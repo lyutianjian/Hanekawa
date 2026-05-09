@@ -1,0 +1,451 @@
+{
+  "meta": {
+    "id": "4aa5d2f1-81bf-4480-81ea-c9edfcb287d6",
+    "shortId": "4aa5d2f1-81b",
+    "createdAt": "2026-05-09T01:50:44.726Z",
+    "updatedAt": "2026-05-09T01:55:19.776Z",
+    "messageCount": 9,
+    "title": "请读取 src/config/providers.ts"
+  },
+  "records": [
+    {
+      "type": "message",
+      "id": "10c8ac9e-a8b2-4f92-bba0-9a2ac68e5fcd",
+      "role": "user",
+      "content": "请读取 src/config/providers.ts",
+      "createdAt": "2026-05-09T01:50:57.210Z"
+    },
+    {
+      "type": "message",
+      "id": "87ba7bc4-38fc-4e0b-9956-ebcf6cd58025",
+      "role": "assistant",
+      "content": "\n\n",
+      "createdAt": "2026-05-09T01:51:07.846Z",
+      "model": "deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "call_0056441f6dee4cf5ae3ce39b",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/config/providers.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:51:07.849Z"
+    },
+    {
+      "id": "6166eeca-4934-4645-8e83-a6e778be37ad",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/config/providers.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:51:07.851Z"
+    },
+    {
+      "id": "ebe2e1b5-f969-485f-9be2-0df7a10c373d",
+      "type": "tool_result",
+      "toolUseId": "call_0056441f6dee4cf5ae3ce39b",
+      "tool": "readFile",
+      "ok": true,
+      "content": "import type { ModelContextItem, ModelProvider, ModelRequest, ModelResponse, Tool } from '../harness/types.js'\nimport Anthropic from '@anthropic-ai/sdk'\nimport OpenAI from 'openai'\nimport type { ModelConfig } from './service.js'\n\nfunction shouldDebugProviderPayloads() {\n  return process.env.MYAGENT_DEBUG_PROVIDER === '1'\n}\n\nfunction debugProviderPayload(label: string, payload: unknown) {\n  if (!shouldDebugProviderPayloads()) return\n  console.error(`[myagent][provider:${label}] ${JSON.stringify(payload, null, 2)}`)\n}\n\nexport function buildAnthropicMessages(request: ModelRequest) {\n  const contextItems = request.contextItems ?? request.messages.map((message) => ({ kind: 'message', message }) satisfies ModelContextItem)\n  const messages: Array<Record<string, unknown>> = []\n  let pendingToolResults: Array<Record<string, unknown>> = []\n\n  for (const item of contextItems) {\n    if (item.kind === 'message') {\n      if (pendingToolResults.length > 0) {\n        messages.push({ role: 'user', content: pendingToolResults })\n        pendingToolResults = []\n      }\n      if (item.message.role !== 'user' && item.message.role !== 'assistant') continue\n      messages.push({\n        role: item.message.role,\n        content: item.message.content,\n      })\n      continue\n    }\n\n    if (item.kind === 'tool_use') {\n      const lastMessage = messages[messages.length - 1]\n      const toolUseBlock = {\n        type: 'tool_use',\n        id: item.id,\n        name: item.tool,\n        input: item.input,\n      }\n      if (lastMessage && lastMessage.role === 'assistant') {\n        const existingContent = lastMessage.content as unknown[]\n        lastMessage.content = Array.isArray(existingContent)\n          ? [...existingContent, toolUseBlock]\n          : [existingContent, toolUseBlock]\n      } else {\n        messages.push({\n          role: 'assistant',\n          content: [toolUseBlock],\n        })\n      }\n      continue\n    }\n\n    pendingToolResults.push({\n      type: 'tool_result',\n      tool_use_id: item.toolUseId,\n      content: item.content,\n      is_error: !item.ok,\n    })\n  }\n\n  if (pendingToolResults.length > 0) {\n    messages.push({ role: 'user', content: pendingToolResults })\n  }\n\n  return messages\n}\n\nexport function buildOpenAIMessages(request: ModelRequest): OpenAI.Chat.ChatCompletionMessageParam[] {\n  const contextItems = request.contextItems ?? request.messages.map((message) => ({ kind: 'message', message }) satisfies ModelContextItem)\n  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [\n    ...(request.system ? [{ role: 'system' as const, content: request.system }] : []),\n  ]\n\n  for (const item of contextItems) {\n    if (item.kind === 'message') {\n      if (item.message.role !== 'user' && item.message.role !== 'assistant') continue\n      messages.push({\n        role: item.message.role,\n        content: item.message.content,\n      })\n      continue\n    }\n\n    if (item.kind === 'tool_use') {\n      const lastMessage = messages[messages.length - 1]\n      const toolCall = {\n        id: item.id,\n        type: 'function' as const,\n        function: {\n          name: item.tool,\n          arguments: JSON.stringify(item.input ?? {}),\n        },\n      }\n      if (lastMessage && lastMessage.role === 'assistant') {\n        const existing = (lastMessage as { tool_calls?: unknown[] }).tool_calls ?? []\n        ;(lastMessage as { tool_calls: unknown[] }).tool_calls = [...existing, toolCall]\n      } else {\n        messages.push({\n          role: 'assistant',\n          content: '',\n          tool_calls: [toolCall],\n        })\n      }\n      continue\n    }\n\n    messages.push({\n      role: 'tool',\n      content: item.content,\n      tool_call_id: item.toolUseId,\n    })\n  }\n\n  return messages\n}\n\nexport function buildAnthropicTools(tools: Tool[] = []) {\n  return tools.map((tool) => ({\n    name: tool.name,\n    description: tool.description,\n    input_schema: tool.inputSchema,\n  }))\n}\n\nexport function buildOpenAITools(tools: Tool[] = []) {\n  return tools.map((tool) => ({\n    type: 'function' as const,\n    function: {\n      name: tool.name,\n      description: tool.description,\n      parameters: tool.inputSchema as Record<string, unknown>,\n    },\n  }))\n}\n\nexport function buildAnthropicPayload(request: ModelRequest) {\n  const tools = buildAnthropicTools(request.tools)\n  return {\n    model: request.model,\n    max_tokens: request.maxTokens ?? 4096,\n    messages: buildAnthropicMessages(request) as unknown as Anthropic.Messages.MessageParam[],\n    ...(request.system ? { system: request.system } : {}),\n    ...(tools.length > 0\n      ? {\n          // eslint-disable-next-line @typescript-eslint/no-explicit-any\n          tools: tools as any,\n          tool_choice: { type: 'auto', disable_parallel_tool_use: true } as const,\n        }\n      : {}),\n  }\n}\n\nexport function buildOpenAIPayload(request: ModelRequest) {\n  const tools = buildOpenAITools(request.tools)\n  return {\n    model: request.model,\n    messages: buildOpenAIMessages(request),\n    ...(tools.length > 0\n      ? {\n          // eslint-disable-next-line @typescript-eslint/no-explicit-any\n          tools: tools as any,\n        }\n      : {}),\n  }\n}\n\nexport class AnthropicProvider implements ModelProvider {\n  name = 'anthropic'\n  private client: Anthropic\n\n  constructor(config: ModelConfig) {\n    this.client = new Anthropic({\n      apiKey: config.apiKey,\n      baseURL: config.baseUrl,\n    })\n  }\n\n  async createMessage(request: ModelRequest): Promise<ModelResponse> {\n    const payload = buildAnthropicPayload(request)\n    debugProviderPayload('anthropic', payload)\n    const response = await this.client.messages.create(payload)\n\n    const content = response.content.find((c) => c.type === 'text')\n    const toolUses = response.content.filter((c) => c.type === 'tool_use')\n\n    return {\n      content: content?.type === 'text' ? content.text : '',\n      toolCalls: toolUses.map((c) => {\n        if (c.type !== 'tool_use') throw new Error('Unexpected content type')\n        return {\n          id: c.id,\n          name: c.name,\n          input: c.input,\n        }\n      }),\n    }\n  }\n}\n\nexport class OpenAIProvider implements ModelProvider {\n  name = 'openai'\n  private client: OpenAI\n\n  constructor(config: ModelConfig) {\n    this.client = new OpenAI({\n      apiKey: config.apiKey,\n      baseURL: config.baseUrl,\n    })\n  }\n\n  async createMessage(request: ModelRequest): Promise<ModelResponse> {\n    const payload = buildOpenAIPayload(request)\n    debugProviderPayload('openai', payload)\n    const response = await this.client.chat.completions.create(payload)\n\n    const choice = response.choices[0]\n    const message = choice?.message\n\n    const toolCalls =\n      message?.tool_calls?.map((tc) => {\n        // eslint-disable-next-line @typescript-eslint/no-explicit-any\n        const fn = tc as any\n        return {\n          id: tc.id,\n          name: fn.function.name,\n          input: typeof fn.function.arguments === 'string'\n            ? JSON.parse(fn.function.arguments)\n            : fn.function.arguments,\n        }\n      }) ?? []\n\n    return {\n      content: message?.content ?? '',\n      toolCalls,\n    }\n  }\n}\n\nexport class ProviderRegistry {\n  private providers: Map<string, ModelProvider> = new Map()\n\n  register(provider: ModelProvider): void {\n    this.providers.set(provider.name, provider)\n  }\n\n  get(name: string): ModelProvider | undefined {\n    return this.providers.get(name)\n  }\n\n  has(name: string): boolean {\n    return this.providers.has(name)\n  }\n\n  list(): string[] {\n    return Array.from(this.providers.keys())\n  }\n}\n\nexport function createProvider(config: ModelConfig): ModelProvider | undefined {\n  switch (config.provider) {\n    case 'anthropic':\n      return new AnthropicProvider(config)\n    case 'openai':\n      return new OpenAIProvider(config)\n    default:\n      return undefined\n  }\n}\n",
+      "createdAt": "2026-05-09T01:51:07.852Z"
+    },
+    {
+      "type": "message",
+      "id": "e5541d42-6829-41d0-b75c-5c80f9cfc851",
+      "role": "assistant",
+      "content": "请继续读取相关的配置文件，了解项目的结构和功能",
+      "createdAt": "2026-05-09T01:54:52.244Z",
+      "model": "deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "call_6f688224fc8b41e9a7a4184f",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/config/service.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:54:52.247Z"
+    },
+    {
+      "id": "27015ac8-7bec-41f5-abad-c35001f5b051",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/config/service.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:54:52.249Z"
+    },
+    {
+      "id": "fc7c2316-8b37-49d0-8b68-157eb8c54697",
+      "type": "tool_result",
+      "toolUseId": "call_6f688224fc8b41e9a7a4184f",
+      "tool": "readFile",
+      "ok": true,
+      "content": "import { readJsonFile, writeJsonFile } from '../utils/json.js'\nimport { getConfigPath } from '../utils/paths.js'\n\nexport interface ModelConfig {\n  provider: string\n  model: string\n  apiKey?: string\n  baseUrl?: string\n}\n\nexport interface AgentConfig {\n  system?: string\n  maxTokens?: number\n  contextBudget?: number\n  sessionDir?: string\n}\n\nexport interface Config {\n  models: Record<string, ModelConfig>\n  defaultModel?: string\n  agent: AgentConfig\n}\n\nconst DEFAULT_CONFIG: Config = {\n  models: {\n    anthropic: {\n      provider: 'anthropic',\n      model: 'claude-opus-4-7',\n    },\n  },\n  defaultModel: 'anthropic',\n  agent: {\n    contextBudget: 100_000,\n  },\n}\n\nexport class ConfigService {\n  private config: Config\n  private configPath: string\n\n  constructor(cwd: string) {\n    this.configPath = getConfigPath(cwd)\n    this.config = { ...DEFAULT_CONFIG }\n  }\n\n  async load(): Promise<void> {\n    this.config = await readJsonFile(this.configPath, DEFAULT_CONFIG)\n  }\n\n  async save(): Promise<void> {\n    await writeJsonFile(this.configPath, this.config)\n  }\n\n  get(): Config {\n    return this.config\n  }\n\n  getModel(name: string): ModelConfig | undefined {\n    return this.config.models[name]\n  }\n\n  getDefaultModel(): ModelConfig | undefined {\n    if (!this.config.defaultModel) return undefined\n    return this.config.models[this.config.defaultModel]\n  }\n\n  setDefaultModel(name: string): void {\n    if (this.config.models[name]) {\n      this.config.defaultModel = name\n    }\n  }\n\n  addModel(name: string, model: ModelConfig): void {\n    this.config.models[name] = model\n  }\n}\n",
+      "createdAt": "2026-05-09T01:54:52.251Z"
+    },
+    {
+      "id": "call_220f469015f34783bb92b055",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/harness/types.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:54:52.253Z"
+    },
+    {
+      "id": "b4af8d19-aa2a-442b-9948-01b2732f3587",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/harness/types.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:54:52.254Z"
+    },
+    {
+      "id": "490e4587-b3c0-4751-8347-7a272663afba",
+      "type": "tool_result",
+      "toolUseId": "call_220f469015f34783bb92b055",
+      "tool": "readFile",
+      "ok": true,
+      "content": "export type RiskLevel = 'safe' | 'confirm' | 'dangerous'\n\nexport type ChatRole = 'user' | 'assistant' | 'system' | 'tool'\n\nexport interface ChatMessage {\n  id: string\n  role: ChatRole\n  content: string\n  createdAt: string\n  model?: string\n}\n\nexport interface ToolUseRecord {\n  id: string\n  type: 'tool_use'\n  tool: string\n  input: unknown\n  riskLevel: RiskLevel\n  createdAt: string\n}\n\nexport interface ToolResultRecord {\n  id: string\n  type: 'tool_result'\n  toolUseId: string\n  tool: string\n  ok: boolean\n  content: string\n  createdAt: string\n}\n\nexport interface ToolApprovalRecord {\n  id: string\n  type: 'tool_approval'\n  tool: string\n  input: unknown\n  approved: boolean\n  riskLevel: RiskLevel\n  createdAt: string\n}\n\nexport type SessionRecord =\n  | ({ type: 'message' } & ChatMessage)\n  | ToolUseRecord\n  | ToolResultRecord\n  | ToolApprovalRecord\n\nexport interface ToolContext {\n  cwd: string\n  sessionId: string\n  readFiles: Set<string>\n}\n\nexport interface ToolResult {\n  ok: boolean\n  content: string\n  metadata?: Record<string, unknown>\n}\n\nexport interface Tool {\n  name: string\n  description: string\n  inputSchema: unknown\n  riskLevel: RiskLevel\n  execute(input: unknown, context: ToolContext): Promise<ToolResult>\n}\n\nexport interface CommandContext {\n  cwd: string\n  writeLine(message: string): void\n}\n\nexport interface Command {\n  name: string\n  description: string\n  run(args: string[], context: CommandContext): Promise<void>\n}\n\nexport interface ToolCall {\n  id: string\n  name: string\n  input: unknown\n}\n\nexport interface ContextChatMessage {\n  kind: 'message'\n  message: ChatMessage\n}\n\nexport interface ContextToolUse {\n  kind: 'tool_use'\n  id: string\n  tool: string\n  input: unknown\n}\n\nexport interface ContextToolResult {\n  kind: 'tool_result'\n  toolUseId: string\n  tool: string\n  ok: boolean\n  content: string\n}\n\nexport type ModelContextItem = ContextChatMessage | ContextToolUse | ContextToolResult\n\nexport interface ModelRequest {\n  system?: string\n  messages: ChatMessage[]\n  contextItems?: ModelContextItem[]\n  tools?: Tool[]\n  model: string\n  maxTokens?: number\n}\n\nexport interface ModelResponse {\n  content: string\n  toolCalls: ToolCall[]\n}\n\nexport interface ModelProvider {\n  name: string\n  createMessage(request: ModelRequest): Promise<ModelResponse>\n}\n",
+      "createdAt": "2026-05-09T01:54:52.257Z"
+    },
+    {
+      "type": "message",
+      "id": "12463ff9-512a-497f-baf4-dc079e6092df",
+      "role": "assistant",
+      "content": "\n\n",
+      "createdAt": "2026-05-09T01:54:59.843Z",
+      "model": "deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "call_382a91c84f8843d8a451c783",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/prompts/system.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:54:59.846Z"
+    },
+    {
+      "id": "07598708-0cc5-4bd2-811a-34d1f49be6bc",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/prompts/system.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:54:59.847Z"
+    },
+    {
+      "id": "8abf2945-07ad-4d36-99cf-91972bc24a36",
+      "type": "tool_result",
+      "toolUseId": "call_382a91c84f8843d8a451c783",
+      "tool": "readFile",
+      "ok": false,
+      "content": "ENOENT: no such file or directory, open 'C:\\Users\\Miyano\\Documents\\code\\ClaudeCode\\myagent\\src\\prompts\\system.ts'",
+      "createdAt": "2026-05-09T01:54:59.849Z"
+    },
+    {
+      "type": "message",
+      "id": "41954c73-86d7-4667-8c5f-7bde1525ab20",
+      "role": "assistant",
+      "content": "\n\n",
+      "createdAt": "2026-05-09T01:55:02.308Z",
+      "model": "deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "call_6b33dc61a5b44d6e89c9a2e6",
+      "type": "tool_use",
+      "tool": "grep",
+      "input": {
+        "pattern": "system.*prompt|systemPrompt|defaultSystem",
+        "path": "src",
+        "headLimit": 20
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:02.311Z"
+    },
+    {
+      "id": "16321ed2-47be-4b81-83f4-a4f3f7c6f8fa",
+      "type": "tool_approval",
+      "tool": "grep",
+      "input": {
+        "pattern": "system.*prompt|systemPrompt|defaultSystem",
+        "path": "src",
+        "headLimit": 20
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:02.313Z"
+    },
+    {
+      "id": "1e872956-5a49-4ea5-97b0-b8170d62f7b0",
+      "type": "tool_result",
+      "toolUseId": "call_6b33dc61a5b44d6e89c9a2e6",
+      "tool": "grep",
+      "ok": true,
+      "content": "No matches found.",
+      "createdAt": "2026-05-09T01:55:02.324Z"
+    },
+    {
+      "type": "message",
+      "id": "562cdbcb-9d7e-4373-8d09-1ad565061282",
+      "role": "assistant",
+      "content": "\n\n",
+      "createdAt": "2026-05-09T01:55:07.123Z",
+      "model": "deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "call_d896960d2a884169a8dce46e",
+      "type": "tool_use",
+      "tool": "grep",
+      "input": {
+        "pattern": "system",
+        "glob": "src/**/*.ts",
+        "headLimit": 20
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:07.125Z"
+    },
+    {
+      "id": "8f2d2af5-2ca0-47cb-8764-985b5567b0c5",
+      "type": "tool_approval",
+      "tool": "grep",
+      "input": {
+        "pattern": "system",
+        "glob": "src/**/*.ts",
+        "headLimit": 20
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:07.127Z"
+    },
+    {
+      "id": "0874b7b6-efab-4bad-b988-1bbb1fb064bb",
+      "type": "tool_result",
+      "toolUseId": "call_d896960d2a884169a8dce46e",
+      "tool": "grep",
+      "ok": true,
+      "content": "src\\config\\providers.ts:74:     ...(request.system ? [{ role: 'system' as const, content: request.system }] : []),\nsrc\\config\\providers.ts:145:     ...(request.system ? { system: request.system } : {}),\nsrc\\config\\service.ts:12:   system?: string\nsrc\\entrypoints\\cli.ts:127:     system: config.get().agent.system,\nsrc\\harness\\contextBuilder.ts:8:   system?: string\nsrc\\harness\\contextBuilder.ts:13:   system?: string\nsrc\\harness\\contextBuilder.ts:36:       system: input.system,\nsrc\\harness\\contextBuilder.ts:83:       system: builtMessages.system,\nsrc\\harness\\loop.ts:14:   system?: string\nsrc\\harness\\loop.ts:37:         system: this.options.system,\nsrc\\harness\\loop.ts:40:         system: built.system,\nsrc\\harness\\types.ts:3: export type ChatRole = 'user' | 'assistant' | 'system' | 'tool'\nsrc\\harness\\types.ts:108:   system?: string\nsrc\\prompts\\budget.ts:49:   truncate(messages: ChatMessage[], system?: string): ChatMessage[] {\nsrc\\prompts\\budget.ts:50:     const systemTokens = system ? countTokens(system) : 0\nsrc\\prompts\\budget.ts:51:     const availableBudget = this.budget - systemTokens - 1000 // Reserve for response\nsrc\\prompts\\budget.ts:73:   estimate(messages: ChatMessage[], system?: string): { used: number; budget: number; remaining: number } {\nsrc\\prompts\\budget.ts:74:     const used = countMessagesTokens(messages).total + (system ? countTokens(system) : 0)\nsrc\\prompts\\composer.ts:5:   system?: string\nsrc\\prompts\\composer.ts:14:   ): { system?: string; messages: ChatMessage[] } {",
+      "createdAt": "2026-05-09T01:55:07.135Z"
+    },
+    {
+      "type": "message",
+      "id": "133b12de-cd40-4535-b9b4-098f2cb7ddb0",
+      "role": "assistant",
+      "content": "\n\n",
+      "createdAt": "2026-05-09T01:55:11.123Z",
+      "model": "deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "call_256d48b6712749a1aba9dfa6",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/harness/contextBuilder.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:11.125Z"
+    },
+    {
+      "id": "da416bb4-b851-4b65-b524-03b665ff2368",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/harness/contextBuilder.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:11.127Z"
+    },
+    {
+      "id": "8c05c34c-1359-4454-88ba-ef92c3c5ae6d",
+      "type": "tool_result",
+      "toolUseId": "call_256d48b6712749a1aba9dfa6",
+      "tool": "readFile",
+      "ok": true,
+      "content": "import type { ChatMessage, ModelContextItem, SessionRecord, Tool } from './types.js'\nimport { PromptComposer } from '../prompts/composer.js'\nimport { ContextBudget } from '../prompts/budget.js'\n\nexport interface BuildContextInput {\n  records: SessionRecord[]\n  tools: Tool[]\n  system?: string\n  budget?: ContextBudget\n}\n\nexport interface BuiltContext {\n  system?: string\n  messages: ChatMessage[]\n  contextItems: ModelContextItem[]\n}\n\nexport class ContextBuilder {\n  constructor(\n    private readonly composer = new PromptComposer(),\n    private readonly defaultBudget = new ContextBudget(),\n  ) {}\n\n  build(input: BuildContextInput): BuiltContext {\n    const messages = input.records\n      .filter((record): record is SessionRecord & { type: 'message' } => record.type === 'message')\n      .map((record) => ({\n        id: record.id,\n        role: record.role,\n        content: record.content,\n        createdAt: record.createdAt,\n        model: record.model,\n      }))\n\n    const builtMessages = this.composer.compose(messages, {\n      system: input.system,\n      budget: input.budget ?? this.defaultBudget,\n      includeHistory: true,\n    })\n\n    const includedMessageIds = new Set(builtMessages.messages.map((message) => message.id))\n    const contextItems: ModelContextItem[] = []\n\n    for (const record of input.records) {\n      if (record.type === 'message') {\n        if (includedMessageIds.has(record.id)) {\n          contextItems.push({\n            kind: 'message',\n            message: {\n              id: record.id,\n              role: record.role,\n              content: record.content,\n              createdAt: record.createdAt,\n              model: record.model,\n            },\n          })\n        }\n        continue\n      }\n\n      if (record.type === 'tool_use') {\n        contextItems.push({\n          kind: 'tool_use',\n          id: record.id,\n          tool: record.tool,\n          input: record.input,\n        })\n        continue\n      }\n\n      if (record.type === 'tool_result') {\n        contextItems.push({\n          kind: 'tool_result',\n          toolUseId: record.toolUseId,\n          tool: record.tool,\n          ok: record.ok,\n          content: record.content,\n        })\n      }\n    }\n\n    return {\n      system: builtMessages.system,\n      messages: builtMessages.messages,\n      contextItems,\n    }\n  }\n}\n",
+      "createdAt": "2026-05-09T01:55:11.129Z"
+    },
+    {
+      "id": "call_453c9ddb76044844a89d1625",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/harness/loop.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:11.131Z"
+    },
+    {
+      "id": "f87a8587-233e-447f-a840-8c0b115c3f6f",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/harness/loop.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:11.132Z"
+    },
+    {
+      "id": "8f8ca571-4fc8-4ba6-a931-a37f06dc82ed",
+      "type": "tool_result",
+      "toolUseId": "call_453c9ddb76044844a89d1625",
+      "tool": "readFile",
+      "ok": true,
+      "content": "import { randomUUID } from 'node:crypto'\nimport { ContextBuilder } from './contextBuilder.js'\nimport { ToolRunner } from './toolRunner.js'\nimport type { ChatMessage, ModelProvider, SessionRecord, Tool, ToolContext } from './types.js'\n\nexport interface AgentLoopOptions {\n  provider: ModelProvider\n  model: string\n  maxTokens?: number\n  tools: Tool[]\n  contextBuilder: ContextBuilder\n  toolRunner: ToolRunner\n  toolContext: ToolContext\n  system?: string\n  loadRecords(): Promise<SessionRecord[]>\n  appendRecord(record: SessionRecord): Promise<void>\n}\n\nexport class AgentLoop {\n  constructor(private readonly options: AgentLoopOptions) {}\n\n  async run(userInput: string): Promise<string> {\n    const userMessage: ChatMessage & { type: 'message' } = {\n      type: 'message',\n      id: randomUUID(),\n      role: 'user',\n      content: userInput,\n      createdAt: new Date().toISOString(),\n    }\n    await this.options.appendRecord(userMessage)\n\n    for (let iteration = 0; iteration < 8; iteration++) {\n      const records = await this.options.loadRecords()\n      const built = this.options.contextBuilder.build({\n        records,\n        tools: this.options.tools,\n        system: this.options.system,\n      })\n      const response = await this.options.provider.createMessage({\n        system: built.system,\n        messages: built.messages,\n        contextItems: built.contextItems,\n        tools: this.options.tools,\n        model: this.options.model,\n        maxTokens: this.options.maxTokens,\n      })\n\n      const assistantMessage: ChatMessage & { type: 'message' } = {\n        type: 'message',\n        id: randomUUID(),\n        role: 'assistant',\n        content: response.content,\n        createdAt: new Date().toISOString(),\n        model: this.options.model,\n      }\n      await this.options.appendRecord(assistantMessage)\n\n      if (response.toolCalls.length === 0) {\n        return response.content\n      }\n\n      for (const toolCall of response.toolCalls) {\n        await this.options.toolRunner.run(toolCall, this.options.toolContext)\n      }\n    }\n\n    throw new Error('Agent loop exceeded maximum tool iterations')\n  }\n}\n",
+      "createdAt": "2026-05-09T01:55:11.134Z"
+    },
+    {
+      "id": "call_892f8a932d2b4de1a6f24690",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/prompts/composer.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:11.136Z"
+    },
+    {
+      "id": "4214c73f-0343-417a-9c1d-0a4d7f0b6a9b",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/prompts/composer.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:11.137Z"
+    },
+    {
+      "id": "e5a4cff3-4126-479d-9145-0a7df49177ab",
+      "type": "tool_result",
+      "toolUseId": "call_892f8a932d2b4de1a6f24690",
+      "tool": "readFile",
+      "ok": true,
+      "content": "import type { ChatMessage } from '../harness/types.js'\nimport { ContextBudget } from './budget.js'\n\nexport interface ComposerOptions {\n  system?: string\n  budget: ContextBudget\n  includeHistory?: boolean\n}\n\nexport class PromptComposer {\n  compose(\n    messages: ChatMessage[],\n    options: ComposerOptions,\n  ): { system?: string; messages: ChatMessage[] } {\n    const { system, budget, includeHistory = true } = options\n\n    if (!includeHistory) {\n      return { system, messages: [] }\n    }\n\n    const truncatedMessages = budget.truncate(messages, system)\n    return { system, messages: truncatedMessages }\n  }\n\n  buildRequestMessages(\n    messages: ChatMessage[],\n    options: ComposerOptions,\n  ): { system?: string; messages: ChatMessage[] } {\n    return this.compose(messages, options)\n  }\n}\n",
+      "createdAt": "2026-05-09T01:55:11.139Z"
+    },
+    {
+      "id": "call_c6f9a14be8ca46a68aea9b24",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/prompts/budget.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:11.141Z"
+    },
+    {
+      "id": "ff6d6dff-988a-4bc7-a3fa-cb69b0fbb3da",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/prompts/budget.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:11.142Z"
+    },
+    {
+      "id": "f7307241-da3c-4b45-8e1c-9802efc7c8ae",
+      "type": "tool_result",
+      "toolUseId": "call_c6f9a14be8ca46a68aea9b24",
+      "tool": "readFile",
+      "ok": true,
+      "content": "import type { ChatMessage } from '../harness/types.js'\n\nexport interface TokenCount {\n  total: number\n  messages: number[]\n}\n\nfunction countTokens(text: string): number {\n  // Rough estimate: ~4 chars per token for English, more for CJK\n  // This is a simplified approximation for the MVP\n  let count = 0\n  for (const char of text) {\n    if (char.charCodeAt(0) > 127) {\n      count += 2 // CJK characters\n    } else {\n      count += 0.25 // English/ASCII\n    }\n  }\n  return Math.ceil(count)\n}\n\nexport function countMessageTokens(message: ChatMessage): number {\n  return countTokens(message.content)\n}\n\nexport function countMessagesTokens(messages: ChatMessage[]): TokenCount {\n  const counts = messages.map(countMessageTokens)\n  return {\n    total: counts.reduce((a, b) => a + b, 0),\n    messages: counts,\n  }\n}\n\nexport class ContextBudget {\n  private budget: number\n\n  constructor(budget: number = 100_000) {\n    this.budget = budget\n  }\n\n  getBudget(): number {\n    return this.budget\n  }\n\n  setBudget(budget: number): void {\n    this.budget = budget\n  }\n\n  truncate(messages: ChatMessage[], system?: string): ChatMessage[] {\n    const systemTokens = system ? countTokens(system) : 0\n    const availableBudget = this.budget - systemTokens - 1000 // Reserve for response\n\n    if (availableBudget <= 0) {\n      return []\n    }\n\n    const result: ChatMessage[] = []\n    let used = 0\n\n    // Add messages from oldest to newest until budget is exhausted\n    for (const message of messages) {\n      const tokens = countMessageTokens(message)\n      if (used + tokens > availableBudget) {\n        break\n      }\n      result.push(message)\n      used += tokens\n    }\n\n    return result\n  }\n\n  estimate(messages: ChatMessage[], system?: string): { used: number; budget: number; remaining: number } {\n    const used = countMessagesTokens(messages).total + (system ? countTokens(system) : 0)\n    return {\n      used,\n      budget: this.budget,\n      remaining: Math.max(0, this.budget - used),\n    }\n  }\n}\n",
+      "createdAt": "2026-05-09T01:55:11.144Z"
+    },
+    {
+      "type": "message",
+      "id": "ed079f99-f79b-4234-a820-251055925ae1",
+      "role": "assistant",
+      "content": "\n\n",
+      "createdAt": "2026-05-09T01:55:16.963Z",
+      "model": "deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "call_77c67682d8a64b31bcba49e1",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/entrypoints/cli.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:16.965Z"
+    },
+    {
+      "id": "daff63cb-0d86-4a91-b6cb-ce1f9255077e",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/entrypoints/cli.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:16.967Z"
+    },
+    {
+      "id": "5ebe6416-7afb-4d82-93fd-8da593c16d1d",
+      "type": "tool_result",
+      "toolUseId": "call_77c67682d8a64b31bcba49e1",
+      "tool": "readFile",
+      "ok": true,
+      "content": "#!/usr/bin/env node\n\nimport readline from 'node:readline'\nimport { ConfigService } from '../config/service.js'\nimport { createProvider } from '../config/providers.js'\nimport { SessionStore, type SessionMeta } from '../sessions/service.js'\nimport { getBuiltinTools } from '../tools/index.js'\nimport { PermissionGate } from '../harness/permissions.js'\nimport { ToolRunner } from '../harness/toolRunner.js'\nimport { ContextBuilder } from '../harness/contextBuilder.js'\nimport { AgentLoop } from '../harness/loop.js'\nimport type { SessionRecord } from '../harness/types.js'\nimport type { PermissionRequest } from '../harness/permissions.js'\n\nconst cwd = process.cwd()\n\nasync function main() {\n  const args = process.argv.slice(2)\n  const command = args[0] ?? 'help'\n\n  switch (command) {\n    case 'help':\n      printHelp()\n      break\n\n    case 'new':\n      await runNewSession()\n      break\n\n    case 'list':\n      await listSessions()\n      break\n\n    case 'resume': {\n      const sessionId = args[1]\n      if (!sessionId) {\n        console.error('Usage: myagent resume <session-id-or-prefix>')\n        process.exit(1)\n      }\n      await resumeSession(sessionId)\n      break\n    }\n\n    default:\n      console.error(`Unknown command: ${command}`)\n      console.error('Run \"myagent help\" for usage information')\n      process.exit(1)\n  }\n}\n\nfunction printHelp() {\n  console.log(`\nMyAgent CLI\n\nUsage:\n  myagent [command]\n\nCommands:\n  new             Start a new interactive session\n  list            List saved sessions with usable IDs\n  resume <id>     Resume a session by full ID or unambiguous prefix\n  help            Show this help message\n\nDuring a session:\n  - type your prompt and press Enter\n  - type /exit to quit\n`)\n}\n\nasync function runNewSession() {\n  const store = new SessionStore(cwd)\n  await store.init()\n  const session = await store.create()\n  await startInteractiveSession(session)\n}\n\nasync function resumeSession(sessionId: string) {\n  const store = new SessionStore(cwd)\n  await store.init()\n  const session = await store.resolve(sessionId)\n  if (!session) {\n    console.error(`Session not found or ambiguous: ${sessionId}`)\n    process.exit(1)\n  }\n  await startInteractiveSession(session)\n}\n\nasync function startInteractiveSession(session: SessionMeta) {\n  const config = new ConfigService(cwd)\n  await config.load()\n\n  const modelConfig = config.getDefaultModel()\n  if (!modelConfig) {\n    console.error('No default model configured.')\n    process.exit(1)\n  }\n\n  const provider = createProvider(modelConfig)\n  if (!provider) {\n    console.error(`Failed to create provider for: ${modelConfig.provider}`)\n    process.exit(1)\n  }\n\n  const store = new SessionStore(cwd)\n  await store.init()\n  const tools = getBuiltinTools()\n  const rl = readline.createInterface({\n    input: process.stdin,\n    output: process.stdout,\n  })\n\n  const permissionGate = new PermissionGate((request) => promptPermission(rl, request))\n  const toolRunner = new ToolRunner(tools, permissionGate, {\n    onRecord: async (record) => {\n      await store.appendRecord(session.id, record)\n    },\n  })\n\n  const loop = new AgentLoop({\n    provider,\n    model: modelConfig.model,\n    maxTokens: config.get().agent.maxTokens,\n    tools,\n    contextBuilder: new ContextBuilder(),\n    toolRunner,\n    toolContext: { cwd, sessionId: session.id, readFiles: new Set() },\n    system: config.get().agent.system,\n    loadRecords: async () => store.loadRecords(session.id),\n    appendRecord: async (record) => store.appendRecord(session.id, record),\n  })\n\n  const records = await store.loadRecords(session.id)\n  const messageCount = records.filter((record) => record.type === 'message').length\n  console.log(`Session: ${session.shortId} (${session.id})`)\n  console.log(`Using model: ${modelConfig.model} (${provider.name} format)`)\n  if (modelConfig.baseUrl) {\n    console.log(`Provider wire format: ${provider.name}`)\n  }\n  if (messageCount > 0) {\n    console.log(`Loaded ${messageCount} previous messages.`)\n  }\n  console.log('Type /exit to quit.\\n')\n\n  const prompt = () => {\n    rl.question('> ', async (input) => {\n      const trimmed = input.trim()\n      if (trimmed === '/exit' || trimmed === 'exit') {\n        rl.close()\n        return\n      }\n      if (!trimmed) {\n        prompt()\n        return\n      }\n\n      try {\n        console.log('\\nThinking...\\n')\n        const response = await loop.run(trimmed)\n        if (response) console.log(response)\n      } catch (error) {\n        console.error(error instanceof Error ? error.message : String(error))\n      }\n\n      console.log()\n      prompt()\n    })\n  }\n\n  prompt()\n}\n\nasync function promptPermission(rl: readline.Interface, request: PermissionRequest): Promise<boolean> {\n  const summary = JSON.stringify(request.input)\n  const answer = await askQuestion(\n    rl,\n    `[permission] ${request.tool.name}: ${request.reason}\\ninput: ${summary}\\nAllow? (y/N) `,\n  )\n  return /^(y|yes)$/i.test(answer.trim())\n}\n\nfunction askQuestion(rl: readline.Interface, question: string): Promise<string> {\n  return new Promise((resolve) => {\n    rl.question(question, resolve)\n  })\n}\n\nasync function listSessions() {\n  const store = new SessionStore(cwd)\n  await store.init()\n\n  const sessions = await store.list()\n  if (sessions.length === 0) {\n    console.log('No sessions found.')\n    return\n  }\n\n  console.log('Sessions:\\n')\n  for (const session of sessions) {\n    const date = new Date(session.updatedAt).toLocaleString()\n    const title = session.title ?? '(untitled)'\n    console.log(`  ${session.shortId}  ${session.id}  ${session.messageCount} msgs  ${date}  ${title}`)\n  }\n}\n\nmain().catch((error) => {\n  console.error('Fatal error:', error)\n  process.exit(1)\n})\n",
+      "createdAt": "2026-05-09T01:55:16.970Z"
+    },
+    {
+      "type": "message",
+      "id": "a84e7766-e997-43e9-9d24-81d03ff1977d",
+      "role": "assistant",
+      "content": "\n\n",
+      "createdAt": "2026-05-09T01:55:19.769Z",
+      "model": "deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "call_960d47f657f444e1b622d329",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/tools/index.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:19.773Z"
+    },
+    {
+      "id": "566d8e7e-c12e-4252-8d27-f27bd031fee9",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "filePath": "src/tools/index.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T01:55:19.774Z"
+    },
+    {
+      "id": "950f4a03-325e-44c0-a9a0-65aa656b4c10",
+      "type": "tool_result",
+      "toolUseId": "call_960d47f657f444e1b622d329",
+      "tool": "readFile",
+      "ok": true,
+      "content": "import type { Tool } from '../harness/types.js'\nimport { grepTool } from './grep.js'\nimport { readFileTool } from './readFile.js'\nimport { writeFileTool } from './writeFile.js'\nimport { editFileTool } from './editFile.js'\nimport { deleteFileTool } from './deleteFile.js'\n\nexport function getBuiltinTools(): Tool[] {\n  return [grepTool, readFileTool, writeFileTool, editFileTool, deleteFileTool]\n}\n",
+      "createdAt": "2026-05-09T01:55:19.776Z"
+    }
+  ]
+}

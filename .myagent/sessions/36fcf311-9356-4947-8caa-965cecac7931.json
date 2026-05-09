@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "id": "36fcf311-9356-4947-8caa-965cecac7931",
+    "shortId": "36fcf311-935",
+    "createdAt": "2026-05-09T05:20:52.410Z",
+    "updatedAt": "2026-05-09T05:23:02.476Z",
+    "messageCount": 2,
+    "title": "你是谁"
+  },
+  "records": [
+    {
+      "type": "message",
+      "id": "ddd6492a-bfa9-4ec4-8e51-2e31998d54ba",
+      "role": "user",
+      "content": "你是谁",
+      "createdAt": "2026-05-09T05:20:59.821Z"
+    },
+    {
+      "type": "message",
+      "id": "180333e4-407e-435c-96b5-63283170fab6",
+      "role": "user",
+      "content": "你是谁",
+      "createdAt": "2026-05-09T05:23:02.475Z"
+    }
+  ]
+}

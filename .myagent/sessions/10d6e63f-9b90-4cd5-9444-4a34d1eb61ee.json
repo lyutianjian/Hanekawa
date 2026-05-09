@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "id": "10d6e63f-9b90-4cd5-9444-4a34d1eb61ee",
+    "shortId": "10d6e63f-9b9",
+    "createdAt": "2026-05-08T15:28:14.399Z",
+    "updatedAt": "2026-05-08T15:28:37.108Z",
+    "messageCount": 2,
+    "title": "请读取 src/config/providers.ts"
+  },
+  "records": [
+    {
+      "type": "message",
+      "id": "9c491ce4-5056-4137-8565-78d01c89b3ae",
+      "role": "user",
+      "content": "请读取 src/config/providers.ts",
+      "createdAt": "2026-05-08T15:28:18.914Z"
+    },
+    {
+      "type": "message",
+      "id": "33870013-8397-4e66-b60f-9f8f53df0fee",
+      "role": "user",
+      "content": "你是谁",
+      "createdAt": "2026-05-08T15:28:37.107Z"
+    }
+  ]
+}

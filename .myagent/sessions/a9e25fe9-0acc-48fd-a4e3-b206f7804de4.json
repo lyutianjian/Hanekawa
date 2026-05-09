@@ -1,0 +1,75 @@
+{
+  "meta": {
+    "id": "a9e25fe9-0acc-48fd-a4e3-b206f7804de4",
+    "shortId": "a9e25fe9-0ac",
+    "createdAt": "2026-05-09T04:55:13.488Z",
+    "updatedAt": "2026-05-09T05:01:55.975Z",
+    "messageCount": 4,
+    "title": "帮我在当前目录下搜索一个叫nothing.txt"
+  },
+  "records": [
+    {
+      "type": "message",
+      "id": "231a47c3-1c35-4a60-97bd-319d0fe77afa",
+      "role": "user",
+      "content": "帮我在当前目录下搜索一个叫nothing.txt",
+      "createdAt": "2026-05-09T04:56:01.762Z"
+    },
+    {
+      "type": "message",
+      "id": "31920538-06c8-46e9-9845-f62524e99821",
+      "role": "assistant",
+      "content": "\n\n我来帮你在当前目录下搜索名为 `nothing.txt` 的文件。\n\n",
+      "createdAt": "2026-05-09T04:56:05.323Z",
+      "model": "deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "call_eeaaa3990d7c43f88633ee65",
+      "type": "tool_use",
+      "tool": "grep",
+      "input": {
+        "glob": "**/nothing.txt",
+        "path": ".",
+        "pattern": "nothing\\.txt"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T04:56:05.326Z"
+    },
+    {
+      "id": "95779b70-6390-4d2b-8566-33150514f20e",
+      "type": "tool_approval",
+      "tool": "grep",
+      "input": {
+        "glob": "**/nothing.txt",
+        "path": ".",
+        "pattern": "nothing\\.txt"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-09T04:56:05.331Z"
+    },
+    {
+      "id": "53b3aab6-e667-4906-97f8-7b13f15bc33e",
+      "type": "tool_result",
+      "toolUseId": "call_eeaaa3990d7c43f88633ee65",
+      "tool": "grep",
+      "ok": true,
+      "content": "No matches found.",
+      "createdAt": "2026-05-09T04:56:05.375Z"
+    },
+    {
+      "type": "message",
+      "id": "2f764156-ce8b-49f4-bc6b-60d8730ac394",
+      "role": "user",
+      "content": "帮我在当前目录下搜索一个叫nothing.txt的文件",
+      "createdAt": "2026-05-09T04:56:37.110Z"
+    },
+    {
+      "type": "message",
+      "id": "301657dd-7f1d-4681-a517-f7d56f785f65",
+      "role": "user",
+      "content": "你是谁",
+      "createdAt": "2026-05-09T05:01:55.974Z"
+    }
+  ]
+}

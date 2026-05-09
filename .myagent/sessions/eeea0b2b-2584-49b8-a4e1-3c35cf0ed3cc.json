@@ -1,0 +1,19 @@
+{
+  "meta": {
+    "id": "eeea0b2b-2584-49b8-a4e1-3c35cf0ed3cc",
+    "shortId": "eeea0b2b-258",
+    "createdAt": "2026-05-08T14:14:29.199Z",
+    "updatedAt": "2026-05-08T14:14:32.764Z",
+    "messageCount": 1,
+    "title": "请读取 src/config/providers.ts"
+  },
+  "records": [
+    {
+      "type": "message",
+      "id": "9cec7276-1fa7-41dd-9a58-2ac5baae8d4d",
+      "role": "user",
+      "content": "请读取 src/config/providers.ts",
+      "createdAt": "2026-05-08T14:14:32.763Z"
+    }
+  ]
+}

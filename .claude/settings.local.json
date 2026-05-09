@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(node C:\\\\Users\\\\Miyano\\\\Documents\\\\code\\\\ClaudeCode\\\\myagent\\\\node_modules\\\\typescript\\\\bin\\\\tsc *)",
+      "Bash(node *)",
+      "Bash(npx tsc *)",
+      "Bash(npm test *)",
+      "Bash(npm run *)",
+      "Bash(git add *)"
+    ]
+  }
+}

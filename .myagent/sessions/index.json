@@ -1,0 +1,176 @@
+{
+  "sessions": [
+    {
+      "id": "d3d80d03-af89-442b-a210-8e537876946f",
+      "shortId": "d3d80d03-af8",
+      "createdAt": "2026-05-08T11:03:36.028Z",
+      "updatedAt": "2026-05-08T11:04:13.246Z",
+      "messageCount": 1,
+      "title": "src/config/providers.ts"
+    },
+    {
+      "id": "6f7b88d4-41a0-4c74-b6cd-e2b81fc23e6b",
+      "shortId": "6f7b88d4-41a",
+      "createdAt": "2026-05-08T11:04:17.206Z",
+      "updatedAt": "2026-05-08T11:09:04.023Z",
+      "messageCount": 2,
+      "title": "请读取src/config/providers.ts"
+    },
+    {
+      "id": "144b77f2-2e5d-4c82-af7f-716156615d05",
+      "shortId": "144b77f2-2e5",
+      "createdAt": "2026-05-08T12:35:27.482Z",
+      "updatedAt": "2026-05-08T12:37:20.840Z",
+      "messageCount": 2,
+      "title": "请读取 src/config/providers.ts"
+    },
+    {
+      "id": "eeea0b2b-2584-49b8-a4e1-3c35cf0ed3cc",
+      "shortId": "eeea0b2b-258",
+      "createdAt": "2026-05-08T14:14:29.199Z",
+      "updatedAt": "2026-05-08T14:14:32.764Z",
+      "messageCount": 1,
+      "title": "请读取 src/config/providers.ts"
+    },
+    {
+      "id": "10d6e63f-9b90-4cd5-9444-4a34d1eb61ee",
+      "shortId": "10d6e63f-9b9",
+      "createdAt": "2026-05-08T15:28:14.399Z",
+      "updatedAt": "2026-05-08T15:28:37.108Z",
+      "messageCount": 2,
+      "title": "请读取 src/config/providers.ts"
+    },
+    {
+      "id": "26300b98-d87e-4bf9-9ada-ae69e0121b46",
+      "shortId": "26300b98-d87",
+      "createdAt": "2026-05-08T16:29:31.411Z",
+      "updatedAt": "2026-05-08T16:32:03.717Z",
+      "messageCount": 4,
+      "title": "你是谁"
+    },
+    {
+      "id": "614d396d-4ae9-46db-a56a-524e5eac1052",
+      "shortId": "614d396d-4ae",
+      "createdAt": "2026-05-09T01:30:23.793Z",
+      "updatedAt": "2026-05-09T01:30:23.793Z",
+      "messageCount": 0
+    },
+    {
+      "id": "90a0585a-c326-452c-beb5-92d82d3f3aa1",
+      "shortId": "90a0585a-c32",
+      "createdAt": "2026-05-09T01:45:43.107Z",
+      "updatedAt": "2026-05-09T01:45:43.107Z",
+      "messageCount": 0
+    },
+    {
+      "id": "4aa5d2f1-81bf-4480-81ea-c9edfcb287d6",
+      "shortId": "4aa5d2f1-81b",
+      "createdAt": "2026-05-09T01:50:44.726Z",
+      "updatedAt": "2026-05-09T01:55:19.776Z",
+      "messageCount": 9,
+      "title": "请读取 src/config/providers.ts"
+    },
+    {
+      "id": "d537144f-48ae-4153-8895-3fc6ab4a72b6",
+      "shortId": "d537144f-48a",
+      "createdAt": "2026-05-09T02:54:56.347Z",
+      "updatedAt": "2026-05-09T02:57:37.042Z",
+      "messageCount": 3,
+      "title": "请读取文件 src/config/providers.ts"
+    },
+    {
+      "id": "568e54d8-82d7-441e-91f0-c57813561de0",
+      "shortId": "568e54d8-82d",
+      "createdAt": "2026-05-09T02:58:47.688Z",
+      "updatedAt": "2026-05-09T02:58:50.322Z",
+      "messageCount": 2,
+      "title": "请读取文件 src/config/providers.ts"
+    },
+    {
+      "id": "2ed7d147-3676-468f-9f4d-045f971f0e70",
+      "shortId": "2ed7d147-367",
+      "createdAt": "2026-05-09T02:59:00.409Z",
+      "updatedAt": "2026-05-09T03:00:28.496Z",
+      "messageCount": 3,
+      "title": "请读取文件 src/config/providers.ts"
+    },
+    {
+      "id": "f85dee7c-dcc3-45eb-9989-6dbcf794e110",
+      "shortId": "f85dee7c-dcc",
+      "createdAt": "2026-05-09T03:03:40.689Z",
+      "updatedAt": "2026-05-09T03:03:40.689Z",
+      "messageCount": 0
+    },
+    {
+      "id": "76a3aa05-c45c-449e-b34a-610ba8549179",
+      "shortId": "76a3aa05-c45",
+      "createdAt": "2026-05-09T03:03:48.729Z",
+      "updatedAt": "2026-05-09T03:04:09.842Z",
+      "messageCount": 2,
+      "title": "请读取文件 src/config/providers.ts"
+    },
+    {
+      "id": "0fe25749-3719-4b2c-876c-7ca67018a6d6",
+      "shortId": "0fe25749-371",
+      "createdAt": "2026-05-09T03:15:30.552Z",
+      "updatedAt": "2026-05-09T03:22:49.301Z",
+      "messageCount": 5,
+      "title": "请读取文件 src/config/providers.ts"
+    },
+    {
+      "id": "a9e25fe9-0acc-48fd-a4e3-b206f7804de4",
+      "shortId": "a9e25fe9-0ac",
+      "createdAt": "2026-05-09T04:55:13.488Z",
+      "updatedAt": "2026-05-09T05:01:55.975Z",
+      "messageCount": 4,
+      "title": "帮我在当前目录下搜索一个叫nothing.txt"
+    },
+    {
+      "id": "9cf2cbe2-0094-4349-b88f-fc7de52fcb7e",
+      "shortId": "9cf2cbe2-009",
+      "createdAt": "2026-05-09T05:04:31.402Z",
+      "updatedAt": "2026-05-09T05:08:55.180Z",
+      "messageCount": 6,
+      "title": "你是谁"
+    },
+    {
+      "id": "3ef4215d-81cc-48f6-8193-2b03dd6577a4",
+      "shortId": "3ef4215d-81c",
+      "createdAt": "2026-05-09T05:13:26.907Z",
+      "updatedAt": "2026-05-09T05:13:59.490Z",
+      "messageCount": 4,
+      "title": "你是谁"
+    },
+    {
+      "id": "57f4b8f3-afab-4c5a-b4f3-f59c71b431b8",
+      "shortId": "57f4b8f3-afa",
+      "createdAt": "2026-05-09T05:20:30.575Z",
+      "updatedAt": "2026-05-09T05:20:30.575Z",
+      "messageCount": 0
+    },
+    {
+      "id": "36fcf311-9356-4947-8caa-965cecac7931",
+      "shortId": "36fcf311-935",
+      "createdAt": "2026-05-09T05:20:52.410Z",
+      "updatedAt": "2026-05-09T05:23:02.476Z",
+      "messageCount": 2,
+      "title": "你是谁"
+    },
+    {
+      "id": "6c9c4d0a-406d-4439-b227-4266d3d3012c",
+      "shortId": "6c9c4d0a-406",
+      "createdAt": "2026-05-09T05:23:07.151Z",
+      "updatedAt": "2026-05-09T05:23:40.205Z",
+      "messageCount": 5,
+      "title": "你是谁"
+    },
+    {
+      "id": "fa24c193-cebe-4a67-a379-3abe3331043a",
+      "shortId": "fa24c193-ceb",
+      "createdAt": "2026-05-09T05:29:20.972Z",
+      "updatedAt": "2026-05-09T05:34:32.070Z",
+      "messageCount": 37,
+      "title": "你是谁"
+    }
+  ]
+}

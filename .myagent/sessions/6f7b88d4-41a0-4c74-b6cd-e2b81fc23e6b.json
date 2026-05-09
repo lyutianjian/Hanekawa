@@ -1,0 +1,506 @@
+{
+  "meta": {
+    "id": "6f7b88d4-41a0-4c74-b6cd-e2b81fc23e6b",
+    "shortId": "6f7b88d4-41a",
+    "createdAt": "2026-05-08T11:04:17.206Z",
+    "updatedAt": "2026-05-08T11:09:04.023Z",
+    "messageCount": 2,
+    "title": "请读取src/config/providers.ts"
+  },
+  "records": [
+    {
+      "type": "message",
+      "id": "bd2d72d5-87f2-4fa1-9476-42a1ef368fc8",
+      "role": "user",
+      "content": "请读取src/config/providers.ts",
+      "createdAt": "2026-05-08T11:04:24.925Z"
+    },
+    {
+      "id": "019e0742aadaf459d6b34ce371229c11",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "path": "src/config/providers.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:28.471Z"
+    },
+    {
+      "id": "0a5e932a-ec4a-4e63-a0c8-ab4dcb9f95f9",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "path": "src/config/providers.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:28.473Z"
+    },
+    {
+      "id": "62b08165-4c00-42c0-af5e-583a289994ac",
+      "type": "tool_result",
+      "toolUseId": "019e0742aadaf459d6b34ce371229c11",
+      "tool": "readFile",
+      "ok": false,
+      "content": "The \"paths[1]\" argument must be of type string. Received undefined",
+      "createdAt": "2026-05-08T11:04:28.475Z"
+    },
+    {
+      "id": "019e0742b3ec06a85ace0f1831d290c5",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "path": "."
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:29.741Z"
+    },
+    {
+      "id": "d1a61b31-a228-459e-a099-5dc9d451f1fd",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "path": "."
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:29.743Z"
+    },
+    {
+      "id": "dc1e9bf4-9039-4ca7-9b85-0c72df83631f",
+      "type": "tool_result",
+      "toolUseId": "019e0742b3ec06a85ace0f1831d290c5",
+      "tool": "readFile",
+      "ok": false,
+      "content": "The \"paths[1]\" argument must be of type string. Received undefined",
+      "createdAt": "2026-05-08T11:04:29.746Z"
+    },
+    {
+      "id": "019e0742c18a0c914d16705eb9788360",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "path": ""
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:34.026Z"
+    },
+    {
+      "id": "e5b7b22a-2d17-4f11-91c0-fa82a5516960",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "path": ""
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:34.028Z"
+    },
+    {
+      "id": "84af09f8-48c2-494a-af08-1b9b4435c2ed",
+      "type": "tool_result",
+      "toolUseId": "019e0742c18a0c914d16705eb9788360",
+      "tool": "readFile",
+      "ok": false,
+      "content": "The \"paths[1]\" argument must be of type string. Received undefined",
+      "createdAt": "2026-05-08T11:04:34.031Z"
+    },
+    {
+      "id": "019e0742cd82293297542197ce37de53",
+      "type": "tool_use",
+      "tool": "grep",
+      "input": {
+        "pattern": "src"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:36.855Z"
+    },
+    {
+      "id": "5d0b9c9e-d131-4e7d-90fa-65b28b34701e",
+      "type": "tool_approval",
+      "tool": "grep",
+      "input": {
+        "pattern": "src"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:36.858Z"
+    },
+    {
+      "id": "0cd5d9e3-1454-4529-90ca-15ffad233b60",
+      "type": "tool_result",
+      "toolUseId": "019e0742cd82293297542197ce37de53",
+      "tool": "grep",
+      "ok": true,
+      "content": "package-lock.json:19:         \"myagent\": \"src/entrypoints/cli.ts\"\npackage.json:6:     \"myagent\": \"./src/entrypoints/cli.ts\"\npackage.json:9:     \"dev\": \"tsx src/entrypoints/cli.ts\",\ntsconfig.json:14:   \"include\": [\"src/**/*.ts\", \"test/**/*.ts\"]\ntest\\config.test.ts:5: import { ConfigService } from '../src/config/service.js'\ntest\\config.test.ts:11: } from '../src/config/providers.js'\ntest\\config.test.ts:12: import type { ModelRequest } from '../src/harness/types.js'\ntest\\loop.test.ts:3: import { AgentLoop } from '../src/harness/loop.js'\ntest\\loop.test.ts:4: import { ContextBuilder } from '../src/harness/contextBuilder.js'\ntest\\loop.test.ts:5: import { PermissionGate } from '../src/harness/permissions.js'\ntest\\loop.test.ts:6: import { ToolRunner } from '../src/harness/toolRunner.js'\ntest\\loop.test.ts:7: import type { ModelProvider, ModelRequest, SessionRecord, Tool } from '../src/harness/types.js'\ntest\\prompts.test.ts:3: import { ContextBudget, countMessageTokens, countMessagesTokens } from '../src/prompts/budget.js'\ntest\\prompts.test.ts:4: import { PromptComposer } from '../src/prompts/composer.js'\ntest\\prompts.test.ts:5: import type { ChatMessage } from '../src/harness/types.js'\ntest\\sessions.test.ts:6: import { SessionStore } from '../src/sessions/service.js'\ntest\\sessions.test.ts:7: import type { SessionRecord } from '../src/harness/types.js'\ntest\\toolRunner.test.ts:3: import { PermissionGate } from '../src/harness/permissions.js'\ntest\\toolRunner.test.ts:4: import { ToolRunner } from '../src/harness/toolRunner.js'\ntest\\toolRunner.test.ts:5: import type { SessionRecord, Tool } from '../src/harness/types.js'\ntest\\tools.test.ts:6: import { grepTool } from '../src/tools/grep.js'\ntest\\tools.test.ts:7: import { readFileTool } from '../src/tools/readFile.js'\ntest\\tools.test.ts:8: import { editFileTool } from '../src/tools/editFile.js'\ntest\\tools.test.ts:9: import { writeFileTool } from '../src/tools/writeFile.js'\ntest\\tools.test.ts:10: import { deleteFileTool } from '../src/tools/deleteFile.js'\ntest\\utils.test.ts:6: import { getConfigPath, getMyAgentDir } from '../src/utils/paths.js'\ntest\\utils.test.ts:7: import { readJsonFile, writeJsonFile } from '../src/utils/json.js'\nnode_modules\\ajv\\README.md:1: <img align=\"right\" alt=\"Ajv logo\" width=\"160\" src=\"https://ajv.js.org/img/ajv.svg\">\nnode_modules\\ajv\\README.md:21: [<img src=\"https://ajv.js.org/img/mozilla.svg\" width=\"45%\" alt=\"Mozilla\">](https://www.mozilla.org)<img src=\"https://ajv.js.org/img/gap.svg\" width=\"9%\">[<img src=\"https://ajv.js.org/img/reserved.svg\" width=\"45%\">](https://opencollective.com/ajv)\nnode_modules\\ajv\\README.md:23: [<img src=\"https://ajv.js.org/img/microsoft.png\" width=\"31%\" alt=\"Microsoft\">](https://opensource.microsoft.com)<img src=\"https://ajv.js.org/img/gap.svg\" width=\"3%\">[<img src=\"https://ajv.js.org/img/reserved.svg\" width=\"31%\">](https://opencollective.com/ajv)<img src=\"https://ajv.js.org/img/gap.svg\" width=\"3%\">[<img src=\"https://ajv.js.org/img/reserved.svg\" width=\"31%\">](https://opencollective.com/ajv)\nnode_modules\\ajv\\README.md:25: [<img src=\"https://ajv.js.org/img/retool.svg\" width=\"22.5%\" alt=\"Retool\">](https://retool.com/?utm_source=sponsor&utm_campaign=ajv)<img src=\"https://ajv.js.org/img/gap.svg\" width=\"3%\">[<img src=\"https://ajv.js.org/img/tidelift.svg\" width=\"22.5%\" alt=\"Tidelift\">](https://tidelift.com/subscription/pkg/npm-ajv?utm_source=npm-ajv&utm_medium=referral&utm_campaign=enterprise)<img src=\"https://ajv.js.org/img/gap.svg\" width=\"3%\">[<img src=\"https://ajv.js.org/img/simplex.svg\" width=\"22.5%\" alt=\"SimpleX\">](https://github.com/simplex-chat/simplex-chat)<img src=\"https://ajv.js.org/img/gap.svg\" width=\"3%\">[<img src=\"https://ajv.js.org/img/reserved.svg\" width=\"22.5%\">](https://opencollective.com/ajv)\nnode_modules\\ajv\\README.md:63: <a href=\"https://opencollective.com/ajv\"><img src=\"https://opencollective.com/ajv/individuals.svg?width=890\"></a>\nnode_modules\\ajv\\README.md:65: <a href=\"https://opencollective.com/ajv/organization/0/website\"><img src=\"https://opencollective.com/ajv/organization/0/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:66: <a href=\"https://opencollective.com/ajv/organization/1/website\"><img src=\"https://opencollective.com/ajv/organization/1/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:67: <a href=\"https://opencollective.com/ajv/organization/2/website\"><img src=\"https://opencollective.com/ajv/organization/2/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:68: <a href=\"https://opencollective.com/ajv/organization/3/website\"><img src=\"https://opencollective.com/ajv/organization/3/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:69: <a href=\"https://opencollective.com/ajv/organization/4/website\"><img src=\"https://opencollective.com/ajv/organization/4/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:70: <a href=\"https://opencollective.com/ajv/organization/5/website\"><img src=\"https://opencollective.com/ajv/organization/5/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:71: <a href=\"https://opencollective.com/ajv/organization/6/website\"><img src=\"https://opencollective.com/ajv/organization/6/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:72: <a href=\"https://opencollective.com/ajv/organization/7/website\"><img src=\"https://opencollective.com/ajv/organization/7/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:73: <a href=\"https://opencollective.com/ajv/organization/8/website\"><img src=\"https://opencollective.com/ajv/organization/8/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:74: <a href=\"https://opencollective.com/ajv/organization/9/website\"><img src=\"https://opencollective.com/ajv/organization/9/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:75: <a href=\"https://opencollective.com/ajv/organization/10/website\"><img src=\"https://opencollective.com/ajv/organization/10/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:76: <a href=\"https://opencollective.com/ajv/organization/11/website\"><img src=\"https://opencollective.com/ajv/organization/11/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:77: <a href=\"https://opencollective.com/ajv/organization/12/website\"><img src=\"https://opencollective.com/ajv/organization/12/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:78: <a href=\"https://opencollective.com/ajv/organization/13/website\"><img src=\"https://opencollective.com/ajv/organization/13/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:79: <a href=\"https://opencollective.com/ajv/organization/14/website\"><img src=\"https://opencollective.com/ajv/organization/14/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:80: <a href=\"https://opencollective.com/ajv/organization/15/website\"><img src=\"https://opencollective.com/ajv/organization/15/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:81: <a href=\"https://opencollective.com/ajv/organization/16/website\"><img src=\"https://opencollective.com/ajv/organization/16/avatar.svg\"></a>\nnode_modules\\ajv\\README.md:82: <a href=\"https://opencollective.com/ajv/organization/17/website\"><img src=\"https://opencollective.com/ajv/organization/17/avatar.svg\"></a>",
+      "createdAt": "2026-05-08T11:04:36.910Z"
+    },
+    {
+      "id": "019e0742d90f4157fb65f06ad8cf0730",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "path": "src"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:39.794Z"
+    },
+    {
+      "id": "fa5b688b-d66c-4376-a6ed-ed19fe98f46a",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "path": "src"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:39.798Z"
+    },
+    {
+      "id": "33ff33a1-6869-4ebf-a50a-0781ef74c7c5",
+      "type": "tool_result",
+      "toolUseId": "019e0742d90f4157fb65f06ad8cf0730",
+      "tool": "readFile",
+      "ok": false,
+      "content": "The \"paths[1]\" argument must be of type string. Received undefined",
+      "createdAt": "2026-05-08T11:04:39.801Z"
+    },
+    {
+      "id": "019e0742e2dee73f216656dd8b6aeeed",
+      "type": "tool_use",
+      "tool": "grep",
+      "input": {
+        "pattern": "."
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:42.540Z"
+    },
+    {
+      "id": "4af1563f-e32b-438f-ad55-8104eae91f58",
+      "type": "tool_approval",
+      "tool": "grep",
+      "input": {
+        "pattern": "."
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:42.543Z"
+    },
+    {
+      "id": "a030241a-94be-488c-8267-ac523c20c7dd",
+      "type": "tool_result",
+      "toolUseId": "019e0742e2dee73f216656dd8b6aeeed",
+      "tool": "grep",
+      "ok": true,
+      "content": "package-lock.json:1: {\npackage-lock.json:2:   \"name\": \"myagent\",\npackage-lock.json:3:   \"version\": \"0.1.0\",\npackage-lock.json:4:   \"lockfileVersion\": 3,\npackage-lock.json:5:   \"requires\": true,\npackage-lock.json:6:   \"packages\": {\npackage-lock.json:7:     \"\": {\npackage-lock.json:8:       \"name\": \"myagent\",\npackage-lock.json:9:       \"version\": \"0.1.0\",\npackage-lock.json:10:       \"dependencies\": {\npackage-lock.json:11:         \"@anthropic-ai/sdk\": \"latest\",\npackage-lock.json:12:         \"@modelcontextprotocol/sdk\": \"latest\",\npackage-lock.json:13:         \"fast-glob\": \"latest\",\npackage-lock.json:14:         \"openai\": \"latest\",\npackage-lock.json:15:         \"yaml\": \"latest\",\npackage-lock.json:16:         \"zod\": \"latest\"\npackage-lock.json:17:       },\npackage-lock.json:18:       \"bin\": {\npackage-lock.json:19:         \"myagent\": \"src/entrypoints/cli.ts\"\npackage-lock.json:20:       },\npackage-lock.json:21:       \"devDependencies\": {\npackage-lock.json:22:         \"@types/node\": \"latest\",\npackage-lock.json:23:         \"tsx\": \"latest\",\npackage-lock.json:24:         \"typescript\": \"latest\"\npackage-lock.json:25:       }\npackage-lock.json:26:     },\npackage-lock.json:27:     \"node_modules/@anthropic-ai/sdk\": {\npackage-lock.json:28:       \"version\": \"0.95.1\",\npackage-lock.json:29:       \"resolved\": \"https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.95.1.tgz\",\npackage-lock.json:30:       \"integrity\": \"sha512-OO9AF7hmAoU492c/mD7Q2cPqI2WNAj7rAPHlawgBeUgpwiboLRiDs+grsErGWeHHP9ZRWfzq2OVrODTt8aITVg==\",\npackage-lock.json:31:       \"license\": \"MIT\",\npackage-lock.json:32:       \"dependencies\": {\npackage-lock.json:33:         \"json-schema-to-ts\": \"^3.1.1\",\npackage-lock.json:34:         \"standardwebhooks\": \"^1.0.0\"\npackage-lock.json:35:       },\npackage-lock.json:36:       \"bin\": {\npackage-lock.json:37:         \"anthropic-ai-sdk\": \"bin/cli\"\npackage-lock.json:38:       },\npackage-lock.json:39:       \"peerDependencies\": {\npackage-lock.json:40:         \"zod\": \"^3.25.0 || ^4.0.0\"\npackage-lock.json:41:       },\npackage-lock.json:42:       \"peerDependenciesMeta\": {\npackage-lock.json:43:         \"zod\": {\npackage-lock.json:44:           \"optional\": true\npackage-lock.json:45:         }\npackage-lock.json:46:       }\npackage-lock.json:47:     },\npackage-lock.json:48:     \"node_modules/@babel/runtime\": {\npackage-lock.json:49:       \"version\": \"7.29.2\",\npackage-lock.json:50:       \"resolved\": \"https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.2.tgz\",",
+      "createdAt": "2026-05-08T11:04:42.578Z"
+    },
+    {
+      "id": "019e07431fa017eab44484bdb8dabea2",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "path": "package.json"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:58.097Z"
+    },
+    {
+      "id": "3dff97f2-4252-4af8-bcbe-0d851046a05e",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "path": "package.json"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:04:58.101Z"
+    },
+    {
+      "id": "7e123f9e-4172-4a38-8c61-100fa9331208",
+      "type": "tool_result",
+      "toolUseId": "019e07431fa017eab44484bdb8dabea2",
+      "tool": "readFile",
+      "ok": false,
+      "content": "The \"paths[1]\" argument must be of type string. Received undefined",
+      "createdAt": "2026-05-08T11:04:58.104Z"
+    },
+    {
+      "id": "019e07432ad8d6b0f3f78a7a0d2fa0cd",
+      "type": "tool_use",
+      "tool": "grep",
+      "input": {
+        "pattern": "*"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:05:00.963Z"
+    },
+    {
+      "id": "d081fde5-d3ac-4edb-94c0-922652c4f76a",
+      "type": "tool_approval",
+      "tool": "grep",
+      "input": {
+        "pattern": "*"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:05:00.967Z"
+    },
+    {
+      "id": "88080749-d497-4304-acd6-0a64119f2def",
+      "type": "tool_result",
+      "toolUseId": "019e07432ad8d6b0f3f78a7a0d2fa0cd",
+      "tool": "grep",
+      "ok": false,
+      "content": "Invalid regular expression: /*/: Nothing to repeat",
+      "createdAt": "2026-05-08T11:05:01.002Z"
+    },
+    {
+      "type": "message",
+      "id": "06ff50c6-f003-46eb-812d-8c3d67a4a3bc",
+      "role": "user",
+      "content": "请读取 src/config/providers.ts",
+      "createdAt": "2026-05-08T11:08:35.242Z"
+    },
+    {
+      "id": "019e07467db491f43436e2adfc646b58",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "path": "src/config/providers.ts"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:39.001Z"
+    },
+    {
+      "id": "596a5537-8a4b-4289-b6ee-8326acba9da2",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "path": "src/config/providers.ts"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:39.006Z"
+    },
+    {
+      "id": "422b1bc9-191f-4e7e-971b-944655a13292",
+      "type": "tool_result",
+      "toolUseId": "019e07467db491f43436e2adfc646b58",
+      "tool": "readFile",
+      "ok": false,
+      "content": "The \"paths[1]\" argument must be of type string. Received undefined",
+      "createdAt": "2026-05-08T11:08:39.008Z"
+    },
+    {
+      "id": "019e07468c4b052c1a6806c45f0dd1d8",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "path": "."
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:42.323Z"
+    },
+    {
+      "id": "c3f710d4-c408-45c7-a016-367ca1f9d0e3",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "path": "."
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:42.327Z"
+    },
+    {
+      "id": "5dba7d5f-578f-40b6-9a49-574a5f3dd4c6",
+      "type": "tool_result",
+      "toolUseId": "019e07468c4b052c1a6806c45f0dd1d8",
+      "tool": "readFile",
+      "ok": false,
+      "content": "The \"paths[1]\" argument must be of type string. Received undefined",
+      "createdAt": "2026-05-08T11:08:42.328Z"
+    },
+    {
+      "id": "019e07469a189f6938dda42639a52200",
+      "type": "tool_use",
+      "tool": "grep",
+      "input": {
+        "pattern": "config"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:46.085Z"
+    },
+    {
+      "id": "bbefa83e-f27c-480c-98fa-13dfc496a60c",
+      "type": "tool_approval",
+      "tool": "grep",
+      "input": {
+        "pattern": "config"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:46.088Z"
+    },
+    {
+      "id": "b9a37b07-ce56-4730-b145-bea1995c6e20",
+      "type": "tool_result",
+      "toolUseId": "019e07469a189f6938dda42639a52200",
+      "tool": "grep",
+      "ok": true,
+      "content": "package-lock.json:1183:     \"node_modules/get-tsconfig\": {\npackage-lock.json:1185:       \"resolved\": \"https://registry.npmjs.org/get-tsconfig/-/get-tsconfig-4.14.0.tgz\",\npackage-lock.json:1193:         \"url\": \"https://github.com/privatenumber/get-tsconfig?sponsor=1\"\npackage-lock.json:1938:         \"get-tsconfig\": \"^4.7.5\"\ntest\\config.test.ts:5: import { ConfigService } from '../src/config/service.js'\ntest\\config.test.ts:11: } from '../src/config/providers.js'\ntest\\config.test.ts:14: test('ConfigService loads defaults and saves config', async () => {\ntest\\config.test.ts:15:   const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))\ntest\\config.test.ts:20:     const config = service.get()\ntest\\config.test.ts:21:     assert.ok(config.models)\ntest\\config.test.ts:22:     assert.ok(config.agent)\ntest\\config.test.ts:23:     assert.equal(config.defaultModel, 'anthropic')\ntest\\utils.test.ts:12:   assert.equal(getConfigPath(cwd), path.join(cwd, '.myagent', 'config.json'))\ntest\\utils.test.ts:18:     const file = path.join(dir, 'nested', 'config.json')\nsrc\\config\\providers.ts:99:   constructor(config: ModelConfig) {\nsrc\\config\\providers.ts:101:       apiKey: config.apiKey,\nsrc\\config\\providers.ts:102:       baseURL: config.baseUrl,\nsrc\\config\\providers.ts:144:   constructor(config: ModelConfig) {\nsrc\\config\\providers.ts:146:       apiKey: config.apiKey,\nsrc\\config\\providers.ts:147:       baseURL: config.baseUrl,\nsrc\\config\\providers.ts:212: export function createProvider(config: ModelConfig): ModelProvider | undefined {\nsrc\\config\\providers.ts:213:   switch (config.provider) {\nsrc\\config\\providers.ts:215:       return new AnthropicProvider(config)\nsrc\\config\\providers.ts:217:       return new OpenAIProvider(config)\nsrc\\config\\service.ts:38:   private config: Config\nsrc\\config\\service.ts:39:   private configPath: string\nsrc\\config\\service.ts:42:     this.configPath = getConfigPath(cwd)\nsrc\\config\\service.ts:43:     this.config = { ...DEFAULT_CONFIG }\nsrc\\config\\service.ts:47:     this.config = await readJsonFile(this.configPath, DEFAULT_CONFIG)\nsrc\\config\\service.ts:51:     await writeJsonFile(this.configPath, this.config)\nsrc\\config\\service.ts:55:     return this.config\nsrc\\config\\service.ts:59:     return this.config.models[name]\nsrc\\config\\service.ts:63:     if (!this.config.defaultModel) return undefined\nsrc\\config\\service.ts:64:     return this.config.models[this.config.defaultModel]\nsrc\\config\\service.ts:68:     if (this.config.models[name]) {\nsrc\\config\\service.ts:69:       this.config.defaultModel = name\nsrc\\config\\service.ts:74:     this.config.models[name] = model\nsrc\\entrypoints\\cli.ts:4: import { ConfigService } from '../config/service.js'\nsrc\\entrypoints\\cli.ts:5: import { createProvider } from '../config/providers.js'\nsrc\\entrypoints\\cli.ts:89:   const config = new ConfigService(cwd)\nsrc\\entrypoints\\cli.ts:90:   await config.load()\nsrc\\entrypoints\\cli.ts:92:   const modelConfig = config.getDefaultModel()\nsrc\\entrypoints\\cli.ts:94:     console.error('No default model configured.')\nsrc\\entrypoints\\cli.ts:126:     system: config.get().agent.system,\nsrc\\utils\\paths.ts:8:   return path.join(getMyAgentDir(cwd), 'config.json')\nnode_modules\\ajv\\package.json:17:     \"test-spec\": \"cross-env TS_NODE_PROJECT=spec/tsconfig.json mocha -r ts-node/register \\\"spec/**/*.spec.{ts,js}\\\" -R dot\",\nnode_modules\\ajv\\package.json:18:     \"test-codegen\": \"nyc cross-env TS_NODE_PROJECT=spec/tsconfig.json mocha -r ts-node/register 'spec/codegen.spec.ts' -R spec\",\nnode_modules\\ajv\\package.json:68:     \"@ajv-validator/config\": \"^0.5.0\",\nnode_modules\\ajv\\package.json:86:     \"eslint-config-prettier\": \"^9.1.0\",\nnode_modules\\ajv\\package.json:117:   \"prettier\": \"@ajv-validator/config/prettierrc.json\",",
+      "createdAt": "2026-05-08T11:08:46.120Z"
+    },
+    {
+      "id": "019e0746a8c3d7476027da051f0f593b",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "path": "src/config"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:49.812Z"
+    },
+    {
+      "id": "63596bb5-e5c0-499e-9442-257a18076ef4",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "path": "src/config"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:49.815Z"
+    },
+    {
+      "id": "c55538c9-e25b-4f97-9c41-c3144efd81c2",
+      "type": "tool_result",
+      "toolUseId": "019e0746a8c3d7476027da051f0f593b",
+      "tool": "readFile",
+      "ok": false,
+      "content": "The \"paths[1]\" argument must be of type string. Received undefined",
+      "createdAt": "2026-05-08T11:08:49.817Z"
+    },
+    {
+      "id": "019e0746b53e7fcb51a3277f8940a3dc",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "path": "."
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:52.805Z"
+    },
+    {
+      "id": "1fe7d96a-c7a8-4e06-a07e-c7fdb9305119",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "path": "."
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:52.810Z"
+    },
+    {
+      "id": "0853356b-41c0-44f2-80e0-6f53c5a9f6b0",
+      "type": "tool_result",
+      "toolUseId": "019e0746b53e7fcb51a3277f8940a3dc",
+      "tool": "readFile",
+      "ok": false,
+      "content": "The \"paths[1]\" argument must be of type string. Received undefined",
+      "createdAt": "2026-05-08T11:08:52.812Z"
+    },
+    {
+      "id": "019e0746c4c49693192c84bf8946e856",
+      "type": "tool_use",
+      "tool": "grep",
+      "input": {
+        "pattern": "."
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:56.771Z"
+    },
+    {
+      "id": "f15918ba-1e92-4a15-8db9-5bc88ca102e5",
+      "type": "tool_approval",
+      "tool": "grep",
+      "input": {
+        "pattern": "."
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:56.775Z"
+    },
+    {
+      "id": "fd72b370-7d45-42d0-a321-4e1a5f2953c2",
+      "type": "tool_result",
+      "toolUseId": "019e0746c4c49693192c84bf8946e856",
+      "tool": "grep",
+      "ok": true,
+      "content": "package-lock.json:1: {\npackage-lock.json:2:   \"name\": \"myagent\",\npackage-lock.json:3:   \"version\": \"0.1.0\",\npackage-lock.json:4:   \"lockfileVersion\": 3,\npackage-lock.json:5:   \"requires\": true,\npackage-lock.json:6:   \"packages\": {\npackage-lock.json:7:     \"\": {\npackage-lock.json:8:       \"name\": \"myagent\",\npackage-lock.json:9:       \"version\": \"0.1.0\",\npackage-lock.json:10:       \"dependencies\": {\npackage-lock.json:11:         \"@anthropic-ai/sdk\": \"latest\",\npackage-lock.json:12:         \"@modelcontextprotocol/sdk\": \"latest\",\npackage-lock.json:13:         \"fast-glob\": \"latest\",\npackage-lock.json:14:         \"openai\": \"latest\",\npackage-lock.json:15:         \"yaml\": \"latest\",\npackage-lock.json:16:         \"zod\": \"latest\"\npackage-lock.json:17:       },\npackage-lock.json:18:       \"bin\": {\npackage-lock.json:19:         \"myagent\": \"src/entrypoints/cli.ts\"\npackage-lock.json:20:       },\npackage-lock.json:21:       \"devDependencies\": {\npackage-lock.json:22:         \"@types/node\": \"latest\",\npackage-lock.json:23:         \"tsx\": \"latest\",\npackage-lock.json:24:         \"typescript\": \"latest\"\npackage-lock.json:25:       }\npackage-lock.json:26:     },\npackage-lock.json:27:     \"node_modules/@anthropic-ai/sdk\": {\npackage-lock.json:28:       \"version\": \"0.95.1\",\npackage-lock.json:29:       \"resolved\": \"https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.95.1.tgz\",\npackage-lock.json:30:       \"integrity\": \"sha512-OO9AF7hmAoU492c/mD7Q2cPqI2WNAj7rAPHlawgBeUgpwiboLRiDs+grsErGWeHHP9ZRWfzq2OVrODTt8aITVg==\",\npackage-lock.json:31:       \"license\": \"MIT\",\npackage-lock.json:32:       \"dependencies\": {\npackage-lock.json:33:         \"json-schema-to-ts\": \"^3.1.1\",\npackage-lock.json:34:         \"standardwebhooks\": \"^1.0.0\"\npackage-lock.json:35:       },\npackage-lock.json:36:       \"bin\": {\npackage-lock.json:37:         \"anthropic-ai-sdk\": \"bin/cli\"\npackage-lock.json:38:       },\npackage-lock.json:39:       \"peerDependencies\": {\npackage-lock.json:40:         \"zod\": \"^3.25.0 || ^4.0.0\"\npackage-lock.json:41:       },\npackage-lock.json:42:       \"peerDependenciesMeta\": {\npackage-lock.json:43:         \"zod\": {\npackage-lock.json:44:           \"optional\": true\npackage-lock.json:45:         }\npackage-lock.json:46:       }\npackage-lock.json:47:     },\npackage-lock.json:48:     \"node_modules/@babel/runtime\": {\npackage-lock.json:49:       \"version\": \"7.29.2\",\npackage-lock.json:50:       \"resolved\": \"https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.2.tgz\",",
+      "createdAt": "2026-05-08T11:08:56.810Z"
+    },
+    {
+      "id": "019e0746d152b6858d19bb1f6ce53d0e",
+      "type": "tool_use",
+      "tool": "readFile",
+      "input": {
+        "path": "."
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:59.980Z"
+    },
+    {
+      "id": "4f3b1bd2-d916-4213-b923-bce1403480d3",
+      "type": "tool_approval",
+      "tool": "readFile",
+      "input": {
+        "path": "."
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:08:59.983Z"
+    },
+    {
+      "id": "f897180d-a846-4941-bc92-2fca6030cb49",
+      "type": "tool_result",
+      "toolUseId": "019e0746d152b6858d19bb1f6ce53d0e",
+      "tool": "readFile",
+      "ok": false,
+      "content": "The \"paths[1]\" argument must be of type string. Received undefined",
+      "createdAt": "2026-05-08T11:08:59.985Z"
+    },
+    {
+      "id": "019e0746e017d1a3e82e1b7822f77fd9",
+      "type": "tool_use",
+      "tool": "grep",
+      "input": {
+        "pattern": "[a-zA-Z]"
+      },
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:09:03.999Z"
+    },
+    {
+      "id": "65b2b059-f944-4a80-8c67-eedfab7ea419",
+      "type": "tool_approval",
+      "tool": "grep",
+      "input": {
+        "pattern": "[a-zA-Z]"
+      },
+      "approved": true,
+      "riskLevel": "safe",
+      "createdAt": "2026-05-08T11:09:04.002Z"
+    },
+    {
+      "id": "d3790293-0950-4e93-b8c1-5d9bc8ebdac1",
+      "type": "tool_result",
+      "toolUseId": "019e0746e017d1a3e82e1b7822f77fd9",
+      "tool": "grep",
+      "ok": true,
+      "content": "package-lock.json:2:   \"name\": \"myagent\",\npackage-lock.json:3:   \"version\": \"0.1.0\",\npackage-lock.json:4:   \"lockfileVersion\": 3,\npackage-lock.json:5:   \"requires\": true,\npackage-lock.json:6:   \"packages\": {\npackage-lock.json:8:       \"name\": \"myagent\",\npackage-lock.json:9:       \"version\": \"0.1.0\",\npackage-lock.json:10:       \"dependencies\": {\npackage-lock.json:11:         \"@anthropic-ai/sdk\": \"latest\",\npackage-lock.json:12:         \"@modelcontextprotocol/sdk\": \"latest\",\npackage-lock.json:13:         \"fast-glob\": \"latest\",\npackage-lock.json:14:         \"openai\": \"latest\",\npackage-lock.json:15:         \"yaml\": \"latest\",\npackage-lock.json:16:         \"zod\": \"latest\"\npackage-lock.json:18:       \"bin\": {\npackage-lock.json:19:         \"myagent\": \"src/entrypoints/cli.ts\"\npackage-lock.json:21:       \"devDependencies\": {\npackage-lock.json:22:         \"@types/node\": \"latest\",\npackage-lock.json:23:         \"tsx\": \"latest\",\npackage-lock.json:24:         \"typescript\": \"latest\"\npackage-lock.json:27:     \"node_modules/@anthropic-ai/sdk\": {\npackage-lock.json:28:       \"version\": \"0.95.1\",\npackage-lock.json:29:       \"resolved\": \"https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.95.1.tgz\",\npackage-lock.json:30:       \"integrity\": \"sha512-OO9AF7hmAoU492c/mD7Q2cPqI2WNAj7rAPHlawgBeUgpwiboLRiDs+grsErGWeHHP9ZRWfzq2OVrODTt8aITVg==\",\npackage-lock.json:31:       \"license\": \"MIT\",\npackage-lock.json:32:       \"dependencies\": {\npackage-lock.json:33:         \"json-schema-to-ts\": \"^3.1.1\",\npackage-lock.json:34:         \"standardwebhooks\": \"^1.0.0\"\npackage-lock.json:36:       \"bin\": {\npackage-lock.json:37:         \"anthropic-ai-sdk\": \"bin/cli\"\npackage-lock.json:39:       \"peerDependencies\": {\npackage-lock.json:40:         \"zod\": \"^3.25.0 || ^4.0.0\"\npackage-lock.json:42:       \"peerDependenciesMeta\": {\npackage-lock.json:43:         \"zod\": {\npackage-lock.json:44:           \"optional\": true\npackage-lock.json:48:     \"node_modules/@babel/runtime\": {\npackage-lock.json:49:       \"version\": \"7.29.2\",\npackage-lock.json:50:       \"resolved\": \"https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.2.tgz\",\npackage-lock.json:51:       \"integrity\": \"sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g==\",\npackage-lock.json:52:       \"license\": \"MIT\",\npackage-lock.json:53:       \"engines\": {\npackage-lock.json:54:         \"node\": \">=6.9.0\"\npackage-lock.json:57:     \"node_modules/@esbuild/aix-ppc64\": {\npackage-lock.json:58:       \"version\": \"0.27.7\",\npackage-lock.json:59:       \"resolved\": \"https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.27.7.tgz\",\npackage-lock.json:60:       \"integrity\": \"sha512-EKX3Qwmhz1eMdEJokhALr0YiD0lhQNwDqkPYyPhiSwKrh7/4KRjQc04sZ8db+5DVVnZ1LmbNDI1uAMPEUBnQPg==\",\npackage-lock.json:61:       \"cpu\": [\npackage-lock.json:62:         \"ppc64\"\npackage-lock.json:64:       \"dev\": true,\npackage-lock.json:65:       \"license\": \"MIT\",",
+      "createdAt": "2026-05-08T11:09:04.023Z"
+    }
+  ]
+}

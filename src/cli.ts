@@ -6,13 +6,15 @@ import { handleCommand } from './commands/index.js'
 interface Session {
   messages: Array<{ role: string; content: Array<{ type: string; text: string }> }>
   tools: Tool[]
+  cwd: string
 }
 
 const cwd = process.cwd()
 
 const session: Session = {
   messages: [],
-  tools: await getAllTools(cwd)
+  tools: await getAllTools(cwd),
+  cwd,
 }
 
 const rl = readline.createInterface({
@@ -31,7 +33,7 @@ rl.on('line', async (input) => {
   }
 
   if (trimmed.startsWith('/')) {
-    const result = handleCommand(trimmed, session)
+    const result = await handleCommand(trimmed, session)
     if (result.type === 'exit') {
       console.log('Goodbye!')
       rl.close()

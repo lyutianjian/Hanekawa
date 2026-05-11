@@ -13,7 +13,7 @@ export class ToolRunner {
     private readonly events: ToolRunEvents,
   ) {}
 
-  async run(call: ToolCall, context: ToolContext): Promise<ToolResultRecord> {
+  async run(call: ToolCall, context: ToolContext, signal?: AbortSignal): Promise<ToolResultRecord> {
     const tool = this.tools.find((candidate) => candidate.name === call.name)
     if (!tool) throw new Error(`Unknown tool: ${call.name}`)
 

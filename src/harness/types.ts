@@ -39,16 +39,39 @@ export interface ToolApprovalRecord {
   createdAt: string
 }
 
+export interface CompactBoundaryRecord {
+  id: string
+  type: 'compact_boundary'
+  summary: string
+  preTokens: number
+  createdAt: string
+}
+
 export type SessionRecord =
   | ({ type: 'message' } & ChatMessage)
   | ToolUseRecord
   | ToolResultRecord
   | ToolApprovalRecord
+  | CompactBoundaryRecord
+
+export interface TaskItem {
+  id: string
+  status: 'pending' | 'in_progress' | 'completed' | 'deleted'
+  subject: string
+  description: string
+  activeForm?: string
+  metadata?: Record<string, unknown>
+  blockedBy: string[]
+  blocks: string[]
+}
 
 export interface ToolContext {
   cwd: string
   sessionId: string
   readFiles: Set<string>
+  readFileState?: Map<string, { content: string; timestamp: number }>
+  invokedSkills?: Map<string, { content: string; timestamp: number }>
+  taskState?: Map<string, TaskItem>
 }
 
 export interface ToolResult {
@@ -82,6 +105,24 @@ export interface ToolCall {
   input: unknown
 }
 
+export interface TokenUsage {
+  inputTokens: number
+  cacheReadInputTokens: number
+  outputTokens: number
+}
+
+export interface ModelPricing {
+  cacheReadInputPerMillionTokens?: number
+  inputPerMillionTokens?: number
+  outputPerMillionTokens?: number
+  currency?: string
+}
+
+export interface AgentRunResult {
+  content: string
+  usage: TokenUsage
+}
+
 export interface ContextChatMessage {
   kind: 'message'
   message: ChatMessage
@@ -106,16 +147,23 @@ export type ModelContextItem = ContextChatMessage | ContextToolUse | ContextTool
 
 export interface ModelRequest {
   system?: string
+  systemBlocks?: string[]
   messages: ChatMessage[]
   contextItems?: ModelContextItem[]
   tools?: Tool[]
   model: string
-  maxTokens?: number
+  promptCacheRetention?: 'in_memory' | '24h'
+  maxOutputTokens?: number
+  previousRequestId?: string
+  retry?: { maxRetries?: number; signal?: AbortSignal }
 }
 
 export interface ModelResponse {
   content: string
   toolCalls: ToolCall[]
+  usage?: TokenUsage
+  requestId?: string
+  stopReason?: string
 }
 
 export interface ModelProvider {

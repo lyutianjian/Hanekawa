@@ -1,7 +1,68 @@
-import type { ModelContextItem, ModelProvider, ModelRequest, ModelResponse, Tool } from '../harness/types.js'
+import type { ModelContextItem, ModelProvider, ModelRequest, ModelResponse, TokenUsage, Tool } from '../harness/types.js'
+import { createHash } from 'node:crypto'
 import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
 import type { ModelConfig } from './service.js'
+import {
+  addCacheBreakpoints,
+  addCacheControlToLastSystemBlock,
+  getPromptCachingEnabled,
+  splitSystemForCaching,
+} from '../harness/cacheControl.js'
+import { withRetry, isRetryableError } from './retry.js'
+
+const MAX_OUTPUT_TOKENS_DEFAULT = 32_000
+const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 128_000
+
+function getMaxOutputTokens(configValue?: number): number {
+  const envValue = process.env.MYAGENT_MAX_OUTPUT_TOKENS
+  if (envValue) {
+    const parsed = parseInt(envValue, 10)
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.min(parsed, MAX_OUTPUT_TOKENS_UPPER_LIMIT)
+    }
+  }
+  if (configValue !== undefined && Number.isFinite(configValue) && configValue > 0) {
+    return Math.min(configValue, MAX_OUTPUT_TOKENS_UPPER_LIMIT)
+  }
+  return MAX_OUTPUT_TOKENS_DEFAULT
+}
+
+function anthropicContent(content: string): Array<{ type: 'text'; text: string }> {
+  return [{ type: 'text', text: content }]
+}
+
+function anthropicSystem(request: ModelRequest): Array<{ type: 'text'; text: string }> {
+  const blocks = request.systemBlocks && request.systemBlocks.length > 0
+    ? request.systemBlocks
+    : request.system
+      ? [request.system]
+      : []
+
+  return blocks.map((b) => ({ type: 'text', text: b }))
+}
+
+function anthropicSystemWithCache(request: ModelRequest): Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral'; ttl?: '1h' } }> {
+  const { staticBlocks, dynamicBlocks } = splitSystemForCaching(
+    request.systemBlocks ?? (request.system ? [request.system] : []),
+  )
+  const enableCaching = getPromptCachingEnabled(request.model)
+
+  const staticText = staticBlocks.join('\n\n')
+  const blocks: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral'; ttl?: '1h' } }> = []
+
+  if (staticText) {
+    blocks.push({ type: 'text', text: staticText })
+  }
+  for (const b of dynamicBlocks) {
+    blocks.push({ type: 'text', text: b })
+  }
+
+  return addCacheControlToLastSystemBlock(
+    blocks.filter((b) => b.text.length > 0),
+    enableCaching,
+  )
+}
 
 function shouldDebugProviderPayloads() {
   return process.env.MYAGENT_DEBUG_PROVIDER === '1'
@@ -53,13 +114,14 @@ function debugProviderSummary(label: string, request: ModelRequest, payload: unk
   console.error(`[myagent][provider:${label}] request summary ${JSON.stringify({
     model: request.model,
     systemPresent: Boolean(request.system),
-    maxTokens: request.maxTokens ?? 4096,
     toolNames,
     messageCount: request.messages.length,
     contextItemCount: request.contextItems?.length ?? 0,
     contextKinds,
     messagesPreview,
     payloadPreview,
+    promptCacheKeyPresent: Boolean((payload as Record<string, unknown> | undefined)?.prompt_cache_key),
+    promptCacheRetention: (payload as Record<string, unknown> | undefined)?.prompt_cache_retention,
   }, null, 2)}`)
 }
 
@@ -69,6 +131,7 @@ function debugProviderResponse(label: string, response: unknown) {
     const typed = response as Anthropic.Messages.Message
     const textBlocks = typed.content.filter((item) => item.type === 'text')
     const toolBlocks = typed.content.filter((item) => item.type === 'tool_use')
+    const usage = normalizeAnthropicUsage(typed.usage)
     console.error(`[myagent][provider:${label}] response summary ${JSON.stringify({
       id: typed.id,
       model: typed.model,
@@ -76,22 +139,52 @@ function debugProviderResponse(label: string, response: unknown) {
       contentTypes: typed.content.map((item) => item.type),
       textLength: textBlocks.reduce((sum, item) => sum + (item.type === 'text' ? item.text.length : 0), 0),
       toolCalls: toolBlocks.map((item) => item.type === 'tool_use' ? item.name : undefined).filter(Boolean),
+      usage,
     }, null, 2)}`)
     return
   }
 
   const typed = response as OpenAI.Chat.ChatCompletion
   const message = typed.choices[0]?.message
+  const usage = normalizeOpenAIUsage(typed.usage)
   console.error(`[myagent][provider:${label}] response summary ${JSON.stringify({
     id: typed.id,
     model: typed.model,
     finishReason: typed.choices[0]?.finish_reason,
     textLength: typeof message?.content === 'string' ? message.content.length : 0,
+    usage,
     toolCalls: message?.tool_calls?.map((call) => {
       const fn = call as { function?: { name?: string } }
       return fn.function?.name
     }) ?? [],
   }, null, 2)}`)
+}
+
+function tokenNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+export function normalizeAnthropicUsage(usage: unknown): TokenUsage {
+  const typed = usage && typeof usage === 'object' ? usage as Record<string, unknown> : {}
+  return {
+    inputTokens: tokenNumber(typed.input_tokens) + tokenNumber(typed.cache_creation_input_tokens),
+    cacheReadInputTokens: tokenNumber(typed.cache_read_input_tokens),
+    outputTokens: tokenNumber(typed.output_tokens),
+  }
+}
+
+export function normalizeOpenAIUsage(usage: unknown): TokenUsage {
+  const typed = usage && typeof usage === 'object' ? usage as Record<string, unknown> : {}
+  const details = typed.prompt_tokens_details && typeof typed.prompt_tokens_details === 'object'
+    ? typed.prompt_tokens_details as Record<string, unknown>
+    : {}
+  const cacheReadInputTokens = tokenNumber(details.cached_tokens)
+  const promptTokens = tokenNumber(typed.prompt_tokens)
+  return {
+    inputTokens: Math.max(0, promptTokens - cacheReadInputTokens),
+    cacheReadInputTokens,
+    outputTokens: tokenNumber(typed.completion_tokens),
+  }
 }
 
 export function buildAnthropicMessages(request: ModelRequest) {
@@ -108,7 +201,7 @@ export function buildAnthropicMessages(request: ModelRequest) {
       if (item.message.role !== 'user' && item.message.role !== 'assistant') continue
       messages.push({
         role: item.message.role,
-        content: item.message.content,
+        content: anthropicContent(item.message.content),
       })
       continue
     }
@@ -125,7 +218,9 @@ export function buildAnthropicMessages(request: ModelRequest) {
         const existingContent = lastMessage.content as unknown[]
         const contentArray = Array.isArray(existingContent)
           ? existingContent
-          : [existingContent]
+          : typeof existingContent === 'string'
+            ? anthropicContent(existingContent)
+            : [existingContent]
 
         const filteredContent = contentArray.filter((block) => {
           if (typeof block === 'string') {
@@ -230,13 +325,39 @@ export function buildOpenAITools(tools: Tool[] = []) {
   }))
 }
 
-export function buildAnthropicPayload(request: ModelRequest) {
+export function buildOpenAIPromptCacheKey(request: ModelRequest): string {
+  const tools = buildOpenAITools(request.tools).map((tool) => ({
+    name: tool.function.name,
+    description: tool.function.description,
+    parameters: tool.function.parameters,
+  }))
+  const hash = createHash('sha256')
+    .update(JSON.stringify({
+      model: request.model,
+      system: request.system ?? '',
+      tools,
+    }))
+    .digest('hex')
+    .slice(0, 32)
+
+  return `myagent:${hash}`
+}
+
+export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: number) {
   const tools = buildAnthropicTools(request.tools)
+  const enableCaching = getPromptCachingEnabled(request.model)
+  const messages = buildAnthropicMessages(request)
+
   return {
     model: request.model,
-    max_tokens: request.maxTokens ?? 4096,
-    messages: buildAnthropicMessages(request) as unknown as Anthropic.Messages.MessageParam[],
-    ...(request.system ? { system: request.system } : {}),
+    max_tokens: getMaxOutputTokens(maxOutputTokens ?? request.maxOutputTokens),
+    messages: addCacheBreakpoints(
+      messages,
+      enableCaching,
+    ) as unknown as Anthropic.Messages.MessageParam[],
+    ...(request.system || request.systemBlocks?.length
+      ? { system: anthropicSystemWithCache(request) as unknown as Anthropic.Messages.MessageCreateParams['system'] }
+      : {}),
     ...(tools.length > 0
       ? {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -252,6 +373,8 @@ export function buildOpenAIPayload(request: ModelRequest) {
   return {
     model: request.model,
     messages: buildOpenAIMessages(request),
+    prompt_cache_key: buildOpenAIPromptCacheKey(request),
+    ...(request.promptCacheRetention ? { prompt_cache_retention: request.promptCacheRetention } : {}),
     ...(tools.length > 0
       ? {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -261,30 +384,62 @@ export function buildOpenAIPayload(request: ModelRequest) {
   }
 }
 
+const STREAM_IDLE_TIMEOUT_MS =
+  parseInt(process.env.MYAGENT_STREAM_IDLE_TIMEOUT_MS || '', 10) || 90_000
+
 export class AnthropicProvider implements ModelProvider {
   name = 'anthropic'
   private client: Anthropic
+  private maxOutputTokens: number | undefined
 
   constructor(config: ModelConfig) {
     this.client = new Anthropic({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
     })
+    this.maxOutputTokens = config.maxOutputTokens
   }
 
   async createMessage(request: ModelRequest): Promise<ModelResponse> {
-    const payload = buildAnthropicPayload(request)
-    debugProviderSummary('anthropic', request, payload)
-    debugProviderPayload('anthropic', payload)
-    const response = await this.client.messages.create(payload)
-    debugProviderResponse('anthropic', response)
+    return withRetry(
+      async (attempt) => {
+        const payload = buildAnthropicPayload(request, this.maxOutputTokens)
+        if (attempt > 1) {
+          debugProviderPayload('anthropic-retry', payload)
+        }
+        debugProviderSummary('anthropic', request, payload)
+        debugProviderPayload('anthropic', payload)
 
+        let response: Anthropic.Messages.Message
+        try {
+          const stream = this.client.messages.stream(
+            payload as unknown as Anthropic.Messages.MessageStreamParams,
+          )
+          response = await streamWithTimeout(stream)
+        } catch (streamError) {
+          if (isStreamTimeoutError(streamError)) {
+            return await this.executeNonStreamingRequest(payload, request)
+          }
+          throw streamError
+        }
+
+        debugProviderResponse('anthropic', response)
+        return this.parseResponse(response)
+      },
+      {
+        maxRetries: request.retry?.maxRetries ?? 3,
+        shouldRetry: (error) => isRetryableError(error),
+        signal: request.retry?.signal,
+      },
+    )
+  }
+
+  private parseResponse(response: Anthropic.Messages.Message): ModelResponse {
     const content = response.content.find((c) => c.type === 'text')
     const toolUses = response.content.filter((c) => c.type === 'tool_use')
 
     let textContent = content?.type === 'text' ? content.text : ''
 
-    // Normalize: if there are tool uses and content is only whitespace, clear it
     if (toolUses.length > 0 && textContent.trim() === '') {
       textContent = ''
     }
@@ -299,8 +454,48 @@ export class AnthropicProvider implements ModelProvider {
           input: c.input,
         }
       }),
+      usage: normalizeAnthropicUsage(response.usage),
+      requestId: response.id,
+      stopReason: response.stop_reason ?? undefined,
     }
   }
+
+  private async executeNonStreamingRequest(
+    payload: Record<string, unknown>,
+    request: ModelRequest,
+  ): Promise<ModelResponse> {
+    const nonStreamingPayload = {
+      ...payload,
+      stream: false,
+      max_tokens: Math.min(
+        (payload.max_tokens as number) ?? 32_000,
+        64_000,
+      ),
+    }
+    debugProviderPayload('anthropic-nonstreaming', nonStreamingPayload)
+
+    const response = await this.client.messages.create(
+      nonStreamingPayload as unknown as Anthropic.Messages.MessageCreateParamsNonStreaming,
+    )
+    debugProviderResponse('anthropic', response)
+    return this.parseResponse(response)
+  }
+}
+
+function isStreamTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('Stream idle timeout')
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function streamWithTimeout(
+  stream: { finalMessage: () => Promise<Anthropic.Messages.Message> },
+): Promise<Anthropic.Messages.Message> {
+  return Promise.race([
+    stream.finalMessage(),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Stream idle timeout')), STREAM_IDLE_TIMEOUT_MS)
+    }),
+  ])
 }
 
 export class OpenAIProvider implements ModelProvider {
@@ -318,7 +513,9 @@ export class OpenAIProvider implements ModelProvider {
     const payload = buildOpenAIPayload(request)
     debugProviderSummary('openai', request, payload)
     debugProviderPayload('openai', payload)
-    const response = await this.client.chat.completions.create(payload)
+    const response = await this.client.chat.completions.create(payload, {
+      signal: request.retry?.signal,
+    })
     debugProviderResponse('openai', response)
 
     const choice = response.choices[0]
@@ -345,6 +542,9 @@ export class OpenAIProvider implements ModelProvider {
     return {
       content,
       toolCalls,
+      usage: normalizeOpenAIUsage(response.usage),
+      requestId: response.id,
+      stopReason: choice?.finish_reason ?? undefined,
     }
   }
 }

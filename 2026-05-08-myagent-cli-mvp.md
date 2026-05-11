@@ -19,15 +19,15 @@ myagent/
 ├── package.json                    # scripts and dependencies
 ├── tsconfig.json                    # TypeScript ESM config
 ├── src/
-│   ├── entrypoints/cli.ts           # executable entrypoint and argv parsing
-│   ├── main.ts                      # app bootstrap
-│   ├── commands/                    # slash and top-level commands
-│   ├── harness/                     # agent loop, context, permissions, tool runner
-│   ├── prompts/                     # modular prompt text
-│   ├── services/                    # api/config/session/mcp/skills services
-│   ├── tools/                       # built-in tools
-│   ├── ui/repl.ts                   # readline UI
-│   └── utils/                       # filesystem/json/path helpers
+�?  ├── entrypoints/cli.ts           # executable entrypoint and argv parsing
+�?  ├── main.ts                      # app bootstrap
+�?  ├── commands/                    # slash and top-level commands
+�?  ├── harness/                     # agent loop, context, permissions, tool runner
+�?  ├── prompts/                     # modular prompt text
+�?  ├── services/                    # api/config/session/mcp/skills services
+�?  ├── tools/                       # built-in tools
+�?  ├── ui/repl.ts                   # readline UI
+�?  └── utils/                       # filesystem/json/path helpers
 └── test/                            # node:test coverage
 ```
 
@@ -722,7 +722,7 @@ git commit -m "feat: add resumable session store"
 
 ---
 
-### Task 4: Prompt Composer and Context Budget
+### Task 4: Prompt Composer and context management
 
 **Files:**
 - Create: `myagent/src/prompts/system.ts`
@@ -731,7 +731,7 @@ git commit -m "feat: add resumable session store"
 - Create: `myagent/src/prompts/safety.ts`
 - Create: `myagent/src/prompts/outputFormat.ts`
 - Create: `myagent/src/prompts/index.ts`
-- Create: `myagent/src/harness/contextBudget.ts`
+- Create: `myagent/src/harness/contextManagement.ts`
 - Create: `myagent/src/harness/contextBuilder.ts`
 - Create: `myagent/test/context.test.ts`
 
@@ -820,20 +820,20 @@ export function composeBasePrompt(extraBlocks: string[] = []): string {
 }
 ```
 
-- [ ] **Step 2: Implement context budget**
+- [ ] **Step 2: Implement context management**
 
-Write `myagent/src/harness/contextBudget.ts`:
+Write `myagent/src/harness/contextManagement.ts`:
 
 ```ts
 import { ChatMessage } from './types.js'
 
-export interface ContextBudgetResult {
+export interface ContextSelectionResult {
   messages: ChatMessage[]
   tokenEstimate: number
   strategy: 'full' | 'trim-old-tool-results' | 'summary-plus-recent' | 'needs-compact'
 }
 
-export class ContextBudgetManager {
+export class ContextManagementManager {
   constructor(private readonly maxTokens = 200_000) {}
 
   estimateText(text: string): number {
@@ -844,7 +844,7 @@ export class ContextBudgetManager {
     return messages.reduce((total, message) => total + this.estimateText(message.content), 0)
   }
 
-  select(messages: ChatMessage[], summary = ''): ContextBudgetResult {
+  select(messages: ChatMessage[], summary = ''): ContextSelectionResult {
     const tokenEstimate = this.estimateMessages(messages) + this.estimateText(summary)
     const ratio = tokenEstimate / this.maxTokens
     if (ratio < 0.7) return { messages, tokenEstimate, strategy: 'full' }
@@ -864,7 +864,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { composeBasePrompt } from '../prompts/index.js'
 import { ChatMessage, SessionRecord, Tool } from './types.js'
-import { ContextBudgetManager } from './contextBudget.js'
+import { ContextManagementManager } from './contextManagement.js'
 
 export interface BuildContextInput {
   cwd: string
@@ -882,7 +882,7 @@ export interface BuiltContext {
 }
 
 export class ContextBuilder {
-  constructor(private readonly budget = new ContextBudgetManager()) {}
+  constructor(private readonly budget = new ContextManagementManager()) {}
 
   async build(input: BuildContextInput): Promise<BuiltContext> {
     const projectContext = await this.readProjectContext(input.cwd)
@@ -937,11 +937,11 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ContextBudgetManager } from '../src/harness/contextBudget.js'
+import { ContextManagementManager } from '../src/harness/contextManagement.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
 
-test('context budget keeps small sessions in full', () => {
-  const budget = new ContextBudgetManager(1000)
+test('context management keeps small sessions in full', () => {
+  const budget = new ContextManagementManager(1000)
   const result = budget.select([{ id: '1', role: 'user', content: 'hello', createdAt: 'now' }])
   assert.equal(result.strategy, 'full')
   assert.equal(result.messages.length, 1)
@@ -978,7 +978,7 @@ Expected: all tests pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add myagent/src/prompts myagent/src/harness/contextBudget.ts myagent/src/harness/contextBuilder.ts myagent/test/context.test.ts
+git add myagent/src/prompts myagent/src/harness/contextManagement.ts myagent/src/harness/contextBuilder.ts myagent/test/context.test.ts
 git commit -m "feat: add prompt and context management"
 ```
 
@@ -1958,7 +1958,7 @@ function renderScripts(packageJson: string): string {
   const parsed = JSON.parse(packageJson) as { scripts?: Record<string, string> }
   const scripts = Object.entries(parsed.scripts ?? {})
   if (scripts.length === 0) return '- No package scripts detected.'
-  return scripts.map(([name, command]) => `- npm run ${name} — ${command}`).join('\n')
+  return scripts.map(([name, command]) => `- npm run ${name} �?${command}`).join('\n')
 }
 ```
 
@@ -2093,7 +2093,7 @@ export class CommandRouter {
   private async skills(args: string[]): Promise<boolean> {
     const service = new SkillsService(this.context.cwd)
     if (args[0] === 'list') {
-      this.context.writeLine((await service.list()).map(skill => `${skill.name} — ${skill.description}`).join('\n') || 'No skills found.')
+      this.context.writeLine((await service.list()).map(skill => `${skill.name} �?${skill.description}`).join('\n') || 'No skills found.')
     } else if (args[0] === 'use' && args[1]) {
       const skill = await service.use(args[1])
       this.context.setActiveSkill(skill.content)

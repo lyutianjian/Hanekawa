@@ -136,6 +136,6 @@ test('all builtin tools are callable', async () => {
     assert.equal(typeof tool.execute, 'function')
   })
 
-  assert.equal(tools.length, 5)
+  assert.equal(tools.length, 11)
   console.log(`\n✓ All ${tools.length} tools are properly defined`)
 })

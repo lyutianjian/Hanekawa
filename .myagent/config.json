@@ -10,12 +10,24 @@
         "provider": "anthropic",
         "model": "Pro/deepseek-ai/DeepSeek-V3.2",
         "apiKey": "sk-xtkdhlhdomnogtiktzonecsbmitidspwekbibkvmyizksqhv",
-        "baseUrl": "https://api.siliconflow.cn"
+        "baseUrl": "https://api.siliconflow.cn",
+        "maxOutputTokens":"",
+        "pricing": {
+        "cachedInputPerMillionTokens": 0.2,
+        "inputPerMillionTokens": 2,
+        "outputPerMillionTokens": 3,
+        "currency": "CNY"
+      }
       }
       
     },
     "defaultModel": "silicon",
     "agent": {
-      "contextBudget": 100000
+      "contextManagement": {
+        "contextWindow": 200000,
+        "summaryOutputTokens": 20000,
+        "autoCompactBufferTokens": 13000,
+        "manualCompactBufferTokens": 3000
+      }
     }
   }

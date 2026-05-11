@@ -25,52 +25,52 @@ Use TypeScript with Node.js or Bun. Keep the structure close to Claude Code's co
 ```text
 myagent/
 ├── src/
-│   ├── entrypoints/
-│   │   └── cli.ts
-│   ├── main.ts
-│   ├── commands/
-│   │   ├── init.ts
-│   │   ├── model.ts
-│   │   ├── resume.ts
-│   │   ├── session.ts
-│   │   ├── mcp.ts
-│   │   ├── skills.ts
-│   │   └── index.ts
-│   ├── tools/
-│   │   ├── grep.ts
-│   │   ├── readFile.ts
-│   │   ├── editFile.ts
-│   │   ├── writeFile.ts
-│   │   ├── deleteFile.ts
-│   │   ├── mcpTool.ts
-│   │   └── index.ts
-│   ├── services/
-│   │   ├── api/
-│   │   ├── config/
-│   │   ├── session/
-│   │   ├── mcp/
-│   │   └── skills/
-│   ├── harness/
-│   │   ├── loop.ts
-│   │   ├── contextBuilder.ts
-│   │   ├── contextBudget.ts
-│   │   ├── toolRunner.ts
-│   │   ├── permissions.ts
-│   │   └── types.ts
-│   ├── prompts/
-│   │   ├── system.ts
-│   │   ├── harness.ts
-│   │   ├── coding.ts
-│   │   ├── safety.ts
-│   │   ├── outputFormat.ts
-│   │   └── index.ts
-│   └── ui/
-│       └── repl.ts
+�?  ├── entrypoints/
+�?  �?  └── cli.ts
+�?  ├── main.ts
+�?  ├── commands/
+�?  �?  ├── init.ts
+�?  �?  ├── model.ts
+�?  �?  ├── resume.ts
+�?  �?  ├── session.ts
+�?  �?  ├── mcp.ts
+�?  �?  ├── skills.ts
+�?  �?  └── index.ts
+�?  ├── tools/
+�?  �?  ├── grep.ts
+�?  �?  ├── readFile.ts
+�?  �?  ├── editFile.ts
+�?  �?  ├── writeFile.ts
+�?  �?  ├── deleteFile.ts
+�?  �?  ├── mcpTool.ts
+�?  �?  └── index.ts
+�?  ├── services/
+�?  �?  ├── api/
+�?  �?  ├── config/
+�?  �?  ├── session/
+�?  �?  ├── mcp/
+�?  �?  └── skills/
+�?  ├── harness/
+�?  �?  ├── loop.ts
+�?  �?  ├── contextBuilder.ts
+�?  �?  ├── contextManagement.ts
+�?  �?  ├── toolRunner.ts
+�?  �?  ├── permissions.ts
+�?  �?  └── types.ts
+�?  ├── prompts/
+�?  �?  ├── system.ts
+�?  �?  ├── harness.ts
+�?  �?  ├── coding.ts
+�?  �?  ├── safety.ts
+�?  �?  ├── outputFormat.ts
+�?  �?  └── index.ts
+�?  └── ui/
+�?      └── repl.ts
 ├── .myagent/
-│   ├── config.json
-│   ├── mcp.json
-│   ├── skills/
-│   └── sessions/
+�?  ├── config.json
+�?  ├── mcp.json
+�?  ├── skills/
+�?  └── sessions/
 └── package.json
 ```
 
@@ -123,22 +123,16 @@ The harness is the center of the system. It is responsible for context assembly,
 
 ```text
 User input
-  ↓
-CommandRouter
-  ├─ slash command → local command
-  └─ normal input → AgentLoop
-                 ↓
-          ContextBuilder
-                 ↓
-          PromptComposer
-                 ↓
-          ApiClient
-                 ↓
-          tool_use?
-             ├─ yes → PermissionGate → ToolRunner → append tool_result → continue
-             └─ no  → render final response
-                 ↓
-          SessionStore append
+  �?CommandRouter
+  ├─ slash command �?local command
+  └─ normal input �?AgentLoop
+                 �?          ContextBuilder
+                 �?          PromptComposer
+                 �?          ApiClient
+                 �?          tool_use?
+             ├─ yes �?PermissionGate �?ToolRunner �?append tool_result �?continue
+             └─ no  �?render final response
+                 �?          SessionStore append
 ```
 
 Harness rules:
@@ -259,7 +253,7 @@ Budget strategy:
   Ask the user to run /compact or confirm automatic compaction.
 ```
 
-The MVP can begin with approximate token estimation, but it must have a dedicated `ContextBudgetManager` so the behavior is explicit and testable.
+The MVP can begin with approximate token estimation, but it must have a dedicated `ContextManagementManager` so the behavior is explicit and testable.
 
 ## Sessions
 

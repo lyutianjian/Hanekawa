@@ -172,43 +172,58 @@ test('SkillsService throws on missing frontmatter', async () => {
   }
 })
 
-test('createSkillTool() generates correct Tool object', () => {
-  const skill = {
-    name: 'debugging',
-    description: 'Use when diagnosing bugs',
-    content: 'Debug workflow content'
-  }
+test('createSkillTool() generates Skill tool object', () => {
+  const tool = createSkillTool()
 
-  const tool = createSkillTool(skill)
-
-  assert.equal(tool.name, 'skill_debugging')
-  assert.equal(tool.description, 'Use when diagnosing bugs')
+  assert.equal(tool.name, 'Skill')
+  assert.match(tool.description, /Execute a skill/)
   assert.equal(tool.riskLevel, 'safe')
   assert.deepEqual(tool.inputSchema, {
     type: 'object',
-    properties: {},
+    properties: {
+      skill: {
+        type: 'string',
+        description: 'The name of a skill from the available-skills list. Do not guess names.',
+      },
+      args: {
+        type: 'string',
+        description: 'Optional arguments for the skill',
+      },
+    },
+    required: ['skill'],
     additionalProperties: false
   })
 })
 
 test('createSkillTool() execute returns skill content', async () => {
-  const skill = {
-    name: 'debugging',
-    description: 'Use when diagnosing bugs',
-    content: 'Debug workflow content'
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skills-'))
+  try {
+    const skillsDir = path.join(dir, '.myagent', 'skills')
+    await mkdir(path.join(skillsDir, 'debugging'), { recursive: true })
+    await writeFile(
+      path.join(skillsDir, 'debugging', 'SKILL.md'),
+      '---\nname: debugging\ndescription: Use when diagnosing bugs\n---\n\nDebug workflow content',
+      'utf8'
+    )
+
+    const tool = createSkillTool()
+    const context = { cwd: dir, sessionId: 's1', readFiles: new Set<string>(), invokedSkills: new Map<string, { content: string; timestamp: number }>() }
+    const result = await tool.execute({ skill: 'debugging' }, context)
+
+    assert.equal(result.ok, true)
+    assert.equal(result.content, 'Debug workflow content')
+    assert.equal(context.invokedSkills.get('debugging')?.content, 'Debug workflow content')
+    assert.equal(typeof context.invokedSkills.get('debugging')?.timestamp, 'number')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
   }
-
-  const tool = createSkillTool(skill)
-  const result = await tool.execute({}, { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() })
-
-  assert.equal(result.ok, true)
-  assert.equal(result.content, 'Debug workflow content')
 })
 
-test('Skill tool names use skill_ prefix', () => {
-  const skill1 = createSkillTool({ name: 'debugging', description: 'Debug', content: 'Content' })
-  const skill2 = createSkillTool({ name: 'tdd', description: 'TDD', content: 'Content' })
+test('createSkillTool() rejects missing skill name', async () => {
+  const tool = createSkillTool()
 
-  assert.equal(skill1.name, 'skill_debugging')
-  assert.equal(skill2.name, 'skill_tdd')
+  await assert.rejects(
+    () => tool.execute({}, { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() }),
+    /Skill input must include a non-empty skill name/,
+  )
 })

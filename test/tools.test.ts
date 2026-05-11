@@ -51,6 +51,22 @@ test('editFile edits after readFile', async () => {
   }
 })
 
+test('readFile tracks content for post-compact restoration', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, { content: string; timestamp: number }>() }
+    const file = path.join(dir, 'a.txt')
+    await writeFile(file, 'hello\n', 'utf8')
+    const result = await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+
+    assert.equal(result.ok, true)
+    assert.equal(ctx.readFileState.get(file)?.content, 'hello\n')
+    assert.equal(typeof ctx.readFileState.get(file)?.timestamp, 'number')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('writeFile creates parent directories', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
   try {

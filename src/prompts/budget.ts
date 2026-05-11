@@ -1,11 +1,45 @@
-import type { ChatMessage } from '../harness/types.js'
+import type { ChatMessage, ModelContextItem, SessionRecord } from '../harness/types.js'
 
 export interface TokenCount {
   total: number
   messages: number[]
 }
 
-function countTokens(text: string): number {
+export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
+export const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
+export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
+export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
+
+export interface ContextManagementConfig {
+  contextWindow: number
+  summaryOutputTokens: number
+  autoCompactBufferTokens: number
+  manualCompactBufferTokens: number
+}
+
+export const DEFAULT_CONTEXT_MANAGEMENT: ContextManagementConfig = {
+  contextWindow: MODEL_CONTEXT_WINDOW_DEFAULT,
+  summaryOutputTokens: MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+  autoCompactBufferTokens: AUTOCOMPACT_BUFFER_TOKENS,
+  manualCompactBufferTokens: MANUAL_COMPACT_BUFFER_TOKENS,
+}
+
+export function getEffectiveContextWindowSize(config: Partial<ContextManagementConfig> = {}): number {
+  const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
+  return Math.max(0, merged.contextWindow - merged.summaryOutputTokens)
+}
+
+export function getAutoCompactThreshold(config: Partial<ContextManagementConfig> = {}): number {
+  const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
+  return Math.max(0, getEffectiveContextWindowSize(merged) - merged.autoCompactBufferTokens)
+}
+
+export function getManualCompactThreshold(config: Partial<ContextManagementConfig> = {}): number {
+  const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
+  return Math.max(0, getEffectiveContextWindowSize(merged) - merged.manualCompactBufferTokens)
+}
+
+export function countTextTokens(text: string): number {
   // Rough estimate: ~4 chars per token for English, more for CJK
   // This is a simplified approximation for the MVP
   let count = 0
@@ -20,7 +54,7 @@ function countTokens(text: string): number {
 }
 
 export function countMessageTokens(message: ChatMessage): number {
-  return countTokens(message.content)
+  return countTextTokens(message.content)
 }
 
 export function countMessagesTokens(messages: ChatMessage[]): TokenCount {
@@ -31,51 +65,118 @@ export function countMessagesTokens(messages: ChatMessage[]): TokenCount {
   }
 }
 
-export class ContextBudget {
-  private budget: number
+export function getAvailableContextTokens(
+  config: Partial<ContextManagementConfig> = {},
+  system?: string,
+): number {
+  const systemTokens = system ? countTextTokens(system) : 0
+  return getEffectiveContextWindowSize(config) - systemTokens - 1000
+}
 
-  constructor(budget: number = 100_000) {
-    this.budget = budget
+export function selectMessagesForContext(
+  messages: ChatMessage[],
+  config: Partial<ContextManagementConfig> = {},
+  system?: string,
+): ChatMessage[] {
+  const availableTokens = getAvailableContextTokens(config, system)
+
+  if (availableTokens <= 0) {
+    return []
   }
 
-  getBudget(): number {
-    return this.budget
-  }
+  const result: ChatMessage[] = []
+  let used = 0
 
-  setBudget(budget: number): void {
-    this.budget = budget
-  }
-
-  truncate(messages: ChatMessage[], system?: string): ChatMessage[] {
-    const systemTokens = system ? countTokens(system) : 0
-    const availableBudget = this.budget - systemTokens - 1000 // Reserve for response
-
-    if (availableBudget <= 0) {
-      return []
+  for (const message of messages) {
+    const tokens = countMessageTokens(message)
+    if (used + tokens > availableTokens) {
+      break
     }
-
-    const result: ChatMessage[] = []
-    let used = 0
-
-    // Add messages from oldest to newest until budget is exhausted
-    for (const message of messages) {
-      const tokens = countMessageTokens(message)
-      if (used + tokens > availableBudget) {
-        break
-      }
-      result.push(message)
-      used += tokens
-    }
-
-    return result
+    result.push(message)
+    used += tokens
   }
 
-  estimate(messages: ChatMessage[], system?: string): { used: number; budget: number; remaining: number } {
-    const used = countMessagesTokens(messages).total + (system ? countTokens(system) : 0)
-    return {
-      used,
-      budget: this.budget,
-      remaining: Math.max(0, this.budget - used),
-    }
+  return result
+}
+
+export function selectContextItemsForContext(
+  items: ModelContextItem[],
+  config: Partial<ContextManagementConfig> = {},
+  system?: string,
+): ModelContextItem[] {
+  const availableTokens = getAvailableContextTokens(config, system)
+
+  if (availableTokens <= 0) {
+    return []
   }
+
+  const result: ModelContextItem[] = []
+  let used = 0
+
+  for (const item of [...items].reverse()) {
+    const tokens = countContextItemTokens(item)
+    if (used + tokens > availableTokens) {
+      if (result.length > 0) break
+      continue
+    }
+    result.push(item)
+    used += tokens
+  }
+
+  return repairToolPairing(result.reverse())
+}
+
+export function countContextItemTokens(item: ModelContextItem): number {
+  if (item.kind === 'message') {
+    return countMessageTokens(item.message)
+  }
+
+  if (item.kind === 'tool_use') {
+    return countTextTokens(`${item.tool}\n${JSON.stringify(item.input ?? {})}`)
+  }
+
+  return countTextTokens(`${item.tool}\n${item.content}`)
+}
+
+export function countSessionRecordTokens(record: SessionRecord): number {
+  if (record.type === 'message') {
+    return countMessageTokens(record)
+  }
+
+  if (record.type === 'tool_use') {
+    return countTextTokens(`${record.tool}\n${JSON.stringify(record.input ?? {})}`)
+  }
+
+  if (record.type === 'tool_result') {
+    return countTextTokens(`${record.tool}\n${record.content}`)
+  }
+
+  if (record.type === 'compact_boundary') {
+    return countTextTokens(record.summary)
+  }
+
+  return countTextTokens(`${record.tool}\n${JSON.stringify(record.input ?? {})}`)
+}
+
+export function countSessionRecordsTokens(records: SessionRecord[], system?: string): number {
+  return records.reduce((sum, record) => sum + countSessionRecordTokens(record), system ? countTextTokens(system) : 0)
+}
+
+function repairToolPairing(items: ModelContextItem[]): ModelContextItem[] {
+  const toolUseIds = new Set(
+    items
+      .filter((item): item is ModelContextItem & { kind: 'tool_use' } => item.kind === 'tool_use')
+      .map((item) => item.id),
+  )
+  const toolResultIds = new Set(
+    items
+      .filter((item): item is ModelContextItem & { kind: 'tool_result' } => item.kind === 'tool_result')
+      .map((item) => item.toolUseId),
+  )
+
+  return items.filter((item) => {
+    if (item.kind === 'tool_use') return toolResultIds.has(item.id)
+    if (item.kind === 'tool_result') return toolUseIds.has(item.toolUseId)
+    return true
+  })
 }

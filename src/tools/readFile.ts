@@ -19,6 +19,11 @@ export const readFileTool: Tool = {
     const absolute = path.resolve(context.cwd, filePath)
     const content = await readFile(absolute, 'utf8')
     context.readFiles.add(absolute)
+    context.readFileState ??= new Map()
+    context.readFileState.set(absolute, {
+      content,
+      timestamp: Date.now(),
+    })
     return { ok: true, content }
   },
 }

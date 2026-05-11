@@ -1,9 +1,11 @@
 import readline from 'node:readline'
+import { SkillsService } from '../services/skills/skillsService.js'
 import type { Tool } from '../harness/types.js'
 
 interface Session {
   messages: Array<{ role: string; content: Array<{ type: string; text: string }> }>
   tools: Tool[]
+  cwd: string
 }
 
 export type CommandResult =
@@ -11,7 +13,7 @@ export type CommandResult =
   | { type: 'exit' }
   | { type: 'message'; text: string }
 
-export function handleCommand(input: string, session: Session): CommandResult {
+export async function handleCommand(input: string, session: Session): Promise<CommandResult> {
   const trimmed = input.trim()
 
   if (trimmed === '/exit' || trimmed === '/quit') {
@@ -36,14 +38,13 @@ Available commands:
   }
 
   if (trimmed === '/skills list') {
-    const skillTools = session.tools.filter((t: Tool) => t.name.startsWith('skill_'))
-    if (skillTools.length === 0) {
+    const skills = await new SkillsService(session.cwd).list()
+    if (skills.length === 0) {
       console.log('No skills available.')
     } else {
-      console.log(`\nAvailable skills (${skillTools.length}):`)
-      for (const tool of skillTools) {
-        const skillName = tool.name.replace(/^skill_/, '')
-        console.log(`  ${skillName} - ${tool.description}`)
+      console.log(`\nAvailable skills (${skills.length}):`)
+      for (const skill of skills) {
+        console.log(`  ${skill.name} - ${skill.description}`)
       }
     }
     return { type: 'continue' }

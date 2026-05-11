@@ -1,17 +1,21 @@
 import { readJsonFile, writeJsonFile } from '../utils/json.js'
 import { getConfigPath } from '../utils/paths.js'
+import type { ContextManagementConfig } from '../prompts/budget.js'
+import type { ModelPricing } from '../harness/types.js'
 
 export interface ModelConfig {
   provider: string
   model: string
   apiKey?: string
   baseUrl?: string
+  promptCacheRetention?: 'in_memory' | '24h'
+  pricing?: ModelPricing
+  maxOutputTokens?: number
 }
 
 export interface AgentConfig {
   system?: string
-  maxTokens?: number
-  contextBudget?: number
+  contextManagement?: Partial<ContextManagementConfig>
   sessionDir?: string
 }
 
@@ -30,7 +34,12 @@ const DEFAULT_CONFIG: Config = {
   },
   defaultModel: 'anthropic',
   agent: {
-    contextBudget: 100_000,
+    contextManagement: {
+      contextWindow: 200_000,
+      summaryOutputTokens: 20_000,
+      autoCompactBufferTokens: 13_000,
+      manualCompactBufferTokens: 3_000,
+    },
   },
 }
 

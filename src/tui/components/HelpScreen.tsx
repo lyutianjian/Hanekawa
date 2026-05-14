@@ -41,6 +41,9 @@ export function HelpScreen({ onClose }: Props) {
         <HelpRow shortcut="/session" description="Show session info" />
         <HelpRow shortcut="/compact" description="Compact history" />
         <HelpRow shortcut="/settings" description="Open settings" />
+        <HelpRow shortcut="/theme <name>" description="Switch theme (dark/light/auto)" />
+        <HelpRow shortcut="/verbose" description="Toggle verbose mode" />
+        <HelpRow shortcut="/export" description="Export conversation to JSON" />
       </Box>
       <Box marginTop={1}>
         <Text dimColor>Press Esc or q to close</Text>

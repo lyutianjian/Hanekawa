@@ -5,6 +5,7 @@ export type SlashCommandResult = {
   message?: ChatMessage
   action?: string
   model?: string
+  theme?: 'dark' | 'light' | 'auto'
 }
 
 export function handleSlashCommand(input: string, context: {
@@ -30,7 +31,10 @@ export function handleSlashCommand(input: string, context: {
   /retry    — Retry the last user message
   /compact  — Compact conversation history
   /settings — Open settings screen
-  /doctor   — Run system diagnostics`,
+  /doctor   — Run system diagnostics
+  /theme    — Switch theme (dark/light/auto)
+  /verbose  — Toggle verbose mode
+  /export   — Export conversation to JSON`,
         timestamp: Date.now(),
       },
     }
@@ -128,6 +132,34 @@ export function handleSlashCommand(input: string, context: {
 
   if (trimmed === '/clear') {
     return { handled: true } // caller handles clearing
+  }
+
+  if (trimmed.startsWith('/theme')) {
+    const parts = trimmed.split(/\s+/)
+    const theme = parts[1]
+    if (theme && ['dark', 'light', 'auto'].includes(theme)) {
+      return {
+        handled: true,
+        action: 'set_theme',
+        theme: theme as 'dark' | 'light' | 'auto',
+      }
+    }
+    return {
+      handled: true,
+      message: {
+        id: `sys-${Date.now()}`,
+        role: 'system',
+        content: 'Usage: /theme <dark|light|auto>',
+        timestamp: Date.now(),
+      },
+    }
+  }
+
+  if (trimmed === '/verbose') {
+    return {
+      handled: true,
+      action: 'toggle_verbose',
+    }
   }
 
   if (trimmed === '/export') {

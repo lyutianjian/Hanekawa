@@ -218,18 +218,34 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
     case 'table': {
       const header = token.header || []
       const rows = token.rows || []
+
+      // 计算列宽
+      const colWidths = header.map((_: any, colIdx: number) => {
+        const headerLen = typeof header[colIdx] === 'string' ? header[colIdx].length : (header[colIdx] as any).text?.length || 0
+        const maxRowLen = rows.reduce((max: number, row: any) => {
+          const cellLen = typeof row[colIdx] === 'string' ? row[colIdx].length : (row[colIdx] as any).text?.length || 0
+          return Math.max(max, cellLen)
+        }, 0)
+        return Math.max(headerLen, maxRowLen) + 2
+      })
+
+      const renderCell = (cell: any, width: number) => {
+        const text = typeof cell === 'string' ? cell : cell.text || ''
+        return text.padEnd(width).slice(0, width)
+      }
+
       return (
-        <Box flexDirection="column" marginLeft={2} marginBottom={1}>
+        <Box flexDirection="column" marginTop={1} marginBottom={1}>
           <Box>
             {header.map((cell: any, i: number) => (
-              <Text key={i} bold>{typeof cell === 'string' ? cell : cell.text}{'  '}</Text>
+              <Text key={i} bold>{renderCell(cell, colWidths[i])} </Text>
             ))}
           </Box>
-          <Text dimColor>{'─'.repeat(40)}</Text>
+          <Text dimColor>{colWidths.map((w: number) => '─'.repeat(w)).join('┼')}</Text>
           {rows.map((row: any, i: number) => (
             <Box key={i}>
               {row.map((cell: any, j: number) => (
-                <Text key={j}>{typeof cell === 'string' ? cell : cell.text}{'  '}</Text>
+                <Text key={j}>{renderCell(cell, colWidths[j])} </Text>
               ))}
             </Box>
           ))}

@@ -66,10 +66,10 @@ export function PromptInput({ onSubmit, isDisabled, cursorY, cwd }: PromptInputP
 
     // Handle Tab for autocomplete
     if (key.tab && isOpen) {
-      const suggestion = acceptSuggestion()
-      if (suggestion) {
-        setInput(suggestion.value)
-        inputRef.current = suggestion.value
+      const value = acceptSuggestion()
+      if (value) {
+        setInput(value)
+        inputRef.current = value
       }
       return
     }
@@ -89,10 +89,10 @@ export function PromptInput({ onSubmit, isDisabled, cursorY, cwd }: PromptInputP
     if (key.return) {
       // If suggestions are open, accept the selected one
       if (isOpen) {
-        const suggestion = acceptSuggestion()
-        if (suggestion) {
-          setInput(suggestion.value)
-          inputRef.current = suggestion.value
+        const value = acceptSuggestion()
+        if (value) {
+          setInput(value)
+          inputRef.current = value
           return
         }
       }

@@ -10,7 +10,7 @@ type Props = {
   onCancel: () => void
   onApprove: () => void
   onAlwaysAllow?: () => void
-  color?: keyof Theme
+  color?: keyof Theme | string
 }
 
 export function PermissionDialog({ title, subtitle, children, onCancel, onApprove, onAlwaysAllow, color = 'permission' }: Props) {

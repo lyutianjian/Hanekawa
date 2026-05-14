@@ -8,7 +8,7 @@ import type { Theme } from './theme.js'
 
 type PaneProps = {
   children: React.ReactNode
-  color?: keyof Theme
+  color?: keyof Theme | string
 }
 
 export function Pane({ children, color }: PaneProps) {

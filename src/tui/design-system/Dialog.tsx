@@ -4,6 +4,8 @@
 import React from 'react'
 import { Box, Text } from 'ink'
 import { Pane } from './Pane.js'
+import { resolveColor } from './color.js'
+import { useTheme } from './ThemeProvider.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
 import type { Theme } from './theme.js'
 
@@ -12,17 +14,20 @@ type DialogProps = {
   subtitle?: string
   children: React.ReactNode
   onCancel: () => void
-  color?: keyof Theme
+  color?: keyof Theme | string
   hideBorder?: boolean
 }
 
 export function Dialog({ title, subtitle, children, onCancel, color = 'permission', hideBorder }: DialogProps) {
+  const [theme] = useTheme()
   useKeybinding('confirm:no', onCancel, { context: 'Confirmation' })
+
+  const resolvedColor = resolveColor(color, theme)
 
   const content = (
     <Box flexDirection="column">
       <Box>
-        <Text bold color={color as any}>{title}</Text>
+        <Text bold color={resolvedColor as any}>{title}</Text>
         {subtitle && <Text dimColor> — {subtitle}</Text>}
       </Box>
       <Box marginTop={1}>{children}</Box>

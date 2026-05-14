@@ -8,13 +8,6 @@ import { ContextBuilder } from '../../harness/contextBuilder.js'
 import type { Config } from '../../config/service.js'
 import type { AgentRunResult, AgentStreamEvent } from '../../harness/types.js'
 
-export class AbortError extends Error {
-  constructor() {
-    super('Aborted')
-    this.name = 'AbortError'
-  }
-}
-
 export function useQuery(
   config: Config,
   cwd: string,
@@ -70,7 +63,9 @@ export function useQuery(
       }
     }
 
-    init()
+    init().catch(error => {
+      console.error('Failed to initialize query hook:', error)
+    })
 
     return () => {
       cancelled = true
@@ -97,7 +92,7 @@ export function useQuery(
       )
       return result
     } catch (error) {
-      if (error instanceof AbortError) {
+      if (error instanceof Error && error.name === 'AbortError') {
         return { interrupted: true as const }
       }
       throw error

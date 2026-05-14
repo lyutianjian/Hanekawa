@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useInput } from 'ink'
 import { promises as fs } from 'fs'
 import path from 'path'
@@ -103,6 +103,28 @@ function mergeBindings(config: KeyBindingsConfig): KeyBinding[] {
     ctrl: true,
     action: 'kill-word',
     context: 'chat',
+  })
+
+  // Autocomplete bindings
+  bindings.push({
+    key: config.autocomplete?.accept ?? 'tab',
+    action: 'autocomplete.accept',
+    context: 'autocomplete',
+  })
+  bindings.push({
+    key: config.autocomplete?.next ?? 'down',
+    action: 'autocomplete.next',
+    context: 'autocomplete',
+  })
+  bindings.push({
+    key: config.autocomplete?.previous ?? 'up',
+    action: 'autocomplete.previous',
+    context: 'autocomplete',
+  })
+  bindings.push({
+    key: config.autocomplete?.close ?? 'escape',
+    action: 'autocomplete.close',
+    context: 'autocomplete',
   })
 
   return bindings

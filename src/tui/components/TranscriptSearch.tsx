@@ -9,6 +9,21 @@ type Props = {
   onClose: () => void
 }
 
+const highlightMatch = (text: string, query: string): React.ReactNode => {
+  if (!query) return <Text>{text}</Text>
+  const lower = text.toLowerCase()
+  const idx = lower.indexOf(query.toLowerCase())
+  if (idx === -1) return <Text>{text}</Text>
+
+  return (
+    <Text>
+      {text.slice(0, idx)}
+      <Text color="yellow" bold>{text.slice(idx, idx + query.length)}</Text>
+      {text.slice(idx + query.length)}
+    </Text>
+  )
+}
+
 export function TranscriptSearch({ messages, onJumpTo, onClose }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIdx, setSelectedIdx] = useState(0)
@@ -73,7 +88,8 @@ export function TranscriptSearch({ messages, onJumpTo, onClose }: Props) {
                   {i === selectedIdx ? '> ' : '  '}
                 </Text>
                 <Text dimColor>[{match.msg.role}] </Text>
-                <Text>{match.text.slice(0, 80)}{match.text.length > 80 ? '...' : ''}</Text>
+                {highlightMatch(match.text.slice(0, 80), query)}
+                {match.text.length > 80 && <Text dimColor>...</Text>}
               </Box>
             ))}
           </>

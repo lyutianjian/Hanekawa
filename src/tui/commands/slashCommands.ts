@@ -70,12 +70,7 @@ export function handleSlashCommand(input: string, context: {
   if (trimmed === '/cost') {
     return {
       handled: true,
-      message: {
-        id: `sys-${Date.now()}`,
-        role: 'system',
-        content: 'Cost tracking will be displayed here. Use /cost after a conversation to see usage.',
-        timestamp: Date.now(),
-      },
+      action: 'show_cost',
     }
   }
 

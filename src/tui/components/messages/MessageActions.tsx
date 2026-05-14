@@ -1,21 +1,32 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { Box, Text } from '../../ink.js'
+import { copyToClipboard } from '../../utils/clipboard.js'
 
 type Props = {
-  onCopy?: () => void
+  messageContent?: string
   onRetry?: () => void
   onClose: () => void
 }
 
-export function MessageActions({ onCopy, onRetry, onClose }: Props) {
+export function MessageActions({ messageContent, onRetry, onClose }: Props) {
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  const handleCopy = async () => {
+    if (messageContent) {
+      const ok = await copyToClipboard(messageContent)
+      setCopyStatus(ok ? 'copied' : 'failed')
+      setTimeout(() => setCopyStatus('idle'), 2000)
+    }
+  }
+
   return (
     <Box paddingX={2} paddingY={1} flexDirection="column">
       <Text bold dimColor>Message Actions</Text>
       <Box marginTop={1}>
-        {onCopy && (
+        {messageContent && (
           <Box>
             <Text color="cyan" bold>[c]</Text>
-            <Text> Copy</Text>
+            <Text> {copyStatus === 'copied' ? 'Copied!' : copyStatus === 'failed' ? 'Failed' : 'Copy'}</Text>
             <Text dimColor>  </Text>
           </Box>
         )}

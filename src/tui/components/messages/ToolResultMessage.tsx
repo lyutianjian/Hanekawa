@@ -10,7 +10,9 @@ type Props = {
 export function ToolResultMessage({ toolUseId, content, isError }: Props) {
   const lines = content.split('\n')
   const isLong = lines.length > 5 || content.length > 300
-  const preview = isLong ? content.slice(0, 200).split('\n').slice(0, 3).join('\n') + '...' : content
+  const preview = isLong
+    ? lines.slice(0, 3).join('\n') + (lines.length > 3 ? `\n... (${lines.length - 3} more lines)` : '')
+    : content
 
   return (
     <Box flexDirection="column" marginBottom={1} paddingX={1}>
@@ -20,11 +22,11 @@ export function ToolResultMessage({ toolUseId, content, isError }: Props) {
         </Text>
         {isLong && <Text dimColor> ({lines.length} lines)</Text>}
       </Box>
-      {isError && (
-        <Box marginLeft={2}>
-          <Text color="red">{preview}</Text>
-        </Box>
-      )}
+      <Box marginLeft={2} flexDirection="column">
+        <Text color={isError ? 'red' : undefined} dimColor={!isError}>
+          {preview}
+        </Text>
+      </Box>
     </Box>
   )
 }

@@ -18,6 +18,7 @@ import { DoctorScreen } from '../components/DoctorScreen.js'
 import { CompactionIndicator } from '../components/CompactionIndicator.js'
 import { TranscriptSearch } from '../components/TranscriptSearch.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
+import { useTheme } from '../design-system/ThemeProvider.js'
 import type { ChatMessage } from '../components/messages/types.js'
 import { handleSlashCommand } from '../commands/slashCommands.js'
 import type { AgentLoop } from '../../harness/loop.js'
@@ -52,6 +53,9 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
   const [doctorOpen, setDoctorOpen] = useState(false)
   const [scrollToIndex, setScrollToIndex] = useState<number | null>(null)
   const [clearConfirm, setClearConfirm] = useState(false)
+  const [themeSetting, setThemeSetting] = useTheme()
+  const [verboseMode, setVerboseMode] = useState(config?.verbose ?? false)
+  const verboseRef = useRef(verboseMode)
   const { exit } = useApp()
   const { columns, rows } = useWindowSize()
   const nextId = useRef(0)
@@ -114,8 +118,44 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
       if (text.trim() === '/doctor') {
         setDoctorOpen(true)
       }
+      if (slashResult.action === 'show_cost') {
+        const costMsg: ChatMessage = {
+          id: `sys-${nextId.current++}`,
+          role: 'system',
+          content: totalUsage
+            ? `Token Usage:\n  Input: ${totalUsage.input.toLocaleString()} tokens\n  Output: ${totalUsage.output.toLocaleString()} tokens\n  Total: ${(totalUsage.input + totalUsage.output).toLocaleString()} tokens\n  Cost: $${totalUsage.cost.toFixed(6)}`
+            : 'No usage data yet. Start a conversation to see token usage.',
+          timestamp: Date.now(),
+        }
+        setMessages(prev => [...prev, costMsg])
+        return
+      }
       if (slashResult.action === 'switch_model' && slashResult.model) {
         setPendingModel(slashResult.model)
+      }
+      if (slashResult.action === 'set_theme' && slashResult.theme) {
+        setThemeSetting(slashResult.theme)
+        const sysMsg: ChatMessage = {
+          id: `sys-${nextId.current++}`,
+          role: 'system',
+          content: `Theme switched to ${slashResult.theme}`,
+          timestamp: Date.now(),
+        }
+        setMessages(prev => [...prev, sysMsg])
+        return
+      }
+      if (slashResult.action === 'toggle_verbose') {
+        const newVerbose = !verboseRef.current
+        verboseRef.current = newVerbose
+        setVerboseMode(newVerbose)
+        const sysMsg: ChatMessage = {
+          id: `sys-${nextId.current++}`,
+          role: 'system',
+          content: `Verbose mode ${newVerbose ? 'enabled' : 'disabled'}`,
+          timestamp: Date.now(),
+        }
+        setMessages(prev => [...prev, sysMsg])
+        return
       }
       if (slashResult.action === 'retry') {
         // 重新发送最后一条用户消息
@@ -271,11 +311,15 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
         setMessages(prev => [...prev, errorMsg])
         saveMessage(errorMsg)
       } else {
-        // 通用错误
+        // 通用错误 — 对 API/network 错误添加重试提示
+        const errMsg = (err as Error).message || 'Unknown error'
+        const isApiError = errMsg.includes('API') || errMsg.includes('network') || errMsg.includes('fetch')
         const errorMsg: ChatMessage = {
           id: `msg-${nextId.current++}`,
           role: 'system',
-          content: `Error: ${(err as Error).message}`,
+          content: isApiError
+            ? `Error: ${errMsg}\n\nTip: Use /retry to resend the last message.`
+            : `Error: ${errMsg}`,
           timestamp: Date.now(),
         }
         setMessages(prev => [...prev, errorMsg])
@@ -400,7 +444,8 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
                   key={i}
                   messages={group.messages}
                   role={group.role as 'user' | 'assistant' | 'system'}
-                  verbose={config?.verbose}
+                  verbose={verboseMode}
+                  showTimestamp={verboseMode}
                   columns={columns}
                 />
               ))}
@@ -413,6 +458,7 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
                     content: streamingText,
                     isStreaming: true,
                   }}
+                  showTimestamp={verboseMode}
                 />
               )}
             </>

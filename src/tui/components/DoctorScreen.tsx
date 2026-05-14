@@ -21,6 +21,7 @@ export function DoctorScreen({ onClose }: Props) {
     { name: 'Session store', status: 'pending' },
     { name: 'API key', status: 'pending' },
     { name: 'Git repository', status: 'pending' },
+    { name: 'MCP servers', status: 'pending' },
   ])
 
   useEffect(() => {
@@ -90,6 +91,19 @@ export function DoctorScreen({ onClose }: Props) {
         })
       } catch {
         results.push({ name: 'Git repository', status: 'warning', detail: 'Check failed' })
+      }
+
+      // MCP servers
+      try {
+        const { existsSync } = await import('node:fs')
+        const mcpConfig = existsSync('.myagent/mcp.json') || existsSync('.mcp.json')
+        results.push({
+          name: 'MCP servers',
+          status: mcpConfig ? 'success' : 'warning',
+          detail: mcpConfig ? 'Config found' : 'No MCP config',
+        })
+      } catch {
+        results.push({ name: 'MCP servers', status: 'warning', detail: 'Check failed' })
       }
 
       setChecks(results)

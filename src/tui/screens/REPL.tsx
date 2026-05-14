@@ -427,28 +427,44 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
             <Text dimColor>Type a message to get started...</Text>
           ) : (
             <>
-              {/* 将消息按角色分组 */}
-              {messages.reduce<{ role: string; messages: ChatMessage[] }[]>(
-                (groups, msg) => {
-                  const lastGroup = groups[groups.length - 1]
-                  if (lastGroup && lastGroup.role === msg.role) {
-                    lastGroup.messages.push(msg)
-                  } else {
-                    groups.push({ role: msg.role, messages: [msg] })
-                  }
-                  return groups
-                },
-                [],
-              ).map((group, i) => (
-                <MessageGroup
-                  key={i}
-                  messages={group.messages}
-                  role={group.role as 'user' | 'assistant' | 'system'}
-                  verbose={verboseMode}
-                  showTimestamp={verboseMode}
-                  columns={columns}
-                />
-              ))}
+              {/* 性能优化：只渲染最后 N 条消息 */}
+              {(() => {
+                const MAX_VISIBLE_MESSAGES = 100
+                const visibleMessages = messages.slice(-MAX_VISIBLE_MESSAGES)
+                const hiddenCount = messages.length - visibleMessages.length
+
+                return (
+                  <>
+                    {hiddenCount > 0 && (
+                      <Box paddingX={1}>
+                        <Text dimColor>↑ {hiddenCount} older messages (scroll up to view)</Text>
+                      </Box>
+                    )}
+                    {/* 将消息按角色分组 */}
+                    {visibleMessages.reduce<{ role: string; messages: ChatMessage[] }[]>(
+                      (groups, msg) => {
+                        const lastGroup = groups[groups.length - 1]
+                        if (lastGroup && lastGroup.role === msg.role) {
+                          lastGroup.messages.push(msg)
+                        } else {
+                          groups.push({ role: msg.role, messages: [msg] })
+                        }
+                        return groups
+                      },
+                      [],
+                    ).map((group, i) => (
+                      <MessageGroup
+                        key={i}
+                        messages={group.messages}
+                        role={group.role as 'user' | 'assistant' | 'system'}
+                        verbose={verboseMode}
+                        showTimestamp={verboseMode}
+                        columns={columns}
+                      />
+                    ))}
+                  </>
+                )
+              })()}
               {/* 流式文本预览 */}
               {streamingText && (
                 <MessageRow

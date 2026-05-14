@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { Box, Text } from '../../ink.js'
+import { useInput } from 'ink'
 import { copyToClipboard } from '../../utils/clipboard.js'
 
 type Props = {
@@ -18,6 +19,20 @@ export function MessageActions({ messageContent, onRetry, onClose }: Props) {
       setTimeout(() => setCopyStatus('idle'), 2000)
     }
   }
+
+  useInput((input, key) => {
+    if (key.escape) {
+      onClose()
+      return
+    }
+    if (input === 'c' && messageContent) {
+      handleCopy()
+      return
+    }
+    if (input === 'r' && onRetry) {
+      onRetry()
+    }
+  })
 
   return (
     <Box paddingX={2} paddingY={1} flexDirection="column">

@@ -1,12 +1,24 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import { Box, Text } from '../../ink.js'
-import { Markdown } from '../Markdown.js'
+import { Markdown, StreamingMarkdown } from '../Markdown.js'
 
 type Props = {
   text: string
+  isStreaming?: boolean
 }
 
-export function AssistantTextMessage({ text }: Props) {
+function BlinkingCursor() {
+  const [visible, setVisible] = useState(true)
+
+  useEffect(() => {
+    const interval = setInterval(() => setVisible(v => !v), 530)
+    return () => clearInterval(interval)
+  }, [])
+
+  return <Text color="green" bold>{visible ? '█' : ' '}</Text>
+}
+
+export function AssistantTextMessage({ text, isStreaming }: Props) {
   if (!text.trim()) return null
 
   return (
@@ -14,7 +26,14 @@ export function AssistantTextMessage({ text }: Props) {
       <Text color="green" bold>│</Text>
       <Box flexDirection="column" marginLeft={1}>
         <Text color="green" bold>Assistant</Text>
-        <Markdown>{text}</Markdown>
+        {isStreaming ? (
+          <Box>
+            <StreamingMarkdown>{text}</StreamingMarkdown>
+            <BlinkingCursor />
+          </Box>
+        ) : (
+          <Markdown>{text}</Markdown>
+        )}
       </Box>
     </Box>
   )

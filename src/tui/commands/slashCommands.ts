@@ -27,6 +27,7 @@ export function handleSlashCommand(input: string, context: {
   /cost     — Show token usage and cost
   /model    — Show current model
   /session  — Show session info
+  /retry    — Retry the last user message
   /compact  — Compact conversation history
   /settings — Open settings screen`,
         timestamp: Date.now(),
@@ -107,6 +108,13 @@ export function handleSlashCommand(input: string, context: {
     return {
       handled: true,
       action: 'open_settings',
+    }
+  }
+
+  if (trimmed === '/retry') {
+    return {
+      handled: true,
+      action: 'retry',
     }
   }
 

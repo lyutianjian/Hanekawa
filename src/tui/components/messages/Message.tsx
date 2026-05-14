@@ -14,7 +14,7 @@ type Props = {
   isRunning?: boolean
 }
 
-export const Message = memo(function Message({ message, verbose }: Props) {
+export const Message = memo(function Message({ message, verbose, isRunning }: Props) {
   // 系统消息
   if (message.role === 'system') {
     return <SystemMessage message={message} />
@@ -25,27 +25,27 @@ export const Message = memo(function Message({ message, verbose }: Props) {
     if (message.role === 'user') {
       return <UserTextMessage text={message.content} />
     }
-    return <AssistantTextMessage text={message.content} />
+    return <AssistantTextMessage text={message.content} isStreaming={message.isStreaming} />
   }
 
   // 内容块数组
   return (
     <Box flexDirection="column" marginTop={1}>
       {message.content.map((block, i) => (
-        <ContentBlock key={i} block={block} role={message.role} verbose={verbose} />
+        <ContentBlock key={i} block={block} role={message.role} verbose={verbose} isRunning={isRunning} />
       ))}
     </Box>
   )
 })
 
-function ContentBlock({ block, role, verbose }: { block: ContentBlock; role: string; verbose?: boolean }) {
+function ContentBlock({ block, role, verbose, isRunning }: { block: ContentBlock; role: string; verbose?: boolean; isRunning?: boolean }) {
   switch (block.type) {
     case 'text':
       return role === 'user'
         ? <UserTextMessage text={block.text} />
-        : <AssistantTextMessage text={block.text} />
+        : <AssistantTextMessage text={block.text} isStreaming={isRunning} />
     case 'tool_use':
-      return <ToolUseMessage id={block.id} name={block.name} input={block.input} verbose={verbose} />
+      return <ToolUseMessage id={block.id} name={block.name} input={block.input} verbose={verbose} isRunning={isRunning} />
     case 'tool_result':
       return <ToolResultMessage toolUseId={block.tool_use_id} content={block.content} isError={block.is_error} />
     case 'thinking':

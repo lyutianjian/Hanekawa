@@ -45,6 +45,30 @@ type MarkdownProps = {
   children: string
 }
 
+/**
+ * StreamingMarkdown — 流式渲染 Markdown
+ * 在流式输出过程中，只渲染已完成的块，避免未完成的格式化导致闪烁
+ */
+export function StreamingMarkdown({ children }: { children: string }) {
+  // 找到最后一个顶级块边界
+  const lastBlockEnd = children.lastIndexOf('\n\n')
+
+  if (lastBlockEnd === -1) {
+    // 没有完整块，直接显示文本
+    return <Text>{children}</Text>
+  }
+
+  const stablePrefix = children.slice(0, lastBlockEnd + 2)
+  const streamingSuffix = children.slice(lastBlockEnd + 2)
+
+  return (
+    <>
+      <Markdown>{stablePrefix}</Markdown>
+      {streamingSuffix && <Text>{streamingSuffix}</Text>}
+    </>
+  )
+}
+
 export function Markdown({ children }: MarkdownProps) {
   const tokens = useMemo(() => cachedLexer(children), [children])
 

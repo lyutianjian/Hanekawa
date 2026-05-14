@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react'
 import { Box, Text } from '../ink.js'
-import { useApp } from 'ink'
+import { useApp, useInput } from 'ink'
 import { Divider } from '../design-system/Divider.js'
 import { OverlayProvider } from '../context/overlayContext.js'
 import { MessageRow } from '../components/messages/MessageRow.js'
@@ -14,6 +14,7 @@ import { ToolPermissionCard } from '../components/permissions/ToolPermissionCard
 import { SettingsScreen } from '../components/SettingsScreen.js'
 import { HelpScreen } from '../components/HelpScreen.js'
 import { CompactionIndicator } from '../components/CompactionIndicator.js'
+import { TranscriptSearch } from '../components/TranscriptSearch.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import type { ChatMessage } from '../components/messages/types.js'
 import { handleSlashCommand } from '../commands/slashCommands.js'
@@ -39,6 +40,8 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
   const [pendingModel, setPendingModel] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [scrollToIndex, setScrollToIndex] = useState<number | null>(null)
   const { exit } = useApp()
   const nextId = useRef(0)
   const responseLengthRef = useRef(0)
@@ -77,6 +80,17 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
         setHelpOpen(true)
         return
       }
+      if (text.trim() === '/compact') {
+        const systemMsg: ChatMessage = {
+          id: `sys-${nextId.current++}`,
+          role: 'system',
+          content: 'Compacting conversation history... This may take a moment.',
+          timestamp: Date.now(),
+        }
+        setMessages(prev => [...prev, systemMsg])
+        // 实际压缩由 AgentLoop 的 contextBuilder 自动处理
+        return
+      }
       if (slashResult.message) {
         setMessages(prev => [...prev, slashResult.message!])
       }
@@ -88,6 +102,13 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
       }
       if (slashResult.action === 'switch_model' && slashResult.model) {
         setPendingModel(slashResult.model)
+      }
+      if (slashResult.action === 'retry') {
+        // 重新发送最后一条用户消息
+        const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
+        if (lastUserMsg && typeof lastUserMsg.content === 'string') {
+          handleSubmit(lastUserMsg.content)
+        }
       }
       return
     }
@@ -132,14 +153,25 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
             setStreamingText(event.snapshot)
             responseLengthRef.current = event.snapshot.length
             break
-          case 'tool_use_start':
-            // 添加工具使用消息
+          case 'tool_use_start': {
+            // 添加工具使用消息，标记为 running
+            const toolMsgId = `msg-${nextId.current++}`
             setMessages(prev => [...prev, {
-              id: `msg-${nextId.current++}`,
+              id: toolMsgId,
               role: 'assistant',
               content: [{ type: 'tool_use' as const, id: event.toolId, name: event.toolName, input: {} }],
               timestamp: Date.now(),
+              toolStatus: 'running',
             }])
+            break
+          }
+          case 'turn_end':
+            // turn 结束时，标记所有 running 的工具为 done
+            setMessages(prev => prev.map(msg =>
+              msg.toolStatus === 'running'
+                ? { ...msg, toolStatus: 'done' as const }
+                : msg
+            ))
             break
         }
       })
@@ -187,6 +219,13 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
       abortRef.current.abort()
     }
   }, [])
+
+  // Ctrl+R — 打开转录搜索
+  useInput((inputChar, key) => {
+    if (key.ctrl && inputChar === 'r' && !searchOpen && !settingsOpen && !helpOpen) {
+      setSearchOpen(true)
+    }
+  })
 
   return (
     <OverlayProvider>
@@ -289,6 +328,15 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
               />
             </PermissionDialog>
           </Box>
+        )}
+
+        {/* 转录搜索覆盖层 */}
+        {searchOpen && (
+          <TranscriptSearch
+            messages={messages}
+            onJumpTo={(idx) => setScrollToIndex(idx)}
+            onClose={() => setSearchOpen(false)}
+          />
         )}
 
         {/* 设置屏幕 */}

@@ -16,17 +16,17 @@ export type Theme = {
 }
 
 export const DARK_THEME: Theme = {
-  text: '#e0e0e0',
-  inactive: '#808080',
+  text: '#e8e8e8',
+  inactive: '#888888',
   claude: '#cc785c',
   claudeShimmer: '#e8a87c',
-  success: '#4caf50',
-  error: '#f44336',
-  warning: '#ff9800',
-  suggestion: '#64b5f6',
-  permission: '#d4a853',
-  border: '#555555',
-  background: '#1a1a1a',
+  success: '#50fa7b',
+  error: '#ff5555',
+  warning: '#f1fa8c',
+  suggestion: '#8be9fd',
+  permission: '#f1fa8c',
+  border: '#666666',
+  background: '#1e1e1e',
 }
 
 export const LIGHT_THEME: Theme = {

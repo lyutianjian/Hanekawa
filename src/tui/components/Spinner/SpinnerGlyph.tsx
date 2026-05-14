@@ -6,8 +6,8 @@ type Props = {
   stalledIntensity?: number
 }
 
-// 旋转字形字符集
-const GLYPHS = ['·', '✢', '✳', '∗', '✻', '✽']
+// 旋转字形字符集（Braille dots 样式）
+const GLYPHS = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']
 
 export function SpinnerGlyph({ frame, stalledIntensity = 0 }: Props) {
   const glyphIndex = frame % GLYPHS.length

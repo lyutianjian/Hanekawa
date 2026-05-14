@@ -23,8 +23,7 @@ export function AssistantTextMessage({ text, isStreaming }: Props) {
 
   return (
     <Box flexDirection="row" marginBottom={1} paddingX={1}>
-      <Text color="green" bold>│</Text>
-      <Box flexDirection="column" marginLeft={1}>
+      <Box flexDirection="column" borderStyle="round" borderColor="green" paddingX={1} width="100%">
         <Text color="green" bold>Assistant</Text>
         {isStreaming ? (
           <Box>

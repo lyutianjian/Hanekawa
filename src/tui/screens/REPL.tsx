@@ -510,9 +510,9 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
         <Box flexDirection="column">
           <Box paddingX={1}>
             <Text bold color="cyan"> myagent</Text>
-            <Text dimColor> </Text>
-            <Divider />
+            <Text dimColor> — AI Assistant</Text>
           </Box>
+          <Divider />
           <Box paddingX={2} gap={2}>
             <Text>
               <Text color="green">●</Text>

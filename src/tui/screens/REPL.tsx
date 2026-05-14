@@ -15,6 +15,7 @@ import { ToolPermissionCard } from '../components/permissions/ToolPermissionCard
 import { SettingsScreen } from '../components/SettingsScreen.js'
 import { HelpScreen } from '../components/HelpScreen.js'
 import { DoctorScreen } from '../components/DoctorScreen.js'
+import { MessageEditor } from '../components/messages/MessageEditor.js'
 import { CompactionIndicator } from '../components/CompactionIndicator.js'
 import { TranscriptSearch } from '../components/TranscriptSearch.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
@@ -52,6 +53,7 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
   const [helpOpen, setHelpOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [doctorOpen, setDoctorOpen] = useState(false)
+  const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null)
   const [scrollToIndex, setScrollToIndex] = useState<number | null>(null)
   const [clearConfirm, setClearConfirm] = useState(false)
   const [clearedMessages, setClearedMessages] = useState<ChatMessage[] | null>(null)
@@ -148,6 +150,13 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
       }
       if (text.trim() === '/doctor') {
         setDoctorOpen(true)
+      }
+      if (text.trim() === '/edit') {
+        const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
+        if (lastUserMsg) {
+          setEditingMessage(lastUserMsg)
+        }
+        return
       }
       if (slashResult.action === 'show_cost') {
         const costMsg: ChatMessage = {
@@ -661,6 +670,23 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
 
         {/* 诊断屏幕 */}
         {doctorOpen && <DoctorScreen onClose={() => setDoctorOpen(false)} />}
+
+        {/* 消息编辑器 */}
+        {editingMessage && (
+          <MessageEditor
+            initialText={typeof editingMessage.content === 'string' ? editingMessage.content : ''}
+            onSubmit={(newText) => {
+              const idx = messages.findIndex(m => m.id === editingMessage.id)
+              if (idx !== -1) {
+                const newMessages = messages.slice(0, idx)
+                setMessages(newMessages)
+                setEditingMessage(null)
+                handleSubmit(newText)
+              }
+            }}
+            onCancel={() => setEditingMessage(null)}
+          />
+        )}
 
         {/* /clear 确认对话框 */}
         {clearConfirm && (

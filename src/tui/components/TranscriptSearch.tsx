@@ -81,17 +81,25 @@ export function TranscriptSearch({ messages, onJumpTo, onClose }: Props) {
           <Text dimColor>{query ? 'No matches' : 'Type to search...'}</Text>
         ) : (
           <>
-            <Text dimColor>{matches.length} matches (↑/↓ to navigate, Enter to jump)</Text>
-            {matches.slice(0, 10).map((match, i) => (
-              <Box key={match.index}>
-                <Text color={i === selectedIdx ? 'cyan' : undefined}>
-                  {i === selectedIdx ? '> ' : '  '}
-                </Text>
-                <Text dimColor>[{match.msg.role}] </Text>
-                {highlightMatch(match.text.slice(0, 80), query)}
-                {match.text.length > 80 && <Text dimColor>...</Text>}
-              </Box>
-            ))}
+            <Box>
+              <Text dimColor>
+                {matches.length > 0 ? `${selectedIdx + 1}/${matches.length} matches` : 'No matches'}
+              </Text>
+              <Text dimColor> (↑/↓ to navigate, Enter to jump)</Text>
+            </Box>
+            {matches.slice(Math.max(0, selectedIdx - 3), selectedIdx + 4).map((match, i) => {
+              const actualIdx = Math.max(0, selectedIdx - 3) + i
+              return (
+                <Box key={match.index}>
+                  <Text color={actualIdx === selectedIdx ? 'cyan' : undefined}>
+                    {actualIdx === selectedIdx ? '▸ ' : '  '}
+                  </Text>
+                  <Text dimColor>[{match.msg.role}] </Text>
+                  {highlightMatch(match.text.slice(0, 80), query)}
+                  {match.text.length > 80 && <Text dimColor>...</Text>}
+                </Box>
+              )
+            })}
           </>
         )}
       </Box>

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { Divider } from '../design-system/Divider.js'
 import { StatusIcon } from '../design-system/StatusIcon.js'
+import { detectTerminalCapabilities } from '../utils/terminalCapabilities.js'
 
 type Props = {
   onClose: () => void
@@ -22,6 +23,8 @@ export function DoctorScreen({ onClose }: Props) {
     { name: 'API key', status: 'pending' },
     { name: 'Git repository', status: 'pending' },
     { name: 'MCP servers', status: 'pending' },
+    { name: 'Terminal colors', status: 'pending' },
+    { name: 'Unicode support', status: 'pending' },
   ])
 
   useEffect(() => {
@@ -105,6 +108,19 @@ export function DoctorScreen({ onClose }: Props) {
       } catch {
         results.push({ name: 'MCP servers', status: 'warning', detail: 'Check failed' })
       }
+
+      // Terminal capabilities
+      const caps = detectTerminalCapabilities()
+      results.push({
+        name: 'Terminal colors',
+        status: caps.supportsTrueColor ? 'success' : caps.supports256Color ? 'success' : 'warning',
+        detail: caps.supportsTrueColor ? 'True color' : caps.supports256Color ? '256 color' : 'Basic color',
+      })
+      results.push({
+        name: 'Unicode support',
+        status: caps.supportsUnicode ? 'success' : 'warning',
+        detail: caps.supportsUnicode ? 'Yes' : 'No',
+      })
 
       setChecks(results)
     }

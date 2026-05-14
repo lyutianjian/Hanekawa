@@ -197,13 +197,40 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
     case 'list': {
       const items = token.items || []
       return (
-        <Box flexDirection="column" marginTop={1} marginBottom={1} marginLeft={1}>
-          {items.map((item: Tokens.ListItem, i: number) => (
-            <Box key={i}>
-              <Text color="cyan">{token.ordered ? `${(token.start || 1) + i}.` : '•'}</Text>
-              <Text> {item.text}</Text>
-            </Box>
-          ))}
+        <Box flexDirection="column" marginTop={1} marginBottom={1}>
+          {items.map((item: Tokens.ListItem, i: number) => {
+            const prefix = token.ordered
+              ? `${(token.start || 1) + i}.`
+              : '•'
+
+            // 提取非嵌套列表的文本内容
+            const textTokens = (item.tokens || []).filter(
+              (t: Token) => t.type !== 'list'
+            )
+            const displayText = textTokens
+              .map((t: Token) => ('text' in t ? (t as any).text : ''))
+              .join('')
+              .trim() || item.text
+
+            // 提取嵌套列表
+            const nestedLists = (item.tokens || []).filter(
+              (t: Token) => t.type === 'list'
+            )
+
+            return (
+              <Box key={i} flexDirection="column">
+                <Box>
+                  <Text color="cyan">{prefix}</Text>
+                  <Text> {displayText}</Text>
+                </Box>
+                {nestedLists.map((nested: Token, j: number) => (
+                  <Box key={j} marginLeft={2}>
+                    <TokenRenderer token={nested} />
+                  </Box>
+                ))}
+              </Box>
+            )
+          })}
         </Box>
       )
     }

@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink'
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { Message } from './Message.js'
 import { ToolUseMessage } from './ToolUseMessage.js'
 import { ErrorBoundary } from './ErrorBoundary.js'
@@ -11,8 +11,6 @@ const MAX_VISIBLE_MESSAGES = 200
 interface MessageListProps {
   messages: DisplayMessage[]
   streamingMessageId?: string | null
-  focusedMessageId?: string | null
-  focusedToggleSignal?: number
 }
 
 interface ToolGroup {
@@ -55,10 +53,9 @@ function groupToolMessages(messages: DisplayMessage[]): Array<DisplayMessage | T
   return result
 }
 
-export function MessageList({ messages, streamingMessageId, focusedMessageId, focusedToggleSignal }: MessageListProps) {
+export function MessageList({ messages, streamingMessageId }: MessageListProps) {
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
   const [focusedIndex, setFocusedIndex] = useState<number>(-1)
-  const prevToggleSignal = useRef(focusedToggleSignal)
 
   const toggleExpand = useCallback((id: string) => {
     setExpandedTools(prev => {
@@ -123,14 +120,6 @@ export function MessageList({ messages, streamingMessageId, focusedMessageId, fo
     }
   })
 
-  // Toggle the focused message when the signal changes (from parent)
-  useEffect(() => {
-    if (focusedToggleSignal !== undefined && focusedToggleSignal !== prevToggleSignal.current && focusedMessageId) {
-      toggleExpand(focusedMessageId)
-    }
-    prevToggleSignal.current = focusedToggleSignal
-  }, [focusedToggleSignal, focusedMessageId, toggleExpand])
-
   if (messages.length === 0) {
     return (
       <Box paddingX={1} paddingY={1}>
@@ -147,10 +136,7 @@ export function MessageList({ messages, streamingMessageId, focusedMessageId, fo
     // Handle tool groups
     if (typeof item === 'object' && 'toolUse' in item) {
       const group = item as ToolGroup
-      // Use internal focus (focusedIndex) when active, otherwise use prop-based focus
-      const isFocused = focusedIndex >= 0
-        ? i === focusedIndex
-        : group.toolUse.id === focusedMessageId
+      const isFocused = i === focusedIndex
       const isExpanded = expandedTools.has(group.toolUse.id)
       elements.push(
         <ErrorBoundary

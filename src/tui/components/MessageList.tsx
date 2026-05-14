@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink'
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { Message } from './Message.js'
 import { ToolUseMessage } from './ToolUseMessage.js'
 import { ErrorBoundary } from './ErrorBoundary.js'
@@ -12,6 +12,7 @@ interface MessageListProps {
   messages: DisplayMessage[]
   streamingMessageId?: string | null
   focusedMessageId?: string | null
+  focusedToggleSignal?: number
 }
 
 interface ToolGroup {
@@ -54,8 +55,9 @@ function groupToolMessages(messages: DisplayMessage[]): Array<DisplayMessage | T
   return result
 }
 
-export function MessageList({ messages, streamingMessageId, focusedMessageId }: MessageListProps) {
+export function MessageList({ messages, streamingMessageId, focusedMessageId, focusedToggleSignal }: MessageListProps) {
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
+  const prevToggleSignal = useRef(focusedToggleSignal)
 
   const toggleExpand = useCallback((id: string) => {
     setExpandedTools(prev => {
@@ -68,6 +70,14 @@ export function MessageList({ messages, streamingMessageId, focusedMessageId }: 
       return next
     })
   }, [])
+
+  // Toggle the focused message when the signal changes
+  useEffect(() => {
+    if (focusedToggleSignal !== undefined && focusedToggleSignal !== prevToggleSignal.current && focusedMessageId) {
+      toggleExpand(focusedMessageId)
+    }
+    prevToggleSignal.current = focusedToggleSignal
+  }, [focusedToggleSignal, focusedMessageId, toggleExpand])
 
   if (messages.length === 0) {
     return (

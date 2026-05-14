@@ -11,9 +11,10 @@ interface PromptInputProps {
   isDisabled?: boolean
   cursorY: number
   cwd: string
+  onInputEmpty?: (isEmpty: boolean) => void
 }
 
-export function PromptInput({ onSubmit, isDisabled, cursorY, cwd }: PromptInputProps) {
+export function PromptInput({ onSubmit, isDisabled, cursorY, cwd, onInputEmpty }: PromptInputProps) {
   const [input, setInput] = useState('')
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
@@ -38,6 +39,11 @@ export function PromptInput({ onSubmit, isDisabled, cursorY, cwd }: PromptInputP
   useEffect(() => {
     inputRef.current = input
   }, [input])
+
+  // Notify parent when input emptiness changes
+  useEffect(() => {
+    onInputEmpty?.(input.length === 0)
+  }, [input, onInputEmpty])
 
   // Hide cursor on unmount
   useEffect(() => {

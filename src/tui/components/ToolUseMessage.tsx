@@ -73,7 +73,7 @@ export function ToolUseMessage({
           </Box>
           <Box marginLeft={2}>
             <ThemedText color="foreground">
-              {JSON.stringify(input, null, 2)}
+              {safeStringify(input, 2)}
             </ThemedText>
           </Box>
 
@@ -83,7 +83,7 @@ export function ToolUseMessage({
                 <ThemedText color="dimmed">Output:</ThemedText>
               </Box>
               <Box marginLeft={2}>
-                <ThemedText color={ok ? 'success' : 'error'}>
+                <ThemedText color={ok === undefined ? 'foreground' : ok ? 'success' : 'error'}>
                   {output}
                 </ThemedText>
               </Box>
@@ -103,6 +103,14 @@ export function ToolUseMessage({
   )
 }
 
+function safeStringify(value: unknown, indent?: number): string {
+  try {
+    return JSON.stringify(value, null, indent)
+  } catch {
+    return '[Circular or invalid]'
+  }
+}
+
 function formatToolInput(input: unknown): string {
   if (typeof input === 'string') {
     const truncated = input.length > 120 ? input.slice(0, 120) + '…' : input
@@ -116,13 +124,13 @@ function formatToolInput(input: unknown): string {
 
     const preview = keys.slice(0, 3).map(key => {
       const value = record[key]
-      const valueStr = typeof value === 'string' ? value : JSON.stringify(value)
+      const valueStr = typeof value === 'string' ? value : safeStringify(value)
       return `${key}: ${valueStr.slice(0, 30)}${valueStr.length > 30 ? '...' : ''}`
     })
 
     return preview.join(', ') + (keys.length > 3 ? ` (+${keys.length - 3} more)` : '')
   }
 
-  const str = JSON.stringify(input)
+  const str = safeStringify(input)
   return str.length > 120 ? str.slice(0, 120) + '…' : str
 }

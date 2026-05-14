@@ -1,6 +1,6 @@
 import { Box, useInput, useApp, useBoxMetrics } from 'ink'
 import type { DOMElement } from 'ink'
-import { useRef } from 'react'
+import { useRef, useState, useCallback } from 'react'
 import { basename } from 'node:path'
 import { useSession } from '../hooks/useSession.js'
 import { usePermissionPrompt } from '../hooks/usePermissionPrompt.js'
@@ -34,9 +34,20 @@ export function REPL({ config, cwd, resumeSessionId }: REPLProps) {
   const rootRef = useRef<DOMElement | null>(null)
   const rootMetrics = useBoxMetrics(rootRef as React.RefObject<DOMElement>)
   const lastCtrlCTime = useRef(0)
+  const isInputEmpty = useRef(true)
+  const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null)
+  const [focusedToggleSignal, setFocusedToggleSignal] = useState(0)
 
   // Input content line = total output height - 2 (bottom border + content line)
   const cursorY = rootMetrics.hasMeasured ? rootMetrics.height - 2 : 0
+
+  const handleInputEmpty = useCallback((isEmpty: boolean) => {
+    isInputEmpty.current = isEmpty
+    // Clear focus when user starts typing
+    if (!isEmpty && focusedMessageId) {
+      setFocusedMessageId(null)
+    }
+  }, [focusedMessageId])
 
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
@@ -52,6 +63,34 @@ export function REPL({ config, cwd, resumeSessionId }: REPLProps) {
     }
     if (key.ctrl && input === 'd') {
       exit()
+    }
+
+    // Message focus navigation (only when input is empty and not running)
+    if (isInputEmpty.current && !pendingRequest) {
+      if (key.upArrow) {
+        const ids = messages.map(m => m.id)
+        const currentIndex = focusedMessageId ? ids.indexOf(focusedMessageId) : -1
+        if (currentIndex > 0) {
+          setFocusedMessageId(ids[currentIndex - 1])
+        } else if (currentIndex === -1 && ids.length > 0) {
+          setFocusedMessageId(ids[ids.length - 1])
+        }
+        return
+      }
+      if (key.downArrow) {
+        const ids = messages.map(m => m.id)
+        const currentIndex = focusedMessageId ? ids.indexOf(focusedMessageId) : -1
+        if (currentIndex >= 0 && currentIndex < ids.length - 1) {
+          setFocusedMessageId(ids[currentIndex + 1])
+        } else if (currentIndex === ids.length - 1) {
+          setFocusedMessageId(null)
+        }
+        return
+      }
+      if (key.return && focusedMessageId) {
+        setFocusedToggleSignal(prev => prev + 1)
+        return
+      }
     }
   })
 
@@ -79,7 +118,7 @@ export function REPL({ config, cwd, resumeSessionId }: REPLProps) {
 
       {/* Messages */}
       <Box flexDirection="column" paddingY={1}>
-        <MessageList messages={messages} streamingMessageId={streamingMessageId} />
+        <MessageList messages={messages} streamingMessageId={streamingMessageId} focusedMessageId={focusedMessageId} focusedToggleSignal={focusedToggleSignal} />
       </Box>
 
       {/* Spinner */}
@@ -116,7 +155,7 @@ export function REPL({ config, cwd, resumeSessionId }: REPLProps) {
 
       {/* Input */}
       <ThemedBox borderStyle="single" borderTop={true} borderColor="border" paddingY={0}>
-        <PromptInput onSubmit={handleSubmit} isDisabled={isRunning || !!pendingRequest} cursorY={cursorY} cwd={cwd} />
+        <PromptInput onSubmit={handleSubmit} isDisabled={isRunning || !!pendingRequest} cursorY={cursorY} cwd={cwd} onInputEmpty={handleInputEmpty} />
       </ThemedBox>
     </Box>
   )

@@ -5,7 +5,7 @@ export type SlashCommandResult = {
   message?: ChatMessage
 }
 
-export function handleSlashCommand(input: string, context: { model?: string }): SlashCommandResult {
+export function handleSlashCommand(input: string, context: { model?: string; sessionId?: string }): SlashCommandResult {
   const trimmed = input.trim()
 
   if (trimmed === '/help') {
@@ -32,6 +32,42 @@ export function handleSlashCommand(input: string, context: { model?: string }): 
         id: `sys-${Date.now()}`,
         role: 'system',
         content: `Current model: ${context.model || 'unknown'}`,
+        timestamp: Date.now(),
+      },
+    }
+  }
+
+  if (trimmed === '/cost') {
+    return {
+      handled: true,
+      message: {
+        id: `sys-${Date.now()}`,
+        role: 'system',
+        content: 'Cost tracking will be displayed here. Use /cost after a conversation to see usage.',
+        timestamp: Date.now(),
+      },
+    }
+  }
+
+  if (trimmed === '/session') {
+    return {
+      handled: true,
+      message: {
+        id: `sys-${Date.now()}`,
+        role: 'system',
+        content: `Session: ${context.sessionId || 'unknown'}`,
+        timestamp: Date.now(),
+      },
+    }
+  }
+
+  if (trimmed === '/compact') {
+    return {
+      handled: true,
+      message: {
+        id: `sys-${Date.now()}`,
+        role: 'system',
+        content: 'Compacting conversation history...',
         timestamp: Date.now(),
       },
     }

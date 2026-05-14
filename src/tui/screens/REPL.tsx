@@ -12,6 +12,7 @@ import { PermissionDialog } from '../components/permissions/PermissionDialog.js'
 import { ToolPermissionCard } from '../components/permissions/ToolPermissionCard.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import type { ChatMessage } from '../components/messages/types.js'
+import { handleSlashCommand } from '../commands/slashCommands.js'
 import type { AgentLoop } from '../../harness/loop.js'
 import type { AgentStreamEvent } from '../../harness/types.js'
 import type { Store } from '../state/store.js'
@@ -27,6 +28,7 @@ export function REPL({ loop, session, appStore }: REPLProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isRunning, setIsRunning] = useState(false)
   const [streamingText, setStreamingText] = useState('')
+  const [totalUsage, setTotalUsage] = useState<{ input: number; output: number; cost: number } | null>(null)
   const { exit } = useApp()
   const nextId = useRef(0)
   const responseLengthRef = useRef(0)
@@ -36,6 +38,18 @@ export function REPL({ loop, session, appStore }: REPLProps) {
   const setAppState = useSetAppState()
 
   const handleSubmit = useCallback(async (text: string) => {
+    // Slash 命令处理
+    const slashResult = handleSlashCommand(text, { model: 'current-model', sessionId: session?.id })
+    if (slashResult.handled) {
+      if (slashResult.message) {
+        setMessages(prev => [...prev, slashResult.message!])
+      }
+      if (text.trim() === '/clear') {
+        setMessages([])
+      }
+      return
+    }
+
     // 添加用户消息
     const userMsg: ChatMessage = {
       id: `msg-${nextId.current++}`,
@@ -96,6 +110,15 @@ export function REPL({ loop, session, appStore }: REPLProps) {
         }
         setMessages(prev => [...prev, assistantMsg])
       }
+
+      // 更新使用量
+      if (result.usage) {
+        setTotalUsage(prev => ({
+          input: (prev?.input || 0) + (result.usage.inputTokens || 0),
+          output: (prev?.output || 0) + (result.usage.outputTokens || 0),
+          cost: (prev?.cost || 0), // cost 需要根据定价计算，暂不实现
+        }))
+      }
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
         const errorMsg: ChatMessage = {
@@ -127,6 +150,9 @@ export function REPL({ loop, session, appStore }: REPLProps) {
           <Text bold color="cyan">myagent</Text>
           <Text dimColor> — TUI Mode</Text>
           {session && <Text dimColor> [{session.shortId ?? session.id.slice(0, 8)}]</Text>}
+          {totalUsage && (
+            <Text dimColor> | Tokens: {totalUsage.input + totalUsage.output} | ${totalUsage.cost.toFixed(4)}</Text>
+          )}
         </Box>
         <Divider />
 

@@ -130,5 +130,12 @@ export function handleSlashCommand(input: string, context: {
     return { handled: true } // caller handles clearing
   }
 
+  if (trimmed === '/export') {
+    return {
+      handled: true,
+      action: 'export',
+    }
+  }
+
   return { handled: false }
 }

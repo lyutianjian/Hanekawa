@@ -51,6 +51,7 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
   const [searchOpen, setSearchOpen] = useState(false)
   const [doctorOpen, setDoctorOpen] = useState(false)
   const [scrollToIndex, setScrollToIndex] = useState<number | null>(null)
+  const [clearConfirm, setClearConfirm] = useState(false)
   const { exit } = useApp()
   const { columns, rows } = useWindowSize()
   const nextId = useRef(0)
@@ -105,7 +106,7 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
         setMessages(prev => [...prev, slashResult.message!])
       }
       if (text.trim() === '/clear') {
-        setMessages([])
+        setClearConfirm(true)
       }
       if (text.trim() === '/settings') {
         setSettingsOpen(true)
@@ -122,6 +123,36 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
         if (lastUserMsg && typeof lastUserMsg.content === 'string') {
           handleSubmit(lastUserMsg.content)
         }
+      }
+      if (slashResult.action === 'export') {
+        const exportPath = `.myagent/export-${Date.now()}.json`
+        const exportData = messages.map(msg => ({
+          role: msg.role,
+          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+          timestamp: msg.timestamp,
+        }))
+
+        try {
+          const { mkdirSync, writeFileSync } = await import('node:fs')
+          mkdirSync('.myagent', { recursive: true })
+          writeFileSync(exportPath, JSON.stringify(exportData, null, 2))
+          const sysMsg: ChatMessage = {
+            id: `sys-${nextId.current++}`,
+            role: 'system',
+            content: `Exported ${messages.length} messages to ${exportPath}`,
+            timestamp: Date.now(),
+          }
+          setMessages(prev => [...prev, sysMsg])
+        } catch (err) {
+          const errMsg: ChatMessage = {
+            id: `sys-${nextId.current++}`,
+            role: 'system',
+            content: `Export failed: ${(err as Error).message}`,
+            timestamp: Date.now(),
+          }
+          setMessages(prev => [...prev, errMsg])
+        }
+        return
       }
       return
     }
@@ -446,6 +477,23 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
 
         {/* 诊断屏幕 */}
         {doctorOpen && <DoctorScreen onClose={() => setDoctorOpen(false)} />}
+
+        {/* /clear 确认对话框 */}
+        {clearConfirm && (
+          <Box paddingX={1}>
+            <PermissionDialog
+              title="Clear Conversation"
+              subtitle="This will clear all messages"
+              onCancel={() => setClearConfirm(false)}
+              onApprove={() => {
+                setMessages([])
+                setClearConfirm(false)
+              }}
+            >
+              <Text>Are you sure you want to clear the conversation history?</Text>
+            </PermissionDialog>
+          </Box>
+        )}
 
         {/* Input 区域 */}
         <Divider />

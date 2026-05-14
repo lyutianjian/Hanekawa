@@ -8,6 +8,7 @@ import { AppStateProvider } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
 import { getDefaultAppState, type AppState } from '../state/AppStateStore.js'
 import { REPL } from '../screens/REPL.js'
+import { ErrorBoundary } from '../components/ErrorBoundary.js'
 
 // Agent 核心
 import { ConfigService } from '../../config/service.js'
@@ -112,9 +113,11 @@ async function main() {
 
   // 渲染 TUI
   render(
-    <AppStateProvider externalStore={appStore}>
-      <REPL loop={loop} session={session} appStore={appStore} sessionStore={store} config={replConfig} />
-    </AppStateProvider>,
+    <ErrorBoundary>
+      <AppStateProvider externalStore={appStore}>
+        <REPL loop={loop} session={session} appStore={appStore} sessionStore={store} config={replConfig} />
+      </AppStateProvider>
+    </ErrorBoundary>,
   )
 }
 

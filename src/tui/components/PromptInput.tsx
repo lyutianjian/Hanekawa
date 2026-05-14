@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback } from 'react'
 import { Box, Text, useInput, useApp } from 'ink'
 import { useFileCompletion } from '../hooks/useFileCompletion.js'
+import { useSlashCompletion } from '../hooks/useSlashCompletion.js'
 import { Divider } from '../design-system/Divider.js'
 
 type Props = {
@@ -17,10 +18,16 @@ export function PromptInput({ onSubmit, isRunning, onCancel, placeholder }: Prop
   const { exit } = useApp()
   const cwd = process.cwd()
   const { complete } = useFileCompletion(cwd)
+  const { suggestions, selectedIndex, setSelectedIndex, accept } = useSlashCompletion(input)
 
   useInput((inputChar, key) => {
-    // Tab — 文件路径补全
+    // Tab — slash 命令补全优先，否则文件路径补全
     if (key.tab) {
+      if (suggestions.length > 0) {
+        const completed = accept(selectedIndex)
+        if (completed) setInput(completed)
+        return
+      }
       complete(input).then(completed => {
         if (completed) {
           setInput(completed)
@@ -136,6 +143,16 @@ export function PromptInput({ onSubmit, isRunning, onCancel, placeholder }: Prop
           </Box>
         )}
       </Box>
+      {suggestions.length > 0 && input.startsWith('/') && (
+        <Box paddingX={2}>
+          <Text dimColor>Tab: </Text>
+          {suggestions.slice(0, 5).map((cmd, i) => (
+            <Text key={cmd} color={i === selectedIndex ? 'cyan' : undefined}>
+              {cmd}{' '}
+            </Text>
+          ))}
+        </Box>
+      )}
       {inputLines.length > 1 && (
         <Box paddingX={2}>
           <Text dimColor>Shift+Enter for newline · Enter to send ({inputLines.length} lines)</Text>

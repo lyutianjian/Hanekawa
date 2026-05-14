@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react'
 import { Box, Text } from '../ink.js'
-import { useApp, useInput } from 'ink'
+import { useApp, useInput, useWindowSize } from 'ink'
 import { Divider } from '../design-system/Divider.js'
 import { OverlayProvider } from '../context/overlayContext.js'
 import { MessageRow } from '../components/messages/MessageRow.js'
@@ -52,6 +52,7 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
   const [doctorOpen, setDoctorOpen] = useState(false)
   const [scrollToIndex, setScrollToIndex] = useState<number | null>(null)
   const { exit } = useApp()
+  const { columns, rows } = useWindowSize()
   const nextId = useRef(0)
   const responseLengthRef = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
@@ -209,7 +210,37 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
         }))
       }
     } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
+      if ((err as Error).name === 'AbortError') {
+        // 用户取消，不显示错误
+        const cancelMsg: ChatMessage = {
+          id: `msg-${nextId.current++}`,
+          role: 'system',
+          content: 'Request cancelled.',
+          timestamp: Date.now(),
+        }
+        setMessages(prev => [...prev, cancelMsg])
+      } else if ((err as Error).message?.includes('API key')) {
+        // API key 错误
+        const errorMsg: ChatMessage = {
+          id: `msg-${nextId.current++}`,
+          role: 'system',
+          content: 'Error: Invalid or missing API key. Run /doctor to check your configuration.',
+          timestamp: Date.now(),
+        }
+        setMessages(prev => [...prev, errorMsg])
+        saveMessage(errorMsg)
+      } else if ((err as Error).message?.includes('rate limit')) {
+        // 速率限制
+        const errorMsg: ChatMessage = {
+          id: `msg-${nextId.current++}`,
+          role: 'system',
+          content: 'Error: Rate limited. Please wait a moment and try again.',
+          timestamp: Date.now(),
+        }
+        setMessages(prev => [...prev, errorMsg])
+        saveMessage(errorMsg)
+      } else {
+        // 通用错误
         const errorMsg: ChatMessage = {
           id: `msg-${nextId.current++}`,
           role: 'system',
@@ -339,6 +370,7 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
                   messages={group.messages}
                   role={group.role as 'user' | 'assistant' | 'system'}
                   verbose={config?.verbose}
+                  columns={columns}
                 />
               ))}
               {/* 流式文本预览 */}

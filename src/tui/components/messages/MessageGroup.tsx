@@ -7,13 +7,14 @@ type Props = {
   messages: ChatMessage[]
   role: 'user' | 'assistant' | 'system'
   verbose?: boolean
+  columns?: number
 }
 
 /**
  * 消息分组组件 — 将连续同角色消息合并显示
  * 复刻自 ClaudeCode 的消息分组逻辑
  */
-export const MessageGroup = memo(function MessageGroup({ messages, role, verbose }: Props) {
+export const MessageGroup = memo(function MessageGroup({ messages, role, verbose, columns }: Props) {
   if (messages.length === 0) return null
 
   // 单条消息直接渲染

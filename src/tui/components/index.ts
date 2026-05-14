@@ -1,0 +1,42 @@
+// 组件索引 — 统一导出所有 TUI 组件
+
+// 设计系统
+export { ThemedBox } from '../design-system/ThemedBox.js'
+export { ThemedText } from '../design-system/ThemedText.js'
+export { ThemeProvider, useTheme, useThemeSetting } from '../design-system/ThemeProvider.js'
+export { Dialog } from '../design-system/Dialog.js'
+export { Pane } from '../design-system/Pane.js'
+export { Divider } from '../design-system/Divider.js'
+export { StatusIcon } from '../design-system/StatusIcon.js'
+export { ListItem } from '../design-system/ListItem.js'
+
+// 消息组件
+export { Message } from './messages/Message.js'
+export { MessageRow } from './messages/MessageRow.js'
+export { MessageGroup } from './messages/MessageGroup.js'
+export { UserTextMessage } from './messages/UserTextMessage.js'
+export { AssistantTextMessage } from './messages/AssistantTextMessage.js'
+export { ToolUseMessage } from './messages/ToolUseMessage.js'
+export { ToolResultMessage } from './messages/ToolResultMessage.js'
+export { SystemMessage } from './messages/SystemMessage.js'
+export { AssistantThinkingMessage } from './messages/AssistantThinkingMessage.js'
+export { ImageMessage } from './messages/ImageMessage.js'
+export { McpToolMessage } from './messages/McpToolMessage.js'
+export { MessageActions } from './messages/MessageActions.js'
+export { MessageEditor } from './messages/MessageEditor.js'
+export { MessageReaction } from './messages/MessageReaction.js'
+
+// 功能组件
+export { Markdown, StreamingMarkdown } from './Markdown.js'
+export { PromptInput } from './PromptInput.js'
+export { SpinnerWithVerb } from './Spinner/SpinnerWithVerb.js'
+export { PermissionDialog } from './permissions/PermissionDialog.js'
+export { ToolPermissionCard } from './permissions/ToolPermissionCard.js'
+export { VirtualMessageList } from './VirtualMessageList.js'
+export { TranscriptSearch } from './TranscriptSearch.js'
+export { SettingsScreen } from './SettingsScreen.js'
+export { HelpScreen } from './HelpScreen.js'
+export { DoctorScreen } from './DoctorScreen.js'
+export { CompactionIndicator } from './CompactionIndicator.js'
+export { Footer } from './Footer.js'
+export { ErrorBoundary } from './ErrorBoundary.js'

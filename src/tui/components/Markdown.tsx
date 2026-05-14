@@ -146,11 +146,19 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
       const highlighted = highlightCode(token.text, lang || undefined)
       const highlightedLines = highlighted.split('\n')
       return (
-        <Box flexDirection="column" marginLeft={2} marginBottom={1}>
-          {lang && <Text dimColor>{`[${lang}]`}</Text>}
-          {highlightedLines.map((line: string, i: number) => (
-            <Text key={i}>{'  '}{line}</Text>
-          ))}
+        <Box flexDirection="column" marginTop={1} marginBottom={1}>
+          {lang && (
+            <Box>
+              <Text dimColor>{'─'.repeat(lang.length + 4)}</Text>
+              <Text dimColor> {lang} </Text>
+              <Text dimColor>{'─'.repeat(20)}</Text>
+            </Box>
+          )}
+          <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1}>
+            {highlightedLines.map((line: string, i: number) => (
+              <Text key={i}>{line}</Text>
+            ))}
+          </Box>
         </Box>
       )
     }
@@ -158,11 +166,11 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
     case 'list': {
       const items = token.items || []
       return (
-        <Box flexDirection="column" marginLeft={2}>
+        <Box flexDirection="column" marginTop={1} marginBottom={1} marginLeft={1}>
           {items.map((item: Tokens.ListItem, i: number) => (
             <Box key={i}>
-              <Text>{token.ordered ? `${(token.start || 1) + i}. ` : '• '}</Text>
-              <Text>{item.text}</Text>
+              <Text color="cyan">{token.ordered ? `${(token.start || 1) + i}.` : '•'}</Text>
+              <Text> {item.text}</Text>
             </Box>
           ))}
         </Box>

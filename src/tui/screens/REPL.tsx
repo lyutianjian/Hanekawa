@@ -8,6 +8,7 @@ import { OverlayProvider } from '../context/overlayContext.js'
 import { MessageRow } from '../components/messages/MessageRow.js'
 import { SpinnerWithVerb } from '../components/Spinner/SpinnerWithVerb.js'
 import { PromptInput } from '../components/PromptInput.js'
+import { Footer } from '../components/Footer.js'
 import { PermissionDialog } from '../components/permissions/PermissionDialog.js'
 import { ToolPermissionCard } from '../components/permissions/ToolPermissionCard.js'
 import { SettingsScreen } from '../components/SettingsScreen.js'
@@ -298,14 +299,14 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
 
         {/* Input 区域 */}
         <Divider />
-        <Box paddingX={1}>
-          <Text color="cyan" bold>{'> '}</Text>
-          <Text dimColor>Enter to send · Shift+Enter for newline · /help for commands</Text>
-        </Box>
         <PromptInput
           onSubmit={handleSubmit}
           isRunning={isRunning || !!pendingPermission}
           onCancel={handleCancel}
+        />
+        <Footer
+          isRunning={isRunning}
+          pendingPermission={!!pendingPermission}
         />
       </Box>
     </OverlayProvider>

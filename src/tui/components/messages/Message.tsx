@@ -1,4 +1,5 @@
 import React, { memo } from 'react'
+import { Box } from '../../ink.js'
 import type { ChatMessage, ContentBlock } from './types.js'
 import { UserTextMessage } from './UserTextMessage.js'
 import { AssistantTextMessage } from './AssistantTextMessage.js'
@@ -28,11 +29,11 @@ export const Message = memo(function Message({ message, verbose }: Props) {
 
   // 内容块数组
   return (
-    <>
+    <Box flexDirection="column" marginTop={1}>
       {message.content.map((block, i) => (
         <ContentBlock key={i} block={block} role={message.role} verbose={verbose} />
       ))}
-    </>
+    </Box>
   )
 })
 

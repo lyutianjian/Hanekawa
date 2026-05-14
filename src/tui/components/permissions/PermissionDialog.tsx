@@ -1,6 +1,5 @@
 import React from 'react'
 import { Box, Text } from 'ink'
-import { Pane } from '../../design-system/Pane.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import type { Theme } from '../../design-system/theme.js'
 
@@ -18,22 +17,25 @@ export function PermissionDialog({ title, subtitle, children, onCancel, onApprov
   useKeybinding('confirm:no', onCancel, { context: 'Confirmation' })
 
   return (
-    <Pane color={color}>
-      <Box flexDirection="column">
-        <Box>
-          <Text bold color={color as any}>{title}</Text>
-          {subtitle && <Text dimColor> — {subtitle}</Text>}
-        </Box>
-        <Box marginTop={1} flexDirection="column">
-          {children}
-        </Box>
-        <Box marginTop={1}>
-          <Text dimColor>{'[y]'} </Text>
-          <Text color="green">Approve</Text>
-          <Text dimColor>{'  [n]'} </Text>
-          <Text color="red">Deny</Text>
-        </Box>
+    <Box flexDirection="column" marginBottom={1} paddingX={1}>
+      <Box>
+        <Text color="yellow" bold>╭─ </Text>
+        <Text color="yellow" bold>{title}</Text>
+        {subtitle && <Text dimColor> — {subtitle}</Text>}
+        <Text color="yellow" bold> ─╮</Text>
       </Box>
-    </Pane>
+      <Box marginLeft={2} flexDirection="column">
+        {children}
+      </Box>
+      <Box marginLeft={2} marginTop={1}>
+        <Text color="yellow" bold>╰─ </Text>
+        <Text color="green" bold>[y]</Text>
+        <Text> Approve</Text>
+        <Text dimColor>  ·  </Text>
+        <Text color="red" bold>[n]</Text>
+        <Text> Deny</Text>
+        <Text color="yellow" bold> ─╯</Text>
+      </Box>
+    </Box>
   )
 }

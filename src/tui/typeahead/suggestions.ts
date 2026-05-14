@@ -122,7 +122,9 @@ function getVariableSuggestions(input: string): Suggestion[] {
 
 export async function getSuggestions(input: string, cwd: string): Promise<Suggestion[]> {
   if (input.startsWith('/')) {
-    return getCommandSuggestions(input)
+    const commandSuggestions = getCommandSuggestions(input)
+    const toolSuggestions = getToolSuggestions(input)
+    return [...commandSuggestions, ...toolSuggestions]
   }
 
   if (input.includes('@')) {

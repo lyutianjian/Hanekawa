@@ -1,5 +1,5 @@
-import { Box, Text } from 'ink'
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { Box, Text, useInput } from 'ink'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { Message } from './Message.js'
 import { ToolUseMessage } from './ToolUseMessage.js'
 import { ErrorBoundary } from './ErrorBoundary.js'
@@ -57,6 +57,7 @@ function groupToolMessages(messages: DisplayMessage[]): Array<DisplayMessage | T
 
 export function MessageList({ messages, streamingMessageId, focusedMessageId, focusedToggleSignal }: MessageListProps) {
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
+  const [focusedIndex, setFocusedIndex] = useState<number>(-1)
   const prevToggleSignal = useRef(focusedToggleSignal)
 
   const toggleExpand = useCallback((id: string) => {
@@ -71,7 +72,58 @@ export function MessageList({ messages, streamingMessageId, focusedMessageId, fo
     })
   }, [])
 
-  // Toggle the focused message when the signal changes
+  // Compute grouped messages (needed before early return for hooks)
+  const hiddenCount = Math.max(0, messages.length - MAX_VISIBLE_MESSAGES)
+  const visibleMessages = hiddenCount > 0
+    ? messages.slice(hiddenCount)
+    : messages
+  const grouped = groupToolMessages(visibleMessages)
+
+  // Get focusable indices (only tool group items)
+  const focusableIndices = useMemo(() => {
+    return grouped
+      .map((item, index) => (typeof item === 'object' && 'toolUse' in item) ? index : -1)
+      .filter(index => index !== -1)
+  }, [grouped])
+
+  // Keyboard navigation for focus management
+  useInput((input, key) => {
+    if (focusableIndices.length === 0) return
+
+    if (key.upArrow) {
+      setFocusedIndex(prev => {
+        const currentPos = focusableIndices.indexOf(prev)
+        if (currentPos <= 0) return focusableIndices[focusableIndices.length - 1]
+        return focusableIndices[currentPos - 1]
+      })
+      return
+    }
+
+    if (key.downArrow) {
+      setFocusedIndex(prev => {
+        const currentPos = focusableIndices.indexOf(prev)
+        if (currentPos === -1 || currentPos >= focusableIndices.length - 1) return focusableIndices[0]
+        return focusableIndices[currentPos + 1]
+      })
+      return
+    }
+
+    if (key.return || input === ' ') {
+      if (focusedIndex >= 0 && focusedIndex < grouped.length) {
+        const item = grouped[focusedIndex]
+        if (typeof item === 'object' && 'toolUse' in item) {
+          toggleExpand((item as ToolGroup).toolUse.id)
+        }
+      }
+      return
+    }
+
+    if (key.escape) {
+      setFocusedIndex(-1)
+    }
+  })
+
+  // Toggle the focused message when the signal changes (from parent)
   useEffect(() => {
     if (focusedToggleSignal !== undefined && focusedToggleSignal !== prevToggleSignal.current && focusedMessageId) {
       toggleExpand(focusedMessageId)
@@ -87,19 +139,18 @@ export function MessageList({ messages, streamingMessageId, focusedMessageId, fo
     )
   }
 
-  const hiddenCount = Math.max(0, messages.length - MAX_VISIBLE_MESSAGES)
-  const visibleMessages = hiddenCount > 0
-    ? messages.slice(hiddenCount)
-    : messages
-
-  const grouped = groupToolMessages(visibleMessages)
   const elements: React.ReactNode[] = []
 
-  for (const item of grouped) {
+  for (let i = 0; i < grouped.length; i++) {
+    const item = grouped[i]
+
     // Handle tool groups
     if (typeof item === 'object' && 'toolUse' in item) {
       const group = item as ToolGroup
-      const isFocused = group.toolUse.id === focusedMessageId
+      // Use internal focus (focusedIndex) when active, otherwise use prop-based focus
+      const isFocused = focusedIndex >= 0
+        ? i === focusedIndex
+        : group.toolUse.id === focusedMessageId
       const isExpanded = expandedTools.has(group.toolUse.id)
       elements.push(
         <ErrorBoundary

@@ -8,7 +8,7 @@ import { autoCompactIfNeeded } from './compact.js'
 import { prepareRecordsForRequest, tokenCountFromUsage } from './requestPrep.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
-import type { AgentRunResult, ChatMessage, ModelProvider, SessionRecord, Tool, ToolContext } from './types.js'
+import type { AgentRunResult, AgentStreamEvent, ChatMessage, ModelProvider, SessionRecord, Tool, ToolCall, ToolContext } from './types.js'
 
 export interface AgentLoopOptions {
   provider: ModelProvider
@@ -18,6 +18,7 @@ export interface AgentLoopOptions {
   toolRunner: ToolRunner
   toolContext: ToolContext
   system?: string
+  projectContext?: string
   skills?: SkillDefinition[]
   promptCacheRetention?: 'in_memory' | '24h'
   contextManagement?: Partial<ContextManagementConfig>
@@ -35,7 +36,7 @@ const MAX_RECOVERY_COUNT = 3
 export class AgentLoop {
   constructor(private readonly options: AgentLoopOptions) {}
 
-  async run(userInput: string, signal?: AbortSignal): Promise<AgentRunResult> {
+  async run(userInput: string, signal?: AbortSignal, onEvent?: (event: AgentStreamEvent) => void): Promise<AgentRunResult> {
     let usage = { ...EMPTY_TOKEN_USAGE }
     const userMessage: ChatMessage & { type: 'message' } = {
       type: 'message',
@@ -92,11 +93,13 @@ export class AgentLoop {
         records,
         tools: this.options.tools,
         system: this.options.system,
+        projectContext: this.options.projectContext,
         skills: this.options.skills,
         toolContext: this.options.toolContext,
         env,
       })
-      const response = await this.options.provider.createMessage({
+
+      const modelRequest = {
         system: built.system,
         systemBlocks: built.systemBlocks,
         messages: built.messages,
@@ -107,7 +110,25 @@ export class AgentLoop {
         maxOutputTokens: maxOutputTokensOverride,
         previousRequestId: lastRequestId,
         retry: { signal },
-      })
+      }
+
+      let response
+      if (onEvent && this.options.provider.createStreamingMessage) {
+        response = await this.options.provider.createStreamingMessage(modelRequest, {
+          onTextDelta: (delta, snapshot) => {
+            onEvent({ type: 'text_delta', delta, snapshot })
+          },
+          onToolUseStart: (toolId, toolName) => {
+            onEvent({ type: 'tool_use_start', toolId, toolName })
+          },
+          onToolUseDelta: (toolId, partialJson) => {
+            onEvent({ type: 'tool_use_delta', toolId, partialJson })
+          },
+        })
+      } else {
+        response = await this.options.provider.createMessage(modelRequest)
+      }
+
       usage = addTokenUsage(usage, response.usage)
       lastUsageTokenCount = tokenCountFromUsage(usage)
       lastRequestId = response.requestId
@@ -171,8 +192,30 @@ export class AgentLoop {
         return { content: response.content, usage }
       }
 
-      const toolResults: Array<{ ok: boolean }> = []
+      // Split tool calls into safe (parallel) and unsafe (sequential)
+      const safeCalls: ToolCall[] = []
+      const unsafeCalls: ToolCall[] = []
       for (const toolCall of response.toolCalls) {
+        const tool = this.options.tools.find((t) => t.name === toolCall.name)
+        if (tool?.isConcurrencySafe) {
+          safeCalls.push(toolCall)
+        } else {
+          unsafeCalls.push(toolCall)
+        }
+      }
+
+      const toolResults: Array<{ ok: boolean }> = []
+
+      // Execute safe tools in parallel
+      if (safeCalls.length > 0) {
+        const safeResults = await Promise.all(
+          safeCalls.map((tc) => this.options.toolRunner.run(tc, this.options.toolContext, signal)),
+        )
+        toolResults.push(...safeResults)
+      }
+
+      // Execute unsafe tools sequentially
+      for (const toolCall of unsafeCalls) {
         const result = await this.options.toolRunner.run(toolCall, this.options.toolContext, signal)
         toolResults.push(result)
       }

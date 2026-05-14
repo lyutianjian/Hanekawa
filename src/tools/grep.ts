@@ -27,6 +27,7 @@ export const grepTool: Tool = {
     additionalProperties: false,
   },
   riskLevel: 'safe',
+  isConcurrencySafe: true,
   async execute(input, context) {
     const options = input as GrepInput
     const root = path.resolve(context.cwd, options.path ?? '.')

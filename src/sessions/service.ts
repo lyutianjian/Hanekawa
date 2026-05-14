@@ -1,4 +1,5 @@
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { appendFileSync, readFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { getSessionsDir } from '../utils/paths.js'
@@ -72,25 +73,53 @@ export class SessionStore {
   async loadRecords(sessionIdOrPrefix: string): Promise<SessionRecord[]> {
     const session = await this.resolve(sessionIdOrPrefix)
     if (!session) return []
+
+    // Try JSONL format first (new format)
+    const jsonlPath = this.sessionJsonlPath(session.id)
+    if (existsSync(jsonlPath)) {
+      const content = readFileSync(jsonlPath, 'utf-8')
+      return content.split('\n')
+        .filter(line => line.trim())
+        .map(line => JSON.parse(line) as SessionRecord)
+    }
+
+    // Fall back to JSON format (old format)
     const state = await readJsonFile<SessionState>(this.sessionPath(session.id), { meta: session, records: [] })
+
+    // Auto-migrate to JSONL format
+    if (state.records.length > 0) {
+      const lines = state.records.map(r => JSON.stringify(r)).join('\n') + '\n'
+      appendFileSync(jsonlPath, lines, { mode: 0o600 })
+      // Remove old JSON file
+      await rm(this.sessionPath(session.id), { force: true })
+    }
+
     return state.records
   }
 
   async appendRecord(sessionIdOrPrefix: string, record: SessionRecord): Promise<void> {
     const session = await this.resolve(sessionIdOrPrefix)
     if (!session) throw new Error(`Unknown session: ${sessionIdOrPrefix}`)
-    const state = await readJsonFile<SessionState>(this.sessionPath(session.id), { meta: session, records: [] })
-    state.records.push(record)
-    state.meta.updatedAt = new Date().toISOString()
-    state.meta.messageCount = state.records.filter((item) => item.type === 'message').length
-    if (!state.meta.title) {
-      const firstMessage = state.records.find(
-        (item): item is SessionRecord & { type: 'message'; role: 'user' } => item.type === 'message' && item.role === 'user',
-      )
-      if (firstMessage?.content) state.meta.title = firstMessage.content.slice(0, 60)
+
+    // Append to JSONL file (atomic append, no full read-modify-write)
+    const jsonlPath = this.sessionJsonlPath(session.id)
+    const line = JSON.stringify(record) + '\n'
+    appendFileSync(jsonlPath, line, { mode: 0o600 })
+
+    // Update index with new metadata
+    const now = new Date().toISOString()
+    const meta: SessionMeta = {
+      ...session,
+      updatedAt: now,
+      messageCount: session.messageCount + (record.type === 'message' ? 1 : 0),
     }
-    await this.writeSession(state)
-    await this.upsertIndex(state.meta)
+
+    // Set title from first user message if not set
+    if (!meta.title && record.type === 'message' && record.role === 'user') {
+      meta.title = record.content.slice(0, 60)
+    }
+
+    await this.upsertIndex(meta)
   }
 
   async delete(sessionIdOrPrefix: string): Promise<void> {
@@ -129,6 +158,10 @@ export class SessionStore {
 
   private sessionPath(id: string): string {
     return path.join(this.sessionsDir, `${id}.json`)
+  }
+
+  private sessionJsonlPath(id: string): string {
+    return path.join(this.sessionsDir, `${id}.jsonl`)
   }
 
   private indexPath(): string {

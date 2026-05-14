@@ -14,6 +14,7 @@ export const readFileTool: Tool = {
     additionalProperties: false,
   },
   riskLevel: 'safe',
+  isConcurrencySafe: true,
   async execute(input, context) {
     const { filePath } = input as { filePath: string }
     const absolute = path.resolve(context.cwd, filePath)

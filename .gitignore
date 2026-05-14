@@ -1,4 +1,26 @@
-.myagent
-2026-05-08-myagent-cli-design.md
-2026-05-08-myagent-cli-mvp.md
-SKILL-SERVICE-SUMMARY.md
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files
+.env
+.env.local
+
+# Agent data (session history, config, etc.)
+.myagent/
+
+# Debug logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code local settings
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

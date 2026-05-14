@@ -1,4 +1,4 @@
-import type { ModelContextItem, ModelProvider, ModelRequest, ModelResponse, TokenUsage, Tool } from '../harness/types.js'
+import type { ModelContextItem, ModelProvider, ModelRequest, ModelResponse, StreamingCallbacks, TokenUsage, Tool } from '../harness/types.js'
 import { createHash } from 'node:crypto'
 import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
@@ -434,6 +434,49 @@ export class AnthropicProvider implements ModelProvider {
     )
   }
 
+  async createStreamingMessage(
+    request: ModelRequest,
+    callbacks: StreamingCallbacks,
+  ): Promise<ModelResponse> {
+    const payload = buildAnthropicPayload(request, this.maxOutputTokens)
+    debugProviderSummary('anthropic-streaming', request, payload)
+
+    const stream = this.client.messages.stream(
+      payload as unknown as Anthropic.Messages.MessageStreamParams,
+    )
+
+    let textSnapshot = ''
+    let lastActivity = Date.now()
+
+    const idleTimer = setInterval(() => {
+      if (Date.now() - lastActivity > STREAM_IDLE_TIMEOUT_MS) {
+        stream.abort()
+      }
+    }, 5000)
+
+    stream.on('text', (delta: string) => {
+      lastActivity = Date.now()
+      textSnapshot += delta
+      callbacks.onTextDelta(delta, textSnapshot)
+    })
+
+    stream.on('contentBlock', (block: Anthropic.Messages.ContentBlock) => {
+      if (block.type === 'tool_use') {
+        callbacks.onToolUseStart(block.id, block.name)
+      }
+    })
+
+    let response: Anthropic.Messages.Message
+    try {
+      response = await stream.finalMessage()
+    } finally {
+      clearInterval(idleTimer)
+    }
+
+    debugProviderResponse('anthropic', response)
+    return this.parseResponse(response)
+  }
+
   private parseResponse(response: Anthropic.Messages.Message): ModelResponse {
     const content = response.content.find((c) => c.type === 'text')
     const toolUses = response.content.filter((c) => c.type === 'tool_use')
@@ -510,41 +553,119 @@ export class OpenAIProvider implements ModelProvider {
   }
 
   async createMessage(request: ModelRequest): Promise<ModelResponse> {
+    return withRetry(
+      async (attempt) => {
+        const payload = buildOpenAIPayload(request)
+        if (attempt > 1) {
+          debugProviderPayload('openai-retry', payload)
+        }
+        debugProviderSummary('openai', request, payload)
+        debugProviderPayload('openai', payload)
+        const response = await this.client.chat.completions.create(payload, {
+          signal: request.retry?.signal,
+        })
+        debugProviderResponse('openai', response)
+
+        const choice = response.choices[0]
+        const message = choice?.message
+
+        const toolCalls =
+          message?.tool_calls?.map((tc) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const fn = tc as any
+            return {
+              id: tc.id,
+              name: fn.function.name,
+              input: typeof fn.function.arguments === 'string'
+                ? JSON.parse(fn.function.arguments)
+                : fn.function.arguments,
+            }
+          }) ?? []
+
+        let content = message?.content ?? ''
+        if (toolCalls.length > 0 && typeof content === 'string' && content.trim() === '') {
+          content = ''
+        }
+
+        return {
+          content,
+          toolCalls,
+          usage: normalizeOpenAIUsage(response.usage),
+          requestId: response.id,
+          stopReason: choice?.finish_reason ?? undefined,
+        }
+      },
+      {
+        maxRetries: request.retry?.maxRetries ?? 3,
+        shouldRetry: (error) => isRetryableError(error),
+        signal: request.retry?.signal,
+      },
+    )
+  }
+
+  async createStreamingMessage(
+    request: ModelRequest,
+    callbacks: StreamingCallbacks,
+  ): Promise<ModelResponse> {
     const payload = buildOpenAIPayload(request)
-    debugProviderSummary('openai', request, payload)
-    debugProviderPayload('openai', payload)
-    const response = await this.client.chat.completions.create(payload, {
+    debugProviderSummary('openai-streaming', request, payload)
+
+    const stream = await this.client.chat.completions.create({
+      ...payload,
+      stream: true,
+    }, {
       signal: request.retry?.signal,
     })
-    debugProviderResponse('openai', response)
 
-    const choice = response.choices[0]
-    const message = choice?.message
+    let textSnapshot = ''
+    const toolCallsById = new Map<string, { id: string; name: string; arguments: string }>()
 
-    const toolCalls =
-      message?.tool_calls?.map((tc) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const fn = tc as any
-        return {
-          id: tc.id,
-          name: fn.function.name,
-          input: typeof fn.function.arguments === 'string'
-            ? JSON.parse(fn.function.arguments)
-            : fn.function.arguments,
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta
+      if (!delta) continue
+
+      if (delta.content) {
+        textSnapshot += delta.content
+        callbacks.onTextDelta(delta.content, textSnapshot)
+      }
+
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          if (tc.id && tc.function?.name) {
+            toolCallsById.set(tc.id, {
+              id: tc.id,
+              name: tc.function.name,
+              arguments: tc.function.arguments ?? '',
+            })
+            callbacks.onToolUseStart(tc.id, tc.function.name)
+          } else if (tc.function?.arguments) {
+            // Find the tool call by index
+            const existing = Array.from(toolCallsById.values())
+            const target = existing[existing.length - 1]
+            if (target) {
+              target.arguments += tc.function.arguments
+              callbacks.onToolUseDelta(target.id, target.arguments)
+            }
+          }
         }
-      }) ?? []
-
-    let content = message?.content ?? ''
-    if (toolCalls.length > 0 && typeof content === 'string' && content.trim() === '') {
-      content = ''
+      }
     }
 
+    const toolCalls = Array.from(toolCallsById.values()).map((tc) => ({
+      id: tc.id,
+      name: tc.name,
+      input: (() => {
+        try { return JSON.parse(tc.arguments) }
+        catch { return tc.arguments }
+      })(),
+    }))
+
     return {
-      content,
+      content: textSnapshot,
       toolCalls,
-      usage: normalizeOpenAIUsage(response.usage),
-      requestId: response.id,
-      stopReason: choice?.finish_reason ?? undefined,
+      usage: undefined,
+      requestId: undefined,
+      stopReason: undefined,
     }
   }
 }

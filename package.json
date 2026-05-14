@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "tsx src/entrypoints/cli.ts",
+    "tui": "tsx src/entrypoints/tui.tsx",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/**/*.test.ts"
   },
@@ -14,12 +15,15 @@
     "@anthropic-ai/sdk": "latest",
     "@modelcontextprotocol/sdk": "latest",
     "fast-glob": "latest",
+    "ink": "^7.0.2",
     "openai": "latest",
+    "react": "^19.2.6",
     "yaml": "latest",
     "zod": "latest"
   },
   "devDependencies": {
     "@types/node": "latest",
+    "@types/react": "^19.2.14",
     "tsx": "latest",
     "typescript": "latest"
   }

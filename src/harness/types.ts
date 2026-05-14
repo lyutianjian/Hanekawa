@@ -72,6 +72,7 @@ export interface ToolContext {
   readFileState?: Map<string, { content: string; timestamp: number }>
   invokedSkills?: Map<string, { content: string; timestamp: number }>
   taskState?: Map<string, TaskItem>
+  abortSignal?: AbortSignal
 }
 
 export interface ToolResult {
@@ -85,6 +86,7 @@ export interface Tool {
   description: string
   inputSchema: unknown
   riskLevel: RiskLevel
+  isConcurrencySafe?: boolean
   execute(input: unknown, context: ToolContext): Promise<ToolResult>
 }
 
@@ -169,4 +171,20 @@ export interface ModelResponse {
 export interface ModelProvider {
   name: string
   createMessage(request: ModelRequest): Promise<ModelResponse>
+  createStreamingMessage?(
+    request: ModelRequest,
+    callbacks: StreamingCallbacks,
+  ): Promise<ModelResponse>
 }
+
+export interface StreamingCallbacks {
+  onTextDelta: (delta: string, snapshot: string) => void
+  onToolUseStart: (id: string, name: string) => void
+  onToolUseDelta: (id: string, partialJson: string) => void
+}
+
+export type AgentStreamEvent =
+  | { type: 'text_delta'; delta: string; snapshot: string }
+  | { type: 'tool_use_start'; toolId: string; toolName: string }
+  | { type: 'tool_use_delta'; toolId: string; partialJson: string }
+  | { type: 'turn_end'; content: string; toolCalls: ToolCall[]; usage: TokenUsage }

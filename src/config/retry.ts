@@ -1,6 +1,8 @@
 export interface RetryOptions {
   maxRetries?: number
   baseDelayMs?: number
+  maxDelayMs?: number
+  jitterFactor?: number
   signal?: AbortSignal
   shouldRetry?: (error: unknown, attempt: number) => boolean
 }
@@ -11,6 +13,8 @@ export async function withRetry<T>(
 ): Promise<T> {
   const maxRetries = options.maxRetries ?? 3
   const baseDelayMs = options.baseDelayMs ?? 500
+  const maxDelayMs = options.maxDelayMs ?? 32_000
+  const jitterFactor = options.jitterFactor ?? 0.25
 
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     if (options.signal?.aborted) {
@@ -25,12 +29,23 @@ export async function withRetry<T>(
       if (attempt > maxRetries) throw error
       if (options.shouldRetry && !options.shouldRetry(error, attempt)) throw error
 
-      const delay = baseDelayMs * Math.pow(2, attempt - 1)
+      const delay = calculateDelay(attempt, baseDelayMs, maxDelayMs, jitterFactor)
       await sleep(delay)
     }
   }
 
   throw new Error('Unreachable')
+}
+
+export function calculateDelay(
+  attempt: number,
+  baseDelayMs: number,
+  maxDelayMs: number,
+  jitterFactor: number = 0.25,
+): number {
+  const exponentialDelay = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs)
+  const jitter = exponentialDelay * jitterFactor * Math.random()
+  return exponentialDelay + jitter
 }
 
 export function isRetryableError(error: unknown): boolean {

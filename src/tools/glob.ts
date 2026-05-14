@@ -19,6 +19,7 @@ export const globTool: Tool = {
     additionalProperties: false,
   },
   riskLevel: 'safe',
+  isConcurrencySafe: true,
   async execute(input, context) {
     const options = input as GlobInput
     const cwd = options.path ?? context.cwd

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { ChatMessage, CompactBoundaryRecord, ModelProvider, SessionRecord, Tool, TokenUsage } from './types.js'
 import { EMPTY_TOKEN_USAGE, addTokenUsage } from './usage.js'
 import {
+  countTextTokens,
   countSessionRecordsTokens,
   getAutoCompactThreshold,
   type ContextManagementConfig,
@@ -142,4 +143,24 @@ export function compactBoundaryToMessage(record: CompactBoundaryRecord): ChatMes
     content: `<system-reminder>\nPrior conversation was compacted. Continue from this summary:\n\n${record.summary}\n</system-reminder>`,
     createdAt: record.createdAt,
   }
+}
+
+const DEFAULT_SNIP_MAX_TOKENS = 5_000
+
+export function snipLargeToolResults(
+  records: SessionRecord[],
+  maxTokens: number = DEFAULT_SNIP_MAX_TOKENS,
+): SessionRecord[] {
+  return records.map((record) => {
+    if (record.type === 'tool_result') {
+      const estimatedTokens = countTextTokens(record.content)
+      if (estimatedTokens > maxTokens) {
+        return {
+          ...record,
+          content: `[Result truncated: ${record.tool} output exceeded ${maxTokens} tokens (${estimatedTokens} estimated)]`,
+        }
+      }
+    }
+    return record
+  })
 }

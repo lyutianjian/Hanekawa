@@ -1,8 +1,5 @@
-import { exec } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import type { Tool } from '../harness/types.js'
-
-const execAsync = promisify(exec)
 
 interface BashInput {
   command: string
@@ -25,17 +22,44 @@ export const bashTool: Tool = {
   async execute(input, context) {
     const options = input as BashInput
     const timeout = options.timeout ?? 30_000
-    try {
-      const { stdout, stderr } = await execAsync(options.command, {
+
+    return new Promise((resolve) => {
+      const shell = process.platform === 'win32' ? 'powershell' : 'bash'
+      const shellArgs = process.platform === 'win32' ? ['-Command', options.command] : ['-c', options.command]
+
+      const proc = spawn(shell, shellArgs, {
         cwd: context.cwd,
+        signal: context.abortSignal,
         timeout,
       })
-      const output = [stdout, stderr].filter(Boolean).join('\n')
-      return { ok: true, content: output || '(no output)' }
-    } catch (err: unknown) {
-      const error = err as { stdout?: string; stderr?: string; message?: string }
-      const output = [error.stdout, error.stderr, error.message].filter(Boolean).join('\n')
-      return { ok: false, content: output || 'Command failed.' }
-    }
+
+      let stdout = ''
+      let stderr = ''
+
+      proc.stdout.on('data', (data: Buffer) => {
+        stdout += data.toString()
+      })
+
+      proc.stderr.on('data', (data: Buffer) => {
+        stderr += data.toString()
+      })
+
+      proc.on('close', (code: number | null) => {
+        const output = [stdout, stderr].filter(Boolean).join('\n')
+        resolve({
+          ok: code === 0,
+          content: output || '(no output)',
+        })
+      })
+
+      proc.on('error', (err: Error) => {
+        if (err.name === 'AbortError') {
+          resolve({ ok: false, content: 'Operation cancelled by user' })
+        } else {
+          const output = [stdout, stderr, err.message].filter(Boolean).join('\n')
+          resolve({ ok: false, content: output || 'Command failed.' })
+        }
+      })
+    })
   },
 }

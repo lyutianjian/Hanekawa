@@ -9,6 +9,7 @@ export interface BuildContextInput {
   records: SessionRecord[]
   tools: Tool[]
   system?: string
+  projectContext?: string
   skills?: SkillDefinition[]
   contextManagement?: Partial<ContextManagementConfig>
   includeUserContext?: boolean
@@ -135,7 +136,7 @@ export class ContextBuilder {
   ) {}
 
   build(input: BuildContextInput): BuiltContext {
-    const systemBlocks = this.buildSystemBlocks(input.system)
+    const systemBlocks = this.buildSystemBlocks(input.system, input.projectContext)
     const system = systemBlocks
       .filter((b) => b !== SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
       .join('\n\n')
@@ -211,10 +212,11 @@ export class ContextBuilder {
     return contextItems
   }
 
-  private buildSystemBlocks(system: string | undefined): string[] {
+  private buildSystemBlocks(system: string | undefined, projectContext?: string): string[] {
     const staticSections = [
       DEFAULT_IDENTITY,
       DEFAULT_INSTRUCTIONS,
+      projectContext?.trim(),
     ].filter((section): section is string => Boolean(section))
 
     const dynamicSections = [

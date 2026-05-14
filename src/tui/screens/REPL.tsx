@@ -1,4 +1,4 @@
-import { Box, Text, useInput, useApp, useBoxMetrics } from 'ink'
+import { Box, useInput, useApp, useBoxMetrics } from 'ink'
 import type { DOMElement } from 'ink'
 import { useRef } from 'react'
 import { basename } from 'node:path'

@@ -3,15 +3,16 @@ import { useSessionManager } from './useSessionManager.js'
 import { useMessageManager } from './useMessageManager.js'
 import { useQuery } from './useQuery.js'
 import { registerBuiltinCommands, getCommand } from '../../commands/index.js'
-import { setCurrentModel, setError } from '../state/appState.js'
+import { setCurrentModel, setError, setRunning, setStartTime, setStreaming } from '../state/appState.js'
 import { formatUsageLine } from '../../harness/usage.js'
 import type { Config } from '../../config/service.js'
 import type { AgentStreamEvent } from '../../harness/types.js'
 
+import type { DisplayMessage } from '../types.js'
 export type { DisplayMessage, MessageRole } from '../types.js'
 
 interface UseSessionReturn {
-  messages: ReturnType<typeof useMessageManager>['messages']
+  messages: DisplayMessage[]
   isRunning: boolean
   query: (input: string) => Promise<void>
   abort: () => void
@@ -20,7 +21,7 @@ interface UseSessionReturn {
 }
 
 export function useSession(config: Config, cwd: string, resumeSessionId?: string): UseSessionReturn {
-  const { sessionId, sessionMeta, store, error: sessionError } = useSessionManager(cwd, resumeSessionId)
+  const { sessionId, store, error: sessionError } = useSessionManager(cwd, resumeSessionId)
 
   const {
     messages,
@@ -89,33 +90,50 @@ export function useSession(config: Config, cwd: string, resumeSessionId?: string
     addUserMessage(input)
     addAssistantPlaceholder()
 
-    // Execute query with streaming
-    const result = await executeQuery(input, (event: AgentStreamEvent) => {
-      if (event.type === 'text_delta') {
-        appendStreamText(event.delta)
+    // Update global state
+    setRunning(true)
+    setStartTime(Date.now().toString())
+
+    try {
+      // Execute query with streaming
+      const result = await executeQuery(input, (event: AgentStreamEvent) => {
+        if (event.type === 'text_delta') {
+          appendStreamText(event.delta)
+          setStreaming(event.delta, null)
+        }
+      })
+
+      if (!result) {
+        return
       }
-    })
 
-    if (!result) {
-      return
-    }
-
-    // Handle interrupted
-    if ('interrupted' in result && result.interrupted) {
-      addSystemMessage('[Interrupted]', 'warning')
-      return
-    }
-
-    // Handle successful result
-    if ('content' in result) {
-      finalizeAssistantMessage(result.content)
-
-      // Add usage line
-      const modelConfig = config.defaultModel ? config.models[config.defaultModel] : undefined
-      if (result.usage && modelConfig) {
-        const usageLine = formatUsageLine(result.usage, modelConfig.pricing)
-        addSystemMessage(usageLine, 'info')
+      // Handle interrupted
+      if ('interrupted' in result && result.interrupted) {
+        addSystemMessage('[Interrupted]', 'warning')
+        return
       }
+
+      // Handle successful result
+      if ('content' in result) {
+        finalizeAssistantMessage(result.content)
+
+        // Add usage line
+        const modelConfig = config.defaultModel ? config.models[config.defaultModel] : undefined
+        if (result.usage && modelConfig) {
+          const usageLine = formatUsageLine(result.usage, modelConfig.pricing)
+          addSystemMessage(usageLine, 'info')
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        addSystemMessage('[Interrupted]', 'warning')
+      } else {
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        addSystemMessage(`Error: ${errorMessage}`, 'error')
+      }
+    } finally {
+      setRunning(false)
+      setStreaming('', null)
     }
   }, [
     sessionId,

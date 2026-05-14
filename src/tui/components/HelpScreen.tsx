@@ -50,6 +50,8 @@ export function HelpScreen({ onClose }: Props) {
         <HelpRow shortcut="/verbose" description="Toggle verbose mode" />
         <HelpRow shortcut="/export" description="Export conversation to JSON" />
         <HelpRow shortcut="/edit" description="Edit last message" />
+        <HelpRow shortcut="/retry" description="Resend last message" />
+        <HelpRow shortcut="/doctor" description="Check configuration" />
       </Box>
       <Box marginTop={1}>
         <Text dimColor>Press Esc or q to close</Text>

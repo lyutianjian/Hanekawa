@@ -398,36 +398,34 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
           timestamp: Date.now(),
         }
         setMessages(prev => [...prev, cancelMsg])
-      } else if ((err as Error).message?.includes('API key')) {
-        // API key 错误
-        const errorMsg: ChatMessage = {
-          id: `msg-${nextId.current++}`,
-          role: 'system',
-          content: 'Error: Invalid or missing API key. Run /doctor to check your configuration.',
-          timestamp: Date.now(),
-        }
-        setMessages(prev => [...prev, errorMsg])
-        saveMessage(errorMsg)
-      } else if ((err as Error).message?.includes('rate limit')) {
-        // 速率限制
-        const errorMsg: ChatMessage = {
-          id: `msg-${nextId.current++}`,
-          role: 'system',
-          content: 'Error: Rate limited. Please wait a moment and try again.',
-          timestamp: Date.now(),
-        }
-        setMessages(prev => [...prev, errorMsg])
-        saveMessage(errorMsg)
       } else {
-        // 通用错误 — 对 API/network 错误添加重试提示
-        const errMsg = (err as Error).message || 'Unknown error'
-        const isApiError = errMsg.includes('API') || errMsg.includes('network') || errMsg.includes('fetch')
+        // 格式化错误消息
+        const formatError = (err: Error): string => {
+          const msg = err.message || 'Unknown error'
+
+          if (msg.includes('API key')) {
+            return `🔑 API Key Error: ${msg}\n\nRun /doctor to check your configuration.`
+          }
+          if (msg.includes('rate limit')) {
+            return `⏱ Rate Limited: ${msg}\n\nPlease wait a moment and try again.`
+          }
+          if (msg.includes('network') || msg.includes('fetch')) {
+            return `🌐 Network Error: ${msg}\n\nCheck your internet connection. Use /retry to resend.`
+          }
+          if (msg.includes('timeout')) {
+            return `⏰ Timeout: ${msg}\n\nThe request took too long. Use /retry to resend.`
+          }
+          if (msg.includes('context') || msg.includes('token')) {
+            return `📊 Context Error: ${msg}\n\nTry /compact to reduce conversation length.`
+          }
+
+          return `❌ Error: ${msg}`
+        }
+
         const errorMsg: ChatMessage = {
           id: `msg-${nextId.current++}`,
           role: 'system',
-          content: isApiError
-            ? `Error: ${errMsg}\n\nTip: Use /retry to resend the last message.`
-            : `Error: ${errMsg}`,
+          content: formatError(err as Error),
           timestamp: Date.now(),
         }
         setMessages(prev => [...prev, errorMsg])

@@ -81,13 +81,21 @@ export function Markdown({ children }: MarkdownProps) {
   )
 }
 
-type InlinePart = { type: 'text' | 'bold' | 'italic' | 'code' | 'link'; text: string; url?: string }
+type InlinePart = { type: 'text' | 'bold' | 'italic' | 'code' | 'link' | 'strikethrough'; text: string; url?: string }
 
 function parseInlineFormatting(text: string): InlinePart[] {
   const parts: InlinePart[] = []
   let remaining = text
 
   while (remaining.length > 0) {
+    // 匹配 ~~strikethrough~~
+    const strikeMatch = remaining.match(/^~~(.+?)~~/)
+    if (strikeMatch) {
+      parts.push({ type: 'strikethrough', text: strikeMatch[1] })
+      remaining = remaining.slice(strikeMatch[0].length)
+      continue
+    }
+
     // 匹配 **bold**
     const boldMatch = remaining.match(/^\*\*(.+?)\*\*/)
     if (boldMatch) {
@@ -121,7 +129,7 @@ function parseInlineFormatting(text: string): InlinePart[] {
     }
 
     // 普通文本 — 读取到下一个格式标记
-    const nextFormat = remaining.search(/[\[*`]/)
+    const nextFormat = remaining.search(/[\[*`~]/)
     if (nextFormat === -1) {
       parts.push({ type: 'text', text: remaining })
       break
@@ -157,6 +165,7 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
           {parts.map((part, i) => {
             if (part.type === 'bold') return <Text key={i} bold>{part.text}</Text>
             if (part.type === 'italic') return <Text key={i} italic>{part.text}</Text>
+            if (part.type === 'strikethrough') return <Text key={i} strikethrough>{part.text}</Text>
             if (part.type === 'code') return <Text key={i} color="green">{part.text}</Text>
             if (part.type === 'link') {
               return (
@@ -203,6 +212,10 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
               ? `${(token.start || 1) + i}.`
               : '•'
 
+            // 任务列表支持
+            const isTask = item.task
+            const isChecked = item.checked
+
             // 提取非嵌套列表的文本内容
             const textTokens = (item.tokens || []).filter(
               (t: Token) => t.type !== 'list'
@@ -220,8 +233,14 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
             return (
               <Box key={i} flexDirection="column">
                 <Box>
-                  <Text color="cyan">{prefix}</Text>
-                  <Text> {displayText}</Text>
+                  {isTask ? (
+                    <Text color={isChecked ? 'green' : 'dim'}>
+                      {isChecked ? '☑' : '☐'}{' '}
+                    </Text>
+                  ) : (
+                    <Text color="cyan">{prefix} </Text>
+                  )}
+                  <Text>{displayText}</Text>
                 </Box>
                 {nestedLists.map((nested: Token, j: number) => (
                   <Box key={j} marginLeft={2}>

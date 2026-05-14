@@ -1,33 +1,27 @@
-import { Box } from 'ink'
-import type { BoxProps } from 'ink'
-import type { ReactNode } from 'react'
+import React from 'react'
+import { Box, type BoxProps } from 'ink'
 import { useTheme } from './ThemeProvider.js'
-import type { ThemeColors } from './ThemeProvider.js'
+import { resolveColor } from './color.js'
+import type { Theme } from './theme.js'
 
-type ThemeColorKey = keyof ThemeColors
-
-interface ThemedBoxProps extends Omit<BoxProps, 'borderColor' | 'backgroundColor'> {
-  children?: ReactNode
-  borderColor?: ThemeColorKey | string
-  backgroundColor?: ThemeColorKey | string
+type ThemedColorProps = {
+  borderColor?: keyof Theme | string
+  backgroundColor?: keyof Theme | string
 }
 
-function resolveColor(color: ThemeColorKey | string | undefined, themeColors: ThemeColors): string | undefined {
-  if (!color) return undefined
-  if (color in themeColors) {
-    return themeColors[color as ThemeColorKey]
-  }
-  return color
+type Props = Omit<BoxProps, 'borderColor' | 'backgroundColor'> & ThemedColorProps & {
+  children?: React.ReactNode
 }
 
-export function ThemedBox({ borderColor, backgroundColor, ...props }: ThemedBoxProps) {
-  const { colors } = useTheme()
-
+export function ThemedBox({ borderColor, backgroundColor, ...rest }: Props) {
+  const [theme] = useTheme()
   return (
     <Box
-      {...props}
-      borderColor={resolveColor(borderColor, colors)}
-      backgroundColor={resolveColor(backgroundColor, colors)}
+      {...rest}
+      borderColor={resolveColor(borderColor, theme) as any}
+      backgroundColor={resolveColor(backgroundColor, theme) as any}
     />
   )
 }
+
+export default ThemedBox

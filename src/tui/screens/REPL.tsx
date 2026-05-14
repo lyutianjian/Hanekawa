@@ -1,128 +1,96 @@
-import { Box, useInput, useApp, useBoxMetrics } from 'ink'
-import type { DOMElement } from 'ink'
-import { useRef, useCallback } from 'react'
-import { basename } from 'node:path'
-import { useSession } from '../hooks/useSession.js'
-import { usePermissionPrompt } from '../hooks/usePermissionPrompt.js'
-import { useAppState } from '../state/hooks.js'
-import { MessageList } from '../components/MessageList.js'
-import { PromptInput } from '../components/PromptInput.js'
-import { Spinner } from '../components/Spinner.js'
-import { SystemMessage } from '../components/SystemMessage.js'
-import { PermissionPrompt } from '../components/PermissionPrompt.js'
-import { ThemedBox } from '../design-system/ThemedBox.js'
-import { ThemedText } from '../design-system/ThemedText.js'
-import { useTheme } from '../design-system/ThemeProvider.js'
-import type { Config } from '../../config/service.js'
+// 主 REPL 屏幕骨架 — Phase 1 使用简单文本列表
 
-interface REPLProps {
-  config: Config
-  cwd: string
-  resumeSessionId?: string
+import React, { useState, useRef } from 'react'
+import { Box, Text } from '../ink.js'
+import { useInput, useApp } from 'ink'
+import { Divider } from '../design-system/Divider.js'
+import { OverlayProvider } from '../context/overlayContext.js'
+
+type Message = {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
 }
 
-export function REPL({ config, cwd, resumeSessionId }: REPLProps) {
-  const { pendingRequest, approve, deny, approveAll } = usePermissionPrompt()
-  const { messages, query, abort, clearMessages, sessionId } = useSession(config, cwd, resumeSessionId)
-  const isRunning = useAppState((state) => state.isRunning)
-  const startTime = useAppState((state) => state.startTime)
-  const streamingMessageId = useAppState((state) => state.streamingMessageId)
-  const error = useAppState((state) => state.error)
+export function REPL() {
+  const [messages, setMessages] = useState<Message[]>([])
+  const [input, setInput] = useState('')
   const { exit } = useApp()
-  const { colors } = useTheme()
+  const nextId = useRef(0)
 
-  const rootRef = useRef<DOMElement | null>(null)
-  const rootMetrics = useBoxMetrics(rootRef as React.RefObject<DOMElement>)
-  const lastCtrlCTime = useRef(0)
-  const isInputEmpty = useRef(true)
-
-  // Input content line = total output height - 2 (bottom border + content line)
-  const cursorY = rootMetrics.hasMeasured ? rootMetrics.height - 2 : 0
-
-  const handleInputEmpty = useCallback((isEmpty: boolean) => {
-    isInputEmpty.current = isEmpty
-  }, [])
-
-  useInput((input, key) => {
-    if (key.ctrl && input === 'c') {
-      const now = Date.now()
-      if (isRunning) {
-        abort()
-        lastCtrlCTime.current = now
-      } else if (now - lastCtrlCTime.current < 500) {
-        exit()
-      } else {
-        lastCtrlCTime.current = now
-      }
-    }
-    if (key.ctrl && input === 'd') {
+  useInput((inputChar, key) => {
+    // Ctrl+C
+    if (key.ctrl && inputChar === 'c') return
+    // Ctrl+D — 退出
+    if (key.ctrl && inputChar === 'd') {
       exit()
+      return
+    }
+    // Ctrl+L — 清屏
+    if (key.ctrl && inputChar === 'l') {
+      console.clear()
+      return
+    }
+    // Enter — 提交
+    if (key.return) {
+      if (input.trim()) {
+        const userMsg: Message = { id: `msg-${nextId.current++}`, role: 'user', content: input }
+        setMessages(prev => [...prev, userMsg])
+        const assistantMsg: Message = {
+          id: `msg-${nextId.current++}`,
+          role: 'assistant',
+          content: `Echo: ${input}`,
+        }
+        setMessages(prev => [...prev, assistantMsg])
+        setInput('')
+      }
+      return
+    }
+    // Backspace
+    if (key.backspace || key.delete) {
+      setInput(prev => prev.slice(0, -1))
+      return
+    }
+    // 普通字符
+    if (inputChar && !key.ctrl && !key.meta) {
+      setInput(prev => prev + inputChar)
     }
   })
 
-  const handleSubmit = (text: string) => {
-    if (text === '/clear') {
-      clearMessages()
-      return
-    }
-    query(text)
-  }
-
-  const dirName = basename(cwd)
-
   return (
-    <Box ref={rootRef} flexDirection="column">
-      {/* Header */}
-      <ThemedBox borderStyle="single" borderBottom={true} borderColor="border" paddingX={1}>
-        <ThemedText color="accent" bold>{'◈ MyAgent'}</ThemedText>
-        {sessionId && (
-          <ThemedText color="dimmed"> ({sessionId.slice(0, 8)})</ThemedText>
-        )}
-        <ThemedText color="dimmed"> │ {dirName}</ThemedText>
-        <ThemedText color="dimmed"> │ {config.defaultModel ?? 'none'}</ThemedText>
-      </ThemedBox>
-
-      {/* Messages */}
-      <Box flexDirection="column" paddingY={1}>
-        <MessageList messages={messages} streamingMessageId={streamingMessageId} />
-      </Box>
-
-      {/* Spinner */}
-      {isRunning && (
+    <OverlayProvider>
+      <Box flexDirection="column" height="100%">
+        {/* Header */}
         <Box paddingX={1}>
-          <Spinner label="Thinking..." startTime={startTime ?? undefined} />
+          <Text bold color="cyan">myagent</Text>
+          <Text dimColor> — TUI Mode</Text>
         </Box>
-      )}
+        <Divider />
 
-      {/* Error display */}
-      {error && (
-        <SystemMessage content={error} variant="error" />
-      )}
+        {/* Messages 区域 */}
+        <Box flexDirection="column" flexGrow={1} paddingX={1} overflow="hidden">
+          {messages.length === 0 ? (
+            <Text dimColor>Type a message to get started...</Text>
+          ) : (
+            messages.map(msg => (
+              <Box key={msg.id} marginBottom={1}>
+                <Text bold color={msg.role === 'user' ? 'blue' : 'green'}>
+                  {msg.role === 'user' ? '> ' : '< '}
+                </Text>
+                <Text>{msg.content}</Text>
+              </Box>
+            ))
+          )}
+        </Box>
 
-      {/* Permission prompt */}
-      {pendingRequest && (
-        <PermissionPrompt
-          toolName={pendingRequest.toolName}
-          riskLevel={pendingRequest.riskLevel}
-          input={pendingRequest.input}
-          onApprove={approve}
-          onDeny={deny}
-          onApproveAll={approveAll}
-        />
-      )}
-
-      {/* Status line */}
-      <Box paddingX={1}>
-        <ThemedText color="dimmed">
-          {config.defaultModel ?? 'none'}
-          {messages.length > 0 && ` │ ${messages.length} msgs`}
-        </ThemedText>
+        {/* Input 区域 */}
+        <Divider />
+        <Box paddingX={1}>
+          <Text color="cyan">{'> '}</Text>
+          <Text>{input}</Text>
+          <Text inverse>{' '}</Text>
+        </Box>
       </Box>
-
-      {/* Input */}
-      <ThemedBox borderStyle="single" borderTop={true} borderColor="border" paddingY={0}>
-        <PromptInput onSubmit={handleSubmit} isDisabled={isRunning || !!pendingRequest} cursorY={cursorY} cwd={cwd} onInputEmpty={handleInputEmpty} />
-      </ThemedBox>
-    </Box>
+    </OverlayProvider>
   )
 }

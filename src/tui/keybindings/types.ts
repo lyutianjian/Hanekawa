@@ -1,58 +1,20 @@
-export type KeyBindingContext = 'global' | 'chat' | 'autocomplete'
+export type KeybindingContextName = string
+export type KeybindingAction = string
 
-export interface KeyBinding {
-  key: string
+export type ParsedKeystroke = {
+  key?: string
   ctrl?: boolean
+  alt?: boolean
   shift?: boolean
   meta?: boolean
-  action: string
-  context: KeyBindingContext
 }
 
-export interface KeyBindingHandler {
-  action: string
-  handler: () => void
+export type ParsedBinding = {
+  action: KeybindingAction
+  keys: ParsedKeystroke[]
 }
 
-export interface KeyBindingsConfig {
-  global?: {
-    interrupt?: string
-    exit?: string
-    clear?: string
-    toggleTodo?: string
-    toggleTranscript?: string
-    historySearch?: string
-  }
-
-  chat?: {
-    cancel?: string
-    submit?: string
-    historyUp?: string
-    historyDown?: string
-    undo?: string
-    externalEditor?: string
-    stage?: string
-    imagePaste?: string
-  }
-
-  editing?: {
-    lineStart?: string
-    lineEnd?: string
-    killLine?: string
-    killLineBackward?: string
-    killWord?: string
-    yank?: string
-    deleteToken?: string
-    wordBackward?: string
-    wordForward?: string
-    deleteWordForward?: string
-    yankPop?: string
-  }
-
-  autocomplete?: {
-    accept?: string
-    next?: string
-    previous?: string
-    close?: string
-  }
+export type KeybindingBlock = {
+  context?: KeybindingContextName
+  bindings?: Record<string, KeybindingAction>
 }

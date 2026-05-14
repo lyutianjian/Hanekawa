@@ -1,33 +1,34 @@
-import { ThemedText } from './ThemedText.js'
+// 复刻自 ClaudeCode/src/components/design-system/StatusIcon.tsx
 
-type StatusType = 'success' | 'error' | 'warning' | 'info' | 'pending' | 'in_progress'
+import React from 'react'
+import figures from 'figures'
+import { Text } from 'ink'
+import type { Theme } from './theme.js'
 
-interface StatusIconProps {
-  status: StatusType
-  size?: 'small' | 'medium'
+type Status = 'success' | 'error' | 'warning' | 'info' | 'pending' | 'loading'
+
+type Props = {
+  status: Status
+  withSpace?: boolean
 }
 
-const icons: Record<StatusType, { small: string; medium: string }> = {
-  success: { small: '✓', medium: '✔' },
-  error: { small: '✗', medium: '✘' },
-  warning: { small: '⚠', medium: '⚠' },
-  info: { small: 'ℹ', medium: 'ℹ' },
-  pending: { small: '○', medium: '◎' },
-  in_progress: { small: '●', medium: '◉' },
+const STATUS_CONFIG: Record<Status, {
+  icon: string
+  color: keyof Theme | undefined
+}> = {
+  success: { icon: figures.tick, color: 'success' },
+  error: { icon: figures.cross, color: 'error' },
+  warning: { icon: figures.warning, color: 'warning' },
+  info: { icon: figures.info, color: 'suggestion' },
+  pending: { icon: figures.circle, color: undefined },
+  loading: { icon: '…', color: undefined },
 }
 
-const colorMap: Record<StatusType, 'success' | 'error' | 'warning' | 'accent' | 'dimmed' | 'warning'> = {
-  success: 'success',
-  error: 'error',
-  warning: 'warning',
-  info: 'accent',
-  pending: 'dimmed',
-  in_progress: 'warning',
-}
-
-export function StatusIcon({ status, size = 'small' }: StatusIconProps) {
-  const icon = icons[status][size]
-  const color = colorMap[status]
-
-  return <ThemedText color={color}>{icon}</ThemedText>
+export function StatusIcon({ status, withSpace = false }: Props) {
+  const config = STATUS_CONFIG[status]
+  return (
+    <Text color={config.color as any} dimColor={!config.color}>
+      {config.icon}{withSpace && ' '}
+    </Text>
+  )
 }

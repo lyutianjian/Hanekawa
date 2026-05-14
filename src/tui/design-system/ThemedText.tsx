@@ -1,31 +1,38 @@
-import { Text } from 'ink'
-import type { TextProps } from 'ink'
+import React, { createContext, useContext } from 'react'
+import { Text, type TextProps } from 'ink'
 import { useTheme } from './ThemeProvider.js'
-import type { ThemeColors } from './ThemeProvider.js'
+import { resolveColor } from './color.js'
+import type { Theme } from './theme.js'
 
-type ThemeColorKey = keyof ThemeColors
+export const TextHoverColorContext = createContext<keyof Theme | undefined>(undefined)
 
-interface ThemedTextProps extends Omit<TextProps, 'color' | 'backgroundColor'> {
-  color?: ThemeColorKey | string
-  backgroundColor?: ThemeColorKey | string
+type Props = Omit<TextProps, 'color' | 'backgroundColor'> & {
+  color?: keyof Theme | string
+  backgroundColor?: keyof Theme | string
+  children?: React.ReactNode
 }
 
-function resolveColor(color: ThemeColorKey | string | undefined, themeColors: ThemeColors): string | undefined {
-  if (!color) return undefined
-  if (color in themeColors) {
-    return themeColors[color as ThemeColorKey]
+export function ThemedText({ color, backgroundColor, dimColor, ...rest }: Props) {
+  const [theme] = useTheme()
+  const hoverColor = useContext(TextHoverColorContext)
+
+  let resolvedColor: string | undefined
+  if (!color && hoverColor) {
+    resolvedColor = resolveColor(hoverColor, theme)
+  } else if (dimColor) {
+    resolvedColor = theme.inactive
+  } else {
+    resolvedColor = resolveColor(color, theme)
   }
-  return color
-}
-
-export function ThemedText({ color, backgroundColor, ...props }: ThemedTextProps) {
-  const { colors } = useTheme()
 
   return (
     <Text
-      {...props}
-      color={resolveColor(color, colors)}
-      backgroundColor={resolveColor(backgroundColor, colors)}
+      {...rest}
+      color={resolvedColor as any}
+      backgroundColor={resolveColor(backgroundColor, theme) as any}
+      dimColor={dimColor}
     />
   )
 }
+
+export default ThemedText

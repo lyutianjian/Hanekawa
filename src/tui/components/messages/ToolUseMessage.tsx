@@ -43,9 +43,11 @@ export function ToolUseMessage({ id, name, input, verbose, isRunning }: Props) {
 
   return (
     <Box marginBottom={1} paddingX={1}>
-      <Text color="yellow" dimColor>{icon} {name}</Text>
-      {summary && <Text dimColor> — {summary}</Text>}
-      {isRunning && <Text color="yellow"> ⟳</Text>}
+      <Box borderStyle="single" borderColor="yellow" paddingX={1} width="100%">
+        <Text color="yellow" dimColor>{icon} {name}</Text>
+        {summary && <Text dimColor> — {summary}</Text>}
+        {isRunning && <Text color="yellow"> ⟳</Text>}
+      </Box>
     </Box>
   )
 }

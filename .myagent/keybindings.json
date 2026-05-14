@@ -1,0 +1,26 @@
+{
+  "global": {
+    "interrupt": "c",
+    "exit": "d",
+    "clear": "l"
+  },
+  "chat": {
+    "cancel": "escape",
+    "submit": "return",
+    "historyUp": "up",
+    "historyDown": "down"
+  },
+  "editing": {
+    "lineStart": "a",
+    "lineEnd": "e",
+    "killLine": "k",
+    "killLineBackward": "u",
+    "killWord": "w"
+  },
+  "autocomplete": {
+    "accept": "tab",
+    "next": "down",
+    "previous": "up",
+    "close": "escape"
+  }
+}

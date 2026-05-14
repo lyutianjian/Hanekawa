@@ -1,6 +1,6 @@
 // 主 REPL 屏幕 — 集成 AgentLoop 流式输出
 
-import React, { useState, useRef, useCallback } from 'react'
+import React, { useState, useRef, useCallback, useEffect } from 'react'
 import { Box, Text } from '../ink.js'
 import { useApp } from 'ink'
 import { Divider } from '../design-system/Divider.js'
@@ -17,14 +17,17 @@ import type { AgentLoop } from '../../harness/loop.js'
 import type { AgentStreamEvent } from '../../harness/types.js'
 import type { Store } from '../state/store.js'
 import type { AppState } from '../state/AppStateStore.js'
+import type { SessionStore } from '../../sessions/service.js'
+import { useSession } from '../hooks/useSession.js'
 
 type REPLProps = {
   loop?: AgentLoop
   session?: { id: string; shortId?: string }
   appStore?: Store<AppState>
+  sessionStore?: SessionStore
 }
 
-export function REPL({ loop, session, appStore }: REPLProps) {
+export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isRunning, setIsRunning] = useState(false)
   const [streamingText, setStreamingText] = useState('')
@@ -36,6 +39,23 @@ export function REPL({ loop, session, appStore }: REPLProps) {
 
   const pendingPermission = useAppState(s => s.pendingPermission)
   const setAppState = useSetAppState()
+
+  // Session 持久化
+  const { loadHistory, saveMessage } = useSession({
+    store: sessionStore!,
+    sessionId: session?.id || '',
+  })
+
+  // 启动时加载历史消息
+  useEffect(() => {
+    if (session && sessionStore) {
+      loadHistory().then(history => {
+        if (history.length > 0) {
+          setMessages(history)
+        }
+      })
+    }
+  }, [session?.id])
 
   const handleSubmit = useCallback(async (text: string) => {
     // Slash 命令处理
@@ -58,6 +78,7 @@ export function REPL({ loop, session, appStore }: REPLProps) {
       timestamp: Date.now(),
     }
     setMessages(prev => [...prev, userMsg])
+    saveMessage(userMsg)
     setIsRunning(true)
     setStreamingText('')
     responseLengthRef.current = 0
@@ -72,6 +93,7 @@ export function REPL({ loop, session, appStore }: REPLProps) {
           timestamp: Date.now(),
         }
         setMessages(prev => [...prev, assistantMsg])
+        saveMessage(assistantMsg)
         setIsRunning(false)
       }, 500)
       return
@@ -109,6 +131,7 @@ export function REPL({ loop, session, appStore }: REPLProps) {
           timestamp: Date.now(),
         }
         setMessages(prev => [...prev, assistantMsg])
+        saveMessage(assistantMsg)
       }
 
       // 更新使用量
@@ -128,6 +151,7 @@ export function REPL({ loop, session, appStore }: REPLProps) {
           timestamp: Date.now(),
         }
         setMessages(prev => [...prev, errorMsg])
+        saveMessage(errorMsg)
       }
     } finally {
       setIsRunning(false)

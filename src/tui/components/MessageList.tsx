@@ -1,4 +1,5 @@
 import { Box, Text } from 'ink'
+import { useState, useCallback } from 'react'
 import { Message } from './Message.js'
 import { ToolUseMessage } from './ToolUseMessage.js'
 import { ErrorBoundary } from './ErrorBoundary.js'
@@ -10,6 +11,7 @@ const MAX_VISIBLE_MESSAGES = 200
 interface MessageListProps {
   messages: DisplayMessage[]
   streamingMessageId?: string | null
+  focusedMessageId?: string | null
 }
 
 interface ToolGroup {
@@ -52,7 +54,21 @@ function groupToolMessages(messages: DisplayMessage[]): Array<DisplayMessage | T
   return result
 }
 
-export function MessageList({ messages, streamingMessageId }: MessageListProps) {
+export function MessageList({ messages, streamingMessageId, focusedMessageId }: MessageListProps) {
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
+
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedTools(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }, [])
+
   if (messages.length === 0) {
     return (
       <Box paddingX={1} paddingY={1}>
@@ -73,6 +89,8 @@ export function MessageList({ messages, streamingMessageId }: MessageListProps) 
     // Handle tool groups
     if (typeof item === 'object' && 'toolUse' in item) {
       const group = item as ToolGroup
+      const isFocused = group.toolUse.id === focusedMessageId
+      const isExpanded = expandedTools.has(group.toolUse.id)
       elements.push(
         <ErrorBoundary
           key={group.toolUse.id}
@@ -87,6 +105,9 @@ export function MessageList({ messages, streamingMessageId }: MessageListProps) 
             input={group.toolUse.toolInput}
             output={group.toolResult?.content}
             ok={group.toolResult?.toolOk}
+            isFocused={isFocused}
+            isExpanded={isExpanded}
+            onToggleExpand={() => toggleExpand(group.toolUse.id)}
           />
         </ErrorBoundary>,
       )

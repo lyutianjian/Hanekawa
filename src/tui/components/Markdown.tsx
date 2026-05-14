@@ -208,13 +208,21 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
       )
     }
 
-    case 'blockquote':
+    case 'blockquote': {
+      const quoteText = (token as Tokens.Blockquote).text || ''
+      const quoteLines = quoteText.split('\n')
+
       return (
-        <Box marginLeft={2}>
-          <Text color="gray" dimColor>│ </Text>
-          <Text italic>{token.text}</Text>
+        <Box flexDirection="column" marginLeft={1} marginTop={1} marginBottom={1}>
+          {quoteLines.map((line, i) => (
+            <Box key={i}>
+              <Text color="cyan" dimColor>{'│ '}</Text>
+              <Text italic dimColor>{line}</Text>
+            </Box>
+          ))}
         </Box>
       )
+    }
 
     case 'hr':
       return <Text dimColor>{'─'.repeat(40)}</Text>

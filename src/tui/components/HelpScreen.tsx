@@ -27,6 +27,8 @@ export function HelpScreen({ onClose }: Props) {
         <HelpRow shortcut="Ctrl+L" description="Clear screen" />
         <HelpRow shortcut="Ctrl+U" description="Clear input line" />
         <HelpRow shortcut="Ctrl+Z" description="Undo /clear" />
+        <HelpRow shortcut="Ctrl+R" description="Search transcript" />
+        <HelpRow shortcut="F1" description="Toggle help" />
         <HelpRow shortcut="PageUp/Down" description="Scroll messages" />
       </Box>
       <Divider />

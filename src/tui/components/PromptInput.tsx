@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback } from 'react'
 import { Box, Text, useInput, useApp } from 'ink'
+import { useFileCompletion } from '../hooks/useFileCompletion.js'
 
 type Props = {
   onSubmit: (text: string) => void
@@ -13,8 +14,19 @@ export function PromptInput({ onSubmit, isRunning, onCancel, placeholder }: Prop
   const [historyIndex, setHistoryIndex] = useState(-1)
   const historyRef = useRef<string[]>([])
   const { exit } = useApp()
+  const cwd = process.cwd()
+  const { complete } = useFileCompletion(cwd)
 
   useInput((inputChar, key) => {
+    // Tab — 文件路径补全
+    if (key.tab) {
+      complete(input).then(completed => {
+        if (completed) {
+          setInput(completed)
+        }
+      })
+      return
+    }
     // Ctrl+C — 取消或退出
     if (key.ctrl && inputChar === 'c') {
       if (isRunning && onCancel) {

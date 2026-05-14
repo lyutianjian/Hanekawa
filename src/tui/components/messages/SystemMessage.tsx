@@ -14,8 +14,7 @@ export function SystemMessage({ message }: Props) {
   if (!text.trim()) return null
 
   return (
-    <Box marginBottom={1}>
-      <Text dimColor> {'│'} </Text>
+    <Box marginBottom={1} paddingX={1}>
       <Text dimColor italic>{text}</Text>
     </Box>
   )

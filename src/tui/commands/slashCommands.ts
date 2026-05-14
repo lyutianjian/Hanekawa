@@ -29,7 +29,8 @@ export function handleSlashCommand(input: string, context: {
   /session  — Show session info
   /retry    — Retry the last user message
   /compact  — Compact conversation history
-  /settings — Open settings screen`,
+  /settings — Open settings screen
+  /doctor   — Run system diagnostics`,
         timestamp: Date.now(),
       },
     }
@@ -108,6 +109,13 @@ export function handleSlashCommand(input: string, context: {
     return {
       handled: true,
       action: 'open_settings',
+    }
+  }
+
+  if (trimmed === '/doctor') {
+    return {
+      handled: true,
+      action: 'open_doctor',
     }
   }
 

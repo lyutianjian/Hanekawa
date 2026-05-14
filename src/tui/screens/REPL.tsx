@@ -14,6 +14,7 @@ import { PermissionDialog } from '../components/permissions/PermissionDialog.js'
 import { ToolPermissionCard } from '../components/permissions/ToolPermissionCard.js'
 import { SettingsScreen } from '../components/SettingsScreen.js'
 import { HelpScreen } from '../components/HelpScreen.js'
+import { DoctorScreen } from '../components/DoctorScreen.js'
 import { CompactionIndicator } from '../components/CompactionIndicator.js'
 import { TranscriptSearch } from '../components/TranscriptSearch.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
@@ -48,6 +49,7 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [doctorOpen, setDoctorOpen] = useState(false)
   const [scrollToIndex, setScrollToIndex] = useState<number | null>(null)
   const { exit } = useApp()
   const nextId = useRef(0)
@@ -106,6 +108,9 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
       }
       if (text.trim() === '/settings') {
         setSettingsOpen(true)
+      }
+      if (text.trim() === '/doctor') {
+        setDoctorOpen(true)
       }
       if (slashResult.action === 'switch_model' && slashResult.model) {
         setPendingModel(slashResult.model)
@@ -375,6 +380,13 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
                 pendingPermission.resolve(true)
                 setAppState(prev => ({ ...prev, pendingPermission: null }))
               }}
+              onAlwaysAllow={() => {
+                if (pendingPermission?.onAlwaysAllow) {
+                  pendingPermission.onAlwaysAllow()
+                }
+                pendingPermission?.resolve(true)
+                setAppState(prev => ({ ...prev, pendingPermission: null }))
+              }}
             >
               <ToolPermissionCard
                 toolName={pendingPermission.toolName}
@@ -399,6 +411,9 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
 
         {/* 帮助屏幕 */}
         {helpOpen && <HelpScreen onClose={() => setHelpOpen(false)} />}
+
+        {/* 诊断屏幕 */}
+        {doctorOpen && <DoctorScreen onClose={() => setDoctorOpen(false)} />}
 
         {/* Input 区域 */}
         <Divider />

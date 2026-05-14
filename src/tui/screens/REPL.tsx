@@ -1,61 +1,51 @@
-// 主 REPL 屏幕骨架 — Phase 1 使用简单文本列表
+// 主 REPL 屏幕 — 集成消息系统、Spinner、输入组件
 
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useCallback } from 'react'
 import { Box, Text } from '../ink.js'
-import { useInput, useApp } from 'ink'
+import { useApp } from 'ink'
 import { Divider } from '../design-system/Divider.js'
 import { OverlayProvider } from '../context/overlayContext.js'
-
-type Message = {
-  id: string
-  role: 'user' | 'assistant' | 'system'
-  content: string
-}
+import { MessageRow } from '../components/messages/MessageRow.js'
+import { SpinnerWithVerb } from '../components/Spinner/SpinnerWithVerb.js'
+import { PromptInput } from '../components/PromptInput.js'
+import type { ChatMessage } from '../components/messages/types.js'
 
 export function REPL() {
-  const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState('')
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [isRunning, setIsRunning] = useState(false)
   const { exit } = useApp()
   const nextId = useRef(0)
+  const responseLengthRef = useRef(0)
 
-  useInput((inputChar, key) => {
-    // Ctrl+C
-    if (key.ctrl && inputChar === 'c') return
-    // Ctrl+D — 退出
-    if (key.ctrl && inputChar === 'd') {
-      exit()
-      return
+  const handleSubmit = useCallback((text: string) => {
+    // 添加用户消息
+    const userMsg: ChatMessage = {
+      id: `msg-${nextId.current++}`,
+      role: 'user',
+      content: text,
+      timestamp: Date.now(),
     }
-    // Ctrl+L — 清屏
-    if (key.ctrl && inputChar === 'l') {
-      console.clear()
-      return
-    }
-    // Enter — 提交
-    if (key.return) {
-      if (input.trim()) {
-        const userMsg: Message = { id: `msg-${nextId.current++}`, role: 'user', content: input }
-        setMessages(prev => [...prev, userMsg])
-        const assistantMsg: Message = {
-          id: `msg-${nextId.current++}`,
-          role: 'assistant',
-          content: `Echo: ${input}`,
-        }
-        setMessages(prev => [...prev, assistantMsg])
-        setInput('')
+    setMessages(prev => [...prev, userMsg])
+
+    // 模拟 agent 处理（Phase 1: echo，后续接入 AgentLoop）
+    setIsRunning(true)
+    responseLengthRef.current = 0
+
+    setTimeout(() => {
+      const assistantMsg: ChatMessage = {
+        id: `msg-${nextId.current++}`,
+        role: 'assistant',
+        content: `Echo: ${text}`,
+        timestamp: Date.now(),
       }
-      return
-    }
-    // Backspace
-    if (key.backspace || key.delete) {
-      setInput(prev => prev.slice(0, -1))
-      return
-    }
-    // 普通字符
-    if (inputChar && !key.ctrl && !key.meta) {
-      setInput(prev => prev + inputChar)
-    }
-  })
+      setMessages(prev => [...prev, assistantMsg])
+      setIsRunning(false)
+    }, 500)
+  }, [])
+
+  const handleCancel = useCallback(() => {
+    setIsRunning(false)
+  }, [])
 
   return (
     <OverlayProvider>
@@ -73,23 +63,28 @@ export function REPL() {
             <Text dimColor>Type a message to get started...</Text>
           ) : (
             messages.map(msg => (
-              <Box key={msg.id} marginBottom={1}>
-                <Text bold color={msg.role === 'user' ? 'blue' : 'green'}>
-                  {msg.role === 'user' ? '> ' : '< '}
-                </Text>
-                <Text>{msg.content}</Text>
-              </Box>
+              <MessageRow key={msg.id} message={msg} />
             ))
           )}
         </Box>
 
+        {/* Spinner */}
+        {isRunning && (
+          <Box paddingX={1}>
+            <SpinnerWithVerb
+              mode="thinking"
+              responseLengthRef={responseLengthRef}
+            />
+          </Box>
+        )}
+
         {/* Input 区域 */}
         <Divider />
-        <Box paddingX={1}>
-          <Text color="cyan">{'> '}</Text>
-          <Text>{input}</Text>
-          <Text inverse>{' '}</Text>
-        </Box>
+        <PromptInput
+          onSubmit={handleSubmit}
+          isRunning={isRunning}
+          onCancel={handleCancel}
+        />
       </Box>
     </OverlayProvider>
   )

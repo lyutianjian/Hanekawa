@@ -17,6 +17,7 @@
     "fast-glob": "latest",
     "figures": "^6.1.0",
     "ink": "^7.0.3",
+    "marked": "^18.0.3",
     "openai": "latest",
     "react": "^19.2.6",
     "yaml": "latest",

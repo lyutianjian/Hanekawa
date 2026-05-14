@@ -199,10 +199,6 @@ export function PromptInput({ onSubmit, isDisabled, cursorY, cwd }: PromptInputP
         <TypeaheadPopup
           suggestions={suggestions}
           selectedIndex={selectedIndex}
-          onSelect={(suggestion) => {
-            setInput(suggestion.value)
-            inputRef.current = suggestion.value
-          }}
         />
       )}
       {lines.map((line, i) => (

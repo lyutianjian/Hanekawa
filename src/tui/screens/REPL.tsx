@@ -116,7 +116,7 @@ export function REPL({ config, cwd, resumeSessionId }: REPLProps) {
 
       {/* Input */}
       <ThemedBox borderStyle="single" borderTop={true} borderColor="border" paddingY={0}>
-        <PromptInput onSubmit={handleSubmit} isDisabled={isRunning || !!pendingRequest} cursorY={cursorY} />
+        <PromptInput onSubmit={handleSubmit} isDisabled={isRunning || !!pendingRequest} cursorY={cursorY} cwd={cwd} />
       </ThemedBox>
     </Box>
   )

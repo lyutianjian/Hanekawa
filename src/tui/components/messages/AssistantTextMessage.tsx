@@ -9,12 +9,15 @@ type Props = {
 export function AssistantTextMessage({ text }: Props) {
   if (!text.trim()) return null
 
+  const lines = text.split('\n')
   return (
-    <Box flexDirection="row" marginBottom={1}>
-      <Text bold color="green">{'<'} </Text>
-      <Box flexDirection="column">
-        <Markdown>{text}</Markdown>
-      </Box>
+    <Box flexDirection="column" marginBottom={1}>
+      {lines.map((line, i) => (
+        <Box key={i}>
+          <Text color="green"> {'│'} </Text>
+          <Markdown>{line}</Markdown>
+        </Box>
+      ))}
     </Box>
   )
 }

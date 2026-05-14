@@ -11,6 +11,7 @@ import { PromptInput } from '../components/PromptInput.js'
 import { PermissionDialog } from '../components/permissions/PermissionDialog.js'
 import { ToolPermissionCard } from '../components/permissions/ToolPermissionCard.js'
 import { SettingsScreen } from '../components/SettingsScreen.js'
+import { HelpScreen } from '../components/HelpScreen.js'
 import { CompactionIndicator } from '../components/CompactionIndicator.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import type { ChatMessage } from '../components/messages/types.js'
@@ -36,6 +37,7 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
   const [totalUsage, setTotalUsage] = useState<{ input: number; output: number; cost: number } | null>(null)
   const [pendingModel, setPendingModel] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
   const { exit } = useApp()
   const nextId = useRef(0)
   const responseLengthRef = useRef(0)
@@ -70,6 +72,10 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
       createdAt: session?.createdAt,
     })
     if (slashResult.handled) {
+      if (text.trim() === '/help') {
+        setHelpOpen(true)
+        return
+      }
       if (slashResult.message) {
         setMessages(prev => [...prev, slashResult.message!])
       }
@@ -185,20 +191,46 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
     <OverlayProvider>
       <Box flexDirection="column" height="100%">
         {/* Header */}
-        <Box paddingX={1}>
-          <Text bold color="cyan">myagent</Text>
-          <Text dimColor> — TUI Mode</Text>
-          {pendingModel && <Text dimColor> [{pendingModel}]</Text>}
-          {session && <Text dimColor> [{session.shortId ?? session.id.slice(0, 8)}]</Text>}
-          {totalUsage && (
-            <Text dimColor> | Tokens: {totalUsage.input + totalUsage.output} | ${totalUsage.cost.toFixed(4)}</Text>
-          )}
+        <Box flexDirection="column">
+          <Box paddingX={1}>
+            <Text bold color="cyan"> myagent</Text>
+            <Text dimColor> </Text>
+            <Divider />
+          </Box>
+          <Box paddingX={2} gap={2}>
+            <Text>
+              <Text color="green">●</Text>
+              <Text> {pendingModel || 'claude-sonnet-4'}</Text>
+            </Text>
+            <Text dimColor>│</Text>
+            <Text dimColor>Session: {session?.id?.slice(0, 8) || 'none'}</Text>
+            {totalUsage && (
+              <>
+                <Text dimColor>│</Text>
+                <Text>
+                  <Text color="yellow">Tokens:</Text>
+                  <Text> {(totalUsage.input + totalUsage.output).toLocaleString()}</Text>
+                </Text>
+                <Text dimColor>│</Text>
+                <Text>
+                  <Text color="green">$</Text>
+                  <Text>{totalUsage.cost.toFixed(4)}</Text>
+                </Text>
+              </>
+            )}
+            {pendingModel && (
+              <>
+                <Text dimColor>│</Text>
+                <Text color="yellow">{'->'} {pendingModel}</Text>
+              </>
+            )}
+          </Box>
+          <Divider />
         </Box>
         <CompactionIndicator
           tokenCount={totalUsage ? totalUsage.input + totalUsage.output : 0}
           maxTokens={200000}
         />
-        <Divider />
 
         {/* Messages 区域 */}
         <Box flexDirection="column" flexGrow={1} paddingX={1} overflow="hidden">
@@ -261,8 +293,15 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
         {/* 设置屏幕 */}
         {settingsOpen && <SettingsScreen onClose={() => setSettingsOpen(false)} />}
 
+        {/* 帮助屏幕 */}
+        {helpOpen && <HelpScreen onClose={() => setHelpOpen(false)} />}
+
         {/* Input 区域 */}
         <Divider />
+        <Box paddingX={1}>
+          <Text color="cyan" bold>{'> '}</Text>
+          <Text dimColor>Enter to send · Shift+Enter for newline · /help for commands</Text>
+        </Box>
         <PromptInput
           onSubmit={handleSubmit}
           isRunning={isRunning || !!pendingPermission}

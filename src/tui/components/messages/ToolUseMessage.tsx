@@ -44,14 +44,15 @@ export function ToolUseMessage({ id, name, input, verbose }: Props) {
   }
 
   return (
-    <Box flexDirection="column" marginBottom={1} marginLeft={2}>
+    <Box flexDirection="column" marginBottom={1}>
       <Box>
+        <Text color="yellow"> {'│'} </Text>
         <Text color="yellow">{icon} </Text>
         <Text bold color="yellow">{name}</Text>
         <Text dimColor> {getSummary()}</Text>
       </Box>
       {(verbose || expanded) && inputStr && (
-        <Box marginLeft={2} marginTop={1}>
+        <Box marginLeft={3}>
           <Text dimColor>{verbose ? inputStr : truncated}</Text>
         </Box>
       )}

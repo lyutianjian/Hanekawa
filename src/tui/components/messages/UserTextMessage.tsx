@@ -6,10 +6,15 @@ type Props = {
 }
 
 export function UserTextMessage({ text }: Props) {
+  const lines = text.split('\n')
   return (
-    <Box flexDirection="row" marginBottom={1}>
-      <Text bold color="blue">{'>'} </Text>
-      <Text>{text}</Text>
+    <Box flexDirection="column" marginBottom={1}>
+      {lines.map((line, i) => (
+        <Box key={i}>
+          <Text color="blue"> {'│'} </Text>
+          <Text>{line}</Text>
+        </Box>
+      ))}
     </Box>
   )
 }

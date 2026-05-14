@@ -22,12 +22,13 @@ export function handleSlashCommand(input: string, context: {
         id: `sys-${Date.now()}`,
         role: 'system',
         content: `Available commands:
-  /help    — Show this help
-  /clear   — Clear conversation history
-  /cost    — Show token usage and cost
-  /model   — Show current model
-  /session — Show session info
-  /compact — Compact conversation history`,
+  /help     — Show this help
+  /clear    — Clear conversation history
+  /cost     — Show token usage and cost
+  /model    — Show current model
+  /session  — Show session info
+  /compact  — Compact conversation history
+  /settings — Open settings screen`,
         timestamp: Date.now(),
       },
     }
@@ -99,6 +100,13 @@ export function handleSlashCommand(input: string, context: {
         content: 'Compacting conversation history...',
         timestamp: Date.now(),
       },
+    }
+  }
+
+  if (trimmed === '/settings') {
+    return {
+      handled: true,
+      action: 'open_settings',
     }
   }
 

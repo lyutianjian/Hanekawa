@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback } from 'react'
 import { Box, Text, useInput, useApp } from 'ink'
 import { useFileCompletion } from '../hooks/useFileCompletion.js'
+import { Divider } from '../design-system/Divider.js'
 
 type Props = {
   onSubmit: (text: string) => void
@@ -123,18 +124,21 @@ export function PromptInput({ onSubmit, isRunning, onCancel, placeholder }: Prop
   ))
 
   return (
-    <Box paddingX={1} flexDirection="column">
-      {input ? (
-        displayInput
-      ) : (
-        <Box>
-          <Text color="cyan" bold>{'> '}</Text>
-          <Text dimColor>{placeholder || 'Type a message...'}</Text>
-        </Box>
-      )}
+    <Box flexDirection="column">
+      <Divider />
+      <Box paddingX={1}>
+        {input ? (
+          displayInput
+        ) : (
+          <Box>
+            <Text color="cyan" bold>{'> '}</Text>
+            <Text dimColor>{placeholder || 'Type a message...'}</Text>
+          </Box>
+        )}
+      </Box>
       {inputLines.length > 1 && (
         <Box paddingX={2}>
-          <Text dimColor>Shift+Enter for newline, Enter to send ({inputLines.length} lines)</Text>
+          <Text dimColor>Shift+Enter for newline · Enter to send ({inputLines.length} lines)</Text>
         </Box>
       )}
       <Text inverse>{' '}</Text>

@@ -5,6 +5,7 @@ import { AssistantTextMessage } from './AssistantTextMessage.js'
 import { ToolUseMessage } from './ToolUseMessage.js'
 import { ToolResultMessage } from './ToolResultMessage.js'
 import { SystemMessage } from './SystemMessage.js'
+import { AssistantThinkingMessage } from './AssistantThinkingMessage.js'
 
 type Props = {
   message: ChatMessage
@@ -46,7 +47,7 @@ function ContentBlock({ block, role, verbose }: { block: ContentBlock; role: str
     case 'tool_result':
       return <ToolResultMessage toolUseId={block.tool_use_id} content={block.content} isError={block.is_error} />
     case 'thinking':
-      return verbose ? <AssistantTextMessage text={block.thinking} /> : null
+      return <AssistantThinkingMessage thinking={block.thinking} />
     default:
       return null
   }

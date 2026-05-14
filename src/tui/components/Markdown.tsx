@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react'
 import { Text, Box } from 'ink'
 import { marked, type Token, type TokensList, type Tokens } from 'marked'
+import { highlightCode } from '../utils/cliHighlight.js'
 
 // LRU token 缓存 — 复刻自 ClaudeCode/src/components/Markdown.tsx:23-24
 const TOKEN_CACHE_MAX = 500
@@ -73,12 +74,13 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
 
     case 'code': {
       const lang = token.lang || ''
-      const lines = token.text.split('\n')
+      const highlighted = highlightCode(token.text, lang || undefined)
+      const highlightedLines = highlighted.split('\n')
       return (
         <Box flexDirection="column" marginLeft={2} marginBottom={1}>
           {lang && <Text dimColor>{`[${lang}]`}</Text>}
-          {lines.map((line: string, i: number) => (
-            <Text key={i} color="green">{'  '}{line}</Text>
+          {highlightedLines.map((line: string, i: number) => (
+            <Text key={i}>{'  '}{line}</Text>
           ))}
         </Box>
       )

@@ -57,6 +57,63 @@ export function Markdown({ children }: MarkdownProps) {
   )
 }
 
+type InlinePart = { type: 'text' | 'bold' | 'italic' | 'code' | 'link'; text: string }
+
+function parseInlineFormatting(text: string): InlinePart[] {
+  const parts: InlinePart[] = []
+  let remaining = text
+
+  while (remaining.length > 0) {
+    // 匹配 **bold**
+    const boldMatch = remaining.match(/^\*\*(.+?)\*\*/)
+    if (boldMatch) {
+      parts.push({ type: 'bold', text: boldMatch[1] })
+      remaining = remaining.slice(boldMatch[0].length)
+      continue
+    }
+
+    // 匹配 *italic*
+    const italicMatch = remaining.match(/^\*(.+?)\*/)
+    if (italicMatch) {
+      parts.push({ type: 'italic', text: italicMatch[1] })
+      remaining = remaining.slice(italicMatch[0].length)
+      continue
+    }
+
+    // 匹配 `code`
+    const codeMatch = remaining.match(/^`(.+?)`/)
+    if (codeMatch) {
+      parts.push({ type: 'code', text: codeMatch[1] })
+      remaining = remaining.slice(codeMatch[0].length)
+      continue
+    }
+
+    // 匹配 [text](url)
+    const linkMatch = remaining.match(/^\[(.+?)\]\((.+?)\)/)
+    if (linkMatch) {
+      parts.push({ type: 'link', text: `${linkMatch[1]} (${linkMatch[2]})` })
+      remaining = remaining.slice(linkMatch[0].length)
+      continue
+    }
+
+    // 普通文本 — 读取到下一个格式标记
+    const nextFormat = remaining.search(/[\[*`]/)
+    if (nextFormat === -1) {
+      parts.push({ type: 'text', text: remaining })
+      break
+    } else if (nextFormat === 0) {
+      // 无法匹配的格式字符，当普通文本处理
+      parts.push({ type: 'text', text: remaining[0] })
+      remaining = remaining.slice(1)
+    } else {
+      parts.push({ type: 'text', text: remaining.slice(0, nextFormat) })
+      remaining = remaining.slice(nextFormat)
+    }
+  }
+
+  return parts
+}
+
 function TokenRenderer({ token }: { token: Token }): React.ReactNode {
   switch (token.type) {
     case 'heading': {
@@ -69,8 +126,20 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
       )
     }
 
-    case 'paragraph':
-      return <Text>{token.text}</Text>
+    case 'paragraph': {
+      const parts = parseInlineFormatting(token.text)
+      return (
+        <Text>
+          {parts.map((part, i) => {
+            if (part.type === 'bold') return <Text key={i} bold>{part.text}</Text>
+            if (part.type === 'italic') return <Text key={i} italic>{part.text}</Text>
+            if (part.type === 'code') return <Text key={i} color="green">{part.text}</Text>
+            if (part.type === 'link') return <Text key={i} underline>{part.text}</Text>
+            return <Text key={i}>{part.text}</Text>
+          })}
+        </Text>
+      )
+    }
 
     case 'code': {
       const lang = token.lang || ''

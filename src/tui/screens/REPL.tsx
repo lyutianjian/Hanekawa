@@ -10,6 +10,8 @@ import { SpinnerWithVerb } from '../components/Spinner/SpinnerWithVerb.js'
 import { PromptInput } from '../components/PromptInput.js'
 import { PermissionDialog } from '../components/permissions/PermissionDialog.js'
 import { ToolPermissionCard } from '../components/permissions/ToolPermissionCard.js'
+import { SettingsScreen } from '../components/SettingsScreen.js'
+import { CompactionIndicator } from '../components/CompactionIndicator.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import type { ChatMessage } from '../components/messages/types.js'
 import { handleSlashCommand } from '../commands/slashCommands.js'
@@ -33,6 +35,7 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
   const [streamingText, setStreamingText] = useState('')
   const [totalUsage, setTotalUsage] = useState<{ input: number; output: number; cost: number } | null>(null)
   const [pendingModel, setPendingModel] = useState<string | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const { exit } = useApp()
   const nextId = useRef(0)
   const responseLengthRef = useRef(0)
@@ -72,6 +75,9 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
       }
       if (text.trim() === '/clear') {
         setMessages([])
+      }
+      if (text.trim() === '/settings') {
+        setSettingsOpen(true)
       }
       if (slashResult.action === 'switch_model' && slashResult.model) {
         setPendingModel(slashResult.model)
@@ -182,11 +188,16 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
         <Box paddingX={1}>
           <Text bold color="cyan">myagent</Text>
           <Text dimColor> — TUI Mode</Text>
+          {pendingModel && <Text dimColor> [{pendingModel}]</Text>}
           {session && <Text dimColor> [{session.shortId ?? session.id.slice(0, 8)}]</Text>}
           {totalUsage && (
             <Text dimColor> | Tokens: {totalUsage.input + totalUsage.output} | ${totalUsage.cost.toFixed(4)}</Text>
           )}
         </Box>
+        <CompactionIndicator
+          tokenCount={totalUsage ? totalUsage.input + totalUsage.output : 0}
+          maxTokens={200000}
+        />
         <Divider />
 
         {/* Messages 区域 */}
@@ -246,6 +257,9 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
             </PermissionDialog>
           </Box>
         )}
+
+        {/* 设置屏幕 */}
+        {settingsOpen && <SettingsScreen onClose={() => setSettingsOpen(false)} />}
 
         {/* Input 区域 */}
         <Divider />

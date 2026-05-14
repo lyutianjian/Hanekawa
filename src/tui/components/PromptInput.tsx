@@ -19,7 +19,7 @@ export function PromptInput({ onSubmit, isDisabled, cursorY, cwd }: PromptInputP
   const [historyIndex, setHistoryIndex] = useState(-1)
   const { exit } = useApp()
   const { setCursorPosition } = useCursor()
-  const { suggestions, selectedIndex, isOpen, acceptSuggestion, navigateUp, navigateDown } = useTypeahead(input, cwd)
+  const { suggestions, selectedIndex, isOpen, acceptSuggestion, navigateUp, navigateDown, close } = useTypeahead(input, cwd)
 
   // Use ref to store latest input value, avoiding React state update delay
   const inputRef = useRef('')
@@ -112,7 +112,7 @@ export function PromptInput({ onSubmit, isDisabled, cursorY, cwd }: PromptInputP
 
     if (key.escape) {
       if (isOpen) {
-        // Close suggestions first
+        close()
         return
       }
       setInput('')

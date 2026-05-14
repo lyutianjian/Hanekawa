@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react'
 import { SessionStore, type SessionMeta } from '../../sessions/service.js'
-import type { Config } from '../../config/service.js'
-
-export function useSessionManager(config: Config, cwd: string, resumeSessionId?: string) {
+export function useSessionManager(cwd: string, resumeSessionId?: string) {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | null>(null)
   const [store, setStore] = useState<SessionStore | null>(null)
@@ -51,7 +49,7 @@ export function useSessionManager(config: Config, cwd: string, resumeSessionId?:
       setSessionMeta(null)
       setError(null)
     }
-  }, [config, cwd, resumeSessionId])
+  }, [cwd, resumeSessionId])
 
   return {
     sessionId,

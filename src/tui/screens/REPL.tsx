@@ -28,6 +28,7 @@ import type { AppState } from '../state/AppStateStore.js'
 import type { SessionStore } from '../../sessions/service.js'
 import { useSession } from '../hooks/useSession.js'
 import { useDoublePress } from '../hooks/useDoublePress.js'
+import { useTerminalTitle } from '../hooks/useTerminalTitle.js'
 
 type REPLProps = {
   loop?: AgentLoop
@@ -62,9 +63,15 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
   const nextId = useRef(0)
   const responseLengthRef = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
+  const streamingTextRef = useRef('')
+  const streamingUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const pendingPermission = useAppState(s => s.pendingPermission)
   const setAppState = useSetAppState()
+
+  // 终端标题
+  const title = `myagent${session ? ` — ${session.id.slice(0, 8)}` : ''}${isRunning ? ' ⟳' : ''}`
+  useTerminalTitle(title)
 
   // Session 持久化
   const { loadHistory, saveMessage } = useSession({
@@ -288,39 +295,69 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
       return
     }
 
-    // 使用 AgentLoop 流式执行
+    // 使用 AgentLoop 流式执行（含自动重试）
     const abort = new AbortController()
     abortRef.current = abort
 
-    try {
-      const result = await loop.run(text, abort.signal, (event: AgentStreamEvent) => {
-        switch (event.type) {
-          case 'text_delta':
-            setStreamingText(event.snapshot)
-            responseLengthRef.current = event.snapshot.length
-            break
-          case 'tool_use_start': {
-            // 添加工具使用消息，标记为 running
-            const toolMsgId = `msg-${nextId.current++}`
-            setMessages(prev => [...prev, {
-              id: toolMsgId,
-              role: 'assistant',
-              content: [{ type: 'tool_use' as const, id: event.toolId, name: event.toolName, input: {} }],
-              timestamp: Date.now(),
-              toolStatus: 'running',
-            }])
-            break
+    let retryCount = 0
+    const maxRetries = 1
+
+    const executeWithRetry = async (): Promise<Awaited<ReturnType<AgentLoop['run']>>> => {
+      try {
+        return await loop.run(text, abort.signal, (event: AgentStreamEvent) => {
+          switch (event.type) {
+            case 'text_delta':
+              streamingTextRef.current = event.snapshot
+              // 批量更新流式文本，~60fps
+              if (!streamingUpdateTimerRef.current) {
+                streamingUpdateTimerRef.current = setTimeout(() => {
+                  setStreamingText(streamingTextRef.current)
+                  streamingUpdateTimerRef.current = null
+                }, 16)
+              }
+              responseLengthRef.current = event.snapshot.length
+              break
+            case 'tool_use_start': {
+              // 添加工具使用消息，标记为 running
+              const toolMsgId = `msg-${nextId.current++}`
+              setMessages(prev => [...prev, {
+                id: toolMsgId,
+                role: 'assistant',
+                content: [{ type: 'tool_use' as const, id: event.toolId, name: event.toolName, input: {} }],
+                timestamp: Date.now(),
+                toolStatus: 'running',
+              }])
+              break
+            }
+            case 'turn_end':
+              // turn 结束时，标记所有 running 的工具为 done
+              setMessages(prev => prev.map(msg =>
+                msg.toolStatus === 'running'
+                  ? { ...msg, toolStatus: 'done' as const }
+                  : msg
+              ))
+              break
           }
-          case 'turn_end':
-            // turn 结束时，标记所有 running 的工具为 done
-            setMessages(prev => prev.map(msg =>
-              msg.toolStatus === 'running'
-                ? { ...msg, toolStatus: 'done' as const }
-                : msg
-            ))
-            break
+        })
+      } catch (err) {
+        // 网络错误自动重试一次
+        if (retryCount < maxRetries && (err as Error).message?.includes('network')) {
+          retryCount++
+          const retryMsg: ChatMessage = {
+            id: `sys-${nextId.current++}`,
+            role: 'system',
+            content: 'Network error, retrying...',
+            timestamp: Date.now(),
+          }
+          setMessages(prev => [...prev, retryMsg])
+          return executeWithRetry()
         }
-      })
+        throw err
+      }
+    }
+
+    try {
+      const result = await executeWithRetry()
 
       // 流式完成后，添加最终消息
       if (result.content) {
@@ -388,6 +425,11 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
         saveMessage(errorMsg)
       }
     } finally {
+      // 清理流式更新定时器
+      if (streamingUpdateTimerRef.current) {
+        clearTimeout(streamingUpdateTimerRef.current)
+        streamingUpdateTimerRef.current = null
+      }
       setIsRunning(false)
       setStreamingText('')
       abortRef.current = null
@@ -471,6 +513,8 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
             </Text>
             <Text dimColor>│</Text>
             <Text dimColor>Session: {session?.id?.slice(0, 8) || 'none'}</Text>
+            <Text dimColor>│</Text>
+            <Text dimColor>{messages.length} messages</Text>
             {totalUsage && (
               <>
                 <Text dimColor>│</Text>

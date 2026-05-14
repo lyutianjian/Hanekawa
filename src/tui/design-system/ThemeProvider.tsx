@@ -27,6 +27,11 @@ export interface ThemeColors {
   // Interactive
   hoverBorder: string
   selectedBackground: string
+
+  // Claude Code style colors
+  claude: string
+  claudeShimmer: string
+  subtle: string
 }
 
 const darkColors: ThemeColors = {
@@ -48,6 +53,11 @@ const darkColors: ThemeColors = {
 
   hoverBorder: '#585B70',
   selectedBackground: '#313244',
+
+  // Claude Code style colors
+  claude: '#D4A574',
+  claudeShimmer: '#E8C9A0',
+  subtle: '#6C7086',
 }
 
 const lightColors: ThemeColors = {
@@ -69,6 +79,11 @@ const lightColors: ThemeColors = {
 
   hoverBorder: '#ACB0BE',
   selectedBackground: '#E6E9EF',
+
+  // Claude Code style colors
+  claude: '#8B6914',
+  claudeShimmer: '#A67C00',
+  subtle: '#9399B2',
 }
 
 interface ThemeContextValue {

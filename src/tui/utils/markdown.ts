@@ -16,15 +16,19 @@ export function renderMarkdown(text: string, colors?: ThemeColors): string {
   result = result.replace(
     /```(\w*)\n([\s\S]*?)```/g,
     (_: string, lang: string, code: string) => {
-      const highlighted = highlightCode(code.trim(), lang)
-      return `\n${chalk.bgHex('#1E1E2E').hex('#CDD6F4')(` ${lang || 'code'} `)}\n${highlighted}\n`
+      const highlighted = highlightCode(code.trim(), lang, colors)
+      const codeBg = colors?.background ?? '#1E1E2E'
+      const codeFg = colors?.foreground ?? '#CDD6F4'
+      return `\n${chalk.bgHex(codeBg).hex(codeFg)(` ${lang || 'code'} `)}\n${highlighted}\n`
     },
   )
 
   // Inline code (`code`)
+  const inlineBg = colors?.selectedBackground ?? '#313244'
+  const inlineFg = colors?.foreground ?? '#CDD6F4'
   result = result.replace(
     /`([^`]+)`/g,
-    (_: string, code: string) => chalk.bgHex('#313244').hex('#CDD6F4')(` ${code} `),
+    (_: string, code: string) => chalk.bgHex(inlineBg).hex(inlineFg)(` ${code} `),
   )
 
   // Headers (# Header) - up to h6
@@ -82,7 +86,7 @@ export function renderMarkdown(text: string, colors?: ThemeColors): string {
 /**
  * Simple syntax highlighting for code blocks.
  */
-function highlightCode(code: string, language: string): string {
+function highlightCode(code: string, language: string, colors?: ThemeColors): string {
   const keywords: Record<string, string[]> = {
     javascript: ['const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while', 'class', 'import', 'export', 'from', 'default', 'new', 'this', 'async', 'await', 'try', 'catch', 'throw'],
     typescript: ['const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while', 'class', 'import', 'export', 'interface', 'type', 'from', 'default', 'new', 'this', 'async', 'await', 'try', 'catch', 'throw', 'enum', 'extends', 'implements'],
@@ -93,24 +97,29 @@ function highlightCode(code: string, language: string): string {
 
   const langKeywords = keywords[language] || keywords.javascript
 
+  // Use theme colors instead of hardcoded values
+  const keywordColor = colors?.accent ?? '#CBA6F7'
+  const stringColor = colors?.success ?? '#A6E3A1'
+  const commentColor = colors?.dimmed ?? '#6C7086'
+
   let highlighted = code
 
   // Highlight keywords
   for (const keyword of langKeywords) {
     const regex = new RegExp(`\\b${keyword}\\b`, 'g')
-    highlighted = highlighted.replace(regex, chalk.hex('#CBA6F7')(keyword))
+    highlighted = highlighted.replace(regex, chalk.hex(keywordColor)(keyword))
   }
 
   // Highlight strings
   highlighted = highlighted.replace(
     /(["'])(?:(?!\1).)*\1/g,
-    (match: string) => chalk.hex('#A6E3A1')(match),
+    (match: string) => chalk.hex(stringColor)(match),
   )
 
   // Highlight comments (// and # style)
   highlighted = highlighted.replace(
     /(\/\/.*$|#.*$)/gm,
-    (match: string) => chalk.hex('#6C7086')(match),
+    (match: string) => chalk.hex(commentColor)(match),
   )
 
   return highlighted

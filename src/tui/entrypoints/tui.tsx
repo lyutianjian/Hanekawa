@@ -104,10 +104,16 @@ async function main() {
     appendRecord: async (record) => store.appendRecord(session.id, record),
   })
 
+  // 准备 REPL 配置
+  const replConfig = {
+    model: modelConfig.model,
+    verbose: false,
+  }
+
   // 渲染 TUI
   render(
     <AppStateProvider externalStore={appStore}>
-      <REPL loop={loop} session={session} appStore={appStore} sessionStore={store} />
+      <REPL loop={loop} session={session} appStore={appStore} sessionStore={store} config={replConfig} />
     </AppStateProvider>,
   )
 }

@@ -6,6 +6,7 @@ import { useApp, useInput } from 'ink'
 import { Divider } from '../design-system/Divider.js'
 import { OverlayProvider } from '../context/overlayContext.js'
 import { MessageRow } from '../components/messages/MessageRow.js'
+import { MessageGroup } from '../components/messages/MessageGroup.js'
 import { SpinnerWithVerb } from '../components/Spinner/SpinnerWithVerb.js'
 import { PromptInput } from '../components/PromptInput.js'
 import { Footer } from '../components/Footer.js'
@@ -24,15 +25,21 @@ import type { Store } from '../state/store.js'
 import type { AppState } from '../state/AppStateStore.js'
 import type { SessionStore } from '../../sessions/service.js'
 import { useSession } from '../hooks/useSession.js'
+import { useDoublePress } from '../hooks/useDoublePress.js'
 
 type REPLProps = {
   loop?: AgentLoop
   session?: { id: string; shortId?: string; createdAt?: string }
   appStore?: Store<AppState>
   sessionStore?: SessionStore
+  config?: {
+    theme?: string
+    verbose?: boolean
+    model?: string
+  }
 }
 
-export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
+export function REPL({ loop, session, appStore, sessionStore, config }: REPLProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isRunning, setIsRunning] = useState(false)
   const [streamingText, setStreamingText] = useState('')
@@ -220,8 +227,39 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
     }
   }, [])
 
-  // Ctrl+R — 打开转录搜索
+  // 双击 Ctrl+C — 第一次取消，双击退出
+  const handleCtrlC = useDoublePress(
+    () => {
+      if (isRunning) {
+        handleCancel()
+      }
+    },
+    () => {
+      exit()
+    },
+  )
+
+  // 双击 Ctrl+D — 双击退出
+  const handleCtrlD = useDoublePress(
+    () => {},
+    () => exit(),
+  )
+
+  // 键盘快捷键
   useInput((inputChar, key) => {
+    // Ctrl+C — 双击退出
+    if (key.ctrl && inputChar === 'c') {
+      handleCtrlC()
+      return
+    }
+
+    // Ctrl+D — 双击退出
+    if (key.ctrl && inputChar === 'd') {
+      handleCtrlD()
+      return
+    }
+
+    // Ctrl+R — 打开转录搜索
     if (key.ctrl && inputChar === 'r' && !searchOpen && !settingsOpen && !helpOpen) {
       setSearchOpen(true)
     }
@@ -278,8 +316,25 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
             <Text dimColor>Type a message to get started...</Text>
           ) : (
             <>
-              {messages.map(msg => (
-                <MessageRow key={msg.id} message={msg} />
+              {/* 将消息按角色分组 */}
+              {messages.reduce<{ role: string; messages: ChatMessage[] }[]>(
+                (groups, msg) => {
+                  const lastGroup = groups[groups.length - 1]
+                  if (lastGroup && lastGroup.role === msg.role) {
+                    lastGroup.messages.push(msg)
+                  } else {
+                    groups.push({ role: msg.role, messages: [msg] })
+                  }
+                  return groups
+                },
+                [],
+              ).map((group, i) => (
+                <MessageGroup
+                  key={i}
+                  messages={group.messages}
+                  role={group.role as 'user' | 'assistant' | 'system'}
+                  verbose={config?.verbose}
+                />
               ))}
               {/* 流式文本预览 */}
               {streamingText && (

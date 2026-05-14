@@ -11,6 +11,7 @@ import { AssistantThinkingMessage } from './AssistantThinkingMessage.js'
 type Props = {
   message: ChatMessage
   verbose?: boolean
+  isRunning?: boolean
 }
 
 export const Message = memo(function Message({ message, verbose }: Props) {

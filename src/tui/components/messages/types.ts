@@ -13,4 +13,5 @@ export type ChatMessage = {
   model?: string
   timestamp?: number
   isStreaming?: boolean
+  toolStatus?: 'running' | 'done' | 'error'
 }

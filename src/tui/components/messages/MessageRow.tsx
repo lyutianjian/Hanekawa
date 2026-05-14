@@ -11,7 +11,7 @@ type Props = {
 export const MessageRow = memo(function MessageRow({ message, verbose }: Props) {
   return (
     <Box flexDirection="column">
-      <Message message={message} verbose={verbose} />
+      <Message message={message} verbose={verbose} isRunning={message.toolStatus === 'running'} />
     </Box>
   )
 })

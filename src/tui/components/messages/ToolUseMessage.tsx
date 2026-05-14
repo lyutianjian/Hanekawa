@@ -6,6 +6,7 @@ type Props = {
   name: string
   input: unknown
   verbose?: boolean
+  isRunning?: boolean
 }
 
 const TOOL_ICONS: Record<string, string> = {
@@ -24,7 +25,7 @@ const TOOL_ICONS: Record<string, string> = {
   taskGet: '📋',
 }
 
-export function ToolUseMessage({ id, name, input, verbose }: Props) {
+export function ToolUseMessage({ id, name, input, verbose, isRunning }: Props) {
   const icon = TOOL_ICONS[name] || '⚡'
 
   const getSummary = (): string => {
@@ -44,6 +45,7 @@ export function ToolUseMessage({ id, name, input, verbose }: Props) {
     <Box marginBottom={1} paddingX={1}>
       <Text color="yellow" dimColor>{icon} {name}</Text>
       {summary && <Text dimColor> — {summary}</Text>}
+      {isRunning && <Text color="yellow"> ⟳</Text>}
     </Box>
   )
 }

@@ -5,6 +5,8 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { render } from '../ink.js'
 import { AppStateProvider } from '../state/AppState.js'
+import { createStore } from '../state/store.js'
+import { getDefaultAppState, type AppState } from '../state/AppStateStore.js'
 import { REPL } from '../screens/REPL.js'
 
 // Agent 核心
@@ -49,8 +51,25 @@ async function main() {
   const tools = await getAllTools(cwd)
   const skills = await new SkillsService(cwd).list()
 
-  // 权限 — 简化实现：自动批准所有操作（后续接入 Dialog）
-  const permissionGate = new PermissionGate(async () => true)
+  // 创建共享 store — PermissionGate 回调和 TUI 组件都需要访问
+  const appStore = createStore<AppState>(getDefaultAppState())
+
+  // 权限 — 通过 TUI Dialog 让用户确认
+  const permissionGate = new PermissionGate(async (request) => {
+    return new Promise<boolean>((resolve) => {
+      appStore.setState(prev => ({
+        ...prev,
+        pendingPermission: {
+          toolName: request.tool.name || 'unknown',
+          input: request.input,
+          reason: request.reason,
+          riskLevel: request.tool.riskLevel || 'confirm',
+          resolve,
+          onAlwaysAllow: request.onAlwaysAllow,
+        },
+      }))
+    })
+  })
 
   const toolRunner = new ToolRunner(tools, permissionGate, {
     onRecord: async (record) => {
@@ -87,8 +106,8 @@ async function main() {
 
   // 渲染 TUI
   render(
-    <AppStateProvider>
-      <REPL loop={loop} session={session} />
+    <AppStateProvider externalStore={appStore}>
+      <REPL loop={loop} session={session} appStore={appStore} />
     </AppStateProvider>,
   )
 }

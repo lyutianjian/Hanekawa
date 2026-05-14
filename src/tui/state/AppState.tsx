@@ -14,11 +14,13 @@ const HasAppStateContext = createContext(false)
 export function AppStateProvider({
   children,
   initialState,
+  externalStore,
 }: {
   children: React.ReactNode
   initialState?: AppState
+  externalStore?: AppStateStore
 }) {
-  const [store] = useState(() => createStore(initialState ?? getDefaultAppState()))
+  const [store] = useState(() => externalStore ?? createStore(initialState ?? getDefaultAppState()))
 
   if (useContext(HasAppStateContext)) {
     throw new Error('AppStateProvider cannot be nested')

@@ -8,16 +8,22 @@ import { OverlayProvider } from '../context/overlayContext.js'
 import { MessageRow } from '../components/messages/MessageRow.js'
 import { SpinnerWithVerb } from '../components/Spinner/SpinnerWithVerb.js'
 import { PromptInput } from '../components/PromptInput.js'
+import { PermissionDialog } from '../components/permissions/PermissionDialog.js'
+import { ToolPermissionCard } from '../components/permissions/ToolPermissionCard.js'
+import { useAppState, useSetAppState } from '../state/AppState.js'
 import type { ChatMessage } from '../components/messages/types.js'
 import type { AgentLoop } from '../../harness/loop.js'
 import type { AgentStreamEvent } from '../../harness/types.js'
+import type { Store } from '../state/store.js'
+import type { AppState } from '../state/AppStateStore.js'
 
 type REPLProps = {
   loop?: AgentLoop
   session?: { id: string; shortId?: string }
+  appStore?: Store<AppState>
 }
 
-export function REPL({ loop, session }: REPLProps) {
+export function REPL({ loop, session, appStore }: REPLProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isRunning, setIsRunning] = useState(false)
   const [streamingText, setStreamingText] = useState('')
@@ -25,6 +31,9 @@ export function REPL({ loop, session }: REPLProps) {
   const nextId = useRef(0)
   const responseLengthRef = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
+
+  const pendingPermission = useAppState(s => s.pendingPermission)
+  const setAppState = useSetAppState()
 
   const handleSubmit = useCallback(async (text: string) => {
     // 添加用户消息
@@ -155,11 +164,35 @@ export function REPL({ loop, session }: REPLProps) {
           </Box>
         )}
 
+        {/* 权限对话框 */}
+        {pendingPermission && (
+          <Box paddingX={1}>
+            <PermissionDialog
+              title="Permission Required"
+              subtitle={pendingPermission.toolName}
+              onCancel={() => {
+                pendingPermission.resolve(false)
+                setAppState(prev => ({ ...prev, pendingPermission: null }))
+              }}
+              onApprove={() => {
+                pendingPermission.resolve(true)
+                setAppState(prev => ({ ...prev, pendingPermission: null }))
+              }}
+            >
+              <ToolPermissionCard
+                toolName={pendingPermission.toolName}
+                input={pendingPermission.input}
+                riskLevel={pendingPermission.riskLevel}
+              />
+            </PermissionDialog>
+          </Box>
+        )}
+
         {/* Input 区域 */}
         <Divider />
         <PromptInput
           onSubmit={handleSubmit}
-          isRunning={isRunning}
+          isRunning={isRunning || !!pendingPermission}
           onCancel={handleCancel}
         />
       </Box>

@@ -53,6 +53,7 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
   const [doctorOpen, setDoctorOpen] = useState(false)
   const [scrollToIndex, setScrollToIndex] = useState<number | null>(null)
   const [clearConfirm, setClearConfirm] = useState(false)
+  const [clearedMessages, setClearedMessages] = useState<ChatMessage[] | null>(null)
   const [themeSetting, setThemeSetting] = useTheme()
   const [verboseMode, setVerboseMode] = useState(config?.verbose ?? false)
   const verboseRef = useRef(verboseMode)
@@ -192,6 +193,44 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
           }
           setMessages(prev => [...prev, errMsg])
         }
+        return
+      }
+      if (slashResult.action === 'list_sessions') {
+        try {
+          const { readFileSync } = await import('node:fs')
+          const indexPath = '.myagent/sessions/index.json'
+          const index = JSON.parse(readFileSync(indexPath, 'utf-8'))
+          const sessions = Object.entries(index).map(([id, meta]: [string, any]) =>
+            `  ${id.slice(0, 8)} — ${meta.createdAt || 'unknown'} — ${meta.messageCount || 0} messages`
+          ).join('\n')
+
+          const sysMsg: ChatMessage = {
+            id: `sys-${nextId.current++}`,
+            role: 'system',
+            content: `Sessions:\n${sessions || '  No sessions found'}`,
+            timestamp: Date.now(),
+          }
+          setMessages(prev => [...prev, sysMsg])
+        } catch (err) {
+          const sysMsg: ChatMessage = {
+            id: `sys-${nextId.current++}`,
+            role: 'system',
+            content: 'No sessions found.',
+            timestamp: Date.now(),
+          }
+          setMessages(prev => [...prev, sysMsg])
+        }
+        return
+      }
+      if (slashResult.action === 'switch_session' && slashResult.sessionId) {
+        const sysMsg: ChatMessage = {
+          id: `sys-${nextId.current++}`,
+          role: 'system',
+          content: `Switching to session ${slashResult.sessionId}...`,
+          timestamp: Date.now(),
+        }
+        setMessages(prev => [...prev, sysMsg])
+        // 实际切换需要重启会话，此处仅提示
         return
       }
       return
@@ -367,6 +406,22 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
     // Ctrl+D — 双击退出
     if (key.ctrl && inputChar === 'd') {
       handleCtrlD()
+      return
+    }
+
+    // Ctrl+Z — 撤销 /clear
+    if (key.ctrl && inputChar === 'z') {
+      if (clearedMessages) {
+        setMessages(clearedMessages)
+        setClearedMessages(null)
+        const sysMsg: ChatMessage = {
+          id: `sys-${nextId.current++}`,
+          role: 'system',
+          content: 'Restored cleared messages.',
+          timestamp: Date.now(),
+        }
+        setMessages(prev => [...prev, sysMsg])
+      }
       return
     }
 
@@ -548,6 +603,7 @@ export function REPL({ loop, session, appStore, sessionStore, config }: REPLProp
               subtitle="This will clear all messages"
               onCancel={() => setClearConfirm(false)}
               onApprove={() => {
+                setClearedMessages([...messages])
                 setMessages([])
                 setClearConfirm(false)
               }}

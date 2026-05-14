@@ -26,6 +26,7 @@ export function HelpScreen({ onClose }: Props) {
         <HelpRow shortcut="Ctrl+D" description="Exit" />
         <HelpRow shortcut="Ctrl+L" description="Clear screen" />
         <HelpRow shortcut="Ctrl+U" description="Clear input line" />
+        <HelpRow shortcut="Ctrl+Z" description="Undo /clear" />
         <HelpRow shortcut="PageUp/Down" description="Scroll messages" />
       </Box>
       <Divider />
@@ -39,6 +40,8 @@ export function HelpScreen({ onClose }: Props) {
         <HelpRow shortcut="/clear" description="Clear conversation" />
         <HelpRow shortcut="/cost" description="Show token usage" />
         <HelpRow shortcut="/session" description="Show session info" />
+        <HelpRow shortcut="/sessions" description="List all sessions" />
+        <HelpRow shortcut="/switch <id>" description="Switch to session" />
         <HelpRow shortcut="/compact" description="Compact history" />
         <HelpRow shortcut="/settings" description="Open settings" />
         <HelpRow shortcut="/theme <name>" description="Switch theme (dark/light/auto)" />

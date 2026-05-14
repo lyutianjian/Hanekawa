@@ -81,7 +81,7 @@ export function Markdown({ children }: MarkdownProps) {
   )
 }
 
-type InlinePart = { type: 'text' | 'bold' | 'italic' | 'code' | 'link'; text: string }
+type InlinePart = { type: 'text' | 'bold' | 'italic' | 'code' | 'link'; text: string; url?: string }
 
 function parseInlineFormatting(text: string): InlinePart[] {
   const parts: InlinePart[] = []
@@ -115,7 +115,7 @@ function parseInlineFormatting(text: string): InlinePart[] {
     // 匹配 [text](url)
     const linkMatch = remaining.match(/^\[(.+?)\]\((.+?)\)/)
     if (linkMatch) {
-      parts.push({ type: 'link', text: `${linkMatch[1]} (${linkMatch[2]})` })
+      parts.push({ type: 'link', text: linkMatch[1], url: linkMatch[2] })
       remaining = remaining.slice(linkMatch[0].length)
       continue
     }
@@ -158,7 +158,14 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
             if (part.type === 'bold') return <Text key={i} bold>{part.text}</Text>
             if (part.type === 'italic') return <Text key={i} italic>{part.text}</Text>
             if (part.type === 'code') return <Text key={i} color="green">{part.text}</Text>
-            if (part.type === 'link') return <Text key={i} underline>{part.text}</Text>
+            if (part.type === 'link') {
+              return (
+                <Text key={i}>
+                  <Text underline color="cyan">{part.text}</Text>
+                  <Text dimColor> ({part.url})</Text>
+                </Text>
+              )
+            }
             return <Text key={i}>{part.text}</Text>
           })}
         </Text>

@@ -6,6 +6,7 @@ export type SlashCommandResult = {
   action?: string
   model?: string
   theme?: 'dark' | 'light' | 'auto'
+  sessionId?: string
 }
 
 export function handleSlashCommand(input: string, context: {
@@ -28,6 +29,8 @@ export function handleSlashCommand(input: string, context: {
   /cost     — Show token usage and cost
   /model    — Show current model
   /session  — Show session info
+  /sessions — List all sessions
+  /switch   — Switch to session
   /retry    — Retry the last user message
   /compact  — Compact conversation history
   /settings — Open settings screen
@@ -161,6 +164,34 @@ export function handleSlashCommand(input: string, context: {
     return {
       handled: true,
       action: 'export',
+    }
+  }
+
+  if (trimmed === '/sessions') {
+    return {
+      handled: true,
+      action: 'list_sessions',
+    }
+  }
+
+  if (trimmed.startsWith('/switch')) {
+    const parts = trimmed.split(/\s+/)
+    const sessionId = parts[1]
+    if (sessionId) {
+      return {
+        handled: true,
+        action: 'switch_session',
+        sessionId,
+      }
+    }
+    return {
+      handled: true,
+      message: {
+        id: `sys-${Date.now()}`,
+        role: 'system',
+        content: 'Usage: /switch <session-id>',
+        timestamp: Date.now(),
+      },
     }
   }
 

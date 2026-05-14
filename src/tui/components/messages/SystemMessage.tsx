@@ -15,6 +15,7 @@ export function SystemMessage({ message }: Props) {
 
   return (
     <Box marginBottom={1}>
+      <Text dimColor> {'│'} </Text>
       <Text dimColor italic>{text}</Text>
     </Box>
   )

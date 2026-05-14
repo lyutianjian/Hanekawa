@@ -20,8 +20,9 @@ export function ToolResultMessage({ toolUseId, content, isError }: Props) {
   })
 
   return (
-    <Box flexDirection="column" marginBottom={1} marginLeft={2}>
+    <Box flexDirection="column" marginBottom={1}>
       <Box>
+        <Text color="yellow"> {'│'} </Text>
         <Text color={isError ? 'red' : 'green'}>
           {isError ? '✗' : '✓'}
         </Text>
@@ -32,7 +33,7 @@ export function ToolResultMessage({ toolUseId, content, isError }: Props) {
           </Text>
         )}
       </Box>
-      <Box marginLeft={2} flexDirection="column">
+      <Box marginLeft={3} flexDirection="column">
         <Text color={isError ? 'red' : undefined}>
           {expanded ? content : preview}
         </Text>

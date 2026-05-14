@@ -47,6 +47,12 @@ export function PromptInput({ onSubmit, isRunning, onCancel, placeholder }: Prop
       return
     }
 
+    // Shift+Enter 或 Alt+Enter — 插入换行
+    if ((key.shift && key.return) || (key.meta && key.return)) {
+      setInput(prev => prev + '\n')
+      return
+    }
+
     // Enter — 提交
     if (key.return) {
       if (input.trim() && !isRunning) {
@@ -107,13 +113,29 @@ export function PromptInput({ onSubmit, isRunning, onCancel, placeholder }: Prop
     }
   })
 
+  const inputLines = input.split('\n')
+  const displayInput = inputLines.map((line, i) => (
+    <React.Fragment key={i}>
+      {i === 0 ? <Text color="cyan" bold>{'> '}</Text> : <Text color="cyan">{'  '}</Text>}
+      <Text>{line}</Text>
+      {'\n'}
+    </React.Fragment>
+  ))
+
   return (
-    <Box paddingX={1}>
-      <Text color="cyan" bold>{'> '}</Text>
+    <Box paddingX={1} flexDirection="column">
       {input ? (
-        <Text>{input}</Text>
+        displayInput
       ) : (
-        <Text dimColor>{placeholder || 'Type a message...'}</Text>
+        <Box>
+          <Text color="cyan" bold>{'> '}</Text>
+          <Text dimColor>{placeholder || 'Type a message...'}</Text>
+        </Box>
+      )}
+      {inputLines.length > 1 && (
+        <Box paddingX={2}>
+          <Text dimColor>Shift+Enter for newline, Enter to send ({inputLines.length} lines)</Text>
+        </Box>
       )}
       <Text inverse>{' '}</Text>
     </Box>

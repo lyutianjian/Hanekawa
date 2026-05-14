@@ -22,7 +22,7 @@ import { useSession } from '../hooks/useSession.js'
 
 type REPLProps = {
   loop?: AgentLoop
-  session?: { id: string; shortId?: string }
+  session?: { id: string; shortId?: string; createdAt?: string }
   appStore?: Store<AppState>
   sessionStore?: SessionStore
 }
@@ -32,6 +32,7 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
   const [isRunning, setIsRunning] = useState(false)
   const [streamingText, setStreamingText] = useState('')
   const [totalUsage, setTotalUsage] = useState<{ input: number; output: number; cost: number } | null>(null)
+  const [pendingModel, setPendingModel] = useState<string | null>(null)
   const { exit } = useApp()
   const nextId = useRef(0)
   const responseLengthRef = useRef(0)
@@ -59,13 +60,21 @@ export function REPL({ loop, session, appStore, sessionStore }: REPLProps) {
 
   const handleSubmit = useCallback(async (text: string) => {
     // Slash 命令处理
-    const slashResult = handleSlashCommand(text, { model: 'current-model', sessionId: session?.id })
+    const slashResult = handleSlashCommand(text, {
+      model: pendingModel || 'current-model',
+      sessionId: session?.id,
+      messageCount: messages.length,
+      createdAt: session?.createdAt,
+    })
     if (slashResult.handled) {
       if (slashResult.message) {
         setMessages(prev => [...prev, slashResult.message!])
       }
       if (text.trim() === '/clear') {
         setMessages([])
+      }
+      if (slashResult.action === 'switch_model' && slashResult.model) {
+        setPendingModel(slashResult.model)
       }
       return
     }

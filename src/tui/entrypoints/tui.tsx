@@ -107,7 +107,7 @@ async function main() {
   // 渲染 TUI
   render(
     <AppStateProvider externalStore={appStore}>
-      <REPL loop={loop} session={session} appStore={appStore} />
+      <REPL loop={loop} session={session} appStore={appStore} sessionStore={store} />
     </AppStateProvider>,
   )
 }

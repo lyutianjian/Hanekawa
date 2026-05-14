@@ -24,20 +24,21 @@ export function handleSlashCommand(input: string, context: {
         id: `sys-${Date.now()}`,
         role: 'system',
         content: `Available commands:
-  /help     — Show this help
-  /clear    — Clear conversation history
-  /cost     — Show token usage and cost
-  /model    — Show current model
-  /session  — Show session info
-  /sessions — List all sessions
-  /switch   — Switch to session
-  /retry    — Retry the last user message
-  /compact  — Compact conversation history
-  /settings — Open settings screen
-  /doctor   — Run system diagnostics
-  /theme    — Switch theme (dark/light/auto)
-  /verbose  — Toggle verbose mode
-  /export   — Export conversation to JSON`,
+
+  /help      Show this help message
+  /clear     Clear conversation history
+  /cost      Show token usage and estimated cost
+  /model     Show or switch the current model
+  /session   Show current session info
+  /sessions  List all saved sessions
+  /switch    Switch to a different session
+  /retry     Retry the last user message
+  /compact   Compact conversation history to save tokens
+  /settings  Open the settings screen
+  /doctor    Run system diagnostics
+  /theme     Switch theme (dark / light / auto)
+  /verbose   Toggle verbose mode (show tool details)
+  /export    Export conversation to JSON file`,
         timestamp: Date.now(),
       },
     }

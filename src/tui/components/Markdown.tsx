@@ -189,12 +189,12 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
         <Box flexDirection="column" marginTop={1} marginBottom={1}>
           {lang && (
             <Box>
-              <Text dimColor>{'─'.repeat(lang.length + 4)}</Text>
+              <Text dimColor>{'─'.repeat(2)}</Text>
               <Text dimColor> {lang} </Text>
-              <Text dimColor>{'─'.repeat(20)}</Text>
+              <Text dimColor>{'─'.repeat(Math.max(0, 40 - lang.length))}</Text>
             </Box>
           )}
-          <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1}>
+          <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
             {highlightedLines.map((line: string, i: number) => (
               <Text key={i}>{line}</Text>
             ))}
@@ -271,7 +271,11 @@ function TokenRenderer({ token }: { token: Token }): React.ReactNode {
     }
 
     case 'hr':
-      return <Text dimColor>{'─'.repeat(40)}</Text>
+      return (
+        <Box marginTop={1} marginBottom={1}>
+          <Text dimColor>{'─'.repeat(60)}</Text>
+        </Box>
+      )
 
     case 'space':
       return null

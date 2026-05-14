@@ -32,10 +32,10 @@ export function PermissionDialog({ title, subtitle, children, onCancel, onApprov
         {subtitle && <Text dimColor> — {subtitle}</Text>}
         <Text color="yellow" bold> ─╮</Text>
       </Box>
-      <Box marginLeft={2} flexDirection="column">
+      <Box marginLeft={1} marginRight={1} flexDirection="column" borderStyle="single" borderColor="yellow" paddingX={1}>
         {children}
       </Box>
-      <Box marginLeft={2} marginTop={1}>
+      <Box marginLeft={1} marginTop={1}>
         <Text color="yellow" bold>╰─ </Text>
         <Text color="green" bold>[y]</Text>
         <Text> Approve</Text>
@@ -46,7 +46,7 @@ export function PermissionDialog({ title, subtitle, children, onCancel, onApprov
           <>
             <Text dimColor>  ·  </Text>
             <Text color="yellow" bold>[a]</Text>
-            <Text> Always allow</Text>
+            <Text> Always</Text>
           </>
         )}
         <Text color="yellow" bold> ─╯</Text>

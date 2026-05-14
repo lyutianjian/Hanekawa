@@ -33,7 +33,9 @@ export const Message = memo(function Message({ message, verbose, isRunning }: Pr
   return (
     <Box flexDirection="column" marginTop={1}>
       {message.content.map((block, i) => (
-        <ContentBlock key={i} block={block} role={message.role} verbose={verbose} isRunning={isRunning} />
+        <Box key={i} marginBottom={i < message.content.length - 1 ? 1 : 0}>
+          <ContentBlock block={block} role={message.role} verbose={verbose} isRunning={isRunning} />
+        </Box>
       ))}
     </Box>
   )

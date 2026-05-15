@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Tool } from '../harness/types.js'
+import { assertInsideCwd } from '../utils/paths.js'
 
 export const writeFileTool: Tool = {
   name: 'writeFile',
@@ -17,7 +18,7 @@ export const writeFileTool: Tool = {
   riskLevel: 'confirm',
   async execute(input, context) {
     const { filePath, content } = input as { filePath: string; content: string }
-    const absolute = path.resolve(context.cwd, filePath)
+    const absolute = assertInsideCwd(context.cwd, filePath)
     await mkdir(path.dirname(absolute), { recursive: true })
     await writeFile(absolute, content, 'utf8')
     return { ok: true, content: `Wrote ${filePath}` }

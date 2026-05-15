@@ -192,7 +192,7 @@ async function startInteractiveSession(session: SessionMeta) {
 
   const store = new SessionStore(cwd)
   await store.init()
-  const tools = await getAllTools(cwd)
+  const tools = await getAllTools()
   const skills = await new SkillsService(cwd).list()
 
   // Enable keypress events BEFORE creating readline so keypress fires before 'line'
@@ -466,7 +466,9 @@ async function startInteractiveSession(session: SessionMeta) {
 }
 
 async function promptPermission(rl: readline.Interface, request: PermissionRequest): Promise<boolean> {
-  const summary = JSON.stringify(request.input)
+  const MAX_SUMMARY = 500
+  let summary = JSON.stringify(request.input)
+  if (summary.length > MAX_SUMMARY) summary = summary.slice(0, MAX_SUMMARY) + '...'
   const answer = await askQuestion(
     rl,
     `[permission] ${request.tool.name}: ${request.reason}\ninput: ${summary}\nAllow? (y/N) `,

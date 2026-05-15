@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "myagent": "./src/entrypoints/cli.ts"
+    "myagent": "./src/entrypoints/cli.ts",
+    "myagent-tui": "./src/tui/entrypoints/tui.tsx"
   },
   "scripts": {
     "dev": "tsx src/entrypoints/cli.ts",

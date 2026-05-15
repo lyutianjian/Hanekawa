@@ -15,7 +15,9 @@ export async function loadMcpConfig(cwd: string): Promise<Record<string, McpServ
       const content = await readFile(projectConfigPath, 'utf-8')
       const config = JSON.parse(content) as McpConfig
       return config.mcpServers ?? {}
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+      console.warn(`Failed to parse MCP config at ${projectConfigPath}:`, (error as Error).message)
       return {}
     }
   }

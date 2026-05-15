@@ -1,13 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-
-export interface McpServerConfig {
-  transport: 'stdio' | 'sse'
-  command?: string
-  args?: string[]
-  url?: string
-}
+import type { McpServerConfig } from '../services/mcp/types.js'
 
 export interface MyAgentSettings {
   permissions?: {
@@ -22,12 +16,14 @@ export interface MyAgentSettings {
 }
 
 async function loadSettingsFile(filePath: string): Promise<MyAgentSettings> {
+  let content: string
   try {
-    const content = await readFile(filePath, 'utf-8')
-    return JSON.parse(content) as MyAgentSettings
-  } catch {
-    return {}
+    content = await readFile(filePath, 'utf-8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw error
   }
+  return JSON.parse(content) as MyAgentSettings
 }
 
 function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {

@@ -1,6 +1,6 @@
 import { rm } from 'node:fs/promises'
-import path from 'node:path'
 import type { Tool } from '../harness/types.js'
+import { assertInsideCwd } from '../utils/paths.js'
 
 export const deleteFileTool: Tool = {
   name: 'deleteFile',
@@ -16,7 +16,7 @@ export const deleteFileTool: Tool = {
   riskLevel: 'dangerous',
   async execute(input, context) {
     const { filePath } = input as { filePath: string }
-    await rm(path.resolve(context.cwd, filePath), { force: false })
+    await rm(assertInsideCwd(context.cwd, filePath), { force: false })
     return { ok: true, content: `Deleted ${filePath}` }
   },
 }

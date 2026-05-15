@@ -248,7 +248,7 @@ export class ContextBuilder {
       )
     }
 
-    const contextLines: (string | undefined)[] = [
+    const contextLines = [
       '<system-reminder>',
       'As you answer the user, you can use the following context:',
       `# currentDate\nToday's date is ${formatLocalDate(now)}.`,
@@ -256,9 +256,9 @@ export class ContextBuilder {
       'IMPORTANT: this context may or may not be relevant. Do not mention it unless it helps with the task.',
       '</system-reminder>',
     ]
-    sections.push(...contextLines.filter((line): line is string => line !== undefined && line !== null))
+    sections.push(...contextLines.filter((line): line is string => line !== undefined))
 
-    const content = sections.filter((line): line is string => line !== undefined && line !== null).join('\n\n')
+    const content = sections.join('\n\n')
 
     return [{
       kind: 'message',

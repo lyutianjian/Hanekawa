@@ -10,6 +10,7 @@ import {
   splitSystemForCaching,
 } from '../harness/cacheControl.js'
 import { withRetry, isRetryableError } from './retry.js'
+import { safeJsonParse } from '../utils/json.js'
 
 const MAX_OUTPUT_TOKENS_DEFAULT = 32_000
 const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 128_000
@@ -531,14 +532,20 @@ function isStreamTimeoutError(error: unknown): boolean {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function streamWithTimeout(
-  stream: { finalMessage: () => Promise<Anthropic.Messages.Message> },
+  stream: { finalMessage: () => Promise<Anthropic.Messages.Message>; abort: () => void },
 ): Promise<Anthropic.Messages.Message> {
-  return Promise.race([
-    stream.finalMessage(),
-    new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Stream idle timeout')), STREAM_IDLE_TIMEOUT_MS)
-    }),
-  ])
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      stream.abort()
+      reject(new Error('Stream idle timeout'))
+    }, STREAM_IDLE_TIMEOUT_MS)
+  })
+  try {
+    return await Promise.race([stream.finalMessage(), timeoutPromise])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }
 
 export class OpenAIProvider implements ModelProvider {
@@ -576,9 +583,7 @@ export class OpenAIProvider implements ModelProvider {
             return {
               id: tc.id,
               name: fn.function.name,
-              input: typeof fn.function.arguments === 'string'
-                ? JSON.parse(fn.function.arguments)
-                : fn.function.arguments,
+              input: safeJsonParse(fn.function.arguments),
             }
           }) ?? []
 
@@ -613,20 +618,33 @@ export class OpenAIProvider implements ModelProvider {
     const stream = await this.client.chat.completions.create({
       ...payload,
       stream: true,
+      stream_options: { include_usage: true },
     }, {
       signal: request.retry?.signal,
     })
 
     let textSnapshot = ''
     const toolCallsById = new Map<string, { id: string; name: string; arguments: string }>()
+    let lastUsage: TokenUsage | undefined
+    let lastRequestId: string | undefined
+    let lastStopReason: string | undefined
 
     for await (const chunk of stream) {
+      lastRequestId = chunk.id
+      if (chunk.usage) {
+        lastUsage = normalizeOpenAIUsage(chunk.usage)
+      }
+
       const delta = chunk.choices[0]?.delta
       if (!delta) continue
 
       if (delta.content) {
         textSnapshot += delta.content
         callbacks.onTextDelta(delta.content, textSnapshot)
+      }
+
+      if (chunk.choices[0]?.finish_reason) {
+        lastStopReason = chunk.choices[0].finish_reason
       }
 
       if (delta.tool_calls) {
@@ -654,18 +672,15 @@ export class OpenAIProvider implements ModelProvider {
     const toolCalls = Array.from(toolCallsById.values()).map((tc) => ({
       id: tc.id,
       name: tc.name,
-      input: (() => {
-        try { return JSON.parse(tc.arguments) }
-        catch { return tc.arguments }
-      })(),
+      input: safeJsonParse(tc.arguments),
     }))
 
     return {
       content: textSnapshot,
       toolCalls,
-      usage: undefined,
-      requestId: undefined,
-      stopReason: undefined,
+      usage: lastUsage,
+      requestId: lastRequestId,
+      stopReason: lastStopReason,
     }
   }
 }

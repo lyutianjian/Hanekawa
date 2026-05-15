@@ -32,9 +32,9 @@ export async function discoverContextFiles(cwd: string): Promise<string[]> {
 
     // Check for context files
     for (const name of CONTEXT_FILES) {
-      const path = join(dir, name)
-      if (await exists(path)) {
-        found.push(path)
+      const filePath = join(dir, name)
+      if (await exists(filePath)) {
+        found.push(filePath)
       }
     }
 
@@ -54,9 +54,9 @@ export async function discoverContextFiles(cwd: string): Promise<string[]> {
 
   // Local files (highest priority, loaded last)
   for (const name of LOCAL_FILES) {
-    const path = join(cwd, name)
-    if (await exists(path)) {
-      found.push(path)
+    const filePath = join(cwd, name)
+    if (await exists(filePath)) {
+      found.push(filePath)
     }
   }
 

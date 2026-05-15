@@ -7,9 +7,13 @@ function getTasks(context: ToolContext): Map<string, TaskItem> {
   return context.taskState
 }
 
-let nextId = 1
-function nextTaskId(): string {
-  return String(nextId++)
+function nextTaskId(tasks: Map<string, TaskItem>): string {
+  let maxId = 0
+  for (const id of tasks.keys()) {
+    const num = parseInt(id, 10)
+    if (Number.isFinite(num) && num > maxId) maxId = num
+  }
+  return String(maxId + 1)
 }
 
 export const taskCreateTool: Tool = {
@@ -35,7 +39,7 @@ export const taskCreateTool: Tool = {
       metadata?: Record<string, unknown>
     }
     const tasks = getTasks(context)
-    const id = nextTaskId()
+    const id = nextTaskId(tasks)
     const task: TaskItem = {
       id,
       status: 'pending',

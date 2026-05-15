@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import fg from 'fast-glob'
 import type { Tool } from '../harness/types.js'
+import { assertInsideCwd } from '../utils/paths.js'
 
 interface GrepInput {
   pattern: string
@@ -30,7 +31,7 @@ export const grepTool: Tool = {
   isConcurrencySafe: true,
   async execute(input, context) {
     const options = input as GrepInput
-    const root = path.resolve(context.cwd, options.path ?? '.')
+    const root = assertInsideCwd(context.cwd, options.path ?? '.')
     const entries = await fg(options.glob ?? '**/*', { cwd: root, onlyFiles: true, dot: false })
     const flags = options.caseInsensitive ? 'i' : ''
     const regex = new RegExp(options.pattern, flags)

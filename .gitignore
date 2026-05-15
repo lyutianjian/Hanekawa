@@ -21,6 +21,10 @@ dist/
 # Claude Code local settings
 .claude/
 
+# Reference docs (not part of project)
+docs/
+Claude_Code_TUI_架构参考文档.md
+
 # OS
 .DS_Store
 Thumbs.db

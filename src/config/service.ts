@@ -53,7 +53,8 @@ export class ConfigService {
   }
 
   async load(): Promise<void> {
-    this.config = await readJsonFile(this.configPath, DEFAULT_CONFIG)
+    const loaded = await readJsonFile<Partial<Config>>(this.configPath, {})
+    this.config = deepMergeConfig(DEFAULT_CONFIG, loaded)
   }
 
   async save(): Promise<void> {
@@ -81,5 +82,20 @@ export class ConfigService {
 
   addModel(name: string, model: ModelConfig): void {
     this.config.models[name] = model
+  }
+}
+
+function deepMergeConfig(base: Config, overrides: Partial<Config>): Config {
+  return {
+    models: { ...base.models, ...overrides.models },
+    defaultModel: overrides.defaultModel ?? base.defaultModel,
+    agent: {
+      ...base.agent,
+      ...overrides.agent,
+      contextManagement: {
+        ...base.agent.contextManagement,
+        ...overrides.agent?.contextManagement,
+      },
+    },
   }
 }

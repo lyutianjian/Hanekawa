@@ -1,5 +1,6 @@
 import fg from 'fast-glob'
 import type { Tool } from '../harness/types.js'
+import { assertInsideCwd } from '../utils/paths.js'
 
 interface GlobInput {
   pattern: string
@@ -22,7 +23,7 @@ export const globTool: Tool = {
   isConcurrencySafe: true,
   async execute(input, context) {
     const options = input as GlobInput
-    const cwd = options.path ?? context.cwd
+    const cwd = options.path ? assertInsideCwd(context.cwd, options.path) : context.cwd
     const entries = await fg(options.pattern, { cwd, dot: false })
     return { ok: true, content: entries.join('\n') || 'No files found.' }
   },

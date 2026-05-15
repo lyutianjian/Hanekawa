@@ -8,7 +8,7 @@ import { getAllTools, getBuiltinTools } from '../src/tools/index.js'
 test('getAllTools() includes builtin tools', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
   try {
-    const tools = await getAllTools(dir)
+    const tools = await getAllTools()
     const builtinTools = getBuiltinTools()
 
     // Should include all builtin tools
@@ -39,7 +39,7 @@ test('getAllTools() includes the generic Skill tool', async () => {
       'utf8'
     )
 
-    const tools = await getAllTools(dir)
+    const tools = await getAllTools()
 
     const skillTool = tools.find(t => t.name === 'Skill')
 
@@ -62,7 +62,7 @@ test('Skill tools do not conflict with builtin tools', async () => {
       'utf8'
     )
 
-    const tools = await getAllTools(dir)
+    const tools = await getAllTools()
     const names = tools.map(t => t.name)
 
     // Check for duplicates
@@ -91,7 +91,7 @@ test('Skill tools have riskLevel safe', async () => {
       'utf8'
     )
 
-    const tools = await getAllTools(dir)
+    const tools = await getAllTools()
     const skillTool = tools.find(t => t.name === 'Skill')
 
     assert.ok(skillTool)
@@ -112,7 +112,7 @@ test('Skill tool execution returns skill content', async () => {
       'utf8'
     )
 
-    const tools = await getAllTools(dir)
+    const tools = await getAllTools()
     const skillTool = tools.find(t => t.name === 'Skill')
 
     assert.ok(skillTool)
@@ -142,7 +142,7 @@ test('Multiple calls to same skill tool return consistent results', async () => 
       'utf8'
     )
 
-    const tools = await getAllTools(dir)
+    const tools = await getAllTools()
     const skillTool = tools.find(t => t.name === 'Skill')
 
     assert.ok(skillTool)
@@ -160,7 +160,7 @@ test('Multiple calls to same skill tool return consistent results', async () => 
 test('getAllTools() works when no skills directory exists', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
   try {
-    const tools = await getAllTools(dir)
+    const tools = await getAllTools()
     const builtinTools = getBuiltinTools()
 
     assert.equal(tools.length, builtinTools.length + 1)
@@ -188,7 +188,7 @@ test('Skill tool and builtin tools coexist in tool list', async () => {
       'utf8'
     )
 
-    const tools = await getAllTools(dir)
+    const tools = await getAllTools()
     const builtinTools = getBuiltinTools()
 
     assert.equal(tools.length, builtinTools.length + 1)

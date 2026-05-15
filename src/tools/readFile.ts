@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
-import path from 'node:path'
 import type { Tool } from '../harness/types.js'
+import { assertInsideCwd } from '../utils/paths.js'
+import { evictOldestIfNeeded } from '../utils/cache.js'
 
 export const readFileTool: Tool = {
   name: 'readFile',
@@ -17,10 +18,11 @@ export const readFileTool: Tool = {
   isConcurrencySafe: true,
   async execute(input, context) {
     const { filePath } = input as { filePath: string }
-    const absolute = path.resolve(context.cwd, filePath)
+    const absolute = assertInsideCwd(context.cwd, filePath)
     const content = await readFile(absolute, 'utf8')
     context.readFiles.add(absolute)
     context.readFileState ??= new Map()
+    evictOldestIfNeeded(context.readFileState, 100)
     context.readFileState.set(absolute, {
       content,
       timestamp: Date.now(),

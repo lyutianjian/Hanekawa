@@ -13,8 +13,7 @@ export function getBuiltinTools(): Tool[] {
   return [grepTool, globTool, bashTool, readFileTool, writeFileTool, editFileTool, deleteFileTool, taskCreateTool, taskUpdateTool, taskListTool, taskGetTool]
 }
 
-export async function getAllTools(cwd: string): Promise<Tool[]> {
+export async function getAllTools(): Promise<Tool[]> {
   const builtinTools = getBuiltinTools()
-  void cwd
   return [...builtinTools, createSkillTool()]
 }

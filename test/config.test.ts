@@ -292,7 +292,7 @@ test('buildOpenAIPayload omits tools for plain-text requests', () => {
 })
 
 test('buildOpenAIPayload includes Hanekawa system, skills reminder, Skill tool, and cache key', async () => {
-  const tools = await getAllTools(process.cwd())
+  const tools = await getAllTools()
   const builder = new ContextBuilder(undefined, { contextWindow: 50000, summaryOutputTokens: 0 })
   const built = builder.build({
     records: [{
@@ -341,7 +341,7 @@ test('buildOpenAIPayload includes Hanekawa system, skills reminder, Skill tool, 
 })
 
 test('buildOpenAIPromptCacheKey is stable for model, system, and tools', async () => {
-  const tools = await getAllTools(process.cwd())
+  const tools = await getAllTools()
   const request: ModelRequest = {
     model: 'gpt-test',
     system: 'system text',

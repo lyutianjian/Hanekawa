@@ -33,22 +33,37 @@ export const bashTool: Tool = {
         timeout,
       })
 
+      const MAX_OUTPUT_BYTES = 1_000_000
       let stdout = ''
       let stderr = ''
+      let truncated = false
 
       proc.stdout.on('data', (data: Buffer) => {
-        stdout += data.toString()
+        if (stdout.length < MAX_OUTPUT_BYTES) {
+          stdout += data.toString()
+          if (stdout.length > MAX_OUTPUT_BYTES) {
+            stdout = stdout.slice(0, MAX_OUTPUT_BYTES)
+            truncated = true
+          }
+        }
       })
 
       proc.stderr.on('data', (data: Buffer) => {
-        stderr += data.toString()
+        if (stderr.length < MAX_OUTPUT_BYTES) {
+          stderr += data.toString()
+          if (stderr.length > MAX_OUTPUT_BYTES) {
+            stderr = stderr.slice(0, MAX_OUTPUT_BYTES)
+            truncated = true
+          }
+        }
       })
 
       proc.on('close', (code: number | null) => {
         const output = [stdout, stderr].filter(Boolean).join('\n')
+        const suffix = truncated ? '\n\n[Output truncated: exceeded 1MB limit]' : ''
         resolve({
           ok: code === 0,
-          content: output || '(no output)',
+          content: (output || '(no output)') + suffix,
         })
       })
 

@@ -3,7 +3,7 @@ import { appendFileSync, readFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { getSessionsDir } from '../utils/paths.js'
-import { readJsonFile, writeJsonFile } from '../utils/json.js'
+import { readJsonFile, writeJsonFile, parseJsonLines } from '../utils/json.js'
 import type { SessionRecord } from '../harness/types.js'
 
 export interface SessionMeta {
@@ -78,9 +78,7 @@ export class SessionStore {
     const jsonlPath = this.sessionJsonlPath(session.id)
     if (existsSync(jsonlPath)) {
       const content = readFileSync(jsonlPath, 'utf-8')
-      return content.split('\n')
-        .filter(line => line.trim())
-        .map(line => JSON.parse(line) as SessionRecord)
+      return parseJsonLines<SessionRecord>(content)
     }
 
     // Fall back to JSON format (old format)
@@ -126,6 +124,7 @@ export class SessionStore {
     const session = await this.resolve(sessionIdOrPrefix)
     if (!session) return
     await rm(this.sessionPath(session.id), { force: true })
+    await rm(this.sessionJsonlPath(session.id), { force: true })
     const index = await this.readIndex()
     index.sessions = index.sessions.filter((item) => item.id !== session.id)
     await writeJsonFile(this.indexPath(), index)

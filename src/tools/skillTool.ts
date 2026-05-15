@@ -1,5 +1,6 @@
 import type { Tool } from '../harness/types.js'
 import { SkillsService } from '../services/skills/skillsService.js'
+import { evictOldestIfNeeded } from '../utils/cache.js'
 
 export function createSkillTool(): Tool {
   return {
@@ -30,6 +31,7 @@ export function createSkillTool(): Tool {
       const service = new SkillsService(context.cwd)
       const skill = await service.load(parsed.skill)
       context.invokedSkills ??= new Map()
+      evictOldestIfNeeded(context.invokedSkills, 50)
       context.invokedSkills.set(skill.name, {
         content: skill.content,
         timestamp: Date.now(),

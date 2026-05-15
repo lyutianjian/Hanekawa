@@ -1,6 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises'
-import path from 'node:path'
 import type { Tool } from '../harness/types.js'
+import { assertInsideCwd } from '../utils/paths.js'
 
 export const editFileTool: Tool = {
   name: 'editFile',
@@ -18,7 +18,7 @@ export const editFileTool: Tool = {
   riskLevel: 'confirm',
   async execute(input, context) {
     const { filePath, oldString, newString } = input as { filePath: string; oldString: string; newString: string }
-    const absolute = path.resolve(context.cwd, filePath)
+    const absolute = assertInsideCwd(context.cwd, filePath)
     if (!context.readFiles.has(absolute)) {
       return { ok: false, content: `Refusing to edit ${filePath}: file must be read first.` }
     }

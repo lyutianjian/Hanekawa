@@ -62,10 +62,10 @@ export function StreamingMarkdown({ children }: { children: string }) {
   const streamingSuffix = children.slice(lastBlockEnd + 2)
 
   return (
-    <>
+    <Box flexDirection="column">
       <Markdown>{stablePrefix}</Markdown>
       {streamingSuffix && <Text>{streamingSuffix}</Text>}
-    </>
+    </Box>
   )
 }
 
@@ -73,11 +73,11 @@ export function Markdown({ children }: MarkdownProps) {
   const tokens = useMemo(() => cachedLexer(children), [children])
 
   return (
-    <>
+    <Box flexDirection="column">
       {tokens.map((token, i) => (
         <TokenRenderer key={i} token={token} />
       ))}
-    </>
+    </Box>
   )
 }
 

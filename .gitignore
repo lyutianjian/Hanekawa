@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+cc's_harness-engineering/
+# Build output
+dist/
+
+# Environment files
+.env
+.env.local
+
+# Agent data (session history, config, etc.)
+.myagent/
+
+# Debug logs
+*.log
+.kiro/
+# IDE
+.vscode/
+.idea/
+
+# Claude Code local settings
+.claude/
+
+# Reference docs (not part of project)
+
+
+# OS
+.DS_Store
+Thumbs.db

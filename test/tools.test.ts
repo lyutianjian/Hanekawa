@@ -1,0 +1,319 @@
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import type { ReadFileState } from '../src/harness/types.js'
+import { grepTool } from '../src/tools/grep.js'
+import { bashTool } from '../src/tools/bash.js'
+import { readFileTool } from '../src/tools/readFile.js'
+import { editFileTool } from '../src/tools/editFile.js'
+import { writeFileTool } from '../src/tools/writeFile.js'
+import { deleteFileTool } from '../src/tools/deleteFile.js'
+
+function context(cwd: string) {
+  return { cwd, sessionId: 's1', readFiles: new Set<string>() }
+}
+
+test('grep finds matching lines', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    await writeFile(path.join(dir, 'a.txt'), 'hello\nworld\n', 'utf8')
+    const result = await grepTool.execute({ pattern: 'hello', glob: '**/*.txt' }, context(dir))
+    assert.equal(result.ok, true)
+    assert.match(result.content, /a.txt:1/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('bash reports nonzero exits as command_failed', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const result = await bashTool.execute({ command: 'exit 7' }, context(dir))
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'command_failed')
+    assert.deepEqual((result.errorDetails as { exitCode?: number }).exitCode, 7)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('bash reports timeout explicitly', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const result = await bashTool.execute({
+      command: 'node -e "setTimeout(() => {}, 1000)"',
+      timeout: 50,
+    }, context(dir))
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'timeout')
+    assert.deepEqual((result.errorDetails as { timeoutMs?: number }).timeoutMs, 50)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editFile refuses editing before readFile', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    await writeFile(path.join(dir, 'a.txt'), 'hello\n', 'utf8')
+    const result = await editFileTool.execute({ filePath: 'a.txt', oldString: 'hello', newString: 'hi' }, context(dir))
+    assert.equal(result.ok, false)
+    assert.match(result.content, /must be read first/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editFile edits after readFile', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = context(dir)
+    await writeFile(path.join(dir, 'a.txt'), 'hello\n', 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+    const result = await editFileTool.execute({ filePath: 'a.txt', oldString: 'hello', newString: 'hi' }, ctx)
+    assert.equal(result.ok, true)
+    assert.equal(await readFile(path.join(dir, 'a.txt'), 'utf8'), 'hi\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('readFile tracks content for post-compact restoration', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'a.txt')
+    await writeFile(file, 'hello\n', 'utf8')
+    const result = await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+
+    assert.equal(result.ok, true)
+    assert.equal(ctx.readFileState.get(file)?.content, 'hello\n')
+    assert.equal(typeof ctx.readFileState.get(file)?.timestamp, 'number')
+    assert.equal(typeof ctx.readFileState.get(file)?.mtimeMs, 'number')
+    assert.equal(ctx.readFileState.get(file)?.size, 6)
+    assert.equal(typeof ctx.readFileState.get(file)?.ctimeMs, 'number')
+    assert.equal(typeof ctx.readFileState.get(file)?.dev, 'number')
+    assert.equal(typeof ctx.readFileState.get(file)?.ino, 'number')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('readFile refreshes recency timestamp on repeated reads', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'a.txt')
+    await writeFile(file, 'hello\n', 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+    const firstTimestamp = ctx.readFileState.get(file)?.timestamp ?? 0
+
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+    const secondTimestamp = ctx.readFileState.get(file)?.timestamp ?? 0
+
+    assert.ok(secondTimestamp > firstTimestamp)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editFile refuses files replaced after read even when size matches', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'a.txt')
+    const replacement = path.join(dir, 'replacement.txt')
+    await writeFile(file, 'alpha\n', 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+    await writeFile(replacement, 'bravo\n', 'utf8')
+    await rename(replacement, file)
+
+    const stale = await editFileTool.execute({ filePath: 'a.txt', oldString: 'bravo', newString: 'charl' }, ctx)
+    assert.equal(stale.ok, false)
+    assert.equal(stale.errorCode, 'stale_file')
+    assert.match(stale.content, /changed since it was last read/)
+    assert.equal((stale.errorDetails as { current?: { size?: number } }).current?.size, 6)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editFile refuses stale files until they are read again', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'a.txt')
+    await writeFile(file, 'hello\n', 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+    await writeFile(file, 'hello world\n', 'utf8')
+
+    const stale = await editFileTool.execute({ filePath: 'a.txt', oldString: 'world', newString: 'there' }, ctx)
+    assert.equal(stale.ok, false)
+    assert.equal(stale.errorCode, 'stale_file')
+    assert.match(stale.content, /changed since it was last read/)
+
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+    const result = await editFileTool.execute({ filePath: 'a.txt', oldString: 'world', newString: 'there' }, ctx)
+    assert.equal(result.ok, true)
+    assert.equal(await readFile(file, 'utf8'), 'hello there\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('writeFile creates parent directories', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const result = await writeFileTool.execute({ filePath: 'nested/a.txt', content: 'hello' }, context(dir))
+    assert.equal(result.ok, true)
+    assert.equal(await readFile(path.join(dir, 'nested', 'a.txt'), 'utf8'), 'hello')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('writeFile refuses new file when parent has a case-insensitive name collision', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    await writeFile(path.join(dir, 'Existing.txt'), 'hello', 'utf8')
+    const result = await writeFileTool.execute({ filePath: 'existing.txt', content: 'updated' }, context(dir))
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'precondition_failed')
+    assert.match(result.content, /different casing/)
+    assert.equal(await readFile(path.join(dir, 'Existing.txt'), 'utf8'), 'hello')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('writeFile refuses to overwrite unread existing files', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    await writeFile(path.join(dir, 'a.txt'), 'hello', 'utf8')
+    const result = await writeFileTool.execute({ filePath: 'a.txt', content: 'updated' }, context(dir))
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'precondition_failed')
+    assert.match(result.content, /must be read first/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('writeFile overwrites fresh reads and updates read state', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'a.txt')
+    await writeFile(file, 'hello', 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+
+    const result = await writeFileTool.execute({ filePath: 'a.txt', content: 'updated' }, ctx)
+    assert.equal(result.ok, true)
+    assert.equal(await readFile(file, 'utf8'), 'updated')
+    assert.equal(ctx.readFileState.get(file)?.content, 'updated')
+    assert.equal(ctx.readFileState.get(file)?.size, 7)
+    assert.equal(ctx.readFileState.get(file)?.ino, (await stat(file)).ino)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('writeFile refuses to write through a symlink parent', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    await mkdir(path.join(dir, 'real'))
+    try {
+      await symlink(path.join(dir, 'real'), path.join(dir, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+      t.skip(`Cannot create directory symlink: ${String(error)}`)
+      return
+    }
+
+    const result = await writeFileTool.execute({ filePath: path.join('link', 'a.txt'), content: 'hello' }, context(dir))
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'precondition_failed')
+    assert.match(result.content, /parent directory is a symlink/)
+    await assert.rejects(() => readFile(path.join(dir, 'real', 'a.txt'), 'utf8'))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editFile refuses to edit through a symlink parent', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    await mkdir(path.join(dir, 'real'))
+    await writeFile(path.join(dir, 'real', 'a.txt'), 'hello', 'utf8')
+    try {
+      await symlink(path.join(dir, 'real'), path.join(dir, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+      t.skip(`Cannot create directory symlink: ${String(error)}`)
+      return
+    }
+    await readFileTool.execute({ filePath: path.join('link', 'a.txt') }, ctx)
+
+    const result = await editFileTool.execute({ filePath: path.join('link', 'a.txt'), oldString: 'hello', newString: 'bye' }, ctx)
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'precondition_failed')
+    assert.match(result.content, /parent directory is a symlink/)
+    assert.equal(await readFile(path.join(dir, 'real', 'a.txt'), 'utf8'), 'hello')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('deleteFile removes files', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'a.txt')
+    await writeFile(file, 'hello', 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+    const result = await deleteFileTool.execute({ filePath: 'a.txt' }, ctx)
+    assert.equal(result.ok, true)
+    assert.equal(ctx.readFiles.has(file), false)
+    assert.equal(ctx.readFileState.has(file), false)
+    await assert.rejects(() => readFile(file, 'utf8'))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('deleteFile refuses unread files', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    await writeFile(path.join(dir, 'a.txt'), 'hello', 'utf8')
+    const result = await deleteFileTool.execute({ filePath: 'a.txt' }, context(dir))
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'precondition_failed')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('deleteFile refuses to delete through a symlink parent', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    await mkdir(path.join(dir, 'real'))
+    await writeFile(path.join(dir, 'real', 'a.txt'), 'hello', 'utf8')
+    try {
+      await symlink(path.join(dir, 'real'), path.join(dir, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+      t.skip(`Cannot create directory symlink: ${String(error)}`)
+      return
+    }
+    await readFileTool.execute({ filePath: path.join('link', 'a.txt') }, ctx)
+
+    const result = await deleteFileTool.execute({ filePath: path.join('link', 'a.txt') }, ctx)
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'precondition_failed')
+    assert.match(result.content, /parent directory is a symlink/)
+    assert.equal(await readFile(path.join(dir, 'real', 'a.txt'), 'utf8'), 'hello')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

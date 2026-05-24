@@ -1,0 +1,42 @@
+export interface CommandDefinition {
+  name: string
+  description: string
+  argumentHint?: string
+  isEnabled?: () => boolean
+  run: (args: string, context: CommandContext) => Promise<string | void>
+}
+
+export interface CommandUsage {
+  inputTokens: number
+  cacheReadInputTokens: number
+  outputTokens: number
+  cost?: number
+  currency?: string
+}
+
+export interface CommandModelInfo {
+  key: string
+  model: string
+  providerName: string
+}
+
+export type SetModelResult =
+  | { ok: true; model: CommandModelInfo }
+  | { ok: false; message: string; availableModels?: string[] }
+
+export interface CommandContext {
+  cwd: string
+  sessionId: string
+  writeLine: (msg: string) => void
+  clearMessages: () => void | Promise<void>
+  clearCachedSections?: () => void
+  resetCompactFailureCount?: () => Promise<void>
+  getUsage?: () => CommandUsage
+  getModel?: () => CommandModelInfo
+  setModel?: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
+}
+
+export type CommandResult =
+  | { type: 'continue' }
+  | { type: 'exit' }
+  | { type: 'message'; text: string }

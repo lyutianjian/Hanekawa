@@ -1,0 +1,285 @@
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+import type { AgentConfig, ModelConfig } from './service.js'
+import type { HookCommand } from '../harness/hooks.js'
+import type { McpServerConfig } from '../services/mcp/types.js'
+
+export type HookCommandSetting = HookCommand
+export type PreToolUseHookSetting = HookCommandSetting
+
+export interface MyAgentSettings {
+  permissions?: {
+    allow?: string[]
+    deny?: string[]
+    ask?: string[]
+  }
+  hooks?: {
+    userPromptSubmit?: HookCommandSetting[]
+    preToolUse?: HookCommandSetting[]
+    postToolUse?: HookCommandSetting[]
+    stop?: HookCommandSetting[]
+  }
+  mcpServers?: Record<string, McpServerConfig>
+  mcp?: {
+    trustedServers?: string[]
+  }
+  cache?: {
+    ttl1h?: boolean
+  }
+  models?: Record<string, ModelConfig>
+  defaultModel?: string
+  fallbackModel?: string
+  agent?: AgentConfig
+  autoCompact?: boolean
+  autoCompactThreshold?: number
+}
+
+interface LegacyMcpSettings {
+  mcpServers?: Record<string, McpServerConfig>
+}
+
+async function loadSettingsFile(filePath: string): Promise<MyAgentSettings> {
+  let content: string
+  try {
+    content = await readFile(filePath, 'utf-8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw error
+  }
+  return JSON.parse(content) as MyAgentSettings
+}
+
+async function loadLegacyMcpSettings(cwd: string): Promise<MyAgentSettings> {
+  let content: string
+  try {
+    content = await readFile(join(cwd, '.myagent', 'mcp.json'), 'utf-8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw error
+  }
+
+  const config = JSON.parse(content) as LegacyMcpSettings
+  return config.mcpServers ? { mcpServers: config.mcpServers } : {}
+}
+
+function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
+  const result: MyAgentSettings = {}
+
+  for (const source of sources) {
+    if (source.defaultModel) {
+      result.defaultModel = source.defaultModel
+    }
+
+    if (source.fallbackModel !== undefined) {
+      result.fallbackModel = source.fallbackModel
+    }
+
+    if (source.models) {
+      result.models = { ...result.models, ...source.models }
+    }
+
+    if (source.agent) {
+      result.agent = {
+        ...result.agent,
+        ...source.agent,
+        contextManagement: {
+          ...result.agent?.contextManagement,
+          ...source.agent.contextManagement,
+        },
+      }
+    }
+
+    if (source.permissions) {
+      result.permissions = {
+        allow: [...(result.permissions?.allow ?? []), ...(source.permissions.allow ?? [])],
+        deny: [...(result.permissions?.deny ?? []), ...(source.permissions.deny ?? [])],
+        ask: [...(result.permissions?.ask ?? []), ...(source.permissions.ask ?? [])],
+      }
+    }
+
+    if (source.hooks) {
+      result.hooks = {
+        ...result.hooks,
+        ...(source.hooks.userPromptSubmit
+          ? {
+              userPromptSubmit: [
+                ...(result.hooks?.userPromptSubmit ?? []),
+                ...source.hooks.userPromptSubmit,
+              ],
+            }
+          : {}),
+        ...(source.hooks.preToolUse
+          ? {
+              preToolUse: [
+                ...(result.hooks?.preToolUse ?? []),
+                ...source.hooks.preToolUse,
+              ],
+            }
+          : {}),
+        ...(source.hooks.postToolUse
+          ? {
+              postToolUse: [
+                ...(result.hooks?.postToolUse ?? []),
+                ...source.hooks.postToolUse,
+              ],
+            }
+          : {}),
+        ...(source.hooks.stop
+          ? {
+              stop: [
+                ...(result.hooks?.stop ?? []),
+                ...source.hooks.stop,
+              ],
+            }
+          : {}),
+      }
+    }
+
+    if (source.mcpServers) {
+      result.mcpServers = { ...result.mcpServers, ...source.mcpServers }
+    }
+
+    if (source.mcp) {
+      const trustedServers = source.mcp.trustedServers
+        ? [...new Set([...(result.mcp?.trustedServers ?? []), ...source.mcp.trustedServers])]
+        : result.mcp?.trustedServers
+      result.mcp = {
+        ...result.mcp,
+        ...(trustedServers ? { trustedServers } : {}),
+      }
+    }
+
+    if (source.cache) {
+      result.cache = {
+        ...result.cache,
+        ...source.cache,
+      }
+    }
+
+    if (source.autoCompact !== undefined) {
+      result.autoCompact = source.autoCompact
+    }
+
+    if (source.autoCompactThreshold !== undefined) {
+      result.autoCompactThreshold = source.autoCompactThreshold
+    }
+  }
+
+  return result
+}
+
+export async function loadMergedSettings(cwd: string): Promise<MyAgentSettings> {
+  const userSettings = await loadSettingsFile(join(homedir(), '.myagent', 'settings.json'))
+  const projectSettings = await loadSettingsFile(join(cwd, '.myagent', 'settings.json'))
+  const legacyMcpSettings = await loadLegacyMcpSettings(cwd)
+  const localSettings = await loadSettingsFile(join(cwd, '.myagent', 'settings.local.json'))
+
+  return mergeSettings(userSettings, projectSettings, legacyMcpSettings, localSettings)
+}
+
+export async function trustMcpServerLocally(cwd: string, serverName: string): Promise<void> {
+  const localSettingsPath = join(cwd, '.myagent', 'settings.local.json')
+  const localSettings = await loadSettingsFile(localSettingsPath)
+  const trustedServers = new Set(localSettings.mcp?.trustedServers ?? [])
+  trustedServers.add(serverName)
+  localSettings.mcp = {
+    ...localSettings.mcp,
+    trustedServers: [...trustedServers].sort(),
+  }
+
+  await mkdir(join(cwd, '.myagent'), { recursive: true })
+  await writeFile(`${localSettingsPath}.tmp`, `${JSON.stringify(localSettings, null, 2)}\n`, 'utf-8')
+  await rename(`${localSettingsPath}.tmp`, localSettingsPath)
+}
+
+export function validateSettings(settings: MyAgentSettings): { valid: boolean; errors: string[] } {
+  const errors: string[] = []
+
+  if (settings.models) {
+    for (const [name, model] of Object.entries(settings.models)) {
+      if (!model || typeof model !== 'object') {
+        errors.push(`models.${name} must be an object`)
+        continue
+      }
+      if (typeof model.provider !== 'string' || model.provider.trim() === '') {
+        errors.push(`models.${name}.provider must be a non-empty string`)
+      }
+      if (typeof model.model !== 'string' || model.model.trim() === '') {
+        errors.push(`models.${name}.model must be a non-empty string`)
+      }
+    }
+  }
+
+  if (settings.defaultModel !== undefined && (typeof settings.defaultModel !== 'string' || settings.defaultModel.trim() === '')) {
+    errors.push('defaultModel must be a non-empty string')
+  }
+
+  if (settings.fallbackModel !== undefined && (typeof settings.fallbackModel !== 'string' || settings.fallbackModel.trim() === '')) {
+    errors.push('fallbackModel must be a non-empty string')
+  }
+
+  if (settings.agent?.system !== undefined && typeof settings.agent.system !== 'string') {
+    errors.push('agent.system must be a string')
+  }
+
+  if (settings.mcpServers) {
+    for (const [name, config] of Object.entries(settings.mcpServers)) {
+      if (config.transport === 'stdio' && !config.command) {
+        errors.push(`MCP server "${name}" with stdio transport requires "command"`)
+      }
+      if (config.transport === 'sse' && !config.url) {
+        errors.push(`MCP server "${name}" with sse transport requires "url"`)
+      }
+      if (config.args !== undefined && !Array.isArray(config.args)) {
+        errors.push(`MCP server "${name}" args must be an array of strings`)
+      } else if (config.args?.some((arg) => typeof arg !== 'string')) {
+        errors.push(`MCP server "${name}" args must be an array of strings`)
+      }
+      if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1)) {
+        errors.push(`MCP server "${name}" timeoutMs must be a positive integer`)
+      }
+    }
+  }
+
+  if (settings.mcp?.trustedServers !== undefined) {
+    if (!Array.isArray(settings.mcp.trustedServers)) {
+      errors.push('mcp.trustedServers must be an array of strings')
+    } else if (settings.mcp.trustedServers.some((server) => typeof server !== 'string' || server.trim() === '')) {
+      errors.push('mcp.trustedServers must be an array of non-empty strings')
+    }
+  }
+
+  if (settings.cache?.ttl1h !== undefined && typeof settings.cache.ttl1h !== 'boolean') {
+    errors.push('cache.ttl1h must be a boolean')
+  }
+
+  for (const name of ['userPromptSubmit', 'preToolUse', 'postToolUse', 'stop'] as const) {
+    const hooks = settings.hooks?.[name]
+    if (hooks !== undefined && !Array.isArray(hooks)) {
+      errors.push(`hooks.${name} must be an array`)
+      continue
+    }
+    for (const [index, hook] of (hooks ?? []).entries()) {
+      validateHookSetting(hook, `hooks.${name}[${index}]`, errors)
+    }
+  }
+
+  return { valid: errors.length === 0, errors }
+}
+
+function validateHookSetting(hook: HookCommandSetting, path: string, errors: string[]): void {
+  if (!hook || typeof hook !== 'object') {
+    errors.push(`${path} must be an object`)
+    return
+  }
+  if (typeof hook.command !== 'string' || hook.command.trim() === '') {
+    errors.push(`${path}.command must be a non-empty string`)
+  }
+  if (hook.matcher !== undefined && typeof hook.matcher !== 'string') {
+    errors.push(`${path}.matcher must be a string`)
+  }
+  if (hook.timeoutMs !== undefined && (!Number.isInteger(hook.timeoutMs) || hook.timeoutMs < 1)) {
+    errors.push(`${path}.timeoutMs must be a positive integer`)
+  }
+}

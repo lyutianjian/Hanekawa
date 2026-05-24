@@ -1,0 +1,344 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  classifyError,
+  FallbackTriggeredError,
+  isRetryableError,
+  withRetry,
+  type RetryErrorCategory,
+} from '../src/config/retry.js'
+
+function httpError(status: number, message = `status ${status}`): Error {
+  const error = new Error(message) as Error & { status?: number }
+  error.status = status
+  return error
+}
+
+// ---- classifyError -------------------------------------------------------
+
+test('classifyError maps 401 and 403 to auth', () => {
+  assert.equal(classifyError(httpError(401)), 'auth')
+  assert.equal(classifyError(httpError(403)), 'auth')
+})
+
+test('classifyError maps 429 to rate_limit', () => {
+  assert.equal(classifyError(httpError(429)), 'rate_limit')
+})
+
+test('classifyError maps 529 to overload', () => {
+  assert.equal(classifyError(httpError(529)), 'overload')
+})
+
+test('classifyError maps other 5xx to server_error', () => {
+  assert.equal(classifyError(httpError(500)), 'server_error')
+  assert.equal(classifyError(httpError(502)), 'server_error')
+  assert.equal(classifyError(httpError(503)), 'server_error')
+  assert.equal(classifyError(httpError(504)), 'server_error')
+})
+
+test('classifyError uses message fallback for network errors', () => {
+  assert.equal(classifyError(new Error('ECONNRESET on socket')), 'transient')
+  assert.equal(classifyError(new Error('Stream ended unexpectedly')), 'transient')
+  assert.equal(classifyError(new Error('Read timeout after 90s')), 'transient')
+})
+
+test('classifyError uses message fallback for overload without status', () => {
+  assert.equal(classifyError(new Error('upstream is overloaded')), 'overload')
+  assert.equal(classifyError(new Error('got 529 from server')), 'overload')
+})
+
+test('classifyError returns unknown for non-Error and unmatched messages', () => {
+  assert.equal(classifyError('not an error'), 'unknown')
+  assert.equal(classifyError(null), 'unknown')
+  assert.equal(classifyError(new Error('something weird happened')), 'unknown')
+})
+
+// ---- isRetryableError (back-compat) --------------------------------------
+
+test('isRetryableError still reports retryable categories as true', () => {
+  assert.equal(isRetryableError(httpError(429)), true)
+  assert.equal(isRetryableError(httpError(529)), true)
+  assert.equal(isRetryableError(httpError(503)), true)
+  assert.equal(isRetryableError(new Error('ECONNRESET')), true)
+})
+
+test('isRetryableError reports auth and unknown as false', () => {
+  assert.equal(isRetryableError(httpError(401)), false)
+  assert.equal(isRetryableError(httpError(403)), false)
+  assert.equal(isRetryableError(new Error('something weird')), false)
+})
+
+// ---- withRetry: per-category behaviour -----------------------------------
+
+interface RecordedCall {
+  attempt: number
+}
+
+function makeOperation(errors: unknown[], result?: unknown) {
+  const calls: RecordedCall[] = []
+  const op = async (attempt: number) => {
+    calls.push({ attempt })
+    if (calls.length <= errors.length) {
+      throw errors[calls.length - 1]
+    }
+    return result
+  }
+  return { op, calls }
+}
+
+test('withRetry never retries on 401', async () => {
+  const { op, calls } = makeOperation([httpError(401), httpError(401), httpError(401)])
+  await assert.rejects(
+    () => withRetry(op, { baseDelayMs: 0, jitterFactor: 0, maxDelayMs: 0 }),
+    (err: Error & { status?: number }) => err.status === 401,
+  )
+  assert.equal(calls.length, 1)
+})
+
+test('withRetry never retries on 403', async () => {
+  const { op, calls } = makeOperation([httpError(403)])
+  await assert.rejects(
+    () => withRetry(op, { baseDelayMs: 0, jitterFactor: 0, maxDelayMs: 0 }),
+    (err: Error & { status?: number }) => err.status === 403,
+  )
+  assert.equal(calls.length, 1)
+})
+
+test('withRetry retries 429 up to maxRetries times', async () => {
+  const { op, calls } = makeOperation(
+    [httpError(429), httpError(429), httpError(429)],
+    'ok',
+  )
+  const result = await withRetry(op, {
+    maxRetries: 3,
+    baseDelayMs: 0,
+    jitterFactor: 0,
+    maxDelayMs: 0,
+  })
+  assert.equal(result, 'ok')
+  assert.equal(calls.length, 4) // 1 initial + 3 retries
+})
+
+test('withRetry stops retrying 429 after exhausting category budget', async () => {
+  const { op, calls } = makeOperation([
+    httpError(429),
+    httpError(429),
+    httpError(429),
+    httpError(429),
+  ])
+  await assert.rejects(
+    () => withRetry(op, { maxRetries: 3, baseDelayMs: 0, jitterFactor: 0, maxDelayMs: 0 }),
+    (err: Error & { status?: number }) => err.status === 429,
+  )
+  assert.equal(calls.length, 4) // 1 initial + 3 retries, then throw
+})
+
+test('withRetry caps 529 at 2 retries even when maxRetries is higher', async () => {
+  const { op, calls } = makeOperation([
+    httpError(529),
+    httpError(529),
+    httpError(529),
+  ])
+  await assert.rejects(
+    () => withRetry(op, { maxRetries: 10, baseDelayMs: 0, jitterFactor: 0, maxDelayMs: 0 }),
+    (err: Error) => err instanceof FallbackTriggeredError,
+  )
+  // 1 initial + 2 retries (the 3rd 529 exceeds the overload budget)
+  assert.equal(calls.length, 3)
+})
+
+test('withRetry succeeds on 529 within the 2-retry overload budget', async () => {
+  const { op, calls } = makeOperation([httpError(529), httpError(529)], 'ok')
+  const result = await withRetry(op, {
+    maxRetries: 10,
+    baseDelayMs: 0,
+    jitterFactor: 0,
+    maxDelayMs: 0,
+  })
+  assert.equal(result, 'ok')
+  assert.equal(calls.length, 3)
+})
+
+test('withRetry never retries 529 for background callers', async () => {
+  const { op, calls } = makeOperation([httpError(529)])
+  await assert.rejects(
+    () =>
+      withRetry(op, {
+        callerKind: 'background',
+        maxRetries: 10,
+        baseDelayMs: 0,
+        jitterFactor: 0,
+        maxDelayMs: 0,
+      }),
+    (err: Error & { status?: number }) => err.status === 529,
+  )
+  assert.equal(calls.length, 1)
+})
+
+test('withRetry still retries 429 for background callers', async () => {
+  // Background callers should fail fast on 529 specifically; rate-limit 429
+  // is normal backpressure and a small retry is fine.
+  const { op, calls } = makeOperation([httpError(429), httpError(429)], 'ok')
+  const result = await withRetry(op, {
+    callerKind: 'background',
+    maxRetries: 3,
+    baseDelayMs: 0,
+    jitterFactor: 0,
+    maxDelayMs: 0,
+  })
+  assert.equal(result, 'ok')
+  assert.equal(calls.length, 3)
+})
+
+test('withRetry retries 5xx (non-529) up to maxRetries', async () => {
+  const { op, calls } = makeOperation([httpError(500), httpError(503)], 'ok')
+  const result = await withRetry(op, {
+    maxRetries: 3,
+    baseDelayMs: 0,
+    jitterFactor: 0,
+    maxDelayMs: 0,
+  })
+  assert.equal(result, 'ok')
+  assert.equal(calls.length, 3)
+})
+
+test('withRetry retries network errors (ECONNRESET)', async () => {
+  const { op, calls } = makeOperation([new Error('ECONNRESET')], 'ok')
+  const result = await withRetry(op, {
+    baseDelayMs: 0,
+    jitterFactor: 0,
+    maxDelayMs: 0,
+  })
+  assert.equal(result, 'ok')
+  assert.equal(calls.length, 2)
+})
+
+test('withRetry never retries unknown errors', async () => {
+  const { op, calls } = makeOperation([new Error('mystery')])
+  await assert.rejects(
+    () => withRetry(op, { baseDelayMs: 0, jitterFactor: 0, maxDelayMs: 0 }),
+    /mystery/,
+  )
+  assert.equal(calls.length, 1)
+})
+
+test('withRetry per-category budgets are independent', async () => {
+  // 3 rate_limit retries + 2 overload retries should all succeed when the
+  // category caps are honoured separately.
+  const { op, calls } = makeOperation(
+    [
+      httpError(429),
+      httpError(529),
+      httpError(429),
+      httpError(529),
+      httpError(429),
+    ],
+    'ok',
+  )
+  const result = await withRetry(op, {
+    maxRetries: 5,
+    baseDelayMs: 0,
+    jitterFactor: 0,
+    maxDelayMs: 0,
+  })
+  assert.equal(result, 'ok')
+  assert.equal(calls.length, 6)
+})
+
+test('withRetry exhausts overload budget independently of rate_limit budget', async () => {
+  // 2 overload retries are allowed, the 3rd should throw even though plenty
+  // of rate_limit budget is left.
+  const { op, calls } = makeOperation([
+    httpError(529),
+    httpError(529),
+    httpError(529),
+  ])
+  await assert.rejects(
+    () => withRetry(op, { maxRetries: 10, baseDelayMs: 0, jitterFactor: 0, maxDelayMs: 0 }),
+    (err: Error) => err instanceof FallbackTriggeredError,
+  )
+  assert.equal(calls.length, 3)
+})
+
+test('withRetry wraps exhausted interactive overloads in FallbackTriggeredError', async () => {
+  const finalError = httpError(529)
+  const { op } = makeOperation([
+    httpError(529),
+    httpError(529),
+    finalError,
+  ])
+
+  await assert.rejects(
+    () => withRetry(op, { maxRetries: 10, baseDelayMs: 0, jitterFactor: 0, maxDelayMs: 0 }),
+    (err: Error) => {
+      assert.ok(err instanceof FallbackTriggeredError)
+      assert.equal(err.originalError, finalError)
+      assert.equal(err.attempts, 3)
+      return true
+    },
+  )
+})
+
+test('withRetry returns immediately when shouldRetry rejects', async () => {
+  const { op, calls } = makeOperation([httpError(429)])
+  await assert.rejects(
+    () =>
+      withRetry(op, {
+        baseDelayMs: 0,
+        jitterFactor: 0,
+        maxDelayMs: 0,
+        shouldRetry: () => false,
+      }),
+    (err: Error & { status?: number }) => err.status === 429,
+  )
+  assert.equal(calls.length, 1)
+})
+
+test('withRetry honours abort signal before invoking operation', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  let invoked = false
+  await assert.rejects(
+    () =>
+      withRetry(
+        async () => {
+          invoked = true
+          return 'ok'
+        },
+        { signal: controller.signal },
+      ),
+    (err: Error) => err.name === 'AbortError',
+  )
+  assert.equal(invoked, false)
+})
+
+test('withRetry can be configured with custom limits', async () => {
+  const { op, calls } = makeOperation([httpError(429), httpError(429)])
+  await assert.rejects(
+    () =>
+      withRetry(op, {
+        maxRetries: 10,
+        limits: { rateLimit: 1, overload: 0, serverError: 0, transient: 0 },
+        baseDelayMs: 0,
+        jitterFactor: 0,
+        maxDelayMs: 0,
+      }),
+    (err: Error & { status?: number }) => err.status === 429,
+  )
+  assert.equal(calls.length, 2) // 1 initial + 1 retry
+})
+
+test('classifyError integration coverage spans every category', () => {
+  const cases: Array<[unknown, RetryErrorCategory]> = [
+    [httpError(401), 'auth'],
+    [httpError(403), 'auth'],
+    [httpError(429), 'rate_limit'],
+    [httpError(529), 'overload'],
+    [httpError(500), 'server_error'],
+    [new Error('ECONNRESET'), 'transient'],
+    [new Error('something weird'), 'unknown'],
+  ]
+  for (const [err, expected] of cases) {
+    assert.equal(classifyError(err), expected, `for ${String(err)}`)
+  }
+})

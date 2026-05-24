@@ -1,0 +1,16 @@
+export const theme = {
+  brand: '#E8A0BF',
+  userPrefix: '#E8A0BF',
+  assistantText: '#E0E0E0',
+  dimText: '#808080',
+  toolName: '#87CEEB',
+  success: '#90EE90',
+  error: '#FF6B6B',
+  warning: '#FFD700',
+  border: '#555555',
+  spinner: '#E8A0BF',
+  inputPrompt: '#E8A0BF',
+  systemText: '#A0A0A0',
+  codeBg: '#1E1E1E',
+  codeInline: '#CBA6F7',
+} as const

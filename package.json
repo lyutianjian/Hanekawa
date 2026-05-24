@@ -1,0 +1,38 @@
+{
+  "name": "myagent",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "myagent-tui": "./src/tui/entrypoints/tui.tsx"
+  },
+  "scripts": {
+    "dev:tui": "tsx src/tui/entrypoints/tui.tsx",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest",
+    "@modelcontextprotocol/sdk": "latest",
+    "cli-highlight": "^2.1.11",
+    "diff": "^9.0.0",
+    "fast-glob": "latest",
+    "figures": "^6.1.0",
+    "ink": "^7.0.3",
+    "marked": "^18.0.3",
+    "openai": "latest",
+    "react": "^19.2.6",
+    "yaml": "latest",
+    "zod": "latest",
+    "zod-to-json-schema": "^3.25.2"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.2",
+    "@types/ink": "^0.5.2",
+    "@types/node": "latest",
+    "@types/react": "^19.2.14",
+    "fast-check": "^3.23.2",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}

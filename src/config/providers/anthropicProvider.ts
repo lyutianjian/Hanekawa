@@ -90,8 +90,9 @@ export class AnthropicProvider implements ModelProvider {
         }
       },
       {
-        maxRetries: request.retry?.maxRetries ?? 3,
+        maxRetries: request.retry?.maxRetries,
         callerKind: request.retry?.callerKind ?? 'interactive',
+        persistent: request.retry?.persistent,
         signal: request.retry?.signal,
       },
     )

@@ -1,5 +1,8 @@
 import { readFile, stat } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import path from 'node:path'
 import type { ChatMessage, ModelContextItem, SessionRecord, Tool, ToolContext } from './types.js'
+import type { PermissionMode } from './permissions.js'
 import { PromptComposer } from '../prompts/composer.js'
 import { countTextTokens, type ContextManagementConfig } from '../prompts/budget.js'
 import { compactBoundaryToMessage } from './compact.js'
@@ -7,6 +10,12 @@ import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from './cacheControl.js'
 import { SystemPromptSectionCache } from './sections.js'
 import { captureReadFileStateFromStat } from '../tools/fileState.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
+import { evictOldestIfNeeded } from '../utils/cache.js'
+
+const require = createRequire(import.meta.url)
+const picomatch = require('picomatch') as {
+  isMatch(input: string, patterns: string | readonly string[], options?: { dot?: boolean; nocase?: boolean }): boolean
+}
 
 export interface BuildContextInput {
   records: SessionRecord[]
@@ -23,6 +32,7 @@ export interface BuildContextInput {
   now?: Date
   toolContext?: ToolContext
   env?: EnvironmentInfo
+  permissionMode?: PermissionMode
   includePostCompactRestore?: boolean
   enabledSections?: SectionKey[]
 }
@@ -212,15 +222,17 @@ export class ContextBuilder {
       input.tools,
       input.skills ?? [],
       input.env,
+      input.permissionMode,
     )
     const system = systemBlocks
       .filter((b) => b !== SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
       .join('\n\n')
+    const activeSkills = this.activateSkills(input.skills ?? [], input.toolContext)
     const postCompactRestoreContext = input.includePostCompactRestore
       ? await this.buildPostCompactRestoreContext(input.toolContext)
       : []
     const allContextItems = [
-      ...(input.includeUserContext === false ? [] : this.buildUserContext(input.now ?? new Date())),
+      ...(input.includeUserContext === false ? [] : this.buildUserContext(input.now ?? new Date(), activeSkills)),
       ...postCompactRestoreContext,
       ...this.recordsToContextItems(input.records),
     ]
@@ -299,6 +311,7 @@ export class ContextBuilder {
     tools: readonly Tool[] = [],
     skills: readonly SkillDefinition[] = [],
     env?: EnvironmentInfo,
+    permissionMode?: PermissionMode,
   ): string[] {
     const staticSections = [
       ...this.buildDefaultSystemSections(enabledSections ?? this.defaultEnabledSections),
@@ -310,6 +323,7 @@ export class ContextBuilder {
 
     const dynamicSections = [
       system?.trim(),
+      this.buildPlanModeSystemReminder(permissionMode),
     ].filter((s): s is string => Boolean(s))
 
     if (dynamicSections.length > 0) {
@@ -351,11 +365,12 @@ export class ContextBuilder {
   }
 
   private buildSkillsSystemSection(skills: readonly SkillDefinition[]): string | undefined {
-    if (skills.length === 0) return undefined
+    const userInvocableSkills = skills.filter((skill) => skill.inclusion !== 'fileMatch')
+    if (userInvocableSkills.length === 0) return undefined
     return [
       '# Available skills',
       'The following skills are available for use with the Skill tool:',
-      skills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n'),
+      userInvocableSkills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n'),
     ].join('\n')
   }
 
@@ -367,20 +382,27 @@ export class ContextBuilder {
     )
   }
 
-  private buildUserContext(now: Date): ModelContextItem[] {
+  private buildPlanModeSystemReminder(permissionMode?: PermissionMode): string | undefined {
+    if (permissionMode !== 'plan') return undefined
+    return '<system-reminder>You are in plan mode. Read-only operations are auto-approved. To take action you must first present the plan to the user.</system-reminder>'
+  }
+
+  private buildUserContext(now: Date, activeSkills: readonly ActiveSkill[]): ModelContextItem[] {
     const currentDate = this.sections.uncachedSection(
       'user-context:current-date',
       'The local date can change between turns and intentionally lives outside the cached system prompt.',
       () => `# currentDate\nToday's date is ${formatLocalDate(now)}.`,
     )
 
+    const activeSkillContext = this.buildActiveSkillUserContext(activeSkills)
     const contextLines = [
       '<system-reminder>',
       'As you answer the user, you can use the following context:',
       currentDate,
+      activeSkillContext,
       'IMPORTANT: this context may or may not be relevant. Do not mention it unless it helps with the task.',
       '</system-reminder>',
-    ]
+    ].filter((line): line is string => Boolean(line))
     const content = contextLines.join('\n\n')
 
     return [{
@@ -392,6 +414,42 @@ export class ContextBuilder {
         createdAt: now.toISOString(),
       },
     }]
+  }
+
+  private activateSkills(skills: readonly SkillDefinition[], toolContext: ToolContext | undefined): ActiveSkill[] {
+    if (skills.length === 0) return []
+
+    const active = new Map<string, ActiveSkill>()
+    for (const skill of skills) {
+      const invoked = toolContext?.invokedSkills?.get(skill.name)
+      if (invoked) {
+        active.set(skill.name, { name: skill.name, content: invoked.content })
+      }
+    }
+
+    for (const skill of skills) {
+      if (!shouldActivateSkill(skill, toolContext)) continue
+      if (toolContext) {
+        toolContext.invokedSkills ??= new Map()
+        evictOldestIfNeeded(toolContext.invokedSkills, 50)
+        toolContext.invokedSkills.set(skill.name, {
+          content: skill.content,
+          timestamp: Date.now(),
+        })
+      }
+      active.set(skill.name, { name: skill.name, content: skill.content })
+    }
+
+    return [...active.values()]
+  }
+
+  private buildActiveSkillUserContext(activeSkills: readonly ActiveSkill[]): string | undefined {
+    if (activeSkills.length === 0) return undefined
+    return [
+      '# activeSkills',
+      'The following skills are active for this turn:',
+      ...activeSkills.map((skill) => `## ${skill.name}\n${skill.content}`),
+    ].join('\n\n')
   }
 
   invalidateAvailableToolsSection(): void {
@@ -434,6 +492,36 @@ export class ContextBuilder {
       },
     }]
   }
+}
+
+interface ActiveSkill {
+  name: string
+  content: string
+}
+
+function shouldActivateSkill(skill: SkillDefinition, toolContext: ToolContext | undefined): boolean {
+  if (skill.inclusion === 'always') return true
+  if (skill.inclusion !== 'fileMatch' || !skill.paths || skill.paths.length === 0 || !toolContext) return false
+  return [...toolContext.readFiles].some((file) => skillMatchesReadFile(skill, file, toolContext.cwd))
+}
+
+function skillMatchesReadFile(skill: SkillDefinition, file: string, cwd: string): boolean {
+  const candidates = normalizeMatchCandidates(file, cwd)
+  const patterns = skill.paths?.map(normalizeGlobPattern) ?? []
+  return candidates.some((candidate) => picomatch.isMatch(candidate, patterns, {
+    dot: true,
+    nocase: process.platform === 'win32',
+  }))
+}
+
+function normalizeMatchCandidates(file: string, cwd: string): string[] {
+  const relative = normalizeGlobPattern(path.relative(cwd, file))
+  const absolute = normalizeGlobPattern(path.resolve(file))
+  return relative === absolute ? [relative] : [relative, absolute]
+}
+
+function normalizeGlobPattern(pattern: string): string {
+  return pattern.replaceAll(path.sep, '/').replaceAll('\\', '/').replace(/^\/+/, '')
 }
 
 interface RestoreLimits {

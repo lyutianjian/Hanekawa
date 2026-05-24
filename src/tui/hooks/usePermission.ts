@@ -1,18 +1,23 @@
 import { useState, useCallback, useEffect } from 'react'
 import type { PermissionRequest, PermissionPrompt } from '../../harness/permissions.js'
-import type { SessionRecord } from '../../harness/types.js'
+import type { SessionRecord, ToolProgressEvent } from '../../harness/types.js'
 import type { PermissionDialogState } from '../types.js'
 
 export interface RecordProxy {
   onRecord: (record: SessionRecord) => void
   setHandler: (fn: (record: SessionRecord) => void) => void
+  onProgress: (event: ToolProgressEvent) => void
+  setProgressHandler: (fn: (event: ToolProgressEvent) => void) => void
 }
 
 export function createRecordProxy(): RecordProxy {
   let handler: (record: SessionRecord) => void = () => {}
+  let progressHandler: (event: ToolProgressEvent) => void = () => {}
   return {
     onRecord: (record) => handler(record),
     setHandler: (fn) => { handler = fn },
+    onProgress: (event) => progressHandler(event),
+    setProgressHandler: (fn) => { progressHandler = fn },
   }
 }
 

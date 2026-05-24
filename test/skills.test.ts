@@ -46,6 +46,40 @@ test('SkillsService.list() returns skills from directory', async () => {
     const debugging = skills.find(s => s.name === 'debugging')!
     assert.equal(debugging.description, 'Use when diagnosing bugs')
     assert.match(debugging.content, /Debug workflow/)
+    assert.equal(debugging.inclusion, 'manual')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SkillsService.list() parses conditional activation frontmatter', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skills-'))
+  try {
+    const skillsDir = path.join(dir, '.myagent', 'skills')
+    await mkdir(path.join(skillsDir, 'react'), { recursive: true })
+    await writeFile(
+      path.join(skillsDir, 'react', 'SKILL.md'),
+      [
+        '---',
+        'name: react',
+        'description: React files',
+        'inclusion: fileMatch',
+        'paths:',
+        '  - "src/**/*.tsx"',
+        '  - "test/**/*.tsx"',
+        '---',
+        '',
+        'React guidance',
+      ].join('\n'),
+      'utf8',
+    )
+
+    const service = new SkillsService(dir)
+    const skills = await service.list()
+
+    assert.equal(skills.length, 1)
+    assert.equal(skills[0].inclusion, 'fileMatch')
+    assert.deepEqual(skills[0].paths, ['src/**/*.tsx', 'test/**/*.tsx'])
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

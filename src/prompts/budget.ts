@@ -40,12 +40,12 @@ export function getManualCompactThreshold(config: Partial<ContextManagementConfi
 }
 
 export function countTextTokens(text: string): number {
-  // Calibrated coefficients based on code/JSON/Markdown content testing
-  // ASCII: ~3.5 chars per token (code, JSON, Markdown structure)
-  // Non-ASCII (CJK): ~1.5 chars per token (Chinese, Japanese, Korean)
+  // Conservative fallback for code/JSON/Markdown-heavy context. Real provider
+  // usage is preferred where available; this estimate intentionally compacts
+  // early rather than risking an over-limit request.
   const asciiChars = text.replace(/[^\x00-\x7F]/g, '').length
   const nonAsciiChars = text.length - asciiChars
-  return Math.ceil(asciiChars / 3.5 + nonAsciiChars / 1.5)
+  return Math.ceil(asciiChars / 3.0 + nonAsciiChars / 1.2)
 }
 
 export function countMessageTokens(message: ChatMessage): number {

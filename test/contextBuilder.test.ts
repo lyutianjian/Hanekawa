@@ -18,7 +18,7 @@ const tool: Tool = {
 }
 
 test('ContextBuilder injects layered system and user context', async () => {
-  const builder = new ContextBuilder(undefined, contextWindow(5000))
+  const builder = new ContextBuilder(undefined, contextWindow(8000))
   const records: SessionRecord[] = [{
     type: 'message',
     id: 'u1',
@@ -95,6 +95,25 @@ test('ContextBuilder build input can override enabled system sections', async ()
   assert.match(built.system ?? '', /# Using your tools/)
 })
 
+test('ContextBuilder adds a dynamic plan mode reminder', async () => {
+  const builder = new ContextBuilder(undefined, contextWindow(5000))
+
+  const built = await builder.build({
+    records: [],
+    tools: [],
+    includeUserContext: false,
+    permissionMode: 'plan',
+  })
+
+  assert.match(built.system ?? '', /You are in plan mode/)
+  assert.match(built.system ?? '', /To take action you must first present the plan to the user/)
+  assert.equal(built.systemBlocks?.at(-2), '__MYAGENT_SYSTEM_PROMPT_DYNAMIC_BOUNDARY__')
+  assert.equal(
+    built.systemBlocks?.at(-1),
+    '<system-reminder>You are in plan mode. Read-only operations are auto-approved. To take action you must first present the plan to the user.</system-reminder>',
+  )
+})
+
 test('ContextBuilder injects available skills as system reminder', async () => {
   const builder = new ContextBuilder(undefined, contextWindow(5000))
 
@@ -120,6 +139,55 @@ test('ContextBuilder injects available skills as system reminder', async () => {
   assert.match(built.system ?? '', /- tdd: Test-driven development/)
   assert.match(built.system ?? '', /Skill: Execute a skill within the main conversation/)
   assert.doesNotMatch(built.system ?? '', /skill_debugging/)
+})
+
+test('ContextBuilder activates file-matched skills from read files', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-context-'))
+  const builder = new ContextBuilder(undefined, contextWindow(5000))
+  try {
+    const file = path.join(dir, 'src', 'App.tsx')
+    const toolContext = {
+      cwd: dir,
+      sessionId: 's1',
+      readFiles: new Set<string>([file]),
+      invokedSkills: new Map<string, { content: string; timestamp: number }>(),
+    }
+
+    const built = await builder.build({
+      records: [],
+      tools: [],
+      skills: [
+        {
+          name: 'react',
+          description: 'React guidance',
+          content: 'Prefer small components.',
+          inclusion: 'fileMatch',
+          paths: ['src/**/*.tsx'],
+        },
+        {
+          name: 'sql',
+          description: 'SQL guidance',
+          content: 'Use parameterized queries.',
+          inclusion: 'fileMatch',
+          paths: ['src/**/*.sql'],
+        },
+      ],
+      toolContext,
+      now: new Date('2026-05-10T12:00:00.000Z'),
+    })
+
+    const userContext = built.contextItems[0]
+    assert.equal(userContext?.kind, 'message')
+    assert.match(userContext.message.content, /# activeSkills/)
+    assert.match(userContext.message.content, /## react/)
+    assert.match(userContext.message.content, /Prefer small components\./)
+    assert.doesNotMatch(userContext.message.content, /Use parameterized queries/)
+    assert.equal(toolContext.invokedSkills.get('react')?.content, 'Prefer small components.')
+    assert.equal(toolContext.invokedSkills.has('sql'), false)
+    assert.doesNotMatch(built.system ?? '', /react: React guidance/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('ContextBuilder budgets messages and tool records together', async () => {
@@ -171,7 +239,7 @@ test('ContextBuilder budgets messages and tool records together', async () => {
 })
 
 test('ContextBuilder uses latest compact boundary as prior context summary', async () => {
-  const builder = new ContextBuilder(undefined, contextWindow(5000))
+  const builder = new ContextBuilder(undefined, contextWindow(8000))
   const records: SessionRecord[] = [
     {
       type: 'message',

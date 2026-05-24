@@ -29,6 +29,9 @@ export interface RetryPolicyLimits {
   transient: number
 }
 
+export const PERSISTENT_MAX_DELAY_MS = 300_000
+export const DEFAULT_PERSISTENT_MAX_RETRIES = 12
+
 export const DEFAULT_RETRY_LIMITS: RetryPolicyLimits = {
   rateLimit: 3,
   overload: 2,
@@ -36,20 +39,33 @@ export const DEFAULT_RETRY_LIMITS: RetryPolicyLimits = {
   transient: 3,
 }
 
+export const DEFAULT_PERSISTENT_RETRY_LIMITS: RetryPolicyLimits = {
+  rateLimit: DEFAULT_PERSISTENT_MAX_RETRIES,
+  overload: DEFAULT_RETRY_LIMITS.overload,
+  serverError: DEFAULT_PERSISTENT_MAX_RETRIES,
+  transient: DEFAULT_PERSISTENT_MAX_RETRIES,
+}
+
 export interface RetryOptions {
   /**
    * Cap on the maximum number of retries across all categories. The
    * per-category limit is `Math.min(limits[category], maxRetries)`. Defaults
-   * to 3, matching the historical behaviour.
+   * to 3 normally, or the persistent retry cap when persistent mode is enabled.
    */
   maxRetries?: number
   baseDelayMs?: number
   maxDelayMs?: number
   jitterFactor?: number
+  /**
+   * Expand retry budgets for unattended/background maintenance work. This keeps
+   * fail-open tasks resilient to temporary 5xx/network issues without changing
+   * the interactive default. Background 529 overloads still fail fast.
+   */
+  persistent?: boolean
   signal?: AbortSignal
   /**
-   * Override per-category retry caps. Missing keys fall back to
-   * `DEFAULT_RETRY_LIMITS`.
+   * Override per-category retry caps. Missing keys fall back to the active
+   * default policy.
    */
   limits?: Partial<RetryPolicyLimits>
   /**
@@ -83,12 +99,13 @@ export async function withRetry<T>(
   options: RetryOptions = {},
 ): Promise<T> {
   const baseDelayMs = options.baseDelayMs ?? 500
-  const maxDelayMs = options.maxDelayMs ?? 32_000
+  const persistent = options.persistent ?? false
+  const maxDelayMs = options.maxDelayMs ?? (persistent ? PERSISTENT_MAX_DELAY_MS : 32_000)
   const jitterFactor = options.jitterFactor ?? 0.25
   const callerKind: RetryCallerKind = options.callerKind ?? 'interactive'
-  const globalCap = options.maxRetries ?? 3
+  const globalCap = options.maxRetries ?? (persistent ? DEFAULT_PERSISTENT_MAX_RETRIES : 3)
   const limits: RetryPolicyLimits = {
-    ...DEFAULT_RETRY_LIMITS,
+    ...(persistent ? DEFAULT_PERSISTENT_RETRY_LIMITS : DEFAULT_RETRY_LIMITS),
     ...(options.limits ?? {}),
   }
 
@@ -129,7 +146,7 @@ export async function withRetry<T>(
       if (options.shouldRetry && !options.shouldRetry(error, attempt)) throw error
 
       used[category]++
-      const delay = calculateDelay(attempt, baseDelayMs, maxDelayMs, jitterFactor)
+      const delay = calculateRetryDelay(category, used[category], attempt, baseDelayMs, maxDelayMs, jitterFactor)
       await sleep(delay)
     }
   }
@@ -162,6 +179,18 @@ export function calculateDelay(
   return exponentialDelay + jitter
 }
 
+export function calculateRetryDelay(
+  category: RetryErrorCategory,
+  categoryRetryCount: number,
+  attempt: number,
+  baseDelayMs: number,
+  maxDelayMs: number,
+  jitterFactor: number = 0.25,
+): number {
+  if (category === 'transient' && categoryRetryCount === 1) return 0
+  return calculateDelay(attempt, baseDelayMs, maxDelayMs, jitterFactor)
+}
+
 /**
  * Classify a thrown error into a retry category. The status field comes from
  * Anthropic/OpenAI SDK errors; the message-fallback handles cases where the
@@ -185,7 +214,7 @@ export function classifyError(error: unknown): RetryErrorCategory {
   if (msg.includes('rate') || msg.includes('429')) return 'rate_limit'
   if (msg.includes('timeout')) return 'transient'
   if (msg.includes('stream ended')) return 'transient'
-  if (msg.includes('econnreset') || msg.includes('econnrefused')) return 'transient'
+  if (msg.includes('econnreset') || msg.includes('econnrefused') || msg.includes('epipe')) return 'transient'
   if (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('504')) {
     return 'server_error'
   }

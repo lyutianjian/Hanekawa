@@ -244,6 +244,9 @@ async function main() {
         await recordStream.append(record)
         recordProxy.onRecord(record)
       },
+      onProgress: (event) => {
+        recordProxy.onProgress(event)
+      },
     }, {
       preToolUse: settings.hooks?.preToolUse,
     })
@@ -271,6 +274,7 @@ async function main() {
         isGitRepo,
         hooks: settings.hooks,
         cacheRuntime: { settings, env: process.env },
+        permissionMode: () => permissionGate.getMode(),
         fallbackModel,
         getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
         setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),

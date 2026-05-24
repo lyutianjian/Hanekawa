@@ -6,12 +6,13 @@ import { writeFileTool } from './writeFile.js'
 import { editFileTool } from './editFile.js'
 import { multiEditTool } from './multiEdit.js'
 import { deleteFileTool } from './deleteFile.js'
+import { exitPlanModeTool } from './exitPlanMode.js'
 import { createSkillTool } from './skillTool.js'
 import { taskCreateTool, taskUpdateTool, taskListTool, taskGetTool } from './taskTools.js'
 import type { Tool } from '../harness/types.js'
 
 export function getBuiltinTools(): Tool[] {
-  return [grepTool, globTool, bashTool, readFileTool, writeFileTool, editFileTool, multiEditTool, deleteFileTool, taskCreateTool, taskUpdateTool, taskListTool, taskGetTool]
+  return [grepTool, globTool, bashTool, readFileTool, writeFileTool, editFileTool, multiEditTool, deleteFileTool, exitPlanModeTool, taskCreateTool, taskUpdateTool, taskListTool, taskGetTool]
 }
 
 export async function getAllTools(): Promise<Tool[]> {

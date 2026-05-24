@@ -10,6 +10,7 @@ import {
 
 const COMPACT_FAILURE_LIMIT = 3
 const compactFailuresByKey = new Map<string, number>()
+const compactRunsByKey = new Map<string, Promise<CompactCheckResult>>()
 
 export interface CompactCheckInput {
   records: SessionRecord[]
@@ -19,6 +20,7 @@ export interface CompactCheckInput {
   system?: string
   contextManagement?: Partial<ContextManagementConfig>
   lastResponseTokenCount?: number
+  lastResponseRecordCount?: number
   promptCacheRetention?: 'in_memory' | '24h'
   turnId?: string
   circuitKey?: string
@@ -39,13 +41,28 @@ export interface CompactCheckResult {
 
 export async function autoCompactIfNeeded(input: CompactCheckInput): Promise<CompactCheckResult> {
   const circuitKey = input.circuitKey ?? 'default'
+  const existingRun = compactRunsByKey.get(circuitKey)
+  if (existingRun) return existingRun
+
+  const run = autoCompactIfNeededOnce(input, circuitKey)
+  compactRunsByKey.set(circuitKey, run)
+  try {
+    return await run
+  } finally {
+    if (compactRunsByKey.get(circuitKey) === run) {
+      compactRunsByKey.delete(circuitKey)
+    }
+  }
+}
+
+async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: string): Promise<CompactCheckResult> {
   const currentFailures = await getCompactFailureCount(input, circuitKey)
   if (currentFailures >= COMPACT_FAILURE_LIMIT) {
     return { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } }
   }
 
   const compactableRecords = getRecordsAfterLastCompact(input.records)
-  const tokenCount = input.lastResponseTokenCount ?? countSessionRecordsTokens(compactableRecords, input.system)
+  const tokenCount = countCurrentTokens(input, compactableRecords)
   const threshold = getAutoCompactThreshold(input.contextManagement)
 
   if (tokenCount < threshold) {
@@ -92,9 +109,34 @@ export async function autoCompactIfNeeded(input: CompactCheckInput): Promise<Com
 export function resetAutoCompactFailureState(circuitKey?: string): void {
   if (circuitKey) {
     compactFailuresByKey.delete(circuitKey)
+    compactRunsByKey.delete(circuitKey)
     return
   }
   compactFailuresByKey.clear()
+  compactRunsByKey.clear()
+}
+
+function countCurrentTokens(input: CompactCheckInput, compactableRecords: SessionRecord[]): number {
+  if (input.lastResponseTokenCount === undefined) {
+    return countSessionRecordsTokens(compactableRecords, input.system)
+  }
+
+  return input.lastResponseTokenCount + countPendingRecordTokens(input)
+}
+
+function countPendingRecordTokens(input: CompactCheckInput): number {
+  if (input.lastResponseRecordCount === undefined) return 0
+
+  const pendingRecords = input.records.slice(input.lastResponseRecordCount)
+  let skippedResponseMessage = false
+
+  return pendingRecords.reduce((sum, record) => {
+    if (!skippedResponseMessage && record.type === 'message' && record.role === 'assistant') {
+      skippedResponseMessage = true
+      return sum
+    }
+    return sum + countSessionRecordsTokens([record])
+  }, 0)
 }
 
 async function getCompactFailureCount(input: CompactCheckInput, circuitKey: string): Promise<number> {
@@ -199,7 +241,7 @@ async function summarizeRecords(
     model: input.model,
     promptCacheRetention: input.promptCacheRetention,
     cacheSource: 'compact',
-    retry: { callerKind: 'background' },
+    retry: { callerKind: 'background', persistent: true },
   })
 
   return {

@@ -8,6 +8,7 @@ import type { SessionMeta } from '../../sessions/service.js'
 import type {
   SessionRecord,
   TokenUsage,
+  ToolProgressEvent,
 } from '../../harness/types.js'
 import type { TUIDisplayItem, TUIUsage } from '../types.js'
 import type { RecordProxy } from './usePermission.js'
@@ -51,6 +52,7 @@ export function useAgentLoop({
   const abortControllerRef = useRef<AbortController | null>(null)
   // Track the most recent tool_use ID for each tool name (for approval matching)
   const lastToolUseIdRef = useRef<Map<string, string>>(new Map())
+  const activeToolProgressRef = useRef<Map<string, ToolProgressEvent['call']>>(new Map())
 
   // CheckpointService for creating snapshots before each user message
   const checkpointServiceRef = useRef<CheckpointService | null>(null)
@@ -84,6 +86,7 @@ export function useAgentLoop({
       total: createEmptyUsage(),
     })
     lastToolUseIdRef.current.clear()
+    activeToolProgressRef.current.clear()
   }, [session.id])
 
   // Wire up the permission gate's prompt function
@@ -156,10 +159,35 @@ export function useAgentLoop({
         setIsStreaming(false)
         abortControllerRef.current = null
         lastToolUseIdRef.current.clear()
+        activeToolProgressRef.current.clear()
+        setMessages((prev) => prev.filter((item) => item.kind !== 'tool_progress'))
       }
     },
     [loop, store, session.id, onActiveModelChange],
   )
+
+  const handleProgress = useCallback((event: ToolProgressEvent) => {
+    if (event.phase === 'started') {
+      activeToolProgressRef.current.set(event.call.id, event.call)
+    } else {
+      activeToolProgressRef.current.delete(event.call.id)
+    }
+
+    const content = formatToolProgress([...activeToolProgressRef.current.values()])
+    setMessages((prev) => {
+      const withoutProgress = prev.filter((item) => item.kind !== 'tool_progress')
+      if (!content) return withoutProgress
+      return [
+        ...withoutProgress,
+        {
+          kind: 'tool_progress' as const,
+          id: 'tool-progress',
+          content,
+          createdAt: new Date().toISOString(),
+        },
+      ]
+    })
+  }, [])
 
   // Handle records from ToolRunner (via onRecord callback)
   const handleRecord = useCallback(
@@ -262,10 +290,12 @@ export function useAgentLoop({
   // Inject handleRecord into the record proxy so ToolRunner events reach React state
   useEffect(() => {
     recordProxy.setHandler(handleRecord)
+    recordProxy.setProgressHandler(handleProgress)
     return () => {
       recordProxy.setHandler(() => {})
+      recordProxy.setProgressHandler(() => {})
     }
-  }, [recordProxy, handleRecord])
+  }, [recordProxy, handleRecord, handleProgress])
 
   const interrupt = useCallback(() => {
     abortControllerRef.current?.abort()
@@ -301,6 +331,28 @@ export function useAgentLoop({
     handleRecord,
     reloadMessages,
   }
+}
+
+function formatToolProgress(calls: Array<ToolProgressEvent['call']>): string | undefined {
+  if (calls.length <= 1) return undefined
+
+  const counts = new Map<string, number>()
+  for (const call of calls) {
+    counts.set(call.name, (counts.get(call.name) ?? 0) + 1)
+  }
+
+  if (counts.size === 1) {
+    const name = calls[0]?.name
+    if (name === 'readFile') return `Reading ${calls.length} files in parallel...`
+    return `Running ${calls.length} ${formatToolName(name)} calls in parallel...`
+  }
+
+  return `Running ${calls.length} tools in parallel...`
+}
+
+function formatToolName(toolName: string | undefined): string {
+  if (!toolName) return 'tool'
+  return toolName
 }
 
 // Convert SessionRecord[] to TUIDisplayItem[] for initial display

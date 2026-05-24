@@ -162,6 +162,73 @@ test('autoCompactIfNeeded prefers last model usage token count over rough estima
   assert.equal(appended[0]?.type, 'compact_boundary')
 })
 
+test('autoCompactIfNeeded adds pending records to last model usage token count', async () => {
+  resetAutoCompactFailureState()
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'old context',
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'old-assistant',
+      role: 'assistant',
+      content: 'old answer',
+      createdAt: '2026-05-10T00:01:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'latest-user',
+      role: 'user',
+      content: 'latest request',
+      createdAt: '2026-05-10T00:02:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'model-response',
+      role: 'assistant',
+      content: 'already counted by output usage '.repeat(500),
+      createdAt: '2026-05-10T00:03:00.000Z',
+    },
+    {
+      type: 'tool_result',
+      id: 'tool-result',
+      toolUseId: 'tool-use',
+      tool: 'readFile',
+      ok: true,
+      content: 'pending tool output '.repeat(100),
+      createdAt: '2026-05-10T00:04:00.000Z',
+    },
+  ]
+  let called = false
+  const appended: SessionRecord[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      called = true
+      return { content: 'pending-triggered summary', toolCalls: [] }
+    },
+  }
+
+  const result = await autoCompactIfNeeded({
+    records,
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextManagement: compactTestBudget(),
+    lastResponseTokenCount: 400,
+    lastResponseRecordCount: 3,
+    appendRecord: async (record) => { appended.push(record) },
+  })
+
+  assert.equal(called, true)
+  assert.equal(result.compacted, true)
+  assert.equal(appended[0]?.type, 'compact_boundary')
+})
+
 test('autoCompactIfNeeded records telemetry and degrades when summary fails', async () => {
   resetAutoCompactFailureState()
   const records = compactableRecords()
@@ -263,6 +330,96 @@ test('autoCompactIfNeeded honors persisted compact failure count', async () => {
   assert.equal(result.compacted, false)
   assert.equal(calls, 0)
   assert.equal(appended.length, 0)
+})
+
+test('autoCompactIfNeeded deduplicates concurrent runs for the same circuit key', async () => {
+  resetAutoCompactFailureState()
+  const records = compactableRecords()
+  const appended: SessionRecord[] = []
+  let calls = 0
+  let releaseSummary: (() => void) | undefined
+  let markSummaryStarted: (() => void) | undefined
+  const summaryStarted = new Promise<void>((resolve) => {
+    markSummaryStarted = resolve
+  })
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      markSummaryStarted?.()
+      await new Promise<void>((release) => {
+        releaseSummary = release
+      })
+      return { content: 'shared summary', toolCalls: [] }
+    },
+  }
+  const input = {
+    records,
+    provider,
+    model: 'fake-model',
+    tools: [],
+    circuitKey: 'compact-dedup-test',
+    contextManagement: compactTestBudget(),
+    appendRecord: async (record: SessionRecord) => { appended.push(record) },
+  }
+
+  const first = autoCompactIfNeeded(input)
+  await summaryStarted
+  const second = autoCompactIfNeeded(input)
+  releaseSummary?.()
+  const results = await Promise.all([first, second])
+
+  assert.equal(results[0].compacted, true)
+  assert.equal(results[1].compacted, true)
+  assert.equal(calls, 1)
+  assert.equal(appended.filter((record) => record.type === 'compact_boundary').length, 1)
+})
+
+test('autoCompactIfNeeded deduplicates concurrent failure count updates', async () => {
+  resetAutoCompactFailureState()
+  const records = compactableRecords()
+  const appended: SessionRecord[] = []
+  let calls = 0
+  let persistedFailureCount = 0
+  let releaseSummary: (() => void) | undefined
+  let markSummaryStarted: (() => void) | undefined
+  const summaryStarted = new Promise<void>((resolve) => {
+    markSummaryStarted = resolve
+  })
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      markSummaryStarted?.()
+      await new Promise<void>((release) => {
+        releaseSummary = release
+      })
+      throw new Error('shared failure')
+    },
+  }
+  const input = {
+    records,
+    provider,
+    model: 'fake-model',
+    tools: [],
+    circuitKey: 'compact-dedup-failure-test',
+    getCompactFailureCount: async () => persistedFailureCount,
+    setCompactFailureCount: async (count: number) => {
+      persistedFailureCount = count
+    },
+    contextManagement: compactTestBudget(),
+    appendRecord: async (record: SessionRecord) => { appended.push(record) },
+  }
+
+  const first = autoCompactIfNeeded(input)
+  await summaryStarted
+  const second = autoCompactIfNeeded(input)
+  releaseSummary?.()
+  await Promise.all([first, second])
+
+  assert.equal(calls, 1)
+  assert.equal(persistedFailureCount, 1)
+  assert.equal(appended.filter((record) => record.type === 'compact_attempt_failed').length, 1)
 })
 
 function compactableRecords(): SessionRecord[] {

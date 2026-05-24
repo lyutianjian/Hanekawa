@@ -20,6 +20,7 @@ export interface PermissionRequest {
 }
 
 export type PermissionPrompt = (request: PermissionRequest) => Promise<boolean>
+export type PermissionModeListener = (mode: PermissionMode) => void
 
 export interface DenialState {
   streaks: Record<string, number>
@@ -114,6 +115,7 @@ export class PermissionGate {
   private readonly globalDenialPromptThreshold: number
   private readonly denialStateStore?: DenialStateStore
   private denialStateLoaded = false
+  private readonly modeListeners = new Set<PermissionModeListener>()
 
   constructor(
     private readonly prompt: PermissionPrompt,
@@ -273,6 +275,13 @@ export class PermissionGate {
     return this.mode
   }
 
+  onModeChange(listener: PermissionModeListener): () => void {
+    this.modeListeners.add(listener)
+    return () => {
+      this.modeListeners.delete(listener)
+    }
+  }
+
   getDenialState(): DenialState {
     return normalizeDenialState({
       streaks: Object.fromEntries(this.denialStreaks),
@@ -281,7 +290,11 @@ export class PermissionGate {
   }
 
   setMode(mode: PermissionMode): void {
+    if (this.mode === mode) return
     this.mode = mode
+    for (const listener of this.modeListeners) {
+      listener(mode)
+    }
   }
 
   createApprovalRecord(tool: Tool, input: unknown, approved: boolean, turnId?: string): ToolApprovalRecord {
@@ -370,6 +383,8 @@ export class PermissionGate {
     hasHardSafetyDenial: boolean,
     requiresSafetyPrompt: boolean,
   ): boolean {
+    if (tool.name === 'exitPlanMode') return true
+
     if (tool.isReadOnly === true) {
       return !hasHardSafetyDenial && !requiresSafetyPrompt
     }

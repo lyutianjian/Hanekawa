@@ -853,9 +853,21 @@ test('buildOpenAIPromptCacheKey is stable for model, system, and tools', async (
   }
 
   assert.equal(buildOpenAIPromptCacheKey(request), buildOpenAIPromptCacheKey({ ...request, messages: [] }))
+  assert.equal(
+    buildOpenAIPromptCacheKey(request),
+    buildOpenAIPromptCacheKey({ ...request, cacheSource: 'agent:other-session' }),
+  )
   assert.notEqual(
     buildOpenAIPromptCacheKey(request),
     buildOpenAIPromptCacheKey({ ...request, system: 'different system' }),
+  )
+  assert.notEqual(
+    buildOpenAIPromptCacheKey(request),
+    buildOpenAIPromptCacheKey({ ...request, model: 'gpt-other' }),
+  )
+  assert.notEqual(
+    buildOpenAIPromptCacheKey(request),
+    buildOpenAIPromptCacheKey({ ...request, tools: [] }),
   )
 })
 

@@ -18,6 +18,7 @@ import { FallbackTriggeredError } from '../config/retry.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
+import type { PermissionMode } from './permissions.js'
 import type { AgentRunResult, ChatMessage, ModelProvider, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, TokenUsage } from './types.js'
 
 export interface ActiveModelRuntime {
@@ -49,6 +50,7 @@ export interface AgentLoopOptions {
   fallbackRetryDelayMs?: number
   hooks?: Hooks
   cacheRuntime?: CacheRuntime
+  permissionMode?(): PermissionMode
   getCompactFailureCount?(): Promise<number>
   setCompactFailureCount?(count: number): Promise<void>
   recordStream: RecordStream
@@ -131,6 +133,7 @@ export class AgentLoop {
     await this.appendRecord(userMessage)
     await this.runUserPromptSubmitHooks(userInput, turnId, signal)
     let lastResponseTokenCount: number | undefined
+    let lastResponseRecordCount: number | undefined
 
     const maxTurns = this.options.maxTurns ?? 100
     const tokenBudget = this.options.tokenBudget
@@ -155,6 +158,7 @@ export class AgentLoop {
         system: this.options.system,
         contextManagement: this.options.contextManagement,
         lastResponseTokenCount,
+        lastResponseRecordCount,
         promptCacheRetention: this.activeModel.promptCacheRetention,
         turnId,
         circuitKey: this.options.toolContext.sessionId,
@@ -202,10 +206,12 @@ export class AgentLoop {
         skills: this.options.skills,
         toolContext: this.options.toolContext,
         env,
+        permissionMode: this.options.permissionMode?.(),
         includePostCompactRestore: pendingRestoreRecordIds.length > 0,
       })
       await this.consumePostCompactRestoreRecords(pendingRestoreRecordIds)
 
+      const requestRecordCount = this.recordsCache?.length ?? records.length
       const modelRequest = {
         system: built.system,
         systemBlocks: built.systemBlocks,
@@ -237,6 +243,7 @@ export class AgentLoop {
       turnResponseUsage = addTokenUsage(turnResponseUsage, response.usage)
       turnToolCalls += response.toolCalls.length
       lastResponseTokenCount = requestTokenCountFromUsage(response.usage)
+      lastResponseRecordCount = lastResponseTokenCount === undefined ? undefined : requestRecordCount
       lastRequestId = response.requestId
       if (response.cacheBreak) {
         await this.emitMetric({
@@ -481,7 +488,8 @@ export class AgentLoop {
   }
 
   private isConcurrencySafe(call: ToolCall): boolean {
-    return this.options.tools.find((tool) => tool.name === call.name)?.isConcurrencySafe === true
+    const tool = this.options.tools.find((candidate) => candidate.name === call.name)
+    return tool?.isConcurrencySafe === true && tool.isReadOnly === true && tool.isDestructive !== true
   }
 
   private async emitTurnMetric(startedAt: number, usage: TokenUsage, toolCalls: number): Promise<void> {

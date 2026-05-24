@@ -262,7 +262,7 @@ test('prepareRecordsForRequest prefers compacting results older than four hours 
   }
 
   const prepared = prepareRecordsForRequest(records, {
-    contextWindow: 25_000,
+    contextWindow: 30_000,
     summaryOutputTokens: 0,
   }, now)
 
@@ -273,7 +273,7 @@ test('prepareRecordsForRequest prefers compacting results older than four hours 
 test('prepareRecordsForRequest leaves sub-hour oversized results alone unless total budget requires it', () => {
   const now = new Date('2026-05-10T08:00:00.000Z')
   const records: SessionRecord[] = [
-    ...toolPairAt('recent-large', 'grep', 'large recent output '.repeat(30_000), '2026-05-10T07:30:00.000Z'),
+    ...toolPairAt('recent-large', 'grep', 'large recent output '.repeat(29_000), '2026-05-10T07:30:00.000Z'),
   ]
   for (let index = 0; index < 10; index++) {
     records.push(...toolPairAt(`new-${index}`, 'grep', `new ${index}`, `2026-05-10T07:${String(40 + index).padStart(2, '0')}:00.000Z`))

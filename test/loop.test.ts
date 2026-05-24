@@ -550,6 +550,7 @@ test('agent loop preserves tool result association for mixed safe and unsafe ord
       description: 'safe',
       inputSchema: z.object({}).strict(),
       riskLevel: 'safe',
+      isReadOnly: true,
       isConcurrencySafe: true,
       execute: async () => ({ ok: true, content: 'safe-result' }),
     },
@@ -602,6 +603,7 @@ test('agent loop runs consecutive safe calls concurrently and unsafe calls as ba
       description: 'safe a',
       inputSchema: z.object({}).strict(),
       riskLevel: 'safe',
+      isReadOnly: true,
       isConcurrencySafe: true,
       execute: async () => {
         events.push('safeA:start')
@@ -615,6 +617,7 @@ test('agent loop runs consecutive safe calls concurrently and unsafe calls as ba
       description: 'safe b',
       inputSchema: z.object({}).strict(),
       riskLevel: 'safe',
+      isReadOnly: true,
       isConcurrencySafe: true,
       execute: async () => {
         events.push('safeB:start')
@@ -653,6 +656,71 @@ test('agent loop runs consecutive safe calls concurrently and unsafe calls as ba
   assert.ok(events.indexOf('safeB:start') < events.indexOf('safeA:end'))
   assert.ok(events.indexOf('unsafe:start') > events.indexOf('safeA:end'))
   assert.ok(events.indexOf('unsafe:start') > events.indexOf('safeB:end'))
+})
+
+test('agent loop keeps mislabeled write-like tools as barriers', async () => {
+  const records: SessionRecord[] = []
+  const events: string[] = []
+  let callCount = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      callCount += 1
+      if (callCount === 1) {
+        return {
+          content: 'using tools',
+          toolCalls: [
+            { id: 'write-a-call', name: 'writeA', input: {} },
+            { id: 'write-b-call', name: 'writeB', input: {} },
+          ],
+        }
+      }
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const tools: Tool[] = [
+    {
+      name: 'writeA',
+      description: 'mislabeled write a',
+      inputSchema: z.object({}).strict(),
+      riskLevel: 'confirm',
+      isConcurrencySafe: true,
+      execute: async () => {
+        events.push('writeA:start')
+        await delay(20)
+        events.push('writeA:end')
+        return { ok: true, content: 'a' }
+      },
+    },
+    {
+      name: 'writeB',
+      description: 'mislabeled write b',
+      inputSchema: z.object({}).strict(),
+      riskLevel: 'confirm',
+      isConcurrencySafe: true,
+      execute: async () => {
+        events.push('writeB:start')
+        return { ok: true, content: 'b' }
+      },
+    },
+  ]
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  await loop.run('hello')
+
+  assert.ok(events.indexOf('writeB:start') > events.indexOf('writeA:end'))
 })
 
 test('agent loop appends reminder when all tool calls fail', async () => {

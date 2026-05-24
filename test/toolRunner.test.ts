@@ -4,7 +4,7 @@ import { z } from 'zod/v3'
 import { PermissionGate } from '../src/harness/permissions.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { countTextTokens } from '../src/prompts/budget.js'
-import type { SessionRecord, Tool } from '../src/harness/types.js'
+import type { SessionRecord, Tool, ToolProgressEvent } from '../src/harness/types.js'
 
 test('tool runner executes safe tool without prompting', async () => {
   let prompted = false
@@ -206,4 +206,52 @@ test('tool runner skips preToolUse hooks when matcher does not match', async () 
   assert.equal(result.ok, true)
   assert.equal(result.content, 'done')
   assert.equal(executed, true)
+})
+
+test('tool runner emits progress around execution', async () => {
+  const tool: Tool = {
+    name: 'safeTool',
+    description: 'safe',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({ ok: true, content: 'done' }),
+  }
+  const progress: ToolProgressEvent[] = []
+  const runner = new ToolRunner([tool], new PermissionGate(async () => true), {
+    onRecord: async () => {},
+    onProgress: (event) => { progress.push(event) },
+  })
+
+  await runner.run(
+    { id: 'call1', name: 'safeTool', input: {} },
+    { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+  )
+
+  assert.deepEqual(progress.map((event) => event.phase), ['started', 'finished'])
+  assert.deepEqual(progress.map((event) => event.call.id), ['call1', 'call1'])
+})
+
+test('tool runner finishes progress when execution fails', async () => {
+  const tool: Tool = {
+    name: 'failTool',
+    description: 'fail',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    execute: async () => {
+      throw new Error('boom')
+    },
+  }
+  const progress: string[] = []
+  const runner = new ToolRunner([tool], new PermissionGate(async () => true), {
+    onRecord: async () => {},
+    onProgress: (event) => { progress.push(event.phase) },
+  })
+
+  const result = await runner.run(
+    { id: 'call1', name: 'failTool', input: {} },
+    { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+  )
+
+  assert.equal(result.ok, false)
+  assert.deepEqual(progress, ['started', 'finished'])
 })

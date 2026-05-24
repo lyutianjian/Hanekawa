@@ -65,6 +65,14 @@ function DisplayItem({ item, expanded }: { item: TUIDisplayItem; expanded: boole
           </Text>
         </Box>
       )
+    case 'tool_progress':
+      return (
+        <Box paddingLeft={2}>
+          <Text color={theme.warning} dimColor>
+            {item.content}
+          </Text>
+        </Box>
+      )
     case 'system':
       return (
         <Box marginY={1}>

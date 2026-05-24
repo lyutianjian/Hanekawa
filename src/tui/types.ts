@@ -39,6 +39,12 @@ export type TUIDisplayItem =
       summary: string
     }
   | {
+      kind: 'tool_progress'
+      id: string
+      content: string
+      createdAt: string
+    }
+  | {
       kind: 'system'
       id: string
       content: string

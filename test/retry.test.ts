@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  calculateRetryDelay,
   classifyError,
   FallbackTriggeredError,
   isRetryableError,
+  PERSISTENT_MAX_DELAY_MS,
   withRetry,
   type RetryErrorCategory,
 } from '../src/config/retry.js'
@@ -38,6 +40,7 @@ test('classifyError maps other 5xx to server_error', () => {
 
 test('classifyError uses message fallback for network errors', () => {
   assert.equal(classifyError(new Error('ECONNRESET on socket')), 'transient')
+  assert.equal(classifyError(new Error('write EPIPE')), 'transient')
   assert.equal(classifyError(new Error('Stream ended unexpectedly')), 'transient')
   assert.equal(classifyError(new Error('Read timeout after 90s')), 'transient')
 })
@@ -211,6 +214,47 @@ test('withRetry retries network errors (ECONNRESET)', async () => {
   })
   assert.equal(result, 'ok')
   assert.equal(calls.length, 2)
+})
+
+test('withRetry uses immediate delay for the first transient retry', () => {
+  assert.equal(calculateRetryDelay('transient', 1, 1, 500, 32_000, 0), 0)
+  assert.equal(calculateRetryDelay('transient', 2, 2, 500, 32_000, 0), 1000)
+  assert.equal(calculateRetryDelay('server_error', 1, 1, 500, 32_000, 0), 500)
+})
+
+test('withRetry persistent mode expands 5xx retry budget and caps delay at 5 minutes', async () => {
+  const { op, calls } = makeOperation(
+    [
+      httpError(503),
+      httpError(503),
+      httpError(503),
+      httpError(503),
+    ],
+    'ok',
+  )
+  const result = await withRetry(op, {
+    persistent: true,
+    baseDelayMs: 0,
+    jitterFactor: 0,
+  })
+  assert.equal(result, 'ok')
+  assert.equal(calls.length, 5)
+  assert.equal(calculateRetryDelay('server_error', 12, 12, 500, PERSISTENT_MAX_DELAY_MS, 0), PERSISTENT_MAX_DELAY_MS)
+})
+
+test('withRetry persistent mode still fails fast on background 529', async () => {
+  const { op, calls } = makeOperation([httpError(529)])
+  await assert.rejects(
+    () =>
+      withRetry(op, {
+        callerKind: 'background',
+        persistent: true,
+        baseDelayMs: 0,
+        jitterFactor: 0,
+      }),
+    (err: Error & { status?: number }) => err.status === 529,
+  )
+  assert.equal(calls.length, 1)
 })
 
 test('withRetry never retries unknown errors', async () => {

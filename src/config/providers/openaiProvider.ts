@@ -1,11 +1,16 @@
 import OpenAI from 'openai'
 import type { ModelConfig } from '../service.js'
 import type { ModelProvider, ModelRequest, ModelResponse } from '../../harness/types.js'
-import { requireCacheSource } from '../../harness/cacheBreakDetection.js'
+import {
+  checkResponseForCacheBreak,
+  recordPromptState,
+  requireCacheSource,
+  type CacheBreakResult,
+} from '../../harness/cacheBreakDetection.js'
 import { withRetry } from '../retry.js'
 import { safeJsonParse } from '../../utils/json.js'
 import { debugProviderPayload, debugProviderResponse, debugProviderSummary } from './debug.js'
-import { buildOpenAIPayload } from './openaiPayload.js'
+import { buildOpenAIPayload, getOpenAICacheScope } from './openaiPayload.js'
 import { normalizeOpenAIUsage } from './usage.js'
 
 export class OpenAIProvider implements ModelProvider {
@@ -28,8 +33,14 @@ export class OpenAIProvider implements ModelProvider {
           ...request,
           thinking: request.thinking ?? this.thinkingConfig,
         }
-        requireCacheSource(effectiveRequest.cacheSource)
         const payload = buildOpenAIPayload(effectiveRequest)
+        const cacheSource = requireCacheSource(effectiveRequest.cacheSource)
+        recordPromptState({
+          system: JSON.stringify(getOpenAISystemFromPayload(payload)),
+          toolsJson: JSON.stringify(getOpenAIToolsFromPayload(payload)),
+          model: String(payload.model ?? effectiveRequest.model),
+          cacheScope: getOpenAICacheScope(effectiveRequest),
+        }, cacheSource)
         if (attempt > 1) {
           debugProviderPayload('openai-retry', payload)
         }
@@ -63,21 +74,41 @@ export class OpenAIProvider implements ModelProvider {
         const reasoning = typeof reasoningContent === 'string' && reasoningContent.length > 0
           ? reasoningContent
           : undefined
+        const usage = normalizeOpenAIUsage(response.usage)
+        let cacheBreak: CacheBreakResult | null = null
+        if (response.usage) {
+          cacheBreak = checkResponseForCacheBreak(
+            usage.cacheReadInputTokens,
+            usage.inputTokens,
+            cacheSource,
+          )
+        }
 
         return {
           content,
           toolCalls,
-          usage: normalizeOpenAIUsage(response.usage),
+          usage,
           requestId: response.id,
           stopReason: choice?.finish_reason ?? undefined,
           ...(reasoning ? { reasoningContent: reasoning } : {}),
+          ...(cacheBreak ? { cacheBreak } : {}),
         }
       },
       {
-        maxRetries: request.retry?.maxRetries ?? 3,
+        maxRetries: request.retry?.maxRetries,
         callerKind: request.retry?.callerKind ?? 'interactive',
+        persistent: request.retry?.persistent,
         signal: request.retry?.signal,
       },
     )
   }
+}
+
+function getOpenAISystemFromPayload(payload: ReturnType<typeof buildOpenAIPayload>): unknown {
+  const systemMessage = payload.messages.find((message) => message.role === 'system')
+  return systemMessage?.content ?? ''
+}
+
+function getOpenAIToolsFromPayload(payload: ReturnType<typeof buildOpenAIPayload>): unknown {
+  return 'tools' in payload ? payload.tools : []
 }

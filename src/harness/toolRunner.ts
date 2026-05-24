@@ -4,10 +4,11 @@ import { runPreToolUseHooks } from './hooks.js'
 import { validateToolInput } from './toolValidation.js'
 import { countTextTokens } from '../prompts/budget.js'
 import type { ToolHooks } from './hooks.js'
-import type { SessionRecord, Tool, ToolCall, ToolContext, ToolErrorCode, ToolResultRecord, ToolUseRecord } from './types.js'
+import type { SessionRecord, Tool, ToolCall, ToolContext, ToolErrorCode, ToolProgressEvent, ToolResultRecord, ToolUseRecord } from './types.js'
 
 export interface ToolRunEvents {
   onRecord(record: SessionRecord): Promise<void>
+  onProgress?(event: ToolProgressEvent): Promise<void> | void
 }
 
 type ToolRunRecordListener = (record: SessionRecord) => void
@@ -47,13 +48,20 @@ export class ToolRunner {
       createdAt: new Date().toISOString(),
     }
     await this.emitRecord(toolUse)
+    let progressStarted = false
 
     const executionContext: ToolContext = {
       ...context,
       abortSignal: signal ?? context.abortSignal,
+      appendRecord: (record) => this.emitRecord(record),
+      getPermissionMode: () => this.permissionGate.getMode(),
+      setPermissionMode: (mode) => this.permissionGate.setMode(mode),
     }
 
     try {
+      await this.emitProgress({ call, phase: 'started' })
+      progressStarted = true
+
       if (signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError')
       }
@@ -103,6 +111,7 @@ export class ToolRunner {
         syncMutableToolContext(context, executionContext)
         const record = this.result(call, tool.name, result.ok, result.content, result.errorCode, result.errorDetails, turnId)
         await this.emitRecord(record)
+        await this.emitAssistantMessageFromMetadata(result.metadata, turnId)
         return record
       } catch (error) {
         syncMutableToolContext(context, executionContext)
@@ -119,6 +128,10 @@ export class ToolRunner {
       const record = this.result(call, tool.name, false, error instanceof Error ? error.message : String(error), 'aborted', undefined, turnId)
       await this.emitRecord(record)
       return record
+    } finally {
+      if (progressStarted) {
+        await this.emitProgress({ call, phase: 'finished' })
+      }
     }
   }
 
@@ -126,6 +139,14 @@ export class ToolRunner {
     await this.events.onRecord(record)
     for (const listener of this.recordListeners) {
       listener(record)
+    }
+  }
+
+  private async emitProgress(event: ToolProgressEvent): Promise<void> {
+    try {
+      await this.events.onProgress?.(event)
+    } catch {
+      // Progress updates are UI-only; tool execution and persistence own truth.
     }
   }
 
@@ -151,6 +172,19 @@ export class ToolRunner {
       ...(turnId ? { turnId } : {}),
       createdAt: new Date().toISOString(),
     }
+  }
+
+  private async emitAssistantMessageFromMetadata(metadata: Record<string, unknown> | undefined, turnId?: string): Promise<void> {
+    const content = metadata?.assistantMessageContent
+    if (typeof content !== 'string' || content.trim().length === 0) return
+    await this.emitRecord({
+      id: randomUUID(),
+      type: 'message',
+      role: 'assistant',
+      content,
+      ...(turnId ? { turnId } : {}),
+      createdAt: new Date().toISOString(),
+    })
   }
 }
 

@@ -7,7 +7,11 @@ export interface SkillDefinition {
   name: string
   description: string
   content: string
+  paths?: string[]
+  inclusion?: SkillInclusion
 }
+
+export type SkillInclusion = 'always' | 'manual' | 'fileMatch'
 
 export class SkillsService {
   constructor(private readonly cwd: string) {}
@@ -58,15 +62,42 @@ export class SkillsService {
       throw new Error('Skill file must include YAML frontmatter (---\\n...\\n---)')
     }
 
-    const frontmatter = YAML.parse(match[1]) as { name?: string; description?: string }
+    const frontmatter = YAML.parse(match[1]) as {
+      name?: unknown
+      description?: unknown
+      paths?: unknown
+      inclusion?: unknown
+    }
     if (!frontmatter.name || !frontmatter.description) {
       throw new Error('Skill frontmatter must include "name" and "description" fields')
     }
+    if (typeof frontmatter.name !== 'string' || typeof frontmatter.description !== 'string') {
+      throw new Error('Skill frontmatter "name" and "description" fields must be strings')
+    }
+
+    const inclusion = parseInclusion(frontmatter.inclusion)
+    const paths = parsePaths(frontmatter.paths)
 
     return {
       name: frontmatter.name,
       description: frontmatter.description,
-      content: match[2].trim()
+      content: match[2].trim(),
+      ...(paths ? { paths } : {}),
+      inclusion,
     }
   }
+}
+
+function parseInclusion(value: unknown): SkillInclusion {
+  if (value === undefined) return 'manual'
+  if (value === 'always' || value === 'manual' || value === 'fileMatch') return value
+  throw new Error('Skill frontmatter "inclusion" must be one of: always, manual, fileMatch')
+}
+
+function parsePaths(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string' && item.trim() !== '')) {
+    throw new Error('Skill frontmatter "paths" must be an array of non-empty glob strings')
+  }
+  return value
 }

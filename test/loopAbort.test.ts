@@ -134,6 +134,7 @@ describe('AgentLoop abort', () => {
       description: 'abort',
       inputSchema: z.object({}).strict(),
       riskLevel: 'safe',
+      isReadOnly: true,
       isConcurrencySafe: true,
       execute: async () => {
         await new Promise((resolve) => setTimeout(resolve, 5))
@@ -145,6 +146,7 @@ describe('AgentLoop abort', () => {
       description: 'ok',
       inputSchema: z.object({}).strict(),
       riskLevel: 'safe',
+      isReadOnly: true,
       isConcurrencySafe: true,
       execute: async () => {
         await new Promise((resolve) => setTimeout(resolve, 20))

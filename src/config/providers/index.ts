@@ -17,6 +17,7 @@ export {
   buildOpenAIPayload,
   buildOpenAIPromptCacheKey,
   buildOpenAITools,
+  getOpenAICacheScope,
 } from './openaiPayload.js'
 export {
   normalizeAnthropicUsage,

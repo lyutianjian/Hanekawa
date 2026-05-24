@@ -88,6 +88,10 @@ export function buildOpenAIPromptCacheKey(request: ModelRequest): string {
   return `myagent:${hash}`
 }
 
+export function getOpenAICacheScope(request: ModelRequest): string {
+  return `openai:${request.promptCacheRetention ?? 'default'}`
+}
+
 export function buildOpenAIPayload(request: ModelRequest) {
   const tools = buildOpenAITools(request.tools)
   return {

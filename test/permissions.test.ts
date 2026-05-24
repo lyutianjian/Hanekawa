@@ -632,6 +632,30 @@ test('PermissionGate plan mode denies write and unrelated safe tools without pro
   assert.equal(prompted, false)
 })
 
+test('PermissionGate plan mode allows exitPlanMode without prompting', async () => {
+  let prompted = false
+  const exitPlanModeTool: Tool = {
+    name: 'exitPlanMode',
+    description: 'Exit plan mode',
+    riskLevel: 'safe',
+    inputSchema: z.object({ plan: z.string() }).strict(),
+    execute: async () => ({ ok: true, content: '' }),
+  }
+  const gate = new PermissionGate(
+    async () => {
+      prompted = true
+      return false
+    },
+    [],
+    { mode: 'plan' },
+  )
+
+  const approved = await gate.approve(exitPlanModeTool, { plan: 'Do the thing.' })
+
+  assert.equal(approved, true)
+  assert.equal(prompted, false)
+})
+
 test('PermissionGate plan mode allows read-only bash subset', async () => {
   let prompted = false
   const gate = new PermissionGate(

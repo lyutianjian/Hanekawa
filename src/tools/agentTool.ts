@@ -89,6 +89,7 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
         fallbackRetryDelayMs: options.fallbackRetryDelayMs,
         hooks: options.hooks,
         cacheRuntime: options.cacheRuntime,
+        permissionMode: () => permissionGate.getMode(),
         recordStream,
       })
 

@@ -2,6 +2,7 @@ import type { ZodTypeAny } from 'zod/v3'
 import type { CacheBreakResult, CacheBreakSource } from './cacheBreakDetection.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { JsonSchema, ToolValidationResult } from './toolValidation.js'
+import type { PermissionMode } from './permissions.js'
 
 export type RiskLevel = 'safe' | 'confirm' | 'dangerous'
 
@@ -47,6 +48,13 @@ export interface ToolResultRecord {
   errorDetails?: unknown
   createdAt: string
   turnId?: string
+}
+
+export type ToolProgressPhase = 'started' | 'finished'
+
+export interface ToolProgressEvent {
+  call: ToolCall
+  phase: ToolProgressPhase
 }
 
 export interface ToolApprovalRecord {
@@ -108,6 +116,9 @@ export interface ToolContext {
   invokedSkills?: Map<string, { content: string; timestamp: number }>
   taskState?: Map<string, TaskItem>
   abortSignal?: AbortSignal
+  appendRecord?(record: SessionRecord): Promise<void>
+  getPermissionMode?(): PermissionMode
+  setPermissionMode?(mode: PermissionMode): void
 }
 
 export type ToolErrorCode =
@@ -148,6 +159,10 @@ export interface Tool {
   riskLevel: RiskLevel
   isReadOnly?: boolean
   isDestructive?: boolean
+  /**
+   * True only for tools that can run alongside other safe tools without
+   * mutating project files or shared write-tracking state.
+   */
   isConcurrencySafe?: boolean
   execute(input: unknown, context: ToolContext): Promise<ToolResult>
 }
@@ -220,7 +235,7 @@ export interface ModelRequest {
   maxOutputTokens?: number
   previousRequestId?: string
   thinking?: { enabled: boolean; budgetTokens?: number }
-  retry?: { maxRetries?: number; signal?: AbortSignal; callerKind?: 'interactive' | 'background' }
+  retry?: { maxRetries?: number; signal?: AbortSignal; callerKind?: 'interactive' | 'background'; persistent?: boolean }
   cacheSource: CacheBreakSource
   cacheRuntime?: CacheRuntime
 }

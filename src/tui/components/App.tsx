@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { randomUUID } from 'node:crypto'
 import { Box } from 'ink'
 import type { AgentLoop } from '../../harness/loop.js'
@@ -85,6 +85,13 @@ export function App({
   )
 
   const { permState, respond } = usePermission(promptProxy)
+
+  useEffect(() => {
+    setPermissionModeState(permissionGate.getMode())
+    return permissionGate.onModeChange((nextMode) => {
+      setPermissionModeState(nextMode)
+    })
+  }, [permissionGate])
 
   const syncActiveModel = useCallback((activeModel: { modelKey?: string }) => {
     if (!activeModel.modelKey) return

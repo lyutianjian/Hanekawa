@@ -41,6 +41,7 @@ test('filterToolsForSubAgent keeps only read-only non-agent tools', () => {
     readOnlyTool('Agent'),
     readOnlyTool('bash'),
     readOnlyTool('readFile'),
+    safeTool('exitPlanMode'),
     safeTool('safeButStateful'),
   ]
 

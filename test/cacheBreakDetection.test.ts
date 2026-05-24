@@ -1,5 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import {
   agentCacheSource,
   checkResponseForCacheBreak,
@@ -95,6 +99,66 @@ test('compact source does not pollute main conversation cache baseline', () => {
   recordPromptState({ system: 'main system', toolsJson: '[{"name":"a"}]', model: 'model-a' }, MAIN_SOURCE)
   const result = checkResponseForCacheBreak(50_000, 1_000, MAIN_SOURCE)
   assert.equal(result, null)
+})
+
+test('cache break detection reports beta header and cache scope changes', () => {
+  resetCacheBreakDetection()
+
+  recordPromptState({
+    system: 'system',
+    toolsJson: '[]',
+    model: 'model-a',
+    betas: [],
+    cacheScope: 'ephemeral:5m',
+  }, MAIN_SOURCE)
+  assert.equal(checkResponseForCacheBreak(50_000, 1_000, MAIN_SOURCE), null)
+
+  recordPromptState({
+    system: 'system',
+    toolsJson: '[]',
+    model: 'model-a',
+    betas: ['extended-cache-ttl-2025-04-11'],
+    cacheScope: 'ephemeral:1h',
+  }, MAIN_SOURCE)
+  const result = checkResponseForCacheBreak(10_000, 1_000, MAIN_SOURCE)
+
+  assert.ok(result)
+  assert.deepEqual(result.reasons, ['beta_headers_changed', 'cache_scope_changed'])
+})
+
+test('debug cache break writes hash-only diagnostics', async () => {
+  resetCacheBreakDetection()
+  const originalDebug = process.env.MYAGENT_DEBUG_PROVIDER
+  const originalCwd = process.cwd()
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-cache-break-'))
+  process.env.MYAGENT_DEBUG_PROVIDER = '1'
+  process.chdir(dir)
+  try {
+    recordPromptState({ system: 'system-a', toolsJson: '[]', model: 'model-a' }, MAIN_SOURCE)
+    assert.equal(checkResponseForCacheBreak(50_000, 1_000, MAIN_SOURCE), null)
+    recordPromptState({ system: 'system-b', toolsJson: '[]', model: 'model-a' }, MAIN_SOURCE)
+    assert.ok(checkResponseForCacheBreak(10_000, 1_000, MAIN_SOURCE))
+
+    const diagnosticsDir = path.join(dir, '.myagent', 'diagnostics')
+    assert.equal(existsSync(diagnosticsDir), true)
+    const files = readdirSync(diagnosticsDir).filter((file) => file.includes('cache-break'))
+    assert.equal(files.length, 1)
+    const body = readFileSync(path.join(diagnosticsDir, files[0] ?? ''), 'utf-8')
+    const diagnostic = JSON.parse(body) as Record<string, unknown>
+    assert.equal(diagnostic.event, 'tengu_prompt_cache_break')
+    assert.equal(body.includes('system-a'), false)
+    assert.equal(body.includes('system-b'), false)
+    assert.ok(diagnostic.hashes)
+    assert.ok(Array.isArray(diagnostic.hash_diff))
+  } finally {
+    process.chdir(originalCwd)
+    if (originalDebug === undefined) {
+      delete process.env.MYAGENT_DEBUG_PROVIDER
+    } else {
+      process.env.MYAGENT_DEBUG_PROVIDER = originalDebug
+    }
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('agent sources are partitioned by id', () => {

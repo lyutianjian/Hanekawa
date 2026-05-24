@@ -8,6 +8,7 @@ import { grepTool } from '../src/tools/grep.js'
 import { bashTool } from '../src/tools/bash.js'
 import { readFileTool } from '../src/tools/readFile.js'
 import { editFileTool } from '../src/tools/editFile.js'
+import { multiEditTool } from '../src/tools/multiEdit.js'
 import { writeFileTool } from '../src/tools/writeFile.js'
 import { deleteFileTool } from '../src/tools/deleteFile.js'
 
@@ -75,6 +76,99 @@ test('editFile edits after readFile', async () => {
     const result = await editFileTool.execute({ filePath: 'a.txt', oldString: 'hello', newString: 'hi' }, ctx)
     assert.equal(result.ok, true)
     assert.equal(await readFile(path.join(dir, 'a.txt'), 'utf8'), 'hi\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editFile reports nearby context when oldString matches multiple times', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = context(dir)
+    await writeFile(path.join(dir, 'a.txt'), [
+      'one',
+      'target',
+      'two',
+      'three',
+      'target',
+      'four',
+    ].join('\n'), 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+
+    const result = await editFileTool.execute({ filePath: 'a.txt', oldString: 'target', newString: 'done' }, ctx)
+
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'precondition_failed')
+    assert.match(result.content, /Expected exactly one match for oldString, found 2\./)
+    assert.match(result.content, /Match 1 at line 2, column 1:/)
+    assert.match(result.content, /> 2 \| target/)
+    assert.match(result.content, /Match 2 at line 5, column 1:/)
+    assert.equal((result.errorDetails as { occurrences?: number }).occurrences, 2)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editFile truncates oldString match context after five matches', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = context(dir)
+    await writeFile(path.join(dir, 'a.txt'), 'x\nx\nx\nx\nx\nx\n', 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+
+    const result = await editFileTool.execute({ filePath: 'a.txt', oldString: 'x', newString: 'y' }, ctx)
+
+    assert.equal(result.ok, false)
+    assert.match(result.content, /Showing first 5 of 6 matches\./)
+    assert.equal((result.errorDetails as { truncated?: boolean }).truncated, true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('multiEdit applies multiple replacements atomically', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'a.txt')
+    await writeFile(file, 'alpha\nbeta\ngamma\n', 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+
+    const result = await multiEditTool.execute({
+      filePath: 'a.txt',
+      edits: [
+        { oldString: 'alpha', newString: 'ALPHA' },
+        { oldString: 'gamma', newString: 'GAMMA' },
+      ],
+    }, ctx)
+
+    assert.equal(result.ok, true)
+    assert.equal(await readFile(file, 'utf8'), 'ALPHA\nbeta\nGAMMA\n')
+    assert.equal(ctx.readFileState.get(file)?.content, 'ALPHA\nbeta\nGAMMA\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('multiEdit does not write when any replacement is ambiguous', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = context(dir)
+    const file = path.join(dir, 'a.txt')
+    await writeFile(file, 'alpha\nbeta\nbeta\n', 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+
+    const result = await multiEditTool.execute({
+      filePath: 'a.txt',
+      edits: [
+        { oldString: 'alpha', newString: 'ALPHA' },
+        { oldString: 'beta', newString: 'BETA' },
+      ],
+    }, ctx)
+
+    assert.equal(result.ok, false)
+    assert.match(result.content, /Expected exactly one match for edits\[1\]\.oldString, found 2\./)
+    assert.equal(await readFile(file, 'utf8'), 'alpha\nbeta\nbeta\n')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

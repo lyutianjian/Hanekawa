@@ -21,6 +21,10 @@ export class JsonlRecordStream implements RecordStream {
     await this.store.appendRecord(this.sessionId, record)
   }
 
+  async update(recordId: string, update: (record: SessionRecord) => SessionRecord): Promise<void> {
+    await this.store.updateRecord(this.sessionId, recordId, update)
+  }
+
   async appendMetric(metric: SessionMetricInput): Promise<void> {
     await this.store.appendMetric(this.sessionId, metric)
   }

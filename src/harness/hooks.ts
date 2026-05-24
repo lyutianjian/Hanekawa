@@ -30,6 +30,8 @@ export interface PreToolUseHookResult {
 export interface LifecycleHookOutput {
   stdout: string
   failures: string[]
+  blockingErrors: string[]
+  preventContinuation: boolean
 }
 
 export async function runPreToolUseHooks(
@@ -72,10 +74,14 @@ export async function runLifecycleHooks(
   context: ToolContext,
   signal?: AbortSignal,
 ): Promise<LifecycleHookOutput> {
-  if (!hooks || hooks.length === 0) return { stdout: '', failures: [] }
+  if (!hooks || hooks.length === 0) {
+    return { stdout: '', failures: [], blockingErrors: [], preventContinuation: false }
+  }
 
   const outputs: string[] = []
   const failures: string[] = []
+  const blockingErrors: string[] = []
+  let preventContinuation = false
   for (const hook of hooks) {
     const result = await runHookCommand({
       hook,
@@ -92,8 +98,13 @@ export async function runLifecycleHooks(
       blockedPrefix: `${hookName} hook failed`,
     })
 
+    const control = parseLifecycleHookControl(result.stdout ?? '', result.stderr ?? '')
+    if (control.stdout.trim()) outputs.push(control.stdout.trim())
+    blockingErrors.push(...control.blockingErrors)
+    preventContinuation ||= control.preventContinuation
+
     if (result.ok) {
-      if (result.stdout?.trim()) outputs.push(result.stdout.trim())
+      continue
     } else {
       failures.push(result.content ?? `${hookName} hook failed: ${hook.command}`)
     }
@@ -102,6 +113,8 @@ export async function runLifecycleHooks(
   return {
     stdout: outputs.join('\n\n'),
     failures,
+    blockingErrors,
+    preventContinuation,
   }
 }
 
@@ -126,7 +139,7 @@ function runHookCommand(options: {
   failurePrefix: string
   timeoutPrefix: string
   blockedPrefix: string
-}): Promise<PreToolUseHookResult & { stdout?: string }> {
+}): Promise<PreToolUseHookResult & { stdout?: string; stderr?: string }> {
   return new Promise((resolve) => {
     const { hook, hookName, input, context, signal, failurePrefix, timeoutPrefix, blockedPrefix } = options
     const timeoutMs = Math.max(1, hook.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS)
@@ -142,7 +155,7 @@ function runHookCommand(options: {
     let settled = false
     let timedOut = false
 
-    const finish = (result: PreToolUseHookResult) => {
+    const finish = (result: PreToolUseHookResult & { stdout?: string; stderr?: string }) => {
       if (settled) return
       settled = true
       clearTimeout(timeoutId)
@@ -187,7 +200,7 @@ function runHookCommand(options: {
       }
 
       if (code === 0) {
-        finish({ ok: true, stdout })
+        finish({ ok: true, stdout, stderr })
         return
       }
 
@@ -196,6 +209,8 @@ function runHookCommand(options: {
         ok: false,
         content: `${blockedPrefix}: ${hook.command} exited with code ${code ?? 'unknown'}.${output}`,
         details: { command: hook.command, exitCode: code, signal: childSignal, stdout, stderr },
+        stdout,
+        stderr,
       })
     })
 
@@ -211,4 +226,55 @@ function formatHookOutput(stdout: string, stderr: string): string {
   if (stdout.trim()) parts.push(`stdout:\n${stdout.trim()}`)
   if (stderr.trim()) parts.push(`stderr:\n${stderr.trim()}`)
   return parts.length > 0 ? `\n${parts.join('\n')}` : ''
+}
+
+function parseLifecycleHookControl(stdout: string, stderr: string): LifecycleHookOutput {
+  const visibleStdout: string[] = []
+  const blockingErrors: string[] = []
+  let preventContinuation = false
+  const stdoutLines = stdout.split(/\r?\n/)
+
+  for (let index = 0; index < stdoutLines.length; index += 1) {
+    const line = stdoutLines[index] ?? ''
+    if (line.trim() !== '__HANEKAWA_HOOK__') {
+      visibleStdout.push(line)
+      continue
+    }
+
+    const payload = stdoutLines[index + 1]
+    if (payload === undefined) continue
+    index += 1
+    try {
+      const parsed = JSON.parse(payload) as unknown
+      if (!parsed || typeof parsed !== 'object') continue
+      const control = parsed as {
+        preventContinuation?: unknown
+        blockingError?: unknown
+        blockingErrors?: unknown
+      }
+      preventContinuation ||= control.preventContinuation === true
+      if (typeof control.blockingError === 'string' && control.blockingError.trim()) {
+        blockingErrors.push(control.blockingError.trim())
+      }
+      if (Array.isArray(control.blockingErrors)) {
+        for (const item of control.blockingErrors) {
+          if (typeof item === 'string' && item.trim()) blockingErrors.push(item.trim())
+        }
+      }
+    } catch {
+      visibleStdout.push(line, payload)
+    }
+  }
+
+  for (const line of stderr.split(/\r?\n/)) {
+    const match = /^BLOCKING:\s*(.+)$/i.exec(line.trim())
+    if (match?.[1]) blockingErrors.push(match[1].trim())
+  }
+
+  return {
+    stdout: visibleStdout.join('\n').trim(),
+    failures: [],
+    blockingErrors,
+    preventContinuation,
+  }
 }

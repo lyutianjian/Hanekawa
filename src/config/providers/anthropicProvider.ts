@@ -8,7 +8,7 @@ import {
   type CacheBreakResult,
 } from '../../harness/cacheBreakDetection.js'
 import { withRetry } from '../retry.js'
-import { buildAnthropicPayload } from './anthropicPayload.js'
+import { buildAnthropicPayload, getAnthropicBetaHeaders, getAnthropicCacheScope } from './anthropicPayload.js'
 import { debugProviderPayload, debugProviderResponse, debugProviderSummary } from './debug.js'
 import { normalizeAnthropicUsage } from './usage.js'
 
@@ -51,6 +51,8 @@ export class AnthropicProvider implements ModelProvider {
             system: JSON.stringify(payload.system ?? ''),
             toolsJson: JSON.stringify(payload.tools ?? []),
             model: effectiveRequest.model,
+            betas: getAnthropicBetaHeaders(effectiveRequest, this.nativeAnthropic),
+            cacheScope: getAnthropicCacheScope(effectiveRequest, this.nativeAnthropic),
           }, cacheSource)
         }
         if (attempt > 1) {
@@ -81,9 +83,6 @@ export class AnthropicProvider implements ModelProvider {
             parsed.usage.inputTokens,
             cacheSource,
           )
-          if (cacheBreak && process.env.MYAGENT_DEBUG_PROVIDER === '1') {
-            console.error(`[myagent][cache-break] source=${cacheBreak.source} reasons=${cacheBreak.reasons.join(',')} drop=${cacheBreak.tokenDrop}`)
-          }
         }
         return {
           ...parsed,

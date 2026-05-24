@@ -16,6 +16,7 @@ import {
 
 const MAX_OUTPUT_TOKENS_DEFAULT = 32_000
 const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 128_000
+const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11'
 
 function getMaxOutputTokens(configValue?: number): number {
   const envValue = process.env.MYAGENT_MAX_OUTPUT_TOKENS
@@ -204,6 +205,16 @@ export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: n
   }
 
   return nativeAnthropic ? finalizeAnthropicCacheControl(payload) : payload
+}
+
+export function getAnthropicBetaHeaders(request: ModelRequest, nativeAnthropic = false): string[] {
+  if (!nativeAnthropic || !getPromptCachingEnabled(request.model)) return []
+  return getCacheControl(request.cacheRuntime).ttl === '1h' ? [EXTENDED_CACHE_TTL_BETA] : []
+}
+
+export function getAnthropicCacheScope(request: ModelRequest, nativeAnthropic = false): string {
+  if (!nativeAnthropic || !getPromptCachingEnabled(request.model)) return 'disabled'
+  return getCacheControl(request.cacheRuntime).ttl === '1h' ? 'ephemeral:1h' : 'ephemeral:5m'
 }
 
 export function enforceAnthropicCacheControlLimit<T extends Record<string, unknown>>(payload: T): T {

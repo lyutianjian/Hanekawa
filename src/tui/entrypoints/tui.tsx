@@ -152,7 +152,7 @@ async function main() {
       for (const mcpTool of mcpTools) {
         baseTools.push(wrapMcpTool(name, mcpTool, client))
       }
-      promptSections.clear('user-context:available-tools')
+      promptSections.clear('system-prompt:available-tools')
       mcpClients.push(client)
       mcpSuccesses.push(`${name} (${mcpTools.length} tools)`)
     } catch (error) {
@@ -179,7 +179,12 @@ async function main() {
   // Create proxies - React hooks will inject real handlers after mount
   const promptProxy = createPromptProxy()
   const recordProxy = createRecordProxy()
-  const permissionGate = new PermissionGate(promptProxy.prompt)
+  const permissionGate = new PermissionGate(promptProxy.prompt, undefined, {
+    denialStateStore: {
+      getDenialState: async () => store.getDenialState(session.id),
+      setDenialState: async (state) => store.setDenialState(session.id, state),
+    },
+  })
 
   const contextManagement = config.get().agent.contextManagement
   const isGitRepo = existsSync(join(cwd, '.git'))

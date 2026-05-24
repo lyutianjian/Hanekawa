@@ -48,6 +48,7 @@ test('ContextBuilder injects layered system and user context', async () => {
     '# Using your tools\n - Prefer dedicated t',
     '# Tone and style\n - Only use emojis if t',
     '# Text output (does not apply to tool ca',
+    '# availableTools\n- readFile: Read a file',
     '__MYAGENT_SYSTEM_PROMPT_DYNAMIC_BOUNDARY',
     'custom system',
   ])
@@ -56,7 +57,8 @@ test('ContextBuilder injects layered system and user context', async () => {
   assert.equal(first.kind, 'message')
   assert.equal(first.message.id, 'meta:user-context')
   assert.match(first.message.content, /Today's date is 2026\/05\/10/)
-  assert.match(first.message.content, /readFile: Read a file from disk/)
+  assert.doesNotMatch(first.message.content, /readFile: Read a file from disk/)
+  assert.match(built.system ?? '', /readFile: Read a file from disk/)
 })
 
 test('ContextBuilder can build a reduced system prompt from enabled sections', async () => {
@@ -112,11 +114,12 @@ test('ContextBuilder injects available skills as system reminder', async () => {
 
   const first = built.contextItems[0]
   assert.equal(first?.kind, 'message')
-  assert.match(first.message.content, /The following skills are available for use with the Skill tool/)
-  assert.match(first.message.content, /- debugging: Use when diagnosing bugs/)
-  assert.match(first.message.content, /- tdd: Test-driven development/)
-  assert.match(first.message.content, /Skill: Execute a skill within the main conversation/)
-  assert.doesNotMatch(first.message.content, /skill_debugging/)
+  assert.doesNotMatch(first.message.content, /The following skills are available for use with the Skill tool/)
+  assert.match(built.system ?? '', /The following skills are available for use with the Skill tool/)
+  assert.match(built.system ?? '', /- debugging: Use when diagnosing bugs/)
+  assert.match(built.system ?? '', /- tdd: Test-driven development/)
+  assert.match(built.system ?? '', /Skill: Execute a skill within the main conversation/)
+  assert.doesNotMatch(built.system ?? '', /skill_debugging/)
 })
 
 test('ContextBuilder budgets messages and tool records together', async () => {
@@ -368,6 +371,44 @@ test('ContextBuilder applies restore file budget after refreshing from disk', as
   }
 })
 
+test('ContextBuilder notes restored files that are no longer accessible', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-context-'))
+  const builder = new ContextBuilder(undefined, contextWindow(50_000))
+  try {
+    const file = path.join(dir, 'missing.ts')
+    const toolContext = {
+      cwd: dir,
+      sessionId: 's1',
+      readFiles: new Set<string>([file]),
+      readFileState: new Map<string, ReadFileState>([
+        [file, { content: 'export const a = 1', timestamp: 10, mtimeMs: 10, size: 18 }],
+      ]),
+    }
+
+    const built = await builder.build({
+      records: [{
+        type: 'compact_boundary',
+        id: 'compact-1',
+        summary: 'summary',
+        preTokens: 1234,
+        createdAt: '2026-05-10T00:01:00.000Z',
+      }],
+      tools: [],
+      includeUserContext: false,
+      toolContext,
+      includePostCompactRestore: true,
+    })
+
+    const restore = built.contextItems.find((item) => item.kind === 'message' && item.message.id === 'meta:post-compact-restore')
+    assert.equal(restore?.kind, 'message')
+    assert.match(restore.message.content, new RegExp(`previously read file ${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is no longer accessible`))
+    assert.equal(toolContext.readFiles.has(file), false)
+    assert.equal(toolContext.readFileState.has(file), false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('ContextBuilder injects environment context when env is provided', async () => {
   const builder = new ContextBuilder(undefined, contextWindow(5000))
 
@@ -387,13 +428,14 @@ test('ContextBuilder injects environment context when env is provided', async ()
 
   const first = built.contextItems[0]
   assert.equal(first?.kind, 'message')
-  assert.match(first.message.content, /# Environment/)
-  assert.match(first.message.content, /Primary working directory: \/home\/user\/project/)
-  assert.match(first.message.content, /Is a git repository: true/)
-  assert.match(first.message.content, /Platform: linux/)
-  assert.match(first.message.content, /Shell: bash/)
-  assert.match(first.message.content, /OS Version: Linux 6\.1\.0/)
-  assert.match(first.message.content, /powered by the model claude-opus-4-7/)
+  assert.doesNotMatch(first.message.content, /# Environment/)
+  assert.match(built.system ?? '', /# Environment/)
+  assert.match(built.system ?? '', /Primary working directory: \/home\/user\/project/)
+  assert.match(built.system ?? '', /Is a git repository: true/)
+  assert.match(built.system ?? '', /Platform: linux/)
+  assert.match(built.system ?? '', /Shell: bash/)
+  assert.match(built.system ?? '', /OS Version: Linux 6\.1\.0/)
+  assert.match(built.system ?? '', /powered by the model claude-opus-4-7/)
 })
 
 test('ContextBuilder omits environment context when env is not provided', async () => {
@@ -436,16 +478,10 @@ test('ContextBuilder caches available tools until invalidated', async () => {
     now: new Date('2026-05-10T12:02:00.000Z'),
   })
 
-  const firstContext = first.contextItems[0]
-  const cachedContext = cached.contextItems[0]
-  const refreshedContext = refreshed.contextItems[0]
-  assert.equal(firstContext?.kind, 'message')
-  assert.equal(cachedContext?.kind, 'message')
-  assert.equal(refreshedContext?.kind, 'message')
-  assert.match(firstContext.message.content, /readFile: Read a file from disk/)
-  assert.match(cachedContext.message.content, /readFile: Read a file from disk/)
-  assert.doesNotMatch(cachedContext.message.content, /Changed after MCP reconnect/)
-  assert.match(refreshedContext.message.content, /readFile: Changed after MCP reconnect/)
+  assert.match(first.system ?? '', /readFile: Read a file from disk/)
+  assert.match(cached.system ?? '', /readFile: Read a file from disk/)
+  assert.doesNotMatch(cached.system ?? '', /Changed after MCP reconnect/)
+  assert.match(refreshed.system ?? '', /readFile: Changed after MCP reconnect/)
 })
 
 test('ContextBuilder keeps currentDate dynamic while availableTools stays cached', async () => {
@@ -468,6 +504,10 @@ test('ContextBuilder keeps currentDate dynamic while availableTools stays cached
   assert.equal(after?.kind, 'message')
   assert.match(before.message.content, /Today's date is 2026\/05\/10/)
   assert.match(after.message.content, /Today's date is 2026\/05\/11/)
+  assert.doesNotMatch(before.message.content, /readFile: Read a file from disk/)
+  assert.doesNotMatch(after.message.content, /readFile: Read a file from disk/)
+  assert.match(beforeMidnight.system ?? '', /readFile: Read a file from disk/)
+  assert.match(afterMidnight.system ?? '', /readFile: Read a file from disk/)
   assert.doesNotMatch(beforeMidnight.system ?? '', /2026\/05\/10/)
   assert.doesNotMatch(afterMidnight.system ?? '', /2026\/05\/11/)
 })

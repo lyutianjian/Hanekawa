@@ -65,6 +65,7 @@ export interface CompactBoundaryRecord {
   type: 'compact_boundary'
   summary: string
   preTokens: number
+  postCompactRestore?: 'pending' | 'consumed'
   createdAt: string
   turnId?: string
 }

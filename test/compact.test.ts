@@ -72,6 +72,7 @@ test('autoCompactIfNeeded writes compact boundary when threshold is exceeded', a
   assert.equal(appended.length, 1)
   assert.equal(appended[0]?.type, 'compact_boundary')
   assert.equal(appended[0]?.type === 'compact_boundary' ? appended[0].summary : '', 'compact summary')
+  assert.equal(appended[0]?.type === 'compact_boundary' ? appended[0].postCompactRestore : undefined, 'pending')
 })
 
 test('autoCompactIfNeeded skips compacting below threshold', async () => {

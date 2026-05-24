@@ -93,3 +93,7 @@ export async function requireFreshRead(absolute: string, filePath: string, conte
 
   return undefined
 }
+
+export function getReadFileContent(absolute: string, context: ToolContext): string | undefined {
+  return context.readFileState?.get(absolute)?.content
+}

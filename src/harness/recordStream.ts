@@ -6,6 +6,7 @@ export interface RecordStream {
   load(): Promise<SessionRecord[]>
   loadWithDiagnostics?(): Promise<{ records: SessionRecord[]; diagnostics: RuntimeDiagnostic[] }>
   append(record: SessionRecord): Promise<void>
+  update?(recordId: string, update: (record: SessionRecord) => SessionRecord): Promise<void>
   appendMetric?(metric: SessionMetricInput): Promise<void>
 }
 
@@ -23,6 +24,14 @@ export class MemoryRecordStream implements RecordStream {
 
   async append(record: SessionRecord): Promise<void> {
     this.records.push(record)
+  }
+
+  async update(recordId: string, update: (record: SessionRecord) => SessionRecord): Promise<void> {
+    const index = this.records.findIndex((record) => record.id === recordId)
+    if (index < 0) return
+    const record = this.records[index]
+    if (!record) return
+    this.records[index] = update(record)
   }
 
   async appendMetric(metric: SessionMetricInput): Promise<void> {

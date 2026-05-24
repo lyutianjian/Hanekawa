@@ -69,7 +69,6 @@ export class AgentLoop {
   private recordsCache: SessionRecord[] | undefined
   private recordsCacheHasCleanToolProtocol = false
   private stripAllThinkingBlocksFromRequests = false
-  private injectPostCompactRestoreContext = false
 
   constructor(private readonly options: AgentLoopOptions) {
     const primary = {
@@ -165,7 +164,6 @@ export class AgentLoop {
       })
       usage = addTokenUsage(usage, compactResult.usage)
       if (compactResult.compacted) {
-        this.injectPostCompactRestoreContext = true
         notifyCompaction(cacheSource)
         this.options.contextBuilder.clearCachedSections()
         if (compactResult.metrics) {
@@ -186,6 +184,7 @@ export class AgentLoop {
       }
 
       const records = recordsBeforeCompact
+      const pendingRestoreRecordIds = this.pendingPostCompactRestoreRecordIds(records)
       const env: EnvironmentInfo = {
         cwd: this.options.toolContext.cwd,
         platform: process.platform,
@@ -195,8 +194,6 @@ export class AgentLoop {
         model: this.activeModel.model,
       }
 
-      const includePostCompactRestore = this.injectPostCompactRestoreContext
-      this.injectPostCompactRestoreContext = false
       const built = await this.options.contextBuilder.build({
         records,
         tools: this.options.tools,
@@ -205,8 +202,9 @@ export class AgentLoop {
         skills: this.options.skills,
         toolContext: this.options.toolContext,
         env,
-        includePostCompactRestore,
+        includePostCompactRestore: pendingRestoreRecordIds.length > 0,
       })
+      await this.consumePostCompactRestoreRecords(pendingRestoreRecordIds)
 
       const modelRequest = {
         system: built.system,
@@ -282,7 +280,7 @@ export class AgentLoop {
       // Token budget check
       const cumulativeTokens = requestTokenCountFromUsage(usage) ?? 0
       if (tokenBudget && cumulativeTokens > tokenBudget) {
-        return await this.finishTurn({
+        const finished = await this.finishTurn({
           content: `${response.content}\n\n[Token budget exceeded: ${cumulativeTokens} > ${tokenBudget}]`,
           usage,
           turnId,
@@ -291,6 +289,8 @@ export class AgentLoop {
           turnToolCalls,
           signal,
         })
+        if (finished.continueLoop) continue
+        return finished.result
       }
 
       // Token warning
@@ -327,7 +327,7 @@ export class AgentLoop {
       this.options.onRecord?.(assistantMessage)
 
       if (response.toolCalls.length === 0) {
-        return await this.finishTurn({
+        const finished = await this.finishTurn({
           content: response.content,
           usage,
           turnId,
@@ -336,6 +336,8 @@ export class AgentLoop {
           turnToolCalls,
           signal,
         })
+        if (finished.continueLoop) continue
+        return finished.result
       }
 
       // Check abort signal before executing tools
@@ -394,6 +396,28 @@ export class AgentLoop {
   private async appendRecord(record: SessionRecord): Promise<void> {
     await this.options.recordStream.append(record)
     this.noteRecordAppended(record)
+  }
+
+  private pendingPostCompactRestoreRecordIds(records: SessionRecord[]): string[] {
+    const loadedRecords = this.recordsCache ?? records
+    return loadedRecords
+      .filter((record) => record.type === 'compact_boundary' && record.postCompactRestore === 'pending')
+      .map((record) => record.id)
+  }
+
+  private async consumePostCompactRestoreRecords(recordIds: string[]): Promise<void> {
+    for (const recordId of recordIds) {
+      await this.options.recordStream.update?.(recordId, (record) => {
+        if (record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') return record
+        return { ...record, postCompactRestore: 'consumed' }
+      })
+      this.recordsCache = this.recordsCache?.map((record) => {
+        if (record.id !== recordId || record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') {
+          return record
+        }
+        return { ...record, postCompactRestore: 'consumed' }
+      })
+    }
   }
 
   private async runToolCallsInOrder(calls: ToolCall[], signal?: AbortSignal, turnId?: string): Promise<ToolResultRecord[]> {
@@ -464,6 +488,7 @@ export class AgentLoop {
     await this.emitMetric({
       event: 'turn',
       model: this.activeModel.model,
+      input_tokens: usage.inputTokens,
       response_tokens: usage.outputTokens,
       cache_read_tokens: usage.cacheReadInputTokens,
       cache_hit_rate: cacheHitRate(usage.inputTokens, usage.cacheReadInputTokens),
@@ -491,7 +516,7 @@ export class AgentLoop {
     turnResponseUsage: TokenUsage
     turnToolCalls: number
     signal?: AbortSignal
-  }): Promise<AgentRunResult> {
+  }): Promise<{ continueLoop: true } | { continueLoop: false; result: AgentRunResult }> {
     const result = await runLifecycleHooks(
       this.options.hooks?.stop,
       'stop',
@@ -504,8 +529,23 @@ export class AgentLoop {
       input.signal,
     )
     await this.appendLifecycleHookMessages('stop', result.stdout, result.failures, input.turnId)
+    if (result.preventContinuation) {
+      await this.emitTurnMetric(input.turnStartedAt, input.turnResponseUsage, input.turnToolCalls)
+      return { continueLoop: false, result: { content: input.content, usage: input.usage } }
+    }
+    if (result.blockingErrors.length > 0) {
+      await this.appendRecord({
+        type: 'message',
+        id: randomUUID(),
+        role: 'user',
+        content: `<system-reminder>stop hook blocking error:\n${result.blockingErrors.join('\n')}</system-reminder>`,
+        turnId: input.turnId,
+        createdAt: new Date().toISOString(),
+      })
+      return { continueLoop: true }
+    }
     await this.emitTurnMetric(input.turnStartedAt, input.turnResponseUsage, input.turnToolCalls)
-    return { content: input.content, usage: input.usage }
+    return { continueLoop: false, result: { content: input.content, usage: input.usage } }
   }
 
   private async appendLifecycleHookMessages(

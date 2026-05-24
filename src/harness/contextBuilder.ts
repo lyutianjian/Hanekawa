@@ -205,7 +205,14 @@ export class ContextBuilder {
   }
 
   async build(input: BuildContextInput): Promise<BuiltContext> {
-    const systemBlocks = this.buildSystemBlocks(input.system, input.projectContext, input.enabledSections)
+    const systemBlocks = this.buildSystemBlocks(
+      input.system,
+      input.projectContext,
+      input.enabledSections,
+      input.tools,
+      input.skills ?? [],
+      input.env,
+    )
     const system = systemBlocks
       .filter((b) => b !== SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
       .join('\n\n')
@@ -213,7 +220,7 @@ export class ContextBuilder {
       ? await this.buildPostCompactRestoreContext(input.toolContext)
       : []
     const allContextItems = [
-      ...(input.includeUserContext === false ? [] : this.buildUserContext(input.now ?? new Date(), input.tools, input.skills ?? [], input.env)),
+      ...(input.includeUserContext === false ? [] : this.buildUserContext(input.now ?? new Date())),
       ...postCompactRestoreContext,
       ...this.recordsToContextItems(input.records),
     ]
@@ -289,10 +296,16 @@ export class ContextBuilder {
     system: string | undefined,
     projectContext?: string,
     enabledSections?: readonly SectionKey[],
+    tools: readonly Tool[] = [],
+    skills: readonly SkillDefinition[] = [],
+    env?: EnvironmentInfo,
   ): string[] {
     const staticSections = [
       ...this.buildDefaultSystemSections(enabledSections ?? this.defaultEnabledSections),
       projectContext?.trim(),
+      this.buildEnvironmentSystemSection(env),
+      this.buildSkillsSystemSection(skills),
+      this.buildAvailableToolsSystemSection(tools),
     ].filter((section): section is string => Boolean(section))
 
     const dynamicSections = [
@@ -320,51 +333,55 @@ export class ContextBuilder {
     return enabledSections.map((key) => builders[key](this.sections))
   }
 
-  private buildUserContext(now: Date, tools: Tool[], skills: SkillDefinition[], env?: EnvironmentInfo): ModelContextItem[] {
-    const sections: string[] = [...this.buildSkillsContext(skills)]
+  private buildEnvironmentSystemSection(env?: EnvironmentInfo): string | undefined {
+    if (!env) return undefined
+    return this.sections.cachedSection(
+      'system-prompt:environment',
+      () => [
+        '# Environment',
+        `You have been invoked in the following environment:`,
+        ` - Primary working directory: ${env.cwd}`,
+        ` - Is a git repository: ${env.isGitRepo}`,
+        ` - Platform: ${env.platform}`,
+        ` - Shell: ${env.shell}`,
+        ` - OS Version: ${env.osVersion}`,
+        ` - You are powered by the model ${env.model}`,
+      ].join('\n'),
+    )
+  }
 
-    if (env) {
-      sections.push(this.sections.uncachedSection(
-        'user-context:environment',
-        'Environment reflects the active runtime and is emitted as a user-context message outside system prompt caching.',
-        () => [
-          '<system-reminder>',
-          '# Environment',
-          `You have been invoked in the following environment:`,
-          ` - Primary working directory: ${env.cwd}`,
-          ` - Is a git repository: ${env.isGitRepo}`,
-          ` - Platform: ${env.platform}`,
-          ` - Shell: ${env.shell}`,
-          ` - OS Version: ${env.osVersion}`,
-          ` - You are powered by the model ${env.model}`,
-          '</system-reminder>',
-        ].join('\n\n'),
-      ))
-    }
+  private buildSkillsSystemSection(skills: readonly SkillDefinition[]): string | undefined {
+    if (skills.length === 0) return undefined
+    return [
+      '# Available skills',
+      'The following skills are available for use with the Skill tool:',
+      skills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n'),
+    ].join('\n')
+  }
 
+  private buildAvailableToolsSystemSection(tools: readonly Tool[]): string | undefined {
+    if (tools.length === 0) return undefined
+    return this.sections.cachedSection(
+      'system-prompt:available-tools',
+      () => `# availableTools\n${tools.map((tool) => `- ${tool.name}: ${tool.description}`).join('\n')}`,
+    )
+  }
+
+  private buildUserContext(now: Date): ModelContextItem[] {
     const currentDate = this.sections.uncachedSection(
       'user-context:current-date',
       'The local date can change between turns and intentionally lives outside the cached system prompt.',
       () => `# currentDate\nToday's date is ${formatLocalDate(now)}.`,
     )
-    const availableTools = tools.length > 0
-      ? this.sections.cachedSection(
-          'user-context:available-tools',
-          () => `# availableTools\n${tools.map((tool) => `- ${tool.name}: ${tool.description}`).join('\n')}`,
-        )
-      : undefined
 
     const contextLines = [
       '<system-reminder>',
       'As you answer the user, you can use the following context:',
       currentDate,
-      availableTools,
       'IMPORTANT: this context may or may not be relevant. Do not mention it unless it helps with the task.',
       '</system-reminder>',
     ]
-    sections.push(...contextLines.filter((line): line is string => line !== undefined))
-
-    const content = sections.join('\n\n')
+    const content = contextLines.join('\n\n')
 
     return [{
       kind: 'message',
@@ -378,19 +395,7 @@ export class ContextBuilder {
   }
 
   invalidateAvailableToolsSection(): void {
-    this.sections.clear('user-context:available-tools')
-  }
-
-  private buildSkillsContext(skills: SkillDefinition[]): string[] {
-    if (skills.length === 0) return []
-
-    return [
-      '<system-reminder>',
-      'The following skills are available for use with the Skill tool:',
-      skills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n'),
-      '</system-reminder>',
-      '',
-    ]
+    this.sections.clear('system-prompt:available-tools')
   }
 
   private async buildPostCompactRestoreContext(toolContext: ToolContext | undefined): Promise<ModelContextItem[]> {
@@ -400,22 +405,21 @@ export class ContextBuilder {
       totalBudget: 50_000,
     }
     const restoredFiles = selectRestoreEntries(toolContext?.readFileState, fileRestoreLimits)
-    const refreshedFiles = applyRestoreLimits(
-      await refreshRestoredFiles(restoredFiles, toolContext),
-      fileRestoreLimits,
-    )
+    const refreshed = await refreshRestoredFiles(restoredFiles, toolContext)
+    const refreshedFiles = applyRestoreLimits(refreshed.files, fileRestoreLimits)
     const restoredSkills = selectRestoreEntries(toolContext?.invokedSkills, {
       maxEntries: Number.POSITIVE_INFINITY,
       maxTokensPerEntry: 5_000,
       totalBudget: 25_000,
     })
 
-    if (refreshedFiles.length === 0 && restoredSkills.length === 0) return []
+    if (refreshedFiles.length === 0 && refreshed.inaccessibleFiles.length === 0 && restoredSkills.length === 0) return []
 
     const sections = [
       '<system-reminder>',
       'Prior conversation was compacted. The following recently used context has been restored for continuity:',
       ...refreshedFiles.map((entry) => `# restoredFile ${entry.name}\n${entry.content}`),
+      ...refreshed.inaccessibleFiles.map((name) => `Note: previously read file ${name} is no longer accessible.`),
       ...restoredSkills.map((entry) => `# restoredSkill ${entry.name}\n${entry.content}`),
       '</system-reminder>',
     ]
@@ -461,10 +465,11 @@ function selectRestoreEntries<T extends { content: string; timestamp: number }>(
 async function refreshRestoredFiles(
   entries: Array<{ name: string; content: string }>,
   toolContext: ToolContext | undefined,
-): Promise<Array<{ name: string; content: string }>> {
-  if (!toolContext?.readFileState) return entries
+): Promise<{ files: Array<{ name: string; content: string }>; inaccessibleFiles: string[] }> {
+  if (!toolContext?.readFileState) return { files: entries, inaccessibleFiles: [] }
 
-  const refreshed: Array<{ name: string; content: string }> = []
+  const files: Array<{ name: string; content: string }> = []
+  const inaccessibleFiles: string[] = []
   for (const entry of entries) {
     try {
       const [content, fileStat] = await Promise.all([
@@ -473,14 +478,15 @@ async function refreshRestoredFiles(
       ])
       toolContext.readFiles.add(entry.name)
       toolContext.readFileState.set(entry.name, captureReadFileStateFromStat(content, fileStat))
-      refreshed.push({ name: entry.name, content })
+      files.push({ name: entry.name, content })
     } catch {
       toolContext.readFiles.delete(entry.name)
       toolContext.readFileState.delete(entry.name)
+      inaccessibleFiles.push(entry.name)
     }
   }
 
-  return refreshed
+  return { files, inaccessibleFiles }
 }
 
 function applyRestoreLimits(

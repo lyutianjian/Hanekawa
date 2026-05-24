@@ -21,6 +21,16 @@ export interface PermissionRequest {
 
 export type PermissionPrompt = (request: PermissionRequest) => Promise<boolean>
 
+export interface DenialState {
+  streaks: Record<string, number>
+  total: number
+}
+
+export interface DenialStateStore {
+  getDenialState(): Promise<DenialState>
+  setDenialState(state: DenialState): Promise<void>
+}
+
 export interface PermissionRule {
   toolName: string
   contentPattern?: string
@@ -102,11 +112,18 @@ export class PermissionGate {
   private readonly denialStreakThreshold: number
   private globalAutoDenials = 0
   private readonly globalDenialPromptThreshold: number
+  private readonly denialStateStore?: DenialStateStore
+  private denialStateLoaded = false
 
   constructor(
     private readonly prompt: PermissionPrompt,
     configRules?: PermissionRule[],
-    options?: { denialStreakThreshold?: number; globalDenialPromptThreshold?: number; mode?: PermissionMode },
+    options?: {
+      denialStreakThreshold?: number
+      globalDenialPromptThreshold?: number
+      mode?: PermissionMode
+      denialStateStore?: DenialStateStore
+    },
   ) {
     this.configRules = configRules ?? []
     this.mode = options?.mode ?? 'default'
@@ -114,9 +131,12 @@ export class PermissionGate {
     this.denialStreakThreshold = Math.max(1, configured)
     const globalConfigured = options?.globalDenialPromptThreshold ?? DEFAULT_GLOBAL_DENIAL_PROMPT_THRESHOLD
     this.globalDenialPromptThreshold = Math.max(1, globalConfigured)
+    this.denialStateStore = options?.denialStateStore
   }
 
   async approve(tool: Tool, input: unknown): Promise<boolean> {
+    await this.hydrateDenialState()
+
     // 1. Safe tools are approved unless shell/path safety found a reason to
     //    deny or force a prompt first.
     const commandAnalysis = this.commandAnalysisFor(tool.name, input)
@@ -138,7 +158,7 @@ export class PermissionGate {
           denialStreak: 0,
         })
         this.denialStreaks.set(tool.name, 0)
-        return approved
+        return this.persistAndReturn(approved)
       }
 
       // For bash, use commandAnalysis to identify truly destructive commands;
@@ -161,25 +181,25 @@ export class PermissionGate {
         if (approved && alwaysAllow) {
           this.addSessionRule({ toolName: tool.name, behavior: 'allow', source: 'session' })
         }
-        return approved
+        return this.persistAndReturn(approved)
       }
 
       this.denialStreaks.set(tool.name, 0)
-      return true
+      return this.persistAndReturn(true)
     }
 
     if (this.mode === 'plan') {
       if (this.isPlanAllowed(tool, commandAnalysis, hasHardSafetyDenial, requiresSafetyPrompt)) {
         this.denialStreaks.set(tool.name, 0)
-        return true
+        return this.persistAndReturn(true)
       }
       this.denialStreaks.set(tool.name, 0)
-      return false
+      return this.persistAndReturn(false)
     }
 
     if (tool.riskLevel === 'safe' && !hasHardSafetyDenial && !requiresSafetyPrompt) {
       this.denialStreaks.set(tool.name, 0)
-      return true
+      return this.persistAndReturn(true)
     }
 
     const deniedByRule = this.isDenied(tool.name, input)
@@ -190,7 +210,7 @@ export class PermissionGate {
     //    the user make the decision in the normal permission prompt.
     if (!hasHardSafetyDenial && !requiresSafetyPrompt && this.isAllowed(tool.name, input)) {
       this.denialStreaks.set(tool.name, 0)
-      return true
+      return this.persistAndReturn(true)
     }
 
     if (
@@ -201,7 +221,7 @@ export class PermissionGate {
       && !deniedByRule
     ) {
       this.denialStreaks.set(tool.name, 0)
-      return true
+      return this.persistAndReturn(true)
     }
 
     // 3. Auto-deny path - but if the same tool has been auto-denied
@@ -209,7 +229,7 @@ export class PermissionGate {
     //    the model cannot loop on a blocked call indefinitely.
     if (wouldAutoDeny) {
       const escalated = await this.handleAutoDeny(tool, input, commandAnalysis, wouldAutoDeny)
-      if (escalated !== undefined) return escalated
+      if (escalated !== undefined) return this.persistAndReturn(escalated)
     }
 
     // 4. Prompt user
@@ -238,7 +258,7 @@ export class PermissionGate {
       })
     }
 
-    return approved
+    return this.persistAndReturn(approved)
   }
 
   addSessionRule(rule: PermissionRule): void {
@@ -251,6 +271,13 @@ export class PermissionGate {
 
   getMode(): PermissionMode {
     return this.mode
+  }
+
+  getDenialState(): DenialState {
+    return normalizeDenialState({
+      streaks: Object.fromEntries(this.denialStreaks),
+      total: this.globalAutoDenials,
+    })
   }
 
   setMode(mode: PermissionMode): void {
@@ -361,6 +388,29 @@ export class PermissionGate {
     this.denialStreaks.set(toolName, Math.max(previousStreak, this.denialStreakThreshold - 1, 0))
   }
 
+  private async hydrateDenialState(): Promise<void> {
+    if (!this.denialStateStore || this.denialStateLoaded) return
+    this.denialStateLoaded = true
+    try {
+      const state = normalizeDenialState(await this.denialStateStore.getDenialState())
+      this.denialStreaks = new Map(Object.entries(state.streaks))
+      this.globalAutoDenials = state.total
+    } catch {
+      // Persistence is best-effort; in-memory counters still protect this process.
+    }
+  }
+
+  private async persistAndReturn<T>(value: T): Promise<T> {
+    if (this.denialStateStore) {
+      try {
+        await this.denialStateStore.setDenialState(this.getDenialState())
+      } catch {
+        // Permission decisions must not fail because telemetry persistence did.
+      }
+    }
+    return value
+  }
+
   private protectedPathBypassReason(
     input: unknown,
     commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
@@ -409,6 +459,20 @@ export class PermissionGate {
     if (riskLevel === 'confirm') return 'This action changes local state and requires confirmation.'
     return 'This is a dangerous action and requires explicit confirmation.'
   }
+}
+
+export function normalizeDenialState(state: Partial<DenialState> | undefined): DenialState {
+  const streaks: Record<string, number> = {}
+  for (const [toolName, rawCount] of Object.entries(state?.streaks ?? {})) {
+    if (typeof rawCount !== 'number' || !Number.isFinite(rawCount)) continue
+    const count = Math.max(0, Math.floor(rawCount))
+    if (count > 0) streaks[toolName] = count
+  }
+  const rawTotal = state?.total
+  const total = typeof rawTotal === 'number' && Number.isFinite(rawTotal)
+    ? Math.max(0, Math.floor(rawTotal))
+    : 0
+  return { streaks, total }
 }
 
 function isPlanReadOnlyShellCommand(command: string): boolean {

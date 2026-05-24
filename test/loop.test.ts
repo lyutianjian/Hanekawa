@@ -27,6 +27,13 @@ function recordStreamFor(
       return records
     },
     append: async (record) => { records.push(record) },
+    update: async (recordId, update) => {
+      const index = records.findIndex((record) => record.id === recordId)
+      if (index < 0) return
+      const record = records[index]
+      if (!record) return
+      records[index] = update(record)
+    },
     ...(metrics
       ? { appendMetric: async (metric: SessionMetricInput) => { metrics.push(metric) } }
       : {}),
@@ -214,6 +221,84 @@ test('agent loop appends stop hook stdout before returning', async () => {
   assert.match(messages.at(-1)?.content ?? '', /typecheck: failed/)
 })
 
+test('agent loop continues when stop hook reports a blocking error', async () => {
+  const records: SessionRecord[] = []
+  let callCount = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      callCount += 1
+      if (callCount === 1) return { content: 'first', toolCalls: [] }
+
+      const contextItems = request.contextItems ?? []
+      assert.ok(contextItems.some(
+        (item) => item.kind === 'message'
+          && item.message.role === 'user'
+          && /stop hook blocking error:\nfix it/.test(item.message.content),
+      ))
+      return { content: 'second', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    hooks: {
+      stop: [{
+        command: `${JSON.stringify(process.execPath)} -e "let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end', () => { const data = JSON.parse(input); if (data.response === 'first') console.error('BLOCKING: fix it') })"`,
+      }],
+    },
+    recordStream: recordStreamFor(records),
+  })
+
+  const response = await loop.run('hello')
+
+  assert.equal(response.content, 'second')
+  assert.equal(callCount, 2)
+  assert.ok(records.some((record) => record.type === 'message' && /stop hook blocking error:\nfix it/.test(record.content)))
+})
+
+test('agent loop respects stop hook preventContinuation before blocking errors', async () => {
+  const records: SessionRecord[] = []
+  let callCount = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      callCount += 1
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    hooks: {
+      stop: [{
+        command: `${JSON.stringify(process.execPath)} -e "console.log('__HANEKAWA_HOOK__'); console.log(JSON.stringify({ preventContinuation: true })); console.error('BLOCKING: should not continue')"`,
+      }],
+    },
+    recordStream: recordStreamFor(records),
+  })
+
+  const response = await loop.run('hello')
+
+  assert.equal(response.content, 'done')
+  assert.equal(callCount, 1)
+  assert.equal(records.some((record) => record.type === 'message' && /stop hook blocking error/.test(record.content)), false)
+})
+
 test('agent loop annotates records from one user turn with the same turnId', async () => {
   const records: SessionRecord[] = []
   let callCount = 0
@@ -381,6 +466,52 @@ test('agent loop sends tool result into the next model request', async () => {
   assert.equal(records.filter((record) => record.type === 'tool_use' && record.id === 'call-1').length, 1)
   assert.equal(records.filter((record) => record.type === 'tool_result' && record.toolUseId === 'call-1').length, 1)
   assert.equal(records.filter((record) => record.type === 'message' && record.role === 'tool').length, 0)
+})
+
+test('agent loop consumes pending post-compact restore after a successful build', async () => {
+  const records: SessionRecord[] = [{
+    type: 'compact_boundary',
+    id: 'compact-1',
+    summary: 'summary',
+    preTokens: 100,
+    postCompactRestore: 'pending',
+    createdAt: '2026-05-10T00:00:00.000Z',
+  }]
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      const contextItems = request.contextItems ?? []
+      assert.ok(contextItems.some(
+        (item) => item.kind === 'message'
+          && item.message.id === 'meta:post-compact-restore'
+          && /# restoredSkill debugging\nDebug skill body/.test(item.message.content),
+      ))
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: {
+      cwd: process.cwd(),
+      sessionId: 's1',
+      readFiles: new Set(),
+      invokedSkills: new Map([['debugging', { content: 'Debug skill body', timestamp: 1 }]]),
+    },
+    recordStream: recordStreamFor(records),
+  })
+
+  await loop.run('hello')
+
+  const boundary = records.find((record) => record.id === 'compact-1')
+  assert.equal(boundary?.type, 'compact_boundary')
+  assert.equal(boundary?.type === 'compact_boundary' ? boundary.postCompactRestore : undefined, 'consumed')
 })
 
 test('agent loop preserves tool result association for mixed safe and unsafe order', async () => {

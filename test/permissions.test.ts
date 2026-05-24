@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
-import { PermissionGate, isProtectedPath } from '../src/harness/permissions.js'
+import { PermissionGate, isProtectedPath, type DenialState } from '../src/harness/permissions.js'
 import { analyzeShellCommand } from '../src/harness/commandAnalysis.js'
 import { bashTool } from '../src/tools/bash.js'
 import type { Tool } from '../src/harness/types.js'
@@ -192,6 +192,32 @@ test('PermissionGate auto-denies up to threshold-1 times, then prompts the user'
   assert.equal(await gate.approve(bashTool, { command: 'cat .env' }), false)
   assert.equal(prompts, 1)
   assert.equal(lastStreak, 3)
+})
+
+test('PermissionGate restores persisted denial state across instances', async () => {
+  let state: DenialState = { streaks: {}, total: 0 }
+  const store = {
+    getDenialState: async () => state,
+    setDenialState: async (next: DenialState) => { state = next },
+  }
+
+  const firstGate = new PermissionGate(async () => {
+    throw new Error('first gate should not prompt')
+  }, [], { denialStreakThreshold: 2, denialStateStore: store })
+  assert.equal(await firstGate.approve(bashTool, { command: 'cat .env' }), false)
+  assert.deepEqual(state, { streaks: { bash: 1 }, total: 1 })
+
+  let prompts = 0
+  let restoredStreak = 0
+  const secondGate = new PermissionGate(async (request) => {
+    prompts++
+    restoredStreak = request.denialStreak
+    return false
+  }, [], { denialStreakThreshold: 2, denialStateStore: store })
+
+  assert.equal(await secondGate.approve(bashTool, { command: 'cat .env' }), false)
+  assert.equal(prompts, 1)
+  assert.equal(restoredStreak, 2)
 })
 
 test('PermissionGate keeps prompting after a user-prompted denial', async () => {

@@ -65,6 +65,7 @@ export async function autoCompactIfNeeded(input: CompactCheckInput): Promise<Com
       type: 'compact_boundary',
       summary: summary.content,
       preTokens: tokenCount,
+      postCompactRestore: 'pending',
       ...(input.turnId ? { turnId: input.turnId } : {}),
       createdAt: new Date().toISOString(),
     })

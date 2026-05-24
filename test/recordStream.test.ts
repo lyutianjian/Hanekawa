@@ -56,7 +56,8 @@ test('JsonlRecordStream delegates records and metrics to SessionStore', async ()
 
     const metricsPath = path.join(dir, '.myagent', 'sessions', `${session.id}.metrics.jsonl`)
     const metrics = readFileSync(metricsPath, 'utf8').trim().split('\n')
-    assert.equal(metrics.length, 1)
+    assert.equal(metrics.length, 2)
+    assert.equal(JSON.parse(metrics[1] ?? '{}').event, 'session_cache_summary')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

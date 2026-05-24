@@ -83,6 +83,7 @@ test('SessionStore appends metrics next to session records', async () => {
     await store.appendMetric(session.id, {
       event: 'turn',
       model: 'fake-model',
+      input_tokens: 6,
       response_tokens: 12,
       cache_read_tokens: 34,
       cache_hit_rate: 0.85,
@@ -97,17 +98,61 @@ test('SessionStore appends metrics next to session records', async () => {
 
     const metricsPath = path.join(dir, '.myagent', 'sessions', `${session.id}.metrics.jsonl`)
     const lines = readFileSync(metricsPath, 'utf-8').trim().split('\n')
-    assert.equal(lines.length, 2)
+    assert.equal(lines.length, 3)
     const metric = JSON.parse(lines[0] ?? '{}') as Record<string, unknown>
     assert.equal(metric.event, 'turn')
     assert.equal(metric.session_id, session.id)
+    assert.equal(metric.input_tokens, 6)
     assert.equal(metric.response_tokens, 12)
     assert.equal(metric.cache_hit_rate, 0.85)
-    const mcpMetric = JSON.parse(lines[1] ?? '{}') as Record<string, unknown>
+    const summary = JSON.parse(lines[1] ?? '{}') as Record<string, unknown>
+    assert.equal(summary.event, 'session_cache_summary')
+    assert.equal(summary.total_turns, 1)
+    assert.equal(summary.total_cache_hit_rate, 34 / 40)
+    const mcpMetric = JSON.parse(lines[2] ?? '{}') as Record<string, unknown>
     assert.equal(mcpMetric.event, 'mcp_connect_failed')
     assert.equal(mcpMetric.session_id, session.id)
     assert.equal(mcpMetric.server, 'filesystem')
     assert.equal(mcpMetric.error, 'connection timed out')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SessionStore summarizes cache break causes in metrics', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+
+    const session = await store.create()
+    await store.appendMetric(session.id, {
+      event: 'turn',
+      model: 'fake-model',
+      input_tokens: 100,
+      response_tokens: 5,
+      cache_read_tokens: 300,
+      cache_hit_rate: 0.75,
+      tool_calls: 0,
+      duration_ms: 10,
+    })
+    await store.appendMetric(session.id, {
+      event: 'cache_break',
+      source: `agent:${session.id}`,
+      reasons: ['system_prompt_changed(+10 chars)', 'beta_headers_changed'],
+      drop_tokens: 2500,
+    })
+
+    const metricsPath = path.join(dir, '.myagent', 'sessions', `${session.id}.metrics.jsonl`)
+    const metrics = readFileSync(metricsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    const summary = [...metrics].reverse().find((metric) => metric.event === 'session_cache_summary')
+    assert.equal(summary?.total_cache_hit_rate, 0.75)
+    assert.equal(summary?.first_break_turn_count, 1)
+    assert.equal(summary?.cache_break_count, 1)
+    assert.deepEqual(summary?.cause_distribution, {
+      system_prompt_changed: 1,
+      beta_headers_changed: 1,
+    })
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -125,6 +170,40 @@ test('SessionStore persists and clears compact failure count in metadata', async
 
     await store.setCompactFailureCount(session.id, 0)
     assert.equal((await store.load(session.id))?.compactFailureCount, undefined)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SessionStore persists denial state metadata and emits metrics', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+
+    const session = await store.create()
+    await store.setDenialState(session.id, { streaks: { bash: 2 }, total: 5 })
+
+    assert.deepEqual((await store.load(session.id))?.denialState, {
+      streaks: { bash: 2 },
+      total: 5,
+    })
+    assert.deepEqual(await store.getDenialState(session.id), {
+      streaks: { bash: 2 },
+      total: 5,
+    })
+
+    const metricsPath = path.join(dir, '.myagent', 'sessions', `${session.id}.metrics.jsonl`)
+    const metrics = readFileSync(metricsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    assert.equal(metrics.length, 1)
+    assert.equal(metrics[0]?.event, 'permission_denial_state')
+    assert.equal(metrics[0]?.total_auto_denials, 5)
+    assert.equal(metrics[0]?.active_streaks, 1)
+    assert.equal(metrics[0]?.max_streak, 2)
+    assert.deepEqual(metrics[0]?.streaks, { bash: 2 })
+
+    await store.setDenialState(session.id, { streaks: {}, total: 0 })
+    assert.equal((await store.load(session.id))?.denialState, undefined)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

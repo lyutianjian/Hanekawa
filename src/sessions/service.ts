@@ -7,6 +7,7 @@ import { readJsonFile, writeJsonFile, parseJsonLines, parseJsonLinesWithDiagnost
 import type { SessionRecord } from '../harness/types.js'
 import type { SessionMetricInput, SessionMetric } from '../harness/metrics.js'
 import { checkSessionInvariants } from './invariants.js'
+import { normalizeDenialState, type DenialState } from '../harness/permissions.js'
 
 export interface CheckpointMapping {
   messageId: string
@@ -22,6 +23,7 @@ export interface SessionMeta {
   title?: string
   messageCount: number
   compactFailureCount?: number
+  denialState?: DenialState
   checkpoints?: CheckpointMapping[]
 }
 
@@ -199,9 +201,46 @@ export class SessionStore {
         updatedAt: now,
         ...(current.checkpoints ? { checkpoints: current.checkpoints } : {}),
         ...(current.compactFailureCount ? { compactFailureCount: current.compactFailureCount } : {}),
+        ...(current.denialState ? { denialState: current.denialState } : {}),
       }
       this.replaceIndexSession(index, meta)
       await writeJsonFile(this.indexPath(), index)
+    })
+  }
+
+  async updateRecord(
+    sessionIdOrPrefix: string,
+    recordId: string,
+    update: (record: SessionRecord) => SessionRecord,
+  ): Promise<void> {
+    const session = await this.resolve(sessionIdOrPrefix)
+    if (!session) throw new Error(`Unknown session: ${sessionIdOrPrefix}`)
+
+    const jsonlPath = this.sessionJsonlPath(session.id)
+    const content = existsSync(jsonlPath) ? readFileSync(jsonlPath, 'utf-8') : ''
+    const records = parseJsonLines<SessionRecord>(content)
+    const index = records.findIndex((record) => record.id === recordId)
+    if (index < 0) return
+
+    const current = records[index]
+    if (!current) return
+    records[index] = update(current)
+    const nextContent = records.map((record) => JSON.stringify(record)).join('\n') + (records.length > 0 ? '\n' : '')
+    await writeFile(jsonlPath, nextContent, 'utf-8')
+
+    const now = new Date().toISOString()
+    await this.withIndexLock(async () => {
+      const indexFile = await this.readIndexUnlocked()
+      const currentMeta = indexFile.sessions.find((item) => item.id === session.id) ?? session
+      const meta: SessionMeta = {
+        ...this.deriveMetaFromRecords(session.id, records, currentMeta),
+        updatedAt: now,
+        ...(currentMeta.checkpoints ? { checkpoints: currentMeta.checkpoints } : {}),
+        ...(currentMeta.compactFailureCount ? { compactFailureCount: currentMeta.compactFailureCount } : {}),
+        ...(currentMeta.denialState ? { denialState: currentMeta.denialState } : {}),
+      }
+      this.replaceIndexSession(indexFile, meta)
+      await writeJsonFile(this.indexPath(), indexFile)
     })
   }
 
@@ -214,7 +253,14 @@ export class SessionStore {
         session_id: sessionId,
         ...metric,
       } as SessionMetric
-      appendFileSync(this.sessionMetricsPath(sessionId), `${JSON.stringify(record)}\n`, { mode: 0o600 })
+      const metricsPath = this.sessionMetricsPath(sessionId)
+      appendFileSync(metricsPath, `${JSON.stringify(record)}\n`, { mode: 0o600 })
+      if (metric.event === 'turn' || metric.event === 'cache_break') {
+        const summary = this.buildSessionCacheSummary(sessionId, metricsPath)
+        if (summary) {
+          appendFileSync(metricsPath, `${JSON.stringify(summary)}\n`, { mode: 0o600 })
+        }
+      }
     } catch {
       // Metrics are best-effort and must never affect the agent loop.
     }
@@ -236,6 +282,41 @@ export class SessionStore {
       }
       return next
     }, session ?? this.defaultMeta(sessionId))
+  }
+
+  async getDenialState(sessionIdOrPrefix: string): Promise<DenialState> {
+    const session = await this.load(sessionIdOrPrefix)
+    return normalizeDenialState(session?.denialState)
+  }
+
+  async setDenialState(sessionIdOrPrefix: string, state: DenialState): Promise<void> {
+    const session = await this.resolve(sessionIdOrPrefix)
+    const sessionId = session?.id ?? sessionIdOrPrefix
+    const normalized = normalizeDenialState(state)
+    const base = session ?? this.defaultMeta(sessionId)
+    const currentState = normalizeDenialState(base.denialState)
+    if (denialStatesEqual(currentState, normalized)) return
+
+    await this.updateIndexSession(sessionId, (current) => {
+      const next: SessionMeta = {
+        ...current,
+        updatedAt: new Date().toISOString(),
+      }
+      if (normalized.total > 0 || Object.keys(normalized.streaks).length > 0) {
+        next.denialState = normalized
+      } else {
+        delete next.denialState
+      }
+      return next
+    }, base)
+
+    await this.appendMetric(sessionId, {
+      event: 'permission_denial_state',
+      total_auto_denials: normalized.total,
+      active_streaks: Object.keys(normalized.streaks).length,
+      max_streak: Math.max(0, ...Object.values(normalized.streaks)),
+      streaks: normalized.streaks,
+    })
   }
 
   async delete(sessionIdOrPrefix: string): Promise<void> {
@@ -329,6 +410,7 @@ export class SessionStore {
           updatedAt: new Date().toISOString(),
           checkpoints: session.checkpoints?.filter((mapping) => retainedMessageIds.has(mapping.messageId)),
           ...(session.compactFailureCount ? { compactFailureCount: session.compactFailureCount } : {}),
+          ...(session.denialState ? { denialState: session.denialState } : {}),
         }
         await this.upsertIndex(updatedMeta)
       }
@@ -503,6 +585,7 @@ export class SessionStore {
       messageCount: messages.length,
       ...(existing?.checkpoints ? { checkpoints: existing.checkpoints } : {}),
       ...(existing?.compactFailureCount ? { compactFailureCount: existing.compactFailureCount } : {}),
+      ...(existing?.denialState ? { denialState: existing.denialState } : {}),
     }
   }
 
@@ -542,7 +625,73 @@ export class SessionStore {
     return path.join(this.sessionsDir, `${id}.metrics.jsonl`)
   }
 
+  private buildSessionCacheSummary(sessionId: string, metricsPath: string): SessionMetric | null {
+    if (!existsSync(metricsPath)) return null
+    const metrics = parseJsonLines<SessionMetric>(readFileSync(metricsPath, 'utf-8'))
+      .filter((metric) => metric.event !== 'session_cache_summary')
+    const turns = metrics.filter((metric) => metric.event === 'turn')
+    const breaks = metrics.filter((metric) => metric.event === 'cache_break')
+    if (turns.length === 0 && breaks.length === 0) return null
+
+    let totalInputTokens = 0
+    let totalCacheReadTokens = 0
+    for (const turn of turns) {
+      totalCacheReadTokens += turn.cache_read_tokens
+      totalInputTokens += inferTurnInputTokens(turn)
+    }
+
+    const firstBreak = breaks[0]
+    const firstBreakTurnCount = firstBreak
+      ? turns.filter((turn) => turn.created_at <= firstBreak.created_at).length
+      : null
+    const causeDistribution: Record<string, number> = {}
+    for (const item of breaks) {
+      for (const reason of item.reasons) {
+        const cause = normalizeCacheBreakCause(reason)
+        causeDistribution[cause] = (causeDistribution[cause] ?? 0) + 1
+      }
+    }
+    const denominator = totalInputTokens + totalCacheReadTokens
+    return {
+      event: 'session_cache_summary',
+      created_at: new Date().toISOString(),
+      session_id: sessionId,
+      total_cache_hit_rate: denominator > 0 ? totalCacheReadTokens / denominator : null,
+      total_turns: turns.length,
+      first_break_turn_count: firstBreakTurnCount,
+      cache_break_count: breaks.length,
+      cause_distribution: causeDistribution,
+    }
+  }
+
   private indexPath(): string {
     return path.join(this.sessionsDir, 'index.json')
   }
+}
+
+function inferTurnInputTokens(turn: Extract<SessionMetric, { event: 'turn' }>): number {
+  if (typeof turn.input_tokens === 'number' && Number.isFinite(turn.input_tokens)) {
+    return Math.max(0, turn.input_tokens)
+  }
+  if (turn.cache_hit_rate && turn.cache_hit_rate > 0) {
+    const total = turn.cache_read_tokens / turn.cache_hit_rate
+    return Math.max(0, total - turn.cache_read_tokens)
+  }
+  return 0
+}
+
+function normalizeCacheBreakCause(reason: string): string {
+  const parenIndex = reason.indexOf('(')
+  return parenIndex >= 0 ? reason.slice(0, parenIndex) : reason
+}
+
+function denialStatesEqual(left: DenialState, right: DenialState): boolean {
+  if (left.total !== right.total) return false
+  const leftEntries = Object.entries(left.streaks).sort(([a], [b]) => a.localeCompare(b))
+  const rightEntries = Object.entries(right.streaks).sort(([a], [b]) => a.localeCompare(b))
+  if (leftEntries.length !== rightEntries.length) return false
+  return leftEntries.every(([toolName, count], index) => {
+    const rightEntry = rightEntries[index]
+    return rightEntry?.[0] === toolName && rightEntry[1] === count
+  })
 }

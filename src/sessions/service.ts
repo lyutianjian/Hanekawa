@@ -36,6 +36,15 @@ interface SessionIndex {
   sessions: SessionMeta[]
 }
 
+interface RunningCacheSummary {
+  totalTurns: number
+  totalInputTokens: number
+  totalCacheReadTokens: number
+  firstBreakTurnCount: number | null
+  cacheBreakCount: number
+  causeDistribution: Record<string, number>
+}
+
 export type SessionDiagnosticCode =
   | 'malformed_jsonl'
   | 'missing_session_file'
@@ -63,6 +72,7 @@ export interface LoadRecordsResult {
 
 export class SessionStore {
   private static indexLocks = new Map<string, Promise<void>>()
+  private readonly cacheSummaries = new Map<string, RunningCacheSummary>()
   private sessionsDir: string
 
   constructor(cwd: string) {
@@ -254,9 +264,13 @@ export class SessionStore {
         ...metric,
       } as SessionMetric
       const metricsPath = this.sessionMetricsPath(sessionId)
+      const cacheSummary = metric.event === 'turn' || metric.event === 'cache_break'
+        ? this.runningCacheSummary(sessionId, metricsPath)
+        : undefined
       appendFileSync(metricsPath, `${JSON.stringify(record)}\n`, { mode: 0o600 })
-      if (metric.event === 'turn' || metric.event === 'cache_break') {
-        const summary = this.buildSessionCacheSummary(sessionId, metricsPath)
+      if (cacheSummary) {
+        this.updateRunningCacheSummary(cacheSummary, record)
+        const summary = this.buildSessionCacheSummaryRecord(sessionId, cacheSummary)
         if (summary) {
           appendFileSync(metricsPath, `${JSON.stringify(summary)}\n`, { mode: 0o600 })
         }
@@ -325,6 +339,7 @@ export class SessionStore {
     await rm(this.sessionPath(session.id), { force: true })
     await rm(this.sessionJsonlPath(session.id), { force: true })
     await rm(this.sessionMetricsPath(session.id), { force: true })
+    this.cacheSummaries.delete(session.id)
     await this.withIndexLock(async () => {
       const index = await this.readIndexUnlocked()
       index.sessions = index.sessions.filter((item) => item.id !== session.id)
@@ -625,14 +640,32 @@ export class SessionStore {
     return path.join(this.sessionsDir, `${id}.metrics.jsonl`)
   }
 
-  private buildSessionCacheSummary(sessionId: string, metricsPath: string): SessionMetric | null {
-    if (!existsSync(metricsPath)) return null
+  private runningCacheSummary(sessionId: string, metricsPath: string): RunningCacheSummary {
+    const current = this.cacheSummaries.get(sessionId)
+    if (current) return current
+
+    const restored = this.restoreRunningCacheSummary(metricsPath)
+    this.cacheSummaries.set(sessionId, restored)
+    return restored
+  }
+
+  private restoreRunningCacheSummary(metricsPath: string): RunningCacheSummary {
+    const empty = (): RunningCacheSummary => ({
+      totalTurns: 0,
+      totalInputTokens: 0,
+      totalCacheReadTokens: 0,
+      firstBreakTurnCount: null,
+      cacheBreakCount: 0,
+      causeDistribution: {},
+    })
+
+    if (!existsSync(metricsPath)) return empty()
     const metrics = parseJsonLines<SessionMetric>(readFileSync(metricsPath, 'utf-8'))
       .filter((metric) => metric.event !== 'session_cache_summary')
     const turns = metrics.filter((metric) => metric.event === 'turn')
     const breaks = metrics.filter((metric) => metric.event === 'cache_break')
-    if (turns.length === 0 && breaks.length === 0) return null
 
+    const summary = empty()
     let totalInputTokens = 0
     let totalCacheReadTokens = 0
     for (const turn of turns) {
@@ -651,16 +684,47 @@ export class SessionStore {
         causeDistribution[cause] = (causeDistribution[cause] ?? 0) + 1
       }
     }
-    const denominator = totalInputTokens + totalCacheReadTokens
+    summary.totalTurns = turns.length
+    summary.totalInputTokens = totalInputTokens
+    summary.totalCacheReadTokens = totalCacheReadTokens
+    summary.firstBreakTurnCount = firstBreakTurnCount
+    summary.cacheBreakCount = breaks.length
+    summary.causeDistribution = causeDistribution
+    return summary
+  }
+
+  private updateRunningCacheSummary(summary: RunningCacheSummary, metric: SessionMetric): void {
+    if (metric.event === 'turn') {
+      summary.totalTurns += 1
+      summary.totalCacheReadTokens += metric.cache_read_tokens
+      summary.totalInputTokens += inferTurnInputTokens(metric)
+      return
+    }
+
+    if (metric.event !== 'cache_break') return
+    if (summary.cacheBreakCount === 0) {
+      summary.firstBreakTurnCount = summary.totalTurns
+    }
+    summary.cacheBreakCount += 1
+    for (const reason of metric.reasons) {
+      const cause = normalizeCacheBreakCause(reason)
+      summary.causeDistribution[cause] = (summary.causeDistribution[cause] ?? 0) + 1
+    }
+  }
+
+  private buildSessionCacheSummaryRecord(sessionId: string, summary: RunningCacheSummary): SessionMetric | null {
+    if (summary.totalTurns === 0 && summary.cacheBreakCount === 0) return null
+
+    const denominator = summary.totalInputTokens + summary.totalCacheReadTokens
     return {
       event: 'session_cache_summary',
       created_at: new Date().toISOString(),
       session_id: sessionId,
-      total_cache_hit_rate: denominator > 0 ? totalCacheReadTokens / denominator : null,
-      total_turns: turns.length,
-      first_break_turn_count: firstBreakTurnCount,
-      cache_break_count: breaks.length,
-      cause_distribution: causeDistribution,
+      total_cache_hit_rate: denominator > 0 ? summary.totalCacheReadTokens / denominator : null,
+      total_turns: summary.totalTurns,
+      first_break_turn_count: summary.firstBreakTurnCount,
+      cache_break_count: summary.cacheBreakCount,
+      cause_distribution: { ...summary.causeDistribution },
     }
   }
 

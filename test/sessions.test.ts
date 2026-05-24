@@ -158,6 +158,58 @@ test('SessionStore summarizes cache break causes in metrics', async () => {
   }
 })
 
+test('SessionStore restores cache summary before first metric append', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+
+    const session = await store.create()
+    await store.appendMetric(session.id, {
+      event: 'turn',
+      model: 'fake-model',
+      input_tokens: 100,
+      response_tokens: 5,
+      cache_read_tokens: 300,
+      cache_hit_rate: 0.75,
+      tool_calls: 0,
+      duration_ms: 10,
+    })
+    await store.appendMetric(session.id, {
+      event: 'cache_break',
+      source: `agent:${session.id}`,
+      reasons: ['tool_schemas_changed'],
+      drop_tokens: 2500,
+    })
+
+    const restartedStore = new SessionStore(dir)
+    await restartedStore.init()
+    await restartedStore.appendMetric(session.id, {
+      event: 'turn',
+      model: 'fake-model',
+      input_tokens: 200,
+      response_tokens: 8,
+      cache_read_tokens: 200,
+      cache_hit_rate: 0.5,
+      tool_calls: 1,
+      duration_ms: 20,
+    })
+
+    const metricsPath = path.join(dir, '.myagent', 'sessions', `${session.id}.metrics.jsonl`)
+    const metrics = readFileSync(metricsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    const summary = [...metrics].reverse().find((metric) => metric.event === 'session_cache_summary')
+    assert.equal(summary?.total_turns, 2)
+    assert.equal(summary?.total_cache_hit_rate, 500 / 800)
+    assert.equal(summary?.first_break_turn_count, 1)
+    assert.equal(summary?.cache_break_count, 1)
+    assert.deepEqual(summary?.cause_distribution, {
+      tool_schemas_changed: 1,
+    })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('SessionStore persists and clears compact failure count in metadata', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
   try {

@@ -141,6 +141,31 @@ test('ContextBuilder injects available skills as system reminder', async () => {
   assert.doesNotMatch(built.system ?? '', /skill_debugging/)
 })
 
+test('ContextBuilder invalidates cached skills section when skills change', async () => {
+  const builder = new ContextBuilder(undefined, contextWindow(5000))
+
+  const first = await builder.build({
+    records: [],
+    tools: [],
+    skills: [
+      { name: 'debugging', description: 'Use when diagnosing bugs', content: 'Debug content' },
+    ],
+    includeUserContext: false,
+  })
+  const second = await builder.build({
+    records: [],
+    tools: [],
+    skills: [
+      { name: 'review', description: 'Use when reviewing code', content: 'Review content' },
+    ],
+    includeUserContext: false,
+  })
+
+  assert.match(first.system ?? '', /- debugging: Use when diagnosing bugs/)
+  assert.match(second.system ?? '', /- review: Use when reviewing code/)
+  assert.doesNotMatch(second.system ?? '', /debugging/)
+})
+
 test('ContextBuilder activates file-matched skills from read files', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-context-'))
   const builder = new ContextBuilder(undefined, contextWindow(5000))
@@ -186,6 +211,55 @@ test('ContextBuilder activates file-matched skills from read files', async () =>
     assert.equal(toolContext.invokedSkills.has('sql'), false)
     assert.doesNotMatch(built.system ?? '', /react: React guidance/)
   } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ContextBuilder gives file-matched skills lower restore priority than manual skills', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-context-'))
+  const originalNow = Date.now
+  Date.now = () => 1_000_000_000
+  try {
+    const file = path.join(dir, 'src', 'App.tsx')
+    const toolContext = {
+      cwd: dir,
+      sessionId: 's1',
+      readFiles: new Set<string>([file]),
+      invokedSkills: new Map<string, { content: string; timestamp: number }>([
+        ['manual', { content: 'Manual content.', timestamp: 900_000_000 }],
+        ['react', { content: 'Previously manual react content.', timestamp: 800_000_000 }],
+      ]),
+    }
+    const builder = new ContextBuilder(undefined, contextWindow(5000))
+
+    await builder.build({
+      records: [],
+      tools: [],
+      skills: [
+        {
+          name: 'react',
+          description: 'React guidance',
+          content: 'Prefer small components.',
+          inclusion: 'fileMatch',
+          paths: ['src/**/*.tsx'],
+        },
+        {
+          name: 'sql',
+          description: 'SQL guidance',
+          content: 'Use parameterized queries.',
+          inclusion: 'fileMatch',
+          paths: ['src/**/*.tsx'],
+        },
+      ],
+      toolContext,
+      includeUserContext: false,
+    })
+
+    assert.equal(toolContext.invokedSkills.get('react')?.timestamp, 800_000_000)
+    assert.equal(toolContext.invokedSkills.get('sql')?.timestamp, 913_600_000)
+    assert.equal(toolContext.invokedSkills.get('manual')?.timestamp, 900_000_000)
+  } finally {
+    Date.now = originalNow
     await rm(dir, { recursive: true, force: true })
   }
 })

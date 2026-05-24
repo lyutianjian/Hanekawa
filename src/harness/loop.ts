@@ -70,6 +70,9 @@ export class AgentLoop {
   }
   private recordsCache: SessionRecord[] | undefined
   private recordsCacheHasCleanToolProtocol = false
+  // Sticky for the rest of the session after any model switch: thinking
+  // signatures are model/provider-bound, and prior primary/fallback thinking
+  // blocks should not be replayed across either side of a fallback boundary.
   private stripAllThinkingBlocksFromRequests = false
 
   constructor(private readonly options: AgentLoopOptions) {
@@ -107,6 +110,10 @@ export class AgentLoop {
     this.options.contextBuilder.invalidateAvailableToolsSection()
   }
 
+  invalidateSkillsSection(): void {
+    this.options.contextBuilder.invalidateSkillsSection()
+  }
+
   invalidateRecordsCache(): void {
     this.recordsCache = undefined
     this.recordsCacheHasCleanToolProtocol = false
@@ -117,10 +124,7 @@ export class AgentLoop {
   }
 
   async run(userInput: string, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
-    const turnStartedAt = Date.now()
     let usage = { ...EMPTY_TOKEN_USAGE }
-    let turnResponseUsage = { ...EMPTY_TOKEN_USAGE }
-    let turnToolCalls = 0
     const turnId = randomUUID()
     const userMessage: ChatMessage & { type: 'message' } = {
       type: 'message',
@@ -228,6 +232,7 @@ export class AgentLoop {
       }
 
       let response
+      const modelStartedAt = Date.now()
       try {
         response = await this.activeModel.provider.createMessage(modelRequest)
       } catch (error) {
@@ -240,8 +245,7 @@ export class AgentLoop {
       }
 
       usage = addTokenUsage(usage, response.usage)
-      turnResponseUsage = addTokenUsage(turnResponseUsage, response.usage)
-      turnToolCalls += response.toolCalls.length
+      await this.emitTurnMetric(modelStartedAt, response.usage ?? EMPTY_TOKEN_USAGE, response.toolCalls.length)
       lastResponseTokenCount = requestTokenCountFromUsage(response.usage)
       lastResponseRecordCount = lastResponseTokenCount === undefined ? undefined : requestRecordCount
       lastRequestId = response.requestId
@@ -291,9 +295,6 @@ export class AgentLoop {
           content: `${response.content}\n\n[Token budget exceeded: ${cumulativeTokens} > ${tokenBudget}]`,
           usage,
           turnId,
-          turnStartedAt,
-          turnResponseUsage,
-          turnToolCalls,
           signal,
         })
         if (finished.continueLoop) continue
@@ -338,9 +339,6 @@ export class AgentLoop {
           content: response.content,
           usage,
           turnId,
-          turnStartedAt,
-          turnResponseUsage,
-          turnToolCalls,
           signal,
         })
         if (finished.continueLoop) continue
@@ -414,10 +412,16 @@ export class AgentLoop {
 
   private async consumePostCompactRestoreRecords(recordIds: string[]): Promise<void> {
     for (const recordId of recordIds) {
-      await this.options.recordStream.update?.(recordId, (record) => {
-        if (record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') return record
-        return { ...record, postCompactRestore: 'consumed' }
-      })
+      try {
+        await this.options.recordStream.update?.(recordId, (record) => {
+          if (record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') return record
+          return { ...record, postCompactRestore: 'consumed' }
+        })
+      } catch (error) {
+        if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
+          console.error(`[hanekawa][compact] failed to persist consumed restore record ${recordId}:`, error)
+        }
+      }
       this.recordsCache = this.recordsCache?.map((record) => {
         if (record.id !== recordId || record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') {
           return record
@@ -520,9 +524,6 @@ export class AgentLoop {
     content: string
     usage: TokenUsage
     turnId: string
-    turnStartedAt: number
-    turnResponseUsage: TokenUsage
-    turnToolCalls: number
     signal?: AbortSignal
   }): Promise<{ continueLoop: true } | { continueLoop: false; result: AgentRunResult }> {
     const result = await runLifecycleHooks(
@@ -538,7 +539,6 @@ export class AgentLoop {
     )
     await this.appendLifecycleHookMessages('stop', result.stdout, result.failures, input.turnId)
     if (result.preventContinuation) {
-      await this.emitTurnMetric(input.turnStartedAt, input.turnResponseUsage, input.turnToolCalls)
       return { continueLoop: false, result: { content: input.content, usage: input.usage } }
     }
     if (result.blockingErrors.length > 0) {
@@ -552,7 +552,6 @@ export class AgentLoop {
       })
       return { continueLoop: true }
     }
-    await this.emitTurnMetric(input.turnStartedAt, input.turnResponseUsage, input.turnToolCalls)
     return { continueLoop: false, result: { content: input.content, usage: input.usage } }
   }
 

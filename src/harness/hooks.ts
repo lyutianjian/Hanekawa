@@ -102,8 +102,11 @@ export async function runLifecycleHooks(
     if (control.stdout.trim()) outputs.push(control.stdout.trim())
     blockingErrors.push(...control.blockingErrors)
     preventContinuation ||= control.preventContinuation
+    const hasControlSignal = control.preventContinuation || control.blockingErrors.length > 0
 
     if (result.ok) {
+      continue
+    } else if (hasControlSignal) {
       continue
     } else {
       failures.push(result.content ?? `${hookName} hook failed: ${hook.command}`)

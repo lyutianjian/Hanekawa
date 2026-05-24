@@ -72,6 +72,8 @@ const DEFAULT_SECTION_KEYS: readonly SectionKey[] = [
   'output-efficiency',
 ]
 
+const AUTO_ACTIVATED_SKILL_TIMESTAMP_OFFSET_MS = 24 * 60 * 60 * 1000
+
 const INTRO_SECTION = `You are Hanekawa, an interactive CLI agent developed by lyutianjian for software engineering tasks.
 
 You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
@@ -203,6 +205,8 @@ function getOutputEfficiencySection(sections: SystemPromptSectionCache): string 
 }
 
 export class ContextBuilder {
+  private skillsSystemSectionFingerprint: string | undefined
+
   constructor(
     private readonly composer = new PromptComposer(),
     private readonly defaultContextManagement: Partial<ContextManagementConfig> = {},
@@ -365,13 +369,25 @@ export class ContextBuilder {
   }
 
   private buildSkillsSystemSection(skills: readonly SkillDefinition[]): string | undefined {
+    // Skill inclusion is split across system and user context:
+    // - always skills are listed in system blocks so the model sees them every turn.
+    // - manual skills are listed in system blocks as available for explicit Skill calls.
+    // - fileMatch skills are omitted here and activated from readFiles in user context.
     const userInvocableSkills = skills.filter((skill) => skill.inclusion !== 'fileMatch')
+    const fingerprint = JSON.stringify(userInvocableSkills.map((skill) => [skill.name, skill.description]))
+    if (fingerprint !== this.skillsSystemSectionFingerprint) {
+      this.clearCachedSections('system-prompt:skills')
+      this.skillsSystemSectionFingerprint = fingerprint
+    }
     if (userInvocableSkills.length === 0) return undefined
-    return [
-      '# Available skills',
-      'The following skills are available for use with the Skill tool:',
-      userInvocableSkills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n'),
-    ].join('\n')
+    return this.sections.cachedSection(
+      'system-prompt:skills',
+      () => [
+        '# Available skills',
+        'The following skills are available for use with the Skill tool:',
+        userInvocableSkills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n'),
+      ].join('\n'),
+    )
   }
 
   private buildAvailableToolsSystemSection(tools: readonly Tool[]): string | undefined {
@@ -417,6 +433,10 @@ export class ContextBuilder {
   }
 
   private activateSkills(skills: readonly SkillDefinition[], toolContext: ToolContext | undefined): ActiveSkill[] {
+    // Skill inclusion is split across system and user context:
+    // - always/manual skills are exposed by buildSkillsSystemSection.
+    // - explicitly invoked skills remain in invokedSkills with their original timestamp.
+    // - fileMatch skills activate from readFiles and are injected through user context.
     if (skills.length === 0) return []
 
     const active = new Map<string, ActiveSkill>()
@@ -431,11 +451,13 @@ export class ContextBuilder {
       if (!shouldActivateSkill(skill, toolContext)) continue
       if (toolContext) {
         toolContext.invokedSkills ??= new Map()
-        evictOldestIfNeeded(toolContext.invokedSkills, 50)
-        toolContext.invokedSkills.set(skill.name, {
-          content: skill.content,
-          timestamp: Date.now(),
-        })
+        if (!toolContext.invokedSkills.has(skill.name)) {
+          evictOldestIfNeeded(toolContext.invokedSkills, 50)
+          toolContext.invokedSkills.set(skill.name, {
+            content: skill.content,
+            timestamp: Date.now() - AUTO_ACTIVATED_SKILL_TIMESTAMP_OFFSET_MS,
+          })
+        }
       }
       active.set(skill.name, { name: skill.name, content: skill.content })
     }
@@ -454,6 +476,11 @@ export class ContextBuilder {
 
   invalidateAvailableToolsSection(): void {
     this.sections.clear('system-prompt:available-tools')
+  }
+
+  invalidateSkillsSection(): void {
+    this.skillsSystemSectionFingerprint = undefined
+    this.sections.clear('system-prompt:skills')
   }
 
   private async buildPostCompactRestoreContext(toolContext: ToolContext | undefined): Promise<ModelContextItem[]> {

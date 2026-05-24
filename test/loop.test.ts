@@ -223,12 +223,23 @@ test('agent loop appends stop hook stdout before returning', async () => {
 
 test('agent loop continues when stop hook reports a blocking error', async () => {
   const records: SessionRecord[] = []
+  const metrics: Array<Record<string, unknown>> = []
   let callCount = 0
   const provider: ModelProvider = {
     name: 'fake',
     async createMessage(request) {
       callCount += 1
-      if (callCount === 1) return { content: 'first', toolCalls: [] }
+      if (callCount === 1) {
+        return {
+          content: 'first',
+          toolCalls: [],
+          usage: {
+            cacheReadInputTokens: 0,
+            inputTokens: 10,
+            outputTokens: 1,
+          },
+        }
+      }
 
       const contextItems = request.contextItems ?? []
       assert.ok(contextItems.some(
@@ -236,7 +247,15 @@ test('agent loop continues when stop hook reports a blocking error', async () =>
           && item.message.role === 'user'
           && /stop hook blocking error:\nfix it/.test(item.message.content),
       ))
-      return { content: 'second', toolCalls: [] }
+      return {
+        content: 'second',
+        toolCalls: [],
+        usage: {
+          cacheReadInputTokens: 0,
+          inputTokens: 20,
+          outputTokens: 2,
+        },
+      }
     },
   }
   const runner = new ToolRunner([], new PermissionGate(async () => true), {
@@ -251,17 +270,19 @@ test('agent loop continues when stop hook reports a blocking error', async () =>
     toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
     hooks: {
       stop: [{
-        command: `${JSON.stringify(process.execPath)} -e "let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end', () => { const data = JSON.parse(input); if (data.response === 'first') console.error('BLOCKING: fix it') })"`,
+        command: `${JSON.stringify(process.execPath)} -e "let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end', () => { const data = JSON.parse(input); if (data.response === 'first') { console.error('BLOCKING: fix it'); process.exitCode = 1 } })"`,
       }],
     },
-    recordStream: recordStreamFor(records),
+    recordStream: recordStreamFor(records, metrics),
   })
 
   const response = await loop.run('hello')
 
   assert.equal(response.content, 'second')
   assert.equal(callCount, 2)
+  assert.deepEqual(metrics.filter((metric) => metric.event === 'turn').map((metric) => metric.response_tokens), [1, 2])
   assert.ok(records.some((record) => record.type === 'message' && /stop hook blocking error:\nfix it/.test(record.content)))
+  assert.equal(records.some((record) => record.type === 'message' && /Hook failures:/.test(record.content)), false)
 })
 
 test('agent loop respects stop hook preventContinuation before blocking errors', async () => {

@@ -136,6 +136,22 @@ test('all builtin tools are callable', async () => {
     assert.equal(typeof tool.execute, 'function')
   })
 
-  assert.equal(tools.length, 11)
+  const expectedTools = [
+    'grep',
+    'glob',
+    'bash',
+    'readFile',
+    'writeFile',
+    'editFile',
+    'multiEdit',
+    'deleteFile',
+    'exitPlanMode',
+    'TaskCreate',
+    'TaskUpdate',
+    'TaskList',
+    'TaskGet',
+  ]
+  assert.deepEqual(tools.map((t) => t.name).sort(), [...expectedTools].sort())
+  assert.equal(tools.length, expectedTools.length)
   console.log(`\n✓ All ${tools.length} tools are properly defined`)
 })

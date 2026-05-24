@@ -9,6 +9,7 @@ import {
   prepareRecordsForRequestWithDiagnostics,
   requestTokenCountFromUsage,
 } from './requestPrep.js'
+import { applyProgressiveCompaction } from './progressiveCompact.js'
 import { agentCacheSource, formatCacheHitRate, notifyCompaction, resetCacheBreakDetection } from './cacheBreakDetection.js'
 import { logDiagnostics, type RuntimeDiagnostic } from './diagnostics.js'
 import { cacheHitRate, type SessionMetricInput } from './metrics.js'
@@ -153,7 +154,16 @@ export class AgentLoop {
       if (signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError')
       }
-      let recordsBeforeCompact = await this.loadPreparedRecords()
+      const preparedRecords = await this.loadPreparedRecords()
+      const progressive = applyProgressiveCompaction({
+        records: preparedRecords,
+        system: this.options.system,
+        contextManagement: this.options.contextManagement,
+        lastResponseTokenCount,
+        lastResponseRecordCount,
+      })
+      let recordsBeforeCompact = progressive.records
+      const useCachedTokenEstimate = !progressive.microCompacted && !progressive.snipped
       const compactResult = await autoCompactIfNeeded({
         records: recordsBeforeCompact,
         provider: this.activeModel.provider,
@@ -161,8 +171,8 @@ export class AgentLoop {
         tools: this.options.tools,
         system: this.options.system,
         contextManagement: this.options.contextManagement,
-        lastResponseTokenCount,
-        lastResponseRecordCount,
+        lastResponseTokenCount: useCachedTokenEstimate ? lastResponseTokenCount : undefined,
+        lastResponseRecordCount: useCachedTokenEstimate ? lastResponseRecordCount : undefined,
         promptCacheRetention: this.activeModel.promptCacheRetention,
         turnId,
         circuitKey: this.options.toolContext.sessionId,

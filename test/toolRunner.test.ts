@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
 import { PermissionGate } from '../src/harness/permissions.js'
+import { prepareRecordsForRequest } from '../src/harness/requestPrep.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { countTextTokens } from '../src/prompts/budget.js'
 import type { SessionRecord, Tool, ToolProgressEvent } from '../src/harness/types.js'
@@ -124,6 +125,49 @@ test('tool runner stores derived token count on tool results', async () => {
   const result = records.find((record) => record.type === 'tool_result')
   assert.equal(result?.type, 'tool_result')
   assert.equal(result._tokens, countTextTokens('echo\nhello world'))
+})
+
+test('tool runner applies maxResultSizeChars before persisting tool results', async () => {
+  const tool: Tool = {
+    name: 'limitedTool',
+    description: 'limited',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    maxResultSizeChars: 5,
+    execute: async () => ({ ok: true, content: '0123456789' }),
+  }
+  const records: SessionRecord[] = []
+  const runner = new ToolRunner([tool], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+
+  const result = await runner.run({ id: 'call1', name: 'limitedTool', input: {} }, { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() })
+
+  assert.equal(result.content, '01234\n\n[Tool result truncated: exceeded 5 chars; original 10 chars]')
+  assert.equal(result._tokens, countTextTokens(`limitedTool\n${result.content}`))
+  assert.equal(records.find((record) => record.type === 'tool_result'), result)
+
+  const prepared = prepareRecordsForRequest(records, { contextWindow: 1_000_000, summaryOutputTokens: 0 })
+  const preparedResult = prepared.find((record) => record.type === 'tool_result')
+  assert.equal(preparedResult?.type, 'tool_result')
+  assert.equal(preparedResult.content, result.content)
+})
+
+test('tool runner preserves unbounded tool results exactly', async () => {
+  const tool: Tool = {
+    name: 'unboundedTool',
+    description: 'unbounded',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({ ok: true, content: '0123456789' }),
+  }
+  const runner = new ToolRunner([tool], new PermissionGate(async () => true), {
+    onRecord: async () => {},
+  })
+
+  const result = await runner.run({ id: 'call1', name: 'unboundedTool', input: {} }, { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() })
+
+  assert.equal(result.content, '0123456789')
 })
 
 test('tool runner pairs tool_use with aborted tool_result when permission aborts', async () => {

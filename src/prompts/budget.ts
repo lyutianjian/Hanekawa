@@ -9,12 +9,24 @@ export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
 export const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
 export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
+export const MICROCOMPACT_THRESHOLD_RATIO = 0.65
+export const SNIP_THRESHOLD_RATIO = 0.8
+export const AUTOCOMPACT_THRESHOLD_RATIO = 0.9
+export const SNIP_HEAD_TURNS = 3
+export const SNIP_TAIL_TURNS = 12
+export const SNIP_MAX_TURNS = 24
 
 export interface ContextManagementConfig {
   contextWindow: number
   summaryOutputTokens: number
   autoCompactBufferTokens: number
   manualCompactBufferTokens: number
+  microCompactThresholdRatio: number
+  snipThresholdRatio: number
+  autoCompactThresholdRatio: number
+  snipHeadTurns: number
+  snipTailTurns: number
+  snipMaxTurns: number
 }
 
 export const DEFAULT_CONTEXT_MANAGEMENT: ContextManagementConfig = {
@@ -22,6 +34,12 @@ export const DEFAULT_CONTEXT_MANAGEMENT: ContextManagementConfig = {
   summaryOutputTokens: MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   autoCompactBufferTokens: AUTOCOMPACT_BUFFER_TOKENS,
   manualCompactBufferTokens: MANUAL_COMPACT_BUFFER_TOKENS,
+  microCompactThresholdRatio: MICROCOMPACT_THRESHOLD_RATIO,
+  snipThresholdRatio: SNIP_THRESHOLD_RATIO,
+  autoCompactThresholdRatio: AUTOCOMPACT_THRESHOLD_RATIO,
+  snipHeadTurns: SNIP_HEAD_TURNS,
+  snipTailTurns: SNIP_TAIL_TURNS,
+  snipMaxTurns: SNIP_MAX_TURNS,
 }
 
 export function getEffectiveContextWindowSize(config: Partial<ContextManagementConfig> = {}): number {
@@ -31,7 +49,19 @@ export function getEffectiveContextWindowSize(config: Partial<ContextManagementC
 
 export function getAutoCompactThreshold(config: Partial<ContextManagementConfig> = {}): number {
   const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
-  return Math.max(0, getEffectiveContextWindowSize(merged) - merged.autoCompactBufferTokens)
+  const ratioThreshold = Math.floor(getEffectiveContextWindowSize(merged) * merged.autoCompactThresholdRatio)
+  const bufferThreshold = getEffectiveContextWindowSize(merged) - merged.autoCompactBufferTokens
+  return Math.max(0, Math.min(ratioThreshold, bufferThreshold))
+}
+
+export function getMicroCompactThreshold(config: Partial<ContextManagementConfig> = {}): number {
+  const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
+  return Math.max(0, Math.floor(getEffectiveContextWindowSize(merged) * merged.microCompactThresholdRatio))
+}
+
+export function getSnipThreshold(config: Partial<ContextManagementConfig> = {}): number {
+  const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
+  return Math.max(0, Math.floor(getEffectiveContextWindowSize(merged) * merged.snipThresholdRatio))
 }
 
 export function getManualCompactThreshold(config: Partial<ContextManagementConfig> = {}): number {

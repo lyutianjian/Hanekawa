@@ -1,7 +1,11 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { isPermissionModeCycleKey, shouldIgnoreShortcutInput } from '../src/tui/hooks/useKeyboardShortcuts.js'
+import {
+  isPermissionModeCycleKey,
+  permissionModeCycleDirection,
+  shouldIgnoreShortcutInput,
+} from '../src/tui/hooks/useKeyboardShortcuts.js'
 
 /**
  * Regression tests for the input-leakage fix.
@@ -57,10 +61,20 @@ describe('isPermissionModeCycleKey', () => {
     )
   })
 
-  it('returns false for plain Tab', () => {
+  it('returns true for plain Tab', () => {
     assert.equal(
       isPermissionModeCycleKey({ tab: true, shift: false } as never),
-      false,
+      true,
     )
+  })
+})
+
+describe('permissionModeCycleDirection', () => {
+  it('uses Tab for forward mode cycling', () => {
+    assert.equal(permissionModeCycleDirection({ tab: true, shift: false } as never), 1)
+  })
+
+  it('uses Shift+Tab for backward mode cycling', () => {
+    assert.equal(permissionModeCycleDirection({ tab: true, shift: true } as never), -1)
   })
 })

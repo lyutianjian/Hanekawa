@@ -4,7 +4,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
 import { ConfigService } from '../src/config/service.js'
-import { loadMergedSettings, trustMcpServerLocally, validateSettings } from '../src/config/settings.js'
+import {
+  loadMergedSettings,
+  savePermissionModePreferenceLocally,
+  trustMcpServerLocally,
+  validateSettings,
+} from '../src/config/settings.js'
 import { loadMcpConfig } from '../src/services/mcp/config.js'
 import {
   AnthropicProvider,
@@ -233,6 +238,7 @@ test('validateSettings accepts model, agent, and cache settings', () => {
     cache: {
       ttl1h: true,
     },
+    permissionMode: 'acceptEdits',
   })
 
   assert.equal(result.valid, true)
@@ -293,6 +299,15 @@ test('validateSettings rejects malformed cache settings', () => {
   assert.match(result.errors.join('\n'), /cache\.ttl1h/)
 })
 
+test('validateSettings rejects malformed permission mode settings', () => {
+  const result = validateSettings({
+    permissionMode: 'accept-edits',
+  } as never)
+
+  assert.equal(result.valid, false)
+  assert.match(result.errors.join('\n'), /permissionMode/)
+})
+
 test('validateSettings accepts trusted MCP servers and stdio timeout', () => {
   const result = validateSettings({
     mcp: {
@@ -344,6 +359,24 @@ test('trustMcpServerLocally writes only project local settings', async () => {
     const content = await readFile(localSettingsPath, 'utf-8')
     const parsed = JSON.parse(content) as { mcp?: { trustedServers?: string[] } }
     assert.deepEqual(parsed.mcp?.trustedServers, ['filesystem', 'github'])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('savePermissionModePreferenceLocally preserves local settings and writes mode', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-settings-'))
+  try {
+    await mkdir(path.join(dir, '.myagent'), { recursive: true })
+    await writeFile(path.join(dir, '.myagent', 'settings.local.json'), JSON.stringify({
+      defaultModel: 'local',
+    }), 'utf8')
+
+    await savePermissionModePreferenceLocally(dir, 'acceptEdits')
+
+    const settings = await loadMergedSettings(dir)
+    assert.equal(settings.defaultModel, 'local')
+    assert.equal(settings.permissionMode, 'acceptEdits')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

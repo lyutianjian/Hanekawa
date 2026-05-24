@@ -26,6 +26,7 @@ export const grepTool: Tool = {
   riskLevel: 'safe',
   isReadOnly: true,
   isConcurrencySafe: true,
+  maxResultSizeChars: 30_000,
   async execute(input, context) {
     const options = input as GrepInput
     const root = assertInsideCwd(context.cwd, options.path ?? '.')

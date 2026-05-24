@@ -3,8 +3,9 @@ import { analyzeShellCommand } from './commandAnalysis.js'
 import { shellWords } from './bashSafety.js'
 import type { RiskLevel, Tool, ToolApprovalRecord } from './types.js'
 import { isProtectedPath } from '../utils/permissions/protectedPaths.js'
+import { EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
 
-export type PermissionMode = 'default' | 'plan' | 'auto' | 'bypass'
+export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'auto' | 'bypass'
 
 export interface PermissionRequest {
   tool: Tool
@@ -46,6 +47,8 @@ export interface PermissionRule {
  */
 const DEFAULT_DENIAL_STREAK_THRESHOLD = 3
 const DEFAULT_GLOBAL_DENIAL_PROMPT_THRESHOLD = 20
+// `deleteFile` stays excluded so accept-edits mode cannot silently remove files.
+const ACCEPT_EDITS_TOOLS = new Set(['editFile', 'writeFile', 'multiEdit'])
 const PLAN_READ_ONLY_SHELL_COMMANDS = new Set([
   'cat',
   'dir',
@@ -103,6 +106,7 @@ export class PermissionGate {
   private sessionRules: PermissionRule[] = []
   private configRules: PermissionRule[] = []
   private mode: PermissionMode
+  private prePlanMode: PermissionMode = 'default'
   /**
    * Per-tool consecutive auto-denial counter. Reset to 0 whenever a call to
    * that tool is approved. If an escalated prompt is denied, keep the counter
@@ -150,6 +154,8 @@ export class PermissionGate {
       (commandAnalysis?.hasSafetyDenyIssue ?? false)
       || hasProtectedPath
     const requiresSafetyPrompt = commandAnalysis?.requiresSafetyPrompt ?? false
+
+    const deniedByRule = this.isDenied(tool.name, input)
 
     if (this.mode === 'bypass') {
       if (hasProtectedPath) {
@@ -199,12 +205,22 @@ export class PermissionGate {
       return this.persistAndReturn(false)
     }
 
+    if (
+      this.mode === 'acceptEdits'
+      && this.isAcceptEditsAllowed(tool)
+      && !hasHardSafetyDenial
+      && !requiresSafetyPrompt
+      && !deniedByRule
+    ) {
+      this.denialStreaks.set(tool.name, 0)
+      return this.persistAndReturn(true)
+    }
+
     if (tool.riskLevel === 'safe' && !hasHardSafetyDenial && !requiresSafetyPrompt) {
       this.denialStreaks.set(tool.name, 0)
       return this.persistAndReturn(true)
     }
 
-    const deniedByRule = this.isDenied(tool.name, input)
     const wouldAutoDeny = hasHardSafetyDenial || deniedByRule
 
     // 2. Hard shell/path safety denials cannot be bypassed by allow rules.
@@ -275,6 +291,10 @@ export class PermissionGate {
     return this.mode
   }
 
+  getPrePlanMode(): PermissionMode {
+    return this.prePlanMode
+  }
+
   onModeChange(listener: PermissionModeListener): () => void {
     this.modeListeners.add(listener)
     return () => {
@@ -291,10 +311,27 @@ export class PermissionGate {
 
   setMode(mode: PermissionMode): void {
     if (this.mode === mode) return
+    if (mode === 'plan') {
+      this.prePlanMode = this.mode
+    }
+    if (this.mode === 'plan' && mode !== 'plan') {
+      this.prePlanMode = 'default'
+    }
     this.mode = mode
     for (const listener of this.modeListeners) {
       listener(mode)
     }
+  }
+
+  exitPlanMode(): PermissionMode {
+    if (this.mode !== 'plan') return this.mode
+    const restoredMode = this.prePlanMode === 'plan' ? 'default' : this.prePlanMode
+    this.prePlanMode = 'default'
+    this.mode = restoredMode
+    for (const listener of this.modeListeners) {
+      listener(restoredMode)
+    }
+    return restoredMode
   }
 
   createApprovalRecord(tool: Tool, input: unknown, approved: boolean, turnId?: string): ToolApprovalRecord {
@@ -383,7 +420,7 @@ export class PermissionGate {
     hasHardSafetyDenial: boolean,
     requiresSafetyPrompt: boolean,
   ): boolean {
-    if (tool.name === 'exitPlanMode') return true
+    if (tool.name === EXIT_PLAN_MODE_TOOL_NAME) return true
 
     if (tool.isReadOnly === true) {
       return !hasHardSafetyDenial && !requiresSafetyPrompt
@@ -392,6 +429,10 @@ export class PermissionGate {
     if (tool.name !== 'bash' || !commandAnalysis) return false
     if (hasHardSafetyDenial || requiresSafetyPrompt || commandAnalysis.categories.length > 0) return false
     return isPlanReadOnlyShellCommand(commandAnalysis.command)
+  }
+
+  private isAcceptEditsAllowed(tool: Tool): boolean {
+    return ACCEPT_EDITS_TOOLS.has(tool.name)
   }
 
   private recordPromptDecision(toolName: string, approved: boolean, previousStreak: number): void {

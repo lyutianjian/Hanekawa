@@ -56,6 +56,7 @@ export class ToolRunner {
       appendRecord: (record) => this.emitRecord(record),
       getPermissionMode: () => this.permissionGate.getMode(),
       setPermissionMode: (mode) => this.permissionGate.setMode(mode),
+      exitPlanMode: () => this.permissionGate.exitPlanMode(),
     }
 
     try {
@@ -77,6 +78,7 @@ export class ToolRunner {
           'invalid_input',
           validation.errors,
           turnId,
+          tool.maxResultSizeChars,
         )
         await this.emitRecord(record)
         return record
@@ -85,7 +87,7 @@ export class ToolRunner {
       const approved = await this.permissionGate.approve(tool, call.input)
       await this.emitRecord(this.permissionGate.createApprovalRecord(tool, call.input, approved, turnId))
       if (!approved) {
-        const denied = this.result(call, tool.name, false, `User denied permission for ${tool.name}.`, 'permission_denied', undefined, turnId)
+        const denied = this.result(call, tool.name, false, `User denied permission for ${tool.name}.`, 'permission_denied', undefined, turnId, tool.maxResultSizeChars)
         await this.emitRecord(denied)
         return denied
       }
@@ -101,6 +103,7 @@ export class ToolRunner {
           'precondition_failed',
           preToolHooks.details,
           turnId,
+          tool.maxResultSizeChars,
         )
         await this.emitRecord(blocked)
         return blocked
@@ -109,14 +112,14 @@ export class ToolRunner {
       try {
         const result = await tool.execute(call.input, executionContext)
         syncMutableToolContext(context, executionContext)
-        const record = this.result(call, tool.name, result.ok, result.content, result.errorCode, result.errorDetails, turnId)
+        const record = this.result(call, tool.name, result.ok, result.content, result.errorCode, result.errorDetails, turnId, tool.maxResultSizeChars)
         await this.emitRecord(record)
         await this.emitAssistantMessageFromMetadata(result.metadata, turnId)
         return record
       } catch (error) {
         syncMutableToolContext(context, executionContext)
         const errorCode = error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'execution_failed'
-        const record = this.result(call, tool.name, false, error instanceof Error ? error.message : String(error), errorCode, undefined, turnId)
+        const record = this.result(call, tool.name, false, error instanceof Error ? error.message : String(error), errorCode, undefined, turnId, tool.maxResultSizeChars)
         await this.emitRecord(record)
         return record
       }
@@ -125,7 +128,7 @@ export class ToolRunner {
         throw error
       }
       syncMutableToolContext(context, executionContext)
-      const record = this.result(call, tool.name, false, error instanceof Error ? error.message : String(error), 'aborted', undefined, turnId)
+      const record = this.result(call, tool.name, false, error instanceof Error ? error.message : String(error), 'aborted', undefined, turnId, tool.maxResultSizeChars)
       await this.emitRecord(record)
       return record
     } finally {
@@ -158,15 +161,17 @@ export class ToolRunner {
     errorCode?: ToolErrorCode,
     errorDetails?: unknown,
     turnId?: string,
+    maxResultSizeChars?: number,
   ): ToolResultRecord {
+    const boundedContent = applyToolResultBudget(content, maxResultSizeChars)
     return {
       id: randomUUID(),
       type: 'tool_result',
       toolUseId: call.id,
       tool,
       ok,
-      content,
-      _tokens: countTextTokens(`${tool}\n${content}`),
+      content: boundedContent,
+      _tokens: countTextTokens(`${tool}\n${boundedContent}`),
       ...(errorCode ? { errorCode } : {}),
       ...(errorDetails !== undefined ? { errorDetails } : {}),
       ...(turnId ? { turnId } : {}),
@@ -196,4 +201,12 @@ function syncMutableToolContext(target: ToolContext, source: ToolContext): void 
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
+}
+
+function applyToolResultBudget(content: string, maxResultSizeChars: number | undefined): string {
+  if (maxResultSizeChars === undefined || content.length <= maxResultSizeChars) return content
+  return [
+    content.slice(0, maxResultSizeChars),
+    `[Tool result truncated: exceeded ${maxResultSizeChars} chars; original ${content.length} chars]`,
+  ].join('\n\n')
 }

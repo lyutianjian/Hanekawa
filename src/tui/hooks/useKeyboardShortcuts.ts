@@ -8,7 +8,7 @@ export interface KeyboardShortcutOptions {
   onInterrupt: () => void
   onExit: () => void
   onEnterRestoreMode: () => void
-  onCyclePermissionMode: () => void
+  onCyclePermissionMode: (direction: 1 | -1) => void
   isStreaming: boolean
   isRestoreMode: boolean
   isPermissionVisible: boolean
@@ -31,7 +31,11 @@ export function shouldIgnoreShortcutInput(state: {
 }
 
 export function isPermissionModeCycleKey(key: Key): boolean {
-  return key.tab === true && key.shift === true
+  return key.tab === true
+}
+
+export function permissionModeCycleDirection(key: Key): 1 | -1 {
+  return key.shift === true ? -1 : 1
 }
 
 export interface KeyboardShortcutState {
@@ -102,7 +106,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
   const handleInput = useCallback(
     (input: string, key: Key) => {
       // Don't handle input while a modal overlay (restore mode or permission
-      // dialog) is on screen — those components own their own keyboard input.
+      // dialog) is on screen; those components own their keyboard input.
       if (shouldIgnoreShortcutInput({ isPermissionVisible, isRestoreMode })) return
 
       // Clear hint on any key press
@@ -110,9 +114,9 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
         clearHint()
       }
 
-      // --- Shift+Tab: cycle permission mode ---
+      // --- Tab / Shift+Tab: cycle permission mode forward/backward ---
       if (isPermissionModeCycleKey(key)) {
-        onCyclePermissionMode()
+        onCyclePermissionMode(permissionModeCycleDirection(key))
         return
       }
 

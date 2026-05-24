@@ -27,7 +27,7 @@ import { invalidateResolvedCwdCache } from '../../utils/paths.js'
 export type AppMode = 'idle' | 'running' | 'restore' | 'exiting'
 
 const ABORT_TIMEOUT_MS = 2000
-const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'plan', 'auto', 'bypass']
+const PERMISSION_MODES: readonly PermissionMode[] = ['bypass', 'auto', 'acceptEdits', 'default', 'plan']
 
 export interface AppRuntime {
   loop: AgentLoop
@@ -51,6 +51,7 @@ interface AppProps {
   existingRecords: SessionRecord[]
   initialSystemMessages?: TUIDisplayItem[]
   onBeforeExit?: () => Promise<void>
+  onPermissionModeChange?: (mode: PermissionMode) => Promise<void> | void
 }
 
 export function App({
@@ -68,6 +69,7 @@ export function App({
   existingRecords,
   initialSystemMessages,
   onBeforeExit,
+  onPermissionModeChange,
 }: AppProps) {
   const [mode, setMode] = useState<AppMode>('idle')
   const [activeSession, setActiveSession] = useState<SessionMeta>(initialSession)
@@ -90,8 +92,9 @@ export function App({
     setPermissionModeState(permissionGate.getMode())
     return permissionGate.onModeChange((nextMode) => {
       setPermissionModeState(nextMode)
+      void onPermissionModeChange?.(nextMode)
     })
-  }, [permissionGate])
+  }, [permissionGate, onPermissionModeChange])
 
   const syncActiveModel = useCallback((activeModel: { modelKey?: string }) => {
     if (!activeModel.modelKey) return
@@ -179,10 +182,12 @@ export function App({
     }
   }, [availableModelKeys, createRuntime, activeSession, runtime.loop])
 
-  const cyclePermissionMode = useCallback(() => {
+  const cyclePermissionMode = useCallback((direction: 1 | -1) => {
     setPermissionModeState((currentMode) => {
       const index = PERMISSION_MODES.indexOf(currentMode)
-      const nextMode = PERMISSION_MODES[(index + 1) % PERMISSION_MODES.length] ?? 'default'
+      const normalizedIndex = index >= 0 ? index : PERMISSION_MODES.indexOf('default')
+      const nextIndex = (normalizedIndex + direction + PERMISSION_MODES.length) % PERMISSION_MODES.length
+      const nextMode = PERMISSION_MODES[nextIndex] ?? 'default'
       permissionGate.setMode(nextMode)
       return nextMode
     })

@@ -17,6 +17,16 @@ const fsWriteTool: Tool = {
   execute: async () => ({ ok: true, content: '' }),
 }
 
+const writeFileTool: Tool = {
+  ...fsWriteTool,
+  name: 'writeFile',
+}
+
+const editFileTool: Tool = {
+  ...fsWriteTool,
+  name: 'editFile',
+}
+
 const readFileTool: Tool = {
   name: 'readFile',
   description: 'Read a file',
@@ -572,6 +582,62 @@ test('PermissionGate auto mode does not bypass deny rules for confirm tools', as
   assert.equal(prompted, false)
   assert.equal(await gate.approve(fsWriteTool, { path: 'src/index.ts' }), true)
   assert.equal(prompted, true)
+})
+
+test('PermissionGate acceptEdits mode approves edit tools without prompting', async () => {
+  let prompted = false
+  const gate = new PermissionGate(
+    async () => {
+      prompted = true
+      return false
+    },
+    [],
+    { mode: 'acceptEdits' },
+  )
+
+  assert.equal(await gate.approve(writeFileTool, { path: 'src/index.ts' }), true)
+  assert.equal(await gate.approve(editFileTool, { path: 'src/index.ts' }), true)
+  assert.equal(prompted, false)
+})
+
+test('PermissionGate acceptEdits mode keeps other tools on the normal gate', async () => {
+  let prompted = false
+  const gate = new PermissionGate(
+    async () => {
+      prompted = true
+      return true
+    },
+    [],
+    { mode: 'acceptEdits' },
+  )
+
+  assert.equal(await gate.approve(bashTool, { command: 'pwd' }), true)
+  assert.equal(prompted, true)
+})
+
+test('PermissionGate acceptEdits mode does not bypass protected paths or deny rules', async () => {
+  let prompted = false
+  const gate = new PermissionGate(
+    async () => {
+      prompted = true
+      return true
+    },
+    [{ toolName: 'writeFile', behavior: 'deny', source: 'config' }],
+    { mode: 'acceptEdits', denialStreakThreshold: 2 },
+  )
+
+  assert.equal(await gate.approve(writeFileTool, { path: 'src/index.ts' }), false)
+  assert.equal(await gate.approve(editFileTool, { path: '.env' }), false)
+  assert.equal(prompted, false)
+})
+
+test('PermissionGate restores the mode that was active before plan mode', () => {
+  const gate = new PermissionGate(async () => false, undefined, { mode: 'acceptEdits' })
+
+  gate.setMode('plan')
+  assert.equal(gate.getPrePlanMode(), 'acceptEdits')
+  assert.equal(gate.exitPlanMode(), 'acceptEdits')
+  assert.equal(gate.getMode(), 'acceptEdits')
 })
 
 test('PermissionGate plan mode allows read tools without prompting', async () => {

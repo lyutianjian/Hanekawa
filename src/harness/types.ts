@@ -119,6 +119,7 @@ export interface ToolContext {
   appendRecord?(record: SessionRecord): Promise<void>
   getPermissionMode?(): PermissionMode
   setPermissionMode?(mode: PermissionMode): void
+  exitPlanMode?(): PermissionMode
 }
 
 export type ToolErrorCode =
@@ -159,6 +160,11 @@ export interface Tool {
   riskLevel: RiskLevel
   isReadOnly?: boolean
   isDestructive?: boolean
+  /**
+   * Maximum persisted tool result content size. This is applied once when the
+   * tool result is recorded so later request preparation sees stable bytes.
+   */
+  maxResultSizeChars?: number
   /**
    * True only for tools that can run alongside other safe tools without
    * mutating project files or shared write-tracking state.

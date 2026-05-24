@@ -85,6 +85,7 @@ export const bashTool: Tool = {
   }).strict(),
   riskLevel: 'dangerous',
   isDestructive: true,
+  maxResultSizeChars: 100_000,
   async execute(input, context) {
     const options = input as BashInput
     const timeout = options.timeout ?? 30_000

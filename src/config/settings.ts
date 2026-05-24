@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { AgentConfig, ModelConfig } from './service.js'
 import type { HookCommand } from '../harness/hooks.js'
+import type { PermissionMode } from '../harness/permissions.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
 
 export type HookCommandSetting = HookCommand
@@ -33,6 +34,7 @@ export interface MyAgentSettings {
   agent?: AgentConfig
   autoCompact?: boolean
   autoCompactThreshold?: number
+  permissionMode?: PermissionMode
 }
 
 interface LegacyMcpSettings {
@@ -164,6 +166,10 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
     if (source.autoCompactThreshold !== undefined) {
       result.autoCompactThreshold = source.autoCompactThreshold
     }
+
+    if (source.permissionMode !== undefined) {
+      result.permissionMode = source.permissionMode
+    }
   }
 
   return result
@@ -187,6 +193,16 @@ export async function trustMcpServerLocally(cwd: string, serverName: string): Pr
     ...localSettings.mcp,
     trustedServers: [...trustedServers].sort(),
   }
+
+  await mkdir(join(cwd, '.myagent'), { recursive: true })
+  await writeFile(`${localSettingsPath}.tmp`, `${JSON.stringify(localSettings, null, 2)}\n`, 'utf-8')
+  await rename(`${localSettingsPath}.tmp`, localSettingsPath)
+}
+
+export async function savePermissionModePreferenceLocally(cwd: string, mode: PermissionMode): Promise<void> {
+  const localSettingsPath = join(cwd, '.myagent', 'settings.local.json')
+  const localSettings = await loadSettingsFile(localSettingsPath)
+  localSettings.permissionMode = mode
 
   await mkdir(join(cwd, '.myagent'), { recursive: true })
   await writeFile(`${localSettingsPath}.tmp`, `${JSON.stringify(localSettings, null, 2)}\n`, 'utf-8')
@@ -254,6 +270,10 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
     errors.push('cache.ttl1h must be a boolean')
   }
 
+  if (settings.permissionMode !== undefined && !isPermissionMode(settings.permissionMode)) {
+    errors.push('permissionMode must be one of: default, plan, acceptEdits, auto, bypass')
+  }
+
   for (const name of ['userPromptSubmit', 'preToolUse', 'postToolUse', 'stop'] as const) {
     const hooks = settings.hooks?.[name]
     if (hooks !== undefined && !Array.isArray(hooks)) {
@@ -266,6 +286,14 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
   }
 
   return { valid: errors.length === 0, errors }
+}
+
+function isPermissionMode(value: unknown): value is PermissionMode {
+  return value === 'default'
+    || value === 'plan'
+    || value === 'acceptEdits'
+    || value === 'auto'
+    || value === 'bypass'
 }
 
 function validateHookSetting(hook: HookCommandSetting, path: string, errors: string[]): void {

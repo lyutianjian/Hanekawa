@@ -6,13 +6,10 @@ import {
 import type { SessionRecord, ToolResultRecord, ToolUseRecord, TokenUsage } from './types.js'
 import { stripExcessMediaItems } from './mediaStrip.js'
 
-const SINGLE_TOOL_RESULT_TOKEN_LIMIT = 20_000
 const TOOL_RESULTS_CONTEXT_RATIO = 0.5
 const TOOL_RESULTS_TOKEN_BUDGET_CAP = 200_000
 const RECENT_TOOL_RESULTS_TO_KEEP = 10
 const RECENT_ASSISTANT_THINKING_TURNS_TO_KEEP = 3
-const FOUR_HOURS_MS = 4 * 60 * 60 * 1000
-const ONE_HOUR_MS = 60 * 60 * 1000
 
 export interface RequestPrepDiagnostic {
   code: 'tool_protocol_repaired'
@@ -119,7 +116,6 @@ function getRecordsAfterLastCompact(records: SessionRecord[]): SessionRecord[] {
 interface ToolResultCandidate {
   record: ToolResultRecord
   tokens: number
-  ageMs: number
 }
 
 function getToolResultTokenLimit(contextManagement: Partial<ContextManagementConfig>): number {
@@ -130,6 +126,7 @@ function getToolResultTokenLimit(contextManagement: Partial<ContextManagementCon
 }
 
 function selectToolResultsToCompact(records: SessionRecord[], toolResultLimit: number, now: Date): Set<string> {
+  void now
   const candidates: ToolResultCandidate[] = []
   for (let index = records.length - 1; index >= 0; index--) {
     const record = records[index]
@@ -137,10 +134,12 @@ function selectToolResultsToCompact(records: SessionRecord[], toolResultLimit: n
       candidates.push({
         record,
         tokens: getToolResultTokens(record),
-        ageMs: getRecordAgeMs(record, now),
       })
     }
   }
+
+  let totalTokens = candidates.reduce((sum, candidate) => sum + candidate.tokens, 0)
+  if (totalTokens <= toolResultLimit) return new Set()
 
   const protectedIds = new Set(
     candidates
@@ -148,22 +147,18 @@ function selectToolResultsToCompact(records: SessionRecord[], toolResultLimit: n
       .map((candidate) => candidate.record.id),
   )
   const compactedIds = new Set<string>()
-  let totalTokens = candidates.reduce((sum, candidate) => sum + candidate.tokens, 0)
 
   const unprotectedCandidates = candidates
     .filter((candidate) => !protectedIds.has(candidate.record.id))
     .reverse()
 
-  for (const minimumAgeMs of [FOUR_HOURS_MS, ONE_HOUR_MS]) {
-    for (const candidate of unprotectedCandidates) {
-      if (compactedIds.has(candidate.record.id) || candidate.ageMs < minimumAgeMs) continue
-      if (candidate.tokens <= SINGLE_TOOL_RESULT_TOKEN_LIMIT && totalTokens <= toolResultLimit) continue
-      totalTokens = compactCandidate(candidate, compactedIds, totalTokens)
-    }
+  for (const candidate of unprotectedCandidates) {
+    totalTokens = compactCandidate(candidate, compactedIds, totalTokens)
+    if (totalTokens <= toolResultLimit) return compactedIds
   }
 
   if (totalTokens > toolResultLimit) {
-    for (const candidate of unprotectedCandidates) {
+    for (const candidate of [...candidates].reverse()) {
       if (compactedIds.has(candidate.record.id)) continue
       totalTokens = compactCandidate(candidate, compactedIds, totalTokens)
       if (totalTokens <= toolResultLimit) break
@@ -187,17 +182,11 @@ function getToolResultTokens(record: ToolResultRecord): number {
   return tokens
 }
 
-function getRecordAgeMs(record: ToolResultRecord, now: Date): number {
-  const createdAtMs = Date.parse(record.createdAt)
-  if (!Number.isFinite(createdAtMs)) return Number.POSITIVE_INFINITY
-  return Math.max(0, now.getTime() - createdAtMs)
-}
-
-function compactToolResult(record: ToolResultRecord, tokens: number): ToolResultRecord {
+export function compactToolResult(record: ToolResultRecord, tokens: number): ToolResultRecord {
   return {
     ...record,
     content: [
-      `[tool result compacted: ${record.tool} output was approximately ${tokens} tokens]`,
+      `[summarized: ${record.tool} ${tokens} tokens]`,
       `status: ${record.ok ? 'ok' : 'error'}`,
       'The original output was removed from this request to stay within the context budget.',
     ].join('\n'),

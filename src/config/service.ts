@@ -47,6 +47,12 @@ const DEFAULT_CONFIG: Config = {
       summaryOutputTokens: 20_000,
       autoCompactBufferTokens: 13_000,
       manualCompactBufferTokens: 3_000,
+      microCompactThresholdRatio: 0.65,
+      snipThresholdRatio: 0.8,
+      autoCompactThresholdRatio: 0.9,
+      snipHeadTurns: 3,
+      snipTailTurns: 12,
+      snipMaxTurns: 24,
     },
   },
 }

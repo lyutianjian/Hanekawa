@@ -6,6 +6,8 @@ import {
   getAutoCompactThreshold,
   getEffectiveContextWindowSize,
   getManualCompactThreshold,
+  getMicroCompactThreshold,
+  getSnipThreshold,
   selectContextItemsForContext,
   selectMessagesForContext,
 } from '../src/prompts/budget.js'
@@ -29,7 +31,9 @@ test('context management counts tokens', () => {
 
 test('context management thresholds follow Claude Code style defaults', () => {
   assert.equal(getEffectiveContextWindowSize(), 180_000)
-  assert.equal(getAutoCompactThreshold(), 167_000)
+  assert.equal(getMicroCompactThreshold(), 117_000)
+  assert.equal(getSnipThreshold(), 144_000)
+  assert.equal(getAutoCompactThreshold(), 162_000)
   assert.equal(getManualCompactThreshold(), 177_000)
 })
 

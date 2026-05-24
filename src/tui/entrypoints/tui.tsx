@@ -8,7 +8,12 @@ import { stdin as input, stdout as output } from 'node:process'
 import { render } from 'ink'
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { ConfigService } from '../../config/service.js'
-import { loadMergedSettings, trustMcpServerLocally, validateSettings } from '../../config/settings.js'
+import {
+  loadMergedSettings,
+  savePermissionModePreferenceLocally,
+  trustMcpServerLocally,
+  validateSettings,
+} from '../../config/settings.js'
 import { createProvider } from '../../config/providers.js'
 import { SessionStore } from '../../sessions/service.js'
 import type { SessionMeta } from '../../sessions/service.js'
@@ -180,6 +185,7 @@ async function main() {
   const promptProxy = createPromptProxy()
   const recordProxy = createRecordProxy()
   const permissionGate = new PermissionGate(promptProxy.prompt, undefined, {
+    mode: settings.permissionMode,
     denialStateStore: {
       getDenialState: async () => store.getDenialState(session.id),
       setDenialState: async (state) => store.setDenialState(session.id, state),
@@ -317,6 +323,9 @@ async function main() {
     // server cannot prevent the TUI from exiting cleanly.
     await Promise.allSettled(mcpClients.map((c) => disconnectMcpServer(c)))
   }
+  const onPermissionModeChange = async (mode: ReturnType<typeof permissionGate.getMode>) => {
+    await savePermissionModePreferenceLocally(cwd, mode)
+  }
 
   // Render the TUI
   const { waitUntilExit } = render(
@@ -335,6 +344,7 @@ async function main() {
       existingRecords={existingLoad.records}
       initialSystemMessages={initialSystemMessages}
       onBeforeExit={onBeforeExit}
+      onPermissionModeChange={onPermissionModeChange}
     />,
     {
       exitOnCtrlC: false,

@@ -399,8 +399,13 @@ export class ContextBuilder {
   }
 
   private buildPlanModeSystemReminder(permissionMode?: PermissionMode): string | undefined {
-    if (permissionMode !== 'plan') return undefined
-    return '<system-reminder>You are in plan mode. Read-only operations are auto-approved. To take action you must first present the plan to the user.</system-reminder>'
+    if (permissionMode === 'plan') {
+      return '<system-reminder>You are in plan mode. Read-only operations are auto-approved. To take action you must first present the plan to the user.</system-reminder>'
+    }
+    if (permissionMode === 'acceptEdits') {
+      return '<system-reminder>You are in accept-edits mode. File edits are auto-approved, but shell commands and other tools still use the normal permission gate.</system-reminder>'
+    }
+    return undefined
   }
 
   private buildUserContext(now: Date, activeSkills: readonly ActiveSkill[]): ModelContextItem[] {

@@ -37,23 +37,23 @@ function toolResultContent(records: SessionRecord[], id: string): string {
   return record.content
 }
 
-test('prepareRecordsForRequest compacts old oversized tool results without mutating records', () => {
+test('prepareRecordsForRequest preserves old oversized tool results when aggregate budget allows', () => {
   const records: SessionRecord[] = [
-    ...toolPair('old', 'readFile', 'old output '.repeat(100_000), 0),
+    ...toolPair('old', 'readFile', 'old output '.repeat(7_000), 0),
   ]
   for (let index = 0; index < 10; index++) {
     records.push(...toolPair(`new-${index}`, 'readFile', 'new output '.repeat(10), index + 1))
   }
 
-  const prepared = prepareRecordsForRequest(records, { contextWindow: 100_000, summaryOutputTokens: 0 })
+  const prepared = prepareRecordsForRequest(records, { contextWindow: 1_000_000, summaryOutputTokens: 0 })
   const oldResult = prepared.find((record) => record.type === 'tool_result' && record.id === 'old-result')
   const newResult = prepared.find((record) => record.type === 'tool_result' && record.id === 'new-9-result')
 
   assert.equal(oldResult?.type, 'tool_result')
-  assert.match(oldResult.content, /tool result compacted/)
+  assert.equal(oldResult.content, 'old output '.repeat(7_000))
   assert.equal(newResult?.type, 'tool_result')
   assert.match(newResult.content, /new output/)
-  assert.doesNotMatch(records[1]?.type === 'tool_result' ? records[1].content : '', /tool result compacted/)
+  assert.doesNotMatch(records[1]?.type === 'tool_result' ? records[1].content : '', /summarized/)
 })
 
 test('prepareRecordsForRequest keeps same-tool history when under token thresholds', () => {
@@ -176,26 +176,25 @@ test('prepareRecordsForRequest prefers cached tool result token counts', () => {
 
   const result = prepared.find((record) => record.type === 'tool_result')
   assert.equal(result?.type, 'tool_result')
-  assert.match(result.content, /approximately 50000 tokens/)
+  assert.match(result.content, /grep 50000 tokens/)
 })
 
-test('prepareRecordsForRequest keeps the 10 most recent tool results even when oversized', () => {
+test('prepareRecordsForRequest compacts protected recent tool results only when required by total budget', () => {
   const records: SessionRecord[] = []
   for (let index = 0; index < 10; index++) {
-    records.push(...toolPair(`recent-${index}`, 'readFile', 'large recent output '.repeat(30_000), index))
+    records.push(...toolPair(`recent-${index}`, 'readFile', 'large recent output '.repeat(3_000), index))
   }
 
   const prepared = prepareRecordsForRequest(records, {
-    contextWindow: 1_000,
+    contextWindow: 100_000,
     summaryOutputTokens: 0,
   })
 
-  for (let index = 0; index < 10; index++) {
-    assert.doesNotMatch(toolResultContent(prepared, `recent-${index}`), /tool result compacted/)
-  }
+  assert.match(toolResultContent(prepared, 'recent-0'), /summarized/)
+  assert.doesNotMatch(toolResultContent(prepared, 'recent-9'), /summarized/)
 })
 
-test('prepareRecordsForRequest compacts oversized tool results older than the 10 most recent', () => {
+test('prepareRecordsForRequest does not compact older oversized tool results solely by age', () => {
   const records: SessionRecord[] = [
     ...toolPair('old', 'readFile', 'large old output '.repeat(30_000), 0),
   ]
@@ -208,9 +207,9 @@ test('prepareRecordsForRequest compacts oversized tool results older than the 10
     summaryOutputTokens: 0,
   })
 
-  assert.match(toolResultContent(prepared, 'old'), /tool result compacted/)
+  assert.doesNotMatch(toolResultContent(prepared, 'old'), /summarized/)
   for (let index = 0; index < 10; index++) {
-    assert.doesNotMatch(toolResultContent(prepared, `recent-${index}`), /tool result compacted/)
+    assert.doesNotMatch(toolResultContent(prepared, `recent-${index}`), /summarized/)
   }
 })
 
@@ -228,11 +227,11 @@ test('prepareRecordsForRequest compacts older tool results when total tool-resul
     summaryOutputTokens: 0,
   })
 
-  assert.match(toolResultContent(prepared, 'old-0'), /tool result compacted/)
-  assert.match(toolResultContent(prepared, 'old-1'), /tool result compacted/)
-  assert.doesNotMatch(toolResultContent(prepared, 'old-3'), /tool result compacted/)
+  assert.match(toolResultContent(prepared, 'old-0'), /summarized/)
+  assert.match(toolResultContent(prepared, 'old-1'), /summarized/)
+  assert.doesNotMatch(toolResultContent(prepared, 'old-3'), /summarized/)
   for (let index = 0; index < 10; index++) {
-    assert.doesNotMatch(toolResultContent(prepared, `recent-${index}`), /tool result compacted/)
+    assert.doesNotMatch(toolResultContent(prepared, `recent-${index}`), /summarized/)
   }
 })
 
@@ -248,14 +247,14 @@ test('prepareRecordsForRequest caps tool-result budget at 200k tokens for large 
     new Date('2026-05-10T08:00:00.000Z'),
   )
 
-  assert.match(toolResultContent(prepared, 'old-0'), /tool result compacted/)
+  assert.match(toolResultContent(prepared, 'old-0'), /summarized/)
 })
 
-test('prepareRecordsForRequest prefers compacting results older than four hours before one hour', () => {
+test('prepareRecordsForRequest compacts oldest unprotected results first when over budget', () => {
   const now = new Date('2026-05-10T08:00:00.000Z')
   const records: SessionRecord[] = [
-    ...toolPairAt('older-than-four', 'grep', 'large old output '.repeat(2_000), '2026-05-10T03:00:00.000Z'),
-    ...toolPairAt('older-than-one', 'grep', 'large middle output '.repeat(2_000), '2026-05-10T06:30:00.000Z'),
+    ...toolPairAt('first', 'grep', 'large first output '.repeat(2_000), '2026-05-10T07:58:00.000Z'),
+    ...toolPairAt('second', 'grep', 'large second output '.repeat(2_000), '2026-05-10T07:59:00.000Z'),
   ]
   for (let index = 0; index < 10; index++) {
     records.push(...toolPairAt(`recent-${index}`, 'grep', `recent ${index}`, `2026-05-10T07:${String(index).padStart(2, '0')}:00.000Z`))
@@ -266,8 +265,8 @@ test('prepareRecordsForRequest prefers compacting results older than four hours 
     summaryOutputTokens: 0,
   }, now)
 
-  assert.match(toolResultContent(prepared, 'older-than-four'), /tool result compacted/)
-  assert.doesNotMatch(toolResultContent(prepared, 'older-than-one'), /tool result compacted/)
+  assert.match(toolResultContent(prepared, 'first'), /summarized/)
+  assert.doesNotMatch(toolResultContent(prepared, 'second'), /summarized/)
 })
 
 test('prepareRecordsForRequest leaves sub-hour oversized results alone unless total budget requires it', () => {
@@ -284,14 +283,14 @@ test('prepareRecordsForRequest leaves sub-hour oversized results alone unless to
     summaryOutputTokens: 0,
   }, now)
 
-  assert.doesNotMatch(toolResultContent(prepared, 'recent-large'), /tool result compacted/)
+  assert.doesNotMatch(toolResultContent(prepared, 'recent-large'), /summarized/)
 })
 
 test('prepareRecordsForRequest compacts sub-hour results as a last resort for total budget', () => {
   const now = new Date('2026-05-10T08:00:00.000Z')
   const records: SessionRecord[] = []
   for (let index = 0; index < 12; index++) {
-    records.push(...toolPairAt(`recent-large-${index}`, 'grep', 'large recent output '.repeat(4_000), `2026-05-10T07:${String(index).padStart(2, '0')}:00.000Z`))
+    records.push(...toolPairAt(`recent-large-${index}`, 'grep', 'large recent output '.repeat(2_000), `2026-05-10T07:${String(index).padStart(2, '0')}:00.000Z`))
   }
 
   const prepared = prepareRecordsForRequest(records, {
@@ -299,8 +298,8 @@ test('prepareRecordsForRequest compacts sub-hour results as a last resort for to
     summaryOutputTokens: 0,
   }, now)
 
-  assert.match(toolResultContent(prepared, 'recent-large-0'), /tool result compacted/)
-  assert.doesNotMatch(toolResultContent(prepared, 'recent-large-11'), /tool result compacted/)
+  assert.match(toolResultContent(prepared, 'recent-large-0'), /summarized/)
+  assert.doesNotMatch(toolResultContent(prepared, 'recent-large-11'), /summarized/)
 })
 
 test('prepareRecordsForRequest preserves valid tool_use and tool_result pairs', () => {

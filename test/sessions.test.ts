@@ -234,14 +234,14 @@ test('SessionStore persists denial state metadata and emits metrics', async () =
     await store.init()
 
     const session = await store.create()
-    await store.setDenialState(session.id, { streaks: { bash: 2 }, total: 5 })
+    await store.setDenialState(session.id, { streaks: { Bash: 2 }, total: 5 })
 
     assert.deepEqual((await store.load(session.id))?.denialState, {
-      streaks: { bash: 2 },
+      streaks: { Bash: 2 },
       total: 5,
     })
     assert.deepEqual(await store.getDenialState(session.id), {
-      streaks: { bash: 2 },
+      streaks: { Bash: 2 },
       total: 5,
     })
 
@@ -252,10 +252,48 @@ test('SessionStore persists denial state metadata and emits metrics', async () =
     assert.equal(metrics[0]?.total_auto_denials, 5)
     assert.equal(metrics[0]?.active_streaks, 1)
     assert.equal(metrics[0]?.max_streak, 2)
-    assert.deepEqual(metrics[0]?.streaks, { bash: 2 })
+    assert.deepEqual(metrics[0]?.streaks, { Bash: 2 })
 
     await store.setDenialState(session.id, { streaks: {}, total: 0 })
     assert.equal((await store.load(session.id))?.denialState, undefined)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SessionStore repairs orphan tool protocol records in JSONL sessions', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+
+    const session = await store.create()
+    await store.appendRecord(session.id, {
+      type: 'tool_use',
+      id: 'call-1',
+      tool: 'Grep',
+      input: { pattern: 'x' },
+      riskLevel: 'safe',
+      createdAt: '2026-05-24T00:00:00.000Z',
+      turnId: 'turn-1',
+    })
+    await store.appendRecord(session.id, {
+      type: 'tool_result',
+      id: 'result-2',
+      toolUseId: 'missing-call',
+      tool: 'Read',
+      ok: true,
+      content: 'orphan result',
+      createdAt: '2026-05-24T00:00:01.000Z',
+      turnId: 'turn-1',
+    })
+
+    const result = await store.repairRecords(session.id)
+    assert.equal(result.repairedCount, 2)
+
+    const records = await store.loadRecords(session.id)
+    assert.ok(records.some((record) => record.type === 'tool_result' && record.toolUseId === 'call-1'))
+    assert.ok(records.some((record) => record.type === 'tool_use' && record.id === 'missing-call'))
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

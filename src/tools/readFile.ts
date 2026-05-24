@@ -6,7 +6,7 @@ import { evictOldestIfNeeded } from '../utils/cache.js'
 import { captureReadFileState } from './fileState.js'
 
 export const readFileTool: Tool = {
-  name: 'readFile',
+  name: 'Read',
   description: 'Read a UTF-8 text file from the current project.',
   inputSchema: z.object({
     filePath: z.string().min(1),

@@ -10,7 +10,7 @@ import type { ReadFileState, SessionRecord, Tool } from '../src/harness/types.js
 const contextWindow = (contextWindow: number) => ({ contextWindow, summaryOutputTokens: 0 })
 
 const tool: Tool = {
-  name: 'readFile',
+  name: 'Read',
   description: 'Read a file from disk',
   inputSchema: z.object({}).strict(),
   riskLevel: 'safe',
@@ -48,7 +48,7 @@ test('ContextBuilder injects layered system and user context', async () => {
     '# Using your tools\n - Prefer dedicated t',
     '# Tone and style\n - Only use emojis if t',
     '# Text output (does not apply to tool ca',
-    '# availableTools\n- readFile: Read a file',
+    '# availableTools\n- Read: Read a file fro',
     '__MYAGENT_SYSTEM_PROMPT_DYNAMIC_BOUNDARY',
     'custom system',
   ])
@@ -57,8 +57,8 @@ test('ContextBuilder injects layered system and user context', async () => {
   assert.equal(first.kind, 'message')
   assert.equal(first.message.id, 'meta:user-context')
   assert.match(first.message.content, /Today's date is 2026\/05\/10/)
-  assert.doesNotMatch(first.message.content, /readFile: Read a file from disk/)
-  assert.match(built.system ?? '', /readFile: Read a file from disk/)
+  assert.doesNotMatch(first.message.content, /Read: Read a file from disk/)
+  assert.match(built.system ?? '', /Read: Read a file from disk/)
 })
 
 test('ContextBuilder can build a reduced system prompt from enabled sections', async () => {
@@ -284,7 +284,7 @@ test('ContextBuilder budgets messages and tool records together', async () => {
     {
       type: 'tool_use',
       id: 'call-1',
-      tool: 'readFile',
+      tool: 'Read',
       input: { filePath: 'a.txt' },
       riskLevel: 'safe',
       createdAt: '2026-05-10T00:02:00.000Z',
@@ -293,7 +293,7 @@ test('ContextBuilder budgets messages and tool records together', async () => {
       type: 'tool_result',
       id: 'result-1',
       toolUseId: 'call-1',
-      tool: 'readFile',
+      tool: 'Read',
       ok: true,
       content: 'file body',
       createdAt: '2026-05-10T00:03:00.000Z',
@@ -620,10 +620,10 @@ test('ContextBuilder caches available tools until invalidated', async () => {
     now: new Date('2026-05-10T12:02:00.000Z'),
   })
 
-  assert.match(first.system ?? '', /readFile: Read a file from disk/)
-  assert.match(cached.system ?? '', /readFile: Read a file from disk/)
+  assert.match(first.system ?? '', /Read: Read a file from disk/)
+  assert.match(cached.system ?? '', /Read: Read a file from disk/)
   assert.doesNotMatch(cached.system ?? '', /Changed after MCP reconnect/)
-  assert.match(refreshed.system ?? '', /readFile: Changed after MCP reconnect/)
+  assert.match(refreshed.system ?? '', /Read: Changed after MCP reconnect/)
 })
 
 test('ContextBuilder keeps currentDate dynamic while availableTools stays cached', async () => {
@@ -646,10 +646,10 @@ test('ContextBuilder keeps currentDate dynamic while availableTools stays cached
   assert.equal(after?.kind, 'message')
   assert.match(before.message.content, /Today's date is 2026\/05\/10/)
   assert.match(after.message.content, /Today's date is 2026\/05\/11/)
-  assert.doesNotMatch(before.message.content, /readFile: Read a file from disk/)
-  assert.doesNotMatch(after.message.content, /readFile: Read a file from disk/)
-  assert.match(beforeMidnight.system ?? '', /readFile: Read a file from disk/)
-  assert.match(afterMidnight.system ?? '', /readFile: Read a file from disk/)
+  assert.doesNotMatch(before.message.content, /Read: Read a file from disk/)
+  assert.doesNotMatch(after.message.content, /Read: Read a file from disk/)
+  assert.match(beforeMidnight.system ?? '', /Read: Read a file from disk/)
+  assert.match(afterMidnight.system ?? '', /Read: Read a file from disk/)
   assert.doesNotMatch(beforeMidnight.system ?? '', /2026\/05\/10/)
   assert.doesNotMatch(afterMidnight.system ?? '', /2026\/05\/11/)
 })

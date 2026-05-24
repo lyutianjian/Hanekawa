@@ -149,18 +149,30 @@ Each tool exports a `Tool` object with `name`, `inputSchema` (JSON Schema), `ris
 
 | Tool | Risk | Concurrency Safe | Notes |
 |------|------|-----------------|-------|
-| `grep` | safe | yes | fast-glob, 50 match limit, skips dotfiles |
-| `glob` | safe | yes | |
-| `bash` | dangerous | no | 1MB output truncation, 30s timeout, Windows Git Bash detection |
-| `readFile` | safe | yes | LRU cache (100 entries) for post-compact restore |
-| `writeFile` | confirm | no | |
-| `editFile` | confirm | no | requires prior readFile, exactly one match of oldString |
-| `deleteFile` | dangerous | no | |
-| `TaskCreate/Update/List/Get` | safe | no | `blockedBy`/`blocks` dependency support |
+| `Grep` | safe | yes | fast-glob, 50 match limit, skips dotfiles |
+| `Glob` | safe | yes | |
+| `Bash` | dangerous | no | 1MB output truncation, 30s timeout, Windows Git Bash detection |
+| `Read` | safe | yes | LRU cache (100 entries) for post-compact restore |
+| `Write` | confirm | no | |
+| `Edit` | confirm | no | requires prior Read, exactly one match of oldString |
+| `MultiEdit` | confirm | no | atomic exact string replacements |
+| `Delete` | dangerous | no | |
+| `TodoWrite` | safe | no | replaces the complete session todo list |
 | `Skill` | safe | no | on-demand skill invocation, LRU eviction (50) |
-| `Agent` | safe | no | subagent dispatch |
+| `Agent` | safe | no | typed subagent dispatch (`general`, `explore`, `plan`, `verification`) |
 
 The `Skill` and `Agent` tools are dynamically created at runtime and not bundled in `getBuiltinTools()`.
+
+#### Agent Sub-Agent Types
+
+The `Agent` tool requires `subagent_type`:
+
+- `general` - default-style read-only delegation for isolated research or focused questions. It inherits project context.
+- `explore` - fast read-only codebase navigation using search/read tools. It omits project context to save tokens, so pass any critical conventions explicitly.
+- `plan` - read-only implementation planning. It explores relevant code and returns a step-by-step plan plus critical files. It also omits project context.
+- `verification` - adversarial verification after implementation work. It is strictly read-only for project files, may run read-only shell checks, and must end with `VERDICT: PASS`, `VERDICT: FAIL`, or `VERDICT: PARTIAL`.
+
+Use `explore` before broad code searches, `plan` before larger or ambiguous changes, and `verification` before reporting completion on non-trivial implementation work.
 
 Supporting modules: `fileState.ts` (file state tracking), `pathSafety.ts` (path safety checks).
 

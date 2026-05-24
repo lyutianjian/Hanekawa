@@ -26,7 +26,7 @@ test('complete toolcall workflow: grep -> read -> edit -> verify', async () => {
 
     // Step 1: Use grep to find files containing "hello"
     const grepResult = await runner.run(
-      { id: 'call1', name: 'grep', input: { pattern: 'hello', glob: '**/*.ts' } },
+      { id: 'call1', name: 'Grep', input: { pattern: 'hello', glob: '**/*.ts' } },
       context
     )
     assert.equal(grepResult.ok, true)
@@ -35,7 +35,7 @@ test('complete toolcall workflow: grep -> read -> edit -> verify', async () => {
 
     // Step 2: Read the file
     const readResult = await runner.run(
-      { id: 'call2', name: 'readFile', input: { filePath: 'test.ts' } },
+      { id: 'call2', name: 'Read', input: { filePath: 'test.ts' } },
       context
     )
     assert.equal(readResult.ok, true)
@@ -44,7 +44,7 @@ test('complete toolcall workflow: grep -> read -> edit -> verify', async () => {
 
     // Step 3: Edit the file
     const editResult = await runner.run(
-      { id: 'call3', name: 'editFile', input: {
+      { id: 'call3', name: 'Edit', input: {
         filePath: 'test.ts',
         oldString: '"world"',
         newString: '"myagent"'
@@ -91,7 +91,7 @@ test('toolcall permission system works correctly', async () => {
 
     // Safe tool: should execute without asking
     const readResult = await runner.run(
-      { id: 'call1', name: 'readFile', input: { filePath: 'test.txt' } },
+      { id: 'call1', name: 'Read', input: { filePath: 'test.txt' } },
       context
     )
     assert.equal(readResult.ok, true)
@@ -100,7 +100,7 @@ test('toolcall permission system works correctly', async () => {
 
     // Confirm tool: should ask and approve
     const writeResult = await runner.run(
-      { id: 'call2', name: 'writeFile', input: { filePath: 'new.txt', content: 'test' } },
+      { id: 'call2', name: 'Write', input: { filePath: 'new.txt', content: 'test' } },
       context
     )
     assert.equal(writeResult.ok, true)
@@ -110,7 +110,7 @@ test('toolcall permission system works correctly', async () => {
 
     // Dangerous tool: should ask and deny
     const deleteResult = await runner.run(
-      { id: 'call3', name: 'deleteFile', input: { filePath: 'test.txt' } },
+      { id: 'call3', name: 'Delete', input: { filePath: 'test.txt' } },
       context
     )
     assert.equal(deleteResult.ok, false)
@@ -137,19 +137,16 @@ test('all builtin tools are callable', async () => {
   })
 
   const expectedTools = [
-    'grep',
-    'glob',
-    'bash',
-    'readFile',
-    'writeFile',
-    'editFile',
-    'multiEdit',
-    'deleteFile',
-    'exitPlanMode',
-    'TaskCreate',
-    'TaskUpdate',
-    'TaskList',
-    'TaskGet',
+    'Grep',
+    'Glob',
+    'Bash',
+    'Read',
+    'Write',
+    'Edit',
+    'MultiEdit',
+    'Delete',
+    'ExitPlanMode',
+    'TodoWrite',
   ]
   assert.deepEqual(tools.map((t) => t.name).sort(), [...expectedTools].sort())
   assert.equal(tools.length, expectedTools.length)

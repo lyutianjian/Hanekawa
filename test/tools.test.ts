@@ -422,7 +422,7 @@ test('concurrency-safe builtin tools are read-only and write tools remain barrie
     }
   }
 
-  for (const toolName of ['writeFile', 'editFile', 'multiEdit', 'deleteFile']) {
+  for (const toolName of ['Write', 'Edit', 'MultiEdit', 'Delete']) {
     assert.notEqual(byName.get(toolName)?.isConcurrencySafe, true, `${toolName} must be a write barrier`)
   }
 })

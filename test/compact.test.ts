@@ -197,7 +197,7 @@ test('autoCompactIfNeeded adds pending records to last model usage token count',
       type: 'tool_result',
       id: 'tool-result',
       toolUseId: 'tool-use',
-      tool: 'readFile',
+      tool: 'Read',
       ok: true,
       content: 'pending tool output '.repeat(100),
       createdAt: '2026-05-10T00:04:00.000Z',
@@ -262,6 +262,82 @@ test('autoCompactIfNeeded records telemetry and degrades when summary fails', as
   assert.equal(telemetry?.type === 'compact_attempt_failed' ? telemetry.failureCount : 0, 1)
   assert.equal(telemetry?.type === 'compact_attempt_failed' ? telemetry.circuitOpen : true, false)
   assert.match(telemetry?.type === 'compact_attempt_failed' ? telemetry.error : '', /compact model unavailable/)
+})
+
+test('autoCompactIfNeeded ignores pre-compact hook failures', async () => {
+  resetAutoCompactFailureState()
+  const records = compactableRecords()
+  const appended: SessionRecord[] = []
+  let persistedFailureCount = 0
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      return { content: 'summary after hook failure', toolCalls: [] }
+    },
+  }
+
+  const result = await autoCompactIfNeeded({
+    records,
+    provider,
+    model: 'fake-model',
+    tools: [],
+    circuitKey: 'compact-pre-hook-failure-test',
+    getCompactFailureCount: async () => persistedFailureCount,
+    setCompactFailureCount: async (count) => {
+      persistedFailureCount = count
+    },
+    contextManagement: compactTestBudget(),
+    appendRecord: async (record) => { appended.push(record) },
+    onBeforeCompact: async () => {
+      throw new Error('pre hook append failed')
+    },
+  })
+
+  assert.equal(result.compacted, true)
+  assert.equal(calls, 1)
+  assert.equal(persistedFailureCount, 0)
+  assert.equal(appended.filter((record) => record.type === 'compact_attempt_failed').length, 0)
+  assert.equal(appended.filter((record) => record.type === 'compact_boundary').length, 1)
+})
+
+test('autoCompactIfNeeded ignores post-compact hook failures after recording boundary', async () => {
+  resetAutoCompactFailureState()
+  const records = compactableRecords()
+  const appended: SessionRecord[] = []
+  let persistedFailureCount = 0
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      return { content: 'summary before hook failure', toolCalls: [] }
+    },
+  }
+
+  const result = await autoCompactIfNeeded({
+    records,
+    provider,
+    model: 'fake-model',
+    tools: [],
+    circuitKey: 'compact-post-hook-failure-test',
+    getCompactFailureCount: async () => persistedFailureCount,
+    setCompactFailureCount: async (count) => {
+      persistedFailureCount = count
+    },
+    contextManagement: compactTestBudget(),
+    appendRecord: async (record) => { appended.push(record) },
+    onAfterCompact: async () => {
+      throw new Error('post hook append failed')
+    },
+  })
+
+  assert.equal(result.compacted, true)
+  assert.equal(calls, 1)
+  assert.equal(persistedFailureCount, 0)
+  assert.equal(appended.filter((record) => record.type === 'compact_attempt_failed').length, 0)
+  assert.equal(appended.filter((record) => record.type === 'compact_boundary').length, 1)
 })
 
 test('autoCompactIfNeeded opens circuit after three consecutive summary failures', async () => {

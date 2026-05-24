@@ -30,6 +30,8 @@ export interface CommandContext {
   writeLine: (msg: string) => void
   clearMessages: () => void | Promise<void>
   clearCachedSections?: () => void
+  invalidateRecordsCache?: () => void
+  repairRecords?: () => Promise<{ repairedCount: number; diagnostics: Array<{ message: string }> }>
   resetCompactFailureCount?: () => Promise<void>
   getUsage?: () => CommandUsage
   getModel?: () => CommandModelInfo

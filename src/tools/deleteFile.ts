@@ -6,7 +6,7 @@ import { requireFreshRead } from './fileState.js'
 import { assertParentNotSymlink } from './pathSafety.js'
 
 export const deleteFileTool: Tool = {
-  name: 'deleteFile',
+  name: 'Delete',
   description: 'Delete a file. This always requires explicit user approval.',
   inputSchema: z.object({
     filePath: z.string().min(1),

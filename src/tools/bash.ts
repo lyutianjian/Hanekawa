@@ -77,7 +77,7 @@ export function _resetCachedShellForTests(): void {
 }
 
 export const bashTool: Tool = {
-  name: 'bash',
+  name: 'Bash',
   description: 'Execute a shell command and return its output.',
   inputSchema: z.object({
     command: z.string().min(1),

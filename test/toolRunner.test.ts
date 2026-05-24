@@ -32,7 +32,7 @@ test('tool runner executes safe tool without prompting', async () => {
 
 test('tool runner denies dangerous tool when permission is false', async () => {
   const tool: Tool = {
-    name: 'deleteFile',
+    name: 'Delete',
     description: 'delete',
     inputSchema: z.object({
       filePath: z.string(),
@@ -43,7 +43,7 @@ test('tool runner denies dangerous tool when permission is false', async () => {
   const runner = new ToolRunner([tool], new PermissionGate(async () => false), {
     onRecord: async () => {},
   })
-  const result = await runner.run({ id: 'call1', name: 'deleteFile', input: { filePath: 'a.txt' } }, { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() })
+  const result = await runner.run({ id: 'call1', name: 'Delete', input: { filePath: 'a.txt' } }, { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() })
   assert.equal(result.ok, false)
   assert.match(result.content, /denied/)
 })
@@ -240,7 +240,7 @@ test('tool runner skips preToolUse hooks when matcher does not match', async () 
     onRecord: async () => {},
   }, {
     preToolUse: [{
-      matcher: 'bash',
+      matcher: 'Bash',
       command: `${JSON.stringify(process.execPath)} -e "process.exit(9)"`,
     }],
   })
@@ -250,6 +250,34 @@ test('tool runner skips preToolUse hooks when matcher does not match', async () 
   assert.equal(result.ok, true)
   assert.equal(result.content, 'done')
   assert.equal(executed, true)
+})
+
+test('tool runner runs postToolUse hooks after emitting tool result', async () => {
+  const tool: Tool = {
+    name: 'safeTool',
+    description: 'safe',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({ ok: true, content: 'done' }),
+  }
+  const records: SessionRecord[] = []
+  const runner = new ToolRunner([tool], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  }, {
+    postToolUse: [{
+      matcher: 'safeTool',
+      command: `${JSON.stringify(process.execPath)} -e "let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end', () => { const data = JSON.parse(input); console.log(data.tool + ':' + data.result.content) })"`,
+    }],
+  })
+
+  const result = await runner.run({ id: 'call1', name: 'safeTool', input: {} }, { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() })
+
+  assert.equal(result.ok, true)
+  const resultIndex = records.findIndex((record) => record.type === 'tool_result')
+  const hookIndex = records.findIndex((record) => record.type === 'message' && /postToolUse hook output for safeTool/.test(record.content))
+  assert.ok(resultIndex >= 0)
+  assert.ok(hookIndex > resultIndex)
+  assert.match(records[hookIndex]?.type === 'message' ? records[hookIndex].content : '', /safeTool:done/)
 })
 
 test('tool runner emits progress around execution', async () => {

@@ -12,7 +12,6 @@ const COLLAPSE_LINES = 3
 export function ToolCallBlock({ item, expanded }: ToolCallBlockProps) {
   const statusDot = getStatusDot(item.status)
   const inputDisplay = formatInput(item.tool, item.input)
-  const toolLabel = formatToolName(item.tool)
 
   return (
     <Box flexDirection="column" paddingLeft={2}>
@@ -20,7 +19,7 @@ export function ToolCallBlock({ item, expanded }: ToolCallBlockProps) {
       <Box>
         <Text color={statusDot.color}>{statusDot.char} </Text>
         <Text color={theme.toolName} bold>
-          {toolLabel}
+          {item.tool}
         </Text>
         {inputDisplay && (
           <>
@@ -132,24 +131,6 @@ function getStatusDot(status: ToolCallStatus): { char: string; color: string } {
   }
 }
 
-function formatToolName(tool: string): string {
-  const names: Record<string, string> = {
-    bash: 'Bash',
-    readFile: 'ReadFile',
-    writeFile: 'WriteFile',
-    editFile: 'EditFile',
-    deleteFile: 'DeleteFile',
-    grep: 'Grep',
-    glob: 'Glob',
-    taskCreate: 'TaskCreate',
-    taskUpdate: 'TaskUpdate',
-    taskList: 'TaskList',
-    taskGet: 'TaskGet',
-    skill: 'Skill',
-  }
-  return names[tool] ?? tool
-}
-
 function formatInput(tool: string, input: unknown): string {
   if (!input) return ''
 
@@ -158,23 +139,24 @@ function formatInput(tool: string, input: unknown): string {
   const obj = input as Record<string, unknown>
 
   // Internal tools: hide input details
-  if (tool.startsWith('task') || tool === 'skill') return ''
+  if (tool === 'TodoWrite' || tool === 'Skill') return ''
 
   switch (tool) {
-    case 'bash':
+    case 'Bash':
       return typeof obj.command === 'string' ? truncate(obj.command, 80) : ''
-    case 'readFile':
-    case 'writeFile':
-    case 'editFile':
-    case 'deleteFile':
+    case 'Read':
+    case 'Write':
+    case 'Edit':
+    case 'MultiEdit':
+    case 'Delete':
       return typeof obj.filePath === 'string'
         ? obj.filePath
         : typeof obj.path === 'string'
           ? obj.path
           : ''
-    case 'grep':
+    case 'Grep':
       return typeof obj.pattern === 'string' ? `"${truncate(obj.pattern, 60)}"` : ''
-    case 'glob':
+    case 'Glob':
       return typeof obj.pattern === 'string' ? obj.pattern : ''
     default:
       return truncate(JSON.stringify(obj), 80)
@@ -182,7 +164,7 @@ function formatInput(tool: string, input: unknown): string {
 }
 
 function shouldShowResult(tool: string): boolean {
-  return ['readFile', 'bash', 'grep', 'glob'].includes(tool)
+  return ['Read', 'Bash', 'Grep', 'Glob'].includes(tool)
 }
 
 function formatOutput(text: string, _alwaysShow: boolean): string {

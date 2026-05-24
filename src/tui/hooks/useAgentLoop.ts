@@ -280,6 +280,15 @@ export function useAgentLoop({
             summary: record.summary,
           },
         ])
+      } else if (record.type === 'compact_attempt_failed') {
+        setMessages((prev) => [
+          ...prev,
+          {
+            kind: 'compact_attempt_failed' as const,
+            id: record.id,
+            record,
+          },
+        ])
       }
 
       onRecordExternal?.(record)
@@ -343,7 +352,7 @@ function formatToolProgress(calls: Array<ToolProgressEvent['call']>): string | u
 
   if (counts.size === 1) {
     const name = calls[0]?.name
-    if (name === 'readFile') return `Reading ${calls.length} files in parallel...`
+    if (name === 'Read') return `Reading ${calls.length} files in parallel...`
     return `Running ${calls.length} ${formatToolName(name)} calls in parallel...`
   }
 
@@ -392,6 +401,12 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
         kind: 'compact_boundary',
         id: randomUUID(),
         summary: record.summary,
+      })
+    } else if (record.type === 'compact_attempt_failed') {
+      items.push({
+        kind: 'compact_attempt_failed',
+        id: record.id,
+        record,
       })
     }
   }

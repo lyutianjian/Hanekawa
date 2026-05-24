@@ -27,6 +27,14 @@ export interface CompactCheckInput {
   getCompactFailureCount?(): Promise<number>
   setCompactFailureCount?(count: number): Promise<void>
   appendRecord(record: SessionRecord): Promise<void>
+  onBeforeCompact?(event: CompactHookEvent): Promise<void>
+  onAfterCompact?(event: CompactHookEvent & { summary: string; postTokens: number; compactDurationMs: number }): Promise<void>
+}
+
+export interface CompactHookEvent {
+  trigger: 'auto'
+  preTokens: number
+  recordCount: number
 }
 
 export interface CompactCheckResult {
@@ -74,9 +82,13 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
     return { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } }
   }
 
+  const compactStartedAt = Date.now()
+  await runBeforeCompactHook(input, tokenCount, recordsToCompact.length)
+
   try {
-    const compactStartedAt = Date.now()
     const summary = await summarizeRecords(input, recordsToCompact, tokenCount)
+    const postTokens = countTextTokens(summary.content)
+    const compactDurationMs = Date.now() - compactStartedAt
     await input.appendRecord({
       id: randomUUID(),
       type: 'compact_boundary',
@@ -88,14 +100,22 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
     })
     compactFailuresByKey.delete(circuitKey)
     await setCompactFailureCount(input, circuitKey, 0)
+    await runAfterCompactHook(input, {
+      trigger: 'auto',
+      preTokens: tokenCount,
+      recordCount: recordsToCompact.length,
+      summary: summary.content,
+      postTokens,
+      compactDurationMs,
+    })
 
     return {
       compacted: true,
       usage: addTokenUsage({ ...EMPTY_TOKEN_USAGE }, summary.usage),
       metrics: {
         preTokens: tokenCount,
-        postTokens: countTextTokens(summary.content),
-        compactDurationMs: Date.now() - compactStartedAt,
+        postTokens,
+        compactDurationMs,
       },
     }
   } catch (error) {
@@ -103,6 +123,33 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
     await setCompactFailureCount(input, circuitKey, failureCount)
     await appendCompactFailureRecord(input, error, failureCount, tokenCount)
     return { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } }
+  }
+}
+
+async function runBeforeCompactHook(input: CompactCheckInput, tokenCount: number, recordCount: number): Promise<void> {
+  try {
+    await input.onBeforeCompact?.({
+      trigger: 'auto',
+      preTokens: tokenCount,
+      recordCount,
+    })
+  } catch (hookError) {
+    if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
+      console.error('[compact] preCompact hook failed:', hookError)
+    }
+  }
+}
+
+async function runAfterCompactHook(
+  input: CompactCheckInput,
+  event: CompactHookEvent & { summary: string; postTokens: number; compactDurationMs: number },
+): Promise<void> {
+  try {
+    await input.onAfterCompact?.(event)
+  } catch (hookError) {
+    if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
+      console.error('[compact] postCompact hook failed:', hookError)
+    }
   }
 }
 

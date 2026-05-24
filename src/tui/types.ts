@@ -1,5 +1,5 @@
 import type { PermissionRequest } from '../harness/permissions.js'
-import type { TokenUsage, ToolErrorCode } from '../harness/types.js'
+import type { CompactAttemptFailedRecord, TokenUsage, ToolErrorCode } from '../harness/types.js'
 
 export type ToolCallStatus =
   | 'pending'
@@ -37,6 +37,11 @@ export type TUIDisplayItem =
       kind: 'compact_boundary'
       id: string
       summary: string
+    }
+  | {
+      kind: 'compact_attempt_failed'
+      id: string
+      record: CompactAttemptFailedRecord
     }
   | {
       kind: 'tool_progress'

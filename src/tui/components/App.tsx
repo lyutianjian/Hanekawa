@@ -208,6 +208,7 @@ export function App({
     addSystemMessage,
     clearMessages: clearConversation,
     clearCachedSections: () => runtime.loop.clearCachedSections(),
+    invalidateRecordsCache: () => runtime.loop.invalidateRecordsCache(),
   })
 
   const handleSubmit = async (text: string) => {

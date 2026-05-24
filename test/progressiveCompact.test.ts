@@ -28,7 +28,7 @@ function toolPair(index: number, content: string): SessionRecord[] {
     {
       type: 'tool_use',
       id: `call-${index}`,
-      tool: 'grep',
+      tool: 'Grep',
       input: { index },
       riskLevel: 'safe',
       createdAt: `2026-05-10T00:${String(index).padStart(2, '0')}:10.000Z`,
@@ -37,7 +37,7 @@ function toolPair(index: number, content: string): SessionRecord[] {
       type: 'tool_result',
       id: `result-${index}`,
       toolUseId: `call-${index}`,
-      tool: 'grep',
+      tool: 'Grep',
       ok: true,
       content,
       createdAt: `2026-05-10T00:${String(index).padStart(2, '0')}:11.000Z`,
@@ -65,7 +65,7 @@ test('applyProgressiveCompaction microcompacts historical tool results before sn
   assert.equal(result.snipped, false)
   assert.match(
     toolResultContent(result.records, 'result-0'),
-    /^\[summarized: grep \d+ tokens\]/,
+    /^\[summarized: Grep \d+ tokens\]/,
   )
   assert.doesNotMatch(
     toolResultContent(result.records, 'result-11'),

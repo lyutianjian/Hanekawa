@@ -1,5 +1,18 @@
-import type { SessionRecord } from '../harness/types.js'
+import type { SessionRecord, ToolResultRecord, ToolUseRecord } from '../harness/types.js'
 import type { CheckpointMapping, SessionDiagnostic, SessionMeta } from './service.js'
+
+export interface SessionRepairDiagnostic {
+  code: 'tool_protocol_repaired'
+  message: string
+  recordId?: string
+  toolUseId?: string
+  tool?: string
+}
+
+export interface SessionRepairResult {
+  records: SessionRecord[]
+  diagnostics: SessionRepairDiagnostic[]
+}
 
 export function checkSessionInvariants(
   records: SessionRecord[],
@@ -75,4 +88,82 @@ export function checkSessionInvariants(
   }
 
   return diagnostics
+}
+
+export function ensureToolResultPairing(records: SessionRecord[]): SessionRepairResult {
+  return repairToolResultPairing(records)
+}
+
+export function repairToolResultPairing(records: SessionRecord[]): SessionRepairResult {
+  const toolUseIds = new Set(records.filter((record) => record.type === 'tool_use').map((record) => record.id))
+  const toolResultIds = new Set(records.filter((record) => record.type === 'tool_result').map((record) => record.toolUseId))
+  const recordIds = new Set(records.map((record) => record.id))
+  const diagnostics: SessionRepairDiagnostic[] = []
+  const repaired: SessionRecord[] = []
+
+  for (const record of records) {
+    if (record.type === 'tool_use') {
+      repaired.push(record)
+      if (!toolResultIds.has(record.id)) {
+        const syntheticResult: ToolResultRecord = {
+          id: uniqueSyntheticRecordId(`${record.id}-lost-result`, recordIds),
+          type: 'tool_result',
+          toolUseId: record.id,
+          tool: record.tool,
+          ok: false,
+          content: '[Tool result was lost in transport.]',
+          ...(record.turnId ? { turnId: record.turnId } : {}),
+          createdAt: record.createdAt,
+        }
+        repaired.push(syntheticResult)
+        diagnostics.push({
+          code: 'tool_protocol_repaired',
+          message: `Inserted synthetic tool_result for orphan tool_use record: ${record.id}`,
+          recordId: record.id,
+          tool: record.tool,
+        })
+      }
+      continue
+    }
+
+    if (record.type === 'tool_result') {
+      if (!toolUseIds.has(record.toolUseId)) {
+        const syntheticUse: ToolUseRecord = {
+          id: record.toolUseId,
+          type: 'tool_use',
+          tool: record.tool,
+          input: {},
+          riskLevel: 'safe',
+          ...(record.turnId ? { turnId: record.turnId } : {}),
+          createdAt: record.createdAt,
+        }
+        repaired.push(syntheticUse)
+        toolUseIds.add(record.toolUseId)
+        diagnostics.push({
+          code: 'tool_protocol_repaired',
+          message: `Inserted synthetic tool_use for orphan tool_result record: ${record.id}`,
+          recordId: record.id,
+          toolUseId: record.toolUseId,
+          tool: record.tool,
+        })
+      }
+      repaired.push(record)
+      continue
+    }
+
+    repaired.push(record)
+  }
+
+  return { records: repaired, diagnostics }
+}
+
+function uniqueSyntheticRecordId(baseId: string, recordIds: Set<string>): string {
+  let candidate = baseId
+  let suffix = 2
+  while (recordIds.has(candidate)) {
+    candidate = `${baseId}-${suffix}`
+    suffix += 1
+  }
+  recordIds.add(candidate)
+  return candidate
 }

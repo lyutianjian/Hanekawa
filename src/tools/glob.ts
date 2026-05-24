@@ -9,7 +9,7 @@ interface GlobInput {
 }
 
 export const globTool: Tool = {
-  name: 'glob',
+  name: 'Glob',
   description: 'Find files matching a glob pattern.',
   inputSchema: z.object({
     pattern: z.string().min(1),

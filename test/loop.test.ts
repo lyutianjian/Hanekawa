@@ -149,6 +149,60 @@ test('agent loop updates records cache only after record stream append succeeds'
   assert.equal(records.some((record) => record.type === 'message' && record.role === 'assistant' && record.content === 'lost assistant'), false)
 })
 
+test('agent loop marks cached tool protocol dirty after tool record append', async () => {
+  const records: SessionRecord[] = []
+  let providerCalls = 0
+  let failToolResultAppend = true
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      providerCalls += 1
+      if (providerCalls === 1) {
+        return {
+          content: 'using tool',
+          toolCalls: [{ id: 'call-1', name: 'echo', input: {} }],
+        }
+      }
+      assert.ok(request.contextItems?.some(
+        (item) => item.kind === 'tool_result'
+          && item.toolUseId === 'call-1'
+          && /lost in transport/.test(item.content),
+      ))
+      return { content: 'recovered', toolCalls: [] }
+    },
+  }
+  const tools: Tool[] = [{
+    name: 'echo',
+    description: 'echo',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({ ok: true, content: 'ok' }),
+  }]
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => {
+      if (failToolResultAppend && record.type === 'tool_result') {
+        throw new Error('tool result append failed')
+      }
+      records.push(record)
+    },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  await assert.rejects(loop.run('first'), /tool result append failed/)
+  failToolResultAppend = false
+  const response = await loop.run('second')
+
+  assert.equal(response.content, 'recovered')
+})
+
 test('agent loop appends userPromptSubmit hook stdout before first model request', async () => {
   const records: SessionRecord[] = []
   const provider: ModelProvider = {
@@ -870,6 +924,70 @@ test('agent loop auto-compacts without preparing records twice in the same itera
   assert.equal(callCount, 2)
   assert.equal(loadRecordsCount, 1)
   assert.ok(records.some((record) => record.type === 'compact_boundary'))
+})
+
+test('agent loop runs preCompact and postCompact hooks around successful compaction', async () => {
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'old context '.repeat(200),
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'old-assistant',
+      role: 'assistant',
+      content: 'old answer '.repeat(200),
+      createdAt: '2026-05-10T00:01:00.000Z',
+    },
+  ]
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      const isCompactRequest = request.contextItems?.some(
+        (item) => item.kind === 'message' && item.message.id === 'compact-request',
+      ) ?? false
+      if (isCompactRequest) {
+        return { content: 'summary', toolCalls: [] }
+      }
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const hookCommand = `${JSON.stringify(process.execPath)} -e "let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end', () => { const data = JSON.parse(input); console.log(data.hook + ':' + data.trigger) })"`
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    contextManagement: {
+      contextWindow: 600,
+      summaryOutputTokens: 100,
+      autoCompactBufferTokens: 50,
+    },
+    hooks: {
+      preCompact: [{ matcher: 'auto', command: hookCommand }],
+      postCompact: [{ matcher: 'auto', command: hookCommand }],
+    },
+    recordStream: recordStreamFor(records),
+  })
+
+  await loop.run('latest request')
+
+  const preHookIndex = records.findIndex((record) => record.type === 'message' && /preCompact hook output/.test(record.content))
+  const boundaryIndex = records.findIndex((record) => record.type === 'compact_boundary')
+  const postHookIndex = records.findIndex((record) => record.type === 'message' && /postCompact hook output/.test(record.content))
+  assert.ok(preHookIndex >= 0)
+  assert.ok(boundaryIndex > preHookIndex)
+  assert.ok(postHookIndex > boundaryIndex)
+  assert.match(records[preHookIndex]?.type === 'message' ? records[preHookIndex].content : '', /preCompact:auto/)
+  assert.match(records[postHookIndex]?.type === 'message' ? records[postHookIndex].content : '', /postCompact:auto/)
 })
 
 test('agent loop checks auto-compact before later model requests in a tool loop', async () => {

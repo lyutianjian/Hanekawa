@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
-import { createAgentTool, filterToolsForSubAgent } from '../src/tools/agentTool.js'
+import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, filterToolsForSubAgent } from '../src/tools/agentTool.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { PermissionGate } from '../src/harness/permissions.js'
 import type { ModelProvider, ModelRequest, Tool, ToolContext } from '../src/harness/types.js'
@@ -39,13 +39,31 @@ function readOnlyTool(name: string): Tool {
 test('filterToolsForSubAgent keeps only read-only non-agent tools', () => {
   const tools = [
     readOnlyTool('Agent'),
-    readOnlyTool('bash'),
-    readOnlyTool('readFile'),
-    safeTool('exitPlanMode'),
+    readOnlyTool('Bash'),
+    readOnlyTool('Read'),
+    safeTool('ExitPlanMode'),
     safeTool('safeButStateful'),
   ]
 
-  assert.deepEqual(filterToolsForSubAgent(tools).map((tool) => tool.name), ['readFile'])
+  assert.deepEqual(filterToolsForSubAgent(tools).map((tool) => tool.name), ['Read'])
+})
+
+test('filterToolsForSubAgent applies specialist agent tool policies', () => {
+  const tools = [
+    readOnlyTool('Glob'),
+    readOnlyTool('Grep'),
+    readOnlyTool('Read'),
+    readOnlyTool('TodoWrite'),
+    safeTool('Bash'),
+    safeTool('Write'),
+  ]
+  const explore = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'explore')
+  const verification = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'verification')
+
+  assert.ok(explore)
+  assert.ok(verification)
+  assert.deepEqual(filterToolsForSubAgent(tools, explore).map((tool) => tool.name), ['Glob', 'Grep', 'Read'])
+  assert.deepEqual(filterToolsForSubAgent(tools, verification).map((tool) => tool.name), ['Glob', 'Grep', 'Read', 'Bash'])
 })
 
 test('Agent tool keeps sub-agent records out of the parent record stream', async () => {
@@ -72,7 +90,7 @@ test('Agent tool keeps sub-agent records out of the parent record stream', async
   const result = await runner.run({
     id: 'call-1',
     name: 'Agent',
-    input: { task: 'research this' },
+    input: { task: 'research this', subagent_type: 'general' },
   }, toolContext('parent'))
 
   assert.equal(result.ok, true)
@@ -97,11 +115,45 @@ test('Agent tool uses an isolated agent cache source', async () => {
     cwd: process.cwd(),
   })
 
-  await agentTool.execute({ task: 'hello' }, toolContext('parent-session'))
+  await agentTool.execute({ task: 'hello', subagent_type: 'general' }, toolContext('parent-session'))
 
   assert.equal(requests.length, 1)
   assert.match(requests[0]!.cacheSource, /^agent:/)
   assert.notEqual(requests[0]!.cacheSource, 'agent:parent-session')
+})
+
+test('Agent tool runs subagentStart hooks before the sub-agent model request', async () => {
+  const requests: ModelRequest[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    hooks: {
+      subagentStart: [{
+        matcher: 'explore',
+        command: `${JSON.stringify(process.execPath)} -e "let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end', () => { const data = JSON.parse(input); console.log('agent-type:' + data.agentType) })"`,
+      }],
+    },
+  })
+
+  await agentTool.execute({ task: 'map files', subagent_type: 'explore' }, toolContext('parent-session'))
+
+  assert.equal(requests.length, 1)
+  assert.ok(requests[0]!.contextItems?.some(
+    (item) => item.kind === 'message'
+      && item.message.role === 'user'
+      && /subagentStart hook output/.test(item.message.content)
+      && /agent-type:explore/.test(item.message.content),
+  ))
 })
 
 test('Agent tool honors maxTurns', async () => {
@@ -124,7 +176,7 @@ test('Agent tool honors maxTurns', async () => {
     cwd: process.cwd(),
   })
 
-  const result = await agentTool.execute({ task: 'loop', maxTurns: 1 }, toolContext())
+  const result = await agentTool.execute({ task: 'loop', subagent_type: 'general', maxTurns: 1 }, toolContext())
 
   assert.equal(result.ok, false)
   assert.equal(requests, 1)
@@ -168,9 +220,54 @@ test('Agent tool runs sub-agent tools through a permission gate', async () => {
     cwd: process.cwd(),
   })
 
-  const result = await agentTool.execute({ task: 'try dangerous tool' }, toolContext())
+  const result = await agentTool.execute({ task: 'try dangerous tool', subagent_type: 'general' }, toolContext())
 
   assert.equal(result.ok, true)
   assert.equal(result.content, 'done')
   assert.equal(prompts, 1)
+})
+
+test('Agent tool omits project context for explore and plan agents', async () => {
+  const requests: ModelRequest[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [readOnlyTool('Glob'), readOnlyTool('Grep'), readOnlyTool('Read')],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    projectContext: '# Project rules\nDo expensive things.',
+  })
+
+  await agentTool.execute({ task: 'map files', subagent_type: 'explore' }, toolContext())
+
+  assert.equal(requests.length, 1)
+  assert.doesNotMatch(requests[0]!.system ?? '', /Project rules/)
+  assert.match(requests[0]!.system ?? '', /code exploration specialist/)
+})
+
+test('Agent tool requires an explicit subagent_type', async () => {
+  const agentTool = createAgentTool({
+    provider: {
+      name: 'fake',
+      async createMessage() {
+        return { content: 'unused', toolCalls: [] }
+      },
+    },
+    model: 'fake-model',
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+  })
+
+  await assert.rejects(
+    () => agentTool.execute({ task: 'hello' }, toolContext()),
+    /subagent_type/,
+  )
 })

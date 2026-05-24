@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { taskCreateTool, taskUpdateTool, taskListTool, taskGetTool } from '../src/tools/taskTools.js'
-import type { TaskItem, ToolContext } from '../src/harness/types.js'
+import { todoWriteTool } from '../src/tools/taskTools.js'
+import type { ToolContext } from '../src/harness/types.js'
 
 function makeContext(): ToolContext {
   return {
@@ -12,103 +12,67 @@ function makeContext(): ToolContext {
   }
 }
 
-test('TaskCreate creates a pending task', async () => {
+test('TodoWrite replaces the session todo list', async () => {
   const ctx = makeContext()
-  const result = await taskCreateTool.execute({ subject: 'Fix auth bug', description: 'Fix the login flow' }, ctx)
-  assert.equal(result.ok, true)
-  assert.match(result.content, /Task created:/)
-
-  const tasks = ctx.taskState!
-  assert.equal(tasks.size, 1)
-  const task = [...tasks.values()][0]
-  assert.equal(task!.subject, 'Fix auth bug')
-  assert.equal(task!.status, 'pending')
-  assert.deepEqual(task!.blockedBy, [])
-})
-
-test('TaskUpdate changes task status and fields', async () => {
-  const ctx = makeContext()
-  await taskCreateTool.execute({ subject: 'Test', description: 'Run tests' }, ctx)
-  const taskId = [...ctx.taskState!.keys()][0]!
-
-  const result = await taskUpdateTool.execute({
-    taskId,
-    status: 'in_progress',
-    subject: 'Updated test',
+  const result = await todoWriteTool.execute({
+    todos: [
+      { id: 'setup', content: 'Inspect tool definitions', status: 'completed' },
+      { id: 'tests', content: 'Update tests', status: 'in_progress', activeForm: 'Updating tests' },
+    ],
   }, ctx)
+
   assert.equal(result.ok, true)
-
-  const task = ctx.taskState!.get(taskId)!
-  assert.equal(task.status, 'in_progress')
-  assert.equal(task.subject, 'Updated test')
+  assert.match(result.content, /Inspect tool definitions/)
+  assert.equal(ctx.taskState!.size, 2)
+  assert.equal(ctx.taskState!.get('setup')!.status, 'completed')
+  assert.equal(ctx.taskState!.get('tests')!.subject, 'Update tests')
+  assert.equal(ctx.taskState!.get('tests')!.activeForm, 'Updating tests')
 })
 
-test('TaskUpdate adds blockedBy and blocks', async () => {
+test('TodoWrite removes omitted todos on replacement', async () => {
   const ctx = makeContext()
-  await taskCreateTool.execute({ subject: 'Task A', description: 'First task' }, ctx)
-  await taskCreateTool.execute({ subject: 'Task B', description: 'Second task' }, ctx)
-  const [idA, idB] = [...ctx.taskState!.keys()]
-
-  await taskUpdateTool.execute({ taskId: idA!, addBlocks: [idB!] }, ctx)
-  await taskUpdateTool.execute({ taskId: idB!, addBlockedBy: [idA!] }, ctx)
-
-  assert.deepEqual(ctx.taskState!.get(idA!)!.blocks, [idB])
-  assert.deepEqual(ctx.taskState!.get(idB!)!.blockedBy, [idA])
-})
-
-test('TaskList shows only non-deleted tasks', async () => {
-  const ctx = makeContext()
-  await taskCreateTool.execute({ subject: 'Keep', description: 'Visible' }, ctx)
-  await taskCreateTool.execute({ subject: 'Drop', description: 'Deleted' }, ctx)
-  const [, idDrop] = [...ctx.taskState!.keys()]
-
-  await taskUpdateTool.execute({ taskId: idDrop!, status: 'deleted' }, ctx)
-  const result = await taskListTool.execute({}, ctx)
-  assert.equal(result.ok, true)
-  assert.match(result.content, /Keep/)
-  assert.doesNotMatch(result.content, /Drop/)
-})
-
-test('TaskList filters by status', async () => {
-  const ctx = makeContext()
-  await taskCreateTool.execute({ subject: 'Pending task', description: '...' }, ctx)
-  await taskCreateTool.execute({ subject: 'Done task', description: '...' }, ctx)
-  const [, idDone] = [...ctx.taskState!.keys()]
-  await taskUpdateTool.execute({ taskId: idDone!, status: 'completed' }, ctx)
-
-  const result = await taskListTool.execute({ status: 'completed' }, ctx)
-  assert.equal(result.ok, true)
-  assert.doesNotMatch(result.content, /Pending task/)
-  assert.match(result.content, /Done task/)
-})
-
-test('TaskGet returns full task details', async () => {
-  const ctx = makeContext()
-  await taskCreateTool.execute({
-    subject: 'Complex task',
-    description: 'A detailed description',
-    activeForm: 'Working on it',
+  await todoWriteTool.execute({
+    todos: [
+      { id: 'one', content: 'Keep this', status: 'pending' },
+      { id: 'two', content: 'Drop this', status: 'pending' },
+    ],
   }, ctx)
-  const taskId = [...ctx.taskState!.keys()][0]!
 
-  const result = await taskGetTool.execute({ taskId }, ctx)
+  const result = await todoWriteTool.execute({
+    todos: [
+      { id: 'one', content: 'Keep this', status: 'completed' },
+    ],
+  }, ctx)
+
   assert.equal(result.ok, true)
-  assert.match(result.content, /Complex task/)
-  assert.match(result.content, /A detailed description/)
-  assert.match(result.content, /Working on it/)
-  assert.match(result.content, /pending/)
+  assert.equal(ctx.taskState!.size, 1)
+  assert.equal(ctx.taskState!.has('two'), false)
+  assert.equal(ctx.taskState!.get('one')!.status, 'completed')
 })
 
-test('TaskGet returns error for unknown task', async () => {
+test('TodoWrite assigns stable numeric ids when omitted', async () => {
   const ctx = makeContext()
-  const result = await taskGetTool.execute({ taskId: 'nonexistent' }, ctx)
-  assert.equal(result.ok, false)
-  assert.match(result.content, /not found/)
+  const result = await todoWriteTool.execute({
+    todos: [
+      { content: 'First', status: 'pending' },
+      { content: 'Second', status: 'pending' },
+    ],
+  }, ctx)
+
+  assert.equal(result.ok, true)
+  assert.deepEqual([...ctx.taskState!.keys()], ['1', '2'])
 })
 
-test('TaskUpdate rejects unknown task', async () => {
+test('TodoWrite rejects duplicate ids', async () => {
   const ctx = makeContext()
-  const result = await taskUpdateTool.execute({ taskId: 'nope', status: 'completed' }, ctx)
+  const result = await todoWriteTool.execute({
+    todos: [
+      { id: 'dup', content: 'First', status: 'pending' },
+      { id: 'dup', content: 'Second', status: 'pending' },
+    ],
+  }, ctx)
+
   assert.equal(result.ok, false)
-  assert.match(result.content, /not found/)
+  assert.equal(result.errorCode, 'invalid_input')
+  assert.match(result.content, /Duplicate todo id/)
 })

@@ -33,7 +33,7 @@ async function cleanup(dir: string): Promise<void> {
     const sessionsDir = getSessionsDir(dir)
     await chmod(sessionsDir, 0o700)
   } catch {
-    // Ignore â€” directory may not exist
+    // Ignore â€?directory may not exist
   }
   await rm(dir, { recursive: true, force: true })
 }
@@ -72,7 +72,7 @@ test('truncateToMessage retains records up to and including the target message',
     const before = await store.loadRecords(session.id)
     assert.equal(before.length, 5)
 
-    // Truncate at msg-2 â€” should keep msg-0, msg-1, msg-2 (3 records)
+    // Truncate at msg-2 â€?should keep msg-0, msg-1, msg-2 (3 records)
     const result = await store.truncateToMessage(session.id, 'msg-2')
     assert.equal(result.success, true, `truncateToMessage should succeed, got error: ${result.error}`)
     assert.equal(result.error, undefined)
@@ -428,7 +428,7 @@ test('loadRecordsWithDiagnostics leaves orphan tool records to request preparati
     const orphan = {
       type: 'tool_use',
       id: 'call-1',
-      tool: 'grep',
+      tool: 'Grep',
       input: {},
       riskLevel: 'safe',
       createdAt: '2026-05-10T00:00:00.000Z',

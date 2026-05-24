@@ -13,14 +13,14 @@ const createdAt = '2026-05-24T00:00:00.000Z'
 
 const tools: Tool[] = [
   {
-    name: 'readFile',
+    name: 'Read',
     description: 'Read a file',
     inputSchema: z.object({ filePath: z.string() }).strict(),
     riskLevel: 'safe',
     execute: async () => ({ ok: true, content: '' }),
   },
   {
-    name: 'grep',
+    name: 'Grep',
     description: 'Search files',
     inputSchema: z.object({ pattern: z.string() }).strict(),
     riskLevel: 'safe',
@@ -50,13 +50,13 @@ const transcript: ModelContextItem[] = [
   {
     kind: 'tool_use',
     id: 'call-1',
-    tool: 'grep',
+    tool: 'Grep',
     input: { pattern: 'cache_control' },
   },
   {
     kind: 'tool_result',
     toolUseId: 'call-1',
-    tool: 'grep',
+    tool: 'Grep',
     ok: true,
     content: 'src/config/providers/anthropicPayload.ts: cache_control',
   },
@@ -146,4 +146,3 @@ test('buildAnthropicPayload cache_control distribution follows available request
     messages: 1,
   })
 })
-

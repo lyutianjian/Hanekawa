@@ -207,7 +207,7 @@ test('validateSettings accepts hook settings', () => {
         { command: 'node scripts/prompt-context.js', timeoutMs: 1000 },
       ],
       preToolUse: [
-        { matcher: 'bash', command: 'node scripts/lint-bash.js', timeoutMs: 1000 },
+        { matcher: 'Bash', command: 'node scripts/lint-bash.js', timeoutMs: 1000 },
       ],
       postToolUse: [
         { matcher: '*', command: 'node scripts/post-tool.js', timeoutMs: 1000 },
@@ -273,7 +273,7 @@ test('validateSettings rejects malformed hook settings', () => {
     hooks: {
       userPromptSubmit: 'bad' as unknown as [],
       preToolUse: [
-        { matcher: 'bash', command: '', timeoutMs: 0 },
+        { matcher: 'Bash', command: '', timeoutMs: 0 },
       ],
       stop: [
         { command: '' },
@@ -460,13 +460,13 @@ test('buildAnthropicMessages includes tool use and tool results', () => {
       {
         kind: 'tool_use',
         id: 'call-1',
-        tool: 'readFile',
+        tool: 'Read',
         input: { filePath: 'a.txt' },
       },
       {
         kind: 'tool_result',
         toolUseId: 'call-1',
-        tool: 'readFile',
+        tool: 'Read',
         ok: true,
         content: 'file body',
       },
@@ -484,7 +484,7 @@ test('buildAnthropicMessages includes tool use and tool results', () => {
   assert.deepEqual(messages[1]?.content, [{
     type: 'tool_use',
     id: 'call-1',
-    name: 'readFile',
+    name: 'Read',
     input: { filePath: 'a.txt' },
   }])
   assert.equal(messages[2]?.role, 'user')
@@ -756,13 +756,13 @@ test('buildOpenAIMessages includes tool call history and tool results', () => {
       {
         kind: 'tool_use',
         id: 'call-1',
-        tool: 'grep',
+        tool: 'Grep',
         input: { pattern: 'hello' },
       },
       {
         kind: 'tool_result',
         toolUseId: 'call-1',
-        tool: 'grep',
+        tool: 'Grep',
         ok: true,
         content: 'a.txt:1: hello',
       },
@@ -777,7 +777,7 @@ test('buildOpenAIMessages includes tool call history and tool results', () => {
     id: 'call-1',
     type: 'function',
     function: {
-      name: 'grep',
+      name: 'Grep',
       arguments: JSON.stringify({ pattern: 'hello' }),
     },
   }])
@@ -905,7 +905,7 @@ test('buildOpenAIPromptCacheKey is stable for model, system, and tools', async (
 })
 
 test('buildOpenAITools includes concrete schemas for built-in tools', () => {
-  const readFileTool = getBuiltinTools().find((tool) => tool.name === 'readFile')
+  const readFileTool = getBuiltinTools().find((tool) => tool.name === 'Read')
   assert.ok(readFileTool)
 
   const tools = buildOpenAITools([readFileTool])
@@ -921,7 +921,7 @@ test('buildOpenAITools includes concrete schemas for built-in tools', () => {
 })
 
 test('buildAnthropicTools includes concrete schemas for built-in tools', () => {
-  const readFileTool = getBuiltinTools().find((tool) => tool.name === 'readFile')
+  const readFileTool = getBuiltinTools().find((tool) => tool.name === 'Read')
   assert.ok(readFileTool)
 
   const tools = buildAnthropicTools([readFileTool])
@@ -963,7 +963,7 @@ test('buildAnthropicMessages merges assistant text with following tool use', () 
       {
         kind: 'tool_use',
         id: 'call-1',
-        tool: 'readFile',
+        tool: 'Read',
         input: { filePath: 'src/config/providers.ts' },
       },
     ],
@@ -980,7 +980,7 @@ test('buildAnthropicMessages merges assistant text with following tool use', () 
     {
       type: 'tool_use',
       id: 'call-1',
-      name: 'readFile',
+      name: 'Read',
       input: { filePath: 'src/config/providers.ts' },
     },
   ])
@@ -1013,7 +1013,7 @@ test('buildOpenAIMessages merges assistant text with following tool call', () =>
       {
         kind: 'tool_use',
         id: 'call-1',
-        tool: 'grep',
+        tool: 'Grep',
         input: { pattern: 'hello' },
       },
     ],
@@ -1027,7 +1027,7 @@ test('buildOpenAIMessages merges assistant text with following tool call', () =>
     id: 'call-1',
     type: 'function',
     function: {
-      name: 'grep',
+      name: 'Grep',
       arguments: JSON.stringify({ pattern: 'hello' }),
     },
   }])
@@ -1130,7 +1130,7 @@ test('buildAnthropicMessages preserves thinking blocks when followed by tool_use
       {
         kind: 'tool_use',
         id: 'call-1',
-        tool: 'readFile',
+        tool: 'Read',
         input: { filePath: 'a.txt' },
       },
     ],

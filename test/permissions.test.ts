@@ -19,16 +19,16 @@ const fsWriteTool: Tool = {
 
 const writeFileTool: Tool = {
   ...fsWriteTool,
-  name: 'writeFile',
+  name: 'Write',
 }
 
 const editFileTool: Tool = {
   ...fsWriteTool,
-  name: 'editFile',
+  name: 'Edit',
 }
 
 const readFileTool: Tool = {
-  name: 'readFile',
+  name: 'Read',
   description: 'Read a file',
   riskLevel: 'safe',
   isReadOnly: true,
@@ -215,7 +215,7 @@ test('PermissionGate restores persisted denial state across instances', async ()
     throw new Error('first gate should not prompt')
   }, [], { denialStreakThreshold: 2, denialStateStore: store })
   assert.equal(await firstGate.approve(bashTool, { command: 'cat .env' }), false)
-  assert.deepEqual(state, { streaks: { bash: 1 }, total: 1 })
+  assert.deepEqual(state, { streaks: { Bash: 1 }, total: 1 })
 
   let prompts = 0
   let restoredStreak = 0
@@ -385,7 +385,7 @@ test('PermissionGate auto-denies bash command substitution even with an allow ru
       prompted = true
       return true
     },
-    [{ toolName: 'bash', behavior: 'allow', source: 'config' }],
+    [{ toolName: 'Bash', behavior: 'allow', source: 'config' }],
   )
 
   const approved = await gate.approve(bashTool, { command: 'echo $(cat package.json)' })
@@ -480,7 +480,7 @@ test('PermissionGate shell wrapper prefixes bypass auto-allow and prompt', async
       reason = request.reason
       return true
     },
-    [{ toolName: 'bash', behavior: 'allow', source: 'config' }],
+    [{ toolName: 'Bash', behavior: 'allow', source: 'config' }],
   )
 
   const approved = await gate.approve(bashTool, { command: 'env FOO=bar npm test' })
@@ -622,7 +622,7 @@ test('PermissionGate acceptEdits mode does not bypass protected paths or deny ru
       prompted = true
       return true
     },
-    [{ toolName: 'writeFile', behavior: 'deny', source: 'config' }],
+    [{ toolName: 'Write', behavior: 'deny', source: 'config' }],
     { mode: 'acceptEdits', denialStreakThreshold: 2 },
   )
 
@@ -701,7 +701,7 @@ test('PermissionGate plan mode denies write and unrelated safe tools without pro
 test('PermissionGate plan mode allows exitPlanMode without prompting', async () => {
   let prompted = false
   const exitPlanModeTool: Tool = {
-    name: 'exitPlanMode',
+    name: 'ExitPlanMode',
     description: 'Exit plan mode',
     riskLevel: 'safe',
     inputSchema: z.object({ plan: z.string() }).strict(),

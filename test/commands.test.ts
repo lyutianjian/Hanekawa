@@ -4,6 +4,7 @@ import { clearCommand } from '../src/commands/clear.js'
 import { compactCommand } from '../src/commands/compact.js'
 import { costCommand } from '../src/commands/cost.js'
 import { modelCommand } from '../src/commands/model.js'
+import { repairCommand } from '../src/commands/repair.js'
 import type { CommandContext } from '../src/commands/types.js'
 
 function createContext(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -163,4 +164,28 @@ test('/compact reset clears persistent failure circuit', async () => {
     'clear-cache',
     'Auto-compact failure circuit reset.',
   ])
+})
+
+test('/repair runs session repair and invalidates caches', async () => {
+  const events: string[] = []
+  await repairCommand.run('', createContext({
+    repairRecords: async () => ({
+      repairedCount: 1,
+      diagnostics: [{ message: 'Inserted synthetic tool_result for orphan tool_use record: call-1' }],
+    }),
+    invalidateRecordsCache: () => {
+      events.push('invalidate-records')
+    },
+    clearCachedSections: () => {
+      events.push('clear-cache')
+    },
+    writeLine: (message) => {
+      events.push(message)
+    },
+  }))
+
+  assert.equal(events[0], 'invalidate-records')
+  assert.equal(events[1], 'clear-cache')
+  assert.match(events[2] ?? '', /Session invariants repaired/)
+  assert.match(events[2] ?? '', /Inserted synthetic tool_result/)
 })

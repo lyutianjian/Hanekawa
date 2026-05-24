@@ -47,8 +47,8 @@ export interface PermissionRule {
  */
 const DEFAULT_DENIAL_STREAK_THRESHOLD = 3
 const DEFAULT_GLOBAL_DENIAL_PROMPT_THRESHOLD = 20
-// `deleteFile` stays excluded so accept-edits mode cannot silently remove files.
-const ACCEPT_EDITS_TOOLS = new Set(['editFile', 'writeFile', 'multiEdit'])
+// `Delete` stays excluded so accept-edits mode cannot silently remove files.
+const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
 const PLAN_READ_ONLY_SHELL_COMMANDS = new Set([
   'cat',
   'dir',
@@ -169,9 +169,9 @@ export class PermissionGate {
         return this.persistAndReturn(approved)
       }
 
-      // For bash, use commandAnalysis to identify truly destructive commands;
+      // For Bash, use commandAnalysis to identify truly destructive commands;
       // otherwise fall back to the tool-level isDestructive flag.
-      const isDestructiveCall = tool.name === 'bash'
+      const isDestructiveCall = tool.name === 'Bash'
         ? (commandAnalysis?.categories.includes('destructive filesystem or git operation') ?? false)
         : tool.isDestructive === true
 
@@ -369,7 +369,7 @@ export class PermissionGate {
   }
 
   private commandAnalysisFor(toolName: string, input: unknown): ReturnType<typeof analyzeShellCommand> | undefined {
-    if (toolName !== 'bash' || !input || typeof input !== 'object') return undefined
+    if (toolName !== 'Bash' || !input || typeof input !== 'object') return undefined
     const command = (input as { command?: unknown }).command
     if (typeof command !== 'string') return undefined
     return analyzeShellCommand(command)
@@ -426,7 +426,7 @@ export class PermissionGate {
       return !hasHardSafetyDenial && !requiresSafetyPrompt
     }
 
-    if (tool.name !== 'bash' || !commandAnalysis) return false
+    if (tool.name !== 'Bash' || !commandAnalysis) return false
     if (hasHardSafetyDenial || requiresSafetyPrompt || commandAnalysis.categories.length > 0) return false
     return isPlanReadOnlyShellCommand(commandAnalysis.command)
   }

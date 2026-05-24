@@ -3,8 +3,9 @@ import {
   getEffectiveContextWindowSize,
   type ContextManagementConfig,
 } from '../prompts/budget.js'
-import type { SessionRecord, ToolResultRecord, ToolUseRecord, TokenUsage } from './types.js'
+import type { SessionRecord, ToolResultRecord, TokenUsage } from './types.js'
 import { stripExcessMediaItems } from './mediaStrip.js'
+import { repairToolResultPairing } from '../sessions/invariants.js'
 
 const TOOL_RESULTS_CONTEXT_RATIO = 0.5
 const TOOL_RESULTS_TOKEN_BUDGET_CAP = 200_000
@@ -71,7 +72,7 @@ export function prepareRecordsForRequestWithDiagnostics(
     return { records: prepared, diagnostics: [] }
   }
 
-  return repairToolPairing(prepared)
+  return repairToolPairingForRequest(prepared)
 }
 
 export function stripThinkingBlocksFromAssistantMessages(
@@ -194,78 +195,13 @@ export function compactToolResult(record: ToolResultRecord, tokens: number): Too
   }
 }
 
-function repairToolPairing(records: SessionRecord[]): PreparedRecordsResult {
-  const toolUseIds = new Set(records.filter((record) => record.type === 'tool_use').map((record) => record.id))
-  const toolResultIds = new Set(records.filter((record) => record.type === 'tool_result').map((record) => record.toolUseId))
-  const recordIds = new Set(records.map((record) => record.id))
-  const diagnostics: RequestPrepDiagnostic[] = []
-  const repaired: SessionRecord[] = []
-
-  for (const record of records) {
-    if (record.type === 'tool_use') {
-      const paired = toolResultIds.has(record.id)
-      repaired.push(record)
-      if (!paired) {
-        const syntheticResult: ToolResultRecord = {
-          id: uniqueSyntheticRecordId(`${record.id}-lost-result`, recordIds),
-          type: 'tool_result',
-          toolUseId: record.id,
-          tool: record.tool,
-          ok: false,
-          content: '[Tool result was lost in transport.]',
-          ...(record.turnId ? { turnId: record.turnId } : {}),
-          createdAt: record.createdAt,
-        }
-        repaired.push(syntheticResult)
-        diagnostics.push({
-          code: 'tool_protocol_repaired',
-          severity: 'warning',
-          message: `Inserted synthetic tool_result for orphan tool_use record: ${record.id}`,
-          recordId: record.id,
-          tool: record.tool,
-        })
-      }
-      continue
-    }
-    if (record.type === 'tool_result') {
-      const paired = toolUseIds.has(record.toolUseId)
-      if (!paired) {
-        const syntheticUse: ToolUseRecord = {
-          id: record.toolUseId,
-          type: 'tool_use',
-          tool: record.tool,
-          input: {},
-          riskLevel: 'safe',
-          ...(record.turnId ? { turnId: record.turnId } : {}),
-          createdAt: record.createdAt,
-        }
-        repaired.push(syntheticUse)
-        toolUseIds.add(record.toolUseId)
-        diagnostics.push({
-          code: 'tool_protocol_repaired',
-          severity: 'warning',
-          message: `Inserted synthetic tool_use for orphan tool_result record: ${record.id}`,
-          recordId: record.id,
-          toolUseId: record.toolUseId,
-          tool: record.tool,
-        })
-      }
-      repaired.push(record)
-      continue
-    }
-    repaired.push(record)
+function repairToolPairingForRequest(records: SessionRecord[]): PreparedRecordsResult {
+  const repaired = repairToolResultPairing(records)
+  return {
+    records: repaired.records,
+    diagnostics: repaired.diagnostics.map((diagnostic) => ({
+      ...diagnostic,
+      severity: 'warning',
+    })),
   }
-
-  return { records: repaired, diagnostics }
-}
-
-function uniqueSyntheticRecordId(baseId: string, recordIds: Set<string>): string {
-  let candidate = baseId
-  let suffix = 2
-  while (recordIds.has(candidate)) {
-    candidate = `${baseId}-${suffix}`
-    suffix += 1
-  }
-  recordIds.add(candidate)
-  return candidate
 }

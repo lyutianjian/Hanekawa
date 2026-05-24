@@ -14,7 +14,7 @@ interface GrepInput {
 }
 
 export const grepTool: Tool = {
-  name: 'grep',
+  name: 'Grep',
   description: 'Search text files for a regular expression pattern.',
   inputSchema: z.object({
     pattern: z.string().min(1),

@@ -18,6 +18,7 @@ interface UseCommandsOptions {
   addSystemMessage: (content: string) => void
   clearMessages: () => void | Promise<void>
   clearCachedSections?: () => void
+  invalidateRecordsCache?: () => void
 }
 
 export function useCommands({
@@ -31,6 +32,7 @@ export function useCommands({
   addSystemMessage,
   clearMessages,
   clearCachedSections,
+  invalidateRecordsCache,
 }: UseCommandsOptions) {
   const { exit } = useApp()
 
@@ -56,6 +58,8 @@ export function useCommands({
   clearMessagesRef.current = clearMessages
   const clearCachedSectionsRef = useRef(clearCachedSections)
   clearCachedSectionsRef.current = clearCachedSections
+  const invalidateRecordsCacheRef = useRef(invalidateRecordsCache)
+  invalidateRecordsCacheRef.current = invalidateRecordsCache
   const storeRef = useRef(store)
   storeRef.current = store
   const cwdRef = useRef(cwd)
@@ -87,6 +91,8 @@ export function useCommands({
         writeLine: addSystemMessageRef.current,
         clearMessages: clearMessagesRef.current,
         clearCachedSections: clearCachedSectionsRef.current,
+        invalidateRecordsCache: invalidateRecordsCacheRef.current,
+        repairRecords: async () => storeRef.current.repairRecords(sessionRef.current.id),
         resetCompactFailureCount: async () => {
           await storeRef.current.setCompactFailureCount(sessionRef.current.id, 0)
           resetAutoCompactFailureState(sessionRef.current.id)

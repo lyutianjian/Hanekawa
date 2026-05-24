@@ -61,13 +61,13 @@ test('context management keeps newest context items and repairs tool pairing', (
     {
       kind: 'tool_use',
       id: 'call-1',
-      tool: 'readFile',
+      tool: 'Read',
       input: { filePath: 'a.txt' },
     },
     {
       kind: 'tool_result',
       toolUseId: 'call-1',
-      tool: 'readFile',
+      tool: 'Read',
       ok: true,
       content: 'file body',
     },

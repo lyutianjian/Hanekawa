@@ -22,7 +22,7 @@ test('exitPlanMode appends the plan and restores the pre-plan permission mode', 
 
   const result = await runner.run({
     id: 'call-1',
-    name: 'exitPlanMode',
+    name: 'ExitPlanMode',
     input: { plan: '1. Inspect.\n2. Patch.\n3. Test.' },
   }, context)
 
@@ -54,13 +54,13 @@ test('exitPlanMode fails outside plan mode without appending a plan message', as
 
   const result = await runner.run({
     id: 'call-1',
-    name: 'exitPlanMode',
+    name: 'ExitPlanMode',
     input: { plan: '1. This should not be emitted.' },
   }, context)
 
   assert.equal(result.ok, false)
   assert.equal(result.errorCode, 'precondition_failed')
-  assert.equal(result.content, 'exitPlanMode can only be called in plan mode.')
+  assert.equal(result.content, 'ExitPlanMode can only be called in plan mode.')
   assert.equal(gate.getMode(), 'default')
   assert.equal(records.some((record) => record.type === 'message'), false)
 })
@@ -81,7 +81,7 @@ test('exitPlanMode rejects a blank plan without appending a plan message', async
 
   const result = await runner.run({
     id: 'call-1',
-    name: 'exitPlanMode',
+    name: 'ExitPlanMode',
     input: { plan: '   \n\t  ' },
   }, context)
 

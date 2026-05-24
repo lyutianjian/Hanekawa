@@ -103,9 +103,6 @@ export interface TaskItem {
   subject: string
   description: string
   activeForm?: string
-  metadata?: Record<string, unknown>
-  blockedBy: string[]
-  blocks: string[]
 }
 
 export interface ToolContext {

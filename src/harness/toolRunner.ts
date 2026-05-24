@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { PermissionGate } from './permissions.js'
-import { runPreToolUseHooks } from './hooks.js'
+import { runLifecycleHooks, runPreToolUseHooks } from './hooks.js'
 import { validateToolInput } from './toolValidation.js'
 import { countTextTokens } from '../prompts/budget.js'
 import type { ToolHooks } from './hooks.js'
@@ -80,7 +80,7 @@ export class ToolRunner {
           turnId,
           tool.maxResultSizeChars,
         )
-        await this.emitRecord(record)
+        await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
         return record
       }
 
@@ -88,7 +88,7 @@ export class ToolRunner {
       await this.emitRecord(this.permissionGate.createApprovalRecord(tool, call.input, approved, turnId))
       if (!approved) {
         const denied = this.result(call, tool.name, false, `User denied permission for ${tool.name}.`, 'permission_denied', undefined, turnId, tool.maxResultSizeChars)
-        await this.emitRecord(denied)
+        await this.emitToolResultAndPostHooks(denied, tool, call.input, executionContext, signal)
         return denied
       }
 
@@ -105,7 +105,7 @@ export class ToolRunner {
           turnId,
           tool.maxResultSizeChars,
         )
-        await this.emitRecord(blocked)
+        await this.emitToolResultAndPostHooks(blocked, tool, call.input, executionContext, signal)
         return blocked
       }
 
@@ -113,14 +113,14 @@ export class ToolRunner {
         const result = await tool.execute(call.input, executionContext)
         syncMutableToolContext(context, executionContext)
         const record = this.result(call, tool.name, result.ok, result.content, result.errorCode, result.errorDetails, turnId, tool.maxResultSizeChars)
-        await this.emitRecord(record)
+        await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
         await this.emitAssistantMessageFromMetadata(result.metadata, turnId)
         return record
       } catch (error) {
         syncMutableToolContext(context, executionContext)
         const errorCode = error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'execution_failed'
         const record = this.result(call, tool.name, false, error instanceof Error ? error.message : String(error), errorCode, undefined, turnId, tool.maxResultSizeChars)
-        await this.emitRecord(record)
+        await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
         return record
       }
     } catch (error) {
@@ -129,7 +129,7 @@ export class ToolRunner {
       }
       syncMutableToolContext(context, executionContext)
       const record = this.result(call, tool.name, false, error instanceof Error ? error.message : String(error), 'aborted', undefined, turnId, tool.maxResultSizeChars)
-      await this.emitRecord(record)
+      await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
       return record
     } finally {
       if (progressStarted) {
@@ -151,6 +151,57 @@ export class ToolRunner {
     } catch {
       // Progress updates are UI-only; tool execution and persistence own truth.
     }
+  }
+
+  private async emitToolResultAndPostHooks(
+    record: ToolResultRecord,
+    tool: Tool,
+    input: unknown,
+    context: ToolContext,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.emitRecord(record)
+    const result = await runLifecycleHooks(
+      this.hooks.postToolUse,
+      'postToolUse',
+      {
+        tool: tool.name,
+        riskLevel: tool.riskLevel,
+        input,
+        result: {
+          ok: record.ok,
+          content: record.content,
+          errorCode: record.errorCode,
+          errorDetails: record.errorDetails,
+        },
+        toolUseId: record.toolUseId,
+      },
+      context,
+      signal,
+      tool.name,
+    )
+    await this.emitPostToolUseHookMessage(tool.name, result, record.turnId)
+  }
+
+  private async emitPostToolUseHookMessage(
+    toolName: string,
+    result: Awaited<ReturnType<typeof runLifecycleHooks>>,
+    turnId?: string,
+  ): Promise<void> {
+    const blocks: string[] = []
+    if (result.stdout.trim()) blocks.push(result.stdout.trim())
+    if (result.failures.length > 0) blocks.push(`Hook failures:\n${result.failures.join('\n')}`)
+    if (result.blockingErrors.length > 0) blocks.push(`Hook blocking errors:\n${result.blockingErrors.join('\n')}`)
+    if (blocks.length === 0) return
+
+    await this.emitRecord({
+      id: randomUUID(),
+      type: 'message',
+      role: 'user',
+      content: `<system-reminder>postToolUse hook output for ${toolName}:\n${blocks.join('\n\n')}</system-reminder>`,
+      ...(turnId ? { turnId } : {}),
+      createdAt: new Date().toISOString(),
+    })
   }
 
   private result(

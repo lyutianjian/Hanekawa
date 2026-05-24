@@ -13,9 +13,26 @@ export interface HookCommand {
 export interface Hooks {
   userPromptSubmit?: HookCommand[]
   preToolUse?: HookCommand[]
+  /**
+   * Fires for every emitted tool_result, regardless of result.ok. This includes
+   * denied, invalid, and preToolUse-blocked calls; hooks can filter via result.
+   */
   postToolUse?: HookCommand[]
+  preCompact?: HookCommand[]
+  postCompact?: HookCommand[]
+  subagentStart?: HookCommand[]
+  subagentStop?: HookCommand[]
   stop?: HookCommand[]
 }
+
+export type LifecycleHookName =
+  | 'userPromptSubmit'
+  | 'postToolUse'
+  | 'preCompact'
+  | 'postCompact'
+  | 'subagentStart'
+  | 'subagentStop'
+  | 'stop'
 
 export type PreToolUseHook = HookCommand
 export type ToolHooks = Hooks
@@ -69,10 +86,11 @@ export async function runPreToolUseHooks(
 
 export async function runLifecycleHooks(
   hooks: readonly HookCommand[] | undefined,
-  hookName: 'userPromptSubmit' | 'stop',
+  hookName: LifecycleHookName,
   input: Record<string, unknown>,
   context: ToolContext,
   signal?: AbortSignal,
+  matcherValue?: string,
 ): Promise<LifecycleHookOutput> {
   if (!hooks || hooks.length === 0) {
     return { stdout: '', failures: [], blockingErrors: [], preventContinuation: false }
@@ -83,6 +101,7 @@ export async function runLifecycleHooks(
   const blockingErrors: string[] = []
   let preventContinuation = false
   for (const hook of hooks) {
+    if (matcherValue !== undefined && !matchesHook(hook, matcherValue)) continue
     const result = await runHookCommand({
       hook,
       hookName,

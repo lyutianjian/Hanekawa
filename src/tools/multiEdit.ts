@@ -12,7 +12,7 @@ interface MultiEditItem {
 }
 
 export const multiEditTool: Tool = {
-  name: 'multiEdit',
+  name: 'MultiEdit',
   description: 'Apply multiple exact string replacements to one existing UTF-8 text file atomically.',
   inputSchema: z.object({
     filePath: z.string().min(1),

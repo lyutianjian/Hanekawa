@@ -6,7 +6,7 @@ import { captureReadFileState, getReadFileContent, requireFreshRead } from './fi
 import { assertParentNotSymlink } from './pathSafety.js'
 
 export const editFileTool: Tool = {
-  name: 'editFile',
+  name: 'Edit',
   description: 'Replace an exact string in an existing UTF-8 text file.',
   inputSchema: z.object({
     filePath: z.string().min(1),

@@ -14,7 +14,7 @@ import { agentCacheSource, formatCacheHitRate, notifyCompaction, resetCacheBreak
 import { logDiagnostics, type RuntimeDiagnostic } from './diagnostics.js'
 import { cacheHitRate, type SessionMetricInput } from './metrics.js'
 import type { RecordStream } from './recordStream.js'
-import { runLifecycleHooks, type Hooks } from './hooks.js'
+import { runLifecycleHooks, type Hooks, type LifecycleHookName } from './hooks.js'
 import { FallbackTriggeredError } from '../config/retry.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
@@ -122,6 +122,9 @@ export class AgentLoop {
 
   noteRecordAppended(record: SessionRecord): void {
     this.recordsCache?.push(record)
+    if (record.type === 'tool_use' || record.type === 'tool_result') {
+      this.recordsCacheHasCleanToolProtocol = false
+    }
   }
 
   async run(userInput: string, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
@@ -179,6 +182,8 @@ export class AgentLoop {
         getCompactFailureCount: this.options.getCompactFailureCount,
         setCompactFailureCount: this.options.setCompactFailureCount,
         appendRecord: (record) => this.appendRecord(record),
+        onBeforeCompact: (event) => this.runCompactHooks('preCompact', event, turnId, signal),
+        onAfterCompact: (event) => this.runCompactHooks('postCompact', event, turnId, signal),
       })
       usage = addTokenUsage(usage, compactResult.usage)
       if (compactResult.compacted) {
@@ -342,7 +347,6 @@ export class AgentLoop {
           : {}),
       }
       await this.appendRecord(assistantMessage)
-      this.options.onRecord?.(assistantMessage)
 
       if (response.toolCalls.length === 0) {
         const finished = await this.finishTurn({
@@ -411,6 +415,7 @@ export class AgentLoop {
   private async appendRecord(record: SessionRecord): Promise<void> {
     await this.options.recordStream.append(record)
     this.noteRecordAppended(record)
+    this.options.onRecord?.(record)
   }
 
   private pendingPostCompactRestoreRecordIds(records: SessionRecord[]): string[] {
@@ -530,6 +535,34 @@ export class AgentLoop {
     await this.appendLifecycleHookMessages('userPromptSubmit', result.stdout, result.failures, turnId)
   }
 
+  private async runCompactHooks(
+    hookName: 'preCompact' | 'postCompact',
+    input: object,
+    turnId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const hookInput = { ...input } as Record<string, unknown>
+    const result = await runLifecycleHooks(
+      this.options.hooks?.[hookName],
+      hookName,
+      hookInput,
+      this.options.toolContext,
+      signal,
+      typeof hookInput.trigger === 'string' ? hookInput.trigger : undefined,
+    )
+    await this.appendLifecycleHookMessages(hookName, result.stdout, result.failures, turnId)
+    if (result.blockingErrors.length > 0) {
+      await this.appendRecord({
+        type: 'message',
+        id: randomUUID(),
+        role: 'user',
+        content: `<system-reminder>${hookName} hook blocking error:\n${result.blockingErrors.join('\n')}</system-reminder>`,
+        turnId,
+        createdAt: new Date().toISOString(),
+      })
+    }
+  }
+
   private async finishTurn(input: {
     content: string
     usage: TokenUsage
@@ -566,7 +599,7 @@ export class AgentLoop {
   }
 
   private async appendLifecycleHookMessages(
-    hookName: 'userPromptSubmit' | 'stop',
+    hookName: LifecycleHookName,
     stdout: string,
     failures: string[],
     turnId: string,

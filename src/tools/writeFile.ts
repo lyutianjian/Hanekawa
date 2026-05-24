@@ -7,7 +7,7 @@ import { captureReadFileState, requireFreshRead } from './fileState.js'
 import { assertParentNotSymlink } from './pathSafety.js'
 
 export const writeFileTool: Tool = {
-  name: 'writeFile',
+  name: 'Write',
   description: 'Write a UTF-8 text file. Existing-file overwrites require confirmation from the harness.',
   inputSchema: z.object({
     filePath: z.string().min(1),

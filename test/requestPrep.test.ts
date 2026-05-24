@@ -39,10 +39,10 @@ function toolResultContent(records: SessionRecord[], id: string): string {
 
 test('prepareRecordsForRequest preserves old oversized tool results when aggregate budget allows', () => {
   const records: SessionRecord[] = [
-    ...toolPair('old', 'readFile', 'old output '.repeat(7_000), 0),
+    ...toolPair('old', 'Read', 'old output '.repeat(7_000), 0),
   ]
   for (let index = 0; index < 10; index++) {
-    records.push(...toolPair(`new-${index}`, 'readFile', 'new output '.repeat(10), index + 1))
+    records.push(...toolPair(`new-${index}`, 'Read', 'new output '.repeat(10), index + 1))
   }
 
   const prepared = prepareRecordsForRequest(records, { contextWindow: 1_000_000, summaryOutputTokens: 0 })
@@ -58,9 +58,9 @@ test('prepareRecordsForRequest preserves old oversized tool results when aggrega
 
 test('prepareRecordsForRequest keeps same-tool history when under token thresholds', () => {
   const records: SessionRecord[] = [
-    ...toolPair('first', 'readFile', 'first output', 0),
-    ...toolPair('second', 'readFile', 'second output', 1),
-    ...toolPair('third', 'readFile', 'third output', 2),
+    ...toolPair('first', 'Read', 'first output', 0),
+    ...toolPair('second', 'Read', 'second output', 1),
+    ...toolPair('third', 'Read', 'third output', 2),
   ]
 
   const prepared = prepareRecordsForRequest(records, {
@@ -132,7 +132,7 @@ test('prepareRecordsForRequestWithDiagnostics can strip all assistant thinking f
 
 test('prepareRecordsForRequest caches tool result token counts on records', () => {
   const records: SessionRecord[] = [
-    ...toolPair('first', 'readFile', 'first output', 0),
+    ...toolPair('first', 'Read', 'first output', 0),
   ]
   const result = records[1]
   assert.equal(result?.type, 'tool_result')
@@ -140,7 +140,7 @@ test('prepareRecordsForRequest caches tool result token counts on records', () =
 
   prepareRecordsForRequest(records)
 
-  assert.equal(result._tokens, countTextTokens('readFile\nfirst output'))
+  assert.equal(result._tokens, countTextTokens('Read\\nfirst output'))
 })
 
 test('prepareRecordsForRequest prefers cached tool result token counts', () => {
@@ -148,7 +148,7 @@ test('prepareRecordsForRequest prefers cached tool result token counts', () => {
     {
       type: 'tool_use',
       id: 'cached-call',
-      tool: 'grep',
+      tool: 'Grep',
       input: {},
       riskLevel: 'safe',
       createdAt: '2026-05-10T00:00:00.000Z',
@@ -157,7 +157,7 @@ test('prepareRecordsForRequest prefers cached tool result token counts', () => {
       type: 'tool_result',
       id: 'cached-result',
       toolUseId: 'cached-call',
-      tool: 'grep',
+      tool: 'Grep',
       ok: true,
       content: 'tiny',
       _tokens: 50_000,
@@ -165,7 +165,7 @@ test('prepareRecordsForRequest prefers cached tool result token counts', () => {
     },
   ]
   for (let index = 0; index < 10; index++) {
-    records.push(...toolPair(`recent-${index}`, 'grep', `recent ${index}`, index + 1))
+    records.push(...toolPair(`recent-${index}`, 'Grep', `recent ${index}`, index + 1))
   }
 
   const prepared = prepareRecordsForRequest(
@@ -176,13 +176,13 @@ test('prepareRecordsForRequest prefers cached tool result token counts', () => {
 
   const result = prepared.find((record) => record.type === 'tool_result')
   assert.equal(result?.type, 'tool_result')
-  assert.match(result.content, /grep 50000 tokens/)
+  assert.match(result.content, /Grep 50000 tokens/)
 })
 
 test('prepareRecordsForRequest compacts protected recent tool results only when required by total budget', () => {
   const records: SessionRecord[] = []
   for (let index = 0; index < 10; index++) {
-    records.push(...toolPair(`recent-${index}`, 'readFile', 'large recent output '.repeat(3_000), index))
+    records.push(...toolPair(`recent-${index}`, 'Read', 'large recent output '.repeat(3_000), index))
   }
 
   const prepared = prepareRecordsForRequest(records, {
@@ -196,10 +196,10 @@ test('prepareRecordsForRequest compacts protected recent tool results only when 
 
 test('prepareRecordsForRequest does not compact older oversized tool results solely by age', () => {
   const records: SessionRecord[] = [
-    ...toolPair('old', 'readFile', 'large old output '.repeat(30_000), 0),
+    ...toolPair('old', 'Read', 'large old output '.repeat(30_000), 0),
   ]
   for (let index = 0; index < 10; index++) {
-    records.push(...toolPair(`recent-${index}`, 'readFile', `recent ${index}`, index + 1))
+    records.push(...toolPair(`recent-${index}`, 'Read', `recent ${index}`, index + 1))
   }
 
   const prepared = prepareRecordsForRequest(records, {
@@ -216,10 +216,10 @@ test('prepareRecordsForRequest does not compact older oversized tool results sol
 test('prepareRecordsForRequest compacts older tool results when total tool-result budget is exceeded', () => {
   const records: SessionRecord[] = []
   for (let index = 0; index < 4; index++) {
-    records.push(...toolPair(`old-${index}`, 'grep', 'budget output '.repeat(1_000), index))
+    records.push(...toolPair(`old-${index}`, 'Grep', 'budget output '.repeat(1_000), index))
   }
   for (let index = 0; index < 10; index++) {
-    records.push(...toolPair(`recent-${index}`, 'grep', `recent ${index}`, index + 4))
+    records.push(...toolPair(`recent-${index}`, 'Grep', `recent ${index}`, index + 4))
   }
 
   const prepared = prepareRecordsForRequest(records, {
@@ -238,7 +238,7 @@ test('prepareRecordsForRequest compacts older tool results when total tool-resul
 test('prepareRecordsForRequest caps tool-result budget at 200k tokens for large context windows', () => {
   const records: SessionRecord[] = []
   for (let index = 0; index < 25; index++) {
-    records.push(...toolPair(`old-${index}`, 'grep', 'budget output '.repeat(2_000), index))
+    records.push(...toolPair(`old-${index}`, 'Grep', 'budget output '.repeat(2_000), index))
   }
 
   const prepared = prepareRecordsForRequest(
@@ -253,11 +253,11 @@ test('prepareRecordsForRequest caps tool-result budget at 200k tokens for large 
 test('prepareRecordsForRequest compacts oldest unprotected results first when over budget', () => {
   const now = new Date('2026-05-10T08:00:00.000Z')
   const records: SessionRecord[] = [
-    ...toolPairAt('first', 'grep', 'large first output '.repeat(2_000), '2026-05-10T07:58:00.000Z'),
-    ...toolPairAt('second', 'grep', 'large second output '.repeat(2_000), '2026-05-10T07:59:00.000Z'),
+    ...toolPairAt('first', 'Grep', 'large first output '.repeat(2_000), '2026-05-10T07:58:00.000Z'),
+    ...toolPairAt('second', 'Grep', 'large second output '.repeat(2_000), '2026-05-10T07:59:00.000Z'),
   ]
   for (let index = 0; index < 10; index++) {
-    records.push(...toolPairAt(`recent-${index}`, 'grep', `recent ${index}`, `2026-05-10T07:${String(index).padStart(2, '0')}:00.000Z`))
+    records.push(...toolPairAt(`recent-${index}`, 'Grep', `recent ${index}`, `2026-05-10T07:${String(index).padStart(2, '0')}:00.000Z`))
   }
 
   const prepared = prepareRecordsForRequest(records, {
@@ -272,10 +272,10 @@ test('prepareRecordsForRequest compacts oldest unprotected results first when ov
 test('prepareRecordsForRequest leaves sub-hour oversized results alone unless total budget requires it', () => {
   const now = new Date('2026-05-10T08:00:00.000Z')
   const records: SessionRecord[] = [
-    ...toolPairAt('recent-large', 'grep', 'large recent output '.repeat(29_000), '2026-05-10T07:30:00.000Z'),
+    ...toolPairAt('recent-large', 'Grep', 'large recent output '.repeat(29_000), '2026-05-10T07:30:00.000Z'),
   ]
   for (let index = 0; index < 10; index++) {
-    records.push(...toolPairAt(`new-${index}`, 'grep', `new ${index}`, `2026-05-10T07:${String(40 + index).padStart(2, '0')}:00.000Z`))
+    records.push(...toolPairAt(`new-${index}`, 'Grep', `new ${index}`, `2026-05-10T07:${String(40 + index).padStart(2, '0')}:00.000Z`))
   }
 
   const prepared = prepareRecordsForRequest(records, {
@@ -290,7 +290,7 @@ test('prepareRecordsForRequest compacts sub-hour results as a last resort for to
   const now = new Date('2026-05-10T08:00:00.000Z')
   const records: SessionRecord[] = []
   for (let index = 0; index < 12; index++) {
-    records.push(...toolPairAt(`recent-large-${index}`, 'grep', 'large recent output '.repeat(2_000), `2026-05-10T07:${String(index).padStart(2, '0')}:00.000Z`))
+    records.push(...toolPairAt(`recent-large-${index}`, 'Grep', 'large recent output '.repeat(2_000), `2026-05-10T07:${String(index).padStart(2, '0')}:00.000Z`))
   }
 
   const prepared = prepareRecordsForRequest(records, {
@@ -307,7 +307,7 @@ test('prepareRecordsForRequest preserves valid tool_use and tool_result pairs', 
     {
       type: 'tool_use',
       id: 'paired-call',
-      tool: 'grep',
+      tool: 'Grep',
       input: { pattern: 'hello' },
       riskLevel: 'safe',
       createdAt: '2026-05-10T00:00:00.000Z',
@@ -316,7 +316,7 @@ test('prepareRecordsForRequest preserves valid tool_use and tool_result pairs', 
       type: 'tool_result',
       id: 'paired-result',
       toolUseId: 'paired-call',
-      tool: 'grep',
+      tool: 'Grep',
       ok: true,
       content: 'match',
       createdAt: '2026-05-10T00:00:01.000Z',
@@ -324,7 +324,7 @@ test('prepareRecordsForRequest preserves valid tool_use and tool_result pairs', 
     {
       type: 'tool_use',
       id: 'orphan-call',
-      tool: 'grep',
+      tool: 'Grep',
       input: { pattern: 'missing' },
       riskLevel: 'safe',
       createdAt: '2026-05-10T00:00:02.000Z',
@@ -350,7 +350,7 @@ test('prepareRecordsForRequestWithDiagnostics reports repaired orphan tool recor
       type: 'tool_result',
       id: 'orphan-result',
       toolUseId: 'missing-call',
-      tool: 'grep',
+      tool: 'Grep',
       ok: false,
       content: 'failed',
       createdAt: '2026-05-10T00:00:00.000Z',
@@ -358,7 +358,7 @@ test('prepareRecordsForRequestWithDiagnostics reports repaired orphan tool recor
     {
       type: 'tool_use',
       id: 'orphan-call',
-      tool: 'grep',
+      tool: 'Grep',
       input: { pattern: 'missing' },
       riskLevel: 'safe',
       createdAt: '2026-05-10T00:00:01.000Z',
@@ -376,7 +376,7 @@ test('prepareRecordsForRequestWithDiagnostics reports repaired orphan tool recor
     (record) =>
       record.type === 'tool_use'
       && record.id === 'missing-call'
-      && record.tool === 'grep'
+      && record.tool === 'Grep'
       && JSON.stringify(record.input) === '{}',
   ))
   assert.ok(result.records.some(

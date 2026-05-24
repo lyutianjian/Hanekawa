@@ -15,7 +15,7 @@ export const exitPlanModeTool: Tool = {
     if (context.getPermissionMode?.() !== 'plan') {
       return {
         ok: false,
-        content: 'exitPlanMode can only be called in plan mode.',
+        content: 'ExitPlanMode can only be called in plan mode.',
         errorCode: 'precondition_failed',
       }
     }

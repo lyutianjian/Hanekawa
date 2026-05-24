@@ -9,6 +9,7 @@ import { modelCommand } from './model.js'
 import { sessionCommand } from './session.js'
 import { skillsCommand } from './skills.js'
 import { compactCommand } from './compact.js'
+import { repairCommand } from './repair.js'
 
 // Register all built-in commands
 export function registerBuiltinCommands(): void {
@@ -19,4 +20,5 @@ export function registerBuiltinCommands(): void {
   registerCommand(sessionCommand)
   registerCommand(skillsCommand)
   registerCommand(compactCommand)
+  registerCommand(repairCommand)
 }

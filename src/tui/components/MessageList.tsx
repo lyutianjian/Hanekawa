@@ -65,6 +65,14 @@ function DisplayItem({ item, expanded }: { item: TUIDisplayItem; expanded: boole
           </Text>
         </Box>
       )
+    case 'compact_attempt_failed':
+      return (
+        <Box marginY={1}>
+          <Text color={theme.warning}>
+            {formatCompactFailure(item.record)}
+          </Text>
+        </Box>
+      )
     case 'tool_progress':
       return (
         <Box paddingLeft={2}>
@@ -90,4 +98,11 @@ function DisplayItem({ item, expanded }: { item: TUIDisplayItem; expanded: boole
         </Box>
       )
   }
+}
+
+function formatCompactFailure(record: Extract<TUIDisplayItem, { kind: 'compact_attempt_failed' }>['record']): string {
+  const status = record.circuitOpen
+    ? 'Auto-compact failed and the failure circuit is now open.'
+    : 'Auto-compact failed; continuing without compaction.'
+  return `${status} Failure ${record.failureCount}, pre-compact estimate ${record.preTokens.toLocaleString()} tokens. ${record.error}`
 }

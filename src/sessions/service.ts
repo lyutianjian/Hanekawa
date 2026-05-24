@@ -6,7 +6,7 @@ import { getSessionsDir } from '../utils/paths.js'
 import { readJsonFile, writeJsonFile, parseJsonLines, parseJsonLinesWithDiagnostics } from '../utils/json.js'
 import type { SessionRecord } from '../harness/types.js'
 import type { SessionMetricInput, SessionMetric } from '../harness/metrics.js'
-import { checkSessionInvariants } from './invariants.js'
+import { checkSessionInvariants, ensureToolResultPairing } from './invariants.js'
 import { normalizeDenialState, type DenialState } from '../harness/permissions.js'
 
 export interface CheckpointMapping {
@@ -68,6 +68,11 @@ export interface SessionDiagnostic {
 export interface LoadRecordsResult {
   records: SessionRecord[]
   diagnostics: SessionDiagnostic[]
+}
+
+export interface RepairRecordsResult {
+  repairedCount: number
+  diagnostics: ReturnType<typeof ensureToolResultPairing>['diagnostics']
 }
 
 export class SessionStore {
@@ -216,6 +221,41 @@ export class SessionStore {
       this.replaceIndexSession(index, meta)
       await writeJsonFile(this.indexPath(), index)
     })
+  }
+
+  async repairRecords(sessionIdOrPrefix: string): Promise<RepairRecordsResult> {
+    const session = await this.resolve(sessionIdOrPrefix)
+    if (!session) throw new Error(`Unknown session: ${sessionIdOrPrefix}`)
+
+    const loaded = await this.loadRecordsWithDiagnostics(session.id)
+    const repaired = ensureToolResultPairing(loaded.records)
+    if (repaired.diagnostics.length === 0) {
+      return { repairedCount: 0, diagnostics: [] }
+    }
+
+    const jsonlPath = this.sessionJsonlPath(session.id)
+    const nextContent = repaired.records.map((record) => JSON.stringify(record)).join('\n') + '\n'
+    await writeFile(jsonlPath, nextContent, 'utf-8')
+
+    const now = new Date().toISOString()
+    await this.withIndexLock(async () => {
+      const index = await this.readIndexUnlocked()
+      const currentMeta = index.sessions.find((item) => item.id === session.id) ?? session
+      const meta: SessionMeta = {
+        ...this.deriveMetaFromRecords(session.id, repaired.records, currentMeta),
+        updatedAt: now,
+        ...(currentMeta.checkpoints ? { checkpoints: currentMeta.checkpoints } : {}),
+        ...(currentMeta.compactFailureCount ? { compactFailureCount: currentMeta.compactFailureCount } : {}),
+        ...(currentMeta.denialState ? { denialState: currentMeta.denialState } : {}),
+      }
+      this.replaceIndexSession(index, meta)
+      await writeJsonFile(this.indexPath(), index)
+    })
+
+    return {
+      repairedCount: repaired.diagnostics.length,
+      diagnostics: repaired.diagnostics,
+    }
   }
 
   async updateRecord(

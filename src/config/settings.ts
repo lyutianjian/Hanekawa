@@ -19,6 +19,10 @@ export interface MyAgentSettings {
     userPromptSubmit?: HookCommandSetting[]
     preToolUse?: HookCommandSetting[]
     postToolUse?: HookCommandSetting[]
+    preCompact?: HookCommandSetting[]
+    postCompact?: HookCommandSetting[]
+    subagentStart?: HookCommandSetting[]
+    subagentStop?: HookCommandSetting[]
     stop?: HookCommandSetting[]
   }
   mcpServers?: Record<string, McpServerConfig>
@@ -124,6 +128,38 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
               postToolUse: [
                 ...(result.hooks?.postToolUse ?? []),
                 ...source.hooks.postToolUse,
+              ],
+            }
+          : {}),
+        ...(source.hooks.preCompact
+          ? {
+              preCompact: [
+                ...(result.hooks?.preCompact ?? []),
+                ...source.hooks.preCompact,
+              ],
+            }
+          : {}),
+        ...(source.hooks.postCompact
+          ? {
+              postCompact: [
+                ...(result.hooks?.postCompact ?? []),
+                ...source.hooks.postCompact,
+              ],
+            }
+          : {}),
+        ...(source.hooks.subagentStart
+          ? {
+              subagentStart: [
+                ...(result.hooks?.subagentStart ?? []),
+                ...source.hooks.subagentStart,
+              ],
+            }
+          : {}),
+        ...(source.hooks.subagentStop
+          ? {
+              subagentStop: [
+                ...(result.hooks?.subagentStop ?? []),
+                ...source.hooks.subagentStop,
               ],
             }
           : {}),
@@ -274,7 +310,7 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
     errors.push('permissionMode must be one of: default, plan, acceptEdits, auto, bypass')
   }
 
-  for (const name of ['userPromptSubmit', 'preToolUse', 'postToolUse', 'stop'] as const) {
+  for (const name of ['userPromptSubmit', 'preToolUse', 'postToolUse', 'preCompact', 'postCompact', 'subagentStart', 'subagentStop', 'stop'] as const) {
     const hooks = settings.hooks?.[name]
     if (hooks !== undefined && !Array.isArray(hooks)) {
       errors.push(`hooks.${name} must be an array`)

@@ -5,6 +5,7 @@ import { compactCommand } from '../src/commands/compact.js'
 import { costCommand } from '../src/commands/cost.js'
 import { modelCommand } from '../src/commands/model.js'
 import { repairCommand } from '../src/commands/repair.js'
+import { verifyCommand } from '../src/commands/verify.js'
 import type { CommandContext } from '../src/commands/types.js'
 
 function createContext(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -36,6 +37,57 @@ test('/cost reports injected usage and real cost', async () => {
   assert.match(output, /Input tokens:\s+200,000/)
   assert.match(output, /Output tokens:\s+50,000/)
   assert.match(output, /Total cost:\s+CNY 0\.31/)
+})
+
+test('/cost reports cache summary when available', async () => {
+  let output = ''
+  await costCommand.run('', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+    getUsage: () => ({
+      cacheReadInputTokens: 100,
+      inputTokens: 100,
+      outputTokens: 50,
+    }),
+    getSessionMetricsSummary: async () => ({
+      totalCacheHitRate: 0.625,
+      totalTurns: 8,
+      firstBreakTurnCount: 3,
+      cacheBreakCount: 2,
+      averageCompactIntervalTurns: 4.5,
+    }),
+  }))
+
+  assert.match(output, /Session cache:/)
+  assert.match(output, /Cache hit rate:\s+62\.5%/)
+  assert.match(output, /First break turn:\s+3/)
+  assert.match(output, /Avg compact interval:\s+4\.5 turns/)
+})
+
+test('/cost reports unavailable cache summary fields as n\\/a', async () => {
+  let output = ''
+  await costCommand.run('', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+    getUsage: () => ({
+      cacheReadInputTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    }),
+    getSessionMetricsSummary: async () => ({
+      totalCacheHitRate: null,
+      totalTurns: 0,
+      firstBreakTurnCount: null,
+      cacheBreakCount: 0,
+      averageCompactIntervalTurns: null,
+    }),
+  }))
+
+  assert.match(output, /Cache hit rate:\s+n\/a/)
+  assert.match(output, /First break turn:\s+n\/a/)
+  assert.match(output, /Avg compact interval:\s+n\/a/)
 })
 
 test('/cost does not report fake cost without pricing', async () => {
@@ -188,4 +240,30 @@ test('/repair runs session repair and invalidates caches', async () => {
   assert.equal(events[1], 'clear-cache')
   assert.match(events[2] ?? '', /Session invariants repaired/)
   assert.match(events[2] ?? '', /Inserted synthetic tool_result/)
+})
+
+test('/verify reports unavailable runtime without verification hook', async () => {
+  let output = ''
+  await verifyCommand.run('', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+  }))
+
+  assert.match(output, /unavailable/)
+})
+
+test('/verify delegates focus text to verification runner', async () => {
+  const events: string[] = []
+  await verifyCommand.run('check edge cases', createContext({
+    writeLine: (message) => {
+      events.push(message)
+    },
+    runVerification: async (args) => `verified: ${args}`,
+  }))
+
+  assert.deepEqual(events, [
+    'Starting adversarial verification...',
+    'verified: check edge cases',
+  ])
 })

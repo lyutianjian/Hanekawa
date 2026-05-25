@@ -34,6 +34,7 @@ export interface AppRuntime {
   modelKey: string
   modelConfig: ModelConfig
   providerName: string
+  dispose: () => void
 }
 
 interface AppProps {
@@ -43,6 +44,7 @@ interface AppProps {
   session: SessionMeta
   modelConfig: ModelConfig
   providerName: string
+  dispose: () => void
   availableModelKeys: string[]
   createRuntime: (modelKey: string, session: SessionMeta) => AppRuntime
   permissionGate: PermissionGate
@@ -61,6 +63,7 @@ export function App({
   session: initialSession,
   modelConfig: initialModelConfig,
   providerName: initialProviderName,
+  dispose: initialDispose,
   availableModelKeys,
   createRuntime,
   permissionGate,
@@ -78,15 +81,35 @@ export function App({
     modelKey: initialModelKey,
     modelConfig: initialModelConfig,
     providerName: initialProviderName,
+    dispose: initialDispose,
   }))
+  const runtimeRef = useRef<AppRuntime>(runtime)
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
   const [permissionMode, setPermissionModeState] = useState<PermissionMode>(() => permissionGate.getMode())
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const verifyAbortRef = useRef<AbortController | null>(null)
   const checkpointServiceRef = useRef<CheckpointService>(
     new CheckpointService(process.cwd(), initialSession.id),
   )
 
   const { permState, respond } = usePermission(promptProxy)
+
+  const replaceRuntime = useCallback((nextRuntime: AppRuntime) => {
+    const previousRuntime = runtimeRef.current
+    runtimeRef.current = nextRuntime
+    previousRuntime.dispose()
+    setRuntime(nextRuntime)
+  }, [])
+
+  useEffect(() => {
+    runtimeRef.current = runtime
+  }, [runtime])
+
+  useEffect(() => {
+    return () => {
+      runtimeRef.current.dispose()
+    }
+  }, [])
 
   useEffect(() => {
     setPermissionModeState(permissionGate.getMode())
@@ -100,9 +123,14 @@ export function App({
     if (!activeModel.modelKey) return
     if (activeModel.modelKey === runtime.modelKey) return
     const nextRuntime = createRuntime(activeModel.modelKey, activeSession)
+    nextRuntime.dispose()
     setRuntime((current) => {
       if (current.modelKey === activeModel.modelKey) return current
-      return { ...nextRuntime, loop: current.loop }
+      return {
+        ...nextRuntime,
+        loop: current.loop,
+        dispose: current.dispose,
+      }
     })
   }, [createRuntime, activeSession, runtime.modelKey])
 
@@ -147,10 +175,10 @@ export function App({
     const nextRuntime = createRuntime(runtime.modelKey, nextSession)
     checkpointServiceRef.current = new CheckpointService(process.cwd(), nextSession.id)
     setActiveSession(nextSession)
-    setRuntime(nextRuntime)
+    replaceRuntime(nextRuntime)
     setCheckpoints([])
     setMessages([])
-  }, [store, createRuntime, runtime.modelKey, runtime.loop, setMessages])
+  }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, setMessages])
 
   const switchModel = useCallback((modelKey: string): SetModelResult => {
     if (!availableModelKeys.includes(modelKey)) {
@@ -164,7 +192,7 @@ export function App({
     try {
       const nextRuntime = createRuntime(modelKey, activeSession)
       runtime.loop.clearCachedSections()
-      setRuntime(nextRuntime)
+      replaceRuntime(nextRuntime)
       return {
         ok: true,
         model: {
@@ -180,7 +208,44 @@ export function App({
         availableModels: availableModelKeys,
       }
     }
-  }, [availableModelKeys, createRuntime, activeSession, runtime.loop])
+  }, [availableModelKeys, createRuntime, activeSession, runtime.loop, replaceRuntime])
+
+  const runVerification = useCallback(async (args: string): Promise<string> => {
+    setMode('running')
+    const ac = new AbortController()
+    verifyAbortRef.current = ac
+    try {
+      const loaded = await store.loadRecordsWithDiagnostics(activeSession.id)
+      const task = buildVerificationTask(loaded.records, args)
+      const result = await runtime.loop.runTool(
+        {
+          id: randomUUID(),
+          name: 'Agent',
+          input: {
+            task,
+            subagent_type: 'verification',
+            maxTurns: 20,
+          },
+        },
+        { signal: ac.signal },
+      )
+      if (!result.ok) {
+        if (result.errorCode === 'aborted') return 'Verification interrupted.'
+        return `Verification agent failed: ${result.content}`
+      }
+      return result.content
+    } catch (err) {
+      if (err instanceof Error && (err.name === 'AbortError' || (err as Error & { aborted?: boolean }).aborted)) {
+        return 'Verification interrupted.'
+      }
+      throw err
+    } finally {
+      if (verifyAbortRef.current === ac) {
+        verifyAbortRef.current = null
+      }
+      setMode('idle')
+    }
+  }, [store, activeSession.id, runtime.loop])
 
   const cyclePermissionMode = useCallback((direction: 1 | -1) => {
     setPermissionModeState((currentMode) => {
@@ -209,6 +274,7 @@ export function App({
     clearMessages: clearConversation,
     clearCachedSections: () => runtime.loop.clearCachedSections(),
     invalidateRecordsCache: () => runtime.loop.invalidateRecordsCache(),
+    runVerification,
   })
 
   const handleSubmit = async (text: string) => {
@@ -224,6 +290,8 @@ export function App({
   const handleInterrupt = useCallback(() => {
     // Signal the AbortController to abort the agent loop
     interrupt()
+    // Also abort any in-flight verification dispatched via runtime.loop.runTool.
+    verifyAbortRef.current?.abort()
 
     // Set up abort timeout: if agent loop doesn't stop within 2s, force-terminate
     abortTimeoutRef.current = setTimeout(() => {
@@ -244,6 +312,7 @@ export function App({
     if (isStreaming) {
       interrupt()
     }
+    verifyAbortRef.current?.abort()
     // Run cleanup (e.g., disconnect MCP clients) before exiting. Errors are
     // swallowed inside onBeforeExit; we only need to await the promise so
     // disconnects have a chance to flush before process.exit kills the loop.
@@ -398,4 +467,97 @@ export function App({
       />
     </Box>
   )
+}
+
+function buildVerificationTask(records: SessionRecord[], focus: string): string {
+  const lastAssistantIndex = findLastIndex(records, (record) =>
+    record.type === 'message' && record.role === 'assistant' && record.content.trim().length > 0
+  )
+  if (lastAssistantIndex < 0) {
+    throw new Error('No assistant turn found to verify.')
+  }
+
+  const assistant = records[lastAssistantIndex]
+  if (assistant?.type !== 'message') {
+    throw new Error('No assistant turn found to verify.')
+  }
+
+  const previousUser = findLastBefore(records, lastAssistantIndex, (record) =>
+    record.type === 'message' && record.role === 'user'
+  )
+  const turnRecords = assistant.turnId
+    ? records.filter((record) => record.turnId === assistant.turnId)
+    : records.slice(Math.max(0, lastAssistantIndex - 12), lastAssistantIndex + 1)
+
+  const body = [
+    'Adversarially verify the last assistant turn from the parent Hanekawa session.',
+    '',
+    'Do not modify the project. Independently inspect and exercise the claimed behavior. Do not trust the implementation notes or any tests the implementing assistant said it ran.',
+    '',
+    focus.trim() ? `User-specified verification focus:\n${focus.trim()}` : undefined,
+    previousUser ? `Original user request:\n${previousUser.content}` : undefined,
+    `Last assistant response:\n${assistant.content}`,
+    `Relevant records from that turn:\n${formatRecordsForVerification(turnRecords)}`,
+  ].filter((part): part is string => Boolean(part))
+
+  return truncateMiddle(body.join('\n\n'), 60_000)
+}
+
+function findLastBefore(
+  records: SessionRecord[],
+  beforeIndex: number,
+  predicate: (record: SessionRecord) => boolean,
+): Extract<SessionRecord, { type: 'message' }> | undefined {
+  for (let index = beforeIndex - 1; index >= 0; index--) {
+    const record = records[index]
+    if (record && predicate(record) && record.type === 'message') return record
+  }
+  return undefined
+}
+
+function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index]
+    if (item !== undefined && predicate(item)) return index
+  }
+  return -1
+}
+
+function formatRecordsForVerification(records: SessionRecord[]): string {
+  return records.map((record) => {
+    if (record.type === 'message') {
+      return [
+        `- message ${record.role}:`,
+        indent(truncateMiddle(record.content, 10_000)),
+      ].join('\n')
+    }
+    if (record.type === 'tool_use') {
+      return [
+        `- tool_use ${record.tool}:`,
+        indent(truncateMiddle(JSON.stringify(record.input, null, 2), 4_000)),
+      ].join('\n')
+    }
+    if (record.type === 'tool_result') {
+      return [
+        `- tool_result ${record.tool} (${record.ok ? 'ok' : 'failed'}):`,
+        indent(truncateMiddle(record.content, 10_000)),
+      ].join('\n')
+    }
+    return `- ${record.type}`
+  }).join('\n\n')
+}
+
+function indent(text: string): string {
+  return text.split('\n').map((line) => `  ${line}`).join('\n')
+}
+
+function truncateMiddle(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  const head = Math.floor(maxChars * 0.6)
+  const tail = maxChars - head
+  return [
+    text.slice(0, head),
+    `[truncated ${text.length - maxChars} chars]`,
+    text.slice(text.length - tail),
+  ].join('\n')
 }

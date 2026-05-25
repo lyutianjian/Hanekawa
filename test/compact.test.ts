@@ -75,6 +75,65 @@ test('autoCompactIfNeeded writes compact boundary when threshold is exceeded', a
   assert.equal(appended[0]?.type === 'compact_boundary' ? appended[0].postCompactRestore : undefined, 'pending')
 })
 
+test('autoCompactIfNeeded uses configured compact model when provided', async () => {
+  resetAutoCompactFailureState()
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'old context '.repeat(200),
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'latest-user',
+      role: 'user',
+      content: 'latest request',
+      createdAt: '2026-05-10T00:01:00.000Z',
+    },
+  ]
+  let primaryCalled = false
+  let compactModelSeen = ''
+  const provider: ModelProvider = {
+    name: 'primary',
+    async createMessage() {
+      primaryCalled = true
+      return { content: 'wrong', toolCalls: [] }
+    },
+  }
+  const compactProvider: ModelProvider = {
+    name: 'compact',
+    async createMessage(request) {
+      compactModelSeen = request.model
+      return { content: 'compact summary', toolCalls: [] }
+    },
+  }
+
+  const result = await autoCompactIfNeeded({
+    records,
+    provider,
+    model: 'primary-model',
+    compactRuntime: {
+      provider: compactProvider,
+      model: 'cheap-model',
+      modelKey: 'cheap',
+      providerName: 'compact',
+    },
+    tools: [],
+    contextManagement: {
+      contextWindow: 600,
+      summaryOutputTokens: 100,
+      autoCompactBufferTokens: 50,
+    },
+    appendRecord: async () => {},
+  })
+
+  assert.equal(result.compacted, true)
+  assert.equal(primaryCalled, false)
+  assert.equal(compactModelSeen, 'cheap-model')
+})
+
 test('autoCompactIfNeeded skips compacting below threshold', async () => {
   resetAutoCompactFailureState()
   const records: SessionRecord[] = [{

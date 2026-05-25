@@ -35,6 +35,7 @@ export interface MyAgentSettings {
   models?: Record<string, ModelConfig>
   defaultModel?: string
   fallbackModel?: string
+  compactModel?: string
   agent?: AgentConfig
   autoCompact?: boolean
   autoCompactThreshold?: number
@@ -79,6 +80,10 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
 
     if (source.fallbackModel !== undefined) {
       result.fallbackModel = source.fallbackModel
+    }
+
+    if (source.compactModel !== undefined) {
+      result.compactModel = source.compactModel
     }
 
     if (source.models) {
@@ -269,6 +274,10 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
 
   if (settings.fallbackModel !== undefined && (typeof settings.fallbackModel !== 'string' || settings.fallbackModel.trim() === '')) {
     errors.push('fallbackModel must be a non-empty string')
+  }
+
+  if (settings.compactModel !== undefined && (typeof settings.compactModel !== 'string' || settings.compactModel.trim() === '')) {
+    errors.push('compactModel must be a non-empty string')
   }
 
   if (settings.agent?.system !== undefined && typeof settings.agent.system !== 'string') {

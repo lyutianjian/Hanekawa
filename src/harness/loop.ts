@@ -10,17 +10,19 @@ import {
   requestTokenCountFromUsage,
 } from './requestPrep.js'
 import { applyProgressiveCompaction } from './progressiveCompact.js'
+import { summarizeToolUse } from './toolUseSummary.js'
 import { agentCacheSource, formatCacheHitRate, notifyCompaction, resetCacheBreakDetection } from './cacheBreakDetection.js'
 import { logDiagnostics, type RuntimeDiagnostic } from './diagnostics.js'
 import { cacheHitRate, type SessionMetricInput } from './metrics.js'
 import type { RecordStream } from './recordStream.js'
+import { MemoryRecordStream } from './recordStream.js'
 import { runLifecycleHooks, type Hooks, type LifecycleHookName } from './hooks.js'
 import { FallbackTriggeredError } from '../config/retry.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
-import type { AgentRunResult, ChatMessage, ModelProvider, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, TokenUsage } from './types.js'
+import type { AgentRunResult, ChatMessage, ModelProvider, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
 
 export interface ActiveModelRuntime {
   provider: ModelProvider
@@ -28,6 +30,23 @@ export interface ActiveModelRuntime {
   modelKey?: string
   providerName?: string
   promptCacheRetention?: 'in_memory' | '24h'
+}
+
+/**
+ * Options for {@link AgentLoop.runTool}. All fields are optional; by default
+ * the call is isolated (records routed to a fresh in-memory stream, toolContext
+ * forked from the main loop). Provide explicit overrides to opt into
+ * participation with the main session.
+ */
+export interface RunToolOptions {
+  /** Aborts the dispatched tool call. Does not abort a pending run() ahead of it in the queue. */
+  signal?: AbortSignal
+  /** Override the toolContext. Defaults to a forked copy of the loop's main toolContext. */
+  toolContext?: ToolContext
+  /** Override the record stream. Defaults to an isolated in-memory stream. */
+  recordStream?: RecordStream
+  /** Override the turnId stamped on emitted records. Defaults to a fresh UUID. */
+  turnId?: string
 }
 
 export interface AgentLoopOptions {
@@ -48,6 +67,7 @@ export interface AgentLoopOptions {
   tokenBudget?: number
   tokenWarningThreshold?: number
   fallbackModel?: ActiveModelRuntime
+  compactModel?: ActiveModelRuntime
   fallbackRetryDelayMs?: number
   hooks?: Hooks
   cacheRuntime?: CacheRuntime
@@ -71,6 +91,12 @@ export class AgentLoop {
   }
   private recordsCache: SessionRecord[] | undefined
   private recordsCacheHasCleanToolProtocol = false
+  private readonly pendingToolUseSummaries: PendingToolUseSummary[] = []
+  // Serializes run() and runTool() against each other. Both helpers funnel
+  // through enqueue() so that a tool dispatched via runTool (e.g. an
+  // out-of-band /verify) cannot race a concurrent run() and clobber shared
+  // state in the toolContext, recordsCache, or recordStream.
+  private inFlight: Promise<unknown> | null = null
   // Sticky for the rest of the session after any model switch: thinking
   // signatures are model/provider-bound, and prior primary/fallback thinking
   // blocks should not be replayed across either side of a fallback boundary.
@@ -128,6 +154,10 @@ export class AgentLoop {
   }
 
   async run(userInput: string, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
+    return this.enqueue(() => this.runInternal(userInput, signal, messageId))
+  }
+
+  private async runInternal(userInput: string, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
     let usage = { ...EMPTY_TOKEN_USAGE }
     const turnId = randomUUID()
     const userMessage: ChatMessage & { type: 'message' } = {
@@ -157,6 +187,7 @@ export class AgentLoop {
       if (signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError')
       }
+      await this.flushReadyToolUseSummaries(turnId)
       const preparedRecords = await this.loadPreparedRecords()
       const progressive = applyProgressiveCompaction({
         records: preparedRecords,
@@ -171,6 +202,7 @@ export class AgentLoop {
         records: recordsBeforeCompact,
         provider: this.activeModel.provider,
         model: this.activeModel.model,
+        compactRuntime: this.options.compactModel,
         tools: this.options.tools,
         system: this.options.system,
         contextManagement: this.options.contextManagement,
@@ -365,6 +397,7 @@ export class AgentLoop {
       }
 
       const toolResults = await this.runToolCallsInOrder(response.toolCalls, signal, turnId)
+      this.startToolUseSummary(toolResults, turnId)
 
       if (toolResults.length > 0 && toolResults.every((r) => !r.ok)) {
         await this.appendRecord({
@@ -379,6 +412,96 @@ export class AgentLoop {
     }
 
     throw new Error('Agent loop exceeded maximum tool iterations')
+  }
+
+  /**
+   * Run a single tool call out-of-band. By default the call is fully isolated
+   * from the main loop: it gets its own in-memory record stream (so tool_use,
+   * tool_approval, and tool_result records do not pollute the main session's
+   * persisted JSONL or the records cache), and a forked toolContext (so
+   * mutable state — readFiles, readFileState, invokedSkills, taskState — is
+   * not shared with the main loop's pending or future run()).
+   *
+   * Calls are serialized against run() and other runTool() invocations via
+   * the loop's in-flight gate. If a concurrent run() is in progress, this
+   * call waits for it to finish before executing.
+   *
+   * Use this for diagnostic dispatch (e.g. /verify) that should leave no
+   * trace in the main conversation. Pass `recordStream` and/or `toolContext`
+   * explicitly only if you actually want the call to participate in the main
+   * session — e.g. tests asserting record persistence.
+   */
+  async runTool(call: ToolCall, options?: RunToolOptions): Promise<ToolResultRecord> {
+    if (options?.signal?.aborted) {
+      throw new DOMException('The operation was aborted.', 'AbortError')
+    }
+    return this.enqueue(() => this.runToolInternal(call, options))
+  }
+
+  private async runToolInternal(call: ToolCall, options?: RunToolOptions): Promise<ToolResultRecord> {
+    if (options?.signal?.aborted) {
+      throw new DOMException('The operation was aborted.', 'AbortError')
+    }
+
+    const recordStream: RecordStream = options?.recordStream ?? new MemoryRecordStream()
+    const toolContext = options?.toolContext ?? this.forkToolContext()
+    const turnId = options?.turnId ?? randomUUID()
+
+    const isolatedRunner = this.options.toolRunner.fork({
+      onRecord: async (record) => {
+        await recordStream.append(record)
+      },
+    })
+
+    return isolatedRunner.run(call, toolContext, options?.signal, turnId)
+  }
+
+  /**
+   * Produce a shallow-but-collection-cloned copy of the configured
+   * toolContext. Sets and Maps are duplicated so mutations performed by an
+   * out-of-band tool call do not leak back into the main loop's view of
+   * which files have been read, what skills have been invoked, or the
+   * current task list. The returned context omits transient fields
+   * (abortSignal, appendRecord) which the ToolRunner installs per-call.
+   */
+  private forkToolContext(): ToolContext {
+    const source = this.options.toolContext
+    const fork: ToolContext = {
+      cwd: source.cwd,
+      sessionId: source.sessionId,
+      readFiles: new Set(source.readFiles),
+    }
+    if (source.readFileState) fork.readFileState = new Map(source.readFileState)
+    if (source.invokedSkills) fork.invokedSkills = new Map(source.invokedSkills)
+    if (source.taskState) fork.taskState = new Map(source.taskState)
+    return fork
+  }
+
+  /**
+   * Funnel run() and runTool() through a single in-flight slot. New work
+   * waits for any prior work to settle (success or failure) before starting,
+   * which guarantees neither helper races on shared state. The slot is
+   * cleared in finally regardless of outcome.
+   */
+  private async enqueue<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.inFlight
+    if (previous) {
+      try {
+        await previous
+      } catch {
+        // Prior work's failure is the prior caller's concern. We only need
+        // sequencing here, not error propagation.
+      }
+    }
+    const current = (async () => work())()
+    this.inFlight = current
+    try {
+      return await current
+    } finally {
+      if (this.inFlight === current) {
+        this.inFlight = null
+      }
+    }
   }
 
   private async loadPreparedRecords(): Promise<SessionRecord[]> {
@@ -416,6 +539,54 @@ export class AgentLoop {
     await this.options.recordStream.append(record)
     this.noteRecordAppended(record)
     this.options.onRecord?.(record)
+  }
+
+  private startToolUseSummary(toolResults: ToolResultRecord[], turnId: string): void {
+    const runtime = this.options.compactModel
+    if (!runtime || toolResults.length === 0) return
+
+    const entry: PendingToolUseSummary = {
+      turnId,
+      status: 'pending',
+      promise: summarizeToolUse({
+        provider: runtime.provider,
+        model: runtime.model,
+        promptCacheRetention: runtime.promptCacheRetention,
+        toolResults,
+      }),
+    }
+    entry.promise.then((summary) => {
+      entry.status = 'ready'
+      entry.record = {
+        ...summary.record,
+        turnId,
+      }
+    }).catch((error: unknown) => {
+      entry.status = 'failed'
+      if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
+        console.error('[hanekawa][tool-summary] failed:', error)
+      }
+    })
+    this.pendingToolUseSummaries.push(entry)
+  }
+
+  private async flushReadyToolUseSummaries(turnId: string): Promise<void> {
+    if (this.pendingToolUseSummaries.length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    for (let index = 0; index < this.pendingToolUseSummaries.length;) {
+      const entry = this.pendingToolUseSummaries[index]
+      if (!entry || entry.status === 'pending') {
+        index += 1
+        continue
+      }
+      this.pendingToolUseSummaries.splice(index, 1)
+      if (entry.status !== 'ready' || !entry.record) continue
+      await this.appendRecord({
+        ...entry.record,
+        turnId: entry.record.turnId ?? turnId,
+      })
+    }
   }
 
   private pendingPostCompactRestoreRecordIds(records: SessionRecord[]): string[] {
@@ -672,6 +843,13 @@ export class AgentLoop {
     if (a.modelKey || b.modelKey) return a.modelKey === b.modelKey
     return a.provider === b.provider && a.model === b.model
   }
+}
+
+interface PendingToolUseSummary {
+  turnId: string
+  status: 'pending' | 'ready' | 'failed'
+  promise: Promise<{ record: ToolUseSummaryRecord; usage?: TokenUsage }>
+  record?: ToolUseSummaryRecord
 }
 
 function isAbortError(error: unknown): boolean {

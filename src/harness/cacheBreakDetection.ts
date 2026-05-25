@@ -26,6 +26,7 @@ export type CacheBreakSource =
   | 'repl_main_thread'
   | 'sdk'
   | 'compact'
+  | 'tool_use_summary'
   | 'hook_agent'
   | 'hook_prompt'
   | 'verification_agent'

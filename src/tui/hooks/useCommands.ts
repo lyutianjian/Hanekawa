@@ -19,6 +19,7 @@ interface UseCommandsOptions {
   clearMessages: () => void | Promise<void>
   clearCachedSections?: () => void
   invalidateRecordsCache?: () => void
+  runVerification?: (args: string) => Promise<string>
 }
 
 export function useCommands({
@@ -33,15 +34,20 @@ export function useCommands({
   clearMessages,
   clearCachedSections,
   invalidateRecordsCache,
+  runVerification,
 }: UseCommandsOptions) {
   const { exit } = useApp()
 
   // Mirror the live values in refs so dispatch can read the latest data
-  // without listing the parent objects in deps. App.tsx re-creates `model`
-  // (and sometimes `session`) as fresh object literals on every render, so
-  // depending on those identities would rebuild dispatch each streaming
-  // chunk. Keying on stable scalars (session.id, model.key) keeps dispatch
-  // stable while the refs ensure we still read fresh fields when invoked.
+  // without listing the parent objects in deps. These assignments happen
+  // during render intentionally: App.tsx re-creates `model` (and sometimes
+  // `session`) as fresh object literals on every render, and also rebuilds
+  // callbacks such as `runVerification` when runtime changes. Depending on
+  // those identities would rebuild dispatch each streaming chunk, while a
+  // passive effect could leave a just-committed dispatch briefly pointing at
+  // stale command context. Keying on stable scalars (session.id, model.key)
+  // keeps dispatch stable while the refs ensure we still read fresh fields
+  // when invoked.
   const sessionRef = useRef(session)
   sessionRef.current = session
   const modelRef = useRef(model)
@@ -60,6 +66,8 @@ export function useCommands({
   clearCachedSectionsRef.current = clearCachedSections
   const invalidateRecordsCacheRef = useRef(invalidateRecordsCache)
   invalidateRecordsCacheRef.current = invalidateRecordsCache
+  const runVerificationRef = useRef(runVerification)
+  runVerificationRef.current = runVerification
   const storeRef = useRef(store)
   storeRef.current = store
   const cwdRef = useRef(cwd)
@@ -109,8 +117,10 @@ export function useCommands({
             currency: currentPricing.currency ?? 'USD',
           }
         },
+        getSessionMetricsSummary: async () => storeRef.current.loadMetricsSummary(sessionRef.current.id),
         getModel: () => modelRef.current,
         setModel: (m) => setModelRef.current(m),
+        runVerification: runVerificationRef.current,
       }
 
       try {

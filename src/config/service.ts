@@ -30,6 +30,7 @@ export interface Config {
   models: Record<string, ModelConfig>
   defaultModel?: string
   fallbackModel?: string
+  compactModel?: string
   agent: AgentConfig
 }
 
@@ -94,6 +95,11 @@ export class ConfigService {
     return this.config.models[this.config.fallbackModel]
   }
 
+  getCompactModel(): ModelConfig | undefined {
+    if (!this.config.compactModel) return undefined
+    return this.config.models[this.config.compactModel]
+  }
+
   setDefaultModel(name: string): void {
     if (this.config.models[name]) {
       this.config.defaultModel = name
@@ -112,6 +118,7 @@ function configFromSettings(settings?: MyAgentSettings): Partial<Config> {
     ...(settings.models ? { models: settings.models } : {}),
     ...(settings.defaultModel !== undefined ? { defaultModel: settings.defaultModel } : {}),
     ...(settings.fallbackModel !== undefined ? { fallbackModel: settings.fallbackModel } : {}),
+    ...(settings.compactModel !== undefined ? { compactModel: settings.compactModel } : {}),
     ...(settings.agent ? { agent: settings.agent } : {}),
   }
 }
@@ -121,6 +128,7 @@ function deepMergeConfig(base: Config, overrides: Partial<Config>): Config {
     models: { ...base.models, ...overrides.models },
     defaultModel: overrides.defaultModel ?? base.defaultModel,
     fallbackModel: overrides.fallbackModel ?? base.fallbackModel,
+    compactModel: overrides.compactModel ?? base.compactModel,
     agent: {
       ...base.agent,
       ...overrides.agent,

@@ -6,7 +6,6 @@ import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { render } from 'ink'
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { ConfigService } from '../../config/service.js'
 import {
   loadMergedSettings,
@@ -30,12 +29,13 @@ import { SkillsService } from '../../services/skills/skillsService.js'
 import { registerBuiltinCommands } from '../../commands/index.js'
 import {
   loadMcpConfig,
-  connectMcpServer,
-  disconnectMcpServer,
+  connectManagedMcpServer,
   getMcpTimeoutMs,
   wrapMcpTool,
 } from '../../services/mcp/index.js'
+import type { ManagedMcpClient } from '../../services/mcp/index.js'
 import type { McpTool } from '../../services/mcp/index.js'
+import type { Tool } from '../../harness/types.js'
 import { createPromptProxy, createRecordProxy } from '../hooks/usePermission.js'
 import { App } from '../components/App.js'
 import type { AppRuntime } from '../components/App.js'
@@ -59,7 +59,9 @@ async function main() {
     process.exit(1)
   }
 
-  const store = new SessionStore(cwd)
+  const store = new SessionStore(cwd, {
+    ...(startupCommand.otlpEndpoint ? { otlpEndpoint: startupCommand.otlpEndpoint } : {}),
+  })
   await store.init()
 
   if (startupCommand.kind === 'list') {
@@ -111,16 +113,36 @@ async function main() {
     console.error(`Unknown fallback model configured: ${fallbackModelKey}`)
     process.exit(1)
   }
+  const compactModelKey = config.get().compactModel
+  if (compactModelKey && !config.getModel(compactModelKey)) {
+    console.error(`Unknown compact model configured: ${compactModelKey}`)
+    process.exit(1)
+  }
 
   const baseTools = await getAllTools()
   const skills = await new SkillsService(cwd).list()
   const promptSections = new SystemPromptSectionCache()
+  const runtimeToolSets = new Set<Tool[]>()
+  const activeLoops = new Set<AgentLoop>()
+  const mcpToolsByServer = new Map<string, Tool[]>()
+  const refreshRuntimeTools = () => {
+    const mcpTools = [...mcpToolsByServer.values()].flat()
+    for (const tools of runtimeToolSets) {
+      const agentTool = tools.find((tool) => tool.name === 'Agent')
+      tools.splice(0, tools.length, ...baseTools, ...mcpTools)
+      if (agentTool) tools.push(agentTool)
+    }
+    for (const loop of activeLoops) {
+      loop.invalidateAvailableToolsSection()
+    }
+    promptSections.clear('system-prompt:available-tools')
+  }
 
   // MCP integration: load config, connect each server, wrap tools.
   // Fail-open: any server that fails to connect is reported in the status line
   // but does not block startup.
   const mcpConfig = await loadMcpConfig(cwd, settings)
-  const mcpClients: Client[] = []
+  const mcpClients: ManagedMcpClient[] = []
   const mcpSuccesses: string[] = []
   const mcpFailures: { name: string; error: string }[] = []
   const trustedMcpServers = new Set(settings.mcp?.trustedServers ?? [])
@@ -146,20 +168,29 @@ async function main() {
       }
 
       const timeoutMs = getMcpTimeoutMs(serverConfig)
-      const client = await connectMcpServer(serverConfig)
-      const listed = await client.listTools(undefined, { timeout: timeoutMs })
-      const mcpTools: McpTool[] = listed.tools.map((t) => ({
-        name: t.name,
-        description: t.description ?? '',
-        inputSchema: t.inputSchema,
-        annotations: t.annotations as Record<string, unknown> | undefined,
-      }))
-      for (const mcpTool of mcpTools) {
-        baseTools.push(wrapMcpTool(name, mcpTool, client))
-      }
-      promptSections.clear('system-prompt:available-tools')
-      mcpClients.push(client)
-      mcpSuccesses.push(`${name} (${mcpTools.length} tools)`)
+      let manager: ManagedMcpClient
+      manager = await connectManagedMcpServer(serverConfig, {
+        onReconnect: async (client) => {
+          await refreshMcpServerTools(name, client, manager, timeoutMs, mcpToolsByServer)
+          refreshRuntimeTools()
+        },
+        onToolsChanged: (_client, tools) => {
+          setMcpServerTools(name, tools, manager, mcpToolsByServer)
+          refreshRuntimeTools()
+        },
+        onReconnectFailed: async (error) => {
+          await store.appendMetric(session.id, {
+            event: 'mcp_connect_failed',
+            server: name,
+            error: error.message,
+          })
+        },
+      })
+      await refreshMcpServerTools(name, manager, manager, timeoutMs, mcpToolsByServer)
+      const toolCount = mcpToolsByServer.get(name)?.length ?? 0
+      refreshRuntimeTools()
+      mcpClients.push(manager)
+      mcpSuccesses.push(`${name} (${toolCount} tools)`)
     } catch (error) {
       await recordMcpFailure(name, error instanceof Error ? error.message : String(error))
     }
@@ -221,10 +252,27 @@ async function main() {
           modelKey: fallbackModelKey,
           providerName: fallbackProvider.name,
           promptCacheRetention: fallbackModelConfig.promptCacheRetention,
+      }
+      : undefined
+
+    const compactModelConfig = compactModelKey
+      ? config.getModel(compactModelKey)
+      : undefined
+    const compactProvider = compactModelConfig ? createProvider(compactModelConfig) : undefined
+    if (compactModelConfig && !compactProvider) {
+      throw new Error(`Failed to create compact provider for: ${compactModelConfig.provider}`)
+    }
+    const compactModel = compactModelConfig && compactProvider
+      ? {
+          provider: compactProvider,
+          model: compactModelConfig.model,
+          modelKey: compactModelKey,
+          providerName: compactProvider.name,
+          promptCacheRetention: compactModelConfig.promptCacheRetention,
         }
       : undefined
 
-    const runtimeTools = [...baseTools]
+    const runtimeTools = [...baseTools, ...mcpToolsByServer.values()].flat()
     runtimeTools.push(createAgentTool({
       provider: targetProvider,
       model: targetModelConfig.model,
@@ -245,6 +293,7 @@ async function main() {
     }))
 
     const recordStream = new JsonlRecordStream(store, runtimeSession.id)
+    runtimeToolSets.add(runtimeTools)
     const runtimeToolRunner = new ToolRunner(runtimeTools, permissionGate, {
       onRecord: async (record) => {
         await recordStream.append(record)
@@ -257,8 +306,7 @@ async function main() {
       preToolUse: settings.hooks?.preToolUse,
     })
 
-    return {
-      loop: new AgentLoop({
+    const loop = new AgentLoop({
         provider: targetProvider,
         model: targetModelConfig.model,
         modelKey,
@@ -282,14 +330,22 @@ async function main() {
         cacheRuntime: { settings, env: process.env },
         permissionMode: () => permissionGate.getMode(),
         fallbackModel,
+        compactModel,
         getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
         setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
         recordStream,
         onRecord: (record) => recordProxy.onRecord(record),
-      }),
+      })
+    activeLoops.add(loop)
+    return {
+      loop,
       modelKey,
       modelConfig: targetModelConfig,
       providerName: targetProvider.name,
+      dispose: () => {
+        runtimeToolSets.delete(runtimeTools)
+        activeLoops.delete(loop)
+      },
     }
   }
 
@@ -321,7 +377,7 @@ async function main() {
   const onBeforeExit = async () => {
     // Disconnect all MCP clients on exit. Swallow errors so a misbehaving
     // server cannot prevent the TUI from exiting cleanly.
-    await Promise.allSettled(mcpClients.map((c) => disconnectMcpServer(c)))
+    await Promise.allSettled(mcpClients.map((c) => c.close()))
   }
   const onPermissionModeChange = async (mode: ReturnType<typeof permissionGate.getMode>) => {
     await savePermissionModePreferenceLocally(cwd, mode)
@@ -336,6 +392,7 @@ async function main() {
       session={session}
       modelConfig={initialRuntime.modelConfig}
       providerName={initialRuntime.providerName}
+      dispose={initialRuntime.dispose}
       availableModelKeys={Object.keys(config.get().models)}
       createRuntime={createRuntime}
       permissionGate={permissionGate}
@@ -374,4 +431,30 @@ async function promptTrustMcpServer(name: string, serverConfig: { transport: str
   } finally {
     rl.close()
   }
+}
+
+async function refreshMcpServerTools(
+  name: string,
+  client: Pick<ManagedMcpClient, 'listTools'>,
+  toolClient: ManagedMcpClient,
+  timeoutMs: number,
+  toolsByServer: Map<string, Tool[]>,
+): Promise<void> {
+  const listed = await client.listTools(undefined, { timeout: timeoutMs })
+  setMcpServerTools(name, listed.tools, toolClient, toolsByServer)
+}
+
+function setMcpServerTools(
+  name: string,
+  listedTools: Awaited<ReturnType<ManagedMcpClient['listTools']>>['tools'],
+  toolClient: ManagedMcpClient,
+  toolsByServer: Map<string, Tool[]>,
+): void {
+  const mcpTools: McpTool[] = listedTools.map((t) => ({
+    name: t.name,
+    description: t.description ?? '',
+    inputSchema: t.inputSchema,
+    annotations: t.annotations as Record<string, unknown> | undefined,
+  }))
+  toolsByServer.set(name, mcpTools.map((mcpTool) => wrapMcpTool(name, mcpTool, toolClient)))
 }

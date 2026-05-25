@@ -210,6 +210,64 @@ test('SessionStore restores cache summary before first metric append', async () 
   }
 })
 
+test('SessionStore loads cache and compact metrics summary', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+
+    const session = await store.create()
+    for (let i = 0; i < 6; i += 1) {
+      await store.appendMetric(session.id, {
+        event: 'turn',
+        model: 'fake-model',
+        input_tokens: 100,
+        response_tokens: 5,
+        cache_read_tokens: 100,
+        cache_hit_rate: 0.5,
+        tool_calls: 0,
+        duration_ms: 10,
+      })
+      if (i === 1 || i === 5) {
+        await store.appendMetric(session.id, {
+          event: 'compact',
+          model: 'fake-model',
+          pre_tokens: 10_000,
+          post_tokens: 4_000,
+          compact_duration_ms: 25,
+        })
+      }
+    }
+
+    const summary = await store.loadMetricsSummary(session.id)
+    assert.equal(summary?.totalTurns, 6)
+    assert.equal(summary?.totalCacheHitRate, 0.5)
+    assert.equal(summary?.averageCompactIntervalTurns, 4)
+
+    const restartedStore = new SessionStore(dir)
+    await restartedStore.init()
+    const restoredSummary = await restartedStore.loadMetricsSummary(session.id)
+    assert.equal(restoredSummary?.totalTurns, 6)
+    assert.equal(restoredSummary?.totalCacheHitRate, 0.5)
+    assert.equal(restoredSummary?.averageCompactIntervalTurns, 4)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SessionStore returns null metrics summary when no metrics exist', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+
+    const session = await store.create()
+    assert.equal(await store.loadMetricsSummary(session.id), null)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('SessionStore persists and clears compact failure count in metadata', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
   try {

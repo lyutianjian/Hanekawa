@@ -14,6 +14,14 @@ export interface CommandUsage {
   currency?: string
 }
 
+export interface CommandSessionMetricsSummary {
+  totalCacheHitRate: number | null
+  totalTurns: number
+  firstBreakTurnCount: number | null
+  cacheBreakCount: number
+  averageCompactIntervalTurns: number | null
+}
+
 export interface CommandModelInfo {
   key: string
   model: string
@@ -34,8 +42,10 @@ export interface CommandContext {
   repairRecords?: () => Promise<{ repairedCount: number; diagnostics: Array<{ message: string }> }>
   resetCompactFailureCount?: () => Promise<void>
   getUsage?: () => CommandUsage
+  getSessionMetricsSummary?: () => Promise<CommandSessionMetricsSummary | null>
   getModel?: () => CommandModelInfo
   setModel?: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
+  runVerification?: (args: string) => Promise<string>
 }
 
 export type CommandResult =

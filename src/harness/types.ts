@@ -89,6 +89,16 @@ export interface CompactAttemptFailedRecord {
   turnId?: string
 }
 
+export interface ToolUseSummaryRecord {
+  id: string
+  type: 'tool_use_summary'
+  summary: string
+  toolUseIds: string[]
+  createdAt: string
+  turnId?: string
+  model?: string
+}
+
 export type SessionRecord =
   | ({ type: 'message' } & ChatMessage)
   | ToolUseRecord
@@ -96,6 +106,7 @@ export type SessionRecord =
   | ToolApprovalRecord
   | CompactBoundaryRecord
   | CompactAttemptFailedRecord
+  | ToolUseSummaryRecord
 
 export interface TaskItem {
   id: string

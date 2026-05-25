@@ -188,6 +188,10 @@ export function countSessionRecordTokens(record: SessionRecord): number {
     return countTextTokens(`${record.tool}\n${JSON.stringify(record.input ?? {})}`)
   }
 
+  if (record.type === 'tool_use_summary') {
+    return countTextTokens(record.summary)
+  }
+
   return 0
 }
 

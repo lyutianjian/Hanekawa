@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { ChatMessage, CompactBoundaryRecord, ModelProvider, SessionRecord, Tool, TokenUsage } from './types.js'
+import type { ActiveModelRuntime } from './loop.js'
 import { EMPTY_TOKEN_USAGE, addTokenUsage } from './usage.js'
 import {
   countTextTokens,
@@ -16,6 +17,7 @@ export interface CompactCheckInput {
   records: SessionRecord[]
   provider: ModelProvider
   model: string
+  compactRuntime?: ActiveModelRuntime
   tools: Tool[]
   system?: string
   contextManagement?: Partial<ContextManagementConfig>
@@ -277,7 +279,12 @@ async function summarizeRecords(
     createdAt: new Date().toISOString(),
   }
 
-  const response = await input.provider.createMessage({
+  const runtime = input.compactRuntime
+  const provider = runtime?.provider ?? input.provider
+  const model = runtime?.model ?? input.model
+  const promptCacheRetention = runtime?.promptCacheRetention ?? input.promptCacheRetention
+
+  const response = await provider.createMessage({
     system: 'You summarize prior conversation context so an agent can continue after compaction.',
     systemBlocks: [
       'You summarize prior conversation context so an agent can continue after compaction.',
@@ -285,8 +292,8 @@ async function summarizeRecords(
     messages: [message],
     contextItems: [{ kind: 'message', message }],
     tools: [],
-    model: input.model,
-    promptCacheRetention: input.promptCacheRetention,
+    model,
+    promptCacheRetention,
     cacheSource: 'compact',
     retry: { callerKind: 'background', persistent: true },
   })
@@ -313,6 +320,10 @@ function formatRecordsForSummary(records: SessionRecord[]): string {
 
     if (record.type === 'compact_boundary') {
       return `<compact_summary>\n${record.summary}\n</compact_summary>`
+    }
+
+    if (record.type === 'tool_use_summary') {
+      return `<tool_use_summary tool_use_ids="${record.toolUseIds.join(',')}">\n${record.summary}\n</tool_use_summary>`
     }
 
     if (record.type === 'tool_approval') {

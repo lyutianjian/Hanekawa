@@ -18,6 +18,18 @@ test('parseTuiStartupCommand supports continue aliases', () => {
   assert.deepEqual(parseTuiStartupCommand(['c']), { kind: 'continue' })
 })
 
+test('parseTuiStartupCommand supports OTLP endpoint option', () => {
+  assert.deepEqual(parseTuiStartupCommand(['--otlp-endpoint', 'http://127.0.0.1:4318', 'c']), {
+    kind: 'continue',
+    otlpEndpoint: 'http://127.0.0.1:4318',
+  })
+  assert.deepEqual(parseTuiStartupCommand(['resume', 'abc123', '--otlp-endpoint=http://collector:4318']), {
+    kind: 'resume',
+    sessionId: 'abc123',
+    otlpEndpoint: 'http://collector:4318',
+  })
+})
+
 test('resolveStartupSession continues the latest listed session', async () => {
   const older = meta('older-session', '2026-05-23T00:00:00.000Z')
   const newer = meta('newer-session', '2026-05-24T00:00:00.000Z')

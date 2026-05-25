@@ -55,6 +55,7 @@ test('ConfigService loads defaults and saves config', async () => {
     assert.ok(config.agent)
     assert.equal(config.defaultModel, 'anthropic')
     assert.equal(config.fallbackModel, undefined)
+    assert.equal(config.compactModel, undefined)
 
     service.addModel('test', { provider: 'anthropic', model: 'test-model' })
     assert.ok(service.getModel('test'))
@@ -80,6 +81,24 @@ test('ConfigService loads fallbackModel config', async () => {
     const config = reloaded.get()
     assert.equal(config.fallbackModel, 'small')
     assert.equal(reloaded.getFallbackModel()?.model, 'claude-small')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService loads compactModel config', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    const service = new ConfigService(dir)
+    service.addModel('small', { provider: 'anthropic', model: 'claude-small' })
+    service.get().compactModel = 'small'
+    await service.save()
+
+    const reloaded = new ConfigService(dir)
+    await reloaded.load()
+    const config = reloaded.get()
+    assert.equal(config.compactModel, 'small')
+    assert.equal(reloaded.getCompactModel()?.model, 'claude-small')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -127,6 +146,7 @@ test('ConfigService loads model and agent defaults from merged settings', async 
       },
       defaultModel: 'local',
       fallbackModel: 'anthropic',
+      compactModel: 'local',
       agent: {
         system: 'settings system',
         contextManagement: {
@@ -138,6 +158,7 @@ test('ConfigService loads model and agent defaults from merged settings', async 
     const config = service.get()
     assert.equal(config.defaultModel, 'local')
     assert.equal(config.fallbackModel, 'anthropic')
+    assert.equal(config.compactModel, 'local')
     assert.equal(config.models.local?.model, 'gpt-local')
     assert.equal(config.agent.system, 'settings system')
     assert.equal(config.agent.contextManagement?.contextWindow, 12345)
@@ -160,6 +181,7 @@ test('ConfigService gives config.json priority over settings config fields', asy
       },
       defaultModel: 'configModel',
       fallbackModel: 'settingsModel',
+      compactModel: 'settingsModel',
       agent: {
         system: 'config system',
         contextManagement: {
@@ -178,6 +200,7 @@ test('ConfigService gives config.json priority over settings config fields', asy
       },
       defaultModel: 'settingsModel',
       fallbackModel: 'anthropic',
+      compactModel: 'anthropic',
       agent: {
         system: 'settings system',
         contextManagement: {
@@ -190,6 +213,7 @@ test('ConfigService gives config.json priority over settings config fields', asy
     const config = service.get()
     assert.equal(config.defaultModel, 'configModel')
     assert.equal(config.fallbackModel, 'settingsModel')
+    assert.equal(config.compactModel, 'settingsModel')
     assert.equal(config.models.settingsModel?.model, 'gpt-settings')
     assert.equal(config.models.configModel?.model, 'claude-config')
     assert.equal(config.agent.system, 'config system')
@@ -232,6 +256,7 @@ test('validateSettings accepts model, agent, and cache settings', () => {
     },
     defaultModel: 'local',
     fallbackModel: 'anthropic',
+    compactModel: 'local',
     agent: {
       system: 'custom system',
     },
@@ -255,6 +280,7 @@ test('validateSettings rejects malformed model settings', () => {
     },
     defaultModel: '',
     fallbackModel: '',
+    compactModel: '',
     agent: {
       system: 1 as unknown as string,
     },
@@ -265,6 +291,7 @@ test('validateSettings rejects malformed model settings', () => {
   assert.match(result.errors.join('\n'), /model/)
   assert.match(result.errors.join('\n'), /defaultModel/)
   assert.match(result.errors.join('\n'), /fallbackModel/)
+  assert.match(result.errors.join('\n'), /compactModel/)
   assert.match(result.errors.join('\n'), /agent\.system/)
 })
 

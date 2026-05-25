@@ -30,6 +30,19 @@ export class ToolRunner {
     }
   }
 
+  /**
+   * Create a sibling ToolRunner that shares tools, permission gate, and hooks
+   * but routes records and progress events to a different sink. The returned
+   * runner has its own (empty) record-listener set, so any in-process listeners
+   * registered on the original (e.g. AgentLoop's records cache invalidator) are
+   * not invoked for forked runs. Use this when running a tool in isolation,
+   * such as a diagnostic/verification call that must not pollute the main
+   * session's record stream or in-memory caches.
+   */
+  fork(events: ToolRunEvents): ToolRunner {
+    return new ToolRunner(this.tools, this.permissionGate, events, this.hooks)
+  }
+
   async run(call: ToolCall, context: ToolContext, signal?: AbortSignal, turnId?: string): Promise<ToolResultRecord> {
     if (signal?.aborted) {
       throw new DOMException('The operation was aborted.', 'AbortError')

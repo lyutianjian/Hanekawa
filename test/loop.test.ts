@@ -543,6 +543,74 @@ test('agent loop sends tool result into the next model request', async () => {
   assert.equal(records.filter((record) => record.type === 'message' && record.role === 'tool').length, 0)
 })
 
+test('agent loop generates tool-use summary with compact model for the next request', async () => {
+  const records: SessionRecord[] = []
+  let callCount = 0
+  let summaryModelSeen = ''
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      callCount += 1
+      if (callCount === 1) {
+        return {
+          content: 'using tool',
+          toolCalls: [{ id: 'call-1', name: 'echo', input: { value: 'hello' } }],
+        }
+      }
+
+      const contextItems = request.contextItems ?? []
+      assert.ok(contextItems.some(
+        (item) => item.kind === 'message'
+          && /Summary of recent tool use/.test(item.message.content)
+          && /echo returned hello/.test(item.message.content),
+      ))
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const compactProvider: ModelProvider = {
+    name: 'compact',
+    async createMessage(request) {
+      summaryModelSeen = request.model
+      assert.equal(request.cacheSource, 'tool_use_summary')
+      assert.match(request.messages[0]?.content ?? '', /"value":"hello"/)
+      return { content: 'echo returned hello', toolCalls: [] }
+    },
+  }
+  const tools: Tool[] = [{
+    name: 'echo',
+    description: 'echo',
+    inputSchema: z.object({
+      value: z.string(),
+    }).strict(),
+    riskLevel: 'safe',
+    execute: async (input) => ({ ok: true, content: JSON.stringify(input) }),
+  }]
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    compactModel: {
+      provider: compactProvider,
+      model: 'cheap-model',
+      modelKey: 'cheap',
+      providerName: 'compact',
+    },
+    recordStream: recordStreamFor(records),
+  })
+
+  const response = await loop.run('hello')
+
+  assert.equal(response.content, 'done')
+  assert.equal(summaryModelSeen, 'cheap-model')
+  assert.ok(records.some((record) => record.type === 'tool_use_summary' && record.summary === 'echo returned hello'))
+})
+
 test('agent loop consumes pending post-compact restore after a successful build', async () => {
   const records: SessionRecord[] = [{
     type: 'compact_boundary',

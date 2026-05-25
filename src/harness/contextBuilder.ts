@@ -303,6 +303,19 @@ export class ContextBuilder {
           ok: record.ok,
           content: record.content,
         })
+        continue
+      }
+
+      if (record.type === 'tool_use_summary') {
+        contextItems.push({
+          kind: 'message',
+          message: {
+            id: record.id,
+            role: 'user',
+            content: `<system-reminder>Summary of recent tool use:\n${record.summary}</system-reminder>`,
+            createdAt: record.createdAt,
+          },
+        })
       }
     }
     return contextItems

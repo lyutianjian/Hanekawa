@@ -1,12 +1,12 @@
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { z } from 'zod/v3'
 import type { Tool } from '../../harness/types.js'
 import { validateJsonSchemaInput, type JsonSchema } from '../../harness/toolValidation.js'
+import type { McpToolClient } from './client.js'
 import type { McpTool } from './types.js'
 
 const DEFAULT_MCP_TOOL_TIMEOUT_MS = 60_000
 
-export function wrapMcpTool(serverName: string, mcpTool: McpTool, client: Client): Tool {
+export function wrapMcpTool(serverName: string, mcpTool: McpTool, client: McpToolClient): Tool {
   const hasReadOnlyHint = hasMcpReadOnlyHint(mcpTool)
 
   return {

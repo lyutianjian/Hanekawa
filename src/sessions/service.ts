@@ -6,6 +6,7 @@ import { getSessionsDir } from '../utils/paths.js'
 import { readJsonFile, writeJsonFile, parseJsonLines, parseJsonLinesWithDiagnostics } from '../utils/json.js'
 import type { SessionRecord } from '../harness/types.js'
 import type { SessionMetricInput, SessionMetric } from '../harness/metrics.js'
+import { OtlpMetricExporter } from '../harness/otlp.js'
 import { checkSessionInvariants, ensureToolResultPairing } from './invariants.js'
 import { normalizeDenialState, type DenialState } from '../harness/permissions.js'
 
@@ -43,6 +44,23 @@ interface RunningCacheSummary {
   firstBreakTurnCount: number | null
   cacheBreakCount: number
   causeDistribution: Record<string, number>
+  compactCount: number
+  firstCompactTurnIndex: number | null
+  lastCompactTurnIndex: number | null
+  compactIntervalTotal: number
+}
+
+export interface SessionMetricsSummary {
+  totalCacheHitRate: number | null
+  totalTurns: number
+  firstBreakTurnCount: number | null
+  cacheBreakCount: number
+  causeDistribution: Record<string, number>
+  averageCompactIntervalTurns: number | null
+}
+
+export interface SessionStoreOptions {
+  otlpEndpoint?: string
 }
 
 export type SessionDiagnosticCode =
@@ -78,10 +96,14 @@ export interface RepairRecordsResult {
 export class SessionStore {
   private static indexLocks = new Map<string, Promise<void>>()
   private readonly cacheSummaries = new Map<string, RunningCacheSummary>()
+  private readonly otlpExporter?: OtlpMetricExporter
   private sessionsDir: string
 
-  constructor(cwd: string) {
+  constructor(cwd: string, options: SessionStoreOptions = {}) {
     this.sessionsDir = getSessionsDir(cwd)
+    this.otlpExporter = options.otlpEndpoint
+      ? new OtlpMetricExporter({ endpoint: options.otlpEndpoint })
+      : undefined
   }
 
   async init(): Promise<void> {
@@ -304,20 +326,35 @@ export class SessionStore {
         ...metric,
       } as SessionMetric
       const metricsPath = this.sessionMetricsPath(sessionId)
-      const cacheSummary = metric.event === 'turn' || metric.event === 'cache_break'
+      const cacheSummary = metric.event === 'turn' || metric.event === 'cache_break' || metric.event === 'compact'
         ? this.runningCacheSummary(sessionId, metricsPath)
         : undefined
       appendFileSync(metricsPath, `${JSON.stringify(record)}\n`, { mode: 0o600 })
+      this.exportMetric(record)
       if (cacheSummary) {
         this.updateRunningCacheSummary(cacheSummary, record)
         const summary = this.buildSessionCacheSummaryRecord(sessionId, cacheSummary)
         if (summary) {
           appendFileSync(metricsPath, `${JSON.stringify(summary)}\n`, { mode: 0o600 })
+          this.exportMetric(summary)
         }
       }
     } catch {
       // Metrics are best-effort and must never affect the agent loop.
     }
+  }
+
+  async loadMetricsSummary(sessionIdOrPrefix: string): Promise<SessionMetricsSummary | null> {
+    const session = await this.resolve(sessionIdOrPrefix)
+    const sessionId = session?.id ?? sessionIdOrPrefix
+    const cached = this.cacheSummaries.get(sessionId)
+    if (cached) return toMetricsSummary(cached)
+
+    const metricsPath = this.sessionMetricsPath(sessionId)
+    if (!existsSync(metricsPath)) return null
+
+    const restored = this.runningCacheSummary(sessionId, metricsPath)
+    return toMetricsSummary(restored)
   }
 
   async setCompactFailureCount(sessionIdOrPrefix: string, count: number): Promise<void> {
@@ -697,39 +734,18 @@ export class SessionStore {
       firstBreakTurnCount: null,
       cacheBreakCount: 0,
       causeDistribution: {},
+      compactCount: 0,
+      firstCompactTurnIndex: null,
+      lastCompactTurnIndex: null,
+      compactIntervalTotal: 0,
     })
 
     if (!existsSync(metricsPath)) return empty()
-    const metrics = parseJsonLines<SessionMetric>(readFileSync(metricsPath, 'utf-8'))
-      .filter((metric) => metric.event !== 'session_cache_summary')
-    const turns = metrics.filter((metric) => metric.event === 'turn')
-    const breaks = metrics.filter((metric) => metric.event === 'cache_break')
-
     const summary = empty()
-    let totalInputTokens = 0
-    let totalCacheReadTokens = 0
-    for (const turn of turns) {
-      totalCacheReadTokens += turn.cache_read_tokens
-      totalInputTokens += inferTurnInputTokens(turn)
+    for (const metric of parseJsonLines<SessionMetric>(readFileSync(metricsPath, 'utf-8'))) {
+      if (metric.event === 'session_cache_summary') continue
+      this.updateRunningCacheSummary(summary, metric)
     }
-
-    const firstBreak = breaks[0]
-    const firstBreakTurnCount = firstBreak
-      ? turns.filter((turn) => turn.created_at <= firstBreak.created_at).length
-      : null
-    const causeDistribution: Record<string, number> = {}
-    for (const item of breaks) {
-      for (const reason of item.reasons) {
-        const cause = normalizeCacheBreakCause(reason)
-        causeDistribution[cause] = (causeDistribution[cause] ?? 0) + 1
-      }
-    }
-    summary.totalTurns = turns.length
-    summary.totalInputTokens = totalInputTokens
-    summary.totalCacheReadTokens = totalCacheReadTokens
-    summary.firstBreakTurnCount = firstBreakTurnCount
-    summary.cacheBreakCount = breaks.length
-    summary.causeDistribution = causeDistribution
     return summary
   }
 
@@ -738,6 +754,17 @@ export class SessionStore {
       summary.totalTurns += 1
       summary.totalCacheReadTokens += metric.cache_read_tokens
       summary.totalInputTokens += inferTurnInputTokens(metric)
+      return
+    }
+
+    if (metric.event === 'compact') {
+      if (summary.compactCount === 0) {
+        summary.firstCompactTurnIndex = summary.totalTurns
+      } else if (summary.lastCompactTurnIndex !== null) {
+        summary.compactIntervalTotal += summary.totalTurns - summary.lastCompactTurnIndex
+      }
+      summary.lastCompactTurnIndex = summary.totalTurns
+      summary.compactCount += 1
       return
     }
 
@@ -771,6 +798,12 @@ export class SessionStore {
   private indexPath(): string {
     return path.join(this.sessionsDir, 'index.json')
   }
+
+  private exportMetric(metric: SessionMetric): void {
+    this.otlpExporter?.exportMetric(metric).catch(() => {
+      // OTLP export is best-effort and should not surface as an unhandled rejection.
+    })
+  }
 }
 
 function inferTurnInputTokens(turn: Extract<SessionMetric, { event: 'turn' }>): number {
@@ -787,6 +820,26 @@ function inferTurnInputTokens(turn: Extract<SessionMetric, { event: 'turn' }>): 
 function normalizeCacheBreakCause(reason: string): string {
   const parenIndex = reason.indexOf('(')
   return parenIndex >= 0 ? reason.slice(0, parenIndex) : reason
+}
+
+function toMetricsSummary(summary: RunningCacheSummary): SessionMetricsSummary | null {
+  const denominator = summary.totalInputTokens + summary.totalCacheReadTokens
+  const compactInterval = averageCompactIntervalTurns(summary)
+  if (summary.totalTurns === 0 && summary.cacheBreakCount === 0 && compactInterval === null) return null
+  return {
+    totalCacheHitRate: denominator > 0 ? summary.totalCacheReadTokens / denominator : null,
+    totalTurns: summary.totalTurns,
+    firstBreakTurnCount: summary.firstBreakTurnCount,
+    cacheBreakCount: summary.cacheBreakCount,
+    causeDistribution: { ...summary.causeDistribution },
+    averageCompactIntervalTurns: compactInterval,
+  }
+}
+
+function averageCompactIntervalTurns(summary: RunningCacheSummary): number | null {
+  if (summary.compactCount === 0) return null
+  if (summary.compactCount === 1) return summary.firstCompactTurnIndex
+  return summary.compactIntervalTotal / (summary.compactCount - 1)
 }
 
 function denialStatesEqual(left: DenialState, right: DenialState): boolean {

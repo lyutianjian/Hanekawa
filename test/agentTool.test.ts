@@ -4,7 +4,7 @@ import { z } from 'zod/v3'
 import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, filterToolsForSubAgent } from '../src/tools/agentTool.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { PermissionGate } from '../src/harness/permissions.js'
-import type { ModelProvider, ModelRequest, Tool, ToolContext } from '../src/harness/types.js'
+import type { ModelProvider, ModelRequest, SessionRecord, Tool, ToolContext } from '../src/harness/types.js'
 
 function toolContext(sessionId = 'parent'): ToolContext {
   return {
@@ -250,6 +250,73 @@ test('Agent tool omits project context for explore and plan agents', async () =>
   assert.equal(requests.length, 1)
   assert.doesNotMatch(requests[0]!.system ?? '', /Project rules/)
   assert.match(requests[0]!.system ?? '', /code exploration specialist/)
+})
+
+test('verification agent prompt names overconfidence traps and requires command evidence', async () => {
+  const verification = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'verification')
+
+  assert.ok(verification)
+  const prompt = verification.getSystemPrompt()
+  assert.match(prompt ?? '', /verification avoidance/)
+  assert.match(prompt ?? '', /being seduced by the first 80%/)
+  assert.match(prompt ?? '', /RECOGNIZE YOUR OWN RATIONALIZATIONS/)
+  assert.match(prompt ?? '', /Command run/)
+  assert.match(prompt ?? '', /VERDICT: PARTIAL/)
+})
+
+test('Agent loop can run verification through Agent tool directly', async () => {
+  const requests: ModelRequest[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'VERDICT: PASS', toolCalls: [] }
+    },
+  }
+  let agentTool: Tool
+  agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [agentTool],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+  })
+  const runnerRecords: SessionRecord[] = []
+  const runner = new ToolRunner([agentTool], new PermissionGate(async () => true), {
+    onRecord: async (record) => { runnerRecords.push(record) },
+  })
+  const { AgentLoop } = await import('../src/harness/loop.js')
+  const { ContextBuilder } = await import('../src/harness/contextBuilder.js')
+  const mainStreamRecords: SessionRecord[] = []
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [agentTool],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: toolContext(),
+    recordStream: {
+      async append(record) { mainStreamRecords.push(record) },
+      async load() {
+        return []
+      },
+    },
+  })
+
+  const result = await loop.runTool({
+    id: 'verify-1',
+    name: 'Agent',
+    input: { task: 'verify last turn', subagent_type: 'verification' },
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.content, 'VERDICT: PASS')
+  assert.equal(requests.length, 1)
+  assert.match(requests[0]!.system ?? '', /verification specialist/)
+  // runTool must keep its records out of the main session stream and out of
+  // the originally-injected ToolRunner sink.
+  assert.deepEqual(mainStreamRecords, [], 'runTool leaked records into the main session stream')
+  assert.deepEqual(runnerRecords, [], 'runTool leaked records through the original ToolRunner sink')
 })
 
 test('Agent tool requires an explicit subagent_type', async () => {

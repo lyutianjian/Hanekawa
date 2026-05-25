@@ -4,7 +4,7 @@ This file gives coding agents guidance when working in this repository.
 
 ## What This Is
 
-Hanekawa (MyAgent) is a lightweight, self-hosted CLI programming agent. It supports Anthropic and OpenAI-compatible APIs, with session persistence, automatic context compaction, a skill system, MCP integration, prompt cache management, checkpoints, and permission-gated tools.
+Hanekawa (MyAgent) is a self-hosted CLI General-Purpose agent. It supports Anthropic and OpenAI-compatible APIs, with session persistence, automatic context compaction, a skill system, MCP integration, prompt cache management, checkpoints, and permission-gated tools.
 
 The interactive entrypoint is the Ink/React TUI at `src/tui/entrypoints/tui.tsx`.
 

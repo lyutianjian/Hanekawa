@@ -46,6 +46,7 @@ export interface CommandContext {
   getModel?: () => CommandModelInfo
   setModel?: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
   runVerification?: (args: string) => Promise<string>
+  reloadAgentDefinitions?: () => Promise<number>
 }
 
 export type CommandResult =

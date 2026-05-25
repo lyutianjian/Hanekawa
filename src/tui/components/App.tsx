@@ -27,6 +27,7 @@ import { invalidateResolvedCwdCache } from '../../utils/paths.js'
 export type AppMode = 'idle' | 'running' | 'restore' | 'exiting'
 
 const ABORT_TIMEOUT_MS = 2000
+const VERIFICATION_TASK_MAX_CHARS = 60_000
 const PERMISSION_MODES: readonly PermissionMode[] = ['bypass', 'auto', 'acceptEdits', 'default', 'plan']
 
 export interface AppRuntime {
@@ -54,6 +55,7 @@ interface AppProps {
   initialSystemMessages?: TUIDisplayItem[]
   onBeforeExit?: () => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => Promise<void> | void
+  reloadAgentDefinitions?: () => Promise<number>
 }
 
 export function App({
@@ -73,6 +75,7 @@ export function App({
   initialSystemMessages,
   onBeforeExit,
   onPermissionModeChange,
+  reloadAgentDefinitions: reloadRuntimeAgentDefinitions,
 }: AppProps) {
   const [mode, setMode] = useState<AppMode>('idle')
   const [activeSession, setActiveSession] = useState<SessionMeta>(initialSession)
@@ -247,6 +250,17 @@ export function App({
     }
   }, [store, activeSession.id, runtime.loop])
 
+  const reloadAgentDefinitions = useCallback(async (): Promise<number> => {
+    if (!reloadRuntimeAgentDefinitions) {
+      throw new Error('Agent definition reload is not available in this runtime.')
+    }
+    const count = await reloadRuntimeAgentDefinitions()
+    runtime.loop.clearCachedSections()
+    const nextRuntime = createRuntime(runtime.modelKey, activeSession)
+    replaceRuntime(nextRuntime)
+    return count
+  }, [reloadRuntimeAgentDefinitions, runtime.loop, runtime.modelKey, createRuntime, activeSession, replaceRuntime])
+
   const cyclePermissionMode = useCallback((direction: 1 | -1) => {
     setPermissionModeState((currentMode) => {
       const index = PERMISSION_MODES.indexOf(currentMode)
@@ -275,6 +289,7 @@ export function App({
     clearCachedSections: () => runtime.loop.clearCachedSections(),
     invalidateRecordsCache: () => runtime.loop.invalidateRecordsCache(),
     runVerification,
+    reloadAgentDefinitions,
   })
 
   const handleSubmit = async (text: string) => {
@@ -500,7 +515,7 @@ function buildVerificationTask(records: SessionRecord[], focus: string): string 
     `Relevant records from that turn:\n${formatRecordsForVerification(turnRecords)}`,
   ].filter((part): part is string => Boolean(part))
 
-  return truncateMiddle(body.join('\n\n'), 60_000)
+  return truncateMiddle(body.join('\n\n'), VERIFICATION_TASK_MAX_CHARS)
 }
 
 function findLastBefore(

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
-import { PermissionGate, isProtectedPath, type DenialState } from '../src/harness/permissions.js'
+import { PermissionGate, isProtectedPath, type DenialState, type PermissionRule } from '../src/harness/permissions.js'
 import { analyzeShellCommand } from '../src/harness/commandAnalysis.js'
 import { bashTool } from '../src/tools/bash.js'
 import type { Tool } from '../src/harness/types.js'
@@ -45,6 +45,50 @@ const skillTool: Tool = {
   inputSchema: z.object({}).strict(),
   execute: async () => ({ ok: true, content: '' }),
 }
+
+test('PermissionGate keeps bulk session rules separate from config rules', () => {
+  const configRules: PermissionRule[] = [
+    { toolName: 'Bash', behavior: 'deny', source: 'config' },
+  ]
+  const sessionRules: PermissionRule[] = [
+    { toolName: 'fsWrite', behavior: 'allow', source: 'session' },
+  ]
+  const gate = new PermissionGate(async () => true, configRules)
+
+  gate.addSessionRules(sessionRules)
+
+  assert.deepEqual(gate.getConfigRules(), configRules)
+  assert.deepEqual(gate.getSessionRules(), sessionRules)
+})
+
+test('PermissionGate routes bulk rules by source field', () => {
+  const configRule: PermissionRule = { toolName: 'Bash', behavior: 'deny', source: 'config' }
+  const sessionRule: PermissionRule = { toolName: 'fsWrite', behavior: 'allow', source: 'session' }
+  const gate = new PermissionGate(async () => true, [sessionRule])
+
+  gate.addSessionRules([configRule])
+
+  assert.deepEqual(gate.getConfigRules(), [configRule])
+  assert.deepEqual(gate.getSessionRules(), [sessionRule])
+})
+
+test('PermissionGate dedupes inherited rules by source', () => {
+  const configRule: PermissionRule = { toolName: 'Bash', behavior: 'deny', source: 'config' }
+  const sessionRule: PermissionRule = {
+    toolName: 'fsWrite',
+    contentPattern: '*a.txt',
+    behavior: 'allow',
+    source: 'session',
+  }
+  const parentGate = new PermissionGate(async () => true, [configRule, configRule])
+  parentGate.addSessionRules([sessionRule, sessionRule])
+  const childGate = new PermissionGate(async () => true, parentGate.getConfigRules())
+
+  childGate.addSessionRules([...parentGate.getSessionRules(), ...parentGate.getSessionRules()])
+
+  assert.deepEqual(childGate.getConfigRules(), [configRule])
+  assert.deepEqual(childGate.getSessionRules(), [sessionRule])
+})
 
 test('PermissionGate denies bash commands touching protected paths without prompting', async () => {
   let prompted = false

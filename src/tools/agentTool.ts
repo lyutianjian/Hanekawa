@@ -18,7 +18,16 @@ import type { CacheRuntime } from '../harness/cacheControl.js'
 import { runLifecycleHooks, type Hooks } from '../harness/hooks.js'
 import type { ModelProvider, Tool, ToolContext } from '../harness/types.js'
 
-export const ALL_AGENT_DISALLOWED_TOOLS = ['Agent'] as const
+export const NESTED_AGENT_FORBIDDEN_TOOLS = ['Agent'] as const
+
+export const WRITE_LIKE_AGENT_TOOL_NAMES = new Set([
+  'Bash',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'Delete',
+  'NotebookEdit',
+])
 
 export const DEFAULT_AGENT_MAX_TURNS = 10
 const VERIFICATION_AGENT_MAX_TURNS = 20
@@ -36,13 +45,17 @@ export interface BaseAgentDefinition {
   maxResultSizeChars?: number
   isReadOnlyAgent: boolean
   omitProjectContext?: boolean
+  criticalSystemReminder?: string
   getSystemPrompt(baseSystem?: string): string | undefined
 }
+
+const VERIFICATION_AGENT_CRITICAL_REMINDER = `# Critical Verification Reminder
+You are still the verification specialist. Stay adversarial, do not modify the project, run or cite concrete verification evidence where possible, and end with exactly one VERDICT line.`
 
 const GENERAL_PURPOSE_AGENT: BaseAgentDefinition = {
   type: 'general',
   description: 'General-purpose read-only sub-agent for isolated research tasks.',
-  disallowedTools: ALL_AGENT_DISALLOWED_TOOLS,
+  disallowedTools: NESTED_AGENT_FORBIDDEN_TOOLS,
   maxTurns: DEFAULT_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
@@ -131,6 +144,7 @@ const VERIFICATION_AGENT: BaseAgentDefinition = {
   maxTurns: VERIFICATION_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: false,
+  criticalSystemReminder: VERIFICATION_AGENT_CRITICAL_REMINDER,
   getSystemPrompt: () => `You are a verification specialist. Your job is not to confirm that the implementation works; your job is to try to break it.
 
 Your default failure mode as an LLM is overconfidence. Treat that as a real bug in your own process.
@@ -216,6 +230,7 @@ export interface CreateAgentToolOptions {
   providerName?: string
   promptCacheRetention?: 'in_memory' | '24h'
   fallbackModel?: ActiveModelRuntime
+  compactModel?: ActiveModelRuntime
   fallbackRetryDelayMs?: number
   tools(): Tool[]
   permissionPrompt: PermissionPrompt
@@ -232,6 +247,8 @@ export interface CreateAgentToolOptions {
   isGitRepo?: boolean
   hooks?: Hooks
   cacheRuntime?: CacheRuntime
+  getCompactFailureCount?(): Promise<number>
+  setCompactFailureCount?(count: number): Promise<void>
 }
 
 export function filterToolsForSubAgent(
@@ -242,14 +259,22 @@ export function filterToolsForSubAgent(
   const disallowed = new Set<string>(definition.disallowedTools)
   return tools.filter((tool) => {
     if (allowed && !allowed.has(tool.name)) return false
-    if (!allowed && tool.name === 'Bash') return false
+    if (!allowed && isUnsafeForReadOnlySubAgent(tool)) return false
     if (disallowed.has(tool.name)) return false
     return allowed !== undefined ? true : tool.isReadOnly === true
   })
 }
 
+export function infersReadOnlyAgentFromTools(tools: readonly string[] | undefined): boolean {
+  return tools === undefined || !tools.some((tool) => WRITE_LIKE_AGENT_TOOL_NAMES.has(tool))
+}
+
+function isUnsafeForReadOnlySubAgent(tool: Tool): boolean {
+  return tool.isDestructive === true || tool.riskLevel === 'dangerous'
+}
+
 export function createAgentTool(options: CreateAgentToolOptions): Tool {
-  const agentDefinitions = options.agentDefinitions ?? [...BUILT_IN_AGENT_DEFINITIONS]
+  const agentDefinitions = Object.freeze([...(options.agentDefinitions ?? BUILT_IN_AGENT_DEFINITIONS)])
   return {
     name: 'Agent',
     description: buildAgentToolDescription(agentDefinitions),
@@ -280,14 +305,11 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
         subAgentId = randomUUID()
         const recordStream = new MemoryRecordStream()
         const subTools = filterToolsForSubAgent(options.tools(), agentDefinition)
-        const inheritedRules = [
-          ...(options.getConfigRules?.() ?? []),
-          ...(options.getSessionRules?.() ?? []),
-        ]
-        const permissionGate = new PermissionGate(options.permissionPrompt, inheritedRules, {
+        const permissionGate = new PermissionGate(options.permissionPrompt, options.getConfigRules?.(), {
           mode: options.permissionMode?.(),
           denialStateStore: options.denialStateStore,
         })
+        permissionGate.addSessionRules(options.getSessionRules?.() ?? [])
         const toolRunner = new ToolRunner(subTools, permissionGate, {
           onRecord: async (record) => {
             await recordStream.append(record)
@@ -321,6 +343,7 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           toolRunner,
           toolContext,
           system: buildAgentSystemPrompt(agentDefinition, parsed.systemPrompt, options.system, parsed.maxOutputTokens),
+          criticalSystemReminder: agentDefinition.criticalSystemReminder,
           projectContext: agentDefinition.omitProjectContext ? undefined : options.projectContext,
           skills: options.skills,
           promptCacheRetention: options.promptCacheRetention,
@@ -329,10 +352,13 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           maxTurns: parsed.maxTurns ?? agentDefinition.maxTurns,
           maxOutputTokens: parsed.maxOutputTokens,
           fallbackModel: options.fallbackModel,
+          compactModel: options.compactModel,
           fallbackRetryDelayMs: options.fallbackRetryDelayMs,
           hooks: options.hooks,
           cacheRuntime: options.cacheRuntime,
           permissionMode: () => permissionGate.getMode(),
+          getCompactFailureCount: options.getCompactFailureCount,
+          setCompactFailureCount: options.setCompactFailureCount,
           recordStream,
         })
         const result = await loop.run(parsed.task, abortController.signal)
@@ -351,10 +377,11 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           ),
           'subagentStop',
         )
-        const content = appendHookOutputToToolResult(result.content, stopHookOutput)
+        const truncatedContent = applyAgentResultBudget(result.content, agentDefinition.maxResultSizeChars)
+        const content = appendHookOutputToToolResult(truncatedContent, stopHookOutput)
         return {
           ok: true,
-          content: applyAgentResultBudget(content, agentDefinition.maxResultSizeChars),
+          content,
           metadata: {
             subagent: {
               type: parsed.subagent_type,
@@ -427,18 +454,43 @@ function extractCriticalFiles(content: string): string[] {
     if (/^VERDICT:\s*(PASS|FAIL|PARTIAL)\s*$/i.test(trimmed)) break
     if (!trimmed) continue
 
-    const normalized = trimmed
-      .replace(/^[-*+]\s+/, '')
-      .replace(/^\d+[.)]\s+/, '')
-      .replace(/^`([^`]+)`(?:\s+.*)?$/, '$1')
-      .replace(/^([^:\s]+:\d+)(?:\s+.*)?$/, '$1')
-      .trim()
-
-    if (normalized) files.push(normalized)
+    const candidate = extractCriticalFileCandidate(trimmed)
+    if (candidate) files.push(candidate)
     if (files.length >= 5) break
   }
 
   return files
+}
+
+function extractCriticalFileCandidate(trimmed: string): string | undefined {
+  // Strip common list markers (- * + or "1." / "1)") before considering the line as a path candidate.
+  const withoutMarker = trimmed
+    .replace(/^[-*+]\s+/, '')
+    .replace(/^\d+[.)]\s+/, '')
+    .trim()
+
+  // Prefer the first inline-code span when present, e.g. "- `src/foo.ts` - reason".
+  const inlineCode = /^`([^`]+)`/.exec(withoutMarker)
+  if (inlineCode) {
+    const candidate = inlineCode[1]?.trim()
+    return candidate && looksLikePath(candidate) ? candidate : undefined
+  }
+
+  // Otherwise accept the leading whitespace-free token (optionally "path:line"),
+  // but only when the original line lacks descriptive prose (so we don't fold
+  // free-form notes into critical files).
+  const match = /^(\S+(?::\d+)?)(?:\s+.*)?$/.exec(withoutMarker)
+  const candidate = match?.[1]?.trim()
+  if (!candidate || !looksLikePath(candidate)) return undefined
+
+  // If the line continued past the path with prose, only keep the path itself.
+  return candidate
+}
+
+function looksLikePath(value: string): boolean {
+  if (!/[\\/.]/.test(value)) return false
+  if (/\s/.test(value)) return false
+  return true
 }
 
 export function getAgentDefinition(

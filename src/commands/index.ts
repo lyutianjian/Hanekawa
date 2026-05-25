@@ -11,6 +11,7 @@ import { skillsCommand } from './skills.js'
 import { compactCommand } from './compact.js'
 import { repairCommand } from './repair.js'
 import { verifyCommand } from './verify.js'
+import { agentsCommand } from './agents.js'
 
 // Register all built-in commands
 export function registerBuiltinCommands(): void {
@@ -23,4 +24,5 @@ export function registerBuiltinCommands(): void {
   registerCommand(compactCommand)
   registerCommand(repairCommand)
   registerCommand(verifyCommand)
+  registerCommand(agentsCommand)
 }

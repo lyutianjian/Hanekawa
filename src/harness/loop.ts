@@ -59,6 +59,7 @@ export interface AgentLoopOptions {
   toolContext: ToolContext
   system?: string
   projectContext?: string
+  criticalSystemReminder?: string
   skills?: SkillDefinition[]
   promptCacheRetention?: 'in_memory' | '24h'
   contextManagement?: Partial<ContextManagementConfig>
@@ -255,6 +256,7 @@ export class AgentLoop {
         tools: this.options.tools,
         system: this.options.system,
         projectContext: this.options.projectContext,
+        criticalSystemReminder: this.options.criticalSystemReminder,
         skills: this.options.skills,
         toolContext: this.options.toolContext,
         env,

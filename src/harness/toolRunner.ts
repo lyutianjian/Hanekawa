@@ -288,19 +288,24 @@ function formatSubagentSummary(value: unknown): string | undefined {
   const criticalFiles = Array.isArray(value.criticalFiles)
     ? value.criticalFiles.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : []
-  if (criticalFiles.length > 0) {
-    attributes.push(`critical_files="${escapeAttribute(criticalFiles.join(','))}"`)
+  if (criticalFiles.length === 0) {
+    return `<subagent-summary ${attributes.join(' ')} />`
   }
 
-  return `<subagent-summary ${attributes.join(' ')} />`
+  const files = criticalFiles
+    .map((file) => `  <critical-file>${escapeElementText(file)}</critical-file>`)
+    .join('\n')
+  return `<subagent-summary ${attributes.join(' ')}>\n${files}\n</subagent-summary>`
 }
 
 function totalTokens(usage: Record<string, unknown>): number | undefined {
-  const inputTokens = numericUsageField(usage.inputTokens)
-  const cacheReadInputTokens = numericUsageField(usage.cacheReadInputTokens)
-  const outputTokens = numericUsageField(usage.outputTokens)
-  if (inputTokens === undefined || cacheReadInputTokens === undefined || outputTokens === undefined) return undefined
-  return inputTokens + cacheReadInputTokens + outputTokens
+  const fields = [
+    numericUsageField(usage.inputTokens),
+    numericUsageField(usage.cacheReadInputTokens),
+    numericUsageField(usage.outputTokens),
+  ]
+  if (fields.every((field) => field === undefined)) return undefined
+  return fields.reduce<number>((sum, field) => sum + (field ?? 0), 0)
 }
 
 function numericUsageField(value: unknown): number | undefined {
@@ -315,6 +320,13 @@ function escapeAttribute(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+function escapeElementText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
 }

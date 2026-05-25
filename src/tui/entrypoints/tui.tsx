@@ -45,6 +45,13 @@ import type { TuiStartupCommand } from './cli.js'
 
 const cwd = process.cwd()
 
+function mergeAgentDefinitions<T extends { type: string }>(base: readonly T[], overrides: readonly T[]): T[] {
+  const merged = new Map<string, T>()
+  for (const definition of base) merged.set(definition.type, definition)
+  for (const definition of overrides) merged.set(definition.type, definition)
+  return [...merged.values()]
+}
+
 async function main() {
   if (!process.stdin.isTTY) {
     console.error('Error: myagent-tui requires an interactive terminal (TTY).')
@@ -122,8 +129,14 @@ async function main() {
 
   const baseTools = await getAllTools()
   const skills = await new SkillsService(cwd).list()
-  const customAgentDefinitions = await new AgentDefinitionLoader(cwd).list()
-  const agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
+  let customAgentDefinitions = await new AgentDefinitionLoader(cwd).list()
+  let agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
+  const reloadAgentDefinitions = async (): Promise<number> => {
+    customAgentDefinitions = await new AgentDefinitionLoader(cwd).list()
+    agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
+    promptSections.clear('system-prompt:available-tools')
+    return customAgentDefinitions.length
+  }
   const promptSections = new SystemPromptSectionCache()
   const runtimeToolSets = new Set<Tool[]>()
   const activeLoops = new Set<AgentLoop>()
@@ -298,6 +311,9 @@ async function main() {
       isGitRepo,
       hooks: settings.hooks,
       cacheRuntime: { settings, env: process.env },
+      compactModel,
+      getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
+      setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
     }))
 
     const recordStream = new JsonlRecordStream(store, runtimeSession.id)
@@ -410,6 +426,7 @@ async function main() {
       initialSystemMessages={initialSystemMessages}
       onBeforeExit={onBeforeExit}
       onPermissionModeChange={onPermissionModeChange}
+      reloadAgentDefinitions={reloadAgentDefinitions}
     />,
     {
       exitOnCtrlC: false,
@@ -423,13 +440,6 @@ main().catch((err) => {
   console.error('Fatal error:', err)
   process.exit(1)
 })
-
-function mergeAgentDefinitions<T extends { type: string }>(base: readonly T[], overrides: readonly T[]): T[] {
-  const merged = new Map<string, T>()
-  for (const definition of base) merged.set(definition.type, definition)
-  for (const definition of overrides) merged.set(definition.type, definition)
-  return [...merged.values()]
-}
 
 async function promptTrustMcpServer(name: string, serverConfig: { transport: string; command?: string; args?: string[]; url?: string }): Promise<boolean> {
   const rl = createInterface({ input, output })

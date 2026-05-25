@@ -20,6 +20,7 @@ interface UseCommandsOptions {
   clearCachedSections?: () => void
   invalidateRecordsCache?: () => void
   runVerification?: (args: string) => Promise<string>
+  reloadAgentDefinitions?: () => Promise<number>
 }
 
 export function useCommands({
@@ -35,6 +36,7 @@ export function useCommands({
   clearCachedSections,
   invalidateRecordsCache,
   runVerification,
+  reloadAgentDefinitions,
 }: UseCommandsOptions) {
   const { exit } = useApp()
 
@@ -68,6 +70,8 @@ export function useCommands({
   invalidateRecordsCacheRef.current = invalidateRecordsCache
   const runVerificationRef = useRef(runVerification)
   runVerificationRef.current = runVerification
+  const reloadAgentDefinitionsRef = useRef(reloadAgentDefinitions)
+  reloadAgentDefinitionsRef.current = reloadAgentDefinitions
   const storeRef = useRef(store)
   storeRef.current = store
   const cwdRef = useRef(cwd)
@@ -121,6 +125,7 @@ export function useCommands({
         getModel: () => modelRef.current,
         setModel: (m) => setModelRef.current(m),
         runVerification: runVerificationRef.current,
+        reloadAgentDefinitions: reloadAgentDefinitionsRef.current,
       }
 
       try {

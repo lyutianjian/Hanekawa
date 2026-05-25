@@ -82,6 +82,27 @@ const PLAN_READ_ONLY_GIT_SUBCOMMANDS = new Set([
 
 export { isProtectedPath } from '../utils/permissions/protectedPaths.js'
 
+function permissionRuleKey(rule: PermissionRule): string {
+  return [
+    rule.source,
+    rule.behavior,
+    rule.toolName,
+    rule.contentPattern ?? '',
+  ].join('\0')
+}
+
+function dedupePermissionRules(rules: PermissionRule[]): PermissionRule[] {
+  const seen = new Set<string>()
+  const deduped: PermissionRule[] = []
+  for (const rule of rules) {
+    const key = permissionRuleKey(rule)
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(rule)
+  }
+  return deduped
+}
+
 function extractPath(input: unknown): string {
   if (typeof input === 'string') return input
   if (input && typeof input === 'object') {
@@ -131,7 +152,7 @@ export class PermissionGate {
       denialStateStore?: DenialStateStore
     },
   ) {
-    this.configRules = [...(configRules ?? [])]
+    this.addRules(configRules ?? [])
     this.mode = options?.mode ?? 'default'
     const configured = options?.denialStreakThreshold ?? DEFAULT_DENIAL_STREAK_THRESHOLD
     this.denialStreakThreshold = Math.max(1, configured)
@@ -280,11 +301,16 @@ export class PermissionGate {
   }
 
   addSessionRule(rule: PermissionRule): void {
-    this.sessionRules.push(rule)
+    this.addRules([rule])
+  }
+
+  addSessionRules(rules: PermissionRule[]): void {
+    this.addRules(rules)
   }
 
   setConfigRules(rules: PermissionRule[]): void {
-    this.configRules = [...rules]
+    this.configRules = []
+    this.addRules(rules)
   }
 
   getConfigRules(): PermissionRule[] {
@@ -374,6 +400,16 @@ export class PermissionGate {
     if (!rule.contentPattern) return true
     const content = typeof input === 'string' ? input : JSON.stringify(input)
     return matchGlob(content, rule.contentPattern)
+  }
+
+  private addRules(rules: PermissionRule[]): void {
+    for (const rule of rules) {
+      if (rule.source === 'config') {
+        this.configRules = dedupePermissionRules([...this.configRules, rule])
+      } else {
+        this.sessionRules = dedupePermissionRules([...this.sessionRules, rule])
+      }
+    }
   }
 
   private commandAnalysisFor(toolName: string, input: unknown): ReturnType<typeof analyzeShellCommand> | undefined {

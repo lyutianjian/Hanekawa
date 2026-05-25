@@ -22,6 +22,7 @@ export interface BuildContextInput {
   tools: Tool[]
   system?: string
   projectContext?: string
+  criticalSystemReminder?: string
   skills?: SkillDefinition[]
   contextManagement?: Partial<ContextManagementConfig>
   includeUserContext?: boolean
@@ -222,6 +223,7 @@ export class ContextBuilder {
     const systemBlocks = this.buildSystemBlocks(
       input.system,
       input.projectContext,
+      input.criticalSystemReminder,
       input.enabledSections,
       input.tools,
       input.skills ?? [],
@@ -324,6 +326,7 @@ export class ContextBuilder {
   private buildSystemBlocks(
     system: string | undefined,
     projectContext?: string,
+    criticalSystemReminder?: string,
     enabledSections?: readonly SectionKey[],
     tools: readonly Tool[] = [],
     skills: readonly SkillDefinition[] = [],
@@ -340,6 +343,7 @@ export class ContextBuilder {
 
     const dynamicSections = [
       system?.trim(),
+      criticalSystemReminder?.trim(),
       this.buildPlanModeSystemReminder(permissionMode),
     ].filter((s): s is string => Boolean(s))
 

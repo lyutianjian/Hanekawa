@@ -6,6 +6,7 @@ import { costCommand } from '../src/commands/cost.js'
 import { modelCommand } from '../src/commands/model.js'
 import { repairCommand } from '../src/commands/repair.js'
 import { verifyCommand } from '../src/commands/verify.js'
+import { agentsCommand } from '../src/commands/agents.js'
 import type { CommandContext } from '../src/commands/types.js'
 
 function createContext(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -266,4 +267,27 @@ test('/verify delegates focus text to verification runner', async () => {
     'Starting adversarial verification...',
     'verified: check edge cases',
   ])
+})
+
+test('/agents reload delegates to agent definition reloader', async () => {
+  const events: string[] = []
+  await agentsCommand.run('reload', createContext({
+    writeLine: (message) => {
+      events.push(message)
+    },
+    reloadAgentDefinitions: async () => 2,
+  }))
+
+  assert.deepEqual(events, ['Reloaded 2 custom agent definitions.'])
+})
+
+test('/agents reports usage for unknown subcommands', async () => {
+  let output = ''
+  await agentsCommand.run('', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+  }))
+
+  assert.match(output, /Usage: \/agents reload/)
 })

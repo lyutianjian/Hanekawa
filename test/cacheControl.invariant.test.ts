@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
 import {
   ANTHROPIC_CACHE_CONTROL_LIMIT,
+  buildAnthropicMessages,
   buildAnthropicPayload,
   collectCacheControlTelemetry,
 } from '../src/config/providers.js'
@@ -144,5 +145,76 @@ test('buildAnthropicPayload cache_control distribution follows available request
     system: 1,
     tools: 0,
     messages: 1,
+  })
+})
+
+test('buildAnthropicMessages keeps injected subagent summary after Agent tool_result valid', () => {
+  const messages = buildAnthropicMessages(request({
+    contextItems: [
+      {
+        kind: 'message',
+        message: {
+          id: 'u1',
+          role: 'user',
+          content: 'Run verification.',
+          createdAt,
+        },
+      },
+      {
+        kind: 'message',
+        message: {
+          id: 'a1',
+          role: 'assistant',
+          content: 'I will run a verification sub-agent.',
+          createdAt,
+        },
+      },
+      {
+        kind: 'tool_use',
+        id: 'agent-call-1',
+        tool: 'Agent',
+        input: { task: 'verify', subagent_type: 'verification' },
+      },
+      {
+        kind: 'tool_result',
+        toolUseId: 'agent-call-1',
+        tool: 'Agent',
+        ok: true,
+        content: 'Checked behavior.\nVERDICT: PASS',
+      },
+      {
+        kind: 'message',
+        message: {
+          id: 'subagent-summary-1',
+          role: 'assistant',
+          content: '<subagent-summary type="verification" verdict="PASS" />',
+          createdAt,
+        },
+      },
+      {
+        kind: 'message',
+        message: {
+          id: 'u2',
+          role: 'user',
+          content: 'Thanks.',
+          createdAt,
+        },
+      },
+    ],
+  }))
+
+  assert.deepEqual(messages.map((message) => message.role), ['user', 'assistant', 'user', 'assistant', 'user'])
+  assert.deepEqual(messages[2], {
+    role: 'user',
+    content: [{
+      type: 'tool_result',
+      tool_use_id: 'agent-call-1',
+      content: 'Checked behavior.\nVERDICT: PASS',
+      is_error: false,
+    }],
+  })
+  assert.deepEqual(messages[3], {
+    role: 'assistant',
+    content: [{ type: 'text', text: '<subagent-summary type="verification" verdict="PASS" />' }],
   })
 })

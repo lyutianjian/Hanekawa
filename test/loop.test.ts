@@ -801,6 +801,128 @@ test('agent loop runs consecutive safe calls concurrently and unsafe calls as ba
   assert.ok(events.indexOf('unsafe:start') > events.indexOf('safeB:end'))
 })
 
+test('agent loop runs read-only Agent calls concurrently by subagent_type', async () => {
+  const records: SessionRecord[] = []
+  const events: string[] = []
+  let callCount = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      callCount += 1
+      if (callCount === 1) {
+        return {
+          content: 'using agents',
+          toolCalls: [
+            { id: 'explore-a-call', name: 'Agent', input: { task: 'map a', subagent_type: 'explore' } },
+            { id: 'explore-b-call', name: 'Agent', input: { task: 'map b', subagent_type: 'explore' } },
+            { id: 'explore-c-call', name: 'Agent', input: { task: 'map c', subagent_type: 'explore' } },
+          ],
+        }
+      }
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const agentTool: Tool = {
+    name: 'Agent',
+    description: 'agent',
+    inputSchema: z.object({
+      task: z.string(),
+      subagent_type: z.enum(['general', 'explore', 'plan', 'verification']),
+    }).strict(),
+    riskLevel: 'safe',
+    isConcurrencySafeInput(input) {
+      const parsed = this.inputSchema.safeParse(input)
+      return parsed.success && ['general', 'explore', 'plan'].includes((parsed.data as { subagent_type: string }).subagent_type)
+    },
+    execute: async (input) => {
+      const { task } = input as { task: string }
+      events.push(`${task}:start`)
+      await delay(task.endsWith('a') ? 20 : 5)
+      events.push(`${task}:end`)
+      return { ok: true, content: task }
+    },
+  }
+  const runner = new ToolRunner([agentTool], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [agentTool],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  await loop.run('hello')
+
+  assert.ok(events.indexOf('map b:start') > events.indexOf('map a:start'))
+  assert.ok(events.indexOf('map b:start') < events.indexOf('map a:end'))
+  assert.ok(events.indexOf('map c:start') > events.indexOf('map a:start'))
+  assert.ok(events.indexOf('map c:start') < events.indexOf('map a:end'))
+})
+
+test('agent loop keeps verification Agent calls serial', async () => {
+  const records: SessionRecord[] = []
+  const events: string[] = []
+  let callCount = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      callCount += 1
+      if (callCount === 1) {
+        return {
+          content: 'using agents',
+          toolCalls: [
+            { id: 'verification-a-call', name: 'Agent', input: { task: 'verify a', subagent_type: 'verification' } },
+            { id: 'verification-b-call', name: 'Agent', input: { task: 'verify b', subagent_type: 'verification' } },
+          ],
+        }
+      }
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const agentTool: Tool = {
+    name: 'Agent',
+    description: 'agent',
+    inputSchema: z.object({
+      task: z.string(),
+      subagent_type: z.enum(['general', 'explore', 'plan', 'verification']),
+    }).strict(),
+    riskLevel: 'safe',
+    isConcurrencySafeInput(input) {
+      const parsed = this.inputSchema.safeParse(input)
+      return parsed.success && ['general', 'explore', 'plan'].includes((parsed.data as { subagent_type: string }).subagent_type)
+    },
+    execute: async (input) => {
+      const { task } = input as { task: string }
+      events.push(`${task}:start`)
+      await delay(20)
+      events.push(`${task}:end`)
+      return { ok: true, content: task }
+    },
+  }
+  const runner = new ToolRunner([agentTool], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [agentTool],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  await loop.run('hello')
+
+  assert.ok(events.indexOf('verify b:start') > events.indexOf('verify a:end'))
+})
+
 test('agent loop keeps mislabeled write-like tools as barriers', async () => {
   const records: SessionRecord[] = []
   const events: string[] = []

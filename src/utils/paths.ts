@@ -101,3 +101,11 @@ export function getSessionsDir(cwd: string): string {
 export function getSkillsDir(cwd: string): string {
   return path.join(getMyAgentDir(cwd), 'skills')
 }
+
+export function getAgentsDir(cwd: string): string {
+  return path.join(getMyAgentDir(cwd), 'agents')
+}
+
+export function getLocalAgentsDir(cwd: string): string {
+  return path.join(getMyAgentDir(cwd), 'agents.local')
+}

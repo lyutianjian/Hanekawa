@@ -64,6 +64,7 @@ export interface AgentLoopOptions {
   contextManagement?: Partial<ContextManagementConfig>
   isGitRepo?: boolean
   maxTurns?: number
+  maxOutputTokens?: number
   tokenBudget?: number
   tokenWarningThreshold?: number
   fallbackModel?: ActiveModelRuntime
@@ -179,7 +180,7 @@ export class AgentLoop {
     const cacheSource = agentCacheSource(this.options.toolContext.sessionId)
 
     let lastRequestId: string | undefined
-    let maxOutputTokensOverride: number | undefined
+    let maxOutputTokensOverride: number | undefined = this.options.maxOutputTokens
     let maxOutputTokensRecoveryCount = 0
 
     for (let iteration = 0; iteration < maxTurns; iteration++) {
@@ -234,7 +235,7 @@ export class AgentLoop {
 
       if (this.retryPrimaryIfReady(cacheSource)) {
         lastRequestId = undefined
-        maxOutputTokensOverride = undefined
+        maxOutputTokensOverride = this.options.maxOutputTokens
         recordsBeforeCompact = await this.loadPreparedRecords()
       }
 
@@ -285,7 +286,7 @@ export class AgentLoop {
       } catch (error) {
         if (error instanceof FallbackTriggeredError && this.activateFallback(cacheSource)) {
           lastRequestId = undefined
-          maxOutputTokensOverride = undefined
+          maxOutputTokensOverride = this.options.maxOutputTokens
           continue
         }
         throw error
@@ -679,7 +680,9 @@ export class AgentLoop {
 
   private isConcurrencySafe(call: ToolCall): boolean {
     const tool = this.options.tools.find((candidate) => candidate.name === call.name)
-    return tool?.isConcurrencySafe === true && tool.isReadOnly === true && tool.isDestructive !== true
+    if (!tool || tool.isDestructive === true) return false
+    if (tool.isConcurrencySafeInput) return tool.isConcurrencySafeInput(call.input)
+    return tool.isConcurrencySafe === true && tool.isReadOnly === true
   }
 
   private async emitTurnMetric(startedAt: number, usage: TokenUsage, toolCalls: number): Promise<void> {

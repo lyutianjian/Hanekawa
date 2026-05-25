@@ -94,7 +94,7 @@ Key modules:
 
 - `contextBuilder.ts` — assembles system prompt blocks, skills, environment info, post-compact restore context, and session history into a `ModelRequest`
 - `compact.ts` — token-driven auto-compaction via LLM summary
-- `requestPrep.ts` — prepares session records, compacts oversized tool results (20k token limit per result), repairs tool_use/tool_result pairing
+- `requestPrep.ts` — prepares session records, enforces two-layer tool result budget (see below), repairs tool_use/tool_result pairing
 - `toolRunner.ts` — executes tool calls, records results, respects permission gates
 - `permissions.ts` — three-tier risk model: `safe` (auto-allow), `confirm` (prompt user), `dangerous` (always prompt). Protected paths (`.git`, `.myagent`, `.env`, `.ssh`) and files (`.gitconfig`, `.bashrc`, `.env`, `.npmrc`) always blocked. Supports glob-pattern allow/deny rules.
 - `cacheControl.ts` — Anthropic prompt caching breakpoints and cache break detection
@@ -111,6 +111,11 @@ Key modules:
 - `sections.ts` — system prompt section management
 - `toolApiSchema.ts` — tool API schema generation
 - `types.ts` — shared type definitions (`Tool`, `ToolContext`, `ToolResult`, `ModelRequest`, etc.)
+
+**Tool result budget — two layers:**
+
+1. **Per-result write-time truncation** (`toolRunner.ts:applyToolResultBudget`): each tool defines `maxResultSizeChars`; content exceeding that limit is sliced at the boundary with a truncation notice. Current limits: Bash = 100k chars, Grep = 30k chars, Agent = 32k chars.
+2. **Global request-time budget** (`requestPrep.ts`): total `tool_result` content across all records is capped at `effectiveContextWindow * 0.5` (floored at 200k tokens). When the budget is exceeded, older results are summarized, keeping the 10 most recent tool results intact.
 
 ### Provider Layer (`src/config/providers/`)
 
@@ -159,20 +164,37 @@ Each tool exports a `Tool` object with `name`, `inputSchema` (JSON Schema), `ris
 | `Delete` | dangerous | no | |
 | `TodoWrite` | safe | no | replaces the complete session todo list |
 | `Skill` | safe | no | on-demand skill invocation, LRU eviction (50) |
-| `Agent` | safe | no | typed subagent dispatch (`general`, `explore`, `plan`, `verification`) |
+| `Agent` | safe | no | typed subagent dispatch (built-in plus `.myagent/agents/*.md`) |
 
 The `Skill` and `Agent` tools are dynamically created at runtime and not bundled in `getBuiltinTools()`.
 
 #### Agent Sub-Agent Types
 
-The `Agent` tool requires `subagent_type`:
+The `Agent` tool requires `subagent_type`. Built-in types:
 
 - `general` - default-style read-only delegation for isolated research or focused questions. It inherits project context.
 - `explore` - fast read-only codebase navigation using search/read tools. It omits project context to save tokens, so pass any critical conventions explicitly.
 - `plan` - read-only implementation planning. It explores relevant code and returns a step-by-step plan plus critical files. It also omits project context.
-- `verification` - adversarial verification after implementation work. It is strictly read-only for project files, may run read-only shell checks, and must end with `VERDICT: PASS`, `VERDICT: FAIL`, or `VERDICT: PARTIAL`.
+- `verification` - adversarial verification after implementation work. It runs inline like other sub-agents, is strictly read-only for project files, may run read-only shell checks, and must end with `VERDICT: PASS`, `VERDICT: FAIL`, or `VERDICT: PARTIAL`.
 
 Use `explore` before broad code searches, `plan` before larger or ambiguous changes, and `verification` before reporting completion on non-trivial implementation work.
+
+Custom sub-agent types are loaded at TUI startup from Markdown files with YAML frontmatter:
+
+```markdown
+---
+name: security-review
+description: Adversarial security review against changes
+tools: [Glob, Grep, Read, Bash]
+omitProjectContext: false
+maxTurns: 15
+maxResultSizeChars: 24000
+---
+
+You are a security reviewer for Hanekawa. ...
+```
+
+Agent definition directories merge by `name` in this order, later files overriding earlier ones: `~/.myagent/agents/`, `.myagent/agents/`, `.myagent/agents.local/`. The Agent tool description is generated from the current definition table, and `subagent_type` is validated at runtime so unknown types produce a clear tool error. Custom agents always disallow nested `Agent` calls; `tools: ["*"]` means all read-only tools, while `Bash` is available only when explicitly listed.
 
 Supporting modules: `fileState.ts` (file state tracking), `pathSafety.ts` (path safety checks).
 

@@ -178,6 +178,11 @@ export interface Tool {
    * mutating project files or shared write-tracking state.
    */
   isConcurrencySafe?: boolean
+  /**
+   * Optional input-sensitive concurrency check for tools whose safety depends
+   * on the requested mode or subcommand.
+   */
+  isConcurrencySafeInput?(input: unknown): boolean
   execute(input: unknown, context: ToolContext): Promise<ToolResult>
 }
 

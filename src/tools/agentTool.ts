@@ -3,7 +3,13 @@ import { z } from 'zod/v3'
 import { agentCacheSource, resetCacheBreakDetection } from '../harness/cacheBreakDetection.js'
 import { ContextBuilder } from '../harness/contextBuilder.js'
 import { AgentLoop, type ActiveModelRuntime } from '../harness/loop.js'
-import { PermissionGate, type PermissionMode, type PermissionPrompt } from '../harness/permissions.js'
+import {
+  PermissionGate,
+  type DenialStateStore,
+  type PermissionMode,
+  type PermissionPrompt,
+  type PermissionRule,
+} from '../harness/permissions.js'
 import { MemoryRecordStream } from '../harness/recordStream.js'
 import { ToolRunner } from '../harness/toolRunner.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
@@ -12,22 +18,24 @@ import type { CacheRuntime } from '../harness/cacheControl.js'
 import { runLifecycleHooks, type Hooks } from '../harness/hooks.js'
 import type { ModelProvider, Tool, ToolContext } from '../harness/types.js'
 
-export const ALL_AGENT_DISALLOWED_TOOLS = ['Agent', 'Bash'] as const
+export const ALL_AGENT_DISALLOWED_TOOLS = ['Agent'] as const
 
-const DEFAULT_AGENT_MAX_TURNS = 10
+export const DEFAULT_AGENT_MAX_TURNS = 10
 const VERIFICATION_AGENT_MAX_TURNS = 20
+export const AGENT_MAX_RESULT_SIZE_CHARS = 32_000
 
 const agentTypes = ['general', 'explore', 'plan', 'verification'] as const
 export type AgentType = typeof agentTypes[number]
 
 export interface BaseAgentDefinition {
-  type: AgentType
+  type: string
   description: string
   tools?: readonly string[]
   disallowedTools: readonly string[]
   maxTurns: number
+  maxResultSizeChars?: number
+  isReadOnlyAgent: boolean
   omitProjectContext?: boolean
-  background?: boolean
   getSystemPrompt(baseSystem?: string): string | undefined
 }
 
@@ -36,6 +44,8 @@ const GENERAL_PURPOSE_AGENT: BaseAgentDefinition = {
   description: 'General-purpose read-only sub-agent for isolated research tasks.',
   disallowedTools: ALL_AGENT_DISALLOWED_TOOLS,
   maxTurns: DEFAULT_AGENT_MAX_TURNS,
+  maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
+  isReadOnlyAgent: true,
   getSystemPrompt: (baseSystem) => baseSystem,
 }
 
@@ -45,20 +55,32 @@ const EXPLORE_AGENT: BaseAgentDefinition = {
   tools: ['Glob', 'Grep', 'Read'],
   disallowedTools: ['Agent', 'Bash', 'Write', 'Edit', 'Delete', 'MultiEdit', 'TodoWrite'],
   maxTurns: DEFAULT_AGENT_MAX_TURNS,
+  maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
+  isReadOnlyAgent: true,
   omitProjectContext: true,
   getSystemPrompt: () => `You are a code exploration specialist for Hanekawa.
 
-=== READ-ONLY MODE ===
-You are strictly limited to searching and reading existing files. Do not create, edit, move, delete, or copy files. Do not run commands that change project state.
+=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===
+This is a read-only exploration task. You are strictly prohibited from:
+- Creating new files.
+- Modifying existing files.
+- Deleting files.
+- Moving or copying files.
+- Running any command or tool action that changes project state.
 
-Your job is to quickly map the relevant parts of the codebase:
+Your role is exclusively to search and analyze existing code. You only have Glob, Grep, and Read, so attempting to edit files or run shell commands will fail.
+
+Your job is to quickly map the relevant facts in the codebase:
 - Use Glob for broad file discovery.
 - Use Grep for content searches and symbol discovery.
 - Use Read when you know which file needs inspection.
 - Search with multiple naming conventions before concluding something does not exist.
 - Prefer parallel read-only searches when they are independent.
+- Adapt your search depth to the caller's requested thoroughness.
 
-Return concise findings with file paths and line numbers when useful. Do not propose edits unless the caller explicitly asked for implementation guidance.`,
+Keep your final report concise - under ~500 words.
+
+Return high-signal findings with file paths and line numbers when useful. Avoid generic summaries. Do not propose edits unless the caller explicitly asked for implementation guidance.`,
 }
 
 const PLAN_AGENT: BaseAgentDefinition = {
@@ -67,19 +89,38 @@ const PLAN_AGENT: BaseAgentDefinition = {
   tools: ['Glob', 'Grep', 'Read'],
   disallowedTools: ['Agent', 'Bash', 'Write', 'Edit', 'Delete', 'MultiEdit', 'TodoWrite'],
   maxTurns: DEFAULT_AGENT_MAX_TURNS,
+  maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
+  isReadOnlyAgent: true,
   omitProjectContext: true,
   getSystemPrompt: () => `You are a software architecture and planning specialist for Hanekawa.
 
-=== READ-ONLY MODE ===
-You may explore the repository, but you must not create, edit, move, delete, or copy files. You do not have file editing tools.
+=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===
+This is a read-only planning task. You are strictly prohibited from:
+- Creating new files.
+- Modifying existing files.
+- Deleting files.
+- Moving or copying files.
+- Running any command or tool action that changes project state.
 
-Your process:
-1. Understand the requested change and any constraints in the caller's prompt.
-2. Explore relevant files, existing patterns, and adjacent features.
-3. Design an implementation plan that fits the current architecture.
-4. Call out meaningful trade-offs, risks, and sequencing.
+Your role is exclusively to explore the codebase and design implementation plans. You only have Glob, Grep, and Read, so attempting to edit files or run shell commands will fail.
 
-End with a short "Critical Files" section listing the 3-5 files most important for implementation.`,
+You will be given requirements and, sometimes, a suggested perspective. Apply the caller's constraints throughout the design.
+
+## Your Process
+
+1. Understand Requirements: identify the requested outcome, constraints, success criteria, and what is in or out of scope.
+2. Explore Thoroughly: read any files named by the caller, find existing patterns with Glob/Grep/Read, trace relevant code paths, and identify similar features as references.
+3. Design Solution: fit the plan to the current architecture, reuse local conventions, and call out meaningful trade-offs or risks.
+4. Detail the Plan: provide implementation sequencing, affected interfaces, edge cases, and focused tests.
+
+Do not invent implementation details the repository does not support. When there are multiple plausible approaches, recommend one and explain the trade-off briefly.
+
+Keep your final report concise - under ~500 words.
+
+End with exactly this section:
+
+### Critical Files for Implementation
+List the 3-5 files most important for implementation.`,
 }
 
 const VERIFICATION_AGENT: BaseAgentDefinition = {
@@ -88,7 +129,8 @@ const VERIFICATION_AGENT: BaseAgentDefinition = {
   tools: ['Bash', 'Glob', 'Grep', 'Read'],
   disallowedTools: ['Agent', 'Write', 'Edit', 'Delete', 'MultiEdit', 'TodoWrite'],
   maxTurns: VERIFICATION_AGENT_MAX_TURNS,
-  background: true,
+  maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
+  isReadOnlyAgent: false,
   getSystemPrompt: () => `You are a verification specialist. Your job is not to confirm that the implementation works; your job is to try to break it.
 
 Your default failure mode as an LLM is overconfidence. Treat that as a real bug in your own process.
@@ -132,6 +174,8 @@ For every suspected failure, quickly rule out:
 If those are ruled out and the issue is real, report FAIL.
 
 === OUTPUT FORMAT ===
+Keep your final report concise - under ~800 words.
+
 Every verification check in your final report must include:
 ### Check: [what you verified]
 **Command run:**
@@ -159,9 +203,10 @@ export const BUILT_IN_AGENT_DEFINITIONS = [
 
 const agentInputSchema = z.object({
   task: z.string().min(1),
-  subagent_type: z.enum(agentTypes),
+  subagent_type: z.string().min(1),
   systemPrompt: z.string().optional(),
   maxTurns: z.number().int().min(1).optional(),
+  maxOutputTokens: z.number().int().min(1).optional(),
 }).strict()
 
 export interface CreateAgentToolOptions {
@@ -175,10 +220,14 @@ export interface CreateAgentToolOptions {
   tools(): Tool[]
   permissionPrompt: PermissionPrompt
   permissionMode?(): PermissionMode
+  getConfigRules?(): PermissionRule[]
+  getSessionRules?(): PermissionRule[]
+  denialStateStore?: DenialStateStore
   cwd: string
   system?: string
   projectContext?: string
   skills?: SkillDefinition[]
+  agentDefinitions?: BaseAgentDefinition[]
   contextManagement?: Partial<ContextManagementConfig>
   isGitRepo?: boolean
   hooks?: Hooks
@@ -193,81 +242,101 @@ export function filterToolsForSubAgent(
   const disallowed = new Set<string>(definition.disallowedTools)
   return tools.filter((tool) => {
     if (allowed && !allowed.has(tool.name)) return false
+    if (!allowed && tool.name === 'Bash') return false
     if (disallowed.has(tool.name)) return false
     return allowed !== undefined ? true : tool.isReadOnly === true
   })
 }
 
 export function createAgentTool(options: CreateAgentToolOptions): Tool {
+  const agentDefinitions = options.agentDefinitions ?? [...BUILT_IN_AGENT_DEFINITIONS]
   return {
     name: 'Agent',
-    description: [
-      'Run a typed sub-agent on an isolated task. Cannot spawn nested agents.',
-      'Use subagent_type "general" for ordinary read-only delegation, "explore" for fast code search,',
-      '"plan" for read-only implementation planning, and "verification" to adversarially verify completed work.',
-    ].join(' '),
+    description: buildAgentToolDescription(agentDefinitions),
     inputSchema: agentInputSchema,
     riskLevel: 'safe',
+    maxResultSizeChars: undefined,
+    isConcurrencySafeInput(input) {
+      const parsed = agentInputSchema.safeParse(input)
+      if (!parsed.success) return false
+      return getAgentDefinition(agentDefinitions, parsed.data.subagent_type)?.isReadOnlyAgent === true
+    },
     async execute(input, context) {
       const parsed = agentInputSchema.parse(input)
-      const agentDefinition = getBuiltInAgentDefinition(parsed.subagent_type)
-      const subAgentId = randomUUID()
-      const recordStream = new MemoryRecordStream()
-      const subTools = filterToolsForSubAgent(options.tools(), agentDefinition)
-      const permissionGate = new PermissionGate(options.permissionPrompt, undefined, {
-        mode: options.permissionMode?.(),
-      })
-      const toolRunner = new ToolRunner(subTools, permissionGate, {
-        onRecord: async (record) => {
-          await recordStream.append(record)
-        },
-      }, {
-        preToolUse: options.hooks?.preToolUse,
-      })
-      const toolContext = createSubAgentToolContext(context, subAgentId)
-      await appendSubagentHookOutput(
-        recordStream,
-        await runLifecycleHooks(
-          options.hooks?.subagentStart,
-          'subagentStart',
-          {
-            agentId: subAgentId,
-            agentType: parsed.subagent_type,
-            task: parsed.task,
-          },
-          toolContext,
-          context.abortSignal,
-          parsed.subagent_type,
-        ),
-        'subagentStart',
-      )
-      const loop = new AgentLoop({
-        provider: options.provider,
-        model: options.model,
-        modelKey: options.modelKey,
-        tools: subTools,
-        contextBuilder: new ContextBuilder(undefined, options.contextManagement),
-        toolRunner,
-        toolContext,
-        system: buildAgentSystemPrompt(agentDefinition, parsed.systemPrompt, options.system),
-        projectContext: agentDefinition.omitProjectContext ? undefined : options.projectContext,
-        skills: options.skills,
-        promptCacheRetention: options.promptCacheRetention,
-        contextManagement: options.contextManagement,
-        isGitRepo: options.isGitRepo,
-        maxTurns: parsed.maxTurns ?? agentDefinition.maxTurns,
-        fallbackModel: options.fallbackModel,
-        fallbackRetryDelayMs: options.fallbackRetryDelayMs,
-        hooks: options.hooks,
-        cacheRuntime: options.cacheRuntime,
-        permissionMode: () => permissionGate.getMode(),
-        recordStream,
-      })
+      let subAgentId: string | undefined
+      const abortController = new AbortController()
+      const forwardParentAbort = () => abortController.abort(context.abortSignal?.reason)
+      if (context.abortSignal?.aborted) {
+        forwardParentAbort()
+      } else {
+        context.abortSignal?.addEventListener('abort', forwardParentAbort, { once: true })
+      }
 
       try {
-        const result = await loop.run(parsed.task, context.abortSignal)
+        const agentDefinition = getAgentDefinition(agentDefinitions, parsed.subagent_type)
+        if (!agentDefinition) {
+          throw new Error(`Unknown subagent_type "${parsed.subagent_type}". Available types: ${formatAgentTypes(agentDefinitions)}.`)
+        }
+        subAgentId = randomUUID()
+        const recordStream = new MemoryRecordStream()
+        const subTools = filterToolsForSubAgent(options.tools(), agentDefinition)
+        const inheritedRules = [
+          ...(options.getConfigRules?.() ?? []),
+          ...(options.getSessionRules?.() ?? []),
+        ]
+        const permissionGate = new PermissionGate(options.permissionPrompt, inheritedRules, {
+          mode: options.permissionMode?.(),
+          denialStateStore: options.denialStateStore,
+        })
+        const toolRunner = new ToolRunner(subTools, permissionGate, {
+          onRecord: async (record) => {
+            await recordStream.append(record)
+          },
+        }, {
+          preToolUse: options.hooks?.preToolUse,
+        })
+        const toolContext = createSubAgentToolContext(context, subAgentId, abortController.signal)
         await appendSubagentHookOutput(
           recordStream,
+          await runLifecycleHooks(
+            options.hooks?.subagentStart,
+            'subagentStart',
+            {
+              agentId: subAgentId,
+              agentType: parsed.subagent_type,
+              task: parsed.task,
+            },
+            toolContext,
+            abortController.signal,
+            parsed.subagent_type,
+          ),
+          'subagentStart',
+        )
+        const loop = new AgentLoop({
+          provider: options.provider,
+          model: options.model,
+          modelKey: options.modelKey,
+          tools: subTools,
+          contextBuilder: new ContextBuilder(undefined, options.contextManagement),
+          toolRunner,
+          toolContext,
+          system: buildAgentSystemPrompt(agentDefinition, parsed.systemPrompt, options.system, parsed.maxOutputTokens),
+          projectContext: agentDefinition.omitProjectContext ? undefined : options.projectContext,
+          skills: options.skills,
+          promptCacheRetention: options.promptCacheRetention,
+          contextManagement: options.contextManagement,
+          isGitRepo: options.isGitRepo,
+          maxTurns: parsed.maxTurns ?? agentDefinition.maxTurns,
+          maxOutputTokens: parsed.maxOutputTokens,
+          fallbackModel: options.fallbackModel,
+          fallbackRetryDelayMs: options.fallbackRetryDelayMs,
+          hooks: options.hooks,
+          cacheRuntime: options.cacheRuntime,
+          permissionMode: () => permissionGate.getMode(),
+          recordStream,
+        })
+        const result = await loop.run(parsed.task, abortController.signal)
+        const stopHookOutput = formatSubagentHookOutput(
           await runLifecycleHooks(
             options.hooks?.subagentStop,
             'subagentStop',
@@ -277,17 +346,31 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
               response: result.content,
             },
             toolContext,
-            context.abortSignal,
+            abortController.signal,
             parsed.subagent_type,
           ),
           'subagentStop',
         )
-        return { ok: true, content: result.content }
+        const content = appendHookOutputToToolResult(result.content, stopHookOutput)
+        return {
+          ok: true,
+          content: applyAgentResultBudget(content, agentDefinition.maxResultSizeChars),
+          metadata: {
+            subagent: {
+              type: parsed.subagent_type,
+              agentId: subAgentId,
+              usage: result.usage,
+              verdict: extractVerdict(result.content),
+              criticalFiles: extractCriticalFiles(result.content),
+            },
+          },
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         return { ok: false, content: `Sub-agent failed: ${message}`, errorCode: errorCodeFor(error) }
       } finally {
-        resetCacheBreakDetection(agentCacheSource(subAgentId))
+        context.abortSignal?.removeEventListener('abort', forwardParentAbort)
+        if (subAgentId) resetCacheBreakDetection(agentCacheSource(subAgentId))
       }
     },
   }
@@ -298,43 +381,143 @@ async function appendSubagentHookOutput(
   result: Awaited<ReturnType<typeof runLifecycleHooks>>,
   hookName: 'subagentStart' | 'subagentStop',
 ): Promise<void> {
-  const blocks: string[] = []
-  if (result.stdout.trim()) blocks.push(result.stdout.trim())
-  if (result.failures.length > 0) blocks.push(`Hook failures:\n${result.failures.join('\n')}`)
-  if (result.blockingErrors.length > 0) blocks.push(`Hook blocking errors:\n${result.blockingErrors.join('\n')}`)
-  if (blocks.length === 0) return
+  const content = formatSubagentHookOutput(result, hookName)
+  if (!content) return
 
   await recordStream.append({
     id: randomUUID(),
     type: 'message',
     role: 'user',
-    content: `<system-reminder>${hookName} hook output:\n${blocks.join('\n\n')}</system-reminder>`,
+    content,
     createdAt: new Date().toISOString(),
   })
 }
 
-function getBuiltInAgentDefinition(type: AgentType): BaseAgentDefinition {
-  return BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === type) ?? GENERAL_PURPOSE_AGENT
+function formatSubagentHookOutput(
+  result: Awaited<ReturnType<typeof runLifecycleHooks>>,
+  hookName: 'subagentStart' | 'subagentStop',
+): string | undefined {
+  const blocks: string[] = []
+  if (result.stdout.trim()) blocks.push(result.stdout.trim())
+  if (result.failures.length > 0) blocks.push(`Hook failures:\n${result.failures.join('\n')}`)
+  if (result.blockingErrors.length > 0) blocks.push(`Hook blocking errors:\n${result.blockingErrors.join('\n')}`)
+  if (blocks.length === 0) return undefined
+
+  return `<system-reminder>${hookName} hook output:\n${blocks.join('\n\n')}</system-reminder>`
+}
+
+function appendHookOutputToToolResult(content: string, hookOutput: string | undefined): string {
+  return hookOutput ? `${content}\n\n${hookOutput}` : content
+}
+
+function extractVerdict(content: string): 'PASS' | 'FAIL' | 'PARTIAL' | undefined {
+  const match = /^VERDICT:\s*(PASS|FAIL|PARTIAL)\s*$/im.exec(content)
+  return match?.[1] as 'PASS' | 'FAIL' | 'PARTIAL' | undefined
+}
+
+function extractCriticalFiles(content: string): string[] {
+  const lines = content.split(/\r?\n/)
+  const headingIndex = lines.findIndex((line) => /^#{1,6}\s+Critical Files for Implementation\s*$/i.test(line.trim()))
+  if (headingIndex === -1) return []
+
+  const files: string[] = []
+  for (const line of lines.slice(headingIndex + 1)) {
+    const trimmed = line.trim()
+    if (/^#{1,6}\s+/.test(trimmed)) break
+    if (/^VERDICT:\s*(PASS|FAIL|PARTIAL)\s*$/i.test(trimmed)) break
+    if (!trimmed) continue
+
+    const normalized = trimmed
+      .replace(/^[-*+]\s+/, '')
+      .replace(/^\d+[.)]\s+/, '')
+      .replace(/^`([^`]+)`(?:\s+.*)?$/, '$1')
+      .replace(/^([^:\s]+:\d+)(?:\s+.*)?$/, '$1')
+      .trim()
+
+    if (normalized) files.push(normalized)
+    if (files.length >= 5) break
+  }
+
+  return files
+}
+
+export function getAgentDefinition(
+  definitions: readonly BaseAgentDefinition[],
+  type: string,
+): BaseAgentDefinition | undefined {
+  return definitions.find((definition) => definition.type === type)
 }
 
 function buildAgentSystemPrompt(
   definition: BaseAgentDefinition,
   overrideSystemPrompt: string | undefined,
   baseSystem: string | undefined,
+  maxOutputTokens: number | undefined,
 ): string | undefined {
+  const outputLimitPrompt = maxOutputTokens === undefined
+    ? undefined
+    : `Keep your final report under approximately ${maxOutputWords(maxOutputTokens)} words.`
+
   if (definition.type === 'general') {
-    return overrideSystemPrompt ?? definition.getSystemPrompt(baseSystem)
+    const generalPrompt = overrideSystemPrompt ?? definition.getSystemPrompt(baseSystem)
+    return joinPromptParts([generalPrompt, outputLimitPrompt])
   }
 
   const parts = [
     definition.getSystemPrompt(baseSystem),
     overrideSystemPrompt ? `# Additional caller instructions\n${overrideSystemPrompt}` : undefined,
-  ].filter((part): part is string => Boolean(part?.trim()))
+    outputLimitPrompt,
+  ]
 
-  return parts.length > 0 ? parts.join('\n\n') : undefined
+  return joinPromptParts(parts)
 }
 
-function createSubAgentToolContext(parent: ToolContext, subAgentId: string): ToolContext {
+function buildAgentToolDescription(definitions: readonly BaseAgentDefinition[]): string {
+  const typeDescriptions = definitions
+    .map((definition) => `"${definition.type}" (${definition.description})`)
+    .join(', ')
+  return [
+    'Run a typed sub-agent on an isolated task. Use this for complex, multi-step research, exploration, planning, or verification work whose intermediate tool output does not need to stay in the main context. Cannot spawn nested agents.',
+    `Available subagent_type values: ${typeDescriptions}.`,
+    'Always pass an explicit subagent_type.',
+    '',
+    'When NOT to use the Agent tool:',
+    '- If you already know the exact file path to inspect, use Read instead.',
+    '- If you are searching for a symbol, class, function, or string in a known area, use Grep or Glob directly.',
+    '- If the task only touches one small file set, inspect those files yourself.',
+    '- Do not use an agent for work unrelated to the available agent descriptions.',
+    '',
+    'Writing effective sub-agent prompts:',
+    '- Brief the agent like a smart colleague who just walked into the room: it has not seen this conversation, does not know what you tried, and does not know why the task matters.',
+    '- Explain the goal, why it matters, what you already know, what you ruled out, and the output shape you need. If you need a short response, say so.',
+    '- For lookups, hand over the exact target. For investigations, hand over the question; prescribed steps become dead weight when the premise is wrong.',
+    '- Terse command-style prompts produce shallow, generic work.',
+    '- Never delegate understanding. Do not write prompts like "based on your findings, fix the bug" or "based on the research, implement it." Synthesize the agent result yourself, then decide the specific change.',
+  ].join('\n')
+}
+
+function formatAgentTypes(definitions: readonly BaseAgentDefinition[]): string {
+  return definitions.map((definition) => definition.type).join(', ')
+}
+
+function applyAgentResultBudget(content: string, maxResultSizeChars: number | undefined): string {
+  if (maxResultSizeChars === undefined || content.length <= maxResultSizeChars) return content
+  return [
+    content.slice(0, maxResultSizeChars),
+    `[Tool result truncated: exceeded ${maxResultSizeChars} chars; original ${content.length} chars]`,
+  ].join('\n\n')
+}
+
+function joinPromptParts(parts: Array<string | undefined>): string | undefined {
+  const present = parts.filter((part): part is string => Boolean(part?.trim()))
+  return present.length > 0 ? present.join('\n\n') : undefined
+}
+
+function maxOutputWords(maxOutputTokens: number): number {
+  return Math.max(1, Math.floor(maxOutputTokens * 0.75))
+}
+
+function createSubAgentToolContext(parent: ToolContext, subAgentId: string, abortSignal: AbortSignal): ToolContext {
   return {
     cwd: parent.cwd,
     sessionId: subAgentId,
@@ -342,7 +525,7 @@ function createSubAgentToolContext(parent: ToolContext, subAgentId: string): Too
     readFileState: new Map(),
     invokedSkills: new Map(),
     taskState: new Map(),
-    abortSignal: parent.abortSignal,
+    abortSignal,
   }
 }
 

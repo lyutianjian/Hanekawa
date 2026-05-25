@@ -131,7 +131,7 @@ export class PermissionGate {
       denialStateStore?: DenialStateStore
     },
   ) {
-    this.configRules = configRules ?? []
+    this.configRules = [...(configRules ?? [])]
     this.mode = options?.mode ?? 'default'
     const configured = options?.denialStreakThreshold ?? DEFAULT_DENIAL_STREAK_THRESHOLD
     this.denialStreakThreshold = Math.max(1, configured)
@@ -284,7 +284,15 @@ export class PermissionGate {
   }
 
   setConfigRules(rules: PermissionRule[]): void {
-    this.configRules = rules
+    this.configRules = [...rules]
+  }
+
+  getConfigRules(): PermissionRule[] {
+    return [...this.configRules]
+  }
+
+  getSessionRules(): PermissionRule[] {
+    return [...this.sessionRules]
   }
 
   getMode(): PermissionMode {

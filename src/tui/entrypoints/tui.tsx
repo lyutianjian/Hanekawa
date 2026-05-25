@@ -18,14 +18,15 @@ import { SessionStore } from '../../sessions/service.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import { JsonlRecordStream } from '../../sessions/recordStream.js'
 import { getAllTools } from '../../tools/index.js'
-import { createAgentTool } from '../../tools/agentTool.js'
-import { PermissionGate } from '../../harness/permissions.js'
+import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool } from '../../tools/agentTool.js'
+import { PermissionGate, type DenialStateStore } from '../../harness/permissions.js'
 import { ToolRunner } from '../../harness/toolRunner.js'
 import { ContextBuilder } from '../../harness/contextBuilder.js'
 import { SystemPromptSectionCache } from '../../harness/sections.js'
 import { AgentLoop } from '../../harness/loop.js'
 import { logDiagnostics, summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
 import { SkillsService } from '../../services/skills/skillsService.js'
+import { AgentDefinitionLoader } from '../../services/agents/agentDefinitionLoader.js'
 import { registerBuiltinCommands } from '../../commands/index.js'
 import {
   loadMcpConfig,
@@ -121,6 +122,8 @@ async function main() {
 
   const baseTools = await getAllTools()
   const skills = await new SkillsService(cwd).list()
+  const customAgentDefinitions = await new AgentDefinitionLoader(cwd).list()
+  const agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
   const promptSections = new SystemPromptSectionCache()
   const runtimeToolSets = new Set<Tool[]>()
   const activeLoops = new Set<AgentLoop>()
@@ -215,12 +218,13 @@ async function main() {
   // Create proxies - React hooks will inject real handlers after mount
   const promptProxy = createPromptProxy()
   const recordProxy = createRecordProxy()
+  const denialStateStore: DenialStateStore = {
+    getDenialState: async () => store.getDenialState(session.id),
+    setDenialState: async (state) => store.setDenialState(session.id, state),
+  }
   const permissionGate = new PermissionGate(promptProxy.prompt, undefined, {
     mode: settings.permissionMode,
-    denialStateStore: {
-      getDenialState: async () => store.getDenialState(session.id),
-      setDenialState: async (state) => store.setDenialState(session.id, state),
-    },
+    denialStateStore,
   })
 
   const contextManagement = config.get().agent.contextManagement
@@ -283,9 +287,13 @@ async function main() {
       tools: () => runtimeTools,
       permissionPrompt: promptProxy.prompt,
       permissionMode: () => permissionGate.getMode(),
+      getConfigRules: () => permissionGate.getConfigRules(),
+      getSessionRules: () => permissionGate.getSessionRules(),
+      denialStateStore,
       cwd,
       system: config.get().agent.system,
       skills,
+      agentDefinitions,
       contextManagement,
       isGitRepo,
       hooks: settings.hooks,
@@ -415,6 +423,13 @@ main().catch((err) => {
   console.error('Fatal error:', err)
   process.exit(1)
 })
+
+function mergeAgentDefinitions<T extends { type: string }>(base: readonly T[], overrides: readonly T[]): T[] {
+  const merged = new Map<string, T>()
+  for (const definition of base) merged.set(definition.type, definition)
+  for (const definition of overrides) merged.set(definition.type, definition)
+  return [...merged.values()]
+}
 
 async function promptTrustMcpServer(name: string, serverConfig: { transport: string; command?: string; args?: string[]; url?: string }): Promise<boolean> {
   const rl = createInterface({ input, output })

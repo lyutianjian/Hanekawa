@@ -245,16 +245,78 @@ export class ToolRunner {
 
   private async emitAssistantMessageFromMetadata(metadata: Record<string, unknown> | undefined, turnId?: string): Promise<void> {
     const content = metadata?.assistantMessageContent
-    if (typeof content !== 'string' || content.trim().length === 0) return
+    if (typeof content === 'string' && content.trim().length > 0) {
+      await this.emitRecord({
+        id: randomUUID(),
+        type: 'message',
+        role: 'assistant',
+        content,
+        ...(turnId ? { turnId } : {}),
+        createdAt: new Date().toISOString(),
+      })
+    }
+
+    const subagentSummary = formatSubagentSummary(metadata?.subagent)
+    if (!subagentSummary) return
     await this.emitRecord({
       id: randomUUID(),
       type: 'message',
       role: 'assistant',
-      content,
+      content: subagentSummary,
       ...(turnId ? { turnId } : {}),
       createdAt: new Date().toISOString(),
     })
   }
+}
+
+function formatSubagentSummary(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined
+  const type = typeof value.type === 'string' ? value.type : undefined
+  if (!type) return undefined
+
+  const attributes: string[] = [`type="${escapeAttribute(type)}"`]
+  const agentId = typeof value.agentId === 'string' ? value.agentId : undefined
+  if (agentId) attributes.push(`agent_id="${escapeAttribute(agentId)}"`)
+
+  const verdict = typeof value.verdict === 'string' ? value.verdict : undefined
+  if (verdict) attributes.push(`verdict="${escapeAttribute(verdict)}"`)
+
+  const usage = isRecord(value.usage) ? value.usage : undefined
+  const tokens = usage ? totalTokens(usage) : undefined
+  if (tokens !== undefined) attributes.push(`tokens="${tokens}"`)
+
+  const criticalFiles = Array.isArray(value.criticalFiles)
+    ? value.criticalFiles.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : []
+  if (criticalFiles.length > 0) {
+    attributes.push(`critical_files="${escapeAttribute(criticalFiles.join(','))}"`)
+  }
+
+  return `<subagent-summary ${attributes.join(' ')} />`
+}
+
+function totalTokens(usage: Record<string, unknown>): number | undefined {
+  const inputTokens = numericUsageField(usage.inputTokens)
+  const cacheReadInputTokens = numericUsageField(usage.cacheReadInputTokens)
+  const outputTokens = numericUsageField(usage.outputTokens)
+  if (inputTokens === undefined || cacheReadInputTokens === undefined || outputTokens === undefined) return undefined
+  return inputTokens + cacheReadInputTokens + outputTokens
+}
+
+function numericUsageField(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function escapeAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
 }
 
 function syncMutableToolContext(target: ToolContext, source: ToolContext): void {

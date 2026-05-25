@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod/v3'
-import { agentCacheSource, resetCacheBreakDetection } from '../harness/cacheBreakDetection.js'
+import { agentCacheSource, forkCacheSource, resetCacheBreakDetection } from '../harness/cacheBreakDetection.js'
 import { ContextBuilder } from '../harness/contextBuilder.js'
 import { AgentLoop, type ActiveModelRuntime } from '../harness/loop.js'
 import {
@@ -16,25 +16,30 @@ import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from '../harness/cacheControl.js'
 import { runLifecycleHooks, type Hooks } from '../harness/hooks.js'
-import type { ModelProvider, Tool, ToolContext } from '../harness/types.js'
+import type { ModelProvider, SessionRecord, Tool, ToolContext } from '../harness/types.js'
+import { countSessionRecordTokens } from '../prompts/budget.js'
 
 export const NESTED_AGENT_FORBIDDEN_TOOLS = ['Agent'] as const
 
-export const WRITE_LIKE_AGENT_TOOL_NAMES = new Set([
+// TodoWrite is included because sub-agents share taskState semantics, not
+// because it writes files.
+export const STATEFUL_AGENT_TOOL_NAMES = new Set([
   'Bash',
   'Write',
   'Edit',
   'MultiEdit',
   'Delete',
   'NotebookEdit',
+  'TodoWrite',
 ])
 
 export const DEFAULT_AGENT_MAX_TURNS = 10
 const VERIFICATION_AGENT_MAX_TURNS = 20
 export const AGENT_MAX_RESULT_SIZE_CHARS = 32_000
+const SUBAGENT_TRANSCRIPT_SUMMARY_CHARS = 8_000
+export const FORK_PRELOAD_TOKEN_BUDGET = 50_000
 
-const agentTypes = ['general', 'explore', 'plan', 'verification'] as const
-export type AgentType = typeof agentTypes[number]
+export type AgentType = string
 
 export interface BaseAgentDefinition {
   type: string
@@ -55,6 +60,19 @@ You are still the verification specialist. Stay adversarial, do not modify the p
 const GENERAL_PURPOSE_AGENT: BaseAgentDefinition = {
   type: 'general',
   description: 'General-purpose read-only sub-agent for isolated research tasks.',
+  disallowedTools: NESTED_AGENT_FORBIDDEN_TOOLS,
+  maxTurns: DEFAULT_AGENT_MAX_TURNS,
+  maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
+  isReadOnlyAgent: true,
+  getSystemPrompt: (baseSystem) => baseSystem,
+}
+
+const FORK_AGENT_BOILERPLATE = `# Forked Conversation Context
+You are running as an isolated fork of the parent conversation. The parent transcript is preloaded before your task, so use it as background context, but do not assume your intermediate work is visible to the parent. Return a concise result that the parent agent can use directly.`
+
+const FORK_AGENT: BaseAgentDefinition = {
+  type: 'fork',
+  description: 'Read-only sub-agent fork that preloads the parent transcript and shares the parent fork prompt-cache stream.',
   disallowedTools: NESTED_AGENT_FORBIDDEN_TOOLS,
   maxTurns: DEFAULT_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
@@ -210,6 +228,7 @@ Use PASS only when the meaningful checks passed. Use FAIL when you found an acti
 
 export const BUILT_IN_AGENT_DEFINITIONS = [
   GENERAL_PURPOSE_AGENT,
+  FORK_AGENT,
   EXPLORE_AGENT,
   PLAN_AGENT,
   VERIFICATION_AGENT,
@@ -243,12 +262,14 @@ export interface CreateAgentToolOptions {
   projectContext?: string
   skills?: SkillDefinition[]
   agentDefinitions?: BaseAgentDefinition[]
+  loadParentRecords?(): Promise<SessionRecord[]>
   contextManagement?: Partial<ContextManagementConfig>
   isGitRepo?: boolean
   hooks?: Hooks
   cacheRuntime?: CacheRuntime
   getCompactFailureCount?(): Promise<number>
   setCompactFailureCount?(count: number): Promise<void>
+  agentTimeoutMs?: number
 }
 
 export function filterToolsForSubAgent(
@@ -266,7 +287,7 @@ export function filterToolsForSubAgent(
 }
 
 export function infersReadOnlyAgentFromTools(tools: readonly string[] | undefined): boolean {
-  return tools === undefined || !tools.some((tool) => WRITE_LIKE_AGENT_TOOL_NAMES.has(tool))
+  return tools === undefined || !tools.some((tool) => STATEFUL_AGENT_TOOL_NAMES.has(tool))
 }
 
 function isUnsafeForReadOnlySubAgent(tool: Tool): boolean {
@@ -282,14 +303,23 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
     riskLevel: 'safe',
     maxResultSizeChars: undefined,
     isConcurrencySafeInput(input) {
-      const parsed = agentInputSchema.safeParse(input)
-      if (!parsed.success) return false
-      return getAgentDefinition(agentDefinitions, parsed.data.subagent_type)?.isReadOnlyAgent === true
+      const subagentType = typeof input === 'object' && input !== null
+        ? (input as { subagent_type?: unknown }).subagent_type
+        : undefined
+      return typeof subagentType === 'string'
+        && getAgentDefinition(agentDefinitions, subagentType)?.isReadOnlyAgent === true
     },
     async execute(input, context) {
       const parsed = agentInputSchema.parse(input)
       let subAgentId: string | undefined
+      let cacheSource = agentCacheSource('unknown')
+      let resetCacheSourceOnExit = false
       const abortController = new AbortController()
+      const timeout = options.agentTimeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            abortController.abort(createAbortError(`Sub-agent timed out after ${options.agentTimeoutMs}ms`))
+          }, options.agentTimeoutMs)
       const forwardParentAbort = () => abortController.abort(context.abortSignal?.reason)
       if (context.abortSignal?.aborted) {
         forwardParentAbort()
@@ -303,11 +333,17 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           throw new Error(`Unknown subagent_type "${parsed.subagent_type}". Available types: ${formatAgentTypes(agentDefinitions)}.`)
         }
         subAgentId = randomUUID()
+        const isForkAgent = parsed.subagent_type === 'fork'
+        cacheSource = isForkAgent ? forkCacheSource(context.sessionId) : agentCacheSource(subAgentId)
+        resetCacheSourceOnExit = !isForkAgent
         const recordStream = new MemoryRecordStream()
         const subTools = filterToolsForSubAgent(options.tools(), agentDefinition)
+        // Sub-agent gates inherit config/session rules as a snapshot. "Always
+        // allow" choices and denial streak updates stay local to the sub-agent
+        // so concurrent agents cannot overwrite parent permission state.
         const permissionGate = new PermissionGate(options.permissionPrompt, options.getConfigRules?.(), {
           mode: options.permissionMode?.(),
-          denialStateStore: options.denialStateStore,
+          denialStateStore: readonlyDenialStateStore(options.denialStateStore),
         })
         permissionGate.addSessionRules(options.getSessionRules?.() ?? [])
         const toolRunner = new ToolRunner(subTools, permissionGate, {
@@ -318,6 +354,18 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           preToolUse: options.hooks?.preToolUse,
         })
         const toolContext = createSubAgentToolContext(context, subAgentId, abortController.signal)
+        if (isForkAgent) {
+          const forkUserPrefix = buildForkAgentUserPrefix(parsed.systemPrompt, parsed.maxOutputTokens)
+          if (forkUserPrefix) {
+            await recordStream.append({
+              id: randomUUID(),
+              type: 'message',
+              role: 'user',
+              content: forkUserPrefix,
+              createdAt: new Date().toISOString(),
+            })
+          }
+        }
         await appendSubagentHookOutput(
           recordStream,
           await runLifecycleHooks(
@@ -334,6 +382,7 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           ),
           'subagentStart',
         )
+        const preloadRecords = isForkAgent ? await loadForkPreloadRecords(options) : undefined
         const loop = new AgentLoop({
           provider: options.provider,
           model: options.model,
@@ -356,12 +405,32 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           fallbackRetryDelayMs: options.fallbackRetryDelayMs,
           hooks: options.hooks,
           cacheRuntime: options.cacheRuntime,
+          cacheSource,
+          preloadRecords,
           permissionMode: () => permissionGate.getMode(),
           getCompactFailureCount: options.getCompactFailureCount,
           setCompactFailureCount: options.setCompactFailureCount,
           recordStream,
         })
         const result = await loop.run(parsed.task, abortController.signal)
+        const transcriptRecords = await recordStream.load()
+        const transcriptStats = summarizeTranscriptRecords(transcriptRecords)
+        await context.appendRecord?.({
+          id: randomUUID(),
+          type: 'subagent_transcript',
+          agentId: subAgentId,
+          subagentType: parsed.subagent_type,
+          parentToolUseId: context.currentToolUseId,
+          summary: applyAgentResultBudget(result.content, SUBAGENT_TRANSCRIPT_SUMMARY_CHARS),
+          recordCount: transcriptStats.recordCount,
+          messageCount: transcriptStats.messageCount,
+          toolUseCount: transcriptStats.toolUseCount,
+          toolResultCount: transcriptStats.toolResultCount,
+          records: [],
+          usage: result.usage,
+          createdAt: new Date().toISOString(),
+          turnId: context.currentTurnId,
+        })
         const stopHookOutput = formatSubagentHookOutput(
           await runLifecycleHooks(
             options.hooks?.subagentStop,
@@ -394,12 +463,63 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
+        if (error instanceof ForkPreloadError) {
+          return { ok: false, content: `Fork failed: ${message}`, errorCode: 'execution_failed' }
+        }
         return { ok: false, content: `Sub-agent failed: ${message}`, errorCode: errorCodeFor(error) }
       } finally {
+        if (timeout) clearTimeout(timeout)
         context.abortSignal?.removeEventListener('abort', forwardParentAbort)
-        if (subAgentId) resetCacheBreakDetection(agentCacheSource(subAgentId))
+        if (subAgentId && resetCacheSourceOnExit) resetCacheBreakDetection(cacheSource)
       }
     },
+  }
+}
+
+async function loadForkPreloadRecords(options: CreateAgentToolOptions): Promise<SessionRecord[] | undefined> {
+  try {
+    const records = await options.loadParentRecords?.()
+    return records ? prepareForkPreloadRecords(records) : undefined
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new ForkPreloadError(message)
+  }
+}
+
+class ForkPreloadError extends Error {
+  constructor(message: string) {
+    super(`parent records load error: ${message}`)
+    this.name = 'ForkPreloadError'
+  }
+}
+
+function readonlyDenialStateStore(store: DenialStateStore | undefined): DenialStateStore | undefined {
+  if (!store) return undefined
+  return {
+    getDenialState: () => store.getDenialState(),
+    setDenialState: async () => {},
+  }
+}
+
+function summarizeTranscriptRecords(records: SessionRecord[]): {
+  recordCount: number
+  messageCount: number
+  toolUseCount: number
+  toolResultCount: number
+} {
+  let messageCount = 0
+  let toolUseCount = 0
+  let toolResultCount = 0
+  for (const record of records) {
+    if (record.type === 'message') messageCount += 1
+    if (record.type === 'tool_use') toolUseCount += 1
+    if (record.type === 'tool_result') toolResultCount += 1
+  }
+  return {
+    recordCount: records.length,
+    messageCount,
+    toolUseCount,
+    toolResultCount,
   }
 }
 
@@ -454,43 +574,23 @@ function extractCriticalFiles(content: string): string[] {
     if (/^VERDICT:\s*(PASS|FAIL|PARTIAL)\s*$/i.test(trimmed)) break
     if (!trimmed) continue
 
-    const candidate = extractCriticalFileCandidate(trimmed)
-    if (candidate) files.push(candidate)
+    const normalized = trimmed
+      .replace(/^[-*+]\s+/, '')
+      .replace(/^\d+[.)]\s+/, '')
+      .replace(/^`([^`]+)`(?:\s+.*)?$/, '$1')
+      .replace(/^([^:\s]+:\d+)(?:\s+.*)?$/, '$1')
+      .trim()
+
+    if (isCriticalFilePathCandidate(normalized)) files.push(normalized)
     if (files.length >= 5) break
   }
 
   return files
 }
 
-function extractCriticalFileCandidate(trimmed: string): string | undefined {
-  // Strip common list markers (- * + or "1." / "1)") before considering the line as a path candidate.
-  const withoutMarker = trimmed
-    .replace(/^[-*+]\s+/, '')
-    .replace(/^\d+[.)]\s+/, '')
-    .trim()
-
-  // Prefer the first inline-code span when present, e.g. "- `src/foo.ts` - reason".
-  const inlineCode = /^`([^`]+)`/.exec(withoutMarker)
-  if (inlineCode) {
-    const candidate = inlineCode[1]?.trim()
-    return candidate && looksLikePath(candidate) ? candidate : undefined
-  }
-
-  // Otherwise accept the leading whitespace-free token (optionally "path:line"),
-  // but only when the original line lacks descriptive prose (so we don't fold
-  // free-form notes into critical files).
-  const match = /^(\S+(?::\d+)?)(?:\s+.*)?$/.exec(withoutMarker)
-  const candidate = match?.[1]?.trim()
-  if (!candidate || !looksLikePath(candidate)) return undefined
-
-  // If the line continued past the path with prose, only keep the path itself.
-  return candidate
-}
-
-function looksLikePath(value: string): boolean {
-  if (!/[\\/.]/.test(value)) return false
+function isCriticalFilePathCandidate(value: string): boolean {
   if (/\s/.test(value)) return false
-  return true
+  return /[\\/]/.test(value) || /(?:^|[\\/])[^\\/]+\.[^\\/.:]+(?::\d+)?$/.test(value)
 }
 
 export function getAgentDefinition(
@@ -515,6 +615,10 @@ function buildAgentSystemPrompt(
     return joinPromptParts([generalPrompt, outputLimitPrompt])
   }
 
+  if (definition.type === 'fork') {
+    return definition.getSystemPrompt(baseSystem)
+  }
+
   const parts = [
     definition.getSystemPrompt(baseSystem),
     overrideSystemPrompt ? `# Additional caller instructions\n${overrideSystemPrompt}` : undefined,
@@ -522,6 +626,39 @@ function buildAgentSystemPrompt(
   ]
 
   return joinPromptParts(parts)
+}
+
+function buildForkAgentUserPrefix(
+  overrideSystemPrompt: string | undefined,
+  maxOutputTokens: number | undefined,
+): string | undefined {
+  const outputLimitPrompt = maxOutputTokens === undefined
+    ? undefined
+    : `Keep your final report under approximately ${maxOutputWords(maxOutputTokens)} words.`
+  return joinPromptParts([
+    FORK_AGENT_BOILERPLATE,
+    overrideSystemPrompt ? `# Additional caller instructions\n${overrideSystemPrompt}` : undefined,
+    outputLimitPrompt,
+  ])
+}
+
+export function prepareForkPreloadRecords(
+  records: readonly SessionRecord[],
+  tokenBudget = FORK_PRELOAD_TOKEN_BUDGET,
+): SessionRecord[] {
+  const visibleRecords = records.filter((record) => record.type !== 'subagent_transcript')
+  const selected: SessionRecord[] = []
+  let used = 0
+
+  for (const record of [...visibleRecords].reverse()) {
+    const tokens = countSessionRecordTokens(record)
+    if (selected.length > 0 && used + tokens > tokenBudget) break
+    selected.push(record)
+    used += tokens
+    if (used >= tokenBudget) break
+  }
+
+  return selected.reverse()
 }
 
 function buildAgentToolDescription(definitions: readonly BaseAgentDefinition[]): string {
@@ -583,4 +720,10 @@ function createSubAgentToolContext(parent: ToolContext, subAgentId: string, abor
 
 function errorCodeFor(error: unknown): 'aborted' | 'execution_failed' {
   return error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'execution_failed'
+}
+
+function createAbortError(message: string): Error {
+  const error = new Error(message)
+  error.name = 'AbortError'
+  return error
 }

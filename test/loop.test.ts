@@ -5,6 +5,7 @@ import { AgentLoop } from '../src/harness/loop.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
 import { PermissionGate } from '../src/harness/permissions.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
+import { createAgentTool } from '../src/tools/agentTool.js'
 import type { SessionMetricInput } from '../src/harness/metrics.js'
 import type { RecordStream } from '../src/harness/recordStream.js'
 import type { ModelProvider, ModelRequest, SessionRecord, Tool } from '../src/harness/types.js'
@@ -609,6 +610,65 @@ test('agent loop generates tool-use summary with compact model for the next requ
   assert.equal(response.content, 'done')
   assert.equal(summaryModelSeen, 'cheap-model')
   assert.ok(records.some((record) => record.type === 'tool_use_summary' && record.summary === 'echo returned hello'))
+})
+
+test('agent loop includes sub-agent transcript usage in returned turn usage', async () => {
+  const responses = [
+    {
+      content: 'delegating',
+      toolCalls: [{ id: 'agent-call', name: 'Agent', input: { task: 'research', subagent_type: 'general' } }],
+      usage: { inputTokens: 1, cacheReadInputTokens: 2, outputTokens: 3 },
+    },
+    {
+      content: 'sub-agent done',
+      toolCalls: [],
+      usage: { inputTokens: 10, cacheReadInputTokens: 20, outputTokens: 30 },
+    },
+    {
+      content: 'final',
+      toolCalls: [],
+      usage: { inputTokens: 4, cacheReadInputTokens: 5, outputTokens: 6 },
+    },
+  ]
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      const response = responses.shift()
+      assert.ok(response)
+      return response
+    },
+  }
+  let runtimeTools: Tool[] = []
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => runtimeTools,
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+  })
+  runtimeTools = [agentTool]
+  const records: SessionRecord[] = []
+  const runner = new ToolRunner(runtimeTools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: runtimeTools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  const result = await loop.run('start')
+
+  assert.deepEqual(result.usage, {
+    inputTokens: 15,
+    cacheReadInputTokens: 27,
+    outputTokens: 39,
+  })
+  assert.ok(records.some((record) => record.type === 'subagent_transcript'))
 })
 
 test('agent loop consumes pending post-compact restore after a successful build', async () => {

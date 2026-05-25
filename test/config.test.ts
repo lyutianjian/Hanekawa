@@ -259,6 +259,7 @@ test('validateSettings accepts model, agent, and cache settings', () => {
     compactModel: 'local',
     agent: {
       system: 'custom system',
+      agentTimeoutMs: 120_000,
     },
     cache: {
       ttl1h: true,
@@ -283,11 +284,13 @@ test('validateSettings rejects malformed model settings', () => {
     compactModel: '',
     agent: {
       system: 1 as unknown as string,
+      agentTimeoutMs: 0,
     },
   })
 
   assert.equal(result.valid, false)
   assert.match(result.errors.join('\n'), /provider/)
+  assert.match(result.errors.join('\n'), /agentTimeoutMs/)
   assert.match(result.errors.join('\n'), /model/)
   assert.match(result.errors.join('\n'), /defaultModel/)
   assert.match(result.errors.join('\n'), /fallbackModel/)

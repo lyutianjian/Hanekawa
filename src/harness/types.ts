@@ -3,6 +3,7 @@ import type { CacheBreakResult, CacheBreakSource } from './cacheBreakDetection.j
 import type { CacheRuntime } from './cacheControl.js'
 import type { JsonSchema, ToolValidationResult } from './toolValidation.js'
 import type { PermissionMode } from './permissions.js'
+import type { SessionMetricInput } from './metrics.js'
 
 export type RiskLevel = 'safe' | 'confirm' | 'dangerous'
 
@@ -55,6 +56,11 @@ export type ToolProgressPhase = 'started' | 'finished'
 export interface ToolProgressEvent {
   call: ToolCall
   phase: ToolProgressPhase
+  source?: {
+    type: 'subagent'
+    agentType: string
+    agentId?: string
+  }
 }
 
 export interface ToolApprovalRecord {
@@ -99,6 +105,25 @@ export interface ToolUseSummaryRecord {
   model?: string
 }
 
+export interface SubagentTranscriptRecord {
+  id: string
+  type: 'subagent_transcript'
+  agentId: string
+  subagentType: string
+  parentToolUseId?: string
+  summary?: string
+  recordCount?: number
+  messageCount?: number
+  toolUseCount?: number
+  toolResultCount?: number
+  // Intentionally empty when persisted; full transcript records only live in
+  // MemoryRecordStream during execution.
+  records?: SessionRecord[]
+  usage: TokenUsage
+  createdAt: string
+  turnId?: string
+}
+
 export type SessionRecord =
   | ({ type: 'message' } & ChatMessage)
   | ToolUseRecord
@@ -107,6 +132,7 @@ export type SessionRecord =
   | CompactBoundaryRecord
   | CompactAttemptFailedRecord
   | ToolUseSummaryRecord
+  | SubagentTranscriptRecord
 
 export interface TaskItem {
   id: string
@@ -125,6 +151,9 @@ export interface ToolContext {
   taskState?: Map<string, TaskItem>
   abortSignal?: AbortSignal
   appendRecord?(record: SessionRecord): Promise<void>
+  appendMetric?(metric: SessionMetricInput): Promise<void>
+  currentToolUseId?: string
+  currentTurnId?: string
   getPermissionMode?(): PermissionMode
   setPermissionMode?(mode: PermissionMode): void
   exitPlanMode?(): PermissionMode

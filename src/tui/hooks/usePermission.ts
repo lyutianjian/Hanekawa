@@ -1,4 +1,5 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { randomUUID } from 'node:crypto'
 import type { PermissionRequest, PermissionPrompt } from '../../harness/permissions.js'
 import type { SessionRecord, ToolProgressEvent } from '../../harness/types.js'
 import type { PermissionDialogState } from '../types.js'
@@ -50,17 +51,24 @@ export function createPromptProxy(): PermissionPromptProxy {
 }
 
 export function usePermission(proxy: PermissionPromptProxy) {
+  const resolverRef = useRef(new Map<string, (approved: boolean) => void>())
   const [permState, setPermState] = useState<PermissionDialogState>({
     visible: false,
-    request: null,
-    resolve: null,
+    requests: [],
+    activeRequestId: null,
   })
 
   // The actual prompt function that shows the dialog and waits for user response
   const promptFn = useCallback(
     (request: PermissionRequest): Promise<boolean> => {
       return new Promise<boolean>((resolve) => {
-        setPermState({ visible: true, request, resolve })
+        const id = randomUUID()
+        resolverRef.current.set(id, resolve)
+        setPermState((current) => ({
+          visible: true,
+          requests: [...current.requests, { id, request }],
+          activeRequestId: current.activeRequestId ?? id,
+        }))
       })
     },
     [],
@@ -76,13 +84,43 @@ export function usePermission(proxy: PermissionPromptProxy) {
   }, [proxy, promptFn])
 
   // Called when the user responds to the dialog
-  const respond = useCallback(
-    (approved: boolean) => {
-      permState.resolve?.(approved)
-      setPermState({ visible: false, request: null, resolve: null })
-    },
-    [permState.resolve],
-  )
+  const respond = useCallback((id: string, approved: boolean) => {
+    const resolver = resolverRef.current.get(id)
+    resolverRef.current.delete(id)
+    setPermState((current) => {
+      const requests = current.requests.filter((entry) => entry.id !== id)
+      const activeRequestId = current.activeRequestId === id
+        ? requests[0]?.id ?? null
+        : current.activeRequestId
+      return {
+        visible: requests.length > 0,
+        requests,
+        activeRequestId,
+      }
+    })
+    resolver?.(approved)
+  }, [])
 
-  return { permState, respond }
+  const denyPending = useCallback(() => {
+    const resolvers = [...resolverRef.current.values()]
+    resolverRef.current.clear()
+    setPermState({
+      visible: false,
+      requests: [],
+      activeRequestId: null,
+    })
+    for (const resolver of resolvers) {
+      resolver(false)
+    }
+  }, [])
+
+  const setActiveRequest = useCallback((id: string) => {
+    setPermState((current) => (
+      current.requests.some((entry) => entry.id === id)
+        ? { ...current, activeRequestId: id }
+        : current
+    ))
+  }, [])
+
+  return { permState, respond, setActiveRequest, denyPending }
 }

@@ -284,6 +284,10 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
     errors.push('agent.system must be a string')
   }
 
+  if (settings.agent?.agentTimeoutMs !== undefined && (!Number.isInteger(settings.agent.agentTimeoutMs) || settings.agent.agentTimeoutMs < 1)) {
+    errors.push('agent.agentTimeoutMs must be a positive integer')
+  }
+
   if (settings.mcpServers) {
     for (const [name, config] of Object.entries(settings.mcpServers)) {
       if (config.transport === 'stdio' && !config.command) {

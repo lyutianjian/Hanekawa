@@ -18,6 +18,7 @@ const picomatch = require('picomatch') as {
 }
 
 export interface BuildContextInput {
+  preloadRecords?: SessionRecord[]
   records: SessionRecord[]
   tools: Tool[]
   system?: string
@@ -240,6 +241,7 @@ export class ContextBuilder {
     const allContextItems = [
       ...(input.includeUserContext === false ? [] : this.buildUserContext(input.now ?? new Date(), activeSkills)),
       ...postCompactRestoreContext,
+      ...this.recordsToContextItems(input.preloadRecords ?? []),
       ...this.recordsToContextItems(input.records),
     ]
 
@@ -343,6 +345,8 @@ export class ContextBuilder {
 
     const dynamicSections = [
       system?.trim(),
+      // Critical reminders are intentionally dynamic: they can be reasserted
+      // every turn, at the cost of staying outside prompt-cache markers.
       criticalSystemReminder?.trim(),
       this.buildPlanModeSystemReminder(permissionMode),
     ].filter((s): s is string => Boolean(s))

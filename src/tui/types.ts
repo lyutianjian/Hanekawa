@@ -64,8 +64,13 @@ export type TUIDisplayItem =
 
 export interface PermissionDialogState {
   visible: boolean
-  request: PermissionRequest | null
-  resolve: ((approved: boolean) => void) | null
+  requests: PermissionDialogRequest[]
+  activeRequestId: string | null
+}
+
+export interface PermissionDialogRequest {
+  id: string
+  request: PermissionRequest
 }
 
 export interface TUIUsage {

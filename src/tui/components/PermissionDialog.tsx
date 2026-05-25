@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { theme } from '../theme.js'
-import type { PermissionDialogState } from '../types.js'
+import type { PermissionDialogRequest, PermissionDialogState } from '../types.js'
+import type { PermissionRequest } from '../../harness/permissions.js'
 
 /**
  * Pure logic for the PermissionDialog component.
@@ -58,22 +59,25 @@ export function resolvePermissionAction(index: number): PermissionAction {
 
 interface PermissionDialogProps {
   permState: PermissionDialogState
-  respond: (approved: boolean) => void
+  respond: (id: string, approved: boolean) => void
+  setActiveRequest: (id: string) => void
 }
 
-export function PermissionDialog({ permState, respond }: PermissionDialogProps) {
-  const { request } = permState
+export function PermissionDialog({ permState, respond, setActiveRequest }: PermissionDialogProps) {
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const activeIndex = Math.max(0, permState.requests.findIndex((entry) => entry.id === permState.activeRequestId))
+  const activeEntry = permState.requests[activeIndex] ?? permState.requests[0]
+  const request = activeEntry?.request
 
   const performAction = (action: PermissionAction) => {
+    if (!activeEntry) return
     if (action === 'allow') {
-      respond(true)
+      respond(activeEntry.id, true)
     } else if (action === 'deny') {
-      respond(false)
+      respond(activeEntry.id, false)
     } else {
-      // 'always'
       request?.onAlwaysAllow?.()
-      respond(true)
+      respond(activeEntry.id, true)
     }
   }
 
@@ -86,6 +90,13 @@ export function PermissionDialog({ permState, respond }: PermissionDialogProps) 
       setSelectedIndex((i) => nextPermissionIndex(i, 'down', PERMISSION_OPTIONS.length))
       return
     }
+    if (key.leftArrow || key.rightArrow || key.tab) {
+      const direction = key.leftArrow ? 'up' : 'down'
+      const nextIndex = nextPermissionIndex(activeIndex, direction, permState.requests.length)
+      const nextEntry = permState.requests[nextIndex]
+      if (nextEntry) setActiveRequest(nextEntry.id)
+      return
+    }
     if (key.return) {
       performAction(resolvePermissionAction(selectedIndex))
       return
@@ -94,10 +105,6 @@ export function PermissionDialog({ permState, respond }: PermissionDialogProps) 
       performAction('deny')
       return
     }
-    // Letter-key fallbacks (case-insensitive). These bypass the highlighted
-    // selection and act on their own action directly. They keep working for
-    // muscle-memory users; input leakage to the InputBox is prevented by
-    // `useKeyboardShortcuts` honouring `isPermissionVisible`.
     const lower = input.toLowerCase()
     if (lower === 'y') {
       performAction('allow')
@@ -108,14 +115,13 @@ export function PermissionDialog({ permState, respond }: PermissionDialogProps) 
     }
   })
 
-  if (!request) return null
+  if (!request || !activeEntry) return null
 
   const inputSummary =
     typeof request.input === 'string'
       ? request.input.slice(0, 200)
       : JSON.stringify(request.input, null, 2)?.slice(0, 200) ?? ''
 
-  // Per-hotkey colour to preserve the existing visual language (green/red/brand).
   const hotkeyColor = (action: PermissionAction): string => {
     if (action === 'allow') return theme.success
     if (action === 'deny') return theme.error
@@ -131,8 +137,18 @@ export function PermissionDialog({ permState, respond }: PermissionDialogProps) 
       marginY={1}
     >
       <Text bold color={theme.warning}>
-        Permission Required
+        Permission Required{permState.requests.length > 1 ? ` (${activeIndex + 1}/${permState.requests.length})` : ''}
       </Text>
+      {permState.requests.length > 1 ? (
+        <Box flexDirection="column" marginTop={1}>
+          {permState.requests.map((entry, index) => (
+            <Text key={entry.id} color={entry.id === activeEntry.id ? theme.brand : theme.dimText}>
+              {entry.id === activeEntry.id ? '> ' : '  '}
+              {index + 1}. {formatPermissionRequestLabel(entry)}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
       <Box marginTop={1}>
         <Text>
           <Text color={theme.toolName} bold>
@@ -145,7 +161,7 @@ export function PermissionDialog({ permState, respond }: PermissionDialogProps) 
       {request.denialStreak > 1 ? (
         <Box marginTop={1}>
           <Text color={theme.error} bold>
-            ⚠ Model has hit this block {request.denialStreak}× in a row — it may be looping.
+            Model has hit this block {request.denialStreak}x in a row; it may be looping.
           </Text>
         </Box>
       ) : null}
@@ -155,7 +171,7 @@ export function PermissionDialog({ permState, respond }: PermissionDialogProps) 
       <Box flexDirection="column" marginTop={1}>
         {PERMISSION_OPTIONS.map((option, index) => {
           const isSelected = index === selectedIndex
-          const prefix = isSelected ? '▸ ' : '  '
+          const prefix = isSelected ? '> ' : '  '
           const upperHotkey = option.hotkey.toUpperCase()
           return (
             <Box key={option.action}>
@@ -172,9 +188,18 @@ export function PermissionDialog({ permState, respond }: PermissionDialogProps) 
       </Box>
       <Box marginTop={1}>
         <Text color={theme.dimText}>
-          [↑/↓] Navigate  [Enter] Select  [Esc] Cancel  [y/n/a] Quick
+          [Up/Down] Options  [Left/Right/Tab] Requests  [Enter] Select  [Esc] Cancel  [y/n/a] Quick
         </Text>
       </Box>
     </Box>
   )
+}
+
+function formatPermissionRequestLabel(entry: PermissionDialogRequest): string {
+  const request = entry.request
+  if (request.tool.name !== 'Agent' || !request.input || typeof request.input !== 'object') {
+    return request.tool.name
+  }
+  const subagentType = (request.input as Record<string, unknown>).subagent_type
+  return typeof subagentType === 'string' ? `Agent:${subagentType}` : 'Agent'
 }

@@ -4,10 +4,10 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { z } from 'zod/v3'
-import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, filterToolsForSubAgent } from '../src/tools/agentTool.js'
+import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, filterToolsForSubAgent, prepareForkPreloadRecords } from '../src/tools/agentTool.js'
 import { AgentDefinitionLoader } from '../src/services/agents/agentDefinitionLoader.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
-import { PermissionGate } from '../src/harness/permissions.js'
+import { PermissionGate, type DenialStateStore } from '../src/harness/permissions.js'
 import type { ModelProvider, ModelRequest, SessionRecord, Tool, ToolContext } from '../src/harness/types.js'
 
 function toolContext(sessionId = 'parent'): ToolContext {
@@ -103,7 +103,7 @@ test('Agent tool marks only read-only agent types as concurrency-safe inputs', (
   assert.equal(agentTool.isConcurrencySafeInput?.({ task: 'missing type' }), false)
 })
 
-test('Agent tool keeps sub-agent records out of the parent record stream', async () => {
+test('Agent tool bridges sub-agent transcripts without leaking child tool records', async () => {
   const provider: ModelProvider = {
     name: 'fake',
     async createMessage() {
@@ -136,12 +136,88 @@ test('Agent tool keeps sub-agent records out of the parent record stream', async
 
   assert.equal(result.ok, true)
   assert.equal(result.content, 'sub-agent result')
-  assert.deepEqual(parentRecords.map((record) => record.type), ['tool_use', 'tool_approval', 'tool_result', 'message'])
+  assert.deepEqual(parentRecords.map((record) => record.type), ['tool_use', 'tool_approval', 'subagent_transcript', 'tool_result', 'message'])
+  const transcript = parentRecords.find((record) => record.type === 'subagent_transcript')
+  assert.ok(transcript && transcript.type === 'subagent_transcript')
+  assert.deepEqual(transcript.usage, { inputTokens: 10, cacheReadInputTokens: 2, outputTokens: 3 })
+  assert.equal(transcript.summary, 'sub-agent result')
+  assert.equal(transcript.recordCount, 2)
+  assert.equal(transcript.messageCount, 2)
+  assert.deepEqual(transcript.records, [])
   const summary = parentRecords.at(-1)
   assert.ok(summary && summary.type === 'message')
   assert.equal(summary.role, 'assistant')
   assert.match(summary.content, /<subagent-summary type="general"/)
   assert.match(summary.content, /tokens="15"/)
+})
+
+test('Agent tool aborts sub-agent runs after agentTimeoutMs', async () => {
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      await new Promise((_resolve, reject) => {
+        request.retry?.signal?.addEventListener('abort', () => {
+          reject(request.retry?.signal?.reason)
+        }, { once: true })
+      })
+      return { content: 'unused', toolCalls: [] }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    agentTimeoutMs: 5,
+  })
+
+  const result = await agentTool.execute({ task: 'slow task', subagent_type: 'general' }, toolContext())
+
+  assert.equal(result.ok, false)
+  assert.equal(result.errorCode, 'aborted')
+  assert.match(result.content, /timed out/)
+})
+
+test('Agent tool does not persist sub-agent denial state into the parent store', async () => {
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      if (request.contextItems?.some((item) => item.kind === 'tool_result')) {
+        return { content: 'done', toolCalls: [] }
+      }
+      return {
+        content: '',
+        toolCalls: [{ id: 'inner-1', name: 'ConfirmRead', input: {} }],
+      }
+    },
+  }
+  const confirmReadTool: Tool = {
+    ...readOnlyTool('ConfirmRead'),
+    riskLevel: 'confirm',
+  }
+  let parentStoreWrites = 0
+  const denialStateStore: DenialStateStore = {
+    async getDenialState() {
+      return { streaks: {}, total: 0 }
+    },
+    async setDenialState() {
+      parentStoreWrites += 1
+    },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [confirmReadTool],
+    permissionPrompt: async () => false,
+    denialStateStore,
+    cwd: process.cwd(),
+  })
+
+  const result = await agentTool.execute({ task: 'needs approval', subagent_type: 'general' }, toolContext())
+
+  assert.equal(result.ok, true)
+  assert.equal(parentStoreWrites, 0)
 })
 
 test('subagent summary reports partial token usage and structured critical files', async () => {
@@ -249,7 +325,7 @@ test('Agent tool exposes sub-agent usage, verdict, and critical files in metadat
   assert.deepEqual(subagent.criticalFiles, ['src/tools/agentTool.ts', 'test/agentTool.test.ts'])
 })
 
-test('Agent tool ignores prose lines and non-path tokens under Critical Files heading', async () => {
+test('Agent tool ignores prose and non-path tokens under Critical Files heading', async () => {
   const provider: ModelProvider = {
     name: 'fake',
     async createMessage() {
@@ -258,11 +334,12 @@ test('Agent tool ignores prose lines and non-path tokens under Critical Files he
           'Plan details.',
           '',
           '### Critical Files for Implementation',
-          '- `src/tools/agentTool.ts` - metadata extraction',
           '- some unrelated note about Agent tool',
-          '- `not a path` - inline-code hint that is not a path',
-          '- src/harness/loop.ts:42 - explanation of the line',
           '- TODO',
+          '- `not a path`',
+          '- `src/tools/agentTool.ts` - metadata extraction',
+          '- test/agentTool.test.ts:12',
+          '4. package.json',
           '',
           'VERDICT: PASS',
         ].join('\n'),
@@ -283,7 +360,7 @@ test('Agent tool ignores prose lines and non-path tokens under Critical Files he
   assert.equal(result.ok, true)
   const subagent = result.metadata?.subagent as Record<string, unknown> | undefined
   assert.ok(subagent)
-  assert.deepEqual(subagent.criticalFiles, ['src/tools/agentTool.ts', 'src/harness/loop.ts:42'])
+  assert.deepEqual(subagent.criticalFiles, ['src/tools/agentTool.ts', 'test/agentTool.test.ts:12', 'package.json'])
 })
 
 test('verification Agent result emits a structured subagent summary in the parent stream', async () => {
@@ -374,6 +451,110 @@ test('Agent tool uses an isolated agent cache source', async () => {
   assert.equal(requests.length, 1)
   assert.match(requests[0]!.cacheSource, /^agent:/)
   assert.notEqual(requests[0]!.cacheSource, 'agent:parent-session')
+})
+
+test('fork Agent preloads bounded parent records and uses the parent fork cache source', async () => {
+  const requests: ModelRequest[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const parentRecords: SessionRecord[] = [{
+    type: 'message',
+    id: 'parent-1',
+    role: 'user',
+    content: 'parent context',
+    createdAt: '2026-05-10T00:00:00.000Z',
+  }, {
+    type: 'subagent_transcript',
+    id: 'transcript-1',
+    agentId: 'child',
+    subagentType: 'general',
+    summary: 'nested child summary',
+    records: [],
+    usage: { inputTokens: 1, cacheReadInputTokens: 0, outputTokens: 0 },
+    createdAt: '2026-05-10T00:00:01.000Z',
+  }]
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    loadParentRecords: async () => parentRecords,
+  })
+
+  const result = await agentTool.execute({ task: 'continue from parent', subagent_type: 'fork' }, toolContext('parent-session'))
+
+  assert.equal(result.ok, true)
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0]!.cacheSource, 'agent:fork:parent-session')
+  assert.ok(requests[0]!.contextItems?.some(
+    (item) => item.kind === 'message'
+      && item.message.id === 'parent-1'
+      && item.message.content === 'parent context',
+  ))
+  assert.ok(!requests[0]!.contextItems?.some(
+    (item) => item.kind === 'message'
+      && /nested child summary/.test(item.message.content),
+  ))
+  assert.doesNotMatch(requests[0]!.system ?? '', /Forked Conversation Context/)
+  assert.ok(requests[0]!.contextItems?.some(
+    (item) => item.kind === 'message'
+      && item.message.role === 'user'
+      && /Forked Conversation Context/.test(item.message.content),
+  ))
+})
+
+test('prepareForkPreloadRecords keeps the recent tail within budget', () => {
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old',
+      role: 'user',
+      content: 'x'.repeat(600),
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'recent',
+      role: 'assistant',
+      content: 'recent context',
+      createdAt: '2026-05-10T00:00:01.000Z',
+    },
+  ]
+
+  const prepared = prepareForkPreloadRecords(records, 50)
+
+  assert.deepEqual(prepared.map((record) => record.type === 'message' ? record.id : record.type), ['recent'])
+})
+
+test('fork Agent reports parent record load failures clearly', async () => {
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      return { content: 'unused', toolCalls: [] }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    loadParentRecords: async () => {
+      throw new Error('bad jsonl')
+    },
+  })
+
+  const result = await agentTool.execute({ task: 'continue from parent', subagent_type: 'fork' }, toolContext('parent-session'))
+
+  assert.equal(result.ok, false)
+  assert.equal(result.errorCode, 'execution_failed')
+  assert.match(result.content, /Fork failed: parent records load error: bad jsonl/)
 })
 
 test('Agent tool gives sub-agents an independent abort signal bridged from the parent', async () => {
@@ -802,6 +983,55 @@ test('Agent tool snapshots agent definitions at creation time', async () => {
   assert.match(result.content, /Unknown subagent_type "late-agent"/)
 })
 
+test('custom agent reload can refresh a runtime Agent tool', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-agents-'))
+  const cwd = path.join(root, 'project')
+  const home = path.join(root, 'home')
+  const requests: ModelRequest[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'foo result', toolCalls: [] }
+    },
+  }
+  let agentDefinitions = [...BUILT_IN_AGENT_DEFINITIONS]
+  const createRuntimeAgentTool = () => createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd,
+    agentDefinitions,
+  })
+
+  try {
+    await mkdir(path.join(cwd, '.myagent', 'agents'), { recursive: true })
+    const beforeReload = createRuntimeAgentTool()
+    const missing = await beforeReload.execute({ task: 'hello', subagent_type: 'foo' }, toolContext())
+    assert.equal(missing.ok, false)
+    assert.match(missing.content, /Unknown subagent_type "foo"/)
+
+    await writeFile(path.join(cwd, '.myagent', 'agents', 'foo.md'), agentFile({
+      name: 'foo',
+      description: 'Reloaded foo agent.',
+      tools: [],
+      body: 'You are foo.',
+    }))
+    const customDefinitions = await new AgentDefinitionLoader(cwd, home).list()
+    agentDefinitions = [...BUILT_IN_AGENT_DEFINITIONS, ...customDefinitions]
+    const afterReload = createRuntimeAgentTool()
+
+    const result = await afterReload.execute({ task: 'hello', subagent_type: 'foo' }, toolContext())
+
+    assert.equal(result.ok, true)
+    assert.equal(result.content, 'foo result')
+    assert.match(requests[0]!.system ?? '', /You are foo\./)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('explore agent prompt enforces read-only fact finding', async () => {
   const explore = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'explore')
 
@@ -1085,7 +1315,7 @@ test('Agent tool reports a clear runtime error for unknown custom subagent types
 
   assert.equal(result.ok, false)
   assert.match(result.content, /Unknown subagent_type "missing-agent"/)
-  assert.match(result.content, /general, explore, plan, verification/)
+  assert.match(result.content, /general, fork, explore, plan, verification/)
 })
 
 test('custom agent maxResultSizeChars controls its result budget', async () => {
@@ -1183,6 +1413,48 @@ test('custom agent read-only inference treats write-like tools as non-concurrenc
     assert.equal(writer.isReadOnlyAgent, false)
     assert.equal(opaque.isReadOnlyAgent, false)
   } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('AgentDefinitionLoader warns for risky custom agent definitions', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-agents-'))
+  const warnings: string[] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(' '))
+  }
+  try {
+    const agentsDir = path.join(root, 'project', '.myagent', 'agents')
+    await mkdir(agentsDir, { recursive: true })
+    await writeFile(path.join(agentsDir, 'explore.md'), agentFile({
+      name: 'explore',
+      description: 'Overrides built-in explore.',
+      body: 'custom explore prompt',
+    }))
+    await writeFile(path.join(agentsDir, 'unsafe.md'), agentFile({
+      name: 'unsafe',
+      description: 'Incorrectly claims read-only.',
+      tools: ['Glob', 'Bash', 'Delete'],
+      isReadOnlyAgent: true,
+      body: 'unsafe prompt',
+    }))
+    await writeFile(path.join(agentsDir, 'verbose.md'), agentFile({
+      name: 'verbose',
+      description: 'Very large prompt.',
+      body: 'x'.repeat(16_001),
+    }))
+
+    const definitions = await new AgentDefinitionLoader(path.join(root, 'project'), path.join(root, 'home')).list()
+    const unsafe = definitions.find((definition) => definition.type === 'unsafe')
+
+    assert.ok(unsafe)
+    assert.equal(unsafe.isReadOnlyAgent, false)
+    assert.ok(warnings.some((warning) => warning.includes("Custom agent 'explore' overrides built-in definition")))
+    assert.ok(warnings.some((warning) => warning.includes("Custom agent 'unsafe' declares isReadOnlyAgent: true but lists write-like tools")))
+    assert.ok(warnings.some((warning) => warning.includes("Custom agent 'verbose' system prompt is 16001 chars")))
+  } finally {
+    console.warn = originalWarn
     await rm(root, { recursive: true, force: true })
   }
 })

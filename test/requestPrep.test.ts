@@ -56,6 +56,45 @@ test('prepareRecordsForRequest preserves old oversized tool results when aggrega
   assert.doesNotMatch(records[1]?.type === 'tool_result' ? records[1].content : '', /summarized/)
 })
 
+test('prepareRecordsForRequest filters persisted sub-agent transcripts out of model context', () => {
+  const records: SessionRecord[] = [
+    {
+      id: 'user-1',
+      type: 'message',
+      role: 'user',
+      content: 'hello',
+      createdAt: '2024-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'transcript-1',
+      type: 'subagent_transcript',
+      agentId: 'agent-1',
+      subagentType: 'general',
+      parentToolUseId: 'call-1',
+      records: [{
+        id: 'sub-user-1',
+        type: 'message',
+        role: 'user',
+        content: 'private sub-agent prompt',
+        createdAt: '2024-01-01T00:00:01.000Z',
+      }],
+      usage: { inputTokens: 1, cacheReadInputTokens: 2, outputTokens: 3 },
+      createdAt: '2024-01-01T00:00:02.000Z',
+    },
+    {
+      id: 'assistant-1',
+      type: 'message',
+      role: 'assistant',
+      content: 'world',
+      createdAt: '2024-01-01T00:00:03.000Z',
+    },
+  ]
+
+  const prepared = prepareRecordsForRequest(records)
+
+  assert.deepEqual(prepared.map((record) => record.id), ['user-1', 'assistant-1'])
+})
+
 test('prepareRecordsForRequest keeps same-tool history when under token thresholds', () => {
   const records: SessionRecord[] = [
     ...toolPair('first', 'Read', 'first output', 0),

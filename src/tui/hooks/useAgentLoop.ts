@@ -26,6 +26,7 @@ interface UseAgentLoopOptions {
   cwd?: string
   onRecordExternal?: (record: SessionRecord) => void
   onActiveModelChange?: (model: Omit<ActiveModelRuntime, 'provider'>) => void
+  onInterrupt?: () => void
 }
 
 export function useAgentLoop({
@@ -39,6 +40,7 @@ export function useAgentLoop({
   cwd,
   onRecordExternal,
   onActiveModelChange,
+  onInterrupt,
 }: UseAgentLoopOptions) {
   const [messages, setMessages] = useState<TUIDisplayItem[]>(() =>
     [...initialSystemMessages, ...recordsToDisplayItems(existingRecords)],
@@ -48,11 +50,12 @@ export function useAgentLoop({
     current: null,
     total: createEmptyUsage(),
   })
+  const [spinnerSubText, setSpinnerSubText] = useState<string | undefined>()
 
   const abortControllerRef = useRef<AbortController | null>(null)
   // Track the most recent tool_use ID for each tool name (for approval matching)
   const lastToolUseIdRef = useRef<Map<string, string>>(new Map())
-  const activeToolProgressRef = useRef<Map<string, ToolProgressEvent['call']>>(new Map())
+  const activeToolProgressRef = useRef<Map<string, ToolProgressEvent>>(new Map())
 
   // CheckpointService for creating snapshots before each user message
   const checkpointServiceRef = useRef<CheckpointService | null>(null)
@@ -87,6 +90,7 @@ export function useAgentLoop({
     })
     lastToolUseIdRef.current.clear()
     activeToolProgressRef.current.clear()
+    setSpinnerSubText(undefined)
   }, [session.id])
 
   // Wire up the permission gate's prompt function
@@ -160,6 +164,7 @@ export function useAgentLoop({
         abortControllerRef.current = null
         lastToolUseIdRef.current.clear()
         activeToolProgressRef.current.clear()
+        setSpinnerSubText(undefined)
         setMessages((prev) => prev.filter((item) => item.kind !== 'tool_progress'))
       }
     },
@@ -168,21 +173,24 @@ export function useAgentLoop({
 
   const handleProgress = useCallback((event: ToolProgressEvent) => {
     if (event.phase === 'started') {
-      activeToolProgressRef.current.set(event.call.id, event.call)
+      activeToolProgressRef.current.set(event.call.id, event)
     } else {
       activeToolProgressRef.current.delete(event.call.id)
     }
 
-    const content = formatToolProgress([...activeToolProgressRef.current.values()])
+    const activeEvents = [...activeToolProgressRef.current.values()]
+    const content = formatToolProgress(activeEvents)
+    const listContent = activeEvents.length > 1 ? content : undefined
+    setSpinnerSubText(content)
     setMessages((prev) => {
       const withoutProgress = prev.filter((item) => item.kind !== 'tool_progress')
-      if (!content) return withoutProgress
+      if (!listContent) return withoutProgress
       return [
         ...withoutProgress,
         {
           kind: 'tool_progress' as const,
           id: 'tool-progress',
-          content,
+          content: listContent,
           createdAt: new Date().toISOString(),
         },
       ]
@@ -307,8 +315,9 @@ export function useAgentLoop({
   }, [recordProxy, handleRecord, handleProgress])
 
   const interrupt = useCallback(() => {
+    onInterrupt?.()
     abortControllerRef.current?.abort()
-  }, [])
+  }, [onInterrupt])
 
   /**
    * Reload messages from the session store (e.g., after truncation).
@@ -334,6 +343,7 @@ export function useAgentLoop({
     messages,
     setMessages,
     isStreaming,
+    spinnerSubText,
     usage,
     submit,
     interrupt,
@@ -342,26 +352,56 @@ export function useAgentLoop({
   }
 }
 
-function formatToolProgress(calls: Array<ToolProgressEvent['call']>): string | undefined {
-  if (calls.length <= 1) return undefined
+function formatToolProgress(events: ToolProgressEvent[]): string | undefined {
+  if (events.length === 0) return undefined
+  if (events.length === 1) {
+    const event = events[0]
+    if (!event) return undefined
+    return formatSingleToolProgress(event)
+  }
 
   const counts = new Map<string, number>()
-  for (const call of calls) {
-    counts.set(call.name, (counts.get(call.name) ?? 0) + 1)
+  for (const event of events) {
+    const name = formatScopedToolName(event)
+    counts.set(name, (counts.get(name) ?? 0) + 1)
   }
 
   if (counts.size === 1) {
-    const name = calls[0]?.name
-    if (name === 'Read') return `Reading ${calls.length} files in parallel...`
-    return `Running ${calls.length} ${formatToolName(name)} calls in parallel...`
+    const first = events[0]
+    const name = formatScopedToolName(first)
+    if (first?.call.name === 'Read') return `Reading ${events.length} files in parallel...`
+    return `Running ${events.length} ${name} calls in parallel...`
   }
 
-  return `Running ${calls.length} tools in parallel...`
+  return `Running ${events.length} tools in parallel...`
 }
 
-function formatToolName(toolName: string | undefined): string {
-  if (!toolName) return 'tool'
-  return toolName
+function formatSingleToolProgress(event: ToolProgressEvent): string {
+  const details = formatToolProgressDetails(event.call.input)
+  return `${formatScopedToolName(event)}${details ? `: ${details}` : ''} (running)`
+}
+
+function formatScopedToolName(event: ToolProgressEvent | undefined): string {
+  const name = event?.call.name ?? 'tool'
+  if (event?.source?.type === 'subagent') {
+    return `${event.source.agentType} > ${name}`
+  }
+  return name
+}
+
+function formatToolProgressDetails(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object') return undefined
+  const values = input as Record<string, unknown>
+  const candidate = values.command ?? values.filePath ?? values.path ?? values.pattern ?? values.query
+  return typeof candidate === 'string' && candidate.trim().length > 0
+    ? truncateMiddle(candidate.trim(), 80)
+    : undefined
+}
+
+function truncateMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  const keep = Math.max(1, Math.floor((maxLength - 3) / 2))
+  return `${value.slice(0, keep)}...${value.slice(value.length - keep)}`
 }
 
 // Convert SessionRecord[] to TUIDisplayItem[] for initial display

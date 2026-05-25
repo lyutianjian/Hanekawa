@@ -24,6 +24,7 @@ export interface AgentConfig {
   system?: string
   contextManagement?: Partial<ContextManagementConfig>
   sessionDir?: string
+  agentTimeoutMs?: number
 }
 
 export interface Config {

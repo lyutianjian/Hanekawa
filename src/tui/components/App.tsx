@@ -95,7 +95,7 @@ export function App({
     new CheckpointService(process.cwd(), initialSession.id),
   )
 
-  const { permState, respond } = usePermission(promptProxy)
+  const { permState, respond, setActiveRequest, denyPending } = usePermission(promptProxy)
 
   const replaceRuntime = useCallback((nextRuntime: AppRuntime) => {
     const previousRuntime = runtimeRef.current
@@ -141,6 +141,7 @@ export function App({
     messages,
     setMessages,
     isStreaming,
+    spinnerSubText,
     usage,
     submit,
     interrupt,
@@ -155,6 +156,7 @@ export function App({
     existingRecords,
     initialSystemMessages,
     onActiveModelChange: syncActiveModel,
+    onInterrupt: denyPending,
   })
 
   // Track running state in mode
@@ -446,11 +448,11 @@ export function App({
       />
 
       {/* Spinner during streaming */}
-      {isStreaming && <Spinner />}
+      {isStreaming && <Spinner subText={spinnerSubText} />}
 
       {/* Permission dialog */}
       {permState.visible && (
-        <PermissionDialog permState={permState} respond={respond} />
+        <PermissionDialog permState={permState} respond={respond} setActiveRequest={setActiveRequest} />
       )}
 
       {/* Restore mode overlay */}

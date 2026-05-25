@@ -23,6 +23,7 @@ import { getMyAgentDir } from '../utils/paths.js'
 
 export type CacheBreakSource =
   | `agent:${string}`
+  | `agent:fork:${string}`
   | 'repl_main_thread'
   | 'sdk'
   | 'compact'
@@ -37,6 +38,11 @@ export type CacheBreakSource =
 export function agentCacheSource(agentId: string): CacheBreakSource {
   const normalized = agentId.trim() || 'unknown'
   return `agent:${normalized}`
+}
+
+export function forkCacheSource(parentSessionId: string): CacheBreakSource {
+  const normalized = parentSessionId.trim() || 'unknown'
+  return `agent:fork:${normalized}`
 }
 
 export function requireCacheSource(source: CacheBreakSource | undefined): CacheBreakSource {

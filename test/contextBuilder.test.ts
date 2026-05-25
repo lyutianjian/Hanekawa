@@ -312,6 +312,40 @@ test('ContextBuilder budgets messages and tool records together', async () => {
   assert.ok(built.contextItems.some((item) => item.kind === 'tool_result' && item.toolUseId === 'call-1'))
 })
 
+test('ContextBuilder prepends preloaded history before child records', async () => {
+  const builder = new ContextBuilder(undefined, contextWindow(8000))
+  const preloadRecords: SessionRecord[] = [{
+    type: 'message',
+    id: 'parent-message',
+    role: 'user',
+    content: 'parent context',
+    createdAt: '2026-05-10T00:00:00.000Z',
+  }]
+  const records: SessionRecord[] = [{
+    type: 'message',
+    id: 'child-directive',
+    role: 'user',
+    content: 'child directive',
+    createdAt: '2026-05-10T00:01:00.000Z',
+  }]
+
+  const originalPreload = [...preloadRecords]
+  const built = await builder.build({
+    preloadRecords,
+    records,
+    tools: [],
+    includeUserContext: false,
+  })
+
+  assert.deepEqual(preloadRecords, originalPreload)
+  assert.deepEqual(
+    built.contextItems
+      .filter((item) => item.kind === 'message')
+      .map((item) => item.message.id),
+    ['parent-message', 'child-directive'],
+  )
+})
+
 test('ContextBuilder uses latest compact boundary as prior context summary', async () => {
   const builder = new ContextBuilder(undefined, contextWindow(8000))
   const records: SessionRecord[] = [

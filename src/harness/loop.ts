@@ -11,7 +11,7 @@ import {
 } from './requestPrep.js'
 import { applyProgressiveCompaction } from './progressiveCompact.js'
 import { summarizeToolUse } from './toolUseSummary.js'
-import { agentCacheSource, formatCacheHitRate, notifyCompaction, resetCacheBreakDetection } from './cacheBreakDetection.js'
+import { agentCacheSource, formatCacheHitRate, notifyCompaction, resetCacheBreakDetection, type CacheBreakSource } from './cacheBreakDetection.js'
 import { logDiagnostics, type RuntimeDiagnostic } from './diagnostics.js'
 import { cacheHitRate, type SessionMetricInput } from './metrics.js'
 import type { RecordStream } from './recordStream.js'
@@ -73,6 +73,8 @@ export interface AgentLoopOptions {
   fallbackRetryDelayMs?: number
   hooks?: Hooks
   cacheRuntime?: CacheRuntime
+  cacheSource?: CacheBreakSource
+  preloadRecords?: SessionRecord[]
   permissionMode?(): PermissionMode
   getCompactFailureCount?(): Promise<number>
   setCompactFailureCount?(count: number): Promise<void>
@@ -93,6 +95,7 @@ export class AgentLoop {
   }
   private recordsCache: SessionRecord[] | undefined
   private recordsCacheHasCleanToolProtocol = false
+  private pendingSubagentTranscriptUsage: TokenUsage = { ...EMPTY_TOKEN_USAGE }
   private readonly pendingToolUseSummaries: PendingToolUseSummary[] = []
   // Serializes run() and runTool() against each other. Both helpers funnel
   // through enqueue() so that a tool dispatched via runTool (e.g. an
@@ -117,6 +120,7 @@ export class AgentLoop {
       primary,
       fallback: options.fallbackModel,
     }
+    this.options.toolContext.appendMetric = (metric) => this.emitMetric(metric)
     this.options.toolRunner.addRecordListener((record) => {
       this.noteRecordAppended(record)
     })
@@ -150,6 +154,9 @@ export class AgentLoop {
 
   noteRecordAppended(record: SessionRecord): void {
     this.recordsCache?.push(record)
+    if (record.type === 'subagent_transcript') {
+      this.pendingSubagentTranscriptUsage = addTokenUsage(this.pendingSubagentTranscriptUsage, record.usage)
+    }
     if (record.type === 'tool_use' || record.type === 'tool_result') {
       this.recordsCacheHasCleanToolProtocol = false
     }
@@ -161,6 +168,7 @@ export class AgentLoop {
 
   private async runInternal(userInput: string, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
     let usage = { ...EMPTY_TOKEN_USAGE }
+    this.pendingSubagentTranscriptUsage = { ...EMPTY_TOKEN_USAGE }
     const turnId = randomUUID()
     const userMessage: ChatMessage & { type: 'message' } = {
       type: 'message',
@@ -178,7 +186,7 @@ export class AgentLoop {
     const maxTurns = this.options.maxTurns ?? 100
     const tokenBudget = this.options.tokenBudget
     const tokenWarnThreshold = this.options.tokenWarningThreshold ?? 0.8
-    const cacheSource = agentCacheSource(this.options.toolContext.sessionId)
+    const cacheSource = this.options.cacheSource ?? agentCacheSource(this.options.toolContext.sessionId)
 
     let lastRequestId: string | undefined
     let maxOutputTokensOverride: number | undefined = this.options.maxOutputTokens
@@ -252,6 +260,7 @@ export class AgentLoop {
       }
 
       const built = await this.options.contextBuilder.build({
+        preloadRecords: this.options.preloadRecords,
         records,
         tools: this.options.tools,
         system: this.options.system,
@@ -400,6 +409,7 @@ export class AgentLoop {
       }
 
       const toolResults = await this.runToolCallsInOrder(response.toolCalls, signal, turnId)
+      usage = addTokenUsage(usage, this.drainSubagentTranscriptUsage())
       this.startToolUseSummary(toolResults, turnId)
 
       if (toolResults.length > 0 && toolResults.every((r) => !r.ok)) {
@@ -678,6 +688,12 @@ export class AgentLoop {
     }
 
     return results
+  }
+
+  private drainSubagentTranscriptUsage(): TokenUsage {
+    const usage = this.pendingSubagentTranscriptUsage
+    this.pendingSubagentTranscriptUsage = { ...EMPTY_TOKEN_USAGE }
+    return usage
   }
 
   private isConcurrencySafe(call: ToolCall): boolean {

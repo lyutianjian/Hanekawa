@@ -52,7 +52,8 @@ export function prepareRecordsForRequestWithDiagnostics(
   now = new Date(),
   options: RequestPrepOptions = {},
 ): PreparedRecordsResult {
-  const recordsAfterCompact = getRecordsAfterLastCompact(records)
+  const requestVisibleRecords = records.filter((record) => record.type !== 'subagent_transcript')
+  const recordsAfterCompact = getRecordsAfterLastCompact(requestVisibleRecords)
   const stripped = stripExcessMediaItems(recordsAfterCompact)
   const thinkingStripped = stripThinkingBlocksFromAssistantMessages(
     stripped,

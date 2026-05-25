@@ -18,7 +18,7 @@ import { SessionStore } from '../../sessions/service.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import { JsonlRecordStream } from '../../sessions/recordStream.js'
 import { getAllTools } from '../../tools/index.js'
-import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool } from '../../tools/agentTool.js'
+import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, prepareForkPreloadRecords } from '../../tools/agentTool.js'
 import { PermissionGate, type DenialStateStore } from '../../harness/permissions.js'
 import { ToolRunner } from '../../harness/toolRunner.js'
 import { ContextBuilder } from '../../harness/contextBuilder.js'
@@ -289,6 +289,7 @@ async function main() {
         }
       : undefined
 
+    const recordStream = new JsonlRecordStream(store, runtimeSession.id)
     const runtimeTools = [...baseTools, ...mcpToolsByServer.values()].flat()
     runtimeTools.push(createAgentTool({
       provider: targetProvider,
@@ -307,6 +308,7 @@ async function main() {
       system: config.get().agent.system,
       skills,
       agentDefinitions,
+      loadParentRecords: async () => prepareForkPreloadRecords(await recordStream.load()),
       contextManagement,
       isGitRepo,
       hooks: settings.hooks,
@@ -314,9 +316,9 @@ async function main() {
       compactModel,
       getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
       setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
+      agentTimeoutMs: config.get().agent.agentTimeoutMs,
     }))
 
-    const recordStream = new JsonlRecordStream(store, runtimeSession.id)
     runtimeToolSets.add(runtimeTools)
     const runtimeToolRunner = new ToolRunner(runtimeTools, permissionGate, {
       onRecord: async (record) => {

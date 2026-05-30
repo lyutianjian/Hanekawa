@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
-import { captureReadFileState, getReadFileContent, requireFreshRead } from './fileState.js'
+import { getReadFileContent, rememberReadFile, requireFreshRead } from './fileState.js'
 import { assertParentNotSymlink } from './pathSafety.js'
 
 export const editFileTool: Tool = {
@@ -29,15 +29,19 @@ export const editFileTool: Tool = {
     if (matches.length !== 1) {
       return multipleMatchFailure(oldString, matches)
     }
-    const nextContent = original.replace(oldString, newString)
+    const nextContent = replaceLiteralMatch(original, oldString, newString, matches[0].index)
     const unsafeParent = await assertParentNotSymlink(absolute, filePath)
     if (unsafeParent) {
       return unsafeParent
     }
     await writeFile(absolute, nextContent, 'utf8')
-    context.readFileState?.set(absolute, await captureReadFileState(absolute, nextContent))
+    await rememberReadFile(absolute, nextContent, context)
     return { ok: true, content: `Edited ${filePath}` }
   },
+}
+
+export function replaceLiteralMatch(content: string, oldString: string, newString: string, index: number): string {
+  return content.slice(0, index) + newString + content.slice(index + oldString.length)
 }
 
 export interface StringMatchContext {

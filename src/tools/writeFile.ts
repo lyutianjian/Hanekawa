@@ -3,7 +3,7 @@ import path from 'node:path'
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
-import { captureReadFileState, requireFreshRead } from './fileState.js'
+import { rememberReadFile, requireFreshRead } from './fileState.js'
 import { assertParentNotSymlink } from './pathSafety.js'
 
 export const writeFileTool: Tool = {
@@ -42,9 +42,7 @@ export const writeFileTool: Tool = {
       return unsafeParentBeforeWrite
     }
     await writeFile(absolute, content, 'utf8')
-    context.readFiles.add(absolute)
-    context.readFileState ??= new Map()
-    context.readFileState.set(absolute, await captureReadFileState(absolute, content))
+    await rememberReadFile(absolute, content, context)
     return { ok: true, content: `Wrote ${filePath}` }
   },
 }

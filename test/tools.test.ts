@@ -82,6 +82,27 @@ test('editFile edits after readFile', async () => {
   }
 })
 
+test('editFile treats dollar sequences in replacement as literal text', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = context(dir)
+    const file = path.join(dir, 'a.txt')
+    await writeFile(file, 'let total = a + b;\n', 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+
+    const result = await editFileTool.execute({
+      filePath: 'a.txt',
+      oldString: 'a + b',
+      newString: 'price$1 + tax$$ + $&',
+    }, ctx)
+
+    assert.equal(result.ok, true)
+    assert.equal(await readFile(file, 'utf8'), 'let total = price$1 + tax$$ + $&;\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('editFile reports nearby context when oldString matches multiple times', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
   try {
@@ -151,6 +172,29 @@ test('multiEdit applies multiple replacements atomically', async () => {
   }
 })
 
+test('multiEdit treats dollar sequences in replacements as literal text', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = context(dir)
+    const file = path.join(dir, 'a.txt')
+    await writeFile(file, 'first = value\nsecond = value\n', 'utf8')
+    await readFileTool.execute({ filePath: 'a.txt' }, ctx)
+
+    const result = await multiEditTool.execute({
+      filePath: 'a.txt',
+      edits: [
+        { oldString: 'first = value', newString: 'first = price$1 + tax$$ + $&' },
+        { oldString: 'second = value', newString: "second = ${value} + $` + $'" },
+      ],
+    }, ctx)
+
+    assert.equal(result.ok, true)
+    assert.equal(await readFile(file, 'utf8'), "first = price$1 + tax$$ + $&\nsecond = ${value} + $` + $'\n")
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('multiEdit does not write when any replacement is ambiguous', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
   try {
@@ -191,6 +235,47 @@ test('readFile tracks content for post-compact restoration', async () => {
     assert.equal(typeof ctx.readFileState.get(file)?.ctimeMs, 'number')
     assert.equal(typeof ctx.readFileState.get(file)?.dev, 'number')
     assert.equal(typeof ctx.readFileState.get(file)?.ino, 'number')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('readFile evicts read tracking and read state together', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const firstFile = path.join(dir, 'first.txt')
+    await writeFile(firstFile, 'first\n', 'utf8')
+    await readFileTool.execute({ filePath: 'first.txt' }, ctx)
+
+    for (let index = 0; index < 100; index += 1) {
+      const fileName = `file-${index}.txt`
+      await writeFile(path.join(dir, fileName), `${index}\n`, 'utf8')
+      await readFileTool.execute({ filePath: fileName }, ctx)
+    }
+
+    assert.equal(ctx.readFileState.has(firstFile), false)
+    assert.equal(ctx.readFiles.has(firstFile), false)
+    assert.equal(ctx.readFileState.size, 100)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editFile reports missing read state separately from unread files', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'a.txt')
+    await writeFile(file, 'hello\n', 'utf8')
+    ctx.readFiles.add(file)
+
+    const result = await editFileTool.execute({ filePath: 'a.txt', oldString: 'hello', newString: 'hi' }, ctx)
+
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'precondition_failed')
+    assert.match(result.content, /read state is no longer available/)
+    assert.equal((result.errorDetails as { reason?: string }).reason, 'read_state_missing')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

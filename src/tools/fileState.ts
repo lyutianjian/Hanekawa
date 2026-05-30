@@ -4,11 +4,20 @@ import type { Stats } from 'node:fs'
 
 type FileSignature = Pick<ReadFileState, 'mtimeMs' | 'ctimeMs' | 'size' | 'dev' | 'ino'>
 
+const MAX_READ_FILE_STATE_ENTRIES = 100
 let lastReadFileTimestamp = 0
 
 export async function captureReadFileState(absolute: string, content: string): Promise<ReadFileState> {
   const fileStat = await stat(absolute)
   return captureReadFileStateFromStat(content, fileStat)
+}
+
+export async function rememberReadFile(absolute: string, content: string, context: ToolContext): Promise<void> {
+  const state = await captureReadFileState(absolute, content)
+  context.readFileState ??= new Map()
+  evictOldestReadFileStateIfNeeded(context, absolute)
+  context.readFiles.add(absolute)
+  context.readFileState.set(absolute, state)
 }
 
 export function captureReadFileStateFromStat(content: string, fileStat: Stats): ReadFileState {
@@ -35,6 +44,26 @@ function captureFileSignature(fileStat: Stats): FileSignature {
   }
 }
 
+function evictOldestReadFileStateIfNeeded(context: ToolContext, incoming: string): void {
+  const state = context.readFileState
+  if (!state || state.has(incoming) || state.size < MAX_READ_FILE_STATE_ENTRIES) return
+
+  let oldestKey: string | undefined
+  let oldestTimestamp = Infinity
+
+  for (const [key, value] of state.entries()) {
+    if (value.timestamp < oldestTimestamp) {
+      oldestTimestamp = value.timestamp
+      oldestKey = key
+    }
+  }
+
+  if (oldestKey !== undefined) {
+    state.delete(oldestKey)
+    context.readFiles.delete(oldestKey)
+  }
+}
+
 function signatureChanged(state: ReadFileState, current: FileSignature): boolean {
   if (state.size !== current.size || state.mtimeMs !== current.mtimeMs) {
     return true
@@ -52,12 +81,23 @@ function signatureChanged(state: ReadFileState, current: FileSignature): boolean
 }
 
 export async function requireFreshRead(absolute: string, filePath: string, context: ToolContext): Promise<ToolResult | undefined> {
+  const wasRead = context.readFiles.has(absolute)
   const state = context.readFileState?.get(absolute)
-  if (!context.readFiles.has(absolute) || !state) {
+  if (!wasRead) {
     return {
       ok: false,
       content: `Refusing to modify ${filePath}: file must be read first.`,
       errorCode: 'precondition_failed',
+    }
+  }
+  if (!state) {
+    return {
+      ok: false,
+      content: `Refusing to modify ${filePath}: read state is no longer available. Read it again before retrying.`,
+      errorCode: 'precondition_failed',
+      errorDetails: {
+        reason: 'read_state_missing',
+      },
     }
   }
 

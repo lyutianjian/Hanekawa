@@ -2,9 +2,9 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { z } from 'zod/v3'
 import type { Tool } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
-import { captureReadFileState, getReadFileContent, requireFreshRead } from './fileState.js'
+import { getReadFileContent, rememberReadFile, requireFreshRead } from './fileState.js'
 import { assertParentNotSymlink } from './pathSafety.js'
-import { findStringMatches, multipleMatchFailure } from './editFile.js'
+import { findStringMatches, multipleMatchFailure, replaceLiteralMatch } from './editFile.js'
 
 interface MultiEditItem {
   oldString: string
@@ -40,7 +40,7 @@ export const multiEditTool: Tool = {
       if (matches.length !== 1) {
         return multipleMatchFailure(edit.oldString, matches, `edits[${index}].oldString`)
       }
-      nextContent = nextContent.replace(edit.oldString, edit.newString)
+      nextContent = replaceLiteralMatch(nextContent, edit.oldString, edit.newString, matches[0].index)
     }
 
     const unsafeParent = await assertParentNotSymlink(absolute, filePath)
@@ -49,7 +49,7 @@ export const multiEditTool: Tool = {
     }
 
     await writeFile(absolute, nextContent, 'utf8')
-    context.readFileState?.set(absolute, await captureReadFileState(absolute, nextContent))
+    await rememberReadFile(absolute, nextContent, context)
     return { ok: true, content: `Applied ${edits.length} edits to ${filePath}` }
   },
 }

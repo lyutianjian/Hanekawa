@@ -245,6 +245,7 @@ export class AgentLoop {
       if (this.retryPrimaryIfReady(cacheSource)) {
         lastRequestId = undefined
         maxOutputTokensOverride = this.options.maxOutputTokens
+        maxOutputTokensRecoveryCount = 0
         recordsBeforeCompact = await this.loadPreparedRecords()
       }
 
@@ -274,7 +275,8 @@ export class AgentLoop {
       })
       await this.consumePostCompactRestoreRecords(pendingRestoreRecordIds)
 
-      const requestRecordCount = this.recordsCache?.length ?? records.length
+      const requestRecordCount = records.length
+      const canReuseResponseTokenEstimate = useCachedTokenEstimate && !compactResult.compacted
       const modelRequest = {
         system: built.system,
         systemBlocks: built.systemBlocks,
@@ -305,7 +307,9 @@ export class AgentLoop {
 
       usage = addTokenUsage(usage, response.usage)
       await this.emitTurnMetric(modelStartedAt, response.usage ?? EMPTY_TOKEN_USAGE, response.toolCalls.length)
-      lastResponseTokenCount = requestTokenCountFromUsage(response.usage)
+      lastResponseTokenCount = canReuseResponseTokenEstimate
+        ? requestTokenCountFromUsage(response.usage)
+        : undefined
       lastResponseRecordCount = lastResponseTokenCount === undefined ? undefined : requestRecordCount
       lastRequestId = response.requestId
       if (response.cacheBreak) {
@@ -326,6 +330,20 @@ export class AgentLoop {
         }
       }
 
+      const assistantMessage: ChatMessage & { type: 'message' } = {
+        type: 'message',
+        id: randomUUID(),
+        role: 'assistant',
+        content: response.content,
+        turnId,
+        createdAt: new Date().toISOString(),
+        model: this.activeModel.model,
+        ...(response.reasoningContent ? { reasoningContent: response.reasoningContent } : {}),
+        ...(response.thinkingBlocks && response.thinkingBlocks.length > 0
+          ? { thinkingBlocks: response.thinkingBlocks }
+          : {}),
+      }
+
       // max_output_tokens escalation: retry with higher limit
       if (response.stopReason === 'max_tokens') {
         if (maxOutputTokensOverride === undefined) {
@@ -334,6 +352,7 @@ export class AgentLoop {
         }
 
         if (maxOutputTokensRecoveryCount < MAX_RECOVERY_COUNT) {
+          await this.appendRecord(assistantMessage)
           await this.appendRecord({
             type: 'message',
             id: randomUUID(),
@@ -377,19 +396,6 @@ export class AgentLoop {
         })
       }
 
-      const assistantMessage: ChatMessage & { type: 'message' } = {
-        type: 'message',
-        id: randomUUID(),
-        role: 'assistant',
-        content: response.content,
-        turnId,
-        createdAt: new Date().toISOString(),
-        model: this.activeModel.model,
-        ...(response.reasoningContent ? { reasoningContent: response.reasoningContent } : {}),
-        ...(response.thinkingBlocks && response.thinkingBlocks.length > 0
-          ? { thinkingBlocks: response.thinkingBlocks }
-          : {}),
-      }
       await this.appendRecord(assistantMessage)
 
       if (response.toolCalls.length === 0) {
@@ -487,6 +493,8 @@ export class AgentLoop {
     if (source.readFileState) fork.readFileState = new Map(source.readFileState)
     if (source.invokedSkills) fork.invokedSkills = new Map(source.invokedSkills)
     if (source.taskState) fork.taskState = new Map(source.taskState)
+    if (source.planModeBridge) fork.planModeBridge = source.planModeBridge
+    if (source.askUserQuestionBridge) fork.askUserQuestionBridge = source.askUserQuestionBridge
     return fork
   }
 
@@ -611,22 +619,28 @@ export class AgentLoop {
 
   private async consumePostCompactRestoreRecords(recordIds: string[]): Promise<void> {
     for (const recordId of recordIds) {
+      let persisted = false
       try {
         await this.options.recordStream.update?.(recordId, (record) => {
           if (record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') return record
           return { ...record, postCompactRestore: 'consumed' }
         })
+        persisted = true
       } catch (error) {
         if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
           console.error(`[hanekawa][compact] failed to persist consumed restore record ${recordId}:`, error)
         }
       }
-      this.recordsCache = this.recordsCache?.map((record) => {
-        if (record.id !== recordId || record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') {
-          return record
-        }
-        return { ...record, postCompactRestore: 'consumed' }
-      })
+      // Only update in-memory cache if persistence succeeded, to avoid
+      // state divergence between memory and disk.
+      if (persisted) {
+        this.recordsCache = this.recordsCache?.map((record) => {
+          if (record.id !== recordId || record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') {
+            return record
+          }
+          return { ...record, postCompactRestore: 'consumed' }
+        })
+      }
     }
   }
 

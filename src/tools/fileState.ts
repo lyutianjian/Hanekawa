@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises'
+import { open, stat } from 'node:fs/promises'
 import type { ReadFileState, ToolContext, ToolResult } from '../harness/types.js'
 import type { Stats } from 'node:fs'
 
@@ -12,6 +12,31 @@ export async function captureReadFileState(absolute: string, content: string): P
   return captureReadFileStateFromStat(content, fileStat)
 }
 
+/**
+ * Read a file and capture its stat atomically via a single file handle.
+ * This avoids TOCTOU between content read and metadata capture.
+ * Returns the file content string.
+ */
+export async function readFileAndRemember(absolute: string, context: ToolContext): Promise<string> {
+  const fh = await open(absolute, 'r')
+  try {
+    const content = await fh.readFile('utf8')
+    const fileStat = await fh.stat()
+    const state = captureReadFileStateFromStat(content, fileStat)
+    context.readFileState ??= new Map()
+    evictOldestReadFileStateIfNeeded(context, absolute)
+    context.readFiles.add(absolute)
+    context.readFileState.set(absolute, state)
+    return content
+  } finally {
+    await fh.close()
+  }
+}
+
+/**
+ * Remember file state from pre-read content. Use readFileAndRemember()
+ * instead when possible to avoid TOCTOU between read and stat.
+ */
 export async function rememberReadFile(absolute: string, content: string, context: ToolContext): Promise<void> {
   const state = await captureReadFileState(absolute, content)
   context.readFileState ??= new Map()

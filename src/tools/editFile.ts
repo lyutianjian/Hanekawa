@@ -3,7 +3,7 @@ import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
 import { getReadFileContent, rememberReadFile, requireFreshRead } from './fileState.js'
-import { assertParentNotSymlink } from './pathSafety.js'
+import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
 
 export const editFileTool: Tool = {
   name: 'Edit',
@@ -24,16 +24,22 @@ export const editFileTool: Tool = {
     if (oldString.length === 0) {
       return { ok: false, content: 'Refusing to edit: oldString must not be empty.', errorCode: 'precondition_failed' }
     }
+    // Symlink checks BEFORE reading content to prevent TOCTOU: an attacker
+    // could swap the file with a symlink between read and write.
+    const unsafeParent = await assertParentNotSymlink(absolute, filePath)
+    if (unsafeParent) {
+      return unsafeParent
+    }
+    const unsafeFile = await assertFileNotSymlink(absolute, filePath)
+    if (unsafeFile) {
+      return unsafeFile
+    }
     const original = getReadFileContent(absolute, context) ?? await readFile(absolute, 'utf8')
     const matches = findStringMatches(original, oldString)
     if (matches.length !== 1) {
       return multipleMatchFailure(oldString, matches)
     }
     const nextContent = replaceLiteralMatch(original, oldString, newString, matches[0].index)
-    const unsafeParent = await assertParentNotSymlink(absolute, filePath)
-    if (unsafeParent) {
-      return unsafeParent
-    }
     await writeFile(absolute, nextContent, 'utf8')
     await rememberReadFile(absolute, nextContent, context)
     return { ok: true, content: `Edited ${filePath}` }

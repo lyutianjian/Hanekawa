@@ -65,7 +65,7 @@ export class ConfigService {
 
   constructor(cwd: string) {
     this.configPath = getConfigPath(cwd)
-    this.config = { ...DEFAULT_CONFIG }
+    this.config = structuredClone(DEFAULT_CONFIG)
   }
 
   async load(settings?: MyAgentSettings): Promise<void> {

@@ -1,10 +1,11 @@
-import { mkdir, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, rename, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
 import { rememberReadFile, requireFreshRead } from './fileState.js'
-import { assertParentNotSymlink } from './pathSafety.js'
+import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
 
 export const writeFileTool: Tool = {
   name: 'Write',
@@ -41,7 +42,16 @@ export const writeFileTool: Tool = {
     if (unsafeParentBeforeWrite) {
       return unsafeParentBeforeWrite
     }
-    await writeFile(absolute, content, 'utf8')
+    const unsafeFile = await assertFileNotSymlink(absolute, filePath)
+    if (unsafeFile) {
+      return unsafeFile
+    }
+    // Atomic write: write to a temp file in the same directory, then rename.
+    // This prevents symlink following because writeFile follows symlinks,
+    // but rename does not. It also prevents data loss on crash.
+    const tmpPath = `${absolute}.tmp.${randomUUID()}`
+    await writeFile(tmpPath, content, 'utf8')
+    await rename(tmpPath, absolute)
     await rememberReadFile(absolute, content, context)
     return { ok: true, content: `Wrote ${filePath}` }
   },

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { theme } from '../theme.js'
 import type { PermissionDialogRequest, PermissionDialogState } from '../types.js'
@@ -65,6 +65,9 @@ interface PermissionDialogProps {
 
 export function PermissionDialog({ permState, respond, setActiveRequest }: PermissionDialogProps) {
   const [selectedIndex, setSelectedIndex] = useState(0)
+  // Reset selectedIndex when switching between permission requests to avoid
+  // "Always allow" carrying over from one request to the next.
+  useEffect(() => { setSelectedIndex(0) }, [permState.activeRequestId])
   const activeIndex = Math.max(0, permState.requests.findIndex((entry) => entry.id === permState.activeRequestId))
   const activeEntry = permState.requests[activeIndex] ?? permState.requests[0]
   const request = activeEntry?.request

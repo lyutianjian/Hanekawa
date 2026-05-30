@@ -99,7 +99,9 @@ export class AnthropicProvider implements ModelProvider {
   }
 
   private parseResponse(response: Anthropic.Messages.Message): ModelResponse {
-    const content = response.content.find((c) => c.type === 'text')
+    // Concatenate ALL text blocks — the API can return multiple text blocks
+    // (e.g., text before and after tool use in the same message).
+    const textBlocks = response.content.filter((c) => c.type === 'text')
     const toolUses = response.content.filter((c) => c.type === 'tool_use')
     const thinkingBlocks: ThinkingBlock[] = response.content
       .filter((c) => c.type === 'thinking' || c.type === 'redacted_thinking')
@@ -117,7 +119,7 @@ export class AnthropicProvider implements ModelProvider {
         }
       })
 
-    let textContent = content?.type === 'text' ? content.text : ''
+    let textContent = textBlocks.map((c) => c.type === 'text' ? c.text : '').join('')
 
     if (toolUses.length > 0 && textContent.trim() === '') {
       textContent = ''

@@ -8,12 +8,14 @@ import { theme } from '../theme.js'
 
 interface MessageListProps {
   items: TUIDisplayItem[]
+  isOverlayActive?: boolean
 }
 
-export function MessageList({ items }: MessageListProps) {
+export function MessageList({ items, isOverlayActive }: MessageListProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
 
   // Ctrl+O to toggle expand/collapse of the last completed tool call
+  // Disabled when an overlay (permission dialog, restore mode, etc.) is active
   useInput(
     (input, key) => {
       if (key.ctrl && input === 'o') {
@@ -33,7 +35,7 @@ export function MessageList({ items }: MessageListProps) {
         }
       }
     },
-    { isActive: true },
+    { isActive: !isOverlayActive },
   )
 
   return (

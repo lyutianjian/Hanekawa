@@ -108,6 +108,14 @@ export class ToolRunner {
         return denied
       }
 
+      // Check abort signal after permission approval — user may have cancelled
+      // while the permission dialog was open.
+      if (signal?.aborted) {
+        const aborted = this.result(call, tool.name, false, 'The operation was aborted.', 'aborted', undefined, turnId, tool.maxResultSizeChars)
+        await this.emitToolResultAndPostHooks(aborted, tool, call.input, executionContext, signal)
+        return aborted
+      }
+
       const preToolHooks = await runPreToolUseHooks(this.hooks.preToolUse, tool, call.input, executionContext, signal)
       syncMutableToolContext(context, executionContext)
       if (!preToolHooks.ok) {
@@ -123,6 +131,13 @@ export class ToolRunner {
         )
         await this.emitToolResultAndPostHooks(blocked, tool, call.input, executionContext, signal)
         return blocked
+      }
+
+      // Check abort signal again after pre-tool hooks.
+      if (signal?.aborted) {
+        const aborted = this.result(call, tool.name, false, 'The operation was aborted.', 'aborted', undefined, turnId, tool.maxResultSizeChars)
+        await this.emitToolResultAndPostHooks(aborted, tool, call.input, executionContext, signal)
+        return aborted
       }
 
       try {
@@ -164,8 +179,11 @@ export class ToolRunner {
   private async emitProgress(event: ToolProgressEvent): Promise<void> {
     try {
       await this.events.onProgress?.(event)
-    } catch {
+    } catch (error) {
       // Progress updates are UI-only; tool execution and persistence own truth.
+      if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
+        console.error('[myagent][toolRunner] emitProgress error:', error)
+      }
     }
   }
 

@@ -1,11 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import fs, { readFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { SessionStore } from '../src/sessions/service.js'
 import type { SessionRecord } from '../src/harness/types.js'
+import { getSessionsDir } from '../src/utils/paths.js'
 
 test('SessionStore creates, lists, resolves, renames, and deletes sessions', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
@@ -69,6 +71,58 @@ test('SessionStore appends and loads records while updating metadata', async () 
     assert.equal(loaded?.messageCount, 1)
     assert.equal(loaded?.title, 'Hello from session test')
   } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SessionStore appendRecord updates metadata without rereading JSONL history', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  const originalReadFileSync = fs.readFileSync
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+
+    const session = await store.create()
+    const firstMessage: SessionRecord = {
+      type: 'message',
+      id: 'msg-1',
+      role: 'user',
+      content: 'Initial title',
+      createdAt: new Date().toISOString(),
+    }
+    await store.appendRecord(session.id, firstMessage)
+
+    const jsonlPath = path.join(getSessionsDir(dir), `${session.id}.jsonl`)
+    fs.readFileSync = ((filePath: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+      if (String(filePath) === jsonlPath) {
+        throw new Error('appendRecord should not reread JSONL history')
+      }
+      return originalReadFileSync(filePath, ...(args as [BufferEncoding | undefined]))
+    }) as typeof fs.readFileSync
+    syncBuiltinESMExports()
+
+    await store.appendRecord(session.id, {
+      type: 'message',
+      id: 'msg-2',
+      role: 'assistant',
+      content: 'Second message',
+      createdAt: new Date().toISOString(),
+    })
+    await store.appendRecord(session.id, {
+      type: 'tool_use',
+      id: 'call-1',
+      tool: 'Read',
+      input: { file_path: 'README.md' },
+      riskLevel: 'safe',
+      createdAt: new Date().toISOString(),
+    })
+
+    const loaded = await store.load(session.id)
+    assert.equal(loaded?.messageCount, 2)
+    assert.equal(loaded?.title, 'Initial title')
+  } finally {
+    fs.readFileSync = originalReadFileSync
+    syncBuiltinESMExports()
     await rm(dir, { recursive: true, force: true })
   }
 })

@@ -124,6 +124,26 @@ export interface SubagentTranscriptRecord {
   turnId?: string
 }
 
+export interface PlanModeRequestRecord {
+  id: string
+  type: 'plan_mode_request'
+  kind: 'enter' | 'exit' | 'subagent_exit'
+  submittedFromSessionId: string
+  planContent?: string
+  createdAt: string
+  turnId?: string
+}
+
+export interface PlanModeOutcomeRecord {
+  id: string
+  type: 'plan_mode_outcome'
+  kind: 'enter_approved' | 'enter_rejected' | 'exit_approved' | 'exit_rejected'
+  requestId: string
+  detail?: string
+  createdAt: string
+  turnId?: string
+}
+
 export type SessionRecord =
   | ({ type: 'message' } & ChatMessage)
   | ToolUseRecord
@@ -133,6 +153,8 @@ export type SessionRecord =
   | CompactAttemptFailedRecord
   | ToolUseSummaryRecord
   | SubagentTranscriptRecord
+  | PlanModeRequestRecord
+  | PlanModeOutcomeRecord
 
 export interface TaskItem {
   id: string
@@ -140,6 +162,19 @@ export interface TaskItem {
   subject: string
   description: string
   activeForm?: string
+}
+
+export interface PlanModeBridge {
+  parentSessionId: string
+  parentAppendRecord(record: SessionRecord): Promise<void>
+  activePlanFilePath?: string
+}
+
+export interface AskUserQuestionBridge {
+  ask(input: { questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }): Promise<
+    | { kind: 'answers'; answers: Record<string, string> }
+    | { kind: 'rejected'; feedback?: string }
+  >
 }
 
 export interface ToolContext {
@@ -157,6 +192,8 @@ export interface ToolContext {
   getPermissionMode?(): PermissionMode
   setPermissionMode?(mode: PermissionMode): void
   exitPlanMode?(): PermissionMode
+  planModeBridge?: PlanModeBridge
+  askUserQuestionBridge?: AskUserQuestionBridge
 }
 
 export type ToolErrorCode =

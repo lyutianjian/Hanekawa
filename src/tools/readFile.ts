@@ -1,8 +1,7 @@
-import { readFile } from 'node:fs/promises'
 import { z } from 'zod/v3'
 import type { Tool } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
-import { rememberReadFile } from './fileState.js'
+import { readFileAndRemember } from './fileState.js'
 
 export const readFileTool: Tool = {
   name: 'Read',
@@ -16,8 +15,7 @@ export const readFileTool: Tool = {
   async execute(input, context) {
     const { filePath } = input as { filePath: string }
     const absolute = assertInsideCwd(context.cwd, filePath)
-    const content = await readFile(absolute, 'utf8')
-    await rememberReadFile(absolute, content, context)
+    const content = await readFileAndRemember(absolute, context)
     return { ok: true, content }
   },
 }

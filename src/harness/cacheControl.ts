@@ -14,20 +14,16 @@ export function getCacheControl(runtime?: CacheRuntime): { type: 'ephemeral'; tt
   }
 }
 
-let ttlOneHourEligible: boolean | null = null
-
 export function should1hCacheTTL(runtime?: CacheRuntime): boolean {
-  if (ttlOneHourEligible !== null) return ttlOneHourEligible
   if (typeof runtime?.settings?.cache?.ttl1h === 'boolean') {
-    ttlOneHourEligible = runtime.settings.cache.ttl1h
-    return ttlOneHourEligible
+    return runtime.settings.cache.ttl1h
   }
-  ttlOneHourEligible = (runtime?.env ?? process.env).MYAGENT_PROMPT_CACHE_1H === '1'
-  return ttlOneHourEligible
+  return (runtime?.env ?? process.env).MYAGENT_PROMPT_CACHE_1H === '1'
 }
 
+/** @deprecated No longer needed — TTL is evaluated fresh each call. */
 export function resetCacheTTLEvaluation(): void {
-  ttlOneHourEligible = null
+  // No-op kept for call-site compatibility.
 }
 
 export function getPromptCachingEnabled(model?: string): boolean {
@@ -58,11 +54,14 @@ export function addCacheBreakpoints(
   return messages.map((msg, index) => {
     if (index !== messages.length - 1) return msg
 
-    const content = Array.isArray(msg.content)
-      ? [...msg.content]
+    const rawContent = Array.isArray(msg.content)
+      ? msg.content
       : [{ type: 'text', text: msg.content }]
 
-    if (content.length === 0) return msg
+    if (rawContent.length === 0) return msg
+
+    // Deep copy blocks so we don't mutate the original message objects.
+    const content = rawContent.map((b) => ({ ...b }))
 
     const lastBlock = content[content.length - 1] as Record<string, unknown>
     const targetBlock = lastBlock && typeof lastBlock === 'object' && lastBlock.type === 'text'

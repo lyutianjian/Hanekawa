@@ -54,27 +54,38 @@ async function loadSettingsFile(filePath: string): Promise<MyAgentSettings> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
     throw error
   }
-  return JSON.parse(content) as MyAgentSettings
+  try {
+    return JSON.parse(content) as MyAgentSettings
+  } catch (error) {
+    console.error(`[myagent] Warning: corrupted settings file ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+    return {}
+  }
 }
 
 async function loadLegacyMcpSettings(cwd: string): Promise<MyAgentSettings> {
   let content: string
+  const filePath = join(cwd, '.myagent', 'mcp.json')
   try {
-    content = await readFile(join(cwd, '.myagent', 'mcp.json'), 'utf-8')
+    content = await readFile(filePath, 'utf-8')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
     throw error
   }
 
-  const config = JSON.parse(content) as LegacyMcpSettings
-  return config.mcpServers ? { mcpServers: config.mcpServers } : {}
+  try {
+    const config = JSON.parse(content) as LegacyMcpSettings
+    return config.mcpServers ? { mcpServers: config.mcpServers } : {}
+  } catch (error) {
+    console.error(`[myagent] Warning: corrupted MCP settings file ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+    return {}
+  }
 }
 
 function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
   const result: MyAgentSettings = {}
 
   for (const source of sources) {
-    if (source.defaultModel) {
+    if (source.defaultModel !== undefined) {
       result.defaultModel = source.defaultModel
     }
 

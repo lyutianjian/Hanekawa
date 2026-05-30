@@ -3,21 +3,29 @@ import assert from 'node:assert/strict'
 import { PermissionGate } from '../src/harness/permissions.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { exitPlanModeTool } from '../src/tools/exitPlanMode.js'
-import type { SessionRecord, ToolContext } from '../src/harness/types.js'
+import type { PlanModeBridge, SessionRecord, ToolContext } from '../src/harness/types.js'
 
-test('exitPlanMode appends the plan and restores the pre-plan permission mode', async () => {
+function makeBridge(sessionId: string, records: SessionRecord[]): PlanModeBridge {
+  return {
+    parentSessionId: sessionId,
+    parentAppendRecord: async (record) => { records.push(record) },
+  }
+}
+
+test('exitPlanMode emits a plan_mode_request record with inline plan', async () => {
   const records: SessionRecord[] = []
-  const gate = new PermissionGate(async () => false, undefined, { mode: 'acceptEdits' })
-  gate.setMode('plan')
+  const gate = new PermissionGate(async () => false, undefined, { mode: 'plan' })
   const runner = new ToolRunner([exitPlanModeTool], gate, {
     onRecord: async (record) => {
       records.push(record)
     },
   })
+  const bridge = makeBridge('session', records)
   const context: ToolContext = {
     cwd: process.cwd(),
     sessionId: 'session',
     readFiles: new Set(),
+    planModeBridge: bridge,
   }
 
   const result = await runner.run({
@@ -27,18 +35,52 @@ test('exitPlanMode appends the plan and restores the pre-plan permission mode', 
   }, context)
 
   assert.equal(result.ok, true)
-  assert.equal(gate.getMode(), 'acceptEdits')
-  assert.equal(records.some((record) => record.type === 'tool_approval' && record.approved), true)
-  assert.deepEqual(records.map((record) => record.type), ['tool_use', 'tool_approval', 'tool_result', 'message'])
-  const planRecord = records.find(
-    (record): record is Extract<SessionRecord, { type: 'message' }> =>
-      record.type === 'message' && record.role === 'assistant',
+  // Mode is NOT changed directly — PlanModeManager handles that.
+  assert.equal(gate.getMode(), 'plan')
+  // Should emit a plan_mode_request record with the inline plan.
+  const requestRecord = records.find(
+    (r): r is Extract<SessionRecord, { type: 'plan_mode_request' }> =>
+      r.type === 'plan_mode_request',
   )
-  assert.ok(planRecord)
-  assert.equal(planRecord.content, '1. Inspect.\n2. Patch.\n3. Test.')
+  assert.ok(requestRecord, 'should emit a plan_mode_request record')
+  assert.equal(requestRecord.kind, 'exit')
+  assert.equal(requestRecord.planContent, '1. Inspect.\n2. Patch.\n3. Test.')
+  assert.equal(requestRecord.submittedFromSessionId, 'session')
 })
 
-test('exitPlanMode fails outside plan mode without appending a plan message', async () => {
+test('exitPlanMode emits a plan_mode_request without planContent when plan is omitted', async () => {
+  const records: SessionRecord[] = []
+  const gate = new PermissionGate(async () => false, undefined, { mode: 'plan' })
+  const runner = new ToolRunner([exitPlanModeTool], gate, {
+    onRecord: async (record) => {
+      records.push(record)
+    },
+  })
+  const bridge = makeBridge('session', records)
+  const context: ToolContext = {
+    cwd: process.cwd(),
+    sessionId: 'session',
+    readFiles: new Set(),
+    planModeBridge: bridge,
+  }
+
+  const result = await runner.run({
+    id: 'call-1',
+    name: 'ExitPlanMode',
+    input: {},
+  }, context)
+
+  assert.equal(result.ok, true)
+  const requestRecord = records.find(
+    (r): r is Extract<SessionRecord, { type: 'plan_mode_request' }> =>
+      r.type === 'plan_mode_request',
+  )
+  assert.ok(requestRecord, 'should emit a plan_mode_request record')
+  assert.equal(requestRecord.kind, 'exit')
+  assert.equal(requestRecord.planContent, undefined, 'no inline plan when omitted')
+})
+
+test('exitPlanMode fails outside plan mode', async () => {
   const records: SessionRecord[] = []
   const gate = new PermissionGate(async () => false, undefined, { mode: 'default' })
   const runner = new ToolRunner([exitPlanModeTool], gate, {
@@ -46,10 +88,12 @@ test('exitPlanMode fails outside plan mode without appending a plan message', as
       records.push(record)
     },
   })
+  const bridge = makeBridge('session', records)
   const context: ToolContext = {
     cwd: process.cwd(),
     sessionId: 'session',
     readFiles: new Set(),
+    planModeBridge: bridge,
   }
 
   const result = await runner.run({
@@ -62,10 +106,10 @@ test('exitPlanMode fails outside plan mode without appending a plan message', as
   assert.equal(result.errorCode, 'precondition_failed')
   assert.equal(result.content, 'ExitPlanMode can only be called in plan mode.')
   assert.equal(gate.getMode(), 'default')
-  assert.equal(records.some((record) => record.type === 'message'), false)
+  assert.equal(records.some((r) => r.type === 'plan_mode_request'), false)
 })
 
-test('exitPlanMode rejects a blank plan without appending a plan message', async () => {
+test('exitPlanMode fails without planModeBridge', async () => {
   const records: SessionRecord[] = []
   const gate = new PermissionGate(async () => false, undefined, { mode: 'plan' })
   const runner = new ToolRunner([exitPlanModeTool], gate, {
@@ -77,17 +121,16 @@ test('exitPlanMode rejects a blank plan without appending a plan message', async
     cwd: process.cwd(),
     sessionId: 'session',
     readFiles: new Set(),
+    // No planModeBridge
   }
 
   const result = await runner.run({
     id: 'call-1',
     name: 'ExitPlanMode',
-    input: { plan: '   \n\t  ' },
+    input: { plan: 'test plan' },
   }, context)
 
   assert.equal(result.ok, false)
-  assert.equal(result.errorCode, 'invalid_input')
-  assert.equal(result.content, 'Plan must not be empty.')
-  assert.equal(gate.getMode(), 'plan')
-  assert.equal(records.some((record) => record.type === 'message'), false)
+  assert.equal(result.errorCode, 'precondition_failed')
+  assert.equal(result.content, 'Plan mode is not available in this context.')
 })

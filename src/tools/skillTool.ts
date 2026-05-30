@@ -30,9 +30,12 @@ export function createSkillTool(): Tool {
         content: skill.content,
         timestamp: Date.now(),
       })
+      const content = parsed.args
+        ? `${skill.content}\n\nArguments: ${parsed.args}`
+        : skill.content
       return {
         ok: true,
-        content: skill.content
+        content,
       }
     }
   }

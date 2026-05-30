@@ -8,7 +8,7 @@ import { countTextTokens, type ContextManagementConfig } from '../prompts/budget
 import { compactBoundaryToMessage } from './compact.js'
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from './cacheControl.js'
 import { SystemPromptSectionCache } from './sections.js'
-import { captureReadFileStateFromStat } from '../tools/fileState.js'
+import { captureReadFileStateFromStat, readFileAndRemember } from '../tools/fileState.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import { evictOldestIfNeeded } from '../utils/cache.js'
 
@@ -613,16 +613,13 @@ async function refreshRestoredFiles(
   const inaccessibleFiles: string[] = []
   for (const entry of entries) {
     try {
-      const [content, fileStat] = await Promise.all([
-        readFile(entry.name, 'utf8'),
-        stat(entry.name),
-      ])
-      toolContext.readFiles.add(entry.name)
-      toolContext.readFileState.set(entry.name, captureReadFileStateFromStat(content, fileStat))
+      // Use readFileAndRemember for atomic read+stat via a single file handle,
+      // avoiding TOCTOU between content read and metadata capture.
+      const content = await readFileAndRemember(entry.name, toolContext)
       files.push({ name: entry.name, content })
     } catch {
       toolContext.readFiles.delete(entry.name)
-      toolContext.readFileState.delete(entry.name)
+      toolContext.readFileState?.delete(entry.name)
       inaccessibleFiles.push(entry.name)
     }
   }

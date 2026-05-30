@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react'
 import { Box, Text } from 'ink'
 import type { Token, Tokens } from 'marked'
 import { parseMarkdown } from '../markdown.js'
@@ -8,7 +9,7 @@ interface MarkdownProps {
 }
 
 export function Markdown({ content }: MarkdownProps) {
-  const tokens = parseMarkdown(content)
+  const tokens = useMemo(() => parseMarkdown(content), [content])
 
   return (
     <Box flexDirection="column">
@@ -19,7 +20,7 @@ export function Markdown({ content }: MarkdownProps) {
   )
 }
 
-function MarkdownToken({ token }: { token: Token }) {
+const MarkdownToken = memo(function MarkdownToken({ token }: { token: Token }) {
   switch (token.type) {
     case 'heading':
       return <Heading token={token as Tokens.Heading} />
@@ -46,9 +47,9 @@ function MarkdownToken({ token }: { token: Token }) {
       }
       return null
   }
-}
+})
 
-function Heading({ token }: { token: Tokens.Heading }) {
+const Heading = memo(function Heading({ token }: { token: Tokens.Heading }) {
   const prefix = '#'.repeat(token.depth) + ' '
   return (
     <Box marginY={1}>
@@ -60,9 +61,9 @@ function Heading({ token }: { token: Tokens.Heading }) {
       </Text>
     </Box>
   )
-}
+})
 
-function Paragraph({ token }: { token: Tokens.Paragraph }) {
+const Paragraph = memo(function Paragraph({ token }: { token: Tokens.Paragraph }) {
   return (
     <Box marginY={0}>
       <Text>
@@ -70,9 +71,9 @@ function Paragraph({ token }: { token: Tokens.Paragraph }) {
       </Text>
     </Box>
   )
-}
+})
 
-function CodeBlock({ token }: { token: Tokens.Code }) {
+const CodeBlock = memo(function CodeBlock({ token }: { token: Tokens.Code }) {
   const lang = token.lang ?? ''
   const lines = token.text.split('\n')
 
@@ -91,9 +92,9 @@ function CodeBlock({ token }: { token: Tokens.Code }) {
       ))}
     </Box>
   )
-}
+})
 
-function List({ token }: { token: Tokens.List }) {
+const List = memo(function List({ token }: { token: Tokens.List }) {
   return (
     <Box flexDirection="column" marginY={0}>
       {token.items.map((item, i) => (
@@ -101,7 +102,7 @@ function List({ token }: { token: Tokens.List }) {
       ))}
     </Box>
   )
-}
+})
 
 function ListItem({
   token,
@@ -133,7 +134,7 @@ function ListItem({
   )
 }
 
-function Blockquote({ token }: { token: Tokens.Blockquote }) {
+const Blockquote = memo(function Blockquote({ token }: { token: Tokens.Blockquote }) {
   return (
     <Box flexDirection="column" marginY={0} paddingLeft={2}>
       {token.tokens.map((t, i) => (
@@ -150,9 +151,9 @@ function Blockquote({ token }: { token: Tokens.Blockquote }) {
       ))}
     </Box>
   )
-}
+})
 
-function Table({ token }: { token: Tokens.Table }) {
+const Table = memo(function Table({ token }: { token: Tokens.Table }) {
   // Simple table rendering - just show rows
   return (
     <Box flexDirection="column" marginY={1}>
@@ -169,10 +170,10 @@ function Table({ token }: { token: Tokens.Table }) {
       ))}
     </Box>
   )
-}
+})
 
 // Inline token rendering
-function InlineTokens({ tokens }: { tokens: Token[] }) {
+const InlineTokens = memo(function InlineTokens({ tokens }: { tokens: Token[] }) {
   if (!tokens) return null
 
   return (
@@ -216,4 +217,4 @@ function InlineTokens({ tokens }: { tokens: Token[] }) {
       })}
     </>
   )
-}
+})

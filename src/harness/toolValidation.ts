@@ -152,15 +152,32 @@ function applyStringFormat(schema: z.ZodString, format: string): ZodTypeAny {
   if (format === 'uuid') return schema.uuid()
   if (format === 'uri' || format === 'url') return schema.url()
   if (format === 'date-time') return schema.datetime({ offset: true })
+  // Unknown format — accept without validation for forward compatibility.
+  // Known formats that are NOT validated: ipv4, ipv6, hostname, etc.
+  // This is intentional: rejecting unknown formats would break tools that
+  // declare formats this validator doesn't support yet.
   return schema
 }
 
 function compileNumber(schema: JsonSchema): z.ZodNumber {
   let numberSchema = z.number().finite()
-  if (typeof schema.minimum === 'number') numberSchema = numberSchema.min(schema.minimum)
-  if (typeof schema.maximum === 'number') numberSchema = numberSchema.max(schema.maximum)
-  if (typeof schema.exclusiveMinimum === 'number') numberSchema = numberSchema.gt(schema.exclusiveMinimum)
-  if (typeof schema.exclusiveMaximum === 'number') numberSchema = numberSchema.lt(schema.exclusiveMaximum)
+  // Handle draft-04 boolean form: exclusiveMinimum/exclusiveMaximum as booleans
+  // that modify minimum/maximum
+  if (schema.exclusiveMinimum === true && typeof schema.minimum === 'number') {
+    numberSchema = numberSchema.gt(schema.minimum)
+  } else if (typeof schema.exclusiveMinimum === 'number') {
+    numberSchema = numberSchema.gt(schema.exclusiveMinimum)
+  } else if (typeof schema.minimum === 'number') {
+    numberSchema = numberSchema.min(schema.minimum)
+  }
+
+  if (schema.exclusiveMaximum === true && typeof schema.maximum === 'number') {
+    numberSchema = numberSchema.lt(schema.maximum)
+  } else if (typeof schema.exclusiveMaximum === 'number') {
+    numberSchema = numberSchema.lt(schema.exclusiveMaximum)
+  } else if (typeof schema.maximum === 'number') {
+    numberSchema = numberSchema.max(schema.maximum)
+  }
   return numberSchema
 }
 

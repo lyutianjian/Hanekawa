@@ -48,8 +48,13 @@ export class OpenAIProvider implements ModelProvider {
         debugProviderPayload('openai', payload)
         const response = await this.client.chat.completions.create(payload, {
           signal: request.retry?.signal,
+          ...(request.retry?.signal ? {} : { timeout: 120_000 }),
         })
         debugProviderResponse('openai', response)
+
+        if (!response.choices || response.choices.length === 0) {
+          throw new Error('OpenAI API returned empty choices array — possible content filtering or upstream error')
+        }
 
         const choice = response.choices[0]
         const message = choice?.message
@@ -89,7 +94,7 @@ export class OpenAIProvider implements ModelProvider {
           toolCalls,
           usage,
           requestId: response.id,
-          stopReason: choice?.finish_reason ?? undefined,
+          stopReason: normalizeOpenAIStopReason(choice?.finish_reason),
           ...(reasoning ? { reasoningContent: reasoning } : {}),
           ...(cacheBreak ? { cacheBreak } : {}),
         }
@@ -111,4 +116,13 @@ function getOpenAISystemFromPayload(payload: ReturnType<typeof buildOpenAIPayloa
 
 function getOpenAIToolsFromPayload(payload: ReturnType<typeof buildOpenAIPayload>): unknown {
   return 'tools' in payload ? payload.tools : []
+}
+
+function normalizeOpenAIStopReason(reason: string | null | undefined): string | undefined {
+  if (reason === 'length') return 'max_tokens'
+  return reason ?? undefined
+}
+
+function isOpenAIStreamIdleTimeout(error: unknown): boolean {
+  return error instanceof Error && error.message === 'Stream idle timeout'
 }

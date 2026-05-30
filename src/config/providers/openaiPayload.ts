@@ -97,6 +97,7 @@ export function buildOpenAIPayload(request: ModelRequest) {
   return {
     model: request.model,
     messages: buildOpenAIMessages(request),
+    ...(request.maxOutputTokens ? { max_tokens: request.maxOutputTokens } : {}),
     prompt_cache_key: buildOpenAIPromptCacheKey(request),
     ...(request.promptCacheRetention ? { prompt_cache_retention: request.promptCacheRetention } : {}),
     ...(tools.length > 0

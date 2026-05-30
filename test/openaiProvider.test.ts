@@ -134,6 +134,34 @@ test('OpenAI provider preserves reasoning_content and cached-token usage', async
   }
 })
 
+test('OpenAI provider normalizes length finish_reason to max_tokens', async () => {
+  const source = 'agent:openai-length-test'
+  resetCacheBreakDetection(source)
+  try {
+    const provider = new OpenAIProvider({
+      provider: 'openai',
+      model: 'gpt-test',
+      apiKey: 'test-key',
+    })
+    installFakeClient(provider, async () => ({
+      ...openAIResponse('chatcmpl_length', 0),
+      choices: [{
+        finish_reason: 'length',
+        message: {
+          content: 'partial answer',
+        },
+      }],
+    }))
+
+    const response = await provider.createMessage(baseRequest(source))
+
+    assert.equal(response.content, 'partial answer')
+    assert.equal(response.stopReason, 'max_tokens')
+  } finally {
+    resetCacheBreakDetection(source)
+  }
+})
+
 test('OpenAI provider reports cache breaks with prompt-change reasons', async () => {
   const scenarios: Array<{
     name: string

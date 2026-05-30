@@ -8,6 +8,7 @@ import {
   getAutoCompactThreshold,
   type ContextManagementConfig,
 } from '../prompts/budget.js'
+import { getRecordsAfterLastCompact } from './requestPrep.js'
 
 const COMPACT_FAILURE_LIMIT = 3
 const compactFailuresByKey = new Map<string, number>()
@@ -235,11 +236,6 @@ async function appendCompactFailureRecord(
   } catch {
     // Telemetry is best-effort; compact failure should not fail the user turn.
   }
-}
-
-function getRecordsAfterLastCompact(records: SessionRecord[]): SessionRecord[] {
-  const lastCompactIndex = findLastRecordIndex(records, (record) => record.type === 'compact_boundary')
-  return lastCompactIndex >= 0 ? records.slice(lastCompactIndex + 1) : records
 }
 
 function selectRecordsToCompact(records: SessionRecord[]): SessionRecord[] {

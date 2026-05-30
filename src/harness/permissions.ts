@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import picomatch from 'picomatch'
 import { analyzeShellCommand } from './commandAnalysis.js'
 import { shellWords } from './bashSafety.js'
 import type { RiskLevel, Tool, ToolApprovalRecord } from './types.js'
@@ -115,12 +116,8 @@ function extractPath(input: unknown): string {
 }
 
 function matchGlob(content: string, pattern: string): boolean {
-  // Simple glob matching: * matches any characters
-  const regexPattern = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.')
-  return new RegExp(`^${regexPattern}$`, 'i').test(content)
+  // Use picomatch for safe, ReDoS-immune glob matching.
+  return picomatch.isMatch(content, pattern, { nocase: true })
 }
 
 export class PermissionGate {
@@ -184,6 +181,21 @@ export class PermissionGate {
           tool,
           input,
           reason: this.protectedPathBypassReason(input, commandAnalysis),
+          denialStreak: 0,
+        })
+        this.denialStreaks.set(tool.name, 0)
+        return this.persistAndReturn(approved)
+      }
+
+      // Shell safety checks are bypass-immune (aligned with Claude Code):
+      // hasSafetyDenyIssue and requiresSafetyPrompt always prompt even in
+      // bypass mode. This prevents dangerous patterns like sudo, bash -c,
+      // UNC paths, and command substitution from being silently auto-approved.
+      if (hasHardSafetyDenial || requiresSafetyPrompt) {
+        const approved = await this.prompt({
+          tool,
+          input,
+          reason: `Shell safety check: ${commandAnalysis?.categories?.join(', ') ?? 'dangerous pattern detected'}`,
           denialStreak: 0,
         })
         this.denialStreaks.set(tool.name, 0)
@@ -366,6 +378,16 @@ export class PermissionGate {
       listener(restoredMode)
     }
     return restoredMode
+  }
+
+  /** Transition gate into plan mode, saving the current mode. */
+  prepareContextForPlanMode(): void {
+    this.setMode('plan')
+  }
+
+  /** Restore gate from plan mode to the pre-plan mode. */
+  restoreFromPlanMode(): void {
+    this.exitPlanMode()
   }
 
   createApprovalRecord(tool: Tool, input: unknown, approved: boolean, turnId?: string): ToolApprovalRecord {

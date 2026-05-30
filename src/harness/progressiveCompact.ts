@@ -6,7 +6,7 @@ import {
   type ContextManagementConfig,
 } from '../prompts/budget.js'
 import type { SessionRecord, ToolResultRecord } from './types.js'
-import { compactToolResult } from './requestPrep.js'
+import { compactToolResult, getRecordsAfterLastCompact } from './requestPrep.js'
 
 const RECENT_TOOL_RESULTS_TO_KEEP = 10
 
@@ -50,7 +50,7 @@ export function applyProgressiveCompaction(input: ProgressiveCompactInput): Prog
   }
 
   if (tokenCount >= getSnipThreshold(input.contextManagement)) {
-    const snip = snipConversation(records, input.contextManagement, input.system)
+    const snip = snipConversation(records, input.contextManagement, input.system, tokenCount)
     records = snip.records
     snipped = snip.snipped
     tokenCount = snip.tokenCount
@@ -111,6 +111,7 @@ function snipConversation(
   records: SessionRecord[],
   contextManagement: Partial<ContextManagementConfig> = {},
   system?: string,
+  inputTokenCount?: number,
 ): { records: SessionRecord[]; tokenCount: number; snipped: boolean } {
   const headTurns = Math.max(0, contextManagement.snipHeadTurns ?? 3)
   const tailTurns = Math.max(1, contextManagement.snipTailTurns ?? 12)
@@ -121,13 +122,16 @@ function snipConversation(
   if (turnSegments.length <= maxTurns || turnSegments.length <= headTurns + tailTurns) {
     return {
       records,
-      tokenCount: countSessionRecordsTokens(getRecordsAfterLastCompact(records), system),
+      // Use the input token count if available to avoid recalculating,
+      // which could differ from the estimate used to decide whether snipping was needed.
+      tokenCount: inputTokenCount ?? countSessionRecordsTokens(getRecordsAfterLastCompact(records), system),
       snipped: false,
     }
   }
 
   let userTurnsSeen = 0
   const kept: SessionRecord[] = []
+  const preservedBoundaries: SessionRecord[] = []
   let removedRecords = 0
   let removedTurns = 0
 
@@ -142,6 +146,13 @@ function snipConversation(
     if (keepHead || keepTail) {
       kept.push(...segment.records)
     } else {
+      // Preserve compact_boundary records from removed turns so that
+      // getRecordsAfterLastCompact can still locate the last boundary.
+      for (const record of segment.records) {
+        if (record.type === 'compact_boundary') {
+          preservedBoundaries.push(record)
+        }
+      }
       removedRecords += segment.records.length
       removedTurns += 1
     }
@@ -166,6 +177,7 @@ function snipConversation(
   }
   const snippedRecords = [
     ...kept.slice(0, insertAt),
+    ...preservedBoundaries,
     snipRecord,
     ...kept.slice(insertAt),
   ]
@@ -202,13 +214,6 @@ function countPendingRecordTokens(records: SessionRecord[], lastResponseRecordCo
     }
     return sum + countSessionRecordsTokens([record])
   }, 0)
-}
-
-function getRecordsAfterLastCompact(records: SessionRecord[]): SessionRecord[] {
-  for (let index = records.length - 1; index >= 0; index--) {
-    if (records[index]?.type === 'compact_boundary') return records.slice(index + 1)
-  }
-  return records
 }
 
 function splitIntoConversationSegments(records: SessionRecord[]): ConversationSegment[] {

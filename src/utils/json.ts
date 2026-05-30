@@ -7,6 +7,11 @@ export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T>
     return JSON.parse(raw) as T
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return fallback
+    if (error instanceof SyntaxError) {
+      // Corrupted JSON file — return fallback instead of crashing.
+      console.error(`[myagent] Warning: corrupted JSON file ${filePath}: ${error.message}`)
+      return fallback
+    }
     throw error
   }
 }

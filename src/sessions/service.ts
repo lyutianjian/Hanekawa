@@ -1,4 +1,4 @@
-import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, rm, stat, writeFile, rename } from 'node:fs/promises'
 import { appendFileSync, readFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -9,6 +9,16 @@ import type { SessionMetricInput, SessionMetric } from '../harness/metrics.js'
 import { OtlpMetricExporter } from '../harness/otlp.js'
 import { checkSessionInvariants, ensureToolResultPairing } from './invariants.js'
 import { normalizeDenialState, type DenialState } from '../harness/permissions.js'
+
+/**
+ * Atomic write: write to a temp file in the same directory, then rename.
+ * Prevents data loss if the process crashes mid-write.
+ */
+async function writeFileAtomic(filePath: string, content: string): Promise<void> {
+  const tmpPath = `${filePath}.tmp.${randomUUID()}`
+  await writeFile(tmpPath, content, 'utf-8')
+  await rename(tmpPath, filePath)
+}
 
 export interface CheckpointMapping {
   messageId: string
@@ -95,6 +105,7 @@ export interface RepairRecordsResult {
 
 export class SessionStore {
   private static indexLocks = new Map<string, Promise<void>>()
+  private static jsonlLocks = new Map<string, Promise<void>>()
   private readonly cacheSummaries = new Map<string, RunningCacheSummary>()
   private readonly otlpExporter?: OtlpMetricExporter
   private sessionsDir: string
@@ -231,15 +242,7 @@ export class SessionStore {
     await this.withIndexLock(async () => {
       const index = await this.readIndexUnlocked()
       const current = index.sessions.find((item) => item.id === session.id) ?? session
-      const content = existsSync(jsonlPath) ? readFileSync(jsonlPath, 'utf-8') : ''
-      const records = parseJsonLines<SessionRecord>(content)
-      const meta: SessionMeta = {
-        ...this.deriveMetaFromRecords(session.id, records, current),
-        updatedAt: now,
-        ...(current.checkpoints ? { checkpoints: current.checkpoints } : {}),
-        ...(current.compactFailureCount ? { compactFailureCount: current.compactFailureCount } : {}),
-        ...(current.denialState ? { denialState: current.denialState } : {}),
-      }
+      const meta = this.deriveMetaAfterAppend(current, record, now)
       this.replaceIndexSession(index, meta)
       await writeJsonFile(this.indexPath(), index)
     })
@@ -257,7 +260,7 @@ export class SessionStore {
 
     const jsonlPath = this.sessionJsonlPath(session.id)
     const nextContent = repaired.records.map((record) => JSON.stringify(record)).join('\n') + '\n'
-    await writeFile(jsonlPath, nextContent, 'utf-8')
+    await writeFileAtomic(jsonlPath, nextContent)
 
     const now = new Date().toISOString()
     await this.withIndexLock(async () => {
@@ -288,31 +291,34 @@ export class SessionStore {
     const session = await this.resolve(sessionIdOrPrefix)
     if (!session) throw new Error(`Unknown session: ${sessionIdOrPrefix}`)
 
-    const jsonlPath = this.sessionJsonlPath(session.id)
-    const content = existsSync(jsonlPath) ? readFileSync(jsonlPath, 'utf-8') : ''
-    const records = parseJsonLines<SessionRecord>(content)
-    const index = records.findIndex((record) => record.id === recordId)
-    if (index < 0) return
+    // Lock the entire read-modify-write cycle to prevent concurrent overwrites.
+    await this.withJsonlLock(session.id, async () => {
+      const jsonlPath = this.sessionJsonlPath(session.id)
+      const content = existsSync(jsonlPath) ? readFileSync(jsonlPath, 'utf-8') : ''
+      const records = parseJsonLines<SessionRecord>(content)
+      const index = records.findIndex((record) => record.id === recordId)
+      if (index < 0) return
 
-    const current = records[index]
-    if (!current) return
-    records[index] = update(current)
-    const nextContent = records.map((record) => JSON.stringify(record)).join('\n') + (records.length > 0 ? '\n' : '')
-    await writeFile(jsonlPath, nextContent, 'utf-8')
+      const current = records[index]
+      if (!current) return
+      records[index] = update(current)
+      const nextContent = records.map((record) => JSON.stringify(record)).join('\n') + (records.length > 0 ? '\n' : '')
+      await writeFileAtomic(jsonlPath, nextContent)
 
-    const now = new Date().toISOString()
-    await this.withIndexLock(async () => {
-      const indexFile = await this.readIndexUnlocked()
-      const currentMeta = indexFile.sessions.find((item) => item.id === session.id) ?? session
-      const meta: SessionMeta = {
-        ...this.deriveMetaFromRecords(session.id, records, currentMeta),
-        updatedAt: now,
-        ...(currentMeta.checkpoints ? { checkpoints: currentMeta.checkpoints } : {}),
-        ...(currentMeta.compactFailureCount ? { compactFailureCount: currentMeta.compactFailureCount } : {}),
-        ...(currentMeta.denialState ? { denialState: currentMeta.denialState } : {}),
-      }
-      this.replaceIndexSession(indexFile, meta)
-      await writeJsonFile(this.indexPath(), indexFile)
+      const now = new Date().toISOString()
+      await this.withIndexLock(async () => {
+        const indexFile = await this.readIndexUnlocked()
+        const currentMeta = indexFile.sessions.find((item) => item.id === session.id) ?? session
+        const meta: SessionMeta = {
+          ...this.deriveMetaFromRecords(session.id, records, currentMeta),
+          updatedAt: now,
+          ...(currentMeta.checkpoints ? { checkpoints: currentMeta.checkpoints } : {}),
+          ...(currentMeta.compactFailureCount ? { compactFailureCount: currentMeta.compactFailureCount } : {}),
+          ...(currentMeta.denialState ? { denialState: currentMeta.denialState } : {}),
+        }
+        this.replaceIndexSession(indexFile, meta)
+        await writeJsonFile(this.indexPath(), indexFile)
+      })
     })
   }
 
@@ -486,7 +492,7 @@ export class SessionStore {
       const retainedLines = lines.slice(0, targetLineIndex + 1)
       const truncatedContent = retainedLines.join('\n') + '\n'
 
-      await writeFile(jsonlPath, truncatedContent, 'utf-8')
+      await writeFileAtomic(jsonlPath, truncatedContent)
 
       // Update message count in the index
       const retainedRecords = parseJsonLines<SessionRecord>(truncatedContent)
@@ -608,6 +614,28 @@ export class SessionStore {
     }
   }
 
+  private async withJsonlLock<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const key = this.sessionJsonlPath(sessionId)
+    const previous = SessionStore.jsonlLocks.get(key) ?? Promise.resolve()
+    const ready = previous.catch(() => {})
+    let release!: () => void
+    const current = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const queued = ready.then(() => current)
+    SessionStore.jsonlLocks.set(key, queued)
+
+    await ready
+    try {
+      return await operation()
+    } finally {
+      release()
+      if (SessionStore.jsonlLocks.get(key) === queued) {
+        SessionStore.jsonlLocks.delete(key)
+      }
+    }
+  }
+
   private async writeSession(state: SessionState): Promise<void> {
     await writeJsonFile(this.sessionPath(state.meta.id), state)
   }
@@ -681,6 +709,21 @@ export class SessionStore {
     }
   }
 
+  private deriveMetaAfterAppend(current: SessionMeta, record: SessionRecord, updatedAt: string): SessionMeta {
+    const isMessage = record.type === 'message'
+    const title = current.title ?? (
+      isMessage && record.role === 'user'
+        ? record.content.slice(0, 60)
+        : undefined
+    )
+    return {
+      ...current,
+      updatedAt,
+      title,
+      messageCount: current.messageCount + (isMessage ? 1 : 0),
+    }
+  }
+
   private defaultMeta(sessionId: string): SessionMeta {
     const now = new Date().toISOString()
     return {
@@ -705,15 +748,26 @@ export class SessionStore {
     }
   }
 
+  private validateSessionId(id: string): void {
+    // Session IDs must be UUIDs or short prefixes — reject anything with
+    // path-separator, traversal, or null characters to prevent directory escape.
+    if (/[\\/:\x00]/.test(id) || id.includes('..')) {
+      throw new Error(`Invalid session ID: ${JSON.stringify(id)}`)
+    }
+  }
+
   private sessionPath(id: string): string {
+    this.validateSessionId(id)
     return path.join(this.sessionsDir, `${id}.json`)
   }
 
   private sessionJsonlPath(id: string): string {
+    this.validateSessionId(id)
     return path.join(this.sessionsDir, `${id}.jsonl`)
   }
 
   private sessionMetricsPath(id: string): string {
+    this.validateSessionId(id)
     return path.join(this.sessionsDir, `${id}.metrics.jsonl`)
   }
 

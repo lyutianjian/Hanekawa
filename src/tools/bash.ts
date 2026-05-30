@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { Buffer } from 'node:buffer'
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../harness/types.js'
 
@@ -96,17 +97,37 @@ export const bashTool: Tool = {
       const proc = spawn(shell, shellArgs(options.command), {
         cwd: context.cwd,
         signal: context.abortSignal,
+        // detached: true creates a new process group so we can kill all
+        // child processes on timeout, not just the direct child.
+        detached: process.platform !== 'win32',
       })
 
       const MAX_OUTPUT_BYTES = 1_000_000
-      let stdout = ''
-      let stderr = ''
+      const stdoutChunks: Buffer[] = []
+      const stderrChunks: Buffer[] = []
+      let stdoutBytes = 0
+      let stderrBytes = 0
       let truncated = false
       let timedOut = false
 
       const timeoutId = setTimeout(() => {
         timedOut = true
-        proc.kill()
+        // Kill the entire process group on POSIX, or just the process on Windows.
+        if (process.platform !== 'win32' && proc.pid) {
+          try { process.kill(-proc.pid, 'SIGTERM') } catch { /* already dead */ }
+        } else {
+          proc.kill('SIGTERM')
+        }
+        // Escalate to SIGKILL after 5s if process ignores SIGTERM
+        setTimeout(() => {
+          try {
+            if (process.platform !== 'win32' && proc.pid) {
+              process.kill(-proc.pid, 'SIGKILL')
+            } else {
+              proc.kill('SIGKILL')
+            }
+          } catch { /* already dead */ }
+        }, 5000)
       }, timeout)
 
       const finish = (result: ToolResult) => {
@@ -115,26 +136,30 @@ export const bashTool: Tool = {
       }
 
       proc.stdout.on('data', (data: Buffer) => {
-        if (stdout.length < MAX_OUTPUT_BYTES) {
-          stdout += data.toString()
-          if (stdout.length > MAX_OUTPUT_BYTES) {
-            stdout = stdout.slice(0, MAX_OUTPUT_BYTES)
+        if (stdoutBytes < MAX_OUTPUT_BYTES) {
+          stdoutChunks.push(data)
+          stdoutBytes += data.length
+          if (stdoutBytes > MAX_OUTPUT_BYTES) {
             truncated = true
           }
         }
       })
 
       proc.stderr.on('data', (data: Buffer) => {
-        if (stderr.length < MAX_OUTPUT_BYTES) {
-          stderr += data.toString()
-          if (stderr.length > MAX_OUTPUT_BYTES) {
-            stderr = stderr.slice(0, MAX_OUTPUT_BYTES)
+        if (stderrBytes < MAX_OUTPUT_BYTES) {
+          stderrChunks.push(data)
+          stderrBytes += data.length
+          if (stderrBytes > MAX_OUTPUT_BYTES) {
             truncated = true
           }
         }
       })
 
       proc.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
+        // Decode accumulated Buffer chunks as UTF-8 in one shot to avoid
+        // multi-byte character corruption at chunk boundaries.
+        const stdout = Buffer.concat(stdoutChunks).toString('utf8')
+        const stderr = Buffer.concat(stderrChunks).toString('utf8')
         const output = [stdout, stderr].filter(Boolean).join('\n')
         const suffix = truncated ? '\n\n[Output truncated: exceeded 1MB limit]' : ''
         const content = (output || '(no output)') + suffix
@@ -166,7 +191,9 @@ export const bashTool: Tool = {
         if (err.name === 'AbortError') {
           finish({ ok: false, content: 'Operation cancelled by user', errorCode: 'aborted' })
         } else {
-          const output = [stdout, stderr, err.message].filter(Boolean).join('\n')
+          const stdoutStr = Buffer.concat(stdoutChunks).toString('utf8')
+          const stderrStr = Buffer.concat(stderrChunks).toString('utf8')
+          const output = [stdoutStr, stderrStr, err.message].filter(Boolean).join('\n')
           finish({ ok: false, content: output || 'Command failed.', errorCode: 'execution_failed' })
         }
       })

@@ -108,9 +108,9 @@ export function stripThinkingBlocksFromAssistantMessages(
   })
 }
 
-function getRecordsAfterLastCompact(records: SessionRecord[]): SessionRecord[] {
+export function getRecordsAfterLastCompact(records: SessionRecord[]): SessionRecord[] {
   for (let index = records.length - 1; index >= 0; index--) {
-    if (records[index]?.type === 'compact_boundary') return records.slice(index)
+    if (records[index]?.type === 'compact_boundary') return records.slice(index + 1)
   }
   return [...records]
 }
@@ -179,9 +179,7 @@ function compactCandidate(candidate: ToolResultCandidate, compactedIds: Set<stri
 
 function getToolResultTokens(record: ToolResultRecord): number {
   if (typeof record._tokens === 'number') return record._tokens
-  const tokens = countSessionRecordTokens(record)
-  record._tokens = tokens
-  return tokens
+  return countSessionRecordTokens(record)
 }
 
 export function compactToolResult(record: ToolResultRecord, tokens: number): ToolResultRecord {

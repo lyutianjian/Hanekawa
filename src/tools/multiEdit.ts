@@ -3,7 +3,7 @@ import { z } from 'zod/v3'
 import type { Tool } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
 import { getReadFileContent, rememberReadFile, requireFreshRead } from './fileState.js'
-import { assertParentNotSymlink } from './pathSafety.js'
+import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
 import { findStringMatches, multipleMatchFailure, replaceLiteralMatch } from './editFile.js'
 
 interface MultiEditItem {
@@ -29,23 +29,53 @@ export const multiEditTool: Tool = {
     if (stale) {
       return stale
     }
+    // Symlink checks BEFORE reading content to prevent TOCTOU: an attacker
+    // could swap the file with a symlink between read and write.
+    const unsafeParent = await assertParentNotSymlink(absolute, filePath)
+    if (unsafeParent) {
+      return unsafeParent
+    }
+    const unsafeFile = await assertFileNotSymlink(absolute, filePath)
+    if (unsafeFile) {
+      return unsafeFile
+    }
 
-    let nextContent = getReadFileContent(absolute, context) ?? await readFile(absolute, 'utf8')
+    const originalContent = getReadFileContent(absolute, context) ?? await readFile(absolute, 'utf8')
+    // Validate all edits against the original content and find match positions
+    const resolved: Array<{ oldString: string; newString: string; index: number; start: number; end: number }> = []
     for (const [index, edit] of edits.entries()) {
       if (edit.oldString.length === 0) {
         return { ok: false, content: `Refusing to edit: edits[${index}].oldString must not be empty.`, errorCode: 'precondition_failed' }
       }
 
-      const matches = findStringMatches(nextContent, edit.oldString)
+      const matches = findStringMatches(originalContent, edit.oldString)
       if (matches.length !== 1) {
         return multipleMatchFailure(edit.oldString, matches, `edits[${index}].oldString`)
       }
-      nextContent = replaceLiteralMatch(nextContent, edit.oldString, edit.newString, matches[0].index)
+      const start = matches[0].index
+      resolved.push({ oldString: edit.oldString, newString: edit.newString, index, start, end: start + edit.oldString.length })
     }
 
-    const unsafeParent = await assertParentNotSymlink(absolute, filePath)
-    if (unsafeParent) {
-      return unsafeParent
+    // Check for overlapping edit ranges
+    for (let i = 0; i < resolved.length; i++) {
+      for (let j = i + 1; j < resolved.length; j++) {
+        const a = resolved[i]!
+        const b = resolved[j]!
+        if (a.start < b.end && b.start < a.end) {
+          return {
+            ok: false,
+            content: `Overlapping edits: edits[${a.index}] (${a.start}..${a.end}) overlaps with edits[${b.index}] (${b.start}..${b.end}). Each character can only be edited once.`,
+            errorCode: 'precondition_failed',
+          }
+        }
+      }
+    }
+
+    // Apply edits from bottom to top so earlier positions remain valid
+    resolved.sort((a, b) => b.start - a.start)
+    let nextContent = originalContent
+    for (const edit of resolved) {
+      nextContent = replaceLiteralMatch(nextContent, edit.oldString, edit.newString, edit.start)
     }
 
     await writeFile(absolute, nextContent, 'utf8')

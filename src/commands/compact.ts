@@ -16,8 +16,20 @@ export const compactCommand: CommandDefinition = {
       return
     }
 
-    await context.resetCompactFailureCount()
-    context.clearCachedSections?.()
+    try {
+      await context.resetCompactFailureCount()
+    } catch (error) {
+      context.writeLine(`Failed to reset compact failure count: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+
+    try {
+      context.clearCachedSections?.()
+    } catch (error) {
+      context.writeLine(`Failed to clear cached sections: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+
     context.writeLine('Auto-compact failure circuit reset.')
   },
 }

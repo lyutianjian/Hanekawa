@@ -40,8 +40,12 @@ export function wrapMcpTool(serverName: string, mcpTool: McpTool, client: McpToo
 }
 
 function hasMcpReadOnlyHint(mcpTool: McpTool): boolean {
+  // Trust tool-level annotations (standard MCP location).
   return readOnlyHintFromRecord(mcpTool.annotations)
-    || readOnlyHintFromRecord(mcpTool.inputSchema)
+    // Also accept mcp_readonly_hint in inputSchema (legacy convention used by
+    // some MCP servers). Do NOT accept generic readOnlyHint in inputSchema
+    // since inputSchema is server-controlled and could be spoofed.
+    || mcpReadonlyHintFromSchema(mcpTool.inputSchema)
 }
 
 function readOnlyHintFromRecord(value: unknown): boolean {
@@ -49,6 +53,14 @@ function readOnlyHintFromRecord(value: unknown): boolean {
   const record = value as Record<string, unknown>
   if (record.mcp_readonly_hint === true || record.readOnlyHint === true) return true
   return readOnlyHintFromRecord(record.annotations)
+}
+
+function mcpReadonlyHintFromSchema(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  // Only accept mcp_readonly_hint, not generic readOnlyHint
+  if (record.mcp_readonly_hint === true) return true
+  return mcpReadonlyHintFromSchema(record.annotations)
 }
 
 function stringifyMcpContent(content: unknown): string {

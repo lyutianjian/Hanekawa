@@ -110,6 +110,15 @@ export function getOrCreatePlanSlug(cwd: string, sessionId: string): string {
     if (!existsSync(probe)) break
     slug = generateWordSlug()
   }
+  // Final verification: if all retries collided, the last slug still collides.
+  // Throw rather than silently returning a non-unique slug.
+  const finalProbe = join(plansDir, `${slug}.md`)
+  if (existsSync(finalProbe)) {
+    throw new Error(
+      `Failed to generate a unique plan slug after ${MAX_SLUG_RETRIES} attempts. ` +
+      `Last candidate "${slug}" already exists at ${finalProbe}.`,
+    )
+  }
   SLUG_CACHE.set(sessionId, slug)
   return slug
 }

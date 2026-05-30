@@ -89,6 +89,61 @@ test('agent loop appends user and assistant messages', async () => {
   assert.equal(metrics[0]?.tool_calls, 0)
 })
 
+test('agent loop persists max_tokens partial response before continuation reminder', async () => {
+  const records: SessionRecord[] = []
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      calls += 1
+      assert.equal(request.maxOutputTokens, 10)
+      if (calls === 1) {
+        return {
+          content: 'partial answer',
+          toolCalls: [],
+          stopReason: 'max_tokens',
+        }
+      }
+
+      assert.ok(request.contextItems?.some(
+        (item) => item.kind === 'message'
+          && item.message.role === 'assistant'
+          && item.message.content === 'partial answer',
+      ))
+      assert.ok(request.contextItems?.some(
+        (item) => item.kind === 'message'
+          && item.message.role === 'user'
+          && /Continue from where you left off/.test(item.message.content),
+      ))
+      return { content: 'continued answer', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async () => {},
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    maxOutputTokens: 10,
+  })
+
+  const response = await loop.run('hello')
+
+  assert.equal(response.content, 'continued answer')
+  assert.equal(calls, 2)
+  const partialIndex = records.findIndex((record) =>
+    record.type === 'message' && record.role === 'assistant' && record.content === 'partial answer')
+  const reminderIndex = records.findIndex((record) =>
+    record.type === 'message' && record.role === 'user' && /Continue from where you left off/.test(record.content))
+  assert.ok(partialIndex >= 0)
+  assert.ok(reminderIndex > partialIndex)
+})
+
 test('agent loop updates records cache only after record stream append succeeds', async () => {
   const records: SessionRecord[] = []
   let failAssistantAppend = true
@@ -1390,6 +1445,113 @@ test('agent loop checks auto-compact before later model requests in a tool loop'
   assert.deepEqual(providerCalls, ['model-1', 'compact', 'model-2'])
   assert.equal(loadRecordsCount, 1)
   assert.equal(records.filter((record) => record.type === 'compact_boundary').length, 1)
+})
+
+test('agent loop counts pending records against the prepared request baseline after compaction', async () => {
+  const records: SessionRecord[] = []
+  for (let index = 0; index < 8; index++) {
+    records.push({
+      type: 'message',
+      id: `pre-compact-${index}`,
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: `pre compact ${index}`,
+      createdAt: `2026-05-10T00:${String(index).padStart(2, '0')}:00.000Z`,
+    })
+  }
+  records.push(
+    {
+      type: 'compact_boundary',
+      id: 'compact-existing',
+      summary: 'prior summary',
+      preTokens: 500,
+      postCompactRestore: 'consumed',
+      createdAt: '2026-05-10T00:08:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'previous-user',
+      role: 'user',
+      content: 'previous user',
+      createdAt: '2026-05-10T00:09:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'previous-assistant',
+      role: 'assistant',
+      content: 'previous assistant',
+      createdAt: '2026-05-10T00:10:00.000Z',
+    },
+  )
+
+  const providerCalls: string[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      const isCompactRequest = request.contextItems?.some(
+        (item) => item.kind === 'message' && item.message.id === 'compact-request',
+      ) ?? false
+      if (isCompactRequest) {
+        providerCalls.push('compact')
+        return { content: 'new summary', toolCalls: [] }
+      }
+
+      if (providerCalls.length === 0) {
+        providerCalls.push('model-1')
+        return {
+          content: 'using tool',
+          toolCalls: [{ id: 'call-1', name: 'echo', input: { value: 'hello' } }],
+          usage: {
+            cacheReadInputTokens: 0,
+            inputTokens: 70,
+            outputTokens: 0,
+          },
+        }
+      }
+
+      providerCalls.push('model-2')
+      return {
+        content: 'done',
+        toolCalls: [],
+        usage: {
+          cacheReadInputTokens: 0,
+          inputTokens: 1,
+          outputTokens: 1,
+        },
+      }
+    },
+  }
+  const tools: Tool[] = [{
+    name: 'echo',
+    description: 'echo',
+    inputSchema: z.object({
+      value: z.string(),
+    }).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({ ok: true, content: 'pending tool output '.repeat(120) }),
+  }]
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 'prepared-baseline-session', readFiles: new Set() },
+    contextManagement: {
+      contextWindow: 200,
+      summaryOutputTokens: 100,
+      autoCompactBufferTokens: 20,
+    },
+    recordStream: recordStreamFor(records),
+  })
+
+  const response = await loop.run('latest request')
+
+  assert.equal(response.content, 'done')
+  assert.deepEqual(providerCalls, ['model-1', 'compact', 'model-2'])
+  assert.equal(records.filter((record) => record.type === 'compact_boundary').length, 2)
 })
 
 test('agent loop continues the turn when auto-compact summary fails', async () => {

@@ -294,15 +294,18 @@ export function App({
     reloadAgentDefinitions,
   })
 
-  const handleSubmit = async (text: string) => {
+  const handleSubmit = useCallback(async (text: string) => {
     if (text.startsWith('/')) {
       await dispatch(text)
       return
     }
     setMode('running')
-    await submit(text)
-    setMode('idle')
-  }
+    try {
+      await submit(text)
+    } finally {
+      setMode('idle')
+    }
+  }, [dispatch, submit, setMode])
 
   const handleInterrupt = useCallback(() => {
     // Signal the AbortController to abort the agent loop
@@ -416,10 +419,12 @@ export function App({
   }, [store, activeSession.id, reloadMessages, setMessages])
 
   // Clean up abort timeout when streaming stops
-  if (!isStreaming && abortTimeoutRef.current) {
-    clearTimeout(abortTimeoutRef.current)
-    abortTimeoutRef.current = null
-  }
+  useEffect(() => {
+    if (!isStreaming && abortTimeoutRef.current) {
+      clearTimeout(abortTimeoutRef.current)
+      abortTimeoutRef.current = null
+    }
+  }, [isStreaming])
 
   const { text, cursorPos, hintMessage } = useKeyboardShortcuts({
     onSubmit: handleSubmit,
@@ -445,6 +450,7 @@ export function App({
       {/* Message list */}
       <MessageList
         items={messages}
+        isOverlayActive={permState.visible || mode === 'restore'}
       />
 
       {/* Spinner during streaming */}

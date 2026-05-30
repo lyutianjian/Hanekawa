@@ -169,7 +169,7 @@ test('prepareRecordsForRequestWithDiagnostics can strip all assistant thinking f
   assert.equal(records[0]?.type === 'message' ? records[0].thinkingBlocks?.[0]?.signature : undefined, 'signature-1')
 })
 
-test('prepareRecordsForRequest caches tool result token counts on records', () => {
+test('prepareRecordsForRequest does not mutate records with cached token counts', () => {
   const records: SessionRecord[] = [
     ...toolPair('first', 'Read', 'first output', 0),
   ]
@@ -179,7 +179,9 @@ test('prepareRecordsForRequest caches tool result token counts on records', () =
 
   prepareRecordsForRequest(records)
 
-  assert.equal(result._tokens, countTextTokens('Read\\nfirst output'))
+  // Token counts are computed but NOT cached on the record to avoid
+  // cache coherency issues when record content changes after compaction.
+  assert.equal(result._tokens, undefined)
 })
 
 test('prepareRecordsForRequest prefers cached tool result token counts', () => {

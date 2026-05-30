@@ -77,6 +77,7 @@ interface PendingChanges {
   systemCharDelta: number
   previous: PromptHashes | null
   current: PromptHashes
+  pendingSnapshot?: PreviousSnapshot
 }
 
 interface PromptState {
@@ -156,7 +157,10 @@ export function recordPromptState(
 
   pendingChangesBySource.set(source, changes)
 
-  previousSnapshots.set(source, {
+  // Defer the snapshot update to checkResponseForCacheBreak to avoid
+  // overwriting state if concurrent requests share the same source.
+  // Store the pending snapshot so it can be committed after the response.
+  changes.pendingSnapshot = {
     systemHash,
     toolsHash,
     betasHash,
@@ -164,7 +168,7 @@ export function recordPromptState(
     model: state.model,
     systemCharCount: state.system.length,
     prevCacheReadTokens: previous?.prevCacheReadTokens ?? null,
-  })
+  }
 }
 
 export function checkResponseForCacheBreak(
@@ -173,6 +177,13 @@ export function checkResponseForCacheBreak(
   source: CacheBreakSource,
 ): CacheBreakResult | null {
   void inputTokens
+  const pending = pendingChangesBySource.get(source)
+
+  // Commit the deferred snapshot now that the response is complete.
+  if (pending?.pendingSnapshot) {
+    previousSnapshots.set(source, pending.pendingSnapshot)
+  }
+
   const previous = previousSnapshots.get(source)
   if (!previous) return null
 
@@ -195,7 +206,6 @@ export function checkResponseForCacheBreak(
     source,
   }
 
-  const pending = pendingChangesBySource.get(source)
   if (pending) {
     if (pending.systemPromptChanged) {
       result.reasons.push(`system_prompt_changed(+${pending.systemCharDelta} chars)`)

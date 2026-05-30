@@ -107,7 +107,24 @@ export class ManagedMcpClient implements McpToolClient {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = undefined
     }
-    await this.client?.close()
+    // Close the current client if it exists.
+    const currentClient = this.client
+    this.client = undefined
+    if (currentClient) {
+      currentClient.onclose = undefined
+      await currentClient.close().catch(() => {})
+    }
+    // If a reconnection is in progress, wait for it to finish and close
+    // the newly created client too.
+    if (this.reconnecting) {
+      try {
+        const newClient = await this.reconnecting
+        newClient.onclose = undefined
+        await newClient.close().catch(() => {})
+      } catch {
+        // reconnection failed — nothing to close
+      }
+    }
   }
 
   async callTool(
@@ -139,6 +156,9 @@ export class ManagedMcpClient implements McpToolClient {
   private async reconnectNow(): Promise<Client> {
     if (this.reconnecting) return this.reconnecting
     this.reconnecting = (async () => {
+      if (this.intentionalClose) {
+        throw new Error('Cannot reconnect: client was intentionally closed')
+      }
       const staleClient = this.client
       this.client = undefined
       if (staleClient) {
@@ -200,15 +220,15 @@ export function isMcpSessionExpiredError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
   const record = error as Record<string, unknown>
   const code = record.code
-  const name = typeof record.name === 'string' ? record.name.toLowerCase() : ''
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
 
+  // Match MCP session-level errors that are transient and recoverable by
+  // reconnecting. Deliberately do NOT match generic 'unauthorized' (401)
+  // which indicates a credentials problem that reconnecting won't fix.
   return code === -32000
     || (code === -32001 && message.includes('session'))
-    || name.includes('unauthorized')
     || message.includes('connection closed')
     || message.includes('session not found')
     || message.includes('session expired')
     || message.includes('mcp-session-id')
-    || message.includes('unauthorized')
 }

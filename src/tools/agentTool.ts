@@ -19,7 +19,7 @@ import { runLifecycleHooks, type Hooks } from '../harness/hooks.js'
 import type { ModelProvider, SessionRecord, Tool, ToolContext } from '../harness/types.js'
 import { countSessionRecordTokens } from '../prompts/budget.js'
 
-export const NESTED_AGENT_FORBIDDEN_TOOLS = ['Agent'] as const
+export const NESTED_AGENT_FORBIDDEN_TOOLS = ['Agent', 'EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion'] as const
 
 // TodoWrite is included because sub-agents share taskState semantics, not
 // because it writes files.
@@ -278,6 +278,10 @@ export function filterToolsForSubAgent(
 ): Tool[] {
   const allowed = definition.tools ? new Set<string>(definition.tools) : undefined
   const disallowed = new Set<string>(definition.disallowedTools)
+  // Always exclude globally forbidden tools regardless of agent definition.
+  for (const name of NESTED_AGENT_FORBIDDEN_TOOLS) {
+    disallowed.add(name)
+  }
   return tools.filter((tool) => {
     if (allowed && !allowed.has(tool.name)) return false
     if (!allowed && isUnsafeForReadOnlySubAgent(tool)) return false

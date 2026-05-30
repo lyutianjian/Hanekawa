@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import picomatch from 'picomatch'
 import type { Tool, ToolContext } from './types.js'
 
 const DEFAULT_HOOK_TIMEOUT_MS = 30_000
@@ -145,11 +146,8 @@ function matchesHook(hook: HookCommand, toolName: string): boolean {
 }
 
 function matchGlob(content: string, pattern: string): boolean {
-  const regexPattern = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.')
-  return new RegExp(`^${regexPattern}$`, 'i').test(content)
+  // Use picomatch for safe, ReDoS-immune glob matching.
+  return picomatch.isMatch(content, pattern, { nocase: true })
 }
 
 function runHookCommand(options: {
@@ -236,6 +234,17 @@ function runHookCommand(options: {
       })
     })
 
+    proc.stdin.on('error', (err: NodeJS.ErrnoException) => {
+      // EPIPE is expected when the hook process exits before we finish
+      // writing stdin. Suppress it to avoid crashing the host process.
+      if (err.code !== 'EPIPE') {
+        finish({
+          ok: false,
+          content: `${failurePrefix}: stdin error: ${err.message}`,
+          details: { command: hook.command, error: err.message },
+        })
+      }
+    })
     proc.stdin.end(JSON.stringify({
       hook: hookName,
       ...input,

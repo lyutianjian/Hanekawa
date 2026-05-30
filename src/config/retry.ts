@@ -147,7 +147,7 @@ export async function withRetry<T>(
 
       used[category]++
       const delay = calculateRetryDelay(category, used[category], attempt, baseDelayMs, maxDelayMs, jitterFactor)
-      await sleep(delay)
+      await sleep(delay, options.signal)
     }
   }
 }
@@ -238,6 +238,16 @@ export function isRetryableError(error: unknown): boolean {
   )
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('The operation was aborted.', 'AbortError'))
+      return
+    }
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer)
+      reject(new DOMException('The operation was aborted.', 'AbortError'))
+    }, { once: true })
+  })
 }

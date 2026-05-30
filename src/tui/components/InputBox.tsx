@@ -103,7 +103,9 @@ export function InputBox({ text, cursorPos, disabled }: InputBoxProps) {
       rootNode.internal_layoutListeners?.delete(listener)
       cursorContext.setCursorPosition(undefined)
     }
-  })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // The listener reads from cursorInfoRef which is updated every render,
+  // so it always has the latest values without re-registration.
 
   if (disabled) {
     return (

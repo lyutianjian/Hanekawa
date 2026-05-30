@@ -414,7 +414,7 @@ test('writeFile refuses to write through a symlink parent', async (t) => {
     const result = await writeFileTool.execute({ filePath: path.join('link', 'a.txt'), content: 'hello' }, context(dir))
     assert.equal(result.ok, false)
     assert.equal(result.errorCode, 'precondition_failed')
-    assert.match(result.content, /parent directory is a symlink/)
+    assert.match(result.content, /ancestor directory is a symlink/)
     await assert.rejects(() => readFile(path.join(dir, 'real', 'a.txt'), 'utf8'))
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -438,7 +438,7 @@ test('editFile refuses to edit through a symlink parent', async (t) => {
     const result = await editFileTool.execute({ filePath: path.join('link', 'a.txt'), oldString: 'hello', newString: 'bye' }, ctx)
     assert.equal(result.ok, false)
     assert.equal(result.errorCode, 'precondition_failed')
-    assert.match(result.content, /parent directory is a symlink/)
+    assert.match(result.content, /ancestor directory is a symlink/)
     assert.equal(await readFile(path.join(dir, 'real', 'a.txt'), 'utf8'), 'hello')
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -491,7 +491,7 @@ test('deleteFile refuses to delete through a symlink parent', async (t) => {
     const result = await deleteFileTool.execute({ filePath: path.join('link', 'a.txt') }, ctx)
     assert.equal(result.ok, false)
     assert.equal(result.errorCode, 'precondition_failed')
-    assert.match(result.content, /parent directory is a symlink/)
+    assert.match(result.content, /ancestor directory is a symlink/)
     assert.equal(await readFile(path.join(dir, 'real', 'a.txt'), 'utf8'), 'hello')
   } finally {
     await rm(dir, { recursive: true, force: true })

@@ -90,7 +90,11 @@ test('cache ttl1h can be enabled from runtime settings', () => {
     settings: { cache: { ttl1h: true } },
     env: { MYAGENT_PROMPT_CACHE_1H: '0' },
   }), true)
-  assert.deepEqual(getCacheControl(), { type: 'ephemeral', ttl: '1h' })
+  // getCacheControl without runtime re-evaluates from env (no permanent caching).
+  assert.deepEqual(getCacheControl({
+    settings: { cache: { ttl1h: true } },
+    env: { MYAGENT_PROMPT_CACHE_1H: '0' },
+  }), { type: 'ephemeral', ttl: '1h' })
 })
 
 test('cache ttl1h settings override environment', () => {
@@ -102,12 +106,13 @@ test('cache ttl1h settings override environment', () => {
   }), false)
 })
 
-test('cache ttl1h falls back to environment and latches', () => {
+test('cache ttl1h falls back to environment and re-evaluates each call', () => {
   resetCacheTTLEvaluation()
 
   assert.equal(should1hCacheTTL({ env: { MYAGENT_PROMPT_CACHE_1H: '1' } }), true)
+  // Subsequent calls re-evaluate with the new runtime (no permanent caching).
   assert.equal(should1hCacheTTL({
     settings: { cache: { ttl1h: false } },
     env: { MYAGENT_PROMPT_CACHE_1H: '0' },
-  }), true)
+  }), false)
 })

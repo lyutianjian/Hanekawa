@@ -9,6 +9,9 @@ const questionOptionSchema = z.object({
   description: z.string().describe(
     'Explanation of what this option means or what will happen if chosen. Useful for providing context about trade-offs or implications.',
   ),
+  preview: z.string().optional().describe(
+    'Optional preview content rendered when this option is focused. Use for mockups, code snippets, diagrams, or concrete comparisons. Previews are supported only for single-select questions.',
+  ),
 }).strict()
 
 const questionSchema = z.object({
@@ -26,9 +29,30 @@ const questionSchema = z.object({
   ),
 }).strict()
 
+const annotationsSchema = z.record(z.string(), z.object({
+  preview: z.string().optional(),
+  notes: z.string().optional(),
+}).strict()).optional()
+
 const askUserQuestionInputSchema = z.object({
   questions: z.array(questionSchema).min(1).max(4).describe('Questions to ask the user (1-4 questions)'),
-}).strict()
+  answers: z.record(z.string(), z.string()).optional().describe('User answers collected by the UI; models should omit this field.'),
+  annotations: annotationsSchema.describe('Optional per-question preview/notes annotations collected by the UI; models should omit this field.'),
+}).strict().refine((data) => {
+  const questionTexts = data.questions.map((q) => q.question)
+  if (questionTexts.length !== new Set(questionTexts).size) return false
+  return data.questions.every((question) => {
+    const labels = question.options.map((option) => option.label)
+    return labels.length === new Set(labels).size
+  })
+}, {
+  message: 'Question texts must be unique, option labels must be unique within each question',
+}).refine((data) => data.questions.every((question) => {
+  if (question.multiSelect !== true) return true
+  return question.options.every((option) => !option.preview)
+}), {
+  message: 'Option previews are only supported for single-select questions',
+})
 
 /**
  * AskUserQuestion — multiple-choice clarification tool.
@@ -55,12 +79,25 @@ Usage notes:
 - Users will always be able to select "Other" to provide custom text input
 - Use multiSelect: true to allow multiple answers to be selected for a question
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label
+- Use the optional preview field only when concrete artifacts need side-by-side comparison (ASCII mockups, code snippets, diagrams, configuration examples). Do not use previews for simple preference questions. Previews are only supported for single-select questions.
 
 Plan mode note: In plan mode, use this tool to clarify requirements or choose between approaches BEFORE finalizing your plan. Do NOT use this tool to ask "Is my plan ready?", "Should I proceed?", "How does this plan look?", "Any changes before we start?", or similar - use ${EXIT_PLAN_MODE_TOOL_NAME} for plan approval. IMPORTANT: Do not reference "the plan" in your questions (e.g., "Do you have feedback about the plan?", "Does the plan look good?") because the user cannot see the plan in the UI until you call ${EXIT_PLAN_MODE_TOOL_NAME}. If you need plan approval, use ${EXIT_PLAN_MODE_TOOL_NAME} instead.`,
   inputSchema: askUserQuestionInputSchema,
   riskLevel: 'safe',
   isReadOnly: true,
   isConcurrencySafe: false,
+  userFacingName: () => 'Ask',
+  getToolUseSummary(input) {
+    const questions = typeof input === 'object' && input !== null
+      ? (input as { questions?: unknown }).questions
+      : undefined
+    if (!Array.isArray(questions)) return null
+    const firstHeader = questions
+      .map((question) => typeof question === 'object' && question !== null ? (question as { header?: unknown }).header : undefined)
+      .find((header): header is string => typeof header === 'string' && header.trim().length > 0)
+    return firstHeader ?? `${questions.length} ${questions.length === 1 ? 'question' : 'questions'}`
+  },
+  getActivityDescription: () => 'Asking user',
   async execute(input, context) {
     const parsed = askUserQuestionInputSchema.parse(input)
 
@@ -86,7 +123,11 @@ Plan mode note: In plan mode, use this tool to clarify requirements or choose be
     const questions = parsed.questions.map((q) => ({
       question: q.question,
       header: q.header,
-      options: q.options,
+      options: q.options.map((option) => ({
+        label: option.label,
+        description: option.description,
+        ...(option.preview ? { preview: option.preview } : {}),
+      })),
       multiSelect: q.multiSelect ?? false,
     }))
 
@@ -103,13 +144,19 @@ Plan mode note: In plan mode, use this tool to clarify requirements or choose be
     }
 
     const answersText = Object.entries(result.answers)
-      .map(([q, a]) => `"${q}"="${a}"`)
+      .map(([q, a]) => {
+        const annotation = result.annotations?.[q]
+        const parts = [`"${q}"="${a}"`]
+        if (annotation?.preview) parts.push(`selected preview:\n${annotation.preview}`)
+        if (annotation?.notes) parts.push(`user notes: ${annotation.notes}`)
+        return parts.join(' ')
+      })
       .join(', ')
 
     return {
       ok: true,
       content: `User has answered your questions: ${answersText}. You can now continue with the user's answers in mind.`,
-      metadata: { answers: result.answers },
+      metadata: { answers: result.answers, annotations: result.annotations },
     }
   },
 }

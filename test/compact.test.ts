@@ -288,6 +288,82 @@ test('autoCompactIfNeeded adds pending records to last model usage token count',
   assert.equal(appended[0]?.type, 'compact_boundary')
 })
 
+test('autoCompactIfNeeded uses last response record id when record count is stale', async () => {
+  resetAutoCompactFailureState()
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'old context',
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'old-assistant',
+      role: 'assistant',
+      content: 'old answer',
+      createdAt: '2026-05-10T00:01:00.000Z',
+    },
+    {
+      type: 'tool_approval',
+      id: 'approval-inserted-before-boundary',
+      tool: 'Read',
+      input: { file: 'example.ts' },
+      approved: true,
+      riskLevel: 'safe',
+      createdAt: '2026-05-10T00:01:30.000Z',
+    },
+    {
+      type: 'message',
+      id: 'latest-user',
+      role: 'user',
+      content: 'already included in provider usage '.repeat(200),
+      createdAt: '2026-05-10T00:02:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'model-response',
+      role: 'assistant',
+      content: 'already counted by output usage '.repeat(500),
+      createdAt: '2026-05-10T00:03:00.000Z',
+    },
+    {
+      type: 'tool_result',
+      id: 'tool-result',
+      toolUseId: 'tool-use',
+      tool: 'Read',
+      ok: true,
+      content: 'small pending output',
+      _tokens: 5,
+      createdAt: '2026-05-10T00:04:00.000Z',
+    },
+  ]
+  let called = false
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      called = true
+      return { content: 'should not compact', toolCalls: [] }
+    },
+  }
+
+  const result = await autoCompactIfNeeded({
+    records,
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextManagement: compactTestBudget(),
+    lastResponseTokenCount: 440,
+    lastResponseRecordCount: 3,
+    lastResponseRecordId: 'latest-user',
+    appendRecord: async () => {},
+  })
+
+  assert.equal(result.compacted, false)
+  assert.equal(called, false)
+})
+
 test('autoCompactIfNeeded records telemetry and degrades when summary fails', async () => {
   resetAutoCompactFailureState()
   const records = compactableRecords()

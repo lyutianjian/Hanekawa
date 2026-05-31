@@ -23,6 +23,7 @@ export interface CompactCheckInput {
   system?: string
   contextManagement?: Partial<ContextManagementConfig>
   lastResponseTokenCount?: number
+  lastResponseRecordId?: string
   lastResponseRecordCount?: number
   promptCacheRetention?: 'in_memory' | '24h'
   turnId?: string
@@ -171,13 +172,20 @@ function countCurrentTokens(input: CompactCheckInput, compactableRecords: Sessio
     return countSessionRecordsTokens(compactableRecords, input.system)
   }
 
-  return input.lastResponseTokenCount + countPendingRecordTokens(input)
+  const pendingTokens = countPendingRecordTokens(input)
+  if (pendingTokens === undefined) {
+    return countSessionRecordsTokens(compactableRecords, input.system)
+  }
+  return input.lastResponseTokenCount + pendingTokens
 }
 
-function countPendingRecordTokens(input: CompactCheckInput): number {
-  if (input.lastResponseRecordCount === undefined) return 0
+function countPendingRecordTokens(input: CompactCheckInput): number | undefined {
+  if (input.lastResponseRecordId === undefined && input.lastResponseRecordCount === undefined) return 0
 
-  const pendingRecords = input.records.slice(input.lastResponseRecordCount)
+  const boundaryIndex = findLastResponseBoundaryIndex(input)
+  if (boundaryIndex === undefined) return undefined
+
+  const pendingRecords = input.records.slice(boundaryIndex + 1)
   let skippedResponseMessage = false
 
   return pendingRecords.reduce((sum, record) => {
@@ -187,6 +195,16 @@ function countPendingRecordTokens(input: CompactCheckInput): number {
     }
     return sum + countSessionRecordsTokens([record])
   }, 0)
+}
+
+function findLastResponseBoundaryIndex(input: CompactCheckInput): number | undefined {
+  if (input.lastResponseRecordId) {
+    const index = input.records.findIndex((record) => record.id === input.lastResponseRecordId)
+    return index >= 0 ? index : undefined
+  }
+
+  if (input.lastResponseRecordCount === undefined) return undefined
+  return input.lastResponseRecordCount - 1
 }
 
 async function getCompactFailureCount(input: CompactCheckInput, circuitKey: string): Promise<number> {

@@ -1,38 +1,425 @@
-import { Box, Text } from 'ink'
+import { useState, type ReactNode } from 'react'
+import { Box, Text, useStdout } from 'ink'
+import stringWidth from 'string-width'
 import { useSpinner } from '../hooks/useSpinner.js'
 import { theme } from '../theme.js'
 
-const BASE_COLOR = theme.brand
-const SHIMMER_COLOR = '#FFB6C1'
+const MESSAGE_COLOR = theme.spinner
+const SHIMMER_COLOR = '#FFD1DC'
+const DIM_COLOR = theme.dimText
+const ERROR_RED = { r: 171, g: 43, b: 63 }
+const DEFAULT_CHARACTERS = getDefaultCharacters()
+const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()]
+const GLIMMER_PADDING = 10
+const ACTIVE_TOOL_FLASH_MS = 1000
+const SPINNER_VERBS = [
+  'Accomplishing',
+  'Actioning',
+  'Actualizing',
+  'Architecting',
+  'Baking',
+  'Beaming',
+  "Beboppin'",
+  'Befuddling',
+  'Billowing',
+  'Blanching',
+  'Bloviating',
+  'Boogieing',
+  'Boondoggling',
+  'Booping',
+  'Bootstrapping',
+  'Brewing',
+  'Bunning',
+  'Burrowing',
+  'Calculating',
+  'Canoodling',
+  'Caramelizing',
+  'Cascading',
+  'Catapulting',
+  'Cerebrating',
+  'Channeling',
+  'Channelling',
+  'Choreographing',
+  'Churning',
+  'Clauding',
+  'Coalescing',
+  'Cogitating',
+  'Combobulating',
+  'Composing',
+  'Computing',
+  'Concocting',
+  'Considering',
+  'Contemplating',
+  'Cooking',
+  'Crafting',
+  'Creating',
+  'Crunching',
+  'Crystallizing',
+  'Cultivating',
+  'Deciphering',
+  'Deliberating',
+  'Determining',
+  'Dilly-dallying',
+  'Discombobulating',
+  'Doing',
+  'Doodling',
+  'Drizzling',
+  'Ebbing',
+  'Effecting',
+  'Elucidating',
+  'Embellishing',
+  'Enchanting',
+  'Envisioning',
+  'Evaporating',
+  'Fermenting',
+  'Fiddle-faddling',
+  'Finagling',
+  'Flambeeing',
+  'Flibbertigibbeting',
+  'Flowing',
+  'Flummoxing',
+  'Fluttering',
+  'Forging',
+  'Forming',
+  'Frolicking',
+  'Frosting',
+  'Gallivanting',
+  'Galloping',
+  'Garnishing',
+  'Generating',
+  'Gesticulating',
+  'Germinating',
+  'Gitifying',
+  'Grooving',
+  'Gusting',
+  'Harmonizing',
+  'Hashing',
+  'Hatching',
+  'Herding',
+  'Honking',
+  'Hullaballooing',
+  'Hyperspacing',
+  'Ideating',
+  'Imagining',
+  'Improvising',
+  'Incubating',
+  'Inferring',
+  'Infusing',
+  'Ionizing',
+  'Jitterbugging',
+  'Julienning',
+  'Kneading',
+  'Leavening',
+  'Levitating',
+  'Lollygagging',
+  'Manifesting',
+  'Marinating',
+  'Meandering',
+  'Metamorphosing',
+  'Misting',
+  'Moonwalking',
+  'Moseying',
+  'Mulling',
+  'Mustering',
+  'Musing',
+  'Nebulizing',
+  'Nesting',
+  'Newspapering',
+  'Noodling',
+  'Nucleating',
+  'Orbiting',
+  'Orchestrating',
+  'Osmosing',
+  'Perambulating',
+  'Percolating',
+  'Perusing',
+  'Philosophising',
+  'Photosynthesizing',
+  'Pollinating',
+  'Pondering',
+  'Pontificating',
+  'Pouncing',
+  'Precipitating',
+  'Prestidigitating',
+  'Processing',
+  'Proofing',
+  'Propagating',
+  'Puttering',
+  'Puzzling',
+  'Quantumizing',
+  'Razzle-dazzling',
+  'Razzmatazzing',
+  'Recombobulating',
+  'Reticulating',
+  'Roosting',
+  'Ruminating',
+  'Sauteing',
+  'Scampering',
+  'Schlepping',
+  'Scurrying',
+  'Seasoning',
+  'Shenaniganing',
+  'Shimmying',
+  'Simmering',
+  'Skedaddling',
+  'Sketching',
+  'Slithering',
+  'Smooshing',
+  'Sock-hopping',
+  'Spelunking',
+  'Spinning',
+  'Sprouting',
+  'Stewing',
+  'Sublimating',
+  'Swirling',
+  'Swooping',
+  'Symbioting',
+  'Synthesizing',
+  'Tempering',
+  'Thinking',
+  'Thundering',
+  'Tinkering',
+  'Tomfoolering',
+  'Topsy-turvying',
+  'Transfiguring',
+  'Transmuting',
+  'Twisting',
+  'Undulating',
+  'Unfurling',
+  'Unravelling',
+  'Vibing',
+  'Waddling',
+  'Wandering',
+  'Warping',
+  'Whatchamacalliting',
+  'Whirlpooling',
+  'Whirring',
+  'Whisking',
+  'Wibbling',
+  'Working',
+  'Wrangling',
+  'Zesting',
+  'Zigzagging',
+] as const
 
 interface SpinnerProps {
   subText?: string
 }
 
 export function Spinner({ subText }: SpinnerProps) {
-  const { frame, glimmerIndex, glimmerWindow, elapsed } = useSpinner()
-
-  const message = `Thinking... ${elapsed}s`
-  const shimmerStart = glimmerIndex - Math.floor(glimmerWindow / 2)
-  const shimmerEnd = shimmerStart + glimmerWindow
-
-  const before = message.slice(0, Math.max(0, shimmerStart))
-  const shim = message.slice(Math.max(0, shimmerStart), Math.min(message.length, shimmerEnd))
-  const after = message.slice(Math.min(message.length, shimmerEnd))
+  const [randomVerb] = useState(() => `${sampleSpinnerVerb()}...`)
+  const { stdout } = useStdout()
+  const { frame, elapsed, time } = useSpinner()
+  const hasActiveTool = Boolean(subText)
+  const elapsedText = `${elapsed}s`
+  const terminalWidth = stdout.columns || 80
+  const messageWidth = Math.max(1, terminalWidth - stringWidth(elapsedText) - 6)
+  const message = truncateMiddleByWidth(hasActiveTool ? subText! : randomVerb, messageWidth)
+  const mode: SpinnerMode = hasActiveTool ? 'tool-use' : 'requesting'
+  const glimmerIndex = getGlimmerIndex(message, mode, time)
+  const flashOpacity = mode === 'tool-use'
+    ? (Math.sin((time / ACTIVE_TOOL_FLASH_MS) * Math.PI) + 1) / 2
+    : 0
 
   return (
-    <Box flexDirection="column">
-      <Box>
-        <Text color={BASE_COLOR}>{frame} </Text>
-        {before && <Text color={BASE_COLOR}>{before}</Text>}
-        <Text color={SHIMMER_COLOR}>{shim}</Text>
-        {after && <Text color={BASE_COLOR}>{after}</Text>}
-      </Box>
-      {subText && (
-        <Box paddingLeft={2} width="100%">
-          <Text color={BASE_COLOR} dimColor wrap="truncate-middle">{subText}</Text>
-        </Box>
-      )}
+    <Box flexDirection="row" flexWrap="wrap" width="100%">
+      <SpinnerGlyph frame={frame} messageColor={MESSAGE_COLOR} />
+      <GlimmerMessage
+        message={message}
+        mode={mode}
+        messageColor={MESSAGE_COLOR}
+        glimmerIndex={glimmerIndex}
+        flashOpacity={flashOpacity}
+        shimmerColor={SHIMMER_COLOR}
+      />
+      <Text color={DIM_COLOR}>(</Text>
+      <Text color={DIM_COLOR}>{elapsedText}</Text>
+      <Text color={DIM_COLOR}>)</Text>
     </Box>
   )
+}
+
+type SpinnerMode = 'requesting' | 'tool-use'
+
+function SpinnerGlyph({
+  frame,
+  messageColor,
+}: {
+  frame: number
+  messageColor: string
+}): ReactNode {
+  const spinnerChar = SPINNER_FRAMES[frame % SPINNER_FRAMES.length] ?? SPINNER_FRAMES[0]!
+  return (
+    <Box flexWrap="wrap" height={1} width={2}>
+      <Text color={messageColor}>{spinnerChar}</Text>
+    </Box>
+  )
+}
+
+function GlimmerMessage({
+  message,
+  mode,
+  messageColor,
+  glimmerIndex,
+  flashOpacity,
+  shimmerColor,
+}: {
+  message: string
+  mode: SpinnerMode
+  messageColor: string
+  glimmerIndex: number
+  flashOpacity: number
+  shimmerColor: string
+}): ReactNode {
+  if (!message) return null
+
+  if (mode === 'tool-use') {
+    const color = toRGBColor(interpolateColor(parseHexColor(messageColor), parseHexColor(shimmerColor), flashOpacity))
+    return (
+      <>
+        <Text color={color}>{message}</Text>
+        <Text color={messageColor}> </Text>
+      </>
+    )
+  }
+
+  const segments = getGraphemeSegments(message)
+  const messageWidth = stringWidth(message)
+  const shimmerStart = glimmerIndex - 1
+  const shimmerEnd = glimmerIndex + 1
+
+  if (shimmerStart >= messageWidth || shimmerEnd < 0) {
+    return (
+      <>
+        <Text color={messageColor}>{message}</Text>
+        <Text color={messageColor}> </Text>
+      </>
+    )
+  }
+
+  const clampedStart = Math.max(0, shimmerStart)
+  let colPos = 0
+  let before = ''
+  let shim = ''
+  let after = ''
+
+  for (const segment of segments) {
+    if (colPos + segment.width <= clampedStart) {
+      before += segment.value
+    } else if (colPos > shimmerEnd) {
+      after += segment.value
+    } else {
+      shim += segment.value
+    }
+    colPos += segment.width
+  }
+
+  return (
+    <>
+      {before && <Text color={messageColor}>{before}</Text>}
+      <Text color={shimmerColor}>{shim}</Text>
+      {after && <Text color={messageColor}>{after}</Text>}
+      <Text color={messageColor}> </Text>
+    </>
+  )
+}
+
+function getGlimmerIndex(message: string, mode: SpinnerMode, time: number): number {
+  const glimmerSpeed = mode === 'requesting' ? 50 : 200
+  const messageWidth = stringWidth(message)
+  const cycleLength = messageWidth + GLIMMER_PADDING * 2
+  const cyclePosition = Math.floor(time / glimmerSpeed)
+
+  if (mode === 'requesting') {
+    return (cyclePosition % cycleLength) - GLIMMER_PADDING
+  }
+  return messageWidth + GLIMMER_PADDING - (cyclePosition % cycleLength)
+}
+
+function getDefaultCharacters(): string[] {
+  if (process.env.TERM === 'xterm-ghostty') {
+    return ['\u00b7', '\u2722', '\u2733', '\u2736', '\u273b', '*']
+  }
+  return process.platform === 'darwin'
+    ? ['\u00b7', '\u2722', '\u2733', '\u2736', '\u273b', '\u273d']
+    : ['\u00b7', '\u2722', '*', '\u2736', '\u273b', '\u273d']
+}
+
+function getGraphemeSegments(value: string): Array<{ value: string; width: number }> {
+  const segmenter = typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    : undefined
+  const parts = segmenter
+    ? [...segmenter.segment(value)].map((part) => part.segment)
+    : [...value]
+  return parts.map((part) => ({ value: part, width: stringWidth(part) }))
+}
+
+function sampleSpinnerVerb(): string {
+  const index = Math.floor(Math.random() * SPINNER_VERBS.length)
+  return SPINNER_VERBS[index] ?? 'Thinking'
+}
+
+function truncateMiddleByWidth(value: string, maxWidth: number): string {
+  if (stringWidth(value) <= maxWidth) return value
+  const ellipsis = '...'
+  const target = Math.max(1, maxWidth - stringWidth(ellipsis))
+  const segments = getGraphemeSegments(value)
+  let head = ''
+  let tail = ''
+  let headWidth = 0
+  let tailWidth = 0
+  let left = 0
+  let right = segments.length - 1
+
+  while (left <= right && headWidth + tailWidth < target) {
+    const takeHead = headWidth <= tailWidth
+    if (takeHead) {
+      const segment = segments[left]
+      if (!segment || headWidth + tailWidth + segment.width > target) break
+      head += segment.value
+      headWidth += segment.width
+      left++
+    } else {
+      const segment = segments[right]
+      if (!segment || headWidth + tailWidth + segment.width > target) break
+      tail = segment.value + tail
+      tailWidth += segment.width
+      right--
+    }
+  }
+
+  return `${head}${ellipsis}${tail}`
+}
+
+function interpolateColor(
+  color1: RGBColor,
+  color2: RGBColor,
+  t: number,
+): RGBColor {
+  return {
+    r: Math.round(color1.r + (color2.r - color1.r) * t),
+    g: Math.round(color1.g + (color2.g - color1.g) * t),
+    b: Math.round(color1.b + (color2.b - color1.b) * t),
+  }
+}
+
+function parseHexColor(value: string): RGBColor {
+  const normalized = value.startsWith('#') ? value.slice(1) : value
+  if (normalized.length !== 6) return ERROR_RED
+  return {
+    r: Number.parseInt(normalized.slice(0, 2), 16),
+    g: Number.parseInt(normalized.slice(2, 4), 16),
+    b: Number.parseInt(normalized.slice(4, 6), 16),
+  }
+}
+
+function toRGBColor(color: RGBColor): string {
+  return `rgb(${color.r},${color.g},${color.b})`
+}
+
+interface RGBColor {
+  r: number
+  g: number
+  b: number
 }

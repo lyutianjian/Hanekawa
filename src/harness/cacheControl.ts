@@ -79,13 +79,6 @@ export function addCacheBreakpoints(
   })
 }
 
-export function getCacheBreakpointIndexes(messageCount: number, step: number): Set<number> {
-  const indexes = new Set<number>()
-  if (messageCount === 0) return indexes
-  indexes.add(messageCount - 1)
-  return indexes
-}
-
 export function addCacheControlToLastSystemBlock(
   blocks: TextBlockParam[],
   enablePromptCaching: boolean,

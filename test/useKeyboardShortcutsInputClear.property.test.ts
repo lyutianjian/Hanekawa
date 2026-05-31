@@ -13,8 +13,8 @@ import fc from 'fast-check'
  * input.
  *
  * For Escape: a single tap clears the input regardless of content.
- * For Ctrl+C: a single tap on non-empty input clears it; on empty input it
- * shows the "Press Ctrl+C again to exit" hint instead.
+ * For Ctrl+C: a single tap clears input, including when it is already empty,
+ * and shows the hint that matches whether this press counted toward exit.
  *
  * Strategy: re-implement the relevant decision logic from
  * `src/tui/hooks/useKeyboardShortcuts.ts` in a pure function so we can
@@ -32,9 +32,9 @@ interface IdleSingleTapResult {
 }
 
 /**
- * Pure replica of the idle-state single-tap branch from useKeyboardShortcuts.
- * Models what happens when DoubleTapDetector resolves a tap as 'single'
- * (the window expired without a second press).
+ * Pure replica of the idle-state first-press branch from useKeyboardShortcuts.
+ * The visible clear happens immediately; double-tap detection still decides
+ * whether a second press opens restore mode or exits.
  */
 function applyIdleSingleTap(opts: {
   key: InterruptKey
@@ -51,22 +51,14 @@ function applyIdleSingleTap(opts: {
       exitTriggered: false,
     }
   }
-  // Ctrl+C
-  if (opts.text === '') {
-    // Empty input: show "Press Ctrl+C again to exit" hint, don't clear
-    return {
-      newText: '',
-      newCursorPos: 0,
-      hintShown: 'Press Ctrl+C again to exit',
-      enteredRestoreMode: false,
-      exitTriggered: false,
-    }
-  }
-  // Non-empty input: clear text
+  // Ctrl+C clears immediately. Non-empty input does not count toward exit, so
+  // the user needs two more presses after the clear.
   return {
     newText: '',
     newCursorPos: 0,
-    hintShown: null,
+    hintShown: opts.text.length > 0
+      ? 'Input cleared. Press Ctrl+C twice to exit'
+      : 'Press Ctrl+C again to exit',
     enteredRestoreMode: false,
     exitTriggered: false,
   }
@@ -93,7 +85,7 @@ describe('Property 5: input clearing on single interrupt key in idle state', () 
     )
   })
 
-  it('for any non-empty input text and Ctrl+C single-tap, the input is cleared and no hint is shown', () => {
+  it('for any non-empty input text and Ctrl+C single-tap, the input is cleared and the two-press hint is shown', () => {
     fc.assert(
       fc.property(
         fc.string({ minLength: 1 }),
@@ -104,7 +96,7 @@ describe('Property 5: input clearing on single interrupt key in idle state', () 
           return (
             result.newText === '' &&
             result.newCursorPos === 0 &&
-            result.hintShown === null &&
+            result.hintShown === 'Input cleared. Press Ctrl+C twice to exit' &&
             result.exitTriggered === false
           )
         },
@@ -113,7 +105,7 @@ describe('Property 5: input clearing on single interrupt key in idle state', () 
     )
   })
 
-  it('for empty input and Ctrl+C single-tap, the hint "Press Ctrl+C again to exit" is shown and exit is NOT triggered', () => {
+  it('for empty input and Ctrl+C single-tap, the input remains empty and the one-more-press hint is shown', () => {
     // No fc randomness needed for the empty case, but we run 100 iterations
     // through the same pure function to confirm determinism.
     fc.assert(

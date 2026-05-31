@@ -23,6 +23,7 @@ import { getMyAgentDir } from '../utils/paths.js'
 
 export type CacheBreakSource =
   | `agent:${string}`
+  | `agent:plan:${string}`
   | `agent:fork:${string}`
   | 'repl_main_thread'
   | 'sdk'
@@ -43,6 +44,11 @@ export function agentCacheSource(agentId: string): CacheBreakSource {
 export function forkCacheSource(parentSessionId: string): CacheBreakSource {
   const normalized = parentSessionId.trim() || 'unknown'
   return `agent:fork:${normalized}`
+}
+
+export function planCacheSource(sessionId: string): CacheBreakSource {
+  const normalized = sessionId.trim() || 'unknown'
+  return `agent:plan:${normalized}`
 }
 
 export function requireCacheSource(source: CacheBreakSource | undefined): CacheBreakSource {
@@ -190,7 +196,10 @@ export function checkResponseForCacheBreak(
   const prevCacheRead = previous.prevCacheReadTokens
   previous.prevCacheReadTokens = cacheReadTokens
 
-  if (prevCacheRead === null) return null
+  if (prevCacheRead === null) {
+    pendingChangesBySource.delete(source)
+    return null
+  }
 
   const tokenDrop = prevCacheRead - cacheReadTokens
   if (cacheReadTokens >= prevCacheRead * 0.95 || tokenDrop < 2000) {
@@ -281,7 +290,7 @@ export function formatCacheHitRate(usage: CacheUsageSnapshot): string {
   const total = usage.inputTokens + usage.cacheReadInputTokens
   if (total === 0) return 'cache: n/a'
   const hitRate = (usage.cacheReadInputTokens / total) * 100
-  return `cache: ${hitRate.toFixed(0)}% hit (${usage.cacheReadInputTokens}/${total} tokens)`
+  return `cache: ${hitRate.toFixed(0)}% hit`
 }
 
 function writeCacheBreakDiagnostic(result: CacheBreakResult): string | null {

@@ -29,8 +29,8 @@ export function calculateTokenCost(usage: TokenUsage, pricing: ModelPricing & { 
     + (usage.outputTokens / 1_000_000) * pricing.outputPerMillionTokens
 }
 
-export function formatUsageLine(usage: TokenUsage, pricing?: ModelPricing): string {
-  const tokens = `Tokens: cache read ${usage.cacheReadInputTokens}, input ${usage.inputTokens}, output ${usage.outputTokens}`
+export function formatUsageLine(usage: TokenUsage, pricing?: ModelPricing, label = 'Tokens'): string {
+  const tokens = `${label}: cache read ${usage.cacheReadInputTokens}, input ${usage.inputTokens}, output ${usage.outputTokens}`
   if (!hasCompletePricing(pricing)) return tokens
 
   const currency = pricing.currency ?? 'USD'

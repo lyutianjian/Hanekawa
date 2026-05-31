@@ -164,7 +164,7 @@ test('drainRequests handles enter approved (calls openEnterPrompt + appendRecord
   })
 })
 
-test('drainRequests handles exit with empty plan: emits exit_rejected detail=plan-file-empty', async () => {
+test('drainRequests handles exit with empty plan: opens dialog and can approve exit', async () => {
   await withTempCwd(async (cwd) => {
     const { manager, records, gate, meta } = await setup(cwd)
     await manager.onEnterPlanMode()
@@ -191,14 +191,14 @@ test('drainRequests handles exit with empty plan: emits exit_rejected detail=pla
       appendRecord: async (r) => { localRecords.push(r) },
       loadRecords: async () => [...localRecords],
     })
-    m.setUiDeps({ openExitDialog: async () => { dialogOpened = true; return { kind: 'reject', feedback: '' } } })
+    m.setUiDeps({ openExitDialog: async () => { dialogOpened = true; return { kind: 'approve_restore_keep' } } })
     await m.onEnterPlanMode()
     await m.beforeTurn()
-    assert.equal(dialogOpened, false, 'empty plan should NOT open dialog')
-    const rejected = localRecords.find(
-      (r) => r.type === 'plan_mode_outcome' && r.kind === 'exit_rejected' && r.detail === 'plan-file-empty',
+    assert.equal(dialogOpened, true, 'empty plan should open dialog')
+    const approved = localRecords.find(
+      (r) => r.type === 'plan_mode_outcome' && r.kind === 'exit_approved',
     )
-    assert.ok(rejected)
+    assert.ok(approved)
     void records
   })
 })
@@ -284,9 +284,10 @@ test('approved dialog edits replace disk plan, exit attachment, and clear-contex
     await manager.beforeTurn()
 
     assert.equal(await readPlan(planPath), '# Edited by user\n')
-    assert.deepEqual(clearContextCalls, ['# Edited by user\n'])
+    assert.deepEqual(clearContextCalls, ['Implement the following plan:\n\n# Edited by user\n'])
     const exitAttachment = manager.getActivePlanAttachment()
     assert.match(exitAttachment ?? '', /# Edited by user/)
+    assert.doesNotMatch(exitAttachment ?? '', /Implement the following plan/)
     assert.doesNotMatch(exitAttachment ?? '', /# Original/)
   })
 })
@@ -460,6 +461,24 @@ test('subagent_exit kind routed identically to exit', async () => {
   })
 })
 
+test('submitAssistantPlanFallback emits an exit request with inline plan content', async () => {
+  await withTempCwd(async (cwd) => {
+    const { manager, records, meta } = await setup(cwd)
+
+    await manager.submitAssistantPlanFallback('# Assistant text plan\n', 'turn-fallback')
+
+    const request = records.find(
+      (r): r is Extract<SessionRecord, { type: 'plan_mode_request' }> =>
+        r.type === 'plan_mode_request',
+    )
+    assert.ok(request)
+    assert.equal(request.kind, 'exit')
+    assert.equal(request.submittedFromSessionId, meta.id)
+    assert.equal(request.planContent, '# Assistant text plan\n')
+    assert.equal(request.turnId, 'turn-fallback')
+  })
+})
+
 
 test('drainRequests handles enter rejected (appends enter_rejected outcome and emits reminder)', async () => {
   await withTempCwd(async (cwd) => {
@@ -576,7 +595,7 @@ test('approve_clear_bypass_with_plan_as_prompt clears context and sets bypass', 
     await manager.beforeTurn()
 
     assert.equal(gate.getMode(), 'bypass', 'gate flipped to bypass post-exit')
-    assert.deepEqual(clearContextCalls, ['# Approved plan\n'])
+    assert.deepEqual(clearContextCalls, ['Implement the following plan:\n\n# Approved plan\n'])
     assert.equal(
       manager.consumeShouldStopCurrentTurn(),
       true,

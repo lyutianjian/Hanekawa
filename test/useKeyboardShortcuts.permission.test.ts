@@ -61,20 +61,20 @@ describe('isPermissionModeCycleKey', () => {
     )
   })
 
-  it('returns true for plain Tab', () => {
+  it('returns false for plain Tab', () => {
     assert.equal(
       isPermissionModeCycleKey({ tab: true, shift: false } as never),
-      true,
+      false,
     )
   })
 })
 
 describe('permissionModeCycleDirection', () => {
-  it('uses Tab for forward mode cycling', () => {
-    assert.equal(permissionModeCycleDirection({ tab: true, shift: false } as never), 1)
+  it('uses Shift+Tab for forward mode cycling', () => {
+    assert.equal(permissionModeCycleDirection({ tab: true, shift: true } as never), 1)
   })
 
-  it('uses Shift+Tab for backward mode cycling', () => {
-    assert.equal(permissionModeCycleDirection({ tab: true, shift: true } as never), -1)
+  it('does not expose a reverse cycle shortcut', () => {
+    assert.equal(permissionModeCycleDirection({ tab: true, shift: false } as never), 1)
   })
 })

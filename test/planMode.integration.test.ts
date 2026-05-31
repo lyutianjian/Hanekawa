@@ -164,11 +164,12 @@ test('Integration B: exit with inline plan writes to disk before opening dialog'
   })
 })
 
-// Scenario C: Empty plan — exit_rejected with detail='plan-file-empty',
-// no critique, no dialog. Reminder injected via emitChatMessage.
-test('Integration C: empty plan → exit_rejected detail=plan-file-empty + reminder', async () => {
+// Scenario C: Empty plan still surfaces the approval dialog.
+test('Integration C: empty plan opens approval dialog and can exit', async () => {
   await withTempCwd(async (cwd) => {
-    const h = await buildHarness(cwd)
+    const h = await buildHarness(cwd, {
+      dialogResponses: [{ kind: 'approve_restore_keep' }],
+    })
 
     emitEnterRequest(h.records, h.meta.id)
     await h.manager.beforeTurn()
@@ -176,14 +177,14 @@ test('Integration C: empty plan → exit_rejected detail=plan-file-empty + remin
     emitExitRequest(h.records, h.meta.id) // no inline, no file written
     await h.manager.beforeTurn()
 
-    assert.equal(h.dialogInputs.length, 0, 'dialog should NOT open for empty plan')
+    assert.equal(h.dialogInputs.length, 1, 'dialog should open for empty plan')
+    assert.equal(h.dialogInputs[0]?.planContent, '')
     assert.equal(h.critiqueCalled.value, 0, 'critique NOT called for empty plan')
-    const rejected = h.records.find(
-      (r) => r.type === 'plan_mode_outcome' && r.kind === 'exit_rejected' && r.detail === 'plan-file-empty',
+    const approved = h.records.find(
+      (r) => r.type === 'plan_mode_outcome' && r.kind === 'exit_approved',
     )
-    assert.ok(rejected)
-    assert.equal(h.chatMessages.length, 1)
-    assert.match(h.chatMessages[0]!, /plan is empty/i)
+    assert.ok(approved)
+    assert.equal(h.chatMessages.length, 0)
   })
 })
 
@@ -240,7 +241,7 @@ test('Integration E: subagent_exit routes identically; approve_acceptEdits_keep 
 
 // Scenario F: approve_clear_restore_with_plan_as_prompt fires
 // onClearContextAndReplaceInput with the plan content.
-test('Integration F: approve_clear_restore_with_plan_as_prompt → onClearContextAndReplaceInput receives plan', async () => {
+test('Integration F: approve_clear_restore_with_plan_as_prompt -> onClearContextAndReplaceInput receives implementation prompt', async () => {
   await withTempCwd(async (cwd) => {
     const h = await buildHarness(cwd, {
       critiqueResponses: [{ findings: 'ok' }],
@@ -256,7 +257,7 @@ test('Integration F: approve_clear_restore_with_plan_as_prompt → onClearContex
     await h.manager.beforeTurn()
 
     assert.equal(h.clearContextCalls.length, 1)
-    assert.equal(h.clearContextCalls[0], '# Restart with this plan\n')
+    assert.equal(h.clearContextCalls[0], 'Implement the following plan:\n\n# Restart with this plan\n')
   })
 })
 

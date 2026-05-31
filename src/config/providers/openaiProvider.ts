@@ -122,7 +122,3 @@ function normalizeOpenAIStopReason(reason: string | null | undefined): string | 
   if (reason === 'length') return 'max_tokens'
   return reason ?? undefined
 }
-
-function isOpenAIStreamIdleTimeout(error: unknown): boolean {
-  return error instanceof Error && error.message === 'Stream idle timeout'
-}

@@ -149,6 +149,10 @@ test('all builtin tools are callable', async () => {
     'ExitPlanMode',
     'AskUserQuestion',
     'TodoWrite',
+    'TaskCreate',
+    'TaskList',
+    'TaskGet',
+    'TaskUpdate',
   ]
   assert.deepEqual(tools.map((t) => t.name).sort(), [...expectedTools].sort())
   assert.equal(tools.length, expectedTools.length)

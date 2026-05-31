@@ -47,6 +47,13 @@ export interface CommandContext {
   setModel?: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
   runVerification?: (args: string) => Promise<string>
   reloadAgentDefinitions?: () => Promise<number>
+  getPermissionMode?: () => string
+  setPermissionMode?: (mode: string) => void | Promise<void>
+  enterPlanMode?: () => void | Promise<void>
+  readPlanFile?: () => Promise<{ path: string; content: string | null }>
+  openPlanFile?: () => Promise<{ message: string }>
+  submitQuery?: (input: string) => Promise<void>
+  openProviderPanel?: () => void
 }
 
 export type CommandResult =

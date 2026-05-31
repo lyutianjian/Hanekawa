@@ -13,6 +13,12 @@ function makeBridge(parentSessionId: string, parentRecords: SessionRecord[]): Pl
   }
 }
 
+test('EnterPlanMode description includes Claude Code plan workflow', () => {
+  assert.match(enterPlanModeTool.description, /## What Happens in Plan Mode/)
+  assert.match(enterPlanModeTool.description, /Use AskUserQuestion if you need to clarify approaches/)
+  assert.match(enterPlanModeTool.description, /Exit plan mode with ExitPlanMode when ready to implement/)
+})
+
 test('EnterPlanMode in default mode emits plan_mode_request kind="enter"', async () => {
   const parentRecords: SessionRecord[] = []
   const records: SessionRecord[] = []

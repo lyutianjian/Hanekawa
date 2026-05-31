@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { prepareRecordsForRequest, prepareRecordsForRequestWithDiagnostics } from '../src/harness/requestPrep.js'
 import { countTextTokens } from '../src/prompts/budget.js'
+import { ContextBuilder } from '../src/harness/contextBuilder.js'
 import type { SessionRecord } from '../src/harness/types.js'
 
 function toolPair(id: string, tool: string, content: string, minute: number): SessionRecord[] {
@@ -93,6 +94,52 @@ test('prepareRecordsForRequest filters persisted sub-agent transcripts out of mo
   const prepared = prepareRecordsForRequest(records)
 
   assert.deepEqual(prepared.map((record) => record.id), ['user-1', 'assistant-1'])
+})
+
+test('prepareRecordsForRequest preserves latest compact boundary for context builder summary restore', async () => {
+  const records: SessionRecord[] = [
+    {
+      id: 'old-user',
+      type: 'message',
+      role: 'user',
+      content: 'old detail that should only survive through the summary',
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      id: 'compact-1',
+      type: 'compact_boundary',
+      summary: 'summary visible after request prep',
+      preTokens: 1234,
+      postCompactRestore: 'consumed',
+      createdAt: '2026-05-10T00:01:00.000Z',
+    },
+    {
+      id: 'new-user',
+      type: 'message',
+      role: 'user',
+      content: 'new detail',
+      createdAt: '2026-05-10T00:02:00.000Z',
+    },
+  ]
+
+  const prepared = prepareRecordsForRequest(records)
+  assert.deepEqual(prepared.map((record) => record.id), ['compact-1', 'new-user'])
+
+  const built = await new ContextBuilder().build({
+    records: prepared,
+    tools: [],
+    includeUserContext: false,
+  })
+
+  assert.ok(!built.contextItems.some((item) => item.kind === 'message' && item.message.id === 'old-user'))
+  assert.ok(built.contextItems.some(
+    (item) =>
+      item.kind === 'message'
+      && item.message.id === 'compact-1'
+      && /Prior conversation was compacted/.test(item.message.content)
+      && /summary visible after request prep/.test(item.message.content),
+  ))
+  assert.ok(built.contextItems.some((item) => item.kind === 'message' && item.message.id === 'new-user'))
 })
 
 test('prepareRecordsForRequest keeps same-tool history when under token thresholds', () => {

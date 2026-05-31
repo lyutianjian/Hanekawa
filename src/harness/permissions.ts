@@ -1,10 +1,17 @@
 import { randomUUID } from 'node:crypto'
-import picomatch from 'picomatch'
+import { createRequire } from 'node:module'
+import path from 'node:path'
 import { analyzeShellCommand } from './commandAnalysis.js'
 import { shellWords } from './bashSafety.js'
 import type { RiskLevel, Tool, ToolApprovalRecord } from './types.js'
 import { isProtectedPath } from '../utils/permissions/protectedPaths.js'
 import { EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
+import { getPlansDir } from '../utils/plans.js'
+
+const require = createRequire(import.meta.url)
+const picomatch = require('picomatch') as {
+  isMatch(input: string, pattern: string, options?: { nocase?: boolean }): boolean
+}
 
 export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'auto' | 'bypass'
 
@@ -50,6 +57,7 @@ const DEFAULT_DENIAL_STREAK_THRESHOLD = 3
 const DEFAULT_GLOBAL_DENIAL_PROMPT_THRESHOLD = 20
 // `Delete` stays excluded so accept-edits mode cannot silently remove files.
 const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
+const PLAN_ALLOWED_AGENT_TYPES = new Set(['general', 'fork', 'explore', 'plan', 'verification'])
 const PLAN_READ_ONLY_SHELL_COMMANDS = new Set([
   'cat',
   'dir',
@@ -125,6 +133,7 @@ export class PermissionGate {
   private configRules: PermissionRule[] = []
   private mode: PermissionMode
   private prePlanMode: PermissionMode = 'default'
+  private planSlugProvider?: () => string | undefined
   /**
    * Per-tool consecutive auto-denial counter. Reset to 0 whenever a call to
    * that tool is approved. If an escalated prompt is denied, keep the counter
@@ -136,6 +145,7 @@ export class PermissionGate {
   private globalAutoDenials = 0
   private readonly globalDenialPromptThreshold: number
   private readonly denialStateStore?: DenialStateStore
+  private readonly cwd: string
   private denialStateLoaded = false
   private readonly modeListeners = new Set<PermissionModeListener>()
 
@@ -147,6 +157,7 @@ export class PermissionGate {
       globalDenialPromptThreshold?: number
       mode?: PermissionMode
       denialStateStore?: DenialStateStore
+      cwd?: string
     },
   ) {
     this.addRules(configRules ?? [])
@@ -156,6 +167,7 @@ export class PermissionGate {
     const globalConfigured = options?.globalDenialPromptThreshold ?? DEFAULT_GLOBAL_DENIAL_PROMPT_THRESHOLD
     this.globalDenialPromptThreshold = Math.max(1, globalConfigured)
     this.denialStateStore = options?.denialStateStore
+    this.cwd = options?.cwd ?? process.cwd()
   }
 
   async approve(tool: Tool, input: unknown): Promise<boolean> {
@@ -230,7 +242,7 @@ export class PermissionGate {
     }
 
     if (this.mode === 'plan') {
-      if (this.isPlanAllowed(tool, commandAnalysis, hasHardSafetyDenial, requiresSafetyPrompt)) {
+      if (this.isPlanAllowed(tool, input, commandAnalysis, hasHardSafetyDenial, requiresSafetyPrompt)) {
         this.denialStreaks.set(tool.name, 0)
         return this.persistAndReturn(true)
       }
@@ -323,6 +335,10 @@ export class PermissionGate {
   setConfigRules(rules: PermissionRule[]): void {
     this.configRules = []
     this.addRules(rules)
+  }
+
+  setPlanSlugProvider(provider: () => string | undefined): void {
+    this.planSlugProvider = provider
   }
 
   getConfigRules(): PermissionRule[] {
@@ -482,11 +498,22 @@ export class PermissionGate {
 
   private isPlanAllowed(
     tool: Tool,
+    input: unknown,
     commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
     hasHardSafetyDenial: boolean,
     requiresSafetyPrompt: boolean,
   ): boolean {
     if (tool.name === EXIT_PLAN_MODE_TOOL_NAME) return true
+    if (tool.name === 'EnterPlanMode') return true
+    if (tool.name === 'Agent' && isPlanAllowedAgent(input)) return true
+
+    if (
+      (tool.name === 'Write' || tool.name === 'Edit' || tool.name === 'MultiEdit')
+      && !requiresSafetyPrompt
+      && this.isSessionPlanFile(input)
+    ) {
+      return true
+    }
 
     if (tool.isReadOnly === true) {
       return !hasHardSafetyDenial && !requiresSafetyPrompt
@@ -495,6 +522,16 @@ export class PermissionGate {
     if (tool.name !== 'Bash' || !commandAnalysis) return false
     if (hasHardSafetyDenial || requiresSafetyPrompt || commandAnalysis.categories.length > 0) return false
     return isPlanReadOnlyShellCommand(commandAnalysis.command)
+  }
+
+  private isSessionPlanFile(input: unknown): boolean {
+    const slug = this.planSlugProvider?.()
+    if (!slug) return false
+    const filePath = extractPath(input)
+    if (!filePath) return false
+    const absolute = path.resolve(filePath)
+    const expectedPrefix = path.resolve(getPlansDir(this.cwd), slug)
+    return absolute.startsWith(expectedPrefix) && absolute.endsWith('.md')
   }
 
   private isAcceptEditsAllowed(tool: Tool): boolean {
@@ -581,6 +618,12 @@ export class PermissionGate {
     if (riskLevel === 'confirm') return 'This action changes local state and requires confirmation.'
     return 'This is a dangerous action and requires explicit confirmation.'
   }
+}
+
+function isPlanAllowedAgent(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false
+  const subagentType = (input as { subagent_type?: unknown }).subagent_type
+  return typeof subagentType === 'string' && PLAN_ALLOWED_AGENT_TYPES.has(subagentType)
 }
 
 export function normalizeDenialState(state: Partial<DenialState> | undefined): DenialState {

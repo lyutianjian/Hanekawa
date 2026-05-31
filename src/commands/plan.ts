@@ -5,22 +5,28 @@ export const planCommand: CommandDefinition = {
   description: 'Enter plan mode or show the current plan',
   argumentHint: '[open]',
   run: async (args, context) => {
-    const subcommand = args.trim().toLowerCase()
-    if (subcommand && subcommand !== 'open') {
-      context.writeLine('Usage: /plan [open]')
-      return
-    }
+    const description = args.trim()
+    const subcommand = description.toLowerCase()
 
     if (context.getPermissionMode?.() !== 'plan') {
       if (!context.enterPlanMode) {
         context.writeLine('Plan mode is unavailable in this runtime.')
         return
       }
-      context.enterPlanMode()
-      if (subcommand !== 'open') {
-        context.writeLine('Enabled plan mode.')
+      await context.enterPlanMode()
+      context.writeLine('Enabled plan mode.')
+      if (subcommand === 'open') {
         return
       }
+      if (description.length > 0 && context.submitQuery) {
+        await context.submitQuery(description)
+      }
+      return
+    }
+
+    if (subcommand && subcommand !== 'open') {
+      context.writeLine('Usage: /plan [open]')
+      return
     }
 
     if (subcommand === 'open') {

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Box, Text, useInput } from '../ink.js'
 import { theme } from '../theme.js'
 import type {
+  AskUserQuestionAnnotations,
   AskUserQuestionAnswers,
   AskUserQuestionItem,
   AskUserQuestionRequest,
@@ -33,12 +34,17 @@ export function AskUserQuestionDialog({ request, onResolve }: AskUserQuestionDia
   const [otherMode, setOtherMode] = useState(false)
   const [otherText, setOtherText] = useState('')
   const [answers, setAnswers] = useState<AskUserQuestionAnswers>({})
+  const [annotations, setAnnotations] = useState<AskUserQuestionAnnotations>({})
 
   const current: AskUserQuestionItem | undefined = request.questions[questionIndex]
   const isMulti = current?.multiSelect === true
+  const hasPreview = current?.multiSelect !== true && current?.options.some((option) => option.preview) === true
   // Effective option list = declared options + automatic "Other".
   const optionLabels = current ? [...current.options.map((o) => o.label), OTHER_LABEL] : []
   const otherIndex = optionLabels.length - 1
+  const focusedOption = current && selectedIndex < current.options.length
+    ? current.options[selectedIndex]
+    : undefined
 
   // Reset per-question state whenever the question changes.
   useEffect(() => {
@@ -48,12 +54,20 @@ export function AskUserQuestionDialog({ request, onResolve }: AskUserQuestionDia
     setOtherText('')
   }, [questionIndex])
 
-  const submitAnswer = (answer: string) => {
+  const submitAnswer = (answer: string, annotation?: AskUserQuestionAnnotations[string]) => {
     if (!current) return
     const nextAnswers = { ...answers, [current.question]: answer }
+    const nextAnnotations = annotation
+      ? { ...annotations, [current.question]: annotation }
+      : annotations
     setAnswers(nextAnswers)
+    setAnnotations(nextAnnotations)
     if (questionIndex + 1 >= total) {
-      onResolve({ kind: 'answered', answers: nextAnswers })
+      onResolve({
+        kind: 'answers',
+        answers: nextAnswers,
+        ...(Object.keys(nextAnnotations).length > 0 ? { annotations: nextAnnotations } : {}),
+      })
     } else {
       setQuestionIndex(questionIndex + 1)
     }
@@ -156,13 +170,13 @@ export function AskUserQuestionDialog({ request, onResolve }: AskUserQuestionDia
       }
       const label = optionLabels[selectedIndex]
       if (typeof label !== 'string') return
-      submitAnswer(label)
+      submitAnswer(label, focusedOption?.preview ? { preview: focusedOption.preview } : undefined)
       return
     }
   })
 
   if (!current) {
-    // Empty request �?resolve immediately.
+    // Empty request; resolve immediately.
     return null
   }
 
@@ -179,27 +193,37 @@ export function AskUserQuestionDialog({ request, onResolve }: AskUserQuestionDia
 
       {!otherMode ? (
         <Box flexDirection="column" marginTop={1}>
-          {current.options.map((option, index) => {
-            const isFocused = index === selectedIndex
-            const isToggled = isMulti && multiSelected.has(index)
-            const checkbox = isMulti ? (isToggled ? '[x] ' : '[ ] ') : ''
-            return (
-              <Box key={`${option.label}-${index}`} flexDirection="column">
-                <Text color={isFocused ? theme.brand : undefined} bold={isFocused}>
-                  {isFocused ? '> ' : '  '}{checkbox}{option.label}
-                </Text>
-                {option.description ? (
-                  <Box paddingLeft={4}>
-                    <Text color={theme.dimText}>{option.description}</Text>
+          <Box flexDirection={hasPreview ? 'row' : 'column'}>
+            <Box flexDirection="column" width={hasPreview ? '42%' : undefined} paddingRight={hasPreview ? 2 : 0}>
+              {current.options.map((option, index) => {
+                const isFocused = index === selectedIndex
+                const isToggled = isMulti && multiSelected.has(index)
+                const checkbox = isMulti ? (isToggled ? '[x] ' : '[ ] ') : ''
+                return (
+                  <Box key={`${option.label}-${index}`} flexDirection="column">
+                    <Text color={isFocused ? theme.brand : undefined} bold={isFocused}>
+                      {isFocused ? '> ' : '  '}{checkbox}{option.label}
+                    </Text>
+                    {option.description ? (
+                      <Box paddingLeft={4}>
+                        <Text color={theme.dimText}>{option.description}</Text>
+                      </Box>
+                    ) : null}
                   </Box>
-                ) : null}
+                )
+              })}
+              <Box>
+                <Text color={selectedIndex === otherIndex ? theme.brand : undefined} bold={selectedIndex === otherIndex}>
+                  {selectedIndex === otherIndex ? '> ' : '  '}{isMulti ? '[ ] ' : ''}{OTHER_LABEL}
+                </Text>
               </Box>
-            )
-          })}
-          <Box>
-            <Text color={selectedIndex === otherIndex ? theme.brand : undefined} bold={selectedIndex === otherIndex}>
-              {selectedIndex === otherIndex ? '> ' : '  '}{isMulti ? '[ ] ' : ''}{OTHER_LABEL}
-            </Text>
+            </Box>
+            {hasPreview ? (
+              <Box flexDirection="column" width="58%" borderStyle="single" borderColor={theme.border} paddingX={1}>
+                <Text bold color={theme.toolName}>Preview</Text>
+                <Text color={theme.dimText}>{focusedOption?.preview ?? 'Select an option to preview it.'}</Text>
+              </Box>
+            ) : null}
           </Box>
 
           <Box marginTop={1}>

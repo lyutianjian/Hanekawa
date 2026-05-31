@@ -81,14 +81,17 @@ export interface ExitDialogInput {
    * surfacing bypass to a user who never opted in could downgrade safety.
    */
   isBypassAvailable?: boolean
+  isAutoModeAvailable?: boolean
 }
 
 /** Decision returned by the dialog. */
 export type ExitPlanDecision =
   | { kind: 'approve_restore_keep', planContent?: string }
+  | { kind: 'approve_auto_keep', planContent?: string }
   | { kind: 'approve_acceptEdits_keep', planContent?: string }
   | { kind: 'approve_bypass_keep', planContent?: string }
   | { kind: 'approve_clear_restore_with_plan_as_prompt', planContent?: string }
+  | { kind: 'approve_clear_auto_with_plan_as_prompt', planContent?: string }
   | { kind: 'approve_clear_acceptEdits_with_plan_as_prompt', planContent?: string }
   | { kind: 'approve_clear_bypass_with_plan_as_prompt', planContent?: string }
   | { kind: 'reject', feedback: string }
@@ -315,6 +318,24 @@ export class PlanModeManager {
   }
 
   /**
+   * Safety net for models that finish plan mode by writing the final plan as
+   * ordinary assistant text instead of calling ExitPlanMode. The loop calls
+   * this before that text is persisted as chat, so the existing exit request
+   * pipeline still owns critique, approval UI, and permission-mode changes.
+   */
+  async submitAssistantPlanFallback(planContent: string, turnId?: string): Promise<void> {
+    await this.deps.appendRecord({
+      id: randomUUID(),
+      type: 'plan_mode_request',
+      kind: 'exit',
+      submittedFromSessionId: this.deps.sessionMeta.id,
+      planContent,
+      createdAt: new Date().toISOString(),
+      ...(turnId ? { turnId } : {}),
+    })
+  }
+
+  /**
    * Read records and process any unhandled plan_mode_request entries.
    * Idempotency: a request is "handled" when a plan_mode_outcome record
    * with matching requestId already exists in the stream.
@@ -414,29 +435,10 @@ export class PlanModeManager {
       }
     }
 
-    if (!planContent || planContent.trim().length === 0) {
-      await this.deps.appendRecord({
-        id: randomUUID(),
-        type: 'plan_mode_outcome',
-        kind: 'exit_rejected',
-        requestId: req.id,
-        detail: 'plan-file-empty',
-        createdAt: new Date().toISOString(),
-      })
-      if (this.deps.emitChatMessage) {
-        await this.deps.emitChatMessage(
-          '<system-reminder>ExitPlanMode was called but the plan is empty. Call ExitPlanMode with a complete plan, e.g. ExitPlanMode({ plan: "..." }). You can also write a draft to ' +
-          planFilePath +
-          ' and call ExitPlanMode({}) as a fallback.</system-reminder>',
-        )
-      }
-      return
-    }
-
     // Single critique pass before the dialog. Findings inform the user;
     // they don't gate the dialog.
     let critique: CritiqueResult | undefined
-    if (this.deps.runCritiqueAgent) {
+    if (planContent.trim().length > 0 && this.deps.runCritiqueAgent) {
       try {
         critique = await this.deps.runCritiqueAgent(planContent)
       } catch (err) {
@@ -473,6 +475,7 @@ export class PlanModeManager {
       planFilePath,
       finalCritique: critique,
       isBypassAvailable: this.deps.gate.getPrePlanMode() === 'bypass',
+      isAutoModeAvailable: true,
     })
     await this.dispatchExitDecision(req, planContent, planFilePath, decision)
   }
@@ -507,24 +510,6 @@ export class PlanModeManager {
     // the user edited the plan externally, persist it, then use that same
     // content for the exit attachment and clear-context prompt.
     const approvedPlanContent = decision.planContent ?? planContent
-    if (approvedPlanContent.trim().length === 0) {
-      await this.deps.appendRecord({
-        id: randomUUID(),
-        type: 'plan_mode_outcome',
-        kind: 'exit_rejected',
-        requestId: req.id,
-        detail: 'plan-file-empty',
-        createdAt: new Date().toISOString(),
-      })
-      if (this.deps.emitChatMessage) {
-        await this.deps.emitChatMessage(
-          '<system-reminder>The edited plan is empty. Call ExitPlanMode with a complete inline plan, or write a complete draft to ' +
-          planFilePath +
-          ' before calling ExitPlanMode again.</system-reminder>',
-        )
-      }
-      return
-    }
     try {
       await writePlan(planFilePath, approvedPlanContent)
     } catch {
@@ -544,6 +529,9 @@ export class PlanModeManager {
     if (decision.kind === 'approve_restore_keep') {
       this.deps.gate.setMode('default')
     }
+    if (decision.kind === 'approve_auto_keep') {
+      this.deps.gate.setMode('auto')
+    }
     if (decision.kind === 'approve_acceptEdits_keep') {
       this.deps.gate.setMode('acceptEdits')
     }
@@ -552,6 +540,9 @@ export class PlanModeManager {
     }
     if (decision.kind === 'approve_clear_restore_with_plan_as_prompt') {
       this.deps.gate.setMode('default')
+    }
+    if (decision.kind === 'approve_clear_auto_with_plan_as_prompt') {
+      this.deps.gate.setMode('auto')
     }
     if (decision.kind === 'approve_clear_acceptEdits_with_plan_as_prompt') {
       this.deps.gate.setMode('acceptEdits')
@@ -571,11 +562,12 @@ export class PlanModeManager {
 
     if (
       decision.kind === 'approve_clear_restore_with_plan_as_prompt'
+      || decision.kind === 'approve_clear_auto_with_plan_as_prompt'
       || decision.kind === 'approve_clear_acceptEdits_with_plan_as_prompt'
       || decision.kind === 'approve_clear_bypass_with_plan_as_prompt'
     ) {
       if (this.deps.onClearContextAndReplaceInput) {
-        await this.deps.onClearContextAndReplaceInput(approvedPlanContent)
+        await this.deps.onClearContextAndReplaceInput(`Implement the following plan:\n\n${approvedPlanContent}`)
       }
       this.stopCurrentTurnAfterBeforeTurn = true
     }

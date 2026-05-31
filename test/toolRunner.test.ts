@@ -170,6 +170,31 @@ test('tool runner preserves unbounded tool results exactly', async () => {
   assert.equal(result.content, '0123456789')
 })
 
+test('tool runner persists structured display metadata without changing content', async () => {
+  const tool: Tool = {
+    name: 'summaryTool',
+    description: 'summary',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({
+      ok: true,
+      content: 'line 1\nline 2',
+      metadata: { display: { summary: 'Read 2 lines' } },
+    }),
+  }
+  const runner = new ToolRunner([tool], new PermissionGate(async () => true), {
+    onRecord: async () => {},
+  })
+
+  const result = await runner.run(
+    { id: 'call1', name: 'summaryTool', input: {} },
+    { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+  )
+
+  assert.equal(result.content, 'line 1\nline 2')
+  assert.deepEqual(result.display, { summary: 'Read 2 lines' })
+})
+
 test('tool runner pairs tool_use with aborted tool_result when permission aborts', async () => {
   const tool: Tool = {
     name: 'confirmTool',

@@ -766,6 +766,30 @@ test('PermissionGate plan mode allows exitPlanMode without prompting', async () 
   assert.equal(prompted, false)
 })
 
+test('PermissionGate plan mode allows read-only built-in agents without prompting', async () => {
+  let prompted = false
+  const agentTool: Tool = {
+    name: 'Agent',
+    description: 'Run agent',
+    riskLevel: 'safe',
+    inputSchema: z.object({ subagent_type: z.string(), task: z.string() }).strict(),
+    execute: async () => ({ ok: true, content: '' }),
+  }
+  const gate = new PermissionGate(
+    async () => {
+      prompted = true
+      return false
+    },
+    [],
+    { mode: 'plan' },
+  )
+
+  assert.equal(await gate.approve(agentTool, { subagent_type: 'explore', task: 'inspect' }), true)
+  assert.equal(await gate.approve(agentTool, { subagent_type: 'plan', task: 'design' }), true)
+  assert.equal(await gate.approve(agentTool, { subagent_type: 'custom-writer', task: 'edit' }), false)
+  assert.equal(prompted, false)
+})
+
 test('PermissionGate plan mode allows read-only bash subset', async () => {
   let prompted = false
   const gate = new PermissionGate(

@@ -15,6 +15,13 @@ export const writeFileTool: Tool = {
     content: z.string(),
   }).strict(),
   riskLevel: 'confirm',
+  userFacingName: () => 'Write',
+  getToolUseSummary: filePathSummary,
+  shouldDisplayResult: () => true,
+  getActivityDescription(input) {
+    const filePath = filePathSummary(input)
+    return filePath ? `Writing ${filePath}` : 'Writing file'
+  },
   async execute(input, context) {
     const { filePath, content } = input as { filePath: string; content: string }
     const absolute = assertInsideCwd(context.cwd, filePath)
@@ -53,8 +60,23 @@ export const writeFileTool: Tool = {
     await writeFile(tmpPath, content, 'utf8')
     await rename(tmpPath, absolute)
     await rememberReadFile(absolute, content, context)
-    return { ok: true, content: `Wrote ${filePath}` }
+    return {
+      ok: true,
+      content: `Wrote ${filePath}`,
+      metadata: {
+        display: {
+          summary: exists ? `Overwrote ${filePath}` : `Created ${filePath}`,
+        },
+      },
+    }
   },
+}
+
+function filePathSummary(input: unknown): string | null {
+  const filePath = typeof input === 'object' && input !== null
+    ? (input as { filePath?: unknown }).filePath
+    : undefined
+  return typeof filePath === 'string' ? filePath : null
 }
 
 async function detectCaseInsensitiveNameConflict(absolute: string, filePath: string): Promise<ToolResult | undefined> {

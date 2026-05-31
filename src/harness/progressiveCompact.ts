@@ -15,6 +15,7 @@ export interface ProgressiveCompactInput {
   contextManagement?: Partial<ContextManagementConfig>
   system?: string
   lastResponseTokenCount?: number
+  lastResponseRecordId?: string
   lastResponseRecordCount?: number
 }
 
@@ -69,7 +70,15 @@ export function estimateCurrentTokens(input: ProgressiveCompactInput): number {
     return countSessionRecordsTokens(getRecordsAfterLastCompact(input.records), input.system)
   }
 
-  return input.lastResponseTokenCount + countPendingRecordTokens(input.records, input.lastResponseRecordCount)
+  const pendingTokens = countPendingRecordTokens(
+    input.records,
+    input.lastResponseRecordId,
+    input.lastResponseRecordCount,
+  )
+  if (pendingTokens === undefined) {
+    return countSessionRecordsTokens(getRecordsAfterLastCompact(input.records), input.system)
+  }
+  return input.lastResponseTokenCount + pendingTokens
 }
 
 function microCompactToolResults(
@@ -202,10 +211,17 @@ function getToolResultCandidates(records: SessionRecord[]): ToolResultCandidate[
     .filter((candidate): candidate is ToolResultCandidate => candidate !== undefined)
 }
 
-function countPendingRecordTokens(records: SessionRecord[], lastResponseRecordCount?: number): number {
-  if (lastResponseRecordCount === undefined) return 0
+function countPendingRecordTokens(
+  records: SessionRecord[],
+  lastResponseRecordId?: string,
+  lastResponseRecordCount?: number,
+): number | undefined {
+  if (lastResponseRecordId === undefined && lastResponseRecordCount === undefined) return 0
 
-  const pendingRecords = records.slice(lastResponseRecordCount)
+  const boundaryIndex = findLastResponseBoundaryIndex(records, lastResponseRecordId, lastResponseRecordCount)
+  if (boundaryIndex === undefined) return undefined
+
+  const pendingRecords = records.slice(boundaryIndex + 1)
   let skippedResponseMessage = false
   return pendingRecords.reduce((sum, record) => {
     if (!skippedResponseMessage && record.type === 'message' && record.role === 'assistant') {
@@ -214,6 +230,20 @@ function countPendingRecordTokens(records: SessionRecord[], lastResponseRecordCo
     }
     return sum + countSessionRecordsTokens([record])
   }, 0)
+}
+
+function findLastResponseBoundaryIndex(
+  records: SessionRecord[],
+  lastResponseRecordId?: string,
+  lastResponseRecordCount?: number,
+): number | undefined {
+  if (lastResponseRecordId) {
+    const index = records.findIndex((record) => record.id === lastResponseRecordId)
+    return index >= 0 ? index : undefined
+  }
+
+  if (lastResponseRecordCount === undefined) return undefined
+  return lastResponseRecordCount - 1
 }
 
 function splitIntoConversationSegments(records: SessionRecord[]): ConversationSegment[] {

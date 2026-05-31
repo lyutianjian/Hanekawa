@@ -31,11 +31,11 @@ export function shouldIgnoreShortcutInput(state: {
 }
 
 export function isPermissionModeCycleKey(key: Key): boolean {
-  return key.tab === true
+  return key.tab === true && key.shift === true
 }
 
-export function permissionModeCycleDirection(key: Key): 1 | -1 {
-  return key.shift === true ? -1 : 1
+export function permissionModeCycleDirection(_key: Key): 1 | -1 {
+  return 1
 }
 
 export interface KeyboardShortcutState {
@@ -109,64 +109,64 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
       // dialog) is on screen; those components own their keyboard input.
       if (shouldIgnoreShortcutInput({ isPermissionVisible, isRestoreMode })) return
 
-      // Clear hint on any key press
       if (hintMessage) {
         clearHint()
       }
 
-      // --- Tab / Shift+Tab: cycle permission mode forward/backward ---
+      // --- Shift+Tab: cycle permission mode ---
       if (isPermissionModeCycleKey(key)) {
         onCyclePermissionMode(permissionModeCycleDirection(key))
         return
       }
 
+      // Plain Tab is reserved for future input features and should not insert
+      // a literal tab into the prompt.
+      if (key.tab) {
+        return
+      }
+
       // --- Escape key ---
       if (key.escape) {
-        // When streaming: immediately interrupt (no double-tap wait)
         if (isStreaming) {
           onInterrupt()
           return
         }
-
-        // When idle: use double-tap detection
-        const result = escapeDetectorRef.current?.tap('escape', () => {
-          // Single-tap callback (fires after window expires): clear input text
-          setText('')
-          setCursorPos(0)
-        })
-
+        const result = escapeDetectorRef.current?.tap('escape', () => {})
         if (result === 'double') {
-          // Double-tap: enter restore mode
           onEnterRestoreMode()
+          return
         }
+        setText('')
+        setCursorPos(0)
         return
       }
 
       // --- Ctrl+C ---
       if (key.ctrl && input === 'c') {
-        // When streaming: immediately interrupt (no double-tap wait)
-        if (isStreaming) {
-          onInterrupt()
+        if (!isStreaming && text.length > 0) {
+          ctrlCDetectorRef.current?.cancel()
+          setText('')
+          setCursorPos(0)
+          showHint('Input cleared. Press Ctrl+C twice to exit')
           return
         }
 
-        // When idle: use double-tap detection
-        const currentText = text
-        const result = ctrlCDetectorRef.current?.tap('ctrl+c', () => {
-          // Single-tap callback (fires after window expires)
-          if (currentText === '') {
-            // Empty input: show hint
-            showHint('Press Ctrl+C again to exit')
-          } else {
-            // Non-empty input: clear text
-            setText('')
-            setCursorPos(0)
-          }
-        })
-
+        const result = ctrlCDetectorRef.current?.tap('ctrl+c', () => {})
         if (result === 'double') {
-          // Double-tap: exit application
           onExit()
+          return
+        }
+
+        if (isStreaming) {
+          onInterrupt()
+          showHint('Press Ctrl+C again to exit')
+          return
+        }
+
+        if (!isStreaming) {
+          setText('')
+          setCursorPos(0)
+          showHint('Press Ctrl+C again to exit')
         }
         return
       }

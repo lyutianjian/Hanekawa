@@ -14,13 +14,19 @@ interface UseCommandsOptions {
   model: CommandModelInfo
   setModel: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
   pricing?: ModelPricing
-  usage: { current: TokenUsage | null; total: TokenUsage }
+  usage: { lastTurn: TokenUsage | null; total: TokenUsage }
   addSystemMessage: (content: string) => void
   clearMessages: () => void | Promise<void>
   clearCachedSections?: () => void
   invalidateRecordsCache?: () => void
   runVerification?: (args: string) => Promise<string>
   reloadAgentDefinitions?: () => Promise<number>
+  getPermissionMode?: () => string
+  setPermissionMode?: (mode: string) => void | Promise<void>
+  enterPlanMode?: () => void | Promise<void>
+  readPlanFile?: () => Promise<{ path: string; content: string | null }>
+  openPlanFile?: () => Promise<{ message: string }>
+  submitQuery?: (input: string) => Promise<void>
 }
 
 export function useCommands({
@@ -37,6 +43,12 @@ export function useCommands({
   invalidateRecordsCache,
   runVerification,
   reloadAgentDefinitions,
+  getPermissionMode,
+  setPermissionMode,
+  enterPlanMode,
+  readPlanFile,
+  openPlanFile,
+  submitQuery,
 }: UseCommandsOptions) {
   const { exit } = useApp()
 
@@ -72,6 +84,18 @@ export function useCommands({
   runVerificationRef.current = runVerification
   const reloadAgentDefinitionsRef = useRef(reloadAgentDefinitions)
   reloadAgentDefinitionsRef.current = reloadAgentDefinitions
+  const getPermissionModeRef = useRef(getPermissionMode)
+  getPermissionModeRef.current = getPermissionMode
+  const setPermissionModeRef = useRef(setPermissionMode)
+  setPermissionModeRef.current = setPermissionMode
+  const enterPlanModeRef = useRef(enterPlanMode)
+  enterPlanModeRef.current = enterPlanMode
+  const readPlanFileRef = useRef(readPlanFile)
+  readPlanFileRef.current = readPlanFile
+  const openPlanFileRef = useRef(openPlanFile)
+  openPlanFileRef.current = openPlanFile
+  const submitQueryRef = useRef(submitQuery)
+  submitQueryRef.current = submitQuery
   const storeRef = useRef(store)
   storeRef.current = store
   const cwdRef = useRef(cwd)
@@ -126,6 +150,12 @@ export function useCommands({
         setModel: (m) => setModelRef.current(m),
         runVerification: runVerificationRef.current,
         reloadAgentDefinitions: reloadAgentDefinitionsRef.current,
+        getPermissionMode: getPermissionModeRef.current,
+        setPermissionMode: setPermissionModeRef.current,
+        enterPlanMode: enterPlanModeRef.current,
+        readPlanFile: readPlanFileRef.current,
+        openPlanFile: openPlanFileRef.current,
+        submitQuery: submitQueryRef.current,
       }
 
       try {

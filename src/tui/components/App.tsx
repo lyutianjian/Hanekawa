@@ -1,9 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { Box } from 'ink'
 import type { AgentLoop } from '../../harness/loop.js'
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
 import type { PermissionGate, PermissionMode } from '../../harness/permissions.js'
+import type { PlanModeManager } from '../../harness/planModeManager.js'
 import type { ModelConfig } from '../../config/service.js'
 import type { SessionRecord } from '../../harness/types.js'
 import type { SetModelResult } from '../../commands/types.js'
@@ -23,15 +25,23 @@ import { StatusLine } from './StatusLine.js'
 import { WelcomeBanner } from './WelcomeBanner.js'
 import { RestoreMode } from './RestoreMode.js'
 import { invalidateResolvedCwdCache } from '../../utils/paths.js'
+import { readPlan } from '../../utils/plans.js'
+import { applyPermissionModeTransition, nextPermissionMode } from '../permissionMode.js'
+import { ExitPlanModeDialog } from './ExitPlanModeDialog.js'
+import { EnterPlanModeDialog } from './EnterPlanModeDialog.js'
+import { AskUserQuestionDialog } from './AskUserQuestionDialog.js'
+import { useExitPlanPermission, type ExitPlanPromptProxy } from '../hooks/useExitPlanPermission.js'
+import { useEnterPlanPermission, type EnterPlanPromptProxy } from '../hooks/useEnterPlanPermission.js'
+import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
 
 export type AppMode = 'idle' | 'running' | 'restore' | 'exiting'
 
 const ABORT_TIMEOUT_MS = 2000
 const VERIFICATION_TASK_MAX_CHARS = 60_000
-const PERMISSION_MODES: readonly PermissionMode[] = ['bypass', 'auto', 'acceptEdits', 'default', 'plan']
 
 export interface AppRuntime {
   loop: AgentLoop
+  planModeManager: PlanModeManager
   modelKey: string
   modelConfig: ModelConfig
   providerName: string
@@ -40,6 +50,7 @@ export interface AppRuntime {
 
 interface AppProps {
   loop: AgentLoop
+  planModeManager: PlanModeManager
   modelKey: string
   store: SessionStore
   session: SessionMeta
@@ -51,6 +62,9 @@ interface AppProps {
   permissionGate: PermissionGate
   promptProxy: PermissionPromptProxy
   recordProxy: RecordProxy
+  exitPlanProxy: ExitPlanPromptProxy
+  enterPlanProxy: EnterPlanPromptProxy
+  askUserQuestionProxy: AskUserQuestionProxy
   existingRecords: SessionRecord[]
   initialSystemMessages?: TUIDisplayItem[]
   onBeforeExit?: () => Promise<void>
@@ -60,6 +74,7 @@ interface AppProps {
 
 export function App({
   loop: initialLoop,
+  planModeManager: initialPlanModeManager,
   modelKey: initialModelKey,
   store,
   session: initialSession,
@@ -71,6 +86,9 @@ export function App({
   permissionGate,
   promptProxy,
   recordProxy,
+  exitPlanProxy,
+  enterPlanProxy,
+  askUserQuestionProxy,
   existingRecords,
   initialSystemMessages,
   onBeforeExit,
@@ -81,6 +99,7 @@ export function App({
   const [activeSession, setActiveSession] = useState<SessionMeta>(initialSession)
   const [runtime, setRuntime] = useState<AppRuntime>(() => ({
     loop: initialLoop,
+    planModeManager: initialPlanModeManager,
     modelKey: initialModelKey,
     modelConfig: initialModelConfig,
     providerName: initialProviderName,
@@ -94,8 +113,12 @@ export function App({
   const checkpointServiceRef = useRef<CheckpointService>(
     new CheckpointService(process.cwd(), initialSession.id),
   )
+  const [queuedPromptAfterClear, setQueuedPromptAfterClear] = useState<string | null>(null)
 
   const { permState, respond, setActiveRequest, denyPending } = usePermission(promptProxy)
+  const exitPlan = useExitPlanPermission(exitPlanProxy)
+  const enterPlan = useEnterPlanPermission(enterPlanProxy)
+  const askUserQuestion = useAskUserQuestionPermission(askUserQuestionProxy)
 
   const replaceRuntime = useCallback((nextRuntime: AppRuntime) => {
     const previousRuntime = runtimeRef.current
@@ -132,6 +155,7 @@ export function App({
       return {
         ...nextRuntime,
         loop: current.loop,
+        planModeManager: current.planModeManager,
         dispose: current.dispose,
       }
     })
@@ -184,6 +208,22 @@ export function App({
     setCheckpoints([])
     setMessages([])
   }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, setMessages])
+
+  const submitPlainInput = useCallback(async (text: string) => {
+    setMode('running')
+    try {
+      await submit(text)
+    } finally {
+      setMode('idle')
+    }
+  }, [submit])
+
+  useEffect(() => {
+    if (!queuedPromptAfterClear || isStreaming || mode !== 'idle') return
+    const prompt = queuedPromptAfterClear
+    setQueuedPromptAfterClear(null)
+    void submitPlainInput(prompt)
+  }, [queuedPromptAfterClear, isStreaming, mode, submitPlainInput])
 
   const switchModel = useCallback((modelKey: string): SetModelResult => {
     if (!availableModelKeys.includes(modelKey)) {
@@ -265,14 +305,45 @@ export function App({
 
   const cyclePermissionMode = useCallback((direction: 1 | -1) => {
     setPermissionModeState((currentMode) => {
-      const index = PERMISSION_MODES.indexOf(currentMode)
-      const normalizedIndex = index >= 0 ? index : PERMISSION_MODES.indexOf('default')
-      const nextIndex = (normalizedIndex + direction + PERMISSION_MODES.length) % PERMISSION_MODES.length
-      const nextMode = PERMISSION_MODES[nextIndex] ?? 'default'
-      permissionGate.setMode(nextMode)
-      return nextMode
+      const nextMode = nextPermissionMode(currentMode, direction)
+      return applyPermissionModeTransition(permissionGate, runtimeRef.current.planModeManager, nextMode)
     })
   }, [permissionGate])
+
+  useEffect(() => {
+    runtime.planModeManager.setUiDeps({
+      emitChatMessage: async (content) => addSystemMessage(content),
+      openEnterPrompt: enterPlanProxy.open,
+      openExitDialog: exitPlanProxy.open,
+      onClearContextAndReplaceInput: async (content) => {
+        await clearConversation()
+        setQueuedPromptAfterClear(content)
+      },
+    })
+  }, [runtime.planModeManager, addSystemMessage, enterPlanProxy, exitPlanProxy, clearConversation])
+
+  const readCurrentPlanFile = useCallback(async () => {
+    const path = runtimeRef.current.planModeManager.resolvePlanFilePathLazy()
+    return { path, content: await readPlan(path) }
+  }, [])
+
+  const openCurrentPlanFile = useCallback(async (): Promise<{ message: string }> => {
+    const { path } = await readCurrentPlanFile()
+    const editor = process.env.VISUAL || process.env.EDITOR || (process.platform === 'win32' ? 'notepad' : 'nano')
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(editor, [path], { stdio: 'inherit' })
+        child.on('error', reject)
+        child.on('exit', (code) => {
+          if (code === 0 || code === null) resolve()
+          else reject(new Error(`editor exited with code ${code}`))
+        })
+      })
+      return { message: `Opened plan in editor: ${path}` }
+    } catch (error) {
+      return { message: `Failed to open plan in editor: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  }, [readCurrentPlanFile])
 
   const { dispatch } = useCommands({
     store,
@@ -292,6 +363,21 @@ export function App({
     invalidateRecordsCache: () => runtime.loop.invalidateRecordsCache(),
     runVerification,
     reloadAgentDefinitions,
+    getPermissionMode: () => permissionGate.getMode(),
+    setPermissionMode: (mode) => {
+      const nextMode = mode as PermissionMode
+      const actualMode = nextMode === 'plan'
+        ? applyPermissionModeTransition(permissionGate, runtimeRef.current.planModeManager, 'plan')
+        : (permissionGate.setMode(nextMode), permissionGate.getMode())
+      setPermissionModeState(actualMode)
+    },
+    enterPlanMode: () => {
+      const mode = applyPermissionModeTransition(permissionGate, runtimeRef.current.planModeManager, 'plan')
+      setPermissionModeState(mode)
+    },
+    readPlanFile: readCurrentPlanFile,
+    openPlanFile: openCurrentPlanFile,
+    submitQuery: submitPlainInput,
   })
 
   const handleSubmit = useCallback(async (text: string) => {
@@ -299,13 +385,8 @@ export function App({
       await dispatch(text)
       return
     }
-    setMode('running')
-    try {
-      await submit(text)
-    } finally {
-      setMode('idle')
-    }
-  }, [dispatch, submit, setMode])
+    await submitPlainInput(text)
+  }, [dispatch, submitPlainInput])
 
   const handleInterrupt = useCallback(() => {
     // Signal the AbortController to abort the agent loop
@@ -450,7 +531,13 @@ export function App({
       {/* Message list */}
       <MessageList
         items={messages}
-        isOverlayActive={permState.visible || mode === 'restore'}
+        isOverlayActive={
+          permState.visible
+          || exitPlan.state.visible
+          || enterPlan.state.visible
+          || askUserQuestion.state.visible
+          || mode === 'restore'
+        }
       />
 
       {/* Spinner during streaming */}
@@ -459,6 +546,26 @@ export function App({
       {/* Permission dialog */}
       {permState.visible && (
         <PermissionDialog permState={permState} respond={respond} setActiveRequest={setActiveRequest} />
+      )}
+
+      {enterPlan.state.visible && enterPlan.state.request && (
+        <EnterPlanModeDialog
+          onResolve={(approved) => enterPlan.respond(enterPlan.state.request!.id, approved)}
+        />
+      )}
+
+      {exitPlan.state.visible && exitPlan.state.request && (
+        <ExitPlanModeDialog
+          {...exitPlan.state.request.input}
+          onResolve={(decision) => exitPlan.respond(exitPlan.state.request!.id, decision)}
+        />
+      )}
+
+      {askUserQuestion.state.visible && askUserQuestion.state.request && (
+        <AskUserQuestionDialog
+          request={askUserQuestion.state.request.input}
+          onResolve={(result) => askUserQuestion.respond(askUserQuestion.state.request!.id, result)}
+        />
       )}
 
       {/* Restore mode overlay */}
@@ -475,7 +582,13 @@ export function App({
         <InputBox
           text={text}
           cursorPos={cursorPos}
-          disabled={isStreaming || permState.visible}
+          disabled={
+            isStreaming
+            || permState.visible
+            || exitPlan.state.visible
+            || enterPlan.state.visible
+            || askUserQuestion.state.visible
+          }
         />
       )}
 

@@ -87,6 +87,20 @@ export const bashTool: Tool = {
   riskLevel: 'dangerous',
   isDestructive: true,
   maxResultSizeChars: 100_000,
+  userFacingName: () => 'Bash',
+  getToolUseSummary(input) {
+    const command = typeof input === 'object' && input !== null
+      ? (input as { command?: unknown }).command
+      : undefined
+    return typeof command === 'string' ? summarizeCommand(command) : null
+  },
+  getActivityDescription(input) {
+    const command = typeof input === 'object' && input !== null
+      ? (input as { command?: unknown }).command
+      : undefined
+    return typeof command === 'string' ? `Running ${summarizeCommand(command)}` : 'Running command'
+  },
+  shouldDisplayResult: () => true,
   async execute(input, context) {
     const options = input as BashInput
     const timeout = options.timeout ?? 30_000
@@ -199,4 +213,18 @@ export const bashTool: Tool = {
       })
     })
   },
+}
+
+function summarizeCommand(command: string): string {
+  const trimmed = command.trim()
+  const lines = trimmed.split(/\r?\n/)
+  const visible = lines.slice(0, 2).join('\n')
+  const suffix = lines.length > 2 ? '...' : ''
+  return truncateMiddle(`${visible}${suffix}`, 120)
+}
+
+function truncateMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  const keep = Math.max(1, Math.floor((maxLength - 3) / 2))
+  return `${value.slice(0, keep)}...${value.slice(value.length - keep)}`
 }

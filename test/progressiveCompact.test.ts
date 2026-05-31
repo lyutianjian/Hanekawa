@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyProgressiveCompaction } from '../src/harness/progressiveCompact.js'
+import { applyProgressiveCompaction, estimateCurrentTokens } from '../src/harness/progressiveCompact.js'
 import type { SessionRecord } from '../src/harness/types.js'
 
 function userTurn(index: number, content = `user ${index}`): SessionRecord {
@@ -148,6 +148,43 @@ test('applyProgressiveCompaction snips middle turns after microcompact cannot re
   assert.ok(result.records.some((record) => record.id === 'user-7'))
   assert.ok(result.records.some((record) => record.id === 'user-9'))
   assert.equal(result.records.some((record) => record.id === 'user-4'), false)
+})
+
+test('estimateCurrentTokens uses last response record id when record count is stale', () => {
+  const records: SessionRecord[] = [
+    userTurn(0),
+    assistantTurn(0),
+    {
+      type: 'tool_approval',
+      id: 'approval-inserted-before-boundary',
+      tool: 'Read',
+      input: { file: 'example.ts' },
+      approved: true,
+      riskLevel: 'safe',
+      createdAt: '2026-05-10T00:01:30.000Z',
+    },
+    userTurn(1, 'already included in provider usage '.repeat(200)),
+    assistantTurn(1, 'already counted by output usage '.repeat(500)),
+    {
+      type: 'tool_result',
+      id: 'result-pending',
+      toolUseId: 'call-pending',
+      tool: 'Read',
+      ok: true,
+      content: 'small pending output',
+      _tokens: 7,
+      createdAt: '2026-05-10T00:04:00.000Z',
+    },
+  ]
+
+  const tokenCount = estimateCurrentTokens({
+    records,
+    lastResponseTokenCount: 100,
+    lastResponseRecordCount: 3,
+    lastResponseRecordId: 'user-1',
+  })
+
+  assert.equal(tokenCount, 107)
 })
 
 function toolResultContent(records: SessionRecord[], id: string): string {

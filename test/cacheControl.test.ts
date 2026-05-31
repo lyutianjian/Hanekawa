@@ -1,45 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  getCacheBreakpointIndexes,
   addCacheBreakpoints,
   getCacheControl,
   resetCacheTTLEvaluation,
   should1hCacheTTL,
 } from '../src/harness/cacheControl.js'
-
-test('getCacheBreakpointIndexes returns empty set for 0 messages', () => {
-  const indexes = getCacheBreakpointIndexes(0, 4)
-  assert.equal(indexes.size, 0)
-})
-
-test('getCacheBreakpointIndexes returns only last index for 1 message', () => {
-  const indexes = getCacheBreakpointIndexes(1, 4)
-  assert.deepEqual([...indexes], [0])
-})
-
-test('getCacheBreakpointIndexes returns only the last index for small arrays', () => {
-  const indexes = getCacheBreakpointIndexes(3, 4)
-  assert.deepEqual([...indexes], [2])
-})
-
-test('getCacheBreakpointIndexes returns only the last index for long arrays', () => {
-  const indexes = getCacheBreakpointIndexes(12, 4)
-  assert.deepEqual([...indexes], [11])
-})
-
-test('getCacheBreakpointIndexes always includes last index', () => {
-  for (let count = 1; count <= 20; count++) {
-    const indexes = getCacheBreakpointIndexes(count, 4)
-    assert.ok(indexes.has(count - 1), `should include index ${count - 1} for count=${count}`)
-  }
-})
-
-test('getCacheBreakpointIndexes deduplicates when last index aligns with step', () => {
-  // 5 messages with step 4: positions [0] then add(4) → [0, 4]
-  const indexes = getCacheBreakpointIndexes(5, 4)
-  assert.deepEqual([...indexes], [4])
-})
 
 test('addCacheBreakpoints marks only the final message with cache_control', () => {
   const messages = Array.from({ length: 9 }, (_, i) => ({
@@ -49,7 +15,6 @@ test('addCacheBreakpoints marks only the final message with cache_control', () =
 
   const result = addCacheBreakpoints(messages, true, { env: {} })
 
-  // Should have breakpoints at indexes 0, 4, 8
   const cachedIndexes: number[] = []
   for (let i = 0; i < result.length; i++) {
     const content = result[i]?.content as Array<Record<string, unknown>>

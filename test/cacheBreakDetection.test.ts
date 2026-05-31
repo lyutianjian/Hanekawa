@@ -69,7 +69,7 @@ test('resetCacheBreakDetection clears history', () => {
 
 test('formatCacheHitRate shows percentage', () => {
   const result = formatCacheHitRate({ inputTokens: 1000, cacheReadInputTokens: 4000, outputTokens: 500 })
-  assert.equal(result, 'cache: 80% hit (4000/5000 tokens)')
+  assert.equal(result, 'cache: 80% hit')
 })
 
 test('formatCacheHitRate shows n/a for zero tokens', () => {

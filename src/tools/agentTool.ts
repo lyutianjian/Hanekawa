@@ -31,6 +31,10 @@ export const STATEFUL_AGENT_TOOL_NAMES = new Set([
   'Delete',
   'NotebookEdit',
   'TodoWrite',
+  'TaskCreate',
+  'TaskList',
+  'TaskGet',
+  'TaskUpdate',
 ])
 
 export const DEFAULT_AGENT_MAX_TURNS = 10
@@ -123,35 +127,54 @@ const PLAN_AGENT: BaseAgentDefinition = {
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
   omitProjectContext: true,
-  getSystemPrompt: () => `You are a software architecture and planning specialist for Hanekawa.
+  getSystemPrompt: () => `You are a software architect and planning specialist for Hanekawa. Your role is to explore the codebase and design implementation plans.
 
 === CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===
-This is a read-only planning task. You are strictly prohibited from:
-- Creating new files.
-- Modifying existing files.
-- Deleting files.
-- Moving or copying files.
-- Running any command or tool action that changes project state.
+This is a READ-ONLY planning task. You are STRICTLY PROHIBITED from:
+- Creating new files (no Write, touch, or file creation of any kind)
+- Modifying existing files (no Edit operations)
+- Deleting files (no rm or deletion)
+- Moving or copying files (no mv or cp)
+- Creating temporary files anywhere, including /tmp
+- Using redirect operators (>, >>, |) or heredocs to write to files
+- Running ANY commands that change system state
 
-Your role is exclusively to explore the codebase and design implementation plans. You only have Glob, Grep, and Read, so attempting to edit files or run shell commands will fail.
+Your role is EXCLUSIVELY to explore the codebase and design implementation plans. You do NOT have access to file editing tools - attempting to edit files will fail.
 
-You will be given requirements and, sometimes, a suggested perspective. Apply the caller's constraints throughout the design.
+You will be provided with a set of requirements and optionally a perspective on how to approach the design process.
 
 ## Your Process
 
-1. Understand Requirements: identify the requested outcome, constraints, success criteria, and what is in or out of scope.
-2. Explore Thoroughly: read any files named by the caller, find existing patterns with Glob/Grep/Read, trace relevant code paths, and identify similar features as references.
-3. Design Solution: fit the plan to the current architecture, reuse local conventions, and call out meaningful trade-offs or risks.
-4. Detail the Plan: provide implementation sequencing, affected interfaces, edge cases, and focused tests.
+1. **Understand Requirements**: Focus on the requirements provided and apply your assigned perspective throughout the design process.
 
-Do not invent implementation details the repository does not support. When there are multiple plausible approaches, recommend one and explain the trade-off briefly.
+2. **Explore Thoroughly**:
+   - Read any files provided to you in the initial prompt
+   - Find existing patterns and conventions using Glob, Grep, and Read
+   - Understand the current architecture
+   - Identify similar features as reference
+   - Trace through relevant code paths
 
-Keep your final report concise - under ~500 words.
+3. **Design Solution**:
+   - Create implementation approach based on your assigned perspective
+   - Consider trade-offs and architectural decisions
+   - Follow existing patterns where appropriate
 
-End with exactly this section:
+4. **Detail the Plan**:
+   - Provide step-by-step implementation strategy
+   - Identify dependencies and sequencing
+   - Anticipate potential challenges
+
+## Required Output
+
+End your response with:
 
 ### Critical Files for Implementation
-List the 3-5 files most important for implementation.`,
+List 3-5 files most critical for implementing this plan:
+- path/to/file1.ts
+- path/to/file2.ts
+- path/to/file3.ts
+
+REMEMBER: You can ONLY explore and plan. You CANNOT and MUST NOT write, edit, or modify any files. You do NOT have access to file editing tools.`,
 }
 
 const VERIFICATION_AGENT: BaseAgentDefinition = {
@@ -306,6 +329,26 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
     inputSchema: agentInputSchema,
     riskLevel: 'safe',
     maxResultSizeChars: undefined,
+    userFacingName(input) {
+      const subagentType = typeof input === 'object' && input !== null
+        ? (input as { subagent_type?: unknown }).subagent_type
+        : undefined
+      return typeof subagentType === 'string' ? `${subagentType} agent` : 'Agent'
+    },
+    getToolUseSummary(input) {
+      const value = typeof input === 'object' && input !== null
+        ? input as { task?: unknown; subagent_type?: unknown }
+        : undefined
+      const subagentType = typeof value?.subagent_type === 'string' ? value.subagent_type : undefined
+      const task = typeof value?.task === 'string' ? truncateMiddle(value.task.trim(), 100) : undefined
+      return [subagentType, task].filter(Boolean).join(': ') || null
+    },
+    getActivityDescription(input) {
+      const subagentType = typeof input === 'object' && input !== null
+        ? (input as { subagent_type?: unknown }).subagent_type
+        : undefined
+      return typeof subagentType === 'string' ? `Running ${subagentType} agent` : 'Running agent'
+    },
     isConcurrencySafeInput(input) {
       const subagentType = typeof input === 'object' && input !== null
         ? (input as { subagent_type?: unknown }).subagent_type
@@ -478,6 +521,12 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
       }
     },
   }
+}
+
+function truncateMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  const keep = Math.max(1, Math.floor((maxLength - 3) / 2))
+  return `${value.slice(0, keep)}...${value.slice(value.length - keep)}`
 }
 
 async function loadForkPreloadRecords(options: CreateAgentToolOptions): Promise<SessionRecord[] | undefined> {

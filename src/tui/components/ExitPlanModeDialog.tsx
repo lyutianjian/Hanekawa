@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Box, Text, useInput, useStdout } from '../ink.js'
+import { Box, Text, useInput } from '../ink.js'
 import { spawn } from 'node:child_process'
 import { theme } from '../theme.js'
 import { Markdown } from './Markdown.js'
@@ -19,6 +19,7 @@ export interface ExitPlanModeDialogProps {
    * the user explicitly opted into bypass before entering plan mode.
    */
   isBypassAvailable?: boolean
+  isAutoModeAvailable?: boolean
   onResolve(decision: ExitPlanDecision): void
 }
 
@@ -35,11 +36,21 @@ export interface DecisionOption {
  * Hotkeys are assigned by index 1..N in render order so the labels stay
  * consistent without per-option metadata.
  */
-export function buildExitPlanModeOptions(isBypassAvailable: boolean): readonly DecisionOption[] {
+export function buildExitPlanModeOptions(input: boolean | {
+  isBypassAvailable?: boolean
+  isAutoModeAvailable?: boolean
+}): readonly DecisionOption[] {
+  const isBypassAvailable = typeof input === 'boolean' ? input : input.isBypassAvailable === true
+  const isAutoModeAvailable = typeof input === 'boolean' ? true : input.isAutoModeAvailable !== false
   const options: DecisionOption[] = []
 
-  // Slot 1: clear-context approvals. Bypass replaces auto-accept when available.
-  if (isBypassAvailable) {
+  // Slot 1: clear-context approvals. ClaudeCode priority: auto > bypass > accept-edits.
+  if (isAutoModeAvailable) {
+    options.push({
+      kind: 'approve_clear_auto_with_plan_as_prompt',
+      label: 'Yes, clear context and use auto mode',
+    })
+  } else if (isBypassAvailable) {
     options.push({
       kind: 'approve_clear_bypass_with_plan_as_prompt',
       label: 'Yes, clear context and bypass permissions',
@@ -52,7 +63,12 @@ export function buildExitPlanModeOptions(isBypassAvailable: boolean): readonly D
   }
 
   // Slot 2: keep-context with elevated mode.
-  if (isBypassAvailable) {
+  if (isAutoModeAvailable) {
+    options.push({
+      kind: 'approve_auto_keep',
+      label: 'Yes, and use auto mode',
+    })
+  } else if (isBypassAvailable) {
     options.push({
       kind: 'approve_bypass_keep',
       label: 'Yes, and bypass permissions',
@@ -79,19 +95,30 @@ export function buildExitPlanModeOptions(isBypassAvailable: boolean): readonly D
   return options
 }
 
-type ElevatedExitPlanModeDecision = 'approve_bypass_keep' | 'approve_acceptEdits_keep'
+type ElevatedExitPlanModeDecision = 'approve_auto_keep' | 'approve_bypass_keep' | 'approve_acceptEdits_keep'
 
-export function elevatedExitPlanModeDecision(isBypassAvailable: boolean): ElevatedExitPlanModeDecision {
+export function elevatedExitPlanModeDecision(input: boolean | {
+  isBypassAvailable?: boolean
+  isAutoModeAvailable?: boolean
+}): ElevatedExitPlanModeDecision {
+  const isBypassAvailable = typeof input === 'boolean' ? input : input.isBypassAvailable === true
+  const isAutoModeAvailable = typeof input === 'boolean' ? true : input.isAutoModeAvailable !== false
+  if (isAutoModeAvailable) return 'approve_auto_keep'
   return isBypassAvailable ? 'approve_bypass_keep' : 'approve_acceptEdits_keep'
 }
 
 const SAVE_MESSAGE_TIMEOUT_MS = 5000
-const DEFAULT_TERMINAL_ROWS = 24
-const RESERVED_DIALOG_ROWS = 16
-const RESERVED_CRITIQUE_ROWS = 4
-const MIN_PLAN_PREVIEW_LINES = 4
-const MAX_PLAN_PREVIEW_LINES = 24
 const MAX_CRITIQUE_PREVIEW_LINES = 6
+const PLAN_BORDER_STYLE = {
+  topLeft: '-',
+  top: '-',
+  topRight: '-',
+  bottomLeft: '-',
+  bottom: '-',
+  bottomRight: '-',
+  left: '|',
+  right: '|',
+} as const
 
 export function previewMarkdownLines(content: string, maxLines: number): string {
   const lines = content.split(/\r?\n/)
@@ -118,28 +145,18 @@ export function ExitPlanModeDialog({
   planFilePath,
   finalCritique,
   isBypassAvailable = false,
+  isAutoModeAvailable = true,
   onResolve,
 }: ExitPlanModeDialogProps) {
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [planContent, setPlanContent] = useState(initialPlanContent)
-  const [feedbackMode, setFeedbackMode] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [editorError, setEditorError] = useState<string | null>(null)
   const [showSaveMessage, setShowSaveMessage] = useState(false)
 
-  const options = useMemo(() => buildExitPlanModeOptions(isBypassAvailable), [isBypassAvailable])
-  const { stdout } = useStdout()
-  const terminalRows = stdout.rows || DEFAULT_TERMINAL_ROWS
-  const maxPlanPreviewLines = Math.max(
-    MIN_PLAN_PREVIEW_LINES,
-    Math.min(
-      MAX_PLAN_PREVIEW_LINES,
-      terminalRows - RESERVED_DIALOG_ROWS - (finalCritique ? RESERVED_CRITIQUE_ROWS : 0),
-    ),
-  )
-  const planPreview = useMemo(
-    () => previewMarkdownLines(planContent, maxPlanPreviewLines),
-    [planContent, maxPlanPreviewLines],
+  const options = useMemo(
+    () => buildExitPlanModeOptions({ isBypassAvailable, isAutoModeAvailable }),
+    [isBypassAvailable, isAutoModeAvailable],
   )
   const critiquePreview = useMemo(
     () => finalCritique
@@ -151,11 +168,16 @@ export function ExitPlanModeDialog({
     () => options.map((_, i) => String(i + 1) as '1' | '2' | '3' | '4'),
     [options],
   )
+  const isEmptyPlan = planContent.trim().length === 0
 
   // Keep planContent in sync if the parent re-renders with new content.
   useEffect(() => {
     setPlanContent(initialPlanContent)
   }, [initialPlanContent])
+
+  useEffect(() => {
+    if (isEmptyPlan && selectedIndex > 1) setSelectedIndex(0)
+  }, [isEmptyPlan, selectedIndex])
 
   // Auto-hide the save confirmation. Mirrors Claude Code's 5-second timeout.
   useEffect(() => {
@@ -189,32 +211,50 @@ export function ExitPlanModeDialog({
 
   const resolveOption = (option: DecisionOption) => {
     if (option.kind === 'reject') {
-      setFeedbackMode(true)
+      onResolve({ kind: 'reject', feedback })
       return
     }
     onResolve({ kind: option.kind, planContent })
   }
 
   useInput((input, key) => {
-    if (feedbackMode) {
+    if (isEmptyPlan) {
+      if (key.upArrow) {
+        setSelectedIndex((i) => Math.max(0, i - 1))
+        return
+      }
+      if (key.downArrow) {
+        setSelectedIndex((i) => Math.min(1, i + 1))
+        return
+      }
+      if (input === '1') {
+        onResolve({ kind: 'approve_restore_keep', planContent })
+        return
+      }
+      if (input === '2') {
+        onResolve({ kind: 'reject', feedback: '' })
+        return
+      }
       if (key.return) {
-        onResolve({ kind: 'reject', feedback })
+        onResolve(selectedIndex === 0
+          ? { kind: 'approve_restore_keep', planContent }
+          : { kind: 'reject', feedback: '' })
         return
       }
       if (key.escape) {
-        setFeedbackMode(false)
-        setFeedback('')
-        return
+        onResolve({ kind: 'reject', feedback: '' })
       }
+      return
+    }
+
+    const selectedOption = options[selectedIndex]
+    const isRejectSelected = selectedOption?.kind === 'reject'
+
+    if (isRejectSelected) {
       if (key.backspace || key.delete) {
         setFeedback((prev) => prev.slice(0, -1))
         return
       }
-      // Append printable characters; ignore control chars.
-      if (input && !key.ctrl && !key.meta && input.length > 0) {
-        setFeedback((prev) => prev + input)
-      }
-      return
     }
 
     // Ctrl+G opens external editor.
@@ -227,7 +267,7 @@ export function ExitPlanModeDialog({
     // bypass when available). Matches Claude Code's Shift+Tab shortcut.
     if (key.shift && key.tab) {
       onResolve({
-        kind: elevatedExitPlanModeDecision(isBypassAvailable),
+        kind: elevatedExitPlanModeDecision({ isBypassAvailable, isAutoModeAvailable }),
         planContent,
       })
       return
@@ -247,7 +287,11 @@ export function ExitPlanModeDialog({
       const target = hotkeys.indexOf(input)
       if (target >= 0) {
         const option = options[target]
-        if (option) resolveOption(option)
+        if (option?.kind === 'reject') {
+          setSelectedIndex(target)
+        } else if (option) {
+          resolveOption(option)
+        }
       }
       return
     }
@@ -261,75 +305,128 @@ export function ExitPlanModeDialog({
     if (key.escape) {
       // Esc cancels the dialog as an empty rejection so the loop can move on.
       onResolve({ kind: 'reject', feedback: '' })
+      return
+    }
+
+    if (isRejectSelected && input && !key.ctrl && !key.meta && input.length > 0) {
+      setFeedback((prev) => prev + input)
     }
   })
 
-  const elevatedHint = isBypassAvailable ? 'bypass permissions' : 'auto-accept edits'
+  const elevatedHint = isAutoModeAvailable
+    ? 'auto mode'
+    : isBypassAvailable ? 'bypass permissions' : 'auto-accept edits'
 
-  return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.warning} padding={1} marginY={1}>
-      <Box>
-        <Text bold color={theme.warning}>Ready to code?</Text>
-      </Box>
+  if (isEmptyPlan) {
+    const emptyOptions = [
+      { value: 'yes' as const, label: 'Yes', hotkey: '1' as const },
+      { value: 'no' as const, label: 'No', hotkey: '2' as const },
+    ]
 
-      <Box flexDirection="column" marginTop={1}>
-        <Text dimColor>Here is the plan:</Text>
-      </Box>
-
-      <Box flexDirection="column" marginTop={1}>
-        <Markdown content={planPreview} />
-      </Box>
-
-      {critiquePreview ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text bold color={theme.toolName}>Critique findings:</Text>
-          <Text color={theme.dimText}>{critiquePreview}</Text>
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={theme.warning} borderLeft={false} borderRight={false} borderBottom={false} marginTop={1}>
+        <Box paddingX={1} flexDirection="column">
+          <Text bold color={theme.warning}>Exit plan mode?</Text>
         </Box>
-      ) : null}
 
-      {editorError ? (
-        <Box marginTop={1}>
-          <Text color={theme.error}>Editor error: {editorError}</Text>
-        </Box>
-      ) : null}
-
-      {!feedbackMode ? (
-        <Box flexDirection="column" marginTop={1}>
-          {options.map((option, index) => {
-            const isSelected = index === selectedIndex
-            const hotkey = hotkeys[index]
-            return (
-              <Box key={option.kind}>
-                <Text color={isSelected ? theme.brand : undefined} bold={isSelected}>
+        <Box flexDirection="column" paddingX={1} marginTop={1}>
+          <Text>Hanekawa wants to exit plan mode</Text>
+          <Box flexDirection="column" marginTop={1}>
+            {emptyOptions.map((option, index) => {
+              const isSelected = index === selectedIndex
+              return (
+                <Text key={option.value} color={isSelected ? theme.brand : undefined} bold={isSelected}>
                   {isSelected ? '> ' : '  '}[
-                  <Text color={theme.toolName} bold>{hotkey}</Text>
+                  <Text color={theme.toolName} bold>{option.hotkey}</Text>
                   ] {option.label}
                 </Text>
-              </Box>
-            )
-          })}
-          <Box marginTop={1}>
-            <Text color={theme.dimText}>
-              [Up/Down] Options  [1-{options.length}] Quick  [Enter] Select  [Shift+Tab] {elevatedHint}  [Ctrl+G] Edit plan  [Esc] Keep planning
-            </Text>
-          </Box>
-          {showSaveMessage ? (
-            <Box marginTop={1}>
-              <Text color={theme.success}>�?Plan saved!</Text>
-            </Box>
-          ) : null}
-        </Box>
-      ) : (
-        <Box flexDirection="column" marginTop={1}>
-          <Text bold color={theme.warning}>Reject feedback (Enter to submit, Esc to cancel):</Text>
-          <Box marginTop={1}>
-            <Text>{feedback}<Text color={theme.brand}>_</Text></Text>
+              )
+            })}
           </Box>
         </Box>
-      )}
+      </Box>
+    )
+  }
 
-      <Box marginTop={1}>
-        <Text color={theme.dimText}>Draft file: {planFilePath}</Text>
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="column" borderStyle="round" borderColor={theme.warning} borderLeft={false} borderRight={false} borderBottom={false} marginTop={1}>
+        <Box paddingX={1} flexDirection="column">
+          <Text bold color={theme.warning}>Ready to code?</Text>
+        </Box>
+
+        <Box flexDirection="column" marginTop={1}>
+          <Box paddingX={1} flexDirection="column">
+            <Text>Here is Hanekawa&apos;s plan:</Text>
+          </Box>
+
+          <Box
+            borderColor={theme.border}
+            borderStyle={PLAN_BORDER_STYLE}
+            flexDirection="column"
+            borderLeft={false}
+            borderRight={false}
+            paddingX={1}
+            marginBottom={1}
+          >
+            <Markdown content={planContent} />
+          </Box>
+
+          <Box flexDirection="column" paddingX={1}>
+            {critiquePreview ? (
+              <Box flexDirection="column" marginBottom={1}>
+                <Text bold color={theme.toolName}>Critique findings:</Text>
+                <Text color={theme.dimText}>{critiquePreview}</Text>
+              </Box>
+            ) : null}
+
+            {editorError ? (
+              <Box marginBottom={1}>
+                <Text color={theme.error}>Editor error: {editorError}</Text>
+              </Box>
+            ) : null}
+
+            <Text color={theme.dimText}>
+              Hanekawa has written up a plan and is ready to execute. Would you like to proceed?
+            </Text>
+
+            <Box flexDirection="column" marginTop={1}>
+              {options.map((option, index) => {
+                const isSelected = index === selectedIndex
+                const hotkey = hotkeys[index]
+                const isReject = option.kind === 'reject'
+                return (
+                  <Box key={option.kind} flexDirection="column">
+                    <Text color={isSelected ? theme.brand : undefined} bold={isSelected}>
+                      {isSelected ? '> ' : '  '}[
+                      <Text color={theme.toolName} bold>{hotkey}</Text>
+                      ] {option.label}
+                    </Text>
+                    {isReject ? (
+                      <Box paddingLeft={4}>
+                        <Text color={theme.dimText}>
+                          Feedback: {feedback}
+                          {isSelected ? <Text color={theme.brand}>_</Text> : null}
+                        </Text>
+                      </Box>
+                    ) : null}
+                  </Box>
+                )
+              })}
+            </Box>
+          </Box>
+        </Box>
+      </Box>
+
+      <Box flexDirection="row" paddingX={1} marginTop={1}>
+        <Text color={theme.dimText}>ctrl-g to edit plan</Text>
+        <Text color={theme.dimText}> - {planFilePath}</Text>
+        {showSaveMessage ? <Text color={theme.success}> - Plan saved!</Text> : null}
+      </Box>
+      <Box paddingX={1}>
+        <Text color={theme.dimText}>
+          [Up/Down] Options  [1-{options.length}] Quick  [Enter] Select  [Shift+Tab] {elevatedHint}  [Esc] Keep planning
+        </Text>
       </Box>
     </Box>
   )

@@ -14,6 +14,8 @@ import type { TUIDisplayItem, TUIUsage } from '../types.js'
 import type { RecordProxy } from './usePermission.js'
 import { CheckpointService } from '../../services/checkpoint/checkpointService.js'
 import { logDiagnostics, summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
+import { getToolActivityDescription } from '../../tools/display.js'
+import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../../tools/toolNames.js'
 
 interface UseAgentLoopOptions {
   loop: AgentLoop
@@ -47,7 +49,7 @@ export function useAgentLoop({
   )
   const [isStreaming, setIsStreaming] = useState(false)
   const [usage, setUsage] = useState<TUIUsage>({
-    current: null,
+    lastTurn: null,
     total: createEmptyUsage(),
   })
   const [spinnerSubText, setSpinnerSubText] = useState<string | undefined>()
@@ -85,7 +87,7 @@ export function useAgentLoop({
 
   useEffect(() => {
     setUsage({
-      current: null,
+      lastTurn: null,
       total: createEmptyUsage(),
     })
     lastToolUseIdRef.current.clear()
@@ -137,7 +139,7 @@ export function useAgentLoop({
 
         // Update usage
         setUsage((prev) => ({
-          current: result.usage,
+          lastTurn: result.usage,
           total: addTokenUsage(prev.total, result.usage),
         }))
       } catch (err: unknown) {
@@ -172,6 +174,7 @@ export function useAgentLoop({
   )
 
   const handleProgress = useCallback((event: ToolProgressEvent) => {
+    if (isHiddenToolCall(event.call.name)) return
     if (event.phase === 'started') {
       activeToolProgressRef.current.set(event.call.id, event)
     } else {
@@ -202,7 +205,7 @@ export function useAgentLoop({
     (record: SessionRecord) => {
       // Update display items based on record type
       // Note: persistence is handled by loop.appendRecord, not here
-      if (record.type === 'tool_use') {
+      if (record.type === 'tool_use' && !isHiddenToolCall(record.tool)) {
         // Track tool name -> tool_use ID mapping for approval matching
         lastToolUseIdRef.current.set(record.tool, record.id)
 
@@ -233,7 +236,7 @@ export function useAgentLoop({
             },
           ]
         })
-      } else if (record.type === 'tool_approval') {
+      } else if (record.type === 'tool_approval' && !isHiddenToolCall(record.tool)) {
         // Match approval to tool_use by looking up the most recent tool_use ID for this tool name
         const toolUseId = lastToolUseIdRef.current.get(record.tool)
         setMessages((prev) => {
@@ -249,7 +252,7 @@ export function useAgentLoop({
           }
           return prev
         })
-      } else if (record.type === 'tool_result') {
+      } else if (record.type === 'tool_result' && !isHiddenToolCall(record.tool)) {
         setMessages((prev) => {
           // Find by matching tool_use ID
           const idx = prev.findIndex(
@@ -260,6 +263,7 @@ export function useAgentLoop({
             const item = { ...updated[idx] } as Extract<TUIDisplayItem, { kind: 'tool_call' }>
             item.status = record.ok ? 'done' : 'error'
             item.result = record.content
+            item.resultDisplay = record.display
             item.errorCode = record.errorCode
             updated[idx] = item
             return updated
@@ -377,8 +381,12 @@ function formatToolProgress(events: ToolProgressEvent[]): string | undefined {
 }
 
 function formatSingleToolProgress(event: ToolProgressEvent): string {
-  const details = formatToolProgressDetails(event.call.input)
-  return `${formatScopedToolName(event)}${details ? `: ${details}` : ''} (running)`
+  const details = getToolActivityDescription(event.call.name, event.call.input) ?? formatToolProgressDetails(event.call.input)
+  if (details && event.source?.type === 'subagent') {
+    return `${formatScopedToolName(event)}: ${details}`
+  }
+  if (details) return details
+  return `Running ${formatScopedToolName(event)}`
 }
 
 function formatScopedToolName(event: ToolProgressEvent | undefined): string {
@@ -417,6 +425,7 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
         createdAt: record.createdAt,
       })
     } else if (record.type === 'tool_use') {
+      if (isHiddenToolCall(record.tool)) continue
       items.push({
         kind: 'tool_call',
         id: randomUUID(),
@@ -427,12 +436,14 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
         createdAt: record.createdAt,
       })
     } else if (record.type === 'tool_result') {
+      if (isHiddenToolCall(record.tool)) continue
       // Find the matching tool_call and attach the result
       const matchingCall = items.find(
         (i) => i.kind === 'tool_call' && i.toolUseId === record.toolUseId,
       )
       if (matchingCall && matchingCall.kind === 'tool_call') {
         matchingCall.result = record.content
+        matchingCall.resultDisplay = record.display
         matchingCall.status = record.ok ? 'done' : 'error'
         matchingCall.errorCode = record.errorCode
       }
@@ -452,6 +463,10 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
   }
 
   return items
+}
+
+export function isHiddenToolCall(toolName: string): boolean {
+  return toolName === ENTER_PLAN_MODE_TOOL_NAME || toolName === EXIT_PLAN_MODE_TOOL_NAME
 }
 
 function addTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {

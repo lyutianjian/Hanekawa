@@ -1,7 +1,6 @@
 import { Box, Text } from 'ink'
 import { theme } from '../theme.js'
-import { formatUsageLine } from '../../harness/usage.js'
-import { formatCacheHitRate } from '../../harness/cacheBreakDetection.js'
+import { formatStatusUsage } from '../statusUsage.js'
 import type { TUIUsage } from '../types.js'
 import type { ModelPricing } from '../../harness/types.js'
 import type { PermissionMode } from '../../harness/permissions.js'
@@ -16,10 +15,7 @@ interface StatusLineProps {
 }
 
 export function StatusLine({ model, providerName, usage, pricing, permissionMode, hintMessage }: StatusLineProps) {
-  const cacheText = formatCacheHitRate(usage.total)
-  const usageText = usage.current
-    ? `${formatUsageLine(usage.total, pricing)} | ${cacheText}`
-    : `Ready | ${cacheText}`
+  const usageText = formatStatusUsage(usage, pricing)
   const modeStyle = permissionModeStyle(permissionMode)
 
   return (

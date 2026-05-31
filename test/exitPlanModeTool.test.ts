@@ -12,6 +12,14 @@ function makeBridge(sessionId: string, records: SessionRecord[]): PlanModeBridge
   }
 }
 
+test('ExitPlanMode description includes Claude Code approval contract', () => {
+  assert.match(exitPlanModeTool.description, /Use this tool when you are in plan mode and have finished writing your plan/)
+  assert.match(exitPlanModeTool.description, /ready for user approval/)
+  assert.match(exitPlanModeTool.description, /does NOT take the plan content as a parameter/)
+  assert.match(exitPlanModeTool.description, /Do NOT use AskUserQuestion to ask "Is this plan okay\?"/)
+  assert.match(exitPlanModeTool.description, /ExitPlanMode inherently requests user approval/)
+})
+
 test('exitPlanMode emits a plan_mode_request record with inline plan', async () => {
   const records: SessionRecord[] = []
   const gate = new PermissionGate(async () => false, undefined, { mode: 'plan' })

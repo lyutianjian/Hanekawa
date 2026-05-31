@@ -12,10 +12,40 @@ export const readFileTool: Tool = {
   riskLevel: 'safe',
   isReadOnly: true,
   isConcurrencySafe: true,
+  userFacingName: () => 'Read',
+  getToolUseSummary(input) {
+    const filePath = typeof input === 'object' && input !== null
+      ? (input as { filePath?: unknown }).filePath
+      : undefined
+    return typeof filePath === 'string' ? filePath : null
+  },
+  getActivityDescription(input) {
+    const filePath = typeof input === 'object' && input !== null
+      ? (input as { filePath?: unknown }).filePath
+      : undefined
+    return typeof filePath === 'string' ? `Reading ${filePath}` : 'Reading file'
+  },
+  shouldDisplayResult: () => true,
   async execute(input, context) {
     const { filePath } = input as { filePath: string }
     const absolute = assertInsideCwd(context.cwd, filePath)
     const content = await readFileAndRemember(absolute, context)
-    return { ok: true, content }
+    const lineCount = countLines(content)
+    return {
+      ok: true,
+      content,
+      metadata: {
+        display: {
+          summary: `Read ${lineCount} ${lineCount === 1 ? 'line' : 'lines'}`,
+        },
+      },
+    }
   },
+}
+
+function countLines(content: string): number {
+  if (content.length === 0) return 0
+  return content.endsWith('\n')
+    ? content.slice(0, -1).split('\n').length
+    : content.split('\n').length
 }

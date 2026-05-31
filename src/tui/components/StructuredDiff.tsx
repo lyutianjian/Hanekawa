@@ -9,11 +9,11 @@ interface StructuredDiffProps {
 }
 
 export function StructuredDiff({ oldText, newText, maxLines = 30 }: StructuredDiffProps) {
-  const parts = computeWordDiff(oldText, newText)
-
-  // Group parts into lines for display
-  const fullText = parts.map((p) => p.value).join('')
-  const { text: displayText, truncated, remaining } = truncateContent(fullText, maxLines)
+  const oldDisplay = truncateContent(oldText, maxLines)
+  const newDisplay = truncateContent(newText, maxLines)
+  const parts = computeWordDiff(oldDisplay.text, newDisplay.text)
+  const truncated = oldDisplay.truncated || newDisplay.truncated
+  const remaining = Math.max(oldDisplay.remaining, newDisplay.remaining)
 
   // If truncated, just show a simple summary
   if (truncated) {

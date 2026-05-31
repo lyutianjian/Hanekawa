@@ -6,14 +6,14 @@ import {
   previewMarkdownLines,
 } from '../src/tui/components/ExitPlanModeDialog.js'
 
-test('ExitPlanModeDialog options match non-bypass Claude Code slot labels', () => {
-  const options = buildExitPlanModeOptions(false)
+test('ExitPlanModeDialog options prefer auto mode when available', () => {
+  const options = buildExitPlanModeOptions({ isAutoModeAvailable: true, isBypassAvailable: false })
 
   assert.deepEqual(
     options.map((option) => option.label),
     [
-      'Yes, clear context and auto-accept edits',
-      'Yes, auto-accept edits',
+      'Yes, clear context and use auto mode',
+      'Yes, and use auto mode',
       'Yes, manually approve edits',
       'No, keep planning',
     ],
@@ -21,8 +21,8 @@ test('ExitPlanModeDialog options match non-bypass Claude Code slot labels', () =
   assert.deepEqual(
     options.map((option) => option.kind),
     [
-      'approve_clear_acceptEdits_with_plan_as_prompt',
-      'approve_acceptEdits_keep',
+      'approve_clear_auto_with_plan_as_prompt',
+      'approve_auto_keep',
       'approve_restore_keep',
       'reject',
     ],
@@ -30,7 +30,7 @@ test('ExitPlanModeDialog options match non-bypass Claude Code slot labels', () =
 })
 
 test('ExitPlanModeDialog options replace elevated slots with bypass when available', () => {
-  const options = buildExitPlanModeOptions(true)
+  const options = buildExitPlanModeOptions({ isAutoModeAvailable: false, isBypassAvailable: true })
 
   assert.deepEqual(
     options.map((option) => option.label),
@@ -53,11 +53,12 @@ test('ExitPlanModeDialog options replace elevated slots with bypass when availab
 })
 
 test('ExitPlanModeDialog Shift+Tab resolves to the keep-context elevated option', () => {
-  assert.equal(elevatedExitPlanModeDecision(false), 'approve_acceptEdits_keep')
-  assert.equal(elevatedExitPlanModeDecision(true), 'approve_bypass_keep')
+  assert.equal(elevatedExitPlanModeDecision({ isAutoModeAvailable: true, isBypassAvailable: false }), 'approve_auto_keep')
+  assert.equal(elevatedExitPlanModeDecision({ isAutoModeAvailable: false, isBypassAvailable: false }), 'approve_acceptEdits_keep')
+  assert.equal(elevatedExitPlanModeDecision({ isAutoModeAvailable: false, isBypassAvailable: true }), 'approve_bypass_keep')
 })
 
-test('ExitPlanModeDialog preview truncates long plans while preserving head and tail', () => {
+test('ExitPlanModeDialog critique preview truncates long findings while preserving head and tail', () => {
   const content = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join('\n')
   const preview = previewMarkdownLines(content, 5)
 

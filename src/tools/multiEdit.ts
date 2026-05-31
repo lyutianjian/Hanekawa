@@ -22,6 +22,23 @@ export const multiEditTool: Tool = {
     }).strict()).min(1),
   }).strict(),
   riskLevel: 'confirm',
+  userFacingName: () => 'MultiEdit',
+  shouldDisplayResult: () => true,
+  getToolUseSummary(input) {
+    const parsed = typeof input === 'object' && input !== null
+      ? input as { filePath?: unknown; edits?: unknown }
+      : undefined
+    const filePath = typeof parsed?.filePath === 'string' ? parsed.filePath : undefined
+    const editCount = Array.isArray(parsed?.edits) ? parsed.edits.length : undefined
+    if (!filePath) return null
+    return editCount === undefined ? filePath : `${filePath}, ${editCount} edits`
+  },
+  getActivityDescription(input) {
+    const filePath = typeof input === 'object' && input !== null
+      ? (input as { filePath?: unknown }).filePath
+      : undefined
+    return typeof filePath === 'string' ? `Editing ${filePath}` : 'Editing file'
+  },
   async execute(input, context) {
     const { filePath, edits } = input as { filePath: string; edits: MultiEditItem[] }
     const absolute = assertInsideCwd(context.cwd, filePath)
@@ -80,6 +97,14 @@ export const multiEditTool: Tool = {
 
     await writeFile(absolute, nextContent, 'utf8')
     await rememberReadFile(absolute, nextContent, context)
-    return { ok: true, content: `Applied ${edits.length} edits to ${filePath}` }
+    return {
+      ok: true,
+      content: `Applied ${edits.length} edits to ${filePath}`,
+      metadata: {
+        display: {
+          summary: `Applied ${edits.length} edit${edits.length === 1 ? '' : 's'} to ${filePath}`,
+        },
+      },
+    }
   },
 }

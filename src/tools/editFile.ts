@@ -14,6 +14,13 @@ export const editFileTool: Tool = {
     newString: z.string(),
   }).strict(),
   riskLevel: 'confirm',
+  userFacingName: () => 'Edit',
+  getToolUseSummary: filePathSummary,
+  shouldDisplayResult: () => true,
+  getActivityDescription(input) {
+    const filePath = filePathSummary(input)
+    return filePath ? `Editing ${filePath}` : 'Editing file'
+  },
   async execute(input, context) {
     const { filePath, oldString, newString } = input as { filePath: string; oldString: string; newString: string }
     const absolute = assertInsideCwd(context.cwd, filePath)
@@ -42,8 +49,23 @@ export const editFileTool: Tool = {
     const nextContent = replaceLiteralMatch(original, oldString, newString, matches[0].index)
     await writeFile(absolute, nextContent, 'utf8')
     await rememberReadFile(absolute, nextContent, context)
-    return { ok: true, content: `Edited ${filePath}` }
+    return {
+      ok: true,
+      content: `Edited ${filePath}`,
+      metadata: {
+        display: {
+          summary: `Edited ${filePath}`,
+        },
+      },
+    }
   },
+}
+
+function filePathSummary(input: unknown): string | null {
+  const filePath = typeof input === 'object' && input !== null
+    ? (input as { filePath?: unknown }).filePath
+    : undefined
+  return typeof filePath === 'string' ? filePath : null
 }
 
 export function replaceLiteralMatch(content: string, oldString: string, newString: string, index: number): string {

@@ -15,6 +15,13 @@ test('formatUsageLine shows tokens without pricing', () => {
   )
 })
 
+test('formatUsageLine supports a custom label', () => {
+  assert.equal(
+    formatUsageLine(usage, undefined, 'Turn'),
+    'Turn: cache read 100000, input 200000, output 50000',
+  )
+})
+
 test('formatUsageLine shows cost with complete pricing', () => {
   assert.equal(
     formatUsageLine(usage, {

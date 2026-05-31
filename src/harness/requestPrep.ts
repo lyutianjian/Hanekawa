@@ -110,7 +110,8 @@ export function stripThinkingBlocksFromAssistantMessages(
 
 export function getRecordsAfterLastCompact(records: SessionRecord[]): SessionRecord[] {
   for (let index = records.length - 1; index >= 0; index--) {
-    if (records[index]?.type === 'compact_boundary') return records.slice(index + 1)
+    // Keep the boundary so ContextBuilder can render its summary into the next request.
+    if (records[index]?.type === 'compact_boundary') return records.slice(index)
   }
   return [...records]
 }

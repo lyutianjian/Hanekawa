@@ -35,6 +35,7 @@ export interface BuildContextInput {
   toolContext?: ToolContext
   env?: EnvironmentInfo
   permissionMode?: PermissionMode
+  transientUserContext?: string[]
   includePostCompactRestore?: boolean
   enabledSections?: SectionKey[]
 }
@@ -170,6 +171,21 @@ Use the gh command via the Bash tool for ALL GitHub-related tasks.
 # Context management
 When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.`.trim()
 
+const PLAN_MODE_SYSTEM_REMINDER = `<system-reminder>You are in plan mode. Read-only operations are auto-approved. To take action you must first present the plan to the user.
+
+## What Happens in Plan Mode
+
+In plan mode, you'll:
+1. Thoroughly explore the codebase using Glob, Grep, and Read tools
+2. Understand existing patterns and architecture
+3. Design an implementation approach
+4. Present your plan to the user for approval
+5. Use AskUserQuestion if you need to clarify approaches
+6. Exit plan mode with ExitPlanMode when ready to implement
+
+Your final plan should be written to the plan file, then submitted by calling ExitPlanMode.
+Your turn must end only by using AskUserQuestion for unresolved requirements or approach clarifications, or by calling ExitPlanMode when the plan is ready for approval. Do NOT use AskUserQuestion to ask "Is this plan okay?" or "Should I proceed?" - ExitPlanMode inherently requests user approval of your plan.</system-reminder>`
+
 function systemPromptSection(
   sections: SystemPromptSectionCache,
   key: SectionKey,
@@ -240,6 +256,7 @@ export class ContextBuilder {
       : []
     const allContextItems = [
       ...(input.includeUserContext === false ? [] : this.buildUserContext(input.now ?? new Date(), activeSkills)),
+      ...this.buildTransientUserContext(input.transientUserContext ?? [], input.now ?? new Date()),
       ...postCompactRestoreContext,
       ...this.recordsToContextItems(input.preloadRecords ?? []),
       ...this.recordsToContextItems(input.records),
@@ -257,6 +274,23 @@ export class ContextBuilder {
       messages: built.messages,
       contextItems: built.contextItems,
     }
+  }
+
+  private buildTransientUserContext(items: readonly string[], now: Date): ModelContextItem[] {
+    const contextItems: ModelContextItem[] = []
+    for (const [index, content] of items.entries()) {
+      if (content.trim().length === 0) continue
+      contextItems.push({
+        kind: 'message',
+        message: {
+          id: `transient-${now.getTime()}-${index}`,
+          role: 'user',
+          content,
+          createdAt: now.toISOString(),
+        },
+      })
+    }
+    return contextItems
   }
 
   private recordsToContextItems(records: SessionRecord[]): ModelContextItem[] {
@@ -421,7 +455,7 @@ export class ContextBuilder {
 
   private buildPlanModeSystemReminder(permissionMode?: PermissionMode): string | undefined {
     if (permissionMode === 'plan') {
-      return '<system-reminder>You are in plan mode. Read-only operations are auto-approved. To take action you must first present the plan to the user.</system-reminder>'
+      return PLAN_MODE_SYSTEM_REMINDER
     }
     if (permissionMode === 'acceptEdits') {
       return '<system-reminder>You are in accept-edits mode. File edits are auto-approved, but shell commands and other tools still use the normal permission gate.</system-reminder>'

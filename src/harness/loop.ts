@@ -22,6 +22,7 @@ import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
+import type { PlanModeManager } from './planModeManager.js'
 import type { AgentRunResult, ChatMessage, ModelProvider, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
 
 export interface ActiveModelRuntime {
@@ -76,6 +77,7 @@ export interface AgentLoopOptions {
   cacheSource?: CacheBreakSource
   preloadRecords?: SessionRecord[]
   permissionMode?(): PermissionMode
+  planModeManager?: PlanModeManager
   getCompactFailureCount?(): Promise<number>
   setCompactFailureCount?(count: number): Promise<void>
   recordStream: RecordStream
@@ -182,6 +184,7 @@ export class AgentLoop {
     await this.runUserPromptSubmitHooks(userInput, turnId, signal)
     let lastResponseTokenCount: number | undefined
     let lastResponseRecordCount: number | undefined
+    let lastResponseRecordId: string | undefined
 
     const maxTurns = this.options.maxTurns ?? 100
     const tokenBudget = this.options.tokenBudget
@@ -197,6 +200,10 @@ export class AgentLoop {
       if (signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError')
       }
+      await this.options.planModeManager?.beforeTurn()
+      if (this.options.planModeManager?.consumeShouldStopCurrentTurn()) {
+        return { content: '', usage }
+      }
       await this.flushReadyToolUseSummaries(turnId)
       const preparedRecords = await this.loadPreparedRecords()
       const progressive = applyProgressiveCompaction({
@@ -205,6 +212,7 @@ export class AgentLoop {
         contextManagement: this.options.contextManagement,
         lastResponseTokenCount,
         lastResponseRecordCount,
+        lastResponseRecordId,
       })
       let recordsBeforeCompact = progressive.records
       const useCachedTokenEstimate = !progressive.microCompacted && !progressive.snipped
@@ -218,6 +226,7 @@ export class AgentLoop {
         contextManagement: this.options.contextManagement,
         lastResponseTokenCount: useCachedTokenEstimate ? lastResponseTokenCount : undefined,
         lastResponseRecordCount: useCachedTokenEstimate ? lastResponseRecordCount : undefined,
+        lastResponseRecordId: useCachedTokenEstimate ? lastResponseRecordId : undefined,
         promptCacheRetention: this.activeModel.promptCacheRetention,
         turnId,
         circuitKey: this.options.toolContext.sessionId,
@@ -251,6 +260,7 @@ export class AgentLoop {
 
       const records = recordsBeforeCompact
       const pendingRestoreRecordIds = this.pendingPostCompactRestoreRecordIds(records)
+      const planAttachment = this.options.planModeManager?.getActivePlanAttachment()
       const env: EnvironmentInfo = {
         cwd: this.options.toolContext.cwd,
         platform: process.platform,
@@ -271,6 +281,7 @@ export class AgentLoop {
         toolContext: this.options.toolContext,
         env,
         permissionMode: this.options.permissionMode?.(),
+        transientUserContext: planAttachment ? [planAttachment] : undefined,
         includePostCompactRestore: pendingRestoreRecordIds.length > 0,
       })
       await this.consumePostCompactRestoreRecords(pendingRestoreRecordIds)
@@ -311,6 +322,7 @@ export class AgentLoop {
         ? requestTokenCountFromUsage(response.usage)
         : undefined
       lastResponseRecordCount = lastResponseTokenCount === undefined ? undefined : requestRecordCount
+      lastResponseRecordId = lastResponseTokenCount === undefined ? undefined : records.at(-1)?.id
       lastRequestId = response.requestId
       if (response.cacheBreak) {
         await this.emitMetric({
@@ -396,9 +408,25 @@ export class AgentLoop {
         })
       }
 
-      await this.appendRecord(assistantMessage)
-
       if (response.toolCalls.length === 0) {
+        if (this.options.permissionMode?.() === 'plan') {
+          const content = response.content.trim()
+          if (content.length > 0 && this.options.planModeManager) {
+            await this.options.planModeManager.submitAssistantPlanFallback(response.content, turnId)
+          } else {
+            await this.appendRecord({
+              type: 'message',
+              id: randomUUID(),
+              role: 'user',
+              content: '<system-reminder>Plan mode is active. Do not end your turn with ordinary assistant text. Use AskUserQuestion for unresolved decisions, or call ExitPlanMode when the plan is ready for approval.</system-reminder>',
+              turnId,
+              createdAt: new Date().toISOString(),
+            })
+          }
+          continue
+        }
+
+        await this.appendRecord(assistantMessage)
         const finished = await this.finishTurn({
           content: response.content,
           usage,
@@ -409,12 +437,15 @@ export class AgentLoop {
         return finished.result
       }
 
+      await this.appendRecord(assistantMessage)
+
       // Check abort signal before executing tools
       if (signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError')
       }
 
       const toolResults = await this.runToolCallsInOrder(response.toolCalls, signal, turnId)
+      this.options.planModeManager?.noteToolUseTurn()
       usage = addTokenUsage(usage, this.drainSubagentTranscriptUsage())
       this.startToolUseSummary(toolResults, turnId)
 

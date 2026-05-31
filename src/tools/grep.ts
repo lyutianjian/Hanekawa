@@ -50,7 +50,7 @@ function tryRipgrep(
         const lineNum = line.substring(colonIdx + 1, colonIdx2)
         const content = line.substring(colonIdx2 + 1)
         return `${path.relative(cwd, path.join(root, relPath))}:${lineNum}:${content}`
-      })
+      }).slice(0, limit)
       resolve(matches)
     })
 
@@ -119,6 +119,22 @@ export const grepTool: Tool = {
   isReadOnly: true,
   isConcurrencySafe: true,
   maxResultSizeChars: 30_000,
+  userFacingName: () => 'Search',
+  getToolUseSummary(input) {
+    if (typeof input !== 'object' || input === null) return null
+    const { pattern, path: searchPath, glob } = input as { pattern?: unknown; path?: unknown; glob?: unknown }
+    if (typeof pattern !== 'string') return null
+    const parts = [`pattern: "${truncateMiddle(pattern, 80)}"`]
+    if (typeof searchPath === 'string' && searchPath.trim()) parts.push(`path: "${truncateMiddle(searchPath.trim(), 60)}"`)
+    if (typeof glob === 'string' && glob.trim()) parts.push(`glob: "${truncateMiddle(glob.trim(), 60)}"`)
+    return parts.join(', ')
+  },
+  getActivityDescription(input) {
+    if (typeof input !== 'object' || input === null) return 'Searching files'
+    const pattern = (input as { pattern?: unknown }).pattern
+    return typeof pattern === 'string' ? `Searching for "${truncateMiddle(pattern, 60)}"` : 'Searching files'
+  },
+  shouldDisplayResult: () => true,
   async execute(input, context) {
     const options = input as GrepInput
     const root = assertInsideCwd(context.cwd, options.path ?? '.')
@@ -128,11 +144,33 @@ export const grepTool: Tool = {
     // Try ripgrep first (ReDoS-immune, faster)
     const rgMatches = await tryRipgrep(options.pattern, root, options.glob, caseInsensitive, limit, context.cwd)
     if (rgMatches !== null) {
-      return { ok: true, content: rgMatches.join('\n') || 'No matches found.' }
+      return grepResult(rgMatches)
     }
 
     // Fallback to Node RegExp
     const matches = await fallbackGrep(options.pattern, root, options.glob, caseInsensitive, limit, context.cwd)
-    return { ok: true, content: matches.join('\n') || 'No matches found.' }
+    return grepResult(matches)
   },
+}
+
+function grepResult(matches: string[]) {
+  const matchCount = matches.length
+  const fileCount = new Set(matches.map((match) => match.split(':', 1)[0]).filter(Boolean)).size
+  return {
+    ok: true,
+    content: matches.join('\n') || 'No matches found.',
+    metadata: {
+      display: {
+        summary: matchCount === 0
+          ? 'No matches found'
+          : `Found ${matchCount} ${matchCount === 1 ? 'match' : 'matches'} across ${fileCount} ${fileCount === 1 ? 'file' : 'files'}`,
+      },
+    },
+  }
+}
+
+function truncateMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  const keep = Math.max(1, Math.floor((maxLength - 3) / 2))
+  return `${value.slice(0, keep)}...${value.slice(value.length - keep)}`
 }

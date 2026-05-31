@@ -24,6 +24,43 @@ test('grep finds matching lines', async () => {
     const result = await grepTool.execute({ pattern: 'hello', glob: '**/*.txt' }, context(dir))
     assert.equal(result.ok, true)
     assert.match(result.content, /a.txt:1/)
+    assert.equal(result.metadata?.display?.summary, 'Found 1 match across 1 file')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('grep headLimit caps total matches across files', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    await writeFile(path.join(dir, 'a.txt'), 'hit a1\nhit a2\nhit a3\n', 'utf8')
+    await writeFile(path.join(dir, 'b.txt'), 'hit b1\nhit b2\nhit b3\n', 'utf8')
+
+    const result = await grepTool.execute({ pattern: 'hit', glob: '**/*.txt', headLimit: 4 }, context(dir))
+
+    assert.equal(result.ok, true)
+    assert.equal(result.content.split('\n').length, 4)
+    assert.equal(result.metadata?.display?.summary, 'Found 4 matches across 2 files')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('read and glob tools return structured TUI summaries', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    await writeFile(path.join(dir, 'a.txt'), 'one\ntwo\nthree\n', 'utf8')
+    await writeFile(path.join(dir, 'b.txt'), 'other\n', 'utf8')
+
+    const readResult = await readFileTool.execute({ filePath: 'a.txt' }, context(dir))
+    assert.equal(readResult.ok, true)
+    assert.equal(readResult.metadata?.display?.summary, 'Read 3 lines')
+
+    const globResult = await getBuiltinTools()
+      .find((tool) => tool.name === 'Glob')!
+      .execute({ pattern: '*.txt' }, context(dir))
+    assert.equal(globResult.ok, true)
+    assert.equal(globResult.metadata?.display?.summary, 'Found 2 files')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -165,6 +202,7 @@ test('multiEdit applies multiple replacements atomically', async () => {
     }, ctx)
 
     assert.equal(result.ok, true)
+    assert.equal(result.metadata?.display?.summary, 'Applied 2 edits to a.txt')
     assert.equal(await readFile(file, 'utf8'), 'ALPHA\nbeta\nGAMMA\n')
     assert.equal(ctx.readFileState.get(file)?.content, 'ALPHA\nbeta\nGAMMA\n')
   } finally {
@@ -337,6 +375,7 @@ test('editFile refuses stale files until they are read again', async () => {
     await readFileTool.execute({ filePath: 'a.txt' }, ctx)
     const result = await editFileTool.execute({ filePath: 'a.txt', oldString: 'world', newString: 'there' }, ctx)
     assert.equal(result.ok, true)
+    assert.equal(result.metadata?.display?.summary, 'Edited a.txt')
     assert.equal(await readFile(file, 'utf8'), 'hello there\n')
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -348,6 +387,7 @@ test('writeFile creates parent directories', async () => {
   try {
     const result = await writeFileTool.execute({ filePath: 'nested/a.txt', content: 'hello' }, context(dir))
     assert.equal(result.ok, true)
+    assert.equal(result.metadata?.display?.summary, 'Created nested/a.txt')
     assert.equal(await readFile(path.join(dir, 'nested', 'a.txt'), 'utf8'), 'hello')
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -391,6 +431,7 @@ test('writeFile overwrites fresh reads and updates read state', async () => {
 
     const result = await writeFileTool.execute({ filePath: 'a.txt', content: 'updated' }, ctx)
     assert.equal(result.ok, true)
+    assert.equal(result.metadata?.display?.summary, 'Overwrote a.txt')
     assert.equal(await readFile(file, 'utf8'), 'updated')
     assert.equal(ctx.readFileState.get(file)?.content, 'updated')
     assert.equal(ctx.readFileState.get(file)?.size, 7)
@@ -454,6 +495,7 @@ test('deleteFile removes files', async () => {
     await readFileTool.execute({ filePath: 'a.txt' }, ctx)
     const result = await deleteFileTool.execute({ filePath: 'a.txt' }, ctx)
     assert.equal(result.ok, true)
+    assert.equal(result.metadata?.display?.summary, 'Deleted a.txt')
     assert.equal(ctx.readFiles.has(file), false)
     assert.equal(ctx.readFileState.has(file), false)
     await assert.rejects(() => readFile(file, 'utf8'))

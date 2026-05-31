@@ -1,4 +1,5 @@
 import stringWidth from 'string-width'
+import { shouldDisplayToolResult } from '../tools/display.js'
 import type { TUIDisplayItem } from './types.js'
 
 export const DEFAULT_INPUT_MAX_VISIBLE_LINES = 5
@@ -303,11 +304,16 @@ function estimateToolCallRows(
   expanded: boolean,
 ): number {
   let rows = 1
-  if (item.status === 'running' || item.status === 'denied') rows += 1
+  if (item.status === 'denied') rows += 1
   if (item.status === 'error' && item.result) {
     rows += (item.errorCode ? 1 : 0) + estimateWrappedRows(item.result, Math.max(1, width - 2))
   }
-  if (item.status === 'done' && item.result && shouldShowToolResult(item.tool)) {
+  if (item.status === 'done' && item.result && shouldDisplayToolResult(item.tool, item.input, item.result)) {
+    if (item.resultDisplay) {
+      if (!expanded) return rows + 1
+      const detail = item.resultDisplay.detail ?? item.result
+      return rows + 2 + estimateWrappedRows(detail, Math.max(1, width - 2))
+    }
     const resultLines = item.result.split('\n').length
     if (expanded || resultLines <= 3) {
       rows += resultLines + (resultLines > 3 ? 1 : 0)
@@ -316,10 +322,6 @@ function estimateToolCallRows(
     }
   }
   return rows
-}
-
-function shouldShowToolResult(tool: string): boolean {
-  return ['Read', 'Bash', 'Grep', 'Glob'].includes(tool)
 }
 
 function displayItemText(item: TUIDisplayItem): string {

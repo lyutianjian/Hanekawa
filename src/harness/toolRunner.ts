@@ -4,7 +4,7 @@ import { runLifecycleHooks, runPreToolUseHooks } from './hooks.js'
 import { validateToolInput } from './toolValidation.js'
 import { countTextTokens } from '../prompts/budget.js'
 import type { ToolHooks } from './hooks.js'
-import type { SessionRecord, Tool, ToolCall, ToolContext, ToolErrorCode, ToolProgressEvent, ToolResultRecord, ToolUseRecord } from './types.js'
+import type { SessionRecord, Tool, ToolCall, ToolContext, ToolErrorCode, ToolProgressEvent, ToolResultDisplay, ToolResultMetadata, ToolResultRecord, ToolUseRecord } from './types.js'
 
 export interface ToolRunEvents {
   onRecord(record: SessionRecord): Promise<void>
@@ -143,7 +143,7 @@ export class ToolRunner {
       try {
         const result = await tool.execute(call.input, executionContext)
         syncMutableToolContext(context, executionContext)
-        const record = this.result(call, tool.name, result.ok, result.content, result.errorCode, result.errorDetails, turnId, tool.maxResultSizeChars)
+        const record = this.result(call, tool.name, result.ok, result.content, result.errorCode, result.errorDetails, turnId, tool.maxResultSizeChars, result.metadata?.display)
         await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
         await this.emitAssistantMessageFromMetadata(result.metadata, turnId)
         return record
@@ -247,8 +247,10 @@ export class ToolRunner {
     errorDetails?: unknown,
     turnId?: string,
     maxResultSizeChars?: number,
+    display?: ToolResultDisplay,
   ): ToolResultRecord {
     const boundedContent = applyToolResultBudget(content, maxResultSizeChars)
+    const boundedDisplay = normalizeToolResultDisplay(display)
     return {
       id: randomUUID(),
       type: 'tool_result',
@@ -256,6 +258,7 @@ export class ToolRunner {
       tool,
       ok,
       content: boundedContent,
+      ...(boundedDisplay ? { display: boundedDisplay } : {}),
       _tokens: countTextTokens(`${tool}\n${boundedContent}`),
       ...(errorCode ? { errorCode } : {}),
       ...(errorDetails !== undefined ? { errorDetails } : {}),
@@ -264,7 +267,7 @@ export class ToolRunner {
     }
   }
 
-  private async emitAssistantMessageFromMetadata(metadata: Record<string, unknown> | undefined, turnId?: string): Promise<void> {
+  private async emitAssistantMessageFromMetadata(metadata: ToolResultMetadata | undefined, turnId?: string): Promise<void> {
     const content = metadata?.assistantMessageContent
     if (typeof content === 'string' && content.trim().length > 0) {
       await this.emitRecord({
@@ -287,6 +290,17 @@ export class ToolRunner {
       ...(turnId ? { turnId } : {}),
       createdAt: new Date().toISOString(),
     })
+  }
+}
+
+function normalizeToolResultDisplay(display: ToolResultDisplay | undefined): ToolResultDisplay | undefined {
+  if (!display) return undefined
+  const summary = display.summary.trim()
+  if (!summary) return undefined
+  const detail = display.detail?.trim()
+  return {
+    summary,
+    ...(detail ? { detail } : {}),
   }
 }
 

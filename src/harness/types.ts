@@ -44,6 +44,7 @@ export interface ToolResultRecord {
   tool: string
   ok: boolean
   content: string
+  display?: ToolResultDisplay
   _tokens?: number
   errorCode?: ToolErrorCode
   errorDetails?: unknown
@@ -171,11 +172,35 @@ export interface PlanModeBridge {
 }
 
 export interface AskUserQuestionBridge {
-  ask(input: { questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }): Promise<
-    | { kind: 'answers'; answers: Record<string, string> }
-    | { kind: 'rejected'; feedback?: string }
-  >
+  ask(input: AskUserQuestionRequest): Promise<AskUserQuestionResult>
 }
+
+export interface AskUserQuestionOption {
+  label: string
+  description: string
+  preview?: string
+}
+
+export interface AskUserQuestionItem {
+  question: string
+  header: string
+  options: AskUserQuestionOption[]
+  multiSelect: boolean
+}
+
+export interface AskUserQuestionRequest {
+  questions: AskUserQuestionItem[]
+}
+
+export type AskUserQuestionAnswers = Record<string, string>
+export type AskUserQuestionAnnotations = Record<string, {
+  preview?: string
+  notes?: string
+}>
+
+export type AskUserQuestionResult =
+  | { kind: 'answers'; answers: AskUserQuestionAnswers; annotations?: AskUserQuestionAnnotations }
+  | { kind: 'rejected'; feedback?: string }
 
 export interface ToolContext {
   cwd: string
@@ -222,7 +247,16 @@ export interface ToolResult {
   content: string
   errorCode?: ToolErrorCode
   errorDetails?: unknown
-  metadata?: Record<string, unknown>
+  metadata?: ToolResultMetadata
+}
+
+export interface ToolResultMetadata extends Record<string, unknown> {
+  display?: ToolResultDisplay
+}
+
+export interface ToolResultDisplay {
+  summary: string
+  detail?: string
 }
 
 export interface Tool {
@@ -249,6 +283,23 @@ export interface Tool {
    * on the requested mode or subcommand.
    */
   isConcurrencySafeInput?(input: unknown): boolean
+  /**
+   * User-facing name for TUI display. This mirrors Claude Code's tool-owned
+   * display hooks without coupling core tools to React/Ink rendering.
+   */
+  userFacingName?(input: unknown): string
+  /**
+   * Short input summary shown in the TUI header, usually inside parentheses.
+   */
+  getToolUseSummary?(input: unknown): string | null | undefined
+  /**
+   * Present-tense activity description used by spinners/progress summaries.
+   */
+  getActivityDescription?(input: unknown): string | null | undefined
+  /**
+   * Whether the TUI should render the persisted result body under the tool use.
+   */
+  shouldDisplayResult?(input: unknown, result: string): boolean
   execute(input: unknown, context: ToolContext): Promise<ToolResult>
 }
 

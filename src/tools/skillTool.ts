@@ -20,6 +20,19 @@ export function createSkillTool(): Tool {
         .optional(),
     }).strict(),
     riskLevel: 'safe',
+    userFacingName: () => 'Skill',
+    getToolUseSummary(input) {
+      const skill = typeof input === 'object' && input !== null
+        ? (input as { skill?: unknown }).skill
+        : undefined
+      return typeof skill === 'string' ? skill : null
+    },
+    getActivityDescription(input) {
+      const skill = typeof input === 'object' && input !== null
+        ? (input as { skill?: unknown }).skill
+        : undefined
+      return typeof skill === 'string' ? `Loading skill ${skill}` : 'Loading skill'
+    },
     async execute(input, context) {
       const parsed = parseSkillInput(input)
       const service = new SkillsService(context.cwd)

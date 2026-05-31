@@ -1,11 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { z } from 'zod/v3'
 import { AgentLoop } from '../src/harness/loop.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
 import { PermissionGate } from '../src/harness/permissions.js'
+import { PlanModeManager } from '../src/harness/planModeManager.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { createAgentTool } from '../src/tools/agentTool.js'
+import { SessionStore } from '../src/sessions/service.js'
+import { clearAllPlanSlugs } from '../src/utils/plans.js'
 import type { SessionMetricInput } from '../src/harness/metrics.js'
 import type { RecordStream } from '../src/harness/recordStream.js'
 import type { ModelProvider, ModelRequest, SessionRecord, Tool } from '../src/harness/types.js'
@@ -87,6 +93,98 @@ test('agent loop appends user and assistant messages', async () => {
   assert.equal(metrics[0]?.response_tokens, 30)
   assert.equal(metrics[0]?.cache_read_tokens, 10)
   assert.equal(metrics[0]?.tool_calls, 0)
+})
+
+test('plan mode routes assistant text-only plan through exit approval instead of chat', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-loop-plan-'))
+  clearAllPlanSlugs()
+  try {
+    const store = new SessionStore(cwd)
+    await store.init()
+    const session = await store.create()
+    const records: SessionRecord[] = []
+    const gate = new PermissionGate(async () => true, undefined, { cwd })
+    gate.prepareContextForPlanMode()
+
+    let loop: AgentLoop | undefined
+    let dialogOpened = false
+    const manager = new PlanModeManager({
+      cwd,
+      sessionMeta: session,
+      store,
+      gate,
+      appendRecord: async (record) => {
+        records.push(record)
+        loop?.noteRecordAppended(record)
+      },
+      loadRecords: async () => [...records],
+      openExitDialog: async () => {
+        dialogOpened = true
+        return { kind: 'approve_restore_keep' }
+      },
+    })
+    gate.setPlanSlugProvider(() => manager.getSlug())
+    manager.onEnterPlanMode()
+
+    let calls = 0
+    const provider: ModelProvider = {
+      name: 'fake',
+      async createMessage() {
+        calls += 1
+        if (calls === 1) {
+          return {
+            content: '# Final plan\n\n- Update the approval flow.\n- Run tests.',
+            toolCalls: [],
+          }
+        }
+        return { content: 'implementation can now start', toolCalls: [] }
+      },
+    }
+    const runner = new ToolRunner([], gate, {
+      onRecord: async (record) => { records.push(record) },
+    })
+    loop = new AgentLoop({
+      provider,
+      model: 'fake-model',
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner: runner,
+      toolContext: {
+        cwd,
+        sessionId: session.id,
+        readFiles: new Set(),
+        getPermissionMode: () => gate.getMode(),
+        planModeBridge: manager.buildBridge(),
+      },
+      permissionMode: () => gate.getMode(),
+      planModeManager: manager,
+      recordStream: recordStreamFor(records),
+    })
+
+    const response = await loop.run('plan this change')
+
+    assert.equal(response.content, 'implementation can now start')
+    assert.equal(dialogOpened, true)
+    assert.equal(
+      records.some((record) =>
+        record.type === 'message'
+        && record.role === 'assistant'
+        && record.content.includes('# Final plan')
+      ),
+      false,
+      'plain assistant plan should not be persisted as chat',
+    )
+    const request = records.find(
+      (record): record is Extract<SessionRecord, { type: 'plan_mode_request' }> =>
+        record.type === 'plan_mode_request',
+    )
+    assert.ok(request)
+    assert.equal(request.kind, 'exit')
+    assert.match(request.planContent ?? '', /# Final plan/)
+  } finally {
+    clearAllPlanSlugs()
+    await rm(cwd, { recursive: true, force: true })
+  }
 })
 
 test('agent loop persists max_tokens partial response before continuation reminder', async () => {
@@ -1288,6 +1386,79 @@ test('agent loop auto-compacts without preparing records twice in the same itera
   assert.equal(callCount, 2)
   assert.equal(loadRecordsCount, 1)
   assert.ok(records.some((record) => record.type === 'compact_boundary'))
+})
+
+test('agent loop includes compact summary on the next user turn after compaction', async () => {
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'old context '.repeat(200),
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'old-assistant',
+      role: 'assistant',
+      content: 'old answer '.repeat(200),
+      createdAt: '2026-05-10T00:01:00.000Z',
+    },
+  ]
+  let mainCallCount = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      const contextItems = request.contextItems ?? []
+      const isCompactRequest = contextItems.some(
+        (item) => item.kind === 'message' && item.message.id === 'compact-request',
+      )
+      if (isCompactRequest) {
+        return { content: 'compact summary for later turns', toolCalls: [] }
+      }
+
+      mainCallCount += 1
+      const hasCompactSummary = contextItems.some(
+        (item) =>
+          item.kind === 'message'
+          && /Prior conversation was compacted/.test(item.message.content)
+          && /compact summary for later turns/.test(item.message.content),
+      )
+      if (mainCallCount === 1) {
+        assert.equal(hasCompactSummary, false)
+        assert.ok(contextItems.some((item) => item.kind === 'message' && item.message.id === 'old-user'))
+      } else {
+        assert.equal(hasCompactSummary, true)
+        assert.equal(contextItems.some((item) => item.kind === 'message' && item.message.id === 'old-user'), false)
+      }
+
+      return { content: `done ${mainCallCount}`, toolCalls: [] }
+    },
+  }
+  const tools: Tool[] = []
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 'summary-next-turn-session', readFiles: new Set() },
+    contextManagement: {
+      contextWindow: 600,
+      summaryOutputTokens: 100,
+      autoCompactBufferTokens: 50,
+    },
+    recordStream: recordStreamFor(records),
+  })
+
+  await loop.run('latest request')
+  await loop.run('follow up')
+
+  assert.equal(mainCallCount, 2)
+  assert.equal(records.filter((record) => record.type === 'compact_boundary').length, 1)
 })
 
 test('agent loop runs preCompact and postCompact hooks around successful compaction', async () => {

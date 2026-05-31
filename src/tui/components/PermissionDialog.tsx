@@ -3,6 +3,8 @@ import { Box, Text, useInput } from 'ink'
 import { theme } from '../theme.js'
 import type { PermissionDialogRequest, PermissionDialogState } from '../types.js'
 import type { PermissionRequest } from '../../harness/permissions.js'
+import { buildFileToolPreview, type FileToolPreview } from '../fileToolPreview.js'
+import { StructuredDiff } from './StructuredDiff.js'
 
 /**
  * Pure logic for the PermissionDialog component.
@@ -124,6 +126,7 @@ export function PermissionDialog({ permState, respond, setActiveRequest }: Permi
     typeof request.input === 'string'
       ? request.input.slice(0, 200)
       : JSON.stringify(request.input, null, 2)?.slice(0, 200) ?? ''
+  const filePreview = buildFileToolPreview(request.tool.name, request.input)
 
   const hotkeyColor = (action: PermissionAction): string => {
     if (action === 'allow') return theme.success
@@ -171,6 +174,7 @@ export function PermissionDialog({ permState, respond, setActiveRequest }: Permi
       <Box marginTop={1}>
         <Text color={theme.dimText}>Input: {inputSummary}</Text>
       </Box>
+      {filePreview ? <FileToolPreviewBlock preview={filePreview} /> : null}
       <Box flexDirection="column" marginTop={1}>
         {PERMISSION_OPTIONS.map((option, index) => {
           const isSelected = index === selectedIndex
@@ -194,6 +198,24 @@ export function PermissionDialog({ permState, respond, setActiveRequest }: Permi
           [Up/Down] Options  [Left/Right/Tab] Requests  [Enter] Select  [Esc] Cancel  [y/n/a] Quick
         </Text>
       </Box>
+    </Box>
+  )
+}
+
+function FileToolPreviewBlock({ preview }: { preview: FileToolPreview }) {
+  return (
+    <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor={theme.border} paddingX={1}>
+      <Text bold color={theme.toolName}>
+        {preview.title}{preview.filePath ? `: ${preview.filePath}` : ''}
+      </Text>
+      {preview.kind === 'diff' ? (
+        <>
+          <Text color={theme.dimText}>{preview.summary}</Text>
+          <StructuredDiff oldText={preview.oldText} newText={preview.newText} maxLines={18} />
+        </>
+      ) : (
+        <Text color={theme.dimText}>{preview.message}</Text>
+      )}
     </Box>
   )
 }

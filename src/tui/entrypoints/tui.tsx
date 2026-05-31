@@ -9,7 +9,6 @@ import { render } from 'ink'
 import { ConfigService } from '../../config/service.js'
 import {
   loadMergedSettings,
-  savePermissionModePreferenceLocally,
   trustMcpServerLocally,
   validateSettings,
 } from '../../config/settings.js'
@@ -24,6 +23,7 @@ import { ToolRunner } from '../../harness/toolRunner.js'
 import { ContextBuilder } from '../../harness/contextBuilder.js'
 import { SystemPromptSectionCache } from '../../harness/sections.js'
 import { AgentLoop } from '../../harness/loop.js'
+import { PlanModeManager } from '../../harness/planModeManager.js'
 import { logDiagnostics, summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
 import { SkillsService } from '../../services/skills/skillsService.js'
 import { AgentDefinitionLoader } from '../../services/agents/agentDefinitionLoader.js'
@@ -38,6 +38,9 @@ import type { ManagedMcpClient } from '../../services/mcp/index.js'
 import type { McpTool } from '../../services/mcp/index.js'
 import type { Tool } from '../../harness/types.js'
 import { createPromptProxy, createRecordProxy } from '../hooks/usePermission.js'
+import { createExitPlanProxy } from '../hooks/useExitPlanPermission.js'
+import { createEnterPlanProxy } from '../hooks/useEnterPlanPermission.js'
+import { createAskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
 import { App } from '../components/App.js'
 import type { AppRuntime } from '../components/App.js'
 import { TUI_USAGE, parseTuiStartupCommand, resolveStartupSession } from './cli.js'
@@ -231,12 +234,14 @@ async function main() {
   // Create proxies - React hooks will inject real handlers after mount
   const promptProxy = createPromptProxy()
   const recordProxy = createRecordProxy()
+  const exitPlanProxy = createExitPlanProxy()
+  const enterPlanProxy = createEnterPlanProxy()
+  const askUserQuestionProxy = createAskUserQuestionProxy()
   const denialStateStore: DenialStateStore = {
     getDenialState: async () => store.getDenialState(session.id),
     setDenialState: async (state) => store.setDenialState(session.id, state),
   }
   const permissionGate = new PermissionGate(promptProxy.prompt, undefined, {
-    mode: settings.permissionMode,
     denialStateStore,
   })
 
@@ -290,6 +295,23 @@ async function main() {
       : undefined
 
     const recordStream = new JsonlRecordStream(store, runtimeSession.id)
+    let loop: AgentLoop | undefined
+    const planModeManager = new PlanModeManager({
+      cwd,
+      sessionMeta: runtimeSession,
+      store,
+      gate: permissionGate,
+      appendRecord: async (record) => {
+        await recordStream.append(record)
+        loop?.noteRecordAppended(record)
+        recordProxy.onRecord(record)
+      },
+      loadRecords: async () => recordStream.load(),
+      openEnterPrompt: enterPlanProxy.open,
+      openExitDialog: exitPlanProxy.open,
+      onClearContextAndReplaceInput: async () => {},
+    })
+    permissionGate.setPlanSlugProvider(() => planModeManager.getSlug())
     const runtimeTools = [...baseTools, ...mcpToolsByServer.values()].flat()
     runtimeTools.push(createAgentTool({
       provider: targetProvider,
@@ -332,7 +354,7 @@ async function main() {
       preToolUse: settings.hooks?.preToolUse,
     })
 
-    const loop = new AgentLoop({
+    loop = new AgentLoop({
         provider: targetProvider,
         model: targetModelConfig.model,
         modelKey,
@@ -346,6 +368,11 @@ async function main() {
           readFileState: new Map(),
           invokedSkills: new Map(),
           taskState: new Map(),
+          getPermissionMode: () => permissionGate.getMode(),
+          setPermissionMode: (mode) => permissionGate.setMode(mode),
+          exitPlanMode: () => permissionGate.exitPlanMode(),
+          planModeBridge: planModeManager.buildBridge(),
+          askUserQuestionBridge: askUserQuestionProxy,
         },
         system: config.get().agent.system,
         skills,
@@ -355,6 +382,7 @@ async function main() {
         hooks: settings.hooks,
         cacheRuntime: { settings, env: process.env },
         permissionMode: () => permissionGate.getMode(),
+        planModeManager,
         fallbackModel,
         compactModel,
         getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
@@ -365,6 +393,7 @@ async function main() {
     activeLoops.add(loop)
     return {
       loop,
+      planModeManager,
       modelKey,
       modelConfig: targetModelConfig,
       providerName: targetProvider.name,
@@ -405,14 +434,11 @@ async function main() {
     // server cannot prevent the TUI from exiting cleanly.
     await Promise.allSettled(mcpClients.map((c) => c.close()))
   }
-  const onPermissionModeChange = async (mode: ReturnType<typeof permissionGate.getMode>) => {
-    await savePermissionModePreferenceLocally(cwd, mode)
-  }
-
   // Render the TUI
   const { waitUntilExit } = render(
     <App
       loop={initialRuntime.loop}
+      planModeManager={initialRuntime.planModeManager}
       modelKey={initialModelKey}
       store={store}
       session={session}
@@ -424,10 +450,12 @@ async function main() {
       permissionGate={permissionGate}
       promptProxy={promptProxy}
       recordProxy={recordProxy}
+      exitPlanProxy={exitPlanProxy}
+      enterPlanProxy={enterPlanProxy}
+      askUserQuestionProxy={askUserQuestionProxy}
       existingRecords={existingLoad.records}
       initialSystemMessages={initialSystemMessages}
       onBeforeExit={onBeforeExit}
-      onPermissionModeChange={onPermissionModeChange}
       reloadAgentDefinitions={reloadAgentDefinitions}
     />,
     {

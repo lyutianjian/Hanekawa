@@ -1,5 +1,5 @@
 import type { PermissionRequest } from '../harness/permissions.js'
-import type { CompactAttemptFailedRecord, TokenUsage, ToolErrorCode } from '../harness/types.js'
+import type { CompactAttemptFailedRecord, TokenUsage, ToolErrorCode, ToolResultDisplay } from '../harness/types.js'
 
 export type ToolCallStatus =
   | 'pending'
@@ -30,6 +30,7 @@ export type TUIDisplayItem =
       input: unknown
       status: ToolCallStatus
       result?: string
+      resultDisplay?: ToolResultDisplay
       errorCode?: ToolErrorCode
       createdAt: string
     }
@@ -74,6 +75,6 @@ export interface PermissionDialogRequest {
 }
 
 export interface TUIUsage {
-  current: TokenUsage | null
+  lastTurn: TokenUsage | null
   total: TokenUsage
 }

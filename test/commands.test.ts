@@ -7,6 +7,7 @@ import { modelCommand } from '../src/commands/model.js'
 import { repairCommand } from '../src/commands/repair.js'
 import { verifyCommand } from '../src/commands/verify.js'
 import { agentsCommand } from '../src/commands/agents.js'
+import { planCommand } from '../src/commands/plan.js'
 import type { CommandContext } from '../src/commands/types.js'
 
 function createContext(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -217,6 +218,68 @@ test('/compact reset clears persistent failure circuit', async () => {
     'clear-cache',
     'Auto-compact failure circuit reset.',
   ])
+})
+
+test('/plan enters plan mode without opening a missing plan file', async () => {
+  const events: string[] = []
+  let entered = false
+  let opened = false
+  await planCommand.run('open', createContext({
+    getPermissionMode: () => 'default',
+    enterPlanMode: () => { entered = true },
+    openPlanFile: async () => {
+      opened = true
+      return { message: 'opened' }
+    },
+    writeLine: (message) => { events.push(message) },
+  }))
+
+  assert.equal(entered, true)
+  assert.equal(opened, false)
+  assert.deepEqual(events, ['Enabled plan mode.'])
+})
+
+test('/plan with description enters plan mode and submits the description', async () => {
+  const submitted: string[] = []
+  const events: string[] = []
+  await planCommand.run('Design Plan Please', createContext({
+    getPermissionMode: () => 'default',
+    enterPlanMode: () => {},
+    submitQuery: async (input) => { submitted.push(input) },
+    writeLine: (message) => { events.push(message) },
+  }))
+
+  assert.deepEqual(events, ['Enabled plan mode.'])
+  assert.deepEqual(submitted, ['Design Plan Please'])
+})
+
+test('/plan in plan mode reports empty draft path', async () => {
+  let output = ''
+  await planCommand.run('', createContext({
+    getPermissionMode: () => 'plan',
+    readPlanFile: async () => ({ path: '/tmp/project/.myagent/plans/test.md', content: null }),
+    writeLine: (message) => { output = message },
+  }))
+
+  assert.match(output, /No draft plan written yet/)
+  assert.match(output, /test\.md/)
+})
+
+test('/plan open in plan mode opens only after content exists', async () => {
+  const events: string[] = []
+  let opened = false
+  await planCommand.run('open', createContext({
+    getPermissionMode: () => 'plan',
+    readPlanFile: async () => ({ path: '/tmp/project/.myagent/plans/test.md', content: '# Plan\n' }),
+    openPlanFile: async () => {
+      opened = true
+      return { message: 'Opened plan in editor: /tmp/project/.myagent/plans/test.md' }
+    },
+    writeLine: (message) => { events.push(message) },
+  }))
+
+  assert.equal(opened, true)
+  assert.deepEqual(events, ['Opened plan in editor: /tmp/project/.myagent/plans/test.md'])
 })
 
 test('/repair runs session repair and invalidates caches', async () => {

@@ -27,7 +27,7 @@ const OPTIONS: readonly EntryOption[] = [
  *   - two-option Select + Esc to cancel
  *
  * User-initiated plan-mode entries (`/plan` and Shift+Tab) skip this
- * dialog entirely and flip the gate directly �?they are explicit user
+ * dialog entirely and flip the gate directly; they are explicit user
  * intent and don't need confirmation. This dialog appears only when the
  * model autonomously calls the `EnterPlanMode` tool.
  */

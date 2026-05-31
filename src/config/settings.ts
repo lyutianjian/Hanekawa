@@ -2,8 +2,8 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { AgentConfig, ModelConfig } from './service.js'
+import type { Endpoint, Profile, Routing } from './routing.js'
 import type { HookCommand } from '../harness/hooks.js'
-import type { PermissionMode } from '../harness/permissions.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
 
 export type HookCommandSetting = HookCommand
@@ -33,13 +33,16 @@ export interface MyAgentSettings {
     ttl1h?: boolean
   }
   models?: Record<string, ModelConfig>
+  endpoints?: Record<string, Endpoint>
+  profiles?: Record<string, Profile>
+  activeProfile?: string
+  routing?: Routing
   defaultModel?: string
   fallbackModel?: string
   compactModel?: string
   agent?: AgentConfig
   autoCompact?: boolean
   autoCompactThreshold?: number
-  permissionMode?: PermissionMode
 }
 
 interface LegacyMcpSettings {
@@ -99,6 +102,29 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
 
     if (source.models) {
       result.models = { ...result.models, ...source.models }
+    }
+
+    if (source.endpoints) {
+      result.endpoints = { ...result.endpoints, ...source.endpoints }
+    }
+
+    if (source.profiles) {
+      result.profiles = { ...result.profiles, ...source.profiles }
+    }
+
+    if (source.activeProfile !== undefined) {
+      result.activeProfile = source.activeProfile
+    }
+
+    if (source.routing) {
+      result.routing = {
+        ...result.routing,
+        ...source.routing,
+        subagent: {
+          ...result.routing?.subagent,
+          ...source.routing.subagent,
+        },
+      }
     }
 
     if (source.agent) {
@@ -219,9 +245,6 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
       result.autoCompactThreshold = source.autoCompactThreshold
     }
 
-    if (source.permissionMode !== undefined) {
-      result.permissionMode = source.permissionMode
-    }
   }
 
   return result
@@ -251,16 +274,6 @@ export async function trustMcpServerLocally(cwd: string, serverName: string): Pr
   await rename(`${localSettingsPath}.tmp`, localSettingsPath)
 }
 
-export async function savePermissionModePreferenceLocally(cwd: string, mode: PermissionMode): Promise<void> {
-  const localSettingsPath = join(cwd, '.myagent', 'settings.local.json')
-  const localSettings = await loadSettingsFile(localSettingsPath)
-  localSettings.permissionMode = mode
-
-  await mkdir(join(cwd, '.myagent'), { recursive: true })
-  await writeFile(`${localSettingsPath}.tmp`, `${JSON.stringify(localSettings, null, 2)}\n`, 'utf-8')
-  await rename(`${localSettingsPath}.tmp`, localSettingsPath)
-}
-
 export function validateSettings(settings: MyAgentSettings): { valid: boolean; errors: string[] } {
   const errors: string[] = []
 
@@ -271,7 +284,9 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
         continue
       }
       if (typeof model.provider !== 'string' || model.provider.trim() === '') {
-        errors.push(`models.${name}.provider must be a non-empty string`)
+        if (typeof model.endpoint !== 'string' || model.endpoint.trim() === '') {
+          errors.push(`models.${name}.provider must be a non-empty string when endpoint is not set`)
+        }
       }
       if (typeof model.model !== 'string' || model.model.trim() === '') {
         errors.push(`models.${name}.model must be a non-empty string`)
@@ -330,10 +345,6 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
     errors.push('cache.ttl1h must be a boolean')
   }
 
-  if (settings.permissionMode !== undefined && !isPermissionMode(settings.permissionMode)) {
-    errors.push('permissionMode must be one of: default, plan, acceptEdits, auto, bypass')
-  }
-
   for (const name of ['userPromptSubmit', 'preToolUse', 'postToolUse', 'preCompact', 'postCompact', 'subagentStart', 'subagentStop', 'stop'] as const) {
     const hooks = settings.hooks?.[name]
     if (hooks !== undefined && !Array.isArray(hooks)) {
@@ -346,14 +357,6 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
   }
 
   return { valid: errors.length === 0, errors }
-}
-
-function isPermissionMode(value: unknown): value is PermissionMode {
-  return value === 'default'
-    || value === 'plan'
-    || value === 'acceptEdits'
-    || value === 'auto'
-    || value === 'bypass'
 }
 
 function validateHookSetting(hook: HookCommandSetting, path: string, errors: string[]): void {

@@ -6,6 +6,7 @@ import {
   nextPermissionIndex,
   resolvePermissionAction,
 } from '../src/tui/components/PermissionDialog.js'
+import { buildFileToolPreview } from '../src/tui/fileToolPreview.js'
 
 /**
  * Unit tests for the pure logic backing the PermissionDialog component.
@@ -112,5 +113,105 @@ describe('resolvePermissionAction', () => {
     for (let i = 0; i < PERMISSION_OPTIONS.length; i++) {
       assert.equal(resolvePermissionAction(i), PERMISSION_OPTIONS[i]!.action)
     }
+  })
+})
+
+describe('buildFileToolPreview', () => {
+  const cwd = process.cwd()
+  const readFile = () => 'alpha beta gamma\n'
+
+  it('previews creating a file with an empty old side', () => {
+    const preview = buildFileToolPreview('Write', {
+      filePath: 'src/new-file.txt',
+      content: 'new content\n',
+    }, {
+      cwd,
+      readFile: () => undefined,
+    })
+
+    assert.equal(preview?.kind, 'diff')
+    if (preview?.kind !== 'diff') return
+    assert.equal(preview.title, 'Create file')
+    assert.equal(preview.oldText, '')
+    assert.equal(preview.newText, 'new content\n')
+  })
+
+  it('previews overwriting a file with existing content', () => {
+    const preview = buildFileToolPreview('Write', {
+      filePath: 'src/existing-file.txt',
+      content: 'replacement\n',
+    }, { cwd, readFile })
+
+    assert.equal(preview?.kind, 'diff')
+    if (preview?.kind !== 'diff') return
+    assert.equal(preview.title, 'Overwrite file')
+    assert.equal(preview.oldText, 'alpha beta gamma\n')
+    assert.equal(preview.newText, 'replacement\n')
+  })
+
+  it('previews a single exact edit', () => {
+    const preview = buildFileToolPreview('Edit', {
+      filePath: 'src/edit-me.txt',
+      oldString: 'beta',
+      newString: 'BETA',
+    }, { cwd, readFile })
+
+    assert.equal(preview?.kind, 'diff')
+    if (preview?.kind !== 'diff') return
+    assert.equal(preview.oldText, 'alpha beta gamma\n')
+    assert.equal(preview.newText, 'alpha BETA gamma\n')
+  })
+
+  it('previews multiple edits using the file tool ordering semantics', () => {
+    const preview = buildFileToolPreview('MultiEdit', {
+      filePath: 'src/multi-edit-me.txt',
+      edits: [
+        { oldString: 'alpha', newString: 'ALPHA' },
+        { oldString: 'gamma', newString: 'GAMMA' },
+      ],
+    }, { cwd, readFile })
+
+    assert.equal(preview?.kind, 'diff')
+    if (preview?.kind !== 'diff') return
+    assert.equal(preview.oldText, 'alpha beta gamma\n')
+    assert.equal(preview.newText, 'ALPHA beta GAMMA\n')
+  })
+
+  it('reports ambiguous edits instead of showing a misleading diff', () => {
+    const preview = buildFileToolPreview('Edit', {
+      filePath: 'src/ambiguous.txt',
+      oldString: 'beta',
+      newString: 'BETA',
+    }, {
+      cwd,
+      readFile: () => 'beta beta\n',
+    })
+
+    assert.equal(preview?.kind, 'message')
+    if (preview?.kind !== 'message') return
+    assert.match(preview.message, /Expected exactly one match/)
+  })
+
+  it('previews deleting a file with an empty new side', () => {
+    const preview = buildFileToolPreview('Delete', {
+      filePath: 'src/remove-me.txt',
+    }, { cwd, readFile })
+
+    assert.equal(preview?.kind, 'diff')
+    if (preview?.kind !== 'diff') return
+    assert.equal(preview.title, 'Delete file')
+    assert.equal(preview.oldText, 'alpha beta gamma\n')
+    assert.equal(preview.newText, '')
+  })
+
+  it('keeps unsafe paths in a non-crashing message preview', () => {
+    const preview = buildFileToolPreview('Write', {
+      filePath: '../outside.txt',
+      content: 'nope',
+    }, { cwd, readFile })
+
+    assert.equal(preview?.kind, 'message')
+    if (preview?.kind !== 'message') return
+    assert.match(preview.message, /outside the working directory/)
   })
 })

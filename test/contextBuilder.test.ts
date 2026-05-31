@@ -106,12 +106,12 @@ test('ContextBuilder adds a dynamic plan mode reminder', async () => {
   })
 
   assert.match(built.system ?? '', /You are in plan mode/)
-  assert.match(built.system ?? '', /To take action you must first present the plan to the user/)
+  assert.match(built.system ?? '', /Use AskUserQuestion if you need to clarify approaches/)
+  assert.match(built.system ?? '', /Exit plan mode with ExitPlanMode when ready to implement/)
+  assert.match(built.system ?? '', /Ordinary assistant-text plans are invalid/)
   assert.equal(built.systemBlocks?.at(-2), '__MYAGENT_SYSTEM_PROMPT_DYNAMIC_BOUNDARY__')
-  assert.equal(
-    built.systemBlocks?.at(-1),
-    '<system-reminder>You are in plan mode. Read-only operations are auto-approved. To take action you must first present the plan to the user.</system-reminder>',
-  )
+  assert.match(built.systemBlocks?.at(-1) ?? '', /What Happens in Plan Mode/)
+  assert.match(built.systemBlocks?.at(-1) ?? '', /ExitPlanMode inherently requests user approval/)
 })
 
 test('ContextBuilder injects available skills as system reminder', async () => {

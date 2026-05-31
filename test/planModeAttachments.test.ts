@@ -123,8 +123,8 @@ test('reminders contain expected anchor text', () => {
   // Allow/disallow tool sections — TodoWrite is explicitly forbidden in
   // plan mode (mirrors Claude Code's prompt-only enforcement).
   assert.match(full, /AskUserQuestion ONLY to clarify/)
-  assert.match(full, /approval UI appears only when you call ExitPlanMode/)
-  assert.match(full, /ExitPlanMode\(\{ plan: "\.\.\." \}\)/)
+  assert.doesNotMatch(full, /Ordinary assistant-text plans are invalid/)
+  assert.match(full, /Call ExitPlanMode/)
   assert.doesNotMatch(full, /Tools you must NOT call in plan mode/)
 
   const sparse = buildSparsePlanModeReminder(planPath)
@@ -160,7 +160,7 @@ test('post-exit reminder still works when plan content is empty', () => {
   // and emits an exit reminder with no embedded plan body. The todo nudge
   // must still appear so the model knows to start with TodoWrite.
   const reminder = buildPlanModeExitReminder('')
-  assert.match(reminder, /User has approved your plan/)
-  assert.match(reminder, /TodoWrite/)
+  assert.match(reminder, /User has approved exiting plan mode/)
+  assert.match(reminder, /You can now proceed/)
   assert.doesNotMatch(reminder, /Approved plan content:/)
 })

@@ -3,6 +3,60 @@ import assert from 'node:assert/strict'
 import { DoubleTapDetector } from '../src/tui/utils/doubleTapDetector.js'
 
 describe('useKeyboardShortcuts behavior (via pure shortcut pieces)', () => {
+  it('Escape after clearing non-empty input does not count toward restore-mode double-tap', () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 })
+    try {
+      const detector = new DoubleTapDetector({ windowMs: 300 })
+      let text = 'draft'
+      let cursorPos = text.length
+      let restoreModeEntered = false
+      let lastInputClearTime: number | null = null
+
+      const pressEscape = () => {
+        if (text.length > 0) {
+          detector.cancel()
+          lastInputClearTime = Date.now()
+          text = ''
+          cursorPos = 0
+          return
+        }
+
+        if (lastInputClearTime !== null && Date.now() - lastInputClearTime < 300) {
+          lastInputClearTime = null
+          detector.cancel()
+          text = ''
+          cursorPos = 0
+          return
+        }
+        lastInputClearTime = null
+
+        const result = detector.tap('escape', () => {})
+        if (result === 'double') {
+          restoreModeEntered = true
+        }
+      }
+
+      pressEscape()
+      mock.timers.tick(100)
+      pressEscape()
+
+      assert.equal(text, '')
+      assert.equal(cursorPos, 0)
+      assert.equal(restoreModeEntered, false)
+
+      mock.timers.tick(100)
+      pressEscape()
+      mock.timers.tick(100)
+      pressEscape()
+
+      assert.equal(restoreModeEntered, true)
+
+      detector.dispose()
+    } finally {
+      mock.timers.reset()
+    }
+  })
+
   it('Escape double-tap within the window returns "double" so restore mode can open', () => {
     mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 })
     try {

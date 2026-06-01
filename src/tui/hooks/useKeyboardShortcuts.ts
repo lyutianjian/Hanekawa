@@ -67,10 +67,13 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const escapeDetectorRef = useRef<DoubleTapDetector | null>(null)
   const ctrlCDetectorRef = useRef<DoubleTapDetector | null>(null)
+  const doubleTapWindowMsRef = useRef(options.doubleTapWindowMs ?? 300)
+  const escapeInputClearTimeRef = useRef<number | null>(null)
 
   // Load doubleTapWindow from keybindings config on mount
   useEffect(() => {
     const configWindowMs = options.doubleTapWindowMs ?? loadKeybindingsConfig(process.cwd()).doubleTapWindow
+    doubleTapWindowMsRef.current = configWindowMs
 
     escapeDetectorRef.current = new DoubleTapDetector({ windowMs: configWindowMs })
     ctrlCDetectorRef.current = new DoubleTapDetector({ windowMs: configWindowMs })
@@ -131,6 +134,28 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
           onInterrupt()
           return
         }
+
+        if (text.length > 0) {
+          escapeDetectorRef.current?.cancel()
+          escapeInputClearTimeRef.current = Date.now()
+          setText('')
+          setCursorPos(0)
+          return
+        }
+
+        const lastInputClearTime = escapeInputClearTimeRef.current
+        if (
+          lastInputClearTime !== null &&
+          Date.now() - lastInputClearTime < doubleTapWindowMsRef.current
+        ) {
+          escapeInputClearTimeRef.current = null
+          escapeDetectorRef.current?.cancel()
+          setText('')
+          setCursorPos(0)
+          return
+        }
+        escapeInputClearTimeRef.current = null
+
         const result = escapeDetectorRef.current?.tap('escape', () => {})
         if (result === 'double') {
           onEnterRestoreMode()

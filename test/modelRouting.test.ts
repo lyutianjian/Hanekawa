@@ -6,6 +6,7 @@ import { ConfigService } from '../src/config/service.js'
 import {
   DEFAULT_ROUTING,
   mergeRouting,
+  parseTierInput,
   pickTier,
   resolveTier,
 } from '../src/config/routing.js'
@@ -40,6 +41,15 @@ test('resolveTier: powerful prefers balanced then fast', () => {
 test('resolveTier: empty profile returns undefined', () => {
   assert.equal(resolveTier({}, 'fast'), undefined)
   assert.equal(resolveTier(undefined, 'balanced'), undefined)
+})
+
+test('parseTierInput: accepts only Hanekawa tier names', () => {
+  assert.equal(parseTierInput('fast'), 'fast')
+  assert.equal(parseTierInput(' BALANCED '), 'balanced')
+  assert.equal(parseTierInput('powerful'), 'powerful')
+  assert.equal(parseTierInput('haiku'), undefined)
+  assert.equal(parseTierInput('opus'), undefined)
+  assert.equal(parseTierInput('inherit'), undefined)
 })
 
 test('mergeRouting: defaults applied when nothing provided', () => {
@@ -259,6 +269,69 @@ test('ConfigService.resolveModelKeyFor: no profile -> falls back to currentModel
       cfg.resolveModelKeyFor({ kind: 'subagent', type: 'explore' }, { currentModelKey: 'only' }),
       'only',
     )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService.resolveModelKeyFor: invalid current falls back to valid default', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: { only: { provider: 'openai', model: 'only' } },
+      defaultModel: 'only',
+    })
+    const cfg = new ConfigService(dir)
+    await cfg.load()
+    assert.equal(cfg.resolveModelKeyFor({ kind: 'plan' }, { currentModelKey: 'missing' }), 'only')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService.resolveModelInput: exact model keys and tiers resolve, inherit is rejected', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: {
+        fastModel: { provider: 'openai', model: 'fast' },
+        main: { provider: 'openai', model: 'main' },
+        power: { provider: 'openai', model: 'power' },
+      },
+      profiles: {
+        p: { fast: 'fastModel', balanced: 'main', powerful: 'power' },
+      },
+      activeProfile: 'p',
+      defaultModel: 'main',
+    })
+    const cfg = new ConfigService(dir)
+    await cfg.load()
+    assert.equal(cfg.resolveModelInput('main'), 'main')
+    assert.equal(cfg.resolveModelInput('fast'), 'fastModel')
+    assert.equal(cfg.resolveModelInput('powerful'), 'power')
+    assert.equal(cfg.resolveModelInput('inherit'), undefined)
+    assert.equal(cfg.resolveModelInput('sonnet'), undefined)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService.resolveModelInput: exact model key wins over tier spelling', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: {
+        fast: { provider: 'openai', model: 'literal-fast' },
+        routedFast: { provider: 'openai', model: 'routed-fast' },
+        main: { provider: 'openai', model: 'main' },
+      },
+      profiles: { p: { fast: 'routedFast', balanced: 'main' } },
+      activeProfile: 'p',
+      defaultModel: 'main',
+    })
+    const cfg = new ConfigService(dir)
+    await cfg.load()
+    assert.equal(cfg.resolveModelInput('fast'), 'fast')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

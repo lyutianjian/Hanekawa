@@ -13,16 +13,18 @@ import {
   validateSettings,
 } from '../../config/settings.js'
 import { createProvider } from '../../config/providers.js'
+import type { RoutingRole } from '../../config/routing.js'
 import { SessionStore } from '../../sessions/service.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import { JsonlRecordStream } from '../../sessions/recordStream.js'
 import { getAllTools } from '../../tools/index.js'
 import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, prepareForkPreloadRecords } from '../../tools/agentTool.js'
+import { restoreTaskStateFromRecords } from '../../tools/taskTools.js'
 import { PermissionGate, type DenialStateStore } from '../../harness/permissions.js'
 import { ToolRunner } from '../../harness/toolRunner.js'
 import { ContextBuilder } from '../../harness/contextBuilder.js'
 import { SystemPromptSectionCache } from '../../harness/sections.js'
-import { AgentLoop } from '../../harness/loop.js'
+import { AgentLoop, type ActiveModelRuntime } from '../../harness/loop.js'
 import { PlanModeManager } from '../../harness/planModeManager.js'
 import { logDiagnostics, summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
 import { SkillsService } from '../../services/skills/skillsService.js'
@@ -36,7 +38,7 @@ import {
 } from '../../services/mcp/index.js'
 import type { ManagedMcpClient } from '../../services/mcp/index.js'
 import type { McpTool } from '../../services/mcp/index.js'
-import type { Tool } from '../../harness/types.js'
+import type { SessionRecord, Tool } from '../../harness/types.js'
 import { createPromptProxy, createRecordProxy } from '../hooks/usePermission.js'
 import { createExitPlanProxy } from '../hooks/useExitPlanPermission.js'
 import { createEnterPlanProxy } from '../hooks/useEnterPlanPermission.js'
@@ -108,15 +110,17 @@ async function main() {
     process.exit(1)
   }
 
-  const modelConfig = config.getDefaultModel()
-  if (!modelConfig) {
+  const initialModelKey = config.resolveModelKeyFor(
+    { kind: 'main' },
+    { currentModelKey: config.get().defaultModel },
+  )
+  if (!initialModelKey) {
     console.error('No default model configured.')
     process.exit(1)
   }
-
-  const initialModelKey = config.get().defaultModel
-  if (!initialModelKey) {
-    console.error('No default model configured.')
+  const modelConfig = config.getModel(initialModelKey)
+  if (!modelConfig) {
+    console.error(`Initial model could not be resolved: ${initialModelKey}`)
     process.exit(1)
   }
   const fallbackModelKey = config.get().fallbackModel
@@ -247,6 +251,30 @@ async function main() {
 
   const contextManagement = config.get().agent.contextManagement
   const isGitRepo = existsSync(join(cwd, '.git'))
+  const restoredTaskStates = new Map<string, ReturnType<typeof restoreTaskStateFromRecords>>()
+
+  const createActiveModelRuntime = (modelKey: string): ActiveModelRuntime => {
+    const targetModelConfig = config.getModel(modelKey)
+    if (!targetModelConfig) {
+      throw new Error(`Unknown model: ${modelKey}`)
+    }
+    const targetProvider = createProvider(targetModelConfig)
+    if (!targetProvider) {
+      throw new Error(`Failed to create provider for: ${targetModelConfig.provider}`)
+    }
+    return {
+      provider: targetProvider,
+      model: targetModelConfig.model,
+      modelKey,
+      providerName: targetProvider.name,
+      promptCacheRetention: targetModelConfig.promptCacheRetention,
+    }
+  }
+
+  const createRoutedRuntime = (role: RoutingRole, currentModelKey: string): ActiveModelRuntime | undefined => {
+    const routedModelKey = config.resolveModelKeyFor(role, { currentModelKey })
+    return routedModelKey ? createActiveModelRuntime(routedModelKey) : undefined
+  }
 
   const createRuntime = (modelKey: string, runtimeSession: SessionMeta): AppRuntime => {
     const targetModelConfig = config.getModel(modelKey)
@@ -259,40 +287,16 @@ async function main() {
       throw new Error(`Failed to create provider for: ${targetModelConfig.provider}`)
     }
 
-    const fallbackModelConfig = fallbackModelKey && fallbackModelKey !== modelKey
-      ? config.getModel(fallbackModelKey)
-      : undefined
-    const fallbackProvider = fallbackModelConfig ? createProvider(fallbackModelConfig) : undefined
-    if (fallbackModelConfig && !fallbackProvider) {
-      throw new Error(`Failed to create fallback provider for: ${fallbackModelConfig.provider}`)
-    }
-
-    const fallbackModel = fallbackModelConfig && fallbackProvider
-      ? {
-          provider: fallbackProvider,
-          model: fallbackModelConfig.model,
-          modelKey: fallbackModelKey,
-          providerName: fallbackProvider.name,
-          promptCacheRetention: fallbackModelConfig.promptCacheRetention,
-      }
+    const currentFallbackModelKey = config.get().fallbackModel
+    const fallbackModel = currentFallbackModelKey && currentFallbackModelKey !== modelKey
+      ? createActiveModelRuntime(currentFallbackModelKey)
       : undefined
 
-    const compactModelConfig = compactModelKey
-      ? config.getModel(compactModelKey)
-      : undefined
-    const compactProvider = compactModelConfig ? createProvider(compactModelConfig) : undefined
-    if (compactModelConfig && !compactProvider) {
-      throw new Error(`Failed to create compact provider for: ${compactModelConfig.provider}`)
-    }
-    const compactModel = compactModelConfig && compactProvider
-      ? {
-          provider: compactProvider,
-          model: compactModelConfig.model,
-          modelKey: compactModelKey,
-          providerName: compactProvider.name,
-          promptCacheRetention: compactModelConfig.promptCacheRetention,
-        }
-      : undefined
+    const currentCompactModelKey = config.get().compactModel
+    const compactModel = currentCompactModelKey
+      ? createActiveModelRuntime(currentCompactModelKey)
+      : createRoutedRuntime({ kind: 'compact' }, modelKey)
+    const planModel = createRoutedRuntime({ kind: 'plan' }, modelKey)
 
     const recordStream = new JsonlRecordStream(store, runtimeSession.id)
     let loop: AgentLoop | undefined
@@ -336,6 +340,10 @@ async function main() {
       hooks: settings.hooks,
       cacheRuntime: { settings, env: process.env },
       compactModel,
+      resolveSubagentModel: (subagentType) => createRoutedRuntime(
+        { kind: 'subagent', type: subagentType },
+        modelKey,
+      ),
       getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
       setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
       agentTimeoutMs: config.get().agent.agentTimeoutMs,
@@ -367,7 +375,7 @@ async function main() {
           readFiles: new Set(),
           readFileState: new Map(),
           invokedSkills: new Map(),
-          taskState: new Map(),
+          taskState: new Map(restoredTaskStates.get(runtimeSession.id) ?? []),
           getPermissionMode: () => permissionGate.getMode(),
           setPermissionMode: (mode) => permissionGate.setMode(mode),
           exitPlanMode: () => permissionGate.exitPlanMode(),
@@ -385,6 +393,7 @@ async function main() {
         planModeManager,
         fallbackModel,
         compactModel,
+        planModel,
         getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
         setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
         recordStream,
@@ -404,10 +413,15 @@ async function main() {
     }
   }
 
-  const initialRuntime = createRuntime(initialModelKey, session)
-
   // Load existing records for display
   const existingLoad = await store.loadRecordsWithDiagnostics(session.id)
+  restoredTaskStates.set(session.id, restoreTaskStateFromRecords(existingLoad.records))
+  const initialQueuedPrompt = process.env.MYAGENT_RESUME_INTERRUPTED_TURN
+    ? latestRecoverableInterruption(existingLoad.records) ? 'continue' : undefined
+    : undefined
+
+  const initialRuntime = createRuntime(initialModelKey, session)
+
   logDiagnostics(existingLoad.diagnostics)
   const initialDiagnosticSummary = summarizeDiagnosticsForTui(existingLoad.diagnostics)
   const initialSystemMessages = [
@@ -446,6 +460,8 @@ async function main() {
       providerName={initialRuntime.providerName}
       dispose={initialRuntime.dispose}
       availableModelKeys={Object.keys(config.get().models)}
+      resolveModelInput={(input, currentModelKey) => config.resolveModelInput(input, { currentModelKey })}
+      providerConfig={config}
       createRuntime={createRuntime}
       permissionGate={permissionGate}
       promptProxy={promptProxy}
@@ -455,6 +471,7 @@ async function main() {
       askUserQuestionProxy={askUserQuestionProxy}
       existingRecords={existingLoad.records}
       initialSystemMessages={initialSystemMessages}
+      initialQueuedPrompt={initialQueuedPrompt}
       onBeforeExit={onBeforeExit}
       reloadAgentDefinitions={reloadAgentDefinitions}
     />,
@@ -464,6 +481,12 @@ async function main() {
   )
 
   await waitUntilExit()
+}
+
+function latestRecoverableInterruption(records: readonly SessionRecord[]): boolean {
+  return [...records]
+    .reverse()
+    .some((record) => record.type === 'turn_interruption' && record.recoverable && !record.consumedAt)
 }
 
 main().catch((err) => {

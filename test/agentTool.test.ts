@@ -151,6 +151,46 @@ test('Agent tool bridges sub-agent transcripts without leaking child tool record
   assert.match(summary.content, /tokens="15"/)
 })
 
+test('Agent tool uses routed sub-agent runtime without exposing model input', async () => {
+  const parentProvider: ModelProvider = {
+    name: 'parent',
+    async createMessage() {
+      throw new Error('parent provider should not be used for routed explore agent')
+    },
+  }
+  let seenModel = ''
+  const routedProvider: ModelProvider = {
+    name: 'routed',
+    async createMessage(request) {
+      seenModel = request.model
+      return { content: 'routed result', toolCalls: [] }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider: parentProvider,
+    model: 'parent-model',
+    modelKey: 'parent-key',
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    resolveSubagentModel: (subagentType) => {
+      assert.equal(subagentType, 'explore')
+      return {
+        provider: routedProvider,
+        model: 'explore-model',
+        modelKey: 'explore-key',
+        providerName: 'routed',
+      }
+    },
+  })
+
+  const result = await agentTool.execute({ task: 'map files', subagent_type: 'explore' }, toolContext())
+
+  assert.equal(result.ok, true)
+  assert.equal(result.content, 'routed result')
+  assert.equal(seenModel, 'explore-model')
+})
+
 test('Agent tool aborts sub-agent runs after agentTimeoutMs', async () => {
   const provider: ModelProvider = {
     name: 'fake',

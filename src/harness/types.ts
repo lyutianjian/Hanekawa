@@ -145,6 +145,18 @@ export interface PlanModeOutcomeRecord {
   turnId?: string
 }
 
+export interface TurnInterruptionRecord {
+  id: string
+  type: 'turn_interruption'
+  userMessageId: string
+  prompt: string
+  remainingTasks: TaskItem[]
+  recoverable: boolean
+  consumedAt?: string
+  createdAt: string
+  turnId?: string
+}
+
 export type SessionRecord =
   | ({ type: 'message' } & ChatMessage)
   | ToolUseRecord
@@ -156,6 +168,7 @@ export type SessionRecord =
   | SubagentTranscriptRecord
   | PlanModeRequestRecord
   | PlanModeOutcomeRecord
+  | TurnInterruptionRecord
 
 export interface TaskItem {
   id: string
@@ -163,6 +176,10 @@ export interface TaskItem {
   subject: string
   description: string
   activeForm?: string
+  owner?: string
+  blocks?: string[]
+  blockedBy?: string[]
+  metadata?: Record<string, unknown>
 }
 
 export interface PlanModeBridge {

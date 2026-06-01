@@ -27,6 +27,7 @@ interface UseCommandsOptions {
   readPlanFile?: () => Promise<{ path: string; content: string | null }>
   openPlanFile?: () => Promise<{ message: string }>
   submitQuery?: (input: string) => Promise<void>
+  openProviderPanel?: () => void
 }
 
 export function useCommands({
@@ -49,6 +50,7 @@ export function useCommands({
   readPlanFile,
   openPlanFile,
   submitQuery,
+  openProviderPanel,
 }: UseCommandsOptions) {
   const { exit } = useApp()
 
@@ -96,6 +98,8 @@ export function useCommands({
   openPlanFileRef.current = openPlanFile
   const submitQueryRef = useRef(submitQuery)
   submitQueryRef.current = submitQuery
+  const openProviderPanelRef = useRef(openProviderPanel)
+  openProviderPanelRef.current = openProviderPanel
   const storeRef = useRef(store)
   storeRef.current = store
   const cwdRef = useRef(cwd)
@@ -156,6 +160,7 @@ export function useCommands({
         readPlanFile: readPlanFileRef.current,
         openPlanFile: openPlanFileRef.current,
         submitQuery: submitQueryRef.current,
+        openProviderPanel: openProviderPanelRef.current,
       }
 
       try {

@@ -21,6 +21,13 @@ export type Tier = 'fast' | 'balanced' | 'powerful'
 
 export type TierOrInherit = Tier | 'inherit'
 
+export function parseTierInput(input: string): Tier | undefined {
+  const normalized = input.trim().toLowerCase()
+  return normalized === 'fast' || normalized === 'balanced' || normalized === 'powerful'
+    ? normalized
+    : undefined
+}
+
 export interface Endpoint {
   provider: string
   baseUrl?: string

@@ -127,9 +127,11 @@ test('plan mode routes assistant text-only plan through exit approval instead of
     manager.onEnterPlanMode()
 
     let calls = 0
+    const seenModels: string[] = []
     const provider: ModelProvider = {
       name: 'fake',
-      async createMessage() {
+      async createMessage(request) {
+        seenModels.push(request.model)
         calls += 1
         if (calls === 1) {
           return {
@@ -158,12 +160,20 @@ test('plan mode routes assistant text-only plan through exit approval instead of
       },
       permissionMode: () => gate.getMode(),
       planModeManager: manager,
+      planModel: {
+        provider,
+        model: 'plan-model',
+        modelKey: 'plan-key',
+        providerName: 'fake',
+      },
       recordStream: recordStreamFor(records),
     })
 
     const response = await loop.run('plan this change')
 
     assert.equal(response.content, 'implementation can now start')
+    assert.equal(seenModels[0], 'plan-model')
+    assert.equal(loop.getActiveModel().model, 'fake-model')
     assert.equal(dialogOpened, true)
     assert.equal(
       records.some((record) =>

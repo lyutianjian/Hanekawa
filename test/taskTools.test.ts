@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { taskCreateTool, taskGetTool, taskListTool, taskUpdateTool, todoWriteTool } from '../src/tools/taskTools.js'
-import type { ToolContext } from '../src/harness/types.js'
+import { restoreTaskStateFromRecords, taskCreateTool, taskGetTool, taskListTool, taskUpdateTool, todoWriteTool } from '../src/tools/taskTools.js'
+import type { SessionRecord, ToolContext } from '../src/harness/types.js'
 
 function makeContext(): ToolContext {
   return {
@@ -16,13 +16,14 @@ test('TodoWrite replaces the session todo list', async () => {
   const ctx = makeContext()
   const result = await todoWriteTool.execute({
     todos: [
-      { id: 'setup', content: 'Inspect tool definitions', status: 'completed' },
+      { id: 'setup', content: 'Inspect tool definitions', status: 'completed', activeForm: 'Inspecting tool definitions' },
       { id: 'tests', content: 'Update tests', status: 'in_progress', activeForm: 'Updating tests' },
     ],
   }, ctx)
 
   assert.equal(result.ok, true)
-  assert.match(result.content, /Inspect tool definitions/)
+  assert.match(result.content, /Todos have been modified successfully/)
+  assert.match(result.metadata?.display?.detail ?? '', /Inspect tool definitions/)
   assert.equal(ctx.taskState!.size, 2)
   assert.equal(ctx.taskState!.get('setup')!.status, 'completed')
   assert.equal(ctx.taskState!.get('tests')!.subject, 'Update tests')
@@ -33,29 +34,29 @@ test('TodoWrite removes omitted todos on replacement', async () => {
   const ctx = makeContext()
   await todoWriteTool.execute({
     todos: [
-      { id: 'one', content: 'Keep this', status: 'pending' },
-      { id: 'two', content: 'Drop this', status: 'pending' },
+      { id: 'one', content: 'Keep this', status: 'pending', activeForm: 'Keeping this' },
+      { id: 'two', content: 'Drop this', status: 'pending', activeForm: 'Dropping this' },
     ],
   }, ctx)
 
   const result = await todoWriteTool.execute({
     todos: [
-      { id: 'one', content: 'Keep this', status: 'completed' },
+      { id: 'one', content: 'Keep this', status: 'pending', activeForm: 'Keeping this' },
     ],
   }, ctx)
 
   assert.equal(result.ok, true)
   assert.equal(ctx.taskState!.size, 1)
   assert.equal(ctx.taskState!.has('two'), false)
-  assert.equal(ctx.taskState!.get('one')!.status, 'completed')
+  assert.equal(ctx.taskState!.get('one')!.status, 'pending')
 })
 
 test('TodoWrite assigns stable numeric ids when omitted', async () => {
   const ctx = makeContext()
   const result = await todoWriteTool.execute({
     todos: [
-      { content: 'First', status: 'pending' },
-      { content: 'Second', status: 'pending' },
+      { content: 'First', status: 'pending', activeForm: 'Doing first' },
+      { content: 'Second', status: 'pending', activeForm: 'Doing second' },
     ],
   }, ctx)
 
@@ -67,8 +68,8 @@ test('TodoWrite rejects duplicate ids', async () => {
   const ctx = makeContext()
   const result = await todoWriteTool.execute({
     todos: [
-      { id: 'dup', content: 'First', status: 'pending' },
-      { id: 'dup', content: 'Second', status: 'pending' },
+      { id: 'dup', content: 'First', status: 'pending', activeForm: 'Doing first' },
+      { id: 'dup', content: 'Second', status: 'pending', activeForm: 'Doing second' },
     ],
   }, ctx)
 
@@ -104,4 +105,107 @@ test('TaskCreate/List/Get/Update share task state and summarize remaining/comple
   assert.equal(listed.ok, true)
   assert.match(listed.content, /Completed tasks \(1\)/)
   assert.match(listed.metadata?.display?.detail ?? '', /#1 \[completed\]/)
+})
+
+test('TodoWrite clears the session task list when all todos are completed', async () => {
+  const ctx = makeContext()
+  const result = await todoWriteTool.execute({
+    todos: [
+      { id: 'one', content: 'Finish one', status: 'completed', activeForm: 'Finishing one' },
+      { id: 'two', content: 'Finish two', status: 'completed', activeForm: 'Finishing two' },
+    ],
+  }, ctx)
+
+  assert.equal(result.ok, true)
+  assert.equal(ctx.taskState!.size, 0)
+  assert.match(result.content, /Todos have been modified successfully/)
+  assert.match(result.metadata?.display?.summary ?? '', /0 remaining, 0 completed/)
+})
+
+test('TodoWrite requires activeForm for Claude-style todo items', async () => {
+  const ctx = makeContext()
+  await assert.rejects(
+    todoWriteTool.execute({
+      todos: [{ content: 'Missing active form', status: 'pending' }],
+    }, ctx),
+    /activeForm/,
+  )
+})
+
+test('TaskUpdate tracks owner metadata dependencies and cleans dependencies on delete', async () => {
+  const ctx = makeContext()
+  await taskCreateTool.execute({
+    subject: 'Prepare base',
+    description: 'Create the base task',
+  }, ctx)
+  await taskCreateTool.execute({
+    subject: 'Run dependent work',
+    description: 'Depends on the base task',
+  }, ctx)
+
+  const updated = await taskUpdateTool.execute({
+    taskId: '2',
+    status: 'in_progress',
+    activeForm: 'Running dependent work',
+    owner: 'agent-a',
+    addBlockedBy: ['1'],
+    metadata: { phase: 'implementation' },
+  }, ctx)
+
+  assert.equal(updated.ok, true)
+  assert.equal(ctx.taskState!.get('2')!.owner, 'agent-a')
+  assert.deepEqual(ctx.taskState!.get('2')!.blockedBy, ['1'])
+  assert.deepEqual(ctx.taskState!.get('1')!.blocks, ['2'])
+  assert.deepEqual(ctx.taskState!.get('2')!.metadata, { phase: 'implementation' })
+
+  const listed = await taskListTool.execute({}, ctx)
+  assert.match(listed.content, /#2 \[in_progress\] Run dependent work \(agent-a\) \[blocked by #1\]/)
+
+  await taskUpdateTool.execute({ taskId: '1', status: 'deleted' }, ctx)
+  assert.equal(ctx.taskState!.has('1'), false)
+  assert.deepEqual(ctx.taskState!.get('2')!.blockedBy, [])
+})
+
+test('restoreTaskStateFromRecords replays successful task tool calls', () => {
+  const records: SessionRecord[] = [
+    {
+      id: 'create-1',
+      type: 'tool_use',
+      tool: 'TaskCreate',
+      input: { subject: 'Restore me', description: 'Persisted task' },
+      riskLevel: 'safe',
+      createdAt: '2026-06-01T00:00:00.000Z',
+    },
+    {
+      id: 'result-1',
+      type: 'tool_result',
+      toolUseId: 'create-1',
+      tool: 'TaskCreate',
+      ok: true,
+      content: 'created',
+      createdAt: '2026-06-01T00:00:01.000Z',
+    },
+    {
+      id: 'update-1',
+      type: 'tool_use',
+      tool: 'TaskUpdate',
+      input: { taskId: '1', status: 'in_progress', activeForm: 'Restoring me', metadata: { restored: true } },
+      riskLevel: 'safe',
+      createdAt: '2026-06-01T00:00:02.000Z',
+    },
+    {
+      id: 'result-2',
+      type: 'tool_result',
+      toolUseId: 'update-1',
+      tool: 'TaskUpdate',
+      ok: true,
+      content: 'updated',
+      createdAt: '2026-06-01T00:00:03.000Z',
+    },
+  ]
+
+  const state = restoreTaskStateFromRecords(records)
+  assert.equal(state.get('1')?.status, 'in_progress')
+  assert.equal(state.get('1')?.activeForm, 'Restoring me')
+  assert.deepEqual(state.get('1')?.metadata, { restored: true })
 })

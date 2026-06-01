@@ -174,4 +174,90 @@ describe('AgentLoop abort', () => {
     assert.equal(toolResults.find((record) => record.toolUseId === 'call-abort')?.errorCode, 'aborted')
     assert.equal(toolResults.find((record) => record.toolUseId === 'call-ok')?.ok, true)
   })
+
+  it('records a recoverable turn interruption with remaining tasks on abort', async () => {
+    const records: SessionRecord[] = []
+    const controller = new AbortController()
+    const provider = createMockProvider()
+    const permissionGate = new PermissionGate(noopPermission)
+    const toolRunner = new ToolRunner([], permissionGate, {
+      onRecord: async (record) => { records.push(record) },
+    })
+    const taskState = new Map([[
+      '1',
+      {
+        id: '1',
+        status: 'in_progress' as const,
+        subject: 'Finish interrupted work',
+        description: 'Keep this task recoverable',
+        activeForm: 'Finishing interrupted work',
+      },
+    ]])
+    const testLoop = new AgentLoop({
+      provider,
+      model: 'mock-model',
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner,
+      toolContext: { cwd: process.cwd(), sessionId: 'test', readFiles: new Set(), taskState },
+      recordStream: recordStreamFor(records),
+    })
+
+    const runPromise = testLoop.run('please do the work', controller.signal, 'user-1')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    controller.abort()
+    await assert.rejects(runPromise, (error: Error) => error.name === 'AbortError')
+
+    const interruption = records.find((record) => record.type === 'turn_interruption')
+    assert.ok(interruption)
+    assert.equal(interruption.type, 'turn_interruption')
+    assert.equal(interruption.userMessageId, 'user-1')
+    assert.equal(interruption.recoverable, true)
+    assert.equal(interruption.remainingTasks[0]?.subject, 'Finish interrupted work')
+  })
+
+  it('injects and consumes interrupted turn context when the user resumes', async () => {
+    const records: SessionRecord[] = [{
+      id: 'interrupt-1',
+      type: 'turn_interruption',
+      userMessageId: 'user-old',
+      prompt: 'old prompt',
+      remainingTasks: [{
+        id: '1',
+        status: 'pending',
+        subject: 'Resume me',
+        description: 'Resume this task',
+      }],
+      recoverable: true,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      turnId: 'old-turn',
+    }]
+    const provider = createMockProvider()
+    const permissionGate = new PermissionGate(noopPermission)
+    const toolRunner = new ToolRunner([], permissionGate, {
+      onRecord: async (record) => { records.push(record) },
+    })
+    const stream = recordStreamFor(records)
+    stream.update = async (recordId, update) => {
+      const index = records.findIndex((record) => record.id === recordId)
+      if (index >= 0 && records[index]) records[index] = update(records[index])
+    }
+    const testLoop = new AgentLoop({
+      provider,
+      model: 'mock-model',
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner,
+      toolContext: { cwd: process.cwd(), sessionId: 'test', readFiles: new Set() },
+      recordStream: stream,
+    })
+
+    await testLoop.run('continue')
+
+    assert.match(JSON.stringify(provider.requests[0].contextItems), /previous turn was interrupted/)
+    const interruption = records.find((record) => record.type === 'turn_interruption')
+    assert.equal(interruption?.type, 'turn_interruption')
+    assert.equal(interruption?.recoverable, false)
+    assert.equal(typeof interruption?.consumedAt, 'string')
+  })
 })

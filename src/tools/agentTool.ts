@@ -290,6 +290,7 @@ export interface CreateAgentToolOptions {
   isGitRepo?: boolean
   hooks?: Hooks
   cacheRuntime?: CacheRuntime
+  resolveSubagentModel?(subagentType: string): ActiveModelRuntime | undefined
   getCompactFailureCount?(): Promise<number>
   setCompactFailureCount?(count: number): Promise<void>
   agentTimeoutMs?: number
@@ -383,6 +384,13 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
         const isForkAgent = parsed.subagent_type === 'fork'
         cacheSource = isForkAgent ? forkCacheSource(context.sessionId) : agentCacheSource(subAgentId)
         resetCacheSourceOnExit = !isForkAgent
+        const subagentRuntime = options.resolveSubagentModel?.(parsed.subagent_type) ?? {
+          provider: options.provider,
+          model: options.model,
+          modelKey: options.modelKey,
+          providerName: options.providerName,
+          promptCacheRetention: options.promptCacheRetention,
+        }
         const recordStream = new MemoryRecordStream()
         const subTools = filterToolsForSubAgent(options.tools(), agentDefinition)
         // Sub-agent gates inherit config/session rules as a snapshot. "Always
@@ -431,9 +439,9 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
         )
         const preloadRecords = isForkAgent ? await loadForkPreloadRecords(options) : undefined
         const loop = new AgentLoop({
-          provider: options.provider,
-          model: options.model,
-          modelKey: options.modelKey,
+          provider: subagentRuntime.provider,
+          model: subagentRuntime.model,
+          modelKey: subagentRuntime.modelKey,
           tools: subTools,
           contextBuilder: new ContextBuilder(undefined, options.contextManagement),
           toolRunner,
@@ -442,7 +450,7 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           criticalSystemReminder: agentDefinition.criticalSystemReminder,
           projectContext: agentDefinition.omitProjectContext ? undefined : options.projectContext,
           skills: options.skills,
-          promptCacheRetention: options.promptCacheRetention,
+          promptCacheRetention: subagentRuntime.promptCacheRetention,
           contextManagement: options.contextManagement,
           isGitRepo: options.isGitRepo,
           maxTurns: parsed.maxTurns ?? agentDefinition.maxTurns,

@@ -6,7 +6,7 @@ import type { AgentLoop } from '../../harness/loop.js'
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
 import type { PermissionGate, PermissionMode } from '../../harness/permissions.js'
 import type { PlanModeManager } from '../../harness/planModeManager.js'
-import type { ModelConfig } from '../../config/service.js'
+import type { ConfigService, ModelConfig } from '../../config/service.js'
 import type { SessionRecord } from '../../harness/types.js'
 import type { SetModelResult } from '../../commands/types.js'
 import type { TUIDisplayItem } from '../types.js'
@@ -30,6 +30,7 @@ import { applyPermissionModeTransition, nextPermissionMode } from '../permission
 import { ExitPlanModeDialog } from './ExitPlanModeDialog.js'
 import { EnterPlanModeDialog } from './EnterPlanModeDialog.js'
 import { AskUserQuestionDialog } from './AskUserQuestionDialog.js'
+import { ProviderPanel } from './ProviderPanel.js'
 import { useExitPlanPermission, type ExitPlanPromptProxy } from '../hooks/useExitPlanPermission.js'
 import { useEnterPlanPermission, type EnterPlanPromptProxy } from '../hooks/useEnterPlanPermission.js'
 import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
@@ -58,6 +59,8 @@ interface AppProps {
   providerName: string
   dispose: () => void
   availableModelKeys: string[]
+  resolveModelInput: (input: string, currentModelKey: string) => string | undefined
+  providerConfig: ConfigService
   createRuntime: (modelKey: string, session: SessionMeta) => AppRuntime
   permissionGate: PermissionGate
   promptProxy: PermissionPromptProxy
@@ -67,6 +70,7 @@ interface AppProps {
   askUserQuestionProxy: AskUserQuestionProxy
   existingRecords: SessionRecord[]
   initialSystemMessages?: TUIDisplayItem[]
+  initialQueuedPrompt?: string
   onBeforeExit?: () => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => Promise<void> | void
   reloadAgentDefinitions?: () => Promise<number>
@@ -82,6 +86,8 @@ export function App({
   providerName: initialProviderName,
   dispose: initialDispose,
   availableModelKeys,
+  resolveModelInput,
+  providerConfig,
   createRuntime,
   permissionGate,
   promptProxy,
@@ -91,6 +97,7 @@ export function App({
   askUserQuestionProxy,
   existingRecords,
   initialSystemMessages,
+  initialQueuedPrompt,
   onBeforeExit,
   onPermissionModeChange,
   reloadAgentDefinitions: reloadRuntimeAgentDefinitions,
@@ -108,12 +115,14 @@ export function App({
   const runtimeRef = useRef<AppRuntime>(runtime)
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
   const [permissionMode, setPermissionModeState] = useState<PermissionMode>(() => permissionGate.getMode())
+  const [modelKeys, setModelKeys] = useState<string[]>(availableModelKeys)
+  const [providerPanelOpen, setProviderPanelOpen] = useState(false)
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const verifyAbortRef = useRef<AbortController | null>(null)
   const checkpointServiceRef = useRef<CheckpointService>(
     new CheckpointService(process.cwd(), initialSession.id),
   )
-  const [queuedPromptAfterClear, setQueuedPromptAfterClear] = useState<string | null>(null)
+  const [queuedPromptAfterClear, setQueuedPromptAfterClear] = useState<string | null>(initialQueuedPrompt ?? null)
 
   const { permState, respond, setActiveRequest, denyPending } = usePermission(promptProxy)
   const exitPlan = useExitPlanPermission(exitPlanProxy)
@@ -130,6 +139,10 @@ export function App({
   useEffect(() => {
     runtimeRef.current = runtime
   }, [runtime])
+
+  useEffect(() => {
+    setModelKeys(availableModelKeys)
+  }, [availableModelKeys])
 
   useEffect(() => {
     return () => {
@@ -225,12 +238,15 @@ export function App({
     void submitPlainInput(prompt)
   }, [queuedPromptAfterClear, isStreaming, mode, submitPlainInput])
 
-  const switchModel = useCallback((modelKey: string): SetModelResult => {
-    if (!availableModelKeys.includes(modelKey)) {
+  const switchModel = useCallback((input: string): SetModelResult => {
+    const modelKey = resolveModelInput(input, runtimeRef.current.modelKey)
+    if (!modelKey || !modelKeys.includes(modelKey)) {
       return {
         ok: false,
-        message: `Unknown model: ${modelKey}`,
-        availableModels: availableModelKeys,
+        message: input.trim().toLowerCase() === 'inherit'
+          ? '/model inherit is not supported. inherit is only valid in routing/subagent settings.'
+          : `Unknown model or tier: ${input}`,
+        availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
       }
     }
 
@@ -250,10 +266,10 @@ export function App({
       return {
         ok: false,
         message: err instanceof Error ? err.message : String(err),
-        availableModels: availableModelKeys,
+        availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
       }
     }
-  }, [availableModelKeys, createRuntime, activeSession, runtime.loop, replaceRuntime])
+  }, [resolveModelInput, modelKeys, createRuntime, activeSession, runtime.loop, replaceRuntime])
 
   const runVerification = useCallback(async (args: string): Promise<string> => {
     setMode('running')
@@ -378,6 +394,7 @@ export function App({
     readPlanFile: readCurrentPlanFile,
     openPlanFile: openCurrentPlanFile,
     submitQuery: submitPlainInput,
+    openProviderPanel: () => setProviderPanelOpen(true),
   })
 
   const handleSubmit = useCallback(async (text: string) => {
@@ -515,7 +532,7 @@ export function App({
     onCyclePermissionMode: cyclePermissionMode,
     isStreaming,
     isRestoreMode: mode === 'restore',
-    isPermissionVisible: permState.visible,
+    isPermissionVisible: permState.visible || providerPanelOpen,
   })
 
   return (
@@ -536,6 +553,7 @@ export function App({
           || exitPlan.state.visible
           || enterPlan.state.visible
           || askUserQuestion.state.visible
+          || providerPanelOpen
           || mode === 'restore'
         }
       />
@@ -577,8 +595,19 @@ export function App({
         />
       )}
 
+      {providerPanelOpen && (
+        <ProviderPanel
+          config={providerConfig}
+          onChange={() => {
+            setModelKeys(Object.keys(providerConfig.get().models))
+            runtimeRef.current.loop.clearCachedSections()
+          }}
+          onClose={() => setProviderPanelOpen(false)}
+        />
+      )}
+
       {/* Input box (with horizontal lines) */}
-      {mode !== 'restore' && (
+      {mode !== 'restore' && !providerPanelOpen && (
         <InputBox
           text={text}
           cursorPos={cursorPos}
@@ -588,6 +617,7 @@ export function App({
             || exitPlan.state.visible
             || enterPlan.state.visible
             || askUserQuestion.state.visible
+            || providerPanelOpen
           }
         />
       )}

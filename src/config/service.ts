@@ -6,6 +6,7 @@ import type { MyAgentSettings } from './settings.js'
 import {
   mergeRouting,
   pickTier,
+  parseTierInput,
   resolveTier,
   type Endpoint,
   type Profile,
@@ -145,13 +146,36 @@ export class ConfigService {
   }
 
   resolveModelKeyFor(role: RoutingRole, options: { currentModelKey?: string } = {}): string | undefined {
-    const fallback = options.currentModelKey ?? this.config.defaultModel
+    const fallback = this.resolveFallbackModelKey(options.currentModelKey)
     const tier = pickTier(this.getRouting(), role)
     if (tier === undefined || tier === 'inherit') return fallback
 
     const active = this.getActiveProfile()
     const routed = resolveTier(active?.profile, tier)
     return routed && this.resolveModel(routed) ? routed : fallback
+  }
+
+  resolveModelInput(input: string, options: { currentModelKey?: string } = {}): string | undefined {
+    const trimmed = input.trim()
+    if (!trimmed) return undefined
+    if (trimmed.toLowerCase() === 'inherit') return undefined
+
+    if (this.resolveModel(trimmed)) return trimmed
+
+    const tier = parseTierInput(trimmed)
+    if (!tier) return undefined
+
+    const active = this.getActiveProfile()
+    const routed = resolveTier(active?.profile, tier)
+    return routed && this.resolveModel(routed)
+      ? routed
+      : this.resolveFallbackModelKey(options.currentModelKey)
+  }
+
+  private resolveFallbackModelKey(currentModelKey?: string): string | undefined {
+    if (currentModelKey && this.resolveModel(currentModelKey)) return currentModelKey
+    if (this.config.defaultModel && this.resolveModel(this.config.defaultModel)) return this.config.defaultModel
+    return undefined
   }
 
   getEndpoint(name: string): Endpoint | undefined {

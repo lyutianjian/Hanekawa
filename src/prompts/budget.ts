@@ -192,6 +192,10 @@ export function countSessionRecordTokens(record: SessionRecord): number {
     return countTextTokens(record.summary)
   }
 
+  if (record.type === 'turn_interruption') {
+    return countTextTokens(`${record.prompt}\n${JSON.stringify(record.remainingTasks)}`)
+  }
+
   return 0
 }
 

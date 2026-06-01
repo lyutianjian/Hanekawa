@@ -12,6 +12,7 @@ import { compactCommand } from './compact.js'
 import { repairCommand } from './repair.js'
 import { verifyCommand } from './verify.js'
 import { agentsCommand } from './agents.js'
+import { providerCommand } from './provider.js'
 
 // Register all built-in commands
 export function registerBuiltinCommands(): void {
@@ -25,4 +26,5 @@ export function registerBuiltinCommands(): void {
   registerCommand(repairCommand)
   registerCommand(verifyCommand)
   registerCommand(agentsCommand)
+  registerCommand(providerCommand)
 }

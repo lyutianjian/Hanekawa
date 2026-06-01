@@ -184,6 +184,7 @@ In plan mode, you'll:
 6. Exit plan mode with ExitPlanMode when ready to implement
 
 Your final plan should be written to the plan file, then submitted by calling ExitPlanMode.
+Ordinary assistant-text plans are invalid in plan mode because the TUI approval flow only starts from ExitPlanMode.
 Your turn must end only by using AskUserQuestion for unresolved requirements or approach clarifications, or by calling ExitPlanMode when the plan is ready for approval. Do NOT use AskUserQuestion to ask "Is this plan okay?" or "Should I proceed?" - ExitPlanMode inherently requests user approval of your plan.</system-reminder>`
 
 function systemPromptSection(

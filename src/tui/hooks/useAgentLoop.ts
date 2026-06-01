@@ -147,7 +147,7 @@ export function useAgentLoop({
           const interruptMsg: TUIDisplayItem = {
             kind: 'system',
             id: randomUUID(),
-            content: 'Interrupted.',
+            content: await formatInterruptMessage(store, session.id, messageId),
             createdAt: new Date().toISOString(),
           }
           setMessages((prev) => [...prev, interruptMsg])
@@ -463,6 +463,21 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
   }
 
   return items
+}
+
+async function formatInterruptMessage(store: SessionStore, sessionId: string, userMessageId: string): Promise<string> {
+  try {
+    const loaded = await store.loadRecordsWithDiagnostics(sessionId)
+    const interruption = [...loaded.records]
+      .reverse()
+      .find((record) => record.type === 'turn_interruption' && record.userMessageId === userMessageId)
+    if (!interruption || interruption.type !== 'turn_interruption') return 'Interrupted.'
+    const remaining = interruption.remainingTasks.length
+    if (remaining === 0) return 'Interrupted.'
+    return `Interrupted. ${remaining} ${remaining === 1 ? 'task' : 'tasks'} remaining.`
+  } catch {
+    return 'Interrupted.'
+  }
 }
 
 export function isHiddenToolCall(toolName: string): boolean {

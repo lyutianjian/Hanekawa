@@ -104,7 +104,7 @@ test('tool display metadata comes from tool definitions', () => {
     name: 'Search',
     summary: 'pattern: "**/*.ts", path: "src"',
   })
-  assert.deepEqual(getToolDisplay('TodoWrite', { todos: [{ content: 'Ship it', status: 'pending' }] }), {
+  assert.deepEqual(getToolDisplay('TodoWrite', { todos: [{ content: 'Ship it', status: 'pending', activeForm: 'Shipping it' }] }), {
     name: 'Todo',
     summary: '1 item',
   })

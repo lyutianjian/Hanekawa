@@ -8,6 +8,7 @@ import { repairCommand } from '../src/commands/repair.js'
 import { verifyCommand } from '../src/commands/verify.js'
 import { agentsCommand } from '../src/commands/agents.js'
 import { planCommand } from '../src/commands/plan.js'
+import { providerCommand } from '../src/commands/provider.js'
 import type { CommandContext } from '../src/commands/types.js'
 
 function createContext(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -220,6 +221,45 @@ test('/compact reset clears persistent failure circuit', async () => {
   ])
 })
 
+test('/model with tier delegates tier input to runtime resolver', async () => {
+  let requestedModel = ''
+  let output = ''
+  await modelCommand.run('powerful', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+    setModel: (model) => {
+      requestedModel = model
+      return {
+        ok: true,
+        model: {
+          key: 'opus-like',
+          providerName: 'openai',
+          model: 'configured-power-model',
+        },
+      }
+    },
+  }))
+
+  assert.equal(requestedModel, 'powerful')
+  assert.match(output, /Model set to: opus-like \(openai: configured-power-model\)/)
+})
+
+test('/model inherit reports runtime rejection', async () => {
+  let output = ''
+  await modelCommand.run('inherit', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+    setModel: () => ({
+      ok: false,
+      message: '/model inherit is not supported. inherit is only valid in routing/subagent settings.',
+    }),
+  }))
+
+  assert.match(output, /inherit is not supported/)
+})
+
 test('/plan enters plan mode without opening a missing plan file', async () => {
   const events: string[] = []
   let entered = false
@@ -353,4 +393,26 @@ test('/agents reports usage for unknown subcommands', async () => {
   }))
 
   assert.match(output, /Usage: \/agents reload/)
+})
+
+test('/provider opens provider panel when available', async () => {
+  let opened = false
+  await providerCommand.run('', createContext({
+    openProviderPanel: () => {
+      opened = true
+    },
+  }))
+
+  assert.equal(opened, true)
+})
+
+test('/provider reports unavailable outside TUI panel host', async () => {
+  let output = ''
+  await providerCommand.run('', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+  }))
+
+  assert.match(output, /unavailable/)
 })

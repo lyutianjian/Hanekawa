@@ -24,6 +24,7 @@ import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
 import type { PlanModeManager } from './planModeManager.js'
 import type { AgentRunResult, ChatMessage, ModelProvider, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
+import { remainingTasksFromState } from '../tools/taskTools.js'
 
 export interface ActiveModelRuntime {
   provider: ModelProvider
@@ -71,6 +72,7 @@ export interface AgentLoopOptions {
   tokenWarningThreshold?: number
   fallbackModel?: ActiveModelRuntime
   compactModel?: ActiveModelRuntime
+  planModel?: ActiveModelRuntime
   fallbackRetryDelayMs?: number
   hooks?: Hooks
   cacheRuntime?: CacheRuntime
@@ -129,11 +131,12 @@ export class AgentLoop {
   }
 
   getActiveModel(): Omit<ActiveModelRuntime, 'provider'> {
+    const visibleModel = this.isPlanModelActive() ? this.modelState.primary : this.activeModel
     return {
-      model: this.activeModel.model,
-      modelKey: this.activeModel.modelKey,
-      providerName: this.activeModel.providerName,
-      promptCacheRetention: this.activeModel.promptCacheRetention,
+      model: visibleModel.model,
+      modelKey: visibleModel.modelKey,
+      providerName: visibleModel.providerName,
+      promptCacheRetention: visibleModel.promptCacheRetention,
     }
   }
 
@@ -181,32 +184,42 @@ export class AgentLoop {
       createdAt: new Date().toISOString(),
     }
     await this.appendRecord(userMessage)
-    await this.runUserPromptSubmitHooks(userInput, turnId, signal)
-    let lastResponseTokenCount: number | undefined
-    let lastResponseRecordCount: number | undefined
-    let lastResponseRecordId: string | undefined
+    try {
+      await this.runUserPromptSubmitHooks(userInput, turnId, signal)
+      let lastResponseTokenCount: number | undefined
+      let lastResponseRecordCount: number | undefined
+      let lastResponseRecordId: string | undefined
 
-    const maxTurns = this.options.maxTurns ?? 100
-    const tokenBudget = this.options.tokenBudget
-    const tokenWarnThreshold = this.options.tokenWarningThreshold ?? 0.8
-    const cacheSource = this.options.cacheSource ?? agentCacheSource(this.options.toolContext.sessionId)
+      const maxTurns = this.options.maxTurns ?? 100
+      const tokenBudget = this.options.tokenBudget
+      const tokenWarnThreshold = this.options.tokenWarningThreshold ?? 0.8
+      const cacheSource = this.options.cacheSource ?? agentCacheSource(this.options.toolContext.sessionId)
 
-    let lastRequestId: string | undefined
-    let maxOutputTokensOverride: number | undefined = this.options.maxOutputTokens
-    let maxOutputTokensRecoveryCount = 0
-
-    for (let iteration = 0; iteration < maxTurns; iteration++) {
-      // Check abort signal at the start of each iteration
-      if (signal?.aborted) {
-        throw new DOMException('The operation was aborted.', 'AbortError')
+      let lastRequestId: string | undefined
+      let maxOutputTokensOverride: number | undefined = this.options.maxOutputTokens
+      let maxOutputTokensRecoveryCount = 0
+      const resetModelRequestState = () => {
+        lastRequestId = undefined
+        maxOutputTokensOverride = this.options.maxOutputTokens
+        maxOutputTokensRecoveryCount = 0
       }
-      await this.options.planModeManager?.beforeTurn()
-      if (this.options.planModeManager?.consumeShouldStopCurrentTurn()) {
-        return { content: '', usage }
-      }
-      await this.flushReadyToolUseSummaries(turnId)
-      const preparedRecords = await this.loadPreparedRecords()
-      const progressive = applyProgressiveCompaction({
+
+      for (let iteration = 0; iteration < maxTurns; iteration++) {
+        // Check abort signal at the start of each iteration
+        if (signal?.aborted) {
+          throw new DOMException('The operation was aborted.', 'AbortError')
+        }
+        await this.options.planModeManager?.beforeTurn()
+        if (this.options.planModeManager?.consumeShouldStopCurrentTurn()) {
+          return { content: '', usage }
+        }
+        if (this.syncRoleModel(cacheSource)) {
+          resetModelRequestState()
+        }
+        await this.flushReadyToolUseSummaries(turnId)
+        const preparedRecords = await this.loadPreparedRecords()
+        const interruptionContext = await this.consumeTurnInterruptionContext(preparedRecords, userInput)
+        const progressive = applyProgressiveCompaction({
         records: preparedRecords,
         system: this.options.system,
         contextManagement: this.options.contextManagement,
@@ -252,9 +265,10 @@ export class AgentLoop {
       }
 
       if (this.retryPrimaryIfReady(cacheSource)) {
-        lastRequestId = undefined
-        maxOutputTokensOverride = this.options.maxOutputTokens
-        maxOutputTokensRecoveryCount = 0
+        resetModelRequestState()
+        if (this.syncRoleModel(cacheSource)) {
+          resetModelRequestState()
+        }
         recordsBeforeCompact = await this.loadPreparedRecords()
       }
 
@@ -270,7 +284,7 @@ export class AgentLoop {
         model: this.activeModel.model,
       }
 
-      const built = await this.options.contextBuilder.build({
+        const built = await this.options.contextBuilder.build({
         preloadRecords: this.options.preloadRecords,
         records,
         tools: this.options.tools,
@@ -281,7 +295,7 @@ export class AgentLoop {
         toolContext: this.options.toolContext,
         env,
         permissionMode: this.options.permissionMode?.(),
-        transientUserContext: planAttachment ? [planAttachment] : undefined,
+        transientUserContext: [planAttachment, interruptionContext].filter((item): item is string => Boolean(item)),
         includePostCompactRestore: pendingRestoreRecordIds.length > 0,
       })
       await this.consumePostCompactRestoreRecords(pendingRestoreRecordIds)
@@ -309,8 +323,7 @@ export class AgentLoop {
         response = await this.activeModel.provider.createMessage(modelRequest)
       } catch (error) {
         if (error instanceof FallbackTriggeredError && this.activateFallback(cacheSource)) {
-          lastRequestId = undefined
-          maxOutputTokensOverride = this.options.maxOutputTokens
+          resetModelRequestState()
           continue
         }
         throw error
@@ -459,9 +472,97 @@ export class AgentLoop {
           createdAt: new Date().toISOString(),
         })
       }
+      }
+
+      throw new Error('Agent loop exceeded maximum tool iterations')
+    } catch (error) {
+      if (isAbortError(error)) {
+        await this.appendTurnInterruption(userMessage, turnId)
+      }
+      throw error
+    }
+  }
+
+  private async consumeTurnInterruptionContext(records: readonly SessionRecord[], userInput: string): Promise<string | undefined> {
+    const interruption = [...records]
+      .reverse()
+      .find((record) => record.type === 'turn_interruption' && record.recoverable && !record.consumedAt)
+    if (!interruption || interruption.type !== 'turn_interruption') return undefined
+
+    const intent = classifyInterruptionIntent(userInput)
+    await this.consumeTurnInterruption(interruption.id)
+
+    const remaining = interruption.remainingTasks.length > 0
+      ? interruption.remainingTasks.map((task) => `- #${task.id} [${task.status}] ${task.subject}`).join('\n')
+      : '- No tracked remaining tasks.'
+
+    if (intent === 'continue') {
+      return [
+        '<system-reminder>',
+        'The previous turn was interrupted by the user and is now being resumed. Continue from where you left off, but do not blindly repeat tool calls that already completed.',
+        `Interrupted prompt:\n${interruption.prompt}`,
+        `Remaining tracked tasks:\n${remaining}`,
+        'Before doing more work, inspect or update TaskList/TodoWrite so task status reflects the resumed state.',
+        '</system-reminder>',
+      ].join('\n')
     }
 
-    throw new Error('Agent loop exceeded maximum tool iterations')
+    if (intent === 'abandon') {
+      return [
+        '<system-reminder>',
+        'The previous interrupted turn has been abandoned by the user. Do not resume or replay it unless the user asks again.',
+        `Previously remaining tracked tasks:\n${remaining}`,
+        '</system-reminder>',
+      ].join('\n')
+    }
+
+    return [
+      '<system-reminder>',
+      'There is an interrupted prior turn, but the user has provided a new request. Do not automatically replay the interrupted prompt.',
+      `Interrupted prompt:\n${interruption.prompt}`,
+      `Previously remaining tracked tasks:\n${remaining}`,
+      'Treat those tasks as context only; follow the latest user request.',
+      '</system-reminder>',
+    ].join('\n')
+  }
+
+  private async consumeTurnInterruption(recordId: string): Promise<void> {
+    try {
+      await this.options.recordStream.update?.(recordId, (record) => {
+        if (record.type !== 'turn_interruption') return record
+        return {
+          ...record,
+          recoverable: false,
+          consumedAt: new Date().toISOString(),
+        }
+      })
+      this.recordsCache = this.recordsCache?.map((record) => {
+        if (record.type !== 'turn_interruption' || record.id !== recordId) return record
+        return {
+          ...record,
+          recoverable: false,
+          consumedAt: new Date().toISOString(),
+        }
+      })
+    } catch (error) {
+      if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
+        console.error(`[hanekawa][interrupt] failed to consume interruption ${recordId}:`, error)
+      }
+    }
+  }
+
+  private async appendTurnInterruption(userMessage: ChatMessage & { type: 'message' }, turnId: string): Promise<void> {
+    if (this.recordsCache?.some((record) => record.type === 'turn_interruption' && record.turnId === turnId)) return
+    await this.appendRecord({
+      id: randomUUID(),
+      type: 'turn_interruption',
+      turnId,
+      userMessageId: userMessage.id,
+      prompt: userMessage.content,
+      remainingTasks: remainingTasksFromState(this.options.toolContext.taskState),
+      recoverable: true,
+      createdAt: new Date().toISOString(),
+    })
   }
 
   /**
@@ -872,6 +973,24 @@ export class AgentLoop {
     return this.modelState.current
   }
 
+  private syncRoleModel(cacheSource: ReturnType<typeof agentCacheSource>): boolean {
+    if (this.modelState.fallback && this.isSameModel(this.activeModel, this.modelState.fallback)) {
+      return false
+    }
+
+    const next = this.options.permissionMode?.() === 'plan' && this.options.planModel
+      ? this.options.planModel
+      : this.modelState.primary
+
+    if (this.isSameModel(this.activeModel, next)) return false
+    this.switchActiveModel(next, cacheSource)
+    return true
+  }
+
+  private isPlanModelActive(): boolean {
+    return Boolean(this.options.planModel && this.isSameModel(this.activeModel, this.options.planModel))
+  }
+
   private activateFallback(cacheSource: ReturnType<typeof agentCacheSource>): boolean {
     const fallback = this.modelState.fallback
     if (!fallback) return false
@@ -920,4 +1039,16 @@ interface PendingToolUseSummary {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
+}
+
+function classifyInterruptionIntent(input: string): 'continue' | 'abandon' | 'new_request' {
+  const normalized = input.trim().toLowerCase()
+  if (!normalized) return 'new_request'
+  if (/^(continue|resume|carry on|go on|keep going|继续|接着|恢复|接着做|继续做)\b/i.test(normalized)) {
+    return 'continue'
+  }
+  if (/^(cancel|abort|stop|ignore|never mind|nevermind|算了|不用了|停止|放弃|不要继续|别继续)\b/i.test(normalized)) {
+    return 'abandon'
+  }
+  return 'new_request'
 }

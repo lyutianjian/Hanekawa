@@ -323,7 +323,8 @@ export class PermissionGate {
     }
 
     if (this.mode === 'plan') {
-      if (hasHardSafetyDenial || deniedByRule) {
+      const allowedPlanFileWrite = this.isAllowedPlanFileWrite(tool, input, requiresSafetyPrompt)
+      if ((hasHardSafetyDenial && !allowedPlanFileWrite) || deniedByRule) {
         const escalated = await this.handleAutoDeny(
           tool,
           input,
@@ -651,13 +652,7 @@ export class PermissionGate {
     if (tool.name === 'EnterPlanMode') return true
     if (tool.name === 'Agent' && isPlanAllowedAgent(input)) return true
 
-    if (
-      (tool.name === 'Write' || tool.name === 'Edit' || tool.name === 'MultiEdit')
-      && !requiresSafetyPrompt
-      && this.isSessionPlanFile(input)
-    ) {
-      return true
-    }
+    if (this.isAllowedPlanFileWrite(tool, input, requiresSafetyPrompt)) return true
 
     if (tool.isReadOnly === true) {
       return !hasHardSafetyDenial && !requiresSafetyPrompt
@@ -666,6 +661,14 @@ export class PermissionGate {
     if (tool.name !== 'Bash' || !commandAnalysis) return false
     if (hasHardSafetyDenial || requiresSafetyPrompt || commandAnalysis.categories.length > 0) return false
     return isPlanReadOnlyShellCommand(commandAnalysis.command)
+  }
+
+  private isAllowedPlanFileWrite(tool: Tool, input: unknown, requiresSafetyPrompt: boolean): boolean {
+    return (
+      (tool.name === 'Write' || tool.name === 'Edit' || tool.name === 'MultiEdit')
+      && !requiresSafetyPrompt
+      && this.isSessionPlanFile(input)
+    )
   }
 
   private isSessionPlanFile(input: unknown): boolean {

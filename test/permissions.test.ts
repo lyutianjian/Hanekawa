@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { z } from 'zod/v3'
 import {
   PermissionGate,
@@ -1099,6 +1100,59 @@ test('PermissionGate plan mode denies write and unrelated safe tools without pro
 
   assert.equal(await gate.approve(fsWriteTool, { path: 'src/index.ts' }), false)
   assert.equal(await gate.approve(skillTool, {}), false)
+  assert.equal(prompted, false)
+})
+
+test('PermissionGate plan mode allows session plan file writes despite protected plan dir', async () => {
+  let prompted = false
+  const gate = new PermissionGate(
+    async () => {
+      prompted = true
+      return false
+    },
+    [],
+    { mode: 'plan', cwd: process.cwd() },
+  )
+  gate.setPlanSlugProvider(() => 'draft-plan')
+  const planPath = path.join(process.cwd(), '.myagent', 'plans', 'draft-plan.md')
+
+  assert.equal(await gate.approve(writeFileTool, { path: planPath }), true)
+  assert.equal(await gate.approve(editFileTool, { path: planPath }), true)
+  assert.equal(await gate.approve(multiEditFileTool, { path: planPath }), true)
+  assert.equal(prompted, false)
+})
+
+test('PermissionGate plan mode still respects ask and deny rules for session plan files', async () => {
+  let prompted = false
+  let source = ''
+  const planPath = path.join(process.cwd(), '.myagent', 'plans', 'draft-plan.md')
+  const askGate = new PermissionGate(
+    async (request) => {
+      prompted = true
+      source = request.source
+      return true
+    },
+    [{ toolName: 'Write', behavior: 'ask', source: 'config' }],
+    { mode: 'plan', cwd: process.cwd() },
+  )
+  askGate.setPlanSlugProvider(() => 'draft-plan')
+
+  assert.equal(await askGate.approve(writeFileTool, { path: planPath }), true)
+  assert.equal(prompted, true)
+  assert.equal(source, 'ask rule')
+
+  prompted = false
+  const denyGate = new PermissionGate(
+    async () => {
+      prompted = true
+      return true
+    },
+    [{ toolName: 'Write', behavior: 'deny', source: 'config' }],
+    { mode: 'plan', cwd: process.cwd(), denialStreakThreshold: 2 },
+  )
+  denyGate.setPlanSlugProvider(() => 'draft-plan')
+
+  assert.equal(await denyGate.approve(writeFileTool, { path: planPath }), false)
   assert.equal(prompted, false)
 })
 

@@ -345,6 +345,17 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
     errors.push('cache.ttl1h must be a boolean')
   }
 
+  for (const name of ['allow', 'deny', 'ask'] as const) {
+    const rules = settings.permissions?.[name]
+    if (rules !== undefined && !Array.isArray(rules)) {
+      errors.push(`permissions.${name} must be an array`)
+      continue
+    }
+    if (rules?.some((rule) => typeof rule !== 'string' || rule.trim() === '')) {
+      errors.push(`permissions.${name} must be an array of non-empty strings`)
+    }
+  }
+
   for (const name of ['userPromptSubmit', 'preToolUse', 'postToolUse', 'preCompact', 'postCompact', 'subagentStart', 'subagentStop', 'stop'] as const) {
     const hooks = settings.hooks?.[name]
     if (hooks !== undefined && !Array.isArray(hooks)) {

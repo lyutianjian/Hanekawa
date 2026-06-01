@@ -19,7 +19,8 @@ import { CheckpointService } from '../../services/checkpoint/checkpointService.j
 import type { Checkpoint } from '../../services/checkpoint/checkpointService.js'
 import { MessageList } from './MessageList.js'
 import { InputBox } from './InputBox.js'
-import { Spinner } from './Spinner.js'
+import { sampleSpinnerColors, Spinner } from './Spinner.js'
+import { TaskListBlock } from './TaskListBlock.js'
 import { PermissionDialog } from './PermissionDialog.js'
 import { StatusLine } from './StatusLine.js'
 import { WelcomeBanner } from './WelcomeBanner.js'
@@ -119,6 +120,7 @@ export function App({
   const [providerPanelOpen, setProviderPanelOpen] = useState(false)
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const verifyAbortRef = useRef<AbortController | null>(null)
+  const [spinnerColors, setSpinnerColors] = useState(() => sampleSpinnerColors())
   const checkpointServiceRef = useRef<CheckpointService>(
     new CheckpointService(process.cwd(), initialSession.id),
   )
@@ -179,6 +181,7 @@ export function App({
     setMessages,
     isStreaming,
     spinnerSubText,
+    taskSnapshot,
     usage,
     submit,
     interrupt,
@@ -199,6 +202,16 @@ export function App({
   // Track running state in mode
   // When isStreaming changes, update mode accordingly
   const effectiveMode: AppMode = isStreaming ? 'running' : mode
+  const isOverlayActive = permState.visible
+    || exitPlan.state.visible
+    || enterPlan.state.visible
+    || askUserQuestion.state.visible
+    || providerPanelOpen
+    || mode === 'restore'
+  const showStoppedTaskList = !isStreaming
+    && !isOverlayActive
+    && taskSnapshot !== undefined
+    && taskSnapshot.counts.remaining > 0
 
   // Helper to add system messages from commands
   const addSystemMessage = useCallback((content: string) => {
@@ -223,6 +236,7 @@ export function App({
   }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, setMessages])
 
   const submitPlainInput = useCallback(async (text: string) => {
+    setSpinnerColors(sampleSpinnerColors())
     setMode('running')
     try {
       await submit(text)
@@ -272,6 +286,7 @@ export function App({
   }, [resolveModelInput, modelKeys, createRuntime, activeSession, runtime.loop, replaceRuntime])
 
   const runVerification = useCallback(async (args: string): Promise<string> => {
+    setSpinnerColors(sampleSpinnerColors())
     setMode('running')
     const ac = new AbortController()
     verifyAbortRef.current = ac
@@ -548,18 +563,17 @@ export function App({
       {/* Message list */}
       <MessageList
         items={messages}
-        isOverlayActive={
-          permState.visible
-          || exitPlan.state.visible
-          || enterPlan.state.visible
-          || askUserQuestion.state.visible
-          || providerPanelOpen
-          || mode === 'restore'
-        }
+        isOverlayActive={isOverlayActive}
       />
 
       {/* Spinner during streaming */}
-      {isStreaming && <Spinner subText={spinnerSubText} />}
+      {isStreaming && <Spinner subText={spinnerSubText} taskSnapshot={taskSnapshot} spinnerColors={spinnerColors} />}
+
+      {showStoppedTaskList && (
+        <Box paddingLeft={2}>
+          <TaskListBlock snapshot={taskSnapshot} runningColor={spinnerColors.messageColor} />
+        </Box>
+      )}
 
       {/* Permission dialog */}
       {permState.visible && (

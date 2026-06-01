@@ -114,6 +114,8 @@ export interface SubagentTranscriptRecord {
   parentToolUseId?: string
   transcriptPath?: string
   status?: SubagentTaskStatus
+  stopReason?: string
+  truncated?: boolean
   summary?: string
   recordCount?: number
   messageCount?: number
@@ -309,6 +311,32 @@ export interface ToolResultMetadata extends Record<string, unknown> {
 export interface ToolResultDisplay {
   summary: string
   detail?: string
+  taskSnapshot?: TaskDisplaySnapshot
+}
+
+export interface TaskDisplaySnapshot {
+  tasks: TaskDisplayItem[]
+  counts: TaskDisplayCounts
+  activeTaskId?: string
+}
+
+export interface TaskDisplayItem {
+  id: string
+  status: TaskItem['status']
+  subject: string
+  description: string
+  activeForm?: string
+  owner?: string
+  blocks: string[]
+  blockedBy: string[]
+}
+
+export interface TaskDisplayCounts {
+  total: number
+  remaining: number
+  pending: number
+  inProgress: number
+  completed: number
 }
 
 export interface Tool {
@@ -388,6 +416,9 @@ export interface ModelPricing {
 export interface AgentRunResult {
   content: string
   usage: TokenUsage
+  stopReason?: string
+  truncated?: boolean
+  segments?: string[]
 }
 
 export interface ContextChatMessage {

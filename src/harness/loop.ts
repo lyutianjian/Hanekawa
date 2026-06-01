@@ -25,6 +25,7 @@ import type { PermissionMode } from './permissions.js'
 import type { PlanModeManager } from './planModeManager.js'
 import type { AgentRunResult, ChatMessage, ModelProvider, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
+import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
 
 export interface ActiveModelRuntime {
   provider: ModelProvider
@@ -67,6 +68,7 @@ export interface AgentLoopOptions {
   contextManagement?: Partial<ContextManagementConfig>
   isGitRepo?: boolean
   maxTurns?: number
+  maxTurnsExceededBehavior?: 'error' | 'partial'
   maxOutputTokens?: number
   tokenBudget?: number
   tokenWarningThreshold?: number
@@ -198,6 +200,8 @@ export class AgentLoop {
       let lastRequestId: string | undefined
       let maxOutputTokensOverride: number | undefined = this.options.maxOutputTokens
       let maxOutputTokensRecoveryCount = 0
+      const responseSegments: string[] = []
+      let lastAssistantContent = ''
       const resetModelRequestState = () => {
         lastRequestId = undefined
         maxOutputTokensOverride = this.options.maxOutputTokens
@@ -376,29 +380,46 @@ export class AgentLoop {
           continue
         }
 
+        await this.appendRecord(assistantMessage)
+        const maxTokensContent = appendResponseSegment(responseSegments, response.content)
         if (maxOutputTokensRecoveryCount < MAX_RECOVERY_COUNT) {
-          await this.appendRecord(assistantMessage)
           await this.appendRecord({
             type: 'message',
             id: randomUUID(),
             role: 'user',
-            content: '<system-reminder>Your previous response was cut off by the token limit. Continue from where you left off.</system-reminder>',
+            content: buildMaxTokensContinuationReminder(this.options.toolContext.taskState),
             turnId,
             createdAt: new Date().toISOString(),
           })
           maxOutputTokensRecoveryCount++
           continue
         }
+
+        const finished = await this.finishTurn({
+          content: maxTokensContent,
+          usage,
+          turnId,
+          signal,
+          stopReason: 'max_tokens',
+          truncated: true,
+          segments: [...responseSegments],
+        })
+        if (finished.continueLoop) continue
+        return finished.result
       }
+
+      const responseContent = combineResponseSegments(responseSegments, response.content)
+      lastAssistantContent = responseContent
 
       // Token budget check
       const cumulativeTokens = requestTokenCountFromUsage(usage) ?? 0
       if (tokenBudget && cumulativeTokens > tokenBudget) {
         const finished = await this.finishTurn({
-          content: `${response.content}\n\n[Token budget exceeded: ${cumulativeTokens} > ${tokenBudget}]`,
+          content: `${responseContent}\n\n[Token budget exceeded: ${cumulativeTokens} > ${tokenBudget}]`,
           usage,
           turnId,
           signal,
+          segments: segmentsWithFinalResponse(responseSegments, response.content),
         })
         if (finished.continueLoop) continue
         return finished.result
@@ -423,9 +444,9 @@ export class AgentLoop {
 
       if (response.toolCalls.length === 0) {
         if (this.options.permissionMode?.() === 'plan') {
-          const content = response.content.trim()
+          const content = responseContent.trim()
           if (content.length > 0 && this.options.planModeManager) {
-            await this.options.planModeManager.submitAssistantPlanFallback(response.content, turnId)
+            await this.options.planModeManager.submitAssistantPlanFallback(responseContent, turnId)
           } else {
             await this.appendRecord({
               type: 'message',
@@ -441,10 +462,11 @@ export class AgentLoop {
 
         await this.appendRecord(assistantMessage)
         const finished = await this.finishTurn({
-          content: response.content,
+          content: responseContent,
           usage,
           turnId,
           signal,
+          segments: segmentsWithFinalResponse(responseSegments, response.content),
         })
         if (finished.continueLoop) continue
         return finished.result
@@ -472,6 +494,27 @@ export class AgentLoop {
           createdAt: new Date().toISOString(),
         })
       }
+      }
+
+      if (this.options.maxTurnsExceededBehavior === 'partial') {
+        const content = buildMaxTurnsExceededContent(lastAssistantContent, maxTurns)
+        const finished = await this.finishTurn({
+          content,
+          usage,
+          turnId,
+          signal,
+          stopReason: 'max_turns',
+          truncated: true,
+          segments: content ? [content] : undefined,
+        })
+        if (!finished.continueLoop) return finished.result
+        return finishResult({
+          content,
+          usage,
+          stopReason: 'max_turns',
+          truncated: true,
+          segments: content ? [content] : undefined,
+        })
       }
 
       throw new Error('Agent loop exceeded maximum tool iterations')
@@ -696,7 +739,8 @@ export class AgentLoop {
 
   private startToolUseSummary(toolResults: ToolResultRecord[], turnId: string): void {
     const runtime = this.options.compactModel
-    if (!runtime || toolResults.length === 0) return
+    const summarizableResults = toolResults.filter((result) => !isPlanControlTool(result.tool))
+    if (!runtime || summarizableResults.length === 0) return
 
     const entry: PendingToolUseSummary = {
       turnId,
@@ -705,7 +749,7 @@ export class AgentLoop {
         provider: runtime.provider,
         model: runtime.model,
         promptCacheRetention: runtime.promptCacheRetention,
-        toolResults,
+        toolResults: summarizableResults,
       }),
     }
     entry.promise.then((summary) => {
@@ -906,6 +950,9 @@ export class AgentLoop {
     usage: TokenUsage
     turnId: string
     signal?: AbortSignal
+    stopReason?: string
+    truncated?: boolean
+    segments?: string[]
   }): Promise<{ continueLoop: true } | { continueLoop: false; result: AgentRunResult }> {
     const result = await runLifecycleHooks(
       this.options.hooks?.stop,
@@ -920,7 +967,7 @@ export class AgentLoop {
     )
     await this.appendLifecycleHookMessages('stop', result.stdout, result.failures, input.turnId)
     if (result.preventContinuation) {
-      return { continueLoop: false, result: { content: input.content, usage: input.usage } }
+      return { continueLoop: false, result: finishResult(input) }
     }
     if (result.blockingErrors.length > 0) {
       await this.appendRecord({
@@ -933,7 +980,7 @@ export class AgentLoop {
       })
       return { continueLoop: true }
     }
-    return { continueLoop: false, result: { content: input.content, usage: input.usage } }
+    return { continueLoop: false, result: finishResult(input) }
   }
 
   private async appendLifecycleHookMessages(
@@ -1039,6 +1086,68 @@ interface PendingToolUseSummary {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
+}
+
+function appendResponseSegment(segments: string[], content: string): string {
+  if (content.length > 0) segments.push(content)
+  return combineResponseSegments(segments)
+}
+
+function combineResponseSegments(segments: readonly string[], finalContent?: string): string {
+  return segmentsWithFinalResponse(segments, finalContent)?.join('\n\n') ?? ''
+}
+
+function segmentsWithFinalResponse(
+  segments: readonly string[],
+  finalContent?: string,
+): string[] | undefined {
+  const parts = [...segments]
+  if (finalContent !== undefined && finalContent.length > 0) parts.push(finalContent)
+  return parts.length > 0 ? parts : undefined
+}
+
+function buildMaxTokensContinuationReminder(taskState: ToolContext['taskState']): string {
+  const blocks = [
+    '<system-reminder>',
+    'Your previous response was cut off by the token limit. Continue from the exact point where it stopped.',
+    'Do not restart, summarize, or repeat completed text. Finish the remaining answer or remaining tool-driven task directly.',
+  ]
+  const remaining = remainingTasksFromState(taskState)
+  if (remaining.length > 0) {
+    blocks.push(
+      'Still-open tracked tasks:',
+      ...remaining.map((task) => `- #${task.id} [${task.status}] ${task.subject}`),
+    )
+  }
+  blocks.push('</system-reminder>')
+  return blocks.join('\n')
+}
+
+function buildMaxTurnsExceededContent(content: string, maxTurns: number): string {
+  const base = content.trim().length > 0
+    ? content
+    : '(Sub-agent reached the max turns limit before producing a final response.)'
+  return `${base}\n\n[Sub-agent output may be incomplete: reached max turns limit (${maxTurns}).]`
+}
+
+function finishResult(input: {
+  content: string
+  usage: TokenUsage
+  stopReason?: string
+  truncated?: boolean
+  segments?: string[]
+}): AgentRunResult {
+  return {
+    content: input.content,
+    usage: input.usage,
+    ...(input.stopReason ? { stopReason: input.stopReason } : {}),
+    ...(input.truncated ? { truncated: true } : {}),
+    ...(input.segments && input.segments.length > 0 ? { segments: input.segments } : {}),
+  }
+}
+
+function isPlanControlTool(toolName: string): boolean {
+  return toolName === ENTER_PLAN_MODE_TOOL_NAME || toolName === EXIT_PLAN_MODE_TOOL_NAME
 }
 
 function classifyInterruptionIntent(input: string): 'continue' | 'abandon' | 'new_request' {

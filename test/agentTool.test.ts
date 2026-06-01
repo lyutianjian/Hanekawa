@@ -182,6 +182,82 @@ test('Agent tool bridges sub-agent transcripts without leaking child tool record
   assert.match(summary.content, /tokens="15"/)
 })
 
+test('Agent tool returns aggregated sub-agent output after max_tokens continuation', async () => {
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      if (calls === 1) return { content: 'sub-agent part one', toolCalls: [], stopReason: 'max_tokens' }
+      return { content: 'sub-agent done', toolCalls: [] }
+    },
+  }
+  const parentRecords: SessionRecord[] = []
+  let runtimeTools: Tool[] = []
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => runtimeTools,
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+  })
+  runtimeTools = [agentTool]
+  const runner = new ToolRunner(runtimeTools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { parentRecords.push(record) },
+  })
+
+  const result = await runner.run({
+    id: 'call-1',
+    name: 'Agent',
+    input: { task: 'research this', subagent_type: 'general', maxOutputTokens: 10 },
+  }, toolContext('parent'))
+
+  assert.equal(result.ok, true)
+  assert.equal(result.content, 'sub-agent part one\n\nsub-agent done')
+  assert.equal(calls, 2)
+  const transcript = parentRecords.find((record) => record.type === 'subagent_transcript')
+  assert.ok(transcript && transcript.type === 'subagent_transcript')
+  assert.equal(transcript.summary, 'sub-agent part one\n\nsub-agent done')
+})
+
+test('Agent tool marks sub-agent output incomplete when max_tokens recovery is exhausted', async () => {
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      return { content: `sub-agent part ${calls}`, toolCalls: [], stopReason: 'max_tokens' }
+    },
+  }
+  const parentRecords: SessionRecord[] = []
+  let runtimeTools: Tool[] = []
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => runtimeTools,
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+  })
+  runtimeTools = [agentTool]
+  const runner = new ToolRunner(runtimeTools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { parentRecords.push(record) },
+  })
+
+  const result = await runner.run({
+    id: 'call-1',
+    name: 'Agent',
+    input: { task: 'research this', subagent_type: 'general', maxOutputTokens: 10 },
+  }, toolContext('parent'))
+
+  assert.equal(result.ok, true)
+  assert.equal(calls, 4)
+  assert.match(result.content, /sub-agent part 1\n\nsub-agent part 2\n\nsub-agent part 3\n\nsub-agent part 4/)
+  assert.match(result.content, /Sub-agent output may be incomplete/)
+  const transcript = parentRecords.find((record) => record.type === 'subagent_transcript')
+  assert.ok(transcript && transcript.type === 'subagent_transcript')
+  assert.match(transcript.summary ?? '', /Sub-agent output may be incomplete/)
+})
+
 test('Agent tool can launch a background sub-agent and persist a sidechain transcript', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-bg-agent-'))
   try {
@@ -1066,6 +1142,45 @@ test('verification Agent result emits a structured subagent summary in the paren
   assert.match(summary.content, /tokens="19"/)
 })
 
+test('one-shot explore and plan agents suppress parent context summary messages', async () => {
+  for (const subagentType of ['explore', 'plan']) {
+    const provider: ModelProvider = {
+      name: 'fake',
+      async createMessage() {
+        return { content: `${subagentType} result`, toolCalls: [] }
+      },
+    }
+    let runtimeTools: Tool[] = []
+    const agentTool = createAgentTool({
+      provider,
+      model: 'fake-model',
+      tools: () => runtimeTools,
+      permissionPrompt: async () => true,
+      cwd: process.cwd(),
+    })
+    runtimeTools = [agentTool]
+    const records: SessionRecord[] = []
+    const runner = new ToolRunner(runtimeTools, new PermissionGate(async () => true), {
+      onRecord: async (record) => { records.push(record) },
+    })
+
+    const result = await runner.run({
+      id: `${subagentType}-1`,
+      name: 'Agent',
+      input: { task: 'map it', subagent_type: subagentType },
+    }, toolContext('parent-session'), undefined, 'turn-1')
+
+    assert.equal(result.ok, true)
+    assert.equal(result.content, `${subagentType} result`)
+    assert.ok(records.some((record) => record.type === 'subagent_transcript'))
+    assert.ok(!records.some(
+      (record) => record.type === 'message'
+        && record.role === 'assistant'
+        && /<subagent-summary/.test(record.content),
+    ))
+  }
+})
+
 test('Agent tool passes requested maxOutputTokens into the sub-agent request', async () => {
   const requests: ModelRequest[] = []
   const provider: ModelProvider = {
@@ -1408,12 +1523,29 @@ test('Agent tool honors maxTurns', async () => {
     permissionPrompt: async () => true,
     cwd: process.cwd(),
   })
+  const parentRecords: SessionRecord[] = []
 
-  const result = await agentTool.execute({ task: 'loop', subagent_type: 'general', maxTurns: 1 }, toolContext())
+  const result = await agentTool.execute({
+    task: 'loop',
+    subagent_type: 'general',
+    maxTurns: 1,
+  }, {
+    ...toolContext(),
+    appendRecord: async (record) => { parentRecords.push(record) },
+  })
 
-  assert.equal(result.ok, false)
+  assert.equal(result.ok, true)
   assert.equal(requests, 1)
-  assert.match(result.content, /exceeded maximum tool iterations/)
+  assert.match(result.content, /keep going/)
+  assert.match(result.content, /Sub-agent output may be incomplete: reached max turns limit \(1\)/)
+  const subagent = result.metadata?.subagent as Record<string, unknown> | undefined
+  assert.equal(subagent?.stopReason, 'max_turns')
+  assert.equal(subagent?.truncated, true)
+  const transcript = parentRecords.find((record) => record.type === 'subagent_transcript')
+  assert.ok(transcript && transcript.type === 'subagent_transcript')
+  assert.equal(transcript.stopReason, 'max_turns')
+  assert.equal(transcript.truncated, true)
+  assert.match(transcript.summary ?? '', /Sub-agent output may be incomplete: reached max turns limit \(1\)/)
 })
 
 test('Agent tool runs sub-agent tools through a permission gate', async () => {
@@ -1870,6 +2002,7 @@ test('AgentDefinitionLoader parses extended custom agent frontmatter fields', as
     assert.deepEqual(definition.mcpServers, ['github'])
     assert.equal(definition.background, true)
     assert.equal(definition.isolation, 'worktree')
+    assert.equal(definition.maxTurns, 30)
     assert.equal(definition.getSystemPrompt(), 'v2 prompt')
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -1907,6 +2040,28 @@ test('AgentDefinitionLoader overrides v2 fields when later directories override 
     assert.equal(reviewer.model, 'fast')
     assert.equal(reviewer.background, true)
     assert.deepEqual(reviewer.skills, ['local-skill'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('AgentDefinitionLoader honors explicit custom maxTurns over the default', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-agents-'))
+  const cwd = path.join(root, 'project')
+  try {
+    await mkdir(path.join(cwd, '.myagent', 'agents'), { recursive: true })
+    await writeFile(path.join(cwd, '.myagent', 'agents', 'limited.md'), agentFile({
+      name: 'limited',
+      description: 'Explicit max turns.',
+      maxTurns: 7,
+      body: 'limited prompt',
+    }))
+
+    const definitions = await new AgentDefinitionLoader(cwd, path.join(root, 'home')).list()
+    const definition = definitions.find((item) => item.type === 'limited')
+
+    assert.ok(definition)
+    assert.equal(definition.maxTurns, 7)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -2200,6 +2355,7 @@ function agentFile(options: {
   isolation?: string
   tools?: string[]
   isReadOnlyAgent?: boolean
+  maxTurns?: number
   body: string
 }): string {
   const model = options.model ? `model: ${options.model}\n` : ''
@@ -2210,6 +2366,7 @@ function agentFile(options: {
   const isolation = options.isolation ? `isolation: ${options.isolation}\n` : ''
   const tools = options.tools ? `tools: ${JSON.stringify(options.tools)}\n` : ''
   const isReadOnlyAgent = options.isReadOnlyAgent === undefined ? '' : `isReadOnlyAgent: ${options.isReadOnlyAgent}\n`
+  const maxTurns = options.maxTurns === undefined ? '' : `maxTurns: ${options.maxTurns}\n`
   return [
     '---',
     `name: ${options.name}`,
@@ -2222,6 +2379,7 @@ function agentFile(options: {
     isolation.trimEnd(),
     tools.trimEnd(),
     isReadOnlyAgent.trimEnd(),
+    maxTurns.trimEnd(),
     '---',
     options.body,
     '',

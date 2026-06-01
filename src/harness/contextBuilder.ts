@@ -257,10 +257,10 @@ export class ContextBuilder {
       : []
     const allContextItems = [
       ...(input.includeUserContext === false ? [] : this.buildUserContext(input.now ?? new Date(), activeSkills)),
-      ...this.buildTransientUserContext(input.transientUserContext ?? [], input.now ?? new Date()),
       ...postCompactRestoreContext,
       ...this.recordsToContextItems(input.preloadRecords ?? []),
       ...this.recordsToContextItems(input.records),
+      ...this.buildTransientUserContext(input.transientUserContext ?? [], input.now ?? new Date()),
     ]
 
     const built = this.composer.composeContextItems(allContextItems, {

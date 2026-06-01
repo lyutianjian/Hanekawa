@@ -336,6 +336,34 @@ test('validateSettings ignores legacy permission mode settings', () => {
   assert.doesNotMatch(result.errors.join('\n'), /permissionMode/)
 })
 
+test('validateSettings accepts permission rule arrays', () => {
+  const result = validateSettings({
+    permissions: {
+      allow: ['Read', 'Bash:*npm test*'],
+      deny: ['Delete'],
+      ask: ['Write:src/**'],
+    },
+  })
+
+  assert.equal(result.valid, true)
+  assert.deepEqual(result.errors, [])
+})
+
+test('validateSettings rejects malformed permission rule arrays', () => {
+  const result = validateSettings({
+    permissions: {
+      allow: 'Read',
+      deny: [''],
+      ask: [1],
+    },
+  } as never)
+
+  assert.equal(result.valid, false)
+  assert.match(result.errors.join('\n'), /permissions\.allow/)
+  assert.match(result.errors.join('\n'), /permissions\.deny/)
+  assert.match(result.errors.join('\n'), /permissions\.ask/)
+})
+
 test('validateSettings accepts trusted MCP servers and stdio timeout', () => {
   const result = validateSettings({
     mcp: {

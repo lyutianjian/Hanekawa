@@ -10,6 +10,7 @@ import { PermissionGate } from '../src/harness/permissions.js'
 import { PlanModeManager } from '../src/harness/planModeManager.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { createAgentTool } from '../src/tools/agentTool.js'
+import { exitPlanModeTool } from '../src/tools/exitPlanMode.js'
 import { SessionStore } from '../src/sessions/service.js'
 import { clearAllPlanSlugs } from '../src/utils/plans.js'
 import type { SessionMetricInput } from '../src/harness/metrics.js'
@@ -139,6 +140,13 @@ test('plan mode routes assistant text-only plan through exit approval instead of
             toolCalls: [],
           }
         }
+        const contextItems = request.contextItems ?? []
+        const lastContextItem = contextItems.at(-1)
+        assert.equal(lastContextItem?.kind, 'message')
+        if (lastContextItem?.kind === 'message') {
+          assert.match(lastContextItem.message.content, /Exited Plan Mode/)
+          assert.match(lastContextItem.message.content, /User has approved your plan/)
+        }
         return { content: 'implementation can now start', toolCalls: [] }
       },
     }
@@ -173,6 +181,7 @@ test('plan mode routes assistant text-only plan through exit approval instead of
 
     assert.equal(response.content, 'implementation can now start')
     assert.equal(seenModels[0], 'plan-model')
+    assert.equal(seenModels[1], 'fake-model')
     assert.equal(loop.getActiveModel().model, 'fake-model')
     assert.equal(dialogOpened, true)
     assert.equal(
@@ -191,6 +200,126 @@ test('plan mode routes assistant text-only plan through exit approval instead of
     assert.ok(request)
     assert.equal(request.kind, 'exit')
     assert.match(request.planContent ?? '', /# Final plan/)
+  } finally {
+    clearAllPlanSlugs()
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('plan mode approval reminder is last context and ExitPlanMode is not summarized', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-loop-plan-exit-tool-'))
+  clearAllPlanSlugs()
+  try {
+    const store = new SessionStore(cwd)
+    await store.init()
+    const session = await store.create()
+    const records: SessionRecord[] = []
+    const gate = new PermissionGate(async () => true, undefined, { cwd })
+    gate.prepareContextForPlanMode()
+
+    let loop: AgentLoop | undefined
+    const manager = new PlanModeManager({
+      cwd,
+      sessionMeta: session,
+      store,
+      gate,
+      appendRecord: async (record) => {
+        records.push(record)
+        loop?.noteRecordAppended(record)
+      },
+      loadRecords: async () => [...records],
+      openExitDialog: async () => ({ kind: 'approve_auto_keep' }),
+    })
+    gate.setPlanSlugProvider(() => manager.getSlug())
+    manager.onEnterPlanMode()
+
+    let calls = 0
+    let summaryCalls = 0
+    const seenModels: string[] = []
+    const provider: ModelProvider = {
+      name: 'fake',
+      async createMessage(request) {
+        seenModels.push(request.model)
+        calls += 1
+        if (calls === 1) {
+          return {
+            content: 'submitting plan',
+            toolCalls: [{
+              id: 'exit-plan',
+              name: 'ExitPlanMode',
+              input: { plan: '# Final plan\n\n- Fix the approval handoff.' },
+            }],
+          }
+        }
+
+        const contextItems = request.contextItems ?? []
+        assert.equal(
+          contextItems.some(
+            (item) => item.kind === 'message'
+              && /Summary of recent tool use/.test(item.message.content)
+              && /Plan submitted/.test(item.message.content),
+          ),
+          false,
+        )
+        const lastContextItem = contextItems.at(-1)
+        assert.equal(lastContextItem?.kind, 'message')
+        if (lastContextItem?.kind === 'message') {
+          assert.match(lastContextItem.message.content, /Exited Plan Mode/)
+          assert.match(lastContextItem.message.content, /User has approved your plan/)
+        }
+        return { content: 'implementation can now start', toolCalls: [] }
+      },
+    }
+    const compactProvider: ModelProvider = {
+      name: 'compact',
+      async createMessage() {
+        summaryCalls += 1
+        return { content: 'Plan submitted for user approval, rejection, or editing.', toolCalls: [] }
+      },
+    }
+    const runner = new ToolRunner([exitPlanModeTool], gate, {
+      onRecord: async (record) => {
+        records.push(record)
+        loop?.noteRecordAppended(record)
+      },
+    })
+    loop = new AgentLoop({
+      provider,
+      model: 'fake-model',
+      tools: [exitPlanModeTool],
+      contextBuilder: new ContextBuilder(),
+      toolRunner: runner,
+      toolContext: {
+        cwd,
+        sessionId: session.id,
+        readFiles: new Set(),
+        getPermissionMode: () => gate.getMode(),
+        planModeBridge: manager.buildBridge(),
+      },
+      permissionMode: () => gate.getMode(),
+      planModeManager: manager,
+      planModel: {
+        provider,
+        model: 'plan-model',
+        modelKey: 'plan-key',
+        providerName: 'fake',
+      },
+      compactModel: {
+        provider: compactProvider,
+        model: 'cheap-model',
+        modelKey: 'cheap',
+        providerName: 'compact',
+      },
+      recordStream: recordStreamFor(records),
+    })
+
+    const response = await loop.run('plan this change')
+
+    assert.equal(response.content, 'implementation can now start')
+    assert.equal(summaryCalls, 0)
+    assert.equal(seenModels[0], 'plan-model')
+    assert.equal(seenModels[1], 'fake-model')
+    assert.equal(records.some((record) => record.type === 'tool_use_summary'), false)
   } finally {
     clearAllPlanSlugs()
     await rm(cwd, { recursive: true, force: true })
@@ -221,7 +350,7 @@ test('agent loop persists max_tokens partial response before continuation remind
       assert.ok(request.contextItems?.some(
         (item) => item.kind === 'message'
           && item.message.role === 'user'
-          && /Continue from where you left off/.test(item.message.content),
+          && /Continue from the exact point where it stopped/.test(item.message.content),
       ))
       return { content: 'continued answer', toolCalls: [] }
     },
@@ -242,14 +371,210 @@ test('agent loop persists max_tokens partial response before continuation remind
 
   const response = await loop.run('hello')
 
-  assert.equal(response.content, 'continued answer')
+  assert.equal(response.content, 'partial answer\n\ncontinued answer')
+  assert.deepEqual(response.segments, ['partial answer', 'continued answer'])
   assert.equal(calls, 2)
   const partialIndex = records.findIndex((record) =>
     record.type === 'message' && record.role === 'assistant' && record.content === 'partial answer')
   const reminderIndex = records.findIndex((record) =>
-    record.type === 'message' && record.role === 'user' && /Continue from where you left off/.test(record.content))
+    record.type === 'message' && record.role === 'user' && /Continue from the exact point where it stopped/.test(record.content))
   assert.ok(partialIndex >= 0)
   assert.ok(reminderIndex > partialIndex)
+})
+
+test('agent loop aggregates multiple max_tokens continuations into the final result', async () => {
+  const records: SessionRecord[] = []
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      if (calls === 1) return { content: 'part one', toolCalls: [], stopReason: 'max_tokens' }
+      if (calls === 2) return { content: 'part two', toolCalls: [], stopReason: 'max_tokens' }
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async () => {},
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    maxOutputTokens: 10,
+  })
+
+  const response = await loop.run('hello')
+
+  assert.equal(response.content, 'part one\n\npart two\n\ndone')
+  assert.deepEqual(response.segments, ['part one', 'part two', 'done'])
+  assert.equal(response.truncated, undefined)
+  assert.equal(calls, 3)
+})
+
+test('agent loop returns explicit truncation metadata when max_tokens recovery is exhausted', async () => {
+  const records: SessionRecord[] = []
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      return { content: `part ${calls}`, toolCalls: [], stopReason: 'max_tokens' }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async () => {},
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    maxOutputTokens: 10,
+  })
+
+  const response = await loop.run('hello')
+
+  assert.equal(calls, 4)
+  assert.equal(response.content, 'part 1\n\npart 2\n\npart 3\n\npart 4')
+  assert.deepEqual(response.segments, ['part 1', 'part 2', 'part 3', 'part 4'])
+  assert.equal(response.stopReason, 'max_tokens')
+  assert.equal(response.truncated, true)
+})
+
+test('agent loop default maxTurns behavior still throws', async () => {
+  const records: SessionRecord[] = []
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      return {
+        content: 'keep going',
+        toolCalls: [{ id: `noop-${calls}`, name: 'noop', input: {} }],
+      }
+    },
+  }
+  const tools: Tool[] = [{
+    name: 'noop',
+    description: 'noop',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    isReadOnly: true,
+    isConcurrencySafe: true,
+    async execute() {
+      return { ok: true, content: 'ok' }
+    },
+  }]
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    maxTurns: 1,
+  })
+
+  await assert.rejects(() => loop.run('hello'), /Agent loop exceeded maximum tool iterations/)
+  assert.equal(calls, 1)
+})
+
+test('agent loop partial maxTurns behavior returns the latest assistant content', async () => {
+  const records: SessionRecord[] = []
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      return {
+        content: 'latest partial answer',
+        toolCalls: [{ id: `noop-${calls}`, name: 'noop', input: {} }],
+      }
+    },
+  }
+  const tools: Tool[] = [{
+    name: 'noop',
+    description: 'noop',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    isReadOnly: true,
+    isConcurrencySafe: true,
+    async execute() {
+      return { ok: true, content: 'ok' }
+    },
+  }]
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    maxTurns: 1,
+    maxTurnsExceededBehavior: 'partial',
+  })
+
+  const response = await loop.run('hello')
+
+  assert.equal(calls, 1)
+  assert.match(response.content, /latest partial answer/)
+  assert.match(response.content, /Sub-agent output may be incomplete: reached max turns limit \(1\)/)
+  assert.equal(response.stopReason, 'max_turns')
+  assert.equal(response.truncated, true)
+  assert.deepEqual(response.segments, [response.content])
+})
+
+test('agent loop escalates default max output tokens before persisting a max_tokens partial', async () => {
+  const records: SessionRecord[] = []
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      calls += 1
+      if (calls === 1) {
+        assert.equal(request.maxOutputTokens, undefined)
+        return { content: 'discarded retry candidate', toolCalls: [], stopReason: 'max_tokens' }
+      }
+      assert.equal(request.maxOutputTokens, 64_000)
+      return { content: 'complete after escalation', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async () => {},
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  const response = await loop.run('hello')
+
+  assert.equal(response.content, 'complete after escalation')
+  assert.equal(calls, 2)
+  assert.equal(records.some((record) =>
+    record.type === 'message' && record.role === 'assistant' && record.content === 'discarded retry candidate',
+  ), false)
 })
 
 test('agent loop updates records cache only after record stream append succeeds', async () => {

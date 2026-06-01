@@ -4,6 +4,7 @@ import { getToolActivityDescription, getToolDisplay, shouldDisplayToolResult } f
 import type { ToolResultDisplay } from '../../harness/types.js'
 import { theme } from '../theme.js'
 import type { TUIDisplayItem, ToolCallStatus } from '../types.js'
+import { ResponseBlock } from './ResponseBlock.js'
 
 interface ToolCallBlockProps {
   item: Extract<TUIDisplayItem, { kind: 'tool_call' }>
@@ -40,20 +41,22 @@ export function ToolCallBlock({ item, expanded }: ToolCallBlockProps) {
       </Box>
 
       {item.status === 'denied' && (
-        <Box paddingLeft={2}>
+        <ResponseBlock>
           <Text color={theme.error}>denied</Text>
-        </Box>
+        </ResponseBlock>
       )}
 
       {item.status === 'error' && result && (
-        <Box paddingLeft={2} flexDirection="column">
-          {item.errorCode && (
-            <Text color={theme.error} dimColor>
-              error: {item.errorCode}
-            </Text>
-          )}
-          <Text color={theme.error}>{result}</Text>
-        </Box>
+        <ResponseBlock>
+          <Box flexDirection="column">
+            {item.errorCode && (
+              <Text color={theme.error} dimColor>
+                error: {item.errorCode}
+              </Text>
+            )}
+            <Text color={theme.error}>{result}</Text>
+          </Box>
+        </ResponseBlock>
       )}
 
       {item.status === 'done' && result && shouldDisplayToolResult(item.tool, item.input, result) && (
@@ -68,16 +71,27 @@ export function formatToolCallRunningDescription(tool: string, input: unknown): 
 }
 
 function OutputBlock({ result, display, expanded }: { result: string; display?: ToolResultDisplay; expanded?: boolean }) {
+  if (display?.taskSnapshot && !expanded) {
+    const hasDetail = (display.detail ?? result).trim().length > 0
+    return (
+      <ResponseBlock>
+        <Box flexWrap="wrap">
+          <Text color={theme.dimText}>{display.summary}</Text>
+          {hasDetail && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
+        </Box>
+      </ResponseBlock>
+    )
+  }
+
   if (display && !expanded) {
     const hasDetail = (display.detail ?? result).trim().length > 0
     return (
-      <Box flexDirection="column" paddingLeft={2}>
-        <Box>
-          <Text color={theme.dimText}>{'| '}</Text>
+      <ResponseBlock>
+        <Box flexWrap="wrap">
           <Text color={theme.dimText}>{display.summary}</Text>
-          {hasDetail && <Text color={theme.dimText} dimColor> (ctrl+o expand)</Text>}
+          {hasDetail && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
         </Box>
-      </Box>
+      </ResponseBlock>
     )
   }
 
@@ -88,33 +102,36 @@ function OutputBlock({ result, display, expanded }: { result: string; display?: 
 
   if (display && expanded) {
     return (
-      <Box flexDirection="column" paddingLeft={2}>
-        <Box>
-          <Text color={theme.dimText}>{'| '}</Text>
-          <Text color={theme.dimText}>{display.summary}</Text>
+      <ResponseBlock>
+        <Box flexDirection="column">
+          <Box>
+            <Text color={theme.dimText}>{display.summary}</Text>
+          </Box>
+          <DetailLines lines={(display.detail ?? result).split('\n')} />
+          <Box>
+            <Text color={theme.dimText} dimColor>
+              (ctrl+o to collapse)
+            </Text>
+          </Box>
         </Box>
-        <DetailLines lines={(display.detail ?? result).split('\n')} />
-        <Box paddingLeft={3}>
-          <Text color={theme.dimText} dimColor>
-            (ctrl+o collapse)
-          </Text>
-        </Box>
-      </Box>
+      </ResponseBlock>
     )
   }
 
   if (expanded || totalLines <= COLLAPSE_LINES) {
     return (
-      <Box flexDirection="column" paddingLeft={2}>
-        <DetailLines lines={lines} />
-        {totalLines > COLLAPSE_LINES && (
-          <Box paddingLeft={3}>
-            <Text color={theme.dimText} dimColor>
-              (ctrl+o collapse)
-            </Text>
-          </Box>
-        )}
-      </Box>
+      <ResponseBlock>
+        <Box flexDirection="column">
+          <DetailLines lines={lines} />
+          {totalLines > COLLAPSE_LINES && (
+            <Box>
+              <Text color={theme.dimText} dimColor>
+                (ctrl+o to collapse)
+              </Text>
+            </Box>
+          )}
+        </Box>
+      </ResponseBlock>
     )
   }
 
@@ -122,14 +139,16 @@ function OutputBlock({ result, display, expanded }: { result: string; display?: 
   const hiddenCount = totalLines - COLLAPSE_LINES
 
   return (
-    <Box flexDirection="column" paddingLeft={2}>
-      <DetailLines lines={visibleLines} />
-      <Box paddingLeft={3}>
-        <Text color={theme.dimText} dimColor>
-          ... +{hiddenCount} {hiddenCount === 1 ? 'line' : 'lines'} (ctrl+o expand)
-        </Text>
+    <ResponseBlock>
+      <Box flexDirection="column">
+        <DetailLines lines={visibleLines} />
+        <Box>
+          <Text color={theme.dimText} dimColor>
+            ... +{hiddenCount} {hiddenCount === 1 ? 'line' : 'lines'} (ctrl+o to expand)
+          </Text>
+        </Box>
       </Box>
-    </Box>
+    </ResponseBlock>
   )
 }
 
@@ -138,7 +157,6 @@ function DetailLines({ lines }: { lines: string[] }) {
     <>
       {lines.map((line, i) => (
         <Box key={i}>
-          <Text color={theme.dimText}>{'| '}</Text>
           <Text color={theme.dimText}>{line}</Text>
         </Box>
       ))}

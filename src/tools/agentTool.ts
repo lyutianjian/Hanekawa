@@ -23,7 +23,7 @@ import {
 } from '../services/agents/subagentWorktree.js'
 import type { CacheRuntime } from '../harness/cacheControl.js'
 import { runLifecycleHooks, type Hooks } from '../harness/hooks.js'
-import type { ModelProvider, SessionRecord, SubagentTaskStatus, TokenUsage, Tool, ToolContext, ToolProgressEvent } from '../harness/types.js'
+import type { AgentRunResult, ModelProvider, SessionRecord, SubagentTaskStatus, TokenUsage, Tool, ToolContext, ToolProgressEvent } from '../harness/types.js'
 import { countSessionRecordTokens } from '../prompts/budget.js'
 
 export const NESTED_AGENT_FORBIDDEN_TOOLS = ['Agent', 'EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion'] as const
@@ -44,11 +44,12 @@ export const STATEFUL_AGENT_TOOL_NAMES = new Set([
   'TaskUpdate',
 ])
 
-export const DEFAULT_AGENT_MAX_TURNS = 10
-const VERIFICATION_AGENT_MAX_TURNS = 20
+export const DEFAULT_AGENT_MAX_TURNS = 30
+const VERIFICATION_AGENT_MAX_TURNS = 30
 export const AGENT_MAX_RESULT_SIZE_CHARS = 32_000
 const SUBAGENT_TRANSCRIPT_SUMMARY_CHARS = 8_000
 export const FORK_PRELOAD_TOKEN_BUDGET = 50_000
+const ONE_SHOT_AGENT_TYPES = new Set(['explore', 'plan'])
 
 export type AgentType = string
 
@@ -446,7 +447,10 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
         await context.appendRecord?.(run.transcriptRecord)
         const content = appendHookOutputToToolResult(
           appendWorktreeNoticeToToolResult(
-            applyAgentResultBudget(run.result.content, agentDefinition.maxResultSizeChars),
+            appendTruncationNotice(
+              applyAgentResultBudget(run.result.content, agentDefinition.maxResultSizeChars),
+              run.result,
+            ),
             run.worktree,
           ),
           run.stopHookOutput,
@@ -461,6 +465,9 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
               usage: run.result.usage,
               verdict: run.verdict,
               criticalFiles: run.criticalFiles,
+              ...(run.result.stopReason ? { stopReason: run.result.stopReason } : {}),
+              ...(run.result.truncated ? { truncated: true } : {}),
+              ...(ONE_SHOT_AGENT_TYPES.has(parsed.subagent_type) ? { suppressContextSummary: true } : {}),
               ...(run.worktree
                 ? {
                     isolation: run.worktree.isolation,
@@ -495,7 +502,7 @@ interface RunSubagentOptions {
 }
 
 interface RunSubagentResult {
-  result: { content: string; usage: TokenUsage }
+  result: AgentRunResult
   transcriptRecord: Extract<SessionRecord, { type: 'subagent_transcript' }>
   stopHookOutput?: string
   verdict?: 'PASS' | 'FAIL' | 'PARTIAL'
@@ -608,6 +615,7 @@ async function runSubagent({
       contextManagement: options.contextManagement,
       isGitRepo: options.isGitRepo,
       maxTurns: parsed.maxTurns ?? agentDefinition.maxTurns,
+      maxTurnsExceededBehavior: 'partial',
       maxOutputTokens: parsed.maxOutputTokens,
       fallbackModel: options.fallbackModel,
       compactModel: options.compactModel,
@@ -626,7 +634,10 @@ async function runSubagent({
     const transcriptStats = summarizeTranscriptRecords(transcriptRecords)
     const verdict = extractVerdict(result.content)
     const criticalFiles = extractCriticalFiles(result.content)
-    const summary = applyAgentResultBudget(result.content, SUBAGENT_TRANSCRIPT_SUMMARY_CHARS)
+    const summary = appendTruncationNotice(
+      applyAgentResultBudget(result.content, SUBAGENT_TRANSCRIPT_SUMMARY_CHARS),
+      result,
+    )
     const worktreeSummary = worktree
       ? {
           ...worktree,
@@ -662,6 +673,8 @@ async function runSubagent({
         parentToolUseId: context.currentToolUseId,
         ...(transcriptPath ? { transcriptPath } : {}),
         status: 'completed',
+        ...(result.stopReason ? { stopReason: result.stopReason } : {}),
+        ...(result.truncated ? { truncated: true } : {}),
         summary,
         recordCount: transcriptStats.recordCount,
         messageCount: transcriptStats.messageCount,
@@ -1032,6 +1045,13 @@ function appendHookOutputToToolResult(content: string, hookOutput: string | unde
 function appendWorktreeNoticeToToolResult(content: string, worktree: SubagentWorktreeSummary | undefined): string {
   const notice = formatWorktreeNotice(worktree)
   return notice ? `${content}\n\n${notice}` : content
+}
+
+function appendTruncationNotice(content: string, result: AgentRunResult): string {
+  if (!result.truncated) return content
+  if (result.stopReason === 'max_turns') return content
+  if (result.stopReason !== 'max_tokens') return `${content}\n\n[Sub-agent output may be incomplete.]`
+  return `${content}\n\n[Sub-agent output may be incomplete: model stopped because it reached max output tokens.]`
 }
 
 function formatWorktreeNotice(worktree: SubagentWorktreeSummary | undefined): string | undefined {

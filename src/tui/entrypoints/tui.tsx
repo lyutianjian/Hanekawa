@@ -20,7 +20,7 @@ import { JsonlRecordStream } from '../../sessions/recordStream.js'
 import { getAllTools } from '../../tools/index.js'
 import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, prepareForkPreloadRecords } from '../../tools/agentTool.js'
 import { restoreTaskStateFromRecords } from '../../tools/taskState.js'
-import { PermissionGate, type DenialStateStore } from '../../harness/permissions.js'
+import { PermissionGate, permissionRulesFromSettings, type DenialStateStore } from '../../harness/permissions.js'
 import { ToolRunner } from '../../harness/toolRunner.js'
 import { ContextBuilder } from '../../harness/contextBuilder.js'
 import { SystemPromptSectionCache } from '../../harness/sections.js'
@@ -245,8 +245,9 @@ async function main() {
     getDenialState: async () => store.getDenialState(session.id),
     setDenialState: async (state) => store.setDenialState(session.id, state),
   }
-  const permissionGate = new PermissionGate(promptProxy.prompt, undefined, {
+  const permissionGate = new PermissionGate(promptProxy.prompt, permissionRulesFromSettings(settings.permissions), {
     denialStateStore,
+    cwd,
   })
 
   const contextManagement = config.get().agent.contextManagement

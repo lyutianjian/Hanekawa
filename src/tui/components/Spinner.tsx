@@ -1,11 +1,12 @@
 import { useState, type ReactNode } from 'react'
 import { Box, Text, useStdout } from 'ink'
 import stringWidth from 'string-width'
+import type { TaskDisplaySnapshot } from '../../harness/types.js'
 import { useSpinner } from '../hooks/useSpinner.js'
 import { theme } from '../theme.js'
+import { ResponseBlock } from './ResponseBlock.js'
+import { TaskListBlock } from './TaskListBlock.js'
 
-const MESSAGE_COLOR = theme.spinner
-const SHIMMER_COLOR = '#D7E3FC'
 const DIM_COLOR = theme.dimText
 const ERROR_RED = { r: 171, g: 43, b: 63 }
 const DEFAULT_CHARACTERS = getDefaultCharacters()
@@ -204,17 +205,29 @@ const SPINNER_VERBS = [
 
 interface SpinnerProps {
   subText?: string
+  taskSnapshot?: TaskDisplaySnapshot
+  spinnerColors?: SpinnerColors
 }
 
-export function Spinner({ subText }: SpinnerProps) {
+export interface SpinnerColors {
+  messageColor: string
+  shimmerColor: string
+}
+
+export function Spinner({ subText, taskSnapshot, spinnerColors }: SpinnerProps) {
   const [randomVerb] = useState(() => `${sampleSpinnerVerb()}...`)
+  const [sampledSpinnerColors] = useState(sampleSpinnerColors)
+  const { messageColor, shimmerColor } = spinnerColors ?? sampledSpinnerColors
   const { stdout } = useStdout()
   const { frame, elapsed, time } = useSpinner()
   const hasActiveTool = Boolean(subText)
   const elapsedText = `${elapsed}s`
   const terminalWidth = stdout.columns || 80
   const messageWidth = Math.max(1, terminalWidth - stringWidth(elapsedText) - 6)
-  const message = truncateMiddleByWidth(hasActiveTool ? subText! : randomVerb, messageWidth)
+  const taskMessage = taskSnapshot ? formatActiveTaskMessage(taskSnapshot) : undefined
+  const message = hasActiveTool
+    ? truncateMiddleByWidth(subText!, messageWidth)
+    : truncateMiddleByWidth(taskMessage ?? randomVerb, messageWidth)
   const mode: SpinnerMode = hasActiveTool ? 'tool-use' : 'requesting'
   const glimmerIndex = getGlimmerIndex(message, mode, time)
   const flashOpacity = mode === 'tool-use'
@@ -222,19 +235,26 @@ export function Spinner({ subText }: SpinnerProps) {
     : 0
 
   return (
-    <Box flexDirection="row" flexWrap="wrap" width="100%">
-      <SpinnerGlyph frame={frame} messageColor={MESSAGE_COLOR} />
-      <GlimmerMessage
-        message={message}
-        mode={mode}
-        messageColor={MESSAGE_COLOR}
-        glimmerIndex={glimmerIndex}
-        flashOpacity={flashOpacity}
-        shimmerColor={SHIMMER_COLOR}
-      />
-      <Text color={DIM_COLOR}>(</Text>
-      <Text color={DIM_COLOR}>{elapsedText}</Text>
-      <Text color={DIM_COLOR}>)</Text>
+    <Box flexDirection="column" width="100%">
+      <Box flexDirection="row" flexWrap="wrap" width="100%">
+        <SpinnerGlyph frame={frame} messageColor={messageColor} />
+        <GlimmerMessage
+          message={message}
+          mode={mode}
+          messageColor={messageColor}
+          glimmerIndex={glimmerIndex}
+          flashOpacity={flashOpacity}
+          shimmerColor={shimmerColor}
+        />
+        <Text color={DIM_COLOR}>(</Text>
+        <Text color={DIM_COLOR}>{elapsedText}</Text>
+        <Text color={DIM_COLOR}>)</Text>
+      </Box>
+      {taskSnapshot && taskSnapshot.counts.total > 0 && (
+        <ResponseBlock>
+          <TaskListBlock snapshot={taskSnapshot} showHeader={false} runningColor={messageColor} />
+        </ResponseBlock>
+      )}
     </Box>
   )
 }
@@ -273,8 +293,11 @@ function GlimmerMessage({
 }): ReactNode {
   if (!message) return null
 
+  const baseColor = parseHexColor(messageColor)
+  const shimmerRGB = parseHexColor(shimmerColor)
+
   if (mode === 'tool-use') {
-    const color = toRGBColor(interpolateColor(parseHexColor(messageColor), parseHexColor(shimmerColor), flashOpacity))
+    const color = toRGBColor(interpolateColor(baseColor, shimmerRGB, flashOpacity))
     return (
       <>
         <Text color={color}>{message}</Text>
@@ -360,6 +383,16 @@ function sampleSpinnerVerb(): string {
   return SPINNER_VERBS[index] ?? 'Thinking'
 }
 
+export function sampleSpinnerColors(): SpinnerColors {
+  const palette = theme.spinnerPalette
+  const index = Math.floor(Math.random() * palette.length)
+  const colors = palette[index]
+  return {
+    messageColor: colors?.base ?? theme.spinner,
+    shimmerColor: colors?.shimmer ?? theme.spinner,
+  }
+}
+
 function truncateMiddleByWidth(value: string, maxWidth: number): string {
   if (stringWidth(value) <= maxWidth) return value
   const ellipsis = '...'
@@ -422,4 +455,13 @@ interface RGBColor {
   r: number
   g: number
   b: number
+}
+
+function formatActiveTaskMessage(snapshot: TaskDisplaySnapshot): string | undefined {
+  const active = snapshot.activeTaskId
+    ? snapshot.tasks.find((task) => task.id === snapshot.activeTaskId)
+    : snapshot.tasks.find((task) => task.status === 'in_progress')
+  if (!active) return undefined
+  const label = active.activeForm ?? active.subject
+  return label.endsWith('...') ? label : `${label}...`
 }

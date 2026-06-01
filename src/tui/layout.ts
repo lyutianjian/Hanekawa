@@ -57,10 +57,10 @@ export function estimateWelcomeBannerRows(width: number): number {
   return width < 70 ? 13 : 15
 }
 
-export function estimateSpinnerRows(input: { subText?: string; todoCount: number }): number {
-  const visibleTodos = Math.min(input.todoCount, 6)
-  const hiddenTodoRow = input.todoCount > visibleTodos ? 1 : 0
-  return 1 + (input.subText ? 1 : 0) + visibleTodos + hiddenTodoRow
+export function estimateSpinnerRows(input: { subText?: string; taskCount: number }): number {
+  const visibleTasks = Math.min(input.taskCount, 6)
+  const hiddenTaskRow = input.taskCount > visibleTasks ? 1 : 0
+  return 1 + (input.taskCount > 0 ? 1 + visibleTasks + hiddenTaskRow : 0)
 }
 
 export function calculateMessageViewportRows(input: {

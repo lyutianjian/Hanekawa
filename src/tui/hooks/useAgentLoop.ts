@@ -7,6 +7,7 @@ import type { PermissionGate } from '../../harness/permissions.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import type {
   SessionRecord,
+  TaskDisplaySnapshot,
   TokenUsage,
   ToolProgressEvent,
 } from '../../harness/types.js'
@@ -53,6 +54,9 @@ export function useAgentLoop({
     total: createEmptyUsage(),
   })
   const [spinnerSubText, setSpinnerSubText] = useState<string | undefined>()
+  const [taskSnapshot, setTaskSnapshot] = useState<TaskDisplaySnapshot | undefined>(() =>
+    findLatestTaskSnapshot(existingRecords),
+  )
 
   const abortControllerRef = useRef<AbortController | null>(null)
   // Track the most recent tool_use ID for each tool name (for approval matching)
@@ -94,8 +98,10 @@ export function useAgentLoop({
     lastToolUseIdRef.current.clear()
     activeToolProgressRef.current.clear()
     subagentProgressRef.current.clear()
+    const latestTaskSnapshot = findLatestTaskSnapshot(existingRecords)
+    setTaskSnapshot(latestTaskSnapshot)
     setSpinnerSubText(undefined)
-  }, [session.id])
+  }, [session.id, existingRecords])
 
   // Wire up the permission gate's prompt function
   // This is done via the proxy pattern in the entry point
@@ -132,6 +138,7 @@ export function useAgentLoop({
       }
 
       setIsStreaming(true)
+      setSpinnerSubText(undefined)
 
       const ac = new AbortController()
       abortControllerRef.current = ac
@@ -272,24 +279,32 @@ export function useAgentLoop({
           }
           return prev
         })
-      } else if (record.type === 'tool_result' && !isHiddenToolCall(record.tool)) {
-        setMessages((prev) => {
-          // Find by matching tool_use ID
-          const idx = prev.findIndex(
-            (m) => m.kind === 'tool_call' && m.toolUseId === record.toolUseId,
-          )
-          if (idx >= 0) {
-            const updated = [...prev]
-            const item = { ...updated[idx] } as Extract<TUIDisplayItem, { kind: 'tool_call' }>
-            item.status = record.ok ? 'done' : 'error'
-            item.result = record.content
-            item.resultDisplay = record.display
-            item.errorCode = record.errorCode
-            updated[idx] = item
-            return updated
+      } else if (record.type === 'tool_result') {
+        if (record.display?.taskSnapshot) {
+          setTaskSnapshot(record.display.taskSnapshot)
+          if (activeToolProgressRef.current.size === 0) {
+            setSpinnerSubText(undefined)
           }
-          return prev
-        })
+        }
+        if (!isHiddenToolCall(record.tool)) {
+          setMessages((prev) => {
+            // Find by matching tool_use ID
+            const idx = prev.findIndex(
+              (m) => m.kind === 'tool_call' && m.toolUseId === record.toolUseId,
+            )
+            if (idx >= 0) {
+              const updated = [...prev]
+              const item = { ...updated[idx] } as Extract<TUIDisplayItem, { kind: 'tool_call' }>
+              item.status = record.ok ? 'done' : 'error'
+              item.result = record.content
+              item.resultDisplay = record.display
+              item.errorCode = record.errorCode
+              updated[idx] = item
+              return updated
+            }
+            return prev
+          })
+        }
       } else if (record.type === 'message' && record.role === 'assistant') {
         setMessages((prev) => {
           if (prev.some((m) => m.kind === 'assistant' && m.id === record.id)) return prev
@@ -370,6 +385,8 @@ export function useAgentLoop({
           createdAt: new Date().toISOString(),
         }]
       : []
+    const latestTaskSnapshot = findLatestTaskSnapshot(loaded.records)
+    setTaskSnapshot(latestTaskSnapshot)
     setMessages([...systemItems, ...recordsToDisplayItems(loaded.records)])
     return loaded.records
   }, [store, session.id])
@@ -379,6 +396,7 @@ export function useAgentLoop({
     setMessages,
     isStreaming,
     spinnerSubText,
+    taskSnapshot,
     usage,
     submit,
     interrupt,
@@ -433,6 +451,14 @@ function formatSubagentSpinnerProgress(events: ToolProgressEvent[]): string | un
   }
 
   return formatToolProgress(events)
+}
+
+function findLatestTaskSnapshot(records: readonly SessionRecord[]): TaskDisplaySnapshot | undefined {
+  for (const record of [...records].reverse()) {
+    if (record.type !== 'tool_result') continue
+    if (record.display?.taskSnapshot) return record.display.taskSnapshot
+  }
+  return undefined
 }
 
 function formatScopedToolName(event: ToolProgressEvent | undefined): string {
@@ -545,7 +571,17 @@ async function formatInterruptMessage(store: SessionStore, sessionId: string, us
 }
 
 export function isHiddenToolCall(toolName: string): boolean {
-  return toolName === ENTER_PLAN_MODE_TOOL_NAME || toolName === EXIT_PLAN_MODE_TOOL_NAME
+  return toolName === ENTER_PLAN_MODE_TOOL_NAME
+    || toolName === EXIT_PLAN_MODE_TOOL_NAME
+    || isTaskStatusTool(toolName)
+}
+
+function isTaskStatusTool(toolName: string): boolean {
+  return toolName === 'TodoWrite'
+    || toolName === 'TaskCreate'
+    || toolName === 'TaskList'
+    || toolName === 'TaskGet'
+    || toolName === 'TaskUpdate'
 }
 
 function addTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {

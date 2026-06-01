@@ -3,8 +3,10 @@ import assert from 'node:assert/strict'
 import { recordsToDisplayItems } from '../src/tui/hooks/useAgentLoop.js'
 import { formatToolCallRunningDescription, getStatusDot } from '../src/tui/components/ToolCallBlock.js'
 import { formatSubagentTaskLine } from '../src/tui/components/SubagentTaskBlock.js'
+import { getTaskVisual } from '../src/tui/components/TaskListBlock.js'
 import { getToolActivityDescription, getToolDisplay, shouldDisplayToolResult } from '../src/tools/display.js'
-import type { SessionRecord } from '../src/harness/types.js'
+import { theme } from '../src/tui/theme.js'
+import type { SessionRecord, TaskDisplayItem } from '../src/harness/types.js'
 
 test('recordsToDisplayItems preserves tool error codes for TUI rendering', () => {
   const records: SessionRecord[] = [
@@ -100,6 +102,56 @@ test('recordsToDisplayItems hides plan mode transition tool rows', () => {
   assert.equal(recordsToDisplayItems(records).some((item) => item.kind === 'tool_call'), false)
 })
 
+test('recordsToDisplayItems hides task management tool rows', () => {
+  const records: SessionRecord[] = [
+    {
+      id: 'task-create-1',
+      type: 'tool_use',
+      tool: 'TaskCreate',
+      input: { subject: 'Create project folder', description: '' },
+      riskLevel: 'safe',
+      createdAt: '2026-05-24T00:00:00.000Z',
+    },
+    {
+      id: 'task-create-result-1',
+      type: 'tool_result',
+      toolUseId: 'task-create-1',
+      tool: 'TaskCreate',
+      ok: true,
+      content: 'Created task #1',
+      createdAt: '2026-05-24T00:00:01.000Z',
+    },
+    {
+      id: 'task-update-1',
+      type: 'tool_use',
+      tool: 'TaskUpdate',
+      input: { taskId: '1', status: 'in_progress' },
+      riskLevel: 'safe',
+      createdAt: '2026-05-24T00:00:02.000Z',
+    },
+    {
+      id: 'task-update-result-1',
+      type: 'tool_result',
+      toolUseId: 'task-update-1',
+      tool: 'TaskUpdate',
+      ok: false,
+      content: 'Task not found',
+      errorCode: 'invalid_input',
+      createdAt: '2026-05-24T00:00:03.000Z',
+    },
+    {
+      id: 'todo-write-1',
+      type: 'tool_use',
+      tool: 'TodoWrite',
+      input: { todos: [] },
+      riskLevel: 'safe',
+      createdAt: '2026-05-24T00:00:04.000Z',
+    },
+  ]
+
+  assert.equal(recordsToDisplayItems(records).some((item) => item.kind === 'tool_call'), false)
+})
+
 test('recordsToDisplayItems marks restored running subagents as interrupted', () => {
   const records: SessionRecord[] = [{
     id: 'subagent-task-1',
@@ -176,6 +228,42 @@ test('tool status indicator uses Claude-style circle for all states', () => {
   for (const status of ['pending', 'running', 'approved', 'denied', 'done', 'error'] as const) {
     assert.equal(getStatusDot(status).char, '●')
   }
+})
+
+test('task list visual markers use Claude-style task status icons', () => {
+  const base: TaskDisplayItem = {
+    id: '1',
+    status: 'pending',
+    subject: 'Ship UI',
+    description: '',
+    blocks: [],
+    blockedBy: [],
+  }
+
+  assert.deepEqual(getTaskVisual({ ...base, status: 'completed' }, false), {
+    icon: '✔',
+    iconColor: theme.codeInline,
+    textColor: theme.dimText,
+    bold: false,
+    dim: true,
+    strikethrough: true,
+  })
+  assert.deepEqual(getTaskVisual({ ...base, status: 'in_progress' }, false), {
+    icon: '■',
+    iconColor: theme.spinner,
+    textColor: theme.assistantText,
+    bold: true,
+    dim: false,
+    strikethrough: false,
+  })
+  assert.deepEqual(getTaskVisual(base, true), {
+    icon: '□',
+    iconColor: theme.dimText,
+    textColor: theme.dimText,
+    bold: false,
+    dim: true,
+    strikethrough: false,
+  })
 })
 
 test('tool call running description uses tool-owned activity text', () => {

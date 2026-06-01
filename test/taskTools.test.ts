@@ -100,6 +100,8 @@ test('TaskCreate/List/Get/Update share task state and summarize remaining/comple
   }, ctx)
   assert.equal(update.ok, true)
   assert.match(update.metadata?.display?.summary ?? '', /0 remaining, 1 completed/)
+  assert.equal(update.metadata?.display?.taskSnapshot?.counts.completed, 1)
+  assert.equal(update.metadata?.display?.taskSnapshot?.tasks[0]?.subject, 'Inspect plan mode')
 
   const get = await taskGetTool.execute({ taskId: '1' }, ctx)
   assert.equal(get.ok, true)
@@ -162,6 +164,8 @@ test('TaskUpdate tracks owner metadata dependencies and cleans dependencies on d
   assert.deepEqual(ctx.taskState!.get('2')!.blockedBy, ['1'])
   assert.deepEqual(ctx.taskState!.get('1')!.blocks, ['2'])
   assert.deepEqual(ctx.taskState!.get('2')!.metadata, { phase: 'implementation' })
+  assert.equal(updated.metadata?.display?.taskSnapshot?.activeTaskId, '2')
+  assert.equal(updated.metadata?.display?.taskSnapshot?.tasks.find((task) => task.id === '2')?.activeForm, 'Running dependent work')
 
   const listed = await taskListTool.execute({}, ctx)
   assert.match(listed.content, /#2 \[in_progress\] Run dependent work \(agent-a\) \[blocked by #1\]/)

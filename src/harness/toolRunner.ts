@@ -4,7 +4,7 @@ import { runLifecycleHooks, runPreToolUseHooks } from './hooks.js'
 import { validateToolInput } from './toolValidation.js'
 import { countTextTokens } from '../prompts/budget.js'
 import type { ToolHooks } from './hooks.js'
-import type { SessionRecord, Tool, ToolCall, ToolContext, ToolErrorCode, ToolProgressEvent, ToolResultDisplay, ToolResultMetadata, ToolResultRecord, ToolUseRecord } from './types.js'
+import type { SessionRecord, TaskDisplayCounts, TaskDisplayItem, TaskDisplaySnapshot, TaskItem, Tool, ToolCall, ToolContext, ToolErrorCode, ToolProgressEvent, ToolResultDisplay, ToolResultMetadata, ToolResultRecord, ToolUseRecord } from './types.js'
 
 export interface ToolRunEvents {
   onRecord(record: SessionRecord): Promise<void>
@@ -298,14 +298,105 @@ function normalizeToolResultDisplay(display: ToolResultDisplay | undefined): Too
   const summary = display.summary.trim()
   if (!summary) return undefined
   const detail = display.detail?.trim()
+  const taskSnapshot = normalizeTaskDisplaySnapshot(display.taskSnapshot)
   return {
     summary,
     ...(detail ? { detail } : {}),
+    ...(taskSnapshot ? { taskSnapshot } : {}),
   }
+}
+
+const MAX_TASK_DISPLAY_ITEMS = 50
+const MAX_TASK_DISPLAY_TEXT_CHARS = 500
+
+function normalizeTaskDisplaySnapshot(snapshot: TaskDisplaySnapshot | undefined): TaskDisplaySnapshot | undefined {
+  if (!snapshot || !Array.isArray(snapshot.tasks)) return undefined
+  const tasks = snapshot.tasks
+    .slice(0, MAX_TASK_DISPLAY_ITEMS)
+    .map(normalizeTaskDisplayItem)
+    .filter((task): task is TaskDisplayItem => Boolean(task))
+  if (tasks.length === 0) return undefined
+  const activeTaskId = typeof snapshot.activeTaskId === 'string' && tasks.some((task) => task.id === snapshot.activeTaskId)
+    ? snapshot.activeTaskId
+    : undefined
+  return {
+    tasks,
+    counts: normalizeTaskDisplayCounts(snapshot.counts, tasks),
+    ...(activeTaskId ? { activeTaskId } : {}),
+  }
+}
+
+function normalizeTaskDisplayItem(item: TaskDisplayItem): TaskDisplayItem | undefined {
+  if (!isRecord(item)) return undefined
+  const id = trimDisplayString(item.id)
+  const subject = trimDisplayString(item.subject)
+  const description = trimDisplayString(item.description)
+  if (!id || !subject) return undefined
+  const status = normalizeTaskStatus(item.status)
+  if (!status) return undefined
+  const activeForm = trimDisplayString(item.activeForm)
+  const owner = trimDisplayString(item.owner)
+  return {
+    id,
+    status,
+    subject,
+    description: description ?? subject,
+    ...(activeForm ? { activeForm } : {}),
+    ...(owner ? { owner } : {}),
+    blocks: normalizeIdList(item.blocks),
+    blockedBy: normalizeIdList(item.blockedBy),
+  }
+}
+
+function normalizeTaskDisplayCounts(counts: TaskDisplayCounts | undefined, tasks: readonly TaskDisplayItem[]): TaskDisplayCounts {
+  if (counts && isRecord(counts)) {
+    return {
+      total: normalizeCount(counts.total, tasks.length),
+      remaining: normalizeCount(counts.remaining, tasks.filter((task) => task.status === 'pending' || task.status === 'in_progress').length),
+      pending: normalizeCount(counts.pending, tasks.filter((task) => task.status === 'pending').length),
+      inProgress: normalizeCount(counts.inProgress, tasks.filter((task) => task.status === 'in_progress').length),
+      completed: normalizeCount(counts.completed, tasks.filter((task) => task.status === 'completed').length),
+    }
+  }
+  return {
+    total: tasks.length,
+    remaining: tasks.filter((task) => task.status === 'pending' || task.status === 'in_progress').length,
+    pending: tasks.filter((task) => task.status === 'pending').length,
+    inProgress: tasks.filter((task) => task.status === 'in_progress').length,
+    completed: tasks.filter((task) => task.status === 'completed').length,
+  }
+}
+
+function normalizeTaskStatus(value: unknown): TaskItem['status'] | undefined {
+  return value === 'pending' || value === 'in_progress' || value === 'completed' || value === 'deleted'
+    ? value
+    : undefined
+}
+
+function normalizeIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => trimDisplayString(item))
+    .filter((item): item is string => Boolean(item))
+    .slice(0, MAX_TASK_DISPLAY_ITEMS)
+}
+
+function trimDisplayString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  return trimmed.slice(0, MAX_TASK_DISPLAY_TEXT_CHARS)
+}
+
+function normalizeCount(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : fallback
 }
 
 function formatSubagentSummary(value: unknown): string | undefined {
   if (!isRecord(value)) return undefined
+  if (value.suppressContextSummary === true) return undefined
   const type = typeof value.type === 'string' ? value.type : undefined
   if (!type) return undefined
 
@@ -315,6 +406,11 @@ function formatSubagentSummary(value: unknown): string | undefined {
 
   const verdict = typeof value.verdict === 'string' ? value.verdict : undefined
   if (verdict) attributes.push(`verdict="${escapeAttribute(verdict)}"`)
+
+  const stopReason = typeof value.stopReason === 'string' ? value.stopReason : undefined
+  if (stopReason) attributes.push(`stop_reason="${escapeAttribute(stopReason)}"`)
+
+  if (value.truncated === true) attributes.push('truncated="true"')
 
   const usage = isRecord(value.usage) ? value.usage : undefined
   const tokens = usage ? totalTokens(usage) : undefined

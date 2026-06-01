@@ -1,4 +1,4 @@
-import type { TaskItem, ToolResultDisplay } from '../harness/types.js'
+import type { TaskDisplayCounts, TaskDisplayItem, TaskDisplaySnapshot, TaskItem, ToolResultDisplay } from '../harness/types.js'
 
 export function sortedTasks(tasks: Iterable<TaskItem>): TaskItem[] {
   return [...tasks].sort((a, b) => {
@@ -61,6 +61,44 @@ export function taskDisplay(tasks: readonly TaskItem[]): ToolResultDisplay {
   return {
     summary: compactTaskSummary(tasks, remaining, completed),
     detail: summarizeTaskState(tasks),
+    taskSnapshot: createTaskSnapshot(tasks),
+  }
+}
+
+export function createTaskSnapshot(tasks: readonly TaskItem[]): TaskDisplaySnapshot {
+  const normalized = sortedTasks(tasks).map(toTaskDisplayItem)
+  const counts = countTaskDisplayItems(normalized)
+  const activeTask = normalized.find((task) => task.status === 'in_progress')
+  return {
+    tasks: normalized,
+    counts,
+    ...(activeTask ? { activeTaskId: activeTask.id } : {}),
+  }
+}
+
+function toTaskDisplayItem(task: TaskItem): TaskDisplayItem {
+  return {
+    id: task.id,
+    status: task.status,
+    subject: task.subject,
+    description: task.description,
+    ...(task.activeForm ? { activeForm: task.activeForm } : {}),
+    ...(task.owner ? { owner: task.owner } : {}),
+    blocks: [...(task.blocks ?? [])],
+    blockedBy: [...(task.blockedBy ?? [])],
+  }
+}
+
+function countTaskDisplayItems(tasks: readonly TaskDisplayItem[]): TaskDisplayCounts {
+  const pending = tasks.filter((task) => task.status === 'pending').length
+  const inProgress = tasks.filter((task) => task.status === 'in_progress').length
+  const completed = tasks.filter((task) => task.status === 'completed').length
+  return {
+    total: tasks.length,
+    remaining: pending + inProgress,
+    pending,
+    inProgress,
+    completed,
   }
 }
 

@@ -19,6 +19,9 @@ export interface PermissionRequest {
   tool: Tool
   input: unknown
   reason: string
+  source: PermissionDecisionSource
+  matchedRule?: PermissionRule
+  alwaysAllowRule?: PermissionRule
   /**
    * Number of consecutive auto-denials of this tool that came before this
    * prompt. Surfaced so the dialog can warn the user that the model is
@@ -30,6 +33,13 @@ export interface PermissionRequest {
 
 export type PermissionPrompt = (request: PermissionRequest) => Promise<boolean>
 export type PermissionModeListener = (mode: PermissionMode) => void
+export type PermissionDecisionSource =
+  | 'mode'
+  | 'allow rule'
+  | 'ask rule'
+  | 'deny rule'
+  | 'protected path'
+  | 'bash safety'
 
 export interface DenialState {
   streaks: Record<string, number>
@@ -44,9 +54,20 @@ export interface DenialStateStore {
 export interface PermissionRule {
   toolName: string
   contentPattern?: string
-  behavior: 'allow' | 'deny'
+  behavior: 'allow' | 'deny' | 'ask'
   source: 'session' | 'config'
 }
+
+export interface PermissionSettings {
+  allow?: string[]
+  deny?: string[]
+  ask?: string[]
+}
+
+type AutoDecision =
+  | { action: 'allow' }
+  | { action: 'prompt'; reason: string; source: PermissionDecisionSource }
+  | { action: 'deny'; source: PermissionDecisionSource }
 
 /**
  * Default number of consecutive auto-denials of a tool after which we stop
@@ -57,6 +78,8 @@ const DEFAULT_DENIAL_STREAK_THRESHOLD = 3
 const DEFAULT_GLOBAL_DENIAL_PROMPT_THRESHOLD = 20
 // `Delete` stays excluded so accept-edits mode cannot silently remove files.
 const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
+const FILE_PERMISSION_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'Delete'])
+const ACCEPT_EDITS_BASH_COMMANDS = new Set(['mkdir', 'touch'])
 const PLAN_ALLOWED_AGENT_TYPES = new Set(['general', 'fork', 'explore', 'plan', 'verification'])
 const PLAN_READ_ONLY_SHELL_COMMANDS = new Set([
   'cat',
@@ -91,6 +114,38 @@ const PLAN_READ_ONLY_GIT_SUBCOMMANDS = new Set([
 
 export { isProtectedPath } from '../utils/permissions/protectedPaths.js'
 
+export function permissionRulesFromSettings(permissions: PermissionSettings | undefined): PermissionRule[] {
+  if (!permissions) return []
+  return [
+    ...permissionEntriesToRules(permissions.deny, 'deny'),
+    ...permissionEntriesToRules(permissions.ask, 'ask'),
+    ...permissionEntriesToRules(permissions.allow, 'allow'),
+  ]
+}
+
+function permissionEntriesToRules(
+  entries: string[] | undefined,
+  behavior: PermissionRule['behavior'],
+): PermissionRule[] {
+  return (entries ?? []).flatMap((entry) => {
+    const parsed = parsePermissionRuleEntry(entry)
+    return parsed ? [{ ...parsed, behavior, source: 'config' as const }] : []
+  })
+}
+
+function parsePermissionRuleEntry(entry: string): Pick<PermissionRule, 'toolName' | 'contentPattern'> | undefined {
+  const trimmed = entry.trim()
+  if (!trimmed) return undefined
+  const colon = trimmed.indexOf(':')
+  if (colon > 0) {
+    const toolName = trimmed.slice(0, colon).trim()
+    const contentPattern = trimmed.slice(colon + 1).trim()
+    if (!toolName) return undefined
+    return contentPattern ? { toolName, contentPattern } : { toolName }
+  }
+  return { toolName: trimmed }
+}
+
 function permissionRuleKey(rule: PermissionRule): string {
   return [
     rule.source,
@@ -121,6 +176,32 @@ function extractPath(input: unknown): string {
     if (typeof obj.command === 'string') return obj.command
   }
   return ''
+}
+
+function buildSessionAllowRule(
+  tool: Tool,
+  input: unknown,
+  commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
+): PermissionRule | undefined {
+  if (tool.name === 'Bash') {
+    if (!commandAnalysis) return undefined
+    if (commandAnalysis.categories.length > 0) return undefined
+    if (commandAnalysis.hasSafetyDenyIssue || commandAnalysis.requiresSafetyPrompt || commandAnalysis.hasProtectedPath) {
+      return undefined
+    }
+    if (commandAnalysis.segments.length !== 1) return undefined
+    const command = commandAnalysis.command.trim()
+    if (!command) return undefined
+    return { toolName: tool.name, contentPattern: command, behavior: 'allow', source: 'session' }
+  }
+
+  if (FILE_PERMISSION_TOOLS.has(tool.name)) {
+    const filePath = extractPath(input).trim()
+    if (!filePath || isProtectedPath(filePath)) return undefined
+    return { toolName: tool.name, contentPattern: filePath, behavior: 'allow', source: 'session' }
+  }
+
+  return { toolName: tool.name, behavior: 'allow', source: 'session' }
 }
 
 function matchGlob(content: string, pattern: string): boolean {
@@ -185,7 +266,9 @@ export class PermissionGate {
       || hasProtectedPath
     const requiresSafetyPrompt = commandAnalysis?.requiresSafetyPrompt ?? false
 
-    const deniedByRule = this.isDenied(tool.name, input)
+    const deniedByRule = this.matchingRule('deny', tool.name, input)
+    const askedByRule = this.matchingRule('ask', tool.name, input)
+    const allowedByRule = this.matchingRule('allow', tool.name, input)
 
     if (this.mode === 'bypass') {
       if (hasProtectedPath) {
@@ -193,6 +276,7 @@ export class PermissionGate {
           tool,
           input,
           reason: this.protectedPathBypassReason(input, commandAnalysis),
+          source: 'protected path',
           denialStreak: 0,
         })
         this.denialStreaks.set(tool.name, 0)
@@ -208,6 +292,7 @@ export class PermissionGate {
           tool,
           input,
           reason: `Shell safety check: ${commandAnalysis?.categories?.join(', ') ?? 'dangerous pattern detected'}`,
+          source: this.promptSourceForSafety(commandAnalysis, hasProtectedPath),
           denialStreak: 0,
         })
         this.denialStreaks.set(tool.name, 0)
@@ -222,18 +307,14 @@ export class PermissionGate {
 
       if (isDestructiveCall) {
         const previousStreak = this.denialStreaks.get(tool.name) ?? 0
-        let alwaysAllow = false
         const approved = await this.prompt({
           tool,
           input,
           reason: this.reasonFor(tool.riskLevel, commandAnalysis?.categories, false, previousStreak),
+          source: this.promptSourceForSafety(commandAnalysis, false),
           denialStreak: 0,
-          onAlwaysAllow: () => { alwaysAllow = true },
         })
         this.recordPromptDecision(tool.name, approved, previousStreak)
-        if (approved && alwaysAllow) {
-          this.addSessionRule({ toolName: tool.name, behavior: 'allow', source: 'session' })
-        }
         return this.persistAndReturn(approved)
       }
 
@@ -242,20 +323,71 @@ export class PermissionGate {
     }
 
     if (this.mode === 'plan') {
-      if (this.isPlanAllowed(tool, input, commandAnalysis, hasHardSafetyDenial, requiresSafetyPrompt)) {
+      if (hasHardSafetyDenial || deniedByRule) {
+        const escalated = await this.handleAutoDeny(
+          tool,
+          input,
+          commandAnalysis,
+          true,
+          deniedByRule ? 'deny rule' : this.promptSourceForSafety(commandAnalysis, hasProtectedPath),
+          deniedByRule,
+        )
+        if (escalated !== undefined) return this.persistAndReturn(escalated)
+      }
+      const planAllowed = this.isPlanAllowed(tool, input, commandAnalysis, hasHardSafetyDenial, requiresSafetyPrompt)
+      if (!planAllowed) {
+        this.denialStreaks.set(tool.name, 0)
+        return this.persistAndReturn(false)
+      }
+      if (askedByRule || requiresSafetyPrompt) {
+        return this.promptForDecision(
+          tool,
+          input,
+          askedByRule
+            ? `Permission rule asks before running ${tool.name}.`
+            : this.reasonFor(tool.riskLevel, commandAnalysis?.categories, false, 0),
+          askedByRule ? 'ask rule' : this.promptSourceForSafety(commandAnalysis, false),
+          false,
+          { matchedRule: askedByRule, commandAnalysis },
+        )
+      }
+      if (planAllowed) {
         this.denialStreaks.set(tool.name, 0)
         return this.persistAndReturn(true)
       }
-      this.denialStreaks.set(tool.name, 0)
-      return this.persistAndReturn(false)
+    }
+
+    if (hasHardSafetyDenial) {
+      const escalated = await this.handleAutoDeny(
+        tool,
+        input,
+        commandAnalysis,
+        true,
+        this.promptSourceForSafety(commandAnalysis, hasProtectedPath),
+      )
+      if (escalated !== undefined) return this.persistAndReturn(escalated)
+    }
+
+    if (deniedByRule) {
+      const escalated = await this.handleAutoDeny(tool, input, commandAnalysis, true, 'deny rule', deniedByRule)
+      if (escalated !== undefined) return this.persistAndReturn(escalated)
+    }
+
+    if (askedByRule) {
+      return this.promptForDecision(
+        tool,
+        input,
+        `Permission rule asks before running ${tool.name}.`,
+        'ask rule',
+        false,
+        { matchedRule: askedByRule, commandAnalysis },
+      )
     }
 
     if (
       this.mode === 'acceptEdits'
-      && this.isAcceptEditsAllowed(tool)
-      && !hasHardSafetyDenial
+      && this.isAcceptEditsAllowed(tool, input, commandAnalysis)
       && !requiresSafetyPrompt
-      && !deniedByRule
     ) {
       this.denialStreaks.set(tool.name, 0)
       return this.persistAndReturn(true)
@@ -266,45 +398,71 @@ export class PermissionGate {
       return this.persistAndReturn(true)
     }
 
-    const wouldAutoDeny = hasHardSafetyDenial || deniedByRule
-
     // 2. Hard shell/path safety denials cannot be bypassed by allow rules.
     //    Prompt-only shell safety findings disable auto-allow but still let
     //    the user make the decision in the normal permission prompt.
-    if (!hasHardSafetyDenial && !requiresSafetyPrompt && this.isAllowed(tool.name, input)) {
+    if (!requiresSafetyPrompt && allowedByRule) {
       this.denialStreaks.set(tool.name, 0)
       return this.persistAndReturn(true)
     }
 
-    if (
-      this.mode === 'auto'
-      && tool.riskLevel === 'confirm'
-      && !hasHardSafetyDenial
-      && !requiresSafetyPrompt
-      && !deniedByRule
-    ) {
-      this.denialStreaks.set(tool.name, 0)
-      return this.persistAndReturn(true)
-    }
-
-    // 3. Auto-deny path - but if the same tool has been auto-denied
-    //    consecutively too many times, escalate to a user prompt instead so
-    //    the model cannot loop on a blocked call indefinitely.
-    if (wouldAutoDeny) {
-      const escalated = await this.handleAutoDeny(tool, input, commandAnalysis, wouldAutoDeny)
-      if (escalated !== undefined) return this.persistAndReturn(escalated)
+    if (this.mode === 'auto') {
+      const autoDecision = this.classifyAutoDecision(tool, input, commandAnalysis)
+      if (autoDecision.action === 'allow') {
+        this.denialStreaks.set(tool.name, 0)
+        return this.persistAndReturn(true)
+      }
+      if (autoDecision.action === 'deny') {
+        const escalated = await this.handleAutoDeny(tool, input, commandAnalysis, true, autoDecision.source)
+        if (escalated !== undefined) return this.persistAndReturn(escalated)
+        return this.persistAndReturn(false)
+      }
+      return this.promptForDecision(
+        tool,
+        input,
+        autoDecision.reason,
+        autoDecision.source,
+        false,
+        { commandAnalysis },
+      )
     }
 
     // 4. Prompt user
+    return this.promptForDecision(
+      tool,
+      input,
+      this.reasonFor(tool.riskLevel, commandAnalysis?.categories, false, this.denialStreaks.get(tool.name) ?? 0),
+      this.promptSourceForNormalPrompt(commandAnalysis, requiresSafetyPrompt, allowedByRule),
+      false,
+      { matchedRule: allowedByRule, commandAnalysis },
+    )
+  }
+
+  private async promptForDecision(
+    tool: Tool,
+    input: unknown,
+    reason: string,
+    source: PermissionDecisionSource,
+    wouldAutoDeny: boolean,
+    options: {
+      matchedRule?: PermissionRule
+      commandAnalysis?: ReturnType<typeof analyzeShellCommand>
+    } = {},
+  ): Promise<boolean> {
     const previousStreak = this.denialStreaks.get(tool.name) ?? 0
-    const reason = this.reasonFor(tool.riskLevel, commandAnalysis?.categories, wouldAutoDeny, previousStreak)
     let alwaysAllow = false
+    const alwaysAllowRule = this.shouldOfferAlwaysAllow(source)
+      ? buildSessionAllowRule(tool, input, options.commandAnalysis)
+      : undefined
     const approved = await this.prompt({
       tool,
       input,
       reason,
+      source,
+      ...(options.matchedRule ? { matchedRule: options.matchedRule } : {}),
+      ...(alwaysAllowRule ? { alwaysAllowRule } : {}),
       denialStreak: wouldAutoDeny ? previousStreak + 1 : 0,
-      onAlwaysAllow: () => { alwaysAllow = true },
+      ...(alwaysAllowRule ? { onAlwaysAllow: () => { alwaysAllow = true } } : {}),
     })
 
     // 5. Decision recorded. Explicit approval clears the loop signal. Explicit
@@ -313,12 +471,8 @@ export class PermissionGate {
     this.recordPromptDecision(tool.name, approved, previousStreak)
 
     // 6. If user chose "always allow", add session rule
-    if (approved && alwaysAllow) {
-      this.addSessionRule({
-        toolName: tool.name,
-        behavior: 'allow',
-        source: 'session',
-      })
+    if (approved && alwaysAllow && alwaysAllowRule) {
+      this.addSessionRule(alwaysAllowRule)
     }
 
     return this.persistAndReturn(approved)
@@ -419,24 +573,20 @@ export class PermissionGate {
     }
   }
 
-  private isDenied(toolName: string, input: unknown): boolean {
+  private matchingRule(
+    behavior: PermissionRule['behavior'],
+    toolName: string,
+    input: unknown,
+  ): PermissionRule | undefined {
     const allRules = [...this.configRules, ...this.sessionRules]
-    return allRules.some(
-      (r) => r.behavior === 'deny' && this.matchesRule(r, toolName, input),
-    )
-  }
-
-  private isAllowed(toolName: string, input: unknown): boolean {
-    const allRules = [...this.configRules, ...this.sessionRules]
-    return allRules.some(
-      (r) => r.behavior === 'allow' && this.matchesRule(r, toolName, input),
-    )
+    return allRules.find((r) => r.behavior === behavior && this.matchesRule(r, toolName, input))
   }
 
   private matchesRule(rule: PermissionRule, toolName: string, input: unknown): boolean {
     if (rule.toolName !== toolName) return false
     if (!rule.contentPattern) return true
-    const content = typeof input === 'string' ? input : JSON.stringify(input)
+    const content = extractPath(input) || (typeof input === 'string' ? input : JSON.stringify(input))
+    if (content === rule.contentPattern) return true
     return matchGlob(content, rule.contentPattern)
   }
 
@@ -462,6 +612,8 @@ export class PermissionGate {
     input: unknown,
     commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
     wouldAutoDeny: boolean,
+    source: PermissionDecisionSource,
+    matchedRule?: PermissionRule,
   ): Promise<boolean | undefined> {
     const streak = (this.denialStreaks.get(tool.name) ?? 0) + 1
     const nextGlobalAutoDenials = this.globalAutoDenials + 1
@@ -474,24 +626,16 @@ export class PermissionGate {
 
     const previousStreak = this.denialStreaks.get(tool.name) ?? 0
     const reason = this.reasonFor(tool.riskLevel, commandAnalysis?.categories, wouldAutoDeny, previousStreak, globalEscalated)
-    let alwaysAllow = false
     const approved = await this.prompt({
       tool,
       input,
       reason,
+      source,
+      ...(matchedRule ? { matchedRule } : {}),
       denialStreak: previousStreak + 1,
-      onAlwaysAllow: () => { alwaysAllow = true },
     })
 
     this.recordPromptDecision(tool.name, approved, previousStreak)
-
-    if (approved && alwaysAllow && this.mode !== 'bypass') {
-      this.addSessionRule({
-        toolName: tool.name,
-        behavior: 'allow',
-        source: 'session',
-      })
-    }
 
     return approved
   }
@@ -534,8 +678,95 @@ export class PermissionGate {
     return absolute.startsWith(expectedPrefix) && absolute.endsWith('.md')
   }
 
-  private isAcceptEditsAllowed(tool: Tool): boolean {
-    return ACCEPT_EDITS_TOOLS.has(tool.name)
+  private isAcceptEditsAllowed(
+    tool: Tool,
+    input: unknown,
+    commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
+  ): boolean {
+    if (ACCEPT_EDITS_TOOLS.has(tool.name)) return true
+    if (tool.name !== 'Bash' || !commandAnalysis) return false
+    return this.isLightWorkspaceShellWrite(commandAnalysis)
+  }
+
+  private classifyAutoDecision(
+    tool: Tool,
+    _input: unknown,
+    commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
+  ): AutoDecision {
+    if (tool.name === 'Bash') {
+      if (!commandAnalysis) {
+        return {
+          action: 'prompt',
+          reason: 'Auto mode requires confirmation because this Bash command could not be analyzed.',
+          source: 'mode',
+        }
+      }
+      if (isPlanReadOnlyShellCommand(commandAnalysis.command)) return { action: 'allow' }
+      if (isValidationShellCommand(commandAnalysis.command, commandAnalysis)) return { action: 'allow' }
+      if (this.isLightWorkspaceShellWrite(commandAnalysis)) return { action: 'allow' }
+
+      const categories = commandAnalysis.categories.length > 0
+        ? commandAnalysis.categories.join(', ')
+        : 'the command is not in the auto-mode allowlist'
+      return {
+        action: 'prompt',
+        reason: `Auto mode requires confirmation because ${categories}.`,
+        source: 'mode',
+      }
+    }
+
+    if (tool.riskLevel === 'confirm' && tool.isDestructive !== true) return { action: 'allow' }
+
+    return {
+      action: 'prompt',
+      reason: tool.isDestructive === true || tool.riskLevel === 'dangerous'
+        ? 'Auto mode requires confirmation because this is a dangerous or destructive tool.'
+        : 'Auto mode requires confirmation because this tool is not in the auto-mode allowlist.',
+      source: 'mode',
+    }
+  }
+
+  private isLightWorkspaceShellWrite(commandAnalysis: ReturnType<typeof analyzeShellCommand>): boolean {
+    if (commandAnalysis.categories.length > 0) return false
+    if (commandAnalysis.hasSafetyDenyIssue || commandAnalysis.requiresSafetyPrompt || commandAnalysis.hasProtectedPath) return false
+    const words = shellWords(commandAnalysis.command)
+    if (words.length === 0) return false
+    const executable = basename(words[0]!).toLowerCase()
+    if (!ACCEPT_EDITS_BASH_COMMANDS.has(executable)) return false
+    const operands = words.slice(1).filter((word) => !word.startsWith('-'))
+    if (operands.length === 0) return false
+    return operands.every((operand) => this.isSafeWorkspacePathOperand(operand))
+  }
+
+  private isSafeWorkspacePathOperand(operand: string): boolean {
+    if (operand === '.' || operand === '..') return false
+    if (/[\0\r\n*?[\]{}$`~]/.test(operand)) return false
+    if (isProtectedPath(operand)) return false
+    const resolved = path.resolve(this.cwd, operand)
+    const root = path.resolve(this.cwd)
+    return resolved === root || resolved.startsWith(root + path.sep)
+  }
+
+  private promptSourceForSafety(
+    commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
+    hasProtectedPath: boolean,
+  ): PermissionDecisionSource {
+    if (hasProtectedPath || commandAnalysis?.hasProtectedPath) return 'protected path'
+    return 'bash safety'
+  }
+
+  private promptSourceForNormalPrompt(
+    commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
+    requiresSafetyPrompt: boolean,
+    allowedByRule: PermissionRule | undefined,
+  ): PermissionDecisionSource {
+    if (allowedByRule) return 'allow rule'
+    if (requiresSafetyPrompt) return this.promptSourceForSafety(commandAnalysis, false)
+    return 'mode'
+  }
+
+  private shouldOfferAlwaysAllow(source: PermissionDecisionSource): boolean {
+    return this.mode !== 'bypass' && source === 'mode'
   }
 
   private recordPromptDecision(toolName: string, approved: boolean, previousStreak: number): void {
@@ -638,6 +869,44 @@ export function normalizeDenialState(state: Partial<DenialState> | undefined): D
     ? Math.max(0, Math.floor(rawTotal))
     : 0
   return { streaks, total }
+}
+
+function isValidationShellCommand(
+  command: string,
+  commandAnalysis: ReturnType<typeof analyzeShellCommand>,
+): boolean {
+  if (commandAnalysis.categories.length > 0) return false
+  if (commandAnalysis.hasSafetyDenyIssue || commandAnalysis.requiresSafetyPrompt || commandAnalysis.hasProtectedPath) return false
+  if (commandAnalysis.segments.length !== 1) return false
+
+  const words = shellWords(command)
+  if (words.length === 0) return false
+  const executable = basename(words[0]!).toLowerCase()
+  const args = words.slice(1).map((word) => word.toLowerCase())
+
+  if (executable === 'npm') {
+    if (args.length === 1 && args[0] === 'test') return true
+    return args.length === 2 && args[0] === 'run' && isValidationScriptName(args[1]!)
+  }
+
+  if (executable === 'bun') {
+    if (args.length === 1 && args[0] === 'test') return true
+    return args.length === 2 && args[0] === 'run' && isValidationScriptName(args[1]!)
+  }
+
+  if (executable === 'tsc') {
+    return args.length === 1 && args[0] === '--noemit'
+  }
+
+  if (executable === 'node') {
+    return args.length === 1 && args[0] === '--test'
+  }
+
+  return false
+}
+
+function isValidationScriptName(script: string): boolean {
+  return script === 'test' || script === 'typecheck' || script === 'lint'
 }
 
 function isPlanReadOnlyShellCommand(command: string): boolean {

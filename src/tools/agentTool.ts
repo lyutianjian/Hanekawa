@@ -10,19 +10,26 @@ import {
   type PermissionPrompt,
   type PermissionRule,
 } from '../harness/permissions.js'
-import { MemoryRecordStream } from '../harness/recordStream.js'
+import { MemoryRecordStream, type RecordStream } from '../harness/recordStream.js'
+import { getSubagentTranscriptPath, SidechainRecordStream } from '../harness/sidechainRecordStream.js'
 import { ToolRunner } from '../harness/toolRunner.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
+import {
+  GitSubagentWorktreeManager,
+  type SubagentIsolation,
+  type SubagentWorktreeLease,
+  type SubagentWorktreeManager,
+} from '../services/agents/subagentWorktree.js'
 import type { CacheRuntime } from '../harness/cacheControl.js'
 import { runLifecycleHooks, type Hooks } from '../harness/hooks.js'
-import type { ModelProvider, SessionRecord, Tool, ToolContext } from '../harness/types.js'
+import type { ModelProvider, SessionRecord, SubagentTaskStatus, TokenUsage, Tool, ToolContext, ToolProgressEvent } from '../harness/types.js'
 import { countSessionRecordTokens } from '../prompts/budget.js'
 
 export const NESTED_AGENT_FORBIDDEN_TOOLS = ['Agent', 'EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion'] as const
 
-// TodoWrite is included because sub-agents share taskState semantics, not
-// because it writes files.
+// Task tracking tools are included because sub-agents share taskState semantics,
+// not because they write files.
 export const STATEFUL_AGENT_TOOL_NAMES = new Set([
   'Bash',
   'Write',
@@ -48,6 +55,12 @@ export type AgentType = string
 export interface BaseAgentDefinition {
   type: string
   description: string
+  model?: string
+  permissionMode?: PermissionMode
+  skills?: readonly string[]
+  mcpServers?: readonly string[]
+  background?: boolean
+  isolation?: SubagentIsolation
   tools?: readonly string[]
   disallowedTools: readonly string[]
   maxTurns: number
@@ -260,10 +273,15 @@ export const BUILT_IN_AGENT_DEFINITIONS = [
 const agentInputSchema = z.object({
   task: z.string().min(1),
   subagent_type: z.string().min(1),
+  description: z.string().min(1).optional(),
+  run_in_background: z.boolean().optional(),
+  name: z.string().min(1).optional(),
   systemPrompt: z.string().optional(),
   maxTurns: z.number().int().min(1).optional(),
   maxOutputTokens: z.number().int().min(1).optional(),
 }).strict()
+
+type AgentInput = z.infer<typeof agentInputSchema>
 
 export interface CreateAgentToolOptions {
   provider: ModelProvider
@@ -290,10 +308,12 @@ export interface CreateAgentToolOptions {
   isGitRepo?: boolean
   hooks?: Hooks
   cacheRuntime?: CacheRuntime
-  resolveSubagentModel?(subagentType: string): ActiveModelRuntime | undefined
+  resolveSubagentModel?(subagentType: string, requestedModelKey?: string): ActiveModelRuntime | undefined
+  onSubagentProgress?(event: ToolProgressEvent): void
   getCompactFailureCount?(): Promise<number>
   setCompactFailureCount?(count: number): Promise<void>
   agentTimeoutMs?: number
+  worktreeManager?: SubagentWorktreeManager
 }
 
 export function filterToolsForSubAgent(
@@ -302,11 +322,18 @@ export function filterToolsForSubAgent(
 ): Tool[] {
   const allowed = definition.tools ? new Set<string>(definition.tools) : undefined
   const disallowed = new Set<string>(definition.disallowedTools)
+  const allowedMcpServers = definition.mcpServers && definition.mcpServers.length > 0
+    ? new Set(definition.mcpServers)
+    : undefined
   // Always exclude globally forbidden tools regardless of agent definition.
   for (const name of NESTED_AGENT_FORBIDDEN_TOOLS) {
     disallowed.add(name)
   }
   return tools.filter((tool) => {
+    if (allowedMcpServers) {
+      const mcpServer = mcpServerNameForTool(tool.name)
+      if (mcpServer && !allowedMcpServers.has(mcpServer)) return false
+    }
     if (allowed && !allowed.has(tool.name)) return false
     if (!allowed && isUnsafeForReadOnlySubAgent(tool)) return false
     if (disallowed.has(tool.name)) return false
@@ -320,6 +347,12 @@ export function infersReadOnlyAgentFromTools(tools: readonly string[] | undefine
 
 function isUnsafeForReadOnlySubAgent(tool: Tool): boolean {
   return tool.isDestructive === true || tool.riskLevel === 'dangerous'
+}
+
+function mcpServerNameForTool(toolName: string): string | undefined {
+  if (!toolName.startsWith('mcp__')) return undefined
+  const parts = toolName.split('__')
+  return parts.length >= 3 && parts[1] ? parts[1] : undefined
 }
 
 export function createAgentTool(options: CreateAgentToolOptions): Tool {
@@ -359,150 +392,65 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
     },
     async execute(input, context) {
       const parsed = agentInputSchema.parse(input)
-      let subAgentId: string | undefined
-      let cacheSource = agentCacheSource('unknown')
-      let resetCacheSourceOnExit = false
-      const abortController = new AbortController()
-      const timeout = options.agentTimeoutMs === undefined
-        ? undefined
-        : setTimeout(() => {
-            abortController.abort(createAbortError(`Sub-agent timed out after ${options.agentTimeoutMs}ms`))
-          }, options.agentTimeoutMs)
-      const forwardParentAbort = () => abortController.abort(context.abortSignal?.reason)
-      if (context.abortSignal?.aborted) {
-        forwardParentAbort()
-      } else {
-        context.abortSignal?.addEventListener('abort', forwardParentAbort, { once: true })
-      }
-
       try {
         const agentDefinition = getAgentDefinition(agentDefinitions, parsed.subagent_type)
         if (!agentDefinition) {
           throw new Error(`Unknown subagent_type "${parsed.subagent_type}". Available types: ${formatAgentTypes(agentDefinitions)}.`)
         }
-        subAgentId = randomUUID()
-        const isForkAgent = parsed.subagent_type === 'fork'
-        cacheSource = isForkAgent ? forkCacheSource(context.sessionId) : agentCacheSource(subAgentId)
-        resetCacheSourceOnExit = !isForkAgent
-        const subagentRuntime = options.resolveSubagentModel?.(parsed.subagent_type) ?? {
-          provider: options.provider,
-          model: options.model,
-          modelKey: options.modelKey,
-          providerName: options.providerName,
-          promptCacheRetention: options.promptCacheRetention,
-        }
-        const recordStream = new MemoryRecordStream()
-        const subTools = filterToolsForSubAgent(options.tools(), agentDefinition)
-        // Sub-agent gates inherit config/session rules as a snapshot. "Always
-        // allow" choices and denial streak updates stay local to the sub-agent
-        // so concurrent agents cannot overwrite parent permission state.
-        const permissionGate = new PermissionGate(options.permissionPrompt, options.getConfigRules?.(), {
-          mode: options.permissionMode?.(),
-          denialStateStore: readonlyDenialStateStore(options.denialStateStore),
-        })
-        permissionGate.addSessionRules(options.getSessionRules?.() ?? [])
-        const toolRunner = new ToolRunner(subTools, permissionGate, {
-          onRecord: async (record) => {
-            await recordStream.append(record)
-          },
-        }, {
-          preToolUse: options.hooks?.preToolUse,
-        })
-        const toolContext = createSubAgentToolContext(context, subAgentId, abortController.signal)
-        if (isForkAgent) {
-          const forkUserPrefix = buildForkAgentUserPrefix(parsed.systemPrompt, parsed.maxOutputTokens)
-          if (forkUserPrefix) {
-            await recordStream.append({
-              id: randomUUID(),
-              type: 'message',
-              role: 'user',
-              content: forkUserPrefix,
-              createdAt: new Date().toISOString(),
-            })
+        validateSubagentIsolation(agentDefinition)
+
+        const subAgentId = randomUUID()
+        const runInBackground = parsed.run_in_background ?? agentDefinition.background ?? false
+        if (runInBackground) {
+          const transcriptPath = getSubagentTranscriptPath(options.cwd, context.sessionId, subAgentId)
+          await appendSubagentTaskRecord(context, parsed, subAgentId, 'running', {
+            transcriptPath,
+            ...plannedIsolationDetails(options, agentDefinition, context.sessionId, subAgentId),
+          })
+          void runBackgroundSubagent({
+            options,
+            parsed,
+            agentDefinition,
+            context,
+            subAgentId,
+            transcriptPath,
+          })
+          const description = subagentDescription(parsed)
+          return {
+            ok: true,
+            content: `Started ${parsed.subagent_type} sub-agent "${description}" in the background.`,
+            metadata: {
+              display: {
+                summary: `${parsed.subagent_type} background agent started`,
+                detail: [
+                  `Agent ID: ${subAgentId}`,
+                  `Transcript: ${transcriptPath}`,
+                  plannedIsolationDetails(options, agentDefinition, context.sessionId, subAgentId).worktreePath
+                    ? `Worktree: ${plannedIsolationDetails(options, agentDefinition, context.sessionId, subAgentId).worktreePath}`
+                    : undefined,
+                ].filter(Boolean).join('\n'),
+              },
+            },
           }
         }
-        await appendSubagentHookOutput(
-          recordStream,
-          await runLifecycleHooks(
-            options.hooks?.subagentStart,
-            'subagentStart',
-            {
-              agentId: subAgentId,
-              agentType: parsed.subagent_type,
-              task: parsed.task,
-            },
-            toolContext,
-            abortController.signal,
-            parsed.subagent_type,
-          ),
-          'subagentStart',
-        )
-        const preloadRecords = isForkAgent ? await loadForkPreloadRecords(options) : undefined
-        const loop = new AgentLoop({
-          provider: subagentRuntime.provider,
-          model: subagentRuntime.model,
-          modelKey: subagentRuntime.modelKey,
-          tools: subTools,
-          contextBuilder: new ContextBuilder(undefined, options.contextManagement),
-          toolRunner,
-          toolContext,
-          system: buildAgentSystemPrompt(agentDefinition, parsed.systemPrompt, options.system, parsed.maxOutputTokens),
-          criticalSystemReminder: agentDefinition.criticalSystemReminder,
-          projectContext: agentDefinition.omitProjectContext ? undefined : options.projectContext,
-          skills: options.skills,
-          promptCacheRetention: subagentRuntime.promptCacheRetention,
-          contextManagement: options.contextManagement,
-          isGitRepo: options.isGitRepo,
-          maxTurns: parsed.maxTurns ?? agentDefinition.maxTurns,
-          maxOutputTokens: parsed.maxOutputTokens,
-          fallbackModel: options.fallbackModel,
-          compactModel: options.compactModel,
-          fallbackRetryDelayMs: options.fallbackRetryDelayMs,
-          hooks: options.hooks,
-          cacheRuntime: options.cacheRuntime,
-          cacheSource,
-          preloadRecords,
-          permissionMode: () => permissionGate.getMode(),
-          getCompactFailureCount: options.getCompactFailureCount,
-          setCompactFailureCount: options.setCompactFailureCount,
-          recordStream,
+
+        const run = await runSubagent({
+          options,
+          parsed,
+          agentDefinition,
+          context,
+          subAgentId,
+          recordStream: new MemoryRecordStream(),
+          linkParentAbort: true,
         })
-        const result = await loop.run(parsed.task, abortController.signal)
-        const transcriptRecords = await recordStream.load()
-        const transcriptStats = summarizeTranscriptRecords(transcriptRecords)
-        await context.appendRecord?.({
-          id: randomUUID(),
-          type: 'subagent_transcript',
-          agentId: subAgentId,
-          subagentType: parsed.subagent_type,
-          parentToolUseId: context.currentToolUseId,
-          summary: applyAgentResultBudget(result.content, SUBAGENT_TRANSCRIPT_SUMMARY_CHARS),
-          recordCount: transcriptStats.recordCount,
-          messageCount: transcriptStats.messageCount,
-          toolUseCount: transcriptStats.toolUseCount,
-          toolResultCount: transcriptStats.toolResultCount,
-          records: [],
-          usage: result.usage,
-          createdAt: new Date().toISOString(),
-          turnId: context.currentTurnId,
-        })
-        const stopHookOutput = formatSubagentHookOutput(
-          await runLifecycleHooks(
-            options.hooks?.subagentStop,
-            'subagentStop',
-            {
-              agentId: subAgentId,
-              agentType: parsed.subagent_type,
-              response: result.content,
-            },
-            toolContext,
-            abortController.signal,
-            parsed.subagent_type,
+        await context.appendRecord?.(run.transcriptRecord)
+        const content = appendHookOutputToToolResult(
+          appendWorktreeNoticeToToolResult(
+            applyAgentResultBudget(run.result.content, agentDefinition.maxResultSizeChars),
+            run.worktree,
           ),
-          'subagentStop',
+          run.stopHookOutput,
         )
-        const truncatedContent = applyAgentResultBudget(result.content, agentDefinition.maxResultSizeChars)
-        const content = appendHookOutputToToolResult(truncatedContent, stopHookOutput)
         return {
           ok: true,
           content,
@@ -510,9 +458,17 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
             subagent: {
               type: parsed.subagent_type,
               agentId: subAgentId,
-              usage: result.usage,
-              verdict: extractVerdict(result.content),
-              criticalFiles: extractCriticalFiles(result.content),
+              usage: run.result.usage,
+              verdict: run.verdict,
+              criticalFiles: run.criticalFiles,
+              ...(run.worktree
+                ? {
+                    isolation: run.worktree.isolation,
+                    worktreePath: run.worktree.path,
+                    worktreeBaseRef: run.worktree.baseRef,
+                    worktreeChangeSummary: run.worktree.changeSummary,
+                  }
+                : {}),
             },
           },
         }
@@ -522,13 +478,327 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           return { ok: false, content: `Fork failed: ${message}`, errorCode: 'execution_failed' }
         }
         return { ok: false, content: `Sub-agent failed: ${message}`, errorCode: errorCodeFor(error) }
-      } finally {
-        if (timeout) clearTimeout(timeout)
-        context.abortSignal?.removeEventListener('abort', forwardParentAbort)
-        if (subAgentId && resetCacheSourceOnExit) resetCacheBreakDetection(cacheSource)
       }
     },
   }
+}
+
+interface RunSubagentOptions {
+  options: CreateAgentToolOptions
+  parsed: AgentInput
+  agentDefinition: BaseAgentDefinition
+  context: ToolContext
+  subAgentId: string
+  recordStream: RecordStream
+  linkParentAbort: boolean
+  transcriptPath?: string
+}
+
+interface RunSubagentResult {
+  result: { content: string; usage: TokenUsage }
+  transcriptRecord: Extract<SessionRecord, { type: 'subagent_transcript' }>
+  stopHookOutput?: string
+  verdict?: 'PASS' | 'FAIL' | 'PARTIAL'
+  criticalFiles: string[]
+  worktree?: SubagentWorktreeSummary
+}
+
+interface SubagentWorktreeSummary extends SubagentWorktreeLease {
+  changeSummary: string
+}
+
+async function runSubagent({
+  options,
+  parsed,
+  agentDefinition,
+  context,
+  subAgentId,
+  recordStream,
+  linkParentAbort,
+  transcriptPath,
+}: RunSubagentOptions): Promise<RunSubagentResult> {
+  const isForkAgent = parsed.subagent_type === 'fork'
+  const cacheSource = isForkAgent ? forkCacheSource(context.sessionId) : agentCacheSource(subAgentId)
+  const abortController = new AbortController()
+  const timeout = options.agentTimeoutMs === undefined
+    ? undefined
+    : setTimeout(() => {
+        abortController.abort(createAbortError(`Sub-agent timed out after ${options.agentTimeoutMs}ms`))
+      }, options.agentTimeoutMs)
+  const forwardParentAbort = () => abortController.abort(context.abortSignal?.reason)
+  if (linkParentAbort) {
+    if (context.abortSignal?.aborted) {
+      forwardParentAbort()
+    } else {
+      context.abortSignal?.addEventListener('abort', forwardParentAbort, { once: true })
+    }
+  }
+
+  try {
+    const worktree = await createSubagentWorktree(options, agentDefinition, context.sessionId, subAgentId)
+    const effectiveCwd = worktree?.path ?? options.cwd
+    const subagentRuntime = resolveSubagentRuntime(options, parsed.subagent_type, agentDefinition)
+    const subTools = filterToolsForSubAgent(options.tools(), agentDefinition)
+    const permissionGate = new PermissionGate(options.permissionPrompt, options.getConfigRules?.(), {
+      mode: resolveSubagentPermissionMode(options, agentDefinition),
+      denialStateStore: readonlyDenialStateStore(options.denialStateStore),
+      cwd: effectiveCwd,
+    })
+    permissionGate.addSessionRules(options.getSessionRules?.() ?? [])
+    const toolRunner = new ToolRunner(subTools, permissionGate, {
+      onRecord: async (record) => {
+        await recordStream.append(record)
+      },
+      onProgress: (event) => {
+        options.onSubagentProgress?.({
+          ...event,
+          source: {
+            type: 'subagent',
+            agentType: parsed.subagent_type,
+            agentId: subAgentId,
+          },
+        })
+      },
+    }, {
+      preToolUse: options.hooks?.preToolUse,
+    })
+    const toolContext = createSubAgentToolContext(context, subAgentId, abortController.signal, effectiveCwd)
+    if (isForkAgent) {
+      const forkUserPrefix = buildForkAgentUserPrefix(parsed.systemPrompt, parsed.maxOutputTokens)
+      if (forkUserPrefix) {
+        await recordStream.append({
+          id: randomUUID(),
+          type: 'message',
+          role: 'user',
+          content: forkUserPrefix,
+          createdAt: new Date().toISOString(),
+        })
+      }
+    }
+    await appendSubagentHookOutput(
+      recordStream,
+      await runLifecycleHooks(
+        options.hooks?.subagentStart,
+        'subagentStart',
+        {
+          agentId: subAgentId,
+          agentType: parsed.subagent_type,
+          task: parsed.task,
+        },
+        toolContext,
+        abortController.signal,
+        parsed.subagent_type,
+      ),
+      'subagentStart',
+    )
+    const preloadRecords = isForkAgent ? await loadForkPreloadRecords(options) : undefined
+    const loop = new AgentLoop({
+      provider: subagentRuntime.provider,
+      model: subagentRuntime.model,
+      modelKey: subagentRuntime.modelKey,
+      tools: subTools,
+      contextBuilder: new ContextBuilder(undefined, options.contextManagement),
+      toolRunner,
+      toolContext,
+      system: buildAgentSystemPrompt(agentDefinition, parsed.systemPrompt, options.system, parsed.maxOutputTokens, worktree),
+      criticalSystemReminder: agentDefinition.criticalSystemReminder,
+      projectContext: agentDefinition.omitProjectContext ? undefined : options.projectContext,
+      skills: skillsForSubAgent(options.skills, agentDefinition),
+      promptCacheRetention: subagentRuntime.promptCacheRetention,
+      contextManagement: options.contextManagement,
+      isGitRepo: options.isGitRepo,
+      maxTurns: parsed.maxTurns ?? agentDefinition.maxTurns,
+      maxOutputTokens: parsed.maxOutputTokens,
+      fallbackModel: options.fallbackModel,
+      compactModel: options.compactModel,
+      fallbackRetryDelayMs: options.fallbackRetryDelayMs,
+      hooks: options.hooks,
+      cacheRuntime: options.cacheRuntime,
+      cacheSource,
+      preloadRecords,
+      permissionMode: () => permissionGate.getMode(),
+      getCompactFailureCount: options.getCompactFailureCount,
+      setCompactFailureCount: options.setCompactFailureCount,
+      recordStream,
+    })
+    const result = await loop.run(parsed.task, abortController.signal)
+    const transcriptRecords = await recordStream.load()
+    const transcriptStats = summarizeTranscriptRecords(transcriptRecords)
+    const verdict = extractVerdict(result.content)
+    const criticalFiles = extractCriticalFiles(result.content)
+    const summary = applyAgentResultBudget(result.content, SUBAGENT_TRANSCRIPT_SUMMARY_CHARS)
+    const worktreeSummary = worktree
+      ? {
+          ...worktree,
+          changeSummary: await summarizeSubagentWorktree(options, worktree),
+        }
+      : undefined
+    const stopHookOutput = formatSubagentHookOutput(
+      await runLifecycleHooks(
+        options.hooks?.subagentStop,
+        'subagentStop',
+        {
+          agentId: subAgentId,
+          agentType: parsed.subagent_type,
+          response: result.content,
+        },
+        toolContext,
+        abortController.signal,
+        parsed.subagent_type,
+      ),
+      'subagentStop',
+    )
+
+    return {
+      result,
+      stopHookOutput,
+      verdict,
+      criticalFiles,
+      transcriptRecord: {
+        id: randomUUID(),
+        type: 'subagent_transcript',
+        agentId: subAgentId,
+        subagentType: parsed.subagent_type,
+        parentToolUseId: context.currentToolUseId,
+        ...(transcriptPath ? { transcriptPath } : {}),
+        status: 'completed',
+        summary,
+        recordCount: transcriptStats.recordCount,
+        messageCount: transcriptStats.messageCount,
+        toolUseCount: transcriptStats.toolUseCount,
+        toolResultCount: transcriptStats.toolResultCount,
+        ...(verdict ? { verdict } : {}),
+        ...(criticalFiles.length > 0 ? { criticalFiles } : {}),
+        ...worktreeRecordFields(worktreeSummary),
+        records: [],
+        usage: result.usage,
+        createdAt: new Date().toISOString(),
+        turnId: context.currentTurnId,
+      },
+      worktree: worktreeSummary,
+    }
+  } finally {
+    if (timeout) clearTimeout(timeout)
+    if (linkParentAbort) context.abortSignal?.removeEventListener('abort', forwardParentAbort)
+    if (!isForkAgent) resetCacheBreakDetection(cacheSource)
+  }
+}
+
+async function runBackgroundSubagent(input: {
+  options: CreateAgentToolOptions
+  parsed: AgentInput
+  agentDefinition: BaseAgentDefinition
+  context: ToolContext
+  subAgentId: string
+  transcriptPath: string
+}): Promise<void> {
+  const { options, parsed, agentDefinition, context, subAgentId, transcriptPath } = input
+  try {
+    const run = await runSubagent({
+      options,
+      parsed,
+      agentDefinition,
+      context,
+      subAgentId,
+      transcriptPath,
+      recordStream: new SidechainRecordStream(transcriptPath),
+      linkParentAbort: false,
+    })
+    await context.appendRecord?.(run.transcriptRecord)
+    await appendSubagentTaskRecord(context, parsed, subAgentId, 'completed', {
+      transcriptPath,
+      summary: run.transcriptRecord.summary,
+      usage: run.result.usage,
+      verdict: run.verdict,
+      criticalFiles: run.criticalFiles,
+      ...worktreeTaskDetails(run.worktree),
+    })
+    await context.appendRecord?.({
+      id: randomUUID(),
+      type: 'message',
+      role: 'assistant',
+      content: formatBackgroundCompletionMessage(parsed, run.transcriptRecord.summary, run.verdict, run.worktree),
+      createdAt: new Date().toISOString(),
+      turnId: context.currentTurnId,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const status: SubagentTaskStatus = errorCodeFor(error) === 'aborted' ? 'cancelled' : 'failed'
+    await appendSubagentTaskRecord(context, parsed, subAgentId, status, {
+      transcriptPath,
+      ...plannedIsolationDetails(options, agentDefinition, context.sessionId, subAgentId),
+      error: message,
+    })
+    await context.appendRecord?.({
+      id: randomUUID(),
+      type: 'message',
+      role: 'assistant',
+      content: `Background ${parsed.subagent_type} agent "${subagentDescription(parsed)}" ${status}: ${message}`,
+      createdAt: new Date().toISOString(),
+      turnId: context.currentTurnId,
+    })
+  }
+}
+
+async function appendSubagentTaskRecord(
+  context: ToolContext,
+  parsed: AgentInput,
+  subAgentId: string,
+  status: SubagentTaskStatus,
+  details: {
+    transcriptPath?: string
+    summary?: string
+    error?: string
+    usage?: TokenUsage
+    verdict?: 'PASS' | 'FAIL' | 'PARTIAL'
+    criticalFiles?: string[]
+    isolation?: 'worktree'
+    worktreePath?: string
+    worktreeBaseRef?: string
+    worktreeChangeSummary?: string
+  } = {},
+): Promise<void> {
+  await context.appendRecord?.({
+    id: randomUUID(),
+    type: 'subagent_task',
+    agentId: subAgentId,
+    subagentType: parsed.subagent_type,
+    status,
+    description: subagentDescription(parsed),
+    task: parsed.task,
+    ...(parsed.name ? { name: parsed.name } : {}),
+    parentToolUseId: context.currentToolUseId,
+    ...(details.transcriptPath ? { transcriptPath: details.transcriptPath } : {}),
+    ...(details.summary ? { summary: details.summary } : {}),
+    ...(details.error ? { error: details.error } : {}),
+    ...(details.usage ? { usage: details.usage } : {}),
+    ...(details.verdict ? { verdict: details.verdict } : {}),
+    ...(details.criticalFiles && details.criticalFiles.length > 0 ? { criticalFiles: details.criticalFiles } : {}),
+    ...(details.isolation ? { isolation: details.isolation } : {}),
+    ...(details.worktreePath ? { worktreePath: details.worktreePath } : {}),
+    ...(details.worktreeBaseRef ? { worktreeBaseRef: details.worktreeBaseRef } : {}),
+    ...(details.worktreeChangeSummary ? { worktreeChangeSummary: details.worktreeChangeSummary } : {}),
+    createdAt: new Date().toISOString(),
+    turnId: context.currentTurnId,
+  })
+}
+
+function subagentDescription(input: AgentInput): string {
+  return input.description?.trim() || input.name?.trim() || truncateMiddle(input.task.trim(), 80)
+}
+
+function formatBackgroundCompletionMessage(
+  parsed: AgentInput,
+  summary: string | undefined,
+  verdict: 'PASS' | 'FAIL' | 'PARTIAL' | undefined,
+  worktree: SubagentWorktreeSummary | undefined,
+): string {
+  const head = `Background ${parsed.subagent_type} agent "${subagentDescription(parsed)}" completed${verdict ? ` (${verdict})` : ''}.`
+  const body = summary?.trim()
+  const worktreeNotice = formatWorktreeNotice(worktree)
+  return [head, worktreeNotice, body ? applyAgentResultBudget(body, 1200) : undefined]
+    .filter((part): part is string => Boolean(part))
+    .join('\n\n')
 }
 
 function truncateMiddle(value: string, maxLength: number): string {
@@ -545,6 +815,147 @@ async function loadForkPreloadRecords(options: CreateAgentToolOptions): Promise<
     const message = error instanceof Error ? error.message : String(error)
     throw new ForkPreloadError(message)
   }
+}
+
+function validateSubagentIsolation(definition: BaseAgentDefinition): void {
+  if (definition.isolation === undefined) return
+  if (definition.isolation !== 'worktree') {
+    throw new Error(`Unsupported isolation for subagent "${definition.type}": ${String(definition.isolation)}`)
+  }
+  if (definition.isReadOnlyAgent) {
+    throw new Error(`Subagent "${definition.type}" cannot use worktree isolation while marked read-only. Set isReadOnlyAgent: false or include write-capable tools.`)
+  }
+}
+
+function plannedIsolationDetails(
+  options: CreateAgentToolOptions,
+  definition: BaseAgentDefinition,
+  parentSessionId: string,
+  agentId: string,
+): { isolation?: 'worktree'; worktreePath?: string } {
+  if (definition.isolation !== 'worktree') return {}
+  return {
+    isolation: 'worktree',
+    worktreePath: worktreeManager(options).getPath({
+      cwd: options.cwd,
+      parentSessionId,
+      agentId,
+    }),
+  }
+}
+
+async function createSubagentWorktree(
+  options: CreateAgentToolOptions,
+  definition: BaseAgentDefinition,
+  parentSessionId: string,
+  agentId: string,
+): Promise<SubagentWorktreeLease | undefined> {
+  if (definition.isolation !== 'worktree') return undefined
+  return worktreeManager(options).create({
+    cwd: options.cwd,
+    parentSessionId,
+    agentId,
+  })
+}
+
+async function summarizeSubagentWorktree(
+  options: CreateAgentToolOptions,
+  worktree: SubagentWorktreeLease,
+): Promise<string> {
+  try {
+    return await worktreeManager(options).summarize({ worktreePath: worktree.path })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return `Unable to summarize worktree changes: ${message}`
+  }
+}
+
+function worktreeManager(options: CreateAgentToolOptions): SubagentWorktreeManager {
+  return options.worktreeManager ?? new GitSubagentWorktreeManager()
+}
+
+function worktreeRecordFields(worktree: SubagentWorktreeSummary | undefined): {
+  isolation?: 'worktree'
+  worktreePath?: string
+  worktreeBaseRef?: string
+  worktreeChangeSummary?: string
+} {
+  if (!worktree) return {}
+  return {
+    isolation: worktree.isolation,
+    worktreePath: worktree.path,
+    worktreeBaseRef: worktree.baseRef,
+    worktreeChangeSummary: worktree.changeSummary,
+  }
+}
+
+function worktreeTaskDetails(worktree: SubagentWorktreeSummary | undefined): {
+  isolation?: 'worktree'
+  worktreePath?: string
+  worktreeBaseRef?: string
+  worktreeChangeSummary?: string
+} {
+  return worktreeRecordFields(worktree)
+}
+
+function resolveSubagentRuntime(
+  options: CreateAgentToolOptions,
+  subagentType: string,
+  definition: BaseAgentDefinition,
+): ActiveModelRuntime {
+  const parentRuntime = {
+    provider: options.provider,
+    model: options.model,
+    modelKey: options.modelKey,
+    providerName: options.providerName,
+    promptCacheRetention: options.promptCacheRetention,
+  }
+  const requestedModelKey = definition.model?.trim()
+  if (requestedModelKey === 'inherit') return parentRuntime
+
+  if (requestedModelKey) {
+    try {
+      const runtime = options.resolveSubagentModel?.(subagentType, requestedModelKey)
+      if (runtime) return runtime
+    } catch {
+      // Re-throw below with a subagent-specific message.
+    }
+    throw new Error(`Unknown model for subagent "${subagentType}": ${requestedModelKey}`)
+  }
+
+  return options.resolveSubagentModel?.(subagentType) ?? parentRuntime
+}
+
+function resolveSubagentPermissionMode(
+  options: CreateAgentToolOptions,
+  definition: BaseAgentDefinition,
+): PermissionMode | undefined {
+  const parentMode = options.permissionMode?.()
+  if (parentMode === 'bypass') return 'bypass'
+  return definition.permissionMode ?? parentMode
+}
+
+function skillsForSubAgent(
+  skills: SkillDefinition[] | undefined,
+  definition: BaseAgentDefinition,
+): SkillDefinition[] | undefined {
+  if (!skills || !definition.skills || definition.skills.length === 0) return skills
+
+  const requested = new Set(definition.skills)
+  const found = new Set<string>()
+  const next = skills.map((skill) => {
+    if (!requested.has(skill.name)) return skill
+    found.add(skill.name)
+    return { ...skill, inclusion: 'always' as const }
+  })
+
+  for (const name of requested) {
+    if (!found.has(name)) {
+      console.warn(`Custom agent '${definition.type}' references missing skill '${name}'`)
+    }
+  }
+
+  return next
 }
 
 class ForkPreloadError extends Error {
@@ -585,7 +996,7 @@ function summarizeTranscriptRecords(records: SessionRecord[]): {
 }
 
 async function appendSubagentHookOutput(
-  recordStream: MemoryRecordStream,
+  recordStream: RecordStream,
   result: Awaited<ReturnType<typeof runLifecycleHooks>>,
   hookName: 'subagentStart' | 'subagentStop',
 ): Promise<void> {
@@ -616,6 +1027,21 @@ function formatSubagentHookOutput(
 
 function appendHookOutputToToolResult(content: string, hookOutput: string | undefined): string {
   return hookOutput ? `${content}\n\n${hookOutput}` : content
+}
+
+function appendWorktreeNoticeToToolResult(content: string, worktree: SubagentWorktreeSummary | undefined): string {
+  const notice = formatWorktreeNotice(worktree)
+  return notice ? `${content}\n\n${notice}` : content
+}
+
+function formatWorktreeNotice(worktree: SubagentWorktreeSummary | undefined): string | undefined {
+  if (!worktree) return undefined
+  return [
+    `Worktree: ${worktree.path}`,
+    `Base ref: ${worktree.baseRef}`,
+    'Change summary:',
+    worktree.changeSummary,
+  ].join('\n')
 }
 
 function extractVerdict(content: string): 'PASS' | 'FAIL' | 'PARTIAL' | undefined {
@@ -666,23 +1092,26 @@ function buildAgentSystemPrompt(
   overrideSystemPrompt: string | undefined,
   baseSystem: string | undefined,
   maxOutputTokens: number | undefined,
+  worktree: SubagentWorktreeLease | undefined,
 ): string | undefined {
   const outputLimitPrompt = maxOutputTokens === undefined
     ? undefined
     : `Keep your final report under approximately ${maxOutputWords(maxOutputTokens)} words.`
+  const isolationPrompt = worktree ? buildWorktreeIsolationPrompt(worktree) : undefined
 
   if (definition.type === 'general') {
     const generalPrompt = overrideSystemPrompt ?? definition.getSystemPrompt(baseSystem)
-    return joinPromptParts([generalPrompt, outputLimitPrompt])
+    return joinPromptParts([generalPrompt, isolationPrompt, outputLimitPrompt])
   }
 
   if (definition.type === 'fork') {
-    return definition.getSystemPrompt(baseSystem)
+    return joinPromptParts([definition.getSystemPrompt(baseSystem), isolationPrompt])
   }
 
   const parts = [
     definition.getSystemPrompt(baseSystem),
     overrideSystemPrompt ? `# Additional caller instructions\n${overrideSystemPrompt}` : undefined,
+    isolationPrompt,
     outputLimitPrompt,
   ]
 
@@ -724,12 +1153,13 @@ export function prepareForkPreloadRecords(
 
 function buildAgentToolDescription(definitions: readonly BaseAgentDefinition[]): string {
   const typeDescriptions = definitions
-    .map((definition) => `"${definition.type}" (${definition.description})`)
+    .map((definition) => `"${definition.type}" (${[definition.description, formatDefinitionCapabilities(definition)].filter(Boolean).join('; ')})`)
     .join(', ')
   return [
     'Run a typed sub-agent on an isolated task. Use this for complex, multi-step research, exploration, planning, or verification work whose intermediate tool output does not need to stay in the main context. Cannot spawn nested agents.',
     `Available subagent_type values: ${typeDescriptions}.`,
     'Always pass an explicit subagent_type.',
+    'For long-running or independent work, set run_in_background=true and include a short description. Background agents return immediately and send a completion notification later.',
     '',
     'When NOT to use the Agent tool:',
     '- If you already know the exact file path to inspect, use Read instead.',
@@ -750,6 +1180,27 @@ function formatAgentTypes(definitions: readonly BaseAgentDefinition[]): string {
   return definitions.map((definition) => definition.type).join(', ')
 }
 
+function buildWorktreeIsolationPrompt(worktree: SubagentWorktreeLease): string {
+  return [
+    '# Worktree Isolation',
+    `You are running inside an isolated git worktree at: ${worktree.path}`,
+    `Base ref: ${worktree.baseRef}`,
+    'All file reads and writes should happen in this worktree. Do not merge, cherry-pick, push, or copy changes back to the parent workspace unless the caller explicitly asks later.',
+    'When you finish, summarize the changes you made and any files the parent should inspect in this worktree.',
+  ].join('\n')
+}
+
+function formatDefinitionCapabilities(definition: BaseAgentDefinition): string | undefined {
+  const parts: string[] = []
+  if (definition.model) parts.push(`model: ${definition.model}`)
+  if (definition.background) parts.push('background')
+  if (definition.isolation) parts.push(`isolation: ${definition.isolation}`)
+  if (definition.permissionMode) parts.push(`permission: ${definition.permissionMode}`)
+  if (definition.skills && definition.skills.length > 0) parts.push(`skills: ${definition.skills.join(', ')}`)
+  if (definition.mcpServers && definition.mcpServers.length > 0) parts.push(`MCP: ${definition.mcpServers.join(', ')}`)
+  return parts.length > 0 ? parts.join('; ') : undefined
+}
+
 function applyAgentResultBudget(content: string, maxResultSizeChars: number | undefined): string {
   if (maxResultSizeChars === undefined || content.length <= maxResultSizeChars) return content
   return [
@@ -767,9 +1218,9 @@ function maxOutputWords(maxOutputTokens: number): number {
   return Math.max(1, Math.floor(maxOutputTokens * 0.75))
 }
 
-function createSubAgentToolContext(parent: ToolContext, subAgentId: string, abortSignal: AbortSignal): ToolContext {
+function createSubAgentToolContext(parent: ToolContext, subAgentId: string, abortSignal: AbortSignal, cwd = parent.cwd): ToolContext {
   return {
-    cwd: parent.cwd,
+    cwd,
     sessionId: subAgentId,
     readFiles: new Set(),
     readFileState: new Map(),

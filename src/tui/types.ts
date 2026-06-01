@@ -1,5 +1,11 @@
 import type { PermissionRequest } from '../harness/permissions.js'
-import type { CompactAttemptFailedRecord, TokenUsage, ToolErrorCode, ToolResultDisplay } from '../harness/types.js'
+import type {
+  CompactAttemptFailedRecord,
+  SessionRecord,
+  TokenUsage,
+  ToolErrorCode,
+  ToolResultDisplay,
+} from '../harness/types.js'
 
 export type ToolCallStatus =
   | 'pending'
@@ -48,6 +54,13 @@ export type TUIDisplayItem =
       kind: 'tool_progress'
       id: string
       content: string
+      createdAt: string
+    }
+  | {
+      kind: 'subagent_task'
+      id: string
+      record: Extract<SessionRecord, { type: 'subagent_task' }>
+      progress?: string
       createdAt: string
     }
   | {

@@ -5,7 +5,7 @@ import { useSpinner } from '../hooks/useSpinner.js'
 import { theme } from '../theme.js'
 
 const MESSAGE_COLOR = theme.spinner
-const SHIMMER_COLOR = '#FFD1DC'
+const SHIMMER_COLOR = '#D7E3FC'
 const DIM_COLOR = theme.dimText
 const ERROR_RED = { r: 171, g: 43, b: 63 }
 const DEFAULT_CHARACTERS = getDefaultCharacters()

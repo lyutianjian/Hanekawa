@@ -1,6 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { restoreTaskStateFromRecords, taskCreateTool, taskGetTool, taskListTool, taskUpdateTool, todoWriteTool } from '../src/tools/taskTools.js'
+import { taskCreateTool } from '../src/tools/TaskCreateTool/TaskCreateTool.js'
+import { taskGetTool } from '../src/tools/TaskGetTool/TaskGetTool.js'
+import { taskListTool } from '../src/tools/TaskListTool/TaskListTool.js'
+import { taskUpdateTool } from '../src/tools/TaskUpdateTool/TaskUpdateTool.js'
+import { todoWriteTool } from '../src/tools/TodoWriteTool/TodoWriteTool.js'
+import { restoreTaskStateFromRecords } from '../src/tools/taskState.js'
 import type { SessionRecord, ToolContext } from '../src/harness/types.js'
 
 function makeContext(): ToolContext {

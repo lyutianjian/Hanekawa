@@ -10,11 +10,19 @@ import {
   infersReadOnlyAgentFromTools,
   type BaseAgentDefinition,
 } from '../../tools/agentTool.js'
+import type { PermissionMode } from '../../harness/permissions.js'
+import type { SubagentIsolation } from './subagentWorktree.js'
 import { getAgentsDir, getLocalAgentsDir } from '../../utils/paths.js'
 
 interface AgentFrontmatter {
   name?: unknown
   description?: unknown
+  model?: unknown
+  permissionMode?: unknown
+  skills?: unknown
+  mcpServers?: unknown
+  background?: unknown
+  isolation?: unknown
   tools?: unknown
   isReadOnlyAgent?: unknown
   omitProjectContext?: unknown
@@ -86,6 +94,12 @@ export class AgentDefinitionLoader {
     }
 
     const tools = parseTools(frontmatter.tools)
+    const model = parseOptionalString(frontmatter.model, 'model')
+    const permissionMode = parseOptionalPermissionMode(frontmatter.permissionMode)
+    const skills = parseOptionalStringArray(frontmatter.skills, 'skills')
+    const mcpServers = parseOptionalStringArray(frontmatter.mcpServers, 'mcpServers')
+    const background = parseOptionalBoolean(frontmatter.background, 'background')
+    const isolation = parseOptionalIsolation(frontmatter.isolation)
     const maxTurns = parsePositiveInt(frontmatter.maxTurns, DEFAULT_AGENT_MAX_TURNS, 'maxTurns')
     const maxResultSizeChars = parsePositiveInt(
       frontmatter.maxResultSizeChars,
@@ -110,6 +124,12 @@ export class AgentDefinitionLoader {
     return {
       type: frontmatter.name,
       description: frontmatter.description,
+      ...(model ? { model } : {}),
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(skills ? { skills } : {}),
+      ...(mcpServers ? { mcpServers } : {}),
+      ...(background !== undefined ? { background } : {}),
+      ...(isolation ? { isolation } : {}),
       ...(tools ? { tools } : {}),
       disallowedTools: NESTED_AGENT_FORBIDDEN_TOOLS,
       maxTurns,
@@ -134,6 +154,36 @@ function parseTools(value: unknown): readonly string[] | undefined {
     return undefined
   }
   return tools
+}
+
+function parseOptionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`Agent frontmatter "${field}" must be a non-empty string`)
+  }
+  return value.trim()
+}
+
+function parseOptionalStringArray(value: unknown, field: string): readonly string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string' && item.trim() !== '')) {
+    throw new Error(`Agent frontmatter "${field}" must be an array of non-empty strings`)
+  }
+  return value.map((item) => item.trim())
+}
+
+function parseOptionalPermissionMode(value: unknown): PermissionMode | undefined {
+  if (value === undefined) return undefined
+  if (value === 'default' || value === 'plan' || value === 'acceptEdits' || value === 'auto' || value === 'bypass') {
+    return value
+  }
+  throw new Error('Agent frontmatter "permissionMode" must be one of: default, plan, acceptEdits, auto, bypass')
+}
+
+function parseOptionalIsolation(value: unknown): SubagentIsolation | undefined {
+  if (value === undefined) return undefined
+  if (value === 'worktree') return value
+  throw new Error('Agent frontmatter "isolation" must be "worktree" when set')
 }
 
 function parsePositiveInt(value: unknown, defaultValue: number, field: string): number {

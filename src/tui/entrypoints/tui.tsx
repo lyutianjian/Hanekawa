@@ -19,7 +19,7 @@ import type { SessionMeta } from '../../sessions/service.js'
 import { JsonlRecordStream } from '../../sessions/recordStream.js'
 import { getAllTools } from '../../tools/index.js'
 import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, prepareForkPreloadRecords } from '../../tools/agentTool.js'
-import { restoreTaskStateFromRecords } from '../../tools/taskTools.js'
+import { restoreTaskStateFromRecords } from '../../tools/taskState.js'
 import { PermissionGate, type DenialStateStore } from '../../harness/permissions.js'
 import { ToolRunner } from '../../harness/toolRunner.js'
 import { ContextBuilder } from '../../harness/contextBuilder.js'
@@ -123,14 +123,14 @@ async function main() {
     console.error(`Initial model could not be resolved: ${initialModelKey}`)
     process.exit(1)
   }
-  const fallbackModelKey = config.get().fallbackModel
+  const fallbackModelKey = config.resolveModelReference(config.get().fallbackModel)
   if (fallbackModelKey && !config.getModel(fallbackModelKey)) {
-    console.error(`Unknown fallback model configured: ${fallbackModelKey}`)
+    console.error(`Unknown fallback model configured: ${config.get().fallbackModel}`)
     process.exit(1)
   }
-  const compactModelKey = config.get().compactModel
+  const compactModelKey = config.resolveModelReference(config.get().compactModel)
   if (compactModelKey && !config.getModel(compactModelKey)) {
-    console.error(`Unknown compact model configured: ${compactModelKey}`)
+    console.error(`Unknown compact model configured: ${config.get().compactModel}`)
     process.exit(1)
   }
 
@@ -287,12 +287,12 @@ async function main() {
       throw new Error(`Failed to create provider for: ${targetModelConfig.provider}`)
     }
 
-    const currentFallbackModelKey = config.get().fallbackModel
+    const currentFallbackModelKey = config.resolveModelReference(config.get().fallbackModel)
     const fallbackModel = currentFallbackModelKey && currentFallbackModelKey !== modelKey
       ? createActiveModelRuntime(currentFallbackModelKey)
       : undefined
 
-    const currentCompactModelKey = config.get().compactModel
+    const currentCompactModelKey = config.resolveModelReference(config.get().compactModel)
     const compactModel = currentCompactModelKey
       ? createActiveModelRuntime(currentCompactModelKey)
       : createRoutedRuntime({ kind: 'compact' }, modelKey)
@@ -340,10 +340,13 @@ async function main() {
       hooks: settings.hooks,
       cacheRuntime: { settings, env: process.env },
       compactModel,
-      resolveSubagentModel: (subagentType) => createRoutedRuntime(
-        { kind: 'subagent', type: subagentType },
-        modelKey,
-      ),
+      onSubagentProgress: (event) => recordProxy.onProgress(event),
+      resolveSubagentModel: (subagentType, requestedModelKey) => requestedModelKey
+        ? createActiveModelRuntime(requestedModelKey)
+        : createRoutedRuntime(
+          { kind: 'subagent', type: subagentType },
+          modelKey,
+        ),
       getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
       setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
       agentTimeoutMs: config.get().agent.agentTimeoutMs,

@@ -287,6 +287,8 @@ export function estimateDisplayItemRows(
     case 'system':
     case 'error':
       return 2 + estimateWrappedRows(displayItemText(item), contentWidth)
+    case 'subagent_task':
+      return 2 + estimateWrappedRows(displayItemText(item), contentWidth)
     case 'tool_progress':
       return estimateWrappedRows(item.content, Math.max(1, contentWidth - 2))
   }
@@ -333,6 +335,8 @@ function displayItemText(item: TUIDisplayItem): string {
     case 'system':
     case 'error':
       return item.content
+    case 'subagent_task':
+      return `${item.record.subagentType} ${item.record.status} ${item.record.agentId.slice(0, 8)}`
     default:
       return ''
   }

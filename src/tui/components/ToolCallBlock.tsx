@@ -75,7 +75,7 @@ function OutputBlock({ result, display, expanded }: { result: string; display?: 
         <Box>
           <Text color={theme.dimText}>{'| '}</Text>
           <Text color={theme.dimText}>{display.summary}</Text>
-          {hasDetail && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
+          {hasDetail && <Text color={theme.dimText} dimColor> (ctrl+o expand)</Text>}
         </Box>
       </Box>
     )
@@ -96,7 +96,7 @@ function OutputBlock({ result, display, expanded }: { result: string; display?: 
         <DetailLines lines={(display.detail ?? result).split('\n')} />
         <Box paddingLeft={3}>
           <Text color={theme.dimText} dimColor>
-            (ctrl+o to collapse)
+            (ctrl+o collapse)
           </Text>
         </Box>
       </Box>
@@ -110,7 +110,7 @@ function OutputBlock({ result, display, expanded }: { result: string; display?: 
         {totalLines > COLLAPSE_LINES && (
           <Box paddingLeft={3}>
             <Text color={theme.dimText} dimColor>
-              (ctrl+o to collapse)
+              (ctrl+o collapse)
             </Text>
           </Box>
         )}
@@ -126,7 +126,7 @@ function OutputBlock({ result, display, expanded }: { result: string; display?: 
       <DetailLines lines={visibleLines} />
       <Box paddingLeft={3}>
         <Text color={theme.dimText} dimColor>
-          ... +{hiddenCount} {hiddenCount === 1 ? 'line' : 'lines'} (ctrl+o to expand)
+          ... +{hiddenCount} {hiddenCount === 1 ? 'line' : 'lines'} (ctrl+o expand)
         </Text>
       </Box>
     </Box>

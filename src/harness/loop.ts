@@ -24,7 +24,7 @@ import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
 import type { PlanModeManager } from './planModeManager.js'
 import type { AgentRunResult, ChatMessage, ModelProvider, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
-import { remainingTasksFromState } from '../tools/taskTools.js'
+import { remainingTasksFromState } from '../tools/taskFormat.js'
 
 export interface ActiveModelRuntime {
   provider: ModelProvider

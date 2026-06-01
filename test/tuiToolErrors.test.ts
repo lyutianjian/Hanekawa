@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { recordsToDisplayItems } from '../src/tui/hooks/useAgentLoop.js'
 import { formatToolCallRunningDescription, getStatusDot } from '../src/tui/components/ToolCallBlock.js'
+import { formatSubagentTaskLine } from '../src/tui/components/SubagentTaskBlock.js'
 import { getToolActivityDescription, getToolDisplay, shouldDisplayToolResult } from '../src/tools/display.js'
 import type { SessionRecord } from '../src/harness/types.js'
 
@@ -97,6 +98,59 @@ test('recordsToDisplayItems hides plan mode transition tool rows', () => {
   ]
 
   assert.equal(recordsToDisplayItems(records).some((item) => item.kind === 'tool_call'), false)
+})
+
+test('recordsToDisplayItems marks restored running subagents as interrupted', () => {
+  const records: SessionRecord[] = [{
+    id: 'subagent-task-1',
+    type: 'subagent_task',
+    agentId: 'agent-1',
+    subagentType: 'explore',
+    status: 'running',
+    description: 'Explore files',
+    task: 'Find files',
+    createdAt: '2026-05-24T00:00:00.000Z',
+  }]
+
+  const item = recordsToDisplayItems(records).find((candidate) => candidate.kind === 'subagent_task')
+  assert.equal(item?.kind, 'subagent_task')
+  assert.equal(item?.record.status, 'interrupted')
+  assert.match(item ? formatSubagentTaskLine(item) : '', /◌ explore agent interrupted/)
+})
+
+test('recordsToDisplayItems merges subagent lifecycle records into latest status row', () => {
+  const records: SessionRecord[] = [
+    {
+      id: 'subagent-task-1',
+      type: 'subagent_task',
+      agentId: 'agent-1',
+      subagentType: 'plan',
+      status: 'running',
+      description: 'Plan changes',
+      task: 'Plan',
+      createdAt: '2026-05-24T00:00:00.000Z',
+    },
+    {
+      id: 'subagent-task-2',
+      type: 'subagent_task',
+      agentId: 'agent-1',
+      subagentType: 'plan',
+      status: 'completed',
+      description: 'Plan changes',
+      task: 'Plan',
+      summary: 'Done',
+      transcriptPath: '/tmp/transcript.jsonl',
+      createdAt: '2026-05-24T00:00:01.000Z',
+    },
+  ]
+
+  const items = recordsToDisplayItems(records).filter((candidate) => candidate.kind === 'subagent_task')
+  assert.equal(items.length, 1)
+  const item = items[0]
+  assert.equal(item?.kind, 'subagent_task')
+  assert.equal(item?.record.status, 'completed')
+  assert.match(item ? formatSubagentTaskLine(item) : '', /✓ plan agent completed/)
+  assert.match(item ? formatSubagentTaskLine(item) : '', /\/agents show agent-1/)
 })
 
 test('tool display metadata comes from tool definitions', () => {

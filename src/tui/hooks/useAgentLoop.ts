@@ -58,6 +58,7 @@ export function useAgentLoop({
   // Track the most recent tool_use ID for each tool name (for approval matching)
   const lastToolUseIdRef = useRef<Map<string, string>>(new Map())
   const activeToolProgressRef = useRef<Map<string, ToolProgressEvent>>(new Map())
+  const subagentProgressRef = useRef<Map<string, string>>(new Map())
 
   // CheckpointService for creating snapshots before each user message
   const checkpointServiceRef = useRef<CheckpointService | null>(null)
@@ -92,6 +93,7 @@ export function useAgentLoop({
     })
     lastToolUseIdRef.current.clear()
     activeToolProgressRef.current.clear()
+    subagentProgressRef.current.clear()
     setSpinnerSubText(undefined)
   }, [session.id])
 
@@ -166,6 +168,7 @@ export function useAgentLoop({
         abortControllerRef.current = null
         lastToolUseIdRef.current.clear()
         activeToolProgressRef.current.clear()
+        subagentProgressRef.current.clear()
         setSpinnerSubText(undefined)
         setMessages((prev) => prev.filter((item) => item.kind !== 'tool_progress'))
       }
@@ -177,19 +180,36 @@ export function useAgentLoop({
     if (isHiddenToolCall(event.call.name)) return
     if (event.phase === 'started') {
       activeToolProgressRef.current.set(event.call.id, event)
+      if (event.source?.type === 'subagent' && event.source.agentId) {
+        subagentProgressRef.current.set(event.source.agentId, formatSingleToolProgress(event))
+      }
     } else {
       activeToolProgressRef.current.delete(event.call.id)
+      if (event.source?.type === 'subagent' && event.source.agentId) {
+        subagentProgressRef.current.delete(event.source.agentId)
+      }
     }
 
     const activeEvents = [...activeToolProgressRef.current.values()]
-    const content = formatToolProgress(activeEvents)
-    const listContent = activeEvents.length > 1 ? content : undefined
+    const foregroundEvents = activeEvents.filter((candidate) => candidate.source?.type !== 'subagent')
+    const backgroundEvents = activeEvents.filter((candidate) => candidate.source?.type === 'subagent')
+    const content = foregroundEvents.length > 0
+      ? formatToolProgress(foregroundEvents)
+      : formatSubagentSpinnerProgress(backgroundEvents)
+    const listContent = foregroundEvents.length > 1 ? content : undefined
     setSpinnerSubText(content)
     setMessages((prev) => {
       const withoutProgress = prev.filter((item) => item.kind !== 'tool_progress')
-      if (!listContent) return withoutProgress
+      const withTaskProgress = withoutProgress.map((item) => {
+        if (item.kind !== 'subagent_task') return item
+        return {
+          ...item,
+          progress: subagentProgressRef.current.get(item.record.agentId),
+        }
+      })
+      if (!listContent) return withTaskProgress
       return [
-        ...withoutProgress,
+        ...withTaskProgress,
         {
           kind: 'tool_progress' as const,
           id: 'tool-progress',
@@ -301,6 +321,17 @@ export function useAgentLoop({
             record,
           },
         ])
+      } else if (record.type === 'subagent_task') {
+        setMessages((prev) => [
+          ...prev.filter((item) => !(item.kind === 'subagent_task' && item.record.agentId === record.agentId)),
+          {
+            kind: 'subagent_task' as const,
+            id: `subagent-task-${record.agentId}`,
+            record,
+            progress: subagentProgressRef.current.get(record.agentId),
+            createdAt: record.createdAt,
+          },
+        ])
       }
 
       onRecordExternal?.(record)
@@ -389,6 +420,21 @@ function formatSingleToolProgress(event: ToolProgressEvent): string {
   return `Running ${formatScopedToolName(event)}`
 }
 
+function formatSubagentSpinnerProgress(events: ToolProgressEvent[]): string | undefined {
+  if (events.length === 0) return undefined
+
+  const agentIds = new Set<string>()
+  for (const event of events) {
+    agentIds.add(event.source?.agentId ?? `${event.source?.agentType ?? 'agent'}:${event.call.id}`)
+  }
+
+  if (agentIds.size > 1) {
+    return `${agentIds.size} agents running`
+  }
+
+  return formatToolProgress(events)
+}
+
 function formatScopedToolName(event: ToolProgressEvent | undefined): string {
   const name = event?.call.name ?? 'tool'
   if (event?.source?.type === 'subagent') {
@@ -415,6 +461,13 @@ function truncateMiddle(value: string, maxLength: number): string {
 // Convert SessionRecord[] to TUIDisplayItem[] for initial display
 export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[] {
   const items: TUIDisplayItem[] = []
+  const latestSubagentRecordId = new Map<string, string>()
+
+  for (const record of records) {
+    if (record.type === 'subagent_task') {
+      latestSubagentRecordId.set(record.agentId, record.id)
+    }
+  }
 
   for (const record of records) {
     if (record.type === 'message') {
@@ -458,6 +511,17 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
         kind: 'compact_attempt_failed',
         id: record.id,
         record,
+      })
+    } else if (record.type === 'subagent_task') {
+      if (latestSubagentRecordId.get(record.agentId) !== record.id) continue
+      const displayRecord = record.status === 'running'
+        ? { ...record, status: 'interrupted' as const }
+        : record
+      items.push({
+        kind: 'subagent_task',
+        id: `subagent-task-${displayRecord.agentId}`,
+        record: displayRecord,
+        createdAt: displayRecord.createdAt,
       })
     }
   }

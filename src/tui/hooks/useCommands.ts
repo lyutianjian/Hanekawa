@@ -1,11 +1,19 @@
 import { useCallback, useRef } from 'react'
 import { useApp } from 'ink'
 import { getCommand } from '../../commands/index.js'
-import type { CommandContext, CommandModelInfo, SetModelResult } from '../../commands/types.js'
+import type {
+  CommandContext,
+  CommandModelInfo,
+  CommandSubagentCleanupResult,
+  CommandSubagentDetails,
+  SetModelResult,
+} from '../../commands/types.js'
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
-import type { ModelPricing, TokenUsage } from '../../harness/types.js'
+import type { ModelPricing, SessionRecord, TokenUsage } from '../../harness/types.js'
 import { calculateTokenCost, hasCompletePricing } from '../../harness/usage.js'
 import { resetAutoCompactFailureState } from '../../harness/compact.js'
+import { SidechainRecordStream } from '../../harness/sidechainRecordStream.js'
+import { GitSubagentWorktreeManager } from '../../services/agents/subagentWorktree.js'
 
 interface UseCommandsOptions {
   store: SessionStore
@@ -161,6 +169,18 @@ export function useCommands({
         openPlanFile: openPlanFileRef.current,
         submitQuery: submitQueryRef.current,
         openProviderPanel: openProviderPanelRef.current,
+        listSubagentTasks: async () => listLatestSubagentTasks(storeRef.current, sessionRef.current.id),
+        getSubagentDetails: async (agentIdOrPrefix) => getSubagentDetails(
+          storeRef.current,
+          sessionRef.current.id,
+          agentIdOrPrefix,
+        ),
+        cleanupSubagentWorktrees: async ({ apply }) => cleanupSubagentWorktrees(
+          storeRef.current,
+          sessionRef.current.id,
+          cwdRef.current,
+          apply,
+        ),
       }
 
       try {
@@ -180,4 +200,117 @@ export function useCommands({
   )
 
   return { dispatch }
+}
+
+type SubagentTaskRecord = Extract<SessionRecord, { type: 'subagent_task' }>
+type SubagentTranscriptRecord = Extract<SessionRecord, { type: 'subagent_transcript' }>
+
+async function listLatestSubagentTasks(store: SessionStore, sessionId: string): Promise<SubagentTaskRecord[]> {
+  const loaded = await store.loadRecordsWithDiagnostics(sessionId)
+  return latestSubagentTasks(loaded.records)
+}
+
+async function getSubagentDetails(
+  store: SessionStore,
+  sessionId: string,
+  agentIdOrPrefix: string,
+): Promise<CommandSubagentDetails | null> {
+  const loaded = await store.loadRecordsWithDiagnostics(sessionId)
+  const tasks = latestSubagentTasks(loaded.records)
+  const transcripts = latestSubagentTranscripts(loaded.records)
+  const agentId = resolveAgentId(agentIdOrPrefix, tasks, transcripts)
+  if (!agentId) return null
+
+  const task = tasks.find((candidate) => candidate.agentId === agentId)
+  const transcript = transcripts.find((candidate) => candidate.agentId === agentId)
+  const transcriptPath = task?.transcriptPath ?? transcript?.transcriptPath
+  const transcriptRecords = transcriptPath
+    ? await new SidechainRecordStream(transcriptPath).load()
+    : []
+
+  return {
+    task,
+    transcript,
+    transcriptRecords,
+  }
+}
+
+async function cleanupSubagentWorktrees(
+  store: SessionStore,
+  sessionId: string,
+  cwd: string,
+  apply: boolean,
+): Promise<CommandSubagentCleanupResult> {
+  const loaded = await store.loadRecordsWithDiagnostics(sessionId)
+  const tasks = latestSubagentTasks(loaded.records)
+  const manager = new GitSubagentWorktreeManager()
+  const entries = []
+
+  for (const task of tasks) {
+    if (!task.worktreePath || task.status === 'running') continue
+    try {
+      const inspection = await manager.inspect({ worktreePath: task.worktreePath })
+      const cleanup = apply && inspection.exists
+        ? await manager.cleanup({ cwd, worktreePath: task.worktreePath })
+        : undefined
+      entries.push({
+        agentId: task.agentId,
+        status: task.status,
+        worktreePath: task.worktreePath,
+        exists: inspection.exists,
+        removed: cleanup?.removed,
+      })
+    } catch (error) {
+      entries.push({
+        agentId: task.agentId,
+        status: task.status,
+        worktreePath: task.worktreePath,
+        exists: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  return {
+    dryRun: !apply,
+    entries,
+  }
+}
+
+function latestSubagentTasks(records: SessionRecord[]): SubagentTaskRecord[] {
+  const byAgentId = new Map<string, SubagentTaskRecord>()
+  for (const record of records) {
+    if (record.type === 'subagent_task') {
+      byAgentId.set(record.agentId, record)
+    }
+  }
+  return [...byAgentId.values()]
+}
+
+function latestSubagentTranscripts(records: SessionRecord[]): SubagentTranscriptRecord[] {
+  const byAgentId = new Map<string, SubagentTranscriptRecord>()
+  for (const record of records) {
+    if (record.type === 'subagent_transcript') {
+      byAgentId.set(record.agentId, record)
+    }
+  }
+  return [...byAgentId.values()]
+}
+
+function resolveAgentId(
+  agentIdOrPrefix: string,
+  tasks: SubagentTaskRecord[],
+  transcripts: SubagentTranscriptRecord[],
+): string | null {
+  const ids = new Set<string>()
+  for (const task of tasks) ids.add(task.agentId)
+  for (const transcript of transcripts) ids.add(transcript.agentId)
+
+  if (ids.has(agentIdOrPrefix)) return agentIdOrPrefix
+  const matches = [...ids].filter((id) => id.startsWith(agentIdOrPrefix))
+  if (matches.length === 0) return null
+  if (matches.length > 1) {
+    throw new Error(`Ambiguous subagent id ${agentIdOrPrefix}: ${matches.map((id) => id.slice(0, 8)).join(', ')}`)
+  }
+  return matches[0] ?? null
 }

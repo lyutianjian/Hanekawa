@@ -337,6 +337,38 @@ test('ConfigService.resolveModelInput: exact model key wins over tier spelling',
   }
 })
 
+test('ConfigService model reference fields may use tiers', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: {
+        fastModel: { provider: 'openai', model: 'fast-id' },
+        main: { provider: 'openai', model: 'main-id' },
+        power: { provider: 'openai', model: 'power-id' },
+      },
+      profiles: {
+        p: { fast: 'fastModel', balanced: 'main', powerful: 'power' },
+      },
+      activeProfile: 'p',
+      defaultModel: 'balanced',
+      fallbackModel: 'fast',
+      compactModel: 'powerful',
+    })
+    const cfg = new ConfigService(dir)
+    await cfg.load()
+
+    assert.equal(cfg.resolveModelReference(cfg.get().defaultModel), 'main')
+    assert.equal(cfg.resolveModelReference(cfg.get().fallbackModel), 'fastModel')
+    assert.equal(cfg.resolveModelReference(cfg.get().compactModel), 'power')
+    assert.equal(cfg.getDefaultModel()?.model, 'main-id')
+    assert.equal(cfg.getFallbackModel()?.model, 'fast-id')
+    assert.equal(cfg.getCompactModel()?.model, 'power-id')
+    assert.equal(cfg.resolveModelKeyFor({ kind: 'main' }, { currentModelKey: cfg.get().defaultModel }), 'main')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('ConfigService.resolveModelKeyFor: routing override beats default tier', async () => {
   const dir = await tmpDir()
   try {

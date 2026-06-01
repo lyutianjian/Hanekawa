@@ -112,15 +112,49 @@ export interface SubagentTranscriptRecord {
   agentId: string
   subagentType: string
   parentToolUseId?: string
+  transcriptPath?: string
+  status?: SubagentTaskStatus
   summary?: string
   recordCount?: number
   messageCount?: number
   toolUseCount?: number
   toolResultCount?: number
-  // Intentionally empty when persisted; full transcript records only live in
-  // MemoryRecordStream during execution.
+  verdict?: 'PASS' | 'FAIL' | 'PARTIAL'
+  criticalFiles?: string[]
+  isolation?: 'worktree'
+  worktreePath?: string
+  worktreeBaseRef?: string
+  worktreeChangeSummary?: string
+  // Intentionally empty when persisted in the parent session; full transcript
+  // records live in the sidechain transcript file when transcriptPath is set.
   records?: SessionRecord[]
   usage: TokenUsage
+  createdAt: string
+  turnId?: string
+}
+
+export type SubagentTaskStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+
+export interface SubagentTaskRecord {
+  id: string
+  type: 'subagent_task'
+  agentId: string
+  subagentType: string
+  status: SubagentTaskStatus
+  description: string
+  task: string
+  name?: string
+  parentToolUseId?: string
+  transcriptPath?: string
+  summary?: string
+  error?: string
+  usage?: TokenUsage
+  verdict?: 'PASS' | 'FAIL' | 'PARTIAL'
+  criticalFiles?: string[]
+  isolation?: 'worktree'
+  worktreePath?: string
+  worktreeBaseRef?: string
+  worktreeChangeSummary?: string
   createdAt: string
   turnId?: string
 }
@@ -166,6 +200,7 @@ export type SessionRecord =
   | CompactAttemptFailedRecord
   | ToolUseSummaryRecord
   | SubagentTranscriptRecord
+  | SubagentTaskRecord
   | PlanModeRequestRecord
   | PlanModeOutcomeRecord
   | TurnInterruptionRecord

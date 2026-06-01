@@ -4,6 +4,7 @@ import type { TUIDisplayItem } from '../types.js'
 import { UserMessage } from './UserMessage.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import { ToolCallBlock } from './ToolCallBlock.js'
+import { SubagentTaskBlock } from './SubagentTaskBlock.js'
 import { theme } from '../theme.js'
 
 interface MessageListProps {
@@ -83,6 +84,8 @@ function DisplayItem({ item, expanded }: { item: TUIDisplayItem; expanded: boole
           </Text>
         </Box>
       )
+    case 'subagent_task':
+      return <SubagentTaskBlock item={item} />
     case 'system':
       return (
         <Box marginY={1}>

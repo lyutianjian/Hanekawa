@@ -102,22 +102,22 @@ export class ConfigService {
   }
 
   getDefaultModel(): ModelConfig | undefined {
-    if (!this.config.defaultModel) return undefined
-    return this.resolveModel(this.config.defaultModel)
+    const modelKey = this.resolveModelReference(this.config.defaultModel)
+    return modelKey ? this.resolveModel(modelKey) : undefined
   }
 
   getFallbackModel(): ModelConfig | undefined {
-    if (!this.config.fallbackModel) return undefined
-    return this.resolveModel(this.config.fallbackModel)
+    const modelKey = this.resolveModelReference(this.config.fallbackModel)
+    return modelKey ? this.resolveModel(modelKey) : undefined
   }
 
   getCompactModel(): ModelConfig | undefined {
-    if (!this.config.compactModel) return undefined
-    return this.resolveModel(this.config.compactModel)
+    const modelKey = this.resolveModelReference(this.config.compactModel)
+    return modelKey ? this.resolveModel(modelKey) : undefined
   }
 
   setDefaultModel(name: string): void {
-    if (this.config.models[name]) {
+    if (this.resolveModelReference(name)) {
       this.config.defaultModel = name
     }
   }
@@ -160,6 +160,15 @@ export class ConfigService {
     if (!trimmed) return undefined
     if (trimmed.toLowerCase() === 'inherit') return undefined
 
+    return this.resolveModelReference(trimmed)
+      ?? (parseTierInput(trimmed) ? this.resolveFallbackModelKey(options.currentModelKey) : undefined)
+  }
+
+  resolveModelReference(reference: string | undefined): string | undefined {
+    const trimmed = reference?.trim()
+    if (!trimmed) return undefined
+    if (trimmed.toLowerCase() === 'inherit') return undefined
+
     if (this.resolveModel(trimmed)) return trimmed
 
     const tier = parseTierInput(trimmed)
@@ -169,13 +178,12 @@ export class ConfigService {
     const routed = resolveTier(active?.profile, tier)
     return routed && this.resolveModel(routed)
       ? routed
-      : this.resolveFallbackModelKey(options.currentModelKey)
+      : undefined
   }
 
   private resolveFallbackModelKey(currentModelKey?: string): string | undefined {
     if (currentModelKey && this.resolveModel(currentModelKey)) return currentModelKey
-    if (this.config.defaultModel && this.resolveModel(this.config.defaultModel)) return this.config.defaultModel
-    return undefined
+    return this.resolveModelReference(this.config.defaultModel)
   }
 
   getEndpoint(name: string): Endpoint | undefined {

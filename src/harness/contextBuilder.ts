@@ -118,7 +118,7 @@ When you encounter an obstacle, do not use destructive actions as a shortcut to 
 
 const USING_TOOLS_SECTION = `# Using your tools
  - Prefer dedicated tools over Bash when one fits (Read, Edit, Write, Glob, Grep). Reserve Bash for shell-only operations.
- - Use TodoWrite to plan and track work. Keep the todo list current by replacing it with the complete updated list whenever task status changes.
+ - Use TaskCreate, TaskList, TaskGet, and TaskUpdate to plan and track complex multi-step work. Keep task status current as work starts, changes, or completes. TodoWrite remains available as a lightweight compatibility path, but structured Task tools are preferred for task tracking.
  - You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency. However, if some tool calls depend on previous calls to inform dependent values, do NOT call these tools in parallel and instead call them sequentially. For instance, if one operation must complete before another starts, run these operations sequentially instead.`.trim()
 
 const TONE_AND_STYLE_SECTION = `# Tone and style

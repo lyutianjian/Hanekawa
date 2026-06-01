@@ -1,3 +1,5 @@
+import type { SessionRecord } from '../harness/types.js'
+
 export interface CommandDefinition {
   name: string
   description: string
@@ -32,6 +34,24 @@ export type SetModelResult =
   | { ok: true; model: CommandModelInfo }
   | { ok: false; message: string; availableModels?: string[] }
 
+export interface CommandSubagentDetails {
+  task?: Extract<SessionRecord, { type: 'subagent_task' }>
+  transcript?: Extract<SessionRecord, { type: 'subagent_transcript' }>
+  transcriptRecords: SessionRecord[]
+}
+
+export interface CommandSubagentCleanupResult {
+  dryRun: boolean
+  entries: Array<{
+    agentId: string
+    status: string
+    worktreePath: string
+    exists: boolean
+    removed?: boolean
+    error?: string
+  }>
+}
+
 export interface CommandContext {
   cwd: string
   sessionId: string
@@ -54,6 +74,9 @@ export interface CommandContext {
   openPlanFile?: () => Promise<{ message: string }>
   submitQuery?: (input: string) => Promise<void>
   openProviderPanel?: () => void
+  listSubagentTasks?: () => Promise<Array<Extract<SessionRecord, { type: 'subagent_task' }>>>
+  getSubagentDetails?: (agentIdOrPrefix: string) => Promise<CommandSubagentDetails | null>
+  cleanupSubagentWorktrees?: (options: { apply: boolean }) => Promise<CommandSubagentCleanupResult>
 }
 
 export type CommandResult =

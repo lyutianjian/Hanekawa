@@ -392,7 +392,128 @@ test('/agents reports usage for unknown subcommands', async () => {
     },
   }))
 
-  assert.match(output, /Usage: \/agents reload/)
+  assert.match(output, /Usage: \/agents reload\|list\|show/)
+})
+
+test('/agents list renders compact task table', async () => {
+  let output = ''
+  await agentsCommand.run('list', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+    listSubagentTasks: async () => [
+      {
+        id: 'task-1',
+        type: 'subagent_task',
+        agentId: 'abcdef123456',
+        subagentType: 'plan',
+        status: 'completed',
+        description: 'Plan the change',
+        task: 'Plan',
+        summary: 'Ready',
+        createdAt: new Date().toISOString(),
+      },
+    ],
+  }))
+
+  assert.match(output, /status\s+agent\s+age\s+summary\s+id/)
+  assert.match(output, /completed\s+plan\s+\d+s\s+Ready\s+abcdef12/)
+})
+
+test('/agents show renders transcript and worktree details', async () => {
+  let output = ''
+  await agentsCommand.run('show abcdef12', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+    getSubagentDetails: async () => ({
+      task: {
+        id: 'task-1',
+        type: 'subagent_task',
+        agentId: 'abcdef123456',
+        subagentType: 'verification',
+        status: 'completed',
+        description: 'Verify changes',
+        task: 'Verify',
+        transcriptPath: '/tmp/agent.jsonl',
+        worktreePath: '/tmp/hanekawa-subagent-worktrees/repo/session/agent',
+        worktreeChangeSummary: 'No changes.',
+        usage: { inputTokens: 1, cacheReadInputTokens: 2, outputTokens: 3 },
+        verdict: 'PASS',
+        criticalFiles: ['src/a.ts'],
+        createdAt: new Date().toISOString(),
+      },
+      transcript: {
+        id: 'transcript-1',
+        type: 'subagent_transcript',
+        agentId: 'abcdef123456',
+        subagentType: 'verification',
+        transcriptPath: '/tmp/agent.jsonl',
+        usage: { inputTokens: 1, cacheReadInputTokens: 2, outputTokens: 3 },
+        createdAt: new Date().toISOString(),
+      },
+      transcriptRecords: [],
+    }),
+  }))
+
+  assert.match(output, /agent: verification #abcdef12/)
+  assert.match(output, /status: completed/)
+  assert.match(output, /transcript: \/tmp\/agent\.jsonl/)
+  assert.match(output, /worktree:/)
+  assert.match(output, /verdict: PASS/)
+})
+
+test('/agents cleanup defaults to dry-run', async () => {
+  let output = ''
+  let applyValue: boolean | undefined
+  await agentsCommand.run('cleanup', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+    cleanupSubagentWorktrees: async ({ apply }) => {
+      applyValue = apply
+      return {
+        dryRun: !apply,
+        entries: [{
+          agentId: 'abcdef123456',
+          status: 'completed',
+          worktreePath: '/tmp/hanekawa-subagent-worktrees/repo/session/agent',
+          exists: true,
+        }],
+      }
+    },
+  }))
+
+  assert.equal(applyValue, false)
+  assert.match(output, /dry-run/)
+  assert.match(output, /would remove/)
+})
+
+test('/agents cleanup --apply delegates removal', async () => {
+  let output = ''
+  let applyValue: boolean | undefined
+  await agentsCommand.run('cleanup --apply', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+    cleanupSubagentWorktrees: async ({ apply }) => {
+      applyValue = apply
+      return {
+        dryRun: !apply,
+        entries: [{
+          agentId: 'abcdef123456',
+          status: 'completed',
+          worktreePath: '/tmp/hanekawa-subagent-worktrees/repo/session/agent',
+          exists: true,
+          removed: true,
+        }],
+      }
+    },
+  }))
+
+  assert.equal(applyValue, true)
+  assert.match(output, /cleanup/)
+  assert.match(output, /removed/)
 })
 
 test('/provider opens provider panel when available', async () => {

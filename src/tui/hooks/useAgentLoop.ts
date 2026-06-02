@@ -16,7 +16,18 @@ import type { RecordProxy } from './usePermission.js'
 import { CheckpointService } from '../../services/checkpoint/checkpointService.js'
 import { logDiagnostics, summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
 import { getToolActivityDescription } from '../../tools/display.js'
-import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../../tools/toolNames.js'
+import {
+  appendStaticTranscriptItem,
+  applyToolProgressToTranscriptState,
+  applyTuiRecordToTranscriptState,
+  clearToolProgress,
+  createTranscriptState,
+  isHiddenToolCall,
+  recordsToDisplayItems,
+  type TuiTranscriptState,
+} from '../transcript.js'
+
+export { isHiddenToolCall, recordsToDisplayItems } from '../transcript.js'
 
 interface UseAgentLoopOptions {
   loop: AgentLoop
@@ -45,9 +56,10 @@ export function useAgentLoop({
   onActiveModelChange,
   onInterrupt,
 }: UseAgentLoopOptions) {
-  const [messages, setMessages] = useState<TUIDisplayItem[]>(() =>
-    [...initialSystemMessages, ...recordsToDisplayItems(existingRecords)],
+  const [transcript, setTranscript] = useState<TuiTranscriptState>(() =>
+    createTranscriptState([...initialSystemMessages, ...recordsToDisplayItems(existingRecords)]),
   )
+  const [transcriptGeneration, setTranscriptGeneration] = useState(0)
   const [isStreaming, setIsStreaming] = useState(false)
   const [usage, setUsage] = useState<TUIUsage>({
     lastTurn: null,
@@ -106,6 +118,15 @@ export function useAgentLoop({
   // Wire up the permission gate's prompt function
   // This is done via the proxy pattern in the entry point
 
+  const appendStaticItem = useCallback((item: TUIDisplayItem) => {
+    setTranscript((prev) => appendStaticTranscriptItem(prev, item))
+  }, [])
+
+  const resetTranscript = useCallback((items: TUIDisplayItem[] = []) => {
+    setTranscript(createTranscriptState(items))
+    setTranscriptGeneration((value) => value + 1)
+  }, [])
+
   const submit = useCallback(
     async (input: string) => {
       // Add user message — generate ID once, use everywhere
@@ -116,7 +137,7 @@ export function useAgentLoop({
         content: input,
         createdAt: new Date().toISOString(),
       }
-      setMessages((prev) => [...prev, userMsg])
+      appendStaticItem(userMsg)
 
       // Create checkpoint BEFORE agent begins processing
       if (checkpointInitializedRef.current && checkpointServiceRef.current) {
@@ -159,7 +180,7 @@ export function useAgentLoop({
             content: await formatInterruptMessage(store, session.id, messageId),
             createdAt: new Date().toISOString(),
           }
-          setMessages((prev) => [...prev, interruptMsg])
+          appendStaticItem(interruptMsg)
         } else {
           const errorMsg: TUIDisplayItem = {
             kind: 'error',
@@ -167,7 +188,7 @@ export function useAgentLoop({
             content: err instanceof Error ? err.message : String(err),
             createdAt: new Date().toISOString(),
           }
-          setMessages((prev) => [...prev, errorMsg])
+          appendStaticItem(errorMsg)
         }
       } finally {
         onActiveModelChange?.(loop.getActiveModel())
@@ -177,10 +198,10 @@ export function useAgentLoop({
         activeToolProgressRef.current.clear()
         subagentProgressRef.current.clear()
         setSpinnerSubText(undefined)
-        setMessages((prev) => prev.filter((item) => item.kind !== 'tool_progress'))
+        setTranscript((prev) => clearToolProgress(prev))
       }
     },
-    [loop, store, session.id, onActiveModelChange],
+    [loop, store, session.id, onActiveModelChange, appendStaticItem],
   )
 
   const handleProgress = useCallback((event: ToolProgressEvent) => {
@@ -205,26 +226,10 @@ export function useAgentLoop({
       : formatSubagentSpinnerProgress(backgroundEvents)
     const listContent = foregroundEvents.length > 1 ? content : undefined
     setSpinnerSubText(content)
-    setMessages((prev) => {
-      const withoutProgress = prev.filter((item) => item.kind !== 'tool_progress')
-      const withTaskProgress = withoutProgress.map((item) => {
-        if (item.kind !== 'subagent_task') return item
-        return {
-          ...item,
-          progress: subagentProgressRef.current.get(item.record.agentId),
-        }
-      })
-      if (!listContent) return withTaskProgress
-      return [
-        ...withTaskProgress,
-        {
-          kind: 'tool_progress' as const,
-          id: 'tool-progress',
-          content: listContent,
-          createdAt: new Date().toISOString(),
-        },
-      ]
-    })
+    setTranscript((prev) => applyToolProgressToTranscriptState(prev, {
+      listContent,
+      subagentProgressByAgentId: subagentProgressRef.current,
+    }))
   }, [])
 
   // Handle records from ToolRunner (via onRecord callback)
@@ -236,49 +241,13 @@ export function useAgentLoop({
         // Track tool name -> tool_use ID mapping for approval matching
         lastToolUseIdRef.current.set(record.tool, record.id)
 
-        // Update existing pending tool call or create new one
-        setMessages((prev) => {
-          const idx = prev.findIndex(
-            (m) => m.kind === 'tool_call' && m.toolUseId === record.id,
-          )
-          if (idx >= 0) {
-            const updated = [...prev]
-            const item = { ...updated[idx] } as Extract<TUIDisplayItem, { kind: 'tool_call' }>
-            item.status = 'running'
-            item.input = record.input
-            updated[idx] = item
-            return updated
-          }
-          // Create new if not found (e.g., from direct tool execution)
-          return [
-            ...prev,
-            {
-              kind: 'tool_call' as const,
-              id: randomUUID(),
-              toolUseId: record.id,
-              tool: record.tool,
-              input: record.input,
-              status: 'running' as const,
-              createdAt: record.createdAt,
-            },
-          ]
-        })
+        setTranscript((prev) => applyTuiRecordToTranscriptState(prev, record))
       } else if (record.type === 'tool_approval' && !isHiddenToolCall(record.tool)) {
         // Match approval to tool_use by looking up the most recent tool_use ID for this tool name
         const toolUseId = lastToolUseIdRef.current.get(record.tool)
-        setMessages((prev) => {
-          const idx = prev.findIndex(
-            (m) => m.kind === 'tool_call' && m.toolUseId === toolUseId,
-          )
-          if (idx >= 0) {
-            const updated = [...prev]
-            const item = { ...updated[idx] } as Extract<TUIDisplayItem, { kind: 'tool_call' }>
-            item.status = record.approved ? 'approved' : 'denied'
-            updated[idx] = item
-            return updated
-          }
-          return prev
-        })
+        setTranscript((prev) => applyTuiRecordToTranscriptState(prev, record, {
+          approvalToolUseId: toolUseId,
+        }))
       } else if (record.type === 'tool_result') {
         if (record.display?.taskSnapshot) {
           setTaskSnapshot(record.display.taskSnapshot)
@@ -287,66 +256,21 @@ export function useAgentLoop({
           }
         }
         if (!isHiddenToolCall(record.tool)) {
-          setMessages((prev) => {
-            // Find by matching tool_use ID
-            const idx = prev.findIndex(
-              (m) => m.kind === 'tool_call' && m.toolUseId === record.toolUseId,
-            )
-            if (idx >= 0) {
-              const updated = [...prev]
-              const item = { ...updated[idx] } as Extract<TUIDisplayItem, { kind: 'tool_call' }>
-              item.status = record.ok ? 'done' : 'error'
-              item.result = record.content
-              item.resultDisplay = record.display
-              item.errorCode = record.errorCode
-              updated[idx] = item
-              return updated
-            }
-            return prev
-          })
+          setTranscript((prev) => applyTuiRecordToTranscriptState(prev, record))
         }
       } else if (record.type === 'message' && record.role === 'assistant') {
-        setMessages((prev) => {
-          if (prev.some((m) => m.kind === 'assistant' && m.id === record.id)) return prev
-          return [
-            ...prev,
-            {
-              kind: 'assistant' as const,
-              id: record.id,
-              content: record.content,
-              createdAt: record.createdAt,
-            },
-          ]
+        setTranscript((prev) => {
+          if (prev.staticItems.some((item) => item.kind === 'assistant' && item.id === record.id)) return prev
+          return applyTuiRecordToTranscriptState(prev, record)
         })
       } else if (record.type === 'compact_boundary') {
-        setMessages((prev) => [
-          ...prev,
-          {
-            kind: 'compact_boundary' as const,
-            id: randomUUID(),
-            summary: record.summary,
-          },
-        ])
+        setTranscript((prev) => applyTuiRecordToTranscriptState(prev, record))
       } else if (record.type === 'compact_attempt_failed') {
-        setMessages((prev) => [
-          ...prev,
-          {
-            kind: 'compact_attempt_failed' as const,
-            id: record.id,
-            record,
-          },
-        ])
+        setTranscript((prev) => applyTuiRecordToTranscriptState(prev, record))
       } else if (record.type === 'subagent_task') {
-        setMessages((prev) => [
-          ...prev.filter((item) => !(item.kind === 'subagent_task' && item.record.agentId === record.agentId)),
-          {
-            kind: 'subagent_task' as const,
-            id: `subagent-task-${record.agentId}`,
-            record,
-            progress: subagentProgressRef.current.get(record.agentId),
-            createdAt: record.createdAt,
-          },
-        ])
+        setTranscript((prev) => applyTuiRecordToTranscriptState(prev, record, {
+          subagentProgress: subagentProgressRef.current.get(record.agentId),
+        }))
       }
 
       onRecordExternal?.(record)
@@ -387,20 +311,23 @@ export function useAgentLoop({
       : []
     const latestTaskSnapshot = findLatestTaskSnapshot(loaded.records)
     setTaskSnapshot(latestTaskSnapshot)
-    setMessages([...systemItems, ...recordsToDisplayItems(loaded.records)])
+    resetTranscript([...systemItems, ...recordsToDisplayItems(loaded.records)])
     return loaded.records
-  }, [store, session.id])
+  }, [store, session.id, resetTranscript])
 
   return {
-    messages,
-    setMessages,
+    staticTranscriptItems: transcript.staticItems,
+    liveItems: transcript.liveItems,
+    recentCompletedToolCall: transcript.recentCompletedToolCall,
+    transcriptGeneration,
+    appendStaticItem,
+    resetTranscript,
     isStreaming,
     spinnerSubText,
     taskSnapshot,
     usage,
     submit,
     interrupt,
-    handleRecord,
     reloadMessages,
   }
 }
@@ -484,77 +411,6 @@ function truncateMiddle(value: string, maxLength: number): string {
   return `${value.slice(0, keep)}...${value.slice(value.length - keep)}`
 }
 
-// Convert SessionRecord[] to TUIDisplayItem[] for initial display
-export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[] {
-  const items: TUIDisplayItem[] = []
-  const latestSubagentRecordId = new Map<string, string>()
-
-  for (const record of records) {
-    if (record.type === 'subagent_task') {
-      latestSubagentRecordId.set(record.agentId, record.id)
-    }
-  }
-
-  for (const record of records) {
-    if (record.type === 'message') {
-      items.push({
-        kind: record.role === 'user' ? 'user' : record.role === 'assistant' ? 'assistant' : 'system',
-        id: record.id,
-        content: record.content,
-        createdAt: record.createdAt,
-      })
-    } else if (record.type === 'tool_use') {
-      if (isHiddenToolCall(record.tool)) continue
-      items.push({
-        kind: 'tool_call',
-        id: randomUUID(),
-        toolUseId: record.id,
-        tool: record.tool,
-        input: record.input,
-        status: 'done', // Historical records are always done
-        createdAt: record.createdAt,
-      })
-    } else if (record.type === 'tool_result') {
-      if (isHiddenToolCall(record.tool)) continue
-      // Find the matching tool_call and attach the result
-      const matchingCall = items.find(
-        (i) => i.kind === 'tool_call' && i.toolUseId === record.toolUseId,
-      )
-      if (matchingCall && matchingCall.kind === 'tool_call') {
-        matchingCall.result = record.content
-        matchingCall.resultDisplay = record.display
-        matchingCall.status = record.ok ? 'done' : 'error'
-        matchingCall.errorCode = record.errorCode
-      }
-    } else if (record.type === 'compact_boundary') {
-      items.push({
-        kind: 'compact_boundary',
-        id: randomUUID(),
-        summary: record.summary,
-      })
-    } else if (record.type === 'compact_attempt_failed') {
-      items.push({
-        kind: 'compact_attempt_failed',
-        id: record.id,
-        record,
-      })
-    } else if (record.type === 'subagent_task') {
-      if (latestSubagentRecordId.get(record.agentId) !== record.id) continue
-      const displayRecord = record.status === 'running'
-        ? { ...record, status: 'interrupted' as const }
-        : record
-      items.push({
-        kind: 'subagent_task',
-        id: `subagent-task-${displayRecord.agentId}`,
-        record: displayRecord,
-        createdAt: displayRecord.createdAt,
-      })
-    }
-  }
-
-  return items
-}
-
 async function formatInterruptMessage(store: SessionStore, sessionId: string, userMessageId: string): Promise<string> {
   try {
     const loaded = await store.loadRecordsWithDiagnostics(sessionId)
@@ -568,20 +424,6 @@ async function formatInterruptMessage(store: SessionStore, sessionId: string, us
   } catch {
     return 'Interrupted.'
   }
-}
-
-export function isHiddenToolCall(toolName: string): boolean {
-  return toolName === ENTER_PLAN_MODE_TOOL_NAME
-    || toolName === EXIT_PLAN_MODE_TOOL_NAME
-    || isTaskStatusTool(toolName)
-}
-
-function isTaskStatusTool(toolName: string): boolean {
-  return toolName === 'TodoWrite'
-    || toolName === 'TaskCreate'
-    || toolName === 'TaskList'
-    || toolName === 'TaskGet'
-    || toolName === 'TaskUpdate'
 }
 
 function addTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {

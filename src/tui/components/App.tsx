@@ -1,15 +1,16 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { Box } from 'ink'
+import { Box, Static } from '../ink.js'
 import type { AgentLoop } from '../../harness/loop.js'
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
 import type { PermissionGate, PermissionMode } from '../../harness/permissions.js'
 import type { PlanModeManager } from '../../harness/planModeManager.js'
 import type { ConfigService, ModelConfig } from '../../config/service.js'
+import { resolveTier, type Tier } from '../../config/routing.js'
 import type { SessionRecord } from '../../harness/types.js'
 import type { SetModelResult } from '../../commands/types.js'
-import type { TUIDisplayItem } from '../types.js'
+import type { TUIDisplayItem, TUIStaticItem } from '../types.js'
 import { useAgentLoop } from '../hooks/useAgentLoop.js'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts.js'
 import { useCommands } from '../hooks/useCommands.js'
@@ -17,13 +18,13 @@ import { usePermission } from '../hooks/usePermission.js'
 import type { PermissionPromptProxy, RecordProxy } from '../hooks/usePermission.js'
 import { CheckpointService } from '../../services/checkpoint/checkpointService.js'
 import type { Checkpoint } from '../../services/checkpoint/checkpointService.js'
-import { MessageList } from './MessageList.js'
+import { MessageList, StaticDisplayItem } from './MessageList.js'
 import { InputBox } from './InputBox.js'
+import { CommandSuggestions } from './CommandSuggestions.js'
 import { sampleSpinnerColors, Spinner } from './Spinner.js'
 import { TaskListBlock } from './TaskListBlock.js'
 import { PermissionDialog } from './PermissionDialog.js'
 import { StatusLine } from './StatusLine.js'
-import { WelcomeBanner } from './WelcomeBanner.js'
 import { RestoreMode } from './RestoreMode.js'
 import { invalidateResolvedCwdCache } from '../../utils/paths.js'
 import { readPlan } from '../../utils/plans.js'
@@ -32,6 +33,7 @@ import { ExitPlanModeDialog } from './ExitPlanModeDialog.js'
 import { EnterPlanModeDialog } from './EnterPlanModeDialog.js'
 import { AskUserQuestionDialog } from './AskUserQuestionDialog.js'
 import { ProviderPanel } from './ProviderPanel.js'
+import { ModelPickerDialog, type ModelPickerDecision, type ModelPickerOption } from './ModelPickerDialog.js'
 import { useExitPlanPermission, type ExitPlanPromptProxy } from '../hooks/useExitPlanPermission.js'
 import { useEnterPlanPermission, type EnterPlanPromptProxy } from '../hooks/useEnterPlanPermission.js'
 import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
@@ -118,6 +120,7 @@ export function App({
   const [permissionMode, setPermissionModeState] = useState<PermissionMode>(() => permissionGate.getMode())
   const [modelKeys, setModelKeys] = useState<string[]>(availableModelKeys)
   const [providerPanelOpen, setProviderPanelOpen] = useState(false)
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const verifyAbortRef = useRef<AbortController | null>(null)
   const [spinnerColors, setSpinnerColors] = useState(() => sampleSpinnerColors())
@@ -177,15 +180,18 @@ export function App({
   }, [createRuntime, activeSession, runtime.modelKey])
 
   const {
-    messages,
-    setMessages,
+    staticTranscriptItems,
+    liveItems,
+    recentCompletedToolCall,
+    transcriptGeneration,
+    appendStaticItem,
+    resetTranscript,
     isStreaming,
     spinnerSubText,
     taskSnapshot,
     usage,
     submit,
     interrupt,
-    handleRecord,
     reloadMessages,
   } = useAgentLoop({
     loop: runtime.loop,
@@ -207,7 +213,9 @@ export function App({
     || enterPlan.state.visible
     || askUserQuestion.state.visible
     || providerPanelOpen
+    || modelPickerOpen
     || mode === 'restore'
+  const showSpinner = !isOverlayActive
   const showStoppedTaskList = !isStreaming
     && !isOverlayActive
     && taskSnapshot !== undefined
@@ -221,8 +229,8 @@ export function App({
       content,
       createdAt: new Date().toISOString(),
     }
-    setMessages((prev) => [...prev, systemMsg])
-  }, [setMessages])
+    appendStaticItem(systemMsg)
+  }, [appendStaticItem])
 
   const clearConversation = useCallback(async () => {
     runtime.loop.clearCachedSections()
@@ -232,8 +240,8 @@ export function App({
     setActiveSession(nextSession)
     replaceRuntime(nextRuntime)
     setCheckpoints([])
-    setMessages([])
-  }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, setMessages])
+    resetTranscript([])
+  }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, resetTranscript])
 
   const submitPlainInput = useCallback(async (text: string) => {
     setSpinnerColors(sampleSpinnerColors())
@@ -252,21 +260,18 @@ export function App({
     void submitPlainInput(prompt)
   }, [queuedPromptAfterClear, isStreaming, mode, submitPlainInput])
 
-  const switchModel = useCallback((input: string): SetModelResult => {
-    const modelKey = resolveModelInput(input, runtimeRef.current.modelKey)
-    if (!modelKey || !modelKeys.includes(modelKey)) {
+  const activateModelKey = useCallback((modelKey: string): SetModelResult => {
+    if (!modelKeys.includes(modelKey)) {
       return {
         ok: false,
-        message: input.trim().toLowerCase() === 'inherit'
-          ? '/model inherit is not supported. inherit is only valid in routing/subagent settings.'
-          : `Unknown model or tier: ${input}`,
+        message: `Unknown model: ${modelKey}`,
         availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
       }
     }
 
     try {
       const nextRuntime = createRuntime(modelKey, activeSession)
-      runtime.loop.clearCachedSections()
+      runtimeRef.current.loop.clearCachedSections()
       replaceRuntime(nextRuntime)
       return {
         ok: true,
@@ -283,7 +288,59 @@ export function App({
         availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
       }
     }
-  }, [resolveModelInput, modelKeys, createRuntime, activeSession, runtime.loop, replaceRuntime])
+  }, [modelKeys, createRuntime, activeSession, replaceRuntime])
+
+  const switchModel = useCallback((input: string): SetModelResult => {
+    const modelKey = resolveModelInput(input, runtimeRef.current.modelKey)
+    if (!modelKey) {
+      return {
+        ok: false,
+        message: input.trim().toLowerCase() === 'inherit'
+          ? '/model inherit is not supported. inherit is only valid in routing/subagent settings.'
+          : `Unknown model or tier: ${input}`,
+        availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
+      }
+    }
+    return activateModelKey(modelKey)
+  }, [resolveModelInput, modelKeys, activateModelKey])
+
+  const modelPickerOptions = useMemo(
+    () => buildModelPickerOptions(providerConfig, runtime.modelKey, modelKeys),
+    [providerConfig, runtime.modelKey, modelKeys],
+  )
+
+  const handleModelPickerResolve = useCallback(async (decision: ModelPickerDecision | { action: 'cancel' }) => {
+    setModelPickerOpen(false)
+    if (decision.action === 'cancel') return
+
+    const modelKey = decision.option.modelKey
+    if (!modelKey) {
+      addSystemMessage(`Model tier unavailable: ${decision.option.label}`)
+      return
+    }
+
+    if (decision.action === 'set-default') {
+      try {
+        providerConfig.setDefaultModel(modelKey)
+        await providerConfig.save()
+        setModelKeys(Object.keys(providerConfig.get().models))
+      } catch (error) {
+        addSystemMessage(`Failed to update default model: ${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+    }
+
+    const result = activateModelKey(modelKey)
+    if (!result.ok) {
+      addSystemMessage(result.message)
+      return
+    }
+
+    const message = `Model set to: ${result.model.key} (${result.model.providerName}: ${result.model.model})`
+    addSystemMessage(decision.action === 'set-default'
+      ? `${message}\nDefault model updated.`
+      : message)
+  }, [providerConfig, activateModelKey, addSystemMessage])
 
   const runVerification = useCallback(async (args: string): Promise<string> => {
     setSpinnerColors(sampleSpinnerColors())
@@ -395,13 +452,6 @@ export function App({
     runVerification,
     reloadAgentDefinitions,
     getPermissionMode: () => permissionGate.getMode(),
-    setPermissionMode: (mode) => {
-      const nextMode = mode as PermissionMode
-      const actualMode = nextMode === 'plan'
-        ? applyPermissionModeTransition(permissionGate, runtimeRef.current.planModeManager, 'plan')
-        : (permissionGate.setMode(nextMode), permissionGate.getMode())
-      setPermissionModeState(actualMode)
-    },
     enterPlanMode: () => {
       const mode = applyPermissionModeTransition(permissionGate, runtimeRef.current.planModeManager, 'plan')
       setPermissionModeState(mode)
@@ -409,6 +459,7 @@ export function App({
     readPlanFile: readCurrentPlanFile,
     openPlanFile: openCurrentPlanFile,
     submitQuery: submitPlainInput,
+    openModelPicker: () => setModelPickerOpen(true),
     openProviderPanel: () => setProviderPanelOpen(true),
   })
 
@@ -515,7 +566,7 @@ export function App({
         content: `Conversation restored to "${messagePreview}" (${timestamp}), but file state could not be reverted: ${restoreResult.error}`,
         createdAt: new Date().toISOString(),
       }
-      setMessages((prev) => [...prev, partialMsg])
+      appendStaticItem(partialMsg)
       setMode('idle')
       return
     }
@@ -527,9 +578,9 @@ export function App({
       content: `Restored to "${messagePreview}" (${timestamp})`,
       createdAt: new Date().toISOString(),
     }
-    setMessages((prev) => [...prev, successMsg])
+    appendStaticItem(successMsg)
     setMode('idle')
-  }, [store, activeSession.id, reloadMessages, setMessages])
+  }, [store, activeSession.id, reloadMessages, appendStaticItem])
 
   // Clean up abort timeout when streaming stops
   useEffect(() => {
@@ -539,7 +590,14 @@ export function App({
     }
   }, [isStreaming])
 
-  const { text, cursorPos, hintMessage } = useKeyboardShortcuts({
+  const {
+    text,
+    cursorPos,
+    hintMessage,
+    suggestions,
+    selectedSuggestion,
+    suggestionType,
+  } = useKeyboardShortcuts({
     onSubmit: handleSubmit,
     onInterrupt: handleInterrupt,
     onExit: handleExit,
@@ -547,27 +605,48 @@ export function App({
     onCyclePermissionMode: cyclePermissionMode,
     isStreaming,
     isRestoreMode: mode === 'restore',
-    isPermissionVisible: permState.visible || providerPanelOpen,
+    isPermissionVisible:
+      permState.visible
+      || exitPlan.state.visible
+      || enterPlan.state.visible
+      || askUserQuestion.state.visible
+      || providerPanelOpen
+      || modelPickerOpen,
   })
+  const staticItems: TUIStaticItem[] = [
+    {
+      kind: 'welcome_banner',
+      id: `welcome-${activeSession.id}`,
+      sessionShortId: activeSession.shortId,
+      model: runtime.modelConfig.model,
+      providerName: runtime.providerName,
+      cwd: process.cwd(),
+    },
+    ...staticTranscriptItems,
+  ]
 
   return (
     <Box flexDirection="column" width="100%">
-      {/* Welcome banner (always visible) */}
-      <WelcomeBanner
-        sessionShortId={activeSession.shortId}
-        model={runtime.modelConfig.model}
-        providerName={runtime.providerName}
-        cwd={process.cwd()}
-      />
+      <Static key={transcriptGeneration} items={staticItems}>
+        {(item) => <StaticDisplayItem key={item.id} item={item} />}
+      </Static>
 
       {/* Message list */}
       <MessageList
-        items={messages}
+        items={liveItems}
+        recentCompletedToolCall={recentCompletedToolCall}
         isOverlayActive={isOverlayActive}
       />
 
       {/* Spinner during streaming */}
-      {isStreaming && <Spinner subText={spinnerSubText} taskSnapshot={taskSnapshot} spinnerColors={spinnerColors} />}
+      {isStreaming && (
+        <Spinner
+          subText={spinnerSubText}
+          taskSnapshot={taskSnapshot}
+          spinnerColors={spinnerColors}
+          active={showSpinner}
+        />
+      )}
 
       {showStoppedTaskList && (
         <Box paddingLeft={2}>
@@ -620,8 +699,17 @@ export function App({
         />
       )}
 
+      {modelPickerOpen && (
+        <ModelPickerDialog
+          options={modelPickerOptions}
+          onResolve={(decision) => {
+            void handleModelPickerResolve(decision)
+          }}
+        />
+      )}
+
       {/* Input box (with horizontal lines) */}
-      {mode !== 'restore' && !providerPanelOpen && (
+      {mode !== 'restore' && !providerPanelOpen && !modelPickerOpen && (
         <InputBox
           text={text}
           cursorPos={cursorPos}
@@ -632,8 +720,13 @@ export function App({
             || enterPlan.state.visible
             || askUserQuestion.state.visible
             || providerPanelOpen
+            || modelPickerOpen
           }
         />
+      )}
+
+      {suggestionType === 'command' && suggestions.length > 0 && (
+        <CommandSuggestions suggestions={suggestions} selectedIndex={selectedSuggestion} />
       )}
 
       {/* Status line (below input, no border) */}
@@ -647,6 +740,60 @@ export function App({
       />
     </Box>
   )
+}
+
+const MODEL_PICKER_TIERS: Array<{ tier: Tier; label: string }> = [
+  { tier: 'fast', label: 'Fast' },
+  { tier: 'balanced', label: 'Balanced' },
+  { tier: 'powerful', label: 'Powerful' },
+]
+
+function buildModelPickerOptions(
+  config: ConfigService,
+  currentModelKey: string,
+  knownModelKeys: string[],
+): ModelPickerOption[] {
+  const defaultModelKey = config.resolveModelReference(config.get().defaultModel)
+  return MODEL_PICKER_TIERS.map(({ tier, label }) => {
+    const modelKey = resolveTierModelKey(config, tier, currentModelKey)
+    if (!modelKey || !knownModelKeys.includes(modelKey)) {
+      return {
+        tier,
+        label,
+        disabledReason: 'No configured model resolves for this tier.',
+        isCurrent: false,
+        isDefault: false,
+      }
+    }
+
+    const model = config.getModel(modelKey)
+    if (!model) {
+      return {
+        tier,
+        label,
+        disabledReason: `Configured model "${modelKey}" could not be loaded.`,
+        isCurrent: false,
+        isDefault: false,
+      }
+    }
+
+    return {
+      tier,
+      label,
+      modelKey,
+      providerName: model.provider ?? 'unknown',
+      modelId: model.model,
+      isCurrent: modelKey === currentModelKey,
+      isDefault: modelKey === defaultModelKey,
+    }
+  })
+}
+
+function resolveTierModelKey(config: ConfigService, tier: Tier, currentModelKey: string): string | undefined {
+  const routed = resolveTier(config.getActiveProfile()?.profile, tier)
+  if (routed && config.getModel(routed)) return routed
+  if (currentModelKey && config.getModel(currentModelKey)) return currentModelKey
+  return config.resolveModelReference(config.get().defaultModel)
 }
 
 function buildVerificationTask(records: SessionRecord[], focus: string): string {

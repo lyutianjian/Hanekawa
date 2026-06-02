@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
-import { render } from 'ink'
+import { render } from '../ink.js'
 import { ConfigService } from '../../config/service.js'
 import {
   loadMergedSettings,
@@ -248,6 +248,7 @@ async function main() {
   const permissionGate = new PermissionGate(promptProxy.prompt, permissionRulesFromSettings(settings.permissions), {
     denialStateStore,
     cwd,
+    mode: settings.permissions?.mode ?? 'default',
   })
 
   const contextManagement = config.get().agent.contextManagement

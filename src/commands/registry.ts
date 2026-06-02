@@ -7,13 +7,13 @@ export function registerCommand(def: CommandDefinition): void {
 }
 
 export function getCommand(name: string): CommandDefinition | undefined {
-  return commands.get(name)
+  return commands.get(name) ?? [...commands.values()].find((c) => c.aliases?.includes(name))
 }
 
 export function listCommands(): CommandDefinition[] {
-  return [...commands.values()].filter((c) => c.isEnabled?.() ?? true)
+  return [...commands.values()].filter((c) => (c.isEnabled?.() ?? true) && !c.isHidden)
 }
 
 export function hasCommand(name: string): boolean {
-  return commands.has(name)
+  return getCommand(name) !== undefined
 }

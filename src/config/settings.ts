@@ -4,13 +4,18 @@ import { homedir } from 'node:os'
 import type { AgentConfig, ModelConfig } from './service.js'
 import type { Endpoint, Profile, Routing } from './routing.js'
 import type { HookCommand } from '../harness/hooks.js'
+import type { PermissionMode } from '../harness/permissions.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
 
 export type HookCommandSetting = HookCommand
 export type PreToolUseHookSetting = HookCommandSetting
+export type StartupPermissionMode = Exclude<PermissionMode, 'plan'>
+
+const STARTUP_PERMISSION_MODES: readonly StartupPermissionMode[] = ['default', 'acceptEdits', 'auto', 'bypass']
 
 export interface MyAgentSettings {
   permissions?: {
+    mode?: StartupPermissionMode
     allow?: string[]
     deny?: string[]
     ask?: string[]
@@ -139,7 +144,9 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
     }
 
     if (source.permissions) {
+      const mode = source.permissions.mode ?? result.permissions?.mode
       result.permissions = {
+        ...(mode !== undefined ? { mode } : {}),
         allow: [...(result.permissions?.allow ?? []), ...(source.permissions.allow ?? [])],
         deny: [...(result.permissions?.deny ?? []), ...(source.permissions.deny ?? [])],
         ask: [...(result.permissions?.ask ?? []), ...(source.permissions.ask ?? [])],
@@ -343,6 +350,10 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
 
   if (settings.cache?.ttl1h !== undefined && typeof settings.cache.ttl1h !== 'boolean') {
     errors.push('cache.ttl1h must be a boolean')
+  }
+
+  if (settings.permissions?.mode !== undefined && !STARTUP_PERMISSION_MODES.includes(settings.permissions.mode as StartupPermissionMode)) {
+    errors.push('permissions.mode must be one of: default, acceptEdits, auto, bypass')
   }
 
   for (const name of ['allow', 'deny', 'ask'] as const) {

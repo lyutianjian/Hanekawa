@@ -8,6 +8,11 @@ export const modelCommand: CommandDefinition = {
     const currentModel = context.getModel?.()
 
     if (!args.trim()) {
+      if (context.openModelPicker) {
+        context.openModelPicker()
+        return
+      }
+
       if (!currentModel) {
         context.writeLine('Current model: unknown')
         return

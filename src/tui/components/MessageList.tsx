@@ -1,43 +1,40 @@
 import { useState } from 'react'
 import { Box, Text, useInput } from 'ink'
-import type { TUIDisplayItem } from '../types.js'
+import type { TUIDisplayItem, TUIStaticItem } from '../types.js'
 import { UserMessage } from './UserMessage.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import { ToolCallBlock } from './ToolCallBlock.js'
 import { SubagentTaskBlock } from './SubagentTaskBlock.js'
+import { WelcomeBanner } from './WelcomeBanner.js'
 import { theme } from '../theme.js'
 
 interface MessageListProps {
   items: TUIDisplayItem[]
+  recentCompletedToolCall?: Extract<TUIDisplayItem, { kind: 'tool_call' }> | null
   isOverlayActive?: boolean
 }
 
-export function MessageList({ items, isOverlayActive }: MessageListProps) {
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+export function MessageList({ items, recentCompletedToolCall, isOverlayActive }: MessageListProps) {
+  const [previewToolUseId, setPreviewToolUseId] = useState<string | null>(null)
 
-  // Ctrl+O to toggle expand/collapse of the last completed tool call
-  // Disabled when an overlay (permission dialog, restore mode, etc.) is active
+  // Ctrl+O now shows a live preview for the most recently completed tool call.
+  // Static scrollback stays immutable once it has been printed.
   useInput(
     (input, key) => {
       if (key.ctrl && input === 'o') {
-        const lastToolCall = [...items]
-          .reverse()
-          .find((i) => i.kind === 'tool_call' && i.result)
-        if (lastToolCall) {
-          setExpandedIds((prev) => {
-            const next = new Set(prev)
-            if (next.has(lastToolCall.id)) {
-              next.delete(lastToolCall.id)
-            } else {
-              next.add(lastToolCall.id)
-            }
-            return next
-          })
+        if (recentCompletedToolCall?.result) {
+          setPreviewToolUseId((current) =>
+            current === recentCompletedToolCall.toolUseId ? null : recentCompletedToolCall.toolUseId,
+          )
         }
       }
     },
     { isActive: !isOverlayActive },
   )
+
+  const previewItem = recentCompletedToolCall?.result && previewToolUseId === recentCompletedToolCall.toolUseId
+    ? recentCompletedToolCall
+    : null
 
   return (
     <Box flexDirection="column">
@@ -45,14 +42,20 @@ export function MessageList({ items, isOverlayActive }: MessageListProps) {
         <DisplayItem
           key={item.id}
           item={item}
-          expanded={expandedIds.has(item.id)}
         />
       ))}
+      {previewItem && (
+        <DisplayItem
+          key={`tool-preview-${previewItem.toolUseId}`}
+          item={previewItem}
+          expanded
+        />
+      )}
     </Box>
   )
 }
 
-function DisplayItem({ item, expanded }: { item: TUIDisplayItem; expanded: boolean }) {
+export function DisplayItem({ item, expanded = false }: { item: TUIDisplayItem; expanded?: boolean }) {
   switch (item.kind) {
     case 'user':
       return <UserMessage content={item.content} />
@@ -103,6 +106,21 @@ function DisplayItem({ item, expanded }: { item: TUIDisplayItem; expanded: boole
         </Box>
       )
   }
+}
+
+export function StaticDisplayItem({ item }: { item: TUIStaticItem }) {
+  if (item.kind === 'welcome_banner') {
+    return (
+      <WelcomeBanner
+        sessionShortId={item.sessionShortId}
+        model={item.model}
+        providerName={item.providerName}
+        cwd={item.cwd}
+      />
+    )
+  }
+
+  return <DisplayItem item={item} />
 }
 
 function formatCompactFailure(record: Extract<TUIDisplayItem, { kind: 'compact_attempt_failed' }>['record']): string {

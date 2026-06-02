@@ -207,6 +207,7 @@ interface SpinnerProps {
   subText?: string
   taskSnapshot?: TaskDisplaySnapshot
   spinnerColors?: SpinnerColors
+  active?: boolean
 }
 
 export interface SpinnerColors {
@@ -214,12 +215,15 @@ export interface SpinnerColors {
   shimmerColor: string
 }
 
-export function Spinner({ subText, taskSnapshot, spinnerColors }: SpinnerProps) {
+export function Spinner({ subText, taskSnapshot, spinnerColors, active = true }: SpinnerProps) {
   const [randomVerb] = useState(() => `${sampleSpinnerVerb()}...`)
   const [sampledSpinnerColors] = useState(sampleSpinnerColors)
   const { messageColor, shimmerColor } = spinnerColors ?? sampledSpinnerColors
   const { stdout } = useStdout()
-  const { frame, elapsed, time } = useSpinner()
+  const { frame, elapsed, time } = useSpinner(active)
+
+  if (!active) return null
+
   const hasActiveTool = Boolean(subText)
   const elapsedText = `${elapsed}s`
   const terminalWidth = stdout.columns || 80

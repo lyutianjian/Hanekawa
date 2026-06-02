@@ -9,6 +9,7 @@ import { verifyCommand } from '../src/commands/verify.js'
 import { agentsCommand } from '../src/commands/agents.js'
 import { planCommand } from '../src/commands/plan.js'
 import { providerCommand } from '../src/commands/provider.js'
+import { getCommand, registerBuiltinCommands } from '../src/commands/index.js'
 import type { CommandContext } from '../src/commands/types.js'
 
 function createContext(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -20,6 +21,13 @@ function createContext(overrides: Partial<CommandContext> = {}): CommandContext 
     ...overrides,
   }
 }
+
+test('built-in command registry includes /plan and excludes /bypass', () => {
+  registerBuiltinCommands()
+
+  assert.equal(getCommand('plan')?.name, 'plan')
+  assert.equal(getCommand('bypass'), undefined)
+})
 
 test('/cost reports injected usage and real cost', async () => {
   let output = ''
@@ -126,6 +134,27 @@ test('/model without args shows current model key and provider model id', async 
   assert.match(output, /Name:\s+claude/)
   assert.match(output, /Provider:\s+anthropic/)
   assert.match(output, /Model ID:\s+claude-sonnet-4-20250514/)
+})
+
+test('/model without args opens model picker when available', async () => {
+  let opened = false
+  let output = ''
+  await modelCommand.run('', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+    openModelPicker: () => {
+      opened = true
+    },
+    getModel: () => ({
+      key: 'claude',
+      providerName: 'anthropic',
+      model: 'claude-sonnet-4-20250514',
+    }),
+  }))
+
+  assert.equal(opened, true)
+  assert.equal(output, '')
 })
 
 test('/model with args delegates model switching', async () => {

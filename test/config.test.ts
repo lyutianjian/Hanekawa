@@ -52,7 +52,8 @@ test('ConfigService loads defaults and saves config', async () => {
     const config = service.get()
     assert.ok(config.models)
     assert.ok(config.agent)
-    assert.equal(config.defaultModel, 'anthropic')
+    assert.deepEqual(config.models, {})
+    assert.equal(config.defaultModel, undefined)
     assert.equal(config.fallbackModel, undefined)
     assert.equal(config.compactModel, undefined)
 
@@ -144,7 +145,7 @@ test('ConfigService loads model and agent defaults from merged settings', async 
         },
       },
       defaultModel: 'local',
-      fallbackModel: 'anthropic',
+      fallbackModel: 'local',
       compactModel: 'local',
       agent: {
         system: 'settings system',
@@ -156,8 +157,9 @@ test('ConfigService loads model and agent defaults from merged settings', async 
 
     const config = service.get()
     assert.equal(config.defaultModel, 'local')
-    assert.equal(config.fallbackModel, 'anthropic')
+    assert.equal(config.fallbackModel, 'local')
     assert.equal(config.compactModel, 'local')
+    assert.deepEqual(Object.keys(config.models), ['local'])
     assert.equal(config.models.local?.model, 'gpt-local')
     assert.equal(config.agent.system, 'settings system')
     assert.equal(config.agent.contextManagement?.contextWindow, 12345)
@@ -198,8 +200,8 @@ test('ConfigService gives config.json priority over settings config fields', asy
         },
       },
       defaultModel: 'settingsModel',
-      fallbackModel: 'anthropic',
-      compactModel: 'anthropic',
+      fallbackModel: 'settingsModel',
+      compactModel: 'settingsModel',
       agent: {
         system: 'settings system',
         contextManagement: {
@@ -215,9 +217,40 @@ test('ConfigService gives config.json priority over settings config fields', asy
     assert.equal(config.compactModel, 'settingsModel')
     assert.equal(config.models.settingsModel?.model, 'gpt-settings')
     assert.equal(config.models.configModel?.model, 'claude-config')
+    assert.deepEqual(Object.keys(config.models).sort(), ['configModel', 'settingsModel'])
     assert.equal(config.agent.system, 'config system')
     assert.equal(config.agent.contextManagement?.contextWindow, 999)
     assert.equal(config.agent.contextManagement?.summaryOutputTokens, 111)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService does not inject built-in Anthropic model when models are configured', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    await mkdir(path.join(dir, '.myagent'), { recursive: true })
+    const configPath = path.join(dir, '.myagent', 'config.json')
+    await writeFile(configPath, JSON.stringify({
+      models: {
+        local: {
+          provider: 'openai',
+          model: 'gpt-local',
+        },
+      },
+      defaultModel: 'local',
+    }), 'utf8')
+
+    const service = new ConfigService(dir)
+    await service.load()
+
+    assert.deepEqual(Object.keys(service.get().models), ['local'])
+    assert.equal(service.get().models.anthropic, undefined)
+
+    await service.save()
+    const saved = JSON.parse(await readFile(configPath, 'utf8')) as { models?: Record<string, unknown> }
+    assert.deepEqual(Object.keys(saved.models ?? {}), ['local'])
+    assert.equal(saved.models?.anthropic, undefined)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -339,6 +372,7 @@ test('validateSettings ignores legacy permission mode settings', () => {
 test('validateSettings accepts permission rule arrays', () => {
   const result = validateSettings({
     permissions: {
+      mode: 'bypass',
       allow: ['Read', 'Bash:*npm test*'],
       deny: ['Delete'],
       ask: ['Write:src/**'],
@@ -347,6 +381,26 @@ test('validateSettings accepts permission rule arrays', () => {
 
   assert.equal(result.valid, true)
   assert.deepEqual(result.errors, [])
+})
+
+test('validateSettings rejects invalid startup permission mode', () => {
+  const result = validateSettings({
+    permissions: {
+      mode: 'plan',
+    },
+  } as never)
+
+  assert.equal(result.valid, false)
+  assert.match(result.errors.join('\n'), /permissions\.mode/)
+
+  const unknown = validateSettings({
+    permissions: {
+      mode: 'accept-edits',
+    },
+  } as never)
+
+  assert.equal(unknown.valid, false)
+  assert.match(unknown.errors.join('\n'), /permissions\.mode/)
 })
 
 test('validateSettings rejects malformed permission rule arrays', () => {
@@ -432,6 +486,37 @@ test('loadMergedSettings ignores legacy permissionMode from local settings', asy
     const settings = await loadMergedSettings(dir)
     assert.equal(settings.defaultModel, 'local')
     assert.equal((settings as { permissionMode?: unknown }).permissionMode, undefined)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('loadMergedSettings merges permission rules and overrides startup mode', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-settings-'))
+  try {
+    await mkdir(path.join(dir, '.myagent'), { recursive: true })
+    await writeFile(path.join(dir, '.myagent', 'settings.json'), JSON.stringify({
+      permissions: {
+        mode: 'auto',
+        allow: ['Read'],
+        deny: ['Delete'],
+      },
+    }), 'utf8')
+    await writeFile(path.join(dir, '.myagent', 'settings.local.json'), JSON.stringify({
+      permissions: {
+        mode: 'bypass',
+        allow: ['Grep'],
+        ask: ['Write:src/**'],
+      },
+    }), 'utf8')
+
+    const settings = await loadMergedSettings(dir)
+    assert.deepEqual(settings.permissions, {
+      mode: 'bypass',
+      allow: ['Read', 'Grep'],
+      deny: ['Delete'],
+      ask: ['Write:src/**'],
+    })
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

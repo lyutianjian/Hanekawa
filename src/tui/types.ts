@@ -76,6 +76,17 @@ export type TUIDisplayItem =
       createdAt: string
     }
 
+export type TUIStaticItem =
+  | {
+      kind: 'welcome_banner'
+      id: string
+      sessionShortId: string
+      model: string
+      providerName: string
+      cwd: string
+    }
+  | TUIDisplayItem
+
 export interface PermissionDialogState {
   visible: boolean
   requests: PermissionDialogRequest[]

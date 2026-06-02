@@ -2,7 +2,7 @@ import type { PermissionGate, PermissionMode } from '../harness/permissions.js'
 import type { PlanModeManager } from '../harness/planModeManager.js'
 
 // Tab cycle order. Excludes 'bypass' on purpose: bypass is a high-risk mode
-// and must be enabled explicitly via the /bypass command, not by tabbing
+// and must be enabled explicitly at startup through settings, not by tabbing
 // through the cycle.
 export const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto']
 

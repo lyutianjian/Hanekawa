@@ -1,22 +1,15 @@
 import process from 'node:process'
-import React, { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef } from 'react'
-import { render as inkRender, useBoxMetrics } from 'ink'
+import React, { useCallback, useContext, useEffect, useRef } from 'react'
+import { render as inkRender } from 'ink'
 import type { DOMElement, Instance, RenderOptions } from 'ink'
-import { CursorParkingController, type CursorTarget } from './cursorParking.js'
+// @ts-ignore - Ink exposes cursor positioning only through this internal context.
+import CursorContext from '../../node_modules/ink/build/components/CursorContext.js'
+// @ts-ignore - Ink's public surface does not expose layout listeners.
+import { addLayoutListener } from '../../node_modules/ink/build/dom.js'
+import { CursorParkingController } from './cursorParking.js'
 
 export * from 'ink'
 export type * from 'ink'
-
-type CursorDeclaration = CursorTarget & {
-  node: DOMElement
-}
-
-type CursorDeclarationSetter = (
-  declaration: CursorDeclaration | null,
-  clearIfNode?: DOMElement | null,
-) => void
-
-const CursorDeclarationContext = createContext<CursorDeclarationSetter>(() => {})
 
 export function useDeclaredCursor({
   line,
@@ -27,32 +20,53 @@ export function useDeclaredCursor({
   column: number
   active: boolean
 }): (node: DOMElement | null) => void {
-  const setCursorDeclaration = useContext(CursorDeclarationContext)
+  const cursorContext = useContext(CursorContext)
   const nodeRef = useRef<DOMElement | null>(null)
-  const metrics = useBoxMetrics(nodeRef)
+  const cleanupRef = useRef<(() => void) | null>(null)
+  const latestRef = useRef({ line, column, active })
+  latestRef.current = { line, column, active }
+
+  const syncCursor = useCallback(() => {
+    const node = nodeRef.current
+    const latest = latestRef.current
+    if (!latest.active || !node) {
+      cursorContext.setCursorPosition(undefined)
+      return
+    }
+
+    const offset = absoluteLayoutOffset(node)
+    cursorContext.setCursorPosition({
+      x: offset.x + Math.max(0, latest.column),
+      y: offset.y + Math.max(0, latest.line),
+    })
+  }, [cursorContext])
 
   const setNode = useCallback((node: DOMElement | null) => {
+    cleanupRef.current?.()
+    cleanupRef.current = null
     nodeRef.current = node
-  }, [])
 
-  useLayoutEffect(() => {
-    const node = nodeRef.current
-    if (active && node && metrics.hasMeasured) {
-      setCursorDeclaration({
-        x: metrics.left + Math.max(0, column),
-        y: metrics.top + Math.max(0, line),
-        node,
-      })
-    } else {
-      setCursorDeclaration(null, node)
+    if (!node) {
+      cursorContext.setCursorPosition(undefined)
+      return
     }
-  })
 
-  useLayoutEffect(() => {
+    const root = findRootNode(node)
+    if (!root) {
+      cursorContext.setCursorPosition(undefined)
+      return
+    }
+
+    cleanupRef.current = addLayoutListener(root, syncCursor)
+  }, [cursorContext, syncCursor])
+
+  useEffect(() => {
     return () => {
-      setCursorDeclaration(null, nodeRef.current)
+      cursorContext.setCursorPosition(undefined)
+      cleanupRef.current?.()
+      cleanupRef.current = null
     }
-  }, [setCursorDeclaration])
+  }, [cursorContext])
 
   return setNode
 }
@@ -62,25 +76,19 @@ export function render(node: React.ReactNode, options?: NodeJS.WriteStream | Ren
   const controller = new CursorParkingController(stdout)
   controller.patch()
 
-  const wrappedNode = (
-    <CursorDeclarationProvider controller={controller}>
-      {node}
-    </CursorDeclarationProvider>
-  )
-  const instance = inkRender(wrappedNode, options)
+  const instance = inkRender(node, options)
 
   return {
     ...instance,
     rerender(nextNode: React.ReactNode) {
-      instance.rerender(
-        <CursorDeclarationProvider controller={controller}>
-          {nextNode}
-        </CursorDeclarationProvider>,
-      )
+      instance.rerender(nextNode)
     },
     unmount(error?: Error) {
-      controller.unpatch()
-      instance.unmount(error)
+      try {
+        instance.unmount(error)
+      } finally {
+        controller.unpatch()
+      }
     },
     async waitUntilExit() {
       try {
@@ -90,41 +98,13 @@ export function render(node: React.ReactNode, options?: NodeJS.WriteStream | Ren
       }
     },
     cleanup() {
-      controller.unpatch()
-      instance.cleanup()
+      try {
+        instance.cleanup()
+      } finally {
+        controller.unpatch()
+      }
     },
   }
-}
-
-function CursorDeclarationProvider({
-  controller,
-  children,
-}: {
-  controller: CursorParkingController
-  children: React.ReactNode
-}) {
-  const activeNodeRef = useRef<DOMElement | null>(null)
-  const setDeclaration = useCallback<CursorDeclarationSetter>((declaration, clearIfNode) => {
-    if (declaration) {
-      activeNodeRef.current = declaration.node
-      controller.setTarget(declaration)
-      return
-    }
-
-    if (clearIfNode !== undefined && activeNodeRef.current !== clearIfNode) {
-      return
-    }
-
-    activeNodeRef.current = null
-    controller.setTarget(null)
-  }, [controller])
-  const value = useMemo(() => setDeclaration, [setDeclaration])
-
-  return (
-    <CursorDeclarationContext.Provider value={value}>
-      {children}
-    </CursorDeclarationContext.Provider>
-  )
 }
 
 function resolveStdout(options?: NodeJS.WriteStream | RenderOptions): NodeJS.WriteStream {
@@ -132,4 +112,27 @@ function resolveStdout(options?: NodeJS.WriteStream | RenderOptions): NodeJS.Wri
     return options as NodeJS.WriteStream
   }
   return (options as RenderOptions | undefined)?.stdout ?? process.stdout
+}
+
+function findRootNode(node: DOMElement): DOMElement | null {
+  let current: DOMElement | undefined = node
+  while (current.parentNode) {
+    current = current.parentNode
+  }
+  return current.nodeName === 'ink-root' ? current : null
+}
+
+function absoluteLayoutOffset(node: DOMElement): { x: number; y: number } {
+  let x = 0
+  let y = 0
+  let current: DOMElement | undefined = node
+
+  while (current && current.nodeName !== 'ink-root') {
+    const layout = current.yogaNode?.getComputedLayout()
+    x += layout?.left ?? 0
+    y += layout?.top ?? 0
+    current = current.parentNode
+  }
+
+  return { x, y }
 }

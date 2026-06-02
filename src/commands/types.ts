@@ -3,7 +3,9 @@ import type { SessionRecord } from '../harness/types.js'
 export interface CommandDefinition {
   name: string
   description: string
+  aliases?: string[]
   argumentHint?: string
+  isHidden?: boolean
   isEnabled?: () => boolean
   run: (args: string, context: CommandContext) => Promise<string | void>
 }
@@ -65,10 +67,10 @@ export interface CommandContext {
   getSessionMetricsSummary?: () => Promise<CommandSessionMetricsSummary | null>
   getModel?: () => CommandModelInfo
   setModel?: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
+  openModelPicker?: () => void
   runVerification?: (args: string) => Promise<string>
   reloadAgentDefinitions?: () => Promise<number>
   getPermissionMode?: () => string
-  setPermissionMode?: (mode: string) => void | Promise<void>
   enterPlanMode?: () => void | Promise<void>
   readPlanFile?: () => Promise<{ path: string; content: string | null }>
   openPlanFile?: () => Promise<{ message: string }>

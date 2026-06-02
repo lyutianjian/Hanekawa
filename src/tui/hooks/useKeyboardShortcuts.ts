@@ -2,6 +2,13 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useInput as useInkInput, type Key } from 'ink'
 import { DoubleTapDetector } from '../utils/doubleTapDetector.js'
 import { loadKeybindingsConfig } from '../../config/keybindings.js'
+import { listCommands } from '../../commands/index.js'
+import {
+  applyCommandSuggestion,
+  generateCommandSuggestions,
+  type CommandSuggestion,
+} from '../suggestions/commandSuggestions.js'
+import type { SuggestionType } from '../suggestions/types.js'
 
 export interface KeyboardShortcutOptions {
   onSubmit: (text: string) => void
@@ -42,6 +49,9 @@ export interface KeyboardShortcutState {
   text: string
   cursorPos: number
   hintMessage: string | null
+  suggestions: CommandSuggestion[]
+  selectedSuggestion: number
+  suggestionType: SuggestionType
   setText: (text: string) => void
   setCursorPos: (pos: number) => void
 }
@@ -63,6 +73,9 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
   const [text, setText] = useState('')
   const [cursorPos, setCursorPos] = useState(0)
   const [hintMessage, setHintMessage] = useState<string | null>(null)
+  const [suggestions, setSuggestions] = useState<CommandSuggestion[]>([])
+  const [selectedSuggestion, setSelectedSuggestion] = useState(-1)
+  const [suggestionType, setSuggestionType] = useState<SuggestionType>('none')
 
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const escapeDetectorRef = useRef<DoubleTapDetector | null>(null)
@@ -108,6 +121,32 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     }, HINT_TIMEOUT_MS)
   }, [])
 
+  const clearSuggestions = useCallback(() => {
+    setSuggestions([])
+    setSelectedSuggestion(-1)
+    setSuggestionType('none')
+  }, [])
+
+  const refreshSuggestions = useCallback((value: string) => {
+    if (isStreaming || shouldIgnoreShortcutInput({ isPermissionVisible, isRestoreMode })) {
+      clearSuggestions()
+      return
+    }
+
+    const nextSuggestions = generateCommandSuggestions(value, listCommands())
+    setSuggestions(nextSuggestions)
+    setSelectedSuggestion((current) => {
+      if (nextSuggestions.length === 0) return -1
+      if (current < 0) return 0
+      return Math.min(current, nextSuggestions.length - 1)
+    })
+    setSuggestionType(nextSuggestions.length > 0 ? 'command' : 'none')
+  }, [clearSuggestions, isPermissionVisible, isRestoreMode, isStreaming])
+
+  useEffect(() => {
+    refreshSuggestions(text)
+  }, [text, cursorPos, refreshSuggestions])
+
   const handleInput = useCallback(
     (input: string, key: Key) => {
       // Don't handle input while a modal overlay (restore mode or permission
@@ -124,8 +163,52 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
         return
       }
 
-      // Plain Tab is reserved for future input features and should not insert
-      // a literal tab into the prompt.
+      const hasActiveSuggestion = suggestionType === 'command' && suggestions.length > 0
+
+      if (hasActiveSuggestion && key.escape && !isStreaming) {
+        clearSuggestions()
+        return
+      }
+
+      if (hasActiveSuggestion && key.upArrow) {
+        setSelectedSuggestion((current) => (
+          current <= 0 ? suggestions.length - 1 : current - 1
+        ))
+        return
+      }
+
+      if (hasActiveSuggestion && key.downArrow) {
+        setSelectedSuggestion((current) => (
+          current >= suggestions.length - 1 ? 0 : current + 1
+        ))
+        return
+      }
+
+      if (hasActiveSuggestion && key.tab) {
+        const suggestion = suggestions[selectedSuggestion < 0 ? 0 : selectedSuggestion]
+        if (suggestion) {
+          const applied = applyCommandSuggestion(suggestion)
+          setText(applied.text)
+          setCursorPos(applied.cursorPos)
+          clearSuggestions()
+        }
+        return
+      }
+
+      if (hasActiveSuggestion && key.return) {
+        const suggestion = suggestions[selectedSuggestion < 0 ? 0 : selectedSuggestion]
+        if (suggestion) {
+          const applied = applyCommandSuggestion(suggestion)
+          onSubmit(applied.text.trim())
+          setText('')
+          setCursorPos(0)
+          clearSuggestions()
+        }
+        return
+      }
+
+      // Plain Tab is reserved for autocomplete and should not insert a
+      // literal tab into the prompt.
       if (key.tab) {
         return
       }
@@ -146,6 +229,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
           if (result === 'double') {
             setText('')
             setCursorPos(0)
+            clearSuggestions()
           }
           return
         }
@@ -168,6 +252,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
           ctrlCDetectorRef.current?.cancel()
           setText('')
           setCursorPos(0)
+          clearSuggestions()
           showHint('Input cleared. Press Ctrl+C twice to exit')
           return
         }
@@ -187,6 +272,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
         if (!isStreaming) {
           setText('')
           setCursorPos(0)
+          clearSuggestions()
           showHint('Press Ctrl+C again to exit')
         }
         return
@@ -199,6 +285,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
           onSubmit(trimmed)
           setText('')
           setCursorPos(0)
+          clearSuggestions()
         }
         return
       }
@@ -276,10 +363,19 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
         setCursorPos(cursorPos + input.length)
       }
     },
-    [text, cursorPos, isStreaming, isRestoreMode, isPermissionVisible, hintMessage, onSubmit, onInterrupt, onExit, onEnterRestoreMode, onCyclePermissionMode, clearHint, showHint],
+    [text, cursorPos, isStreaming, isRestoreMode, isPermissionVisible, hintMessage, onSubmit, onInterrupt, onExit, onEnterRestoreMode, onCyclePermissionMode, clearHint, showHint, suggestionType, suggestions, selectedSuggestion, clearSuggestions],
   )
 
   useInkInput(handleInput, { isActive: !shouldIgnoreShortcutInput({ isPermissionVisible, isRestoreMode }) })
 
-  return { text, cursorPos, hintMessage, setText, setCursorPos }
+  return {
+    text,
+    cursorPos,
+    hintMessage,
+    suggestions,
+    selectedSuggestion,
+    suggestionType,
+    setText,
+    setCursorPos,
+  }
 }

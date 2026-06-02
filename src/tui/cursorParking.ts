@@ -8,18 +8,13 @@ type WritableStdout = NodeJS.WriteStream & {
 }
 
 const SHOW_CURSOR = '\x1B[?25h'
+const HIDE_CURSOR = '\x1B[?25l'
 
 export class CursorParkingController {
   private originalWrite: NodeJS.WriteStream['write'] | undefined
-  private target: CursorTarget | null = null
-  private parked: CursorTarget | null = null
   private writing = false
 
   constructor(private readonly stdout: WritableStdout) {}
-
-  setTarget(target: CursorTarget | null): void {
-    this.target = target ? this.clampTarget(target) : null
-  }
 
   patch(): void {
     if (this.originalWrite || this.stdout.isTTY === false) return
@@ -37,19 +32,15 @@ export class CursorParkingController {
   }
 
   unpatch(): void {
-    this.restoreCursor()
     if (!this.originalWrite) return
+    this.originalWrite.call(this.stdout, SHOW_CURSOR)
     this.stdout.write = this.originalWrite
     this.originalWrite = undefined
   }
 
   restoreCursor(): void {
-    if (!this.originalWrite || !this.parked) return
-    const restore = moveFromTargetToBottom(this.parked, this.bottomLine())
-    this.parked = null
-    if (restore) {
-      this.originalWrite.call(this.stdout, restore)
-    }
+    if (!this.originalWrite) return
+    this.originalWrite.call(this.stdout, SHOW_CURSOR)
   }
 
   private write(
@@ -72,46 +63,12 @@ export class CursorParkingController {
 
     this.writing = true
     try {
-      const showsCursor = text.includes(SHOW_CURSOR)
-      if (showsCursor) {
-        this.target = null
-      }
-
-      const bottomLine = this.bottomLine()
-      const prefix = this.parked ? moveFromTargetToBottom(this.parked, bottomLine) : ''
-      this.parked = null
-
-      const target = showsCursor ? null : this.target
-      const suffix = target ? moveFromBottomToTarget(target, bottomLine) : ''
-      if (target) {
-        this.parked = target
-      }
-
-      const nextChunk = prefix || suffix ? prefix + text + suffix : chunk
+      const nextChunk = text.includes(SHOW_CURSOR)
+        ? text.replaceAll(SHOW_CURSOR, HIDE_CURSOR)
+        : chunk
       return this.originalWrite.call(this.stdout, nextChunk, encodingOrCallback as BufferEncoding, callback)
     } finally {
       this.writing = false
-    }
-  }
-
-  private bottomLine(): number {
-    const rows = Number.isFinite(this.stdout.rows) && this.stdout.rows > 0
-      ? Math.floor(this.stdout.rows)
-      : 24
-    return Math.max(1, rows)
-  }
-
-  private terminalColumns(): number {
-    const columns = Number.isFinite(this.stdout.columns) && this.stdout.columns > 0
-      ? Math.floor(this.stdout.columns)
-      : 80
-    return Math.max(1, columns)
-  }
-
-  private clampTarget(target: CursorTarget): CursorTarget {
-    return {
-      x: clamp(Math.floor(target.x), 0, this.terminalColumns() - 1),
-      y: clamp(Math.floor(target.y), 0, this.bottomLine() - 1),
     }
   }
 }

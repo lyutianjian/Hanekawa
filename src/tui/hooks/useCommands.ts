@@ -30,11 +30,11 @@ interface UseCommandsOptions {
   runVerification?: (args: string) => Promise<string>
   reloadAgentDefinitions?: () => Promise<number>
   getPermissionMode?: () => string
-  setPermissionMode?: (mode: string) => void | Promise<void>
   enterPlanMode?: () => void | Promise<void>
   readPlanFile?: () => Promise<{ path: string; content: string | null }>
   openPlanFile?: () => Promise<{ message: string }>
   submitQuery?: (input: string) => Promise<void>
+  openModelPicker?: () => void
   openProviderPanel?: () => void
 }
 
@@ -53,11 +53,11 @@ export function useCommands({
   runVerification,
   reloadAgentDefinitions,
   getPermissionMode,
-  setPermissionMode,
   enterPlanMode,
   readPlanFile,
   openPlanFile,
   submitQuery,
+  openModelPicker,
   openProviderPanel,
 }: UseCommandsOptions) {
   const { exit } = useApp()
@@ -96,8 +96,6 @@ export function useCommands({
   reloadAgentDefinitionsRef.current = reloadAgentDefinitions
   const getPermissionModeRef = useRef(getPermissionMode)
   getPermissionModeRef.current = getPermissionMode
-  const setPermissionModeRef = useRef(setPermissionMode)
-  setPermissionModeRef.current = setPermissionMode
   const enterPlanModeRef = useRef(enterPlanMode)
   enterPlanModeRef.current = enterPlanMode
   const readPlanFileRef = useRef(readPlanFile)
@@ -106,6 +104,8 @@ export function useCommands({
   openPlanFileRef.current = openPlanFile
   const submitQueryRef = useRef(submitQuery)
   submitQueryRef.current = submitQuery
+  const openModelPickerRef = useRef(openModelPicker)
+  openModelPickerRef.current = openModelPicker
   const openProviderPanelRef = useRef(openProviderPanel)
   openProviderPanelRef.current = openProviderPanel
   const storeRef = useRef(store)
@@ -163,11 +163,11 @@ export function useCommands({
         runVerification: runVerificationRef.current,
         reloadAgentDefinitions: reloadAgentDefinitionsRef.current,
         getPermissionMode: getPermissionModeRef.current,
-        setPermissionMode: setPermissionModeRef.current,
         enterPlanMode: enterPlanModeRef.current,
         readPlanFile: readPlanFileRef.current,
         openPlanFile: openPlanFileRef.current,
         submitQuery: submitQueryRef.current,
+        openModelPicker: openModelPickerRef.current,
         openProviderPanel: openProviderPanelRef.current,
         listSubagentTasks: async () => listLatestSubagentTasks(storeRef.current, sessionRef.current.id),
         getSubagentDetails: async (agentIdOrPrefix) => getSubagentDetails(

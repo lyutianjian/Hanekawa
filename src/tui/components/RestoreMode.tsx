@@ -98,7 +98,7 @@ export function RestoreMode({ checkpoints, onSelect, onCancel }: RestoreModeProp
         <Box flexDirection="column" marginTop={1}>
           {sorted.map((checkpoint, index) => (
             <CheckpointEntry
-              key={checkpoint.commitHash}
+              key={getCheckpointRenderKey(checkpoint)}
               checkpoint={checkpoint}
               isSelected={index === selectedIndex}
             />
@@ -111,6 +111,10 @@ export function RestoreMode({ checkpoints, onSelect, onCancel }: RestoreModeProp
       </Box>
     </Box>
   )
+}
+
+export function getCheckpointRenderKey(checkpoint: Pick<Checkpoint, 'messageId'>): string {
+  return checkpoint.messageId
 }
 
 interface CheckpointEntryProps {

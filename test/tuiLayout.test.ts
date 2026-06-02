@@ -110,6 +110,16 @@ describe('TUI layout helpers', () => {
     assert.ok(window.cursorVisibleLine < window.visibleLines.length)
   })
 
+  it('computes cursor display columns with CJK character widths', () => {
+    const window = buildInputWindow({
+      text: '你做s',
+      cursorPos: 3,
+      inputWidth: 20,
+    })
+
+    assert.equal(window.cursorDisplayCol, 5)
+  })
+
   it('reserves one terminal column to avoid autowrap at the edge', () => {
     assert.equal(getSafeTerminalWidth(80), 79)
     assert.equal(getSafeTerminalWidth(1), 1)

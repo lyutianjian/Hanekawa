@@ -8,6 +8,8 @@ import { Spinner } from '../src/tui/components/Spinner.js'
 import { AskUserQuestionDialog } from '../src/tui/components/AskUserQuestionDialog.js'
 import { ExitPlanModeDialog } from '../src/tui/components/ExitPlanModeDialog.js'
 import { PermissionDialog } from '../src/tui/components/PermissionDialog.js'
+import { ModelPickerDialog, type ModelPickerDecision, type ModelPickerOption } from '../src/tui/components/ModelPickerDialog.js'
+import { MessageList, StaticDisplayItem } from '../src/tui/components/MessageList.js'
 import type { PermissionDecisionSource, PermissionRequest, PermissionRule } from '../src/harness/permissions.js'
 import type { TaskDisplaySnapshot } from '../src/harness/types.js'
 import type { RiskLevel, Tool, ToolResult } from '../src/harness/types.js'
@@ -164,6 +166,107 @@ test('AskUserQuestionDialog renders preview pane for single-select preview quest
   assert.match(frame, /Other/)
 })
 
+test('ModelPickerDialog renders tier options and hints', () => {
+  const frame = render(h(ModelPickerDialog, {
+    options: modelPickerOptions(),
+    onResolve: () => {},
+  })).lastFrame() ?? ''
+
+  assert.match(frame, /Select model/)
+  assert.match(frame, /1\. Fast/)
+  assert.match(frame, /fast-key \(openai: fast-id\)/)
+  assert.match(frame, /2\. Balanced/)
+  assert.match(frame, /balanced-key \(anthropic: balanced-id\)/)
+  assert.match(frame, /default/)
+  assert.match(frame, /current/)
+  assert.match(frame, /3\. Powerful/)
+  assert.match(frame, /Enter to set as default/)
+  assert.match(frame, /s to use this session only/)
+})
+
+test('ModelPickerDialog resolves Enter as default and s as session-only', async () => {
+  const decisions: Array<ModelPickerDecision | { action: 'cancel' }> = []
+  const enterInstance = render(h(ModelPickerDialog, {
+    options: modelPickerOptions(),
+    onResolve: (decision) => decisions.push(decision),
+  }))
+
+  enterInstance.stdin.write('\r')
+  await waitForInk()
+
+  assert.equal(decisions[0]?.action, 'set-default')
+  assert.equal(decisions[0]?.action === 'set-default' ? decisions[0].option.tier : '', 'fast')
+
+  cleanup()
+  const sessionInstance = render(h(ModelPickerDialog, {
+    options: modelPickerOptions(),
+    onResolve: (decision) => decisions.push(decision),
+  }))
+
+  sessionInstance.stdin.write('s')
+  await waitForInk()
+
+  assert.equal(decisions[1]?.action, 'session-only')
+  assert.equal(decisions[1]?.action === 'session-only' ? decisions[1].option.tier : '', 'fast')
+})
+
+test('ModelPickerDialog supports arrows, numeric selection, Esc, and disabled rows', async () => {
+  const decisions: Array<ModelPickerDecision | { action: 'cancel' }> = []
+  const numericInstance = render(h(ModelPickerDialog, {
+    options: modelPickerOptions(),
+    onResolve: (decision) => decisions.push(decision),
+  }))
+
+  numericInstance.stdin.write('2')
+  await waitForInk()
+  numericInstance.stdin.write('\r')
+  await waitForInk()
+
+  assert.equal(decisions[0]?.action, 'set-default')
+  assert.equal(decisions[0]?.action === 'set-default' ? decisions[0].option.tier : '', 'balanced')
+
+  cleanup()
+  const arrowInstance = render(h(ModelPickerDialog, {
+    options: modelPickerOptions(),
+    onResolve: (decision) => decisions.push(decision),
+  }))
+
+  arrowInstance.stdin.write('\x1B[B')
+  await waitForInk()
+  arrowInstance.stdin.write('s')
+  await waitForInk()
+
+  assert.equal(decisions[1]?.action, 'session-only')
+  assert.equal(decisions[1]?.action === 'session-only' ? decisions[1].option.tier : '', 'balanced')
+
+  cleanup()
+  const cancelInstance = render(h(ModelPickerDialog, {
+    options: modelPickerOptions(),
+    onResolve: (decision) => decisions.push(decision),
+  }))
+
+  cancelInstance.stdin.write('\x1B')
+  await waitForEscape()
+
+  assert.equal(decisions[2]?.action, 'cancel')
+
+  cleanup()
+  const disabledInstance = render(h(ModelPickerDialog, {
+    options: modelPickerOptions().map((option) => ({
+      ...option,
+      modelKey: undefined,
+      disabledReason: 'No configured model resolves for this tier.',
+    })),
+    onResolve: (decision) => decisions.push(decision),
+  }))
+
+  disabledInstance.stdin.write('\r')
+  disabledInstance.stdin.write('s')
+  await waitForInk()
+
+  assert.equal(decisions.length, 3)
+})
+
 test('ExitPlanModeDialog renders Claude-style approval choices', () => {
   const planContent = [
     '## Context',
@@ -242,6 +345,88 @@ test('PermissionDialog renders pending count without expanding full queue', () =
   assert.doesNotMatch(frame, /1\. Bash/)
   assert.doesNotMatch(frame, /3\. Agent/)
 })
+
+test('MessageList shows recent completed tool detail as a live Ctrl+O preview', async () => {
+  const recent: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
+    kind: 'tool_call',
+    id: 'tool-1',
+    toolUseId: 'call-1',
+    tool: 'Read',
+    input: { filePath: 'a.txt' },
+    status: 'done',
+    result: ['one', 'two', 'three', 'four'].join('\n'),
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }
+
+  const instance = render(h(MessageList, {
+    items: [],
+    recentCompletedToolCall: recent,
+    isOverlayActive: false,
+  }))
+
+  assert.doesNotMatch(instance.lastFrame() ?? '', /four/)
+  instance.stdin.write('\x0f')
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.match(instance.lastFrame() ?? '', /four/)
+})
+
+test('StaticDisplayItem renders welcome banner as a static header item', () => {
+  const frame = render(h(StaticDisplayItem, {
+    item: {
+      kind: 'welcome_banner',
+      id: 'welcome-session',
+      sessionShortId: 'abc123',
+      model: 'mimo-v2.5',
+      providerName: 'anthropic',
+      cwd: 'C:\\repo',
+    },
+  })).lastFrame() ?? ''
+
+  assert.match(frame, /Welcome to Hanekawa|Hanekawa/)
+  assert.match(frame, /abc123/)
+  assert.match(frame, /mimo-v2\.5/)
+})
+
+function modelPickerOptions(): ModelPickerOption[] {
+  return [
+    {
+      tier: 'fast',
+      label: 'Fast',
+      modelKey: 'fast-key',
+      providerName: 'openai',
+      modelId: 'fast-id',
+      isCurrent: false,
+      isDefault: false,
+    },
+    {
+      tier: 'balanced',
+      label: 'Balanced',
+      modelKey: 'balanced-key',
+      providerName: 'anthropic',
+      modelId: 'balanced-id',
+      isCurrent: true,
+      isDefault: true,
+    },
+    {
+      tier: 'powerful',
+      label: 'Powerful',
+      modelKey: 'powerful-key',
+      providerName: 'openai',
+      modelId: 'powerful-id',
+      isCurrent: false,
+      isDefault: false,
+    },
+  ]
+}
+
+async function waitForInk(): Promise<void> {
+  await new Promise((resolve) => setImmediate(resolve))
+}
+
+async function waitForEscape(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 120))
+}
 
 function renderPermission(permState: PermissionDialogState): string {
   return render(h(PermissionDialog, {

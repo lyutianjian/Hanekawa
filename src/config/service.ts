@@ -51,13 +51,7 @@ export interface Config {
 }
 
 const DEFAULT_CONFIG: Config = {
-  models: {
-    anthropic: {
-      provider: 'anthropic',
-      model: 'claude-opus-4-7',
-    },
-  },
-  defaultModel: 'anthropic',
+  models: {},
   agent: {
     contextManagement: {
       contextWindow: 200_000,

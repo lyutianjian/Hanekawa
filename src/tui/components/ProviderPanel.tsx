@@ -80,7 +80,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
 
   // Items are recomputed on every render. config.get() returns the same Config
   // object reference even after mutations, so we cannot rely on referential
-  // equality for memoization 鈥?instead we accept the O(n) cost (n is small)
+  // equality for memoization -- instead we accept the O(n) cost (n is small)
   // and let React re-render on form / tab / status changes that always
   // accompany config mutations.
   const cfg = config.get()
@@ -120,7 +120,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
     }
   }
 
-  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ input routing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  // ---------- input routing ----------
 
   useInput((input, key) => {
     if (form.kind === 'busy') return
@@ -352,7 +352,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
     }
   }
 
-  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ form input handling 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  // ---------- form input handling ----------
 
   function handleFormInput(input: string, key: InkKey) {
     if (key.escape) {
@@ -484,7 +484,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
     }
   }
 
-  // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ render 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  // ---------- render ----------
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.brand} padding={1} marginY={1}>
@@ -528,7 +528,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
   )
 }
 
-// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ---------- helpers ----------
 
 interface ListItem {
   id: string
@@ -547,7 +547,7 @@ function collectListItems(cfg: Config, tab: Tab): ListItem[] {
   if (tab === 'models') {
     return Object.entries(cfg.models).map(([name, m]) => ({
       id: name,
-      primary: `${name}  ${m.endpoint ? `鈫?endpoint:${m.endpoint}` : `[${m.provider}]`}`,
+      primary: `${name}  ${m.endpoint ? `-> endpoint:${m.endpoint}` : `[${m.provider}]`}`,
       secondary: m.model,
     }))
   }
@@ -695,7 +695,7 @@ function renderRoutingForm(form: Extract<FormState, { kind: 'routing-edit' }>) {
       <Box marginTop={1} flexDirection="column">
         {TIER_OPTIONS.map((opt, i) => (
           <Text key={opt} color={i === form.valueIndex ? theme.brand : theme.assistantText}>
-            {i === form.valueIndex ? '鈻?' : '  '}
+            {i === form.valueIndex ? '>' : '  '}
             {opt}
           </Text>
         ))}
@@ -747,18 +747,18 @@ function maskKey(key: string): string {
 
 function footerHint(tab: Tab, form: FormState): string {
   if (form.kind === 'endpoint-edit' || form.kind === 'model-edit' || form.kind === 'profile-edit') {
-    return '[Tab] next field  [鈫愨啋/Home/End] move  [Enter] save  [Esc] cancel'
+    return '[Tab] next field  [Left/Right/Home/End] move  [Enter] save  [Esc] cancel'
   }
   if (form.kind === 'routing-edit') {
-    return '[鈫戔啌] choose  [Enter] save  [Esc] cancel'
+    return '[Up/Down] choose  [Enter] save  [Esc] cancel'
   }
   if (form.kind === 'confirm-delete') {
     return '[y] confirm  [n / Esc] cancel'
   }
-  if (tab === 'endpoints') return '[鈫戔啌] move  [n] new  [e] edit  [d] delete  [t] test  [Tab] next tab  [q/Esc] close'
-  if (tab === 'profiles')  return '[鈫戔啌] move  [Enter] activate  [n] new  [e] edit  [d] delete  [Tab] next tab  [q/Esc] close'
-  if (tab === 'models')    return '[鈫戔啌] move  [n] new  [e] edit  [d] delete  [Tab] next tab  [q/Esc] close'
-  return '[鈫戔啌] move  [Enter] edit  [Tab] next tab  [q/Esc] close'
+  if (tab === 'endpoints') return '[Up/Down] move  [n] new  [e] edit  [d] delete  [t] test  [Tab] next tab  [q/Esc] close'
+  if (tab === 'profiles')  return '[Up/Down] move  [Enter] activate  [n] new  [e] edit  [d] delete  [Tab] next tab  [q/Esc] close'
+  if (tab === 'models')    return '[Up/Down] move  [n] new  [e] edit  [d] delete  [Tab] next tab  [q/Esc] close'
+  return '[Up/Down] move  [Enter] edit  [Tab] next tab  [q/Esc] close'
 }
 
 function capitalize(s: string): string {
@@ -790,7 +790,7 @@ export interface InkKey {
 
 /**
  * Apply a key event to a (value, cursor) pair, returning the next pair.
- * Pure function 鈥?no React state.
+ * Pure function -- no React state.
  *
  * Recognised keys:
  *   - printable input         : insert at cursor
@@ -870,7 +870,7 @@ function isControl(input: string): boolean {
   // Treat anything below printable ASCII as control. This filters out arrow
   // keys, function keys, etc., which Ink delivers via key flags but also
   // sometimes leaks into `input` as escape sequences on certain terminals.
-  // For multi-char input (paste), check the first character 鈥?actual paste
+  // For multi-char input (paste), check the first character -- actual paste
   // payloads start with a printable character.
   return input.charCodeAt(0) < 0x20
 }

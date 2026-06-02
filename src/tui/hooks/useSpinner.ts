@@ -2,29 +2,36 @@ import { useEffect, useRef, useState } from 'react'
 
 const TICK_MS = 50
 
-export function useSpinner() {
+export function useSpinner(active = true) {
   const [time, setTime] = useState(0)
-  const startTimeRef = useRef(Date.now())
-  const [elapsed, setElapsed] = useState(0)
+  const visibleElapsedMsRef = useRef(0)
+  const activeStartedAtRef = useRef<number | null>(null)
 
   useEffect(() => {
-    startTimeRef.current = Date.now()
-    setTime(0)
-    setElapsed(0)
+    if (!active) return
+
+    activeStartedAtRef.current = Date.now()
+    setTime(visibleElapsedMsRef.current)
 
     const id = setInterval(() => {
-      const now = Date.now()
-      const nextTime = now - startTimeRef.current
-      setTime(nextTime)
-      setElapsed(Math.floor(nextTime / 1000))
+      const activeStartedAt = activeStartedAtRef.current
+      if (activeStartedAt === null) return
+      setTime(visibleElapsedMsRef.current + Date.now() - activeStartedAt)
     }, TICK_MS)
 
-    return () => clearInterval(id)
-  }, [])
+    return () => {
+      clearInterval(id)
+      const activeStartedAt = activeStartedAtRef.current
+      if (activeStartedAt !== null) {
+        visibleElapsedMsRef.current += Date.now() - activeStartedAt
+        activeStartedAtRef.current = null
+      }
+    }
+  }, [active])
 
   return {
     frame: Math.floor(time / 120),
-    elapsed,
+    elapsed: Math.floor(time / 1000),
     time,
   }
 }

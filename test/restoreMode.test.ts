@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { getCheckpointRenderKey } from '../src/tui/components/RestoreMode.js'
 
 /**
  * Feature: keyboard-shortcuts-control
@@ -81,6 +82,28 @@ describe('RestoreMode component logic', () => {
       const original = [...sampleCheckpoints]
       sortCheckpointsReverseChronological(sampleCheckpoints)
       assert.deepEqual(sampleCheckpoints, original)
+    })
+
+    it('uses message ids for render keys because commit hashes can be reused', () => {
+      const sharedCommitHash = 'same-commit-hash'
+      const checkpoints: Checkpoint[] = [
+        {
+          commitHash: sharedCommitHash,
+          messageId: 'msg-1',
+          messageContent: 'First user message',
+          timestamp: '2026-05-19T10:00:00.000Z',
+        },
+        {
+          commitHash: sharedCommitHash,
+          messageId: 'msg-2',
+          messageContent: 'Second user message',
+          timestamp: '2026-05-19T11:00:00.000Z',
+        },
+      ]
+
+      const keys = checkpoints.map(getCheckpointRenderKey)
+      assert.deepEqual(keys, ['msg-1', 'msg-2'])
+      assert.equal(new Set(keys).size, checkpoints.length)
     })
   })
 

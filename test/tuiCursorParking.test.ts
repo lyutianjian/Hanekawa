@@ -1,47 +1,29 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import {
-  CursorParkingController,
-  moveFromBottomToTarget,
-  moveFromTargetToBottom,
-} from '../src/tui/cursorParking.js'
+import { CursorParkingController } from '../src/tui/cursorParking.js'
 
 describe('TUI cursor parking', () => {
-  it('moves from the rendered bottom to the declared cursor target', () => {
-    assert.equal(moveFromBottomToTarget({ x: 3, y: 2 }, 5), '\x1B[3A\x1B[4G')
-  })
-
-  it('restores from the declared cursor target back to the rendered bottom', () => {
-    assert.equal(moveFromTargetToBottom({ x: 3, y: 2 }, 5), '\x1B[3B\x1B[1G')
-  })
-
-  it('restores before the next frame and parks again without showing the cursor', () => {
+  it('suppresses Ink show-cursor escapes while preserving cursor movement', () => {
     const stream = createFakeStdout()
     const controller = new CursorParkingController(stream)
 
     controller.patch()
-    controller.setTarget({ x: 3, y: 2 })
-    stream.write('frame1')
-    stream.write('frame2')
+    stream.write('frame\x1B[2A\x1B[4G\x1B[?25h')
     controller.unpatch()
 
-    assert.equal(stream.writes[0], 'frame1\x1B[3A\x1B[4G')
-    assert.equal(stream.writes[1], '\x1B[3B\x1B[1Gframe2\x1B[3A\x1B[4G')
-    assert.equal(stream.writes.some(write => write.includes('\x1B[?25h')), false)
+    assert.equal(stream.writes[0], 'frame\x1B[2A\x1B[4G\x1B[?25l')
+    assert.equal(stream.writes[0]?.includes('\x1B[?25h'), false)
   })
 
-  it('does not re-park when Ink is showing the cursor during teardown', () => {
+  it('restores the real cursor when unpatched', () => {
     const stream = createFakeStdout()
     const controller = new CursorParkingController(stream)
 
     controller.patch()
-    controller.setTarget({ x: 3, y: 2 })
-    stream.write('frame1')
-    stream.write('\x1B[?25h')
     controller.unpatch()
 
-    assert.equal(stream.writes[1], '\x1B[3B\x1B[1G\x1B[?25h')
+    assert.equal(stream.writes.at(-1), '\x1B[?25h')
   })
 })
 

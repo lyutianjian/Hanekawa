@@ -58,7 +58,7 @@ test('applying transition out of plan mode deactivates PlanModeManager', () => {
   assert.deepEqual(calls, ['exit'])
 })
 
-test('mode-change listener sync handles raw gate.setMode calls such as /bypass', () => {
+test('mode-change listener sync handles raw gate.setMode calls such as startup bypass', () => {
   const { manager, calls } = managerSpy()
   syncPlanModeManagerForPermissionModeChange(manager, 'default', 'plan')
   syncPlanModeManagerForPermissionModeChange(manager, 'plan', 'bypass')

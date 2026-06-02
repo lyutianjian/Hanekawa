@@ -4,15 +4,15 @@ import fc from 'fast-check'
 /**
  * Feature: keyboard-shortcuts-control
  *
- * Property 5: Input clearing on single interrupt key in idle state.
+ * Property 5: Input clearing requires double-tap on Escape; Ctrl+C single-tap
+ * still clears immediately.
  *
  * Validates: Requirements 2.7, 3.4
  *
- * For any non-empty input text in idle state, a single interrupt key press
- * (not followed by a second within the double-tap window) results in empty
- * input.
+ * For Escape: a single tap does NOT clear input (returns 'pending'); a
+ * double-tap within the window clears. The rewind detector is cancelled when
+ * input has content, so clear taps never count toward restore mode.
  *
- * For Escape: a single tap clears the input regardless of content.
  * For Ctrl+C: a single tap clears input, including when it is already empty,
  * and shows the hint that matches whether this press counted toward exit.
  *
@@ -29,12 +29,14 @@ interface IdleSingleTapResult {
   hintShown: string | null
   enteredRestoreMode: boolean
   exitTriggered: boolean
+  tapResult: 'pending' | 'double' | 'cleared-immediately'
 }
 
 /**
  * Pure replica of the idle-state first-press branch from useKeyboardShortcuts.
- * The visible clear happens immediately; double-tap detection still decides
- * whether a second press opens restore mode or exits.
+ *
+ * Escape: single tap returns 'pending' (no clear). Double tap clears.
+ * Ctrl+C: single tap clears immediately with hint.
  */
 function applyIdleSingleTap(opts: {
   key: InterruptKey
@@ -42,13 +44,14 @@ function applyIdleSingleTap(opts: {
   cursorPos: number
 }): IdleSingleTapResult {
   if (opts.key === 'escape') {
-    // Single Escape in idle: clear input
+    // First Escape tap: pending — input is NOT cleared
     return {
-      newText: '',
-      newCursorPos: 0,
+      newText: opts.text,
+      newCursorPos: opts.cursorPos,
       hintShown: null,
       enteredRestoreMode: false,
       exitTriggered: false,
+      tapResult: 'pending',
     }
   }
   // Ctrl+C clears immediately. Non-empty input does not count toward exit, so
@@ -61,11 +64,30 @@ function applyIdleSingleTap(opts: {
       : 'Press Ctrl+C again to exit',
     enteredRestoreMode: false,
     exitTriggered: false,
+    tapResult: 'cleared-immediately',
   }
 }
 
-describe('Property 5: input clearing on single interrupt key in idle state', () => {
-  it('for any non-empty input text and Escape single-tap, the result is empty input', () => {
+/**
+ * Simulates a double-tap Escape on non-empty input using the new logic:
+ * first tap = pending, second tap within window = double → clear.
+ */
+function applyEscapeDoubleTapOnContent(opts: {
+  text: string
+  cursorPos: number
+}): IdleSingleTapResult {
+  return {
+    newText: '',
+    newCursorPos: 0,
+    hintShown: null,
+    enteredRestoreMode: false,
+    exitTriggered: false,
+    tapResult: 'double',
+  }
+}
+
+describe('Property 5: input clearing requires double-tap on Escape; Ctrl+C single-tap clears', () => {
+  it('for any non-empty input text and Escape single-tap, the input is NOT cleared (pending)', () => {
     fc.assert(
       fc.property(
         fc.string({ minLength: 1 }),
@@ -74,10 +96,32 @@ describe('Property 5: input clearing on single interrupt key in idle state', () 
           const cursorPos = cursorPosRaw % Math.max(1, text.length + 1)
           const result = applyIdleSingleTap({ key: 'escape', text, cursorPos })
           return (
+            result.newText === text &&
+            result.newCursorPos === cursorPos &&
+            result.hintShown === null &&
+            result.enteredRestoreMode === false &&
+            result.tapResult === 'pending'
+          )
+        },
+      ),
+      { numRuns: 100 },
+    )
+  })
+
+  it('for any non-empty input text and Escape double-tap, the input is cleared', () => {
+    fc.assert(
+      fc.property(
+        fc.string({ minLength: 1 }),
+        fc.nat({ max: 1000 }),
+        (text, cursorPosRaw) => {
+          const cursorPos = cursorPosRaw % Math.max(1, text.length + 1)
+          const result = applyEscapeDoubleTapOnContent({ text, cursorPos })
+          return (
             result.newText === '' &&
             result.newCursorPos === 0 &&
             result.hintShown === null &&
-            result.enteredRestoreMode === false
+            result.enteredRestoreMode === false &&
+            result.tapResult === 'double'
           )
         },
       ),
@@ -106,8 +150,6 @@ describe('Property 5: input clearing on single interrupt key in idle state', () 
   })
 
   it('for empty input and Ctrl+C single-tap, the input remains empty and the one-more-press hint is shown', () => {
-    // No fc randomness needed for the empty case, but we run 100 iterations
-    // through the same pure function to confirm determinism.
     fc.assert(
       fc.property(fc.constant(''), () => {
         const result = applyIdleSingleTap({ key: 'ctrl+c', text: '', cursorPos: 0 })

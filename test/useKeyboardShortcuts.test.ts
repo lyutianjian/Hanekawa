@@ -3,55 +3,83 @@ import assert from 'node:assert/strict'
 import { DoubleTapDetector } from '../src/tui/utils/doubleTapDetector.js'
 
 describe('useKeyboardShortcuts behavior (via pure shortcut pieces)', () => {
-  it('Escape after clearing non-empty input does not count toward restore-mode double-tap', () => {
+  it('Escape single-tap on non-empty input does NOT clear; double-tap within window clears', () => {
     mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 })
     try {
-      const detector = new DoubleTapDetector({ windowMs: 300 })
+      const clearDetector = new DoubleTapDetector({ windowMs: 300 })
       let text = 'draft'
       let cursorPos = text.length
-      let restoreModeEntered = false
-      let lastInputClearTime: number | null = null
 
       const pressEscape = () => {
         if (text.length > 0) {
-          detector.cancel()
-          lastInputClearTime = Date.now()
-          text = ''
-          cursorPos = 0
+          const result = clearDetector.tap('escape-clear', () => {})
+          if (result === 'double') {
+            text = ''
+            cursorPos = 0
+          }
+          return
+        }
+      }
+
+      // First ESC: pending — text should remain
+      pressEscape()
+      assert.equal(text, 'draft', 'single tap should NOT clear input')
+
+      // Second ESC within window: double — text should be cleared
+      mock.timers.tick(100)
+      pressEscape()
+      assert.equal(text, '', 'double tap should clear input')
+      assert.equal(cursorPos, 0)
+
+      clearDetector.dispose()
+    } finally {
+      mock.timers.reset()
+    }
+  })
+
+  it('Escape clear detector and rewind detector are independent — clearing does not trigger restore mode', () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 })
+    try {
+      const clearDetector = new DoubleTapDetector({ windowMs: 300 })
+      const rewindDetector = new DoubleTapDetector({ windowMs: 300 })
+      let text = 'draft'
+      let cursorPos = text.length
+      let restoreModeEntered = false
+
+      const pressEscape = () => {
+        if (text.length > 0) {
+          rewindDetector.cancel()
+          const result = clearDetector.tap('escape-clear', () => {})
+          if (result === 'double') {
+            text = ''
+            cursorPos = 0
+          }
           return
         }
 
-        if (lastInputClearTime !== null && Date.now() - lastInputClearTime < 300) {
-          lastInputClearTime = null
-          detector.cancel()
-          text = ''
-          cursorPos = 0
-          return
-        }
-        lastInputClearTime = null
-
-        const result = detector.tap('escape', () => {})
+        clearDetector.cancel()
+        const result = rewindDetector.tap('escape-rewind', () => {})
         if (result === 'double') {
           restoreModeEntered = true
         }
       }
 
+      // Clear input with double-tap
       pressEscape()
       mock.timers.tick(100)
       pressEscape()
-
       assert.equal(text, '')
-      assert.equal(cursorPos, 0)
-      assert.equal(restoreModeEntered, false)
+      assert.equal(restoreModeEntered, false, 'clearing should not trigger restore mode')
 
+      // Now input is empty — double-tap for rewind
       mock.timers.tick(100)
       pressEscape()
       mock.timers.tick(100)
       pressEscape()
+      assert.equal(restoreModeEntered, true, 'double-tap on empty input should enter restore mode')
 
-      assert.equal(restoreModeEntered, true)
-
-      detector.dispose()
+      clearDetector.dispose()
+      rewindDetector.dispose()
     } finally {
       mock.timers.reset()
     }

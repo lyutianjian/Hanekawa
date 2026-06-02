@@ -66,9 +66,9 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
 
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const escapeDetectorRef = useRef<DoubleTapDetector | null>(null)
+  const escapeClearDetectorRef = useRef<DoubleTapDetector | null>(null)
   const ctrlCDetectorRef = useRef<DoubleTapDetector | null>(null)
   const doubleTapWindowMsRef = useRef(options.doubleTapWindowMs ?? 300)
-  const escapeInputClearTimeRef = useRef<number | null>(null)
 
   // Load doubleTapWindow from keybindings config on mount
   useEffect(() => {
@@ -76,10 +76,12 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     doubleTapWindowMsRef.current = configWindowMs
 
     escapeDetectorRef.current = new DoubleTapDetector({ windowMs: configWindowMs })
+    escapeClearDetectorRef.current = new DoubleTapDetector({ windowMs: configWindowMs })
     ctrlCDetectorRef.current = new DoubleTapDetector({ windowMs: configWindowMs })
 
     return () => {
       escapeDetectorRef.current?.dispose()
+      escapeClearDetectorRef.current?.dispose()
       ctrlCDetectorRef.current?.dispose()
       if (hintTimerRef.current) {
         clearTimeout(hintTimerRef.current)
@@ -136,33 +138,27 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
         }
 
         if (text.length > 0) {
+          // Input has content: use the dedicated clear detector.
+          // Cancel the rewind detector so prior empty-state taps don't
+          // carry over into the clear path.
           escapeDetectorRef.current?.cancel()
-          escapeInputClearTimeRef.current = Date.now()
-          setText('')
-          setCursorPos(0)
+          const result = escapeClearDetectorRef.current?.tap('escape-clear', () => {})
+          if (result === 'double') {
+            setText('')
+            setCursorPos(0)
+          }
           return
         }
 
-        const lastInputClearTime = escapeInputClearTimeRef.current
-        if (
-          lastInputClearTime !== null &&
-          Date.now() - lastInputClearTime < doubleTapWindowMsRef.current
-        ) {
-          escapeInputClearTimeRef.current = null
-          escapeDetectorRef.current?.cancel()
-          setText('')
-          setCursorPos(0)
-          return
-        }
-        escapeInputClearTimeRef.current = null
-
-        const result = escapeDetectorRef.current?.tap('escape', () => {})
+        // Input is empty: use the rewind detector.
+        // Cancel the clear detector so prior content-state taps don't
+        // carry over into the rewind path.
+        escapeClearDetectorRef.current?.cancel()
+        const result = escapeDetectorRef.current?.tap('escape-rewind', () => {})
         if (result === 'double') {
           onEnterRestoreMode()
           return
         }
-        setText('')
-        setCursorPos(0)
         return
       }
 

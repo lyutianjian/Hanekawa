@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { prepareRecordsForRequest, prepareRecordsForRequestWithDiagnostics } from '../src/harness/requestPrep.js'
 import { countTextTokens } from '../src/prompts/budget.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
+import { recordsAfterAreOnlyInterruptSynthetic } from '../src/tui/interruptRollback.js'
 import type { SessionRecord } from '../src/harness/types.js'
 
 function toolPair(id: string, tool: string, content: string, minute: number): SessionRecord[] {
@@ -477,4 +478,63 @@ test('prepareRecordsForRequestWithDiagnostics reports repaired orphan tool recor
   assert.equal(result.diagnostics.length, 2)
   assert.ok(result.diagnostics.every((diagnostic) => diagnostic.code === 'tool_protocol_repaired'))
   assert.ok(result.diagnostics.every((diagnostic) => diagnostic.message.startsWith('Inserted synthetic')))
+})
+
+test('recordsAfterAreOnlyInterruptSynthetic allows only interrupt bookkeeping after a user message', () => {
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'user-1',
+      role: 'user',
+      content: 'do work',
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      id: 'at-1',
+      type: 'at_mention_context',
+      userMessageId: 'user-1',
+      files: [],
+      content: '',
+      createdAt: '2026-05-10T00:00:01.000Z',
+    },
+    {
+      id: 'interrupt-1',
+      type: 'turn_interruption',
+      userMessageId: 'user-1',
+      prompt: 'do work',
+      remainingTasks: [],
+      recoverable: true,
+      createdAt: '2026-05-10T00:00:02.000Z',
+    },
+  ]
+
+  assert.equal(recordsAfterAreOnlyInterruptSynthetic(records, 'user-1'), true)
+})
+
+test('recordsAfterAreOnlyInterruptSynthetic treats assistant and tool records as meaningful', () => {
+  const base: SessionRecord = {
+    type: 'message',
+    id: 'user-1',
+    role: 'user',
+    content: 'do work',
+    createdAt: '2026-05-10T00:00:00.000Z',
+  }
+  const assistant: SessionRecord = {
+    type: 'message',
+    id: 'assistant-1',
+    role: 'assistant',
+    content: 'partial answer',
+    createdAt: '2026-05-10T00:00:01.000Z',
+  }
+  const toolUse: SessionRecord = {
+    type: 'tool_use',
+    id: 'call-1',
+    tool: 'Read',
+    input: { filePath: 'README.md' },
+    riskLevel: 'safe',
+    createdAt: '2026-05-10T00:00:01.000Z',
+  }
+
+  assert.equal(recordsAfterAreOnlyInterruptSynthetic([base, assistant], 'user-1'), false)
+  assert.equal(recordsAfterAreOnlyInterruptSynthetic([base, toolUse], 'user-1'), false)
 })

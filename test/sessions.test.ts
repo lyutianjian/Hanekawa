@@ -6,6 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { SessionStore } from '../src/sessions/service.js'
+import { rollbackInterruptedPromptIfSynthetic } from '../src/tui/interruptRollback.js'
 import type { SessionRecord } from '../src/harness/types.js'
 import { getSessionsDir } from '../src/utils/paths.js'
 
@@ -70,6 +71,147 @@ test('SessionStore appends and loads records while updating metadata', async () 
     const loaded = await store.load(session.id)
     assert.equal(loaded?.messageCount, 1)
     assert.equal(loaded?.title, 'Hello from session test')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SessionStore truncateBeforeMessage removes the target message and later records', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+
+    const session = await store.create()
+    const records: SessionRecord[] = [
+      {
+        type: 'message',
+        id: 'msg-1',
+        role: 'user',
+        content: 'first',
+        createdAt: '2026-06-01T00:00:00.000Z',
+      },
+      {
+        type: 'message',
+        id: 'msg-2',
+        role: 'assistant',
+        content: 'second',
+        createdAt: '2026-06-01T00:00:01.000Z',
+      },
+      {
+        type: 'message',
+        id: 'msg-3',
+        role: 'user',
+        content: 'third',
+        createdAt: '2026-06-01T00:00:02.000Z',
+      },
+      {
+        type: 'message',
+        id: 'msg-4',
+        role: 'assistant',
+        content: 'fourth',
+        createdAt: '2026-06-01T00:00:03.000Z',
+      },
+    ]
+    for (const record of records) {
+      await store.appendRecord(session.id, record)
+    }
+    await store.addCheckpointMapping(session.id, 'msg-1', 'commit-1')
+    await store.addCheckpointMapping(session.id, 'msg-3', 'commit-3')
+
+    const result = await store.truncateBeforeMessage(session.id, 'msg-3')
+    assert.equal(result.success, true)
+
+    const after = await store.loadRecords(session.id)
+    assert.deepEqual(after.map((record) => 'id' in record ? record.id : null), ['msg-1', 'msg-2'])
+
+    const meta = await store.load(session.id)
+    assert.equal(meta?.messageCount, 2)
+    assert.deepEqual(meta?.checkpoints?.map((mapping) => mapping.messageId), ['msg-1'])
+
+    const jsonlPath = path.join(getSessionsDir(dir), `${session.id}.jsonl`)
+    const onDisk = readFileSync(jsonlPath, 'utf-8').trim().split('\n')
+    assert.equal(onDisk.length, 2)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('rollbackInterruptedPromptIfSynthetic removes interrupted prompt bookkeeping only', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+    const session = await store.create()
+
+    await store.appendRecord(session.id, {
+      type: 'message',
+      id: 'user-1',
+      role: 'user',
+      content: 'do work',
+      createdAt: '2026-06-01T00:00:00.000Z',
+    })
+    await store.appendRecord(session.id, {
+      id: 'at-1',
+      type: 'at_mention_context',
+      userMessageId: 'user-1',
+      files: [],
+      content: '',
+      createdAt: '2026-06-01T00:00:01.000Z',
+    })
+    await store.appendRecord(session.id, {
+      id: 'interrupt-1',
+      type: 'turn_interruption',
+      userMessageId: 'user-1',
+      prompt: 'do work',
+      remainingTasks: [],
+      recoverable: true,
+      createdAt: '2026-06-01T00:00:02.000Z',
+    })
+
+    const restored = await rollbackInterruptedPromptIfSynthetic({
+      store,
+      sessionId: session.id,
+      userMessageId: 'user-1',
+    })
+
+    assert.deepEqual(restored, [])
+    assert.deepEqual(await store.loadRecords(session.id), [])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('rollbackInterruptedPromptIfSynthetic preserves meaningful assistant output', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+    const session = await store.create()
+
+    await store.appendRecord(session.id, {
+      type: 'message',
+      id: 'user-1',
+      role: 'user',
+      content: 'do work',
+      createdAt: '2026-06-01T00:00:00.000Z',
+    })
+    await store.appendRecord(session.id, {
+      type: 'message',
+      id: 'assistant-1',
+      role: 'assistant',
+      content: 'partial answer',
+      createdAt: '2026-06-01T00:00:01.000Z',
+    })
+
+    const restored = await rollbackInterruptedPromptIfSynthetic({
+      store,
+      sessionId: session.id,
+      userMessageId: 'user-1',
+    })
+
+    assert.equal(restored, null)
+    assert.deepEqual((await store.loadRecords(session.id)).map((record) => 'id' in record ? record.id : null), ['user-1', 'assistant-1'])
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

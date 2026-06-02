@@ -66,7 +66,12 @@ export class AnthropicProvider implements ModelProvider {
         )
         let response: Anthropic.Messages.Message
         try {
-          response = await streamWithTimeout(stream, request.retry?.signal)
+          response = await streamWithTimeout(
+            stream,
+            request.retry?.signal,
+            STREAM_IDLE_TIMEOUT_MS,
+            request.onTextDelta,
+          )
         } catch (error) {
           if (!isStreamIdleTimeout(error)) {
             throw error
@@ -182,6 +187,7 @@ export async function streamWithTimeout(
   stream: AnthropicMessageStream,
   signal?: AbortSignal,
   idleTimeoutMs = STREAM_IDLE_TIMEOUT_MS,
+  onTextDelta?: (delta: string) => void,
 ): Promise<Anthropic.Messages.Message> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const resetTimer = () => {
@@ -195,7 +201,12 @@ export async function streamWithTimeout(
   const timeoutPromise = new Promise<never>((_, reject) => {
     rejectTimeout = reject
   })
-  stream.on('streamEvent', resetTimer)
+  const onStreamEvent = (event: unknown) => {
+    resetTimer()
+    const delta = extractTextDelta(event)
+    if (delta) onTextDelta?.(delta)
+  }
+  stream.on('streamEvent', onStreamEvent)
   resetTimer()
 
   let onAbort: (() => void) | undefined
@@ -220,7 +231,23 @@ export async function streamWithTimeout(
     return await Promise.race(racers)
   } finally {
     if (timer !== undefined) clearTimeout(timer)
-    stream.off('streamEvent', resetTimer)
+    stream.off('streamEvent', onStreamEvent)
     if (signal && onAbort) signal.removeEventListener('abort', onAbort)
   }
+}
+
+function extractTextDelta(event: unknown): string | undefined {
+  if (!event || typeof event !== 'object') return undefined
+  const typed = event as {
+    type?: unknown
+    delta?: {
+      type?: unknown
+      text?: unknown
+    }
+  }
+  if (typed.type !== 'content_block_delta') return undefined
+  if (typed.delta?.type !== 'text_delta') return undefined
+  return typeof typed.delta.text === 'string' && typed.delta.text.length > 0
+    ? typed.delta.text
+    : undefined
 }

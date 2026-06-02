@@ -123,6 +123,7 @@ export function App({
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const verifyAbortRef = useRef<AbortController | null>(null)
+  const restoreInputRef = useRef<(text: string) => void>(() => {})
   const [spinnerColors, setSpinnerColors] = useState(() => sampleSpinnerColors())
   const checkpointServiceRef = useRef<CheckpointService>(
     new CheckpointService(process.cwd(), initialSession.id),
@@ -179,6 +180,10 @@ export function App({
     })
   }, [createRuntime, activeSession, runtime.modelKey])
 
+  const restoreInput = useCallback((text: string) => {
+    restoreInputRef.current(text)
+  }, [])
+
   const {
     staticTranscriptItems,
     liveItems,
@@ -203,6 +208,7 @@ export function App({
     initialSystemMessages,
     onActiveModelChange: syncActiveModel,
     onInterrupt: denyPending,
+    onRestoreInput: restoreInput,
   })
 
   // Track running state in mode
@@ -473,9 +479,9 @@ export function App({
 
   const handleInterrupt = useCallback(() => {
     // Signal the AbortController to abort the agent loop
-    interrupt()
+    interrupt('user-cancel')
     // Also abort any in-flight verification dispatched via runtime.loop.runTool.
-    verifyAbortRef.current?.abort()
+    verifyAbortRef.current?.abort('user-cancel')
 
     // Set up abort timeout: if agent loop doesn't stop within 2s, force-terminate
     abortTimeoutRef.current = setTimeout(() => {
@@ -494,9 +500,9 @@ export function App({
     setMode('exiting')
     // If running, signal abort first to allow in-flight operations to terminate
     if (isStreaming) {
-      interrupt()
+      interrupt('exit')
     }
-    verifyAbortRef.current?.abort()
+    verifyAbortRef.current?.abort('exit')
     // Run cleanup (e.g., disconnect MCP clients) before exiting. Errors are
     // swallowed inside onBeforeExit; we only need to await the promise so
     // disconnects have a chance to flush before process.exit kills the loop.
@@ -597,6 +603,8 @@ export function App({
     suggestions,
     selectedSuggestion,
     suggestionType,
+    setText,
+    setCursorPos,
   } = useKeyboardShortcuts({
     onSubmit: handleSubmit,
     onInterrupt: handleInterrupt,
@@ -613,6 +621,12 @@ export function App({
       || providerPanelOpen
       || modelPickerOpen,
   })
+
+  restoreInputRef.current = (restoredText: string) => {
+    setText(restoredText)
+    setCursorPos(restoredText.length)
+  }
+
   const staticItems: TUIStaticItem[] = [
     {
       kind: 'welcome_banner',

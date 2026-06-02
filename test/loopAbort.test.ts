@@ -205,7 +205,7 @@ describe('AgentLoop abort', () => {
 
     const runPromise = testLoop.run('please do the work', controller.signal, 'user-1')
     await new Promise((resolve) => setTimeout(resolve, 5))
-    controller.abort()
+    controller.abort('user-cancel')
     await assert.rejects(runPromise, (error: Error) => error.name === 'AbortError')
 
     const interruption = records.find((record) => record.type === 'turn_interruption')
@@ -214,6 +214,79 @@ describe('AgentLoop abort', () => {
     assert.equal(interruption.userMessageId, 'user-1')
     assert.equal(interruption.recoverable, true)
     assert.equal(interruption.remainingTasks[0]?.subject, 'Finish interrupted work')
+  })
+
+  it('does not record recoverable turn interruption for non-user aborts', async () => {
+    const records: SessionRecord[] = []
+    const controller = new AbortController()
+    const provider = createMockProvider()
+    const permissionGate = new PermissionGate(noopPermission)
+    const toolRunner = new ToolRunner([], permissionGate, {
+      onRecord: async (record) => { records.push(record) },
+    })
+    const testLoop = new AgentLoop({
+      provider,
+      model: 'mock-model',
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner,
+      toolContext: { cwd: process.cwd(), sessionId: 'test', readFiles: new Set() },
+      recordStream: recordStreamFor(records),
+    })
+
+    const runPromise = testLoop.run('please do the work', controller.signal, 'user-1')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    controller.abort('exit')
+    await assert.rejects(runPromise, (error: Error) => error.name === 'AbortError')
+
+    assert.equal(records.some((record) => record.type === 'turn_interruption'), false)
+  })
+
+  it('persists partial assistant text before recording a user interruption', async () => {
+    const records: SessionRecord[] = []
+    const controller = new AbortController()
+    const provider: ModelProvider = {
+      name: 'mock',
+      async createMessage(request: ModelRequest): Promise<ModelResponse> {
+        request.onTextDelta?.('partial ')
+        request.onTextDelta?.('answer')
+        await new Promise<void>((_resolve, reject) => {
+          request.retry?.signal?.addEventListener('abort', () => {
+            reject(abortError())
+          }, { once: true })
+        })
+        throw new Error('unreachable')
+      },
+    }
+    const permissionGate = new PermissionGate(noopPermission)
+    const toolRunner = new ToolRunner([], permissionGate, {
+      onRecord: async (record) => { records.push(record) },
+    })
+    const testLoop = new AgentLoop({
+      provider,
+      model: 'mock-model',
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner,
+      toolContext: { cwd: process.cwd(), sessionId: 'test', readFiles: new Set() },
+      recordStream: recordStreamFor(records),
+    })
+
+    const runPromise = testLoop.run('please do the work', controller.signal, 'user-1')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    controller.abort('user-cancel')
+    await assert.rejects(runPromise, (error: Error) => error.name === 'AbortError')
+
+    const assistant = records.find((record) => record.type === 'message' && record.role === 'assistant')
+    if (!assistant || assistant.type !== 'message') assert.fail('Expected partial assistant message')
+    assert.equal(assistant.role, 'assistant')
+    assert.equal(assistant.content, 'partial answer')
+    const interruption = records.find((record) => record.type === 'turn_interruption')
+    assert.equal(interruption?.type, 'turn_interruption')
+    assert.ok(
+      records.findIndex((record) => record.id === assistant?.id)
+      < records.findIndex((record) => record.id === interruption?.id),
+    )
   })
 
   it('injects and consumes interrupted turn context when the user resumes', async () => {
@@ -259,5 +332,87 @@ describe('AgentLoop abort', () => {
     assert.equal(interruption?.type, 'turn_interruption')
     assert.equal(interruption?.recoverable, false)
     assert.equal(typeof interruption?.consumedAt, 'string')
+  })
+
+  it('recognizes Chinese resume intent for interrupted turns', async () => {
+    const records: SessionRecord[] = [{
+      id: 'interrupt-1',
+      type: 'turn_interruption',
+      userMessageId: 'user-old',
+      prompt: 'old prompt',
+      remainingTasks: [{
+        id: '1',
+        status: 'pending',
+        subject: 'Resume me',
+        description: 'Resume this task',
+      }],
+      recoverable: true,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      turnId: 'old-turn',
+    }]
+    const provider = createMockProvider()
+    const permissionGate = new PermissionGate(noopPermission)
+    const toolRunner = new ToolRunner([], permissionGate, {
+      onRecord: async (record) => { records.push(record) },
+    })
+    const stream = recordStreamFor(records)
+    stream.update = async (recordId, update) => {
+      const index = records.findIndex((record) => record.id === recordId)
+      if (index >= 0 && records[index]) records[index] = update(records[index])
+    }
+    const testLoop = new AgentLoop({
+      provider,
+      model: 'mock-model',
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner,
+      toolContext: { cwd: process.cwd(), sessionId: 'test', readFiles: new Set() },
+      recordStream: stream,
+    })
+
+    await testLoop.run('继续')
+
+    assert.match(JSON.stringify(provider.requests[0].contextItems), /previous turn was interrupted/)
+  })
+
+  it('recognizes Chinese abandon intent for interrupted turns', async () => {
+    const records: SessionRecord[] = [{
+      id: 'interrupt-1',
+      type: 'turn_interruption',
+      userMessageId: 'user-old',
+      prompt: 'old prompt',
+      remainingTasks: [{
+        id: '1',
+        status: 'pending',
+        subject: 'Resume me',
+        description: 'Resume this task',
+      }],
+      recoverable: true,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      turnId: 'old-turn',
+    }]
+    const provider = createMockProvider()
+    const permissionGate = new PermissionGate(noopPermission)
+    const toolRunner = new ToolRunner([], permissionGate, {
+      onRecord: async (record) => { records.push(record) },
+    })
+    const stream = recordStreamFor(records)
+    stream.update = async (recordId, update) => {
+      const index = records.findIndex((record) => record.id === recordId)
+      if (index >= 0 && records[index]) records[index] = update(records[index])
+    }
+    const testLoop = new AgentLoop({
+      provider,
+      model: 'mock-model',
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner,
+      toolContext: { cwd: process.cwd(), sessionId: 'test', readFiles: new Set() },
+      recordStream: stream,
+    })
+
+    await testLoop.run('算了')
+
+    assert.match(JSON.stringify(provider.requests[0].contextItems), /has been abandoned/)
   })
 })

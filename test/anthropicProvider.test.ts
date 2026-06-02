@@ -34,6 +34,18 @@ class FakeAnthropicStream {
     for (const listener of this.listeners) listener({ type: 'ping' })
   }
 
+  emitTextDelta(text: string): void {
+    for (const listener of this.listeners) {
+      listener({
+        type: 'content_block_delta',
+        delta: {
+          type: 'text_delta',
+          text,
+        },
+      })
+    }
+  }
+
   finish(): void {
     this.resolveFinal({
       id: 'msg_1',
@@ -82,6 +94,25 @@ test('Anthropic stream timeout is reset by stream events', async () => {
   } finally {
     mock.timers.reset()
   }
+})
+
+test('Anthropic stream emits text deltas through callback', async () => {
+  const stream = new FakeAnthropicStream()
+  const deltas: string[] = []
+  const responsePromise = streamWithTimeout(
+    stream,
+    undefined,
+    100,
+    (delta) => deltas.push(delta),
+  )
+
+  stream.emitTextDelta('hello ')
+  stream.emitTextDelta('world')
+  stream.finish()
+
+  await responsePromise
+  assert.deepEqual(deltas, ['hello ', 'world'])
+  assert.equal(stream.listenerCount(), 0)
 })
 
 test('Anthropic stream timeout aborts after an idle interval', async () => {

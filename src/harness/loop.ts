@@ -176,6 +176,7 @@ export class AgentLoop {
 
   private async runInternal(userInput: string, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
     let usage = { ...EMPTY_TOKEN_USAGE }
+    let pendingAssistantStreamContent = ''
     this.pendingSubagentTranscriptUsage = { ...EMPTY_TOKEN_USAGE }
     const turnId = randomUUID()
     const userMessage: ChatMessage & { type: 'message' } = {
@@ -319,6 +320,7 @@ export class AgentLoop {
 
       const requestRecordCount = records.length
       const canReuseResponseTokenEstimate = useCachedTokenEstimate && !compactResult.compacted
+      pendingAssistantStreamContent = ''
       const modelRequest = {
         system: built.system,
         systemBlocks: built.systemBlocks,
@@ -332,14 +334,19 @@ export class AgentLoop {
         retry: { signal },
         cacheSource,
         cacheRuntime: this.options.cacheRuntime,
+        onTextDelta: (delta: string) => {
+          pendingAssistantStreamContent += delta
+        },
       }
 
       let response
       const modelStartedAt = Date.now()
       try {
         response = await this.activeModel.provider.createMessage(modelRequest)
+        pendingAssistantStreamContent = ''
       } catch (error) {
         if (error instanceof FallbackTriggeredError && this.activateFallback(cacheSource)) {
+          pendingAssistantStreamContent = ''
           resetModelRequestState()
           continue
         }
@@ -532,7 +539,9 @@ export class AgentLoop {
 
       throw new Error('Agent loop exceeded maximum tool iterations')
     } catch (error) {
-      if (isAbortError(error)) {
+      if (isAbortError(error) && isUserCancelAbort(signal)) {
+        await this.appendPartialAssistantMessage(pendingAssistantStreamContent, turnId)
+        pendingAssistantStreamContent = ''
         await this.appendTurnInterruption(userMessage, turnId)
       }
       throw error
@@ -618,6 +627,19 @@ export class AgentLoop {
       remainingTasks: remainingTasksFromState(this.options.toolContext.taskState),
       recoverable: true,
       createdAt: new Date().toISOString(),
+    })
+  }
+
+  private async appendPartialAssistantMessage(content: string, turnId: string): Promise<void> {
+    if (content.trim().length === 0) return
+    await this.appendRecord({
+      type: 'message',
+      id: randomUUID(),
+      role: 'assistant',
+      content,
+      turnId,
+      createdAt: new Date().toISOString(),
+      model: this.activeModel.model,
     })
   }
 
@@ -1166,11 +1188,48 @@ function isPlanControlTool(toolName: string): boolean {
 function classifyInterruptionIntent(input: string): 'continue' | 'abandon' | 'new_request' {
   const normalized = input.trim().toLowerCase()
   if (!normalized) return 'new_request'
-  if (/^(continue|resume|carry on|go on|keep going|继续|接着|恢复|接着做|继续做)\b/i.test(normalized)) {
+  if (startsWithInterruptionCommand(normalized, [
+    'continue',
+    'resume',
+    'carry on',
+    'go on',
+    'keep going',
+    '继续',
+    '接着',
+    '恢复',
+    '接着做',
+    '继续做',
+  ])) {
     return 'continue'
   }
-  if (/^(cancel|abort|stop|ignore|never mind|nevermind|算了|不用了|停止|放弃|不要继续|别继续)\b/i.test(normalized)) {
+  if (startsWithInterruptionCommand(normalized, [
+    'cancel',
+    'abort',
+    'stop',
+    'ignore',
+    'never mind',
+    'nevermind',
+    '算了',
+    '不用了',
+    '停止',
+    '放弃',
+    '不要继续',
+    '别继续',
+  ])) {
     return 'abandon'
   }
   return 'new_request'
+}
+
+function startsWithInterruptionCommand(input: string, commands: readonly string[]): boolean {
+  return commands.some((command) => {
+    if (input === command) return true
+    if (!input.startsWith(command)) return false
+    const next = input[command.length]
+    return next === undefined || /\s|[,.!?;:，。！？；：]/u.test(next)
+  })
+}
+
+function isUserCancelAbort(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true && signal.reason === 'user-cancel'
 }

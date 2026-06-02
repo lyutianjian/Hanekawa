@@ -196,6 +196,7 @@ test('tool runner persists structured display metadata without changing content'
 })
 
 test('tool runner pairs tool_use with aborted tool_result when permission aborts', async () => {
+  const controller = new AbortController()
   const tool: Tool = {
     name: 'confirmTool',
     description: 'confirm',
@@ -205,15 +206,21 @@ test('tool runner pairs tool_use with aborted tool_result when permission aborts
   }
   const records: SessionRecord[] = []
   const runner = new ToolRunner([tool], new PermissionGate(async () => {
+    controller.abort('user-cancel')
     throw new DOMException('The operation was aborted.', 'AbortError')
   }), {
     onRecord: async (record) => { records.push(record) },
   })
 
-  const result = await runner.run({ id: 'call1', name: 'confirmTool', input: {} }, { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() })
+  const result = await runner.run(
+    { id: 'call1', name: 'confirmTool', input: {} },
+    { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    controller.signal,
+  )
 
   assert.equal(result.ok, false)
   assert.equal(result.errorCode, 'aborted')
+  assert.equal(result.content, 'Interrupted by user')
   assert.equal(records.filter((record) => record.type === 'tool_use').length, 1)
   assert.equal(records.filter((record) => record.type === 'tool_result').length, 1)
   assert.equal(records.find((record) => record.type === 'tool_result')?.toolUseId, 'call1')

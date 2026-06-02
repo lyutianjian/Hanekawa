@@ -26,6 +26,7 @@ import {
   recordsToDisplayItems,
   type TuiTranscriptState,
 } from '../transcript.js'
+import { rollbackInterruptedPromptIfSynthetic } from '../interruptRollback.js'
 
 export { isHiddenToolCall, recordsToDisplayItems } from '../transcript.js'
 
@@ -41,6 +42,7 @@ interface UseAgentLoopOptions {
   onRecordExternal?: (record: SessionRecord) => void
   onActiveModelChange?: (model: Omit<ActiveModelRuntime, 'provider'>) => void
   onInterrupt?: () => void
+  onRestoreInput?: (text: string) => void
 }
 
 export function useAgentLoop({
@@ -55,6 +57,7 @@ export function useAgentLoop({
   onRecordExternal,
   onActiveModelChange,
   onInterrupt,
+  onRestoreInput,
 }: UseAgentLoopOptions) {
   const [transcript, setTranscript] = useState<TuiTranscriptState>(() =>
     createTranscriptState([...initialSystemMessages, ...recordsToDisplayItems(existingRecords)]),
@@ -174,6 +177,19 @@ export function useAgentLoop({
         }))
       } catch (err: unknown) {
         if (err instanceof Error && (err.name === 'AbortError' || (err as Error & { aborted?: boolean }).aborted)) {
+          const restored = await tryRestoreInterruptedPrompt({
+            signal: ac.signal,
+            store,
+            sessionId: session.id,
+            userMessageId: messageId,
+            input,
+            loop,
+            resetTranscript,
+            setTaskSnapshot,
+            onRestoreInput,
+          })
+          if (restored) return
+
           const interruptMsg: TUIDisplayItem = {
             kind: 'system',
             id: randomUUID(),
@@ -201,7 +217,7 @@ export function useAgentLoop({
         setTranscript((prev) => clearToolProgress(prev))
       }
     },
-    [loop, store, session.id, onActiveModelChange, appendStaticItem],
+    [loop, store, session.id, onActiveModelChange, appendStaticItem, onRestoreInput, resetTranscript],
   )
 
   const handleProgress = useCallback((event: ToolProgressEvent) => {
@@ -288,9 +304,9 @@ export function useAgentLoop({
     }
   }, [recordProxy, handleRecord, handleProgress])
 
-  const interrupt = useCallback(() => {
+  const interrupt = useCallback((reason: unknown = 'user-cancel') => {
     onInterrupt?.()
-    abortControllerRef.current?.abort()
+    abortControllerRef.current?.abort(reason)
   }, [onInterrupt])
 
   /**
@@ -329,6 +345,37 @@ export function useAgentLoop({
     submit,
     interrupt,
     reloadMessages,
+  }
+}
+
+async function tryRestoreInterruptedPrompt(input: {
+  signal: AbortSignal
+  store: SessionStore
+  sessionId: string
+  userMessageId: string
+  input: string
+  loop: AgentLoop
+  resetTranscript: (items?: TUIDisplayItem[]) => void
+  setTaskSnapshot: (snapshot: TaskDisplaySnapshot | undefined) => void
+  onRestoreInput?: (text: string) => void
+}): Promise<boolean> {
+  if (input.signal.reason !== 'user-cancel') return false
+
+  try {
+    const records = await rollbackInterruptedPromptIfSynthetic({
+      store: input.store,
+      sessionId: input.sessionId,
+      userMessageId: input.userMessageId,
+    })
+    if (!records) return false
+
+    input.loop.invalidateRecordsCache()
+    input.setTaskSnapshot(findLatestTaskSnapshot(records))
+    input.resetTranscript(recordsToDisplayItems(records))
+    input.onRestoreInput?.(input.input)
+    return true
+  } catch {
+    return false
   }
 }
 

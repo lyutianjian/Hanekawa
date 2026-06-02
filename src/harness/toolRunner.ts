@@ -111,7 +111,7 @@ export class ToolRunner {
       // Check abort signal after permission approval — user may have cancelled
       // while the permission dialog was open.
       if (signal?.aborted) {
-        const aborted = this.result(call, tool.name, false, 'The operation was aborted.', 'aborted', undefined, turnId, tool.maxResultSizeChars)
+        const aborted = this.result(call, tool.name, false, abortedToolResultContent(signal), 'aborted', undefined, turnId, tool.maxResultSizeChars)
         await this.emitToolResultAndPostHooks(aborted, tool, call.input, executionContext, signal)
         return aborted
       }
@@ -135,7 +135,7 @@ export class ToolRunner {
 
       // Check abort signal again after pre-tool hooks.
       if (signal?.aborted) {
-        const aborted = this.result(call, tool.name, false, 'The operation was aborted.', 'aborted', undefined, turnId, tool.maxResultSizeChars)
+        const aborted = this.result(call, tool.name, false, abortedToolResultContent(signal), 'aborted', undefined, turnId, tool.maxResultSizeChars)
         await this.emitToolResultAndPostHooks(aborted, tool, call.input, executionContext, signal)
         return aborted
       }
@@ -150,7 +150,7 @@ export class ToolRunner {
       } catch (error) {
         syncMutableToolContext(context, executionContext)
         const errorCode = error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'execution_failed'
-        const record = this.result(call, tool.name, false, error instanceof Error ? error.message : String(error), errorCode, undefined, turnId, tool.maxResultSizeChars)
+        const record = this.result(call, tool.name, false, errorCode === 'aborted' ? abortedToolResultContent(signal, error) : error instanceof Error ? error.message : String(error), errorCode, undefined, turnId, tool.maxResultSizeChars)
         await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
         return record
       }
@@ -159,7 +159,7 @@ export class ToolRunner {
         throw error
       }
       syncMutableToolContext(context, executionContext)
-      const record = this.result(call, tool.name, false, error instanceof Error ? error.message : String(error), 'aborted', undefined, turnId, tool.maxResultSizeChars)
+      const record = this.result(call, tool.name, false, abortedToolResultContent(signal, error), 'aborted', undefined, turnId, tool.maxResultSizeChars)
       await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
       return record
     } finally {
@@ -291,6 +291,11 @@ export class ToolRunner {
       createdAt: new Date().toISOString(),
     })
   }
+}
+
+function abortedToolResultContent(signal: AbortSignal | undefined, error?: unknown): string {
+  if (signal?.reason === 'user-cancel') return 'Interrupted by user'
+  return error instanceof Error ? error.message : 'The operation was aborted.'
 }
 
 function normalizeToolResultDisplay(display: ToolResultDisplay | undefined): ToolResultDisplay | undefined {

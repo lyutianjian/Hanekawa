@@ -476,6 +476,7 @@ export interface ModelRequest {
   retry?: { maxRetries?: number; signal?: AbortSignal; callerKind?: 'interactive' | 'background'; persistent?: boolean }
   cacheSource: CacheBreakSource
   cacheRuntime?: CacheRuntime
+  onTextDelta?: (delta: string) => void
 }
 
 export interface ModelResponse {

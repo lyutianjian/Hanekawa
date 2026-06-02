@@ -20,6 +20,13 @@ async function writeFileAtomic(filePath: string, content: string): Promise<void>
   await rename(tmpPath, filePath)
 }
 
+class MessageNotFoundError extends Error {
+  constructor(readonly messageId: string) {
+    super(messageId)
+    this.name = 'MessageNotFoundError'
+  }
+}
+
 export interface CheckpointMapping {
   messageId: string
   commitHash: string
@@ -233,18 +240,20 @@ export class SessionStore {
     const session = await this.resolve(sessionIdOrPrefix)
     if (!session) throw new Error(`Unknown session: ${sessionIdOrPrefix}`)
 
-    // Append to JSONL file (atomic append, no full read-modify-write)
-    const jsonlPath = this.sessionJsonlPath(session.id)
-    const line = JSON.stringify(record) + '\n'
-    appendFileSync(jsonlPath, line, { mode: 0o600 })
+    await this.withJsonlLock(session.id, async () => {
+      // Append to JSONL file (atomic append, no full read-modify-write)
+      const jsonlPath = this.sessionJsonlPath(session.id)
+      const line = JSON.stringify(record) + '\n'
+      appendFileSync(jsonlPath, line, { mode: 0o600 })
 
-    const now = new Date().toISOString()
-    await this.withIndexLock(async () => {
-      const index = await this.readIndexUnlocked()
-      const current = index.sessions.find((item) => item.id === session.id) ?? session
-      const meta = this.deriveMetaAfterAppend(current, record, now)
-      this.replaceIndexSession(index, meta)
-      await writeJsonFile(this.indexPath(), index)
+      const now = new Date().toISOString()
+      await this.withIndexLock(async () => {
+        const index = await this.readIndexUnlocked()
+        const current = index.sessions.find((item) => item.id === session.id) ?? session
+        const meta = this.deriveMetaAfterAppend(current, record, now)
+        this.replaceIndexSession(index, meta)
+        await writeJsonFile(this.indexPath(), index)
+      })
     })
   }
 
@@ -458,6 +467,22 @@ export class SessionStore {
    * the record with the given messageId. Returns success/error result.
    */
   async truncateToMessage(sessionId: string, messageId: string): Promise<{ success: boolean; error?: string }> {
+    return this.truncateSessionToMessage(sessionId, messageId, true)
+  }
+
+  /**
+   * Truncate the JSONL session file to include only records before the record
+   * with the given messageId. Returns success/error result.
+   */
+  async truncateBeforeMessage(sessionId: string, messageId: string): Promise<{ success: boolean; error?: string }> {
+    return this.truncateSessionToMessage(sessionId, messageId, false)
+  }
+
+  private async truncateSessionToMessage(
+    sessionId: string,
+    messageId: string,
+    includeTarget: boolean,
+  ): Promise<{ success: boolean; error?: string }> {
     try {
       const jsonlPath = this.sessionJsonlPath(sessionId)
 
@@ -465,56 +490,60 @@ export class SessionStore {
         return { success: false, error: `Session file not found: ${sessionId}` }
       }
 
-      const content = readFileSync(jsonlPath, 'utf-8')
-      const lines = content.split('\n')
+      await this.withJsonlLock(sessionId, async () => {
+        const content = readFileSync(jsonlPath, 'utf-8')
+        const lines = content.split('\n')
 
-      // Find the line containing the target message ID
-      let targetLineIndex = -1
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]
-        if (!line.trim()) continue
-        try {
-          const record = JSON.parse(line) as SessionRecord
-          if ('id' in record && record.id === messageId) {
-            targetLineIndex = i
-            break
+        // Find the line containing the target message ID
+        let targetLineIndex = -1
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i]
+          if (!line.trim()) continue
+          try {
+            const record = JSON.parse(line) as SessionRecord
+            if ('id' in record && record.id === messageId) {
+              targetLineIndex = i
+              break
+            }
+          } catch {
+            // Skip malformed lines
           }
-        } catch {
-          // Skip malformed lines
         }
-      }
 
-      if (targetLineIndex === -1) {
-        return { success: false, error: `Message not found: ${messageId}` }
-      }
-
-      // Keep lines 0 through targetLineIndex (inclusive)
-      const retainedLines = lines.slice(0, targetLineIndex + 1)
-      const truncatedContent = retainedLines.join('\n') + '\n'
-
-      await writeFileAtomic(jsonlPath, truncatedContent)
-
-      // Update message count in the index
-      const retainedRecords = parseJsonLines<SessionRecord>(truncatedContent)
-      const retainedMessageIds = new Set(
-        retainedRecords
-          .filter((record) => record.type === 'message')
-          .map((record) => record.id),
-      )
-      const session = await this.resolve(sessionId)
-      if (session) {
-        const updatedMeta: SessionMeta = {
-          ...this.deriveMetaFromRecords(session.id, retainedRecords, session),
-          updatedAt: new Date().toISOString(),
-          checkpoints: session.checkpoints?.filter((mapping) => retainedMessageIds.has(mapping.messageId)),
-          ...(session.compactFailureCount ? { compactFailureCount: session.compactFailureCount } : {}),
-          ...(session.denialState ? { denialState: session.denialState } : {}),
+        if (targetLineIndex === -1) {
+          throw new MessageNotFoundError(messageId)
         }
-        await this.upsertIndex(updatedMeta)
-      }
+
+        const retainedLines = lines.slice(0, includeTarget ? targetLineIndex + 1 : targetLineIndex)
+        const truncatedContent = retainedLines.length > 0 ? `${retainedLines.join('\n')}\n` : ''
+
+        await writeFileAtomic(jsonlPath, truncatedContent)
+
+        // Update message count in the index
+        const retainedRecords = parseJsonLines<SessionRecord>(truncatedContent)
+        const retainedMessageIds = new Set(
+          retainedRecords
+            .filter((record) => record.type === 'message')
+            .map((record) => record.id),
+        )
+        const session = await this.resolve(sessionId)
+        if (session) {
+          const updatedMeta: SessionMeta = {
+            ...this.deriveMetaFromRecords(session.id, retainedRecords, session),
+            updatedAt: new Date().toISOString(),
+            checkpoints: session.checkpoints?.filter((mapping) => retainedMessageIds.has(mapping.messageId)),
+            ...(session.compactFailureCount ? { compactFailureCount: session.compactFailureCount } : {}),
+            ...(session.denialState ? { denialState: session.denialState } : {}),
+          }
+          await this.upsertIndex(updatedMeta)
+        }
+      })
 
       return { success: true }
     } catch (error) {
+      if (error instanceof MessageNotFoundError) {
+        return { success: false, error: `Message not found: ${error.messageId}` }
+      }
       const message = error instanceof Error ? error.message : String(error)
       return { success: false, error: `Failed to truncate session: ${message}` }
     }

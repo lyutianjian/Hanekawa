@@ -324,6 +324,20 @@ export class ContextBuilder {
         continue
       }
 
+      if (record.type === 'at_mention_context') {
+        contextItems.push({
+          kind: 'message',
+          message: {
+            id: record.id,
+            role: 'user',
+            content: record.content,
+            createdAt: record.createdAt,
+            turnId: record.turnId,
+          },
+        })
+        continue
+      }
+
       if (record.type === 'tool_use') {
         contextItems.push({
           kind: 'tool_use',

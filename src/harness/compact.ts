@@ -324,6 +324,10 @@ function formatRecordsForSummary(records: SessionRecord[]): string {
       return `<message role="${record.role}">\n${record.content}\n</message>`
     }
 
+    if (record.type === 'at_mention_context') {
+      return `<at_mention_context user_message_id="${record.userMessageId}">\n${record.content}\n</at_mention_context>`
+    }
+
     if (record.type === 'tool_use') {
       return `<tool_use name="${record.tool}" id="${record.id}">\n${JSON.stringify(record.input ?? {})}\n</tool_use>`
     }

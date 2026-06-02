@@ -8,7 +8,12 @@ import {
   generateCommandSuggestions,
   type CommandSuggestion,
 } from '../suggestions/commandSuggestions.js'
-import type { SuggestionType } from '../suggestions/types.js'
+import {
+  applyFileSuggestion,
+  generateFileSuggestions,
+  type FileSuggestion,
+} from '../suggestions/fileSuggestions.js'
+import type { SuggestionItem, SuggestionType } from '../suggestions/types.js'
 
 export interface KeyboardShortcutOptions {
   onSubmit: (text: string) => void
@@ -19,6 +24,7 @@ export interface KeyboardShortcutOptions {
   isStreaming: boolean
   isRestoreMode: boolean
   isPermissionVisible: boolean
+  cwd?: string
   doubleTapWindowMs?: number
 }
 
@@ -49,7 +55,7 @@ export interface KeyboardShortcutState {
   text: string
   cursorPos: number
   hintMessage: string | null
-  suggestions: CommandSuggestion[]
+  suggestions: SuggestionItem[]
   selectedSuggestion: number
   suggestionType: SuggestionType
   setText: (text: string) => void
@@ -68,12 +74,13 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     isStreaming,
     isRestoreMode,
     isPermissionVisible,
+    cwd = process.cwd(),
   } = options
 
   const [text, setText] = useState('')
   const [cursorPos, setCursorPos] = useState(0)
   const [hintMessage, setHintMessage] = useState<string | null>(null)
-  const [suggestions, setSuggestions] = useState<CommandSuggestion[]>([])
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([])
   const [selectedSuggestion, setSelectedSuggestion] = useState(-1)
   const [suggestionType, setSuggestionType] = useState<SuggestionType>('none')
 
@@ -82,6 +89,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
   const escapeClearDetectorRef = useRef<DoubleTapDetector | null>(null)
   const ctrlCDetectorRef = useRef<DoubleTapDetector | null>(null)
   const doubleTapWindowMsRef = useRef(options.doubleTapWindowMs ?? 300)
+  const suggestionRequestRef = useRef(0)
 
   // Load doubleTapWindow from keybindings config on mount
   useEffect(() => {
@@ -127,24 +135,31 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     setSuggestionType('none')
   }, [])
 
-  const refreshSuggestions = useCallback((value: string) => {
+  const refreshSuggestions = useCallback(async (value: string, valueCursorPos: number) => {
+    const requestId = ++suggestionRequestRef.current
     if (isStreaming || shouldIgnoreShortcutInput({ isPermissionVisible, isRestoreMode })) {
       clearSuggestions()
       return
     }
 
-    const nextSuggestions = generateCommandSuggestions(value, listCommands())
+    const commandSuggestions = generateCommandSuggestions(value, listCommands())
+    const nextType: SuggestionType = commandSuggestions.length > 0 ? 'command' : 'file'
+    const nextSuggestions = commandSuggestions.length > 0
+      ? commandSuggestions
+      : await generateFileSuggestions(value, valueCursorPos, cwd)
+
+    if (requestId !== suggestionRequestRef.current) return
     setSuggestions(nextSuggestions)
     setSelectedSuggestion((current) => {
       if (nextSuggestions.length === 0) return -1
       if (current < 0) return 0
       return Math.min(current, nextSuggestions.length - 1)
     })
-    setSuggestionType(nextSuggestions.length > 0 ? 'command' : 'none')
-  }, [clearSuggestions, isPermissionVisible, isRestoreMode, isStreaming])
+    setSuggestionType(nextSuggestions.length > 0 ? nextType : 'none')
+  }, [clearSuggestions, cwd, isPermissionVisible, isRestoreMode, isStreaming])
 
   useEffect(() => {
-    refreshSuggestions(text)
+    void refreshSuggestions(text, cursorPos)
   }, [text, cursorPos, refreshSuggestions])
 
   const handleInput = useCallback(
@@ -163,7 +178,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
         return
       }
 
-      const hasActiveSuggestion = suggestionType === 'command' && suggestions.length > 0
+      const hasActiveSuggestion = suggestionType !== 'none' && suggestions.length > 0
 
       if (hasActiveSuggestion && key.escape && !isStreaming) {
         clearSuggestions()
@@ -186,8 +201,14 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
 
       if (hasActiveSuggestion && key.tab) {
         const suggestion = suggestions[selectedSuggestion < 0 ? 0 : selectedSuggestion]
-        if (suggestion) {
-          const applied = applyCommandSuggestion(suggestion)
+        if (suggestion && suggestionType === 'command') {
+          const applied = applyCommandSuggestion(suggestion as CommandSuggestion)
+          setText(applied.text)
+          setCursorPos(applied.cursorPos)
+          clearSuggestions()
+        }
+        if (suggestion && suggestionType === 'file') {
+          const applied = applyFileSuggestion(text, cursorPos, suggestion as FileSuggestion)
           setText(applied.text)
           setCursorPos(applied.cursorPos)
           clearSuggestions()
@@ -197,11 +218,17 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
 
       if (hasActiveSuggestion && key.return) {
         const suggestion = suggestions[selectedSuggestion < 0 ? 0 : selectedSuggestion]
-        if (suggestion) {
-          const applied = applyCommandSuggestion(suggestion)
+        if (suggestion && suggestionType === 'command') {
+          const applied = applyCommandSuggestion(suggestion as CommandSuggestion)
           onSubmit(applied.text.trim())
           setText('')
           setCursorPos(0)
+          clearSuggestions()
+        }
+        if (suggestion && suggestionType === 'file') {
+          const applied = applyFileSuggestion(text, cursorPos, suggestion as FileSuggestion)
+          setText(applied.text)
+          setCursorPos(applied.cursorPos)
           clearSuggestions()
         }
         return

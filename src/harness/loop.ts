@@ -26,6 +26,7 @@ import type { PlanModeManager } from './planModeManager.js'
 import type { AgentRunResult, ChatMessage, ModelProvider, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
+import { buildAtMentionContextRecord } from './atMentions.js'
 
 export interface ActiveModelRuntime {
   provider: ModelProvider
@@ -186,6 +187,18 @@ export class AgentLoop {
       createdAt: new Date().toISOString(),
     }
     await this.appendRecord(userMessage)
+    if (!userInput.trimStart().startsWith('/')) {
+      const atMentionRecord = await buildAtMentionContextRecord({
+        userInput,
+        userMessageId: userMessage.id,
+        turnId,
+        toolContext: this.options.toolContext,
+        createdAt: new Date().toISOString(),
+      })
+      if (atMentionRecord) {
+        await this.appendRecord(atMentionRecord)
+      }
+    }
     try {
       await this.runUserPromptSubmitHooks(userInput, turnId, signal)
       let lastResponseTokenCount: number | undefined

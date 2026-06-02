@@ -1330,3 +1330,40 @@ test('buildOpenAIMessages omits reasoning_content for user messages', () => {
   const user = messages[0] as { reasoning_content?: string }
   assert.equal(user.reasoning_content, undefined)
 })
+
+test('provider payload builders include at-mention context text', () => {
+  const atMentionContent = '<system-reminder><file path="src/a.py" lines="1-1">print(1)</file></system-reminder>'
+  const request: ModelRequest = {
+    cacheSource: 'agent:test',
+    model: 'test-model',
+    messages: [],
+    contextItems: [
+      {
+        kind: 'message',
+        message: {
+          id: 'u1',
+          role: 'user',
+          content: 'explain @src/a.py',
+          createdAt: '2026-06-02T00:00:00.000Z',
+        },
+      },
+      {
+        kind: 'message',
+        message: {
+          id: 'at1',
+          role: 'user',
+          content: atMentionContent,
+          createdAt: '2026-06-02T00:00:01.000Z',
+        },
+      },
+    ],
+  }
+
+  const openAiMessages = buildOpenAIMessages(request)
+  assert.equal(openAiMessages.some((message) => JSON.stringify(message).includes('src/a.py')), true)
+  assert.equal(openAiMessages.some((message) => JSON.stringify(message).includes('print(1)')), true)
+
+  const anthropicMessages = buildAnthropicMessages(request)
+  assert.equal(anthropicMessages.some((message) => JSON.stringify(message).includes('src/a.py')), true)
+  assert.equal(anthropicMessages.some((message) => JSON.stringify(message).includes('print(1)')), true)
+})

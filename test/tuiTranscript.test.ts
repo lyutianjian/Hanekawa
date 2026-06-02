@@ -29,6 +29,21 @@ test('transcript reducer keeps running tool calls live and commits results to st
   assert.equal(state.recentCompletedToolCall?.toolUseId, 'call-1')
 })
 
+test('transcript reducer ignores at-mention context records', () => {
+  let state = createTranscriptState()
+  state = applyTuiRecordToTranscriptState(state, {
+    type: 'at_mention_context',
+    id: 'at1',
+    userMessageId: 'u1',
+    createdAt: '2026-06-02T00:00:00.000Z',
+    files: [],
+    content: '<system-reminder>hidden</system-reminder>',
+  })
+
+  assert.deepEqual(state.staticItems, [])
+  assert.deepEqual(state.liveItems, [])
+})
+
 test('transcript reducer handles multiple parallel tool calls without leaving stale live rows', () => {
   let state = createTranscriptState()
   state = applyTuiRecordToTranscriptState(state, toolUse('call-1', 'Read', { filePath: 'a.txt' }))

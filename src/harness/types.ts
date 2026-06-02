@@ -106,6 +106,24 @@ export interface ToolUseSummaryRecord {
   model?: string
 }
 
+export interface AtMentionFileContext {
+  path: string
+  displayPath: string
+  lineStart: number
+  lineEnd: number
+  truncated: boolean
+}
+
+export interface AtMentionContextRecord {
+  id: string
+  type: 'at_mention_context'
+  userMessageId: string
+  files: AtMentionFileContext[]
+  content: string
+  createdAt: string
+  turnId?: string
+}
+
 export interface SubagentTranscriptRecord {
   id: string
   type: 'subagent_transcript'
@@ -195,6 +213,7 @@ export interface TurnInterruptionRecord {
 
 export type SessionRecord =
   | ({ type: 'message' } & ChatMessage)
+  | AtMentionContextRecord
   | ToolUseRecord
   | ToolResultRecord
   | ToolApprovalRecord

@@ -80,6 +80,44 @@ test('ContextBuilder can build a reduced system prompt from enabled sections', a
   ])
 })
 
+test('ContextBuilder injects at-mention context records as hidden user context', async () => {
+  const builder = new ContextBuilder(undefined, contextWindow(5000))
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'u1',
+      role: 'user',
+      content: 'explain @src/a.py',
+      createdAt: '2026-06-02T00:00:00.000Z',
+    },
+    {
+      type: 'at_mention_context',
+      id: 'at1',
+      userMessageId: 'u1',
+      turnId: 't1',
+      createdAt: '2026-06-02T00:00:01.000Z',
+      files: [{
+        path: '/repo/src/a.py',
+        displayPath: 'src/a.py',
+        lineStart: 1,
+        lineEnd: 1,
+        truncated: false,
+      }],
+      content: '<system-reminder>\n<file path="src/a.py" lines="1-1">\nprint(1)\n</file>\n</system-reminder>',
+    },
+  ]
+
+  const built = await builder.build({
+    records,
+    tools: [],
+    includeUserContext: false,
+  })
+
+  const context = built.contextItems.filter((item) => item.kind === 'message').map((item) => item.message.content).join('\n')
+  assert.match(context, /<file path="src\/a.py" lines="1-1">/)
+  assert.match(context, /print\(1\)/)
+})
+
 test('ContextBuilder build input can override enabled system sections', async () => {
   const builder = new ContextBuilder(undefined, contextWindow(5000), undefined, ['intro', 'system'])
 

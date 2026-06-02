@@ -171,6 +171,10 @@ export function countSessionRecordTokens(record: SessionRecord): number {
     return countMessageTokens(record)
   }
 
+  if (record.type === 'at_mention_context') {
+    return countTextTokens(record.content)
+  }
+
   if (record.type === 'tool_use') {
     return countTextTokens(`${record.tool}\n${JSON.stringify(record.input ?? {})}`)
   }

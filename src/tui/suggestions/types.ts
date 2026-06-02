@@ -5,4 +5,4 @@ export interface SuggestionItem<TMetadata = unknown> {
   metadata?: TMetadata
 }
 
-export type SuggestionType = 'command' | 'none'
+export type SuggestionType = 'command' | 'file' | 'none'

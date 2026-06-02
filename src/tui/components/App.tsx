@@ -725,7 +725,7 @@ export function App({
         />
       )}
 
-      {suggestionType === 'command' && suggestions.length > 0 && (
+      {suggestionType !== 'none' && suggestions.length > 0 && (
         <CommandSuggestions suggestions={suggestions} selectedIndex={selectedSuggestion} />
       )}
 

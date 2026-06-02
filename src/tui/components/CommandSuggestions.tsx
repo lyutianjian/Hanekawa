@@ -1,15 +1,15 @@
 import { Box, Text, useStdout } from 'ink'
-import type { CommandSuggestion } from '../suggestions/commandSuggestions.js'
+import type { SuggestionItem } from '../suggestions/types.js'
 import { theme } from '../theme.js'
 
 const MAX_VISIBLE_SUGGESTIONS = 6
 
-interface CommandSuggestionsProps {
-  suggestions: CommandSuggestion[]
+interface SuggestionsListProps {
+  suggestions: SuggestionItem[]
   selectedIndex: number
 }
 
-export function CommandSuggestions({ suggestions, selectedIndex }: CommandSuggestionsProps) {
+export function SuggestionsList({ suggestions, selectedIndex }: SuggestionsListProps) {
   const { stdout } = useStdout()
   const columns = stdout.columns || 80
   if (suggestions.length === 0) return null
@@ -45,6 +45,8 @@ export function CommandSuggestions({ suggestions, selectedIndex }: CommandSugges
     </Box>
   )
 }
+
+export const CommandSuggestions = SuggestionsList
 
 function truncate(value: string, maxWidth: number): string {
   if (maxWidth <= 0) return ''

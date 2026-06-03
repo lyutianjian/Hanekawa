@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { Box, Text, useStdout } from 'ink'
 import stringWidth from 'string-width'
 import type { TaskDisplaySnapshot } from '../../harness/types.js'
@@ -209,6 +209,7 @@ interface SpinnerProps {
   taskSnapshot?: TaskDisplaySnapshot
   spinnerColors?: SpinnerColors
   active?: boolean
+  responseLengthRef?: RefObject<number>
 }
 
 export interface SpinnerColors {
@@ -216,7 +217,7 @@ export interface SpinnerColors {
   shimmerColor: string
 }
 
-export function Spinner({ subText, mode: streamMode = 'requesting', taskSnapshot, spinnerColors, active = true }: SpinnerProps) {
+export function Spinner({ subText, mode: streamMode = 'requesting', taskSnapshot, spinnerColors, active = true, responseLengthRef }: SpinnerProps) {
   const [randomVerb] = useState(() => `${sampleSpinnerVerb()}...`)
   const [sampledSpinnerColors] = useState(sampleSpinnerColors)
   const [thinkingStatus, setThinkingStatus] = useState<'thinking' | number | null>(null)
@@ -264,16 +265,24 @@ export function Spinner({ subText, mode: streamMode = 'requesting', taskSnapshot
 
   const elapsedText = `${elapsed}s`
   const terminalWidth = stdout.columns || 80
-  const messageWidth = Math.max(1, terminalWidth - stringWidth(elapsedText) - 6)
+
+  // Build parenthetical: (elapsed · ↓ tokens · thinking status)
+  const approxTokens = responseLengthRef ? Math.round(responseLengthRef.current / 4) : 0
+  const parentheticalSegments: string[] = [elapsedText]
+  if (approxTokens > 0) parentheticalSegments.push(`↓ ${approxTokens} tokens`)
+  const thinkingLabel = formatThinkingStatus(thinkingStatus)
+  if (thinkingLabel) parentheticalSegments.push(thinkingLabel)
+  const parenthetical = parentheticalSegments.join(' · ')
+
+  const parentheticalWidth = stringWidth(parenthetical) + 4 // "(" + ")" + spaces
+  const messageWidth = Math.max(1, terminalWidth - parentheticalWidth - 2)
   const taskMessage = taskSnapshot ? formatActiveTaskMessage(taskSnapshot) : undefined
-  const streamMessage = mode === 'thinking'
-    ? 'Thinking...'
-    : mode === 'waiting'
-      ? 'Waiting for model...'
-      : formatThinkingStatus(thinkingStatus)
+  // Always show random verb as main message — never "Thinking..."
   const message = hasActiveTool
     ? truncateMiddleByWidth(subText!, messageWidth)
-    : truncateMiddleByWidth(streamMessage ?? taskMessage ?? randomVerb, messageWidth)
+    : mode === 'waiting'
+      ? 'Waiting for model...'
+      : truncateMiddleByWidth(taskMessage ?? randomVerb, messageWidth)
   const glimmerIndex = getGlimmerIndex(message, mode, time)
   const flashOpacity = mode === 'tool-use'
     ? (Math.sin((time / ACTIVE_TOOL_FLASH_MS) * Math.PI) + 1) / 2
@@ -292,7 +301,7 @@ export function Spinner({ subText, mode: streamMode = 'requesting', taskSnapshot
           shimmerColor={shimmerColor}
         />
         <Text color={DIM_COLOR}>(</Text>
-        <Text color={DIM_COLOR}>{elapsedText}</Text>
+        <Text color={DIM_COLOR}>{parenthetical}</Text>
         <Text color={DIM_COLOR}>)</Text>
       </Box>
       {taskSnapshot && taskSnapshot.counts.total > 0 && (
@@ -313,7 +322,7 @@ type StreamSpinnerMode = 'requesting' | 'thinking' | 'waiting'
 type SpinnerMode = StreamSpinnerMode | 'tool-use'
 
 function formatThinkingStatus(status: 'thinking' | number | null): string | undefined {
-  if (status === 'thinking') return 'Thinking...'
+  if (status === 'thinking') return 'thinking'
   if (typeof status === 'number') return `thought for ${Math.max(1, Math.round(status / 1000))}s`
   return undefined
 }

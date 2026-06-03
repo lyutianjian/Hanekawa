@@ -12,6 +12,7 @@ export interface TuiTranscriptState {
 export interface ApplyRecordOptions {
   approvalToolUseId?: string
   subagentProgress?: string
+  thinkingDurationMs?: number
 }
 
 export function createTranscriptState(staticItems: TUIDisplayItem[] = []): TuiTranscriptState {
@@ -41,13 +42,41 @@ export function appendStaticTranscriptItem(
   }
 }
 
+/** Move all live items to static (called at the start of a new turn). */
+export function commitLiveItemsToStatic(state: TuiTranscriptState): TuiTranscriptState {
+  if (state.liveItems.length === 0) return state
+  return {
+    ...state,
+    staticItems: [...state.staticItems, ...state.liveItems],
+    liveItems: [],
+  }
+}
+
 export function applyTuiRecordToTranscriptState(
   state: TuiTranscriptState,
   record: SessionRecord,
   options: ApplyRecordOptions = {},
 ): TuiTranscriptState {
   if (record.type === 'message') {
-    return appendStaticTranscriptItem(state, messageRecordToDisplayItem(record))
+    const item = messageRecordToDisplayItem(record, options.thinkingDurationMs)
+    // Assistant messages with thinking blocks go to liveItems so MessageList
+    // can control expanded/collapsed state via ctrl+o.
+    if (item.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0) {
+      // Move any existing thinking items from liveItems to static first
+      const existingThinking = state.liveItems.filter(
+        (li) => li.kind === 'assistant' && li.thinkingBlocks && li.thinkingBlocks.length > 0,
+      )
+      const remainingLive = state.liveItems.filter(
+        (li) => !(li.kind === 'assistant' && li.thinkingBlocks && li.thinkingBlocks.length > 0),
+      )
+      return {
+        ...state,
+        staticItems: [...state.staticItems, ...existingThinking],
+        liveItems: [...remainingLive, item],
+        recentThinkingAssistant: item,
+      }
+    }
+    return appendStaticTranscriptItem(state, item)
   }
 
   if (record.type === 'tool_use') {
@@ -256,13 +285,14 @@ export function isHiddenToolCall(toolName: string): boolean {
 
 function messageRecordToDisplayItem(
   record: Extract<SessionRecord, { type: 'message' }>,
+  thinkingDurationMs?: number,
 ): TUIDisplayItem {
   return {
     kind: record.role === 'user' ? 'user' : record.role === 'assistant' ? 'assistant' : 'system',
     id: record.id,
     content: record.content,
     ...(record.role === 'assistant' && record.thinkingBlocks && record.thinkingBlocks.length > 0
-      ? { thinkingBlocks: record.thinkingBlocks }
+      ? { thinkingBlocks: record.thinkingBlocks, thinkingDurationMs }
       : {}),
     createdAt: record.createdAt,
   }

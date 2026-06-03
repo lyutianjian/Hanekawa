@@ -198,6 +198,7 @@ export function App({
     streamMode,
     taskSnapshot,
     usage,
+    responseLengthRef,
     submit,
     interrupt,
     reloadMessages,
@@ -681,6 +682,7 @@ export function App({
         items={liveItems}
         recentCompletedToolCall={recentCompletedToolCall}
         recentThinkingAssistant={recentThinkingAssistant}
+        isStreaming={isStreaming}
         isOverlayActive={isOverlayActive}
         animationsEnabled={animationsEnabled}
       />
@@ -693,6 +695,7 @@ export function App({
           taskSnapshot={taskSnapshot}
           spinnerColors={spinnerColors}
           active={showSpinner}
+          responseLengthRef={responseLengthRef}
         />
       )}
 

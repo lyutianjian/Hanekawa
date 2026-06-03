@@ -7,10 +7,11 @@ import { AssistantThinkingMessage } from './AssistantThinkingMessage.js'
 interface AssistantMessageProps {
   content: string
   thinkingBlocks?: ThinkingBlock[]
+  thinkingDurationMs?: number
   thinkingExpanded?: boolean
 }
 
-export function AssistantMessage({ content, thinkingBlocks, thinkingExpanded = false }: AssistantMessageProps) {
+export function AssistantMessage({ content, thinkingBlocks, thinkingDurationMs, thinkingExpanded = false }: AssistantMessageProps) {
   const hasContent = content.trim().length > 0
   const hasThinking = Boolean(thinkingBlocks?.length)
   if (!hasContent && !hasThinking) return null
@@ -21,7 +22,7 @@ export function AssistantMessage({ content, thinkingBlocks, thinkingExpanded = f
         <Text color={theme.brand}>*</Text>
       </Box>
       <Box flexDirection="column" flexGrow={1}>
-        {hasThinking && <AssistantThinkingMessage blocks={thinkingBlocks!} expanded={thinkingExpanded} />}
+        {hasThinking && <AssistantThinkingMessage blocks={thinkingBlocks!} expanded={thinkingExpanded} thinkingDurationMs={thinkingDurationMs} />}
         {hasContent && <Markdown content={content} />}
       </Box>
     </Box>

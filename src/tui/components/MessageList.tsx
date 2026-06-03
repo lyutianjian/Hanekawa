@@ -12,6 +12,7 @@ interface MessageListProps {
   items: TUIDisplayItem[]
   recentCompletedToolCall?: Extract<TUIDisplayItem, { kind: 'tool_call' }> | null
   recentThinkingAssistant?: Extract<TUIDisplayItem, { kind: 'assistant' }> | null
+  isStreaming?: boolean
   isOverlayActive?: boolean
   animationsEnabled?: boolean
 }
@@ -24,6 +25,7 @@ export function MessageList({
   items,
   recentCompletedToolCall,
   recentThinkingAssistant,
+  isStreaming,
   isOverlayActive,
   animationsEnabled = true,
 }: MessageListProps) {
@@ -48,25 +50,22 @@ export function MessageList({
 
   return (
     <Box flexDirection="column">
-      {items.map((item) => (
-        <DisplayItem
-          key={item.id}
-          item={item}
-          animationsEnabled={animationsEnabled}
-        />
-      ))}
+      {items.map((item) => {
+        const isLatestThinking = previewTarget?.kind === 'thinking' && previewTarget.item.id === item.id
+        const isLiveThinking = isStreaming && item.kind === 'assistant' && Boolean(item.thinkingBlocks?.length) && recentThinkingAssistant?.id === item.id
+        return (
+          <DisplayItem
+            key={item.id}
+            item={item}
+            expanded={isLatestThinking || isLiveThinking}
+            animationsEnabled={animationsEnabled}
+          />
+        )
+      })}
       {previewTarget?.kind === 'tool' && (
         <DisplayItem
           key={`preview-${previewTarget.key}`}
           item={previewTarget.item}
-          expanded
-          animationsEnabled={animationsEnabled}
-        />
-      )}
-      {previewTarget?.kind === 'thinking' && (
-        <DisplayItem
-          key={`preview-${previewTarget.key}`}
-          item={{ ...previewTarget.item, content: '' }}
           expanded
           animationsEnabled={animationsEnabled}
         />
@@ -88,7 +87,7 @@ export function DisplayItem({
     case 'user':
       return <UserMessage content={item.content} />
     case 'assistant':
-      return <AssistantMessage content={item.content} thinkingBlocks={item.thinkingBlocks} thinkingExpanded={expanded} />
+      return <AssistantMessage content={item.content} thinkingBlocks={item.thinkingBlocks} thinkingDurationMs={item.thinkingDurationMs} thinkingExpanded={expanded} />
     case 'tool_call':
       return <ToolCallBlock item={item} expanded={expanded} animationsEnabled={animationsEnabled} />
     case 'compact_boundary':

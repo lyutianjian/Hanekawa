@@ -6,9 +6,10 @@ import { Markdown } from './Markdown.js'
 interface AssistantThinkingMessageProps {
   blocks: ThinkingBlock[]
   expanded?: boolean
+  thinkingDurationMs?: number
 }
 
-export function AssistantThinkingMessage({ blocks, expanded = false }: AssistantThinkingMessageProps) {
+export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDurationMs }: AssistantThinkingMessageProps) {
   if (blocks.length === 0) return null
 
   const redacted = blocks.every((block) => block.type === 'redacted_thinking')
@@ -27,9 +28,12 @@ export function AssistantThinkingMessage({ blocks, expanded = false }: Assistant
   }
 
   if (!expanded) {
+    const label = thinkingDurationMs
+      ? `Thought for ${Math.max(1, Math.round(thinkingDurationMs / 1000))}s`
+      : 'Thinking'
     return (
       <Text color={theme.dimText} dimColor italic>
-        Thinking <Text color={theme.dimText} dimColor>(ctrl+o to expand)</Text>
+        {label} <Text color={theme.dimText} dimColor>(ctrl+o to expand)</Text>
       </Text>
     )
   }

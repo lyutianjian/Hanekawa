@@ -22,6 +22,7 @@ import {
   applyToolProgressToTranscriptState,
   applyTuiRecordToTranscriptState,
   clearToolProgress,
+  commitLiveItemsToStatic,
   createTranscriptState,
   isHiddenToolCall,
   recordsToDisplayItems,
@@ -82,6 +83,9 @@ export function useAgentLoop({
   const lastToolUseIdRef = useRef<Map<string, string>>(new Map())
   const activeToolProgressRef = useRef<Map<string, ToolProgressEvent>>(new Map())
   const subagentProgressRef = useRef<Map<string, string>>(new Map())
+  const responseLengthRef = useRef(0)
+  const thinkingStartRef = useRef<number | null>(null)
+  const thinkingDurationRef = useRef<number | null>(null)
 
   // CheckpointService for creating snapshots before each user message
   const checkpointServiceRef = useRef<CheckpointService | null>(null)
@@ -136,6 +140,9 @@ export function useAgentLoop({
 
   const submit = useCallback(
     async (input: string) => {
+      // Move any live items (e.g. thinking blocks from the previous turn) to static
+      setTranscript((prev) => commitLiveItemsToStatic(prev))
+
       // Add user message — generate ID once, use everywhere
       const messageId = randomUUID()
       const userMsg: TUIDisplayItem = {
@@ -168,6 +175,9 @@ export function useAgentLoop({
       setIsStreaming(true)
       setSpinnerSubText(undefined)
       setStreamMode('requesting')
+      responseLengthRef.current = 0
+      thinkingStartRef.current = null
+      thinkingDurationRef.current = null
 
       const ac = new AbortController()
       abortControllerRef.current = ac
@@ -259,14 +269,28 @@ export function useAgentLoop({
       case 'thinking_start':
       case 'thinking_delta':
       case 'redacted_thinking':
+        if (thinkingStartRef.current === null) thinkingStartRef.current = Date.now()
+        if (event.type === 'thinking_delta') responseLengthRef.current += event.thinking.length
         setStreamMode('thinking')
+        return
+      case 'thinking_stop':
+        if (thinkingStartRef.current !== null) {
+          thinkingDurationRef.current = Date.now() - thinkingStartRef.current
+          thinkingStartRef.current = null
+        }
+        setStreamMode('requesting')
+        return
+      case 'text_delta':
+        responseLengthRef.current += event.text.length
+        setStreamMode('requesting')
+        return
+      case 'tool_input_delta':
+        responseLengthRef.current += event.partialJson.length
+        setStreamMode('requesting')
         return
       case 'idle_warning':
         setStreamMode('waiting')
         return
-      case 'thinking_stop':
-      case 'text_delta':
-      case 'tool_input_delta':
       case 'message_start':
       case 'message_stop':
       case 'thinking_signature':
@@ -304,7 +328,9 @@ export function useAgentLoop({
       } else if (record.type === 'message' && record.role === 'assistant') {
         setTranscript((prev) => {
           if (prev.staticItems.some((item) => item.kind === 'assistant' && item.id === record.id)) return prev
-          return applyTuiRecordToTranscriptState(prev, record)
+          return applyTuiRecordToTranscriptState(prev, record, {
+            thinkingDurationMs: thinkingDurationRef.current ?? undefined,
+          })
         })
       } else if (record.type === 'compact_boundary') {
         setTranscript((prev) => applyTuiRecordToTranscriptState(prev, record))
@@ -373,6 +399,7 @@ export function useAgentLoop({
     streamMode,
     taskSnapshot,
     usage,
+    responseLengthRef,
     submit,
     interrupt,
     reloadMessages,

@@ -1,27 +1,41 @@
-import { useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { theme } from '../theme.js'
-import type { Checkpoint } from '../../services/checkpoint/checkpointService.js'
+import type { CheckpointDiffSummary, CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
+
+export type RestoreDecision =
+  | 'restore-code-and-conversation'
+  | 'restore-conversation'
+  | 'restore-code'
+  | 'summarize-from-here'
+  | 'summarize-up-to-here'
+  | 'nevermind'
 
 export interface RestoreModeProps {
-  checkpoints: Checkpoint[]
-  onSelect: (checkpoint: Checkpoint) => Promise<void>
+  checkpoints: CheckpointWithDiff[]
+  onSelect: (checkpoint: CheckpointWithDiff, decision: RestoreDecision) => Promise<void>
   onCancel: () => void
 }
 
-/**
- * RestoreMode TUI component.
- * Displays a scrollable list of checkpoints in reverse chronological order.
- * Allows the user to select a checkpoint to restore or press Escape to cancel.
- */
+export interface RestoreOption {
+  decision: RestoreDecision
+  label: string
+}
+
+type RestoreScreen = 'select-node' | 'confirm'
+
 export function RestoreMode({ checkpoints, onSelect, onCancel }: RestoreModeProps) {
-  const [selectedIndex, setSelectedIndex] = useState(0)
+  const [screen, setScreen] = useState<RestoreScreen>('select-node')
+  const [selectedCheckpointIndex, setSelectedCheckpointIndex] = useState(0)
+  const [selectedOptionIndex, setSelectedOptionIndex] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Sort checkpoints in reverse chronological order
-  const sorted = [...checkpoints].sort(
-    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+  const sorted = useMemo(() => sortCheckpointsReverseChronological(checkpoints), [checkpoints])
+  const selectedCheckpoint = sorted[selectedCheckpointIndex]
+  const options = useMemo(
+    () => buildRestoreOptions(selectedCheckpoint?.restoreDiff.hasChanges === true),
+    [selectedCheckpoint?.restoreDiff.hasChanges],
   )
 
   useInput((input, key) => {
@@ -32,131 +46,343 @@ export function RestoreMode({ checkpoints, onSelect, onCancel }: RestoreModeProp
       return
     }
 
-    if (key.return) {
-      if (sorted.length === 0) return
-      const selected = sorted[selectedIndex]
-      if (!selected) return
-
-      setIsLoading(true)
-      setError(null)
-      onSelect(selected)
-        .catch((err: Error) => {
-          setError(err.message || 'Restore operation failed')
-        })
-        .finally(() => {
-          setIsLoading(false)
-        })
+    if (screen === 'select-node') {
+      if (key.upArrow) {
+        setSelectedCheckpointIndex((index) => Math.max(0, index - 1))
+        return
+      }
+      if (key.downArrow) {
+        setSelectedCheckpointIndex((index) => Math.min(sorted.length - 1, index + 1))
+        return
+      }
+      if (key.return) {
+        if (!selectedCheckpoint) return
+        setSelectedOptionIndex(0)
+        setError(null)
+        setScreen('confirm')
+      }
       return
     }
 
     if (key.upArrow) {
-      setSelectedIndex((prev) => Math.max(0, prev - 1))
-    } else if (key.downArrow) {
-      setSelectedIndex((prev) => Math.min(sorted.length - 1, prev + 1))
+      setSelectedOptionIndex((index) => Math.max(0, index - 1))
+      return
+    }
+    if (key.downArrow) {
+      setSelectedOptionIndex((index) => Math.min(options.length - 1, index + 1))
+      return
+    }
+
+    const numericIndex = parseNumericOption(input, options.length)
+    if (numericIndex !== null) {
+      const option = options[numericIndex]
+      if (option) {
+        setSelectedOptionIndex(numericIndex)
+        void resolveOption(selectedCheckpoint, option)
+      }
+      return
+    }
+
+    if (key.return) {
+      const option = options[selectedOptionIndex]
+      if (option) void resolveOption(selectedCheckpoint, option)
     }
   })
 
-  // Empty checkpoint list
+  const resolveOption = async (
+    checkpoint: CheckpointWithDiff | undefined,
+    option: RestoreOption,
+  ): Promise<void> => {
+    if (!checkpoint) return
+    if (option.decision === 'nevermind') {
+      setScreen('select-node')
+      setSelectedOptionIndex(0)
+      setError(null)
+      return
+    }
+
+    setIsLoading(true)
+    setError(null)
+    try {
+      await onSelect(checkpoint, option.decision)
+      if (option.decision === 'summarize-from-here' || option.decision === 'summarize-up-to-here') {
+        setScreen('select-node')
+        setSelectedOptionIndex(0)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Rewind operation failed')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   if (checkpoints.length === 0) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.brand} padding={1} marginY={1}>
-        <Text bold color={theme.brand}>
-          Restore Mode
-        </Text>
+      <RewindPanel>
+        <Text bold color={theme.brand}>Rewind</Text>
         <Box marginTop={1}>
           <Text color={theme.dimText}>No checkpoints available</Text>
         </Box>
         <Box marginTop={1}>
           <Text color={theme.dimText}>[Escape] Exit</Text>
         </Box>
-      </Box>
+      </RewindPanel>
     )
   }
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.brand} padding={1} marginY={1}>
-      <Text bold color={theme.brand}>
-        Restore Mode
-      </Text>
-      <Box marginTop={1}>
-        <Text color={theme.dimText}>
-          Select a checkpoint to restore (↑/↓ to navigate, Enter to select, Escape to cancel)
-        </Text>
-      </Box>
+    <RewindPanel>
+      <Text bold color={theme.brand}>Rewind</Text>
 
-      {error && (
+      {screen === 'select-node' ? (
+        <SelectNodeScreen
+          checkpoints={sorted}
+          selectedIndex={selectedCheckpointIndex}
+          error={error}
+        />
+      ) : (
+        <ConfirmScreen
+          checkpoint={selectedCheckpoint}
+          options={options}
+          selectedOptionIndex={selectedOptionIndex}
+          isLoading={isLoading}
+          error={error}
+        />
+      )}
+    </RewindPanel>
+  )
+}
+
+function RewindPanel({ children }: { children: ReactNode }) {
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.brand}
+      borderLeft={false}
+      borderRight={false}
+      borderBottom={false}
+      marginTop={1}
+    >
+      <Box flexDirection="column" paddingX={1}>
+        {children}
+      </Box>
+    </Box>
+  )
+}
+
+function SelectNodeScreen({
+  checkpoints,
+  selectedIndex,
+  error,
+}: {
+  checkpoints: CheckpointWithDiff[]
+  selectedIndex: number
+  error: string | null
+}) {
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text>Restore the code and/or conversation to the point before...</Text>
+      {error ? (
         <Box marginTop={1}>
           <Text color={theme.error}>{error}</Text>
         </Box>
-      )}
+      ) : null}
+      <Box flexDirection="column" marginTop={1}>
+        {checkpoints.map((checkpoint, index) => (
+          <CheckpointEntry
+            key={getCheckpointRenderKey(checkpoint)}
+            checkpoint={checkpoint}
+            isSelected={index === selectedIndex}
+          />
+        ))}
+      </Box>
+      <Box marginTop={1}>
+        <Text color={theme.dimText}>[Up/Down] Navigate  [Enter] Select  [Esc] Cancel</Text>
+      </Box>
+    </Box>
+  )
+}
+
+function ConfirmScreen({
+  checkpoint,
+  options,
+  selectedOptionIndex,
+  isLoading,
+  error,
+}: {
+  checkpoint: CheckpointWithDiff | undefined
+  options: readonly RestoreOption[]
+  selectedOptionIndex: number
+  isLoading: boolean
+  error: string | null
+}) {
+  if (!checkpoint) return null
+  const selectedDecision = options[selectedOptionIndex]?.decision
+  const loadingLabel = selectedDecision === 'summarize-from-here' || selectedDecision === 'summarize-up-to-here'
+    ? 'Summarizing...'
+    : 'Rewinding...'
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text>Confirm you want to restore to the point before you sent this message:</Text>
+      <Box borderStyle="single" borderTop={false} borderRight={false} borderBottom={false} borderColor={theme.border} paddingLeft={1} marginTop={1}>
+        <Box flexDirection="column">
+          <Text>{truncateMessage(checkpoint.messageContent, 100) || '(no message)'}</Text>
+          <Text color={theme.dimText}>{formatRelativeTime(checkpoint.timestamp)}</Text>
+        </Box>
+      </Box>
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={theme.dimText}>The conversation will be forked.</Text>
+        {checkpoint.restoreDiff.hasChanges ? (
+          <Text color={theme.dimText}>
+            The code will be restored {formatDiffSummary(checkpoint.restoreDiff)}.
+          </Text>
+        ) : (
+          <Text color={theme.dimText}>The code will be unchanged.</Text>
+        )}
+      </Box>
+
+      {error ? (
+        <Box marginTop={1}>
+          <Text color={theme.error}>{error}</Text>
+        </Box>
+      ) : null}
 
       {isLoading ? (
         <Box marginTop={1}>
-          <Text color={theme.brand}>Restoring checkpoint...</Text>
+          <Text color={theme.brand}>{loadingLabel}</Text>
         </Box>
       ) : (
         <Box flexDirection="column" marginTop={1}>
-          {sorted.map((checkpoint, index) => (
-            <CheckpointEntry
-              key={getCheckpointRenderKey(checkpoint)}
-              checkpoint={checkpoint}
-              isSelected={index === selectedIndex}
+          {options.map((option, index) => (
+            <RestoreOptionEntry
+              key={option.decision}
+              option={option}
+              index={index}
+              isSelected={index === selectedOptionIndex}
             />
           ))}
         </Box>
       )}
 
+      {checkpoint.restoreDiff.hasChanges ? (
+        <Box marginTop={1}>
+          <Text color={theme.dimText}>Warning: Rewinding does not affect files edited manually or via bash.</Text>
+        </Box>
+      ) : null}
+
       <Box marginTop={1}>
-        <Text color={theme.dimText}>[Escape] Cancel  [Enter] Restore</Text>
+        <Text color={theme.dimText}>[Up/Down] Options  [1-{options.length}] Quick  [Enter] Select  [Esc] Cancel</Text>
       </Box>
     </Box>
   )
 }
 
-export function getCheckpointRenderKey(checkpoint: Pick<Checkpoint, 'messageId'>): string {
-  return checkpoint.messageId
-}
-
-interface CheckpointEntryProps {
-  checkpoint: Checkpoint
-  isSelected: boolean
-}
-
-function CheckpointEntry({ checkpoint, isSelected }: CheckpointEntryProps) {
-  const prefix = isSelected ? '▸ ' : '  '
-  const messagePreview = truncateMessage(checkpoint.messageContent, 80)
-  const timestamp = formatLocalTimestamp(checkpoint.timestamp)
+function CheckpointEntry({ checkpoint, isSelected }: { checkpoint: CheckpointWithDiff; isSelected: boolean }) {
+  const prefix = isSelected ? '> ' : '  '
+  const messagePreview = truncateMessage(checkpoint.messageContent.replace(/\s+/g, ' '), 88)
 
   return (
-    <Box>
-      <Text color={isSelected ? theme.brand : theme.assistantText}>
-        {prefix}
-        <Text color={theme.dimText}>{timestamp}</Text>
-        {' '}
-        {messagePreview || '(no message)'}
+    <Box flexDirection="column">
+      <Text color={isSelected ? theme.brand : theme.assistantText} bold={isSelected}>
+        {prefix}{messagePreview || '(no message)'}
       </Text>
+      <Box paddingLeft={2}>
+        <DiffSummaryText summary={checkpoint.turnDiff} />
+        {checkpoint.isCurrent ? <Text color={theme.dimText}> (current)</Text> : null}
+      </Box>
     </Box>
   )
 }
 
-/**
- * Truncate message content to at most maxLength characters.
- * Adds ellipsis if truncated.
- */
-function truncateMessage(content: string, maxLength: number): string {
-  if (content.length <= maxLength) return content
-  return content.slice(0, maxLength - 1) + '…'
+function RestoreOptionEntry({
+  option,
+  index,
+  isSelected,
+}: {
+  option: RestoreOption
+  index: number
+  isSelected: boolean
+}) {
+  return (
+    <Text color={isSelected ? theme.brand : theme.assistantText} bold={isSelected}>
+      {isSelected ? '> ' : '  '}
+      {index + 1}. {option.label}
+    </Text>
+  )
 }
 
-/**
- * Format an ISO timestamp to local time display.
- */
-function formatLocalTimestamp(isoTimestamp: string): string {
-  try {
-    const date = new Date(isoTimestamp)
-    if (isNaN(date.getTime())) return isoTimestamp
-    return date.toLocaleString()
-  } catch {
-    return isoTimestamp
+function DiffSummaryText({ summary }: { summary: CheckpointDiffSummary }) {
+  if (!summary.hasChanges) {
+    return <Text color={theme.dimText}>No code changes</Text>
   }
+  return (
+    <Text color={theme.dimText}>
+      {summary.fileCount} {summary.fileCount === 1 ? 'file' : 'files'} changed{' '}
+      <Text color={theme.success}>+{summary.additions}</Text>
+      {' '}
+      <Text color={theme.error}>-{summary.deletions}</Text>
+    </Text>
+  )
+}
+
+export function buildRestoreOptions(hasCodeChanges: boolean): readonly RestoreOption[] {
+  const conversationOnly: RestoreOption[] = [
+    { decision: 'restore-conversation', label: 'Restore conversation' },
+    { decision: 'summarize-from-here', label: 'Summarize from here' },
+    { decision: 'summarize-up-to-here', label: 'Summarize up to here' },
+    { decision: 'nevermind', label: 'Never mind' },
+  ]
+  if (!hasCodeChanges) return conversationOnly
+  return [
+    { decision: 'restore-code-and-conversation', label: 'Restore code and conversation' },
+    { decision: 'restore-conversation', label: 'Restore conversation' },
+    { decision: 'restore-code', label: 'Restore code' },
+    { decision: 'summarize-from-here', label: 'Summarize from here' },
+    { decision: 'summarize-up-to-here', label: 'Summarize up to here' },
+    { decision: 'nevermind', label: 'Never mind' },
+  ]
+}
+
+export function sortCheckpointsReverseChronological(checkpoints: CheckpointWithDiff[]): CheckpointWithDiff[] {
+  return [...checkpoints].sort(
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+  )
+}
+
+export function getCheckpointRenderKey(checkpoint: Pick<CheckpointWithDiff, 'messageId'>): string {
+  return checkpoint.messageId
+}
+
+export function formatDiffSummary(summary: CheckpointDiffSummary): string {
+  if (!summary.hasChanges) return 'unchanged'
+  const filePart = summary.firstFile
+    ? `in ${summary.firstFile}${summary.fileCount > 1 ? ` and ${summary.fileCount - 1} other ${summary.fileCount - 1 === 1 ? 'file' : 'files'}` : ''}`
+    : `across ${summary.fileCount} ${summary.fileCount === 1 ? 'file' : 'files'}`
+  return `+${summary.additions} -${summary.deletions} ${filePart}`
+}
+
+export function truncateMessage(content: string, maxLength: number): string {
+  if (content.length <= maxLength) return content
+  return `${content.slice(0, Math.max(0, maxLength - 3))}...`
+}
+
+function parseNumericOption(input: string, optionCount: number): number | null {
+  if (!/^[1-9]$/.test(input)) return null
+  const index = Number.parseInt(input, 10) - 1
+  return index >= 0 && index < optionCount ? index : null
+}
+
+function formatRelativeTime(isoTimestamp: string): string {
+  const timestamp = new Date(isoTimestamp).getTime()
+  if (!Number.isFinite(timestamp)) return isoTimestamp
+  const elapsedMs = Math.max(0, Date.now() - timestamp)
+  const minuteMs = 60_000
+  const hourMs = 60 * minuteMs
+  const dayMs = 24 * hourMs
+  if (elapsedMs < minuteMs) return 'just now'
+  if (elapsedMs < hourMs) return `${Math.floor(elapsedMs / minuteMs)}m ago`
+  if (elapsedMs < dayMs) return `${Math.floor(elapsedMs / hourMs)}h ago`
+  return `${Math.floor(elapsedMs / dayMs)}d ago`
 }

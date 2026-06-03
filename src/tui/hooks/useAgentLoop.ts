@@ -7,6 +7,7 @@ import type { PermissionGate } from '../../harness/permissions.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import type {
   SessionRecord,
+  ModelStreamEvent,
   TaskDisplaySnapshot,
   TokenUsage,
   ToolProgressEvent,
@@ -29,6 +30,8 @@ import {
 import { rollbackInterruptedPromptIfSynthetic } from '../interruptRollback.js'
 
 export { isHiddenToolCall, recordsToDisplayItems } from '../transcript.js'
+
+export type StreamDisplayMode = 'requesting' | 'thinking' | 'waiting'
 
 interface UseAgentLoopOptions {
   loop: AgentLoop
@@ -69,6 +72,7 @@ export function useAgentLoop({
     total: createEmptyUsage(),
   })
   const [spinnerSubText, setSpinnerSubText] = useState<string | undefined>()
+  const [streamMode, setStreamMode] = useState<StreamDisplayMode>('requesting')
   const [taskSnapshot, setTaskSnapshot] = useState<TaskDisplaySnapshot | undefined>(() =>
     findLatestTaskSnapshot(existingRecords),
   )
@@ -163,6 +167,7 @@ export function useAgentLoop({
 
       setIsStreaming(true)
       setSpinnerSubText(undefined)
+      setStreamMode('requesting')
 
       const ac = new AbortController()
       abortControllerRef.current = ac
@@ -214,6 +219,7 @@ export function useAgentLoop({
         activeToolProgressRef.current.clear()
         subagentProgressRef.current.clear()
         setSpinnerSubText(undefined)
+        setStreamMode('requesting')
         setTranscript((prev) => clearToolProgress(prev))
       }
     },
@@ -246,6 +252,27 @@ export function useAgentLoop({
       listContent,
       subagentProgressByAgentId: subagentProgressRef.current,
     }))
+  }, [])
+
+  const handleStreamEvent = useCallback((event: ModelStreamEvent) => {
+    switch (event.type) {
+      case 'thinking_start':
+      case 'thinking_delta':
+      case 'redacted_thinking':
+        setStreamMode('thinking')
+        return
+      case 'idle_warning':
+        setStreamMode('waiting')
+        return
+      case 'thinking_stop':
+      case 'text_delta':
+      case 'tool_input_delta':
+      case 'message_start':
+      case 'message_stop':
+      case 'thinking_signature':
+        setStreamMode('requesting')
+        return
+    }
   }, [])
 
   // Handle records from ToolRunner (via onRecord callback)
@@ -298,11 +325,13 @@ export function useAgentLoop({
   useEffect(() => {
     recordProxy.setHandler(handleRecord)
     recordProxy.setProgressHandler(handleProgress)
+    recordProxy.setStreamEventHandler(handleStreamEvent)
     return () => {
       recordProxy.setHandler(() => {})
       recordProxy.setProgressHandler(() => {})
+      recordProxy.setStreamEventHandler(() => {})
     }
-  }, [recordProxy, handleRecord, handleProgress])
+  }, [recordProxy, handleRecord, handleProgress, handleStreamEvent])
 
   const interrupt = useCallback((reason: unknown = 'user-cancel') => {
     onInterrupt?.()
@@ -335,11 +364,13 @@ export function useAgentLoop({
     staticTranscriptItems: transcript.staticItems,
     liveItems: transcript.liveItems,
     recentCompletedToolCall: transcript.recentCompletedToolCall,
+    recentThinkingAssistant: transcript.recentThinkingAssistant,
     transcriptGeneration,
     appendStaticItem,
     resetTranscript,
     isStreaming,
     spinnerSubText,
+    streamMode,
     taskSnapshot,
     usage,
     submit,

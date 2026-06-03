@@ -331,6 +331,39 @@ export class SessionStore {
     })
   }
 
+  async replaceRecords(sessionIdOrPrefix: string, records: SessionRecord[]): Promise<void> {
+    const session = await this.resolve(sessionIdOrPrefix)
+    if (!session) throw new Error(`Unknown session: ${sessionIdOrPrefix}`)
+
+    await this.withJsonlLock(session.id, async () => {
+      const jsonlPath = this.sessionJsonlPath(session.id)
+      const nextContent = records.map((record) => JSON.stringify(record)).join('\n') + (records.length > 0 ? '\n' : '')
+      await writeFileAtomic(jsonlPath, nextContent)
+
+      const retainedMessageIds = new Set(
+        records
+          .filter((record) => record.type === 'message')
+          .map((record) => record.id),
+      )
+      const now = new Date().toISOString()
+      await this.withIndexLock(async () => {
+        const index = await this.readIndexUnlocked()
+        const currentMeta = index.sessions.find((item) => item.id === session.id) ?? session
+        const metaBase: Partial<SessionMeta> = { ...currentMeta }
+        delete metaBase.title
+        const meta: SessionMeta = {
+          ...this.deriveMetaFromRecords(session.id, records, metaBase),
+          updatedAt: now,
+          checkpoints: currentMeta.checkpoints?.filter((mapping) => retainedMessageIds.has(mapping.messageId)),
+          ...(currentMeta.compactFailureCount ? { compactFailureCount: currentMeta.compactFailureCount } : {}),
+          ...(currentMeta.denialState ? { denialState: currentMeta.denialState } : {}),
+        }
+        this.replaceIndexSession(index, meta)
+        await writeJsonFile(this.indexPath(), index)
+      })
+    })
+  }
+
   async appendMetric(sessionIdOrPrefix: string, metric: SessionMetricInput): Promise<void> {
     try {
       const session = await this.resolve(sessionIdOrPrefix)

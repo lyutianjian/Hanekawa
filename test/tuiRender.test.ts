@@ -1,4 +1,4 @@
-import test, { afterEach } from 'node:test'
+import test, { afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { createElement as h } from 'react'
 import { cleanup, render } from 'ink-testing-library'
@@ -9,7 +9,9 @@ import { AskUserQuestionDialog } from '../src/tui/components/AskUserQuestionDial
 import { ExitPlanModeDialog } from '../src/tui/components/ExitPlanModeDialog.js'
 import { PermissionDialog } from '../src/tui/components/PermissionDialog.js'
 import { ModelPickerDialog, type ModelPickerDecision, type ModelPickerOption } from '../src/tui/components/ModelPickerDialog.js'
+import { RestoreMode, type RestoreDecision } from '../src/tui/components/RestoreMode.js'
 import { MessageList, StaticDisplayItem } from '../src/tui/components/MessageList.js'
+import type { CheckpointDiffSummary, CheckpointWithDiff } from '../src/services/checkpoint/checkpointService.js'
 import type { PermissionDecisionSource, PermissionRequest, PermissionRule } from '../src/harness/permissions.js'
 import type { TaskDisplaySnapshot } from '../src/harness/types.js'
 import type { RiskLevel, Tool, ToolResult } from '../src/harness/types.js'
@@ -141,6 +143,112 @@ test('Spinner collapses hidden running tasks by status without task header', () 
   assert.doesNotMatch(frame, /12 tasks \(9 done, 0 in progress, 3 open\)/)
   assert.match(frame, /⎿/)
   assert.match(frame, /\+2 completed/)
+})
+
+test('Spinner renders nothing when inactive', () => {
+  const frame = render(h(Spinner, { active: false })).lastFrame() ?? ''
+
+  assert.equal(frame.trim(), '')
+})
+
+test('Spinner renders thinking and waiting stream modes', () => {
+  const thinkingFrame = render(h(Spinner, { mode: 'thinking' })).lastFrame() ?? ''
+  assert.match(thinkingFrame, /Thinking\.\.\./)
+
+  cleanup()
+
+  const waitingFrame = render(h(Spinner, { mode: 'waiting' })).lastFrame() ?? ''
+  assert.match(waitingFrame, /Waiting for model\.\.\./)
+})
+
+test('Spinner briefly renders thought duration after thinking stops', async () => {
+  mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  try {
+    const instance = render(h(Spinner, { mode: 'thinking' }))
+    assert.match(instance.lastFrame() ?? '', /Thinking\.\.\./)
+
+    mock.timers.tick(2500)
+    instance.rerender(h(Spinner, { mode: 'requesting' }))
+    await waitForInk()
+
+    assert.match(instance.lastFrame() ?? '', /thought for 3s/)
+  } finally {
+    mock.timers.reset()
+  }
+})
+
+test('MessageList renders assistant thinking blocks as folded status', () => {
+  const items: TUIDisplayItem[] = [{
+    kind: 'assistant',
+    id: 'assistant-1',
+    content: 'final answer',
+    thinkingBlocks: [{
+      type: 'thinking',
+      thinking: 'private reasoning',
+      signature: 'sig-1',
+    }],
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }]
+
+  const frame = render(h(MessageList, { items })).lastFrame() ?? ''
+
+  assert.match(frame, /Thinking/)
+  assert.match(frame, /ctrl\+o to expand/)
+  assert.match(frame, /final answer/)
+  assert.doesNotMatch(frame, /private reasoning/)
+})
+
+test('MessageList expands latest assistant thinking with Ctrl+O preview', async () => {
+  const recentThinking: Extract<TUIDisplayItem, { kind: 'assistant' }> = {
+    kind: 'assistant',
+    id: 'assistant-thinking',
+    content: 'final answer',
+    thinkingBlocks: [{
+      type: 'thinking',
+      thinking: 'private reasoning\n\n- inspect files',
+      signature: 'sig-1',
+    }],
+    createdAt: '2026-06-01T00:00:00.000Z',
+  }
+
+  const instance = render(h(MessageList, {
+    items: [],
+    recentThinkingAssistant: recentThinking,
+    isOverlayActive: false,
+  }))
+
+  assert.doesNotMatch(instance.lastFrame() ?? '', /private reasoning/)
+  instance.stdin.write('\x0f')
+  await waitForInk()
+
+  assert.match(instance.lastFrame() ?? '', /private reasoning/)
+  assert.match(instance.lastFrame() ?? '', /inspect files/)
+})
+
+test('MessageList never reveals redacted thinking when expanded', async () => {
+  const recentThinking: Extract<TUIDisplayItem, { kind: 'assistant' }> = {
+    kind: 'assistant',
+    id: 'assistant-redacted',
+    content: 'final answer',
+    thinkingBlocks: [{
+      type: 'redacted_thinking',
+      data: 'encrypted-private-data',
+    }],
+    createdAt: '2026-06-01T00:00:00.000Z',
+  }
+
+  const instance = render(h(MessageList, {
+    items: [],
+    recentThinkingAssistant: recentThinking,
+    isOverlayActive: false,
+  }))
+
+  instance.stdin.write('\x0f')
+  await waitForInk()
+
+  const frame = instance.lastFrame() ?? ''
+  assert.match(frame, /Thinking \(redacted\)/)
+  assert.doesNotMatch(frame, /encrypted-private-data/)
 })
 
 test('AskUserQuestionDialog renders preview pane for single-select preview questions', () => {
@@ -346,6 +454,158 @@ test('PermissionDialog renders pending count without expanding full queue', () =
   assert.doesNotMatch(frame, /3\. Agent/)
 })
 
+test('RestoreMode renders checkpoint list with code diff summaries', () => {
+  const frame = render(h(RestoreMode, {
+    checkpoints: [
+      rewindCheckpoint({
+        messageId: 'older',
+        messageContent: 'older prompt',
+        timestamp: '2026-06-01T00:00:00.000Z',
+        turnDiff: emptyRewindDiff(),
+      }),
+      rewindCheckpoint({
+        messageId: 'newer',
+        messageContent: 'newer prompt',
+        timestamp: '2026-06-02T00:00:00.000Z',
+        turnDiff: rewindDiff({ fileCount: 3, additions: 89, deletions: 1 }),
+        isCurrent: true,
+      }),
+    ],
+    onSelect: async () => {},
+    onCancel: () => {},
+  })).lastFrame() ?? ''
+
+  assert.match(frame, /Rewind/)
+  assert.match(frame, /Restore the code and\/or conversation to the point before/)
+  assert.match(frame, /newer prompt/)
+  assert.match(frame, /3 files changed\s+\+89\s+-1/)
+  assert.match(frame, /\(current\)/)
+  assert.match(frame, /older prompt/)
+  assert.match(frame, /No code changes/)
+})
+
+test('RestoreMode confirm screen renders four options when code is unchanged', async () => {
+  const instance = render(h(RestoreMode, {
+    checkpoints: [rewindCheckpoint({ restoreDiff: emptyRewindDiff() })],
+    onSelect: async () => {},
+    onCancel: () => {},
+  }))
+
+  instance.stdin.write('\r')
+  await waitForInk()
+  const frame = instance.lastFrame() ?? ''
+
+  assert.match(frame, /Confirm you want to restore/)
+  assert.match(frame, /1\. Restore conversation/)
+  assert.match(frame, /2\. Summarize from here/)
+  assert.match(frame, /3\. Summarize up to here/)
+  assert.match(frame, /4\. Never mind/)
+  assert.doesNotMatch(frame, /Restore code/)
+})
+
+test('RestoreMode confirm screen renders six options when code can be restored', async () => {
+  const instance = render(h(RestoreMode, {
+    checkpoints: [rewindCheckpoint({
+      restoreDiff: rewindDiff({
+        fileCount: 6,
+        additions: 450,
+        deletions: 588,
+        firstFile: 'cosmic-sprouting-moore.md',
+      }),
+    })],
+    onSelect: async () => {},
+    onCancel: () => {},
+  }))
+
+  instance.stdin.write('\r')
+  await waitForInk()
+  const frame = instance.lastFrame() ?? ''
+
+  assert.match(frame, /1\. Restore code and conversation/)
+  assert.match(frame, /2\. Restore conversation/)
+  assert.match(frame, /3\. Restore code/)
+  assert.match(frame, /4\. Summarize from here/)
+  assert.match(frame, /5\. Summarize up to here/)
+  assert.match(frame, /6\. Never mind/)
+  assert.match(frame, /\+450 -588 in cosmic-sprouting-moore\.md/)
+})
+
+test('RestoreMode Never mind returns to checkpoint selection', async () => {
+  const instance = render(h(RestoreMode, {
+    checkpoints: [rewindCheckpoint({ restoreDiff: rewindDiff() })],
+    onSelect: async () => {},
+    onCancel: () => {},
+  }))
+
+  instance.stdin.write('\r')
+  await waitForInk()
+  assert.match(instance.lastFrame() ?? '', /Confirm you want to restore/)
+
+  instance.stdin.write('6')
+  await waitForInk()
+  const frame = instance.lastFrame() ?? ''
+
+  assert.match(frame, /Restore the code and\/or conversation to the point before/)
+  assert.doesNotMatch(frame, /Confirm you want to restore/)
+})
+
+test('RestoreMode numeric shortcut resolves selected restore decision', async () => {
+  const decisions: RestoreDecision[] = []
+  const instance = render(h(RestoreMode, {
+    checkpoints: [rewindCheckpoint({ restoreDiff: rewindDiff() })],
+    onSelect: async (_checkpoint, decision) => {
+      decisions.push(decision)
+    },
+    onCancel: () => {},
+  }))
+
+  instance.stdin.write('\r')
+  await waitForInk()
+  instance.stdin.write('3')
+  await waitForInk()
+
+  assert.deepEqual(decisions, ['restore-code'])
+})
+
+test('RestoreMode numeric shortcut resolves summary decisions', async () => {
+  const decisions: RestoreDecision[] = []
+  const instance = render(h(RestoreMode, {
+    checkpoints: [rewindCheckpoint({ restoreDiff: rewindDiff() })],
+    onSelect: async (_checkpoint, decision) => {
+      decisions.push(decision)
+    },
+    onCancel: () => {},
+  }))
+
+  instance.stdin.write('\r')
+  await waitForInk()
+  instance.stdin.write('4')
+  await waitForInk()
+
+  assert.deepEqual(decisions, ['summarize-from-here'])
+})
+
+test('RestoreMode renders Summarizing while summary action is pending', async () => {
+  let resolveSelect!: () => void
+  const pending = new Promise<void>((resolve) => {
+    resolveSelect = resolve
+  })
+  const instance = render(h(RestoreMode, {
+    checkpoints: [rewindCheckpoint({ restoreDiff: rewindDiff() })],
+    onSelect: async () => pending,
+    onCancel: () => {},
+  }))
+
+  instance.stdin.write('\r')
+  await waitForInk()
+  instance.stdin.write('4')
+  await waitForInk()
+
+  assert.match(instance.lastFrame() ?? '', /Summarizing\.\.\./)
+  resolveSelect()
+  await waitForInk()
+})
+
 test('MessageList shows recent completed tool detail as a live Ctrl+O preview', async () => {
   const recent: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
     kind: 'tool_call',
@@ -369,6 +629,82 @@ test('MessageList shows recent completed tool detail as a live Ctrl+O preview', 
   await new Promise((resolve) => setImmediate(resolve))
 
   assert.match(instance.lastFrame() ?? '', /four/)
+})
+
+test('MessageList Ctrl+O prefers newer thinking over older tool result', async () => {
+  const recentTool: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
+    kind: 'tool_call',
+    id: 'tool-1',
+    toolUseId: 'call-1',
+    tool: 'Read',
+    input: { filePath: 'a.txt' },
+    status: 'done',
+    result: 'older tool detail',
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }
+  const recentThinking: Extract<TUIDisplayItem, { kind: 'assistant' }> = {
+    kind: 'assistant',
+    id: 'assistant-thinking',
+    content: 'final answer',
+    thinkingBlocks: [{
+      type: 'thinking',
+      thinking: 'newer thinking detail',
+      signature: 'sig-1',
+    }],
+    createdAt: '2026-06-01T00:00:00.000Z',
+  }
+
+  const instance = render(h(MessageList, {
+    items: [],
+    recentCompletedToolCall: recentTool,
+    recentThinkingAssistant: recentThinking,
+    isOverlayActive: false,
+  }))
+
+  instance.stdin.write('\x0f')
+  await waitForInk()
+
+  const frame = instance.lastFrame() ?? ''
+  assert.match(frame, /newer thinking detail/)
+  assert.doesNotMatch(frame, /older tool detail/)
+})
+
+test('MessageList Ctrl+O prefers newer tool result over older thinking', async () => {
+  const recentTool: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
+    kind: 'tool_call',
+    id: 'tool-1',
+    toolUseId: 'call-1',
+    tool: 'Read',
+    input: { filePath: 'a.txt' },
+    status: 'done',
+    result: 'newer tool detail',
+    createdAt: '2026-06-02T00:00:00.000Z',
+  }
+  const recentThinking: Extract<TUIDisplayItem, { kind: 'assistant' }> = {
+    kind: 'assistant',
+    id: 'assistant-thinking',
+    content: 'final answer',
+    thinkingBlocks: [{
+      type: 'thinking',
+      thinking: 'older thinking detail',
+      signature: 'sig-1',
+    }],
+    createdAt: '2026-06-01T00:00:00.000Z',
+  }
+
+  const instance = render(h(MessageList, {
+    items: [],
+    recentCompletedToolCall: recentTool,
+    recentThinkingAssistant: recentThinking,
+    isOverlayActive: false,
+  }))
+
+  instance.stdin.write('\x0f')
+  await waitForInk()
+
+  const frame = instance.lastFrame() ?? ''
+  assert.match(frame, /newer tool detail/)
+  assert.doesNotMatch(frame, /older thinking detail/)
 })
 
 test('StaticDisplayItem renders welcome banner as a static header item', () => {
@@ -418,6 +754,39 @@ function modelPickerOptions(): ModelPickerOption[] {
       isDefault: false,
     },
   ]
+}
+
+function emptyRewindDiff(): CheckpointDiffSummary {
+  return {
+    fileCount: 0,
+    additions: 0,
+    deletions: 0,
+    hasChanges: false,
+  }
+}
+
+function rewindDiff(overrides: Partial<CheckpointDiffSummary> = {}): CheckpointDiffSummary {
+  return {
+    fileCount: 1,
+    additions: 1,
+    deletions: 0,
+    firstFile: 'src/app.ts',
+    hasChanges: true,
+    ...overrides,
+  }
+}
+
+function rewindCheckpoint(overrides: Partial<CheckpointWithDiff> = {}): CheckpointWithDiff {
+  return {
+    commitHash: 'abc123',
+    messageId: 'msg-1',
+    messageContent: 'rewind this prompt',
+    timestamp: '2026-06-02T00:00:00.000Z',
+    turnDiff: emptyRewindDiff(),
+    restoreDiff: emptyRewindDiff(),
+    isCurrent: false,
+    ...overrides,
+  }
 }
 
 async function waitForInk(): Promise<void> {

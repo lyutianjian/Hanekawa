@@ -2,6 +2,7 @@ import type { PermissionRequest } from '../harness/permissions.js'
 import type {
   CompactAttemptFailedRecord,
   SessionRecord,
+  ThinkingBlock,
   TokenUsage,
   ToolErrorCode,
   ToolResultDisplay,
@@ -26,6 +27,7 @@ export type TUIDisplayItem =
       kind: 'assistant'
       id: string
       content: string
+      thinkingBlocks?: ThinkingBlock[]
       createdAt: string
     }
   | {

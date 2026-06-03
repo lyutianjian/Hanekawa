@@ -9,6 +9,7 @@ interface TaskListBlockProps {
   snapshot: TaskDisplaySnapshot
   showHeader?: boolean
   runningColor?: string
+  animationsEnabled?: boolean
 }
 
 const DEFAULT_MAX_TASKS = 10
@@ -17,7 +18,12 @@ const CHECK_MARK = '✔'
 const RUNNING_MARK = '■'
 const OPEN_MARK = '□'
 
-export function TaskListBlock({ snapshot, showHeader = true, runningColor = theme.spinner }: TaskListBlockProps) {
+export function TaskListBlock({
+  snapshot,
+  showHeader = true,
+  runningColor = theme.spinner,
+  animationsEnabled = true,
+}: TaskListBlockProps) {
   const { stdout } = useStdout()
   const terminalRows = stdout.rows || 24
   const terminalWidth = stdout.columns || 80
@@ -42,6 +48,7 @@ export function TaskListBlock({ snapshot, showHeader = true, runningColor = them
   previousCompletedIdsRef.current = currentCompletedIds
 
   useEffect(() => {
+    if (!animationsEnabled) return
     if (completionTimestampsRef.current.size === 0) return
 
     const currentNow = Date.now()
@@ -54,7 +61,7 @@ export function TaskListBlock({ snapshot, showHeader = true, runningColor = them
 
     const timer = setTimeout(() => forceUpdate((value) => value + 1), earliestExpiry - currentNow)
     return () => clearTimeout(timer)
-  }, [snapshot.tasks])
+  }, [animationsEnabled, snapshot.tasks])
 
   const visibleTasks = selectVisibleTasks(snapshot.tasks, maxTasks, completionTimestampsRef.current, now)
   const hiddenCount = visibleTasks.hiddenTasks.length

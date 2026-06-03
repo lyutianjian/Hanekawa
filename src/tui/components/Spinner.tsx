@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Box, Text, useStdout } from 'ink'
 import stringWidth from 'string-width'
 import type { TaskDisplaySnapshot } from '../../harness/types.js'
@@ -205,6 +205,7 @@ const SPINNER_VERBS = [
 
 interface SpinnerProps {
   subText?: string
+  mode?: StreamSpinnerMode
   taskSnapshot?: TaskDisplaySnapshot
   spinnerColors?: SpinnerColors
   active?: boolean
@@ -215,24 +216,64 @@ export interface SpinnerColors {
   shimmerColor: string
 }
 
-export function Spinner({ subText, taskSnapshot, spinnerColors, active = true }: SpinnerProps) {
+export function Spinner({ subText, mode: streamMode = 'requesting', taskSnapshot, spinnerColors, active = true }: SpinnerProps) {
   const [randomVerb] = useState(() => `${sampleSpinnerVerb()}...`)
   const [sampledSpinnerColors] = useState(sampleSpinnerColors)
+  const [thinkingStatus, setThinkingStatus] = useState<'thinking' | number | null>(null)
+  const thinkingStartRef = useRef<number | null>(null)
   const { messageColor, shimmerColor } = spinnerColors ?? sampledSpinnerColors
   const { stdout } = useStdout()
   const { frame, elapsed, time } = useSpinner(active)
 
+  const hasActiveTool = Boolean(subText)
+  const mode: SpinnerMode = hasActiveTool ? 'tool-use' : streamMode
+
+  useEffect(() => {
+    let showDurationTimer: ReturnType<typeof setTimeout> | undefined
+    let clearStatusTimer: ReturnType<typeof setTimeout> | undefined
+
+    if (mode === 'thinking') {
+      if (thinkingStartRef.current === null) {
+        thinkingStartRef.current = Date.now()
+      }
+      setThinkingStatus('thinking')
+    } else if (thinkingStartRef.current !== null) {
+      const duration = Date.now() - thinkingStartRef.current
+      const remainingThinkingTime = Math.max(0, 2_000 - duration)
+      thinkingStartRef.current = null
+
+      const showDuration = () => {
+        setThinkingStatus(duration)
+        clearStatusTimer = setTimeout(() => setThinkingStatus(null), 2_000)
+      }
+
+      if (remainingThinkingTime > 0) {
+        showDurationTimer = setTimeout(showDuration, remainingThinkingTime)
+      } else {
+        showDuration()
+      }
+    }
+
+    return () => {
+      if (showDurationTimer) clearTimeout(showDurationTimer)
+      if (clearStatusTimer) clearTimeout(clearStatusTimer)
+    }
+  }, [mode])
+
   if (!active) return null
 
-  const hasActiveTool = Boolean(subText)
   const elapsedText = `${elapsed}s`
   const terminalWidth = stdout.columns || 80
   const messageWidth = Math.max(1, terminalWidth - stringWidth(elapsedText) - 6)
   const taskMessage = taskSnapshot ? formatActiveTaskMessage(taskSnapshot) : undefined
+  const streamMessage = mode === 'thinking'
+    ? 'Thinking...'
+    : mode === 'waiting'
+      ? 'Waiting for model...'
+      : formatThinkingStatus(thinkingStatus)
   const message = hasActiveTool
     ? truncateMiddleByWidth(subText!, messageWidth)
-    : truncateMiddleByWidth(taskMessage ?? randomVerb, messageWidth)
-  const mode: SpinnerMode = hasActiveTool ? 'tool-use' : 'requesting'
+    : truncateMiddleByWidth(streamMessage ?? taskMessage ?? randomVerb, messageWidth)
   const glimmerIndex = getGlimmerIndex(message, mode, time)
   const flashOpacity = mode === 'tool-use'
     ? (Math.sin((time / ACTIVE_TOOL_FLASH_MS) * Math.PI) + 1) / 2
@@ -256,14 +297,26 @@ export function Spinner({ subText, taskSnapshot, spinnerColors, active = true }:
       </Box>
       {taskSnapshot && taskSnapshot.counts.total > 0 && (
         <ResponseBlock>
-          <TaskListBlock snapshot={taskSnapshot} showHeader={false} runningColor={messageColor} />
+          <TaskListBlock
+            snapshot={taskSnapshot}
+            showHeader={false}
+            runningColor={messageColor}
+            animationsEnabled={active}
+          />
         </ResponseBlock>
       )}
     </Box>
   )
 }
 
-type SpinnerMode = 'requesting' | 'tool-use'
+type StreamSpinnerMode = 'requesting' | 'thinking' | 'waiting'
+type SpinnerMode = StreamSpinnerMode | 'tool-use'
+
+function formatThinkingStatus(status: 'thinking' | number | null): string | undefined {
+  if (status === 'thinking') return 'Thinking...'
+  if (typeof status === 'number') return `thought for ${Math.max(1, Math.round(status / 1000))}s`
+  return undefined
+}
 
 function SpinnerGlyph({
   frame,

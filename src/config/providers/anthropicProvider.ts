@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { ModelConfig } from '../service.js'
-import type { ModelProvider, ModelRequest, ModelResponse, ThinkingBlock } from '../../harness/types.js'
+import type { ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, ThinkingBlock } from '../../harness/types.js'
 import {
   checkResponseForCacheBreak,
   recordPromptState,
@@ -13,7 +13,14 @@ import { debugProviderPayload, debugProviderResponse, debugProviderSummary } fro
 import { normalizeAnthropicUsage } from './usage.js'
 
 const STREAM_IDLE_TIMEOUT_MS =
-  parseInt(process.env.MYAGENT_STREAM_IDLE_TIMEOUT_MS || '', 10) || 90_000
+  parseInt(process.env.MYAGENT_STREAM_IDLE_HARD_TIMEOUT_MS || '', 10) || 10 * 60_000
+const STREAM_IDLE_WARNING_MS =
+  parseInt(
+    process.env.MYAGENT_STREAM_IDLE_WARNING_MS
+      || process.env.MYAGENT_STREAM_IDLE_TIMEOUT_MS
+      || '',
+    10,
+  ) || 90_000
 
 function isNativeAnthropicApi(baseUrl?: string): boolean {
   if (!baseUrl) return true
@@ -64,20 +71,14 @@ export class AnthropicProvider implements ModelProvider {
         const stream = this.client.messages.stream(
           payload as unknown as Anthropic.Messages.MessageStreamParams,
         )
-        let response: Anthropic.Messages.Message
-        try {
-          response = await streamWithTimeout(
-            stream,
-            request.retry?.signal,
-            STREAM_IDLE_TIMEOUT_MS,
-            request.onTextDelta,
-          )
-        } catch (error) {
-          if (!isStreamIdleTimeout(error)) {
-            throw error
-          }
-          response = await this.executeNonStreamingRequest(payload)
-        }
+        const response = await streamWithTimeout(
+          stream,
+          request.retry?.signal,
+          STREAM_IDLE_TIMEOUT_MS,
+          request.onTextDelta,
+          request.onStreamEvent,
+          STREAM_IDLE_WARNING_MS,
+        )
 
         debugProviderResponse('anthropic', response)
         const parsed = this.parseResponse(response)
@@ -151,29 +152,6 @@ export class AnthropicProvider implements ModelProvider {
     }
   }
 
-  private async executeNonStreamingRequest(
-    payload: Record<string, unknown>,
-  ): Promise<Anthropic.Messages.Message> {
-    const nonStreamingPayload = {
-      ...payload,
-      stream: false,
-      max_tokens: Math.min(
-        (payload.max_tokens as number) ?? 32_000,
-        64_000,
-      ),
-    }
-    debugProviderPayload('anthropic-nonstreaming', nonStreamingPayload)
-
-    const response = await this.client.messages.create(
-      nonStreamingPayload as unknown as Anthropic.Messages.MessageCreateParamsNonStreaming,
-    )
-    debugProviderResponse('anthropic', response)
-    return response
-  }
-}
-
-function isStreamIdleTimeout(error: unknown): boolean {
-  return error instanceof Error && error.message === 'Stream idle timeout'
 }
 
 type AnthropicMessageStream = {
@@ -188,11 +166,20 @@ export async function streamWithTimeout(
   signal?: AbortSignal,
   idleTimeoutMs = STREAM_IDLE_TIMEOUT_MS,
   onTextDelta?: (delta: string) => void,
+  onStreamEvent?: (event: ModelStreamEvent) => void,
+  idleWarningMs = STREAM_IDLE_WARNING_MS,
 ): Promise<Anthropic.Messages.Message> {
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+  let warningTimer: ReturnType<typeof setTimeout> | undefined
   const resetTimer = () => {
-    if (timer !== undefined) clearTimeout(timer)
-    timer = setTimeout(() => {
+    if (timeoutTimer !== undefined) clearTimeout(timeoutTimer)
+    if (warningTimer !== undefined) clearTimeout(warningTimer)
+    if (idleWarningMs > 0 && idleWarningMs < idleTimeoutMs) {
+      warningTimer = setTimeout(() => {
+        onStreamEvent?.({ type: 'idle_warning', idleMs: idleWarningMs })
+      }, idleWarningMs)
+    }
+    timeoutTimer = setTimeout(() => {
       stream.abort()
       rejectTimeout(new Error('Stream idle timeout'))
     }, idleTimeoutMs)
@@ -201,12 +188,16 @@ export async function streamWithTimeout(
   const timeoutPromise = new Promise<never>((_, reject) => {
     rejectTimeout = reject
   })
-  const onStreamEvent = (event: unknown) => {
+  const blockTypes = new Map<number, string>()
+  const handleStreamEvent = (event: unknown) => {
     resetTimer()
-    const delta = extractTextDelta(event)
-    if (delta) onTextDelta?.(delta)
+    for (const modelEvent of extractModelStreamEvents(event, blockTypes)) {
+      if (modelEvent.type === 'text_delta') onTextDelta?.(modelEvent.text)
+      onStreamEventCallback?.(modelEvent)
+    }
   }
-  stream.on('streamEvent', onStreamEvent)
+  const onStreamEventCallback = onStreamEvent
+  stream.on('streamEvent', handleStreamEvent)
   resetTimer()
 
   let onAbort: (() => void) | undefined
@@ -230,24 +221,77 @@ export async function streamWithTimeout(
     if (abortPromise) racers.push(abortPromise)
     return await Promise.race(racers)
   } finally {
-    if (timer !== undefined) clearTimeout(timer)
-    stream.off('streamEvent', onStreamEvent)
+    if (timeoutTimer !== undefined) clearTimeout(timeoutTimer)
+    if (warningTimer !== undefined) clearTimeout(warningTimer)
+    stream.off('streamEvent', handleStreamEvent)
     if (signal && onAbort) signal.removeEventListener('abort', onAbort)
   }
 }
 
-function extractTextDelta(event: unknown): string | undefined {
-  if (!event || typeof event !== 'object') return undefined
+function extractModelStreamEvents(
+  event: unknown,
+  blockTypes: Map<number, string>,
+): ModelStreamEvent[] {
+  if (!event || typeof event !== 'object') return []
+  const events: ModelStreamEvent[] = []
   const typed = event as {
     type?: unknown
+    index?: unknown
+    content_block?: {
+      type?: unknown
+    }
     delta?: {
       type?: unknown
       text?: unknown
+      thinking?: unknown
+      signature?: unknown
+      partial_json?: unknown
     }
   }
-  if (typed.type !== 'content_block_delta') return undefined
-  if (typed.delta?.type !== 'text_delta') return undefined
-  return typeof typed.delta.text === 'string' && typed.delta.text.length > 0
-    ? typed.delta.text
-    : undefined
+  const index = typeof typed.index === 'number' ? typed.index : undefined
+
+  if (typed.type === 'message_start') {
+    return [{ type: 'message_start' }]
+  }
+  if (typed.type === 'message_stop') {
+    return [{ type: 'message_stop' }]
+  }
+
+  if (typed.type === 'content_block_start') {
+    const blockType = typeof typed.content_block?.type === 'string'
+      ? typed.content_block.type
+      : undefined
+    if (index !== undefined && blockType) blockTypes.set(index, blockType)
+    if (blockType === 'thinking') {
+      events.push({ type: 'thinking_start', index, redacted: false })
+    } else if (blockType === 'redacted_thinking') {
+      events.push({ type: 'thinking_start', index, redacted: true })
+      events.push({ type: 'redacted_thinking', index })
+    }
+    return events
+  }
+
+  if (typed.type === 'content_block_delta') {
+    if (typed.delta?.type === 'text_delta' && typeof typed.delta.text === 'string' && typed.delta.text.length > 0) {
+      events.push({ type: 'text_delta', index, text: typed.delta.text })
+    } else if (typed.delta?.type === 'thinking_delta' && typeof typed.delta.thinking === 'string' && typed.delta.thinking.length > 0) {
+      events.push({ type: 'thinking_delta', index, thinking: typed.delta.thinking })
+    } else if (typed.delta?.type === 'signature_delta' && typeof typed.delta.signature === 'string') {
+      events.push({ type: 'thinking_signature', index, signature: typed.delta.signature })
+    } else if (typed.delta?.type === 'input_json_delta' && typeof typed.delta.partial_json === 'string' && typed.delta.partial_json.length > 0) {
+      events.push({ type: 'tool_input_delta', index, partialJson: typed.delta.partial_json })
+    }
+    return events
+  }
+
+  if (typed.type === 'content_block_stop') {
+    const blockType = index === undefined ? undefined : blockTypes.get(index)
+    if (index !== undefined) blockTypes.delete(index)
+    if (blockType === 'thinking' || blockType === 'redacted_thinking') {
+      events.push({ type: 'thinking_stop', index })
+    }
+    return events
+  }
+
+  return events
 }

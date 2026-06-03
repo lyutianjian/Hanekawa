@@ -1,4 +1,4 @@
-import { mkdir, access } from 'node:fs/promises'
+import { mkdir, access, readFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
@@ -11,6 +11,20 @@ export interface Checkpoint {
   messageId: string
   messageContent: string
   timestamp: string
+}
+
+export interface CheckpointDiffSummary {
+  fileCount: number
+  additions: number
+  deletions: number
+  firstFile?: string
+  hasChanges: boolean
+}
+
+export interface CheckpointWithDiff extends Checkpoint {
+  turnDiff: CheckpointDiffSummary
+  restoreDiff: CheckpointDiffSummary
+  isCurrent: boolean
 }
 
 export interface CheckpointCreateResult {
@@ -142,6 +156,51 @@ export class CheckpointService {
   }
 
   /**
+   * Get checkpoints enriched with code-change summaries for rewind UI.
+   *
+   * `turnDiff` describes the work after that prompt until the next checkpoint,
+   * or the current worktree for the latest prompt. `restoreDiff` describes
+   * everything that would change if code were restored to this checkpoint.
+   */
+  async getCheckpointsWithDiffs(): Promise<CheckpointWithDiff[]> {
+    const checkpoints = await this.getCheckpoints()
+    const chronological = [...checkpoints].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+    )
+
+    const byMessageId = new Map<string, CheckpointWithDiff>()
+    for (let index = 0; index < chronological.length; index++) {
+      const checkpoint = chronological[index]
+      if (!checkpoint) continue
+      const next = chronological[index + 1]
+      const turnDiff = next
+        ? await this.getDiffBetweenCommits(checkpoint.commitHash, next.commitHash)
+        : await this.getDiffFromCommitToWorktree(checkpoint.commitHash)
+      const restoreDiff = await this.getDiffFromCommitToWorktree(checkpoint.commitHash)
+      byMessageId.set(checkpoint.messageId, {
+        ...checkpoint,
+        turnDiff,
+        restoreDiff,
+        isCurrent: index === chronological.length - 1,
+      })
+    }
+
+    return checkpoints.map((checkpoint) => byMessageId.get(checkpoint.messageId)).filter((entry): entry is CheckpointWithDiff => Boolean(entry))
+  }
+
+  async getDiffBetweenCommits(fromCommitHash: string, toCommitHash: string): Promise<CheckpointDiffSummary> {
+    if (fromCommitHash === toCommitHash) return emptyDiffSummary()
+    const output = await this.git(['diff', '--numstat', fromCommitHash, toCommitHash, '--', '.'])
+    return parseNumstat(output)
+  }
+
+  async getDiffFromCommitToWorktree(commitHash: string): Promise<CheckpointDiffSummary> {
+    const tracked = parseNumstat(await this.git(['diff', '--numstat', commitHash, '--', '.']))
+    const untracked = await this.getUntrackedDiffSummary()
+    return mergeDiffSummaries(tracked, untracked)
+  }
+
+  /**
    * Restore working tree to a specific checkpoint commit.
    * Uses git checkout to restore file state.
    */
@@ -226,5 +285,84 @@ export class CheckpointService {
     } catch {
       return null
     }
+  }
+
+  private async getUntrackedDiffSummary(): Promise<CheckpointDiffSummary> {
+    const output = await this.git(['ls-files', '--others', '--exclude-standard', '--', '.'])
+    const files = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    if (files.length === 0) return emptyDiffSummary()
+
+    let additions = 0
+    for (const file of files) {
+      additions += await countFileLines(path.join(this.worktree, file))
+    }
+
+    return {
+      fileCount: files.length,
+      additions,
+      deletions: 0,
+      firstFile: files[0],
+      hasChanges: true,
+    }
+  }
+}
+
+function emptyDiffSummary(): CheckpointDiffSummary {
+  return {
+    fileCount: 0,
+    additions: 0,
+    deletions: 0,
+    hasChanges: false,
+  }
+}
+
+function parseNumstat(output: string): CheckpointDiffSummary {
+  const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  if (lines.length === 0) return emptyDiffSummary()
+
+  let additions = 0
+  let deletions = 0
+  let firstFile: string | undefined
+  for (const line of lines) {
+    const [rawAdditions, rawDeletions, ...pathParts] = line.split(/\s+/)
+    additions += parseCount(rawAdditions)
+    deletions += parseCount(rawDeletions)
+    firstFile ??= pathParts.join(' ')
+  }
+
+  return {
+    fileCount: lines.length,
+    additions,
+    deletions,
+    ...(firstFile ? { firstFile } : {}),
+    hasChanges: lines.length > 0,
+  }
+}
+
+function parseCount(value: string | undefined): number {
+  if (!value || value === '-') return 0
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function mergeDiffSummaries(...summaries: CheckpointDiffSummary[]): CheckpointDiffSummary {
+  const changed = summaries.filter((summary) => summary.hasChanges)
+  if (changed.length === 0) return emptyDiffSummary()
+  return {
+    fileCount: summaries.reduce((sum, summary) => sum + summary.fileCount, 0),
+    additions: summaries.reduce((sum, summary) => sum + summary.additions, 0),
+    deletions: summaries.reduce((sum, summary) => sum + summary.deletions, 0),
+    firstFile: changed[0]?.firstFile,
+    hasChanges: true,
+  }
+}
+
+async function countFileLines(filePath: string): Promise<number> {
+  try {
+    const content = await readFile(filePath, 'utf8')
+    if (content.length === 0) return 0
+    return content.endsWith('\n') ? content.split(/\r?\n/).length - 1 : content.split(/\r?\n/).length
+  } catch {
+    return 0
   }
 }

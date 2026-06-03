@@ -16,6 +16,18 @@ export interface ThinkingBlock {
   data?: string
 }
 
+export type ModelStreamEvent =
+  | { type: 'message_start' }
+  | { type: 'thinking_start'; index?: number; redacted?: boolean }
+  | { type: 'thinking_delta'; index?: number; thinking: string }
+  | { type: 'thinking_signature'; index?: number; signature: string }
+  | { type: 'thinking_stop'; index?: number }
+  | { type: 'redacted_thinking'; index?: number }
+  | { type: 'text_delta'; index?: number; text: string }
+  | { type: 'tool_input_delta'; index?: number; partialJson: string }
+  | { type: 'message_stop' }
+  | { type: 'idle_warning'; idleMs: number }
+
 export interface ChatMessage {
   id: string
   role: ChatRole
@@ -477,6 +489,7 @@ export interface ModelRequest {
   cacheSource: CacheBreakSource
   cacheRuntime?: CacheRuntime
   onTextDelta?: (delta: string) => void
+  onStreamEvent?: (event: ModelStreamEvent) => void
 }
 
 export interface ModelResponse {

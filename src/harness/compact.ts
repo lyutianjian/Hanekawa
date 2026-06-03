@@ -51,6 +51,21 @@ export interface CompactCheckResult {
   }
 }
 
+export interface ContinuationSummaryInput {
+  records: SessionRecord[]
+  provider: ModelProvider
+  model: string
+  compactRuntime?: ActiveModelRuntime
+  promptCacheRetention?: 'in_memory' | '24h'
+  preTokens?: number
+}
+
+export interface ContinuationSummaryResult {
+  content: string
+  usage?: TokenUsage
+  preTokens: number
+}
+
 export async function autoCompactIfNeeded(input: CompactCheckInput): Promise<CompactCheckResult> {
   const circuitKey = input.circuitKey ?? 'default'
   const existingRun = compactRunsByKey.get(circuitKey)
@@ -90,7 +105,14 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
   await runBeforeCompactHook(input, tokenCount, recordsToCompact.length)
 
   try {
-    const summary = await summarizeRecords(input, recordsToCompact, tokenCount)
+    const summary = await summarizeRecordsForContinuation({
+      records: recordsToCompact,
+      provider: input.provider,
+      model: input.model,
+      compactRuntime: input.compactRuntime,
+      promptCacheRetention: input.promptCacheRetention,
+      preTokens: tokenCount,
+    })
     const postTokens = countTextTokens(summary.content)
     const compactDurationMs = Date.now() - compactStartedAt
     await input.appendRecord({
@@ -270,11 +292,8 @@ function findLastRecordIndex(records: SessionRecord[], predicate: (record: Sessi
   return -1
 }
 
-async function summarizeRecords(
-  input: CompactCheckInput,
-  records: SessionRecord[],
-  tokenCount: number,
-): Promise<{ content: string; usage?: TokenUsage }> {
+export async function summarizeRecordsForContinuation(input: ContinuationSummaryInput): Promise<ContinuationSummaryResult> {
+  const tokenCount = input.preTokens ?? countSessionRecordsTokens(input.records)
   const content = [
     'Summarize the conversation context below for continuation after context compaction.',
     'Preserve user goals, decisions, constraints, file paths, tool results, unresolved tasks, and any facts needed to continue.',
@@ -282,7 +301,7 @@ async function summarizeRecords(
     '',
     `<pre_compact_tokens>${tokenCount}</pre_compact_tokens>`,
     '<conversation>',
-    formatRecordsForSummary(records),
+    formatRecordsForSummary(input.records),
     '</conversation>',
   ].join('\n')
 
@@ -315,6 +334,7 @@ async function summarizeRecords(
   return {
     content: response.content.trim() || '(No compact summary was produced.)',
     usage: response.usage,
+    preTokens: tokenCount,
   }
 }
 

@@ -9,14 +9,16 @@ import { ResponseBlock } from './ResponseBlock.js'
 interface ToolCallBlockProps {
   item: Extract<TUIDisplayItem, { kind: 'tool_call' }>
   expanded?: boolean
+  animationsEnabled?: boolean
 }
 
 const COLLAPSE_LINES = 3
 const STATUS_DOT = '\u25cf'
 
-export function ToolCallBlock({ item, expanded }: ToolCallBlockProps) {
+export function ToolCallBlock({ item, expanded, animationsEnabled = true }: ToolCallBlockProps) {
   const statusDot = getStatusDot(item.status)
-  const blinkOff = useBlink(item.status === 'running' || item.status === 'approved')
+  const runningOrApproved = item.status === 'running' || item.status === 'approved'
+  const blinkOff = useBlink(animationsEnabled && runningOrApproved)
   const display = getToolDisplay(item.tool, item.input)
   const result = item.result
 

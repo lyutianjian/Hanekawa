@@ -1,6 +1,6 @@
 import { describe, it, before } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile, mkdir, readFile, access } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, mkdir, readFile, access, unlink } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
@@ -146,6 +146,95 @@ describe('CheckpointService', () => {
         'second checkpoint should reuse the first commit hash'
       )
       assert.equal(second.reusedPrevious, true)
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('getDiffBetweenCommits reports no changes for reused checkpoint hashes', async (t) => {
+    if (!gitAvailable) {
+      t.skip('git not available on this system')
+      return
+    }
+    const cwd = await makeTempCwd()
+    try {
+      await writeFile(path.join(cwd, 'a.txt'), 'first\n', 'utf8')
+
+      const service = new CheckpointService(cwd, SESSION_ID)
+      await service.init()
+      const first = await service.createCheckpoint('msg-1')
+      const second = await service.createCheckpoint('msg-2')
+
+      assert.equal(first.success, true)
+      assert.equal(second.success, true)
+      assert.equal(second.commitHash, first.commitHash)
+
+      const diff = await service.getDiffBetweenCommits(first.commitHash!, second.commitHash!)
+      assert.deepEqual(diff, {
+        fileCount: 0,
+        additions: 0,
+        deletions: 0,
+        hasChanges: false,
+      })
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('getDiffBetweenCommits reports additions, deletions, and changed files', async (t) => {
+    if (!gitAvailable) {
+      t.skip('git not available on this system')
+      return
+    }
+    const cwd = await makeTempCwd()
+    try {
+      const removedPath = path.join(cwd, 'removed.txt')
+      await writeFile(removedPath, 'delete me\n', 'utf8')
+
+      const service = new CheckpointService(cwd, SESSION_ID)
+      await service.init()
+      const first = await service.createCheckpoint('msg-1')
+      assert.equal(first.success, true)
+
+      await unlink(removedPath)
+      await writeFile(path.join(cwd, 'added.txt'), 'one\ntwo\n', 'utf8')
+      const second = await service.createCheckpoint('msg-2')
+      assert.equal(second.success, true)
+
+      const diff = await service.getDiffBetweenCommits(first.commitHash!, second.commitHash!)
+      assert.equal(diff.hasChanges, true)
+      assert.equal(diff.fileCount, 2)
+      assert.equal(diff.additions, 2)
+      assert.equal(diff.deletions, 1)
+      assert.ok(diff.firstFile)
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('getDiffFromCommitToWorktree includes current tracked and untracked changes', async (t) => {
+    if (!gitAvailable) {
+      t.skip('git not available on this system')
+      return
+    }
+    const cwd = await makeTempCwd()
+    try {
+      const trackedPath = path.join(cwd, 'tracked.txt')
+      await writeFile(trackedPath, 'one\n', 'utf8')
+
+      const service = new CheckpointService(cwd, SESSION_ID)
+      await service.init()
+      const checkpoint = await service.createCheckpoint('msg-1')
+      assert.equal(checkpoint.success, true)
+
+      await writeFile(trackedPath, 'one\ntwo\n', 'utf8')
+      await writeFile(path.join(cwd, 'new.txt'), 'alpha\nbeta\ngamma\n', 'utf8')
+
+      const diff = await service.getDiffFromCommitToWorktree(checkpoint.commitHash!)
+      assert.equal(diff.hasChanges, true)
+      assert.equal(diff.fileCount, 2)
+      assert.equal(diff.additions, 4)
+      assert.equal(diff.deletions, 0)
     } finally {
       await cleanup(cwd)
     }

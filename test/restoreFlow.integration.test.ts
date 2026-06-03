@@ -10,6 +10,7 @@ import { SessionStore } from '../src/sessions/service.js'
 import { getSessionsDir } from '../src/utils/paths.js'
 import { parseJsonLines } from '../src/utils/json.js'
 import type { SessionRecord } from '../src/harness/types.js'
+import { buildRewindSummaryRewrite } from '../src/tui/rewindSummary.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -119,14 +120,13 @@ describe('Integration: full restore flow', () => {
       assert.equal(beforeRecords.length, 4)
 
       // --- RESTORE FLOW ---
-      // Step 1: Truncate to msg-1
-      const truncResult = await store.truncateToMessage(session.id, 'msg-1')
+      // Step 1: Truncate to before msg-1
+      const truncResult = await store.truncateBeforeMessage(session.id, 'msg-1')
       assert.equal(truncResult.success, true)
 
       // Step 2: Verify JSONL truncated
       const afterRecords = await store.loadRecords(session.id)
-      assert.equal(afterRecords.length, 1)
-      assert.equal('id' in afterRecords[0]! ? afterRecords[0]!.id : null, 'msg-1')
+      assert.equal(afterRecords.length, 0)
 
       // Step 3: Git checkout to restore file state
       const restoreResult = await cpService.restoreToCommit(cp1.commitHash!)
@@ -135,6 +135,43 @@ describe('Integration: full restore flow', () => {
       // Step 4: Verify file content reverted
       const restoredContent = await readFile(filePath, 'utf8')
       assert.equal(restoredContent, 'version 1\n')
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('restore code only leaves session records unchanged', async (t) => {
+    if (!gitAvailable) {
+      t.skip('git not available')
+      return
+    }
+    const cwd = await makeTempCwd()
+    try {
+      const store = new SessionStore(cwd)
+      await store.init()
+      const session = await store.create('code only restore test')
+
+      const filePath = path.join(cwd, 'data.txt')
+      await writeFile(filePath, 'version 1\n', 'utf8')
+
+      const cpService = new CheckpointService(cwd, session.id)
+      await cpService.init()
+      await store.appendRecord(session.id, makeUserRecord('msg-1', 'first question'))
+      const cp1 = await cpService.createCheckpoint('msg-1')
+      assert.equal(cp1.success, true)
+      await store.addCheckpointMapping(session.id, 'msg-1', cp1.commitHash!)
+      await store.appendRecord(session.id, makeAssistantRecord('resp-1', 'first answer'))
+
+      await writeFile(filePath, 'version 2\n', 'utf8')
+      const beforeRecords = await store.loadRecords(session.id)
+      assert.equal(beforeRecords.length, 2)
+
+      const restoreResult = await cpService.restoreToCommit(cp1.commitHash!)
+      assert.equal(restoreResult.success, true)
+
+      const afterRecords = await store.loadRecords(session.id)
+      assert.deepEqual(afterRecords.map((record) => 'id' in record ? record.id : null), ['msg-1', 'resp-1'])
+      assert.equal(await readFile(filePath, 'utf8'), 'version 1\n')
     } finally {
       await cleanup(cwd)
     }
@@ -164,7 +201,7 @@ describe('Integration: full restore flow', () => {
       await store.appendRecord(session.id, makeAssistantRecord('resp-1', 'world'))
 
       // Truncation should succeed
-      const truncResult = await store.truncateToMessage(session.id, 'msg-1')
+      const truncResult = await store.truncateBeforeMessage(session.id, 'msg-1')
       assert.equal(truncResult.success, true)
 
       // Git checkout with invalid hash should fail gracefully
@@ -174,7 +211,7 @@ describe('Integration: full restore flow', () => {
 
       // The JSONL is already truncated (partial success state)
       const records = await store.loadRecords(session.id)
-      assert.equal(records.length, 1)
+      assert.equal(records.length, 0)
     } finally {
       await cleanup(cwd)
     }
@@ -195,7 +232,7 @@ describe('Integration: full restore flow', () => {
       await store.appendRecord(session.id, makeAssistantRecord('resp-1', 'world'))
 
       // Try to truncate to a non-existent message ID
-      const truncResult = await store.truncateToMessage(session.id, 'nonexistent-id')
+      const truncResult = await store.truncateBeforeMessage(session.id, 'nonexistent-id')
       assert.equal(truncResult.success, false)
       assert.ok(truncResult.error)
       assert.match(truncResult.error!, /not found/i)
@@ -203,6 +240,113 @@ describe('Integration: full restore flow', () => {
       // Session should be unchanged
       const records = await store.loadRecords(session.id)
       assert.equal(records.length, 2)
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('summarize from here replaces selected and later records without changing files', async (t) => {
+    if (!gitAvailable) {
+      t.skip('git not available')
+      return
+    }
+    const cwd = await makeTempCwd()
+    try {
+      const store = new SessionStore(cwd)
+      await store.init()
+      const session = await store.create('summary from test')
+      const filePath = path.join(cwd, 'file.txt')
+      await writeFile(filePath, 'current worktree\n', 'utf8')
+
+      await store.appendRecord(session.id, makeUserRecord('msg-1', 'first'))
+      await store.appendRecord(session.id, makeAssistantRecord('resp-1', 'first answer'))
+      await store.appendRecord(session.id, makeUserRecord('msg-2', 'second'))
+      await store.appendRecord(session.id, makeAssistantRecord('resp-2', 'second answer'))
+
+      const loaded = await store.loadRecords(session.id)
+      const rewrite = await buildRewindSummaryRewrite({
+        records: loaded,
+        targetMessageId: 'msg-2',
+        decision: 'summarize-from-here',
+        summarize: async () => ({ summary: 'from summary', preTokens: 20 }),
+        createId: () => 'compact-from',
+        now: () => '2026-06-01T00:00:00.000Z',
+      })
+      await store.replaceRecords(session.id, rewrite.nextRecords)
+
+      const after = await store.loadRecords(session.id)
+      assert.deepEqual(after.map((record) => 'id' in record ? record.id : null), ['msg-1', 'resp-1', 'compact-from'])
+      assert.equal(after[2]?.type === 'compact_boundary' ? after[2].summary : '', 'from summary')
+      assert.equal(await readFile(filePath, 'utf8'), 'current worktree\n')
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('summarize up to here replaces earlier records and keeps selected and later records without changing files', async (t) => {
+    if (!gitAvailable) {
+      t.skip('git not available')
+      return
+    }
+    const cwd = await makeTempCwd()
+    try {
+      const store = new SessionStore(cwd)
+      await store.init()
+      const session = await store.create('summary up test')
+      const filePath = path.join(cwd, 'file.txt')
+      await writeFile(filePath, 'current worktree\n', 'utf8')
+
+      await store.appendRecord(session.id, makeUserRecord('msg-1', 'first'))
+      await store.appendRecord(session.id, makeAssistantRecord('resp-1', 'first answer'))
+      await store.appendRecord(session.id, makeUserRecord('msg-2', 'second'))
+      await store.appendRecord(session.id, makeAssistantRecord('resp-2', 'second answer'))
+
+      const loaded = await store.loadRecords(session.id)
+      const rewrite = await buildRewindSummaryRewrite({
+        records: loaded,
+        targetMessageId: 'msg-2',
+        decision: 'summarize-up-to-here',
+        summarize: async () => ({ summary: 'up summary', preTokens: 20 }),
+        createId: () => 'compact-up',
+        now: () => '2026-06-01T00:00:00.000Z',
+      })
+      await store.replaceRecords(session.id, rewrite.nextRecords)
+
+      const after = await store.loadRecords(session.id)
+      assert.deepEqual(after.map((record) => 'id' in record ? record.id : null), ['compact-up', 'msg-2', 'resp-2'])
+      assert.equal(after[0]?.type === 'compact_boundary' ? after[0].summary : '', 'up summary')
+      assert.equal(await readFile(filePath, 'utf8'), 'current worktree\n')
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('summarize up to here on first node leaves records unchanged', async (t) => {
+    if (!gitAvailable) {
+      t.skip('git not available')
+      return
+    }
+    const cwd = await makeTempCwd()
+    try {
+      const store = new SessionStore(cwd)
+      await store.init()
+      const session = await store.create('summary first test')
+      await store.appendRecord(session.id, makeUserRecord('msg-1', 'first'))
+      await store.appendRecord(session.id, makeAssistantRecord('resp-1', 'first answer'))
+      const before = await store.loadRecords(session.id)
+
+      await assert.rejects(
+        () => buildRewindSummaryRewrite({
+          records: before,
+          targetMessageId: 'msg-1',
+          decision: 'summarize-up-to-here',
+          summarize: async () => ({ summary: 'unused', preTokens: 1 }),
+        }),
+        /No earlier conversation to summarize/,
+      )
+
+      const after = await store.loadRecords(session.id)
+      assert.deepEqual(after.map((record) => 'id' in record ? record.id : null), ['msg-1', 'resp-1'])
     } finally {
       await cleanup(cwd)
     }

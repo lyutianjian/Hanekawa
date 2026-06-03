@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { autoCompactIfNeeded, resetAutoCompactFailureState } from '../src/harness/compact.js'
+import { autoCompactIfNeeded, resetAutoCompactFailureState, summarizeRecordsForContinuation } from '../src/harness/compact.js'
 import type { ModelProvider, SessionRecord } from '../src/harness/types.js'
 
 test('autoCompactIfNeeded writes compact boundary when threshold is exceeded', async () => {
@@ -286,6 +286,123 @@ test('autoCompactIfNeeded adds pending records to last model usage token count',
   assert.equal(called, true)
   assert.equal(result.compacted, true)
   assert.equal(appended[0]?.type, 'compact_boundary')
+})
+
+test('summarizeRecordsForContinuation formats supported record types', async () => {
+  let requestContent = ''
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requestContent = request.messages[0]?.content ?? ''
+      return { content: 'rewind summary', toolCalls: [] }
+    },
+  }
+
+  const result = await summarizeRecordsForContinuation({
+    records: [
+      {
+        type: 'message',
+        id: 'user-1',
+        role: 'user',
+        content: 'user goal',
+        createdAt: '2026-06-01T00:00:00.000Z',
+      },
+      {
+        type: 'at_mention_context',
+        id: 'ctx-1',
+        userMessageId: 'user-1',
+        files: [],
+        content: 'attached file context',
+        createdAt: '2026-06-01T00:00:01.000Z',
+      },
+      {
+        type: 'tool_use',
+        id: 'tool-1',
+        tool: 'Read',
+        input: { filePath: 'src/a.ts' },
+        riskLevel: 'safe',
+        createdAt: '2026-06-01T00:00:02.000Z',
+      },
+      {
+        type: 'tool_result',
+        id: 'result-1',
+        toolUseId: 'tool-1',
+        tool: 'Read',
+        ok: true,
+        content: 'file body',
+        createdAt: '2026-06-01T00:00:03.000Z',
+      },
+      {
+        type: 'tool_approval',
+        id: 'approval-1',
+        tool: 'Bash',
+        input: { command: 'git status' },
+        approved: true,
+        riskLevel: 'dangerous',
+        createdAt: '2026-06-01T00:00:04.000Z',
+      },
+      {
+        type: 'compact_boundary',
+        id: 'compact-1',
+        summary: 'prior summary',
+        preTokens: 100,
+        createdAt: '2026-06-01T00:00:05.000Z',
+      },
+    ],
+    provider,
+    model: 'fake-model',
+    preTokens: 123,
+  })
+
+  assert.equal(result.content, 'rewind summary')
+  assert.equal(result.preTokens, 123)
+  assert.match(requestContent, /<pre_compact_tokens>123<\/pre_compact_tokens>/)
+  assert.match(requestContent, /<message role="user">\nuser goal\n<\/message>/)
+  assert.match(requestContent, /<at_mention_context user_message_id="user-1">/)
+  assert.match(requestContent, /<tool_use name="Read" id="tool-1">/)
+  assert.match(requestContent, /<tool_result name="Read" tool_use_id="tool-1" ok="true">/)
+  assert.match(requestContent, /<tool_approval name="Bash" approved="true">/)
+  assert.match(requestContent, /<compact_summary>\nprior summary\n<\/compact_summary>/)
+})
+
+test('summarizeRecordsForContinuation prefers compact runtime', async () => {
+  let primaryCalled = false
+  let compactModelSeen = ''
+  const provider: ModelProvider = {
+    name: 'primary',
+    async createMessage() {
+      primaryCalled = true
+      return { content: 'wrong', toolCalls: [] }
+    },
+  }
+  const compactProvider: ModelProvider = {
+    name: 'compact',
+    async createMessage(request) {
+      compactModelSeen = request.model
+      return { content: 'compact summary', toolCalls: [] }
+    },
+  }
+
+  const result = await summarizeRecordsForContinuation({
+    records: [{
+      type: 'message',
+      id: 'user-1',
+      role: 'user',
+      content: 'summarize me',
+      createdAt: '2026-06-01T00:00:00.000Z',
+    }],
+    provider,
+    model: 'primary-model',
+    compactRuntime: {
+      provider: compactProvider,
+      model: 'compact-model',
+      promptCacheRetention: '24h',
+    },
+  })
+
+  assert.equal(primaryCalled, false)
+  assert.equal(compactModelSeen, 'compact-model')
+  assert.equal(result.content, 'compact summary')
 })
 
 test('autoCompactIfNeeded uses last response record id when record count is stale', async () => {

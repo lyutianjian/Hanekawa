@@ -11,30 +11,40 @@ import { theme } from '../theme.js'
 interface MessageListProps {
   items: TUIDisplayItem[]
   recentCompletedToolCall?: Extract<TUIDisplayItem, { kind: 'tool_call' }> | null
+  recentThinkingAssistant?: Extract<TUIDisplayItem, { kind: 'assistant' }> | null
   isOverlayActive?: boolean
+  animationsEnabled?: boolean
 }
 
-export function MessageList({ items, recentCompletedToolCall, isOverlayActive }: MessageListProps) {
-  const [previewToolUseId, setPreviewToolUseId] = useState<string | null>(null)
+type PreviewTarget =
+  | { kind: 'tool'; key: string; item: Extract<TUIDisplayItem, { kind: 'tool_call' }> }
+  | { kind: 'thinking'; key: string; item: Extract<TUIDisplayItem, { kind: 'assistant' }> }
 
-  // Ctrl+O now shows a live preview for the most recently completed tool call.
+export function MessageList({
+  items,
+  recentCompletedToolCall,
+  recentThinkingAssistant,
+  isOverlayActive,
+  animationsEnabled = true,
+}: MessageListProps) {
+  const [previewKey, setPreviewKey] = useState<string | null>(null)
+  const latestPreviewTarget = getLatestPreviewTarget(recentCompletedToolCall, recentThinkingAssistant)
+
+  // Ctrl+O shows a live preview for the most recent expandable item.
   // Static scrollback stays immutable once it has been printed.
   useInput(
     (input, key) => {
       if (key.ctrl && input === 'o') {
-        if (recentCompletedToolCall?.result) {
-          setPreviewToolUseId((current) =>
-            current === recentCompletedToolCall.toolUseId ? null : recentCompletedToolCall.toolUseId,
-          )
-        }
+        if (!latestPreviewTarget) return
+        setPreviewKey((current) =>
+          current === latestPreviewTarget.key ? null : latestPreviewTarget.key,
+        )
       }
     },
     { isActive: !isOverlayActive },
   )
 
-  const previewItem = recentCompletedToolCall?.result && previewToolUseId === recentCompletedToolCall.toolUseId
-    ? recentCompletedToolCall
-    : null
+  const previewTarget = latestPreviewTarget?.key === previewKey ? latestPreviewTarget : null
 
   return (
     <Box flexDirection="column">
@@ -42,27 +52,45 @@ export function MessageList({ items, recentCompletedToolCall, isOverlayActive }:
         <DisplayItem
           key={item.id}
           item={item}
+          animationsEnabled={animationsEnabled}
         />
       ))}
-      {previewItem && (
+      {previewTarget?.kind === 'tool' && (
         <DisplayItem
-          key={`tool-preview-${previewItem.toolUseId}`}
-          item={previewItem}
+          key={`preview-${previewTarget.key}`}
+          item={previewTarget.item}
           expanded
+          animationsEnabled={animationsEnabled}
+        />
+      )}
+      {previewTarget?.kind === 'thinking' && (
+        <DisplayItem
+          key={`preview-${previewTarget.key}`}
+          item={{ ...previewTarget.item, content: '' }}
+          expanded
+          animationsEnabled={animationsEnabled}
         />
       )}
     </Box>
   )
 }
 
-export function DisplayItem({ item, expanded = false }: { item: TUIDisplayItem; expanded?: boolean }) {
+export function DisplayItem({
+  item,
+  expanded = false,
+  animationsEnabled = true,
+}: {
+  item: TUIDisplayItem
+  expanded?: boolean
+  animationsEnabled?: boolean
+}) {
   switch (item.kind) {
     case 'user':
       return <UserMessage content={item.content} />
     case 'assistant':
-      return <AssistantMessage content={item.content} />
+      return <AssistantMessage content={item.content} thinkingBlocks={item.thinkingBlocks} thinkingExpanded={expanded} />
     case 'tool_call':
-      return <ToolCallBlock item={item} expanded={expanded} />
+      return <ToolCallBlock item={item} expanded={expanded} animationsEnabled={animationsEnabled} />
     case 'compact_boundary':
       return (
         <Box marginY={1}>
@@ -106,6 +134,29 @@ export function DisplayItem({ item, expanded = false }: { item: TUIDisplayItem; 
         </Box>
       )
   }
+}
+
+function getLatestPreviewTarget(
+  tool: Extract<TUIDisplayItem, { kind: 'tool_call' }> | null | undefined,
+  assistant: Extract<TUIDisplayItem, { kind: 'assistant' }> | null | undefined,
+): PreviewTarget | null {
+  const toolTarget = tool?.result
+    ? { kind: 'tool' as const, key: `tool:${tool.toolUseId}`, item: tool }
+    : null
+  const thinkingTarget = assistant?.thinkingBlocks && assistant.thinkingBlocks.length > 0
+    ? { kind: 'thinking' as const, key: `thinking:${assistant.id}`, item: assistant }
+    : null
+
+  if (!toolTarget) return thinkingTarget
+  if (!thinkingTarget) return toolTarget
+  return timestampMs(thinkingTarget.item.createdAt) > timestampMs(toolTarget.item.createdAt)
+    ? thinkingTarget
+    : toolTarget
+}
+
+function timestampMs(value: string): number {
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? time : 0
 }
 
 export function StaticDisplayItem({ item }: { item: TUIStaticItem }) {

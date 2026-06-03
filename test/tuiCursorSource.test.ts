@@ -29,15 +29,26 @@ test('App renders welcome banner through static items instead of dynamic live tr
   assert.match(source, /<Static/)
 })
 
-test('App pauses spinner rendering while modal overlays are active', async () => {
+test('App disables TUI animations while the permission dialog is visible', async () => {
   const source = await readFile('src/tui/components/App.tsx', 'utf8')
   const spinnerSource = await readFile('src/tui/components/Spinner.tsx', 'utf8')
   const hookSource = await readFile('src/tui/hooks/useSpinner.ts', 'utf8')
+  const messageListSource = await readFile('src/tui/components/MessageList.tsx', 'utf8')
+  const toolCallSource = await readFile('src/tui/components/ToolCallBlock.tsx', 'utf8')
+  const taskListSource = await readFile('src/tui/components/TaskListBlock.tsx', 'utf8')
 
-  assert.match(source, /const showSpinner = !isOverlayActive/)
+  assert.match(source, /const animationsEnabled = !permState\.visible/)
+  assert.match(source, /const showSpinner = animationsEnabled && !isOverlayActive/)
   assert.match(source, /active=\{showSpinner\}/)
+  assert.match(source, /animationsEnabled=\{animationsEnabled\}/)
   assert.doesNotMatch(source, /\{isStreaming && <Spinner/)
   assert.match(spinnerSource, /if \(!active\) return null/)
+  assert.match(spinnerSource, /animationsEnabled=\{active\}/)
   assert.match(hookSource, /export function useSpinner\(active = true\)/)
   assert.match(hookSource, /if \(!active\) return/)
+  assert.match(messageListSource, /animationsEnabled = true/)
+  assert.match(messageListSource, /<ToolCallBlock item=\{item\} expanded=\{expanded\} animationsEnabled=\{animationsEnabled\}/)
+  assert.match(toolCallSource, /useBlink\(animationsEnabled && runningOrApproved\)/)
+  assert.match(taskListSource, /animationsEnabled = true/)
+  assert.match(taskListSource, /if \(!animationsEnabled\) return/)
 })

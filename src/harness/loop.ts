@@ -4,7 +4,7 @@ import { ContextBuilder } from './contextBuilder.js'
 import type { EnvironmentInfo } from './contextBuilder.js'
 import { ToolRunner } from './toolRunner.js'
 import { EMPTY_TOKEN_USAGE, addTokenUsage } from './usage.js'
-import { autoCompactIfNeeded } from './compact.js'
+import { autoCompactIfNeeded, summarizeRecordsForContinuation } from './compact.js'
 import {
   prepareRecordsForRequestWithDiagnostics,
   requestTokenCountFromUsage,
@@ -23,7 +23,7 @@ import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
 import type { PlanModeManager } from './planModeManager.js'
-import type { AgentRunResult, ChatMessage, ModelProvider, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
+import type { AgentRunResult, ChatMessage, ModelProvider, ModelStreamEvent, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
 import { buildAtMentionContextRecord } from './atMentions.js'
@@ -87,6 +87,7 @@ export interface AgentLoopOptions {
   setCompactFailureCount?(count: number): Promise<void>
   recordStream: RecordStream
   onRecord?(record: SessionRecord): void
+  onStreamEvent?(event: ModelStreamEvent): void
 }
 
 const ESCALATED_MAX_TOKENS = 64_000
@@ -172,6 +173,23 @@ export class AgentLoop {
 
   async run(userInput: string, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
     return this.enqueue(() => this.runInternal(userInput, signal, messageId))
+  }
+
+  async summarizeRecordsForRewind(records: SessionRecord[]): Promise<{ summary: string; usage?: TokenUsage; preTokens: number }> {
+    return this.enqueue(async () => {
+      const result = await summarizeRecordsForContinuation({
+        records,
+        provider: this.activeModel.provider,
+        model: this.activeModel.model,
+        compactRuntime: this.options.compactModel,
+        promptCacheRetention: this.activeModel.promptCacheRetention,
+      })
+      return {
+        summary: result.content,
+        usage: result.usage,
+        preTokens: result.preTokens,
+      }
+    })
   }
 
   private async runInternal(userInput: string, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
@@ -336,6 +354,9 @@ export class AgentLoop {
         cacheRuntime: this.options.cacheRuntime,
         onTextDelta: (delta: string) => {
           pendingAssistantStreamContent += delta
+        },
+        onStreamEvent: (event: ModelStreamEvent) => {
+          this.options.onStreamEvent?.(event)
         },
       }
 

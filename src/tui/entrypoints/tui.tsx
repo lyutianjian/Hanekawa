@@ -403,6 +403,7 @@ async function main() {
         setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
         recordStream,
         onRecord: (record) => recordProxy.onRecord(record),
+        onStreamEvent: (event) => recordProxy.onStreamEvent(event),
       })
     activeLoops.add(loop)
     return {

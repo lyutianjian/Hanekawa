@@ -6,6 +6,7 @@ export interface TuiTranscriptState {
   staticItems: TUIDisplayItem[]
   liveItems: TUIDisplayItem[]
   recentCompletedToolCall: Extract<TUIDisplayItem, { kind: 'tool_call' }> | null
+  recentThinkingAssistant: Extract<TUIDisplayItem, { kind: 'assistant' }> | null
 }
 
 export interface ApplyRecordOptions {
@@ -15,10 +16,12 @@ export interface ApplyRecordOptions {
 
 export function createTranscriptState(staticItems: TUIDisplayItem[] = []): TuiTranscriptState {
   const recentCompletedToolCall = findRecentCompletedToolCall(staticItems)
+  const recentThinkingAssistant = findRecentThinkingAssistant(staticItems)
   return {
     staticItems,
     liveItems: [],
     recentCompletedToolCall,
+    recentThinkingAssistant,
   }
 }
 
@@ -32,6 +35,9 @@ export function appendStaticTranscriptItem(
     recentCompletedToolCall: item.kind === 'tool_call' && item.result
       ? item
       : state.recentCompletedToolCall,
+    recentThinkingAssistant: item.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0
+      ? item
+      : state.recentThinkingAssistant,
   }
 }
 
@@ -255,6 +261,9 @@ function messageRecordToDisplayItem(
     kind: record.role === 'user' ? 'user' : record.role === 'assistant' ? 'assistant' : 'system',
     id: record.id,
     content: record.content,
+    ...(record.role === 'assistant' && record.thinkingBlocks && record.thinkingBlocks.length > 0
+      ? { thinkingBlocks: record.thinkingBlocks }
+      : {}),
     createdAt: record.createdAt,
   }
 }
@@ -295,6 +304,16 @@ function findRecentCompletedToolCall(
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index]
     if (item?.kind === 'tool_call' && item.result) return item
+  }
+  return null
+}
+
+function findRecentThinkingAssistant(
+  items: readonly TUIDisplayItem[],
+): Extract<TUIDisplayItem, { kind: 'assistant' }> | null {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index]
+    if (item?.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0) return item
   }
   return null
 }

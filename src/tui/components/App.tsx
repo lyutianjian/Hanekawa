@@ -17,7 +17,7 @@ import { useCommands } from '../hooks/useCommands.js'
 import { usePermission } from '../hooks/usePermission.js'
 import type { PermissionPromptProxy, RecordProxy } from '../hooks/usePermission.js'
 import { CheckpointService } from '../../services/checkpoint/checkpointService.js'
-import type { Checkpoint } from '../../services/checkpoint/checkpointService.js'
+import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
 import { MessageList, StaticDisplayItem } from './MessageList.js'
 import { InputBox } from './InputBox.js'
 import { CommandSuggestions } from './CommandSuggestions.js'
@@ -25,7 +25,7 @@ import { sampleSpinnerColors, Spinner } from './Spinner.js'
 import { TaskListBlock } from './TaskListBlock.js'
 import { PermissionDialog } from './PermissionDialog.js'
 import { StatusLine } from './StatusLine.js'
-import { RestoreMode } from './RestoreMode.js'
+import { RestoreMode, type RestoreDecision } from './RestoreMode.js'
 import { invalidateResolvedCwdCache } from '../../utils/paths.js'
 import { readPlan } from '../../utils/plans.js'
 import { applyPermissionModeTransition, nextPermissionMode } from '../permissionMode.js'
@@ -37,6 +37,7 @@ import { ModelPickerDialog, type ModelPickerDecision, type ModelPickerOption } f
 import { useExitPlanPermission, type ExitPlanPromptProxy } from '../hooks/useExitPlanPermission.js'
 import { useEnterPlanPermission, type EnterPlanPromptProxy } from '../hooks/useEnterPlanPermission.js'
 import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
+import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../rewindSummary.js'
 
 export type AppMode = 'idle' | 'running' | 'restore' | 'exiting'
 
@@ -116,7 +117,7 @@ export function App({
     dispose: initialDispose,
   }))
   const runtimeRef = useRef<AppRuntime>(runtime)
-  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
+  const [checkpoints, setCheckpoints] = useState<CheckpointWithDiff[]>([])
   const [permissionMode, setPermissionModeState] = useState<PermissionMode>(() => permissionGate.getMode())
   const [modelKeys, setModelKeys] = useState<string[]>(availableModelKeys)
   const [providerPanelOpen, setProviderPanelOpen] = useState(false)
@@ -188,11 +189,13 @@ export function App({
     staticTranscriptItems,
     liveItems,
     recentCompletedToolCall,
+    recentThinkingAssistant,
     transcriptGeneration,
     appendStaticItem,
     resetTranscript,
     isStreaming,
     spinnerSubText,
+    streamMode,
     taskSnapshot,
     usage,
     submit,
@@ -221,7 +224,8 @@ export function App({
     || providerPanelOpen
     || modelPickerOpen
     || mode === 'restore'
-  const showSpinner = !isOverlayActive
+  const animationsEnabled = !permState.visible
+  const showSpinner = animationsEnabled && !isOverlayActive
   const showStoppedTaskList = !isStreaming
     && !isOverlayActive
     && taskSnapshot !== undefined
@@ -522,7 +526,7 @@ export function App({
   const handleEnterRestoreMode = useCallback(async () => {
     try {
       const cpService = checkpointServiceRef.current
-      const cpList = await cpService.getCheckpoints()
+      const cpList = await cpService.getCheckpointsWithDiffs()
       setCheckpoints(cpList)
       setMode('restore')
     } catch {
@@ -536,57 +540,84 @@ export function App({
     setMode('idle')
   }, [])
 
-  const handleRestoreSelect = useCallback(async (checkpoint: Checkpoint) => {
-    // Step 1: Truncate conversation history to the selected message
-    const truncateResult = await store.truncateToMessage(activeSession.id, checkpoint.messageId)
-
+  const restoreConversationToCheckpoint = useCallback(async (checkpoint: CheckpointWithDiff) => {
+    const truncateResult = await store.truncateBeforeMessage(activeSession.id, checkpoint.messageId)
     if (!truncateResult.success) {
-      // Full failure: truncation failed, remain in restore mode
-      // The error will be displayed by RestoreMode component via the thrown error
       throw new Error(truncateResult.error ?? 'Failed to truncate session')
     }
-
-    // Step 2: Reload messages after successful truncation
     runtime.loop.invalidateRecordsCache()
     await reloadMessages()
+  }, [store, activeSession.id, runtime.loop, reloadMessages])
 
-    // Step 3: Attempt git checkout to restore file state
+  const restoreCodeToCheckpoint = useCallback(async (checkpoint: CheckpointWithDiff) => {
     const cpService = checkpointServiceRef.current
     const restoreResult = await cpService.restoreToCommit(checkpoint.commitHash)
-    // git checkout can swap symlink targets (or replace symlinks with regular
-    // files and vice versa), which invalidates the cwd's realpath cache used
-    // by assertInsideCwd. Drop the cached entry so subsequent path checks
-    // resolve against the post-checkout filesystem state.
     invalidateResolvedCwdCache(process.cwd())
-
-    // Step 4: Format and display success/partial-failure message
-    const messagePreview = checkpoint.messageContent.slice(0, 50)
-    const timestamp = new Date(checkpoint.timestamp).toLocaleString()
-
     if (!restoreResult.success) {
-      // Partial failure: truncation succeeded but git checkout failed
-      // Add system message about partial restore, then return to idle
-      const partialMsg: TUIDisplayItem = {
-        kind: 'system',
-        id: randomUUID(),
-        content: `Conversation restored to "${messagePreview}" (${timestamp}), but file state could not be reverted: ${restoreResult.error}`,
-        createdAt: new Date().toISOString(),
-      }
-      appendStaticItem(partialMsg)
+      throw new Error(restoreResult.error ?? 'Failed to restore file state')
+    }
+  }, [])
+
+  const summarizeRewindSegment = useCallback(async (checkpoint: CheckpointWithDiff, decision: RewindSummaryDecision) => {
+    const loaded = await store.loadRecordsWithDiagnostics(activeSession.id)
+    const rewrite = await buildRewindSummaryRewrite({
+      records: loaded.records,
+      targetMessageId: checkpoint.messageId,
+      decision,
+      summarize: (records) => runtime.loop.summarizeRecordsForRewind(records),
+    })
+
+    await store.replaceRecords(activeSession.id, rewrite.nextRecords)
+    runtime.loop.invalidateRecordsCache()
+    await reloadMessages()
+  }, [store, activeSession.id, runtime.loop, reloadMessages])
+
+  const handleRestoreSelect = useCallback(async (checkpoint: CheckpointWithDiff, decision: RestoreDecision) => {
+    const messagePreview = formatRestoreMessagePreview(checkpoint.messageContent)
+
+    if (decision === 'summarize-from-here') {
+      await summarizeRewindSegment(checkpoint, decision)
+      addSystemMessage(`Summarized from "${messagePreview}"`)
       setMode('idle')
       return
     }
 
-    // Full success: both truncation and git checkout succeeded
-    const successMsg: TUIDisplayItem = {
-      kind: 'system',
-      id: randomUUID(),
-      content: `Restored to "${messagePreview}" (${timestamp})`,
-      createdAt: new Date().toISOString(),
+    if (decision === 'summarize-up-to-here') {
+      await summarizeRewindSegment(checkpoint, decision)
+      addSystemMessage(`Summarized up to before "${messagePreview}"`)
+      setMode('idle')
+      return
     }
-    appendStaticItem(successMsg)
-    setMode('idle')
-  }, [store, activeSession.id, reloadMessages, appendStaticItem])
+
+    if (decision === 'restore-conversation') {
+      await restoreConversationToCheckpoint(checkpoint)
+      addSystemMessage(`Conversation rewound to before "${messagePreview}"`)
+      setMode('idle')
+      return
+    }
+
+    if (decision === 'restore-code') {
+      await restoreCodeToCheckpoint(checkpoint)
+      addSystemMessage(`Code restored to before "${messagePreview}"`)
+      setMode('idle')
+      return
+    }
+
+    if (decision === 'restore-code-and-conversation') {
+      await restoreConversationToCheckpoint(checkpoint)
+      try {
+        await restoreCodeToCheckpoint(checkpoint)
+      } catch (error) {
+        addSystemMessage(
+          `Conversation rewound to before "${messagePreview}", but file state could not be reverted: ${error instanceof Error ? error.message : String(error)}`,
+        )
+        setMode('idle')
+        return
+      }
+      addSystemMessage(`Code and conversation rewound to before "${messagePreview}"`)
+      setMode('idle')
+    }
+  }, [addSystemMessage, restoreCodeToCheckpoint, restoreConversationToCheckpoint, summarizeRewindSegment])
 
   // Clean up abort timeout when streaming stops
   useEffect(() => {
@@ -649,13 +680,16 @@ export function App({
       <MessageList
         items={liveItems}
         recentCompletedToolCall={recentCompletedToolCall}
+        recentThinkingAssistant={recentThinkingAssistant}
         isOverlayActive={isOverlayActive}
+        animationsEnabled={animationsEnabled}
       />
 
       {/* Spinner during streaming */}
       {isStreaming && (
         <Spinner
           subText={spinnerSubText}
+          mode={streamMode}
           taskSnapshot={taskSnapshot}
           spinnerColors={spinnerColors}
           active={showSpinner}
@@ -664,7 +698,11 @@ export function App({
 
       {showStoppedTaskList && (
         <Box paddingLeft={2}>
-          <TaskListBlock snapshot={taskSnapshot} runningColor={spinnerColors.messageColor} />
+          <TaskListBlock
+            snapshot={taskSnapshot}
+            runningColor={spinnerColors.messageColor}
+            animationsEnabled={animationsEnabled}
+          />
         </Box>
       )}
 
@@ -808,6 +846,12 @@ function resolveTierModelKey(config: ConfigService, tier: Tier, currentModelKey:
   if (routed && config.getModel(routed)) return routed
   if (currentModelKey && config.getModel(currentModelKey)) return currentModelKey
   return config.resolveModelReference(config.get().defaultModel)
+}
+
+function formatRestoreMessagePreview(content: string): string {
+  const normalized = content.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= 50) return normalized
+  return `${normalized.slice(0, 47)}...`
 }
 
 function buildVerificationTask(records: SessionRecord[], focus: string): string {

@@ -3,6 +3,7 @@ export const theme = {
   userPrefix: '#E8A0BF',
   assistantText: '#E0E0E0',
   dimText: '#808080',
+  subtleText: '#909090',
   toolName: '#87CEEB',
   success: '#90EE90',
   error: '#FF6B6B',

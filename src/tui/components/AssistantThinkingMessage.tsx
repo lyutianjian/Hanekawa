@@ -21,7 +21,7 @@ export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDur
 
   if (redacted || !thinking.trim()) {
     return (
-      <Text color={theme.dimText} dimColor italic>
+      <Text color={theme.subtleText} italic>
         Thinking (redacted)
       </Text>
     )
@@ -32,21 +32,21 @@ export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDur
       ? `Thought for ${Math.max(1, Math.round(thinkingDurationMs / 1000))}s`
       : 'Thinking'
     return (
-      <Text color={theme.dimText} dimColor italic>
-        {label} <Text color={theme.dimText} dimColor>(ctrl+o to expand)</Text>
+      <Text color={theme.subtleText} italic>
+        {label} <Text color={theme.subtleText}>(ctrl+o to expand)</Text>
       </Text>
     )
   }
 
   return (
     <Box flexDirection="column">
-      <Text color={theme.dimText} dimColor italic>
+      <Text color={theme.subtleText} italic>
         Thinking
       </Text>
       <Box paddingLeft={2}>
         <Markdown content={thinking} />
       </Box>
-      <Text color={theme.dimText} dimColor>
+      <Text color={theme.subtleText}>
         (ctrl+o to collapse)
       </Text>
     </Box>

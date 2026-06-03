@@ -119,7 +119,7 @@ export function DisplayItem({
     case 'system':
       return (
         <Box marginY={1}>
-          <Text color={theme.systemText} dimColor>
+          <Text color={item.content.startsWith('✻') ? theme.subtleText : theme.systemText} dimColor={!item.content.startsWith('✻')}>
             {item.content}
           </Text>
         </Box>

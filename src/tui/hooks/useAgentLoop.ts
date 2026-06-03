@@ -21,7 +21,6 @@ import {
   appendStaticTranscriptItem,
   applyToolProgressToTranscriptState,
   applyTuiRecordToTranscriptState,
-  clearToolProgress,
   commitLiveItemsToStatic,
   createTranscriptState,
   isHiddenToolCall,
@@ -90,6 +89,8 @@ export function useAgentLoop({
   // CheckpointService for creating snapshots before each user message
   const checkpointServiceRef = useRef<CheckpointService | null>(null)
   const checkpointInitializedRef = useRef(false)
+  const didRollbackRef = useRef(false)
+  const loopStartRef = useRef(0)
 
   // Initialize CheckpointService when session starts
   useEffect(() => {
@@ -143,7 +144,9 @@ export function useAgentLoop({
       // Move any live items (e.g. thinking blocks from the previous turn) to static
       setTranscript((prev) => commitLiveItemsToStatic(prev))
 
-      // Add user message — generate ID once, use everywhere
+      // Add user message — generate ID once, use everywhere.
+      // Placed in liveItems first so rollback can cleanly remove it
+      // without leaving a ghost in the terminal scrollback.
       const messageId = randomUUID()
       const userMsg: TUIDisplayItem = {
         kind: 'user',
@@ -151,7 +154,17 @@ export function useAgentLoop({
         content: input,
         createdAt: new Date().toISOString(),
       }
-      appendStaticItem(userMsg)
+      setTranscript((prev) => ({
+        ...prev,
+        liveItems: [...prev.liveItems, userMsg],
+      }))
+
+      setIsStreaming(true)
+      setSpinnerSubText(undefined)
+      setStreamMode('requesting')
+      responseLengthRef.current = 0
+      thinkingStartRef.current = null
+      thinkingDurationRef.current = null
 
       // Create checkpoint BEFORE agent begins processing
       if (checkpointInitializedRef.current && checkpointServiceRef.current) {
@@ -172,15 +185,10 @@ export function useAgentLoop({
         }
       }
 
-      setIsStreaming(true)
-      setSpinnerSubText(undefined)
-      setStreamMode('requesting')
-      responseLengthRef.current = 0
-      thinkingStartRef.current = null
-      thinkingDurationRef.current = null
-
       const ac = new AbortController()
       abortControllerRef.current = ac
+      didRollbackRef.current = false
+      loopStartRef.current = Date.now()
 
       try {
         const result = await loop.run(input, ac.signal, messageId)
@@ -199,11 +207,14 @@ export function useAgentLoop({
             userMessageId: messageId,
             input,
             loop,
-            resetTranscript,
+            setTranscript,
             setTaskSnapshot,
             onRestoreInput,
           })
-          if (restored) return
+          if (restored) {
+            didRollbackRef.current = true
+            return
+          }
 
           const interruptMsg: TUIDisplayItem = {
             kind: 'system',
@@ -224,16 +235,41 @@ export function useAgentLoop({
       } finally {
         onActiveModelChange?.(loop.getActiveModel())
         setIsStreaming(false)
+
+        // Show duration summary on successful completion
+        if (!ac.signal.aborted) {
+          // Commit live items to static first so they appear in
+          // chronological order above the duration summary.
+          setTranscript((prev) => commitLiveItemsToStatic(prev))
+
+          const elapsed = Date.now() - loopStartRef.current
+          const totalSec = Math.floor(elapsed / 1000)
+          const min = Math.floor(totalSec / 60)
+          const sec = totalSec % 60
+          const duration = min > 0 ? `${min}m ${sec}s` : `${sec}s`
+          appendStaticItem({
+            kind: 'system',
+            id: randomUUID(),
+            content: `✻ Worked for ${duration}`,
+            createdAt: new Date().toISOString(),
+          })
+        }
+
         abortControllerRef.current = null
         lastToolUseIdRef.current.clear()
         activeToolProgressRef.current.clear()
         subagentProgressRef.current.clear()
         setSpinnerSubText(undefined)
         setStreamMode('requesting')
-        setTranscript((prev) => clearToolProgress(prev))
+        // Clear live items only on rollback abort (user message ghost prevention).
+        // On success or non-rollback abort, leave liveItems alone — they transition
+        // to static naturally via commitLiveItemsToStatic at the start of the next submit.
+        if (didRollbackRef.current) {
+          setTranscript((prev) => prev.liveItems.length > 0 ? { ...prev, liveItems: [] } : prev)
+        }
       }
     },
-    [loop, store, session.id, onActiveModelChange, appendStaticItem, onRestoreInput, resetTranscript],
+    [loop, store, session.id, onActiveModelChange, appendStaticItem, onRestoreInput],
   )
 
   const handleProgress = useCallback((event: ToolProgressEvent) => {
@@ -413,7 +449,7 @@ async function tryRestoreInterruptedPrompt(input: {
   userMessageId: string
   input: string
   loop: AgentLoop
-  resetTranscript: (items?: TUIDisplayItem[]) => void
+  setTranscript: React.Dispatch<React.SetStateAction<TuiTranscriptState>>
   setTaskSnapshot: (snapshot: TaskDisplaySnapshot | undefined) => void
   onRestoreInput?: (text: string) => void
 }): Promise<boolean> {
@@ -429,7 +465,7 @@ async function tryRestoreInterruptedPrompt(input: {
 
     input.loop.invalidateRecordsCache()
     input.setTaskSnapshot(findLatestTaskSnapshot(records))
-    input.resetTranscript(recordsToDisplayItems(records))
+    input.setTranscript(createTranscriptState(recordsToDisplayItems(records)))
     input.onRestoreInput?.(input.input)
     return true
   } catch {

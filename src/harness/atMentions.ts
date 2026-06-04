@@ -3,6 +3,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import fg from 'fast-glob'
 import type { AtMentionContextRecord, AtMentionFileContext, ToolContext } from './types.js'
+import { wrapInSystemReminder } from './systemReminder.js'
 import { readFileAndRemember } from '../tools/fileState.js'
 import { filterGitIgnoredPaths } from '../utils/gitIgnore.js'
 import { assertInsideCwd } from '../utils/paths.js'
@@ -127,15 +128,14 @@ export async function buildAtMentionContextRecord(input: {
 
   if (attachments.length === 0) return undefined
 
-  const content = [
-    '<system-reminder>',
+  const innerContent = [
     'User attached code files with @-mentions. Treat this as user-provided context for the current task.',
     ...attachments.map(({ file, content: fileContent }) => {
       const truncated = file.truncated ? ' truncated="true"' : ''
       return `<file path="${escapeAttribute(file.displayPath)}" lines="${file.lineStart}-${file.lineEnd}"${truncated}>\n${fileContent}\n</file>`
     }),
-    '</system-reminder>',
   ].join('\n\n')
+  const content = wrapInSystemReminder(innerContent)
 
   return {
     id: `at-mention-${randomUUID()}`,

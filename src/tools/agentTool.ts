@@ -69,6 +69,8 @@ export interface BaseAgentDefinition {
   isReadOnlyAgent: boolean
   omitProjectContext?: boolean
   criticalSystemReminder?: string
+  initialPrompt?: string
+  effort?: 'low' | 'medium' | 'high' | number
   getSystemPrompt(baseSystem?: string): string | undefined
 }
 
@@ -582,6 +584,15 @@ async function runSubagent({
         })
       }
     }
+    if (agentDefinition.initialPrompt) {
+      await recordStream.append({
+        id: randomUUID(),
+        type: 'message',
+        role: 'user',
+        content: agentDefinition.initialPrompt,
+        createdAt: new Date().toISOString(),
+      })
+    }
     await appendSubagentHookOutput(
       recordStream,
       await runLifecycleHooks(
@@ -617,6 +628,7 @@ async function runSubagent({
       maxTurns: parsed.maxTurns ?? agentDefinition.maxTurns,
       maxTurnsExceededBehavior: 'partial',
       maxOutputTokens: parsed.maxOutputTokens,
+      thinking: effortToThinking(agentDefinition.effort),
       fallbackModel: options.fallbackModel,
       compactModel: options.compactModel,
       fallbackRetryDelayMs: options.fallbackRetryDelayMs,
@@ -1236,6 +1248,15 @@ function joinPromptParts(parts: Array<string | undefined>): string | undefined {
 
 function maxOutputWords(maxOutputTokens: number): number {
   return Math.max(1, Math.floor(maxOutputTokens * 0.75))
+}
+
+function effortToThinking(effort: 'low' | 'medium' | 'high' | number | undefined): { enabled: boolean; budgetTokens?: number } | undefined {
+  if (effort === undefined) return undefined
+  if (effort === 'low') return { enabled: false }
+  if (effort === 'medium') return { enabled: true, budgetTokens: 10_000 }
+  if (effort === 'high') return { enabled: true, budgetTokens: 32_000 }
+  if (typeof effort === 'number') return { enabled: true, budgetTokens: effort }
+  return undefined
 }
 
 function createSubAgentToolContext(parent: ToolContext, subAgentId: string, abortSignal: AbortSignal, cwd = parent.cwd): ToolContext {

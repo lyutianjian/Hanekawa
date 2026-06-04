@@ -5,6 +5,7 @@ import type { ToolResultDisplay } from '../../harness/types.js'
 import { theme } from '../theme.js'
 import type { TUIDisplayItem, ToolCallStatus } from '../types.js'
 import { ResponseBlock } from './ResponseBlock.js'
+import { AnsiText, hasAnsi, stripAnsi } from '../ansi.js'
 
 interface ToolCallBlockProps {
   item: Extract<TUIDisplayItem, { kind: 'tool_call' }>
@@ -56,7 +57,11 @@ export function ToolCallBlock({ item, expanded, animationsEnabled = true }: Tool
                 error: {item.errorCode}
               </Text>
             )}
-            <Text color={theme.error}>{result}</Text>
+            {hasAnsi(result) ? (
+              <AnsiText>{result}</AnsiText>
+            ) : (
+              <Text color={theme.error}>{result}</Text>
+            )}
           </Box>
         </ResponseBlock>
       )}
@@ -159,7 +164,13 @@ function DetailLines({ lines }: { lines: string[] }) {
     <>
       {lines.map((line, i) => (
         <Box key={i}>
-          <Text color={theme.dimText}>{line}</Text>
+          {hasAnsi(line) ? (
+            <Text color={theme.dimText}>
+              <AnsiText>{line}</AnsiText>
+            </Text>
+          ) : (
+            <Text color={theme.dimText}>{line}</Text>
+          )}
         </Box>
       ))}
     </>

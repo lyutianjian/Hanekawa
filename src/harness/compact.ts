@@ -9,6 +9,7 @@ import {
   type ContextManagementConfig,
 } from '../prompts/budget.js'
 import { getRecordsAfterLastCompact } from './requestPrep.js'
+import { wrapInSystemReminder } from './systemReminder.js'
 
 const COMPACT_FAILURE_LIMIT = 3
 const compactFailuresByKey = new Map<string, number>()
@@ -376,7 +377,7 @@ export function compactBoundaryToMessage(record: CompactBoundaryRecord): ChatMes
   return {
     id: record.id,
     role: 'user',
-    content: `<system-reminder>\nPrior conversation was compacted. Continue from this summary:\n\n${record.summary}\n</system-reminder>`,
+    content: wrapInSystemReminder(`Prior conversation was compacted. Continue from this summary:\n\n${record.summary}`),
     createdAt: record.createdAt,
   }
 }

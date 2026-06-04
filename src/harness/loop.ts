@@ -27,6 +27,7 @@ import type { AgentRunResult, ChatMessage, ModelProvider, ModelStreamEvent, Sess
 import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
 import { buildAtMentionContextRecord } from './atMentions.js'
+import { wrapInSystemReminder } from './systemReminder.js'
 
 export interface ActiveModelRuntime {
   provider: ModelProvider
@@ -73,6 +74,7 @@ export interface AgentLoopOptions {
   maxOutputTokens?: number
   tokenBudget?: number
   tokenWarningThreshold?: number
+  thinking?: { enabled: boolean; budgetTokens?: number }
   fallbackModel?: ActiveModelRuntime
   compactModel?: ActiveModelRuntime
   planModel?: ActiveModelRuntime
@@ -348,6 +350,7 @@ export class AgentLoop {
         model: this.activeModel.model,
         promptCacheRetention: this.activeModel.promptCacheRetention,
         maxOutputTokens: maxOutputTokensOverride,
+        thinking: this.options.thinking,
         previousRequestId: lastRequestId,
         retry: { signal },
         cacheSource,
@@ -477,7 +480,7 @@ export class AgentLoop {
           type: 'message',
           id: randomUUID(),
           role: 'user',
-          content: `<system-reminder>Token budget at ${pct}%. Finish the current task and stop using tools.</system-reminder>`,
+          content: wrapInSystemReminder(`Token budget at ${pct}%. Finish the current task and stop using tools.`),
           turnId,
           createdAt: new Date().toISOString(),
         })
@@ -493,7 +496,7 @@ export class AgentLoop {
               type: 'message',
               id: randomUUID(),
               role: 'user',
-              content: '<system-reminder>Plan mode is active. Do not end your turn with ordinary assistant text. Use AskUserQuestion for unresolved decisions, or call ExitPlanMode when the plan is ready for approval.</system-reminder>',
+              content: wrapInSystemReminder('Plan mode is active. Do not end your turn with ordinary assistant text. Use AskUserQuestion for unresolved decisions, or call ExitPlanMode when the plan is ready for approval.'),
               turnId,
               createdAt: new Date().toISOString(),
             })
@@ -530,7 +533,7 @@ export class AgentLoop {
           type: 'message',
           id: randomUUID(),
           role: 'user',
-          content: '<system-reminder>All tool calls in the previous turn failed. Review the errors above and decide how to proceed — try a different approach, ask the user for help, or report the failures.</system-reminder>',
+          content: wrapInSystemReminder('All tool calls in the previous turn failed. Review the errors above and decide how to proceed — try a different approach, ask the user for help, or report the failures.'),
           turnId,
           createdAt: new Date().toISOString(),
         })
@@ -583,33 +586,27 @@ export class AgentLoop {
       : '- No tracked remaining tasks.'
 
     if (intent === 'continue') {
-      return [
-        '<system-reminder>',
+      return wrapInSystemReminder([
         'The previous turn was interrupted by the user and is now being resumed. Continue from where you left off, but do not blindly repeat tool calls that already completed.',
         `Interrupted prompt:\n${interruption.prompt}`,
         `Remaining tracked tasks:\n${remaining}`,
         'Before doing more work, inspect or update TaskList/TodoWrite so task status reflects the resumed state.',
-        '</system-reminder>',
-      ].join('\n')
+      ].join('\n'))
     }
 
     if (intent === 'abandon') {
-      return [
-        '<system-reminder>',
+      return wrapInSystemReminder([
         'The previous interrupted turn has been abandoned by the user. Do not resume or replay it unless the user asks again.',
         `Previously remaining tracked tasks:\n${remaining}`,
-        '</system-reminder>',
-      ].join('\n')
+      ].join('\n'))
     }
 
-    return [
-      '<system-reminder>',
+    return wrapInSystemReminder([
       'There is an interrupted prior turn, but the user has provided a new request. Do not automatically replay the interrupted prompt.',
       `Interrupted prompt:\n${interruption.prompt}`,
       `Previously remaining tracked tasks:\n${remaining}`,
       'Treat those tasks as context only; follow the latest user request.',
-      '</system-reminder>',
-    ].join('\n')
+    ].join('\n'))
   }
 
   private async consumeTurnInterruption(recordId: string): Promise<void> {
@@ -994,7 +991,7 @@ export class AgentLoop {
         type: 'message',
         id: randomUUID(),
         role: 'user',
-        content: `<system-reminder>${hookName} hook blocking error:\n${result.blockingErrors.join('\n')}</system-reminder>`,
+        content: wrapInSystemReminder(`${hookName} hook blocking error:\n${result.blockingErrors.join('\n')}`),
         turnId,
         createdAt: new Date().toISOString(),
       })
@@ -1030,7 +1027,7 @@ export class AgentLoop {
         type: 'message',
         id: randomUUID(),
         role: 'user',
-        content: `<system-reminder>stop hook blocking error:\n${result.blockingErrors.join('\n')}</system-reminder>`,
+        content: wrapInSystemReminder(`stop hook blocking error:\n${result.blockingErrors.join('\n')}`),
         turnId: input.turnId,
         createdAt: new Date().toISOString(),
       })
@@ -1058,7 +1055,7 @@ export class AgentLoop {
       type: 'message',
       id: randomUUID(),
       role: 'user',
-      content: `<system-reminder>${hookName} hook output:\n${blocks.join('\n\n')}</system-reminder>`,
+      content: wrapInSystemReminder(`${hookName} hook output:\n${blocks.join('\n\n')}`),
       turnId,
       createdAt: new Date().toISOString(),
     })
@@ -1164,7 +1161,6 @@ function segmentsWithFinalResponse(
 
 function buildMaxTokensContinuationReminder(taskState: ToolContext['taskState']): string {
   const blocks = [
-    '<system-reminder>',
     'Your previous response was cut off by the token limit. Continue from the exact point where it stopped.',
     'Do not restart, summarize, or repeat completed text. Finish the remaining answer or remaining tool-driven task directly.',
   ]
@@ -1175,8 +1171,7 @@ function buildMaxTokensContinuationReminder(taskState: ToolContext['taskState'])
       ...remaining.map((task) => `- #${task.id} [${task.status}] ${task.subject}`),
     )
   }
-  blocks.push('</system-reminder>')
-  return blocks.join('\n')
+  return wrapInSystemReminder(blocks.join('\n'))
 }
 
 function buildMaxTurnsExceededContent(content: string, maxTurns: number): string {

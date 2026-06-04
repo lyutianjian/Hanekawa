@@ -3,6 +3,7 @@ import { PermissionGate } from './permissions.js'
 import { runLifecycleHooks, runPreToolUseHooks } from './hooks.js'
 import { validateToolInput } from './toolValidation.js'
 import { countTextTokens } from '../prompts/budget.js'
+import { wrapInSystemReminder } from './systemReminder.js'
 import type { ToolHooks } from './hooks.js'
 import type { SessionRecord, TaskDisplayCounts, TaskDisplayItem, TaskDisplaySnapshot, TaskItem, Tool, ToolCall, ToolContext, ToolErrorCode, ToolProgressEvent, ToolResultDisplay, ToolResultMetadata, ToolResultRecord, ToolUseRecord } from './types.js'
 
@@ -232,7 +233,7 @@ export class ToolRunner {
       id: randomUUID(),
       type: 'message',
       role: 'user',
-      content: `<system-reminder>postToolUse hook output for ${toolName}:\n${blocks.join('\n\n')}</system-reminder>`,
+      content: wrapInSystemReminder(`postToolUse hook output for ${toolName}:\n${blocks.join('\n\n')}`),
       ...(turnId ? { turnId } : {}),
       createdAt: new Date().toISOString(),
     })

@@ -48,6 +48,7 @@ test('ContextBuilder injects layered system and user context', async () => {
     '# Using your tools\n - Prefer dedicated t',
     '# Tone and style\n - Only use emojis if t',
     '# Text output (does not apply to tool ca',
+    '# Context management\nWhen working with t',
     '# availableTools\n- Read: Read a file fro',
     '__MYAGENT_SYSTEM_PROMPT_DYNAMIC_BOUNDARY',
     'custom system',
@@ -144,12 +145,12 @@ test('ContextBuilder adds a dynamic plan mode reminder', async () => {
   })
 
   assert.match(built.system ?? '', /You are in plan mode/)
-  assert.match(built.system ?? '', /Use AskUserQuestion if you need to clarify approaches/)
-  assert.match(built.system ?? '', /Exit plan mode with ExitPlanMode when ready to implement/)
-  assert.match(built.system ?? '', /Ordinary assistant-text plans are invalid/)
+  assert.match(built.system ?? '', /AskUserQuestion for unresolved requirements/)
+  assert.match(built.system ?? '', /ExitPlanMode when the plan is ready for approval/)
+  assert.match(built.system ?? '', /always use ExitPlanMode/)
   assert.equal(built.systemBlocks?.at(-2), '__MYAGENT_SYSTEM_PROMPT_DYNAMIC_BOUNDARY__')
-  assert.match(built.systemBlocks?.at(-1) ?? '', /What Happens in Plan Mode/)
-  assert.match(built.systemBlocks?.at(-1) ?? '', /ExitPlanMode inherently requests user approval/)
+  assert.match(built.systemBlocks?.at(-1) ?? '', /plan mode/)
+  assert.match(built.systemBlocks?.at(-1) ?? '', /ExitPlanMode/)
 })
 
 test('ContextBuilder injects available skills as system reminder', async () => {

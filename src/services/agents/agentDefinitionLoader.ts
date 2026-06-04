@@ -24,29 +24,41 @@ interface AgentFrontmatter {
   background?: unknown
   isolation?: unknown
   tools?: unknown
+  disallowedTools?: unknown
   isReadOnlyAgent?: unknown
   omitProjectContext?: unknown
   maxTurns?: unknown
   maxResultSizeChars?: unknown
+  initialPrompt?: unknown
+  effort?: unknown
 }
 
 const CUSTOM_AGENT_PROMPT_WARN_CHARS = 16_000
 const BUILT_IN_AGENT_TYPES = new Set(BUILT_IN_AGENT_DEFINITIONS.map((definition) => definition.type))
 
 export class AgentDefinitionLoader {
+  private cached: BaseAgentDefinition[] | undefined
+
   constructor(
     private readonly cwd: string,
     private readonly homeDir = homedir(),
   ) {}
 
   async list(): Promise<BaseAgentDefinition[]> {
+    if (this.cached) return this.cached
     const definitions = new Map<string, BaseAgentDefinition>()
     for (const dir of this.agentDirs()) {
       for (const definition of await this.loadDir(dir)) {
         definitions.set(definition.type, definition)
       }
     }
-    return [...definitions.values()]
+    const result = [...definitions.values()]
+    this.cached = result
+    return result
+  }
+
+  invalidate(): void {
+    this.cached = undefined
   }
 
   private agentDirs(): string[] {
@@ -94,6 +106,7 @@ export class AgentDefinitionLoader {
     }
 
     const tools = parseTools(frontmatter.tools)
+    const userDisallowedTools = parseOptionalStringArray(frontmatter.disallowedTools, 'disallowedTools')
     const model = parseOptionalString(frontmatter.model, 'model')
     const permissionMode = parseOptionalPermissionMode(frontmatter.permissionMode)
     const skills = parseOptionalStringArray(frontmatter.skills, 'skills')
@@ -108,6 +121,18 @@ export class AgentDefinitionLoader {
     )
     const omitProjectContext = parseBoolean(frontmatter.omitProjectContext, false, 'omitProjectContext')
     const explicitReadOnlyAgent = parseOptionalBoolean(frontmatter.isReadOnlyAgent, 'isReadOnlyAgent')
+    const initialPrompt = parseOptionalString(frontmatter.initialPrompt, 'initialPrompt')
+
+    const effortRaw = frontmatter.effort
+    let effort: 'low' | 'medium' | 'high' | number | undefined
+    if (effortRaw === 'low' || effortRaw === 'medium' || effortRaw === 'high') {
+      effort = effortRaw
+    } else if (typeof effortRaw === 'number' && Number.isInteger(effortRaw) && effortRaw > 0) {
+      effort = effortRaw
+    } else if (effortRaw !== undefined) {
+      console.warn(`Custom agent '${frontmatter.name}' has invalid effort '${effortRaw}'. Use low/medium/high or a positive integer.`)
+    }
+
     const content = match[2].trim()
     const inferredReadOnlyAgent = infersReadOnlyAgentFromTools(tools)
 
@@ -131,12 +156,16 @@ export class AgentDefinitionLoader {
       ...(background !== undefined ? { background } : {}),
       ...(isolation ? { isolation } : {}),
       ...(tools ? { tools } : {}),
-      disallowedTools: NESTED_AGENT_FORBIDDEN_TOOLS,
+      disallowedTools: userDisallowedTools
+        ? [...new Set([...NESTED_AGENT_FORBIDDEN_TOOLS, ...userDisallowedTools])]
+        : NESTED_AGENT_FORBIDDEN_TOOLS,
       maxTurns,
       maxResultSizeChars,
       isReadOnlyAgent: explicitReadOnlyAgent === false ? false : inferredReadOnlyAgent,
       omitProjectContext,
       getSystemPrompt: () => content,
+      ...(initialPrompt ? { initialPrompt } : {}),
+      ...(effort !== undefined ? { effort } : {}),
     }
   }
 }

@@ -27,4 +27,25 @@ export const theme = {
   taskDim: '#808080',
   codeBg: '#1E1E1E',
   codeInline: '#CBA6F7',
+  // Syntax highlighting colors (used by cli-highlight theme + code block rendering)
+  syntax: {
+    keyword: '#CBA6F7',     // Purple — keywords (if, else, return, etc.)
+    builtIn: '#F38BA8',     // Red — built-in objects/functions
+    type: '#F9E2AF',        // Yellow — user-defined types
+    literal: '#A6E3A1',     // Green — true, false, null
+    number: '#FAB387',      // Orange — numeric literals
+    regexp: '#F5C2E7',      // Pink — regex patterns
+    string: '#A6E3A1',      // Green — string literals
+    comment: '#6C7086',     // Gray — comments
+    function: '#89B4FA',    // Blue — function names
+    title: '#89B4FA',       // Blue — declaration names
+    params: '#CDD6F4',      // Light gray — function parameters
+    meta: '#F38BA8',        // Red — preprocessor/meta
+    tag: '#F38BA8',         // Red — HTML/XML tags
+    name: '#89B4FA',        // Blue — tag names
+    attr: '#F9E2AF',        // Yellow — attributes
+    section: '#89B4FA',     // Blue — section headings
+    class: '#F9E2AF',       // Yellow — class names
+    default: '#CDD6F4',     // Light gray — default/fallback
+  },
 } as const

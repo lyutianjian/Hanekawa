@@ -4,6 +4,8 @@
  * outside the static system-prompt cache boundary.
  */
 
+import { wrapInSystemReminder } from './systemReminder.js'
+
 export const TURNS_BETWEEN_ATTACHMENTS = 5
 export const FULL_REMINDER_EVERY_N_ATTACHMENTS = 5
 
@@ -51,8 +53,7 @@ export function buildFullPlanModeReminder(planFilePath: string, planExists: bool
     ? `A plan file already exists at ${planFilePath}. You can read it and make incremental edits using the Edit tool.`
     : `No plan file exists yet. You should create your plan at ${planFilePath} using the Write tool.`
 
-  return [
-    '<system-reminder>',
+  return wrapInSystemReminder([
     'Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.',
     '',
     '## Plan File Info:',
@@ -103,30 +104,24 @@ export function buildFullPlanModeReminder(planFilePath: string, planExists: bool
     '**Important:** Use AskUserQuestion ONLY to clarify requirements or choose between approaches. Use ExitPlanMode to request plan approval. Do NOT ask about plan approval in any other way - no text questions, no AskUserQuestion. Phrases like "Is this plan okay?", "Should I proceed?", "How does this plan look?", "Any changes before we start?", or similar MUST use ExitPlanMode.',
     '',
     'NOTE: At any point in time through this workflow you should feel free to ask the user questions or clarifications using the AskUserQuestion tool. Don\'t make large assumptions about user intent. The goal is to present a well researched plan to the user, and tie any loose ends before implementation begins.',
-    '</system-reminder>',
-  ].join('\n')
+  ].join('\n'))
 }
 
 export function buildSparsePlanModeReminder(planFilePath?: string): string {
   const planPathSuffix = planFilePath ? ` (${planFilePath})` : ''
-  return [
-    '<system-reminder>',
+  return wrapInSystemReminder(
     `Plan mode still active (see full instructions earlier in conversation). Read-only except plan file${planPathSuffix}. Follow 5-phase workflow. End turns with AskUserQuestion (for clarifications) or ExitPlanMode (for plan approval). Never ask about plan approval via text or AskUserQuestion.`,
-    '</system-reminder>',
-  ].join('\n')
+  )
 }
 
 export function buildPlanModeReentryReminder(planFilePath: string, planExists: boolean = true): string {
   if (!planExists) {
-    return [
-      '<system-reminder>',
+    return wrapInSystemReminder(
       'You are returning to plan mode after having previously exited it. Your previous plan file at ' + planFilePath + ' no longer exists. Treat this as a fresh planning session and follow the 5-phase plan workflow from the top. When the plan is ready, call ExitPlanMode rather than asking for approval in text.',
-      '</system-reminder>',
-    ].join('\n')
+    )
   }
 
-  return [
-    '<system-reminder>',
+  return wrapInSystemReminder([
     '## Re-entering Plan Mode',
     '',
     'You are returning to plan mode after having previously exited it. A plan file exists at ' + planFilePath + ' from your previous planning session.',
@@ -140,23 +135,17 @@ export function buildPlanModeReentryReminder(planFilePath: string, planExists: b
     '4. Continue on with the plan process and most importantly you should always edit the plan file one way or the other before calling ExitPlanMode',
     '',
     'Treat this as a fresh planning session. Do not assume the existing plan is relevant without evaluating it first. When the plan is ready, call ExitPlanMode rather than asking for approval in text.',
-    '</system-reminder>',
-  ].join('\n')
+  ].join('\n'))
 }
 
 export function buildPlanModeExitReminder(planContent: string): string {
   // Aligned with Claude Code's ExitPlanModeV2Tool tool_result body.
   const trimmed = planContent.trim()
   if (trimmed.length === 0) {
-    return [
-      '<system-reminder>',
-      'User has approved exiting plan mode. You can now proceed.',
-      '</system-reminder>',
-    ].join('\n')
+    return wrapInSystemReminder('User has approved exiting plan mode. You can now proceed.')
   }
 
   const lines = [
-    '<system-reminder>',
     '## Exited Plan Mode',
     '',
     'User has approved your plan. You can now start coding. Start with updating your todo list (TodoWrite) if applicable, then proceed with the implementation.',
@@ -164,15 +153,11 @@ export function buildPlanModeExitReminder(planContent: string): string {
   if (trimmed.length > 0) {
     lines.push('', 'Approved plan content:', trimmed)
   }
-  lines.push('</system-reminder>')
-  return lines.join('\n')
+  return wrapInSystemReminder(lines.join('\n'))
 }
 
 export function buildPlanFileReferenceReminder(planContent: string): string {
-  return [
-    '<system-reminder>',
-    'Plan mode is active. Current draft plan file content:',
-    planContent.trim(),
-    '</system-reminder>',
-  ].join('\n')
+  return wrapInSystemReminder(
+    'Plan mode is active. Current draft plan file content:\n' + planContent.trim(),
+  )
 }

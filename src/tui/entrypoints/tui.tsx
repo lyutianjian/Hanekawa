@@ -136,10 +136,12 @@ async function main() {
 
   const baseTools = await getAllTools()
   const skills = await new SkillsService(cwd).list()
-  let customAgentDefinitions = await new AgentDefinitionLoader(cwd).list()
+  const agentLoader = new AgentDefinitionLoader(cwd)
+  let customAgentDefinitions = await agentLoader.list()
   let agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
   const reloadAgentDefinitions = async (): Promise<number> => {
-    customAgentDefinitions = await new AgentDefinitionLoader(cwd).list()
+    agentLoader.invalidate()
+    customAgentDefinitions = await agentLoader.list()
     agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
     promptSections.clear('system-prompt:available-tools')
     return customAgentDefinitions.length

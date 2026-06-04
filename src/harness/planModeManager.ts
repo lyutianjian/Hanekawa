@@ -40,6 +40,7 @@ import {
 import type { PermissionGate } from './permissions.js'
 import type { SessionStore, SessionMeta } from '../sessions/service.js'
 import type { PlanModeBridge, SessionRecord } from './types.js'
+import { wrapInSystemReminder } from './systemReminder.js'
 
 /** Plan-mode state. Slug now lives in the in-memory cache in utils/plans.ts —
  *  this state only carries flags and counters that don't need to persist. */
@@ -395,7 +396,7 @@ export class PlanModeManager {
       })
       if (this.deps.emitChatMessage) {
         await this.deps.emitChatMessage(
-          '<system-reminder>The user declined to enter plan mode. Continue with the existing approach.</system-reminder>',
+          wrapInSystemReminder('The user declined to enter plan mode. Continue with the existing approach.'),
         )
       }
     }
@@ -500,7 +501,7 @@ export class PlanModeManager {
           ? decision.feedback.trim()
           : '(no specific feedback)'
         await this.deps.emitChatMessage(
-          `<system-reminder>The user rejected the plan with the following feedback: ${fb}\n\nRevise the plan and call ExitPlanMode again.</system-reminder>`,
+          wrapInSystemReminder(`The user rejected the plan with the following feedback: ${fb}\n\nRevise the plan and call ExitPlanMode again.`),
         )
       }
       return

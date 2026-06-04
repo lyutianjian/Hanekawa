@@ -11,6 +11,7 @@ import { SystemPromptSectionCache } from './sections.js'
 import { captureReadFileStateFromStat, readFileAndRemember } from '../tools/fileState.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import { evictOldestIfNeeded } from '../utils/cache.js'
+import { wrapInSystemReminder } from './systemReminder.js'
 
 const require = createRequire(import.meta.url)
 const picomatch = require('picomatch') as {
@@ -64,6 +65,7 @@ export type SectionKey =
   | 'using-tools'
   | 'tone-and-style'
   | 'output-efficiency'
+  | 'context-management'
 
 const DEFAULT_SECTION_KEYS: readonly SectionKey[] = [
   'intro',
@@ -73,13 +75,14 @@ const DEFAULT_SECTION_KEYS: readonly SectionKey[] = [
   'using-tools',
   'tone-and-style',
   'output-efficiency',
+  'context-management',
 ]
 
 const AUTO_ACTIVATED_SKILL_TIMESTAMP_OFFSET_MS = 24 * 60 * 60 * 1000
 
 const INTRO_SECTION = `You are Hanekawa, an interactive CLI agent developed by lyutianjian for software engineering tasks.
 
-You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+Use the instructions below and the tools available to you to assist the user.
 
 IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.
 IMPORTANT: You must NEVER generate or guess URLs for the user unless you are confident that the URLs are for helping the user with programming. You may use URLs provided by the user in their messages or local files.`.trim()
@@ -94,8 +97,12 @@ const SYSTEM_SECTION = `# System
 const DOING_TASKS_SECTION = `# Doing tasks
  - The user will primarily request you to perform software engineering tasks. These may include solving bugs, adding new functionality, refactoring code, explaining code, and more. When given an unclear or generic instruction, consider it in the context of these software engineering tasks and the current working directory. For example, if the user asks you to change "methodName" to snake case, do not reply with just "method_name", instead find the method in the code and modify the code.
  - You are highly capable and often allow users to complete ambitious tasks that would otherwise be too complex or take too long. You should defer to user judgement about whether a task is too large to attempt.
+ - If you notice the user's request is based on a misconception, or spot a bug adjacent to what they asked about, say so. You're a collaborator, not just an executor — users benefit from your judgment, not just your compliance.
  - For exploratory questions ("what could we do about X?", "how should we approach this?", "what do you think?"), respond in 2-3 sentences with a recommendation and the main tradeoff. Present it as something the user can redirect, not a decided plan. Don't implement until the user agrees.
+ - In general, do not propose changes to code you haven't read. If a user asks about or wants you to modify a file, read it first. Understand existing code before suggesting modifications.
  - Prefer editing existing files to creating new ones.
+ - If an approach fails, diagnose why before switching tactics — read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. Escalate to the user only when you're genuinely stuck after investigation, not as a first response to friction.
+ - Avoid giving time estimates or predictions for how long tasks will take, whether for your own work or for users planning projects. Focus on what needs to be done, not how long it might take.
  - Be careful not to introduce security vulnerabilities such as command injection, XSS, SQL injection, and other OWASP top 10 vulnerabilities. If you notice that you wrote insecure code, immediately fix it. Prioritize writing safe, secure, and correct code.
  - Don't add features, refactor, or introduce abstractions beyond what the task requires. A bug fix doesn't need surrounding cleanup; a one-shot operation doesn't need a helper. Don't design for hypothetical future requirements. Three similar lines is better than a premature abstraction. No half-finished implementations either.
  - Don't add error handling, fallbacks, or validation for scenarios that can't happen. Trust internal code and framework guarantees. Only validate at system boundaries (user input, external APIs). Don't use feature flags or backwards-compatibility shims when you can just change the code.
@@ -166,26 +173,15 @@ Use the gh command via the Bash tool for ALL GitHub-related tasks.
 
 1. Run git status, git diff, git log, and \`git diff [base-branch]...HEAD\` to understand the full commit history.
 2. Analyze ALL commits that will be included in the pull request, not just the latest.
-3. Create a PR with a short title (under 70 characters) and use the description/body for details.
+3. Create a PR with a short title (under 70 characters) and use the description/body for details.`.trim()
 
-# Context management
-When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.`.trim()
+const CONTEXT_MANAGEMENT_SECTION = `# Context management
+When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.
+Old tool results will be automatically cleared from context to free up space. The most recent results are always kept.`.trim()
 
-const PLAN_MODE_SYSTEM_REMINDER = `<system-reminder>You are in plan mode. Read-only operations are auto-approved. To take action you must first present the plan to the user.
-
-## What Happens in Plan Mode
-
-In plan mode, you'll:
-1. Thoroughly explore the codebase using Glob, Grep, and Read tools
-2. Understand existing patterns and architecture
-3. Design an implementation approach
-4. Present your plan to the user for approval
-5. Use AskUserQuestion if you need to clarify approaches
-6. Exit plan mode with ExitPlanMode when ready to implement
-
-Your final plan should be written to the plan file, then submitted by calling ExitPlanMode.
-Ordinary assistant-text plans are invalid in plan mode because the TUI approval flow only starts from ExitPlanMode.
-Your turn must end only by using AskUserQuestion for unresolved requirements or approach clarifications, or by calling ExitPlanMode when the plan is ready for approval. Do NOT use AskUserQuestion to ask "Is this plan okay?" or "Should I proceed?" - ExitPlanMode inherently requests user approval of your plan.</system-reminder>`
+const PLAN_MODE_SYSTEM_REMINDER = wrapInSystemReminder(
+  'You are in plan mode. Read-only operations are auto-approved. To take action you must first present the plan to the user. Your turn must end only by using AskUserQuestion for unresolved requirements, or by calling ExitPlanMode when the plan is ready for approval. Do NOT ask about plan approval via text or AskUserQuestion — always use ExitPlanMode.',
+)
 
 function systemPromptSection(
   sections: SystemPromptSectionCache,
@@ -221,6 +217,10 @@ function getSimpleToneAndStyleSection(sections: SystemPromptSectionCache): strin
 
 function getOutputEfficiencySection(sections: SystemPromptSectionCache): string {
   return systemPromptSection(sections, 'output-efficiency', () => OUTPUT_EFFICIENCY_SECTION)
+}
+
+function getContextManagementSection(sections: SystemPromptSectionCache): string {
+  return systemPromptSection(sections, 'context-management', () => CONTEXT_MANAGEMENT_SECTION)
 }
 
 export class ContextBuilder {
@@ -365,7 +365,7 @@ export class ContextBuilder {
           message: {
             id: record.id,
             role: 'user',
-            content: `<system-reminder>Summary of recent tool use:\n${record.summary}</system-reminder>`,
+            content: wrapInSystemReminder(`Summary of recent tool use:\n${record.summary}`),
             createdAt: record.createdAt,
           },
         })
@@ -416,6 +416,7 @@ export class ContextBuilder {
       'using-tools': getUsingYourToolsSection,
       'tone-and-style': getSimpleToneAndStyleSection,
       'output-efficiency': getOutputEfficiencySection,
+      'context-management': getContextManagementSection,
     }
 
     return enabledSections.map((key) => builders[key](this.sections))
@@ -473,7 +474,7 @@ export class ContextBuilder {
       return PLAN_MODE_SYSTEM_REMINDER
     }
     if (permissionMode === 'acceptEdits') {
-      return '<system-reminder>You are in accept-edits mode. File edits are auto-approved, but shell commands and other tools still use the normal permission gate.</system-reminder>'
+      return wrapInSystemReminder('You are in accept-edits mode. File edits are auto-approved, but shell commands and other tools still use the normal permission gate.')
     }
     return undefined
   }
@@ -486,15 +487,13 @@ export class ContextBuilder {
     )
 
     const activeSkillContext = this.buildActiveSkillUserContext(activeSkills)
-    const contextLines = [
-      '<system-reminder>',
+    const innerContent = [
       'As you answer the user, you can use the following context:',
       currentDate,
       activeSkillContext,
       'IMPORTANT: this context may or may not be relevant. Do not mention it unless it helps with the task.',
-      '</system-reminder>',
-    ].filter((line): line is string => Boolean(line))
-    const content = contextLines.join('\n\n')
+    ].filter((line): line is string => Boolean(line)).join('\n\n')
+    const content = wrapInSystemReminder(innerContent)
 
     return [{
       kind: 'message',
@@ -575,21 +574,20 @@ export class ContextBuilder {
 
     if (refreshedFiles.length === 0 && refreshed.inaccessibleFiles.length === 0 && restoredSkills.length === 0) return []
 
-    const sections = [
-      '<system-reminder>',
+    const innerContent = [
       'Prior conversation was compacted. The following recently used context has been restored for continuity:',
       ...refreshedFiles.map((entry) => `# restoredFile ${entry.name}\n${entry.content}`),
       ...refreshed.inaccessibleFiles.map((name) => `Note: previously read file ${name} is no longer accessible.`),
       ...restoredSkills.map((entry) => `# restoredSkill ${entry.name}\n${entry.content}`),
-      '</system-reminder>',
-    ]
+    ].join('\n\n')
+    const content = wrapInSystemReminder(innerContent)
 
     return [{
       kind: 'message',
       message: {
         id: 'meta:post-compact-restore',
         role: 'user',
-        content: sections.join('\n\n'),
+        content,
         createdAt: new Date().toISOString(),
       },
     }]

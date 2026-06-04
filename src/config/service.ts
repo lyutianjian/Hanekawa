@@ -3,6 +3,7 @@ import { getConfigPath } from '../utils/paths.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { ModelPricing } from '../harness/types.js'
 import type { MyAgentSettings } from './settings.js'
+import type { EffortLevel } from './effort.js'
 import {
   mergeRouting,
   pickTier,
@@ -14,10 +15,10 @@ import {
   type RoutingRole,
 } from './routing.js'
 
-export interface ThinkingConfig {
-  enabled: boolean
-  budgetTokens?: number
-}
+export type ThinkingConfig =
+  | { type: 'adaptive' }
+  | { type: 'enabled'; budgetTokens: number }
+  | { type: 'disabled' }
 
 export interface ModelConfig {
   provider?: string
@@ -29,6 +30,7 @@ export interface ModelConfig {
   pricing?: ModelPricing
   maxOutputTokens?: number
   thinking?: ThinkingConfig
+  maxEffort?: EffortLevel
 }
 
 export interface AgentConfig {

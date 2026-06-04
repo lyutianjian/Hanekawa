@@ -173,13 +173,28 @@ export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: n
   const tools = buildAnthropicTools(request.tools, enableCaching, request.cacheRuntime)
   const messages = buildAnthropicMessages(request)
   const systemBlocks = request.systemBlocks ?? (request.system ? [request.system] : [])
-  const thinking = request.thinking?.enabled
-    ? { type: 'enabled' as const, budget_tokens: request.thinking.budgetTokens ?? 10_000 }
-    : undefined
+
+  // Build thinking config: adaptive by default, or from request
+  let thinking: { type: 'adaptive' } | { type: 'enabled'; budget_tokens: number } | undefined
+  if (request.thinking?.type === 'enabled') {
+    thinking = { type: 'enabled', budget_tokens: request.thinking.budgetTokens }
+  } else if (request.thinking?.type === 'disabled') {
+    thinking = undefined
+  } else {
+    // Default: adaptive thinking
+    thinking = { type: 'adaptive' }
+  }
+
   const maxOutput = getMaxOutputTokens(maxOutputTokens ?? request.maxOutputTokens)
-  const finalMaxOutput = thinking && maxOutput <= thinking.budget_tokens
-    ? thinking.budget_tokens + 1024
+  const thinkingBudget = thinking?.type === 'enabled' ? thinking.budget_tokens : 0
+  const finalMaxOutput = thinkingBudget > 0 && maxOutput <= thinkingBudget
+    ? thinkingBudget + 1024
     : maxOutput
+
+  // Build output_config with effort if specified
+  const outputConfig = request.effort
+    ? { effort: request.effort }
+    : undefined
 
   const payload = {
     model: request.model,
@@ -202,6 +217,7 @@ export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: n
         }
       : {}),
     ...(thinking ? { thinking } : {}),
+    ...(outputConfig ? { output_config: outputConfig } : {}),
   }
 
   return nativeAnthropic ? finalizeAnthropicCacheControl(payload) : payload

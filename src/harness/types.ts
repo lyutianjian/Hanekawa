@@ -484,7 +484,8 @@ export interface ModelRequest {
   promptCacheRetention?: 'in_memory' | '24h'
   maxOutputTokens?: number
   previousRequestId?: string
-  thinking?: { enabled: boolean; budgetTokens?: number }
+  thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' }
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   retry?: { maxRetries?: number; signal?: AbortSignal; callerKind?: 'interactive' | 'background'; persistent?: boolean }
   cacheSource: CacheBreakSource
   cacheRuntime?: CacheRuntime

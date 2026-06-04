@@ -35,7 +35,10 @@ interface UseCommandsOptions {
   openPlanFile?: () => Promise<{ message: string }>
   submitQuery?: (input: string) => Promise<void>
   openModelPicker?: () => void
+  openEffortPicker?: () => void
   openProviderPanel?: () => void
+  getEffort?: () => string
+  setEffort?: (level: string) => void | Promise<void>
 }
 
 export function useCommands({
@@ -58,7 +61,10 @@ export function useCommands({
   openPlanFile,
   submitQuery,
   openModelPicker,
+  openEffortPicker,
   openProviderPanel,
+  getEffort,
+  setEffort,
 }: UseCommandsOptions) {
   const { exit } = useApp()
 
@@ -106,8 +112,14 @@ export function useCommands({
   submitQueryRef.current = submitQuery
   const openModelPickerRef = useRef(openModelPicker)
   openModelPickerRef.current = openModelPicker
+  const openEffortPickerRef = useRef(openEffortPicker)
+  openEffortPickerRef.current = openEffortPicker
   const openProviderPanelRef = useRef(openProviderPanel)
   openProviderPanelRef.current = openProviderPanel
+  const getEffortRef = useRef(getEffort)
+  getEffortRef.current = getEffort
+  const setEffortRef = useRef(setEffort)
+  setEffortRef.current = setEffort
   const storeRef = useRef(store)
   storeRef.current = store
   const cwdRef = useRef(cwd)
@@ -160,6 +172,8 @@ export function useCommands({
         getSessionMetricsSummary: async () => storeRef.current.loadMetricsSummary(sessionRef.current.id),
         getModel: () => modelRef.current,
         setModel: (m) => setModelRef.current(m),
+        getEffort: getEffortRef.current ? () => getEffortRef.current!() : undefined,
+        setEffort: setEffortRef.current ? (level) => setEffortRef.current!(level) : undefined,
         runVerification: runVerificationRef.current,
         reloadAgentDefinitions: reloadAgentDefinitionsRef.current,
         getPermissionMode: getPermissionModeRef.current,
@@ -168,6 +182,7 @@ export function useCommands({
         openPlanFile: openPlanFileRef.current,
         submitQuery: submitQueryRef.current,
         openModelPicker: openModelPickerRef.current,
+        openEffortPicker: openEffortPickerRef.current,
         openProviderPanel: openProviderPanelRef.current,
         listSubagentTasks: async () => listLatestSubagentTasks(storeRef.current, sessionRef.current.id),
         getSubagentDetails: async (agentIdOrPrefix) => getSubagentDetails(

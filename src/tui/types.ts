@@ -29,6 +29,7 @@ export type TUIDisplayItem =
       content: string
       thinkingBlocks?: ThinkingBlock[]
       thinkingDurationMs?: number
+      thinkingPreview?: string
       createdAt: string
     }
   | {

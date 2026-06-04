@@ -16,14 +16,12 @@ import { normalizeOpenAIUsage } from './usage.js'
 export class OpenAIProvider implements ModelProvider {
   name = 'openai'
   private client: OpenAI
-  private thinkingConfig: { enabled: boolean; budgetTokens?: number } | undefined
 
   constructor(config: ModelConfig) {
     this.client = new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
     })
-    this.thinkingConfig = config.thinking
   }
 
   async createMessage(request: ModelRequest): Promise<ModelResponse> {
@@ -31,7 +29,6 @@ export class OpenAIProvider implements ModelProvider {
       async (attempt) => {
         const effectiveRequest: ModelRequest = {
           ...request,
-          thinking: request.thinking ?? this.thinkingConfig,
         }
         const payload = buildOpenAIPayload(effectiveRequest)
         const cacheSource = requireCacheSource(effectiveRequest.cacheSource)

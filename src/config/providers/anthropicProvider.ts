@@ -32,7 +32,6 @@ export class AnthropicProvider implements ModelProvider {
   private client: Anthropic
   private maxOutputTokens: number | undefined
   private nativeAnthropic: boolean
-  private thinkingConfig: { enabled: boolean; budgetTokens?: number } | undefined
 
   constructor(config: ModelConfig) {
     this.client = new Anthropic({
@@ -41,7 +40,6 @@ export class AnthropicProvider implements ModelProvider {
     })
     this.maxOutputTokens = config.maxOutputTokens
     this.nativeAnthropic = isNativeAnthropicApi(config.baseUrl)
-    this.thinkingConfig = config.thinking
   }
 
   async createMessage(request: ModelRequest): Promise<ModelResponse> {
@@ -49,7 +47,6 @@ export class AnthropicProvider implements ModelProvider {
       async (attempt) => {
         const effectiveRequest: ModelRequest = {
           ...request,
-          thinking: request.thinking ?? this.thinkingConfig,
         }
         const payload = buildAnthropicPayload(effectiveRequest, this.maxOutputTokens, this.nativeAnthropic)
         const cacheSource = requireCacheSource(effectiveRequest.cacheSource)

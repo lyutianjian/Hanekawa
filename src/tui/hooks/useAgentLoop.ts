@@ -18,9 +18,12 @@ import { CheckpointService } from '../../services/checkpoint/checkpointService.j
 import { logDiagnostics, summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
 import { getToolActivityDescription } from '../../tools/display.js'
 import {
+  appendLiveSystemItem,
   appendStaticTranscriptItem,
+  applyStreamingThinkingPreview,
   applyToolProgressToTranscriptState,
   applyTuiRecordToTranscriptState,
+  commitLiveItemsExcludingThinking,
   commitLiveItemsToStatic,
   createTranscriptState,
   isHiddenToolCall,
@@ -85,6 +88,9 @@ export function useAgentLoop({
   const responseLengthRef = useRef(0)
   const thinkingStartRef = useRef<number | null>(null)
   const thinkingDurationRef = useRef<number | null>(null)
+  const thinkingTextAccRef = useRef('')
+  const thinkingPreviewDoneRef = useRef(false)
+  const streamingThinkingIdRef = useRef<string | null>(null)
 
   // CheckpointService for creating snapshots before each user message
   const checkpointServiceRef = useRef<CheckpointService | null>(null)
@@ -238,21 +244,24 @@ export function useAgentLoop({
 
         // Show duration summary on successful completion
         if (!ac.signal.aborted) {
-          // Commit live items to static first so they appear in
-          // chronological order above the duration summary.
-          setTranscript((prev) => commitLiveItemsToStatic(prev))
+          // Commit non-thinking items to static; thinking blocks stay in
+          // liveItems so MessageList can expand them in-place via Ctrl+O.
+          setTranscript((prev) => commitLiveItemsExcludingThinking(prev))
 
           const elapsed = Date.now() - loopStartRef.current
           const totalSec = Math.floor(elapsed / 1000)
           const min = Math.floor(totalSec / 60)
           const sec = totalSec % 60
           const duration = min > 0 ? `${min}m ${sec}s` : `${sec}s`
-          appendStaticItem({
+          // Append to liveSystemItems so duration renders AFTER thinking
+          // blocks (in live area), not before them (in static area).
+          // Commits to static at the start of the next turn.
+          setTranscript((prev) => appendLiveSystemItem(prev, {
             kind: 'system',
             id: randomUUID(),
             content: `✻ Worked for ${duration}`,
             createdAt: new Date().toISOString(),
-          })
+          }))
         }
 
         abortControllerRef.current = null
@@ -303,16 +312,41 @@ export function useAgentLoop({
   const handleStreamEvent = useCallback((event: ModelStreamEvent) => {
     switch (event.type) {
       case 'thinking_start':
+        if (thinkingStartRef.current === null) thinkingStartRef.current = Date.now()
+        thinkingTextAccRef.current = ''
+        thinkingPreviewDoneRef.current = false
+        streamingThinkingIdRef.current = `thinking-stream-${Date.now()}`
+        setTranscript((prev) => applyStreamingThinkingPreview(prev, streamingThinkingIdRef.current!, undefined))
+        setStreamMode('thinking')
+        return
       case 'thinking_delta':
+        if (thinkingStartRef.current === null) thinkingStartRef.current = Date.now()
+        responseLengthRef.current += event.thinking.length
+        thinkingTextAccRef.current += event.thinking
+        if (!thinkingPreviewDoneRef.current) {
+          const sentence = extractFirstSentence(thinkingTextAccRef.current)
+          if (sentence) {
+            thinkingPreviewDoneRef.current = true
+            if (streamingThinkingIdRef.current) {
+              setTranscript((prev) => applyStreamingThinkingPreview(prev, streamingThinkingIdRef.current!, sentence))
+            }
+          }
+        }
+        setStreamMode('thinking')
+        return
       case 'redacted_thinking':
         if (thinkingStartRef.current === null) thinkingStartRef.current = Date.now()
-        if (event.type === 'thinking_delta') responseLengthRef.current += event.thinking.length
         setStreamMode('thinking')
         return
       case 'thinking_stop':
         if (thinkingStartRef.current !== null) {
           thinkingDurationRef.current = Date.now() - thinkingStartRef.current
           thinkingStartRef.current = null
+        }
+        if (!thinkingPreviewDoneRef.current && thinkingTextAccRef.current && streamingThinkingIdRef.current) {
+          const text = thinkingTextAccRef.current.trim()
+          const preview = text.length > 80 ? text.slice(0, 80) + '…' : text || undefined
+          setTranscript((prev) => applyStreamingThinkingPreview(prev, streamingThinkingIdRef.current!, preview))
         }
         setStreamMode('requesting')
         return
@@ -425,8 +459,13 @@ export function useAgentLoop({
   return {
     staticTranscriptItems: transcript.staticItems,
     liveItems: transcript.liveItems,
+    liveSystemItems: transcript.liveSystemItems,
     recentCompletedToolCall: transcript.recentCompletedToolCall,
-    recentThinkingAssistant: transcript.recentThinkingAssistant,
+    // Only expose thinking assistants that are still in the live area.
+    // Once a thinking block is committed to static (at the start of the
+    // next turn or when a newer thinking round arrives), Ctrl+O expansion
+    // should not render a stale fallback below the duration message.
+    recentThinkingAssistant: findRecentLiveThinkingAssistant(transcript.liveItems),
     transcriptGeneration,
     appendStaticItem,
     resetTranscript,
@@ -440,6 +479,38 @@ export function useAgentLoop({
     interrupt,
     reloadMessages,
   }
+}
+
+function findRecentLiveThinkingAssistant(
+  items: readonly TUIDisplayItem[],
+): Extract<TUIDisplayItem, { kind: 'assistant' }> | null {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index]
+    if (
+      item?.kind === 'assistant'
+      && item.thinkingBlocks
+      && item.thinkingBlocks.length > 0
+      && !isStreamingThinkingPreview(item)
+    ) {
+      return item
+    }
+  }
+  return null
+}
+
+function isStreamingThinkingPreview(
+  item: TUIDisplayItem,
+): item is Extract<TUIDisplayItem, { kind: 'assistant' }> {
+  return item.kind === 'assistant'
+    && item.content === ''
+    && (!item.thinkingBlocks || item.thinkingBlocks.length === 0)
+}
+
+function extractFirstSentence(text: string): string | undefined {
+  const match = text.match(/^(.+?[.!?。！？])[\s\n]/)
+  if (match) return match[1].trim()
+  if (text.length >= 80) return text.slice(0, 80) + '…'
+  return undefined
 }
 
 async function tryRestoreInterruptedPrompt(input: {

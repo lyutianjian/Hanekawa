@@ -153,19 +153,19 @@ test('Spinner renders nothing when inactive', () => {
 
 test('Spinner renders thinking and waiting stream modes', () => {
   const thinkingFrame = render(h(Spinner, { mode: 'thinking' })).lastFrame() ?? ''
-  assert.match(thinkingFrame, /Thinking\.\.\./)
+  assert.match(thinkingFrame, /\.\.\..*\(\d+s/)
 
   cleanup()
 
   const waitingFrame = render(h(Spinner, { mode: 'waiting' })).lastFrame() ?? ''
-  assert.match(waitingFrame, /Waiting for model\.\.\./)
+  assert.match(waitingFrame, /Waiting for model\.\./)
 })
 
 test('Spinner briefly renders thought duration after thinking stops', async () => {
   mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
   try {
     const instance = render(h(Spinner, { mode: 'thinking' }))
-    assert.match(instance.lastFrame() ?? '', /Thinking\.\.\./)
+    assert.match(instance.lastFrame() ?? '', /\.\.\..*\(\d+s/)
 
     mock.timers.tick(2500)
     instance.rerender(h(Spinner, { mode: 'requesting' }))

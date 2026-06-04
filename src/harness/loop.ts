@@ -24,6 +24,7 @@ import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
 import type { PlanModeManager } from './planModeManager.js'
 import type { AgentRunResult, ChatMessage, ModelProvider, ModelStreamEvent, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
+import type { ThinkingConfig } from '../config/service.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
 import { buildAtMentionContextRecord } from './atMentions.js'
@@ -74,7 +75,8 @@ export interface AgentLoopOptions {
   maxOutputTokens?: number
   tokenBudget?: number
   tokenWarningThreshold?: number
-  thinking?: { enabled: boolean; budgetTokens?: number }
+  thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' }
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   fallbackModel?: ActiveModelRuntime
   compactModel?: ActiveModelRuntime
   planModel?: ActiveModelRuntime
@@ -161,6 +163,24 @@ export class AgentLoop {
   invalidateRecordsCache(): void {
     this.recordsCache = undefined
     this.recordsCacheHasCleanToolProtocol = false
+  }
+
+  /** Update thinking config at runtime; takes effect on the next turn. */
+  setThinking(thinking: ThinkingConfig | undefined): void {
+    this.options.thinking = thinking
+  }
+
+  getThinking(): ThinkingConfig | undefined {
+    return this.options.thinking
+  }
+
+  /** Update effort level at runtime; takes effect on the next turn. */
+  setEffort(effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined): void {
+    this.options.effort = effort
+  }
+
+  getEffort(): 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined {
+    return this.options.effort
   }
 
   noteRecordAppended(record: SessionRecord): void {
@@ -351,6 +371,7 @@ export class AgentLoop {
         promptCacheRetention: this.activeModel.promptCacheRetention,
         maxOutputTokens: maxOutputTokensOverride,
         thinking: this.options.thinking,
+        effort: this.options.effort,
         previousRequestId: lastRequestId,
         retry: { signal },
         cacheSource,

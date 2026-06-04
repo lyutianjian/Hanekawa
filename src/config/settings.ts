@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { AgentConfig, ModelConfig } from './service.js'
 import type { Endpoint, Profile, Routing } from './routing.js'
+import type { EffortLevel } from './effort.js'
 import type { HookCommand } from '../harness/hooks.js'
 import type { PermissionMode } from '../harness/permissions.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
@@ -48,6 +49,7 @@ export interface MyAgentSettings {
   agent?: AgentConfig
   autoCompact?: boolean
   autoCompactThreshold?: number
+  effortLevel?: EffortLevel
 }
 
 interface LegacyMcpSettings {
@@ -252,6 +254,10 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
       result.autoCompactThreshold = source.autoCompactThreshold
     }
 
+    if (source.effortLevel !== undefined) {
+      result.effortLevel = source.effortLevel
+    }
+
   }
 
   return result
@@ -279,6 +285,15 @@ export async function trustMcpServerLocally(cwd: string, serverName: string): Pr
   await mkdir(join(cwd, '.myagent'), { recursive: true })
   await writeFile(`${localSettingsPath}.tmp`, `${JSON.stringify(localSettings, null, 2)}\n`, 'utf-8')
   await rename(`${localSettingsPath}.tmp`, localSettingsPath)
+}
+
+export async function saveEffortLevel(level: EffortLevel): Promise<void> {
+  const settingsPath = join(homedir(), '.myagent', 'settings.json')
+  const settings = await loadSettingsFile(settingsPath)
+  settings.effortLevel = level
+  await mkdir(join(homedir(), '.myagent'), { recursive: true })
+  await writeFile(`${settingsPath}.tmp`, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
+  await rename(`${settingsPath}.tmp`, settingsPath)
 }
 
 export function validateSettings(settings: MyAgentSettings): { valid: boolean; errors: string[] } {
@@ -350,6 +365,10 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
 
   if (settings.cache?.ttl1h !== undefined && typeof settings.cache.ttl1h !== 'boolean') {
     errors.push('cache.ttl1h must be a boolean')
+  }
+
+  if (settings.effortLevel !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(settings.effortLevel)) {
+    errors.push('effortLevel must be one of: low, medium, high, xhigh, max')
   }
 
   if (settings.permissions?.mode !== undefined && !STARTUP_PERMISSION_MODES.includes(settings.permissions.mode as StartupPermissionMode)) {

@@ -70,6 +70,14 @@ export function MessageList({
           animationsEnabled={animationsEnabled}
         />
       )}
+      {previewTarget?.kind === 'thinking' && !items.some((item) => item.id === previewTarget.item.id) && (
+        <DisplayItem
+          key={`preview-${previewTarget.key}`}
+          item={previewTarget.item}
+          expanded
+          animationsEnabled={animationsEnabled}
+        />
+      )}
     </Box>
   )
 }
@@ -87,7 +95,7 @@ export function DisplayItem({
     case 'user':
       return <UserMessage content={item.content} />
     case 'assistant':
-      return <AssistantMessage content={item.content} thinkingBlocks={item.thinkingBlocks} thinkingDurationMs={item.thinkingDurationMs} thinkingExpanded={expanded} />
+      return <AssistantMessage content={item.content} thinkingBlocks={item.thinkingBlocks} thinkingDurationMs={item.thinkingDurationMs} thinkingExpanded={expanded} thinkingPreview={item.thinkingPreview} />
     case 'tool_call':
       return <ToolCallBlock item={item} expanded={expanded} animationsEnabled={animationsEnabled} />
     case 'compact_boundary':

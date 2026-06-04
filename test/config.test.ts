@@ -1184,7 +1184,7 @@ test('buildAnthropicPayload includes thinking parameter when enabled', () => {
         message: { id: 'u1', role: 'user', content: 'hi', createdAt: new Date().toISOString() },
       },
     ],
-    thinking: { enabled: true, budgetTokens: 5000 },
+    thinking: { type: 'enabled', budgetTokens: 5000 },
   }
 
   const payload = buildAnthropicPayload(request, undefined, true) as { thinking?: unknown; max_tokens: number }
@@ -1192,7 +1192,7 @@ test('buildAnthropicPayload includes thinking parameter when enabled', () => {
   assert.ok(payload.max_tokens > 5000)
 })
 
-test('buildAnthropicPayload omits thinking when disabled', () => {
+test('buildAnthropicPayload defaults to adaptive thinking when not specified', () => {
   const request: ModelRequest = {
     cacheSource: 'agent:test',
     model: 'claude-opus-4-7',
@@ -1206,7 +1206,7 @@ test('buildAnthropicPayload omits thinking when disabled', () => {
   }
 
   const payload = buildAnthropicPayload(request) as Record<string, unknown>
-  assert.equal(payload.thinking, undefined)
+  assert.deepEqual(payload.thinking, { type: 'adaptive' })
 })
 
 test('buildAnthropicMessages prepends thinking blocks before assistant content', () => {

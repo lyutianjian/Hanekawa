@@ -5,6 +5,7 @@ import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/to
 export interface TuiTranscriptState {
   staticItems: TUIDisplayItem[]
   liveItems: TUIDisplayItem[]
+  liveSystemItems: TUIDisplayItem[]
   recentCompletedToolCall: Extract<TUIDisplayItem, { kind: 'tool_call' }> | null
   recentThinkingAssistant: Extract<TUIDisplayItem, { kind: 'assistant' }> | null
 }
@@ -21,6 +22,7 @@ export function createTranscriptState(staticItems: TUIDisplayItem[] = []): TuiTr
   return {
     staticItems,
     liveItems: [],
+    liveSystemItems: [],
     recentCompletedToolCall,
     recentThinkingAssistant,
   }
@@ -42,13 +44,89 @@ export function appendStaticTranscriptItem(
   }
 }
 
-/** Move all live items to static (called at the start of a new turn). */
-export function commitLiveItemsToStatic(state: TuiTranscriptState): TuiTranscriptState {
-  if (state.liveItems.length === 0) return state
+/** Append a system item to the live system area (rendered after MessageList,
+ *  below thinking blocks). Commits to static at the start of the next turn. */
+export function appendLiveSystemItem(
+  state: TuiTranscriptState,
+  item: TUIDisplayItem,
+): TuiTranscriptState {
   return {
     ...state,
-    staticItems: [...state.staticItems, ...state.liveItems],
+    liveSystemItems: [...state.liveSystemItems, item],
+  }
+}
+
+/** Move all live items to static (called at the start of a new turn).
+ *  Streaming thinking preview items are discarded — they are temporary
+ *  placeholders replaced by the real assistant message. */
+export function commitLiveItemsToStatic(state: TuiTranscriptState): TuiTranscriptState {
+  if (state.liveItems.length === 0 && state.liveSystemItems.length === 0) return state
+  const toCommit = state.liveItems.filter((item) => !isStreamingThinkingPreview(item))
+  if (toCommit.length === 0 && state.liveSystemItems.length === 0) {
+    return { ...state, liveItems: [], liveSystemItems: [] }
+  }
+  return {
+    ...state,
+    staticItems: [...state.staticItems, ...toCommit, ...state.liveSystemItems],
     liveItems: [],
+    liveSystemItems: [],
+  }
+}
+
+/** Move non-thinking items to static, keeping thinking blocks in liveItems
+ *  so MessageList can expand them in-place via Ctrl+O (called at turn end).
+ *  Streaming thinking preview items are discarded. */
+export function commitLiveItemsExcludingThinking(state: TuiTranscriptState): TuiTranscriptState {
+  if (state.liveItems.length === 0 && state.liveSystemItems.length === 0) return state
+  const thinking = state.liveItems.filter(
+    (item) => item.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0,
+  )
+  const nonThinking = state.liveItems.filter(
+    (item) => !(item.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0)
+      && !isStreamingThinkingPreview(item),
+  )
+  if (nonThinking.length === 0 && thinking.length === 0 && state.liveSystemItems.length === 0) {
+    return { ...state, liveItems: [], liveSystemItems: [] }
+  }
+  if (nonThinking.length === 0 && state.liveSystemItems.length === 0) {
+    return { ...state, liveItems: thinking }
+  }
+  return {
+    ...state,
+    staticItems: [...state.staticItems, ...nonThinking, ...state.liveSystemItems],
+    liveItems: thinking,
+    liveSystemItems: [],
+  }
+}
+
+/** Create or update a streaming thinking preview item in liveItems.
+ *  Used during model streaming to show the first sentence of thinking in-place. */
+export function applyStreamingThinkingPreview(
+  state: TuiTranscriptState,
+  id: string,
+  preview: string | undefined,
+): TuiTranscriptState {
+  const existing = state.liveItems.find((item) => item.id === id)
+  if (existing && existing.kind === 'assistant') {
+    return {
+      ...state,
+      liveItems: state.liveItems.map((item) =>
+        item.id === id ? { ...item, thinkingPreview: preview } : item,
+      ),
+    }
+  }
+  const item: Extract<TUIDisplayItem, { kind: 'assistant' }> = {
+    kind: 'assistant',
+    id,
+    content: '',
+    thinkingBlocks: [],
+    thinkingPreview: preview,
+    createdAt: new Date().toISOString(),
+  }
+  return {
+    ...state,
+    liveItems: [...state.liveItems, item],
+    recentThinkingAssistant: item,
   }
 }
 
@@ -62,12 +140,12 @@ export function applyTuiRecordToTranscriptState(
     // Assistant messages with thinking blocks go to liveItems so MessageList
     // can control expanded/collapsed state via ctrl+o.
     if (item.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0) {
-      // Move any existing thinking items from liveItems to static first
-      const existingThinking = state.liveItems.filter(
-        (li) => li.kind === 'assistant' && li.thinkingBlocks && li.thinkingBlocks.length > 0,
-      )
+      // Move finalized thinking items to static; discard streaming preview items
+      const isFinalizedThinking = (li: TUIDisplayItem) =>
+        li.kind === 'assistant' && li.thinkingBlocks && li.thinkingBlocks.length > 0
+      const existingThinking = state.liveItems.filter(isFinalizedThinking)
       const remainingLive = state.liveItems.filter(
-        (li) => !(li.kind === 'assistant' && li.thinkingBlocks && li.thinkingBlocks.length > 0),
+        (li) => !isFinalizedThinking(li) && !isStreamingThinkingPreview(li),
       )
       return {
         ...state,
@@ -354,4 +432,10 @@ function isTaskStatusTool(toolName: string): boolean {
     || toolName === 'TaskList'
     || toolName === 'TaskGet'
     || toolName === 'TaskUpdate'
+}
+
+function isStreamingThinkingPreview(item: TUIDisplayItem): boolean {
+  return item.kind === 'assistant'
+    && item.content === ''
+    && (!item.thinkingBlocks || item.thinkingBlocks.length === 0)
 }

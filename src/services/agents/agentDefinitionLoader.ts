@@ -124,13 +124,13 @@ export class AgentDefinitionLoader {
     const initialPrompt = parseOptionalString(frontmatter.initialPrompt, 'initialPrompt')
 
     const effortRaw = frontmatter.effort
-    let effort: 'low' | 'medium' | 'high' | number | undefined
-    if (effortRaw === 'low' || effortRaw === 'medium' || effortRaw === 'high') {
+    let effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | number | undefined
+    if (effortRaw === 'low' || effortRaw === 'medium' || effortRaw === 'high' || effortRaw === 'xhigh' || effortRaw === 'max') {
       effort = effortRaw
     } else if (typeof effortRaw === 'number' && Number.isInteger(effortRaw) && effortRaw > 0) {
       effort = effortRaw
     } else if (effortRaw !== undefined) {
-      console.warn(`Custom agent '${frontmatter.name}' has invalid effort '${effortRaw}'. Use low/medium/high or a positive integer.`)
+      console.warn(`Custom agent '${frontmatter.name}' has invalid effort '${effortRaw}'. Use low/medium/high/xhigh/max or a positive integer.`)
     }
 
     const content = match[2].trim()

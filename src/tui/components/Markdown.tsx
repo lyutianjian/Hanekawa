@@ -10,15 +10,16 @@ import { AnsiText } from '../ansi.js'
 
 interface MarkdownProps {
   content: string
+  color?: string
 }
 
-export function Markdown({ content }: MarkdownProps) {
+export function Markdown({ content, color }: MarkdownProps) {
   const tokens = useMemo(() => parseMarkdown(content), [content])
 
   return (
     <Box flexDirection="column">
       {tokens.map((token, i) => (
-        <MarkdownToken key={i} token={token} />
+        <MarkdownToken key={i} token={token} color={color} />
       ))}
     </Box>
   )
@@ -83,29 +84,29 @@ function highlightCode(code: string, lang?: string): string {
 
 // ── Block-level token dispatcher ──
 
-const MarkdownToken = memo(function MarkdownToken({ token }: { token: Token }) {
+const MarkdownToken = memo(function MarkdownToken({ token, color }: { token: Token; color?: string }) {
   switch (token.type) {
     case 'heading':
-      return <Heading token={token as Tokens.Heading} />
+      return <Heading token={token as Tokens.Heading} color={color} />
     case 'paragraph':
-      return <Paragraph token={token as Tokens.Paragraph} />
+      return <Paragraph token={token as Tokens.Paragraph} color={color} />
     case 'code':
       return <CodeBlock token={token as Tokens.Code} />
     case 'list':
-      return <List token={token as Tokens.List} />
+      return <List token={token as Tokens.List} color={color} />
     case 'blockquote':
-      return <Blockquote token={token as Tokens.Blockquote} />
+      return <Blockquote token={token as Tokens.Blockquote} color={color} />
     case 'hr':
       return <Text color={theme.dimText}>{'─'.repeat(40)}</Text>
     case 'space':
       return null
     case 'table':
-      return <Table token={token as Tokens.Table} />
+      return <Table token={token as Tokens.Table} color={color} />
     case 'html':
       return <HtmlBlock token={token as Tokens.HTML} />
     default:
       if ('raw' in token) {
-        return <Text>{(token as { raw: string }).raw}</Text>
+        return <Text color={color}>{(token as { raw: string }).raw}</Text>
       }
       return null
   }
@@ -113,15 +114,16 @@ const MarkdownToken = memo(function MarkdownToken({ token }: { token: Token }) {
 
 // ── Heading ──
 
-const Heading = memo(function Heading({ token }: { token: Tokens.Heading }) {
+const Heading = memo(function Heading({ token, color }: { token: Tokens.Heading; color?: string }) {
+  const headingColor = color ?? theme.brand
   const prefix = '#'.repeat(token.depth) + ' '
   return (
     <Box marginY={1}>
-      <Text color={theme.brand} bold>
+      <Text color={headingColor} bold>
         {prefix}
       </Text>
-      <Text color={theme.brand} bold>
-        <InlineTokens tokens={token.tokens} />
+      <Text color={headingColor} bold>
+        <InlineTokens tokens={token.tokens} color={headingColor} />
       </Text>
     </Box>
   )
@@ -129,11 +131,11 @@ const Heading = memo(function Heading({ token }: { token: Tokens.Heading }) {
 
 // ── Paragraph ──
 
-const Paragraph = memo(function Paragraph({ token }: { token: Tokens.Paragraph }) {
+const Paragraph = memo(function Paragraph({ token, color }: { token: Tokens.Paragraph; color?: string }) {
   return (
     <Box marginY={0}>
-      <Text>
-        <InlineTokens tokens={token.tokens} />
+      <Text color={color}>
+        <InlineTokens tokens={token.tokens} color={color} />
       </Text>
     </Box>
   )
@@ -173,7 +175,7 @@ const CodeBlock = memo(function CodeBlock({ token }: { token: Tokens.Code }) {
 
 // ── List ──
 
-const List = memo(function List({ token }: { token: Tokens.List }) {
+const List = memo(function List({ token, color }: { token: Tokens.List; color?: string }) {
   return (
     <Box flexDirection="column" marginY={0}>
       {token.items.map((item, i) => (
@@ -184,6 +186,7 @@ const List = memo(function List({ token }: { token: Tokens.List }) {
           ordered={token.ordered}
           start={typeof token.start === 'number' ? token.start : 1}
           loose={token.loose}
+          color={color}
         />
       ))}
     </Box>
@@ -196,12 +199,14 @@ function ListItem({
   ordered,
   start,
   loose,
+  color,
 }: {
   token: Tokens.ListItem
   index: number
   ordered: boolean | null
   start: number
   loose: boolean
+  color?: string
 }) {
   const bullet = ordered ? `${start + index}.` : '•'
 
@@ -230,13 +235,13 @@ function ListItem({
             {checkboxToken.checked ? '☑' : '☐'}{' '}
           </Text>
         )}
-        <Text>
+        <Text color={color}>
           {contentTokens.map((t, i) => {
             if (t.type === 'text') {
-              return <InlineTokens key={i} tokens={(t as Tokens.Text).tokens ?? []} />
+              return <InlineTokens key={i} tokens={(t as Tokens.Text).tokens ?? []} color={color} />
             }
             if (t.type === 'paragraph') {
-              return <InlineTokens key={i} tokens={(t as Tokens.Paragraph).tokens} />
+              return <InlineTokens key={i} tokens={(t as Tokens.Paragraph).tokens} color={color} />
             }
             return null
           })}
@@ -247,7 +252,7 @@ function ListItem({
         if (t.type === 'list') {
           return (
             <Box key={`nested-${i}`} paddingLeft={2}>
-              <List token={t as Tokens.List} />
+              <List token={t as Tokens.List} color={color} />
             </Box>
           )
         }
@@ -255,7 +260,7 @@ function ListItem({
         if (t.type === 'code' || t.type === 'blockquote') {
           return (
             <Box key={`nested-${i}`} paddingLeft={2}>
-              <MarkdownToken token={t} />
+              <MarkdownToken token={t} color={color} />
             </Box>
           )
         }
@@ -269,17 +274,17 @@ function ListItem({
 
 // ── Blockquote ──
 
-const Blockquote = memo(function Blockquote({ token }: { token: Tokens.Blockquote }) {
+const Blockquote = memo(function Blockquote({ token, color }: { token: Tokens.Blockquote; color?: string }) {
   return (
     <Box flexDirection="column" marginY={0} paddingLeft={2}>
       {token.tokens.map((t, i) => (
         <Box key={i}>
           <Text color={theme.brand}>{'│ '}</Text>
-          <Text color={theme.dimText}>
+          <Text color={color ?? theme.dimText}>
             {t.type === 'paragraph' ? (
-              <InlineTokens tokens={(t as Tokens.Paragraph).tokens} />
+              <InlineTokens tokens={(t as Tokens.Paragraph).tokens} color={color ?? theme.dimText} />
             ) : t.type === 'blockquote' ? (
-              <Blockquote token={t as Tokens.Blockquote} />
+              <Blockquote token={t as Tokens.Blockquote} color={color ?? theme.dimText} />
             ) : (
               ('raw' in t ? (t as { raw: string }).raw : '')
             )}
@@ -292,7 +297,7 @@ const Blockquote = memo(function Blockquote({ token }: { token: Tokens.Blockquot
 
 // ── Table (with header, column width, alignment) ──
 
-const Table = memo(function Table({ token }: { token: Tokens.Table }) {
+const Table = memo(function Table({ token, color }: { token: Tokens.Table; color?: string }) {
   const allRows = [token.header, ...token.rows]
   const colCount = token.header.length
   const aligns = token.align ?? []
@@ -357,7 +362,7 @@ const Table = memo(function Table({ token }: { token: Tokens.Table }) {
       {token.rows.map((row, i) => (
         <Box key={i}>
           {row.map((cell, j) => (
-            <Text key={j}>
+            <Text key={j} color={color}>
               {j > 0 && <Text color={theme.dimText}>{' │ '}</Text>}
               {padCell(cell, j)}
             </Text>
@@ -397,7 +402,7 @@ const HtmlBlock = memo(function HtmlBlock({ token }: { token: Tokens.HTML }) {
 
 // ── Inline token rendering ──
 
-const InlineTokens = memo(function InlineTokens({ tokens }: { tokens: Token[] }) {
+const InlineTokens = memo(function InlineTokens({ tokens, color }: { tokens: Token[]; color?: string }) {
   if (!tokens) return null
 
   return (
@@ -406,20 +411,20 @@ const InlineTokens = memo(function InlineTokens({ tokens }: { tokens: Token[] })
         switch (token.type) {
           case 'strong':
             return (
-              <Text key={i} bold>
-                <InlineTokens tokens={(token as Tokens.Strong).tokens} />
+              <Text key={i} bold color={color}>
+                <InlineTokens tokens={(token as Tokens.Strong).tokens} color={color} />
               </Text>
             )
           case 'em':
             return (
-              <Text key={i} italic>
-                <InlineTokens tokens={(token as Tokens.Em).tokens} />
+              <Text key={i} italic color={color}>
+                <InlineTokens tokens={(token as Tokens.Em).tokens} color={color} />
               </Text>
             )
           case 'del':
             return (
               <Text key={i} strikethrough color={theme.dimText}>
-                <InlineTokens tokens={(token as Tokens.Del).tokens} />
+                <InlineTokens tokens={(token as Tokens.Del).tokens} color={color} />
               </Text>
             )
           case 'codespan':
@@ -431,7 +436,7 @@ const InlineTokens = memo(function InlineTokens({ tokens }: { tokens: Token[] })
           case 'link':
             return (
               <Text key={i} color={theme.toolName} underline>
-                <InlineTokens tokens={(token as Tokens.Link).tokens} />
+                <InlineTokens tokens={(token as Tokens.Link).tokens} color={color} />
               </Text>
             )
           case 'image': {
@@ -439,7 +444,7 @@ const InlineTokens = memo(function InlineTokens({ tokens }: { tokens: Token[] })
             return (
               <Text key={i}>
                 <Text color={theme.dimText}>[</Text>
-                <Text>{img.text || 'image'}</Text>
+                <Text color={color}>{img.text || 'image'}</Text>
                 <Text color={theme.dimText}>]</Text>
                 <Text color={theme.toolName}>({img.href})</Text>
               </Text>
@@ -448,12 +453,12 @@ const InlineTokens = memo(function InlineTokens({ tokens }: { tokens: Token[] })
           case 'br':
             return <Text key={i}>{'\n'}</Text>
           case 'text':
-            return <Text key={i}>{insertCjkBreaks((token as Tokens.Text).text)}</Text>
+            return <Text key={i} color={color}>{insertCjkBreaks((token as Tokens.Text).text)}</Text>
           case 'escape':
-            return <Text key={i}>{insertCjkBreaks((token as Tokens.Escape).text)}</Text>
+            return <Text key={i} color={color}>{insertCjkBreaks((token as Tokens.Escape).text)}</Text>
           default:
             if ('raw' in token) {
-              return <Text key={i}>{(token as { raw: string }).raw}</Text>
+              return <Text key={i} color={color}>{(token as { raw: string }).raw}</Text>
             }
             return null
         }

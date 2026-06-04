@@ -70,7 +70,7 @@ export interface BaseAgentDefinition {
   omitProjectContext?: boolean
   criticalSystemReminder?: string
   initialPrompt?: string
-  effort?: 'low' | 'medium' | 'high' | number
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | number
   getSystemPrompt(baseSystem?: string): string | undefined
 }
 
@@ -84,6 +84,7 @@ const GENERAL_PURPOSE_AGENT: BaseAgentDefinition = {
   maxTurns: DEFAULT_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
+  effort: 'medium',
   getSystemPrompt: (baseSystem) => baseSystem,
 }
 
@@ -97,6 +98,7 @@ const FORK_AGENT: BaseAgentDefinition = {
   maxTurns: DEFAULT_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
+  effort: 'medium',
   getSystemPrompt: (baseSystem) => baseSystem,
 }
 
@@ -109,6 +111,7 @@ const EXPLORE_AGENT: BaseAgentDefinition = {
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
   omitProjectContext: true,
+  effort: 'low',
   getSystemPrompt: () => `You are a code exploration specialist for Hanekawa.
 
 === CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===
@@ -143,6 +146,7 @@ const PLAN_AGENT: BaseAgentDefinition = {
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
   omitProjectContext: true,
+  effort: 'high',
   getSystemPrompt: () => `You are a software architect and planning specialist for Hanekawa. Your role is to explore the codebase and design implementation plans.
 
 === CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===
@@ -201,6 +205,7 @@ const VERIFICATION_AGENT: BaseAgentDefinition = {
   maxTurns: VERIFICATION_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: false,
+  effort: 'high',
   criticalSystemReminder: VERIFICATION_AGENT_CRITICAL_REMINDER,
   getSystemPrompt: () => `You are a verification specialist. Your job is not to confirm that the implementation works; your job is to try to break it.
 
@@ -628,7 +633,8 @@ async function runSubagent({
       maxTurns: parsed.maxTurns ?? agentDefinition.maxTurns,
       maxTurnsExceededBehavior: 'partial',
       maxOutputTokens: parsed.maxOutputTokens,
-      thinking: effortToThinking(agentDefinition.effort),
+      thinking: { type: 'adaptive' },
+      effort: agentDefinition.effort as 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined,
       fallbackModel: options.fallbackModel,
       compactModel: options.compactModel,
       fallbackRetryDelayMs: options.fallbackRetryDelayMs,
@@ -1248,15 +1254,6 @@ function joinPromptParts(parts: Array<string | undefined>): string | undefined {
 
 function maxOutputWords(maxOutputTokens: number): number {
   return Math.max(1, Math.floor(maxOutputTokens * 0.75))
-}
-
-function effortToThinking(effort: 'low' | 'medium' | 'high' | number | undefined): { enabled: boolean; budgetTokens?: number } | undefined {
-  if (effort === undefined) return undefined
-  if (effort === 'low') return { enabled: false }
-  if (effort === 'medium') return { enabled: true, budgetTokens: 10_000 }
-  if (effort === 'high') return { enabled: true, budgetTokens: 32_000 }
-  if (typeof effort === 'number') return { enabled: true, budgetTokens: effort }
-  return undefined
 }
 
 function createSubAgentToolContext(parent: ToolContext, subAgentId: string, abortSignal: AbortSignal, cwd = parent.cwd): ToolContext {

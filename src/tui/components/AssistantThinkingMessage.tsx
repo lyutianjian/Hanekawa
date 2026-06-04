@@ -7,19 +7,23 @@ interface AssistantThinkingMessageProps {
   blocks: ThinkingBlock[]
   expanded?: boolean
   thinkingDurationMs?: number
+  thinkingPreview?: string
 }
 
-export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDurationMs }: AssistantThinkingMessageProps) {
-  if (blocks.length === 0) return null
+export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDurationMs, thinkingPreview }: AssistantThinkingMessageProps) {
+  const hasBlocks = blocks.length > 0
+  const redacted = hasBlocks && blocks.every((block) => block.type === 'redacted_thinking')
+  const thinking = hasBlocks
+    ? blocks
+      .filter((block) => block.type === 'thinking')
+      .map((block) => block.thinking ?? '')
+      .filter((text) => text.trim().length > 0)
+      .join('\n\n')
+    : ''
 
-  const redacted = blocks.every((block) => block.type === 'redacted_thinking')
-  const thinking = blocks
-    .filter((block) => block.type === 'thinking')
-    .map((block) => block.thinking ?? '')
-    .filter((text) => text.trim().length > 0)
-    .join('\n\n')
+  if (!hasBlocks && !thinkingPreview) return null
 
-  if (redacted || !thinking.trim()) {
+  if (redacted || (hasBlocks && !thinking.trim() && !thinkingPreview)) {
     return (
       <Text color={theme.subtleText} italic>
         Thinking (redacted)
@@ -32,19 +36,34 @@ export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDur
       ? `Thought for ${Math.max(1, Math.round(thinkingDurationMs / 1000))}s`
       : 'Thinking'
     return (
-      <Text color={theme.subtleText} italic>
-        {label} <Text color={theme.subtleText}>(ctrl+o to expand)</Text>
-      </Text>
+      <Box flexDirection="column">
+        <Text color={theme.subtleText} italic>
+          {label} <Text color={theme.subtleText}>(ctrl+o to expand)</Text>
+        </Text>
+        {thinkingPreview && (
+          <Box flexDirection="row">
+            <Text color={theme.subtleText}>{'⎿ '}</Text>
+            <Text color={theme.subtleText} dimColor wrap="truncate-end">
+              {thinkingPreview}
+            </Text>
+          </Box>
+        )}
+      </Box>
     )
   }
+
+  if (!thinking.trim()) return null
 
   return (
     <Box flexDirection="column">
       <Text color={theme.subtleText} italic>
         Thinking
       </Text>
-      <Box paddingLeft={2}>
-        <Markdown content={thinking} />
+      <Box flexDirection="row">
+        <Text color={theme.subtleText}>{'⎿ '}</Text>
+        <Box flexGrow={1}>
+          <Markdown content={thinking} color={theme.subtleText} />
+        </Box>
       </Box>
       <Text color={theme.subtleText}>
         (ctrl+o to collapse)

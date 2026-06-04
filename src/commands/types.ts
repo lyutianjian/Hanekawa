@@ -67,7 +67,10 @@ export interface CommandContext {
   getSessionMetricsSummary?: () => Promise<CommandSessionMetricsSummary | null>
   getModel?: () => CommandModelInfo
   setModel?: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
+  getEffort?: () => string
+  setEffort?: (level: string) => void | Promise<void>
   openModelPicker?: () => void
+  openEffortPicker?: () => void
   runVerification?: (args: string) => Promise<string>
   reloadAgentDefinitions?: () => Promise<number>
   getPermissionMode?: () => string

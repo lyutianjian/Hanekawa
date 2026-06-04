@@ -9,22 +9,36 @@ interface AssistantMessageProps {
   thinkingBlocks?: ThinkingBlock[]
   thinkingDurationMs?: number
   thinkingExpanded?: boolean
+  thinkingPreview?: string
 }
 
-export function AssistantMessage({ content, thinkingBlocks, thinkingDurationMs, thinkingExpanded = false }: AssistantMessageProps) {
+export function AssistantMessage({ content, thinkingBlocks, thinkingDurationMs, thinkingExpanded = false, thinkingPreview }: AssistantMessageProps) {
   const hasContent = content.trim().length > 0
-  const hasThinking = Boolean(thinkingBlocks?.length)
+  const hasThinking = Boolean(thinkingBlocks?.length) || Boolean(thinkingPreview)
   if (!hasContent && !hasThinking) return null
 
   return (
-    <Box flexDirection="row" marginY={1}>
-      <Box width={2} flexShrink={0}>
-        <Text color={theme.brand}>*</Text>
-      </Box>
-      <Box flexDirection="column" flexGrow={1}>
-        {hasThinking && <AssistantThinkingMessage blocks={thinkingBlocks!} expanded={thinkingExpanded} thinkingDurationMs={thinkingDurationMs} />}
-        {hasContent && <Markdown content={content} />}
-      </Box>
+    <Box flexDirection="column" marginY={1}>
+      {hasThinking && (
+        <Box flexDirection="row">
+          <Box width={2} flexShrink={0}>
+            <Text color={theme.brand}>*</Text>
+          </Box>
+          <Box flexGrow={1}>
+            <AssistantThinkingMessage blocks={thinkingBlocks ?? []} expanded={thinkingExpanded} thinkingDurationMs={thinkingDurationMs} thinkingPreview={thinkingPreview} />
+          </Box>
+        </Box>
+      )}
+      {hasContent && (
+        <Box flexDirection="row" marginTop={hasThinking ? 1 : 0}>
+          <Box width={2} flexShrink={0}>
+            <Text color={theme.brand}>●</Text>
+          </Box>
+          <Box flexGrow={1}>
+            <Markdown content={content} />
+          </Box>
+        </Box>
+      )}
     </Box>
   )
 }

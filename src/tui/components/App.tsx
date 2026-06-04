@@ -18,7 +18,7 @@ import { usePermission } from '../hooks/usePermission.js'
 import type { PermissionPromptProxy, RecordProxy } from '../hooks/usePermission.js'
 import { CheckpointService } from '../../services/checkpoint/checkpointService.js'
 import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
-import { MessageList, StaticDisplayItem } from './MessageList.js'
+import { MessageList, StaticDisplayItem, DisplayItem } from './MessageList.js'
 import { InputBox } from './InputBox.js'
 import { CommandSuggestions } from './CommandSuggestions.js'
 import { sampleSpinnerColors, Spinner } from './Spinner.js'
@@ -34,10 +34,12 @@ import { EnterPlanModeDialog } from './EnterPlanModeDialog.js'
 import { AskUserQuestionDialog } from './AskUserQuestionDialog.js'
 import { ProviderPanel } from './ProviderPanel.js'
 import { ModelPickerDialog, type ModelPickerDecision, type ModelPickerOption } from './ModelPickerDialog.js'
+import { EffortPickerBar } from './EffortPickerBar.js'
 import { useExitPlanPermission, type ExitPlanPromptProxy } from '../hooks/useExitPlanPermission.js'
 import { useEnterPlanPermission, type EnterPlanPromptProxy } from '../hooks/useEnterPlanPermission.js'
 import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
 import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../rewindSummary.js'
+import { clampEffort, type EffortValue, type EffortLevel } from '../../config/effort.js'
 
 export type AppMode = 'idle' | 'running' | 'restore' | 'exiting'
 
@@ -78,6 +80,8 @@ interface AppProps {
   onBeforeExit?: () => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => Promise<void> | void
   reloadAgentDefinitions?: () => Promise<number>
+  initialEffortLevel?: string
+  onEffortLevelChange?: (level: string) => void
 }
 
 export function App({
@@ -105,6 +109,8 @@ export function App({
   onBeforeExit,
   onPermissionModeChange,
   reloadAgentDefinitions: reloadRuntimeAgentDefinitions,
+  initialEffortLevel,
+  onEffortLevelChange,
 }: AppProps) {
   const [mode, setMode] = useState<AppMode>('idle')
   const [activeSession, setActiveSession] = useState<SessionMeta>(initialSession)
@@ -122,6 +128,8 @@ export function App({
   const [modelKeys, setModelKeys] = useState<string[]>(availableModelKeys)
   const [providerPanelOpen, setProviderPanelOpen] = useState(false)
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  const [effortPickerOpen, setEffortPickerOpen] = useState(false)
+  const [effortLevel, setEffortLevel] = useState<string>(initialEffortLevel ?? 'high')
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const verifyAbortRef = useRef<AbortController | null>(null)
   const restoreInputRef = useRef<(text: string) => void>(() => {})
@@ -188,6 +196,7 @@ export function App({
   const {
     staticTranscriptItems,
     liveItems,
+    liveSystemItems,
     recentCompletedToolCall,
     recentThinkingAssistant,
     transcriptGeneration,
@@ -224,6 +233,7 @@ export function App({
     || askUserQuestion.state.visible
     || providerPanelOpen
     || modelPickerOpen
+    || effortPickerOpen
     || mode === 'restore'
   const animationsEnabled = !permState.visible
   const showSpinner = animationsEnabled && !isOverlayActive
@@ -284,6 +294,13 @@ export function App({
       const nextRuntime = createRuntime(modelKey, activeSession)
       runtimeRef.current.loop.clearCachedSections()
       replaceRuntime(nextRuntime)
+      // Re-apply current effort clamped to new model's maxEffort
+      const maxEffort = nextRuntime.modelConfig.maxEffort
+      const clamped = clampEffort(effortLevel as EffortValue, maxEffort)
+      const clampedLevel = typeof clamped === 'number' ? effortLevel : clamped
+      if (clampedLevel !== effortLevel) setEffortLevel(clampedLevel)
+      const effortLevelForLoop = typeof clamped === 'string' ? clamped as EffortLevel : undefined
+      nextRuntime.loop.setEffort(effortLevelForLoop)
       return {
         ok: true,
         model: {
@@ -314,6 +331,16 @@ export function App({
     }
     return activateModelKey(modelKey)
   }, [resolveModelInput, modelKeys, activateModelKey])
+
+  const handleSetEffort = useCallback((level: string) => {
+    const maxEffort = runtimeRef.current.modelConfig.maxEffort
+    const clamped = clampEffort(level as EffortValue, maxEffort)
+    const clampedLevel = typeof clamped === 'number' ? level : clamped
+    setEffortLevel(clampedLevel)
+    const effortLevel = typeof clamped === 'string' ? clamped as EffortLevel : undefined
+    runtimeRef.current.loop.setEffort(effortLevel)
+    onEffortLevelChange?.(clampedLevel)
+  }, [onEffortLevelChange])
 
   const modelPickerOptions = useMemo(
     () => buildModelPickerOptions(providerConfig, runtime.modelKey, modelKeys),
@@ -471,7 +498,10 @@ export function App({
     openPlanFile: openCurrentPlanFile,
     submitQuery: submitPlainInput,
     openModelPicker: () => setModelPickerOpen(true),
+    openEffortPicker: () => setEffortPickerOpen(true),
     openProviderPanel: () => setProviderPanelOpen(true),
+    getEffort: () => effortLevel,
+    setEffort: handleSetEffort,
   })
 
   const handleSubmit = useCallback(async (text: string) => {
@@ -651,7 +681,8 @@ export function App({
       || enterPlan.state.visible
       || askUserQuestion.state.visible
       || providerPanelOpen
-      || modelPickerOpen,
+      || modelPickerOpen
+      || effortPickerOpen,
   })
 
   restoreInputRef.current = (restoredText: string) => {
@@ -686,6 +717,12 @@ export function App({
         isOverlayActive={isOverlayActive}
         animationsEnabled={animationsEnabled}
       />
+
+      {/* Live system items (e.g. duration summary) render in live area
+          so they appear below thinking blocks, not above them. */}
+      {liveSystemItems.map((item) => (
+        <DisplayItem key={item.id} item={item} />
+      ))}
 
       {/* Spinner during streaming */}
       {isStreaming && (
@@ -763,8 +800,19 @@ export function App({
         />
       )}
 
+      {effortPickerOpen && (
+        <EffortPickerBar
+          currentLevel={effortLevel as EffortLevel}
+          maxEffort={runtime.modelConfig.maxEffort}
+          onResolve={(result) => {
+            setEffortPickerOpen(false)
+            if (result.action === 'set') handleSetEffort(result.level)
+          }}
+        />
+      )}
+
       {/* Input box (with horizontal lines) */}
-      {mode !== 'restore' && !providerPanelOpen && !modelPickerOpen && (
+      {mode !== 'restore' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && (
         <InputBox
           text={text}
           cursorPos={cursorPos}
@@ -776,6 +824,7 @@ export function App({
             || askUserQuestion.state.visible
             || providerPanelOpen
             || modelPickerOpen
+            || effortPickerOpen
           }
         />
       )}
@@ -792,6 +841,7 @@ export function App({
         pricing={runtime.modelConfig.pricing}
         permissionMode={permissionMode}
         hintMessage={hintMessage}
+        effortLevel={effortLevel}
       />
     </Box>
   )

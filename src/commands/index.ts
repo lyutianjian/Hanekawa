@@ -14,6 +14,7 @@ import { verifyCommand } from './verify.js'
 import { agentsCommand } from './agents.js'
 import { providerCommand } from './provider.js'
 import { planCommand } from './plan.js'
+import { effortCommand } from './effort.js'
 
 // Register all built-in commands
 export function registerBuiltinCommands(): void {
@@ -29,4 +30,5 @@ export function registerBuiltinCommands(): void {
   registerCommand(agentsCommand)
   registerCommand(providerCommand)
   registerCommand(planCommand)
+  registerCommand(effortCommand)
 }

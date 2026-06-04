@@ -12,9 +12,10 @@ interface StatusLineProps {
   pricing?: ModelPricing
   permissionMode: PermissionMode
   hintMessage?: string | null
+  effortLevel?: string
 }
 
-export function StatusLine({ model, providerName, usage, pricing, permissionMode, hintMessage }: StatusLineProps) {
+export function StatusLine({ model, providerName, usage, pricing, permissionMode, hintMessage, effortLevel }: StatusLineProps) {
   const usageText = formatStatusUsage(usage, pricing)
   const modeStyle = permissionModeStyle(permissionMode)
 
@@ -26,6 +27,11 @@ export function StatusLine({ model, providerName, usage, pricing, permissionMode
           <Text color={modeStyle.color} bold={modeStyle.bold}>
             [{modeStyle.label}]
           </Text>
+          {effortLevel && (
+            <Text color={effortColor(effortLevel)}>
+              {' '}[{effortLevel}]
+            </Text>
+          )}
         </Text>
         <Text color={theme.dimText} dimColor>
           {usageText}
@@ -38,6 +44,17 @@ export function StatusLine({ model, providerName, usage, pricing, permissionMode
       )}
     </Box>
   )
+}
+
+function effortColor(level: string): string {
+  switch (level) {
+    case 'low': return theme.subtleText
+    case 'medium': return theme.brand
+    case 'high': return theme.dimText
+    case 'xhigh': return theme.warning
+    case 'max': return theme.error
+    default: return theme.dimText
+  }
 }
 
 function permissionModeStyle(mode: PermissionMode): { label: string; color: string; bold?: boolean } {

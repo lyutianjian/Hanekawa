@@ -11,7 +11,9 @@ import {
   loadMergedSettings,
   trustMcpServerLocally,
   validateSettings,
+  saveEffortLevel,
 } from '../../config/settings.js'
+import { clampEffort, type EffortLevel } from '../../config/effort.js'
 import { createProvider } from '../../config/providers.js'
 import type { RoutingRole } from '../../config/routing.js'
 import { SessionStore } from '../../sessions/service.js'
@@ -102,6 +104,7 @@ async function main() {
 
   // Initialize infrastructure
   const settings = await loadMergedSettings(cwd)
+  const initialEffortLevel = settings.effortLevel ?? 'high'
   const config = new ConfigService(cwd)
   await config.load(settings)
   const settingsValidation = validateSettings(settings)
@@ -123,6 +126,7 @@ async function main() {
     console.error(`Initial model could not be resolved: ${initialModelKey}`)
     process.exit(1)
   }
+  const clampedInitialEffort = clampEffort(initialEffortLevel, modelConfig.maxEffort)
   const fallbackModelKey = config.resolveModelReference(config.get().fallbackModel)
   if (fallbackModelKey && !config.getModel(fallbackModelKey)) {
     console.error(`Unknown fallback model configured: ${config.get().fallbackModel}`)
@@ -396,6 +400,8 @@ async function main() {
         isGitRepo,
         hooks: settings.hooks,
         cacheRuntime: { settings, env: process.env },
+        thinking: { type: 'adaptive' },
+        effort: typeof clampedInitialEffort === 'string' ? clampedInitialEffort as EffortLevel : undefined,
         permissionMode: () => permissionGate.getMode(),
         planModeManager,
         fallbackModel,
@@ -482,6 +488,10 @@ async function main() {
       initialQueuedPrompt={initialQueuedPrompt}
       onBeforeExit={onBeforeExit}
       reloadAgentDefinitions={reloadAgentDefinitions}
+      initialEffortLevel={typeof clampedInitialEffort === 'string' ? clampedInitialEffort : initialEffortLevel}
+      onEffortLevelChange={async (level) => {
+        try { await saveEffortLevel(level as EffortLevel) } catch { /* non-critical */ }
+      }}
     />,
     {
       exitOnCtrlC: false,

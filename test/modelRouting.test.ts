@@ -70,7 +70,6 @@ test('mergeRouting: deep-merges subagent overrides', () => {
   assert.equal(merged.subagent?.explore, 'powerful')
   // Untouched defaults preserved.
   assert.equal(merged.subagent?.fork, 'inherit')
-  assert.equal(merged.subagent?.verification, 'balanced')
 })
 
 test('pickTier: subagent type override beats general fallback', () => {

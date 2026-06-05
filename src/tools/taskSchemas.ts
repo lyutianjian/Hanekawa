@@ -1,18 +1,6 @@
 import { z } from 'zod/v3'
 
-export const todoStatusSchema = z.enum(['pending', 'in_progress', 'completed'])
 export const taskUpdateStatusSchema = z.enum(['pending', 'in_progress', 'completed', 'deleted'])
-
-export const todoItemSchema = z.object({
-  id: z.string().min(1).optional(),
-  content: z.string().min(1).describe('A concise description of the todo item'),
-  status: todoStatusSchema,
-  activeForm: z.string().min(1).describe('Present continuous form shown when in_progress'),
-}).strict()
-
-export const todoWriteInputSchema = z.object({
-  todos: z.array(todoItemSchema).describe('The complete updated todo list for the current session.'),
-}).strict()
 
 export const taskCreateInputSchema = z.object({
   subject: z.string().min(1).describe('A brief title for the task'),
@@ -37,6 +25,5 @@ export const taskUpdateInputSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional().describe('Metadata keys to merge into the task. Set a key to null to delete it.'),
 }).strict()
 
-export type TodoItem = z.infer<typeof todoItemSchema>
 export type TaskCreateInput = z.infer<typeof taskCreateInputSchema>
 export type TaskUpdateInput = z.infer<typeof taskUpdateInputSchema>

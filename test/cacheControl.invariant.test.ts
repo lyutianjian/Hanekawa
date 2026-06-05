@@ -156,7 +156,7 @@ test('buildAnthropicMessages keeps injected subagent summary after Agent tool_re
         message: {
           id: 'u1',
           role: 'user',
-          content: 'Run verification.',
+          content: 'Explore the codebase.',
           createdAt,
         },
       },
@@ -165,7 +165,7 @@ test('buildAnthropicMessages keeps injected subagent summary after Agent tool_re
         message: {
           id: 'a1',
           role: 'assistant',
-          content: 'I will run a verification sub-agent.',
+          content: 'I will run an explore sub-agent.',
           createdAt,
         },
       },
@@ -173,21 +173,21 @@ test('buildAnthropicMessages keeps injected subagent summary after Agent tool_re
         kind: 'tool_use',
         id: 'agent-call-1',
         tool: 'Agent',
-        input: { task: 'verify', subagent_type: 'verification' },
+        input: { task: 'map the codebase', subagent_type: 'explore' },
       },
       {
         kind: 'tool_result',
         toolUseId: 'agent-call-1',
         tool: 'Agent',
         ok: true,
-        content: 'Checked behavior.\nVERDICT: PASS',
+        content: 'Found 5 relevant files.',
       },
       {
         kind: 'message',
         message: {
           id: 'subagent-summary-1',
           role: 'assistant',
-          content: '<subagent-summary type="verification" verdict="PASS" />',
+          content: '<subagent-summary type="explore" />',
           createdAt,
         },
       },
@@ -209,12 +209,12 @@ test('buildAnthropicMessages keeps injected subagent summary after Agent tool_re
     content: [{
       type: 'tool_result',
       tool_use_id: 'agent-call-1',
-      content: 'Checked behavior.\nVERDICT: PASS',
+      content: 'Found 5 relevant files.',
       is_error: false,
     }],
   })
   assert.deepEqual(messages[3], {
     role: 'assistant',
-    content: [{ type: 'text', text: '<subagent-summary type="verification" verdict="PASS" />' }],
+    content: [{ type: 'text', text: '<subagent-summary type="explore" />' }],
   })
 })

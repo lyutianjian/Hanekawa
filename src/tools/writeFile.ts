@@ -10,6 +10,7 @@ import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
 export const writeFileTool: Tool = {
   name: 'Write',
   description: 'Write a UTF-8 text file. Existing-file overwrites require confirmation from the harness.',
+  searchHint: 'create write new file',
   inputSchema: z.object({
     filePath: z.string().min(1),
     content: z.string(),

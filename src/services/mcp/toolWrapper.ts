@@ -18,6 +18,7 @@ export function wrapMcpTool(serverName: string, mcpTool: McpTool, client: McpToo
     riskLevel: hasReadOnlyHint ? 'safe' : 'confirm',
     isReadOnly: hasReadOnlyHint,
     isConcurrencySafe: hasReadOnlyHint,
+    isMcp: true,
     async execute(input, context) {
       const result = await client.callTool({
         name: mcpTool.name,

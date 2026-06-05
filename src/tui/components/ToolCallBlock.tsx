@@ -1,20 +1,18 @@
-import { useEffect, useState } from 'react'
 import { Box, Text } from 'ink'
-import { getToolActivityDescription, getToolDisplay, shouldDisplayToolResult } from '../../tools/display.js'
+import { getToolActivityDescription, getToolDisplay, getToolResultSummary, shouldDisplayToolResult } from '../../tools/display.js'
 import type { ToolResultDisplay } from '../../harness/types.js'
 import { theme } from '../theme.js'
 import type { TUIDisplayItem, ToolCallStatus } from '../types.js'
 import { ResponseBlock } from './ResponseBlock.js'
-import { AnsiText, hasAnsi, stripAnsi } from '../ansi.js'
+import { AnsiText, hasAnsi } from '../ansi.js'
+import { COLLAPSE_LINES, STATUS_DOT } from '../constants/figures.js'
+import { useBlink } from '../hooks/useBlink.js'
 
 interface ToolCallBlockProps {
   item: Extract<TUIDisplayItem, { kind: 'tool_call' }>
   expanded?: boolean
   animationsEnabled?: boolean
 }
-
-const COLLAPSE_LINES = 3
-const STATUS_DOT = '\u25cf'
 
 export function ToolCallBlock({ item, expanded, animationsEnabled = true }: ToolCallBlockProps) {
   const statusDot = getStatusDot(item.status)
@@ -67,7 +65,13 @@ export function ToolCallBlock({ item, expanded, animationsEnabled = true }: Tool
       )}
 
       {item.status === 'done' && result && shouldDisplayToolResult(item.tool, item.input, result) && (
-        <OutputBlock result={result} display={item.resultDisplay} expanded={expanded} />
+        <OutputBlock
+          tool={item.tool}
+          input={item.input}
+          result={result}
+          display={item.resultDisplay}
+          expanded={expanded}
+        />
       )}
     </Box>
   )
@@ -77,13 +81,26 @@ export function formatToolCallRunningDescription(tool: string, input: unknown): 
   return getToolActivityDescription(tool, input) ?? 'running...'
 }
 
-function OutputBlock({ result, display, expanded }: { result: string; display?: ToolResultDisplay; expanded?: boolean }) {
+interface OutputBlockProps {
+  tool: string
+  input: unknown
+  result: string
+  display?: ToolResultDisplay
+  expanded?: boolean
+}
+
+function OutputBlock({ tool, input, result, display, expanded }: OutputBlockProps) {
+  // Render-time customized summary. Used when the tool has no display
+  // metadata (e.g. Bash) but provides a renderToolResultSummary hook.
+  const customSummary = !display ? getToolResultSummary(tool, input, result, true) : null
+  const collapsedSummary = display?.summary ?? customSummary
+
   if (display?.taskSnapshot && !expanded) {
     const hasDetail = (display.detail ?? result).trim().length > 0
     return (
       <ResponseBlock>
         <Box flexWrap="wrap">
-          <Text color={theme.dimText}>{display.summary}</Text>
+          <Text color={theme.dimText}>{collapsedSummary}</Text>
           {hasDetail && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
         </Box>
       </ResponseBlock>
@@ -95,8 +112,20 @@ function OutputBlock({ result, display, expanded }: { result: string; display?: 
     return (
       <ResponseBlock>
         <Box flexWrap="wrap">
-          <Text color={theme.dimText}>{display.summary}</Text>
+          <Text color={theme.dimText}>{collapsedSummary}</Text>
           {hasDetail && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
+        </Box>
+      </ResponseBlock>
+    )
+  }
+
+  // No display metadata — render using custom summary when available.
+  if (!display && customSummary && !expanded) {
+    return (
+      <ResponseBlock>
+        <Box flexWrap="wrap">
+          <Text color={theme.dimText}>{customSummary}</Text>
+          <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>
         </Box>
       </ResponseBlock>
     )
@@ -104,7 +133,6 @@ function OutputBlock({ result, display, expanded }: { result: string; display?: 
 
   const lines = result.split('\n')
   const totalLines = lines.length
-
   if (totalLines === 0) return null
 
   if (display && expanded) {
@@ -112,7 +140,7 @@ function OutputBlock({ result, display, expanded }: { result: string; display?: 
       <ResponseBlock>
         <Box flexDirection="column">
           <Box>
-            <Text color={theme.dimText}>{display.summary}</Text>
+            <Text color={theme.dimText}>{collapsedSummary}</Text>
           </Box>
           <DetailLines lines={(display.detail ?? result).split('\n')} />
           <Box>
@@ -125,18 +153,34 @@ function OutputBlock({ result, display, expanded }: { result: string; display?: 
     )
   }
 
-  if (expanded || totalLines <= COLLAPSE_LINES) {
+  // No display metadata, expanded — show custom summary header + raw result.
+  if (!display && expanded) {
+    return (
+      <ResponseBlock>
+        <Box flexDirection="column">
+          {customSummary && (
+            <Box>
+              <Text color={theme.dimText}>{customSummary}</Text>
+            </Box>
+          )}
+          <DetailLines lines={lines} />
+          <Box>
+            <Text color={theme.dimText} dimColor>
+              (ctrl+o to collapse)
+            </Text>
+          </Box>
+        </Box>
+      </ResponseBlock>
+    )
+  }
+
+  // No display metadata, not expanded, no custom summary — fall back to raw
+  // line-based collapse behavior.
+  if (totalLines <= COLLAPSE_LINES) {
     return (
       <ResponseBlock>
         <Box flexDirection="column">
           <DetailLines lines={lines} />
-          {totalLines > COLLAPSE_LINES && (
-            <Box>
-              <Text color={theme.dimText} dimColor>
-                (ctrl+o to collapse)
-              </Text>
-            </Box>
-          )}
         </Box>
       </ResponseBlock>
     )
@@ -192,17 +236,4 @@ export function getStatusDot(status: ToolCallStatus): { char: string; color: str
     case 'error':
       return { char: STATUS_DOT, color: theme.error }
   }
-}
-
-function useBlink(enabled: boolean): boolean {
-  const [dim, setDim] = useState(false)
-  useEffect(() => {
-    if (!enabled) {
-      setDim(false)
-      return
-    }
-    const timer = setInterval(() => setDim((current) => !current), 500)
-    return () => clearInterval(timer)
-  }, [enabled])
-  return enabled && dim
 }

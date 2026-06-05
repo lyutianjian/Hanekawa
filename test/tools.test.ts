@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { getBuiltinTools } from '../src/tools/index.js'
 import type { ReadFileState } from '../src/harness/types.js'
 import { grepTool } from '../src/tools/grep.js'
-import { bashTool } from '../src/tools/bash.js'
+import { bashTool, detectSleepPattern } from '../src/tools/bash.js'
 import { readFileTool } from '../src/tools/readFile.js'
 import { editFileTool } from '../src/tools/editFile.js'
 import { multiEditTool } from '../src/tools/multiEdit.js'
@@ -552,4 +552,273 @@ test('concurrency-safe builtin tools are read-only and write tools remain barrie
   for (const toolName of ['Write', 'Edit', 'MultiEdit', 'Delete']) {
     assert.notEqual(byName.get(toolName)?.isConcurrencySafe, true, `${toolName} must be a write barrier`)
   }
+})
+
+// ── Edit fuzzy matching (quote normalization) ──────────────────────────
+
+test('editFile succeeds with straight quotes when file has curly quotes', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'quotes.txt')
+    await writeFile(file, '“hello world”\n', 'utf8')
+    await readFileTool.execute({ filePath: 'quotes.txt' }, ctx)
+
+    const result = await editFileTool.execute(
+      { filePath: 'quotes.txt', oldString: '"hello world"', newString: '"goodbye world"' },
+      ctx,
+    )
+    assert.equal(result.ok, true)
+    // The file should now have curly quotes in the new string too
+    const content = await readFile(file, 'utf8')
+    assert.equal(content, '“goodbye world”\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editFile preserves curly quotes in newString when matched via normalization', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'quotes.txt')
+    await writeFile(file, 'she said “hello”\n', 'utf8')
+    await readFileTool.execute({ filePath: 'quotes.txt' }, ctx)
+
+    // Model provides straight quotes, file has curly quotes
+    const result = await editFileTool.execute(
+      { filePath: 'quotes.txt', oldString: '"hello"', newString: '"goodbye"' },
+      ctx,
+    )
+    assert.equal(result.ok, true)
+    const content = await readFile(file, 'utf8')
+    // newString should have curly quotes matching the file's style
+    assert.equal(content, 'she said “goodbye”\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editFile handles apostrophe normalization (contractions)', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'contract.txt')
+    await writeFile(file, 'I don’t know\n', 'utf8')
+    await readFileTool.execute({ filePath: 'contract.txt' }, ctx)
+
+    const result = await editFileTool.execute(
+      { filePath: 'contract.txt', oldString: "don't", newString: "can't" },
+      ctx,
+    )
+    assert.equal(result.ok, true)
+    const content = await readFile(file, 'utf8')
+    // Apostrophe should be preserved as right single curly quote
+    assert.equal(content, 'I can’t know\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editFile exact match still works (no regression)', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const ctx = { ...context(dir), readFileState: new Map<string, ReadFileState>() }
+    const file = path.join(dir, 'exact.txt')
+    await writeFile(file, 'hello world\n', 'utf8')
+    await readFileTool.execute({ filePath: 'exact.txt' }, ctx)
+
+    const result = await editFileTool.execute(
+      { filePath: 'exact.txt', oldString: 'hello', newString: 'goodbye' },
+      ctx,
+    )
+    assert.equal(result.ok, true)
+    const content = await readFile(file, 'utf8')
+    assert.equal(content, 'goodbye world\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ── Grep pagination ────────────────────────────────────────────────────
+
+test('grep offset skips correct number of results', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    await writeFile(path.join(dir, 'a.txt'), 'line1\nline2\nline3\nline4\nline5\n', 'utf8')
+    const result = await grepTool.execute({ pattern: 'line', path: dir, offset: 2 }, context(dir))
+    assert.equal(result.ok, true)
+    // Should skip first 2 results (line1, line2) and return line3, line4, line5
+    assert.match(result.content, /line3/)
+    assert.match(result.content, /line4/)
+    assert.match(result.content, /line5/)
+    assert.doesNotMatch(result.content, /line1:/)
+    assert.doesNotMatch(result.content, /line2:/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('grep headLimit caps total results', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    await writeFile(path.join(dir, 'a.txt'), 'line1\nline2\nline3\nline4\nline5\n', 'utf8')
+    const result = await grepTool.execute({ pattern: 'line', path: dir, headLimit: 2 }, context(dir))
+    assert.equal(result.ok, true)
+    const lines = result.content.split('\n').filter(l => l.startsWith('a.txt:'))
+    assert.equal(lines.length, 2)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('grep pagination notice appears when results are truncated', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    await writeFile(path.join(dir, 'a.txt'), 'line1\nline2\nline3\n', 'utf8')
+    const result = await grepTool.execute({ pattern: 'line', path: dir, headLimit: 1, offset: 1 }, context(dir))
+    assert.equal(result.ok, true)
+    assert.match(result.content, /\[Showing results/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ── WebFetch/WebSearch basic validation ────────────────────────────────
+
+test('WebFetch tool is registered and has correct properties', () => {
+  const tools = getBuiltinTools()
+  const webFetch = tools.find(t => t.name === 'WebFetch')
+  assert.ok(webFetch, 'WebFetch tool should be registered')
+  assert.equal(webFetch.isReadOnly, true)
+  assert.equal(webFetch.isConcurrencySafe, true)
+  assert.equal(webFetch.shouldDefer, true)
+  assert.equal(webFetch.riskLevel, 'safe')
+})
+
+test('WebSearch tool is registered and has correct properties', () => {
+  const tools = getBuiltinTools()
+  const webSearch = tools.find(t => t.name === 'WebSearch')
+  assert.ok(webSearch, 'WebSearch tool should be registered')
+  assert.equal(webSearch.isReadOnly, true)
+  assert.equal(webSearch.isConcurrencySafe, true)
+  assert.equal(webSearch.shouldDefer, true)
+  assert.equal(webSearch.riskLevel, 'safe')
+})
+
+// ── Bash sleep detection ────────────────────────────────────────────────────
+
+test('detectSleepPattern returns null for short sleep', () => {
+  assert.equal(detectSleepPattern('sleep 1'), null)
+  assert.equal(detectSleepPattern('sleep 0.5'), null)
+  assert.equal(detectSleepPattern('sleep 1.9'), null)
+})
+
+test('detectSleepPattern detects standalone sleep >= 2s', () => {
+  assert.equal(detectSleepPattern('sleep 2'), 2)
+  assert.equal(detectSleepPattern('sleep 5'), 5)
+  assert.equal(detectSleepPattern('sleep 300'), 300)
+  assert.equal(detectSleepPattern('sleep 2.5'), 2.5)
+})
+
+test('detectSleepPattern detects sleep with trailing chain', () => {
+  assert.equal(detectSleepPattern('sleep 5 && echo done'), 5)
+  assert.equal(detectSleepPattern('sleep 3; echo done'), 3)
+  assert.equal(detectSleepPattern('sleep 5 || echo fail'), 5)
+  assert.equal(detectSleepPattern('sleep 5 | cat'), 5)
+  assert.equal(detectSleepPattern('sleep 5 # comment'), 5)
+})
+
+test('detectSleepPattern does not match sleep inside compound commands', () => {
+  assert.equal(detectSleepPattern('for i in 1 2; do sleep 1; done'), null)
+  assert.equal(detectSleepPattern('echo hello && sleep 5'), null)
+  assert.equal(detectSleepPattern('if true; then sleep 10; fi'), null)
+})
+
+test('detectSleepPattern does not match non-sleep commands', () => {
+  assert.equal(detectSleepPattern('echo hello'), null)
+  assert.equal(detectSleepPattern('ls -la'), null)
+  assert.equal(detectSleepPattern(''), null)
+})
+
+test('bash blocks sleep without run_in_background', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const result = await bashTool.execute({ command: 'sleep 5' }, context(dir))
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'precondition_failed')
+    assert.match(result.content, /run_in_background/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('bash blocks sleep with || operator', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const result = await bashTool.execute({ command: 'sleep 5 || echo fail' }, context(dir))
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'precondition_failed')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('bash blocks sleep with pipe operator', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const result = await bashTool.execute({ command: 'sleep 5 | cat' }, context(dir))
+    assert.equal(result.ok, false)
+    assert.equal(result.errorCode, 'precondition_failed')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('bash allows sleep with run_in_background', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    // Use a very short background sleep to not slow down tests
+    const result = await bashTool.execute({ command: 'sleep 0.1', run_in_background: true }, context(dir))
+    assert.equal(result.ok, true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('bash allows short sleep without run_in_background', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const result = await bashTool.execute({ command: 'sleep 0.1' }, context(dir))
+    assert.equal(result.ok, true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('bash allows non-sleep commands normally', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  try {
+    const result = await bashTool.execute({ command: 'echo hello' }, context(dir))
+    assert.equal(result.ok, true)
+    assert.match(result.content, /hello/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('Bash tool has run_in_background in schema', () => {
+  const tools = getBuiltinTools()
+  const bash = tools.find(t => t.name === 'Bash')
+  assert.ok(bash, 'Bash tool should be registered')
+  // Verify the schema accepts run_in_background
+  const parsed = bash.inputSchema.parse({ command: 'echo hi', run_in_background: true })
+  assert.equal((parsed as { run_in_background?: boolean }).run_in_background, true)
+})
+
+test('Config tool is registered in builtin tools', () => {
+  const tools = getBuiltinTools()
+  const config = tools.find(t => t.name === 'Config')
+  assert.ok(config, 'Config tool should be registered')
+  assert.equal(config.shouldDefer, true)
 })

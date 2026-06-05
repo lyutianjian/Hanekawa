@@ -43,7 +43,6 @@ No bundler — runs TypeScript directly via `tsx`.
 | `/compact` | Force context compaction |
 | `/agents reload` | Reload custom sub-agent definitions from `.myagent/agents*` |
 | `/repair` | Repair the current session record stream and invalidate caches |
-| `/verify [focus]` | Run the verification sub-agent out-of-band against the current session |
 
 ## Configuration
 
@@ -165,7 +164,10 @@ Each tool exports a `Tool` object with `name`, `inputSchema` (JSON Schema), `ris
 | `Edit` | confirm | no | requires prior Read, exactly one match of oldString |
 | `MultiEdit` | confirm | no | atomic exact string replacements |
 | `Delete` | dangerous | no | |
-| `TodoWrite` | safe | no | replaces the complete session todo list |
+| `TaskCreate` | safe | no | creates a new task |
+| `TaskList` | safe | yes | lists all tasks |
+| `TaskGet` | safe | yes | gets a specific task |
+| `TaskUpdate` | safe | no | updates a task |
 | `Skill` | safe | no | on-demand skill invocation, LRU eviction (50) |
 | `Agent` | safe | input-specific | typed subagent dispatch (built-in plus `.myagent/agents/*.md`); read-only agent types can run concurrently |
 
@@ -179,9 +181,8 @@ The `Agent` tool requires `subagent_type`. Built-in types:
 - `fork` - read-only fork that preloads the parent transcript and shares the parent fork prompt-cache stream.
 - `explore` - fast read-only codebase navigation using search/read tools. It omits project context to save tokens, so pass any critical conventions explicitly.
 - `plan` - read-only implementation planning. It explores relevant code and returns a step-by-step plan plus critical files. It also omits project context.
-- `verification` - adversarial verification after implementation work. It runs inline like other sub-agents, is strictly read-only for project files, may run read-only shell checks, and must end with `VERDICT: PASS`, `VERDICT: FAIL`, or `VERDICT: PARTIAL`.
 
-Use `explore` before broad code searches, `plan` before larger or ambiguous changes, and `verification` before reporting completion on non-trivial implementation work.
+Use `explore` before broad code searches and `plan` before larger or ambiguous changes.
 
 Custom sub-agent types are loaded at TUI startup from Markdown files with YAML frontmatter:
 
@@ -201,7 +202,7 @@ You are a security reviewer for Hanekawa. ...
 
 Agent definition directories merge by `name` in this order, later files overriding earlier ones: `~/.myagent/agents/`, `.myagent/agents/`, `.myagent/agents.local/`. The Agent tool description is generated from the current definition table, and `subagent_type` is validated at runtime so unknown types produce a clear tool error. `/agents reload` refreshes these definitions without restarting the TUI.
 
-Custom agents always disallow nested `Agent` calls. `tools: ["*"]` means all read-only tools, while `Bash` is available only when explicitly listed. `isReadOnlyAgent` controls whether an agent type may be scheduled concurrently; definitions that list write-like tools such as `Bash`, `Write`, `Edit`, `MultiEdit`, `Delete`, or `TodoWrite` are treated as non-read-only even if they declare `isReadOnlyAgent: true`. Custom prompts have a 16k character soft warning threshold. Custom names that collide with built-ins, such as `explore`, override the built-in definition and produce a warning.
+Custom agents always disallow nested `Agent` calls. `tools: ["*"]` means all read-only tools, while `Bash` is available only when explicitly listed. `isReadOnlyAgent` controls whether an agent type may be scheduled concurrently; definitions that list write-like tools such as `Bash`, `Write`, `Edit`, `MultiEdit`, `Delete`, or `TaskCreate`/`TaskUpdate` are treated as non-read-only even if they declare `isReadOnlyAgent: true`. Custom prompts have a 16k character soft warning threshold. Custom names that collide with built-ins, such as `explore`, override the built-in definition and produce a warning.
 
 Supporting modules: `fileState.ts` (file state tracking), `pathSafety.ts` (path safety checks).
 

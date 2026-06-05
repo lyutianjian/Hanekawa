@@ -8,6 +8,7 @@ import { assertParentNotSymlink } from './pathSafety.js'
 export const deleteFileTool: Tool = {
   name: 'Delete',
   description: 'Delete a file. This always requires explicit user approval.',
+  searchHint: 'remove delete file',
   inputSchema: z.object({
     filePath: z.string().min(1),
   }).strict(),

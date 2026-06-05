@@ -80,7 +80,7 @@ const DEFAULT_GLOBAL_DENIAL_PROMPT_THRESHOLD = 20
 const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
 const FILE_PERMISSION_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'Delete'])
 const ACCEPT_EDITS_BASH_COMMANDS = new Set(['mkdir', 'touch'])
-const PLAN_ALLOWED_AGENT_TYPES = new Set(['general', 'fork', 'explore', 'plan', 'verification'])
+const PLAN_ALLOWED_AGENT_TYPES = new Set(['general', 'fork', 'explore', 'plan'])
 const PLAN_READ_ONLY_SHELL_COMMANDS = new Set([
   'cat',
   'dir',

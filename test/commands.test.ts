@@ -5,7 +5,6 @@ import { compactCommand } from '../src/commands/compact.js'
 import { costCommand } from '../src/commands/cost.js'
 import { modelCommand } from '../src/commands/model.js'
 import { repairCommand } from '../src/commands/repair.js'
-import { verifyCommand } from '../src/commands/verify.js'
 import { agentsCommand } from '../src/commands/agents.js'
 import { planCommand } from '../src/commands/plan.js'
 import { providerCommand } from '../src/commands/provider.js'
@@ -375,32 +374,6 @@ test('/repair runs session repair and invalidates caches', async () => {
   assert.match(events[2] ?? '', /Inserted synthetic tool_result/)
 })
 
-test('/verify reports unavailable runtime without verification hook', async () => {
-  let output = ''
-  await verifyCommand.run('', createContext({
-    writeLine: (message) => {
-      output = message
-    },
-  }))
-
-  assert.match(output, /unavailable/)
-})
-
-test('/verify delegates focus text to verification runner', async () => {
-  const events: string[] = []
-  await verifyCommand.run('check edge cases', createContext({
-    writeLine: (message) => {
-      events.push(message)
-    },
-    runVerification: async (args) => `verified: ${args}`,
-  }))
-
-  assert.deepEqual(events, [
-    'Starting adversarial verification...',
-    'verified: check edge cases',
-  ])
-})
-
 test('/agents reload delegates to agent definition reloader', async () => {
   const events: string[] = []
   await agentsCommand.run('reload', createContext({
@@ -460,15 +433,14 @@ test('/agents show renders transcript and worktree details', async () => {
         id: 'task-1',
         type: 'subagent_task',
         agentId: 'abcdef123456',
-        subagentType: 'verification',
+        subagentType: 'explore',
         status: 'completed',
-        description: 'Verify changes',
-        task: 'Verify',
+        description: 'Explore codebase',
+        task: 'Explore',
         transcriptPath: '/tmp/agent.jsonl',
         worktreePath: '/tmp/hanekawa-subagent-worktrees/repo/session/agent',
         worktreeChangeSummary: 'No changes.',
         usage: { inputTokens: 1, cacheReadInputTokens: 2, outputTokens: 3 },
-        verdict: 'PASS',
         criticalFiles: ['src/a.ts'],
         createdAt: new Date().toISOString(),
       },
@@ -476,7 +448,7 @@ test('/agents show renders transcript and worktree details', async () => {
         id: 'transcript-1',
         type: 'subagent_transcript',
         agentId: 'abcdef123456',
-        subagentType: 'verification',
+        subagentType: 'explore',
         transcriptPath: '/tmp/agent.jsonl',
         usage: { inputTokens: 1, cacheReadInputTokens: 2, outputTokens: 3 },
         createdAt: new Date().toISOString(),
@@ -485,11 +457,10 @@ test('/agents show renders transcript and worktree details', async () => {
     }),
   }))
 
-  assert.match(output, /agent: verification #abcdef12/)
+  assert.match(output, /agent: explore #abcdef12/)
   assert.match(output, /status: completed/)
   assert.match(output, /transcript: \/tmp\/agent\.jsonl/)
   assert.match(output, /worktree:/)
-  assert.match(output, /verdict: PASS/)
 })
 
 test('/agents cleanup defaults to dry-run', async () => {

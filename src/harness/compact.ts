@@ -29,6 +29,8 @@ export interface CompactCheckInput {
   promptCacheRetention?: 'in_memory' | '24h'
   turnId?: string
   circuitKey?: string
+  /** Tool names discovered via ToolSearch — preserved in compact boundary. */
+  discoveredToolNames?: Set<string>
   getCompactFailureCount?(): Promise<number>
   setCompactFailureCount?(count: number): Promise<void>
   appendRecord(record: SessionRecord): Promise<void>
@@ -123,6 +125,9 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
       preTokens: tokenCount,
       postCompactRestore: 'pending',
       ...(input.turnId ? { turnId: input.turnId } : {}),
+      ...(input.discoveredToolNames && input.discoveredToolNames.size > 0
+        ? { preCompactDiscoveredTools: [...input.discoveredToolNames] }
+        : {}),
       createdAt: new Date().toISOString(),
     })
     compactFailuresByKey.delete(circuitKey)

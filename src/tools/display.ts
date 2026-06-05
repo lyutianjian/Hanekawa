@@ -43,6 +43,34 @@ export function shouldDisplayToolResult(toolName: string, input: unknown, result
   return false
 }
 
+export function getToolResultSummary(
+  toolName: string,
+  input: unknown,
+  result: string | undefined,
+  ok: boolean,
+): string | null {
+  if (!result) return null
+  if (toolName === 'Agent') return getAgentResultSummary(input, result, ok)
+  const tool = toolsByName().get(toolName)
+  if (!tool?.renderToolResultSummary) return null
+  try {
+    return tool.renderToolResultSummary(input, result, ok)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Tools whose results can be collapsed into a parallel-tool group summary line.
+ * Bash is excluded despite being concurrency-safe because its output is
+ * typically large and benefits from an individual ToolCallBlock.
+ */
+const GROUPABLE_TOOLS = new Set(['Read', 'Grep', 'Glob'])
+
+export function isGroupableTool(toolName: string): boolean {
+  return GROUPABLE_TOOLS.has(toolName)
+}
+
 export function filePathSummary(input: unknown): string | null {
   if (!isRecord(input)) return null
   const value = input.filePath ?? input.path
@@ -111,3 +139,20 @@ function getAgentActivityDescription(input: unknown): string | undefined {
   const subagentType = typeof input.subagent_type === 'string' ? input.subagent_type : undefined
   return subagentType ? `Running ${subagentType} agent` : 'Running agent'
 }
+
+function getAgentResultSummary(_input: unknown, _result: string, ok: boolean): string | null {
+  // The Agent tool sets metadata.display.summary directly at execute() time
+  // with full stats ("Done (N tool uses · Xk tokens · Ys)"). For older
+  // sessions that predate that field, show a generic "Done" so the collapsed
+  // line doesn't dump the agent's entire transcript.
+  if (!ok) return null
+  return 'Done'
+}
+
+function formatTokenCount(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`
+  return `${Math.round(n / 1000)}k`
+}
+
+export { formatTokenCount }

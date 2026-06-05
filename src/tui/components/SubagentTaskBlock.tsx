@@ -1,90 +1,137 @@
 import { Box, Text } from 'ink'
 import type { TUIDisplayItem } from '../types.js'
 import { theme } from '../theme.js'
+import { TREE_BRANCH, TREE_LAST, TREE_PIPE } from '../constants/figures.js'
+import { formatTokenCount } from '../../tools/display.js'
 
 type SubagentTaskItem = Extract<TUIDisplayItem, { kind: 'subagent_task' }>
 
-export function SubagentTaskBlock({ item }: { item: SubagentTaskItem }) {
+export type SubagentTreePosition = 'first' | 'middle' | 'last' | 'only'
+
+interface SubagentTaskBlockProps {
+  item: SubagentTaskItem
+  /** Tree position when multiple subagent_task items render back-to-back. */
+  treePosition?: SubagentTreePosition
+}
+
+/**
+ * Claude-Code-style tree rendering for a subagent task line.
+ *
+ * Single item:
+ *   └─ explore · 5 tool uses · 2.3k tokens
+ *      ⎿ Done · verdict PASS · #a1b2c3d4
+ *
+ * Multiple siblings:
+ *   ├─ plan(routing layer) · 3 tool uses · 1.2k tokens
+ *   │  ⎿ Done
+ *   └─ explore · 8 tool uses · 4.1k tokens
+ *      ⎿ Done · #e5f6g7h8
+ */
+export function SubagentTaskBlock({ item, treePosition = 'only' }: SubagentTaskBlockProps) {
   const { record } = item
-  const marker = getStatusMarker(record.status)
+  const statusColor = statusColorFor(record.status)
+  const treeChar = treePosition === 'last' || treePosition === 'only' ? TREE_LAST : TREE_BRANCH
+  const continuation = treePosition === 'last' || treePosition === 'only' ? '   ' : `${TREE_PIPE}  `
+
   const label = formatAgentLabel(record)
-  const status = formatStatus(record.status)
-  const details = formatDetails(item)
+  const stats = formatStats(record)
+  const statusText = formatStatusText(record, item.progress)
+  const details = formatDetails(record)
 
   return (
-    <Box marginY={1} flexDirection="column">
-      <Box>
-        <Text color={marker.color}>{marker.char}</Text>
-        <Text color={marker.color}> {label}</Text>
-        <Text color={theme.taskDim}> {status}</Text>
-        {details && <Text color={theme.taskDim}> · {details}</Text>}
+    <Box marginY={0} flexDirection="column" paddingLeft={2}>
+      <Box flexDirection="row" flexWrap="nowrap">
+        <Box flexShrink={0}>
+          <Text color={theme.taskDim}>{treeChar} </Text>
+        </Box>
+        <Box flexShrink={1} minWidth={0}>
+          <Text color={statusColor} bold>{label}</Text>
+          {stats && <Text color={theme.taskDim}> · {stats}</Text>}
+        </Box>
+      </Box>
+      <Box flexDirection="row" flexWrap="nowrap">
+        <Box flexShrink={0}>
+          <Text color={theme.taskDim}>{continuation}</Text>
+        </Box>
+        <Box flexShrink={1} minWidth={0}>
+          <Text color={statusColor}>{statusText}</Text>
+          {details && <Text color={theme.taskDim}> · {details}</Text>}
+        </Box>
       </Box>
     </Box>
   )
 }
 
 export function formatSubagentTaskLine(item: SubagentTaskItem): string {
-  const marker = getStatusMarker(item.record.status)
   const label = formatAgentLabel(item.record)
-  const status = formatStatus(item.record.status)
-  const details = formatDetails(item)
-  return `${marker.char} ${label} ${status}${details ? ` · ${details}` : ''}`
+  const stats = formatStats(item.record)
+  const status = formatStatusText(item.record, item.progress)
+  const details = formatDetails(item.record)
+  const parts = [label]
+  if (stats) parts.push(stats)
+  const tail = [status, details].filter(Boolean).join(' · ')
+  return `${parts.join(' · ')}${tail ? `\n  ⎿  ${tail}` : ''}`
 }
 
-function getStatusMarker(status: SubagentTaskItem['record']['status']): { char: string; color: string } {
+function statusColorFor(status: SubagentTaskItem['record']['status']): string {
   switch (status) {
-    case 'running':
-      return { char: '●', color: theme.taskRunning }
-    case 'completed':
-      return { char: '✓', color: theme.taskDone }
-    case 'failed':
-      return { char: '✗', color: theme.taskFailed }
+    case 'running':     return theme.taskRunning
+    case 'completed':   return theme.taskDone
+    case 'failed':      return theme.taskFailed
     case 'cancelled':
-    case 'interrupted':
-      return { char: '◌', color: theme.taskDim }
+    case 'interrupted': return theme.taskDim
   }
 }
 
 function formatAgentLabel(record: SubagentTaskItem['record']): string {
   const name = record.name?.trim()
-  return name && name !== record.subagentType
+  const baseName = name && name !== record.subagentType
     ? `${name} (${record.subagentType})`
     : `${record.subagentType} agent`
+  return baseName
 }
 
-function formatStatus(status: SubagentTaskItem['record']['status']): string {
-  switch (status) {
+function formatStats(record: SubagentTaskItem['record']): string {
+  const segments: string[] = []
+  if (typeof record.toolUseCount === 'number') {
+    segments.push(`${record.toolUseCount} ${record.toolUseCount === 1 ? 'tool use' : 'tool uses'}`)
+  }
+  if (record.usage) {
+    const total = (record.usage.inputTokens ?? 0)
+      + (record.usage.cacheReadInputTokens ?? 0)
+      + (record.usage.outputTokens ?? 0)
+    if (total > 0) segments.push(`${formatTokenCount(total)} tokens`)
+  }
+  if (typeof record.durationMs === 'number' && record.durationMs >= 0) {
+    segments.push(`${Math.max(1, Math.round(record.durationMs / 1000))}s`)
+  }
+  return segments.join(' \u00b7 ')
+}
+
+function formatStatusText(
+  record: SubagentTaskItem['record'],
+  progress: string | undefined,
+): string {
+  switch (record.status) {
     case 'running':
-      return 'running'
+      return progress && progress.length > 0 ? truncate(progress, 80) : 'Initializing…'
     case 'completed':
-      return 'completed'
+      return record.verdict ? `Done · verdict ${record.verdict}` : 'Done'
     case 'failed':
-      return 'failed'
+      return record.error ? `Failed: ${truncate(record.error, 80)}` : 'Failed'
     case 'cancelled':
-      return 'cancelled'
+      return 'Cancelled'
     case 'interrupted':
-      return 'interrupted'
+      return 'Interrupted'
   }
 }
 
-function formatDetails(item: SubagentTaskItem): string {
-  const { record } = item
-  if (record.status === 'running' && item.progress) {
-    const parts = [
-      truncate(item.progress, 80),
-      `#${record.agentId.slice(0, 8)}`,
-    ]
-    if (record.transcriptPath || record.worktreePath) {
-      parts.push(`/agents show ${record.agentId.slice(0, 8)}`)
-    }
-    return parts.join(' ')
-  }
-
-  const parts: string[] = []
-  if (record.verdict) parts.push(record.verdict)
-  parts.push(`#${record.agentId.slice(0, 8)}`)
+function formatDetails(record: SubagentTaskItem['record']): string {
+  if (record.status === 'running') return ''
+  const shortId = record.agentId.slice(0, 8)
+  const parts = [`#${shortId}`]
   if (record.transcriptPath || record.worktreePath) {
-    parts.push(`/agents show ${record.agentId.slice(0, 8)}`)
+    parts.push(`/agents show ${shortId}`)
   }
   return parts.join(' ')
 }

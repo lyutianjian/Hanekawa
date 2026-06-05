@@ -7,6 +7,7 @@ import {
   applyTuiRecordToTranscriptState,
   clearToolProgress,
   createTranscriptState,
+  isHiddenToolCall,
   recordsToDisplayItems,
 } from '../src/tui/transcript.js'
 
@@ -99,6 +100,63 @@ test('recordsToDisplayItems restores historical running subagents as interrupted
 
   assert.equal(item?.kind, 'subagent_task')
   assert.equal(item?.kind === 'subagent_task' ? item.record.status : undefined, 'interrupted')
+})
+
+// --- isHiddenToolCall tests ---
+
+test('isHiddenToolCall returns true for ToolSearch', () => {
+  assert.equal(isHiddenToolCall('ToolSearch'), true)
+})
+
+test('isHiddenToolCall returns true for EnterPlanMode and ExitPlanMode', () => {
+  assert.equal(isHiddenToolCall('EnterPlanMode'), true)
+  assert.equal(isHiddenToolCall('ExitPlanMode'), true)
+})
+
+test('isHiddenToolCall returns true for AskUserQuestion', () => {
+  assert.equal(isHiddenToolCall('AskUserQuestion'), true)
+})
+
+test('isHiddenToolCall returns true for Skill', () => {
+  assert.equal(isHiddenToolCall('Skill'), true)
+})
+
+test('isHiddenToolCall returns false for task status tools (visible)', () => {
+  assert.equal(isHiddenToolCall('TaskCreate'), false)
+  assert.equal(isHiddenToolCall('TaskList'), false)
+  assert.equal(isHiddenToolCall('TaskGet'), false)
+  assert.equal(isHiddenToolCall('TaskUpdate'), false)
+})
+
+test('isHiddenToolCall returns false for visible tools', () => {
+  assert.equal(isHiddenToolCall('Read'), false)
+  assert.equal(isHiddenToolCall('Write'), false)
+  assert.equal(isHiddenToolCall('Edit'), false)
+  assert.equal(isHiddenToolCall('Bash'), false)
+  assert.equal(isHiddenToolCall('Grep'), false)
+  assert.equal(isHiddenToolCall('Glob'), false)
+  assert.equal(isHiddenToolCall('Agent'), false)
+  assert.equal(isHiddenToolCall('TaskCreate'), false)
+  assert.equal(isHiddenToolCall('TaskUpdate'), false)
+  assert.equal(isHiddenToolCall('WebFetch'), false)
+  assert.equal(isHiddenToolCall('WebSearch'), false)
+  assert.equal(isHiddenToolCall('NotebookEdit'), false)
+})
+
+test('ToolSearch tool_use record is completely suppressed from TUI', () => {
+  let state = createTranscriptState()
+  state = applyTuiRecordToTranscriptState(state, toolUse('call-ts-1', 'ToolSearch', { query: 'test', max_results: 5 }))
+
+  assert.deepEqual(state.staticItems, [])
+  assert.deepEqual(state.liveItems, [])
+})
+
+test('ToolSearch tool_result record is completely suppressed from TUI', () => {
+  let state = createTranscriptState()
+  state = applyTuiRecordToTranscriptState(state, toolResult('result-ts-1', 'call-ts-1', 'ToolSearch', true, '{"matches":[],"query":"test","totalDeferredTools":0}'))
+
+  assert.deepEqual(state.staticItems, [])
+  assert.deepEqual(state.liveItems, [])
 })
 
 function toolUse(id: string, tool: string, input: unknown): SessionRecord {

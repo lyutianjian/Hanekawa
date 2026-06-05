@@ -10,7 +10,6 @@ import { sessionCommand } from './session.js'
 import { skillsCommand } from './skills.js'
 import { compactCommand } from './compact.js'
 import { repairCommand } from './repair.js'
-import { verifyCommand } from './verify.js'
 import { agentsCommand } from './agents.js'
 import { providerCommand } from './provider.js'
 import { planCommand } from './plan.js'
@@ -26,7 +25,6 @@ export function registerBuiltinCommands(): void {
   registerCommand(skillsCommand)
   registerCommand(compactCommand)
   registerCommand(repairCommand)
-  registerCommand(verifyCommand)
   registerCommand(agentsCommand)
   registerCommand(providerCommand)
   registerCommand(planCommand)

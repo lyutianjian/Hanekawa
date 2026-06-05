@@ -73,17 +73,14 @@ test('filterToolsForSubAgent applies specialist agent tool policies', () => {
     readOnlyTool('Glob'),
     readOnlyTool('Grep'),
     readOnlyTool('Read'),
-    readOnlyTool('TodoWrite'),
+    readOnlyTool('TaskCreate'),
     safeTool('Bash'),
     safeTool('Write'),
   ]
   const explore = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'explore')
-  const verification = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'verification')
 
   assert.ok(explore)
-  assert.ok(verification)
   assert.deepEqual(filterToolsForSubAgent(tools, explore).map((tool) => tool.name), ['Glob', 'Grep', 'Read'])
-  assert.deepEqual(filterToolsForSubAgent(tools, verification).map((tool) => tool.name), ['Glob', 'Grep', 'Read', 'Bash'])
 })
 
 test('filterToolsForSubAgent limits MCP tools to configured servers', () => {
@@ -126,11 +123,9 @@ test('Agent tool marks only read-only agent types as concurrency-safe inputs', (
   assert.equal(BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'general')?.isReadOnlyAgent, true)
   assert.equal(BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'explore')?.isReadOnlyAgent, true)
   assert.equal(BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'plan')?.isReadOnlyAgent, true)
-  assert.equal(BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'verification')?.isReadOnlyAgent, false)
   assert.equal(agentTool.isConcurrencySafeInput?.({ task: 'research', subagent_type: 'general' }), true)
   assert.equal(agentTool.isConcurrencySafeInput?.({ task: 'map', subagent_type: 'explore' }), true)
   assert.equal(agentTool.isConcurrencySafeInput?.({ task: 'design', subagent_type: 'plan' }), true)
-  assert.equal(agentTool.isConcurrencySafeInput?.({ task: 'verify', subagent_type: 'verification' }), false)
   assert.equal(agentTool.isConcurrencySafeInput?.({ task: 'missing type' }), false)
 })
 
@@ -1100,48 +1095,6 @@ test('Agent tool ignores prose and non-path tokens under Critical Files heading'
   assert.deepEqual(subagent.criticalFiles, ['src/tools/agentTool.ts', 'test/agentTool.test.ts:12', 'package.json'])
 })
 
-test('verification Agent result emits a structured subagent summary in the parent stream', async () => {
-  const provider: ModelProvider = {
-    name: 'fake',
-    async createMessage() {
-      return {
-        content: 'Checked the changed path.\nVERDICT: PASS',
-        toolCalls: [],
-        usage: { inputTokens: 12, cacheReadInputTokens: 3, outputTokens: 4 },
-      }
-    },
-  }
-  let runtimeTools: Tool[] = []
-  const agentTool = createAgentTool({
-    provider,
-    model: 'fake-model',
-    tools: () => runtimeTools,
-    permissionPrompt: async () => true,
-    cwd: process.cwd(),
-  })
-  runtimeTools = [agentTool]
-  const records: SessionRecord[] = []
-  const runner = new ToolRunner(runtimeTools, new PermissionGate(async () => true), {
-    onRecord: async (record) => { records.push(record) },
-  })
-
-  const result = await runner.run({
-    id: 'verify-1',
-    name: 'Agent',
-    input: { task: 'verify last change', subagent_type: 'verification' },
-  }, toolContext('parent-session'), undefined, 'turn-1')
-
-  assert.equal(result.ok, true)
-  assert.match(result.content, /VERDICT: PASS/)
-  const summary = records.find((record) => record.type === 'message' && record.role === 'assistant')
-  assert.ok(summary && summary.type === 'message')
-  assert.equal(summary.turnId, 'turn-1')
-  assert.match(summary.content, /^<subagent-summary /)
-  assert.match(summary.content, /type="verification"/)
-  assert.match(summary.content, /verdict="PASS"/)
-  assert.match(summary.content, /tokens="19"/)
-})
-
 test('one-shot explore and plan agents suppress parent context summary messages', async () => {
   for (const subagentType of ['explore', 'plan']) {
     const provider: ModelProvider = {
@@ -1484,18 +1437,18 @@ test('Agent tool appends subagentStop hook failures and blocking errors to the r
     hooks: {
       subagentStop: [
         {
-          matcher: 'verification',
+          matcher: 'general',
           command: `${JSON.stringify(process.execPath)} -e "process.exit(7)"`,
         },
         {
-          matcher: 'verification',
+          matcher: 'general',
           command: `${JSON.stringify(process.execPath)} -e "console.log('__HANEKAWA_HOOK__'); console.log('{\\"blockingError\\":\\"stop blocked\\"}'); process.exit(1)"`,
         },
       ],
     },
   })
 
-  const result = await agentTool.execute({ task: 'verify', subagent_type: 'verification' }, toolContext('parent-session'))
+  const result = await agentTool.execute({ task: 'research', subagent_type: 'general' }, toolContext('parent-session'))
 
   assert.equal(result.ok, true)
   assert.match(result.content, /Hook failures:/)
@@ -1674,54 +1627,6 @@ test('Agent tool omits project context for explore and plan agents', async () =>
   assert.match(requests[0]!.system ?? '', /code exploration specialist/)
 })
 
-test('verification agent prompt names overconfidence traps and requires command evidence', async () => {
-  const verification = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'verification')
-
-  assert.ok(verification)
-  const prompt = verification.getSystemPrompt()
-  assert.match(prompt ?? '', /verification avoidance/)
-  assert.match(prompt ?? '', /being seduced by the first 80%/)
-  assert.match(prompt ?? '', /RECOGNIZE YOUR OWN RATIONALIZATIONS/)
-  assert.match(prompt ?? '', /Command run/)
-  assert.match(prompt ?? '', /under ~800 words/)
-  assert.match(prompt ?? '', /VERDICT: PARTIAL/)
-})
-
-test('verification agent re-injects a critical reminder on every model request', async () => {
-  const requests: ModelRequest[] = []
-  let calls = 0
-  const provider: ModelProvider = {
-    name: 'fake',
-    async createMessage(request) {
-      requests.push(request)
-      calls += 1
-      if (calls === 1) {
-        return {
-          content: 'I will inspect.',
-          toolCalls: [{ id: 'read-1', name: 'Read', input: {} }],
-        }
-      }
-      return { content: 'Checked.\nVERDICT: PASS', toolCalls: [] }
-    },
-  }
-  const agentTool = createAgentTool({
-    provider,
-    model: 'fake-model',
-    tools: () => [readOnlyTool('Read')],
-    permissionPrompt: async () => true,
-    cwd: process.cwd(),
-  })
-
-  const result = await agentTool.execute({ task: 'verify', subagent_type: 'verification' }, toolContext())
-
-  assert.equal(result.ok, true)
-  assert.equal(requests.length, 2)
-  for (const request of requests) {
-    assert.match(request.system ?? '', /Critical Verification Reminder/)
-    assert.ok(request.systemBlocks?.some((block) => /Critical Verification Reminder/.test(block)))
-  }
-})
-
 test('Agent tool description teaches effective sub-agent prompting', async () => {
   const agentTool = createAgentTool({
     provider: {
@@ -1863,61 +1768,6 @@ test('specialist agent prompts require concise final reports', async () => {
   assert.ok(plan)
   assert.match(explore.getSystemPrompt() ?? '', /under ~500 words/)
   assert.match(plan.getSystemPrompt() ?? '', /Required Output/)
-})
-
-test('Agent loop can run verification through Agent tool directly', async () => {
-  const requests: ModelRequest[] = []
-  const provider: ModelProvider = {
-    name: 'fake',
-    async createMessage(request) {
-      requests.push(request)
-      return { content: 'VERDICT: PASS', toolCalls: [] }
-    },
-  }
-  let agentTool: Tool
-  agentTool = createAgentTool({
-    provider,
-    model: 'fake-model',
-    tools: () => [agentTool],
-    permissionPrompt: async () => true,
-    cwd: process.cwd(),
-  })
-  const runnerRecords: SessionRecord[] = []
-  const runner = new ToolRunner([agentTool], new PermissionGate(async () => true), {
-    onRecord: async (record) => { runnerRecords.push(record) },
-  })
-  const { AgentLoop } = await import('../src/harness/loop.js')
-  const { ContextBuilder } = await import('../src/harness/contextBuilder.js')
-  const mainStreamRecords: SessionRecord[] = []
-  const loop = new AgentLoop({
-    provider,
-    model: 'fake-model',
-    tools: [agentTool],
-    contextBuilder: new ContextBuilder(),
-    toolRunner: runner,
-    toolContext: toolContext(),
-    recordStream: {
-      async append(record) { mainStreamRecords.push(record) },
-      async load() {
-        return []
-      },
-    },
-  })
-
-  const result = await loop.runTool({
-    id: 'verify-1',
-    name: 'Agent',
-    input: { task: 'verify last turn', subagent_type: 'verification' },
-  })
-
-  assert.equal(result.ok, true)
-  assert.equal(result.content, 'VERDICT: PASS')
-  assert.equal(requests.length, 1)
-  assert.match(requests[0]!.system ?? '', /verification specialist/)
-  // runTool must keep its records out of the main session stream and out of
-  // the originally-injected ToolRunner sink.
-  assert.deepEqual(mainStreamRecords, [], 'runTool leaked records into the main session stream')
-  assert.deepEqual(runnerRecords, [], 'runTool leaked records through the original ToolRunner sink')
 })
 
 test('Agent tool requires an explicit subagent_type', async () => {
@@ -2200,7 +2050,7 @@ test('Agent tool reports a clear runtime error for unknown custom subagent types
 
   assert.equal(result.ok, false)
   assert.match(result.content, /Unknown subagent_type "missing-agent"/)
-  assert.match(result.content, /general, fork, explore, plan, verification/)
+  assert.match(result.content, /general, fork, explore, plan/)
 })
 
 test('custom agent maxResultSizeChars controls its result budget', async () => {
@@ -2344,6 +2194,532 @@ test('AgentDefinitionLoader warns for risky custom agent definitions', async () 
   }
 })
 
+// ============================================================================
+// Phase 1: Differentiated Turn Limits
+// ============================================================================
+
+test('fork agent default maxTurns is 200', () => {
+  const fork = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'fork')
+  assert.ok(fork)
+  assert.equal(fork.maxTurns, 200)
+})
+
+test('general agent default maxTurns is 30', () => {
+  const general = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'general')
+  assert.ok(general)
+  assert.equal(general.maxTurns, 30)
+})
+
+test('explore agent default maxTurns is 30', () => {
+  const explore = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'explore')
+  assert.ok(explore)
+  assert.equal(explore.maxTurns, 30)
+})
+
+test('plan agent default maxTurns is 30', () => {
+  const plan = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'plan')
+  assert.ok(plan)
+  assert.equal(plan.maxTurns, 30)
+})
+
+test('explicit maxTurns in input overrides per-type default', async () => {
+  let requests = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      requests += 1
+      return {
+        content: 'keep going',
+        toolCalls: [{ id: `call-${requests}`, name: 'noop', input: {} }],
+      }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [readOnlyTool('noop')],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+  })
+
+  const result = await agentTool.execute({
+    task: 'loop',
+    subagent_type: 'fork',
+    maxTurns: 2,
+  }, toolContext())
+
+  assert.equal(result.ok, true)
+  assert.equal(requests, 2)
+  assert.match(result.content, /Sub-agent output may be incomplete: reached max turns limit \(2\)/)
+})
+
+// ============================================================================
+// Phase 1: Expanded Tool Restrictions
+// ============================================================================
+
+test('ALL_AGENT_DISALLOWED_TOOLS contains expected tools', async () => {
+  const { ALL_AGENT_DISALLOWED_TOOLS } = await import('../src/tools/agentTool.js')
+  assert.ok(ALL_AGENT_DISALLOWED_TOOLS.includes('Agent'))
+  assert.ok(ALL_AGENT_DISALLOWED_TOOLS.includes('EnterPlanMode'))
+  assert.ok(ALL_AGENT_DISALLOWED_TOOLS.includes('ExitPlanMode'))
+  assert.ok(ALL_AGENT_DISALLOWED_TOOLS.includes('AskUserQuestion'))
+})
+
+test('ASYNC_AGENT_ALLOWED_TOOLS contains expected tools', async () => {
+  const { ASYNC_AGENT_ALLOWED_TOOLS } = await import('../src/tools/agentTool.js')
+  const allowed = ASYNC_AGENT_ALLOWED_TOOLS as readonly string[]
+  assert.ok(allowed.includes('Read'))
+  assert.ok(allowed.includes('Glob'))
+  assert.ok(allowed.includes('Grep'))
+  assert.ok(allowed.includes('Bash'))
+  assert.ok(allowed.includes('Write'))
+  assert.ok(allowed.includes('Edit'))
+  assert.ok(allowed.includes('MultiEdit'))
+  assert.ok(allowed.includes('Delete'))
+  assert.ok(allowed.includes('Skill'))
+  // Tools that should NOT be in async whitelist
+  assert.ok(!allowed.includes('TaskCreate'))
+  assert.ok(!allowed.includes('TaskList'))
+  assert.ok(!allowed.includes('Agent'))
+})
+
+test('background agents only receive tools from ASYNC_AGENT_ALLOWED_TOOLS', () => {
+  const tools = [
+    readOnlyTool('Read'),
+    readOnlyTool('Glob'),
+    readOnlyTool('Grep'),
+    safeTool('Bash'),
+    safeTool('Write'),
+    readOnlyTool('Agent'),
+    readOnlyTool('Workflow'),
+    readOnlyTool('CustomTool'),
+  ]
+  const definition = BUILT_IN_AGENT_DEFINITIONS.find((d) => d.type === 'general')!
+
+  const filtered = filterToolsForSubAgent(tools, definition, { isBackground: true })
+
+  assert.ok(filtered.every((t) => ['Read', 'Glob', 'Grep', 'Bash', 'Write'].includes(t.name)))
+  assert.ok(!filtered.some((t) => t.name === 'Agent'))
+  assert.ok(!filtered.some((t) => t.name === 'Workflow'))
+  assert.ok(!filtered.some((t) => t.name === 'CustomTool'))
+})
+
+test('non-background agents are unaffected by async whitelist', () => {
+  const tools = [
+    readOnlyTool('Read'),
+    readOnlyTool('Glob'),
+    readOnlyTool('Grep'),
+    safeTool('Bash'),
+    readOnlyTool('Agent'),
+  ]
+  const definition = BUILT_IN_AGENT_DEFINITIONS.find((d) => d.type === 'general')!
+
+  const filtered = filterToolsForSubAgent(tools, definition)
+
+  assert.ok(filtered.some((t) => t.name === 'Read'))
+  assert.ok(filtered.some((t) => t.name === 'Glob'))
+  assert.ok(filtered.some((t) => t.name === 'Grep'))
+  assert.ok(!filtered.some((t) => t.name === 'Agent'))
+})
+
+// ============================================================================
+// Phase 1: Fork Recursion Prevention
+// ============================================================================
+
+test('fork agent rejects recursive fork when parent records contain fork boilerplate', async () => {
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      return { content: 'unused', toolCalls: [] }
+    },
+  }
+  const parentRecords: SessionRecord[] = [{
+    type: 'message',
+    id: 'fork-msg',
+    role: 'user',
+    content: '# Forked Conversation Context\n__HANEKAWA_FORK_AGENT__\nYou are running as an isolated fork.',
+    createdAt: '2026-05-10T00:00:00.000Z',
+  }]
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    loadParentRecords: async () => parentRecords,
+  })
+
+  const result = await agentTool.execute({ task: 'recursive fork', subagent_type: 'fork' }, toolContext())
+
+  assert.equal(result.ok, false)
+  assert.match(result.content, /Recursive fork agent detected/)
+})
+
+test('fork agent succeeds when parent records do not contain fork boilerplate', async () => {
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      return { content: 'fork result', toolCalls: [] }
+    },
+  }
+  const parentRecords: SessionRecord[] = [{
+    type: 'message',
+    id: 'normal-msg',
+    role: 'user',
+    content: 'normal parent context',
+    createdAt: '2026-05-10T00:00:00.000Z',
+  }]
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    loadParentRecords: async () => parentRecords,
+  })
+
+  const result = await agentTool.execute({ task: 'normal fork', subagent_type: 'fork' }, toolContext())
+
+  assert.equal(result.ok, true)
+  assert.equal(result.content, 'fork result')
+})
+
+// ============================================================================
+// Phase 2: Async Agent Permission Avoidance
+// ============================================================================
+
+test('background agents use auto permission mode when parent mode is default', async () => {
+  let promptCalls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      return { content: 'background done', toolCalls: [] }
+    },
+  }
+  const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-bg-perm-'))
+  try {
+    const agentTool = createAgentTool({
+      provider,
+      model: 'fake-model',
+      tools: () => [],
+      permissionPrompt: async () => {
+        promptCalls += 1
+        return false
+      },
+      permissionMode: () => 'default',
+      cwd: root,
+      agentDefinitions: [{
+        type: 'bg-simple',
+        description: 'Background simple agent.',
+        background: true,
+        disallowedTools: ['Agent'],
+        maxTurns: 3,
+        isReadOnlyAgent: true,
+        getSystemPrompt: () => 'bg simple',
+      }],
+    })
+
+    const parentRecords: SessionRecord[] = []
+    const result = await agentTool.execute({
+      task: 'run simple in background',
+      subagent_type: 'bg-simple',
+    }, {
+      ...toolContext('parent-session'),
+      appendRecord: async (record) => { parentRecords.push(record) },
+    })
+
+    assert.equal(result.ok, true)
+    assert.match(result.content, /Started bg-simple sub-agent/)
+    await waitFor(() => parentRecords.some((record) => record.type === 'subagent_task' && record.status === 'completed'))
+    assert.equal(promptCalls, 0, 'background agent should not prompt for permissions')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('background agents with explicit permissionMode honor their mode', async () => {
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      return { content: 'background plan done', toolCalls: [] }
+    },
+  }
+  const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-bg-perm-explicit-'))
+  try {
+    const agentTool = createAgentTool({
+      provider,
+      model: 'fake-model',
+      tools: () => [],
+      permissionPrompt: async () => false,
+      permissionMode: () => 'default',
+      cwd: root,
+      agentDefinitions: [{
+        type: 'bg-plan',
+        description: 'Background plan agent with explicit mode.',
+        background: true,
+        permissionMode: 'plan',
+        disallowedTools: ['Agent'],
+        maxTurns: 3,
+        isReadOnlyAgent: true,
+        getSystemPrompt: () => 'bg plan',
+      }],
+    })
+
+    const parentRecords: SessionRecord[] = []
+    const result = await agentTool.execute({
+      task: 'run plan in background',
+      subagent_type: 'bg-plan',
+    }, {
+      ...toolContext('parent-session'),
+      appendRecord: async (record) => { parentRecords.push(record) },
+    })
+
+    assert.equal(result.ok, true)
+    await waitFor(() => parentRecords.some((record) => record.type === 'subagent_task' && record.status === 'completed'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('parent bypass mode still takes precedence for background agents', async () => {
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      return { content: 'background bypass done', toolCalls: [] }
+    },
+  }
+  const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-bg-bypass-'))
+  try {
+    const agentTool = createAgentTool({
+      provider,
+      model: 'fake-model',
+      tools: () => [],
+      permissionPrompt: async () => false,
+      permissionMode: () => 'bypass',
+      cwd: root,
+      agentDefinitions: [{
+        type: 'bg-default',
+        description: 'Background agent under bypass parent.',
+        background: true,
+        disallowedTools: ['Agent'],
+        maxTurns: 3,
+        isReadOnlyAgent: true,
+        getSystemPrompt: () => 'bg default',
+      }],
+    })
+
+    const parentRecords: SessionRecord[] = []
+    const result = await agentTool.execute({
+      task: 'run under bypass',
+      subagent_type: 'bg-default',
+    }, {
+      ...toolContext('parent-session'),
+      appendRecord: async (record) => { parentRecords.push(record) },
+    })
+
+    assert.equal(result.ok, true)
+    await waitFor(() => parentRecords.some((record) => record.type === 'subagent_task' && record.status === 'completed'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// ============================================================================
+// Phase 2: Environment Variable Override for Subagent Model
+// ============================================================================
+
+test('MYAGENT_SUBAGENT_MODEL overrides default routing', async () => {
+  const originalEnv = process.env.MYAGENT_SUBAGENT_MODEL
+  try {
+    process.env.MYAGENT_SUBAGENT_MODEL = 'fast-model'
+    let requestedModelKey: string | undefined
+    const routedProvider: ModelProvider = {
+      name: 'routed',
+      async createMessage() {
+        return { content: 'env routed result', toolCalls: [] }
+      },
+    }
+    const agentTool = createAgentTool({
+      provider: {
+        name: 'parent',
+        async createMessage() {
+          throw new Error('parent provider should not be used')
+        },
+      },
+      model: 'parent-model',
+      tools: () => [],
+      permissionPrompt: async () => true,
+      cwd: process.cwd(),
+      resolveSubagentModel: (subagentType, modelKey) => {
+        requestedModelKey = modelKey
+        return {
+          provider: routedProvider,
+          model: 'fast-provider-model',
+          modelKey,
+          providerName: 'routed',
+        }
+      },
+    })
+
+    const result = await agentTool.execute({ task: 'map files', subagent_type: 'explore' }, toolContext())
+
+    assert.equal(result.ok, true)
+    assert.equal(result.content, 'env routed result')
+    assert.equal(requestedModelKey, 'fast-model')
+  } finally {
+    if (originalEnv === undefined) {
+      delete process.env.MYAGENT_SUBAGENT_MODEL
+    } else {
+      process.env.MYAGENT_SUBAGENT_MODEL = originalEnv
+    }
+  }
+})
+
+test('MYAGENT_SUBAGENT_MODEL per-type override takes precedence', async () => {
+  const originalGeneric = process.env.MYAGENT_SUBAGENT_MODEL
+  const originalExplore = process.env.MYAGENT_SUBAGENT_MODEL_EXPLORE
+  try {
+    process.env.MYAGENT_SUBAGENT_MODEL = 'generic-model'
+    process.env.MYAGENT_SUBAGENT_MODEL_EXPLORE = 'explore-specific-model'
+    let requestedModelKey: string | undefined
+    const routedProvider: ModelProvider = {
+      name: 'routed',
+      async createMessage() {
+        return { content: 'per-type routed result', toolCalls: [] }
+      },
+    }
+    const agentTool = createAgentTool({
+      provider: {
+        name: 'parent',
+        async createMessage() {
+          throw new Error('parent provider should not be used')
+        },
+      },
+      model: 'parent-model',
+      tools: () => [],
+      permissionPrompt: async () => true,
+      cwd: process.cwd(),
+      resolveSubagentModel: (subagentType, modelKey) => {
+        requestedModelKey = modelKey
+        return {
+          provider: routedProvider,
+          model: 'explore-provider-model',
+          modelKey,
+          providerName: 'routed',
+        }
+      },
+    })
+
+    const result = await agentTool.execute({ task: 'map files', subagent_type: 'explore' }, toolContext())
+
+    assert.equal(result.ok, true)
+    assert.equal(requestedModelKey, 'explore-specific-model')
+  } finally {
+    if (originalGeneric === undefined) {
+      delete process.env.MYAGENT_SUBAGENT_MODEL
+    } else {
+      process.env.MYAGENT_SUBAGENT_MODEL = originalGeneric
+    }
+    if (originalExplore === undefined) {
+      delete process.env.MYAGENT_SUBAGENT_MODEL_EXPLORE
+    } else {
+      process.env.MYAGENT_SUBAGENT_MODEL_EXPLORE = originalExplore
+    }
+  }
+})
+
+test('invalid MYAGENT_SUBAGENT_MODEL falls through to default routing', async () => {
+  const originalEnv = process.env.MYAGENT_SUBAGENT_MODEL
+  try {
+    process.env.MYAGENT_SUBAGENT_MODEL = 'nonexistent-model'
+    const provider: ModelProvider = {
+      name: 'parent',
+      async createMessage() {
+        return { content: 'fallback result', toolCalls: [] }
+      },
+    }
+    const agentTool = createAgentTool({
+      provider,
+      model: 'parent-model',
+      tools: () => [],
+      permissionPrompt: async () => true,
+      cwd: process.cwd(),
+      resolveSubagentModel: () => undefined,
+    })
+
+    const result = await agentTool.execute({ task: 'map files', subagent_type: 'explore' }, toolContext())
+
+    assert.equal(result.ok, true)
+    assert.equal(result.content, 'fallback result')
+  } finally {
+    if (originalEnv === undefined) {
+      delete process.env.MYAGENT_SUBAGENT_MODEL
+    } else {
+      process.env.MYAGENT_SUBAGENT_MODEL = originalEnv
+    }
+  }
+})
+
+// ============================================================================
+// Phase 3: CriticalSystemReminder in Custom Agents
+// ============================================================================
+
+test('AgentDefinitionLoader parses criticalSystemReminder from frontmatter', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-agents-'))
+  const cwd = path.join(root, 'project')
+  try {
+    await mkdir(path.join(cwd, '.myagent', 'agents'), { recursive: true })
+    await writeFile(path.join(cwd, '.myagent', 'agents', 'reminder.md'), agentFile({
+      name: 'reminder-agent',
+      description: 'Agent with critical reminder.',
+      body: 'You are a reminder agent.',
+      criticalSystemReminder: 'Stay focused on the task.',
+    }))
+
+    const definitions = await new AgentDefinitionLoader(cwd, path.join(root, 'home')).list()
+    const definition = definitions.find((item) => item.type === 'reminder-agent')
+
+    assert.ok(definition)
+    assert.equal(definition.criticalSystemReminder, 'Stay focused on the task.')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('custom agent criticalSystemReminder is injected into sub-agent system prompts', async () => {
+  const requests: ModelRequest[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    agentDefinitions: [{
+      type: 'reminded',
+      description: 'Agent with critical reminder.',
+      tools: ['Read'],
+      disallowedTools: ['Agent'],
+      maxTurns: 1,
+      isReadOnlyAgent: true,
+      criticalSystemReminder: 'Always verify your findings.',
+      getSystemPrompt: () => 'You are a reminded agent.',
+    }],
+  })
+
+  await agentTool.execute({ task: 'verify', subagent_type: 'reminded' }, toolContext())
+
+  assert.equal(requests.length, 1)
+  assert.match(requests[0]!.system ?? '', /Always verify your findings/)
+  assert.ok(requests[0]!.systemBlocks?.some((block) => /Always verify your findings/.test(block)))
+})
+
 function agentFile(options: {
   name: string
   description: string
@@ -2356,6 +2732,7 @@ function agentFile(options: {
   tools?: string[]
   isReadOnlyAgent?: boolean
   maxTurns?: number
+  criticalSystemReminder?: string
   body: string
 }): string {
   const model = options.model ? `model: ${options.model}\n` : ''
@@ -2367,6 +2744,7 @@ function agentFile(options: {
   const tools = options.tools ? `tools: ${JSON.stringify(options.tools)}\n` : ''
   const isReadOnlyAgent = options.isReadOnlyAgent === undefined ? '' : `isReadOnlyAgent: ${options.isReadOnlyAgent}\n`
   const maxTurns = options.maxTurns === undefined ? '' : `maxTurns: ${options.maxTurns}\n`
+  const criticalSystemReminder = options.criticalSystemReminder ? `criticalSystemReminder: ${options.criticalSystemReminder}\n` : ''
   return [
     '---',
     `name: ${options.name}`,
@@ -2380,6 +2758,7 @@ function agentFile(options: {
     tools.trimEnd(),
     isReadOnlyAgent.trimEnd(),
     maxTurns.trimEnd(),
+    criticalSystemReminder.trimEnd(),
     '---',
     options.body,
     '',

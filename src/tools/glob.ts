@@ -11,6 +11,7 @@ interface GlobInput {
 export const globTool: Tool = {
   name: 'Glob',
   description: 'Find files matching a glob pattern.',
+  searchHint: 'find files by name pattern glob',
   inputSchema: z.object({
     pattern: z.string().min(1),
     path: z.string().min(1).optional(),

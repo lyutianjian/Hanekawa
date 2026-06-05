@@ -5,14 +5,12 @@ import { theme } from '../theme.js'
 import { Markdown } from './Markdown.js'
 import { readPlan } from '../../utils/plans.js'
 import type {
-  CritiqueResult,
   ExitPlanDecision,
 } from '../../harness/planModeManager.js'
 
 export interface ExitPlanModeDialogProps {
   planContent: string
   planFilePath: string
-  finalCritique?: CritiqueResult
   /**
    * When true, surface "bypass permissions" exit options. Mirrors Claude
    * Code's `isBypassPermissionsModeAvailable`: only show this exit when
@@ -108,7 +106,6 @@ export function elevatedExitPlanModeDecision(input: boolean | {
 }
 
 const SAVE_MESSAGE_TIMEOUT_MS = 5000
-const MAX_CRITIQUE_PREVIEW_LINES = 6
 const PLAN_BORDER_STYLE = {
   topLeft: '-',
   top: '-',
@@ -143,7 +140,6 @@ export function previewMarkdownLines(content: string, maxLines: number): string 
 export function ExitPlanModeDialog({
   planContent: initialPlanContent,
   planFilePath,
-  finalCritique,
   isBypassAvailable = false,
   isAutoModeAvailable = true,
   onResolve,
@@ -157,12 +153,6 @@ export function ExitPlanModeDialog({
   const options = useMemo(
     () => buildExitPlanModeOptions({ isBypassAvailable, isAutoModeAvailable }),
     [isBypassAvailable, isAutoModeAvailable],
-  )
-  const critiquePreview = useMemo(
-    () => finalCritique
-      ? previewMarkdownLines(finalCritique.findings, MAX_CRITIQUE_PREVIEW_LINES)
-      : undefined,
-    [finalCritique],
   )
   const hotkeys = useMemo(
     () => options.map((_, i) => String(i + 1) as '1' | '2' | '3' | '4'),
@@ -373,13 +363,6 @@ export function ExitPlanModeDialog({
           </Box>
 
           <Box flexDirection="column" paddingX={1}>
-            {critiquePreview ? (
-              <Box flexDirection="column" marginBottom={1}>
-                <Text bold color={theme.toolName}>Critique findings:</Text>
-                <Text color={theme.dimText}>{critiquePreview}</Text>
-              </Box>
-            ) : null}
-
             {editorError ? (
               <Box marginBottom={1}>
                 <Text color={theme.error}>Editor error: {editorError}</Text>

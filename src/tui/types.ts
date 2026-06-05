@@ -45,6 +45,12 @@ export type TUIDisplayItem =
       createdAt: string
     }
   | {
+      kind: 'tool_group'
+      id: string
+      toolCalls: Array<Extract<TUIDisplayItem, { kind: 'tool_call' }>>
+      createdAt: string
+    }
+  | {
       kind: 'compact_boundary'
       id: string
       summary: string

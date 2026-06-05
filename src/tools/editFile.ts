@@ -8,6 +8,7 @@ import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
 export const editFileTool: Tool = {
   name: 'Edit',
   description: 'Replace an exact string in an existing UTF-8 text file.',
+  searchHint: 'modify change file content',
   inputSchema: z.object({
     filePath: z.string().min(1),
     oldString: z.string().min(1),
@@ -24,6 +25,13 @@ export const editFileTool: Tool = {
   async execute(input, context) {
     const { filePath, oldString, newString } = input as { filePath: string; oldString: string; newString: string }
     const absolute = assertInsideCwd(context.cwd, filePath)
+    if (absolute.toLowerCase().endsWith('.ipynb')) {
+      return {
+        ok: false,
+        content: `Cannot edit .ipynb files with the Edit tool. Use the NotebookEdit tool to modify notebook cells.`,
+        errorCode: 'invalid_input',
+      }
+    }
     const stale = await requireFreshRead(absolute, filePath, context)
     if (stale) {
       return stale
@@ -46,7 +54,14 @@ export const editFileTool: Tool = {
     if (matches.length !== 1) {
       return multipleMatchFailure(oldString, matches)
     }
-    const nextContent = replaceLiteralMatch(original, oldString, newString, matches[0].index)
+    // When matched via quote normalization, preserve the file's quote style in newString
+    const match = matches[0]
+    let effectiveNewString = newString
+    if (match.matchedViaNormalization) {
+      const actualOld = original.substring(match.index, match.index + oldString.length)
+      effectiveNewString = preserveQuoteStyle(oldString, actualOld, newString)
+    }
+    const nextContent = replaceLiteralMatch(original, oldString, effectiveNewString, match.index)
     await writeFile(absolute, nextContent, 'utf8')
     await rememberReadFile(absolute, nextContent, context)
     return {
@@ -72,11 +87,97 @@ export function replaceLiteralMatch(content: string, oldString: string, newStrin
   return content.slice(0, index) + newString + content.slice(index + oldString.length)
 }
 
+// --- Quote normalization for fuzzy matching ---
+
+const LEFT_SINGLE = '‘'   // '
+const RIGHT_SINGLE = '’'  // '
+const LEFT_DOUBLE = '“'   // "
+const RIGHT_DOUBLE = '”'  // "
+
+export function normalizeQuotes(s: string): string {
+  return s
+    .replaceAll(LEFT_SINGLE, "'")
+    .replaceAll(RIGHT_SINGLE, "'")
+    .replaceAll(LEFT_DOUBLE, '"')
+    .replaceAll(RIGHT_DOUBLE, '"')
+}
+
+/**
+ * Try to find `searchString` in `fileContent`. Returns the actual substring
+ * from the file if found (exact match first, then quote-normalized fallback),
+ * or null if not found at all.
+ */
+export function findActualString(fileContent: string, searchString: string): string | null {
+  if (fileContent.includes(searchString)) {
+    return searchString
+  }
+  const normalizedSearch = normalizeQuotes(searchString)
+  const normalizedFile = normalizeQuotes(fileContent)
+  const idx = normalizedFile.indexOf(normalizedSearch)
+  if (idx !== -1) {
+    return fileContent.substring(idx, idx + searchString.length)
+  }
+  return null
+}
+
+function isOpeningContext(chars: string[], index: number): boolean {
+  if (index === 0) return true
+  const prev = chars[index - 1]
+  return prev === ' ' || prev === '\t' || prev === '\n' || prev === '\r' ||
+    prev === '(' || prev === '[' || prev === '{' || prev === '—' || prev === '–'
+}
+
+function applyCurlyDoubleQuotes(s: string): string {
+  const chars = [...s]
+  let open = true
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i] === '"') {
+      chars[i] = open ? LEFT_DOUBLE : RIGHT_DOUBLE
+      open = !open
+    }
+  }
+  return chars.join('')
+}
+
+function applyCurlySingleQuotes(s: string): string {
+  const chars = [...s]
+  let open = true
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i] === "'") {
+      // Apostrophe between two letters → right single (contraction like don't)
+      const prev = i > 0 ? chars[i - 1] : ''
+      const next = i < chars.length - 1 ? chars[i + 1] : ''
+      const isContraction = /\p{L}/u.test(prev) && /\p{L}/u.test(next)
+      chars[i] = isContraction ? RIGHT_SINGLE : (isOpeningContext(chars, i) ? LEFT_SINGLE : RIGHT_SINGLE)
+      if (!isContraction) open = !open
+    }
+  }
+  return chars.join('')
+}
+
+/**
+ * When oldString was matched via quote normalization, convert straight quotes
+ * in newString back to the curly style found in the file.
+ */
+export function preserveQuoteStyle(oldString: string, actualOldString: string, newString: string): string {
+  if (oldString === actualOldString) return newString
+  const hasDouble = actualOldString.includes(LEFT_DOUBLE) || actualOldString.includes(RIGHT_DOUBLE)
+  const hasSingle = actualOldString.includes(LEFT_SINGLE) || actualOldString.includes(RIGHT_SINGLE)
+  if (!hasDouble && !hasSingle) return newString
+  let result = newString
+  if (hasDouble) result = applyCurlyDoubleQuotes(result)
+  if (hasSingle) result = applyCurlySingleQuotes(result)
+  return result
+}
+
+// --- Match context ---
+
 export interface StringMatchContext {
   index: number
   line: number
   column: number
   context: string
+  matchedViaNormalization?: boolean
 }
 
 export function findStringMatches(content: string, search: string): StringMatchContext[] {
@@ -84,13 +185,39 @@ export function findStringMatches(content: string, search: string): StringMatchC
     return []
   }
 
+  // Try exact match first (fast path)
   const matches: StringMatchContext[] = []
   let index = content.indexOf(search)
   while (index !== -1) {
     matches.push(matchContext(content, index))
     index = content.indexOf(search, index + search.length)
   }
-  return matches
+  if (matches.length > 0) {
+    return matches
+  }
+
+  // Fallback: quote-normalized match
+  // Normalize both sides so curly quotes in the file match straight quotes from the model
+  const normalizedSearch = normalizeQuotes(search)
+  const normalizedContent = normalizeQuotes(content)
+  // If normalization didn't change either string, there are no curly quotes to bridge
+  if (normalizedSearch === search && normalizedContent === content) {
+    return []
+  }
+  const normalizedIndex = normalizedContent.indexOf(normalizedSearch)
+  if (normalizedIndex === -1) {
+    return []
+  }
+  // Collect all normalized match positions
+  const normalizedPositions: number[] = [normalizedIndex]
+  let nextPos = normalizedIndex + normalizedSearch.length
+  while (true) {
+    const found = normalizedContent.indexOf(normalizedSearch, nextPos)
+    if (found === -1) break
+    normalizedPositions.push(found)
+    nextPos = found + normalizedSearch.length
+  }
+  return normalizedPositions.map(i => ({ ...matchContext(content, i), matchedViaNormalization: true }))
 }
 
 export function multipleMatchFailure(oldString: string, matches: StringMatchContext[], label = 'oldString'): ToolResult {

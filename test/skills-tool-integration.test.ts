@@ -163,8 +163,13 @@ test('getAllTools() works when no skills directory exists', async () => {
     const tools = await getAllTools()
     const builtinTools = getBuiltinTools()
 
-    assert.equal(tools.length, builtinTools.length + 1)
+    // getAllTools adds Skill, and may also add ToolSearch when tool search is enabled
+    assert.ok(tools.length >= builtinTools.length + 1)
     assert.ok(tools.find(t => t.name === 'Skill'))
+    // All builtin tools should be present
+    for (const builtin of builtinTools) {
+      assert.ok(tools.find(t => t.name === builtin.name), `Missing builtin tool: ${builtin.name}`)
+    }
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -191,7 +196,8 @@ test('Skill tool and builtin tools coexist in tool list', async () => {
     const tools = await getAllTools()
     const builtinTools = getBuiltinTools()
 
-    assert.equal(tools.length, builtinTools.length + 1)
+    // getAllTools adds Skill, and may also add ToolSearch when tool search is enabled
+    assert.ok(tools.length >= builtinTools.length + 1)
 
     // Verify all builtin tools are present
     for (const builtin of builtinTools) {

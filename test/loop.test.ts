@@ -1376,7 +1376,7 @@ test('agent loop runs read-only Agent calls concurrently by subagent_type', asyn
     description: 'agent',
     inputSchema: z.object({
       task: z.string(),
-      subagent_type: z.enum(['general', 'explore', 'plan', 'verification']),
+      subagent_type: z.enum(['general', 'explore', 'plan']),
     }).strict(),
     riskLevel: 'safe',
     isConcurrencySafeInput(input) {
@@ -1412,7 +1412,7 @@ test('agent loop runs read-only Agent calls concurrently by subagent_type', asyn
   assert.ok(events.indexOf('map c:start') < events.indexOf('map a:end'))
 })
 
-test('agent loop keeps verification Agent calls serial', async () => {
+test('agent loop keeps non-concurrency-safe Agent calls as barriers around read-only agents', async () => {
   const records: SessionRecord[] = []
   const events: string[] = []
   let callCount = 0
@@ -1424,66 +1424,7 @@ test('agent loop keeps verification Agent calls serial', async () => {
         return {
           content: 'using agents',
           toolCalls: [
-            { id: 'verification-a-call', name: 'Agent', input: { task: 'verify a', subagent_type: 'verification' } },
-            { id: 'verification-b-call', name: 'Agent', input: { task: 'verify b', subagent_type: 'verification' } },
-          ],
-        }
-      }
-      return { content: 'done', toolCalls: [] }
-    },
-  }
-  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-  const agentTool: Tool = {
-    name: 'Agent',
-    description: 'agent',
-    inputSchema: z.object({
-      task: z.string(),
-      subagent_type: z.enum(['general', 'explore', 'plan', 'verification']),
-    }).strict(),
-    riskLevel: 'safe',
-    isConcurrencySafeInput(input) {
-      const parsed = this.inputSchema.safeParse(input)
-      return parsed.success && ['general', 'explore', 'plan'].includes((parsed.data as { subagent_type: string }).subagent_type)
-    },
-    execute: async (input) => {
-      const { task } = input as { task: string }
-      events.push(`${task}:start`)
-      await delay(20)
-      events.push(`${task}:end`)
-      return { ok: true, content: task }
-    },
-  }
-  const runner = new ToolRunner([agentTool], new PermissionGate(async () => true), {
-    onRecord: async (record) => { records.push(record) },
-  })
-  const loop = new AgentLoop({
-    provider,
-    model: 'fake-model',
-    tools: [agentTool],
-    contextBuilder: new ContextBuilder(),
-    toolRunner: runner,
-    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
-    recordStream: recordStreamFor(records),
-  })
-
-  await loop.run('hello')
-
-  assert.ok(events.indexOf('verify b:start') > events.indexOf('verify a:end'))
-})
-
-test('agent loop keeps verification Agent calls as barriers around read-only agents', async () => {
-  const records: SessionRecord[] = []
-  const events: string[] = []
-  let callCount = 0
-  const provider: ModelProvider = {
-    name: 'fake',
-    async createMessage() {
-      callCount += 1
-      if (callCount === 1) {
-        return {
-          content: 'using agents',
-          toolCalls: [
-            { id: 'verification-call', name: 'Agent', input: { task: 'verify', subagent_type: 'verification' } },
+            { id: 'write-agent-call', name: 'Agent', input: { task: 'write-files', subagent_type: 'general' } },
             { id: 'explore-call', name: 'Agent', input: { task: 'explore', subagent_type: 'explore' } },
           ],
         }
@@ -1497,17 +1438,20 @@ test('agent loop keeps verification Agent calls as barriers around read-only age
     description: 'agent',
     inputSchema: z.object({
       task: z.string(),
-      subagent_type: z.enum(['general', 'explore', 'plan', 'verification']),
+      subagent_type: z.enum(['general', 'explore', 'plan']),
     }).strict(),
     riskLevel: 'safe',
     isConcurrencySafeInput(input) {
       const parsed = this.inputSchema.safeParse(input)
-      return parsed.success && ['general', 'explore', 'plan'].includes((parsed.data as { subagent_type: string }).subagent_type)
+      if (!parsed.success) return false
+      const { subagent_type } = parsed.data as { subagent_type: string }
+      // Only explore and plan are concurrency-safe; general is not
+      return ['explore', 'plan'].includes(subagent_type)
     },
     execute: async (input) => {
       const { task } = input as { task: string }
       events.push(`${task}:start`)
-      await delay(task === 'verify' ? 20 : 1)
+      await delay(task === 'write-files' ? 20 : 1)
       events.push(`${task}:end`)
       return { ok: true, content: task }
     },
@@ -1527,7 +1471,7 @@ test('agent loop keeps verification Agent calls as barriers around read-only age
 
   await loop.run('hello')
 
-  assert.ok(events.indexOf('explore:start') > events.indexOf('verify:end'))
+  assert.ok(events.indexOf('explore:start') > events.indexOf('write-files:end'))
 })
 
 test('agent loop keeps mislabeled write-like tools as barriers', async () => {

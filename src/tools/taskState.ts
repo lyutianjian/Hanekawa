@@ -3,13 +3,11 @@ import { normalizeTask, sortedTasks } from './taskFormat.js'
 import {
   taskCreateInputSchema,
   taskUpdateInputSchema,
-  todoWriteInputSchema,
   type TaskCreateInput,
   type TaskUpdateInput,
-  type TodoItem,
 } from './taskSchemas.js'
 
-const TASK_TOOL_NAMES = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate'])
+const TASK_TOOL_NAMES = new Set(['TaskCreate', 'TaskUpdate'])
 
 export function ensureTaskState(context: ToolContext): Map<string, TaskItem> {
   if (!context.taskState) context.taskState = new Map()
@@ -20,21 +18,6 @@ export function currentSortedTasks(context: ToolContext): TaskItem[] {
   return sortedTasks(ensureTaskState(context).values())
 }
 
-function normalizeTodoId(id: string | undefined, index: number): string {
-  return id?.trim() || String(index + 1)
-}
-
-function taskFromTodo(todo: TodoItem, index: number): TaskItem {
-  const id = normalizeTodoId(todo.id, index)
-  return normalizeTask({
-    id,
-    status: todo.status,
-    subject: todo.content,
-    description: todo.content,
-    activeForm: todo.activeForm,
-  })
-}
-
 function nextTaskId(tasks: ReadonlyMap<string, TaskItem>): string {
   const numericIds = [...tasks.keys()]
     .map((id) => Number.parseInt(id, 10))
@@ -42,27 +25,6 @@ function nextTaskId(tasks: ReadonlyMap<string, TaskItem>): string {
   let index = numericIds.length > 0 ? Math.max(...numericIds) + 1 : tasks.size + 1
   while (tasks.has(String(index))) index++
   return String(index)
-}
-
-export function applyTodoWrite(input: { todos: TodoItem[] }, tasks: Map<string, TaskItem>): { ok: true } | { ok: false; content: string } {
-  const seen = new Set<string>()
-  const next = new Map<string, TaskItem>()
-  const allDone = input.todos.length > 0 && input.todos.every((todo) => todo.status === 'completed')
-
-  if (!allDone) {
-    for (const [index, todo] of input.todos.entries()) {
-      const task = taskFromTodo(todo, index)
-      if (seen.has(task.id)) {
-        return { ok: false, content: `Duplicate todo id: ${task.id}` }
-      }
-      seen.add(task.id)
-      next.set(task.id, task)
-    }
-  }
-
-  tasks.clear()
-  for (const [id, task] of next) tasks.set(id, task)
-  return { ok: true }
 }
 
 export function applyTaskCreate(input: TaskCreateInput, tasks: Map<string, TaskItem>): TaskItem {
@@ -165,9 +127,7 @@ export function restoreTaskStateFromRecords(records: readonly SessionRecord[]): 
     if (!toolUse) continue
 
     try {
-      if (toolUse.tool === 'TodoWrite') {
-        applyTodoWrite(todoWriteInputSchema.parse(toolUse.input), tasks)
-      } else if (toolUse.tool === 'TaskCreate') {
+      if (toolUse.tool === 'TaskCreate') {
         applyTaskCreate(taskCreateInputSchema.parse(toolUse.input), tasks)
       } else if (toolUse.tool === 'TaskUpdate') {
         applyTaskUpdate(taskUpdateInputSchema.parse(toolUse.input), tasks)

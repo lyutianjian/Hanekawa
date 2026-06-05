@@ -14,9 +14,7 @@
  *     preferred Claude Code-style path and is mirrored to disk only so the
  *     review dialog/editor has a backing file. If absent, the manager reads
  *     the optional draft file for compatibility.
- *   - One critique sub-agent pass runs before the dialog opens. Findings
- *     are shown in the dialog so the user can decide. NO convergence
- *     loop: critique informs, doesn't gate.
+ *   - The exit dialog opens directly. No convergence loop.
  */
 
 import { existsSync } from 'node:fs'
@@ -63,18 +61,10 @@ export interface PlanModeState {
   lastApprovedPlanContent?: string
 }
 
-/** Result of the single plan-critique pass before the dialog. */
-export interface CritiqueResult {
-  /** Findings text shown in the dialog. Free-form markdown. */
-  findings: string
-}
-
 /** Input passed to openExitDialog. */
 export interface ExitDialogInput {
   planContent: string
   planFilePath: string
-  /** Optional critique findings shown beneath the plan in the dialog. */
-  finalCritique?: CritiqueResult
   /**
    * True when the dialog should expose the `bypassPermissions` exit
    * options. Mirrors Claude Code's `isBypassPermissionsModeAvailable` —
@@ -109,7 +99,6 @@ export interface PlanModeManagerDeps {
   loadRecords?: () => Promise<SessionRecord[]>
   /** UI-side hooks late-bound by App.tsx via setUiDeps. */
   emitChatMessage?(content: string): Promise<void>
-  runCritiqueAgent?(planContent: string): Promise<CritiqueResult>
   openExitDialog?(input: ExitDialogInput): Promise<ExitPlanDecision>
   openEnterPrompt?(): Promise<boolean>
   onClearContextAndReplaceInput?(content: string): Promise<void>
@@ -132,7 +121,6 @@ export class PlanModeManager {
    */
   setUiDeps(uiDeps: Pick<PlanModeManagerDeps,
     | 'emitChatMessage'
-    | 'runCritiqueAgent'
     | 'openExitDialog'
     | 'openEnterPrompt'
     | 'onClearContextAndReplaceInput'
@@ -322,7 +310,7 @@ export class PlanModeManager {
    * Safety net for models that finish plan mode by writing the final plan as
    * ordinary assistant text instead of calling ExitPlanMode. The loop calls
    * this before that text is persisted as chat, so the existing exit request
-   * pipeline still owns critique, approval UI, and permission-mode changes.
+   * pipeline still owns approval UI and permission-mode changes.
    */
   async submitAssistantPlanFallback(planContent: string, turnId?: string): Promise<void> {
     await this.deps.appendRecord({
@@ -410,7 +398,7 @@ export class PlanModeManager {
     // delegated planning workflows where the sub-agent is the one that
     // wrote the plan should still surface to the user. The
     // submittedFromSessionId on the request lets observers tell the two
-    // apart for telemetry; the dialog/critique flow is the same.
+    // apart for telemetry; the dialog flow is the same.
 
     // The plan content is provided either inline on the request record
     // (model passed it via ExitPlanMode {plan: ...}) or read from the
@@ -436,26 +424,13 @@ export class PlanModeManager {
       }
     }
 
-    // Single critique pass before the dialog. Findings inform the user;
-    // they don't gate the dialog.
-    let critique: CritiqueResult | undefined
-    if (planContent.trim().length > 0 && this.deps.runCritiqueAgent) {
-      try {
-        critique = await this.deps.runCritiqueAgent(planContent)
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        critique = { findings: `Critique agent failed: ${msg}` }
-      }
-    }
-
-    await this.openDialogAndDispatch(req, planContent, planFilePath, critique)
+    await this.openDialogAndDispatch(req, planContent, planFilePath)
   }
 
   private async openDialogAndDispatch(
     req: Extract<SessionRecord, { type: 'plan_mode_request' }>,
     planContent: string,
     planFilePath: string,
-    critique: CritiqueResult | undefined,
   ): Promise<void> {
     if (!this.deps.openExitDialog) {
       // Without a dialog hook there's no way to make a decision; emit
@@ -474,7 +449,6 @@ export class PlanModeManager {
     const decision = await this.deps.openExitDialog({
       planContent,
       planFilePath,
-      finalCritique: critique,
       isBypassAvailable: this.deps.gate.getPrePlanMode() === 'bypass',
       isAutoModeAvailable: true,
     })

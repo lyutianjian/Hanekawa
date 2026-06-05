@@ -58,7 +58,7 @@ test('ExitPlanModeDialog Shift+Tab resolves to the keep-context elevated option'
   assert.equal(elevatedExitPlanModeDecision({ isAutoModeAvailable: false, isBypassAvailable: true }), 'approve_bypass_keep')
 })
 
-test('ExitPlanModeDialog critique preview truncates long findings while preserving head and tail', () => {
+test('ExitPlanModeDialog previewMarkdownLines truncates long content while preserving head and tail', () => {
   const content = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join('\n')
   const preview = previewMarkdownLines(content, 5)
 

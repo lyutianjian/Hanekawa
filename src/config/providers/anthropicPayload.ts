@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { ModelContextItem, ModelRequest, Tool } from '../../harness/types.js'
-import { toolToAPISchema } from '../../harness/toolApiSchema.js'
+import { getCachedToolSchema } from '../../harness/toolApiSchema.js'
 import {
   addCacheBreakpoints,
   type CacheRuntime,
@@ -138,12 +138,21 @@ export function buildAnthropicMessages(request: ModelRequest) {
       continue
     }
 
-    pendingToolResults.push({
-      type: 'tool_result',
-      tool_use_id: item.toolUseId,
-      content: item.content,
-      is_error: !item.ok,
-    })
+    // Use pre-mapped API block when available (e.g. tool_reference for ToolSearch),
+    // otherwise fall back to plain-text content.
+    if (item.apiResultBlock) {
+      pendingToolResults.push({
+        ...(item.apiResultBlock as Record<string, unknown>),
+        is_error: !item.ok,
+      })
+    } else {
+      pendingToolResults.push({
+        type: 'tool_result',
+        tool_use_id: item.toolUseId,
+        content: item.content,
+        is_error: !item.ok,
+      })
+    }
   }
 
   if (pendingToolResults.length > 0) {
@@ -157,22 +166,50 @@ export function buildAnthropicMessages(request: ModelRequest) {
   return messages
 }
 
-export function buildAnthropicTools(tools: Tool[] = [], enablePromptCaching = false, runtime?: CacheRuntime) {
-  return tools.map((tool, index) => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: toolToAPISchema(tool),
-    ...(enablePromptCaching && index === tools.length - 1
-      ? { cache_control: getCacheControl(runtime) }
-      : {}),
-  }))
+export function buildAnthropicTools(
+  tools: Tool[] = [],
+  enablePromptCaching = false,
+  runtime?: CacheRuntime,
+  deferredToolNames?: Set<string>,
+) {
+  return tools.map((tool, index) => {
+    // Get cached base schema (name + description + input_schema)
+    const base = getCachedToolSchema(tool)
+    // Apply per-request overlays (not cached — vary per call)
+    return {
+      ...base,
+      ...(deferredToolNames?.has(tool.name) ? { defer_loading: true } : {}),
+      ...(enablePromptCaching && index === tools.length - 1
+        ? { cache_control: getCacheControl(runtime) }
+        : {}),
+    }
+  })
 }
 
 export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: number, nativeAnthropic = false) {
   const enableCaching = nativeAnthropic && getPromptCachingEnabled(request.model)
-  const tools = buildAnthropicTools(request.tools, enableCaching, request.cacheRuntime)
-  const messages = buildAnthropicMessages(request)
+  // Only tools discovered AFTER the last compaction should have defer_loading.
+  // Pre-compact discovered tools have lost their tool_reference blocks in the
+  // message history, so the API can't expand them — send them as regular tools.
+  const deferLoadingNames = request.hasDeferredTools
+    ? (request.postCompactDiscoveredNames ?? new Set<string>())
+    : undefined
+  // ALL deferred tool names from the full (unfiltered) tool list — for <available-deferred-tools>
+  const allDeferredNames = request.allDeferredToolNames
+  const tools = buildAnthropicTools(request.tools, enableCaching, request.cacheRuntime, deferLoadingNames)
+  let messages = buildAnthropicMessages(request)
   const systemBlocks = request.systemBlocks ?? (request.system ? [request.system] : [])
+
+  // Inject <available-deferred-tools> as the first user message.
+  // Uses ALL deferred tool names (not just discovered ones) so the model
+  // knows the full set of tools available via ToolSearch.
+  if (allDeferredNames && allDeferredNames.size > 0) {
+    const deferredList = [...allDeferredNames].sort().join('\n')
+    messages = [
+      { role: 'user', content: `<available-deferred-tools>\n${deferredList}\n</available-deferred-tools>` },
+      ...messages,
+    ]
+  }
 
   // Build thinking config: adaptive by default, or from request
   let thinking: { type: 'adaptive' } | { type: 'enabled'; budget_tokens: number } | undefined
@@ -224,8 +261,16 @@ export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: n
 }
 
 export function getAnthropicBetaHeaders(request: ModelRequest, nativeAnthropic = false): string[] {
-  if (!nativeAnthropic || !getPromptCachingEnabled(request.model)) return []
-  return getCacheControl(request.cacheRuntime).ttl === '1h' ? [EXTENDED_CACHE_TTL_BETA] : []
+  const betas: string[] = []
+  if (nativeAnthropic && getPromptCachingEnabled(request.model)) {
+    if (getCacheControl(request.cacheRuntime).ttl === '1h') {
+      betas.push(EXTENDED_CACHE_TTL_BETA)
+    }
+  }
+  if (request.hasDeferredTools) {
+    betas.push('tool-reference-2025-04-14')
+  }
+  return betas
 }
 
 export function getAnthropicCacheScope(request: ModelRequest, nativeAnthropic = false): string {

@@ -36,7 +36,6 @@ type RoutingRoleKey =
   | 'subagent.fork'
   | 'subagent.explore'
   | 'subagent.plan'
-  | 'subagent.verification'
 
 const ROUTING_ROLES: readonly RoutingRoleKey[] = [
   'main',
@@ -46,7 +45,6 @@ const ROUTING_ROLES: readonly RoutingRoleKey[] = [
   'subagent.fork',
   'subagent.explore',
   'subagent.plan',
-  'subagent.verification',
 ]
 
 export interface ProviderPanelProps {
@@ -582,7 +580,6 @@ function currentRoutingValue(cfg: Config, role: RoutingRoleKey): TierOrInherit {
   if (subType === 'general' || subType === 'fork') return 'inherit'
   if (subType === 'explore') return 'balanced'
   if (subType === 'plan') return 'powerful'
-  if (subType === 'verification') return 'balanced'
   return 'inherit'
 }
 

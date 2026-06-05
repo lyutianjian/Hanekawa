@@ -176,7 +176,7 @@ describe('permission dialog formatters', () => {
     assert.equal(formatPermissionTitle(request('Edit', { filePath: 'src/app.ts' })), 'Edit file')
     assert.equal(formatPermissionTitle(request('MultiEdit', { filePath: 'src/app.ts' })), 'Edit file')
     assert.equal(formatPermissionTitle(request('Delete', { filePath: 'src/old.ts' })), 'Delete file')
-    assert.equal(formatPermissionTitle(request('TodoWrite', {})), 'Tool permission')
+    assert.equal(formatPermissionTitle(request('TaskCreate', { subject: 'New task', description: 'Do something' })), 'Tool permission')
   })
 
   it('formats subtitles with path, risk, source, and queue position', () => {

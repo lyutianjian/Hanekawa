@@ -62,6 +62,13 @@ export interface ToolResultRecord {
   errorDetails?: unknown
   createdAt: string
   turnId?: string
+  /**
+   * Pre-mapped API result block. When a tool defines mapToolResultToToolResultBlockParam,
+   * the ToolRunner calls it after execute() and caches the result here.
+   * The Anthropic payload builder uses this instead of the plain-text content
+   * when present, enabling tool_reference blocks for ToolSearch.
+   */
+  apiResultBlock?: ToolResultBlockParam
 }
 
 export type ToolProgressPhase = 'started' | 'finished'
@@ -95,6 +102,8 @@ export interface CompactBoundaryRecord {
   postCompactRestore?: 'pending' | 'consumed'
   createdAt: string
   turnId?: string
+  /** Tool names discovered via ToolSearch before compaction — survives compaction. */
+  preCompactDiscoveredTools?: string[]
 }
 
 export interface CompactAttemptFailedRecord {
@@ -181,6 +190,8 @@ export interface SubagentTaskRecord {
   summary?: string
   error?: string
   usage?: TokenUsage
+  toolUseCount?: number
+  durationMs?: number
   verdict?: 'PASS' | 'FAIL' | 'PARTIAL'
   criticalFiles?: string[]
   isolation?: 'worktree'
@@ -304,6 +315,12 @@ export interface ToolContext {
   exitPlanMode?(): PermissionMode
   planModeBridge?: PlanModeBridge
   askUserQuestionBridge?: AskUserQuestionBridge
+  /** Active provider name ('anthropic' | 'openai') — used by ToolSearchTool to format results. */
+  providerName?: string
+  /** Tool names already discovered via ToolSearch — survives compaction. */
+  discoveredToolNames?: Set<string>
+  /** Tool names discovered AFTER the last compaction — these still have tool_reference blocks in history. */
+  _postCompactDiscoveredNames?: Set<string>
 }
 
 export type ToolErrorCode =
@@ -333,6 +350,18 @@ export interface ToolResult {
   errorCode?: ToolErrorCode
   errorDetails?: unknown
   metadata?: ToolResultMetadata
+}
+
+/**
+ * API-level tool_result block parameter.
+ * Most tools use {type, tool_use_id, content: string}.
+ * ToolSearch overrides to emit tool_reference content blocks.
+ */
+export interface ToolResultBlockParam {
+  type: 'tool_result'
+  tool_use_id: string
+  content: string | Array<{ type: 'tool_reference'; tool_name: string } | { type: 'text'; text: string }>
+  is_error?: boolean
 }
 
 export interface ToolResultMetadata extends Record<string, unknown> {
@@ -395,6 +424,27 @@ export interface Tool {
    */
   isConcurrencySafeInput?(input: unknown): boolean
   /**
+   * One-line capability phrase used by ToolSearch for keyword matching.
+   * Should be 3-10 words describing what the tool does (e.g. "search file contents with regex").
+   */
+  searchHint?: string
+  /**
+   * When true, this tool is deferred and requires ToolSearch to load its schema
+   * before it can be called. Deferred tools are announced by name only in the
+   * system prompt; the model must use ToolSearch to discover their parameters.
+   */
+  shouldDefer?: boolean
+  /**
+   * When true, this tool is never deferred even if shouldDefer or isMcp is true.
+   * Use for tools that must be available from the first turn.
+   */
+  alwaysLoad?: boolean
+  /**
+   * True for MCP-provided tools. MCP tools are deferred by default when
+   * tool search is enabled, unless alwaysLoad is set.
+   */
+  isMcp?: boolean
+  /**
    * User-facing name for TUI display. This mirrors Claude Code's tool-owned
    * display hooks without coupling core tools to React/Ink rendering.
    */
@@ -411,6 +461,22 @@ export interface Tool {
    * Whether the TUI should render the persisted result body under the tool use.
    */
   shouldDisplayResult?(input: unknown, result: string): boolean
+  /**
+   * Render-time customized one-line summary for the collapsed TUI view.
+   * Runs in the React render path (not at tool execution), receives the full
+   * persisted result string, and returns null to defer to display.summary.
+   * Tools that already populate metadata.display.summary typically don't need
+   * this hook — it's meant for tools whose result content needs parsing to
+   * produce a human-readable line (e.g. Bash line counts, agent stats).
+   */
+  renderToolResultSummary?(input: unknown, result: string, ok: boolean): string | null
+  /**
+   * Convert the tool's execute() result into the API-level tool_result block.
+   * Most tools return a string content; ToolSearch overrides this to emit
+   * tool_reference content blocks for Anthropic's dynamic tool loading.
+   * When not defined, the default behavior wraps result.content as plain text.
+   */
+  mapToolResultToToolResultBlockParam?(result: unknown, toolUseID: string): ToolResultBlockParam
   execute(input: unknown, context: ToolContext): Promise<ToolResult>
 }
 
@@ -470,6 +536,8 @@ export interface ContextToolResult {
   tool: string
   ok: boolean
   content: string
+  /** Pre-mapped API block (e.g. tool_reference for ToolSearch). */
+  apiResultBlock?: ToolResultBlockParam
 }
 
 export type ModelContextItem = ContextChatMessage | ContextToolUse | ContextToolResult
@@ -489,6 +557,12 @@ export interface ModelRequest {
   retry?: { maxRetries?: number; signal?: AbortSignal; callerKind?: 'interactive' | 'background'; persistent?: boolean }
   cacheSource: CacheBreakSource
   cacheRuntime?: CacheRuntime
+  /** When true, the Anthropic payload builder adds defer_loading and the tool-reference beta header. */
+  hasDeferredTools?: boolean
+  /** All deferred tool names from the FULL (unfiltered) tool list. Used for <available-deferred-tools>. */
+  allDeferredToolNames?: Set<string>
+  /** Tool names discovered after the last compaction — only these should have defer_loading. */
+  postCompactDiscoveredNames?: Set<string>
   onTextDelta?: (delta: string) => void
   onStreamEvent?: (event: ModelStreamEvent) => void
 }

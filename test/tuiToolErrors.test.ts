@@ -139,14 +139,6 @@ test('recordsToDisplayItems hides task management tool rows', () => {
       errorCode: 'invalid_input',
       createdAt: '2026-05-24T00:00:03.000Z',
     },
-    {
-      id: 'todo-write-1',
-      type: 'tool_use',
-      tool: 'TodoWrite',
-      input: { todos: [] },
-      riskLevel: 'safe',
-      createdAt: '2026-05-24T00:00:04.000Z',
-    },
   ]
 
   assert.equal(recordsToDisplayItems(records).some((item) => item.kind === 'tool_call'), false)
@@ -167,7 +159,7 @@ test('recordsToDisplayItems marks restored running subagents as interrupted', ()
   const item = recordsToDisplayItems(records).find((candidate) => candidate.kind === 'subagent_task')
   assert.equal(item?.kind, 'subagent_task')
   assert.equal(item?.record.status, 'interrupted')
-  assert.match(item ? formatSubagentTaskLine(item) : '', /◌ explore agent interrupted/)
+  assert.match(item ? formatSubagentTaskLine(item) : '', /explore agent[\s\S]*Interrupted/)
 })
 
 test('recordsToDisplayItems merges subagent lifecycle records into latest status row', () => {
@@ -201,7 +193,7 @@ test('recordsToDisplayItems merges subagent lifecycle records into latest status
   const item = items[0]
   assert.equal(item?.kind, 'subagent_task')
   assert.equal(item?.record.status, 'completed')
-  assert.match(item ? formatSubagentTaskLine(item) : '', /✓ plan agent completed/)
+  assert.match(item ? formatSubagentTaskLine(item) : '', /plan agent[\s\S]*Done/)
   assert.match(item ? formatSubagentTaskLine(item) : '', /\/agents show agent-1/)
 })
 
@@ -209,10 +201,6 @@ test('tool display metadata comes from tool definitions', () => {
   assert.deepEqual(getToolDisplay('Glob', { pattern: '**/*.ts', path: 'src' }), {
     name: 'Search',
     summary: 'pattern: "**/*.ts", path: "src"',
-  })
-  assert.deepEqual(getToolDisplay('TodoWrite', { todos: [{ content: 'Ship it', status: 'pending', activeForm: 'Shipping it' }] }), {
-    name: 'Todo',
-    summary: '1 item',
   })
   assert.deepEqual(getToolDisplay('Agent', { subagent_type: 'plan', task: 'Design the change' }), {
     name: 'plan agent',

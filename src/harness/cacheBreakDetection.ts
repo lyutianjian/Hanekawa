@@ -31,7 +31,6 @@ export type CacheBreakSource =
   | 'tool_use_summary'
   | 'hook_agent'
   | 'hook_prompt'
-  | 'verification_agent'
   | 'side_question'
   | 'auto_mode'
   | 'bash_classifier'

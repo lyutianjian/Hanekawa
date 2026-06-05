@@ -4,7 +4,7 @@ import type { Tool } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
 import { getReadFileContent, rememberReadFile, requireFreshRead } from './fileState.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
-import { findStringMatches, multipleMatchFailure, replaceLiteralMatch } from './editFile.js'
+import { findStringMatches, multipleMatchFailure, replaceLiteralMatch, preserveQuoteStyle } from './editFile.js'
 
 interface MultiEditItem {
   oldString: string
@@ -14,6 +14,7 @@ interface MultiEditItem {
 export const multiEditTool: Tool = {
   name: 'MultiEdit',
   description: 'Apply multiple exact string replacements to one existing UTF-8 text file atomically.',
+  searchHint: 'multiple edits batch changes',
   inputSchema: z.object({
     filePath: z.string().min(1),
     edits: z.array(z.object({
@@ -42,6 +43,13 @@ export const multiEditTool: Tool = {
   async execute(input, context) {
     const { filePath, edits } = input as { filePath: string; edits: MultiEditItem[] }
     const absolute = assertInsideCwd(context.cwd, filePath)
+    if (absolute.toLowerCase().endsWith('.ipynb')) {
+      return {
+        ok: false,
+        content: `Cannot edit .ipynb files with the MultiEdit tool. Use the NotebookEdit tool to modify notebook cells.`,
+        errorCode: 'invalid_input',
+      }
+    }
     const stale = await requireFreshRead(absolute, filePath, context)
     if (stale) {
       return stale
@@ -69,8 +77,14 @@ export const multiEditTool: Tool = {
       if (matches.length !== 1) {
         return multipleMatchFailure(edit.oldString, matches, `edits[${index}].oldString`)
       }
-      const start = matches[0].index
-      resolved.push({ oldString: edit.oldString, newString: edit.newString, index, start, end: start + edit.oldString.length })
+      const match = matches[0]
+      // When matched via quote normalization, preserve the file's quote style in newString
+      let effectiveNewString = edit.newString
+      if (match.matchedViaNormalization) {
+        const actualOld = originalContent.substring(match.index, match.index + edit.oldString.length)
+        effectiveNewString = preserveQuoteStyle(edit.oldString, actualOld, edit.newString)
+      }
+      resolved.push({ oldString: edit.oldString, newString: effectiveNewString, index, start: match.index, end: match.index + edit.oldString.length })
     }
 
     // Check for overlapping edit ranges

@@ -37,8 +37,8 @@ export class ToolRunner {
    * runner has its own (empty) record-listener set, so any in-process listeners
    * registered on the original (e.g. AgentLoop's records cache invalidator) are
    * not invoked for forked runs. Use this when running a tool in isolation,
-   * such as a diagnostic/verification call that must not pollute the main
-   * session's record stream or in-memory caches.
+   * such as a diagnostic call that must not pollute the main session's record
+   * stream or in-memory caches.
    */
   fork(events: ToolRunEvents): ToolRunner {
     return new ToolRunner(this.tools, this.permissionGate, events, this.hooks)
@@ -145,6 +145,14 @@ export class ToolRunner {
         const result = await tool.execute(call.input, executionContext)
         syncMutableToolContext(context, executionContext)
         const record = this.result(call, tool.name, result.ok, result.content, result.errorCode, result.errorDetails, turnId, tool.maxResultSizeChars, result.metadata?.display)
+        // Map tool result to API format (e.g. tool_reference blocks for ToolSearch)
+        if (tool.mapToolResultToToolResultBlockParam) {
+          try {
+            record.apiResultBlock = tool.mapToolResultToToolResultBlockParam(result, call.id)
+          } catch {
+            // Mapping is best-effort; fall back to plain-text content
+          }
+        }
         await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
         await this.emitAssistantMessageFromMetadata(result.metadata, turnId)
         return record

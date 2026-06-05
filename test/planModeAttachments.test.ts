@@ -120,8 +120,7 @@ test('reminders contain expected anchor text', () => {
   assert.match(full, /Phase 5: Call ExitPlanMode/)
   assert.match(full, /Use ExitPlanMode to request plan approval/)
   assert.match(full, new RegExp(planPath))
-  // Allow/disallow tool sections — TodoWrite is explicitly forbidden in
-  // plan mode (mirrors Claude Code's prompt-only enforcement).
+  // Allow/disallow tool sections
   assert.match(full, /AskUserQuestion ONLY to clarify/)
   assert.doesNotMatch(full, /Ordinary assistant-text plans are invalid/)
   assert.match(full, /Call ExitPlanMode/)
@@ -132,7 +131,6 @@ test('reminders contain expected anchor text', () => {
   assert.match(sparse, new RegExp(planPath))
   assert.match(sparse, /ExitPlanMode/)
   assert.match(sparse, /AskUserQuestion/)
-  assert.doesNotMatch(sparse, /TodoWrite/)
 
   assert.match(buildPlanModeReentryReminder(planPath), /Re-entering Plan Mode/)
   assert.match(buildPlanModeReentryReminder(planPath), new RegExp(planPath))
@@ -142,23 +140,23 @@ test('reminders contain expected anchor text', () => {
   assert.match(buildPlanFileReferenceReminder('# Plan'), /# Plan/)
 })
 
-test('post-exit reminder nudges the model to update its todo list', () => {
+test('post-exit reminder nudges the model to update its task list', () => {
   // Mirrors Claude Code's ExitPlanModeV2Tool tool_result body:
   //   "User has approved your plan. You can now start coding. Start with
-  //    updating your todo list if applicable"
-  // This is the moment in the workflow where TodoWrite is the natural next
+  //    updating your task list if applicable"
+  // This is the moment in the workflow where TaskCreate/TaskUpdate is the natural next
   // action — paired with the in-plan-mode disallow, the boundary is clear.
   const reminder = buildPlanModeExitReminder('# Approved plan content\n')
   assert.match(reminder, /User has approved your plan/)
-  assert.match(reminder, /Start with updating your todo list/)
-  assert.match(reminder, /TodoWrite/)
+  assert.match(reminder, /Start with updating your task list/)
+  assert.match(reminder, /TaskCreate\/TaskUpdate/)
   assert.match(reminder, /# Approved plan content/)
 })
 
 test('post-exit reminder still works when plan content is empty', () => {
   // The clear-context approval flow passes the plan as the new user prompt
-  // and emits an exit reminder with no embedded plan body. The todo nudge
-  // must still appear so the model knows to start with TodoWrite.
+  // and emits an exit reminder with no embedded plan body. The task nudge
+  // must still appear so the model knows to start with TaskCreate/TaskUpdate.
   const reminder = buildPlanModeExitReminder('')
   assert.match(reminder, /User has approved exiting plan mode/)
   assert.match(reminder, /You can now proceed/)

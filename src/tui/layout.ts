@@ -278,6 +278,8 @@ export function estimateDisplayItemRows(
         : 0
     case 'tool_call':
       return estimateToolCallRows(item, contentWidth, expanded)
+    case 'tool_group':
+      return estimateToolGroupRows(item, contentWidth, expanded)
     case 'compact_boundary':
       if (showCompactSummary && item.summary.trim()) {
         return 2 + estimateWrappedRows(`Compact summary\n${item.summary}`, contentWidth)
@@ -322,6 +324,23 @@ function estimateToolCallRows(
     } else {
       rows += 4
     }
+  }
+  return rows
+}
+
+function estimateToolGroupRows(
+  item: Extract<TUIDisplayItem, { kind: 'tool_group' }>,
+  width: number,
+  expanded: boolean,
+): number {
+  if (!expanded) {
+    const hasHint = item.toolCalls.some((call) => call.status === 'done' && call.resultDisplay?.summary)
+    return hasHint ? 2 : 1
+  }
+  // Expanded: one header + one ResponseBlock gutter per child + the child's own rows.
+  let rows = 1
+  for (const call of item.toolCalls) {
+    rows += 1 + estimateToolCallRows(call, Math.max(1, width - 4), true)
   }
   return rows
 }

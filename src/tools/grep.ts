@@ -12,9 +12,12 @@ interface GrepInput {
   glob?: string
   caseInsensitive?: boolean
   headLimit?: number
+  offset?: number
+  multiline?: boolean
 }
 
 const RG_TIMEOUT_MS = 30_000
+const DEFAULT_HEAD_LIMIT = 250
 
 /**
  * Try ripgrep first (ReDoS-immune, fast). Falls back to Node RegExp if
@@ -28,10 +31,12 @@ function tryRipgrep(
   caseInsensitive: boolean,
   limit: number,
   cwd: string,
+  multiline: boolean = false,
 ): Promise<string[] | null> {
   return new Promise((resolve) => {
     const args = ['--no-heading', '--line-number', '--max-count', String(limit)]
     if (caseInsensitive) args.push('--ignore-case')
+    if (multiline) args.push('-U', '--multiline-dotall')
     if (glob) args.push('--glob', glob)
     args.push('--', pattern, '.')
 
@@ -69,8 +74,9 @@ async function fallbackGrep(
   caseInsensitive: boolean,
   limit: number,
   cwd: string,
+  multiline: boolean = false,
 ): Promise<string[]> {
-  const flags = caseInsensitive ? 'i' : ''
+  const flags = (caseInsensitive ? 'i' : '') + (multiline ? 's' : '')
   let regex: RegExp
   try {
     regex = new RegExp(pattern, flags)
@@ -107,13 +113,16 @@ async function fallbackGrep(
 
 export const grepTool: Tool = {
   name: 'Grep',
-  description: 'Search text files for a regular expression pattern. Uses ripgrep when available for ReDoS-immune, fast searching.',
+  description: 'Search text files for a regular expression pattern. Uses ripgrep when available for ReDoS-immune, fast searching. Supports offset and head_limit for pagination, and multiline for cross-line patterns.',
+  searchHint: 'search file contents with regex (ripgrep)',
   inputSchema: z.object({
     pattern: z.string().min(1),
     path: z.string().min(1).optional(),
     glob: z.string().min(1).optional(),
     caseInsensitive: z.boolean().optional(),
-    headLimit: z.number().int().min(1).max(10_000).optional(),
+    headLimit: z.number().int().min(0).max(10_000).optional(),
+    offset: z.number().int().min(0).optional(),
+    multiline: z.boolean().optional(),
   }).strict(),
   riskLevel: 'safe',
   isReadOnly: true,
@@ -122,11 +131,12 @@ export const grepTool: Tool = {
   userFacingName: () => 'Search',
   getToolUseSummary(input) {
     if (typeof input !== 'object' || input === null) return null
-    const { pattern, path: searchPath, glob } = input as { pattern?: unknown; path?: unknown; glob?: unknown }
+    const { pattern, path: searchPath, glob, offset } = input as { pattern?: unknown; path?: unknown; glob?: unknown; offset?: unknown }
     if (typeof pattern !== 'string') return null
     const parts = [`pattern: "${truncateMiddle(pattern, 80)}"`]
     if (typeof searchPath === 'string' && searchPath.trim()) parts.push(`path: "${truncateMiddle(searchPath.trim(), 60)}"`)
     if (typeof glob === 'string' && glob.trim()) parts.push(`glob: "${truncateMiddle(glob.trim(), 60)}"`)
+    if (typeof offset === 'number' && offset > 0) parts.push(`offset: ${offset}`)
     return parts.join(', ')
   },
   getActivityDescription(input) {
@@ -138,27 +148,40 @@ export const grepTool: Tool = {
   async execute(input, context) {
     const options = input as GrepInput
     const root = assertInsideCwd(context.cwd, options.path ?? '.')
-    const limit = options.headLimit ?? 50
     const caseInsensitive = options.caseInsensitive ?? false
+    const multiline = options.multiline ?? false
+    const offset = options.offset ?? 0
+    // headLimit: 0 means unlimited; undefined means use default
+    const effectiveLimit = options.headLimit === 0 ? Infinity : (options.headLimit ?? DEFAULT_HEAD_LIMIT)
+    // Fetch enough results to cover offset + limit
+    const fetchLimit = effectiveLimit === Infinity ? 10_000 : offset + effectiveLimit
 
     // Try ripgrep first (ReDoS-immune, faster)
-    const rgMatches = await tryRipgrep(options.pattern, root, options.glob, caseInsensitive, limit, context.cwd)
+    const rgMatches = await tryRipgrep(options.pattern, root, options.glob, caseInsensitive, fetchLimit, context.cwd, multiline)
     if (rgMatches !== null) {
-      return grepResult(rgMatches)
+      return paginateResult(rgMatches, effectiveLimit, offset)
     }
 
     // Fallback to Node RegExp
-    const matches = await fallbackGrep(options.pattern, root, options.glob, caseInsensitive, limit, context.cwd)
-    return grepResult(matches)
+    const matches = await fallbackGrep(options.pattern, root, options.glob, caseInsensitive, fetchLimit, context.cwd, multiline)
+    return paginateResult(matches, effectiveLimit, offset)
   },
 }
 
-function grepResult(matches: string[]) {
-  const matchCount = matches.length
-  const fileCount = new Set(matches.map((match) => match.split(':', 1)[0]).filter(Boolean)).size
+function paginateResult(allMatches: string[], limit: number, offset: number) {
+  const sliced = allMatches.slice(offset, offset + limit)
+  const matchCount = sliced.length
+  const fileCount = new Set(sliced.map((m) => m.split(':', 1)[0]).filter(Boolean)).size
+
+  let content = sliced.join('\n') || 'No matches found.'
+  // Append pagination notice if results were truncated
+  if (offset > 0 || sliced.length < allMatches.length) {
+    content += `\n\n[Showing results ${offset + 1}..${offset + sliced.length} of ${allMatches.length} total matches]`
+  }
+
   return {
     ok: true,
-    content: matches.join('\n') || 'No matches found.',
+    content,
     metadata: {
       display: {
         summary: matchCount === 0

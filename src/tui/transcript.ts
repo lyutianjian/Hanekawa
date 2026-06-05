@@ -1,6 +1,8 @@
 import type { SessionRecord, ToolProgressEvent } from '../harness/types.js'
 import type { TUIDisplayItem } from './types.js'
-import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
+import { ASK_USER_QUESTION_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
+import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
+import { groupConsecutiveSafeToolCalls } from './utils/toolGroupSummary.js'
 
 export interface TuiTranscriptState {
   staticItems: TUIDisplayItem[]
@@ -65,9 +67,10 @@ export function commitLiveItemsToStatic(state: TuiTranscriptState): TuiTranscrip
   if (toCommit.length === 0 && state.liveSystemItems.length === 0) {
     return { ...state, liveItems: [], liveSystemItems: [] }
   }
+  const grouped = groupConsecutiveSafeToolCalls(toCommit)
   return {
     ...state,
-    staticItems: [...state.staticItems, ...toCommit, ...state.liveSystemItems],
+    staticItems: [...state.staticItems, ...grouped, ...state.liveSystemItems],
     liveItems: [],
     liveSystemItems: [],
   }
@@ -91,9 +94,10 @@ export function commitLiveItemsExcludingThinking(state: TuiTranscriptState): Tui
   if (nonThinking.length === 0 && state.liveSystemItems.length === 0) {
     return { ...state, liveItems: thinking }
   }
+  const grouped = groupConsecutiveSafeToolCalls(nonThinking)
   return {
     ...state,
-    staticItems: [...state.staticItems, ...nonThinking, ...state.liveSystemItems],
+    staticItems: [...state.staticItems, ...grouped, ...state.liveSystemItems],
     liveItems: thinking,
     liveSystemItems: [],
   }
@@ -186,11 +190,11 @@ export function applyTuiRecordToTranscriptState(
 
   if (record.type === 'tool_result') {
     if (isHiddenToolCall(record.tool)) return state
-    const liveItem = state.liveItems.find(
-      (item): item is Extract<TUIDisplayItem, { kind: 'tool_call' }> =>
-        item.kind === 'tool_call' && item.toolUseId === record.toolUseId,
+    const toolCallIndex = state.liveItems.findIndex(
+      (item) => item.kind === 'tool_call' && item.toolUseId === record.toolUseId,
     )
-    if (!liveItem) return state
+    if (toolCallIndex < 0) return state
+    const liveItem = state.liveItems[toolCallIndex] as Extract<TUIDisplayItem, { kind: 'tool_call' }>
     const completed: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
       ...liveItem,
       status: record.ok ? 'done' : 'error',
@@ -198,12 +202,44 @@ export function applyTuiRecordToTranscriptState(
       resultDisplay: record.display,
       errorCode: record.errorCode,
     }
-    return appendStaticTranscriptItem({
-      ...state,
-      liveItems: state.liveItems.filter((item) =>
-        !(item.kind === 'tool_call' && item.toolUseId === record.toolUseId)
-      ),
-    }, completed)
+    // Commit items that chronologically precede this tool_call to static,
+    // preserving their order. This includes:
+    // - User messages (so they appear above tool output)
+    // - Thinking blocks (so they appear before the tool_call, not after)
+    // Streaming thinking previews are discarded (they are temporary placeholders).
+    // Other running tool_calls are kept in liveItems — they'll be committed
+    // when their own result arrives.
+    const indicesToCommit = new Set<number>()
+    const itemsToCommit: TUIDisplayItem[] = []
+    for (let i = 0; i < toolCallIndex; i++) {
+      const item = state.liveItems[i]
+      if (isStreamingThinkingPreview(item)) {
+        indicesToCommit.add(i)
+        continue
+      }
+      if (
+        item.kind === 'user'
+        || (item.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0)
+      ) {
+        indicesToCommit.add(i)
+        itemsToCommit.push(item)
+      }
+    }
+    // Also remove the completed tool_call itself from liveItems
+    const remainingLive = state.liveItems.filter(
+      (_, index) => !indicesToCommit.has(index) && index !== toolCallIndex,
+    )
+    const stateWithItemsCommitted: TuiTranscriptState = itemsToCommit.length > 0
+      ? {
+          ...state,
+          liveItems: remainingLive,
+          staticItems: [...state.staticItems, ...itemsToCommit],
+        }
+      : {
+          ...state,
+          liveItems: remainingLive,
+        }
+    return appendStaticTranscriptItem(stateWithItemsCommitted, completed)
   }
 
   if (record.type === 'compact_boundary') {
@@ -290,6 +326,44 @@ export function clearToolProgress(state: TuiTranscriptState): TuiTranscriptState
   }
 }
 
+/**
+ * Commit user messages, thinking blocks, and other preceding items from
+ * liveItems to staticItems. Streaming thinking previews are discarded.
+ *
+ * Called when a hidden tool_result arrives (e.g. TaskCreate, TaskUpdate)
+ * so that user messages and thinking blocks are committed to static in
+ * the correct chronological order, even though the tool itself has no
+ * visible tool_call in liveItems.
+ *
+ * Without this, user messages would stay in liveItems until turn end
+ * and end up AFTER assistant messages in the static transcript.
+ */
+export function commitPrecedingLiveItemsToStatic(state: TuiTranscriptState): TuiTranscriptState {
+  const indicesToCommit = new Set<number>()
+  const itemsToCommit: TUIDisplayItem[] = []
+  for (let i = 0; i < state.liveItems.length; i++) {
+    const item = state.liveItems[i]
+    if (isStreamingThinkingPreview(item)) {
+      indicesToCommit.add(i)
+      continue
+    }
+    if (
+      item.kind === 'user'
+      || (item.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0)
+    ) {
+      indicesToCommit.add(i)
+      itemsToCommit.push(item)
+    }
+  }
+  if (itemsToCommit.length === 0) return state
+  const remainingLive = state.liveItems.filter((_, index) => !indicesToCommit.has(index))
+  return {
+    ...state,
+    liveItems: remainingLive,
+    staticItems: [...state.staticItems, ...itemsToCommit],
+  }
+}
+
 export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[] {
   const items: TUIDisplayItem[] = []
   const toolCalls = new Map<string, Extract<TUIDisplayItem, { kind: 'tool_call' }>>()
@@ -352,13 +426,15 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
     }
   }
 
-  return items
+  return groupConsecutiveSafeToolCalls(items)
 }
 
 export function isHiddenToolCall(toolName: string): boolean {
   return toolName === ENTER_PLAN_MODE_TOOL_NAME
     || toolName === EXIT_PLAN_MODE_TOOL_NAME
-    || isTaskStatusTool(toolName)
+    || toolName === TOOL_SEARCH_TOOL_NAME
+    || toolName === ASK_USER_QUESTION_TOOL_NAME
+    || toolName === 'Skill'
 }
 
 function messageRecordToDisplayItem(
@@ -424,14 +500,6 @@ function findRecentThinkingAssistant(
     if (item?.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0) return item
   }
   return null
-}
-
-function isTaskStatusTool(toolName: string): boolean {
-  return toolName === 'TodoWrite'
-    || toolName === 'TaskCreate'
-    || toolName === 'TaskList'
-    || toolName === 'TaskGet'
-    || toolName === 'TaskUpdate'
 }
 
 function isStreamingThinkingPreview(item: TUIDisplayItem): boolean {

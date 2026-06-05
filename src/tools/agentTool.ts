@@ -25,8 +25,31 @@ import type { CacheRuntime } from '../harness/cacheControl.js'
 import { runLifecycleHooks, type Hooks } from '../harness/hooks.js'
 import type { AgentRunResult, ModelProvider, SessionRecord, SubagentTaskStatus, TokenUsage, Tool, ToolContext, ToolProgressEvent } from '../harness/types.js'
 import { countSessionRecordTokens } from '../prompts/budget.js'
+import { formatTokenCount } from './display.js'
 
-export const NESTED_AGENT_FORBIDDEN_TOOLS = ['Agent', 'EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion'] as const
+// Tools that no sub-agent should ever call directly.
+export const ALL_AGENT_DISALLOWED_TOOLS = [
+  'Agent',
+  'EnterPlanMode',
+  'ExitPlanMode',
+  'AskUserQuestion',
+] as const
+
+/** @deprecated Use ALL_AGENT_DISALLOWED_TOOLS instead. */
+export const NESTED_AGENT_FORBIDDEN_TOOLS = ALL_AGENT_DISALLOWED_TOOLS
+
+// Whitelist for background/async agents. Only these tools are available.
+export const ASYNC_AGENT_ALLOWED_TOOLS = [
+  'Read',
+  'Glob',
+  'Grep',
+  'Bash',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'Delete',
+  'Skill',
+] as const
 
 // Task tracking tools are included because sub-agents share taskState semantics,
 // not because they write files.
@@ -36,8 +59,6 @@ export const STATEFUL_AGENT_TOOL_NAMES = new Set([
   'Edit',
   'MultiEdit',
   'Delete',
-  'NotebookEdit',
-  'TodoWrite',
   'TaskCreate',
   'TaskList',
   'TaskGet',
@@ -45,7 +66,10 @@ export const STATEFUL_AGENT_TOOL_NAMES = new Set([
 ])
 
 export const DEFAULT_AGENT_MAX_TURNS = 30
-const VERIFICATION_AGENT_MAX_TURNS = 30
+const FORK_AGENT_MAX_TURNS = 200
+const GENERAL_AGENT_MAX_TURNS = 30
+const EXPLORE_AGENT_MAX_TURNS = 30
+const PLAN_AGENT_MAX_TURNS = 30
 export const AGENT_MAX_RESULT_SIZE_CHARS = 32_000
 const SUBAGENT_TRANSCRIPT_SUMMARY_CHARS = 8_000
 export const FORK_PRELOAD_TOKEN_BUDGET = 50_000
@@ -74,28 +98,29 @@ export interface BaseAgentDefinition {
   getSystemPrompt(baseSystem?: string): string | undefined
 }
 
-const VERIFICATION_AGENT_CRITICAL_REMINDER = `# Critical Verification Reminder
-You are still the verification specialist. Stay adversarial, do not modify the project, run or cite concrete verification evidence where possible, and end with exactly one VERDICT line.`
-
 const GENERAL_PURPOSE_AGENT: BaseAgentDefinition = {
   type: 'general',
   description: 'General-purpose read-only sub-agent for isolated research tasks.',
-  disallowedTools: NESTED_AGENT_FORBIDDEN_TOOLS,
-  maxTurns: DEFAULT_AGENT_MAX_TURNS,
+  disallowedTools: ALL_AGENT_DISALLOWED_TOOLS,
+  maxTurns: GENERAL_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
   effort: 'medium',
   getSystemPrompt: (baseSystem) => baseSystem,
 }
 
+// Sentinel tag for detecting recursive fork agents
+const FORK_AGENT_BOILERPLATE_TAG = '__HANEKAWA_FORK_AGENT__'
+
 const FORK_AGENT_BOILERPLATE = `# Forked Conversation Context
+${FORK_AGENT_BOILERPLATE_TAG}
 You are running as an isolated fork of the parent conversation. The parent transcript is preloaded before your task, so use it as background context, but do not assume your intermediate work is visible to the parent. Return a concise result that the parent agent can use directly.`
 
 const FORK_AGENT: BaseAgentDefinition = {
   type: 'fork',
   description: 'Read-only sub-agent fork that preloads the parent transcript and shares the parent fork prompt-cache stream.',
-  disallowedTools: NESTED_AGENT_FORBIDDEN_TOOLS,
-  maxTurns: DEFAULT_AGENT_MAX_TURNS,
+  disallowedTools: ALL_AGENT_DISALLOWED_TOOLS,
+  maxTurns: FORK_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
   effort: 'medium',
@@ -106,8 +131,8 @@ const EXPLORE_AGENT: BaseAgentDefinition = {
   type: 'explore',
   description: 'Fast read-only code exploration agent for broad search, navigation, and codebase questions.',
   tools: ['Glob', 'Grep', 'Read'],
-  disallowedTools: ['Agent', 'Bash', 'Write', 'Edit', 'Delete', 'MultiEdit', 'TodoWrite'],
-  maxTurns: DEFAULT_AGENT_MAX_TURNS,
+  disallowedTools: ['Agent', 'Bash', 'Write', 'Edit', 'Delete', 'MultiEdit'],
+  maxTurns: EXPLORE_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
   omitProjectContext: true,
@@ -141,8 +166,8 @@ const PLAN_AGENT: BaseAgentDefinition = {
   type: 'plan',
   description: 'Read-only software planning agent for implementation strategy and trade-off analysis.',
   tools: ['Glob', 'Grep', 'Read'],
-  disallowedTools: ['Agent', 'Bash', 'Write', 'Edit', 'Delete', 'MultiEdit', 'TodoWrite'],
-  maxTurns: DEFAULT_AGENT_MAX_TURNS,
+  disallowedTools: ['Agent', 'Bash', 'Write', 'Edit', 'Delete', 'MultiEdit'],
+  maxTurns: PLAN_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
   omitProjectContext: true,
@@ -197,85 +222,11 @@ List 3-5 files most critical for implementing this plan:
 REMEMBER: You can ONLY explore and plan. You CANNOT and MUST NOT write, edit, or modify any files. You do NOT have access to file editing tools.`,
 }
 
-const VERIFICATION_AGENT: BaseAgentDefinition = {
-  type: 'verification',
-  description: 'Adversarial verification agent that tries to break an implementation before completion is reported.',
-  tools: ['Bash', 'Glob', 'Grep', 'Read'],
-  disallowedTools: ['Agent', 'Write', 'Edit', 'Delete', 'MultiEdit', 'TodoWrite'],
-  maxTurns: VERIFICATION_AGENT_MAX_TURNS,
-  maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
-  isReadOnlyAgent: false,
-  effort: 'high',
-  criticalSystemReminder: VERIFICATION_AGENT_CRITICAL_REMINDER,
-  getSystemPrompt: () => `You are a verification specialist. Your job is not to confirm that the implementation works; your job is to try to break it.
-
-Your default failure mode as an LLM is overconfidence. Treat that as a real bug in your own process.
-
-Two named traps:
-- verification avoidance: reading code, nodding along, and reporting PASS without executing anything meaningful.
-- being seduced by the first 80%: a UI, CLI, or API looks polished on the happy path, so you miss dead buttons, broken edge cases, partial state, or unusable workflows.
-
-=== DO NOT MODIFY THE PROJECT ===
-You are strictly prohibited from creating, modifying, deleting, moving, or copying files in the project directory. Do not install packages. Do not run git write operations such as add, commit, push, reset, checkout, restore, or clean.
-
-You may use read-only repository inspection tools. If the Bash tool is available, use it only for verification commands such as status checks, builds, tests, type checks, linters, read-only git commands, or read-only CLI invocations. If a command would write to the project, do not run it.
-
-=== RECOGNIZE YOUR OWN RATIONALIZATIONS ===
-When you notice one of these thoughts, do the corrective action instead:
-- "The code looks correct based on reading." Reading is not verification. Run the behavior or a focused check.
-- "The implementer's tests passed." The implementer is also an LLM. Independently verify; do not trust another agent's claim.
-- "This should work." "Should" is not evidence. Convert it into an observed result.
-- "I'll start the server and inspect code." If you start a server, hit the endpoint or workflow with a real request/action.
-- "I do not have a browser." First check whether browser MCP tools or other runtime/browser tools are available. If a browser tool fails, debug the server, URL, selector, or environment before declaring it impossible.
-- "This is too time-consuming." That is not your decision. Run the highest-signal checks that fit the task and report exact limits if blocked.
-- "The change is small, so a smoke test is enough." Small changes can break integration points. Probe at least one edge or failure path.
-- "I am not sure whether this is a bug, so PARTIAL." PARTIAL is only for environmental inability to verify, not uncertainty about severity.
-
-=== VERIFICATION DISCIPLINE ===
-- Exercise the changed behavior when possible.
-- Passing tests are context, not proof.
-- Prefer commands that directly hit the changed surface over broad, indirect confidence checks.
-- For frontend work, verify actual runtime behavior with browser/runtime tools if available, not just screenshots or code reading.
-- For API or CLI work, run representative inputs and edge cases.
-- For bug fixes, reproduce the original failure when possible, then verify the fix.
-- Include at least one adversarial probe that fits the change: concurrency, boundary values, idempotency, partial failure/orphaned state, malformed input, permission denial, missing config, or restart/resume behavior.
-- If a check cannot run because the environment is missing something, report PARTIAL and say exactly what blocked it.
-
-=== BEFORE REPORTING FAIL ===
-For every suspected failure, quickly rule out:
-- Already handled: is this checked or normalized elsewhere?
-- Intentional: is this behavior a documented or obvious design choice?
-- Not actionable: is this outside the requested change or current verification scope?
-
-If those are ruled out and the issue is real, report FAIL.
-
-=== OUTPUT FORMAT ===
-Keep your final report concise - under ~800 words.
-
-Every verification check in your final report must include:
-### Check: [what you verified]
-**Command run:**
-  [exact command or tool action]
-**Output observed:**
-  [relevant observed output]
-**Result: PASS** or **Result: FAIL**
-
-Checks without a Command run block are skipped, not passed.
-
-End with exactly one of these lines:
-VERDICT: PASS
-VERDICT: FAIL
-VERDICT: PARTIAL
-
-Use PASS only when the meaningful checks passed. Use FAIL when you found an actionable defect. Use PARTIAL only when environmental limits prevented enough verification; name the missing tool, dependency, service, credential, or runtime condition.`,
-}
-
 export const BUILT_IN_AGENT_DEFINITIONS = [
   GENERAL_PURPOSE_AGENT,
   FORK_AGENT,
   EXPLORE_AGENT,
   PLAN_AGENT,
-  VERIFICATION_AGENT,
 ] as const
 
 const agentInputSchema = z.object({
@@ -327,6 +278,7 @@ export interface CreateAgentToolOptions {
 export function filterToolsForSubAgent(
   tools: Tool[],
   definition: BaseAgentDefinition = GENERAL_PURPOSE_AGENT,
+  options?: { isBackground?: boolean },
 ): Tool[] {
   const allowed = definition.tools ? new Set<string>(definition.tools) : undefined
   const disallowed = new Set<string>(definition.disallowedTools)
@@ -334,9 +286,15 @@ export function filterToolsForSubAgent(
     ? new Set(definition.mcpServers)
     : undefined
   // Always exclude globally forbidden tools regardless of agent definition.
-  for (const name of NESTED_AGENT_FORBIDDEN_TOOLS) {
+  for (const name of ALL_AGENT_DISALLOWED_TOOLS) {
     disallowed.add(name)
   }
+
+  // For background/async agents, restrict to the async whitelist
+  const asyncAllowed = options?.isBackground
+    ? new Set<string>(ASYNC_AGENT_ALLOWED_TOOLS)
+    : undefined
+
   return tools.filter((tool) => {
     if (allowedMcpServers) {
       const mcpServer = mcpServerNameForTool(tool.name)
@@ -345,6 +303,8 @@ export function filterToolsForSubAgent(
     if (allowed && !allowed.has(tool.name)) return false
     if (!allowed && isUnsafeForReadOnlySubAgent(tool)) return false
     if (disallowed.has(tool.name)) return false
+    // For background agents, only allow tools in the async whitelist
+    if (asyncAllowed && !asyncAllowed.has(tool.name)) return false
     return allowed !== undefined ? true : tool.isReadOnly === true
   })
 }
@@ -442,6 +402,7 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           }
         }
 
+        const startedAtMs = Date.now()
         const run = await runSubagent({
           options,
           parsed,
@@ -451,6 +412,7 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           recordStream: new MemoryRecordStream(),
           linkParentAbort: true,
         })
+        const durationMs = Date.now() - startedAtMs
         await context.appendRecord?.(run.transcriptRecord)
         const content = appendHookOutputToToolResult(
           appendWorktreeNoticeToToolResult(
@@ -462,14 +424,18 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           ),
           run.stopHookOutput,
         )
+        const doneSummary = formatAgentDoneSummary(run.transcriptRecord.toolUseCount, run.result.usage, durationMs)
         return {
           ok: true,
           content,
           metadata: {
+            display: { summary: doneSummary },
             subagent: {
               type: parsed.subagent_type,
               agentId: subAgentId,
               usage: run.result.usage,
+              toolUseCount: run.transcriptRecord.toolUseCount,
+              durationMs,
               verdict: run.verdict,
               criticalFiles: run.criticalFiles,
               ...(run.result.stopReason ? { stopReason: run.result.stopReason } : {}),
@@ -506,6 +472,7 @@ interface RunSubagentOptions {
   recordStream: RecordStream
   linkParentAbort: boolean
   transcriptPath?: string
+  isBackground?: boolean
 }
 
 interface RunSubagentResult {
@@ -530,8 +497,27 @@ async function runSubagent({
   recordStream,
   linkParentAbort,
   transcriptPath,
+  isBackground = false,
 }: RunSubagentOptions): Promise<RunSubagentResult> {
   const isForkAgent = parsed.subagent_type === 'fork'
+
+  // Fork recursion prevention: check if parent records already contain fork boilerplate
+  if (isForkAgent) {
+    try {
+      const parentRecords = await options.loadParentRecords?.()
+      if (parentRecords?.some(r =>
+        r.type === 'message' && typeof r.content === 'string' && r.content.includes(FORK_AGENT_BOILERPLATE_TAG)
+      )) {
+        throw new Error('Recursive fork agent detected. A fork agent cannot spawn another fork agent.')
+      }
+    } catch (error) {
+      // Only re-throw our recursion error, ignore other load errors
+      if (error instanceof Error && error.message.includes('Recursive fork agent')) {
+        throw error
+      }
+    }
+  }
+
   const cacheSource = isForkAgent ? forkCacheSource(context.sessionId) : agentCacheSource(subAgentId)
   const abortController = new AbortController()
   const timeout = options.agentTimeoutMs === undefined
@@ -552,9 +538,9 @@ async function runSubagent({
     const worktree = await createSubagentWorktree(options, agentDefinition, context.sessionId, subAgentId)
     const effectiveCwd = worktree?.path ?? options.cwd
     const subagentRuntime = resolveSubagentRuntime(options, parsed.subagent_type, agentDefinition)
-    const subTools = filterToolsForSubAgent(options.tools(), agentDefinition)
+    const subTools = filterToolsForSubAgent(options.tools(), agentDefinition, { isBackground })
     const permissionGate = new PermissionGate(options.permissionPrompt, options.getConfigRules?.(), {
-      mode: resolveSubagentPermissionMode(options, agentDefinition),
+      mode: resolveSubagentPermissionMode(options, agentDefinition, isBackground),
       denialStateStore: readonlyDenialStateStore(options.denialStateStore),
       cwd: effectiveCwd,
     })
@@ -724,6 +710,7 @@ async function runBackgroundSubagent(input: {
   transcriptPath: string
 }): Promise<void> {
   const { options, parsed, agentDefinition, context, subAgentId, transcriptPath } = input
+  const startedAtMs = Date.now()
   try {
     const run = await runSubagent({
       options,
@@ -734,12 +721,15 @@ async function runBackgroundSubagent(input: {
       transcriptPath,
       recordStream: new SidechainRecordStream(transcriptPath),
       linkParentAbort: false,
+      isBackground: true,
     })
     await context.appendRecord?.(run.transcriptRecord)
     await appendSubagentTaskRecord(context, parsed, subAgentId, 'completed', {
       transcriptPath,
       summary: run.transcriptRecord.summary,
       usage: run.result.usage,
+      toolUseCount: run.transcriptRecord.toolUseCount,
+      durationMs: Date.now() - startedAtMs,
       verdict: run.verdict,
       criticalFiles: run.criticalFiles,
       ...worktreeTaskDetails(run.worktree),
@@ -781,6 +771,8 @@ async function appendSubagentTaskRecord(
     summary?: string
     error?: string
     usage?: TokenUsage
+    toolUseCount?: number
+    durationMs?: number
     verdict?: 'PASS' | 'FAIL' | 'PARTIAL'
     criticalFiles?: string[]
     isolation?: 'worktree'
@@ -803,6 +795,8 @@ async function appendSubagentTaskRecord(
     ...(details.summary ? { summary: details.summary } : {}),
     ...(details.error ? { error: details.error } : {}),
     ...(details.usage ? { usage: details.usage } : {}),
+    ...(typeof details.toolUseCount === 'number' ? { toolUseCount: details.toolUseCount } : {}),
+    ...(typeof details.durationMs === 'number' ? { durationMs: details.durationMs } : {}),
     ...(details.verdict ? { verdict: details.verdict } : {}),
     ...(details.criticalFiles && details.criticalFiles.length > 0 ? { criticalFiles: details.criticalFiles } : {}),
     ...(details.isolation ? { isolation: details.isolation } : {}),
@@ -941,6 +935,20 @@ function resolveSubagentRuntime(
     providerName: options.providerName,
     promptCacheRetention: options.promptCacheRetention,
   }
+
+  // Environment variable override: check per-type first, then generic
+  const envModelType = process.env[`MYAGENT_SUBAGENT_MODEL_${subagentType.toUpperCase()}`]?.trim()
+  const envModelGeneric = process.env.MYAGENT_SUBAGENT_MODEL?.trim()
+  const envModel = envModelType || envModelGeneric
+  if (envModel) {
+    try {
+      const runtime = options.resolveSubagentModel?.(subagentType, envModel)
+      if (runtime) return runtime
+    } catch {
+      console.warn(`MYAGENT_SUBAGENT_MODEL="${envModel}" could not be resolved for subagent "${subagentType}", falling back to default routing`)
+    }
+  }
+
   const requestedModelKey = definition.model?.trim()
   if (requestedModelKey === 'inherit') return parentRuntime
 
@@ -960,10 +968,14 @@ function resolveSubagentRuntime(
 function resolveSubagentPermissionMode(
   options: CreateAgentToolOptions,
   definition: BaseAgentDefinition,
+  runInBackground: boolean = false,
 ): PermissionMode | undefined {
   const parentMode = options.permissionMode?.()
   if (parentMode === 'bypass') return 'bypass'
-  return definition.permissionMode ?? parentMode
+  if (definition.permissionMode) return definition.permissionMode
+  // Background agents default to 'auto' mode to avoid permission prompts
+  if (runInBackground) return 'auto'
+  return parentMode
 }
 
 function skillsForSubAgent(
@@ -1063,6 +1075,27 @@ function appendHookOutputToToolResult(content: string, hookOutput: string | unde
 function appendWorktreeNoticeToToolResult(content: string, worktree: SubagentWorktreeSummary | undefined): string {
   const notice = formatWorktreeNotice(worktree)
   return notice ? `${content}\n\n${notice}` : content
+}
+
+function formatAgentDoneSummary(
+  toolUseCount: number | undefined,
+  usage: TokenUsage | undefined,
+  durationMs: number,
+): string {
+  const parts: string[] = []
+  if (typeof toolUseCount === 'number') {
+    parts.push(`${toolUseCount} ${toolUseCount === 1 ? 'tool use' : 'tool uses'}`)
+  }
+  if (usage) {
+    const total = (usage.inputTokens ?? 0)
+      + (usage.cacheReadInputTokens ?? 0)
+      + (usage.outputTokens ?? 0)
+    if (total > 0) parts.push(`${formatTokenCount(total)} tokens`)
+  }
+  if (durationMs >= 0) {
+    parts.push(`${Math.max(1, Math.round(durationMs / 1000))}s`)
+  }
+  return parts.length > 0 ? `Done (${parts.join(' \u00b7 ')})` : 'Done'
 }
 
 function appendTruncationNotice(content: string, result: AgentRunResult): string {
@@ -1194,7 +1227,7 @@ function buildAgentToolDescription(definitions: readonly BaseAgentDefinition[]):
     .map((definition) => `"${definition.type}" (${[definition.description, formatDefinitionCapabilities(definition)].filter(Boolean).join('; ')})`)
     .join(', ')
   return [
-    'Run a typed sub-agent on an isolated task. Use this for complex, multi-step research, exploration, planning, or verification work whose intermediate tool output does not need to stay in the main context. Cannot spawn nested agents.',
+    'Run a typed sub-agent on an isolated task. Use this for complex, multi-step research, exploration, or planning work whose intermediate tool output does not need to stay in the main context. Cannot spawn nested agents.',
     `Available subagent_type values: ${typeDescriptions}.`,
     'Always pass an explicit subagent_type.',
     'For long-running or independent work, set run_in_background=true and include a short description. Background agents return immediately and send a completion notification later.',

@@ -7,6 +7,7 @@ import type { Tool, ToolResult } from '../harness/types.js'
 interface BashInput {
   command: string
   timeout?: number
+  run_in_background?: boolean
 }
 
 interface ShellInfo {
@@ -77,12 +78,49 @@ export function _resetCachedShellForTests(): void {
   cachedShell = undefined
 }
 
+/**
+ * Minimum sleep duration (seconds) that triggers the blocked-sleep pattern.
+ * Sleep commands below this threshold are allowed without run_in_background.
+ */
+const SLEEP_BLOCK_THRESHOLD_SECONDS = 2
+
+/**
+ * Detect a standalone blocking sleep pattern at the start of a command.
+ * Returns the sleep duration in seconds if found, or null otherwise.
+ *
+ * Matches:
+ *   - `sleep N` (standalone)
+ *   - `sleep N && ...` (sleep as the first command in a chain)
+ *   - `sleep N || ...` (sleep as the first command in an OR chain)
+ *   - `sleep N; ...` (sleep followed by semicolon)
+ *   - `sleep N | ...` (sleep as the first command in a pipe)
+ *   - `sleep N # comment` (sleep with shell comment)
+ *
+ * Does NOT match:
+ *   - `sleep 0.5` (below threshold)
+ *   - `for i in 1 2; do sleep 1; done` (sleep inside compound command)
+ *   - `echo hello && sleep 5` (sleep not at the start)
+ */
+export function detectSleepPattern(command: string): number | null {
+  const trimmed = command.trim()
+  // Match: "sleep", whitespace, number (int or float),
+  // then end-of-string or whitespace followed by shell operators (&&, ||, ;, |) or comment (#)
+  const match = trimmed.match(/^sleep\s+(\d+(?:\.\d+)?)\s*(?:$|&&|\|\||[;|#])/)
+  if (!match) return null
+
+  const seconds = parseFloat(match[1]!)
+  if (isNaN(seconds) || seconds < SLEEP_BLOCK_THRESHOLD_SECONDS) return null
+  return seconds
+}
+
 export const bashTool: Tool = {
   name: 'Bash',
-  description: 'Execute a shell command and return its output.',
+  description: 'Execute a shell command and return its output. Set run_in_background: true for long-running commands (e.g. sleep, servers).',
+  searchHint: 'run shell commands terminal',
   inputSchema: z.object({
     command: z.string().min(1),
     timeout: z.number().min(1).max(600_000).optional(),
+    run_in_background: z.boolean().optional(),
   }).strict(),
   riskLevel: 'dangerous',
   isDestructive: true,
@@ -104,6 +142,17 @@ export const bashTool: Tool = {
   async execute(input, context) {
     const options = input as BashInput
     const timeout = options.timeout ?? 30_000
+
+    // Block standalone sleep commands unless run_in_background is set.
+    const sleepSeconds = detectSleepPattern(options.command)
+    if (sleepSeconds !== null && !options.run_in_background) {
+      return {
+        ok: false,
+        content: `Blocking sleep command (${sleepSeconds}s) detected. Use \`run_in_background: true\` for long-running commands, or restructure to avoid blocking the conversation.`,
+        errorCode: 'precondition_failed',
+        errorDetails: { sleepSeconds },
+      }
+    }
 
     return new Promise<ToolResult>((resolve) => {
       const { shell, args: shellArgs } = getShell()

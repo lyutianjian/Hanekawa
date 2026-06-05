@@ -71,7 +71,6 @@ export interface CommandContext {
   setEffort?: (level: string) => void | Promise<void>
   openModelPicker?: () => void
   openEffortPicker?: () => void
-  runVerification?: (args: string) => Promise<string>
   reloadAgentDefinitions?: () => Promise<number>
   getPermissionMode?: () => string
   enterPlanMode?: () => void | Promise<void>

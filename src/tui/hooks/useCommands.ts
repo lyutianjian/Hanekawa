@@ -27,7 +27,6 @@ interface UseCommandsOptions {
   clearMessages: () => void | Promise<void>
   clearCachedSections?: () => void
   invalidateRecordsCache?: () => void
-  runVerification?: (args: string) => Promise<string>
   reloadAgentDefinitions?: () => Promise<number>
   getPermissionMode?: () => string
   enterPlanMode?: () => void | Promise<void>
@@ -53,7 +52,6 @@ export function useCommands({
   clearMessages,
   clearCachedSections,
   invalidateRecordsCache,
-  runVerification,
   reloadAgentDefinitions,
   getPermissionMode,
   enterPlanMode,
@@ -72,7 +70,7 @@ export function useCommands({
   // without listing the parent objects in deps. These assignments happen
   // during render intentionally: App.tsx re-creates `model` (and sometimes
   // `session`) as fresh object literals on every render, and also rebuilds
-  // callbacks such as `runVerification` when runtime changes. Depending on
+  // callbacks when runtime changes. Depending on
   // those identities would rebuild dispatch each streaming chunk, while a
   // passive effect could leave a just-committed dispatch briefly pointing at
   // stale command context. Keying on stable scalars (session.id, model.key)
@@ -96,8 +94,6 @@ export function useCommands({
   clearCachedSectionsRef.current = clearCachedSections
   const invalidateRecordsCacheRef = useRef(invalidateRecordsCache)
   invalidateRecordsCacheRef.current = invalidateRecordsCache
-  const runVerificationRef = useRef(runVerification)
-  runVerificationRef.current = runVerification
   const reloadAgentDefinitionsRef = useRef(reloadAgentDefinitions)
   reloadAgentDefinitionsRef.current = reloadAgentDefinitions
   const getPermissionModeRef = useRef(getPermissionMode)
@@ -174,7 +170,6 @@ export function useCommands({
         setModel: (m) => setModelRef.current(m),
         getEffort: getEffortRef.current ? () => getEffortRef.current!() : undefined,
         setEffort: setEffortRef.current ? (level) => setEffortRef.current!(level) : undefined,
-        runVerification: runVerificationRef.current,
         reloadAgentDefinitions: reloadAgentDefinitionsRef.current,
         getPermissionMode: getPermissionModeRef.current,
         enterPlanMode: enterPlanModeRef.current,

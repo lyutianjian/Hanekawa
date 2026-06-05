@@ -148,7 +148,7 @@ export function buildPlanModeExitReminder(planContent: string): string {
   const lines = [
     '## Exited Plan Mode',
     '',
-    'User has approved your plan. You can now start coding. Start with updating your todo list (TodoWrite) if applicable, then proceed with the implementation.',
+    'User has approved your plan. You can now start coding. Start with updating your task list (TaskCreate/TaskUpdate) if applicable, then proceed with the implementation.',
   ]
   if (trimmed.length > 0) {
     lines.push('', 'Approved plan content:', trimmed)

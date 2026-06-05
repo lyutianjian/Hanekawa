@@ -203,12 +203,12 @@ test('drainRequests handles exit with empty plan: opens dialog and can approve e
   })
 })
 
-test('drainRequests handles exit with inline plan: writes to disk + opens dialog with critique findings', async () => {
+test('drainRequests handles exit with inline plan: writes to disk + opens dialog', async () => {
   await withTempCwd(async (cwd) => {
     const setupResult = await setup(cwd)
     const { gate, meta } = setupResult
     const localRecords: SessionRecord[] = []
-    let dialogInput: { planContent: string; planFilePath: string; finalCritique?: { findings: string } } | undefined
+    let dialogInput: { planContent: string; planFilePath: string } | undefined
     const manager = new PlanModeManager({
       cwd,
       sessionMeta: meta,
@@ -219,7 +219,6 @@ test('drainRequests handles exit with inline plan: writes to disk + opens dialog
     })
     gate.setPlanSlugProvider(() => manager.getSlug())
     manager.setUiDeps({
-      runCritiqueAgent: async () => ({ findings: 'consider edge case X' }),
       openExitDialog: async (input) => {
         dialogInput = input
         return { kind: 'approve_restore_keep' }
@@ -238,7 +237,6 @@ test('drainRequests handles exit with inline plan: writes to disk + opens dialog
     await manager.beforeTurn()
     assert.ok(dialogInput, 'dialog should open')
     assert.equal(dialogInput!.planContent, '# Inline plan body\n')
-    assert.equal(dialogInput!.finalCritique?.findings, 'consider edge case X')
     const approved = localRecords.find(
       (r) => r.type === 'plan_mode_outcome' && r.kind === 'exit_approved',
     )
@@ -441,7 +439,6 @@ test('subagent_exit kind routed identically to exit', async () => {
     })
     gate.setPlanSlugProvider(() => manager.getSlug())
     manager.setUiDeps({
-      runCritiqueAgent: async () => ({ findings: 'fine' }),
       openExitDialog: async () => {
         dialogOpened = true
         return { kind: 'approve_restore_keep' }

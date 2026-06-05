@@ -44,7 +44,6 @@ import { clampEffort, type EffortValue, type EffortLevel } from '../../config/ef
 export type AppMode = 'idle' | 'running' | 'restore' | 'exiting'
 
 const ABORT_TIMEOUT_MS = 2000
-const VERIFICATION_TASK_MAX_CHARS = 60_000
 
 export interface AppRuntime {
   loop: AgentLoop
@@ -131,7 +130,6 @@ export function App({
   const [effortPickerOpen, setEffortPickerOpen] = useState(false)
   const [effortLevel, setEffortLevel] = useState<string>(initialEffortLevel ?? 'high')
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const verifyAbortRef = useRef<AbortController | null>(null)
   const restoreInputRef = useRef<(text: string) => void>(() => {})
   const [spinnerColors, setSpinnerColors] = useState(() => sampleSpinnerColors())
   const checkpointServiceRef = useRef<CheckpointService>(
@@ -380,44 +378,6 @@ export function App({
       : message)
   }, [providerConfig, activateModelKey, addSystemMessage])
 
-  const runVerification = useCallback(async (args: string): Promise<string> => {
-    setSpinnerColors(sampleSpinnerColors())
-    setMode('running')
-    const ac = new AbortController()
-    verifyAbortRef.current = ac
-    try {
-      const loaded = await store.loadRecordsWithDiagnostics(activeSession.id)
-      const task = buildVerificationTask(loaded.records, args)
-      const result = await runtime.loop.runTool(
-        {
-          id: randomUUID(),
-          name: 'Agent',
-          input: {
-            task,
-            subagent_type: 'verification',
-            maxTurns: 20,
-          },
-        },
-        { signal: ac.signal },
-      )
-      if (!result.ok) {
-        if (result.errorCode === 'aborted') return 'Verification interrupted.'
-        return `Verification agent failed: ${result.content}`
-      }
-      return result.content
-    } catch (err) {
-      if (err instanceof Error && (err.name === 'AbortError' || (err as Error & { aborted?: boolean }).aborted)) {
-        return 'Verification interrupted.'
-      }
-      throw err
-    } finally {
-      if (verifyAbortRef.current === ac) {
-        verifyAbortRef.current = null
-      }
-      setMode('idle')
-    }
-  }, [store, activeSession.id, runtime.loop])
-
   const reloadAgentDefinitions = useCallback(async (): Promise<number> => {
     if (!reloadRuntimeAgentDefinitions) {
       throw new Error('Agent definition reload is not available in this runtime.')
@@ -487,7 +447,6 @@ export function App({
     clearMessages: clearConversation,
     clearCachedSections: () => runtime.loop.clearCachedSections(),
     invalidateRecordsCache: () => runtime.loop.invalidateRecordsCache(),
-    runVerification,
     reloadAgentDefinitions,
     getPermissionMode: () => permissionGate.getMode(),
     enterPlanMode: () => {
@@ -515,8 +474,6 @@ export function App({
   const handleInterrupt = useCallback(() => {
     // Signal the AbortController to abort the agent loop
     interrupt('user-cancel')
-    // Also abort any in-flight verification dispatched via runtime.loop.runTool.
-    verifyAbortRef.current?.abort('user-cancel')
 
     // Set up abort timeout: if agent loop doesn't stop within 2s, force-terminate
     abortTimeoutRef.current = setTimeout(() => {
@@ -537,7 +494,6 @@ export function App({
     if (isStreaming) {
       interrupt('exit')
     }
-    verifyAbortRef.current?.abort('exit')
     // Run cleanup (e.g., disconnect MCP clients) before exiting. Errors are
     // swallowed inside onBeforeExit; we only need to await the promise so
     // disconnects have a chance to flush before process.exit kills the loop.
@@ -907,95 +863,3 @@ function formatRestoreMessagePreview(content: string): string {
   return `${normalized.slice(0, 47)}...`
 }
 
-function buildVerificationTask(records: SessionRecord[], focus: string): string {
-  const lastAssistantIndex = findLastIndex(records, (record) =>
-    record.type === 'message' && record.role === 'assistant' && record.content.trim().length > 0
-  )
-  if (lastAssistantIndex < 0) {
-    throw new Error('No assistant turn found to verify.')
-  }
-
-  const assistant = records[lastAssistantIndex]
-  if (assistant?.type !== 'message') {
-    throw new Error('No assistant turn found to verify.')
-  }
-
-  const previousUser = findLastBefore(records, lastAssistantIndex, (record) =>
-    record.type === 'message' && record.role === 'user'
-  )
-  const turnRecords = assistant.turnId
-    ? records.filter((record) => record.turnId === assistant.turnId)
-    : records.slice(Math.max(0, lastAssistantIndex - 12), lastAssistantIndex + 1)
-
-  const body = [
-    'Adversarially verify the last assistant turn from the parent Hanekawa session.',
-    '',
-    'Do not modify the project. Independently inspect and exercise the claimed behavior. Do not trust the implementation notes or any tests the implementing assistant said it ran.',
-    '',
-    focus.trim() ? `User-specified verification focus:\n${focus.trim()}` : undefined,
-    previousUser ? `Original user request:\n${previousUser.content}` : undefined,
-    `Last assistant response:\n${assistant.content}`,
-    `Relevant records from that turn:\n${formatRecordsForVerification(turnRecords)}`,
-  ].filter((part): part is string => Boolean(part))
-
-  return truncateMiddle(body.join('\n\n'), VERIFICATION_TASK_MAX_CHARS)
-}
-
-function findLastBefore(
-  records: SessionRecord[],
-  beforeIndex: number,
-  predicate: (record: SessionRecord) => boolean,
-): Extract<SessionRecord, { type: 'message' }> | undefined {
-  for (let index = beforeIndex - 1; index >= 0; index--) {
-    const record = records[index]
-    if (record && predicate(record) && record.type === 'message') return record
-  }
-  return undefined
-}
-
-function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
-  for (let index = items.length - 1; index >= 0; index--) {
-    const item = items[index]
-    if (item !== undefined && predicate(item)) return index
-  }
-  return -1
-}
-
-function formatRecordsForVerification(records: SessionRecord[]): string {
-  return records.map((record) => {
-    if (record.type === 'message') {
-      return [
-        `- message ${record.role}:`,
-        indent(truncateMiddle(record.content, 10_000)),
-      ].join('\n')
-    }
-    if (record.type === 'tool_use') {
-      return [
-        `- tool_use ${record.tool}:`,
-        indent(truncateMiddle(JSON.stringify(record.input, null, 2), 4_000)),
-      ].join('\n')
-    }
-    if (record.type === 'tool_result') {
-      return [
-        `- tool_result ${record.tool} (${record.ok ? 'ok' : 'failed'}):`,
-        indent(truncateMiddle(record.content, 10_000)),
-      ].join('\n')
-    }
-    return `- ${record.type}`
-  }).join('\n\n')
-}
-
-function indent(text: string): string {
-  return text.split('\n').map((line) => `  ${line}`).join('\n')
-}
-
-function truncateMiddle(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text
-  const head = Math.floor(maxChars * 0.6)
-  const tail = maxChars - head
-  return [
-    text.slice(0, head),
-    `[truncated ${text.length - maxChars} chars]`,
-    text.slice(text.length - tail),
-  ].join('\n')
-}

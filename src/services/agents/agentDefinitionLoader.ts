@@ -4,9 +4,9 @@ import path from 'node:path'
 import YAML from 'yaml'
 import {
   AGENT_MAX_RESULT_SIZE_CHARS,
+  ALL_AGENT_DISALLOWED_TOOLS,
   BUILT_IN_AGENT_DEFINITIONS,
   DEFAULT_AGENT_MAX_TURNS,
-  NESTED_AGENT_FORBIDDEN_TOOLS,
   infersReadOnlyAgentFromTools,
   type BaseAgentDefinition,
 } from '../../tools/agentTool.js'
@@ -31,6 +31,7 @@ interface AgentFrontmatter {
   maxResultSizeChars?: unknown
   initialPrompt?: unknown
   effort?: unknown
+  criticalSystemReminder?: unknown
 }
 
 const CUSTOM_AGENT_PROMPT_WARN_CHARS = 16_000
@@ -122,6 +123,7 @@ export class AgentDefinitionLoader {
     const omitProjectContext = parseBoolean(frontmatter.omitProjectContext, false, 'omitProjectContext')
     const explicitReadOnlyAgent = parseOptionalBoolean(frontmatter.isReadOnlyAgent, 'isReadOnlyAgent')
     const initialPrompt = parseOptionalString(frontmatter.initialPrompt, 'initialPrompt')
+    const criticalSystemReminder = parseOptionalString(frontmatter.criticalSystemReminder, 'criticalSystemReminder')
 
     const effortRaw = frontmatter.effort
     let effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | number | undefined
@@ -157,8 +159,8 @@ export class AgentDefinitionLoader {
       ...(isolation ? { isolation } : {}),
       ...(tools ? { tools } : {}),
       disallowedTools: userDisallowedTools
-        ? [...new Set([...NESTED_AGENT_FORBIDDEN_TOOLS, ...userDisallowedTools])]
-        : NESTED_AGENT_FORBIDDEN_TOOLS,
+        ? [...new Set([...ALL_AGENT_DISALLOWED_TOOLS, ...userDisallowedTools])]
+        : [...ALL_AGENT_DISALLOWED_TOOLS],
       maxTurns,
       maxResultSizeChars,
       isReadOnlyAgent: explicitReadOnlyAgent === false ? false : inferredReadOnlyAgent,
@@ -166,6 +168,7 @@ export class AgentDefinitionLoader {
       getSystemPrompt: () => content,
       ...(initialPrompt ? { initialPrompt } : {}),
       ...(effort !== undefined ? { effort } : {}),
+      ...(criticalSystemReminder ? { criticalSystemReminder } : {}),
     }
   }
 }

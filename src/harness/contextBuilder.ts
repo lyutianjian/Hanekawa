@@ -12,6 +12,7 @@ import { captureReadFileStateFromStat, readFileAndRemember } from '../tools/file
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import { evictOldestIfNeeded } from '../utils/cache.js'
 import { wrapInSystemReminder } from './systemReminder.js'
+import { isToolSearchEnabled, isDeferredTool } from '../utils/toolSearch.js'
 
 const require = createRequire(import.meta.url)
 const picomatch = require('picomatch') as {
@@ -125,7 +126,7 @@ When you encounter an obstacle, do not use destructive actions as a shortcut to 
 
 const USING_TOOLS_SECTION = `# Using your tools
  - Prefer dedicated tools over Bash when one fits (Read, Edit, Write, Glob, Grep). Reserve Bash for shell-only operations.
- - Use TaskCreate, TaskList, TaskGet, and TaskUpdate to plan and track complex multi-step work. Keep task status current as work starts, changes, or completes. TodoWrite remains available as a lightweight compatibility path, but structured Task tools are preferred for task tracking.
+ - Use TaskCreate, TaskList, TaskGet, and TaskUpdate to plan and track complex multi-step work. Keep task status current as work starts, changes, or completes.
  - You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency. However, if some tool calls depend on previous calls to inform dependent values, do NOT call these tools in parallel and instead call them sequentially. For instance, if one operation must complete before another starts, run these operations sequentially instead.`.trim()
 
 const TONE_AND_STYLE_SECTION = `# Tone and style
@@ -355,6 +356,7 @@ export class ContextBuilder {
           tool: record.tool,
           ok: record.ok,
           content: record.content,
+          ...(record.apiResultBlock ? { apiResultBlock: record.apiResultBlock } : {}),
         })
         continue
       }
@@ -384,12 +386,18 @@ export class ContextBuilder {
     env?: EnvironmentInfo,
     permissionMode?: PermissionMode,
   ): string[] {
+    // Split tools into active (full schema in prompt) and deferred (name only)
+    const toolSearchActive = isToolSearchEnabled()
+    const activeTools = toolSearchActive ? tools.filter(t => !isDeferredTool(t)) : tools
+
     const staticSections = [
       ...this.buildDefaultSystemSections(enabledSections ?? this.defaultEnabledSections),
       projectContext?.trim(),
       this.buildEnvironmentSystemSection(env),
       this.buildSkillsSystemSection(skills),
-      this.buildAvailableToolsSystemSection(tools),
+      this.buildAvailableToolsSystemSection(activeTools),
+      // Deferred tools are announced via injected user message in the payload builder,
+      // not in the system prompt, to avoid busting the prompt cache.
     ].filter((section): section is string => Boolean(section))
 
     const dynamicSections = [
@@ -572,13 +580,20 @@ export class ContextBuilder {
       totalBudget: 25_000,
     })
 
-    if (refreshedFiles.length === 0 && refreshed.inaccessibleFiles.length === 0 && restoredSkills.length === 0) return []
+    // Restore discovered tool names from ToolSearch
+    const discoveredNames = toolContext?.discoveredToolNames
+    const discoveredBlock = discoveredNames && discoveredNames.size > 0
+      ? `Previously discovered tools via ToolSearch (available for immediate use): ${[...discoveredNames].join(', ')}`
+      : undefined
+
+    if (refreshedFiles.length === 0 && refreshed.inaccessibleFiles.length === 0 && restoredSkills.length === 0 && !discoveredBlock) return []
 
     const innerContent = [
       'Prior conversation was compacted. The following recently used context has been restored for continuity:',
       ...refreshedFiles.map((entry) => `# restoredFile ${entry.name}\n${entry.content}`),
       ...refreshed.inaccessibleFiles.map((name) => `Note: previously read file ${name} is no longer accessible.`),
       ...restoredSkills.map((entry) => `# restoredSkill ${entry.name}\n${entry.content}`),
+      ...(discoveredBlock ? [discoveredBlock] : []),
     ].join('\n\n')
     const content = wrapInSystemReminder(innerContent)
 

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import { ContextBuilder } from './contextBuilder.js'
+import { isToolSearchEnabled, extractDiscoveredToolNames, filterToolsForRequest } from '../utils/toolSearch.js'
 import type { EnvironmentInfo } from './contextBuilder.js'
 import { ToolRunner } from './toolRunner.js'
 import { EMPTY_TOKEN_USAGE, addTokenUsage } from './usage.js'
@@ -110,9 +111,9 @@ export class AgentLoop {
   private pendingSubagentTranscriptUsage: TokenUsage = { ...EMPTY_TOKEN_USAGE }
   private readonly pendingToolUseSummaries: PendingToolUseSummary[] = []
   // Serializes run() and runTool() against each other. Both helpers funnel
-  // through enqueue() so that a tool dispatched via runTool (e.g. an
-  // out-of-band /verify) cannot race a concurrent run() and clobber shared
-  // state in the toolContext, recordsCache, or recordStream.
+  // through enqueue() so that a tool dispatched via runTool cannot race a
+  // concurrent run() and clobber shared state in the toolContext,
+  // recordsCache, or recordStream.
   private inFlight: Promise<unknown> | null = null
   // Sticky for the rest of the session after any model switch: thinking
   // signatures are model/provider-bound, and prior primary/fallback thinking
@@ -298,6 +299,7 @@ export class AgentLoop {
         lastResponseTokenCount: useCachedTokenEstimate ? lastResponseTokenCount : undefined,
         lastResponseRecordCount: useCachedTokenEstimate ? lastResponseRecordCount : undefined,
         lastResponseRecordId: useCachedTokenEstimate ? lastResponseRecordId : undefined,
+        discoveredToolNames: this.options.toolContext.discoveredToolNames,
         promptCacheRetention: this.activeModel.promptCacheRetention,
         turnId,
         circuitKey: this.options.toolContext.sessionId,
@@ -361,12 +363,60 @@ export class AgentLoop {
       const requestRecordCount = records.length
       const canReuseResponseTokenEstimate = useCachedTokenEstimate && !compactResult.compacted
       pendingAssistantStreamContent = ''
+
+      // Set provider name on tool context for ToolSearchTool dual-provider support
+      this.options.toolContext.providerName = this.activeModel.providerName
+      // Inject full tool list for ToolSearchTool scoring (pragmatic escape hatch)
+      ;(this.options.toolContext as Record<string, unknown>)['_allTools'] = this.options.tools
+
+      const hasDeferred = isToolSearchEnabled() && this.options.tools.some(t => t.shouldDefer || t.isMcp)
+
+      // Compute deferred tool names from the FULL (unfiltered) tool list.
+      // This is used by the payload builder for <available-deferred-tools>,
+      // NOT for the API tools array (which uses filteredTools).
+      const allDeferredToolNames = hasDeferred
+        ? new Set(this.options.tools.filter(t => t.shouldDefer || t.isMcp).map(t => t.name))
+        : undefined
+
+      // Filter tools: only include deferred tools that have been discovered
+      // via tool_reference blocks in message history. Non-deferred tools and
+      // ToolSearch itself are always included.
+      const discoveredNames = extractDiscoveredToolNames(records)
+
+      // Separate pre-compact vs post-compact discovered tools.
+      // After compaction, tool_reference blocks from pre-compact messages are lost.
+      // Tools discovered before compaction should NOT have defer_loading — their
+      // schema was already loaded and the tool_reference is no longer in history.
+      const preCompactDiscoveredNames = new Set<string>()
+      for (const record of records) {
+        if (record.type === 'compact_boundary' && record.preCompactDiscoveredTools) {
+          for (const name of record.preCompactDiscoveredTools) preCompactDiscoveredNames.add(name)
+        }
+      }
+      // Post-compact discovered = all discovered minus pre-compact
+      const postCompactDiscoveredNames = new Set<string>()
+      for (const name of discoveredNames) {
+        if (!preCompactDiscoveredNames.has(name)) postCompactDiscoveredNames.add(name)
+      }
+      // Store for the payload builder to use as defer_loading candidates
+      this.options.toolContext._postCompactDiscoveredNames = postCompactDiscoveredNames
+      // Sync back to toolContext for post-compact restore
+      if (discoveredNames.size > 0) {
+        this.options.toolContext.discoveredToolNames ??= new Set()
+        for (const name of discoveredNames) {
+          this.options.toolContext.discoveredToolNames.add(name)
+        }
+      }
+      const filteredTools = hasDeferred
+        ? filterToolsForRequest(this.options.tools, discoveredNames)
+        : this.options.tools
+
       const modelRequest = {
         system: built.system,
         systemBlocks: built.systemBlocks,
         messages: built.messages,
         contextItems: built.contextItems,
-        tools: this.options.tools,
+        tools: filteredTools,
         model: this.activeModel.model,
         promptCacheRetention: this.activeModel.promptCacheRetention,
         maxOutputTokens: maxOutputTokensOverride,
@@ -376,6 +426,9 @@ export class AgentLoop {
         retry: { signal },
         cacheSource,
         cacheRuntime: this.options.cacheRuntime,
+        hasDeferredTools: hasDeferred,
+        allDeferredToolNames,
+        postCompactDiscoveredNames: this.options.toolContext._postCompactDiscoveredNames,
         onTextDelta: (delta: string) => {
           pendingAssistantStreamContent += delta
         },
@@ -549,6 +602,9 @@ export class AgentLoop {
       usage = addTokenUsage(usage, this.drainSubagentTranscriptUsage())
       this.startToolUseSummary(toolResults, turnId)
 
+      // Track discovered tool names from ToolSearch results
+      this.trackDiscoveredTools(toolResults)
+
       if (toolResults.length > 0 && toolResults.every((r) => !r.ok)) {
         await this.appendRecord({
           type: 'message',
@@ -611,7 +667,7 @@ export class AgentLoop {
         'The previous turn was interrupted by the user and is now being resumed. Continue from where you left off, but do not blindly repeat tool calls that already completed.',
         `Interrupted prompt:\n${interruption.prompt}`,
         `Remaining tracked tasks:\n${remaining}`,
-        'Before doing more work, inspect or update TaskList/TodoWrite so task status reflects the resumed state.',
+        'Before doing more work, inspect or update TaskList so task status reflects the resumed state.',
       ].join('\n'))
     }
 
@@ -694,8 +750,8 @@ export class AgentLoop {
    * the loop's in-flight gate. If a concurrent run() is in progress, this
    * call waits for it to finish before executing.
    *
-   * Use this for diagnostic dispatch (e.g. /verify) that should leave no
-   * trace in the main conversation. Pass `recordStream` and/or `toolContext`
+   * Use this for diagnostic dispatch that should leave no trace in the main
+   * conversation. Pass `recordStream` and/or `toolContext`
    * explicitly only if you actually want the call to participate in the main
    * session — e.g. tests asserting record persistence.
    */
@@ -958,6 +1014,30 @@ export class AgentLoop {
     const usage = this.pendingSubagentTranscriptUsage
     this.pendingSubagentTranscriptUsage = { ...EMPTY_TOKEN_USAGE }
     return usage
+  }
+
+  /**
+   * Extract discovered tool names from ToolSearch results and add them to
+   * toolContext.discoveredToolNames. This set survives compaction via the
+   * post-compact restore mechanism.
+   */
+  private trackDiscoveredTools(toolResults: ToolResultRecord[]): void {
+    for (const result of toolResults) {
+      if (result.tool !== 'ToolSearch' || !result.ok) continue
+      // For Anthropic: content is JSON.stringify({matches, query, totalDeferredTools})
+      // For OpenAI: content is plain text with schemas — skip
+      try {
+        const parsed = JSON.parse(result.content)
+        if (Array.isArray(parsed.matches)) {
+          this.options.toolContext.discoveredToolNames ??= new Set()
+          for (const name of parsed.matches) {
+            this.options.toolContext.discoveredToolNames.add(name)
+          }
+        }
+      } catch {
+        // Not JSON (OpenAI text format) — skip
+      }
+    }
   }
 
   private isConcurrencySafe(call: ToolCall): boolean {

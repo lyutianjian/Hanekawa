@@ -42,7 +42,7 @@ export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDur
         </Text>
         {thinkingPreview && (
           <Box flexDirection="row">
-            <Text color={theme.subtleText}>{'⎿ '}</Text>
+            <Text color={theme.subtleText}>{'⎿  '}</Text>
             <Text color={theme.subtleText} dimColor wrap="truncate-end">
               {thinkingPreview}
             </Text>
@@ -60,7 +60,7 @@ export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDur
         Thinking
       </Text>
       <Box flexDirection="row">
-        <Text color={theme.subtleText}>{'⎿ '}</Text>
+        <Text color={theme.subtleText}>{'⎿  '}</Text>
         <Box flexGrow={1}>
           <Markdown content={thinking} color={theme.subtleText} />
         </Box>

@@ -25,6 +25,7 @@ import {
   applyTuiRecordToTranscriptState,
   commitLiveItemsExcludingThinking,
   commitLiveItemsToStatic,
+  commitPrecedingLiveItemsToStatic,
   createTranscriptState,
   isHiddenToolCall,
   recordsToDisplayItems,
@@ -392,7 +393,13 @@ export function useAgentLoop({
             setSpinnerSubText(undefined)
           }
         }
-        if (!isHiddenToolCall(record.tool)) {
+        if (isHiddenToolCall(record.tool)) {
+          // Hidden tools (TaskCreate, TaskUpdate, EnterPlanMode, etc.) don't
+          // have a visible tool_call in liveItems, but we still need to commit
+          // preceding user messages and thinking blocks to static to preserve
+          // correct chronological ordering.
+          setTranscript((prev) => commitPrecedingLiveItemsToStatic(prev))
+        } else {
           setTranscript((prev) => applyTuiRecordToTranscriptState(prev, record))
         }
       } else if (record.type === 'message' && record.role === 'assistant') {

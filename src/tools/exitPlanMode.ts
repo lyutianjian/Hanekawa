@@ -37,7 +37,7 @@ Ensure your plan is complete and unambiguous:
  * permission mode itself; instead it appends a `plan_mode_request`
  * (kind='exit') record to the parent record stream, which the
  * PlanModeManager drains at the start of the next turn. The manager
- * then runs the critique agent, opens the exit dialog, and on approve
+ * then opens the exit dialog, and on approve
  * transitions the gate via `gate.restoreFromPlanMode()`.
  *
  * If `plan` is provided inline, it is attached to the request record

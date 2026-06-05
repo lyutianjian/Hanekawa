@@ -7,7 +7,6 @@ import { randomUUID } from 'node:crypto'
 import { PermissionGate } from '../src/harness/permissions.js'
 import {
   PlanModeManager,
-  type CritiqueResult,
   type ExitDialogInput,
   type ExitPlanDecision,
   type PlanModeManagerDeps,
@@ -32,7 +31,6 @@ interface Harness {
   gate: PermissionGate
   records: SessionRecord[]
   meta: { id: string; shortId: string }
-  critiqueCalled: { value: number }
   dialogInputs: ExitDialogInput[]
   dialogResponses: ExitPlanDecision[]
   chatMessages: string[]
@@ -40,7 +38,6 @@ interface Harness {
 }
 
 async function buildHarness(cwd: string, options: {
-  critiqueResponses?: CritiqueResult[]
   dialogResponses?: ExitPlanDecision[]
   enterApproved?: boolean
 } = {}): Promise<Harness> {
@@ -49,8 +46,6 @@ async function buildHarness(cwd: string, options: {
   const meta = await store.create()
   const records: SessionRecord[] = []
   const chatMessages: string[] = []
-  const critiqueResponses = options.critiqueResponses ?? []
-  const critiqueCalled = { value: 0 }
   const dialogResponses = options.dialogResponses ?? []
   const dialogInputs: ExitDialogInput[] = []
   const clearContextCalls: string[] = []
@@ -64,11 +59,6 @@ async function buildHarness(cwd: string, options: {
     appendRecord: async (record) => { records.push(record) },
     loadRecords: async () => [...records],
     emitChatMessage: async (content) => { chatMessages.push(content) },
-    runCritiqueAgent: async () => {
-      const idx = critiqueCalled.value
-      critiqueCalled.value += 1
-      return critiqueResponses[idx] ?? { findings: 'no findings' }
-    },
     openExitDialog: async (input) => {
       dialogInputs.push(input)
       const idx = dialogInputs.length - 1
@@ -81,7 +71,7 @@ async function buildHarness(cwd: string, options: {
   const manager = new PlanModeManager(deps)
   gate.setPlanSlugProvider(() => manager.getSlug())
 
-  return { manager, gate, records, meta, critiqueCalled, dialogInputs, dialogResponses, chatMessages, clearContextCalls }
+  return { manager, gate, records, meta, dialogInputs, dialogResponses, chatMessages, clearContextCalls }
 }
 
 function emitEnterRequest(records: SessionRecord[], sessionId: string): string {
@@ -114,11 +104,10 @@ function emitExitRequest(
 }
 
 // Scenario A: Happy path — enter via tool → write plan to disk → exit
-// (no inline plan) → critique runs once → dialog → approve restore.
-test('Integration A: enter approved → write plan → exit (disk fallback) → critique → approve restore', async () => {
+// (no inline plan) → dialog → approve restore.
+test('Integration A: enter approved → write plan → exit (disk fallback) → approve restore', async () => {
   await withTempCwd(async (cwd) => {
     const h = await buildHarness(cwd, {
-      critiqueResponses: [{ findings: 'looks fine' }],
       dialogResponses: [{ kind: 'approve_restore_keep' }],
     })
 
@@ -134,7 +123,6 @@ test('Integration A: enter approved → write plan → exit (disk fallback) → 
 
     assert.equal(h.dialogInputs.length, 1)
     assert.equal(h.dialogInputs[0]?.planContent, '# Plan A\n')
-    assert.equal(h.critiqueCalled.value, 1, 'critique runs exactly once')
     assert.equal(h.manager.isActive(), false)
     const approved = h.records.find((r) => r.type === 'plan_mode_outcome' && r.kind === 'exit_approved')
     assert.ok(approved)
@@ -179,7 +167,6 @@ test('Integration C: empty plan opens approval dialog and can exit', async () =>
 
     assert.equal(h.dialogInputs.length, 1, 'dialog should open for empty plan')
     assert.equal(h.dialogInputs[0]?.planContent, '')
-    assert.equal(h.critiqueCalled.value, 0, 'critique NOT called for empty plan')
     const approved = h.records.find(
       (r) => r.type === 'plan_mode_outcome' && r.kind === 'exit_approved',
     )
@@ -192,7 +179,6 @@ test('Integration C: empty plan opens approval dialog and can exit', async () =>
 test('Integration D: dialog reject with feedback → mode stays plan + reminder injected', async () => {
   await withTempCwd(async (cwd) => {
     const h = await buildHarness(cwd, {
-      critiqueResponses: [{ findings: 'fine' }],
       dialogResponses: [{ kind: 'reject', feedback: 'add error handling' }],
     })
 
@@ -221,7 +207,6 @@ test('Integration D: dialog reject with feedback → mode stays plan + reminder 
 test('Integration E: subagent_exit routes identically; approve_acceptEdits_keep flips gate to acceptEdits', async () => {
   await withTempCwd(async (cwd) => {
     const h = await buildHarness(cwd, {
-      critiqueResponses: [{ findings: 'fine' }],
       dialogResponses: [{ kind: 'approve_acceptEdits_keep' }],
     })
 
@@ -244,7 +229,6 @@ test('Integration E: subagent_exit routes identically; approve_acceptEdits_keep 
 test('Integration F: approve_clear_restore_with_plan_as_prompt -> onClearContextAndReplaceInput receives implementation prompt', async () => {
   await withTempCwd(async (cwd) => {
     const h = await buildHarness(cwd, {
-      critiqueResponses: [{ findings: 'ok' }],
       dialogResponses: [{ kind: 'approve_clear_restore_with_plan_as_prompt' }],
     })
 

@@ -12,7 +12,7 @@ Reference inspected: `C:\Users\Miyano\Documents\code\ClaudeCode\src`, especially
 
 - Added tool-owned display hooks to `Tool`: `userFacingName`, `getToolUseSummary`, `getActivityDescription`, and `shouldDisplayResult`.
 - Added `src/tools/display.ts` as the TUI-facing adapter so UI code can consume those hooks without importing React/Ink into tools.
-- Updated built-in tools to provide display metadata for file operations, search, bash, Agent, Skill, TodoWrite, EnterPlanMode, ExitPlanMode, and AskUserQuestion.
+- Updated built-in tools to provide display metadata for file operations, search, bash, Agent, Skill, TaskCreate, TaskList, TaskGet, TaskUpdate, EnterPlanMode, ExitPlanMode, and AskUserQuestion.
 - Updated `ToolCallBlock`, progress text, and layout row estimation to use tool metadata instead of hard-coded tool-name switches.
 - Added structured `tool_result.display` summaries for `Read`, `Grep`, and `Glob`, so the TUI can show count-first collapsed results while preserving the full model-facing `content`.
 - Added diff-aware permission previews for `Write`, `Edit`, `MultiEdit`, and `Delete`, including create/overwrite/delete previews and non-crashing fallback messages for ambiguous edits or unsafe paths.

@@ -10,7 +10,7 @@
  *  - main:     the main loop
  *  - plan:     used while permissionMode === 'plan'
  *  - compact:  used by autoCompact and tool-use summarizer
- *  - subagent: per subagent_type (general / explore / plan / verification / fork / ...)
+ *  - subagent: per subagent_type (general / explore / plan / fork / ...)
  *
  * The router accepts a `'inherit'` sentinel to mean "fall back to the parent /
  * main loop model", which is essential for fork-style sub-agents that share
@@ -41,7 +41,6 @@ export interface SubagentRouting {
   fork?: TierOrInherit
   explore?: TierOrInherit
   plan?: TierOrInherit
-  verification?: TierOrInherit
   /** Custom subagent types declared via `.myagent/agents/*.md`. */
   [type: string]: TierOrInherit | undefined
 }
@@ -61,7 +60,7 @@ export interface Routing {
  * - When all three tiers are configured, plan-mode automatically upgrades and
  *   compact / explore-style subagents downgrade.
  */
-export const DEFAULT_ROUTING: Required<Pick<Routing, 'main' | 'plan' | 'compact'>> & { subagent: Required<Pick<SubagentRouting, 'general' | 'fork' | 'explore' | 'plan' | 'verification'>> } = {
+export const DEFAULT_ROUTING: Required<Pick<Routing, 'main' | 'plan' | 'compact'>> & { subagent: Required<Pick<SubagentRouting, 'general' | 'fork' | 'explore' | 'plan'>> } = {
   main: 'balanced',
   plan: 'powerful',
   compact: 'fast',
@@ -70,7 +69,6 @@ export const DEFAULT_ROUTING: Required<Pick<Routing, 'main' | 'plan' | 'compact'
     fork: 'inherit',
     explore: 'balanced',
     plan: 'powerful',
-    verification: 'balanced',
   },
 }
 

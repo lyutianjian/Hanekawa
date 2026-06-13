@@ -3,7 +3,6 @@ import type { ThinkingBlock } from '../../harness/types.js'
 import { theme } from '../theme.js'
 import { THINKING_PREFIX, CONTENT_PREFIX, PREFIX_WIDTH } from '../constants/figures.js'
 import { Markdown } from './Markdown.js'
-import { StreamingMarkdown } from './StreamingMarkdown.js'
 import { AssistantThinkingMessage } from './AssistantThinkingMessage.js'
 
 interface AssistantMessageProps {
@@ -39,7 +38,7 @@ export function AssistantMessage({ content, streamingContent, thinkingBlocks, th
           {streamingContent !== undefined ? (
             <Box flexDirection="row">
               <Text color={theme.brand}>{CONTENT_PREFIX} </Text>
-              <StreamingMarkdown width={width - PREFIX_WIDTH}>{streamingContent}</StreamingMarkdown>
+              <Markdown content={streamingContent} width={width - PREFIX_WIDTH} />
             </Box>
           ) : (
             <Box flexDirection="row">

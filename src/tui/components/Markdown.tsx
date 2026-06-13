@@ -11,15 +11,16 @@ import { AnsiText } from '../ansi.js'
 interface MarkdownProps {
   content: string
   color?: string
+  width?: number
 }
 
-export function Markdown({ content, color }: MarkdownProps) {
+export function Markdown({ content, color, width }: MarkdownProps) {
   const tokens = useMemo(() => parseMarkdown(content), [content])
 
   return (
     <Box flexDirection="column">
       {tokens.map((token, i) => (
-        <MarkdownToken key={i} token={token} color={color} />
+        <MarkdownToken key={i} token={token} color={color} width={width} />
       ))}
     </Box>
   )
@@ -84,7 +85,7 @@ function highlightCode(code: string, lang?: string): string {
 
 // ── Block-level token dispatcher ──
 
-const MarkdownToken = memo(function MarkdownToken({ token, color }: { token: Token; color?: string }) {
+const MarkdownToken = memo(function MarkdownToken({ token, color, width }: { token: Token; color?: string; width?: number }) {
   switch (token.type) {
     case 'heading':
       return <Heading token={token as Tokens.Heading} color={color} />
@@ -97,16 +98,16 @@ const MarkdownToken = memo(function MarkdownToken({ token, color }: { token: Tok
     case 'blockquote':
       return <Blockquote token={token as Tokens.Blockquote} color={color} />
     case 'hr':
-      return <Text color={theme.dimText}>{'─'.repeat(40)}</Text>
+      return <Text color={theme.dimText}>{'─'.repeat(Math.max(1, (width ?? 40) - 2))}</Text>
     case 'space':
-      return null
+      return <Box height={1} />
     case 'table':
-      return <Table token={token as Tokens.Table} color={color} />
+      return <Table token={token as Tokens.Table} color={color} width={width} />
     case 'html':
       return <HtmlBlock token={token as Tokens.HTML} />
     default:
       if ('raw' in token) {
-        return <Text color={color}>{(token as { raw: string }).raw}</Text>
+        return <Text color={color}>{insertCjkBreaks((token as { raw: string }).raw)}</Text>
       }
       return null
   }
@@ -116,12 +117,8 @@ const MarkdownToken = memo(function MarkdownToken({ token, color }: { token: Tok
 
 const Heading = memo(function Heading({ token, color }: { token: Tokens.Heading; color?: string }) {
   const headingColor = color ?? theme.brand
-  const prefix = '#'.repeat(token.depth) + ' '
   return (
-    <Box marginY={1}>
-      <Text color={headingColor} bold>
-        {prefix}
-      </Text>
+    <Box marginTop={1}>
       <Text color={headingColor} bold>
         <InlineTokens tokens={token.tokens} color={headingColor} />
       </Text>
@@ -152,7 +149,7 @@ const CodeBlock = memo(function CodeBlock({ token }: { token: Tokens.Code }) {
   return (
     <Box flexDirection="column" marginY={1}>
       {lang && (
-        <Box paddingLeft={1}>
+        <Box paddingLeft={2}>
           <Text color={theme.dimText} dimColor>
             {'── '}
           </Text>
@@ -164,7 +161,7 @@ const CodeBlock = memo(function CodeBlock({ token }: { token: Tokens.Code }) {
           </Text>
         </Box>
       )}
-      <Box flexDirection="column" paddingLeft={2}>
+      <Box flexDirection="column" paddingLeft={2} backgroundColor={theme.codeBg}>
         {lines.map((_, i) => (
           <AnsiText key={i}>{highlightedLines[i] ?? ''}</AnsiText>
         ))}
@@ -176,6 +173,8 @@ const CodeBlock = memo(function CodeBlock({ token }: { token: Tokens.Code }) {
 // ── List ──
 
 const List = memo(function List({ token, color }: { token: Tokens.List; color?: string }) {
+  const start = typeof token.start === 'number' ? token.start : 1
+  const maxNumWidth = token.ordered ? String(start + token.items.length - 1).length : 0
   return (
     <Box flexDirection="column" marginY={0}>
       {token.items.map((item, i) => (
@@ -184,7 +183,8 @@ const List = memo(function List({ token, color }: { token: Tokens.List; color?: 
           token={item}
           index={i}
           ordered={token.ordered}
-          start={typeof token.start === 'number' ? token.start : 1}
+          start={start}
+          maxNumWidth={maxNumWidth}
           loose={token.loose}
           color={color}
         />
@@ -198,6 +198,7 @@ function ListItem({
   index,
   ordered,
   start,
+  maxNumWidth,
   loose,
   color,
 }: {
@@ -205,10 +206,11 @@ function ListItem({
   index: number
   ordered: boolean | null
   start: number
+  maxNumWidth: number
   loose: boolean
   color?: string
 }) {
-  const bullet = ordered ? `${start + index}.` : '•'
+  const bullet = ordered ? `${String(start + index).padStart(maxNumWidth)}.` : '•'
 
   // Check for leading checkbox
   const firstToken = token.tokens[0]
@@ -279,7 +281,7 @@ const Blockquote = memo(function Blockquote({ token, color }: { token: Tokens.Bl
     <Box flexDirection="column" marginY={0} paddingLeft={2}>
       {token.tokens.map((t, i) => (
         <Box key={i}>
-          <Text color={theme.brand}>{'│ '}</Text>
+          <Text color={theme.brand}>{'> '}</Text>
           <Text color={color ?? theme.dimText}>
             {t.type === 'paragraph' ? (
               <InlineTokens tokens={(t as Tokens.Paragraph).tokens} color={color ?? theme.dimText} />
@@ -297,13 +299,13 @@ const Blockquote = memo(function Blockquote({ token, color }: { token: Tokens.Bl
 
 // ── Table (with header, column width, alignment) ──
 
-const Table = memo(function Table({ token, color }: { token: Tokens.Table; color?: string }) {
+const Table = memo(function Table({ token, color, width }: { token: Tokens.Table; color?: string; width?: number }) {
   const allRows = [token.header, ...token.rows]
   const colCount = token.header.length
   const aligns = token.align ?? []
 
   // Calculate max display width per column
-  const colWidths: number[] = Array.from({ length: colCount }, (_, col) => {
+  let colWidths: number[] = Array.from({ length: colCount }, (_, col) => {
     let max = 0
     for (const row of allRows) {
       if (row[col]) {
@@ -314,6 +316,18 @@ const Table = memo(function Table({ token, color }: { token: Tokens.Table; color
     // Enforce minimum width of 3
     return Math.max(3, max)
   })
+
+  // Shrink columns proportionally if table exceeds available width
+  if (width && colCount > 0) {
+    const separatorOverhead = 3 * (colCount - 1) // '─┼─' between columns
+    const totalColWidth = colWidths.reduce((a, b) => a + b, 0)
+    const tableWidth = totalColWidth + separatorOverhead
+    if (tableWidth > width) {
+      const available = width - separatorOverhead
+      const ratio = available / totalColWidth
+      colWidths = colWidths.map((w) => Math.max(3, Math.floor(w * ratio)))
+    }
+  }
 
   function cellText(cell: Tokens.TableCell): string {
     // Extract plain text from cell tokens for width measurement
@@ -378,16 +392,20 @@ const Table = memo(function Table({ token, color }: { token: Tokens.Table; color
 const HtmlBlock = memo(function HtmlBlock({ token }: { token: Tokens.HTML }) {
   // Strip HTML tags and extract text content
   const text = token.raw
+    .replace(/<!--[\s\S]*?-->/g, '')          // HTML comments
+    .replace(/<!\[CDATA\[\s\S]*?\]\]>/g, '') // CDATA sections
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/?(p|div|h[1-6]|li|tr|td|th|blockquote|pre|ul|ol)[^>]*>/gi, '\n')
     .replace(/<\/?(b|strong)[^>]*>/gi, '')
     .replace(/<\/?(i|em)[^>]*>/gi, '')
-    .replace(/<[^>]+>/g, '')
+    .replace(/<[^>]*>/g, '')                  // remaining tags
+    .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
@@ -430,7 +448,7 @@ const InlineTokens = memo(function InlineTokens({ tokens, color }: { tokens: Tok
           case 'codespan':
             return (
               <Text key={i} color={theme.codeInline}>
-                {(token as Tokens.Codespan).text}
+                {insertCjkBreaks((token as Tokens.Codespan).text)}
               </Text>
             )
           case 'link':

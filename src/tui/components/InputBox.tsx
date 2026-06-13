@@ -24,33 +24,33 @@ export function InputBox({ text, cursorPos, disabled }: InputBoxProps) {
   if (disabled) {
     return (
       <Box flexDirection="column" ref={declareCursor}>
-        <Text color={theme.border}>{separator}</Text>
+        <Text color={theme.subtleText}>{separator}</Text>
         {window.visibleLines.map((line, idx) => {
           const actualIndex = window.firstVisibleLine + idx
           return (
             <Box key={idx}>
-              <Text color={theme.dimText}>{actualIndex === 0 ? '> ' : '  '}</Text>
+              <Text color={theme.dimText}>{actualIndex === 0 ? '❯ ' : '  '}</Text>
               <Text color={theme.dimText} dimColor>
                 {line.text || ' '}
               </Text>
             </Box>
           )
         })}
-        <Text color={theme.border}>{separator}</Text>
+        <Text color={theme.subtleText}>{separator}</Text>
       </Box>
     )
   }
 
   return (
     <Box flexDirection="column" ref={declareCursor}>
-      <Text color={theme.border}>{separator}</Text>
+      <Text color={theme.subtleText}>{separator}</Text>
       {window.visibleLines.map((line, idx) => {
         const actualIndex = window.firstVisibleLine + idx
         const isCursorLine = actualIndex === window.cursorLine
         const cursorCharIndex = isCursorLine ? window.cursorCharIndex : 0
         return (
           <Box key={idx}>
-            <Text color={theme.inputPrompt}>{actualIndex === 0 ? '> ' : '  '}</Text>
+            <Text color={theme.inputPrompt}>{actualIndex === 0 ? '❯ ' : '  '}</Text>
             {isCursorLine ? (
               <>
                 <Text>{line.text.slice(0, cursorCharIndex)}</Text>
@@ -63,7 +63,7 @@ export function InputBox({ text, cursorPos, disabled }: InputBoxProps) {
           </Box>
         )
       })}
-      <Text color={theme.border}>{separator}</Text>
+      <Text color={theme.subtleText}>{separator}</Text>
     </Box>
   )
 }

@@ -12,30 +12,22 @@ test('formatStatusUsage shows Ready before any turn completes', () => {
   )
 })
 
-test('formatStatusUsage shows the last turn instead of the session total', () => {
+test('formatStatusUsage shows compact token usage with cache hit rate', () => {
   assert.equal(
     formatStatusUsage({
       lastTurn: { cacheReadInputTokens: 4000, inputTokens: 1000, outputTokens: 500 },
       total: { cacheReadInputTokens: 30_208, inputTokens: 313, outputTokens: 544 },
     }),
-    'Turn: cache read 4000, input 1000, output 500 | cache: 80% hit',
+    '↑1000 ↓500 ⚡4000 80%',
   )
 })
 
-test('formatStatusUsage keeps cost scoped to the last turn', () => {
+test('formatStatusUsage omits cache info when no cache tokens', () => {
   assert.equal(
-    formatStatusUsage(
-      {
-        lastTurn: { cacheReadInputTokens: 100_000, inputTokens: 200_000, outputTokens: 50_000 },
-        total: { cacheReadInputTokens: 500_000, inputTokens: 800_000, outputTokens: 100_000 },
-      },
-      {
-        cacheReadInputPerMillionTokens: 0.1,
-        inputPerMillionTokens: 1,
-        outputPerMillionTokens: 2,
-        currency: 'CNY',
-      },
-    ),
-    'Turn: cache read 100000, input 200000, output 50000 | Cost: CNY 0.31 | cache: 33% hit',
+    formatStatusUsage({
+      lastTurn: { cacheReadInputTokens: 0, inputTokens: 1000, outputTokens: 500 },
+      total: { cacheReadInputTokens: 0, inputTokens: 1000, outputTokens: 500 },
+    }),
+    '↑1000 ↓500',
   )
 })

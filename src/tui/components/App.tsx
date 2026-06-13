@@ -811,12 +811,12 @@ export function App({
       {/* Status line (below input, no border) */}
       <StatusLine
         model={runtime.modelConfig.model}
-        providerName={runtime.providerName}
         usage={usage}
         pricing={runtime.modelConfig.pricing}
         permissionMode={permissionMode}
         hintMessage={hintMessage}
         effortLevel={effortLevel}
+        contextWindow={providerConfig.get().agent.contextManagement?.contextWindow ?? 200_000}
       />
     </Box>
   )

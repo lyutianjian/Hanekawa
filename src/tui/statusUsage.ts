@@ -1,14 +1,14 @@
-import { formatCacheHitRate } from '../harness/cacheBreakDetection.js'
-import { formatUsageLine } from '../harness/usage.js'
-import type { ModelPricing } from '../harness/types.js'
 import type { TUIUsage } from './types.js'
 
-export function formatStatusUsage(usage: TUIUsage, pricing?: ModelPricing): string {
+export function formatStatusUsage(usage: TUIUsage): string {
   if (!usage.lastTurn) return 'Ready'
 
-  const usageText = formatUsageLine(usage.lastTurn, pricing, 'Turn')
-  const cacheText = formatCacheHitRate(usage.lastTurn)
-  if (cacheText === 'cache: n/a') return usageText
+  const t = usage.lastTurn
+  const total = t.inputTokens + t.cacheReadInputTokens
+  const cacheRate = total > 0 ? Math.round((t.cacheReadInputTokens / total) * 100) : 0
+  const parts = [`↑${t.inputTokens} ↓${t.outputTokens}`]
+  if (t.cacheReadInputTokens > 0) parts.push(`⚡${t.cacheReadInputTokens}`)
+  if (cacheRate > 0) parts.push(`${cacheRate}%`)
 
-  return `${usageText} | ${cacheText}`
+  return parts.join(' ')
 }

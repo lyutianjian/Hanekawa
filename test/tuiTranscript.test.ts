@@ -121,11 +121,11 @@ test('isHiddenToolCall returns true for Skill', () => {
   assert.equal(isHiddenToolCall('Skill'), true)
 })
 
-test('isHiddenToolCall returns false for task status tools (visible)', () => {
-  assert.equal(isHiddenToolCall('TaskCreate'), false)
-  assert.equal(isHiddenToolCall('TaskList'), false)
-  assert.equal(isHiddenToolCall('TaskGet'), false)
-  assert.equal(isHiddenToolCall('TaskUpdate'), false)
+test('isHiddenToolCall returns true for task management tools', () => {
+  assert.equal(isHiddenToolCall('TaskCreate'), true)
+  assert.equal(isHiddenToolCall('TaskList'), true)
+  assert.equal(isHiddenToolCall('TaskGet'), true)
+  assert.equal(isHiddenToolCall('TaskUpdate'), true)
 })
 
 test('isHiddenToolCall returns false for visible tools', () => {
@@ -136,8 +136,6 @@ test('isHiddenToolCall returns false for visible tools', () => {
   assert.equal(isHiddenToolCall('Grep'), false)
   assert.equal(isHiddenToolCall('Glob'), false)
   assert.equal(isHiddenToolCall('Agent'), false)
-  assert.equal(isHiddenToolCall('TaskCreate'), false)
-  assert.equal(isHiddenToolCall('TaskUpdate'), false)
   assert.equal(isHiddenToolCall('WebFetch'), false)
   assert.equal(isHiddenToolCall('WebSearch'), false)
   assert.equal(isHiddenToolCall('NotebookEdit'), false)
@@ -157,6 +155,19 @@ test('ToolSearch tool_result record is completely suppressed from TUI', () => {
 
   assert.deepEqual(state.staticItems, [])
   assert.deepEqual(state.liveItems, [])
+})
+
+test('Task tools are completely suppressed from TUI', () => {
+  for (const tool of ['TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate']) {
+    let state = createTranscriptState()
+    state = applyTuiRecordToTranscriptState(state, toolUse(`call-${tool}`, tool, {}))
+    assert.deepEqual(state.staticItems, [], `${tool} tool_use should be suppressed`)
+    assert.deepEqual(state.liveItems, [], `${tool} tool_use should be suppressed`)
+
+    state = applyTuiRecordToTranscriptState(state, toolResult(`result-${tool}`, `call-${tool}`, tool, true, '{}'))
+    assert.deepEqual(state.staticItems, [], `${tool} tool_result should be suppressed`)
+    assert.deepEqual(state.liveItems, [], `${tool} tool_result should be suppressed`)
+  }
 })
 
 function toolUse(id: string, tool: string, input: unknown): SessionRecord {

@@ -21,6 +21,10 @@ export interface MyAgentSettings {
     deny?: string[]
     ask?: string[]
   }
+  autoMode?: {
+    allow?: string[]
+    deny?: string[]
+  }
   hooks?: {
     userPromptSubmit?: HookCommandSetting[]
     preToolUse?: HookCommandSetting[]
@@ -152,6 +156,13 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
         allow: [...(result.permissions?.allow ?? []), ...(source.permissions.allow ?? [])],
         deny: [...(result.permissions?.deny ?? []), ...(source.permissions.deny ?? [])],
         ask: [...(result.permissions?.ask ?? []), ...(source.permissions.ask ?? [])],
+      }
+    }
+
+    if (source.autoMode) {
+      result.autoMode = {
+        allow: [...(result.autoMode?.allow ?? []), ...(source.autoMode.allow ?? [])],
+        deny: [...(result.autoMode?.deny ?? []), ...(source.autoMode.deny ?? [])],
       }
     }
 
@@ -383,6 +394,19 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
     }
     if (rules?.some((rule) => typeof rule !== 'string' || rule.trim() === '')) {
       errors.push(`permissions.${name} must be an array of non-empty strings`)
+    }
+  }
+
+  if (settings.autoMode) {
+    for (const name of ['allow', 'deny'] as const) {
+      const rules = settings.autoMode[name]
+      if (rules !== undefined && !Array.isArray(rules)) {
+        errors.push(`autoMode.${name} must be an array`)
+        continue
+      }
+      if (rules?.some((rule) => typeof rule !== 'string' || rule.trim() === '')) {
+        errors.push(`autoMode.${name} must be an array of non-empty strings`)
+      }
     }
   }
 

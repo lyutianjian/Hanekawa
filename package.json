@@ -8,7 +8,8 @@
   "scripts": {
     "dev:tui": "tsx src/tui/entrypoints/tui.tsx",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/**/*.test.ts"
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
@@ -18,7 +19,7 @@
     "fast-glob": "latest",
     "figures": "^6.1.0",
     "fuse.js": "^7.4.1",
-    "ink": "^7.0.3",
+    "ink": "^7.0.5",
     "marked": "^18.0.3",
     "openai": "latest",
     "picomatch": "^2.3.2",
@@ -36,6 +37,7 @@
     "@types/react": "^19.2.14",
     "fast-check": "^3.23.2",
     "ink-testing-library": "^4.0.0",
+    "patch-package": "^8.0.0",
     "tsx": "latest",
     "typescript": "latest"
   }

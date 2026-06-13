@@ -10,6 +10,7 @@ import {
   type PermissionPrompt,
   type PermissionRule,
 } from '../harness/permissions.js'
+import type { AutoModeConfig } from '../harness/autoClassifier.js'
 import { MemoryRecordStream, type RecordStream } from '../harness/recordStream.js'
 import { getSubagentTranscriptPath, SidechainRecordStream } from '../harness/sidechainRecordStream.js'
 import { ToolRunner } from '../harness/toolRunner.js'
@@ -257,6 +258,7 @@ export interface CreateAgentToolOptions {
   getConfigRules?(): PermissionRule[]
   getSessionRules?(): PermissionRule[]
   denialStateStore?: DenialStateStore
+  autoModeConfig?: AutoModeConfig
   cwd: string
   system?: string
   projectContext?: string
@@ -543,6 +545,7 @@ async function runSubagent({
       mode: resolveSubagentPermissionMode(options, agentDefinition, isBackground),
       denialStateStore: readonlyDenialStateStore(options.denialStateStore),
       cwd: effectiveCwd,
+      autoModeConfig: options.autoModeConfig,
     })
     permissionGate.addSessionRules(options.getSessionRules?.() ?? [])
     const toolRunner = new ToolRunner(subTools, permissionGate, {

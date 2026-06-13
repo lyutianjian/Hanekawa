@@ -1,6 +1,6 @@
 import type { SessionRecord, ToolProgressEvent } from '../harness/types.js'
 import type { TUIDisplayItem } from './types.js'
-import { ASK_USER_QUESTION_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
+import { ASK_USER_QUESTION_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME, TASK_CREATE_TOOL_NAME, TASK_GET_TOOL_NAME, TASK_LIST_TOOL_NAME, TASK_UPDATE_TOOL_NAME } from '../tools/toolNames.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
 import { groupConsecutiveSafeToolCalls } from './utils/toolGroupSummary.js'
 
@@ -73,6 +73,30 @@ export function commitLiveItemsToStatic(state: TuiTranscriptState): TuiTranscrip
     staticItems: [...state.staticItems, ...grouped, ...state.liveSystemItems],
     liveItems: [],
     liveSystemItems: [],
+  }
+}
+
+/** Move ALL live items to static at turn end — including thinking-bearing
+ *  assistant messages. Streaming thinking preview items are discarded.
+ *  Ctrl+O expansion is handled by MessageList's fallback: when the thinking
+ *  item is no longer in liveItems, MessageList renders an expanded copy at
+ *  the bottom of the live area using recentThinkingAssistant from state. */
+export function commitAllLiveItemsToStatic(state: TuiTranscriptState): TuiTranscriptState {
+  if (state.liveItems.length === 0 && state.liveSystemItems.length === 0) return state
+  const toCommit = state.liveItems.filter((item) => !isStreamingThinkingPreview(item))
+  if (toCommit.length === 0 && state.liveSystemItems.length === 0) {
+    return { ...state, liveItems: [], liveSystemItems: [] }
+  }
+  const recentThinkingAssistant = findRecentThinkingAssistant(toCommit) ?? state.recentThinkingAssistant
+  const recentCompletedToolCall = findRecentCompletedToolCall(toCommit) ?? state.recentCompletedToolCall
+  const grouped = groupConsecutiveSafeToolCalls(toCommit)
+  return {
+    ...state,
+    staticItems: [...state.staticItems, ...grouped, ...state.liveSystemItems],
+    liveItems: [],
+    liveSystemItems: [],
+    recentThinkingAssistant,
+    recentCompletedToolCall,
   }
 }
 
@@ -435,6 +459,10 @@ export function isHiddenToolCall(toolName: string): boolean {
     || toolName === TOOL_SEARCH_TOOL_NAME
     || toolName === ASK_USER_QUESTION_TOOL_NAME
     || toolName === 'Skill'
+    || toolName === TASK_CREATE_TOOL_NAME
+    || toolName === TASK_GET_TOOL_NAME
+    || toolName === TASK_LIST_TOOL_NAME
+    || toolName === TASK_UPDATE_TOOL_NAME
 }
 
 function messageRecordToDisplayItem(

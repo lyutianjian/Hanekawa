@@ -4,3 +4,7 @@ export const ASK_USER_QUESTION_TOOL_NAME = 'AskUserQuestion'
 export const ASK_USER_QUESTION_TOOL_CHIP_WIDTH = 12
 export const CONFIG_TOOL_NAME = 'Config'
 export const NOTEBOOK_EDIT_TOOL_NAME = 'NotebookEdit'
+export const TASK_CREATE_TOOL_NAME = 'TaskCreate'
+export const TASK_GET_TOOL_NAME = 'TaskGet'
+export const TASK_LIST_TOOL_NAME = 'TaskList'
+export const TASK_UPDATE_TOOL_NAME = 'TaskUpdate'

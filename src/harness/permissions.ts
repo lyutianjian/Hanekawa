@@ -3,6 +3,12 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { analyzeShellCommand } from './commandAnalysis.js'
 import { shellWords } from './bashSafety.js'
+import {
+  isSafeAutoTool,
+  classifyWithUserRules,
+  isPlanReadOnlyShellCommand,
+  type AutoModeConfig,
+} from './autoClassifier.js'
 import type { RiskLevel, Tool, ToolApprovalRecord } from './types.js'
 import { isProtectedPath } from '../utils/permissions/protectedPaths.js'
 import { EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
@@ -64,11 +70,6 @@ export interface PermissionSettings {
   ask?: string[]
 }
 
-type AutoDecision =
-  | { action: 'allow' }
-  | { action: 'prompt'; reason: string; source: PermissionDecisionSource }
-  | { action: 'deny'; source: PermissionDecisionSource }
-
 /**
  * Default number of consecutive auto-denials of a tool after which we stop
  * silently denying and force a user prompt instead. Prevents a model from
@@ -81,36 +82,6 @@ const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
 const FILE_PERMISSION_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'Delete'])
 const ACCEPT_EDITS_BASH_COMMANDS = new Set(['mkdir', 'touch'])
 const PLAN_ALLOWED_AGENT_TYPES = new Set(['general', 'fork', 'explore', 'plan'])
-const PLAN_READ_ONLY_SHELL_COMMANDS = new Set([
-  'cat',
-  'dir',
-  'fd',
-  'find',
-  'get-childitem',
-  'get-content',
-  'grep',
-  'head',
-  'ls',
-  'pwd',
-  'rg',
-  'ripgrep',
-  'select-string',
-  'stat',
-  'tail',
-  'wc',
-])
-const PLAN_READ_ONLY_GIT_SUBCOMMANDS = new Set([
-  'diff',
-  'grep',
-  'log',
-  'ls-files',
-  'rev-parse',
-  'shortlog',
-  'show',
-  'show-ref',
-  'status',
-  'tag',
-])
 
 export { isProtectedPath } from '../utils/permissions/protectedPaths.js'
 
@@ -227,6 +198,7 @@ export class PermissionGate {
   private readonly globalDenialPromptThreshold: number
   private readonly denialStateStore?: DenialStateStore
   private readonly cwd: string
+  private readonly autoModeConfig?: AutoModeConfig
   private denialStateLoaded = false
   private readonly modeListeners = new Set<PermissionModeListener>()
 
@@ -239,16 +211,22 @@ export class PermissionGate {
       mode?: PermissionMode
       denialStateStore?: DenialStateStore
       cwd?: string
+      autoModeConfig?: AutoModeConfig
     },
   ) {
     this.addRules(configRules ?? [])
     this.mode = options?.mode ?? 'default'
+    this.autoModeConfig = options?.autoModeConfig
     const configured = options?.denialStreakThreshold ?? DEFAULT_DENIAL_STREAK_THRESHOLD
     this.denialStreakThreshold = Math.max(1, configured)
     const globalConfigured = options?.globalDenialPromptThreshold ?? DEFAULT_GLOBAL_DENIAL_PROMPT_THRESHOLD
     this.globalDenialPromptThreshold = Math.max(1, globalConfigured)
     this.denialStateStore = options?.denialStateStore
     this.cwd = options?.cwd ?? process.cwd()
+    // Strip dangerous permissions when starting in auto mode
+    if (this.mode === 'auto') {
+      this.stripDangerousPermissions()
+    }
   }
 
   async approve(tool: Tool, input: unknown): Promise<boolean> {
@@ -408,7 +386,31 @@ export class PermissionGate {
     }
 
     if (this.mode === 'auto') {
-      const autoDecision = this.classifyAutoDecision(tool, input, commandAnalysis)
+      // Fast-path 1: Safe read-only / metadata tools skip the classifier entirely
+      if (isSafeAutoTool(tool.name)) {
+        this.denialStreaks.set(tool.name, 0)
+        return this.persistAndReturn(true)
+      }
+
+      // Fast-path 2: acceptEdits-style CWD file ops skip the classifier
+      if (
+        this.isAcceptEditsAllowed(tool, input, commandAnalysis)
+        && !requiresSafetyPrompt
+      ) {
+        this.denialStreaks.set(tool.name, 0)
+        return this.persistAndReturn(true)
+      }
+
+      // Layer 3: Rule-based classifier with user-configured allow/deny rules
+      const autoDecision = classifyWithUserRules({
+        tool,
+        input,
+        commandAnalysis,
+        autoModeConfig: this.autoModeConfig,
+        isLightWorkspaceShellWrite: (ca) => this.isLightWorkspaceShellWrite(ca),
+        matchGlob: (content, pattern) => matchGlob(content, pattern),
+        extractPath,
+      })
       if (autoDecision.action === 'allow') {
         this.denialStreaks.set(tool.name, 0)
         return this.persistAndReturn(true)
@@ -535,6 +537,11 @@ export class PermissionGate {
       this.prePlanMode = 'default'
     }
     this.mode = mode
+    // Strip dangerous permissions when entering auto mode so that overly
+    // permissive allow rules cannot bypass the classifier.
+    if (mode === 'auto') {
+      this.stripDangerousPermissions()
+    }
     for (const listener of this.modeListeners) {
       listener(mode)
     }
@@ -559,6 +566,26 @@ export class PermissionGate {
   /** Restore gate from plan mode to the pre-plan mode. */
   restoreFromPlanMode(): void {
     this.exitPlanMode()
+  }
+
+  /**
+   * Remove dangerous allow rules that would bypass the auto mode classifier.
+   * Called when entering auto mode to prevent overly permissive config rules
+   * from silently approving dangerous operations (e.g. Bash without a content
+   * pattern, or Agent tool which could spawn arbitrary sub-agents).
+   */
+  stripDangerousPermissions(): void {
+    const isDangerous = (rule: PermissionRule): boolean => {
+      if (rule.behavior !== 'allow') return false
+      // Bash allow rules without a content pattern would approve ANY bash command
+      if (rule.toolName === 'Bash' && !rule.contentPattern) return true
+      // Agent allow rules could approve arbitrary sub-agent invocations
+      if (rule.toolName === 'Agent') return true
+      return false
+    }
+
+    this.configRules = this.configRules.filter((r) => !isDangerous(r))
+    this.sessionRules = this.sessionRules.filter((r) => !isDangerous(r))
   }
 
   createApprovalRecord(tool: Tool, input: unknown, approved: boolean, turnId?: string): ToolApprovalRecord {
@@ -689,44 +716,6 @@ export class PermissionGate {
     if (ACCEPT_EDITS_TOOLS.has(tool.name)) return true
     if (tool.name !== 'Bash' || !commandAnalysis) return false
     return this.isLightWorkspaceShellWrite(commandAnalysis)
-  }
-
-  private classifyAutoDecision(
-    tool: Tool,
-    _input: unknown,
-    commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
-  ): AutoDecision {
-    if (tool.name === 'Bash') {
-      if (!commandAnalysis) {
-        return {
-          action: 'prompt',
-          reason: 'Auto mode requires confirmation because this Bash command could not be analyzed.',
-          source: 'mode',
-        }
-      }
-      if (isPlanReadOnlyShellCommand(commandAnalysis.command)) return { action: 'allow' }
-      if (isValidationShellCommand(commandAnalysis.command, commandAnalysis)) return { action: 'allow' }
-      if (this.isLightWorkspaceShellWrite(commandAnalysis)) return { action: 'allow' }
-
-      const categories = commandAnalysis.categories.length > 0
-        ? commandAnalysis.categories.join(', ')
-        : 'the command is not in the auto-mode allowlist'
-      return {
-        action: 'prompt',
-        reason: `Auto mode requires confirmation because ${categories}.`,
-        source: 'mode',
-      }
-    }
-
-    if (tool.riskLevel === 'confirm' && tool.isDestructive !== true) return { action: 'allow' }
-
-    return {
-      action: 'prompt',
-      reason: tool.isDestructive === true || tool.riskLevel === 'dangerous'
-        ? 'Auto mode requires confirmation because this is a dangerous or destructive tool.'
-        : 'Auto mode requires confirmation because this tool is not in the auto-mode allowlist.',
-      source: 'mode',
-    }
   }
 
   private isLightWorkspaceShellWrite(commandAnalysis: ReturnType<typeof analyzeShellCommand>): boolean {
@@ -872,68 +861,6 @@ export function normalizeDenialState(state: Partial<DenialState> | undefined): D
     ? Math.max(0, Math.floor(rawTotal))
     : 0
   return { streaks, total }
-}
-
-function isValidationShellCommand(
-  command: string,
-  commandAnalysis: ReturnType<typeof analyzeShellCommand>,
-): boolean {
-  if (commandAnalysis.categories.length > 0) return false
-  if (commandAnalysis.hasSafetyDenyIssue || commandAnalysis.requiresSafetyPrompt || commandAnalysis.hasProtectedPath) return false
-  if (commandAnalysis.segments.length !== 1) return false
-
-  const words = shellWords(command)
-  if (words.length === 0) return false
-  const executable = basename(words[0]!).toLowerCase()
-  const args = words.slice(1).map((word) => word.toLowerCase())
-
-  if (executable === 'npm') {
-    if (args.length === 1 && args[0] === 'test') return true
-    return args.length === 2 && args[0] === 'run' && isValidationScriptName(args[1]!)
-  }
-
-  if (executable === 'bun') {
-    if (args.length === 1 && args[0] === 'test') return true
-    return args.length === 2 && args[0] === 'run' && isValidationScriptName(args[1]!)
-  }
-
-  if (executable === 'tsc') {
-    return args.length === 1 && args[0] === '--noemit'
-  }
-
-  if (executable === 'node') {
-    return args.length === 1 && args[0] === '--test'
-  }
-
-  return false
-}
-
-function isValidationScriptName(script: string): boolean {
-  return script === 'test' || script === 'typecheck' || script === 'lint'
-}
-
-function isPlanReadOnlyShellCommand(command: string): boolean {
-  const words = shellWords(command)
-  if (words.length === 0) return false
-  const executable = basename(words[0]!).toLowerCase()
-  if (executable === 'git') {
-    const subcommand = words.find((word, index) => index > 0 && !word.startsWith('-'))
-    return typeof subcommand === 'string' && PLAN_READ_ONLY_GIT_SUBCOMMANDS.has(subcommand.toLowerCase())
-  }
-  if (!PLAN_READ_ONLY_SHELL_COMMANDS.has(executable)) return false
-  if (executable === 'fd') {
-    return !words.slice(1).some((word) => {
-      const lower = word.toLowerCase()
-      return lower === '--exec' || lower === '--exec-batch' || /^-[a-z]*x[a-z]*$/.test(lower)
-    })
-  }
-  if (executable === 'find') {
-    return !words.slice(1).some((word) => {
-      const lower = word.toLowerCase()
-      return lower === '-delete' || lower === '-exec' || lower === '-execdir'
-    })
-  }
-  return PLAN_READ_ONLY_SHELL_COMMANDS.has(executable)
 }
 
 function basename(command: string): string {

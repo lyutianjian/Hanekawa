@@ -30,6 +30,7 @@ export type TUIDisplayItem =
       thinkingBlocks?: ThinkingBlock[]
       thinkingDurationMs?: number
       thinkingPreview?: string
+      expanded?: boolean
       createdAt: string
     }
   | {

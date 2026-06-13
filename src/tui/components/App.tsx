@@ -136,6 +136,7 @@ export function App({
     new CheckpointService(process.cwd(), initialSession.id),
   )
   const [queuedPromptAfterClear, setQueuedPromptAfterClear] = useState<string | null>(initialQueuedPrompt ?? null)
+  const [expandedThinkingId, setExpandedThinkingId] = useState<string | null>(null)
 
   const { permState, respond, setActiveRequest, denyPending } = usePermission(promptProxy)
   const exitPlan = useExitPlanPermission(exitPlanProxy)
@@ -471,6 +472,10 @@ export function App({
     await submitPlainInput(text)
   }, [dispatch, submitPlainInput])
 
+  const handleToggleExpandThinking = useCallback((id: string | null) => {
+    setExpandedThinkingId((current) => (current === id ? null : id))
+  }, [])
+
   const handleInterrupt = useCallback(() => {
     // Signal the AbortController to abort the agent loop
     interrupt('user-cancel')
@@ -614,6 +619,13 @@ export function App({
     }
   }, [isStreaming])
 
+  // Collapse expanded thinking when streaming starts
+  useEffect(() => {
+    if (isStreaming && expandedThinkingId) {
+      setExpandedThinkingId(null)
+    }
+  }, [isStreaming, expandedThinkingId])
+
   const {
     text,
     cursorPos,
@@ -638,7 +650,8 @@ export function App({
       || askUserQuestion.state.visible
       || providerPanelOpen
       || modelPickerOpen
-      || effortPickerOpen,
+      || effortPickerOpen
+      || !!expandedThinkingId,
   })
 
   restoreInputRef.current = (restoredText: string) => {
@@ -655,12 +668,16 @@ export function App({
       providerName: runtime.providerName,
       cwd: process.cwd(),
     },
-    ...staticTranscriptItems,
+    ...staticTranscriptItems.map((item) =>
+      item.kind === 'assistant' && item.thinkingBlocks?.length
+        ? { ...item, expanded: item.id === expandedThinkingId }
+        : item
+    ),
   ]
 
   return (
     <Box flexDirection="column" width="100%">
-      <Static key={transcriptGeneration} items={staticItems}>
+      <Static key={`${transcriptGeneration}-${expandedThinkingId}`} items={staticItems}>
         {(item) => <StaticDisplayItem key={item.id} item={item} />}
       </Static>
 
@@ -672,6 +689,8 @@ export function App({
         isStreaming={isStreaming}
         isOverlayActive={isOverlayActive}
         animationsEnabled={animationsEnabled}
+        expandedThinkingId={expandedThinkingId}
+        onToggleExpandThinking={handleToggleExpandThinking}
       />
 
       {/* Live system items (e.g. duration summary) render in live area
@@ -767,8 +786,8 @@ export function App({
         />
       )}
 
-      {/* Input box (with horizontal lines) */}
-      {mode !== 'restore' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && (
+      {/* Input box (with horizontal lines) — hidden when thinking is expanded in-place */}
+      {mode !== 'restore' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && !expandedThinkingId && (
         <InputBox
           text={text}
           cursorPos={cursorPos}

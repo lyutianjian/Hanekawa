@@ -1360,3 +1360,203 @@ test('PermissionGate global denial threshold prompts across different tools', as
   assert.equal(prompts, 1)
   assert.match(reason, /session has already had 2 auto-denials/)
 })
+
+// ---------------------------------------------------------------------------
+// Auto mode: safe-tool fast-path
+// ---------------------------------------------------------------------------
+
+test('PermissionGate auto mode auto-approves safe tools without prompting', async () => {
+  const gate = new PermissionGate(
+    async () => { throw new Error('should not prompt') },
+    [],
+    { mode: 'auto' },
+  )
+
+  // All safe/readonly tools should be auto-approved
+  for (const toolName of ['Read', 'Grep', 'Glob', 'ToolSearch', 'AskUserQuestion',
+    'ExitPlanMode', 'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList', 'webSearch', 'webFetch', 'Skill']) {
+    const tool: Tool = {
+      name: toolName,
+      description: toolName,
+      riskLevel: 'safe',
+      isReadOnly: true,
+      inputSchema: z.object({}).strict(),
+      execute: async () => ({ ok: true, content: '' }),
+    }
+    assert.equal(await gate.approve(tool, {}), true, `${toolName} should be auto-approved`)
+  }
+})
+
+test('PermissionGate auto mode safe tool fast-path respects deny rules', async () => {
+  let prompted = false
+  const gate = new PermissionGate(
+    async (req) => {
+      prompted = true
+      return false
+    },
+    [{ toolName: 'Read', behavior: 'deny', source: 'config' }],
+    { mode: 'auto' },
+  )
+
+  const approved = await gate.approve(readFileTool, { filePath: 'secret.txt' })
+  assert.equal(approved, false)
+  assert.equal(prompted, false) // auto-denied, not prompted (streak threshold)
+})
+
+// ---------------------------------------------------------------------------
+// Auto mode: acceptEdits fast-path
+// ---------------------------------------------------------------------------
+
+test('PermissionGate auto mode auto-approves Write/Edit/MultiEdit via acceptEdits fast-path', async () => {
+  const gate = new PermissionGate(
+    async () => { throw new Error('should not prompt') },
+    [],
+    { mode: 'auto', cwd: '/workspace' },
+  )
+
+  assert.equal(await gate.approve(writeFileTool, { filePath: '/workspace/src/index.ts' }), true)
+  assert.equal(await gate.approve(editFileTool, { filePath: '/workspace/src/index.ts' }), true)
+  assert.equal(await gate.approve(multiEditFileTool, { filePath: '/workspace/src/index.ts' }), true)
+})
+
+test('PermissionGate auto mode acceptEdits fast-path does not approve Delete', async () => {
+  let prompted = false
+  const gate = new PermissionGate(
+    async (req) => {
+      prompted = true
+      return true
+    },
+    [],
+    { mode: 'auto', cwd: '/workspace' },
+  )
+
+  await gate.approve(deleteFileTool, { filePath: '/workspace/src/old.ts' })
+  assert.equal(prompted, true) // Delete still goes through classifier
+})
+
+// ---------------------------------------------------------------------------
+// Auto mode: user-configured rules
+// ---------------------------------------------------------------------------
+
+test('PermissionGate auto mode respects user-configured deny rules', async () => {
+  let promptCount = 0
+  const gate = new PermissionGate(
+    async () => {
+      promptCount++
+      return false
+    },
+    [],
+    {
+      mode: 'auto',
+      autoModeConfig: { deny: ['Bash:git push*'] },
+    },
+  )
+
+  // 'git push' should be auto-denied by user rule
+  assert.equal(await gate.approve(bashTool, { command: 'git push origin main' }), false)
+  // Should not prompt (denied by user rule via classifier)
+})
+
+test('PermissionGate auto mode respects user-configured allow rules', async () => {
+  const gate = new PermissionGate(
+    async () => { throw new Error('should not prompt') },
+    [],
+    {
+      mode: 'auto',
+      autoModeConfig: { allow: ['Bash:docker build*'] },
+    },
+  )
+
+  assert.equal(await gate.approve(bashTool, { command: 'docker build -t myapp .' }), true)
+})
+
+test('PermissionGate auto mode deny rules override allow rules', async () => {
+  const gate = new PermissionGate(
+    async () => true,
+    [],
+    {
+      mode: 'auto',
+      autoModeConfig: {
+        allow: ['Bash:git push*'],
+        deny: ['Bash:git push*'],
+      },
+    },
+  )
+
+  // Deny takes precedence
+  assert.equal(await gate.approve(bashTool, { command: 'git push origin main' }), false)
+})
+
+// ---------------------------------------------------------------------------
+// Auto mode: dangerous permission stripping
+// ---------------------------------------------------------------------------
+
+test('PermissionGate strips dangerous Bash allow rules on auto mode entry', async () => {
+  const gate = new PermissionGate(
+    async () => true,
+    [],
+    { mode: 'auto', cwd: '/workspace' },
+  )
+
+  // Add a session rule that would approve any Bash command
+  gate.addSessionRule({ toolName: 'Bash', behavior: 'allow', source: 'session' })
+
+  // Switch to auto mode triggers stripping
+  gate.setMode('auto')
+
+  // A dangerous bash command should NOT be auto-approved by the stripped rule
+  let prompted = false
+  // We need a new gate that actually tracks prompts since the old one auto-approves everything
+  const gate2 = new PermissionGate(
+    async (req) => {
+      prompted = true
+      return false
+    },
+    [{ toolName: 'Bash', behavior: 'allow', source: 'config' }],
+    { mode: 'auto' },
+  )
+
+  // The Bash wildcard rule should have been stripped
+  await gate2.approve(bashTool, { command: 'rm -rf /important' })
+  // If stripping worked, this should prompt (not silently approve)
+  assert.equal(prompted, true)
+})
+
+test('PermissionGate strips Agent allow rules on auto mode entry', async () => {
+  // Use a dangerous-risk Agent to ensure the classifier would prompt
+  // (confirm-risk non-destructive tools are auto-approved by the classifier itself)
+  const dangerousAgentTool: Tool = {
+    name: 'Agent',
+    description: 'Spawn a sub-agent',
+    riskLevel: 'dangerous',
+    inputSchema: z.object({ prompt: z.string() }).strict(),
+    execute: async () => ({ ok: true, content: '' }),
+  }
+
+  // Agent allow rule should be stripped when entering auto mode
+  let prompted = false
+  const gate = new PermissionGate(
+    async (req) => {
+      prompted = true
+      return true
+    },
+    [{ toolName: 'Agent', behavior: 'allow', source: 'config' }],
+    { mode: 'auto' },
+  )
+
+  await gate.approve(dangerousAgentTool, { prompt: 'do something' })
+  // If stripping worked, this should prompt (Agent allow rule was removed,
+  // and the classifier prompts for dangerous tools)
+  assert.equal(prompted, true)
+})
+
+test('PermissionGate does not strip Bash rules with content patterns', async () => {
+  const gate = new PermissionGate(
+    async () => { throw new Error('should not prompt') },
+    [{ toolName: 'Bash', contentPattern: 'npm test', behavior: 'allow', source: 'config' }],
+    { mode: 'auto' },
+  )
+
+  // Bash rule with content pattern should survive stripping
+  assert.equal(await gate.approve(bashTool, { command: 'npm test' }), true)
+})

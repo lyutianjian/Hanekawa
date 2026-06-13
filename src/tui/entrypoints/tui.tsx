@@ -255,6 +255,7 @@ async function main() {
     denialStateStore,
     cwd,
     mode: settings.permissions?.mode ?? 'default',
+    autoModeConfig: settings.autoMode,
   })
 
   const contextManagement = config.get().agent.contextManagement
@@ -338,6 +339,7 @@ async function main() {
       getConfigRules: () => permissionGate.getConfigRules(),
       getSessionRules: () => permissionGate.getSessionRules(),
       denialStateStore,
+      autoModeConfig: settings.autoMode,
       cwd,
       system: config.get().agent.system,
       skills,

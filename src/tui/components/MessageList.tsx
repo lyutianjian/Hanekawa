@@ -17,6 +17,8 @@ interface MessageListProps {
   isStreaming?: boolean
   isOverlayActive?: boolean
   animationsEnabled?: boolean
+  expandedThinkingId?: string | null
+  onToggleExpandThinking?: (id: string | null) => void
 }
 
 type PreviewTarget =
@@ -32,6 +34,8 @@ export function MessageList({
   isStreaming,
   isOverlayActive,
   animationsEnabled = true,
+  expandedThinkingId,
+  onToggleExpandThinking,
 }: MessageListProps) {
   const [previewKey, setPreviewKey] = useState<string | null>(null)
   const latestPreviewTarget = getLatestPreviewTarget(
@@ -40,12 +44,23 @@ export function MessageList({
     recentThinkingAssistant,
   )
 
-  // Ctrl+O shows a live preview for the most recent expandable item.
-  // Static scrollback stays immutable once it has been printed.
+  // Ctrl+O: toggle in-place expansion for thinking (from static), or
+  // live preview for tool_call/tool_group (from liveItems).
   useInput(
     (input, key) => {
       if (key.ctrl && input === 'o') {
+        // If thinking is currently expanded, collapse it
+        if (expandedThinkingId) {
+          onToggleExpandThinking?.(null)
+          return
+        }
         if (!latestPreviewTarget) return
+        // Thinking items expand in-place via the static re-render path
+        if (latestPreviewTarget.kind === 'thinking') {
+          onToggleExpandThinking?.(latestPreviewTarget.item.id)
+          return
+        }
+        // Tool/tool_group: toggle live preview as before
         setPreviewKey((current) =>
           current === latestPreviewTarget.key ? null : latestPreviewTarget.key,
         )
@@ -83,14 +98,6 @@ export function MessageList({
         />
       )}
       {previewTarget?.kind === 'tool_group' && (
-        <DisplayItem
-          key={`preview-${previewTarget.key}`}
-          item={previewTarget.item}
-          expanded
-          animationsEnabled={animationsEnabled}
-        />
-      )}
-      {previewTarget?.kind === 'thinking' && !items.some((item) => item.id === previewTarget.item.id) && (
         <DisplayItem
           key={`preview-${previewTarget.key}`}
           item={previewTarget.item}
@@ -209,7 +216,7 @@ export function StaticDisplayItem({ item }: { item: TUIStaticItem }) {
     )
   }
 
-  return <DisplayItem item={item} />
+  return <DisplayItem item={item} expanded={'expanded' in item ? item.expanded : undefined} />
 }
 
 function formatCompactFailure(record: Extract<TUIDisplayItem, { kind: 'compact_attempt_failed' }>['record']): string {

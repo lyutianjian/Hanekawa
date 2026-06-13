@@ -211,18 +211,20 @@ test('MessageList expands latest assistant thinking with Ctrl+O preview', async 
     createdAt: '2026-06-01T00:00:00.000Z',
   }
 
+  let toggledId: string | null = null
   const instance = render(h(MessageList, {
     items: [],
     recentThinkingAssistant: recentThinking,
     isOverlayActive: false,
+    onToggleExpandThinking: (id) => { toggledId = id },
   }))
 
   assert.doesNotMatch(instance.lastFrame() ?? '', /private reasoning/)
   instance.stdin.write('\x0f')
   await waitForInk()
 
-  assert.match(instance.lastFrame() ?? '', /private reasoning/)
-  assert.match(instance.lastFrame() ?? '', /inspect files/)
+  // Ctrl+O now calls onToggleExpandThinking (in-place expansion via App re-render)
+  assert.equal(toggledId, 'assistant-thinking')
 })
 
 test('MessageList never reveals redacted thinking when expanded', async () => {
@@ -237,18 +239,20 @@ test('MessageList never reveals redacted thinking when expanded', async () => {
     createdAt: '2026-06-01T00:00:00.000Z',
   }
 
+  let toggledId: string | null = null
   const instance = render(h(MessageList, {
     items: [],
     recentThinkingAssistant: recentThinking,
     isOverlayActive: false,
+    onToggleExpandThinking: (id) => { toggledId = id },
   }))
 
   instance.stdin.write('\x0f')
   await waitForInk()
 
-  const frame = instance.lastFrame() ?? ''
-  assert.match(frame, /Thinking \(redacted\)/)
-  assert.doesNotMatch(frame, /encrypted-private-data/)
+  // Ctrl+O triggers in-place expansion; redacted content safety is enforced
+  // by AssistantThinkingMessage at render time (not by MessageList).
+  assert.equal(toggledId, 'assistant-redacted')
 })
 
 test('AskUserQuestionDialog renders preview pane for single-select preview questions', () => {
@@ -654,19 +658,22 @@ test('MessageList Ctrl+O prefers newer thinking over older tool result', async (
     createdAt: '2026-06-01T00:00:00.000Z',
   }
 
+  let toggledId: string | null = null
   const instance = render(h(MessageList, {
     items: [],
     recentCompletedToolCall: recentTool,
     recentThinkingAssistant: recentThinking,
     isOverlayActive: false,
+    onToggleExpandThinking: (id) => { toggledId = id },
   }))
 
   instance.stdin.write('\x0f')
   await waitForInk()
 
-  const frame = instance.lastFrame() ?? ''
-  assert.match(frame, /newer thinking detail/)
-  assert.doesNotMatch(frame, /older tool detail/)
+  // Newer thinking takes priority: Ctrl+O calls onToggleExpandThinking
+  // instead of rendering the older tool preview.
+  assert.equal(toggledId, 'assistant-thinking')
+  assert.doesNotMatch(instance.lastFrame() ?? '', /older tool detail/)
 })
 
 test('MessageList Ctrl+O prefers newer tool result over older thinking', async () => {

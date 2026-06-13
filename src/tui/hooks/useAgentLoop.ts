@@ -23,7 +23,7 @@ import {
   applyStreamingThinkingPreview,
   applyToolProgressToTranscriptState,
   applyTuiRecordToTranscriptState,
-  commitLiveItemsExcludingThinking,
+  commitAllLiveItemsToStatic,
   commitLiveItemsToStatic,
   commitPrecedingLiveItemsToStatic,
   createTranscriptState,
@@ -245,9 +245,10 @@ export function useAgentLoop({
 
         // Show duration summary on successful completion
         if (!ac.signal.aborted) {
-          // Commit non-thinking items to static; thinking blocks stay in
-          // liveItems so MessageList can expand them in-place via Ctrl+O.
-          setTranscript((prev) => commitLiveItemsExcludingThinking(prev))
+          // Commit ALL live items to static (including thinking-bearing
+          // messages) so the dynamic frame never exceeds viewport height.
+          // Ctrl+O expansion is handled by MessageList's fallback rendering.
+          setTranscript((prev) => commitAllLiveItemsToStatic(prev))
 
           const elapsed = Date.now() - loopStartRef.current
           const totalSec = Math.floor(elapsed / 1000)
@@ -468,11 +469,10 @@ export function useAgentLoop({
     liveItems: transcript.liveItems,
     liveSystemItems: transcript.liveSystemItems,
     recentCompletedToolCall: transcript.recentCompletedToolCall,
-    // Only expose thinking assistants that are still in the live area.
-    // Once a thinking block is committed to static (at the start of the
-    // next turn or when a newer thinking round arrives), Ctrl+O expansion
-    // should not render a stale fallback below the duration message.
-    recentThinkingAssistant: findRecentLiveThinkingAssistant(transcript.liveItems),
+    // Thinking-bearing messages are committed to static at turn end.
+    // recentThinkingAssistant is maintained by commitAllLiveItemsToStatic
+    // and appendStaticTranscriptItem, so Ctrl+O fallback works from static.
+    recentThinkingAssistant: transcript.recentThinkingAssistant,
     transcriptGeneration,
     appendStaticItem,
     resetTranscript,
@@ -486,31 +486,6 @@ export function useAgentLoop({
     interrupt,
     reloadMessages,
   }
-}
-
-function findRecentLiveThinkingAssistant(
-  items: readonly TUIDisplayItem[],
-): Extract<TUIDisplayItem, { kind: 'assistant' }> | null {
-  for (let index = items.length - 1; index >= 0; index--) {
-    const item = items[index]
-    if (
-      item?.kind === 'assistant'
-      && item.thinkingBlocks
-      && item.thinkingBlocks.length > 0
-      && !isStreamingThinkingPreview(item)
-    ) {
-      return item
-    }
-  }
-  return null
-}
-
-function isStreamingThinkingPreview(
-  item: TUIDisplayItem,
-): item is Extract<TUIDisplayItem, { kind: 'assistant' }> {
-  return item.kind === 'assistant'
-    && item.content === ''
-    && (!item.thinkingBlocks || item.thinkingBlocks.length === 0)
 }
 
 function extractFirstSentence(text: string): string | undefined {

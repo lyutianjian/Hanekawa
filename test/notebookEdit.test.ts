@@ -18,11 +18,11 @@ function makeNotebook(cells: Array<{ cell_type: string; source: string; id?: str
     cells: cells.map((c, i) => ({
       cell_type: c.cell_type,
       source: c.source.split('\n').map((line, j, arr) => (j < arr.length - 1 ? `${line}\n` : line)),
-      metadata: {},
-      ...(c.cell_type === 'code' ? { execution_count: i + 1, outputs: [] } : {}),
+      metadata: {} as Record<string, unknown>,
+      ...(c.cell_type === 'code' ? { execution_count: i + 1, outputs: [] as unknown[] } : {}),
       ...(c.id ? { id: c.id } : {}),
     })),
-    metadata: { language_info: { name: 'python' } },
+    metadata: { language_info: { name: 'python' } } as Record<string, unknown>,
     nbformat,
     nbformat_minor,
   }

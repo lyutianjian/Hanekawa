@@ -12,6 +12,7 @@ interface CollapsedToolGroupProps {
   item: Extract<TUIDisplayItem, { kind: 'tool_group' }>
   expanded?: boolean
   animationsEnabled?: boolean
+  isTranscriptMode?: boolean
 }
 
 /**
@@ -31,7 +32,7 @@ interface CollapsedToolGroupProps {
  * The hint line (`  ⎿  <summary of last tool>`) is held back for
  * MIN_HINT_DISPLAY_MS so fast-completing batches don't flicker a line.
  */
-export function CollapsedToolGroup({ item, expanded, animationsEnabled = true }: CollapsedToolGroupProps) {
+export function CollapsedToolGroup({ item, expanded, animationsEnabled = true, isTranscriptMode = false }: CollapsedToolGroupProps) {
   const { toolCalls } = item
   const summary = formatToolGroupSummary(toolCalls)
   const allDone = toolCalls.every((call) => call.status === 'done' || call.status === 'error' || call.status === 'denied')
@@ -76,7 +77,7 @@ export function CollapsedToolGroup({ item, expanded, animationsEnabled = true }:
           </Box>
           <Box flexShrink={1} minWidth={0}>
             <Text color={theme.dimText}>{summary}</Text>
-            <Text color={theme.dimText} dimColor> (ctrl+o to collapse)</Text>
+            {!isTranscriptMode && <Text color={theme.dimText} dimColor> (ctrl+o to collapse)</Text>}
           </Box>
         </Box>
         {toolCalls.map((call) => (
@@ -103,7 +104,7 @@ export function CollapsedToolGroup({ item, expanded, animationsEnabled = true }:
         </Box>
         <Box flexShrink={1} minWidth={0}>
           <Text color={theme.dimText}>{summary}</Text>
-          <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>
+          {!isTranscriptMode && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
         </Box>
       </Box>
       {hintVisible && hintText && (

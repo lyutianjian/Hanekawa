@@ -242,7 +242,7 @@ export const toolSearchTool: Tool = {
     }
 
     const { query, max_results = 5 } = parsed.data
-    const tools: Tool[] = (context as Record<string, unknown>)['_allTools'] as Tool[] ?? []
+    const tools: Tool[] = context._allTools ?? []
     const deferredTools = tools.filter(isDeferredTool)
 
     // Check for select: prefix — direct tool selection

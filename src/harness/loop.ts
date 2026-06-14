@@ -366,8 +366,8 @@ export class AgentLoop {
 
       // Set provider name on tool context for ToolSearchTool dual-provider support
       this.options.toolContext.providerName = this.activeModel.providerName
-      // Inject full tool list for ToolSearchTool scoring (pragmatic escape hatch)
-      ;(this.options.toolContext as Record<string, unknown>)['_allTools'] = this.options.tools
+      // Inject full tool list for ToolSearchTool scoring
+      this.options.toolContext._allTools = this.options.tools
 
       const hasDeferred = isToolSearchEnabled() && this.options.tools.some(t => t.shouldDefer || t.isMcp)
 

@@ -21,6 +21,7 @@ export interface KeyboardShortcutOptions {
   onExit: () => void
   onEnterRestoreMode: () => void
   onCyclePermissionMode: (direction: 1 | -1) => void
+  onToggleTranscript: () => void
   isStreaming: boolean
   isRestoreMode: boolean
   isPermissionVisible: boolean
@@ -71,6 +72,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     onExit,
     onEnterRestoreMode,
     onCyclePermissionMode,
+    onToggleTranscript,
     isStreaming,
     isRestoreMode,
     isPermissionVisible,
@@ -170,6 +172,12 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
 
       if (hintMessage) {
         clearHint()
+      }
+
+      // --- Ctrl+O: toggle transcript mode ---
+      if (key.ctrl && input === 'o') {
+        onToggleTranscript()
+        return
       }
 
       // --- Shift+Tab: cycle permission mode ---
@@ -390,7 +398,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
         setCursorPos(cursorPos + input.length)
       }
     },
-    [text, cursorPos, isStreaming, isRestoreMode, isPermissionVisible, hintMessage, onSubmit, onInterrupt, onExit, onEnterRestoreMode, onCyclePermissionMode, clearHint, showHint, suggestionType, suggestions, selectedSuggestion, clearSuggestions],
+    [text, cursorPos, isStreaming, isRestoreMode, isPermissionVisible, hintMessage, onSubmit, onInterrupt, onExit, onEnterRestoreMode, onCyclePermissionMode, onToggleTranscript, clearHint, showHint, suggestionType, suggestions, selectedSuggestion, clearSuggestions],
   )
 
   useInkInput(handleInput, { isActive: !shouldIgnoreShortcutInput({ isPermissionVisible, isRestoreMode }) })

@@ -30,6 +30,7 @@ function AutocompleteHarness({ submissions, cwd }: { submissions: string[]; cwd?
     onExit: () => {},
     onEnterRestoreMode: () => {},
     onCyclePermissionMode: () => {},
+    onToggleTranscript: () => {},
     isStreaming: false,
     isRestoreMode: false,
     isPermissionVisible: false,

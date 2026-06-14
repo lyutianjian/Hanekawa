@@ -12,9 +12,10 @@ interface AssistantMessageProps {
   thinkingDurationMs?: number
   thinkingExpanded?: boolean
   thinkingPreview?: string
+  isTranscriptMode?: boolean
 }
 
-export function AssistantMessage({ content, streamingContent, thinkingBlocks, thinkingDurationMs, thinkingExpanded = false, thinkingPreview }: AssistantMessageProps) {
+export function AssistantMessage({ content, streamingContent, thinkingBlocks, thinkingDurationMs, thinkingExpanded = false, thinkingPreview, isTranscriptMode = false }: AssistantMessageProps) {
   const { stdout } = useStdout()
   const width = stdout?.columns ?? 80
   const hasContent = content.trim().length > 0
@@ -29,7 +30,7 @@ export function AssistantMessage({ content, streamingContent, thinkingBlocks, th
             <Text color={theme.brand}>{THINKING_PREFIX}</Text>
           </Box>
           <Box flexGrow={1}>
-            <AssistantThinkingMessage blocks={thinkingBlocks ?? []} expanded={thinkingExpanded} thinkingDurationMs={thinkingDurationMs} thinkingPreview={thinkingPreview} />
+            <AssistantThinkingMessage blocks={thinkingBlocks ?? []} expanded={thinkingExpanded} thinkingDurationMs={thinkingDurationMs} thinkingPreview={thinkingPreview} isTranscriptMode={isTranscriptMode} />
           </Box>
         </Box>
       )}

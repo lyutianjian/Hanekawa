@@ -142,7 +142,7 @@ export function buildAnthropicMessages(request: ModelRequest) {
     // otherwise fall back to plain-text content.
     if (item.apiResultBlock) {
       pendingToolResults.push({
-        ...(item.apiResultBlock as Record<string, unknown>),
+        ...(item.apiResultBlock as unknown as Record<string, unknown>),
         is_error: !item.ok,
       })
     } else {

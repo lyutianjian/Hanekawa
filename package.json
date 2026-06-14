@@ -19,7 +19,7 @@
     "fast-glob": "latest",
     "figures": "^6.1.0",
     "fuse.js": "^7.4.1",
-    "ink": "^7.0.5",
+    "ink": "7.0.6",
     "marked": "^18.0.3",
     "openai": "latest",
     "picomatch": "^2.3.2",

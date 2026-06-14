@@ -47,7 +47,7 @@ test('App disables TUI animations while the permission dialog is visible', async
   assert.match(hookSource, /export function useSpinner\(active = true\)/)
   assert.match(hookSource, /if \(!active\) return/)
   assert.match(messageListSource, /animationsEnabled = true/)
-  assert.match(messageListSource, /<ToolCallBlock item=\{item\} expanded=\{expanded\} animationsEnabled=\{animationsEnabled\}/)
+  assert.match(messageListSource, /<ToolCallBlock item=\{item\} expanded=\{isExpanded\} animationsEnabled=\{animationsEnabled\}/)
   assert.match(toolCallSource, /useBlink\(animationsEnabled && runningOrApproved\)/)
   assert.match(taskListSource, /animationsEnabled = true/)
   assert.match(taskListSource, /if \(!animationsEnabled\) return/)

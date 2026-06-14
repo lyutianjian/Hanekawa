@@ -317,6 +317,8 @@ export interface ToolContext {
   askUserQuestionBridge?: AskUserQuestionBridge
   /** Active provider name ('anthropic' | 'openai') — used by ToolSearchTool to format results. */
   providerName?: string
+  /** Full unfiltered tool list for ToolSearchTool scoring. */
+  _allTools?: Tool[]
   /** Tool names already discovered via ToolSearch — survives compaction. */
   discoveredToolNames?: Set<string>
   /** Tool names discovered AFTER the last compaction — these still have tool_reference blocks in history. */

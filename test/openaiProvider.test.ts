@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
 import { OpenAIProvider } from '../src/config/providers/openaiProvider.js'
 import { resetCacheBreakDetection, type CacheBreakSource } from '../src/harness/cacheBreakDetection.js'
+import { clearToolSchemaCache } from '../src/utils/toolSchemaCache.js'
 import type { ModelRequest, Tool } from '../src/harness/types.js'
 
 interface FakeOpenAIResponse {
@@ -201,6 +202,7 @@ test('OpenAI provider reports cache breaks with prompt-change reasons', async ()
 
   for (const scenario of scenarios) {
     resetCacheBreakDetection(scenario.source)
+    clearToolSchemaCache()
     try {
       let calls = 0
       const provider = new OpenAIProvider({

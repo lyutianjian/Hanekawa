@@ -6,10 +6,58 @@ import type { DOMElement, Instance, RenderOptions } from 'ink'
 import CursorContext from '../../node_modules/ink/build/components/CursorContext.js'
 // @ts-ignore - Ink's public surface does not expose layout listeners.
 import { addLayoutListener } from '../../node_modules/ink/build/dom.js'
+// @ts-ignore - Ink stores live instances keyed by stdout stream.
+import instances from '../../node_modules/ink/build/instances.js'
 import { CursorParkingController } from './cursorParking.js'
 
 export * from 'ink'
 export type * from 'ink'
+
+type InkInternalInstance = {
+  log?: {
+    reset?: () => void
+  }
+  lastOutput?: string
+  lastOutputToRender?: string
+  lastOutputHeight?: number
+}
+
+type InternalRootNode = DOMElement & {
+  onImmediateRender?: () => void
+}
+
+// ---------------------------------------------------------------------------
+// Log-update state reset
+// ---------------------------------------------------------------------------
+// When AlternateScreen unmounts (user exits transcript mode), ink's internal
+// log-update module retains stale state (previousLineCount, cursorWasShown,
+// etc.) from the transcript view.  The next normal render frame would use
+// these stale values to compute eraseLines() and cursor movement, resulting
+// in garbled output and cursor misplacement.
+//
+// resetLogUpdateForStdout() reaches into ink's internal instances map to
+// access the live Ink class instance and clear cached log/frame state WITHOUT
+// writing to the terminal. This is exactly what we need after the terminal has
+// already been restored by EXIT_ALT_SCREEN + CLEAR_SCREEN + CURSOR_HOME.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reset ink's log-update and frame cache state for the given stdout stream.
+ * Call this AFTER writing EXIT_ALT_SCREEN + CLEAR_SCREEN + CURSOR_HOME.
+ */
+export function resetLogUpdateForStdout(stdout: NodeJS.WriteStream): void {
+  const inkInstance = instances.get(stdout) as InkInternalInstance | undefined
+  inkInstance?.log?.reset?.()
+  if (!inkInstance) return
+
+  inkInstance.lastOutput = ''
+  inkInstance.lastOutputToRender = ''
+  inkInstance.lastOutputHeight = 0
+}
+
+// ---------------------------------------------------------------------------
+// useDeclaredCursor
+// ---------------------------------------------------------------------------
 
 export function useDeclaredCursor({
   line,
@@ -58,6 +106,18 @@ export function useDeclaredCursor({
     }
 
     cleanupRef.current = addLayoutListener(root, syncCursor)
+    // Sync cursor position immediately on mount.  addLayoutListener only
+    // fires on *changes* — if the layout was already computed before the
+    // listener was attached (common after an alt-screen round-trip), the
+    // initial position would be lost without this call.
+    syncCursor()
+    queueMicrotask(() => {
+      if (nodeRef.current !== node) return
+      if (!latestRef.current.active) return
+      if (findRootNode(node) !== root) return
+      const internalRoot = root as InternalRootNode
+      internalRoot.onImmediateRender?.()
+    })
   }, [cursorContext, syncCursor])
 
   useEffect(() => {
@@ -70,6 +130,10 @@ export function useDeclaredCursor({
 
   return setNode
 }
+
+// ---------------------------------------------------------------------------
+// render
+// ---------------------------------------------------------------------------
 
 export function render(node: React.ReactNode, options?: NodeJS.WriteStream | RenderOptions): Instance {
   const stdout = resolveStdout(options)

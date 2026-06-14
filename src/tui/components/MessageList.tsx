@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react'
-import { Box, Text, useInput } from 'ink'
+import { useMemo } from 'react'
+import { Box, Text } from 'ink'
 import type { TUIDisplayItem, TUIStaticItem } from '../types.js'
 import { UserMessage } from './UserMessage.js'
 import { AssistantMessage } from './AssistantMessage.js'
@@ -11,100 +11,32 @@ import { theme } from '../theme.js'
 
 interface MessageListProps {
   items: TUIDisplayItem[]
-  recentCompletedToolCall?: Extract<TUIDisplayItem, { kind: 'tool_call' }> | null
-  recentCompletedToolGroup?: Extract<TUIDisplayItem, { kind: 'tool_group' }> | null
-  recentThinkingAssistant?: Extract<TUIDisplayItem, { kind: 'assistant' }> | null
   isStreaming?: boolean
   isOverlayActive?: boolean
   animationsEnabled?: boolean
-  expandedThinkingId?: string | null
-  onToggleExpandThinking?: (id: string | null) => void
 }
-
-type PreviewTarget =
-  | { kind: 'tool'; key: string; item: Extract<TUIDisplayItem, { kind: 'tool_call' }> }
-  | { kind: 'tool_group'; key: string; item: Extract<TUIDisplayItem, { kind: 'tool_group' }> }
-  | { kind: 'thinking'; key: string; item: Extract<TUIDisplayItem, { kind: 'assistant' }> }
 
 export function MessageList({
   items,
-  recentCompletedToolCall,
-  recentCompletedToolGroup,
-  recentThinkingAssistant,
   isStreaming,
-  isOverlayActive,
   animationsEnabled = true,
-  expandedThinkingId,
-  onToggleExpandThinking,
 }: MessageListProps) {
-  const [previewKey, setPreviewKey] = useState<string | null>(null)
-  const latestPreviewTarget = getLatestPreviewTarget(
-    recentCompletedToolCall,
-    recentCompletedToolGroup,
-    recentThinkingAssistant,
-  )
-
-  // Ctrl+O: toggle in-place expansion for thinking (from static), or
-  // live preview for tool_call/tool_group (from liveItems).
-  useInput(
-    (input, key) => {
-      if (key.ctrl && input === 'o') {
-        // If thinking is currently expanded, collapse it
-        if (expandedThinkingId) {
-          onToggleExpandThinking?.(null)
-          return
-        }
-        if (!latestPreviewTarget) return
-        // Thinking items expand in-place via the static re-render path
-        if (latestPreviewTarget.kind === 'thinking') {
-          onToggleExpandThinking?.(latestPreviewTarget.item.id)
-          return
-        }
-        // Tool/tool_group: toggle live preview as before
-        setPreviewKey((current) =>
-          current === latestPreviewTarget.key ? null : latestPreviewTarget.key,
-        )
-      }
-    },
-    { isActive: !isOverlayActive },
-  )
-
-  const previewTarget = latestPreviewTarget?.key === previewKey ? latestPreviewTarget : null
-
   const subagentTreePositions = useMemo(() => computeSubagentTreePositions(items), [items])
 
   return (
     <Box flexDirection="column">
       {items.map((item) => {
-        const isLatestThinking = previewTarget?.kind === 'thinking' && previewTarget.item.id === item.id
-        const isLiveThinking = isStreaming && item.kind === 'assistant' && Boolean(item.thinkingBlocks?.length) && recentThinkingAssistant?.id === item.id
-        const isLatestGroup = previewTarget?.kind === 'tool_group' && previewTarget.item.id === item.id
+        const isLiveThinking = isStreaming && item.kind === 'assistant' && Boolean(item.thinkingBlocks?.length)
         return (
           <DisplayItem
             key={item.id}
             item={item}
-            expanded={isLatestThinking || isLiveThinking || isLatestGroup}
+            expanded={isLiveThinking}
             animationsEnabled={animationsEnabled}
             subagentTreePosition={item.kind === 'subagent_task' ? subagentTreePositions.get(item.id) : undefined}
           />
         )
       })}
-      {previewTarget?.kind === 'tool' && (
-        <DisplayItem
-          key={`preview-${previewTarget.key}`}
-          item={previewTarget.item}
-          expanded
-          animationsEnabled={animationsEnabled}
-        />
-      )}
-      {previewTarget?.kind === 'tool_group' && (
-        <DisplayItem
-          key={`preview-${previewTarget.key}`}
-          item={previewTarget.item}
-          expanded
-          animationsEnabled={animationsEnabled}
-        />
-      )}
     </Box>
   )
 }
@@ -114,21 +46,24 @@ export function DisplayItem({
   expanded = false,
   animationsEnabled = true,
   subagentTreePosition,
+  isTranscriptMode = false,
 }: {
   item: TUIDisplayItem
   expanded?: boolean
   animationsEnabled?: boolean
   subagentTreePosition?: SubagentTreePosition
+  isTranscriptMode?: boolean
 }) {
+  const isExpanded = expanded || isTranscriptMode
   switch (item.kind) {
     case 'user':
       return <UserMessage content={item.content} />
     case 'assistant':
-      return <AssistantMessage content={item.content} thinkingBlocks={item.thinkingBlocks} thinkingDurationMs={item.thinkingDurationMs} thinkingExpanded={expanded} thinkingPreview={item.thinkingPreview} />
+      return <AssistantMessage content={item.content} thinkingBlocks={item.thinkingBlocks} thinkingDurationMs={item.thinkingDurationMs} thinkingExpanded={isExpanded} thinkingPreview={item.thinkingPreview} isTranscriptMode={isTranscriptMode} />
     case 'tool_call':
-      return <ToolCallBlock item={item} expanded={expanded} animationsEnabled={animationsEnabled} />
+      return <ToolCallBlock item={item} expanded={isExpanded} animationsEnabled={animationsEnabled} isTranscriptMode={isTranscriptMode} />
     case 'tool_group':
-      return <CollapsedToolGroup item={item} expanded={expanded} animationsEnabled={animationsEnabled} />
+      return <CollapsedToolGroup item={item} expanded={isExpanded} animationsEnabled={animationsEnabled} isTranscriptMode={isTranscriptMode} />
     case 'compact_boundary':
       return (
         <Box marginY={1}>
@@ -172,36 +107,6 @@ export function DisplayItem({
         </Box>
       )
   }
-}
-
-function getLatestPreviewTarget(
-  tool: Extract<TUIDisplayItem, { kind: 'tool_call' }> | null | undefined,
-  toolGroup: Extract<TUIDisplayItem, { kind: 'tool_group' }> | null | undefined,
-  assistant: Extract<TUIDisplayItem, { kind: 'assistant' }> | null | undefined,
-): PreviewTarget | null {
-  const toolTarget = tool?.result
-    ? { kind: 'tool' as const, key: `tool:${tool.toolUseId}`, item: tool, createdAt: tool.createdAt }
-    : null
-  const groupTarget = toolGroup && toolGroup.toolCalls.length > 0
-    ? { kind: 'tool_group' as const, key: `group:${toolGroup.id}`, item: toolGroup, createdAt: toolGroup.createdAt }
-    : null
-  const thinkingTarget = assistant?.thinkingBlocks && assistant.thinkingBlocks.length > 0
-    ? { kind: 'thinking' as const, key: `thinking:${assistant.id}`, item: assistant, createdAt: assistant.createdAt }
-    : null
-
-  const candidates = [toolTarget, groupTarget, thinkingTarget].filter(
-    (target): target is NonNullable<typeof target> => target !== null,
-  )
-  if (candidates.length === 0) return null
-  candidates.sort((a, b) => timestampMs(b.createdAt) - timestampMs(a.createdAt))
-  const latest = candidates[0]!
-  // Drop the transient `createdAt` before returning.
-  return { kind: latest.kind, key: latest.key, item: latest.item } as PreviewTarget
-}
-
-function timestampMs(value: string): number {
-  const time = Date.parse(value)
-  return Number.isFinite(time) ? time : 0
 }
 
 export function StaticDisplayItem({ item }: { item: TUIStaticItem }) {

@@ -19,6 +19,8 @@ import type { PermissionPromptProxy, RecordProxy } from '../hooks/usePermission.
 import { CheckpointService } from '../../services/checkpoint/checkpointService.js'
 import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
 import { MessageList, StaticDisplayItem, DisplayItem } from './MessageList.js'
+import { AlternateScreen } from './AlternateScreen.js'
+import { TranscriptView } from './TranscriptView.js'
 import { InputBox } from './InputBox.js'
 import { CommandSuggestions } from './CommandSuggestions.js'
 import { sampleSpinnerColors, Spinner } from './Spinner.js'
@@ -136,7 +138,7 @@ export function App({
     new CheckpointService(process.cwd(), initialSession.id),
   )
   const [queuedPromptAfterClear, setQueuedPromptAfterClear] = useState<string | null>(initialQueuedPrompt ?? null)
-  const [expandedThinkingId, setExpandedThinkingId] = useState<string | null>(null)
+  const [screen, setScreen] = useState<'prompt' | 'transcript'>('prompt')
 
   const { permState, respond, setActiveRequest, denyPending } = usePermission(promptProxy)
   const exitPlan = useExitPlanPermission(exitPlanProxy)
@@ -234,6 +236,7 @@ export function App({
     || modelPickerOpen
     || effortPickerOpen
     || mode === 'restore'
+    || screen === 'transcript'
   const animationsEnabled = !permState.visible
   const showSpinner = animationsEnabled && !isOverlayActive
   const showStoppedTaskList = !isStreaming
@@ -472,8 +475,8 @@ export function App({
     await submitPlainInput(text)
   }, [dispatch, submitPlainInput])
 
-  const handleToggleExpandThinking = useCallback((id: string | null) => {
-    setExpandedThinkingId((current) => (current === id ? null : id))
+  const handleToggleTranscript = useCallback(() => {
+    setScreen((s) => s === 'transcript' ? 'prompt' : 'transcript')
   }, [])
 
   const handleInterrupt = useCallback(() => {
@@ -619,13 +622,6 @@ export function App({
     }
   }, [isStreaming])
 
-  // Collapse expanded thinking when streaming starts
-  useEffect(() => {
-    if (isStreaming && expandedThinkingId) {
-      setExpandedThinkingId(null)
-    }
-  }, [isStreaming, expandedThinkingId])
-
   const {
     text,
     cursorPos,
@@ -641,6 +637,7 @@ export function App({
     onExit: handleExit,
     onEnterRestoreMode: handleEnterRestoreMode,
     onCyclePermissionMode: cyclePermissionMode,
+    onToggleTranscript: handleToggleTranscript,
     isStreaming,
     isRestoreMode: mode === 'restore',
     isPermissionVisible:
@@ -651,7 +648,7 @@ export function App({
       || providerPanelOpen
       || modelPickerOpen
       || effortPickerOpen
-      || !!expandedThinkingId,
+      || screen === 'transcript',
   })
 
   restoreInputRef.current = (restoredText: string) => {
@@ -668,29 +665,36 @@ export function App({
       providerName: runtime.providerName,
       cwd: process.cwd(),
     },
-    ...staticTranscriptItems.map((item) =>
-      item.kind === 'assistant' && item.thinkingBlocks?.length
-        ? { ...item, expanded: item.id === expandedThinkingId }
-        : item
-    ),
+    ...staticTranscriptItems,
   ]
+
+  // Transcript mode: render into alternate screen buffer, replacing the
+  // normal prompt view entirely.  The main screen is preserved by the
+  // alt-screen escape sequences and restored when the component unmounts.
+  if (screen === 'transcript') {
+    return (
+      <AlternateScreen>
+        <TranscriptView
+          store={store}
+          sessionId={activeSession.id}
+          onExit={() => setScreen('prompt')}
+        />
+      </AlternateScreen>
+    )
+  }
 
   return (
     <Box flexDirection="column" width="100%">
-      <Static key={`${transcriptGeneration}-${expandedThinkingId}`} items={staticItems}>
+      <Static key={`${transcriptGeneration}`} items={staticItems}>
         {(item) => <StaticDisplayItem key={item.id} item={item} />}
       </Static>
 
       {/* Message list */}
       <MessageList
         items={liveItems}
-        recentCompletedToolCall={recentCompletedToolCall}
-        recentThinkingAssistant={recentThinkingAssistant}
         isStreaming={isStreaming}
         isOverlayActive={isOverlayActive}
         animationsEnabled={animationsEnabled}
-        expandedThinkingId={expandedThinkingId}
-        onToggleExpandThinking={handleToggleExpandThinking}
       />
 
       {/* Live system items (e.g. duration summary) render in live area
@@ -786,8 +790,8 @@ export function App({
         />
       )}
 
-      {/* Input box (with horizontal lines) — hidden when thinking is expanded in-place */}
-      {mode !== 'restore' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && !expandedThinkingId && (
+      {/* Input box (with horizontal lines) */}
+      {mode !== 'restore' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && (
         <InputBox
           text={text}
           cursorPos={cursorPos}

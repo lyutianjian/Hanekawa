@@ -5,6 +5,7 @@ cc's_harness-engineering/
 # Build output
 dist/
 
+docs/
 # Environment files
 .env
 .env.local

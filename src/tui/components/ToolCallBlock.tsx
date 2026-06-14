@@ -12,9 +12,10 @@ interface ToolCallBlockProps {
   item: Extract<TUIDisplayItem, { kind: 'tool_call' }>
   expanded?: boolean
   animationsEnabled?: boolean
+  isTranscriptMode?: boolean
 }
 
-export function ToolCallBlock({ item, expanded, animationsEnabled = true }: ToolCallBlockProps) {
+export function ToolCallBlock({ item, expanded, animationsEnabled = true, isTranscriptMode = false }: ToolCallBlockProps) {
   const statusDot = getStatusDot(item.status)
   const runningOrApproved = item.status === 'running' || item.status === 'approved'
   const blinkOff = useBlink(animationsEnabled && runningOrApproved)
@@ -71,6 +72,7 @@ export function ToolCallBlock({ item, expanded, animationsEnabled = true }: Tool
           result={result}
           display={item.resultDisplay}
           expanded={expanded}
+          isTranscriptMode={isTranscriptMode}
         />
       )}
     </Box>
@@ -87,9 +89,10 @@ interface OutputBlockProps {
   result: string
   display?: ToolResultDisplay
   expanded?: boolean
+  isTranscriptMode?: boolean
 }
 
-function OutputBlock({ tool, input, result, display, expanded }: OutputBlockProps) {
+function OutputBlock({ tool, input, result, display, expanded, isTranscriptMode = false }: OutputBlockProps) {
   // Render-time customized summary. Used when the tool has no display
   // metadata (e.g. Bash) but provides a renderToolResultSummary hook.
   const customSummary = !display ? getToolResultSummary(tool, input, result, true) : null
@@ -101,7 +104,7 @@ function OutputBlock({ tool, input, result, display, expanded }: OutputBlockProp
       <ResponseBlock>
         <Box flexWrap="wrap">
           <Text color={theme.dimText}>{collapsedSummary}</Text>
-          {hasDetail && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
+          {hasDetail && !isTranscriptMode && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
         </Box>
       </ResponseBlock>
     )
@@ -113,7 +116,7 @@ function OutputBlock({ tool, input, result, display, expanded }: OutputBlockProp
       <ResponseBlock>
         <Box flexWrap="wrap">
           <Text color={theme.dimText}>{collapsedSummary}</Text>
-          {hasDetail && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
+          {hasDetail && !isTranscriptMode && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
         </Box>
       </ResponseBlock>
     )
@@ -125,7 +128,7 @@ function OutputBlock({ tool, input, result, display, expanded }: OutputBlockProp
       <ResponseBlock>
         <Box flexWrap="wrap">
           <Text color={theme.dimText}>{customSummary}</Text>
-          <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>
+          {!isTranscriptMode && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
         </Box>
       </ResponseBlock>
     )
@@ -143,11 +146,13 @@ function OutputBlock({ tool, input, result, display, expanded }: OutputBlockProp
             <Text color={theme.dimText}>{collapsedSummary}</Text>
           </Box>
           <DetailLines lines={(display.detail ?? result).split('\n')} />
-          <Box>
-            <Text color={theme.dimText} dimColor>
-              (ctrl+o to collapse)
-            </Text>
-          </Box>
+          {!isTranscriptMode && (
+            <Box>
+              <Text color={theme.dimText} dimColor>
+                (ctrl+o to collapse)
+              </Text>
+            </Box>
+          )}
         </Box>
       </ResponseBlock>
     )
@@ -164,11 +169,13 @@ function OutputBlock({ tool, input, result, display, expanded }: OutputBlockProp
             </Box>
           )}
           <DetailLines lines={lines} />
-          <Box>
-            <Text color={theme.dimText} dimColor>
-              (ctrl+o to collapse)
-            </Text>
-          </Box>
+          {!isTranscriptMode && (
+            <Box>
+              <Text color={theme.dimText} dimColor>
+                (ctrl+o to collapse)
+              </Text>
+            </Box>
+          )}
         </Box>
       </ResponseBlock>
     )
@@ -195,7 +202,7 @@ function OutputBlock({ tool, input, result, display, expanded }: OutputBlockProp
         <DetailLines lines={visibleLines} />
         <Box>
           <Text color={theme.dimText} dimColor>
-            ... +{hiddenCount} {hiddenCount === 1 ? 'line' : 'lines'} (ctrl+o to expand)
+            ... +{hiddenCount} {hiddenCount === 1 ? 'line' : 'lines'}{!isTranscriptMode && ' (ctrl+o to expand)'}
           </Text>
         </Box>
       </Box>

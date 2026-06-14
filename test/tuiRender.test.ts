@@ -198,8 +198,8 @@ test('MessageList renders assistant thinking blocks as folded status', () => {
   assert.doesNotMatch(frame, /private reasoning/)
 })
 
-test('MessageList expands latest assistant thinking with Ctrl+O preview', async () => {
-  const recentThinking: Extract<TUIDisplayItem, { kind: 'assistant' }> = {
+test('MessageList renders thinking blocks in items list', async () => {
+  const items: TUIDisplayItem[] = [{
     kind: 'assistant',
     id: 'assistant-thinking',
     content: 'final answer',
@@ -209,26 +209,17 @@ test('MessageList expands latest assistant thinking with Ctrl+O preview', async 
       signature: 'sig-1',
     }],
     createdAt: '2026-06-01T00:00:00.000Z',
-  }
+  }]
 
-  let toggledId: string | null = null
-  const instance = render(h(MessageList, {
-    items: [],
-    recentThinkingAssistant: recentThinking,
-    isOverlayActive: false,
-    onToggleExpandThinking: (id) => { toggledId = id },
-  }))
+  const instance = render(h(MessageList, { items, isStreaming: true }))
+  const frame = instance.lastFrame() ?? ''
 
-  assert.doesNotMatch(instance.lastFrame() ?? '', /private reasoning/)
-  instance.stdin.write('\x0f')
-  await waitForInk()
-
-  // Ctrl+O now calls onToggleExpandThinking (in-place expansion via App re-render)
-  assert.equal(toggledId, 'assistant-thinking')
+  // Streaming thinking is auto-expanded
+  assert.match(frame, /private reasoning/)
 })
 
-test('MessageList never reveals redacted thinking when expanded', async () => {
-  const recentThinking: Extract<TUIDisplayItem, { kind: 'assistant' }> = {
+test('MessageList never reveals redacted thinking content', async () => {
+  const items: TUIDisplayItem[] = [{
     kind: 'assistant',
     id: 'assistant-redacted',
     content: 'final answer',
@@ -237,22 +228,13 @@ test('MessageList never reveals redacted thinking when expanded', async () => {
       data: 'encrypted-private-data',
     }],
     createdAt: '2026-06-01T00:00:00.000Z',
-  }
+  }]
 
-  let toggledId: string | null = null
-  const instance = render(h(MessageList, {
-    items: [],
-    recentThinkingAssistant: recentThinking,
-    isOverlayActive: false,
-    onToggleExpandThinking: (id) => { toggledId = id },
-  }))
+  const instance = render(h(MessageList, { items, isStreaming: true }))
+  const frame = instance.lastFrame() ?? ''
 
-  instance.stdin.write('\x0f')
-  await waitForInk()
-
-  // Ctrl+O triggers in-place expansion; redacted content safety is enforced
-  // by AssistantThinkingMessage at render time (not by MessageList).
-  assert.equal(toggledId, 'assistant-redacted')
+  // Redacted content must never appear in output
+  assert.doesNotMatch(frame, /encrypted-private-data/)
 })
 
 test('AskUserQuestionDialog renders preview pane for single-select preview questions', () => {
@@ -608,110 +590,6 @@ test('RestoreMode renders Summarizing while summary action is pending', async ()
   assert.match(instance.lastFrame() ?? '', /Summarizing\.\.\./)
   resolveSelect()
   await waitForInk()
-})
-
-test('MessageList shows recent completed tool detail as a live Ctrl+O preview', async () => {
-  const recent: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
-    kind: 'tool_call',
-    id: 'tool-1',
-    toolUseId: 'call-1',
-    tool: 'Read',
-    input: { filePath: 'a.txt' },
-    status: 'done',
-    result: ['one', 'two', 'three', 'four'].join('\n'),
-    createdAt: '2026-05-31T00:00:00.000Z',
-  }
-
-  const instance = render(h(MessageList, {
-    items: [],
-    recentCompletedToolCall: recent,
-    isOverlayActive: false,
-  }))
-
-  assert.doesNotMatch(instance.lastFrame() ?? '', /four/)
-  instance.stdin.write('\x0f')
-  await new Promise((resolve) => setImmediate(resolve))
-
-  assert.match(instance.lastFrame() ?? '', /four/)
-})
-
-test('MessageList Ctrl+O prefers newer thinking over older tool result', async () => {
-  const recentTool: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
-    kind: 'tool_call',
-    id: 'tool-1',
-    toolUseId: 'call-1',
-    tool: 'Read',
-    input: { filePath: 'a.txt' },
-    status: 'done',
-    result: 'older tool detail',
-    createdAt: '2026-05-31T00:00:00.000Z',
-  }
-  const recentThinking: Extract<TUIDisplayItem, { kind: 'assistant' }> = {
-    kind: 'assistant',
-    id: 'assistant-thinking',
-    content: 'final answer',
-    thinkingBlocks: [{
-      type: 'thinking',
-      thinking: 'newer thinking detail',
-      signature: 'sig-1',
-    }],
-    createdAt: '2026-06-01T00:00:00.000Z',
-  }
-
-  let toggledId: string | null = null
-  const instance = render(h(MessageList, {
-    items: [],
-    recentCompletedToolCall: recentTool,
-    recentThinkingAssistant: recentThinking,
-    isOverlayActive: false,
-    onToggleExpandThinking: (id) => { toggledId = id },
-  }))
-
-  instance.stdin.write('\x0f')
-  await waitForInk()
-
-  // Newer thinking takes priority: Ctrl+O calls onToggleExpandThinking
-  // instead of rendering the older tool preview.
-  assert.equal(toggledId, 'assistant-thinking')
-  assert.doesNotMatch(instance.lastFrame() ?? '', /older tool detail/)
-})
-
-test('MessageList Ctrl+O prefers newer tool result over older thinking', async () => {
-  const recentTool: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
-    kind: 'tool_call',
-    id: 'tool-1',
-    toolUseId: 'call-1',
-    tool: 'Read',
-    input: { filePath: 'a.txt' },
-    status: 'done',
-    result: 'newer tool detail',
-    createdAt: '2026-06-02T00:00:00.000Z',
-  }
-  const recentThinking: Extract<TUIDisplayItem, { kind: 'assistant' }> = {
-    kind: 'assistant',
-    id: 'assistant-thinking',
-    content: 'final answer',
-    thinkingBlocks: [{
-      type: 'thinking',
-      thinking: 'older thinking detail',
-      signature: 'sig-1',
-    }],
-    createdAt: '2026-06-01T00:00:00.000Z',
-  }
-
-  const instance = render(h(MessageList, {
-    items: [],
-    recentCompletedToolCall: recentTool,
-    recentThinkingAssistant: recentThinking,
-    isOverlayActive: false,
-  }))
-
-  instance.stdin.write('\x0f')
-  await waitForInk()
-
-  const frame = instance.lastFrame() ?? ''
-  assert.match(frame, /newer tool detail/)
-  assert.doesNotMatch(frame, /older thinking detail/)
 })
 
 test('StaticDisplayItem renders welcome banner as a static header item', () => {

@@ -8,9 +8,10 @@ interface AssistantThinkingMessageProps {
   expanded?: boolean
   thinkingDurationMs?: number
   thinkingPreview?: string
+  isTranscriptMode?: boolean
 }
 
-export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDurationMs, thinkingPreview }: AssistantThinkingMessageProps) {
+export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDurationMs, thinkingPreview, isTranscriptMode = false }: AssistantThinkingMessageProps) {
   const hasBlocks = blocks.length > 0
   const redacted = hasBlocks && blocks.every((block) => block.type === 'redacted_thinking')
   const thinking = hasBlocks
@@ -38,7 +39,7 @@ export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDur
     return (
       <Box flexDirection="column">
         <Text color={theme.subtleText} italic>
-          {label} <Text color={theme.subtleText}>(ctrl+o to expand)</Text>
+          {label} {!isTranscriptMode && <Text color={theme.subtleText}>(ctrl+o to expand)</Text>}
         </Text>
         {thinkingPreview && (
           <Box flexDirection="row">
@@ -65,9 +66,11 @@ export function AssistantThinkingMessage({ blocks, expanded = false, thinkingDur
           <Markdown content={thinking} color={theme.subtleText} />
         </Box>
       </Box>
-      <Text color={theme.subtleText}>
-        (ctrl+o to collapse)
-      </Text>
+      {!isTranscriptMode && (
+        <Text color={theme.subtleText}>
+          (ctrl+o to collapse)
+        </Text>
+      )}
     </Box>
   )
 }

@@ -1,7 +1,8 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { Box, Static } from '../ink.js'
+import { Box, Static, snapshotInkFrameForStdout, useStdout } from '../ink.js'
+import type { InkFrameSnapshot } from '../ink.js'
 import type { AgentLoop } from '../../harness/loop.js'
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
 import type { PermissionGate, PermissionMode } from '../../harness/permissions.js'
@@ -133,12 +134,17 @@ export function App({
   const [effortLevel, setEffortLevel] = useState<string>(initialEffortLevel ?? 'high')
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const restoreInputRef = useRef<(text: string) => void>(() => {})
+  const latestStaticItemCountRef = useRef(0)
+  const transcriptStaticItemCountRef = useRef<number | null>(null)
+  const promptFrameSnapshotRef = useRef<InkFrameSnapshot | undefined>(undefined)
   const [spinnerColors, setSpinnerColors] = useState(() => sampleSpinnerColors())
   const checkpointServiceRef = useRef<CheckpointService>(
     new CheckpointService(process.cwd(), initialSession.id),
   )
   const [queuedPromptAfterClear, setQueuedPromptAfterClear] = useState<string | null>(initialQueuedPrompt ?? null)
   const [screen, setScreen] = useState<'prompt' | 'transcript'>('prompt')
+  const [transcriptScrollOffsetRows, setTranscriptScrollOffsetRows] = useState(0)
+  const { stdout } = useStdout()
 
   const { permState, respond, setActiveRequest, denyPending } = usePermission(promptProxy)
   const exitPlan = useExitPlanPermission(exitPlanProxy)
@@ -476,7 +482,21 @@ export function App({
   }, [dispatch, submitPlainInput])
 
   const handleToggleTranscript = useCallback(() => {
-    setScreen((s) => s === 'transcript' ? 'prompt' : 'transcript')
+    if (screen === 'transcript') {
+      transcriptStaticItemCountRef.current = null
+      setScreen('prompt')
+      return
+    }
+
+    promptFrameSnapshotRef.current = snapshotInkFrameForStdout(stdout)
+    transcriptStaticItemCountRef.current = latestStaticItemCountRef.current
+    setTranscriptScrollOffsetRows(0)
+    setScreen('transcript')
+  }, [screen, stdout])
+
+  const handleCloseTranscript = useCallback(() => {
+    transcriptStaticItemCountRef.current = null
+    setScreen('prompt')
   }, [])
 
   const handleInterrupt = useCallback(() => {
@@ -667,161 +687,173 @@ export function App({
     },
     ...staticTranscriptItems,
   ]
+  latestStaticItemCountRef.current = staticItems.length
 
-  // Transcript mode: render into alternate screen buffer, replacing the
-  // normal prompt view entirely.  The main screen is preserved by the
-  // alt-screen escape sequences and restored when the component unmounts.
-  if (screen === 'transcript') {
-    return (
-      <AlternateScreen>
-        <TranscriptView
-          store={store}
-          sessionId={activeSession.id}
-          onExit={() => setScreen('prompt')}
-        />
-      </AlternateScreen>
-    )
-  }
+  const frozenStaticItemCount = screen === 'transcript'
+    ? transcriptStaticItemCountRef.current
+    : null
+  const staticItemsForInk = frozenStaticItemCount === null
+    ? staticItems
+    : staticItems.slice(0, frozenStaticItemCount)
+  const transcriptItems = useMemo(
+    () => [...staticTranscriptItems, ...liveItems, ...liveSystemItems],
+    [staticTranscriptItems, liveItems, liveSystemItems],
+  )
 
   return (
     <Box flexDirection="column" width="100%">
-      <Static key={`${transcriptGeneration}`} items={staticItems}>
+      <Static key={`${transcriptGeneration}`} items={staticItemsForInk}>
         {(item) => <StaticDisplayItem key={item.id} item={item} />}
       </Static>
 
-      {/* Message list */}
-      <MessageList
-        items={liveItems}
-        isStreaming={isStreaming}
-        isOverlayActive={isOverlayActive}
-        animationsEnabled={animationsEnabled}
-      />
-
-      {/* Live system items (e.g. duration summary) render in live area
-          so they appear below thinking blocks, not above them. */}
-      {liveSystemItems.map((item) => (
-        <DisplayItem key={item.id} item={item} />
-      ))}
-
-      {/* Spinner during streaming */}
-      {isStreaming && (
-        <Spinner
-          subText={spinnerSubText}
-          mode={streamMode}
-          taskSnapshot={taskSnapshot}
-          spinnerColors={spinnerColors}
-          active={showSpinner}
-          responseLengthRef={responseLengthRef}
-        />
-      )}
-
-      {showStoppedTaskList && (
-        <Box paddingLeft={2}>
-          <TaskListBlock
-            snapshot={taskSnapshot}
-            runningColor={spinnerColors.messageColor}
+      {screen === 'transcript' ? (
+        <AlternateScreen promptFrameSnapshot={promptFrameSnapshotRef.current}>
+          <TranscriptView
+            items={transcriptItems}
+            scrollOffsetRows={transcriptScrollOffsetRows}
+            onScrollOffsetRowsChange={setTranscriptScrollOffsetRows}
+            onExit={handleCloseTranscript}
+          />
+        </AlternateScreen>
+      ) : (
+        <>
+          {/* Message list */}
+          <MessageList
+            items={liveItems}
+            isStreaming={isStreaming}
+            isOverlayActive={isOverlayActive}
             animationsEnabled={animationsEnabled}
           />
-        </Box>
-      )}
 
-      {/* Permission dialog */}
-      {permState.visible && (
-        <PermissionDialog permState={permState} respond={respond} setActiveRequest={setActiveRequest} />
-      )}
+          {/* Live system items (e.g. duration summary) render in live area
+              so they appear below thinking blocks, not above them. */}
+          {liveSystemItems.map((item) => (
+            <DisplayItem key={item.id} item={item} />
+          ))}
 
-      {enterPlan.state.visible && enterPlan.state.request && (
-        <EnterPlanModeDialog
-          onResolve={(approved) => enterPlan.respond(enterPlan.state.request!.id, approved)}
-        />
-      )}
+          {/* Spinner during streaming */}
+          {isStreaming && (
+            <Spinner
+              subText={spinnerSubText}
+              mode={streamMode}
+              taskSnapshot={taskSnapshot}
+              spinnerColors={spinnerColors}
+              active={showSpinner}
+              responseLengthRef={responseLengthRef}
+            />
+          )}
 
-      {exitPlan.state.visible && exitPlan.state.request && (
-        <ExitPlanModeDialog
-          {...exitPlan.state.request.input}
-          onResolve={(decision) => exitPlan.respond(exitPlan.state.request!.id, decision)}
-        />
-      )}
+          {showStoppedTaskList && (
+            <Box paddingLeft={2}>
+              <TaskListBlock
+                snapshot={taskSnapshot}
+                runningColor={spinnerColors.messageColor}
+                animationsEnabled={animationsEnabled}
+              />
+            </Box>
+          )}
 
-      {askUserQuestion.state.visible && askUserQuestion.state.request && (
-        <AskUserQuestionDialog
-          request={askUserQuestion.state.request.input}
-          onResolve={(result) => askUserQuestion.respond(askUserQuestion.state.request!.id, result)}
-        />
-      )}
+          {/* Permission dialog */}
+          {permState.visible && (
+            <PermissionDialog permState={permState} respond={respond} setActiveRequest={setActiveRequest} />
+          )}
 
-      {/* Restore mode overlay */}
-      {mode === 'restore' && (
-        <RestoreMode
-          checkpoints={checkpoints}
-          onSelect={handleRestoreSelect}
-          onCancel={handleRestoreCancel}
-        />
-      )}
+          {enterPlan.state.visible && enterPlan.state.request && (
+            <EnterPlanModeDialog
+              onResolve={(approved) => enterPlan.respond(enterPlan.state.request!.id, approved)}
+            />
+          )}
 
-      {providerPanelOpen && (
-        <ProviderPanel
-          config={providerConfig}
-          onChange={() => {
-            setModelKeys(Object.keys(providerConfig.get().models))
-            runtimeRef.current.loop.clearCachedSections()
-          }}
-          onClose={() => setProviderPanelOpen(false)}
-        />
-      )}
+          {exitPlan.state.visible && exitPlan.state.request && (
+            <ExitPlanModeDialog
+              {...exitPlan.state.request.input}
+              onResolve={(decision) => exitPlan.respond(exitPlan.state.request!.id, decision)}
+            />
+          )}
 
-      {modelPickerOpen && (
-        <ModelPickerDialog
-          options={modelPickerOptions}
-          onResolve={(decision) => {
-            void handleModelPickerResolve(decision)
-          }}
-        />
-      )}
+          {askUserQuestion.state.visible && askUserQuestion.state.request && (
+            <AskUserQuestionDialog
+              request={askUserQuestion.state.request.input}
+              onResolve={(result) => askUserQuestion.respond(askUserQuestion.state.request!.id, result)}
+            />
+          )}
 
-      {effortPickerOpen && (
-        <EffortPickerBar
-          currentLevel={effortLevel as EffortLevel}
-          maxEffort={runtime.modelConfig.maxEffort}
-          onResolve={(result) => {
-            setEffortPickerOpen(false)
-            if (result.action === 'set') handleSetEffort(result.level)
-          }}
-        />
-      )}
+          {/* Restore mode overlay */}
+          {mode === 'restore' && (
+            <RestoreMode
+              checkpoints={checkpoints}
+              onSelect={handleRestoreSelect}
+              onCancel={handleRestoreCancel}
+            />
+          )}
 
-      {/* Input box (with horizontal lines) */}
-      {mode !== 'restore' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && (
-        <InputBox
-          text={text}
-          cursorPos={cursorPos}
-          disabled={
-            isStreaming
-            || permState.visible
-            || exitPlan.state.visible
-            || enterPlan.state.visible
-            || askUserQuestion.state.visible
-            || providerPanelOpen
-            || modelPickerOpen
-            || effortPickerOpen
-          }
-        />
-      )}
+          {providerPanelOpen && (
+            <ProviderPanel
+              config={providerConfig}
+              onChange={() => {
+                setModelKeys(Object.keys(providerConfig.get().models))
+                runtimeRef.current.loop.clearCachedSections()
+              }}
+              onClose={() => setProviderPanelOpen(false)}
+            />
+          )}
 
-      {suggestionType !== 'none' && suggestions.length > 0 && (
-        <CommandSuggestions suggestions={suggestions} selectedIndex={selectedSuggestion} />
+          {modelPickerOpen && (
+            <ModelPickerDialog
+              options={modelPickerOptions}
+              onResolve={(decision) => {
+                void handleModelPickerResolve(decision)
+              }}
+            />
+          )}
+
+          {effortPickerOpen && (
+            <EffortPickerBar
+              currentLevel={effortLevel as EffortLevel}
+              maxEffort={runtime.modelConfig.maxEffort}
+              onResolve={(result) => {
+                setEffortPickerOpen(false)
+                if (result.action === 'set') handleSetEffort(result.level)
+              }}
+            />
+          )}
+
+          {/* Input box (with horizontal lines) */}
+          {mode !== 'restore' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && (
+            <InputBox
+              text={text}
+              cursorPos={cursorPos}
+              disabled={
+                isStreaming
+                || permState.visible
+                || exitPlan.state.visible
+                || enterPlan.state.visible
+                || askUserQuestion.state.visible
+                || providerPanelOpen
+                || modelPickerOpen
+                || effortPickerOpen
+              }
+            />
+          )}
+
+          {suggestionType !== 'none' && suggestions.length > 0 && (
+            <CommandSuggestions suggestions={suggestions} selectedIndex={selectedSuggestion} />
+          )}
+        </>
       )}
 
       {/* Status line (below input, no border) */}
-      <StatusLine
-        model={runtime.modelConfig.model}
-        usage={usage}
-        pricing={runtime.modelConfig.pricing}
-        permissionMode={permissionMode}
-        hintMessage={hintMessage}
-        effortLevel={effortLevel}
-        contextWindow={providerConfig.get().agent.contextManagement?.contextWindow ?? 200_000}
-      />
+      {screen === 'prompt' && (
+        <StatusLine
+          model={runtime.modelConfig.model}
+          usage={usage}
+          pricing={runtime.modelConfig.pricing}
+          permissionMode={permissionMode}
+          hintMessage={hintMessage}
+          effortLevel={effortLevel}
+          contextWindow={providerConfig.get().agent.contextManagement?.contextWindow ?? 200_000}
+        />
+      )}
     </Box>
   )
 }

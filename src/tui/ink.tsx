@@ -16,43 +16,109 @@ export type * from 'ink'
 type InkInternalInstance = {
   log?: {
     reset?: () => void
+    sync?: (value: string) => void
+    setCursorPosition?: (position: CursorPosition | undefined) => void
   }
+  cursorPosition?: CursorPosition
   lastOutput?: string
   lastOutputToRender?: string
   lastOutputHeight?: number
+  fullStaticOutput?: string
 }
 
 type InternalRootNode = DOMElement & {
   onImmediateRender?: () => void
 }
 
+interface CursorPosition {
+  x: number
+  y: number
+}
+
+export interface InkFrameSnapshot {
+  cursorPosition?: CursorPosition
+  lastOutput: string
+  lastOutputToRender: string
+  lastOutputHeight: number
+  fullStaticOutput: string
+}
+
 // ---------------------------------------------------------------------------
-// Log-update state reset
+// Ink frame state snapshot/restore
 // ---------------------------------------------------------------------------
-// When AlternateScreen unmounts (user exits transcript mode), ink's internal
-// log-update module retains stale state (previousLineCount, cursorWasShown,
-// etc.) from the transcript view.  The next normal render frame would use
-// these stale values to compute eraseLines() and cursor movement, resulting
-// in garbled output and cursor misplacement.
-//
-// resetLogUpdateForStdout() reaches into ink's internal instances map to
-// access the live Ink class instance and clear cached log/frame state WITHOUT
-// writing to the terminal. This is exactly what we need after the terminal has
-// already been restored by EXIT_ALT_SCREEN + CLEAR_SCREEN + CURSOR_HOME.
+// AlternateScreen renders disposable transcript content into the terminal's
+// alternate buffer. Ink still updates its live frame bookkeeping while that
+// happens. Snapshot the prompt frame before entering the alternate buffer, then
+// restore it after returning to the primary buffer so the next prompt render can
+// diff against the real primary-screen contents instead of replaying history.
 // ---------------------------------------------------------------------------
 
-/**
- * Reset ink's log-update and frame cache state for the given stdout stream.
- * Call this AFTER writing EXIT_ALT_SCREEN + CLEAR_SCREEN + CURSOR_HOME.
- */
-export function resetLogUpdateForStdout(stdout: NodeJS.WriteStream): void {
+export function snapshotInkFrameForStdout(stdout: NodeJS.WriteStream): InkFrameSnapshot | undefined {
   const inkInstance = instances.get(stdout) as InkInternalInstance | undefined
-  inkInstance?.log?.reset?.()
+  if (!inkInstance) return undefined
+
+  return {
+    cursorPosition: inkInstance.cursorPosition
+      ? { ...inkInstance.cursorPosition }
+      : undefined,
+    lastOutput: inkInstance.lastOutput ?? '',
+    lastOutputToRender: inkInstance.lastOutputToRender ?? '',
+    lastOutputHeight: inkInstance.lastOutputHeight ?? 0,
+    fullStaticOutput: inkInstance.fullStaticOutput ?? '',
+  }
+}
+
+export function restoreInkFrameForStdout(
+  stdout: NodeJS.WriteStream,
+  snapshot: InkFrameSnapshot | undefined,
+): void {
+  if (!snapshot) return
+  const inkInstance = instances.get(stdout) as InkInternalInstance | undefined
   if (!inkInstance) return
 
-  inkInstance.lastOutput = ''
-  inkInstance.lastOutputToRender = ''
-  inkInstance.lastOutputHeight = 0
+  inkInstance.cursorPosition = snapshot.cursorPosition
+    ? { ...snapshot.cursorPosition }
+    : undefined
+
+  inkInstance.lastOutput = snapshot.lastOutput
+  inkInstance.lastOutputToRender = snapshot.lastOutputToRender
+  inkInstance.lastOutputHeight = snapshot.lastOutputHeight
+  inkInstance.fullStaticOutput = snapshot.fullStaticOutput
+
+  // log.sync() is the only public-ish way to update log-update's private
+  // previousOutput/line-count/cursor bookkeeping. Suppress its cursor write:
+  // after EXIT_ALT_SCREEN the terminal has already restored the primary-screen
+  // cursor, and writing a suffix that assumes "cursor at bottom" can drift.
+  const outputToSync = snapshot.lastOutputToRender || `${snapshot.lastOutput}\n`
+  withSuppressedStdoutWrites(stdout, () => {
+    inkInstance.log?.setCursorPosition?.(inkInstance.cursorPosition)
+    inkInstance.log?.sync?.(outputToSync)
+  })
+}
+
+export function suspendInkStaticOutputForStdout(stdout: NodeJS.WriteStream): void {
+  const inkInstance = instances.get(stdout) as InkInternalInstance | undefined
+  if (!inkInstance) return
+  inkInstance.fullStaticOutput = ''
+}
+
+function withSuppressedStdoutWrites(stdout: NodeJS.WriteStream, callback: () => void): void {
+  const originalWrite = stdout.write
+  stdout.write = function suppressedWrite(
+    _chunk: string | Uint8Array,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void,
+  ): boolean {
+    const done = typeof encodingOrCallback === 'function' ? encodingOrCallback : callback
+    done?.()
+    return true
+  } as NodeJS.WriteStream['write']
+
+  try {
+    callback()
+  } finally {
+    stdout.write = originalWrite
+  }
 }
 
 // ---------------------------------------------------------------------------

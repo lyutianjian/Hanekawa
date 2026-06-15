@@ -95,6 +95,29 @@ describe('TUI layout helpers', () => {
     )
   })
 
+  it('counts expanded assistant thinking in transcript row estimates', () => {
+    const assistant: TUIDisplayItem = {
+      kind: 'assistant',
+      id: 'assistant-thinking-1',
+      content: 'final answer',
+      thinkingBlocks: [{
+        type: 'thinking',
+        thinking: 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda\nsecond line of reasoning',
+      }],
+      createdAt: '2026-05-30T00:00:00.000Z',
+    }
+
+    const collapsedRows = estimateDisplayItemRows(assistant, 24, false)
+    const expandedRows = estimateDisplayItemRows(assistant, 24, true)
+    const viewport = selectScrollableViewportEntries([{
+      item: assistant,
+      estimatedRows: expandedRows,
+    }], Math.max(1, collapsedRows), 0)
+
+    assert.ok(expandedRows > collapsedRows)
+    assert.ok(viewport.maxScrollOffsetRows > 0)
+  })
+
   it('keeps the cursor line visible when long input is windowed', () => {
     const text = 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda'
     const cursorPos = text.indexOf('theta')

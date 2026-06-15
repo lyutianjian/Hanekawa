@@ -273,9 +273,7 @@ export function estimateDisplayItemRows(
     case 'user':
       return 3 + estimateWrappedRows(item.content, Math.max(1, contentWidth - 2))
     case 'assistant':
-      return item.content.trim()
-        ? 2 + estimateWrappedRows(item.content, Math.max(1, contentWidth - 2))
-        : 0
+      return estimateAssistantRows(item, contentWidth, expanded)
     case 'tool_call':
       return estimateToolCallRows(item, contentWidth, expanded)
     case 'tool_group':
@@ -294,6 +292,39 @@ export function estimateDisplayItemRows(
     case 'tool_progress':
       return estimateWrappedRows(item.content, Math.max(1, contentWidth - 2))
   }
+}
+
+function estimateAssistantRows(
+  item: Extract<TUIDisplayItem, { kind: 'assistant' }>,
+  width: number,
+  expanded: boolean,
+): number {
+  const hasContent = item.content.trim().length > 0
+  const hasThinking = Boolean(item.thinkingBlocks?.length) || Boolean(item.thinkingPreview)
+  if (!hasContent && !hasThinking) return 0
+
+  let rows = 2
+  if (hasThinking) {
+    if (expanded) {
+      const thinking = item.thinkingBlocks
+        ?.filter((block) => block.type === 'thinking')
+        .map((block) => block.thinking ?? '')
+        .filter((text) => text.trim().length > 0)
+        .join('\n\n')
+        ?? ''
+      rows += thinking.trim()
+        ? 2 + estimateWrappedRows(thinking, Math.max(1, width - 4))
+        : 1
+    } else {
+      rows += 1 + (item.thinkingPreview ? 1 : 0)
+    }
+  }
+
+  if (hasContent) {
+    rows += (hasThinking ? 1 : 0)
+      + estimateWrappedRows(item.content, Math.max(1, width - 2))
+  }
+  return rows
 }
 
 export function estimateWrappedRows(text: string, width: number): number {

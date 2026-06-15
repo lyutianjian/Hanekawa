@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createElement as h, useState } from 'react'
 
-import { Box, render, Text } from '../src/tui/ink.js'
+import { Box, render, Static, Text, snapshotInkFrameForStdout, useStdout } from '../src/tui/ink.js'
+import type { InkFrameSnapshot } from '../src/tui/ink.js'
 import { InputBox } from '../src/tui/components/InputBox.js'
 import { AlternateScreen } from '../src/tui/components/AlternateScreen.js'
 
@@ -10,6 +11,11 @@ const ENTER_ALT_SCREEN = '\x1B[?1049h'
 const EXIT_ALT_SCREEN = '\x1B[?1049l'
 const CLEAR_SCREEN = '\x1B[2J'
 const CURSOR_HOME = '\x1B[H'
+
+interface StaticHistoryItem {
+  id: string
+  label: string
+}
 
 test('InputBox declares cursor position on the first empty-input frame', async () => {
   const stdout = createFakeStdout()
@@ -49,27 +55,53 @@ test('InputBox declares cursor position on first frame after remount', async () 
   assert.match(output, /\x1B\[2A\x1B\[3G/)
 })
 
-test('prompt view rewrites input and cursor after alternate-screen round trip', async () => {
+test('prompt view preserves static history after alternate-screen round trip', async () => {
   const stdout = createFakeStdout()
-  let setScreen: ((screen: 'prompt' | 'transcript') => void) | undefined
+  let openTranscript: (() => void) | undefined
+  let closeTranscript: (() => void) | undefined
+  let appendStatic: ((label: string) => void) | undefined
 
   function RoundTripApp() {
     const [screen, nextSetScreen] = useState<'prompt' | 'transcript'>('prompt')
-    setScreen = nextSetScreen
+    const [items, setItems] = useState<StaticHistoryItem[]>(() => [{ id: 'old', label: 'OLD-HISTORY' }])
+    const [frozenStaticCount, setFrozenStaticCount] = useState<number | null>(null)
+    const [promptFrameSnapshot, setPromptFrameSnapshot] = useState<InkFrameSnapshot | undefined>(undefined)
+    const { stdout: inkStdout } = useStdout()
 
-    if (screen === 'transcript') {
-      return h(
-        AlternateScreen,
-        null,
-        h(Box, { flexDirection: 'column' }, h(Text, null, 'Transcript')),
-      )
+    openTranscript = () => {
+      setPromptFrameSnapshot(snapshotInkFrameForStdout(inkStdout))
+      setFrozenStaticCount(items.length)
+      nextSetScreen('transcript')
     }
+    closeTranscript = () => {
+      setFrozenStaticCount(null)
+      nextSetScreen('prompt')
+    }
+    appendStatic = (label: string) => {
+      setItems((previous) => [...previous, { id: label, label }])
+    }
+
+    const staticItems = frozenStaticCount === null ? items : items.slice(0, frozenStaticCount)
 
     return h(
       Box,
       { flexDirection: 'column' },
-      h(Text, null, 'Prompt'),
-      h(InputBox, { text: '', cursorPos: 0 }),
+      h(Static<StaticHistoryItem>, {
+        items: staticItems,
+        children: (item) => h(Text, { key: item.id }, item.label),
+      }),
+      screen === 'transcript'
+        ? h(
+          AlternateScreen,
+          { promptFrameSnapshot },
+          h(Box, { flexDirection: 'column' }, h(Text, null, 'Transcript')),
+        )
+        : h(
+          Box,
+          { flexDirection: 'column' },
+          h(Text, null, 'Prompt'),
+          h(InputBox, { text: '', cursorPos: 0 }),
+        ),
     )
   }
 
@@ -81,22 +113,94 @@ test('prompt view rewrites input and cursor after alternate-screen round trip', 
   await instance.waitUntilRenderFlush()
   stdout.writes.length = 0
 
-  setScreen?.('transcript')
+  openTranscript?.()
   await instance.waitUntilRenderFlush()
   const transcriptOutput = stdout.writes.join('')
 
   stdout.writes.length = 0
-  setScreen?.('prompt')
+  appendStatic?.('NEW-HISTORY')
+  await instance.waitUntilRenderFlush()
+  const whileTranscriptOutput = stdout.writes.join('')
+
+  stdout.writes.length = 0
+  closeTranscript?.()
   await instance.waitUntilRenderFlush()
   const promptOutput = stdout.writes.join('')
 
   instance.unmount()
 
   assert.match(transcriptOutput, new RegExp(escapeRegExp(ENTER_ALT_SCREEN)))
+  assert.doesNotMatch(transcriptOutput, /\x1B\[\?1007[lh]/)
+  assert.match(transcriptOutput, /Transcript/)
+  assert.doesNotMatch(transcriptOutput, /OLD-HISTORY/)
+  assert.doesNotMatch(whileTranscriptOutput, /NEW-HISTORY/)
   assert.match(promptOutput, new RegExp(escapeRegExp(EXIT_ALT_SCREEN)))
-  assert.match(promptOutput, new RegExp(escapeRegExp(CLEAR_SCREEN + CURSOR_HOME)))
-  assert.match(promptOutput, /Prompt/)
-  assert.match(promptOutput, /\x1B\[2A\x1B\[3G/)
+  assert.doesNotMatch(promptOutput, /\x1B\[\?1007[lh]/)
+  assert.doesNotMatch(promptOutput, new RegExp(escapeRegExp(CLEAR_SCREEN + CURSOR_HOME)))
+  assert.doesNotMatch(promptOutput, /OLD-HISTORY/)
+  assert.match(promptOutput, /NEW-HISTORY/)
+})
+
+test('alternate-screen round trip preserves prompt cursor anchor after live summary', async () => {
+  const stdout = createFakeStdout()
+  let openTranscript: (() => void) | undefined
+  let closeTranscript: (() => void) | undefined
+
+  function PromptLikeApp() {
+    const [screen, nextSetScreen] = useState<'prompt' | 'transcript'>('prompt')
+    const [promptFrameSnapshot, setPromptFrameSnapshot] = useState<InkFrameSnapshot | undefined>(undefined)
+    const { stdout: inkStdout } = useStdout()
+
+    openTranscript = () => {
+      setPromptFrameSnapshot(snapshotInkFrameForStdout(inkStdout))
+      nextSetScreen('transcript')
+    }
+    closeTranscript = () => {
+      nextSetScreen('prompt')
+    }
+
+    return h(
+      Box,
+      { flexDirection: 'column' },
+      screen === 'transcript'
+        ? h(
+          AlternateScreen,
+          { promptFrameSnapshot },
+          h(Box, { flexDirection: 'column' }, h(Text, null, 'Transcript')),
+        )
+        : h(
+          Box,
+          { flexDirection: 'column' },
+          h(Text, null, '* Worked for 4s'),
+          h(InputBox, { text: '', cursorPos: 0 }),
+          h(Text, null, 'STATUS-LINE'),
+        ),
+    )
+  }
+
+  const instance = render(h(PromptLikeApp), {
+    stdout,
+    exitOnCtrlC: false,
+  })
+
+  await instance.waitUntilRenderFlush()
+  stdout.writes.length = 0
+
+  openTranscript?.()
+  await instance.waitUntilRenderFlush()
+  stdout.writes.length = 0
+
+  closeTranscript?.()
+  await instance.waitUntilRenderFlush()
+  const promptOutput = stdout.writes.join('')
+
+  instance.unmount()
+
+  assert.match(promptOutput, new RegExp(escapeRegExp(EXIT_ALT_SCREEN)))
+  assert.doesNotMatch(promptOutput, /\x1B\[\?1007[lh]/)
+  assert.doesNotMatch(promptOutput, /\x1B\[\d+A\x1B\[\d+G/)
+  assert.doesNotMatch(promptOutput, /\* Worked for 4s/)
+  assert.doesNotMatch(promptOutput, /STATUS-LINE/)
 })
 
 test('InputBox declares the current-frame cursor column for mixed CJK input', async () => {

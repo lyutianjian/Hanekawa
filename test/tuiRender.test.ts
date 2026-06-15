@@ -11,6 +11,7 @@ import { PermissionDialog } from '../src/tui/components/PermissionDialog.js'
 import { ModelPickerDialog, type ModelPickerDecision, type ModelPickerOption } from '../src/tui/components/ModelPickerDialog.js'
 import { RestoreMode, type RestoreDecision } from '../src/tui/components/RestoreMode.js'
 import { MessageList, StaticDisplayItem } from '../src/tui/components/MessageList.js'
+import { TranscriptView } from '../src/tui/components/TranscriptView.js'
 import type { CheckpointDiffSummary, CheckpointWithDiff } from '../src/services/checkpoint/checkpointService.js'
 import type { PermissionDecisionSource, PermissionRequest, PermissionRule } from '../src/harness/permissions.js'
 import type { TaskDisplaySnapshot } from '../src/harness/types.js'
@@ -117,6 +118,128 @@ test('Spinner renders current task text and task snapshot without generated prom
   assert.match(frame, /Polishing tool output/)
   assert.doesNotMatch(frame, /Generating\.\.\./)
   assert.doesNotMatch(frame, /Vibing\.\.\./)
+})
+
+test('TranscriptView renders provided prompt-order items expanded', () => {
+  const items: TUIDisplayItem[] = [
+    {
+      kind: 'user',
+      id: 'user-1',
+      content: 'user asks for files',
+      createdAt: '2026-05-31T00:00:00.000Z',
+    },
+    {
+      kind: 'assistant',
+      id: 'assistant-thinking-1',
+      content: '',
+      thinkingBlocks: [{ type: 'thinking', thinking: 'first reason\nsecond reason' }],
+      createdAt: '2026-05-31T00:00:01.000Z',
+    },
+    {
+      kind: 'tool_call',
+      id: 'tool-1',
+      toolUseId: 'call-1',
+      tool: 'Bash',
+      input: { command: 'printf lines' },
+      status: 'done',
+      result: 'line1\nline2\nline3\nline4',
+      createdAt: '2026-05-31T00:00:02.000Z',
+    },
+    {
+      kind: 'system',
+      id: 'system-1',
+      content: 'done marker',
+      createdAt: '2026-05-31T00:00:03.000Z',
+    },
+  ]
+
+  const frame = render(h(TranscriptView, {
+    items,
+    scrollOffsetRows: 0,
+    onScrollOffsetRowsChange: () => {},
+    onExit: () => {},
+  })).lastFrame() ?? ''
+
+  const userIndex = frame.indexOf('user asks for files')
+  const thinkingIndex = frame.indexOf('first reason')
+  const toolIndex = frame.indexOf('Bash')
+  const expandedToolIndex = frame.indexOf('line4')
+  const systemIndex = frame.indexOf('done marker')
+
+  assert.ok(userIndex >= 0, 'user item should render')
+  assert.ok(thinkingIndex > userIndex, 'thinking should render after user')
+  assert.ok(toolIndex > thinkingIndex, 'tool should render after thinking')
+  assert.ok(expandedToolIndex > toolIndex, 'tool output should be expanded')
+  assert.ok(systemIndex > expandedToolIndex, 'live system item should render last')
+  assert.doesNotMatch(frame, /ctrl\+o to expand/)
+  assert.doesNotMatch(frame, /j\/k: scroll/)
+  assert.doesNotMatch(frame, /g\/G: top\/bottom/)
+  assert.match(frame, /ctrl\+o: exit/)
+  assert.doesNotMatch(frame, /j\/k/)
+  assert.doesNotMatch(frame, /g\/G/)
+})
+
+test('TranscriptView keeps wheel-mapped arrow scrolling while ignoring removed shortcuts', async () => {
+  const items: TUIDisplayItem[] = [{
+    kind: 'system',
+    id: 'system-1',
+    content: 'transcript body',
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }]
+  let exitCount = 0
+  let scrollOffset = 0
+  let scrollUpdateCount = 0
+
+  const onScrollOffsetRowsChange = (update: (previous: number) => number) => {
+    scrollUpdateCount++
+    scrollOffset = update(scrollOffset)
+  }
+
+  const instance = render(h(TranscriptView, {
+    items,
+    scrollOffsetRows: 0,
+    onScrollOffsetRowsChange,
+    onExit: () => {
+      exitCount++
+    },
+  }))
+  const initialFrame = instance.lastFrame()
+
+  for (const input of ['j', 'k', 'g', 'G', '\x1B[5~', '\x1B[6~', ' ', 'b']) {
+    instance.stdin.write(input)
+    await waitForInk()
+  }
+
+  assert.equal(exitCount, 0)
+  assert.equal(scrollUpdateCount, 0)
+  assert.equal(instance.lastFrame(), initialFrame)
+
+  for (const input of ['\x1B[A', '\x1B[B']) {
+    instance.stdin.write(input)
+    await waitForInk()
+  }
+
+  assert.equal(exitCount, 0)
+  assert.ok(scrollUpdateCount > 0)
+  assert.equal(scrollOffset, 0)
+
+  instance.stdin.write('\x0F')
+  await waitForInk()
+  assert.equal(exitCount, 1)
+
+  cleanup()
+  const escapeInstance = render(h(TranscriptView, {
+    items,
+    scrollOffsetRows: 0,
+    onScrollOffsetRowsChange: onScrollOffsetRowsChange,
+    onExit: () => {
+      exitCount++
+    },
+  }))
+
+  escapeInstance.stdin.write('\x1B')
+  await waitForEscape()
+  assert.equal(exitCount, 2)
 })
 
 test('Spinner collapses hidden running tasks by status without task header', () => {

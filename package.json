@@ -25,6 +25,7 @@
     "picomatch": "^2.3.2",
     "react": "^19.2.6",
     "turndown": "^7.2.0",
+    "wrap-ansi": "^10.0.0",
     "yaml": "latest",
     "zod": "latest",
     "zod-to-json-schema": "^3.25.2"

@@ -4,9 +4,11 @@ import type { Token, Tokens } from 'marked'
 import { highlight as cliHighlight } from 'cli-highlight'
 import type { Theme as HighlightTheme } from 'cli-highlight'
 import stringWidth from 'string-width'
+import wrapAnsi from 'wrap-ansi'
 import { parseMarkdown, insertCjkBreaks } from '../markdown.js'
 import { theme } from '../theme.js'
-import { AnsiText } from '../ansi.js'
+import { AnsiText, stripAnsi } from '../ansi.js'
+import { supportsHyperlinks, createHyperlink } from '../hyperlink.js'
 
 interface MarkdownProps {
   content: string
@@ -117,9 +119,16 @@ const MarkdownToken = memo(function MarkdownToken({ token, color, width }: { tok
 
 const Heading = memo(function Heading({ token, color }: { token: Tokens.Heading; color?: string }) {
   const headingColor = color ?? theme.brand
+  const depth = token.depth
   return (
     <Box marginTop={1}>
-      <Text color={headingColor} bold>
+      <Text
+        color={headingColor}
+        bold
+        italic={depth === 1}
+        underline={depth === 1}
+        dimColor={depth >= 3}
+      >
         <InlineTokens tokens={token.tokens} color={headingColor} />
       </Text>
     </Box>
@@ -276,113 +285,330 @@ function ListItem({
 
 // ── Blockquote ──
 
+const BLOCKQUOTE_BAR = '▎' // ▎ left one-quarter block
+
 const Blockquote = memo(function Blockquote({ token, color }: { token: Tokens.Blockquote; color?: string }) {
   return (
-    <Box flexDirection="column" marginY={0} paddingLeft={2}>
-      {token.tokens.map((t, i) => (
-        <Box key={i}>
-          <Text color={theme.brand}>{'> '}</Text>
-          <Text color={color ?? theme.dimText}>
-            {t.type === 'paragraph' ? (
-              <InlineTokens tokens={(t as Tokens.Paragraph).tokens} color={color ?? theme.dimText} />
-            ) : t.type === 'blockquote' ? (
-              <Blockquote token={t as Tokens.Blockquote} color={color ?? theme.dimText} />
-            ) : (
-              ('raw' in t ? (t as { raw: string }).raw : '')
-            )}
-          </Text>
-        </Box>
-      ))}
+    <Box flexDirection="column" marginY={0} paddingLeft={1}>
+      {token.tokens.map((t, i) => {
+        // Nested blockquote: render as recursive Blockquote (returns <Box>, can't nest in <Text>)
+        if (t.type === 'blockquote') {
+          return <Blockquote key={i} token={t as Tokens.Blockquote} color={color ?? theme.dimText} />
+        }
+        // Paragraph or other inline content: render bar + inline tokens
+        return (
+          <Box key={i}>
+            <Text color={theme.dimText} dimColor>{BLOCKQUOTE_BAR} </Text>
+            <Text color={color ?? theme.dimText} italic>
+              {t.type === 'paragraph' ? (
+                <InlineTokens tokens={(t as Tokens.Paragraph).tokens} color={color ?? theme.dimText} />
+              ) : (
+                ('raw' in t ? (t as { raw: string }).raw : '')
+              )}
+            </Text>
+          </Box>
+        )
+      })}
     </Box>
   )
 })
 
-// ── Table (with header, column width, alignment) ──
+// ── Table (ANSI string rendering with word-wrap) ──
 
-const Table = memo(function Table({ token, color, width }: { token: Tokens.Table; color?: string; width?: number }) {
-  const allRows = [token.header, ...token.rows]
-  const colCount = token.header.length
-  const aligns = token.align ?? []
+const SAFETY_MARGIN = 4
+const MIN_COLUMN_WIDTH = 3
+const MAX_ROW_LINES = 4
 
-  // Calculate max display width per column
-  let colWidths: number[] = Array.from({ length: colCount }, (_, col) => {
-    let max = 0
-    for (const row of allRows) {
-      if (row[col]) {
-        const w = stringWidth(cellText(row[col]))
-        if (w > max) max = w
-      }
+/** Wrap text to fit within a given width, returning array of lines. ANSI-aware. */
+function wrapCellText(text: string, width: number, hard = false): string[] {
+  if (width <= 0) return [text]
+  const trimmed = text.trimEnd()
+  if (trimmed.length === 0) return ['']
+  const wrapped = wrapAnsi(trimmed, width, {
+    hard,
+    trim: false,
+    wordWrap: true,
+  })
+  const lines = wrapped.split('\n').filter(line => line.length > 0)
+  return lines.length > 0 ? lines : ['']
+}
+
+/** Pad content to targetWidth according to alignment. ANSI-aware via displayWidth param. */
+function padAligned(
+  content: string,
+  displayWidth: number,
+  targetWidth: number,
+  align: 'left' | 'center' | 'right' | null | undefined,
+): string {
+  const padding = Math.max(0, targetWidth - displayWidth)
+  if (align === 'center') {
+    const leftPad = Math.floor(padding / 2)
+    return ' '.repeat(leftPad) + content + ' '.repeat(padding - leftPad)
+  }
+  if (align === 'right') {
+    return ' '.repeat(padding) + content
+  }
+  return content + ' '.repeat(padding)
+}
+
+/** Convert inline token to ANSI-styled string for table cell rendering. */
+function renderInlineTokenToAnsi(token: Token, cellColor?: string): string {
+  const applyColor = cellColor ? color(cellColor) : null
+  switch (token.type) {
+    case 'strong':
+      return `\x1b[1m${(token as Tokens.Strong).tokens.map(t => renderInlineTokenToAnsi(t, cellColor)).join('')}\x1b[22m`
+    case 'em':
+      return `\x1b[3m${(token as Tokens.Em).tokens.map(t => renderInlineTokenToAnsi(t, cellColor)).join('')}\x1b[23m`
+    case 'del':
+      return `\x1b[9m${(token as Tokens.Del).tokens.map(t => renderInlineTokenToAnsi(t, cellColor)).join('')}\x1b[29m`
+    case 'codespan':
+      return `${color(theme.codeInline)((token as Tokens.Codespan).text)}`
+    case 'link': {
+      const linkText = (token as Tokens.Link).tokens.map(t => renderInlineTokenToAnsi(t, cellColor)).join('')
+      return `${color(theme.toolName)(linkText)}`
     }
-    // Enforce minimum width of 3
-    return Math.max(3, max)
+    case 'text':
+      return applyColor ? applyColor((token as Tokens.Text).text) : (token as Tokens.Text).text
+    case 'escape':
+      return applyColor ? applyColor((token as Tokens.Escape).text) : (token as Tokens.Escape).text
+    default:
+      if ('raw' in token) {
+        return applyColor ? applyColor((token as { raw: string }).raw) : (token as { raw: string }).raw
+      }
+      return ''
+  }
+}
+
+/** Render a table cell's inline tokens as a single ANSI-styled string. */
+function renderFormattedCell(cell: Tokens.TableCell, cellColor?: string): string {
+  return cell.tokens.map(t => renderInlineTokenToAnsi(t, cellColor)).join('')
+}
+
+/** Extract plain text from a cell for width measurement. */
+function cellPlainText(cell: Tokens.TableCell): string {
+  return cell.tokens
+    .map((t) => {
+      if (t.type === 'text') return (t as Tokens.Text).text
+      if (t.type === 'codespan') return (t as Tokens.Codespan).text
+      if ('raw' in t) return (t as { raw: string }).raw
+      return ''
+    })
+    .join('')
+}
+
+/** Get the longest word width in a cell (minimum width to avoid breaking words). */
+function getCellMinWidth(cell: Tokens.TableCell): number {
+  const text = stripAnsi(renderFormattedCell(cell))
+  const words = text.split(/\s+/).filter(w => w.length > 0)
+  if (words.length === 0) return MIN_COLUMN_WIDTH
+  return Math.max(...words.map(w => stringWidth(w)), MIN_COLUMN_WIDTH)
+}
+
+/** Get ideal width (full content without wrapping). */
+function getCellIdealWidth(cell: Tokens.TableCell): number {
+  return Math.max(stringWidth(stripAnsi(renderFormattedCell(cell))), MIN_COLUMN_WIDTH)
+}
+
+/** Render a single row with potential multi-line cells as ANSI string array. */
+function renderRowLines(
+  cells: Tokens.TableCell[],
+  colWidths: number[],
+  aligns: ('left' | 'center' | 'right' | null)[],
+  cellColor?: string,
+  isHeader = false,
+): string[] {
+  const cellLinesArr: string[][] = cells.map((cell, col) => {
+    const formatted = renderFormattedCell(cell, cellColor)
+    return wrapCellText(formatted, colWidths[col]!)
   })
 
-  // Shrink columns proportionally if table exceeds available width
-  if (width && colCount > 0) {
-    const separatorOverhead = 3 * (colCount - 1) // '─┼─' between columns
-    const totalColWidth = colWidths.reduce((a, b) => a + b, 0)
-    const tableWidth = totalColWidth + separatorOverhead
-    if (tableWidth > width) {
-      const available = width - separatorOverhead
-      const ratio = available / totalColWidth
-      colWidths = colWidths.map((w) => Math.max(3, Math.floor(w * ratio)))
+  const maxLines = Math.max(...cellLinesArr.map(l => l.length), 1)
+  const result: string[] = []
+  for (let lineIdx = 0; lineIdx < maxLines; lineIdx++) {
+    let line = '│'
+    for (let col = 0; col < cells.length; col++) {
+      const lineText = cellLinesArr[col]![lineIdx] ?? ''
+      const displayWidth = stringWidth(lineText)
+      const width = colWidths[col]!
+      const align = isHeader ? 'center' as const : (aligns[col] ?? 'left')
+      line += ' ' + padAligned(lineText, displayWidth, width, align) + ' │'
     }
+    result.push(line)
   }
+  return result
+}
 
-  function cellText(cell: Tokens.TableCell): string {
-    // Extract plain text from cell tokens for width measurement
-    return cell.tokens
-      .map((t) => {
-        if (t.type === 'text') return (t as Tokens.Text).text
-        if ('raw' in t) return (t as { raw: string }).raw
-        return ''
-      })
-      .join('')
-  }
+/** Render horizontal border as a single string. */
+function renderBorderLine(colWidths: number[], type: 'top' | 'middle' | 'bottom'): string {
+  const [left, mid, cross, right] = {
+    top:    ['┌', '─', '┬', '┐'],
+    middle: ['├', '─', '┼', '┤'],
+    bottom: ['└', '─', '┴', '┘'],
+  }[type] as [string, string, string, string]
+  let line = left
+  colWidths.forEach((w, i) => {
+    line += mid.repeat(w + 2)
+    line += i < colWidths.length - 1 ? cross : right
+  })
+  return line
+}
 
-  function padCell(cell: Tokens.TableCell, col: number): string {
-    const text = cellText(cell)
-    const width = colWidths[col]
-    const diff = width - stringWidth(text)
-    const align = aligns[col] ?? 'left'
+/** Render vertical format (key-value pairs) for extra-narrow terminals. */
+function renderVerticalFormat(
+  token: Tokens.Table,
+  terminalWidth: number,
+  cellColor?: string,
+): string {
+  const lines: string[] = []
+  const headers = token.header.map(h => cellPlainText(h))
+  const separatorWidth = Math.min(terminalWidth - 1, 40)
+  const separator = '─'.repeat(separatorWidth)
+  const wrapIndent = '  '
 
-    if (diff <= 0) return text
-    if (align === 'right') return ' '.repeat(diff) + text
-    if (align === 'center') {
-      const left = Math.floor(diff / 2)
-      return ' '.repeat(left) + text + ' '.repeat(diff - left)
+  token.rows.forEach((row, rowIndex) => {
+    if (rowIndex > 0) {
+      lines.push(separator)
     }
-    return text + ' '.repeat(diff) // left (default)
+    row.forEach((cell, colIdx) => {
+      const label = headers[colIdx] || `Column ${colIdx + 1}`
+      const rawValue = stripAnsi(renderFormattedCell(cell, cellColor)).trimEnd()
+      const value = rawValue.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim()
+
+      const firstLineWidth = terminalWidth - stringWidth(label) - 3
+      const subsequentLineWidth = terminalWidth - wrapIndent.length - 1
+
+      const firstPassLines = wrapCellText(value, Math.max(firstLineWidth, 10))
+      const firstLine = firstPassLines[0] || ''
+      let wrappedValue: string[]
+      if (firstPassLines.length <= 1 || subsequentLineWidth <= firstLineWidth) {
+        wrappedValue = firstPassLines
+      } else {
+        const remainingText = firstPassLines.slice(1).map(l => l.trim()).join(' ')
+        const rewrapped = wrapCellText(remainingText, subsequentLineWidth)
+        wrappedValue = [firstLine, ...rewrapped]
+      }
+
+      // Bold label + value
+      lines.push(`\x1b[1m${label}:\x1b[22m ${wrappedValue[0] || ''}`)
+      for (let i = 1; i < wrappedValue.length; i++) {
+        const line = wrappedValue[i]!
+        if (!line.trim()) continue
+        lines.push(`${wrapIndent}${line}`)
+      }
+    })
+  })
+  return lines.join('\n')
+}
+
+const Table = memo(function Table({ token, color: cellColor, width }: { token: Tokens.Table; color?: string; width?: number }) {
+  const terminalWidth = width ?? 80
+  const allRows = [token.header, ...token.rows]
+  const colCount = token.header.length
+  const aligns: ('left' | 'center' | 'right' | null)[] = (token.align ?? []).map(a => a ?? 'left')
+
+  // Step 1: Calculate minWidth (longest word) and idealWidth (full content) per column
+  const minWidths = Array.from({ length: colCount }, (_, col) => {
+    let max = MIN_COLUMN_WIDTH
+    for (const row of allRows) {
+      if (row[col]) {
+        max = Math.max(max, getCellMinWidth(row[col]!))
+      }
+    }
+    return max
+  })
+  const idealWidths = Array.from({ length: colCount }, (_, col) => {
+    let max = MIN_COLUMN_WIDTH
+    for (const row of allRows) {
+      if (row[col]) {
+        max = Math.max(max, getCellIdealWidth(row[col]!))
+      }
+    }
+    return max
+  })
+
+  // Step 2: Calculate available space
+  const borderOverhead = 1 + colCount * 3 // │ + (2 padding + 1 border) per col
+  const availableWidth = Math.max(terminalWidth - borderOverhead - SAFETY_MARGIN, colCount * MIN_COLUMN_WIDTH)
+
+  // Step 3: Three-stage column width allocation
+  const totalMin = minWidths.reduce((a, b) => a + b, 0)
+  const totalIdeal = idealWidths.reduce((a, b) => a + b, 0)
+
+  let needsHardWrap = false
+  let colWidths: number[]
+  if (totalIdeal <= availableWidth) {
+    // Everything fits — use ideal widths
+    colWidths = idealWidths
+  } else if (totalMin <= availableWidth) {
+    // Need to shrink — give each column its min, distribute remaining space proportionally
+    const extraSpace = availableWidth - totalMin
+    const overflows = idealWidths.map((ideal, i) => ideal - minWidths[i]!)
+    const totalOverflow = overflows.reduce((a, b) => a + b, 0)
+    colWidths = minWidths.map((min, i) => {
+      if (totalOverflow === 0) return min
+      const extra = Math.floor(overflows[i]! / totalOverflow * extraSpace)
+      return min + extra
+    })
+  } else {
+    // Table wider than terminal at minimum widths — shrink proportionally, allow word breaks
+    needsHardWrap = true
+    const scaleFactor = availableWidth / totalMin
+    colWidths = minWidths.map(w => Math.max(Math.floor(w * scaleFactor), MIN_COLUMN_WIDTH))
   }
 
-  const separator = colWidths.map((w) => '─'.repeat(w)).join('─┼─')
+  // Step 4: Check if vertical format is needed
+  function calculateMaxRowLines(): number {
+    let maxLines = 1
+    for (const row of allRows) {
+      for (let col = 0; col < row.length; col++) {
+        if (row[col]) {
+          const formatted = renderFormattedCell(row[col]!, cellColor)
+          const wrapped = wrapCellText(formatted, colWidths[col]!, needsHardWrap)
+          maxLines = Math.max(maxLines, wrapped.length)
+        }
+      }
+    }
+    return maxLines
+  }
 
+  const maxRowLines = calculateMaxRowLines()
+  const useVerticalFormat = maxRowLines > MAX_ROW_LINES
+
+  if (useVerticalFormat) {
+    return (
+      <Box marginY={1}>
+        <AnsiText>{renderVerticalFormat(token, terminalWidth, cellColor)}</AnsiText>
+      </Box>
+    )
+  }
+
+  // Step 5: Build horizontal table as ANSI string
+  const tableLines: string[] = []
+  tableLines.push(renderBorderLine(colWidths, 'top'))
+  tableLines.push(...renderRowLines(token.header, colWidths, aligns, cellColor, true))
+  tableLines.push(renderBorderLine(colWidths, 'middle'))
+  token.rows.forEach((row, rowIndex) => {
+    tableLines.push(...renderRowLines(row, colWidths, aligns, cellColor, false))
+    if (rowIndex < token.rows.length - 1) {
+      tableLines.push(renderBorderLine(colWidths, 'middle'))
+    }
+  })
+  tableLines.push(renderBorderLine(colWidths, 'bottom'))
+
+  // Step 6: Safety check — if any line exceeds terminal width, fall back to vertical
+  const maxLineWidth = Math.max(...tableLines.map(line => stringWidth(line)))
+  if (maxLineWidth > terminalWidth - SAFETY_MARGIN) {
+    return (
+      <Box marginY={1}>
+        <AnsiText>{renderVerticalFormat(token, terminalWidth, cellColor)}</AnsiText>
+      </Box>
+    )
+  }
+
+  // Render as a single AnsiText block to prevent Ink from wrapping mid-row
   return (
-    <Box flexDirection="column" marginY={1}>
-      {/* Header row (bold) */}
-      <Box>
-        {token.header.map((cell, j) => (
-          <Text key={j} bold>
-            {j > 0 && <Text color={theme.dimText}>{' │ '}</Text>}
-            {padCell(cell, j)}
-          </Text>
-        ))}
-      </Box>
-      {/* Separator line */}
-      <Box>
-        <Text color={theme.dimText}>{separator}</Text>
-      </Box>
-      {/* Data rows */}
-      {token.rows.map((row, i) => (
-        <Box key={i}>
-          {row.map((cell, j) => (
-            <Text key={j} color={color}>
-              {j > 0 && <Text color={theme.dimText}>{' │ '}</Text>}
-              {padCell(cell, j)}
-            </Text>
-          ))}
-        </Box>
-      ))}
+    <Box marginY={1}>
+      <AnsiText>{tableLines.join('\n')}</AnsiText>
     </Box>
   )
 })
@@ -451,12 +677,22 @@ const InlineTokens = memo(function InlineTokens({ tokens, color }: { tokens: Tok
                 {insertCjkBreaks((token as Tokens.Codespan).text)}
               </Text>
             )
-          case 'link':
+          case 'link': {
+            const linkToken = token as Tokens.Link
+            const href = linkToken.href
+            // OSC 8 clickable hyperlink when terminal supports it
+            if (supportsHyperlinks() && href) {
+              const linkText = linkToken.tokens
+                .map(t => renderInlineTokenToAnsi(t, theme.toolName))
+                .join('')
+              return <AnsiText key={i}>{createHyperlink(href, linkText)}</AnsiText>
+            }
             return (
               <Text key={i} color={theme.toolName} underline>
-                <InlineTokens tokens={(token as Tokens.Link).tokens} color={color} />
+                <InlineTokens tokens={linkToken.tokens} color={color} />
               </Text>
             )
+          }
           case 'image': {
             const img = token as Tokens.Image
             return (
@@ -484,3 +720,18 @@ const InlineTokens = memo(function InlineTokens({ tokens, color }: { tokens: Tok
     </>
   )
 })
+
+// ── Test-only exports ──
+
+export {
+  wrapCellText,
+  padAligned,
+  renderBorderLine,
+  renderRowLines,
+  renderVerticalFormat,
+  renderFormattedCell,
+  cellPlainText,
+  SAFETY_MARGIN,
+  MIN_COLUMN_WIDTH,
+  MAX_ROW_LINES,
+}

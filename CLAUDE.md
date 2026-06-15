@@ -120,6 +120,16 @@ Shadow git repo per session under `.myagent/shadow-git/<session-id>/`. Creates c
 
 Walks up from cwd looking for `MYAGENT.md`, `CLAUDE.md`, `AGENTS.md`, plus `.myagent/rules/*.md` and local overrides (`MYAGENT.local.md`, `CLAUDE.local.md`). Cached within session.
 
+## TUI Markdown Rendering
+
+Markdown rendering in `src/tui/components/Markdown.tsx` uses a hybrid approach:
+- **Block-level tokens** (headings, paragraphs, lists, blockquotes) are rendered as React components (`<Text>`/`<Box>`)
+- **Tables** are rendered as ANSI strings via `wrap-ansi` for word-wrap, then bridged to Ink via `<AnsiText>`. Includes three-stage column width allocation (ideal → proportional → hard wrap) and automatic vertical format fallback for narrow terminals.
+- **Code blocks** use `cli-highlight` for syntax highlighting, rendered via `<AnsiText>`
+- **CJK wrapping** is handled at two layers: `insertCjkBreaks()` in `markdown.ts` (application-level spaces at punctuation boundaries) and an Ink patch (`patches/ink+7.0.6.patch`) that inserts zero-width spaces between CJK characters in Ink's internal `wrap-text.js`
+
+Key dependencies: `marked` (parsing), `cli-highlight` (syntax), `wrap-ansi` (table cell wrapping), `string-width` (display width).
+
 ## Ink Patch
 
 The current branch uses a customized Ink build. `patches/ink+7.0.6.patch` contains modifications to Ink 7.0.6, applied automatically via `patch-package` on `postinstall`. When modifying Ink-related code, always work on top of the existing patch — do not overwrite or revert the patch content. If further Ink changes are needed, append to `patches/ink+7.0.6.patch`.

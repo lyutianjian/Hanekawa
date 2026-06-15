@@ -4,7 +4,7 @@ node_modules/
 cc's_harness-engineering/
 # Build output
 dist/
-
+plans/
 docs/
 # Environment files
 .env

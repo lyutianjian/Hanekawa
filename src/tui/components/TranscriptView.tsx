@@ -8,6 +8,8 @@ import { theme } from '../theme.js'
 const HEADER_ROWS = 1
 const FOOTER_ROWS = 1
 const CHROME_ROWS = HEADER_ROWS + FOOTER_ROWS
+const MOUSE_WHEEL_SCROLL_ROWS = 3
+const SGR_MOUSE_INPUT_PATTERN = /^\x1B?\[<(\d+);\d+;\d+([mM])$/
 
 interface TranscriptViewProps {
   items: TUIDisplayItem[]
@@ -53,6 +55,15 @@ export const TranscriptView = memo(function TranscriptView({
       onExit()
       return
     }
+    const wheelDirection = getSgrMouseWheelDirection(input)
+    if (wheelDirection === 'up') {
+      scrollUp(MOUSE_WHEEL_SCROLL_ROWS)
+      return
+    }
+    if (wheelDirection === 'down') {
+      scrollDown(MOUSE_WHEEL_SCROLL_ROWS)
+      return
+    }
     if (key.downArrow) {
       scrollDown(1)
       return
@@ -93,3 +104,17 @@ export const TranscriptView = memo(function TranscriptView({
     </Box>
   )
 })
+
+function getSgrMouseWheelDirection(input: string): 'up' | 'down' | null {
+  const match = SGR_MOUSE_INPUT_PATTERN.exec(input)
+  if (!match) return null
+  if (match[2] !== 'M') return null
+
+  const buttonCode = Number(match[1])
+  if (!Number.isInteger(buttonCode) || (buttonCode & 64) === 0) return null
+
+  const wheelButton = buttonCode & 3
+  if (wheelButton === 0) return 'up'
+  if (wheelButton === 1) return 'down'
+  return null
+}

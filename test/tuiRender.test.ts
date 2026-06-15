@@ -179,13 +179,13 @@ test('TranscriptView renders provided prompt-order items expanded', () => {
   assert.doesNotMatch(frame, /g\/G/)
 })
 
-test('TranscriptView keeps wheel-mapped arrow scrolling while ignoring removed shortcuts', async () => {
-  const items: TUIDisplayItem[] = [{
+test('TranscriptView supports arrow and SGR wheel scrolling while ignoring removed shortcuts', async () => {
+  const items: TUIDisplayItem[] = Array.from({ length: 60 }, (_, index) => ({
     kind: 'system',
-    id: 'system-1',
-    content: 'transcript body',
+    id: `system-${index}`,
+    content: `transcript body ${index}`,
     createdAt: '2026-05-31T00:00:00.000Z',
-  }]
+  }))
   let exitCount = 0
   let scrollOffset = 0
   let scrollUpdateCount = 0
@@ -221,6 +221,21 @@ test('TranscriptView keeps wheel-mapped arrow scrolling while ignoring removed s
 
   assert.equal(exitCount, 0)
   assert.ok(scrollUpdateCount > 0)
+  assert.equal(scrollOffset, 0)
+
+  const updatesBeforeMouseClick = scrollUpdateCount
+  for (const input of ['\x1B[<0;10;5M', '\x1B[<64;10;5m']) {
+    instance.stdin.write(input)
+    await waitForInk()
+  }
+  assert.equal(scrollUpdateCount, updatesBeforeMouseClick)
+
+  instance.stdin.write('\x1B[<64;10;5M')
+  await waitForInk()
+  assert.equal(scrollOffset, 3)
+
+  instance.stdin.write('\x1B[<65;10;5M')
+  await waitForInk()
   assert.equal(scrollOffset, 0)
 
   instance.stdin.write('\x0F')

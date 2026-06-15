@@ -57,6 +57,13 @@ Use the TUI for the interactive agent experience:
 bun run dev:tui
 ```
 
+Transcript history opens with Ctrl+O in a terminal alternate screen. While that
+view is active, the app enables xterm alternate-scroll mode so mouse-wheel input
+can map to the same up/down scrolling path as the arrow keys. It also enables
+SGR mouse wheel reporting as a fallback for terminals that do not implement
+alternate-scroll mapping; the terminal's native scrollbar may still be hidden by
+the alternate screen.
+
 Resume a session:
 
 ```bash

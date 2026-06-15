@@ -9,6 +9,12 @@ import { AlternateScreen } from '../src/tui/components/AlternateScreen.js'
 
 const ENTER_ALT_SCREEN = '\x1B[?1049h'
 const EXIT_ALT_SCREEN = '\x1B[?1049l'
+const ENABLE_ALT_SCROLL = '\x1B[?1007h'
+const DISABLE_ALT_SCROLL = '\x1B[?1007l'
+const ENABLE_SGR_MOUSE = '\x1B[?1006h'
+const DISABLE_SGR_MOUSE = '\x1B[?1006l'
+const ENABLE_MOUSE_TRACKING = '\x1B[?1000h'
+const DISABLE_MOUSE_TRACKING = '\x1B[?1000l'
 const CLEAR_SCREEN = '\x1B[2J'
 const CURSOR_HOME = '\x1B[H'
 
@@ -130,12 +136,22 @@ test('prompt view preserves static history after alternate-screen round trip', a
   instance.unmount()
 
   assert.match(transcriptOutput, new RegExp(escapeRegExp(ENTER_ALT_SCREEN)))
-  assert.doesNotMatch(transcriptOutput, /\x1B\[\?1007[lh]/)
+  assert.match(transcriptOutput, new RegExp(escapeRegExp(ENABLE_ALT_SCROLL)))
+  assert.match(transcriptOutput, new RegExp(escapeRegExp(ENABLE_SGR_MOUSE)))
+  assert.match(transcriptOutput, new RegExp(escapeRegExp(ENABLE_MOUSE_TRACKING)))
+  assert.ok(transcriptOutput.indexOf(ENTER_ALT_SCREEN) < transcriptOutput.indexOf(ENABLE_ALT_SCROLL))
+  assert.ok(transcriptOutput.indexOf(ENABLE_ALT_SCROLL) < transcriptOutput.indexOf(ENABLE_SGR_MOUSE))
+  assert.ok(transcriptOutput.indexOf(ENABLE_SGR_MOUSE) < transcriptOutput.indexOf(ENABLE_MOUSE_TRACKING))
   assert.match(transcriptOutput, /Transcript/)
   assert.doesNotMatch(transcriptOutput, /OLD-HISTORY/)
   assert.doesNotMatch(whileTranscriptOutput, /NEW-HISTORY/)
+  assert.match(promptOutput, new RegExp(escapeRegExp(DISABLE_MOUSE_TRACKING)))
+  assert.match(promptOutput, new RegExp(escapeRegExp(DISABLE_SGR_MOUSE)))
+  assert.match(promptOutput, new RegExp(escapeRegExp(DISABLE_ALT_SCROLL)))
   assert.match(promptOutput, new RegExp(escapeRegExp(EXIT_ALT_SCREEN)))
-  assert.doesNotMatch(promptOutput, /\x1B\[\?1007[lh]/)
+  assert.ok(promptOutput.indexOf(DISABLE_MOUSE_TRACKING) < promptOutput.indexOf(DISABLE_SGR_MOUSE))
+  assert.ok(promptOutput.indexOf(DISABLE_SGR_MOUSE) < promptOutput.indexOf(DISABLE_ALT_SCROLL))
+  assert.ok(promptOutput.indexOf(DISABLE_ALT_SCROLL) < promptOutput.indexOf(EXIT_ALT_SCREEN))
   assert.doesNotMatch(promptOutput, new RegExp(escapeRegExp(CLEAR_SCREEN + CURSOR_HOME)))
   assert.doesNotMatch(promptOutput, /OLD-HISTORY/)
   assert.match(promptOutput, /NEW-HISTORY/)
@@ -196,8 +212,13 @@ test('alternate-screen round trip preserves prompt cursor anchor after live summ
 
   instance.unmount()
 
+  assert.match(promptOutput, new RegExp(escapeRegExp(DISABLE_MOUSE_TRACKING)))
+  assert.match(promptOutput, new RegExp(escapeRegExp(DISABLE_SGR_MOUSE)))
+  assert.match(promptOutput, new RegExp(escapeRegExp(DISABLE_ALT_SCROLL)))
   assert.match(promptOutput, new RegExp(escapeRegExp(EXIT_ALT_SCREEN)))
-  assert.doesNotMatch(promptOutput, /\x1B\[\?1007[lh]/)
+  assert.ok(promptOutput.indexOf(DISABLE_MOUSE_TRACKING) < promptOutput.indexOf(DISABLE_SGR_MOUSE))
+  assert.ok(promptOutput.indexOf(DISABLE_SGR_MOUSE) < promptOutput.indexOf(DISABLE_ALT_SCROLL))
+  assert.ok(promptOutput.indexOf(DISABLE_ALT_SCROLL) < promptOutput.indexOf(EXIT_ALT_SCREEN))
   assert.doesNotMatch(promptOutput, /\x1B\[\d+A\x1B\[\d+G/)
   assert.doesNotMatch(promptOutput, /\* Worked for 4s/)
   assert.doesNotMatch(promptOutput, /STATUS-LINE/)

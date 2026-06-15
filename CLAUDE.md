@@ -104,6 +104,17 @@ Settings support: `permissions` (mode + allow/deny/ask rules), `autoMode` (allow
 
 JSONL records in `.myagent/sessions/`. Record types: messages, tool_use, tool_result, tool_approval, compact_boundary, compact_attempt_failed, tool_use_summary, subagent_transcript, subagent_task, plan_mode_request, plan_mode_outcome, turn_interruption, at_mention_context. Prefix-based ID resolution.
 
+### TUI Transcript Mode
+
+Ctrl+O opens transcript history in `AlternateScreen`, which switches the terminal
+to the alternate buffer to avoid prompt scrollback redraw and cursor drift. While
+that view is mounted, `AlternateScreen` enables xterm alternate-scroll mode
+(`?1007h`) so mouse-wheel input maps to the existing up/down arrow scrolling
+path when the terminal supports it. It also enables SGR mouse tracking
+(`?1006h` + `?1000h`) so `TranscriptView` can directly parse wheel up/down
+events as a fallback. Cleanup disables mouse tracking and alternate-scroll
+before returning to the primary screen.
+
 ### Skills (`.myagent/skills/<name>/SKILL.md`)
 
 Markdown files with YAML frontmatter (`name`, `description`). Auto-discovered at startup, injected into system prompt, invocable via the `Skill` tool.

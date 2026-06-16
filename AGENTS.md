@@ -159,7 +159,7 @@ Two providers share a common `ModelProvider` interface:
 
 - `anthropicProvider.ts` — Anthropic SDK, streaming, cache break diagnostics
 - `openaiProvider.ts` — OpenAI Chat Completions API with `prompt_cache_key` (SHA256 of model+system+tools)
-- `anthropicPayload.ts` — Anthropic messages, tools, thinking, max token, and cache marker payload construction
+- `anthropicPayload.ts` — Anthropic messages, tools, thinking, max token, cache marker payload construction, and cache edits injection (`pendingCacheEdits` into last user message, `pinnedCacheEdits` re-insertion with deduplication, `cache_reference` on cached-prefix tool_results)
 - `openaiPayload.ts` — OpenAI messages, tools, and prompt_cache_key construction
 - `registry.ts` — `ProviderRegistry` and `createProvider`
 - `debug.ts` — provider debug logging

@@ -32,21 +32,23 @@ Key modules:
 - **`contextBuilder.ts`** — assembles system prompt, skills, environment, session history into `ModelRequest`
 - **`toolRunner.ts`** — executes tool calls with ordered batching (safe tools parallel, unsafe sequential), records results, enforces per-result size budgets
 - **`permissions.ts`** — five permission modes (`default`, `plan`, `acceptEdits`, `auto`, `bypass`). Protected paths (`.git`, `.myagent`, `.env`, `.ssh`, `.aws`) and secret files (`.gitconfig`, `.bashrc`, `.env`, `.npmrc`, `id_rsa*`, `*.pem`, `*.key`) always blocked. Supports glob-pattern allow/deny/ask rules. Denial streak escalation after repeated denials.
-- **`compact.ts`** — token-driven auto-compaction via LLM summary when context exceeds threshold
-- **`requestPrep.ts`** — prepares session records, enforces two-layer tool result budget, repairs tool_use/tool_result pairing
+- **`compact.ts`** — token-driven auto-compaction via LLM summary when context exceeds threshold; uses structured 9-section prompt from `compactPrompt.ts` with `<analysis>` scratchpad
+- **`compactPrompt.ts`** — structured compact prompt template (9 sections: Primary Request, Key Concepts, Files/Code, Errors, Problem Solving, User Messages, Pending Tasks, Current Work, Next Step) and `formatCompactSummary()` for post-processing
+- **`requestPrep.ts`** — prepares session records, enforces two-layer tool result budget, snips oversized individual tool results (50k token cap), repairs tool_use/tool_result pairing
 - **`planModeManager.ts`** — plan mode orchestration: enter/exit plan mode, plan file management at `<plansDir>/<slug>.md`, auto-allow plan file writes
 - **`hooks.ts`** — lifecycle hooks (`userPromptSubmit`, `preToolUse`, `postToolUse`, `preCompact`, `postCompact`, `subagentStart`, `subagentStop`, `stop`). Hooks run shell commands with glob matchers on tool names, timeout, and output size limits.
-- **`progressiveCompact.ts`** — micro-compaction and snipping for incremental context reduction
+- **`progressiveCompact.ts`** — three-stage progressive compaction: (1) time-based micro-compact (clears old tool results when gap > 60min), (2) ratio-based micro-compact (65% threshold, with optional cache-aware path via `CacheEditManager` that registers tool results for API-level deletion instead of local mutation), (3) conversation snipping (80% threshold, keeps head 3 + tail 12 turns)
 - **`systemReminder.ts`** — unified `<system-reminder>` wrapper for dynamic context injection
 
-**Tool result budget — two layers:**
+**Tool result budget — three layers:**
 
 1. Per-result write-time truncation (`toolRunner.ts:applyToolResultBudget`): each tool defines `maxResultSizeChars`; content exceeding that limit is sliced. Current limits: Bash=100k, Grep=30k, Agent=32k chars.
 2. Global request-time budget (`requestPrep.ts`): total tool_result content capped at `effectiveContextWindow * 0.5` (floored at 200k tokens). Older results summarized when exceeded, keeping the 10 most recent intact.
+3. Per-result hard cap (`compact.ts:snipLargeToolResults`): individual tool results exceeding 50k tokens are truncated with a notice. Applied after budget compaction to catch any remaining oversized results.
 
 ### Providers (`src/config/providers/`)
 
-Two providers share a `ModelProvider` interface: `anthropicProvider.ts` (Anthropic SDK, streaming, cache diagnostics) and `openaiProvider.ts` (OpenAI Chat Completions with `prompt_cache_key`). Both support extended thinking/reasoning. Payload builders translate a neutral `ModelContextItem` union into provider-specific formats.
+Two providers share a `ModelProvider` interface: `anthropicProvider.ts` (Anthropic SDK, streaming, cache diagnostics) and `openaiProvider.ts` (OpenAI Chat Completions with `prompt_cache_key`). Both support extended thinking/reasoning. Payload builders translate a neutral `ModelContextItem` union into provider-specific formats. The Anthropic payload builder (`anthropicPayload.ts`) supports cache edits injection: `pendingCacheEdits` are appended to the last user message, `pinnedCacheEdits` are re-inserted at their original positions (with deduplication), and `cache_reference` fields are added to `tool_result` blocks in the cached prefix.
 
 Max output tokens: default 32k, upper limit 128k (env override or config). Auto-escalates to 64k on `max_tokens` stop reason with up to 3 recovery attempts.
 

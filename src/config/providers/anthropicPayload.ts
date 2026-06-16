@@ -48,6 +48,13 @@ function anthropicContent(content: string): Array<{ type: 'text'; text: string }
   return [{ type: 'text', text: content }]
 }
 
+function findLastUserMessageIndex(messages: Array<Record<string, unknown>>): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') return i
+  }
+  return -1
+}
+
 function anthropicSystemWithCache(request: ModelRequest): Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral'; ttl?: '1h' } }> {
   const { staticBlocks, dynamicBlocks } = splitSystemForCaching(
     request.systemBlocks ?? (request.system ? [request.system] : []),
@@ -168,6 +175,60 @@ export function buildAnthropicMessages(request: ModelRequest) {
 
   if (pendingToolResults.length > 0) {
     messages.push({ role: 'user', content: pendingToolResults })
+  }
+
+  // --- Cache edits injection ---
+  if (request.pendingCacheEdits && messages.length > 0) {
+    const lastUserIdx = findLastUserMessageIndex(messages)
+    if (lastUserIdx >= 0) {
+      const msg = messages[lastUserIdx]
+      const content = Array.isArray(msg.content) ? [...msg.content] : [{ type: 'text', text: String(msg.content) }]
+      content.push(request.pendingCacheEdits as unknown as Record<string, unknown>)
+      messages[lastUserIdx] = { ...msg, content }
+    }
+  }
+
+  // Re-insert pinned edits at their original positions
+  if (request.pinnedCacheEdits) {
+    for (const pinned of request.pinnedCacheEdits) {
+      const msg = messages[pinned.userMessageIndex]
+      if (msg && msg.role === 'user') {
+        const content = Array.isArray(msg.content) ? [...msg.content] : [{ type: 'text', text: String(msg.content) }]
+        // Deduplicate: skip if cache_edits with same refs already exist
+        const existingRefs = new Set(
+          content
+            .filter((b: Record<string, unknown>) => b.type === 'cache_edits')
+            .flatMap((b: Record<string, unknown>) => (b.edits as Array<{ cache_reference: string }>).map(e => e.cache_reference))
+        )
+        const newEdits = pinned.block.edits.filter(e => !existingRefs.has(e.cache_reference))
+        if (newEdits.length > 0) {
+          content.push({ type: 'cache_edits', edits: newEdits })
+        }
+        messages[pinned.userMessageIndex] = { ...msg, content }
+      }
+    }
+  }
+
+  // Add cache_reference to tool_result blocks in the cached prefix
+  // (all messages except the last one, which has the cache_edits)
+  if (request.pendingCacheEdits) {
+    for (let i = 0; i < messages.length - 1; i++) {
+      const msg = messages[i]
+      const msgContent = msg.content as unknown
+      if (msg.role !== 'user' || !Array.isArray(msgContent)) continue
+      const contentArr = msgContent as Array<Record<string, unknown>>
+      let cloned = false
+      for (let j = 0; j < contentArr.length; j++) {
+        const block = contentArr[j]
+        if (block && block.type === 'tool_result' && block.tool_use_id) {
+          if (!cloned) {
+            msg.content = [...contentArr]
+            cloned = true
+          }
+          ;((msg.content as Array<Record<string, unknown>>)[j]).cache_reference = block.tool_use_id
+        }
+      }
+    }
   }
 
   if (messages.length === 0) {

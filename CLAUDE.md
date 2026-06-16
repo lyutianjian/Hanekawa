@@ -38,6 +38,7 @@ Key modules:
 - **`planModeManager.ts`** — plan mode orchestration: enter/exit plan mode, plan file management at `<plansDir>/<slug>.md`, auto-allow plan file writes
 - **`hooks.ts`** — lifecycle hooks (`userPromptSubmit`, `preToolUse`, `postToolUse`, `preCompact`, `postCompact`, `subagentStart`, `subagentStop`, `stop`). Hooks run shell commands with glob matchers on tool names, timeout, and output size limits.
 - **`progressiveCompact.ts`** — three-stage progressive compaction: (1) time-based micro-compact (clears old tool results when gap > 60min), (2) ratio-based micro-compact (65% threshold, with optional cache-aware path via `CacheEditManager` that registers tool results for API-level deletion instead of local mutation), (3) conversation snipping (80% threshold, keeps head 3 + tail 12 turns)
+- **`cacheEditManager.ts`** — manages Anthropic `cache_edits` blocks for prompt cache-aware compaction. Tracks tool results by `tool_use_id`, produces `cache_edits` blocks to delete old cached results, and manages pinned edits for re-sending across requests. Only active for native Anthropic provider with prompt caching enabled.
 - **`systemReminder.ts`** — unified `<system-reminder>` wrapper for dynamic context injection
 
 **Tool result budget — three layers:**
@@ -45,6 +46,23 @@ Key modules:
 1. Per-result write-time truncation (`toolRunner.ts:applyToolResultBudget`): each tool defines `maxResultSizeChars`; content exceeding that limit is sliced. Current limits: Bash=100k, Grep=30k, Agent=32k chars.
 2. Global request-time budget (`requestPrep.ts`): total tool_result content capped at `effectiveContextWindow * 0.5` (floored at 200k tokens). Older results summarized when exceeded, keeping the 10 most recent intact.
 3. Per-result hard cap (`compact.ts:snipLargeToolResults`): individual tool results exceeding 50k tokens are truncated with a notice. Applied after budget compaction to catch any remaining oversized results.
+
+### Output Token Slot Cap
+
+Default max output tokens are capped to `CAPPED_DEFAULT_MAX_TOKENS = 8,000` to reduce API slot over-reservation (p99 output is ~4,911 tokens). Requests hitting this cap get one retry at `ESCALATED_MAX_TOKENS = 64,000`, then up to 3 multi-turn recovery attempts with continuation reminders. The cap can be bypassed with `MYAGENT_SLOT_CAP_DISABLED=1`.
+
+### Cache-Aware Microcompact (Native Anthropic Only)
+
+When the microcompact threshold (65%) is reached, the system can either:
+- **Legacy path:** Mutate tool result records locally (breaks prompt cache)
+- **Cache-aware path:** Register tool results with `CacheEditManager`, which produces `cache_edits` blocks for the Anthropic API to delete old cached tool results without breaking the cached prefix
+
+The cache-aware path is active when:
+1. Provider is native Anthropic (`provider.name === 'anthropic'`)
+2. Prompt caching is enabled
+3. `CacheEditManager` is injected into `applyProgressiveCompaction`
+
+The Anthropic payload builder injects `cache_edits` into the last user message and adds `cache_reference` fields to tool_result blocks in the cached prefix. The `cache-editing-2025-04-11` beta header is included when edits are present.
 
 ### Providers (`src/config/providers/`)
 
@@ -187,6 +205,7 @@ Dynamic ToolSearch is provider-aware:
 - `MYAGENT_PROMPT_CACHE_1H=1` — enable 1-hour Anthropic prompt cache TTL
 - `MYAGENT_DISABLE_PROMPT_CACHING=1` — disable prompt caching
 - `MYAGENT_MAX_OUTPUT_TOKENS=N` — override max output tokens (capped at 128k)
+- `MYAGENT_SLOT_CAP_DISABLED=1` — disable the 8K output token slot cap (bypasses `CAPPED_DEFAULT_MAX_TOKENS`)
 - `MYAGENT_STREAM_IDLE_TIMEOUT_MS=N` — stream idle timeout (default 90s)
 - `MYAGENT_BASH_PATH` — override bash executable path (Windows)
 - `MYAGENT_SUBAGENT_MODEL_<TYPE>` — override model for a specific subagent type

@@ -19,6 +19,7 @@ const MAX_OUTPUT_TOKENS_DEFAULT = 32_000
 const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 128_000
 const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11'
 const TOOL_SEARCH_BETA = 'advanced-tool-use-2025-11-20'
+const CACHE_EDITING_BETA = 'cache-editing-2025-04-11'
 
 export function getMaxOutputTokens(configValue?: number, model?: string): number {
   const envValue = process.env.MYAGENT_MAX_OUTPUT_TOKENS
@@ -342,6 +343,9 @@ export function getAnthropicBetaHeaders(request: ModelRequest, nativeAnthropic =
   }
   if (nativeAnthropic && request.hasDeferredTools) {
     betas.push(TOOL_SEARCH_BETA)
+  }
+  if (nativeAnthropic && request.pendingCacheEdits && request.pendingCacheEdits.edits.length > 0) {
+    betas.push(CACHE_EDITING_BETA)
   }
   return betas
 }

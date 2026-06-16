@@ -4,6 +4,7 @@ export {
   countMessagesTokens,
   countTextTokens,
   getAvailableContextTokens,
+  getContextWindowForModel,
   selectContextItemsForContext,
   selectMessagesForContext,
   type ContextManagementConfig,

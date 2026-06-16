@@ -46,7 +46,7 @@ function toolPair(index: number, content: string): SessionRecord[] {
   ]
 }
 
-test('applyProgressiveCompaction microcompacts historical tool results before snipping', () => {
+test('applyProgressiveCompaction skips ratio-based microcompact without cache edits', () => {
   const records: SessionRecord[] = []
   for (let index = 0; index < 12; index++) {
     records.push(userTurn(index), ...toolPair(index, 'large output '.repeat(1_500)), assistantTurn(index))
@@ -55,16 +55,15 @@ test('applyProgressiveCompaction microcompacts historical tool results before sn
   const result = applyProgressiveCompaction({
     records,
     contextManagement: {
-      contextWindow: 80_000,
+      contextWindow: 100_000,
       summaryOutputTokens: 0,
       microCompactThresholdRatio: 0.65,
-      snipThresholdRatio: 0.8,
     },
   })
 
-  assert.equal(result.microCompacted, true)
+  assert.equal(result.microCompacted, false)
   assert.equal(result.snipped, false)
-  assert.match(
+  assert.doesNotMatch(
     toolResultContent(result.records, 'result-0'),
     /^\[summarized: Grep \d+ tokens\]/,
   )
@@ -74,7 +73,7 @@ test('applyProgressiveCompaction microcompacts historical tool results before sn
   )
 })
 
-test('applyProgressiveCompaction does not microcompact when all tool results are protected', () => {
+test('applyProgressiveCompaction does not ratio-microcompact without cache edits even above threshold', () => {
   const records: SessionRecord[] = []
   for (let index = 0; index < 10; index++) {
     records.push(userTurn(index), ...toolPair(index, 'large output '.repeat(250)), assistantTurn(index))
@@ -86,7 +85,6 @@ test('applyProgressiveCompaction does not microcompact when all tool results are
       contextWindow: 10_000,
       summaryOutputTokens: 0,
       microCompactThresholdRatio: 0.2,
-      snipThresholdRatio: 0.95,
     },
   })
 
@@ -95,7 +93,7 @@ test('applyProgressiveCompaction does not microcompact when all tool results are
   assert.equal(result.records.every((record) => record.type !== 'tool_result' || !record.content.startsWith('[summarized:')), true)
 })
 
-test('applyProgressiveCompaction skips snipping when microcompact recovers enough context', () => {
+test('applyProgressiveCompaction does not insert conversation snip markers', () => {
   const records: SessionRecord[] = []
   for (let index = 0; index < 11; index++) {
     const pair = toolPair(index, 'tool output')
@@ -112,20 +110,17 @@ test('applyProgressiveCompaction skips snipping when microcompact recovers enoug
       contextWindow: 1_000,
       summaryOutputTokens: 0,
       microCompactThresholdRatio: 0.5,
-      snipThresholdRatio: 0.8,
-      snipMaxTurns: 6,
-      snipHeadTurns: 2,
-      snipTailTurns: 3,
     },
   })
 
-  assert.equal(result.microCompacted, true)
+  assert.equal(result.microCompacted, false)
   assert.equal(result.snipped, false)
-  assert.match(toolResultContent(result.records, 'result-0'), /^\[summarized:/)
+  assert.doesNotMatch(toolResultContent(result.records, 'result-0'), /^\[summarized:/)
   assert.equal(result.records.some((record) => record.type === 'message' && /conversation snipped/.test(record.content)), false)
+  assert.equal(result.records.length, records.length)
 })
 
-test('applyProgressiveCompaction snips middle turns after microcompact cannot recover enough context', () => {
+test('applyProgressiveCompaction keeps middle turns under high context pressure', () => {
   const records: SessionRecord[] = []
   for (let index = 0; index < 10; index++) {
     records.push(userTurn(index, `user ${index} ${'chat '.repeat(500)}`), assistantTurn(index, `assistant ${index} ${'reply '.repeat(500)}`))
@@ -136,19 +131,17 @@ test('applyProgressiveCompaction snips middle turns after microcompact cannot re
     contextManagement: {
       contextWindow: 10_000,
       summaryOutputTokens: 0,
-      snipMaxTurns: 6,
-      snipHeadTurns: 2,
-      snipTailTurns: 3,
     },
   })
 
-  assert.equal(result.snipped, true)
-  assert.ok(result.records.some((record) => record.type === 'message' && /conversation snipped/.test(record.content)))
+  assert.equal(result.snipped, false)
+  assert.equal(result.records.some((record) => record.type === 'message' && /conversation snipped/.test(record.content)), false)
   assert.ok(result.records.some((record) => record.id === 'user-0'))
   assert.ok(result.records.some((record) => record.id === 'user-1'))
   assert.ok(result.records.some((record) => record.id === 'user-7'))
   assert.ok(result.records.some((record) => record.id === 'user-9'))
-  assert.equal(result.records.some((record) => record.id === 'user-4'), false)
+  assert.equal(result.records.some((record) => record.id === 'user-4'), true)
+  assert.equal(result.records.length, records.length)
 })
 
 test('estimateCurrentTokens uses last response record id when record count is stale', () => {
@@ -266,8 +259,8 @@ test('applyProgressiveCompaction cache-aware path registers tool results without
   const manager = new CacheEditManager({ keepRecent: 2, triggerAfter: 3 })
 
   // Create enough tool results to trigger microcompact
-  // Default microCompactThresholdRatio is 0.65 of (contextWindow - summaryOutputTokens)
-  // With contextWindow: 10000, threshold = floor(10000 * 0.65) = 6500 tokens
+  // Default microCompactThresholdRatio is 0.9 of (contextWindow - summaryOutputTokens)
+  // With contextWindow: 10000, threshold = floor(10000 * 0.9) = 9000 tokens
   // Each tool result with 'large output '.repeat(1500) ≈ 18000 chars ≈ 4500 tokens
   // 5 tool results ≈ 22500 tokens, well above threshold
   const records: SessionRecord[] = []
@@ -303,8 +296,7 @@ test('applyProgressiveCompaction cache-aware path registers tool results without
   assert.ok(manager.getRegisteredToolUseIds().size > 0)
 })
 
-test('applyProgressiveCompaction uses legacy path when no cacheEditManager', () => {
-  // This tests existing behavior is unchanged
+test('applyProgressiveCompaction does not mutate records when cacheEditManager is absent', () => {
   const records: SessionRecord[] = []
   for (let i = 0; i < 20; i++) {
     records.push({
@@ -327,10 +319,11 @@ test('applyProgressiveCompaction uses legacy path when no cacheEditManager', () 
 
   const result = applyProgressiveCompaction({
     records,
-    contextManagement: { contextWindow: 40000, summaryOutputTokens: 2000 },
+    contextManagement: { contextWindow: 200000, summaryOutputTokens: 0, microCompactThresholdRatio: 0.2 },
   })
 
-  // Without cacheEditManager, legacy path should work
-  assert.ok(result)
+  assert.equal(result.microCompacted, false)
+  assert.equal(result.snipped, false)
   assert.equal(result.cacheEditsPending, undefined)
+  assert.doesNotMatch(toolResultContent(result.records, 'tr-0'), /^\[summarized:/)
 })

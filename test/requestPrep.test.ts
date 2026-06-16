@@ -39,9 +39,14 @@ function toolResultContent(records: SessionRecord[], id: string): string {
   return record.content
 }
 
-test('prepareRecordsForRequest preserves old oversized tool results when aggregate budget allows', () => {
+test('prepareRecordsForRequest preserves old tool results when under snip threshold and aggregate budget allows', () => {
+  // Use content that stays under the per-result snip threshold (10K tokens).
+  // 'old output ' is 11 chars; 3_000 repeats = 33_000 chars ≈ 11_000 tokens.
+  // With 1M context window and 0 summary output, aggregate budget is 500K —
+  // so budget compaction won't trigger. But snip triggers at 10K tokens.
+  // Use 2_000 repeats to stay under: 22_000 chars ≈ 7_333 tokens < 10K.
   const records: SessionRecord[] = [
-    ...toolPair('old', 'Read', 'old output '.repeat(7_000), 0),
+    ...toolPair('old', 'Read', 'old output '.repeat(2_000), 0),
   ]
   for (let index = 0; index < 10; index++) {
     records.push(...toolPair(`new-${index}`, 'Read', 'new output '.repeat(10), index + 1))
@@ -52,7 +57,7 @@ test('prepareRecordsForRequest preserves old oversized tool results when aggrega
   const newResult = prepared.find((record) => record.type === 'tool_result' && record.id === 'new-9-result')
 
   assert.equal(oldResult?.type, 'tool_result')
-  assert.equal(oldResult.content, 'old output '.repeat(7_000))
+  assert.equal(oldResult.content, 'old output '.repeat(2_000))
   assert.equal(newResult?.type, 'tool_result')
   assert.match(newResult.content, /new output/)
   assert.doesNotMatch(records[1]?.type === 'tool_result' ? records[1].content : '', /summarized/)
@@ -537,4 +542,58 @@ test('recordsAfterAreOnlyInterruptSynthetic treats assistant and tool records as
 
   assert.equal(recordsAfterAreOnlyInterruptSynthetic([base, assistant], 'user-1'), false)
   assert.equal(recordsAfterAreOnlyInterruptSynthetic([base, toolUse], 'user-1'), false)
+})
+
+test('prepareRecordsForRequest snips individual tool results exceeding max tokens', () => {
+  // Generate content that dynamically exceeds the 10,000 token snip threshold.
+  // Use countTextTokens to verify the setup rather than relying on a fixed chars/token ratio.
+  const targetTokens = 10_001
+  const hugeContent = 'x'.repeat(Math.ceil(targetTokens * 4)) // generous margin
+  assert.ok(
+    countTextTokens(hugeContent) > targetTokens,
+    `test setup: content must exceed ${targetTokens} tokens (got ${countTextTokens(hugeContent)})`,
+  )
+
+  const records: SessionRecord[] = [
+    ...toolPair('huge', 'Read', hugeContent, 0),
+    ...toolPair('normal', 'Read', 'small output', 1),
+  ]
+
+  const prepared = prepareRecordsForRequest(records)
+
+  assert.match(toolResultContent(prepared, 'huge'), /Result truncated/)
+  assert.match(toolResultContent(prepared, 'huge'), /Read/)
+  assert.equal(toolResultContent(prepared, 'normal'), 'small output')
+})
+
+test('prepareRecordsForRequest does not snip tool results under max tokens', () => {
+  const records: SessionRecord[] = [
+    ...toolPair('ok', 'Read', 'short output', 0),
+  ]
+
+  const prepared = prepareRecordsForRequest(records)
+
+  assert.equal(toolResultContent(prepared, 'ok'), 'short output')
+})
+
+test('prepareRecordsForRequest does not double-snip already budget-compacted results', () => {
+  const records: SessionRecord[] = [
+    ...toolPair('old', 'Read', 'large output '.repeat(7_000), 0),
+  ]
+  for (let i = 0; i < 10; i++) {
+    records.push(...toolPair(`new-${i}`, 'Read', 'new output '.repeat(10), i + 1))
+  }
+
+  // Use a small context window to trigger budget compaction on the old result
+  const prepared = prepareRecordsForRequest(records, {
+    contextWindow: 50_000,
+    summaryOutputTokens: 0,
+  })
+
+  const oldContent = toolResultContent(prepared, 'old')
+  // Budget compaction runs first and replaces with [summarized: ...].
+  // snipLargeToolResults should not re-snip already compacted results
+  // because [summarized: ...] is well under 50K tokens.
+  assert.match(oldContent, /summarized/)
+  assert.doesNotMatch(oldContent, /Result truncated/)
 })

@@ -4,6 +4,7 @@ import {
   buildRestoreOptions,
   formatDiffSummary,
   getCheckpointRenderKey,
+  sortCheckpointsChronological,
   sortCheckpointsReverseChronological,
   truncateMessage,
 } from '../src/tui/components/RestoreMode.js'
@@ -38,6 +39,16 @@ describe('RestoreMode component logic', () => {
     ])
 
     assert.deepEqual(sorted.map((item) => item.messageId), ['new', 'middle', 'old'])
+  })
+
+  it('sorts rewind checkpoint choices chronologically before the current row', () => {
+    const sorted = sortCheckpointsChronological([
+      checkpoint({ messageId: 'old', timestamp: '2026-05-19T10:00:00.000Z' }),
+      checkpoint({ messageId: 'new', timestamp: '2026-05-19T12:00:00.000Z' }),
+      checkpoint({ messageId: 'middle', timestamp: '2026-05-19T11:00:00.000Z' }),
+    ])
+
+    assert.deepEqual(sorted.map((item) => item.messageId), ['old', 'middle', 'new'])
   })
 
   it('uses message ids for render keys because commit hashes can be reused', () => {

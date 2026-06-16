@@ -235,6 +235,43 @@ test('ConfigService gives config.json priority over settings config fields', asy
   }
 })
 
+test('ConfigService ignores legacy conversation snip context settings', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    await mkdir(path.join(dir, '.myagent'), { recursive: true })
+    await writeFile(path.join(dir, '.myagent', 'config.json'), JSON.stringify({
+      models: {},
+      agent: {
+        contextManagement: {
+          contextWindow: 12345,
+          snipThresholdRatio: 0.8,
+          snipHeadTurns: 2,
+          snipTailTurns: 3,
+          snipMaxTurns: 6,
+        },
+      },
+    }), 'utf8')
+
+    const service = new ConfigService(dir)
+    await service.load({
+      agent: {
+        contextManagement: {
+          snipThresholdRatio: 1,
+        } as never,
+      },
+    })
+
+    const contextManagement = service.get().agent.contextManagement as Record<string, unknown>
+    assert.equal(contextManagement.contextWindow, 12345)
+    assert.equal(contextManagement.snipThresholdRatio, undefined)
+    assert.equal(contextManagement.snipHeadTurns, undefined)
+    assert.equal(contextManagement.snipTailTurns, undefined)
+    assert.equal(contextManagement.snipMaxTurns, undefined)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('ConfigService does not inject built-in Anthropic model when models are configured', async () => {
   const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
   try {

@@ -2,22 +2,20 @@ import {
   countSessionRecordsTokens,
   countSessionRecordTokens,
   getMicroCompactThreshold,
-  getSnipThreshold,
   TIME_BASED_MC_GAP_THRESHOLD_MINUTES,
   TIME_BASED_MC_KEEP_RECENT,
   type ContextManagementConfig,
 } from '../prompts/budget.js'
 import type { CacheEditManager } from './cacheEditManager.js'
 import type { SessionRecord, ToolResultRecord } from './types.js'
-import { compactToolResult, getRecordsAfterLastCompact } from './requestPrep.js'
-
-const RECENT_TOOL_RESULTS_TO_KEEP = 10
+import { getRecordsAfterLastCompact } from './requestPrep.js'
 
 export interface ProgressiveCompactInput {
   records: SessionRecord[]
   contextManagement?: Partial<ContextManagementConfig>
   system?: string
   model?: string
+  modelKey?: string
   lastResponseTokenCount?: number
   lastResponseRecordId?: string
   lastResponseRecordCount?: number
@@ -39,21 +37,15 @@ interface ToolResultCandidate {
   index: number
 }
 
-interface ConversationSegment {
-  records: SessionRecord[]
-  startsWithUser: boolean
-}
-
 export function applyProgressiveCompaction(input: ProgressiveCompactInput): ProgressiveCompactResult {
   let records = input.records
   let tokenCount = estimateCurrentTokens(input)
   let microCompacted = false
-  let snipped = false
   let cacheEditsPending: boolean | undefined = undefined
 
   // Stage 0: Time-based micro-compact. When the gap since the last assistant
   // message exceeds the threshold, the server prompt cache has expired and the
-  // full prefix will be rewritten anyway — clearing old tool results is free.
+  // full prefix will be rewritten anyway; clearing old tool results is free.
   const timeBased = applyTimeBasedMicrocompact(records, input.now)
   if (timeBased.changed) {
     records = timeBased.records
@@ -61,42 +53,28 @@ export function applyProgressiveCompaction(input: ProgressiveCompactInput): Prog
     microCompacted = true
   }
 
-  if (tokenCount >= getMicroCompactThreshold(input.contextManagement, input.model)) {
-    if (input.cacheEditManager) {
-      // Cache-aware path: register tool results for API-level deletion
-      const candidates = getToolResultCandidates(records)
-      for (const candidate of candidates) {
-        input.cacheEditManager.registerToolResult(
-          candidate.index,
-          candidate.record.toolUseId,
-          candidate.record.tool,
-          candidate.tokens,
-        )
-      }
-      input.cacheEditManager.produceCacheEdits()
-      cacheEditsPending = true
-      // Do NOT mutate records — the API will handle deletion
-    } else {
-      // Legacy path: mutate records locally
-      const micro = microCompactToolResults(records, getMicroCompactThreshold(input.contextManagement, input.model), tokenCount)
-      records = micro.records
-      microCompacted = micro.compacted
-      tokenCount = micro.tokenCount
+  if (tokenCount >= getMicroCompactThreshold(input.contextManagement, input.model, input.modelKey) && input.cacheEditManager) {
+    // Cache-aware path: register tool results for API-level deletion.
+    // Do not mutate records locally; providers without cache_edits skip
+    // ratio-based microcompact to preserve prompt-cache prefix stability.
+    const candidates = getToolResultCandidates(records)
+    for (const candidate of candidates) {
+      input.cacheEditManager.registerToolResult(
+        candidate.index,
+        candidate.record.toolUseId,
+        candidate.record.tool,
+        candidate.tokens,
+      )
     }
-  }
-
-  if (tokenCount >= getSnipThreshold(input.contextManagement, input.model)) {
-    const snip = snipConversation(records, input.contextManagement, input.system, tokenCount)
-    records = snip.records
-    snipped = snip.snipped
-    tokenCount = snip.tokenCount
+    cacheEditsPending = Boolean(input.cacheEditManager.produceCacheEdits())
+    // Do not mutate records locally; the API handles deletion.
   }
 
   return {
     records,
     tokenCount,
     microCompacted,
-    snipped,
+    snipped: false,
     cacheEditsPending,
   }
 }
@@ -121,7 +99,7 @@ export function estimateCurrentTokens(input: ProgressiveCompactInput): number {
  * Time-based micro-compact: when the gap since the last assistant message
  * exceeds the configured threshold, content-clear all but the most recent N
  * compactable tool results. The server prompt cache has almost certainly
- * expired, so the full prefix will be rewritten regardless — clearing old
+ * expired, so the full prefix will be rewritten regardless; clearing old
  * tool results before the request shrinks what gets rewritten.
  *
  * Returns { changed: false } when the trigger doesn't fire.
@@ -189,123 +167,6 @@ function applyTimeBasedMicrocompact(
   return { records: updatedRecords, changed }
 }
 
-function microCompactToolResults(
-  records: SessionRecord[],
-  targetTokens: number,
-  baselineTokens: number,
-): { records: SessionRecord[]; tokenCount: number; compacted: boolean } {
-  const candidates = getToolResultCandidates(records)
-  const protectedIds = new Set(
-    candidates
-      .slice(-RECENT_TOOL_RESULTS_TO_KEEP)
-      .map((candidate) => candidate.record.id),
-  )
-  let tokenCount = baselineTokens
-  if (tokenCount < targetTokens) return { records, tokenCount, compacted: false }
-
-  const compacted = new Map<number, ToolResultRecord>()
-  for (const candidate of candidates) {
-    if (protectedIds.has(candidate.record.id)) continue
-    const nextRecord = compactToolResult(candidate.record, candidate.tokens)
-    const nextTokens = countSessionRecordTokens(nextRecord)
-    if (nextTokens >= candidate.tokens) continue
-
-    compacted.set(candidate.index, nextRecord)
-    tokenCount += nextTokens - candidate.tokens
-    if (tokenCount < targetTokens) break
-  }
-
-  if (compacted.size === 0) return { records, tokenCount, compacted: false }
-
-  return {
-    records: records.map((record, index) => compacted.get(index) ?? record),
-    tokenCount,
-    compacted: true,
-  }
-}
-
-function snipConversation(
-  records: SessionRecord[],
-  contextManagement: Partial<ContextManagementConfig> = {},
-  system?: string,
-  inputTokenCount?: number,
-): { records: SessionRecord[]; tokenCount: number; snipped: boolean } {
-  const headTurns = Math.max(0, contextManagement.snipHeadTurns ?? 3)
-  const tailTurns = Math.max(1, contextManagement.snipTailTurns ?? 12)
-  const maxTurns = Math.max(headTurns + tailTurns + 1, contextManagement.snipMaxTurns ?? 32)
-  const segments = splitIntoConversationSegments(records)
-  const turnSegments = segments.filter((segment) => segment.startsWithUser)
-
-  if (turnSegments.length <= maxTurns || turnSegments.length <= headTurns + tailTurns) {
-    return {
-      records,
-      // Use the input token count if available to avoid recalculating,
-      // which could differ from the estimate used to decide whether snipping was needed.
-      tokenCount: inputTokenCount ?? countSessionRecordsTokens(getRecordsAfterLastCompact(records), system),
-      snipped: false,
-    }
-  }
-
-  let userTurnsSeen = 0
-  const kept: SessionRecord[] = []
-  const preservedBoundaries: SessionRecord[] = []
-  let removedRecords = 0
-  let removedTurns = 0
-
-  for (const segment of segments) {
-    if (!segment.startsWithUser) {
-      kept.push(...segment.records)
-      continue
-    }
-
-    const keepHead = userTurnsSeen < headTurns
-    const keepTail = userTurnsSeen >= turnSegments.length - tailTurns
-    if (keepHead || keepTail) {
-      kept.push(...segment.records)
-    } else {
-      // Preserve compact_boundary records from removed turns so that
-      // getRecordsAfterLastCompact can still locate the last boundary.
-      for (const record of segment.records) {
-        if (record.type === 'compact_boundary') {
-          preservedBoundaries.push(record)
-        }
-      }
-      removedRecords += segment.records.length
-      removedTurns += 1
-    }
-    userTurnsSeen += 1
-  }
-
-  if (removedRecords === 0) {
-    return {
-      records,
-      tokenCount: countSessionRecordsTokens(getRecordsAfterLastCompact(records), system),
-      snipped: false,
-    }
-  }
-
-  const insertAt = insertionIndexAfterHeadTurns(kept, headTurns)
-  const snipRecord: SessionRecord = {
-    type: 'message',
-    id: 'meta:snip-middle',
-    role: 'user',
-    content: `[conversation snipped: ${removedTurns} middle turns / ${removedRecords} records omitted from this request]`,
-    createdAt: new Date().toISOString(),
-  }
-  const snippedRecords = [
-    ...kept.slice(0, insertAt),
-    ...preservedBoundaries,
-    snipRecord,
-    ...kept.slice(insertAt),
-  ]
-
-  return {
-    records: snippedRecords,
-    tokenCount: countSessionRecordsTokens(getRecordsAfterLastCompact(snippedRecords), system),
-    snipped: true,
-  }
-}
-
 function getToolResultCandidates(records: SessionRecord[]): ToolResultCandidate[] {
   return records
     .map((record, index): ToolResultCandidate | undefined => {
@@ -352,41 +213,4 @@ function findLastResponseBoundaryIndex(
 
   if (lastResponseRecordCount === undefined) return undefined
   return lastResponseRecordCount - 1
-}
-
-function splitIntoConversationSegments(records: SessionRecord[]): ConversationSegment[] {
-  const segments: ConversationSegment[] = []
-  let current: SessionRecord[] = []
-  let currentStartsWithUser = false
-
-  for (const record of records) {
-    if (record.type === 'message' && record.role === 'user') {
-      if (current.length > 0) {
-        segments.push({ records: current, startsWithUser: currentStartsWithUser })
-      }
-      current = [record]
-      currentStartsWithUser = true
-      continue
-    }
-    current.push(record)
-  }
-
-  if (current.length > 0) {
-    segments.push({ records: current, startsWithUser: currentStartsWithUser })
-  }
-  return segments
-}
-
-function insertionIndexAfterHeadTurns(records: SessionRecord[], headTurns: number): number {
-  if (headTurns <= 0) return 0
-
-  let seen = 0
-  for (let index = 0; index < records.length; index++) {
-    const record = records[index]
-    if (record?.type === 'message' && record.role === 'user') {
-      seen += 1
-      if (seen > headTurns) return index
-    }
-  }
-  return records.length
 }

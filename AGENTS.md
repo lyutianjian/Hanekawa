@@ -122,7 +122,7 @@ Key modules:
 
 - `contextBuilder.ts` — assembles system prompt blocks, skills, environment info, post-compact restore context, and session history into a `ModelRequest`
 - `compact.ts` — token-driven auto-compaction via LLM summary
-- `progressiveCompact.ts` — micro-compaction and snipping for incremental context reduction
+- `progressiveCompact.ts` — time-based and cache-edit-aware micro-compaction; conversation snipping has been removed
 - `requestPrep.ts` — prepares session records, enforces two-layer tool result budget (see below), repairs tool_use/tool_result pairing
 - `toolRunner.ts` — executes tool calls, records results, respects permission gates
 - `permissions.ts` — five permission modes: `default` (prompt for confirm/dangerous), `plan` (read-only + plan file writes), `acceptEdits` (auto-allow Edit/Write/MultiEdit + light shell), `auto` (classifier-based), `bypass` (auto-allow except protected paths and shell safety). Protected paths (`.git`, `.myagent`, `.env`, `.ssh`, `.aws`) and secret files (`.gitconfig`, `.bashrc`, `.env`, `.npmrc`, `id_rsa*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`) always blocked. Supports glob-pattern allow/deny/ask rules. Denial streak escalation: after N consecutive auto-denials, forces user prompt.
@@ -324,7 +324,9 @@ Walks up from cwd looking for `MYAGENT.md`, `CLAUDE.md`, `AGENTS.md`, plus `.mya
 - `contextWindow`: 200,000 tokens (default)
 - `summaryOutputTokens`: 20,000 tokens (budget for compaction summary)
 - Effective window = contextWindow - summaryOutputTokens
+- Ratio-based micro-compaction triggers at 90% of the effective window (`microCompactThresholdRatio = 0.9`) only when `cache_edits` are supported; providers without cache-edit support skip this step to preserve prompt-cache prefix stability.
 - Auto-compact triggers when tokens exceed effective window minus `autoCompactBufferTokens` (13,000)
+- Conversation snipping has been removed; Hanekawa does not remove middle turns by position-only truncation.
 - Token counting: ~3.5 chars/token ASCII, ~1.5 chars/token CJK
 - Context item selection walks in reverse, repairs tool_use/tool_result pairing
 

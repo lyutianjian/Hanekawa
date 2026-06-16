@@ -19,7 +19,8 @@ import type { RecordStream } from './recordStream.js'
 import { MemoryRecordStream } from './recordStream.js'
 import { runLifecycleHooks, type Hooks, type LifecycleHookName } from './hooks.js'
 import { FallbackTriggeredError } from '../config/retry.js'
-import { getEffectiveContextWindowSize, type ContextManagementConfig } from '../prompts/budget.js'
+import { getContextWindowForModel, getEffectiveContextWindowSize, type ContextManagementConfig } from '../prompts/budget.js'
+import { ESCALATED_MAX_TOKENS } from '../prompts/modelCapabilities.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
@@ -30,6 +31,9 @@ import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
 import { buildAtMentionContextRecord } from './atMentions.js'
 import { wrapInSystemReminder } from './systemReminder.js'
+import { CacheEditManager } from './cacheEditManager.js'
+import { getPromptCachingEnabled } from './cacheControl.js'
+import { maybeExtractSessionMemory } from '../services/sessionMemory/service.js'
 
 export interface ActiveModelRuntime {
   provider: ModelProvider
@@ -95,7 +99,6 @@ export interface AgentLoopOptions {
   onStreamEvent?(event: ModelStreamEvent): void
 }
 
-const ESCALATED_MAX_TOKENS = 64_000
 const MAX_RECOVERY_COUNT = 3
 const DEFAULT_FALLBACK_RETRY_DELAY_MS = 5 * 60 * 1000
 
@@ -119,6 +122,7 @@ export class AgentLoop {
   // signatures are model/provider-bound, and prior primary/fallback thinking
   // blocks should not be replayed across either side of a fallback boundary.
   private stripAllThinkingBlocksFromRequests = false
+  private readonly cacheEditManager: CacheEditManager | undefined
 
   constructor(private readonly options: AgentLoopOptions) {
     const primary = {
@@ -133,6 +137,11 @@ export class AgentLoop {
       primary,
       fallback: options.fallbackModel,
     }
+    // Only create cache edit manager for providers that support cache_edits
+    // (native Anthropic API) with prompt caching enabled.
+    this.cacheEditManager = options.provider.supportsCacheEdits && getPromptCachingEnabled(options.model)
+      ? new CacheEditManager({ keepRecent: 10, triggerAfter: 15 })
+      : undefined
     this.options.toolContext.appendMetric = (metric) => this.emitMetric(metric)
     this.options.toolRunner.addRecordListener((record) => {
       this.noteRecordAppended(record)
@@ -279,50 +288,57 @@ export class AgentLoop {
         const preparedRecords = await this.loadPreparedRecords()
         const interruptionContext = await this.consumeTurnInterruptionContext(preparedRecords, userInput)
         const progressive = applyProgressiveCompaction({
-        records: preparedRecords,
-        system: this.options.system,
-        contextManagement: this.options.contextManagement,
-        lastResponseTokenCount,
-        lastResponseRecordCount,
-        lastResponseRecordId,
-      })
-      let recordsBeforeCompact = progressive.records
-      const useCachedTokenEstimate = !progressive.microCompacted && !progressive.snipped
-      const compactResult = await autoCompactIfNeeded({
-        records: recordsBeforeCompact,
-        provider: this.activeModel.provider,
-        model: this.activeModel.model,
-        compactRuntime: this.options.compactModel,
-        tools: this.options.tools,
-        system: this.options.system,
-        contextManagement: this.options.contextManagement,
-        lastResponseTokenCount: useCachedTokenEstimate ? lastResponseTokenCount : undefined,
-        lastResponseRecordCount: useCachedTokenEstimate ? lastResponseRecordCount : undefined,
-        lastResponseRecordId: useCachedTokenEstimate ? lastResponseRecordId : undefined,
-        discoveredToolNames: this.options.toolContext.discoveredToolNames,
-        promptCacheRetention: this.activeModel.promptCacheRetention,
-        turnId,
-        circuitKey: this.options.toolContext.sessionId,
-        getCompactFailureCount: this.options.getCompactFailureCount,
-        setCompactFailureCount: this.options.setCompactFailureCount,
-        appendRecord: (record) => this.appendRecord(record),
-        onBeforeCompact: (event) => this.runCompactHooks('preCompact', event, turnId, signal),
-        onAfterCompact: (event) => this.runCompactHooks('postCompact', event, turnId, signal),
-      })
-      usage = addTokenUsage(usage, compactResult.usage)
-      if (compactResult.compacted) {
-        notifyCompaction(cacheSource)
-        this.options.contextBuilder.clearCachedSections()
-        if (compactResult.metrics) {
-          await this.emitMetric({
-            event: 'compact',
-            model: this.activeModel.model,
-            pre_tokens: compactResult.metrics.preTokens,
-            post_tokens: compactResult.metrics.postTokens,
-            compact_duration_ms: compactResult.metrics.compactDurationMs,
-          })
+          records: preparedRecords,
+          system: this.options.system,
+          model: this.activeModel.model,
+          modelKey: this.activeModel.modelKey,
+          contextManagement: this.options.contextManagement,
+          lastResponseTokenCount,
+          lastResponseRecordCount,
+          lastResponseRecordId,
+          now: new Date(),
+          cacheEditManager: this.cacheEditManager,
+        })
+        let recordsBeforeCompact = progressive.records
+        const useCachedTokenEstimate = !progressive.microCompacted && !progressive.snipped
+        const compactResult = await autoCompactIfNeeded({
+          records: recordsBeforeCompact,
+          provider: this.activeModel.provider,
+          model: this.activeModel.model,
+          modelKey: this.activeModel.modelKey,
+          compactRuntime: this.options.compactModel,
+          tools: this.options.tools,
+          system: this.options.system,
+          contextManagement: this.options.contextManagement,
+          lastResponseTokenCount: useCachedTokenEstimate ? lastResponseTokenCount : undefined,
+          lastResponseRecordCount: useCachedTokenEstimate ? lastResponseRecordCount : undefined,
+          lastResponseRecordId: useCachedTokenEstimate ? lastResponseRecordId : undefined,
+          discoveredToolNames: this.options.toolContext.discoveredToolNames,
+          promptCacheRetention: this.activeModel.promptCacheRetention,
+          turnId,
+          circuitKey: this.options.toolContext.sessionId,
+          sessionId: this.options.toolContext.sessionId,
+          getCompactFailureCount: this.options.getCompactFailureCount,
+          setCompactFailureCount: this.options.setCompactFailureCount,
+          appendRecord: (record) => this.appendRecord(record),
+          onBeforeCompact: (event) => this.runCompactHooks('preCompact', event, turnId, signal),
+          onAfterCompact: (event) => this.runCompactHooks('postCompact', event, turnId, signal),
+        })
+        usage = addTokenUsage(usage, compactResult.usage)
+        if (compactResult.compacted) {
+          notifyCompaction(cacheSource)
+          this.options.contextBuilder.clearCachedSections()
+          this.cacheEditManager?.reset()
+          if (compactResult.metrics) {
+            await this.emitMetric({
+              event: 'compact',
+              model: this.activeModel.model,
+              pre_tokens: compactResult.metrics.preTokens,
+              post_tokens: compactResult.metrics.postTokens,
+              compact_duration_ms: compactResult.metrics.compactDurationMs,
+            })
+          }
         }
-      }
 
       if (this.retryPrimaryIfReady(cacheSource)) {
         resetModelRequestState()
@@ -348,7 +364,11 @@ export class AgentLoop {
         this.activeModel.provider.supportsDynamicToolSearch?.(this.activeModel.model) ?? false
       const toolSearchState = resolveToolSearchState({
         tools: this.options.tools,
-        contextWindowSize: getEffectiveContextWindowSize(this.options.contextManagement),
+        contextWindowSize: getContextWindowForModel(
+          this.options.contextManagement,
+          this.activeModel.model,
+          this.activeModel.modelKey,
+        ),
         providerSupportsDynamicToolSearch,
       })
       const toolsForContext = toolSearchState.enabled
@@ -363,6 +383,8 @@ export class AgentLoop {
         projectContext: this.options.projectContext,
         criticalSystemReminder: this.options.criticalSystemReminder,
         skills: this.options.skills,
+        model: this.activeModel.model,
+        modelKey: this.activeModel.modelKey,
         toolContext: this.options.toolContext,
         env,
         permissionMode: this.options.permissionMode?.(),
@@ -441,6 +463,8 @@ export class AgentLoop {
         onStreamEvent: (event: ModelStreamEvent) => {
           this.options.onStreamEvent?.(event)
         },
+        pendingCacheEdits: this.cacheEditManager?.consumePendingEdits() ?? undefined,
+        pinnedCacheEdits: this.cacheEditManager?.getPinnedEdits() ?? undefined,
       }
 
       let response
@@ -621,6 +645,17 @@ export class AgentLoop {
           createdAt: new Date().toISOString(),
         })
       }
+
+      // Trigger async session memory extraction (fire-and-forget).
+      // Runs after the full turn is complete so extraction captures tool results.
+      maybeExtractSessionMemory({
+        provider: this.activeModel.provider,
+        model: this.activeModel.model,
+        compactRuntime: this.options.compactModel,
+        records: this.recordsCache ?? [],
+        system: this.options.system,
+        sessionId: this.options.toolContext.sessionId,
+      })
       }
 
       if (this.options.maxTurnsExceededBehavior === 'partial') {
@@ -844,6 +879,8 @@ export class AgentLoop {
       new Date(),
       {
         repairToolPairing: !this.recordsCacheHasCleanToolProtocol,
+        model: this.activeModel.model,
+        modelKey: this.activeModel.modelKey,
         ...(this.stripAllThinkingBlocksFromRequests ? { recentAssistantThinkingTurnsToKeep: 0 } : {}),
       },
     )
@@ -1229,6 +1266,7 @@ export class AgentLoop {
     this.stripAllThinkingBlocksFromRequests = true
     resetCacheBreakDetection(cacheSource)
     this.options.contextBuilder.clearCachedSections()
+    this.cacheEditManager?.reset()
   }
 
   private isSameModel(a: ActiveModelRuntime, b: ActiveModelRuntime): boolean {

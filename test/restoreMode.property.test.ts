@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import fc from 'fast-check'
 import {
+  sortCheckpointsChronological,
   sortCheckpointsReverseChronological,
   truncateMessage,
 } from '../src/tui/components/RestoreMode.js'
@@ -38,6 +39,24 @@ describe('Property 3: rewind checkpoint list ordering and formatting', () => {
             const current = new Date(sorted[i]!.timestamp).getTime()
             const next = new Date(sorted[i + 1]!.timestamp).getTime()
             if (current < next) return false
+          }
+          return sorted.length === checkpoints.length
+        },
+      ),
+      { numRuns: 100 },
+    )
+  })
+
+  it('for any checkpoint list, rewind choices are sorted chronologically', () => {
+    fc.assert(
+      fc.property(
+        fc.array(checkpointArb, { minLength: 0, maxLength: 20 }),
+        (checkpoints) => {
+          const sorted = sortCheckpointsChronological(checkpoints)
+          for (let i = 0; i < sorted.length - 1; i++) {
+            const current = new Date(sorted[i]!.timestamp).getTime()
+            const next = new Date(sorted[i + 1]!.timestamp).getTime()
+            if (current > next) return false
           }
           return sorted.length === checkpoints.length
         },

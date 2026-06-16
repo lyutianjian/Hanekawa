@@ -4,10 +4,10 @@ import {
   countMessageTokens,
   countMessagesTokens,
   getAutoCompactThreshold,
+  getContextWindowForModel,
   getEffectiveContextWindowSize,
   getManualCompactThreshold,
   getMicroCompactThreshold,
-  getSnipThreshold,
   selectContextItemsForContext,
   selectMessagesForContext,
 } from '../src/prompts/budget.js'
@@ -31,10 +31,23 @@ test('context management counts tokens', () => {
 
 test('context management thresholds follow Claude Code style defaults', () => {
   assert.equal(getEffectiveContextWindowSize(), 180_000)
-  assert.equal(getMicroCompactThreshold(), 117_000)
-  assert.equal(getSnipThreshold(), 144_000)
-  assert.equal(getAutoCompactThreshold(), 162_000)
+  assert.equal(getMicroCompactThreshold(), 162_000)
+  assert.equal(getAutoCompactThreshold(), 167_000)
   assert.equal(getManualCompactThreshold(), 177_000)
+})
+
+test('context management uses [1m] model-key suffix as agent-side context marker', () => {
+  const contextManagement = { contextWindow: 200_000, summaryOutputTokens: 20_000 }
+
+  assert.equal(getContextWindowForModel(contextManagement, 'mimo-v2.5', 'mimo-v2.5[1m]'), 1_000_000)
+  assert.equal(getEffectiveContextWindowSize(contextManagement, 'mimo-v2.5', 'mimo-v2.5[1m]'), 980_000)
+  assert.equal(getMicroCompactThreshold(contextManagement, 'mimo-v2.5', 'mimo-v2.5[1m]'), 882_000)
+  assert.equal(getAutoCompactThreshold(contextManagement, 'mimo-v2.5', 'mimo-v2.5[1m]'), 911_400)
+  assert.equal(getManualCompactThreshold(contextManagement, 'mimo-v2.5', 'mimo-v2.5[1m]'), 977_000)
+})
+
+test('context management lets [1m] model key override API model capability', () => {
+  assert.equal(getContextWindowForModel({}, 'claude-sonnet-4-6', 'claude-sonnet-4-6[1m]'), 1_000_000)
 })
 
 test('context management selects messages within configured window', () => {
@@ -94,6 +107,30 @@ test('PromptComposer builds request messages', () => {
 
   const noHistory = composer.compose(messages, { contextManagement, includeHistory: false })
   assert.equal(noHistory.messages.length, 0)
+})
+
+test('PromptComposer uses model-key context markers when selecting history', () => {
+  const composer = new PromptComposer()
+  const contextManagement = { contextWindow: 2000, summaryOutputTokens: 0 }
+  const messages: ChatMessage[] = [
+    { id: '1', role: 'user', content: 'A'.repeat(2000), createdAt: new Date().toISOString() },
+    { id: '2', role: 'assistant', content: 'B'.repeat(2000), createdAt: new Date().toISOString() },
+  ]
+
+  const defaultWindow = composer.compose(messages, {
+    contextManagement,
+    model: 'mimo-v2.5',
+    includeHistory: true,
+  })
+  const oneMillionWindow = composer.compose(messages, {
+    contextManagement,
+    model: 'mimo-v2.5',
+    modelKey: 'mimo-v2.5[1m]',
+    includeHistory: true,
+  })
+
+  assert.equal(defaultWindow.messages.length, 1)
+  assert.equal(oneMillionWindow.messages.length, 2)
 })
 
 test('PromptComposer builds request context items', () => {

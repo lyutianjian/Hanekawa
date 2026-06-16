@@ -1,20 +1,19 @@
 import type { ChatMessage, ModelContextItem, SessionRecord } from '../harness/types.js'
+import { getContextWindowFromModelKey, getModelCapability, MODEL_CONTEXT_WINDOW_DEFAULT } from './modelCapabilities.js'
 
 export interface TokenCount {
   total: number
   messages: number[]
 }
 
-export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
+export { MODEL_CONTEXT_WINDOW_DEFAULT } from './modelCapabilities.js'
 export const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
 export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
-export const MICROCOMPACT_THRESHOLD_RATIO = 0.65
-export const SNIP_THRESHOLD_RATIO = 0.8
-export const AUTOCOMPACT_THRESHOLD_RATIO = 0.9
-export const SNIP_HEAD_TURNS = 3
-export const SNIP_TAIL_TURNS = 12
-export const SNIP_MAX_TURNS = 24
+export const MICROCOMPACT_THRESHOLD_RATIO = 0.9
+export const AUTOCOMPACT_THRESHOLD_RATIO = 0.93
+export const TIME_BASED_MC_GAP_THRESHOLD_MINUTES = 60
+export const TIME_BASED_MC_KEEP_RECENT = 5
 
 export interface ContextManagementConfig {
   contextWindow: number
@@ -22,11 +21,7 @@ export interface ContextManagementConfig {
   autoCompactBufferTokens: number
   manualCompactBufferTokens: number
   microCompactThresholdRatio: number
-  snipThresholdRatio: number
   autoCompactThresholdRatio: number
-  snipHeadTurns: number
-  snipTailTurns: number
-  snipMaxTurns: number
 }
 
 export const DEFAULT_CONTEXT_MANAGEMENT: ContextManagementConfig = {
@@ -35,44 +30,77 @@ export const DEFAULT_CONTEXT_MANAGEMENT: ContextManagementConfig = {
   autoCompactBufferTokens: AUTOCOMPACT_BUFFER_TOKENS,
   manualCompactBufferTokens: MANUAL_COMPACT_BUFFER_TOKENS,
   microCompactThresholdRatio: MICROCOMPACT_THRESHOLD_RATIO,
-  snipThresholdRatio: SNIP_THRESHOLD_RATIO,
   autoCompactThresholdRatio: AUTOCOMPACT_THRESHOLD_RATIO,
-  snipHeadTurns: SNIP_HEAD_TURNS,
-  snipTailTurns: SNIP_TAIL_TURNS,
-  snipMaxTurns: SNIP_MAX_TURNS,
 }
 
-export function getEffectiveContextWindowSize(config: Partial<ContextManagementConfig> = {}): number {
+/**
+ * Returns the raw context window size for a model (no output token subtraction).
+ * Used for ToolSearch auto-threshold calculations where the full window matters.
+ * Model-key suffixes are agent-side capability markers and take precedence over
+ * API model IDs. Unknown models fall back to config.
+ */
+export function getContextWindowForModel(
+  config: Partial<ContextManagementConfig> = {},
+  model?: string,
+  modelKey?: string,
+): number {
   const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
-  return Math.max(0, merged.contextWindow - merged.summaryOutputTokens)
+  const keyContextWindow = getContextWindowFromModelKey(modelKey)
+  if (keyContextWindow !== undefined) return keyContextWindow
+  const capability = model ? getModelCapability(model) : undefined
+  return capability?.contextWindow ?? merged.contextWindow
 }
 
-export function getAutoCompactThreshold(config: Partial<ContextManagementConfig> = {}): number {
+/**
+ * Returns the effective context window (raw window minus reserved output tokens).
+ * Used for compact thresholds and context budget calculations.
+ */
+export function getEffectiveContextWindowSize(
+  config: Partial<ContextManagementConfig> = {},
+  model?: string,
+  modelKey?: string,
+): number {
   const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
-  const ratioThreshold = Math.floor(getEffectiveContextWindowSize(merged) * merged.autoCompactThresholdRatio)
-  const bufferThreshold = getEffectiveContextWindowSize(merged) - merged.autoCompactBufferTokens
+  const contextWindow = getContextWindowForModel(config, model, modelKey)
+  return Math.max(0, contextWindow - merged.summaryOutputTokens)
+}
+
+export function getAutoCompactThreshold(
+  config: Partial<ContextManagementConfig> = {},
+  model?: string,
+  modelKey?: string,
+): number {
+  const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
+  const effectiveContextWindow = getEffectiveContextWindowSize(merged, model, modelKey)
+  const ratioThreshold = Math.floor(effectiveContextWindow * merged.autoCompactThresholdRatio)
+  const bufferThreshold = effectiveContextWindow - merged.autoCompactBufferTokens
   return Math.max(0, Math.min(ratioThreshold, bufferThreshold))
 }
 
-export function getMicroCompactThreshold(config: Partial<ContextManagementConfig> = {}): number {
+export function getMicroCompactThreshold(
+  config: Partial<ContextManagementConfig> = {},
+  model?: string,
+  modelKey?: string,
+): number {
   const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
-  return Math.max(0, Math.floor(getEffectiveContextWindowSize(merged) * merged.microCompactThresholdRatio))
+  return Math.max(0, Math.floor(getEffectiveContextWindowSize(merged, model, modelKey) * merged.microCompactThresholdRatio))
 }
 
-export function getSnipThreshold(config: Partial<ContextManagementConfig> = {}): number {
+export function getManualCompactThreshold(
+  config: Partial<ContextManagementConfig> = {},
+  model?: string,
+  modelKey?: string,
+): number {
   const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
-  return Math.max(0, Math.floor(getEffectiveContextWindowSize(merged) * merged.snipThresholdRatio))
-}
-
-export function getManualCompactThreshold(config: Partial<ContextManagementConfig> = {}): number {
-  const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
-  return Math.max(0, getEffectiveContextWindowSize(merged) - merged.manualCompactBufferTokens)
+  return Math.max(0, getEffectiveContextWindowSize(merged, model, modelKey) - merged.manualCompactBufferTokens)
 }
 
 export function countTextTokens(text: string): number {
-  // Conservative fallback for code/JSON/Markdown-heavy context. Real provider
-  // usage is preferred where available; this estimate intentionally compacts
-  // early rather than risking an over-limit request.
+  // Conservative estimate that intentionally compacts early to avoid exceeding
+  // the context window. Claude Code uses content.length / 4 with a 4/3 safety
+  // multiplier (~length / 3). We use per-character-class ratios instead:
+  //   ASCII:  ~3 chars/token  (code, JSON, Markdown — denser than English)
+  //   non-ASCII: ~1.2 chars/token  (CJK characters typically 1-2 chars/token)
   const asciiChars = text.replace(/[^\x00-\x7F]/g, '').length
   const nonAsciiChars = text.length - asciiChars
   return Math.ceil(asciiChars / 3.0 + nonAsciiChars / 1.2)
@@ -93,17 +121,21 @@ export function countMessagesTokens(messages: ChatMessage[]): TokenCount {
 export function getAvailableContextTokens(
   config: Partial<ContextManagementConfig> = {},
   system?: string,
+  model?: string,
+  modelKey?: string,
 ): number {
   const systemTokens = system ? countTextTokens(system) : 0
-  return getEffectiveContextWindowSize(config) - systemTokens - 1000
+  return getEffectiveContextWindowSize(config, model, modelKey) - systemTokens - 1000
 }
 
 export function selectMessagesForContext(
   messages: ChatMessage[],
   config: Partial<ContextManagementConfig> = {},
   system?: string,
+  model?: string,
+  modelKey?: string,
 ): ChatMessage[] {
-  const availableTokens = getAvailableContextTokens(config, system)
+  const availableTokens = getAvailableContextTokens(config, system, model, modelKey)
 
   if (availableTokens <= 0) {
     return []
@@ -128,8 +160,10 @@ export function selectContextItemsForContext(
   items: ModelContextItem[],
   config: Partial<ContextManagementConfig> = {},
   system?: string,
+  model?: string,
+  modelKey?: string,
 ): ModelContextItem[] {
-  const availableTokens = getAvailableContextTokens(config, system)
+  const availableTokens = getAvailableContextTokens(config, system, model, modelKey)
 
   if (availableTokens <= 0) {
     const lastUserItem = [...items].reverse().find(

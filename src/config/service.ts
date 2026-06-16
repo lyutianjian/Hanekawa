@@ -60,12 +60,8 @@ const DEFAULT_CONFIG: Config = {
       summaryOutputTokens: 20_000,
       autoCompactBufferTokens: 13_000,
       manualCompactBufferTokens: 3_000,
-      microCompactThresholdRatio: 0.65,
-      snipThresholdRatio: 0.8,
-      autoCompactThresholdRatio: 0.9,
-      snipHeadTurns: 3,
-      snipTailTurns: 12,
-      snipMaxTurns: 24,
+      microCompactThresholdRatio: 0.9,
+      autoCompactThresholdRatio: 0.93,
     },
   },
 }
@@ -282,6 +278,7 @@ function configFromSettings(settings?: MyAgentSettings): Partial<Config> {
 }
 
 function deepMergeConfig(base: Config, overrides: Partial<Config>): Config {
+  const contextManagement = sanitizeContextManagement(overrides.agent?.contextManagement)
   return {
     endpoints: { ...base.endpoints, ...overrides.endpoints },
     models: { ...base.models, ...overrides.models },
@@ -296,8 +293,22 @@ function deepMergeConfig(base: Config, overrides: Partial<Config>): Config {
       ...overrides.agent,
       contextManagement: {
         ...base.agent.contextManagement,
-        ...overrides.agent?.contextManagement,
+        ...contextManagement,
       },
     },
+  }
+}
+
+function sanitizeContextManagement(
+  config?: Partial<ContextManagementConfig>,
+): Partial<ContextManagementConfig> | undefined {
+  if (!config) return undefined
+  return {
+    ...(config.contextWindow !== undefined ? { contextWindow: config.contextWindow } : {}),
+    ...(config.summaryOutputTokens !== undefined ? { summaryOutputTokens: config.summaryOutputTokens } : {}),
+    ...(config.autoCompactBufferTokens !== undefined ? { autoCompactBufferTokens: config.autoCompactBufferTokens } : {}),
+    ...(config.manualCompactBufferTokens !== undefined ? { manualCompactBufferTokens: config.manualCompactBufferTokens } : {}),
+    ...(config.microCompactThresholdRatio !== undefined ? { microCompactThresholdRatio: config.microCompactThresholdRatio } : {}),
+    ...(config.autoCompactThresholdRatio !== undefined ? { autoCompactThresholdRatio: config.autoCompactThresholdRatio } : {}),
   }
 }

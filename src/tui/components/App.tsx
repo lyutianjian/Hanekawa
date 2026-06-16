@@ -43,6 +43,8 @@ import { useEnterPlanPermission, type EnterPlanPromptProxy } from '../hooks/useE
 import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
 import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../rewindSummary.js'
 import { clampEffort, type EffortValue, type EffortLevel } from '../../config/effort.js'
+import { getContextWindowForModel } from '../../prompts/budget.js'
+import { shouldRenderStatusLine } from '../statusLineVisibility.js'
 
 export type AppMode = 'idle' | 'running' | 'restore' | 'exiting'
 
@@ -843,7 +845,7 @@ export function App({
       )}
 
       {/* Status line (below input, no border) */}
-      {screen === 'prompt' && (
+      {shouldRenderStatusLine(screen, mode) && (
         <StatusLine
           model={runtime.modelConfig.model}
           usage={usage}
@@ -851,7 +853,11 @@ export function App({
           permissionMode={permissionMode}
           hintMessage={hintMessage}
           effortLevel={effortLevel}
-          contextWindow={providerConfig.get().agent.contextManagement?.contextWindow ?? 200_000}
+          contextWindow={getContextWindowForModel(
+            providerConfig.get().agent.contextManagement,
+            runtime.modelConfig.model,
+            runtime.modelKey,
+          )}
         />
       )}
     </Box>

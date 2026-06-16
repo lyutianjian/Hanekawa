@@ -37,7 +37,7 @@ Key modules:
 - **`requestPrep.ts`** — prepares session records, enforces two-layer tool result budget, snips oversized individual tool results (50k token cap), repairs tool_use/tool_result pairing
 - **`planModeManager.ts`** — plan mode orchestration: enter/exit plan mode, plan file management at `<plansDir>/<slug>.md`, auto-allow plan file writes
 - **`hooks.ts`** — lifecycle hooks (`userPromptSubmit`, `preToolUse`, `postToolUse`, `preCompact`, `postCompact`, `subagentStart`, `subagentStop`, `stop`). Hooks run shell commands with glob matchers on tool names, timeout, and output size limits.
-- **`progressiveCompact.ts`** — three-stage progressive compaction: (1) time-based micro-compact (clears old tool results when gap > 60min), (2) ratio-based micro-compact (65% threshold, with optional cache-aware path via `CacheEditManager` that registers tool results for API-level deletion instead of local mutation), (3) conversation snipping (80% threshold, keeps head 3 + tail 12 turns)
+- **`progressiveCompact.ts`** — progressive compaction: (1) time-based micro-compact (clears old tool results when gap > 60min), (2) ratio-based micro-compact only when `CacheEditManager`/`cache_edits` is available (90% threshold, registers tool results for API-level deletion instead of local mutation). Conversation snipping has been removed.
 - **`cacheEditManager.ts`** — manages Anthropic `cache_edits` blocks for prompt cache-aware compaction. Tracks tool results by `tool_use_id`, produces `cache_edits` blocks to delete old cached results, and manages pinned edits for re-sending across requests. Only active for native Anthropic provider with prompt caching enabled.
 - **`systemReminder.ts`** — unified `<system-reminder>` wrapper for dynamic context injection
 
@@ -45,7 +45,7 @@ Key modules:
 
 1. Per-result write-time truncation (`toolRunner.ts:applyToolResultBudget`): each tool defines `maxResultSizeChars`; content exceeding that limit is sliced. Current limits: Bash=100k, Grep=30k, Agent=32k chars.
 2. Global request-time budget (`requestPrep.ts`): total tool_result content capped at `effectiveContextWindow * 0.5` (floored at 200k tokens). Older results summarized when exceeded, keeping the 10 most recent intact.
-3. Per-result hard cap (`compact.ts:snipLargeToolResults`): individual tool results exceeding 50k tokens are truncated with a notice. Applied after budget compaction to catch any remaining oversized results.
+3. Per-result hard cap (`compact.ts:snipLargeToolResults`): individual tool results exceeding 50k tokens are truncated with a notice. This is not conversation snipping; it is applied after budget compaction to catch any remaining oversized results.
 
 ### Output Token Slot Cap
 
@@ -53,9 +53,7 @@ Default max output tokens are capped to `CAPPED_DEFAULT_MAX_TOKENS = 8,000` to r
 
 ### Cache-Aware Microcompact (Native Anthropic Only)
 
-When the microcompact threshold (65%) is reached, the system can either:
-- **Legacy path:** Mutate tool result records locally (breaks prompt cache)
-- **Cache-aware path:** Register tool results with `CacheEditManager`, which produces `cache_edits` blocks for the Anthropic API to delete old cached tool results without breaking the cached prefix
+When the microcompact threshold (90%) is reached, ratio-based microcompact runs only when `CacheEditManager` is available. It registers tool results with `CacheEditManager`, which produces `cache_edits` blocks for the Anthropic API to delete old cached tool results without breaking the cached prefix. Providers without cache-edit support skip ratio-based microcompact instead of mutating historical tool result records locally.
 
 The cache-aware path is active when:
 1. Provider is native Anthropic (`provider.name === 'anthropic'`)
@@ -212,3 +210,15 @@ Dynamic ToolSearch is provider-aware:
 - `MYAGENT_SUBAGENT_MODEL` — override model for all subagent types
 - `HANEKAWA_TOOL_SEARCH` - ToolSearch mode: `true`/`1`/unset=always, `false`/`0`=off, `auto`=auto, `auto:N`=auto with N% threshold
 - `HANEKAWA_TOOL_SEARCH_AUTO_PERCENT` - auto mode threshold percentage (default 10); overridden by `auto:N`
+
+## Current 1M Context Marker
+
+Model keys can include an agent-side `[1m]` suffix, for example
+`"mimo-v2.5[1m]"`, to mark a 1,000,000-token context window. The suffix is read
+from the `models` map key only; the configured API `model` value is sent to the
+provider unchanged and should not include provider-unsupported suffix text.
+
+This marker takes precedence over built-in model capability table entries and
+global `agent.contextManagement.contextWindow` defaults when Hanekawa computes
+history selection, compaction thresholds, ToolSearch auto thresholds, status
+display, and tool-result request budgets.

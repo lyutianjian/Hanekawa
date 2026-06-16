@@ -6,6 +6,7 @@ import {
 import type { SessionRecord, ToolResultRecord, TokenUsage } from './types.js'
 import { stripExcessMediaItems } from './mediaStrip.js'
 import { repairToolResultPairing } from '../sessions/invariants.js'
+import { snipLargeToolResults } from './compact.js'
 
 const TOOL_RESULTS_CONTEXT_RATIO = 0.5
 const TOOL_RESULTS_TOKEN_BUDGET_CAP = 200_000
@@ -29,6 +30,8 @@ export interface PreparedRecordsResult {
 export interface RequestPrepOptions {
   repairToolPairing?: boolean
   recentAssistantThinkingTurnsToKeep?: number
+  model?: string
+  modelKey?: string
 }
 
 export function requestTokenCountFromUsage(usage?: TokenUsage): number | undefined {
@@ -59,15 +62,19 @@ export function prepareRecordsForRequestWithDiagnostics(
     stripped,
     options.recentAssistantThinkingTurnsToKeep,
   )
-  const toolResultLimit = getToolResultTokenLimit(contextManagement)
+  const toolResultLimit = getToolResultTokenLimit(contextManagement, options.model, options.modelKey)
   const compactedToolResultIds = selectToolResultsToCompact(thinkingStripped, toolResultLimit, now)
 
-  const prepared = thinkingStripped.map((record) => {
+  const budgetCompacted = thinkingStripped.map((record) => {
     if (record.type !== 'tool_result') return record
     if (!compactedToolResultIds.has(record.id)) return record
     const tokens = getToolResultTokens(record)
     return compactToolResult(record, tokens)
   })
+
+  // Snip individual oversized tool results (hard cap per result).
+  // Runs after budget compaction so already-summarized results are not re-snipped.
+  const prepared = snipLargeToolResults(budgetCompacted)
 
   if (options.repairToolPairing === false) {
     return { records: prepared, diagnostics: [] }
@@ -121,9 +128,13 @@ interface ToolResultCandidate {
   tokens: number
 }
 
-function getToolResultTokenLimit(contextManagement: Partial<ContextManagementConfig>): number {
+function getToolResultTokenLimit(
+  contextManagement: Partial<ContextManagementConfig>,
+  model?: string,
+  modelKey?: string,
+): number {
   return Math.min(
-    Math.floor(getEffectiveContextWindowSize(contextManagement) * TOOL_RESULTS_CONTEXT_RATIO),
+    Math.floor(getEffectiveContextWindowSize(contextManagement, model, modelKey) * TOOL_RESULTS_CONTEXT_RATIO),
     TOOL_RESULTS_TOKEN_BUDGET_CAP,
   )
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { theme } from '../theme.js'
 import type { CheckpointDiffSummary, CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
@@ -26,17 +26,24 @@ type RestoreScreen = 'select-node' | 'confirm'
 
 export function RestoreMode({ checkpoints, onSelect, onCancel }: RestoreModeProps) {
   const [screen, setScreen] = useState<RestoreScreen>('select-node')
-  const [selectedCheckpointIndex, setSelectedCheckpointIndex] = useState(0)
+  const [selectedCheckpointIndex, setSelectedCheckpointIndex] = useState(() => checkpoints.length)
   const [selectedOptionIndex, setSelectedOptionIndex] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const sorted = useMemo(() => sortCheckpointsReverseChronological(checkpoints), [checkpoints])
-  const selectedCheckpoint = sorted[selectedCheckpointIndex]
+  const sorted = useMemo(() => sortCheckpointsChronological(checkpoints), [checkpoints])
+  const currentSelectionIndex = sorted.length
+  const selectedCheckpoint = selectedCheckpointIndex === currentSelectionIndex
+    ? undefined
+    : sorted[selectedCheckpointIndex]
   const options = useMemo(
     () => buildRestoreOptions(selectedCheckpoint?.restoreDiff.hasChanges === true),
     [selectedCheckpoint?.restoreDiff.hasChanges],
   )
+
+  useEffect(() => {
+    setSelectedCheckpointIndex(sorted.length)
+  }, [sorted.length])
 
   useInput((input, key) => {
     if (isLoading) return
@@ -52,10 +59,14 @@ export function RestoreMode({ checkpoints, onSelect, onCancel }: RestoreModeProp
         return
       }
       if (key.downArrow) {
-        setSelectedCheckpointIndex((index) => Math.min(sorted.length - 1, index + 1))
+        setSelectedCheckpointIndex((index) => Math.min(currentSelectionIndex, index + 1))
         return
       }
       if (key.return) {
+        if (selectedCheckpointIndex === currentSelectionIndex) {
+          onCancel()
+          return
+        }
         if (!selectedCheckpoint) return
         setSelectedOptionIndex(0)
         setError(null)
@@ -198,7 +209,10 @@ function SelectNodeScreen({
         ))}
       </Box>
       <Box marginTop={1}>
-        <Text color={theme.dimText}>[Up/Down] Navigate  [Enter] Select  [Esc] Cancel</Text>
+        <CurrentEntry isSelected={selectedIndex === checkpoints.length} />
+      </Box>
+      <Box marginTop={1}>
+        <Text color={theme.dimText}>Enter to select  Esc to cancel</Text>
       </Box>
     </Box>
   )
@@ -290,9 +304,17 @@ function CheckpointEntry({ checkpoint, isSelected }: { checkpoint: CheckpointWit
       </Text>
       <Box paddingLeft={2}>
         <DiffSummaryText summary={checkpoint.turnDiff} />
-        {checkpoint.isCurrent ? <Text color={theme.dimText}> (current)</Text> : null}
       </Box>
     </Box>
+  )
+}
+
+function CurrentEntry({ isSelected }: { isSelected: boolean }) {
+  const prefix = isSelected ? '> ' : '  '
+  return (
+    <Text color={isSelected ? theme.brand : theme.assistantText} bold={isSelected}>
+      {prefix}(current)
+    </Text>
   )
 }
 
@@ -348,6 +370,12 @@ export function buildRestoreOptions(hasCodeChanges: boolean): readonly RestoreOp
 export function sortCheckpointsReverseChronological(checkpoints: CheckpointWithDiff[]): CheckpointWithDiff[] {
   return [...checkpoints].sort(
     (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+  )
+}
+
+export function sortCheckpointsChronological(checkpoints: CheckpointWithDiff[]): CheckpointWithDiff[] {
+  return [...checkpoints].sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
   )
 }
 

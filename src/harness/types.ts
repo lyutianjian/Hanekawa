@@ -2,6 +2,7 @@ import type { ZodTypeAny } from 'zod/v3'
 import type { CacheBreakResult, CacheBreakSource } from './cacheBreakDetection.js'
 import type { CacheEditsBlock } from './cacheEditManager.js'
 import type { CacheRuntime } from './cacheControl.js'
+import type { APISideContextManagement } from '../config/providers/apiContextManagement.js'
 import type { JsonSchema, ToolValidationResult } from './toolValidation.js'
 import type { PermissionMode } from './permissions.js'
 import type { SessionMetricInput } from './metrics.js'
@@ -324,6 +325,8 @@ export interface ToolContext {
   discoveredToolNames?: Set<string>
   /** Tool names discovered AFTER the last compaction — these still have tool_reference blocks in history. */
   _postCompactDiscoveredNames?: Set<string>
+  /** Last record ID incorporated into session memory (for session memory compaction). */
+  lastSummarizedRecordId?: string
 }
 
 export type ToolErrorCode =
@@ -574,6 +577,10 @@ export interface ModelRequest {
   pendingCacheEdits?: CacheEditsBlock | null
   /** Pinned cache edits from previous requests (re-sending for cache consistency). */
   pinnedCacheEdits?: Array<{ userMessageIndex: number; block: CacheEditsBlock }>
+  /** Server-side context management strategies (native Anthropic only). */
+  contextManagement?: APISideContextManagement
+  /** Whether the request contains thinking blocks (used for context_management). */
+  hasThinking?: boolean
 }
 
 export interface ModelResponse {
@@ -590,5 +597,7 @@ export interface ModelResponse {
 export interface ModelProvider {
   name: string
   supportsDynamicToolSearch?(model: string): boolean
+  /** Whether this provider supports Anthropic cache_edits for prompt cache management. */
+  supportsCacheEdits?: boolean
   createMessage(request: ModelRequest): Promise<ModelResponse>
 }

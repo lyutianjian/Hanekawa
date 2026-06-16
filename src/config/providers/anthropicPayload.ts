@@ -329,6 +329,9 @@ export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: n
       : {}),
     ...(thinking ? { thinking } : {}),
     ...(outputConfig ? { output_config: outputConfig } : {}),
+    ...(nativeAnthropic && request.contextManagement
+      ? { context_management: request.contextManagement }
+      : {}),
   }
 
   return nativeAnthropic ? finalizeAnthropicCacheControl(payload) : payload

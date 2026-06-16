@@ -1,4 +1,5 @@
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
+export const MODEL_CONTEXT_WINDOW_1M = 1_000_000
 export const CAPPED_DEFAULT_MAX_TOKENS = 8_000
 export const ESCALATED_MAX_TOKENS = 64_000
 
@@ -45,6 +46,12 @@ export function getModelCapability(model: string): ModelCapability | undefined {
     }
   }
   return undefined
+}
+
+export function getContextWindowFromModelKey(modelKey: string | undefined): number | undefined {
+  return modelKey?.trim().toLowerCase().endsWith('[1m]')
+    ? MODEL_CONTEXT_WINDOW_1M
+    : undefined
 }
 
 export function isSlotCapDisabled(): boolean {

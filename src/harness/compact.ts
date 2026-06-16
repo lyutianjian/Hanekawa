@@ -10,6 +10,8 @@ import {
 } from '../prompts/budget.js'
 import { getRecordsAfterLastCompact } from './requestPrep.js'
 import { wrapInSystemReminder } from './systemReminder.js'
+import { getCompactPrompt, formatCompactSummary } from '../prompts/compactPrompt.js'
+import { trySessionMemoryCompaction } from '../services/sessionMemory/compact.js'
 
 const COMPACT_FAILURE_LIMIT = 3
 const compactFailuresByKey = new Map<string, number>()
@@ -19,6 +21,7 @@ export interface CompactCheckInput {
   records: SessionRecord[]
   provider: ModelProvider
   model: string
+  modelKey?: string
   compactRuntime?: ActiveModelRuntime
   tools: Tool[]
   system?: string
@@ -29,8 +32,12 @@ export interface CompactCheckInput {
   promptCacheRetention?: 'in_memory' | '24h'
   turnId?: string
   circuitKey?: string
+  /** Session ID for session memory compaction. */
+  sessionId?: string
   /** Tool names discovered via ToolSearch — preserved in compact boundary. */
   discoveredToolNames?: Set<string>
+  /** Custom instructions to append to the compact prompt (from CLI args or hook output). */
+  compactInstructions?: string
   getCompactFailureCount?(): Promise<number>
   setCompactFailureCount?(count: number): Promise<void>
   appendRecord(record: SessionRecord): Promise<void>
@@ -61,6 +68,8 @@ export interface ContinuationSummaryInput {
   compactRuntime?: ActiveModelRuntime
   promptCacheRetention?: 'in_memory' | '24h'
   preTokens?: number
+  /** Custom instructions to append to the compact prompt. */
+  compactInstructions?: string
 }
 
 export interface ContinuationSummaryResult {
@@ -93,7 +102,7 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
 
   const compactableRecords = getRecordsAfterLastCompact(input.records)
   const tokenCount = countCurrentTokens(input, compactableRecords)
-  const threshold = getAutoCompactThreshold(input.contextManagement)
+  const threshold = getAutoCompactThreshold(input.contextManagement, input.model, input.modelKey)
 
   if (tokenCount < threshold) {
     return { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } }
@@ -102,6 +111,47 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
   const recordsToCompact = selectRecordsToCompact(compactableRecords)
   if (recordsToCompact.length === 0) {
     return { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } }
+  }
+
+  // Try session memory compaction first (fast, no LLM call).
+  // Falls through to LLM compaction if session memory is not available.
+  if (input.sessionId) {
+    try {
+      const smResult = await trySessionMemoryCompaction({
+        records: compactableRecords,
+        provider: input.provider,
+        model: input.model,
+        system: input.system,
+        sessionId: input.sessionId,
+        autoCompactThreshold: threshold,
+        discoveredToolNames: input.discoveredToolNames,
+      })
+      if (smResult) {
+        await runBeforeCompactHook(input, smResult.preTokens, compactableRecords.length)
+        await input.appendRecord(smResult.boundary)
+        compactFailuresByKey.delete(circuitKey)
+        await setCompactFailureCount(input, circuitKey, 0)
+        await runAfterCompactHook(input, {
+          trigger: 'auto',
+          preTokens: smResult.preTokens,
+          recordCount: compactableRecords.length,
+          summary: smResult.boundary.summary,
+          postTokens: smResult.postTokens,
+          compactDurationMs: 0,
+        })
+        return {
+          compacted: true,
+          usage: smResult.usage,
+          metrics: {
+            preTokens: smResult.preTokens,
+            postTokens: smResult.postTokens,
+            compactDurationMs: 0, // No LLM call
+          },
+        }
+      }
+    } catch {
+      // Session memory compaction failed — fall through to LLM compaction
+    }
   }
 
   const compactStartedAt = Date.now()
@@ -115,6 +165,7 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
       compactRuntime: input.compactRuntime,
       promptCacheRetention: input.promptCacheRetention,
       preTokens: tokenCount,
+      compactInstructions: input.compactInstructions,
     })
     const postTokens = countTextTokens(summary.content)
     const compactDurationMs = Date.now() - compactStartedAt
@@ -301,9 +352,7 @@ function findLastRecordIndex(records: SessionRecord[], predicate: (record: Sessi
 export async function summarizeRecordsForContinuation(input: ContinuationSummaryInput): Promise<ContinuationSummaryResult> {
   const tokenCount = input.preTokens ?? countSessionRecordsTokens(input.records)
   const content = [
-    'Summarize the conversation context below for continuation after context compaction.',
-    'Preserve user goals, decisions, constraints, file paths, tool results, unresolved tasks, and any facts needed to continue.',
-    'Write a concise but complete summary. Do not answer the user directly.',
+    getCompactPrompt(input.compactInstructions),
     '',
     `<pre_compact_tokens>${tokenCount}</pre_compact_tokens>`,
     '<conversation>',
@@ -338,7 +387,7 @@ export async function summarizeRecordsForContinuation(input: ContinuationSummary
   })
 
   return {
-    content: response.content.trim() || '(No compact summary was produced.)',
+    content: formatCompactSummary(response.content.trim()) || '(No compact summary was produced.)',
     usage: response.usage,
     preTokens: tokenCount,
   }
@@ -387,7 +436,7 @@ export function compactBoundaryToMessage(record: CompactBoundaryRecord): ChatMes
   }
 }
 
-const DEFAULT_SNIP_MAX_TOKENS = 5_000
+const DEFAULT_SNIP_MAX_TOKENS = 10_000
 
 export function snipLargeToolResults(
   records: SessionRecord[],

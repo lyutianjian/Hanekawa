@@ -603,9 +603,31 @@ test('RestoreMode renders checkpoint list with code diff summaries', () => {
   assert.match(frame, /Restore the code and\/or conversation to the point before/)
   assert.match(frame, /newer prompt/)
   assert.match(frame, /3 files changed\s+\+89\s+-1/)
-  assert.match(frame, /\(current\)/)
   assert.match(frame, /older prompt/)
   assert.match(frame, /No code changes/)
+  assert.match(frame, /> \(current\)/)
+  assert.ok(frame.indexOf('older prompt') < frame.indexOf('newer prompt'))
+  assert.ok(frame.indexOf('newer prompt') < frame.indexOf('(current)'))
+})
+
+test('RestoreMode selecting current cancels without rewinding', async () => {
+  const decisions: RestoreDecision[] = []
+  let cancelCount = 0
+  const instance = render(h(RestoreMode, {
+    checkpoints: [rewindCheckpoint()],
+    onSelect: async (_checkpoint, decision) => {
+      decisions.push(decision)
+    },
+    onCancel: () => {
+      cancelCount++
+    },
+  }))
+
+  instance.stdin.write('\r')
+  await waitForInk()
+
+  assert.equal(cancelCount, 1)
+  assert.deepEqual(decisions, [])
 })
 
 test('RestoreMode confirm screen renders four options when code is unchanged', async () => {
@@ -615,6 +637,8 @@ test('RestoreMode confirm screen renders four options when code is unchanged', a
     onCancel: () => {},
   }))
 
+  instance.stdin.write('\x1B[A')
+  await waitForInk()
   instance.stdin.write('\r')
   await waitForInk()
   const frame = instance.lastFrame() ?? ''
@@ -641,6 +665,8 @@ test('RestoreMode confirm screen renders six options when code can be restored',
     onCancel: () => {},
   }))
 
+  instance.stdin.write('\x1B[A')
+  await waitForInk()
   instance.stdin.write('\r')
   await waitForInk()
   const frame = instance.lastFrame() ?? ''
@@ -661,6 +687,8 @@ test('RestoreMode Never mind returns to checkpoint selection', async () => {
     onCancel: () => {},
   }))
 
+  instance.stdin.write('\x1B[A')
+  await waitForInk()
   instance.stdin.write('\r')
   await waitForInk()
   assert.match(instance.lastFrame() ?? '', /Confirm you want to restore/)
@@ -683,6 +711,8 @@ test('RestoreMode numeric shortcut resolves selected restore decision', async ()
     onCancel: () => {},
   }))
 
+  instance.stdin.write('\x1B[A')
+  await waitForInk()
   instance.stdin.write('\r')
   await waitForInk()
   instance.stdin.write('3')
@@ -701,6 +731,8 @@ test('RestoreMode numeric shortcut resolves summary decisions', async () => {
     onCancel: () => {},
   }))
 
+  instance.stdin.write('\x1B[A')
+  await waitForInk()
   instance.stdin.write('\r')
   await waitForInk()
   instance.stdin.write('4')
@@ -720,6 +752,8 @@ test('RestoreMode renders Summarizing while summary action is pending', async ()
     onCancel: () => {},
   }))
 
+  instance.stdin.write('\x1B[A')
+  await waitForInk()
   instance.stdin.write('\r')
   await waitForInk()
   instance.stdin.write('4')

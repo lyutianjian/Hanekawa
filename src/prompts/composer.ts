@@ -9,6 +9,8 @@ export interface ComposerOptions {
   system?: string
   contextManagement?: Partial<ContextManagementConfig>
   includeHistory?: boolean
+  model?: string
+  modelKey?: string
 }
 
 export class PromptComposer {
@@ -16,13 +18,13 @@ export class PromptComposer {
     messages: ChatMessage[],
     options: ComposerOptions,
   ): { system?: string; messages: ChatMessage[] } {
-    const { system, contextManagement, includeHistory = true } = options
+    const { system, contextManagement, includeHistory = true, model, modelKey } = options
 
     if (!includeHistory) {
       return { system, messages: [] }
     }
 
-    const truncatedMessages = selectMessagesForContext(messages, contextManagement, system)
+    const truncatedMessages = selectMessagesForContext(messages, contextManagement, system, model, modelKey)
     return { system, messages: truncatedMessages }
   }
 
@@ -37,13 +39,13 @@ export class PromptComposer {
     items: ModelContextItem[],
     options: ComposerOptions,
   ): { system?: string; contextItems: ModelContextItem[]; messages: ChatMessage[] } {
-    const { system, contextManagement, includeHistory = true } = options
+    const { system, contextManagement, includeHistory = true, model, modelKey } = options
 
     if (!includeHistory) {
       return { system, contextItems: [], messages: [] }
     }
 
-    const contextItems = selectContextItemsForContext(items, contextManagement, system)
+    const contextItems = selectContextItemsForContext(items, contextManagement, system, model, modelKey)
     const messages = contextItems
       .filter((item): item is ModelContextItem & { kind: 'message' } => item.kind === 'message')
       .map((item) => item.message)

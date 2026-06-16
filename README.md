@@ -137,6 +137,12 @@ Anthropic prompt caching is managed by `src/harness/cacheControl.ts` and provide
 
 OpenAI-compatible requests use a stable `prompt_cache_key` based on model, system prompt, and tools.
 
+Default context management reserves 20,000 tokens for compact summaries, starts
+ratio-based micro-compaction at 90% of the effective window only when
+`cache_edits` are available, starts auto-compaction near the effective-window
+limit, and no longer includes middle conversation snipping, so historical turns
+are not removed by position-only truncation.
+
 ### Providers
 
 Provider code is split under `src/config/providers/`:
@@ -206,3 +212,24 @@ text.
 - `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS=1` disables beta-only dynamic ToolSearch payload fields
 
 Dynamic ToolSearch is enabled only for native Anthropic providers that support `tool_reference`, using the `advanced-tool-use-2025-11-20` beta header. OpenAI and Anthropic-compatible proxy endpoints fall back to complete inline tool schemas instead of dynamic loading.
+
+## 1M Context Model Keys
+
+Model names in the `models` map are Hanekawa-side keys. Add a `[1m]` suffix to
+that key when the configured provider model should be treated as having a
+1,000,000-token context window:
+
+```json
+{
+  "models": {
+    "mimo-v2.5[1m]": {
+      "endpoint": "xiaomi",
+      "model": "mimo-v2.5"
+    }
+  }
+}
+```
+
+The suffix is not sent to the API; only the `model` field is used for provider
+requests. Hanekawa uses the key suffix for context budgeting, history selection,
+compaction thresholds, and status display.

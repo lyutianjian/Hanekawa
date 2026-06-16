@@ -12,6 +12,7 @@ import { buildAnthropicPayload, getAnthropicBetaHeaders, getAnthropicCacheScope 
 import { debugProviderPayload, debugProviderResponse, debugProviderSummary } from './debug.js'
 import { normalizeAnthropicUsage } from './usage.js'
 import { isExperimentalToolSearchBetaDisabled, modelSupportsToolReference } from '../../utils/toolSearch.js'
+import { getAPIContextManagement } from './apiContextManagement.js'
 
 const STREAM_IDLE_TIMEOUT_MS =
   parseInt(process.env.MYAGENT_STREAM_IDLE_HARD_TIMEOUT_MS || '', 10) || 10 * 60_000
@@ -30,6 +31,8 @@ function isNativeAnthropicApi(baseUrl?: string): boolean {
 
 export class AnthropicProvider implements ModelProvider {
   name = 'anthropic'
+  /** Native Anthropic API supports cache_edits; proxy endpoints do not. */
+  supportsCacheEdits: boolean
   private client: Anthropic
   private maxOutputTokens: number | undefined
   private nativeAnthropic: boolean
@@ -41,6 +44,7 @@ export class AnthropicProvider implements ModelProvider {
     })
     this.maxOutputTokens = config.maxOutputTokens
     this.nativeAnthropic = isNativeAnthropicApi(config.baseUrl)
+    this.supportsCacheEdits = this.nativeAnthropic
   }
 
   supportsDynamicToolSearch(model: string): boolean {
@@ -55,6 +59,17 @@ export class AnthropicProvider implements ModelProvider {
         const effectiveRequest: ModelRequest = {
           ...request,
         }
+
+        // Compute server-side context management strategies (native Anthropic only).
+        // When enabled, the API automatically clears old tool results / thinking
+        // blocks when input_tokens exceed a threshold — reducing client-side
+        // micro-compact frequency.
+        if (this.nativeAnthropic && !effectiveRequest.contextManagement) {
+          const hasThinking = effectiveRequest.thinking?.type !== 'disabled'
+          const cm = getAPIContextManagement({ hasThinking })
+          if (cm) effectiveRequest.contextManagement = cm
+        }
+
         const payload = buildAnthropicPayload(effectiveRequest, this.maxOutputTokens, this.nativeAnthropic)
         const cacheSource = requireCacheSource(effectiveRequest.cacheSource)
         if (this.nativeAnthropic) {

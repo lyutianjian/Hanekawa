@@ -1,11 +1,24 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { getModelCapability, getModelCapabilityOrDefault, isSlotCapDisabled, CAPPED_DEFAULT_MAX_TOKENS, ESCALATED_MAX_TOKENS } from '../src/prompts/modelCapabilities.js'
+import {
+  getContextWindowFromModelKey,
+  getModelCapability,
+  getModelCapabilityOrDefault,
+  isSlotCapDisabled,
+  CAPPED_DEFAULT_MAX_TOKENS,
+  ESCALATED_MAX_TOKENS,
+} from '../src/prompts/modelCapabilities.js'
 import { getMaxOutputTokens } from '../src/config/providers/anthropicPayload.js'
 
 test('getModelCapability returns undefined for unknown models', () => {
   const cap = getModelCapability('some-unknown-model')
   assert.equal(cap, undefined)
+})
+
+test('getContextWindowFromModelKey detects [1m] model-key suffix', () => {
+  assert.equal(getContextWindowFromModelKey('mimo-v2.5[1m]'), 1_000_000)
+  assert.equal(getContextWindowFromModelKey('mimo-v2.5[1M]'), 1_000_000)
+  assert.equal(getContextWindowFromModelKey('mimo-v2.5'), undefined)
 })
 
 test('getModelCapabilityOrDefault returns raw defaults for unknown models', () => {

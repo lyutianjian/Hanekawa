@@ -783,3 +783,240 @@ function compactTestBudget() {
     autoCompactBufferTokens: 50,
   }
 }
+
+test('formatCompactSummary strips analysis and formats summary section', async () => {
+  const { formatCompactSummary } = await import('../src/prompts/compactPrompt.js')
+  const input = '<analysis>thinking about the conversation...</analysis><summary>1. Primary Request:\nDo X\n\n2. Key Concepts:\n- TypeScript</summary>'
+  const result = formatCompactSummary(input)
+  assert.equal(result, 'Summary:\n1. Primary Request:\nDo X\n\n2. Key Concepts:\n- TypeScript')
+})
+
+test('formatCompactSummary handles missing tags gracefully', async () => {
+  const { formatCompactSummary } = await import('../src/prompts/compactPrompt.js')
+  const input = 'plain text summary without tags'
+  const result = formatCompactSummary(input)
+  assert.equal(result, 'plain text summary without tags')
+})
+
+test('formatCompactSummary handles partial tags', async () => {
+  const { formatCompactSummary } = await import('../src/prompts/compactPrompt.js')
+  const input = '<summary>1. Primary Request:\nDo X</summary>'
+  const result = formatCompactSummary(input)
+  assert.equal(result, 'Summary:\n1. Primary Request:\nDo X')
+})
+
+test('getCompactPrompt returns structured prompt with 9 sections', async () => {
+  const { getCompactPrompt } = await import('../src/prompts/compactPrompt.js')
+  const prompt = getCompactPrompt()
+  assert.match(prompt, /CRITICAL: Respond with TEXT ONLY/)
+  assert.match(prompt, /Primary Request and Intent/)
+  assert.match(prompt, /Key Technical Concepts/)
+  assert.match(prompt, /Files and Code Sections/)
+  assert.match(prompt, /Errors and fixes/)
+  assert.match(prompt, /Problem Solving/)
+  assert.match(prompt, /All user messages/)
+  assert.match(prompt, /Pending Tasks/)
+  assert.match(prompt, /Current Work/)
+  assert.match(prompt, /Optional Next Step/)
+  assert.match(prompt, /REMINDER: Do NOT call any tools/)
+})
+
+test('getCompactPrompt includes custom instructions when provided', async () => {
+  const { getCompactPrompt } = await import('../src/prompts/compactPrompt.js')
+  const prompt = getCompactPrompt('Focus on TypeScript code changes and remember error patterns.')
+  assert.match(prompt, /Additional Instructions:/)
+  assert.match(prompt, /Focus on TypeScript code changes and remember error patterns\./)
+  // Custom instructions should appear before the trailer
+  const trailerIdx = prompt.indexOf('REMINDER: Do NOT call any tools')
+  const instructionsIdx = prompt.indexOf('Additional Instructions:')
+  assert.ok(instructionsIdx < trailerIdx, 'instructions should come before trailer')
+})
+
+test('getCompactPrompt omits instructions block when not provided', async () => {
+  const { getCompactPrompt } = await import('../src/prompts/compactPrompt.js')
+  const prompt = getCompactPrompt()
+  assert.doesNotMatch(prompt, /Additional Instructions:/)
+})
+
+test('getCompactPrompt omits instructions block when empty string', async () => {
+  const { getCompactPrompt } = await import('../src/prompts/compactPrompt.js')
+  const prompt = getCompactPrompt('   ')
+  assert.doesNotMatch(prompt, /Additional Instructions:/)
+})
+
+test('mergeHookInstructions merges user and hook instructions', async () => {
+  const { mergeHookInstructions } = await import('../src/prompts/compactPrompt.js')
+  assert.equal(mergeHookInstructions(undefined, undefined), undefined)
+  assert.equal(mergeHookInstructions('user instructions', undefined), 'user instructions')
+  assert.equal(mergeHookInstructions(undefined, 'hook output'), 'hook output')
+  assert.equal(
+    mergeHookInstructions('user instructions', 'hook output'),
+    'user instructions\n\nhook output',
+  )
+})
+
+test('summarizeRecordsForContinuation passes custom instructions to prompt', async () => {
+  let requestContent = ''
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requestContent = request.messages[0]?.content ?? ''
+      return {
+        content: '<summary>Summary content</summary>',
+        toolCalls: [],
+      }
+    },
+  }
+
+  await summarizeRecordsForContinuation({
+    records: [{
+      type: 'message',
+      id: 'user-1',
+      role: 'user',
+      content: 'Build feature X',
+      createdAt: '2026-06-01T00:00:00.000Z',
+    }],
+    provider,
+    model: 'fake-model',
+    compactInstructions: 'Always include file paths verbatim.',
+  })
+
+  assert.match(requestContent, /Additional Instructions:/)
+  assert.match(requestContent, /Always include file paths verbatim\./)
+})
+
+test('summarizeRecordsForContinuation uses structured prompt and formats output', async () => {
+  let requestContent = ''
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requestContent = request.messages[0]?.content ?? ''
+      return {
+        content: '<analysis>analyzing...</analysis><summary>1. Primary Request:\nBuild feature X</summary>',
+        toolCalls: [],
+      }
+    },
+  }
+
+  const result = await summarizeRecordsForContinuation({
+    records: [{
+      type: 'message',
+      id: 'user-1',
+      role: 'user',
+      content: 'Build feature X',
+      createdAt: '2026-06-01T00:00:00.000Z',
+    }],
+    provider,
+    model: 'fake-model',
+  })
+
+  // Prompt should contain structured instructions
+  assert.match(requestContent, /Primary Request and Intent/)
+  assert.match(requestContent, /CRITICAL: Respond with TEXT ONLY/)
+  // Output should have analysis stripped and summary formatted
+  assert.equal(result.content, 'Summary:\n1. Primary Request:\nBuild feature X')
+  assert.doesNotMatch(result.content, /analyzing/)
+})
+
+test('session memory state is isolated per sessionId', async () => {
+  const { setLastSummarizedRecordId, getLastSummarizedRecordId, resetSessionMemoryState } = await import('../src/services/sessionMemory/service.js')
+
+  try {
+    // Set different values for two sessions
+    setLastSummarizedRecordId('session-a', 'record-a-1')
+    setLastSummarizedRecordId('session-b', 'record-b-1')
+
+    // Each session sees its own value
+    assert.equal(getLastSummarizedRecordId('session-a'), 'record-a-1')
+    assert.equal(getLastSummarizedRecordId('session-b'), 'record-b-1')
+
+    // Updating session A does not affect session B
+    setLastSummarizedRecordId('session-a', 'record-a-2')
+    assert.equal(getLastSummarizedRecordId('session-a'), 'record-a-2')
+    assert.equal(getLastSummarizedRecordId('session-b'), 'record-b-1')
+
+    // Resetting session A does not affect session B
+    resetSessionMemoryState('session-a')
+    assert.equal(getLastSummarizedRecordId('session-a'), undefined)
+    assert.equal(getLastSummarizedRecordId('session-b'), 'record-b-1')
+  } finally {
+    resetSessionMemoryState()
+  }
+})
+
+test('trySessionMemoryCompaction preserves discoveredToolNames in boundary', async () => {
+  const { trySessionMemoryCompaction } = await import('../src/services/sessionMemory/compact.js')
+  const { setSessionMemory, resetSessionMemoryState } = await import('../src/services/sessionMemory/service.js')
+
+  const sessionId = 'test-discovered-tools'
+  try {
+    // Seed session memory so compaction has something to use
+    await setSessionMemory(sessionId, {
+      content: '## Session Memory\n- Working on feature X\n- Key file: src/main.ts',
+      lastSummarizedRecordId: 'record-1',
+      lastExtractedAt: '2026-06-16T00:00:00.000Z',
+      tokenCount: 50,
+    })
+
+    const records: SessionRecord[] = [
+      { type: 'message', id: 'record-1', role: 'user', content: 'Build feature X', createdAt: '2026-06-16T00:00:00.000Z' },
+      { type: 'message', id: 'record-2', role: 'assistant', content: 'Working on it', createdAt: '2026-06-16T00:01:00.000Z' },
+      { type: 'message', id: 'record-3', role: 'user', content: 'Continue', createdAt: '2026-06-16T00:02:00.000Z' },
+    ]
+
+    const discovered = new Set(['mcp__server__toolA', 'mcp__server__toolB'])
+
+    const result = await trySessionMemoryCompaction({
+      records,
+      provider: { name: 'fake', async createMessage() { return { content: '', toolCalls: [] } } },
+      model: 'fake-model',
+      sessionId,
+      autoCompactThreshold: 100_000,
+      discoveredToolNames: discovered,
+      config: { enabled: true },
+    })
+
+    assert.ok(result, 'compaction should succeed')
+    assert.ok(result.boundary.preCompactDiscoveredTools, 'boundary should have preCompactDiscoveredTools')
+    assert.deepEqual(
+      result.boundary.preCompactDiscoveredTools!.sort(),
+      ['mcp__server__toolA', 'mcp__server__toolB'],
+    )
+  } finally {
+    resetSessionMemoryState(sessionId)
+  }
+})
+
+test('trySessionMemoryCompaction omits preCompactDiscoveredTools when empty', async () => {
+  const { trySessionMemoryCompaction } = await import('../src/services/sessionMemory/compact.js')
+  const { setSessionMemory, resetSessionMemoryState } = await import('../src/services/sessionMemory/service.js')
+
+  const sessionId = 'test-no-discovered'
+  try {
+    await setSessionMemory(sessionId, {
+      content: '## Session Memory\n- Working on feature Y\n- File: src/utils.ts\n- Decision: use Bun instead of Node',
+      lastSummarizedRecordId: 'record-1',
+      lastExtractedAt: '2026-06-16T00:00:00.000Z',
+      tokenCount: 30,
+    })
+
+    const records: SessionRecord[] = [
+      { type: 'message', id: 'record-1', role: 'user', content: 'Do Y', createdAt: '2026-06-16T00:00:00.000Z' },
+      { type: 'message', id: 'record-2', role: 'user', content: 'Continue', createdAt: '2026-06-16T00:02:00.000Z' },
+    ]
+
+    const result = await trySessionMemoryCompaction({
+      records,
+      provider: { name: 'fake', async createMessage() { return { content: '', toolCalls: [] } } },
+      model: 'fake-model',
+      sessionId,
+      autoCompactThreshold: 100_000,
+      config: { enabled: true },
+    })
+
+    assert.ok(result, 'compaction should succeed')
+    assert.equal(result.boundary.preCompactDiscoveredTools, undefined, 'should omit preCompactDiscoveredTools when no discovered tools')
+  } finally {
+    resetSessionMemoryState(sessionId)
+  }
+})

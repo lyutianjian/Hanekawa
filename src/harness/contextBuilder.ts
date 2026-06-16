@@ -28,6 +28,8 @@ export interface BuildContextInput {
   criticalSystemReminder?: string
   skills?: SkillDefinition[]
   contextManagement?: Partial<ContextManagementConfig>
+  model?: string
+  modelKey?: string
   includeUserContext?: boolean
   /**
    * Used only in the user-context message, outside Anthropic system prompt cache
@@ -269,6 +271,8 @@ export class ContextBuilder {
     const built = this.composer.composeContextItems(allContextItems, {
       system,
       contextManagement: input.contextManagement ?? this.defaultContextManagement,
+      model: input.model,
+      modelKey: input.modelKey,
       includeHistory: true,
     })
 

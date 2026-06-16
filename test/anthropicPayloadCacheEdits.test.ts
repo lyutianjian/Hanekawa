@@ -57,7 +57,7 @@ test('buildAnthropicMessages adds cache_reference to tool_result blocks in earli
 
   // All tool_results in non-last messages should have cache_reference
   for (let i = 0; i < messages.length - 1; i++) {
-    const content = Array.isArray(messages[i].content) ? messages[i].content : []
+    const content: Array<Record<string, unknown>> = Array.isArray(messages[i].content) ? messages[i].content as Array<Record<string, unknown>> : []
     for (const block of content) {
       if (block.type === 'tool_result') {
         assert.equal(block.cache_reference, block.tool_use_id, `tool_result ${block.tool_use_id} should have cache_reference`)

@@ -3,8 +3,11 @@ import {
   countSessionRecordTokens,
   getMicroCompactThreshold,
   getSnipThreshold,
+  TIME_BASED_MC_GAP_THRESHOLD_MINUTES,
+  TIME_BASED_MC_KEEP_RECENT,
   type ContextManagementConfig,
 } from '../prompts/budget.js'
+import type { CacheEditManager } from './cacheEditManager.js'
 import type { SessionRecord, ToolResultRecord } from './types.js'
 import { compactToolResult, getRecordsAfterLastCompact } from './requestPrep.js'
 
@@ -14,9 +17,12 @@ export interface ProgressiveCompactInput {
   records: SessionRecord[]
   contextManagement?: Partial<ContextManagementConfig>
   system?: string
+  model?: string
   lastResponseTokenCount?: number
   lastResponseRecordId?: string
   lastResponseRecordCount?: number
+  now?: Date
+  cacheEditManager?: CacheEditManager
 }
 
 export interface ProgressiveCompactResult {
@@ -24,6 +30,7 @@ export interface ProgressiveCompactResult {
   tokenCount: number
   microCompacted: boolean
   snipped: boolean
+  cacheEditsPending?: boolean
 }
 
 interface ToolResultCandidate {
@@ -42,15 +49,43 @@ export function applyProgressiveCompaction(input: ProgressiveCompactInput): Prog
   let tokenCount = estimateCurrentTokens(input)
   let microCompacted = false
   let snipped = false
+  let cacheEditsPending: boolean | undefined = undefined
 
-  if (tokenCount >= getMicroCompactThreshold(input.contextManagement)) {
-    const micro = microCompactToolResults(records, getMicroCompactThreshold(input.contextManagement), tokenCount)
-    records = micro.records
-    microCompacted = micro.compacted
-    tokenCount = micro.tokenCount
+  // Stage 0: Time-based micro-compact. When the gap since the last assistant
+  // message exceeds the threshold, the server prompt cache has expired and the
+  // full prefix will be rewritten anyway — clearing old tool results is free.
+  const timeBased = applyTimeBasedMicrocompact(records, input.now)
+  if (timeBased.changed) {
+    records = timeBased.records
+    tokenCount = estimateCurrentTokens({ ...input, records })
+    microCompacted = true
   }
 
-  if (tokenCount >= getSnipThreshold(input.contextManagement)) {
+  if (tokenCount >= getMicroCompactThreshold(input.contextManagement, input.model)) {
+    if (input.cacheEditManager) {
+      // Cache-aware path: register tool results for API-level deletion
+      const candidates = getToolResultCandidates(records)
+      for (const candidate of candidates) {
+        input.cacheEditManager.registerToolResult(
+          candidate.index,
+          candidate.record.toolUseId,
+          candidate.record.tool,
+          candidate.tokens,
+        )
+      }
+      input.cacheEditManager.produceCacheEdits()
+      cacheEditsPending = true
+      // Do NOT mutate records — the API will handle deletion
+    } else {
+      // Legacy path: mutate records locally
+      const micro = microCompactToolResults(records, getMicroCompactThreshold(input.contextManagement, input.model), tokenCount)
+      records = micro.records
+      microCompacted = micro.compacted
+      tokenCount = micro.tokenCount
+    }
+  }
+
+  if (tokenCount >= getSnipThreshold(input.contextManagement, input.model)) {
     const snip = snipConversation(records, input.contextManagement, input.system, tokenCount)
     records = snip.records
     snipped = snip.snipped
@@ -62,6 +97,7 @@ export function applyProgressiveCompaction(input: ProgressiveCompactInput): Prog
     tokenCount,
     microCompacted,
     snipped,
+    cacheEditsPending,
   }
 }
 
@@ -79,6 +115,78 @@ export function estimateCurrentTokens(input: ProgressiveCompactInput): number {
     return countSessionRecordsTokens(getRecordsAfterLastCompact(input.records), input.system)
   }
   return input.lastResponseTokenCount + pendingTokens
+}
+
+/**
+ * Time-based micro-compact: when the gap since the last assistant message
+ * exceeds the configured threshold, content-clear all but the most recent N
+ * compactable tool results. The server prompt cache has almost certainly
+ * expired, so the full prefix will be rewritten regardless — clearing old
+ * tool results before the request shrinks what gets rewritten.
+ *
+ * Returns { changed: false } when the trigger doesn't fire.
+ */
+function applyTimeBasedMicrocompact(
+  records: SessionRecord[],
+  now?: Date,
+): { records: SessionRecord[]; changed: boolean } {
+  // Only fire when the caller explicitly provides a timestamp (loop.ts does).
+  // Without an explicit `now`, tests and internal callers are not affected.
+  if (!now) {
+    return { records, changed: false }
+  }
+  const currentTime = now
+
+  // Find the last assistant message timestamp
+  let lastAssistantTime: string | undefined
+  for (let i = records.length - 1; i >= 0; i--) {
+    const record = records[i]
+    if (record?.type === 'message' && record.role === 'assistant') {
+      lastAssistantTime = record.createdAt
+      break
+    }
+  }
+  if (!lastAssistantTime) {
+    return { records, changed: false }
+  }
+
+  const gapMs = currentTime.getTime() - new Date(lastAssistantTime).getTime()
+  const gapMinutes = gapMs / 60_000
+  if (!Number.isFinite(gapMinutes) || gapMinutes < TIME_BASED_MC_GAP_THRESHOLD_MINUTES) {
+    return { records, changed: false }
+  }
+
+  // Collect tool result IDs in encounter order
+  const toolResultIds: string[] = []
+  for (const record of records) {
+    if (record.type === 'tool_result') {
+      toolResultIds.push(record.id)
+    }
+  }
+
+  // Floor at 1: clearing ALL results leaves the model with zero working context
+  const keepRecent = Math.max(1, TIME_BASED_MC_KEEP_RECENT)
+  const keepSet = new Set(toolResultIds.slice(-keepRecent))
+  const clearIds = new Set(toolResultIds.filter((id) => !keepSet.has(id)))
+
+  if (clearIds.size === 0) {
+    return { records, changed: false }
+  }
+
+  let changed = false
+  const updatedRecords = records.map((record) => {
+    if (
+      record.type === 'tool_result'
+      && clearIds.has(record.id)
+      && record.content !== '[Old tool result content cleared]'
+    ) {
+      changed = true
+      return { ...record, content: '[Old tool result content cleared]' }
+    }
+    return record
+  })
+
+  return { records: updatedRecords, changed }
 }
 
 function microCompactToolResults(

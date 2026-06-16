@@ -37,9 +37,11 @@ function getMaxOutputTokens(configValue?: number, model?: string): number {
   // Requests hitting this cap get one retry at ESCALATED_MAX_TOKENS (64k).
   if (model) {
     const cap = getModelCapabilityOrDefault(model)
-    return cap.defaultMaxOutputTokens
+    if (isSlotCapDisabled()) return cap.defaultMaxOutputTokens
+    return Math.min(cap.defaultMaxOutputTokens, CAPPED_DEFAULT_MAX_TOKENS)
   }
-  return isSlotCapDisabled() ? MAX_OUTPUT_TOKENS_DEFAULT : Math.min(MAX_OUTPUT_TOKENS_DEFAULT, CAPPED_DEFAULT_MAX_TOKENS)
+  if (isSlotCapDisabled()) return MAX_OUTPUT_TOKENS_DEFAULT
+  return Math.min(MAX_OUTPUT_TOKENS_DEFAULT, CAPPED_DEFAULT_MAX_TOKENS)
 }
 
 function anthropicContent(content: string): Array<{ type: 'text'; text: string }> {

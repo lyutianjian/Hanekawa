@@ -52,7 +52,5 @@ export function isSlotCapDisabled(): boolean {
 }
 
 export function getModelCapabilityOrDefault(model: string): ModelCapability {
-  const raw = getModelCapability(model) ?? DEFAULT_CAPABILITY
-  if (isSlotCapDisabled()) return raw
-  return { ...raw, defaultMaxOutputTokens: Math.min(raw.defaultMaxOutputTokens, CAPPED_DEFAULT_MAX_TOKENS) }
+  return getModelCapability(model) ?? DEFAULT_CAPABILITY
 }

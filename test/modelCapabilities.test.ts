@@ -7,10 +7,10 @@ test('getModelCapability returns undefined for unknown models', () => {
   assert.equal(cap, undefined)
 })
 
-test('getModelCapabilityOrDefault returns capped defaults for unknown models', () => {
+test('getModelCapabilityOrDefault returns raw defaults for unknown models', () => {
   const cap = getModelCapabilityOrDefault('some-unknown-model')
   assert.equal(cap.contextWindow, 200_000)
-  assert.equal(cap.defaultMaxOutputTokens, 8_000)
+  assert.equal(cap.defaultMaxOutputTokens, 32_000)
   assert.equal(cap.upperMaxOutputTokens, 64_000)
 })
 

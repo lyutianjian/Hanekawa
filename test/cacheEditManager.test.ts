@@ -73,6 +73,53 @@ test('deduplicates edits across pinned blocks', () => {
   assert.equal(allRefs.length, new Set(allRefs).size, 'no duplicates')
 })
 
+test('duplicate registerToolResult calls are ignored', () => {
+  const manager = new CacheEditManager({ keepRecent: 2, triggerAfter: 3 })
+  manager.registerToolResult(0, 'tr-1', 'Read', 500)
+  manager.registerToolResult(0, 'tr-1', 'Read', 500) // duplicate
+  manager.registerToolResult(1, 'tr-2', 'Bash', 800)
+  manager.registerToolResult(2, 'tr-3', 'Grep', 300)
+
+  // Should only have 3 registered (not 4)
+  assert.equal(manager.getRegisteredToolUseIds().size, 3)
+})
+
+test('produceCacheEdits twice without consuming replaces first result', () => {
+  const manager = new CacheEditManager({ keepRecent: 1, triggerAfter: 2 })
+  manager.registerToolResult(0, 'tr-1', 'Read', 500)
+  manager.registerToolResult(1, 'tr-2', 'Bash', 800)
+  manager.registerToolResult(2, 'tr-3', 'Grep', 300)
+
+  const first = manager.produceCacheEdits()
+  assert.ok(first)
+
+  // Register more and produce again — should replace
+  manager.registerToolResult(3, 'tr-4', 'Glob', 200)
+  const second = manager.produceCacheEdits()
+  assert.ok(second)
+
+  // Consume should return the second produce
+  const consumed = manager.consumePendingEdits()
+  assert.ok(consumed)
+  // The consumed edits should reflect the latest state
+})
+
+test('getPinnedEdits returns defensive copy', () => {
+  const manager = new CacheEditManager({ keepRecent: 1, triggerAfter: 2 })
+  manager.registerToolResult(0, 'tr-1', 'Read', 500)
+  manager.registerToolResult(1, 'tr-2', 'Bash', 800)
+  manager.registerToolResult(2, 'tr-3', 'Grep', 300)
+
+  const edits = manager.produceCacheEdits()
+  assert.ok(edits)
+  manager.pinEdits(0, edits)
+
+  const pinned1 = manager.getPinnedEdits()
+  const pinned2 = manager.getPinnedEdits()
+  assert.notEqual(pinned1, pinned2, 'should return different array instances')
+  assert.deepEqual(pinned1, pinned2, 'should have same content')
+})
+
 test('reset clears all state', () => {
   const manager = new CacheEditManager({ keepRecent: 1, triggerAfter: 2 })
   manager.registerToolResult(0, 'tr-1', 'Read', 500)

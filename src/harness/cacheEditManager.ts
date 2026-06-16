@@ -122,9 +122,9 @@ export class CacheEditManager {
     }
   }
 
-  /** Get all pinned edits. */
+  /** Get all pinned edits. Returns a shallow copy to prevent external mutation. */
   getPinnedEdits(): PinnedCacheEdits[] {
-    return this.pinnedEdits
+    return [...this.pinnedEdits]
   }
 
   /** Get the set of all registered tool_use_ids. */

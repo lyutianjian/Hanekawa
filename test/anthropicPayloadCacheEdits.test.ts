@@ -55,9 +55,24 @@ test('buildAnthropicMessages adds cache_reference to tool_result blocks in earli
   assert.ok(toolResult)
   assert.equal(toolResult.cache_reference, 'tu-1')
 
+  // All tool_results in non-last messages should have cache_reference
+  for (let i = 0; i < messages.length - 1; i++) {
+    const content = Array.isArray(messages[i].content) ? messages[i].content : []
+    for (const block of content) {
+      if (block.type === 'tool_result') {
+        assert.equal(block.cache_reference, block.tool_use_id, `tool_result ${block.tool_use_id} should have cache_reference`)
+      }
+    }
+  }
+
   // Last message should NOT have cache_reference on tool_results (it's where cache_edits goes)
-  // Actually tu-2 is in the second-to-last content block, but the cache_edits is appended to the last user message
-  // Let's check: tu-2's tool_result should have cache_reference since it's not in the last message
+  const lastMsg = messages[messages.length - 1]
+  const lastContent = Array.isArray(lastMsg.content) ? lastMsg.content : []
+  for (const block of lastContent) {
+    if (block.type === 'tool_result') {
+      assert.equal(block.cache_reference, undefined, `tool_result ${block.tool_use_id} in last message should not have cache_reference`)
+    }
+  }
 })
 
 test('buildAnthropicMessages re-inserts pinned edits', () => {

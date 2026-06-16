@@ -1,5 +1,6 @@
 import type { ZodTypeAny } from 'zod/v3'
 import type { CacheBreakResult, CacheBreakSource } from './cacheBreakDetection.js'
+import type { CacheEditsBlock } from './cacheEditManager.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { JsonSchema, ToolValidationResult } from './toolValidation.js'
 import type { PermissionMode } from './permissions.js'
@@ -569,6 +570,10 @@ export interface ModelRequest {
   postCompactDiscoveredNames?: Set<string>
   onTextDelta?: (delta: string) => void
   onStreamEvent?: (event: ModelStreamEvent) => void
+  /** Cache edits to inject into the Anthropic payload (native Anthropic only). */
+  pendingCacheEdits?: CacheEditsBlock | null
+  /** Pinned cache edits from previous requests (re-sending for cache consistency). */
+  pinnedCacheEdits?: Array<{ userMessageIndex: number; block: CacheEditsBlock }>
 }
 
 export interface ModelResponse {

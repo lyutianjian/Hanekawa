@@ -11,6 +11,7 @@ import { PlanModeManager } from '../src/harness/planModeManager.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { createAgentTool } from '../src/tools/agentTool.js'
 import { exitPlanModeTool } from '../src/tools/exitPlanMode.js'
+import { toolSearchTool } from '../src/tools/ToolSearchTool/ToolSearchTool.js'
 import { SessionStore } from '../src/sessions/service.js'
 import { clearAllPlanSlugs } from '../src/utils/plans.js'
 import type { SessionMetricInput } from '../src/harness/metrics.js'
@@ -45,6 +46,27 @@ function recordStreamFor(
     ...(metrics
       ? { appendMetric: async (metric: SessionMetricInput) => { metrics.push(metric) } }
       : {}),
+  }
+}
+
+function testTool(name: string, options: Partial<Tool> = {}): Tool {
+  return {
+    name,
+    description: `${name} description`,
+    inputSchema: z.object({ value: z.string().optional() }).strict(),
+    riskLevel: 'safe',
+    isReadOnly: true,
+    isConcurrencySafe: true,
+    execute: async () => ({ ok: true, content: `${name} result` }),
+    ...options,
+  }
+}
+
+function setEnv(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key as keyof typeof process.env]
+  } else {
+    process.env[key] = value
   }
 }
 
@@ -94,6 +116,117 @@ test('agent loop appends user and assistant messages', async () => {
   assert.equal(metrics[0]?.response_tokens, 30)
   assert.equal(metrics[0]?.cache_read_tokens, 10)
   assert.equal(metrics[0]?.tool_calls, 0)
+})
+
+test('agent loop filters deferred tools only when provider supports dynamic ToolSearch', async () => {
+  const original = process.env.HANEKAWA_TOOL_SEARCH
+  process.env.HANEKAWA_TOOL_SEARCH = 'true'
+  const records: SessionRecord[] = [
+    {
+      id: 'ts-use',
+      type: 'tool_use',
+      tool: 'ToolSearch',
+      input: { query: 'select:DeferredTool' },
+      riskLevel: 'safe',
+      createdAt: new Date().toISOString(),
+    },
+    {
+      id: 'ts-result',
+      type: 'tool_result',
+      toolUseId: 'ts-use',
+      tool: 'ToolSearch',
+      ok: true,
+      content: '{"matches":["DeferredTool"],"query":"select:DeferredTool","totalDeferredTools":1}',
+      apiResultBlock: {
+        type: 'tool_result',
+        tool_use_id: 'ts-use',
+        content: [{ type: 'tool_reference', tool_name: 'DeferredTool' }],
+      },
+      createdAt: new Date().toISOString(),
+    },
+  ]
+  const active = testTool('ActiveTool')
+  const deferred = testTool('DeferredTool', { shouldDefer: true })
+  const alwaysLoad = testTool('AlwaysLoadTool', { shouldDefer: true, alwaysLoad: true })
+  const tools = [active, deferred, alwaysLoad, toolSearchTool]
+  let seenRequest: ModelRequest | undefined
+  const provider: ModelProvider = {
+    name: 'anthropic',
+    supportsDynamicToolSearch: () => true,
+    async createMessage(request) {
+      seenRequest = request
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  try {
+    const loop = new AgentLoop({
+      provider,
+      model: 'claude-sonnet-4',
+      tools,
+      contextBuilder: new ContextBuilder(),
+      toolRunner: new ToolRunner(tools, new PermissionGate(async () => true), {
+        onRecord: async (record) => { records.push(record) },
+      }),
+      toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+      recordStream: recordStreamFor(records),
+    })
+
+    await loop.run('next')
+
+    assert.deepEqual(seenRequest?.tools?.map((tool) => tool.name).sort(), [
+      'ActiveTool',
+      'AlwaysLoadTool',
+      'DeferredTool',
+      'ToolSearch',
+    ])
+    assert.equal(seenRequest?.hasDeferredTools, true)
+    assert.deepEqual([...(seenRequest?.allDeferredToolNames ?? new Set())], ['DeferredTool'])
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', original)
+  }
+})
+
+test('agent loop fully inlines tools and removes ToolSearch when provider lacks dynamic support', async () => {
+  const original = process.env.HANEKAWA_TOOL_SEARCH
+  process.env.HANEKAWA_TOOL_SEARCH = 'true'
+  const records: SessionRecord[] = []
+  const active = testTool('ActiveTool')
+  const deferred = testTool('DeferredTool', { shouldDefer: true })
+  const tools = [active, deferred, toolSearchTool]
+  let seenRequest: ModelRequest | undefined
+  const provider: ModelProvider = {
+    name: 'openai',
+    supportsDynamicToolSearch: () => false,
+    async createMessage(request) {
+      seenRequest = request
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  try {
+    const loop = new AgentLoop({
+      provider,
+      model: 'gpt-test',
+      tools,
+      contextBuilder: new ContextBuilder(),
+      toolRunner: new ToolRunner(tools, new PermissionGate(async () => true), {
+        onRecord: async (record) => { records.push(record) },
+      }),
+      toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+      recordStream: recordStreamFor(records),
+    })
+
+    await loop.run('next')
+
+    assert.deepEqual(seenRequest?.tools?.map((tool) => tool.name).sort(), [
+      'ActiveTool',
+      'DeferredTool',
+    ])
+    assert.equal(seenRequest?.hasDeferredTools, false)
+    assert.equal(seenRequest?.allDeferredToolNames, undefined)
+    assert.match(seenRequest?.system ?? '', /DeferredTool/)
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', original)
+  }
 })
 
 test('plan mode routes assistant text-only plan through exit approval instead of chat', async () => {

@@ -197,13 +197,16 @@ export const toolSearchTool: Tool = {
   maxResultSizeChars: 100_000,
 
   /**
-   * Returns tool_result with tool_reference blocks for Anthropic.
-   * Mirrors ClaudeCode's mapToolResultToToolResultBlockParam exactly.
+   * Returns tool_result with provider-appropriate content.
+   *
+   * For Anthropic: returns tool_reference blocks that the API expands server-side.
+   * For OpenAI: returns schemas as formatted <functions> text (no tool_reference).
    *
    * The `result` parameter is the ToolResult from execute(), where content
    * is JSON.stringify(ToolSearchOutput). We parse it to extract matches.
+   * The optional `context` provides _allTools for schema lookup (OpenAI path).
    */
-  mapToolResultToToolResultBlockParam(result: unknown, toolUseID: string): ToolResultBlockParam {
+  mapToolResultToToolResultBlockParam(result: unknown, toolUseID: string, context?: ToolContext): ToolResultBlockParam {
     // result is ToolResult {ok, content: string} — parse the JSON content
     const toolResult = result as { ok: boolean; content: string }
     let matches: string[] = []
@@ -213,7 +216,7 @@ export const toolSearchTool: Tool = {
         matches = parsed.matches
       }
     } catch {
-      // Not JSON — shouldn't happen for Anthropic path
+      // Not JSON — shouldn't happen
     }
 
     if (matches.length === 0) {
@@ -223,15 +226,28 @@ export const toolSearchTool: Tool = {
         content: 'No matching deferred tools found',
       }
     }
-    // Return tool_reference blocks — the Anthropic API expands these
-    // into full tool definitions in the model's context.
+
+    const isAnthropic = !context?.providerName || context.providerName === 'anthropic'
+    if (isAnthropic) {
+      // Return tool_reference blocks — the Anthropic API expands these
+      // into full tool definitions in the model's context.
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUseID,
+        content: matches.map(name => ({
+          type: 'tool_reference' as const,
+          tool_name: name,
+        })),
+      }
+    }
+
+    // OpenAI: return schemas as formatted text (no tool_reference equivalent)
+    const allTools = context?._allTools ?? []
+    const schemasText = buildSchemasText(matches, allTools)
     return {
       type: 'tool_result',
       tool_use_id: toolUseID,
-      content: matches.map(name => ({
-        type: 'tool_reference' as const,
-        tool_name: name,
-      })),
+      content: schemasText,
     }
   },
 
@@ -266,38 +282,17 @@ export const toolSearchTool: Tool = {
         }
       }
 
-      if (found.length === 0) {
-        // Return structured output — mapToolResultToToolResultBlockParam handles serialization
-        const output: ToolSearchOutput = { matches: [], query, totalDeferredTools: deferredTools.length }
-        return { content: JSON.stringify(output), ok: true }
-      }
-
-      // Return structured output — mapToolResultToToolResultBlockParam will convert
-      // matches to tool_reference blocks for Anthropic, or we handle OpenAI inline
-      const isAnthropic = context.providerName === 'anthropic' || !context.providerName
-      if (isAnthropic) {
-        const output: ToolSearchOutput = { matches: found, query, totalDeferredTools: deferredTools.length }
-        return { content: JSON.stringify(output), ok: true }
-      } else {
-        // OpenAI: return schemas as formatted text (no tool_reference equivalent)
-        return { content: buildSchemasText(found, tools), ok: true }
-      }
+      // Always return JSON so trackDiscoveredTools can parse matches for both providers.
+      // mapToolResultToToolResultBlockParam handles Anthropic tool_reference;
+      // OpenAI gets schemas as text via buildSchemasText in the tool_result content.
+      const output: ToolSearchOutput = { matches: found, query, totalDeferredTools: deferredTools.length }
+      return { content: JSON.stringify(output), ok: true }
     }
 
     // Keyword search
     const matches = searchToolsWithKeywords(query, deferredTools, tools, max_results)
 
-    if (matches.length === 0) {
-      const output: ToolSearchOutput = { matches: [], query, totalDeferredTools: deferredTools.length }
-      return { content: JSON.stringify(output), ok: true }
-    }
-
-    const isAnthropic = context.providerName === 'anthropic' || !context.providerName
-    if (isAnthropic) {
-      const output: ToolSearchOutput = { matches, query, totalDeferredTools: deferredTools.length }
-      return { content: JSON.stringify(output), ok: true }
-    } else {
-      return { content: buildSchemasText(matches, tools), ok: true }
-    }
+    const output: ToolSearchOutput = { matches, query, totalDeferredTools: deferredTools.length }
+    return { content: JSON.stringify(output), ok: true }
   },
 }

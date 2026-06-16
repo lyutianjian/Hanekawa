@@ -12,7 +12,7 @@ import { captureReadFileStateFromStat, readFileAndRemember } from '../tools/file
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import { evictOldestIfNeeded } from '../utils/cache.js'
 import { wrapInSystemReminder } from './systemReminder.js'
-import { isToolSearchEnabled, isDeferredTool } from '../utils/toolSearch.js'
+import { isDeferredTool } from '../utils/toolSearch.js'
 
 const require = createRequire(import.meta.url)
 const picomatch = require('picomatch') as {
@@ -40,6 +40,7 @@ export interface BuildContextInput {
   transientUserContext?: string[]
   includePostCompactRestore?: boolean
   enabledSections?: SectionKey[]
+  dynamicToolSearchEnabled?: boolean
 }
 
 export interface EnvironmentInfo {
@@ -248,6 +249,7 @@ export class ContextBuilder {
       input.skills ?? [],
       input.env,
       input.permissionMode,
+      input.dynamicToolSearchEnabled ?? false,
     )
     const system = systemBlocks
       .filter((b) => b !== SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
@@ -385,10 +387,10 @@ export class ContextBuilder {
     skills: readonly SkillDefinition[] = [],
     env?: EnvironmentInfo,
     permissionMode?: PermissionMode,
+    dynamicToolSearchEnabled = false,
   ): string[] {
     // Split tools into active (full schema in prompt) and deferred (name only)
-    const toolSearchActive = isToolSearchEnabled()
-    const activeTools = toolSearchActive ? tools.filter(t => !isDeferredTool(t)) : tools
+    const activeTools = dynamicToolSearchEnabled ? tools.filter(t => !isDeferredTool(t)) : tools
 
     const staticSections = [
       ...this.buildDefaultSystemSections(enabledSections ?? this.defaultEnabledSections),

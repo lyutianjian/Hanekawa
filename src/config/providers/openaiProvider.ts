@@ -24,6 +24,10 @@ export class OpenAIProvider implements ModelProvider {
     })
   }
 
+  supportsDynamicToolSearch(): boolean {
+    return false
+  }
+
   async createMessage(request: ModelRequest): Promise<ModelResponse> {
     return withRetry(
       async (attempt) => {

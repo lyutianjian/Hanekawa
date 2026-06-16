@@ -148,7 +148,7 @@ export class ToolRunner {
         // Map tool result to API format (e.g. tool_reference blocks for ToolSearch)
         if (tool.mapToolResultToToolResultBlockParam) {
           try {
-            record.apiResultBlock = tool.mapToolResultToToolResultBlockParam(result, call.id)
+            record.apiResultBlock = tool.mapToolResultToToolResultBlockParam(result, call.id, executionContext)
           } catch {
             // Mapping is best-effort; fall back to plain-text content
           }

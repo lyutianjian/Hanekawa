@@ -11,6 +11,7 @@ import { withRetry } from '../retry.js'
 import { buildAnthropicPayload, getAnthropicBetaHeaders, getAnthropicCacheScope } from './anthropicPayload.js'
 import { debugProviderPayload, debugProviderResponse, debugProviderSummary } from './debug.js'
 import { normalizeAnthropicUsage } from './usage.js'
+import { isExperimentalToolSearchBetaDisabled, modelSupportsToolReference } from '../../utils/toolSearch.js'
 
 const STREAM_IDLE_TIMEOUT_MS =
   parseInt(process.env.MYAGENT_STREAM_IDLE_HARD_TIMEOUT_MS || '', 10) || 10 * 60_000
@@ -42,6 +43,12 @@ export class AnthropicProvider implements ModelProvider {
     this.nativeAnthropic = isNativeAnthropicApi(config.baseUrl)
   }
 
+  supportsDynamicToolSearch(model: string): boolean {
+    return this.nativeAnthropic
+      && !isExperimentalToolSearchBetaDisabled()
+      && modelSupportsToolReference(model)
+  }
+
   async createMessage(request: ModelRequest): Promise<ModelResponse> {
     return withRetry(
       async (attempt) => {
@@ -65,8 +72,17 @@ export class AnthropicProvider implements ModelProvider {
         debugProviderSummary('anthropic', request, payload)
         debugProviderPayload('anthropic', payload)
 
+        // Pass beta headers (for example, advanced tool use) to the API so
+        // tool_reference blocks are expanded server-side.
+        const betas = this.nativeAnthropic
+          ? getAnthropicBetaHeaders(effectiveRequest, this.nativeAnthropic)
+          : []
+
         const stream = this.client.messages.stream(
           payload as unknown as Anthropic.Messages.MessageStreamParams,
+          betas.length > 0
+            ? { headers: { 'anthropic-beta': betas.join(',') } as Record<string, string> }
+            : undefined,
         )
         const response = await streamWithTimeout(
           stream,

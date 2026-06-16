@@ -154,6 +154,31 @@ The current branch uses a customized Ink build. `patches/ink+7.0.6.patch` contai
 - Tests: unit tests, property-based tests (`*.property.test.ts` with fast-check), integration tests (`*.integration.test.ts`)
 - Prefer small, behavior-preserving changes unless asked for a broader refactor
 
+## Current ToolSearch Prompt State
+
+ToolSearch prompt copy in `src/tools/ToolSearchTool/prompt.ts` uses plain ASCII
+punctuation so deferred-tool instructions do not expose mojibake artifacts to
+the model. `test/tools.test.ts` includes a regression check for this prompt
+text.
+
+### ToolSearch auto:N Threshold
+
+`HANEKAWA_TOOL_SEARCH=auto:N` sets both the mode and threshold:
+- `auto:0` -> always mode (0% threshold, always defer)
+- `auto:100` -> off mode (100% threshold, never defer)
+- `auto:N` (1-99) -> auto mode with N% as the threshold
+
+Priority: `auto:N` over `HANEKAWA_TOOL_SEARCH_AUTO_PERCENT` env var over default 10%.
+
+### ToolSearch Provider Support
+
+Dynamic ToolSearch is provider-aware:
+- Native Anthropic: deferred tools use `tool_reference` blocks with the `advanced-tool-use-2025-11-20` beta header.
+- OpenAI and Anthropic-compatible proxy endpoints: dynamic ToolSearch is disabled and all business tool schemas are sent inline.
+- `auto` mode enables dynamic loading only when deferred tool definitions, including input schemas, exceed the configured threshold.
+- `alwaysLoad` tools are never announced as deferred.
+- `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS=1` disables beta-only dynamic ToolSearch payload fields.
+
 ## Environment Variables
 
 - `MYAGENT_DEBUG_PROVIDER=1` — log provider request/response payloads
@@ -164,3 +189,5 @@ The current branch uses a customized Ink build. `patches/ink+7.0.6.patch` contai
 - `MYAGENT_BASH_PATH` — override bash executable path (Windows)
 - `MYAGENT_SUBAGENT_MODEL_<TYPE>` — override model for a specific subagent type
 - `MYAGENT_SUBAGENT_MODEL` — override model for all subagent types
+- `HANEKAWA_TOOL_SEARCH` - ToolSearch mode: `true`/`1`/unset=always, `false`/`0`=off, `auto`=auto, `auto:N`=auto with N% threshold
+- `HANEKAWA_TOOL_SEARCH_AUTO_PERCENT` - auto mode threshold percentage (default 10); overridden by `auto:N`

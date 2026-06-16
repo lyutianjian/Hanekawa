@@ -190,3 +190,19 @@ Sessions are stored in `.myagent/sessions/` as metadata plus JSONL records. Reco
 - `MYAGENT_DISABLE_PROMPT_CACHING=1`: disable prompt caching
 - `MYAGENT_MAX_OUTPUT_TOKENS=N`: override max output tokens
 - `MYAGENT_STREAM_IDLE_TIMEOUT_MS=N`: override Anthropic stream idle timeout
+
+## Current ToolSearch Prompt State
+
+ToolSearch prompt copy in `src/tools/ToolSearchTool/prompt.ts` uses plain ASCII
+punctuation so deferred-tool instructions do not expose mojibake artifacts to
+the model. `test/tools.test.ts` includes a regression check for this prompt
+text.
+
+### ToolSearch Configuration
+
+- `HANEKAWA_TOOL_SEARCH` - mode: `true`/`1`/unset=always, `false`/`0`=off, `auto`=auto, `auto:N`=auto with N% threshold
+- `HANEKAWA_TOOL_SEARCH_AUTO_PERCENT` - auto mode threshold percentage (default 10)
+- `auto:N` takes priority over `HANEKAWA_TOOL_SEARCH_AUTO_PERCENT`
+- `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS=1` disables beta-only dynamic ToolSearch payload fields
+
+Dynamic ToolSearch is enabled only for native Anthropic providers that support `tool_reference`, using the `advanced-tool-use-2025-11-20` beta header. OpenAI and Anthropic-compatible proxy endpoints fall back to complete inline tool schemas instead of dynamic loading.

@@ -5,6 +5,7 @@ export {
   buildAnthropicMessages,
   buildAnthropicPayload,
   buildAnthropicTools,
+  getAnthropicBetaHeaders,
   enforceAnthropicCacheControlLimit,
 } from './anthropicPayload.js'
 export {

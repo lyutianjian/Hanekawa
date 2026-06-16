@@ -477,8 +477,10 @@ export interface Tool {
    * Most tools return a string content; ToolSearch overrides this to emit
    * tool_reference content blocks for Anthropic's dynamic tool loading.
    * When not defined, the default behavior wraps result.content as plain text.
+   * The optional `context` parameter provides providerName and _allTools
+   * for provider-aware formatting (e.g. OpenAI schemas as text).
    */
-  mapToolResultToToolResultBlockParam?(result: unknown, toolUseID: string): ToolResultBlockParam
+  mapToolResultToToolResultBlockParam?(result: unknown, toolUseID: string, context?: ToolContext): ToolResultBlockParam
   execute(input: unknown, context: ToolContext): Promise<ToolResult>
 }
 
@@ -582,5 +584,6 @@ export interface ModelResponse {
 
 export interface ModelProvider {
   name: string
+  supportsDynamicToolSearch?(model: string): boolean
   createMessage(request: ModelRequest): Promise<ModelResponse>
 }

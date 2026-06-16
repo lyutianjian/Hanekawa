@@ -49,9 +49,13 @@ export function buildOpenAIMessages(request: ModelRequest): OpenAI.Chat.ChatComp
       continue
     }
 
+    // Use apiResultBlock content when available (e.g. ToolSearch schemas text for OpenAI)
+    const toolContent = item.apiResultBlock
+      ? (typeof item.apiResultBlock.content === 'string' ? item.apiResultBlock.content : item.content)
+      : item.content
     messages.push({
       role: 'tool',
-      content: item.content,
+      content: toolContent,
       tool_call_id: item.toolUseId,
     })
   }

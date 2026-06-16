@@ -17,6 +17,7 @@ import {
   buildAnthropicMessages,
   buildAnthropicPayload,
   buildAnthropicTools,
+  getAnthropicBetaHeaders,
   collectCacheControlTelemetry,
   enforceAnthropicCacheControlLimit,
   assertAnthropicCacheControlLimit,
@@ -41,6 +42,14 @@ function countCacheControlMarkers(value: unknown): number {
   const record = value as Record<string, unknown>
   return (Object.hasOwn(record, 'cache_control') ? 1 : 0)
     + Object.values(record).reduce<number>((sum, item) => sum + countCacheControlMarkers(item), 0)
+}
+
+function setEnv(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key as keyof typeof process.env]
+  } else {
+    process.env[key] = value
+  }
 }
 
 test('ConfigService loads defaults and saves config', async () => {
@@ -581,6 +590,26 @@ test('createProvider selects adapter from provider field', () => {
   assert.ok(openai instanceof OpenAIProvider)
 })
 
+test('providers report dynamic ToolSearch support conservatively', () => {
+  const original = process.env.HANEKAWA_DISABLE_EXPERIMENTAL_BETAS
+  try {
+    delete process.env.HANEKAWA_DISABLE_EXPERIMENTAL_BETAS
+    const nativeAnthropic = new AnthropicProvider({ provider: 'anthropic', model: 'claude-sonnet-4', apiKey: 'test-key' })
+    const proxiedAnthropic = new AnthropicProvider({ provider: 'anthropic', model: 'claude-sonnet-4', apiKey: 'test-key', baseUrl: 'https://example.test' })
+    const openai = new OpenAIProvider({ provider: 'openai', model: 'gpt-test', apiKey: 'test-key' })
+
+    assert.equal(nativeAnthropic.supportsDynamicToolSearch?.('claude-sonnet-4'), true)
+    assert.equal(nativeAnthropic.supportsDynamicToolSearch?.('claude-3-haiku'), false)
+    assert.equal(proxiedAnthropic.supportsDynamicToolSearch?.('claude-sonnet-4'), false)
+    assert.equal(openai.supportsDynamicToolSearch?.(), false)
+
+    process.env.HANEKAWA_DISABLE_EXPERIMENTAL_BETAS = '1'
+    assert.equal(nativeAnthropic.supportsDynamicToolSearch?.('claude-sonnet-4'), false)
+  } finally {
+    setEnv('HANEKAWA_DISABLE_EXPERIMENTAL_BETAS', original)
+  }
+})
+
 test('buildAnthropicMessages includes tool use and tool results', () => {
   const request: ModelRequest = {
     cacheSource: 'agent:test',
@@ -757,6 +786,36 @@ test('buildAnthropicPayload caches only the final tool schema for native Anthrop
 
   assert.equal(payload.tools[0]?.cache_control, undefined)
   assert.deepEqual(payload.tools[1]?.cache_control, { type: 'ephemeral' })
+})
+
+test('buildAnthropicPayload applies dynamic ToolSearch fields only for native Anthropic', () => {
+  const request: ModelRequest = {
+    cacheSource: 'agent:test',
+    model: 'claude-sonnet-4',
+    messages: [{
+      id: 'u1',
+      role: 'user',
+      content: 'hello',
+      createdAt: new Date().toISOString(),
+    }],
+    tools: [
+      { name: 'ToolSearch', description: 'search', inputSchema: z.object({ query: z.string() }).strict(), riskLevel: 'safe', execute: async () => ({ ok: true, content: '' }) },
+      { name: 'DeferredTool', description: 'deferred', inputSchema: z.object({}).strict(), riskLevel: 'safe', execute: async () => ({ ok: true, content: '' }) },
+    ],
+    hasDeferredTools: true,
+    allDeferredToolNames: new Set(['DeferredTool']),
+    postCompactDiscoveredNames: new Set(['DeferredTool']),
+  }
+
+  const nativePayload = buildAnthropicPayload(request, undefined, true) as unknown as { messages: Array<Record<string, unknown>>; tools: Array<Record<string, unknown>> }
+  assert.equal(JSON.stringify(nativePayload.messages).includes('<available-deferred-tools>'), true)
+  assert.equal(nativePayload.tools.find((tool) => tool.name === 'DeferredTool')?.defer_loading, true)
+  assert.deepEqual(getAnthropicBetaHeaders(request, true), ['advanced-tool-use-2025-11-20'])
+
+  const thirdPartyPayload = buildAnthropicPayload(request, undefined, false) as unknown as { messages: Array<Record<string, unknown>>; tools: Array<Record<string, unknown>> }
+  assert.equal(JSON.stringify(thirdPartyPayload.messages).includes('<available-deferred-tools>'), false)
+  assert.equal(thirdPartyPayload.tools.some((tool) => 'defer_loading' in tool), false)
+  assert.deepEqual(getAnthropicBetaHeaders(request, false), [])
 })
 
 test('enforceAnthropicCacheControlLimit removes tool schema markers first', () => {
@@ -963,6 +1022,32 @@ test('buildOpenAIPayload omits tools for plain-text requests', () => {
   assert.ok(!('tools' in payload))
   assert.equal(JSON.stringify(payload).includes('cache_control'), false)
   assert.equal(typeof payload.prompt_cache_key, 'string')
+})
+
+test('buildOpenAIPayload does not inject ToolSearch discovery hints and keeps full tools', () => {
+  const request: ModelRequest = {
+    cacheSource: 'agent:test',
+    model: 'gpt-test',
+    messages: [{
+      id: 'u1',
+      role: 'user',
+      content: 'hello',
+      createdAt: new Date().toISOString(),
+    }],
+    tools: [
+      { name: 'DeferredTool', description: 'deferred', inputSchema: z.object({}).strict(), riskLevel: 'safe', shouldDefer: true, execute: async () => ({ ok: true, content: '' }) },
+    ],
+    hasDeferredTools: false,
+    allDeferredToolNames: new Set(['DeferredTool']),
+  }
+
+  const payload = buildOpenAIPayload(request) as {
+    messages: Array<{ role: string; content?: string | null }>
+    tools: Array<{ function: { name: string } }>
+  }
+
+  assert.equal(JSON.stringify(payload.messages).includes('<available-deferred-tools>'), false)
+  assert.deepEqual(payload.tools.map((tool) => tool.function.name), ['DeferredTool'])
 })
 
 test('buildOpenAIPayload includes Hanekawa system, skills reminder, Skill tool, and cache key', async () => {

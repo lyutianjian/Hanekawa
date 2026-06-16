@@ -3,8 +3,9 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { z } from 'zod/v3'
 import { getBuiltinTools } from '../src/tools/index.js'
-import type { ReadFileState } from '../src/harness/types.js'
+import type { ReadFileState, Tool } from '../src/harness/types.js'
 import { grepTool } from '../src/tools/grep.js'
 import { bashTool, detectSleepPattern } from '../src/tools/bash.js'
 import { readFileTool } from '../src/tools/readFile.js'
@@ -12,9 +13,22 @@ import { editFileTool } from '../src/tools/editFile.js'
 import { multiEditTool } from '../src/tools/multiEdit.js'
 import { writeFileTool } from '../src/tools/writeFile.js'
 import { deleteFileTool } from '../src/tools/deleteFile.js'
+import { toolSearchTool } from '../src/tools/ToolSearchTool/ToolSearchTool.js'
+import { getToolSearchMode, getAutoThreshold, resetToolSearchCache, resolveToolSearchState } from '../src/utils/toolSearch.js'
 
 function context(cwd: string) {
   return { cwd, sessionId: 's1', readFiles: new Set<string>() }
+}
+
+function searchTestTool(name: string, options: Partial<Tool> = {}): Tool {
+  return {
+    name,
+    description: `${name} description`,
+    inputSchema: z.object({ value: z.string().optional() }).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({ ok: true, content: '' }),
+    ...options,
+  }
 }
 
 test('grep finds matching lines', async () => {
@@ -706,7 +720,192 @@ test('WebSearch tool is registered and has correct properties', () => {
   assert.equal(webSearch.riskLevel, 'safe')
 })
 
-// ── Bash sleep detection ────────────────────────────────────────────────────
+test('ToolSearch prompt text has no mojibake artifacts', () => {
+  assert.doesNotMatch(toolSearchTool.description, /鈥|鈹|—/)
+  assert.match(toolSearchTool.description, /select:Read,Edit,Grep/)
+  assert.match(toolSearchTool.description, /<functions>/)
+})
+
+// ToolSearch mode and auto:N threshold
+
+test('getToolSearchMode returns always by default', () => {
+  const orig = process.env.HANEKAWA_TOOL_SEARCH
+  try {
+    delete process.env.HANEKAWA_TOOL_SEARCH
+    resetToolSearchCache()
+    assert.equal(getToolSearchMode(), 'always')
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', orig)
+  }
+})
+
+test('getToolSearchMode returns off for false/0', () => {
+  const orig = process.env.HANEKAWA_TOOL_SEARCH
+  try {
+    process.env.HANEKAWA_TOOL_SEARCH = 'false'
+    resetToolSearchCache()
+    assert.equal(getToolSearchMode(), 'off')
+    process.env.HANEKAWA_TOOL_SEARCH = '0'
+    resetToolSearchCache()
+    assert.equal(getToolSearchMode(), 'off')
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', orig)
+  }
+})
+
+test('getToolSearchMode returns auto for plain auto', () => {
+  const orig = process.env.HANEKAWA_TOOL_SEARCH
+  try {
+    process.env.HANEKAWA_TOOL_SEARCH = 'auto'
+    resetToolSearchCache()
+    assert.equal(getToolSearchMode(), 'auto')
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', orig)
+  }
+})
+
+test('auto:0 maps to always, auto:100 maps to off', () => {
+  const orig = process.env.HANEKAWA_TOOL_SEARCH
+  try {
+    process.env.HANEKAWA_TOOL_SEARCH = 'auto:0'
+    resetToolSearchCache()
+    assert.equal(getToolSearchMode(), 'always')
+
+    process.env.HANEKAWA_TOOL_SEARCH = 'auto:100'
+    resetToolSearchCache()
+    assert.equal(getToolSearchMode(), 'off')
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', orig)
+  }
+})
+
+test('auto:N uses N as threshold percentage', () => {
+  const origSearch = process.env.HANEKAWA_TOOL_SEARCH
+  const origPercent = process.env.HANEKAWA_TOOL_SEARCH_AUTO_PERCENT
+  try {
+    process.env.HANEKAWA_TOOL_SEARCH = 'auto:5'
+    delete process.env.HANEKAWA_TOOL_SEARCH_AUTO_PERCENT
+    resetToolSearchCache()
+    assert.equal(getToolSearchMode(), 'auto')
+    // 5% of 200000 = 10000
+    assert.equal(getAutoThreshold(200_000), 10_000)
+
+    process.env.HANEKAWA_TOOL_SEARCH = 'auto:50'
+    resetToolSearchCache()
+    assert.equal(getToolSearchMode(), 'auto')
+    // 50% of 200000 = 100000
+    assert.equal(getAutoThreshold(200_000), 100_000)
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', origSearch)
+    setEnv('HANEKAWA_TOOL_SEARCH_AUTO_PERCENT', origPercent)
+  }
+})
+
+test('auto:N takes priority over HANEKAWA_TOOL_SEARCH_AUTO_PERCENT', () => {
+  const origSearch = process.env.HANEKAWA_TOOL_SEARCH
+  const origPercent = process.env.HANEKAWA_TOOL_SEARCH_AUTO_PERCENT
+  try {
+    process.env.HANEKAWA_TOOL_SEARCH = 'auto:25'
+    process.env.HANEKAWA_TOOL_SEARCH_AUTO_PERCENT = '80'
+    resetToolSearchCache()
+    assert.equal(getToolSearchMode(), 'auto')
+    // auto:N=25 takes priority over AUTO_PERCENT=80.
+    assert.equal(getAutoThreshold(200_000), 50_000)
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', origSearch)
+    setEnv('HANEKAWA_TOOL_SEARCH_AUTO_PERCENT', origPercent)
+  }
+})
+
+test('auto mode without N falls back to HANEKAWA_TOOL_SEARCH_AUTO_PERCENT', () => {
+  const origSearch = process.env.HANEKAWA_TOOL_SEARCH
+  const origPercent = process.env.HANEKAWA_TOOL_SEARCH_AUTO_PERCENT
+  try {
+    process.env.HANEKAWA_TOOL_SEARCH = 'auto'
+    process.env.HANEKAWA_TOOL_SEARCH_AUTO_PERCENT = '30'
+    resetToolSearchCache()
+    assert.equal(getToolSearchMode(), 'auto')
+    assert.equal(getAutoThreshold(200_000), 60_000)
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', origSearch)
+    setEnv('HANEKAWA_TOOL_SEARCH_AUTO_PERCENT', origPercent)
+  }
+})
+
+test('auto mode defaults to 10% when no config set', () => {
+  const origSearch = process.env.HANEKAWA_TOOL_SEARCH
+  const origPercent = process.env.HANEKAWA_TOOL_SEARCH_AUTO_PERCENT
+  try {
+    process.env.HANEKAWA_TOOL_SEARCH = 'auto'
+    delete process.env.HANEKAWA_TOOL_SEARCH_AUTO_PERCENT
+    resetToolSearchCache()
+    assert.equal(getAutoThreshold(200_000), 20_000)
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', origSearch)
+    setEnv('HANEKAWA_TOOL_SEARCH_AUTO_PERCENT', origPercent)
+  }
+})
+
+test('resolveToolSearchState enables auto only above schema-size threshold', () => {
+  const origSearch = process.env.HANEKAWA_TOOL_SEARCH
+  const origPercent = process.env.HANEKAWA_TOOL_SEARCH_AUTO_PERCENT
+  const deferred = searchTestTool('DeferredTool', {
+    shouldDefer: true,
+    description: 'x'.repeat(200),
+  })
+  try {
+    process.env.HANEKAWA_TOOL_SEARCH = 'auto:50'
+    delete process.env.HANEKAWA_TOOL_SEARCH_AUTO_PERCENT
+    resetToolSearchCache()
+    assert.equal(resolveToolSearchState({
+      tools: [deferred, toolSearchTool],
+      contextWindowSize: 100_000,
+      providerSupportsDynamicToolSearch: true,
+    }).enabled, false)
+
+    process.env.HANEKAWA_TOOL_SEARCH = 'auto:1'
+    resetToolSearchCache()
+    assert.equal(resolveToolSearchState({
+      tools: [deferred, toolSearchTool],
+      contextWindowSize: 1_000,
+      providerSupportsDynamicToolSearch: true,
+    }).enabled, true)
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', origSearch)
+    setEnv('HANEKAWA_TOOL_SEARCH_AUTO_PERCENT', origPercent)
+  }
+})
+
+test('resolveToolSearchState excludes alwaysLoad tools from deferred names', () => {
+  const origSearch = process.env.HANEKAWA_TOOL_SEARCH
+  try {
+    process.env.HANEKAWA_TOOL_SEARCH = 'true'
+    resetToolSearchCache()
+    const deferred = searchTestTool('DeferredTool', { shouldDefer: true })
+    const alwaysLoad = searchTestTool('AlwaysLoadTool', { shouldDefer: true, alwaysLoad: true })
+
+    const state = resolveToolSearchState({
+      tools: [deferred, alwaysLoad, toolSearchTool],
+      contextWindowSize: 100_000,
+      providerSupportsDynamicToolSearch: true,
+    })
+
+    assert.equal(state.enabled, true)
+    assert.deepEqual([...(state.allDeferredToolNames ?? new Set())], ['DeferredTool'])
+  } finally {
+    setEnv('HANEKAWA_TOOL_SEARCH', origSearch)
+  }
+})
+
+function setEnv(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key as keyof typeof process.env]
+  } else {
+    process.env[key] = value
+  }
+}
+
+// Bash sleep detection
 
 test('detectSleepPattern returns null for short sleep', () => {
   assert.equal(detectSleepPattern('sleep 1'), null)

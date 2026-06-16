@@ -17,6 +17,7 @@ import {
 const MAX_OUTPUT_TOKENS_DEFAULT = 32_000
 const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 128_000
 const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11'
+const TOOL_SEARCH_BETA = 'advanced-tool-use-2025-11-20'
 
 function getMaxOutputTokens(configValue?: number): number {
   const envValue = process.env.MYAGENT_MAX_OUTPUT_TOKENS
@@ -175,7 +176,7 @@ export function buildAnthropicTools(
   return tools.map((tool, index) => {
     // Get cached base schema (name + description + input_schema)
     const base = getCachedToolSchema(tool)
-    // Apply per-request overlays (not cached — vary per call)
+    // Apply per-request overlays (not cached; vary per call)
     return {
       ...base,
       ...(deferredToolNames?.has(tool.name) ? { defer_loading: true } : {}),
@@ -188,13 +189,14 @@ export function buildAnthropicTools(
 
 export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: number, nativeAnthropic = false) {
   const enableCaching = nativeAnthropic && getPromptCachingEnabled(request.model)
+  const dynamicToolSearch = nativeAnthropic && request.hasDeferredTools === true
   // Only tools discovered AFTER the last compaction should have defer_loading.
   // Pre-compact discovered tools have lost their tool_reference blocks in the
-  // message history, so the API can't expand them — send them as regular tools.
-  const deferLoadingNames = request.hasDeferredTools
+  // message history, so the API can't expand them; send them as regular tools.
+  const deferLoadingNames = dynamicToolSearch
     ? (request.postCompactDiscoveredNames ?? new Set<string>())
     : undefined
-  // ALL deferred tool names from the full (unfiltered) tool list — for <available-deferred-tools>
+  // ALL deferred tool names from the full (unfiltered) tool list for <available-deferred-tools>.
   const allDeferredNames = request.allDeferredToolNames
   const tools = buildAnthropicTools(request.tools, enableCaching, request.cacheRuntime, deferLoadingNames)
   let messages = buildAnthropicMessages(request)
@@ -203,7 +205,7 @@ export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: n
   // Inject <available-deferred-tools> as the first user message.
   // Uses ALL deferred tool names (not just discovered ones) so the model
   // knows the full set of tools available via ToolSearch.
-  if (allDeferredNames && allDeferredNames.size > 0) {
+  if (dynamicToolSearch && allDeferredNames && allDeferredNames.size > 0) {
     const deferredList = [...allDeferredNames].sort().join('\n')
     messages = [
       { role: 'user', content: `<available-deferred-tools>\n${deferredList}\n</available-deferred-tools>` },
@@ -267,8 +269,8 @@ export function getAnthropicBetaHeaders(request: ModelRequest, nativeAnthropic =
       betas.push(EXTENDED_CACHE_TTL_BETA)
     }
   }
-  if (request.hasDeferredTools) {
-    betas.push('tool-reference-2025-04-14')
+  if (nativeAnthropic && request.hasDeferredTools) {
+    betas.push(TOOL_SEARCH_BETA)
   }
   return betas
 }

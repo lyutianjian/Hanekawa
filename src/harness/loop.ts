@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import { ContextBuilder } from './contextBuilder.js'
-import { isToolSearchEnabled, extractDiscoveredToolNames, filterToolsForRequest } from '../utils/toolSearch.js'
+import { extractDiscoveredToolNames, filterToolsForRequest, resolveToolSearchState, TOOL_SEARCH_TOOL_NAME } from '../utils/toolSearch.js'
 import type { EnvironmentInfo } from './contextBuilder.js'
 import { ToolRunner } from './toolRunner.js'
 import { EMPTY_TOKEN_USAGE, addTokenUsage } from './usage.js'
@@ -19,7 +19,7 @@ import type { RecordStream } from './recordStream.js'
 import { MemoryRecordStream } from './recordStream.js'
 import { runLifecycleHooks, type Hooks, type LifecycleHookName } from './hooks.js'
 import { FallbackTriggeredError } from '../config/retry.js'
-import type { ContextManagementConfig } from '../prompts/budget.js'
+import { getEffectiveContextWindowSize, type ContextManagementConfig } from '../prompts/budget.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
@@ -344,10 +344,21 @@ export class AgentLoop {
         model: this.activeModel.model,
       }
 
-        const built = await this.options.contextBuilder.build({
+      const providerSupportsDynamicToolSearch =
+        this.activeModel.provider.supportsDynamicToolSearch?.(this.activeModel.model) ?? false
+      const toolSearchState = resolveToolSearchState({
+        tools: this.options.tools,
+        contextWindowSize: getEffectiveContextWindowSize(this.options.contextManagement),
+        providerSupportsDynamicToolSearch,
+      })
+      const toolsForContext = toolSearchState.enabled
+        ? this.options.tools
+        : this.options.tools.filter((tool) => tool.name !== TOOL_SEARCH_TOOL_NAME)
+
+      const built = await this.options.contextBuilder.build({
         preloadRecords: this.options.preloadRecords,
         records,
-        tools: this.options.tools,
+        tools: toolsForContext,
         system: this.options.system,
         projectContext: this.options.projectContext,
         criticalSystemReminder: this.options.criticalSystemReminder,
@@ -357,6 +368,7 @@ export class AgentLoop {
         permissionMode: this.options.permissionMode?.(),
         transientUserContext: [planAttachment, interruptionContext].filter((item): item is string => Boolean(item)),
         includePostCompactRestore: pendingRestoreRecordIds.length > 0,
+        dynamicToolSearchEnabled: toolSearchState.enabled,
       })
       await this.consumePostCompactRestoreRecords(pendingRestoreRecordIds)
 
@@ -369,14 +381,8 @@ export class AgentLoop {
       // Inject full tool list for ToolSearchTool scoring
       this.options.toolContext._allTools = this.options.tools
 
-      const hasDeferred = isToolSearchEnabled() && this.options.tools.some(t => t.shouldDefer || t.isMcp)
-
-      // Compute deferred tool names from the FULL (unfiltered) tool list.
-      // This is used by the payload builder for <available-deferred-tools>,
-      // NOT for the API tools array (which uses filteredTools).
-      const allDeferredToolNames = hasDeferred
-        ? new Set(this.options.tools.filter(t => t.shouldDefer || t.isMcp).map(t => t.name))
-        : undefined
+      const hasDeferred = toolSearchState.enabled
+      const allDeferredToolNames = toolSearchState.allDeferredToolNames
 
       // Filter tools: only include deferred tools that have been discovered
       // via tool_reference blocks in message history. Non-deferred tools and
@@ -385,7 +391,7 @@ export class AgentLoop {
 
       // Separate pre-compact vs post-compact discovered tools.
       // After compaction, tool_reference blocks from pre-compact messages are lost.
-      // Tools discovered before compaction should NOT have defer_loading — their
+      // Tools discovered before compaction should NOT have defer_loading; their
       // schema was already loaded and the tool_reference is no longer in history.
       const preCompactDiscoveredNames = new Set<string>()
       for (const record of records) {
@@ -409,7 +415,7 @@ export class AgentLoop {
       }
       const filteredTools = hasDeferred
         ? filterToolsForRequest(this.options.tools, discoveredNames)
-        : this.options.tools
+        : toolsForContext
 
       const modelRequest = {
         system: built.system,

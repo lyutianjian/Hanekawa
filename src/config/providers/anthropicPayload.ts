@@ -13,13 +13,14 @@ import {
   assertAnthropicCacheControlLimit,
   collectCacheControlTelemetry,
 } from './cacheControlTelemetry.js'
+import { getModelCapabilityOrDefault, CAPPED_DEFAULT_MAX_TOKENS, isSlotCapDisabled } from '../../prompts/modelCapabilities.js'
 
 const MAX_OUTPUT_TOKENS_DEFAULT = 32_000
 const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 128_000
 const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11'
 const TOOL_SEARCH_BETA = 'advanced-tool-use-2025-11-20'
 
-function getMaxOutputTokens(configValue?: number): number {
+function getMaxOutputTokens(configValue?: number, model?: string): number {
   const envValue = process.env.MYAGENT_MAX_OUTPUT_TOKENS
   if (envValue) {
     const parsed = parseInt(envValue, 10)
@@ -31,7 +32,14 @@ function getMaxOutputTokens(configValue?: number): number {
   if (Number.isFinite(num) && num > 0) {
     return Math.min(num, MAX_OUTPUT_TOKENS_UPPER_LIMIT)
   }
-  return MAX_OUTPUT_TOKENS_DEFAULT
+  // Model-aware default with slot cap: reduce over-reservation.
+  // p99 output is ~4,911 tokens; 32k/64k defaults over-reserve 8-16x.
+  // Requests hitting this cap get one retry at ESCALATED_MAX_TOKENS (64k).
+  if (model) {
+    const cap = getModelCapabilityOrDefault(model)
+    return cap.defaultMaxOutputTokens
+  }
+  return isSlotCapDisabled() ? MAX_OUTPUT_TOKENS_DEFAULT : Math.min(MAX_OUTPUT_TOKENS_DEFAULT, CAPPED_DEFAULT_MAX_TOKENS)
 }
 
 function anthropicContent(content: string): Array<{ type: 'text'; text: string }> {
@@ -224,7 +232,7 @@ export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: n
     thinking = { type: 'adaptive' }
   }
 
-  const maxOutput = getMaxOutputTokens(maxOutputTokens ?? request.maxOutputTokens)
+  const maxOutput = getMaxOutputTokens(maxOutputTokens ?? request.maxOutputTokens, request.model)
   const thinkingBudget = thinking?.type === 'enabled' ? thinking.budget_tokens : 0
   const finalMaxOutput = thinkingBudget > 0 && maxOutput <= thinkingBudget
     ? thinkingBudget + 1024

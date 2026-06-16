@@ -20,7 +20,7 @@ const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 128_000
 const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11'
 const TOOL_SEARCH_BETA = 'advanced-tool-use-2025-11-20'
 
-function getMaxOutputTokens(configValue?: number, model?: string): number {
+export function getMaxOutputTokens(configValue?: number, model?: string): number {
   const envValue = process.env.MYAGENT_MAX_OUTPUT_TOKENS
   if (envValue) {
     const parsed = parseInt(envValue, 10)

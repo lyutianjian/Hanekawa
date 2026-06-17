@@ -52,6 +52,27 @@ export interface LifecycleHookOutput {
   preventContinuation: boolean
 }
 
+export function mergeHooks(base: Hooks | undefined, extra: Hooks | undefined): Hooks | undefined {
+  if (!base) return extra
+  if (!extra) return base
+  return {
+    userPromptSubmit: mergeHookList(base.userPromptSubmit, extra.userPromptSubmit),
+    preToolUse: mergeHookList(base.preToolUse, extra.preToolUse),
+    postToolUse: mergeHookList(base.postToolUse, extra.postToolUse),
+    preCompact: mergeHookList(base.preCompact, extra.preCompact),
+    postCompact: mergeHookList(base.postCompact, extra.postCompact),
+    subagentStart: mergeHookList(base.subagentStart, extra.subagentStart),
+    subagentStop: mergeHookList(base.subagentStop, extra.subagentStop),
+    stop: mergeHookList(base.stop, extra.stop),
+  }
+}
+
+function mergeHookList<T>(base: readonly T[] | undefined, extra: readonly T[] | undefined): T[] | undefined {
+  if (!base || base.length === 0) return extra ? [...extra] : undefined
+  if (!extra || extra.length === 0) return [...base]
+  return [...base, ...extra]
+}
+
 export async function runPreToolUseHooks(
   hooks: readonly HookCommand[] | undefined,
   tool: Tool,
@@ -74,6 +95,7 @@ export async function runPreToolUseHooks(
         input,
         cwd: context.cwd,
         sessionId: context.sessionId,
+        ...skillHookInput(context),
       },
       failurePrefix: `Pre-tool hook failed for ${tool.name}`,
       timeoutPrefix: `Pre-tool hook timed out for ${tool.name}`,
@@ -112,6 +134,7 @@ export async function runLifecycleHooks(
         ...input,
         cwd: context.cwd,
         sessionId: context.sessionId,
+        ...skillHookInput(context),
       },
       failurePrefix: `${hookName} hook failed`,
       timeoutPrefix: `${hookName} hook timed out`,
@@ -138,6 +161,15 @@ export async function runLifecycleHooks(
     failures,
     blockingErrors,
     preventContinuation,
+  }
+}
+
+function skillHookInput(context: ToolContext): Record<string, string> {
+  if (!context.skillInvocation) return {}
+  return {
+    skillName: context.skillInvocation.skillName,
+    skillArgs: context.skillInvocation.skillArgs,
+    prompt: context.skillInvocation.prompt,
   }
 }
 

@@ -1,7 +1,8 @@
 import { Box, Text } from 'ink'
+import type { ReactNode } from 'react'
 import type { TUIDisplayItem } from '../types.js'
 import { theme } from '../theme.js'
-import { TREE_BRANCH, TREE_LAST, TREE_PIPE } from '../constants/figures.js'
+import { INDENT_TOOL, STATUS_DOT, TREE_LAST } from '../constants/figures.js'
 import { formatTokenCount } from '../../tools/display.js'
 
 type SubagentTaskItem = Extract<TUIDisplayItem, { kind: 'subagent_task' }>
@@ -10,85 +11,84 @@ export type SubagentTreePosition = 'first' | 'middle' | 'last' | 'only'
 
 interface SubagentTaskBlockProps {
   item: SubagentTaskItem
-  /** Tree position when multiple subagent_task items render back-to-back. */
   treePosition?: SubagentTreePosition
+  expanded?: boolean
+  isTranscriptMode?: boolean
 }
 
-/**
- * Claude-Code-style tree rendering for a subagent task line.
- *
- * Single item:
- *   └─ explore · 5 tool uses · 2.3k tokens
- *      ⎿ Done · verdict PASS · #a1b2c3d4
- *
- * Multiple siblings:
- *   ├─ plan(routing layer) · 3 tool uses · 1.2k tokens
- *   │  ⎿ Done
- *   └─ explore · 8 tool uses · 4.1k tokens
- *      ⎿ Done · #e5f6g7h8
- */
-export function SubagentTaskBlock({ item, treePosition = 'only' }: SubagentTaskBlockProps) {
+export function SubagentTaskBlock({ item, expanded = false, isTranscriptMode = false }: SubagentTaskBlockProps) {
   const { record } = item
-  const statusColor = statusColorFor(record.status)
-  const treeChar = treePosition === 'last' || treePosition === 'only' ? TREE_LAST : TREE_BRANCH
-  const continuation = treePosition === 'last' || treePosition === 'only' ? '   ' : `${TREE_PIPE}  `
-
+  const statusColor = getSubagentStatusColor(record.status)
   const label = formatAgentLabel(record)
-  const stats = formatStats(record)
+  const model = record.model?.trim()
   const statusText = formatStatusText(record, item.progress)
-  const details = formatDetails(record)
+  const response = formatResponseText(record, item.progress)
 
   return (
-    <Box marginY={0} flexDirection="column" paddingLeft={2}>
+    <Box marginY={0} flexDirection="column" paddingLeft={INDENT_TOOL}>
       <Box flexDirection="row" flexWrap="nowrap">
-        <Box flexShrink={0}>
-          <Text color={theme.taskDim}>{treeChar} </Text>
+        <Box minWidth={2} flexShrink={0}>
+          <Text color={statusColor}>{STATUS_DOT}</Text>
         </Box>
         <Box flexShrink={1} minWidth={0}>
           <Text color={statusColor} bold>{label}</Text>
-          {stats && <Text color={theme.taskDim}> · {stats}</Text>}
+          {model && <Text color={theme.dimText}> {model}</Text>}
         </Box>
       </Box>
-      <Box flexDirection="row" flexWrap="nowrap">
-        <Box flexShrink={0}>
-          <Text color={theme.taskDim}>{continuation}</Text>
-        </Box>
-        <Box flexShrink={1} minWidth={0}>
-          <Text color={statusColor}>{statusText}</Text>
-          {details && <Text color={theme.taskDim}> · {details}</Text>}
-        </Box>
-      </Box>
+
+      {!expanded && (
+        <SubagentTreeLine>
+          {statusText}
+          {record.status === 'completed' && !isTranscriptMode && (
+            <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>
+          )}
+        </SubagentTreeLine>
+      )}
+
+      {expanded && (
+        <>
+          <SubagentSection label="Prompt:" />
+          <IndentedText text={record.task} />
+          {response && (
+            <>
+              <SubagentSection label="Response:" />
+              <IndentedText text={response} />
+            </>
+          )}
+          <SubagentTreeLine>{statusText}</SubagentTreeLine>
+          {record.status === 'completed' && !isTranscriptMode && (
+            <Box paddingLeft={3}>
+              <Text color={theme.dimText} dimColor>
+                (ctrl+o to collapse)
+              </Text>
+            </Box>
+          )}
+        </>
+      )}
     </Box>
   )
 }
 
 export function formatSubagentTaskLine(item: SubagentTaskItem): string {
   const label = formatAgentLabel(item.record)
-  const stats = formatStats(item.record)
+  const model = item.record.model?.trim()
   const status = formatStatusText(item.record, item.progress)
-  const details = formatDetails(item.record)
-  const parts = [label]
-  if (stats) parts.push(stats)
-  const tail = [status, details].filter(Boolean).join(' · ')
-  return `${parts.join(' · ')}${tail ? `\n  ⎿  ${tail}` : ''}`
+  return `${[label, model].filter(Boolean).join(' ')}\n  ${TREE_LAST} ${status}`
 }
 
-function statusColorFor(status: SubagentTaskItem['record']['status']): string {
+export function getSubagentStatusColor(status: SubagentTaskItem['record']['status']): string {
   switch (status) {
     case 'running':     return theme.taskRunning
-    case 'completed':   return theme.taskDone
-    case 'failed':      return theme.taskFailed
+    case 'completed':   return theme.statusDotSuccess
+    case 'failed':      return theme.statusDotFailed
     case 'cancelled':
     case 'interrupted': return theme.taskDim
   }
 }
 
 function formatAgentLabel(record: SubagentTaskItem['record']): string {
-  const name = record.name?.trim()
-  const baseName = name && name !== record.subagentType
-    ? `${name} (${record.subagentType})`
-    : `${record.subagentType} agent`
-  return baseName
+  const summary = truncate((record.description || record.name || record.task).trim(), 36)
+  return summary ? `${record.subagentType} agent(${summary})` : `${record.subagentType} agent`
 }
 
 function formatStats(record: SubagentTaskItem['record']): string {
@@ -105,7 +105,7 @@ function formatStats(record: SubagentTaskItem['record']): string {
   if (typeof record.durationMs === 'number' && record.durationMs >= 0) {
     segments.push(`${Math.max(1, Math.round(record.durationMs / 1000))}s`)
   }
-  return segments.join(' \u00b7 ')
+  return segments.join(' · ')
 }
 
 function formatStatusText(
@@ -114,9 +114,9 @@ function formatStatusText(
 ): string {
   switch (record.status) {
     case 'running':
-      return progress && progress.length > 0 ? truncate(progress, 80) : 'Initializing…'
+      return progress && progress.length > 0 ? truncate(progress, 80) : 'Initializing...'
     case 'completed':
-      return record.verdict ? `Done · verdict ${record.verdict}` : 'Done'
+      return formatDoneStatus(record)
     case 'failed':
       return record.error ? `Failed: ${truncate(record.error, 80)}` : 'Failed'
     case 'cancelled':
@@ -126,14 +126,54 @@ function formatStatusText(
   }
 }
 
-function formatDetails(record: SubagentTaskItem['record']): string {
-  if (record.status === 'running') return ''
-  const shortId = record.agentId.slice(0, 8)
-  const parts = [`#${shortId}`]
-  if (record.transcriptPath || record.worktreePath) {
-    parts.push(`/agents show ${shortId}`)
-  }
-  return parts.join(' ')
+function formatDoneStatus(record: SubagentTaskItem['record']): string {
+  const stats = formatStats(record)
+  return stats ? `Done (${stats})` : 'Done'
+}
+
+function formatResponseText(record: SubagentTaskItem['record'], progress: string | undefined): string {
+  if (record.status === 'completed') return record.summary?.trim() ?? ''
+  if (record.status === 'failed') return record.error?.trim() ?? ''
+  if (record.status === 'running') return progress?.trim() ?? ''
+  return ''
+}
+
+function SubagentTreeLine({ children }: { children: ReactNode }) {
+  return (
+    <Box flexDirection="row" flexWrap="nowrap">
+      <Box flexShrink={0}>
+        <Text color={theme.taskDim}>{TREE_LAST} </Text>
+      </Box>
+      <Box flexShrink={1} minWidth={0}>
+        <Text color={theme.dimText}>{children}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+function SubagentSection({ label }: { label: string }) {
+  return (
+    <Box flexDirection="row" flexWrap="nowrap">
+      <Box flexShrink={0}>
+        <Text color={theme.taskDim}>{TREE_LAST} </Text>
+      </Box>
+      <Box flexShrink={1} minWidth={0}>
+        <Text color={theme.success} bold>{label}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+function IndentedText({ text }: { text: string }) {
+  return (
+    <Box flexDirection="column" paddingLeft={3}>
+      {text.split('\n').map((line, index) => (
+        <Box key={index}>
+          <Text color={theme.dimText}>{line}</Text>
+        </Box>
+      ))}
+    </Box>
+  )
 }
 
 function truncate(value: string, maxLength: number): string {

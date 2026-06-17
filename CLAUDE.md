@@ -133,9 +133,23 @@ path when the terminal supports it. It also enables SGR mouse tracking
 events as a fallback. Cleanup disables mouse tracking and alternate-scroll
 before returning to the primary screen.
 
+`ToolCallBlock`, `CollapsedToolGroup`, and `SubagentTaskBlock` status rows align
+flush with the assistant message gutter. Nested tool output remains indented by
+`ResponseBlock`.
+
+Successful tool and subagent `●` status prefixes use `rgb(78,186,101)`;
+failed tool and subagent `●` status prefixes use `rgb(255,107,128)`.
+
+Agent/subagent rows keep headers compact: `<type> agent(<short summary>) <model>`
+plus a `Done (N tool uses · X tokens · Ys)` status line. Expanded views show
+`Prompt` from the user-provided Agent task and `Response` from subagent output;
+they do not render the internal agent system prompt.
+
 ### Skills (`.myagent/skills/<name>/SKILL.md`)
 
-Markdown files with YAML frontmatter (`name`, `description`). Auto-discovered at startup, injected into system prompt, invocable via the `Skill` tool.
+Markdown files with YAML frontmatter (`name`, `description`, optional `allowedTools`, `model`, `effort`, `hooks`, `attachments`). Auto-discovered at TUI startup, injected into system prompt, invocable via the `Skill` tool, and registered as slash commands using the skill `name` when that name is not already used by a built-in command. For example, `name: debugging` is callable as `/debugging args`.
+
+Skill slash commands submit the skill body as a normal query in the background while the TUI shows only the slash invocation, such as `/debugging args`. `$ARGUMENTS` placeholders are replaced with the slash command arguments; if no placeholder exists, non-empty arguments are appended as `Arguments: ...`. Inline shell snippets like ``!`git status` `` run through the normal Bash tool permission gate before submission. Text `attachments` are UTF-8 files resolved inside the skill directory and appended to the prompt. `allowedTools` limits model-visible and executable tools, while `model` and `effort` are temporary per-turn overrides. Skill hooks are merged with session hooks only for the active skill turn. Built-in slash commands take precedence on name conflicts, and new or changed skill commands require restarting the TUI. Image/PDF multimodal attachments are not supported in this stage.
 
 ### MCP Integration
 

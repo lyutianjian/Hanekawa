@@ -110,6 +110,6 @@ export interface PermissionDialogRequest {
 }
 
 export interface TUIUsage {
-  lastTurn: TokenUsage | null
+  lastRequest: TokenUsage | null
   total: TokenUsage
 }

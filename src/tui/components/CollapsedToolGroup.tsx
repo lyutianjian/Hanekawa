@@ -4,7 +4,7 @@ import { theme } from '../theme.js'
 import type { TUIDisplayItem } from '../types.js'
 import { getStatusDot, ToolCallBlock } from './ToolCallBlock.js'
 import { ResponseBlock } from './ResponseBlock.js'
-import { MIN_HINT_DISPLAY_MS } from '../constants/figures.js'
+import { INDENT_TOOL, MIN_HINT_DISPLAY_MS } from '../constants/figures.js'
 import { useBlink } from '../hooks/useBlink.js'
 import { formatToolGroupSummary } from '../utils/toolGroupSummary.js'
 
@@ -68,7 +68,7 @@ export function CollapsedToolGroup({ item, expanded, animationsEnabled = true, i
 
   if (expanded) {
     return (
-      <Box flexDirection="column" paddingLeft={2}>
+      <Box flexDirection="column" paddingLeft={INDENT_TOOL}>
         <Box flexDirection="row" flexWrap="nowrap">
           <Box minWidth={2} flexShrink={0}>
             <Text color={statusDot.color}>
@@ -95,7 +95,7 @@ export function CollapsedToolGroup({ item, expanded, animationsEnabled = true, i
   }
 
   return (
-    <Box flexDirection="column" paddingLeft={2}>
+    <Box flexDirection="column" paddingLeft={INDENT_TOOL}>
       <Box flexDirection="row" flexWrap="nowrap">
         <Box minWidth={2} flexShrink={0}>
           <Text color={statusDot.color}>

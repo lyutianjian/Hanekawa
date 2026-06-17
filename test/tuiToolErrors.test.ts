@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { recordsToDisplayItems } from '../src/tui/hooks/useAgentLoop.js'
 import { formatToolCallRunningDescription, getStatusDot } from '../src/tui/components/ToolCallBlock.js'
-import { formatSubagentTaskLine } from '../src/tui/components/SubagentTaskBlock.js'
+import { formatSubagentTaskLine, getSubagentStatusColor } from '../src/tui/components/SubagentTaskBlock.js'
 import { getTaskVisual } from '../src/tui/components/TaskListBlock.js'
 import { getToolActivityDescription, getToolDisplay, shouldDisplayToolResult } from '../src/tools/display.js'
 import { theme } from '../src/tui/theme.js'
@@ -194,7 +194,34 @@ test('recordsToDisplayItems merges subagent lifecycle records into latest status
   assert.equal(item?.kind, 'subagent_task')
   assert.equal(item?.record.status, 'completed')
   assert.match(item ? formatSubagentTaskLine(item) : '', /plan agent[\s\S]*Done/)
-  assert.match(item ? formatSubagentTaskLine(item) : '', /\/agents show agent-1/)
+  assert.doesNotMatch(item ? formatSubagentTaskLine(item) : '', /\/agents show agent-1/)
+})
+
+test('subagent task line shows subagent-owned token usage', () => {
+  const records: SessionRecord[] = [
+    {
+      id: 'subagent-task-1',
+      type: 'subagent_task',
+      agentId: 'agent-1',
+      subagentType: 'explore',
+      status: 'completed',
+      description: 'Search task display in TUI',
+      task: 'Search task display in TUI',
+      transcriptPath: '/tmp/transcript.jsonl',
+      toolUseCount: 25,
+      durationMs: 104_000,
+      usage: { inputTokens: 24_900, cacheReadInputTokens: 100_000, outputTokens: 0 },
+      createdAt: '2026-05-24T00:00:01.000Z',
+    },
+  ]
+
+  const item = recordsToDisplayItems(records).find((candidate) => candidate.kind === 'subagent_task')
+  assert.equal(item?.kind, 'subagent_task')
+  const line = item ? formatSubagentTaskLine(item) : ''
+  assert.match(line, /explore agent/)
+  assert.match(line, /25 tool uses/)
+  assert.match(line, /125k tokens/)
+  assert.match(line, /104s/)
 })
 
 test('tool display metadata comes from tool definitions', () => {
@@ -204,7 +231,7 @@ test('tool display metadata comes from tool definitions', () => {
   })
   assert.deepEqual(getToolDisplay('Agent', { subagent_type: 'plan', task: 'Design the change' }), {
     name: 'plan agent',
-    summary: 'plan: Design the change',
+    summary: 'Design the change',
   })
   assert.equal(getToolActivityDescription('Read', { filePath: 'src/tools/readFile.ts' }), 'Reading src/tools/readFile.ts')
   assert.equal(shouldDisplayToolResult('Read', { filePath: 'x' }, 'content'), true)
@@ -216,6 +243,14 @@ test('tool status indicator uses Claude-style circle for all states', () => {
   for (const status of ['pending', 'running', 'approved', 'denied', 'done', 'error'] as const) {
     assert.equal(getStatusDot(status).char, '●')
   }
+})
+
+test('tool and subagent success and failure dots use configured RGB colors', () => {
+  assert.equal(getStatusDot('done').color, 'rgb(78,186,101)')
+  assert.equal(getStatusDot('error').color, 'rgb(255,107,128)')
+  assert.equal(getStatusDot('denied').color, 'rgb(255,107,128)')
+  assert.equal(getSubagentStatusColor('completed'), 'rgb(78,186,101)')
+  assert.equal(getSubagentStatusColor('failed'), 'rgb(255,107,128)')
 })
 
 test('task list visual markers use Claude-style task status icons', () => {

@@ -312,6 +312,45 @@ test('tool runner runs postToolUse hooks after emitting tool result', async () =
   assert.match(records[hookIndex]?.type === 'message' ? records[hookIndex].content : '', /safeTool:done/)
 })
 
+test('tool runner merges per-run hooks with configured hooks', async () => {
+  const tool: Tool = {
+    name: 'safeTool',
+    description: 'safe',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({ ok: true, content: 'done' }),
+  }
+  const records: SessionRecord[] = []
+  const runner = new ToolRunner([tool], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  }, {
+    postToolUse: [{
+      matcher: 'safeTool',
+      command: `${JSON.stringify(process.execPath)} -e "console.log('configured hook')"`,
+    }],
+  })
+
+  await runner.run(
+    { id: 'call1', name: 'safeTool', input: {} },
+    { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    undefined,
+    'turn-1',
+    {
+      hooks: {
+        postToolUse: [{
+          matcher: 'safeTool',
+          command: `${JSON.stringify(process.execPath)} -e "console.log('per-run hook')"`,
+        }],
+      },
+    },
+  )
+
+  const hookMessage = records.find((record) => record.type === 'message' && record.content.includes('postToolUse hook output'))
+  assert.ok(hookMessage)
+  assert.match(hookMessage.type === 'message' ? hookMessage.content : '', /configured hook/)
+  assert.match(hookMessage.type === 'message' ? hookMessage.content : '', /per-run hook/)
+})
+
 test('tool runner emits progress around execution', async () => {
   const tool: Tool = {
     name: 'safeTool',

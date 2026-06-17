@@ -89,7 +89,7 @@ export function DisplayItem({
         </Box>
       )
     case 'subagent_task':
-      return <SubagentTaskBlock item={item} treePosition={subagentTreePosition} />
+      return <SubagentTaskBlock item={item} treePosition={subagentTreePosition} expanded={isExpanded} isTranscriptMode={isTranscriptMode} />
     case 'system':
       return (
         <Box marginY={1}>

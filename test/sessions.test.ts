@@ -76,6 +76,31 @@ test('SessionStore appends and loads records while updating metadata', async () 
   }
 })
 
+test('SessionStore derives title from displayContent when present', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+
+    const session = await store.create()
+    const message: SessionRecord = {
+      type: 'message',
+      id: 'msg-display',
+      role: 'user',
+      content: 'Expanded skill prompt that should stay hidden from title',
+      displayContent: '/debug hello',
+      createdAt: new Date().toISOString(),
+    }
+
+    await store.appendRecord(session.id, message)
+
+    const loaded = await store.load(session.id)
+    assert.equal(loaded?.title, '/debug hello')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('SessionStore truncateBeforeMessage removes the target message and later records', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
   try {

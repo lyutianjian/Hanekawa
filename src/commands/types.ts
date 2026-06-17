@@ -1,4 +1,6 @@
 import type { SessionRecord } from '../harness/types.js'
+import type { EffortLevel } from '../config/effort.js'
+import type { Hooks } from '../harness/hooks.js'
 
 export interface CommandDefinition {
   name: string
@@ -54,6 +56,22 @@ export interface CommandSubagentCleanupResult {
   }>
 }
 
+export interface CommandSubmitQueryOptions {
+  allowedTools?: string[]
+  model?: string
+  effort?: EffortLevel
+  hooks?: Hooks
+  skillName?: string
+  skillArgs?: string
+  displayInput?: string
+}
+
+export interface CommandShellResult {
+  ok: boolean
+  content: string
+  errorCode?: string
+}
+
 export interface CommandContext {
   cwd: string
   sessionId: string
@@ -76,7 +94,8 @@ export interface CommandContext {
   enterPlanMode?: () => void | Promise<void>
   readPlanFile?: () => Promise<{ path: string; content: string | null }>
   openPlanFile?: () => Promise<{ message: string }>
-  submitQuery?: (input: string) => Promise<void>
+  submitQuery?: (input: string, options?: CommandSubmitQueryOptions) => Promise<void>
+  runShellCommand?: (command: string) => Promise<CommandShellResult>
   openProviderPanel?: () => void
   listSubagentTasks?: () => Promise<Array<Extract<SessionRecord, { type: 'subagent_task' }>>>
   getSubagentDetails?: (agentIdOrPrefix: string) => Promise<CommandSubagentDetails | null>

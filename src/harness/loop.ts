@@ -17,7 +17,7 @@ import { logDiagnostics, type RuntimeDiagnostic } from './diagnostics.js'
 import { cacheHitRate, type SessionMetricInput } from './metrics.js'
 import type { RecordStream } from './recordStream.js'
 import { MemoryRecordStream } from './recordStream.js'
-import { runLifecycleHooks, type Hooks, type LifecycleHookName } from './hooks.js'
+import { mergeHooks, runLifecycleHooks, type Hooks, type LifecycleHookName } from './hooks.js'
 import { FallbackTriggeredError } from '../config/retry.js'
 import { getContextWindowForModel, getEffectiveContextWindowSize, type ContextManagementConfig } from '../prompts/budget.js'
 import { ESCALATED_MAX_TOKENS } from '../prompts/modelCapabilities.js'
@@ -58,6 +58,30 @@ export interface RunToolOptions {
   recordStream?: RecordStream
   /** Override the turnId stamped on emitted records. Defaults to a fresh UUID. */
   turnId?: string
+}
+
+export interface AgentRunOverrides {
+  allowedTools?: string[]
+  model?: ActiveModelRuntime
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  hooks?: Hooks
+  skillName?: string
+  skillArgs?: string
+  displayInput?: string
+}
+
+interface ActiveRunOverrides {
+  allowedTools?: Set<string>
+  tools?: Tool[]
+  model?: ActiveModelRuntime
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  hooks?: Hooks
+  displayInput?: string
+  skillInvocation?: {
+    skillName: string
+    skillArgs: string
+    prompt: string
+  }
 }
 
 export interface AgentLoopOptions {
@@ -123,6 +147,7 @@ export class AgentLoop {
   // blocks should not be replayed across either side of a fallback boundary.
   private stripAllThinkingBlocksFromRequests = false
   private readonly cacheEditManager: CacheEditManager | undefined
+  private activeRunOverrides: ActiveRunOverrides | undefined
 
   constructor(private readonly options: AgentLoopOptions) {
     const primary = {
@@ -203,8 +228,8 @@ export class AgentLoop {
     }
   }
 
-  async run(userInput: string, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
-    return this.enqueue(() => this.runInternal(userInput, signal, messageId))
+  async run(userInput: string, signal?: AbortSignal, messageId?: string, overrides?: AgentRunOverrides): Promise<AgentRunResult> {
+    return this.enqueue(() => this.runWithOverrides(userInput, signal, messageId, overrides))
   }
 
   async summarizeRecordsForRewind(records: SessionRecord[]): Promise<{ summary: string; usage?: TokenUsage; preTokens: number }> {
@@ -224,8 +249,59 @@ export class AgentLoop {
     })
   }
 
+  private async runWithOverrides(
+    userInput: string,
+    signal?: AbortSignal,
+    messageId?: string,
+    overrides?: AgentRunOverrides,
+  ): Promise<AgentRunResult> {
+    const previous = this.activeRunOverrides
+    const previousSkillInvocation = this.options.toolContext.skillInvocation
+    this.activeRunOverrides = this.normalizeRunOverrides(userInput, overrides)
+    if (this.activeRunOverrides?.model && !this.isSameModel(this.activeRunOverrides.model, this.modelState.current)) {
+      this.stripAllThinkingBlocksFromRequests = true
+    }
+    this.options.toolContext.skillInvocation = this.activeRunOverrides?.skillInvocation
+    try {
+      return await this.runInternal(userInput, signal, messageId)
+    } finally {
+      this.activeRunOverrides = previous
+      this.options.toolContext.skillInvocation = previousSkillInvocation
+    }
+  }
+
+  private normalizeRunOverrides(userInput: string, overrides: AgentRunOverrides | undefined): ActiveRunOverrides | undefined {
+    if (!overrides) return undefined
+    const normalized: ActiveRunOverrides = {}
+    if (overrides.allowedTools) {
+      const allowed = new Set(overrides.allowedTools.map((tool) => tool.trim()).filter(Boolean))
+      const known = new Set(this.options.tools.map((tool) => tool.name))
+      const unknown = [...allowed].filter((tool) => !known.has(tool))
+      if (unknown.length > 0) {
+        throw new Error(`Unknown allowed tool${unknown.length === 1 ? '' : 's'} for skill command: ${unknown.join(', ')}`)
+      }
+      normalized.allowedTools = allowed
+      normalized.tools = this.options.tools.filter((tool) => allowed.has(tool.name))
+    }
+    if (overrides.model) normalized.model = overrides.model
+    if (overrides.effort) normalized.effort = overrides.effort
+    if (overrides.hooks) normalized.hooks = overrides.hooks
+    if (overrides.displayInput !== undefined && overrides.displayInput !== userInput) {
+      normalized.displayInput = overrides.displayInput
+    }
+    if (overrides.skillName) {
+      normalized.skillInvocation = {
+        skillName: overrides.skillName,
+        skillArgs: overrides.skillArgs ?? '',
+        prompt: userInput,
+      }
+    }
+    return Object.keys(normalized).length > 0 ? normalized : undefined
+  }
+
   private async runInternal(userInput: string, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
     let usage = { ...EMPTY_TOKEN_USAGE }
+    let lastForegroundResponseUsage: TokenUsage | undefined
     let pendingAssistantStreamContent = ''
     this.pendingSubagentTranscriptUsage = { ...EMPTY_TOKEN_USAGE }
     const turnId = randomUUID()
@@ -234,6 +310,7 @@ export class AgentLoop {
       id: messageId ?? randomUUID(),
       role: 'user',
       content: userInput,
+      ...(this.activeRunOverrides?.displayInput ? { displayContent: this.activeRunOverrides.displayInput } : {}),
       turnId,
       createdAt: new Date().toISOString(),
     }
@@ -297,7 +374,7 @@ export class AgentLoop {
           lastResponseRecordCount,
           lastResponseRecordId,
           now: new Date(),
-          cacheEditManager: this.cacheEditManager,
+          cacheEditManager: this.currentCacheEditManager,
         })
         let recordsBeforeCompact = progressive.records
         const useCachedTokenEstimate = !progressive.microCompacted && !progressive.snipped
@@ -307,7 +384,7 @@ export class AgentLoop {
           model: this.activeModel.model,
           modelKey: this.activeModel.modelKey,
           compactRuntime: this.options.compactModel,
-          tools: this.options.tools,
+          tools: this.currentTools,
           system: this.options.system,
           contextManagement: this.options.contextManagement,
           lastResponseTokenCount: useCachedTokenEstimate ? lastResponseTokenCount : undefined,
@@ -328,7 +405,7 @@ export class AgentLoop {
         if (compactResult.compacted) {
           notifyCompaction(cacheSource)
           this.options.contextBuilder.clearCachedSections()
-          this.cacheEditManager?.reset()
+          this.currentCacheEditManager?.reset()
           if (compactResult.metrics) {
             await this.emitMetric({
               event: 'compact',
@@ -363,7 +440,7 @@ export class AgentLoop {
       const providerSupportsDynamicToolSearch =
         this.activeModel.provider.supportsDynamicToolSearch?.(this.activeModel.model) ?? false
       const toolSearchState = resolveToolSearchState({
-        tools: this.options.tools,
+        tools: this.currentTools,
         contextWindowSize: getContextWindowForModel(
           this.options.contextManagement,
           this.activeModel.model,
@@ -372,8 +449,8 @@ export class AgentLoop {
         providerSupportsDynamicToolSearch,
       })
       const toolsForContext = toolSearchState.enabled
-        ? this.options.tools
-        : this.options.tools.filter((tool) => tool.name !== TOOL_SEARCH_TOOL_NAME)
+        ? this.currentTools
+        : this.currentTools.filter((tool) => tool.name !== TOOL_SEARCH_TOOL_NAME)
 
       const built = await this.options.contextBuilder.build({
         preloadRecords: this.options.preloadRecords,
@@ -401,7 +478,7 @@ export class AgentLoop {
       // Set provider name on tool context for ToolSearchTool dual-provider support
       this.options.toolContext.providerName = this.activeModel.providerName
       // Inject full tool list for ToolSearchTool scoring
-      this.options.toolContext._allTools = this.options.tools
+      this.options.toolContext._allTools = this.currentTools
 
       const hasDeferred = toolSearchState.enabled
       const allDeferredToolNames = toolSearchState.allDeferredToolNames
@@ -436,7 +513,7 @@ export class AgentLoop {
         }
       }
       const filteredTools = hasDeferred
-        ? filterToolsForRequest(this.options.tools, discoveredNames)
+        ? filterToolsForRequest(this.currentTools, discoveredNames)
         : toolsForContext
 
       const modelRequest = {
@@ -449,7 +526,7 @@ export class AgentLoop {
         promptCacheRetention: this.activeModel.promptCacheRetention,
         maxOutputTokens: maxOutputTokensOverride,
         thinking: this.options.thinking,
-        effort: this.options.effort,
+        effort: this.currentEffort,
         previousRequestId: lastRequestId,
         retry: { signal },
         cacheSource,
@@ -463,8 +540,8 @@ export class AgentLoop {
         onStreamEvent: (event: ModelStreamEvent) => {
           this.options.onStreamEvent?.(event)
         },
-        pendingCacheEdits: this.cacheEditManager?.consumePendingEdits() ?? undefined,
-        pinnedCacheEdits: this.cacheEditManager?.getPinnedEdits() ?? undefined,
+        pendingCacheEdits: this.currentCacheEditManager?.consumePendingEdits() ?? undefined,
+        pinnedCacheEdits: this.currentCacheEditManager?.getPinnedEdits() ?? undefined,
       }
 
       let response
@@ -482,6 +559,7 @@ export class AgentLoop {
       }
 
       usage = addTokenUsage(usage, response.usage)
+      lastForegroundResponseUsage = response.usage
       await this.emitTurnMetric(modelStartedAt, response.usage ?? EMPTY_TOKEN_USAGE, response.toolCalls.length)
       lastResponseTokenCount = canReuseResponseTokenEstimate
         ? requestTokenCountFromUsage(response.usage)
@@ -551,6 +629,7 @@ export class AgentLoop {
           stopReason: 'max_tokens',
           truncated: true,
           segments: [...responseSegments],
+          statusUsage: lastForegroundResponseUsage,
         })
         if (finished.continueLoop) continue
         return finished.result
@@ -568,6 +647,7 @@ export class AgentLoop {
           turnId,
           signal,
           segments: segmentsWithFinalResponse(responseSegments, response.content),
+          statusUsage: lastForegroundResponseUsage,
         })
         if (finished.continueLoop) continue
         return finished.result
@@ -615,6 +695,7 @@ export class AgentLoop {
           turnId,
           signal,
           segments: segmentsWithFinalResponse(responseSegments, response.content),
+          statusUsage: lastForegroundResponseUsage,
         })
         if (finished.continueLoop) continue
         return finished.result
@@ -668,6 +749,7 @@ export class AgentLoop {
           stopReason: 'max_turns',
           truncated: true,
           segments: content ? [content] : undefined,
+          statusUsage: lastForegroundResponseUsage,
         })
         if (!finished.continueLoop) return finished.result
         return finishResult({
@@ -676,6 +758,7 @@ export class AgentLoop {
           stopReason: 'max_turns',
           truncated: true,
           segments: content ? [content] : undefined,
+          statusUsage: lastForegroundResponseUsage,
         })
       }
 
@@ -1004,9 +1087,12 @@ export class AgentLoop {
 
       const call = calls[index]
       if (!call) break
+      this.assertToolAllowed(call.name)
 
       if (!this.isConcurrencySafe(call)) {
-        const result = await this.options.toolRunner.run(call, this.options.toolContext, signal, turnId)
+        const result = await this.options.toolRunner.run(call, this.options.toolContext, signal, turnId, {
+          hooks: this.activeRunOverrides?.hooks,
+        })
         results.push(result)
         if (result.errorCode === 'aborted' || signal?.aborted) {
           throw new DOMException('The operation was aborted.', 'AbortError')
@@ -1024,7 +1110,9 @@ export class AgentLoop {
       }
 
       const settled = await Promise.allSettled(
-        safeBatch.map((toolCall) => this.options.toolRunner.run(toolCall, this.options.toolContext, signal, turnId)),
+        safeBatch.map((toolCall) => this.options.toolRunner.run(toolCall, this.options.toolContext, signal, turnId, {
+          hooks: this.activeRunOverrides?.hooks,
+        })),
       )
       let firstRejection: unknown
       let sawAbort = false
@@ -1084,10 +1172,17 @@ export class AgentLoop {
   }
 
   private isConcurrencySafe(call: ToolCall): boolean {
-    const tool = this.options.tools.find((candidate) => candidate.name === call.name)
+    const tool = this.currentTools.find((candidate) => candidate.name === call.name)
     if (!tool || tool.isDestructive === true) return false
     if (tool.isConcurrencySafeInput) return tool.isConcurrencySafeInput(call.input)
     return tool.isConcurrencySafe === true && tool.isReadOnly === true
+  }
+
+  private assertToolAllowed(toolName: string): void {
+    if (!this.activeRunOverrides?.allowedTools) return
+    if (!this.activeRunOverrides.allowedTools.has(toolName)) {
+      throw new Error(`Tool ${toolName} is not allowed for this skill command.`)
+    }
   }
 
   private async emitTurnMetric(startedAt: number, usage: TokenUsage, toolCalls: number): Promise<void> {
@@ -1105,7 +1200,7 @@ export class AgentLoop {
 
   private async runUserPromptSubmitHooks(userInput: string, turnId: string, signal?: AbortSignal): Promise<void> {
     const result = await runLifecycleHooks(
-      this.options.hooks?.userPromptSubmit,
+      this.currentHooks?.userPromptSubmit,
       'userPromptSubmit',
       { prompt: userInput },
       this.options.toolContext,
@@ -1122,7 +1217,7 @@ export class AgentLoop {
   ): Promise<void> {
     const hookInput = { ...input } as Record<string, unknown>
     const result = await runLifecycleHooks(
-      this.options.hooks?.[hookName],
+      this.currentHooks?.[hookName],
       hookName,
       hookInput,
       this.options.toolContext,
@@ -1150,9 +1245,10 @@ export class AgentLoop {
     stopReason?: string
     truncated?: boolean
     segments?: string[]
+    statusUsage?: TokenUsage
   }): Promise<{ continueLoop: true } | { continueLoop: false; result: AgentRunResult }> {
     const result = await runLifecycleHooks(
-      this.options.hooks?.stop,
+      this.currentHooks?.stop,
       'stop',
       {
         response: input.content,
@@ -1214,10 +1310,27 @@ export class AgentLoop {
   }
 
   private get activeModel(): ActiveModelRuntime {
-    return this.modelState.current
+    return this.activeRunOverrides?.model ?? this.modelState.current
+  }
+
+  private get currentTools(): Tool[] {
+    return this.activeRunOverrides?.tools ?? this.options.tools
+  }
+
+  private get currentEffort(): 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined {
+    return this.activeRunOverrides?.effort ?? this.options.effort
+  }
+
+  private get currentHooks(): Hooks | undefined {
+    return mergeHooks(this.options.hooks, this.activeRunOverrides?.hooks)
+  }
+
+  private get currentCacheEditManager(): CacheEditManager | undefined {
+    return this.activeRunOverrides?.model ? undefined : this.cacheEditManager
   }
 
   private syncRoleModel(cacheSource: ReturnType<typeof agentCacheSource>): boolean {
+    if (this.activeRunOverrides?.model) return false
     if (this.modelState.fallback && this.isSameModel(this.activeModel, this.modelState.fallback)) {
       return false
     }
@@ -1232,10 +1345,12 @@ export class AgentLoop {
   }
 
   private isPlanModelActive(): boolean {
+    if (this.activeRunOverrides?.model) return false
     return Boolean(this.options.planModel && this.isSameModel(this.activeModel, this.options.planModel))
   }
 
   private activateFallback(cacheSource: ReturnType<typeof agentCacheSource>): boolean {
+    if (this.activeRunOverrides?.model) return false
     const fallback = this.modelState.fallback
     if (!fallback) return false
     if (this.isSameModel(fallback, this.activeModel)) return false
@@ -1246,6 +1361,7 @@ export class AgentLoop {
   }
 
   private retryPrimaryIfReady(cacheSource: ReturnType<typeof agentCacheSource>): boolean {
+    if (this.activeRunOverrides?.model) return false
     if (!this.modelState.fallback) return false
     if (!this.isSameModel(this.activeModel, this.modelState.fallback)) return false
     if (this.isSameModel(this.modelState.primary, this.modelState.fallback)) return false
@@ -1332,10 +1448,12 @@ function finishResult(input: {
   stopReason?: string
   truncated?: boolean
   segments?: string[]
+  statusUsage?: TokenUsage
 }): AgentRunResult {
   return {
     content: input.content,
     usage: input.usage,
+    ...(input.statusUsage ? { statusUsage: input.statusUsage } : {}),
     ...(input.stopReason ? { stopReason: input.stopReason } : {}),
     ...(input.truncated ? { truncated: true } : {}),
     ...(input.segments && input.segments.length > 0 ? { segments: input.segments } : {}),

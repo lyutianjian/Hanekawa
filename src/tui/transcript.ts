@@ -472,7 +472,7 @@ function messageRecordToDisplayItem(
   return {
     kind: record.role === 'user' ? 'user' : record.role === 'assistant' ? 'assistant' : 'system',
     id: record.id,
-    content: record.content,
+    content: record.displayContent ?? record.content,
     ...(record.role === 'assistant' && record.thinkingBlocks && record.thinkingBlocks.length > 0
       ? { thinkingBlocks: record.thinkingBlocks, thinkingDurationMs }
       : {}),

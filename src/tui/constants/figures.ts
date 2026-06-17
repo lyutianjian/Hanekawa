@@ -14,7 +14,7 @@ export const MIDDLE_DOT = '·'             // · (separator in stat lines)
 export const ELLIPSIS = '…'               // …
 
 // ── Indent & prefix constants ──
-export const INDENT_TOOL = 2                   // ToolCallBlock / list nesting paddingLeft
+export const INDENT_TOOL = 0                   // Tool/status rows align with assistant message gutter
 export const THINKING_PREFIX = '*'             // AssistantMessage thinking indicator
 export const CONTENT_PREFIX = '●'         // ● AssistantMessage content indicator
 export const PREFIX_WIDTH = 2                  // Width of prefix column in AssistantMessage

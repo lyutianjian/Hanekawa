@@ -64,6 +64,16 @@ SGR mouse wheel reporting as a fallback for terminals that do not implement
 alternate-scroll mapping; the terminal's native scrollbar may still be hidden by
 the alternate screen.
 
+Tool status rows, collapsed tool-group rows, and subagent task rows render flush
+with the assistant message gutter. Nested tool output still uses the response
+prefix indentation. Successful tool and subagent `●` prefixes use
+`rgb(78,186,101)`; failed prefixes use `rgb(255,107,128)`.
+
+Agent/subagent rows use compact task summaries in the header. Completed rows
+show the routed model, tool-use count, token usage, and duration; Ctrl+O expands
+them to show only the user task as `Prompt` and the subagent output as
+`Response`, never the full internal agent system prompt.
+
 Resume a session:
 
 ```bash
@@ -178,12 +188,40 @@ Skills live in `.myagent/skills/<name>/SKILL.md` with YAML frontmatter:
 ---
 name: debugging
 description: Use when diagnosing bugs
+allowedTools: [Read, Grep, Bash]
+model: powerful
+effort: high
+attachments:
+  - references/checklist.md
+hooks:
+  stop:
+    - command: "echo skill finished"
 ---
 
-Skill instructions go here.
+Skill instructions go here. Use $ARGUMENTS where slash command arguments should appear.
 ```
 
-Skills are discovered at startup and made available through the generic `Skill` tool.
+Skills are discovered at TUI startup and made available in two ways:
+
+- the generic `Skill` tool, which lets the model load a named skill during a turn
+- slash commands named from the skill frontmatter, such as `/debugging args`
+
+Skill slash commands submit the skill body as a normal query in the background
+while the TUI shows only the slash invocation, such as `/debugging args`.
+`$ARGUMENTS` in the skill body is replaced with the slash command arguments;
+when no placeholder is present, non-empty arguments are appended as
+`Arguments: ...`. Skill bodies may include inline shell snippets like
+``!`git status` ``; these run through the normal Bash tool permission gate
+before the query is submitted.
+
+Slash skills can also declare text `attachments`, `hooks`, `allowedTools`,
+`model`, and `effort` in frontmatter. These options apply only to that skill
+turn: `allowedTools` filters the model-visible and executable tool set, `model`
+and `effort` are temporary overrides, and hooks are merged with the session
+hooks for that turn. Attachment paths are UTF-8 text files resolved inside the
+skill directory and appended to the prompt. Built-in slash commands take
+precedence when names conflict. New or changed skill commands require restarting
+the TUI. Image/PDF multimodal attachments are not supported in this stage.
 
 ### Sessions
 

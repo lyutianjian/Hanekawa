@@ -1,11 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import {
   applyCommandSuggestion,
   generateCommandSuggestions,
 } from '../src/tui/suggestions/commandSuggestions.js'
 import type { CommandDefinition } from '../src/commands/types.js'
 import { getCommand, hasCommand, listCommands, registerCommand } from '../src/commands/index.js'
+import { registerSkillCommands } from '../src/commands/skills.js'
 
 function command(overrides: Partial<CommandDefinition> & { name: string }): CommandDefinition {
   return {
@@ -72,4 +76,24 @@ test('command registry supports aliases and hides hidden commands from listings'
   assert.equal(getCommand('aat')?.name, 'autocomplete-alias-target')
   assert.equal(hasCommand('aat'), true)
   assert.equal(listCommands().some((item) => item.name === 'autocomplete-hidden-target'), false)
+})
+
+test('slash command suggestions include registered skill commands', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-command-suggestion-skill-'))
+  try {
+    const skillsDir = path.join(dir, '.myagent', 'skills')
+    await mkdir(path.join(skillsDir, 'suggestion-skill'), { recursive: true })
+    await writeFile(
+      path.join(skillsDir, 'suggestion-skill', 'SKILL.md'),
+      '---\nname: suggestion-skill\ndescription: Skill suggestion\n---\n\nSkill content',
+      'utf8',
+    )
+
+    await registerSkillCommands(dir)
+    const suggestions = generateCommandSuggestions('/suggestion', listCommands())
+
+    assert.ok(suggestions.some((suggestion) => suggestion.displayText === '/suggestion-skill'))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })

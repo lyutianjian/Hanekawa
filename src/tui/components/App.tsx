@@ -3,14 +3,14 @@ import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { Box, Static, snapshotInkFrameForStdout, useStdout } from '../ink.js'
 import type { InkFrameSnapshot } from '../ink.js'
-import type { AgentLoop } from '../../harness/loop.js'
+import type { AgentLoop, ActiveModelRuntime, AgentRunOverrides } from '../../harness/loop.js'
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
 import type { PermissionGate, PermissionMode } from '../../harness/permissions.js'
 import type { PlanModeManager } from '../../harness/planModeManager.js'
 import type { ConfigService, ModelConfig } from '../../config/service.js'
 import { resolveTier, type Tier } from '../../config/routing.js'
 import type { SessionRecord } from '../../harness/types.js'
-import type { SetModelResult } from '../../commands/types.js'
+import type { CommandSubmitQueryOptions, SetModelResult } from '../../commands/types.js'
 import type { TUIDisplayItem, TUIStaticItem } from '../types.js'
 import { useAgentLoop } from '../hooks/useAgentLoop.js'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts.js'
@@ -72,6 +72,7 @@ interface AppProps {
   resolveModelInput: (input: string, currentModelKey: string) => string | undefined
   providerConfig: ConfigService
   createRuntime: (modelKey: string, session: SessionMeta) => AppRuntime
+  createActiveModelRuntime: (modelKey: string) => ActiveModelRuntime
   permissionGate: PermissionGate
   promptProxy: PermissionPromptProxy
   recordProxy: RecordProxy
@@ -101,6 +102,7 @@ export function App({
   resolveModelInput,
   providerConfig,
   createRuntime,
+  createActiveModelRuntime,
   permissionGate,
   promptProxy,
   recordProxy,
@@ -228,6 +230,7 @@ export function App({
     recordProxy,
     existingRecords,
     initialSystemMessages,
+    pricing: runtime.modelConfig.pricing,
     onActiveModelChange: syncActiveModel,
     onInterrupt: denyPending,
     onRestoreInput: restoreInput,
@@ -274,15 +277,63 @@ export function App({
     resetTranscript([])
   }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, resetTranscript])
 
-  const submitPlainInput = useCallback(async (text: string) => {
+  const buildRunOverrides = useCallback((options?: CommandSubmitQueryOptions): AgentRunOverrides | undefined => {
+    if (!options) return undefined
+    let modelOverride: ActiveModelRuntime | undefined
+    let effortOverride = options.effort
+
+    if (options.model) {
+      const modelKey = resolveModelInput(options.model, runtimeRef.current.modelKey)
+      if (!modelKey) {
+        throw new Error(`Unknown model or tier for skill command: ${options.model}`)
+      }
+      const modelConfig = providerConfig.getModel(modelKey)
+      if (!modelConfig) {
+        throw new Error(`Unknown model for skill command: ${options.model}`)
+      }
+      modelOverride = createActiveModelRuntime(modelKey)
+      if (effortOverride) {
+        const clamped = clampEffort(effortOverride, modelConfig.maxEffort)
+        effortOverride = typeof clamped === 'string' ? clamped : undefined
+      }
+    } else if (effortOverride) {
+      const clamped = clampEffort(effortOverride, runtimeRef.current.modelConfig.maxEffort)
+      effortOverride = typeof clamped === 'string' ? clamped : undefined
+    }
+
+    return {
+      ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
+      ...(modelOverride ? { model: modelOverride } : {}),
+      ...(effortOverride ? { effort: effortOverride } : {}),
+      ...(options.hooks ? { hooks: options.hooks } : {}),
+      ...(options.skillName ? { skillName: options.skillName } : {}),
+      ...(options.skillArgs !== undefined ? { skillArgs: options.skillArgs } : {}),
+      ...(options.displayInput !== undefined ? { displayInput: options.displayInput } : {}),
+    }
+  }, [createActiveModelRuntime, providerConfig, resolveModelInput])
+
+  const submitPlainInput = useCallback(async (text: string, options?: CommandSubmitQueryOptions) => {
     setSpinnerColors(sampleSpinnerColors())
     setMode('running')
     try {
-      await submit(text)
+      await submit(text, buildRunOverrides(options))
     } finally {
       setMode('idle')
     }
-  }, [submit])
+  }, [submit, buildRunOverrides])
+
+  const runShellCommand = useCallback(async (command: string) => {
+    const result = await runtimeRef.current.loop.runTool({
+      id: randomUUID(),
+      name: 'Bash',
+      input: { command },
+    })
+    return {
+      ok: result.ok,
+      content: result.content,
+      ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+    }
+  }, [])
 
   useEffect(() => {
     if (!queuedPromptAfterClear || isStreaming || mode !== 'idle') return
@@ -468,6 +519,7 @@ export function App({
     readPlanFile: readCurrentPlanFile,
     openPlanFile: openCurrentPlanFile,
     submitQuery: submitPlainInput,
+    runShellCommand,
     openModelPicker: () => setModelPickerOpen(true),
     openEffortPicker: () => setEffortPickerOpen(true),
     openProviderPanel: () => setProviderPanelOpen(true),
@@ -849,7 +901,6 @@ export function App({
         <StatusLine
           model={runtime.modelConfig.model}
           usage={usage}
-          pricing={runtime.modelConfig.pricing}
           permissionMode={permissionMode}
           hintMessage={hintMessage}
           effortLevel={effortLevel}

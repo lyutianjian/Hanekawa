@@ -42,6 +42,7 @@ No bundler — runs TypeScript directly via `tsx`.
 | `/model [name]` | Show or set the current model |
 | `/session` | Show current session info (ID, CWD) |
 | `/skills` | List available skills with descriptions |
+| `/<skill-name> [args]` | Run a disk skill as a normal query with skill frontmatter options when its name does not conflict with a built-in command |
 | `/compact` | Force context compaction |
 | `/agents reload` | Reload custom sub-agent definitions from `.myagent/agents*` |
 | `/repair` | Repair the current session record stream and invalidate caches |
@@ -283,7 +284,9 @@ Model Context Protocol support via `@modelcontextprotocol/sdk`. Currently `stdio
 
 ### Skills (`src/services/skills/`)
 
-Skills are `SKILL.md` files (YAML frontmatter with `name`+`description`, Markdown body) in `.myagent/skills/<name>/`. Auto-discovered at session start and injected into system prompt. The `Skill` tool allows on-demand invocation during conversation.
+Skills are `SKILL.md` files (YAML frontmatter with `name`+`description`, optional `allowedTools`, `model`, `effort`, `hooks`, and text `attachments`, plus a Markdown body) in `.myagent/skills/<name>/`. Auto-discovered at TUI startup and injected into system prompt. The `Skill` tool allows on-demand invocation during conversation, and each disk skill is also registered as a slash command named from its frontmatter when the name is not already used by a built-in command.
+
+Skill slash commands submit the skill body as a normal query in the background while the TUI shows only the slash invocation, such as `/debugging args`. `$ARGUMENTS` placeholders are replaced with the slash command arguments; if no placeholder exists, non-empty arguments are appended as `Arguments: ...`. Inline shell snippets such as ``!`git status` `` run through the normal Bash tool permission gate before submission. Text attachments are UTF-8 files resolved inside the skill directory and appended to the prompt. `allowedTools` limits model-visible and executable tools, while `model` and `effort` are temporary per-turn overrides. Skill hooks merge with session hooks for only the active skill turn. Built-in slash commands take precedence on name conflicts, and new or changed skill commands require restarting the TUI. Image/PDF multimodal attachments are not supported in this stage.
 
 ### Checkpoints (`src/services/checkpoint/`)
 

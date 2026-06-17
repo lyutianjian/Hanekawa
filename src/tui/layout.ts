@@ -288,7 +288,7 @@ export function estimateDisplayItemRows(
     case 'error':
       return 2 + estimateWrappedRows(displayItemText(item), contentWidth)
     case 'subagent_task':
-      return 2 + estimateWrappedRows(displayItemText(item), contentWidth)
+      return estimateSubagentTaskRows(item, contentWidth, expanded)
     case 'tool_progress':
       return estimateWrappedRows(item.content, Math.max(1, contentWidth - 2))
   }
@@ -338,6 +338,7 @@ function estimateToolCallRows(
   width: number,
   expanded: boolean,
 ): number {
+  if (item.tool === 'Agent') return estimateAgentToolRows(item, width, expanded)
   let rows = 1
   if (item.status === 'denied') rows += 1
   if (item.status === 'error' && item.result) {
@@ -357,6 +358,41 @@ function estimateToolCallRows(
     }
   }
   return rows
+}
+
+function estimateAgentToolRows(
+  item: Extract<TUIDisplayItem, { kind: 'tool_call' }>,
+  width: number,
+  expanded: boolean,
+): number {
+  if (item.status === 'denied') return 2
+  if (item.status === 'error' && item.result) {
+    return 1 + (item.errorCode ? 1 : 0) + estimateWrappedRows(item.result, Math.max(1, width - 3))
+  }
+  if (item.status !== 'done' || !item.result) return 1
+  if (!expanded) return 2
+
+  const prompt = getAgentTaskInput(item.input)
+  const response = item.resultDisplay?.detail ?? item.result
+  return 3
+    + estimateWrappedRows(prompt, Math.max(1, width - 3))
+    + (response ? 1 + estimateWrappedRows(response, Math.max(1, width - 3)) : 0)
+}
+
+function estimateSubagentTaskRows(
+  item: Extract<TUIDisplayItem, { kind: 'subagent_task' }>,
+  width: number,
+  expanded: boolean,
+): number {
+  if (!expanded) return 2
+  const response = item.record.status === 'completed'
+    ? item.record.summary?.trim() ?? ''
+    : item.record.status === 'failed'
+      ? item.record.error?.trim() ?? ''
+      : item.progress?.trim() ?? ''
+  return 3
+    + estimateWrappedRows(item.record.task, Math.max(1, width - 3))
+    + (response ? 1 + estimateWrappedRows(response, Math.max(1, width - 3)) : 0)
 }
 
 function estimateToolGroupRows(
@@ -386,10 +422,16 @@ function displayItemText(item: TUIDisplayItem): string {
     case 'error':
       return item.content
     case 'subagent_task':
-      return `${item.record.subagentType} ${item.record.status} ${item.record.agentId.slice(0, 8)}`
+      return `${item.record.subagentType} ${item.record.status}`
     default:
       return ''
   }
+}
+
+function getAgentTaskInput(input: unknown): string {
+  if (typeof input !== 'object' || input === null) return ''
+  const task = (input as { task?: unknown }).task
+  return typeof task === 'string' ? task : ''
 }
 
 function findCursorLine(lines: WrappedInputLine[], cursorPos: number): number {

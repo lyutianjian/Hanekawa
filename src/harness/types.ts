@@ -34,6 +34,7 @@ export interface ChatMessage {
   id: string
   role: ChatRole
   content: string
+  displayContent?: string
   createdAt: string
   turnId?: string
   model?: string
@@ -152,6 +153,7 @@ export interface SubagentTranscriptRecord {
   type: 'subagent_transcript'
   agentId: string
   subagentType: string
+  model?: string
   parentToolUseId?: string
   transcriptPath?: string
   status?: SubagentTaskStatus
@@ -183,6 +185,7 @@ export interface SubagentTaskRecord {
   type: 'subagent_task'
   agentId: string
   subagentType: string
+  model?: string
   status: SubagentTaskStatus
   description: string
   task: string
@@ -327,6 +330,12 @@ export interface ToolContext {
   _postCompactDiscoveredNames?: Set<string>
   /** Last record ID incorporated into session memory (for session memory compaction). */
   lastSummarizedRecordId?: string
+  /** Current skill slash command invocation metadata, attached only for the active turn. */
+  skillInvocation?: {
+    skillName: string
+    skillArgs: string
+    prompt: string
+  }
 }
 
 export type ToolErrorCode =
@@ -376,6 +385,7 @@ export interface ToolResultMetadata extends Record<string, unknown> {
 
 export interface ToolResultDisplay {
   summary: string
+  headerSuffix?: string
   detail?: string
   taskSnapshot?: TaskDisplaySnapshot
 }
@@ -521,6 +531,7 @@ export interface ModelPricing {
 export interface AgentRunResult {
   content: string
   usage: TokenUsage
+  statusUsage?: TokenUsage
   stopReason?: string
   truncated?: boolean
   segments?: string[]

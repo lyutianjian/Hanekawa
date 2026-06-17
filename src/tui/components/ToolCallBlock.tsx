@@ -1,11 +1,12 @@
 import { Box, Text } from 'ink'
+import type { ReactNode } from 'react'
 import { getToolActivityDescription, getToolDisplay, getToolResultSummary, shouldDisplayToolResult } from '../../tools/display.js'
 import type { ToolResultDisplay } from '../../harness/types.js'
 import { theme } from '../theme.js'
 import type { TUIDisplayItem, ToolCallStatus } from '../types.js'
 import { ResponseBlock } from './ResponseBlock.js'
 import { AnsiText, hasAnsi } from '../ansi.js'
-import { COLLAPSE_LINES, STATUS_DOT } from '../constants/figures.js'
+import { COLLAPSE_LINES, INDENT_TOOL, STATUS_DOT, TREE_LAST } from '../constants/figures.js'
 import { useBlink } from '../hooks/useBlink.js'
 
 interface ToolCallBlockProps {
@@ -22,8 +23,22 @@ export function ToolCallBlock({ item, expanded, animationsEnabled = true, isTran
   const display = getToolDisplay(item.tool, item.input)
   const result = item.result
 
+  if (item.tool === 'Agent') {
+    return (
+      <AgentToolCallBlock
+        item={item}
+        display={display}
+        result={result}
+        statusDot={statusDot}
+        blinkOff={blinkOff}
+        expanded={expanded}
+        isTranscriptMode={isTranscriptMode}
+      />
+    )
+  }
+
   return (
-    <Box flexDirection="column" paddingLeft={2} marginY={0}>
+    <Box flexDirection="column" paddingLeft={INDENT_TOOL} marginY={0}>
       <Box flexDirection="row" flexWrap="nowrap">
         <Box minWidth={2} flexShrink={0}>
           <Text color={statusDot.color} dimColor={item.status === 'pending'}>
@@ -38,6 +53,11 @@ export function ToolCallBlock({ item, expanded, animationsEnabled = true, isTran
         {display.summary && (
           <Box flexShrink={1} minWidth={0}>
             <Text color={theme.dimText}>{` (${display.summary})`}</Text>
+          </Box>
+        )}
+        {item.resultDisplay?.headerSuffix && (
+          <Box flexShrink={0}>
+            <Text color={theme.dimText}> {item.resultDisplay.headerSuffix}</Text>
           </Box>
         )}
       </Box>
@@ -77,6 +97,159 @@ export function ToolCallBlock({ item, expanded, animationsEnabled = true, isTran
       )}
     </Box>
   )
+}
+
+interface AgentToolCallBlockProps {
+  item: Extract<TUIDisplayItem, { kind: 'tool_call' }>
+  display: { name: string; summary: string }
+  result?: string
+  statusDot: { char: string; color: string }
+  blinkOff: boolean
+  expanded?: boolean
+  isTranscriptMode?: boolean
+}
+
+function AgentToolCallBlock({
+  item,
+  display,
+  result,
+  statusDot,
+  blinkOff,
+  expanded,
+  isTranscriptMode = false,
+}: AgentToolCallBlockProps) {
+  const doneSummary = item.resultDisplay?.summary ?? (result ? getToolResultSummary(item.tool, item.input, result, item.status !== 'error') : null)
+  const prompt = getAgentPrompt(item.input)
+  const response = item.resultDisplay?.detail ?? result
+
+  return (
+    <Box flexDirection="column" paddingLeft={INDENT_TOOL} marginY={0}>
+      <AgentHeader
+        display={display}
+        suffix={item.resultDisplay?.headerSuffix}
+        statusDot={statusDot}
+        dimDot={item.status === 'pending'}
+        blinkOff={blinkOff}
+      />
+
+      {item.status === 'denied' && (
+        <AgentTreeLine color={theme.error}>denied</AgentTreeLine>
+      )}
+
+      {item.status === 'error' && result && (
+        <>
+          {item.errorCode && <AgentTreeLine color={theme.error}>error: {item.errorCode}</AgentTreeLine>}
+          <IndentedLines lines={result.split('\n')} color={theme.error} />
+        </>
+      )}
+
+      {item.status === 'done' && result && !expanded && (
+        <AgentTreeLine color={theme.dimText}>
+          {doneSummary ?? 'Done'}{!isTranscriptMode && <Text color={theme.dimText} dimColor> (ctrl+o to expand)</Text>}
+        </AgentTreeLine>
+      )}
+
+      {item.status === 'done' && result && expanded && (
+        <>
+          <AgentSection label="Prompt:" />
+          <IndentedLines lines={prompt.split('\n')} />
+          {response && (
+            <>
+              <AgentSection label="Response:" />
+              <IndentedLines lines={response.split('\n')} />
+            </>
+          )}
+          <AgentTreeLine color={theme.dimText}>{doneSummary ?? 'Done'}</AgentTreeLine>
+          {!isTranscriptMode && (
+            <Box paddingLeft={3}>
+              <Text color={theme.dimText} dimColor>
+                (ctrl+o to collapse)
+              </Text>
+            </Box>
+          )}
+        </>
+      )}
+    </Box>
+  )
+}
+
+function AgentHeader({
+  display,
+  suffix,
+  statusDot,
+  dimDot,
+  blinkOff,
+}: {
+  display: { name: string; summary: string }
+  suffix?: string
+  statusDot: { char: string; color: string }
+  dimDot?: boolean
+  blinkOff: boolean
+}) {
+  return (
+    <Box flexDirection="row" flexWrap="nowrap">
+      <Box minWidth={2} flexShrink={0}>
+        <Text color={statusDot.color} dimColor={dimDot}>
+          {blinkOff ? ' ' : statusDot.char}
+        </Text>
+      </Box>
+      <Box flexShrink={0}>
+        <Text color={theme.toolName} bold wrap="truncate-end">
+          {display.name}
+        </Text>
+      </Box>
+      {display.summary && (
+        <Box flexShrink={1} minWidth={0}>
+          <Text color={theme.dimText}>{`(${display.summary})`}</Text>
+        </Box>
+      )}
+      {suffix && (
+        <Box flexShrink={0}>
+          <Text color={theme.dimText}> {suffix}</Text>
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+function AgentTreeLine({ children, color = theme.dimText }: { children: ReactNode; color?: string }) {
+  return (
+    <Box flexDirection="row" flexWrap="nowrap">
+      <Box flexShrink={0}>
+        <Text color={theme.taskDim}>{TREE_LAST} </Text>
+      </Box>
+      <Box flexShrink={1} minWidth={0}>
+        <Text color={color}>{children}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+function AgentSection({ label }: { label: string }) {
+  return (
+    <Box flexDirection="row" flexWrap="nowrap">
+      <Box flexShrink={0}>
+        <Text color={theme.taskDim}>{TREE_LAST} </Text>
+      </Box>
+      <Box flexShrink={1} minWidth={0}>
+        <Text color={theme.success} bold>{label}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+function IndentedLines({ lines, color = theme.dimText }: { lines: string[]; color?: string }) {
+  return (
+    <Box flexDirection="column" paddingLeft={3}>
+      <DetailLines lines={lines} color={color} />
+    </Box>
+  )
+}
+
+function getAgentPrompt(input: unknown): string {
+  if (typeof input !== 'object' || input === null) return ''
+  const task = (input as { task?: unknown }).task
+  return typeof task === 'string' ? task : ''
 }
 
 export function formatToolCallRunningDescription(tool: string, input: unknown): string {
@@ -210,17 +383,17 @@ function OutputBlock({ tool, input, result, display, expanded, isTranscriptMode 
   )
 }
 
-function DetailLines({ lines }: { lines: string[] }) {
+function DetailLines({ lines, color = theme.dimText }: { lines: string[]; color?: string }) {
   return (
     <>
       {lines.map((line, i) => (
         <Box key={i}>
           {hasAnsi(line) ? (
-            <Text color={theme.dimText}>
+            <Text color={color}>
               <AnsiText>{line}</AnsiText>
             </Text>
           ) : (
-            <Text color={theme.dimText}>{line}</Text>
+            <Text color={color}>{line}</Text>
           )}
         </Box>
       ))}
@@ -237,10 +410,10 @@ export function getStatusDot(status: ToolCallStatus): { char: string; color: str
     case 'approved':
       return { char: STATUS_DOT, color: theme.warning }
     case 'denied':
-      return { char: STATUS_DOT, color: theme.error }
+      return { char: STATUS_DOT, color: theme.statusDotFailed }
     case 'done':
-      return { char: STATUS_DOT, color: theme.success }
+      return { char: STATUS_DOT, color: theme.statusDotSuccess }
     case 'error':
-      return { char: STATUS_DOT, color: theme.error }
+      return { char: STATUS_DOT, color: theme.statusDotFailed }
   }
 }

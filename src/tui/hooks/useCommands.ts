@@ -4,6 +4,8 @@ import { getCommand } from '../../commands/index.js'
 import type {
   CommandContext,
   CommandModelInfo,
+  CommandShellResult,
+  CommandSubmitQueryOptions,
   CommandSubagentCleanupResult,
   CommandSubagentDetails,
   SetModelResult,
@@ -22,7 +24,7 @@ interface UseCommandsOptions {
   model: CommandModelInfo
   setModel: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
   pricing?: ModelPricing
-  usage: { lastTurn: TokenUsage | null; total: TokenUsage }
+  usage: { lastRequest: TokenUsage | null; total: TokenUsage }
   addSystemMessage: (content: string) => void
   clearMessages: () => void | Promise<void>
   clearCachedSections?: () => void
@@ -32,7 +34,8 @@ interface UseCommandsOptions {
   enterPlanMode?: () => void | Promise<void>
   readPlanFile?: () => Promise<{ path: string; content: string | null }>
   openPlanFile?: () => Promise<{ message: string }>
-  submitQuery?: (input: string) => Promise<void>
+  submitQuery?: (input: string, options?: CommandSubmitQueryOptions) => Promise<void>
+  runShellCommand?: (command: string) => Promise<CommandShellResult>
   openModelPicker?: () => void
   openEffortPicker?: () => void
   openProviderPanel?: () => void
@@ -63,6 +66,7 @@ export function useCommands({
   openProviderPanel,
   getEffort,
   setEffort,
+  runShellCommand,
 }: UseCommandsOptions) {
   const { exit } = useApp()
 
@@ -106,6 +110,8 @@ export function useCommands({
   openPlanFileRef.current = openPlanFile
   const submitQueryRef = useRef(submitQuery)
   submitQueryRef.current = submitQuery
+  const runShellCommandRef = useRef(runShellCommand)
+  runShellCommandRef.current = runShellCommand
   const openModelPickerRef = useRef(openModelPicker)
   openModelPickerRef.current = openModelPicker
   const openEffortPickerRef = useRef(openEffortPicker)
@@ -176,6 +182,7 @@ export function useCommands({
         readPlanFile: readPlanFileRef.current,
         openPlanFile: openPlanFileRef.current,
         submitQuery: submitQueryRef.current,
+        runShellCommand: runShellCommandRef.current,
         openModelPicker: openModelPickerRef.current,
         openEffortPicker: openEffortPickerRef.current,
         openProviderPanel: openProviderPanelRef.current,

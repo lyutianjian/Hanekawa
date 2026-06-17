@@ -6,6 +6,7 @@ import {
   commitLiveItemsExcludingThinking,
   commitPrecedingLiveItemsToStatic,
   applyStreamingThinkingPreview,
+  recordsToDisplayItems,
 } from '../src/tui/transcript.js'
 import type { SessionRecord } from '../src/harness/types.js'
 
@@ -17,6 +18,17 @@ function userRecord(content: string): SessionRecord {
     type: 'message',
     role: 'user',
     content,
+    createdAt: new Date().toISOString(),
+  }
+}
+
+function userRecordWithDisplay(content: string, displayContent: string): SessionRecord {
+  return {
+    id: `user-display-${Date.now()}`,
+    type: 'message',
+    role: 'user',
+    content,
+    displayContent,
     createdAt: new Date().toISOString(),
   }
 }
@@ -87,6 +99,15 @@ function simulateSubmit(state: ReturnType<typeof createTranscriptState>, userCon
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe('transcript ordering: tool_result commits user message to static first', () => {
+  it('renders displayContent for restored user messages', () => {
+    const items = recordsToDisplayItems([
+      userRecordWithDisplay('Expanded skill prompt', '/debug hello'),
+    ])
+
+    assert.equal(items[0]?.kind, 'user')
+    assert.equal(items[0]?.content, '/debug hello')
+  })
+
   it('places user message before tool result in staticItems', () => {
     let state = createTranscriptState()
     state = simulateSubmit(state, '列出文件')

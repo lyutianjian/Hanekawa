@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { PermissionGate } from './permissions.js'
-import { runLifecycleHooks, runPreToolUseHooks } from './hooks.js'
+import { mergeHooks, runLifecycleHooks, runPreToolUseHooks } from './hooks.js'
 import { validateToolInput } from './toolValidation.js'
 import { countTextTokens } from '../prompts/budget.js'
 import { wrapInSystemReminder } from './systemReminder.js'
@@ -13,6 +13,10 @@ export interface ToolRunEvents {
 }
 
 type ToolRunRecordListener = (record: SessionRecord) => void
+
+export interface ToolRunOptions {
+  hooks?: ToolHooks
+}
 
 export class ToolRunner {
   private readonly recordListeners = new Set<ToolRunRecordListener>()
@@ -44,13 +48,14 @@ export class ToolRunner {
     return new ToolRunner(this.tools, this.permissionGate, events, this.hooks)
   }
 
-  async run(call: ToolCall, context: ToolContext, signal?: AbortSignal, turnId?: string): Promise<ToolResultRecord> {
+  async run(call: ToolCall, context: ToolContext, signal?: AbortSignal, turnId?: string, options?: ToolRunOptions): Promise<ToolResultRecord> {
     if (signal?.aborted) {
       throw new DOMException('The operation was aborted.', 'AbortError')
     }
 
     const tool = this.tools.find((candidate) => candidate.name === call.name)
     if (!tool) throw new Error(`Unknown tool: ${call.name}`)
+    const activeHooks = mergeHooks(this.hooks, options?.hooks)
 
     const toolUse: ToolUseRecord = {
       id: call.id,
@@ -97,7 +102,7 @@ export class ToolRunner {
           turnId,
           tool.maxResultSizeChars,
         )
-        await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
+        await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal, activeHooks)
         return record
       }
 
@@ -105,7 +110,7 @@ export class ToolRunner {
       await this.emitRecord(this.permissionGate.createApprovalRecord(tool, call.input, approved, turnId))
       if (!approved) {
         const denied = this.result(call, tool.name, false, `User denied permission for ${tool.name}.`, 'permission_denied', undefined, turnId, tool.maxResultSizeChars)
-        await this.emitToolResultAndPostHooks(denied, tool, call.input, executionContext, signal)
+        await this.emitToolResultAndPostHooks(denied, tool, call.input, executionContext, signal, activeHooks)
         return denied
       }
 
@@ -113,11 +118,11 @@ export class ToolRunner {
       // while the permission dialog was open.
       if (signal?.aborted) {
         const aborted = this.result(call, tool.name, false, abortedToolResultContent(signal), 'aborted', undefined, turnId, tool.maxResultSizeChars)
-        await this.emitToolResultAndPostHooks(aborted, tool, call.input, executionContext, signal)
+        await this.emitToolResultAndPostHooks(aborted, tool, call.input, executionContext, signal, activeHooks)
         return aborted
       }
 
-      const preToolHooks = await runPreToolUseHooks(this.hooks.preToolUse, tool, call.input, executionContext, signal)
+      const preToolHooks = await runPreToolUseHooks(activeHooks?.preToolUse, tool, call.input, executionContext, signal)
       syncMutableToolContext(context, executionContext)
       if (!preToolHooks.ok) {
         const blocked = this.result(
@@ -130,14 +135,14 @@ export class ToolRunner {
           turnId,
           tool.maxResultSizeChars,
         )
-        await this.emitToolResultAndPostHooks(blocked, tool, call.input, executionContext, signal)
+        await this.emitToolResultAndPostHooks(blocked, tool, call.input, executionContext, signal, activeHooks)
         return blocked
       }
 
       // Check abort signal again after pre-tool hooks.
       if (signal?.aborted) {
         const aborted = this.result(call, tool.name, false, abortedToolResultContent(signal), 'aborted', undefined, turnId, tool.maxResultSizeChars)
-        await this.emitToolResultAndPostHooks(aborted, tool, call.input, executionContext, signal)
+        await this.emitToolResultAndPostHooks(aborted, tool, call.input, executionContext, signal, activeHooks)
         return aborted
       }
 
@@ -153,14 +158,14 @@ export class ToolRunner {
             // Mapping is best-effort; fall back to plain-text content
           }
         }
-        await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
+        await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal, activeHooks)
         await this.emitAssistantMessageFromMetadata(result.metadata, turnId)
         return record
       } catch (error) {
         syncMutableToolContext(context, executionContext)
         const errorCode = error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'execution_failed'
         const record = this.result(call, tool.name, false, errorCode === 'aborted' ? abortedToolResultContent(signal, error) : error instanceof Error ? error.message : String(error), errorCode, undefined, turnId, tool.maxResultSizeChars)
-        await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
+        await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal, activeHooks)
         return record
       }
     } catch (error) {
@@ -169,7 +174,7 @@ export class ToolRunner {
       }
       syncMutableToolContext(context, executionContext)
       const record = this.result(call, tool.name, false, abortedToolResultContent(signal, error), 'aborted', undefined, turnId, tool.maxResultSizeChars)
-      await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal)
+      await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal, activeHooks)
       return record
     } finally {
       if (progressStarted) {
@@ -202,10 +207,11 @@ export class ToolRunner {
     input: unknown,
     context: ToolContext,
     signal?: AbortSignal,
+    hooks?: ToolHooks,
   ): Promise<void> {
     await this.emitRecord(record)
     const result = await runLifecycleHooks(
-      this.hooks.postToolUse,
+      hooks?.postToolUse,
       'postToolUse',
       {
         tool: tool.name,
@@ -311,10 +317,12 @@ function normalizeToolResultDisplay(display: ToolResultDisplay | undefined): Too
   if (!display) return undefined
   const summary = display.summary.trim()
   if (!summary) return undefined
+  const headerSuffix = display.headerSuffix?.trim()
   const detail = display.detail?.trim()
   const taskSnapshot = normalizeTaskDisplaySnapshot(display.taskSnapshot)
   return {
     summary,
+    ...(headerSuffix ? { headerSuffix } : {}),
     ...(detail ? { detail } : {}),
     ...(taskSnapshot ? { taskSnapshot } : {}),
   }

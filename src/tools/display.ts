@@ -3,6 +3,7 @@ import { createSkillTool } from './skillTool.js'
 import { getBuiltinTools } from './index.js'
 
 const TOOL_SUMMARY_MAX_LENGTH = 120
+const AGENT_TITLE_SUMMARY_MAX_LENGTH = 36
 
 let cachedTools: Map<string, Tool> | undefined
 
@@ -127,11 +128,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function getAgentToolDisplay(input: unknown): ToolDisplay {
   if (!isRecord(input)) return { name: 'Agent', summary: '' }
   const subagentType = typeof input.subagent_type === 'string' ? input.subagent_type : undefined
-  const task = typeof input.task === 'string' ? truncateMiddle(input.task.trim(), 100) : undefined
+  const summary = agentBriefSummary(input)
   return {
     name: subagentType ? `${subagentType} agent` : 'Agent',
-    summary: [subagentType, task].filter(Boolean).join(': '),
+    summary: summary ? truncateMiddle(summary, AGENT_TITLE_SUMMARY_MAX_LENGTH) : '',
   }
+}
+
+function agentBriefSummary(input: Record<string, unknown>): string | undefined {
+  for (const key of ['description', 'name', 'task']) {
+    const value = input[key]
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim()
+    }
+  }
+  return undefined
 }
 
 function getAgentActivityDescription(input: unknown): string | undefined {

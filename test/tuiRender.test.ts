@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { createElement as h } from 'react'
 import { cleanup, render } from 'ink-testing-library'
 import { ToolCallBlock } from '../src/tui/components/ToolCallBlock.js'
+import { CollapsedToolGroup } from '../src/tui/components/CollapsedToolGroup.js'
+import { SubagentTaskBlock } from '../src/tui/components/SubagentTaskBlock.js'
 import { TaskListBlock } from '../src/tui/components/TaskListBlock.js'
 import { Spinner } from '../src/tui/components/Spinner.js'
 import { AskUserQuestionDialog } from '../src/tui/components/AskUserQuestionDialog.js'
@@ -12,6 +14,8 @@ import { ModelPickerDialog, type ModelPickerDecision, type ModelPickerOption } f
 import { RestoreMode, type RestoreDecision } from '../src/tui/components/RestoreMode.js'
 import { MessageList, StaticDisplayItem } from '../src/tui/components/MessageList.js'
 import { TranscriptView } from '../src/tui/components/TranscriptView.js'
+import { StatusLine } from '../src/tui/components/StatusLine.js'
+import { formatWorkedSummary } from '../src/tui/hooks/useAgentLoop.js'
 import type { CheckpointDiffSummary, CheckpointWithDiff } from '../src/services/checkpoint/checkpointService.js'
 import type { PermissionDecisionSource, PermissionRequest, PermissionRule } from '../src/harness/permissions.js'
 import type { TaskDisplaySnapshot } from '../src/harness/types.js'
@@ -74,6 +78,225 @@ test('ToolCallBlock renders collapsed output through response prefix', () => {
   assert.doesNotMatch(frame, /\| /)
 })
 
+test('ToolCallBlock aligns status row with assistant message gutter', () => {
+  const item: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
+    kind: 'tool_call',
+    id: 'tool-1',
+    toolUseId: 'call-1',
+    tool: 'Read',
+    input: { filePath: 'src/index.ts' },
+    status: 'running',
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }
+
+  const frame = render(h(ToolCallBlock, { item, animationsEnabled: false })).lastFrame() ?? ''
+
+  assert.doesNotMatch(frame, /^ /)
+})
+
+test('CollapsedToolGroup aligns status row with assistant message gutter', () => {
+  const toolCall: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
+    kind: 'tool_call',
+    id: 'tool-1',
+    toolUseId: 'call-1',
+    tool: 'Read',
+    input: { filePath: 'src/index.ts' },
+    status: 'running',
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }
+  const item: Extract<TUIDisplayItem, { kind: 'tool_group' }> = {
+    kind: 'tool_group',
+    id: 'tool-group-1',
+    toolCalls: [toolCall],
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }
+
+  const frame = render(h(CollapsedToolGroup, { item, animationsEnabled: false })).lastFrame() ?? ''
+
+  assert.doesNotMatch(frame, /^ /)
+})
+
+test('SubagentTaskBlock aligns tree row with assistant message gutter', () => {
+  const item: Extract<TUIDisplayItem, { kind: 'subagent_task' }> = {
+    kind: 'subagent_task',
+    id: 'subagent-1',
+    record: {
+      id: 'subagent-task-1',
+      type: 'subagent_task',
+      agentId: 'agent-12345678',
+      subagentType: 'explore',
+      status: 'completed',
+      description: 'Map files',
+      task: 'Map files',
+      createdAt: '2026-05-31T00:00:00.000Z',
+    },
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }
+
+  const frame = render(h(SubagentTaskBlock, { item })).lastFrame() ?? ''
+
+  assert.doesNotMatch(frame, /^ /)
+})
+
+test('Agent tool collapsed view shows compact prompt summary, model, and stats', () => {
+  const item: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
+    kind: 'tool_call',
+    id: 'tool-agent-1',
+    toolUseId: 'call-agent-1',
+    tool: 'Agent',
+    input: {
+      subagent_type: 'explore',
+      description: 'Demo task display',
+      task: 'This is the complete task prompt that should only appear in the expanded prompt area.',
+    },
+    status: 'done',
+    result: 'Hello, I am a demo subagent!',
+    resultDisplay: {
+      summary: 'Done (0 tool uses · 7.2k tokens · 1s)',
+      headerSuffix: 'mimo-v2.5',
+    },
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }
+
+  const frame = render(h(ToolCallBlock, { item })).lastFrame() ?? ''
+
+  assert.match(frame, /explore agent\(Demo task display\) mimo-v2\.5/)
+  assert.match(frame, /Done \(0 tool uses · 7\.2k tokens · 1s\)/)
+  assert.doesNotMatch(frame, /complete task prompt/)
+  assert.match(frame, /ctrl\+o to expand/)
+})
+
+test('Agent tool expanded view renders prompt then response then done summary', () => {
+  const item: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
+    kind: 'tool_call',
+    id: 'tool-agent-1',
+    toolUseId: 'call-agent-1',
+    tool: 'Agent',
+    input: {
+      subagent_type: 'explore',
+      description: 'Demo task display',
+      task: 'Just say "Hello, I am a demo subagent!" and nothing else.',
+    },
+    status: 'done',
+    result: 'Hello, I am a demo subagent!',
+    resultDisplay: {
+      summary: 'Done (0 tool uses · 7.2k tokens · 1s)',
+      headerSuffix: 'mimo-v2.5',
+    },
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }
+
+  const frame = render(h(ToolCallBlock, { item, expanded: true })).lastFrame() ?? ''
+  const promptIndex = frame.indexOf('Prompt:')
+  const taskIndex = frame.indexOf('Just say "Hello, I am a demo subagent!"')
+  const responseIndex = frame.indexOf('Response:')
+  const resultIndex = frame.indexOf('Hello, I am a demo subagent!', responseIndex)
+  const doneIndex = frame.lastIndexOf('Done (0 tool uses · 7.2k tokens · 1s)')
+
+  assert.ok(promptIndex >= 0, 'prompt label should render')
+  assert.ok(taskIndex > promptIndex, 'task should render after prompt label')
+  assert.ok(responseIndex > taskIndex, 'response label should render after task')
+  assert.ok(resultIndex > responseIndex, 'response should render after response label')
+  assert.ok(doneIndex > resultIndex, 'done summary should render after response')
+})
+
+test('SubagentTaskBlock collapsed view shows compact title, model, and stats', () => {
+  const item: Extract<TUIDisplayItem, { kind: 'subagent_task' }> = {
+    kind: 'subagent_task',
+    id: 'subagent-1',
+    record: {
+      id: 'subagent-task-1',
+      type: 'subagent_task',
+      agentId: 'agent-12345678',
+      subagentType: 'explore',
+      model: 'mimo-v2.5',
+      status: 'completed',
+      description: 'Demo task display',
+      task: 'Long prompt that should not appear while collapsed.',
+      summary: 'Hello, I am a demo subagent!',
+      toolUseCount: 0,
+      usage: { inputTokens: 7000, cacheReadInputTokens: 0, outputTokens: 200 },
+      durationMs: 1000,
+      createdAt: '2026-05-31T00:00:00.000Z',
+    },
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }
+
+  const frame = render(h(SubagentTaskBlock, { item })).lastFrame() ?? ''
+
+  assert.match(frame, /explore agent\(Demo task display\) mimo-v2\.5/)
+  assert.match(frame, /Done \(0 tool uses · 7\.2k tokens · 1s\)/)
+  assert.doesNotMatch(frame, /Long prompt/)
+  assert.doesNotMatch(frame, /agent-12345678/)
+})
+
+test('SubagentTaskBlock expanded view renders prompt and response without agent system prompt', () => {
+  const item: Extract<TUIDisplayItem, { kind: 'subagent_task' }> = {
+    kind: 'subagent_task',
+    id: 'subagent-1',
+    record: {
+      id: 'subagent-task-1',
+      type: 'subagent_task',
+      agentId: 'agent-12345678',
+      subagentType: 'explore',
+      model: 'mimo-v2.5',
+      status: 'completed',
+      description: 'Demo task display',
+      task: 'Just say "Hello, I am a demo subagent!" and nothing else.',
+      summary: 'Hello, I am a demo subagent!',
+      toolUseCount: 0,
+      usage: { inputTokens: 7000, cacheReadInputTokens: 0, outputTokens: 200 },
+      durationMs: 1000,
+      createdAt: '2026-05-31T00:00:00.000Z',
+    },
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }
+
+  const frame = render(h(SubagentTaskBlock, { item, expanded: true })).lastFrame() ?? ''
+
+  assert.match(frame, /Prompt:/)
+  assert.match(frame, /Just say "Hello, I am a demo subagent!"/)
+  assert.match(frame, /Response:/)
+  assert.match(frame, /Hello, I am a demo subagent!/)
+  assert.match(frame, /Done \(0 tool uses · 7\.2k tokens · 1s\)/)
+  assert.doesNotMatch(frame, /READ-ONLY MODE/)
+})
+
+test('TranscriptView renders subagent prompt and response expanded', () => {
+  const items: TUIDisplayItem[] = [{
+    kind: 'subagent_task',
+    id: 'subagent-1',
+    record: {
+      id: 'subagent-task-1',
+      type: 'subagent_task',
+      agentId: 'agent-12345678',
+      subagentType: 'explore',
+      model: 'mimo-v2.5',
+      status: 'completed',
+      description: 'Demo task display',
+      task: 'Transcript prompt',
+      summary: 'Transcript response',
+      toolUseCount: 1,
+      usage: { inputTokens: 1000, cacheReadInputTokens: 0, outputTokens: 100 },
+      durationMs: 1000,
+      createdAt: '2026-05-31T00:00:00.000Z',
+    },
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }]
+
+  const frame = render(h(TranscriptView, {
+    items,
+    scrollOffsetRows: 0,
+    onScrollOffsetRowsChange: () => {},
+    onExit: () => {},
+  })).lastFrame() ?? ''
+
+  assert.match(frame, /Prompt:/)
+  assert.match(frame, /Transcript prompt/)
+  assert.match(frame, /Response:/)
+  assert.match(frame, /Transcript response/)
+})
+
 test('TaskListBlock renders completed, active, pending, and blocked tasks', () => {
   const snapshot: TaskDisplaySnapshot = {
     counts: { total: 4, remaining: 3, pending: 2, inProgress: 1, completed: 1 },
@@ -118,6 +341,50 @@ test('Spinner renders current task text and task snapshot without generated prom
   assert.match(frame, /Polishing tool output/)
   assert.doesNotMatch(frame, /Generating\.\.\./)
   assert.doesNotMatch(frame, /Vibing\.\.\./)
+})
+
+test('StatusLine renders per-request tokens without cost', () => {
+  const frame = render(h(StatusLine, {
+    model: 'mimo-v2.5',
+    usage: {
+      lastRequest: { inputTokens: 66_300, cacheReadInputTokens: 1_400_000, outputTokens: 23_900 },
+      total: { inputTokens: 120_000, cacheReadInputTokens: 2_000_000, outputTokens: 50_000 },
+    },
+    permissionMode: 'default',
+    contextWindow: 1_000_000,
+  })).lastFrame() ?? ''
+
+  assert.match(frame, /146\.6%/)
+  assert.match(frame, /1\.5M\/1\.0M/)
+  assert.match(frame, /hit:1\.4M/)
+  assert.match(frame, /in:66\.3K/)
+  assert.match(frame, /out:23\.9K/)
+  assert.doesNotMatch(frame, /USD/)
+  assert.doesNotMatch(frame, /Cost/)
+})
+
+test('worked summary renders total-turn cost when pricing is available', () => {
+  assert.equal(
+    formatWorkedSummary(
+      '4m 23s',
+      { inputTokens: 1_000, cacheReadInputTokens: 2_000, outputTokens: 500 },
+      {
+        inputPerMillionTokens: 3,
+        cacheReadInputPerMillionTokens: 0.3,
+        outputPerMillionTokens: 15,
+        currency: 'USD',
+      },
+    ),
+    '✻ Worked for 4m 23s · Cost: USD 0.0111',
+  )
+  assert.equal(
+    formatWorkedSummary(
+      '4m 23s',
+      { inputTokens: 1_000, cacheReadInputTokens: 2_000, outputTokens: 500 },
+      undefined,
+    ),
+    '✻ Worked for 4m 23s',
+  )
 })
 
 test('TranscriptView renders provided prompt-order items expanded', () => {

@@ -1,11 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { randomUUID } from 'node:crypto'
 import type { AgentLoop } from '../../harness/loop.js'
-import type { ActiveModelRuntime } from '../../harness/loop.js'
+import type { ActiveModelRuntime, AgentRunOverrides } from '../../harness/loop.js'
 import type { SessionStore } from '../../sessions/service.js'
 import type { PermissionGate } from '../../harness/permissions.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import type {
+  AgentRunResult,
+  ModelPricing,
   SessionRecord,
   ModelStreamEvent,
   TaskDisplaySnapshot,
@@ -32,6 +34,7 @@ import {
   type TuiTranscriptState,
 } from '../transcript.js'
 import { rollbackInterruptedPromptIfSynthetic } from '../interruptRollback.js'
+import { calculateTokenCost, hasCompletePricing } from '../../harness/usage.js'
 
 export { isHiddenToolCall, recordsToDisplayItems } from '../transcript.js'
 
@@ -45,6 +48,7 @@ interface UseAgentLoopOptions {
   recordProxy: RecordProxy
   existingRecords: SessionRecord[]
   initialSystemMessages?: TUIDisplayItem[]
+  pricing?: ModelPricing
   cwd?: string
   onRecordExternal?: (record: SessionRecord) => void
   onActiveModelChange?: (model: Omit<ActiveModelRuntime, 'provider'>) => void
@@ -60,6 +64,7 @@ export function useAgentLoop({
   recordProxy,
   existingRecords,
   initialSystemMessages = [],
+  pricing,
   cwd,
   onRecordExternal,
   onActiveModelChange,
@@ -72,7 +77,7 @@ export function useAgentLoop({
   const [transcriptGeneration, setTranscriptGeneration] = useState(0)
   const [isStreaming, setIsStreaming] = useState(false)
   const [usage, setUsage] = useState<TUIUsage>({
-    lastTurn: null,
+    lastRequest: null,
     total: createEmptyUsage(),
   })
   const [spinnerSubText, setSpinnerSubText] = useState<string | undefined>()
@@ -123,7 +128,7 @@ export function useAgentLoop({
 
   useEffect(() => {
     setUsage({
-      lastTurn: null,
+      lastRequest: null,
       total: createEmptyUsage(),
     })
     lastToolUseIdRef.current.clear()
@@ -147,7 +152,7 @@ export function useAgentLoop({
   }, [])
 
   const submit = useCallback(
-    async (input: string) => {
+    async (input: string, options?: AgentRunOverrides) => {
       // Move any live items (e.g. thinking blocks from the previous turn) to static
       setTranscript((prev) => commitLiveItemsToStatic(prev))
 
@@ -158,7 +163,7 @@ export function useAgentLoop({
       const userMsg: TUIDisplayItem = {
         kind: 'user',
         id: messageId,
-        content: input,
+        content: options?.displayInput ?? input,
         createdAt: new Date().toISOString(),
       }
       setTranscript((prev) => ({
@@ -196,13 +201,15 @@ export function useAgentLoop({
       abortControllerRef.current = ac
       didRollbackRef.current = false
       loopStartRef.current = Date.now()
+      let completedResult: AgentRunResult | undefined
 
       try {
-        const result = await loop.run(input, ac.signal, messageId)
+        const result = await loop.run(input, ac.signal, messageId, options)
+        completedResult = result
 
         // Update usage
         setUsage((prev) => ({
-          lastTurn: result.usage,
+          lastRequest: result.statusUsage ?? null,
           total: addTokenUsage(prev.total, result.usage),
         }))
       } catch (err: unknown) {
@@ -255,13 +262,14 @@ export function useAgentLoop({
           const min = Math.floor(totalSec / 60)
           const sec = totalSec % 60
           const duration = min > 0 ? `${min}m ${sec}s` : `${sec}s`
+          const workedSummary = formatWorkedSummary(duration, completedResult?.usage, pricing)
           // Append to liveSystemItems so duration renders AFTER thinking
           // blocks (in live area), not before them (in static area).
           // Commits to static at the start of the next turn.
           setTranscript((prev) => appendLiveSystemItem(prev, {
             kind: 'system',
             id: randomUUID(),
-            content: `✻ Worked for ${duration}`,
+            content: workedSummary,
             createdAt: new Date().toISOString(),
           }))
         }
@@ -280,7 +288,7 @@ export function useAgentLoop({
         }
       }
     },
-    [loop, store, session.id, onActiveModelChange, appendStaticItem, onRestoreInput],
+    [loop, store, session.id, onActiveModelChange, appendStaticItem, onRestoreInput, pricing],
   )
 
   const handleProgress = useCallback((event: ToolProgressEvent) => {
@@ -634,4 +642,17 @@ function createEmptyUsage(): TokenUsage {
     cacheReadInputTokens: 0,
     outputTokens: 0,
   }
+}
+
+export function formatWorkedSummary(duration: string, usage: TokenUsage | undefined, pricing: ModelPricing | undefined): string {
+  const base = `✻ Worked for ${duration}`
+  if (!usage || !hasCompletePricing(pricing)) return base
+  const currency = pricing.currency ?? 'USD'
+  return `${base} · Cost: ${currency} ${formatCost(calculateTokenCost(usage, { ...pricing, currency }))}`
+}
+
+function formatCost(cost: number): string {
+  if (cost === 0) return '0'
+  if (cost < 0.000001) return cost.toExponential(4)
+  return cost.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')
 }

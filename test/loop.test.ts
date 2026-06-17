@@ -109,6 +109,11 @@ test('agent loop appends user and assistant messages', async () => {
     inputTokens: 20,
     outputTokens: 30,
   })
+  assert.deepEqual(response.statusUsage, {
+    cacheReadInputTokens: 10,
+    inputTokens: 20,
+    outputTokens: 30,
+  })
   assert.equal(records.filter((record) => record.type === 'message').length, 2)
   assert.equal(metrics.length, 1)
   assert.equal(metrics[0]?.event, 'turn')
@@ -116,6 +121,193 @@ test('agent loop appends user and assistant messages', async () => {
   assert.equal(metrics[0]?.response_tokens, 30)
   assert.equal(metrics[0]?.cache_read_tokens, 10)
   assert.equal(metrics[0]?.tool_calls, 0)
+})
+
+test('agent loop applies per-run allowed tools to model requests', async () => {
+  const records: SessionRecord[] = []
+  const tools = [testTool('AllowedTool'), testTool('BlockedTool')]
+  let seenRequest: ModelRequest | undefined
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      seenRequest = request
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  await loop.run('hello', undefined, undefined, { allowedTools: ['AllowedTool'] })
+
+  assert.deepEqual(seenRequest?.tools?.map((tool) => tool.name), ['AllowedTool'])
+})
+
+test('agent loop stores display input while sending real prompt to the model', async () => {
+  const records: SessionRecord[] = []
+  let seenRequest: ModelRequest | undefined
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      seenRequest = request
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  await loop.run('Expanded skill prompt', undefined, undefined, {
+    displayInput: '/debug hello',
+  })
+
+  const userRecord = records.find((record) => record.type === 'message' && record.role === 'user')
+  assert.equal(userRecord?.type, 'message')
+  if (userRecord?.type === 'message') {
+    assert.equal(userRecord.content, 'Expanded skill prompt')
+    assert.equal(userRecord.displayContent, '/debug hello')
+  }
+  assert.equal(seenRequest?.messages.at(-1)?.content, 'Expanded skill prompt')
+})
+
+test('agent loop rejects unknown per-run allowed tools before appending records', async () => {
+  const records: SessionRecord[] = []
+  const tools = [testTool('AllowedTool')]
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      throw new Error('provider should not run')
+    },
+  }
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  await assert.rejects(
+    () => loop.run('hello', undefined, undefined, { allowedTools: ['MissingTool'] }),
+    /Unknown allowed tool/,
+  )
+  assert.equal(records.length, 0)
+})
+
+test('agent loop applies per-run model and effort without changing later turns', async () => {
+  const records: SessionRecord[] = []
+  const seen: Array<{ provider: string; model: string; effort?: string }> = []
+  const primaryProvider: ModelProvider = {
+    name: 'primary',
+    async createMessage(request) {
+      seen.push({ provider: 'primary', model: request.model, effort: request.effort })
+      return { content: 'primary done', toolCalls: [] }
+    },
+  }
+  const overrideProvider: ModelProvider = {
+    name: 'override',
+    async createMessage(request) {
+      seen.push({ provider: 'override', model: request.model, effort: request.effort })
+      return { content: 'override done', toolCalls: [] }
+    },
+  }
+  const tools: Tool[] = []
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider: primaryProvider,
+    model: 'primary-model',
+    modelKey: 'primary',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    effort: 'low',
+  })
+
+  await loop.run('skill turn', undefined, undefined, {
+    model: { provider: overrideProvider, model: 'override-model', modelKey: 'override', providerName: 'override' },
+    effort: 'xhigh',
+  })
+  await loop.run('normal turn')
+
+  assert.deepEqual(seen, [
+    { provider: 'override', model: 'override-model', effort: 'xhigh' },
+    { provider: 'primary', model: 'primary-model', effort: 'low' },
+  ])
+})
+
+test('agent loop merges per-run hooks only for the active turn', async () => {
+  const records: SessionRecord[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    hooks: {
+      userPromptSubmit: [{
+        command: `${JSON.stringify(process.execPath)} -e "console.log('global hook')"`,
+      }],
+    },
+  })
+
+  await loop.run('skill turn', undefined, undefined, {
+    skillName: 'debugging',
+    skillArgs: 'args',
+    displayInput: '/debugging args',
+    hooks: {
+      userPromptSubmit: [{
+        command: `${JSON.stringify(process.execPath)} -e "let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end', () => { const data = JSON.parse(input); console.log('skill hook:' + data.skillName + ':' + data.skillArgs + ':' + data.prompt) })"`,
+      }],
+    },
+  })
+  await loop.run('normal turn')
+
+  const hookMessages = records
+    .filter((record) => record.type === 'message' && record.role === 'user' && record.content.includes('userPromptSubmit hook output'))
+    .map((record) => record.type === 'message' ? record.content : '')
+  assert.match(hookMessages[0] ?? '', /global hook/)
+  assert.match(hookMessages[0] ?? '', /skill hook:debugging:args:skill turn/)
+  assert.doesNotMatch(hookMessages[0] ?? '', /\/debugging args/)
+  assert.match(hookMessages[1] ?? '', /global hook/)
+  assert.doesNotMatch(hookMessages[1] ?? '', /skill hook/)
 })
 
 test('agent loop filters deferred tools only when provider supports dynamic ToolSearch', async () => {
@@ -1289,7 +1481,80 @@ test('agent loop includes sub-agent transcript usage in returned turn usage', as
     cacheReadInputTokens: 27,
     outputTokens: 39,
   })
+  assert.deepEqual(result.statusUsage, {
+    inputTokens: 4,
+    cacheReadInputTokens: 5,
+    outputTokens: 6,
+  })
   assert.ok(records.some((record) => record.type === 'subagent_transcript'))
+})
+
+test('agent loop excludes compact summarizer usage from status usage', async () => {
+  const records: SessionRecord[] = [
+    {
+      id: 'old-user',
+      type: 'message',
+      role: 'user',
+      content: 'old context ' + 'x'.repeat(3000),
+      createdAt: '2026-05-24T00:00:00.000Z',
+    },
+    {
+      id: 'old-assistant',
+      type: 'message',
+      role: 'assistant',
+      content: 'old answer',
+      createdAt: '2026-05-24T00:00:01.000Z',
+    },
+  ]
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      if (request.cacheSource === 'compact') {
+        return {
+          content: 'compact summary',
+          toolCalls: [],
+          usage: { inputTokens: 100, cacheReadInputTokens: 200, outputTokens: 300 },
+        }
+      }
+      return {
+        content: 'main response',
+        toolCalls: [],
+        usage: { inputTokens: 1, cacheReadInputTokens: 2, outputTokens: 3 },
+      }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    contextManagement: {
+      contextWindow: 1000,
+      summaryOutputTokens: 0,
+      autoCompactBufferTokens: 0,
+      autoCompactThresholdRatio: 0.5,
+    },
+    recordStream: recordStreamFor(records),
+  })
+
+  const result = await loop.run('continue')
+
+  assert.deepEqual(result.usage, {
+    inputTokens: 101,
+    cacheReadInputTokens: 202,
+    outputTokens: 303,
+  })
+  assert.deepEqual(result.statusUsage, {
+    inputTokens: 1,
+    cacheReadInputTokens: 2,
+    outputTokens: 3,
+  })
+  assert.ok(records.some((record) => record.type === 'compact_boundary'))
 })
 
 test('agent loop consumes pending post-compact restore after a successful build', async () => {

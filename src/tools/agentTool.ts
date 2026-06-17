@@ -341,11 +341,10 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
     },
     getToolUseSummary(input) {
       const value = typeof input === 'object' && input !== null
-        ? input as { task?: unknown; subagent_type?: unknown }
+        ? input as { description?: unknown; name?: unknown; task?: unknown }
         : undefined
-      const subagentType = typeof value?.subagent_type === 'string' ? value.subagent_type : undefined
-      const task = typeof value?.task === 'string' ? truncateMiddle(value.task.trim(), 100) : undefined
-      return [subagentType, task].filter(Boolean).join(': ') || null
+      const summary = agentBriefSummary(value)
+      return summary ? truncateMiddle(summary, 36) : null
     },
     getActivityDescription(input) {
       const subagentType = typeof input === 'object' && input !== null
@@ -373,8 +372,10 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
         const runInBackground = parsed.run_in_background ?? agentDefinition.background ?? false
         if (runInBackground) {
           const transcriptPath = getSubagentTranscriptPath(options.cwd, context.sessionId, subAgentId)
+          const plannedModel = resolveSubagentModelLabel(options, parsed.subagent_type, agentDefinition)
           await appendSubagentTaskRecord(context, parsed, subAgentId, 'running', {
             transcriptPath,
+            ...(plannedModel ? { model: plannedModel } : {}),
             ...plannedIsolationDetails(options, agentDefinition, context.sessionId, subAgentId),
           })
           void runBackgroundSubagent({
@@ -431,10 +432,14 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           ok: true,
           content,
           metadata: {
-            display: { summary: doneSummary },
+            display: {
+              summary: doneSummary,
+              ...(run.transcriptRecord.model ? { headerSuffix: run.transcriptRecord.model } : {}),
+            },
             subagent: {
               type: parsed.subagent_type,
               agentId: subAgentId,
+              ...(run.transcriptRecord.model ? { model: run.transcriptRecord.model } : {}),
               usage: run.result.usage,
               toolUseCount: run.transcriptRecord.toolUseCount,
               durationMs,
@@ -677,6 +682,7 @@ async function runSubagent({
         type: 'subagent_transcript',
         agentId: subAgentId,
         subagentType: parsed.subagent_type,
+        model: subagentRuntime.model,
         parentToolUseId: context.currentToolUseId,
         ...(transcriptPath ? { transcriptPath } : {}),
         status: 'completed',
@@ -729,6 +735,7 @@ async function runBackgroundSubagent(input: {
     await context.appendRecord?.(run.transcriptRecord)
     await appendSubagentTaskRecord(context, parsed, subAgentId, 'completed', {
       transcriptPath,
+      ...(run.transcriptRecord.model ? { model: run.transcriptRecord.model } : {}),
       summary: run.transcriptRecord.summary,
       usage: run.result.usage,
       toolUseCount: run.transcriptRecord.toolUseCount,
@@ -748,8 +755,10 @@ async function runBackgroundSubagent(input: {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const status: SubagentTaskStatus = errorCodeFor(error) === 'aborted' ? 'cancelled' : 'failed'
+    const failedModel = resolveSubagentModelLabel(options, parsed.subagent_type, agentDefinition)
     await appendSubagentTaskRecord(context, parsed, subAgentId, status, {
       transcriptPath,
+      ...(failedModel ? { model: failedModel } : {}),
       ...plannedIsolationDetails(options, agentDefinition, context.sessionId, subAgentId),
       error: message,
     })
@@ -771,6 +780,7 @@ async function appendSubagentTaskRecord(
   status: SubagentTaskStatus,
   details: {
     transcriptPath?: string
+    model?: string
     summary?: string
     error?: string
     usage?: TokenUsage
@@ -789,6 +799,7 @@ async function appendSubagentTaskRecord(
     type: 'subagent_task',
     agentId: subAgentId,
     subagentType: parsed.subagent_type,
+    ...(details.model ? { model: details.model } : {}),
     status,
     description: subagentDescription(parsed),
     task: parsed.task,
@@ -813,6 +824,15 @@ async function appendSubagentTaskRecord(
 
 function subagentDescription(input: AgentInput): string {
   return input.description?.trim() || input.name?.trim() || truncateMiddle(input.task.trim(), 80)
+}
+
+function agentBriefSummary(input: { description?: unknown; name?: unknown; task?: unknown } | undefined): string | undefined {
+  if (!input) return undefined
+  for (const key of ['description', 'name', 'task'] as const) {
+    const value = input[key]
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim()
+  }
+  return undefined
 }
 
 function formatBackgroundCompletionMessage(
@@ -966,6 +986,18 @@ function resolveSubagentRuntime(
   }
 
   return options.resolveSubagentModel?.(subagentType) ?? parentRuntime
+}
+
+function resolveSubagentModelLabel(
+  options: CreateAgentToolOptions,
+  subagentType: string,
+  definition: BaseAgentDefinition,
+): string | undefined {
+  try {
+    return resolveSubagentRuntime(options, subagentType, definition).model
+  } catch {
+    return undefined
+  }
 }
 
 function resolveSubagentPermissionMode(

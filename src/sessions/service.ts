@@ -763,7 +763,7 @@ export class SessionStore {
       shortId: existing?.shortId ?? sessionId.slice(0, 12),
       createdAt: existing?.createdAt || records[0]?.createdAt || now,
       updatedAt: lastRecord?.createdAt ?? existing?.updatedAt ?? now,
-      title: existing?.title ?? firstUserMessage?.content.slice(0, 60),
+      title: existing?.title ?? getMessageDisplayContent(firstUserMessage)?.slice(0, 60),
       messageCount: messages.length,
       ...(existing?.checkpoints ? { checkpoints: existing.checkpoints } : {}),
       ...(existing?.compactFailureCount ? { compactFailureCount: existing.compactFailureCount } : {}),
@@ -775,7 +775,7 @@ export class SessionStore {
     const isMessage = record.type === 'message'
     const title = current.title ?? (
       isMessage && record.role === 'user'
-        ? record.content.slice(0, 60)
+        ? getRequiredMessageDisplayContent(record).slice(0, 60)
         : undefined
     )
     return {
@@ -920,6 +920,14 @@ export class SessionStore {
       // OTLP export is best-effort and should not surface as an unhandled rejection.
     })
   }
+}
+
+function getMessageDisplayContent(record: (SessionRecord & { type: 'message' }) | undefined): string | undefined {
+  return record?.displayContent ?? record?.content
+}
+
+function getRequiredMessageDisplayContent(record: SessionRecord & { type: 'message' }): string {
+  return record.displayContent ?? record.content
 }
 
 function inferTurnInputTokens(turn: Extract<SessionMetric, { event: 'turn' }>): number {

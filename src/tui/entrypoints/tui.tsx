@@ -32,6 +32,7 @@ import { logDiagnostics, summarizeDiagnosticsForTui } from '../../harness/diagno
 import { SkillsService } from '../../services/skills/skillsService.js'
 import { AgentDefinitionLoader } from '../../services/agents/agentDefinitionLoader.js'
 import { registerBuiltinCommands } from '../../commands/index.js'
+import { registerSkillCommands } from '../../commands/skills.js'
 import {
   loadMcpConfig,
   connectManagedMcpServer,
@@ -240,6 +241,7 @@ async function main() {
   }
 
   registerBuiltinCommands()
+  await registerSkillCommands(cwd)
 
   // Create proxies - React hooks will inject real handlers after mount
   const promptProxy = createPromptProxy()
@@ -479,6 +481,7 @@ async function main() {
       resolveModelInput={(input, currentModelKey) => config.resolveModelInput(input, { currentModelKey })}
       providerConfig={config}
       createRuntime={createRuntime}
+      createActiveModelRuntime={createActiveModelRuntime}
       permissionGate={permissionGate}
       promptProxy={promptProxy}
       recordProxy={recordProxy}

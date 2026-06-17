@@ -1,7 +1,6 @@
 import { Box, Text } from 'ink'
 import { theme } from '../theme.js'
 import type { TUIUsage } from '../types.js'
-import type { ModelPricing } from '../../harness/types.js'
 import type { PermissionMode } from '../../harness/permissions.js'
 
 const BAR_WIDTH = 20
@@ -29,14 +28,13 @@ const MODE_INDICATOR: Record<string, { icon: string; label: string; color: strin
 interface StatusLineProps {
   model: string
   usage: TUIUsage
-  pricing?: ModelPricing
   permissionMode: PermissionMode
   hintMessage?: string | null
   effortLevel?: string
   contextWindow?: number
 }
 
-export function StatusLine({ model, usage, pricing, permissionMode, hintMessage, effortLevel, contextWindow }: StatusLineProps) {
+export function StatusLine({ model, usage, permissionMode, hintMessage, effortLevel, contextWindow }: StatusLineProps) {
   const effortSymbol = effortLevel ? EFFORT_SYMBOLS[effortLevel] : undefined
   const modeInfo = permissionMode !== 'default' ? MODE_INDICATOR[permissionMode] : undefined
 
@@ -45,7 +43,7 @@ export function StatusLine({ model, usage, pricing, permissionMode, hintMessage,
       <Box justifyContent="space-between">
         <Text color={theme.subtleText}>
           {model}
-          {'  '}{formatBar(usage, contextWindow)}{'  '}{formatStats(usage, contextWindow, pricing)}
+          {'  '}{formatBar(usage, contextWindow)}{'  '}{formatStats(usage, contextWindow)}
         </Text>
         {effortSymbol && (
           <Text color={theme.subtleText}>{effortSymbol} {effortLevel}</Text>
@@ -67,8 +65,8 @@ export function StatusLine({ model, usage, pricing, permissionMode, hintMessage,
 }
 
 function formatBar(usage: TUIUsage, contextWindow?: number): string {
-  if (!contextWindow || !usage.lastTurn) return ''
-  const used = usage.lastTurn.inputTokens + usage.lastTurn.cacheReadInputTokens
+  if (!contextWindow || !usage.lastRequest) return ''
+  const used = usage.lastRequest.inputTokens + usage.lastRequest.cacheReadInputTokens
   const pct = Math.min(1, used / contextWindow)
   const raw = pct * BAR_WIDTH
   const full = Math.floor(raw)
@@ -79,9 +77,9 @@ function formatBar(usage: TUIUsage, contextWindow?: number): string {
   return `${BAR_LEFT}${filled}${empty}${BAR_RIGHT}`
 }
 
-function formatStats(usage: TUIUsage, contextWindow?: number, pricing?: ModelPricing): string {
-  if (!usage.lastTurn) return 'Ready'
-  const t = usage.lastTurn
+function formatStats(usage: TUIUsage, contextWindow?: number): string {
+  if (!usage.lastRequest) return 'Ready'
+  const t = usage.lastRequest
   const used = t.inputTokens + t.cacheReadInputTokens
   const parts: string[] = []
 
@@ -95,22 +93,7 @@ function formatStats(usage: TUIUsage, contextWindow?: number, pricing?: ModelPri
   parts.push(`in:${formatTokens(t.inputTokens)}`)
   parts.push(`out:${formatTokens(t.outputTokens)}`)
 
-  if (pricing?.inputPerMillionTokens != null && pricing?.outputPerMillionTokens != null) {
-    const cacheReadPrice = pricing.cacheReadInputPerMillionTokens ?? pricing.inputPerMillionTokens
-    const cost = (t.cacheReadInputTokens / 1_000_000) * cacheReadPrice
-      + (t.inputTokens / 1_000_000) * pricing.inputPerMillionTokens
-      + (t.outputTokens / 1_000_000) * pricing.outputPerMillionTokens
-    const currency = pricing.currency ?? 'USD'
-    parts.push(`${currency} ${formatCost(cost)}`)
-  }
-
   return parts.join('  ')
-}
-
-function formatCost(cost: number): string {
-  if (cost === 0) return '0'
-  if (cost < 0.000001) return cost.toExponential(4)
-  return cost.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')
 }
 
 function formatTokens(n: number): string {

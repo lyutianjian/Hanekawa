@@ -5,6 +5,8 @@ export const theme = {
   dimText: '#808080',
   subtleText: '#909090',
   toolName: '#87CEEB',
+  statusDotSuccess: 'rgb(78,186,101)',
+  statusDotFailed: 'rgb(255,107,128)',
   success: '#90EE90',
   error: '#FF6B6B',
   warning: '#FFD700',

@@ -165,6 +165,7 @@ test('Agent tool bridges sub-agent transcripts without leaking child tool record
   assert.deepEqual(parentRecords.map((record) => record.type), ['tool_use', 'tool_approval', 'subagent_transcript', 'tool_result', 'message'])
   const transcript = parentRecords.find((record) => record.type === 'subagent_transcript')
   assert.ok(transcript && transcript.type === 'subagent_transcript')
+  assert.equal(transcript.model, 'fake-model')
   assert.deepEqual(transcript.usage, { inputTokens: 10, cacheReadInputTokens: 2, outputTokens: 3 })
   assert.equal(transcript.summary, 'sub-agent result')
   assert.equal(transcript.recordCount, 2)
@@ -175,6 +176,8 @@ test('Agent tool bridges sub-agent transcripts without leaking child tool record
   assert.equal(summary.role, 'assistant')
   assert.match(summary.content, /<subagent-summary type="general"/)
   assert.match(summary.content, /tokens="15"/)
+  assert.equal(result.display?.summary, 'Done (0 tool uses · 15 tokens · 1s)')
+  assert.equal(result.display?.headerSuffix, 'fake-model')
 })
 
 test('Agent tool returns aggregated sub-agent output after max_tokens continuation', async () => {
@@ -294,11 +297,12 @@ test('Agent tool can launch a background sub-agent and persist a sidechain trans
 
     assert.equal(result.ok, true)
     assert.match(result.content, /Started general sub-agent/)
-    assert.ok(parentRecords.some((record) => record.type === 'subagent_task' && record.status === 'running'))
+    assert.ok(parentRecords.some((record) => record.type === 'subagent_task' && record.status === 'running' && record.model === 'fake-model'))
 
     await waitFor(() => parentRecords.some((record) => record.type === 'subagent_task' && record.status === 'completed'))
     const transcript = parentRecords.find((record) => record.type === 'subagent_transcript')
     assert.ok(transcript && transcript.type === 'subagent_transcript')
+    assert.equal(transcript.model, 'fake-model')
     assert.equal(transcript.status, 'completed')
     assert.equal(transcript.summary, 'background result')
     assert.ok(transcript.transcriptPath)
@@ -306,6 +310,9 @@ test('Agent tool can launch a background sub-agent and persist a sidechain trans
     assert.match(sidechain, /background result/)
     const completion = parentRecords.find((record) => record.type === 'message' && record.role === 'assistant' && /Background general agent/.test(record.content))
     assert.ok(completion)
+    const completed = parentRecords.find((record) => record.type === 'subagent_task' && record.status === 'completed')
+    assert.ok(completed && completed.type === 'subagent_task')
+    assert.equal(completed.model, 'fake-model')
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -1052,6 +1059,7 @@ test('Agent tool exposes sub-agent usage, verdict, and critical files in metadat
   assert.ok(subagent)
   assert.equal(subagent.type, 'plan')
   assert.equal(typeof subagent.agentId, 'string')
+  assert.equal(subagent.model, 'fake-model')
   assert.deepEqual(subagent.usage, { inputTokens: 100, cacheReadInputTokens: 20, outputTokens: 30 })
   assert.equal(subagent.verdict, 'PASS')
   assert.deepEqual(subagent.criticalFiles, ['src/tools/agentTool.ts', 'test/agentTool.test.ts'])

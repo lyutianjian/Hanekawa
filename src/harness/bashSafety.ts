@@ -102,7 +102,7 @@ export function splitShellSegments(command: string): string[] {
       continue
     }
 
-    if (ch === ';' || ch === '|') {
+    if (ch === ';' || ch === '|' || ch === '\n') {
       push()
       continue
     }

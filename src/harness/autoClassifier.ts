@@ -61,42 +61,6 @@ export function isSafeAutoTool(toolName: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Read-only shell commands (shared with plan mode)
-// ---------------------------------------------------------------------------
-
-const PLAN_READ_ONLY_SHELL_COMMANDS = new Set([
-  'cat',
-  'dir',
-  'fd',
-  'find',
-  'get-childitem',
-  'get-content',
-  'grep',
-  'head',
-  'ls',
-  'pwd',
-  'rg',
-  'ripgrep',
-  'select-string',
-  'stat',
-  'tail',
-  'wc',
-])
-
-const PLAN_READ_ONLY_GIT_SUBCOMMANDS = new Set([
-  'diff',
-  'grep',
-  'log',
-  'ls-files',
-  'rev-parse',
-  'shortlog',
-  'show',
-  'show-ref',
-  'status',
-  'tag',
-])
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -104,30 +68,6 @@ function basename(command: string): string {
   const normalized = command.replace(/\\/g, '/')
   const slash = normalized.lastIndexOf('/')
   return slash === -1 ? normalized : normalized.slice(slash + 1)
-}
-
-export function isPlanReadOnlyShellCommand(command: string): boolean {
-  const words = shellWords(command)
-  if (words.length === 0) return false
-  const executable = basename(words[0]!).toLowerCase()
-  if (executable === 'git') {
-    const subcommand = words.find((word, index) => index > 0 && !word.startsWith('-'))
-    return typeof subcommand === 'string' && PLAN_READ_ONLY_GIT_SUBCOMMANDS.has(subcommand.toLowerCase())
-  }
-  if (!PLAN_READ_ONLY_SHELL_COMMANDS.has(executable)) return false
-  if (executable === 'fd') {
-    return !words.slice(1).some((word) => {
-      const lower = word.toLowerCase()
-      return lower === '--exec' || lower === '--exec-batch' || /^-[a-z]*x[a-z]*$/.test(lower)
-    })
-  }
-  if (executable === 'find') {
-    return !words.slice(1).some((word) => {
-      const lower = word.toLowerCase()
-      return lower === '-delete' || lower === '-exec' || lower === '-execdir'
-    })
-  }
-  return PLAN_READ_ONLY_SHELL_COMMANDS.has(executable)
 }
 
 function isValidationScriptName(script: string): boolean {
@@ -192,7 +132,7 @@ export function classifyAutoDecision(params: {
         source: 'mode',
       }
     }
-    if (isPlanReadOnlyShellCommand(commandAnalysis.command)) return { action: 'allow' }
+    if (commandAnalysis.isReadOnly) return { action: 'allow' }
     if (isValidationShellCommand(commandAnalysis.command, commandAnalysis)) return { action: 'allow' }
     if (isLightWorkspaceShellWrite(commandAnalysis)) return { action: 'allow' }
 

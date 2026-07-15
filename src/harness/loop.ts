@@ -121,6 +121,7 @@ export interface AgentLoopOptions {
   recordStream: RecordStream
   onRecord?(record: SessionRecord): void
   onStreamEvent?(event: ModelStreamEvent): void
+  consumePendingUserMessages?(): string[]
 }
 
 const MAX_RECOVERY_COUNT = 3
@@ -353,6 +354,17 @@ export class AgentLoop {
         // Check abort signal at the start of each iteration
         if (signal?.aborted) {
           throw new DOMException('The operation was aborted.', 'AbortError')
+        }
+        const pendingUserMessages = this.options.consumePendingUserMessages?.() ?? []
+        for (const message of pendingUserMessages) {
+          await this.appendRecord({
+            type: 'message',
+            id: randomUUID(),
+            role: 'user',
+            content: `[Message from parent agent]\n${message}`,
+            turnId,
+            createdAt: new Date().toISOString(),
+          })
         }
         await this.options.planModeManager?.beforeTurn()
         if (this.options.planModeManager?.consumeShouldStopCurrentTurn()) {

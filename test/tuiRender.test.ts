@@ -904,6 +904,19 @@ test('RestoreMode renders checkpoint list with code diff summaries', () => {
   assert.ok(frame.indexOf('newer prompt') < frame.indexOf('(current)'))
 })
 
+test('PermissionDialog highlights destructive Bash and selects deny by default', () => {
+  const frame = renderPermission(permissionState([
+    permissionRequest('Bash', { command: 'rm -rf dist' }, 'bash safety', 'dangerous', {
+      alwaysAllowRule: permissionRule('Bash', 'allow', 'rm -rf dist', 'session'),
+    }),
+  ]))
+
+  assert.match(frame, /DANGER: destructive command detected/)
+  assert.match(frame, /Recursively force-deletes files or directories/)
+  assert.match(frame, /> \[N\] No, deny/)
+  assert.doesNotMatch(frame, /always allow/)
+})
+
 test('MessageList renders queued messages after live items', () => {
   const items: TUIDisplayItem[] = [{
     kind: 'assistant',

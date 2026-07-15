@@ -29,6 +29,7 @@ export interface KeyboardShortcutOptions {
   isPermissionVisible: boolean
   cwd?: string
   doubleTapWindowMs?: number
+  history?: string[]
 }
 
 /**
@@ -81,6 +82,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     isRestoreMode,
     isPermissionVisible,
     cwd = process.cwd(),
+    history = [],
   } = options
 
   const [text, setText] = useState('')
@@ -89,6 +91,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([])
   const [selectedSuggestion, setSelectedSuggestion] = useState(-1)
   const [suggestionType, setSuggestionType] = useState<SuggestionType>('none')
+  const [historyIndex, setHistoryIndex] = useState(-1)
 
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const escapeDetectorRef = useRef<DoubleTapDetector | null>(null)
@@ -98,6 +101,20 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
   const submitPendingRef = useRef(false)
   const doubleTapWindowMsRef = useRef(options.doubleTapWindowMs ?? 300)
   const suggestionRequestRef = useRef(0)
+  const historyDraftRef = useRef('')
+
+  const leaveHistory = useCallback(() => {
+    setHistoryIndex(-1)
+  }, [])
+
+  const replaceText = useCallback((value: string) => {
+    leaveHistory()
+    setText(value)
+  }, [leaveHistory])
+
+  const replaceCursorPos = useCallback((value: number) => {
+    setCursorPos(value)
+  }, [])
 
   // Load doubleTapWindow from keybindings config on mount
   useEffect(() => {
@@ -153,6 +170,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
       setText((current) => {
         if (current !== originalText) return current
         setCursorPos(0)
+        leaveHistory()
         clearSuggestions()
         return ''
       })
@@ -176,7 +194,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     }
     finish(result)
     submitPendingRef.current = false
-  }, [onSubmit, clearSuggestions])
+  }, [onSubmit, clearSuggestions, leaveHistory])
 
   const refreshSuggestions = useCallback(async (value: string, valueCursorPos: number) => {
     const requestId = ++suggestionRequestRef.current
@@ -280,6 +298,34 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
         return
       }
 
+      if (!hasActiveSuggestion && key.upArrow && history.length > 0) {
+        if (historyIndex < 0) historyDraftRef.current = text
+        const nextIndex = historyIndex < 0 ? history.length - 1 : Math.max(0, historyIndex - 1)
+        const nextText = history[nextIndex] ?? ''
+        setHistoryIndex(nextIndex)
+        setText(nextText)
+        setCursorPos(nextText.length)
+        clearSuggestions()
+        return
+      }
+
+      if (!hasActiveSuggestion && key.downArrow && historyIndex >= 0) {
+        const nextIndex = historyIndex + 1
+        if (nextIndex >= history.length) {
+          const draft = historyDraftRef.current
+          setHistoryIndex(-1)
+          setText(draft)
+          setCursorPos(draft.length)
+        } else {
+          const nextText = history[nextIndex] ?? ''
+          setHistoryIndex(nextIndex)
+          setText(nextText)
+          setCursorPos(nextText.length)
+        }
+        clearSuggestions()
+        return
+      }
+
       // Plain Tab is reserved for autocomplete and should not insert a
       // literal tab into the prompt.
       if (key.tab) {
@@ -318,6 +364,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
           if (result === 'double') {
             setText('')
             setCursorPos(0)
+            leaveHistory()
             clearSuggestions()
           }
           return
@@ -341,6 +388,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
           ctrlCDetectorRef.current?.cancel()
           setText('')
           setCursorPos(0)
+          leaveHistory()
           clearSuggestions()
           showHint('Input cleared. Press Ctrl+C twice to exit')
           return
@@ -361,6 +409,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
         if (!isStreaming) {
           setText('')
           setCursorPos(0)
+          leaveHistory()
           clearSuggestions()
           showHint('Press Ctrl+C again to exit')
         }
@@ -402,6 +451,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
 
       // --- Ctrl+U: clear to start ---
       if (key.ctrl && input === 'u') {
+        leaveHistory()
         setText(text.slice(cursorPos))
         setCursorPos(0)
         return
@@ -409,12 +459,14 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
 
       // --- Ctrl+K: clear to end ---
       if (key.ctrl && input === 'k') {
+        leaveHistory()
         setText(text.slice(0, cursorPos))
         return
       }
 
       // --- Ctrl+W: delete word backward ---
       if (key.ctrl && input === 'w') {
+        leaveHistory()
         const before = text.slice(0, cursorPos)
         const after = text.slice(cursorPos)
         const trimmed = before.trimEnd()
@@ -428,6 +480,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
 
       // --- Backspace ---
       if (key.backspace) {
+        leaveHistory()
         if (cursorPos > 0) {
           setText(text.slice(0, cursorPos - 1) + text.slice(cursorPos))
           setCursorPos(cursorPos - 1)
@@ -437,6 +490,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
 
       // --- Delete ---
       if (key.delete) {
+        leaveHistory()
         if (cursorPos < text.length) {
           setText(text.slice(0, cursorPos) + text.slice(cursorPos + 1))
         }
@@ -445,11 +499,12 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
 
       // --- Regular character input ---
       if (input && !key.ctrl && !key.meta) {
+        leaveHistory()
         setText(text.slice(0, cursorPos) + input + text.slice(cursorPos))
         setCursorPos(cursorPos + input.length)
       }
     },
-    [text, cursorPos, isStreaming, hasQueuedMessages, isRestoreMode, isPermissionVisible, hintMessage, onInterrupt, onClearQueue, onExit, onEnterRestoreMode, onCyclePermissionMode, onToggleTranscript, clearHint, showHint, submitInput, suggestionType, suggestions, selectedSuggestion, clearSuggestions],
+    [text, cursorPos, history, historyIndex, isStreaming, hasQueuedMessages, isRestoreMode, isPermissionVisible, hintMessage, onInterrupt, onClearQueue, onExit, onEnterRestoreMode, onCyclePermissionMode, onToggleTranscript, clearHint, showHint, submitInput, suggestionType, suggestions, selectedSuggestion, clearSuggestions, leaveHistory],
   )
 
   useInkInput(handleInput, { isActive: !shouldIgnoreShortcutInput({ isPermissionVisible, isRestoreMode }) })
@@ -461,8 +516,8 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     suggestions,
     selectedSuggestion,
     suggestionType,
-    setText,
-    setCursorPos,
+    setText: replaceText,
+    setCursorPos: replaceCursorPos,
   }
 }
 

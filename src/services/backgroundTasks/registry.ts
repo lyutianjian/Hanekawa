@@ -4,11 +4,33 @@ import type {
   BackgroundTaskRecord,
   BackgroundTaskStatus,
   SessionRecord,
+  ToolContext,
+  ToolResult,
 } from '../../harness/types.js'
 import { terminateProcessTree } from './processTree.js'
 
 export const MAX_BACKGROUND_OUTPUT_BYTES = 1_000_000
 export const MAX_BACKGROUND_READ_BYTES = 90_000
+export const MAX_RETAINED_AGENT_CONTINUATIONS = 8
+
+export interface AgentContinuation {
+  resume(message: string, context: ToolContext): Promise<ToolResult>
+}
+
+export type AgentMessageDelivery =
+  | { kind: 'queued'; agentId: string }
+  | { kind: 'resumed'; agentId: string; result: ToolResult }
+
+interface PendingAgentMessage {
+  message: string
+  context: ToolContext
+}
+
+interface AgentRuntimeState {
+  pendingMessages: PendingAgentMessage[]
+  continuation?: AgentContinuation
+  lastUsedAt: number
+}
 
 export interface BackgroundTaskSnapshot {
   id: string
@@ -52,6 +74,8 @@ export class BackgroundTaskRegistry {
   private readonly counters = new Map<string, { shell: number; agent: number }>()
   private readonly listeners = new Set<() => void>()
   private readonly snapshotCache = new Map<string, readonly BackgroundTaskSnapshot[]>()
+  private readonly agentRuntimeStates = new Map<string, AgentRuntimeState>()
+  private readonly agentIdCounters = new Map<string, number>()
   private persistenceTail: Promise<void> = Promise.resolve()
 
   constructor(private readonly persistRecord?: PersistRecord) {}
@@ -99,6 +123,7 @@ export class BackgroundTaskRegistry {
     description: string
     stop?: () => Promise<void> | void
   }): BackgroundTaskSnapshot {
+    this.seedAgentIdCounter(input.sessionId, input.agentId)
     const task: InternalTask = {
       id: this.nextId(input.sessionId, 'agent'),
       sessionId: input.sessionId,
@@ -116,7 +141,76 @@ export class BackgroundTaskRegistry {
       waiters: new Set(),
     }
     this.addTask(task)
+    this.agentRuntimeStates.set(this.agentKey(input.sessionId, input.agentId), {
+      pendingMessages: [],
+      lastUsedAt: Date.now(),
+    })
     return this.toSnapshot(task)
+  }
+
+  allocateAgentId(sessionId: string, agentType: string): string {
+    const normalizedType = agentType.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-') || 'agent'
+    const key = `${sessionId}\0${normalizedType}`
+    const next = (this.agentIdCounters.get(key) ?? 0) + 1
+    this.agentIdCounters.set(key, next)
+    return `${normalizedType}-${next}`
+  }
+
+  setAgentContinuation(sessionId: string, agentId: string, continuation: AgentContinuation): void {
+    const state = this.agentRuntimeStates.get(this.agentKey(sessionId, agentId))
+    if (!state) return
+    state.continuation = continuation
+    state.lastUsedAt = Date.now()
+  }
+
+  consumePendingAgentMessages(sessionId: string, agentId: string): string[] {
+    const state = this.agentRuntimeStates.get(this.agentKey(sessionId, agentId))
+    if (!state || state.pendingMessages.length === 0) return []
+    const messages = state.pendingMessages.splice(0)
+    state.lastUsedAt = Date.now()
+    return messages.map((item) => item.message)
+  }
+
+  async sendAgentMessage(
+    sessionId: string,
+    agentIdOrPrefix: string,
+    message: string,
+    context: ToolContext,
+  ): Promise<AgentMessageDelivery> {
+    const task = this.resolveAgentTask(sessionId, agentIdOrPrefix)
+    if (!task?.agentId) throw new AgentAddressError('not_found', `Sub-agent not found: ${agentIdOrPrefix}`)
+    const state = this.agentRuntimeStates.get(this.agentKey(sessionId, task.agentId))
+    if (task.status === 'running') {
+      if (!state) throw new AgentAddressError('precondition_failed', `Sub-agent ${task.agentId} is not messageable.`)
+      state.pendingMessages.push({ message, context })
+      state.lastUsedAt = Date.now()
+      return { kind: 'queued', agentId: task.agentId }
+    }
+    if (task.status !== 'completed' || !state?.continuation) {
+      throw new AgentAddressError(
+        'precondition_failed',
+        `Sub-agent ${task.agentId} is ${task.status} and cannot be resumed.`,
+      )
+    }
+
+    state.lastUsedAt = Date.now()
+    this.transition(task, 'running', { finishedAt: undefined, reason: undefined })
+    try {
+      let result = await state.continuation.resume(message, context)
+      while (state.pendingMessages.length > 0) {
+        const pending = state.pendingMessages.shift()!
+        result = await state.continuation.resume(pending.message, pending.context)
+      }
+      this.transition(task, 'completed', {})
+      state.lastUsedAt = Date.now()
+      this.trimAgentContinuations(sessionId)
+      return { kind: 'resumed', agentId: task.agentId, result }
+    } catch (error) {
+      state.continuation = undefined
+      state.pendingMessages.length = 0
+      this.transition(task, 'failed', { reason: error instanceof Error ? error.message : String(error) })
+      throw error
+    }
   }
 
   appendOutput(sessionId: string, taskId: string, data: Buffer): void {
@@ -146,7 +240,20 @@ export class BackgroundTaskRegistry {
   completeAgent(sessionId: string, agentId: string, status: 'completed' | 'failed', reason?: string): void {
     const task = [...this.tasks.values()].find((candidate) => candidate.sessionId === sessionId && candidate.agentId === agentId)
     if (!task || task.status !== 'running') return
+    const state = this.agentRuntimeStates.get(this.agentKey(sessionId, agentId))
+    if (status === 'completed' && state?.continuation && state.pendingMessages.length > 0) {
+      void this.finishPendingAgentMessages(task, state)
+      return
+    }
     this.transition(task, status, reason ? { reason } : {})
+    if (state) {
+      state.lastUsedAt = Date.now()
+      if (status !== 'completed') {
+        state.continuation = undefined
+        state.pendingMessages.length = 0
+      }
+    }
+    if (status === 'completed') this.trimAgentContinuations(sessionId)
   }
 
   async stopAgent(sessionId: string, agentId: string, reason = 'Stopped'): Promise<void> {
@@ -247,6 +354,7 @@ export class BackgroundTaskRegistry {
         waiters: new Set(),
       }
       this.tasks.set(this.key(sessionId, task.id), task)
+      if (task.agentId) this.seedAgentIdCounter(sessionId, task.agentId)
       if (record.status === 'running') {
         task.finishedAt = Date.now()
         task.reason = 'Process was not present when the session resumed'
@@ -270,7 +378,9 @@ export class BackgroundTaskRegistry {
   }
 
   private transition(task: InternalTask, status: BackgroundTaskStatus, details: Partial<BackgroundTaskSnapshot>): void {
-    Object.assign(task, details, { status, finishedAt: Date.now() })
+    Object.assign(task, details, { status })
+    if (status === 'running') delete task.finishedAt
+    else task.finishedAt = Date.now()
     this.enqueuePersist(task)
     this.changed(task)
   }
@@ -367,12 +477,73 @@ export class BackgroundTaskRegistry {
     this.counters.set(sessionId, counters)
   }
 
+  private seedAgentIdCounter(sessionId: string, agentId: string): void {
+    const match = agentId.match(/^(.+)-(\d+)$/)
+    if (!match?.[1] || !match[2]) return
+    const key = `${sessionId}\0${match[1]}`
+    this.agentIdCounters.set(key, Math.max(this.agentIdCounters.get(key) ?? 0, Number(match[2])))
+  }
+
   private getInternal(sessionId: string, taskId: string): InternalTask | undefined {
     return this.tasks.get(this.key(sessionId, taskId))
   }
 
   private key(sessionId: string, taskId: string): string {
     return `${sessionId}\0${taskId}`
+  }
+
+  private agentKey(sessionId: string, agentId: string): string {
+    return `${sessionId}\0${agentId}`
+  }
+
+  private resolveAgentTask(sessionId: string, agentIdOrPrefix: string): InternalTask | undefined {
+    const agents = [...this.tasks.values()].filter((task) => task.sessionId === sessionId && task.kind === 'agent' && task.agentId)
+    const exact = agents.find((task) => task.agentId === agentIdOrPrefix)
+    if (exact) return exact
+    const matches = agents.filter((task) => task.agentId!.startsWith(agentIdOrPrefix))
+    if (matches.length > 1) {
+      throw new AgentAddressError(
+        'invalid_input',
+        `Ambiguous sub-agent id ${agentIdOrPrefix}: ${matches.map((task) => task.agentId).join(', ')}`,
+      )
+    }
+    return matches[0]
+  }
+
+  private trimAgentContinuations(sessionId: string): void {
+    const completed = [...this.tasks.values()]
+      .filter((task) => task.sessionId === sessionId && task.kind === 'agent' && task.status === 'completed' && task.agentId)
+      .map((task) => ({ task, state: this.agentRuntimeStates.get(this.agentKey(sessionId, task.agentId!)) }))
+      .filter((entry): entry is { task: InternalTask; state: AgentRuntimeState } => Boolean(entry.state?.continuation))
+      .sort((a, b) => a.state.lastUsedAt - b.state.lastUsedAt)
+    while (completed.length > MAX_RETAINED_AGENT_CONTINUATIONS) {
+      const evicted = completed.shift()!
+      evicted.state.continuation = undefined
+      evicted.state.pendingMessages.length = 0
+    }
+  }
+
+  private async finishPendingAgentMessages(task: InternalTask, state: AgentRuntimeState): Promise<void> {
+    try {
+      while (state.pendingMessages.length > 0) {
+        const pending = state.pendingMessages.shift()!
+        await state.continuation!.resume(pending.message, pending.context)
+      }
+      this.transition(task, 'completed', {})
+      state.lastUsedAt = Date.now()
+      this.trimAgentContinuations(task.sessionId)
+    } catch (error) {
+      state.continuation = undefined
+      state.pendingMessages.length = 0
+      this.transition(task, 'failed', { reason: error instanceof Error ? error.message : String(error) })
+    }
+  }
+}
+
+export class AgentAddressError extends Error {
+  constructor(readonly code: 'not_found' | 'invalid_input' | 'precondition_failed', message: string) {
+    super(message)
+    this.name = 'AgentAddressError'
   }
 }
 

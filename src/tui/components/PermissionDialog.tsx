@@ -3,6 +3,7 @@ import { Box, Text, useInput } from 'ink'
 import { theme } from '../theme.js'
 import type { PermissionDialogRequest, PermissionDialogState } from '../types.js'
 import type { PermissionRequest, PermissionRule } from '../../harness/permissions.js'
+import { analyzeDestructiveCommands, type DestructiveCommandWarning } from '../../harness/destructiveCommands.js'
 import { buildFileToolPreview, type FileToolPreview } from '../fileToolPreview.js'
 import { StructuredDiff } from './StructuredDiff.js'
 
@@ -72,6 +73,7 @@ export function resolvePermissionOption(
 }
 
 export function permissionOptionsForRequest(request: PermissionRequest): readonly PermissionOption[] {
+  if (destructiveWarningsForRequest(request).length > 0) return PERMISSION_OPTIONS
   if (!request.alwaysAllowRule) return PERMISSION_OPTIONS
   return [
     ...PERMISSION_OPTIONS,
@@ -81,6 +83,20 @@ export function permissionOptionsForRequest(request: PermissionRequest): readonl
       hotkey: 'a',
     },
   ] as const
+}
+
+export function destructiveWarningsForRequest(request: PermissionRequest): DestructiveCommandWarning[] {
+  if (request.tool.name !== 'Bash' || !isRecord(request.input) || typeof request.input.command !== 'string') return []
+  return analyzeDestructiveCommands(request.input.command)
+}
+
+export function defaultPermissionIndex(
+  request: PermissionRequest,
+  options: readonly PermissionOption[] = permissionOptionsForRequest(request),
+): number {
+  if (destructiveWarningsForRequest(request).length === 0) return 0
+  const denyIndex = options.findIndex((option) => option.action === 'deny')
+  return denyIndex === -1 ? 0 : denyIndex
 }
 
 export function formatPermissionSource(request: PermissionRequest): string {
@@ -170,14 +186,16 @@ interface PermissionDialogProps {
 }
 
 export function PermissionDialog({ permState, respond, setActiveRequest }: PermissionDialogProps) {
-  const [selectedIndex, setSelectedIndex] = useState(0)
-  // Reset selectedIndex when switching between permission requests to avoid
-  // "Always allow" carrying over from one request to the next.
-  useEffect(() => { setSelectedIndex(0) }, [permState.activeRequestId])
   const activeIndex = Math.max(0, permState.requests.findIndex((entry) => entry.id === permState.activeRequestId))
   const activeEntry = permState.requests[activeIndex] ?? permState.requests[0]
   const request = activeEntry?.request
   const options = request ? permissionOptionsForRequest(request) : PERMISSION_OPTIONS
+  const [selectedIndex, setSelectedIndex] = useState(() => request ? defaultPermissionIndex(request, options) : 0)
+  // Reset selectedIndex when switching between permission requests to avoid
+  // "Always allow" carrying over from one request to the next.
+  useEffect(() => {
+    setSelectedIndex(request ? defaultPermissionIndex(request, options) : 0)
+  }, [permState.activeRequestId])
   useEffect(() => {
     setSelectedIndex((index) => clamp(index, 0, options.length - 1))
   }, [options.length])
@@ -229,6 +247,7 @@ export function PermissionDialog({ permState, respond, setActiveRequest }: Permi
   const subtitle = formatPermissionSubtitle(request, activeIndex, permState.requests.length)
   const reason = formatPermissionReason(request)
   const inputBlock = formatPermissionInputBlock(request)
+  const destructiveWarnings = destructiveWarningsForRequest(request)
   const filePreview = buildFileToolPreview(request.tool.name, request.input)
   const otherPending = permState.requests
     .filter((entry) => entry.id !== activeEntry.id)
@@ -236,7 +255,9 @@ export function PermissionDialog({ permState, respond, setActiveRequest }: Permi
     .map(formatPermissionRequestLabel)
     .join(', ')
 
-  const panelColor = request.tool.riskLevel === 'dangerous' ? theme.warning : theme.brand
+  const panelColor = destructiveWarnings.length > 0
+    ? theme.error
+    : request.tool.riskLevel === 'dangerous' ? theme.warning : theme.brand
   const titleRight = permState.requests.length > 1
     ? <Text color={theme.dimText}>{activeIndex + 1}/{permState.requests.length} pending</Text>
     : null
@@ -257,7 +278,12 @@ export function PermissionDialog({ permState, respond, setActiveRequest }: Permi
           </Text>
         </Box>
       ) : null}
-      <PermissionContentBlock request={request} reason={reason} inputBlock={inputBlock} />
+      <PermissionContentBlock
+        request={request}
+        reason={reason}
+        inputBlock={inputBlock}
+        destructiveWarnings={destructiveWarnings}
+      />
       {filePreview ? <FileToolPreviewBlock preview={filePreview} /> : null}
       <PermissionPromptOptions
         options={options}
@@ -331,14 +357,26 @@ function PermissionContentBlock({
   request,
   reason,
   inputBlock,
+  destructiveWarnings,
 }: {
   request: PermissionRequest
   reason: string
   inputBlock: PermissionInputBlock
+  destructiveWarnings: DestructiveCommandWarning[]
 }) {
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text color={theme.assistantText}>{reason}</Text>
+      {destructiveWarnings.length > 0 ? (
+        <Box flexDirection="column" marginTop={1} paddingX={1}>
+          <Text bold color={theme.error}>DANGER: destructive command detected</Text>
+          {destructiveWarnings.map((warning) => (
+            <Text key={`${warning.code}:${warning.segment}`} color={theme.error}>
+              - {warning.message}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
       {request.denialStreak > 1 ? (
         <Box marginTop={1}>
           <Text color={theme.warning}>

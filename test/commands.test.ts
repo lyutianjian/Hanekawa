@@ -9,6 +9,7 @@ import { agentsCommand } from '../src/commands/agents.js'
 import { planCommand } from '../src/commands/plan.js'
 import { providerCommand } from '../src/commands/provider.js'
 import { tasksCommand } from '../src/commands/tasks.js'
+import { resumeCommand } from '../src/commands/resume.js'
 import { getCommand, registerBuiltinCommands } from '../src/commands/index.js'
 import type { CommandContext } from '../src/commands/types.js'
 
@@ -26,6 +27,7 @@ test('built-in command registry includes /plan and excludes /bypass', () => {
   registerBuiltinCommands()
 
   assert.equal(getCommand('plan')?.name, 'plan')
+  assert.equal(getCommand('resume')?.name, 'resume')
   assert.equal(getCommand('bypass'), undefined)
 })
 
@@ -537,6 +539,21 @@ test('/provider reports unavailable outside TUI panel host', async () => {
   }))
 
   assert.match(output, /unavailable/)
+})
+
+test('/resume opens the in-session picker only without arguments', async () => {
+  let opened = 0
+  const output: string[] = []
+  const context = createContext({
+    openResumePicker: () => { opened += 1 },
+    writeLine: (message) => { output.push(message) },
+  })
+
+  await resumeCommand.run('', context)
+  await resumeCommand.run('abc123', context)
+
+  assert.equal(opened, 1)
+  assert.deepEqual(output, ['Usage: /resume'])
 })
 
 test('/tasks opens the background task panel', async () => {

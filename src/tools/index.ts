@@ -21,12 +21,13 @@ import { webFetchTool } from './webFetch.js'
 import { webSearchTool } from './webSearch.js'
 import { configTool } from './configTool.js'
 import { notebookEditTool } from './notebookEdit.js'
+import { createSendMessageTool } from './sendMessage.js'
 import { isToolSearchEnabled, isDeferredTool } from '../utils/toolSearch.js'
 import type { Tool } from '../harness/types.js'
 import type { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
 
 export function getBuiltinTools(backgroundTasks?: BackgroundTaskRegistry): Tool[] {
-  return [grepTool, globTool, createBashTool(backgroundTasks), createBashOutputTool(backgroundTasks), createKillShellTool(backgroundTasks), readFileTool, writeFileTool, editFileTool, multiEditTool, deleteFileTool, enterPlanModeTool, exitPlanModeTool, askUserQuestionTool, taskCreateTool, taskListTool, taskGetTool, taskUpdateTool, webFetchTool, webSearchTool, configTool, notebookEditTool]
+  return [grepTool, globTool, createBashTool(backgroundTasks), createBashOutputTool(backgroundTasks), createKillShellTool(backgroundTasks), readFileTool, writeFileTool, editFileTool, multiEditTool, deleteFileTool, enterPlanModeTool, exitPlanModeTool, askUserQuestionTool, createSendMessageTool(backgroundTasks), taskCreateTool, taskListTool, taskGetTool, taskUpdateTool, webFetchTool, webSearchTool, configTool, notebookEditTool]
 }
 
 export async function getAllTools(backgroundTasks?: BackgroundTaskRegistry): Promise<Tool[]> {

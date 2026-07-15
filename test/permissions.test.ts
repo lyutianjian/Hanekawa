@@ -1217,6 +1217,8 @@ test('PermissionGate plan mode allows read-only bash subset', async () => {
 
   assert.equal(await gate.approve(bashTool, { command: 'git status' }), true)
   assert.equal(await gate.approve(bashTool, { command: 'git diff -- src/index.ts' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'git log --oneline | head -10' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'pwd && rg TODO src' }), true)
   assert.equal(await gate.approve(bashTool, { command: 'stat package.json' }), true)
   assert.equal(await gate.approve(bashTool, { command: 'fd package' }), true)
   assert.equal(await gate.approve(bashTool, { command: 'find src -name "*.ts"' }), true)
@@ -1235,6 +1237,7 @@ test('PermissionGate plan mode denies non-read bash commands without prompting',
   )
 
   assert.equal(await gate.approve(bashTool, { command: 'npm test' }), false)
+  assert.equal(await gate.approve(bashTool, { command: 'pwd | touch marker' }), false)
   assert.equal(await gate.approve(bashTool, { command: 'cat .env' }), false)
   assert.equal(await gate.approve(bashTool, { command: 'sed -i s/a/b/ src/index.ts' }), false)
   assert.equal(await gate.approve(bashTool, { command: 'fd package -x rm {}' }), false)

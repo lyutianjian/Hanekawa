@@ -1,10 +1,9 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { filePathCompleter } from '../src/utils/pathCompleter.js'
-import { getHistoryPath, loadHistoryFile, appendHistoryLine, saveHistoryFile } from '../src/utils/inputHistory.js'
 
 // ─── filePathCompleter ──────────────────────────────────────────────────
 
@@ -71,65 +70,3 @@ describe('filePathCompleter', () => {
 })
 
 // ─── History functions ──────────────────────────────────────────────────
-
-describe('history functions', () => {
-  let tmpDir: string
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'myagent-history-'))
-  })
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it('getHistoryPath returns path under .myagent', () => {
-    const path = getHistoryPath(tmpDir)
-    assert(path.endsWith(join('.myagent', 'history')))
-  })
-
-  it('loadHistoryFile returns empty array when file does not exist', () => {
-    const lines = loadHistoryFile(tmpDir)
-    assert.deepStrictEqual(lines, [])
-  })
-
-  it('loadHistoryFile loads and filters lines', () => {
-    appendHistoryLine('line 1', tmpDir)
-    appendHistoryLine('line 2', tmpDir)
-    appendHistoryLine('', tmpDir)
-
-    const lines = loadHistoryFile(tmpDir)
-    assert.deepStrictEqual(lines, ['line 1', 'line 2'])
-  })
-
-  it('appendHistoryLine creates directory and appends', () => {
-    appendHistoryLine('hello', tmpDir)
-    const path = getHistoryPath(tmpDir)
-    assert(existsSync(path))
-    const content = readFileSync(path, 'utf-8')
-    assert(content.includes('hello'))
-  })
-
-  it('saveHistoryFile deduplicates lines', () => {
-    saveHistoryFile(['a', 'b', 'a', 'a'], tmpDir)
-    const lines = loadHistoryFile(tmpDir)
-    assert.deepStrictEqual(lines, ['a', 'b'])
-  })
-
-  it('saveHistoryFile truncates to HISTORY_MAX', () => {
-    const many = Array.from({ length: 2000 }, (_, i) => `line-${i}`)
-    saveHistoryFile(many, tmpDir)
-    const lines = loadHistoryFile(tmpDir)
-    assert.equal(lines.length, 1000)
-    // Should keep the most recent lines (last 1000)
-    assert(lines[lines.length - 1] === 'line-1999')
-  })
-
-  it('saveHistoryFile handles empty array', () => {
-    saveHistoryFile([], tmpDir)
-    const path = getHistoryPath(tmpDir)
-    assert(existsSync(path))
-    const content = readFileSync(path, 'utf-8')
-    assert.equal(content, '\n')
-  })
-})

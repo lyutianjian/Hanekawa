@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 
 import {
   PERMISSION_OPTIONS,
+  defaultPermissionIndex,
+  destructiveWarningsForRequest,
   formatPermissionInputBlock,
   formatPermissionReason,
   formatPermissionRuleLabel,
@@ -86,6 +88,17 @@ describe('PERMISSION_OPTIONS', () => {
       options.map((o) => o.action),
       ['allow', 'deny'],
     )
+  })
+
+  it('suppresses always allow and defaults to deny for destructive Bash', () => {
+    const destructive = request('Bash', { command: 'git push --force origin main' }, 'mode', 'dangerous', 'requires', {
+      alwaysAllowRule: allowRule('Bash', 'git push --force origin main'),
+    })
+
+    assert.deepEqual(permissionOptionsForRequest(destructive).map((option) => option.action), ['allow', 'deny'])
+    assert.equal(defaultPermissionIndex(destructive), 1)
+    assert.equal(destructiveWarningsForRequest(destructive)[0]?.code, 'git_push_force')
+    assert.equal(defaultPermissionIndex(request('Bash', { command: 'npm test' })), 0)
   })
 })
 

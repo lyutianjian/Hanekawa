@@ -40,6 +40,7 @@ interface UseCommandsOptions {
   openEffortPicker?: () => void
   openProviderPanel?: () => void
   openBackgroundTasks?: () => void
+  openResumePicker?: () => void
   getEffort?: () => string
   setEffort?: (level: string) => void | Promise<void>
 }
@@ -66,6 +67,7 @@ export function useCommands({
   openEffortPicker,
   openProviderPanel,
   openBackgroundTasks,
+  openResumePicker,
   getEffort,
   setEffort,
   runShellCommand,
@@ -122,6 +124,8 @@ export function useCommands({
   openProviderPanelRef.current = openProviderPanel
   const openBackgroundTasksRef = useRef(openBackgroundTasks)
   openBackgroundTasksRef.current = openBackgroundTasks
+  const openResumePickerRef = useRef(openResumePicker)
+  openResumePickerRef.current = openResumePicker
   const getEffortRef = useRef(getEffort)
   getEffortRef.current = getEffort
   const setEffortRef = useRef(setEffort)
@@ -191,6 +195,7 @@ export function useCommands({
         openEffortPicker: openEffortPickerRef.current,
         openProviderPanel: openProviderPanelRef.current,
         openBackgroundTasks: openBackgroundTasksRef.current,
+        openResumePicker: openResumePickerRef.current,
         listSubagentTasks: async () => listLatestSubagentTasks(storeRef.current, sessionRef.current.id),
         getSubagentDetails: async (agentIdOrPrefix) => getSubagentDetails(
           storeRef.current,
@@ -244,7 +249,7 @@ async function getSubagentDetails(
   if (!agentId) return null
 
   const task = tasks.find((candidate) => candidate.agentId === agentId)
-  const transcript = transcripts.find((candidate) => candidate.agentId === agentId)
+  const transcript = [...transcripts].reverse().find((candidate) => candidate.agentId === agentId)
   const transcriptPath = task?.transcriptPath ?? transcript?.transcriptPath
   const transcriptRecords = transcriptPath
     ? await new SidechainRecordStream(transcriptPath).load()

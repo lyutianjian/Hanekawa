@@ -80,7 +80,7 @@ test('filterToolsForSubAgent applies specialist agent tool policies', () => {
   const explore = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'explore')
 
   assert.ok(explore)
-  assert.deepEqual(filterToolsForSubAgent(tools, explore).map((tool) => tool.name), ['Glob', 'Grep', 'Read'])
+  assert.deepEqual(filterToolsForSubAgent(tools, explore).map((tool) => tool.name), ['Glob', 'Grep', 'Read', 'Bash'])
 })
 
 test('filterToolsForSubAgent limits MCP tools to configured servers', () => {
@@ -2271,6 +2271,60 @@ test('ALL_AGENT_DISALLOWED_TOOLS contains expected tools', async () => {
   assert.ok(ALL_AGENT_DISALLOWED_TOOLS.includes('EnterPlanMode'))
   assert.ok(ALL_AGENT_DISALLOWED_TOOLS.includes('ExitPlanMode'))
   assert.ok(ALL_AGENT_DISALLOWED_TOOLS.includes('AskUserQuestion'))
+  assert.ok(ALL_AGENT_DISALLOWED_TOOLS.includes('SendMessage'))
+})
+
+test('built-in explore keeps Bash read-only even when the parent is in bypass mode', async () => {
+  let runs = 0
+  let prompts = 0
+  const commands = ['git status', 'touch marker']
+  let execution = 0
+  let modelCalls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      modelCalls++
+      if (request.contextItems?.some((item) => item.kind === 'tool_result')) {
+        return { content: 'done', toolCalls: [] }
+      }
+      return { content: '', toolCalls: [{ id: `bash-${execution}`, name: 'Bash', input: { command: commands[execution] } }] }
+    },
+  }
+  const bash: Tool = {
+    name: 'Bash',
+    description: 'shell',
+    riskLevel: 'dangerous',
+    isDestructive: true,
+    inputSchema: z.object({ command: z.string() }).strict(),
+    async execute() {
+      runs++
+      return { ok: true, content: 'ran' }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [bash],
+    permissionPrompt: async () => {
+      prompts++
+      return true
+    },
+    permissionMode: () => 'bypass',
+    cwd: process.cwd(),
+  })
+
+  assert.equal((await agentTool.execute({ task: 'inspect', subagent_type: 'explore' }, toolContext())).ok, true)
+  assert.equal(runs, 1)
+
+  execution = 1
+  assert.equal((await agentTool.execute({
+    task: 'try write',
+    subagent_type: 'explore',
+    run_in_background: true,
+  }, toolContext())).ok, true)
+  await waitFor(() => modelCalls >= 4)
+  assert.equal(runs, 1)
+  assert.equal(prompts, 0)
 })
 
 test('ASYNC_AGENT_ALLOWED_TOOLS contains expected tools', async () => {

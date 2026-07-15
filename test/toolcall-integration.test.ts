@@ -150,6 +150,7 @@ test('all builtin tools are callable', async () => {
     'EnterPlanMode',
     'ExitPlanMode',
     'AskUserQuestion',
+    'SendMessage',
     'Config',
     'NotebookEdit',
     'WebFetch',

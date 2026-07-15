@@ -265,7 +265,6 @@ async function main() {
 
   const contextManagement = config.get().agent.contextManagement
   const isGitRepo = existsSync(join(cwd, '.git'))
-  const restoredTaskStates = new Map<string, ReturnType<typeof restoreTaskStateFromRecords>>()
 
   const createActiveModelRuntime = (modelKey: string): ActiveModelRuntime => {
     const targetModelConfig = config.getModel(modelKey)
@@ -290,7 +289,11 @@ async function main() {
     return routedModelKey ? createActiveModelRuntime(routedModelKey) : undefined
   }
 
-  const createRuntime = (modelKey: string, runtimeSession: SessionMeta): AppRuntime => {
+  const createRuntime = (
+    modelKey: string,
+    runtimeSession: SessionMeta,
+    runtimeRecords: readonly SessionRecord[] = [],
+  ): AppRuntime => {
     const targetModelConfig = config.getModel(modelKey)
     if (!targetModelConfig) {
       throw new Error(`Unknown model: ${modelKey}`)
@@ -394,7 +397,7 @@ async function main() {
           readFiles: new Set(),
           readFileState: new Map(),
           invokedSkills: new Map(),
-          taskState: new Map(restoredTaskStates.get(runtimeSession.id) ?? []),
+          taskState: new Map(restoreTaskStateFromRecords(runtimeRecords)),
           getPermissionMode: () => permissionGate.getMode(),
           setPermissionMode: (mode) => permissionGate.setMode(mode),
           exitPlanMode: () => permissionGate.exitPlanMode(),
@@ -457,12 +460,11 @@ async function main() {
       existingLoad.records.push(interrupted)
     }
   }
-  restoredTaskStates.set(session.id, restoreTaskStateFromRecords(existingLoad.records))
   const initialQueuedPrompt = process.env.MYAGENT_RESUME_INTERRUPTED_TURN
     ? latestRecoverableInterruption(existingLoad.records) ? 'continue' : undefined
     : undefined
 
-  const initialRuntime = createRuntime(initialModelKey, session)
+  const initialRuntime = createRuntime(initialModelKey, session, existingLoad.records)
 
   logDiagnostics(existingLoad.diagnostics)
   const initialDiagnosticSummary = summarizeDiagnosticsForTui(existingLoad.diagnostics)

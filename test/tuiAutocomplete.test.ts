@@ -23,7 +23,15 @@ function registerTestCommand(name: string): void {
   })
 }
 
-function AutocompleteHarness({ submissions, cwd }: { submissions: string[]; cwd?: string }) {
+function AutocompleteHarness({
+  submissions,
+  cwd,
+  history,
+}: {
+  submissions: string[]
+  cwd?: string
+  history?: string[]
+}) {
   const state = useKeyboardShortcuts({
     onSubmit: (text) => submissions.push(text),
     onInterrupt: () => {},
@@ -36,6 +44,7 @@ function AutocompleteHarness({ submissions, cwd }: { submissions: string[]; cwd?
     isPermissionVisible: false,
     cwd,
     doubleTapWindowMs: 50,
+    history,
   })
 
   return h(
@@ -46,6 +55,44 @@ function AutocompleteHarness({ submissions, cwd }: { submissions: string[]; cwd?
     h(Text, null, `SUGGESTIONS:${state.suggestions.map((suggestion) => suggestion.displayText).join(',')}`),
   )
 }
+
+test('input history navigates newest-first and restores the draft', async () => {
+  const instance = render(h(AutocompleteHarness, {
+    submissions: [],
+    history: ['old prompt', 'new prompt'],
+  }))
+
+  instance.stdin.write('draft')
+  await waitForInk()
+  instance.stdin.write('\u001B[A')
+  await waitForInk()
+  assert.match(instance.lastFrame() ?? '', /TEXT:"new prompt"/)
+
+  instance.stdin.write('\u001B[A')
+  await waitForInk()
+  assert.match(instance.lastFrame() ?? '', /TEXT:"old prompt"/)
+
+  instance.stdin.write('\u001B[B')
+  await waitForInk()
+  instance.stdin.write('\u001B[B')
+  await waitForInk()
+  assert.match(instance.lastFrame() ?? '', /TEXT:"draft"/)
+})
+
+test('editing a recalled history entry exits history navigation', async () => {
+  const instance = render(h(AutocompleteHarness, {
+    submissions: [],
+    history: ['first', 'second'],
+  }))
+
+  instance.stdin.write('\u001B[A')
+  await waitForInk()
+  instance.stdin.write('!')
+  await waitForInk()
+  instance.stdin.write('\u001B[B')
+  await waitForInk()
+  assert.match(instance.lastFrame() ?? '', /TEXT:"second!"/)
+})
 
 test('slash autocomplete renders suggestions and cycles with arrows', async () => {
   registerTestCommand('aaa-autocomplete-one')

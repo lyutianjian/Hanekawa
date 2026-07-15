@@ -27,7 +27,7 @@ import { runLifecycleHooks, type Hooks } from '../harness/hooks.js'
 import type { AgentRunResult, ModelProvider, SessionRecord, SubagentTaskStatus, TokenUsage, Tool, ToolContext, ToolProgressEvent } from '../harness/types.js'
 import { countSessionRecordTokens } from '../prompts/budget.js'
 import { formatTokenCount } from './display.js'
-import type { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
+import type { AgentContinuation, BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
 
 // Tools that no sub-agent should ever call directly.
 export const ALL_AGENT_DISALLOWED_TOOLS = [
@@ -35,6 +35,7 @@ export const ALL_AGENT_DISALLOWED_TOOLS = [
   'EnterPlanMode',
   'ExitPlanMode',
   'AskUserQuestion',
+  'SendMessage',
 ] as const
 
 /** @deprecated Use ALL_AGENT_DISALLOWED_TOOLS instead. */
@@ -87,6 +88,7 @@ export interface BaseAgentDefinition {
   description: string
   model?: string
   permissionMode?: PermissionMode
+  lockPermissionMode?: boolean
   skills?: readonly string[]
   mcpServers?: readonly string[]
   background?: boolean
@@ -135,8 +137,10 @@ const FORK_AGENT: BaseAgentDefinition = {
 const EXPLORE_AGENT: BaseAgentDefinition = {
   type: 'explore',
   description: 'Fast read-only code exploration agent for broad search, navigation, and codebase questions.',
-  tools: ['Glob', 'Grep', 'Read'],
-  disallowedTools: ['Agent', 'Bash', 'Write', 'Edit', 'Delete', 'MultiEdit'],
+  permissionMode: 'plan',
+  lockPermissionMode: true,
+  tools: ['Glob', 'Grep', 'Read', 'Bash'],
+  disallowedTools: ['Agent', 'Write', 'Edit', 'Delete', 'MultiEdit'],
   maxTurns: EXPLORE_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
@@ -152,12 +156,13 @@ This is a read-only exploration task. You are strictly prohibited from:
 - Moving or copying files.
 - Running any command or tool action that changes project state.
 
-Your role is exclusively to search and analyze existing code. You only have Glob, Grep, and Read, so attempting to edit files or run shell commands will fail.
+Your role is exclusively to search and analyze existing code. Prefer Glob, Grep, and Read. Bash is available only for commands that the plan-mode safety analysis proves are read-only; all other shell commands are denied.
 
 Your job is to quickly map the relevant facts in the codebase:
 - Use Glob for broad file discovery.
 - Use Grep for content searches and symbol discovery.
 - Use Read when you know which file needs inspection.
+- Use Bash only for read-only inspection commands when the dedicated tools are insufficient.
 - Search with multiple naming conventions before concluding something does not exist.
 - Prefer parallel read-only searches when they are independent.
 - Adapt your search depth to the caller's requested thoroughness.
@@ -170,8 +175,10 @@ Return high-signal findings with file paths and line numbers when useful. Avoid 
 const PLAN_AGENT: BaseAgentDefinition = {
   type: 'plan',
   description: 'Read-only software planning agent for implementation strategy and trade-off analysis.',
-  tools: ['Glob', 'Grep', 'Read'],
-  disallowedTools: ['Agent', 'Bash', 'Write', 'Edit', 'Delete', 'MultiEdit'],
+  permissionMode: 'plan',
+  lockPermissionMode: true,
+  tools: ['Glob', 'Grep', 'Read', 'Bash'],
+  disallowedTools: ['Agent', 'Write', 'Edit', 'Delete', 'MultiEdit'],
   maxTurns: PLAN_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
   isReadOnlyAgent: true,
@@ -186,10 +193,10 @@ This is a READ-ONLY planning task. You are STRICTLY PROHIBITED from:
 - Deleting files (no rm or deletion)
 - Moving or copying files (no mv or cp)
 - Creating temporary files anywhere, including /tmp
-- Using redirect operators (>, >>, |) or heredocs to write to files
+- Using redirect operators (>, >>) or heredocs to write to files
 - Running ANY commands that change system state
 
-Your role is EXCLUSIVELY to explore the codebase and design implementation plans. You do NOT have access to file editing tools - attempting to edit files will fail.
+Your role is EXCLUSIVELY to explore the codebase and design implementation plans. You do NOT have access to file editing tools. Bash is available only for commands that the plan-mode safety analysis proves are read-only; all other shell commands are denied.
 
 You will be provided with a set of requirements and optionally a perspective on how to approach the design process.
 
@@ -373,7 +380,7 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
         }
         validateSubagentIsolation(agentDefinition)
 
-        const subAgentId = randomUUID()
+        const subAgentId = options.backgroundTasks?.allocateAgentId(context.sessionId, parsed.subagent_type) ?? randomUUID()
         const runInBackground = parsed.run_in_background ?? agentDefinition.background ?? false
         if (runInBackground) {
           const transcriptPath = getSubagentTranscriptPath(options.cwd, context.sessionId, subAgentId)
@@ -408,7 +415,12 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           const description = subagentDescription(parsed)
           return {
             ok: true,
-            content: `Started ${parsed.subagent_type} sub-agent "${description}" in the background.`,
+            content: options.backgroundTasks
+              ? appendAgentContinuationNotice(
+                  `Started ${parsed.subagent_type} sub-agent "${description}" in the background.`,
+                  subAgentId,
+                )
+              : `Started ${parsed.subagent_type} sub-agent "${description}" in the background.`,
             metadata: {
               display: {
                 summary: `${parsed.subagent_type} background agent started`,
@@ -426,18 +438,27 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
         }
 
         const startedAtMs = Date.now()
+        const recordStream = new MemoryRecordStream()
         const run = await runSubagent({
           options,
           parsed,
           agentDefinition,
           context,
           subAgentId,
-          recordStream: new MemoryRecordStream(),
+          recordStream,
           linkParentAbort: true,
         })
+        options.backgroundTasks?.registerAgent({
+          sessionId: context.sessionId,
+          agentId: subAgentId,
+          agentType: parsed.subagent_type,
+          description: subagentDescription(parsed),
+        })
+        options.backgroundTasks?.setAgentContinuation(context.sessionId, subAgentId, run.continuation)
+        options.backgroundTasks?.completeAgent(context.sessionId, subAgentId, 'completed')
         const durationMs = Date.now() - startedAtMs
         await context.appendRecord?.(run.transcriptRecord)
-        const content = appendHookOutputToToolResult(
+        const baseContent = appendHookOutputToToolResult(
           appendWorktreeNoticeToToolResult(
             appendTruncationNotice(
               applyAgentResultBudget(run.result.content, agentDefinition.maxResultSizeChars),
@@ -447,6 +468,9 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
           ),
           run.stopHookOutput,
         )
+        const content = options.backgroundTasks
+          ? appendAgentContinuationNotice(baseContent, subAgentId)
+          : baseContent
         const doneSummary = formatAgentDoneSummary(run.transcriptRecord.toolUseCount, run.result.usage, durationMs)
         return {
           ok: true,
@@ -510,6 +534,7 @@ interface RunSubagentResult {
   verdict?: 'PASS' | 'FAIL' | 'PARTIAL'
   criticalFiles: string[]
   worktree?: SubagentWorktreeSummary
+  continuation: AgentContinuation
 }
 
 interface SubagentWorktreeSummary extends SubagentWorktreeLease {
@@ -580,7 +605,7 @@ async function runSubagent({
       autoModeConfig: options.autoModeConfig,
     })
     permissionGate.addSessionRules(options.getSessionRules?.() ?? [])
-    const toolRunner = new ToolRunner(subTools, permissionGate, {
+    const createToolRunner = () => new ToolRunner(subTools, permissionGate, {
       onRecord: async (record) => {
         await recordStream.append(record)
       },
@@ -636,13 +661,13 @@ async function runSubagent({
       'subagentStart',
     )
     const preloadRecords = isForkAgent ? await loadForkPreloadRecords(options) : undefined
-    const loop = new AgentLoop({
+    const createLoop = () => new AgentLoop({
       provider: subagentRuntime.provider,
       model: subagentRuntime.model,
       modelKey: subagentRuntime.modelKey,
       tools: subTools,
       contextBuilder: new ContextBuilder(undefined, options.contextManagement),
-      toolRunner,
+      toolRunner: createToolRunner(),
       toolContext,
       system: buildAgentSystemPrompt(agentDefinition, parsed.systemPrompt, options.system, parsed.maxOutputTokens, worktree),
       criticalSystemReminder: agentDefinition.criticalSystemReminder,
@@ -663,11 +688,16 @@ async function runSubagent({
       cacheRuntime: options.cacheRuntime,
       cacheSource,
       preloadRecords,
-      permissionMode: () => permissionGate.getMode(),
+      // A locked plan gate constrains tools without turning this child loop
+      // into an interactive plan-mode workflow that waits for ExitPlanMode.
+      permissionMode: () => agentDefinition.lockPermissionMode ? 'default' : permissionGate.getMode(),
       getCompactFailureCount: options.getCompactFailureCount,
       setCompactFailureCount: options.setCompactFailureCount,
       recordStream,
+      consumePendingUserMessages: () => options.backgroundTasks
+        ?.consumePendingAgentMessages(context.sessionId, subAgentId) ?? [],
     })
+    const loop = createLoop()
     const result = await loop.run(parsed.task, abortController.signal)
     const transcriptRecords = await recordStream.load()
     const transcriptStats = summarizeTranscriptRecords(transcriptRecords)
@@ -698,6 +728,112 @@ async function runSubagent({
       ),
       'subagentStop',
     )
+    const continuation: AgentContinuation = {
+      resume: async (message, parentContext) => {
+        const continuationAbort = new AbortController()
+        const forwardAbort = () => continuationAbort.abort(parentContext.abortSignal?.reason)
+        if (parentContext.abortSignal?.aborted) forwardAbort()
+        else parentContext.abortSignal?.addEventListener('abort', forwardAbort, { once: true })
+        const continuationTimeout = options.agentTimeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              continuationAbort.abort(createAbortError(`Sub-agent timed out after ${options.agentTimeoutMs}ms`))
+            }, options.agentTimeoutMs)
+        toolContext.abortSignal = continuationAbort.signal
+        const beforeRecords = await recordStream.load()
+        try {
+          await appendSubagentHookOutput(
+            recordStream,
+            await runLifecycleHooks(
+              options.hooks?.subagentStart,
+              'subagentStart',
+              { agentId: subAgentId, agentType: parsed.subagent_type, task: message },
+              toolContext,
+              continuationAbort.signal,
+              parsed.subagent_type,
+            ),
+            'subagentStart',
+          )
+          const resumed = await createLoop().run(message, continuationAbort.signal)
+          const turnRecords = (await recordStream.load()).slice(beforeRecords.length)
+          const turnStats = summarizeTranscriptRecords(turnRecords)
+          const turnVerdict = extractVerdict(resumed.content)
+          const turnCriticalFiles = extractCriticalFiles(resumed.content)
+          const resumedWorktree = worktree
+            ? { ...worktree, changeSummary: await summarizeSubagentWorktree(options, worktree) }
+            : undefined
+          const turnStopHookOutput = formatSubagentHookOutput(
+            await runLifecycleHooks(
+              options.hooks?.subagentStop,
+              'subagentStop',
+              { agentId: subAgentId, agentType: parsed.subagent_type, response: resumed.content },
+              toolContext,
+              continuationAbort.signal,
+              parsed.subagent_type,
+            ),
+            'subagentStop',
+          )
+          const transcriptRecord: Extract<SessionRecord, { type: 'subagent_transcript' }> = {
+            id: randomUUID(),
+            type: 'subagent_transcript',
+            agentId: subAgentId,
+            subagentType: parsed.subagent_type,
+            model: subagentRuntime.model,
+            parentToolUseId: parentContext.currentToolUseId,
+            ...(transcriptPath ? { transcriptPath } : {}),
+            status: 'completed',
+            ...(resumed.stopReason ? { stopReason: resumed.stopReason } : {}),
+            ...(resumed.truncated ? { truncated: true } : {}),
+            summary: appendTruncationNotice(
+              applyAgentResultBudget(resumed.content, SUBAGENT_TRANSCRIPT_SUMMARY_CHARS),
+              resumed,
+            ),
+            recordCount: turnStats.recordCount,
+            messageCount: turnStats.messageCount,
+            toolUseCount: turnStats.toolUseCount,
+            toolResultCount: turnStats.toolResultCount,
+            ...(turnVerdict ? { verdict: turnVerdict } : {}),
+            ...(turnCriticalFiles.length > 0 ? { criticalFiles: turnCriticalFiles } : {}),
+            ...worktreeRecordFields(resumedWorktree),
+            records: [],
+            usage: resumed.usage,
+            createdAt: new Date().toISOString(),
+            turnId: parentContext.currentTurnId,
+          }
+          await parentContext.appendRecord?.(transcriptRecord)
+          return {
+            ok: true,
+            content: appendAgentContinuationNotice(
+              appendHookOutputToToolResult(
+                appendWorktreeNoticeToToolResult(
+                  appendTruncationNotice(
+                    applyAgentResultBudget(resumed.content, agentDefinition.maxResultSizeChars),
+                    resumed,
+                  ),
+                  resumedWorktree,
+                ),
+                turnStopHookOutput,
+              ),
+              subAgentId,
+            ),
+            metadata: {
+              subagent: {
+                type: parsed.subagent_type,
+                agentId: subAgentId,
+                model: subagentRuntime.model,
+                usage: resumed.usage,
+                toolUseCount: turnStats.toolUseCount,
+                verdict: turnVerdict,
+                criticalFiles: turnCriticalFiles,
+              },
+            },
+          }
+        } finally {
+          if (continuationTimeout) clearTimeout(continuationTimeout)
+          parentContext.abortSignal?.removeEventListener('abort', forwardAbort)
+        }
+      },
+    }
 
     return {
       result,
@@ -729,6 +865,7 @@ async function runSubagent({
         turnId: context.currentTurnId,
       },
       worktree: worktreeSummary,
+      continuation,
     }
   } finally {
     if (timeout) clearTimeout(timeout)
@@ -762,6 +899,7 @@ async function runBackgroundSubagent(input: {
       isBackground: true,
       externalAbortSignal,
     })
+    options.backgroundTasks?.setAgentContinuation(context.sessionId, subAgentId, run.continuation)
     await context.appendRecord?.(run.transcriptRecord)
     await appendSubagentTaskRecord(context, parsed, subAgentId, 'completed', {
       transcriptPath,
@@ -779,7 +917,12 @@ async function runBackgroundSubagent(input: {
       id: randomUUID(),
       type: 'message',
       role: 'assistant',
-      content: formatBackgroundCompletionMessage(parsed, run.transcriptRecord.summary, run.verdict, run.worktree),
+      content: options.backgroundTasks
+        ? appendAgentContinuationNotice(
+            formatBackgroundCompletionMessage(parsed, run.transcriptRecord.summary, run.verdict, run.worktree),
+            subAgentId,
+          )
+        : formatBackgroundCompletionMessage(parsed, run.transcriptRecord.summary, run.verdict, run.worktree),
       createdAt: new Date().toISOString(),
       turnId: context.currentTurnId,
     })
@@ -1039,6 +1182,7 @@ function resolveSubagentPermissionMode(
   definition: BaseAgentDefinition,
   runInBackground: boolean = false,
 ): PermissionMode | undefined {
+  if (definition.lockPermissionMode && definition.permissionMode) return definition.permissionMode
   const parentMode = options.permissionMode?.()
   if (parentMode === 'bypass') return 'bypass'
   if (definition.permissionMode) return definition.permissionMode
@@ -1139,6 +1283,10 @@ function formatSubagentHookOutput(
 
 function appendHookOutputToToolResult(content: string, hookOutput: string | undefined): string {
   return hookOutput ? `${content}\n\n${hookOutput}` : content
+}
+
+function appendAgentContinuationNotice(content: string, agentId: string): string {
+  return `${content}\n\nAgent ID: ${agentId}. Use SendMessage with this agent_id to continue the same sub-agent.`
 }
 
 function appendWorktreeNoticeToToolResult(content: string, worktree: SubagentWorktreeSummary | undefined): string {

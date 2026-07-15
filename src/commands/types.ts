@@ -98,6 +98,7 @@ export interface CommandContext {
   runShellCommand?: (command: string) => Promise<CommandShellResult>
   openProviderPanel?: () => void
   openBackgroundTasks?: () => void
+  openResumePicker?: () => void
   listSubagentTasks?: () => Promise<Array<Extract<SessionRecord, { type: 'subagent_task' }>>>
   getSubagentDetails?: (agentIdOrPrefix: string) => Promise<CommandSubagentDetails | null>
   cleanupSubagentWorktrees?: (options: { apply: boolean }) => Promise<CommandSubagentCleanupResult>

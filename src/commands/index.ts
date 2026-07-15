@@ -15,6 +15,7 @@ import { providerCommand } from './provider.js'
 import { planCommand } from './plan.js'
 import { effortCommand } from './effort.js'
 import { tasksCommand } from './tasks.js'
+import { resumeCommand } from './resume.js'
 
 // Register all built-in commands
 export function registerBuiltinCommands(): void {
@@ -31,4 +32,5 @@ export function registerBuiltinCommands(): void {
   registerCommand(planCommand)
   registerCommand(effortCommand)
   registerCommand(tasksCommand)
+  registerCommand(resumeCommand)
 }

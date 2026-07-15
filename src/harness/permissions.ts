@@ -6,7 +6,6 @@ import { shellWords } from './bashSafety.js'
 import {
   isSafeAutoTool,
   classifyWithUserRules,
-  isPlanReadOnlyShellCommand,
   type AutoModeConfig,
 } from './autoClassifier.js'
 import type { RiskLevel, Tool, ToolApprovalRecord } from './types.js'
@@ -686,8 +685,8 @@ export class PermissionGate {
     }
 
     if (tool.name !== 'Bash' || !commandAnalysis) return false
-    if (hasHardSafetyDenial || requiresSafetyPrompt || commandAnalysis.categories.length > 0) return false
-    return isPlanReadOnlyShellCommand(commandAnalysis.command)
+    if (hasHardSafetyDenial || requiresSafetyPrompt) return false
+    return commandAnalysis.isReadOnly
   }
 
   private isAllowedPlanFileWrite(tool: Tool, input: unknown, requiresSafetyPrompt: boolean): boolean {

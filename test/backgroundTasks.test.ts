@@ -146,6 +146,14 @@ test('agent tasks share registry status and subscriptions with shell tasks', () 
   assert.ok(notifications >= 2)
 })
 
+test('restored short agent ids seed the next per-type id', async () => {
+  const registry = new BackgroundTaskRegistry()
+  const record = backgroundRecord('agent_2', 'agent', 'completed')
+  record.agentId = 'explore-4'
+  await registry.restoreSession('session-1', [record])
+  assert.equal(registry.allocateAgentId('session-1', 'explore'), 'explore-5')
+})
+
 function backgroundRecord(
   taskId: string,
   kind: 'shell' | 'agent',

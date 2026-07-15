@@ -13,6 +13,7 @@ import type { SessionRecord } from '../../harness/types.js'
 import type { CommandSubmitQueryOptions, SetModelResult } from '../../commands/types.js'
 import type { TUIDisplayItem, TUIStaticItem } from '../types.js'
 import { useAgentLoop } from '../hooks/useAgentLoop.js'
+import { recordsToDisplayItems } from '../transcript.js'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts.js'
 import { useCommands } from '../hooks/useCommands.js'
 import { usePermission } from '../hooks/usePermission.js'
@@ -30,6 +31,7 @@ import { PermissionDialog } from './PermissionDialog.js'
 import { StatusLine } from './StatusLine.js'
 import { RestoreMode, type RestoreDecision } from './RestoreMode.js'
 import { BackgroundTasksPanel } from './BackgroundTasksPanel.js'
+import { SessionResumePicker } from './SessionResumePicker.js'
 import { invalidateResolvedCwdCache } from '../../utils/paths.js'
 import { readPlan } from '../../utils/plans.js'
 import { applyPermissionModeTransition, nextPermissionMode } from '../permissionMode.js'
@@ -57,8 +59,10 @@ import {
   subscribeMessageQueue,
 } from '../messageQueue.js'
 import type { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
+import { appendPromptHistory, loadPromptHistory, promptHistoryTexts } from '../promptHistory.js'
+import { summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
 
-export type AppMode = 'idle' | 'running' | 'restore' | 'tasks' | 'exiting'
+export type AppMode = 'idle' | 'running' | 'restore' | 'resume' | 'tasks' | 'exiting'
 
 const ABORT_TIMEOUT_MS = 2000
 
@@ -83,7 +87,7 @@ interface AppProps {
   availableModelKeys: string[]
   resolveModelInput: (input: string, currentModelKey: string) => string | undefined
   providerConfig: ConfigService
-  createRuntime: (modelKey: string, session: SessionMeta) => AppRuntime
+  createRuntime: (modelKey: string, session: SessionMeta, records?: readonly SessionRecord[]) => AppRuntime
   createActiveModelRuntime: (modelKey: string) => ActiveModelRuntime
   permissionGate: PermissionGate
   promptProxy: PermissionPromptProxy
@@ -134,6 +138,12 @@ export function App({
 }: AppProps) {
   const [mode, setMode] = useState<AppMode>('idle')
   const [activeSession, setActiveSession] = useState<SessionMeta>(initialSession)
+  const [sessionRecords, setSessionRecords] = useState<SessionRecord[]>(existingRecords)
+  const [promptHistory, setPromptHistory] = useState<string[]>([])
+  const historyWarningShownRef = useRef(false)
+  const [resumeSessions, setResumeSessions] = useState<SessionMeta[]>([])
+  const [resumeLoading, setResumeLoading] = useState(false)
+  const [resumeError, setResumeError] = useState<string | null>(null)
   const [runtime, setRuntime] = useState<AppRuntime>(() => ({
     loop: initialLoop,
     planModeManager: initialPlanModeManager,
@@ -209,6 +219,16 @@ export function App({
   }, [availableModelKeys])
 
   useEffect(() => {
+    let cancelled = false
+    void loadPromptHistory(process.cwd()).then((entries) => {
+      if (!cancelled) setPromptHistory(promptHistoryTexts(entries))
+    }).catch(() => {
+      // History is a convenience feature; a read failure must not block the TUI.
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
     return () => {
       runtimeRef.current.dispose()
     }
@@ -225,7 +245,7 @@ export function App({
   const syncActiveModel = useCallback((activeModel: { modelKey?: string }) => {
     if (!activeModel.modelKey) return
     if (activeModel.modelKey === runtime.modelKey) return
-    const nextRuntime = createRuntime(activeModel.modelKey, activeSession)
+    const nextRuntime = createRuntime(activeModel.modelKey, activeSession, sessionRecords)
     nextRuntime.dispose()
     setRuntime((current) => {
       if (current.modelKey === activeModel.modelKey) return current
@@ -236,7 +256,7 @@ export function App({
         dispose: current.dispose,
       }
     })
-  }, [createRuntime, activeSession, runtime.modelKey])
+  }, [createRuntime, activeSession, sessionRecords, runtime.modelKey])
 
   const restoreInput = useCallback((text: string) => {
     restoreInputRef.current(text)
@@ -266,7 +286,7 @@ export function App({
     session: activeSession,
     permissionGate,
     recordProxy,
-    existingRecords,
+    existingRecords: sessionRecords,
     initialSystemMessages,
     pricing: runtime.modelConfig.pricing,
     onActiveModelChange: syncActiveModel,
@@ -285,6 +305,7 @@ export function App({
     || modelPickerOpen
     || effortPickerOpen
     || mode === 'restore'
+    || mode === 'resume'
     || mode === 'tasks'
     || screen === 'transcript'
   const animationsEnabled = !permState.visible
@@ -310,9 +331,10 @@ export function App({
     await backgroundTasks.stopAll(activeSession.id, 'Session cleared')
     const nextSession = await store.create()
     await migrateMessageQueue(nextSession.id, [])
-    const nextRuntime = createRuntime(runtime.modelKey, nextSession)
+    const nextRuntime = createRuntime(runtime.modelKey, nextSession, [])
     checkpointServiceRef.current = new CheckpointService(process.cwd(), nextSession.id)
     setActiveSession(nextSession)
+    setSessionRecords([])
     replaceRuntime(nextRuntime)
     setCheckpoints([])
     resetTranscript([])
@@ -395,7 +417,7 @@ export function App({
     }
 
     try {
-      const nextRuntime = createRuntime(modelKey, activeSession)
+      const nextRuntime = createRuntime(modelKey, activeSession, sessionRecords)
       runtimeRef.current.loop.clearCachedSections()
       replaceRuntime(nextRuntime)
       // Re-apply current effort clamped to new model's maxEffort
@@ -420,7 +442,7 @@ export function App({
         availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
       }
     }
-  }, [modelKeys, createRuntime, activeSession, replaceRuntime])
+  }, [modelKeys, createRuntime, activeSession, sessionRecords, replaceRuntime])
 
   const switchModel = useCallback((input: string): SetModelResult => {
     const modelKey = resolveModelInput(input, runtimeRef.current.modelKey)
@@ -490,10 +512,10 @@ export function App({
     }
     const count = await reloadRuntimeAgentDefinitions()
     runtime.loop.clearCachedSections()
-    const nextRuntime = createRuntime(runtime.modelKey, activeSession)
+    const nextRuntime = createRuntime(runtime.modelKey, activeSession, sessionRecords)
     replaceRuntime(nextRuntime)
     return count
-  }, [reloadRuntimeAgentDefinitions, runtime.loop, runtime.modelKey, createRuntime, activeSession, replaceRuntime])
+  }, [reloadRuntimeAgentDefinitions, runtime.loop, runtime.modelKey, createRuntime, activeSession, sessionRecords, replaceRuntime])
 
   const cyclePermissionMode = useCallback((direction: 1 | -1) => {
     setPermissionModeState((currentMode) => {
@@ -539,6 +561,75 @@ export function App({
 
   const openBackgroundTasks = useCallback(() => setMode('tasks'), [])
   const closeBackgroundTasks = useCallback(() => setMode('idle'), [])
+  const openResumePicker = useCallback(() => {
+    setResumeLoading(true)
+    setResumeError(null)
+    setMode('resume')
+    void store.list().then((sessions) => {
+      setResumeSessions(sessions)
+    }).catch((error) => {
+      setResumeSessions([])
+      setResumeError(error instanceof Error ? error.message : String(error))
+    }).finally(() => setResumeLoading(false))
+  }, [store])
+
+  const closeResumePicker = useCallback(() => {
+    setResumeError(null)
+    setMode('idle')
+  }, [])
+
+  const resumeSession = useCallback(async (target: SessionMeta) => {
+    if (target.id === activeSession.id) {
+      closeResumePicker()
+      return
+    }
+
+    const loaded = await store.loadRecordsWithDiagnostics(target.id)
+    const alreadyRegistered = backgroundTasks.getSnapshot(target.id).length > 0
+    const orphanedAgentIds = new Set(alreadyRegistered
+      ? []
+      : await backgroundTasks.restoreSession(target.id, loaded.records))
+    if (orphanedAgentIds.size > 0) {
+      const latestTasks = new Map<string, Extract<SessionRecord, { type: 'subagent_task' }>>()
+      for (const record of loaded.records) {
+        if (record.type === 'subagent_task') latestTasks.set(record.agentId, record)
+      }
+      for (const agentId of orphanedAgentIds) {
+        const previous = latestTasks.get(agentId)
+        if (!previous || previous.status !== 'running') continue
+        const interrupted: Extract<SessionRecord, { type: 'subagent_task' }> = {
+          ...previous,
+          id: randomUUID(),
+          status: 'interrupted',
+          error: 'Background agent was not present when the session resumed',
+          createdAt: new Date().toISOString(),
+        }
+        await store.appendRecord(target.id, interrupted)
+        loaded.records.push(interrupted)
+      }
+    }
+
+    const nextRuntime = createRuntime(runtimeRef.current.modelKey, target, loaded.records)
+    const diagnosticSummary = summarizeDiagnosticsForTui(loaded.diagnostics)
+    const transcriptItems = recordsToDisplayItems(loaded.records)
+    if (diagnosticSummary) {
+      transcriptItems.unshift({
+        kind: 'system',
+        id: randomUUID(),
+        content: diagnosticSummary,
+        createdAt: new Date().toISOString(),
+      })
+    }
+
+    initializeMessageQueue(target.id, loaded.records, (sessionId, record) => store.appendRecord(sessionId, record))
+    checkpointServiceRef.current = new CheckpointService(process.cwd(), target.id)
+    setSessionRecords(loaded.records)
+    setActiveSession(target)
+    replaceRuntime(nextRuntime)
+    setCheckpoints([])
+    resetTranscript(transcriptItems)
+    setMode('idle')
+  }, [activeSession.id, backgroundTasks, closeResumePicker, createRuntime, replaceRuntime, resetTranscript, store])
 
   const { dispatch } = useCommands({
     store,
@@ -570,6 +661,7 @@ export function App({
     openEffortPicker: () => setEffortPickerOpen(true),
     openProviderPanel: () => setProviderPanelOpen(true),
     openBackgroundTasks,
+    openResumePicker,
     getEffort: () => effortLevel,
     setEffort: handleSetEffort,
   })
@@ -585,6 +677,14 @@ export function App({
   const handleSubmit = useCallback(async (text: string): Promise<boolean> => {
     try {
       await enqueueMessage(text)
+      void appendPromptHistory(text, process.cwd()).then((entry) => {
+        if (!entry) return
+        setPromptHistory((current) => [...current, entry.text].slice(-1000))
+      }).catch((error) => {
+        if (historyWarningShownRef.current) return
+        historyWarningShownRef.current = true
+        addSystemMessage(`Input history could not be saved: ${error instanceof Error ? error.message : String(error)}`)
+      })
       return true
     } catch (error) {
       addSystemMessage(`Failed to queue message: ${error instanceof Error ? error.message : String(error)}`)
@@ -803,9 +903,10 @@ export function App({
     onEnterRestoreMode: handleEnterRestoreMode,
     onCyclePermissionMode: cyclePermissionMode,
     onToggleTranscript: handleToggleTranscript,
+    history: promptHistory,
     isStreaming,
     hasQueuedMessages: queuedMessages.length > 0,
-    isRestoreMode: mode === 'restore' || mode === 'tasks',
+    isRestoreMode: mode === 'restore' || mode === 'resume' || mode === 'tasks',
     isPermissionVisible:
       permState.visible
       || exitPlan.state.visible
@@ -859,6 +960,17 @@ export function App({
             scrollOffsetRows={transcriptScrollOffsetRows}
             onScrollOffsetRowsChange={setTranscriptScrollOffsetRows}
             onExit={handleCloseTranscript}
+          />
+        </AlternateScreen>
+      ) : mode === 'resume' ? (
+        <AlternateScreen>
+          <SessionResumePicker
+            sessions={resumeSessions}
+            currentSessionId={activeSession.id}
+            loading={resumeLoading}
+            error={resumeError}
+            onSelect={resumeSession}
+            onCancel={closeResumePicker}
           />
         </AlternateScreen>
       ) : (

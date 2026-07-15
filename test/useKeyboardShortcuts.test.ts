@@ -133,19 +133,27 @@ describe('useKeyboardShortcuts behavior (via pure shortcut pieces)', () => {
     }
   })
 
-  it('Escape while streaming immediately calls onInterrupt without double-tap handling', () => {
-    let interruptCalled = false
-    let detectorUsed = false
+  it('Escape while streaming interrupts once and a fast second press clears the queue', () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 })
+    try {
+      const detector = new DoubleTapDetector({ windowMs: 300 })
+      let interruptCount = 0
+      let clearCount = 0
+      const pressEscape = () => {
+        const result = detector.tap('escape-streaming', () => {})
+        if (result === 'double') clearCount++
+        else interruptCount++
+      }
 
-    const isStreaming = true
-    if (isStreaming) {
-      interruptCalled = true
-    } else {
-      detectorUsed = true
+      pressEscape()
+      mock.timers.tick(100)
+      pressEscape()
+      assert.equal(interruptCount, 1)
+      assert.equal(clearCount, 1)
+      detector.dispose()
+    } finally {
+      mock.timers.reset()
     }
-
-    assert.equal(interruptCalled, true)
-    assert.equal(detectorUsed, false)
   })
 
   it('Ctrl+C while streaming interrupts on the first press and exits on a fast second press', () => {

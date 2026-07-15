@@ -50,6 +50,7 @@ import { App } from '../components/App.js'
 import type { AppRuntime } from '../components/App.js'
 import { TUI_USAGE, parseTuiStartupCommand, resolveStartupSession } from './cli.js'
 import type { TuiStartupCommand } from './cli.js'
+import { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
 
 const cwd = process.cwd()
 
@@ -103,6 +104,8 @@ async function main() {
     process.exit(1)
   }
 
+  const backgroundTasks = new BackgroundTaskRegistry((sessionId, record) => store.appendRecord(sessionId, record))
+
   // Initialize infrastructure
   const settings = await loadMergedSettings(cwd)
   const initialEffortLevel = settings.effortLevel ?? 'high'
@@ -139,7 +142,7 @@ async function main() {
     process.exit(1)
   }
 
-  const baseTools = await getAllTools()
+  const baseTools = await getAllTools(backgroundTasks)
   const skills = await new SkillsService(cwd).list()
   const agentLoader = new AgentDefinitionLoader(cwd)
   let customAgentDefinitions = await agentLoader.list()
@@ -362,6 +365,7 @@ async function main() {
       getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
       setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
       agentTimeoutMs: config.get().agent.agentTimeoutMs,
+      backgroundTasks,
     }))
 
     runtimeToolSets.add(runtimeTools)
@@ -433,6 +437,26 @@ async function main() {
 
   // Load existing records for display
   const existingLoad = await store.loadRecordsWithDiagnostics(session.id)
+  const orphanedAgentIds = new Set(await backgroundTasks.restoreSession(session.id, existingLoad.records))
+  if (orphanedAgentIds.size > 0) {
+    const latestAgentTasks = new Map<string, Extract<SessionRecord, { type: 'subagent_task' }>>()
+    for (const record of existingLoad.records) {
+      if (record.type === 'subagent_task') latestAgentTasks.set(record.agentId, record)
+    }
+    for (const agentId of orphanedAgentIds) {
+      const previous = latestAgentTasks.get(agentId)
+      if (!previous || previous.status !== 'running') continue
+      const interrupted: Extract<SessionRecord, { type: 'subagent_task' }> = {
+        ...previous,
+        id: randomUUID(),
+        status: 'interrupted',
+        error: 'Background agent was not present when the session resumed',
+        createdAt: new Date().toISOString(),
+      }
+      await store.appendRecord(session.id, interrupted)
+      existingLoad.records.push(interrupted)
+    }
+  }
   restoredTaskStates.set(session.id, restoreTaskStateFromRecords(existingLoad.records))
   const initialQueuedPrompt = process.env.MYAGENT_RESUME_INTERRUPTED_TURN
     ? latestRecoverableInterruption(existingLoad.records) ? 'continue' : undefined
@@ -464,6 +488,7 @@ async function main() {
   const onBeforeExit = async () => {
     // Disconnect all MCP clients on exit. Swallow errors so a misbehaving
     // server cannot prevent the TUI from exiting cleanly.
+    await backgroundTasks.stopAll(undefined, 'TUI exited')
     await Promise.allSettled(mcpClients.map((c) => c.close()))
   }
   // Render the TUI
@@ -492,6 +517,7 @@ async function main() {
       initialSystemMessages={initialSystemMessages}
       initialQueuedPrompt={initialQueuedPrompt}
       onBeforeExit={onBeforeExit}
+      backgroundTasks={backgroundTasks}
       reloadAgentDefinitions={reloadAgentDefinitions}
       initialEffortLevel={typeof clampedInitialEffort === 'string' ? clampedInitialEffort : initialEffortLevel}
       onEffortLevelChange={async (level) => {

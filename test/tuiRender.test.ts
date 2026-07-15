@@ -15,6 +15,7 @@ import { RestoreMode, type RestoreDecision } from '../src/tui/components/Restore
 import { MessageList, StaticDisplayItem } from '../src/tui/components/MessageList.js'
 import { TranscriptView } from '../src/tui/components/TranscriptView.js'
 import { StatusLine } from '../src/tui/components/StatusLine.js'
+import { BackgroundTasksPanel } from '../src/tui/components/BackgroundTasksPanel.js'
 import { formatWorkedSummary } from '../src/tui/hooks/useAgentLoop.js'
 import type { CheckpointDiffSummary, CheckpointWithDiff } from '../src/services/checkpoint/checkpointService.js'
 import type { PermissionDecisionSource, PermissionRequest, PermissionRule } from '../src/harness/permissions.js'
@@ -361,6 +362,32 @@ test('StatusLine renders per-request tokens without cost', () => {
   assert.match(frame, /out:23\.9K/)
   assert.doesNotMatch(frame, /USD/)
   assert.doesNotMatch(frame, /Cost/)
+})
+
+test('StatusLine renders the running background task count', () => {
+  const frame = render(h(StatusLine, {
+    model: 'model',
+    usage: { lastRequest: null, total: { inputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0 } },
+    permissionMode: 'default',
+    backgroundTaskCount: 2,
+  })).lastFrame() ?? ''
+  assert.match(frame, /2 background tasks/)
+})
+
+test('BackgroundTasksPanel sorts running tasks first and renders task details', async () => {
+  const panel = render(h(BackgroundTasksPanel, {
+    tasks: [
+      { id: 'bash_1', sessionId: 's1', kind: 'shell', status: 'completed', command: 'echo old', startedAt: 1, outputBytes: 0, unreadBytes: 0 },
+      { id: 'agent_1', sessionId: 's1', kind: 'agent', status: 'running', agentId: 'abcdef123', agentType: 'general', description: 'work', startedAt: 2, outputBytes: 0, unreadBytes: 0 },
+    ],
+    peekOutput: () => 'tail',
+    onClose: () => {},
+  }))
+  const frame = panel.lastFrame() ?? ''
+  assert.ok(frame.indexOf('agent_1') < frame.indexOf('bash_1'))
+  panel.stdin.write('\r')
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.match(panel.lastFrame() ?? '', /agent: general #abcdef12/)
 })
 
 test('worked summary renders total-turn cost when pricing is available', () => {
@@ -875,6 +902,27 @@ test('RestoreMode renders checkpoint list with code diff summaries', () => {
   assert.match(frame, /> \(current\)/)
   assert.ok(frame.indexOf('older prompt') < frame.indexOf('newer prompt'))
   assert.ok(frame.indexOf('newer prompt') < frame.indexOf('(current)'))
+})
+
+test('MessageList renders queued messages after live items', () => {
+  const items: TUIDisplayItem[] = [{
+    kind: 'assistant',
+    id: 'assistant-queued',
+    content: 'current response',
+    createdAt: '2026-07-14T00:00:00.000Z',
+  }]
+  const frame = render(h(MessageList, {
+    items,
+    queuedMessages: [{
+      id: 'queued-1',
+      content: '/model fast',
+      priority: 'next',
+      createdAt: '2026-07-14T00:00:01.000Z',
+    }],
+  })).lastFrame() ?? ''
+
+  assert.ok(frame.indexOf('current response') < frame.indexOf('/model fast'))
+  assert.match(frame, /\(queued\)/)
 })
 
 test('RestoreMode selecting current cancels without rewinding', async () => {

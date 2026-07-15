@@ -7,9 +7,10 @@ interface InputBoxProps {
   text: string
   cursorPos: number
   disabled?: boolean
+  isStreaming?: boolean
 }
 
-export function InputBox({ text, cursorPos, disabled }: InputBoxProps) {
+export function InputBox({ text, cursorPos, disabled, isStreaming = false }: InputBoxProps) {
   const { stdout } = useStdout()
   const lineWidth = stdout.columns || 80
   const inputWidth = Math.max(1, lineWidth - 2)
@@ -64,6 +65,7 @@ export function InputBox({ text, cursorPos, disabled }: InputBoxProps) {
         )
       })}
       <Text color={theme.subtleText}>{separator}</Text>
+      {isStreaming ? <Text color={theme.dimText} dimColor>  Enter to queue</Text> : null}
     </Box>
   )
 }

@@ -180,6 +180,29 @@ export interface SubagentTranscriptRecord {
 
 export type SubagentTaskStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
 
+export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'killed' | 'orphaned'
+
+export interface BackgroundTaskRecord {
+  id: string
+  type: 'background_task'
+  taskId: string
+  sessionId: string
+  kind: 'shell' | 'agent'
+  status: BackgroundTaskStatus
+  command?: string
+  pid?: number
+  agentId?: string
+  agentType?: string
+  description?: string
+  startedAt: number
+  finishedAt?: number
+  exitCode?: number | null
+  signal?: string | null
+  reason?: string
+  createdAt: string
+  turnId?: string
+}
+
 export interface SubagentTaskRecord {
   id: string
   type: 'subagent_task'
@@ -239,6 +262,40 @@ export interface TurnInterruptionRecord {
   turnId?: string
 }
 
+export type MessageQueuePriority = 'now' | 'next' | 'later'
+
+export interface PersistedQueuedMessage {
+  id: string
+  content: string
+  priority: MessageQueuePriority
+  createdAt: string
+}
+
+export type MessageQueueRecord =
+  | {
+      id: string
+      type: 'message_queue'
+      operation: 'enqueue'
+      message: PersistedQueuedMessage
+      createdAt: string
+      turnId?: string
+    }
+  | {
+      id: string
+      type: 'message_queue'
+      operation: 'dequeue'
+      messageId: string
+      createdAt: string
+      turnId?: string
+    }
+  | {
+      id: string
+      type: 'message_queue'
+      operation: 'clear'
+      createdAt: string
+      turnId?: string
+    }
+
 export type SessionRecord =
   | ({ type: 'message' } & ChatMessage)
   | AtMentionContextRecord
@@ -250,9 +307,11 @@ export type SessionRecord =
   | ToolUseSummaryRecord
   | SubagentTranscriptRecord
   | SubagentTaskRecord
+  | BackgroundTaskRecord
   | PlanModeRequestRecord
   | PlanModeOutcomeRecord
   | TurnInterruptionRecord
+  | MessageQueueRecord
 
 export interface TaskItem {
   id: string

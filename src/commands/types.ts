@@ -97,6 +97,7 @@ export interface CommandContext {
   submitQuery?: (input: string, options?: CommandSubmitQueryOptions) => Promise<void>
   runShellCommand?: (command: string) => Promise<CommandShellResult>
   openProviderPanel?: () => void
+  openBackgroundTasks?: () => void
   listSubagentTasks?: () => Promise<Array<Extract<SessionRecord, { type: 'subagent_task' }>>>
   getSubagentDetails?: (agentIdOrPrefix: string) => Promise<CommandSubagentDetails | null>
   cleanupSubagentWorktrees?: (options: { apply: boolean }) => Promise<CommandSubagentCleanupResult>

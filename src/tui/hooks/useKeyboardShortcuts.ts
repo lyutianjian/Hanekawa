@@ -16,13 +16,15 @@ import {
 import type { SuggestionItem, SuggestionType } from '../suggestions/types.js'
 
 export interface KeyboardShortcutOptions {
-  onSubmit: (text: string) => void
+  onSubmit: (text: string) => unknown | Promise<unknown>
   onInterrupt: () => void
+  onClearQueue?: () => void
   onExit: () => void
   onEnterRestoreMode: () => void
   onCyclePermissionMode: (direction: 1 | -1) => void
   onToggleTranscript: () => void
   isStreaming: boolean
+  hasQueuedMessages?: boolean
   isRestoreMode: boolean
   isPermissionVisible: boolean
   cwd?: string
@@ -69,11 +71,13 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
   const {
     onSubmit,
     onInterrupt,
+    onClearQueue = () => {},
     onExit,
     onEnterRestoreMode,
     onCyclePermissionMode,
     onToggleTranscript,
     isStreaming,
+    hasQueuedMessages = false,
     isRestoreMode,
     isPermissionVisible,
     cwd = process.cwd(),
@@ -90,6 +94,8 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
   const escapeDetectorRef = useRef<DoubleTapDetector | null>(null)
   const escapeClearDetectorRef = useRef<DoubleTapDetector | null>(null)
   const ctrlCDetectorRef = useRef<DoubleTapDetector | null>(null)
+  const streamingEscapeDetectorRef = useRef<DoubleTapDetector | null>(null)
+  const submitPendingRef = useRef(false)
   const doubleTapWindowMsRef = useRef(options.doubleTapWindowMs ?? 300)
   const suggestionRequestRef = useRef(0)
 
@@ -101,11 +107,13 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     escapeDetectorRef.current = new DoubleTapDetector({ windowMs: configWindowMs })
     escapeClearDetectorRef.current = new DoubleTapDetector({ windowMs: configWindowMs })
     ctrlCDetectorRef.current = new DoubleTapDetector({ windowMs: configWindowMs })
+    streamingEscapeDetectorRef.current = new DoubleTapDetector({ windowMs: configWindowMs })
 
     return () => {
       escapeDetectorRef.current?.dispose()
       escapeClearDetectorRef.current?.dispose()
       ctrlCDetectorRef.current?.dispose()
+      streamingEscapeDetectorRef.current?.dispose()
       if (hintTimerRef.current) {
         clearTimeout(hintTimerRef.current)
       }
@@ -136,6 +144,39 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     setSelectedSuggestion(-1)
     setSuggestionType('none')
   }, [])
+
+  const submitInput = useCallback((value: string, originalText: string) => {
+    if (submitPendingRef.current) return
+    submitPendingRef.current = true
+    const finish = (accepted: unknown) => {
+      if (accepted === false) return
+      setText((current) => {
+        if (current !== originalText) return current
+        setCursorPos(0)
+        clearSuggestions()
+        return ''
+      })
+    }
+
+    let result: unknown
+    try {
+      result = onSubmit(value)
+    } catch {
+      // The submitter owns user-visible error reporting. Keep the draft intact.
+      submitPendingRef.current = false
+      return
+    }
+    if (isPromiseLike(result)) {
+      void result.then(finish).catch(() => {
+        // The submitter owns user-visible error reporting. Keep the draft intact.
+      }).finally(() => {
+        submitPendingRef.current = false
+      })
+      return
+    }
+    finish(result)
+    submitPendingRef.current = false
+  }, [onSubmit, clearSuggestions])
 
   const refreshSuggestions = useCallback(async (value: string, valueCursorPos: number) => {
     const requestId = ++suggestionRequestRef.current
@@ -228,10 +269,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
         const suggestion = suggestions[selectedSuggestion < 0 ? 0 : selectedSuggestion]
         if (suggestion && suggestionType === 'command') {
           const applied = applyCommandSuggestion(suggestion as CommandSuggestion)
-          onSubmit(applied.text.trim())
-          setText('')
-          setCursorPos(0)
-          clearSuggestions()
+          submitInput(applied.text.trim(), text)
         }
         if (suggestion && suggestionType === 'file') {
           const applied = applyFileSuggestion(text, cursorPos, suggestion as FileSuggestion)
@@ -251,9 +289,25 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
       // --- Escape key ---
       if (key.escape) {
         if (isStreaming) {
+          escapeDetectorRef.current?.cancel()
+          escapeClearDetectorRef.current?.cancel()
+          const result = streamingEscapeDetectorRef.current?.tap('escape-streaming', () => {})
+          if (result === 'double') {
+            onClearQueue()
+            return
+          }
           onInterrupt()
           return
         }
+
+        if (hasQueuedMessages) {
+          escapeDetectorRef.current?.cancel()
+          escapeClearDetectorRef.current?.cancel()
+          const result = streamingEscapeDetectorRef.current?.tap('escape-streaming', () => {})
+          if (result === 'double') onClearQueue()
+          return
+        }
+        streamingEscapeDetectorRef.current?.cancel()
 
         if (text.length > 0) {
           // Input has content: use the dedicated clear detector.
@@ -317,10 +371,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
       if (key.return) {
         const trimmed = text.trim()
         if (trimmed) {
-          onSubmit(trimmed)
-          setText('')
-          setCursorPos(0)
-          clearSuggestions()
+          submitInput(trimmed, text)
         }
         return
       }
@@ -398,7 +449,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
         setCursorPos(cursorPos + input.length)
       }
     },
-    [text, cursorPos, isStreaming, isRestoreMode, isPermissionVisible, hintMessage, onSubmit, onInterrupt, onExit, onEnterRestoreMode, onCyclePermissionMode, onToggleTranscript, clearHint, showHint, suggestionType, suggestions, selectedSuggestion, clearSuggestions],
+    [text, cursorPos, isStreaming, hasQueuedMessages, isRestoreMode, isPermissionVisible, hintMessage, onInterrupt, onClearQueue, onExit, onEnterRestoreMode, onCyclePermissionMode, onToggleTranscript, clearHint, showHint, submitInput, suggestionType, suggestions, selectedSuggestion, clearSuggestions],
   )
 
   useInkInput(handleInput, { isActive: !shouldIgnoreShortcutInput({ isPermissionVisible, isRestoreMode }) })
@@ -413,4 +464,8 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     setText,
     setCursorPos,
   }
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return typeof value === 'object' && value !== null && 'then' in value
 }

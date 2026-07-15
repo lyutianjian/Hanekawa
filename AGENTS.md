@@ -4,7 +4,7 @@ This file gives coding agents guidance when working in this repository.
 
 ## What This Is
 
-Hanekawa (MyAgent) is a self-hosted CLI General-Purpose agent. It supports Anthropic and OpenAI-compatible APIs, with session persistence, automatic context compaction, a skill system, MCP integration, prompt cache management, checkpoints, permission-gated tools, plan mode, lifecycle hooks, and deferred tool loading via ToolSearch.
+Hanekawa (MyAgent) is a self-hosted CLI General-Purpose agent. It supports Anthropic and OpenAI-compatible APIs, with session persistence, a persistent input queue, background shell/agent tasks, automatic context compaction, a skill system, MCP integration, prompt cache management, checkpoints, permission-gated tools, plan mode, lifecycle hooks, and deferred tool loading via ToolSearch.
 
 The interactive entrypoint is the Ink/React TUI at `src/tui/entrypoints/tui.tsx`.
 
@@ -49,6 +49,7 @@ No bundler — runs TypeScript directly via `tsx`.
 | `/provider [name]` | Show or set the active provider |
 | `/plan` | Toggle plan mode |
 | `/effort [level]` | Show or set reasoning effort level (low/medium/high/xhigh/max) |
+| `/tasks` | Open the background shell/agent task panel |
 
 ## Configuration
 
@@ -122,9 +123,11 @@ prepare records -> auto-compact if needed -> build context -> call model -> exec
 Key modules:
 
 - `contextBuilder.ts` — assembles system prompt blocks, skills, environment info, post-compact restore context, and session history into a `ModelRequest`
-- `compact.ts` — token-driven auto-compaction via LLM summary
+- `compact.ts` — token-driven auto-compaction via LLM summary plus a 10k-token hard cap for any remaining oversized individual tool result
+- `prompts/compactPrompt.ts` — structured compaction prompt and summary formatter
 - `progressiveCompact.ts` — time-based and cache-edit-aware micro-compaction; conversation snipping has been removed
-- `requestPrep.ts` — prepares session records, enforces two-layer tool result budget (see below), repairs tool_use/tool_result pairing
+- `requestPrep.ts` — prepares session records, enforces the layered tool-result budget (see below), repairs tool_use/tool_result pairing
+- `cacheEditManager.ts` — tracks Anthropic `cache_edits`, pending deletions, and pinned edits for cache-aware micro-compaction
 - `toolRunner.ts` — executes tool calls, records results, respects permission gates
 - `permissions.ts` — five permission modes: `default` (prompt for confirm/dangerous), `plan` (read-only + plan file writes), `acceptEdits` (auto-allow Edit/Write/MultiEdit + light shell), `auto` (classifier-based), `bypass` (auto-allow except protected paths and shell safety). Protected paths (`.git`, `.myagent`, `.env`, `.ssh`, `.aws`) and secret files (`.gitconfig`, `.bashrc`, `.env`, `.npmrc`, `id_rsa*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`) always blocked. Supports glob-pattern allow/deny/ask rules. Denial streak escalation: after N consecutive auto-denials, forces user prompt.
 - `autoClassifier.ts` — auto mode decision layers: safe-tool allowlist → acceptEdits fast-path → user rules → base classifier
@@ -142,6 +145,7 @@ Key modules:
 - `metrics.ts` — runtime metrics collection
 - `recordStream.ts` — session record streaming
 - `sidechainRecordStream.ts` — background subagent transcript streaming
+- `services/backgroundTasks/registry.ts` — session-scoped shell/agent task registry, lifecycle persistence, output ring buffers, and shutdown cleanup
 - `sections.ts` — system prompt section management
 - `systemReminder.ts` — unified `<system-reminder>` wrapper for dynamic context injection
 - `toolApiSchema.ts` — tool API schema generation
@@ -149,10 +153,11 @@ Key modules:
 - `atMentions.ts` — `@file` reference parsing and context injection
 - `types.ts` — shared type definitions (`Tool`, `ToolContext`, `ToolResult`, `ModelRequest`, etc.)
 
-**Tool result budget — two layers:**
+**Tool result budget — three layers:**
 
 1. **Per-result write-time truncation** (`toolRunner.ts:applyToolResultBudget`): each tool defines `maxResultSizeChars`; content exceeding that limit is sliced at the boundary with a truncation notice. Current limits: Bash = 100k chars, Grep = 30k chars, Agent = 32k chars.
 2. **Global request-time budget** (`requestPrep.ts`): total `tool_result` content across all records is capped at `effectiveContextWindow * 0.5` (floored at 200k tokens). When the budget is exceeded, older results are summarized, keeping the 10 most recent tool results intact.
+3. **Per-result hard cap** (`compact.ts:snipLargeToolResults`): after global budgeting, any remaining individual tool result over 10k estimated tokens is replaced with a truncation notice. This does not remove conversation turns.
 
 ### Provider Layer (`src/config/providers/`)
 
@@ -168,7 +173,7 @@ Two providers share a common `ModelProvider` interface:
 
 Both support extended thinking/reasoning (`thinking: { type: 'adaptive' | 'enabled' | 'disabled' }`). Anthropic uses `thinking`/`redacted_thinking` blocks; OpenAI uses `reasoning_content` field.
 
-Max output tokens: default 32,000, upper limit 128,000 (env override or config). Auto-escalates to 64,000 on `max_tokens` stop reason with up to 3 recovery attempts.
+Raw provider defaults are model-aware (32,000 for unknown modern models, upper limit 128,000), but normal Anthropic requests cap the default slot at 8,000 to avoid over-reservation. `MYAGENT_MAX_OUTPUT_TOKENS` or model config can override it; `MYAGENT_SLOT_CAP_DISABLED=1` restores the raw default. A `max_tokens` stop first escalates to 64,000, followed by up to 3 continuation attempts.
 
 Retry logic (`src/config/retry.ts`): exponential backoff with jitter (base 500ms, max 32s). Per-category budgets: rate_limit(3), overload(2), server_error(3), transient(3). Retries on HTTP 429, 529, 5xx, timeout, ECONNRESET, ECONNREFUSED. Background callers skip 529 retries. `FallbackTriggeredError` triggers model fallback when overload budget exhausted.
 
@@ -203,7 +208,9 @@ Each tool exports a `Tool` object with `name`, `inputSchema` (JSON Schema via Zo
 | `Grep` | safe | yes | — | yes | fast-glob, 50 match limit, skips dotfiles |
 | `Glob` | safe | yes | — | yes | |
 | `Read` | safe | yes | — | yes | LRU cache (100 entries) for post-compact restore |
-| `Bash` | dangerous | no | yes | no | 1MB output truncation, 30s timeout, Windows Git Bash detection |
+| `Bash` | dangerous | no | yes | no | foreground execution or `run_in_background`; 1MB output cap; Windows Git Bash detection |
+| `BashOutput` | safe | yes | — | yes | consumes new output from a background shell; optional regex filter and wait up to 30s |
+| `KillShell` | dangerous | no | yes | no | terminates a background shell and its child process tree |
 | `Write` | confirm | no | — | no | |
 | `Edit` | confirm | no | — | no | requires prior Read, exactly one match of oldString |
 | `MultiEdit` | confirm | no | — | no | atomic exact string replacements |
@@ -264,7 +271,7 @@ Agent definition directories merge by `name` in this order, later files overridi
 
 Custom agents always disallow nested `Agent`, `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion` calls. `tools: ["*"]` means all read-only tools, while `Bash` is available only when explicitly listed. `isReadOnlyAgent` controls whether an agent type may be scheduled concurrently; definitions that list write-like tools such as `Bash`, `Write`, `Edit`, `MultiEdit`, `Delete`, or `TaskCreate`/`TaskUpdate` are treated as non-read-only even if they declare `isReadOnlyAgent: true`. Custom prompts have a 16k character soft warning threshold. Custom names that collide with built-ins, such as `explore`, override the built-in definition and produce a warning.
 
-Background agents (`background: true` or `run_in_background: true`) return immediately and send a completion notification later. They use `SidechainRecordStream` for transcript persistence and default to `auto` permission mode.
+Background agents (`background: true` or `run_in_background: true`) return immediately and send a completion notification later. They use `SidechainRecordStream` for transcript persistence, default to `auto` permission mode, and register alongside background shells in the session task registry. `/tasks` displays both kinds; background shells are controlled through `BashOutput` and `KillShell`.
 
 Worktree isolation (`isolation: 'worktree'`) creates an isolated git worktree for the sub-agent via `GitSubagentWorktreeManager`. Only available for non-read-only agents.
 
@@ -294,7 +301,7 @@ Shadow git repo per session under `.myagent/shadow-git/<session-id>/`. Creates c
 
 ### Sessions (`src/sessions/`)
 
-Sessions persist as JSONL records (atomic append) in `.myagent/sessions/`. Old JSON format auto-migrates. Record types: messages, tool_use, tool_result, tool_approval, compact_boundary, compact_attempt_failed, tool_use_summary, subagent_transcript, subagent_task, plan_mode_request, plan_mode_outcome, turn_interruption, at_mention_context. Title auto-assigned from first user message (60 chars). Supports prefix-based ID resolution and `truncateToMessage` for rollback.
+Sessions persist as JSONL records (atomic append) in `.myagent/sessions/`. Old JSON format auto-migrates. Record types include messages, tool uses/results/approvals, compaction records, tool-use summaries, subagent transcripts/tasks, background tasks, message-queue operations, plan-mode outcomes, turn interruptions, and `@file` context. Title auto-assigned from first user message (60 chars). Supports prefix-based ID resolution and `truncateToMessage` for rollback.
 
 - `service.ts` — session CRUD, JSONL append, prefix-based ID resolution
 - `invariants.ts` — session record integrity checks and repair logic
@@ -304,7 +311,9 @@ Sessions persist as JSONL records (atomic append) in `.myagent/sessions/`. Old J
 
 Ink/React-based terminal UI.
 
-Components in `src/tui/components/`: `App`, `AssistantMessage`, `AssistantThinkingMessage`, `InputBox`, `Markdown`, `MessageList`, `Neko` (mascot), `PermissionDialog`, `RestoreMode`, `Spinner`, `StatusLine`, `StructuredDiff`, `ToolCallBlock`, `UserMessage`, `WelcomeBanner`, `CollapsedToolGroup`, `CommandSuggestions`, `ProviderPanel`, `ModelPickerDialog`, `EffortPickerBar`, `EnterPlanModeDialog`, `ExitPlanModeDialog`, `AskUserQuestionDialog`, `SubagentTaskBlock`, `TaskListBlock`, `TranscriptView`, `AlternateScreen`, `ResponseBlock`.
+Components in `src/tui/components/`: `App`, `AssistantMessage`, `AssistantThinkingMessage`, `InputBox`, `Markdown`, `MessageList`, `Neko` (mascot), `PermissionDialog`, `RestoreMode`, `Spinner`, `StatusLine`, `StructuredDiff`, `ToolCallBlock`, `UserMessage`, `WelcomeBanner`, `CollapsedToolGroup`, `CommandSuggestions`, `ProviderPanel`, `ModelPickerDialog`, `EffortPickerBar`, `EnterPlanModeDialog`, `ExitPlanModeDialog`, `AskUserQuestionDialog`, `SubagentTaskBlock`, `TaskListBlock`, `BackgroundTasksPanel`, `TranscriptView`, `AlternateScreen`, `ResponseBlock`.
+
+`messageQueue.ts` persists enqueue/dequeue/clear operations in the active session so users can submit while the model is streaming. The queue is replayed on resume, migrated on `/clear`, and drained serially when the TUI becomes idle. A double Escape clears pending messages while work is active.
 
 Hooks in `src/tui/hooks/`: `useAgentLoop`, `useCommands`, `useInput`, `useKeyboardShortcuts`, `usePermission`, `useSpinner`, `useBlink`, `useAskUserQuestionPermission`, `useEnterPlanPermission`, `useExitPlanPermission`.
 
@@ -340,10 +349,17 @@ Walks up from cwd looking for `MYAGENT.md`, `CLAUDE.md`, `AGENTS.md`, plus `.mya
 - `MYAGENT_DISABLE_PROMPT_CACHING=1` — disable prompt caching globally
 - `MYAGENT_DISABLE_PROMPT_CACHING_HAIKU=1` — disable prompt caching for Haiku models
 - `MYAGENT_MAX_OUTPUT_TOKENS=N` — override max output tokens (capped at 128k)
+- `MYAGENT_SLOT_CAP_DISABLED=1` — disable the normal 8k default output-slot cap
 - `MYAGENT_STREAM_IDLE_TIMEOUT_MS=N` — stream idle timeout (default 90s)
 - `MYAGENT_BASH_PATH` — override bash executable path (Windows)
 - `MYAGENT_SUBAGENT_MODEL_<TYPE>` — override model for a specific subagent type
 - `MYAGENT_SUBAGENT_MODEL` — override model for all subagent types
+- `HANEKAWA_SEARCH_URL` — use a SearXNG instance instead of DuckDuckGo HTML search
+- `HANEKAWA_TOOL_SEARCH` — `always`/`true`/`1`, `off`/`false`/`0`, `auto`, or `auto:N` deferred-tool mode
+- `HANEKAWA_TOOL_SEARCH_AUTO_PERCENT=N` — ToolSearch auto-mode threshold (default 10%; overridden by `auto:N`)
+- `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS=1` — omit beta-only dynamic ToolSearch payload fields
+
+Model configuration keys may end in an agent-side `[1m]` suffix to force a 1,000,000-token context window without changing the API model ID. This override feeds history selection, compaction thresholds, ToolSearch thresholds, status display, and tool-result budgets.
 
 ## Conventions
 

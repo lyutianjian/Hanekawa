@@ -62,6 +62,25 @@ test('ContextBuilder injects layered system and user context', async () => {
   assert.match(built.system ?? '', /Read: Read a file from disk/)
 })
 
+test('ContextBuilder excludes message queue records from model context', async () => {
+  const builder = new ContextBuilder(undefined, contextWindow(8000))
+  const records: SessionRecord[] = [{
+    id: 'queue-event-1',
+    type: 'message_queue',
+    operation: 'enqueue',
+    message: {
+      id: 'queued-1',
+      content: 'not submitted yet',
+      priority: 'next',
+      createdAt: '2026-07-14T00:00:00.000Z',
+    },
+    createdAt: '2026-07-14T00:00:00.000Z',
+  }]
+
+  const built = await builder.build({ records, tools: [], system: 'system' })
+  assert.doesNotMatch(JSON.stringify(built.contextItems), /not submitted yet/)
+})
+
 test('ContextBuilder can build a reduced system prompt from enabled sections', async () => {
   const builder = new ContextBuilder(undefined, contextWindow(5000), undefined, ['intro', 'doing-tasks'])
 

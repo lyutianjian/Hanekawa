@@ -8,6 +8,7 @@ import { repairCommand } from '../src/commands/repair.js'
 import { agentsCommand } from '../src/commands/agents.js'
 import { planCommand } from '../src/commands/plan.js'
 import { providerCommand } from '../src/commands/provider.js'
+import { tasksCommand } from '../src/commands/tasks.js'
 import { getCommand, registerBuiltinCommands } from '../src/commands/index.js'
 import type { CommandContext } from '../src/commands/types.js'
 
@@ -536,4 +537,10 @@ test('/provider reports unavailable outside TUI panel host', async () => {
   }))
 
   assert.match(output, /unavailable/)
+})
+
+test('/tasks opens the background task panel', async () => {
+  let opened = false
+  await tasksCommand.run('', createContext({ openBackgroundTasks: () => { opened = true } }))
+  assert.equal(opened, true)
 })

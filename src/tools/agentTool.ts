@@ -27,6 +27,7 @@ import { runLifecycleHooks, type Hooks } from '../harness/hooks.js'
 import type { AgentRunResult, ModelProvider, SessionRecord, SubagentTaskStatus, TokenUsage, Tool, ToolContext, ToolProgressEvent } from '../harness/types.js'
 import { countSessionRecordTokens } from '../prompts/budget.js'
 import { formatTokenCount } from './display.js'
+import type { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
 
 // Tools that no sub-agent should ever call directly.
 export const ALL_AGENT_DISALLOWED_TOOLS = [
@@ -45,6 +46,8 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = [
   'Glob',
   'Grep',
   'Bash',
+  'BashOutput',
+  'KillShell',
   'Write',
   'Edit',
   'MultiEdit',
@@ -56,6 +59,7 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = [
 // not because they write files.
 export const STATEFUL_AGENT_TOOL_NAMES = new Set([
   'Bash',
+  'KillShell',
   'Write',
   'Edit',
   'MultiEdit',
@@ -275,6 +279,7 @@ export interface CreateAgentToolOptions {
   setCompactFailureCount?(count: number): Promise<void>
   agentTimeoutMs?: number
   worktreeManager?: SubagentWorktreeManager
+  backgroundTasks?: BackgroundTaskRegistry
 }
 
 export function filterToolsForSubAgent(
@@ -378,14 +383,28 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
             ...(plannedModel ? { model: plannedModel } : {}),
             ...plannedIsolationDetails(options, agentDefinition, context.sessionId, subAgentId),
           })
-          void runBackgroundSubagent({
+          const backgroundAbort = new AbortController()
+          let backgroundRun: Promise<void> | undefined
+          const registeredTask = options.backgroundTasks?.registerAgent({
+            sessionId: context.sessionId,
+            agentId: subAgentId,
+            agentType: parsed.subagent_type,
+            description: subagentDescription(parsed),
+            stop: async () => {
+              backgroundAbort.abort(createAbortError('Background agent stopped'))
+              await backgroundRun
+            },
+          })
+          backgroundRun = runBackgroundSubagent({
             options,
             parsed,
             agentDefinition,
             context,
             subAgentId,
             transcriptPath,
+            externalAbortSignal: backgroundAbort.signal,
           })
+          void backgroundRun
           const description = subagentDescription(parsed)
           return {
             ok: true,
@@ -395,6 +414,7 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
                 summary: `${parsed.subagent_type} background agent started`,
                 detail: [
                   `Agent ID: ${subAgentId}`,
+                  registeredTask ? `Task ID: ${registeredTask.id}` : undefined,
                   `Transcript: ${transcriptPath}`,
                   plannedIsolationDetails(options, agentDefinition, context.sessionId, subAgentId).worktreePath
                     ? `Worktree: ${plannedIsolationDetails(options, agentDefinition, context.sessionId, subAgentId).worktreePath}`
@@ -480,6 +500,7 @@ interface RunSubagentOptions {
   linkParentAbort: boolean
   transcriptPath?: string
   isBackground?: boolean
+  externalAbortSignal?: AbortSignal
 }
 
 interface RunSubagentResult {
@@ -505,6 +526,7 @@ async function runSubagent({
   linkParentAbort,
   transcriptPath,
   isBackground = false,
+  externalAbortSignal,
 }: RunSubagentOptions): Promise<RunSubagentResult> {
   const isForkAgent = parsed.subagent_type === 'fork'
 
@@ -533,12 +555,17 @@ async function runSubagent({
         abortController.abort(createAbortError(`Sub-agent timed out after ${options.agentTimeoutMs}ms`))
       }, options.agentTimeoutMs)
   const forwardParentAbort = () => abortController.abort(context.abortSignal?.reason)
+  const forwardExternalAbort = () => abortController.abort(externalAbortSignal?.reason)
   if (linkParentAbort) {
     if (context.abortSignal?.aborted) {
       forwardParentAbort()
     } else {
       context.abortSignal?.addEventListener('abort', forwardParentAbort, { once: true })
     }
+  }
+  if (externalAbortSignal) {
+    if (externalAbortSignal.aborted) forwardExternalAbort()
+    else externalAbortSignal.addEventListener('abort', forwardExternalAbort, { once: true })
   }
 
   try {
@@ -706,6 +733,7 @@ async function runSubagent({
   } finally {
     if (timeout) clearTimeout(timeout)
     if (linkParentAbort) context.abortSignal?.removeEventListener('abort', forwardParentAbort)
+    externalAbortSignal?.removeEventListener('abort', forwardExternalAbort)
     if (!isForkAgent) resetCacheBreakDetection(cacheSource)
   }
 }
@@ -717,8 +745,9 @@ async function runBackgroundSubagent(input: {
   context: ToolContext
   subAgentId: string
   transcriptPath: string
+  externalAbortSignal?: AbortSignal
 }): Promise<void> {
-  const { options, parsed, agentDefinition, context, subAgentId, transcriptPath } = input
+  const { options, parsed, agentDefinition, context, subAgentId, transcriptPath, externalAbortSignal } = input
   const startedAtMs = Date.now()
   try {
     const run = await runSubagent({
@@ -731,6 +760,7 @@ async function runBackgroundSubagent(input: {
       recordStream: new SidechainRecordStream(transcriptPath),
       linkParentAbort: false,
       isBackground: true,
+      externalAbortSignal,
     })
     await context.appendRecord?.(run.transcriptRecord)
     await appendSubagentTaskRecord(context, parsed, subAgentId, 'completed', {
@@ -744,6 +774,7 @@ async function runBackgroundSubagent(input: {
       criticalFiles: run.criticalFiles,
       ...worktreeTaskDetails(run.worktree),
     })
+    options.backgroundTasks?.completeAgent(context.sessionId, subAgentId, 'completed')
     await context.appendRecord?.({
       id: randomUUID(),
       type: 'message',
@@ -755,6 +786,9 @@ async function runBackgroundSubagent(input: {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const status: SubagentTaskStatus = errorCodeFor(error) === 'aborted' ? 'cancelled' : 'failed'
+    if (!(status === 'cancelled' && externalAbortSignal?.aborted)) {
+      options.backgroundTasks?.completeAgent(context.sessionId, subAgentId, 'failed', message)
+    }
     const failedModel = resolveSubagentModelLabel(options, parsed.subagent_type, agentDefinition)
     await appendSubagentTaskRecord(context, parsed, subAgentId, status, {
       transcriptPath,

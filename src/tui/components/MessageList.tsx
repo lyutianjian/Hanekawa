@@ -8,9 +8,11 @@ import { CollapsedToolGroup } from './CollapsedToolGroup.js'
 import { SubagentTaskBlock, type SubagentTreePosition } from './SubagentTaskBlock.js'
 import { WelcomeBanner } from './WelcomeBanner.js'
 import { theme } from '../theme.js'
+import type { QueuedMessage } from '../messageQueue.js'
 
 interface MessageListProps {
   items: TUIDisplayItem[]
+  queuedMessages?: readonly QueuedMessage[]
   isStreaming?: boolean
   isOverlayActive?: boolean
   animationsEnabled?: boolean
@@ -18,6 +20,7 @@ interface MessageListProps {
 
 export function MessageList({
   items,
+  queuedMessages = [],
   isStreaming,
   animationsEnabled = true,
 }: MessageListProps) {
@@ -37,6 +40,13 @@ export function MessageList({
           />
         )
       })}
+      {queuedMessages.map((message) => (
+        <Box key={message.id} paddingLeft={2}>
+          <Text color={theme.dimText} dimColor>
+            {`❯ ${message.content} (queued)`}
+          </Text>
+        </Box>
+      ))}
     </Box>
   )
 }

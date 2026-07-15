@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Hanekawa (MyAgent) is a self-hosted CLI programming agent for the terminal. TypeScript (ES2022, strict mode, NodeNext modules), Ink/React TUI, supports Anthropic and OpenAI-compatible APIs. Features: session persistence, automatic context compaction, skills, MCP integration, prompt cache management, checkpoints, permission-gated tools, plan mode, lifecycle hooks, and deferred tool loading via ToolSearch.
+Hanekawa (MyAgent) is a self-hosted CLI programming agent for the terminal. TypeScript (ES2022, strict mode, NodeNext modules), Ink/React TUI, supports Anthropic and OpenAI-compatible APIs. Features: session persistence, a persistent input queue, background shell/agent tasks, automatic context compaction, skills, MCP integration, prompt cache management, checkpoints, permission-gated tools, plan mode, lifecycle hooks, and deferred tool loading via ToolSearch.
 
 ## Commands
 
@@ -20,6 +20,8 @@ node --import tsx --test test/<file>.test.ts   # run a single test file
 ```
 
 No bundler — runs TypeScript directly via `tsx`. No ESLint/Prettier configured.
+
+Inside the TUI, `/tasks` opens the session's background task panel. Other important built-ins are `/help`, `/clear`, `/compact`, `/model`, `/provider`, `/plan`, `/effort`, `/session`, `/skills`, `/agents reload`, and `/repair`.
 
 ## Architecture
 
@@ -39,13 +41,14 @@ Key modules:
 - **`hooks.ts`** — lifecycle hooks (`userPromptSubmit`, `preToolUse`, `postToolUse`, `preCompact`, `postCompact`, `subagentStart`, `subagentStop`, `stop`). Hooks run shell commands with glob matchers on tool names, timeout, and output size limits.
 - **`progressiveCompact.ts`** — progressive compaction: (1) time-based micro-compact (clears old tool results when gap > 60min), (2) ratio-based micro-compact only when `CacheEditManager`/`cache_edits` is available (90% threshold, registers tool results for API-level deletion instead of local mutation). Conversation snipping has been removed.
 - **`cacheEditManager.ts`** — manages Anthropic `cache_edits` blocks for prompt cache-aware compaction. Tracks tool results by `tool_use_id`, produces `cache_edits` blocks to delete old cached results, and manages pinned edits for re-sending across requests. Only active for native Anthropic provider with prompt caching enabled.
+- **`services/backgroundTasks/registry.ts`** — tracks session-scoped shell and agent tasks, persists lifecycle records, buffers up to 1MB of shell output, restores completed/orphaned state, and stops live tasks during clear/exit.
 - **`systemReminder.ts`** — unified `<system-reminder>` wrapper for dynamic context injection
 
 **Tool result budget — three layers:**
 
 1. Per-result write-time truncation (`toolRunner.ts:applyToolResultBudget`): each tool defines `maxResultSizeChars`; content exceeding that limit is sliced. Current limits: Bash=100k, Grep=30k, Agent=32k chars.
 2. Global request-time budget (`requestPrep.ts`): total tool_result content capped at `effectiveContextWindow * 0.5` (floored at 200k tokens). Older results summarized when exceeded, keeping the 10 most recent intact.
-3. Per-result hard cap (`compact.ts:snipLargeToolResults`): individual tool results exceeding 50k tokens are truncated with a notice. This is not conversation snipping; it is applied after budget compaction to catch any remaining oversized results.
+3. Per-result hard cap (`compact.ts:snipLargeToolResults`): individual tool results exceeding 10k estimated tokens are replaced with a truncation notice. This is not conversation snipping; it is applied after budget compaction to catch any remaining oversized results.
 
 ### Output Token Slot Cap
 
@@ -66,7 +69,7 @@ The Anthropic payload builder injects `cache_edits` into the last user message a
 
 Two providers share a `ModelProvider` interface: `anthropicProvider.ts` (Anthropic SDK, streaming, cache diagnostics) and `openaiProvider.ts` (OpenAI Chat Completions with `prompt_cache_key`). Both support extended thinking/reasoning. Payload builders translate a neutral `ModelContextItem` union into provider-specific formats. The Anthropic payload builder (`anthropicPayload.ts`) supports cache edits injection: `pendingCacheEdits` are appended to the last user message, `pinnedCacheEdits` are re-inserted at their original positions (with deduplication), and `cache_reference` fields are added to `tool_result` blocks in the cached prefix.
 
-Max output tokens: default 32k, upper limit 128k (env override or config). Auto-escalates to 64k on `max_tokens` stop reason with up to 3 recovery attempts.
+Raw provider defaults are model-aware (32k for unknown modern models, upper limit 128k), while normal Anthropic requests cap the default slot at 8k. Config or `MYAGENT_MAX_OUTPUT_TOKENS` overrides that cap, and `MYAGENT_SLOT_CAP_DISABLED=1` restores the raw default. A `max_tokens` stop first escalates to 64k, followed by up to 3 continuation attempts.
 
 Retry logic (`src/config/retry.ts`): exponential backoff with jitter (base 500ms, max 32s). Per-category budgets: rate_limit(3), overload(2), server_error(3), transient(3). Retries on HTTP 429, 529, 5xx, timeout, ECONNRESET, ECONNREFUSED. Background callers skip 529 retries. `FallbackTriggeredError` triggers model fallback when overload budget exhausted.
 
@@ -83,7 +86,9 @@ Each tool exports `{ name, inputSchema (Zod), riskLevel, isReadOnly?, isDestruct
 | Grep | safe | yes | fast-glob, 50 match limit |
 | Glob | safe | yes | |
 | Read | safe | yes | LRU cache for post-compact restore |
-| Bash | dangerous | no | 1MB output, 30s timeout, Windows Git Bash detection |
+| Bash | dangerous | no | foreground execution or `run_in_background`; 1MB output cap; Windows Git Bash detection |
+| BashOutput | safe | yes | consumes unread background-shell output; supports regex filtering and waits up to 30s |
+| KillShell | dangerous | no | terminates a background shell and its child process tree |
 | Write | confirm | no | |
 | Edit | confirm | no | requires prior Read, exactly one match |
 | MultiEdit | confirm | no | atomic exact string replacements |
@@ -103,7 +108,7 @@ Built-in types: `general` (delegation, inherits project context), `fork` (transc
 
 Custom types from `.myagent/agents/*.md` (YAML frontmatter with `name`, `description`, `tools`, `isReadOnlyAgent`, `maxTurns`, `permissionMode`, `skills`, `mcpServers`, `background`, `isolation`, `model`, `effort`). Agent definition directories merge by `name`: `~/.myagent/agents/` → `.myagent/agents/` → `.myagent/agents.local/` (later overrides). `/agents reload` refreshes definitions in the TUI without restart.
 
-Sub-agents always disallow: `Agent`, `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`. Background agents restricted to: Read, Glob, Grep, Bash, Write, Edit, MultiEdit, Delete, Skill. Worktree isolation available for non-read-only agents (`isolation: 'worktree'`).
+Sub-agents always disallow: `Agent`, `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`. Background agents use the shared task registry, return immediately, persist sidechain transcripts, and default to `auto` permission mode. Their tool set is restricted to `Read`, `Glob`, `Grep`, `Bash`, `BashOutput`, `KillShell`, file-editing tools, and `Skill`. Worktree isolation is available for non-read-only agents (`isolation: 'worktree'`).
 
 Environment variable overrides: `MYAGENT_SUBAGENT_MODEL_<TYPE>` or `MYAGENT_SUBAGENT_MODEL`.
 
@@ -120,7 +125,13 @@ Settings support: `permissions` (mode + allow/deny/ask rules), `autoMode` (allow
 
 ### Sessions (`src/sessions/`)
 
-JSONL records in `.myagent/sessions/`. Record types: messages, tool_use, tool_result, tool_approval, compact_boundary, compact_attempt_failed, tool_use_summary, subagent_transcript, subagent_task, plan_mode_request, plan_mode_outcome, turn_interruption, at_mention_context. Prefix-based ID resolution.
+JSONL records in `.myagent/sessions/`. In addition to messages, tool records, compaction records, subagent records, plan outcomes, interruptions, and `@file` context, sessions now persist `background_task` lifecycle entries and `message_queue` enqueue/dequeue/clear operations. Prefix-based ID resolution.
+
+### Background Tasks and Message Queue
+
+`BackgroundTaskRegistry` is created once by the TUI entrypoint and injected into `Bash`, `BashOutput`, `KillShell`, and `Agent`. Shell tasks use stable per-session IDs, a 1MB byte ring buffer, process-tree termination, and optional long-poll output reads. Running records become `orphaned` after process restart because child processes are not reattached. `/tasks` opens `BackgroundTasksPanel` for shell/agent status and recent shell output.
+
+`src/tui/messageQueue.ts` serializes and persists queue operations. Input remains available during streaming; queued messages are displayed, replayed on resume, migrated to the new session on `/clear`, and executed one at a time when the UI is idle. Escape interrupts active work, while double Escape clears queued messages.
 
 ### TUI Transcript Mode
 
@@ -222,8 +233,10 @@ Dynamic ToolSearch is provider-aware:
 - `MYAGENT_BASH_PATH` — override bash executable path (Windows)
 - `MYAGENT_SUBAGENT_MODEL_<TYPE>` — override model for a specific subagent type
 - `MYAGENT_SUBAGENT_MODEL` — override model for all subagent types
+- `HANEKAWA_SEARCH_URL` — use a SearXNG instance instead of DuckDuckGo HTML search
 - `HANEKAWA_TOOL_SEARCH` - ToolSearch mode: `true`/`1`/unset=always, `false`/`0`=off, `auto`=auto, `auto:N`=auto with N% threshold
 - `HANEKAWA_TOOL_SEARCH_AUTO_PERCENT` - auto mode threshold percentage (default 10); overridden by `auto:N`
+- `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS=1` — omit beta-only dynamic ToolSearch payload fields
 
 ## Current 1M Context Marker
 

@@ -1,6 +1,8 @@
 import { grepTool } from './grep.js'
 import { globTool } from './glob.js'
-import { bashTool } from './bash.js'
+import { createBashTool } from './bash.js'
+import { createBashOutputTool } from './bashOutput.js'
+import { createKillShellTool } from './killShell.js'
 import { readFileTool } from './readFile.js'
 import { writeFileTool } from './writeFile.js'
 import { editFileTool } from './editFile.js'
@@ -21,13 +23,14 @@ import { configTool } from './configTool.js'
 import { notebookEditTool } from './notebookEdit.js'
 import { isToolSearchEnabled, isDeferredTool } from '../utils/toolSearch.js'
 import type { Tool } from '../harness/types.js'
+import type { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
 
-export function getBuiltinTools(): Tool[] {
-  return [grepTool, globTool, bashTool, readFileTool, writeFileTool, editFileTool, multiEditTool, deleteFileTool, enterPlanModeTool, exitPlanModeTool, askUserQuestionTool, taskCreateTool, taskListTool, taskGetTool, taskUpdateTool, webFetchTool, webSearchTool, configTool, notebookEditTool]
+export function getBuiltinTools(backgroundTasks?: BackgroundTaskRegistry): Tool[] {
+  return [grepTool, globTool, createBashTool(backgroundTasks), createBashOutputTool(backgroundTasks), createKillShellTool(backgroundTasks), readFileTool, writeFileTool, editFileTool, multiEditTool, deleteFileTool, enterPlanModeTool, exitPlanModeTool, askUserQuestionTool, taskCreateTool, taskListTool, taskGetTool, taskUpdateTool, webFetchTool, webSearchTool, configTool, notebookEditTool]
 }
 
-export async function getAllTools(): Promise<Tool[]> {
-  const builtinTools = getBuiltinTools()
+export async function getAllTools(backgroundTasks?: BackgroundTaskRegistry): Promise<Tool[]> {
+  const builtinTools = getBuiltinTools(backgroundTasks)
   const tools: Tool[] = [...builtinTools, createSkillTool()]
 
   if (isToolSearchEnabled()) {

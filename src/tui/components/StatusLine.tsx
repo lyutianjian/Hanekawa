@@ -32,9 +32,10 @@ interface StatusLineProps {
   hintMessage?: string | null
   effortLevel?: string
   contextWindow?: number
+  backgroundTaskCount?: number
 }
 
-export function StatusLine({ model, usage, permissionMode, hintMessage, effortLevel, contextWindow }: StatusLineProps) {
+export function StatusLine({ model, usage, permissionMode, hintMessage, effortLevel, contextWindow, backgroundTaskCount = 0 }: StatusLineProps) {
   const effortSymbol = effortLevel ? EFFORT_SYMBOLS[effortLevel] : undefined
   const modeInfo = permissionMode !== 'default' ? MODE_INDICATOR[permissionMode] : undefined
 
@@ -52,6 +53,11 @@ export function StatusLine({ model, usage, permissionMode, hintMessage, effortLe
       {hintMessage && (
         <Box>
           <Text color={theme.brand}>{hintMessage}</Text>
+        </Box>
+      )}
+      {backgroundTaskCount > 0 && (
+        <Box>
+          <Text color={theme.subtleText}>{backgroundTaskCount} background task{backgroundTaskCount === 1 ? '' : 's'}</Text>
         </Box>
       )}
       {modeInfo && (

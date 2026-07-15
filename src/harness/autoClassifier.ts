@@ -49,6 +49,7 @@ export const SAFE_AUTO_TOOLS = new Set([
   'TaskList',
   'TaskStop',
   'TaskOutput',
+  'BashOutput',
   'webSearch',
   'webFetch',
   'Config',

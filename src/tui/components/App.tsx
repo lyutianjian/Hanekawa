@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo, useSyncExternalStore } from 'react'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { Box, Static, snapshotInkFrameForStdout, useStdout } from '../ink.js'
@@ -29,6 +29,7 @@ import { TaskListBlock } from './TaskListBlock.js'
 import { PermissionDialog } from './PermissionDialog.js'
 import { StatusLine } from './StatusLine.js'
 import { RestoreMode, type RestoreDecision } from './RestoreMode.js'
+import { BackgroundTasksPanel } from './BackgroundTasksPanel.js'
 import { invalidateResolvedCwdCache } from '../../utils/paths.js'
 import { readPlan } from '../../utils/plans.js'
 import { applyPermissionModeTransition, nextPermissionMode } from '../permissionMode.js'
@@ -45,8 +46,19 @@ import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../rewind
 import { clampEffort, type EffortValue, type EffortLevel } from '../../config/effort.js'
 import { getContextWindowForModel } from '../../prompts/budget.js'
 import { shouldRenderStatusLine } from '../statusLineVisibility.js'
+import {
+  clearMessageQueue,
+  dequeueMessage,
+  enqueueMessage,
+  getMessageQueueSnapshot,
+  hydrateMessageQueue,
+  initializeMessageQueue,
+  migrateMessageQueue,
+  subscribeMessageQueue,
+} from '../messageQueue.js'
+import type { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
 
-export type AppMode = 'idle' | 'running' | 'restore' | 'exiting'
+export type AppMode = 'idle' | 'running' | 'restore' | 'tasks' | 'exiting'
 
 const ABORT_TIMEOUT_MS = 2000
 
@@ -87,6 +99,7 @@ interface AppProps {
   reloadAgentDefinitions?: () => Promise<number>
   initialEffortLevel?: string
   onEffortLevelChange?: (level: string) => void
+  backgroundTasks: BackgroundTaskRegistry
 }
 
 export function App({
@@ -117,6 +130,7 @@ export function App({
   reloadAgentDefinitions: reloadRuntimeAgentDefinitions,
   initialEffortLevel,
   onEffortLevelChange,
+  backgroundTasks,
 }: AppProps) {
   const [mode, setMode] = useState<AppMode>('idle')
   const [activeSession, setActiveSession] = useState<SessionMeta>(initialSession)
@@ -145,10 +159,34 @@ export function App({
   const checkpointServiceRef = useRef<CheckpointService>(
     new CheckpointService(process.cwd(), initialSession.id),
   )
-  const [queuedPromptAfterClear, setQueuedPromptAfterClear] = useState<string | null>(initialQueuedPrompt ?? null)
+  const [queuePumpGeneration, setQueuePumpGeneration] = useState(0)
+  const queuePumpRunningRef = useRef(false)
+  const initialQueuedPromptRef = useRef(initialQueuedPrompt)
+  const [messageQueueInitialized] = useState(() => {
+    initializeMessageQueue(initialSession.id, existingRecords, (sessionId, record) => store.appendRecord(sessionId, record))
+    return true
+  })
+  const queuedMessages = useSyncExternalStore(
+    subscribeMessageQueue,
+    getMessageQueueSnapshot,
+    getMessageQueueSnapshot,
+  )
   const [screen, setScreen] = useState<'prompt' | 'transcript'>('prompt')
   const [transcriptScrollOffsetRows, setTranscriptScrollOffsetRows] = useState(0)
   const { stdout } = useStdout()
+  const subscribeBackgroundTasks = useCallback(
+    (listener: () => void) => backgroundTasks.subscribe(listener),
+    [backgroundTasks],
+  )
+  const getBackgroundTaskSnapshot = useCallback(
+    () => backgroundTasks.getSnapshot(activeSession.id),
+    [backgroundTasks, activeSession.id],
+  )
+  const backgroundTaskSnapshot = useSyncExternalStore(
+    subscribeBackgroundTasks,
+    getBackgroundTaskSnapshot,
+    getBackgroundTaskSnapshot,
+  )
 
   const { permState, respond, setActiveRequest, denyPending } = usePermission(promptProxy)
   const exitPlan = useExitPlanPermission(exitPlanProxy)
@@ -247,6 +285,7 @@ export function App({
     || modelPickerOpen
     || effortPickerOpen
     || mode === 'restore'
+    || mode === 'tasks'
     || screen === 'transcript'
   const animationsEnabled = !permState.visible
   const showSpinner = animationsEnabled && !isOverlayActive
@@ -268,14 +307,16 @@ export function App({
 
   const clearConversation = useCallback(async () => {
     runtime.loop.clearCachedSections()
+    await backgroundTasks.stopAll(activeSession.id, 'Session cleared')
     const nextSession = await store.create()
+    await migrateMessageQueue(nextSession.id, [])
     const nextRuntime = createRuntime(runtime.modelKey, nextSession)
     checkpointServiceRef.current = new CheckpointService(process.cwd(), nextSession.id)
     setActiveSession(nextSession)
     replaceRuntime(nextRuntime)
     setCheckpoints([])
     resetTranscript([])
-  }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, resetTranscript])
+  }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, resetTranscript, backgroundTasks, activeSession.id])
 
   const buildRunOverrides = useCallback((options?: CommandSubmitQueryOptions): AgentRunOverrides | undefined => {
     if (!options) return undefined
@@ -336,11 +377,13 @@ export function App({
   }, [])
 
   useEffect(() => {
-    if (!queuedPromptAfterClear || isStreaming || mode !== 'idle') return
-    const prompt = queuedPromptAfterClear
-    setQueuedPromptAfterClear(null)
-    void submitPlainInput(prompt)
-  }, [queuedPromptAfterClear, isStreaming, mode, submitPlainInput])
+    const prompt = initialQueuedPromptRef.current
+    if (!messageQueueInitialized || !prompt) return
+    initialQueuedPromptRef.current = undefined
+    void enqueueMessage(prompt).catch((error) => {
+      addSystemMessage(`Failed to queue prompt: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }, [messageQueueInitialized, addSystemMessage])
 
   const activateModelKey = useCallback((modelKey: string): SetModelResult => {
     if (!modelKeys.includes(modelKey)) {
@@ -466,7 +509,7 @@ export function App({
       openExitDialog: exitPlanProxy.open,
       onClearContextAndReplaceInput: async (content) => {
         await clearConversation()
-        setQueuedPromptAfterClear(content)
+        await enqueueMessage(content)
       },
     })
   }, [runtime.planModeManager, addSystemMessage, enterPlanProxy, exitPlanProxy, clearConversation])
@@ -493,6 +536,9 @@ export function App({
       return { message: `Failed to open plan in editor: ${error instanceof Error ? error.message : String(error)}` }
     }
   }, [readCurrentPlanFile])
+
+  const openBackgroundTasks = useCallback(() => setMode('tasks'), [])
+  const closeBackgroundTasks = useCallback(() => setMode('idle'), [])
 
   const { dispatch } = useCommands({
     store,
@@ -523,17 +569,51 @@ export function App({
     openModelPicker: () => setModelPickerOpen(true),
     openEffortPicker: () => setEffortPickerOpen(true),
     openProviderPanel: () => setProviderPanelOpen(true),
+    openBackgroundTasks,
     getEffort: () => effortLevel,
     setEffort: handleSetEffort,
   })
 
-  const handleSubmit = useCallback(async (text: string) => {
+  const executeQueuedInput = useCallback(async (text: string) => {
     if (text.startsWith('/')) {
       await dispatch(text)
       return
     }
     await submitPlainInput(text)
   }, [dispatch, submitPlainInput])
+
+  const handleSubmit = useCallback(async (text: string): Promise<boolean> => {
+    try {
+      await enqueueMessage(text)
+      return true
+    } catch (error) {
+      addSystemMessage(`Failed to queue message: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+  }, [addSystemMessage])
+
+  useEffect(() => {
+    if (
+      queuePumpRunningRef.current
+      || queuedMessages.length === 0
+      || isStreaming
+      || mode !== 'idle'
+      || isOverlayActive
+    ) return
+
+    queuePumpRunningRef.current = true
+    void (async () => {
+      try {
+        const next = await dequeueMessage()
+        if (next) await executeQueuedInput(next.content)
+      } catch (error) {
+        addSystemMessage(`Failed to process queued message: ${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        queuePumpRunningRef.current = false
+        setQueuePumpGeneration((value) => value + 1)
+      }
+    })()
+  }, [queuedMessages, isStreaming, mode, isOverlayActive, executeQueuedInput, addSystemMessage, queuePumpGeneration])
 
   const handleToggleTranscript = useCallback(() => {
     if (screen === 'transcript') {
@@ -569,6 +649,14 @@ export function App({
     // when it catches the AbortError. We just need to clean up the timeout
     // when streaming stops (which happens in the effectiveMode logic).
   }, [interrupt])
+
+  const handleClearQueue = useCallback(() => {
+    void clearMessageQueue().then(() => {
+      addSystemMessage('Queued messages cleared.')
+    }).catch((error) => {
+      addSystemMessage(`Failed to clear queued messages: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }, [addSystemMessage])
 
   const handleExit = useCallback(() => {
     setMode('exiting')
@@ -615,7 +703,8 @@ export function App({
       throw new Error(truncateResult.error ?? 'Failed to truncate session')
     }
     runtime.loop.invalidateRecordsCache()
-    await reloadMessages()
+    const records = await reloadMessages()
+    await hydrateMessageQueue(records)
   }, [store, activeSession.id, runtime.loop, reloadMessages])
 
   const restoreCodeToCheckpoint = useCallback(async (checkpoint: CheckpointWithDiff) => {
@@ -638,7 +727,8 @@ export function App({
 
     await store.replaceRecords(activeSession.id, rewrite.nextRecords)
     runtime.loop.invalidateRecordsCache()
-    await reloadMessages()
+    const records = await reloadMessages()
+    await hydrateMessageQueue(records)
   }, [store, activeSession.id, runtime.loop, reloadMessages])
 
   const handleRestoreSelect = useCallback(async (checkpoint: CheckpointWithDiff, decision: RestoreDecision) => {
@@ -708,12 +798,14 @@ export function App({
   } = useKeyboardShortcuts({
     onSubmit: handleSubmit,
     onInterrupt: handleInterrupt,
+    onClearQueue: handleClearQueue,
     onExit: handleExit,
     onEnterRestoreMode: handleEnterRestoreMode,
     onCyclePermissionMode: cyclePermissionMode,
     onToggleTranscript: handleToggleTranscript,
     isStreaming,
-    isRestoreMode: mode === 'restore',
+    hasQueuedMessages: queuedMessages.length > 0,
+    isRestoreMode: mode === 'restore' || mode === 'tasks',
     isPermissionVisible:
       permState.visible
       || exitPlan.state.visible
@@ -774,6 +866,7 @@ export function App({
           {/* Message list */}
           <MessageList
             items={liveItems}
+            queuedMessages={queuedMessages}
             isStreaming={isStreaming}
             isOverlayActive={isOverlayActive}
             animationsEnabled={animationsEnabled}
@@ -841,6 +934,14 @@ export function App({
             />
           )}
 
+          {mode === 'tasks' && (
+            <BackgroundTasksPanel
+              tasks={backgroundTaskSnapshot}
+              peekOutput={(taskId) => backgroundTasks.peekOutput(activeSession.id, taskId)}
+              onClose={closeBackgroundTasks}
+            />
+          )}
+
           {providerPanelOpen && (
             <ProviderPanel
               config={providerConfig}
@@ -873,13 +974,12 @@ export function App({
           )}
 
           {/* Input box (with horizontal lines) */}
-          {mode !== 'restore' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && (
+          {mode !== 'restore' && mode !== 'tasks' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && (
             <InputBox
               text={text}
               cursorPos={cursorPos}
               disabled={
-                isStreaming
-                || permState.visible
+                permState.visible
                 || exitPlan.state.visible
                 || enterPlan.state.visible
                 || askUserQuestion.state.visible
@@ -887,6 +987,7 @@ export function App({
                 || modelPickerOpen
                 || effortPickerOpen
               }
+              isStreaming={isStreaming}
             />
           )}
 
@@ -909,6 +1010,7 @@ export function App({
             runtime.modelConfig.model,
             runtime.modelKey,
           )}
+          backgroundTaskCount={backgroundTaskSnapshot.filter((task) => task.status === 'running').length}
         />
       )}
     </Box>

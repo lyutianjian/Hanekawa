@@ -15,6 +15,7 @@ import { writeFileTool } from '../src/tools/writeFile.js'
 import { deleteFileTool } from '../src/tools/deleteFile.js'
 import { toolSearchTool } from '../src/tools/ToolSearchTool/ToolSearchTool.js'
 import { getToolSearchMode, getAutoThreshold, resetToolSearchCache, resolveToolSearchState } from '../src/utils/toolSearch.js'
+import { defaultBackgroundTaskRegistry } from '../src/services/backgroundTasks/registry.js'
 
 function context(cwd: string) {
   return { cwd, sessionId: 's1', readFiles: new Set<string>() }
@@ -981,6 +982,7 @@ test('bash allows sleep with run_in_background', async () => {
     const result = await bashTool.execute({ command: 'sleep 0.1', run_in_background: true }, context(dir))
     assert.equal(result.ok, true)
   } finally {
+    await defaultBackgroundTaskRegistry.stopAll('s1', 'test cleanup')
     await rm(dir, { recursive: true, force: true })
   }
 })

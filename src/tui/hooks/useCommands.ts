@@ -39,6 +39,7 @@ interface UseCommandsOptions {
   openModelPicker?: () => void
   openEffortPicker?: () => void
   openProviderPanel?: () => void
+  openBackgroundTasks?: () => void
   getEffort?: () => string
   setEffort?: (level: string) => void | Promise<void>
 }
@@ -64,6 +65,7 @@ export function useCommands({
   openModelPicker,
   openEffortPicker,
   openProviderPanel,
+  openBackgroundTasks,
   getEffort,
   setEffort,
   runShellCommand,
@@ -118,6 +120,8 @@ export function useCommands({
   openEffortPickerRef.current = openEffortPicker
   const openProviderPanelRef = useRef(openProviderPanel)
   openProviderPanelRef.current = openProviderPanel
+  const openBackgroundTasksRef = useRef(openBackgroundTasks)
+  openBackgroundTasksRef.current = openBackgroundTasks
   const getEffortRef = useRef(getEffort)
   getEffortRef.current = getEffort
   const setEffortRef = useRef(setEffort)
@@ -186,6 +190,7 @@ export function useCommands({
         openModelPicker: openModelPickerRef.current,
         openEffortPicker: openEffortPickerRef.current,
         openProviderPanel: openProviderPanelRef.current,
+        openBackgroundTasks: openBackgroundTasksRef.current,
         listSubagentTasks: async () => listLatestSubagentTasks(storeRef.current, sessionRef.current.id),
         getSubagentDetails: async (agentIdOrPrefix) => getSubagentDetails(
           storeRef.current,

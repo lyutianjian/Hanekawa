@@ -140,6 +140,8 @@ test('all builtin tools are callable', async () => {
     'Grep',
     'Glob',
     'Bash',
+    'BashOutput',
+    'KillShell',
     'Read',
     'Write',
     'Edit',

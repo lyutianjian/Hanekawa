@@ -3,6 +3,11 @@ import { existsSync } from 'node:fs'
 import { Buffer } from 'node:buffer'
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../harness/types.js'
+import {
+  BackgroundTaskRegistry,
+  defaultBackgroundTaskRegistry,
+} from '../services/backgroundTasks/registry.js'
+import { terminateProcessTree } from '../services/backgroundTasks/processTree.js'
 
 interface BashInput {
   command: string
@@ -113,7 +118,8 @@ export function detectSleepPattern(command: string): number | null {
   return seconds
 }
 
-export const bashTool: Tool = {
+export function createBashTool(backgroundTasks: BackgroundTaskRegistry = defaultBackgroundTaskRegistry): Tool {
+  return {
   name: 'Bash',
   description: 'Execute a shell command and return its output. Set run_in_background: true for long-running commands (e.g. sleep, servers).',
   searchHint: 'run shell commands terminal',
@@ -154,8 +160,57 @@ export const bashTool: Tool = {
       }
     }
 
+    const { shell, args: shellArgs } = getShell()
+
+    if (options.run_in_background) {
+      const proc = spawn(shell, shellArgs(options.command), {
+        cwd: context.cwd,
+        detached: process.platform !== 'win32',
+      })
+      const task = backgroundTasks.registerShell({
+        sessionId: context.sessionId,
+        command: options.command,
+        proc,
+      })
+      let timeoutId: ReturnType<typeof setTimeout> | undefined
+      if (options.timeout !== undefined) {
+        timeoutId = setTimeout(() => {
+          void backgroundTasks.killShell(
+            context.sessionId,
+            task.id,
+            `Command timed out after ${options.timeout}ms`,
+            true,
+          )
+        }, options.timeout)
+      }
+      proc.stdout?.on('data', (data: Buffer) => backgroundTasks.appendOutput(context.sessionId, task.id, data))
+      proc.stderr?.on('data', (data: Buffer) => backgroundTasks.appendOutput(context.sessionId, task.id, data))
+      proc.once('close', (code: number | null, signal: NodeJS.Signals | null) => {
+        if (timeoutId) clearTimeout(timeoutId)
+        backgroundTasks.finishShell(context.sessionId, task.id, code, signal)
+      })
+      proc.once('error', (error: Error) => {
+        if (timeoutId) clearTimeout(timeoutId)
+        backgroundTasks.fail(context.sessionId, task.id, error.message)
+      })
+      return {
+        ok: true,
+        content: [
+          'Shell started in background.',
+          `Task ID: ${task.id}`,
+          ...(task.pid ? [`PID: ${task.pid}`] : []),
+          `Use BashOutput with task_id \"${task.id}\" to read output or KillShell to stop it.`,
+        ].join('\n'),
+        metadata: {
+          display: {
+            summary: `background shell ${task.id} started`,
+            detail: task.pid ? `PID: ${task.pid}` : undefined,
+          },
+        },
+      }
+    }
+
     return new Promise<ToolResult>((resolve) => {
-      const { shell, args: shellArgs } = getShell()
 
       const proc = spawn(shell, shellArgs(options.command), {
         cwd: context.cwd,
@@ -175,22 +230,7 @@ export const bashTool: Tool = {
 
       const timeoutId = setTimeout(() => {
         timedOut = true
-        // Kill the entire process group on POSIX, or just the process on Windows.
-        if (process.platform !== 'win32' && proc.pid) {
-          try { process.kill(-proc.pid, 'SIGTERM') } catch { /* already dead */ }
-        } else {
-          proc.kill('SIGTERM')
-        }
-        // Escalate to SIGKILL after 5s if process ignores SIGTERM
-        setTimeout(() => {
-          try {
-            if (process.platform !== 'win32' && proc.pid) {
-              process.kill(-proc.pid, 'SIGKILL')
-            } else {
-              proc.kill('SIGKILL')
-            }
-          } catch { /* already dead */ }
-        }, 5000)
+        void terminateProcessTree(proc)
       }, timeout)
 
       const finish = (result: ToolResult) => {
@@ -262,7 +302,10 @@ export const bashTool: Tool = {
       })
     })
   },
+  }
 }
+
+export const bashTool: Tool = createBashTool()
 
 function summarizeCommand(command: string): string {
   const trimmed = command.trim()

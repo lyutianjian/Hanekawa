@@ -359,7 +359,7 @@ Walks up from cwd looking for `MYAGENT.md`, `CLAUDE.md`, `AGENTS.md`, plus `.mya
 - `HANEKAWA_TOOL_SEARCH_AUTO_PERCENT=N` — ToolSearch auto-mode threshold (default 10%; overridden by `auto:N`)
 - `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS=1` — omit beta-only dynamic ToolSearch payload fields
 
-Model configuration keys may end in an agent-side `[1m]` suffix to force a 1,000,000-token context window without changing the API model ID. This override feeds history selection, compaction thresholds, ToolSearch thresholds, status display, and tool-result budgets.
+Set `contextWindow` on an entry in `models` to declare that provider model's context size. When omitted it defaults to 200,000 tokens. The configured value feeds history selection, compaction thresholds, ToolSearch thresholds, status display, and tool-result budgets; model names and configuration keys are not used to infer it.
 
 ## Conventions
 

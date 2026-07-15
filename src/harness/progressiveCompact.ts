@@ -14,8 +14,6 @@ export interface ProgressiveCompactInput {
   records: SessionRecord[]
   contextManagement?: Partial<ContextManagementConfig>
   system?: string
-  model?: string
-  modelKey?: string
   lastResponseTokenCount?: number
   lastResponseRecordId?: string
   lastResponseRecordCount?: number
@@ -53,7 +51,7 @@ export function applyProgressiveCompaction(input: ProgressiveCompactInput): Prog
     microCompacted = true
   }
 
-  if (tokenCount >= getMicroCompactThreshold(input.contextManagement, input.model, input.modelKey) && input.cacheEditManager) {
+  if (tokenCount >= getMicroCompactThreshold(input.contextManagement) && input.cacheEditManager) {
     // Cache-aware path: register tool results for API-level deletion.
     // Do not mutate records locally; providers without cache_edits skip
     // ratio-based microcompact to preserve prompt-cache prefix stability.

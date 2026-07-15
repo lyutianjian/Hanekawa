@@ -6,12 +6,13 @@ import {
   applyToolProgressToTranscriptState,
   applyTuiRecordToTranscriptState,
   clearToolProgress,
+  commitAllLiveItemsToStatic,
   createTranscriptState,
   isHiddenToolCall,
   recordsToDisplayItems,
 } from '../src/tui/transcript.js'
 
-test('transcript reducer keeps running tool calls live and commits results to static transcript', () => {
+test('transcript reducer keeps completed tool calls live until the segment is committed', () => {
   let state = createTranscriptState()
   state = applyTuiRecordToTranscriptState(state, toolUse('call-1', 'Read', { filePath: 'a.txt' }))
 
@@ -21,6 +22,9 @@ test('transcript reducer keeps running tool calls live and commits results to st
 
   state = applyTuiRecordToTranscriptState(state, toolResult('result-1', 'call-1', 'Read', true, 'file contents'))
 
+  assert.equal(state.liveItems.length, 1)
+  assert.equal(state.staticItems.length, 0)
+  state = commitAllLiveItemsToStatic(state)
   assert.equal(state.liveItems.length, 0)
   assert.equal(state.staticItems.length, 1)
   const item = state.staticItems[0]
@@ -45,20 +49,55 @@ test('transcript reducer ignores at-mention context records', () => {
   assert.deepEqual(state.liveItems, [])
 })
 
-test('transcript reducer handles multiple parallel tool calls without leaving stale live rows', () => {
+test('transcript reducer preserves original order for parallel results completed out of order', () => {
   let state = createTranscriptState()
   state = applyTuiRecordToTranscriptState(state, toolUse('call-1', 'Read', { filePath: 'a.txt' }))
   state = applyTuiRecordToTranscriptState(state, toolUse('call-2', 'Glob', { pattern: '*.ts' }))
   state = applyTuiRecordToTranscriptState(state, toolResult('result-2', 'call-2', 'Glob', true, 'b.ts'))
   state = applyTuiRecordToTranscriptState(state, toolResult('result-1', 'call-1', 'Read', true, 'a'))
 
+  assert.equal(state.liveItems.length, 2)
+  state = commitAllLiveItemsToStatic(state)
   assert.equal(state.liveItems.length, 0)
   assert.deepEqual(
     state.staticItems
       .filter((item) => item.kind === 'tool_call')
       .map((item) => item.toolUseId),
-    ['call-2', 'call-1'],
+    ['call-1', 'call-2'],
   )
+})
+
+test('thinking blocks split repeated tools into independent groups', () => {
+  let state = createTranscriptState()
+  state = applyTuiRecordToTranscriptState(state, toolUse('call-1', 'WebSearch', { query: 'one' }))
+  state = applyTuiRecordToTranscriptState(state, toolUse('call-2', 'WebSearch', { query: 'two' }))
+  state = applyTuiRecordToTranscriptState(state, toolResult('result-1', 'call-1', 'WebSearch', true, 'one'))
+  state = applyTuiRecordToTranscriptState(state, toolResult('result-2', 'call-2', 'WebSearch', true, 'two'))
+  state = applyTuiRecordToTranscriptState(state, thinkingMessage('thought-1', 'next search round'))
+  state = applyTuiRecordToTranscriptState(state, toolUse('call-3', 'WebSearch', { query: 'three' }))
+  state = applyTuiRecordToTranscriptState(state, toolUse('call-4', 'WebSearch', { query: 'four' }))
+  state = applyTuiRecordToTranscriptState(state, toolResult('result-3', 'call-3', 'WebSearch', true, 'three'))
+  state = applyTuiRecordToTranscriptState(state, toolResult('result-4', 'call-4', 'WebSearch', true, 'four'))
+  state = commitAllLiveItemsToStatic(state)
+
+  assert.deepEqual(state.staticItems.map((item) => item.kind), ['tool_group', 'assistant', 'tool_group'])
+  const groups = state.staticItems.filter((item) => item.kind === 'tool_group')
+  assert.deepEqual(groups.map((group) => group.toolCalls.map((call) => call.toolUseId)), [
+    ['call-1', 'call-2'],
+    ['call-3', 'call-4'],
+  ])
+})
+
+test('historical hidden tools are hard grouping boundaries', () => {
+  const items = recordsToDisplayItems([
+    toolUse('call-1', 'WebFetch', { url: 'https://example.com/1' }),
+    toolUse('call-2', 'WebFetch', { url: 'https://example.com/2' }),
+    toolUse('hidden-1', 'ToolSearch', { query: 'web' }),
+    toolUse('call-3', 'WebFetch', { url: 'https://example.com/3' }),
+    toolUse('call-4', 'WebFetch', { url: 'https://example.com/4' }),
+  ])
+
+  assert.deepEqual(items.map((item) => item.kind), ['tool_group', 'tool_group'])
 })
 
 test('transcript reducer keeps running subagents live and commits terminal states', () => {
@@ -203,5 +242,16 @@ function subagentTask(id: string, status: SubagentTaskStatus): SessionRecord {
     description: 'Explore files',
     task: 'Find files',
     createdAt: '2026-05-24T00:00:00.000Z',
+  }
+}
+
+function thinkingMessage(id: string, thinking: string): SessionRecord {
+  return {
+    id,
+    type: 'message',
+    role: 'assistant',
+    content: '',
+    thinkingBlocks: [{ type: 'thinking', thinking }],
+    createdAt: '2026-05-24T00:00:02.000Z',
   }
 }

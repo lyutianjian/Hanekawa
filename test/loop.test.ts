@@ -1533,6 +1533,7 @@ test('agent loop excludes compact summarizer usage from status usage', async () 
     contextBuilder: new ContextBuilder(),
     toolRunner: runner,
     toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    contextWindow: 1000,
     contextManagement: {
       contextWindow: 1000,
       summaryOutputTokens: 0,
@@ -2044,10 +2045,12 @@ test('agent loop auto-compacts without preparing records twice in the same itera
     contextBuilder: new ContextBuilder(),
     toolRunner: runner,
     toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    contextWindow: 10_000,
     contextManagement: {
-      contextWindow: 600,
+      contextWindow: 10_000,
       summaryOutputTokens: 100,
       autoCompactBufferTokens: 50,
+      autoCompactThresholdRatio: 0.05,
     },
     recordStream: recordStreamFor(records, undefined, () => { loadRecordsCount += 1 }),
   })
@@ -2123,10 +2126,12 @@ test('agent loop includes compact summary on the next user turn after compaction
     contextBuilder: new ContextBuilder(),
     toolRunner: runner,
     toolContext: { cwd: process.cwd(), sessionId: 'summary-next-turn-session', readFiles: new Set() },
+    contextWindow: 10_000,
     contextManagement: {
-      contextWindow: 600,
+      contextWindow: 10_000,
       summaryOutputTokens: 100,
       autoCompactBufferTokens: 50,
+      autoCompactThresholdRatio: 0.05,
     },
     recordStream: recordStreamFor(records),
   })
@@ -2178,6 +2183,7 @@ test('agent loop runs preCompact and postCompact hooks around successful compact
     contextBuilder: new ContextBuilder(),
     toolRunner: runner,
     toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    contextWindow: 600,
     contextManagement: {
       contextWindow: 600,
       summaryOutputTokens: 100,
@@ -2272,6 +2278,7 @@ test('agent loop checks auto-compact before later model requests in a tool loop'
     contextBuilder: new ContextBuilder(),
     toolRunner: runner,
     toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    contextWindow: 200,
     contextManagement: {
       contextWindow: 200,
       summaryOutputTokens: 100,
@@ -2387,6 +2394,7 @@ test('agent loop counts pending records against the prepared request baseline af
     contextBuilder: new ContextBuilder(),
     toolRunner: runner,
     toolContext: { cwd: process.cwd(), sessionId: 'prepared-baseline-session', readFiles: new Set() },
+    contextWindow: 200,
     contextManagement: {
       contextWindow: 200,
       summaryOutputTokens: 100,
@@ -2453,6 +2461,7 @@ test('agent loop continues the turn when auto-compact summary fails', async () =
     contextBuilder: new ContextBuilder(),
     toolRunner: runner,
     toolContext: { cwd: process.cwd(), sessionId: 'compact-failure-session', readFiles: new Set() },
+    contextWindow: 600,
     contextManagement: {
       contextWindow: 600,
       summaryOutputTokens: 100,
@@ -2756,6 +2765,7 @@ test('agent loop uses last response usage, not cumulative usage, for auto-compac
     contextBuilder: new ContextBuilder(),
     toolRunner: runner,
     toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    contextWindow: 200,
     contextManagement: {
       contextWindow: 200,
       summaryOutputTokens: 100,

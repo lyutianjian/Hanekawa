@@ -27,6 +27,20 @@ export const agentsCommand: CommandDefinition = {
       }
 
       const tasks = await context.listSubagentTasks()
+      if (context.openCommandView) {
+        const sorted = sortTasks(tasks)
+        context.openCommandView({
+          kind: 'list',
+          title: 'Subagents',
+          subtitle: `${tasks.length} recent task${tasks.length === 1 ? '' : 's'}`,
+          items: sorted.map((task) => ({
+            id: task.agentId,
+            label: `${task.status.padEnd(11)} ${formatAgentName(task)}  #${task.agentId.slice(0, 8)}`,
+            description: `${formatAge(task.createdAt)} · ${task.summary ?? task.description}`,
+          })),
+        })
+        return
+      }
       context.writeLine(formatTaskList(tasks))
       return
     }
@@ -43,6 +57,25 @@ export const agentsCommand: CommandDefinition = {
       }
 
       const details = await context.getSubagentDetails(id)
+      if (details && context.openCommandView) {
+        const source = details.task ?? details.transcript
+        const rows = source ? [
+          { label: 'Agent', value: `${source.subagentType} #${source.agentId.slice(0, 8)}` },
+          ...(details.task ? [
+            { label: 'Status', value: details.task.status },
+            { label: 'Task', value: truncate(details.task.task, 240) },
+            { label: 'Summary', value: truncate(details.task.summary ?? details.task.description, 240) },
+          ] : []),
+          { label: 'Records', value: details.transcriptRecords.length.toLocaleString() },
+        ] : []
+        context.openCommandView({
+          kind: 'info',
+          title: 'Subagent details',
+          subtitle: source ? `${source.subagentType} agent` : undefined,
+          sections: [{ rows }],
+        })
+        return
+      }
       context.writeLine(details ? formatDetails(details) : `No subagent found for ${id}.`)
       return
     }
@@ -68,17 +101,11 @@ type SubagentTaskRecord = Extract<SessionRecord, { type: 'subagent_task' }>
 function formatTaskList(tasks: SubagentTaskRecord[]): string {
   if (tasks.length === 0) return 'No subagent tasks.'
 
-  const sorted = [...tasks].sort((a, b) => {
-    const rank = statusRank(a.status) - statusRank(b.status)
-    if (rank !== 0) return rank
-    return Date.parse(b.createdAt) - Date.parse(a.createdAt)
-  })
+  const sorted = sortTasks(tasks)
 
   const rows = sorted.map((task) => {
     const id = task.agentId.slice(0, 8)
-    const agent = task.name && task.name !== task.subagentType
-      ? `${task.name}(${task.subagentType})`
-      : task.subagentType
+    const agent = formatAgentName(task)
     return [
       pad(task.status, 11),
       pad(truncate(agent, 20), 20),
@@ -92,6 +119,20 @@ function formatTaskList(tasks: SubagentTaskRecord[]): string {
     'status       agent                 age       summary                                     id',
     ...rows,
   ].join('\n')
+}
+
+function sortTasks(tasks: SubagentTaskRecord[]): SubagentTaskRecord[] {
+  return [...tasks].sort((a, b) => {
+    const rank = statusRank(a.status) - statusRank(b.status)
+    if (rank !== 0) return rank
+    return Date.parse(b.createdAt) - Date.parse(a.createdAt)
+  })
+}
+
+function formatAgentName(task: SubagentTaskRecord): string {
+  return task.name && task.name !== task.subagentType
+    ? `${task.name}(${task.subagentType})`
+    : task.subagentType
 }
 
 function formatDetails(details: CommandSubagentDetails): string {

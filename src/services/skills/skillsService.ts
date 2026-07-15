@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
-import YAML from 'yaml'
 import { getSkillsDir } from '../../utils/paths.js'
+import { parseYamlFrontmatter } from '../../utils/frontmatter.js'
 import type { EffortLevel } from '../../config/effort.js'
 import type { HookCommand, Hooks } from '../../harness/hooks.js'
 
@@ -65,12 +65,12 @@ export class SkillsService {
   }
 
   private parse(raw: string, skillDir: string): SkillDefinition {
-    const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
+    const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/)
     if (!match) {
       throw new Error('Skill file must include YAML frontmatter (---\\n...\\n---)')
     }
 
-    const frontmatter = YAML.parse(match[1]) as {
+    const frontmatter = parseYamlFrontmatter(match[1]) as {
       name?: unknown
       description?: unknown
       paths?: unknown

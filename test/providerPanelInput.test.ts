@@ -1,6 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTextInputKey, type InkKey } from '../src/tui/components/ProviderPanel.js'
+import {
+  applyTextInputKey,
+  cycleChoiceValue,
+  moveBoundedIndex,
+  moveCyclicIndex,
+  type InkKey,
+} from '../src/tui/components/ProviderPanel.js'
 
 const empty: InkKey = {}
 
@@ -106,4 +112,42 @@ test('applyTextInputKey: negative cursor is clamped to 0', () => {
   const out = applyTextInputKey('ab', -5, 'x', empty)
   assert.equal(out.value, 'xab')
   assert.equal(out.cursor, 1)
+})
+
+test('cycleChoiceValue: cycles forward and wraps', () => {
+  const options = ['anthropic', 'openai'] as const
+  assert.equal(cycleChoiceValue('anthropic', options, 1), 'openai')
+  assert.equal(cycleChoiceValue('openai', options, 1), 'anthropic')
+})
+
+test('cycleChoiceValue: cycles backward and wraps', () => {
+  const options = ['', 'first', 'second'] as const
+  assert.equal(cycleChoiceValue('', options, -1), 'second')
+  assert.equal(cycleChoiceValue('first', options, -1), '')
+})
+
+test('cycleChoiceValue: preserves unknown until the user chooses a direction', () => {
+  const options = ['anthropic', 'openai'] as const
+  assert.equal(cycleChoiceValue('legacy', options, 1), 'anthropic')
+  assert.equal(cycleChoiceValue('legacy', options, -1), 'openai')
+})
+
+test('cycleChoiceValue: empty options are a no-op', () => {
+  assert.equal(cycleChoiceValue('legacy', [], 1), 'legacy')
+})
+
+test('moveBoundedIndex: moves vertically and stops at boundaries', () => {
+  assert.equal(moveBoundedIndex(1, 3, -1), 0)
+  assert.equal(moveBoundedIndex(1, 3, 1), 2)
+  assert.equal(moveBoundedIndex(0, 3, -1), 0)
+  assert.equal(moveBoundedIndex(2, 3, 1), 2)
+  assert.equal(moveBoundedIndex(4, 3, -1), 1)
+  assert.equal(moveBoundedIndex(0, 0, 1), 0)
+})
+
+test('moveCyclicIndex: moves horizontally and wraps', () => {
+  assert.equal(moveCyclicIndex(0, 4, -1), 3)
+  assert.equal(moveCyclicIndex(3, 4, 1), 0)
+  assert.equal(moveCyclicIndex(1, 4, 1), 2)
+  assert.equal(moveCyclicIndex(0, 0, 1), 0)
 })

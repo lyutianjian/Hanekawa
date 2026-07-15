@@ -72,10 +72,28 @@ export interface CommandShellResult {
   errorCode?: string
 }
 
+export type CommandView =
+  | {
+      kind: 'list'
+      title: string
+      subtitle?: string
+      items: Array<{ id: string; label: string; description?: string }>
+    }
+  | {
+      kind: 'info'
+      title: string
+      subtitle?: string
+      sections: Array<{
+        title?: string
+        rows: Array<{ label: string; value: string; tone?: 'normal' | 'success' | 'warning' | 'error' }>
+      }>
+    }
+
 export interface CommandContext {
   cwd: string
   sessionId: string
   writeLine: (msg: string) => void
+  openCommandView?: (view: CommandView) => void
   clearMessages: () => void | Promise<void>
   clearCachedSections?: () => void
   invalidateRecordsCache?: () => void

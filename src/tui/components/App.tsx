@@ -10,7 +10,7 @@ import type { PlanModeManager } from '../../harness/planModeManager.js'
 import type { ConfigService, ModelConfig } from '../../config/service.js'
 import { resolveTier, type Tier } from '../../config/routing.js'
 import type { SessionRecord } from '../../harness/types.js'
-import type { CommandSubmitQueryOptions, SetModelResult } from '../../commands/types.js'
+import type { CommandSubmitQueryOptions, CommandView, SetModelResult } from '../../commands/types.js'
 import type { TUIDisplayItem, TUIStaticItem } from '../types.js'
 import { useAgentLoop } from '../hooks/useAgentLoop.js'
 import { recordsToDisplayItems } from '../transcript.js'
@@ -41,12 +41,14 @@ import { AskUserQuestionDialog } from './AskUserQuestionDialog.js'
 import { ProviderPanel } from './ProviderPanel.js'
 import { ModelPickerDialog, type ModelPickerDecision, type ModelPickerOption } from './ModelPickerDialog.js'
 import { EffortPickerBar } from './EffortPickerBar.js'
+import { CommandViewPanel } from './CommandViewPanel.js'
 import { useExitPlanPermission, type ExitPlanPromptProxy } from '../hooks/useExitPlanPermission.js'
 import { useEnterPlanPermission, type EnterPlanPromptProxy } from '../hooks/useEnterPlanPermission.js'
 import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
 import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../rewindSummary.js'
 import { clampEffort, type EffortValue, type EffortLevel } from '../../config/effort.js'
 import { getContextWindowForModel } from '../../prompts/budget.js'
+import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/modelCapabilities.js'
 import { shouldRenderStatusLine } from '../statusLineVisibility.js'
 import {
   clearMessageQueue,
@@ -61,6 +63,10 @@ import {
 import type { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
 import { appendPromptHistory, loadPromptHistory, promptHistoryTexts } from '../promptHistory.js'
 import { summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
+import {
+  resolveRuntimeModelKeyAfterConfigChange,
+  type ProviderConfigChangeScope,
+} from '../providerRuntime.js'
 
 export type AppMode = 'idle' | 'running' | 'restore' | 'resume' | 'tasks' | 'exiting'
 
@@ -159,6 +165,7 @@ export function App({
   const [providerPanelOpen, setProviderPanelOpen] = useState(false)
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [effortPickerOpen, setEffortPickerOpen] = useState(false)
+  const [activeCommandView, setActiveCommandView] = useState<CommandView | null>(null)
   const [effortLevel, setEffortLevel] = useState<string>(initialEffortLevel ?? 'high')
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const restoreInputRef = useRef<(text: string) => void>(() => {})
@@ -304,6 +311,7 @@ export function App({
     || providerPanelOpen
     || modelPickerOpen
     || effortPickerOpen
+    || activeCommandView !== null
     || mode === 'restore'
     || mode === 'resume'
     || mode === 'tasks'
@@ -329,7 +337,8 @@ export function App({
   const clearConversation = useCallback(async () => {
     runtime.loop.clearCachedSections()
     await backgroundTasks.stopAll(activeSession.id, 'Session cleared')
-    const nextSession = await store.create()
+    store.discardDraft(activeSession.id)
+    const nextSession = store.createDraft()
     await migrateMessageQueue(nextSession.id, [])
     const nextRuntime = createRuntime(runtime.modelKey, nextSession, [])
     checkpointServiceRef.current = new CheckpointService(process.cwd(), nextSession.id)
@@ -458,6 +467,29 @@ export function App({
     return activateModelKey(modelKey)
   }, [resolveModelInput, modelKeys, activateModelKey])
 
+  const refreshRuntimeAfterProviderConfigChange = useCallback((scope: ProviderConfigChangeScope) => {
+    setModelKeys(Object.keys(providerConfig.get().models))
+
+    const currentRuntime = runtimeRef.current
+    const modelKey = resolveRuntimeModelKeyAfterConfigChange(
+      providerConfig,
+      currentRuntime.modelKey,
+      scope,
+    )
+    if (!modelKey) {
+      throw new Error('No model is available after the provider configuration change.')
+    }
+
+    const nextRuntime = createRuntime(modelKey, activeSession, sessionRecords)
+    currentRuntime.loop.clearCachedSections()
+    replaceRuntime(nextRuntime)
+
+    const clamped = clampEffort(effortLevel as EffortValue, nextRuntime.modelConfig.maxEffort)
+    const clampedLevel = typeof clamped === 'number' ? effortLevel : clamped
+    if (clampedLevel !== effortLevel) setEffortLevel(clampedLevel)
+    nextRuntime.loop.setEffort(typeof clamped === 'string' ? clamped as EffortLevel : undefined)
+  }, [providerConfig, createRuntime, activeSession, sessionRecords, replaceRuntime, effortLevel])
+
   const handleSetEffort = useCallback((level: string) => {
     const maxEffort = runtimeRef.current.modelConfig.maxEffort
     const clamped = clampEffort(level as EffortValue, maxEffort)
@@ -559,19 +591,32 @@ export function App({
     }
   }, [readCurrentPlanFile])
 
-  const openBackgroundTasks = useCallback(() => setMode('tasks'), [])
+  const closePickerSurfaces = useCallback(() => {
+    setProviderPanelOpen(false)
+    setModelPickerOpen(false)
+    setEffortPickerOpen(false)
+    setActiveCommandView(null)
+  }, [])
+
+  const openBackgroundTasks = useCallback(() => {
+    closePickerSurfaces()
+    setMode('tasks')
+  }, [closePickerSurfaces])
   const closeBackgroundTasks = useCallback(() => setMode('idle'), [])
   const openResumePicker = useCallback(() => {
+    closePickerSurfaces()
     setResumeLoading(true)
     setResumeError(null)
     setMode('resume')
     void store.list().then((sessions) => {
-      setResumeSessions(sessions)
+      setResumeSessions(sessions.some((session) => session.id === activeSession.id)
+        ? sessions
+        : [activeSession, ...sessions])
     }).catch((error) => {
       setResumeSessions([])
       setResumeError(error instanceof Error ? error.message : String(error))
     }).finally(() => setResumeLoading(false))
-  }, [store])
+  }, [activeSession, closePickerSurfaces, store])
 
   const closeResumePicker = useCallback(() => {
     setResumeError(null)
@@ -644,6 +689,13 @@ export function App({
     pricing: runtime.modelConfig.pricing,
     usage,
     addSystemMessage,
+    openCommandView: (view) => {
+      setProviderPanelOpen(false)
+      setModelPickerOpen(false)
+      setEffortPickerOpen(false)
+      setMode('idle')
+      setActiveCommandView(view)
+    },
     clearMessages: clearConversation,
     clearCachedSections: () => runtime.loop.clearCachedSections(),
     invalidateRecordsCache: () => runtime.loop.invalidateRecordsCache(),
@@ -657,9 +709,18 @@ export function App({
     openPlanFile: openCurrentPlanFile,
     submitQuery: submitPlainInput,
     runShellCommand,
-    openModelPicker: () => setModelPickerOpen(true),
-    openEffortPicker: () => setEffortPickerOpen(true),
-    openProviderPanel: () => setProviderPanelOpen(true),
+    openModelPicker: () => {
+      closePickerSurfaces()
+      setModelPickerOpen(true)
+    },
+    openEffortPicker: () => {
+      closePickerSurfaces()
+      setEffortPickerOpen(true)
+    },
+    openProviderPanel: () => {
+      closePickerSurfaces()
+      setProviderPanelOpen(true)
+    },
     openBackgroundTasks,
     openResumePicker,
     getEffort: () => effortLevel,
@@ -768,6 +829,7 @@ export function App({
     // swallowed inside onBeforeExit; we only need to await the promise so
     // disconnects have a chance to flush before process.exit kills the loop.
     const finalizeAndExit = async () => {
+      store.discardDraft(activeSession.id)
       if (onBeforeExit) {
         try {
           await onBeforeExit()
@@ -778,7 +840,7 @@ export function App({
       process.exit(0)
     }
     void finalizeAndExit()
-  }, [isStreaming, interrupt, onBeforeExit])
+  }, [activeSession.id, isStreaming, interrupt, onBeforeExit, store])
 
   const handleEnterRestoreMode = useCallback(async () => {
     try {
@@ -906,7 +968,14 @@ export function App({
     history: promptHistory,
     isStreaming,
     hasQueuedMessages: queuedMessages.length > 0,
-    isRestoreMode: mode === 'restore' || mode === 'resume' || mode === 'tasks',
+    isRestoreMode:
+      mode === 'restore'
+      || mode === 'resume'
+      || mode === 'tasks'
+      || providerPanelOpen
+      || modelPickerOpen
+      || effortPickerOpen
+      || activeCommandView !== null,
     isPermissionVisible:
       permState.visible
       || exitPlan.state.visible
@@ -960,17 +1029,6 @@ export function App({
             scrollOffsetRows={transcriptScrollOffsetRows}
             onScrollOffsetRowsChange={setTranscriptScrollOffsetRows}
             onExit={handleCloseTranscript}
-          />
-        </AlternateScreen>
-      ) : mode === 'resume' ? (
-        <AlternateScreen>
-          <SessionResumePicker
-            sessions={resumeSessions}
-            currentSessionId={activeSession.id}
-            loading={resumeLoading}
-            error={resumeError}
-            onSelect={resumeSession}
-            onCancel={closeResumePicker}
           />
         </AlternateScreen>
       ) : (
@@ -1054,13 +1112,21 @@ export function App({
             />
           )}
 
+          {mode === 'resume' && (
+            <SessionResumePicker
+              sessions={resumeSessions}
+              currentSessionId={activeSession.id}
+              loading={resumeLoading}
+              error={resumeError}
+              onSelect={resumeSession}
+              onCancel={closeResumePicker}
+            />
+          )}
+
           {providerPanelOpen && (
             <ProviderPanel
               config={providerConfig}
-              onChange={() => {
-                setModelKeys(Object.keys(providerConfig.get().models))
-                runtimeRef.current.loop.clearCachedSections()
-              }}
+              onChange={refreshRuntimeAfterProviderConfigChange}
               onClose={() => setProviderPanelOpen(false)}
             />
           )}
@@ -1085,8 +1151,12 @@ export function App({
             />
           )}
 
+          {activeCommandView && (
+            <CommandViewPanel view={activeCommandView} onClose={() => setActiveCommandView(null)} />
+          )}
+
           {/* Input box (with horizontal lines) */}
-          {mode !== 'restore' && mode !== 'tasks' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && (
+          {mode !== 'restore' && mode !== 'tasks' && mode !== 'resume' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && !activeCommandView && (
             <InputBox
               text={text}
               cursorPos={cursorPos}
@@ -1098,19 +1168,20 @@ export function App({
                 || providerPanelOpen
                 || modelPickerOpen
                 || effortPickerOpen
+                || activeCommandView !== null
               }
               isStreaming={isStreaming}
             />
           )}
 
-          {suggestionType !== 'none' && suggestions.length > 0 && (
+          {!isOverlayActive && suggestionType !== 'none' && suggestions.length > 0 && (
             <CommandSuggestions suggestions={suggestions} selectedIndex={selectedSuggestion} />
           )}
         </>
       )}
 
       {/* Status line (below input, no border) */}
-      {shouldRenderStatusLine(screen, mode) && (
+      {shouldRenderStatusLine(screen, mode) && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && !activeCommandView && (
         <StatusLine
           model={runtime.modelConfig.model}
           usage={usage}
@@ -1118,9 +1189,10 @@ export function App({
           hintMessage={hintMessage}
           effortLevel={effortLevel}
           contextWindow={getContextWindowForModel(
-            providerConfig.get().agent.contextManagement,
-            runtime.modelConfig.model,
-            runtime.modelKey,
+            {
+              ...providerConfig.get().agent.contextManagement,
+              contextWindow: runtime.modelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
+            },
           )}
           backgroundTaskCount={backgroundTaskSnapshot.filter((task) => task.status === 'running').length}
         />

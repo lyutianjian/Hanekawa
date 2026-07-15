@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Box, Text, useInput } from 'ink'
+import { Box, Text, useInput, useStdout } from 'ink'
 import type { BackgroundTaskSnapshot } from '../../services/backgroundTasks/registry.js'
 import { theme } from '../theme.js'
+import { commandVisibleRows, CommandListItem, CommandPane, getVisibleWindow } from './CommandUI.js'
 
 interface BackgroundTasksPanelProps {
   tasks: readonly BackgroundTaskSnapshot[]
@@ -20,6 +21,7 @@ export function BackgroundTasksPanel({ tasks, peekOutput, onClose }: BackgroundT
   const sorted = useMemo(() => sortBackgroundTasks(tasks), [tasks])
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [detail, setDetail] = useState(false)
+  const { stdout } = useStdout()
 
   useEffect(() => {
     setSelectedIndex((current) => Math.max(0, Math.min(current, sorted.length - 1)))
@@ -38,47 +40,77 @@ export function BackgroundTasksPanel({ tasks, peekOutput, onClose }: BackgroundT
   })
 
   const selected = sorted[selectedIndex]
+  const visibleCount = commandVisibleRows(stdout.rows, 9, 10)
+  const window = getVisibleWindow(sorted.length, selectedIndex, visibleCount)
+  const visibleTasks = sorted.slice(window.start, window.end)
+  const runningCount = sorted.filter((task) => task.status === 'running').length
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.brand}
-      borderLeft={false}
-      borderRight={false}
-      borderBottom={false}
-      marginTop={1}
-      paddingX={1}
+    <CommandPane
+      title="Background tasks"
+      subtitle={sorted.length === 0
+        ? 'No active or recent tasks.'
+        : `${sorted.length} task${sorted.length === 1 ? '' : 's'} · ${runningCount} running`}
+      hints={detail
+        ? [{ key: 'Esc', action: 'back' }]
+        : [
+            { key: '↑/↓', action: 'navigate' },
+            { key: 'Enter', action: 'view details' },
+            { key: 'Esc', action: 'close' },
+          ]}
     >
-      <Text bold color={theme.brand}>Background tasks</Text>
       {detail && selected ? (
-        <TaskDetail task={selected} output={peekOutput(selected.id)} />
+        <TaskDetail task={selected} output={peekOutput(selected.id)} maxOutputLines={visibleCount} />
       ) : (
-        <TaskList tasks={sorted} selectedIndex={selectedIndex} />
+        <TaskList
+          tasks={visibleTasks}
+          selectedIndex={selectedIndex}
+          windowStart={window.start}
+          hasAbove={window.hasAbove}
+          hasBelow={window.hasBelow}
+        />
       )}
-      <Box marginTop={1}>
-        <Text color={theme.dimText}>{detail ? 'Esc to return' : 'Enter for details  Esc to close'}</Text>
-      </Box>
-    </Box>
+    </CommandPane>
   )
 }
 
-function TaskList({ tasks, selectedIndex }: { tasks: BackgroundTaskSnapshot[]; selectedIndex: number }) {
+function TaskList({
+  tasks,
+  selectedIndex,
+  windowStart,
+  hasAbove,
+  hasBelow,
+}: {
+  tasks: BackgroundTaskSnapshot[]
+  selectedIndex: number
+  windowStart: number
+  hasAbove: boolean
+  hasBelow: boolean
+}) {
   if (tasks.length === 0) return <Box marginTop={1}><Text color={theme.dimText}>No background tasks.</Text></Box>
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column">
       {tasks.map((task, index) => (
-        <Text key={task.id} color={index === selectedIndex ? theme.brand : undefined}>
-          {index === selectedIndex ? '❯' : ' '} {pad(task.status, 9)} {pad(task.kind, 5)} {pad(task.id, 10)} {task.command ?? task.description ?? ''}
-        </Text>
+        <CommandListItem
+          key={task.id}
+          focused={windowStart + index === selectedIndex}
+          showMoreAbove={index === 0 && hasAbove}
+          showMoreBelow={index === tasks.length - 1 && hasBelow}
+          description={task.command ?? task.description}
+        >
+          {pad(task.status, 9)} {pad(task.kind, 5)} {task.id.slice(0, 8)}
+        </CommandListItem>
       ))}
     </Box>
   )
 }
 
-function TaskDetail({ task, output }: { task: BackgroundTaskSnapshot; output: string }) {
+function TaskDetail({ task, output, maxOutputLines }: { task: BackgroundTaskSnapshot; output: string; maxOutputLines: number }) {
   const duration = (task.finishedAt ?? Date.now()) - task.startedAt
+  const outputLines = output.split('\n')
+  const visibleOutput = outputLines.slice(-maxOutputLines).join('\n')
+  const omitted = Math.max(0, outputLines.length - maxOutputLines)
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column">
       <Text>task: {task.id}</Text>
       <Text>kind: {task.kind}</Text>
       <Text>status: {task.status}</Text>
@@ -92,8 +124,8 @@ function TaskDetail({ task, output }: { task: BackgroundTaskSnapshot; output: st
       {task.reason ? <Text color={theme.warning}>reason: {task.reason}</Text> : null}
       {task.kind === 'shell' ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text color={theme.dimText}>latest output (non-consuming):</Text>
-          <Text>{output || '(no output)'}</Text>
+          <Text color={theme.dimText}>Latest output{omitted > 0 ? ` · ${omitted} earlier lines hidden` : ''}</Text>
+          <Text>{visibleOutput || '(no output)'}</Text>
         </Box>
       ) : null}
     </Box>

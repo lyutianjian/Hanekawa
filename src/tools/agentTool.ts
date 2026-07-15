@@ -258,6 +258,7 @@ export interface CreateAgentToolOptions {
   provider: ModelProvider
   model: string
   modelKey?: string
+  contextWindow?: number
   providerName?: string
   promptCacheRetention?: 'in_memory' | '24h'
   fallbackModel?: ActiveModelRuntime
@@ -665,6 +666,7 @@ async function runSubagent({
       provider: subagentRuntime.provider,
       model: subagentRuntime.model,
       modelKey: subagentRuntime.modelKey,
+      contextWindow: subagentRuntime.contextWindow,
       tools: subTools,
       contextBuilder: new ContextBuilder(undefined, options.contextManagement),
       toolRunner: createToolRunner(),
@@ -1132,6 +1134,7 @@ function resolveSubagentRuntime(
     provider: options.provider,
     model: options.model,
     modelKey: options.modelKey,
+    contextWindow: options.contextWindow,
     providerName: options.providerName,
     promptCacheRetention: options.promptCacheRetention,
   }

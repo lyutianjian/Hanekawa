@@ -21,7 +21,6 @@ export interface CompactCheckInput {
   records: SessionRecord[]
   provider: ModelProvider
   model: string
-  modelKey?: string
   compactRuntime?: ActiveModelRuntime
   tools: Tool[]
   system?: string
@@ -102,7 +101,7 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
 
   const compactableRecords = getRecordsAfterLastCompact(input.records)
   const tokenCount = countCurrentTokens(input, compactableRecords)
-  const threshold = getAutoCompactThreshold(input.contextManagement, input.model, input.modelKey)
+  const threshold = getAutoCompactThreshold(input.contextManagement)
 
   if (tokenCount < threshold) {
     return { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } }

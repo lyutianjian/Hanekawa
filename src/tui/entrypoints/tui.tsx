@@ -48,9 +48,10 @@ import { createEnterPlanProxy } from '../hooks/useEnterPlanPermission.js'
 import { createAskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
 import { App } from '../components/App.js'
 import type { AppRuntime } from '../components/App.js'
-import { TUI_USAGE, parseTuiStartupCommand, resolveStartupSession } from './cli.js'
+import { TUI_USAGE, isResumableSession, parseTuiStartupCommand, resolveStartupSession } from './cli.js'
 import type { TuiStartupCommand } from './cli.js'
 import { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
+import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/modelCapabilities.js'
 
 const cwd = process.cwd()
 
@@ -82,7 +83,7 @@ async function main() {
   await store.init()
 
   if (startupCommand.kind === 'list') {
-    const sessions = await store.list()
+    const sessions = (await store.list()).filter(isResumableSession)
     if (sessions.length === 0) {
       console.log('No sessions found.')
     } else {
@@ -279,6 +280,7 @@ async function main() {
       provider: targetProvider,
       model: targetModelConfig.model,
       modelKey,
+      contextWindow: targetModelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
       providerName: targetProvider.name,
       promptCacheRetention: targetModelConfig.promptCacheRetention,
     }
@@ -338,6 +340,7 @@ async function main() {
       provider: targetProvider,
       model: targetModelConfig.model,
       modelKey,
+      contextWindow: targetModelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
       providerName: targetProvider.name,
       promptCacheRetention: targetModelConfig.promptCacheRetention,
       fallbackModel,
@@ -388,6 +391,7 @@ async function main() {
         provider: targetProvider,
         model: targetModelConfig.model,
         modelKey,
+        contextWindow: targetModelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
         tools: runtimeTools,
         contextBuilder: new ContextBuilder(undefined, contextManagement, promptSections),
         toolRunner: runtimeToolRunner,

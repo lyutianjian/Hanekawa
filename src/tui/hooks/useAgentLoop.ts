@@ -30,6 +30,7 @@ import {
   commitPrecedingLiveItemsToStatic,
   createTranscriptState,
   isHiddenToolCall,
+  markToolGroupBoundary,
   recordsToDisplayItems,
   type TuiTranscriptState,
 } from '../transcript.js'
@@ -384,11 +385,14 @@ export function useAgentLoop({
     (record: SessionRecord) => {
       // Update display items based on record type
       // Note: persistence is handled by loop.appendRecord, not here
-      if (record.type === 'tool_use' && !isHiddenToolCall(record.tool)) {
-        // Track tool name -> tool_use ID mapping for approval matching
-        lastToolUseIdRef.current.set(record.tool, record.id)
-
-        setTranscript((prev) => applyTuiRecordToTranscriptState(prev, record))
+      if (record.type === 'tool_use') {
+        if (isHiddenToolCall(record.tool)) {
+          setTranscript((prev) => markToolGroupBoundary(prev))
+        } else {
+          // Track tool name -> tool_use ID mapping for approval matching
+          lastToolUseIdRef.current.set(record.tool, record.id)
+          setTranscript((prev) => applyTuiRecordToTranscriptState(prev, record))
+        }
       } else if (record.type === 'tool_approval' && !isHiddenToolCall(record.tool)) {
         // Match approval to tool_use by looking up the most recent tool_use ID for this tool name
         const toolUseId = lastToolUseIdRef.current.get(record.tool)

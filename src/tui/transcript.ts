@@ -2,12 +2,13 @@ import type { SessionRecord, ToolProgressEvent } from '../harness/types.js'
 import type { TUIDisplayItem } from './types.js'
 import { ASK_USER_QUESTION_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME, TASK_CREATE_TOOL_NAME, TASK_GET_TOOL_NAME, TASK_LIST_TOOL_NAME, TASK_UPDATE_TOOL_NAME } from '../tools/toolNames.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
-import { groupConsecutiveSafeToolCalls } from './utils/toolGroupSummary.js'
+import { groupConsecutiveSameToolCalls } from './utils/toolGroupSummary.js'
 
 export interface TuiTranscriptState {
   staticItems: TUIDisplayItem[]
   liveItems: TUIDisplayItem[]
   liveSystemItems: TUIDisplayItem[]
+  groupSegmentId: number
   recentCompletedToolCall: Extract<TUIDisplayItem, { kind: 'tool_call' }> | null
   recentThinkingAssistant: Extract<TUIDisplayItem, { kind: 'assistant' }> | null
 }
@@ -25,6 +26,7 @@ export function createTranscriptState(staticItems: TUIDisplayItem[] = []): TuiTr
     staticItems,
     liveItems: [],
     liveSystemItems: [],
+    groupSegmentId: 0,
     recentCompletedToolCall,
     recentThinkingAssistant,
   }
@@ -58,6 +60,14 @@ export function appendLiveSystemItem(
   }
 }
 
+/** Mark a non-rendered record as a hard boundary for subsequent tool calls. */
+export function markToolGroupBoundary(state: TuiTranscriptState): TuiTranscriptState {
+  return {
+    ...state,
+    groupSegmentId: state.groupSegmentId + 1,
+  }
+}
+
 /** Move all live items to static (called at the start of a new turn).
  *  Streaming thinking preview items are discarded — they are temporary
  *  placeholders replaced by the real assistant message. */
@@ -67,7 +77,7 @@ export function commitLiveItemsToStatic(state: TuiTranscriptState): TuiTranscrip
   if (toCommit.length === 0 && state.liveSystemItems.length === 0) {
     return { ...state, liveItems: [], liveSystemItems: [] }
   }
-  const grouped = groupConsecutiveSafeToolCalls(toCommit)
+  const grouped = groupConsecutiveSameToolCalls(toCommit)
   return {
     ...state,
     staticItems: [...state.staticItems, ...grouped, ...state.liveSystemItems],
@@ -89,7 +99,7 @@ export function commitAllLiveItemsToStatic(state: TuiTranscriptState): TuiTransc
   }
   const recentThinkingAssistant = findRecentThinkingAssistant(toCommit) ?? state.recentThinkingAssistant
   const recentCompletedToolCall = findRecentCompletedToolCall(toCommit) ?? state.recentCompletedToolCall
-  const grouped = groupConsecutiveSafeToolCalls(toCommit)
+  const grouped = groupConsecutiveSameToolCalls(toCommit)
   return {
     ...state,
     staticItems: [...state.staticItems, ...grouped, ...state.liveSystemItems],
@@ -118,7 +128,7 @@ export function commitLiveItemsExcludingThinking(state: TuiTranscriptState): Tui
   if (nonThinking.length === 0 && state.liveSystemItems.length === 0) {
     return { ...state, liveItems: thinking }
   }
-  const grouped = groupConsecutiveSafeToolCalls(nonThinking)
+  const grouped = groupConsecutiveSameToolCalls(nonThinking)
   return {
     ...state,
     staticItems: [...state.staticItems, ...grouped, ...state.liveSystemItems],
@@ -165,24 +175,30 @@ export function applyTuiRecordToTranscriptState(
 ): TuiTranscriptState {
   if (record.type === 'message') {
     const item = messageRecordToDisplayItem(record, options.thinkingDurationMs)
+    const hasPriorToolSegment = state.liveItems.some((liveItem) => liveItem.kind === 'tool_call')
+    const boundaryState = markToolGroupBoundary(
+      hasPriorToolSegment ? commitLiveItemsToStatic(state) : state,
+    )
     // Assistant messages with thinking blocks go to liveItems so MessageList
     // can control expanded/collapsed state via ctrl+o.
     if (item.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0) {
-      // Move finalized thinking items to static; discard streaming preview items
-      const isFinalizedThinking = (li: TUIDisplayItem) =>
-        li.kind === 'assistant' && li.thinkingBlocks && li.thinkingBlocks.length > 0
-      const existingThinking = state.liveItems.filter(isFinalizedThinking)
-      const remainingLive = state.liveItems.filter(
-        (li) => !isFinalizedThinking(li) && !isStreamingThinkingPreview(li),
+      // Preserve the prior behavior when no tool segment precedes this block:
+      // older finalized thoughts become static while the newest stays live.
+      const existingThinking = boundaryState.liveItems.filter(
+        (liveItem) => liveItem.kind === 'assistant' && Boolean(liveItem.thinkingBlocks?.length),
+      )
+      const remainingLive = boundaryState.liveItems.filter(
+        (liveItem) => !(liveItem.kind === 'assistant' && liveItem.thinkingBlocks?.length)
+          && !isStreamingThinkingPreview(liveItem),
       )
       return {
-        ...state,
-        staticItems: [...state.staticItems, ...existingThinking],
+        ...boundaryState,
+        staticItems: [...boundaryState.staticItems, ...existingThinking],
         liveItems: [...remainingLive, item],
         recentThinkingAssistant: item,
       }
     }
-    return appendStaticTranscriptItem(state, item)
+    return appendStaticTranscriptItem(boundaryState, item)
   }
 
   if (record.type === 'tool_use') {
@@ -194,6 +210,7 @@ export function applyTuiRecordToTranscriptState(
       tool: record.tool,
       input: record.input,
       status: 'running',
+      groupSegmentId: state.groupSegmentId,
       createdAt: record.createdAt,
     }
     return upsertLiveItem(state, item, (candidate) =>
@@ -249,21 +266,25 @@ export function applyTuiRecordToTranscriptState(
         itemsToCommit.push(item)
       }
     }
-    // Also remove the completed tool_call itself from liveItems
-    const remainingLive = state.liveItems.filter(
-      (_, index) => !indicesToCommit.has(index) && index !== toolCallIndex,
-    )
+    // Keep the completed call live until a hard boundary or turn end. Ink's
+    // Static output cannot retract a single row after a later sibling arrives.
+    const remainingLive = state.liveItems.flatMap((item, index) => {
+      if (indicesToCommit.has(index)) return []
+      return [index === toolCallIndex ? completed : item]
+    })
     const stateWithItemsCommitted: TuiTranscriptState = itemsToCommit.length > 0
       ? {
           ...state,
           liveItems: remainingLive,
           staticItems: [...state.staticItems, ...itemsToCommit],
+          recentCompletedToolCall: completed,
         }
       : {
           ...state,
           liveItems: remainingLive,
+          recentCompletedToolCall: completed,
         }
-    return appendStaticTranscriptItem(stateWithItemsCommitted, completed)
+    return stateWithItemsCommitted
   }
 
   if (record.type === 'compact_boundary') {
@@ -392,6 +413,7 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
   const items: TUIDisplayItem[] = []
   const toolCalls = new Map<string, Extract<TUIDisplayItem, { kind: 'tool_call' }>>()
   const latestSubagentRecordId = new Map<string, string>()
+  let groupSegmentId = 0
 
   for (const record of records) {
     if (record.type === 'subagent_task') {
@@ -402,8 +424,12 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
   for (const record of records) {
     if (record.type === 'message') {
       items.push(messageRecordToDisplayItem(record))
+      groupSegmentId += 1
     } else if (record.type === 'tool_use') {
-      if (isHiddenToolCall(record.tool)) continue
+      if (isHiddenToolCall(record.tool)) {
+        groupSegmentId += 1
+        continue
+      }
       const item: Extract<TUIDisplayItem, { kind: 'tool_call' }> = {
         kind: 'tool_call',
         id: `tool-call-${record.id}`,
@@ -411,6 +437,7 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
         tool: record.tool,
         input: record.input,
         status: 'done',
+        groupSegmentId,
         createdAt: record.createdAt,
       }
       toolCalls.set(record.id, item)
@@ -450,7 +477,7 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
     }
   }
 
-  return groupConsecutiveSafeToolCalls(items)
+  return groupConsecutiveSameToolCalls(items)
 }
 
 export function isHiddenToolCall(toolName: string): boolean {
@@ -516,6 +543,12 @@ function findRecentCompletedToolCall(
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index]
     if (item?.kind === 'tool_call' && item.result) return item
+    if (item?.kind === 'tool_group') {
+      for (let callIndex = item.toolCalls.length - 1; callIndex >= 0; callIndex--) {
+        const call = item.toolCalls[callIndex]
+        if (call?.result) return call
+      }
+    }
   }
   return null
 }

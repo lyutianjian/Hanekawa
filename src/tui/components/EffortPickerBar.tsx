@@ -7,6 +7,7 @@ import {
   effortDescription,
   type EffortLevel,
 } from '../../config/effort.js'
+import { CommandListItem, CommandPane } from './CommandUI.js'
 
 export interface EffortPickerBarProps {
   currentLevel: EffortLevel
@@ -77,12 +78,12 @@ export function EffortPickerBar({ currentLevel, maxEffort, onResolve }: EffortPi
       return
     }
 
-    if (key.leftArrow) {
+    if (key.leftArrow || key.upArrow) {
       setSelectedIndex((i) => nextEnabledIndex(maxEffort, i, -1))
       return
     }
 
-    if (key.rightArrow) {
+    if (key.rightArrow || key.downArrow) {
       setSelectedIndex((i) => nextEnabledIndex(maxEffort, i, 1))
       return
     }
@@ -107,44 +108,53 @@ export function EffortPickerBar({ currentLevel, maxEffort, onResolve }: EffortPi
   const description = selectedLevel ? effortDescription(selectedLevel) : ''
   const arrowColumn = indicatorColumn(selectedIndex)
   const centerOffset = Math.max(0, Math.floor((terminalWidth - rowWidth()) / 2))
+  const compact = terminalWidth < rowWidth() + 4
 
   return (
-    <Box flexDirection="column" marginTop={1}>
-      <Box>
-        <Text color={theme.border}>{'─'.repeat(terminalWidth)}</Text>
-      </Box>
-
-      <Box flexDirection="row" marginLeft={centerOffset} marginTop={1}>
-        {VALID_EFFORT_LEVELS.map((level, index) => {
-          const selected = index === selectedIndex
-          const disabled = isLevelDisabled(level, maxEffort)
-          const color = disabled ? theme.dimText : selected ? theme.brand : theme.assistantText
-          const pad = ' '.repeat(PILL_PAD)
-          const gap = index < VALID_EFFORT_LEVELS.length - 1 ? ' '.repeat(PILL_GAP) : ''
-          return (
-            <Text key={level} color={color} bold={!disabled && selected}>
-              {pad}
-              {level.toUpperCase()}
-              {pad}
-              {gap}
-            </Text>
-          )
-        })}
-      </Box>
-
-      <Box marginLeft={centerOffset + arrowColumn}>
-        <Text color={theme.brand}>▲</Text>
-      </Box>
-
-      <Box justifyContent="center" marginTop={1}>
-        <Text color={theme.assistantText}>{description}</Text>
-      </Box>
-
-      <Box justifyContent="center">
-        <Text color={theme.dimText}>
-          ←/→ to adjust · 1-5 to jump · Enter to confirm · Esc to cancel
-        </Text>
-      </Box>
-    </Box>
+    <CommandPane
+      title="Effort"
+      subtitle="Adjust how much reasoning the model uses."
+      hints={[
+        { key: compact ? '↑/↓' : '←/→', action: 'navigate' },
+        { key: '1–5', action: 'jump' },
+        { key: 'Enter', action: 'confirm' },
+        { key: 'Esc', action: 'close' },
+      ]}
+    >
+      {compact ? (
+        <Box flexDirection="column">
+          {VALID_EFFORT_LEVELS.map((level, index) => (
+            <CommandListItem
+              key={level}
+              focused={index === selectedIndex}
+              selected={level === currentLevel}
+              disabled={isLevelDisabled(level, maxEffort)}
+              description={index === selectedIndex ? effortDescription(level) : undefined}
+            >
+              {index + 1}. {level.toUpperCase()}
+            </CommandListItem>
+          ))}
+        </Box>
+      ) : (
+        <>
+          <Box flexDirection="row" marginLeft={centerOffset}>
+            {VALID_EFFORT_LEVELS.map((level, index) => {
+              const selected = index === selectedIndex
+              const disabled = isLevelDisabled(level, maxEffort)
+              const color = disabled ? theme.dimText : selected ? theme.brand : theme.assistantText
+              const pad = ' '.repeat(PILL_PAD)
+              const gap = index < VALID_EFFORT_LEVELS.length - 1 ? ' '.repeat(PILL_GAP) : ''
+              return (
+                <Text key={level} color={color} bold={!disabled && selected}>
+                  {pad}{level.toUpperCase()}{pad}{gap}
+                </Text>
+              )
+            })}
+          </Box>
+          <Box marginLeft={centerOffset + arrowColumn}><Text color={theme.brand}>▲</Text></Box>
+          <Box justifyContent="center" marginTop={1}><Text>{description}</Text></Box>
+        </>
+      )}
+    </CommandPane>
   )
 }

@@ -61,15 +61,8 @@ export function getToolResultSummary(
   }
 }
 
-/**
- * Tools whose results can be collapsed into a parallel-tool group summary line.
- * Bash is excluded despite being concurrency-safe because its output is
- * typically large and benefits from an individual ToolCallBlock.
- */
-const GROUPABLE_TOOLS = new Set(['Read', 'Grep', 'Glob'])
-
 export function isGroupableTool(toolName: string): boolean {
-  return GROUPABLE_TOOLS.has(toolName)
+  return toolName !== 'Agent'
 }
 
 export function filePathSummary(input: unknown): string | null {

@@ -1867,6 +1867,61 @@ test('AgentDefinitionLoader parses extended custom agent frontmatter fields', as
   }
 })
 
+test('AgentDefinitionLoader parses CRLF frontmatter', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-agents-'))
+  const cwd = path.join(root, 'project')
+  try {
+    const agentsDir = path.join(cwd, '.myagent', 'agents')
+    await mkdir(agentsDir, { recursive: true })
+    await writeFile(
+      path.join(agentsDir, 'windows.md'),
+      agentFile({
+        name: 'windows-agent',
+        description: 'Uses Windows line endings.',
+        body: 'Windows agent prompt.',
+      }).replace(/\n/g, '\r\n'),
+    )
+
+    const definitions = await new AgentDefinitionLoader(cwd, path.join(root, 'home')).list()
+    const definition = definitions.find((item) => item.type === 'windows-agent')
+
+    assert.ok(definition)
+    assert.equal(definition.description, 'Uses Windows line endings.')
+    assert.equal(definition.getSystemPrompt(), 'Windows agent prompt.')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('AgentDefinitionLoader repairs problematic top-level description scalars', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-agents-'))
+  const cwd = path.join(root, 'project')
+  try {
+    const agentsDir = path.join(cwd, '.myagent', 'agents')
+    await mkdir(agentsDir, { recursive: true })
+    await writeFile(
+      path.join(agentsDir, 'compat.md'),
+      [
+        '---',
+        'name: compat-agent',
+        'description: Reviews code: correctness and safety.',
+        '---',
+        'Review the implementation.',
+        '',
+      ].join('\n'),
+    )
+
+    const definitions = await new AgentDefinitionLoader(cwd, path.join(root, 'home')).list()
+    const definition = definitions.find((item) => item.type === 'compat-agent')
+
+    assert.ok(definition)
+    assert.equal(definition.description, 'Reviews code: correctness and safety.')
+    assert.equal(definition.getSystemPrompt(), 'Review the implementation.')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('AgentDefinitionLoader overrides v2 fields when later directories override an agent', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-agents-'))
   const home = path.join(root, 'home')

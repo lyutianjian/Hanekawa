@@ -3,6 +3,19 @@ import type { ModelConfig } from '../service.js'
 import { AnthropicProvider } from './anthropicProvider.js'
 import { OpenAIProvider } from './openaiProvider.js'
 
+export const SUPPORTED_PROVIDER_NAMES = ['anthropic', 'openai'] as const
+
+export type SupportedProviderName = typeof SUPPORTED_PROVIDER_NAMES[number]
+
+export function isSupportedProviderName(value: string): value is SupportedProviderName {
+  return SUPPORTED_PROVIDER_NAMES.some((provider) => provider === value)
+}
+
+const PROVIDER_FACTORIES: Record<SupportedProviderName, (config: ModelConfig) => ModelProvider> = {
+  anthropic: (config) => new AnthropicProvider(config),
+  openai: (config) => new OpenAIProvider(config),
+}
+
 export class ProviderRegistry {
   private providers: Map<string, ModelProvider> = new Map()
 
@@ -24,12 +37,6 @@ export class ProviderRegistry {
 }
 
 export function createProvider(config: ModelConfig): ModelProvider | undefined {
-  switch (config.provider) {
-    case 'anthropic':
-      return new AnthropicProvider(config)
-    case 'openai':
-      return new OpenAIProvider(config)
-    default:
-      return undefined
-  }
+  if (!config.provider || !isSupportedProviderName(config.provider)) return undefined
+  return PROVIDER_FACTORIES[config.provider](config)
 }

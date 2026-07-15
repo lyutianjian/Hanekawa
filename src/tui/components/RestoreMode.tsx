@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Box, Text, useInput } from 'ink'
+import { Box, Text, useInput, useStdout } from 'ink'
 import { theme } from '../theme.js'
 import type { CheckpointDiffSummary, CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
+import { commandVisibleRows, CommandHintBar, CommandListItem, CommandPane, getVisibleWindow } from './CommandUI.js'
 
 export type RestoreDecision =
   | 'restore-code-and-conversation'
@@ -130,7 +131,6 @@ export function RestoreMode({ checkpoints, onSelect, onCancel }: RestoreModeProp
   if (checkpoints.length === 0) {
     return (
       <RewindPanel>
-        <Text bold color={theme.brand}>Rewind</Text>
         <Box marginTop={1}>
           <Text color={theme.dimText}>No checkpoints available</Text>
         </Box>
@@ -143,8 +143,6 @@ export function RestoreMode({ checkpoints, onSelect, onCancel }: RestoreModeProp
 
   return (
     <RewindPanel>
-      <Text bold color={theme.brand}>Rewind</Text>
-
       {screen === 'select-node' ? (
         <SelectNodeScreen
           checkpoints={sorted}
@@ -165,21 +163,7 @@ export function RestoreMode({ checkpoints, onSelect, onCancel }: RestoreModeProp
 }
 
 function RewindPanel({ children }: { children: ReactNode }) {
-  return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.brand}
-      borderLeft={false}
-      borderRight={false}
-      borderBottom={false}
-      marginTop={1}
-    >
-      <Box flexDirection="column" paddingX={1}>
-        {children}
-      </Box>
-    </Box>
-  )
+  return <CommandPane title="Rewind" subtitle="Return to an earlier point in this session.">{children}</CommandPane>
 }
 
 function SelectNodeScreen({
@@ -191,8 +175,14 @@ function SelectNodeScreen({
   selectedIndex: number
   error: string | null
 }) {
+  const { stdout } = useStdout()
+  const visibleCount = commandVisibleRows(stdout.rows, 12, 8)
+  const window = getVisibleWindow(checkpoints.length + 1, selectedIndex, visibleCount)
+  const visibleCheckpointEnd = Math.min(checkpoints.length, window.end)
+  const visibleCheckpoints = checkpoints.slice(window.start, visibleCheckpointEnd)
+  const showCurrent = window.end > checkpoints.length
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column">
       <Text>Restore the code and/or conversation to the point before...</Text>
       {error ? (
         <Box marginTop={1}>
@@ -200,20 +190,27 @@ function SelectNodeScreen({
         </Box>
       ) : null}
       <Box flexDirection="column" marginTop={1}>
-        {checkpoints.map((checkpoint, index) => (
+        {visibleCheckpoints.map((checkpoint, offset) => {
+          const index = window.start + offset
+          return (
           <CheckpointEntry
             key={getCheckpointRenderKey(checkpoint)}
             checkpoint={checkpoint}
             isSelected={index === selectedIndex}
+            showMoreAbove={offset === 0 && window.hasAbove}
+            showMoreBelow={offset === visibleCheckpoints.length - 1 && !showCurrent && window.hasBelow}
           />
-        ))}
+          )
+        })}
       </Box>
-      <Box marginTop={1}>
+      {showCurrent ? <Box marginTop={visibleCheckpoints.length > 0 ? 1 : 0}>
         <CurrentEntry isSelected={selectedIndex === checkpoints.length} />
-      </Box>
-      <Box marginTop={1}>
-        <Text color={theme.dimText}>Enter to select  Esc to cancel</Text>
-      </Box>
+      </Box> : null}
+      <CommandHintBar hints={[
+        { key: '↑/↓', action: 'navigate' },
+        { key: 'Enter', action: 'select' },
+        { key: 'Esc', action: 'close' },
+      ]} />
     </Box>
   )
 }
@@ -286,35 +283,44 @@ function ConfirmScreen({
         </Box>
       ) : null}
 
-      <Box marginTop={1}>
-        <Text color={theme.dimText}>[Up/Down] Options  [1-{options.length}] Quick  [Enter] Select  [Esc] Cancel</Text>
-      </Box>
+      <CommandHintBar hints={[
+        { key: '↑/↓', action: 'navigate' },
+        { key: `1–${options.length}`, action: 'choose' },
+        { key: 'Enter', action: 'confirm' },
+        { key: 'Esc', action: 'back' },
+      ]} />
     </Box>
   )
 }
 
-function CheckpointEntry({ checkpoint, isSelected }: { checkpoint: CheckpointWithDiff; isSelected: boolean }) {
-  const prefix = isSelected ? '> ' : '  '
+function CheckpointEntry({
+  checkpoint,
+  isSelected,
+  showMoreAbove = false,
+  showMoreBelow = false,
+}: {
+  checkpoint: CheckpointWithDiff
+  isSelected: boolean
+  showMoreAbove?: boolean
+  showMoreBelow?: boolean
+}) {
   const messagePreview = truncateMessage(checkpoint.messageContent.replace(/\s+/g, ' '), 88)
 
   return (
-    <Box flexDirection="column">
-      <Text color={isSelected ? theme.brand : theme.assistantText} bold={isSelected}>
-        {prefix}{messagePreview || '(no message)'}
-      </Text>
-      <Box paddingLeft={2}>
-        <DiffSummaryText summary={checkpoint.turnDiff} />
-      </Box>
-    </Box>
+    <CommandListItem
+      focused={isSelected}
+      showMoreAbove={showMoreAbove}
+      showMoreBelow={showMoreBelow}
+      description={<DiffSummaryText summary={checkpoint.turnDiff} />}
+    >
+      {messagePreview || '(no message)'}
+    </CommandListItem>
   )
 }
 
 function CurrentEntry({ isSelected }: { isSelected: boolean }) {
-  const prefix = isSelected ? '> ' : '  '
   return (
-    <Text color={isSelected ? theme.brand : theme.assistantText} bold={isSelected}>
-      {prefix}(current)
-    </Text>
+    <CommandListItem focused={isSelected}>(current)</CommandListItem>
   )
 }
 

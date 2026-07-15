@@ -5,7 +5,7 @@ import { highlight as cliHighlight } from 'cli-highlight'
 import type { Theme as HighlightTheme } from 'cli-highlight'
 import stringWidth from 'string-width'
 import wrapAnsi from 'wrap-ansi'
-import { parseMarkdown, insertCjkBreaks } from '../markdown.js'
+import { parseMarkdown } from '../markdown.js'
 import { theme } from '../theme.js'
 import { AnsiText, stripAnsi } from '../ansi.js'
 import { supportsHyperlinks, createHyperlink } from '../hyperlink.js'
@@ -20,7 +20,7 @@ export function Markdown({ content, color, width }: MarkdownProps) {
   const tokens = useMemo(() => parseMarkdown(content), [content])
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={width}>
       {tokens.map((token, i) => (
         <MarkdownToken key={i} token={token} color={color} width={width} />
       ))}
@@ -96,9 +96,9 @@ const MarkdownToken = memo(function MarkdownToken({ token, color, width }: { tok
     case 'code':
       return <CodeBlock token={token as Tokens.Code} />
     case 'list':
-      return <List token={token as Tokens.List} color={color} />
+      return <List token={token as Tokens.List} color={color} width={width} />
     case 'blockquote':
-      return <Blockquote token={token as Tokens.Blockquote} color={color} />
+      return <Blockquote token={token as Tokens.Blockquote} color={color} width={width} />
     case 'hr':
       return <Text color={theme.dimText}>{'─'.repeat(Math.max(1, (width ?? 40) - 2))}</Text>
     case 'space':
@@ -109,7 +109,7 @@ const MarkdownToken = memo(function MarkdownToken({ token, color, width }: { tok
       return <HtmlBlock token={token as Tokens.HTML} />
     default:
       if ('raw' in token) {
-        return <Text color={color}>{insertCjkBreaks((token as { raw: string }).raw)}</Text>
+        return <Text color={color}>{(token as { raw: string }).raw}</Text>
       }
       return null
   }
@@ -121,7 +121,7 @@ const Heading = memo(function Heading({ token, color }: { token: Tokens.Heading;
   const headingColor = color ?? theme.brand
   const depth = token.depth
   return (
-    <Box marginTop={1}>
+    <Box>
       <Text
         color={headingColor}
         bold
@@ -156,7 +156,7 @@ const CodeBlock = memo(function CodeBlock({ token }: { token: Tokens.Code }) {
   const highlightedLines = highlighted.split('\n')
 
   return (
-    <Box flexDirection="column" marginY={1}>
+    <Box flexDirection="column">
       {lang && (
         <Box paddingLeft={2}>
           <Text color={theme.dimText} dimColor>
@@ -181,7 +181,7 @@ const CodeBlock = memo(function CodeBlock({ token }: { token: Tokens.Code }) {
 
 // ── List ──
 
-const List = memo(function List({ token, color }: { token: Tokens.List; color?: string }) {
+const List = memo(function List({ token, color, width }: { token: Tokens.List; color?: string; width?: number }) {
   const start = typeof token.start === 'number' ? token.start : 1
   const maxNumWidth = token.ordered ? String(start + token.items.length - 1).length : 0
   return (
@@ -195,7 +195,9 @@ const List = memo(function List({ token, color }: { token: Tokens.List; color?: 
           start={start}
           maxNumWidth={maxNumWidth}
           loose={token.loose}
+          isLast={i === token.items.length - 1}
           color={color}
+          width={width}
         />
       ))}
     </Box>
@@ -209,7 +211,9 @@ function ListItem({
   start,
   maxNumWidth,
   loose,
+  isLast,
   color,
+  width,
 }: {
   token: Tokens.ListItem
   index: number
@@ -217,98 +221,106 @@ function ListItem({
   start: number
   maxNumWidth: number
   loose: boolean
+  isLast: boolean
   color?: string
+  width?: number
 }) {
   const bullet = ordered ? `${String(start + index).padStart(maxNumWidth)}.` : '•'
-
-  // Check for leading checkbox
-  const firstToken = token.tokens[0]
-  const firstTextTokens = firstToken?.type === 'text'
-    ? (firstToken as Tokens.Text).tokens ?? []
-    : []
-  const hasCheckbox = firstTextTokens.length > 0 && firstTextTokens[0].type === 'checkbox'
-
-  const checkboxToken = hasCheckbox
-    ? (firstTextTokens[0] as Tokens.Checkbox)
-    : null
-
-  // Get the remaining content tokens (skip the text token that contained the checkbox)
-  const contentTokens = hasCheckbox
-    ? token.tokens.slice(1)
-    : token.tokens
+  const contentTokens = token.tokens.filter(t => t.type !== 'checkbox')
+  const firstInlineIndex = contentTokens.findIndex(t => t.type === 'text' || t.type === 'paragraph')
+  const firstInlineToken = firstInlineIndex >= 0 ? contentTokens[firstInlineIndex] : undefined
+  const remainingTokens = contentTokens.filter((_, i) => i !== firstInlineIndex)
+  const hasCheckbox = token.task
+  const checkboxWidth = hasCheckbox ? 2 : 0
+  const contentIndent = stringWidth(bullet) + 1 + checkboxWidth
+  const nestedWidth = width === undefined ? undefined : Math.max(1, width - contentIndent)
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginBottom={loose && !isLast ? 1 : 0}>
       <Box>
         <Text color={theme.dimText}>{bullet} </Text>
-        {checkboxToken && (
-          <Text color={checkboxToken.checked ? theme.success : theme.dimText}>
-            {checkboxToken.checked ? '☑' : '☐'}{' '}
+        {hasCheckbox && (
+          <Text color={token.checked ? theme.success : theme.dimText}>
+            {token.checked ? '☑' : '☐'}{' '}
           </Text>
         )}
         <Text color={color}>
-          {contentTokens.map((t, i) => {
-            if (t.type === 'text') {
-              return <InlineTokens key={i} tokens={(t as Tokens.Text).tokens ?? []} color={color} />
-            }
-            if (t.type === 'paragraph') {
-              return <InlineTokens key={i} tokens={(t as Tokens.Paragraph).tokens} color={color} />
-            }
-            return null
-          })}
+          {firstInlineToken?.type === 'text' && (
+            <InlineTokens tokens={(firstInlineToken as Tokens.Text).tokens ?? []} color={color} />
+          )}
+          {firstInlineToken?.type === 'paragraph' && (
+            <InlineTokens tokens={(firstInlineToken as Tokens.Paragraph).tokens} color={color} />
+          )}
         </Text>
       </Box>
-      {/* Nested list items: render sub-lists with increased indentation */}
-      {token.tokens.map((t, i) => {
+      {remainingTokens.map((t, i) => {
+        if (t.type === 'space') {
+          return <Box key={`space-${i}`} height={1} />
+        }
+        if (t.type === 'text' || t.type === 'paragraph') {
+          const inlineTokens = t.type === 'text'
+            ? (t as Tokens.Text).tokens ?? []
+            : (t as Tokens.Paragraph).tokens
+          return (
+            <Box key={`paragraph-${i}`} paddingLeft={contentIndent}>
+              <Text color={color}>
+                <InlineTokens tokens={inlineTokens} color={color} />
+              </Text>
+            </Box>
+          )
+        }
         if (t.type === 'list') {
           return (
-            <Box key={`nested-${i}`} paddingLeft={2}>
-              <List token={t as Tokens.List} color={color} />
+            <Box key={`nested-${i}`} paddingLeft={contentIndent}>
+              <List token={t as Tokens.List} color={color} width={nestedWidth} />
             </Box>
           )
         }
-        // Nested code blocks, blockquotes, etc. inside list items
-        if (t.type === 'code' || t.type === 'blockquote') {
-          return (
-            <Box key={`nested-${i}`} paddingLeft={2}>
-              <MarkdownToken token={t} color={color} />
-            </Box>
-          )
-        }
-        return null
+        return (
+          <Box key={`block-${i}`} paddingLeft={contentIndent}>
+            <MarkdownToken token={t} color={color} width={nestedWidth} />
+          </Box>
+        )
       })}
-      {/* Add extra spacing for loose lists */}
-      {loose && <Text>{''}</Text>}
     </Box>
   )
 }
 
 // ── Blockquote ──
 
-const BLOCKQUOTE_BAR = '▎' // ▎ left one-quarter block
+const BLOCKQUOTE_BORDER = {
+  topLeft: '▎',
+  top: '─',
+  topRight: '─',
+  bottomLeft: '▎',
+  bottom: '─',
+  bottomRight: '─',
+  left: '▎',
+  right: '│',
+} as const
 
-const Blockquote = memo(function Blockquote({ token, color }: { token: Tokens.Blockquote; color?: string }) {
+const Blockquote = memo(function Blockquote({ token, color, width }: { token: Tokens.Blockquote; color?: string; width?: number }) {
+  const quoteWidth = width === undefined ? undefined : Math.max(1, width - 1)
+  const contentWidth = width === undefined ? undefined : Math.max(1, width - 3)
   return (
-    <Box flexDirection="column" marginY={0} paddingLeft={1}>
-      {token.tokens.map((t, i) => {
-        // Nested blockquote: render as recursive Blockquote (returns <Box>, can't nest in <Text>)
-        if (t.type === 'blockquote') {
-          return <Blockquote key={i} token={t as Tokens.Blockquote} color={color ?? theme.dimText} />
-        }
-        // Paragraph or other inline content: render bar + inline tokens
-        return (
-          <Box key={i}>
-            <Text color={theme.dimText} dimColor>{BLOCKQUOTE_BAR} </Text>
-            <Text color={color ?? theme.dimText} italic>
-              {t.type === 'paragraph' ? (
-                <InlineTokens tokens={(t as Tokens.Paragraph).tokens} color={color ?? theme.dimText} />
-              ) : (
-                ('raw' in t ? (t as { raw: string }).raw : '')
-              )}
-            </Text>
-          </Box>
-        )
-      })}
+    <Box
+      flexDirection="column"
+      borderStyle={BLOCKQUOTE_BORDER}
+      borderColor={theme.dimText}
+      borderTop={false}
+      borderRight={false}
+      borderBottom={false}
+      paddingLeft={1}
+      marginLeft={1}
+      width={quoteWidth}
+    >
+      {token.tokens.map((t, i) => t.type === 'paragraph' ? (
+        <Text key={i} color={color ?? theme.dimText} italic>
+          <InlineTokens tokens={(t as Tokens.Paragraph).tokens} color={color ?? theme.dimText} />
+        </Text>
+      ) : (
+        <MarkdownToken key={i} token={t} color={color ?? theme.subtleText} width={contentWidth} />
+      ))}
     </Box>
   )
 })
@@ -576,7 +588,7 @@ const Table = memo(function Table({ token, color: cellColor, width }: { token: T
 
   if (useVerticalFormat) {
     return (
-      <Box marginY={1}>
+      <Box>
         <AnsiText>{renderVerticalFormat(token, terminalWidth, cellColor)}</AnsiText>
       </Box>
     )
@@ -599,7 +611,7 @@ const Table = memo(function Table({ token, color: cellColor, width }: { token: T
   const maxLineWidth = Math.max(...tableLines.map(line => stringWidth(line)))
   if (maxLineWidth > terminalWidth - SAFETY_MARGIN) {
     return (
-      <Box marginY={1}>
+      <Box>
         <AnsiText>{renderVerticalFormat(token, terminalWidth, cellColor)}</AnsiText>
       </Box>
     )
@@ -607,7 +619,7 @@ const Table = memo(function Table({ token, color: cellColor, width }: { token: T
 
   // Render as a single AnsiText block to prevent Ink from wrapping mid-row
   return (
-    <Box marginY={1}>
+    <Box>
       <AnsiText>{tableLines.join('\n')}</AnsiText>
     </Box>
   )
@@ -674,7 +686,7 @@ const InlineTokens = memo(function InlineTokens({ tokens, color }: { tokens: Tok
           case 'codespan':
             return (
               <Text key={i} color={theme.codeInline}>
-                {insertCjkBreaks((token as Tokens.Codespan).text)}
+                {(token as Tokens.Codespan).text}
               </Text>
             )
           case 'link': {
@@ -707,12 +719,12 @@ const InlineTokens = memo(function InlineTokens({ tokens, color }: { tokens: Tok
           case 'br':
             return <Text key={i}>{'\n'}</Text>
           case 'text':
-            return <Text key={i} color={color}>{insertCjkBreaks((token as Tokens.Text).text)}</Text>
+            return <Text key={i} color={color}>{normalizeSoftBreaks((token as Tokens.Text).text)}</Text>
           case 'escape':
-            return <Text key={i} color={color}>{insertCjkBreaks((token as Tokens.Escape).text)}</Text>
+            return <Text key={i} color={color}>{normalizeSoftBreaks((token as Tokens.Escape).text)}</Text>
           default:
             if ('raw' in token) {
-              return <Text key={i} color={color}>{(token as { raw: string }).raw}</Text>
+              return <Text key={i} color={color}>{normalizeSoftBreaks((token as { raw: string }).raw)}</Text>
             }
             return null
         }
@@ -720,6 +732,25 @@ const InlineTokens = memo(function InlineTokens({ tokens, color }: { tokens: Tok
     </>
   )
 })
+
+function normalizeSoftBreaks(text: string): string {
+  return text.replace(/[ \t]*\r?\n[ \t]*/g, (match, offset: number, source: string) => {
+    const before = source[offset - 1] ?? ''
+    const after = source[offset + match.length] ?? ''
+    return isCjkTypographyCharacter(before) || isCjkTypographyCharacter(after) ? '' : ' '
+  })
+}
+
+function isCjkTypographyCharacter(value: string): boolean {
+  if (!value) return false
+  const codePoint = value.codePointAt(0) ?? 0
+  return (codePoint >= 0x3400 && codePoint <= 0x4DBF)
+    || (codePoint >= 0x4E00 && codePoint <= 0x9FFF)
+    || (codePoint >= 0xF900 && codePoint <= 0xFAFF)
+    || (codePoint >= 0x20000 && codePoint <= 0x2FA1F)
+    || (codePoint >= 0x3000 && codePoint <= 0x303F)
+    || (codePoint >= 0xFF00 && codePoint <= 0xFFEF)
+}
 
 // ── Test-only exports ──
 

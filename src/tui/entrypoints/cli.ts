@@ -11,9 +11,13 @@ export interface TuiStartupOptions {
 }
 
 export interface TuiSessionStore {
-  create(): Promise<SessionMeta>
+  createDraft(): SessionMeta | Promise<SessionMeta>
   list(): Promise<SessionMeta[]>
   resolve(idOrPrefix: string): Promise<SessionMeta | undefined>
+}
+
+export function isResumableSession(session: SessionMeta): boolean {
+  return session.messageCount > 0
 }
 
 export const TUI_USAGE = 'Usage: myagent-tui [--otlp-endpoint <url>] [new|--continue|c|resume <id>|list]'
@@ -48,7 +52,7 @@ export async function resolveStartupSession(
 ): Promise<SessionMeta> {
   switch (command.kind) {
     case 'new':
-      return store.create()
+      return store.createDraft()
     case 'resume': {
       const resolved = await store.resolve(command.sessionId)
       if (!resolved) {
@@ -57,7 +61,7 @@ export async function resolveStartupSession(
       return resolved
     }
     case 'continue': {
-      const latest = (await store.list())[0]
+      const latest = (await store.list()).find(isResumableSession)
       if (!latest) {
         throw new Error('No sessions found to continue.')
       }

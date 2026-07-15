@@ -8,6 +8,7 @@ import type {
   CommandSubmitQueryOptions,
   CommandSubagentCleanupResult,
   CommandSubagentDetails,
+  CommandView,
   SetModelResult,
 } from '../../commands/types.js'
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
@@ -26,6 +27,7 @@ interface UseCommandsOptions {
   pricing?: ModelPricing
   usage: { lastRequest: TokenUsage | null; total: TokenUsage }
   addSystemMessage: (content: string) => void
+  openCommandView?: (view: CommandView) => void
   clearMessages: () => void | Promise<void>
   clearCachedSections?: () => void
   invalidateRecordsCache?: () => void
@@ -54,6 +56,7 @@ export function useCommands({
   pricing,
   usage,
   addSystemMessage,
+  openCommandView,
   clearMessages,
   clearCachedSections,
   invalidateRecordsCache,
@@ -96,6 +99,8 @@ export function useCommands({
   usageRef.current = usage
   const addSystemMessageRef = useRef(addSystemMessage)
   addSystemMessageRef.current = addSystemMessage
+  const openCommandViewRef = useRef(openCommandView)
+  openCommandViewRef.current = openCommandView
   const clearMessagesRef = useRef(clearMessages)
   clearMessagesRef.current = clearMessages
   const clearCachedSectionsRef = useRef(clearCachedSections)
@@ -159,6 +164,7 @@ export function useCommands({
         cwd: cwdRef.current,
         sessionId: sessionRef.current.id,
         writeLine: addSystemMessageRef.current,
+        openCommandView: openCommandViewRef.current,
         clearMessages: clearMessagesRef.current,
         clearCachedSections: clearCachedSectionsRef.current,
         invalidateRecordsCache: invalidateRecordsCacheRef.current,

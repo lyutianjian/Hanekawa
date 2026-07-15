@@ -117,6 +117,33 @@ test('CollapsedToolGroup aligns status row with assistant message gutter', () =>
   assert.doesNotMatch(frame, /^ /)
 })
 
+test('CollapsedToolGroup renders three input prefixes and expands every call', () => {
+  const toolCalls: Array<Extract<TUIDisplayItem, { kind: 'tool_call' }>> = ['one', 'two', 'three', 'four'].map((query, index) => ({
+    kind: 'tool_call',
+    id: `tool-${index}`,
+    toolUseId: `call-${index}`,
+    tool: 'WebSearch',
+    input: { query },
+    status: 'done',
+    result: 'No search results found.',
+    resultDisplay: { summary: 'No results found' },
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }))
+  const item: Extract<TUIDisplayItem, { kind: 'tool_group' }> = {
+    kind: 'tool_group',
+    id: 'tool-group-search',
+    toolCalls,
+    createdAt: '2026-05-31T00:00:00.000Z',
+  }
+
+  const collapsed = render(h(CollapsedToolGroup, { item, animationsEnabled: false })).lastFrame() ?? ''
+  assert.match(collapsed, /Web Search \(one, two, three, \.\.\.\)/)
+  assert.doesNotMatch(collapsed, /×4|4 calls/)
+
+  const expanded = render(h(CollapsedToolGroup, { item, expanded: true, animationsEnabled: false })).lastFrame() ?? ''
+  assert.match(expanded, /Web Search \(four\)/)
+})
+
 test('SubagentTaskBlock aligns tree row with assistant message gutter', () => {
   const item: Extract<TUIDisplayItem, { kind: 'subagent_task' }> = {
     kind: 'subagent_task',
@@ -700,14 +727,14 @@ test('ModelPickerDialog renders tier options and hints', () => {
 
   assert.match(frame, /Select model/)
   assert.match(frame, /1\. Fast/)
-  assert.match(frame, /fast-key \(openai: fast-id\)/)
+  assert.match(frame, /fast-key · openai: fast-id/)
   assert.match(frame, /2\. Balanced/)
-  assert.match(frame, /balanced-key \(anthropic: balanced-id\)/)
+  assert.match(frame, /balanced-key · anthropic: balanced-id/)
   assert.match(frame, /default/)
   assert.match(frame, /current/)
   assert.match(frame, /3\. Powerful/)
-  assert.match(frame, /Enter to set as default/)
-  assert.match(frame, /s to use this session only/)
+  assert.match(frame, /Enter to set default/)
+  assert.match(frame, /S to use for this session/)
 })
 
 test('ModelPickerDialog resolves Enter as default and s as session-only', async () => {
@@ -899,7 +926,7 @@ test('RestoreMode renders checkpoint list with code diff summaries', () => {
   assert.match(frame, /3 files changed\s+\+89\s+-1/)
   assert.match(frame, /older prompt/)
   assert.match(frame, /No code changes/)
-  assert.match(frame, /> \(current\)/)
+  assert.match(frame, /❯ \(current\)/)
   assert.ok(frame.indexOf('older prompt') < frame.indexOf('newer prompt'))
   assert.ok(frame.indexOf('newer prompt') < frame.indexOf('(current)'))
 })

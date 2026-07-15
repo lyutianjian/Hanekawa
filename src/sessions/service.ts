@@ -54,6 +54,14 @@ interface SessionIndex {
   sessions: SessionMeta[]
 }
 
+interface DraftSessionState {
+  meta: SessionMeta
+  records: SessionRecord[]
+  metrics: SessionMetricInput[]
+}
+
+const EMPTY_SESSION_CLEANUP_GRACE_MS = 10 * 60 * 1000
+
 interface RunningCacheSummary {
   totalTurns: number
   totalInputTokens: number
@@ -114,6 +122,7 @@ export class SessionStore {
   private static indexLocks = new Map<string, Promise<void>>()
   private static jsonlLocks = new Map<string, Promise<void>>()
   private readonly cacheSummaries = new Map<string, RunningCacheSummary>()
+  private readonly drafts = new Map<string, DraftSessionState>()
   private readonly otlpExporter?: OtlpMetricExporter
   private sessionsDir: string
 
@@ -126,22 +135,26 @@ export class SessionStore {
 
   async init(): Promise<void> {
     await mkdir(this.sessionsDir, { recursive: true })
+    await this.cleanupStaleEmptySessions()
   }
 
   async create(title?: string): Promise<SessionMeta> {
-    const now = new Date().toISOString()
-    const id = randomUUID()
-    const meta: SessionMeta = {
-      id,
-      shortId: id.slice(0, 12),
-      createdAt: now,
-      updatedAt: now,
-      title,
-      messageCount: 0,
-    }
+    const meta = this.createMeta(title)
+    const { id } = meta
     await writeFile(this.sessionJsonlPath(id), '', { flag: 'a' })
     await this.upsertIndex(meta)
     return meta
+  }
+
+  createDraft(title?: string): SessionMeta {
+    const meta = this.createMeta(title)
+    this.drafts.set(meta.id, { meta, records: [], metrics: [] })
+    return meta
+  }
+
+  discardDraft(sessionIdOrPrefix: string): void {
+    const draft = this.resolveDraft(sessionIdOrPrefix)
+    if (draft) this.drafts.delete(draft.meta.id)
   }
 
   async list(): Promise<SessionMeta[]> {
@@ -150,6 +163,8 @@ export class SessionStore {
   }
 
   async resolve(idOrPrefix: string): Promise<SessionMeta | undefined> {
+    const draft = this.resolveDraft(idOrPrefix)
+    if (draft) return draft.meta
     const sessions = await this.list()
     const exact = sessions.find((session) => session.id === idOrPrefix || session.shortId === idOrPrefix)
     if (exact) return exact
@@ -169,6 +184,8 @@ export class SessionStore {
 
   async loadRecordsWithDiagnostics(sessionIdOrPrefix: string): Promise<LoadRecordsResult> {
     const diagnostics: SessionDiagnostic[] = []
+    const draft = this.resolveDraft(sessionIdOrPrefix)
+    if (draft) return { records: [...draft.records], diagnostics }
     const session = await this.resolve(sessionIdOrPrefix)
     if (!session) {
       return {
@@ -241,6 +258,13 @@ export class SessionStore {
     if (!session) throw new Error(`Unknown session: ${sessionIdOrPrefix}`)
 
     await this.withJsonlLock(session.id, async () => {
+      const draft = this.drafts.get(session.id)
+      if (draft) {
+        draft.records.push(record)
+        draft.meta = this.deriveMetaAfterAppend(draft.meta, record, new Date().toISOString())
+        if (record.type === 'message') await this.materializeDraft(draft)
+        return
+      }
       // Append to JSONL file (atomic append, no full read-modify-write)
       const jsonlPath = this.sessionJsonlPath(session.id)
       const line = JSON.stringify(record) + '\n'
@@ -300,6 +324,14 @@ export class SessionStore {
     const session = await this.resolve(sessionIdOrPrefix)
     if (!session) throw new Error(`Unknown session: ${sessionIdOrPrefix}`)
 
+    const draft = this.drafts.get(session.id)
+    if (draft) {
+      const index = draft.records.findIndex((record) => record.id === recordId)
+      const current = draft.records[index]
+      if (index >= 0 && current) draft.records[index] = update(current)
+      return
+    }
+
     // Lock the entire read-modify-write cycle to prevent concurrent overwrites.
     await this.withJsonlLock(session.id, async () => {
       const jsonlPath = this.sessionJsonlPath(session.id)
@@ -335,6 +367,18 @@ export class SessionStore {
     const session = await this.resolve(sessionIdOrPrefix)
     if (!session) throw new Error(`Unknown session: ${sessionIdOrPrefix}`)
 
+    const draft = this.drafts.get(session.id)
+    if (draft) {
+      draft.records = [...records]
+      const metaBase: Partial<SessionMeta> = { ...draft.meta }
+      delete metaBase.title
+      draft.meta = this.deriveMetaFromRecords(session.id, draft.records, metaBase)
+      if (draft.records.some((record) => record.type === 'message')) {
+        await this.withJsonlLock(session.id, () => this.materializeDraft(draft))
+      }
+      return
+    }
+
     await this.withJsonlLock(session.id, async () => {
       const jsonlPath = this.sessionJsonlPath(session.id)
       const nextContent = records.map((record) => JSON.stringify(record)).join('\n') + (records.length > 0 ? '\n' : '')
@@ -366,6 +410,11 @@ export class SessionStore {
 
   async appendMetric(sessionIdOrPrefix: string, metric: SessionMetricInput): Promise<void> {
     try {
+      const draft = this.resolveDraft(sessionIdOrPrefix)
+      if (draft) {
+        draft.metrics.push(metric)
+        return
+      }
       const session = await this.resolve(sessionIdOrPrefix)
       const sessionId = session?.id ?? sessionIdOrPrefix
       const record: SessionMetric = {
@@ -393,6 +442,7 @@ export class SessionStore {
   }
 
   async loadMetricsSummary(sessionIdOrPrefix: string): Promise<SessionMetricsSummary | null> {
+    if (this.resolveDraft(sessionIdOrPrefix)) return null
     const session = await this.resolve(sessionIdOrPrefix)
     const sessionId = session?.id ?? sessionIdOrPrefix
     const cached = this.cacheSummaries.get(sessionId)
@@ -459,6 +509,11 @@ export class SessionStore {
   }
 
   async delete(sessionIdOrPrefix: string): Promise<void> {
+    const draft = this.resolveDraft(sessionIdOrPrefix)
+    if (draft) {
+      this.drafts.delete(draft.meta.id)
+      return
+    }
     const session = await this.resolve(sessionIdOrPrefix)
     if (!session) return
     await rm(this.sessionPath(session.id), { force: true })
@@ -487,6 +542,11 @@ export class SessionStore {
     update: (current: SessionMeta) => SessionMeta,
     fallback?: SessionMeta,
   ): Promise<void> {
+    const draft = this.drafts.get(sessionId)
+    if (draft) {
+      draft.meta = update(draft.meta)
+      return
+    }
     await this.withIndexLock(async () => {
       const index = await this.readIndexUnlocked()
       const current = index.sessions.find((item) => item.id === sessionId) ?? fallback ?? this.defaultMeta(sessionId)
@@ -588,6 +648,8 @@ export class SessionStore {
    */
   async getCheckpointMappings(sessionId: string): Promise<CheckpointMapping[]> {
     try {
+      const draft = this.resolveDraft(sessionId)
+      if (draft) return draft.meta.checkpoints ?? []
       const index = await this.readIndex()
       const session = index.sessions.find((item) => item.id === sessionId || item.shortId === sessionId)
       if (session?.checkpoints && session.checkpoints.length > 0) return session.checkpoints
@@ -624,6 +686,93 @@ export class SessionStore {
       checkpoints: [...(current.checkpoints ?? []), mapping],
       updatedAt: new Date().toISOString(),
     }), base)
+  }
+
+  private createMeta(title?: string): SessionMeta {
+    const now = new Date().toISOString()
+    const id = randomUUID()
+    return {
+      id,
+      shortId: id.slice(0, 12),
+      createdAt: now,
+      updatedAt: now,
+      title,
+      messageCount: 0,
+    }
+  }
+
+  private resolveDraft(idOrPrefix: string): DraftSessionState | undefined {
+    const exact = this.drafts.get(idOrPrefix)
+      ?? [...this.drafts.values()].find((draft) => draft.meta.shortId === idOrPrefix)
+    if (exact) return exact
+    const partial = [...this.drafts.values()].filter((draft) =>
+      draft.meta.id.startsWith(idOrPrefix) || draft.meta.shortId.startsWith(idOrPrefix),
+    )
+    return partial.length === 1 ? partial[0] : undefined
+  }
+
+  private async materializeDraft(draft: DraftSessionState): Promise<void> {
+    if (!this.drafts.has(draft.meta.id)) return
+    const content = draft.records.map((record) => JSON.stringify(record)).join('\n')
+      + (draft.records.length > 0 ? '\n' : '')
+    await writeFileAtomic(this.sessionJsonlPath(draft.meta.id), content)
+    await this.upsertIndex(draft.meta)
+    const metrics = [...draft.metrics]
+    this.drafts.delete(draft.meta.id)
+    for (const metric of metrics) await this.appendMetric(draft.meta.id, metric)
+  }
+
+  private async cleanupStaleEmptySessions(now = Date.now()): Promise<void> {
+    await this.withIndexLock(async () => {
+      const index = await this.readIndexUnlocked()
+      const retained: SessionMeta[] = []
+      let changed = false
+
+      for (const session of index.sessions) {
+        if (session.messageCount > 0) {
+          retained.push(session)
+          continue
+        }
+
+        const paths = [
+          this.sessionPath(session.id),
+          this.sessionJsonlPath(session.id),
+          this.sessionMetricsPath(session.id),
+        ]
+        const mtimes = await Promise.all(paths.map(async (filePath) => {
+          try {
+            return (await stat(filePath)).mtimeMs
+          } catch {
+            return 0
+          }
+        }))
+        const indexedTime = Date.parse(session.updatedAt)
+        const latestActivity = Math.max(Number.isFinite(indexedTime) ? indexedTime : now, ...mtimes)
+        if (now - latestActivity < EMPTY_SESSION_CLEANUP_GRACE_MS) {
+          retained.push(session)
+          continue
+        }
+
+        let records: SessionRecord[] = []
+        const jsonlPath = this.sessionJsonlPath(session.id)
+        if (existsSync(jsonlPath)) {
+          records = parseJsonLines<SessionRecord>(readFileSync(jsonlPath, 'utf-8'))
+        } else {
+          records = (await this.readLegacySession(session.id))?.records ?? []
+        }
+        if (records.some((record) => record.type === 'message')) {
+          retained.push(this.deriveMetaFromRecords(session.id, records, session))
+          changed = true
+          continue
+        }
+
+        await Promise.all(paths.map((filePath) => rm(filePath, { force: true })))
+        this.cacheSummaries.delete(session.id)
+        changed = true
+      }
+
+      if (changed) await writeJsonFile(this.indexPath(), { sessions: retained })
+    })
   }
 
   private async readIndex(): Promise<SessionIndex> {
@@ -704,8 +853,9 @@ export class SessionStore {
 
   private async recoverIndex(index: SessionIndex): Promise<{ index: SessionIndex; changed: boolean }> {
     await mkdir(this.sessionsDir, { recursive: true })
-    const sessionsById = new Map(index.sessions.map((session) => [session.id, session]))
-    let changed = false
+    const validIndexedSessions = index.sessions.filter((session) => !session.id.endsWith('.metrics'))
+    const sessionsById = new Map(validIndexedSessions.map((session) => [session.id, session]))
+    let changed = validIndexedSessions.length !== index.sessions.length
 
     let entries: string[] = []
     try {
@@ -715,7 +865,7 @@ export class SessionStore {
     }
 
     for (const entry of entries) {
-      if (!entry.endsWith('.jsonl')) continue
+      if (!entry.endsWith('.jsonl') || entry.endsWith('.metrics.jsonl')) continue
       const id = entry.slice(0, -'.jsonl'.length)
       if (sessionsById.has(id)) continue
       const filePath = this.sessionJsonlPath(id)

@@ -30,8 +30,6 @@ export interface PreparedRecordsResult {
 export interface RequestPrepOptions {
   repairToolPairing?: boolean
   recentAssistantThinkingTurnsToKeep?: number
-  model?: string
-  modelKey?: string
 }
 
 export function requestTokenCountFromUsage(usage?: TokenUsage): number | undefined {
@@ -62,7 +60,7 @@ export function prepareRecordsForRequestWithDiagnostics(
     stripped,
     options.recentAssistantThinkingTurnsToKeep,
   )
-  const toolResultLimit = getToolResultTokenLimit(contextManagement, options.model, options.modelKey)
+  const toolResultLimit = getToolResultTokenLimit(contextManagement)
   const compactedToolResultIds = selectToolResultsToCompact(thinkingStripped, toolResultLimit, now)
 
   const budgetCompacted = thinkingStripped.map((record) => {
@@ -130,11 +128,9 @@ interface ToolResultCandidate {
 
 function getToolResultTokenLimit(
   contextManagement: Partial<ContextManagementConfig>,
-  model?: string,
-  modelKey?: string,
 ): number {
   return Math.min(
-    Math.floor(getEffectiveContextWindowSize(contextManagement, model, modelKey) * TOOL_RESULTS_CONTEXT_RATIO),
+    Math.floor(getEffectiveContextWindowSize(contextManagement) * TOOL_RESULTS_CONTEXT_RATIO),
     TOOL_RESULTS_TOKEN_BUDGET_CAP,
   )
 }

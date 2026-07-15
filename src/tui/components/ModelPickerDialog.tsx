@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Box, Text, useInput } from '../ink.js'
 import { theme } from '../theme.js'
 import type { Tier } from '../../config/routing.js'
+import { CommandListItem, CommandPane } from './CommandUI.js'
 
 export type ModelTierChoice = Tier
 export type ModelPickerAction = 'set-default' | 'session-only'
@@ -79,41 +80,36 @@ export function ModelPickerDialog({ options, onResolve }: ModelPickerDialogProps
   })
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.brand} paddingX={1} paddingY={1} marginTop={1}>
-      <Text bold color={theme.brand}>Select model</Text>
-      <Text color={theme.dimText}>
-        Switch between configured model tiers. Enter sets the default for new sessions; s uses this session only.
-      </Text>
-
-      <Box flexDirection="column" marginTop={1}>
+    <CommandPane
+      title="Select model"
+      subtitle="Choose the model tier for this session or make it the default."
+      hints={[
+        { key: '↑/↓', action: 'navigate' },
+        { key: 'Enter', action: 'set default' },
+        { key: 'S', action: 'use for this session' },
+        { key: 'Esc', action: 'close' },
+      ]}
+    >
+      <Box flexDirection="column">
         {options.map((option, index) => {
           const selected = index === selectedIndex
           const disabled = option.disabledReason !== undefined
-          const color = disabled ? theme.dimText : selected ? theme.brand : theme.assistantText
           return (
-            <Box key={option.tier} flexDirection="column">
-              <Text color={color} bold={selected && !disabled}>
-                {selected ? '> ' : '  '}
-                {index + 1}. {option.label}
-                {option.isDefault ? <Text color={theme.success}> default</Text> : null}
-                {option.isCurrent ? <Text color={theme.toolName}> current</Text> : null}
-              </Text>
-              <Box paddingLeft={5}>
-                <Text color={disabled ? theme.dimText : theme.dimText}>
-                  {disabled
-                    ? option.disabledReason
-                    : `${option.modelKey} (${option.providerName}: ${option.modelId})`}
-                </Text>
-              </Box>
-            </Box>
+            <CommandListItem
+              key={option.tier}
+              focused={selected}
+              selected={option.isCurrent}
+              disabled={disabled}
+              description={disabled ? option.disabledReason : `${option.modelKey} · ${option.providerName}: ${option.modelId}`}
+            >
+              {index + 1}. {option.label}
+              {option.isDefault ? <Text color={theme.success}>  default</Text> : null}
+              {option.isCurrent ? <Text color={theme.toolName}>  current</Text> : null}
+            </CommandListItem>
           )
         })}
       </Box>
-
-      <Box marginTop={1}>
-        <Text color={theme.dimText}>Enter to set as default · s to use this session only · Esc to cancel</Text>
-      </Box>
-    </Box>
+    </CommandPane>
   )
 }
 

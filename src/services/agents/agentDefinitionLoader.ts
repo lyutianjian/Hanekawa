@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
-import YAML from 'yaml'
+import { parseYamlFrontmatter } from '../../utils/frontmatter.js'
 import {
   AGENT_MAX_RESULT_SIZE_CHARS,
   ALL_AGENT_DISALLOWED_TOOLS,
@@ -93,12 +93,12 @@ export class AgentDefinitionLoader {
   }
 
   private parse(raw: string): BaseAgentDefinition {
-    const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
+    const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/)
     if (!match) {
       throw new Error('Agent file must include YAML frontmatter (---\\n...\\n---)')
     }
 
-    const frontmatter = YAML.parse(match[1]) as AgentFrontmatter
+    const frontmatter = parseYamlFrontmatter(match[1]) as AgentFrontmatter
     if (typeof frontmatter.name !== 'string' || frontmatter.name.trim() === '') {
       throw new Error('Agent frontmatter must include non-empty string "name" field')
     }

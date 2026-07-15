@@ -23,6 +23,7 @@ export type ThinkingConfig =
 export interface ModelConfig {
   provider?: string
   model: string
+  contextWindow?: number
   endpoint?: string
   apiKey?: string
   baseUrl?: string

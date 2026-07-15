@@ -30,13 +30,34 @@ test('parseTuiStartupCommand supports OTLP endpoint option', () => {
   })
 })
 
+test('resolveStartupSession creates an in-memory draft for a new TUI session', async () => {
+  const draft = meta('draft-session', '2026-05-24T00:00:00.000Z')
+  let called = false
+  const session = await resolveStartupSession({ kind: 'new' }, {
+    createDraft() {
+      called = true
+      return draft
+    },
+    async list() {
+      throw new Error('list should not be called')
+    },
+    async resolve() {
+      throw new Error('resolve should not be called')
+    },
+  })
+  assert.equal(called, true)
+  assert.equal(session.id, draft.id)
+})
+
 test('resolveStartupSession continues the latest listed session', async () => {
   const older = meta('older-session', '2026-05-23T00:00:00.000Z')
   const newer = meta('newer-session', '2026-05-24T00:00:00.000Z')
+  older.messageCount = 1
+  newer.messageCount = 1
 
   const session = await resolveStartupSession({ kind: 'continue' }, {
-    async create() {
-      throw new Error('create should not be called')
+    createDraft() {
+      throw new Error('createDraft should not be called')
     },
     async list() {
       return [newer, older]
@@ -52,8 +73,8 @@ test('resolveStartupSession continues the latest listed session', async () => {
 test('resolveStartupSession reports when there is no session to continue', async () => {
   await assert.rejects(
     () => resolveStartupSession({ kind: 'continue' }, {
-      async create() {
-        throw new Error('create should not be called')
+      createDraft() {
+        throw new Error('createDraft should not be called')
       },
       async list() {
         return []

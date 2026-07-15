@@ -251,23 +251,23 @@ text.
 
 Dynamic ToolSearch is enabled only for native Anthropic providers that support `tool_reference`, using the `advanced-tool-use-2025-11-20` beta header. OpenAI and Anthropic-compatible proxy endpoints fall back to complete inline tool schemas instead of dynamic loading.
 
-## 1M Context Model Keys
+## Model Context Windows
 
-Model names in the `models` map are Hanekawa-side keys. Add a `[1m]` suffix to
-that key when the configured provider model should be treated as having a
-1,000,000-token context window:
+Set `contextWindow` explicitly on a model when its provider supports a context
+window other than the default 200,000 tokens:
 
 ```json
 {
   "models": {
-    "mimo-v2.5[1m]": {
+    "mimo-v2.5": {
       "endpoint": "xiaomi",
-      "model": "mimo-v2.5"
+      "model": "mimo-v2.5",
+      "contextWindow": 1000000
     }
   }
 }
 ```
 
-The suffix is not sent to the API; only the `model` field is used for provider
-requests. Hanekawa uses the key suffix for context budgeting, history selection,
-compaction thresholds, and status display.
+When omitted, Hanekawa uses 200,000. The configured value controls context
+budgeting, history selection, compaction thresholds, ToolSearch thresholds, and
+status display; Hanekawa does not infer it from the model name.

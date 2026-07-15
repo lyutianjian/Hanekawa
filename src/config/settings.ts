@@ -324,6 +324,9 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
       if (typeof model.model !== 'string' || model.model.trim() === '') {
         errors.push(`models.${name}.model must be a non-empty string`)
       }
+      if (model.contextWindow !== undefined && (!Number.isInteger(model.contextWindow) || model.contextWindow < 1)) {
+        errors.push(`models.${name}.contextWindow must be a positive integer`)
+      }
     }
   }
 

@@ -1,5 +1,5 @@
 import type { ChatMessage, ModelContextItem, SessionRecord } from '../harness/types.js'
-import { getContextWindowFromModelKey, getModelCapability, MODEL_CONTEXT_WINDOW_DEFAULT } from './modelCapabilities.js'
+import { MODEL_CONTEXT_WINDOW_DEFAULT } from './modelCapabilities.js'
 
 export interface TokenCount {
   total: number
@@ -34,21 +34,15 @@ export const DEFAULT_CONTEXT_MANAGEMENT: ContextManagementConfig = {
 }
 
 /**
- * Returns the raw context window size for a model (no output token subtraction).
- * Used for ToolSearch auto-threshold calculations where the full window matters.
- * Model-key suffixes are agent-side capability markers and take precedence over
- * API model IDs. Unknown models fall back to config.
+ * Returns the configured raw context window size (no output token subtraction).
+ * Provider/model configuration is the sole source of model-specific limits;
+ * callers that do not provide one use the 200k default in the merged config.
  */
 export function getContextWindowForModel(
   config: Partial<ContextManagementConfig> = {},
-  model?: string,
-  modelKey?: string,
 ): number {
   const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
-  const keyContextWindow = getContextWindowFromModelKey(modelKey)
-  if (keyContextWindow !== undefined) return keyContextWindow
-  const capability = model ? getModelCapability(model) : undefined
-  return capability?.contextWindow ?? merged.contextWindow
+  return merged.contextWindow
 }
 
 /**
@@ -57,21 +51,17 @@ export function getContextWindowForModel(
  */
 export function getEffectiveContextWindowSize(
   config: Partial<ContextManagementConfig> = {},
-  model?: string,
-  modelKey?: string,
 ): number {
   const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
-  const contextWindow = getContextWindowForModel(config, model, modelKey)
+  const contextWindow = getContextWindowForModel(config)
   return Math.max(0, contextWindow - merged.summaryOutputTokens)
 }
 
 export function getAutoCompactThreshold(
   config: Partial<ContextManagementConfig> = {},
-  model?: string,
-  modelKey?: string,
 ): number {
   const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
-  const effectiveContextWindow = getEffectiveContextWindowSize(merged, model, modelKey)
+  const effectiveContextWindow = getEffectiveContextWindowSize(merged)
   const ratioThreshold = Math.floor(effectiveContextWindow * merged.autoCompactThresholdRatio)
   const bufferThreshold = effectiveContextWindow - merged.autoCompactBufferTokens
   return Math.max(0, Math.min(ratioThreshold, bufferThreshold))
@@ -79,20 +69,16 @@ export function getAutoCompactThreshold(
 
 export function getMicroCompactThreshold(
   config: Partial<ContextManagementConfig> = {},
-  model?: string,
-  modelKey?: string,
 ): number {
   const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
-  return Math.max(0, Math.floor(getEffectiveContextWindowSize(merged, model, modelKey) * merged.microCompactThresholdRatio))
+  return Math.max(0, Math.floor(getEffectiveContextWindowSize(merged) * merged.microCompactThresholdRatio))
 }
 
 export function getManualCompactThreshold(
   config: Partial<ContextManagementConfig> = {},
-  model?: string,
-  modelKey?: string,
 ): number {
   const merged = { ...DEFAULT_CONTEXT_MANAGEMENT, ...config }
-  return Math.max(0, getEffectiveContextWindowSize(merged, model, modelKey) - merged.manualCompactBufferTokens)
+  return Math.max(0, getEffectiveContextWindowSize(merged) - merged.manualCompactBufferTokens)
 }
 
 export function countTextTokens(text: string): number {
@@ -121,21 +107,17 @@ export function countMessagesTokens(messages: ChatMessage[]): TokenCount {
 export function getAvailableContextTokens(
   config: Partial<ContextManagementConfig> = {},
   system?: string,
-  model?: string,
-  modelKey?: string,
 ): number {
   const systemTokens = system ? countTextTokens(system) : 0
-  return getEffectiveContextWindowSize(config, model, modelKey) - systemTokens - 1000
+  return getEffectiveContextWindowSize(config) - systemTokens - 1000
 }
 
 export function selectMessagesForContext(
   messages: ChatMessage[],
   config: Partial<ContextManagementConfig> = {},
   system?: string,
-  model?: string,
-  modelKey?: string,
 ): ChatMessage[] {
-  const availableTokens = getAvailableContextTokens(config, system, model, modelKey)
+  const availableTokens = getAvailableContextTokens(config, system)
 
   if (availableTokens <= 0) {
     return []
@@ -160,10 +142,8 @@ export function selectContextItemsForContext(
   items: ModelContextItem[],
   config: Partial<ContextManagementConfig> = {},
   system?: string,
-  model?: string,
-  modelKey?: string,
 ): ModelContextItem[] {
-  const availableTokens = getAvailableContextTokens(config, system, model, modelKey)
+  const availableTokens = getAvailableContextTokens(config, system)
 
   if (availableTokens <= 0) {
     const lastUserItem = [...items].reverse().find(

@@ -299,10 +299,10 @@ index 5b4a9d7..7e73d5b 100644
          if (removeNode.internal_static &&
              currentRootNode?.staticNode === removeNode) {
 diff --git a/node_modules/ink/build/wrap-text.js b/node_modules/ink/build/wrap-text.js
-index 51f696c..25be9a1 100644
+index 51f696c..8252655 100644
 --- a/node_modules/ink/build/wrap-text.js
 +++ b/node_modules/ink/build/wrap-text.js
-@@ -1,5 +1,32 @@
+@@ -1,5 +1,72 @@
  import wrapAnsi from 'wrap-ansi';
  import cliTruncate from 'cli-truncate';
 +
@@ -315,16 +315,56 @@ index 51f696c..25be9a1 100644
 +        || (cp >= 0xF900 && cp <= 0xFAFF);   // CJK Compatibility Ideographs
 +}
 +
++const cannotStartLine = new Set(Array.from('，。！？、；：）】」』〉》〕］｝”’…—,.!?;:)]}'));
++const cannotEndLine = new Set(Array.from('（【「『〈《〔［｛“‘([{'));
++
 +function insertCjkBreakOpportunities(text) {
 +    const ZWS = '​';
 +    const chars = Array.from(text);
 +    let result = '';
 +    for (let i = 0; i < chars.length; i++) {
++        // ANSI control sequences are zero-width, indivisible tokens. In
++        // particular, never insert a break between ESC and "[": doing so
++        // corrupts SGR colors and makes their numeric parameters visible to
++        // wrap-ansi's width calculation.
++        if (chars[i] === '\x1b') {
++            let end = i;
++            if (chars[i + 1] === '[') {
++                end = i + 2;
++                while (end < chars.length) {
++                    const code = chars[end].codePointAt(0);
++                    if (code >= 0x40 && code <= 0x7E) break;
++                    end++;
++                }
++            }
++            else if (chars[i + 1] === ']') {
++                end = i + 2;
++                while (end < chars.length) {
++                    if (chars[end] === '\x07') break;
++                    if (chars[end] === '\x1b' && chars[end + 1] === '\\') {
++                        end++;
++                        break;
++                    }
++                    end++;
++                }
++            }
++            else if (i + 1 < chars.length) {
++                end = i + 1;
++            }
++            result += chars.slice(i, Math.min(end + 1, chars.length)).join('');
++            i = end;
++            continue;
++        }
 +        result += chars[i];
 +        if (i + 1 < chars.length) {
++            const current = chars[i];
++            const next = chars[i + 1];
 +            const cp = chars[i].codePointAt(0);
 +            const nextCp = chars[i + 1].codePointAt(0);
-+            if (isCjkCodePoint(cp) || isCjkCodePoint(nextCp)) {
++            const isPunctuationBoundary = cannotStartLine.has(current) || cannotEndLine.has(next);
++            if ((isCjkCodePoint(cp) || isCjkCodePoint(nextCp) || isPunctuationBoundary)
++                && !cannotEndLine.has(current)
++                && !cannotStartLine.has(next)) {
 +                result += ZWS;
 +            }
 +        }
@@ -335,7 +375,7 @@ index 51f696c..25be9a1 100644
  const cache = {};
  const wrapText = (text, maxWidth, wrapType) => {
      const cacheKey = text + String(maxWidth) + String(wrapType);
-@@ -9,17 +36,17 @@ const wrapText = (text, maxWidth, wrapType) => {
+@@ -9,17 +76,17 @@ const wrapText = (text, maxWidth, wrapType) => {
      }
      let wrappedText = text;
      if (wrapType === 'wrap') {

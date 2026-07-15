@@ -10,8 +10,10 @@ import { planCommand } from '../src/commands/plan.js'
 import { providerCommand } from '../src/commands/provider.js'
 import { tasksCommand } from '../src/commands/tasks.js'
 import { resumeCommand } from '../src/commands/resume.js'
+import { helpCommand } from '../src/commands/help.js'
+import { sessionCommand } from '../src/commands/session.js'
 import { getCommand, registerBuiltinCommands } from '../src/commands/index.js'
-import type { CommandContext } from '../src/commands/types.js'
+import type { CommandContext, CommandView } from '../src/commands/types.js'
 
 function createContext(overrides: Partial<CommandContext> = {}): CommandContext {
   return {
@@ -539,6 +541,48 @@ test('/provider reports unavailable outside TUI panel host', async () => {
   }))
 
   assert.match(output, /unavailable/)
+})
+
+test('/help opens a structured list view when hosted by the TUI', async () => {
+  registerBuiltinCommands()
+  let view: CommandView | undefined
+  await helpCommand.run('', createContext({
+    openCommandView: (next) => { view = next },
+    writeLine: () => assert.fail('structured help should not write into chat'),
+  }))
+
+  assert.equal(view?.kind, 'list')
+  assert.equal(view?.title, 'Help')
+  assert.ok(view?.kind === 'list' && view.items.some((item) => item.label === '/help'))
+})
+
+test('/session opens a structured information view when hosted by the TUI', async () => {
+  let view: CommandView | undefined
+  await sessionCommand.run('', createContext({
+    openCommandView: (next) => { view = next },
+    writeLine: () => assert.fail('structured session should not write into chat'),
+  }))
+
+  assert.equal(view?.kind, 'info')
+  assert.ok(view?.kind === 'info' && view.sections[0]?.rows.some((row) => row.value === 'session-1'))
+})
+
+test('/cost opens a structured information view without losing cache metrics', async () => {
+  let view: CommandView | undefined
+  await costCommand.run('', createContext({
+    openCommandView: (next) => { view = next },
+    getUsage: () => ({ cacheReadInputTokens: 100, inputTokens: 200, outputTokens: 50 }),
+    getSessionMetricsSummary: async () => ({
+      totalCacheHitRate: 0.5,
+      totalTurns: 2,
+      firstBreakTurnCount: null,
+      cacheBreakCount: 0,
+      averageCompactIntervalTurns: null,
+    }),
+  }))
+
+  assert.equal(view?.kind, 'info')
+  assert.ok(view?.kind === 'info' && view.sections.some((section) => section.title === 'Prompt cache'))
 })
 
 test('/resume opens the in-session picker only without arguments', async () => {

@@ -54,6 +54,51 @@ test('SkillsService.list() returns skills from directory', async () => {
   }
 })
 
+test('SkillsService.list() parses CRLF frontmatter', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skills-'))
+  try {
+    const skillDir = path.join(dir, '.myagent', 'skills', 'windows-skill')
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      '---\r\nname: windows-skill\r\ndescription: Uses Windows line endings\r\n---\r\n\r\n# Windows skill\r\n\r\nRun on Windows.',
+      'utf8',
+    )
+
+    const skills = await new SkillsService(dir).list()
+
+    assert.equal(skills.length, 1)
+    assert.equal(skills[0].name, 'windows-skill')
+    assert.equal(skills[0].description, 'Uses Windows line endings')
+    assert.equal(skills[0].content, '# Windows skill\r\n\r\nRun on Windows.')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SkillsService.list() repairs problematic top-level description scalars', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skills-'))
+  try {
+    const skillDir = path.join(dir, '.myagent', 'skills', 'firecrawl-build')
+    await mkdir(skillDir, { recursive: true })
+    const description = 'Integrate application data: web search, "scrape", and `interact`.'
+    await writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---\nname: firecrawl-build\ndescription: ${description}\n---\n\n# Firecrawl build\n\nBuild with web data.`,
+      'utf8',
+    )
+
+    const skills = await new SkillsService(dir).list()
+
+    assert.equal(skills.length, 1)
+    assert.equal(skills[0].name, 'firecrawl-build')
+    assert.equal(skills[0].description, description)
+    assert.equal(skills[0].content, '# Firecrawl build\n\nBuild with web data.')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('SkillsService.list() parses conditional activation frontmatter', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skills-'))
   try {
@@ -221,7 +266,7 @@ test('SkillsService throws on invalid YAML frontmatter', async () => {
     await mkdir(path.join(skillsDir, 'broken'), { recursive: true })
     await writeFile(
       path.join(skillsDir, 'broken', 'SKILL.md'),
-      '---\ninvalid: yaml: syntax:\n---\n\nContent',
+      '---\nname: broken\ndescription: Broken\nmetadata:\n  values: [one, two\n---\n\nContent',
       'utf8'
     )
 

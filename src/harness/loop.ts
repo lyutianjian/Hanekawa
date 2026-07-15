@@ -20,7 +20,7 @@ import { MemoryRecordStream } from './recordStream.js'
 import { mergeHooks, runLifecycleHooks, type Hooks, type LifecycleHookName } from './hooks.js'
 import { FallbackTriggeredError } from '../config/retry.js'
 import { getContextWindowForModel, getEffectiveContextWindowSize, type ContextManagementConfig } from '../prompts/budget.js'
-import { ESCALATED_MAX_TOKENS } from '../prompts/modelCapabilities.js'
+import { ESCALATED_MAX_TOKENS, MODEL_CONTEXT_WINDOW_DEFAULT } from '../prompts/modelCapabilities.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
@@ -39,6 +39,7 @@ export interface ActiveModelRuntime {
   provider: ModelProvider
   model: string
   modelKey?: string
+  contextWindow?: number
   providerName?: string
   promptCacheRetention?: 'in_memory' | '24h'
 }
@@ -88,6 +89,7 @@ export interface AgentLoopOptions {
   provider: ModelProvider
   model: string
   modelKey?: string
+  contextWindow?: number
   tools: Tool[]
   contextBuilder: ContextBuilder
   toolRunner: ToolRunner
@@ -155,6 +157,7 @@ export class AgentLoop {
       provider: options.provider,
       model: options.model,
       modelKey: options.modelKey,
+      contextWindow: options.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
       providerName: options.provider.name,
       promptCacheRetention: options.promptCacheRetention,
     }
@@ -179,6 +182,7 @@ export class AgentLoop {
     return {
       model: visibleModel.model,
       modelKey: visibleModel.modelKey,
+      contextWindow: visibleModel.contextWindow,
       providerName: visibleModel.providerName,
       promptCacheRetention: visibleModel.promptCacheRetention,
     }
@@ -379,9 +383,7 @@ export class AgentLoop {
         const progressive = applyProgressiveCompaction({
           records: preparedRecords,
           system: this.options.system,
-          model: this.activeModel.model,
-          modelKey: this.activeModel.modelKey,
-          contextManagement: this.options.contextManagement,
+          contextManagement: this.activeContextManagement,
           lastResponseTokenCount,
           lastResponseRecordCount,
           lastResponseRecordId,
@@ -394,11 +396,10 @@ export class AgentLoop {
           records: recordsBeforeCompact,
           provider: this.activeModel.provider,
           model: this.activeModel.model,
-          modelKey: this.activeModel.modelKey,
           compactRuntime: this.options.compactModel,
           tools: this.currentTools,
           system: this.options.system,
-          contextManagement: this.options.contextManagement,
+          contextManagement: this.activeContextManagement,
           lastResponseTokenCount: useCachedTokenEstimate ? lastResponseTokenCount : undefined,
           lastResponseRecordCount: useCachedTokenEstimate ? lastResponseRecordCount : undefined,
           lastResponseRecordId: useCachedTokenEstimate ? lastResponseRecordId : undefined,
@@ -453,11 +454,7 @@ export class AgentLoop {
         this.activeModel.provider.supportsDynamicToolSearch?.(this.activeModel.model) ?? false
       const toolSearchState = resolveToolSearchState({
         tools: this.currentTools,
-        contextWindowSize: getContextWindowForModel(
-          this.options.contextManagement,
-          this.activeModel.model,
-          this.activeModel.modelKey,
-        ),
+        contextWindowSize: getContextWindowForModel(this.activeContextManagement),
         providerSupportsDynamicToolSearch,
       })
       const toolsForContext = toolSearchState.enabled
@@ -472,8 +469,7 @@ export class AgentLoop {
         projectContext: this.options.projectContext,
         criticalSystemReminder: this.options.criticalSystemReminder,
         skills: this.options.skills,
-        model: this.activeModel.model,
-        modelKey: this.activeModel.modelKey,
+        contextManagement: this.activeContextManagement,
         toolContext: this.options.toolContext,
         env,
         permissionMode: this.options.permissionMode?.(),
@@ -970,12 +966,10 @@ export class AgentLoop {
     const loaded = await this.loadRecordsOnce()
     const prepared = prepareRecordsForRequestWithDiagnostics(
       loaded.records,
-      this.options.contextManagement,
+      this.activeContextManagement,
       new Date(),
       {
         repairToolPairing: !this.recordsCacheHasCleanToolProtocol,
-        model: this.activeModel.model,
-        modelKey: this.activeModel.modelKey,
         ...(this.stripAllThinkingBlocksFromRequests ? { recentAssistantThinkingTurnsToKeep: 0 } : {}),
       },
     )
@@ -1323,6 +1317,13 @@ export class AgentLoop {
 
   private get activeModel(): ActiveModelRuntime {
     return this.activeRunOverrides?.model ?? this.modelState.current
+  }
+
+  private get activeContextManagement(): Partial<ContextManagementConfig> {
+    return {
+      ...this.options.contextManagement,
+      contextWindow: this.activeModel.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
+    }
   }
 
   private get currentTools(): Tool[] {

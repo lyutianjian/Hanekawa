@@ -11,6 +11,43 @@ export const costCommand: CommandDefinition = {
     }
     const summary = await context.getSessionMetricsSummary?.()
 
+    if (context.openCommandView) {
+      const sections = [{
+        title: 'Usage',
+        rows: [
+          { label: 'Cache read', value: usage.cacheReadInputTokens.toLocaleString() },
+          { label: 'Input tokens', value: usage.inputTokens.toLocaleString() },
+          { label: 'Output tokens', value: usage.outputTokens.toLocaleString() },
+          {
+            label: 'Total cost',
+            value: typeof usage.cost === 'number'
+              ? `${usage.currency ?? 'USD'} ${formatCost(usage.cost)}`
+              : 'Unavailable (missing pricing)',
+            tone: typeof usage.cost === 'number' ? 'normal' as const : 'warning' as const,
+          },
+        ],
+      }]
+      if (summary) {
+        sections.push({
+          title: 'Prompt cache',
+          rows: [
+            { label: 'Cache hit rate', value: formatPercent(summary.totalCacheHitRate) },
+            { label: 'Total turns', value: summary.totalTurns.toLocaleString() },
+            { label: 'First break turn', value: formatNullableInteger(summary.firstBreakTurnCount) },
+            { label: 'Cache breaks', value: summary.cacheBreakCount.toLocaleString() },
+            { label: 'Avg compact interval', value: formatTurns(summary.averageCompactIntervalTurns) },
+          ],
+        })
+      }
+      context.openCommandView({
+        kind: 'info',
+        title: 'Session usage',
+        subtitle: 'Token consumption, cost, and prompt-cache health',
+        sections,
+      })
+      return
+    }
+
     const lines = [
       'Session usage:',
       `  Cache read:    ${usage.cacheReadInputTokens.toLocaleString()}`,

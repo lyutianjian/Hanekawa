@@ -2,7 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createElement as h } from 'react'
 import { cleanup, render } from 'ink-testing-library'
+import stringWidth from 'string-width'
+import { AssistantMessage } from '../src/tui/components/AssistantMessage.js'
 import { Markdown } from '../src/tui/components/Markdown.js'
+import { parseMarkdown } from '../src/tui/markdown.js'
 
 // Cleanup after each test
 test.afterEach(() => cleanup())
@@ -95,4 +98,79 @@ test('Mixed: heading inside blockquote renders', () => {
   assert.match(frame, /bold/)
   assert.match(frame, /italic/)
   assert.match(frame, /code/)
+})
+
+test('CJK: punctuation and mixed inline Markdown render without synthetic spaces', () => {
+  const md = '代码**分析**、文件编辑、命令执行；路径 `C:\\repo\\Hanekawa-main`。'
+  const frame = render(h(Markdown, { content: md })).lastFrame() ?? ''
+
+  assert.match(frame, /代码分析、文件编辑、命令执行；路径 C:\\repo\\Hanekawa-main。/)
+  assert.doesNotMatch(frame, /、 |； |。 /)
+})
+
+test('AssistantMessage: reserves the terminal edge column for mixed CJK wrapping', () => {
+  const content = '我目前运行在 Windows 环境（PowerShell）下，位于 C:\\Users\\33731\\Documents\\code\\Hanekawa-main。我可以帮你进行代码分析、文件编辑、命令执行。'
+  const frame = render(h(AssistantMessage, { content })).lastFrame() ?? ''
+
+  for (const line of frame.split('\n')) {
+    assert.ok(stringWidth(line) <= 99, `line must reserve one column: ${line}`)
+  }
+})
+
+test('Paragraph: soft line breaks reflow while explicit hard breaks remain', () => {
+  const softFrame = render(h(Markdown, { content: 'alpha\nbeta', width: 40 })).lastFrame() ?? ''
+  assert.equal(softFrame, 'alpha beta')
+  cleanup()
+
+  const hardFrame = render(h(Markdown, { content: 'alpha  \nbeta', width: 40 })).lastFrame() ?? ''
+  assert.equal(hardFrame, 'alpha\nbeta')
+})
+
+test('Paragraph: CJK soft line breaks do not introduce synthetic spaces', () => {
+  const frame = render(h(Markdown, { content: '甲方确认\n乙方执行', width: 40 })).lastFrame() ?? ''
+  assert.equal(frame, '甲方确认乙方执行')
+})
+
+test('Parser: Markdown appearing after a long plain prefix is still parsed', () => {
+  const tokens = parseMarkdown(`${'a'.repeat(501)}\n\n# Late heading`)
+  assert.deepEqual(tokens.map(token => token.type), ['paragraph', 'space', 'heading'])
+})
+
+test('AssistantMessage: block content starts beside the existing content prefix', () => {
+  const cases = [
+    ['# Title', '● Title'],
+    ['```ts\nconst x = 1\n```', '●   ── ts ──'],
+    ['| A | B |\n|---|---|\n| 1 | 2 |', '● ┌'],
+  ] as const
+
+  for (const [content, expectedFirstLine] of cases) {
+    const frame = render(h(AssistantMessage, { content })).lastFrame() ?? ''
+    const firstVisibleLine = frame.split('\n').find(line => line.length > 0) ?? ''
+    assert.ok(firstVisibleLine.startsWith(expectedFirstLine), `unexpected first line: ${firstVisibleLine}`)
+    cleanup()
+  }
+})
+
+test('Blockquote: hard breaks and blank quote lines keep a continuous rail', () => {
+  const hardBreakFrame = render(h(Markdown, { content: '> first  \n> second', width: 30 })).lastFrame() ?? ''
+  assert.deepEqual(hardBreakFrame.split('\n'), [' ▎ first', ' ▎ second'])
+  cleanup()
+
+  const blankLineFrame = render(h(Markdown, { content: '> first\n>\n> second', width: 30 })).lastFrame() ?? ''
+  assert.deepEqual(blankLineFrame.split('\n'), [' ▎ first', ' ▎', ' ▎ second'])
+})
+
+test('List: loose paragraphs and task markers retain structure and alignment', () => {
+  const looseFrame = render(h(Markdown, {
+    content: '- first paragraph\n\n  second paragraph',
+    width: 40,
+  })).lastFrame() ?? ''
+  assert.equal(looseFrame, '• first paragraph\n\n  second paragraph')
+  cleanup()
+
+  const taskFrame = render(h(Markdown, {
+    content: '- [x] finished\n- [ ] pending',
+    width: 40,
+  })).lastFrame() ?? ''
+  assert.equal(taskFrame, '• ☑ finished\n• ☐ pending')
 })

@@ -1,6 +1,7 @@
 import stringWidth from 'string-width'
 import { shouldDisplayToolResult } from '../tools/display.js'
 import type { TUIDisplayItem } from './types.js'
+import { formatToolGroupResultSummary } from './utils/toolGroupSummary.js'
 
 export const DEFAULT_INPUT_MAX_VISIBLE_LINES = 5
 export const INPUT_CHROME_ROWS = 2
@@ -401,7 +402,7 @@ function estimateToolGroupRows(
   expanded: boolean,
 ): number {
   if (!expanded) {
-    const hasHint = item.toolCalls.some((call) => call.status === 'done' && call.resultDisplay?.summary)
+    const hasHint = Boolean(formatToolGroupResultSummary(item.toolCalls))
     return hasHint ? 2 : 1
   }
   // Expanded: one header + one ResponseBlock gutter per child + the child's own rows.

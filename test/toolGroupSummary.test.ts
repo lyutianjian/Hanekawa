@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { formatToolGroupSummary, groupConsecutiveSafeToolCalls } from '../src/tui/utils/toolGroupSummary.js'
+import {
+  formatToolGroupResultSummary,
+  formatToolGroupSummary,
+  groupConsecutiveSameToolCalls,
+} from '../src/tui/utils/toolGroupSummary.js'
 import type { TUIDisplayItem } from '../src/tui/types.js'
 
 type ToolCallItem = Extract<TUIDisplayItem, { kind: 'tool_call' }>
@@ -19,99 +23,104 @@ function toolCall(tool: string, overrides: Partial<ToolCallItem> = {}): ToolCall
 }
 
 describe('formatToolGroupSummary', () => {
-  it('uses past-tense verbs for completed batches', () => {
+  it('shows the first three input prefixes without a count', () => {
     const calls = [
-      toolCall('Read'), toolCall('Read'), toolCall('Read'),
-      toolCall('Grep'), toolCall('Grep'),
+      toolCall('WebSearch', { input: { query: 'one' } }),
+      toolCall('WebSearch', { input: { query: 'two' } }),
+      toolCall('WebSearch', { input: { query: 'three' } }),
+      toolCall('WebSearch', { input: { query: 'four' } }),
     ]
-    assert.equal(formatToolGroupSummary(calls), 'Read 3 files, Searched 2 patterns')
+    assert.equal(formatToolGroupSummary(calls), 'Web Search (one, two, three, ...)')
   })
 
-  it('uses present-tense when any call is still running', () => {
+  it('truncates each input at 30 terminal columns including CJK text', () => {
     const calls = [
-      toolCall('Read', { status: 'running' }),
-      toolCall('Read'),
-      toolCall('Glob'),
+      toolCall('WebSearch', { input: { query: 'abcdefghijklmnopqrstuvwxyz123456789' } }),
+      toolCall('WebSearch', { input: { query: '这是一个非常长的中文搜索关键词用于测试截断' } }),
     ]
-    assert.equal(formatToolGroupSummary(calls), 'Reading 2 files, Searched 1 pattern')
+    assert.equal(
+      formatToolGroupSummary(calls),
+      'Web Search (abcdefghijklmnopqrstuvwxyz1..., 这是一个非常长的中文搜索关...)',
+    )
   })
 
-  it('handles singular counts', () => {
-    const calls = [toolCall('Read')]
-    assert.equal(formatToolGroupSummary(calls), 'Read 1 file')
-  })
-
-  it('aggregates tools by userFacingName', () => {
-    // Glob and Grep both expose userFacingName="Search" so they merge into
-    // one "Searched N patterns" segment.
-    const calls = [toolCall('Glob'), toolCall('Read'), toolCall('Grep')]
-    assert.equal(formatToolGroupSummary(calls), 'Searched 2 patterns, Read 1 file')
+  it('omits empty parentheses when no input summary is available', () => {
+    assert.equal(formatToolGroupSummary([toolCall('Unknown', { input: undefined })]), 'Unknown')
   })
 })
 
-describe('groupConsecutiveSafeToolCalls', () => {
-  it('merges 2+ consecutive groupable tool_call items into a tool_group', () => {
-    const items: TUIDisplayItem[] = [
-      toolCall('Read'),
-      toolCall('Grep'),
-      toolCall('Glob'),
+describe('formatToolGroupResultSummary', () => {
+  it('shows one copy when every structured result summary matches', () => {
+    const calls = [
+      toolCall('WebSearch', { resultDisplay: { summary: 'No results found' } }),
+      toolCall('WebSearch', { resultDisplay: { summary: 'No results found' } }),
     ]
-    const out = groupConsecutiveSafeToolCalls(items)
+    assert.equal(formatToolGroupResultSummary(calls), 'No results found')
+  })
+
+  it('aggregates distinct results and statuses', () => {
+    const calls = [
+      toolCall('WebSearch', { resultDisplay: { summary: 'Found 3 results' } }),
+      toolCall('WebSearch', { resultDisplay: { summary: 'Found 5 results' } }),
+      toolCall('WebSearch', { resultDisplay: { summary: 'No results found' } }),
+      toolCall('WebSearch', { status: 'error' }),
+      toolCall('WebSearch', { status: 'running' }),
+    ]
+    assert.equal(formatToolGroupResultSummary(calls), '2 found · 1 no result · 1 failed · 1 running')
+  })
+})
+
+describe('groupConsecutiveSameToolCalls', () => {
+  it('groups consecutive calls with the same raw tool name', () => {
+    const items: TUIDisplayItem[] = [
+      toolCall('WebFetch'),
+      toolCall('WebFetch'),
+      toolCall('WebFetch'),
+    ]
+    const out = groupConsecutiveSameToolCalls(items)
     assert.equal(out.length, 1)
     assert.equal(out[0]!.kind, 'tool_group')
-    if (out[0]!.kind === 'tool_group') {
-      assert.equal(out[0]!.toolCalls.length, 3)
+  })
+
+  it('does not group different raw tools with the same display name', () => {
+    const out = groupConsecutiveSameToolCalls([toolCall('Grep'), toolCall('Glob')])
+    assert.deepEqual(out.map((item) => item.kind), ['tool_call', 'tool_call'])
+  })
+
+  it('groups command and editing tools but never Agent', () => {
+    for (const tool of ['Bash', 'Edit', 'Write']) {
+      assert.equal(groupConsecutiveSameToolCalls([toolCall(tool), toolCall(tool)])[0]?.kind, 'tool_group')
     }
+    assert.deepEqual(
+      groupConsecutiveSameToolCalls([toolCall('Agent'), toolCall('Agent')]).map((item) => item.kind),
+      ['tool_call', 'tool_call'],
+    )
   })
 
-  it('keeps a single groupable tool as tool_call (no group)', () => {
-    const items: TUIDisplayItem[] = [toolCall('Read')]
-    const out = groupConsecutiveSafeToolCalls(items)
-    assert.equal(out.length, 1)
-    assert.equal(out[0]!.kind, 'tool_call')
-  })
-
-  it('does not group Bash, Edit, Write even when consecutive', () => {
-    const items: TUIDisplayItem[] = [
-      toolCall('Bash'),
-      toolCall('Edit'),
-      toolCall('Write'),
-    ]
-    const out = groupConsecutiveSafeToolCalls(items)
-    assert.equal(out.length, 3)
-    for (const item of out) assert.equal(item.kind, 'tool_call')
-  })
-
-  it('breaks runs on non-groupable items', () => {
-    const items: TUIDisplayItem[] = [
-      toolCall('Read'),
-      toolCall('Read'),
-      toolCall('Bash'),
-      toolCall('Glob'),
-      toolCall('Grep'),
-    ]
-    const out = groupConsecutiveSafeToolCalls(items)
-    assert.equal(out.length, 3)
-    assert.equal(out[0]!.kind, 'tool_group')
-    assert.equal(out[1]!.kind, 'tool_call')
-    assert.equal(out[2]!.kind, 'tool_group')
-  })
-
-  it('passes through non-tool_call items untouched', () => {
-    const assistant: TUIDisplayItem = {
+  it('breaks groups on thought or other transcript items', () => {
+    const thought: TUIDisplayItem = {
       kind: 'assistant',
-      id: 'a1',
-      content: 'hello',
+      id: 'thought',
+      content: '',
+      thinkingBlocks: [{ type: 'thinking', thinking: 'next round' }],
       createdAt: new Date().toISOString(),
     }
-    const items: TUIDisplayItem[] = [assistant, toolCall('Read'), toolCall('Grep')]
-    const out = groupConsecutiveSafeToolCalls(items)
-    assert.equal(out.length, 2)
-    assert.equal(out[0]!.kind, 'assistant')
-    assert.equal(out[1]!.kind, 'tool_group')
+    const out = groupConsecutiveSameToolCalls([
+      toolCall('WebSearch'), toolCall('WebSearch'), thought,
+      toolCall('WebSearch'), toolCall('WebSearch'),
+    ])
+    assert.deepEqual(out.map((item) => item.kind), ['tool_group', 'assistant', 'tool_group'])
   })
 
-  it('returns an empty array for empty input', () => {
-    assert.deepEqual(groupConsecutiveSafeToolCalls([]), [])
+  it('breaks adjacent calls when their hidden-boundary segment differs', () => {
+    const out = groupConsecutiveSameToolCalls([
+      toolCall('WebSearch', { groupSegmentId: 1 }),
+      toolCall('WebSearch', { groupSegmentId: 2 }),
+    ])
+    assert.deepEqual(out.map((item) => item.kind), ['tool_call', 'tool_call'])
+  })
+
+  it('keeps a single groupable tool as a tool call', () => {
+    assert.equal(groupConsecutiveSameToolCalls([toolCall('Read')])[0]?.kind, 'tool_call')
   })
 })

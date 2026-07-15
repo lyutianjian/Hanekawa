@@ -6,7 +6,7 @@ import { getStatusDot, ToolCallBlock } from './ToolCallBlock.js'
 import { ResponseBlock } from './ResponseBlock.js'
 import { INDENT_TOOL, MIN_HINT_DISPLAY_MS } from '../constants/figures.js'
 import { useBlink } from '../hooks/useBlink.js'
-import { formatToolGroupSummary } from '../utils/toolGroupSummary.js'
+import { formatToolGroupResultSummary, formatToolGroupSummary } from '../utils/toolGroupSummary.js'
 
 interface CollapsedToolGroupProps {
   item: Extract<TUIDisplayItem, { kind: 'tool_group' }>
@@ -43,8 +43,7 @@ export function CollapsedToolGroup({ item, expanded, animationsEnabled = true, i
   const statusDot = getStatusDot(dotStatus)
   const blinkOff = useBlink(animationsEnabled && dotStatus === 'running')
 
-  // Hint line: the most recent completed tool's display summary. Delay its
-  // appearance so fast-completing batches don't flash a line for one frame.
+  // Delay the aggregate result so fast-completing batches do not flicker.
   const [hintVisible, setHintVisible] = useState(false)
   useEffect(() => {
     if (expanded) {
@@ -56,15 +55,7 @@ export function CollapsedToolGroup({ item, expanded, animationsEnabled = true, i
     return () => clearTimeout(timer)
   }, [expanded, toolCalls.length])
 
-  let lastDoneCall: (typeof toolCalls)[number] | undefined
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i]!
-    if (call.status === 'done' && call.resultDisplay?.summary) {
-      lastDoneCall = call
-      break
-    }
-  }
-  const hintText = lastDoneCall?.resultDisplay?.summary
+  const hintText = formatToolGroupResultSummary(toolCalls)
 
   if (expanded) {
     return (

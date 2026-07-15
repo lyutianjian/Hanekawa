@@ -330,6 +330,7 @@ test('validateSettings accepts model, agent, and cache settings', () => {
       local: {
         provider: 'openai',
         model: 'gpt-local',
+        contextWindow: 1_000_000,
       },
     },
     defaultModel: 'local',
@@ -354,6 +355,7 @@ test('validateSettings rejects malformed model settings', () => {
       broken: {
         provider: '',
         model: '',
+        contextWindow: 0,
       },
     },
     defaultModel: '',
@@ -369,6 +371,7 @@ test('validateSettings rejects malformed model settings', () => {
   assert.match(result.errors.join('\n'), /provider/)
   assert.match(result.errors.join('\n'), /agentTimeoutMs/)
   assert.match(result.errors.join('\n'), /model/)
+  assert.match(result.errors.join('\n'), /contextWindow/)
   assert.match(result.errors.join('\n'), /defaultModel/)
   assert.match(result.errors.join('\n'), /fallbackModel/)
   assert.match(result.errors.join('\n'), /compactModel/)

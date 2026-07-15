@@ -43,6 +43,8 @@ export type TUIDisplayItem =
       result?: string
       resultDisplay?: ToolResultDisplay
       errorCode?: ToolErrorCode
+      /** Prevents grouping across non-rendered boundaries such as hidden tools. */
+      groupSegmentId?: number
       createdAt: string
     }
   | {

@@ -1,85 +1,77 @@
+import stringWidth from 'string-width'
 import { getToolDisplay, isGroupableTool } from '../../tools/display.js'
 import type { TUIDisplayItem } from '../types.js'
 
 export type ToolCallItem = Extract<TUIDisplayItem, { kind: 'tool_call' }>
 
-/**
- * Aggregate a batch of completed tool_call items into a single collapsed-line
- * summary, past-tense and pluralized to match Claude Code's
- * CollapsedReadSearchContent output (e.g. "Read 5 files, searched 3 patterns").
- *
- * The input may contain items that are still running (no result yet) — those
- * contribute a present-tense segment ("Reading 2 files") so the summary reads
- * naturally during in-flight batches.
- */
-export function formatToolGroupSummary(toolCalls: ToolCallItem[]): string {
-  const anyRunning = toolCalls.some((call) => call.status === 'running' || call.status === 'pending' || call.status === 'approved')
+const MAX_VISIBLE_INPUTS = 3
+const MAX_INPUT_WIDTH = 30
 
-  // Group by userFacingName (e.g. "Read", "Search"). Count each bucket.
-  const buckets = new Map<string, { count: number; running: number }>()
+/** Format a same-tool batch as "Tool (input 1, input 2, input 3, ...)". */
+export function formatToolGroupSummary(toolCalls: ToolCallItem[]): string {
+  const first = toolCalls[0]
+  if (!first) return ''
+
+  const display = getToolDisplay(first.tool, first.input)
+  const inputs = toolCalls
+    .slice(0, MAX_VISIBLE_INPUTS)
+    .map((call) => truncateEndByWidth(getToolDisplay(call.tool, call.input).summary, MAX_INPUT_WIDTH))
+    .filter(Boolean)
+
+  if (toolCalls.length > MAX_VISIBLE_INPUTS) inputs.push('...')
+  return inputs.length > 0 ? `${display.name} (${inputs.join(', ')})` : display.name
+}
+
+/** Summarize current results while keeping failures and pending calls visible. */
+export function formatToolGroupResultSummary(toolCalls: ToolCallItem[]): string | undefined {
+  const exactSummaries = toolCalls.map((call) =>
+    call.status === 'done' ? call.resultDisplay?.summary?.trim() : undefined,
+  )
+  const firstSummary = exactSummaries[0]
+  if (
+    firstSummary
+    && exactSummaries.length === toolCalls.length
+    && exactSummaries.every((summary) => summary === firstSummary)
+  ) {
+    return firstSummary
+  }
+
+  const counts = {
+    found: 0,
+    succeeded: 0,
+    noResult: 0,
+    failed: 0,
+    denied: 0,
+    running: 0,
+  }
   for (const call of toolCalls) {
-    const name = getToolDisplayName(call.tool, call.input)
-    const bucket = buckets.get(name) ?? { count: 0, running: 0 }
-    bucket.count += 1
-    if (call.status === 'running' || call.status === 'pending' || call.status === 'approved') {
-      bucket.running += 1
+    if (call.status === 'error') counts.failed += 1
+    else if (call.status === 'denied') counts.denied += 1
+    else if (call.status === 'running' || call.status === 'pending' || call.status === 'approved') counts.running += 1
+    else {
+      const summary = call.resultDisplay?.summary?.trim() ?? ''
+      if (/^Found\b/i.test(summary)) counts.found += 1
+      else if (/^No\b/i.test(summary)) counts.noResult += 1
+      else counts.succeeded += 1
     }
-    buckets.set(name, bucket)
   }
 
   const segments: string[] = []
-  for (const [name, { count, running }] of buckets) {
-    const verb = verbFor(name, running > 0 && anyRunning)
-    const noun = nounFor(name, count)
-    segments.push(`${verb} ${count} ${noun}`)
-  }
-  return segments.join(', ')
-}
-
-function getToolDisplayName(tool: string, input: unknown): string {
-  try {
-    const display = getToolDisplay(tool, input)
-    return display.name || tool
-  } catch {
-    return tool
-  }
-}
-
-function verbFor(userFacingName: string, present: boolean): string {
-  // Past-tense default matches Claude Code's "Searched/Read/Listed" style.
-  // Present-tense is used while any tool in the batch is still in flight.
-  switch (userFacingName) {
-    case 'Read':   return present ? 'Reading'   : 'Read'
-    case 'Search': return present ? 'Searching' : 'Searched'
-    case 'Bash':   return present ? 'Running'   : 'Ran'
-    case 'List':   return present ? 'Listing'   : 'Listed'
-    case 'Write':  return present ? 'Writing'   : 'Wrote'
-    case 'Edit':   return present ? 'Editing'   : 'Edited'
-    case 'Delete': return present ? 'Deleting'  : 'Deleted'
-    default:       return present ? 'Running'   : 'Ran'
-  }
-}
-
-function nounFor(userFacingName: string, count: number): string {
-  const plural = count !== 1
-  switch (userFacingName) {
-    case 'Read':   return plural ? 'files'       : 'file'
-    case 'Search': return plural ? 'patterns'    : 'pattern'
-    case 'Bash':   return plural ? 'commands'    : 'command'
-    case 'List':   return plural ? 'directories' : 'directory'
-    case 'Write':  return plural ? 'files'       : 'file'
-    case 'Edit':   return plural ? 'files'       : 'file'
-    case 'Delete': return plural ? 'files'       : 'file'
-    default:       return plural ? 'tools'       : 'tool'
-  }
+  if (counts.found > 0) segments.push(`${counts.found} found`)
+  if (counts.succeeded > 0) segments.push(`${counts.succeeded} succeeded`)
+  if (counts.noResult > 0) segments.push(`${counts.noResult} no result`)
+  if (counts.failed > 0) segments.push(`${counts.failed} failed`)
+  if (counts.denied > 0) segments.push(`${counts.denied} denied`)
+  if (counts.running > 0) segments.push(`${counts.running} running`)
+  return segments.join(' · ') || undefined
 }
 
 /**
- * Coalesce consecutive groupable tool_call items into a single tool_group.
- * Non-groupable items (e.g. Bash, Edit, Write) and non-tool_call items break
- * the run and are passed through verbatim.
+ * Coalesce only consecutive calls whose raw tool name and thought segment
+ * match. Every non-tool item is a hard boundary, and existing groups are
+ * passed through rather than merged again.
  */
-export function groupConsecutiveSafeToolCalls(items: TUIDisplayItem[]): TUIDisplayItem[] {
+export function groupConsecutiveSameToolCalls(items: TUIDisplayItem[]): TUIDisplayItem[] {
   const out: TUIDisplayItem[] = []
   let run: ToolCallItem[] = []
 
@@ -100,6 +92,13 @@ export function groupConsecutiveSafeToolCalls(items: TUIDisplayItem[]): TUIDispl
 
   for (const item of items) {
     if (item.kind === 'tool_call' && isGroupableTool(item.tool)) {
+      const previous = run[run.length - 1]
+      if (
+        previous
+        && (previous.tool !== item.tool || previous.groupSegmentId !== item.groupSegmentId)
+      ) {
+        flushRun()
+      }
       run.push(item)
       continue
     }
@@ -108,4 +107,19 @@ export function groupConsecutiveSafeToolCalls(items: TUIDisplayItem[]): TUIDispl
   }
   flushRun()
   return out
+}
+
+function truncateEndByWidth(value: string, maxWidth: number): string {
+  if (stringWidth(value) <= maxWidth) return value
+  const ellipsis = '...'
+  const target = Math.max(0, maxWidth - stringWidth(ellipsis))
+  let output = ''
+  let width = 0
+  for (const segment of [...value]) {
+    const segmentWidth = stringWidth(segment)
+    if (width + segmentWidth > target) break
+    output += segment
+    width += segmentWidth
+  }
+  return `${output}${ellipsis}`
 }

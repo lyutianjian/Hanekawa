@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   createTranscriptState,
   applyTuiRecordToTranscriptState,
+  commitAllLiveItemsToStatic,
   commitLiveItemsExcludingThinking,
   commitPrecedingLiveItemsToStatic,
   applyStreamingThinkingPreview,
@@ -117,6 +118,7 @@ describe('transcript ordering: tool_result commits user message to static first'
 
     // tool_result arrives → should commit user message to static FIRST
     state = applyTuiRecordToTranscriptState(state, toolResultRecord('c1', 'Bash', true, 'file1.txt'))
+    state = commitAllLiveItemsToStatic(state)
 
     const staticKinds = state.staticItems.map((item) => item.kind)
     const userIdx = staticKinds.indexOf('user')
@@ -151,6 +153,7 @@ describe('transcript ordering: tool_result commits user message to static first'
     state = applyTuiRecordToTranscriptState(state, toolResultRecord('c1', 'Read', true, 'content'))
     state = applyTuiRecordToTranscriptState(state, toolUseRecord('c2', 'Bash'))
     state = applyTuiRecordToTranscriptState(state, toolResultRecord('c2', 'Bash', true, 'output'))
+    state = commitAllLiveItemsToStatic(state)
 
     const kinds = state.staticItems.map((item) => item.kind)
     const userIdx = kinds.indexOf('user')
@@ -183,6 +186,7 @@ describe('transcript ordering: tool_result commits user message to static first'
     // Tool call and result
     state = applyTuiRecordToTranscriptState(state, toolUseRecord('c1', 'Bash'))
     state = applyTuiRecordToTranscriptState(state, toolResultRecord('c1', 'Bash', true, 'ok'))
+    state = commitAllLiveItemsToStatic(state)
 
     // Thinking block before tool_call should be committed to static
     const staticThinking = state.staticItems.filter(
@@ -357,6 +361,7 @@ describe('transcript ordering: tool_result commits user message to static first'
     )
     state = applyTuiRecordToTranscriptState(state, toolUseRecord('c1', 'Bash'))
     state = applyTuiRecordToTranscriptState(state, toolResultRecord('c1', 'Bash', true, 'out'))
+    state = commitAllLiveItemsToStatic(state)
 
     // Both thinking blocks should be in staticItems before the tool_call
     const thinkingItems = state.staticItems.filter(
@@ -382,6 +387,7 @@ describe('transcript ordering: tool_result commits user message to static first'
     )
     state = applyTuiRecordToTranscriptState(state, toolUseRecord('c1', 'Bash'))
     state = applyTuiRecordToTranscriptState(state, toolResultRecord('c1', 'Bash', false, 'command not found'))
+    state = commitAllLiveItemsToStatic(state)
 
     const thinkingIdx = state.staticItems.findIndex(
       (item) => item.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0,
@@ -566,6 +572,7 @@ describe('transcript ordering: tool_result commits user message to static first'
 
     state = applyTuiRecordToTranscriptState(state, toolUseRecord('c1', 'Bash'))
     state = applyTuiRecordToTranscriptState(state, toolResultRecord('c1', 'Bash', false, 'command not found'))
+    state = commitAllLiveItemsToStatic(state)
 
     const userIdx = state.staticItems.findIndex((item) => item.kind === 'user')
     const toolIdx = state.staticItems.findIndex((item) => item.kind === 'tool_call')

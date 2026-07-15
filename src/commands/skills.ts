@@ -15,8 +15,22 @@ export const skillsCommand: CommandDefinition = {
   description: 'List available skills',
   run: async (_args, context) => {
     const skills = await new SkillsService(context.cwd).list()
-    if (skills.length === 0) {
+    if (skills.length === 0 && !context.openCommandView) {
       context.writeLine('No skills available.')
+      return
+    }
+
+    if (context.openCommandView) {
+      context.openCommandView({
+        kind: 'list',
+        title: 'Skills',
+        subtitle: `${skills.length} available skill${skills.length === 1 ? '' : 's'}`,
+        items: skills.map((skill) => ({
+          id: skill.name,
+          label: `/${skill.name}`,
+          description: skill.description,
+        })),
+      })
       return
     }
 

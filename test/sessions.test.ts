@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { SessionStore } from '../src/sessions/service.js'
+import { SessionStore, type SessionMeta } from '../src/sessions/service.js'
 import { rollbackInterruptedPromptIfSynthetic } from '../src/tui/interruptRollback.js'
 import type { SessionRecord } from '../src/harness/types.js'
 import { getSessionsDir } from '../src/utils/paths.js'
@@ -71,6 +71,66 @@ test('SessionStore appends and loads records while updating metadata', async () 
     const loaded = await store.load(session.id)
     assert.equal(loaded?.messageCount, 1)
     assert.equal(loaded?.title, 'Hello from session test')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SessionStore drafts stay in memory until the first chat message', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+
+    const session = store.createDraft()
+    const sessionsDir = getSessionsDir(dir)
+    const jsonlPath = path.join(sessionsDir, `${session.id}.jsonl`)
+    const metricsPath = path.join(sessionsDir, `${session.id}.metrics.jsonl`)
+    assert.equal((await store.list()).some((item) => item.id === session.id), false)
+    assert.equal(fs.existsSync(jsonlPath), false)
+
+    await store.appendRecord(session.id, {
+      id: 'queue-clear',
+      type: 'message_queue',
+      operation: 'clear',
+      createdAt: '2026-07-15T00:00:00.000Z',
+    })
+    await store.appendMetric(session.id, {
+      event: 'mcp_connect_failed',
+      server: 'test',
+      error: 'deferred metric',
+    })
+    assert.equal(fs.existsSync(jsonlPath), false)
+    assert.equal(fs.existsSync(metricsPath), false)
+    assert.equal((await store.loadRecords(session.id)).length, 1)
+
+    await store.appendRecord(session.id, {
+      type: 'message',
+      id: 'msg-1',
+      role: 'user',
+      content: 'Materialize me',
+      createdAt: '2026-07-15T00:00:01.000Z',
+    })
+
+    assert.equal(fs.existsSync(jsonlPath), true)
+    assert.equal(fs.existsSync(metricsPath), true)
+    assert.deepEqual((await store.loadRecords(session.id)).map((record) => record.id), ['queue-clear', 'msg-1'])
+    assert.equal((await store.load(session.id))?.title, 'Materialize me')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SessionStore discards drafts without creating session files', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+    const session = store.createDraft()
+    store.discardDraft(session.id)
+
+    assert.equal(await store.load(session.id), undefined)
+    assert.equal(fs.existsSync(path.join(getSessionsDir(dir), `${session.id}.jsonl`)), false)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -335,6 +395,86 @@ test('SessionStore appends metrics next to session records', async () => {
     assert.equal(mcpMetric.session_id, session.id)
     assert.equal(mcpMetric.server, 'filesystem')
     assert.equal(mcpMetric.error, 'connection timed out')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SessionStore recovery ignores metrics JSONL files and removes polluted index entries', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+    const session = await store.create()
+    await store.appendRecord(session.id, {
+      type: 'message',
+      id: 'msg-1',
+      role: 'user',
+      content: 'real session',
+      createdAt: new Date().toISOString(),
+    })
+    await store.appendMetric(session.id, {
+      event: 'mcp_connect_failed',
+      server: 'test',
+      error: 'keep this file',
+    })
+
+    const sessionsDir = getSessionsDir(dir)
+    const indexPath = path.join(sessionsDir, 'index.json')
+    const index = JSON.parse(readFileSync(indexPath, 'utf8')) as { sessions: SessionMeta[] }
+    index.sessions.push({
+      ...session,
+      id: `${session.id}.metrics`,
+      messageCount: 0,
+      title: undefined,
+    })
+    fs.writeFileSync(indexPath, JSON.stringify(index), 'utf8')
+
+    const listed = await store.list()
+    assert.deepEqual(listed.map((item) => item.id), [session.id])
+    assert.equal(fs.existsSync(path.join(sessionsDir, `${session.id}.metrics.jsonl`)), true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SessionStore init removes empty sessions older than ten minutes but preserves recent ones', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const firstStore = new SessionStore(dir)
+    await firstStore.init()
+    const stale = await firstStore.create()
+    await firstStore.appendRecord(stale.id, {
+      id: 'queue-clear',
+      type: 'message_queue',
+      operation: 'clear',
+      createdAt: '2026-07-15T00:00:00.000Z',
+    })
+    await firstStore.appendMetric(stale.id, {
+      event: 'mcp_connect_failed',
+      server: 'test',
+      error: 'stale',
+    })
+    const recent = await firstStore.create()
+
+    const sessionsDir = getSessionsDir(dir)
+    const indexPath = path.join(sessionsDir, 'index.json')
+    const index = JSON.parse(readFileSync(indexPath, 'utf8')) as { sessions: SessionMeta[] }
+    const staleMeta = index.sessions.find((item) => item.id === stale.id)
+    assert.ok(staleMeta)
+    staleMeta.updatedAt = '2000-01-01T00:00:00.000Z'
+    fs.writeFileSync(indexPath, JSON.stringify(index), 'utf8')
+    const old = new Date('2000-01-01T00:00:00.000Z')
+    fs.utimesSync(path.join(sessionsDir, `${stale.id}.jsonl`), old, old)
+    fs.utimesSync(path.join(sessionsDir, `${stale.id}.metrics.jsonl`), old, old)
+
+    const secondStore = new SessionStore(dir)
+    await secondStore.init()
+    const listed = await secondStore.list()
+    assert.equal(listed.some((item) => item.id === stale.id), false)
+    assert.equal(listed.some((item) => item.id === recent.id), true)
+    assert.equal(fs.existsSync(path.join(sessionsDir, `${stale.id}.jsonl`)), false)
+    assert.equal(fs.existsSync(path.join(sessionsDir, `${stale.id}.metrics.jsonl`)), false)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

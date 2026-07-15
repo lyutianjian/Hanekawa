@@ -9,6 +9,7 @@ import { SubagentTaskBlock, type SubagentTreePosition } from './SubagentTaskBloc
 import { WelcomeBanner } from './WelcomeBanner.js'
 import { theme } from '../theme.js'
 import type { QueuedMessage } from '../messageQueue.js'
+import { groupConsecutiveSameToolCalls } from '../utils/toolGroupSummary.js'
 
 interface MessageListProps {
   items: TUIDisplayItem[]
@@ -24,11 +25,12 @@ export function MessageList({
   isStreaming,
   animationsEnabled = true,
 }: MessageListProps) {
-  const subagentTreePositions = useMemo(() => computeSubagentTreePositions(items), [items])
+  const displayItems = useMemo(() => groupConsecutiveSameToolCalls(items), [items])
+  const subagentTreePositions = useMemo(() => computeSubagentTreePositions(displayItems), [displayItems])
 
   return (
     <Box flexDirection="column">
-      {items.map((item) => {
+      {displayItems.map((item) => {
         const isLiveThinking = isStreaming && item.kind === 'assistant' && Boolean(item.thinkingBlocks?.length)
         return (
           <DisplayItem

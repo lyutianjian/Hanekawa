@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Box, Text, useInput, useStdout } from 'ink'
 import type { SessionMeta } from '../../sessions/service.js'
 import { theme } from '../theme.js'
+import { CommandListItem, CommandPane } from './CommandUI.js'
 
 export interface SessionResumePickerProps {
   sessions: SessionMeta[]
@@ -20,7 +21,10 @@ export function SessionResumePicker({
   onSelect,
   onCancel,
 }: SessionResumePickerProps) {
-  const sorted = useMemo(() => sortSessionsForResume(sessions), [sessions])
+  const sorted = useMemo(
+    () => filterSessionsForResume(sessions, currentSessionId),
+    [currentSessionId, sessions],
+  )
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [selecting, setSelecting] = useState(false)
   const [selectionError, setSelectionError] = useState<string | null>(null)
@@ -62,40 +66,56 @@ export function SessionResumePicker({
   })
 
   return (
-    <Box flexDirection="column" paddingX={2} paddingY={1}>
-      <Text bold color={theme.brand}>Resume session</Text>
-      <Text color={theme.dimText}>Sessions in the current working directory</Text>
-
-      <Box flexDirection="column" marginTop={1} flexGrow={1}>
+    <CommandPane
+      title="Resume session"
+      subtitle="Sessions in the current working directory, newest first."
+      hints={[
+        { key: '↑/↓', action: 'navigate' },
+        { key: 'Enter', action: 'resume' },
+        { key: 'Esc', action: 'close' },
+      ]}
+      status={error || selectionError
+        ? <Text color={theme.error}>{error ?? selectionError}</Text>
+        : selecting
+          ? <Text color={theme.dimText}>Resuming session…</Text>
+          : undefined}
+    >
+      <Box flexDirection="column" flexGrow={1}>
         {loading ? <Text color={theme.dimText}>Loading sessions...</Text> : null}
         {!loading && sorted.length === 0 ? <Text color={theme.dimText}>No sessions found.</Text> : null}
         {!loading && visibleSessions.map((session, offset) => {
           const index = windowStart + offset
           const selected = index === selectedIndex
           return (
-            <Text
+            <CommandListItem
               key={session.id}
-              color={selected ? theme.brand : theme.assistantText}
-              bold={selected}
+              focused={selected}
+              selected={session.id === currentSessionId}
+              showMoreAbove={offset === 0 && windowStart > 0}
+              showMoreBelow={offset === visibleSessions.length - 1 && windowStart + visibleSessions.length < sorted.length}
+              description={`${formatRelativeTime(session.updatedAt)} · ${session.messageCount} ${session.messageCount === 1 ? 'message' : 'messages'}`}
             >
-              {selected ? '> ' : '  '}
-              {formatSessionResumeRow(session, session.id === currentSessionId)}
-            </Text>
+              {(session.title ?? '(untitled)').replace(/\s+/g, ' ')}
+              {session.id === currentSessionId ? <Text color={theme.success}>  current</Text> : null}
+            </CommandListItem>
           )
         })}
       </Box>
-
-      {error || selectionError ? (
-        <Text color={theme.error}>{error ?? selectionError}</Text>
-      ) : null}
-      {selecting ? <Text color={theme.dimText}>Resuming session...</Text> : null}
-      <Text color={theme.dimText}>[Up/Down] Select  [Enter] Resume  [Esc] Cancel</Text>
-    </Box>
+    </CommandPane>
   )
 }
 
 export function sortSessionsForResume(sessions: readonly SessionMeta[]): SessionMeta[] {
   return [...sessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+}
+
+export function filterSessionsForResume(
+  sessions: readonly SessionMeta[],
+  currentSessionId: string,
+): SessionMeta[] {
+  return sortSessionsForResume(
+    sessions.filter((session) => session.messageCount > 0 || session.id === currentSessionId),
+  )
 }
 
 export function formatSessionResumeRow(session: SessionMeta, isCurrent: boolean, now = Date.now()): string {
@@ -109,7 +129,7 @@ function truncateTitle(title: string, maxLength: number): string {
   return `${title.slice(0, maxLength - 3)}...`
 }
 
-function formatRelativeTime(timestamp: string, now: number): string {
+function formatRelativeTime(timestamp: string, now = Date.now()): string {
   const value = Date.parse(timestamp)
   if (!Number.isFinite(value)) return timestamp
   const elapsed = Math.max(0, now - value)

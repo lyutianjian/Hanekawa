@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Box, Text, useInput } from '../ink.js'
+import { Box, Text, useInput, useStdout } from '../ink.js'
 import { theme } from '../theme.js'
+import { commandVisibleRows, CommandListItem, CommandPane, CommandTabs, getVisibleWindow, type CommandHint } from './CommandUI.js'
 import type {
   Config,
   ModelConfig,
@@ -14,6 +15,11 @@ import type {
   TierOrInherit,
 } from '../../config/routing.js'
 import { pingEndpoint, type EndpointPingResult } from '../../config/endpointPing.js'
+import {
+  isSupportedProviderName,
+  SUPPORTED_PROVIDER_NAMES,
+} from '../../config/providers/registry.js'
+import type { ProviderConfigChangeScope } from '../providerRuntime.js'
 
 type Tab = 'endpoints' | 'models' | 'profiles' | 'routing'
 const TABS: readonly Tab[] = ['endpoints', 'models', 'profiles', 'routing']
@@ -22,7 +28,7 @@ const TIER_OPTIONS: readonly TierOrInherit[] = ['inherit', 'fast', 'balanced', '
 type FormState =
   | { kind: 'list' }
   | { kind: 'endpoint-edit'; nameInput: string; provider: string; baseUrl: string; apiKey: string; field: 'nameInput' | 'provider' | 'baseUrl' | 'apiKey'; cursor: number; original: string | null }
-  | { kind: 'model-edit'; nameInput: string; modelId: string; endpointName: string; provider: string; field: 'nameInput' | 'modelId' | 'endpointName' | 'provider'; cursor: number; original: string | null }
+  | { kind: 'model-edit'; nameInput: string; modelId: string; endpointName: string; field: 'nameInput' | 'modelId' | 'endpointName'; cursor: number; original: string | null }
   | { kind: 'profile-edit'; nameInput: string; fast: string; balanced: string; powerful: string; field: 'nameInput' | 'fast' | 'balanced' | 'powerful'; cursor: number; original: string | null }
   | { kind: 'routing-edit'; role: RoutingRoleKey; valueIndex: number }
   | { kind: 'confirm-delete'; what: string; targetId: string }
@@ -49,9 +55,9 @@ const ROUTING_ROLES: readonly RoutingRoleKey[] = [
 
 export interface ProviderPanelProps {
   config: ConfigService
-  /** Notify the parent when config has been mutated and saved. The parent
-   *  should refresh any cached views (e.g. /model output). */
-  onChange: () => void
+  /** Notify the parent when config has been mutated and saved so cached views
+   *  and the live model runtime can be refreshed immediately. */
+  onChange: (scope: ProviderConfigChangeScope) => void | Promise<void>
   onClose: () => void
 }
 
@@ -75,6 +81,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [statusKind, setStatusKind] = useState<'info' | 'error' | 'success'>('info')
   const [pingResults, setPingResults] = useState<Record<string, EndpointPingResult>>({})
+  const { stdout } = useStdout()
 
   // Items are recomputed on every render. config.get() returns the same Config
   // object reference even after mutations, so we cannot rely on referential
@@ -83,6 +90,8 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
   // accompany config mutations.
   const cfg = config.get()
   const items = collectListItems(cfg, tab)
+  const listWindow = getVisibleWindow(items.length, selectedIndex, commandVisibleRows(stdout.rows, 11, 10))
+  const visibleItems = items.slice(listWindow.start, listWindow.end)
 
   // Clamp selectedIndex into the current items range. Without this, deleting
   // an item leaves selectedIndex pointing past the end and the cursor
@@ -107,7 +116,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
     try {
       mutation()
       await config.save()
-      onChange()
+      await onChange(tab)
       // setForm below changes form-state references so React re-renders;
       // items are recomputed inline from the freshly mutated config.
       setForm({ kind: 'list' })
@@ -158,12 +167,28 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
       cycleTab(-1)
       return
     }
+    if (key.leftArrow) {
+      cycleTab(-1)
+      return
+    }
+    if (key.rightArrow) {
+      cycleTab(1)
+      return
+    }
     if (key.upArrow) {
-      setSelectedIndex((i) => Math.max(0, i - 1))
+      setSelectedIndex((i) => moveBoundedIndex(i, items.length, -1))
       return
     }
     if (key.downArrow) {
-      setSelectedIndex((i) => Math.min(items.length - 1, i + 1))
+      setSelectedIndex((i) => moveBoundedIndex(i, items.length, 1))
+      return
+    }
+    if (key.home) {
+      setSelectedIndex(0)
+      return
+    }
+    if (key.end) {
+      setSelectedIndex(Math.max(0, items.length - 1))
       return
     }
     if (key.return) {
@@ -178,6 +203,10 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
       handleEdit()
       return
     }
+    if ((input === 'a' || input === 'A') && tab === 'profiles') {
+      handleActivateProfile()
+      return
+    }
     if (input === 'd') {
       handleDelete()
       return
@@ -190,27 +219,23 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
 
   function cycleTab(delta: number) {
     const idx = TABS.indexOf(tab)
-    const next = TABS[(idx + delta + TABS.length) % TABS.length] ?? 'endpoints'
+    const next = TABS[moveCyclicIndex(idx, TABS.length, delta < 0 ? -1 : 1)] ?? 'endpoints'
     setTab(next)
     setSelectedIndex(0)
     setStatusMessage(null)
   }
 
   function handleEnter() {
-    if (tab === 'profiles') {
-      const item = items[selectedIndex]
-      if (!item) return
-      void persist(
-        () => config.setActiveProfile(item.id),
-        `Active profile set to "${item.id}"`,
-      )
-      return
-    }
-    if (tab === 'routing') {
-      handleEdit()
-      return
-    }
     handleEdit()
+  }
+
+  function handleActivateProfile() {
+    const item = items[selectedIndex]
+    if (!item || tab !== 'profiles') return
+    void persist(
+      () => config.setActiveProfile(item.id),
+      `Active profile set to "${item.id}"`,
+    )
   }
 
   function handleNew() {
@@ -228,12 +253,16 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
       return
     }
     if (tab === 'models') {
+      const firstEndpoint = Object.keys(cfg.endpoints ?? {})[0] ?? ''
+      if (!firstEndpoint) {
+        flashStatus('Create an endpoint before adding a model', 'error')
+        return
+      }
       setForm({
         kind: 'model-edit',
         nameInput: '',
         modelId: '',
-        endpointName: '',
-        provider: '',
+        endpointName: firstEndpoint,
         field: 'nameInput',
         cursor: 0,
         original: null,
@@ -241,12 +270,17 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
       return
     }
     if (tab === 'profiles') {
+      const firstModel = Object.keys(cfg.models)[0] ?? ''
+      if (!firstModel) {
+        flashStatus('Create a model before adding a profile', 'error')
+        return
+      }
       setForm({
         kind: 'profile-edit',
         nameInput: '',
-        fast: '',
-        balanced: '',
-        powerful: '',
+        fast: firstModel,
+        balanced: firstModel,
+        powerful: firstModel,
         field: 'nameInput',
         cursor: 0,
         original: null,
@@ -281,7 +315,6 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         nameInput: item.id,
         modelId: m.model,
         endpointName: m.endpoint ?? '',
-        provider: m.provider ?? '',
         field: 'modelId',
         cursor: m.model.length,
         original: item.id,
@@ -368,16 +401,25 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
 
   function handleEndpointFormInput(input: string, key: InkKey) {
     if (form.kind !== 'endpoint-edit') return
+    const fields: Array<typeof form.field> = ['nameInput', 'provider', 'baseUrl', 'apiKey']
     if (key.tab) {
-      const fields: Array<typeof form.field> = ['nameInput', 'provider', 'baseUrl', 'apiKey']
-      const next = fields[(fields.indexOf(form.field) + 1) % fields.length]!
+      const next = fields[moveCyclicIndex(fields.indexOf(form.field), fields.length, key.shift ? -1 : 1)]!
       setForm({ ...form, field: next, cursor: form[next].length })
       return
     }
-    if (key.return) {
+    if (key.upArrow || key.downArrow) {
+      const direction = key.upArrow ? -1 : 1
+      const next = fields[moveBoundedIndex(fields.indexOf(form.field), fields.length, direction)]!
+      setForm({ ...form, field: next, cursor: form[next].length })
+      return
+    }
+    if (key.return || isSaveKey(input, key)) {
       const name = form.nameInput.trim()
       if (!name) return flashStatus('Name is required', 'error')
-      const provider = form.provider.trim() || 'anthropic'
+      const provider = form.provider.trim()
+      if (!isSupportedProviderName(provider)) {
+        return flashStatus(`Unsupported provider "${provider}"`, 'error')
+      }
       const endpoint: Endpoint = {
         provider,
         ...(form.baseUrl.trim() ? { baseUrl: form.baseUrl.trim() } : {}),
@@ -391,31 +433,51 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
       }, `Saved endpoint "${name}"`)
       return
     }
+    if (form.field === 'provider') {
+      const direction = choiceDirection(key)
+      if (direction !== 0) {
+        const provider = cycleChoiceValue(form.provider, SUPPORTED_PROVIDER_NAMES, direction)
+        setForm({ ...form, provider, cursor: provider.length })
+      }
+      return
+    }
     setForm(applyKeyToForm(form, input, key))
   }
 
   function handleModelFormInput(input: string, key: InkKey) {
     if (form.kind !== 'model-edit') return
+    const fields: Array<typeof form.field> = ['nameInput', 'modelId', 'endpointName']
     if (key.tab) {
-      const fields: Array<typeof form.field> = ['nameInput', 'modelId', 'endpointName', 'provider']
-      const next = fields[(fields.indexOf(form.field) + 1) % fields.length]!
+      const next = fields[moveCyclicIndex(fields.indexOf(form.field), fields.length, key.shift ? -1 : 1)]!
       setForm({ ...form, field: next, cursor: form[next].length })
       return
     }
-    if (key.return) {
+    if (key.upArrow || key.downArrow) {
+      const direction = key.upArrow ? -1 : 1
+      const next = fields[moveBoundedIndex(fields.indexOf(form.field), fields.length, direction)]!
+      setForm({ ...form, field: next, cursor: form[next].length })
+      return
+    }
+    if (key.return || isSaveKey(input, key)) {
       const name = form.nameInput.trim()
       if (!name) return flashStatus('Name is required', 'error')
       if (!form.modelId.trim()) return flashStatus('Model id is required', 'error')
-      if (!form.endpointName.trim() && !form.provider.trim()) {
-        return flashStatus('Either endpoint or provider is required', 'error')
-      }
+      if (!form.endpointName.trim()) return flashStatus('Endpoint is required', 'error')
       if (form.endpointName.trim() && !cfg.endpoints?.[form.endpointName.trim()]) {
         return flashStatus(`Unknown endpoint "${form.endpointName}"`, 'error')
       }
+      const selectedEndpoint = form.endpointName.trim()
+        ? cfg.endpoints?.[form.endpointName.trim()]
+        : undefined
+      if (selectedEndpoint && !isSupportedProviderName(selectedEndpoint.provider)) {
+        return flashStatus(
+          `Endpoint "${form.endpointName}" uses unsupported provider "${selectedEndpoint.provider}"`,
+          'error',
+        )
+      }
       const model: ModelConfig = {
         model: form.modelId.trim(),
-        ...(form.endpointName.trim() ? { endpoint: form.endpointName.trim() } : {}),
-        ...(form.provider.trim() && !form.endpointName.trim() ? { provider: form.provider.trim() } : {}),
+        endpoint: form.endpointName.trim(),
       }
       void persist(() => {
         if (form.original && form.original !== name) {
@@ -425,20 +487,38 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
       }, `Saved model "${name}"`)
       return
     }
+    if (form.field === 'endpointName') {
+      const direction = choiceDirection(key)
+      if (direction !== 0) {
+        const endpoints = Object.keys(cfg.endpoints ?? {})
+        const endpointName = cycleChoiceValue(form.endpointName, endpoints, direction)
+        setForm({ ...form, endpointName, cursor: endpointName.length })
+      }
+      return
+    }
     setForm(applyKeyToForm(form, input, key))
   }
 
   function handleProfileFormInput(input: string, key: InkKey) {
     if (form.kind !== 'profile-edit') return
+    const fields: Array<typeof form.field> = ['nameInput', 'fast', 'balanced', 'powerful']
     if (key.tab) {
-      const fields: Array<typeof form.field> = ['nameInput', 'fast', 'balanced', 'powerful']
-      const next = fields[(fields.indexOf(form.field) + 1) % fields.length]!
+      const next = fields[moveCyclicIndex(fields.indexOf(form.field), fields.length, key.shift ? -1 : 1)]!
       setForm({ ...form, field: next, cursor: form[next].length })
       return
     }
-    if (key.return) {
+    if (key.upArrow || key.downArrow) {
+      const direction = key.upArrow ? -1 : 1
+      const next = fields[moveBoundedIndex(fields.indexOf(form.field), fields.length, direction)]!
+      setForm({ ...form, field: next, cursor: form[next].length })
+      return
+    }
+    if (key.return || isSaveKey(input, key)) {
       const name = form.nameInput.trim()
       if (!name) return flashStatus('Name is required', 'error')
+      if (!form.fast.trim() || !form.balanced.trim() || !form.powerful.trim()) {
+        return flashStatus('Fast, balanced, and powerful models are required', 'error')
+      }
       const profile: Profile = {}
       if (form.fast.trim()) profile.fast = form.fast.trim()
       if (form.balanced.trim()) profile.balanced = form.balanced.trim()
@@ -455,6 +535,15 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         }
         config.setProfile(name, profile)
       }, `Saved profile "${name}"`)
+      return
+    }
+    if (form.field === 'fast' || form.field === 'balanced' || form.field === 'powerful') {
+      const direction = choiceDirection(key)
+      if (direction !== 0) {
+        const models = Object.keys(cfg.models)
+        const value = cycleChoiceValue(form[form.field], models, direction)
+        setForm({ ...form, [form.field]: value, cursor: value.length })
+      }
       return
     }
     setForm(applyKeyToForm(form, input, key))
@@ -485,20 +574,31 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
   // ---------- render ----------
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.brand} padding={1} marginY={1}>
-      <Box>
-        {TABS.map((t, i) => (
-          <Box key={t} marginRight={2}>
-            <Text bold color={t === tab ? theme.brand : theme.dimText}>
-              {t === tab ? `[${capitalize(t)}]` : ` ${capitalize(t)} `}
-            </Text>
-            {i < TABS.length - 1 && <Text color={theme.dimText}> </Text>}
-          </Box>
-        ))}
-      </Box>
+    <CommandPane
+      title="Provider configuration"
+      subtitle="Manage endpoints, models, profiles, and request routing."
+      hints={footerHints(tab, form)}
+      status={statusMessage ? (
+        <Text color={statusKind === 'error' ? theme.error : statusKind === 'success' ? theme.success : theme.dimText}>
+          {statusMessage}
+        </Text>
+      ) : undefined}
+    >
+      <CommandTabs
+        tabs={TABS.map((value) => ({ id: value, label: capitalize(value) }))}
+        selected={tab}
+      />
 
       <Box marginTop={1} flexDirection="column">
-        {form.kind === 'list' && renderList(tab, items, selectedIndex, cfg, pingResults)}
+        {form.kind === 'list' && renderList(
+          tab,
+          visibleItems,
+          selectedIndex - listWindow.start,
+          cfg,
+          pingResults,
+          listWindow.hasAbove,
+          listWindow.hasBelow,
+        )}
         {form.kind === 'endpoint-edit' && renderEndpointForm(form)}
         {form.kind === 'model-edit' && renderModelForm(form, cfg)}
         {form.kind === 'profile-edit' && renderProfileForm(form, cfg)}
@@ -511,18 +611,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         {form.kind === 'busy' && <Text color={theme.dimText}>{form.message}</Text>}
       </Box>
 
-      {statusMessage && (
-        <Box marginTop={1}>
-          <Text color={statusKind === 'error' ? theme.error : statusKind === 'success' ? theme.success : theme.dimText}>
-            {statusMessage}
-          </Text>
-        </Box>
-      )}
-
-      <Box marginTop={1}>
-        <Text color={theme.dimText}>{footerHint(tab, form)}</Text>
-      </Box>
-    </Box>
+    </CommandPane>
   )
 }
 
@@ -605,6 +694,8 @@ function renderList(
   selectedIndex: number,
   cfg: Config,
   pingResults: Record<string, EndpointPingResult>,
+  hasAbove: boolean,
+  hasBelow: boolean,
 ) {
   if (items.length === 0) {
     return <Text color={theme.dimText}>No {tab} configured. Press [n] to create one.</Text>
@@ -616,18 +707,17 @@ function renderList(
         const ping = tab === 'endpoints' ? pingResults[item.id] : undefined
         const pingTag = ping ? `  ${ping.ok ? 'OK' : 'ERR'} ${ping.message}` : ''
         return (
-          <Box key={item.id} flexDirection="column" marginBottom={tab === 'profiles' ? 1 : 0}>
-            <Text color={selected ? theme.brand : theme.assistantText}>
-              {selected ? '> ' : '  '}
-              {item.primary}
-              {pingTag && (
-                <Text color={ping?.ok ? theme.success : theme.error}> {pingTag}</Text>
-              )}
-            </Text>
-            {item.secondary && (
-              <Text color={theme.dimText}>    {maskMaybe(tab, item.secondary, item.id, cfg)}</Text>
-            )}
-          </Box>
+          <CommandListItem
+            key={item.id}
+            focused={selected}
+            selected={tab === 'profiles' && item.primary.includes('(active)')}
+            showMoreAbove={i === 0 && hasAbove}
+            showMoreBelow={i === items.length - 1 && hasBelow}
+            description={item.secondary ? maskMaybe(tab, item.secondary, item.id, cfg) : undefined}
+          >
+            {item.primary}
+            {pingTag ? <Text color={ping?.ok ? theme.success : theme.error}>{pingTag}</Text> : null}
+          </CommandListItem>
         )
       })}
     </Box>
@@ -646,7 +736,11 @@ function renderEndpointForm(form: Extract<FormState, { kind: 'endpoint-edit' }>)
     <Box flexDirection="column">
       <Text bold color={theme.brand}>{form.original ? `Edit endpoint "${form.original}"` : 'New endpoint'}</Text>
       <FieldRow label="Name"     value={form.nameInput} active={form.field === 'nameInput'}     cursor={form.field === 'nameInput'     ? form.cursor : undefined} />
-      <FieldRow label="Provider" value={form.provider}  active={form.field === 'provider'} cursor={form.field === 'provider' ? form.cursor : undefined} hint="anthropic | openai" />
+      <ChoiceFieldRow
+        label="Provider"
+        value={isSupportedProviderName(form.provider) ? form.provider : `${form.provider} (unsupported)`}
+        active={form.field === 'provider'}
+      />
       <FieldRow label="Base URL" value={form.baseUrl}   active={form.field === 'baseUrl'}  cursor={form.field === 'baseUrl'  ? form.cursor : undefined} />
       <FieldRow
         label="API Key"
@@ -660,27 +754,34 @@ function renderEndpointForm(form: Extract<FormState, { kind: 'endpoint-edit' }>)
 }
 
 function renderModelForm(form: Extract<FormState, { kind: 'model-edit' }>, cfg: Config) {
-  const known = Object.keys(cfg.endpoints ?? {}).join(', ') || '(none)'
+  const endpoint = form.endpointName ? cfg.endpoints?.[form.endpointName] : undefined
+  const endpointDisplay = !form.endpointName
+    ? '(missing endpoint)'
+    : endpoint
+      ? form.endpointName
+      : `${form.endpointName} (missing)`
+  const inheritedProviderDisplay = endpoint && !isSupportedProviderName(endpoint.provider)
+    ? `${endpoint.provider} (unsupported)`
+    : endpoint?.provider ?? '(unavailable)'
   return (
     <Box flexDirection="column">
       <Text bold color={theme.brand}>{form.original ? `Edit model "${form.original}"` : 'New model'}</Text>
       <FieldRow label="Name"        value={form.nameInput}    active={form.field === 'nameInput'}         cursor={form.field === 'nameInput'         ? form.cursor : undefined} />
       <FieldRow label="Model ID"    value={form.modelId}      active={form.field === 'modelId'}      cursor={form.field === 'modelId'      ? form.cursor : undefined} />
-      <FieldRow label="Endpoint"    value={form.endpointName} active={form.field === 'endpointName'} cursor={form.field === 'endpointName' ? form.cursor : undefined} hint={`one of: ${known}`} />
-      <FieldRow label="Provider"    value={form.provider}     active={form.field === 'provider'}     cursor={form.field === 'provider'     ? form.cursor : undefined} hint="(only used when endpoint is empty)" />
+      <ChoiceFieldRow label="Endpoint" value={endpointDisplay} active={form.field === 'endpointName'} />
+      <FieldRow label="Provider" value={inheritedProviderDisplay} active={false} hint="inherited from endpoint" />
     </Box>
   )
 }
 
 function renderProfileForm(form: Extract<FormState, { kind: 'profile-edit' }>, cfg: Config) {
-  const known = Object.keys(cfg.models).join(', ')
   return (
     <Box flexDirection="column">
       <Text bold color={theme.brand}>{form.original ? `Edit profile "${form.original}"` : 'New profile'}</Text>
       <FieldRow label="Name"     value={form.nameInput} active={form.field === 'nameInput'}     cursor={form.field === 'nameInput'     ? form.cursor : undefined} />
-      <FieldRow label="Fast"     value={form.fast}      active={form.field === 'fast'}     cursor={form.field === 'fast'     ? form.cursor : undefined} hint={`models: ${known}`} />
-      <FieldRow label="Balanced" value={form.balanced}  active={form.field === 'balanced'} cursor={form.field === 'balanced' ? form.cursor : undefined} hint={`models: ${known}`} />
-      <FieldRow label="Powerful" value={form.powerful}  active={form.field === 'powerful'} cursor={form.field === 'powerful' ? form.cursor : undefined} hint={`models: ${known}`} />
+      <ChoiceFieldRow label="Fast" value={modelChoiceLabel(form.fast, cfg)} active={form.field === 'fast'} />
+      <ChoiceFieldRow label="Balanced" value={modelChoiceLabel(form.balanced, cfg)} active={form.field === 'balanced'} />
+      <ChoiceFieldRow label="Powerful" value={modelChoiceLabel(form.powerful, cfg)} active={form.field === 'powerful'} />
     </Box>
   )
 }
@@ -719,9 +820,10 @@ function FieldRow({ label, value, active, cursor, maskedValue, hint }: FieldRowP
   const before = display.slice(0, safeCursor)
   const at = display.slice(safeCursor, safeCursor + 1)
   const after = display.slice(safeCursor + 1)
+  const fieldLabel = `${active ? '> ' : '  '}${label.padEnd(10)}: `
   return (
     <Box>
-      <Text color={active ? theme.brand : theme.dimText}>{label.padEnd(10)}: </Text>
+      <Text color={active ? theme.brand : theme.dimText}>{fieldLabel}</Text>
       {active ? (
         <Text color={theme.assistantText}>
           {before}
@@ -736,26 +838,67 @@ function FieldRow({ label, value, active, cursor, maskedValue, hint }: FieldRowP
   )
 }
 
+interface ChoiceFieldRowProps {
+  label: string
+  value: string
+  active: boolean
+}
+
+function ChoiceFieldRow({ label, value, active }: ChoiceFieldRowProps) {
+  const fieldLabel = `${active ? '> ' : '  '}${label.padEnd(10)}: `
+  return (
+    <Box>
+      <Text color={active ? theme.brand : theme.dimText}>{fieldLabel}</Text>
+      <Text color={active ? theme.assistantText : theme.dimText}>
+        {active ? `‹ ${value} ›` : value}
+      </Text>
+    </Box>
+  )
+}
+
+function modelChoiceLabel(value: string, cfg: Config): string {
+  if (!value) return '(missing model)'
+  return cfg.models[value] ? value : `${value} (missing)`
+}
+
 function maskKey(key: string): string {
   if (!key) return ''
   if (key.length <= 8) return '*'.repeat(key.length)
   return key.slice(0, 4) + '...' + key.slice(-4)
 }
 
-function footerHint(tab: Tab, form: FormState): string {
+function footerHints(tab: Tab, form: FormState): CommandHint[] {
   if (form.kind === 'endpoint-edit' || form.kind === 'model-edit' || form.kind === 'profile-edit') {
-    return '[Tab] next field  [Left/Right/Home/End] move  [Enter] save  [Esc] cancel'
+    const action = isChoiceField(form) ? 'change' : 'cursor'
+    return [
+      { key: '↑/↓', action: 'change field' },
+      { key: '←/→', action },
+      { key: 'Tab', action: 'next field' },
+      { key: 'Enter', action: 'save' },
+      { key: 'Esc', action: 'cancel' },
+    ]
   }
   if (form.kind === 'routing-edit') {
-    return '[Up/Down] choose  [Enter] save  [Esc] cancel'
+    return [{ key: '↑/↓', action: 'choose' }, { key: 'Enter', action: 'save' }, { key: 'Esc', action: 'cancel' }]
   }
   if (form.kind === 'confirm-delete') {
-    return '[y] confirm  [n / Esc] cancel'
+    return [{ key: 'Y', action: 'confirm' }, { key: 'N/Esc', action: 'cancel' }]
   }
-  if (tab === 'endpoints') return '[Up/Down] move  [n] new  [e] edit  [d] delete  [t] test  [Tab] next tab  [q/Esc] close'
-  if (tab === 'profiles')  return '[Up/Down] move  [Enter] activate  [n] new  [e] edit  [d] delete  [Tab] next tab  [q/Esc] close'
-  if (tab === 'models')    return '[Up/Down] move  [n] new  [e] edit  [d] delete  [Tab] next tab  [q/Esc] close'
-  return '[Up/Down] move  [Enter] edit  [Tab] next tab  [q/Esc] close'
+  const base: CommandHint[] = [
+    { key: '↑/↓', action: 'navigate' },
+    { key: '←/→', action: 'switch section' },
+  ]
+  if (tab === 'routing') return [...base, { key: 'Enter', action: 'edit' }, { key: 'Esc', action: 'close' }]
+  if (tab === 'profiles') {
+    return [...base, { key: 'Enter', action: 'edit' }, { key: 'Esc', action: 'close' }, { key: 'A', action: 'activate' }, { key: 'N', action: 'new' }]
+  }
+  return [...base, { key: 'Esc', action: 'close' }, { key: 'N', action: 'new' }, { key: 'E', action: 'edit' }, { key: 'D', action: 'delete' }]
+}
+
+function isChoiceField(form: Extract<FormState, { kind: 'endpoint-edit' | 'model-edit' | 'profile-edit' }>): boolean {
+  if (form.kind === 'endpoint-edit') return form.field === 'provider'
+  if (form.kind === 'model-edit') return form.field === 'endpointName'
+  return form.field === 'fast' || form.field === 'balanced' || form.field === 'powerful'
 }
 
 function capitalize(s: string): string {
@@ -838,6 +981,43 @@ export function applyTextInputKey(
     }
   }
   return { value, cursor: c }
+}
+
+/** Cycle a choice value while preserving an unknown legacy value until the
+ * user explicitly moves away from it. Empty option lists are a no-op. */
+export function cycleChoiceValue(
+  value: string,
+  options: readonly string[],
+  direction: -1 | 1,
+): string {
+  if (options.length === 0) return value
+  const choices = options.includes(value) ? [...options] : [value, ...options]
+  const current = choices.indexOf(value)
+  return choices[(current + direction + choices.length) % choices.length] ?? value
+}
+
+/** Move within a vertical list without wrapping at either boundary. */
+export function moveBoundedIndex(current: number, length: number, direction: -1 | 1): number {
+  if (length <= 0) return 0
+  const safeCurrent = Math.min(Math.max(0, current), length - 1)
+  return Math.min(Math.max(0, safeCurrent + direction), length - 1)
+}
+
+/** Move within a cyclic horizontal or Tab sequence. */
+export function moveCyclicIndex(current: number, length: number, direction: -1 | 1): number {
+  if (length <= 0) return 0
+  const safeCurrent = Math.min(Math.max(0, current), length - 1)
+  return (safeCurrent + direction + length) % length
+}
+
+function choiceDirection(key: InkKey): -1 | 0 | 1 {
+  if (key.leftArrow) return -1
+  if (key.rightArrow) return 1
+  return 0
+}
+
+function isSaveKey(input: string, key: InkKey): boolean {
+  return key.ctrl === true && (input.toLowerCase() === 's' || input === '\x13')
 }
 
 function clampCursor(cursor: number, max: number): number {

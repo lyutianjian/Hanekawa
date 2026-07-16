@@ -1,6 +1,6 @@
-import { Box, Text, useStdout } from 'ink'
+import { Box, Text, useWindowSize } from 'ink'
 import { useDeclaredCursor } from '../ink.js'
-import { buildInputWindow } from '../layout.js'
+import { buildInputWindow, calculateInputBoxGeometry } from '../layout.js'
 import { theme } from '../theme.js'
 
 interface InputBoxProps {
@@ -11,10 +11,8 @@ interface InputBoxProps {
 }
 
 export function InputBox({ text, cursorPos, disabled, isStreaming = false }: InputBoxProps) {
-  const { stdout } = useStdout()
-  const lineWidth = stdout.columns || 80
-  const inputWidth = Math.max(1, lineWidth - 2)
-  const separator = '─'.repeat(lineWidth)
+  const { columns } = useWindowSize()
+  const { inputWidth } = calculateInputBoxGeometry(columns)
   const window = buildInputWindow({ text, cursorPos, inputWidth })
   const declareCursor = useDeclaredCursor({
     line: 1 + window.cursorVisibleLine,
@@ -24,8 +22,8 @@ export function InputBox({ text, cursorPos, disabled, isStreaming = false }: Inp
 
   if (disabled) {
     return (
-      <Box flexDirection="column" ref={declareCursor}>
-        <Text color={theme.subtleText}>{separator}</Text>
+      <Box flexDirection="column" width="100%" paddingRight={1} ref={declareCursor}>
+        <InputSeparator />
         {window.visibleLines.map((line, idx) => {
           const actualIndex = window.firstVisibleLine + idx
           return (
@@ -37,14 +35,14 @@ export function InputBox({ text, cursorPos, disabled, isStreaming = false }: Inp
             </Box>
           )
         })}
-        <Text color={theme.subtleText}>{separator}</Text>
+        <InputSeparator />
       </Box>
     )
   }
 
   return (
-    <Box flexDirection="column" ref={declareCursor}>
-      <Text color={theme.subtleText}>{separator}</Text>
+    <Box flexDirection="column" width="100%" paddingRight={1} ref={declareCursor}>
+      <InputSeparator />
       {window.visibleLines.map((line, idx) => {
         const actualIndex = window.firstVisibleLine + idx
         const isCursorLine = actualIndex === window.cursorLine
@@ -64,8 +62,21 @@ export function InputBox({ text, cursorPos, disabled, isStreaming = false }: Inp
           </Box>
         )
       })}
-      <Text color={theme.subtleText}>{separator}</Text>
+      <InputSeparator />
       {isStreaming ? <Text color={theme.dimText} dimColor>  Enter to queue</Text> : null}
     </Box>
+  )
+}
+
+function InputSeparator() {
+  return (
+    <Box
+      width="100%"
+      borderStyle="single"
+      borderColor={theme.subtleText}
+      borderLeft={false}
+      borderRight={false}
+      borderBottom={false}
+    />
   )
 }

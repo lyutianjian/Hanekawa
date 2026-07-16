@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import type { TUIDisplayItem } from '../src/tui/types.js'
 import {
   buildInputWindow,
+  calculateInputBoxGeometry,
   estimateDisplayItemRows,
   getSafeTerminalWidth,
   selectScrollableViewportEntries,
@@ -147,6 +148,18 @@ describe('TUI layout helpers', () => {
     assert.equal(getSafeTerminalWidth(80), 79)
     assert.equal(getSafeTerminalWidth(1), 1)
     assert.equal(getSafeTerminalWidth(undefined), 79)
+  })
+
+  it('reserves prompt and cursor cells in input box geometry', () => {
+    for (const columns of [120, 80, 40, 20, 5, 4, 1]) {
+      const geometry = calculateInputBoxGeometry(columns)
+
+      assert.equal(geometry.frameWidth, Math.max(1, columns - 1))
+      assert.ok(geometry.inputWidth >= 1)
+      if (columns >= 5) {
+        assert.ok(geometry.inputWidth + 3 <= geometry.frameWidth)
+      }
+    }
   })
 })
 

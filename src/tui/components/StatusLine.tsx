@@ -19,10 +19,10 @@ const EFFORT_SYMBOLS: Record<string, string> = {
 }
 
 const MODE_INDICATOR: Record<string, { icon: string; label: string; color: string }> = {
-  acceptEdits: { icon: '⏵⏵', label: 'accept edits on', color: '#90EE90' },
-  plan:        { icon: '⏸', label: 'plan mode on', color: '#8AB4F8' },
-  auto:        { icon: '⏵⏵', label: 'auto mode on', color: '#FFD700' },
-  bypass:      { icon: '⏵⏵', label: 'bypass mode on', color: '#FF6B6B' },
+  acceptEdits: { icon: '⏵⏵', label: 'accept edits on', color: theme.success },
+  plan:        { icon: '⏸', label: 'plan mode on', color: theme.brand },
+  auto:        { icon: '⏵⏵', label: 'auto mode on', color: theme.warning },
+  bypass:      { icon: '⏵⏵', label: 'bypass mode on', color: theme.error },
 }
 
 interface StatusLineProps {

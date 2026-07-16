@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import ansiEscapes from 'ansi-escapes'
 
 import { buildCursorSuffix } from '../node_modules/ink/build/cursor-helpers.js'
 import logUpdate from '../node_modules/ink/build/log-update.js'
@@ -111,11 +112,85 @@ test('Ink cursor-only updates remember whether the previous frame had a trailing
   assert.equal(stream.writes.at(-1), HIDE_CURSOR + '\x1B[1B\x1B[1G\x1B[2G' + SHOW_CURSOR)
 })
 
-function createFakeStdout(): NodeJS.WriteStream & { writes: string[] } {
+test('Ink resize clear uses reflowed rows and cursor coordinates', () => {
+  const stream = createFakeStdout(119)
+  const log = logUpdate.create(stream)
+  const output = `${'─'.repeat(118)}\n> \n${'─'.repeat(118)}\n`
+
+  log.setCursorPosition({ x: 2, y: 1 })
+  log(output)
+  stream.writes.length = 0
+  stream.columns = 80
+  log.clearAfterResize(80)
+
+  assert.equal(
+    stream.writes.at(-1),
+    HIDE_CURSOR + '\x1B[3B\x1B[1G' + ansiEscapes.eraseLines(6),
+  )
+})
+
+test('Ink incremental resize clear resets reflowed frame bookkeeping', () => {
+  const stream = createFakeStdout(119)
+  const log = logUpdate.create(stream, { incremental: true })
+  const output = `${'─'.repeat(118)}\n> \n${'─'.repeat(118)}\n`
+
+  log.setCursorPosition({ x: 2, y: 1 })
+  log(output)
+  stream.writes.length = 0
+  stream.columns = 80
+  log.clearAfterResize(80)
+
+  assert.equal(
+    stream.writes.at(-1),
+    HIDE_CURSOR + '\x1B[3B\x1B[1G' + ansiEscapes.eraseLines(6),
+  )
+
+  stream.writes.length = 0
+  log('next\n')
+  assert.equal(stream.writes.at(-1), 'next\n')
+})
+
+test('Ink resize clear counts ANSI, CJK, emoji, and trailing rows by display width', () => {
+  const stream = createFakeStdout(12)
+  const log = logUpdate.create(stream)
+  const output = `\x1B[31m你好🙂ab\x1B[39m\n`
+
+  log(output)
+  stream.writes.length = 0
+  stream.columns = 4
+  log.clearAfterResize(4)
+
+  assert.equal(stream.writes.at(-1), ansiEscapes.eraseLines(3))
+})
+
+test('Ink resize clear handles frames without a trailing newline', () => {
+  const stream = createFakeStdout(12)
+  const log = logUpdate.create(stream)
+
+  log('1234567890')
+  stream.writes.length = 0
+  stream.columns = 4
+  log.clearAfterResize(4)
+
+  assert.equal(stream.writes.at(-1), ansiEscapes.eraseLines(3))
+})
+
+test('Ink resize clear falls back to logical clearing for invalid geometry', () => {
+  const stream = createFakeStdout(12)
+  const log = logUpdate.create(stream)
+
+  log('first\nsecond\n')
+  stream.writes.length = 0
+  log.clearAfterResize(0)
+
+  assert.equal(stream.writes.at(-1), ansiEscapes.eraseLines(3))
+})
+
+function createFakeStdout(columns = 20): NodeJS.WriteStream & { writes: string[] } {
   const writes: string[] = []
   return {
     rows: 5,
-    columns: 20,
+    columns,
     isTTY: true,
     writes,
     write(chunk: string | Uint8Array) {

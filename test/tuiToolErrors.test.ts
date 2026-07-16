@@ -245,12 +245,12 @@ test('tool status indicator uses Claude-style circle for all states', () => {
   }
 })
 
-test('tool and subagent success and failure dots use configured RGB colors', () => {
-  assert.equal(getStatusDot('done').color, 'rgb(78,186,101)')
-  assert.equal(getStatusDot('error').color, 'rgb(255,107,128)')
-  assert.equal(getStatusDot('denied').color, 'rgb(255,107,128)')
-  assert.equal(getSubagentStatusColor('completed'), 'rgb(78,186,101)')
-  assert.equal(getSubagentStatusColor('failed'), 'rgb(255,107,128)')
+test('tool and subagent status dots use grayscale semantic theme colors', () => {
+  assert.equal(getStatusDot('done').color, theme.statusDotSuccess)
+  assert.equal(getStatusDot('error').color, theme.statusDotFailed)
+  assert.equal(getStatusDot('denied').color, theme.statusDotFailed)
+  assert.equal(getSubagentStatusColor('completed'), theme.statusDotSuccess)
+  assert.equal(getSubagentStatusColor('failed'), theme.statusDotFailed)
 })
 
 test('task list visual markers use Claude-style task status icons', () => {

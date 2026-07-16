@@ -54,6 +54,17 @@ export function getSafeTerminalWidth(columns: number | undefined, fallback = 80)
   return Math.max(1, width - 1)
 }
 
+export interface InputBoxGeometry {
+  frameWidth: number
+  inputWidth: number
+}
+
+export function calculateInputBoxGeometry(columns: number | undefined): InputBoxGeometry {
+  const frameWidth = getSafeTerminalWidth(columns)
+  const inputWidth = Math.max(1, frameWidth - 3)
+  return { frameWidth, inputWidth }
+}
+
 export function estimateWelcomeBannerRows(width: number): number {
   return width < 70 ? 13 : 15
 }

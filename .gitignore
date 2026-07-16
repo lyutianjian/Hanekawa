@@ -1,14 +1,11 @@
 # Dependencies
 node_modules/
 
-# Local research/reference checkouts
 cc's_harness-engineering/
-
 # Build output
 dist/
 plans/
 docs/
-
 # Environment files
 .env
 .env.local
@@ -21,14 +18,13 @@ docs/
 # Debug logs
 *.log
 .kiro/
-
 # IDE
 .vscode/
 .idea/
 
 # Claude Code local settings
 .claude/
-
+.firecrawl/
 # Reference docs (not part of project)
 capability-gap-reference.md
 

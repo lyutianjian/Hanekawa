@@ -6,9 +6,12 @@ import type { Theme as HighlightTheme } from 'cli-highlight'
 import stringWidth from 'string-width'
 import wrapAnsi from 'wrap-ansi'
 import { parseMarkdown } from '../markdown.js'
-import { theme } from '../theme.js'
+import { theme as appTheme } from '../theme.js'
 import { AnsiText, stripAnsi } from '../ansi.js'
 import { supportsHyperlinks, createHyperlink } from '../hyperlink.js'
+
+// Keep Markdown's established colors while the surrounding TUI uses grayscale.
+const theme = { ...appTheme, ...appTheme.markdown }
 
 interface MarkdownProps {
   content: string

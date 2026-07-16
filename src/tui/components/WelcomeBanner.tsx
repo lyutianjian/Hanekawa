@@ -1,4 +1,5 @@
 import { Box, Text, useStdout } from 'ink'
+import { getSafeTerminalWidth } from '../layout.js'
 import { theme } from '../theme.js'
 import { Neko } from './Neko.js'
 
@@ -17,8 +18,9 @@ const tips = [
 
 export function WelcomeBanner({ sessionShortId, model, providerName, cwd }: WelcomeBannerProps) {
   const { stdout } = useStdout()
-  const width = stdout.columns || 80
-  const isCompact = width < 70
+  const terminalWidth = stdout.columns || 80
+  const width = getSafeTerminalWidth(terminalWidth)
+  const isCompact = terminalWidth < 70
 
   if (isCompact) {
     return (
@@ -50,6 +52,7 @@ export function WelcomeBanner({ sessionShortId, model, providerName, cwd }: Welc
       flexDirection="column"
       borderStyle="round"
       borderColor={theme.brand}
+      width={width}
       marginBottom={1}
     >
       <Box flexDirection="row" paddingX={1} gap={2}>
@@ -82,7 +85,7 @@ export function WelcomeBanner({ sessionShortId, model, providerName, cwd }: Welc
         />
 
         {/* Right panel — tips */}
-        <Box flexDirection="column" justifyContent="center">
+        <Box flexDirection="column" justifyContent="center" flexGrow={1}>
           <Text color={theme.brand} bold>Tips for getting started</Text>
           {tips.map((tip, i) => (
             <Text key={i} color={theme.dimText}>  · {tip}</Text>

@@ -8,7 +8,7 @@ import { ResponseBlock } from './ResponseBlock.js'
 import { TaskListBlock } from './TaskListBlock.js'
 
 const DIM_COLOR = theme.dimText
-const ERROR_RED = { r: 171, g: 43, b: 63 }
+const FALLBACK_GRAY = { r: 128, g: 128, b: 128 }
 const DEFAULT_CHARACTERS = getDefaultCharacters()
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()]
 const GLIMMER_PADDING = 10
@@ -505,7 +505,7 @@ function interpolateColor(
 
 function parseHexColor(value: string): RGBColor {
   const normalized = value.startsWith('#') ? value.slice(1) : value
-  if (normalized.length !== 6) return ERROR_RED
+  if (normalized.length !== 6) return FALLBACK_GRAY
   return {
     r: Number.parseInt(normalized.slice(0, 2), 16),
     g: Number.parseInt(normalized.slice(2, 4), 16),

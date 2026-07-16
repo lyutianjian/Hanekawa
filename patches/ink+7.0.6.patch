@@ -50,13 +50,48 @@ index be49354..dece3c8 100644
      return hidePrefix + returnToBottom + cursorSuffix;
  };
  /**
+diff --git a/node_modules/ink/build/ink.js b/node_modules/ink/build/ink.js
+index f558e7e..3e5786d 100644
+--- a/node_modules/ink/build/ink.js
++++ b/node_modules/ink/build/ink.js
+@@ -273,7 +273,16 @@ export default class Ink {
+         const currentWidth = getWindowSize(this.options.stdout).columns;
+         if (currentWidth < this.lastTerminalWidth) {
+             // We clear the screen when decreasing terminal width to prevent duplicate overlapping re-renders.
+-            this.log.clear();
++            if (process.env['WT_SESSION']) {
++                // Windows Terminal reflows the previous frame before this event,
++                // so flush deferred writes and clear using reflowed row/cursor geometry.
++                const { canWriteToStdout } = getWritableStreamState(this.options.stdout);
++                settleThrottle(this.throttledLog, canWriteToStdout);
++                this.log.clearAfterResize(currentWidth);
++            }
++            else {
++                this.log.clear();
++            }
+             this.lastOutput = '';
+             this.lastOutputToRender = '';
+         }
+diff --git a/node_modules/ink/build/log-update.d.ts b/node_modules/ink/build/log-update.d.ts
+index 6e91353..2538dfb 100644
+--- a/node_modules/ink/build/log-update.d.ts
++++ b/node_modules/ink/build/log-update.d.ts
+@@ -3,6 +3,7 @@ import { type CursorPosition } from './cursor-helpers.js';
+ export type { CursorPosition } from './cursor-helpers.js';
+ export type LogUpdate = {
+     clear: () => void;
++    clearAfterResize: (columns: number) => void;
+     done: () => void;
+     reset: () => void;
+     sync: (str: string) => void;
 diff --git a/node_modules/ink/build/log-update.js b/node_modules/ink/build/log-update.js
-index cdb5fc4..1491f7c 100644
+index cdb5fc4..2923d22 100644
 --- a/node_modules/ink/build/log-update.js
 +++ b/node_modules/ink/build/log-update.js
-@@ -1,6 +1,16 @@
+@@ -1,9 +1,50 @@
  import ansiEscapes from 'ansi-escapes';
  import cliCursor from 'cli-cursor';
++import stringWidth from 'string-width';
  import { cursorPositionChanged, buildCursorSuffix, buildCursorOnlySequence, buildReturnToBottomPrefix, hideCursorEscape, } from './cursor-helpers.js';
 +
 +function fnv1aHash(str) {
@@ -71,7 +106,40 @@ index cdb5fc4..1491f7c 100644
  // Count visible lines in a string, ignoring the trailing empty element
  // that `split('\n')` produces when the string ends with '\n'.
  const visibleLineCount = (lines, str) => str.endsWith('\n') ? lines.length - 1 : lines.length;
-@@ -12,6 +22,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
++// Windows Terminal reflows already-rendered cells when its width shrinks.
++// This geometry is only used by the WT_SESSION-gated resize clear path.
++const reflowedFrameGeometry = (lines, cursorPosition, columns) => {
++    if (!Number.isFinite(columns) || columns <= 0) {
++        return {
++            lineCount: lines.length,
++            cursorPosition,
++        };
++    }
++    const width = Math.max(1, Math.floor(columns));
++    const rowSpans = lines.map(line => Math.max(1, Math.ceil(stringWidth(line) / width)));
++    const lineCount = rowSpans.reduce((sum, rows) => sum + rows, 0);
++    if (!cursorPosition) {
++        return { lineCount, cursorPosition: undefined };
++    }
++    const logicalLine = Math.min(Math.max(0, Math.floor(cursorPosition.y)), Math.max(0, lines.length - 1));
++    let physicalLine = 0;
++    for (let index = 0; index < logicalLine; index++) {
++        physicalLine += rowSpans[index] ?? 1;
++    }
++    const logicalColumn = Math.max(0, Math.floor(cursorPosition.x));
++    physicalLine += Math.floor(logicalColumn / width);
++    return {
++        lineCount,
++        cursorPosition: {
++            x: logicalColumn % width,
++            y: physicalLine,
++        },
++    };
++};
+ const createStandard = (stream, { showCursor = false } = {}) => {
+     let previousLineCount = 0;
+     let previousOutput = '';
+@@ -12,6 +53,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
      let cursorDirty = false;
      let previousCursorPosition;
      let cursorWasShown = false;
@@ -79,7 +147,7 @@ index cdb5fc4..1491f7c 100644
      const getActiveCursor = () => (cursorDirty ? cursorPosition : undefined);
      const hasChanges = (str, activeCursor) => {
          const cursorChanged = cursorPositionChanged(activeCursor, previousCursorPosition);
-@@ -32,7 +43,8 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+@@ -32,7 +74,8 @@ const createStandard = (stream, { showCursor = false } = {}) => {
          }
          const lines = str.split('\n');
          const visibleCount = visibleLineCount(lines, str);
@@ -89,7 +157,7 @@ index cdb5fc4..1491f7c 100644
          if (str === previousOutput && cursorChanged) {
              stream.write(buildCursorOnlySequence({
                  cursorWasShown,
-@@ -40,6 +52,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+@@ -40,6 +83,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
                  previousCursorPosition,
                  visibleLineCount: visibleCount,
                  cursorPosition: activeCursor,
@@ -97,7 +165,7 @@ index cdb5fc4..1491f7c 100644
              }));
          }
          else {
-@@ -53,6 +66,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+@@ -53,6 +97,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
          }
          previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
          cursorWasShown = activeCursor !== undefined;
@@ -105,10 +173,24 @@ index cdb5fc4..1491f7c 100644
          return true;
      };
      render.clear = () => {
-@@ -62,12 +76,14 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+@@ -62,12 +107,28 @@ const createStandard = (stream, { showCursor = false } = {}) => {
          previousLineCount = 0;
          previousCursorPosition = undefined;
          cursorWasShown = false;
++        previousHasTrailingNewline = true;
++    };
++    render.clearAfterResize = columns => {
++        if (previousLineCount === 0 || !Number.isFinite(columns) || columns <= 0) {
++            render.clear();
++            return;
++        }
++        const geometry = reflowedFrameGeometry(previousOutput.split('\n'), previousCursorPosition, columns);
++        const prefix = buildReturnToBottomPrefix(cursorWasShown, geometry.lineCount, geometry.cursorPosition);
++        stream.write(prefix + ansiEscapes.eraseLines(geometry.lineCount));
++        previousOutput = '';
++        previousLineCount = 0;
++        previousCursorPosition = undefined;
++        cursorWasShown = false;
 +        previousHasTrailingNewline = true;
      };
      render.done = () => {
@@ -120,7 +202,7 @@ index cdb5fc4..1491f7c 100644
          if (!showCursor) {
              cliCursor.show(stream);
              hasHiddenCursor = false;
-@@ -78,21 +94,24 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+@@ -78,21 +139,24 @@ const createStandard = (stream, { showCursor = false } = {}) => {
          previousLineCount = 0;
          previousCursorPosition = undefined;
          cursorWasShown = false;
@@ -146,7 +228,7 @@ index cdb5fc4..1491f7c 100644
      };
      render.setCursorPosition = (position) => {
          cursorPosition = position;
-@@ -104,12 +123,14 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+@@ -104,12 +168,14 @@ const createStandard = (stream, { showCursor = false } = {}) => {
  };
  const createIncremental = (stream, { showCursor = false } = {}) => {
      let previousLines = [];
@@ -161,7 +243,7 @@ index cdb5fc4..1491f7c 100644
      const getActiveCursor = () => (cursorDirty ? cursorPosition : undefined);
      const hasChanges = (str, activeCursor) => {
          const cursorChanged = cursorPositionChanged(activeCursor, previousCursorPosition);
-@@ -130,6 +151,7 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+@@ -130,6 +196,7 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
          }
          const nextLines = str.split('\n');
          const visibleCount = visibleLineCount(nextLines, str);
@@ -169,7 +251,7 @@ index cdb5fc4..1491f7c 100644
          const previousVisible = visibleLineCount(previousLines, previousOutput);
          if (str === previousOutput && cursorChanged) {
              stream.write(buildCursorOnlySequence({
-@@ -138,14 +160,16 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+@@ -138,14 +205,16 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
                  previousCursorPosition,
                  visibleLineCount: visibleCount,
                  cursorPosition: activeCursor,
@@ -187,7 +269,7 @@ index cdb5fc4..1491f7c 100644
              stream.write(returnPrefix +
                  ansiEscapes.eraseLines(previousLines.length) +
                  str +
-@@ -154,9 +178,10 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+@@ -154,9 +223,10 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
              previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
              previousOutput = str;
              previousLines = nextLines;
@@ -199,7 +281,7 @@ index cdb5fc4..1491f7c 100644
          // We aggregate all chunks for incremental rendering into a buffer, and then write them to stdout at the end.
          const buffer = [];
          buffer.push(returnPrefix);
-@@ -169,10 +194,11 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+@@ -169,10 +239,11 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
          else {
              buffer.push(ansiEscapes.cursorUp(previousLines.length - 1));
          }
@@ -212,7 +294,7 @@ index cdb5fc4..1491f7c 100644
                  // Don't move past the last line when there's no trailing newline,
                  // otherwise the cursor overshoots the rendered block.
                  if (!isLastLine || hasTrailingNewline) {
-@@ -187,13 +213,15 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+@@ -187,13 +258,15 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
                  // has no trailing newline (fullscreen mode).
                  (isLastLine && !hasTrailingNewline ? '' : '\n'));
          }
@@ -229,13 +311,28 @@ index cdb5fc4..1491f7c 100644
          return true;
      };
      render.clear = () => {
-@@ -201,14 +229,18 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+@@ -201,14 +274,33 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
          stream.write(prefix + ansiEscapes.eraseLines(previousLines.length));
          previousOutput = '';
          previousLines = [];
 +        previousLineHashes = [];
          previousCursorPosition = undefined;
          cursorWasShown = false;
++        previousHasTrailingNewline = true;
++    };
++    render.clearAfterResize = columns => {
++        if (previousLines.length === 0 || !Number.isFinite(columns) || columns <= 0) {
++            render.clear();
++            return;
++        }
++        const geometry = reflowedFrameGeometry(previousLines, previousCursorPosition, columns);
++        const prefix = buildReturnToBottomPrefix(cursorWasShown, geometry.lineCount, geometry.cursorPosition);
++        stream.write(prefix + ansiEscapes.eraseLines(geometry.lineCount));
++        previousOutput = '';
++        previousLines = [];
++        previousLineHashes = [];
++        previousCursorPosition = undefined;
++        cursorWasShown = false;
 +        previousHasTrailingNewline = true;
      };
      render.done = () => {
@@ -248,7 +345,7 @@ index cdb5fc4..1491f7c 100644
          if (!showCursor) {
              cliCursor.show(stream);
              hasHiddenCursor = false;
-@@ -217,23 +249,28 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+@@ -217,23 +309,28 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
      render.reset = () => {
          previousOutput = '';
          previousLines = [];
@@ -299,7 +396,7 @@ index 5b4a9d7..7e73d5b 100644
          if (removeNode.internal_static &&
              currentRootNode?.staticNode === removeNode) {
 diff --git a/node_modules/ink/build/wrap-text.js b/node_modules/ink/build/wrap-text.js
-index 51f696c..8252655 100644
+index 51f696c..0b58fed 100644
 --- a/node_modules/ink/build/wrap-text.js
 +++ b/node_modules/ink/build/wrap-text.js
 @@ -1,5 +1,72 @@

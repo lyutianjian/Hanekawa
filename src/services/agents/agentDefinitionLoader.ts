@@ -206,10 +206,10 @@ function parseOptionalStringArray(value: unknown, field: string): readonly strin
 
 function parseOptionalPermissionMode(value: unknown): PermissionMode | undefined {
   if (value === undefined) return undefined
-  if (value === 'default' || value === 'plan' || value === 'acceptEdits' || value === 'auto' || value === 'bypass') {
+  if (value === 'default' || value === 'plan' || value === 'acceptEdits' || value === 'bypass') {
     return value
   }
-  throw new Error('Agent frontmatter "permissionMode" must be one of: default, plan, acceptEdits, auto, bypass')
+  throw new Error('Agent frontmatter "permissionMode" must be one of: default, plan, acceptEdits, bypass')
 }
 
 function parseOptionalIsolation(value: unknown): SubagentIsolation | undefined {

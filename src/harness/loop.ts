@@ -192,10 +192,6 @@ export class AgentLoop {
     this.options.contextBuilder.clearCachedSections(key)
   }
 
-  invalidateAvailableToolsSection(): void {
-    this.options.contextBuilder.invalidateAvailableToolsSection()
-  }
-
   invalidateSkillsSection(): void {
     this.options.contextBuilder.invalidateSkillsSection()
   }
@@ -371,9 +367,6 @@ export class AgentLoop {
           })
         }
         await this.options.planModeManager?.beforeTurn()
-        if (this.options.planModeManager?.consumeShouldStopCurrentTurn()) {
-          return { content: '', usage }
-        }
         if (this.syncRoleModel(cacheSource)) {
           resetModelRequestState()
         }
@@ -679,23 +672,6 @@ export class AgentLoop {
       }
 
       if (response.toolCalls.length === 0) {
-        if (this.options.permissionMode?.() === 'plan') {
-          const content = responseContent.trim()
-          if (content.length > 0 && this.options.planModeManager) {
-            await this.options.planModeManager.submitAssistantPlanFallback(responseContent, turnId)
-          } else {
-            await this.appendRecord({
-              type: 'message',
-              id: randomUUID(),
-              role: 'user',
-              content: wrapInSystemReminder('Plan mode is active. Do not end your turn with ordinary assistant text. Use AskUserQuestion for unresolved decisions, or call ExitPlanMode when the plan is ready for approval.'),
-              turnId,
-              createdAt: new Date().toISOString(),
-            })
-          }
-          continue
-        }
-
         await this.appendRecord(assistantMessage)
         const finished = await this.finishTurn({
           content: responseContent,

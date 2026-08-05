@@ -19,19 +19,18 @@ function managerSpy() {
   return { manager, calls }
 }
 
-test('permission mode cycle includes plan and excludes bypass', () => {
+test('permission mode cycle includes plan and bypass', () => {
   assert.equal(nextPermissionMode('default', 1), 'acceptEdits')
   assert.equal(nextPermissionMode('acceptEdits', 1), 'plan')
-  assert.equal(nextPermissionMode('plan', 1), 'auto')
-  assert.equal(nextPermissionMode('auto', 1), 'default')
-  assert.equal(nextPermissionMode('bypass', 1), 'acceptEdits')
+  assert.equal(nextPermissionMode('plan', 1), 'bypass')
+  assert.equal(nextPermissionMode('bypass', 1), 'default')
 })
 
-test('permission mode display labels keep acceptEdits distinct from auto', () => {
+test('permission mode display labels', () => {
   assert.equal(permissionModeStatusLabel('acceptEdits'), 'accept-edits')
   assert.equal(permissionModeTitle('acceptEdits'), 'Accept edits')
-  assert.equal(permissionModeStatusLabel('auto'), 'auto')
-  assert.equal(permissionModeTitle('auto'), 'Auto')
+  assert.equal(permissionModeStatusLabel('bypass'), 'bypass')
+  assert.equal(permissionModeTitle('bypass'), 'Bypass')
 })
 
 test('applying transition into plan mode activates PlanModeManager and stashes prior mode', () => {
@@ -51,10 +50,10 @@ test('applying transition out of plan mode deactivates PlanModeManager', () => {
   const { manager, calls } = managerSpy()
   gate.prepareContextForPlanMode()
 
-  const mode = applyPermissionModeTransition(gate, manager, 'auto')
+  const mode = applyPermissionModeTransition(gate, manager, 'bypass')
 
-  assert.equal(mode, 'auto')
-  assert.equal(gate.getMode(), 'auto')
+  assert.equal(mode, 'bypass')
+  assert.equal(gate.getMode(), 'bypass')
   assert.deepEqual(calls, ['exit'])
 })
 

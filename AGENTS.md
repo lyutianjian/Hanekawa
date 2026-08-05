@@ -271,7 +271,7 @@ Agent definition directories merge by `name` in this order, later files overridi
 
 Custom agents always disallow nested `Agent`, `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion` calls. `tools: ["*"]` means all read-only tools, while `Bash` is available only when explicitly listed. `isReadOnlyAgent` controls whether an agent type may be scheduled concurrently; definitions that list write-like tools such as `Bash`, `Write`, `Edit`, `MultiEdit`, `Delete`, or `TaskCreate`/`TaskUpdate` are treated as non-read-only even if they declare `isReadOnlyAgent: true`. Custom prompts have a 16k character soft warning threshold. Custom names that collide with built-ins, such as `explore`, override the built-in definition and produce a warning.
 
-Background agents (`background: true` or `run_in_background: true`) return immediately and send a completion notification later. They use `SidechainRecordStream` for transcript persistence, default to `auto` permission mode, and register alongside background shells in the session task registry. `/tasks` displays both kinds; background shells are controlled through `BashOutput` and `KillShell`.
+Background agents (`background: true` or `run_in_background: true`) return immediately and send a completion notification later. They use `SidechainRecordStream` for transcript persistence, default to `bypass` permission mode, and register alongside background shells in the session task registry. `/tasks` displays both kinds; background shells are controlled through `BashOutput` and `KillShell`.
 
 Worktree isolation (`isolation: 'worktree'`) creates an isolated git worktree for the sub-agent via `GitSubagentWorktreeManager`. Only available for non-read-only agents.
 

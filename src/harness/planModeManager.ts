@@ -72,19 +72,13 @@ export interface ExitDialogInput {
    * surfacing bypass to a user who never opted in could downgrade safety.
    */
   isBypassAvailable?: boolean
-  isAutoModeAvailable?: boolean
 }
 
 /** Decision returned by the dialog. */
 export type ExitPlanDecision =
   | { kind: 'approve_restore_keep', planContent?: string }
-  | { kind: 'approve_auto_keep', planContent?: string }
   | { kind: 'approve_acceptEdits_keep', planContent?: string }
   | { kind: 'approve_bypass_keep', planContent?: string }
-  | { kind: 'approve_clear_restore_with_plan_as_prompt', planContent?: string }
-  | { kind: 'approve_clear_auto_with_plan_as_prompt', planContent?: string }
-  | { kind: 'approve_clear_acceptEdits_with_plan_as_prompt', planContent?: string }
-  | { kind: 'approve_clear_bypass_with_plan_as_prompt', planContent?: string }
   | { kind: 'reject', feedback: string }
 
 export interface PlanModeManagerDeps {
@@ -101,7 +95,6 @@ export interface PlanModeManagerDeps {
   emitChatMessage?(content: string): Promise<void>
   openExitDialog?(input: ExitDialogInput): Promise<ExitPlanDecision>
   openEnterPrompt?(): Promise<boolean>
-  onClearContextAndReplaceInput?(content: string): Promise<void>
 }
 
 export class PlanModeManager {
@@ -112,8 +105,6 @@ export class PlanModeManager {
     toolUseTurnsSinceEntry: 0,
     attachmentInjections: 0,
   }
-  private stopCurrentTurnAfterBeforeTurn = false
-
   constructor(private deps: PlanModeManagerDeps) {}
 
   /**
@@ -123,7 +114,6 @@ export class PlanModeManager {
     | 'emitChatMessage'
     | 'openExitDialog'
     | 'openEnterPrompt'
-    | 'onClearContextAndReplaceInput'
   >): void {
     this.deps = { ...this.deps, ...uiDeps }
   }
@@ -227,23 +217,16 @@ export class PlanModeManager {
   }
 
   /**
-   * Compaction integration: read current plan content from disk and wrap
-   * it in a plan_file_reference reminder. Returns undefined if plan mode
-   * isn't active or the file doesn't exist / is empty.
+   * Compaction integration: returns a lightweight reminder with the plan
+   * slug and file path so the model can Read it if needed. Returns
+   * undefined if plan mode isn't active or no slug exists yet.
    */
   async getPlanFileReferenceForCompaction(): Promise<string | undefined> {
     if (!this.state.active) return undefined
     const slug = getPlanSlug(this.deps.sessionMeta.id)
     if (!slug) return undefined
-    const path = getPlanFilePath(this.deps.cwd, this.deps.sessionMeta.id)
-    let content: string | null
-    try {
-      content = await readPlan(path)
-    } catch {
-      return undefined
-    }
-    if (!content || content.trim().length === 0) return undefined
-    return buildPlanFileReferenceReminder(content)
+    const planPath = getPlanFilePath(this.deps.cwd, this.deps.sessionMeta.id)
+    return buildPlanFileReferenceReminder(slug, planPath)
   }
 
   /**
@@ -288,41 +271,12 @@ export class PlanModeManager {
     await this.drainRequests()
   }
 
-  /**
-   * When the user approves "clear context and treat plan as the new prompt",
-   * the UI replaces the active session while beforeTurn() is still executing
-   * inside the old loop. The old loop must stop before building another
-   * request against the stale session.
-   */
-  consumeShouldStopCurrentTurn(): boolean {
-    const shouldStop = this.stopCurrentTurnAfterBeforeTurn
-    this.stopCurrentTurnAfterBeforeTurn = false
-    return shouldStop
-  }
-
   /** Called after each tool batch completes — bumps the tool-use counter. */
   noteToolUseTurn(): void {
     if (!this.state.active) return
     this.state.toolUseTurnsSinceEntry += 1
   }
 
-  /**
-   * Safety net for models that finish plan mode by writing the final plan as
-   * ordinary assistant text instead of calling ExitPlanMode. The loop calls
-   * this before that text is persisted as chat, so the existing exit request
-   * pipeline still owns approval UI and permission-mode changes.
-   */
-  async submitAssistantPlanFallback(planContent: string, turnId?: string): Promise<void> {
-    await this.deps.appendRecord({
-      id: randomUUID(),
-      type: 'plan_mode_request',
-      kind: 'exit',
-      submittedFromSessionId: this.deps.sessionMeta.id,
-      planContent,
-      createdAt: new Date().toISOString(),
-      ...(turnId ? { turnId } : {}),
-    })
-  }
 
   /**
    * Read records and process any unhandled plan_mode_request entries.
@@ -391,18 +345,9 @@ export class PlanModeManager {
   }
 
   private async processExitRequest(req: Extract<SessionRecord, { type: 'plan_mode_request' }>): Promise<void> {
-    // 'subagent_exit' is routed identically to 'exit' so that a sub-agent
-    // can submit a finished plan via ExitPlanMode and the parent main
-    // session opens the user dialog. The exitPlanMode tool already
-    // refuses to fire from sub-agents *for the main session* — but
-    // delegated planning workflows where the sub-agent is the one that
-    // wrote the plan should still surface to the user. The
-    // submittedFromSessionId on the request lets observers tell the two
-    // apart for telemetry; the dialog flow is the same.
-
-    // The plan content is provided either inline on the request record
+    // Plan content is provided either inline on the request record
     // (model passed it via ExitPlanMode {plan: ...}) or read from the
-    // optional draft file for compatibility with file-first flows.
+    // plan file on disk. Inline is the primary path; disk is the fallback.
     let planContent = req.planContent
     const planFilePath = getPlanFilePath(this.deps.cwd, this.deps.sessionMeta.id)
 
@@ -449,8 +394,7 @@ export class PlanModeManager {
     const decision = await this.deps.openExitDialog({
       planContent,
       planFilePath,
-      isBypassAvailable: this.deps.gate.getPrePlanMode() === 'bypass',
-      isAutoModeAvailable: true,
+      isBypassAvailable: this.deps.gate.isBypassAvailable(),
     })
     await this.dispatchExitDecision(req, planContent, planFilePath, decision)
   }
@@ -504,25 +448,10 @@ export class PlanModeManager {
     if (decision.kind === 'approve_restore_keep') {
       this.deps.gate.setMode('default')
     }
-    if (decision.kind === 'approve_auto_keep') {
-      this.deps.gate.setMode('auto')
-    }
     if (decision.kind === 'approve_acceptEdits_keep') {
       this.deps.gate.setMode('acceptEdits')
     }
     if (decision.kind === 'approve_bypass_keep') {
-      this.deps.gate.setMode('bypass')
-    }
-    if (decision.kind === 'approve_clear_restore_with_plan_as_prompt') {
-      this.deps.gate.setMode('default')
-    }
-    if (decision.kind === 'approve_clear_auto_with_plan_as_prompt') {
-      this.deps.gate.setMode('auto')
-    }
-    if (decision.kind === 'approve_clear_acceptEdits_with_plan_as_prompt') {
-      this.deps.gate.setMode('acceptEdits')
-    }
-    if (decision.kind === 'approve_clear_bypass_with_plan_as_prompt') {
       this.deps.gate.setMode('bypass')
     }
 
@@ -534,18 +463,6 @@ export class PlanModeManager {
       detail: decision.kind,
       createdAt: new Date().toISOString(),
     })
-
-    if (
-      decision.kind === 'approve_clear_restore_with_plan_as_prompt'
-      || decision.kind === 'approve_clear_auto_with_plan_as_prompt'
-      || decision.kind === 'approve_clear_acceptEdits_with_plan_as_prompt'
-      || decision.kind === 'approve_clear_bypass_with_plan_as_prompt'
-    ) {
-      if (this.deps.onClearContextAndReplaceInput) {
-        await this.deps.onClearContextAndReplaceInput(`Implement the following plan:\n\n${approvedPlanContent}`)
-      }
-      this.stopCurrentTurnAfterBeforeTurn = true
-    }
   }
 }
 

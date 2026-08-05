@@ -8,7 +8,7 @@ import type { SessionStore, SessionMeta } from '../../sessions/service.js'
 import type { PermissionGate, PermissionMode } from '../../harness/permissions.js'
 import type { PlanModeManager } from '../../harness/planModeManager.js'
 import type { ConfigService, ModelConfig } from '../../config/service.js'
-import { resolveTier, type Tier } from '../../config/routing.js'
+import { parseTierInput, resolveTier, type Tier } from '../../config/routing.js'
 import type { SessionRecord } from '../../harness/types.js'
 import type { CommandSubmitQueryOptions, CommandView, SetModelResult } from '../../commands/types.js'
 import type { TUIDisplayItem, TUIStaticItem } from '../types.js'
@@ -464,8 +464,16 @@ export function App({
         availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
       }
     }
-    return activateModelKey(modelKey)
-  }, [resolveModelInput, modelKeys, activateModelKey])
+    const result = activateModelKey(modelKey)
+    if (result.ok) {
+      const tier = parseTierInput(input) ?? providerConfig.findTierForModel(modelKey)
+      if (tier) {
+        providerConfig.setDefaultModel(tier)
+        void providerConfig.save().catch(() => {})
+      }
+    }
+    return result
+  }, [resolveModelInput, modelKeys, activateModelKey, providerConfig])
 
   const refreshRuntimeAfterProviderConfigChange = useCallback((scope: ProviderConfigChangeScope) => {
     setModelKeys(Object.keys(providerConfig.get().models))
@@ -517,7 +525,7 @@ export function App({
 
     if (decision.action === 'set-default') {
       try {
-        providerConfig.setDefaultModel(modelKey)
+        providerConfig.setDefaultModel(decision.option.tier)
         await providerConfig.save()
         setModelKeys(Object.keys(providerConfig.get().models))
       } catch (error) {
@@ -561,12 +569,8 @@ export function App({
       emitChatMessage: async (content) => addSystemMessage(content),
       openEnterPrompt: enterPlanProxy.open,
       openExitDialog: exitPlanProxy.open,
-      onClearContextAndReplaceInput: async (content) => {
-        await clearConversation()
-        await enqueueMessage(content)
-      },
     })
-  }, [runtime.planModeManager, addSystemMessage, enterPlanProxy, exitPlanProxy, clearConversation])
+  }, [runtime.planModeManager, addSystemMessage, enterPlanProxy, exitPlanProxy])
 
   const readCurrentPlanFile = useCallback(async () => {
     const path = runtimeRef.current.planModeManager.resolvePlanFilePathLazy()

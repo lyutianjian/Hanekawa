@@ -110,15 +110,16 @@ test('buildBridge returns a bridge whose activePlanFilePath getter is live', asy
   })
 })
 
-test('getPlanFileReferenceForCompaction returns reminder when active+non-empty', async () => {
+test('getPlanFileReferenceForCompaction returns path reference when active', async () => {
   await withTempCwd(async (cwd) => {
     const { manager } = await setup(cwd)
     await manager.onEnterPlanMode()
     const planPath = manager.resolvePlanFilePathLazy()
-    await writePlan(planPath, '# Plan body\n')
     const reminder = await manager.getPlanFileReferenceForCompaction()
     assert.ok(reminder)
-    assert.match(reminder!, /Plan body/)
+    assert.match(reminder!, /Plan mode is active/)
+    assert.match(reminder!, /Plan file:/)
+    assert.match(reminder!, /Read it with the Read tool/)
   })
 })
 
@@ -203,7 +204,7 @@ test('drainRequests handles exit with empty plan: opens dialog and can approve e
   })
 })
 
-test('drainRequests handles exit with inline plan: writes to disk + opens dialog', async () => {
+test('drainRequests handles exit with plan on disk: reads from file + opens dialog', async () => {
   await withTempCwd(async (cwd) => {
     const setupResult = await setup(cwd)
     const { gate, meta } = setupResult
@@ -225,18 +226,20 @@ test('drainRequests handles exit with inline plan: writes to disk + opens dialog
       },
     })
     await manager.onEnterPlanMode()
-    // Emit an exit request with inline plan.
+    // Write plan to disk (the only supported path now).
+    const planPath = manager.resolvePlanFilePathLazy()
+    await writePlan(planPath, '# Disk plan body\n')
+    // Emit an exit request without inline plan.
     localRecords.push({
-      id: 'req-exit-inline',
+      id: 'req-exit-disk',
       type: 'plan_mode_request',
       kind: 'exit',
       submittedFromSessionId: meta.id,
-      planContent: '# Inline plan body\n',
       createdAt: new Date().toISOString(),
     })
     await manager.beforeTurn()
     assert.ok(dialogInput, 'dialog should open')
-    assert.equal(dialogInput!.planContent, '# Inline plan body\n')
+    assert.equal(dialogInput!.planContent, '# Disk plan body\n')
     const approved = localRecords.find(
       (r) => r.type === 'plan_mode_outcome' && r.kind === 'exit_approved',
     )
@@ -246,12 +249,11 @@ test('drainRequests handles exit with inline plan: writes to disk + opens dialog
   })
 })
 
-test('approved dialog edits replace disk plan, exit attachment, and clear-context prompt', async () => {
+test('approved dialog edits replace disk plan and exit attachment', async () => {
   await withTempCwd(async (cwd) => {
     const setupResult = await setup(cwd)
     const { gate, meta } = setupResult
     const localRecords: SessionRecord[] = []
-    const clearContextCalls: string[] = []
     const manager = new PlanModeManager({
       cwd,
       sessionMeta: meta,
@@ -260,12 +262,9 @@ test('approved dialog edits replace disk plan, exit attachment, and clear-contex
       appendRecord: async (r) => { localRecords.push(r) },
       loadRecords: async () => [...localRecords],
       openExitDialog: async () => ({
-        kind: 'approve_clear_restore_with_plan_as_prompt',
+        kind: 'approve_restore_keep',
         planContent: '# Edited by user\n',
       }),
-      onClearContextAndReplaceInput: async (content) => {
-        clearContextCalls.push(content)
-      },
     })
     gate.setPlanSlugProvider(() => manager.getSlug())
     await manager.onEnterPlanMode()
@@ -282,45 +281,9 @@ test('approved dialog edits replace disk plan, exit attachment, and clear-contex
     await manager.beforeTurn()
 
     assert.equal(await readPlan(planPath), '# Edited by user\n')
-    assert.deepEqual(clearContextCalls, ['Implement the following plan:\n\n# Edited by user\n'])
     const exitAttachment = manager.getActivePlanAttachment()
     assert.match(exitAttachment ?? '', /# Edited by user/)
-    assert.doesNotMatch(exitAttachment ?? '', /Implement the following plan/)
     assert.doesNotMatch(exitAttachment ?? '', /# Original/)
-  })
-})
-
-test('approve_clear_restore_with_plan_as_prompt requests current turn stop exactly once', async () => {
-  await withTempCwd(async (cwd) => {
-    const setupResult = await setup(cwd)
-    const { gate, meta } = setupResult
-    const localRecords: SessionRecord[] = []
-    const manager = new PlanModeManager({
-      cwd,
-      sessionMeta: meta,
-      store: setupResult.store,
-      gate,
-      appendRecord: async (r) => { localRecords.push(r) },
-      loadRecords: async () => [...localRecords],
-      openExitDialog: async () => ({ kind: 'approve_clear_restore_with_plan_as_prompt' }),
-      onClearContextAndReplaceInput: async () => {},
-    })
-    gate.setPlanSlugProvider(() => manager.getSlug())
-    await manager.onEnterPlanMode()
-    const planPath = manager.resolvePlanFilePathLazy()
-    await writePlan(planPath, '# Restart here\n')
-    localRecords.push({
-      id: 'req-stop-current-turn',
-      type: 'plan_mode_request',
-      kind: 'exit',
-      submittedFromSessionId: meta.id,
-      createdAt: new Date().toISOString(),
-    })
-
-    await manager.beforeTurn()
-
-    assert.equal(manager.consumeShouldStopCurrentTurn(), true)
-    assert.equal(manager.consumeShouldStopCurrentTurn(), false)
   })
 })
 
@@ -458,24 +421,6 @@ test('subagent_exit kind routed identically to exit', async () => {
   })
 })
 
-test('submitAssistantPlanFallback emits an exit request with inline plan content', async () => {
-  await withTempCwd(async (cwd) => {
-    const { manager, records, meta } = await setup(cwd)
-
-    await manager.submitAssistantPlanFallback('# Assistant text plan\n', 'turn-fallback')
-
-    const request = records.find(
-      (r): r is Extract<SessionRecord, { type: 'plan_mode_request' }> =>
-        r.type === 'plan_mode_request',
-    )
-    assert.ok(request)
-    assert.equal(request.kind, 'exit')
-    assert.equal(request.submittedFromSessionId, meta.id)
-    assert.equal(request.planContent, '# Assistant text plan\n')
-    assert.equal(request.turnId, 'turn-fallback')
-  })
-})
-
 
 test('drainRequests handles enter rejected (appends enter_rejected outcome and emits reminder)', async () => {
   await withTempCwd(async (cwd) => {
@@ -555,53 +500,7 @@ test('approve_bypass_keep flips gate to bypass and emits exit_approved', async (
   })
 })
 
-test('approve_clear_bypass_with_plan_as_prompt clears context and sets bypass', async () => {
-  await withTempCwd(async (cwd) => {
-    const setupResult = await setup(cwd)
-    const { gate, meta } = setupResult
-    const localRecords: SessionRecord[] = []
-    const clearContextCalls: string[] = []
-    const manager = new PlanModeManager({
-      cwd,
-      sessionMeta: meta,
-      store: setupResult.store,
-      gate,
-      appendRecord: async (r) => { localRecords.push(r) },
-      loadRecords: async () => [...localRecords],
-      openExitDialog: async () => ({
-        kind: 'approve_clear_bypass_with_plan_as_prompt',
-        planContent: '# Approved plan\n',
-      }),
-      onClearContextAndReplaceInput: async (content) => {
-        clearContextCalls.push(content)
-      },
-    })
-    gate.setPlanSlugProvider(() => manager.getSlug())
-    gate.setMode('bypass')
-    gate.prepareContextForPlanMode()
-    await manager.onEnterPlanMode()
-    const planPath = manager.resolvePlanFilePathLazy()
-    await writePlan(planPath, '# Original\n')
-    localRecords.push({
-      id: 'req-exit-clear-bypass',
-      type: 'plan_mode_request',
-      kind: 'exit',
-      submittedFromSessionId: meta.id,
-      createdAt: new Date().toISOString(),
-    })
-    await manager.beforeTurn()
-
-    assert.equal(gate.getMode(), 'bypass', 'gate flipped to bypass post-exit')
-    assert.deepEqual(clearContextCalls, ['Implement the following plan:\n\n# Approved plan\n'])
-    assert.equal(
-      manager.consumeShouldStopCurrentTurn(),
-      true,
-      'turn-stop signal raised so the old loop bails before the new one starts',
-    )
-  })
-})
-
-test('openExitDialog receives isBypassAvailable=true when prePlanMode was bypass', async () => {
+test('openExitDialog receives isBypassAvailable=true (bypass is always available)', async () => {
   await withTempCwd(async (cwd) => {
     const setupResult = await setup(cwd)
     const { gate, meta } = setupResult
@@ -620,7 +519,6 @@ test('openExitDialog receives isBypassAvailable=true when prePlanMode was bypass
       },
     })
     gate.setPlanSlugProvider(() => manager.getSlug())
-    gate.setMode('bypass')
     gate.prepareContextForPlanMode()
     await manager.onEnterPlanMode()
     const planPath = manager.resolvePlanFilePathLazy()
@@ -634,43 +532,8 @@ test('openExitDialog receives isBypassAvailable=true when prePlanMode was bypass
     })
     await manager.beforeTurn()
 
-    assert.equal(observedFlag, true, 'dialog sees bypass-available flag from gate.getPrePlanMode()')
+    assert.equal(observedFlag, true, 'bypass is always available')
   })
 })
 
-test('openExitDialog receives isBypassAvailable=false when prePlanMode was not bypass', async () => {
-  await withTempCwd(async (cwd) => {
-    const setupResult = await setup(cwd)
-    const { gate, meta } = setupResult
-    const localRecords: SessionRecord[] = []
-    let observedFlag: boolean | undefined
-    const manager = new PlanModeManager({
-      cwd,
-      sessionMeta: meta,
-      store: setupResult.store,
-      gate,
-      appendRecord: async (r) => { localRecords.push(r) },
-      loadRecords: async () => [...localRecords],
-      openExitDialog: async (input) => {
-        observedFlag = input.isBypassAvailable
-        return { kind: 'reject', feedback: '' }
-      },
-    })
-    gate.setPlanSlugProvider(() => manager.getSlug())
-    // Default mode entry: prePlanMode is 'default', not 'bypass'.
-    gate.prepareContextForPlanMode()
-    await manager.onEnterPlanMode()
-    const planPath = manager.resolvePlanFilePathLazy()
-    await writePlan(planPath, '# Plan\n')
-    localRecords.push({
-      id: 'req-flag-default',
-      type: 'plan_mode_request',
-      kind: 'exit',
-      submittedFromSessionId: meta.id,
-      createdAt: new Date().toISOString(),
-    })
-    await manager.beforeTurn()
 
-    assert.equal(observedFlag, false, 'dialog sees bypass-unavailable for non-bypass entries')
-  })
-})

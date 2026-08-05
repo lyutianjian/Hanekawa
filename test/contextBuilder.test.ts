@@ -43,13 +43,11 @@ test('ContextBuilder injects layered system and user context', async () => {
   assert.deepEqual(built.systemBlocks?.map((block) => block.slice(0, 40)), [
     'You are Hanekawa, an interactive CLI age',
     '# System\n - All text you output outside ',
-    '# Doing tasks\n - The user will primarily',
-    '# Executing actions with care\n\nCarefully',
+    '# Doing tasks\n - The user will request s',
+    '# Executing actions with care\n\nConsider ',
     '# Using your tools\n - Prefer dedicated t',
     '# Tone and style\n - Only use emojis if t',
     '# Text output (does not apply to tool ca',
-    '# Context management\nWhen working with t',
-    '# availableTools\n- Read: Read a file fro',
     '__MYAGENT_SYSTEM_PROMPT_DYNAMIC_BOUNDARY',
     'custom system',
   ])
@@ -59,7 +57,7 @@ test('ContextBuilder injects layered system and user context', async () => {
   assert.equal(first.message.id, 'meta:user-context')
   assert.match(first.message.content, /Today's date is 2026\/05\/10/)
   assert.doesNotMatch(first.message.content, /Read: Read a file from disk/)
-  assert.match(built.system ?? '', /Read: Read a file from disk/)
+  assert.doesNotMatch(built.system ?? '', /Read: Read a file from disk/)
 })
 
 test('ContextBuilder excludes message queue records from model context', async () => {
@@ -96,7 +94,7 @@ test('ContextBuilder can build a reduced system prompt from enabled sections', a
   assert.doesNotMatch(built.system ?? '', /# Tone and style/)
   assert.deepEqual(built.systemBlocks?.map((block) => block.slice(0, 40)), [
     'You are Hanekawa, an interactive CLI age',
-    '# Doing tasks\n - The user will primarily',
+    '# Doing tasks\n - The user will request s',
   ])
 })
 
@@ -163,12 +161,12 @@ test('ContextBuilder adds a dynamic plan mode reminder', async () => {
     permissionMode: 'plan',
   })
 
-  assert.match(built.system ?? '', /You are in plan mode/)
+  assert.match(built.system ?? '', /Plan mode is active/)
   assert.match(built.system ?? '', /AskUserQuestion for unresolved requirements/)
   assert.match(built.system ?? '', /ExitPlanMode when the plan is ready for approval/)
   assert.match(built.system ?? '', /always use ExitPlanMode/)
   assert.equal(built.systemBlocks?.at(-2), '__MYAGENT_SYSTEM_PROMPT_DYNAMIC_BOUNDARY__')
-  assert.match(built.systemBlocks?.at(-1) ?? '', /plan mode/)
+  assert.match(built.systemBlocks?.at(-1) ?? '', /Plan mode/)
   assert.match(built.systemBlocks?.at(-1) ?? '', /ExitPlanMode/)
 })
 
@@ -195,7 +193,7 @@ test('ContextBuilder injects available skills as system reminder', async () => {
   assert.match(built.system ?? '', /The following skills are available for use with the Skill tool/)
   assert.match(built.system ?? '', /- debugging: Use when diagnosing bugs/)
   assert.match(built.system ?? '', /- tdd: Test-driven development/)
-  assert.match(built.system ?? '', /Skill: Execute a skill within the main conversation/)
+  assert.doesNotMatch(built.system ?? '', /Skill: Execute a skill within the main conversation/)
   assert.doesNotMatch(built.system ?? '', /skill_debugging/)
 })
 
@@ -687,38 +685,7 @@ test('ContextBuilder omits environment context when env is not provided', async 
   assert.doesNotMatch(first.message.content, /Primary working directory/)
 })
 
-test('ContextBuilder caches available tools until invalidated', async () => {
-  const builder = new ContextBuilder(undefined, contextWindow(5000))
-  const tools = [tool]
-
-  const first = await builder.build({
-    records: [],
-    tools,
-    now: new Date('2026-05-10T12:00:00.000Z'),
-  })
-  tools[0] = {
-    ...tool,
-    description: 'Changed after MCP reconnect',
-  }
-  const cached = await builder.build({
-    records: [],
-    tools,
-    now: new Date('2026-05-10T12:01:00.000Z'),
-  })
-  builder.invalidateAvailableToolsSection()
-  const refreshed = await builder.build({
-    records: [],
-    tools,
-    now: new Date('2026-05-10T12:02:00.000Z'),
-  })
-
-  assert.match(first.system ?? '', /Read: Read a file from disk/)
-  assert.match(cached.system ?? '', /Read: Read a file from disk/)
-  assert.doesNotMatch(cached.system ?? '', /Changed after MCP reconnect/)
-  assert.match(refreshed.system ?? '', /Read: Changed after MCP reconnect/)
-})
-
-test('ContextBuilder keeps currentDate dynamic while availableTools stays cached', async () => {
+test('ContextBuilder keeps currentDate dynamic across midnight boundary', async () => {
   const builder = new ContextBuilder(undefined, contextWindow(5000))
 
   const beforeMidnight = await builder.build({
@@ -740,8 +707,8 @@ test('ContextBuilder keeps currentDate dynamic while availableTools stays cached
   assert.match(after.message.content, /Today's date is 2026\/05\/11/)
   assert.doesNotMatch(before.message.content, /Read: Read a file from disk/)
   assert.doesNotMatch(after.message.content, /Read: Read a file from disk/)
-  assert.match(beforeMidnight.system ?? '', /Read: Read a file from disk/)
-  assert.match(afterMidnight.system ?? '', /Read: Read a file from disk/)
+  assert.doesNotMatch(beforeMidnight.system ?? '', /Read: Read a file from disk/)
+  assert.doesNotMatch(afterMidnight.system ?? '', /Read: Read a file from disk/)
   assert.doesNotMatch(beforeMidnight.system ?? '', /2026\/05\/10/)
   assert.doesNotMatch(afterMidnight.system ?? '', /2026\/05\/11/)
 })

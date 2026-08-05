@@ -3,41 +3,43 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { theme } from '../src/tui/theme.js'
 
-test('TUI application colors use zero-saturation grayscale values', () => {
-  const uiColors = [
+test('TUI neutral UI colors use zero-saturation grayscale values', () => {
+  const neutralColors = [
     theme.brand,
     theme.userPrefix,
     theme.assistantText,
     theme.dimText,
     theme.subtleText,
     theme.toolName,
-    theme.statusDotSuccess,
-    theme.statusDotFailed,
-    theme.success,
-    theme.error,
-    theme.warning,
     theme.border,
     theme.spinner,
     theme.inputPrompt,
     theme.systemText,
-    theme.taskRunning,
-    theme.taskDone,
-    theme.taskFailed,
     theme.taskDim,
     theme.codeBg,
     theme.codeInline,
     ...theme.spinnerPalette.flatMap(({ base, shimmer }) => [base, shimmer]),
   ]
 
-  for (const color of uiColors) {
+  for (const color of neutralColors) {
     const [red, green, blue] = parseColor(color)
     assert.equal(red, green, `${color} is not grayscale`)
     assert.equal(green, blue, `${color} is not grayscale`)
   }
 
   assert.equal(theme.brand, '#F2F2F2')
-  assert.equal(theme.error, '#FFFFFF')
   assert.equal(theme.codeBg, '#000000')
+})
+
+test('TUI semantic colors carry meaning (non-grayscale)', () => {
+  assert.equal(theme.statusDotSuccess, 'rgb(78,186,101)')
+  assert.equal(theme.statusDotFailed, 'rgb(255,107,128)')
+  assert.equal(theme.success, '#90EE90')
+  assert.equal(theme.error, '#FF6B6B')
+  assert.equal(theme.warning, '#FFD700')
+  assert.equal(theme.taskRunning, '#8AB4F8')
+  assert.equal(theme.taskDone, '#90EE90')
+  assert.equal(theme.taskFailed, '#FF6B6B')
 })
 
 test('Markdown retains its established colors and syntax highlighting', () => {
@@ -47,6 +49,8 @@ test('Markdown retains its established colors and syntax highlighting', () => {
     subtleText: '#909090',
     toolName: '#87CEEB',
     success: '#90EE90',
+    error: '#FF6B6B',
+    warning: '#FFD700',
     codeBg: '#1E1E1E',
     codeInline: '#CBA6F7',
   })

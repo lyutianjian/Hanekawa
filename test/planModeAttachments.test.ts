@@ -136,8 +136,9 @@ test('reminders contain expected anchor text', () => {
   assert.match(buildPlanModeReentryReminder(planPath), new RegExp(planPath))
   assert.match(buildPlanModeExitReminder('# Approved\n'), /Exited Plan Mode/)
   assert.match(buildPlanModeExitReminder('# Approved\n'), /# Approved/)
-  assert.match(buildPlanFileReferenceReminder('# Plan'), /Plan mode is active/)
-  assert.match(buildPlanFileReferenceReminder('# Plan'), /# Plan/)
+  assert.match(buildPlanFileReferenceReminder('test-slug', planPath), /Plan mode is active/)
+  assert.match(buildPlanFileReferenceReminder('test-slug', planPath), /test-slug/)
+  assert.match(buildPlanFileReferenceReminder('test-slug', planPath), new RegExp(planPath.replace(/\\/g, '\\\\')))
 })
 
 test('post-exit reminder nudges the model to update its task list', () => {

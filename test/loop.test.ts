@@ -13,7 +13,7 @@ import { createAgentTool } from '../src/tools/agentTool.js'
 import { exitPlanModeTool } from '../src/tools/exitPlanMode.js'
 import { toolSearchTool } from '../src/tools/ToolSearchTool/ToolSearchTool.js'
 import { SessionStore } from '../src/sessions/service.js'
-import { clearAllPlanSlugs } from '../src/utils/plans.js'
+import { clearAllPlanSlugs, writePlan } from '../src/utils/plans.js'
 import type { SessionMetricInput } from '../src/harness/metrics.js'
 import type { RecordStream } from '../src/harness/recordStream.js'
 import type { ModelProvider, ModelRequest, SessionRecord, Tool } from '../src/harness/types.js'
@@ -415,13 +415,12 @@ test('agent loop fully inlines tools and removes ToolSearch when provider lacks 
     ])
     assert.equal(seenRequest?.hasDeferredTools, false)
     assert.equal(seenRequest?.allDeferredToolNames, undefined)
-    assert.match(seenRequest?.system ?? '', /DeferredTool/)
   } finally {
     setEnv('HANEKAWA_TOOL_SEARCH', original)
   }
 })
 
-test('plan mode routes assistant text-only plan through exit approval instead of chat', async () => {
+test('plan mode text-only response ends turn normally as assistant message', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-loop-plan-'))
   clearAllPlanSlugs()
   try {
@@ -433,7 +432,6 @@ test('plan mode routes assistant text-only plan through exit approval instead of
     gate.prepareContextForPlanMode()
 
     let loop: AgentLoop | undefined
-    let dialogOpened = false
     const manager = new PlanModeManager({
       cwd,
       sessionMeta: session,
@@ -444,35 +442,17 @@ test('plan mode routes assistant text-only plan through exit approval instead of
         loop?.noteRecordAppended(record)
       },
       loadRecords: async () => [...records],
-      openExitDialog: async () => {
-        dialogOpened = true
-        return { kind: 'approve_restore_keep' }
-      },
     })
     gate.setPlanSlugProvider(() => manager.getSlug())
     manager.onEnterPlanMode()
 
-    let calls = 0
-    const seenModels: string[] = []
     const provider: ModelProvider = {
       name: 'fake',
-      async createMessage(request) {
-        seenModels.push(request.model)
-        calls += 1
-        if (calls === 1) {
-          return {
-            content: '# Final plan\n\n- Update the approval flow.\n- Run tests.',
-            toolCalls: [],
-          }
+      async createMessage() {
+        return {
+          content: 'I need more information about the requirements.',
+          toolCalls: [],
         }
-        const contextItems = request.contextItems ?? []
-        const lastContextItem = contextItems.at(-1)
-        assert.equal(lastContextItem?.kind, 'message')
-        if (lastContextItem?.kind === 'message') {
-          assert.match(lastContextItem.message.content, /Exited Plan Mode/)
-          assert.match(lastContextItem.message.content, /User has approved your plan/)
-        }
-        return { content: 'implementation can now start', toolCalls: [] }
       },
     }
     const runner = new ToolRunner([], gate, {
@@ -504,27 +484,24 @@ test('plan mode routes assistant text-only plan through exit approval instead of
 
     const response = await loop.run('plan this change')
 
-    assert.equal(response.content, 'implementation can now start')
-    assert.equal(seenModels[0], 'plan-model')
-    assert.equal(seenModels[1], 'fake-model')
-    assert.equal(loop.getActiveModel().model, 'fake-model')
-    assert.equal(dialogOpened, true)
+    // Text-only response in plan mode should end the turn normally
+    assert.equal(response.content, 'I need more information about the requirements.')
+    // Assistant message should be persisted as chat (not intercepted as plan)
     assert.equal(
       records.some((record) =>
         record.type === 'message'
         && record.role === 'assistant'
-        && record.content.includes('# Final plan')
+        && record.content.includes('I need more information')
       ),
+      true,
+      'assistant text should be persisted as a normal message',
+    )
+    // No plan_mode_request should be emitted
+    assert.equal(
+      records.some((record) => record.type === 'plan_mode_request'),
       false,
-      'plain assistant plan should not be persisted as chat',
+      'no plan_mode_request should be emitted for text-only response',
     )
-    const request = records.find(
-      (record): record is Extract<SessionRecord, { type: 'plan_mode_request' }> =>
-        record.type === 'plan_mode_request',
-    )
-    assert.ok(request)
-    assert.equal(request.kind, 'exit')
-    assert.match(request.planContent ?? '', /# Final plan/)
   } finally {
     clearAllPlanSlugs()
     await rm(cwd, { recursive: true, force: true })
@@ -553,10 +530,13 @@ test('plan mode approval reminder is last context and ExitPlanMode is not summar
         loop?.noteRecordAppended(record)
       },
       loadRecords: async () => [...records],
-      openExitDialog: async () => ({ kind: 'approve_auto_keep' }),
+      openExitDialog: async () => ({ kind: 'approve_acceptEdits_keep' }),
     })
     gate.setPlanSlugProvider(() => manager.getSlug())
     manager.onEnterPlanMode()
+    // Write plan file to disk so ExitPlanMode validation passes.
+    const planPath = manager.resolvePlanFilePathLazy()
+    await writePlan(planPath, '# Final plan\n\n- Fix the approval handoff.')
 
     let calls = 0
     let summaryCalls = 0
@@ -572,7 +552,7 @@ test('plan mode approval reminder is last context and ExitPlanMode is not summar
             toolCalls: [{
               id: 'exit-plan',
               name: 'ExitPlanMode',
-              input: { plan: '# Final plan\n\n- Fix the approval handoff.' },
+              input: {},
             }],
           }
         }
@@ -876,7 +856,7 @@ test('agent loop escalates default max output tokens before persisting a max_tok
         assert.equal(request.maxOutputTokens, undefined)
         return { content: 'discarded retry candidate', toolCalls: [], stopReason: 'max_tokens' }
       }
-      assert.equal(request.maxOutputTokens, 64_000)
+      assert.equal(request.maxOutputTokens, 128_000)
       return { content: 'complete after escalation', toolCalls: [] }
     },
   }

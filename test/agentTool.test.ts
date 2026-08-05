@@ -624,7 +624,7 @@ test('Agent tool does not persist sub-agent denial state into the parent store',
   assert.equal(parentStoreWrites, 0)
 })
 
-test('custom agent permissionMode auto approves confirm tools inside the sub-agent', async () => {
+test('custom agent permissionMode bypass auto approves confirm tools inside the sub-agent', async () => {
   let promptCalls = 0
   let confirmRuns = 0
   const provider: ModelProvider = {
@@ -660,7 +660,7 @@ test('custom agent permissionMode auto approves confirm tools inside the sub-age
     agentDefinitions: [{
       type: 'auto-review',
       description: 'Auto approves confirm tools.',
-      permissionMode: 'auto',
+      permissionMode: 'bypass',
       tools: ['ConfirmRead'],
       disallowedTools: ['Agent'],
       maxTurns: 3,
@@ -1650,10 +1650,9 @@ test('Agent tool description teaches effective sub-agent prompting', async () =>
   })
 
   assert.match(agentTool.description, /complex, multi-step/)
-  assert.match(agentTool.description, /When NOT to use the Agent tool/)
-  assert.match(agentTool.description, /smart colleague who just walked into the room/)
+  assert.match(agentTool.description, /Do NOT use when/)
+  assert.match(agentTool.description, /colleague who has not seen this conversation/)
   assert.match(agentTool.description, /Never delegate understanding/)
-  assert.match(agentTool.description, /based on your findings, fix the bug/)
   assert.match(agentTool.description, /Always pass an explicit subagent_type/)
 })
 
@@ -1842,7 +1841,7 @@ test('AgentDefinitionLoader parses extended custom agent frontmatter fields', as
       name: 'v2-agent',
       description: 'Uses v2 fields.',
       model: 'fast',
-      permissionMode: 'auto',
+      permissionMode: 'bypass',
       skills: ['debugging', 'testing'],
       mcpServers: ['github'],
       background: true,
@@ -1855,7 +1854,7 @@ test('AgentDefinitionLoader parses extended custom agent frontmatter fields', as
 
     assert.ok(definition)
     assert.equal(definition.model, 'fast')
-    assert.equal(definition.permissionMode, 'auto')
+    assert.equal(definition.permissionMode, 'bypass')
     assert.deepEqual(definition.skills, ['debugging', 'testing'])
     assert.deepEqual(definition.mcpServers, ['github'])
     assert.equal(definition.background, true)

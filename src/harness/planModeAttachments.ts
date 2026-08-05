@@ -156,8 +156,8 @@ export function buildPlanModeExitReminder(planContent: string): string {
   return wrapInSystemReminder(lines.join('\n'))
 }
 
-export function buildPlanFileReferenceReminder(planContent: string): string {
+export function buildPlanFileReferenceReminder(slug: string, planPath: string): string {
   return wrapInSystemReminder(
-    'Plan mode is active. Current draft plan file content:\n' + planContent.trim(),
+    `Plan mode is active. You are working on plan '${slug}'. Plan file: ${planPath}\nRead it with the Read tool if you need to reference or continue editing it.`,
   )
 }

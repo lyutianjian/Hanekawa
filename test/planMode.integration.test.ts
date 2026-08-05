@@ -34,7 +34,6 @@ interface Harness {
   dialogInputs: ExitDialogInput[]
   dialogResponses: ExitPlanDecision[]
   chatMessages: string[]
-  clearContextCalls: string[]
 }
 
 async function buildHarness(cwd: string, options: {
@@ -48,7 +47,6 @@ async function buildHarness(cwd: string, options: {
   const chatMessages: string[] = []
   const dialogResponses = options.dialogResponses ?? []
   const dialogInputs: ExitDialogInput[] = []
-  const clearContextCalls: string[] = []
   const gate = new PermissionGate(async () => true, undefined, { mode: 'default', cwd })
 
   const deps: PlanModeManagerDeps = {
@@ -65,13 +63,12 @@ async function buildHarness(cwd: string, options: {
       return dialogResponses[idx] ?? { kind: 'reject', feedback: '' }
     },
     openEnterPrompt: async () => options.enterApproved ?? true,
-    onClearContextAndReplaceInput: async (content) => { clearContextCalls.push(content) },
   }
 
   const manager = new PlanModeManager(deps)
   gate.setPlanSlugProvider(() => manager.getSlug())
 
-  return { manager, gate, records, meta, dialogInputs, dialogResponses, chatMessages, clearContextCalls }
+  return { manager, gate, records, meta, dialogInputs, dialogResponses, chatMessages }
 }
 
 function emitEnterRequest(records: SessionRecord[], sessionId: string): string {
@@ -129,9 +126,8 @@ test('Integration A: enter approved → write plan → exit (disk fallback) → 
   })
 })
 
-// Scenario B: Inline plan path — model passes plan content via
-// ExitPlanMode({plan: ...}). Manager writes to disk THEN opens dialog.
-test('Integration B: exit with inline plan writes to disk before opening dialog', async () => {
+// Scenario B: Plan on disk — manager reads from file and opens dialog.
+test('Integration B: exit reads plan from disk and opens dialog', async () => {
   await withTempCwd(async (cwd) => {
     const h = await buildHarness(cwd, {
       dialogResponses: [{ kind: 'approve_restore_keep' }],
@@ -140,15 +136,18 @@ test('Integration B: exit with inline plan writes to disk before opening dialog'
     emitEnterRequest(h.records, h.meta.id)
     await h.manager.beforeTurn()
 
-    emitExitRequest(h.records, h.meta.id, { planContent: '# Inline plan body\n' })
+    // Write plan to disk before emitting exit request.
+    const planPath = h.manager.resolvePlanFilePathLazy()
+    await writePlan(planPath, '# Disk plan body\n')
+
+    emitExitRequest(h.records, h.meta.id)
     await h.manager.beforeTurn()
 
     assert.equal(h.dialogInputs.length, 1)
-    assert.equal(h.dialogInputs[0]?.planContent, '# Inline plan body\n')
-    // Disk reflects the inline plan.
-    const planPath = h.dialogInputs[0]!.planFilePath
-    const onDisk = await readPlan(planPath)
-    assert.equal(onDisk, '# Inline plan body\n')
+    assert.equal(h.dialogInputs[0]?.planContent, '# Disk plan body\n')
+    // Disk still has the plan.
+    const onDisk = await readPlan(h.dialogInputs[0]!.planFilePath)
+    assert.equal(onDisk, '# Disk plan body\n')
   })
 })
 
@@ -224,27 +223,6 @@ test('Integration E: subagent_exit routes identically; approve_acceptEdits_keep 
   })
 })
 
-// Scenario F: approve_clear_restore_with_plan_as_prompt fires
-// onClearContextAndReplaceInput with the plan content.
-test('Integration F: approve_clear_restore_with_plan_as_prompt -> onClearContextAndReplaceInput receives implementation prompt', async () => {
-  await withTempCwd(async (cwd) => {
-    const h = await buildHarness(cwd, {
-      dialogResponses: [{ kind: 'approve_clear_restore_with_plan_as_prompt' }],
-    })
-
-    emitEnterRequest(h.records, h.meta.id)
-    await h.manager.beforeTurn()
-    const planPath = h.manager.resolvePlanFilePathLazy()
-    await writePlan(planPath, '# Restart with this plan\n')
-
-    emitExitRequest(h.records, h.meta.id)
-    await h.manager.beforeTurn()
-
-    assert.equal(h.clearContextCalls.length, 1)
-    assert.equal(h.clearContextCalls[0], 'Implement the following plan:\n\n# Restart with this plan\n')
-  })
-})
-
 // Scenario G: Plan-file write exception via prefix match — main and
 // sub-agent paths both pass; non-matching .myagent/plans path falls
 // through to the prompt.
@@ -283,15 +261,13 @@ test('Integration G: plan-file prefix match allows main + sub-agent paths; non-m
     // Sub-agent plan path: also auto-allowed (same prefix, different suffix).
     const r2 = await gateWithSpy.approve(writeTool as any, { path: subPath, content: 'x' })
     assert.equal(r2, true)
-    // Non-matching path under .myagent/plans/: denied by the hard
-    // protected-path check (.myagent is in PROTECTED_PATHS). The
-    // exception only fires for paths matching the active slug prefix,
-    // so this path falls through to standard denial — without prompting.
+    // Non-matching path under .myagent/plans/: triggers protected-path
+    // prompt (bypass-equivalent still guards protected paths). The spy
+    // returns false, so it is denied.
     const r3 = await gateWithSpy.approve(writeTool as any, { path: otherPath, content: 'x' })
-    assert.equal(r3, false, 'non-matching plans-dir path is denied')
+    assert.equal(r3, false, 'non-matching plans-dir path is denied via prompt')
 
-    // Neither auto-allowed path triggered the prompt; the denied path
-    // also did not (hard-deny short-circuits before prompt).
-    assert.equal(promptCount, 0, 'no prompt fired for any of the three calls')
+    // Only the non-matching path triggered the protected-path prompt.
+    assert.equal(promptCount, 1, 'one prompt fired for the non-matching protected path')
   })
 })

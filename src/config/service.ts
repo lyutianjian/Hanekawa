@@ -115,6 +115,15 @@ export class ConfigService {
     }
   }
 
+  findTierForModel(modelKey: string): string | undefined {
+    const profile = this.getActiveProfile()?.profile
+    if (!profile) return undefined
+    for (const [tier, key] of Object.entries(profile)) {
+      if (key === modelKey) return tier
+    }
+    return undefined
+  }
+
   addModel(name: string, model: ModelConfig): void {
     this.config.models[name] = model
   }
@@ -140,6 +149,17 @@ export class ConfigService {
 
   resolveModelKeyFor(role: RoutingRole, options: { currentModelKey?: string } = {}): string | undefined {
     const fallback = this.resolveFallbackModelKey(options.currentModelKey)
+
+    if (role.kind === 'main') {
+      const defaultTier = parseTierInput(this.config.defaultModel ?? '')
+      if (defaultTier) {
+        const active = this.getActiveProfile()
+        const routed = resolveTier(active?.profile, defaultTier)
+        if (routed && this.resolveModel(routed)) return routed
+        return fallback
+      }
+    }
+
     const tier = pickTier(this.getRouting(), role)
     if (tier === undefined || tier === 'inherit') return fallback
 
@@ -203,7 +223,7 @@ export class ConfigService {
   }
 
   removeModel(name: string): void {
-    if (this.config.defaultModel === name) {
+    if (this.config.defaultModel === name || this.resolveModelReference(this.config.defaultModel) === name) {
       throw new Error(`Cannot remove model "${name}": it is the defaultModel.`)
     }
     if (this.config.fallbackModel === name) {
@@ -220,6 +240,28 @@ export class ConfigService {
       }
     }
     delete this.config.models[name]
+  }
+
+  renameModel(oldKey: string, newKey: string): void {
+    if (oldKey === newKey) return
+    const model = this.config.models[oldKey]
+    if (!model) throw new Error(`Model "${oldKey}" not found.`)
+    if (this.config.models[newKey]) throw new Error(`Model "${newKey}" already exists.`)
+
+    this.setModelConfig(newKey, model)
+    delete this.config.models[oldKey]
+
+    if (this.config.defaultModel === oldKey) this.config.defaultModel = newKey
+    if (this.config.fallbackModel === oldKey) this.config.fallbackModel = newKey
+    if (this.config.compactModel === oldKey) this.config.compactModel = newKey
+
+    if (this.config.profiles) {
+      for (const profile of Object.values(this.config.profiles)) {
+        for (const tier of ['fast', 'balanced', 'powerful'] as const) {
+          if (profile[tier] === oldKey) profile[tier] = newKey
+        }
+      }
+    }
   }
 
   setProfile(name: string, profile: Profile): void {

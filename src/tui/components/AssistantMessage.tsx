@@ -28,7 +28,7 @@ export function AssistantMessage({ content, streamingContent, thinkingBlocks, th
       {hasThinking && (
         <Box flexDirection="row">
           <Box width={PREFIX_WIDTH} flexShrink={0}>
-            <Text color={theme.brand}>{THINKING_PREFIX}</Text>
+            <Text color={theme.subtleText}>{THINKING_PREFIX}</Text>
           </Box>
           <Box flexGrow={1}>
             <AssistantThinkingMessage blocks={thinkingBlocks ?? []} expanded={thinkingExpanded} thinkingDurationMs={thinkingDurationMs} thinkingPreview={thinkingPreview} isTranscriptMode={isTranscriptMode} />

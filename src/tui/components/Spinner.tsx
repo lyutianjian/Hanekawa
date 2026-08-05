@@ -263,13 +263,13 @@ export function Spinner({ subText, mode: streamMode = 'requesting', taskSnapshot
 
   if (!active) return null
 
-  const elapsedText = `${elapsed}s`
+  const elapsedText = formatElapsed(elapsed)
   const terminalWidth = stdout.columns || 80
 
   // Build parenthetical: (elapsed · ↓ tokens · thinking status)
   const approxTokens = responseLengthRef ? Math.round(responseLengthRef.current / 4) : 0
   const parentheticalSegments: string[] = [elapsedText]
-  if (approxTokens > 0) parentheticalSegments.push(`↓ ${approxTokens} tokens`)
+  if (approxTokens > 0) parentheticalSegments.push(`↓ ${formatTokenCount(approxTokens)}`)
   const thinkingLabel = formatThinkingStatus(thinkingStatus)
   if (thinkingLabel) parentheticalSegments.push(thinkingLabel)
   const parenthetical = parentheticalSegments.join(' · ')
@@ -320,6 +320,19 @@ export function Spinner({ subText, mode: streamMode = 'requesting', taskSnapshot
 
 type StreamSpinnerMode = 'requesting' | 'thinking' | 'waiting'
 type SpinnerMode = StreamSpinnerMode | 'tool-use'
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m${seconds % 60 > 0 ? ` ${seconds % 60}s` : ''}`
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  return `${h}h${m > 0 ? ` ${m}m` : ''}`
+}
+
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k tokens`
+  return `${tokens} tokens`
+}
 
 function formatThinkingStatus(status: 'thinking' | number | null): string | undefined {
   if (status === 'thinking') return 'thinking'

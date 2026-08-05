@@ -3,14 +3,8 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { analyzeShellCommand } from './commandAnalysis.js'
 import { shellWords } from './bashSafety.js'
-import {
-  isSafeAutoTool,
-  classifyWithUserRules,
-  type AutoModeConfig,
-} from './autoClassifier.js'
 import type { RiskLevel, Tool, ToolApprovalRecord } from './types.js'
-import { isProtectedPath } from '../utils/permissions/protectedPaths.js'
-import { EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
+import { isProtectedPath, checkWindowsPathSafety } from '../utils/permissions/protectedPaths.js'
 import { getPlansDir } from '../utils/plans.js'
 
 const require = createRequire(import.meta.url)
@@ -18,7 +12,7 @@ const picomatch = require('picomatch') as {
   isMatch(input: string, pattern: string, options?: { nocase?: boolean }): boolean
 }
 
-export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'auto' | 'bypass'
+export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'bypass' | 'readonly'
 
 export interface PermissionRequest {
   tool: Tool
@@ -80,9 +74,8 @@ const DEFAULT_GLOBAL_DENIAL_PROMPT_THRESHOLD = 20
 const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
 const FILE_PERMISSION_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'Delete'])
 const ACCEPT_EDITS_BASH_COMMANDS = new Set(['mkdir', 'touch'])
-const PLAN_ALLOWED_AGENT_TYPES = new Set(['general', 'fork', 'explore', 'plan'])
 
-export { isProtectedPath } from '../utils/permissions/protectedPaths.js'
+export { isProtectedPath, checkWindowsPathSafety } from '../utils/permissions/protectedPaths.js'
 
 export function permissionRulesFromSettings(permissions: PermissionSettings | undefined): PermissionRule[] {
   if (!permissions) return []
@@ -197,7 +190,6 @@ export class PermissionGate {
   private readonly globalDenialPromptThreshold: number
   private readonly denialStateStore?: DenialStateStore
   private readonly cwd: string
-  private readonly autoModeConfig?: AutoModeConfig
   private denialStateLoaded = false
   private readonly modeListeners = new Set<PermissionModeListener>()
 
@@ -210,22 +202,16 @@ export class PermissionGate {
       mode?: PermissionMode
       denialStateStore?: DenialStateStore
       cwd?: string
-      autoModeConfig?: AutoModeConfig
     },
   ) {
     this.addRules(configRules ?? [])
     this.mode = options?.mode ?? 'default'
-    this.autoModeConfig = options?.autoModeConfig
     const configured = options?.denialStreakThreshold ?? DEFAULT_DENIAL_STREAK_THRESHOLD
     this.denialStreakThreshold = Math.max(1, configured)
     const globalConfigured = options?.globalDenialPromptThreshold ?? DEFAULT_GLOBAL_DENIAL_PROMPT_THRESHOLD
     this.globalDenialPromptThreshold = Math.max(1, globalConfigured)
     this.denialStateStore = options?.denialStateStore
     this.cwd = options?.cwd ?? process.cwd()
-    // Strip dangerous permissions when starting in auto mode
-    if (this.mode === 'auto') {
-      this.stripDangerousPermissions()
-    }
   }
 
   async approve(tool: Tool, input: unknown): Promise<boolean> {
@@ -248,6 +234,53 @@ export class PermissionGate {
     const allowedByRule = this.matchingRule('allow', tool.name, input)
 
     if (this.mode === 'bypass') {
+      // Deny rules are bypass-immune (aligned with Claude Code step 1a), but
+      // the user gets to decide: prompt instead of silently denying.
+      if (deniedByRule) {
+        const previousStreak = this.denialStreaks.get(tool.name) ?? 0
+        const approved = await this.prompt({
+          tool,
+          input,
+          reason: `A permission rule denies ${tool.name}. Confirm to override the deny rule.`,
+          source: 'deny rule',
+          matchedRule: deniedByRule,
+          denialStreak: 0,
+        })
+        this.recordPromptDecision(tool.name, approved, previousStreak)
+        return this.persistAndReturn(approved)
+      }
+
+      // Ask rules are bypass-immune, both tool-wide and content-specific
+      // (aligned with Claude Code steps 1b/1f).
+      if (askedByRule) {
+        return this.promptForDecision(
+          tool,
+          input,
+          `Permission rule asks before running ${tool.name}.`,
+          'ask rule',
+          false,
+          { matchedRule: askedByRule, commandAnalysis },
+        )
+      }
+
+      // Windows path safety checks are bypass-immune (aligned with Claude Code's
+      // classifierApprovable: false): NTFS ADS, UNC paths, DOS device names,
+      // 8.3 short names, and trailing dots/spaces cannot be silently approved.
+      const windowsPathCheck = checkWindowsPathSafety(path)
+      if (windowsPathCheck.suspicious) {
+        const approved = await this.prompt({
+          tool,
+          input,
+          reason: `Suspicious path: ${windowsPathCheck.reason}`,
+          source: 'protected path',
+          denialStreak: 0,
+        })
+        this.denialStreaks.set(tool.name, 0)
+        return this.persistAndReturn(approved)
+      }
+
+      // Protected-path safety checks are bypass-immune (aligned with Claude
+      // Code step 1g, which is a path safetyCheck only).
       if (hasProtectedPath) {
         const approved = await this.prompt({
           tool,
@@ -260,11 +293,28 @@ export class PermissionGate {
         return this.persistAndReturn(approved)
       }
 
-      // Shell safety checks are bypass-immune (aligned with Claude Code):
-      // hasSafetyDenyIssue and requiresSafetyPrompt always prompt even in
-      // bypass mode. This prevents dangerous patterns like sudo, bash -c,
-      // UNC paths, and command substitution from being silently auto-approved.
-      if (hasHardSafetyDenial || requiresSafetyPrompt) {
+      // Everything else is allowed silently: shell syntax findings and
+      // destructive commands are not bypass-immune (aligned with Claude Code,
+      // where Bash syntax analysis only produces ask results that bypass
+      // mode approves at step 2a).
+      this.denialStreaks.set(tool.name, 0)
+      return this.persistAndReturn(true)
+    }
+
+    if (this.mode === 'plan') {
+      const planFileWrite = this.isSessionPlanFile(tool, input)
+      if (hasProtectedPath && !planFileWrite) {
+        const approved = await this.prompt({
+          tool,
+          input,
+          reason: this.protectedPathBypassReason(input, commandAnalysis),
+          source: 'protected path',
+          denialStreak: 0,
+        })
+        this.denialStreaks.set(tool.name, 0)
+        return this.persistAndReturn(approved)
+      }
+      if ((hasHardSafetyDenial || requiresSafetyPrompt) && !planFileWrite) {
         const approved = await this.prompt({
           tool,
           input,
@@ -275,64 +325,21 @@ export class PermissionGate {
         this.denialStreaks.set(tool.name, 0)
         return this.persistAndReturn(approved)
       }
-
-      // For Bash, use commandAnalysis to identify truly destructive commands;
-      // otherwise fall back to the tool-level isDestructive flag.
-      const isDestructiveCall = tool.name === 'Bash'
-        ? (commandAnalysis?.categories.includes('destructive filesystem or git operation') ?? false)
-        : tool.isDestructive === true
-
-      if (isDestructiveCall) {
-        const previousStreak = this.denialStreaks.get(tool.name) ?? 0
-        const approved = await this.prompt({
-          tool,
-          input,
-          reason: this.reasonFor(tool.riskLevel, commandAnalysis?.categories, false, previousStreak),
-          source: this.promptSourceForSafety(commandAnalysis, false),
-          denialStreak: 0,
-        })
-        this.recordPromptDecision(tool.name, approved, previousStreak)
-        return this.persistAndReturn(approved)
-      }
-
       this.denialStreaks.set(tool.name, 0)
       return this.persistAndReturn(true)
     }
 
-    if (this.mode === 'plan') {
-      const allowedPlanFileWrite = this.isAllowedPlanFileWrite(tool, input, requiresSafetyPrompt)
-      if ((hasHardSafetyDenial && !allowedPlanFileWrite) || deniedByRule) {
-        const escalated = await this.handleAutoDeny(
-          tool,
-          input,
-          commandAnalysis,
-          true,
-          deniedByRule ? 'deny rule' : this.promptSourceForSafety(commandAnalysis, hasProtectedPath),
-          deniedByRule,
-        )
-        if (escalated !== undefined) return this.persistAndReturn(escalated)
-      }
-      const planAllowed = this.isPlanAllowed(tool, input, commandAnalysis, hasHardSafetyDenial, requiresSafetyPrompt)
-      if (!planAllowed) {
-        this.denialStreaks.set(tool.name, 0)
-        return this.persistAndReturn(false)
-      }
-      if (askedByRule || requiresSafetyPrompt) {
-        return this.promptForDecision(
-          tool,
-          input,
-          askedByRule
-            ? `Permission rule asks before running ${tool.name}.`
-            : this.reasonFor(tool.riskLevel, commandAnalysis?.categories, false, 0),
-          askedByRule ? 'ask rule' : this.promptSourceForSafety(commandAnalysis, false),
-          false,
-          { matchedRule: askedByRule, commandAnalysis },
-        )
-      }
-      if (planAllowed) {
+    if (this.mode === 'readonly') {
+      if (tool.isReadOnly === true && !hasHardSafetyDenial && !requiresSafetyPrompt) {
         this.denialStreaks.set(tool.name, 0)
         return this.persistAndReturn(true)
       }
+      if (tool.name === 'Bash' && commandAnalysis && !hasHardSafetyDenial && !requiresSafetyPrompt && commandAnalysis.isReadOnly) {
+        this.denialStreaks.set(tool.name, 0)
+        return this.persistAndReturn(true)
+      }
+      this.denialStreaks.set(tool.name, 0)
+      return this.persistAndReturn(false)
     }
 
     if (hasHardSafetyDenial) {
@@ -382,51 +389,6 @@ export class PermissionGate {
     if (!requiresSafetyPrompt && allowedByRule) {
       this.denialStreaks.set(tool.name, 0)
       return this.persistAndReturn(true)
-    }
-
-    if (this.mode === 'auto') {
-      // Fast-path 1: Safe read-only / metadata tools skip the classifier entirely
-      if (isSafeAutoTool(tool.name)) {
-        this.denialStreaks.set(tool.name, 0)
-        return this.persistAndReturn(true)
-      }
-
-      // Fast-path 2: acceptEdits-style CWD file ops skip the classifier
-      if (
-        this.isAcceptEditsAllowed(tool, input, commandAnalysis)
-        && !requiresSafetyPrompt
-      ) {
-        this.denialStreaks.set(tool.name, 0)
-        return this.persistAndReturn(true)
-      }
-
-      // Layer 3: Rule-based classifier with user-configured allow/deny rules
-      const autoDecision = classifyWithUserRules({
-        tool,
-        input,
-        commandAnalysis,
-        autoModeConfig: this.autoModeConfig,
-        isLightWorkspaceShellWrite: (ca) => this.isLightWorkspaceShellWrite(ca),
-        matchGlob: (content, pattern) => matchGlob(content, pattern),
-        extractPath,
-      })
-      if (autoDecision.action === 'allow') {
-        this.denialStreaks.set(tool.name, 0)
-        return this.persistAndReturn(true)
-      }
-      if (autoDecision.action === 'deny') {
-        const escalated = await this.handleAutoDeny(tool, input, commandAnalysis, true, autoDecision.source)
-        if (escalated !== undefined) return this.persistAndReturn(escalated)
-        return this.persistAndReturn(false)
-      }
-      return this.promptForDecision(
-        tool,
-        input,
-        autoDecision.reason,
-        autoDecision.source,
-        false,
-        { commandAnalysis },
-      )
     }
 
     // 4. Prompt user
@@ -513,6 +475,10 @@ export class PermissionGate {
     return this.prePlanMode
   }
 
+  isBypassAvailable(): boolean {
+    return true
+  }
+
   onModeChange(listener: PermissionModeListener): () => void {
     this.modeListeners.add(listener)
     return () => {
@@ -536,11 +502,6 @@ export class PermissionGate {
       this.prePlanMode = 'default'
     }
     this.mode = mode
-    // Strip dangerous permissions when entering auto mode so that overly
-    // permissive allow rules cannot bypass the classifier.
-    if (mode === 'auto') {
-      this.stripDangerousPermissions()
-    }
     for (const listener of this.modeListeners) {
       listener(mode)
     }
@@ -565,26 +526,6 @@ export class PermissionGate {
   /** Restore gate from plan mode to the pre-plan mode. */
   restoreFromPlanMode(): void {
     this.exitPlanMode()
-  }
-
-  /**
-   * Remove dangerous allow rules that would bypass the auto mode classifier.
-   * Called when entering auto mode to prevent overly permissive config rules
-   * from silently approving dangerous operations (e.g. Bash without a content
-   * pattern, or Agent tool which could spawn arbitrary sub-agents).
-   */
-  stripDangerousPermissions(): void {
-    const isDangerous = (rule: PermissionRule): boolean => {
-      if (rule.behavior !== 'allow') return false
-      // Bash allow rules without a content pattern would approve ANY bash command
-      if (rule.toolName === 'Bash' && !rule.contentPattern) return true
-      // Agent allow rules could approve arbitrary sub-agent invocations
-      if (rule.toolName === 'Agent') return true
-      return false
-    }
-
-    this.configRules = this.configRules.filter((r) => !isDangerous(r))
-    this.sessionRules = this.sessionRules.filter((r) => !isDangerous(r))
   }
 
   createApprovalRecord(tool: Tool, input: unknown, approved: boolean, turnId?: string): ToolApprovalRecord {
@@ -667,37 +608,8 @@ export class PermissionGate {
     return approved
   }
 
-  private isPlanAllowed(
-    tool: Tool,
-    input: unknown,
-    commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
-    hasHardSafetyDenial: boolean,
-    requiresSafetyPrompt: boolean,
-  ): boolean {
-    if (tool.name === EXIT_PLAN_MODE_TOOL_NAME) return true
-    if (tool.name === 'EnterPlanMode') return true
-    if (tool.name === 'Agent' && isPlanAllowedAgent(input)) return true
-
-    if (this.isAllowedPlanFileWrite(tool, input, requiresSafetyPrompt)) return true
-
-    if (tool.isReadOnly === true) {
-      return !hasHardSafetyDenial && !requiresSafetyPrompt
-    }
-
-    if (tool.name !== 'Bash' || !commandAnalysis) return false
-    if (hasHardSafetyDenial || requiresSafetyPrompt) return false
-    return commandAnalysis.isReadOnly
-  }
-
-  private isAllowedPlanFileWrite(tool: Tool, input: unknown, requiresSafetyPrompt: boolean): boolean {
-    return (
-      (tool.name === 'Write' || tool.name === 'Edit' || tool.name === 'MultiEdit')
-      && !requiresSafetyPrompt
-      && this.isSessionPlanFile(input)
-    )
-  }
-
-  private isSessionPlanFile(input: unknown): boolean {
+  private isSessionPlanFile(tool: Tool, input: unknown): boolean {
+    if (tool.name !== 'Write' && tool.name !== 'Edit' && tool.name !== 'MultiEdit') return false
     const slug = this.planSlugProvider?.()
     if (!slug) return false
     const filePath = extractPath(input)
@@ -842,11 +754,6 @@ export class PermissionGate {
   }
 }
 
-function isPlanAllowedAgent(input: unknown): boolean {
-  if (!input || typeof input !== 'object') return false
-  const subagentType = (input as { subagent_type?: unknown }).subagent_type
-  return typeof subagentType === 'string' && PLAN_ALLOWED_AGENT_TYPES.has(subagentType)
-}
 
 export function normalizeDenialState(state: Partial<DenialState> | undefined): DenialState {
   const streaks: Record<string, number> = {}

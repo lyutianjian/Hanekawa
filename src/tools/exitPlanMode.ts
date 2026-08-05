@@ -11,7 +11,7 @@ const EXIT_PLAN_MODE_V2_TOOL_PROMPT = `Use this tool when you are in plan mode a
 
 ## How This Tool Works
 - You should have already written your plan to the plan file specified in the plan mode system message
-- This tool does NOT take the plan content as a parameter - it will read the plan from the file you wrote
+- This tool reads the plan from the file you wrote. If the file was not written, you may pass the plan content directly via the optional "plan" parameter.
 - This tool simply signals that you're done planning and ready for the user to review and approve
 - The user will see the contents of your plan file when they review it
 
@@ -24,12 +24,6 @@ Ensure your plan is complete and unambiguous:
 - Once your plan is finalized, use THIS tool to request approval
 
 **Important:** Do NOT use AskUserQuestion to ask "Is this plan okay?" or "Should I proceed?" - that's exactly what THIS tool does. ExitPlanMode inherently requests user approval of your plan.
-
-## Examples
-
-1. Initial task: "Search for and understand the implementation of vim mode in the codebase" - Do not use the exit plan mode tool because you are not planning the implementation steps of a task.
-2. Initial task: "Help me implement yank mode for vim" - Use the exit plan mode tool after you have finished planning the implementation steps of the task.
-3. Initial task: "Add a new feature to handle user authentication" - If unsure about auth method (OAuth, JWT, etc.), use AskUserQuestion first, then use exit plan mode tool after clarifying the approach.
 `
 
 /**
@@ -84,14 +78,17 @@ export const exitPlanModeTool: Tool = {
     }
 
     const parsed = exitPlanModeInputSchema.parse(input)
-    const plan = parsed.plan?.trim()
+    const inlinePlan = parsed.plan?.trim() || undefined
 
+    // Aligned with CC: plan content is optional. The manager reads from disk
+    // first, falling back to inline content. If neither is available, the
+    // exit dialog still opens — the user sees an empty plan and can reject.
     await context.planModeBridge.parentAppendRecord({
       id: randomUUID(),
       type: 'plan_mode_request',
       kind: 'exit',
       submittedFromSessionId: context.sessionId,
-      ...(plan ? { planContent: plan } : {}),
+      ...(inlinePlan ? { planContent: inlinePlan } : {}),
       createdAt: new Date().toISOString(),
       ...(context.currentTurnId ? { turnId: context.currentTurnId } : {}),
     })

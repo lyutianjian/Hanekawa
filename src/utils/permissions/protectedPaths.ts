@@ -1,47 +1,40 @@
 /**
  * Directories whose contents are always protected. Match anywhere in the path.
+ * Aligned with Claude Code's DANGEROUS_DIRECTORIES (isDangerousFilePathToAutoEdit);
+ * `.myagent` is this project's equivalent of `.claude`.
  */
-export const PROTECTED_PATHS = ['.git', '.myagent', '.env', '.ssh', '.aws'] as const
+export const PROTECTED_PATHS = ['.git', '.vscode', '.idea', '.myagent'] as const
 
 /**
  * Files whose exact basename is always protected.
+ * Aligned with Claude Code's DANGEROUS_FILES; `.myagent.json` is this
+ * project's equivalent of `.claude.json`.
  */
 export const PROTECTED_FILES = [
   '.gitconfig',
+  '.gitmodules',
   '.bashrc',
+  '.bash_profile',
   '.zshrc',
-  '.env',
-  '.npmrc',
-  'credentials.json',
-  'secrets.yaml',
-  'secrets.yml',
+  '.zprofile',
+  '.profile',
+  '.ripgreprc',
+  '.mcp.json',
+  '.myagent.json',
 ] as const
 
 /**
  * Glob patterns matched against the basename of the path.
- * Covers SSH/TLS private keys and PKCS#12 bundles.
+ * Empty by design: secret-file patterns are intentionally not bypass-immune.
  */
-export const PROTECTED_FILE_PATTERNS: RegExp[] = [
-  /^id_rsa(\..*)?$/i,
-  /^id_dsa(\..*)?$/i,
-  /^id_ecdsa(\..*)?$/i,
-  /^id_ed25519(\..*)?$/i,
-  /\.pem$/i,
-  /\.p12$/i,
-  /\.pfx$/i,
-  /\.key$/i,
-]
+export const PROTECTED_FILE_PATTERNS: RegExp[] = []
 
 /**
  * Path suffixes (directory + filename) that are always protected even though
  * neither component alone is in PROTECTED_PATHS or PROTECTED_FILES with the
- * required precision. `.aws/credentials` is the canonical example.
+ * required precision. Empty by design (aligned with Claude Code).
  */
-export const PROTECTED_PATH_SUFFIXES = [
-  '.aws/credentials',
-  '.aws/config',
-  '.config/gcloud/credentials.db',
-] as const
+export const PROTECTED_PATH_SUFFIXES = [] as const
 
 export function basenameOf(path: string): string {
   const normalized = path.replace(/\\/g, '/')
@@ -101,4 +94,46 @@ export function isProtectedPath(path: string): boolean {
   if (PROTECTED_FILE_PATTERNS.some((re) => re.test(base))) return true
 
   return false
+}
+
+const DOS_DEVICE_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+const SHORT_NAME_PATTERN = /~[1-9](\.[^.]*)?$/
+const NTFS_ADS_PATTERN = /:[^/\\:*?"<>|]+(:\$DATA)?$/i
+
+export interface WindowsPathSafetyResult {
+  suspicious: boolean
+  reason?: string
+}
+
+export function checkWindowsPathSafety(path: string): WindowsPathSafetyResult {
+  if (!path) return { suspicious: false }
+
+  if (path.startsWith('\\\\?\\') || path.startsWith('//?/')) {
+    return { suspicious: true, reason: 'Extended-length path prefix (\\\\?\\) can bypass path normalization' }
+  }
+
+  if (path.startsWith('\\\\') || path.startsWith('//')) {
+    const withoutPrefix = path.replace(/^[\\/]{2}/, '')
+    if (!withoutPrefix.startsWith('?')) {
+      return { suspicious: true, reason: 'UNC paths may leak credentials to remote hosts' }
+    }
+  }
+
+  const segments = path.split(/[/\\]/).filter(Boolean)
+  for (const segment of segments) {
+    if (DOS_DEVICE_NAMES.test(segment)) {
+      return { suspicious: true, reason: `DOS device name "${segment}" can cause unexpected I/O behavior` }
+    }
+    if (segment.endsWith('.') || segment.endsWith(' ')) {
+      return { suspicious: true, reason: `Path component "${segment}" has trailing dot/space (Windows normalizes these away)` }
+    }
+    if (SHORT_NAME_PATTERN.test(segment) && segment.includes('~')) {
+      return { suspicious: true, reason: `8.3 short name "${segment}" may resolve to a different target than expected` }
+    }
+    if (NTFS_ADS_PATTERN.test(segment)) {
+      return { suspicious: true, reason: `NTFS Alternate Data Stream in "${segment}" can hide or redirect content` }
+    }
+  }
+
+  return { suspicious: false }
 }

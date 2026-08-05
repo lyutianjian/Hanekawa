@@ -2,7 +2,6 @@ import { memo, useMemo } from 'react'
 import { Box, Text } from 'ink'
 import type { Token, Tokens } from 'marked'
 import { highlight as cliHighlight } from 'cli-highlight'
-import type { Theme as HighlightTheme } from 'cli-highlight'
 import stringWidth from 'string-width'
 import wrapAnsi from 'wrap-ansi'
 import { parseMarkdown } from '../markdown.js'
@@ -54,7 +53,11 @@ function boldColor(hex: string) {
   return (s: string) => `\x1b[1;38;2;${r};${g};${b}m${s}\x1b[22;39m`
 }
 
-const syntaxHighlightTheme: HighlightTheme = {
+// cli-highlight's Theme type only declares a fixed set of token keys, but
+// highlight.js emits many more (punctuation, operator, variable, …).
+// Extra keys are accepted at runtime — cli-highlight looks them up dynamically.
+const syntaxHighlightTheme = {
+  // Core token types (highlight.js)
   keyword: boldColor(theme.syntax.keyword),
   built_in: color(theme.syntax.builtIn),
   type: color(theme.syntax.type),
@@ -73,6 +76,38 @@ const syntaxHighlightTheme: HighlightTheme = {
   section: boldColor(theme.syntax.section),
   class: color(theme.syntax.class),
   default: color(theme.syntax.default),
+  // Additional token types that highlight.js emits but were missing.
+  // Without these, cli-highlight falls back to `plain` (identity), producing
+  // raw text with no ANSI wrapping — the color then depends entirely on the
+  // parser state, which previously leaked due to the reset-code bug in
+  // parseAnsiToSegments. Explicit entries prevent that fallback.
+  punctuation: color(theme.syntax.default),
+  operator: color(theme.syntax.default),
+  property: color(theme.syntax.default),
+  variable: color(theme.syntax.params),
+  symbol: color(theme.syntax.literal),
+  subst: color(theme.syntax.default),
+  selector: color(theme.syntax.tag),
+  attribute: color(theme.syntax.attr),
+  addition: color(theme.syntax.string),
+  deletion: color(theme.syntax.builtIn),
+  emphasis: color(theme.syntax.default),
+  strong: boldColor(theme.syntax.default),
+  link: color(theme.syntax.function),
+  quote: color(theme.syntax.comment),
+  'selector-tag': color(theme.syntax.tag),
+  'selector-id': color(theme.syntax.title),
+  'selector-class': color(theme.syntax.class),
+  'selector-attr': color(theme.syntax.attr),
+  'selector-pseudo': color(theme.syntax.attr),
+  'template-tag': color(theme.syntax.tag),
+  'template-variable': color(theme.syntax.params),
+  'meta-keyword': boldColor(theme.syntax.meta),
+  'meta-string': color(theme.syntax.string),
+  'built_in-name': color(theme.syntax.builtIn),
+  'doctag': color(theme.syntax.comment),
+  code: color(theme.syntax.default),
+  formula: color(theme.syntax.default),
 }
 
 function highlightCode(code: string, lang?: string): string {

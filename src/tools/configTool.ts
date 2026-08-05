@@ -21,7 +21,7 @@ interface SettingDef {
   validate?: (value: unknown) => string | null
 }
 
-const PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'bypass'] as const
+const PERMISSION_MODES = ['default', 'acceptEdits', 'bypass'] as const
 
 const SUPPORTED_SETTINGS: SettingDef[] = [
   {

@@ -10,7 +10,6 @@ import {
   type PermissionPrompt,
   type PermissionRule,
 } from '../harness/permissions.js'
-import type { AutoModeConfig } from '../harness/autoClassifier.js'
 import { MemoryRecordStream, type RecordStream } from '../harness/recordStream.js'
 import { getSubagentTranscriptPath, SidechainRecordStream } from '../harness/sidechainRecordStream.js'
 import { ToolRunner } from '../harness/toolRunner.js'
@@ -137,7 +136,7 @@ const FORK_AGENT: BaseAgentDefinition = {
 const EXPLORE_AGENT: BaseAgentDefinition = {
   type: 'explore',
   description: 'Fast read-only code exploration agent for broad search, navigation, and codebase questions.',
-  permissionMode: 'plan',
+  permissionMode: 'readonly',
   lockPermissionMode: true,
   tools: ['Glob', 'Grep', 'Read', 'Bash'],
   disallowedTools: ['Agent', 'Write', 'Edit', 'Delete', 'MultiEdit'],
@@ -175,7 +174,7 @@ Return high-signal findings with file paths and line numbers when useful. Avoid 
 const PLAN_AGENT: BaseAgentDefinition = {
   type: 'plan',
   description: 'Read-only software planning agent for implementation strategy and trade-off analysis.',
-  permissionMode: 'plan',
+  permissionMode: 'readonly',
   lockPermissionMode: true,
   tools: ['Glob', 'Grep', 'Read', 'Bash'],
   disallowedTools: ['Agent', 'Write', 'Edit', 'Delete', 'MultiEdit'],
@@ -270,7 +269,6 @@ export interface CreateAgentToolOptions {
   getConfigRules?(): PermissionRule[]
   getSessionRules?(): PermissionRule[]
   denialStateStore?: DenialStateStore
-  autoModeConfig?: AutoModeConfig
   cwd: string
   system?: string
   projectContext?: string
@@ -603,7 +601,6 @@ async function runSubagent({
       mode: resolveSubagentPermissionMode(options, agentDefinition, isBackground),
       denialStateStore: readonlyDenialStateStore(options.denialStateStore),
       cwd: effectiveCwd,
-      autoModeConfig: options.autoModeConfig,
     })
     permissionGate.addSessionRules(options.getSessionRules?.() ?? [])
     const createToolRunner = () => new ToolRunner(subTools, permissionGate, {
@@ -1189,8 +1186,7 @@ function resolveSubagentPermissionMode(
   const parentMode = options.permissionMode?.()
   if (parentMode === 'bypass') return 'bypass'
   if (definition.permissionMode) return definition.permissionMode
-  // Background agents default to 'auto' mode to avoid permission prompts
-  if (runInBackground) return 'auto'
+  if (runInBackground) return 'bypass'
   return parentMode
 }
 
@@ -1447,23 +1443,13 @@ function buildAgentToolDescription(definitions: readonly BaseAgentDefinition[]):
     .map((definition) => `"${definition.type}" (${[definition.description, formatDefinitionCapabilities(definition)].filter(Boolean).join('; ')})`)
     .join(', ')
   return [
-    'Run a typed sub-agent on an isolated task. Use this for complex, multi-step research, exploration, or planning work whose intermediate tool output does not need to stay in the main context. Cannot spawn nested agents.',
+    'Run a typed sub-agent on an isolated task. Use for complex, multi-step research or planning whose intermediate output does not need to stay in main context. Cannot spawn nested agents.',
     `Available subagent_type values: ${typeDescriptions}.`,
-    'Always pass an explicit subagent_type.',
-    'For long-running or independent work, set run_in_background=true and include a short description. Background agents return immediately and send a completion notification later.',
+    'Always pass an explicit subagent_type. Set run_in_background=true for independent work.',
     '',
-    'When NOT to use the Agent tool:',
-    '- If you already know the exact file path to inspect, use Read instead.',
-    '- If you are searching for a symbol, class, function, or string in a known area, use Grep or Glob directly.',
-    '- If the task only touches one small file set, inspect those files yourself.',
-    '- Do not use an agent for work unrelated to the available agent descriptions.',
+    'Do NOT use when: you know the exact file to inspect (use Read), you are searching a known area (use Grep/Glob), or the task touches one small file set.',
     '',
-    'Writing effective sub-agent prompts:',
-    '- Brief the agent like a smart colleague who just walked into the room: it has not seen this conversation, does not know what you tried, and does not know why the task matters.',
-    '- Explain the goal, why it matters, what you already know, what you ruled out, and the output shape you need. If you need a short response, say so.',
-    '- For lookups, hand over the exact target. For investigations, hand over the question; prescribed steps become dead weight when the premise is wrong.',
-    '- Terse command-style prompts produce shallow, generic work.',
-    '- Never delegate understanding. Do not write prompts like "based on your findings, fix the bug" or "based on the research, implement it." Synthesize the agent result yourself, then decide the specific change.',
+    'Writing effective prompts: brief the agent like a colleague who has not seen this conversation. Explain the goal, why it matters, what you know, what you ruled out, and the output shape needed. Never delegate understanding — synthesize results yourself.',
   ].join('\n')
 }
 

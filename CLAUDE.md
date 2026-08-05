@@ -108,7 +108,7 @@ Built-in types: `general` (delegation, inherits project context), `fork` (transc
 
 Custom types from `.myagent/agents/*.md` (YAML frontmatter with `name`, `description`, `tools`, `isReadOnlyAgent`, `maxTurns`, `permissionMode`, `skills`, `mcpServers`, `background`, `isolation`, `model`, `effort`). Agent definition directories merge by `name`: `~/.myagent/agents/` → `.myagent/agents/` → `.myagent/agents.local/` (later overrides). `/agents reload` refreshes definitions in the TUI without restart.
 
-Sub-agents always disallow: `Agent`, `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`. Background agents use the shared task registry, return immediately, persist sidechain transcripts, and default to `auto` permission mode. Their tool set is restricted to `Read`, `Glob`, `Grep`, `Bash`, `BashOutput`, `KillShell`, file-editing tools, and `Skill`. Worktree isolation is available for non-read-only agents (`isolation: 'worktree'`).
+Sub-agents always disallow: `Agent`, `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`. Background agents use the shared task registry, return immediately, persist sidechain transcripts, and default to `bypass` permission mode. Their tool set is restricted to `Read`, `Glob`, `Grep`, `Bash`, `BashOutput`, `KillShell`, file-editing tools, and `Skill`. Worktree isolation is available for non-read-only agents (`isolation: 'worktree'`).
 
 Environment variable overrides: `MYAGENT_SUBAGENT_MODEL_<TYPE>` or `MYAGENT_SUBAGENT_MODEL`.
 

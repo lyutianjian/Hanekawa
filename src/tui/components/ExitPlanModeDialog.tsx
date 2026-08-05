@@ -17,7 +17,6 @@ export interface ExitPlanModeDialogProps {
    * the user explicitly opted into bypass before entering plan mode.
    */
   isBypassAvailable?: boolean
-  isAutoModeAvailable?: boolean
   onResolve(decision: ExitPlanDecision): void
 }
 
@@ -36,37 +35,12 @@ export interface DecisionOption {
  */
 export function buildExitPlanModeOptions(input: boolean | {
   isBypassAvailable?: boolean
-  isAutoModeAvailable?: boolean
 }): readonly DecisionOption[] {
   const isBypassAvailable = typeof input === 'boolean' ? input : input.isBypassAvailable === true
-  const isAutoModeAvailable = typeof input === 'boolean' ? true : input.isAutoModeAvailable !== false
   const options: DecisionOption[] = []
 
-  // Slot 1: clear-context approvals. ClaudeCode priority: auto > bypass > accept-edits.
-  if (isAutoModeAvailable) {
-    options.push({
-      kind: 'approve_clear_auto_with_plan_as_prompt',
-      label: 'Yes, clear context and use auto mode',
-    })
-  } else if (isBypassAvailable) {
-    options.push({
-      kind: 'approve_clear_bypass_with_plan_as_prompt',
-      label: 'Yes, clear context and bypass permissions',
-    })
-  } else {
-    options.push({
-      kind: 'approve_clear_acceptEdits_with_plan_as_prompt',
-      label: 'Yes, clear context and auto-accept edits',
-    })
-  }
-
-  // Slot 2: keep-context with elevated mode.
-  if (isAutoModeAvailable) {
-    options.push({
-      kind: 'approve_auto_keep',
-      label: 'Yes, and use auto mode',
-    })
-  } else if (isBypassAvailable) {
+  // Slot 1: keep-context with elevated mode (higher privilege first).
+  if (isBypassAvailable) {
     options.push({
       kind: 'approve_bypass_keep',
       label: 'Yes, and bypass permissions',
@@ -78,13 +52,13 @@ export function buildExitPlanModeOptions(input: boolean | {
     })
   }
 
-  // Slot 3: always-present default keep-context (manual approval).
+  // Slot 2: always-present default keep-context (manual approval).
   options.push({
     kind: 'approve_restore_keep',
     label: 'Yes, manually approve edits',
   })
 
-  // Slot 4: always-present reject with feedback.
+  // Slot 3: always-present reject with feedback.
   options.push({
     kind: 'reject',
     label: 'No, keep planning',
@@ -93,16 +67,14 @@ export function buildExitPlanModeOptions(input: boolean | {
   return options
 }
 
-type ElevatedExitPlanModeDecision = 'approve_auto_keep' | 'approve_bypass_keep' | 'approve_acceptEdits_keep'
+type ElevatedExitPlanModeDecision = 'approve_bypass_keep' | 'approve_acceptEdits_keep'
 
 export function elevatedExitPlanModeDecision(input: boolean | {
   isBypassAvailable?: boolean
-  isAutoModeAvailable?: boolean
 }): ElevatedExitPlanModeDecision {
   const isBypassAvailable = typeof input === 'boolean' ? input : input.isBypassAvailable === true
-  const isAutoModeAvailable = typeof input === 'boolean' ? true : input.isAutoModeAvailable !== false
-  if (isAutoModeAvailable) return 'approve_auto_keep'
-  return isBypassAvailable ? 'approve_bypass_keep' : 'approve_acceptEdits_keep'
+  if (isBypassAvailable) return 'approve_bypass_keep'
+  return 'approve_acceptEdits_keep'
 }
 
 const SAVE_MESSAGE_TIMEOUT_MS = 5000
@@ -141,7 +113,6 @@ export function ExitPlanModeDialog({
   planContent: initialPlanContent,
   planFilePath,
   isBypassAvailable = false,
-  isAutoModeAvailable = true,
   onResolve,
 }: ExitPlanModeDialogProps) {
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -151,8 +122,8 @@ export function ExitPlanModeDialog({
   const [showSaveMessage, setShowSaveMessage] = useState(false)
 
   const options = useMemo(
-    () => buildExitPlanModeOptions({ isBypassAvailable, isAutoModeAvailable }),
-    [isBypassAvailable, isAutoModeAvailable],
+    () => buildExitPlanModeOptions({ isBypassAvailable }),
+    [isBypassAvailable],
   )
   const hotkeys = useMemo(
     () => options.map((_, i) => String(i + 1) as '1' | '2' | '3' | '4'),
@@ -257,7 +228,7 @@ export function ExitPlanModeDialog({
     // bypass when available). Matches Claude Code's Shift+Tab shortcut.
     if (key.shift && key.tab) {
       onResolve({
-        kind: elevatedExitPlanModeDecision({ isBypassAvailable, isAutoModeAvailable }),
+        kind: elevatedExitPlanModeDecision({ isBypassAvailable }),
         planContent,
       })
       return
@@ -303,9 +274,9 @@ export function ExitPlanModeDialog({
     }
   })
 
-  const elevatedHint = isAutoModeAvailable
-    ? 'auto mode'
-    : isBypassAvailable ? 'bypass permissions' : 'auto-accept edits'
+  const elevatedHint = isBypassAvailable
+    ? 'bypass permissions'
+    : 'auto-accept edits'
 
   if (isEmptyPlan) {
     const emptyOptions = [

@@ -245,7 +245,7 @@ test('tool status indicator uses Claude-style circle for all states', () => {
   }
 })
 
-test('tool and subagent status dots use grayscale semantic theme colors', () => {
+test('tool and subagent status dots use semantic theme colors', () => {
   assert.equal(getStatusDot('done').color, theme.statusDotSuccess)
   assert.equal(getStatusDot('error').color, theme.statusDotFailed)
   assert.equal(getStatusDot('denied').color, theme.statusDotFailed)

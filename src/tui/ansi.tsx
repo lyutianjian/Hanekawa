@@ -48,6 +48,11 @@ export interface AnsiSegment {
 /**
  * Parse an ANSI-escaped string into styled segments.
  * Supports SGR sequences: colors (16/256/truecolor), bold, dim, italic, underline, strikethrough.
+ *
+ * Uses a `touched` set to distinguish "attribute not mentioned in this SGR"
+ * (carry over from previous segment) from "attribute explicitly reset"
+ * (clear to default). Without this, reset codes like 39/49/0 are silently
+ * ignored because `undefined` is ambiguous.
  */
 export function parseAnsiToSegments(ansiString: string): AnsiSegment[] {
   const segments: AnsiSegment[] = []
@@ -73,6 +78,9 @@ export function parseAnsiToSegments(ansiString: string): AnsiSegment[] {
     // Parse SGR parameters
     const params = match[1].split(';').map(Number)
     const attrs: Partial<AnsiSegment> = {}
+    // Track which attributes were explicitly touched by this SGR sequence,
+    // so we can distinguish "not mentioned" from "reset to default".
+    const touched: Record<string, boolean> = {}
     let i = 0
     while (i < params.length) {
       const code = params[i]
@@ -82,51 +90,54 @@ export function parseAnsiToSegments(ansiString: string): AnsiSegment[] {
         attrs.bold = false; attrs.dim = false
         attrs.italic = false; attrs.underline = false
         attrs.strikethrough = false
-      } else if (code === 1) attrs.bold = true
-      else if (code === 2) attrs.dim = true
-      else if (code === 3) attrs.italic = true
-      else if (code === 4) attrs.underline = true
-      else if (code === 9) attrs.strikethrough = true
-      else if (code === 22) { attrs.bold = false; attrs.dim = false }
-      else if (code === 23) attrs.italic = false
-      else if (code === 24) attrs.underline = false
-      else if (code === 29) attrs.strikethrough = false
+        touched.fg = touched.bg = touched.bold = touched.dim =
+          touched.italic = touched.underline = touched.strikethrough = true
+      } else if (code === 1) { attrs.bold = true; touched.bold = true }
+      else if (code === 2) { attrs.dim = true; touched.dim = true }
+      else if (code === 3) { attrs.italic = true; touched.italic = true }
+      else if (code === 4) { attrs.underline = true; touched.underline = true }
+      else if (code === 9) { attrs.strikethrough = true; touched.strikethrough = true }
+      else if (code === 22) { attrs.bold = false; attrs.dim = false; touched.bold = true; touched.dim = true }
+      else if (code === 23) { attrs.italic = false; touched.italic = true }
+      else if (code === 24) { attrs.underline = false; touched.underline = true }
+      else if (code === 29) { attrs.strikethrough = false; touched.strikethrough = true }
       else if (code >= 30 && code <= 37) {
-        attrs.fg = ANSI_256_COLORS[code - 30]
+        attrs.fg = ANSI_256_COLORS[code - 30]; touched.fg = true
       } else if (code === 38) {
         // Extended foreground
         if (params[i + 1] === 5 && params[i + 2] !== undefined) {
-          attrs.fg = ansi256ToHex(params[i + 2]); i += 2
+          attrs.fg = ansi256ToHex(params[i + 2]); touched.fg = true; i += 2
         } else if (params[i + 1] === 2 && params[i + 4] !== undefined) {
-          attrs.fg = rgbToHex(params[i + 2], params[i + 3], params[i + 4]); i += 4
+          attrs.fg = rgbToHex(params[i + 2]!, params[i + 3]!, params[i + 4]!); touched.fg = true; i += 4
         }
-      } else if (code === 39) attrs.fg = undefined
+      } else if (code === 39) { attrs.fg = undefined; touched.fg = true }
       else if (code >= 40 && code <= 47) {
-        attrs.bg = ANSI_256_COLORS[code - 40]
+        attrs.bg = ANSI_256_COLORS[code - 40]; touched.bg = true
       } else if (code === 48) {
         // Extended background
         if (params[i + 1] === 5 && params[i + 2] !== undefined) {
-          attrs.bg = ansi256ToHex(params[i + 2]); i += 2
+          attrs.bg = ansi256ToHex(params[i + 2]); touched.bg = true; i += 2
         } else if (params[i + 1] === 2 && params[i + 4] !== undefined) {
-          attrs.bg = rgbToHex(params[i + 2], params[i + 3], params[i + 4]); i += 4
+          attrs.bg = rgbToHex(params[i + 2]!, params[i + 3]!, params[i + 4]!); touched.bg = true; i += 4
         }
-      } else if (code === 49) attrs.bg = undefined
+      } else if (code === 49) { attrs.bg = undefined; touched.bg = true }
       else if (code >= 90 && code <= 97) {
-        attrs.fg = ANSI_256_COLORS[code - 90 + 8]
+        attrs.fg = ANSI_256_COLORS[code - 90 + 8]; touched.fg = true
       }
       i++
     }
 
-    // Start a new segment with carried-over state + new attributes
+    // Start a new segment with carried-over state + new attributes.
+    // Only carry over an attribute if it was NOT explicitly touched by this SGR.
     current = {
       text: '',
-      fg: attrs.fg !== undefined ? attrs.fg : current.fg,
-      bg: attrs.bg !== undefined ? attrs.bg : current.bg,
-      bold: attrs.bold !== undefined ? attrs.bold : current.bold,
-      dim: attrs.dim !== undefined ? attrs.dim : current.dim,
-      italic: attrs.italic !== undefined ? attrs.italic : current.italic,
-      underline: attrs.underline !== undefined ? attrs.underline : current.underline,
-      strikethrough: attrs.strikethrough !== undefined ? attrs.strikethrough : current.strikethrough,
+      fg: touched.fg ? attrs.fg : current.fg,
+      bg: touched.bg ? attrs.bg : current.bg,
+      bold: touched.bold ? attrs.bold : current.bold,
+      dim: touched.dim ? attrs.dim : current.dim,
+      italic: touched.italic ? attrs.italic : current.italic,
+      underline: touched.underline ? attrs.underline : current.underline,
+      strikethrough: touched.strikethrough ? attrs.strikethrough : current.strikethrough,
     }
   }
 

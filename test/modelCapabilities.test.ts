@@ -105,8 +105,8 @@ test('getModelCapability prefers more specific patterns', () => {
 })
 
 test('slot cap constants are defined', () => {
-  assert.equal(CAPPED_DEFAULT_MAX_TOKENS, 8_000)
-  assert.equal(ESCALATED_MAX_TOKENS, 64_000)
+  assert.equal(CAPPED_DEFAULT_MAX_TOKENS, 64_000)
+  assert.equal(ESCALATED_MAX_TOKENS, 128_000)
 })
 
 test('isSlotCapDisabled returns true when MYAGENT_SLOT_CAP_DISABLED=1', () => {
@@ -165,10 +165,12 @@ test('getMaxOutputTokens without MYAGENT_SLOT_CAP_DISABLED returns capped value'
   try {
     delete process.env.MYAGENT_SLOT_CAP_DISABLED
     delete process.env.MYAGENT_MAX_OUTPUT_TOKENS
-    // sonnet-4-6 raw default is 32k; capped to 8k
-    assert.equal(getMaxOutputTokens(undefined, 'claude-sonnet-4-6'), 8_000)
-    // Unknown model: 32k capped to 8k
-    assert.equal(getMaxOutputTokens(undefined, 'some-unknown-model'), 8_000)
+    // sonnet-4-6 raw default is 32k; below cap, unchanged
+    assert.equal(getMaxOutputTokens(undefined, 'claude-sonnet-4-6'), 32_000)
+    // opus-4-6 raw default is 64k; matches cap
+    assert.equal(getMaxOutputTokens(undefined, 'claude-opus-4-6'), 64_000)
+    // Unknown model: 32k below cap, unchanged
+    assert.equal(getMaxOutputTokens(undefined, 'some-unknown-model'), 32_000)
   } finally {
     if (origCap !== undefined) process.env.MYAGENT_SLOT_CAP_DISABLED = origCap
     if (origMax !== undefined) process.env.MYAGENT_MAX_OUTPUT_TOKENS = origMax

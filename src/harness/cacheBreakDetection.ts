@@ -32,7 +32,6 @@ export type CacheBreakSource =
   | 'hook_agent'
   | 'hook_prompt'
   | 'side_question'
-  | 'auto_mode'
   | 'bash_classifier'
 
 export function agentCacheSource(agentId: string): CacheBreakSource {

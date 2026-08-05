@@ -1,10 +1,7 @@
 import type { PermissionGate, PermissionMode } from '../harness/permissions.js'
 import type { PlanModeManager } from '../harness/planModeManager.js'
 
-// Tab cycle order. Excludes 'bypass' on purpose: bypass is a high-risk mode
-// and must be enabled explicitly at startup through settings, not by tabbing
-// through the cycle.
-export const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto']
+export const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypass']
 
 export function nextPermissionMode(currentMode: PermissionMode, direction: 1 | -1): PermissionMode {
   const index = PERMISSION_MODES.indexOf(currentMode)
@@ -17,8 +14,6 @@ export function permissionModeStatusLabel(mode: PermissionMode): string {
   switch (mode) {
     case 'acceptEdits':
       return 'accept-edits'
-    case 'auto':
-      return 'auto'
     case 'bypass':
       return 'bypass'
     case 'plan':
@@ -33,8 +28,6 @@ export function permissionModeTitle(mode: PermissionMode): string {
   switch (mode) {
     case 'acceptEdits':
       return 'Accept edits'
-    case 'auto':
-      return 'Auto'
     case 'bypass':
       return 'Bypass'
     case 'plan':

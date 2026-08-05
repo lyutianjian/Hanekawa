@@ -13,10 +13,10 @@ function makeBridge(parentSessionId: string, parentRecords: SessionRecord[]): Pl
   }
 }
 
-test('EnterPlanMode description includes Claude Code plan workflow', () => {
-  assert.match(enterPlanModeTool.description, /## What Happens in Plan Mode/)
-  assert.match(enterPlanModeTool.description, /Use AskUserQuestion if you need to clarify approaches/)
-  assert.match(enterPlanModeTool.description, /Exit plan mode with ExitPlanMode when ready to implement/)
+test('EnterPlanMode description includes plan workflow', () => {
+  assert.match(enterPlanModeTool.description, /In plan mode you explore the codebase/)
+  assert.match(enterPlanModeTool.description, /Use AskUserQuestion to clarify requirements/)
+  assert.match(enterPlanModeTool.description, /approval via ExitPlanMode/)
 })
 
 test('EnterPlanMode in default mode emits plan_mode_request kind="enter"', async () => {

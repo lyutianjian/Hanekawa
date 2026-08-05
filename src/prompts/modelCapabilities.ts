@@ -1,6 +1,6 @@
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
-export const CAPPED_DEFAULT_MAX_TOKENS = 8_000
-export const ESCALATED_MAX_TOKENS = 64_000
+export const CAPPED_DEFAULT_MAX_TOKENS = 64_000
+export const ESCALATED_MAX_TOKENS = 128_000
 
 export interface ModelCapability {
   contextWindow: number

@@ -834,7 +834,6 @@ test('ExitPlanModeDialog renders Claude-style approval choices', () => {
   const frame = render(h(ExitPlanModeDialog, {
     planContent,
     planFilePath: 'C:\\tmp\\plan.md',
-    isAutoModeAvailable: true,
     isBypassAvailable: false,
     onResolve: () => {},
   })).lastFrame() ?? ''
@@ -844,8 +843,7 @@ test('ExitPlanModeDialog renders Claude-style approval choices', () => {
   assert.match(frame, /Hanekawa has written up a plan and is ready to execute\. Would you like to proceed\?/)
   assert.match(frame, /Step 14/)
   assert.doesNotMatch(frame, /lines omitted from preview/)
-  assert.match(frame, /Yes, clear context and use auto mode/)
-  assert.match(frame, /Yes, and use auto mode/)
+  assert.match(frame, /Yes, auto-accept edits/)
   assert.match(frame, /Yes, manually approve edits/)
   assert.match(frame, /No, keep planning/)
   assert.match(frame, /Feedback:/)

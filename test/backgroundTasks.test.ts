@@ -19,7 +19,9 @@ test('background Bash returns immediately and BashOutput consumes incremental ou
   try {
     await bash.execute({ command: 'echo warmup' }, context())
     const startedAt = Date.now()
-    const executable = `${process.platform === 'win32' ? '& ' : ''}${JSON.stringify(process.execPath)}`
+    // Windows shell detection prefers Git Bash, where PowerShell's `& ` call
+    // operator is a syntax error; bare `node` from PATH works in both shells.
+    const executable = process.platform === 'win32' ? 'node' : JSON.stringify(process.execPath)
     const command = `${executable} -e "console.log('first'); setTimeout(() => console.log('second'), 400)"`
     const result = await bash.execute({
       command,
@@ -50,9 +52,8 @@ test('KillShell terminates a running task and is idempotent for terminal tasks',
   const bash = createBashTool(registry)
   const kill = createKillShellTool(registry)
   try {
-    const command = process.platform === 'win32'
-      ? 'Start-Sleep -Seconds 30'
-      : `${JSON.stringify(process.execPath)} -e "setInterval(() => {}, 1000)"`
+    // node one-liner keeps the task alive in both Git Bash and PowerShell.
+    const command = `${process.platform === 'win32' ? 'node' : JSON.stringify(process.execPath)} -e "setTimeout(() => {}, 30000)"`
     const result = await bash.execute({ command, run_in_background: true }, context())
     const taskId = result.content.match(/Task ID: (bash_\d+)/)?.[1]
     assert.ok(taskId)
@@ -71,7 +72,7 @@ test('an explicit background timeout terminates the task as failed', async () =>
   const registry = new BackgroundTaskRegistry()
   const bash = createBashTool(registry)
   try {
-    const command = process.platform === 'win32' ? 'Start-Sleep -Seconds 30' : 'sleep 30'
+    const command = process.platform === 'win32' ? 'node -e "setTimeout(() => {}, 30000)"' : 'sleep 30'
     const result = await bash.execute({ command, run_in_background: true, timeout: 100 }, context())
     const taskId = result.content.match(/Task ID: (bash_\d+)/)?.[1]
     assert.ok(taskId)

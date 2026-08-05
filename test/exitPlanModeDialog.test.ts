@@ -6,14 +6,13 @@ import {
   previewMarkdownLines,
 } from '../src/tui/components/ExitPlanModeDialog.js'
 
-test('ExitPlanModeDialog options prefer auto mode when available', () => {
-  const options = buildExitPlanModeOptions({ isAutoModeAvailable: true, isBypassAvailable: false })
+test('ExitPlanModeDialog options show accept-edits when bypass is not available', () => {
+  const options = buildExitPlanModeOptions({ isBypassAvailable: false })
 
   assert.deepEqual(
     options.map((option) => option.label),
     [
-      'Yes, clear context and use auto mode',
-      'Yes, and use auto mode',
+      'Yes, auto-accept edits',
       'Yes, manually approve edits',
       'No, keep planning',
     ],
@@ -21,21 +20,26 @@ test('ExitPlanModeDialog options prefer auto mode when available', () => {
   assert.deepEqual(
     options.map((option) => option.kind),
     [
-      'approve_clear_auto_with_plan_as_prompt',
-      'approve_auto_keep',
+      'approve_acceptEdits_keep',
       'approve_restore_keep',
       'reject',
     ],
   )
 })
 
+test('ExitPlanModeDialog options show bypass when available', () => {
+  const options = buildExitPlanModeOptions({ isBypassAvailable: true })
+
+  assert.equal(options[0]?.kind, 'approve_bypass_keep')
+  assert.equal(options[0]?.label, 'Yes, and bypass permissions')
+})
+
 test('ExitPlanModeDialog options replace elevated slots with bypass when available', () => {
-  const options = buildExitPlanModeOptions({ isAutoModeAvailable: false, isBypassAvailable: true })
+  const options = buildExitPlanModeOptions({ isBypassAvailable: true })
 
   assert.deepEqual(
     options.map((option) => option.label),
     [
-      'Yes, clear context and bypass permissions',
       'Yes, and bypass permissions',
       'Yes, manually approve edits',
       'No, keep planning',
@@ -44,7 +48,6 @@ test('ExitPlanModeDialog options replace elevated slots with bypass when availab
   assert.deepEqual(
     options.map((option) => option.kind),
     [
-      'approve_clear_bypass_with_plan_as_prompt',
       'approve_bypass_keep',
       'approve_restore_keep',
       'reject',
@@ -53,9 +56,8 @@ test('ExitPlanModeDialog options replace elevated slots with bypass when availab
 })
 
 test('ExitPlanModeDialog Shift+Tab resolves to the keep-context elevated option', () => {
-  assert.equal(elevatedExitPlanModeDecision({ isAutoModeAvailable: true, isBypassAvailable: false }), 'approve_auto_keep')
-  assert.equal(elevatedExitPlanModeDecision({ isAutoModeAvailable: false, isBypassAvailable: false }), 'approve_acceptEdits_keep')
-  assert.equal(elevatedExitPlanModeDecision({ isAutoModeAvailable: false, isBypassAvailable: true }), 'approve_bypass_keep')
+  assert.equal(elevatedExitPlanModeDecision({ isBypassAvailable: true }), 'approve_bypass_keep')
+  assert.equal(elevatedExitPlanModeDecision({ isBypassAvailable: false }), 'approve_acceptEdits_keep')
 })
 
 test('ExitPlanModeDialog previewMarkdownLines truncates long content while preserving head and tail', () => {

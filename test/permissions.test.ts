@@ -141,7 +141,7 @@ test('PermissionGate ask rules force safe tools to prompt', async () => {
   assert.equal(source, 'ask rule')
 })
 
-test('PermissionGate deny rules win over ask allow and auto mode', async () => {
+test('PermissionGate deny rules win over ask and allow rules', async () => {
   let prompted = false
   const gate = new PermissionGate(
     async () => {
@@ -153,7 +153,6 @@ test('PermissionGate deny rules win over ask allow and auto mode', async () => {
       { toolName: 'fsWrite', behavior: 'ask', source: 'config' },
       { toolName: 'fsWrite', behavior: 'deny', source: 'config' },
     ],
-    { mode: 'auto' },
   )
 
   const approved = await gate.approve(fsWriteTool, { path: 'src/index.ts' })
@@ -169,7 +168,7 @@ test('PermissionGate denies bash commands touching protected paths without promp
     return true
   })
 
-  const approved = await gate.approve(bashTool, { command: 'cat .env' })
+  const approved = await gate.approve(bashTool, { command: 'cat .git/config' })
 
   assert.equal(approved, false)
   assert.equal(prompted, false)
@@ -302,35 +301,37 @@ test('PermissionGate omits always allow for unsafe Bash and deny-rule prompts', 
   assert.deepEqual(gate.getSessionRules(), [])
 })
 
-// --- New: expanded protected secret-file coverage --------------------------
+// --- Protected path coverage (aligned with Claude Code safetyCheck) --------
 
-test('isProtectedPath catches SSH private keys by name', () => {
-  assert.equal(isProtectedPath('/home/me/.ssh/id_rsa'), true)
-  assert.equal(isProtectedPath('id_rsa'), true)
-  assert.equal(isProtectedPath('id_rsa.pub'), true)
-  assert.equal(isProtectedPath('id_ed25519'), true)
-  assert.equal(isProtectedPath('./keys/id_ecdsa'), true)
+test('isProtectedPath catches dangerous directories', () => {
+  assert.equal(isProtectedPath('.git/config'), true)
+  assert.equal(isProtectedPath('repo/.git/HEAD'), true)
+  assert.equal(isProtectedPath('.vscode/settings.json'), true)
+  assert.equal(isProtectedPath('.idea/workspace.xml'), true)
+  assert.equal(isProtectedPath('.myagent/config.json'), true)
 })
 
-test('isProtectedPath catches PEM, P12, and KEY bundles', () => {
-  assert.equal(isProtectedPath('cert.pem'), true)
-  assert.equal(isProtectedPath('/var/secrets/key.p12'), true)
-  assert.equal(isProtectedPath('client.pfx'), true)
-  assert.equal(isProtectedPath('private.key'), true)
+test('isProtectedPath catches shell config and agent config files', () => {
+  assert.equal(isProtectedPath('.gitconfig'), true)
+  assert.equal(isProtectedPath('/home/me/.gitconfig'), true)
+  assert.equal(isProtectedPath('.bashrc'), true)
+  assert.equal(isProtectedPath('.bash_profile'), true)
+  assert.equal(isProtectedPath('.zshrc'), true)
+  assert.equal(isProtectedPath('.zprofile'), true)
+  assert.equal(isProtectedPath('.profile'), true)
+  assert.equal(isProtectedPath('.ripgreprc'), true)
+  assert.equal(isProtectedPath('.mcp.json'), true)
+  assert.equal(isProtectedPath('.myagent.json'), true)
 })
 
-test('isProtectedPath catches credentials.json and secrets.yaml', () => {
-  assert.equal(isProtectedPath('credentials.json'), true)
-  assert.equal(isProtectedPath('config/credentials.json'), true)
-  assert.equal(isProtectedPath('secrets.yaml'), true)
-  assert.equal(isProtectedPath('secrets.yml'), true)
-})
-
-test('isProtectedPath catches .aws/credentials regardless of leading path', () => {
-  assert.equal(isProtectedPath('/Users/me/.aws/credentials'), true)
-  assert.equal(isProtectedPath('.aws/credentials'), true)
-  assert.equal(isProtectedPath('C:\\Users\\me\\.aws\\credentials'), true)
-  assert.equal(isProtectedPath('/Users/me/.aws/config'), true)
+test('isProtectedPath does not protect secrets outside the CC list', () => {
+  assert.equal(isProtectedPath('.env'), false)
+  assert.equal(isProtectedPath('.ssh/id_rsa'), false)
+  assert.equal(isProtectedPath('id_rsa'), false)
+  assert.equal(isProtectedPath('cert.pem'), false)
+  assert.equal(isProtectedPath('credentials.json'), false)
+  assert.equal(isProtectedPath('.aws/credentials'), false)
+  assert.equal(isProtectedPath('.npmrc'), false)
 })
 
 test('isProtectedPath does not over-match safe filenames', () => {
@@ -340,40 +341,40 @@ test('isProtectedPath does not over-match safe filenames', () => {
   assert.equal(isProtectedPath('keymap.ts'), false)
 })
 
-test('PermissionGate auto-denies fsWrite to id_rsa without prompting', async () => {
+test('PermissionGate auto-denies fsWrite to .bashrc without prompting', async () => {
   let prompted = false
   const gate = new PermissionGate(async () => {
     prompted = true
     return true
   })
 
-  const approved = await gate.approve(fsWriteTool, { path: '/home/me/.ssh/id_rsa' })
+  const approved = await gate.approve(fsWriteTool, { path: '/home/me/.bashrc' })
 
   assert.equal(approved, false)
   assert.equal(prompted, false)
 })
 
-test('PermissionGate auto-denies bash command writing to a .pem file', async () => {
+test('PermissionGate auto-denies bash command writing into .git', async () => {
   let prompted = false
   const gate = new PermissionGate(async () => {
     prompted = true
     return true
   })
 
-  const approved = await gate.approve(bashTool, { command: 'echo data > server.pem' })
+  const approved = await gate.approve(bashTool, { command: 'echo data > .git/config' })
 
   assert.equal(approved, false)
   assert.equal(prompted, false)
 })
 
-test('PermissionGate auto-denies bash reading .aws/credentials', async () => {
+test('PermissionGate auto-denies bash reading .gitconfig', async () => {
   let prompted = false
   const gate = new PermissionGate(async () => {
     prompted = true
     return true
   })
 
-  const approved = await gate.approve(bashTool, { command: 'cat ~/.aws/credentials' })
+  const approved = await gate.approve(bashTool, { command: 'cat ~/.gitconfig' })
 
   assert.equal(approved, false)
   assert.equal(prompted, false)
@@ -395,12 +396,12 @@ test('PermissionGate auto-denies up to threshold-1 times, then prompts the user'
   )
 
   // Calls 1 and 2 are silently auto-denied.
-  assert.equal(await gate.approve(bashTool, { command: 'cat .env' }), false)
-  assert.equal(await gate.approve(bashTool, { command: 'cat .env' }), false)
+  assert.equal(await gate.approve(bashTool, { command: 'cat .git/config' }), false)
+  assert.equal(await gate.approve(bashTool, { command: 'cat .git/config' }), false)
   assert.equal(prompts, 0)
 
   // Call 3 escalates to a user prompt.
-  assert.equal(await gate.approve(bashTool, { command: 'cat .env' }), false)
+  assert.equal(await gate.approve(bashTool, { command: 'cat .git/config' }), false)
   assert.equal(prompts, 1)
   assert.equal(lastStreak, 3)
 })
@@ -415,7 +416,7 @@ test('PermissionGate restores persisted denial state across instances', async ()
   const firstGate = new PermissionGate(async () => {
     throw new Error('first gate should not prompt')
   }, [], { denialStreakThreshold: 2, denialStateStore: store })
-  assert.equal(await firstGate.approve(bashTool, { command: 'cat .env' }), false)
+  assert.equal(await firstGate.approve(bashTool, { command: 'cat .git/config' }), false)
   assert.deepEqual(state, { streaks: { Bash: 1 }, total: 1 })
 
   let prompts = 0
@@ -426,7 +427,7 @@ test('PermissionGate restores persisted denial state across instances', async ()
     return false
   }, [], { denialStreakThreshold: 2, denialStateStore: store })
 
-  assert.equal(await secondGate.approve(bashTool, { command: 'cat .env' }), false)
+  assert.equal(await secondGate.approve(bashTool, { command: 'cat .git/config' }), false)
   assert.equal(prompts, 1)
   assert.equal(restoredStreak, 2)
 })
@@ -443,14 +444,14 @@ test('PermissionGate keeps prompting after a user-prompted denial', async () => 
   )
 
   // First call auto-denies.
-  await gate.approve(bashTool, { command: 'cat .env' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
   // Second call hits threshold and prompts the user.
-  await gate.approve(bashTool, { command: 'cat .env' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
   assert.equal(prompts, 1)
 
   // After the user explicitly denies, keep asking instead of dropping back to
   // silent auto-denial.
-  await gate.approve(bashTool, { command: 'cat .env' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
   assert.equal(prompts, 2)
 })
 
@@ -465,12 +466,12 @@ test('PermissionGate clears denial streak after a user-prompted approval', async
     { denialStreakThreshold: 2 },
   )
 
-  await gate.approve(bashTool, { command: 'cat .env' })
-  await gate.approve(bashTool, { command: 'cat .env' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
   assert.equal(prompts, 1)
 
   // Approval clears the streak, so the next denial is silent again.
-  await gate.approve(bashTool, { command: 'cat .env' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
   assert.equal(prompts, 1)
 })
 
@@ -486,13 +487,13 @@ test('PermissionGate streak resets when a different call is approved', async () 
   )
 
   // Auto-denied - streak goes to 1.
-  await gate.approve(bashTool, { command: 'cat .env' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
   // A normal prompt-and-allow on the same tool resets the streak.
   await gate.approve(bashTool, { command: 'pwd' })
   assert.equal(prompts, 1)
 
   // Streak should have been reset, so the next denial is silent again.
-  await gate.approve(bashTool, { command: 'cat .env' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
   assert.equal(prompts, 1)
 })
 
@@ -508,12 +509,12 @@ test('PermissionGate denial streak is per-tool, not global', async () => {
   )
 
   // bash hits threshold -> prompt.
-  await gate.approve(bashTool, { command: 'cat .env' })
-  await gate.approve(bashTool, { command: 'cat .env' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
   assert.equal(prompts, 1)
 
   // bash denial streak does not affect fsWrite's own counter - first denial is silent.
-  await gate.approve(fsWriteTool, { path: '.env' })
+  await gate.approve(fsWriteTool, { path: '.bashrc' })
   assert.equal(prompts, 1)
 })
 
@@ -528,8 +529,8 @@ test('PermissionGate prompt request includes denialStreak when escalated', async
     { denialStreakThreshold: 2 },
   )
 
-  await gate.approve(bashTool, { command: 'cat .env' })
-  await gate.approve(bashTool, { command: 'cat .env' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
 
   assert.equal(received, 2)
 })
@@ -557,8 +558,8 @@ test('PermissionGate escalated prompt reason calls out the loop', async () => {
     { denialStreakThreshold: 2 },
   )
 
-  await gate.approve(bashTool, { command: 'cat .env' })
-  await gate.approve(bashTool, { command: 'cat .env' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
 
   assert.match(reason, /auto-denied/i)
   assert.match(reason, /2 times/i)
@@ -575,7 +576,7 @@ test('PermissionGate threshold of 1 prompts on the very first denial', async () 
     { denialStreakThreshold: 1 },
   )
 
-  await gate.approve(bashTool, { command: 'cat .env' })
+  await gate.approve(bashTool, { command: 'cat .git/config' })
   assert.equal(prompts, 1)
 })
 
@@ -615,7 +616,7 @@ test('PermissionGate checks protected paths in each bash segment', async () => {
     return true
   })
 
-  const approved = await gate.approve(bashTool, { command: 'echo ok && cat ~/.aws/credentials' })
+  const approved = await gate.approve(bashTool, { command: 'echo ok && cat ~/.gitconfig' })
 
   assert.equal(approved, false)
   assert.equal(prompted, false)
@@ -728,196 +729,10 @@ test('PermissionGate catches protected filePath inputs', async () => {
     return true
   })
 
-  const approved = await gate.approve(fsWriteTool, { filePath: '.env' })
+  const approved = await gate.approve(fsWriteTool, { filePath: '.bashrc' })
 
   assert.equal(approved, false)
   assert.equal(prompted, false)
-})
-
-test('PermissionGate auto mode approves confirm tools without prompting when no deny rule matches', async () => {
-  let prompted = false
-  const gate = new PermissionGate(
-    async () => {
-      prompted = true
-      return false
-    },
-    [],
-    { mode: 'auto' },
-  )
-
-  const approved = await gate.approve(fsWriteTool, { path: 'src/index.ts' })
-
-  assert.equal(approved, true)
-  assert.equal(prompted, false)
-})
-
-test('PermissionGate auto mode approves read-only bash commands without prompting', async () => {
-  let prompted = false
-  const gate = new PermissionGate(
-    async () => {
-      prompted = true
-      return false
-    },
-    [],
-    { mode: 'auto' },
-  )
-
-  assert.equal(await gate.approve(bashTool, { command: 'pwd' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'git status' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'rg foo src' }), true)
-  assert.equal(prompted, false)
-})
-
-test('PermissionGate auto mode approves validation bash commands without prompting', async () => {
-  let prompted = false
-  const gate = new PermissionGate(
-    async () => {
-      prompted = true
-      return false
-    },
-    [],
-    { mode: 'auto' },
-  )
-
-  assert.equal(await gate.approve(bashTool, { command: 'npm test' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'npm run typecheck' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'bun test' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'tsc --noEmit' }), true)
-  assert.equal(prompted, false)
-})
-
-test('PermissionGate auto mode approves light workspace bash writes without prompting', async () => {
-  let prompted = false
-  const gate = new PermissionGate(
-    async () => {
-      prompted = true
-      return false
-    },
-    [],
-    { mode: 'auto', cwd: process.cwd() },
-  )
-
-  assert.equal(await gate.approve(bashTool, { command: 'mkdir src/auto-dir' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'touch src/auto-file.ts' }), true)
-  assert.equal(prompted, false)
-})
-
-test('PermissionGate auto mode prompts for unsafe light-write bash paths', async () => {
-  let prompts = 0
-  const gate = new PermissionGate(
-    async () => {
-      prompts++
-      return true
-    },
-    [],
-    { mode: 'auto', cwd: process.cwd(), denialStreakThreshold: 10 },
-  )
-
-  assert.equal(await gate.approve(bashTool, { command: 'touch ../outside.txt' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'touch src/*.ts' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'touch ~/outside.txt' }), true)
-  assert.equal(prompts, 3)
-})
-
-test('PermissionGate auto mode still auto-denies protected light-write paths', async () => {
-  let prompted = false
-  const gate = new PermissionGate(
-    async () => {
-      prompted = true
-      return true
-    },
-    [],
-    { mode: 'auto', denialStreakThreshold: 10 },
-  )
-
-  assert.equal(await gate.approve(bashTool, { command: 'touch .env' }), false)
-  assert.equal(prompted, false)
-})
-
-test('PermissionGate auto mode prompts for destructive and external bash commands', async () => {
-  let prompts = 0
-  let reason = ''
-  let source = ''
-  const gate = new PermissionGate(
-    async (request) => {
-      prompts++
-      reason = request.reason
-      source = request.source
-      return true
-    },
-    [],
-    { mode: 'auto' },
-  )
-
-  assert.equal(await gate.approve(bashTool, { command: 'rm -rf tmp' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'sed -i s/a/b/ src/index.ts' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'git push origin main' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'npm install' }), true)
-  assert.equal(await gate.approve(bashTool, { command: 'curl https://example.com' }), true)
-  assert.equal(prompts, 5)
-  assert.equal(source, 'mode')
-  assert.match(reason, /Auto mode requires confirmation/)
-})
-
-test('PermissionGate auto mode prompts for dangerous tools outside bash allowlists', async () => {
-  let prompted = false
-  let reason = ''
-  const deleteTool: Tool = {
-    ...fsWriteTool,
-    name: 'Delete',
-    riskLevel: 'dangerous',
-    isDestructive: true,
-  }
-  const gate = new PermissionGate(
-    async (request) => {
-      prompted = true
-      reason = request.reason
-      return true
-    },
-    [],
-    { mode: 'auto' },
-  )
-
-  const approved = await gate.approve(deleteTool, { path: 'src/index.ts' })
-
-  assert.equal(approved, true)
-  assert.equal(prompted, true)
-  assert.match(reason, /Auto mode requires confirmation/)
-})
-
-test('PermissionGate auto mode does not bypass deny rules for confirm tools', async () => {
-  let prompted = false
-  const gate = new PermissionGate(
-    async () => {
-      prompted = true
-      return true
-    },
-    [{ toolName: 'fsWrite', behavior: 'deny', source: 'config' }],
-    { mode: 'auto', denialStreakThreshold: 2 },
-  )
-
-  assert.equal(await gate.approve(fsWriteTool, { path: 'src/index.ts' }), false)
-  assert.equal(prompted, false)
-  assert.equal(await gate.approve(fsWriteTool, { path: 'src/index.ts' }), true)
-  assert.equal(prompted, true)
-})
-
-test('PermissionGate auto mode respects ask rules before auto approval', async () => {
-  let prompted = false
-  let source = ''
-  const gate = new PermissionGate(
-    async (request) => {
-      prompted = true
-      source = request.source
-      return true
-    },
-    [{ toolName: 'Bash', behavior: 'ask', source: 'config' }],
-    { mode: 'auto' },
-  )
-
-  assert.equal(await gate.approve(bashTool, { command: 'pwd' }), true)
-  assert.equal(prompted, true)
-  assert.equal(source, 'ask rule')
 })
 
 test('PermissionGate acceptEdits mode approves edit tools without prompting', async () => {
@@ -994,7 +809,7 @@ test('PermissionGate acceptEdits mode does not bypass protected paths or deny ru
   )
 
   assert.equal(await gate.approve(writeFileTool, { path: 'src/index.ts' }), false)
-  assert.equal(await gate.approve(editFileTool, { path: '.env' }), false)
+  assert.equal(await gate.approve(editFileTool, { path: '.bashrc' }), false)
   assert.equal(prompted, false)
 })
 
@@ -1042,13 +857,11 @@ test('PermissionGate plan mode allows read tools without prompting', async () =>
   assert.equal(prompted, false)
 })
 
-test('PermissionGate plan mode respects ask rules for otherwise allowed read tools', async () => {
+test('PermissionGate plan mode ignores ask rules (bypass-equivalent)', async () => {
   let prompted = false
-  let source = ''
   const gate = new PermissionGate(
-    async (request) => {
+    async () => {
       prompted = true
-      source = request.source
       return true
     },
     [{ toolName: 'Read', behavior: 'ask', source: 'config' }],
@@ -1058,8 +871,7 @@ test('PermissionGate plan mode respects ask rules for otherwise allowed read too
   const approved = await gate.approve(readFileTool, { filePath: 'src/index.ts' })
 
   assert.equal(approved, true)
-  assert.equal(prompted, true)
-  assert.equal(source, 'ask rule')
+  assert.equal(prompted, false)
 })
 
 test('PermissionGate plan mode allows tools marked read-only by metadata', async () => {
@@ -1087,7 +899,7 @@ test('PermissionGate plan mode allows tools marked read-only by metadata', async
   assert.equal(prompted, false)
 })
 
-test('PermissionGate plan mode denies write and unrelated safe tools without prompting', async () => {
+test('PermissionGate plan mode auto-allows write tools (bypass-equivalent)', async () => {
   let prompted = false
   const gate = new PermissionGate(
     async () => {
@@ -1098,8 +910,8 @@ test('PermissionGate plan mode denies write and unrelated safe tools without pro
     { mode: 'plan' },
   )
 
-  assert.equal(await gate.approve(fsWriteTool, { path: 'src/index.ts' }), false)
-  assert.equal(await gate.approve(skillTool, {}), false)
+  assert.equal(await gate.approve(fsWriteTool, { path: 'src/index.ts' }), true)
+  assert.equal(await gate.approve(skillTool, {}), true)
   assert.equal(prompted, false)
 })
 
@@ -1122,37 +934,20 @@ test('PermissionGate plan mode allows session plan file writes despite protected
   assert.equal(prompted, false)
 })
 
-test('PermissionGate plan mode still respects ask and deny rules for session plan files', async () => {
+test('PermissionGate plan mode ignores deny rules (bypass-equivalent)', async () => {
   let prompted = false
-  let source = ''
   const planPath = path.join(process.cwd(), '.myagent', 'plans', 'draft-plan.md')
-  const askGate = new PermissionGate(
-    async (request) => {
-      prompted = true
-      source = request.source
-      return true
-    },
-    [{ toolName: 'Write', behavior: 'ask', source: 'config' }],
-    { mode: 'plan', cwd: process.cwd() },
-  )
-  askGate.setPlanSlugProvider(() => 'draft-plan')
-
-  assert.equal(await askGate.approve(writeFileTool, { path: planPath }), true)
-  assert.equal(prompted, true)
-  assert.equal(source, 'ask rule')
-
-  prompted = false
   const denyGate = new PermissionGate(
     async () => {
       prompted = true
       return true
     },
     [{ toolName: 'Write', behavior: 'deny', source: 'config' }],
-    { mode: 'plan', cwd: process.cwd(), denialStreakThreshold: 2 },
+    { mode: 'plan', cwd: process.cwd() },
   )
   denyGate.setPlanSlugProvider(() => 'draft-plan')
 
-  assert.equal(await denyGate.approve(writeFileTool, { path: planPath }), false)
+  assert.equal(await denyGate.approve(writeFileTool, { path: planPath }), true)
   assert.equal(prompted, false)
 })
 
@@ -1180,7 +975,7 @@ test('PermissionGate plan mode allows exitPlanMode without prompting', async () 
   assert.equal(prompted, false)
 })
 
-test('PermissionGate plan mode allows read-only built-in agents without prompting', async () => {
+test('PermissionGate plan mode auto-allows all agents (bypass-equivalent)', async () => {
   let prompted = false
   const agentTool: Tool = {
     name: 'Agent',
@@ -1200,7 +995,7 @@ test('PermissionGate plan mode allows read-only built-in agents without promptin
 
   assert.equal(await gate.approve(agentTool, { subagent_type: 'explore', task: 'inspect' }), true)
   assert.equal(await gate.approve(agentTool, { subagent_type: 'plan', task: 'design' }), true)
-  assert.equal(await gate.approve(agentTool, { subagent_type: 'custom-writer', task: 'edit' }), false)
+  assert.equal(await gate.approve(agentTool, { subagent_type: 'custom-writer', task: 'edit' }), true)
   assert.equal(prompted, false)
 })
 
@@ -1225,24 +1020,18 @@ test('PermissionGate plan mode allows read-only bash subset', async () => {
   assert.equal(prompted, false)
 })
 
-test('PermissionGate plan mode denies non-read bash commands without prompting', async () => {
-  let prompted = false
+test('PermissionGate plan mode auto-allows non-read bash commands (bypass-equivalent)', async () => {
   const gate = new PermissionGate(
-    async () => {
-      prompted = true
-      return true
-    },
+    async () => true,
     [],
     { mode: 'plan' },
   )
 
-  assert.equal(await gate.approve(bashTool, { command: 'npm test' }), false)
-  assert.equal(await gate.approve(bashTool, { command: 'pwd | touch marker' }), false)
-  assert.equal(await gate.approve(bashTool, { command: 'cat .env' }), false)
-  assert.equal(await gate.approve(bashTool, { command: 'sed -i s/a/b/ src/index.ts' }), false)
-  assert.equal(await gate.approve(bashTool, { command: 'fd package -x rm {}' }), false)
-  assert.equal(await gate.approve(bashTool, { command: 'find src -delete' }), false)
-  assert.equal(prompted, false)
+  assert.equal(await gate.approve(bashTool, { command: 'npm test' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'pwd | touch marker' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'sed -i s/a/b/ src/index.ts' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'fd package -x rm {}' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'find src -delete' }), true)
 })
 
 test('PermissionGate bypass mode approves non-protected actions without prompting', async () => {
@@ -1252,7 +1041,7 @@ test('PermissionGate bypass mode approves non-protected actions without promptin
       prompted = true
       return false
     },
-    [{ toolName: 'fsWrite', behavior: 'deny', source: 'config' }],
+    [{ toolName: 'fsWrite', behavior: 'deny', contentPattern: 'other/**', source: 'config' }],
     { mode: 'bypass' },
   )
 
@@ -1276,24 +1065,40 @@ test('PermissionGate bypass mode approves read-only bash without prompting', asy
   assert.equal(prompted, false)
 })
 
-test('PermissionGate bypass mode still prompts for destructive bash without adding always rules', async () => {
+test('PermissionGate bypass mode approves destructive bash without prompting', async () => {
   let prompted = false
-  let hasAlwaysAllow = false
   const gate = new PermissionGate(
-    async (request) => {
+    async () => {
       prompted = true
-      hasAlwaysAllow = typeof request.onAlwaysAllow === 'function'
-      request.onAlwaysAllow?.()
-      return true
+      return false
     },
     [],
     { mode: 'bypass' },
   )
 
   assert.equal(await gate.approve(bashTool, { command: 'git reset --hard HEAD' }), true)
-  assert.equal(prompted, true)
-  assert.equal(hasAlwaysAllow, false)
+  assert.equal(await gate.approve(bashTool, { command: 'rm -rf tmp' }), true)
+  assert.equal(await gate.approve(deleteFileTool, { path: 'tmp/junk.txt' }), true)
+  assert.equal(prompted, false)
   assert.deepEqual(gate.getSessionRules(), [])
+})
+
+test('PermissionGate bypass mode approves shell syntax findings without prompting', async () => {
+  let prompted = false
+  const gate = new PermissionGate(
+    async () => {
+      prompted = true
+      return false
+    },
+    [],
+    { mode: 'bypass' },
+  )
+
+  assert.equal(await gate.approve(bashTool, { command: 'echo hi > out.txt' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'echo $(cat package.json)' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'bash -c "echo x"' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'sudo npm test' }), true)
+  assert.equal(prompted, false)
 })
 
 test('PermissionGate bypass mode prompts immediately for protected paths', async () => {
@@ -1311,11 +1116,11 @@ test('PermissionGate bypass mode prompts immediately for protected paths', async
     { mode: 'bypass', denialStreakThreshold: 2 },
   )
 
-  assert.equal(await gate.approve(bashTool, { command: 'cat .env' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'cat .git/config' }), true)
   assert.equal(prompts, 1)
   assert.equal(denialStreak, 0)
   assert.match(reason, /Even in bypass mode, protected paths require explicit confirmation/)
-  assert.match(reason, /\.env/)
+  assert.match(reason, /\.git/)
 })
 
 test('PermissionGate bypass mode does not accumulate protected path denial streaks', async () => {
@@ -1330,9 +1135,106 @@ test('PermissionGate bypass mode does not accumulate protected path denial strea
     { mode: 'bypass', denialStreakThreshold: 2 },
   )
 
-  assert.equal(await gate.approve(bashTool, { command: 'cat .env' }), false)
-  assert.equal(await gate.approve(bashTool, { command: 'cat .env' }), false)
+  assert.equal(await gate.approve(bashTool, { command: 'cat .git/config' }), false)
+  assert.equal(await gate.approve(bashTool, { command: 'cat .git/config' }), false)
   assert.equal(prompts, 2)
+})
+
+test('PermissionGate bypass mode prompts the user for deny rules', async () => {
+  const sources: string[] = []
+  const approveGate = new PermissionGate(
+    async (request) => {
+      sources.push(request.source)
+      return true
+    },
+    [{ toolName: 'Bash', behavior: 'deny', source: 'config' }],
+    { mode: 'bypass' },
+  )
+
+  assert.equal(await approveGate.approve(bashTool, { command: 'npm test' }), true)
+  assert.deepEqual(sources, ['deny rule'])
+
+  const denyGate = new PermissionGate(
+    async () => false,
+    [{ toolName: 'Bash', behavior: 'deny', source: 'config' }],
+    { mode: 'bypass' },
+  )
+
+  assert.equal(await denyGate.approve(bashTool, { command: 'npm test' }), false)
+})
+
+test('PermissionGate bypass mode enforces tool-wide ask rules', async () => {
+  let prompted = false
+  let source = ''
+  const gate = new PermissionGate(
+    async (request) => {
+      prompted = true
+      source = request.source
+      return true
+    },
+    [{ toolName: 'Bash', behavior: 'ask', source: 'config' }],
+    { mode: 'bypass' },
+  )
+
+  const approved = await gate.approve(bashTool, { command: 'npm test' })
+
+  assert.equal(approved, true)
+  assert.equal(prompted, true)
+  assert.equal(source, 'ask rule')
+})
+
+test('PermissionGate bypass mode prompts for shell config files but not .env', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async () => {
+      prompts++
+      return true
+    },
+    [],
+    { mode: 'bypass' },
+  )
+
+  assert.equal(await gate.approve(writeFileTool, { path: '.bashrc' }), true)
+  assert.equal(prompts, 1)
+  assert.equal(await gate.approve(writeFileTool, { path: '.env' }), true)
+  assert.equal(prompts, 1)
+})
+
+test('PermissionGate bypass mode enforces content-specific ask rules', async () => {
+  let prompted = false
+  let source = ''
+  const gate = new PermissionGate(
+    async (request) => {
+      prompted = true
+      source = request.source
+      return true
+    },
+    [{ toolName: 'Bash', contentPattern: 'npm publish*', behavior: 'ask', source: 'config' }],
+    { mode: 'bypass' },
+  )
+
+  const approved = await gate.approve(bashTool, { command: 'npm publish --access public' })
+
+  assert.equal(approved, true)
+  assert.equal(prompted, true)
+  assert.equal(source, 'ask rule')
+})
+
+test('PermissionGate bypass mode prompts for suspicious Windows paths', async () => {
+  let prompted = false
+  const gate = new PermissionGate(
+    async () => {
+      prompted = true
+      return true
+    },
+    [],
+    { mode: 'bypass' },
+  )
+
+  const approved = await gate.approve(writeFileTool, { path: 'C:\\Users\\test\\file.txt:secret:$DATA' })
+
+  assert.equal(approved, true)
+  assert.equal(prompted, true)
 })
 
 test('PermissionGate global denial threshold prompts across different tools', async () => {
@@ -1362,204 +1264,4 @@ test('PermissionGate global denial threshold prompts across different tools', as
   assert.equal(await gate.approve(fsWriteTool, { path: 'c.txt' }), false)
   assert.equal(prompts, 1)
   assert.match(reason, /session has already had 2 auto-denials/)
-})
-
-// ---------------------------------------------------------------------------
-// Auto mode: safe-tool fast-path
-// ---------------------------------------------------------------------------
-
-test('PermissionGate auto mode auto-approves safe tools without prompting', async () => {
-  const gate = new PermissionGate(
-    async () => { throw new Error('should not prompt') },
-    [],
-    { mode: 'auto' },
-  )
-
-  // All safe/readonly tools should be auto-approved
-  for (const toolName of ['Read', 'Grep', 'Glob', 'ToolSearch', 'AskUserQuestion',
-    'ExitPlanMode', 'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList', 'webSearch', 'webFetch', 'Skill']) {
-    const tool: Tool = {
-      name: toolName,
-      description: toolName,
-      riskLevel: 'safe',
-      isReadOnly: true,
-      inputSchema: z.object({}).strict(),
-      execute: async () => ({ ok: true, content: '' }),
-    }
-    assert.equal(await gate.approve(tool, {}), true, `${toolName} should be auto-approved`)
-  }
-})
-
-test('PermissionGate auto mode safe tool fast-path respects deny rules', async () => {
-  let prompted = false
-  const gate = new PermissionGate(
-    async (req) => {
-      prompted = true
-      return false
-    },
-    [{ toolName: 'Read', behavior: 'deny', source: 'config' }],
-    { mode: 'auto' },
-  )
-
-  const approved = await gate.approve(readFileTool, { filePath: 'secret.txt' })
-  assert.equal(approved, false)
-  assert.equal(prompted, false) // auto-denied, not prompted (streak threshold)
-})
-
-// ---------------------------------------------------------------------------
-// Auto mode: acceptEdits fast-path
-// ---------------------------------------------------------------------------
-
-test('PermissionGate auto mode auto-approves Write/Edit/MultiEdit via acceptEdits fast-path', async () => {
-  const gate = new PermissionGate(
-    async () => { throw new Error('should not prompt') },
-    [],
-    { mode: 'auto', cwd: '/workspace' },
-  )
-
-  assert.equal(await gate.approve(writeFileTool, { filePath: '/workspace/src/index.ts' }), true)
-  assert.equal(await gate.approve(editFileTool, { filePath: '/workspace/src/index.ts' }), true)
-  assert.equal(await gate.approve(multiEditFileTool, { filePath: '/workspace/src/index.ts' }), true)
-})
-
-test('PermissionGate auto mode acceptEdits fast-path does not approve Delete', async () => {
-  let prompted = false
-  const gate = new PermissionGate(
-    async (req) => {
-      prompted = true
-      return true
-    },
-    [],
-    { mode: 'auto', cwd: '/workspace' },
-  )
-
-  await gate.approve(deleteFileTool, { filePath: '/workspace/src/old.ts' })
-  assert.equal(prompted, true) // Delete still goes through classifier
-})
-
-// ---------------------------------------------------------------------------
-// Auto mode: user-configured rules
-// ---------------------------------------------------------------------------
-
-test('PermissionGate auto mode respects user-configured deny rules', async () => {
-  let promptCount = 0
-  const gate = new PermissionGate(
-    async () => {
-      promptCount++
-      return false
-    },
-    [],
-    {
-      mode: 'auto',
-      autoModeConfig: { deny: ['Bash:git push*'] },
-    },
-  )
-
-  // 'git push' should be auto-denied by user rule
-  assert.equal(await gate.approve(bashTool, { command: 'git push origin main' }), false)
-  // Should not prompt (denied by user rule via classifier)
-})
-
-test('PermissionGate auto mode respects user-configured allow rules', async () => {
-  const gate = new PermissionGate(
-    async () => { throw new Error('should not prompt') },
-    [],
-    {
-      mode: 'auto',
-      autoModeConfig: { allow: ['Bash:docker build*'] },
-    },
-  )
-
-  assert.equal(await gate.approve(bashTool, { command: 'docker build -t myapp .' }), true)
-})
-
-test('PermissionGate auto mode deny rules override allow rules', async () => {
-  const gate = new PermissionGate(
-    async () => true,
-    [],
-    {
-      mode: 'auto',
-      autoModeConfig: {
-        allow: ['Bash:git push*'],
-        deny: ['Bash:git push*'],
-      },
-    },
-  )
-
-  // Deny takes precedence
-  assert.equal(await gate.approve(bashTool, { command: 'git push origin main' }), false)
-})
-
-// ---------------------------------------------------------------------------
-// Auto mode: dangerous permission stripping
-// ---------------------------------------------------------------------------
-
-test('PermissionGate strips dangerous Bash allow rules on auto mode entry', async () => {
-  const gate = new PermissionGate(
-    async () => true,
-    [],
-    { mode: 'auto', cwd: '/workspace' },
-  )
-
-  // Add a session rule that would approve any Bash command
-  gate.addSessionRule({ toolName: 'Bash', behavior: 'allow', source: 'session' })
-
-  // Switch to auto mode triggers stripping
-  gate.setMode('auto')
-
-  // A dangerous bash command should NOT be auto-approved by the stripped rule
-  let prompted = false
-  // We need a new gate that actually tracks prompts since the old one auto-approves everything
-  const gate2 = new PermissionGate(
-    async (req) => {
-      prompted = true
-      return false
-    },
-    [{ toolName: 'Bash', behavior: 'allow', source: 'config' }],
-    { mode: 'auto' },
-  )
-
-  // The Bash wildcard rule should have been stripped
-  await gate2.approve(bashTool, { command: 'rm -rf /important' })
-  // If stripping worked, this should prompt (not silently approve)
-  assert.equal(prompted, true)
-})
-
-test('PermissionGate strips Agent allow rules on auto mode entry', async () => {
-  // Use a dangerous-risk Agent to ensure the classifier would prompt
-  // (confirm-risk non-destructive tools are auto-approved by the classifier itself)
-  const dangerousAgentTool: Tool = {
-    name: 'Agent',
-    description: 'Spawn a sub-agent',
-    riskLevel: 'dangerous',
-    inputSchema: z.object({ prompt: z.string() }).strict(),
-    execute: async () => ({ ok: true, content: '' }),
-  }
-
-  // Agent allow rule should be stripped when entering auto mode
-  let prompted = false
-  const gate = new PermissionGate(
-    async (req) => {
-      prompted = true
-      return true
-    },
-    [{ toolName: 'Agent', behavior: 'allow', source: 'config' }],
-    { mode: 'auto' },
-  )
-
-  await gate.approve(dangerousAgentTool, { prompt: 'do something' })
-  // If stripping worked, this should prompt (Agent allow rule was removed,
-  // and the classifier prompts for dangerous tools)
-  assert.equal(prompted, true)
-})
-
-test('PermissionGate does not strip Bash rules with content patterns', async () => {
-  const gate = new PermissionGate(
-    async () => { throw new Error('should not prompt') },
-    [{ toolName: 'Bash', contentPattern: 'npm test', behavior: 'allow', source: 'config' }],
-    { mode: 'auto' },
-  )
-
-  // Bash rule with content pattern should survive stripping
-  assert.equal(await gate.approve(bashTool, { command: 'npm test' }), true)
 })

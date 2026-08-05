@@ -152,7 +152,6 @@ async function main() {
     agentLoader.invalidate()
     customAgentDefinitions = await agentLoader.list()
     agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
-    promptSections.clear('system-prompt:available-tools')
     return customAgentDefinitions.length
   }
   const promptSections = new SystemPromptSectionCache()
@@ -166,10 +165,6 @@ async function main() {
       tools.splice(0, tools.length, ...baseTools, ...mcpTools)
       if (agentTool) tools.push(agentTool)
     }
-    for (const loop of activeLoops) {
-      loop.invalidateAvailableToolsSection()
-    }
-    promptSections.clear('system-prompt:available-tools')
   }
 
   // MCP integration: load config, connect each server, wrap tools.
@@ -261,7 +256,6 @@ async function main() {
     denialStateStore,
     cwd,
     mode: settings.permissions?.mode ?? 'default',
-    autoModeConfig: settings.autoMode,
   })
 
   const contextManagement = config.get().agent.contextManagement
@@ -332,7 +326,6 @@ async function main() {
       loadRecords: async () => recordStream.load(),
       openEnterPrompt: enterPlanProxy.open,
       openExitDialog: exitPlanProxy.open,
-      onClearContextAndReplaceInput: async () => {},
     })
     permissionGate.setPlanSlugProvider(() => planModeManager.getSlug())
     const runtimeTools = [...baseTools, ...mcpToolsByServer.values()].flat()
@@ -350,7 +343,6 @@ async function main() {
       getConfigRules: () => permissionGate.getConfigRules(),
       getSessionRules: () => permissionGate.getSessionRules(),
       denialStateStore,
-      autoModeConfig: settings.autoMode,
       cwd,
       system: config.get().agent.system,
       skills,

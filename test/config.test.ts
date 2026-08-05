@@ -302,6 +302,65 @@ test('ConfigService does not inject built-in Anthropic model when models are con
   }
 })
 
+test('ConfigService renameModel moves config and cascades references', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    const service = new ConfigService(dir)
+    await service.load()
+
+    service.addModel('old-name', { provider: 'anthropic', model: 'claude-x' })
+    service.setModelConfig('old-name', { provider: 'anthropic', model: 'claude-x' })
+    service.get().defaultModel = 'old-name'
+    service.get().fallbackModel = 'old-name'
+    service.get().compactModel = 'old-name'
+    service.setProfile('default', { fast: 'old-name', balanced: 'old-name', powerful: 'old-name' })
+
+    service.renameModel('old-name', 'new-name')
+
+    const cfg = service.get()
+    assert.equal(cfg.models['old-name'], undefined)
+    assert.equal(cfg.models['new-name']?.model, 'claude-x')
+    assert.equal(cfg.defaultModel, 'new-name')
+    assert.equal(cfg.fallbackModel, 'new-name')
+    assert.equal(cfg.compactModel, 'new-name')
+    assert.equal(cfg.profiles?.default?.fast, 'new-name')
+    assert.equal(cfg.profiles?.default?.balanced, 'new-name')
+    assert.equal(cfg.profiles?.default?.powerful, 'new-name')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService renameModel throws on missing source or existing target', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    const service = new ConfigService(dir)
+    await service.load()
+
+    service.addModel('a', { provider: 'anthropic', model: 'm1' })
+    service.addModel('b', { provider: 'anthropic', model: 'm2' })
+
+    assert.throws(() => service.renameModel('missing', 'x'), /not found/)
+    assert.throws(() => service.renameModel('a', 'b'), /already exists/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService renameModel is no-op when keys are equal', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    const service = new ConfigService(dir)
+    await service.load()
+
+    service.addModel('same', { provider: 'openai', model: 'gpt' })
+    service.renameModel('same', 'same')
+    assert.equal(service.get().models['same']?.model, 'gpt')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('validateSettings accepts hook settings', () => {
   const result = validateSettings({
     hooks: {
@@ -546,7 +605,7 @@ test('loadMergedSettings merges permission rules and overrides startup mode', as
     await mkdir(path.join(dir, '.myagent'), { recursive: true })
     await writeFile(path.join(dir, '.myagent', 'settings.json'), JSON.stringify({
       permissions: {
-        mode: 'auto',
+        mode: 'bypass',
         allow: ['Read'],
         deny: ['Delete'],
       },

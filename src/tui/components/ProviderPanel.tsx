@@ -24,11 +24,29 @@ import type { ProviderConfigChangeScope } from '../providerRuntime.js'
 type Tab = 'endpoints' | 'models' | 'profiles' | 'routing'
 const TABS: readonly Tab[] = ['endpoints', 'models', 'profiles', 'routing']
 const TIER_OPTIONS: readonly TierOrInherit[] = ['inherit', 'fast', 'balanced', 'powerful']
+const CONTEXT_WINDOW_OPTIONS: readonly string[] = ['(default)', '200K', '400K', '1M']
+
+function contextWindowToLabel(n: number | undefined): string {
+  if (n === undefined) return '(default)'
+  if (n === 200_000) return '200K'
+  if (n === 400_000) return '400K'
+  if (n === 1_000_000) return '1M'
+  return String(n)
+}
+
+function contextWindowFromLabel(label: string): number | undefined {
+  if (label === '(default)' || !label) return undefined
+  if (label === '200K') return 200_000
+  if (label === '400K') return 400_000
+  if (label === '1M') return 1_000_000
+  const n = Number(label)
+  return Number.isInteger(n) && n > 0 ? n : undefined
+}
 
 type FormState =
   | { kind: 'list' }
   | { kind: 'endpoint-edit'; nameInput: string; provider: string; baseUrl: string; apiKey: string; field: 'nameInput' | 'provider' | 'baseUrl' | 'apiKey'; cursor: number; original: string | null }
-  | { kind: 'model-edit'; nameInput: string; modelId: string; endpointName: string; field: 'nameInput' | 'modelId' | 'endpointName'; cursor: number; original: string | null }
+  | { kind: 'model-edit'; nameInput: string; modelId: string; endpointName: string; contextWindow: string; field: 'nameInput' | 'modelId' | 'endpointName' | 'contextWindow'; cursor: number; original: string | null }
   | { kind: 'profile-edit'; nameInput: string; fast: string; balanced: string; powerful: string; field: 'nameInput' | 'fast' | 'balanced' | 'powerful'; cursor: number; original: string | null }
   | { kind: 'routing-edit'; role: RoutingRoleKey; valueIndex: number }
   | { kind: 'confirm-delete'; what: string; targetId: string }
@@ -263,6 +281,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         nameInput: '',
         modelId: '',
         endpointName: firstEndpoint,
+        contextWindow: '(default)',
         field: 'nameInput',
         cursor: 0,
         original: null,
@@ -315,6 +334,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         nameInput: item.id,
         modelId: m.model,
         endpointName: m.endpoint ?? '',
+        contextWindow: contextWindowToLabel(m.contextWindow),
         field: 'modelId',
         cursor: m.model.length,
         original: item.id,
@@ -446,7 +466,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
 
   function handleModelFormInput(input: string, key: InkKey) {
     if (form.kind !== 'model-edit') return
-    const fields: Array<typeof form.field> = ['nameInput', 'modelId', 'endpointName']
+    const fields: Array<typeof form.field> = ['nameInput', 'modelId', 'endpointName', 'contextWindow']
     if (key.tab) {
       const next = fields[moveCyclicIndex(fields.indexOf(form.field), fields.length, key.shift ? -1 : 1)]!
       setForm({ ...form, field: next, cursor: form[next].length })
@@ -475,13 +495,15 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
           'error',
         )
       }
+      const parsedContextWindow = contextWindowFromLabel(form.contextWindow)
       const model: ModelConfig = {
         model: form.modelId.trim(),
         endpoint: form.endpointName.trim(),
+        ...(parsedContextWindow ? { contextWindow: parsedContextWindow } : {}),
       }
       void persist(() => {
         if (form.original && form.original !== name) {
-          config.removeModel(form.original)
+          config.renameModel(form.original, name)
         }
         config.setModelConfig(name, model)
       }, `Saved model "${name}"`)
@@ -493,6 +515,14 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         const endpoints = Object.keys(cfg.endpoints ?? {})
         const endpointName = cycleChoiceValue(form.endpointName, endpoints, direction)
         setForm({ ...form, endpointName, cursor: endpointName.length })
+      }
+      return
+    }
+    if (form.field === 'contextWindow') {
+      const direction = choiceDirection(key)
+      if (direction !== 0) {
+        const contextWindow = cycleChoiceValue(form.contextWindow, CONTEXT_WINDOW_OPTIONS, direction)
+        setForm({ ...form, contextWindow, cursor: contextWindow.length })
       }
       return
     }
@@ -769,6 +799,7 @@ function renderModelForm(form: Extract<FormState, { kind: 'model-edit' }>, cfg: 
       <FieldRow label="Name"        value={form.nameInput}    active={form.field === 'nameInput'}         cursor={form.field === 'nameInput'         ? form.cursor : undefined} />
       <FieldRow label="Model ID"    value={form.modelId}      active={form.field === 'modelId'}      cursor={form.field === 'modelId'      ? form.cursor : undefined} />
       <ChoiceFieldRow label="Endpoint" value={endpointDisplay} active={form.field === 'endpointName'} />
+      <ChoiceFieldRow label="Context" value={form.contextWindow} active={form.field === 'contextWindow'} />
       <FieldRow label="Provider" value={inheritedProviderDisplay} active={false} hint="inherited from endpoint" />
     </Box>
   )
@@ -897,7 +928,7 @@ function footerHints(tab: Tab, form: FormState): CommandHint[] {
 
 function isChoiceField(form: Extract<FormState, { kind: 'endpoint-edit' | 'model-edit' | 'profile-edit' }>): boolean {
   if (form.kind === 'endpoint-edit') return form.field === 'provider'
-  if (form.kind === 'model-edit') return form.field === 'endpointName'
+  if (form.kind === 'model-edit') return form.field === 'endpointName' || form.field === 'contextWindow'
   return form.field === 'fast' || form.field === 'balanced' || form.field === 'powerful'
 }
 

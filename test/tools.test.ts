@@ -7,7 +7,15 @@ import { z } from 'zod/v3'
 import { getBuiltinTools } from '../src/tools/index.js'
 import type { ReadFileState, Tool } from '../src/harness/types.js'
 import { grepTool } from '../src/tools/grep.js'
-import { bashTool, detectSleepPattern } from '../src/tools/bash.js'
+import {
+  bashTool,
+  createBashTool,
+  detectSleepPattern,
+  isAutobackgroundingAllowed,
+  resolveBashTimeoutMs,
+  DEFAULT_BASH_TIMEOUT_MS,
+  MAX_BASH_TIMEOUT_MS,
+} from '../src/tools/bash.js'
 import { readFileTool } from '../src/tools/readFile.js'
 import { editFileTool } from '../src/tools/editFile.js'
 import { multiEditTool } from '../src/tools/multiEdit.js'
@@ -15,7 +23,8 @@ import { writeFileTool } from '../src/tools/writeFile.js'
 import { deleteFileTool } from '../src/tools/deleteFile.js'
 import { toolSearchTool } from '../src/tools/ToolSearchTool/ToolSearchTool.js'
 import { getToolSearchMode, getAutoThreshold, resetToolSearchCache, resolveToolSearchState } from '../src/utils/toolSearch.js'
-import { defaultBackgroundTaskRegistry } from '../src/services/backgroundTasks/registry.js'
+import { BackgroundTaskRegistry, defaultBackgroundTaskRegistry } from '../src/services/backgroundTasks/registry.js'
+import { createBashOutputTool } from '../src/tools/bashOutput.js'
 
 function context(cwd: string) {
   return { cwd, sessionId: 's1', readFiles: new Set<string>() }
@@ -93,17 +102,132 @@ test('bash reports nonzero exits as command_failed', async () => {
   }
 })
 
-test('bash reports timeout explicitly', async () => {
+test('resolveBashTimeoutMs defaults to 120s and clamps to max', () => {
+  assert.equal(resolveBashTimeoutMs(undefined, {}), DEFAULT_BASH_TIMEOUT_MS)
+  assert.equal(resolveBashTimeoutMs(50, {}), 50)
+  assert.equal(resolveBashTimeoutMs(999_999, {}), MAX_BASH_TIMEOUT_MS)
+  assert.equal(resolveBashTimeoutMs(undefined, { MYAGENT_BASH_DEFAULT_TIMEOUT_MS: '5000' }), 5_000)
+  assert.equal(resolveBashTimeoutMs(8000, { MYAGENT_BASH_MAX_TIMEOUT_MS: '6000', MYAGENT_BASH_DEFAULT_TIMEOUT_MS: '1000' }), 6_000)
+})
+
+test('isAutobackgroundingAllowed rejects leading sleep only', () => {
+  assert.equal(isAutobackgroundingAllowed('sleep 5'), false)
+  assert.equal(isAutobackgroundingAllowed('/bin/sleep 5'), false)
+  assert.equal(isAutobackgroundingAllowed('bash -c "sleep 30"'), true)
+  assert.equal(isAutobackgroundingAllowed('node -e "setTimeout(()=>{}, 1000)"'), true)
+})
+
+test('bash hard-timeouts leading sleep that is allowed to run', async () => {
+  // sleep < 2s is not blocked by detectSleepPattern, but must not auto-background.
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
   try {
     const result = await bashTool.execute({
-      command: 'node -e "setTimeout(() => {}, 1000)"',
+      command: 'sleep 1',
       timeout: 50,
     }, context(dir))
     assert.equal(result.ok, false)
     assert.equal(result.errorCode, 'timeout')
     assert.deepEqual((result.errorDetails as { timeoutMs?: number }).timeoutMs, 50)
+    assert.doesNotMatch(result.content, /Task ID:/)
   } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('bash timeout auto-backgrounds long non-sleep commands', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  const registry = new BackgroundTaskRegistry()
+  const tool = createBashTool(registry)
+  const ctx = { ...context(dir), sessionId: 'auto-bg-1' }
+  try {
+    const started = Date.now()
+    const result = await tool.execute({
+      command: 'node -e "setTimeout(() => {}, 5000)"',
+      timeout: 100,
+    }, ctx)
+    const elapsed = Date.now() - started
+    assert.equal(result.ok, true)
+    assert.match(result.content, /moved to the background/)
+    assert.match(result.content, /Task ID: bash_\d+/)
+    assert.ok(elapsed < 2_000, `auto-bg hung for ${elapsed}ms`)
+
+    const idMatch = /Task ID: (bash_\d+)/.exec(result.content)
+    assert.ok(idMatch?.[1])
+    const task = registry.getTask(ctx.sessionId, idMatch[1]!)
+    assert.ok(task)
+    assert.equal(task.status, 'running')
+  } finally {
+    await registry.stopAll(ctx.sessionId, 'test cleanup')
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('bash timeout auto-background preserves process output', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  const registry = new BackgroundTaskRegistry()
+  const tool = createBashTool(registry)
+  const outputTool = createBashOutputTool(registry)
+  const ctx = { ...context(dir), sessionId: 'auto-bg-out' }
+  try {
+    const result = await tool.execute({
+      command: 'node -e "setTimeout(() => { console.log(\'late-output\') }, 400)"',
+      timeout: 80,
+    }, ctx)
+    assert.equal(result.ok, true)
+    const idMatch = /Task ID: (bash_\d+)/.exec(result.content)
+    assert.ok(idMatch?.[1])
+
+    // Wait for the delayed print, then read via BashOutput.
+    await new Promise((r) => setTimeout(r, 600))
+    const read = await outputTool.execute({ task_id: idMatch[1]!, wait_ms: 1_000 }, ctx)
+    assert.equal(read.ok, true)
+    assert.match(read.content, /late-output/)
+  } finally {
+    await registry.stopAll(ctx.sessionId, 'test cleanup')
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('bash nested sleep timeout auto-backgrounds promptly', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  const registry = new BackgroundTaskRegistry()
+  const tool = createBashTool(registry)
+  const ctx = { ...context(dir), sessionId: 'nested-bg' }
+  try {
+    // Nested sleep is not blocked by detectSleepPattern; timeout should
+    // auto-background (not hang waiting for 'close').
+    const started = Date.now()
+    const result = await tool.execute({
+      command: 'bash -c "sleep 30"',
+      timeout: 200,
+    }, ctx)
+    const elapsed = Date.now() - started
+    assert.equal(result.ok, true)
+    assert.match(result.content, /Task ID: bash_\d+/)
+    assert.ok(elapsed < 4_000, `nested bash auto-bg hung for ${elapsed}ms`)
+  } finally {
+    await registry.stopAll(ctx.sessionId, 'test cleanup')
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('bash subshell sleep timeout auto-backgrounds promptly', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-tools-'))
+  const registry = new BackgroundTaskRegistry()
+  const tool = createBashTool(registry)
+  const ctx = { ...context(dir), sessionId: 'subshell-bg' }
+  try {
+    const started = Date.now()
+    const result = await tool.execute({
+      command: '( sleep 30 )',
+      timeout: 200,
+    }, ctx)
+    const elapsed = Date.now() - started
+    assert.equal(result.ok, true)
+    assert.match(result.content, /Task ID: bash_\d+/)
+    assert.ok(elapsed < 4_000, `subshell auto-bg hung for ${elapsed}ms`)
+  } finally {
+    await registry.stopAll(ctx.sessionId, 'test cleanup')
     await rm(dir, { recursive: true, force: true })
   }
 })

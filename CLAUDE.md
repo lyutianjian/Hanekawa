@@ -86,7 +86,7 @@ Each tool exports `{ name, inputSchema (Zod), riskLevel, isReadOnly?, isDestruct
 | Grep | safe | yes | fast-glob, 50 match limit |
 | Glob | safe | yes | |
 | Read | safe | yes | LRU cache for post-compact restore |
-| Bash | dangerous | no | foreground execution or `run_in_background`; 1MB output cap; Windows Git Bash detection |
+| Bash | dangerous | no | default timeout 120s; on timeout non-sleep cmds auto-background (same process); explicit `run_in_background`; 1MB output cap; Windows Git Bash detection |
 | BashOutput | safe | yes | consumes unread background-shell output; supports regex filtering and waits up to 30s |
 | KillShell | dangerous | no | terminates a background shell and its child process tree |
 | Write | confirm | no | |
@@ -230,6 +230,8 @@ Dynamic ToolSearch is provider-aware:
 - `MYAGENT_MAX_OUTPUT_TOKENS=N` — override max output tokens (capped at 128k)
 - `MYAGENT_SLOT_CAP_DISABLED=1` — disable the 8K output token slot cap (bypasses `CAPPED_DEFAULT_MAX_TOKENS`)
 - `MYAGENT_STREAM_IDLE_TIMEOUT_MS=N` — stream idle timeout (default 90s)
+- `MYAGENT_BASH_DEFAULT_TIMEOUT_MS=N` / `BASH_DEFAULT_TIMEOUT_MS=N` — Bash foreground default timeout (default 120000)
+- `MYAGENT_BASH_MAX_TIMEOUT_MS=N` / `BASH_MAX_TIMEOUT_MS=N` — Bash max timeout clamp (default 600000, ≥ default)
 - `MYAGENT_BASH_PATH` — override bash executable path (Windows)
 - `MYAGENT_SUBAGENT_MODEL_<TYPE>` — override model for a specific subagent type
 - `MYAGENT_SUBAGENT_MODEL` — override model for all subagent types

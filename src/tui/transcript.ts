@@ -198,7 +198,13 @@ export function applyTuiRecordToTranscriptState(
         recentThinkingAssistant: item,
       }
     }
-    return appendStaticTranscriptItem(boundaryState, item)
+    // A plain (non-thinking) assistant message goes straight to static, which
+    // renders ABOVE the live area — commit any preceding user messages first
+    // so they don't end up displayed below the assistant reply.
+    const committed = item.kind === 'assistant'
+      ? commitPrecedingLiveItemsToStatic(boundaryState)
+      : boundaryState
+    return appendStaticTranscriptItem(committed, item)
   }
 
   if (record.type === 'tool_use') {

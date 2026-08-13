@@ -34,14 +34,20 @@ function userRecordWithDisplay(content: string, displayContent: string): Session
   }
 }
 
-function assistantRecordWithThinking(content: string, thinkingText: string): SessionRecord {
+function assistantRecord(content: string): Extract<SessionRecord, { type: 'message' }> {
   return {
     id: `assistant-${Date.now()}`,
     type: 'message',
     role: 'assistant',
     content,
-    thinkingBlocks: [{ type: 'thinking', thinking: thinkingText }],
     createdAt: new Date().toISOString(),
+  }
+}
+
+function assistantRecordWithThinking(content: string, thinkingText: string): SessionRecord {
+  return {
+    ...assistantRecord(content),
+    thinkingBlocks: [{ type: 'thinking', thinking: thinkingText }],
   }
 }
 
@@ -579,5 +585,100 @@ describe('transcript ordering: tool_result commits user message to static first'
 
     assert.ok(userIdx >= 0 && toolIdx >= 0 && userIdx < toolIdx,
       'user message before failed tool result in staticItems')
+  })
+})
+
+describe('transcript ordering: plain assistant message commits preceding user to static', () => {
+  it('user message is committed to static before a non-thinking assistant message', () => {
+    let state = createTranscriptState()
+    state = simulateSubmit(state, '你好')
+
+    state = applyTuiRecordToTranscriptState(state, assistantRecord('你好！'))
+
+    assert.deepEqual(
+      state.staticItems.map((item) => item.kind),
+      ['user', 'assistant'],
+      'static should be [user, assistant] so assistant renders below user',
+    )
+    assert.equal(
+      state.liveItems.filter((item) => item.kind === 'user').length,
+      0,
+      'user message should no longer be in liveItems',
+    )
+
+    // Turn end must not duplicate the user message
+    state = commitAllLiveItemsToStatic(state)
+    assert.equal(
+      state.staticItems.filter((item) => item.kind === 'user').length,
+      1,
+      'user message should appear exactly once after turn end',
+    )
+  })
+
+  it('thinking block followed by plain assistant keeps user < thinking < assistant', () => {
+    let state = createTranscriptState()
+    state = simulateSubmit(state, '先思考')
+
+    state = applyTuiRecordToTranscriptState(state, assistantRecordWithThinking('思考结果', '思考过程'))
+    state = applyTuiRecordToTranscriptState(state, assistantRecord('最终回答'))
+
+    const userIdx = state.staticItems.findIndex((item) => item.kind === 'user')
+    const thinkingIdx = state.staticItems.findIndex(
+      (item) => item.kind === 'assistant' && item.thinkingBlocks && item.thinkingBlocks.length > 0,
+    )
+    const assistantIdx = state.staticItems.findIndex(
+      (item) => item.kind === 'assistant' && (!item.thinkingBlocks || item.thinkingBlocks.length === 0),
+    )
+
+    assert.ok(userIdx < thinkingIdx, `user (${userIdx}) before thinking (${thinkingIdx})`)
+    assert.ok(thinkingIdx < assistantIdx, `thinking (${thinkingIdx}) before plain assistant (${assistantIdx})`)
+  })
+
+  it('plain assistant after a tool round keeps user < tool_call < assistant', () => {
+    let state = createTranscriptState()
+    state = simulateSubmit(state, '运行命令')
+
+    state = applyTuiRecordToTranscriptState(state, toolUseRecord('c1', 'Bash'))
+    state = applyTuiRecordToTranscriptState(state, toolResultRecord('c1', 'Bash', true, 'out'))
+    state = applyTuiRecordToTranscriptState(state, assistantRecord('完成'))
+
+    const userIdx = state.staticItems.findIndex((item) => item.kind === 'user')
+    const toolIdx = state.staticItems.findIndex((item) => item.kind === 'tool_call')
+    const assistantIdx = state.staticItems.findIndex((item) => item.kind === 'assistant')
+
+    assert.ok(userIdx >= 0 && toolIdx >= 0 && assistantIdx >= 0, 'user, tool_call, assistant all in static')
+    assert.ok(userIdx < toolIdx, `user (${userIdx}) before tool_call (${toolIdx})`)
+    assert.ok(toolIdx < assistantIdx, `tool_call (${toolIdx}) before assistant (${assistantIdx})`)
+    assert.equal(
+      state.staticItems.filter((item) => item.kind === 'assistant').length,
+      1,
+      'assistant message should appear exactly once',
+    )
+  })
+
+  it('multiple turns keep [user1, assistant1, user2, assistant2] order', () => {
+    let state = createTranscriptState()
+
+    state = simulateSubmit(state, '问题一')
+    state = applyTuiRecordToTranscriptState(state, assistantRecord('回答一'))
+
+    state = simulateSubmit(state, '问题二')
+    state = applyTuiRecordToTranscriptState(state, assistantRecord('回答二'))
+    state = commitAllLiveItemsToStatic(state)
+
+    const kinds = state.staticItems.map((item) => item.kind)
+    assert.deepEqual(kinds, ['user', 'assistant', 'user', 'assistant'])
+  })
+
+  it('two plain assistant messages in one turn (max_tokens style) keep order', () => {
+    let state = createTranscriptState()
+    state = simulateSubmit(state, '写长文章')
+
+    state = applyTuiRecordToTranscriptState(state, assistantRecord('第一部分'))
+    state = applyTuiRecordToTranscriptState(state, assistantRecord('第二部分'))
+    state = commitAllLiveItemsToStatic(state)
+
+    const kinds = state.staticItems.map((item) => item.kind)
+    assert.deepEqual(kinds, ['user', 'assistant', 'assistant'])
   })
 })

@@ -32,7 +32,8 @@ test('App renders welcome banner through static items instead of dynamic live tr
 test('App disables TUI animations while the permission dialog is visible', async () => {
   const source = await readFile('src/tui/components/App.tsx', 'utf8')
   const spinnerSource = await readFile('src/tui/components/Spinner.tsx', 'utf8')
-  const hookSource = await readFile('src/tui/hooks/useSpinner.ts', 'utf8')
+  const animationFrameSource = await readFile('src/tui/hooks/useAnimationFrame.ts', 'utf8')
+  const rowSource = await readFile('src/tui/components/Spinner/SpinnerAnimationRow.tsx', 'utf8')
   const messageListSource = await readFile('src/tui/components/MessageList.tsx', 'utf8')
   const toolCallSource = await readFile('src/tui/components/ToolCallBlock.tsx', 'utf8')
   const taskListSource = await readFile('src/tui/components/TaskListBlock.tsx', 'utf8')
@@ -44,8 +45,14 @@ test('App disables TUI animations while the permission dialog is visible', async
   assert.doesNotMatch(source, /\{isStreaming && <Spinner/)
   assert.match(spinnerSource, /if \(!active\) return null/)
   assert.match(spinnerSource, /animationsEnabled=\{active\}/)
-  assert.match(hookSource, /export function useSpinner\(active = true\)/)
-  assert.match(hookSource, /if \(!active\) return/)
+  // Hiding the spinner unmounts the animation row; its keepAlive clock
+  // subscription drops, so the global tick stops entirely while overlays
+  // are visible.
+  assert.match(animationFrameSource, /keepAlive: true/)
+  assert.match(animationFrameSource, /intervalMs === null/)
+  assert.match(rowSource, /useAnimationFrame\(50\)/)
+  // Overlay pause time is accumulated so elapsed survives the hidden window.
+  assert.match(spinnerSource, /pauseStartTimeRef/)
   assert.match(messageListSource, /animationsEnabled = true/)
   assert.match(messageListSource, /<ToolCallBlock item=\{item\} expanded=\{isExpanded\} animationsEnabled=\{animationsEnabled\}/)
   assert.match(toolCallSource, /useBlink\(animationsEnabled && runningOrApproved\)/)

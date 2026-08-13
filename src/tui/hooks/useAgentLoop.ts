@@ -39,7 +39,13 @@ import { calculateTokenCost, hasCompletePricing } from '../../harness/usage.js'
 
 export { isHiddenToolCall, recordsToDisplayItems } from '../transcript.js'
 
-export type StreamDisplayMode = 'requesting' | 'thinking' | 'waiting'
+export type StreamDisplayMode =
+  | 'requesting'
+  | 'thinking'
+  | 'tool-input'
+  | 'tool-use'
+  | 'responding'
+  | 'waiting'
 
 interface UseAgentLoopOptions {
   loop: AgentLoop
@@ -93,6 +99,13 @@ export function useAgentLoop({
   const activeToolProgressRef = useRef<Map<string, ToolProgressEvent>>(new Map())
   const subagentProgressRef = useRef<Map<string, string>>(new Map())
   const responseLengthRef = useRef(0)
+  // Elapsed-time accounting for the spinner. loadingStartTimeRef is anchored
+  // in submit(); totalPausedMsRef accumulates overlay/pause time strobed in
+  // by the Spinner's active toggle; pauseStartTimeRef freezes the elapsed
+  // clock while the spinner is hidden.
+  const loadingStartTimeRef = useRef(0)
+  const totalPausedMsRef = useRef(0)
+  const pauseStartTimeRef = useRef<number | null>(null)
   const thinkingStartRef = useRef<number | null>(null)
   const thinkingDurationRef = useRef<number | null>(null)
   const thinkingTextAccRef = useRef('')
@@ -176,6 +189,9 @@ export function useAgentLoop({
       setSpinnerSubText(undefined)
       setStreamMode('requesting')
       responseLengthRef.current = 0
+      loadingStartTimeRef.current = Date.now()
+      totalPausedMsRef.current = 0
+      pauseStartTimeRef.current = null
       thinkingStartRef.current = null
       thinkingDurationRef.current = null
 
@@ -363,19 +379,25 @@ export function useAgentLoop({
         return
       case 'text_delta':
         responseLengthRef.current += event.text.length
-        setStreamMode('requesting')
+        setStreamMode('responding')
         return
       case 'tool_input_delta':
         responseLengthRef.current += event.partialJson.length
-        setStreamMode('requesting')
+        setStreamMode('tool-input')
         return
       case 'idle_warning':
         setStreamMode('waiting')
         return
       case 'message_start':
-      case 'message_stop':
       case 'thinking_signature':
         setStreamMode('requesting')
+        return
+      case 'message_stop':
+        // Model yielded control; tools execute (if any) until the next stream.
+        setStreamMode('tool-use')
+        return
+      default:
+        setStreamMode('responding')
         return
     }
   }, [])
@@ -494,6 +516,9 @@ export function useAgentLoop({
     taskSnapshot,
     usage,
     responseLengthRef,
+    loadingStartTimeRef,
+    totalPausedMsRef,
+    pauseStartTimeRef,
     submit,
     interrupt,
     reloadMessages,

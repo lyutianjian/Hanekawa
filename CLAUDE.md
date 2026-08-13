@@ -8,18 +8,7 @@ Hanekawa (MyAgent) is a self-hosted CLI programming agent for the terminal. Type
 
 ## Commands
 
-```bash
-bun install                              # install dependencies (Node.js >= 22)
-bun run dev:tui                          # start TUI (primary interactive mode)
-bun run dev:tui resume <id>              # resume a session
-bun run dev:tui --continue               # continue most recent session
-bun run dev:tui list                     # list sessions
-bun run typecheck                        # tsc --noEmit
-bun run test                             # run all tests (Node built-in test runner)
-node --import tsx --test test/<file>.test.ts   # run a single test file
-```
-
-No bundler — runs TypeScript directly via `tsx`. No ESLint/Prettier configured.
+Development scripts live in `package.json` (`bun install`, `bun run dev:tui`, `bun run typecheck`, `bun run test`). Run a single test file with `node --import tsx --test test/<file>.test.ts`. No bundler — runs TypeScript directly via `tsx`; no ESLint/Prettier configured.
 
 Inside the TUI, `/tasks` opens the session's background task panel. Other important built-ins are `/help`, `/clear`, `/compact`, `/model`, `/provider`, `/plan`, `/effort`, `/session`, `/skills`, `/agents reload`, and `/repair`.
 
@@ -79,28 +68,7 @@ Three-layer configuration: endpoints (provider + baseUrl + apiKey) → models (m
 
 ### Tools (`src/tools/`)
 
-Each tool exports `{ name, inputSchema (Zod), riskLevel, isReadOnly?, isDestructive?, isConcurrencySafe?, execute() }`. Safe tools run in parallel; unsafe tools run sequentially as ordering barriers. The `Agent` and `Skill` tools are created dynamically at runtime.
-
-| Tool | Risk | Read-Only | Notes |
-|------|------|-----------|-------|
-| Grep | safe | yes | fast-glob, 50 match limit |
-| Glob | safe | yes | |
-| Read | safe | yes | LRU cache for post-compact restore |
-| Bash | dangerous | no | default timeout 120s; on timeout non-sleep cmds auto-background (same process); explicit `run_in_background`; 1MB output cap; Windows Git Bash detection |
-| BashOutput | safe | yes | consumes unread background-shell output; supports regex filtering and waits up to 30s |
-| KillShell | dangerous | no | terminates a background shell and its child process tree |
-| Write | confirm | no | |
-| Edit | confirm | no | requires prior Read, exactly one match |
-| MultiEdit | confirm | no | atomic exact string replacements |
-| Delete | dangerous | no | |
-| NotebookEdit | confirm | no | Jupyter notebook cell editing |
-| WebFetch | safe | yes | URL → Markdown, 15min cache, 30s timeout |
-| WebSearch | safe | yes | DuckDuckGo HTML search, no API key |
-| Config | safe | no | read/write settings at runtime |
-| TaskCreate/List/Get/Update | safe | mixed | task tracking |
-| ToolSearch | safe | yes | deferred tool schema loading (Anthropic tool_reference) |
-| Skill | safe | no | on-demand skill invocation |
-| Agent | safe | input-specific | typed subagent dispatch |
+Each tool exports `{ name, inputSchema (Zod), riskLevel, isReadOnly?, isDestructive?, isConcurrencySafe?, execute() }`. Safe tools run in parallel; unsafe tools run sequentially as ordering barriers. The `Agent` and `Skill` tools are created dynamically at runtime. Per-tool schemas, risk levels, and behavior live in each tool's own file under `src/tools/`.
 
 ### Sub-Agents (`Agent` tool)
 
@@ -135,26 +103,7 @@ JSONL records in `.myagent/sessions/`. In addition to messages, tool records, co
 
 ### TUI Transcript Mode
 
-Ctrl+O opens transcript history in `AlternateScreen`, which switches the terminal
-to the alternate buffer to avoid prompt scrollback redraw and cursor drift. While
-that view is mounted, `AlternateScreen` enables xterm alternate-scroll mode
-(`?1007h`) so mouse-wheel input maps to the existing up/down arrow scrolling
-path when the terminal supports it. It also enables SGR mouse tracking
-(`?1006h` + `?1000h`) so `TranscriptView` can directly parse wheel up/down
-events as a fallback. Cleanup disables mouse tracking and alternate-scroll
-before returning to the primary screen.
-
-`ToolCallBlock`, `CollapsedToolGroup`, and `SubagentTaskBlock` status rows align
-flush with the assistant message gutter. Nested tool output remains indented by
-`ResponseBlock`.
-
-Successful tool and subagent `●` status prefixes use `rgb(78,186,101)`;
-failed tool and subagent `●` status prefixes use `rgb(255,107,128)`.
-
-Agent/subagent rows keep headers compact: `<type> agent(<short summary>) <model>`
-plus a `Done (N tool uses · X tokens · Ys)` status line. Expanded views show
-`Prompt` from the user-provided Agent task and `Response` from subagent output;
-they do not render the internal agent system prompt.
+Conventions moved to `src/tui/CLAUDE.md` — loads when working under `src/tui/`. Markdown-rendering conventions likewise.
 
 ### Skills (`.myagent/skills/<name>/SKILL.md`)
 
@@ -173,16 +122,6 @@ Shadow git repo per session under `.myagent/shadow-git/<session-id>/`. Creates c
 ### Project Context Discovery
 
 Walks up from cwd looking for `MYAGENT.md`, `CLAUDE.md`, `AGENTS.md`, plus `.myagent/rules/*.md` and local overrides (`MYAGENT.local.md`, `CLAUDE.local.md`). Cached within session.
-
-## TUI Markdown Rendering
-
-Markdown rendering in `src/tui/components/Markdown.tsx` uses a hybrid approach:
-- **Block-level tokens** (headings, paragraphs, lists, blockquotes) are rendered as React components (`<Text>`/`<Box>`)
-- **Tables** are rendered as ANSI strings via `wrap-ansi` for word-wrap, then bridged to Ink via `<AnsiText>`. Includes three-stage column width allocation (ideal → proportional → hard wrap) and automatic vertical format fallback for narrow terminals.
-- **Code blocks** use `cli-highlight` for syntax highlighting, rendered via `<AnsiText>`
-- **CJK wrapping** is handled at two layers: `insertCjkBreaks()` in `markdown.ts` (application-level spaces at punctuation boundaries) and an Ink patch (`patches/ink+7.0.6.patch`) that inserts zero-width spaces between CJK characters in Ink's internal `wrap-text.js`
-
-Key dependencies: `marked` (parsing), `cli-highlight` (syntax), `wrap-ansi` (table cell wrapping), `string-width` (display width).
 
 ## Ink Patch
 
@@ -224,21 +163,7 @@ Dynamic ToolSearch is provider-aware:
 
 ## Environment Variables
 
-- `MYAGENT_DEBUG_PROVIDER=1` — log provider request/response payloads
-- `MYAGENT_PROMPT_CACHE_1H=1` — enable 1-hour Anthropic prompt cache TTL
-- `MYAGENT_DISABLE_PROMPT_CACHING=1` — disable prompt caching
-- `MYAGENT_MAX_OUTPUT_TOKENS=N` — override max output tokens (capped at 128k)
-- `MYAGENT_SLOT_CAP_DISABLED=1` — disable the 8K output token slot cap (bypasses `CAPPED_DEFAULT_MAX_TOKENS`)
-- `MYAGENT_STREAM_IDLE_TIMEOUT_MS=N` — stream idle timeout (default 90s)
-- `MYAGENT_BASH_DEFAULT_TIMEOUT_MS=N` / `BASH_DEFAULT_TIMEOUT_MS=N` — Bash foreground default timeout (default 120000)
-- `MYAGENT_BASH_MAX_TIMEOUT_MS=N` / `BASH_MAX_TIMEOUT_MS=N` — Bash max timeout clamp (default 600000, ≥ default)
-- `MYAGENT_BASH_PATH` — override bash executable path (Windows)
-- `MYAGENT_SUBAGENT_MODEL_<TYPE>` — override model for a specific subagent type
-- `MYAGENT_SUBAGENT_MODEL` — override model for all subagent types
-- `HANEKAWA_SEARCH_URL` — use a SearXNG instance instead of DuckDuckGo HTML search
-- `HANEKAWA_TOOL_SEARCH` - ToolSearch mode: `true`/`1`/unset=always, `false`/`0`=off, `auto`=auto, `auto:N`=auto with N% threshold
-- `HANEKAWA_TOOL_SEARCH_AUTO_PERCENT` - auto mode threshold percentage (default 10); overridden by `auto:N`
-- `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS=1` — omit beta-only dynamic ToolSearch payload fields
+The authoritative env-var list lives in source — grep the `MYAGENT_`, `HANEKAWA_`, and `BASH_` prefixes under `src/`.
 
 ## Current 1M Context Marker
 

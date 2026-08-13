@@ -6,6 +6,8 @@ import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { render } from '../ink.js'
+import { ClockProvider } from '../clock/ClockContext.js'
+import { installTerminalFocusFilter } from '../clock/terminalFocusState.js'
 import { ConfigService } from '../../config/service.js'
 import {
   loadMergedSettings,
@@ -68,6 +70,11 @@ async function main() {
     console.error('Use "myagent" for non-interactive mode.')
     process.exit(1)
   }
+
+  // Register before Ink attaches its own 'readable' listener so DECSET 1004
+  // focus sequences (`ESC [ I` / `ESC [ O`) are stripped instead of being
+  // delivered to useInput as literal '[I' / '[O' text.
+  installTerminalFocusFilter(process.stdin)
 
   let startupCommand: TuiStartupCommand
   try {
@@ -491,7 +498,8 @@ async function main() {
   }
   // Render the TUI
   const { waitUntilExit } = render(
-    <App
+    <ClockProvider>
+      <App
       loop={initialRuntime.loop}
       planModeManager={initialRuntime.planModeManager}
       modelKey={initialModelKey}
@@ -521,7 +529,8 @@ async function main() {
       onEffortLevelChange={async (level) => {
         try { await saveEffortLevel(level as EffortLevel) } catch { /* non-critical */ }
       }}
-    />,
+      />
+      </ClockProvider>,
     {
       exitOnCtrlC: false,
     },

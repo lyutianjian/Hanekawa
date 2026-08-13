@@ -284,6 +284,9 @@ export function App({
     taskSnapshot,
     usage,
     responseLengthRef,
+    loadingStartTimeRef,
+    totalPausedMsRef,
+    pauseStartTimeRef,
     submit,
     interrupt,
     reloadMessages,
@@ -1061,6 +1064,9 @@ export function App({
               spinnerColors={spinnerColors}
               active={showSpinner}
               responseLengthRef={responseLengthRef}
+              loadingStartTimeRef={loadingStartTimeRef}
+              totalPausedMsRef={totalPausedMsRef}
+              pauseStartTimeRef={pauseStartTimeRef}
             />
           )}
 

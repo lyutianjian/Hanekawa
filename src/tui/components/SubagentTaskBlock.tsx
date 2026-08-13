@@ -25,7 +25,7 @@ export function SubagentTaskBlock({ item, expanded = false, isTranscriptMode = f
   const response = formatResponseText(record, item.progress)
 
   return (
-    <Box marginY={0} flexDirection="column" paddingLeft={INDENT_TOOL}>
+    <Box marginBottom={1} flexDirection="column" paddingLeft={INDENT_TOOL}>
       <Box flexDirection="row" flexWrap="nowrap">
         <Box minWidth={2} flexShrink={0}>
           <Text color={statusColor}>{STATUS_DOT}</Text>

@@ -78,7 +78,7 @@ export function DisplayItem({
       return <CollapsedToolGroup item={item} expanded={isExpanded} animationsEnabled={animationsEnabled} isTranscriptMode={isTranscriptMode} />
     case 'compact_boundary':
       return (
-        <Box marginY={1}>
+        <Box marginBottom={1}>
           <Text color={theme.dimText} dimColor>
             {'--- context compacted ---'}
           </Text>
@@ -86,7 +86,7 @@ export function DisplayItem({
       )
     case 'compact_attempt_failed':
       return (
-        <Box marginY={1}>
+        <Box marginBottom={1}>
           <Text color={theme.warning}>
             {formatCompactFailure(item.record)}
           </Text>
@@ -104,7 +104,7 @@ export function DisplayItem({
       return <SubagentTaskBlock item={item} treePosition={subagentTreePosition} expanded={isExpanded} isTranscriptMode={isTranscriptMode} />
     case 'system':
       return (
-        <Box marginY={1}>
+        <Box marginBottom={1}>
           <Text color={item.content.startsWith('✻') ? theme.subtleText : theme.systemText} dimColor={!item.content.startsWith('✻')}>
             {item.content}
           </Text>
@@ -112,7 +112,7 @@ export function DisplayItem({
       )
     case 'error':
       return (
-        <Box marginY={1}>
+        <Box marginBottom={1}>
           <Text color={theme.error}>
             Error: {item.content}
           </Text>

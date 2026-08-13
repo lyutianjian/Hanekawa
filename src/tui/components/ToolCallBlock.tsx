@@ -38,7 +38,7 @@ export function ToolCallBlock({ item, expanded, animationsEnabled = true, isTran
   }
 
   return (
-    <Box flexDirection="column" paddingLeft={INDENT_TOOL} marginY={0}>
+    <Box flexDirection="column" paddingLeft={INDENT_TOOL} marginBottom={1}>
       <Box flexDirection="row" flexWrap="nowrap">
         <Box minWidth={2} flexShrink={0}>
           <Text color={statusDot.color} dimColor={item.status === 'pending'}>
@@ -123,7 +123,7 @@ function AgentToolCallBlock({
   const response = item.resultDisplay?.detail ?? result
 
   return (
-    <Box flexDirection="column" paddingLeft={INDENT_TOOL} marginY={0}>
+    <Box flexDirection="column" paddingLeft={INDENT_TOOL} marginBottom={1}>
       <AgentHeader
         display={display}
         suffix={item.resultDisplay?.headerSuffix}

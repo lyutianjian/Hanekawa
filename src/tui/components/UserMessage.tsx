@@ -6,7 +6,7 @@ interface UserMessageProps {
 
 export function UserMessage({ content }: UserMessageProps) {
   return (
-    <Box marginY={1}>
+    <Box marginBottom={1}>
       <Box backgroundColor="#2d2d2d" width="100%">
         <Text color="white">{'❯ '}{content}</Text>
       </Box>

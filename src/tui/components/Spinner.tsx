@@ -1,18 +1,14 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { Box, Text, useStdout } from 'ink'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import stringWidth from 'string-width'
+import { Box, useStdout } from 'ink'
 import type { TaskDisplaySnapshot } from '../../harness/types.js'
-import { useSpinner } from '../hooks/useSpinner.js'
 import { theme } from '../theme.js'
 import { ResponseBlock } from './ResponseBlock.js'
 import { TaskListBlock } from './TaskListBlock.js'
+import { SpinnerAnimationRow } from './Spinner/SpinnerAnimationRow.js'
+import type { SpinnerMode } from './Spinner/types.js'
+import { getGraphemeSegments } from './Spinner/utils.js'
 
-const DIM_COLOR = theme.dimText
-const FALLBACK_GRAY = { r: 128, g: 128, b: 128 }
-const DEFAULT_CHARACTERS = getDefaultCharacters()
-const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()]
-const GLIMMER_PADDING = 10
-const ACTIVE_TOOL_FLASH_MS = 1000
 const SPINNER_VERBS = [
   'Accomplishing',
   'Actioning',
@@ -210,6 +206,9 @@ interface SpinnerProps {
   spinnerColors?: SpinnerColors
   active?: boolean
   responseLengthRef?: RefObject<number>
+  loadingStartTimeRef?: RefObject<number>
+  totalPausedMsRef?: RefObject<number>
+  pauseStartTimeRef?: RefObject<number | null>
 }
 
 export interface SpinnerColors {
@@ -217,14 +216,40 @@ export interface SpinnerColors {
   shimmerColor: string
 }
 
-export function Spinner({ subText, mode: streamMode = 'requesting', taskSnapshot, spinnerColors, active = true, responseLengthRef }: SpinnerProps) {
+type StreamSpinnerMode = 'requesting' | 'thinking' | 'tool-input' | 'tool-use' | 'responding' | 'waiting'
+
+// Static shell of the spinner. Only SpinnerAnimationRow subscribes to the
+// global animation clock; this component re-renders solely on state/prop
+// changes (~25x/turn instead of ~383x at 50ms), keeping verb selection, the
+// thinking timers, and TaskListBlock out of the animation path.
+export function Spinner({
+  subText,
+  mode: streamMode = 'requesting',
+  taskSnapshot,
+  spinnerColors,
+  active = true,
+  responseLengthRef,
+  loadingStartTimeRef,
+  totalPausedMsRef,
+  pauseStartTimeRef,
+}: SpinnerProps) {
   const [randomVerb] = useState(() => `${sampleSpinnerVerb()}...`)
   const [sampledSpinnerColors] = useState(sampleSpinnerColors)
   const [thinkingStatus, setThinkingStatus] = useState<'thinking' | number | null>(null)
   const thinkingStartRef = useRef<number | null>(null)
   const { messageColor, shimmerColor } = spinnerColors ?? sampledSpinnerColors
   const { stdout } = useStdout()
-  const { frame, elapsed, time } = useSpinner(active)
+
+  // Fallbacks keep the props optional for callers that only pass taskSnapshot
+  // (tests, static TaskListBlock rendering) — App passes the real refs.
+  const fallbackLoadingStartRef = useRef(Date.now())
+  const fallbackTotalPausedMsRef = useRef(0)
+  const fallbackPauseStartRef = useRef<number | null>(null)
+  const fallbackResponseLengthRef = useRef(0)
+  const rowLoadingStartRef = loadingStartTimeRef ?? fallbackLoadingStartRef
+  const rowTotalPausedMsRef = totalPausedMsRef ?? fallbackTotalPausedMsRef
+  const rowPauseStartRef = pauseStartTimeRef ?? fallbackPauseStartRef
+  const rowResponseLengthRef = responseLengthRef ?? fallbackResponseLengthRef
 
   const hasActiveTool = Boolean(subText)
   const mode: SpinnerMode = hasActiveTool ? 'tool-use' : streamMode
@@ -261,49 +286,44 @@ export function Spinner({ subText, mode: streamMode = 'requesting', taskSnapshot
     }
   }, [mode])
 
+  // Pause accounting: while the spinner is hidden (overlays like the
+  // permission dialog), freeze the elapsed clock and resume it on return.
+  useEffect(() => {
+    if (active) {
+      if (rowPauseStartRef.current !== null) {
+        rowTotalPausedMsRef.current += Date.now() - rowPauseStartRef.current
+        rowPauseStartRef.current = null
+      }
+    } else if (rowPauseStartRef.current === null) {
+      rowPauseStartRef.current = Date.now()
+    }
+  }, [active, rowPauseStartRef, rowTotalPausedMsRef])
+
   if (!active) return null
 
-  const elapsedText = formatElapsed(elapsed)
   const terminalWidth = stdout.columns || 80
-
-  // Build parenthetical: (elapsed · ↓ tokens · thinking status)
-  const approxTokens = responseLengthRef ? Math.round(responseLengthRef.current / 4) : 0
-  const parentheticalSegments: string[] = [elapsedText]
-  if (approxTokens > 0) parentheticalSegments.push(`↓ ${formatTokenCount(approxTokens)}`)
-  const thinkingLabel = formatThinkingStatus(thinkingStatus)
-  if (thinkingLabel) parentheticalSegments.push(thinkingLabel)
-  const parenthetical = parentheticalSegments.join(' · ')
-
-  const parentheticalWidth = stringWidth(parenthetical) + 4 // "(" + ")" + spaces
-  const messageWidth = Math.max(1, terminalWidth - parentheticalWidth - 2)
   const taskMessage = taskSnapshot ? formatActiveTaskMessage(taskSnapshot) : undefined
-  // Always show random verb as main message — never "Thinking..."
   const message = hasActiveTool
-    ? truncateMiddleByWidth(subText!, messageWidth)
+    ? truncateMiddleByWidth(subText!, Math.max(1, terminalWidth - 2))
     : mode === 'waiting'
       ? 'Waiting for model...'
-      : truncateMiddleByWidth(taskMessage ?? randomVerb, messageWidth)
-  const glimmerIndex = getGlimmerIndex(message, mode, time)
-  const flashOpacity = mode === 'tool-use'
-    ? (Math.sin((time / ACTIVE_TOOL_FLASH_MS) * Math.PI) + 1) / 2
-    : 0
+      : truncateMiddleByWidth(taskMessage ?? randomVerb, Math.max(1, terminalWidth - 2))
 
   return (
     <Box flexDirection="column" width="100%">
-      <Box flexDirection="row" flexWrap="wrap" width="100%">
-        <SpinnerGlyph frame={frame} messageColor={messageColor} />
-        <GlimmerMessage
-          message={message}
-          mode={mode}
-          messageColor={messageColor}
-          glimmerIndex={glimmerIndex}
-          flashOpacity={flashOpacity}
-          shimmerColor={shimmerColor}
-        />
-        <Text color={DIM_COLOR}>(</Text>
-        <Text color={DIM_COLOR}>{parenthetical}</Text>
-        <Text color={DIM_COLOR}>)</Text>
-      </Box>
+      <SpinnerAnimationRow
+        mode={mode}
+        hasActiveTools={hasActiveTool}
+        responseLengthRef={rowResponseLengthRef}
+        message={message}
+        messageColor={messageColor}
+        shimmerColor={shimmerColor}
+        loadingStartTimeRef={rowLoadingStartRef}
+        totalPausedMsRef={rowTotalPausedMsRef}
+        pauseStartTimeRef={rowPauseStartRef}
+        thinkingStatus={thinkingStatus}
+        columns={terminalWidth}
+      />
       {taskSnapshot && taskSnapshot.counts.total > 0 && (
         <ResponseBlock>
           <TaskListBlock
@@ -316,145 +336,6 @@ export function Spinner({ subText, mode: streamMode = 'requesting', taskSnapshot
       )}
     </Box>
   )
-}
-
-type StreamSpinnerMode = 'requesting' | 'thinking' | 'waiting'
-type SpinnerMode = StreamSpinnerMode | 'tool-use'
-
-function formatElapsed(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m${seconds % 60 > 0 ? ` ${seconds % 60}s` : ''}`
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  return `${h}h${m > 0 ? ` ${m}m` : ''}`
-}
-
-function formatTokenCount(tokens: number): string {
-  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k tokens`
-  return `${tokens} tokens`
-}
-
-function formatThinkingStatus(status: 'thinking' | number | null): string | undefined {
-  if (status === 'thinking') return 'thinking'
-  if (typeof status === 'number') return `thought for ${Math.max(1, Math.round(status / 1000))}s`
-  return undefined
-}
-
-function SpinnerGlyph({
-  frame,
-  messageColor,
-}: {
-  frame: number
-  messageColor: string
-}): ReactNode {
-  const spinnerChar = SPINNER_FRAMES[frame % SPINNER_FRAMES.length] ?? SPINNER_FRAMES[0]!
-  return (
-    <Box flexWrap="wrap" height={1} width={2}>
-      <Text color={messageColor}>{spinnerChar}</Text>
-    </Box>
-  )
-}
-
-function GlimmerMessage({
-  message,
-  mode,
-  messageColor,
-  glimmerIndex,
-  flashOpacity,
-  shimmerColor,
-}: {
-  message: string
-  mode: SpinnerMode
-  messageColor: string
-  glimmerIndex: number
-  flashOpacity: number
-  shimmerColor: string
-}): ReactNode {
-  if (!message) return null
-
-  const baseColor = parseHexColor(messageColor)
-  const shimmerRGB = parseHexColor(shimmerColor)
-
-  if (mode === 'tool-use') {
-    const color = toRGBColor(interpolateColor(baseColor, shimmerRGB, flashOpacity))
-    return (
-      <>
-        <Text color={color}>{message}</Text>
-        <Text color={messageColor}> </Text>
-      </>
-    )
-  }
-
-  const segments = getGraphemeSegments(message)
-  const messageWidth = stringWidth(message)
-  const shimmerStart = glimmerIndex - 1
-  const shimmerEnd = glimmerIndex + 1
-
-  if (shimmerStart >= messageWidth || shimmerEnd < 0) {
-    return (
-      <>
-        <Text color={messageColor}>{message}</Text>
-        <Text color={messageColor}> </Text>
-      </>
-    )
-  }
-
-  const clampedStart = Math.max(0, shimmerStart)
-  let colPos = 0
-  let before = ''
-  let shim = ''
-  let after = ''
-
-  for (const segment of segments) {
-    if (colPos + segment.width <= clampedStart) {
-      before += segment.value
-    } else if (colPos > shimmerEnd) {
-      after += segment.value
-    } else {
-      shim += segment.value
-    }
-    colPos += segment.width
-  }
-
-  return (
-    <>
-      {before && <Text color={messageColor}>{before}</Text>}
-      <Text color={shimmerColor}>{shim}</Text>
-      {after && <Text color={messageColor}>{after}</Text>}
-      <Text color={messageColor}> </Text>
-    </>
-  )
-}
-
-function getGlimmerIndex(message: string, mode: SpinnerMode, time: number): number {
-  const glimmerSpeed = mode === 'requesting' ? 50 : 200
-  const messageWidth = stringWidth(message)
-  const cycleLength = messageWidth + GLIMMER_PADDING * 2
-  const cyclePosition = Math.floor(time / glimmerSpeed)
-
-  if (mode === 'requesting') {
-    return (cyclePosition % cycleLength) - GLIMMER_PADDING
-  }
-  return messageWidth + GLIMMER_PADDING - (cyclePosition % cycleLength)
-}
-
-function getDefaultCharacters(): string[] {
-  if (process.env.TERM === 'xterm-ghostty') {
-    return ['\u00b7', '\u2722', '\u2733', '\u2736', '\u273b', '*']
-  }
-  return process.platform === 'darwin'
-    ? ['\u00b7', '\u2722', '\u2733', '\u2736', '\u273b', '\u273d']
-    : ['\u00b7', '\u2722', '*', '\u2736', '\u273b', '\u273d']
-}
-
-function getGraphemeSegments(value: string): Array<{ value: string; width: number }> {
-  const segmenter = typeof Intl.Segmenter === 'function'
-    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
-    : undefined
-  const parts = segmenter
-    ? [...segmenter.segment(value)].map((part) => part.segment)
-    : [...value]
-  return parts.map((part) => ({ value: part, width: stringWidth(part) }))
 }
 
 function sampleSpinnerVerb(): string {
@@ -502,38 +383,6 @@ function truncateMiddleByWidth(value: string, maxWidth: number): string {
   }
 
   return `${head}${ellipsis}${tail}`
-}
-
-function interpolateColor(
-  color1: RGBColor,
-  color2: RGBColor,
-  t: number,
-): RGBColor {
-  return {
-    r: Math.round(color1.r + (color2.r - color1.r) * t),
-    g: Math.round(color1.g + (color2.g - color1.g) * t),
-    b: Math.round(color1.b + (color2.b - color1.b) * t),
-  }
-}
-
-function parseHexColor(value: string): RGBColor {
-  const normalized = value.startsWith('#') ? value.slice(1) : value
-  if (normalized.length !== 6) return FALLBACK_GRAY
-  return {
-    r: Number.parseInt(normalized.slice(0, 2), 16),
-    g: Number.parseInt(normalized.slice(2, 4), 16),
-    b: Number.parseInt(normalized.slice(4, 6), 16),
-  }
-}
-
-function toRGBColor(color: RGBColor): string {
-  return `rgb(${color.r},${color.g},${color.b})`
-}
-
-interface RGBColor {
-  r: number
-  g: number
-  b: number
 }
 
 function formatActiveTaskMessage(snapshot: TaskDisplaySnapshot): string | undefined {

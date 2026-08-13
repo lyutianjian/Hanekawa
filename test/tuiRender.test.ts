@@ -1,6 +1,7 @@
 import test, { afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { createElement as h } from 'react'
+import { Box } from 'ink'
 import { cleanup, render } from 'ink-testing-library'
 import { ToolCallBlock } from '../src/tui/components/ToolCallBlock.js'
 import { CollapsedToolGroup } from '../src/tui/components/CollapsedToolGroup.js'
@@ -16,6 +17,7 @@ import { MessageList, StaticDisplayItem } from '../src/tui/components/MessageLis
 import { TranscriptView } from '../src/tui/components/TranscriptView.js'
 import { StatusLine } from '../src/tui/components/StatusLine.js'
 import { BackgroundTasksPanel } from '../src/tui/components/BackgroundTasksPanel.js'
+import { WelcomeBanner } from '../src/tui/components/WelcomeBanner.js'
 import { formatWorkedSummary } from '../src/tui/hooks/useAgentLoop.js'
 import type { CheckpointDiffSummary, CheckpointWithDiff } from '../src/services/checkpoint/checkpointService.js'
 import type { PermissionDecisionSource, PermissionRequest, PermissionRule } from '../src/harness/permissions.js'
@@ -610,9 +612,15 @@ test('Spinner renders nothing when inactive', () => {
   assert.equal(frame.trim(), '')
 })
 
-test('Spinner renders thinking and waiting stream modes', () => {
-  const thinkingFrame = render(h(Spinner, { mode: 'thinking' })).lastFrame() ?? ''
-  assert.match(thinkingFrame, /\.\.\..*\(\d+s/)
+test('Spinner renders thinking and waiting stream modes', async () => {
+  const instance = render(h(Spinner, { mode: 'thinking' }))
+  await waitForInk()
+  const thinkingFrame = instance.lastFrame() ?? ''
+
+  // Verb is present; the (· time · tokens) group is gated until 30s of elapsed.
+  assert.match(thinkingFrame, /\.\.\./)
+  assert.match(thinkingFrame, /thinking/)
+  assert.doesNotMatch(thinkingFrame, /\(\d+m?s/)
 
   cleanup()
 
@@ -624,7 +632,8 @@ test('Spinner briefly renders thought duration after thinking stops', async () =
   mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
   try {
     const instance = render(h(Spinner, { mode: 'thinking' }))
-    assert.match(instance.lastFrame() ?? '', /\.\.\..*\(\d+s/)
+    assert.match(instance.lastFrame() ?? '', /\.\.\./)
+    assert.doesNotMatch(instance.lastFrame() ?? '', /\(\d+m?s/)
 
     mock.timers.tick(2500)
     instance.rerender(h(Spinner, { mode: 'requesting' }))
@@ -633,6 +642,54 @@ test('Spinner briefly renders thought duration after thinking stops', async () =
     assert.match(instance.lastFrame() ?? '', /thought for 3s/)
   } finally {
     mock.timers.reset()
+  }
+})
+
+test('Spinner shows elapsed and tokens only after 30s', () => {
+  const now = Date.now()
+
+  // Before 30s: verb only, no status group.
+  const before = render(h(Spinner, {
+    responseLengthRef: { current: 800 },
+    loadingStartTimeRef: { current: now - 10_000 },
+    totalPausedMsRef: { current: 0 },
+    pauseStartTimeRef: { current: null },
+  })).lastFrame() ?? ''
+  assert.doesNotMatch(before, /\(\d+m?s/)
+  assert.doesNotMatch(before, /tokens/)
+
+  cleanup()
+
+  // After 30s: (45s · N tokens) group appears.
+  const after = render(h(Spinner, {
+    responseLengthRef: { current: 800 },
+    loadingStartTimeRef: { current: now - 45_000 },
+    totalPausedMsRef: { current: 0 },
+    pauseStartTimeRef: { current: null },
+  })).lastFrame() ?? ''
+  assert.match(after, /45s/)
+  assert.match(after, /200 tokens/)
+})
+
+test('Spinner freezes elapsed while paused (overlay hidden)', () => {
+  const now = Date.now()
+  const frame = render(h(Spinner, {
+    responseLengthRef: { current: 400 },
+    loadingStartTimeRef: { current: now - 60_000 },
+    totalPausedMsRef: { current: 30_000 },
+    pauseStartTimeRef: { current: now },
+  })).lastFrame() ?? ''
+
+  // Elapsed frozen at 30s (loaded 60s ago, paused the last 30s) — still under the gate.
+  assert.doesNotMatch(frame, /\(\d+m?s/)
+  assert.doesNotMatch(frame, /tokens/)
+})
+
+test('Spinner renders tool-input, tool-use, and responding modes', () => {
+  for (const mode of ['tool-input', 'tool-use', 'responding'] as const) {
+    const frame = render(h(Spinner, { mode })).lastFrame() ?? ''
+    assert.match(frame, /\.\.\./)
+    assert.doesNotMatch(frame, /Waiting for model/)
   }
 })
 
@@ -961,6 +1018,97 @@ test('MessageList renders queued messages after live items', () => {
 
   assert.ok(frame.indexOf('current response') < frame.indexOf('/model fast'))
   assert.match(frame, /\(queued\)/)
+})
+
+test('MessageList separates blocks by exactly one blank line', () => {
+  const items: TUIDisplayItem[] = [
+    {
+      kind: 'user',
+      id: 'user-1',
+      content: 'hello there',
+      createdAt: '2026-07-14T00:00:00.000Z',
+    },
+    {
+      kind: 'assistant',
+      id: 'assistant-1',
+      content: 'answer text',
+      createdAt: '2026-07-14T00:00:01.000Z',
+    },
+    {
+      kind: 'tool_call',
+      id: 'tool-1',
+      toolUseId: 'call-1',
+      tool: 'Read',
+      input: { filePath: 'a.ts' },
+      status: 'done',
+      createdAt: '2026-07-14T00:00:02.000Z',
+    },
+    {
+      kind: 'tool_call',
+      id: 'tool-2',
+      toolUseId: 'call-2',
+      tool: 'Bash',
+      input: { command: 'ls' },
+      status: 'done',
+      createdAt: '2026-07-14T00:00:03.000Z',
+    },
+    {
+      kind: 'system',
+      id: 'system-1',
+      content: '✻ Worked for 3s',
+      createdAt: '2026-07-14T00:00:04.000Z',
+    },
+  ]
+
+  const frame = render(h(MessageList, { items })).lastFrame() ?? ''
+  const lines = frame.split('\n')
+  const lineOf = (needle: string): number => {
+    const index = lines.findIndex((line) => line.includes(needle))
+    assert.ok(index >= 0, `expected "${needle}" to render`)
+    return index
+  }
+  const assertOneBlankBetween = (first: number, second: number): void => {
+    assert.equal(second - first, 2, `expected exactly one blank line between lines ${first} and ${second}`)
+    assert.equal(lines[first + 1]!.trim(), '')
+  }
+
+  const userLine = lineOf('hello there')
+  const assistantLine = lineOf('answer text')
+  const tool1Line = lineOf('Read')
+  const tool2Line = lineOf('Bash')
+  const systemLine = lineOf('Worked for 3s')
+
+  assertOneBlankBetween(userLine, assistantLine)
+  assertOneBlankBetween(assistantLine, tool1Line)
+  assertOneBlankBetween(tool1Line, tool2Line)
+  assertOneBlankBetween(tool2Line, systemLine)
+})
+
+test('welcome banner leaves exactly one blank line before the first message', () => {
+  const frame = render(h(Box, { flexDirection: 'column' }, [
+    h(WelcomeBanner, {
+      sessionShortId: 'abcd1234',
+      model: 'fast-model',
+      providerName: 'test-provider',
+      cwd: '/tmp/project',
+    }),
+    h(MessageList, {
+      items: [{
+        kind: 'user',
+        id: 'user-1',
+        content: 'first message',
+        createdAt: '2026-07-14T00:00:00.000Z',
+      }],
+    }),
+  ])).lastFrame() ?? ''
+
+  const lines = frame.split('\n')
+  const borderIndex = lines.findIndex((line) => line.startsWith('╰'))
+  const userIndex = lines.findIndex((line) => line.includes('first message'))
+  assert.ok(borderIndex >= 0, 'welcome banner bottom border should render')
+  assert.ok(userIndex >= 0, 'first message should render')
+  assert.equal(userIndex - borderIndex, 2, 'expected exactly one blank line between banner and first message')
+  assert.equal(lines[borderIndex + 1]!.trim(), '')
 })
 
 test('RestoreMode selecting current cancels without rewinding', async () => {

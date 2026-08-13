@@ -59,7 +59,7 @@ export function CollapsedToolGroup({ item, expanded, animationsEnabled = true, i
 
   if (expanded) {
     return (
-      <Box flexDirection="column" paddingLeft={INDENT_TOOL}>
+      <Box flexDirection="column" paddingLeft={INDENT_TOOL} marginBottom={1}>
         <Box flexDirection="row" flexWrap="nowrap">
           <Box minWidth={2} flexShrink={0}>
             <Text color={statusDot.color}>
@@ -86,7 +86,7 @@ export function CollapsedToolGroup({ item, expanded, animationsEnabled = true, i
   }
 
   return (
-    <Box flexDirection="column" paddingLeft={INDENT_TOOL}>
+    <Box flexDirection="column" paddingLeft={INDENT_TOOL} marginBottom={1}>
       <Box flexDirection="row" flexWrap="nowrap">
         <Box minWidth={2} flexShrink={0}>
           <Text color={statusDot.color}>

@@ -24,7 +24,7 @@ export function AssistantMessage({ content, streamingContent, thinkingBlocks, th
   if (!hasContent && !hasThinking) return null
 
   return (
-    <Box flexDirection="column" marginY={1} width={width}>
+    <Box flexDirection="column" marginBottom={1} width={width}>
       {hasThinking && (
         <Box flexDirection="row">
           <Box width={PREFIX_WIDTH} flexShrink={0}>

@@ -283,7 +283,7 @@ export function estimateDisplayItemRows(
   const contentWidth = Math.max(1, width)
   switch (item.kind) {
     case 'user':
-      return 3 + estimateWrappedRows(item.content, Math.max(1, contentWidth - 2))
+      return 2 + estimateWrappedRows(item.content, Math.max(1, contentWidth - 2))
     case 'assistant':
       return estimateAssistantRows(item, contentWidth, expanded)
     case 'tool_call':
@@ -292,13 +292,13 @@ export function estimateDisplayItemRows(
       return estimateToolGroupRows(item, contentWidth, expanded)
     case 'compact_boundary':
       if (showCompactSummary && item.summary.trim()) {
-        return 2 + estimateWrappedRows(`Compact summary\n${item.summary}`, contentWidth)
+        return 1 + estimateWrappedRows(`Compact summary\n${item.summary}`, contentWidth)
       }
-      return 2 + estimateWrappedRows(displayItemText(item), contentWidth)
+      return 1 + estimateWrappedRows(displayItemText(item), contentWidth)
     case 'compact_attempt_failed':
     case 'system':
     case 'error':
-      return 2 + estimateWrappedRows(displayItemText(item), contentWidth)
+      return 1 + estimateWrappedRows(displayItemText(item), contentWidth)
     case 'subagent_task':
       return estimateSubagentTaskRows(item, contentWidth, expanded)
     case 'tool_progress':
@@ -315,7 +315,7 @@ function estimateAssistantRows(
   const hasThinking = Boolean(item.thinkingBlocks?.length) || Boolean(item.thinkingPreview)
   if (!hasContent && !hasThinking) return 0
 
-  let rows = 2
+  let rows = 1
   if (hasThinking) {
     if (expanded) {
       const thinking = item.thinkingBlocks
@@ -351,7 +351,7 @@ function estimateToolCallRows(
   expanded: boolean,
 ): number {
   if (item.tool === 'Agent') return estimateAgentToolRows(item, width, expanded)
-  let rows = 1
+  let rows = 2
   if (item.status === 'denied') rows += 1
   if (item.status === 'error' && item.result) {
     rows += (item.errorCode ? 1 : 0) + estimateWrappedRows(item.result, Math.max(1, width - 2))
@@ -377,16 +377,16 @@ function estimateAgentToolRows(
   width: number,
   expanded: boolean,
 ): number {
-  if (item.status === 'denied') return 2
+  if (item.status === 'denied') return 3
   if (item.status === 'error' && item.result) {
-    return 1 + (item.errorCode ? 1 : 0) + estimateWrappedRows(item.result, Math.max(1, width - 3))
+    return 2 + (item.errorCode ? 1 : 0) + estimateWrappedRows(item.result, Math.max(1, width - 3))
   }
-  if (item.status !== 'done' || !item.result) return 1
-  if (!expanded) return 2
+  if (item.status !== 'done' || !item.result) return 2
+  if (!expanded) return 3
 
   const prompt = getAgentTaskInput(item.input)
   const response = item.resultDisplay?.detail ?? item.result
-  return 3
+  return 4
     + estimateWrappedRows(prompt, Math.max(1, width - 3))
     + (response ? 1 + estimateWrappedRows(response, Math.max(1, width - 3)) : 0)
 }
@@ -396,13 +396,13 @@ function estimateSubagentTaskRows(
   width: number,
   expanded: boolean,
 ): number {
-  if (!expanded) return 2
+  if (!expanded) return 3
   const response = item.record.status === 'completed'
     ? item.record.summary?.trim() ?? ''
     : item.record.status === 'failed'
       ? item.record.error?.trim() ?? ''
       : item.progress?.trim() ?? ''
-  return 3
+  return 4
     + estimateWrappedRows(item.record.task, Math.max(1, width - 3))
     + (response ? 1 + estimateWrappedRows(response, Math.max(1, width - 3)) : 0)
 }
@@ -414,10 +414,10 @@ function estimateToolGroupRows(
 ): number {
   if (!expanded) {
     const hasHint = Boolean(formatToolGroupResultSummary(item.toolCalls))
-    return hasHint ? 2 : 1
+    return hasHint ? 3 : 2
   }
   // Expanded: one header + one ResponseBlock gutter per child + the child's own rows.
-  let rows = 1
+  let rows = 2
   for (const call of item.toolCalls) {
     rows += 1 + estimateToolCallRows(call, Math.max(1, width - 4), true)
   }

@@ -78,7 +78,7 @@ describe('PERMISSION_OPTIONS', () => {
       options.map((o) => o.hotkey),
       ['y', 'n', 'a'],
     )
-    assert.equal(options[2]?.label, 'Yes, always allow Bash:npm test')
+    assert.equal(options[2]?.label, 'Yes, always allow Bash(npm test)')
   })
 
   it('omits always when the request has no scoped always rule', () => {
@@ -214,13 +214,13 @@ describe('permission dialog formatters', () => {
       formatPermissionReason(request('Read', {}, 'ask rule', 'safe', 'requires', {
         matchedRule: askRule('Read', 'src/**'),
       })),
-      'Permission rule Read:src/** requires confirmation.',
+      'Permission rule Read(src/**) requires confirmation.',
     )
     assert.equal(
       formatPermissionReason(request('Read', {}, 'deny rule', 'safe', 'requires', {
         matchedRule: denyRule('Read', 'secrets/**'),
       })),
-      'Permission deny rule Read:secrets/** is blocking this action.',
+      'Permission deny rule Read(secrets/**) is blocking this action.',
     )
     assert.equal(
       formatPermissionReason(request('Write', { filePath: '.env' }, 'protected path', 'confirm', 'Protected path requires confirmation')),
@@ -234,12 +234,12 @@ describe('permission dialog formatters', () => {
       formatPermissionReason(request('Write', { filePath: 'src/app.ts' }, 'allow rule', 'confirm', 'Allow rule matched but safety still requires confirmation', {
         matchedRule: allowRule('Write', 'src/**'),
       })),
-      'Allow rule Write:src/** matched, but safety still requires confirmation.',
+      'Allow rule Write(src/**) matched, but safety still requires confirmation.',
     )
   })
 
   it('formats permission rule labels', () => {
-    assert.equal(formatPermissionRuleLabel(allowRule('Bash', 'npm test')), 'Bash:npm test')
+    assert.equal(formatPermissionRuleLabel(allowRule('Bash', 'npm test')), 'Bash(npm test)')
     assert.equal(formatPermissionRuleLabel(allowRule('Read')), 'Read')
   })
 

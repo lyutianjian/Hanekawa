@@ -337,7 +337,7 @@ function basename(command: string): string {
   return slash === -1 ? normalized : normalized.slice(slash + 1)
 }
 
-function normalizedExecutable(command: string): string {
+export function normalizedExecutable(command: string): string {
   const base = basename(command).toLowerCase()
   return base.endsWith('.exe') ? base.slice(0, -4) : base
 }

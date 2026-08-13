@@ -158,7 +158,7 @@ export function formatPermissionReason(request: PermissionRequest): string {
 }
 
 export function formatPermissionRuleLabel(rule: PermissionRule): string {
-  return rule.contentPattern ? `${rule.toolName}:${rule.contentPattern}` : rule.toolName
+  return rule.contentPattern ? `${rule.toolName}(${rule.contentPattern})` : rule.toolName
 }
 
 export function formatPermissionInputBlock(request: PermissionRequest): PermissionInputBlock {

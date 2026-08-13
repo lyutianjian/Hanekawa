@@ -1,14 +1,19 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import os from 'node:os'
 import { z } from 'zod/v3'
 import {
   PermissionGate,
+  createSessionRuleStore,
   isProtectedPath,
   permissionRulesFromSettings,
+  permissionRuleToEntry,
   type DenialState,
   type PermissionRule,
 } from '../src/harness/permissions.js'
+import { persistPermissionRule } from '../src/config/settings.js'
 import { analyzeShellCommand } from '../src/harness/commandAnalysis.js'
 import { bashTool } from '../src/tools/bash.js'
 import type { Tool } from '../src/harness/types.js'
@@ -200,23 +205,145 @@ test('PermissionGate includes complex command category in prompt reason', async 
   assert.match(reason, /complex shell command/)
 })
 
-test('PermissionGate still prompts for simple read-only bash commands', async () => {
-  let reason = ''
+test('PermissionGate auto-allows simple read-only bash commands in default mode', async () => {
   let prompted = false
-  const gate = new PermissionGate(async (request) => {
+  const gate = new PermissionGate(async () => {
     prompted = true
-    reason = request.reason
     return true
   })
 
   const approved = await gate.approve(bashTool, { command: 'pwd' })
 
   assert.equal(approved, true)
-  assert.equal(prompted, true)
-  assert.match(reason, /dangerous action/)
+  assert.equal(prompted, false)
 })
 
-test('PermissionGate always allow creates an exact Bash session rule', async () => {
+test('PermissionGate auto-allows read-only bash variants without prompting in default mode', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(async () => {
+    prompts++
+    return true
+  })
+
+  for (const command of [
+    'git status',
+    'git log --oneline',
+    'git diff',
+    'cat README.md',
+    'rg TODO src',
+    'ls -la',
+    'wc -l file.txt',
+  ]) {
+    assert.equal(await gate.approve(bashTool, { command }), true)
+  }
+  assert.equal(prompts, 0)
+
+  // Mutating / destructive / external commands still prompt.
+  for (const command of ['git push', 'rm -rf dist', 'npm install', 'sed -i s/a/b/ f']) {
+    assert.equal(await gate.approve(bashTool, { command }), true)
+  }
+  assert.equal(prompts, 4)
+})
+
+test('PermissionGate Bash prefix rule (CC syntax) matches subcommand args without prompting', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async () => { prompts++; return true },
+    [{ toolName: 'Bash', contentPattern: 'npm install:*', behavior: 'allow', source: 'config' }],
+  )
+  assert.equal(await gate.approve(bashTool, { command: 'npm install' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'npm install pkg' }), true)
+  assert.equal(prompts, 0)
+  // Different prefix still prompts.
+  assert.equal(await gate.approve(bashTool, { command: 'npm run build' }), true)
+  assert.equal(prompts, 1)
+})
+
+test('PermissionGate Bash exact rule (CC syntax) matches only the exact command', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async () => { prompts++; return true },
+    [{ toolName: 'Bash', contentPattern: 'npm run build', behavior: 'allow', source: 'config' }],
+  )
+  assert.equal(await gate.approve(bashTool, { command: 'npm run build' }), true)
+  assert.equal(prompts, 0)
+  assert.equal(await gate.approve(bashTool, { command: 'npm run build --foo' }), true)
+  assert.equal(prompts, 1)
+})
+
+test('PermissionGate Bash wildcard rule matches within the prefix', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async () => { prompts++; return true },
+    [{ toolName: 'Bash', contentPattern: 'git *', behavior: 'allow', source: 'config' }],
+  )
+  assert.equal(await gate.approve(bashTool, { command: 'git push' }), true)
+  assert.equal(prompts, 0)
+  assert.equal(await gate.approve(bashTool, { command: 'echo hi' }), true)
+  assert.equal(prompts, 1)
+})
+
+test('PermissionGate Bash prefix rule enforces word boundaries', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async () => { prompts++; return true },
+    [{ toolName: 'Bash', contentPattern: 'ls:*', behavior: 'allow', source: 'config' }],
+  )
+  assert.equal(await gate.approve(bashTool, { command: 'lsof' }), true)
+  assert.equal(prompts, 1)
+})
+
+test('PermissionGate Bash allow rule does not match compound commands', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async () => { prompts++; return true },
+    [{ toolName: 'Bash', contentPattern: 'cd:*', behavior: 'allow', source: 'config' }],
+  )
+  assert.equal(await gate.approve(bashTool, { command: 'cd /x && rm file' }), true)
+  assert.equal(prompts, 1)
+})
+
+test('PermissionGate Bash deny rule matches compound subcommands', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async () => { prompts++; return true },
+    [{ toolName: 'Bash', contentPattern: 'rm:*', behavior: 'deny', source: 'config' }],
+  )
+  assert.equal(await gate.approve(bashTool, { command: 'cd /x && rm file' }), false)
+  assert.equal(prompts, 0)
+})
+
+test('PermissionGate Bash deny rule strips env var prefixes to prevent bypass', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async () => { prompts++; return true },
+    [{ toolName: 'Bash', contentPattern: 'rm:*', behavior: 'deny', source: 'config' }],
+  )
+  assert.equal(await gate.approve(bashTool, { command: 'FOO=bar rm file' }), false)
+  assert.equal(prompts, 0)
+})
+
+test('PermissionGate Bash allow rule strips safe wrappers before matching', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async () => { prompts++; return true },
+    [{ toolName: 'Bash', contentPattern: 'npm install:*', behavior: 'allow', source: 'config' }],
+  )
+  assert.equal(await gate.approve(bashTool, { command: 'timeout 10 npm install' }), true)
+  assert.equal(prompts, 0)
+})
+
+test('PermissionGate legacy Bash:prefix:* syntax still works as prefix rule', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async () => { prompts++; return true },
+    permissionRulesFromSettings({ allow: ['Bash:npm install:*'] }),
+  )
+  assert.equal(await gate.approve(bashTool, { command: 'npm install pkg' }), true)
+  assert.equal(prompts, 0)
+})
+
+test('PermissionGate always allow creates a prefix Bash session rule', async () => {
   let prompts = 0
   let scopedRule: PermissionRule | undefined
   const gate = new PermissionGate(async (request) => {
@@ -226,19 +353,20 @@ test('PermissionGate always allow creates an exact Bash session rule', async () 
     return true
   })
 
-  assert.equal(await gate.approve(bashTool, { command: 'pwd' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'mkdir test' }), true)
   assert.deepEqual(scopedRule, {
     toolName: 'Bash',
-    contentPattern: 'pwd',
+    contentPattern: 'mkdir test:*',
     behavior: 'allow',
     source: 'session',
   })
   assert.deepEqual(gate.getSessionRules(), [scopedRule])
 
-  assert.equal(await gate.approve(bashTool, { command: 'pwd' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'mkdir test' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'mkdir test sub' }), true)
   assert.equal(prompts, 1)
 
-  assert.equal(await gate.approve(bashTool, { command: 'ls' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'mkdir other' }), true)
   assert.equal(prompts, 2)
 })
 
@@ -259,6 +387,80 @@ test('PermissionGate always allow creates file-path scoped file-tool rules', asy
     { toolName: 'MultiEdit', contentPattern: 'src/multi.ts', behavior: 'allow', source: 'session' },
     { toolName: 'Delete', contentPattern: 'src/delete.ts', behavior: 'allow', source: 'session' },
   ])
+})
+
+test('PermissionGate always allow reuses the git commit prefix for later invocations', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(async (request) => {
+    prompts++
+    request.onAlwaysAllow?.()
+    return true
+  })
+
+  assert.equal(await gate.approve(bashTool, { command: 'git commit -m "first"' }), true)
+  assert.deepEqual(gate.getSessionRules(), [
+    { toolName: 'Bash', contentPattern: 'git commit:*', behavior: 'allow', source: 'session' },
+  ])
+  assert.equal(await gate.approve(bashTool, { command: 'git commit -am "second"' }), true)
+  assert.equal(prompts, 1)
+  // Different prefix still prompts.
+  assert.equal(await gate.approve(bashTool, { command: 'git push' }), true)
+  assert.equal(prompts, 2)
+})
+
+test('PermissionGate always allow is not offered for bare shells and privilege wrappers', async () => {
+  const gate = new PermissionGate(async (request) => {
+    request.onAlwaysAllow?.()
+    return true
+  })
+  assert.equal(await gate.approve(bashTool, { command: 'sudo apt update' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'bash -c "echo hi"' }), true)
+  assert.deepEqual(gate.getSessionRules(), [])
+})
+
+test('PermissionGate always allow is not offered when an operand absorbs shell operators', async () => {
+  const gate = new PermissionGate(async (request) => {
+    request.onAlwaysAllow?.()
+    return true
+  })
+  assert.equal(await gate.approve(bashTool, { command: 'git commit a&rm -rf x' }), true)
+  assert.deepEqual(gate.getSessionRules(), [])
+})
+
+test('PermissionGate always allow is not offered when compound segments have different prefixes', async () => {
+  const gate = new PermissionGate(async (request) => {
+    request.onAlwaysAllow?.()
+    return true
+  })
+  assert.equal(await gate.approve(bashTool, { command: 'mkdir a && mkdir b' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'rm -rf dist' }), true)
+  assert.deepEqual(gate.getSessionRules(), [])
+})
+
+test('PermissionGate session always allow overrides config ask rules', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async (request) => {
+      prompts++
+      request.onAlwaysAllow?.()
+      return true
+    },
+    permissionRulesFromSettings({ ask: ['Bash(npm run build)'] }),
+  )
+
+  // Config ask rule prompts, and the prompt offers an always option.
+  assert.equal(await gate.approve(bashTool, { command: 'npm run build' }), true)
+  assert.equal(prompts, 1)
+  assert.deepEqual(gate.getSessionRules(), [
+    { toolName: 'Bash', contentPattern: 'npm run:*', behavior: 'allow', source: 'session' },
+  ])
+
+  // The session allow rule now suppresses the config ask rule.
+  assert.equal(await gate.approve(bashTool, { command: 'npm run build' }), true)
+  assert.equal(prompts, 1)
+  // An unmatched command still prompts (config ask rule still applies).
+  assert.equal(await gate.approve(bashTool, { command: 'echo hi' }), true)
+  assert.equal(prompts, 2)
 })
 
 test('PermissionGate includes matched rules in prompt requests', async () => {
@@ -489,7 +691,7 @@ test('PermissionGate streak resets when a different call is approved', async () 
   // Auto-denied - streak goes to 1.
   await gate.approve(bashTool, { command: 'cat .git/config' })
   // A normal prompt-and-allow on the same tool resets the streak.
-  await gate.approve(bashTool, { command: 'pwd' })
+  await gate.approve(bashTool, { command: 'mkdir normal' })
   assert.equal(prompts, 1)
 
   // Streak should have been reset, so the next denial is silent again.
@@ -542,7 +744,7 @@ test('PermissionGate sets denialStreak=0 for normal (non-escalated) prompts', as
     return true
   })
 
-  await gate.approve(bashTool, { command: 'pwd' })
+  await gate.approve(bashTool, { command: 'mkdir x' })
 
   assert.equal(received, 0)
 })
@@ -751,6 +953,24 @@ test('PermissionGate acceptEdits mode approves edit tools without prompting', as
   assert.equal(prompted, false)
 })
 
+test('PermissionGate acceptEdits mode prompts for edits outside the workspace', async () => {
+  let prompts = 0
+  const gate = new PermissionGate(
+    async () => {
+      prompts++
+      return true
+    },
+    [],
+    { mode: 'acceptEdits' },
+  )
+
+  assert.equal(await gate.approve(editFileTool, { filePath: '../outside.ts' }), true)
+  assert.equal(await gate.approve(editFileTool, { filePath: path.join(os.tmpdir(), 'outside.ts') }), true)
+  assert.equal(prompts, 2)
+  assert.equal(await gate.approve(editFileTool, { filePath: 'src/index.ts' }), true)
+  assert.equal(prompts, 2)
+})
+
 test('PermissionGate acceptEdits mode keeps other tools on the normal gate', async () => {
   let prompted = false
   const gate = new PermissionGate(
@@ -762,7 +982,7 @@ test('PermissionGate acceptEdits mode keeps other tools on the normal gate', asy
     { mode: 'acceptEdits' },
   )
 
-  assert.equal(await gate.approve(bashTool, { command: 'pwd' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'echo hi' }), true)
   assert.equal(prompted, true)
 })
 
@@ -1264,4 +1484,93 @@ test('PermissionGate global denial threshold prompts across different tools', as
   assert.equal(await gate.approve(fsWriteTool, { path: 'c.txt' }), false)
   assert.equal(prompts, 1)
   assert.match(reason, /session has already had 2 auto-denials/)
+})
+
+test('PermissionGate persists always-allow rules via the persistRule callback', async () => {
+  const persisted: PermissionRule[] = []
+  const gate = new PermissionGate(
+    async (request) => {
+      request.onAlwaysAllow?.()
+      return true
+    },
+    undefined,
+    { persistRule: async (rule) => { persisted.push(rule) } },
+  )
+
+  assert.equal(await gate.approve(bashTool, { command: 'mkdir test' }), true)
+  assert.deepEqual(gate.getSessionRules(), [
+    { toolName: 'Bash', contentPattern: 'mkdir test:*', behavior: 'allow', source: 'session' },
+  ])
+  assert.deepEqual(persisted, [
+    { toolName: 'Bash', contentPattern: 'mkdir test:*', behavior: 'allow', source: 'session' },
+  ])
+})
+
+test('PermissionGate without persistRule keeps always allow session-only', async () => {
+  const gate = new PermissionGate(async (request) => {
+    request.onAlwaysAllow?.()
+    return true
+  })
+
+  assert.equal(await gate.approve(bashTool, { command: 'mkdir test' }), true)
+  assert.equal(gate.getSessionRules().length, 1)
+})
+
+test('persistPermissionRule writes deduped entries into settings.local.json', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-perm-'))
+  try {
+    const rule: PermissionRule = { toolName: 'Bash', contentPattern: 'git commit:*', behavior: 'allow', source: 'session' }
+    const rule2: PermissionRule = { toolName: 'Bash', contentPattern: 'git commit:*', behavior: 'allow', source: 'session' }
+    await persistPermissionRule(dir, rule)
+    await persistPermissionRule(dir, rule2)
+    const settingsPath = path.join(dir, '.myagent', 'settings.local.json')
+    const saved = JSON.parse(await readFile(settingsPath, 'utf-8'))
+    assert.deepEqual(saved.permissions.allow, ['Bash(git commit:*)'])
+
+    const reloaded = permissionRulesFromSettings(saved.permissions)
+    assert.deepEqual(reloaded, [
+      { toolName: 'Bash', contentPattern: 'git commit:*', behavior: 'allow', source: 'config' },
+    ])
+    assert.equal(permissionRuleToEntry(reloaded[0]!), 'Bash(git commit:*)')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('PermissionGate gates sharing a session rule store see each others rules live', async () => {
+  const store = createSessionRuleStore()
+  let parentPrompts = 0
+  let childPrompts = 0
+  const parent = new PermissionGate(async () => { parentPrompts++; return true }, [], { sessionRuleStore: store })
+  const child = new PermissionGate(async () => { childPrompts++; return true }, [], { sessionRuleStore: store })
+
+  // Parent's always-allow is immediately visible to the child (no snapshot).
+  parent.addSessionRule({ toolName: 'Bash', contentPattern: 'git commit:*', behavior: 'allow', source: 'session' })
+  assert.equal(await child.approve(bashTool, { command: 'git commit -m x' }), true)
+  assert.equal(childPrompts, 0)
+
+  // Child's always-allow propagates back to the parent.
+  const childGateWithPrompt = new PermissionGate(async (request) => {
+    childPrompts++
+    request.onAlwaysAllow?.()
+    return true
+  }, [], { sessionRuleStore: store })
+  assert.equal(await childGateWithPrompt.approve(bashTool, { command: 'mkdir x' }), true)
+  assert.equal(childPrompts, 1)
+  assert.equal(await parent.approve(bashTool, { command: 'mkdir x' }), true)
+  assert.equal(parentPrompts, 0)
+})
+
+test('PermissionGate session rule store keeps config rules isolated', async () => {
+  const store = createSessionRuleStore()
+  const parent = new PermissionGate(async () => true, [], { sessionRuleStore: store })
+  const child = new PermissionGate(async () => true, [
+    { toolName: 'Bash', contentPattern: 'rm:*', behavior: 'deny', source: 'config' },
+  ], { sessionRuleStore: store })
+
+  assert.equal(child.getConfigRules().length, 1)
+  assert.equal(parent.getConfigRules().length, 0)
+  assert.equal(parent.getSessionRules().length, 0)
+  // The child's config deny does not leak into the shared session rules.
+  assert.equal(await parent.approve(bashTool, { command: 'rm file' }), true)
 })

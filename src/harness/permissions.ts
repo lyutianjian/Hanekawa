@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { analyzeShellCommand } from './commandAnalysis.js'
+import { matchBashRule, bashCommandSegments, suggestBashPrefix } from './shellRuleMatching.js'
 import { shellWords } from './bashSafety.js'
 import type { RiskLevel, Tool, ToolApprovalRecord } from './types.js'
 import { isProtectedPath, checkWindowsPathSafety } from '../utils/permissions/protectedPaths.js'
@@ -99,6 +100,13 @@ function permissionEntriesToRules(
 function parsePermissionRuleEntry(entry: string): Pick<PermissionRule, 'toolName' | 'contentPattern'> | undefined {
   const trimmed = entry.trim()
   if (!trimmed) return undefined
+  // Claude Code syntax: ToolName(content)
+  const paren = trimmed.match(/^([A-Za-z0-9_-]+)\(([\s\S]*)\)$/)
+  if (paren) {
+    const content = paren[2]!.trim()
+    return content ? { toolName: paren[1]!, contentPattern: content } : { toolName: paren[1]! }
+  }
+  // Legacy syntax: ToolName:pattern
   const colon = trimmed.indexOf(':')
   if (colon > 0) {
     const toolName = trimmed.slice(0, colon).trim()
@@ -116,6 +124,11 @@ function permissionRuleKey(rule: PermissionRule): string {
     rule.toolName,
     rule.contentPattern ?? '',
   ].join('\0')
+}
+
+/** Serialize a rule to its settings-file entry form, e.g. Bash(git commit:*). */
+export function permissionRuleToEntry(rule: PermissionRule): string {
+  return rule.contentPattern ? `${rule.toolName}(${rule.contentPattern})` : rule.toolName
 }
 
 function dedupePermissionRules(rules: PermissionRule[]): PermissionRule[] {
@@ -152,10 +165,17 @@ function buildSessionAllowRule(
     if (commandAnalysis.hasSafetyDenyIssue || commandAnalysis.requiresSafetyPrompt || commandAnalysis.hasProtectedPath) {
       return undefined
     }
-    if (commandAnalysis.segments.length !== 1) return undefined
-    const command = commandAnalysis.command.trim()
-    if (!command) return undefined
-    return { toolName: tool.name, contentPattern: command, behavior: 'allow', source: 'session' }
+    // Every segment must suggest the identical prefix, otherwise a compound
+    // like `git commit && git push` would yield a rule that over-approves.
+    let shared: string | undefined
+    for (const segment of commandAnalysis.segments) {
+      const prefix = suggestBashPrefix(segment)
+      if (!prefix) return undefined
+      if (shared !== undefined && shared !== prefix) return undefined
+      shared = prefix
+    }
+    if (shared === undefined) return undefined
+    return { toolName: tool.name, contentPattern: `${shared}:*`, behavior: 'allow', source: 'session' }
   }
 
   if (FILE_PERMISSION_TOOLS.has(tool.name)) {
@@ -172,8 +192,32 @@ function matchGlob(content: string, pattern: string): boolean {
   return picomatch.isMatch(content, pattern, { nocase: true })
 }
 
+/**
+ * Shared, deduped collection of session rules. Parent and subagent gates
+ * reference the same store so an always-allow decision made in one is
+ * immediately visible to the others.
+ */
+export interface SessionRuleStore {
+  readonly rules: PermissionRule[]
+  add(rule: PermissionRule): void
+}
+
+export function createSessionRuleStore(): SessionRuleStore {
+  let rules: PermissionRule[] = []
+  return {
+    get rules() {
+      return rules
+    },
+    add(rule) {
+      const key = permissionRuleKey(rule)
+      if (rules.some((r) => permissionRuleKey(r) === key)) return
+      rules = [...rules, rule]
+    },
+  }
+}
+
 export class PermissionGate {
-  private sessionRules: PermissionRule[] = []
+  private readonly sessionRuleStore: SessionRuleStore
   private configRules: PermissionRule[] = []
   private mode: PermissionMode
   private prePlanMode: PermissionMode = 'default'
@@ -189,6 +233,7 @@ export class PermissionGate {
   private globalAutoDenials = 0
   private readonly globalDenialPromptThreshold: number
   private readonly denialStateStore?: DenialStateStore
+  private readonly persistRule?: (rule: PermissionRule) => Promise<void>
   private readonly cwd: string
   private denialStateLoaded = false
   private readonly modeListeners = new Set<PermissionModeListener>()
@@ -202,8 +247,11 @@ export class PermissionGate {
       mode?: PermissionMode
       denialStateStore?: DenialStateStore
       cwd?: string
+      persistRule?: (rule: PermissionRule) => Promise<void>
+      sessionRuleStore?: SessionRuleStore
     },
   ) {
+    this.sessionRuleStore = options?.sessionRuleStore ?? createSessionRuleStore()
     this.addRules(configRules ?? [])
     this.mode = options?.mode ?? 'default'
     const configured = options?.denialStreakThreshold ?? DEFAULT_DENIAL_STREAK_THRESHOLD
@@ -212,6 +260,7 @@ export class PermissionGate {
     this.globalDenialPromptThreshold = Math.max(1, globalConfigured)
     this.denialStateStore = options?.denialStateStore
     this.cwd = options?.cwd ?? process.cwd()
+    this.persistRule = options?.persistRule
   }
 
   async approve(tool: Tool, input: unknown): Promise<boolean> {
@@ -229,9 +278,9 @@ export class PermissionGate {
       || hasProtectedPath
     const requiresSafetyPrompt = commandAnalysis?.requiresSafetyPrompt ?? false
 
-    const deniedByRule = this.matchingRule('deny', tool.name, input)
-    const askedByRule = this.matchingRule('ask', tool.name, input)
-    const allowedByRule = this.matchingRule('allow', tool.name, input)
+    const deniedByRule = this.matchingRule('deny', tool.name, input, commandAnalysis)
+    const askedByRule = this.matchingRule('ask', tool.name, input, commandAnalysis)
+    const allowedByRule = this.matchingRule('allow', tool.name, input, commandAnalysis)
 
     if (this.mode === 'bypass') {
       // Deny rules are bypass-immune (aligned with Claude Code step 1a), but
@@ -359,14 +408,32 @@ export class PermissionGate {
     }
 
     if (askedByRule) {
-      return this.promptForDecision(
-        tool,
-        input,
-        `Permission rule asks before running ${tool.name}.`,
-        'ask rule',
-        false,
-        { matchedRule: askedByRule, commandAnalysis },
-      )
+      // A session-level "always allow" decision (made by the user at an
+      // earlier prompt) overrides config ask rules; without one, prompt.
+      // On a session allow match, execution falls through to the allow-rule
+      // approval below. (Bypass-mode ask prompts are handled in the bypass
+      // branch above and never reach this block.)
+      if (!this.sessionRuleMatches('allow', tool.name, input, commandAnalysis)) {
+        return this.promptForDecision(
+          tool,
+          input,
+          `Permission rule asks before running ${tool.name}.`,
+          'ask rule',
+          false,
+          { matchedRule: askedByRule, commandAnalysis },
+        )
+      }
+    }
+
+    // Aligned with Claude Code step 7: read-only Bash is auto-allowed.
+    if (
+      (this.mode === 'default' || this.mode === 'acceptEdits')
+      && tool.name === 'Bash'
+      && commandAnalysis?.isReadOnly
+      && !requiresSafetyPrompt
+    ) {
+      this.denialStreaks.set(tool.name, 0)
+      return this.persistAndReturn(true)
     }
 
     if (
@@ -434,9 +501,17 @@ export class PermissionGate {
     //    instead of falling back to silent auto-denial.
     this.recordPromptDecision(tool.name, approved, previousStreak)
 
-    // 6. If user chose "always allow", add session rule
+    // 6. If user chose "always allow", add session rule and persist it so the
+    //    rule survives restarts (writes to .myagent/settings.local.json).
     if (approved && alwaysAllow && alwaysAllowRule) {
       this.addSessionRule(alwaysAllowRule)
+      if (this.persistRule) {
+        try {
+          await this.persistRule(alwaysAllowRule)
+        } catch {
+          // Persistence is best-effort; the in-memory session rule still applies.
+        }
+      }
     }
 
     return this.persistAndReturn(approved)
@@ -464,7 +539,11 @@ export class PermissionGate {
   }
 
   getSessionRules(): PermissionRule[] {
-    return [...this.sessionRules]
+    return [...this.sessionRuleStore.rules]
+  }
+
+  getSessionRuleStore(): SessionRuleStore {
+    return this.sessionRuleStore
   }
 
   getMode(): PermissionMode {
@@ -545,14 +624,46 @@ export class PermissionGate {
     behavior: PermissionRule['behavior'],
     toolName: string,
     input: unknown,
+    commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
   ): PermissionRule | undefined {
-    const allRules = [...this.configRules, ...this.sessionRules]
-    return allRules.find((r) => r.behavior === behavior && this.matchesRule(r, toolName, input))
+    const allRules = [...this.configRules, ...this.sessionRuleStore.rules]
+    return allRules.find((r) => r.behavior === behavior && this.matchesRule(r, toolName, input, commandAnalysis))
   }
 
-  private matchesRule(rule: PermissionRule, toolName: string, input: unknown): boolean {
+  private sessionRuleMatches(
+    behavior: PermissionRule['behavior'],
+    toolName: string,
+    input: unknown,
+    commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
+  ): boolean {
+    return this.sessionRuleStore.rules.some((r) => r.behavior === behavior && this.matchesRule(r, toolName, input, commandAnalysis))
+  }
+
+  private matchesRule(
+    rule: PermissionRule,
+    toolName: string,
+    input: unknown,
+    commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
+  ): boolean {
     if (rule.toolName !== toolName) return false
     if (!rule.contentPattern) return true
+
+    if (toolName === 'Bash') {
+      const command = extractPath(input)
+      if (!command) return false
+      // deny/ask rules strip ALL env var prefixes and match compound commands
+      // (whole + each segment) so a denied subcommand stays denied regardless
+      // of prefix wrapping. allow rules match the whole command only — the
+      // compound guard blocks compounds, since Hanekawa cannot verify every
+      // segment shares the rule the way Claude Code's per-subcommand flow does.
+      const stripAll = rule.behavior === 'deny' || rule.behavior === 'ask'
+      const candidates = stripAll ? [command, ...(commandAnalysis?.segments ?? bashCommandSegments(command))] : [command]
+      return matchBashRule(rule.contentPattern, candidates, {
+        stripAllEnvVars: stripAll,
+        skipCompoundCheck: stripAll,
+      })
+    }
+
     const content = extractPath(input) || (typeof input === 'string' ? input : JSON.stringify(input))
     if (content === rule.contentPattern) return true
     return matchGlob(content, rule.contentPattern)
@@ -563,7 +674,7 @@ export class PermissionGate {
       if (rule.source === 'config') {
         this.configRules = dedupePermissionRules([...this.configRules, rule])
       } else {
-        this.sessionRules = dedupePermissionRules([...this.sessionRules, rule])
+        this.sessionRuleStore.add(rule)
       }
     }
   }
@@ -624,7 +735,12 @@ export class PermissionGate {
     input: unknown,
     commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
   ): boolean {
-    if (ACCEPT_EDITS_TOOLS.has(tool.name)) return true
+    if (ACCEPT_EDITS_TOOLS.has(tool.name)) {
+      // acceptEdits only auto-approves edits inside the working directory
+      // (aligned with Claude Code); outside paths fall through to the prompt.
+      const filePath = extractPath(input)
+      return filePath !== '' && this.isSafeWorkspacePathOperand(filePath)
+    }
     if (tool.name !== 'Bash' || !commandAnalysis) return false
     return this.isLightWorkspaceShellWrite(commandAnalysis)
   }
@@ -669,7 +785,8 @@ export class PermissionGate {
   }
 
   private shouldOfferAlwaysAllow(source: PermissionDecisionSource): boolean {
-    return this.mode !== 'bypass' && source === 'mode'
+    if (this.mode === 'bypass') return false
+    return source === 'mode' || source === 'ask rule'
   }
 
   private recordPromptDecision(toolName: string, approved: boolean, previousStreak: number): void {

@@ -1,11 +1,12 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import type { AgentConfig, ModelConfig } from './service.js'
 import type { Endpoint, Profile, Routing } from './routing.js'
 import type { EffortLevel } from './effort.js'
 import type { HookCommand } from '../harness/hooks.js'
 import type { PermissionMode } from '../harness/permissions.js'
+import { permissionRuleToEntry, type PermissionRule } from '../harness/permissions.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
 
 export type HookCommandSetting = HookCommand
@@ -272,6 +273,12 @@ export async function loadMergedSettings(cwd: string): Promise<MyAgentSettings> 
   return mergeSettings(userSettings, projectSettings, legacyMcpSettings, localSettings)
 }
 
+async function writeSettingsAtomic(filePath: string, settings: MyAgentSettings): Promise<void> {
+  await mkdir(join(dirname(filePath)), { recursive: true })
+  await writeFile(`${filePath}.tmp`, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
+  await rename(`${filePath}.tmp`, filePath)
+}
+
 export async function trustMcpServerLocally(cwd: string, serverName: string): Promise<void> {
   const localSettingsPath = join(cwd, '.myagent', 'settings.local.json')
   const localSettings = await loadSettingsFile(localSettingsPath)
@@ -281,19 +288,28 @@ export async function trustMcpServerLocally(cwd: string, serverName: string): Pr
     ...localSettings.mcp,
     trustedServers: [...trustedServers].sort(),
   }
+  await writeSettingsAtomic(localSettingsPath, localSettings)
+}
 
-  await mkdir(join(cwd, '.myagent'), { recursive: true })
-  await writeFile(`${localSettingsPath}.tmp`, `${JSON.stringify(localSettings, null, 2)}\n`, 'utf-8')
-  await rename(`${localSettingsPath}.tmp`, localSettingsPath)
+export async function persistPermissionRule(cwd: string, rule: PermissionRule): Promise<void> {
+  const localSettingsPath = join(cwd, '.myagent', 'settings.local.json')
+  const localSettings = await loadSettingsFile(localSettingsPath)
+  const key = rule.behavior
+  const entries = [...(localSettings.permissions?.[key] ?? [])]
+  const entry = permissionRuleToEntry(rule)
+  if (!entries.includes(entry)) entries.push(entry)
+  localSettings.permissions = {
+    ...localSettings.permissions,
+    [key]: entries,
+  }
+  await writeSettingsAtomic(localSettingsPath, localSettings)
 }
 
 export async function saveEffortLevel(level: EffortLevel): Promise<void> {
   const settingsPath = join(homedir(), '.myagent', 'settings.json')
   const settings = await loadSettingsFile(settingsPath)
   settings.effortLevel = level
-  await mkdir(join(homedir(), '.myagent'), { recursive: true })
-  await writeFile(`${settingsPath}.tmp`, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
-  await rename(`${settingsPath}.tmp`, settingsPath)
+  await writeSettingsAtomic(settingsPath, settings)
 }
 
 export function validateSettings(settings: MyAgentSettings): { valid: boolean; errors: string[] } {

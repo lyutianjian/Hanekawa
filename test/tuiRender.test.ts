@@ -926,7 +926,7 @@ test('PermissionDialog renders scoped always allow label from request rule', () 
     }),
   ]))
 
-  assert.match(frame, /Yes, always allow Bash:npm test/)
+  assert.match(frame, /Yes, always allow Bash\(npm test\)/)
 })
 
 test('PermissionDialog renders matched permission rule explanation', () => {
@@ -936,7 +936,7 @@ test('PermissionDialog renders matched permission rule explanation', () => {
     }),
   ]))
 
-  assert.match(frame, /Permission rule Bash:npm \* requires confirmation\./)
+  assert.match(frame, /Permission rule Bash\(npm \*\) requires confirmation\./)
 })
 
 test('PermissionDialog renders pending count without expanding full queue', () => {

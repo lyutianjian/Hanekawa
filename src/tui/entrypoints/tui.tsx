@@ -14,6 +14,7 @@ import {
   trustMcpServerLocally,
   validateSettings,
   saveEffortLevel,
+  persistPermissionRule,
 } from '../../config/settings.js'
 import { clampEffort, type EffortLevel } from '../../config/effort.js'
 import { createProvider } from '../../config/providers.js'
@@ -263,6 +264,7 @@ async function main() {
     denialStateStore,
     cwd,
     mode: settings.permissions?.mode ?? 'default',
+    persistRule: (rule) => persistPermissionRule(cwd, rule),
   })
 
   const contextManagement = config.get().agent.contextManagement
@@ -349,6 +351,7 @@ async function main() {
       permissionMode: () => permissionGate.getMode(),
       getConfigRules: () => permissionGate.getConfigRules(),
       getSessionRules: () => permissionGate.getSessionRules(),
+      getSessionRuleStore: () => permissionGate.getSessionRuleStore(),
       denialStateStore,
       cwd,
       system: config.get().agent.system,

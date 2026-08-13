@@ -9,6 +9,7 @@ import {
   type PermissionMode,
   type PermissionPrompt,
   type PermissionRule,
+  type SessionRuleStore,
 } from '../harness/permissions.js'
 import { MemoryRecordStream, type RecordStream } from '../harness/recordStream.js'
 import { getSubagentTranscriptPath, SidechainRecordStream } from '../harness/sidechainRecordStream.js'
@@ -268,6 +269,7 @@ export interface CreateAgentToolOptions {
   permissionMode?(): PermissionMode
   getConfigRules?(): PermissionRule[]
   getSessionRules?(): PermissionRule[]
+  getSessionRuleStore?(): SessionRuleStore
   denialStateStore?: DenialStateStore
   cwd: string
   system?: string
@@ -597,12 +599,16 @@ async function runSubagent({
     const effectiveCwd = worktree?.path ?? options.cwd
     const subagentRuntime = resolveSubagentRuntime(options, parsed.subagent_type, agentDefinition)
     const subTools = filterToolsForSubAgent(options.tools(), agentDefinition, { isBackground })
+    const sessionRuleStore = options.getSessionRuleStore?.()
     const permissionGate = new PermissionGate(options.permissionPrompt, options.getConfigRules?.(), {
       mode: resolveSubagentPermissionMode(options, agentDefinition, isBackground),
       denialStateStore: readonlyDenialStateStore(options.denialStateStore),
       cwd: effectiveCwd,
+      sessionRuleStore,
     })
-    permissionGate.addSessionRules(options.getSessionRules?.() ?? [])
+    if (!sessionRuleStore) {
+      permissionGate.addSessionRules(options.getSessionRules?.() ?? [])
+    }
     const createToolRunner = () => new ToolRunner(subTools, permissionGate, {
       onRecord: async (record) => {
         await recordStream.append(record)

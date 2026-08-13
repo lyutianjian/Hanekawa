@@ -1,4 +1,5 @@
 import type { Endpoint } from './routing.js'
+import { USER_AGENT } from '../utils/userAgent.js'
 
 export interface EndpointPingResult {
   ok: boolean
@@ -60,7 +61,7 @@ export async function pingEndpoint(endpoint: Endpoint): Promise<EndpointPingResu
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), PING_TIMEOUT_MS)
     try {
-      const headers: Record<string, string> = { Accept: 'application/json' }
+      const headers: Record<string, string> = { Accept: 'application/json', 'User-Agent': USER_AGENT }
       if (endpoint.apiKey) {
         headers.Authorization = `Bearer ${endpoint.apiKey}`
         // Anthropic also uses x-api-key. Sending both is safe: servers ignore

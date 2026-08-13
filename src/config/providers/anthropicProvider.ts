@@ -13,6 +13,7 @@ import { debugProviderPayload, debugProviderResponse, debugProviderSummary } fro
 import { normalizeAnthropicUsage } from './usage.js'
 import { isExperimentalToolSearchBetaDisabled, modelSupportsToolReference } from '../../utils/toolSearch.js'
 import { getAPIContextManagement } from './apiContextManagement.js'
+import { USER_AGENT } from '../../utils/userAgent.js'
 
 const STREAM_IDLE_TIMEOUT_MS =
   parseInt(process.env.MYAGENT_STREAM_IDLE_HARD_TIMEOUT_MS || '', 10) || 10 * 60_000
@@ -41,6 +42,7 @@ export class AnthropicProvider implements ModelProvider {
     this.client = new Anthropic({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
+      defaultHeaders: { 'User-Agent': USER_AGENT },
     })
     this.maxOutputTokens = config.maxOutputTokens
     this.nativeAnthropic = isNativeAnthropicApi(config.baseUrl)

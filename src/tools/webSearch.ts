@@ -1,5 +1,6 @@
 import { z } from 'zod/v3'
 import type { Tool } from '../harness/types.js'
+import { USER_AGENT } from '../utils/userAgent.js'
 
 const SEARCH_TIMEOUT_MS = 15_000
 const MAX_RESULTS = 10
@@ -70,7 +71,7 @@ function parseDuckDuckGoResults(html: string): SearchResult[] {
 async function searchSearXNG(query: string, instanceUrl: string, signal?: AbortSignal): Promise<SearchResult[]> {
   const params = new URLSearchParams({ q: query, format: 'json' })
   const url = `${instanceUrl.replace(/\/$/, '')}/search?${params}`
-  const response = await fetch(url, { signal })
+  const response = await fetch(url, { headers: { 'User-Agent': USER_AGENT }, signal })
   if (!response.ok) {
     throw new Error(`SearXNG returned HTTP ${response.status}`)
   }

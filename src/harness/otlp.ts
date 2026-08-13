@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module'
 import type { SessionMetric } from './metrics.js'
+import { USER_AGENT } from '../utils/userAgent.js'
 
 export interface OtlpExporterOptions {
   endpoint: string
@@ -86,7 +87,7 @@ export class OtlpMetricExporter {
     try {
       const response = await fetch(this.endpoint, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'User-Agent': USER_AGENT },
         body: JSON.stringify(this.toMetricsPayload(metric)),
         signal: controller.signal,
       })

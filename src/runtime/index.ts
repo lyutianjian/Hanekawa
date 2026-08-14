@@ -53,6 +53,10 @@ export type {
   SessionControllerSnapshot,
   SessionEvent,
 } from './sessionController.js'
+export { RuntimeSlot } from './runtimeSlot.js'
+export type { RuntimeSlotSnapshot } from './runtimeSlot.js'
+export { canPumpQueue } from './queuePump.js'
+export type { QueuePumpState } from './queuePump.js'
 export type {
   AgentSession,
   BootstrapOptions,

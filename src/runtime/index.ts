@@ -47,6 +47,12 @@ export {
   formatSubagentSpinnerProgress,
   formatToolProgress,
 } from './toolProgress.js'
+export { SessionController } from './sessionController.js'
+export type {
+  SessionControllerDeps,
+  SessionControllerSnapshot,
+  SessionEvent,
+} from './sessionController.js'
 export type {
   AgentSession,
   BootstrapOptions,

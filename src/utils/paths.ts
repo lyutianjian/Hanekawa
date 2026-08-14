@@ -1,8 +1,17 @@
 import path from 'node:path'
 import { realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
 
 export function getMyAgentDir(cwd: string): string {
   return path.join(cwd, '.myagent')
+}
+
+/**
+ * User-level `.myagent`, shared by every project. Resolved lazily through
+ * `homedir()` so tests can redirect it via USERPROFILE/HOME.
+ */
+export function getGlobalMyAgentDir(): string {
+  return path.join(homedir(), '.myagent')
 }
 
 const MAX_PATH_DEPTH = 50
@@ -88,6 +97,11 @@ export function assertInsideCwd(cwd: string, filePath: string): string {
 
 export function getConfigPath(cwd: string): string {
   return path.join(getMyAgentDir(cwd), 'config.json')
+}
+
+/** Base config layer shared across projects; `getConfigPath` overrides it. */
+export function getGlobalConfigPath(): string {
+  return path.join(getGlobalMyAgentDir(), 'config.json')
 }
 
 export function getMcpConfigPath(cwd: string): string {

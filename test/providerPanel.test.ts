@@ -1,4 +1,4 @@
-import test, { afterEach } from 'node:test'
+import test, { afterEach, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -7,6 +7,17 @@ import { createElement as h } from 'react'
 import { cleanup, render } from 'ink-testing-library'
 import { ConfigService } from '../src/config/service.js'
 import { ProviderPanel } from '../src/tui/components/ProviderPanel.js'
+import { mkdtempSync } from 'node:fs'
+
+// ConfigService layers a shared `~/.myagent/config.json` under the project one.
+// A fresh home per test keeps these off the developer's config and stops a
+// save() in one test (which targets the shared layer when no project config
+// exists) from leaking models into the next.
+beforeEach(() => {
+  const testHome = mkdtempSync(path.join(tmpdir(), 'myagent-home-'))
+  process.env.USERPROFILE = testHome
+  process.env.HOME = testHome
+})
 
 afterEach(() => cleanup())
 

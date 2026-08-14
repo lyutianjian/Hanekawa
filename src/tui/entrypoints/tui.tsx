@@ -14,6 +14,8 @@ import { logDiagnostics, summarizeDiagnosticsForTui } from '../../harness/diagno
 import type { McpServerConfig } from '../../services/mcp/index.js'
 import { bootstrap, RuntimeStartupError } from '../../runtime/index.js'
 import type { McpConnectionStatus, RuntimeHost } from '../../runtime/index.js'
+import { RuntimeSlot } from '../../runtime/runtimeSlot.js'
+import { SessionController } from '../../runtime/sessionController.js'
 import { App } from '../components/App.js'
 import { TUI_USAGE, isResumableSession, parseTuiStartupCommand, resolveStartupSession } from './cli.js'
 import type { TuiStartupCommand } from './cli.js'
@@ -83,6 +85,19 @@ async function main() {
 
   const initialRuntime = host.createRuntime(host.initialModelKey, session, host.existingRecords)
 
+  // The runtime slot and the session controller are the headless half of the
+  // app. They are assembled here rather than inside App so a different shell
+  // can reuse them verbatim and only replace the view layer.
+  const runtimeSlot = new RuntimeSlot(initialRuntime, host.initialEffort ?? host.configuredEffortLevel)
+  const sessionController = new SessionController({
+    cwd,
+    store,
+    session,
+    existingRecords: host.existingRecords,
+    recordProxy: host.bridges.record,
+    getSession: () => runtimeSlot.current,
+  })
+
   const initialQueuedPrompt = process.env.MYAGENT_RESUME_INTERRUPTED_TURN
     ? host.hasRecoverableInterruption ? 'continue' : undefined
     : undefined
@@ -104,14 +119,10 @@ async function main() {
   const { waitUntilExit } = render(
     <ClockProvider>
       <App
-      loop={initialRuntime.loop}
-      planModeManager={initialRuntime.planModeManager}
-      modelKey={host.initialModelKey}
+      runtimeSlot={runtimeSlot}
+      sessionController={sessionController}
       store={store}
       session={session}
-      modelConfig={initialRuntime.modelConfig}
-      providerName={initialRuntime.providerName}
-      dispose={initialRuntime.dispose}
       availableModelKeys={Object.keys(host.config.get().models)}
       resolveModelInput={(input, currentModelKey) => host.config.resolveModelInput(input, { currentModelKey })}
       providerConfig={host.config}
@@ -119,7 +130,6 @@ async function main() {
       createActiveModelRuntime={host.createActiveModelRuntime}
       permissionGate={host.permissionGate}
       promptProxy={host.bridges.prompt}
-      recordProxy={host.bridges.record}
       exitPlanProxy={host.bridges.exitPlan}
       enterPlanProxy={host.bridges.enterPlan}
       askUserQuestionProxy={host.bridges.askUserQuestion}
@@ -129,7 +139,6 @@ async function main() {
       onBeforeExit={() => host.shutdown('TUI exited')}
       backgroundTasks={host.backgroundTasks}
       reloadAgentDefinitions={host.reloadAgentDefinitions}
-      initialEffortLevel={host.initialEffort ?? host.configuredEffortLevel}
       onEffortLevelChange={async (level) => {
         try { await saveEffortLevel(level as EffortLevel) } catch { /* non-critical */ }
       }}

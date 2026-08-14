@@ -3,11 +3,10 @@ import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { Box, Static, snapshotInkFrameForStdout, useStdout } from '../ink.js'
 import type { InkFrameSnapshot } from '../ink.js'
-import type { AgentLoop, ActiveModelRuntime, AgentRunOverrides } from '../../harness/loop.js'
+import type { ActiveModelRuntime, AgentRunOverrides } from '../../harness/loop.js'
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
 import type { PermissionGate, PermissionMode } from '../../harness/permissions.js'
-import type { PlanModeManager } from '../../harness/planModeManager.js'
-import type { ConfigService, ModelConfig } from '../../config/service.js'
+import type { ConfigService } from '../../config/service.js'
 import { parseTierInput, resolveTier, type Tier } from '../../config/routing.js'
 import type { SessionRecord } from '../../harness/types.js'
 import type { CommandSubmitQueryOptions, CommandView, SetModelResult } from '../../commands/types.js'
@@ -17,8 +16,7 @@ import { recordsToDisplayItems } from '../transcript.js'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts.js'
 import { useCommands } from '../hooks/useCommands.js'
 import { usePermission } from '../hooks/usePermission.js'
-import type { PermissionPromptProxy, RecordProxy } from '../hooks/usePermission.js'
-import { CheckpointService } from '../../services/checkpoint/checkpointService.js'
+import type { PermissionPromptProxy } from '../hooks/usePermission.js'
 import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
 import { MessageList, StaticDisplayItem, DisplayItem } from './MessageList.js'
 import { AlternateScreen } from './AlternateScreen.js'
@@ -46,8 +44,11 @@ import { useExitPlanPermission, type ExitPlanPromptProxy } from '../hooks/useExi
 import { useEnterPlanPermission, type EnterPlanPromptProxy } from '../hooks/useEnterPlanPermission.js'
 import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
 import type { AgentSession } from '../../runtime/index.js'
+import type { RuntimeSlot } from '../../runtime/runtimeSlot.js'
+import type { SessionController } from '../../runtime/sessionController.js'
+import { canPumpQueue } from '../../runtime/queuePump.js'
 import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../rewindSummary.js'
-import { clampEffort, type EffortValue, type EffortLevel } from '../../config/effort.js'
+import { clampEffort, type EffortLevel } from '../../config/effort.js'
 import { getContextWindowForModel } from '../../prompts/budget.js'
 import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/modelCapabilities.js'
 import { shouldRenderStatusLine } from '../statusLineVisibility.js'
@@ -71,14 +72,12 @@ const ABORT_TIMEOUT_MS = 2000
 export type AppRuntime = AgentSession
 
 interface AppProps {
-  loop: AgentLoop
-  planModeManager: PlanModeManager
-  modelKey: string
+  /** Owns the live runtime and the effort level bound to it. */
+  runtimeSlot: RuntimeSlot
+  /** Owns the turn lifecycle; this component only renders its event stream. */
+  sessionController: SessionController
   store: SessionStore
   session: SessionMeta
-  modelConfig: ModelConfig
-  providerName: string
-  dispose: () => void
   availableModelKeys: string[]
   resolveModelInput: (input: string, currentModelKey: string) => string | undefined
   providerConfig: ConfigService
@@ -86,7 +85,6 @@ interface AppProps {
   createActiveModelRuntime: (modelKey: string) => ActiveModelRuntime
   permissionGate: PermissionGate
   promptProxy: PermissionPromptProxy
-  recordProxy: RecordProxy
   exitPlanProxy: ExitPlanPromptProxy
   enterPlanProxy: EnterPlanPromptProxy
   askUserQuestionProxy: AskUserQuestionProxy
@@ -96,20 +94,15 @@ interface AppProps {
   onBeforeExit?: () => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => Promise<void> | void
   reloadAgentDefinitions?: () => Promise<number>
-  initialEffortLevel?: string
   onEffortLevelChange?: (level: string) => void
   backgroundTasks: BackgroundTaskRegistry
 }
 
 export function App({
-  loop: initialLoop,
-  planModeManager: initialPlanModeManager,
-  modelKey: initialModelKey,
+  runtimeSlot,
+  sessionController,
   store,
   session: initialSession,
-  modelConfig: initialModelConfig,
-  providerName: initialProviderName,
-  dispose: initialDispose,
   availableModelKeys,
   resolveModelInput,
   providerConfig,
@@ -117,7 +110,6 @@ export function App({
   createActiveModelRuntime,
   permissionGate,
   promptProxy,
-  recordProxy,
   exitPlanProxy,
   enterPlanProxy,
   askUserQuestionProxy,
@@ -127,18 +119,17 @@ export function App({
   onBeforeExit,
   onPermissionModeChange,
   reloadAgentDefinitions: reloadRuntimeAgentDefinitions,
-  initialEffortLevel,
   onEffortLevelChange,
   backgroundTasks,
 }: AppProps) {
   const [mode, setMode] = useState<AppMode>('idle')
   const [activeSession, setActiveSession] = useState<SessionMeta>(initialSession)
-  // The records the transcript was last rebuilt from. useAgentLoop keys effects
-  // on its identity, so it must only change when the transcript is reset.
+  // The records the transcript was last rebuilt from. useAgentLoop seeds its
+  // initial transcript from these, so they only change when the view resets.
   const [sessionRecords, setSessionRecords] = useState<SessionRecord[]>(existingRecords)
   // The live record list. createRuntime folds it into taskState, so a mid-session
   // `/model` switch has to see everything appended since startup — but appending
-  // must not re-render, or useAgentLoop would reset its usage totals per record.
+  // must not re-render the transcript.
   const sessionRecordsRef = useRef<SessionRecord[]>([...existingRecords])
   const sessionRecordIdsRef = useRef<Set<string>>(new Set(existingRecords.map((record) => record.id)))
   const [promptHistory, setPromptHistory] = useState<string[]>([])
@@ -146,16 +137,11 @@ export function App({
   const [resumeSessions, setResumeSessions] = useState<SessionMeta[]>([])
   const [resumeLoading, setResumeLoading] = useState(false)
   const [resumeError, setResumeError] = useState<string | null>(null)
-  const [runtime, setRuntime] = useState<AppRuntime>(() => ({
-    loop: initialLoop,
-    planModeManager: initialPlanModeManager,
-    modelKey: initialModelKey,
-    modelConfig: initialModelConfig,
-    providerName: initialProviderName,
-    run: (input, signal, messageId, overrides) => initialLoop.run(input, signal, messageId, overrides),
-    dispose: initialDispose,
-  }))
-  const runtimeRef = useRef<AppRuntime>(runtime)
+  const { session: runtime, effort: effortLevel } = useSyncExternalStore(
+    runtimeSlot.subscribe,
+    runtimeSlot.getSnapshot,
+    runtimeSlot.getSnapshot,
+  )
   const [checkpoints, setCheckpoints] = useState<CheckpointWithDiff[]>([])
   const [permissionMode, setPermissionModeState] = useState<PermissionMode>(() => permissionGate.getMode())
   const [modelKeys, setModelKeys] = useState<string[]>(availableModelKeys)
@@ -163,16 +149,12 @@ export function App({
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [effortPickerOpen, setEffortPickerOpen] = useState(false)
   const [activeCommandView, setActiveCommandView] = useState<CommandView | null>(null)
-  const [effortLevel, setEffortLevel] = useState<string>(initialEffortLevel ?? 'high')
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const restoreInputRef = useRef<(text: string) => void>(() => {})
   const latestStaticItemCountRef = useRef(0)
   const transcriptStaticItemCountRef = useRef<number | null>(null)
   const promptFrameSnapshotRef = useRef<InkFrameSnapshot | undefined>(undefined)
   const [spinnerColors, setSpinnerColors] = useState(() => sampleSpinnerColors())
-  const checkpointServiceRef = useRef<CheckpointService>(
-    new CheckpointService(process.cwd(), initialSession.id),
-  )
   const [queuePumpGeneration, setQueuePumpGeneration] = useState(0)
   const queuePumpRunningRef = useRef(false)
   const initialQueuedPromptRef = useRef(initialQueuedPrompt)
@@ -208,17 +190,6 @@ export function App({
   const enterPlan = useEnterPlanPermission(enterPlanProxy)
   const askUserQuestion = useAskUserQuestionPermission(askUserQuestionProxy)
 
-  const replaceRuntime = useCallback((nextRuntime: AppRuntime) => {
-    const previousRuntime = runtimeRef.current
-    runtimeRef.current = nextRuntime
-    previousRuntime.dispose()
-    setRuntime(nextRuntime)
-  }, [])
-
-  useEffect(() => {
-    runtimeRef.current = runtime
-  }, [runtime])
-
   useEffect(() => {
     setModelKeys(availableModelKeys)
   }, [availableModelKeys])
@@ -235,9 +206,10 @@ export function App({
 
   useEffect(() => {
     return () => {
-      runtimeRef.current.dispose()
+      sessionController.dispose()
+      runtimeSlot.dispose()
     }
-  }, [])
+  }, [runtimeSlot, sessionController])
 
   useEffect(() => {
     setPermissionModeState(permissionGate.getMode())
@@ -257,16 +229,8 @@ export function App({
     // install a plan-slug provider for a runtime nobody ever runs.
     const nextModelConfig = providerConfig.getModel(nextModelKey)
     if (!nextModelConfig) return
-    setRuntime((current) => {
-      if (current.modelKey === nextModelKey) return current
-      return {
-        ...current,
-        modelKey: nextModelKey,
-        modelConfig: nextModelConfig,
-        providerName: nextModelConfig.provider ?? current.providerName,
-      }
-    })
-  }, [providerConfig])
+    runtimeSlot.patchModel(nextModelKey, nextModelConfig, nextModelConfig.provider)
+  }, [providerConfig, runtimeSlot])
 
   const restoreInput = useCallback((text: string) => {
     restoreInputRef.current(text)
@@ -313,11 +277,7 @@ export function App({
     interrupt,
     reloadMessages,
   } = useAgentLoop({
-    loop: runtime.loop,
-    store,
-    session: activeSession,
-    permissionGate,
-    recordProxy,
+    controller: sessionController,
     existingRecords: sessionRecords,
     initialSystemMessages,
     pricing: runtime.modelConfig.pricing,
@@ -367,13 +327,13 @@ export function App({
     const nextSession = store.createDraft()
     await messageQueue.migrateTo(nextSession.id, [])
     const nextRuntime = createRuntime(runtime.modelKey, nextSession, [])
-    checkpointServiceRef.current = new CheckpointService(process.cwd(), nextSession.id)
+    sessionController.retarget(nextSession, [])
     setActiveSession(nextSession)
     resetSessionRecords([])
-    replaceRuntime(nextRuntime)
+    runtimeSlot.replace(nextRuntime)
     setCheckpoints([])
     resetTranscript([])
-  }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, resetTranscript, resetSessionRecords, messageQueue, backgroundTasks, activeSession.id])
+  }, [store, createRuntime, runtime.modelKey, runtime.loop, runtimeSlot, sessionController, resetTranscript, resetSessionRecords, messageQueue, backgroundTasks, activeSession.id])
 
   const buildRunOverrides = useCallback((options?: CommandSubmitQueryOptions): AgentRunOverrides | undefined => {
     if (!options) return undefined
@@ -381,7 +341,7 @@ export function App({
     let effortOverride = options.effort
 
     if (options.model) {
-      const modelKey = resolveModelInput(options.model, runtimeRef.current.modelKey)
+      const modelKey = resolveModelInput(options.model, runtimeSlot.current.modelKey)
       if (!modelKey) {
         throw new Error(`Unknown model or tier for skill command: ${options.model}`)
       }
@@ -395,7 +355,7 @@ export function App({
         effortOverride = typeof clamped === 'string' ? clamped : undefined
       }
     } else if (effortOverride) {
-      const clamped = clampEffort(effortOverride, runtimeRef.current.modelConfig.maxEffort)
+      const clamped = clampEffort(effortOverride, runtimeSlot.current.modelConfig.maxEffort)
       effortOverride = typeof clamped === 'string' ? clamped : undefined
     }
 
@@ -408,7 +368,7 @@ export function App({
       ...(options.skillArgs !== undefined ? { skillArgs: options.skillArgs } : {}),
       ...(options.displayInput !== undefined ? { displayInput: options.displayInput } : {}),
     }
-  }, [createActiveModelRuntime, providerConfig, resolveModelInput])
+  }, [createActiveModelRuntime, providerConfig, resolveModelInput, runtimeSlot])
 
   const submitPlainInput = useCallback(async (text: string, options?: CommandSubmitQueryOptions) => {
     setSpinnerColors(sampleSpinnerColors())
@@ -421,7 +381,7 @@ export function App({
   }, [submit, buildRunOverrides])
 
   const runShellCommand = useCallback(async (command: string) => {
-    const result = await runtimeRef.current.loop.runTool({
+    const result = await runtimeSlot.current.loop.runTool({
       id: randomUUID(),
       name: 'Bash',
       input: { command },
@@ -431,7 +391,7 @@ export function App({
       content: result.content,
       ...(result.errorCode ? { errorCode: result.errorCode } : {}),
     }
-  }, [])
+  }, [runtimeSlot])
 
   useEffect(() => {
     const prompt = initialQueuedPromptRef.current
@@ -453,15 +413,10 @@ export function App({
 
     try {
       const nextRuntime = createRuntime(modelKey, activeSession, sessionRecordsRef.current)
-      runtimeRef.current.loop.clearCachedSections()
-      replaceRuntime(nextRuntime)
-      // Re-apply current effort clamped to new model's maxEffort
-      const maxEffort = nextRuntime.modelConfig.maxEffort
-      const clamped = clampEffort(effortLevel as EffortValue, maxEffort)
-      const clampedLevel = typeof clamped === 'number' ? effortLevel : clamped
-      if (clampedLevel !== effortLevel) setEffortLevel(clampedLevel)
-      const effortLevelForLoop = typeof clamped === 'string' ? clamped as EffortLevel : undefined
-      nextRuntime.loop.setEffort(effortLevelForLoop)
+      runtimeSlot.current.loop.clearCachedSections()
+      runtimeSlot.replace(nextRuntime)
+      // Re-apply current effort clamped to the new model's maxEffort.
+      runtimeSlot.reapplyEffort()
       return {
         ok: true,
         model: {
@@ -477,10 +432,10 @@ export function App({
         availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
       }
     }
-  }, [modelKeys, createRuntime, activeSession, replaceRuntime])
+  }, [modelKeys, createRuntime, activeSession, runtimeSlot])
 
   const switchModel = useCallback((input: string): SetModelResult => {
-    const modelKey = resolveModelInput(input, runtimeRef.current.modelKey)
+    const modelKey = resolveModelInput(input, runtimeSlot.current.modelKey)
     if (!modelKey) {
       return {
         ok: false,
@@ -504,7 +459,7 @@ export function App({
   const refreshRuntimeAfterProviderConfigChange = useCallback((scope: ProviderConfigChangeScope) => {
     setModelKeys(Object.keys(providerConfig.get().models))
 
-    const currentRuntime = runtimeRef.current
+    const currentRuntime = runtimeSlot.current
     const modelKey = resolveRuntimeModelKeyAfterConfigChange(
       providerConfig,
       currentRuntime.modelKey,
@@ -516,23 +471,14 @@ export function App({
 
     const nextRuntime = createRuntime(modelKey, activeSession, sessionRecordsRef.current)
     currentRuntime.loop.clearCachedSections()
-    replaceRuntime(nextRuntime)
-
-    const clamped = clampEffort(effortLevel as EffortValue, nextRuntime.modelConfig.maxEffort)
-    const clampedLevel = typeof clamped === 'number' ? effortLevel : clamped
-    if (clampedLevel !== effortLevel) setEffortLevel(clampedLevel)
-    nextRuntime.loop.setEffort(typeof clamped === 'string' ? clamped as EffortLevel : undefined)
-  }, [providerConfig, createRuntime, activeSession, replaceRuntime, effortLevel])
+    runtimeSlot.replace(nextRuntime)
+    runtimeSlot.reapplyEffort()
+  }, [providerConfig, createRuntime, activeSession, runtimeSlot])
 
   const handleSetEffort = useCallback((level: string) => {
-    const maxEffort = runtimeRef.current.modelConfig.maxEffort
-    const clamped = clampEffort(level as EffortValue, maxEffort)
-    const clampedLevel = typeof clamped === 'number' ? level : clamped
-    setEffortLevel(clampedLevel)
-    const effortLevel = typeof clamped === 'string' ? clamped as EffortLevel : undefined
-    runtimeRef.current.loop.setEffort(effortLevel)
+    const clampedLevel = runtimeSlot.setEffort(level)
     onEffortLevelChange?.(clampedLevel)
-  }, [onEffortLevelChange])
+  }, [onEffortLevelChange, runtimeSlot])
 
   const modelPickerOptions = useMemo(
     () => buildModelPickerOptions(providerConfig, runtime.modelKey, modelKeys),
@@ -579,16 +525,16 @@ export function App({
     const count = await reloadRuntimeAgentDefinitions()
     runtime.loop.clearCachedSections()
     const nextRuntime = createRuntime(runtime.modelKey, activeSession, sessionRecordsRef.current)
-    replaceRuntime(nextRuntime)
+    runtimeSlot.replace(nextRuntime)
     return count
-  }, [reloadRuntimeAgentDefinitions, runtime.loop, runtime.modelKey, createRuntime, activeSession, replaceRuntime])
+  }, [reloadRuntimeAgentDefinitions, runtime.loop, runtime.modelKey, createRuntime, activeSession, runtimeSlot])
 
   const cyclePermissionMode = useCallback((direction: 1 | -1) => {
     setPermissionModeState((currentMode) => {
       const nextMode = nextPermissionMode(currentMode, direction)
-      return applyPermissionModeTransition(permissionGate, runtimeRef.current.planModeManager, nextMode)
+      return applyPermissionModeTransition(permissionGate, runtimeSlot.current.planModeManager, nextMode)
     })
-  }, [permissionGate])
+  }, [permissionGate, runtimeSlot])
 
   useEffect(() => {
     runtime.planModeManager.setUiDeps({
@@ -599,9 +545,9 @@ export function App({
   }, [runtime.planModeManager, addSystemMessage, enterPlanProxy, exitPlanProxy])
 
   const readCurrentPlanFile = useCallback(async () => {
-    const path = runtimeRef.current.planModeManager.resolvePlanFilePathLazy()
+    const path = runtimeSlot.current.planModeManager.resolvePlanFilePathLazy()
     return { path, content: await readPlan(path) }
-  }, [])
+  }, [runtimeSlot])
 
   const openCurrentPlanFile = useCallback(async (): Promise<{ message: string }> => {
     const { path } = await readCurrentPlanFile()
@@ -684,7 +630,7 @@ export function App({
       }
     }
 
-    const nextRuntime = createRuntime(runtimeRef.current.modelKey, target, loaded.records)
+    const nextRuntime = createRuntime(runtimeSlot.current.modelKey, target, loaded.records)
     const diagnosticSummary = summarizeDiagnosticsForTui(loaded.diagnostics)
     const transcriptItems = recordsToDisplayItems(loaded.records)
     if (diagnosticSummary) {
@@ -697,14 +643,14 @@ export function App({
     }
 
     await messageQueue.reset(target.id, loaded.records)
-    checkpointServiceRef.current = new CheckpointService(process.cwd(), target.id)
+    sessionController.retarget(target, loaded.records)
     resetSessionRecords(loaded.records)
     setActiveSession(target)
-    replaceRuntime(nextRuntime)
+    runtimeSlot.replace(nextRuntime)
     setCheckpoints([])
     resetTranscript(transcriptItems)
     setMode('idle')
-  }, [activeSession.id, backgroundTasks, closeResumePicker, createRuntime, replaceRuntime, resetTranscript, resetSessionRecords, messageQueue, store])
+  }, [activeSession.id, backgroundTasks, closeResumePicker, createRuntime, runtimeSlot, sessionController, resetTranscript, resetSessionRecords, messageQueue, store])
 
   const { dispatch } = useCommands({
     store,
@@ -732,7 +678,7 @@ export function App({
     reloadAgentDefinitions,
     getPermissionMode: () => permissionGate.getMode(),
     enterPlanMode: () => {
-      const mode = applyPermissionModeTransition(permissionGate, runtimeRef.current.planModeManager, 'plan')
+      const mode = applyPermissionModeTransition(permissionGate, runtimeSlot.current.planModeManager, 'plan')
       setPermissionModeState(mode)
     },
     readPlanFile: readCurrentPlanFile,
@@ -784,13 +730,16 @@ export function App({
   }, [addSystemMessage, messageQueue])
 
   useEffect(() => {
-    if (
-      queuePumpRunningRef.current
-      || queuedMessages.length === 0
-      || isStreaming
-      || mode !== 'idle'
-      || isOverlayActive
-    ) return
+    // `mode` folds two unrelated ideas together: 'running' means a turn is in
+    // flight, everything else non-idle means a surface is holding the screen.
+    // The headless policy keeps them apart so a desktop shell can substitute
+    // "a permission request is pending" for the second one.
+    if (!canPumpQueue({
+      pending: queuedMessages.length,
+      running: queuePumpRunningRef.current,
+      turnActive: isStreaming || mode === 'running',
+      uiBlocked: isOverlayActive || mode !== 'idle',
+    })) return
 
     queuePumpRunningRef.current = true
     void (async () => {
@@ -874,7 +823,7 @@ export function App({
 
   const handleEnterRestoreMode = useCallback(async () => {
     try {
-      const cpService = checkpointServiceRef.current
+      const cpService = sessionController.getCheckpointService()
       const cpList = await cpService.getCheckpointsWithDiffs()
       setCheckpoints(cpList)
       setMode('restore')
@@ -883,7 +832,7 @@ export function App({
       setCheckpoints([])
       setMode('restore')
     }
-  }, [])
+  }, [sessionController])
 
   const handleRestoreCancel = useCallback(() => {
     setMode('idle')
@@ -901,13 +850,13 @@ export function App({
   }, [store, activeSession.id, runtime.loop, reloadMessages, rebaseSessionRecords, messageQueue])
 
   const restoreCodeToCheckpoint = useCallback(async (checkpoint: CheckpointWithDiff) => {
-    const cpService = checkpointServiceRef.current
+    const cpService = sessionController.getCheckpointService()
     const restoreResult = await cpService.restoreToCommit(checkpoint.commitHash)
     invalidateResolvedCwdCache(process.cwd())
     if (!restoreResult.success) {
       throw new Error(restoreResult.error ?? 'Failed to restore file state')
     }
-  }, [])
+  }, [sessionController])
 
   const summarizeRewindSegment = useCallback(async (checkpoint: CheckpointWithDiff, decision: RewindSummaryDecision) => {
     const loaded = await store.loadRecordsWithDiagnostics(activeSession.id)

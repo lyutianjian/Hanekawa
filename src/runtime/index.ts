@@ -21,6 +21,32 @@ export type {
 } from './bridges.js'
 export { ToolRegistry } from './toolRegistry.js'
 export { connectMcpServers } from './mcp.js'
+export {
+  PERMISSION_MODES,
+  applyPermissionModeTransition,
+  nextPermissionMode,
+  syncPlanModeManagerForPermissionModeChange,
+} from './permissionMode.js'
+export { resolveRuntimeModelKeyAfterConfigChange } from './providerRuntime.js'
+export type { ProviderConfigChangeScope } from './providerRuntime.js'
+export {
+  recordsAfterAreOnlyInterruptSynthetic,
+  rollbackInterruptedPromptIfSynthetic,
+} from './interruptRollback.js'
+export {
+  addTokenUsage,
+  createEmptySessionUsage,
+  createEmptyUsage,
+  findLatestTaskSnapshot,
+  formatInterruptMessage,
+} from './sessionUsage.js'
+export type { SessionUsage } from './sessionUsage.js'
+export {
+  formatScopedToolName,
+  formatSingleToolProgress,
+  formatSubagentSpinnerProgress,
+  formatToolProgress,
+} from './toolProgress.js'
 export type {
   AgentSession,
   BootstrapOptions,

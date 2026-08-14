@@ -34,7 +34,18 @@ import {
   recordsToDisplayItems,
   type TuiTranscriptState,
 } from '../transcript.js'
-import { rollbackInterruptedPromptIfSynthetic } from '../interruptRollback.js'
+import { rollbackInterruptedPromptIfSynthetic } from '../../runtime/interruptRollback.js'
+import {
+  formatSingleToolProgress,
+  formatSubagentSpinnerProgress,
+  formatToolProgress,
+} from '../../runtime/toolProgress.js'
+import {
+  addTokenUsage,
+  createEmptyUsage,
+  findLatestTaskSnapshot,
+  formatInterruptMessage,
+} from '../../runtime/sessionUsage.js'
 import { calculateTokenCost, hasCompletePricing } from '../../harness/usage.js'
 
 export { isHiddenToolCall, recordsToDisplayItems } from '../transcript.js'
@@ -563,115 +574,6 @@ async function tryRestoreInterruptedPrompt(input: {
   }
 }
 
-function formatToolProgress(events: ToolProgressEvent[]): string | undefined {
-  if (events.length === 0) return undefined
-  if (events.length === 1) {
-    const event = events[0]
-    if (!event) return undefined
-    return formatSingleToolProgress(event)
-  }
-
-  const counts = new Map<string, number>()
-  for (const event of events) {
-    const name = formatScopedToolName(event)
-    counts.set(name, (counts.get(name) ?? 0) + 1)
-  }
-
-  if (counts.size === 1) {
-    const first = events[0]
-    const name = formatScopedToolName(first)
-    if (first?.call.name === 'Read') return `Reading ${events.length} files in parallel...`
-    return `Running ${events.length} ${name} calls in parallel...`
-  }
-
-  return `Running ${events.length} tools in parallel...`
-}
-
-function formatSingleToolProgress(event: ToolProgressEvent): string {
-  const details = getToolActivityDescription(event.call.name, event.call.input) ?? formatToolProgressDetails(event.call.input)
-  if (details && event.source?.type === 'subagent') {
-    return `${formatScopedToolName(event)}: ${details}`
-  }
-  if (details) return details
-  return `Running ${formatScopedToolName(event)}`
-}
-
-function formatSubagentSpinnerProgress(events: ToolProgressEvent[]): string | undefined {
-  if (events.length === 0) return undefined
-
-  const agentIds = new Set<string>()
-  for (const event of events) {
-    agentIds.add(event.source?.agentId ?? `${event.source?.agentType ?? 'agent'}:${event.call.id}`)
-  }
-
-  if (agentIds.size > 1) {
-    return `${agentIds.size} agents running`
-  }
-
-  return formatToolProgress(events)
-}
-
-function findLatestTaskSnapshot(records: readonly SessionRecord[]): TaskDisplaySnapshot | undefined {
-  for (const record of [...records].reverse()) {
-    if (record.type !== 'tool_result') continue
-    if (record.display?.taskSnapshot) return record.display.taskSnapshot
-  }
-  return undefined
-}
-
-function formatScopedToolName(event: ToolProgressEvent | undefined): string {
-  const name = event?.call.name ?? 'tool'
-  if (event?.source?.type === 'subagent') {
-    return `${event.source.agentType} > ${name}`
-  }
-  return name
-}
-
-function formatToolProgressDetails(input: unknown): string | undefined {
-  if (!input || typeof input !== 'object') return undefined
-  const values = input as Record<string, unknown>
-  const candidate = values.command ?? values.filePath ?? values.path ?? values.pattern ?? values.query
-  return typeof candidate === 'string' && candidate.trim().length > 0
-    ? truncateMiddle(candidate.trim(), 80)
-    : undefined
-}
-
-function truncateMiddle(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value
-  const keep = Math.max(1, Math.floor((maxLength - 3) / 2))
-  return `${value.slice(0, keep)}...${value.slice(value.length - keep)}`
-}
-
-async function formatInterruptMessage(store: SessionStore, sessionId: string, userMessageId: string): Promise<string> {
-  try {
-    const loaded = await store.loadRecordsWithDiagnostics(sessionId)
-    const interruption = [...loaded.records]
-      .reverse()
-      .find((record) => record.type === 'turn_interruption' && record.userMessageId === userMessageId)
-    if (!interruption || interruption.type !== 'turn_interruption') return 'Interrupted.'
-    const remaining = interruption.remainingTasks.length
-    if (remaining === 0) return 'Interrupted.'
-    return `Interrupted. ${remaining} ${remaining === 1 ? 'task' : 'tasks'} remaining.`
-  } catch {
-    return 'Interrupted.'
-  }
-}
-
-function addTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
-  return {
-    inputTokens: a.inputTokens + b.inputTokens,
-    cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
-    outputTokens: a.outputTokens + b.outputTokens,
-  }
-}
-
-function createEmptyUsage(): TokenUsage {
-  return {
-    inputTokens: 0,
-    cacheReadInputTokens: 0,
-    outputTokens: 0,
-  }
-}
 
 export function formatWorkedSummary(duration: string, usage: TokenUsage | undefined, pricing: ModelPricing | undefined): string {
   const base = `✻ Worked for ${duration}`

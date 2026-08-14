@@ -5,9 +5,11 @@ import type { PlanModeManager } from '../src/harness/planModeManager.js'
 import {
   applyPermissionModeTransition,
   nextPermissionMode,
+  syncPlanModeManagerForPermissionModeChange,
+} from '../src/runtime/permissionMode.js'
+import {
   permissionModeStatusLabel,
   permissionModeTitle,
-  syncPlanModeManagerForPermissionModeChange,
 } from '../src/tui/permissionMode.js'
 
 function managerSpy() {

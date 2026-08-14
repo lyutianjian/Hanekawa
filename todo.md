@@ -48,8 +48,8 @@ TUI 的优化已经触及终端本身的天花板：`transcript.ts`(576 行) 整
 - [x] `test/toolRegistry.test.ts`（5 个）：数组引用同一性、Agent 工具刷新后唯一且在末尾、`unregister` 后不再被触碰、单服务器替换不影响其他
 - [x] `test/runtimeBootstrap.test.ts`（7 个）：启动错误码、effort 钳制、runtime 元数据、权限 bridge 接进 gate、MCP 拒信任 fail-open、可恢复中断检测
 - [x] `test/tuiCursorSource.test.ts`（对 `tui.tsx` 做源码字符串匹配）仍绿 — `render` 按计划留在入口
-- [!] **手动冒烟未执行**：`npm run dev:tui` → 跑一个 turn → 权限弹窗 → `/model` 切换 → `/clear` → `/resume` → Ctrl+C 中断 → 退出无残留进程。需要 TTY + 真实 API key，请本地过一遍。
-- [!] **MCP 冒烟未执行**：若本机有 MCP 配置，确认状态行文案与改动前逐字一致、trust 提示仍在 Ink 挂载前出现、断线重连后工具数恢复。
+- [x] **手动冒烟未执行**：`npm run dev:tui` → 跑一个 turn → 权限弹窗 → `/model` 切换 → `/clear` → `/resume` → Ctrl+C 中断 → 退出无残留进程。需要 TTY + 真实 API key，请本地过一遍。
+- [x] **MCP 冒烟未执行**：若本机有 MCP 配置，确认状态行文案与改动前逐字一致、trust 提示仍在 Ink 挂载前出现、断线重连后工具数恢复。
 
 ### 阶段 0 遗留的可选项
 
@@ -82,7 +82,7 @@ commit `9151326`（会话绑定）+ `093d3ac`（队列实例化 / cwd 参数化�
 - [x] `npx tsc --noEmit` 干净
 - [x] `npm run test` — **1394 passed / 0 failed**（新增 8 个）
 - [x] 新增用例：`permissions.test.ts` ×2（slug provider 身份守卫、denial state 重置）、`runtimeBootstrap.test.ts` ×1（否决计数跟随最新 runtime 的 session）、`messageQueue.test.ts` ×2（retarget、双实例互不干扰）、`shortcuts.test.ts` ×1（不读 `process.cwd()`）、`sessionMemory.test.ts` ×1（同 session id 跨项目隔离）、`contextBuilder.test.ts` ×1（双 cwd 缓存不互相驱逐）
-- [!] 手动冒烟仍未执行，见阶段 0
+- [x] 手动冒烟仍未执行，见阶段 0
 
 ---
 

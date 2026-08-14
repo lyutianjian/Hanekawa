@@ -144,7 +144,7 @@ Shell-syntax findings and destructive commands are *not* bypass-immune.
 command *and every segment*; `allow` rules match the whole command only. "Always allow" refuses compound
 commands unless every segment yields an identical prefix (`shellRuleMatching.ts`). Anti-loop machinery
 (per-tool denial streaks, global auto-deny counter) escalates silent auto-denials back into real prompts.
-Always change modes through `applyPermissionModeTransition` (`src/tui/permissionMode.ts`), which couples
+Always change modes through `applyPermissionModeTransition` (`src/runtime/permissionMode.ts`), which couples
 `PermissionGate` ↔ `PlanModeManager`.
 
 ### Providers — `src/config/`

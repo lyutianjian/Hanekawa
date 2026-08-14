@@ -6,7 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { SessionStore, type SessionMeta } from '../src/sessions/service.js'
-import { rollbackInterruptedPromptIfSynthetic } from '../src/tui/interruptRollback.js'
+import { rollbackInterruptedPromptIfSynthetic } from '../src/runtime/interruptRollback.js'
 import type { SessionRecord } from '../src/harness/types.js'
 import { getSessionsDir } from '../src/utils/paths.js'
 

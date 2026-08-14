@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { prepareRecordsForRequest, prepareRecordsForRequestWithDiagnostics } from '../src/harness/requestPrep.js'
 import { countTextTokens } from '../src/prompts/budget.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
-import { recordsAfterAreOnlyInterruptSynthetic } from '../src/tui/interruptRollback.js'
+import { recordsAfterAreOnlyInterruptSynthetic } from '../src/runtime/interruptRollback.js'
 import type { SessionRecord } from '../src/harness/types.js'
 
 function toolPair(id: string, tool: string, content: string, minute: number): SessionRecord[] {

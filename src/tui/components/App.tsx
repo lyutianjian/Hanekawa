@@ -34,7 +34,7 @@ import { BackgroundTasksPanel } from './BackgroundTasksPanel.js'
 import { SessionResumePicker } from './SessionResumePicker.js'
 import { invalidateResolvedCwdCache } from '../../utils/paths.js'
 import { readPlan } from '../../utils/plans.js'
-import { applyPermissionModeTransition, nextPermissionMode } from '../permissionMode.js'
+import { applyPermissionModeTransition, nextPermissionMode } from '../../runtime/permissionMode.js'
 import { ExitPlanModeDialog } from './ExitPlanModeDialog.js'
 import { EnterPlanModeDialog } from './EnterPlanModeDialog.js'
 import { AskUserQuestionDialog } from './AskUserQuestionDialog.js'
@@ -58,7 +58,7 @@ import { summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
 import {
   resolveRuntimeModelKeyAfterConfigChange,
   type ProviderConfigChangeScope,
-} from '../providerRuntime.js'
+} from '../../runtime/providerRuntime.js'
 
 export type AppMode = 'idle' | 'running' | 'restore' | 'resume' | 'tasks' | 'exiting'
 

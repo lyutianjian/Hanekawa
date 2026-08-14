@@ -1,9 +1,9 @@
 import type { PermissionRequest } from '../harness/permissions.js'
+import type { SessionUsage } from '../runtime/sessionUsage.js'
 import type {
   CompactAttemptFailedRecord,
   SessionRecord,
   ThinkingBlock,
-  TokenUsage,
   ToolErrorCode,
   ToolResultDisplay,
 } from '../harness/types.js'
@@ -111,7 +111,5 @@ export interface PermissionDialogRequest {
   request: PermissionRequest
 }
 
-export interface TUIUsage {
-  lastRequest: TokenUsage | null
-  total: TokenUsage
-}
+/** Re-homed into the headless runtime; kept as an alias for the component tree. */
+export type TUIUsage = SessionUsage

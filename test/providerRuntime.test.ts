@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp } from 'node:fs/promises'
 import path from 'node:path'
 import { ConfigService } from '../src/config/service.js'
-import { resolveRuntimeModelKeyAfterConfigChange } from '../src/tui/providerRuntime.js'
+import { resolveRuntimeModelKeyAfterConfigChange } from '../src/runtime/providerRuntime.js'
 import { tmpdir } from 'node:os'
 import { mkdtempSync } from 'node:fs'
 

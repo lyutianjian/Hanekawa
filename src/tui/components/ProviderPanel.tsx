@@ -19,7 +19,7 @@ import {
   isSupportedProviderName,
   SUPPORTED_PROVIDER_NAMES,
 } from '../../config/providers/registry.js'
-import type { ProviderConfigChangeScope } from '../providerRuntime.js'
+import type { ProviderConfigChangeScope } from '../../runtime/providerRuntime.js'
 
 type Tab = 'endpoints' | 'models' | 'profiles' | 'routing'
 const TABS: readonly Tab[] = ['endpoints', 'models', 'profiles', 'routing']

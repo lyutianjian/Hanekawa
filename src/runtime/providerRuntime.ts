@@ -2,7 +2,7 @@ import type { ConfigService } from '../config/service.js'
 
 export type ProviderConfigChangeScope = 'endpoints' | 'models' | 'profiles' | 'routing'
 
-/** Resolve the model that should back the live TUI after /provider changes. */
+/** Resolve the model that should back the live runtime after /provider changes. */
 export function resolveRuntimeModelKeyAfterConfigChange(
   config: ConfigService,
   currentModelKey: string,

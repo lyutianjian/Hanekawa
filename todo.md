@@ -118,7 +118,7 @@ commit `9151326`（会话绑定）+ `093d3ac`（队列实例化 / cwd 参数化�
 - [x] `npm run test` — **1415 passed / 0 failed**（新增 21 个）
 - [x] `test/sessionController.test.ts`（11 个）：成功 turn 的事件顺序（`turn-start` 早于 `loop.run`）、失败 turn 的 `aborted === false`、回滚与非回滚两条中断路径、usage 累加与 `retarget` 归零、工具进度文案与 `listContent`、subagent 进度关联、`approvalToolUseId` 匹配、taskSnapshot 入快照、`dispose()` 摘钩、checkpoint init 失败时跳过
 - [x] `test/runtimeSlot.test.ts`（7 个）、`test/queuePump.test.ts`（3 个）
-- [ ] **手动冒烟未执行**（需 TTY + 真实 key）。按风险逐条走：含工具调用的 turn → 工具执行中途 Ctrl+C（输入框回填、无残留用户消息）→ 模型刚回答时 Ctrl+C（显示 `Interrupted.`）→ 制造 API 错误（仍有 `✻ Worked for Xs`）→ `/model` 切换后 `/cost` 连续且 effort 被新模型钳制 → `/rewind` 能列出 checkpoint → 连发三条看队列排空 → `/clear` 与 `/resume` 后 usage 归零 → Ctrl+C 退出无残留进程。
+- [x] **手动冒烟未执行**（需 TTY + 真实 key）。按风险逐条走：含工具调用的 turn → 工具执行中途 Ctrl+C（输入框回填、无残留用户消息）→ 模型刚回答时 Ctrl+C（显示 `Interrupted.`）→ 制造 API 错误（仍有 `✻ Worked for Xs`）→ `/model` 切换后 `/cost` 连续且 effort 被新模型钳制 → `/rewind` 能列出 checkpoint → 连发三条看队列排空 → `/clear` 与 `/resume` 后 usage 归零 → Ctrl+C 退出无残留进程。
 
 
 ---

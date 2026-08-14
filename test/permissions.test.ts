@@ -1154,6 +1154,54 @@ test('PermissionGate plan mode allows session plan file writes despite protected
   assert.equal(prompted, false)
 })
 
+test('PermissionGate clearPlanSlugProvider only uninstalls the provider it was handed', async () => {
+  let prompted = false
+  const gate = new PermissionGate(
+    async () => {
+      prompted = true
+      return false
+    },
+    [],
+    { mode: 'plan', cwd: process.cwd() },
+  )
+  const provider = () => 'draft-plan'
+  gate.setPlanSlugProvider(provider)
+  const planPath = path.join(process.cwd(), '.myagent', 'plans', 'draft-plan.md')
+
+  // A superseded runtime disposing after a newer one installed its own
+  // provider must not uninstall the newer one.
+  gate.clearPlanSlugProvider(() => 'draft-plan')
+  assert.equal(await gate.approve(writeFileTool, { path: planPath }), true)
+  assert.equal(prompted, false)
+
+  gate.clearPlanSlugProvider(provider)
+  assert.equal(await gate.approve(writeFileTool, { path: planPath }), false)
+  assert.equal(prompted, true)
+})
+
+test('PermissionGate resetDenialState re-reads the store for the next session', async () => {
+  let state: DenialState = { streaks: {}, total: 0 }
+  const store = {
+    getDenialState: async () => state,
+    setDenialState: async (next: DenialState) => { state = next },
+  }
+  const gate = new PermissionGate(async () => false, [], {
+    denialStreakThreshold: 3,
+    denialStateStore: store,
+  })
+
+  assert.equal(await gate.approve(bashTool, { command: 'cat .git/config' }), false)
+  assert.deepEqual(state, { streaks: { Bash: 1 }, total: 1 })
+
+  // The host retargeted the store at a different session; the counters the
+  // gate still holds belong to the old one.
+  state = { streaks: {}, total: 0 }
+  gate.resetDenialState()
+
+  assert.equal(await gate.approve(bashTool, { command: 'cat .git/config' }), false)
+  assert.deepEqual(state, { streaks: { Bash: 1 }, total: 1 })
+})
+
 test('PermissionGate plan mode ignores deny rules (bypass-equivalent)', async () => {
   let prompted = false
   const planPath = path.join(process.cwd(), '.myagent', 'plans', 'draft-plan.md')

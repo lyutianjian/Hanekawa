@@ -534,6 +534,27 @@ export class PermissionGate {
     this.planSlugProvider = provider
   }
 
+  /**
+   * Uninstalls `provider` only if it is still the installed one. A disposed
+   * runtime therefore cannot clear the provider of the runtime that replaced
+   * it, whatever order dispose happens to run in.
+   */
+  clearPlanSlugProvider(provider: () => string | undefined): void {
+    if (this.planSlugProvider === provider) this.planSlugProvider = undefined
+  }
+
+  /**
+   * Drops the in-memory denial counters and re-arms hydration. Called when the
+   * gate starts serving a different session (`/clear`, `/resume`): without it
+   * the previous session's streaks stay latched and get persisted onto the new
+   * session on the next auto-denial.
+   */
+  resetDenialState(): void {
+    this.denialStreaks = new Map()
+    this.globalAutoDenials = 0
+    this.denialStateLoaded = false
+  }
+
   getConfigRules(): PermissionRule[] {
     return [...this.configRules]
   }

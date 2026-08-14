@@ -165,6 +165,38 @@ test('an MCP server the host refuses to trust is reported without blocking start
   await host.shutdown('test over')
 })
 
+test('denial counters follow the session the newest runtime was built for', async () => {
+  const { cwd, store, session } = await createProject()
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+
+  const bashTool: Tool = {
+    name: 'Bash',
+    description: 'run a command',
+    inputSchema: z.object({ command: z.string() }).strict(),
+    riskLevel: 'confirm',
+    execute: async () => ({ ok: true, content: 'done' }),
+  }
+  const denied = { command: 'cat .git/config' }
+
+  const first = host.createRuntime(host.initialModelKey, session)
+  assert.equal(await host.permissionGate.approve(bashTool, denied), false)
+  assert.deepEqual(await store.getDenialState(session.id), { streaks: { Bash: 1 }, total: 1 })
+
+  // `/clear` and `/resume` build a runtime for a different session.
+  const next = await store.create('cleared session')
+  const second = host.createRuntime(host.initialModelKey, next)
+  first.dispose()
+
+  assert.equal(await host.permissionGate.approve(bashTool, denied), false)
+  // Written to the new session, and starting from its own (empty) counters
+  // rather than inheriting the previous session's streak.
+  assert.deepEqual(await store.getDenialState(next.id), { streaks: { Bash: 1 }, total: 1 })
+  assert.deepEqual(await store.getDenialState(session.id), { streaks: { Bash: 1 }, total: 1 })
+
+  second.dispose()
+  await host.shutdown('test over')
+})
+
 test('an unconsumed recoverable interruption is reported to the host', async () => {
   const { cwd, store, session } = await createProject()
   const interruption: SessionRecord = {

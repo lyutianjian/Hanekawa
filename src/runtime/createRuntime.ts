@@ -73,6 +73,12 @@ export interface CreateRuntimeDeps {
   isGitRepo: boolean
   initialEffort: EffortValue
   createActiveModelRuntime: (modelKey: string) => ActiveModelRuntime
+  /**
+   * Notified whenever a runtime is built for a different session than the last
+   * one. `bootstrap` uses it to retarget session-scoped state (denial counters)
+   * that the gate holds across runtimes.
+   */
+  onActiveSessionChange?: (sessionId: string) => void
 }
 
 export type CreateRuntime = (
@@ -104,6 +110,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
     isGitRepo,
     initialEffort,
     createActiveModelRuntime,
+    onActiveSessionChange,
   } = deps
 
   const createRoutedRuntime = (
@@ -127,6 +134,10 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
         `Failed to create provider for: ${targetModelConfig.provider}`,
       )
     }
+
+    // Past the last throwing validation, so a rejected model key never
+    // retargets session-scoped state.
+    onActiveSessionChange?.(runtimeSession.id)
 
     const currentFallbackModelKey = config.resolveModelReference(config.get().fallbackModel)
     const fallbackModel = currentFallbackModelKey && currentFallbackModelKey !== modelKey
@@ -155,7 +166,8 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       openEnterPrompt: bridges.enterPlan.open,
       openExitDialog: bridges.exitPlan.open,
     })
-    permissionGate.setPlanSlugProvider(() => planModeManager.getSlug())
+    const planSlugProvider = () => planModeManager.getSlug()
+    permissionGate.setPlanSlugProvider(planSlugProvider)
 
     const runtimeTools = toolRegistry.buildRuntimeTools()
     runtimeTools.push(createAgentTool({
@@ -261,6 +273,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       run: (input, signal, messageId, overrides) => activeLoop.run(input, signal, messageId, overrides),
       dispose: () => {
         toolRegistry.unregister(runtimeTools)
+        permissionGate.clearPlanSlugProvider(planSlugProvider)
       },
     }
   }

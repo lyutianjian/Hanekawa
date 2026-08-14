@@ -123,9 +123,13 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   await registerSkillCommands(cwd)
 
   const bridges = createUiBridges()
+  // The gate and every subagent share one denial-state store, but the session
+  // it targets changes with `/clear` and `/resume`. Read the id at call time so
+  // counters are never written back to whichever session was active at startup.
+  let activeSessionId = session.id
   const denialStateStore: DenialStateStore = {
-    getDenialState: async () => store.getDenialState(session.id),
-    setDenialState: async (state) => store.setDenialState(session.id, state),
+    getDenialState: async () => store.getDenialState(activeSessionId),
+    setDenialState: async (state) => store.setDenialState(activeSessionId, state),
   }
   const permissionGate = new PermissionGate(bridges.prompt.prompt, permissionRulesFromSettings(settings.permissions), {
     denialStateStore,
@@ -155,6 +159,11 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     isGitRepo,
     initialEffort: clampedInitialEffort,
     createActiveModelRuntime,
+    onActiveSessionChange: (nextSessionId) => {
+      if (nextSessionId === activeSessionId) return
+      activeSessionId = nextSessionId
+      permissionGate.resetDenialState()
+    },
   })
 
   const existingLoad = await store.loadRecordsWithDiagnostics(session.id)

@@ -142,7 +142,14 @@ export function App({
 }: AppProps) {
   const [mode, setMode] = useState<AppMode>('idle')
   const [activeSession, setActiveSession] = useState<SessionMeta>(initialSession)
+  // The records the transcript was last rebuilt from. useAgentLoop keys effects
+  // on its identity, so it must only change when the transcript is reset.
   const [sessionRecords, setSessionRecords] = useState<SessionRecord[]>(existingRecords)
+  // The live record list. createRuntime folds it into taskState, so a mid-session
+  // `/model` switch has to see everything appended since startup — but appending
+  // must not re-render, or useAgentLoop would reset its usage totals per record.
+  const sessionRecordsRef = useRef<SessionRecord[]>([...existingRecords])
+  const sessionRecordIdsRef = useRef<Set<string>>(new Set(existingRecords.map((record) => record.id)))
   const [promptHistory, setPromptHistory] = useState<string[]>([])
   const historyWarningShownRef = useRef(false)
   const [resumeSessions, setResumeSessions] = useState<SessionMeta[]>([])
@@ -249,24 +256,48 @@ export function App({
   }, [permissionGate, onPermissionModeChange])
 
   const syncActiveModel = useCallback((activeModel: { modelKey?: string }) => {
-    if (!activeModel.modelKey) return
-    if (activeModel.modelKey === runtime.modelKey) return
-    const nextRuntime = createRuntime(activeModel.modelKey, activeSession, sessionRecords)
-    nextRuntime.dispose()
+    const nextModelKey = activeModel.modelKey
+    if (!nextModelKey) return
+    // The loop switched models on its own (fallback activation); it keeps
+    // running on the same loop and plan-mode manager. Only the displayed
+    // metadata changes, so read it from config rather than assembling a whole
+    // runtime — that would construct a provider, re-register the tool set, and
+    // install a plan-slug provider for a runtime nobody ever runs.
+    const nextModelConfig = providerConfig.getModel(nextModelKey)
+    if (!nextModelConfig) return
     setRuntime((current) => {
-      if (current.modelKey === activeModel.modelKey) return current
+      if (current.modelKey === nextModelKey) return current
       return {
-        ...nextRuntime,
-        loop: current.loop,
-        planModeManager: current.planModeManager,
-        dispose: current.dispose,
+        ...current,
+        modelKey: nextModelKey,
+        modelConfig: nextModelConfig,
+        providerName: nextModelConfig.provider ?? current.providerName,
       }
     })
-  }, [createRuntime, activeSession, sessionRecords, runtime.modelKey])
+  }, [providerConfig])
 
   const restoreInput = useCallback((text: string) => {
     restoreInputRef.current(text)
   }, [])
+
+  /** Appends to the live record list. Records reach the UI over several paths, so dedupe by id. */
+  const trackSessionRecord = useCallback((record: SessionRecord) => {
+    if (sessionRecordIdsRef.current.has(record.id)) return
+    sessionRecordIdsRef.current.add(record.id)
+    sessionRecordsRef.current.push(record)
+  }, [])
+
+  /** Rebases the live record list after the session's records are replaced on disk. */
+  const rebaseSessionRecords = useCallback((records: readonly SessionRecord[]) => {
+    sessionRecordsRef.current = [...records]
+    sessionRecordIdsRef.current = new Set(records.map((record) => record.id))
+  }, [])
+
+  /** `/clear` and resume also rebuild the transcript from these records. */
+  const resetSessionRecords = useCallback((records: SessionRecord[]) => {
+    rebaseSessionRecords(records)
+    setSessionRecords(records)
+  }, [rebaseSessionRecords])
 
   const {
     staticTranscriptItems,
@@ -299,6 +330,7 @@ export function App({
     initialSystemMessages,
     pricing: runtime.modelConfig.pricing,
     onActiveModelChange: syncActiveModel,
+    onRecordExternal: trackSessionRecord,
     onInterrupt: denyPending,
     onRestoreInput: restoreInput,
   })
@@ -345,11 +377,11 @@ export function App({
     const nextRuntime = createRuntime(runtime.modelKey, nextSession, [])
     checkpointServiceRef.current = new CheckpointService(process.cwd(), nextSession.id)
     setActiveSession(nextSession)
-    setSessionRecords([])
+    resetSessionRecords([])
     replaceRuntime(nextRuntime)
     setCheckpoints([])
     resetTranscript([])
-  }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, resetTranscript, backgroundTasks, activeSession.id])
+  }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, resetTranscript, resetSessionRecords, backgroundTasks, activeSession.id])
 
   const buildRunOverrides = useCallback((options?: CommandSubmitQueryOptions): AgentRunOverrides | undefined => {
     if (!options) return undefined
@@ -428,7 +460,7 @@ export function App({
     }
 
     try {
-      const nextRuntime = createRuntime(modelKey, activeSession, sessionRecords)
+      const nextRuntime = createRuntime(modelKey, activeSession, sessionRecordsRef.current)
       runtimeRef.current.loop.clearCachedSections()
       replaceRuntime(nextRuntime)
       // Re-apply current effort clamped to new model's maxEffort
@@ -453,7 +485,7 @@ export function App({
         availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
       }
     }
-  }, [modelKeys, createRuntime, activeSession, sessionRecords, replaceRuntime])
+  }, [modelKeys, createRuntime, activeSession, replaceRuntime])
 
   const switchModel = useCallback((input: string): SetModelResult => {
     const modelKey = resolveModelInput(input, runtimeRef.current.modelKey)
@@ -490,7 +522,7 @@ export function App({
       throw new Error('No model is available after the provider configuration change.')
     }
 
-    const nextRuntime = createRuntime(modelKey, activeSession, sessionRecords)
+    const nextRuntime = createRuntime(modelKey, activeSession, sessionRecordsRef.current)
     currentRuntime.loop.clearCachedSections()
     replaceRuntime(nextRuntime)
 
@@ -498,7 +530,7 @@ export function App({
     const clampedLevel = typeof clamped === 'number' ? effortLevel : clamped
     if (clampedLevel !== effortLevel) setEffortLevel(clampedLevel)
     nextRuntime.loop.setEffort(typeof clamped === 'string' ? clamped as EffortLevel : undefined)
-  }, [providerConfig, createRuntime, activeSession, sessionRecords, replaceRuntime, effortLevel])
+  }, [providerConfig, createRuntime, activeSession, replaceRuntime, effortLevel])
 
   const handleSetEffort = useCallback((level: string) => {
     const maxEffort = runtimeRef.current.modelConfig.maxEffort
@@ -554,10 +586,10 @@ export function App({
     }
     const count = await reloadRuntimeAgentDefinitions()
     runtime.loop.clearCachedSections()
-    const nextRuntime = createRuntime(runtime.modelKey, activeSession, sessionRecords)
+    const nextRuntime = createRuntime(runtime.modelKey, activeSession, sessionRecordsRef.current)
     replaceRuntime(nextRuntime)
     return count
-  }, [reloadRuntimeAgentDefinitions, runtime.loop, runtime.modelKey, createRuntime, activeSession, sessionRecords, replaceRuntime])
+  }, [reloadRuntimeAgentDefinitions, runtime.loop, runtime.modelKey, createRuntime, activeSession, replaceRuntime])
 
   const cyclePermissionMode = useCallback((direction: 1 | -1) => {
     setPermissionModeState((currentMode) => {
@@ -674,13 +706,13 @@ export function App({
 
     initializeMessageQueue(target.id, loaded.records, (sessionId, record) => store.appendRecord(sessionId, record))
     checkpointServiceRef.current = new CheckpointService(process.cwd(), target.id)
-    setSessionRecords(loaded.records)
+    resetSessionRecords(loaded.records)
     setActiveSession(target)
     replaceRuntime(nextRuntime)
     setCheckpoints([])
     resetTranscript(transcriptItems)
     setMode('idle')
-  }, [activeSession.id, backgroundTasks, closeResumePicker, createRuntime, replaceRuntime, resetTranscript, store])
+  }, [activeSession.id, backgroundTasks, closeResumePicker, createRuntime, replaceRuntime, resetTranscript, resetSessionRecords, store])
 
   const { dispatch } = useCommands({
     store,
@@ -872,8 +904,9 @@ export function App({
     }
     runtime.loop.invalidateRecordsCache()
     const records = await reloadMessages()
+    rebaseSessionRecords(records)
     await hydrateMessageQueue(records)
-  }, [store, activeSession.id, runtime.loop, reloadMessages])
+  }, [store, activeSession.id, runtime.loop, reloadMessages, rebaseSessionRecords])
 
   const restoreCodeToCheckpoint = useCallback(async (checkpoint: CheckpointWithDiff) => {
     const cpService = checkpointServiceRef.current
@@ -896,8 +929,9 @@ export function App({
     await store.replaceRecords(activeSession.id, rewrite.nextRecords)
     runtime.loop.invalidateRecordsCache()
     const records = await reloadMessages()
+    rebaseSessionRecords(records)
     await hydrateMessageQueue(records)
-  }, [store, activeSession.id, runtime.loop, reloadMessages])
+  }, [store, activeSession.id, runtime.loop, reloadMessages, rebaseSessionRecords])
 
   const handleRestoreSelect = useCallback(async (checkpoint: CheckpointWithDiff, decision: RestoreDecision) => {
     const messagePreview = formatRestoreMessagePreview(checkpoint.messageContent)

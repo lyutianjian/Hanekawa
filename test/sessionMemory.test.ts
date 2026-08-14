@@ -163,3 +163,34 @@ test('calculateRecordsToKeepIndex respects maxTokens cap', () => {
   // The kept tokens should be bounded (though the exact value depends on the estimation)
   assert.ok(index >= 0)
 })
+
+// --- storage cwd tests ---
+
+test('session memory reads and writes under the cwd it is given', async () => {
+  const { mkdtemp } = await import('node:fs/promises')
+  const path = (await import('node:path')).default
+  const { tmpdir } = await import('node:os')
+  const { getSessionMemory, setSessionMemory, clearSessionMemory } =
+    await import('../src/services/sessionMemory/service.js')
+
+  const projectA = await mkdtemp(path.join(tmpdir(), 'myagent-sm-a-'))
+  const projectB = await mkdtemp(path.join(tmpdir(), 'myagent-sm-b-'))
+  const sessionId = 'shared-session-id'
+
+  await setSessionMemory(sessionId, {
+    content: 'memory for A',
+    lastSummarizedRecordId: 'record-1',
+    lastExtractedAt: '2026-01-01T00:00:00.000Z',
+    tokenCount: 3,
+  }, projectA)
+
+  assert.equal((await getSessionMemory(sessionId, projectA))?.content, 'memory for A')
+  // Same session id, different project: must not see A's memory.
+  assert.equal(await getSessionMemory(sessionId, projectB), undefined)
+
+  await clearSessionMemory(sessionId, projectB)
+  assert.equal((await getSessionMemory(sessionId, projectA))?.content, 'memory for A')
+
+  await clearSessionMemory(sessionId, projectA)
+  assert.equal(await getSessionMemory(sessionId, projectA), undefined)
+})

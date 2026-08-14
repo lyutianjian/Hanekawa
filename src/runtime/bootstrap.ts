@@ -9,6 +9,7 @@ import {
 } from '../config/settings.js'
 import { clampEffort } from '../config/effort.js'
 import { PermissionGate, permissionRulesFromSettings, type DenialStateStore } from '../harness/permissions.js'
+import { setCacheBreakDiagnosticsRoot } from '../harness/cacheBreakDetection.js'
 import { SystemPromptSectionCache } from '../harness/sections.js'
 import type { SessionRecord } from '../harness/types.js'
 import { getAllTools } from '../tools/index.js'
@@ -43,6 +44,8 @@ function mergeAgentDefinitions<T extends { type: string }>(base: readonly T[], o
  */
 export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost> {
   const { cwd, store, session, confirmMcpTrust } = options
+
+  setCacheBreakDiagnosticsRoot(cwd)
 
   const backgroundTasks = new BackgroundTaskRegistry(
     (sessionId, record) => store.appendRecord(sessionId, record),

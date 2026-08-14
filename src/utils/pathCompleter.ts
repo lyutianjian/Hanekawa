@@ -7,7 +7,7 @@ import path from 'node:path'
  * filesystems, this could block the event loop briefly. If this becomes a
  * problem, consider caching directory listings or switching to async.
  */
-export function filePathCompleter(line: string): [string[], string] {
+export function filePathCompleter(line: string, cwd: string = process.cwd()): [string[], string] {
   const match = line.match(/(?:^|\s)(\S*)$/)
   const token = match?.[1] ?? ''
   const directory = token.endsWith(path.sep) || token.endsWith('/')
@@ -16,7 +16,7 @@ export function filePathCompleter(line: string): [string[], string] {
   const prefix = token.endsWith(path.sep) || token.endsWith('/')
     ? ''
     : path.basename(token)
-  const searchDir = directory === '.' ? process.cwd() : path.resolve(directory)
+  const searchDir = directory === '.' ? cwd : path.resolve(cwd, directory)
 
   try {
     const completions = readdirSync(searchDir)

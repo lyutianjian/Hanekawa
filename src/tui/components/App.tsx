@@ -51,16 +51,7 @@ import { clampEffort, type EffortValue, type EffortLevel } from '../../config/ef
 import { getContextWindowForModel } from '../../prompts/budget.js'
 import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/modelCapabilities.js'
 import { shouldRenderStatusLine } from '../statusLineVisibility.js'
-import {
-  clearMessageQueue,
-  dequeueMessage,
-  enqueueMessage,
-  getMessageQueueSnapshot,
-  hydrateMessageQueue,
-  initializeMessageQueue,
-  migrateMessageQueue,
-  subscribeMessageQueue,
-} from '../messageQueue.js'
+import { MessageQueue } from '../messageQueue.js'
 import type { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
 import { appendPromptHistory, loadPromptHistory, promptHistoryTexts } from '../promptHistory.js'
 import { summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
@@ -185,14 +176,15 @@ export function App({
   const [queuePumpGeneration, setQueuePumpGeneration] = useState(0)
   const queuePumpRunningRef = useRef(false)
   const initialQueuedPromptRef = useRef(initialQueuedPrompt)
-  const [messageQueueInitialized] = useState(() => {
-    initializeMessageQueue(initialSession.id, existingRecords, (sessionId, record) => store.appendRecord(sessionId, record))
-    return true
-  })
+  const [messageQueue] = useState(() => new MessageQueue(
+    initialSession.id,
+    existingRecords,
+    (sessionId, record) => store.appendRecord(sessionId, record),
+  ))
   const queuedMessages = useSyncExternalStore(
-    subscribeMessageQueue,
-    getMessageQueueSnapshot,
-    getMessageQueueSnapshot,
+    messageQueue.subscribe,
+    messageQueue.getSnapshot,
+    messageQueue.getSnapshot,
   )
   const [screen, setScreen] = useState<'prompt' | 'transcript'>('prompt')
   const [transcriptScrollOffsetRows, setTranscriptScrollOffsetRows] = useState(0)
@@ -373,7 +365,7 @@ export function App({
     await backgroundTasks.stopAll(activeSession.id, 'Session cleared')
     store.discardDraft(activeSession.id)
     const nextSession = store.createDraft()
-    await migrateMessageQueue(nextSession.id, [])
+    await messageQueue.migrateTo(nextSession.id, [])
     const nextRuntime = createRuntime(runtime.modelKey, nextSession, [])
     checkpointServiceRef.current = new CheckpointService(process.cwd(), nextSession.id)
     setActiveSession(nextSession)
@@ -381,7 +373,7 @@ export function App({
     replaceRuntime(nextRuntime)
     setCheckpoints([])
     resetTranscript([])
-  }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, resetTranscript, resetSessionRecords, backgroundTasks, activeSession.id])
+  }, [store, createRuntime, runtime.modelKey, runtime.loop, replaceRuntime, resetTranscript, resetSessionRecords, messageQueue, backgroundTasks, activeSession.id])
 
   const buildRunOverrides = useCallback((options?: CommandSubmitQueryOptions): AgentRunOverrides | undefined => {
     if (!options) return undefined
@@ -443,12 +435,12 @@ export function App({
 
   useEffect(() => {
     const prompt = initialQueuedPromptRef.current
-    if (!messageQueueInitialized || !prompt) return
+    if (!prompt) return
     initialQueuedPromptRef.current = undefined
-    void enqueueMessage(prompt).catch((error) => {
+    void messageQueue.enqueue(prompt).catch((error) => {
       addSystemMessage(`Failed to queue prompt: ${error instanceof Error ? error.message : String(error)}`)
     })
-  }, [messageQueueInitialized, addSystemMessage])
+  }, [messageQueue, addSystemMessage])
 
   const activateModelKey = useCallback((modelKey: string): SetModelResult => {
     if (!modelKeys.includes(modelKey)) {
@@ -704,7 +696,7 @@ export function App({
       })
     }
 
-    initializeMessageQueue(target.id, loaded.records, (sessionId, record) => store.appendRecord(sessionId, record))
+    await messageQueue.reset(target.id, loaded.records)
     checkpointServiceRef.current = new CheckpointService(process.cwd(), target.id)
     resetSessionRecords(loaded.records)
     setActiveSession(target)
@@ -712,7 +704,7 @@ export function App({
     setCheckpoints([])
     resetTranscript(transcriptItems)
     setMode('idle')
-  }, [activeSession.id, backgroundTasks, closeResumePicker, createRuntime, replaceRuntime, resetTranscript, resetSessionRecords, store])
+  }, [activeSession.id, backgroundTasks, closeResumePicker, createRuntime, replaceRuntime, resetTranscript, resetSessionRecords, messageQueue, store])
 
   const { dispatch } = useCommands({
     store,
@@ -775,7 +767,7 @@ export function App({
 
   const handleSubmit = useCallback(async (text: string): Promise<boolean> => {
     try {
-      await enqueueMessage(text)
+      await messageQueue.enqueue(text)
       void appendPromptHistory(text, process.cwd()).then((entry) => {
         if (!entry) return
         setPromptHistory((current) => [...current, entry.text].slice(-1000))
@@ -789,7 +781,7 @@ export function App({
       addSystemMessage(`Failed to queue message: ${error instanceof Error ? error.message : String(error)}`)
       return false
     }
-  }, [addSystemMessage])
+  }, [addSystemMessage, messageQueue])
 
   useEffect(() => {
     if (
@@ -803,7 +795,7 @@ export function App({
     queuePumpRunningRef.current = true
     void (async () => {
       try {
-        const next = await dequeueMessage()
+        const next = await messageQueue.dequeue()
         if (next) await executeQueuedInput(next.content)
       } catch (error) {
         addSystemMessage(`Failed to process queued message: ${error instanceof Error ? error.message : String(error)}`)
@@ -812,7 +804,7 @@ export function App({
         setQueuePumpGeneration((value) => value + 1)
       }
     })()
-  }, [queuedMessages, isStreaming, mode, isOverlayActive, executeQueuedInput, addSystemMessage, queuePumpGeneration])
+  }, [queuedMessages, isStreaming, mode, isOverlayActive, executeQueuedInput, addSystemMessage, messageQueue, queuePumpGeneration])
 
   const handleToggleTranscript = useCallback(() => {
     if (screen === 'transcript') {
@@ -850,12 +842,12 @@ export function App({
   }, [interrupt])
 
   const handleClearQueue = useCallback(() => {
-    void clearMessageQueue().then(() => {
+    void messageQueue.clear().then(() => {
       addSystemMessage('Queued messages cleared.')
     }).catch((error) => {
       addSystemMessage(`Failed to clear queued messages: ${error instanceof Error ? error.message : String(error)}`)
     })
-  }, [addSystemMessage])
+  }, [addSystemMessage, messageQueue])
 
   const handleExit = useCallback(() => {
     setMode('exiting')
@@ -905,8 +897,8 @@ export function App({
     runtime.loop.invalidateRecordsCache()
     const records = await reloadMessages()
     rebaseSessionRecords(records)
-    await hydrateMessageQueue(records)
-  }, [store, activeSession.id, runtime.loop, reloadMessages, rebaseSessionRecords])
+    await messageQueue.hydrate(records)
+  }, [store, activeSession.id, runtime.loop, reloadMessages, rebaseSessionRecords, messageQueue])
 
   const restoreCodeToCheckpoint = useCallback(async (checkpoint: CheckpointWithDiff) => {
     const cpService = checkpointServiceRef.current
@@ -930,8 +922,8 @@ export function App({
     runtime.loop.invalidateRecordsCache()
     const records = await reloadMessages()
     rebaseSessionRecords(records)
-    await hydrateMessageQueue(records)
-  }, [store, activeSession.id, runtime.loop, reloadMessages, rebaseSessionRecords])
+    await messageQueue.hydrate(records)
+  }, [store, activeSession.id, runtime.loop, reloadMessages, rebaseSessionRecords, messageQueue])
 
   const handleRestoreSelect = useCallback(async (checkpoint: CheckpointWithDiff, decision: RestoreDecision) => {
     const messagePreview = formatRestoreMessagePreview(checkpoint.messageContent)

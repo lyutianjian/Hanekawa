@@ -39,6 +39,20 @@ export function agentCacheSource(agentId: string): CacheBreakSource {
   return `agent:${normalized}`
 }
 
+let diagnosticsRoot: string | undefined
+
+/**
+ * Project root that cache-break diagnostics are written under. Detection runs
+ * inside the provider, which has no cwd of its own, so the host sets this once
+ * at startup; unset means `process.cwd()`.
+ *
+ * Process-wide, like this module's snapshot maps. Isolating it per project
+ * would mean partitioning all of them, not just this one.
+ */
+export function setCacheBreakDiagnosticsRoot(cwd: string | undefined): void {
+  diagnosticsRoot = cwd
+}
+
 export function forkCacheSource(parentSessionId: string): CacheBreakSource {
   const normalized = parentSessionId.trim() || 'unknown'
   return `agent:fork:${normalized}`
@@ -295,7 +309,7 @@ function writeCacheBreakDiagnostic(result: CacheBreakResult): string | null {
   if (!result.hashes) return null
   try {
     const session = result.source.startsWith('agent:') ? result.source.slice('agent:'.length) : result.source
-    const diagnosticsDir = path.join(getMyAgentDir(process.cwd()), 'diagnostics')
+    const diagnosticsDir = path.join(getMyAgentDir(diagnosticsRoot ?? process.cwd()), 'diagnostics')
     mkdirSync(diagnosticsDir, { recursive: true, mode: 0o700 })
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
     const filePath = path.join(diagnosticsDir, `${sanitizeFilePart(session)}-cache-break-${timestamp}.json`)

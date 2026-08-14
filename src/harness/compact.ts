@@ -33,6 +33,8 @@ export interface CompactCheckInput {
   circuitKey?: string
   /** Session ID for session memory compaction. */
   sessionId?: string
+  /** Project root, for locating session memory. Defaults to `process.cwd()`. */
+  cwd?: string
   /** Tool names discovered via ToolSearch — preserved in compact boundary. */
   discoveredToolNames?: Set<string>
   /** Custom instructions to append to the compact prompt (from CLI args or hook output). */
@@ -122,6 +124,7 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
         model: input.model,
         system: input.system,
         sessionId: input.sessionId,
+        cwd: input.cwd,
         autoCompactThreshold: threshold,
         discoveredToolNames: input.discoveredToolNames,
       })

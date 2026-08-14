@@ -67,6 +67,18 @@ describe('filePathCompleter', () => {
     const [completions] = filePathCompleter(line)
     assert.equal(completions.length, 0)
   })
+
+  it('resolves relative tokens against an explicit cwd, not process.cwd()', () => {
+    // No chdir: the completer must not consult the process working directory.
+    const [empty] = filePathCompleter('', tmpDir)
+    assert(empty.length >= 4)
+
+    const [prefixed] = filePathCompleter('file', tmpDir)
+    assert.deepEqual(prefixed.sort(), ['file-a.txt', 'file-b.txt'])
+
+    const [nested] = filePathCompleter('subdir/', tmpDir)
+    assert.equal(nested.length, 0)
+  })
 })
 
 // ─── History functions ──────────────────────────────────────────────────

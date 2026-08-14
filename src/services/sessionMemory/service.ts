@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto'
 import type { SessionRecord, ModelProvider, TokenUsage } from '../../harness/types.js'
 import { EMPTY_TOKEN_USAGE } from '../../harness/usage.js'
 import { countTextTokens } from '../../prompts/budget.js'
+import { getMyAgentDir } from '../../utils/paths.js'
 import type { SessionMemoryState, SessionMemoryConfig, ExtractionResult } from './types.js'
 import { DEFAULT_SESSION_MEMORY_CONFIG } from './types.js'
 import {
@@ -49,16 +50,12 @@ function getOrCreateSessionState(sessionId: string): PerSessionState {
 
 // --- Storage ---
 
-function getMyAgentDir(): string {
-  return path.join(process.cwd(), '.myagent')
+function getMemoryDir(cwd: string): string {
+  return path.join(getMyAgentDir(cwd), 'session-memory')
 }
 
-function getMemoryDir(): string {
-  return path.join(getMyAgentDir(), 'session-memory')
-}
-
-function getMemoryPath(sessionId: string): string {
-  return path.join(getMemoryDir(), `${sessionId}.json`)
+function getMemoryPath(sessionId: string, cwd: string = process.cwd()): string {
+  return path.join(getMemoryDir(cwd), `${sessionId}.json`)
 }
 
 /** Atomic write: write to temp file, then rename. */
@@ -71,8 +68,8 @@ async function writeAtomic(filePath: string, content: string): Promise<void> {
 }
 
 /** Read session memory state from disk. Returns undefined if not found. */
-export async function getSessionMemory(sessionId: string): Promise<SessionMemoryState | undefined> {
-  const filePath = getMemoryPath(sessionId)
+export async function getSessionMemory(sessionId: string, cwd?: string): Promise<SessionMemoryState | undefined> {
+  const filePath = getMemoryPath(sessionId, cwd)
   if (!existsSync(filePath)) return undefined
   try {
     const content = await readFile(filePath, 'utf-8')
@@ -88,14 +85,15 @@ export async function getSessionMemory(sessionId: string): Promise<SessionMemory
 export async function setSessionMemory(
   sessionId: string,
   state: SessionMemoryState,
+  cwd?: string,
 ): Promise<void> {
-  const filePath = getMemoryPath(sessionId)
+  const filePath = getMemoryPath(sessionId, cwd)
   await writeAtomic(filePath, JSON.stringify(state, null, 2))
 }
 
 /** Delete session memory file. */
-export async function clearSessionMemory(sessionId: string): Promise<void> {
-  const filePath = getMemoryPath(sessionId)
+export async function clearSessionMemory(sessionId: string, cwd?: string): Promise<void> {
+  const filePath = getMemoryPath(sessionId, cwd)
   try {
     await unlink(filePath)
   } catch {
@@ -125,8 +123,8 @@ export function setLastSummarizedRecordId(sessionId: string, id: string | undefi
 }
 
 /** Check if session memory is empty or not available. */
-export async function isSessionMemoryAvailable(sessionId: string): Promise<boolean> {
-  const memory = await getSessionMemory(sessionId)
+export async function isSessionMemoryAvailable(sessionId: string, cwd?: string): Promise<boolean> {
+  const memory = await getSessionMemory(sessionId, cwd)
   return memory !== undefined && !isSessionMemoryEmpty(memory.content)
 }
 
@@ -139,6 +137,8 @@ export interface ExtractSessionMemoryParams {
   records: SessionRecord[]
   system?: string
   sessionId: string
+  /** Project root the memory file lives under. Defaults to `process.cwd()`. */
+  cwd?: string
   config?: Partial<SessionMemoryConfig>
 }
 
@@ -207,7 +207,7 @@ export function maybeExtractSessionMemory(params: ExtractSessionMemoryParams): v
     // Fire-and-forget load — next invocation will see initialized=true and skip.
     // If this load completes before the extraction below, great; if not, the
     // extraction will start from index 0 (safe, just slightly redundant).
-    getSessionMemory(params.sessionId).then((memory) => {
+    getSessionMemory(params.sessionId, params.cwd).then((memory) => {
       if (memory) {
         state.lastSummarizedRecordId = memory.lastSummarizedRecordId
       }
@@ -232,7 +232,7 @@ export function maybeExtractSessionMemory(params: ExtractSessionMemoryParams): v
   // Fire-and-forget extraction
   state.extractionInProgress = (async () => {
     try {
-      const existing = await getSessionMemory(params.sessionId)
+      const existing = await getSessionMemory(params.sessionId, params.cwd)
       const result = await extractSessionMemory(
         params,
         existing?.content,
@@ -248,7 +248,7 @@ export function maybeExtractSessionMemory(params: ExtractSessionMemoryParams): v
           lastExtractedAt: new Date().toISOString(),
           tokenCount: countTextTokens(result.content),
         }
-        await setSessionMemory(params.sessionId, memoryState)
+        await setSessionMemory(params.sessionId, memoryState, params.cwd)
         state.lastSummarizedRecordId = lastRecord.id
       }
 

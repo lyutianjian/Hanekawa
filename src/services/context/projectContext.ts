@@ -88,21 +88,23 @@ export async function loadProjectContext(cwd: string): Promise<string> {
   ].join('\n')
 }
 
-// Cache for project context within a session
-let cachedContext: string | null = null
-let cachedCwd: string | null = null
+// Project context per cwd. A single-slot cache thrashed once two projects were
+// open at the same time, re-reading every CLAUDE.md on each alternating turn.
+const contextByCwd = new Map<string, string>()
 
 export async function getProjectContext(cwd: string): Promise<string> {
-  if (cachedCwd === cwd && cachedContext !== null) {
-    return cachedContext
-  }
+  const cached = contextByCwd.get(cwd)
+  if (cached !== undefined) return cached
 
-  cachedContext = await loadProjectContext(cwd)
-  cachedCwd = cwd
-  return cachedContext
+  const context = await loadProjectContext(cwd)
+  contextByCwd.set(cwd, context)
+  return context
 }
 
-export function clearProjectContextCache(): void {
-  cachedContext = null
-  cachedCwd = null
+export function clearProjectContextCache(cwd?: string): void {
+  if (cwd === undefined) {
+    contextByCwd.clear()
+    return
+  }
+  contextByCwd.delete(cwd)
 }

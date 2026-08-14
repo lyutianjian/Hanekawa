@@ -13,7 +13,7 @@ permission-gated tools, subagents, skills, and MCP. `README.md` documents user-f
 npm install                        # or `bun install`; postinstall runs patch-package (required, see Patches)
 npm run dev:tui                    # start the TUI (tsx, no build step); also: resume <id> | --continue | c | list
 npm run typecheck                  # tsc --noEmit
-npm run test                       # full suite: 1371 tests / 35 suites, ~37s
+npm run test                       # full suite: 1394 tests / 35 suites, ~38s
 node --import tsx --test test/compact.test.ts                    # single file
 node --import tsx --test test/a.test.ts test/b.test.ts           # several files
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
@@ -199,8 +199,9 @@ single stateful shell; `hooks/useAgentLoop.ts` owns transcript state and the tur
   `UserMessage.tsx`. Add a semantic key rather than a literal.
 - Animation ticks off one shared clock (`clock/ClockContext.tsx`, 16ms) that pauses on terminal focus
   loss or overlay; don't add `setInterval` in components.
-- The message queue is a **module-level singleton** persisted as `message_queue` records; Enter always
-  enqueues and a guarded effect pumps it.
+- The message queue is a **`MessageQueue` instance** owned by `App` (one per session, persisted as
+  `message_queue` records); Enter always enqueues and a guarded effect pumps it. `subscribe`/
+  `getSnapshot` are bound methods so `useSyncExternalStore` sees stable identities.
 - Slash commands (`src/commands/`) are a module-level `Map` of plain `{name, description, run}` objects
   that render nothing — all effects go through optional `CommandContext` callbacks, so every command
   must tolerate `undefined` ones. Skill commands are prompt macros with per-invocation

@@ -54,7 +54,7 @@ export async function trySessionMemoryCompaction(
   await waitForExtraction(params.sessionId, 5_000)
 
   // Load session memory from disk
-  const memory = await getSessionMemory(params.sessionId)
+  const memory = await getSessionMemory(params.sessionId, params.cwd)
   if (!memory || isSessionMemoryEmpty(memory.content)) return null
 
   // Find the last summarized record index

@@ -60,6 +60,8 @@ export interface SessionMemoryCompactParams {
   model: string
   system?: string
   sessionId: string
+  /** Project root the memory file lives under. Defaults to `process.cwd()`. */
+  cwd?: string
   /** Auto-compact threshold — if post-compact tokens exceed this, skip SM compact. */
   autoCompactThreshold?: number
   /** Tool names discovered via ToolSearch — preserved in compact boundary. */

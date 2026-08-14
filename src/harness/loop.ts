@@ -401,6 +401,7 @@ export class AgentLoop {
           turnId,
           circuitKey: this.options.toolContext.sessionId,
           sessionId: this.options.toolContext.sessionId,
+          cwd: this.options.toolContext.cwd,
           getCompactFailureCount: this.options.getCompactFailureCount,
           setCompactFailureCount: this.options.setCompactFailureCount,
           appendRecord: (record) => this.appendRecord(record),
@@ -720,6 +721,7 @@ export class AgentLoop {
         records: this.recordsCache ?? [],
         system: this.options.system,
         sessionId: this.options.toolContext.sessionId,
+        cwd: this.options.toolContext.cwd,
       })
       }
 

@@ -11,126 +11,152 @@ export type PersistQueueRecord = (sessionId: string, record: MessageQueueRecord)
 
 const EMPTY_SNAPSHOT: readonly QueuedMessage[] = Object.freeze([])
 
-let sessionId: string | null = null
-let persistRecord: PersistQueueRecord | null = null
-let snapshot: readonly QueuedMessage[] = EMPTY_SNAPSHOT
-let operationChain: Promise<void> = Promise.resolve()
-const listeners = new Set<() => void>()
+/**
+ * Messages the user submitted while a turn was running, persisted as
+ * `message_queue` records so they survive a restart.
+ *
+ * One instance owns one session's queue. Every mutation goes through
+ * {@link serialize}, so the persisted record and the in-memory snapshot can
+ * never disagree: a rejected write leaves the snapshot untouched.
+ *
+ * `getSnapshot`/`subscribe` are shaped for `useSyncExternalStore` — the
+ * snapshot is a frozen array whose identity only changes when the contents do.
+ */
+export class MessageQueue {
+  private sessionId: string
+  private readonly persist: PersistQueueRecord
+  private snapshot: readonly QueuedMessage[] = EMPTY_SNAPSHOT
+  private operationChain: Promise<void> = Promise.resolve()
+  private readonly listeners = new Set<() => void>()
 
-export function initializeMessageQueue(
-  nextSessionId: string,
-  records: readonly SessionRecord[],
-  persist: PersistQueueRecord,
-): void {
-  sessionId = nextSessionId
-  persistRecord = persist
-  operationChain = Promise.resolve()
-  replaceSnapshot(replayMessageQueue(records))
-}
+  constructor(sessionId: string, records: readonly SessionRecord[], persist: PersistQueueRecord) {
+    this.sessionId = sessionId
+    this.persist = persist
+    this.replaceSnapshot(replayMessageQueue(records))
+  }
 
-export function getMessageQueueSnapshot(): readonly QueuedMessage[] {
-  return snapshot
-}
+  getSnapshot = (): readonly QueuedMessage[] => this.snapshot
 
-export function subscribeMessageQueue(listener: () => void): () => void {
-  listeners.add(listener)
-  return () => listeners.delete(listener)
-}
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
 
-export async function enqueueMessage(
-  content: string,
-  priority: MessageQueuePriority = 'next',
-): Promise<QueuedMessage> {
-  const message: QueuedMessage = Object.freeze({
-    id: randomUUID(),
-    content,
-    priority,
-    createdAt: new Date().toISOString(),
-  })
-
-  return serialize(async () => {
-    const target = requireConfiguration()
-    await target.persist(target.sessionId, {
+  async enqueue(
+    content: string,
+    priority: MessageQueuePriority = 'next',
+  ): Promise<QueuedMessage> {
+    const message: QueuedMessage = Object.freeze({
       id: randomUUID(),
-      type: 'message_queue',
-      operation: 'enqueue',
-      message,
+      content,
+      priority,
       createdAt: new Date().toISOString(),
     })
-    replaceSnapshot([...snapshot, message])
-    return message
-  })
-}
 
-export async function dequeueMessage(): Promise<QueuedMessage | undefined> {
-  return serialize(async () => {
-    const message = snapshot[0]
-    if (!message) return undefined
-    const target = requireConfiguration()
-    await target.persist(target.sessionId, {
-      id: randomUUID(),
-      type: 'message_queue',
-      operation: 'dequeue',
-      messageId: message.id,
-      createdAt: new Date().toISOString(),
-    })
-    replaceSnapshot(snapshot.slice(1))
-    return message
-  })
-}
-
-export async function clearMessageQueue(): Promise<void> {
-  return serialize(async () => {
-    if (snapshot.length === 0) return
-    const target = requireConfiguration()
-    await target.persist(target.sessionId, {
-      id: randomUUID(),
-      type: 'message_queue',
-      operation: 'clear',
-      createdAt: new Date().toISOString(),
-    })
-    replaceSnapshot([])
-  })
-}
-
-/** Rebuild the active queue after session records are replaced or truncated. */
-export async function hydrateMessageQueue(records: readonly SessionRecord[]): Promise<void> {
-  return serialize(async () => {
-    requireConfiguration()
-    replaceSnapshot(replayMessageQueue(records))
-  })
-}
-
-/** Move pending messages to a newly-created session without changing their order. */
-export async function migrateMessageQueue(
-  nextSessionId: string,
-  records: readonly SessionRecord[],
-): Promise<void> {
-  return serialize(async () => {
-    const current = requireConfiguration()
-    const pending = [...snapshot]
-
-    for (const message of pending) {
-      await current.persist(nextSessionId, {
+    return this.serialize(async () => {
+      await this.persist(this.sessionId, {
         id: randomUUID(),
         type: 'message_queue',
         operation: 'enqueue',
         message,
         createdAt: new Date().toISOString(),
       })
-    }
-    if (pending.length > 0) {
-      await current.persist(current.sessionId, {
+      this.replaceSnapshot([...this.snapshot, message])
+      return message
+    })
+  }
+
+  async dequeue(): Promise<QueuedMessage | undefined> {
+    return this.serialize(async () => {
+      const message = this.snapshot[0]
+      if (!message) return undefined
+      await this.persist(this.sessionId, {
+        id: randomUUID(),
+        type: 'message_queue',
+        operation: 'dequeue',
+        messageId: message.id,
+        createdAt: new Date().toISOString(),
+      })
+      this.replaceSnapshot(this.snapshot.slice(1))
+      return message
+    })
+  }
+
+  async clear(): Promise<void> {
+    return this.serialize(async () => {
+      if (this.snapshot.length === 0) return
+      await this.persist(this.sessionId, {
         id: randomUUID(),
         type: 'message_queue',
         operation: 'clear',
         createdAt: new Date().toISOString(),
       })
-    }
+      this.replaceSnapshot([])
+    })
+  }
 
-    sessionId = nextSessionId
-    replaceSnapshot([...replayMessageQueue(records), ...pending])
-  })
+  /** Rebuild the active queue after session records are replaced or truncated. */
+  async hydrate(records: readonly SessionRecord[]): Promise<void> {
+    return this.serialize(async () => {
+      this.replaceSnapshot(replayMessageQueue(records))
+    })
+  }
+
+  /** Point at a different session, discarding whatever the old one had pending. */
+  async reset(sessionId: string, records: readonly SessionRecord[]): Promise<void> {
+    return this.serialize(async () => {
+      this.sessionId = sessionId
+      this.replaceSnapshot(replayMessageQueue(records))
+    })
+  }
+
+  /**
+   * Move pending messages to a newly-created session without changing their
+   * order. The compensating `clear` is written to the *old* session's log so
+   * replaying it later cannot resurrect messages that now live elsewhere.
+   */
+  async migrateTo(nextSessionId: string, records: readonly SessionRecord[]): Promise<void> {
+    return this.serialize(async () => {
+      const previousSessionId = this.sessionId
+      const pending = [...this.snapshot]
+
+      for (const message of pending) {
+        await this.persist(nextSessionId, {
+          id: randomUUID(),
+          type: 'message_queue',
+          operation: 'enqueue',
+          message,
+          createdAt: new Date().toISOString(),
+        })
+      }
+      if (pending.length > 0) {
+        await this.persist(previousSessionId, {
+          id: randomUUID(),
+          type: 'message_queue',
+          operation: 'clear',
+          createdAt: new Date().toISOString(),
+        })
+      }
+
+      this.sessionId = nextSessionId
+      this.replaceSnapshot([...replayMessageQueue(records), ...pending])
+    })
+  }
+
+  private replaceSnapshot(messages: readonly QueuedMessage[]): void {
+    const next = messages.length === 0 ? EMPTY_SNAPSHOT : Object.freeze([...messages])
+    if (sameMessages(this.snapshot, next)) return
+    this.snapshot = next
+    for (const listener of this.listeners) listener()
+  }
+
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operationChain.then(operation, operation)
+    this.operationChain = result.then(() => undefined, () => undefined)
+    return result
+  }
 }
 
 export function replayMessageQueue(records: readonly SessionRecord[]): QueuedMessage[] {
@@ -159,13 +185,6 @@ export function replayMessageQueue(records: readonly SessionRecord[]): QueuedMes
   return pending
 }
 
-function replaceSnapshot(messages: readonly QueuedMessage[]): void {
-  const next = messages.length === 0 ? EMPTY_SNAPSHOT : Object.freeze([...messages])
-  if (sameMessages(snapshot, next)) return
-  snapshot = next
-  for (const listener of listeners) listener()
-}
-
 function sameMessages(left: readonly QueuedMessage[], right: readonly QueuedMessage[]): boolean {
   return left.length === right.length && left.every((message, index) => {
     const other = right[index]
@@ -175,17 +194,6 @@ function sameMessages(left: readonly QueuedMessage[], right: readonly QueuedMess
       && message.priority === other.priority
       && message.createdAt === other.createdAt
   })
-}
-
-function requireConfiguration(): { sessionId: string; persist: PersistQueueRecord } {
-  if (!sessionId || !persistRecord) throw new Error('Message queue has not been initialized')
-  return { sessionId, persist: persistRecord }
-}
-
-function serialize<T>(operation: () => Promise<T>): Promise<T> {
-  const result = operationChain.then(operation, operation)
-  operationChain = result.then(() => undefined, () => undefined)
-  return result
 }
 
 function isValidQueuedMessage(value: PersistedQueuedMessage): boolean {

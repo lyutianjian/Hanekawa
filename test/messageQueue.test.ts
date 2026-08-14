@@ -1,56 +1,47 @@
 import { beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import type { MessageQueueRecord, SessionRecord } from '../src/harness/types.js'
-import {
-  clearMessageQueue,
-  dequeueMessage,
-  enqueueMessage,
-  getMessageQueueSnapshot,
-  hydrateMessageQueue,
-  initializeMessageQueue,
-  migrateMessageQueue,
-  replayMessageQueue,
-  subscribeMessageQueue,
-} from '../src/tui/messageQueue.js'
+import { MessageQueue, replayMessageQueue } from '../src/tui/messageQueue.js'
 
 describe('messageQueue', () => {
   let persisted: Array<{ sessionId: string; record: MessageQueueRecord }>
+  let queue: MessageQueue
 
   beforeEach(() => {
     persisted = []
-    initializeMessageQueue('session-a', [], async (sessionId, record) => {
+    queue = new MessageQueue('session-a', [], async (sessionId, record) => {
       persisted.push({ sessionId, record })
     })
   })
 
   it('persists and consumes messages in FIFO order regardless of priority', async () => {
-    const first = await enqueueMessage('first', 'later')
-    const second = await enqueueMessage('second', 'now')
-    assert.deepEqual(getMessageQueueSnapshot().map((item) => item.content), ['first', 'second'])
-    assert.equal((await dequeueMessage())?.id, first.id)
-    assert.equal((await dequeueMessage())?.id, second.id)
-    assert.equal(getMessageQueueSnapshot().length, 0)
+    const first = await queue.enqueue('first', 'later')
+    const second = await queue.enqueue('second', 'now')
+    assert.deepEqual(queue.getSnapshot().map((item) => item.content), ['first', 'second'])
+    assert.equal((await queue.dequeue())?.id, first.id)
+    assert.equal((await queue.dequeue())?.id, second.id)
+    assert.equal(queue.getSnapshot().length, 0)
     assert.deepEqual(persisted.map(({ record }) => record.operation), ['enqueue', 'enqueue', 'dequeue', 'dequeue'])
   })
 
   it('keeps the snapshot stable and notifies only on changes', async () => {
-    const initial = getMessageQueueSnapshot()
+    const initial = queue.getSnapshot()
     let notifications = 0
-    const unsubscribe = subscribeMessageQueue(() => notifications++)
-    await hydrateMessageQueue([])
-    assert.equal(getMessageQueueSnapshot(), initial)
+    const unsubscribe = queue.subscribe(() => notifications++)
+    await queue.hydrate([])
+    assert.equal(queue.getSnapshot(), initial)
     assert.equal(notifications, 0)
-    await enqueueMessage('hello')
+    await queue.enqueue('hello')
     assert.equal(notifications, 1)
     unsubscribe()
   })
 
   it('does not mutate memory when persistence fails', async () => {
-    initializeMessageQueue('session-a', [], async () => {
+    const failing = new MessageQueue('session-a', [], async () => {
       throw new Error('disk full')
     })
-    await assert.rejects(() => enqueueMessage('hello'), /disk full/)
-    assert.equal(getMessageQueueSnapshot().length, 0)
+    await assert.rejects(() => failing.enqueue('hello'), /disk full/)
+    assert.equal(failing.getSnapshot().length, 0)
   })
 
   it('replays enqueue, dequeue, clear, duplicate, and unknown events safely', () => {
@@ -68,17 +59,46 @@ describe('messageQueue', () => {
   })
 
   it('clears and migrates pending messages between sessions', async () => {
-    await enqueueMessage('one')
-    await enqueueMessage('two')
-    await migrateMessageQueue('session-b', [])
-    assert.deepEqual(getMessageQueueSnapshot().map((item) => item.content), ['one', 'two'])
+    await queue.enqueue('one')
+    await queue.enqueue('two')
+    await queue.migrateTo('session-b', [])
+    assert.deepEqual(queue.getSnapshot().map((item) => item.content), ['one', 'two'])
     assert.deepEqual(persisted.slice(-3).map((entry) => [entry.sessionId, entry.record.operation]), [
       ['session-b', 'enqueue'],
       ['session-b', 'enqueue'],
       ['session-a', 'clear'],
     ])
-    await clearMessageQueue()
-    assert.equal(getMessageQueueSnapshot().length, 0)
+    await queue.clear()
+    assert.equal(queue.getSnapshot().length, 0)
     assert.equal(persisted.at(-1)?.sessionId, 'session-b')
+  })
+
+  it('retargets a session without carrying the previous one\'s pending messages', async () => {
+    await queue.enqueue('stale')
+    await queue.reset('session-b', [])
+
+    assert.equal(queue.getSnapshot().length, 0)
+    await queue.enqueue('fresh')
+    assert.equal(persisted.at(-1)?.sessionId, 'session-b')
+  })
+
+  it('keeps two queues independent', async () => {
+    const other = new MessageQueue('session-b', [], async (sessionId, record) => {
+      persisted.push({ sessionId, record })
+    })
+    let notifications = 0
+    const unsubscribe = queue.subscribe(() => notifications++)
+
+    await other.enqueue('theirs')
+
+    assert.deepEqual(other.getSnapshot().map((item) => item.content), ['theirs'])
+    assert.equal(queue.getSnapshot().length, 0)
+    assert.equal(notifications, 0)
+    assert.deepEqual(persisted.map((entry) => entry.sessionId), ['session-b'])
+
+    await queue.enqueue('mine')
+    assert.deepEqual(queue.getSnapshot().map((item) => item.content), ['mine'])
+    assert.deepEqual(other.getSnapshot().map((item) => item.content), ['theirs'])
+    unsubscribe()
   })
 })

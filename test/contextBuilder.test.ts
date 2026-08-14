@@ -712,3 +712,32 @@ test('ContextBuilder keeps currentDate dynamic across midnight boundary', async 
   assert.doesNotMatch(beforeMidnight.system ?? '', /2026\/05\/10/)
   assert.doesNotMatch(afterMidnight.system ?? '', /2026\/05\/11/)
 })
+
+test('project context is cached per cwd and invalidated per cwd', async () => {
+  const { getProjectContext, clearProjectContextCache } =
+    await import('../src/services/context/projectContext.js')
+
+  const projectA = await mkdtemp(path.join(os.tmpdir(), 'myagent-ctx-a-'))
+  const projectB = await mkdtemp(path.join(os.tmpdir(), 'myagent-ctx-b-'))
+  clearProjectContextCache()
+
+  try {
+    await writeFile(path.join(projectA, 'CLAUDE.md'), 'instructions for A', 'utf8')
+    await writeFile(path.join(projectB, 'CLAUDE.md'), 'instructions for B', 'utf8')
+
+    assert.match(await getProjectContext(projectA), /instructions for A/)
+    assert.match(await getProjectContext(projectB), /instructions for B/)
+    // A single-slot cache would have evicted A when B was read.
+    assert.match(await getProjectContext(projectA), /instructions for A/)
+
+    await writeFile(path.join(projectA, 'CLAUDE.md'), 'rewritten A', 'utf8')
+    clearProjectContextCache(projectA)
+
+    assert.match(await getProjectContext(projectA), /rewritten A/)
+    assert.match(await getProjectContext(projectB), /instructions for B/)
+  } finally {
+    clearProjectContextCache()
+    await rm(projectA, { recursive: true, force: true })
+    await rm(projectB, { recursive: true, force: true })
+  }
+})

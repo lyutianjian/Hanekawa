@@ -53,7 +53,7 @@ TUI 的优化已经触及终端本身的天花板：`transcript.ts`(576 行) 整
 
 ### 阶段 0 遗留的可选项
 
-- [ ] 把 `src/tui/providerRuntime.ts`(17 行) 和 `src/tui/permissionMode.ts` 里的 `nextPermissionMode` / `applyPermissionModeTransition` / `syncPlanModeManagerForPermissionModeChange` 移入 `src/runtime/`（两者已完全纯净且有专属测试 `test/providerRuntime.test.ts`、`test/permissionMode.test.ts`；展示字符串 `permissionModeStatusLabel` / `permissionModeTitle` 留在 TUI）。纯搬家，不影响桌面端接入，可随时做。**建议等阶段 1 动 `App.tsx` 时顺手带上**，单独做只会污染 diff。
+- [x] 把 `src/tui/providerRuntime.ts` 和 `src/tui/permissionMode.ts` 里的三个纯函数移入 `src/runtime/` — 已随阶段 1 完成（展示字符串 `permissionModeStatusLabel` / `permissionModeTitle` 留在 `src/tui/permissionMode.ts`）。
 
 ---
 
@@ -86,35 +86,47 @@ commit `9151326`（会话绑定）+ `093d3ac`（队列实例化 / cwd 参数化�
 
 ---
 
-## 阶段 1 — 应用逻辑下沉为 `SessionController` `[ ]` 未开始
+## 阶段 1 — 应用逻辑下沉为 `SessionController` `[x]` 已完成
 
-把困在 React hooks 里的框架无关逻辑抽成 EventEmitter 式的 `SessionController`，hooks 退化成 `useSyncExternalStore`。**对 TUI 本身也是净收益**，且是桌面端能复用业务逻辑的前提。
+把困在 React hooks 里的框架无关逻辑抽成事件流式的 `SessionController` + `RuntimeSlot`，hooks 退化成 `useSyncExternalStore` 消费者与事件订阅者。TUI 运行时行为零变化。
 
-> **开工前先读这条**：`useAgentLoop`/`App.tsx` **没有任何测试驱动**。全仓库只有 `tuiRender.test.ts` 和 `tuiToolErrors.test.ts` import 了它导出的两个纯函数（`formatWorkedSummary`、`recordsToDisplayItems`），`App.tsx` 一次都没被 import 过。这个阶段唯一的验证手段是 `npm run dev:tui`（需 TTY + 真实 key）。要么先补测试，要么把改动切得足够小、每步都能人工冒烟。
+### 产出
 
-### 待办
+- [x] `src/runtime/sessionController.ts` — turn 生命周期、AbortController、checkpoint、usage 累计、工具进度关联、中断回滚。独占 `RecordProxy` 三个 handler，对外只有 `onEvent(SessionEvent)` 单条流 + `subscribe`/`getSnapshot` 快照（`isStreaming`/`usage`/`taskSnapshot`/`spinnerSubText`）。
+  - **不用 `node:events`**：事件种类固定且阶段 2 要整条走 IPC，单条 union 流能被 TypeScript 穷尽检查。
+  - `turn-end` 带的是 `aborted`（signal 状态）而非「是否抛异常」—— 失败的 turn **不是** aborted，仍然要出 `✻ Worked for Xs`。
+  - `transcript-reset` 带 `bumpGeneration`：回滚路径为 `false`（不能 remount `<Static>`），`reload()` 路径为 `true`。
+- [x] `src/runtime/runtimeSlot.ts` — runtime + effort 归属。`replace()` 先装新的再 dispose 旧的；`patchModel()` 承接 fallback 元数据；`setEffort()`（用户动作，调用方负责持久化）与 `reapplyEffort()`（换 runtime 后重钳，不持久化）统一了原本散在 `App.tsx` 三处的 clamp 代码。
+- [x] `src/runtime/queuePump.ts` — `canPumpQueue()` 把「turn 进行中」与「UI 被占用」拆成两个维度。
+- [x] `src/runtime/{toolProgress,sessionUsage,interruptRollback,permissionMode,providerRuntime}.ts` — 从 `src/tui/` 搬入的纯模块。
+- [x] `useAgentLoop.ts` 687 → **378 行**：只剩 transcript 状态、`transcriptGeneration`、`handleStreamEvent` 与 thinking 预览、4 个 spinner ref、`formatWorkedSummary`。
+- [x] `App.tsx` 1298 → **1247 行**：删掉 `runtime` state / `runtimeRef` / `replaceRuntime` / `effortLevel` state / 第二个 `CheckpointService`。
+- [x] `tui.tsx` 新建 `RuntimeSlot` 与 `SessionController` 并作为 prop 传入，`App` 的 6 个 runtime 相关 prop 合并成 2 个。
 
-- [ ] `useAgentLoop.ts`(687 行) 拆分。已完成分类调研，结论：
-  - **可下沉（域逻辑）**：`submit` 的 turn 生命周期骨架、checkpoint 创建（`:198-215`）、AbortController（`:217-221`、`interrupt` `:474-477`）、usage/cost 累计（`:224-231`）、中断回滚（`tryRestoreInterruptedPrompt` `:535-564`，注意其签名当前吃 `React.Dispatch`，需反转为返回结果对象）、`handleRecord` 的记录归约（`:406-460`）、`findLatestTaskSnapshot`/`addTokenUsage`/`formatInterruptMessage`
-  - **留在 TUI（展示）**：`handleStreamEvent`(`:339-403`) 整个、`handleProgress`(`:311-337`)、所有 spinner refs/计时器、thinking 预览、`transcriptGeneration`（纯 Ink `<Static>` remount key，绝不能进 headless API）、`formatToolProgress` 系列(`:566-643`)
-  - 难点：`submit()` 里 10 处 `setTranscript` 与域步骤交织，抽离等于把 turn 生命周期反转成事件流
-- [ ] 队列排空策略重新表述：当前 pump effect（`App.tsx` 的 `queuePumpGeneration` effect）依赖 `!isStreaming && mode === 'idle' && !isOverlayActive`，其中 `isOverlayActive` 是 Ink 弹窗/picker 状态。headless 侧要改成「无进行中的 turn 且无待决权限请求」。
+### 「React 是唯一真相源」清单 — 全部解决
 
-### 阶段 1 必须解决的「React 是唯一真相源」清单
+| 项 | 处理 |
+|---|---|
+| token/费用累计 | 归 `SessionController`，remount 不再归零；resume 仍从零开始（与改动前一致，已确认不做落盘恢复）|
+| `runtime` 实例 | 归 `RuntimeSlot`，替换顺序由 `test/runtimeSlot.test.ts` 钉住 |
+| `effortLevel` | 归 `RuntimeSlot`，clamp 与 `loop.setEffort` 一处收口 |
+| 两个 `CheckpointService` | 合一，由 controller 持有且 `init()` 过；restore 面板改读 `getCheckpointService()` |
 
-| 项 | 位置 | 问题 |
-|---|---|---|
-| token/费用累计 | `useAgentLoop.ts:86-89` | 任何 SessionRecord 都没落盘，remount/resume 后不可恢复 |
-| `runtime` 实例 | `App.tsx` 的 `useState<AppRuntime>` | loop 身份 + dispose 闭包只存在于 React state，`replaceRuntime` 的顺序是唯一防泄漏机制 |
-| `effortLevel` | `App.tsx` 的 `useState<string>` | runtime 换掉后，用户选择的 effort 只由 React 值承载 |
-| 两个 `CheckpointService` | `App.tsx` 的 `checkpointServiceRef` vs `useAgentLoop.ts:116-141` | 同一 session 两个独立实例，resume/clear 提交那一帧可能不一致 |
+### 验证
+
+- [x] `npx tsc --noEmit` 干净
+- [x] `npm run test` — **1415 passed / 0 failed**（新增 21 个）
+- [x] `test/sessionController.test.ts`（11 个）：成功 turn 的事件顺序（`turn-start` 早于 `loop.run`）、失败 turn 的 `aborted === false`、回滚与非回滚两条中断路径、usage 累加与 `retarget` 归零、工具进度文案与 `listContent`、subagent 进度关联、`approvalToolUseId` 匹配、taskSnapshot 入快照、`dispose()` 摘钩、checkpoint init 失败时跳过
+- [x] `test/runtimeSlot.test.ts`（7 个）、`test/queuePump.test.ts`（3 个）
+- [ ] **手动冒烟未执行**（需 TTY + 真实 key）。按风险逐条走：含工具调用的 turn → 工具执行中途 Ctrl+C（输入框回填、无残留用户消息）→ 模型刚回答时 Ctrl+C（显示 `Interrupted.`）→ 制造 API 错误（仍有 `✻ Worked for Xs`）→ `/model` 切换后 `/cost` 连续且 effort 被新模型钳制 → `/rewind` 能列出 checkpoint → 连发三条看队列排空 → `/clear` 与 `/resume` 后 usage 归零 → Ctrl+C 退出无残留进程。
+
 
 ---
 
 ## 阶段 2 — Electron 外壳 `[ ]` 未开始
 
-- [ ] 主进程 = 现有 Node 全栈 + `bootstrap()` / `AgentSession`；渲染进程 = 新 UI，**绝不 import harness**（Bash + fs 工具跑在开了 nodeIntegration 的渲染进程是安全灾难）
-- [ ] IPC 只传两类东西：`SessionRecord` 流（单向推送）+ 5 类 UI 请求（权限、AskUserQuestion、进入/退出 plan、record 回推）
+- [ ] 主进程 = 现有 Node 全栈 + `bootstrap()` + `RuntimeSlot`/`SessionController`；渲染进程 = 新 UI，**绝不 import harness**（Bash + fs 工具跑在开了 nodeIntegration 的渲染进程是安全灾难）
+- [ ] IPC 载荷就是 `SessionEvent` 流（单向推送，已按可序列化设计）+ 5 类 UI 请求（权限、AskUserQuestion、进入/退出 plan、record 回推）；`SessionControllerSnapshot` 走同一通道做 pull 状态
 - [ ] **权限提示跨进程的生命周期要重设计**：`createPromptProxy` 初始值是 `async () => false`（静默拒绝）。TUI 里这窗口只有几毫秒，桌面端渲染进程慢启动或窗口被关会误拒。要改成「排队等待 UI」，并保留 `denyPending()` 语义在窗口销毁时兜底 resolve，否则 `ToolRunner` 永久挂起。
 - [ ] 中断信号跨不了 IPC：`signal.reason === 'user-cancel'` 是进程内 sentinel，渲染进程只能发 `{sessionId, turnId}`，由主进程持有 `AbortController`。任何新的 `await toolRunner.run` 路径必须检查 `errorCode === 'aborted'` 并转成抛出的 `AbortError`。
 - [ ] `SessionStore` 的锁是进程内静态 map，**无跨进程安全**。桌面 app 与 CLI 同时开同一项目会并发写，需要文件锁或单写入者。
@@ -125,7 +137,7 @@ commit `9151326`（会话绑定）+ `093d3ac`（队列实例化 / cwd 参数化�
 
 ## 阶段 3 — 桌面独有能力 `[ ]` 未开始
 
-- [ ] 多标签会话 / 多项目窗口（cwd 参数化与队列实例化已在阶段 0.5 完成，剩下的阻塞项是阶段 1 的 `SessionController`）
+- [ ] 多标签会话 / 多项目窗口（cwd 参数化、队列实例化、`SessionController`/`RuntimeSlot` 均已就绪；剩下的是每标签一套 slot+controller 的容器与生命周期）
 - [ ] diff 面板、文件树等 DOM 才划算的 UI
 
 ---
@@ -151,12 +163,16 @@ commit `9151326`（会话绑定）+ `093d3ac`（队列实例化 / cwd 参数化�
 - `bootstrap()` 里的步骤顺序有意义：MCP 连接必须在 `registerBuiltinCommands()` 之前，且整个 `bootstrap()` 必须在 Ink `render()` 之前完成（trust 提示要抢在 Ink 接管 stdin 前）。
 - 5 个 bridge 的 pre-mount 兜底值各不相同且都是刻意的：权限=拒绝、AskUserQuestion=拒绝、退出 plan=拒绝、**进入 plan=批准**、record=丢弃。不要"统一"它们。
 - `createRuntime` 里的 `onActiveSessionChange?.(runtimeSession.id)` 放在所有会抛的校验**之后**：模型 key 无效时不能已经把会话级状态切过去了。
+- `RuntimeSlot.replace()` 必须先装新 runtime 再 dispose 旧的：晚到的 dispose 会拆掉继任者的 plan-slug provider。
+- `SessionController` **独占** `RecordProxy` 的三个 setter。UI 只能 `onEvent` 订阅，不能自己 `setHandler`，否则记录会被处理两次。
+- `SessionEvent` 的 `turn-end.aborted` 是 signal 状态，不是「是否抛异常」；`transcript-reset.bumpGeneration` 只在真正换了会话视图时为 `true`。
 
 **验证命令**：
 
 ```bash
 npm run typecheck
-npm run test                                          # 1394 tests / 35 suites, ~38s
+npm run test                                          # 1415 tests / 35 suites, ~38s
+node --import tsx --test test/sessionController.test.ts test/runtimeSlot.test.ts test/queuePump.test.ts
 node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 npm run dev:tui                                       # 手动冒烟，需 TTY
 ```

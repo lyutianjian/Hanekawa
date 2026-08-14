@@ -13,7 +13,7 @@ permission-gated tools, subagents, skills, and MCP. `README.md` documents user-f
 npm install                        # or `bun install`; postinstall runs patch-package (required, see Patches)
 npm run dev:tui                    # start the TUI (tsx, no build step); also: resume <id> | --continue | c | list
 npm run typecheck                  # tsc --noEmit
-npm run test                       # full suite: 1394 tests / 35 suites, ~38s
+npm run test                       # full suite: 1415 tests / 35 suites, ~38s
 node --import tsx --test test/compact.test.ts                    # single file
 node --import tsx --test test/a.test.ts test/b.test.ts           # several files
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
@@ -177,14 +177,25 @@ churn from busting the prompt cache.
 ### TUI — `src/tui/`
 
 `entrypoints/tui.tsx` is the only wiring point and startup order matters: focus-filter install must
-precede Ink attaching stdin, and MCP trust prompts must happen before Ink owns stdin. `App.tsx` is the
-single stateful shell; `hooks/useAgentLoop.ts` owns transcript state and the turn lifecycle;
+precede Ink attaching stdin, and MCP trust prompts must happen before Ink owns stdin. It also builds the
+`RuntimeSlot` + `SessionController` pair and hands them to `App` — those two carry all the
+framework-agnostic session state, so a different shell replaces only the view layer. `App.tsx` is the
+single stateful shell; `hooks/useAgentLoop.ts` renders the controller's event stream into Ink;
 `hooks/useKeyboardShortcuts.ts` is the one global key handler (App holds no input state).
 
 - **`createRuntime` is a factory closed over everything**, returning `{loop, planModeManager, …,
-  dispose}`. Model switches, `/clear`, and resume replace the runtime — the old one's `dispose()` must
-  run. **Runtime tool arrays are mutated in place** (`splice`) so MCP reconnects propagate into live
-  subagent closures; never swap a tools array by identity.
+  dispose}`. Model switches, `/clear`, and resume replace the runtime — always via
+  `RuntimeSlot.replace` (`src/runtime/runtimeSlot.ts`), which installs the new runtime *before*
+  disposing the old one so a late dispose can't tear down its successor. The slot also owns the effort
+  level, since clamping depends on the active model's `maxEffort`. **Runtime tool arrays are mutated in
+  place** (`splice`) so MCP reconnects propagate into live subagent closures; never swap a tools array
+  by identity.
+- **`SessionController` (`src/runtime/sessionController.ts`) owns the turn lifecycle**: abort,
+  checkpointing, token totals, tool-progress correlation, interrupt rollback. It exclusively owns the
+  three `RecordProxy` handlers and republishes everything as one ordered `SessionEvent` stream plus a
+  `useSyncExternalStore` snapshot. `turn-end` carries `aborted` (the signal) rather than "did it throw"
+  — a *failed* turn is not aborted and still gets its duration summary. Only `transcript-reset` events
+  with `bumpGeneration` remount Ink's `<Static>`; a rollback must not.
 - **`transcript.ts` encodes the load-bearing TUI invariant:** Ink `<Static>` output cannot be retracted
   once a later sibling is emitted. Items live in `staticItems` / `liveItems` / `liveSystemItems` and are
   promoted in a strict order. Plain assistant messages go straight to static, so preceding live user
@@ -201,7 +212,9 @@ single stateful shell; `hooks/useAgentLoop.ts` owns transcript state and the tur
   loss or overlay; don't add `setInterval` in components.
 - The message queue is a **`MessageQueue` instance** owned by `App` (one per session, persisted as
   `message_queue` records); Enter always enqueues and a guarded effect pumps it. `subscribe`/
-  `getSnapshot` are bound methods so `useSyncExternalStore` sees stable identities.
+  `getSnapshot` are bound methods so `useSyncExternalStore` sees stable identities. The pump's guard is
+  `canPumpQueue` (`src/runtime/queuePump.ts`), which separates "a turn is running" from "the UI is
+  blocked" so a non-terminal shell can define the latter differently.
 - Slash commands (`src/commands/`) are a module-level `Map` of plain `{name, description, run}` objects
   that render nothing — all effects go through optional `CommandContext` callbacks, so every command
   must tolerate `undefined` ones. Skill commands are prompt macros with per-invocation

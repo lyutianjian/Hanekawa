@@ -1,60 +1,20 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { randomUUID } from 'node:crypto'
-import type { PermissionRequest, PermissionPrompt } from '../../harness/permissions.js'
-import type { ModelStreamEvent, SessionRecord, ToolProgressEvent } from '../../harness/types.js'
+import type { PermissionRequest } from '../../harness/permissions.js'
 import type { PermissionDialogState } from '../types.js'
+import type { PermissionPromptProxy } from '../../runtime/bridges.js'
 
-export interface RecordProxy {
-  onRecord: (record: SessionRecord) => void
-  setHandler: (fn: (record: SessionRecord) => void) => void
-  onProgress: (event: ToolProgressEvent) => void
-  setProgressHandler: (fn: (event: ToolProgressEvent) => void) => void
-  onStreamEvent: (event: ModelStreamEvent) => void
-  setStreamEventHandler: (fn: (event: ModelStreamEvent) => void) => void
-}
-
-export function createRecordProxy(): RecordProxy {
-  let handler: (record: SessionRecord) => void = () => {}
-  let progressHandler: (event: ToolProgressEvent) => void = () => {}
-  let streamEventHandler: (event: ModelStreamEvent) => void = () => {}
-  return {
-    onRecord: (record) => handler(record),
-    setHandler: (fn) => { handler = fn },
-    onProgress: (event) => progressHandler(event),
-    setProgressHandler: (fn) => { progressHandler = fn },
-    onStreamEvent: (event) => streamEventHandler(event),
-    setStreamEventHandler: (fn) => { streamEventHandler = fn },
-  }
-}
+export { createPromptProxy, createRecordProxy } from '../../runtime/bridges.js'
+export type { PermissionPromptProxy, RecordProxy } from '../../runtime/bridges.js'
 
 /**
- * Creates a permission system that bridges the imperative PermissionGate
- * with a declarative React dialog.
+ * Wires a {@link PermissionPromptProxy} up to a declarative React dialog.
  *
  * Usage:
- * 1. Call `createPromptProxy()` to get a stable PermissionPrompt function
- * 2. Pass it to PermissionGate constructor
- * 3. In the React tree, call `usePermission(promptProxy)` to wire up the dialog
- * 4. The hook replaces the proxy's internal prompt with the React-aware one
+ * 1. Call `createPromptProxy()` (outside React) and pass it to PermissionGate
+ * 2. In the React tree, call `usePermission(promptProxy)` to wire up the dialog
+ * 3. The hook replaces the proxy's internal prompt with the React-aware one
  */
-export interface PermissionPromptProxy {
-  prompt: PermissionPrompt
-  setPrompt: (fn: PermissionPrompt) => void
-}
-
-export function createPromptProxy(): PermissionPromptProxy {
-  // The proxy holds a mutable reference to the actual prompt function.
-  // Initially it auto-denies (before React mounts).
-  let currentPrompt: PermissionPrompt = async () => false
-
-  return {
-    prompt: (request: PermissionRequest) => currentPrompt(request),
-    setPrompt: (fn: PermissionPrompt) => {
-      currentPrompt = fn
-    },
-  }
-}
-
 export function usePermission(proxy: PermissionPromptProxy) {
   const resolverRef = useRef(new Map<string, (approved: boolean) => void>())
   const [permState, setPermState] = useState<PermissionDialogState>({

@@ -4,11 +4,14 @@ import type {
   AskUserQuestionRequest,
   AskUserQuestionResult,
 } from '../../harness/types.js'
+import type { AskUserQuestionProxy } from '../../runtime/bridges.js'
+
+export { createAskUserQuestionProxy } from '../../runtime/bridges.js'
+export type { AskUserQuestionProxy } from '../../runtime/bridges.js'
 
 /**
- * Bridge between the imperative AskUserQuestion tool and the React-rendered
- * AskUserQuestionDialog component. Mirrors createExitPlanProxy /
- * createPromptProxy.
+ * Renders the {@link AskUserQuestionProxy} bridge as the React
+ * AskUserQuestionDialog.
  *
  * Usage:
  * 1. Call createAskUserQuestionProxy() once outside React to get a stable
@@ -16,26 +19,7 @@ import type {
  * 2. Inside the React tree, call useAskUserQuestionPermission(proxy) to
  *    install the actual handler that opens the dialog and resolves on the
  *    user's choice.
- *
- * Before mount the proxy auto-rejects so the tool surfaces a clean error
- * instead of hanging.
  */
-export interface AskUserQuestionProxy {
-  ask(request: AskUserQuestionRequest): Promise<AskUserQuestionResult>
-  setOpen(fn: (request: AskUserQuestionRequest) => Promise<AskUserQuestionResult>): void
-}
-
-export function createAskUserQuestionProxy(): AskUserQuestionProxy {
-  let currentOpen: (request: AskUserQuestionRequest) => Promise<AskUserQuestionResult> = async () => ({
-    kind: 'rejected',
-    feedback: 'AskUserQuestion UI is not mounted.',
-  })
-  return {
-    ask: (request) => currentOpen(request),
-    setOpen: (fn) => { currentOpen = fn },
-  }
-}
-
 export interface AskUserQuestionDialogState {
   visible: boolean
   request?: {

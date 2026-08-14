@@ -1,69 +1,22 @@
 #!/usr/bin/env node
 
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { render } from '../ink.js'
 import { ClockProvider } from '../clock/ClockContext.js'
 import { installTerminalFocusFilter } from '../clock/terminalFocusState.js'
-import { ConfigService } from '../../config/service.js'
-import {
-  loadMergedSettings,
-  trustMcpServerLocally,
-  validateSettings,
-  saveEffortLevel,
-  persistPermissionRule,
-} from '../../config/settings.js'
-import { clampEffort, type EffortLevel } from '../../config/effort.js'
-import { createProvider } from '../../config/providers.js'
-import type { RoutingRole } from '../../config/routing.js'
+import { saveEffortLevel } from '../../config/settings.js'
+import type { EffortLevel } from '../../config/effort.js'
 import { SessionStore } from '../../sessions/service.js'
 import type { SessionMeta } from '../../sessions/service.js'
-import { JsonlRecordStream } from '../../sessions/recordStream.js'
-import { getAllTools } from '../../tools/index.js'
-import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, prepareForkPreloadRecords } from '../../tools/agentTool.js'
-import { restoreTaskStateFromRecords } from '../../tools/taskState.js'
-import { PermissionGate, permissionRulesFromSettings, type DenialStateStore } from '../../harness/permissions.js'
-import { ToolRunner } from '../../harness/toolRunner.js'
-import { ContextBuilder } from '../../harness/contextBuilder.js'
-import { SystemPromptSectionCache } from '../../harness/sections.js'
-import { AgentLoop, type ActiveModelRuntime } from '../../harness/loop.js'
-import { PlanModeManager } from '../../harness/planModeManager.js'
 import { logDiagnostics, summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
-import { SkillsService } from '../../services/skills/skillsService.js'
-import { AgentDefinitionLoader } from '../../services/agents/agentDefinitionLoader.js'
-import { registerBuiltinCommands } from '../../commands/index.js'
-import { registerSkillCommands } from '../../commands/skills.js'
-import {
-  loadMcpConfig,
-  connectManagedMcpServer,
-  getMcpTimeoutMs,
-  wrapMcpTool,
-} from '../../services/mcp/index.js'
-import type { ManagedMcpClient } from '../../services/mcp/index.js'
-import type { McpTool } from '../../services/mcp/index.js'
-import type { SessionRecord, Tool } from '../../harness/types.js'
-import { createPromptProxy, createRecordProxy } from '../hooks/usePermission.js'
-import { createExitPlanProxy } from '../hooks/useExitPlanPermission.js'
-import { createEnterPlanProxy } from '../hooks/useEnterPlanPermission.js'
-import { createAskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
+import type { McpServerConfig } from '../../services/mcp/index.js'
+import { bootstrap, RuntimeStartupError } from '../../runtime/index.js'
+import type { McpConnectionStatus, RuntimeHost } from '../../runtime/index.js'
 import { App } from '../components/App.js'
-import type { AppRuntime } from '../components/App.js'
 import { TUI_USAGE, isResumableSession, parseTuiStartupCommand, resolveStartupSession } from './cli.js'
 import type { TuiStartupCommand } from './cli.js'
-import { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
-import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/modelCapabilities.js'
-
-const cwd = process.cwd()
-
-function mergeAgentDefinitions<T extends { type: string }>(base: readonly T[], overrides: readonly T[]): T[] {
-  const merged = new Map<string, T>()
-  for (const definition of base) merged.set(definition.type, definition)
-  for (const definition of overrides) merged.set(definition.type, definition)
-  return [...merged.values()]
-}
 
 async function main() {
   if (!process.stdin.isTTY) {
@@ -76,6 +29,8 @@ async function main() {
   // focus sequences (`ESC [ I` / `ESC [ O`) are stripped instead of being
   // delivered to useInput as literal '[I' / '[O' text.
   installTerminalFocusFilter(process.stdin)
+
+  const cwd = process.cwd()
 
   let startupCommand: TuiStartupCommand
   try {
@@ -113,422 +68,68 @@ async function main() {
     process.exit(1)
   }
 
-  const backgroundTasks = new BackgroundTaskRegistry((sessionId, record) => store.appendRecord(sessionId, record))
-
-  // Initialize infrastructure
-  const settings = await loadMergedSettings(cwd)
-  const initialEffortLevel = settings.effortLevel ?? 'high'
-  const config = new ConfigService(cwd)
-  await config.load(settings)
-  const settingsValidation = validateSettings(settings)
-  if (!settingsValidation.valid) {
-    console.error(`Invalid settings:\n${settingsValidation.errors.map((error) => `- ${error}`).join('\n')}`)
-    process.exit(1)
-  }
-
-  const initialModelKey = config.resolveModelKeyFor(
-    { kind: 'main' },
-    { currentModelKey: config.get().defaultModel },
-  )
-  if (!initialModelKey) {
-    console.error('No default model configured.')
-    process.exit(1)
-  }
-  const modelConfig = config.getModel(initialModelKey)
-  if (!modelConfig) {
-    console.error(`Initial model could not be resolved: ${initialModelKey}`)
-    process.exit(1)
-  }
-  const clampedInitialEffort = clampEffort(initialEffortLevel, modelConfig.maxEffort)
-  const fallbackModelKey = config.resolveModelReference(config.get().fallbackModel)
-  if (fallbackModelKey && !config.getModel(fallbackModelKey)) {
-    console.error(`Unknown fallback model configured: ${config.get().fallbackModel}`)
-    process.exit(1)
-  }
-  const compactModelKey = config.resolveModelReference(config.get().compactModel)
-  if (compactModelKey && !config.getModel(compactModelKey)) {
-    console.error(`Unknown compact model configured: ${config.get().compactModel}`)
-    process.exit(1)
-  }
-
-  const baseTools = await getAllTools(backgroundTasks)
-  const skills = await new SkillsService(cwd).list()
-  const agentLoader = new AgentDefinitionLoader(cwd)
-  let customAgentDefinitions = await agentLoader.list()
-  let agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
-  const reloadAgentDefinitions = async (): Promise<number> => {
-    agentLoader.invalidate()
-    customAgentDefinitions = await agentLoader.list()
-    agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
-    return customAgentDefinitions.length
-  }
-  const promptSections = new SystemPromptSectionCache()
-  const runtimeToolSets = new Set<Tool[]>()
-  const activeLoops = new Set<AgentLoop>()
-  const mcpToolsByServer = new Map<string, Tool[]>()
-  const refreshRuntimeTools = () => {
-    const mcpTools = [...mcpToolsByServer.values()].flat()
-    for (const tools of runtimeToolSets) {
-      const agentTool = tools.find((tool) => tool.name === 'Agent')
-      tools.splice(0, tools.length, ...baseTools, ...mcpTools)
-      if (agentTool) tools.push(agentTool)
+  // Everything terminal-independent lives in src/runtime. MCP trust is the one
+  // prompt that must happen here, before Ink takes over stdin.
+  let host: RuntimeHost
+  try {
+    host = await bootstrap({ cwd, store, session, confirmMcpTrust: promptTrustMcpServer })
+  } catch (error) {
+    if (error instanceof RuntimeStartupError) {
+      console.error(error.message)
+      process.exit(1)
     }
+    throw error
   }
 
-  // MCP integration: load config, connect each server, wrap tools.
-  // Fail-open: any server that fails to connect is reported in the status line
-  // but does not block startup.
-  const mcpConfig = await loadMcpConfig(cwd, settings)
-  const mcpClients: ManagedMcpClient[] = []
-  const mcpSuccesses: string[] = []
-  const mcpFailures: { name: string; error: string }[] = []
-  const trustedMcpServers = new Set(settings.mcp?.trustedServers ?? [])
-  const recordMcpFailure = async (name: string, error: string) => {
-    mcpFailures.push({ name, error })
-    await store.appendMetric(session.id, {
-      event: 'mcp_connect_failed',
-      server: name,
-      error,
-    })
-  }
+  const initialRuntime = host.createRuntime(host.initialModelKey, session, host.existingRecords)
 
-  for (const [name, serverConfig] of Object.entries(mcpConfig)) {
-    try {
-      if (!trustedMcpServers.has(name)) {
-        const trusted = await promptTrustMcpServer(name, serverConfig)
-        if (!trusted) {
-          await recordMcpFailure(name, 'not trusted')
-          continue
-        }
-        await trustMcpServerLocally(cwd, name)
-        trustedMcpServers.add(name)
-      }
-
-      const timeoutMs = getMcpTimeoutMs(serverConfig)
-      let manager: ManagedMcpClient
-      manager = await connectManagedMcpServer(serverConfig, {
-        onReconnect: async (client) => {
-          await refreshMcpServerTools(name, client, manager, timeoutMs, mcpToolsByServer)
-          refreshRuntimeTools()
-        },
-        onToolsChanged: (_client, tools) => {
-          setMcpServerTools(name, tools, manager, mcpToolsByServer)
-          refreshRuntimeTools()
-        },
-        onReconnectFailed: async (error) => {
-          await store.appendMetric(session.id, {
-            event: 'mcp_connect_failed',
-            server: name,
-            error: error.message,
-          })
-        },
-      })
-      await refreshMcpServerTools(name, manager, manager, timeoutMs, mcpToolsByServer)
-      const toolCount = mcpToolsByServer.get(name)?.length ?? 0
-      refreshRuntimeTools()
-      mcpClients.push(manager)
-      mcpSuccesses.push(`${name} (${toolCount} tools)`)
-    } catch (error) {
-      await recordMcpFailure(name, error instanceof Error ? error.message : String(error))
-    }
-  }
-
-  let mcpStatusMessage: string | undefined
-  if (mcpSuccesses.length > 0 || mcpFailures.length > 0) {
-    const parts: string[] = []
-    if (mcpSuccesses.length > 0) {
-      parts.push(`MCP connected: ${mcpSuccesses.join(', ')}`)
-    }
-    if (mcpFailures.length > 0) {
-      parts.push(
-        `MCP failed: ${mcpFailures.map((f) => `${f.name} (${f.error})`).join(', ')}`,
-      )
-    }
-    mcpStatusMessage = parts.join(' | ')
-  }
-
-  registerBuiltinCommands()
-  await registerSkillCommands(cwd)
-
-  // Create proxies - React hooks will inject real handlers after mount
-  const promptProxy = createPromptProxy()
-  const recordProxy = createRecordProxy()
-  const exitPlanProxy = createExitPlanProxy()
-  const enterPlanProxy = createEnterPlanProxy()
-  const askUserQuestionProxy = createAskUserQuestionProxy()
-  const denialStateStore: DenialStateStore = {
-    getDenialState: async () => store.getDenialState(session.id),
-    setDenialState: async (state) => store.setDenialState(session.id, state),
-  }
-  const permissionGate = new PermissionGate(promptProxy.prompt, permissionRulesFromSettings(settings.permissions), {
-    denialStateStore,
-    cwd,
-    mode: settings.permissions?.mode ?? 'default',
-    persistRule: (rule) => persistPermissionRule(cwd, rule),
-  })
-
-  const contextManagement = config.get().agent.contextManagement
-  const isGitRepo = existsSync(join(cwd, '.git'))
-
-  const createActiveModelRuntime = (modelKey: string): ActiveModelRuntime => {
-    const targetModelConfig = config.getModel(modelKey)
-    if (!targetModelConfig) {
-      throw new Error(`Unknown model: ${modelKey}`)
-    }
-    const targetProvider = createProvider(targetModelConfig)
-    if (!targetProvider) {
-      throw new Error(`Failed to create provider for: ${targetModelConfig.provider}`)
-    }
-    return {
-      provider: targetProvider,
-      model: targetModelConfig.model,
-      modelKey,
-      contextWindow: targetModelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
-      providerName: targetProvider.name,
-      promptCacheRetention: targetModelConfig.promptCacheRetention,
-    }
-  }
-
-  const createRoutedRuntime = (role: RoutingRole, currentModelKey: string): ActiveModelRuntime | undefined => {
-    const routedModelKey = config.resolveModelKeyFor(role, { currentModelKey })
-    return routedModelKey ? createActiveModelRuntime(routedModelKey) : undefined
-  }
-
-  const createRuntime = (
-    modelKey: string,
-    runtimeSession: SessionMeta,
-    runtimeRecords: readonly SessionRecord[] = [],
-  ): AppRuntime => {
-    const targetModelConfig = config.getModel(modelKey)
-    if (!targetModelConfig) {
-      throw new Error(`Unknown model: ${modelKey}`)
-    }
-
-    const targetProvider = createProvider(targetModelConfig)
-    if (!targetProvider) {
-      throw new Error(`Failed to create provider for: ${targetModelConfig.provider}`)
-    }
-
-    const currentFallbackModelKey = config.resolveModelReference(config.get().fallbackModel)
-    const fallbackModel = currentFallbackModelKey && currentFallbackModelKey !== modelKey
-      ? createActiveModelRuntime(currentFallbackModelKey)
-      : undefined
-
-    const currentCompactModelKey = config.resolveModelReference(config.get().compactModel)
-    const compactModel = currentCompactModelKey
-      ? createActiveModelRuntime(currentCompactModelKey)
-      : createRoutedRuntime({ kind: 'compact' }, modelKey)
-    const planModel = createRoutedRuntime({ kind: 'plan' }, modelKey)
-
-    const recordStream = new JsonlRecordStream(store, runtimeSession.id)
-    let loop: AgentLoop | undefined
-    const planModeManager = new PlanModeManager({
-      cwd,
-      sessionMeta: runtimeSession,
-      store,
-      gate: permissionGate,
-      appendRecord: async (record) => {
-        await recordStream.append(record)
-        loop?.noteRecordAppended(record)
-        recordProxy.onRecord(record)
-      },
-      loadRecords: async () => recordStream.load(),
-      openEnterPrompt: enterPlanProxy.open,
-      openExitDialog: exitPlanProxy.open,
-    })
-    permissionGate.setPlanSlugProvider(() => planModeManager.getSlug())
-    const runtimeTools = [...baseTools, ...mcpToolsByServer.values()].flat()
-    runtimeTools.push(createAgentTool({
-      provider: targetProvider,
-      model: targetModelConfig.model,
-      modelKey,
-      contextWindow: targetModelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
-      providerName: targetProvider.name,
-      promptCacheRetention: targetModelConfig.promptCacheRetention,
-      fallbackModel,
-      tools: () => runtimeTools,
-      permissionPrompt: promptProxy.prompt,
-      permissionMode: () => permissionGate.getMode(),
-      getConfigRules: () => permissionGate.getConfigRules(),
-      getSessionRules: () => permissionGate.getSessionRules(),
-      getSessionRuleStore: () => permissionGate.getSessionRuleStore(),
-      denialStateStore,
-      cwd,
-      system: config.get().agent.system,
-      skills,
-      agentDefinitions,
-      loadParentRecords: async () => prepareForkPreloadRecords(await recordStream.load()),
-      contextManagement,
-      isGitRepo,
-      hooks: settings.hooks,
-      cacheRuntime: { settings, env: process.env },
-      compactModel,
-      onSubagentProgress: (event) => recordProxy.onProgress(event),
-      resolveSubagentModel: (subagentType, requestedModelKey) => requestedModelKey
-        ? createActiveModelRuntime(requestedModelKey)
-        : createRoutedRuntime(
-          { kind: 'subagent', type: subagentType },
-          modelKey,
-        ),
-      getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
-      setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
-      agentTimeoutMs: config.get().agent.agentTimeoutMs,
-      backgroundTasks,
-    }))
-
-    runtimeToolSets.add(runtimeTools)
-    const runtimeToolRunner = new ToolRunner(runtimeTools, permissionGate, {
-      onRecord: async (record) => {
-        await recordStream.append(record)
-        recordProxy.onRecord(record)
-      },
-      onProgress: (event) => {
-        recordProxy.onProgress(event)
-      },
-    }, {
-      preToolUse: settings.hooks?.preToolUse,
-    })
-
-    loop = new AgentLoop({
-        provider: targetProvider,
-        model: targetModelConfig.model,
-        modelKey,
-        contextWindow: targetModelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
-        tools: runtimeTools,
-        contextBuilder: new ContextBuilder(undefined, contextManagement, promptSections),
-        toolRunner: runtimeToolRunner,
-        toolContext: {
-          cwd,
-          sessionId: runtimeSession.id,
-          readFiles: new Set(),
-          readFileState: new Map(),
-          invokedSkills: new Map(),
-          taskState: new Map(restoreTaskStateFromRecords(runtimeRecords)),
-          getPermissionMode: () => permissionGate.getMode(),
-          setPermissionMode: (mode) => permissionGate.setMode(mode),
-          exitPlanMode: () => permissionGate.exitPlanMode(),
-          planModeBridge: planModeManager.buildBridge(),
-          askUserQuestionBridge: askUserQuestionProxy,
-        },
-        system: config.get().agent.system,
-        skills,
-        promptCacheRetention: targetModelConfig.promptCacheRetention,
-        contextManagement,
-        isGitRepo,
-        hooks: settings.hooks,
-        cacheRuntime: { settings, env: process.env },
-        thinking: { type: 'adaptive' },
-        effort: typeof clampedInitialEffort === 'string' ? clampedInitialEffort as EffortLevel : undefined,
-        permissionMode: () => permissionGate.getMode(),
-        planModeManager,
-        fallbackModel,
-        compactModel,
-        planModel,
-        getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
-        setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
-        recordStream,
-        onRecord: (record) => recordProxy.onRecord(record),
-        onStreamEvent: (event) => recordProxy.onStreamEvent(event),
-      })
-    activeLoops.add(loop)
-    return {
-      loop,
-      planModeManager,
-      modelKey,
-      modelConfig: targetModelConfig,
-      providerName: targetProvider.name,
-      dispose: () => {
-        runtimeToolSets.delete(runtimeTools)
-        activeLoops.delete(loop)
-      },
-    }
-  }
-
-  // Load existing records for display
-  const existingLoad = await store.loadRecordsWithDiagnostics(session.id)
-  const orphanedAgentIds = new Set(await backgroundTasks.restoreSession(session.id, existingLoad.records))
-  if (orphanedAgentIds.size > 0) {
-    const latestAgentTasks = new Map<string, Extract<SessionRecord, { type: 'subagent_task' }>>()
-    for (const record of existingLoad.records) {
-      if (record.type === 'subagent_task') latestAgentTasks.set(record.agentId, record)
-    }
-    for (const agentId of orphanedAgentIds) {
-      const previous = latestAgentTasks.get(agentId)
-      if (!previous || previous.status !== 'running') continue
-      const interrupted: Extract<SessionRecord, { type: 'subagent_task' }> = {
-        ...previous,
-        id: randomUUID(),
-        status: 'interrupted',
-        error: 'Background agent was not present when the session resumed',
-        createdAt: new Date().toISOString(),
-      }
-      await store.appendRecord(session.id, interrupted)
-      existingLoad.records.push(interrupted)
-    }
-  }
   const initialQueuedPrompt = process.env.MYAGENT_RESUME_INTERRUPTED_TURN
-    ? latestRecoverableInterruption(existingLoad.records) ? 'continue' : undefined
+    ? host.hasRecoverableInterruption ? 'continue' : undefined
     : undefined
 
-  const initialRuntime = createRuntime(initialModelKey, session, existingLoad.records)
-
-  logDiagnostics(existingLoad.diagnostics)
-  const initialDiagnosticSummary = summarizeDiagnosticsForTui(existingLoad.diagnostics)
+  logDiagnostics(host.diagnostics)
   const initialSystemMessages = [
-    ...(initialDiagnosticSummary
-      ? [{
-          kind: 'system' as const,
-          id: randomUUID(),
-          content: initialDiagnosticSummary,
-          createdAt: new Date().toISOString(),
-        }]
-      : []),
-    ...(mcpStatusMessage
-      ? [{
-          kind: 'system' as const,
-          id: randomUUID(),
-          content: mcpStatusMessage,
-          createdAt: new Date().toISOString(),
-        }]
-      : []),
+    summarizeDiagnosticsForTui(host.diagnostics),
+    formatMcpStatus(host.mcp),
   ]
+    .filter((content): content is string => Boolean(content))
+    .map((content) => ({
+      kind: 'system' as const,
+      id: randomUUID(),
+      content,
+      createdAt: new Date().toISOString(),
+    }))
 
-  const onBeforeExit = async () => {
-    // Disconnect all MCP clients on exit. Swallow errors so a misbehaving
-    // server cannot prevent the TUI from exiting cleanly.
-    await backgroundTasks.stopAll(undefined, 'TUI exited')
-    await Promise.allSettled(mcpClients.map((c) => c.close()))
-  }
   // Render the TUI
   const { waitUntilExit } = render(
     <ClockProvider>
       <App
       loop={initialRuntime.loop}
       planModeManager={initialRuntime.planModeManager}
-      modelKey={initialModelKey}
+      modelKey={host.initialModelKey}
       store={store}
       session={session}
       modelConfig={initialRuntime.modelConfig}
       providerName={initialRuntime.providerName}
       dispose={initialRuntime.dispose}
-      availableModelKeys={Object.keys(config.get().models)}
-      resolveModelInput={(input, currentModelKey) => config.resolveModelInput(input, { currentModelKey })}
-      providerConfig={config}
-      createRuntime={createRuntime}
-      createActiveModelRuntime={createActiveModelRuntime}
-      permissionGate={permissionGate}
-      promptProxy={promptProxy}
-      recordProxy={recordProxy}
-      exitPlanProxy={exitPlanProxy}
-      enterPlanProxy={enterPlanProxy}
-      askUserQuestionProxy={askUserQuestionProxy}
-      existingRecords={existingLoad.records}
+      availableModelKeys={Object.keys(host.config.get().models)}
+      resolveModelInput={(input, currentModelKey) => host.config.resolveModelInput(input, { currentModelKey })}
+      providerConfig={host.config}
+      createRuntime={host.createRuntime}
+      createActiveModelRuntime={host.createActiveModelRuntime}
+      permissionGate={host.permissionGate}
+      promptProxy={host.bridges.prompt}
+      recordProxy={host.bridges.record}
+      exitPlanProxy={host.bridges.exitPlan}
+      enterPlanProxy={host.bridges.enterPlan}
+      askUserQuestionProxy={host.bridges.askUserQuestion}
+      existingRecords={host.existingRecords}
       initialSystemMessages={initialSystemMessages}
       initialQueuedPrompt={initialQueuedPrompt}
-      onBeforeExit={onBeforeExit}
-      backgroundTasks={backgroundTasks}
-      reloadAgentDefinitions={reloadAgentDefinitions}
-      initialEffortLevel={typeof clampedInitialEffort === 'string' ? clampedInitialEffort : initialEffortLevel}
+      onBeforeExit={() => host.shutdown('TUI exited')}
+      backgroundTasks={host.backgroundTasks}
+      reloadAgentDefinitions={host.reloadAgentDefinitions}
+      initialEffortLevel={host.initialEffort ?? host.configuredEffortLevel}
       onEffortLevelChange={async (level) => {
         try { await saveEffortLevel(level as EffortLevel) } catch { /* non-critical */ }
       }}
@@ -542,10 +143,15 @@ async function main() {
   await waitUntilExit()
 }
 
-function latestRecoverableInterruption(records: readonly SessionRecord[]): boolean {
-  return [...records]
-    .reverse()
-    .some((record) => record.type === 'turn_interruption' && record.recoverable && !record.consumedAt)
+function formatMcpStatus(status: McpConnectionStatus): string | undefined {
+  const parts: string[] = []
+  if (status.connected.length > 0) {
+    parts.push(`MCP connected: ${status.connected.map((s) => `${s.name} (${s.toolCount} tools)`).join(', ')}`)
+  }
+  if (status.failed.length > 0) {
+    parts.push(`MCP failed: ${status.failed.map((f) => `${f.name} (${f.error})`).join(', ')}`)
+  }
+  return parts.length > 0 ? parts.join(' | ') : undefined
 }
 
 main().catch((err) => {
@@ -553,7 +159,7 @@ main().catch((err) => {
   process.exit(1)
 })
 
-async function promptTrustMcpServer(name: string, serverConfig: { transport: string; command?: string; args?: string[]; url?: string }): Promise<boolean> {
+async function promptTrustMcpServer(name: string, serverConfig: McpServerConfig): Promise<boolean> {
   const rl = createInterface({ input, output })
   try {
     console.log(`\nMCP server "${name}" is not trusted yet.`)
@@ -568,30 +174,4 @@ async function promptTrustMcpServer(name: string, serverConfig: { transport: str
   } finally {
     rl.close()
   }
-}
-
-async function refreshMcpServerTools(
-  name: string,
-  client: Pick<ManagedMcpClient, 'listTools'>,
-  toolClient: ManagedMcpClient,
-  timeoutMs: number,
-  toolsByServer: Map<string, Tool[]>,
-): Promise<void> {
-  const listed = await client.listTools(undefined, { timeout: timeoutMs })
-  setMcpServerTools(name, listed.tools, toolClient, toolsByServer)
-}
-
-function setMcpServerTools(
-  name: string,
-  listedTools: Awaited<ReturnType<ManagedMcpClient['listTools']>>['tools'],
-  toolClient: ManagedMcpClient,
-  toolsByServer: Map<string, Tool[]>,
-): void {
-  const mcpTools: McpTool[] = listedTools.map((t) => ({
-    name: t.name,
-    description: t.description ?? '',
-    inputSchema: t.inputSchema,
-    annotations: t.annotations as Record<string, unknown> | undefined,
-  }))
-  toolsByServer.set(name, mcpTools.map((mcpTool) => wrapMcpTool(name, mcpTool, toolClient)))
 }

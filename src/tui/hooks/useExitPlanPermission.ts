@@ -4,37 +4,21 @@ import type {
   ExitDialogInput,
   ExitPlanDecision,
 } from '../../harness/planModeManager.js'
+import type { ExitPlanPromptProxy } from '../../runtime/bridges.js'
+
+export { createExitPlanProxy } from '../../runtime/bridges.js'
+export type { ExitPlanPromptProxy } from '../../runtime/bridges.js'
 
 /**
- * Bridge between the imperative PlanModeManager.openExitDialog dependency
- * and the React-rendered ExitPlanModeDialog component. Mirrors the
- * createPromptProxy / usePermission pattern in {@link usePermission}.
+ * Renders the {@link ExitPlanPromptProxy} bridge as the React
+ * ExitPlanModeDialog. Mirrors the createPromptProxy / usePermission pattern.
  *
  * Usage:
  * 1. Call createExitPlanProxy() once (outside React) to get a stable async
  *    function for PlanModeManagerDeps.openExitDialog.
  * 2. Inside the React tree, call useExitPlanPermission(proxy) to install
  *    the actual handler that opens the dialog and resolves on user choice.
- *
- * Before mount the proxy auto-rejects with empty feedback so the manager
- * can still drive a clean test run.
  */
-export interface ExitPlanPromptProxy {
-  open(input: ExitDialogInput): Promise<ExitPlanDecision>
-  setOpen(fn: (input: ExitDialogInput) => Promise<ExitPlanDecision>): void
-}
-
-export function createExitPlanProxy(): ExitPlanPromptProxy {
-  let currentOpen: (input: ExitDialogInput) => Promise<ExitPlanDecision> = async () => ({
-    kind: 'reject',
-    feedback: '',
-  })
-  return {
-    open: (input) => currentOpen(input),
-    setOpen: (fn) => { currentOpen = fn },
-  }
-}
-
 export interface ExitPlanDialogState {
   visible: boolean
   request?: {

@@ -1,0 +1,68 @@
+import type { Tool } from '../harness/types.js'
+
+/** The per-runtime Agent tool is not part of `baseTools`; see `refresh`. */
+const AGENT_TOOL_NAME = 'Agent'
+
+/**
+ * Owns the tool set shared by every live runtime: the built-in tools plus the
+ * tools currently exposed by each connected MCP server.
+ *
+ * The load-bearing detail is **array identity**. A runtime's tool array is
+ * captured by three collaborators that cannot be re-pointed afterwards — the
+ * Agent tool's `tools: () => runtimeTools` closure, `ToolRunner`, and
+ * `AgentLoop`. So when an MCP server reconnects or changes its tool list, the
+ * registry rewrites every registered array *in place* with `splice` rather
+ * than handing out a new one.
+ */
+export class ToolRegistry {
+  private readonly baseTools: readonly Tool[]
+  private readonly toolsByServer = new Map<string, Tool[]>()
+  private readonly runtimeToolSets = new Set<Tool[]>()
+
+  constructor(baseTools: readonly Tool[]) {
+    this.baseTools = baseTools
+  }
+
+  /**
+   * A fresh array of the currently known tools. The caller appends its
+   * per-runtime Agent tool and then calls `register` to keep it in sync.
+   */
+  buildRuntimeTools(): Tool[] {
+    return [...this.baseTools, ...this.toolsByServer.values()].flat()
+  }
+
+  /** Starts tracking `tools`; later MCP changes rewrite it in place. */
+  register(tools: Tool[]): void {
+    this.runtimeToolSets.add(tools)
+  }
+
+  /** Stops tracking `tools`. Called from `AgentSession.dispose`. */
+  unregister(tools: Tool[]): void {
+    this.runtimeToolSets.delete(tools)
+  }
+
+  /**
+   * Replaces one server's tools and propagates the change to every registered
+   * runtime. Replacement, not merge: a server that reports fewer tools loses
+   * the missing ones, and a server that never reports keeps its last set.
+   */
+  setServerTools(name: string, tools: Tool[]): void {
+    this.toolsByServer.set(name, tools)
+    this.refresh()
+  }
+
+  serverToolCount(name: string): number {
+    return this.toolsByServer.get(name)?.length ?? 0
+  }
+
+  private refresh(): void {
+    const mcpTools = [...this.toolsByServer.values()].flat()
+    for (const tools of this.runtimeToolSets) {
+      // The Agent tool is built per runtime, so it survives the splice by
+      // being lifted out and re-appended — which does move it to the end.
+      const agentTool = tools.find((tool) => tool.name === AGENT_TOOL_NAME)
+      tools.splice(0, tools.length, ...this.baseTools, ...mcpTools)
+      if (agentTool) tools.push(agentTool)
+    }
+  }
+}

@@ -45,6 +45,7 @@ import { CommandViewPanel } from './CommandViewPanel.js'
 import { useExitPlanPermission, type ExitPlanPromptProxy } from '../hooks/useExitPlanPermission.js'
 import { useEnterPlanPermission, type EnterPlanPromptProxy } from '../hooks/useEnterPlanPermission.js'
 import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
+import type { AgentSession } from '../../runtime/index.js'
 import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../rewindSummary.js'
 import { clampEffort, type EffortValue, type EffortLevel } from '../../config/effort.js'
 import { getContextWindowForModel } from '../../prompts/budget.js'
@@ -72,14 +73,11 @@ export type AppMode = 'idle' | 'running' | 'restore' | 'resume' | 'tasks' | 'exi
 
 const ABORT_TIMEOUT_MS = 2000
 
-export interface AppRuntime {
-  loop: AgentLoop
-  planModeManager: PlanModeManager
-  modelKey: string
-  modelConfig: ModelConfig
-  providerName: string
-  dispose: () => void
-}
+/**
+ * The runtime shape App consumes. Assembled by `src/runtime`; aliased here so
+ * the component tree keeps a local name for it.
+ */
+export type AppRuntime = AgentSession
 
 interface AppProps {
   loop: AgentLoop
@@ -156,6 +154,7 @@ export function App({
     modelKey: initialModelKey,
     modelConfig: initialModelConfig,
     providerName: initialProviderName,
+    run: (input, signal, messageId, overrides) => initialLoop.run(input, signal, messageId, overrides),
     dispose: initialDispose,
   }))
   const runtimeRef = useRef<AppRuntime>(runtime)

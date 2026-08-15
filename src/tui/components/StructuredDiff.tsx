@@ -6,14 +6,26 @@ interface StructuredDiffProps {
   oldText: string
   newText: string
   maxLines?: number
+  /**
+   * Lines already dropped before this component saw the text, e.g. by
+   * `capFileToolPreview` bounding a preview for transport. Added to the local
+   * count so "... (N more lines)" stays truthful, and forces the summary line
+   * even when what survived fits inside `maxLines`.
+   */
+  extraRemaining?: number
 }
 
-export function StructuredDiff({ oldText, newText, maxLines = 30 }: StructuredDiffProps) {
+export function StructuredDiff({
+  oldText,
+  newText,
+  maxLines = 30,
+  extraRemaining = 0,
+}: StructuredDiffProps) {
   const oldDisplay = truncateContent(oldText, maxLines)
   const newDisplay = truncateContent(newText, maxLines)
   const parts = computeWordDiff(oldDisplay.text, newDisplay.text)
-  const truncated = oldDisplay.truncated || newDisplay.truncated
-  const remaining = Math.max(oldDisplay.remaining, newDisplay.remaining)
+  const truncated = oldDisplay.truncated || newDisplay.truncated || extraRemaining > 0
+  const remaining = Math.max(oldDisplay.remaining, newDisplay.remaining) + extraRemaining
 
   // If truncated, just show a simple summary
   if (truncated) {

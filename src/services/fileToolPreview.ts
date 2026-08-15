@@ -1,12 +1,39 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { assertInsideCwd } from '../utils/paths.js'
 
-type ReadFile = (absolutePath: string) => string | undefined
+/**
+ * Returned by a reader that located the file but refused to load it. Distinct
+ * from `undefined` (which means "not there") because `Write` infers whether it
+ * is creating or overwriting from exactly that difference.
+ */
+export const PREVIEW_CONTENT_TOO_LARGE = Symbol('preview-content-too-large')
 
-interface PreviewOptions {
+export type ReadFileResult = string | undefined | typeof PREVIEW_CONTENT_TOO_LARGE
+export type ReadFile = (absolutePath: string) => ReadFileResult
+
+export interface PreviewOptions {
   cwd?: string
   readFile?: ReadFile
+}
+
+/** Beyond this the file is never read; the preview degrades to a message. */
+export const PREVIEW_MAX_FILE_BYTES = 2_000_000
+
+export interface FileToolPreviewLimits {
+  /** Combined budget across both sides of the diff. */
+  maxChars: number
+  /** Per-side line budget. */
+  maxLines: number
+}
+
+/**
+ * What a preview may cost to ship to a UI. The dialog only renders ~18 lines,
+ * so these are transport limits, not display limits.
+ */
+export const PERMISSION_PREVIEW_LIMITS: FileToolPreviewLimits = {
+  maxChars: 64_000,
+  maxLines: 200,
 }
 
 export interface FileToolDiffPreview {
@@ -16,6 +43,8 @@ export interface FileToolDiffPreview {
   oldText: string
   newText: string
   summary: string
+  /** Set when `capFileToolPreview` dropped lines. Counts the *dropped* lines. */
+  elided?: { oldLines: number; newLines: number }
 }
 
 export interface FileToolMessagePreview {
@@ -26,6 +55,8 @@ export interface FileToolMessagePreview {
 }
 
 export type FileToolPreview = FileToolDiffPreview | FileToolMessagePreview
+
+const TOO_LARGE_MESSAGE = 'File is too large to preview.'
 
 interface EditItem {
   oldString: string
@@ -87,6 +118,9 @@ function buildWritePreview(
     return messagePreview('Write preview unavailable', filePath, 'Missing string content.')
   }
   const oldText = readFile(absolute)
+  if (oldText === PREVIEW_CONTENT_TOO_LARGE) {
+    return messagePreview('Write preview unavailable', filePath, TOO_LARGE_MESSAGE)
+  }
   const exists = oldText !== undefined
   return {
     kind: 'diff',
@@ -112,6 +146,9 @@ function buildEditPreview(
   }
 
   const original = readFile(absolute)
+  if (original === PREVIEW_CONTENT_TOO_LARGE) {
+    return messagePreview('Edit preview unavailable', filePath, TOO_LARGE_MESSAGE)
+  }
   if (original === undefined) {
     return messagePreview('Edit preview unavailable', filePath, 'File content is not available for preview.')
   }
@@ -154,6 +191,9 @@ function buildMultiEditPreview(
   }
 
   const original = readFile(absolute)
+  if (original === PREVIEW_CONTENT_TOO_LARGE) {
+    return messagePreview('MultiEdit preview unavailable', filePath, TOO_LARGE_MESSAGE)
+  }
   if (original === undefined) {
     return messagePreview('MultiEdit preview unavailable', filePath, 'File content is not available for preview.')
   }
@@ -203,6 +243,9 @@ function buildMultiEditPreview(
 
 function buildDeletePreview(filePath: string, absolute: string, readFile: ReadFile): FileToolPreview {
   const oldText = readFile(absolute)
+  if (oldText === PREVIEW_CONTENT_TOO_LARGE) {
+    return messagePreview('Delete preview unavailable', filePath, TOO_LARGE_MESSAGE)
+  }
   if (oldText === undefined) {
     return messagePreview('Delete preview unavailable', filePath, 'File content is not available for preview.')
   }
@@ -216,13 +259,103 @@ function buildDeletePreview(filePath: string, absolute: string, readFile: ReadFi
   }
 }
 
-function defaultReadFile(absolutePath: string): string | undefined {
-  if (!existsSync(absolutePath)) return undefined
+function defaultReadFile(absolutePath: string): ReadFileResult {
+  let size: number
+  try {
+    const stats = statSync(absolutePath)
+    if (!stats.isFile()) return undefined
+    size = stats.size
+  } catch {
+    return undefined
+  }
+  // Checked before reading: a permission prompt must not pull a 500 MB file
+  // into the host's heap only to decide it is undisplayable.
+  if (size > PREVIEW_MAX_FILE_BYTES) return PREVIEW_CONTENT_TOO_LARGE
   try {
     return readFileSync(absolutePath, 'utf8')
   } catch {
     return undefined
   }
+}
+
+/**
+ * Bounds what a diff preview costs to ship. Two different answers by design:
+ * line-structured files are truncated (a 500-line edit keeps its diff), while
+ * files with no line breaks to cut on degrade to a message rather than sending
+ * megabytes for an 18-line dialog.
+ *
+ * Previews already inside both budgets are returned by identity — that is the
+ * common case and it must not allocate.
+ */
+export function capFileToolPreview(
+  preview: FileToolPreview,
+  limits: FileToolPreviewLimits = PERMISSION_PREVIEW_LIMITS,
+): FileToolPreview {
+  if (preview.kind !== 'diff') return preview
+  if (
+    preview.oldText.length + preview.newText.length <= limits.maxChars
+    && countLines(preview.oldText) <= limits.maxLines
+    && countLines(preview.newText) <= limits.maxLines
+  ) {
+    return preview
+  }
+
+  const perSide = Math.floor(limits.maxChars / 2)
+  const oldSide = capPreviewSide(preview.oldText, limits.maxLines, perSide)
+  const newSide = capPreviewSide(preview.newText, limits.maxLines, perSide)
+
+  if (oldSide.text.length + newSide.text.length > limits.maxChars) {
+    return {
+      kind: 'message',
+      title: preview.title,
+      filePath: preview.filePath,
+      message: `Preview omitted: the file is too large to display (${formatPreviewSize(
+        Math.max(preview.oldText.length, preview.newText.length),
+      )}).`,
+    }
+  }
+
+  return {
+    ...preview,
+    oldText: oldSide.text,
+    newText: newSide.text,
+    elided: { oldLines: oldSide.dropped, newLines: newSide.dropped },
+  }
+}
+
+function capPreviewSide(
+  text: string,
+  maxLines: number,
+  maxChars: number,
+): { text: string; dropped: number } {
+  const lines = text.split('\n')
+  const kept = lines.length > maxLines ? lines.slice(0, maxLines) : lines
+  let dropped = lines.length - kept.length
+
+  let out = kept.join('\n')
+  if (out.length > maxChars) {
+    // Only ever cut on a line boundary: half a line fed to a word diff renders
+    // as a bogus edit. With no boundary to cut on the side is left intact and
+    // the caller degrades the whole preview to a message.
+    const cut = out.lastIndexOf('\n', maxChars)
+    if (cut > 0) {
+      const trimmed = out.slice(0, cut)
+      dropped += kept.length - countLines(trimmed)
+      out = trimmed
+    }
+  }
+
+  return { text: out, dropped }
+}
+
+function countLines(text: string): number {
+  return text.split('\n').length
+}
+
+function formatPreviewSize(chars: number): string {
+  if (chars >= 1_000_000) return `${(chars / 1_000_000).toFixed(1)} MB`
+  if (chars >= 1_000) return `${Math.round(chars / 1_000)} KB`
+  return `${chars} B`
 }
 
 function parseEdit(input: Record<string, unknown>): EditItem | undefined {

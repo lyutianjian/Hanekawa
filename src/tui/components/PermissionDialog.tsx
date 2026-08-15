@@ -4,7 +4,7 @@ import { theme } from '../theme.js'
 import type { PermissionDialogRequest, PermissionDialogState } from '../types.js'
 import type { PermissionRequest, PermissionRule } from '../../harness/permissions.js'
 import { analyzeDestructiveCommands, type DestructiveCommandWarning } from '../../harness/destructiveCommands.js'
-import { buildFileToolPreview, type FileToolPreview } from '../fileToolPreview.js'
+import { buildFileToolPreview, type FileToolPreview } from '../../services/fileToolPreview.js'
 import { StructuredDiff } from './StructuredDiff.js'
 
 /**

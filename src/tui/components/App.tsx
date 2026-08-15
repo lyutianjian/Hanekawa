@@ -1,13 +1,11 @@
 import { useState, useCallback, useRef, useEffect, useMemo, useSyncExternalStore } from 'react'
 import { randomUUID } from 'node:crypto'
-import { spawn } from 'node:child_process'
 import { Box, Static, snapshotInkFrameForStdout, useStdout } from '../ink.js'
 import type { InkFrameSnapshot } from '../ink.js'
-import type { ActiveModelRuntime, AgentRunOverrides } from '../../harness/loop.js'
+import type { ActiveModelRuntime } from '../../harness/loop.js'
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
 import type { PermissionGate, PermissionMode } from '../../harness/permissions.js'
 import type { ConfigService } from '../../config/service.js'
-import { parseTierInput } from '../../config/routing.js'
 import type { SessionRecord } from '../../harness/types.js'
 import type { CommandSubmitQueryOptions, CommandView, SetModelResult } from '../../commands/types.js'
 import type { TUIDisplayItem, TUIStaticItem } from '../types.js'
@@ -31,7 +29,6 @@ import { RestoreMode, type RestoreDecision } from './RestoreMode.js'
 import { BackgroundTasksPanel } from './BackgroundTasksPanel.js'
 import { SessionResumePicker } from './SessionResumePicker.js'
 import { invalidateResolvedCwdCache } from '../../utils/paths.js'
-import { readPlan } from '../../utils/plans.js'
 import { applyPermissionModeTransition, nextPermissionMode } from '../../runtime/permissionMode.js'
 import { ExitPlanModeDialog } from './ExitPlanModeDialog.js'
 import { EnterPlanModeDialog } from './EnterPlanModeDialog.js'
@@ -49,7 +46,13 @@ import type { SessionController } from '../../runtime/sessionController.js'
 import { canPumpQueue } from '../../runtime/queuePump.js'
 import { buildModelPickerOptions } from '../../runtime/modelPicker.js'
 import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../../runtime/rewindSummary.js'
-import { clampEffort, type EffortLevel } from '../../config/effort.js'
+import { activateModelKey, switchModel } from '../../runtime/modelSwitch.js'
+import { buildRunOverrides } from '../../runtime/runOverrides.js'
+import {
+  openPlanFileInEditor,
+  readCurrentPlanFile as readCurrentPlanFileFromRuntime,
+} from '../../runtime/planFile.js'
+import type { EffortLevel } from '../../config/effort.js'
 import { getContextWindowForModel } from '../../prompts/budget.js'
 import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/modelCapabilities.js'
 import { shouldRenderStatusLine } from '../statusLineVisibility.js'
@@ -80,7 +83,6 @@ interface AppProps {
   store: SessionStore
   session: SessionMeta
   availableModelKeys: string[]
-  resolveModelInput: (input: string, currentModelKey: string) => string | undefined
   providerConfig: ConfigService
   createRuntime: (modelKey: string, session: SessionMeta, records?: readonly SessionRecord[]) => AppRuntime
   createActiveModelRuntime: (modelKey: string) => ActiveModelRuntime
@@ -106,7 +108,6 @@ export function App({
   store,
   session: initialSession,
   availableModelKeys,
-  resolveModelInput,
   providerConfig,
   createRuntime,
   createActiveModelRuntime,
@@ -338,50 +339,19 @@ export function App({
     resetTranscript([])
   }, [store, createRuntime, runtime.modelKey, runtime.loop, runtimeSlot, sessionController, resetTranscript, resetSessionRecords, messageQueue, backgroundTasks, activeSession.id])
 
-  const buildRunOverrides = useCallback((options?: CommandSubmitQueryOptions): AgentRunOverrides | undefined => {
-    if (!options) return undefined
-    let modelOverride: ActiveModelRuntime | undefined
-    let effortOverride = options.effort
-
-    if (options.model) {
-      const modelKey = resolveModelInput(options.model, runtimeSlot.current.modelKey)
-      if (!modelKey) {
-        throw new Error(`Unknown model or tier for skill command: ${options.model}`)
-      }
-      const modelConfig = providerConfig.getModel(modelKey)
-      if (!modelConfig) {
-        throw new Error(`Unknown model for skill command: ${options.model}`)
-      }
-      modelOverride = createActiveModelRuntime(modelKey)
-      if (effortOverride) {
-        const clamped = clampEffort(effortOverride, modelConfig.maxEffort)
-        effortOverride = typeof clamped === 'string' ? clamped : undefined
-      }
-    } else if (effortOverride) {
-      const clamped = clampEffort(effortOverride, runtimeSlot.current.modelConfig.maxEffort)
-      effortOverride = typeof clamped === 'string' ? clamped : undefined
-    }
-
-    return {
-      ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
-      ...(modelOverride ? { model: modelOverride } : {}),
-      ...(effortOverride ? { effort: effortOverride } : {}),
-      ...(options.hooks ? { hooks: options.hooks } : {}),
-      ...(options.skillName ? { skillName: options.skillName } : {}),
-      ...(options.skillArgs !== undefined ? { skillArgs: options.skillArgs } : {}),
-      ...(options.displayInput !== undefined ? { displayInput: options.displayInput } : {}),
-    }
-  }, [createActiveModelRuntime, providerConfig, resolveModelInput, runtimeSlot])
+  const buildRunOverridesForOptions = useCallback((options?: CommandSubmitQueryOptions) => (
+    buildRunOverrides({ config: providerConfig, runtimeSlot, createActiveModelRuntime }, options)
+  ), [createActiveModelRuntime, providerConfig, runtimeSlot])
 
   const submitPlainInput = useCallback(async (text: string, options?: CommandSubmitQueryOptions) => {
     setSpinnerColors(sampleSpinnerColors())
     setMode('running')
     try {
-      await submit(text, buildRunOverrides(options))
+      await submit(text, buildRunOverridesForOptions(options))
     } finally {
       setMode('idle')
     }
-  }, [submit, buildRunOverrides])
+  }, [submit, buildRunOverridesForOptions])
 
   const runShellCommand = useCallback(async (command: string) => {
     const result = await runtimeSlot.current.loop.runTool({
@@ -405,59 +375,23 @@ export function App({
     })
   }, [messageQueue, addSystemMessage])
 
-  const activateModelKey = useCallback((modelKey: string): SetModelResult => {
-    if (!modelKeys.includes(modelKey)) {
-      return {
-        ok: false,
-        message: `Unknown model: ${modelKey}`,
-        availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
-      }
-    }
+  /** Shared with the host-side CommandContext; see `runtime/modelSwitch.ts`. */
+  const modelSwitchDeps = useMemo(() => ({
+    config: providerConfig,
+    runtimeSlot,
+    availableModelKeys: modelKeys,
+    createRuntime,
+    getSession: () => activeSession,
+    getRecords: () => sessionRecordsRef.current,
+  }), [providerConfig, runtimeSlot, modelKeys, createRuntime, activeSession])
 
-    try {
-      const nextRuntime = createRuntime(modelKey, activeSession, sessionRecordsRef.current)
-      runtimeSlot.current.loop.clearCachedSections()
-      runtimeSlot.replace(nextRuntime)
-      // Re-apply current effort clamped to the new model's maxEffort.
-      runtimeSlot.reapplyEffort()
-      return {
-        ok: true,
-        model: {
-          key: nextRuntime.modelKey,
-          model: nextRuntime.modelConfig.model,
-          providerName: nextRuntime.providerName,
-        },
-      }
-    } catch (err) {
-      return {
-        ok: false,
-        message: err instanceof Error ? err.message : String(err),
-        availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
-      }
-    }
-  }, [modelKeys, createRuntime, activeSession, runtimeSlot])
+  const activateModel = useCallback((modelKey: string): SetModelResult => (
+    activateModelKey(modelSwitchDeps, modelKey)
+  ), [modelSwitchDeps])
 
-  const switchModel = useCallback((input: string): SetModelResult => {
-    const modelKey = resolveModelInput(input, runtimeSlot.current.modelKey)
-    if (!modelKey) {
-      return {
-        ok: false,
-        message: input.trim().toLowerCase() === 'inherit'
-          ? '/model inherit is not supported. inherit is only valid in routing/subagent settings.'
-          : `Unknown model or tier: ${input}`,
-        availableModels: [...modelKeys, 'fast', 'balanced', 'powerful'],
-      }
-    }
-    const result = activateModelKey(modelKey)
-    if (result.ok) {
-      const tier = parseTierInput(input) ?? providerConfig.findTierForModel(modelKey)
-      if (tier) {
-        providerConfig.setDefaultModel(tier)
-        void providerConfig.save().catch(() => {})
-      }
-    }
-    return result
-  }, [resolveModelInput, modelKeys, activateModelKey, providerConfig])
+  const switchToModel = useCallback((input: string): SetModelResult => (
+    switchModel(modelSwitchDeps, input)
+  ), [modelSwitchDeps])
 
   const refreshRuntimeAfterProviderConfigChange = useCallback((scope: ProviderConfigChangeScope) => {
     setModelKeys(Object.keys(providerConfig.get().models))
@@ -509,7 +443,7 @@ export function App({
       }
     }
 
-    const result = activateModelKey(modelKey)
+    const result = activateModel(modelKey)
     if (!result.ok) {
       addSystemMessage(result.message)
       return
@@ -519,7 +453,7 @@ export function App({
     addSystemMessage(decision.action === 'set-default'
       ? `${message}\nDefault model updated.`
       : message)
-  }, [providerConfig, activateModelKey, addSystemMessage])
+  }, [providerConfig, activateModel, addSystemMessage])
 
   const reloadAgentDefinitions = useCallback(async (): Promise<number> => {
     if (!reloadRuntimeAgentDefinitions) {
@@ -559,28 +493,18 @@ export function App({
     })
   }, [runtime.planModeManager, addSystemMessage, enterPlanProxy, exitPlanProxy])
 
-  const readCurrentPlanFile = useCallback(async () => {
-    const path = runtimeSlot.current.planModeManager.resolvePlanFilePathLazy()
-    return { path, content: await readPlan(path) }
-  }, [runtimeSlot])
+  const planFileDeps = useMemo(
+    () => ({ getPlanModeManager: () => runtimeSlot.current.planModeManager }),
+    [runtimeSlot],
+  )
 
-  const openCurrentPlanFile = useCallback(async (): Promise<{ message: string }> => {
-    const { path } = await readCurrentPlanFile()
-    const editor = process.env.VISUAL || process.env.EDITOR || (process.platform === 'win32' ? 'notepad' : 'nano')
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn(editor, [path], { stdio: 'inherit' })
-        child.on('error', reject)
-        child.on('exit', (code) => {
-          if (code === 0 || code === null) resolve()
-          else reject(new Error(`editor exited with code ${code}`))
-        })
-      })
-      return { message: `Opened plan in editor: ${path}` }
-    } catch (error) {
-      return { message: `Failed to open plan in editor: ${error instanceof Error ? error.message : String(error)}` }
-    }
-  }, [readCurrentPlanFile])
+  const readCurrentPlanFile = useCallback(async () => (
+    readCurrentPlanFileFromRuntime(planFileDeps)
+  ), [planFileDeps])
+
+  const openCurrentPlanFile = useCallback(async (): Promise<{ message: string }> => (
+    openPlanFileInEditor(planFileDeps)
+  ), [planFileDeps])
 
   const closePickerSurfaces = useCallback(() => {
     setProviderPanelOpen(false)
@@ -676,7 +600,7 @@ export function App({
       model: runtime.modelConfig.model,
       providerName: runtime.providerName,
     },
-    setModel: switchModel,
+    setModel: switchToModel,
     pricing: runtime.modelConfig.pricing,
     usage,
     addSystemMessage,

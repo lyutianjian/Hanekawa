@@ -29,6 +29,12 @@ export {
 } from './permissionMode.js'
 export { resolveRuntimeModelKeyAfterConfigChange } from './providerRuntime.js'
 export type { ProviderConfigChangeScope } from './providerRuntime.js'
+export { activateModelKey, switchModel } from './modelSwitch.js'
+export type { ModelSwitchDeps } from './modelSwitch.js'
+export { buildRunOverrides } from './runOverrides.js'
+export type { RunOverridesDeps } from './runOverrides.js'
+export { openPlanFileInEditor, readCurrentPlanFile } from './planFile.js'
+export type { PlanFileDeps } from './planFile.js'
 export {
   recordsAfterAreOnlyInterruptSynthetic,
   rollbackInterruptedPromptIfSynthetic,
@@ -110,6 +116,14 @@ export {
   switchToNewSession,
 } from './sessionSwitch.js'
 export type { SessionSwitchDeps, SessionSwitchResult } from './sessionSwitch.js'
+export {
+  cleanupSubagentWorktrees,
+  getSubagentDetails,
+  latestSubagentTasks,
+  latestSubagentTranscripts,
+  listLatestSubagentTasks,
+  resolveAgentId,
+} from './subagentInspection.js'
 export type {
   AgentSession,
   BootstrapOptions,

@@ -118,7 +118,6 @@ async function main() {
       store={store}
       session={session}
       availableModelKeys={Object.keys(host.config.get().models)}
-      resolveModelInput={(input, currentModelKey) => host.config.resolveModelInput(input, { currentModelKey })}
       providerConfig={host.config}
       createRuntime={host.createRuntime}
       createActiveModelRuntime={host.createActiveModelRuntime}

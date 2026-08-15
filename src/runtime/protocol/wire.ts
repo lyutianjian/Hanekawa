@@ -12,6 +12,7 @@ import type {
 } from '../../harness/types.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeManager.js'
 import type { BackgroundTaskSnapshot } from '../../services/backgroundTasks/registry.js'
+import type { ModelPickerOption } from '../modelPicker.js'
 import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
 import type { FileToolPreview } from '../../services/fileToolPreview.js'
 import type { SessionMeta } from '../../sessions/service.js'
@@ -249,6 +250,12 @@ export interface WireModelsResult {
   /** Every configured key, resolvable or not — parity with `availableModelKeys`. */
   models: WireModelInfo[]
   defaultModelKey?: string
+  /**
+   * Resolved host-side for the same reason `PermissionRequestDto` carries its
+   * preview: building these needs `ConfigService.getModel`, which folds the
+   * endpoint's `apiKey` and `baseUrl` into what it returns.
+   */
+  pickerOptions: ModelPickerOption[]
 }
 
 export interface WireResolveModelResult {

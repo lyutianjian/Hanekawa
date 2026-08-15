@@ -159,6 +159,10 @@ async function createHarness(): Promise<Harness> {
         }),
       resolveModelInput: (input: string) => (input === 'nope' ? undefined : `${input}-resolved`),
       resolveModelReference: (reference: string | undefined) => reference,
+      getActiveProfile: () => ({
+        name: 'default',
+        profile: { fast: 'fast', balanced: 'main', powerful: 'main' },
+      }),
       setDefaultModel: (name: string) => { calls.defaultModels.push(name) },
       save: async () => {},
     },
@@ -438,12 +442,19 @@ test('the model list never carries an apiKey or a baseUrl', async () => {
   const result = reply.result as {
     models: Array<{ key: string; model?: string }>
     defaultModelKey?: string
+    pickerOptions: Array<{ tier: string; modelKey?: string; disabledReason?: string }>
   }
   assert.deepEqual(result.models.map((entry) => entry.key), ['main', 'fast', 'broken'])
   assert.equal(result.models[0]?.model, 'main-model')
   // An unresolvable entry still appears, matching availableModelKeys.
   assert.equal(result.models[2]?.model, undefined)
   assert.equal(result.defaultModelKey, 'main')
+
+  // The picker rides along, resolved host-side because building it needs
+  // getModel -- the same call that folds the secrets in above. Asserted
+  // non-empty so the serialized check is not passing over an empty array.
+  assert.deepEqual(result.pickerOptions.map((option) => option.tier), ['fast', 'balanced', 'powerful'])
+  assert.deepEqual(result.pickerOptions.map((option) => option.modelKey), ['fast', 'main', 'main'])
   harness.dispose()
 })
 

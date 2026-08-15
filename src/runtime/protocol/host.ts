@@ -5,6 +5,7 @@ import type { PermissionRequest } from '../../harness/permissions.js'
 import type { SessionRecord } from '../../harness/types.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import { applyPermissionModeTransition } from '../permissionMode.js'
+import { buildModelPickerOptions } from '../modelPicker.js'
 import { resolveRuntimeModelKeyAfterConfigChange } from '../providerRuntime.js'
 import { SessionRecordLedger } from '../recordLedger.js'
 import type { RuntimeSlot } from '../runtimeSlot.js'
@@ -560,7 +561,12 @@ export class SessionHost {
       return info
     })
     const defaultModelKey = this.host.config.resolveModelReference(this.host.config.get().defaultModel)
-    return { models, ...(defaultModelKey ? { defaultModelKey } : {}) }
+    const pickerOptions = buildModelPickerOptions(
+      this.host.config,
+      this.runtimeSlot.current.modelKey,
+      Object.keys(configured),
+    )
+    return { models, pickerOptions, ...(defaultModelKey ? { defaultModelKey } : {}) }
   }
 
   /** Turns wire overrides back into the live objects the loop expects. */

@@ -9,6 +9,7 @@
 export type { RuntimeChannel } from './channel.js'
 export { hostCommandSchema, parseHostCommand } from './commandSchema.js'
 export type { HostCommandParseFailure, HostCommandParseResult } from './commandSchema.js'
+export type { ModelPickerOption } from '../modelPicker.js'
 export { createMemoryChannelPair } from './memoryChannel.js'
 export { createNodeProcessChannel } from './nodeChannel.js'
 export type { NodeIpcTarget } from './nodeChannel.js'

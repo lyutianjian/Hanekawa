@@ -7,16 +7,12 @@ import { CommandListItem, CommandPane } from './CommandUI.js'
 export type ModelTierChoice = Tier
 export type ModelPickerAction = 'set-default' | 'session-only'
 
-export interface ModelPickerOption {
-  tier: ModelTierChoice
-  label: string
-  modelKey?: string
-  providerName?: string
-  modelId?: string
-  disabledReason?: string
-  isCurrent: boolean
-  isDefault: boolean
-}
+// Declared with the builder, in `src/runtime/`: the options are resolved
+// against ConfigService, which never crosses to a viewer, and they ride to one
+// on `WireModelsResult`. Re-exported so this file stays the single import for
+// anything rendering the dialog.
+import type { ModelPickerOption } from '../../runtime/modelPicker.js'
+export type { ModelPickerOption }
 
 export interface ModelPickerDecision {
   action: ModelPickerAction

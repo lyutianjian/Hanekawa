@@ -7,7 +7,7 @@ import type { ActiveModelRuntime, AgentRunOverrides } from '../../harness/loop.j
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
 import type { PermissionGate, PermissionMode } from '../../harness/permissions.js'
 import type { ConfigService } from '../../config/service.js'
-import { parseTierInput, resolveTier, type Tier } from '../../config/routing.js'
+import { parseTierInput } from '../../config/routing.js'
 import type { SessionRecord } from '../../harness/types.js'
 import type { CommandSubmitQueryOptions, CommandView, SetModelResult } from '../../commands/types.js'
 import type { TUIDisplayItem, TUIStaticItem } from '../types.js'
@@ -37,7 +37,7 @@ import { ExitPlanModeDialog } from './ExitPlanModeDialog.js'
 import { EnterPlanModeDialog } from './EnterPlanModeDialog.js'
 import { AskUserQuestionDialog } from './AskUserQuestionDialog.js'
 import { ProviderPanel } from './ProviderPanel.js'
-import { ModelPickerDialog, type ModelPickerDecision, type ModelPickerOption } from './ModelPickerDialog.js'
+import { ModelPickerDialog, type ModelPickerDecision } from './ModelPickerDialog.js'
 import { EffortPickerBar } from './EffortPickerBar.js'
 import { CommandViewPanel } from './CommandViewPanel.js'
 import { useExitPlanPermission, type ExitPlanPromptProxy } from '../hooks/useExitPlanPermission.js'
@@ -47,6 +47,7 @@ import type { AgentSession } from '../../runtime/index.js'
 import type { RuntimeSlot } from '../../runtime/runtimeSlot.js'
 import type { SessionController } from '../../runtime/sessionController.js'
 import { canPumpQueue } from '../../runtime/queuePump.js'
+import { buildModelPickerOptions } from '../../runtime/modelPicker.js'
 import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../../runtime/rewindSummary.js'
 import { clampEffort, type EffortLevel } from '../../config/effort.js'
 import { getContextWindowForModel } from '../../prompts/budget.js'
@@ -1198,60 +1199,6 @@ export function App({
       )}
     </Box>
   )
-}
-
-const MODEL_PICKER_TIERS: Array<{ tier: Tier; label: string }> = [
-  { tier: 'fast', label: 'Fast' },
-  { tier: 'balanced', label: 'Balanced' },
-  { tier: 'powerful', label: 'Powerful' },
-]
-
-function buildModelPickerOptions(
-  config: ConfigService,
-  currentModelKey: string,
-  knownModelKeys: string[],
-): ModelPickerOption[] {
-  const defaultModelKey = config.resolveModelReference(config.get().defaultModel)
-  return MODEL_PICKER_TIERS.map(({ tier, label }) => {
-    const modelKey = resolveTierModelKey(config, tier, currentModelKey)
-    if (!modelKey || !knownModelKeys.includes(modelKey)) {
-      return {
-        tier,
-        label,
-        disabledReason: 'No configured model resolves for this tier.',
-        isCurrent: false,
-        isDefault: false,
-      }
-    }
-
-    const model = config.getModel(modelKey)
-    if (!model) {
-      return {
-        tier,
-        label,
-        disabledReason: `Configured model "${modelKey}" could not be loaded.`,
-        isCurrent: false,
-        isDefault: false,
-      }
-    }
-
-    return {
-      tier,
-      label,
-      modelKey,
-      providerName: model.provider ?? 'unknown',
-      modelId: model.model,
-      isCurrent: modelKey === currentModelKey,
-      isDefault: modelKey === defaultModelKey,
-    }
-  })
-}
-
-function resolveTierModelKey(config: ConfigService, tier: Tier, currentModelKey: string): string | undefined {
-  const routed = resolveTier(config.getActiveProfile()?.profile, tier)
-  if (routed && config.getModel(routed)) return routed
-  if (currentModelKey && config.getModel(currentModelKey)) return currentModelKey
-  return config.resolveModelReference(config.get().defaultModel)
 }
 
 function formatRestoreMessagePreview(content: string): string {

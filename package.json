@@ -2,12 +2,16 @@
   "name": "myagent",
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
     "hanekawa": "./bin/hanekawa.mjs",
     "myagent-tui": "./bin/hanekawa.mjs"
   },
   "scripts": {
     "dev:tui": "tsx src/tui/entrypoints/tui.tsx",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/**/*.test.ts",
     "postinstall": "patch-package"

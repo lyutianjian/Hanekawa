@@ -36,8 +36,23 @@ interface OtlpMetric {
 
 const DEFAULT_TIMEOUT_MS = 2_000
 const require = createRequire(import.meta.url)
-const packageJson = require('../../package.json') as { version?: string }
-const SERVICE_VERSION = packageJson.version ?? '0.0.0'
+
+/**
+ * Depth-sensitive: `rootDir: "src"` keeps the emitted file two levels below the
+ * repo root, so `../../package.json` resolves identically from `src/harness/`
+ * and from `dist/harness/`. A layout that breaks that must not take the process
+ * with it — this runs at module load, and the version is only a telemetry
+ * attribute.
+ */
+function readPackageVersion(): string | undefined {
+  try {
+    return (require('../../package.json') as { version?: string }).version
+  } catch {
+    return undefined
+  }
+}
+
+const SERVICE_VERSION = readPackageVersion() ?? '0.0.0'
 const TELEMETRY_SDK_NAME = 'hanekawa'
 const METRIC_NUMERIC_FIELDS: Record<SessionMetric['event'], ReadonlySet<string>> = {
   turn: new Set([

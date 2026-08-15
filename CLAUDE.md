@@ -13,13 +13,20 @@ permission-gated tools, subagents, skills, and MCP. `README.md` documents user-f
 npm install                        # or `bun install`; postinstall runs patch-package (required, see Patches)
 npm run dev:tui                    # start the TUI (tsx, no build step); also: resume <id> | --continue | c | list
 npm run typecheck                  # tsc --noEmit
-npm run test                       # full suite: 1534 tests / 39 suites, ~39s
+npm run build                      # tsc -p tsconfig.build.json → dist/ (only a desktop shell needs this)
+npm run test                       # full suite: 1592 tests / 39 suites, ~40s
 node --import tsx --test test/compact.test.ts                    # single file
 node --import tsx --test test/a.test.ts test/b.test.ts           # several files
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
 ```
 
-There is no lint step and no build for development (`tsc` emits to `dist/` only if invoked directly).
+There is no lint step, and development needs no build — `dev:tui` runs the sources through tsx.
+`npm run build` exists for a shell that cannot use tsx (an Electron main process; see
+`bin/hanekawa.mjs`) and uses `tsconfig.build.json`, which adds `rootDir: "src"` so `src/x.ts` emits
+to `dist/x.js`. That is load-bearing rather than cosmetic: without it tsc infers the repo root,
+because the base `include` spans `src/` and `test/`, and emits one level deeper into `dist/src/**`,
+which changes what every `import.meta.url`-relative path resolves to. `test/distBuild.test.ts` pins
+the layout and loads the output under a plain `node` with no loader.
 Requires Node 22+. Tests are `node:test` + `node:assert`, flat in `test/` (no helpers dir), with
 `fast-check` for `*.property.test.ts` and `ink-testing-library` for the few render tests.
 
@@ -212,6 +219,23 @@ single stateful shell; `hooks/useAgentLoop.ts` renders the controller's event st
   field-diff before swapping its snapshot *and* its background-task list, because
   `SessionController.publish` compares `usage` and `taskSnapshot` by reference and every deserialized
   message is a fresh object graph.
+- **Everything inbound is validated; nothing outbound is.** `parseHostCommand`
+  (`protocol/commandSchema.ts`) runs a `.strict()` discriminated union over all 24 `HostCommand`
+  variants before `handleMessage` dispatches, because the client half is the less trusted end — in an
+  Electron shell it is the one rendering remote content, and `set-permission-mode` reaches
+  `PermissionGate` directly. The schema is a second description of the union, so two compile-time
+  guards keep them together: a keyed `satisfies Record<HostCommand['type'], …>` table that fails *by
+  name*, and a mutual-assignability assertion that catches field-level drift. A malformed message
+  with a recoverable `id` gets a `fail`; a malformed `ui-response` is settled with that kind's own
+  fallback rather than dropped, since nothing else releases a pending prompt. `SessionClient` does
+  **not** mirror any of this — it would put zod in a renderer bundle to re-check what the host just
+  produced.
+- **`execute()`'s exhaustiveness is enforced by `assertNever`, not by the absent `default`.** The
+  missing `default` alone never worked: `execute` returns `Promise<unknown>`, `undefined` is
+  assignable to `unknown`, and `noImplicitReturns` is off, so an unhandled variant compiled clean and
+  answered `{ type: 'reply', result: undefined }` — a command that did nothing, reported as success.
+  The `assertNever(command)` after the switch is what makes a new variant a compile error. Do not
+  turn it into a `default` branch, and do not delete it.
 - **The DTO carries derived data so a renderer never imports `harness/`.** `PermissionRequestDto` ships
   a `preview` (bounded by `capFileToolPreview`) and `destructiveWarnings` already computed, because both
   need host-side code — the filesystem and the shell analyzer. `toPermissionDto`
@@ -219,6 +243,9 @@ single stateful shell; `hooks/useAgentLoop.ts` renders the controller's event st
   `usePermission`, so both dialogs render from identical input; `test/protocolClientParity.test.ts` pins
   that `client.ts` only ever *type*-imports the harness. `protocol/index.js` transitively pulls
   `node:fs`, so a renderer must deep-import `protocol/client.js` rather than the barrel.
+  `WireModelsResult.pickerOptions` is the same bargain: `buildModelPickerOptions`
+  (`runtime/modelPicker.ts`) needs `ConfigService.getModel`, so it runs host-side and the options
+  cross as plain scalars.
 - **Anything projected from `ModelConfig` is built field by field, never spread.** `resolveModel` folds
   the endpoint's `apiKey` and `baseUrl` into what it returns, so one spread in `WireModelInfo` would
   ship every configured key to the renderer.

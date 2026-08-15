@@ -199,23 +199,99 @@ Stage 2b 原本写成「装 Electron + 写外壳」。三份探查后确认这�
 
 ---
 
+## 阶段 2b-2a — 构建步骤与协议硬化 `[x]` 已完成
+
+2b-2 在这次会话里做不完，原因是硬约束：**装不上 Electron**。npm registry 指向内网 Nexus 镜像
+`http://172.16.9.57:8081/repository/npm-group/`，`npm view electron version` 与 `npm ping` 都
+`ECONNRESET`（`npm view react version` 能出结果，所以镜像是半通的，只是不代理 electron），而
+`npm i -D electron` 还要再从 GitHub releases 拉一个上百 MB 的二进制。
+
+于是先做 **2b-2 里不需要 Electron 的那个子集** + 两项 2b-1 遗留。选择标准是每一件都能在今天验证：
+不需要 TTY、不需要真实 API key、不需要 Electron。
+
+### 产出
+
+- [x] **构建步骤**（原 2b-2 第一条 bullet）。`tsconfig.build.json` extends 基座并加
+  `rootDir: "src"` / `include: ["src/**/*"]`，`npm run build`，`engines: node >= 22`。
+  **不加 `main`/`exports`**——本仓库不作为库被消费，Electron 的 `main` 会指向 `dist/desktop/main.js`，
+  那个文件属于 2b-2。依赖零新增（TypeScript **7.0.2** 原生移植版本来就支持 emit）。
+- [x] **`rootDir: "src"` 是载荷所在，不是排版**。裸 `tsc` 会把 `rootDir` 推断成仓库根（`include`
+  同时含 `src/` 与 `test/`），emit 到 `dist/src/**` 深一层，于是
+  `src/harness/otlp.ts:38` 的 `require('../../package.json')` 解析成 `dist/package.json`，**在模块顶层抛**。
+  设了 `rootDir` 深度就守恒（`src/harness/` 与 `dist/harness/` 都在根下两层），这行免费活下来。
+  但耦合是隐形的，所以顺手把 require 包进 try/catch 落到已有的 `'0.0.0'` 兜底——
+  **变异验证过**：删掉 `rootDir` 后 `dist/src/harness/otlp.js` 仍能 import，只是版本降级。
+- [x] **`test/distBuild.test.ts`（8 个）**：emit → 断言 `dist/harness/` 而非 `dist/src/`、`.tsx` 也 emit、
+  用 `createRequire` 复现 otlp 那次解析、四个入口在**纯 node** 下 import。
+  最后一条是反空转守卫：断言子进程 `execArgv` 里没有 `--import`/`--require`。
+  **不能**用「import 一个 `.ts` 应当失败」来证明没有 loader——Node 22.18+ 原生剥类型，
+  `.ts` 在完全没有 loader 时也能 import，两种情况分不开（这一条是写的时候被测试本身抓出来的）。
+- [x] **入站命令校验**：`src/runtime/protocol/commandSchema.ts`，`zod/v3` 的
+  `discriminatedUnion` 覆盖 24 个变体，全 `.strict()`。`handleMessage` 不再裸 cast。
+  两个防漂移守卫**都做过变异验证**：① 键控 `satisfies Record<HostCommand['type'], …>` 表——加变体不加
+  schema 会报 `Property 'ping' is missing`；② `MutuallyAssignable` 断言——字段类型改了会红。
+- [x] **`execute()` 的穷尽性此前根本没有被编译器强制**。CLAUDE.md 原文说「加了 variant 不写 case 就
+  `tsc` 红」，**实测是假的**：`execute` 返回 `Promise<unknown>`，`undefined` 可赋给 `unknown`，
+  `noImplicitReturns` 又是关的，第 25 个变体编译全绿。现在 switch 之后加了
+  `assertNever(command)`——**它不是 `default` 分支**，且是让那条红线第一次真正成立的东西。
+- [x] **`buildModelPickerOptions` → `src/runtime/modelPicker.ts`**，逐字搬迁，
+  `ModelPickerOption` 一并移入（runtime 不能反向 import `src/tui/`），
+  `ModelPickerDialog.tsx` 再导出所以所有 import 端零改动。挂上 `WireModelsResult.pickerOptions`，
+  `SessionClient.listModels()` 自动带上，**没有新增客户端方法**。
+
+### 顺带修掉的真 bug
+
+1. [x] **无法识别的命令回报「成功」**。`type` 没有 case 时会穿过 switch 底部，
+   host 回 `{type:'reply', result: undefined}`——调用方的 promise **resolve** 了，
+   看起来像命令跑通了。现在回 `fail`。（不是挂起：先前写的「永久泄漏」判断有误，实测是 resolve。）
+2. [x] **`set-permission-mode` 可以直接送 `'bypass'`**。进程边界的另一半是信任级别更低的渲染进程。
+   现在非法 mode 直接 `fail` 且不进 `PermissionGate`（测试里配了 spy，并断言合法 mode 仍然生效，
+   免得断言空转）。
+
+### 两个差点写错的地方（都已核实）
+
+- **不要用 `PERMISSION_MODES` 建 schema**：它是 Shift+Tab 的**循环顺序**，只有 4 个值，
+  故意不含 `'readonly'`；而 `PermissionMode` 有 5 个。照抄会开始拒绝一个合法 mode。
+- **`set-effort.level` 必须是 `z.string()` 而非 effort 枚举**：数字 effort 是原始 token 预算，
+  以十进制字符串到达，`RuntimeSlot.applyEffort` 原样保留。`WireRunOverrides.effort` 才是枚举——
+  两个不同的字段。
+
+### 验证
+
+- [x] `npx tsc --noEmit` 干净
+- [x] `npm run test` — **1592 passed / 0 failed / 39 suites**（较 1534 基线新增 58 个）
+- [x] `npm run build` + 纯 node import `dist/runtime/bootstrap.js`
+- [x] `test/protocolCommandSchema.test.ts`（38）、`test/distBuild.test.ts`（8）、
+  `test/modelPicker.test.ts`（8，此前**零覆盖**）、`protocolHost.test.ts` 新增 4 条
+- [x] **不需要手动冒烟**：三件事对运行中的 TUI 全是惰性的——构建步骤不碰 `dev:tui`（仍走
+  `bin/hanekawa.mjs` 的 tsx 路径），命令校验只在 `SessionHost` 上而 TUI 不构造它，
+  modelPicker 是等价搬迁且 `tuiRender.test.ts` 已覆盖对话框。
+
+### 留给下一轮
+
+- **`typescript` 在 `package.json` 里是 `"latest"`**（实际 7.0.2）。用不固定的 major 做 emit 是真实风险，
+  但改 spec 就要动 `package-lock.json`，而当前网络下 `npm install` 不可靠。**网络恢复后固定它。**
+- `todo.md` 原 198 行那条 2b-1 权限对话框手动冒烟**仍未执行**。
+
+---
+
 ## 阶段 2b-2 — Electron 外壳 `[ ]` 未开始
 
-协议已充分，剩下三件纯增量的事。
+构建步骤已完成（见 2b-2a），剩下的都需要能装包。
 
-- [ ] **构建步骤（新发现的前置）**：Electron 主进程**不能**用 `--import tsx`（原因见 `bin/hanekawa.mjs:3-19`：tsx 的 load hook 在 Node 22+ 会破坏 `require()` package.json）。这会引入本仓库**第一个真正的构建步骤**——`tsc` emit 到 `dist/`，或 esbuild 打包主进程。目前没有任何打包器。
+- [x] ~~构建步骤~~ — 已在 2b-2a 完成
 - [ ] `npm i -D electron` + 渲染进程打包器；主进程 = 现有 Node 全栈 + `bootstrap()` + `RuntimeSlot`/`SessionController` + `SessionHost`；渲染进程 = 新 UI + `SessionClient`，**深 import `protocol/client.js` 而非桶**（桶经 `host.ts` 传递性拉进 `node:fs`）
 - [ ] `src/desktop/ipc/` 写 `ipcMain`/`ipcRenderer` 适配器。`createNodeProcessChannel` **不能直接复用**——`NodeIpcTarget` 的结构（`send`/`on('message')`）与 Electron 的 `on(channel, (event, ...args))` / `webContents.send` 不匹配，需要约 50 行新适配器。握手照 `test/protocolChildProcess.test.ts` 的 `__ready` 模式。
 - [ ] MCP trust 提示：`confirmMcpTrust` 在**任何 channel 存在之前**运行，做成 `UiRequest` 需要一个 pre-`hello` 阶段；或先用原生 `dialog.showMessageBox`。
-- [ ] 把 `App.tsx` 的会话切换改接 `sessionSwitch.ts`（见上文缺陷 2 的留尾）
+- [ ] 把 `App.tsx` 的会话切换改接 `sessionSwitch.ts`（见阶段 2b-1 缺陷 2 的留尾）
 - [ ] 无需迁移：Ink patches、focus filter、alt-screen、`transcript.ts`、`layout.ts`
 
-### 本轮刻意推迟
+### 仍然刻意推迟
 
-- **斜杠命令的跨进程派发**（`run-command`）：`src/commands/` 的效果全走 `CommandContext` 回调，投影这套注册表是独立一件事。新增的命令已覆盖 `/model`、`/clear`、`/resume`、`/skills reload` 的实际能力。
-- **`/rewind` 写路径**：摘要要跑活 loop，跟着 rewind 流程一起移。
-- **入站命令的 zod 校验**：`handleMessage` 目前是 cast，加固要 ~150 行 `.strict()` schema。
-- **后台任务的推送订阅之外的能力**、`buildModelPickerOptions` 的 DTO 化。
+- **斜杠命令的跨进程派发**（`run-command`）：`CommandContext` 有 34 个字段，其中 **8 个是没有返回值的渲染器副作用**（`writeLine`、`openCommandView`、`openModelPicker`、`openEffortPicker`、`openProviderPanel`、`openBackgroundTasks`、`openResumePicker`、半个 `clearMessages`）。它们在命令执行**中途**被推送，所以 `run-command` 不能是普通的请求/响应，需要新增一个 `HostEvent` 承载 effect union。这是独立的半天以上，且不阻塞别的。
+- **`/rewind` 写路径**：入口是双击 Esc（`useKeyboardShortcuts.ts:377`），不是斜杠命令，所以**不被上一条阻塞**。读路径与 `restore-code` 已在线上；缺的是会话截断与摘要两半。摘要那半必须在 host 执行：`summarizeRecordsForRewind` 走 `AgentLoop` 的同一条串行队列并真的调 provider。纯逻辑早已抽在 `runtime/rewindSummary.ts`。
+- **`buildModelPickerOptions` 的 DTO 化** — 已在 2b-2a 完成。
+- **入站命令的 zod 校验** — 已在 2b-2a 完成。
 
 ---
 
@@ -258,7 +334,18 @@ Stage 2b 原本写成「装 Electron + 写外壳」。三份探查后确认这�
 - `SessionEvent` 的 `turn-end.aborted` 是 signal 状态，不是「是否抛异常」；`transcript-reset.bumpGeneration` 只在真正换了会话视图时为 `true`。
 - **协议层**：`SessionClient` 换快照前必须逐字段 diff，**后台任务列表同理**。`SessionController.publish` 是按引用比 `usage`/`taskSnapshot` 的，而反序列化出来的每条消息都是新对象图——照搬会让 `useSyncExternalStore` 无限重渲染。
 - **协议层**：往 `HostEvent`/`HostCommand` 上加字段前先确认它过得了 `structuredClone`。`memoryChannel` 每次 `post` 都克隆就是为了当场炸出来；Node 的 `child_process.send` 默认走 JSON，会**静默吞掉**函数（`test/protocolChildProcess.test.ts` 有一条专门钉这个）。
-- **协议层**：`execute()` **没有 `default` 分支**且 switch 在穷尽 union 上——这是强制机制，加了 variant 不写 case 就 `tsc` 红。别加 default。
+- **协议层**：`execute()` **没有 `default` 分支**，但真正强制穷尽性的是 switch 之后那句
+  `assertNever(command)`——**光靠没有 `default` 从来不起作用**（`execute` 返回 `Promise<unknown>`，
+  `undefined` 可赋给 `unknown`，`noImplicitReturns` 关着），阶段 2b-2a 变异验证过。别加 default，
+  也别删 `assertNever`。
+- **协议层**：入站命令一律先过 `parseHostCommand`（`protocol/commandSchema.ts`）。schema 是 `HostCommand`
+  的第二份描述，靠两个编译期守卫防漂移：键控 `satisfies` 表（按名字报缺哪个变体）+ `MutuallyAssignable`
+  断言（报字段级漂移）。**`SessionClient` 不做对称校验**——那会把 zod 拉进渲染进程包体。
+- **不要用 `PERMISSION_MODES` 建 schema / 校验 mode**：它是 Shift+Tab 的循环顺序，只有 4 个值，
+  故意不含 `'readonly'`。`set-effort.level` 同理必须是 `string` 而非 effort 枚举（数字 effort 是
+  原始 token 预算）。
+- **构建产物**：`tsconfig.build.json` 的 `rootDir: "src"` 是载荷所在。去掉它，`tsc` 会推断仓库根并
+  emit 到 `dist/src/**`，所有 `import.meta.url` 相对路径的解析深度就变了。`test/distBuild.test.ts` 钉住这点。
 - **任何从 `ModelConfig` 投影出去的类型都要逐字段构造，绝不 spread**：`resolveModel` 会把 endpoint 的 `apiKey`/`baseUrl` 折进返回值。
 - **`PermissionRequestDto` 携带派生数据**（`preview`、`destructiveWarnings`），目的是让渲染器不必 import `harness/`。加字段时保持这条：需要 host 侧代码才能算出来的东西，在 host 算完再上线。
 - **「always allow」必须先触发回调再 resolve**：`PermissionGate` 在 `await this.prompt(...)` 的下一行读那个闭包标志。host 与 `usePermission` 两条路径都是如此，各有测试钉住。
@@ -269,14 +356,18 @@ Stage 2b 原本写成「装 Electron + 写外壳」。三份探查后确认这�
 
 ```bash
 npm run typecheck
-npm run test                                          # 1534 tests / 39 suites, ~39s
+npm run test                                          # 1592 tests / 39 suites, ~40s
+npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 
 node --import tsx --test test/protocolWire.test.ts test/protocolHost.test.ts \
   test/protocolClient.test.ts test/protocolClientParity.test.ts test/bridgesPending.test.ts
+node --import tsx --test test/protocolCommandSchema.test.ts   # 入站校验 + 防漂移
+node --import tsx --test test/distBuild.test.ts               # emit 后用纯 node 载入
 node --import tsx --test test/protocolChildProcess.test.ts   # 真实进程边界
 node --import tsx --test test/sessionFileLock.test.ts        # 含双进程并发写
 node --import tsx --test test/permissionPresentation.test.ts test/usePermission.test.ts \
-  test/fileToolPreview.test.ts test/fileSuggestions.test.ts test/sessionSwitch.test.ts
+  test/fileToolPreview.test.ts test/fileSuggestions.test.ts test/sessionSwitch.test.ts \
+  test/modelPicker.test.ts
 node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 npm run dev:tui                                       # 手动冒烟，需 TTY
 ```

@@ -14,7 +14,7 @@ npm install                        # or `bun install`; postinstall runs patch-pa
 npm run dev:tui                    # start the TUI (tsx, no build step); also: resume <id> | --continue | c | list
 npm run typecheck                  # tsc --noEmit
 npm run build                      # tsc -p tsconfig.build.json → dist/ (only a desktop shell needs this)
-npm run test                       # full suite: 1592 tests / 39 suites, ~40s
+npm run test                       # full suite: 1651 tests / 39 suites, ~40s
 node --import tsx --test test/compact.test.ts                    # single file
 node --import tsx --test test/a.test.ts test/b.test.ts           # several files
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
@@ -220,7 +220,7 @@ single stateful shell; `hooks/useAgentLoop.ts` renders the controller's event st
   `SessionController.publish` compares `usage` and `taskSnapshot` by reference and every deserialized
   message is a fresh object graph.
 - **Everything inbound is validated; nothing outbound is.** `parseHostCommand`
-  (`protocol/commandSchema.ts`) runs a `.strict()` discriminated union over all 24 `HostCommand`
+  (`protocol/commandSchema.ts`) runs a `.strict()` discriminated union over all 27 `HostCommand`
   variants before `handleMessage` dispatches, because the client half is the less trusted end — in an
   Electron shell it is the one rendering remote content, and `set-permission-mode` reaches
   `PermissionGate` directly. The schema is a second description of the union, so two compile-time
@@ -249,10 +249,40 @@ single stateful shell; `hooks/useAgentLoop.ts` renders the controller's event st
 - **Anything projected from `ModelConfig` is built field by field, never spread.** `resolveModel` folds
   the endpoint's `apiKey` and `baseUrl` into what it returns, so one spread in `WireModelInfo` would
   ship every configured key to the renderer.
+- **Slash commands run host-side; `CommandEffect` is the part that cannot.** `run-command` takes the raw
+  line, because the registry is already host-side. `createHostCommandContext`
+  (`protocol/commandContext.ts`) satisfies 24 of `CommandContext`'s 31 members from the host's own
+  collaborators; the other 7 return nothing and mean nothing outside a view, so they leave as
+  `write-line` / `open-command-view` / `open-surface` effects on `HostEvent`. That is why `run-command`
+  is not a plain request/response — a command pushes effects *while running*, and they must arrive
+  before its `reply`; do not turn them into reply fields. `COMMAND_CONTEXT_COVERAGE` is a keyed
+  `satisfies` table like `COMMAND_SCHEMAS`, so a new `CommandContext` member fails the build *by name*
+  until someone decides which side runs it. The context is rebuilt per command and reads the session
+  and records through getters, since `/model` and `/clear` replace the runtime and the session
+  mid-command. An unknown command and one that threw are both `handled` with a `write-line`, matching
+  the TUI; only non-slash input is unhandled, and `/exit` returns a flag rather than shutting the host
+  down.
+- **Both `/rewind` writes end with the same three steps:** `invalidateRecordsCache()` →
+  `controller.reload()` → `ledger.rebase()`. Drop the first and the loop keeps serving records it
+  already read; drop the last and the discarded records fold back into whatever `set-model` or
+  `reload-settings` builds next. `truncate-session` throws on a message it cannot find rather than
+  reporting it, because a rewind that silently did nothing leaves the caller rendering a transcript the
+  file no longer matches. `restore-code-and-conversation` has no command of its own — it is
+  `restore-code` then `truncate-session`, composed by the caller.
+- **`client.ts` must not *value*-import `harness/`, `services/`, `sessions/` or `commands/`.** The last
+  one matters as much as the others: it would drag the whole slash-command registry, and through
+  `skills.ts` the filesystem, into a renderer bundle. `test/protocolClientParity.test.ts` pins all four.
 - **Switching sessions is not just `controller.retarget`.** `runtime/sessionSwitch.ts` also rebuilds the
   runtime (`createRuntime` + `RuntimeSlot.replace`, replace *last*), restores background tasks and
   reconciles orphaned agents. Skipping the rebuild leaves the `AgentLoop` bound to the session it left.
-  `App.tsx` still has its own copy of this until the TUI moves onto `SessionClient`.
+  Both `SessionHost` and `App.tsx` go through it. It returns raw `SessionDiagnostic`s rather than
+  formatted notices — pairing them with the MCP status needs a host, and a terminal resume has never
+  reported connection state — and its `host` dep is a two-member `Pick`, because the TUI holds `store`
+  and `createRuntime` as props and owns no `RuntimeHost`. The optional `beforeApply` hook is where the
+  shell's `MessageQueue` gets rebound: it must happen *before* `RuntimeSlot.replace`, since past that
+  point the slot has notified `useSyncExternalStore` and a queue still keyed to the old session could
+  pump into the new one. A new session's id does not exist until `createDraft()`, so a caller cannot do
+  it ahead of the call.
 - **Only the permission bridge parks.** `createPromptProxy` queues requests until a UI attaches rather
   than auto-denying; the other three answer immediately because headless callers (a `PlanModeManager`
   driven straight from a unit test) depend on it. The five fallbacks are deliberately asymmetric —

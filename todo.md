@@ -185,7 +185,7 @@ Stage 2b 原本写成「装 Electron + 写外壳」。三份探查后确认这�
 ### 顺带修掉的两个真缺陷
 
 1. [x] **客户端 `permissionMode` 会陈旧** — `EnterPlanMode`/`ExitPlanMode` 经 `PlanModeManager` → `PermissionGate` 改模式，根本不碰 `RuntimeSlot`，而 host 只订阅了 `RuntimeSlot`。补 `permissionGate.onModeChange`。
-2. [x] **`retarget` 后 loop 仍绑旧会话** — 原实现只做 ledger rebase + `controller.retarget`，没有 `createRuntime` + `RuntimeSlot.replace`，也跳过了 `backgroundTasks.restoreSession` 与孤儿 agent 对账。策略抽进 `sessionSwitch.ts`。**`App.tsx` 暂留自己那份**：协议层是惰性的而 TUI 的 resume 路径是活的，两边同时改会让一个回归有两个嫌疑人；等 TUI 真正接到 `SessionClient` 时统一（`App.tsx:616` 附近）。
+2. [x] **`retarget` 后 loop 仍绑旧会话** — 原实现只做 ledger rebase + `controller.retarget`，没有 `createRuntime` + `RuntimeSlot.replace`，也跳过了 `backgroundTasks.restoreSession` 与孤儿 agent 对账。策略抽进 `sessionSwitch.ts`。**`App.tsx` 当时暂留自己那份**：协议层是惰性的而 TUI 的 resume 路径是活的，两边同时改会让一个回归有两个嫌疑人。**已在 2b-2b 收口**，两侧现在同走 `sessionSwitch.ts`。
 
 ### 验证
 
@@ -275,21 +275,114 @@ Stage 2b 原本写成「装 Electron + 写外壳」。三份探查后确认这�
 
 ---
 
+## 阶段 2b-2b — 斜杠命令跨进程派发、`/rewind` 写路径、TUI/host 去重 `[x]` 已完成
+
+2b-2a 的「仍然刻意推迟」里那两件事，本阶段全部做完。选择标准和 2b-2a 一样：不需要 TTY、不需要真实
+API key、不需要 Electron —— 每一件都能当天验证。
+
+### 产出
+
+- [x] **四个共享模块**：`runtime/modelSwitch.ts`（`activateModelKey` / `switchModel`）、
+  `runtime/runOverrides.ts`、`runtime/planFile.ts`、`runtime/subagentInspection.ts`。
+  这些原本困在 `App.tsx` 与 `useCommands.ts` 里，但 host 侧组装 `CommandContext` 同样需要它们——
+  不搬就等于写第二份然后放任漂移。`useCommands.ts` 354 → **244 行**，`App.tsx` 1209 → **1126 行**
+  （这一条占 −76，后面那条会话切换只占 −7：它换掉的是编排而不是体积），四个模块一并挂进
+  `runtime/index.ts` 门面。`App.tsx` 顺带少一个 prop：`resolveModelInput` 没必要单传，
+  `switchModel` 直接拿本来就在传的 `ConfigService`。
+  - **`activateModelKey` 与 `switchModel` 故意分成两层**：`set-model` 命令只是把当前 runtime 指到别处，
+    `/model` 是用户在表达偏好，所以只有后者回写 tier。把持久化折进下层，fallback 激活或选择器预览
+    就会开始改写用户默认值。
+- [x] **`run-command`**：`CommandContext` 的 31 个成员里 **24 个** host 侧直接满足；剩下 **7 个**
+  无返回值、离开视图就没有意义，降为 `CommandEffect` 的三种
+  （`write-line` / `open-command-view` / `open-surface`）走 `HostEvent`。
+  **这正是 `run-command` 不能是普通请求/响应的原因**：命令在**执行中途**推送这些，而且一条命令可能推多次；
+  它们保证在自己那条 `reply` 之前到达。五个面板开启器收成一个 `open-surface`，
+  没有 provider 面板的外壳按名字忽略即可，加第六个面板也不会加宽 union。
+  - `COMMAND_CONTEXT_COVERAGE` 是键控 `satisfies` 表（与 `COMMAND_SCHEMAS` 同一手法）：
+    给 `CommandContext` 加成员而不决定它在哪一侧执行，**按名字**编译失败。
+  - context **每条命令重建**且 session/records 走 getter：`/model x` 会换掉 runtime 再读回新模型来打印，
+    `/clear` 会在命令执行中途换掉会话。
+  - 两处容错逐字照搬 `useCommands.dispatch`：未知命令、抛异常的命令都算 `handled`，
+    解释以 `write-line` 送出——斜杠命令失败不是协议失败。只有「根本不是斜杠命令」才 `handled: false`。
+    `/exit` 回一个 flag 而不是自己关掉 host：外壳有自己的 teardown，好了再调 `shutdown`。
+- [x] **`/rewind` 写路径**：`truncate-session` + `summarize-rewind`。两者都以
+  `invalidateRecordsCache()` → `controller.reload()` → `ledger.rebase()` 收尾，三步都是载荷：
+  少第一步 loop 继续供应它已经读到的旧记录，少最后一步被丢弃的记录会折回下一个
+  `set-model` / `reload-settings` 建出来的 runtime。`truncate-session` 找不到 messageId **抛**而不是报告，
+  因为「静默什么都没做」会让调用方继续显示一个与磁盘不符的 transcript。
+  `restore-code-and-conversation` 故意没有独立命令：它就是 `restore-code` 接 `truncate-session`，由调用方组合。
+- [x] **`session-changed` 事件**：`/clear` 经 `run-command` 也会换会话，而只有 host 知道它刚铸的 draft id。
+  客户端逐字段 diff 后才换（`updatedAt`/`messageCount` 每个 turn 都在动）。
+- [x] **`SessionClient` 新增** `runCommand` / `onCommandEffect` / `truncateSession` / `summarizeRewind` /
+  `getSession`。
+- [x] **`App.tsx` 两处会话切换接入 `sessionSwitch.ts`**（2b-1 遗留、2b-2 列出的最后一个非 Electron 项）。
+  推迟它的前提「协议层惰性、TUI resume 是活的」已随协议侧全绿消失。为此先动了两处：
+  - **notices 从 `sessionSwitch.ts` 挪到调用点**。它原本为了 `buildStartupNotices` 里的 `mcp`
+    而要求整个 `RuntimeHost`；而 `App` 只有 `store` / `createRuntime` 两个 prop、根本没有 `mcp`，
+    拿到 notices 也会丢掉（终端 resume 从来只报诊断、不报连接状态）。改为返回**原始
+    `SessionDiagnostic[]`**，host 在 `applySessionSwitch` 里就地折入 MCP 状态。
+    两侧措辞逐字不变，而 `summarizeDiagnosticsForTui` 会丢掉的 `code` / `line` 得以保留。
+    `host` dep 因此收窄成两成员 `Pick`。
+  - **新增可选 `beforeApply` hook**。消息队列归外壳而非 host，且 `App` 是在换 runtime **之前**重绑它的。
+    落到 `RuntimeSlot.replace` 之后就有一个 await 边界：slot 已经通知了 `useSyncExternalStore`，
+    仍指向旧会话的队列可能往新会话里 pump。新会话 id 在 `createDraft()` 之后才存在，
+    调用方无法提前做——所以是 hook 而不是调用方自己的一步。host 不传，行为不变。
+  - 留在 `App` 的是切换不拥有的东西：`activeSession`、transcript、checkpoint 列表、mode，
+    以及选择器「已经在这个会话上」的早退。`resumeSession` 改为传 id 让共享函数 `resolve`，
+    于是会话已消失时会**抛**而不是静默切换——`SessionResumePicker` 本来就 catch `onSelect` 的 reject 并就地显示。
+
+### 顺带修掉 / 校正的
+
+1. [x] **四个新模块没进 `runtime/index.ts` 门面**。该文件导出了其余每一个 runtime 模块，
+   漏这四个属于不一致，已补。
+2. [x] **注释里的数字是错的**。`commandContext.ts` 原写「Twenty-six … The other eight」，
+   实测 **24 / 7**（`COMMAND_CONTEXT_COVERAGE` 共 31 项）；`wire.ts` 与 parity 测试里的「eight」同步改掉。
+   本文件早先「34 个字段 / 8 个副作用」是更早的口径。
+3. [x] **`CLAUDE.md` 的 `HostCommand` 变体数 24 → 27**，测试基线 1592 → 1651。
+
+### 验证
+
+- [x] `npx tsc --noEmit` 干净
+- [x] `npm run test` — **1651 passed / 0 failed / 39 suites**（较 1592 基线新增 59 个）
+- [x] `test/modelSwitch.test.ts`（9）、`test/runOverrides.test.ts`（10）、
+  `test/subagentInspection.test.ts`（10，含 store 往返与 worktree 清理跳过 running）
+- [x] `test/protocolHost.test.ts` 新增 16 条：效果全部早于 reply、非斜杠输入 unhandled、
+  未知命令与抛异常的命令都以 write-line 解释、`/exit` 不关 host、`/model` 带参切换并持久化 tier、
+  `/model` 无参要选择器、`/clear` 换会话并广播、`/plan` 到达权限 gate、
+  context 用 getter 而非捕获读会话；两个 rewind 命令各自的切割、边界与拒绝
+- [x] `test/sessionSwitch.test.ts` 从 6 条扩到 14 条：`beforeApply` 严格早于
+  `createRuntime`/`retarget`/`replace`、新会话 hook 拿到的是新铸 draft id、
+  hook 可省略、诊断以原始对象返回且结果里**没有** `notices`、未知会话抛且什么都没换、
+  已在本进程注册的会话不二次 restore、孤儿记录同时进磁盘与返回列表
+- [x] **源码级守卫**：`App.tsx` 不得再出现 `.retarget(` / 孤儿字面量 / `restoreSession(`。
+  三条**都做过变异验证**（逐个塞回去，都能被测出）。React 组件本身按仓库惯例不做渲染测试。
+- [ ] **手动冒烟未执行**（需 TTY + 真实 key）。**本阶段唯一有真实回归面的是 `App.tsx` 的两处会话切换**，
+  其余对运行中的 TUI 全是惰性的（协议层 TUI 不构造，四个共享模块是等价搬迁）。按顺序走：
+  含工具调用的一个 turn → `/clear`（usage 归零、transcript 清空、队列清空、无残留 draft）→
+  `/resume` 切到另一个会话（transcript 重建、诊断 banner 仍**只有诊断且不含 MCP 行**、
+  后台任务恢复且不重复注册）→ `/model` 切换 → `/cost` → `/plan` → `/agents` → Ctrl+C 退出无残留进程。
+
+---
+
 ## 阶段 2b-2 — Electron 外壳 `[ ]` 未开始
 
-构建步骤已完成（见 2b-2a），剩下的都需要能装包。
+构建步骤已完成（见 2b-2a），协议补完与 TUI 去重已完成（见 2b-2b），剩下的都需要能装包。
 
 - [x] ~~构建步骤~~ — 已在 2b-2a 完成
 - [ ] `npm i -D electron` + 渲染进程打包器；主进程 = 现有 Node 全栈 + `bootstrap()` + `RuntimeSlot`/`SessionController` + `SessionHost`；渲染进程 = 新 UI + `SessionClient`，**深 import `protocol/client.js` 而非桶**（桶经 `host.ts` 传递性拉进 `node:fs`）
 - [ ] `src/desktop/ipc/` 写 `ipcMain`/`ipcRenderer` 适配器。`createNodeProcessChannel` **不能直接复用**——`NodeIpcTarget` 的结构（`send`/`on('message')`）与 Electron 的 `on(channel, (event, ...args))` / `webContents.send` 不匹配，需要约 50 行新适配器。握手照 `test/protocolChildProcess.test.ts` 的 `__ready` 模式。
 - [ ] MCP trust 提示：`confirmMcpTrust` 在**任何 channel 存在之前**运行，做成 `UiRequest` 需要一个 pre-`hello` 阶段；或先用原生 `dialog.showMessageBox`。
-- [ ] 把 `App.tsx` 的会话切换改接 `sessionSwitch.ts`（见阶段 2b-1 缺陷 2 的留尾）
+- [x] ~~把 `App.tsx` 的会话切换改接 `sessionSwitch.ts`~~ — 已在 2b-2b 完成
 - [ ] 无需迁移：Ink patches、focus filter、alt-screen、`transcript.ts`、`layout.ts`
 
 ### 仍然刻意推迟
 
-- **斜杠命令的跨进程派发**（`run-command`）：`CommandContext` 有 34 个字段，其中 **8 个是没有返回值的渲染器副作用**（`writeLine`、`openCommandView`、`openModelPicker`、`openEffortPicker`、`openProviderPanel`、`openBackgroundTasks`、`openResumePicker`、半个 `clearMessages`）。它们在命令执行**中途**被推送，所以 `run-command` 不能是普通的请求/响应，需要新增一个 `HostEvent` 承载 effect union。这是独立的半天以上，且不阻塞别的。
-- **`/rewind` 写路径**：入口是双击 Esc（`useKeyboardShortcuts.ts:377`），不是斜杠命令，所以**不被上一条阻塞**。读路径与 `restore-code` 已在线上；缺的是会话截断与摘要两半。摘要那半必须在 host 执行：`summarizeRecordsForRewind` 走 `AgentLoop` 的同一条串行队列并真的调 provider。纯逻辑早已抽在 `runtime/rewindSummary.ts`。
+- **斜杠命令的跨进程派发**（`run-command`）— 已在 2b-2b 完成。
+- **`/rewind` 写路径** — 已在 2b-2b 完成（`truncate-session` + `summarize-rewind`）。入口是双击 Esc
+  （`useKeyboardShortcuts.ts:377`）而非斜杠命令，所以它本来就不被上一条阻塞。
+  摘要那半必须在 host 执行：`summarizeRecordsForRewind` 走 `AgentLoop` 的同一条串行队列并真的调 provider。
+  **TUI 仍走自己那份**（`App.tsx` 直接调 store + `runtime/rewindSummary.ts`）：与协议侧共用纯逻辑，
+  等 TUI 真正接到 `SessionClient` 时再收口。
 - **`buildModelPickerOptions` 的 DTO 化** — 已在 2b-2a 完成。
 - **入站命令的 zod 校验** — 已在 2b-2a 完成。
 
@@ -349,14 +442,27 @@ Stage 2b 原本写成「装 Electron + 写外壳」。三份探查后确认这�
 - **任何从 `ModelConfig` 投影出去的类型都要逐字段构造，绝不 spread**：`resolveModel` 会把 endpoint 的 `apiKey`/`baseUrl` 折进返回值。
 - **`PermissionRequestDto` 携带派生数据**（`preview`、`destructiveWarnings`），目的是让渲染器不必 import `harness/`。加字段时保持这条：需要 host 侧代码才能算出来的东西，在 host 算完再上线。
 - **「always allow」必须先触发回调再 resolve**：`PermissionGate` 在 `await this.prompt(...)` 的下一行读那个闭包标志。host 与 `usePermission` 两条路径都是如此，各有测试钉住。
-- **切会话不等于 `controller.retarget`**：还要 `createRuntime` + `RuntimeSlot.replace`（replace 放最后）+ 后台任务恢复 + 孤儿 agent 对账，见 `runtime/sessionSwitch.ts`。
+- **切会话不等于 `controller.retarget`**：还要 `createRuntime` + `RuntimeSlot.replace`（replace 放最后）+ 后台任务恢复 + 孤儿 agent 对账，见 `runtime/sessionSwitch.ts`。**`SessionHost` 与 `App.tsx` 现在同走这一份**。
+  它返回**原始 `SessionDiagnostic[]`** 而非格式化 notices（配 MCP 状态需要 host，终端 resume 从不报连接状态），
+  `host` dep 只是两成员 `Pick`（TUI 没有 `RuntimeHost`）。可选 `beforeApply` 是外壳重绑 `MessageQueue` 的位置，
+  **必须早于 `RuntimeSlot.replace`**：过了那一步 slot 已通知 `useSyncExternalStore`，仍指向旧会话的队列会往新会话 pump。
+- **斜杠命令跑在 host**：`run-command` 只送原始行。`CommandContext` 31 个成员里 24 个 host 侧满足，
+  剩下 7 个降为 `CommandEffect`（`write-line`/`open-command-view`/`open-surface`），
+  **在自己那条 `reply` 之前**到达——命令是在执行中途推它们的，**不要改成 reply 字段**。
+  `COMMAND_CONTEXT_COVERAGE` 是键控 `satisfies` 表，加成员不表态会按名字编译失败。
+  context 每条命令重建、session/records 走 getter（`/model`、`/clear` 会在中途换掉它们）。
+- **两个 `/rewind` 写命令都以 `invalidateRecordsCache()` → `controller.reload()` → `ledger.rebase()` 收尾**。
+  少第一步 loop 继续供应旧记录；少最后一步被丢弃的记录会折回下一个 runtime。
+  `truncate-session` 找不到 messageId 要**抛**。
+- **`client.ts` 的值导入禁区是四个**：`harness/`、`services/`、`sessions/`、**`commands/`**。
+  最后一个会把整个斜杠命令注册表、并经 `skills.ts` 把文件系统拖进渲染进程包体。
 - **渲染器深 import `protocol/client.js`，不要走 `protocol/index.js`**：桶经 `host.ts`/`permissionDto.ts` 传递性拉进 `node:fs`。`test/protocolClientParity.test.ts` 钉住了 `client.ts` 只 type-import harness。
 
 **验证命令**：
 
 ```bash
 npm run typecheck
-npm run test                                          # 1592 tests / 39 suites, ~40s
+npm run test                                          # 1651 tests / 39 suites, ~40s
 npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 
 node --import tsx --test test/protocolWire.test.ts test/protocolHost.test.ts \
@@ -365,8 +471,11 @@ node --import tsx --test test/protocolCommandSchema.test.ts   # 入站校验 + �
 node --import tsx --test test/distBuild.test.ts               # emit 后用纯 node 载入
 node --import tsx --test test/protocolChildProcess.test.ts   # 真实进程边界
 node --import tsx --test test/sessionFileLock.test.ts        # 含双进程并发写
+node --import tsx --test test/sessionSwitch.test.ts           # 切会话编排 + App.tsx 源码守卫
+node --import tsx --test test/modelSwitch.test.ts test/runOverrides.test.ts \
+  test/subagentInspection.test.ts                             # TUI 与 host 共享的四个模块
 node --import tsx --test test/permissionPresentation.test.ts test/usePermission.test.ts \
-  test/fileToolPreview.test.ts test/fileSuggestions.test.ts test/sessionSwitch.test.ts \
+  test/fileToolPreview.test.ts test/fileSuggestions.test.ts \
   test/modelPicker.test.ts
 node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 npm run dev:tui                                       # 手动冒烟，需 TTY

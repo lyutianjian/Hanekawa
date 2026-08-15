@@ -1,0 +1,108 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { SessionClient } from '../src/runtime/protocol/client.js'
+
+/**
+ * The acceptance test for "a renderer needs nothing but a SessionClient".
+ *
+ * Stage 2b's rule is that the renderer never imports the harness. That only
+ * holds if every capability the TUI gets by holding a live `RuntimeHost` has a
+ * wire path, so the table below is the executable version of that gap list: it
+ * fails the moment an App prop gains no counterpart on the client.
+ */
+
+const repoRoot = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)))
+
+/** Every prop `tui.tsx` hands to `App`, mapped to its client-side replacement. */
+const COVERAGE: Array<{ prop: string; via: 'client' | 'shell'; members: string[]; note?: string }> = [
+  { prop: 'runtimeSlot', via: 'client', members: ['getRuntimeSnapshot', 'subscribe'] },
+  {
+    prop: 'sessionController',
+    via: 'client',
+    members: ['onEvent', 'getSnapshot', 'subscribe', 'submit', 'interrupt', 'reload'],
+  },
+  { prop: 'store', via: 'client', members: ['listSessions', 'createSession', 'retarget'] },
+  { prop: 'session', via: 'client', members: ['hello'] },
+  { prop: 'availableModelKeys', via: 'client', members: ['listModels'] },
+  { prop: 'resolveModelInput', via: 'client', members: ['resolveModel'] },
+  { prop: 'providerConfig', via: 'client', members: ['listModels', 'setDefaultModel'] },
+  { prop: 'createRuntime', via: 'client', members: ['setModel', 'retarget', 'createSession'] },
+  { prop: 'createActiveModelRuntime', via: 'client', members: ['submit'] },
+  { prop: 'permissionGate', via: 'client', members: ['getRuntimeSnapshot', 'setPermissionMode'] },
+  { prop: 'promptProxy', via: 'client', members: ['setHandlers'] },
+  { prop: 'exitPlanProxy', via: 'client', members: ['setHandlers'] },
+  { prop: 'enterPlanProxy', via: 'client', members: ['setHandlers'] },
+  { prop: 'askUserQuestionProxy', via: 'client', members: ['setHandlers'] },
+  { prop: 'existingRecords', via: 'client', members: ['hello', 'reload'] },
+  { prop: 'initialSystemMessages', via: 'client', members: ['hello'] },
+  { prop: 'initialQueuedPrompt', via: 'client', members: ['hello'] },
+  { prop: 'onBeforeExit', via: 'client', members: ['shutdown'] },
+  { prop: 'reloadAgentDefinitions', via: 'client', members: ['reloadAgents'] },
+  { prop: 'reloadSkills', via: 'client', members: ['reloadSkills'] },
+  { prop: 'onEffortLevelChange', via: 'client', members: ['setEffort'] },
+  {
+    prop: 'backgroundTasks',
+    via: 'client',
+    members: ['getBackgroundTasks', 'listBackgroundTasks', 'peekTaskOutput', 'killTask'],
+  },
+  {
+    prop: 'onPermissionModeChange',
+    via: 'client',
+    members: ['getRuntimeSnapshot'],
+    note: 'pushed as a runtime-snapshot, now including PermissionGate-driven changes',
+  },
+]
+
+test('every App prop has a SessionClient counterpart', () => {
+  const client = Object.create(SessionClient.prototype) as Record<string, unknown>
+  const instanceFields = new Set(['getSnapshot', 'subscribe', 'getBackgroundTasks'])
+
+  for (const entry of COVERAGE) {
+    for (const member of entry.members) {
+      const present = typeof client[member] === 'function' || instanceFields.has(member)
+      assert.ok(present, `App prop "${entry.prop}" maps to SessionClient.${member}, which does not exist`)
+    }
+  }
+})
+
+test('the coverage table lists every prop tui.tsx passes to App', async () => {
+  const source = await readFile(path.join(repoRoot, 'src/tui/entrypoints/tui.tsx'), 'utf8')
+  const jsx = source.slice(source.indexOf('<App'), source.indexOf('/>', source.indexOf('<App')))
+
+  const passed = new Set<string>()
+  for (const match of jsx.matchAll(/^\s{4,}([a-zA-Z][a-zA-Z0-9]*)=/gm)) {
+    passed.add(match[1]!)
+  }
+
+  assert.ok(passed.size > 15, `expected to find the App props, parsed ${passed.size}`)
+
+  const covered = new Set(COVERAGE.map((entry) => entry.prop))
+  const uncovered = [...passed].filter((prop) => !covered.has(prop))
+  assert.deepEqual(uncovered, [],
+    'a new App prop needs either a wire path or an explicit entry in this table')
+})
+
+test('the client half never imports the harness at runtime', async () => {
+  const source = await readFile(path.join(repoRoot, 'src/runtime/protocol/client.ts'), 'utf8')
+
+  const imports = [...source.matchAll(/^import\s+(type\s+)?[\s\S]*?from\s+'([^']+)'/gm)]
+  assert.ok(imports.length > 0, 'expected to parse some imports')
+
+  for (const [statement, typeOnly, specifier] of imports) {
+    if (!specifier!.includes('harness/') && !specifier!.includes('services/') && !specifier!.includes('sessions/')) {
+      continue
+    }
+    const isTypeOnly = Boolean(typeOnly) || !/^import\s+(?!type)[^{]*\{[^}]*\b(?!type\b)\w/.test(statement!)
+    assert.ok(
+      isTypeOnly || statement!.includes('import type'),
+      `client.ts must only type-import ${specifier}; a value import drags the harness into a renderer bundle`,
+    )
+  }
+
+  assert.ok(!source.includes("from '../../tui/"), 'the client must not reach into the TUI')
+  assert.ok(!/from '[^']*\bink\b/.test(source), 'the client must not import Ink')
+  assert.ok(!/from 'react'/.test(source), 'the client must not import React')
+})

@@ -138,8 +138,9 @@ test('a command resolves on reply and rejects on fail', async () => {
   await settle()
   const command = harness.sent.find((entry) => entry.type === 'set-effort')
   assert.ok(command && command.type === 'set-effort')
-  harness.post({ type: 'reply', id: command.id, result: { effort: 'low' } })
-  assert.equal(await pending, 'low')
+  assert.equal(command.persist, undefined, 'persistence is opt-in')
+  harness.post({ type: 'reply', id: command.id, result: { effort: 'low', persisted: false } })
+  assert.deepEqual(await pending, { effort: 'low', persisted: false })
 
   const failing = harness.client.setModel('nope')
   await settle()
@@ -220,5 +221,67 @@ test('an installed permission handler can answer with alwaysAllow', async () => 
   const response = harness.sent.find((entry) => entry.type === 'ui-response')
   assert.ok(response && response.type === 'ui-response' && response.response.kind === 'permission')
   assert.deepEqual(response.response, { kind: 'permission', approved: true, alwaysAllow: true })
+  harness.client.dispose()
+})
+
+test('an unchanged background task list keeps its identity', async () => {
+  const harness = createHarness()
+  const post = (outputBytes: number) => harness.post({
+    type: 'background-tasks',
+    tasks: [{ id: 't1', status: 'running', outputBytes, unreadBytes: 4 }],
+  } as unknown as HostEvent)
+
+  let notifications = 0
+  harness.client.subscribe(() => { notifications += 1 })
+
+  post(10)
+  await settle()
+  const first = harness.client.getBackgroundTasks()
+  assert.equal(first.length, 1)
+  assert.equal(notifications, 1)
+
+  // The host re-sends the whole list on every change, so an identical payload
+  // must not hand useSyncExternalStore a new array.
+  post(10)
+  await settle()
+  assert.equal(harness.client.getBackgroundTasks(), first, 'identity must survive an identical list')
+  assert.equal(notifications, 1, 'and it must not notify')
+
+  post(11)
+  await settle()
+  assert.notEqual(harness.client.getBackgroundTasks(), first)
+  assert.equal(notifications, 2)
+  harness.client.dispose()
+})
+
+test('shutdown resolves even when the host dies before replying', async () => {
+  const harness = createHarness()
+
+  const closing = harness.client.shutdown('window closed')
+  await settle()
+  harness.hostSide.close()
+
+  // The host going away is the success case; a window must not refuse to close
+  // because the reply never arrived.
+  await closing
+  harness.client.dispose()
+})
+
+test('retarget returns the session alongside its records', async () => {
+  const harness = createHarness()
+  const pending = harness.client.retarget('s2')
+  await settle()
+
+  const sent = harness.sent.find((entry) => entry.type === 'retarget')
+  assert.ok(sent && sent.type === 'retarget')
+  harness.post({
+    type: 'reply',
+    id: sent.id,
+    result: { session: { id: 's2' }, records: [], notices: [] },
+  })
+
+  const result = await pending
+  assert.equal(result.session.id, 's2')
+  assert.deepEqual(result.records, [])
   harness.client.dispose()
 })

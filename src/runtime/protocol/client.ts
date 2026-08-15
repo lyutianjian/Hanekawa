@@ -6,7 +6,9 @@ import type {
   AskUserQuestionResult,
 } from '../../harness/types.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeManager.js'
+import type { BackgroundTaskSnapshot } from '../../services/backgroundTasks/registry.js'
 import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
+import type { SessionMeta } from '../../sessions/service.js'
 import { createEmptySessionUsage, type SessionUsage } from '../sessionUsage.js'
 import type { SessionControllerSnapshot, SessionEvent } from '../sessionController.js'
 import type { RuntimeChannel } from './channel.js'
@@ -17,9 +19,22 @@ import {
   type InterruptReason,
   type PermissionRequestDto,
   type UiResponse,
+  type WireBackgroundTasksResult,
+  type WireEffortResult,
+  type WireHelloResult,
+  type WireModelsResult,
+  type WireReloadCountResult,
+  type WireReloadSettingsResult,
+  type WireResolveModelResult,
   type WireRunOverrides,
   type WireRuntimeSnapshot,
+  type WireSessionSwitchResult,
+  type WireSessionsResult,
+  type WireTaskOutputResult,
+  type WireTaskResult,
 } from './wire.js'
+
+const EMPTY_TASKS: readonly BackgroundTaskSnapshot[] = Object.freeze([])
 
 /** Answers the four blocking questions a host can ask. */
 export interface SessionClientHandlers {
@@ -59,6 +74,7 @@ export class SessionClient {
   })
   private subagentProgress: ReadonlyMap<string, string> = new Map()
   private runtimeSnapshot: WireRuntimeSnapshot | undefined
+  private backgroundTasks: readonly BackgroundTaskSnapshot[] = EMPTY_TASKS
   private readonly teardown: Array<() => void> = []
   private disposed = false
 
@@ -91,6 +107,8 @@ export class SessionClient {
     return this.runtimeSnapshot
   }
 
+  getBackgroundTasks = (): readonly BackgroundTaskSnapshot[] => this.backgroundTasks
+
   onEvent(listener: (event: SessionEvent) => void): () => void {
     this.eventListeners.add(listener)
     return () => {
@@ -100,8 +118,8 @@ export class SessionClient {
 
   // --- commands ---------------------------------------------------------
 
-  async hello(): Promise<{ sessionId: string }> {
-    return this.send({ type: 'hello', id: randomUUID() }) as Promise<{ sessionId: string }>
+  async hello(): Promise<WireHelloResult> {
+    return this.send({ type: 'hello', id: randomUUID() }) as Promise<WireHelloResult>
   }
 
   async submit(input: string, overrides?: WireRunOverrides): Promise<void> {
@@ -112,14 +130,86 @@ export class SessionClient {
     await this.send({ type: 'interrupt', id: randomUUID(), reason })
   }
 
+  /** Reloads *records*. The `reload*` methods below reload host state. */
   async reload(): Promise<SessionRecord[]> {
     const result = await this.send({ type: 'reload', id: randomUUID() }) as { records: SessionRecord[] }
     return result.records
   }
 
-  async retarget(sessionId: string): Promise<SessionRecord[]> {
-    const result = await this.send({ type: 'retarget', id: randomUUID(), sessionId }) as { records: SessionRecord[] }
-    return result.records
+  async retarget(sessionId: string): Promise<WireSessionSwitchResult> {
+    return this.send({ type: 'retarget', id: randomUUID(), sessionId }) as Promise<WireSessionSwitchResult>
+  }
+
+  async createSession(title?: string): Promise<WireSessionSwitchResult> {
+    return this.send({
+      type: 'create-session',
+      id: randomUUID(),
+      ...(title ? { title } : {}),
+    }) as Promise<WireSessionSwitchResult>
+  }
+
+  async listSessions(): Promise<SessionMeta[]> {
+    const result = await this.send({ type: 'list-sessions', id: randomUUID() }) as WireSessionsResult
+    return result.sessions
+  }
+
+  async listModels(): Promise<WireModelsResult> {
+    return this.send({ type: 'list-models', id: randomUUID() }) as Promise<WireModelsResult>
+  }
+
+  async resolveModel(input: string): Promise<string | undefined> {
+    const result = await this.send({ type: 'resolve-model', id: randomUUID(), input }) as WireResolveModelResult
+    return result.modelKey
+  }
+
+  async setDefaultModel(reference: string): Promise<WireModelsResult> {
+    return this.send({
+      type: 'set-default-model',
+      id: randomUUID(),
+      reference,
+    }) as Promise<WireModelsResult>
+  }
+
+  async reloadAgents(): Promise<number> {
+    const result = await this.send({ type: 'reload-agents', id: randomUUID() }) as WireReloadCountResult
+    return result.count
+  }
+
+  async reloadSkills(): Promise<number> {
+    const result = await this.send({ type: 'reload-skills', id: randomUUID() }) as WireReloadCountResult
+    return result.count
+  }
+
+  async reloadSettings(): Promise<WireReloadSettingsResult> {
+    return this.send({ type: 'reload-settings', id: randomUUID() }) as Promise<WireReloadSettingsResult>
+  }
+
+  async listBackgroundTasks(): Promise<BackgroundTaskSnapshot[]> {
+    const result = await this.send({
+      type: 'list-background-tasks',
+      id: randomUUID(),
+    }) as WireBackgroundTasksResult
+    return result.tasks
+  }
+
+  async peekTaskOutput(taskId: string, maxBytes?: number): Promise<string> {
+    const result = await this.send({
+      type: 'peek-task-output',
+      id: randomUUID(),
+      taskId,
+      ...(maxBytes === undefined ? {} : { maxBytes }),
+    }) as WireTaskOutputResult
+    return result.output
+  }
+
+  async killTask(taskId: string, reason?: string): Promise<BackgroundTaskSnapshot | undefined> {
+    const result = await this.send({
+      type: 'kill-task',
+      id: randomUUID(),
+      taskId,
+      ...(reason ? { reason } : {}),
+    }) as WireTaskResult
+    return result.task
   }
 
   async runTool(name: string, input: unknown): Promise<{ ok: boolean; content: string; errorCode?: string }> {
@@ -149,9 +239,13 @@ export class SessionClient {
     }>
   }
 
-  async setEffort(level: string): Promise<string> {
-    const result = await this.send({ type: 'set-effort', id: randomUUID(), level }) as { effort: string }
-    return result.effort
+  async setEffort(level: string, options: { persist?: boolean } = {}): Promise<WireEffortResult> {
+    return this.send({
+      type: 'set-effort',
+      id: randomUUID(),
+      level,
+      ...(options.persist ? { persist: true } : {}),
+    }) as Promise<WireEffortResult>
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<PermissionMode> {
@@ -159,11 +253,25 @@ export class SessionClient {
     return result.mode
   }
 
+  /**
+   * The one command that tolerates the transport dying mid-flight: the host
+   * going away is the success case, and a shell must not refuse to close its
+   * window because the reply never arrived.
+   */
+  async shutdown(reason: string): Promise<void> {
+    try {
+      await this.send({ type: 'shutdown', id: randomUUID(), reason })
+    } catch {
+      // Already gone.
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     for (const off of this.teardown.splice(0)) off()
     this.failAllPending('The client was disposed.')
+    this.backgroundTasks = EMPTY_TASKS
     this.eventListeners.clear()
     this.listeners.clear()
   }
@@ -194,6 +302,9 @@ export class SessionClient {
       case 'runtime-snapshot':
         this.runtimeSnapshot = event.snapshot
         this.notify()
+        return
+      case 'background-tasks':
+        this.applyBackgroundTasks(event.tasks)
         return
       case 'ui-request':
         void this.answer(event.request)
@@ -236,6 +347,17 @@ export class SessionClient {
 
   private notify(): void {
     for (const listener of [...this.listeners]) listener()
+  }
+
+  /**
+   * Same identity discipline as the snapshot, and for the same reason: the
+   * host re-sends the whole list on every change, so a fresh array would hand
+   * `useSyncExternalStore` a new identity on every output chunk.
+   */
+  private applyBackgroundTasks(next: BackgroundTaskSnapshot[]): void {
+    if (sameTaskList(this.backgroundTasks, next)) return
+    this.backgroundTasks = next
+    this.notify()
   }
 
   private async answer(request: Extract<HostEvent, { type: 'ui-request' }>['request']): Promise<void> {
@@ -282,6 +404,28 @@ export class SessionClient {
   private failAllPending(message: string): void {
     this.replies.settleAll(() => ({ ok: false, message }))
   }
+}
+
+/**
+ * Compared field by field rather than deeply: the fields that move are the
+ * ones a task list renders, and `outputBytes`/`unreadBytes` change on every
+ * chunk, which is exactly what the comparison needs to catch.
+ */
+function sameTaskList(
+  a: readonly BackgroundTaskSnapshot[],
+  b: readonly BackgroundTaskSnapshot[],
+): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  return a.every((task, index) => {
+    const other = b[index]
+    if (!other) return false
+    return task.id === other.id
+      && task.status === other.status
+      && task.outputBytes === other.outputBytes
+      && task.unreadBytes === other.unreadBytes
+      && task.finishedAt === other.finishedAt
+  })
 }
 
 function sameUsage(a: SessionUsage, b: SessionUsage): boolean {

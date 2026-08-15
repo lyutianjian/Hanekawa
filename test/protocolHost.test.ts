@@ -4,6 +4,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createUiBridges } from '../src/runtime/bridges.js'
+import { registerBuiltinCommands } from '../src/commands/index.js'
 import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.js'
 import { SessionHost } from '../src/runtime/protocol/host.js'
 import type { HostCommand, HostEvent } from '../src/runtime/protocol/wire.js'
@@ -29,6 +30,9 @@ interface Harness {
   emit: (event: SessionEvent) => void
   publishSnapshot: () => void
   bridges: ReturnType<typeof createUiBridges>
+  /** The real store behind the stub controller, for the commands that write. */
+  store: SessionStore
+  sessionId: string
   calls: {
     submits: string[]
     interrupts: unknown[]
@@ -36,9 +40,12 @@ interface Harness {
     defaultModels: string[]
     shutdowns: string[]
     modeChanges: string[]
+    cacheInvalidations: number
+    summarized: SessionRecord[][]
   }
   /** Drives the two subscriptions the host installs on the runtime host. */
   changeMode: (mode: string) => void
+  getPermissionMode: () => string
   changeBackgroundTasks: (tasks: unknown[]) => void
   closeClient: () => void
   dispose: () => void
@@ -58,6 +65,8 @@ async function createHarness(): Promise<Harness> {
     defaultModels: [],
     shutdowns: [],
     modeChanges: [],
+    cacheInvalidations: 0,
+    summarized: [],
   }
 
   const eventListeners = new Set<(event: SessionEvent) => void>()
@@ -82,7 +91,15 @@ async function createHarness(): Promise<Harness> {
     getSubagentProgress: () => new Map([['agent-1', 'Reading file']]),
     submit: async (input: string) => { calls.submits.push(input) },
     interrupt: (reason: unknown) => { calls.interrupts.push(reason) },
-    reload: async () => [] as SessionRecord[],
+    // Reads the real store and emits the reset the real controller emits, so a
+    // command that rewrote the file on disk is observable through the boundary.
+    reload: async () => {
+      const loaded = await store.loadRecordsWithDiagnostics(session.id)
+      for (const listener of [...eventListeners]) {
+        listener({ type: 'transcript-reset', records: loaded.records, systemMessages: [], bumpGeneration: true })
+      }
+      return loaded.records
+    },
     retarget: () => {},
     getCheckpointService: () => ({
       getCheckpointsWithDiffs: async () => [{ messageId: 'm1', commitHash: 'abc' }],
@@ -90,7 +107,15 @@ async function createHarness(): Promise<Harness> {
     }),
   }
 
-  const loop = { runTool: async () => ({ ok: true, content: 'ran' }), clearCachedSections: () => {} }
+  const loop = {
+    runTool: async () => ({ ok: true, content: 'ran' }),
+    clearCachedSections: () => {},
+    invalidateRecordsCache: () => { calls.cacheInvalidations += 1 },
+    summarizeRecordsForRewind: async (records: SessionRecord[]) => {
+      calls.summarized.push(records)
+      return { summary: `summary of ${records.length}`, preTokens: 1234 }
+    },
+  }
   const agentSession = {
     loop,
     planModeManager: undefined,
@@ -110,6 +135,7 @@ async function createHarness(): Promise<Harness> {
   const modeListeners = new Set<(mode: string) => void>()
   const taskListeners = new Set<() => void>()
   let backgroundTaskSnapshot: unknown[] = []
+  let permissionMode = 'default'
 
   const runtimeHost = {
     cwd,
@@ -122,9 +148,9 @@ async function createHarness(): Promise<Harness> {
     hasRecoverableInterruption: false,
     configuredEffortLevel: 'medium',
     permissionGate: {
-      getMode: () => 'default',
-      setMode: (mode: string) => { calls.modeChanges.push(mode) },
-      prepareContextForPlanMode: () => { calls.modeChanges.push('plan') },
+      getMode: () => permissionMode,
+      setMode: (mode: string) => { permissionMode = mode; calls.modeChanges.push(mode) },
+      prepareContextForPlanMode: () => { permissionMode = 'plan'; calls.modeChanges.push('plan') },
       onModeChange: (listener: (mode: string) => void) => {
         modeListeners.add(listener)
         return () => modeListeners.delete(listener)
@@ -157,7 +183,13 @@ async function createHarness(): Promise<Harness> {
           apiKey: 'SECRET',
           baseUrl: 'https://secret.example.com',
         }),
-      resolveModelInput: (input: string) => (input === 'nope' ? undefined : `${input}-resolved`),
+      resolveModelInput: (input: string) => {
+        if (input === 'nope') return undefined
+        // A real key resolves to itself; anything else gets a marker suffix so a
+        // test can tell "resolved" from "was already a key".
+        return input in { main: 1, fast: 1, broken: 1 } ? input : `${input}-resolved`
+      },
+      findTierForModel: (modelKey: string) => (modelKey === 'fast' ? 'fast' : undefined),
       resolveModelReference: (reference: string | undefined) => reference,
       getActiveProfile: () => ({
         name: 'default',
@@ -199,8 +231,11 @@ async function createHarness(): Promise<Harness> {
       for (const listener of [...snapshotListeners]) listener()
     },
     bridges,
+    store,
+    sessionId: session.id,
     calls,
     changeMode: (mode: string) => { for (const listener of [...modeListeners]) listener(mode) },
+    getPermissionMode: () => permissionMode,
     changeBackgroundTasks: (tasks: unknown[]) => {
       backgroundTaskSnapshot = tasks
       for (const listener of [...taskListeners]) listener()
@@ -366,6 +401,116 @@ test('switching models passes the accumulated record ledger to the new runtime',
   harness.dispose()
 })
 
+/** Three user/assistant messages on disk, so a rewind has something to cut. */
+async function seedConversation(harness: Harness): Promise<void> {
+  const records: SessionRecord[] = [
+    { type: 'message', id: 'm1', role: 'user', content: 'first', createdAt: 'now' },
+    { type: 'message', id: 'm2', role: 'assistant', content: 'answer one', createdAt: 'now' },
+    { type: 'message', id: 'm3', role: 'user', content: 'second', createdAt: 'now' },
+    { type: 'message', id: 'm4', role: 'assistant', content: 'answer two', createdAt: 'now' },
+  ]
+  for (const record of records) await harness.store.appendRecord(harness.sessionId, record)
+}
+
+test('truncate-session cuts the file, repaints the view and rebases the ledger', async () => {
+  const harness = await createHarness()
+  await seedConversation(harness)
+
+  harness.send({ type: 'truncate-session', id: 'c1', messageId: 'm3' })
+  const reply = await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+  assert.ok(reply.type === 'reply')
+
+  const { records } = reply.result as { records: SessionRecord[] }
+  assert.deepEqual(records.map((record) => record.id), ['m1', 'm2'],
+    'truncateBeforeMessage keeps records strictly before the target')
+
+  // The event stream, not the reply, is what a view listens to.
+  const reset = harness.received.find(
+    (event) => event.type === 'session-event' && event.event.type === 'transcript-reset',
+  )
+  assert.ok(reset?.type === 'session-event' && reset.event.type === 'transcript-reset')
+  assert.deepEqual(reset.event.records.map((record) => record.id), ['m1', 'm2'])
+
+  assert.equal(harness.calls.cacheInvalidations, 1,
+    'without this the loop keeps serving the records it read before the cut')
+
+  // A stale ledger would fold the discarded records into the next runtime.
+  harness.send({ type: 'set-model', id: 'c2', modelKey: 'other' })
+  await settle()
+  assert.deepEqual(harness.calls.createdRuntimes, [{ modelKey: 'other', recordCount: 2 }])
+  harness.dispose()
+})
+
+test('truncate-session fails loudly for a message that is not in the session', async () => {
+  const harness = await createHarness()
+  await seedConversation(harness)
+
+  harness.send({ type: 'truncate-session', id: 'c1', messageId: 'gone' })
+  const failure = await waitFor(() => harness.received.find((event) => event.type === 'fail'), 'a fail reply')
+  assert.ok(failure.type === 'fail')
+  assert.match(failure.message, /Message not found/)
+  // Reporting success here would leave the caller showing a transcript the file
+  // no longer matches.
+  assert.equal(harness.received.some((event) => event.type === 'reply'), false)
+  harness.dispose()
+})
+
+test('summarize-rewind replaces the earlier half with a boundary', async () => {
+  const harness = await createHarness()
+  await seedConversation(harness)
+
+  harness.send({ type: 'summarize-rewind', id: 'c1', messageId: 'm3', decision: 'summarize-up-to-here' })
+  const reply = await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+  assert.ok(reply.type === 'reply')
+
+  const { records } = reply.result as { records: SessionRecord[] }
+  assert.deepEqual(records.map((record) => record.type),
+    ['compact_boundary', 'message', 'message'])
+  assert.deepEqual(records.slice(1).map((record) => record.id), ['m3', 'm4'])
+
+  const boundary = records[0]
+  assert.ok(boundary?.type === 'compact_boundary')
+  assert.equal(boundary.summary, 'summary of 2')
+  assert.equal(boundary.preTokens, 1234)
+
+  // The summary must come from the loop, which is the only thing that can call
+  // the provider -- and it arrives with exactly the records being replaced.
+  assert.deepEqual(harness.calls.summarized.map((batch) => batch.map((record) => record.id)), [['m1', 'm2']])
+
+  // Persisted, not just returned.
+  const onDisk = await harness.store.loadRecordsWithDiagnostics(harness.sessionId)
+  assert.deepEqual(onDisk.records.map((record) => record.type),
+    ['compact_boundary', 'message', 'message'])
+  harness.dispose()
+})
+
+test('summarize-rewind summarizes the later half for the other decision', async () => {
+  const harness = await createHarness()
+  await seedConversation(harness)
+
+  harness.send({ type: 'summarize-rewind', id: 'c1', messageId: 'm3', decision: 'summarize-from-here' })
+  const reply = await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+  assert.ok(reply.type === 'reply')
+
+  const { records } = reply.result as { records: SessionRecord[] }
+  assert.deepEqual(records.map((record) => record.type), ['message', 'message', 'compact_boundary'])
+  assert.deepEqual(harness.calls.summarized.map((batch) => batch.map((record) => record.id)), [['m3', 'm4']])
+  harness.dispose()
+})
+
+test('summarize-rewind refuses a target with nothing on the far side', async () => {
+  const harness = await createHarness()
+  await seedConversation(harness)
+
+  // Nothing precedes m1, so there is no earlier conversation to summarize.
+  harness.send({ type: 'summarize-rewind', id: 'c1', messageId: 'm1', decision: 'summarize-up-to-here' })
+  const failure = await waitFor(() => harness.received.find((event) => event.type === 'fail'), 'a fail reply')
+  assert.ok(failure.type === 'fail')
+  assert.match(failure.message, /No earlier conversation/)
+  assert.equal(harness.calls.summarized.length, 0, 'no provider call for a rewind that cannot happen')
+  harness.dispose()
+})
+
 test('a failing command replies with fail rather than hanging the client', async () => {
   const harness = await createHarness()
   harness.send({ type: 'retarget', id: 'c1', sessionId: 'does-not-exist' })
@@ -377,6 +522,222 @@ test('a failing command replies with fail rather than hanging the client', async
   assert.ok(failure.type === 'fail')
   assert.equal(failure.id, 'c1')
   assert.match(failure.message, /Unknown session/)
+  harness.dispose()
+})
+
+/** Effects and the reply share one channel; this reads them back in arrival order. */
+function commandTraffic(harness: Harness): string[] {
+  return harness.received.flatMap((event) => {
+    if (event.type === 'command-effect') return [`effect:${event.effect.kind}`]
+    if (event.type === 'reply') return ['reply']
+    if (event.type === 'fail') return ['fail']
+    return []
+  })
+}
+
+test('a slash command\'s effects all arrive before its reply', async () => {
+  registerBuiltinCommands()
+  const harness = await createHarness()
+
+  harness.send({ type: 'run-command', id: 'c1', input: '/help' })
+  await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+
+  // This ordering is the whole reason run-command needs an event channel: /help
+  // pushes its view while it is still running.
+  assert.deepEqual(commandTraffic(harness), ['effect:open-command-view', 'reply'])
+
+  const effect = harness.received.find((event) => event.type === 'command-effect')
+  assert.ok(effect?.type === 'command-effect' && effect.effect.kind === 'open-command-view')
+  assert.equal(effect.effect.view.kind, 'list')
+  harness.dispose()
+})
+
+test('input that is not a slash command comes back unhandled', async () => {
+  const harness = await createHarness()
+
+  harness.send({ type: 'run-command', id: 'c1', input: 'just a prompt' })
+  const reply = await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+
+  assert.ok(reply.type === 'reply')
+  assert.deepEqual(reply.result, { handled: false })
+  assert.equal(harness.received.some((event) => event.type === 'command-effect'), false)
+  harness.dispose()
+})
+
+test('an unknown command is handled, and explains itself as a written line', async () => {
+  registerBuiltinCommands()
+  const harness = await createHarness()
+
+  harness.send({ type: 'run-command', id: 'c1', input: '/nosuchthing' })
+  const reply = await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+
+  // Same tolerance as the TUI's dispatch: a bad command name is not a protocol
+  // failure, so this must not be a `fail`.
+  assert.ok(reply.type === 'reply')
+  assert.deepEqual(reply.result, { handled: true })
+  const effect = harness.received.find((event) => event.type === 'command-effect')
+  assert.ok(effect?.type === 'command-effect' && effect.effect.kind === 'write-line')
+  assert.match(effect.effect.text, /Unknown command: \/nosuchthing/)
+  harness.dispose()
+})
+
+test('/exit asks the shell to close rather than shutting the host down', async () => {
+  const harness = await createHarness()
+
+  harness.send({ type: 'run-command', id: 'c1', input: '/exit' })
+  const reply = await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+
+  assert.ok(reply.type === 'reply')
+  assert.deepEqual(reply.result, { handled: true, exit: true })
+  assert.deepEqual(harness.calls.shutdowns, [],
+    'the shell owns its teardown; it calls shutdown when it is ready')
+  harness.dispose()
+})
+
+test('a command that throws is reported through a written line, not a fail', async () => {
+  registerBuiltinCommands()
+  const harness = await createHarness()
+  // Two agents sharing a prefix: `resolveAgentId` refuses to guess and throws,
+  // which is a genuine throw out of `command.run` rather than a handled miss.
+  for (const agentId of ['abc111', 'abc222']) {
+    await harness.store.appendRecord(harness.sessionId, {
+      type: 'subagent_task',
+      id: `r-${agentId}`,
+      agentId,
+      subagentType: 'general',
+      status: 'completed',
+      description: 'd',
+      task: 't',
+      createdAt: 'now',
+    } as SessionRecord)
+  }
+
+  harness.send({ type: 'run-command', id: 'c1', input: '/agents show abc' })
+  const reply = await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+
+  // Same tolerance as the TUI's dispatch: the command failed, the protocol did not.
+  assert.ok(reply.type === 'reply')
+  assert.deepEqual(reply.result, { handled: true })
+  assert.equal(harness.received.some((event) => event.type === 'fail'), false)
+
+  const effect = harness.received.find((event) => event.type === 'command-effect')
+  assert.ok(effect?.type === 'command-effect' && effect.effect.kind === 'write-line')
+  assert.match(effect.effect.text, /Command error: Ambiguous subagent id abc/)
+  harness.dispose()
+})
+
+test('/model with an argument switches the runtime and persists the tier', async () => {
+  registerBuiltinCommands()
+  const harness = await createHarness()
+
+  harness.send({ type: 'run-command', id: 'c1', input: '/model fast' })
+  await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+
+  assert.deepEqual(harness.calls.createdRuntimes, [{ modelKey: 'fast', recordCount: 0 }])
+  // The tier write-back is what separates /model from the set-model command.
+  assert.deepEqual(harness.calls.defaultModels, ['fast'])
+  harness.dispose()
+})
+
+test('/model with an unknown argument writes a line and leaves the runtime alone', async () => {
+  registerBuiltinCommands()
+  const harness = await createHarness()
+
+  harness.send({ type: 'run-command', id: 'c1', input: '/model nope' })
+  await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+
+  assert.deepEqual(harness.calls.createdRuntimes, [])
+  assert.deepEqual(harness.calls.defaultModels, [])
+  const effect = harness.received.find((event) => event.type === 'command-effect')
+  assert.ok(effect?.type === 'command-effect' && effect.effect.kind === 'write-line')
+  assert.match(effect.effect.text, /Unknown model or tier: nope/)
+  harness.dispose()
+})
+
+test('/model with no argument asks for the picker', async () => {
+  registerBuiltinCommands()
+  const harness = await createHarness()
+
+  harness.send({ type: 'run-command', id: 'c1', input: '/model' })
+  await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+
+  const effect = harness.received.find((event) => event.type === 'command-effect')
+  assert.ok(effect?.type === 'command-effect' && effect.effect.kind === 'open-surface')
+  assert.equal(effect.effect.surface, 'model-picker')
+  harness.dispose()
+})
+
+test('/clear switches to a fresh session and announces it', async () => {
+  registerBuiltinCommands()
+  const harness = await createHarness()
+  harness.emit({
+    type: 'record',
+    record: { type: 'message', id: 'm1', role: 'user', content: 'a', createdAt: 'now' },
+  })
+  await settle()
+
+  harness.send({ type: 'run-command', id: 'c1', input: '/clear' })
+  await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+
+  const changed = harness.received.find((event) => event.type === 'session-changed')
+  assert.ok(changed?.type === 'session-changed')
+  assert.notEqual(changed.session.id, harness.sessionId,
+    'without this a client keeps its message queue keyed to the session it left')
+
+  const reset = harness.received.find(
+    (event) => event.type === 'session-event' && event.event.type === 'transcript-reset',
+  )
+  assert.ok(reset?.type === 'session-event' && reset.event.type === 'transcript-reset')
+  assert.deepEqual(reset.event.records, [])
+
+  // The ledger went with it: the next runtime must not inherit the old records.
+  harness.send({ type: 'set-model', id: 'c2', modelKey: 'other' })
+  await settle()
+  const forModel = harness.calls.createdRuntimes.at(-1)
+  assert.equal(forModel?.recordCount, 0)
+  harness.dispose()
+})
+
+test('/plan reaches the permission gate', async () => {
+  registerBuiltinCommands()
+  const harness = await createHarness()
+
+  harness.send({ type: 'run-command', id: 'c1', input: '/plan' })
+  await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
+
+  assert.deepEqual(harness.calls.modeChanges, ['plan'])
+  assert.equal(harness.getPermissionMode(), 'plan')
+  harness.dispose()
+})
+
+test('the command context reads the session through a getter, not a capture', async () => {
+  registerBuiltinCommands()
+  const harness = await createHarness()
+
+  harness.send({ type: 'run-command', id: 'c1', input: '/clear' })
+  const changed = await waitFor(
+    () => harness.received.find((event) => event.type === 'session-changed'),
+    'the session-changed event',
+  )
+  assert.ok(changed.type === 'session-changed')
+  const newSessionId = changed.session.id
+
+  // /session prints context.sessionId. A captured id would still name the
+  // session /clear left behind.
+  harness.send({ type: 'run-command', id: 'c2', input: '/session' })
+  await waitFor(
+    () => (harness.received.filter((event) => event.type === 'reply').length === 2 ? true : undefined),
+    'the second reply',
+  )
+
+  const views = harness.received.filter((event) =>
+    event.type === 'command-effect' && event.effect.kind === 'open-command-view')
+  const view = views[views.length - 1]
+  assert.ok(view?.type === 'command-effect' && view.effect.kind === 'open-command-view')
+  assert.equal(view.effect.view.kind, 'info')
+  const rows = view.effect.view.kind === 'info' ? view.effect.view.sections[0]?.rows : undefined
+  assert.equal(rows?.find((row: { label: string }) => row.label === 'Session ID')?.value, newSessionId)
+  assert.notEqual(newSessionId, harness.sessionId)
   harness.dispose()
 })
 

@@ -16,12 +16,16 @@ export type { NodeIpcTarget } from './nodeChannel.js'
 export { PendingRequests } from './pendingRequests.js'
 export { SessionHost } from './host.js'
 export type { SessionHostDeps } from './host.js'
+export { COMMAND_CONTEXT_COVERAGE, createHostCommandContext } from './commandContext.js'
+export type { HostCommandContextDeps } from './commandContext.js'
 export { toPermissionDto } from './permissionDto.js'
 export type { PermissionDtoOptions } from './permissionDto.js'
 export { SessionClient } from './client.js'
 export type { SessionClientHandlers } from './client.js'
 export { UI_REQUEST_FALLBACKS } from './wire.js'
 export type {
+  CommandEffect,
+  CommandSurface,
   HostCommand,
   HostEvent,
   InterruptReason,
@@ -39,6 +43,8 @@ export type {
   WireReloadSettingsResult,
   WireResolveModelResult,
   WireRestoreCodeResult,
+  WireRewindResult,
+  WireRunCommandResult,
   WireRunOverrides,
   WireRunToolResult,
   WireRuntimeSnapshot,

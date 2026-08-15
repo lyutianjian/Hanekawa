@@ -1,6 +1,7 @@
 import { z } from 'zod/v3'
 import { VALID_EFFORT_LEVELS } from '../../config/effort.js'
 import type { PermissionMode } from '../../harness/permissions.js'
+import type { RewindSummaryDecision } from '../rewindSummary.js'
 import type { HostCommand, UiRequest } from './wire.js'
 
 /**
@@ -40,6 +41,10 @@ const runOverridesSchema = z
  */
 const permissionModeSchema = z.enum(['default', 'plan', 'acceptEdits', 'bypass', 'readonly'] as const satisfies
   readonly PermissionMode[])
+
+/** Spelled out like the mode above; `_NoDrift` is what keeps it honest. */
+const rewindDecisionSchema = z.enum(['summarize-from-here', 'summarize-up-to-here'] as const satisfies
+  readonly RewindSummaryDecision[])
 
 const askUserQuestionResultSchema = z.discriminatedUnion('kind', [
   z
@@ -93,9 +98,21 @@ const COMMAND_SCHEMAS = {
   'run-tool': z
     .object({ type: z.literal('run-tool'), id: commandId, name: z.string(), input: z.unknown() })
     .strict(),
+  'run-command': z.object({ type: z.literal('run-command'), id: commandId, input: z.string() }).strict(),
   checkpoints: z.object({ type: z.literal('checkpoints'), id: commandId }).strict(),
   'restore-code': z
     .object({ type: z.literal('restore-code'), id: commandId, commitHash: z.string() })
+    .strict(),
+  'truncate-session': z
+    .object({ type: z.literal('truncate-session'), id: commandId, messageId: z.string() })
+    .strict(),
+  'summarize-rewind': z
+    .object({
+      type: z.literal('summarize-rewind'),
+      id: commandId,
+      messageId: z.string(),
+      decision: rewindDecisionSchema,
+    })
     .strict(),
   'set-model': z.object({ type: z.literal('set-model'), id: commandId, modelKey: z.string() }).strict(),
   // A plain string, not the effort enum: a numeric effort is a raw token

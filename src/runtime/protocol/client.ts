@@ -10,10 +10,12 @@ import type { BackgroundTaskSnapshot } from '../../services/backgroundTasks/regi
 import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import { createEmptySessionUsage, type SessionUsage } from '../sessionUsage.js'
+import type { RewindSummaryDecision } from '../rewindSummary.js'
 import type { SessionControllerSnapshot, SessionEvent } from '../sessionController.js'
 import type { RuntimeChannel } from './channel.js'
 import { PendingRequests } from './pendingRequests.js'
 import {
+  type CommandEffect,
   type HostCommand,
   type HostEvent,
   type InterruptReason,
@@ -26,6 +28,8 @@ import {
   type WireReloadCountResult,
   type WireReloadSettingsResult,
   type WireResolveModelResult,
+  type WireRewindResult,
+  type WireRunCommandResult,
   type WireRunOverrides,
   type WireRuntimeSnapshot,
   type WireSessionSwitchResult,
@@ -63,6 +67,7 @@ export class SessionClient {
   private readonly channel: RuntimeChannel
   private readonly replies = new PendingRequests<{ ok: true; result: unknown } | { ok: false; message: string }>()
   private readonly eventListeners = new Set<(event: SessionEvent) => void>()
+  private readonly effectListeners = new Set<(effect: CommandEffect) => void>()
   private readonly listeners = new Set<() => void>()
   private handlers: SessionClientHandlers = {}
 
@@ -74,6 +79,7 @@ export class SessionClient {
   })
   private subagentProgress: ReadonlyMap<string, string> = new Map()
   private runtimeSnapshot: WireRuntimeSnapshot | undefined
+  private session: SessionMeta | undefined
   private backgroundTasks: readonly BackgroundTaskSnapshot[] = EMPTY_TASKS
   private readonly teardown: Array<() => void> = []
   private disposed = false
@@ -109,10 +115,33 @@ export class SessionClient {
 
   getBackgroundTasks = (): readonly BackgroundTaskSnapshot[] => this.backgroundTasks
 
+  /**
+   * The session the host is bound to, once it has said so.
+   *
+   * `undefined` until the first `session-changed` or `hello`; a shell that needs
+   * it to paint should take it from `hello()`'s result instead of waiting.
+   */
+  getSession = (): SessionMeta | undefined => this.session
+
   onEvent(listener: (event: SessionEvent) => void): () => void {
     this.eventListeners.add(listener)
     return () => {
       this.eventListeners.delete(listener)
+    }
+  }
+
+  /**
+   * Renderer-side side effects pushed by a running slash command.
+   *
+   * Separate from `onEvent` because these are not session history: nothing here
+   * is persisted, so a client that attaches later never sees the ones it missed —
+   * exactly as the TUI behaves, where `writeLine` appends a display item rather
+   * than a `SessionRecord`.
+   */
+  onCommandEffect(listener: (effect: CommandEffect) => void): () => void {
+    this.effectListeners.add(listener)
+    return () => {
+      this.effectListeners.delete(listener)
     }
   }
 
@@ -220,6 +249,18 @@ export class SessionClient {
     }>
   }
 
+  /**
+   * Runs a slash command in the host.
+   *
+   * Anything the command wants drawn arrives beforehand on `onCommandEffect`,
+   * not in this result — see `CommandEffect`. A rejected promise means the
+   * command could not be *dispatched*; a command that failed on its own terms
+   * resolves as handled and explains itself through a `write-line`.
+   */
+  async runCommand(input: string): Promise<WireRunCommandResult> {
+    return this.send({ type: 'run-command', id: randomUUID(), input }) as Promise<WireRunCommandResult>
+  }
+
   async getCheckpoints(): Promise<CheckpointWithDiff[]> {
     const result = await this.send({ type: 'checkpoints', id: randomUUID() }) as { checkpoints: CheckpointWithDiff[] }
     return result.checkpoints
@@ -230,6 +271,38 @@ export class SessionClient {
       success: boolean
       error?: string
     }>
+  }
+
+  /**
+   * Drops everything from `messageId` onward. Rejects when the message is not
+   * in the session, so a stale checkpoint list cannot silently no-op.
+   *
+   * `restore-code-and-conversation` is this plus `restoreCode()`; there is no
+   * combined command.
+   */
+  async truncateSession(messageId: string): Promise<SessionRecord[]> {
+    const result = await this.send({
+      type: 'truncate-session',
+      id: randomUUID(),
+      messageId,
+    }) as WireRewindResult
+    return result.records
+  }
+
+  /**
+   * Replaces one half of the conversation with a summary of it.
+   *
+   * Slow by nature: the summary is a real provider call queued behind whatever
+   * the loop is already doing.
+   */
+  async summarizeRewind(messageId: string, decision: RewindSummaryDecision): Promise<SessionRecord[]> {
+    const result = await this.send({
+      type: 'summarize-rewind',
+      id: randomUUID(),
+      messageId,
+      decision,
+    }) as WireRewindResult
+    return result.records
   }
 
   async setModel(modelKey: string): Promise<{ modelKey: string; effort: string }> {
@@ -273,6 +346,7 @@ export class SessionClient {
     this.failAllPending('The client was disposed.')
     this.backgroundTasks = EMPTY_TASKS
     this.eventListeners.clear()
+    this.effectListeners.clear()
     this.listeners.clear()
   }
 
@@ -305,6 +379,12 @@ export class SessionClient {
         return
       case 'background-tasks':
         this.applyBackgroundTasks(event.tasks)
+        return
+      case 'session-changed':
+        this.applySession(event.session)
+        return
+      case 'command-effect':
+        for (const listener of [...this.effectListeners]) listener(event.effect)
         return
       case 'ui-request':
         void this.answer(event.request)
@@ -357,6 +437,25 @@ export class SessionClient {
   private applyBackgroundTasks(next: BackgroundTaskSnapshot[]): void {
     if (sameTaskList(this.backgroundTasks, next)) return
     this.backgroundTasks = next
+    this.notify()
+  }
+
+  /**
+   * Field-diffed like the rest. `updatedAt` and `messageCount` move on every
+   * turn, so the host re-announcing the same session — which it does on any
+   * switch, including one that landed back where it started — must not wake
+   * every subscriber.
+   */
+  private applySession(next: SessionMeta): void {
+    const previous = this.session
+    if (
+      previous
+      && previous.id === next.id
+      && previous.title === next.title
+      && previous.messageCount === next.messageCount
+      && previous.updatedAt === next.updatedAt
+    ) return
+    this.session = next
     this.notify()
   }
 

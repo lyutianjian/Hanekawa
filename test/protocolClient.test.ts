@@ -267,6 +267,39 @@ test('shutdown resolves even when the host dies before replying', async () => {
   harness.client.dispose()
 })
 
+test('the two rewind commands unwrap to the records the host wrote', async () => {
+  const harness = createHarness()
+
+  const truncating = harness.client.truncateSession('m3')
+  await settle()
+  const truncate = harness.sent.find((entry) => entry.type === 'truncate-session')
+  assert.ok(truncate && truncate.type === 'truncate-session')
+  assert.equal(truncate.messageId, 'm3')
+  harness.post({ type: 'reply', id: truncate.id, result: { records: [{ id: 'm1' }] } })
+  assert.deepEqual(await truncating, [{ id: 'm1' }])
+
+  const summarizing = harness.client.summarizeRewind('m3', 'summarize-up-to-here')
+  await settle()
+  const summarize = harness.sent.find((entry) => entry.type === 'summarize-rewind')
+  assert.ok(summarize && summarize.type === 'summarize-rewind')
+  assert.equal(summarize.decision, 'summarize-up-to-here')
+  harness.post({ type: 'reply', id: summarize.id, result: { records: [] } })
+  assert.deepEqual(await summarizing, [])
+  harness.client.dispose()
+})
+
+test('a rewind that cannot happen rejects rather than resolving empty', async () => {
+  const harness = createHarness()
+  const pending = assert.rejects(harness.client.truncateSession('gone'), /Message not found/)
+  await settle()
+
+  const sent = harness.sent.find((entry) => entry.type === 'truncate-session')
+  assert.ok(sent)
+  harness.post({ type: 'fail', id: sent.id, message: 'Message not found: gone' })
+  await pending
+  harness.client.dispose()
+})
+
 test('retarget returns the session alongside its records', async () => {
   const harness = createHarness()
   const pending = harness.client.retarget('s2')

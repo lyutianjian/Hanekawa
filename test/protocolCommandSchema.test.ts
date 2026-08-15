@@ -22,8 +22,11 @@ const SAMPLES = {
   reload: { type: 'reload', id: '1' },
   retarget: { type: 'retarget', id: '1', sessionId: 's' },
   'run-tool': { type: 'run-tool', id: '1', name: 'Read', input: { file_path: '/tmp/x' } },
+  'run-command': { type: 'run-command', id: '1', input: '/help' },
   checkpoints: { type: 'checkpoints', id: '1' },
   'restore-code': { type: 'restore-code', id: '1', commitHash: 'abc' },
+  'truncate-session': { type: 'truncate-session', id: '1', messageId: 'm1' },
+  'summarize-rewind': { type: 'summarize-rewind', id: '1', messageId: 'm1', decision: 'summarize-from-here' },
   'set-model': { type: 'set-model', id: '1', modelKey: 'main' },
   'set-effort': { type: 'set-effort', id: '1', level: 'high' },
   'set-permission-mode': { type: 'set-permission-mode', id: '1', mode: 'plan' },
@@ -108,8 +111,19 @@ test('set-effort accepts a numeric token budget as a string', () => {
   assert.equal(parseHostCommand({ type: 'set-effort', id: '1', level: 'max' }).ok, true)
 })
 
-test('run-tool preserves any input shape byte for byte', () => {
-  for (const input of [null, 42, 'text', [1, 2], { nested: { deep: [{ a: 1 }] } }]) {
+test('summarize-rewind accepts both decisions and nothing else', () => {
+  for (const decision of ['summarize-from-here', 'summarize-up-to-here']) {
+    const parsed = parseHostCommand({ type: 'summarize-rewind', id: '1', messageId: 'm', decision })
+    assert.ok(parsed.ok, `expected ${decision} to parse`)
+  }
+  // 'restore-conversation' is a RestoreDecision, not a RewindSummaryDecision:
+  // the picker offers five options and only two of them summarize.
+  for (const decision of ['restore-conversation', 'summarize', '', undefined]) {
+    assert.equal(parseHostCommand({ type: 'summarize-rewind', id: '1', messageId: 'm', decision }).ok, false)
+  }
+})
+
+test('run-tool preserves any input shape byte for byte', () => {  for (const input of [null, 42, 'text', [1, 2], { nested: { deep: [{ a: 1 }] } }]) {
     const parsed = parseHostCommand({ type: 'run-tool', id: '1', name: 'X', input })
     assert.ok(parsed.ok)
     assert.deepEqual((parsed.command as { input: unknown }).input, input)

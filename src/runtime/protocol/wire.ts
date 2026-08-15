@@ -1,4 +1,5 @@
 import type { EffortLevel } from '../../config/effort.js'
+import type { CommandView } from '../../commands/types.js'
 import type { DestructiveCommandWarning } from '../../harness/destructiveCommands.js'
 import type {
   PermissionDecisionSource,
@@ -13,6 +14,7 @@ import type {
 import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeManager.js'
 import type { BackgroundTaskSnapshot } from '../../services/backgroundTasks/registry.js'
 import type { ModelPickerOption } from '../modelPicker.js'
+import type { RewindSummaryDecision } from '../rewindSummary.js'
 import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
 import type { FileToolPreview } from '../../services/fileToolPreview.js'
 import type { SessionMeta } from '../../sessions/service.js'
@@ -52,6 +54,24 @@ export type HostEvent =
    * shell, which would otherwise be an IPC firehose.
    */
   | { type: 'background-tasks'; tasks: BackgroundTaskSnapshot[] }
+  /**
+   * The session the host is now bound to.
+   *
+   * Push rather than a reply field, because a switch is not always the client's
+   * own doing: `/clear` arrives as a `run-command`, and only the host knows the
+   * draft id it just minted. A client that missed this would keep its message
+   * queue and history keyed to the session it left.
+   */
+  | { type: 'session-changed'; session: SessionMeta }
+  /**
+   * A renderer-side side effect a slash command asked for mid-run.
+   *
+   * These cannot be reply fields: a command pushes them while it is still
+   * executing, and several commands push more than one. They arrive on this
+   * channel in order and always before the `reply` for the `run-command` that
+   * produced them.
+   */
+  | { type: 'command-effect'; effect: CommandEffect }
   /** A blocking question for the UI. The client must eventually answer it. */
   | { type: 'ui-request'; request: UiRequest }
   | { type: 'reply'; id: string; result: unknown }
@@ -73,8 +93,21 @@ export type HostCommand =
   | { type: 'reload'; id: string }
   | { type: 'retarget'; id: string; sessionId: string }
   | { type: 'run-tool'; id: string; name: string; input: unknown }
+  /**
+   * Runs a slash command. The registry lives host-side (`bootstrap()` calls
+   * `registerBuiltinCommands` and `registerSkillCommands`), so the client sends
+   * the raw line and reads the effects that come back.
+   */
+  | { type: 'run-command'; id: string; input: string }
   | { type: 'checkpoints'; id: string }
   | { type: 'restore-code'; id: string; commitHash: string }
+  /**
+   * The write half of `/rewind`. `restore-code-and-conversation` deliberately
+   * has no command of its own: it is `restore-code` followed by
+   * `truncate-session`, which the caller composes.
+   */
+  | { type: 'truncate-session'; id: string; messageId: string }
+  | { type: 'summarize-rewind'; id: string; messageId: string; decision: RewindSummaryDecision }
   | { type: 'set-model'; id: string; modelKey: string }
   | { type: 'set-effort'; id: string; level: string; persist?: boolean }
   | { type: 'set-permission-mode'; id: string; mode: PermissionMode }
@@ -154,6 +187,48 @@ export interface PermissionRequestDto {
   destructiveWarnings: DestructiveCommandWarning[]
 }
 
+// --- slash command effects --------------------------------------------------
+
+/**
+ * The seven `CommandContext` members a host cannot satisfy, reduced to data.
+ *
+ * Everything else on `CommandContext` runs host-side — the store, the config,
+ * the loop, the permission gate. What is left are calls that return nothing and
+ * only mean something to whatever is drawing: write a line into the transcript,
+ * open a panel. They are the reason `run-command` needs an event channel rather
+ * than a richer reply.
+ *
+ * The five panel openers collapse into one `open-surface` rather than five
+ * variants: a shell that has no provider panel can ignore that surface by name,
+ * and adding a sixth panel does not widen the union.
+ */
+export type CommandEffect =
+  | { kind: 'write-line'; text: string }
+  | { kind: 'open-command-view'; view: CommandView }
+  | { kind: 'open-surface'; surface: CommandSurface }
+
+export type CommandSurface =
+  | 'model-picker'
+  | 'effort-picker'
+  | 'provider-panel'
+  | 'background-tasks'
+  | 'resume-picker'
+
+/**
+ * Mirrors what the TUI's `dispatch` returns, deliberately including its
+ * tolerance: an unknown command or a command that threw is still `handled`, with
+ * the explanation delivered as a `write-line` effect. Only input that is not a
+ * slash command at all comes back unhandled.
+ *
+ * `exit` replaces the Ink `exit()` that `/exit` calls in the TUI. The host does
+ * not shut itself down on a renderer's say-so — the shell has its own teardown
+ * and calls `shutdown` when it is ready.
+ */
+export interface WireRunCommandResult {
+  handled: boolean
+  exit?: boolean
+}
+
 // --- the four blocking UI requests -----------------------------------------
 
 export type UiRequest =
@@ -202,6 +277,18 @@ export interface WireReloadResult {
 export interface WireRestoreCodeResult {
   success: boolean
   error?: string
+}
+
+/**
+ * The records as they stand after a rewind wrote to disk.
+ *
+ * The event stream is still the source of transcript truth -- both rewind
+ * commands go through `SessionController.reload()`, which emits a
+ * `transcript-reset` -- so this is the same list arriving a second time, for a
+ * caller that wants it in hand rather than in a listener.
+ */
+export interface WireRewindResult {
+  records: SessionRecord[]
 }
 
 export interface WireRunToolResult {

@@ -24,11 +24,15 @@ const COVERAGE: Array<{ prop: string; via: 'client' | 'shell'; members: string[]
     via: 'client',
     members: ['onEvent', 'getSnapshot', 'subscribe', 'submit', 'interrupt', 'reload'],
   },
-  { prop: 'store', via: 'client', members: ['listSessions', 'createSession', 'retarget'] },
-  { prop: 'session', via: 'client', members: ['hello'] },
+  {
+    prop: 'store',
+    via: 'client',
+    members: ['listSessions', 'createSession', 'retarget', 'truncateSession', 'summarizeRewind'],
+    note: 'the two rewind writes are the store methods RestoreMode reaches for',
+  },
+  { prop: 'session', via: 'client', members: ['hello', 'getSession'] },
   { prop: 'availableModelKeys', via: 'client', members: ['listModels'] },
-  { prop: 'resolveModelInput', via: 'client', members: ['resolveModel'] },
-  { prop: 'providerConfig', via: 'client', members: ['listModels', 'setDefaultModel'] },
+  { prop: 'providerConfig', via: 'client', members: ['listModels', 'resolveModel', 'setDefaultModel'] },
   { prop: 'createRuntime', via: 'client', members: ['setModel', 'retarget', 'createSession'] },
   { prop: 'createActiveModelRuntime', via: 'client', members: ['submit'] },
   { prop: 'permissionGate', via: 'client', members: ['getRuntimeSnapshot', 'setPermissionMode'] },
@@ -56,14 +60,33 @@ const COVERAGE: Array<{ prop: string; via: 'client' | 'shell'; members: string[]
   },
 ]
 
+/**
+ * Capabilities that are not App props but carry the same acceptance criterion: a
+ * renderer holding only a client has to be able to reach them.
+ */
+const NON_PROP_COVERAGE: Array<{ capability: string; members: string[] }> = [
+  // `useCommands` is a hook rather than a prop, and its whole `CommandContext`
+  // is built host-side now; the effects are how its seven renderer-side members
+  // come back out.
+  { capability: 'slash commands', members: ['runCommand', 'onCommandEffect'] },
+  { capability: '/rewind write path', members: ['truncateSession', 'summarizeRewind', 'restoreCode'] },
+]
+
 test('every App prop has a SessionClient counterpart', () => {
   const client = Object.create(SessionClient.prototype) as Record<string, unknown>
-  const instanceFields = new Set(['getSnapshot', 'subscribe', 'getBackgroundTasks'])
+  const instanceFields = new Set(['getSnapshot', 'subscribe', 'getBackgroundTasks', 'getSession'])
 
   for (const entry of COVERAGE) {
     for (const member of entry.members) {
       const present = typeof client[member] === 'function' || instanceFields.has(member)
       assert.ok(present, `App prop "${entry.prop}" maps to SessionClient.${member}, which does not exist`)
+    }
+  }
+
+  for (const entry of NON_PROP_COVERAGE) {
+    for (const member of entry.members) {
+      const present = typeof client[member] === 'function' || instanceFields.has(member)
+      assert.ok(present, `"${entry.capability}" needs SessionClient.${member}, which does not exist`)
     }
   }
 })
@@ -92,7 +115,14 @@ test('the client half never imports the harness at runtime', async () => {
   assert.ok(imports.length > 0, 'expected to parse some imports')
 
   for (const [statement, typeOnly, specifier] of imports) {
-    if (!specifier!.includes('harness/') && !specifier!.includes('services/') && !specifier!.includes('sessions/')) {
+    if (
+      !specifier!.includes('harness/')
+      && !specifier!.includes('services/')
+      && !specifier!.includes('sessions/')
+      // A value import here would drag the whole slash-command registry, and
+      // through `skills.ts` the filesystem, into a renderer bundle.
+      && !specifier!.includes('commands/')
+    ) {
       continue
     }
     const isTypeOnly = Boolean(typeOnly) || !/^import\s+(?!type)[^{]*\{[^}]*\b(?!type\b)\w/.test(statement!)

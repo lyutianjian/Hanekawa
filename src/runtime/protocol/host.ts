@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { getCommand } from '../../commands/index.js'
+import type { CommandContext } from '../../commands/types.js'
 import { VALID_EFFORT_LEVELS, type EffortLevel } from '../../config/effort.js'
 import { saveEffortLevel } from '../../config/settings.js'
 import type { PermissionRequest } from '../../harness/permissions.js'
@@ -8,6 +10,7 @@ import { applyPermissionModeTransition } from '../permissionMode.js'
 import { buildModelPickerOptions } from '../modelPicker.js'
 import { resolveRuntimeModelKeyAfterConfigChange } from '../providerRuntime.js'
 import { SessionRecordLedger } from '../recordLedger.js'
+import { buildRewindSummaryRewrite } from '../rewindSummary.js'
 import type { RuntimeSlot } from '../runtimeSlot.js'
 import type { SessionController, SessionEvent } from '../sessionController.js'
 import {
@@ -19,11 +22,13 @@ import {
 import { buildStartupNotices, resolveInitialQueuedPrompt } from '../startupNotices.js'
 import type { RuntimeHost } from '../types.js'
 import type { RuntimeChannel } from './channel.js'
+import { createHostCommandContext } from './commandContext.js'
 import { parseHostCommand, type HostCommandParseFailure } from './commandSchema.js'
 import { PendingRequests } from './pendingRequests.js'
 import { toPermissionDto } from './permissionDto.js'
 import {
   UI_REQUEST_FALLBACKS,
+  type CommandEffect,
   type HostCommand,
   type HostEvent,
   type UiRequest,
@@ -36,6 +41,8 @@ import {
   type WireReloadCountResult,
   type WireReloadSettingsResult,
   type WireResolveModelResult,
+  type WireRewindResult,
+  type WireRunCommandResult,
   type WireRunOverrides,
   type WireRuntimeSnapshot,
   type WireSessionSwitchResult,
@@ -392,11 +399,37 @@ export class SessionHost {
         }
       }
 
+      case 'run-command':
+        return this.runSlashCommand(command.input)
+
       case 'checkpoints':
         return { checkpoints: await this.controller.getCheckpointService().getCheckpointsWithDiffs() }
 
       case 'restore-code':
         return this.controller.getCheckpointService().restoreToCommit(command.commitHash)
+
+      case 'truncate-session': {
+        const result = await this.host.store.truncateBeforeMessage(this.session.id, command.messageId)
+        // Thrown rather than reported: a rewind that silently did nothing would
+        // leave the caller showing a transcript the file no longer matches.
+        if (!result.success) throw new Error(result.error ?? 'Failed to truncate session')
+        return { records: await this.afterRewind() } satisfies WireRewindResult
+      }
+
+      case 'summarize-rewind': {
+        const loaded = await this.host.store.loadRecordsWithDiagnostics(this.session.id)
+        const rewrite = await buildRewindSummaryRewrite({
+          records: loaded.records,
+          targetMessageId: command.messageId,
+          decision: command.decision,
+          // Goes through `AgentLoop.enqueue`, the same single in-flight slot as
+          // `run()`. Sent mid-turn it waits for that turn to finish, so this
+          // reply can be arbitrarily slow; nothing about it is a fast path.
+          summarize: (records) => this.runtimeSlot.current.loop.summarizeRecordsForRewind(records),
+        })
+        await this.host.store.replaceRecords(this.session.id, rewrite.nextRecords)
+        return { records: await this.afterRewind() } satisfies WireRewindResult
+      }
 
       case 'set-model': {
         const next = this.host.createRuntime(command.modelKey, this.session, this.ledger.list())
@@ -519,6 +552,85 @@ export class SessionHost {
     return assertNever(command)
   }
 
+  /**
+   * `useCommands.dispatch`, minus React.
+   *
+   * The tolerance is copied deliberately: an unknown command and a command that
+   * threw both come back as `handled` with a `write-line` explaining why, because
+   * that is what the TUI does and a slash command failing is not a protocol
+   * failure. Only input that is not a slash command at all is unhandled.
+   */
+  private async runSlashCommand(input: string): Promise<WireRunCommandResult> {
+    if (!input.startsWith('/')) return { handled: false }
+
+    const spaceIndex = input.indexOf(' ')
+    const name = spaceIndex >= 0 ? input.slice(1, spaceIndex) : input.slice(1)
+    const args = spaceIndex >= 0 ? input.slice(spaceIndex + 1).trim() : ''
+
+    // The shell owns its own teardown; it calls `shutdown` when it is ready.
+    if (name === 'exit') return { handled: true, exit: true }
+
+    const command = getCommand(name)
+    if (!command) {
+      this.emitCommandEffect({
+        kind: 'write-line',
+        text: `Unknown command: /${name}. Type /help for available commands.`,
+      })
+      return { handled: true }
+    }
+
+    try {
+      await command.run(args, this.commandContext())
+    } catch (error) {
+      this.emitCommandEffect({
+        kind: 'write-line',
+        text: `Command error: ${error instanceof Error ? error.message : String(error)}`,
+      })
+    }
+    return { handled: true }
+  }
+
+  private emitCommandEffect = (effect: CommandEffect): void => {
+    this.post({ type: 'command-effect', effect })
+  }
+
+  /**
+   * Rebuilt per command rather than cached: `getSession` and `getRecords` close
+   * over `this`, so a command that switches sessions mid-run still reads the new
+   * one back.
+   */
+  private commandContext(): CommandContext {
+    return createHostCommandContext({
+      host: this.host,
+      runtimeSlot: this.runtimeSlot,
+      controller: this.controller,
+      getSession: () => this.session,
+      getRecords: () => this.ledger.list(),
+      startNewSession: async () => {
+        this.applySessionSwitch(await switchToNewSession(this.switchDeps(), {
+          previousSessionId: this.session.id,
+        }))
+      },
+      emit: this.emitCommandEffect,
+    })
+  }
+
+  /**
+   * The tail both rewind commands share once the file on disk has changed.
+   *
+   * `invalidateRecordsCache` first, or the loop keeps serving the pre-rewind
+   * records it already read. `reload()` re-reads and emits the
+   * `transcript-reset` that repaints the view, and the ledger has to be rebased
+   * off the same list -- a stale ledger would fold the discarded records back
+   * into the next runtime `set-model` or `reload-settings` builds.
+   */
+  private async afterRewind(): Promise<SessionRecord[]> {
+    this.runtimeSlot.current.loop.invalidateRecordsCache()
+    const records = await this.controller.reload()
+    this.ledger.rebase(records)
+    return records
+  }
+
   private switchDeps(): SessionSwitchDeps {
     return {
       host: this.host,
@@ -531,6 +643,10 @@ export class SessionHost {
   private applySessionSwitch(result: SessionSwitchResult): WireSessionSwitchResult {
     this.session = result.session
     this.ledger.rebase(result.records)
+    // Pushed rather than left to the reply: a `/clear` arriving as a
+    // `run-command` switches the session too, and only the host knows the draft
+    // id it just minted.
+    this.post({ type: 'session-changed', session: result.session })
     // The event stream stays the single source of transcript truth; the reply
     // carries the same records only for convenience.
     this.post({

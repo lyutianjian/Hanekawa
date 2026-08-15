@@ -13,7 +13,7 @@ permission-gated tools, subagents, skills, and MCP. `README.md` documents user-f
 npm install                        # or `bun install`; postinstall runs patch-package (required, see Patches)
 npm run dev:tui                    # start the TUI (tsx, no build step); also: resume <id> | --continue | c | list
 npm run typecheck                  # tsc --noEmit
-npm run test                       # full suite: 1468 tests / 35 suites, ~39s
+npm run test                       # full suite: 1534 tests / 39 suites, ~39s
 node --import tsx --test test/compact.test.ts                    # single file
 node --import tsx --test test/a.test.ts test/b.test.ts           # several files
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
@@ -209,14 +209,31 @@ single stateful shell; `hooks/useAgentLoop.ts` renders the controller's event st
   resolving). Two rules when touching it: anything added must survive `structuredClone` —
   `createMemoryChannelPair` clones on every post so violations fail loudly, since Node's
   `child_process.send` defaults to JSON and *silently drops* functions — and `SessionClient` must
-  field-diff before swapping its snapshot, because `SessionController.publish` compares `usage` and
-  `taskSnapshot` by reference and every deserialized message is a fresh object graph.
+  field-diff before swapping its snapshot *and* its background-task list, because
+  `SessionController.publish` compares `usage` and `taskSnapshot` by reference and every deserialized
+  message is a fresh object graph.
+- **The DTO carries derived data so a renderer never imports `harness/`.** `PermissionRequestDto` ships
+  a `preview` (bounded by `capFileToolPreview`) and `destructiveWarnings` already computed, because both
+  need host-side code — the filesystem and the shell analyzer. `toPermissionDto`
+  (`protocol/permissionDto.ts`) takes `cwd` explicitly and is shared by `SessionHost` and the TUI's
+  `usePermission`, so both dialogs render from identical input; `test/protocolClientParity.test.ts` pins
+  that `client.ts` only ever *type*-imports the harness. `protocol/index.js` transitively pulls
+  `node:fs`, so a renderer must deep-import `protocol/client.js` rather than the barrel.
+- **Anything projected from `ModelConfig` is built field by field, never spread.** `resolveModel` folds
+  the endpoint's `apiKey` and `baseUrl` into what it returns, so one spread in `WireModelInfo` would
+  ship every configured key to the renderer.
+- **Switching sessions is not just `controller.retarget`.** `runtime/sessionSwitch.ts` also rebuilds the
+  runtime (`createRuntime` + `RuntimeSlot.replace`, replace *last*), restores background tasks and
+  reconciles orphaned agents. Skipping the rebuild leaves the `AgentLoop` bound to the session it left.
+  `App.tsx` still has its own copy of this until the TUI moves onto `SessionClient`.
 - **Only the permission bridge parks.** `createPromptProxy` queues requests until a UI attaches rather
   than auto-denying; the other three answer immediately because headless callers (a `PlanModeManager`
   driven straight from a unit test) depend on it. The five fallbacks are deliberately asymmetric —
   permission/AskUserQuestion/exit-plan reject, **enter-plan approves**, record drops — and must not be
   unified. Every UI teardown path has to settle its in-flight requests: `ToolRunner.run` does not pass
   its abort signal into `PermissionGate.approve`, so cancelling a turn never unblocks a pending prompt.
+  `usePermission` owns the "always allow" side effect and must fire it *before* resolving, since
+  `PermissionGate` reads the captured flag on the line after the prompt returns.
 - **`transcript.ts` encodes the load-bearing TUI invariant:** Ink `<Static>` output cannot be retracted
   once a later sibling is emitted. Items live in `staticItems` / `liveItems` / `liveSystemItems` and are
   promoted in a strict order. Plain assistant messages go straight to static, so preceding live user

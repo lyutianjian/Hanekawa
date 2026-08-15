@@ -15,7 +15,7 @@ TUI 的优化已经触及终端本身的天花板：`transcript.ts`(576 行) 整
 **已确认的有利结论**（实测，非估计）：
 
 - `src/` 中 `tui/` 之外：import `ink` 或 `tui/` 的文件数 **0**；使用 `process.stdout/stdin/readline/isTTY` 的 **0**；出现 ANSI 转义的 **0**。
-- 核心（harness/tools/config/sessions/services/prompts/commands/utils）约 **24.8k 行**，对 UI 完全无知；`src/tui/` 约 14.7k 行，其中约 **10.4k 是纯终端资产**（components/ + transcript/layout/ink/ansi/Markdown/cursorParking/diff/fileToolPreview），桌面端不迁移、直接丢弃。
+- 核心（harness/tools/config/sessions/services/prompts/commands/utils）约 **24.8k 行**，对 UI 完全无知；`src/tui/` 约 14.7k 行，其中约 **10k 是纯终端资产**（components/ + transcript/layout/ink/ansi/Markdown/cursorParking），桌面端不迁移、直接丢弃。**`fileToolPreview` 当初被误列在这份「丢弃」名单里——它是纯数据的，阶段 2b-1 已移入 `src/services/` 并挂上权限 DTO；`diff.ts` 同样是纯数据，但词级 diff 是渲染器的事，留在 `src/tui/`。**
 - 跨界数据 `SessionRecord` 天生 JSON 可序列化（已在 JSONL 落盘），工具展示钩子返回纯字符串 → Electron 主/渲染进程分离几乎不需要新序列化层。
 
 **技术选型**：Electron 而非 Tauri。依赖面（`child_process`、MCP SDK stdio transport、fast-glob、shadow-git、patch-package）全是 Node；Tauri 需要 Node sidecar，等于 Electron 但更绕。
@@ -165,16 +165,57 @@ Stage 2 里所有**跨进程风险**都与 Electron 无关，先把它们做完�
 
 ---
 
-## 阶段 2b — Electron 外壳 `[ ]` 未开始
+## 阶段 2b-1 — 协议补全与共享展示层 `[x]` 已完成
 
-协议层已就绪，剩下的是外壳与 UI。
+Stage 2b 原本写成「装 Electron + 写外壳」。三份探查后确认这个描述埋了错误的因果：**挡路的不是 Electron，是协议不完整**。`tui.tsx` 给 `App` 的 22 个 prop 就是权威缺口清单——一个只拿 `SessionClient` 的渲染进程，列模型 / 列会话 / 建会话 / reload / 持久化 effort / shutdown / 后台任务全都无命令可用，`hello` 只回 `{ sessionId }`，连初始 transcript 都画不出来。
 
-- [ ] `npm i -D electron` + 渲染进程打包器；主进程 = 现有 Node 全栈 + `bootstrap()` + `RuntimeSlot`/`SessionController` + `SessionHost`；渲染进程 = 新 UI + `SessionClient`，**绝不 import harness**
-- [ ] `src/desktop/ipc/` 写 `ipcMain`/`ipcRenderer` 适配器（实现 `RuntimeChannel` 即可，约 100 行），`src/desktop/renderer/` 放 UI
-- [ ] MCP trust 提示改为桌面 UI 流程（`BootstrapOptions.confirmMcpTrust` 已是注入点，readline 实现留在 `tui.tsx`）
-- [ ] 权限对话框想要文件 diff 预览：`src/tui/fileToolPreview.ts` 是**纯数据**的（返回 `{kind:'diff'|'message', …}`，不渲染），先移到 `src/services/` 再挂到 `PermissionRequestDto` 上
-- [ ] 无需迁移：Ink patches（CJK 换行 + wrap-ansi 那对补丁）、focus filter、alt-screen、`transcript.ts`、`layout.ts`
-- [ ] 可顺手下沉到 `src/runtime/` 的框架无关模块：`messageQueue.ts`、`promptHistory.ts`、`rewindSummary.ts`、`suggestions/*`（都零 React 依赖）
+本阶段把 `SessionClient` 做成**充分**接口，Electron 因此只剩三件纯增量的事。
+
+### 产出
+
+- [x] **模块下沉**：`messageQueue` / `promptHistory` / `rewindSummary` / `suggestions/*` 从 `src/tui/` 移入 `src/runtime/`（全部深度守恒，被搬文件自身 import 一行未改），新增 `runtime/suggestions/index.ts` 桶。搬迁前先补了 `test/fileSuggestions.test.ts`（该文件此前**零覆盖**，却做路径穿越防护与 gitignore 过滤）。
+- [x] **`fileToolPreview` → `src/services/`** 并加尺寸上限。`capFileToolPreview` 分级：两个预算内**按对象身份原样返回**；超 200 行/侧截断并把丢弃行数记进 `elided`；没有换行可切的（minified 单行）降级为 `kind:'message'`。`defaultReadFile` 先 `statSync`，超 2 MB 不读——但必须用**与 `undefined` 不同的哨兵**，否则 `Write` 会把「太大读不了的既存文件」说成「将要创建」。
+- [x] **`runtime/permissionPresentation.ts`**：`PermissionDialog.tsx` 的纯逻辑整体搬出并按 `PermissionRequestDto` 重打类型。新增 `permissionToneForRequest` 返回**语义**（`danger`/`caution`/`normal`）而非 theme 颜色。
+- [x] **DTO 携带派生数据**：`preview` + `destructiveWarnings` 在 host 侧算好。这是关键分层决定——否则渲染器为了画一个警告条就要 import `harness/`。`toPermissionDto` 移入 `protocol/permissionDto.ts`，`cwd` 必填。
+- [x] **TUI 改吃 DTO**：`usePermission` 用 `liveRef` 留住活的 `PermissionRequest`（与 `host.ts` 的 `livePermissionRequests` 同构），`respond(id, approved, alwaysAllow?)`。「always allow」的副作用从组件迁进 hook，形状正是 wire 上的 `UiResponse`。
+- [x] **11 个新 `HostCommand`**：`list-models` / `resolve-model` / `set-default-model` / `list-sessions` / `create-session` / `reload-agents` / `reload-skills` / `reload-settings` / `list-background-tasks` / `peek-task-output` / `kill-task` / `shutdown`。`hello` 扩成 `WireHelloResult`（含 `records`、`notices`、`cwd`、`configuredEffortLevel`）。
+- [x] **`runtime/startupNotices.ts`**、**`runtime/sessionSwitch.ts`** 两个共享模块，`tui.tsx` 改用前者（行为等价）。
+- [x] **`SessionClient` 15 个新方法** + `getBackgroundTasks()`（逐字段 diff）+ 容忍传输死亡的 `shutdown()`。
+
+### 顺带修掉的两个真缺陷
+
+1. [x] **客户端 `permissionMode` 会陈旧** — `EnterPlanMode`/`ExitPlanMode` 经 `PlanModeManager` → `PermissionGate` 改模式，根本不碰 `RuntimeSlot`，而 host 只订阅了 `RuntimeSlot`。补 `permissionGate.onModeChange`。
+2. [x] **`retarget` 后 loop 仍绑旧会话** — 原实现只做 ledger rebase + `controller.retarget`，没有 `createRuntime` + `RuntimeSlot.replace`，也跳过了 `backgroundTasks.restoreSession` 与孤儿 agent 对账。策略抽进 `sessionSwitch.ts`。**`App.tsx` 暂留自己那份**：协议层是惰性的而 TUI 的 resume 路径是活的，两边同时改会让一个回归有两个嫌疑人；等 TUI 真正接到 `SessionClient` 时统一（`App.tsx:616` 附近）。
+
+### 验证
+
+- [x] `npx tsc --noEmit` 干净
+- [x] `npm run test` — **1534 passed / 0 failed / 39 suites**（较 1468 基线新增 66 个）
+- [x] `test/protocolClientParity.test.ts` 是本阶段**验收标准**：23 个 App prop → `SessionClient` 成员的映射表（对真实实例校验）、与 `tui.tsx` 实际传的 prop 交叉核对、外加源码级断言「`client.ts` 只 type-import harness」。两半都做过**变异验证**（加一个值 import、加一个新 prop，均能被测出）。
+- [x] `test/usePermission.test.ts`（6）：DTO 而非活对象进对话框、**「always allow」早于 resolve**（同样变异验证过：宏任务延迟会被测出，微任务不会——因为微任务仍先于 gate 的 await 续体）、denyPending 清空、卸载结清在途请求
+- [x] `test/fileToolPreview.test.ts`（15）含**上限内返回同一对象身份**与超大文件降级；`test/permissionPresentation.test.ts`（40）；`test/fileSuggestions.test.ts`（17）；`test/sessionSwitch.test.ts`（6）
+- [x] `protocolHost.test.ts` 新增 9 条（B1、B2、后台任务合并、**模型列表不含 apiKey/baseUrl**、hello 形状等）；`protocolWire.test.ts` 补 `UiRequest`/`UiResponse` 的 `structuredClone` 覆盖（此前只钉了事件侧）
+- [ ] **手动冒烟未执行**（需 TTY + 真实 key）。本轮唯一动到活 TUI 的是权限对话框：① 文件写入的 diff 预览与改动前逐字一致 ② 200 行以上文件的「... (N more lines)」计数 ③ 破坏性 Bash 仍显示 `DANGER` 且默认选中 `[N]` ④ **选 `[A]` 后规则真的生效**（直接验证 `onAlwaysAllow` 新时序）⑤ 多个请求排队时 Tab 切换与 `Also waiting:` ⑥ 工具执行中 Ctrl+C ⑦ `/model` → `/clear` → `/resume`
+
+---
+
+## 阶段 2b-2 — Electron 外壳 `[ ]` 未开始
+
+协议已充分，剩下三件纯增量的事。
+
+- [ ] **构建步骤（新发现的前置）**：Electron 主进程**不能**用 `--import tsx`（原因见 `bin/hanekawa.mjs:3-19`：tsx 的 load hook 在 Node 22+ 会破坏 `require()` package.json）。这会引入本仓库**第一个真正的构建步骤**——`tsc` emit 到 `dist/`，或 esbuild 打包主进程。目前没有任何打包器。
+- [ ] `npm i -D electron` + 渲染进程打包器；主进程 = 现有 Node 全栈 + `bootstrap()` + `RuntimeSlot`/`SessionController` + `SessionHost`；渲染进程 = 新 UI + `SessionClient`，**深 import `protocol/client.js` 而非桶**（桶经 `host.ts` 传递性拉进 `node:fs`）
+- [ ] `src/desktop/ipc/` 写 `ipcMain`/`ipcRenderer` 适配器。`createNodeProcessChannel` **不能直接复用**——`NodeIpcTarget` 的结构（`send`/`on('message')`）与 Electron 的 `on(channel, (event, ...args))` / `webContents.send` 不匹配，需要约 50 行新适配器。握手照 `test/protocolChildProcess.test.ts` 的 `__ready` 模式。
+- [ ] MCP trust 提示：`confirmMcpTrust` 在**任何 channel 存在之前**运行，做成 `UiRequest` 需要一个 pre-`hello` 阶段；或先用原生 `dialog.showMessageBox`。
+- [ ] 把 `App.tsx` 的会话切换改接 `sessionSwitch.ts`（见上文缺陷 2 的留尾）
+- [ ] 无需迁移：Ink patches、focus filter、alt-screen、`transcript.ts`、`layout.ts`
+
+### 本轮刻意推迟
+
+- **斜杠命令的跨进程派发**（`run-command`）：`src/commands/` 的效果全走 `CommandContext` 回调，投影这套注册表是独立一件事。新增的命令已覆盖 `/model`、`/clear`、`/resume`、`/skills reload` 的实际能力。
+- **`/rewind` 写路径**：摘要要跑活 loop，跟着 rewind 流程一起移。
+- **入站命令的 zod 校验**：`handleMessage` 目前是 cast，加固要 ~150 行 `.strict()` schema。
+- **后台任务的推送订阅之外的能力**、`buildModelPickerOptions` 的 DTO 化。
 
 ---
 
@@ -215,22 +256,32 @@ Stage 2 里所有**跨进程风险**都与 Electron 无关，先把它们做完�
 - `RuntimeSlot.replace()` 必须先装新 runtime 再 dispose 旧的：晚到的 dispose 会拆掉继任者的 plan-slug provider。
 - `SessionController` **独占** `RecordProxy` 的三个 setter。UI 只能 `onEvent` 订阅，不能自己 `setHandler`，否则记录会被处理两次。
 - `SessionEvent` 的 `turn-end.aborted` 是 signal 状态，不是「是否抛异常」；`transcript-reset.bumpGeneration` 只在真正换了会话视图时为 `true`。
-- **协议层**：`SessionClient` 换快照前必须逐字段 diff。`SessionController.publish` 是按引用比 `usage`/`taskSnapshot` 的，而反序列化出来的每条消息都是新对象图——照搬会让 `useSyncExternalStore` 无限重渲染。
+- **协议层**：`SessionClient` 换快照前必须逐字段 diff，**后台任务列表同理**。`SessionController.publish` 是按引用比 `usage`/`taskSnapshot` 的，而反序列化出来的每条消息都是新对象图——照搬会让 `useSyncExternalStore` 无限重渲染。
 - **协议层**：往 `HostEvent`/`HostCommand` 上加字段前先确认它过得了 `structuredClone`。`memoryChannel` 每次 `post` 都克隆就是为了当场炸出来；Node 的 `child_process.send` 默认走 JSON，会**静默吞掉**函数（`test/protocolChildProcess.test.ts` 有一条专门钉这个）。
+- **协议层**：`execute()` **没有 `default` 分支**且 switch 在穷尽 union 上——这是强制机制，加了 variant 不写 case 就 `tsc` 红。别加 default。
+- **任何从 `ModelConfig` 投影出去的类型都要逐字段构造，绝不 spread**：`resolveModel` 会把 endpoint 的 `apiKey`/`baseUrl` 折进返回值。
+- **`PermissionRequestDto` 携带派生数据**（`preview`、`destructiveWarnings`），目的是让渲染器不必 import `harness/`。加字段时保持这条：需要 host 侧代码才能算出来的东西，在 host 算完再上线。
+- **「always allow」必须先触发回调再 resolve**：`PermissionGate` 在 `await this.prompt(...)` 的下一行读那个闭包标志。host 与 `usePermission` 两条路径都是如此，各有测试钉住。
+- **切会话不等于 `controller.retarget`**：还要 `createRuntime` + `RuntimeSlot.replace`（replace 放最后）+ 后台任务恢复 + 孤儿 agent 对账，见 `runtime/sessionSwitch.ts`。
+- **渲染器深 import `protocol/client.js`，不要走 `protocol/index.js`**：桶经 `host.ts`/`permissionDto.ts` 传递性拉进 `node:fs`。`test/protocolClientParity.test.ts` 钉住了 `client.ts` 只 type-import harness。
 
 **验证命令**：
 
 ```bash
 npm run typecheck
-npm run test                                          # 1468 tests / 35 suites, ~39s
+npm run test                                          # 1534 tests / 39 suites, ~39s
 
 node --import tsx --test test/protocolWire.test.ts test/protocolHost.test.ts \
-  test/protocolClient.test.ts test/bridgesPending.test.ts
+  test/protocolClient.test.ts test/protocolClientParity.test.ts test/bridgesPending.test.ts
 node --import tsx --test test/protocolChildProcess.test.ts   # 真实进程边界
 node --import tsx --test test/sessionFileLock.test.ts        # 含双进程并发写
+node --import tsx --test test/permissionPresentation.test.ts test/usePermission.test.ts \
+  test/fileToolPreview.test.ts test/fileSuggestions.test.ts test/sessionSwitch.test.ts
 node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 npm run dev:tui                                       # 手动冒烟，需 TTY
 ```
+
+**改文档时注意**：`AGENTS.md` 是 `CLAUDE.md` 的逐字镜像，只有第 1、3 行不同（Codex / Claude Code）。它**未被 git 跟踪**，但改了 `CLAUDE.md` 就要同步它。
 
 **已知不稳定**：`test/toolcall-integration.test.ts` 在**全量并发跑**时偶发
 `Unable to deserialize cloned data due to invalid or unsupported version` —— 这是 Node test runner

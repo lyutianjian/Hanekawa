@@ -10,10 +10,11 @@ import { saveEffortLevel } from '../../config/settings.js'
 import type { EffortLevel } from '../../config/effort.js'
 import { SessionStore } from '../../sessions/service.js'
 import type { SessionMeta } from '../../sessions/service.js'
-import { logDiagnostics, summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
+import { logDiagnostics } from '../../harness/diagnostics.js'
 import type { McpServerConfig } from '../../services/mcp/index.js'
 import { bootstrap, RuntimeStartupError } from '../../runtime/index.js'
-import type { McpConnectionStatus, RuntimeHost } from '../../runtime/index.js'
+import type { RuntimeHost } from '../../runtime/index.js'
+import { buildStartupNotices, resolveInitialQueuedPrompt } from '../../runtime/startupNotices.js'
 import { RuntimeSlot } from '../../runtime/runtimeSlot.js'
 import { SessionController } from '../../runtime/sessionController.js'
 import { App } from '../components/App.js'
@@ -98,22 +99,15 @@ async function main() {
     getSession: () => runtimeSlot.current,
   })
 
-  const initialQueuedPrompt = process.env.MYAGENT_RESUME_INTERRUPTED_TURN
-    ? host.hasRecoverableInterruption ? 'continue' : undefined
-    : undefined
+  const initialQueuedPrompt = resolveInitialQueuedPrompt(host.hasRecoverableInterruption)
 
   logDiagnostics(host.diagnostics)
-  const initialSystemMessages = [
-    summarizeDiagnosticsForTui(host.diagnostics),
-    formatMcpStatus(host.mcp),
-  ]
-    .filter((content): content is string => Boolean(content))
-    .map((content) => ({
-      kind: 'system' as const,
-      id: randomUUID(),
-      content,
-      createdAt: new Date().toISOString(),
-    }))
+  const initialSystemMessages = buildStartupNotices(host).map((notice) => ({
+    kind: 'system' as const,
+    id: randomUUID(),
+    content: notice.content,
+    createdAt: new Date().toISOString(),
+  }))
 
   // Render the TUI
   const { waitUntilExit } = render(
@@ -153,16 +147,6 @@ async function main() {
   await waitUntilExit()
 }
 
-function formatMcpStatus(status: McpConnectionStatus): string | undefined {
-  const parts: string[] = []
-  if (status.connected.length > 0) {
-    parts.push(`MCP connected: ${status.connected.map((s) => `${s.name} (${s.toolCount} tools)`).join(', ')}`)
-  }
-  if (status.failed.length > 0) {
-    parts.push(`MCP failed: ${status.failed.map((f) => `${f.name} (${f.error})`).join(', ')}`)
-  }
-  return parts.length > 0 ? parts.join(' | ') : undefined
-}
 
 main().catch((err) => {
   console.error('Fatal error:', err)

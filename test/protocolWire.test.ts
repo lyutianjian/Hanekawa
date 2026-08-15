@@ -3,6 +3,11 @@ import assert from 'node:assert/strict'
 import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.js'
 import { PendingRequests } from '../src/runtime/protocol/pendingRequests.js'
 import { UI_REQUEST_FALLBACKS } from '../src/runtime/protocol/wire.js'
+import type {
+  PermissionRequestDto,
+  UiRequest,
+  UiResponse,
+} from '../src/runtime/protocol/wire.js'
 import type { SessionEvent } from '../src/runtime/sessionController.js'
 import type { SessionRecord } from '../src/harness/types.js'
 
@@ -60,6 +65,89 @@ test('the event union covers every variant the controller can emit', () => {
     'turn-end',
     'turn-start',
   ])
+})
+
+const permissionDto: PermissionRequestDto = {
+  toolName: 'Write',
+  riskLevel: 'confirm',
+  input: { filePath: 'src/app.ts', content: 'export {}\n' },
+  reason: 'requires confirmation',
+  source: 'mode',
+  matchedRule: { toolName: 'Write', behavior: 'ask', source: 'config' },
+  alwaysAllowRule: { toolName: 'Write', contentPattern: 'src/**', behavior: 'allow', source: 'session' },
+  denialStreak: 2,
+  canAlwaysAllow: true,
+  preview: {
+    kind: 'diff',
+    title: 'Edit file',
+    filePath: 'src/app.ts',
+    oldText: 'a\nb\n',
+    newText: 'a\nc\n',
+    summary: 'src/app.ts will be edited',
+    elided: { oldLines: 300, newLines: 12 },
+  },
+  destructiveWarnings: [{ code: 'recursive_force_delete', message: 'boom', segment: 'rm -rf x' }],
+}
+
+const allUiRequestVariants: UiRequest[] = [
+  { kind: 'permission', requestId: 'r1', payload: permissionDto },
+  {
+    kind: 'permission',
+    requestId: 'r2',
+    payload: {
+      ...permissionDto,
+      preview: { kind: 'message', title: 'Edit preview unavailable', filePath: 'x', message: 'nope' },
+    },
+  },
+  {
+    kind: 'ask-user-question',
+    requestId: 'r3',
+    payload: {
+      questions: [{
+        question: 'Which one?',
+        header: 'Pick',
+        multiSelect: false,
+        options: [{ label: 'A', description: 'first' }],
+      }],
+    },
+  },
+  { kind: 'enter-plan', requestId: 'r4' },
+  {
+    kind: 'exit-plan',
+    requestId: 'r5',
+    payload: { planContent: 'do the thing', planFilePath: '.myagent/plans/p.md' },
+  },
+]
+
+const allUiResponseVariants: UiResponse[] = [
+  { kind: 'permission', approved: true, alwaysAllow: true },
+  { kind: 'ask-user-question', result: { kind: 'answers', answers: { Pick: 'A' } } },
+  { kind: 'enter-plan', approved: false },
+  { kind: 'exit-plan', decision: { kind: 'reject', feedback: 'no' } },
+]
+
+test('every UiRequest variant survives structuredClone unchanged', () => {
+  // Only the event side was pinned before; a permission DTO now carries a file
+  // preview and the destructive analysis, both of which cross per prompt.
+  for (const request of allUiRequestVariants) {
+    assert.deepEqual(structuredClone(request), request, `${request.kind} lost data`)
+  }
+})
+
+test('every UiResponse variant survives structuredClone unchanged', () => {
+  for (const response of allUiResponseVariants) {
+    assert.deepEqual(structuredClone(response), response, `${response.kind} lost data`)
+  }
+})
+
+test('the UI request union covers every kind the host can ask', () => {
+  const covered = new Set(allUiRequestVariants.map((request) => request.kind))
+  assert.deepEqual([...covered].sort(), ['ask-user-question', 'enter-plan', 'exit-plan', 'permission'])
+  assert.deepEqual(
+    [...covered].sort(),
+    Object.keys(UI_REQUEST_FALLBACKS).sort(),
+    'every request kind needs a fallback for when the client dies',
+  )
 })
 
 test('UI request fallbacks are asymmetric: only entering plan mode approves', () => {

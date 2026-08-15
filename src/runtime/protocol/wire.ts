@@ -11,9 +11,12 @@ import type {
   AskUserQuestionResult,
 } from '../../harness/types.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeManager.js'
+import type { BackgroundTaskSnapshot } from '../../services/backgroundTasks/registry.js'
 import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
 import type { FileToolPreview } from '../../services/fileToolPreview.js'
+import type { SessionMeta } from '../../sessions/service.js'
 import type { SessionControllerSnapshot, SessionEvent } from '../sessionController.js'
+import type { StartupNotice } from '../startupNotices.js'
 
 /**
  * The wire format between a runtime host and whatever renders it.
@@ -42,6 +45,12 @@ export type HostEvent =
    */
   | { type: 'snapshot'; snapshot: SessionControllerSnapshot; subagentProgress: Array<[string, string]> }
   | { type: 'runtime-snapshot'; snapshot: WireRuntimeSnapshot }
+  /**
+   * Push, because the registry is a `useSyncExternalStore` source. The host
+   * coalesces these: `changed()` fires on every output chunk of every running
+   * shell, which would otherwise be an IPC firehose.
+   */
+  | { type: 'background-tasks'; tasks: BackgroundTaskSnapshot[] }
   /** A blocking question for the UI. The client must eventually answer it. */
   | { type: 'ui-request'; request: UiRequest }
   | { type: 'reply'; id: string; result: unknown }
@@ -59,15 +68,33 @@ export type HostCommand =
    * `turn_interruption` record, `'exit'` deliberately does not.
    */
   | { type: 'interrupt'; id: string; reason: InterruptReason }
+  /** Reloads *records*, unlike the `reload-*` commands below. */
   | { type: 'reload'; id: string }
   | { type: 'retarget'; id: string; sessionId: string }
   | { type: 'run-tool'; id: string; name: string; input: unknown }
   | { type: 'checkpoints'; id: string }
   | { type: 'restore-code'; id: string; commitHash: string }
   | { type: 'set-model'; id: string; modelKey: string }
-  | { type: 'set-effort'; id: string; level: string }
+  | { type: 'set-effort'; id: string; level: string; persist?: boolean }
   | { type: 'set-permission-mode'; id: string; mode: PermissionMode }
   | { type: 'ui-response'; requestId: string; response: UiResponse }
+  // --- models ---------------------------------------------------------------
+  | { type: 'list-models'; id: string }
+  | { type: 'resolve-model'; id: string; input: string }
+  | { type: 'set-default-model'; id: string; reference: string }
+  // --- sessions -------------------------------------------------------------
+  | { type: 'list-sessions'; id: string }
+  | { type: 'create-session'; id: string; title?: string }
+  // --- host-side reloads ----------------------------------------------------
+  | { type: 'reload-agents'; id: string }
+  | { type: 'reload-skills'; id: string }
+  | { type: 'reload-settings'; id: string }
+  // --- background tasks -----------------------------------------------------
+  | { type: 'list-background-tasks'; id: string }
+  | { type: 'peek-task-output'; id: string; taskId: string; maxBytes?: number }
+  | { type: 'kill-task'; id: string; taskId: string; reason?: string }
+  // --- lifecycle ------------------------------------------------------------
+  | { type: 'shutdown'; id: string; reason: string }
 
 export type InterruptReason = 'user-cancel' | 'exit'
 
@@ -180,4 +207,89 @@ export interface WireRunToolResult {
   ok: boolean
   content: string
   errorCode?: string
+}
+
+/**
+ * What a shell needs before it can paint its first frame.
+ *
+ * Startup-shaped state rides here rather than becoming events or extra round
+ * trips; anything that changes later gets a command instead. `records` is the
+ * host's ledger at attach time — without it a fresh renderer has an empty
+ * transcript until it asks for a reload.
+ */
+export interface WireHelloResult {
+  sessionId: string
+  session: SessionMeta
+  cwd: string
+  records: SessionRecord[]
+  notices: StartupNotice[]
+  hasRecoverableInterruption: boolean
+  initialQueuedPrompt?: string
+  /** Before clamping, for a picker that wants to show the configured value. */
+  configuredEffortLevel: EffortLevel
+}
+
+/**
+ * One entry of `config.models`, built field by field.
+ *
+ * Never spread a `ModelConfig` into this: `resolveModel` folds the endpoint's
+ * `apiKey` and `baseUrl` into what it returns, so a spread would ship every
+ * key the user has configured to the renderer. Fields are absent when the
+ * entry does not resolve (missing or unknown endpoint).
+ */
+export interface WireModelInfo {
+  key: string
+  model?: string
+  provider?: string
+  contextWindow?: number
+  maxEffort?: EffortLevel
+}
+
+export interface WireModelsResult {
+  /** Every configured key, resolvable or not — parity with `availableModelKeys`. */
+  models: WireModelInfo[]
+  defaultModelKey?: string
+}
+
+export interface WireResolveModelResult {
+  modelKey?: string
+}
+
+/** `SessionMeta` crosses verbatim: it is already the JSON shape in index.json. */
+export interface WireSessionsResult {
+  sessions: SessionMeta[]
+}
+
+export interface WireSessionSwitchResult {
+  session: SessionMeta
+  records: SessionRecord[]
+  notices: StartupNotice[]
+}
+
+export interface WireReloadCountResult {
+  count: number
+}
+
+export interface WireReloadSettingsResult {
+  needsRuntimeRebuild: boolean
+  /** True when the host already swapped the runtime on your behalf. */
+  rebuilt: boolean
+  modelKey: string
+}
+
+export interface WireEffortResult {
+  effort: string
+  persisted: boolean
+}
+
+export interface WireBackgroundTasksResult {
+  tasks: BackgroundTaskSnapshot[]
+}
+
+export interface WireTaskOutputResult {
+  output: string
+}
+
+export interface WireTaskResult {
+  task?: BackgroundTaskSnapshot
 }

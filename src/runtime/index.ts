@@ -74,6 +74,41 @@ export type {
   RewindSummaryDecision,
   RewindSummaryRewrite,
 } from './rewindSummary.js'
+export {
+  PERMISSION_OPTIONS,
+  defaultPermissionIndex,
+  destructiveWarningsForRequest,
+  formatPermissionInputBlock,
+  formatPermissionReason,
+  formatPermissionRequestLabel,
+  formatPermissionRuleLabel,
+  formatPermissionSource,
+  formatPermissionSubtitle,
+  formatPermissionTitle,
+  nextPermissionIndex,
+  permissionOptionsForRequest,
+  permissionToneForRequest,
+  resolvePermissionAction,
+  resolvePermissionOption,
+} from './permissionPresentation.js'
+export type {
+  PermissionAction,
+  PermissionInputBlock,
+  PermissionOption,
+  PermissionTone,
+} from './permissionPresentation.js'
+export {
+  buildStartupNotices,
+  formatMcpStatus,
+  resolveInitialQueuedPrompt,
+} from './startupNotices.js'
+export type { StartupNotice } from './startupNotices.js'
+export {
+  reconcileOrphanedAgents,
+  switchToExistingSession,
+  switchToNewSession,
+} from './sessionSwitch.js'
+export type { SessionSwitchDeps, SessionSwitchResult } from './sessionSwitch.js'
 export type {
   AgentSession,
   BootstrapOptions,

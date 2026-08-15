@@ -1,13 +1,27 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { reconcileOrphanedAgents } from '../src/runtime/sessionSwitch.js'
+import { appendFile, mkdtemp, readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  reconcileOrphanedAgents,
+  switchToExistingSession,
+  switchToNewSession,
+  type SessionSwitchDeps,
+} from '../src/runtime/sessionSwitch.js'
 import type { SessionRecord } from '../src/harness/types.js'
+import { SessionStore } from '../src/sessions/service.js'
+import { getSessionsDir } from '../src/utils/paths.js'
 
 /**
- * The switch itself needs a live runtime, so what is tested here is the part
- * that decides *what to write*: agents still marked running that did not
- * survive into this process. Without it a resumed transcript shows them
- * running forever.
+ * Two halves. `reconcileOrphanedAgents` is pure and decides *what to write*:
+ * agents still marked running that did not survive into this process. Without it
+ * a resumed transcript shows them running forever.
+ *
+ * The switch functions themselves are exercised against stub collaborators over
+ * a real store, because what matters is the choreography — the order of the
+ * queue hook, `createRuntime`, `retarget` and `replace` — rather than the loop.
  */
 
 function task(
@@ -76,4 +90,209 @@ test('several orphans each get their own record', () => {
 
   assert.deepEqual(written.map((record) => record.type === 'subagent_task' && record.agentId), ['a', 'b'])
   assert.deepEqual(written.map((record) => record.id), ['new-1', 'new-2'])
+})
+
+// --- the switch choreography ------------------------------------------------
+
+interface SwitchHarness {
+  deps: SessionSwitchDeps
+  store: SessionStore
+  cwd: string
+  /** Every step that has an ordering constraint, in the order it happened. */
+  order: string[]
+  restoredSessions: string[]
+  stopped: Array<{ sessionId: string; reason: string }>
+  /** Agent ids `restoreSession` reports as not having survived. */
+  orphans: string[]
+  registered: Set<string>
+}
+
+async function createSwitchHarness(): Promise<SwitchHarness> {
+  const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-switch-'))
+  const store = new SessionStore(cwd)
+  await store.init()
+
+  const order: string[] = []
+  const restoredSessions: string[] = []
+  const stopped: Array<{ sessionId: string; reason: string }> = []
+  const orphans: string[] = []
+  const registered = new Set<string>()
+
+  const runtimeSlot = {
+    current: {
+      modelKey: 'sonnet',
+      loop: { clearCachedSections: () => order.push('clearCachedSections') },
+    },
+    replace: () => order.push('replace'),
+  }
+
+  const deps: SessionSwitchDeps = {
+    host: {
+      store,
+      createRuntime: (modelKey, session) => {
+        order.push(`createRuntime:${modelKey}:${session.id}`)
+        return {} as never
+      },
+    },
+    runtimeSlot: runtimeSlot as unknown as SessionSwitchDeps['runtimeSlot'],
+    controller: {
+      retarget: (session: { id: string }) => order.push(`retarget:${session.id}`),
+    } as unknown as SessionSwitchDeps['controller'],
+    backgroundTasks: {
+      getSnapshot: (sessionId: string) => (registered.has(sessionId) ? [{}] : []),
+      restoreSession: async (sessionId: string) => {
+        restoredSessions.push(sessionId)
+        return orphans
+      },
+      stopAll: async (sessionId: string, reason: string) => { stopped.push({ sessionId, reason }) },
+    } as unknown as SessionSwitchDeps['backgroundTasks'],
+  }
+
+  return { deps, store, cwd, order, restoredSessions, stopped, orphans, registered }
+}
+
+function message(id: string, content: string): SessionRecord {
+  return { type: 'message', id, role: 'user', content, createdAt: 'now' }
+}
+
+test('the queue hook runs before the runtime is swapped, not after', async () => {
+  const harness = await createSwitchHarness()
+  const session = await harness.store.create('resume me')
+  await harness.store.appendRecord(session.id, message('m1', 'hello'))
+
+  const seen: Array<{ id: string; records: number }> = []
+  await switchToExistingSession({
+    ...harness.deps,
+    beforeApply: async (next, records) => {
+      harness.order.push('beforeApply')
+      seen.push({ id: next.id, records: records.length })
+    },
+  }, session.id)
+
+  assert.deepEqual(harness.order, [
+    'beforeApply',
+    `createRuntime:sonnet:${session.id}`,
+    `retarget:${session.id}`,
+    'replace',
+  ], 'a queue still keyed to the previous session must not outlive the swap')
+  assert.deepEqual(seen, [{ id: session.id, records: 1 }],
+    'the hook is handed the session it is switching to and the records it loaded')
+})
+
+test('a new session hands the hook the draft id that did not exist before the call', async () => {
+  const harness = await createSwitchHarness()
+  const previous = await harness.store.create('old')
+
+  const seen: string[] = []
+  const result = await switchToNewSession({
+    ...harness.deps,
+    beforeApply: async (next) => {
+      harness.order.push('beforeApply')
+      seen.push(next.id)
+    },
+  }, { previousSessionId: previous.id })
+
+  assert.deepEqual(seen, [result.session.id])
+  assert.notEqual(result.session.id, previous.id)
+  assert.deepEqual(harness.order, [
+    'clearCachedSections',
+    'beforeApply',
+    `createRuntime:sonnet:${result.session.id}`,
+    `retarget:${result.session.id}`,
+    'replace',
+  ], 'the cached Environment section goes first; the swap still goes last')
+  assert.deepEqual(harness.stopped, [{ sessionId: previous.id, reason: 'Session cleared' }])
+})
+
+test('the hook is optional, and leaving it out changes nothing else', async () => {
+  const harness = await createSwitchHarness()
+  const session = await harness.store.create('resume me')
+
+  await switchToExistingSession(harness.deps, session.id)
+
+  assert.deepEqual(harness.order, [
+    `createRuntime:sonnet:${session.id}`,
+    `retarget:${session.id}`,
+    'replace',
+  ])
+})
+
+test('diagnostics come back raw, for each shell to word its own way', async () => {
+  const harness = await createSwitchHarness()
+  const session = await harness.store.create('damaged')
+  await harness.store.appendRecord(session.id, message('m1', 'hello'))
+  // A torn line is the diagnostic the reader self-heals from and reports.
+  await appendFile(path.join(getSessionsDir(harness.cwd), `${session.id}.jsonl`), '{not json\n')
+
+  const result = await switchToExistingSession(harness.deps, session.id)
+
+  assert.equal(result.records.length, 1, 'the malformed line is skipped, not fatal')
+  const torn = result.diagnostics.find((diagnostic) => diagnostic.code === 'malformed_jsonl')
+  // The structured fields are the point: `code` and `line` are exactly what
+  // `summarizeDiagnosticsForTui` throws away, so a shell that wants to word this
+  // differently still can.
+  assert.ok(torn, 'the reader self-heals from a torn line and reports it')
+  assert.equal(torn.severity, 'warning')
+  assert.equal(torn.line, 2)
+  assert.ok(!('notices' in result),
+    'formatting these here would need `mcp`, which puts the whole RuntimeHost back in the deps')
+})
+
+test('an unknown session throws rather than switching to nothing', async () => {
+  const harness = await createSwitchHarness()
+
+  await assert.rejects(
+    () => switchToExistingSession(harness.deps, 'no-such-session'),
+    /Unknown session: no-such-session/,
+  )
+  assert.deepEqual(harness.order, [], 'nothing was swapped on the way to failing')
+})
+
+test('a session already live in this process is not restored a second time', async () => {
+  const harness = await createSwitchHarness()
+  const session = await harness.store.create('already running')
+  harness.registered.add(session.id)
+
+  await switchToExistingSession(harness.deps, session.id)
+
+  assert.deepEqual(harness.restoredSessions, [],
+    'restoring again would double-register every background task it owns')
+})
+
+test('an orphaned agent is written to the store and joins the returned records', async () => {
+  const harness = await createSwitchHarness()
+  const session = await harness.store.create('had an agent')
+  await harness.store.appendRecord(session.id, task('a', 'running'))
+  harness.orphans.push('a')
+
+  const result = await switchToExistingSession(harness.deps, session.id)
+
+  const written = result.records.filter(
+    (record): record is Extract<SessionRecord, { type: 'subagent_task' }> =>
+      record.type === 'subagent_task' && record.status === 'interrupted',
+  )
+  assert.equal(written.length, 1, 'the interruption is in what the caller renders')
+  const reloaded = await harness.store.loadRecordsWithDiagnostics(session.id)
+  assert.equal(
+    reloaded.records.filter((r) => r.type === 'subagent_task' && r.status === 'interrupted').length,
+    1,
+    'and on disk, so the next resume does not report it again',
+  )
+})
+
+test('the TUI has no second copy of the switch choreography', async () => {
+  const repoRoot = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)))
+  const source = await readFile(path.join(repoRoot, 'src/tui/components/App.tsx'), 'utf8')
+
+  assert.match(source, /import \{ switchToExistingSession, switchToNewSession \} from '\.\.\/\.\.\/runtime\/sessionSwitch\.js'/,
+    'both switches go through the shared module')
+  // Each of these was a line of the copy App.tsx used to keep. `retarget`
+  // without `createRuntime` + `replace` is the specific bug: the loop keeps
+  // writing into the session it left.
+  assert.ok(!source.includes('.retarget('),
+    'a switch assembled in the view drifts from the one the host runs')
+  assert.ok(!source.includes('Background agent was not present'),
+    'orphan reconciliation belongs to reconcileOrphanedAgents, and only there')
+  assert.ok(!source.includes('restoreSession('),
+    'background tasks are reattached by the switch, not by the view')
 })

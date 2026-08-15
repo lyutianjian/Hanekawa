@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { SessionRecord } from '../harness/types.js'
 import type { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
-import type { SessionMeta } from '../sessions/service.js'
+import type { SessionDiagnostic, SessionMeta } from '../sessions/service.js'
 import type { RuntimeSlot } from './runtimeSlot.js'
 import type { SessionController } from './sessionController.js'
-import { buildStartupNotices, type StartupNotice } from './startupNotices.js'
 import type { RuntimeHost } from './types.js'
 
 /**
@@ -18,16 +17,38 @@ import type { RuntimeHost } from './types.js'
  * forever.
  */
 export interface SessionSwitchDeps {
-  host: RuntimeHost
+  /**
+   * Deliberately narrower than `RuntimeHost`: the TUI holds these two as
+   * separate props and has no host object to hand over. Widening this back to
+   * the whole host is what would force a shell to own members it does not use.
+   */
+  host: Pick<RuntimeHost, 'store' | 'createRuntime'>
   runtimeSlot: RuntimeSlot
   controller: SessionController
   backgroundTasks: BackgroundTaskRegistry
+  /**
+   * Runs once the records are loaded and before the runtime is swapped.
+   *
+   * The message queue is why this exists. It belongs to the shell rather than
+   * the host, and it has to be rebound *before* the new runtime goes live: past
+   * `RuntimeSlot.replace` there is an await boundary on which a queue still
+   * keyed to the previous session could pump into the new one. A new session's
+   * id does not exist until `createDraft()`, so no caller can do this ahead of
+   * the call.
+   */
+  beforeApply?: (session: SessionMeta, records: readonly SessionRecord[]) => Promise<void>
 }
 
 export interface SessionSwitchResult {
   session: SessionMeta
   records: SessionRecord[]
-  notices: StartupNotice[]
+  /**
+   * Raw rather than formatted. A terminal surfaces only these, while a host
+   * folds them together with the MCP status into `StartupNotice`s — and doing
+   * that here would need `mcp`, which puts the whole `RuntimeHost` back into the
+   * deps above.
+   */
+  diagnostics: SessionDiagnostic[]
 }
 
 export async function switchToExistingSession(
@@ -52,13 +73,9 @@ export async function switchToExistingSession(
     records.push(record)
   }
 
-  applySwitch(deps, meta, records)
+  await applySwitch(deps, meta, records)
 
-  return {
-    session: meta,
-    records,
-    notices: buildStartupNotices({ diagnostics: loaded.diagnostics, mcp: deps.host.mcp }),
-  }
+  return { session: meta, records, diagnostics: loaded.diagnostics }
 }
 
 export async function switchToNewSession(
@@ -73,12 +90,17 @@ export async function switchToNewSession(
     ? deps.host.store.createDraft(options.title)
     : deps.host.store.createDraft()
 
-  applySwitch(deps, meta, [])
+  await applySwitch(deps, meta, [])
 
-  return { session: meta, records: [], notices: [] }
+  return { session: meta, records: [], diagnostics: [] }
 }
 
-function applySwitch(deps: SessionSwitchDeps, meta: SessionMeta, records: SessionRecord[]): void {
+async function applySwitch(
+  deps: SessionSwitchDeps,
+  meta: SessionMeta,
+  records: SessionRecord[],
+): Promise<void> {
+  await deps.beforeApply?.(meta, records)
   const next = deps.host.createRuntime(deps.runtimeSlot.current.modelKey, meta, records)
   deps.controller.retarget(meta, records)
   // Last, and never an assignment: replace installs the new runtime before

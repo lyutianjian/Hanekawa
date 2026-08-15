@@ -643,6 +643,9 @@ export class SessionHost {
   private applySessionSwitch(result: SessionSwitchResult): WireSessionSwitchResult {
     this.session = result.session
     this.ledger.rebase(result.records)
+    // Folded here rather than inside the switch: only a host has the MCP status,
+    // and a terminal shell shows the diagnostics without it.
+    const notices = buildStartupNotices({ diagnostics: result.diagnostics, mcp: this.host.mcp })
     // Pushed rather than left to the reply: a `/clear` arriving as a
     // `run-command` switches the session too, and only the host knows the draft
     // id it just minted.
@@ -654,13 +657,13 @@ export class SessionHost {
       event: {
         type: 'transcript-reset',
         records: result.records,
-        systemMessages: result.notices.map((notice) => notice.content),
+        systemMessages: notices.map((notice) => notice.content),
         bumpGeneration: true,
       },
     })
     this.postBackgroundTasks()
     this.postRuntimeSnapshot()
-    return result
+    return { session: result.session, records: result.records, notices }
   }
 
   private buildModelsResult(): WireModelsResult {

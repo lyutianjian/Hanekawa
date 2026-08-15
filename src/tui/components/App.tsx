@@ -47,6 +47,7 @@ import { canPumpQueue } from '../../runtime/queuePump.js'
 import { buildModelPickerOptions } from '../../runtime/modelPicker.js'
 import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../../runtime/rewindSummary.js'
 import { activateModelKey, switchModel } from '../../runtime/modelSwitch.js'
+import { switchToExistingSession, switchToNewSession } from '../../runtime/sessionSwitch.js'
 import { buildRunOverrides } from '../../runtime/runOverrides.js'
 import {
   openPlanFileInEditor,
@@ -324,20 +325,32 @@ export function App({
     appendStaticItem(systemMsg)
   }, [appendStaticItem])
 
+  /**
+   * The host-agnostic half of a session switch, shared with `SessionHost`.
+   *
+   * `host` is only the two members the switch needs; the TUI has them as props
+   * and never holds a `RuntimeHost`. Everything the switch does *not* own — the
+   * message queue, the transcript, `activeSession` — stays in the two callbacks
+   * below, which is the whole boundary between shell and runtime here.
+   */
+  const sessionSwitchDeps = useMemo(() => ({
+    host: { store, createRuntime },
+    runtimeSlot,
+    controller: sessionController,
+    backgroundTasks,
+  }), [store, createRuntime, runtimeSlot, sessionController, backgroundTasks])
+
   const clearConversation = useCallback(async () => {
-    runtime.loop.clearCachedSections()
-    await backgroundTasks.stopAll(activeSession.id, 'Session cleared')
-    store.discardDraft(activeSession.id)
-    const nextSession = store.createDraft()
-    await messageQueue.migrateTo(nextSession.id, [])
-    const nextRuntime = createRuntime(runtime.modelKey, nextSession, [])
-    sessionController.retarget(nextSession, [])
-    setActiveSession(nextSession)
+    const result = await switchToNewSession({
+      ...sessionSwitchDeps,
+      // Before the new runtime goes live, never after: see `beforeApply`.
+      beforeApply: (next) => messageQueue.migrateTo(next.id, []),
+    }, { previousSessionId: activeSession.id })
+    setActiveSession(result.session)
     resetSessionRecords([])
-    runtimeSlot.replace(nextRuntime)
     setCheckpoints([])
     resetTranscript([])
-  }, [store, createRuntime, runtime.modelKey, runtime.loop, runtimeSlot, sessionController, resetTranscript, resetSessionRecords, messageQueue, backgroundTasks, activeSession.id])
+  }, [sessionSwitchDeps, messageQueue, activeSession.id, resetSessionRecords, resetTranscript])
 
   const buildRunOverridesForOptions = useCallback((options?: CommandSubmitQueryOptions) => (
     buildRunOverrides({ config: providerConfig, runtimeSlot, createActiveModelRuntime }, options)
@@ -544,34 +557,17 @@ export function App({
       return
     }
 
-    const loaded = await store.loadRecordsWithDiagnostics(target.id)
-    const alreadyRegistered = backgroundTasks.getSnapshot(target.id).length > 0
-    const orphanedAgentIds = new Set(alreadyRegistered
-      ? []
-      : await backgroundTasks.restoreSession(target.id, loaded.records))
-    if (orphanedAgentIds.size > 0) {
-      const latestTasks = new Map<string, Extract<SessionRecord, { type: 'subagent_task' }>>()
-      for (const record of loaded.records) {
-        if (record.type === 'subagent_task') latestTasks.set(record.agentId, record)
-      }
-      for (const agentId of orphanedAgentIds) {
-        const previous = latestTasks.get(agentId)
-        if (!previous || previous.status !== 'running') continue
-        const interrupted: Extract<SessionRecord, { type: 'subagent_task' }> = {
-          ...previous,
-          id: randomUUID(),
-          status: 'interrupted',
-          error: 'Background agent was not present when the session resumed',
-          createdAt: new Date().toISOString(),
-        }
-        await store.appendRecord(target.id, interrupted)
-        loaded.records.push(interrupted)
-      }
-    }
+    // Throws for a session that is gone; `SessionResumePicker` catches what
+    // `onSelect` rejects with and shows it in place.
+    const result = await switchToExistingSession({
+      ...sessionSwitchDeps,
+      beforeApply: (next, records) => messageQueue.reset(next.id, records),
+    }, target.id)
 
-    const nextRuntime = createRuntime(runtimeSlot.current.modelKey, target, loaded.records)
-    const diagnosticSummary = summarizeDiagnosticsForTui(loaded.diagnostics)
-    const transcriptItems = recordsToDisplayItems(loaded.records)
+    // Only the diagnostics: the host pairs these with its MCP status, but a
+    // resume in the terminal has never reported connection state.
+    const diagnosticSummary = summarizeDiagnosticsForTui(result.diagnostics)
+    const transcriptItems = recordsToDisplayItems(result.records)
     if (diagnosticSummary) {
       transcriptItems.unshift({
         kind: 'system',
@@ -581,15 +577,12 @@ export function App({
       })
     }
 
-    await messageQueue.reset(target.id, loaded.records)
-    sessionController.retarget(target, loaded.records)
-    resetSessionRecords(loaded.records)
-    setActiveSession(target)
-    runtimeSlot.replace(nextRuntime)
+    resetSessionRecords(result.records)
+    setActiveSession(result.session)
     setCheckpoints([])
     resetTranscript(transcriptItems)
     setMode('idle')
-  }, [activeSession.id, backgroundTasks, closeResumePicker, createRuntime, runtimeSlot, sessionController, resetTranscript, resetSessionRecords, messageQueue, store])
+  }, [activeSession.id, closeResumePicker, sessionSwitchDeps, messageQueue, resetTranscript, resetSessionRecords])
 
   const { dispatch } = useCommands({
     store,

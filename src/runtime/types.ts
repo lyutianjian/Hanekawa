@@ -80,5 +80,13 @@ export interface RuntimeHost {
   ): AgentSession
   createActiveModelRuntime(modelKey: string): ActiveModelRuntime
   reloadAgentDefinitions(): Promise<number>
+  /** Re-reads `.myagent/skills/` and re-registers their slash commands. */
+  reloadSkills(): Promise<number>
+  /**
+   * Re-reads the settings layers. Permission rules and the config layer take
+   * effect immediately; hooks are captured at runtime construction, so
+   * `needsRuntimeRebuild` tells the caller when to replace the runtime.
+   */
+  reloadSettings(): Promise<{ needsRuntimeRebuild: boolean }>
   shutdown(reason: string): Promise<void>
 }

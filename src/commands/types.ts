@@ -108,6 +108,8 @@ export interface CommandContext {
   openModelPicker?: () => void
   openEffortPicker?: () => void
   reloadAgentDefinitions?: () => Promise<number>
+  /** Re-reads `.myagent/skills/` and re-registers their slash commands. */
+  reloadSkills?: () => Promise<number>
   getPermissionMode?: () => string
   enterPlanMode?: () => void | Promise<void>
   readPlanFile?: () => Promise<{ path: string; content: string | null }>

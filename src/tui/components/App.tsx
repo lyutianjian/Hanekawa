@@ -94,6 +94,7 @@ interface AppProps {
   onBeforeExit?: () => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => Promise<void> | void
   reloadAgentDefinitions?: () => Promise<number>
+  reloadSkills?: () => Promise<number>
   onEffortLevelChange?: (level: string) => void
   backgroundTasks: BackgroundTaskRegistry
 }
@@ -119,6 +120,7 @@ export function App({
   onBeforeExit,
   onPermissionModeChange,
   reloadAgentDefinitions: reloadRuntimeAgentDefinitions,
+  reloadSkills: reloadRuntimeSkills,
   onEffortLevelChange,
   backgroundTasks,
 }: AppProps) {
@@ -529,6 +531,18 @@ export function App({
     return count
   }, [reloadRuntimeAgentDefinitions, runtime.loop, runtime.modelKey, createRuntime, activeSession, runtimeSlot])
 
+  const reloadSkills = useCallback(async (): Promise<number> => {
+    if (!reloadRuntimeSkills) {
+      throw new Error('Skill reload is not available in this runtime.')
+    }
+    const count = await reloadRuntimeSkills()
+    // Same shape as the agent-definition reload: skills feed the system prompt
+    // through `createRuntime`, so the live runtime has to be rebuilt to see them.
+    runtime.loop.clearCachedSections()
+    runtimeSlot.replace(createRuntime(runtime.modelKey, activeSession, sessionRecordsRef.current))
+    return count
+  }, [reloadRuntimeSkills, runtime.loop, runtime.modelKey, createRuntime, activeSession, runtimeSlot])
+
   const cyclePermissionMode = useCallback((direction: 1 | -1) => {
     setPermissionModeState((currentMode) => {
       const nextMode = nextPermissionMode(currentMode, direction)
@@ -676,6 +690,7 @@ export function App({
     clearCachedSections: () => runtime.loop.clearCachedSections(),
     invalidateRecordsCache: () => runtime.loop.invalidateRecordsCache(),
     reloadAgentDefinitions,
+    reloadSkills,
     getPermissionMode: () => permissionGate.getMode(),
     enterPlanMode: () => {
       const mode = applyPermissionModeTransition(permissionGate, runtimeSlot.current.planModeManager, 'plan')

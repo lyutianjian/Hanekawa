@@ -8,6 +8,7 @@ import type { SessionRecord } from '../harness/types.js'
 import type { SessionMetricInput, SessionMetric } from '../harness/metrics.js'
 import { OtlpMetricExporter } from '../harness/otlp.js'
 import { checkSessionInvariants, ensureToolResultPairing } from './invariants.js'
+import { withFileLock } from './fileLock.js'
 import { normalizeDenialState, type DenialState } from '../harness/permissions.js'
 
 /**
@@ -293,7 +294,10 @@ export class SessionStore {
 
     const jsonlPath = this.sessionJsonlPath(session.id)
     const nextContent = repaired.records.map((record) => JSON.stringify(record)).join('\n') + '\n'
-    await writeFileAtomic(jsonlPath, nextContent)
+    // Under the lock like every other full rewrite: tmp+rename is crash-safe
+    // but not interleave-safe, so a concurrent append between the read above
+    // and this rename would be dropped.
+    await this.withJsonlLock(session.id, () => writeFileAtomic(jsonlPath, nextContent))
 
     const now = new Date().toISOString()
     await this.withIndexLock(async () => {
@@ -816,7 +820,10 @@ export class SessionStore {
 
     await ready
     try {
-      return await operation()
+      // The in-process chain above orders our own writers cheaply; the file
+      // lock is what keeps a second process out. Nested this way the syscalls
+      // only happen once per critical section, not once per queued caller.
+      return await withFileLock(`${key}.lock`, operation)
     } finally {
       release()
       if (SessionStore.indexLocks.get(key) === queued) {
@@ -838,7 +845,7 @@ export class SessionStore {
 
     await ready
     try {
-      return await operation()
+      return await withFileLock(`${key}.lock`, operation)
     } finally {
       release()
       if (SessionStore.jsonlLocks.get(key) === queued) {

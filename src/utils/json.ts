@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 
 export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
@@ -16,9 +17,19 @@ export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T>
   }
 }
 
+/**
+ * Writes via a temp file in the same directory, then renames.
+ *
+ * `index.json` is rewritten in full on every session mutation, so a plain
+ * `writeFile` left a window where a crash — or another process reading
+ * mid-write — saw a truncated file. `readJsonFile` treats that as corruption
+ * and silently falls back, which for the session index means losing the list.
+ */
 export async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  const tmpPath = `${filePath}.tmp.${randomUUID()}`
+  await writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  await rename(tmpPath, filePath)
 }
 
 /**

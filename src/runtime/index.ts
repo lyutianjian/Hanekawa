@@ -55,6 +55,7 @@ export type {
 } from './sessionController.js'
 export { RuntimeSlot } from './runtimeSlot.js'
 export type { RuntimeSlotSnapshot } from './runtimeSlot.js'
+export { SessionRecordLedger } from './recordLedger.js'
 export { canPumpQueue } from './queuePump.js'
 export type { QueuePumpState } from './queuePump.js'
 export type {
@@ -63,3 +64,4 @@ export type {
   McpConnectionStatus,
   RuntimeHost,
 } from './types.js'
+export * from './protocol/index.js'

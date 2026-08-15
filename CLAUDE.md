@@ -13,7 +13,7 @@ permission-gated tools, subagents, skills, and MCP. `README.md` documents user-f
 npm install                        # or `bun install`; postinstall runs patch-package (required, see Patches)
 npm run dev:tui                    # start the TUI (tsx, no build step); also: resume <id> | --continue | c | list
 npm run typecheck                  # tsc --noEmit
-npm run test                       # full suite: 1415 tests / 35 suites, ~38s
+npm run test                       # full suite: 1468 tests / 35 suites, ~39s
 node --import tsx --test test/compact.test.ts                    # single file
 node --import tsx --test test/a.test.ts test/b.test.ts           # several files
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
@@ -100,7 +100,11 @@ literals in `DEFAULT_CONFIG` (`src/config/service.ts`); keep them in sync.
   that and stale estimates leak past a threshold.
 - **The provider owns cache-break detection** (`cacheBreakDetection.ts`); the loop only emits the
   metric. State is partitioned by `CacheBreakSource` — reusing one source across unrelated request
-  streams poisons the baseline (`agentCacheSource` / `planCacheSource` / `forkCacheSource`).
+  streams poisons the baseline (`agentCacheSource` / `planCacheSource` / `forkCacheSource`). Those
+  three take an optional project root and fold a digest of it into the source string, so two projects
+  open at once never share a baseline even when they mint the same logical source; use
+  `displayCacheSource()` for anything user-visible, and note the source is hashed into
+  `prompt_cache_key` on the OpenAI path.
 
 ### Tools — `src/tools/`
 
@@ -196,6 +200,23 @@ single stateful shell; `hooks/useAgentLoop.ts` renders the controller's event st
   `useSyncExternalStore` snapshot. `turn-end` carries `aborted` (the signal) rather than "did it throw"
   — a *failed* turn is not aborted and still gets its duration summary. Only `transcript-reset` events
   with `bumpGeneration` remount Ink's `<Static>`; a rollback must not.
+- **`src/runtime/protocol/` is the process boundary** for a desktop shell, and imports no Electron.
+  `SessionHost` owns the runtime and speaks `HostEvent`/`HostCommand` over a `RuntimeChannel`;
+  `SessionClient` mirrors `SessionController`'s shape for a renderer. Three types have wire replacements
+  because the originals cannot be cloned: `WireRunOverrides` (a model *key*, never a live provider; no
+  `hooks`), `WireRuntimeSnapshot` (metadata, `apiKey` stripped) and `PermissionRequestDto` (`toolName` +
+  `riskLevel` instead of the `Tool`; `onAlwaysAllow` becomes a response flag the host fires *before*
+  resolving). Two rules when touching it: anything added must survive `structuredClone` —
+  `createMemoryChannelPair` clones on every post so violations fail loudly, since Node's
+  `child_process.send` defaults to JSON and *silently drops* functions — and `SessionClient` must
+  field-diff before swapping its snapshot, because `SessionController.publish` compares `usage` and
+  `taskSnapshot` by reference and every deserialized message is a fresh object graph.
+- **Only the permission bridge parks.** `createPromptProxy` queues requests until a UI attaches rather
+  than auto-denying; the other three answer immediately because headless callers (a `PlanModeManager`
+  driven straight from a unit test) depend on it. The five fallbacks are deliberately asymmetric —
+  permission/AskUserQuestion/exit-plan reject, **enter-plan approves**, record drops — and must not be
+  unified. Every UI teardown path has to settle its in-flight requests: `ToolRunner.run` does not pass
+  its abort signal into `PermissionGate.approve`, so cancelling a turn never unblocks a pending prompt.
 - **`transcript.ts` encodes the load-bearing TUI invariant:** Ink `<Static>` output cannot be retracted
   once a later sibling is emitted. Items live in `staticItems` / `liveItems` / `liveSystemItems` and are
   promoted in a strict order. Plain assistant messages go straight to static, so preceding live user
@@ -232,7 +253,9 @@ sessions, skills, and plans remain strictly per-project.
 rewrites go through `writeFileAtomic` (tmp + rename). **New sessions are in-memory drafts** — nothing
 touches disk until the first `message` record. `messageCount`/`title`/`updatedAt` are always *derived*;
 `compactFailureCount`/`denialState` must be explicitly preserved on rewrites (easy to drop when adding a
-path). Static class-level lock maps serialize mutations within a process (no cross-process safety).
+path). Class-level lock maps serialize mutations within a process; `src/sessions/fileLock.ts` nests an
+`O_EXCL` advisory lock inside them for cross-process safety, stealing a lock only when it is both stale
+and owned by a dead pid, and proceeding without it on timeout rather than wedging a write forever.
 Reads self-heal — index rebuild, legacy migration, malformed-line skipping — and report
 `SessionDiagnostic[]` rather than throwing.
 

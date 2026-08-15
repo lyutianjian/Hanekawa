@@ -58,8 +58,16 @@ export class ToolRegistry {
   private refresh(): void {
     const mcpTools = [...this.toolsByServer.values()].flat()
     for (const tools of this.runtimeToolSets) {
-      // The Agent tool is built per runtime, so it survives the splice by
-      // being lifted out and re-appended — which does move it to the end.
+      // The Agent tool is built per runtime, so it is not in `baseTools` and has
+      // to be lifted out and put back.
+      //
+      // Re-appending rather than restoring its old index is deliberate. A
+      // freshly built runtime is `buildRuntimeTools()` + `push(agentTool)`, so
+      // Agent is always last; reproducing that here keeps a runtime whose MCP
+      // servers reconnected byte-identical to a new one. Preserving the old
+      // index instead would leave Agent stranded mid-array on any runtime built
+      // before a server connected, and tool order is part of the prompt-cache
+      // key — the two runtimes would then cache differently.
       const agentTool = tools.find((tool) => tool.name === AGENT_TOOL_NAME)
       tools.splice(0, tools.length, ...this.baseTools, ...mcpTools)
       if (agentTool) tools.push(agentTool)

@@ -45,7 +45,12 @@ export function useExitPlanPermission(proxy: ExitPlanPromptProxy) {
   useEffect(() => {
     proxy.setOpen(openFn)
     return () => {
+      // Settle whatever the dialog was still holding first: an abandoned
+      // resolver leaves PlanModeManager awaiting forever.
+      const resolvers = [...resolverRef.current.values()]
+      resolverRef.current.clear()
       proxy.setOpen(async () => ({ kind: 'reject', feedback: '' }))
+      for (const resolver of resolvers) resolver({ kind: 'reject', feedback: '' })
     }
   }, [proxy, openFn])
 

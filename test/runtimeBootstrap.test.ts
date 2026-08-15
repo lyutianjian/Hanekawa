@@ -216,3 +216,124 @@ test('an unconsumed recoverable interruption is reported to the host', async () 
   assert.equal(host.existingRecords.length, 1)
   await host.shutdown('test over')
 })
+
+test('a typo in an optional model is reported instead of silently ignored', async () => {
+  // `resolveModelReference` returns undefined for a name it cannot resolve,
+  // which is indistinguishable from "not configured" — so the old guards here
+  // could never fire and a typo just disabled the feature quietly.
+  const { cwd, store, session } = await createProject({
+    config: { ...MODEL_CONFIG, fallbackModel: 'typo-model', compactModel: 'also-wrong' },
+  })
+
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+
+  const codes = host.diagnostics.map((diagnostic) => diagnostic.code)
+  assert.ok(codes.includes('unknown_fallback_model'), 'fallbackModel typo must be reported')
+  assert.ok(codes.includes('unknown_compact_model'), 'compactModel typo must be reported')
+  for (const diagnostic of host.diagnostics) {
+    assert.equal(diagnostic.severity, 'warning',
+      'an optional model is a degradation, not a reason to refuse to start')
+  }
+  await host.shutdown('test over')
+})
+
+test('"inherit" and an unset optional model are not misreported as typos', async () => {
+  const { cwd, store, session } = await createProject({
+    config: { ...MODEL_CONFIG, fallbackModel: 'inherit' },
+  })
+
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+
+  assert.deepEqual(host.diagnostics, [], 'inherit resolves to nothing on purpose')
+  await host.shutdown('test over')
+})
+
+test('an unresolvable defaultModel says so, rather than "none configured"', async () => {
+  const { cwd, store, session } = await createProject({
+    config: { models: { main: { provider: 'anthropic', model: 'm', apiKey: 'k' } }, defaultModel: 'nope' },
+  })
+
+  await assert.rejects(
+    () => bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust }),
+    (error: unknown) => {
+      assert.ok(error instanceof RuntimeStartupError)
+      assert.equal(error.code, 'no_default_model')
+      assert.match(error.message, /could not be resolved: nope/)
+      return true
+    },
+  )
+})
+
+test('skills added after startup are picked up by a reload', async () => {
+  const { cwd, store, session } = await createProject()
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+
+  const before = host.createRuntime(host.initialModelKey, session)
+  before.dispose()
+
+  await mkdir(path.join(cwd, '.myagent', 'skills', 'greet'), { recursive: true })
+  await writeFile(
+    path.join(cwd, '.myagent', 'skills', 'greet', 'SKILL.md'),
+    '---\nname: greet\ndescription: Say hello\n---\n\nSay hello.\n',
+    'utf8',
+  )
+
+  assert.equal(await host.reloadSkills(), 1, 'the new skill is visible after a reload')
+  await host.shutdown('test over')
+})
+
+test('settings edited after startup take effect on reload', async () => {
+  // Settings used to be captured by value and passed into the runtime factory,
+  // so editing .myagent/settings.json mid-session changed nothing at all.
+  const { cwd, store, session } = await createProject({
+    settings: { permissions: { deny: ['Bash(rm *)'] } },
+  })
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+
+  assert.equal(host.permissionGate.getConfigRules().length, 1)
+
+  await writeFile(
+    path.join(cwd, '.myagent', 'settings.json'),
+    JSON.stringify({ permissions: { deny: ['Bash(rm *)', 'Bash(curl *)'] } }),
+    'utf8',
+  )
+  const result = await host.reloadSettings()
+
+  assert.equal(host.permissionGate.getConfigRules().length, 2, 'rules are read live')
+  assert.equal(result.needsRuntimeRebuild, false, 'no hook change, so no rebuild needed')
+  await host.shutdown('test over')
+})
+
+test('a hooks change reports that the runtime has to be rebuilt', async () => {
+  const { cwd, store, session } = await createProject()
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+
+  await writeFile(
+    path.join(cwd, '.myagent', 'settings.json'),
+    JSON.stringify({ hooks: { preToolUse: [{ matcher: 'Bash', command: 'true' }] } }),
+    'utf8',
+  )
+
+  // Hooks are captured when a runtime is constructed, so reloading settings
+  // alone cannot apply them; the caller has to replace the runtime.
+  assert.equal((await host.reloadSettings()).needsRuntimeRebuild, true)
+  await host.shutdown('test over')
+})
+
+test('invalid settings on reload are rejected without clobbering the live ones', async () => {
+  const { cwd, store, session } = await createProject({ settings: { effortLevel: 'low' } })
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+
+  await writeFile(
+    path.join(cwd, '.myagent', 'settings.json'),
+    JSON.stringify({ effortLevel: 'turbo' }),
+    'utf8',
+  )
+
+  await assert.rejects(() => host.reloadSettings(), (error: unknown) => {
+    assert.ok(error instanceof RuntimeStartupError)
+    assert.equal(error.code, 'invalid_settings')
+    return true
+  })
+  await host.shutdown('test over')
+})

@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { z } from 'zod/v3'
 import { AgentLoop } from '../src/harness/loop.js'
+import { displayCacheSource } from '../src/harness/cacheBreakDetection.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
 import { PermissionGate } from '../src/harness/permissions.js'
 import { PlanModeManager } from '../src/harness/planModeManager.js'
@@ -77,7 +78,7 @@ test('agent loop appends user and assistant messages', async () => {
     name: 'fake',
     async createMessage(request) {
       assert.ok(!('maxTokens' in request))
-      assert.equal(request.cacheSource, 'agent:s1')
+      assert.equal(displayCacheSource(request.cacheSource!), 'agent:s1')
       return {
         content: 'hello back',
         toolCalls: [],
@@ -2700,7 +2701,9 @@ test('agent loop uses last response usage, not cumulative usage, for auto-compac
       assert.equal(isCompactRequest, false)
 
       if (providerCalls.length === 0) {
-        assert.equal(request.cacheSource, 'agent:s1')
+        // The source carries a digest of the project root so two projects never
+        // share a cache-break baseline; the logical part is still `agent:<id>`.
+        assert.equal(displayCacheSource(request.cacheSource!), 'agent:s1')
         providerCalls.push('model-1')
         return {
           content: 'using tool',
@@ -2714,7 +2717,7 @@ test('agent loop uses last response usage, not cumulative usage, for auto-compac
       }
 
       providerCalls.push('model-2')
-      assert.equal(request.cacheSource, 'agent:s1')
+      assert.equal(displayCacheSource(request.cacheSource!), 'agent:s1')
       return {
         content: 'done',
         toolCalls: [],

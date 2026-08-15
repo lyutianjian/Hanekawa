@@ -59,9 +59,14 @@ export interface CreateRuntimeDeps {
   cwd: string
   config: ConfigService
   store: SessionStore
-  settings: MyAgentSettings
-  skills: SkillDefinition[]
-  /** Read at call time: `/agents` reload replaces the array. */
+  /**
+   * All three are read at call time rather than captured, so a reload changes
+   * what the *next* runtime is built from. `/agents reload` only ever worked
+   * because it was already a getter; settings and skills were captured by value
+   * and silently stayed at their startup contents for the life of the process.
+   */
+  getSettings: () => MyAgentSettings
+  getSkills: () => SkillDefinition[]
   getAgentDefinitions: () => BaseAgentDefinition[]
   toolRegistry: ToolRegistry
   promptSections: SystemPromptSectionCache
@@ -97,8 +102,8 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
     cwd,
     config,
     store,
-    settings,
-    skills,
+    getSettings,
+    getSkills,
     getAgentDefinitions,
     toolRegistry,
     promptSections,
@@ -187,13 +192,13 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       denialStateStore,
       cwd,
       system: config.get().agent.system,
-      skills,
+      skills: getSkills(),
       agentDefinitions: getAgentDefinitions(),
       loadParentRecords: async () => prepareForkPreloadRecords(await recordStream.load()),
       contextManagement,
       isGitRepo,
-      hooks: settings.hooks,
-      cacheRuntime: { settings, env: process.env },
+      hooks: getSettings().hooks,
+      cacheRuntime: { settings: getSettings(), env: process.env },
       compactModel,
       onSubagentProgress: (event) => bridges.record.onProgress(event),
       resolveSubagentModel: (subagentType, requestedModelKey) => requestedModelKey
@@ -218,7 +223,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
         bridges.record.onProgress(event)
       },
     }, {
-      preToolUse: settings.hooks?.preToolUse,
+      preToolUse: getSettings().hooks?.preToolUse,
     })
 
     loop = new AgentLoop({
@@ -243,12 +248,12 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
         askUserQuestionBridge: bridges.askUserQuestion,
       },
       system: config.get().agent.system,
-      skills,
+      skills: getSkills(),
       promptCacheRetention: targetModelConfig.promptCacheRetention,
       contextManagement,
       isGitRepo,
-      hooks: settings.hooks,
-      cacheRuntime: { settings, env: process.env },
+      hooks: getSettings().hooks,
+      cacheRuntime: { settings: getSettings(), env: process.env },
       thinking: { type: 'adaptive' },
       effort: typeof initialEffort === 'string' ? initialEffort as EffortLevel : undefined,
       permissionMode: () => permissionGate.getMode(),

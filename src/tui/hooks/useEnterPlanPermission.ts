@@ -37,8 +37,13 @@ export function useEnterPlanPermission(proxy: EnterPlanPromptProxy) {
   useEffect(() => {
     proxy.setOpen(openFn)
     return () => {
-      // After unmount, fall back to auto-approve so headless paths still work.
+      // Settle whatever the dialog was still holding — an abandoned resolver
+      // leaves PlanModeManager awaiting forever — then fall back to
+      // auto-approve so headless paths still work.
+      const resolvers = [...resolverRef.current.values()]
+      resolverRef.current.clear()
       proxy.setOpen(async () => true)
+      for (const resolver of resolvers) resolver(true)
     }
   }, [proxy, openFn])
 

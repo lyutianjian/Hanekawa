@@ -573,7 +573,9 @@ async function runSubagent({
     }
   }
 
-  const cacheSource = isForkAgent ? forkCacheSource(context.sessionId) : agentCacheSource(subAgentId)
+  const cacheSource = isForkAgent
+    ? forkCacheSource(context.sessionId, context.cwd)
+    : agentCacheSource(subAgentId, context.cwd)
   const abortController = new AbortController()
   const timeout = options.agentTimeoutMs === undefined
     ? undefined

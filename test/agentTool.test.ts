@@ -8,6 +8,7 @@ import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, filterToolsForSubAgent, pr
 import { AgentDefinitionLoader } from '../src/services/agents/agentDefinitionLoader.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { PermissionGate, type DenialStateStore } from '../src/harness/permissions.js'
+import { displayCacheSource } from '../src/harness/cacheBreakDetection.js'
 import type { ModelProvider, ModelRequest, SessionRecord, Tool, ToolContext } from '../src/harness/types.js'
 
 async function waitFor(assertion: () => boolean, timeoutMs = 500): Promise<void> {
@@ -1187,7 +1188,7 @@ test('Agent tool uses an isolated agent cache source', async () => {
 
   assert.equal(requests.length, 1)
   assert.match(requests[0]!.cacheSource, /^agent:/)
-  assert.notEqual(requests[0]!.cacheSource, 'agent:parent-session')
+  assert.notEqual(displayCacheSource(requests[0]!.cacheSource!), 'agent:parent-session')
 })
 
 test('fork Agent preloads bounded parent records and uses the parent fork cache source', async () => {
@@ -1228,7 +1229,7 @@ test('fork Agent preloads bounded parent records and uses the parent fork cache 
 
   assert.equal(result.ok, true)
   assert.equal(requests.length, 1)
-  assert.equal(requests[0]!.cacheSource, 'agent:fork:parent-session')
+  assert.equal(displayCacheSource(requests[0]!.cacheSource!), 'agent:fork:parent-session')
   assert.ok(requests[0]!.contextItems?.some(
     (item) => item.kind === 'message'
       && item.message.id === 'parent-1'

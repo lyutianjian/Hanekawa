@@ -263,3 +263,69 @@ test('notifyCompaction is scoped to its source', () => {
   recordPromptState({ system: 'compact', toolsJson: '[]', model: 'm' }, 'compact')
   assert.equal(checkResponseForCacheBreak(1_000, 1_000, 'compact'), null)
 })
+
+test('two project roots do not share a cache-read baseline', async () => {
+  // Detection state used to be keyed by source alone, so two projects open at
+  // once poisoned each other's baseline whenever they used the same source
+  // name — every fixed source (`compact`, `tool_use_summary`, …) collides.
+  resetCacheBreakDetection()
+  const projectA = await mkdtemp(path.join(os.tmpdir(), 'cachebreak-a-'))
+  const projectB = await mkdtemp(path.join(os.tmpdir(), 'cachebreak-b-'))
+
+  // Same session id in both projects: the worst case for a shared key.
+  const sourceA = agentCacheSource('shared-id', projectA)
+  const sourceB = agentCacheSource('shared-id', projectB)
+
+  recordPromptState({ system: 'system a', toolsJson: '[]', model: 'model-a' }, sourceA)
+  assert.equal(checkResponseForCacheBreak(50_000, 1_000, sourceA), null)
+
+  // B's first request must be a cold start, not a break inherited from A.
+  recordPromptState({ system: 'system b', toolsJson: '[]', model: 'model-b' }, sourceB)
+  assert.equal(checkResponseForCacheBreak(40_000, 1_000, sourceB), null,
+    'B should see its own first request, not a drop measured against A')
+
+  await rm(projectA, { recursive: true, force: true })
+  await rm(projectB, { recursive: true, force: true })
+})
+
+test('cache break diagnostics are written under the source\'s own project', async () => {
+  resetCacheBreakDetection()
+  const originalDebug = process.env.MYAGENT_DEBUG_PROVIDER
+  process.env.MYAGENT_DEBUG_PROVIDER = '1'
+  const projectA = await mkdtemp(path.join(os.tmpdir(), 'cachebreak-diagA-'))
+  const projectB = await mkdtemp(path.join(os.tmpdir(), 'cachebreak-diagB-'))
+
+  try {
+    const sourceA = agentCacheSource('session-a', projectA)
+    const sourceB = agentCacheSource('session-b', projectB)
+
+    // Give B a baseline too, so the most recently seen project is B's.
+    recordPromptState({ system: 'sys b', toolsJson: '[]', model: 'model-b' }, sourceB)
+    checkResponseForCacheBreak(30_000, 1_000, sourceB)
+
+    // Now break A's cache. Its diagnostic belongs to A regardless of B.
+    recordPromptState({ system: 'sys a', toolsJson: '[]', model: 'model-a' }, sourceA)
+    checkResponseForCacheBreak(50_000, 1_000, sourceA)
+    recordPromptState({ system: 'sys a changed', toolsJson: '[]', model: 'model-a' }, sourceA)
+    assert.ok(checkResponseForCacheBreak(0, 1_000, sourceA))
+
+    const aDiagnostics = path.join(projectA, '.myagent', 'diagnostics')
+    assert.ok(existsSync(aDiagnostics), 'the break belongs to project A')
+    const aFiles = readdirSync(aDiagnostics).filter((name) => name.includes('cache-break'))
+    assert.equal(aFiles.length, 1)
+    // The root travels inside the source string; it must not leak into the
+    // filename or the payload, where it is already implied by the location.
+    assert.equal(aFiles[0]?.includes('root:'), false)
+    const body = readFileSync(path.join(aDiagnostics, aFiles[0] ?? ''), 'utf-8')
+    assert.equal(JSON.parse(body).source, 'agent:session-a')
+
+    const bDiagnostics = path.join(projectB, '.myagent', 'diagnostics')
+    const bFiles = existsSync(bDiagnostics) ? readdirSync(bDiagnostics) : []
+    assert.deepEqual(bFiles, [], 'project B never broke, so it gets no file')
+  } finally {
+    if (originalDebug === undefined) delete process.env.MYAGENT_DEBUG_PROVIDER
+    else process.env.MYAGENT_DEBUG_PROVIDER = originalDebug
+    await rm(projectA, { recursive: true, force: true })
+    await rm(projectB, { recursive: true, force: true })
+  }
+})

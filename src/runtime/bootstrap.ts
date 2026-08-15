@@ -12,6 +12,7 @@ import { PermissionGate, permissionRulesFromSettings, type DenialStateStore } fr
 import { setCacheBreakDiagnosticsRoot } from '../harness/cacheBreakDetection.js'
 import { SystemPromptSectionCache } from '../harness/sections.js'
 import type { SessionRecord } from '../harness/types.js'
+import type { RuntimeDiagnostic } from '../harness/diagnostics.js'
 import { getAllTools } from '../tools/index.js'
 import { BUILT_IN_AGENT_DEFINITIONS } from '../tools/agentTool.js'
 import { SkillsService } from '../services/skills/skillsService.js'
@@ -51,7 +52,9 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     (sessionId, record) => store.appendRecord(sessionId, record),
   )
 
-  const settings = await loadMergedSettings(cwd)
+  // Mutable so `reloadSettings()` can replace it; `createRuntime` reads it
+  // through a getter, so the next runtime built picks up the new contents.
+  let settings = await loadMergedSettings(cwd)
   const configuredEffortLevel = settings.effortLevel ?? 'high'
   const config = new ConfigService(cwd)
   await config.load(settings)
@@ -68,33 +71,25 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     { currentModelKey: config.get().defaultModel },
   )
   if (!initialModelKey) {
-    throw new RuntimeStartupError('no_default_model', 'No default model configured.')
-  }
-  const modelConfig = config.getModel(initialModelKey)
-  if (!modelConfig) {
+    // `resolveModelKeyFor` returns undefined both when nothing is configured and
+    // when what *is* configured names a model that does not exist. Saying "none
+    // configured" for a typo sent people looking in the wrong place.
+    const configured = configuredModelName(config.get().defaultModel)
     throw new RuntimeStartupError(
-      'unknown_initial_model',
-      `Initial model could not be resolved: ${initialModelKey}`,
+      'no_default_model',
+      configured
+        ? `Default model could not be resolved: ${configured}. Check "models" in your config.`
+        : 'No default model configured.',
     )
   }
+  const modelConfig = config.getModel(initialModelKey)!
+  const modelDiagnostics = checkOptionalModelReferences(config)
   const clampedInitialEffort = clampEffort(configuredEffortLevel, modelConfig.maxEffort)
-  const fallbackModelKey = config.resolveModelReference(config.get().fallbackModel)
-  if (fallbackModelKey && !config.getModel(fallbackModelKey)) {
-    throw new RuntimeStartupError(
-      'unknown_fallback_model',
-      `Unknown fallback model configured: ${config.get().fallbackModel}`,
-    )
-  }
-  const compactModelKey = config.resolveModelReference(config.get().compactModel)
-  if (compactModelKey && !config.getModel(compactModelKey)) {
-    throw new RuntimeStartupError(
-      'unknown_compact_model',
-      `Unknown compact model configured: ${config.get().compactModel}`,
-    )
-  }
 
   const toolRegistry = new ToolRegistry(await getAllTools(backgroundTasks))
-  const skills = await new SkillsService(cwd).list()
+  // Constructed fresh on every read: the service caches, and a reload exists
+  // precisely to see files that changed since startup.
+  let skills = await new SkillsService(cwd).list()
   const agentLoader = new AgentDefinitionLoader(cwd)
   let customAgentDefinitions = await agentLoader.list()
   let agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
@@ -103,6 +98,44 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     customAgentDefinitions = await agentLoader.list()
     agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
     return customAgentDefinitions.length
+  }
+
+  /**
+   * Re-reads `.myagent/skills/` and re-registers the slash commands they define.
+   *
+   * The prompt side needs no help: `ContextBuilder` fingerprints its
+   * `# Available skills` section and drops the cached copy when it changes.
+   */
+  const reloadSkills = async (): Promise<number> => {
+    skills = await new SkillsService(cwd).list()
+    await registerSkillCommands(cwd)
+    return skills.length
+  }
+
+  /**
+   * Re-reads the settings layers.
+   *
+   * Only the parts that are read live take effect immediately — permission
+   * rules and the config layer. Hooks and the cache-break `cacheRuntime` are
+   * captured when a runtime is constructed, so the caller has to rebuild the
+   * runtime for those; `needsRuntimeRebuild` says so rather than leaving the
+   * caller to guess.
+   */
+  const reloadSettings = async (): Promise<{ needsRuntimeRebuild: boolean }> => {
+    const next = await loadMergedSettings(cwd)
+    const validation = validateSettings(next)
+    if (!validation.valid) {
+      throw new RuntimeStartupError(
+        'invalid_settings',
+        `Invalid settings:\n${validation.errors.map((error) => `- ${error}`).join('\n')}`,
+      )
+    }
+
+    const hooksChanged = JSON.stringify(next.hooks) !== JSON.stringify(settings.hooks)
+    settings = next
+    await config.load(settings)
+    permissionGate.setConfigRules(permissionRulesFromSettings(settings.permissions))
+    return { needsRuntimeRebuild: hooksChanged }
   }
   const promptSections = new SystemPromptSectionCache()
 
@@ -149,8 +182,8 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     cwd,
     config,
     store,
-    settings,
-    skills,
+    getSettings: () => settings,
+    getSkills: () => skills,
     getAgentDefinitions: () => agentDefinitions,
     toolRegistry,
     promptSections,
@@ -204,11 +237,13 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     configuredEffortLevel,
     existingRecords: existingLoad.records,
     hasRecoverableInterruption: hasRecoverableInterruption(existingLoad.records),
-    diagnostics: existingLoad.diagnostics,
+    diagnostics: [...modelDiagnostics, ...existingLoad.diagnostics],
     mcp: mcp.status,
     createRuntime,
     createActiveModelRuntime,
     reloadAgentDefinitions,
+    reloadSkills,
+    reloadSettings,
     shutdown: async (reason: string) => {
       // Swallow errors so a misbehaving server cannot prevent a clean exit.
       await backgroundTasks.stopAll(undefined, reason)
@@ -221,4 +256,47 @@ function hasRecoverableInterruption(records: readonly SessionRecord[]): boolean 
   return [...records]
     .reverse()
     .some((record) => record.type === 'turn_interruption' && record.recoverable && !record.consumedAt)
+}
+
+/**
+ * The configured name, or undefined when the setting means "unset".
+ *
+ * `inherit` is a legitimate value that resolves to nothing on purpose, so it is
+ * not a misconfiguration.
+ */
+function configuredModelName(reference: string | undefined): string | undefined {
+  const trimmed = reference?.trim()
+  if (!trimmed || trimmed.toLowerCase() === 'inherit') return undefined
+  return trimmed
+}
+
+/**
+ * Warns about `fallbackModel` / `compactModel` naming something that does not
+ * exist.
+ *
+ * `resolveModelReference` only ever returns a key `resolveModel` already
+ * accepted, so the old `config.getModel(resolved)` guards here could never
+ * fire. What they were reaching for was real, though: an unresolvable name
+ * yields `undefined`, which is indistinguishable from "not configured", so a
+ * typo was silently ignored. These are optional settings — degrading to no
+ * fallback beats refusing to start — so this reports rather than throws.
+ */
+function checkOptionalModelReferences(config: ConfigService): RuntimeDiagnostic[] {
+  const diagnostics: RuntimeDiagnostic[] = []
+  const optional = [
+    { code: 'unknown_fallback_model', label: 'fallbackModel', raw: config.get().fallbackModel },
+    { code: 'unknown_compact_model', label: 'compactModel', raw: config.get().compactModel },
+  ] as const
+
+  for (const { code, label, raw } of optional) {
+    const configured = configuredModelName(raw)
+    if (configured && !config.resolveModelReference(configured)) {
+      diagnostics.push({
+        code,
+        severity: 'warning',
+        message: `Unknown ${label} configured: ${configured}. It will be ignored.`,
+      })
+    }
+  }
+  return diagnostics
 }

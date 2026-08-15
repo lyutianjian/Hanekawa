@@ -337,7 +337,8 @@ export class AgentLoop {
       const maxTurns = this.options.maxTurns ?? 100
       const tokenBudget = this.options.tokenBudget
       const tokenWarnThreshold = this.options.tokenWarningThreshold ?? 0.8
-      const cacheSource = this.options.cacheSource ?? agentCacheSource(this.options.toolContext.sessionId)
+      const cacheSource = this.options.cacheSource
+        ?? agentCacheSource(this.options.toolContext.sessionId, this.options.toolContext.cwd)
 
       let lastRequestId: string | undefined
       let maxOutputTokensOverride: number | undefined = this.options.maxOutputTokens

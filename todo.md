@@ -1,7 +1,6 @@
 # Hanekawa 桌面端适配 — 进度与待办
 
 > 交接文档。新 session 从这里开始读，不需要回溯之前的对话。
-> 详细的阶段 0 实施计划存档在 `C:\Users\Miyano\.claude\plans\deep-rolling-flamingo.md`。
 
 **状态标记**：`[x]` 已完成并验证 · `[~]` 部分完成 · `[ ]` 未开始 · `[!]` 需要人工介入
 
@@ -123,56 +122,118 @@ commit `9151326`（会话绑定）+ `093d3ac`（队列实例化 / cwd 参数化�
 
 ---
 
-## 阶段 2 — Electron 外壳 `[ ]` 未开始
+## 阶段 2a — 会话协议与 host `[x]` 已完成
 
-- [ ] 主进程 = 现有 Node 全栈 + `bootstrap()` + `RuntimeSlot`/`SessionController`；渲染进程 = 新 UI，**绝不 import harness**（Bash + fs 工具跑在开了 nodeIntegration 的渲染进程是安全灾难）
-- [ ] IPC 载荷就是 `SessionEvent` 流（单向推送，已按可序列化设计）+ 5 类 UI 请求（权限、AskUserQuestion、进入/退出 plan、record 回推）；`SessionControllerSnapshot` 走同一通道做 pull 状态
-- [ ] **权限提示跨进程的生命周期要重设计**：`createPromptProxy` 初始值是 `async () => false`（静默拒绝）。TUI 里这窗口只有几毫秒，桌面端渲染进程慢启动或窗口被关会误拒。要改成「排队等待 UI」，并保留 `denyPending()` 语义在窗口销毁时兜底 resolve，否则 `ToolRunner` 永久挂起。
-- [ ] 中断信号跨不了 IPC：`signal.reason === 'user-cancel'` 是进程内 sentinel，渲染进程只能发 `{sessionId, turnId}`，由主进程持有 `AbortController`。任何新的 `await toolRunner.run` 路径必须检查 `errorCode === 'aborted'` 并转成抛出的 `AbortError`。
-- [ ] `SessionStore` 的锁是进程内静态 map，**无跨进程安全**。桌面 app 与 CLI 同时开同一项目会并发写，需要文件锁或单写入者。
-- [ ] MCP trust 提示改为桌面 UI 流程（当前 readline 实现留在 `tui.tsx`，通过 `BootstrapOptions.confirmMcpTrust` 注入，桌面端换实现即可）
+Stage 2 里所有**跨进程风险**都与 Electron 无关，先把它们做完并测透，Electron 就只剩一层适配器 + 渲染进程 UI。本阶段**不引入任何新依赖**，TUI 仍直连 `SessionController`，行为不变。
+
+### 产出
+
+- [x] `src/runtime/protocol/channel.ts` — `RuntimeChannel`（`post`/`onMessage`/`onClose`/`close`）。Electron IPC、`child_process`、`MessagePort` 都满足它，模块本身不 import 任何一个。
+- [x] `src/runtime/protocol/wire.ts` — `HostEvent` / `HostCommand` 两条 JSON-only union。三个不可序列化类型各有替身：
+  - `WireRunOverrides` 替 `AgentRunOverrides`（`model` 变成 key，由 host 解析；**故意不含 `hooks`**，hooks 属于 host 侧 settings，客户端不得注入）
+  - `WireRuntimeSnapshot` 替 `RuntimeSlotSnapshot`（投影成元数据，**剥掉 `apiKey`**）
+  - `PermissionRequestDto` 替 `PermissionRequest`（`Tool` 只留 `toolName`/`riskLevel`，`onAlwaysAllow` 变成响应上的 flag）
+- [x] `src/runtime/protocol/pendingRequests.ts` — id 键控的等待表，`settleAll` 是通道死亡时的兜底。
+- [x] `src/runtime/protocol/host.ts` — `SessionHost`：转发事件与两个快照、接管 4 个 UI bridge、持有 `AbortController`、执行命令。
+- [x] `src/runtime/protocol/client.ts` — `SessionClient`：镜像 `onEvent` + `subscribe`/`getSnapshot`，**逐字段 diff** 后才换快照对象。
+- [x] `src/runtime/protocol/memoryChannel.ts` — 每次 `post` 走 `structuredClone`，不可克隆的载荷当场炸。
+- [x] `src/runtime/protocol/nodeChannel.ts` — `child_process` 传输，与 Electron IPC 同一套结构化克隆语义。
+- [x] `src/runtime/recordLedger.ts` — `SessionRecordLedger`，从 `App.tsx` 的 `sessionRecordsRef` 抽出的框架无关部分（TUI 仍持有自己那份）。
+- [x] `bridges.ts`：**只有权限 bridge 改成排队**（见下），其余三个兜底值原样不动。
+
+### 权限提示生命周期（`todo.md` 原 130 行）
+
+- [x] `createPromptProxy` 的 `async () => false` 改为**排队等待 UI**，新增 `clearPrompt()` / `drainPending()`。终端里这个窗口只有几毫秒，桌面端渲染进程慢启动会误拒真实工具调用。
+- [x] 四个 hook 的 unmount 现在都会**先结清自己 resolver map 里的在途请求**再摘钩。原先只有 `usePermission` 有 `denyPending` 且只挂在中断上，另外三个完全没有 drain —— UI 消失后 `PlanModeManager` / AskUserQuestion 会永远挂着。
+- [x] **没有统一四个兜底值**：`test/useEnterPlanPermission.test.ts` 钉住了 enter-plan 的「预挂载自动批准」，headless 调用方依赖它；`todo.md:164` 也明确要求不要统一。只有权限 bridge 排队。
+- [x] `SessionHost` 在 `channel.onClose` 时按 kind 分别结清（拒绝 / 拒绝 / **批准** / 拒绝）。这是唯一的兜底：`ToolRunner.run` **不把 signal 传进** `permissionGate.approve`（`toolRunner.ts:109`），中断根本解不开一个挂起的提示。
+
+### 中断跨进程
+
+- [x] `interrupt` 只带 `reason: 'user-cancel' | 'exit'`，`AbortController` 留在 host。两个 sentinel 都必须活着——`'exit'` 故意躲开 `isUserCancelAbort`，退出时不写 `turn_interruption`。
+
+### 验证
+
+- [x] `npx tsc --noEmit` 干净
+- [x] `npm run test` — **1468 passed / 0 failed**（较 1415 基线新增 53 个）
+- [x] `test/protocolWire.test.ts`（8）：每个 `SessionEvent` 变体过 `structuredClone`、union 覆盖度、四个兜底值的**不对称性**、memory channel 克隆与关闭传播
+- [x] `test/protocolHost.test.ts`（9）：事件顺序、subagent progress 以数组过界、`hello` 重放且**不泄漏 apiKey**、两个中断 sentinel、权限 DTO 形状、**`onAlwaysAllow` 在 resolve 之前触发**、客户端死亡时四种兜底、换模型带上完整 ledger、失败命令回 `fail`
+- [x] `test/protocolClient.test.ts`（9）：**同样内容的快照不改变 `getSnapshot()` 身份**（`useSyncExternalStore` 契约）、usage 按值比较、命令 resolve/reject、host 死亡时拒绝在途命令
+- [x] `test/protocolChildProcess.test.ts`（5）：**真实 fork**，一个 turn 的事件跨进程按序到达、快照不带 apiKey、权限提示往返、杀掉 host 释放在途命令、Node IPC 静默吞掉函数（正是 memoryChannel 要克隆的原因）
+- [x] `test/bridgesPending.test.ts`（6）
+- [x] **手动冒烟未执行**（需 TTY + 真实 key）。协议层在 TUI 里是惰性的，这一轮只需回归：跑一个含工具调用的 turn → 权限弹窗批准 → 「always allow」→ 工具执行中 Ctrl+C → `/model` 切换 → `/skills reload` → `/clear` → `/resume` → 退出无残留进程。
+
+---
+
+## 阶段 2b — Electron 外壳 `[ ]` 未开始
+
+协议层已就绪，剩下的是外壳与 UI。
+
+- [ ] `npm i -D electron` + 渲染进程打包器；主进程 = 现有 Node 全栈 + `bootstrap()` + `RuntimeSlot`/`SessionController` + `SessionHost`；渲染进程 = 新 UI + `SessionClient`，**绝不 import harness**
+- [ ] `src/desktop/ipc/` 写 `ipcMain`/`ipcRenderer` 适配器（实现 `RuntimeChannel` 即可，约 100 行），`src/desktop/renderer/` 放 UI
+- [ ] MCP trust 提示改为桌面 UI 流程（`BootstrapOptions.confirmMcpTrust` 已是注入点，readline 实现留在 `tui.tsx`）
+- [ ] 权限对话框想要文件 diff 预览：`src/tui/fileToolPreview.ts` 是**纯数据**的（返回 `{kind:'diff'|'message', …}`，不渲染），先移到 `src/services/` 再挂到 `PermissionRequestDto` 上
 - [ ] 无需迁移：Ink patches（CJK 换行 + wrap-ansi 那对补丁）、focus filter、alt-screen、`transcript.ts`、`layout.ts`
+- [ ] 可顺手下沉到 `src/runtime/` 的框架无关模块：`messageQueue.ts`、`promptHistory.ts`、`rewindSummary.ts`、`suggestions/*`（都零 React 依赖）
 
 ---
 
 ## 阶段 3 — 桌面独有能力 `[ ]` 未开始
 
-- [ ] 多标签会话 / 多项目窗口（cwd 参数化、队列实例化、`SessionController`/`RuntimeSlot` 均已就绪；剩下的是每标签一套 slot+controller 的容器与生命周期）
+- [ ] 多标签会话 / 多项目窗口（cwd 参数化、队列实例化、`SessionController`/`RuntimeSlot`、协议层、跨进程文件锁、cacheBreak 按项目分区均已就绪；剩下的是每标签一套 slot+controller 的容器与生命周期）
 - [ ] diff 面板、文件树等 DOM 才划算的 UI
 
 ---
 
-## 已知缺陷（发现但**未修**）
+## 已知缺陷 — 本轮全部处理
 
-按修复价值排序：
+1. [x] **`settings` / `skills` 启动后不再重载** — `CreateRuntimeDeps` 的 `settings`/`skills` 改成 `getSettings()`/`getSkills()`，对齐原本就能工作的 `getAgentDefinitions`。`RuntimeHost` 新增 `reloadSkills()` 与 `reloadSettings()`，后者返回 `{needsRuntimeRebuild}`（hooks 是构造期捕获的，权限规则与 config 层则是实时读取），并复用现成的 `permissionGate.setConfigRules`。新增 `/skills reload`，形状对齐 `/agents reload`。
+2. [x] **`ToolRegistry.refresh()` 把 Agent 工具移到末尾** — **查证后确认这是对的，不改**。新建 runtime 恒为 `buildRuntimeTools()` + `push(agentTool)`，Agent 必在末尾；refresh 重现这个顺序，才能让「MCP 重连过的 runtime」与「新建 runtime」的工具数组逐位相同。保留原索引反而会让「在服务器连上之前建好的 runtime」把 Agent 卡在数组中间，而工具顺序是 prompt 缓存键的一部分。原因已写进代码注释。
+3. [x] **三条不可达的启动错误分支** — 确认不可达：`resolveModelReference` 只会返回 `resolveModel` 已经认可的 key，而 `getModel` 就是 `resolveModel`。但底下藏着真问题：**名字拼错时返回 `undefined`，与「没配置」无法区分，于是被静默忽略**。改为校验**原始配置字符串**（排除空值与 `inherit`）：`fallbackModel`/`compactModel` 出 `RuntimeDiagnostic` 警告而不抛（可选配置降级不该拦启动），`defaultModel` 则区分「没配置」与「配了但解析不了」。三个错误码已从 `RuntimeStartupErrorCode` 删除。
+4. [x] **`cacheBreakDetection` 状态是进程级的** — root 现在**编进 source 字符串本身**（`@root-<sha256 前 8 位>`），因为旁挂一张 `source → root` 表挡不住两个项目铸出同名 source（同一个 session id，或 `compact` 这类固定字面量）的情况。两张快照 Map 因此自动按项目分区，诊断文件也落到各自项目下。新增 `displayCacheSource()` 供输出与文件名剥掉后缀 —— 用摘要而非原始路径，是因为这个字符串会被 OpenAI 路径哈希进 `prompt_cache_key`，也会打进 debug 输出。
 
-1. `settings` 与 `skills` 启动后不再重载（而 `agentDefinitions` 会重载），行为不一致。
-2. `ToolRegistry.refresh()` 后 Agent 工具会被移到数组末尾（继承自原实现）。工具顺序影响 prompt 缓存，改之前想清楚。
-3. **三条启动错误分支实际不可达**：`unknown_initial_model` / `unknown_fallback_model` / `unknown_compact_model`。`resolveModelReference` 只返回已通过 `resolveModel` 校验的 key，未知名字直接返回 `undefined`。已按行为零变化原则保留为守卫，测试只覆盖真正可达的 `invalid_settings` 和 `no_default_model`。
-4. `cacheBreakDetection` 的诊断根目录是进程级的（见阶段 0.5）。多项目桌面端下，最后一个 `bootstrap()` 胜出。要真正隔离得把 `previousSnapshots` / `pendingChangesBySource` 一起按项目分区。
+### 跨进程 `SessionStore` 安全
+
+- [x] `src/sessions/fileLock.ts` — `O_EXCL` 建锁 + PID/mtime 判陈旧，无新依赖。套在原有进程内 mutex **内层**：进程内链条便宜地排好自己人，文件锁只挡另一个进程，syscall 每个临界区一次而非每个排队者一次。
+- [x] 超时后**放行而非死等**：为了别的进程卡住而永久挂起会话写入，比它防的交错更糟；底下每个写者不是 append 就是 tmp+rename。
+- [x] `repairRecords` 的整文件重写补进 jsonl 锁（原先只有它的索引更新在锁内）。tmp+rename 抗崩溃但不抗交错。
+- [x] `writeJsonFile`（`src/utils/json.ts`）改为 tmp+rename。`index.json` 是两个进程最先写坏的文件，而它原本是**唯一没走原子写**的那个。
+- [x] `test/sessionFileLock.test.ts`（7）：互斥、抛异常也释放、陈旧锁被死进程让出、新鲜锁不被抢、记录持有者、**两个真实进程并发 append 一个 session 不丢记录也不撕行**
 
 ---
 
 ## 新 session 接手须知
 
-**必读**：`CLAUDE.md`（架构与不变式）、`src/runtime/index.ts`（新门面的全部导出）。
+**必读**：`CLAUDE.md`（架构与不变式）、`src/runtime/index.ts`（新门面的全部导出，含 `protocol/`）。
 
 **改动 `src/runtime/` 时的红线**：
 
-- `ToolRegistry` 必须用 `splice` 原地改写数组，**不能重新赋值** — 同一个数组引用被 Agent 工具的 `tools: () => runtimeTools` 闭包、`ToolRunner`、`AgentLoop` 三处持有且无法重新指向。`test/toolRegistry.test.ts` 钉住了这一点。
+- `ToolRegistry` 必须用 `splice` 原地改写数组，**不能重新赋值** — 同一个数组引用被 Agent 工具的 `tools: () => runtimeTools` 闭包、`ToolRunner`、`AgentLoop` 三处持有且无法重新指向。`test/toolRegistry.test.ts` 钉住了这一点，也钉住了 Agent 工具必须在末尾（原因见已知缺陷 #2）。
 - `bootstrap()` 里的步骤顺序有意义：MCP 连接必须在 `registerBuiltinCommands()` 之前，且整个 `bootstrap()` 必须在 Ink `render()` 之前完成（trust 提示要抢在 Ink 接管 stdin 前）。
-- 5 个 bridge 的 pre-mount 兜底值各不相同且都是刻意的：权限=拒绝、AskUserQuestion=拒绝、退出 plan=拒绝、**进入 plan=批准**、record=丢弃。不要"统一"它们。
+- 5 个 bridge 的兜底值各不相同且都是刻意的：权限=拒绝、AskUserQuestion=拒绝、退出 plan=拒绝、**进入 plan=批准**、record=丢弃。不要"统一"它们。**只有权限 bridge 会排队**，其余三个立即回答——headless 调用方（直接驱动 `PlanModeManager` 的单测）依赖这一点。
 - `createRuntime` 里的 `onActiveSessionChange?.(runtimeSession.id)` 放在所有会抛的校验**之后**：模型 key 无效时不能已经把会话级状态切过去了。
 - `RuntimeSlot.replace()` 必须先装新 runtime 再 dispose 旧的：晚到的 dispose 会拆掉继任者的 plan-slug provider。
 - `SessionController` **独占** `RecordProxy` 的三个 setter。UI 只能 `onEvent` 订阅，不能自己 `setHandler`，否则记录会被处理两次。
 - `SessionEvent` 的 `turn-end.aborted` 是 signal 状态，不是「是否抛异常」；`transcript-reset.bumpGeneration` 只在真正换了会话视图时为 `true`。
+- **协议层**：`SessionClient` 换快照前必须逐字段 diff。`SessionController.publish` 是按引用比 `usage`/`taskSnapshot` 的，而反序列化出来的每条消息都是新对象图——照搬会让 `useSyncExternalStore` 无限重渲染。
+- **协议层**：往 `HostEvent`/`HostCommand` 上加字段前先确认它过得了 `structuredClone`。`memoryChannel` 每次 `post` 都克隆就是为了当场炸出来；Node 的 `child_process.send` 默认走 JSON，会**静默吞掉**函数（`test/protocolChildProcess.test.ts` 有一条专门钉这个）。
 
 **验证命令**：
 
 ```bash
 npm run typecheck
-npm run test                                          # 1415 tests / 35 suites, ~38s
-node --import tsx --test test/sessionController.test.ts test/runtimeSlot.test.ts test/queuePump.test.ts
+npm run test                                          # 1468 tests / 35 suites, ~39s
+
+node --import tsx --test test/protocolWire.test.ts test/protocolHost.test.ts \
+  test/protocolClient.test.ts test/bridgesPending.test.ts
+node --import tsx --test test/protocolChildProcess.test.ts   # 真实进程边界
+node --import tsx --test test/sessionFileLock.test.ts        # 含双进程并发写
 node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 npm run dev:tui                                       # 手动冒烟，需 TTY
 ```
+
+**已知不稳定**：`test/toolcall-integration.test.ts` 在**全量并发跑**时偶发
+`Unable to deserialize cloned data due to invalid or unsupported version` —— 这是 Node test runner
+自己的 IPC 报错，不是断言失败。单独跑必过，且在**未改动的基线上同样复现**（基线两次全量跑里挂了一次）。
+与本阶段改动无关，重跑即可。
+

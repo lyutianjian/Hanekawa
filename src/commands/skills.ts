@@ -13,7 +13,18 @@ const MAX_SKILL_ATTACHMENT_BYTES = 200_000
 export const skillsCommand: CommandDefinition = {
   name: 'skills',
   description: 'List available skills',
-  run: async (_args, context) => {
+  argumentHint: 'reload',
+  run: async (args, context) => {
+    if (args.trim() === 'reload') {
+      if (!context.reloadSkills) {
+        context.writeLine('Skill reload is not available.')
+        return
+      }
+      const count = await context.reloadSkills()
+      context.writeLine(`Reloaded ${count} skill${count === 1 ? '' : 's'}.`)
+      return
+    }
+
     const skills = await new SkillsService(context.cwd).list()
     if (skills.length === 0 && !context.openCommandView) {
       context.writeLine('No skills available.')

@@ -1,9 +1,6 @@
 export type RuntimeStartupErrorCode =
   | 'invalid_settings'
   | 'no_default_model'
-  | 'unknown_initial_model'
-  | 'unknown_fallback_model'
-  | 'unknown_compact_model'
   | 'unknown_model'
   | 'provider_creation_failed'
 

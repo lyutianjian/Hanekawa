@@ -46,10 +46,16 @@ export function useAskUserQuestionPermission(proxy: AskUserQuestionProxy) {
   useEffect(() => {
     proxy.setOpen(askFn)
     return () => {
-      proxy.setOpen(async () => ({
+      // Settle whatever the dialog was still holding first: an abandoned
+      // resolver leaves the AskUserQuestion tool awaiting forever.
+      const unmounted = (): AskUserQuestionResult => ({
         kind: 'rejected',
         feedback: 'AskUserQuestion UI was unmounted.',
-      }))
+      })
+      const resolvers = [...resolverRef.current.values()]
+      resolverRef.current.clear()
+      proxy.setOpen(async () => unmounted())
+      for (const resolver of resolvers) resolver(unmounted())
     }
   }, [proxy, askFn])
 

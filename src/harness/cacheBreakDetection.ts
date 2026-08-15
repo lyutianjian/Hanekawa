@@ -34,33 +34,66 @@ export type CacheBreakSource =
   | 'side_question'
   | 'bash_classifier'
 
-export function agentCacheSource(agentId: string): CacheBreakSource {
+export function agentCacheSource(agentId: string, root?: string): CacheBreakSource {
   const normalized = agentId.trim() || 'unknown'
-  return `agent:${normalized}`
+  return bindRoot(`agent:${normalized}`, root)
 }
-
-let diagnosticsRoot: string | undefined
 
 /**
- * Project root that cache-break diagnostics are written under. Detection runs
- * inside the provider, which has no cwd of its own, so the host sets this once
- * at startup; unset means `process.cwd()`.
+ * Project root each source belongs to.
  *
- * Process-wide, like this module's snapshot maps. Isolating it per project
- * would mean partitioning all of them, not just this one.
+ * Detection runs inside the provider, which has no cwd of its own, so the root
+ * travels *inside the source string*: whoever mints a source says where it came
+ * from, and the root becomes part of the identity. A side table keyed by source
+ * would not do — two projects can mint the same logical source (the same
+ * session id, or any of the fixed literals like `compact`), and the second
+ * binding would silently retarget the first.
+ *
+ * `ROOT_TAG` cannot appear in a source name, which is why it separates cleanly.
+ */
+const ROOT_TAG = '@root-'
+const rootBySource = new Map<CacheBreakSource, string>()
+let defaultRoot: string | undefined
+
+function bindRoot(base: string, root: string | undefined): CacheBreakSource {
+  if (!root) return base as CacheBreakSource
+  // A digest rather than the path itself: this string is hashed into
+  // `prompt_cache_key` on the OpenAI path and printed in debug output, and
+  // neither wants an absolute path in it.
+  const digest = createHash('sha256').update(root).digest('hex').slice(0, 8)
+  const source = `${base}${ROOT_TAG}${digest}` as CacheBreakSource
+  rootBySource.set(source, root)
+  return source
+}
+
+function rootFor(source: CacheBreakSource): string {
+  return rootBySource.get(source) ?? defaultRoot ?? process.cwd()
+}
+
+/** The source without its root suffix, for diagnostics output and filenames. */
+export function displayCacheSource(source: CacheBreakSource): string {
+  const index = source.indexOf(ROOT_TAG)
+  return index === -1 ? source : source.slice(0, index)
+}
+
+/**
+ * Fallback root for sources nobody bound — the fixed literals (`compact`,
+ * `tool_use_summary`, …) minted where no cwd is in reach. Set once per
+ * `bootstrap()`; last caller wins, which is why binding at the source is
+ * preferred wherever a cwd is available.
  */
 export function setCacheBreakDiagnosticsRoot(cwd: string | undefined): void {
-  diagnosticsRoot = cwd
+  defaultRoot = cwd
 }
 
-export function forkCacheSource(parentSessionId: string): CacheBreakSource {
+export function forkCacheSource(parentSessionId: string, root?: string): CacheBreakSource {
   const normalized = parentSessionId.trim() || 'unknown'
-  return `agent:fork:${normalized}`
+  return bindRoot(`agent:fork:${normalized}`, root)
 }
 
-export function planCacheSource(sessionId: string): CacheBreakSource {
+export function planCacheSource(sessionId: string, root?: string): CacheBreakSource {
   const normalized = sessionId.trim() || 'unknown'
-  return `agent:plan:${normalized}`
+  return bindRoot(`agent:plan:${normalized}`, root)
 }
 
 export function requireCacheSource(source: CacheBreakSource | undefined): CacheBreakSource {
@@ -114,8 +147,10 @@ export interface PromptHashes {
   model: string
 }
 
-const previousSnapshots = new Map<CacheBreakSource, PreviousSnapshot>()
-const pendingChangesBySource = new Map<CacheBreakSource, PendingChanges>()
+// Keyed by the root-qualified source, so the same logical source used from two
+// project roots never shares a cache-read baseline.
+const previousSnapshots = new Map<string, PreviousSnapshot>()
+const pendingChangesBySource = new Map<string, PendingChanges>()
 
 export function recordPromptState(
   state: PromptState,
@@ -259,7 +294,7 @@ export function checkResponseForCacheBreak(
   if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
     const diagnosticsPath = writeCacheBreakDiagnostic(result)
     console.error(
-      `[myagent][cache-break] source=${source} drop=${tokenDrop} tokens prev=${prevCacheRead} current=${cacheReadTokens} reasons=${result.reasons.join(',')}${diagnosticsPath ? ` diagnostics=${diagnosticsPath}` : ''}`,
+      `[myagent][cache-break] source=${displayCacheSource(source)} drop=${tokenDrop} tokens prev=${prevCacheRead} current=${cacheReadTokens} reasons=${result.reasons.join(',')}${diagnosticsPath ? ` diagnostics=${diagnosticsPath}` : ''}`,
     )
   }
 
@@ -308,15 +343,18 @@ export function formatCacheHitRate(usage: CacheUsageSnapshot): string {
 function writeCacheBreakDiagnostic(result: CacheBreakResult): string | null {
   if (!result.hashes) return null
   try {
-    const session = result.source.startsWith('agent:') ? result.source.slice('agent:'.length) : result.source
-    const diagnosticsDir = path.join(getMyAgentDir(diagnosticsRoot ?? process.cwd()), 'diagnostics')
+    // The root is stripped for output: it is already implied by the directory
+    // this lands in, and a full path makes for an unreadable filename.
+    const display = displayCacheSource(result.source)
+    const session = display.startsWith('agent:') ? display.slice('agent:'.length) : display
+    const diagnosticsDir = path.join(getMyAgentDir(rootFor(result.source)), 'diagnostics')
     mkdirSync(diagnosticsDir, { recursive: true, mode: 0o700 })
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
     const filePath = path.join(diagnosticsDir, `${sanitizeFilePart(session)}-cache-break-${timestamp}.json`)
     const payload = {
       created_at: new Date().toISOString(),
       event: 'tengu_prompt_cache_break',
-      source: result.source,
+      source: display,
       reasons: result.reasons,
       drop_tokens: result.tokenDrop,
       prev_cache_read_tokens: result.prevCacheRead,

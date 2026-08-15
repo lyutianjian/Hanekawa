@@ -32,6 +32,7 @@ interface UseCommandsOptions {
   clearCachedSections?: () => void
   invalidateRecordsCache?: () => void
   reloadAgentDefinitions?: () => Promise<number>
+  reloadSkills?: () => Promise<number>
   getPermissionMode?: () => string
   enterPlanMode?: () => void | Promise<void>
   readPlanFile?: () => Promise<{ path: string; content: string | null }>
@@ -61,6 +62,7 @@ export function useCommands({
   clearCachedSections,
   invalidateRecordsCache,
   reloadAgentDefinitions,
+  reloadSkills,
   getPermissionMode,
   enterPlanMode,
   readPlanFile,
@@ -109,6 +111,8 @@ export function useCommands({
   invalidateRecordsCacheRef.current = invalidateRecordsCache
   const reloadAgentDefinitionsRef = useRef(reloadAgentDefinitions)
   reloadAgentDefinitionsRef.current = reloadAgentDefinitions
+  const reloadSkillsRef = useRef(reloadSkills)
+  reloadSkillsRef.current = reloadSkills
   const getPermissionModeRef = useRef(getPermissionMode)
   getPermissionModeRef.current = getPermissionMode
   const enterPlanModeRef = useRef(enterPlanMode)
@@ -191,6 +195,7 @@ export function useCommands({
         getEffort: getEffortRef.current ? () => getEffortRef.current!() : undefined,
         setEffort: setEffortRef.current ? (level) => setEffortRef.current!(level) : undefined,
         reloadAgentDefinitions: reloadAgentDefinitionsRef.current,
+        reloadSkills: reloadSkillsRef.current,
         getPermissionMode: getPermissionModeRef.current,
         enterPlanMode: enterPlanModeRef.current,
         readPlanFile: readPlanFileRef.current,

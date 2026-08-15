@@ -139,6 +139,7 @@ async function main() {
       onBeforeExit={() => host.shutdown('TUI exited')}
       backgroundTasks={host.backgroundTasks}
       reloadAgentDefinitions={host.reloadAgentDefinitions}
+      reloadSkills={host.reloadSkills}
       onEffortLevelChange={async (level) => {
         try { await saveEffortLevel(level as EffortLevel) } catch { /* non-critical */ }
       }}

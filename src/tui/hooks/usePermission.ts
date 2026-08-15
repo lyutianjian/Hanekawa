@@ -43,8 +43,15 @@ export function usePermission(proxy: PermissionPromptProxy) {
   useEffect(() => {
     proxy.setPrompt(promptFn)
     return () => {
-      // Reset to auto-deny on unmount
-      proxy.setPrompt(async () => false)
+      // Deny whatever the dialog was still holding before letting go of the
+      // proxy: PermissionGate awaits these promises and ToolRunner does not
+      // pass its abort signal down, so an abandoned resolver hangs the tool
+      // call forever. Detaching (rather than installing an auto-deny) means a
+      // later request parks for the next UI instead of being denied silently.
+      const resolvers = [...resolverRef.current.values()]
+      resolverRef.current.clear()
+      proxy.clearPrompt()
+      for (const resolver of resolvers) resolver(false)
     }
   }, [proxy, promptFn])
 

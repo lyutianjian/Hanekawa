@@ -1,4 +1,4 @@
-import type { PermissionRequest } from '../harness/permissions.js'
+import type { PermissionRequestDto } from '../runtime/protocol/wire.js'
 import type { SessionUsage } from '../runtime/sessionUsage.js'
 import type {
   CompactAttemptFailedRecord,
@@ -108,7 +108,8 @@ export interface PermissionDialogState {
 
 export interface PermissionDialogRequest {
   id: string
-  request: PermissionRequest
+  /** The wire projection, so this dialog renders the same in any shell. */
+  request: PermissionRequestDto
 }
 
 /** Re-homed into the headless runtime; kept as an alias for the component tree. */

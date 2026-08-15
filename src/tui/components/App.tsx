@@ -187,7 +187,7 @@ export function App({
     getBackgroundTaskSnapshot,
   )
 
-  const { permState, respond, setActiveRequest, denyPending } = usePermission(promptProxy)
+  const { permState, respond, setActiveRequest, denyPending } = usePermission(promptProxy, { cwd: process.cwd() })
   const exitPlan = useExitPlanPermission(exitPlanProxy)
   const enterPlan = useEnterPlanPermission(enterPlanProxy)
   const askUserQuestion = useAskUserQuestionPermission(askUserQuestionProxy)

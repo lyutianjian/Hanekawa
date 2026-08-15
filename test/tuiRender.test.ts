@@ -21,6 +21,8 @@ import { WelcomeBanner } from '../src/tui/components/WelcomeBanner.js'
 import { formatWorkedSummary } from '../src/tui/hooks/useAgentLoop.js'
 import type { CheckpointDiffSummary, CheckpointWithDiff } from '../src/services/checkpoint/checkpointService.js'
 import type { PermissionDecisionSource, PermissionRequest, PermissionRule } from '../src/harness/permissions.js'
+import { toPermissionDto } from '../src/runtime/protocol/permissionDto.js'
+import type { PermissionRequestDto } from '../src/runtime/protocol/wire.js'
 import type { TaskDisplaySnapshot } from '../src/harness/types.js'
 import type { RiskLevel, Tool, ToolResult } from '../src/harness/types.js'
 import type { PermissionDialogState, TUIDisplayItem } from '../src/tui/types.js'
@@ -1363,7 +1365,7 @@ function renderPermission(permState: PermissionDialogState): string {
   })).lastFrame() ?? ''
 }
 
-function permissionState(requests: PermissionRequest[], activeIndex = 0): PermissionDialogState {
+function permissionState(requests: PermissionRequestDto[], activeIndex = 0): PermissionDialogState {
   return {
     visible: true,
     activeRequestId: `permission-${activeIndex}`,
@@ -1380,15 +1382,21 @@ function permissionRequest(
   source: PermissionDecisionSource = 'mode',
   riskLevel: RiskLevel = 'confirm',
   extra: Partial<PermissionRequest> = {},
-): PermissionRequest {
-  return {
-    tool: permissionTool(toolName, riskLevel),
-    input,
-    reason: 'Current permission mode requires confirmation',
-    source,
-    denialStreak: 0,
-    ...extra,
-  }
+): PermissionRequestDto {
+  return toPermissionDto(
+    {
+      tool: permissionTool(toolName, riskLevel),
+      input,
+      reason: 'Current permission mode requires confirmation',
+      source,
+      denialStreak: 0,
+      // The gate sets the rule and the callback together, so a fixture with
+      // only the rule would not offer the "always allow" option any more.
+      ...(extra.alwaysAllowRule ? { onAlwaysAllow: () => {} } : {}),
+      ...extra,
+    },
+    { cwd: process.cwd() },
+  )
 }
 
 function permissionTool(name: string, riskLevel: RiskLevel): Tool {

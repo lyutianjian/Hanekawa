@@ -10,7 +10,7 @@ import { SessionStore } from '../src/sessions/service.js'
 import { getSessionsDir } from '../src/utils/paths.js'
 import { parseJsonLines } from '../src/utils/json.js'
 import type { SessionRecord } from '../src/harness/types.js'
-import { buildRewindSummaryRewrite } from '../src/tui/rewindSummary.js'
+import { buildRewindSummaryRewrite } from '../src/runtime/rewindSummary.js'
 
 const execFileAsync = promisify(execFile)
 

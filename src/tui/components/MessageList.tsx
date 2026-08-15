@@ -8,7 +8,7 @@ import { CollapsedToolGroup } from './CollapsedToolGroup.js'
 import { SubagentTaskBlock, type SubagentTreePosition } from './SubagentTaskBlock.js'
 import { WelcomeBanner } from './WelcomeBanner.js'
 import { theme } from '../theme.js'
-import type { QueuedMessage } from '../messageQueue.js'
+import type { QueuedMessage } from '../../runtime/messageQueue.js'
 import { groupConsecutiveSameToolCalls } from '../utils/toolGroupSummary.js'
 
 interface MessageListProps {

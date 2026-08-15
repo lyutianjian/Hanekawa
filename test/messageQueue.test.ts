@@ -1,7 +1,7 @@
 import { beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import type { MessageQueueRecord, SessionRecord } from '../src/harness/types.js'
-import { MessageQueue, replayMessageQueue } from '../src/tui/messageQueue.js'
+import { MessageQueue, replayMessageQueue } from '../src/runtime/messageQueue.js'
 
 describe('messageQueue', () => {
   let persisted: Array<{ sessionId: string; record: MessageQueueRecord }>

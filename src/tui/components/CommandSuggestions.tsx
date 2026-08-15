@@ -1,5 +1,5 @@
 import { Box, Text, useStdout } from 'ink'
-import type { SuggestionItem } from '../suggestions/types.js'
+import type { SuggestionItem } from '../../runtime/suggestions/types.js'
 import { theme } from '../theme.js'
 
 const MAX_VISIBLE_SUGGESTIONS = 6

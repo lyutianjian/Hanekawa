@@ -58,10 +58,27 @@ export type { RuntimeSlotSnapshot } from './runtimeSlot.js'
 export { SessionRecordLedger } from './recordLedger.js'
 export { canPumpQueue } from './queuePump.js'
 export type { QueuePumpState } from './queuePump.js'
+export { MessageQueue, replayMessageQueue } from './messageQueue.js'
+export type { PersistQueueRecord, QueuedMessage } from './messageQueue.js'
+export {
+  PROMPT_HISTORY_LIMIT,
+  appendPromptHistory,
+  getPromptHistoryPath,
+  loadPromptHistory,
+  promptHistoryTexts,
+} from './promptHistory.js'
+export type { PromptHistoryEntry } from './promptHistory.js'
+export { buildRewindSummaryRewrite } from './rewindSummary.js'
+export type {
+  RewindSummary,
+  RewindSummaryDecision,
+  RewindSummaryRewrite,
+} from './rewindSummary.js'
 export type {
   AgentSession,
   BootstrapOptions,
   McpConnectionStatus,
   RuntimeHost,
 } from './types.js'
+export * from './suggestions/index.js'
 export * from './protocol/index.js'

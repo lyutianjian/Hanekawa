@@ -7,13 +7,13 @@ import {
   applyCommandSuggestion,
   generateCommandSuggestions,
   type CommandSuggestion,
-} from '../suggestions/commandSuggestions.js'
+} from '../../runtime/suggestions/commandSuggestions.js'
 import {
   applyFileSuggestion,
   generateFileSuggestions,
   type FileSuggestion,
-} from '../suggestions/fileSuggestions.js'
-import type { SuggestionItem, SuggestionType } from '../suggestions/types.js'
+} from '../../runtime/suggestions/fileSuggestions.js'
+import type { SuggestionItem, SuggestionType } from '../../runtime/suggestions/types.js'
 
 export interface KeyboardShortcutOptions {
   onSubmit: (text: string) => unknown | Promise<unknown>

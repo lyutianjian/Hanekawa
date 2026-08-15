@@ -6,7 +6,7 @@ import path from 'node:path'
 import {
   applyCommandSuggestion,
   generateCommandSuggestions,
-} from '../src/tui/suggestions/commandSuggestions.js'
+} from '../src/runtime/suggestions/commandSuggestions.js'
 import type { CommandDefinition } from '../src/commands/types.js'
 import { getCommand, hasCommand, listCommands, registerCommand } from '../src/commands/index.js'
 import { registerSkillCommands } from '../src/commands/skills.js'

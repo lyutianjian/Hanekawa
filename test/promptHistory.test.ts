@@ -8,7 +8,7 @@ import {
   getPromptHistoryPath,
   loadPromptHistory,
   promptHistoryTexts,
-} from '../src/tui/promptHistory.js'
+} from '../src/runtime/promptHistory.js'
 
 test('prompt history uses the user-level JSONL path and preserves duplicates and multiline text', async () => {
   const home = await mkdtemp(path.join(tmpdir(), 'myagent-history-'))

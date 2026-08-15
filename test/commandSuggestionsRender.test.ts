@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createElement as h } from 'react'
 import { cleanup, render } from 'ink-testing-library'
 import { CommandSuggestions } from '../src/tui/components/CommandSuggestions.js'
-import type { CommandSuggestion } from '../src/tui/suggestions/commandSuggestions.js'
+import type { CommandSuggestion } from '../src/runtime/suggestions/commandSuggestions.js'
 
 afterEach(() => cleanup())
 

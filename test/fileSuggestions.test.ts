@@ -8,7 +8,7 @@ import {
   extractAtCompletionToken,
   generateFileSuggestions,
   type FileSuggestion,
-} from '../src/tui/suggestions/fileSuggestions.js'
+} from '../src/runtime/suggestions/fileSuggestions.js'
 
 /**
  * The fixture is never a git repo, so `gitIgnoredPaths` spawns `git check-ignore`

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildRewindSummaryRewrite } from '../src/tui/rewindSummary.js'
+import { buildRewindSummaryRewrite } from '../src/runtime/rewindSummary.js'
 import type { SessionRecord } from '../src/harness/types.js'
 
 function user(id: string, content = id): SessionRecord {

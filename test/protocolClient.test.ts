@@ -175,6 +175,7 @@ test('with no handler installed, UI requests answer the way a missing UI would',
     source: 'mode',
     denialStreak: 0,
     canAlwaysAllow: false,
+    destructiveWarnings: [],
   } } })
   harness.post({ type: 'ui-request', request: { kind: 'enter-plan', requestId: 'r2' } })
   await settle()
@@ -211,6 +212,7 @@ test('an installed permission handler can answer with alwaysAllow', async () => 
     source: 'mode',
     denialStreak: 0,
     canAlwaysAllow: true,
+    destructiveWarnings: [],
   } } })
   await settle()
   await settle()

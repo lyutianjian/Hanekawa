@@ -229,6 +229,8 @@ test('a permission prompt becomes a DTO without the Tool or the callback', async
     source: 'mode',
     denialStreak: 0,
     canAlwaysAllow: true,
+    // Derived host-side so a renderer can draw the dialog without the harness.
+    destructiveWarnings: [],
   })
 
   harness.send({

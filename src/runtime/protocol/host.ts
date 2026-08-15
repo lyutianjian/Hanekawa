@@ -9,11 +9,11 @@ import type { SessionController, SessionEvent } from '../sessionController.js'
 import type { RuntimeHost } from '../types.js'
 import type { RuntimeChannel } from './channel.js'
 import { PendingRequests } from './pendingRequests.js'
+import { toPermissionDto } from './permissionDto.js'
 import {
   UI_REQUEST_FALLBACKS,
   type HostCommand,
   type HostEvent,
-  type PermissionRequestDto,
   type UiRequest,
   type UiResponse,
   type WireRunOverrides,
@@ -141,7 +141,7 @@ export class SessionHost {
         const response = await this.askUi({
           kind: 'permission',
           requestId,
-          payload: toPermissionDto(request),
+          payload: toPermissionDto(request, { cwd: this.host.cwd }),
         })
         if (response.kind !== 'permission') return false
         // Must run before we resolve: PermissionGate reads the captured
@@ -337,19 +337,5 @@ export class SessionHost {
   /** Exposed for hosts that need the ledger (model switches fold it into task state). */
   getRecords(): readonly SessionRecord[] {
     return this.ledger.list()
-  }
-}
-
-function toPermissionDto(request: PermissionRequest): PermissionRequestDto {
-  return {
-    toolName: request.tool.name,
-    riskLevel: request.tool.riskLevel,
-    input: request.input,
-    reason: request.reason,
-    source: request.source,
-    ...(request.matchedRule ? { matchedRule: request.matchedRule } : {}),
-    ...(request.alwaysAllowRule ? { alwaysAllowRule: request.alwaysAllowRule } : {}),
-    denialStreak: request.denialStreak,
-    canAlwaysAllow: Boolean(request.onAlwaysAllow),
   }
 }

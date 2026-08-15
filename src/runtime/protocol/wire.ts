@@ -1,4 +1,5 @@
 import type { EffortLevel } from '../../config/effort.js'
+import type { DestructiveCommandWarning } from '../../harness/destructiveCommands.js'
 import type {
   PermissionDecisionSource,
   PermissionMode,
@@ -11,6 +12,7 @@ import type {
 } from '../../harness/types.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeManager.js'
 import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
+import type { FileToolPreview } from '../../services/fileToolPreview.js'
 import type { SessionControllerSnapshot, SessionEvent } from '../sessionController.js'
 
 /**
@@ -102,6 +104,11 @@ export interface WireRuntimeSnapshot {
  * `PermissionRequest` with the `Tool` reduced to the two fields a dialog reads
  * and `onAlwaysAllow` reduced to a flag. The host keeps the real request and
  * invokes the callback when the answer comes back.
+ *
+ * `preview` and `destructiveWarnings` are derived here rather than by the
+ * viewer: both need host-side code (the filesystem, and the shell analyzer in
+ * `harness/`), and a renderer must be able to draw this dialog without
+ * importing either.
  */
 export interface PermissionRequestDto {
   toolName: string
@@ -114,6 +121,9 @@ export interface PermissionRequestDto {
   denialStreak: number
   /** False when the gate offered no "always allow" affordance for this call. */
   canAlwaysAllow: boolean
+  /** Already bounded by `capFileToolPreview`; absent for non-file tools. */
+  preview?: FileToolPreview
+  destructiveWarnings: DestructiveCommandWarning[]
 }
 
 // --- the four blocking UI requests -----------------------------------------

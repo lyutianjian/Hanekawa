@@ -18,6 +18,7 @@ import {
 import { buildStartupNotices, resolveInitialQueuedPrompt } from '../startupNotices.js'
 import type { RuntimeHost } from '../types.js'
 import type { RuntimeChannel } from './channel.js'
+import { parseHostCommand, type HostCommandParseFailure } from './commandSchema.js'
 import { PendingRequests } from './pendingRequests.js'
 import { toPermissionDto } from './permissionDto.js'
 import {
@@ -44,6 +45,10 @@ import {
 
 function isEffortLevel(value: string): value is EffortLevel {
   return (VALID_EFFORT_LEVELS as readonly string[]).includes(value)
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled host command: ${JSON.stringify(value)}`)
 }
 
 export interface SessionHostDeps {
@@ -277,15 +282,45 @@ export class SessionHost {
   // --- inbound ----------------------------------------------------------
 
   private handleMessage = (message: unknown): void => {
-    const command = message as HostCommand
-    if (!command || typeof command !== 'object' || typeof command.type !== 'string') return
+    const parsed = parseHostCommand(message)
+    if (!parsed.ok) {
+      this.rejectMalformed(parsed)
+      return
+    }
 
+    const command = parsed.command
     if (command.type === 'ui-response') {
       this.pendingUi.settle(command.requestId, command.response)
       return
     }
 
     void this.runCommand(command)
+  }
+
+  /**
+   * A malformed message must not simply vanish. Both halves of this protocol
+   * park a promise waiting for an answer, so silence is the one outcome that
+   * hangs something: a command's `send()` never settles until the channel dies,
+   * and an unanswered permission prompt blocks the agent loop outright --
+   * `ToolRunner.run` does not pass its abort signal into
+   * `PermissionGate.approve`, so interrupting the turn will not release it
+   * either.
+   *
+   * A message too broken to carry an id is still dropped, as before: there is
+   * nowhere to send the answer.
+   */
+  private rejectMalformed(failure: HostCommandParseFailure): void {
+    if (failure.requestId !== undefined) {
+      const kind = this.pendingKinds.get(failure.requestId)
+      // Its own fallback rather than a blanket denial: `UI_REQUEST_FALLBACKS`
+      // is asymmetric on purpose, and a renderer that answers garbage is not
+      // distinguishable from one that has gone away.
+      if (kind) this.pendingUi.settle(failure.requestId, UI_REQUEST_FALLBACKS[kind]())
+      return
+    }
+    if (failure.id !== undefined) {
+      this.post({ type: 'fail', id: failure.id, message: failure.message })
+    }
   }
 
   private async runCommand(command: Exclude<HostCommand, { type: 'ui-response' }>): Promise<void> {
@@ -472,6 +507,15 @@ export class SessionHost {
         await this.host.shutdown(command.reason)
         return { ok: true }
     }
+
+    // Not a `default` branch, and it must not become one. The switch above has
+    // to stay exhaustive so a new HostCommand variant is a compile error rather
+    // than a silent reply; this line is what makes that true, because the
+    // declared return type `Promise<unknown>` already admits the `undefined`
+    // that falling out of the switch produces. Unreachable at runtime --
+    // `parseHostCommand` rejects anything outside the union -- and if it ever
+    // is reached, `runCommand`'s catch turns it into a `fail`.
+    return assertNever(command)
   }
 
   private switchDeps(): SessionSwitchDeps {

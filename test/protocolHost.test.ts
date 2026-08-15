@@ -24,6 +24,8 @@ interface Harness {
   host: SessionHost
   received: HostEvent[]
   send: (command: HostCommand) => void
+  /** Malformed payloads, which `send` is deliberately too well typed to express. */
+  sendRaw: (message: unknown) => void
   emit: (event: SessionEvent) => void
   publishSnapshot: () => void
   bridges: ReturnType<typeof createUiBridges>
@@ -33,6 +35,7 @@ interface Harness {
     createdRuntimes: Array<{ modelKey: string; recordCount: number }>
     defaultModels: string[]
     shutdowns: string[]
+    modeChanges: string[]
   }
   /** Drives the two subscriptions the host installs on the runtime host. */
   changeMode: (mode: string) => void
@@ -54,6 +57,7 @@ async function createHarness(): Promise<Harness> {
     createdRuntimes: [],
     defaultModels: [],
     shutdowns: [],
+    modeChanges: [],
   }
 
   const eventListeners = new Set<(event: SessionEvent) => void>()
@@ -119,6 +123,8 @@ async function createHarness(): Promise<Harness> {
     configuredEffortLevel: 'medium',
     permissionGate: {
       getMode: () => 'default',
+      setMode: (mode: string) => { calls.modeChanges.push(mode) },
+      prepareContextForPlanMode: () => { calls.modeChanges.push('plan') },
       onModeChange: (listener: (mode: string) => void) => {
         modeListeners.add(listener)
         return () => modeListeners.delete(listener)
@@ -182,6 +188,7 @@ async function createHarness(): Promise<Harness> {
     host,
     received,
     send: (command) => clientSide.post(command),
+    sendRaw: (message) => clientSide.post(message),
     emit: (event) => { for (const listener of [...eventListeners]) listener(event) },
     publishSnapshot: () => {
       snapshot = { ...snapshot, isStreaming: !snapshot.isStreaming }
@@ -559,5 +566,71 @@ test('background task commands read and kill through the registry', async () => 
   assert.ok(peeked.type === 'reply' && killed.type === 'reply')
   assert.deepEqual(peeked.result, { output: 'tail of the output' })
   assert.deepEqual(killed.result, { task: { id: 't1', status: 'killed' } })
+  harness.dispose()
+})
+
+test('an unrecognized command fails instead of replying that it worked', async () => {
+  const harness = await createHarness()
+  harness.sendRaw({ type: 'bogus', id: 'c1' })
+  await settle()
+
+  const answers = harness.received.filter((event) => event.type === 'fail' || event.type === 'reply')
+  assert.equal(answers.length, 1)
+  // The old blind cast let this fall out of the switch in execute(), which
+  // answered `{ type: 'reply', result: undefined }` -- a command that had done
+  // nothing, reported as a success.
+  assert.equal(answers[0]?.type, 'fail')
+  assert.equal(answers[0] && 'id' in answers[0] ? answers[0].id : undefined, 'c1')
+  harness.dispose()
+})
+
+test('a malformed permission mode is refused rather than applied', async () => {
+  const harness = await createHarness()
+  harness.sendRaw({ type: 'set-permission-mode', id: 'c1', mode: 'god' })
+  await settle()
+
+  const fail = harness.received.find((event) => event.type === 'fail')
+  assert.ok(fail && fail.type === 'fail')
+  assert.match(fail.message, /mode/)
+  // The point of validating at all: in an Electron shell the renderer is the
+  // less trusted half, and this command reaches PermissionGate directly.
+  assert.deepEqual(harness.calls.modeChanges, [])
+
+  harness.send({ type: 'set-permission-mode', id: 'c2', mode: 'bypass' })
+  await settle()
+  assert.deepEqual(harness.calls.modeChanges, ['bypass'], 'a legal mode still applies')
+  harness.dispose()
+})
+
+test('a malformed ui-response settles the prompt with its own fallback', async () => {
+  const harness = await createHarness()
+  const permission = harness.bridges.prompt.prompt(permissionRequest())
+  const enterPlan = harness.bridges.enterPlan.open()
+  await settle()
+
+  const requests = harness.received.filter((event) => event.type === 'ui-request')
+  for (const event of requests) {
+    assert.ok(event.type === 'ui-request')
+    // `response` is missing the field its kind requires.
+    harness.sendRaw({ type: 'ui-response', requestId: event.request.requestId, response: { kind: event.request.kind } })
+  }
+  await settle()
+
+  // Dropping these would hang the agent loop outright, so the fallback applies
+  // -- and it stays asymmetric: a renderer answering garbage is not
+  // distinguishable from one that has gone away.
+  assert.equal(await permission, false, 'permission denies')
+  assert.equal(await enterPlan, true, 'entering plan mode still approves')
+  harness.dispose()
+})
+
+test('a malformed ui-response is never answered with a fail', async () => {
+  const harness = await createHarness()
+  harness.sendRaw({ type: 'ui-response', requestId: 'nobody', response: { kind: 'permission' } })
+  await settle()
+
+  // There is no command id to fail against, and inventing one would reject a
+  // request the client never made.
+  assert.equal(harness.received.some((event) => event.type === 'fail'), false)
   harness.dispose()
 })

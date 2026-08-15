@@ -105,4 +105,8 @@ test('the client half never imports the harness at runtime', async () => {
   assert.ok(!source.includes("from '../../tui/"), 'the client must not reach into the TUI')
   assert.ok(!/from '[^']*\bink\b/.test(source), 'the client must not import Ink')
   assert.ok(!/from 'react'/.test(source), 'the client must not import React')
+  // Inbound validation is the host's job. Mirroring it here would put zod in a
+  // renderer bundle to re-check messages the host already produced.
+  assert.ok(!/from 'zod/.test(source), 'the client must not import zod')
+  assert.ok(!source.includes('commandSchema'), 'the client must not import the command schema')
 })

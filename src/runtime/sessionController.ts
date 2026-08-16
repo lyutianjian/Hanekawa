@@ -287,6 +287,18 @@ export class SessionController {
     return this.session.id
   }
 
+  /**
+   * The session this controller currently drives, which `retarget` moves.
+   *
+   * Named for the meta rather than "session" because the dep of that name is
+   * the *runtime*. Exposed so nothing downstream has to keep a second copy in
+   * sync: a `SessionPane` derives its session from here rather than tracking
+   * one that a `/clear` in between would leave stale.
+   */
+  getSessionMeta(): SessionMeta {
+    return this.session
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true

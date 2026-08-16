@@ -1,6 +1,8 @@
 export { bootstrap } from './bootstrap.js'
 export { createActiveModelRuntimeFactory, createRuntimeFactory } from './createRuntime.js'
 export type { CreateRuntime, CreateRuntimeDeps } from './createRuntime.js'
+export { createSessionScope, hasRecoverableInterruption } from './sessionScope.js'
+export type { SessionScopeDeps } from './sessionScope.js'
 export { RuntimeStartupError } from './errors.js'
 export type { RuntimeStartupErrorCode } from './errors.js'
 export {
@@ -61,6 +63,8 @@ export type {
 } from './sessionController.js'
 export { RuntimeSlot } from './runtimeSlot.js'
 export type { RuntimeSlotSnapshot } from './runtimeSlot.js'
+export { SessionPane, SessionWorkspace, createSessionPane } from './sessionWorkspace.js'
+export type { CreateSessionPaneOptions, SessionWorkspaceOptions } from './sessionWorkspace.js'
 export { SessionRecordLedger } from './recordLedger.js'
 export { canPumpQueue } from './queuePump.js'
 export { buildModelPickerOptions } from './modelPicker.js'
@@ -128,7 +132,9 @@ export type {
   AgentSession,
   BootstrapOptions,
   McpConnectionStatus,
+  ProjectRuntime,
   RuntimeHost,
+  SessionScope,
 } from './types.js'
 export * from './suggestions/index.js'
 export * from './protocol/index.js'

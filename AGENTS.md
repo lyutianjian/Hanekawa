@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 Hanekawa (package name `myagent`) is a self-hosted terminal coding agent: an Ink/React TUI over a
 provider-agnostic agent loop, with session persistence, prompt-cache-aware compaction,

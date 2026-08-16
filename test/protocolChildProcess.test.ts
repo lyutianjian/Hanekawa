@@ -84,25 +84,30 @@ const runtimeSlot = {
   replace: () => {},
 }
 
+// One fake standing in for both halves: \`RuntimeHost\` is exactly their
+// intersection, so a single-session host sees what it always did.
+const runtimeHost = {
+  cwd: process.cwd(),
+  session: { id: 'child-session' },
+  store: {},
+  bridges,
+  existingRecords: [],
+  diagnostics: [],
+  mcp: { connected: [], failed: [] },
+  hasRecoverableInterruption: false,
+  configuredEffortLevel: 'medium',
+  permissionGate: { getMode: () => 'default', onModeChange: () => () => {} },
+  backgroundTasks: { subscribe: () => () => {}, getSnapshot: () => [] },
+  createRuntime: () => agentSession,
+  createActiveModelRuntime: (key) => ({ model: key }),
+}
+
 const host = new SessionHost({
   channel: createNodeProcessChannel(process),
   controller,
   runtimeSlot,
-  host: {
-    cwd: process.cwd(),
-    session: { id: 'child-session' },
-    store: {},
-    bridges,
-    existingRecords: [],
-    diagnostics: [],
-    mcp: { connected: [], failed: [] },
-    hasRecoverableInterruption: false,
-    configuredEffortLevel: 'medium',
-    permissionGate: { getMode: () => 'default', onModeChange: () => () => {} },
-    backgroundTasks: { subscribe: () => () => {}, getSnapshot: () => [] },
-    createRuntime: () => agentSession,
-    createActiveModelRuntime: (key) => ({ model: key }),
-  },
+  project: runtimeHost,
+  scope: runtimeHost,
 })
 
 // Lets the parent trigger a permission prompt from inside the child.

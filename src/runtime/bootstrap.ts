@@ -1,31 +1,28 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { ConfigService } from '../config/service.js'
 import {
   loadMergedSettings,
-  persistPermissionRule,
   validateSettings,
 } from '../config/settings.js'
 import { clampEffort } from '../config/effort.js'
-import { PermissionGate, permissionRulesFromSettings, type DenialStateStore } from '../harness/permissions.js'
+import { permissionRulesFromSettings } from '../harness/permissions.js'
 import { setCacheBreakDiagnosticsRoot } from '../harness/cacheBreakDetection.js'
-import { SystemPromptSectionCache } from '../harness/sections.js'
-import type { SessionRecord } from '../harness/types.js'
 import type { RuntimeDiagnostic } from '../harness/diagnostics.js'
 import { getAllTools } from '../tools/index.js'
 import { BUILT_IN_AGENT_DEFINITIONS } from '../tools/agentTool.js'
 import { SkillsService } from '../services/skills/skillsService.js'
 import { AgentDefinitionLoader } from '../services/agents/agentDefinitionLoader.js'
 import { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
+import type { SessionMeta } from '../sessions/service.js'
 import { registerBuiltinCommands } from '../commands/index.js'
 import { registerSkillCommands } from '../commands/skills.js'
-import { createUiBridges } from './bridges.js'
-import { createActiveModelRuntimeFactory, createRuntimeFactory } from './createRuntime.js'
+import { createActiveModelRuntimeFactory } from './createRuntime.js'
 import { RuntimeStartupError } from './errors.js'
 import { connectMcpServers } from './mcp.js'
+import { createSessionScope, type SessionScopeDeps } from './sessionScope.js'
 import { ToolRegistry } from './toolRegistry.js'
-import type { BootstrapOptions, RuntimeHost } from './types.js'
+import type { BootstrapOptions, RuntimeHost, SessionScope } from './types.js'
 
 function mergeAgentDefinitions<T extends { type: string }>(base: readonly T[], overrides: readonly T[]): T[] {
   const merged = new Map<string, T>()
@@ -120,6 +117,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
    * captured when a runtime is constructed, so the caller has to rebuild the
    * runtime for those; `needsRuntimeRebuild` says so rather than leaving the
    * caller to guess.
+   *
+   * Every open scope gets the new rules, not just the newest one: each holds
+   * its own `PermissionGate`, so reaching only one would leave the other tabs
+   * enforcing the rules the process started with.
    */
   const reloadSettings = async (): Promise<{ needsRuntimeRebuild: boolean }> => {
     const next = await loadMergedSettings(cwd)
@@ -134,10 +135,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     const hooksChanged = JSON.stringify(next.hooks) !== JSON.stringify(settings.hooks)
     settings = next
     await config.load(settings)
-    permissionGate.setConfigRules(permissionRulesFromSettings(settings.permissions))
+    const rules = permissionRulesFromSettings(settings.permissions)
+    for (const scope of scopes) scope.permissionGate.setConfigRules(rules)
     return { needsRuntimeRebuild: hooksChanged }
   }
-  const promptSections = new SystemPromptSectionCache()
 
   // Fail-open: a server that fails to connect is reported but does not block
   // startup. Trust is confirmed through the host, before it owns stdin.
@@ -158,27 +159,12 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   registerBuiltinCommands()
   await registerSkillCommands(cwd)
 
-  const bridges = createUiBridges()
-  // The gate and every subagent share one denial-state store, but the session
-  // it targets changes with `/clear` and `/resume`. Read the id at call time so
-  // counters are never written back to whichever session was active at startup.
-  let activeSessionId = session.id
-  const denialStateStore: DenialStateStore = {
-    getDenialState: async () => store.getDenialState(activeSessionId),
-    setDenialState: async (state) => store.setDenialState(activeSessionId, state),
-  }
-  const permissionGate = new PermissionGate(bridges.prompt.prompt, permissionRulesFromSettings(settings.permissions), {
-    denialStateStore,
-    cwd,
-    mode: settings.permissions?.mode ?? 'default',
-    persistRule: (rule) => persistPermissionRule(cwd, rule),
-  })
-
   const contextManagement = config.get().agent.contextManagement
   const isGitRepo = existsSync(join(cwd, '.git'))
 
   const createActiveModelRuntime = createActiveModelRuntimeFactory(config)
-  const createRuntime = createRuntimeFactory({
+
+  const scopeDeps: SessionScopeDeps = {
     cwd,
     config,
     store,
@@ -186,61 +172,48 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     getSkills: () => skills,
     getAgentDefinitions: () => agentDefinitions,
     toolRegistry,
-    promptSections,
-    permissionGate,
-    denialStateStore,
     backgroundTasks,
-    bridges,
     contextManagement,
     isGitRepo,
     initialEffort: clampedInitialEffort,
     createActiveModelRuntime,
-    onActiveSessionChange: (nextSessionId) => {
-      if (nextSessionId === activeSessionId) return
-      activeSessionId = nextSessionId
-      permissionGate.resetDenialState()
-    },
-  })
-
-  const existingLoad = await store.loadRecordsWithDiagnostics(session.id)
-  const orphanedAgentIds = new Set(await backgroundTasks.restoreSession(session.id, existingLoad.records))
-  if (orphanedAgentIds.size > 0) {
-    const latestAgentTasks = new Map<string, Extract<SessionRecord, { type: 'subagent_task' }>>()
-    for (const record of existingLoad.records) {
-      if (record.type === 'subagent_task') latestAgentTasks.set(record.agentId, record)
-    }
-    for (const agentId of orphanedAgentIds) {
-      const previous = latestAgentTasks.get(agentId)
-      if (!previous || previous.status !== 'running') continue
-      const interrupted: Extract<SessionRecord, { type: 'subagent_task' }> = {
-        ...previous,
-        id: randomUUID(),
-        status: 'interrupted',
-        error: 'Background agent was not present when the session resumed',
-        createdAt: new Date().toISOString(),
-      }
-      await store.appendRecord(session.id, interrupted)
-      existingLoad.records.push(interrupted)
-    }
   }
 
+  // Every scope currently open. `reloadSettings` has to reach all of them, and
+  // `shutdown` has to release all of them.
+  const scopes = new Set<SessionScope>()
+  const openScope = async (target: SessionMeta): Promise<SessionScope> => {
+    const created = await createSessionScope(scopeDeps, target)
+    // Wrapped rather than handed a deregister callback: the scope has no reason
+    // to know it is being tracked, and this keeps the set private to bootstrap.
+    const scope: SessionScope = {
+      ...created,
+      dispose: () => {
+        scopes.delete(scope)
+        created.dispose()
+      },
+    }
+    scopes.add(scope)
+    return scope
+  }
+
+  const initialScope = await openScope(session)
+
   return {
+    ...initialScope,
+    // The initial scope shows the project's startup diagnostics too — they need
+    // surfacing once, and this is the scope that surfaces them.
+    diagnostics: [...modelDiagnostics, ...initialScope.diagnostics],
     cwd,
     config,
     store,
-    session,
-    permissionGate,
     backgroundTasks,
-    bridges,
+    mcp: mcp.status,
     initialModelKey,
     initialEffort: typeof clampedInitialEffort === 'string' ? clampedInitialEffort : undefined,
     configuredEffortLevel,
-    existingRecords: existingLoad.records,
-    hasRecoverableInterruption: hasRecoverableInterruption(existingLoad.records),
-    diagnostics: [...modelDiagnostics, ...existingLoad.diagnostics],
-    mcp: mcp.status,
-    createRuntime,
     createActiveModelRuntime,
+    openScope,
     reloadAgentDefinitions,
     reloadSkills,
     reloadSettings,
@@ -248,14 +221,9 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
       // Swallow errors so a misbehaving server cannot prevent a clean exit.
       await backgroundTasks.stopAll(undefined, reason)
       await Promise.allSettled(mcp.clients.map((client) => client.close()))
+      for (const scope of [...scopes]) scope.dispose()
     },
   }
-}
-
-function hasRecoverableInterruption(records: readonly SessionRecord[]): boolean {
-  return [...records]
-    .reverse()
-    .some((record) => record.type === 'turn_interruption' && record.recoverable && !record.consumedAt)
 }
 
 /**

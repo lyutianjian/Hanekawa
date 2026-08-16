@@ -4,6 +4,7 @@ import type { CommandContext } from '../../commands/types.js'
 import { VALID_EFFORT_LEVELS, type EffortLevel } from '../../config/effort.js'
 import { saveEffortLevel } from '../../config/settings.js'
 import type { PermissionRequest } from '../../harness/permissions.js'
+import type { RuntimeDiagnostic } from '../../harness/diagnostics.js'
 import type { SessionRecord } from '../../harness/types.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import { applyPermissionModeTransition } from '../permissionMode.js'
@@ -19,8 +20,8 @@ import {
   type SessionSwitchDeps,
   type SessionSwitchResult,
 } from '../sessionSwitch.js'
-import { buildStartupNotices, resolveInitialQueuedPrompt } from '../startupNotices.js'
-import type { RuntimeHost } from '../types.js'
+import { buildStartupNotices, resolveInitialQueuedPrompt, type StartupNotice } from '../startupNotices.js'
+import type { ProjectRuntime, SessionScope } from '../types.js'
 import type { RuntimeChannel } from './channel.js'
 import { createHostCommandContext } from './commandContext.js'
 import { parseHostCommand, type HostCommandParseFailure } from './commandSchema.js'
@@ -63,7 +64,14 @@ export interface SessionHostDeps {
   channel: RuntimeChannel
   controller: SessionController
   runtimeSlot: RuntimeSlot
-  host: RuntimeHost
+  /**
+   * Split rather than one `RuntimeHost` because `SessionHost` is the only
+   * consumer that ever gets a second instance. Keeping the halves apart here is
+   * what stops session-scoped state being reached for on the project — and
+   * project state being duplicated per tab.
+   */
+  project: ProjectRuntime
+  scope: SessionScope
 }
 
 /**
@@ -85,7 +93,8 @@ export class SessionHost {
   private readonly channel: RuntimeChannel
   private readonly controller: SessionController
   private readonly runtimeSlot: RuntimeSlot
-  private readonly host: RuntimeHost
+  private readonly project: ProjectRuntime
+  private readonly scope: SessionScope
 
   private readonly pendingUi = new PendingRequests<UiResponse>()
   /** Request kind per outstanding id, so each settles with its own fallback. */
@@ -102,17 +111,18 @@ export class SessionHost {
     this.channel = deps.channel
     this.controller = deps.controller
     this.runtimeSlot = deps.runtimeSlot
-    this.host = deps.host
-    this.session = deps.host.session
-    this.ledger = new SessionRecordLedger(deps.host.existingRecords)
+    this.project = deps.project
+    this.scope = deps.scope
+    this.session = deps.scope.session
+    this.ledger = new SessionRecordLedger(deps.scope.existingRecords)
 
     this.teardown.push(this.controller.onEvent(this.forwardSessionEvent))
     this.teardown.push(this.controller.subscribe(this.postSnapshot))
     this.teardown.push(this.runtimeSlot.subscribe(this.postRuntimeSnapshot))
     // Plan-mode tools change the mode through PermissionGate without ever
     // touching RuntimeSlot, so without this the client's mode goes stale.
-    this.teardown.push(this.host.permissionGate.onModeChange(this.postRuntimeSnapshot))
-    this.teardown.push(this.host.backgroundTasks.subscribe(this.scheduleBackgroundTaskPost))
+    this.teardown.push(this.scope.permissionGate.onModeChange(this.postRuntimeSnapshot))
+    this.teardown.push(this.project.backgroundTasks.subscribe(this.scheduleBackgroundTaskPost))
     this.teardown.push(this.channel.onMessage(this.handleMessage))
     this.teardown.push(this.channel.onClose(this.handleClose))
 
@@ -176,7 +186,7 @@ export class SessionHost {
   private postBackgroundTasks(): void {
     this.post({
       type: 'background-tasks',
-      tasks: [...this.host.backgroundTasks.getSnapshot(this.session.id)],
+      tasks: [...this.project.backgroundTasks.getSnapshot(this.session.id)],
     })
   }
 
@@ -194,14 +204,14 @@ export class SessionHost {
         ? { maxEffort: session.modelConfig.maxEffort }
         : {}),
       effort: this.runtimeSlot.getEffort(),
-      permissionMode: this.host.permissionGate.getMode(),
+      permissionMode: this.scope.permissionGate.getMode(),
     }
   }
 
   // --- the four blocking bridges ---------------------------------------
 
   private attachBridges(): void {
-    const { bridges } = this.host
+    const { bridges } = this.scope
 
     bridges.prompt.setPrompt(async (request) => {
       const requestId = randomUUID()
@@ -210,7 +220,7 @@ export class SessionHost {
         const response = await this.askUi({
           kind: 'permission',
           requestId,
-          payload: toPermissionDto(request, { cwd: this.host.cwd }),
+          payload: toPermissionDto(request, { cwd: this.project.cwd }),
         })
         if (response.kind !== 'permission') return false
         // Must run before we resolve: PermissionGate reads the captured
@@ -252,7 +262,7 @@ export class SessionHost {
   }
 
   private detachBridges(): void {
-    const { bridges } = this.host
+    const { bridges } = this.scope
     bridges.prompt.clearPrompt()
     bridges.askUserQuestion.setOpen(async () => ({
       kind: 'rejected',
@@ -350,16 +360,16 @@ export class SessionHost {
         this.postSnapshot()
         this.postRuntimeSnapshot()
         this.postBackgroundTasks()
-        const queued = resolveInitialQueuedPrompt(this.host.hasRecoverableInterruption)
+        const queued = resolveInitialQueuedPrompt(this.scope.hasRecoverableInterruption)
         return {
           sessionId: this.session.id,
           session: this.session,
-          cwd: this.host.cwd,
+          cwd: this.project.cwd,
           records: [...this.ledger.list()],
-          notices: buildStartupNotices(this.host),
-          hasRecoverableInterruption: this.host.hasRecoverableInterruption,
+          notices: this.startupNotices(this.scope.diagnostics),
+          hasRecoverableInterruption: this.scope.hasRecoverableInterruption,
           ...(queued ? { initialQueuedPrompt: queued } : {}),
-          configuredEffortLevel: this.host.configuredEffortLevel,
+          configuredEffortLevel: this.project.configuredEffortLevel,
         } satisfies WireHelloResult
       }
 
@@ -409,7 +419,7 @@ export class SessionHost {
         return this.controller.getCheckpointService().restoreToCommit(command.commitHash)
 
       case 'truncate-session': {
-        const result = await this.host.store.truncateBeforeMessage(this.session.id, command.messageId)
+        const result = await this.project.store.truncateBeforeMessage(this.session.id, command.messageId)
         // Thrown rather than reported: a rewind that silently did nothing would
         // leave the caller showing a transcript the file no longer matches.
         if (!result.success) throw new Error(result.error ?? 'Failed to truncate session')
@@ -417,7 +427,7 @@ export class SessionHost {
       }
 
       case 'summarize-rewind': {
-        const loaded = await this.host.store.loadRecordsWithDiagnostics(this.session.id)
+        const loaded = await this.project.store.loadRecordsWithDiagnostics(this.session.id)
         const rewrite = await buildRewindSummaryRewrite({
           records: loaded.records,
           targetMessageId: command.messageId,
@@ -427,12 +437,12 @@ export class SessionHost {
           // reply can be arbitrarily slow; nothing about it is a fast path.
           summarize: (records) => this.runtimeSlot.current.loop.summarizeRecordsForRewind(records),
         })
-        await this.host.store.replaceRecords(this.session.id, rewrite.nextRecords)
+        await this.project.store.replaceRecords(this.session.id, rewrite.nextRecords)
         return { records: await this.afterRewind() } satisfies WireRewindResult
       }
 
       case 'set-model': {
-        const next = this.host.createRuntime(command.modelKey, this.session, this.ledger.list())
+        const next = this.scope.createRuntime(command.modelKey, this.session, this.ledger.list())
         // Clearing before the swap: the cached Environment section embeds the
         // model name, so a stale prefix would survive into the next request.
         this.runtimeSlot.current.loop.clearCachedSections()
@@ -459,7 +469,7 @@ export class SessionHost {
 
       case 'set-permission-mode': {
         const applied = applyPermissionModeTransition(
-          this.host.permissionGate,
+          this.scope.permissionGate,
           this.runtimeSlot.current.planModeManager,
           command.mode,
         )
@@ -471,29 +481,29 @@ export class SessionHost {
         return this.buildModelsResult()
 
       case 'resolve-model': {
-        const modelKey = this.host.config.resolveModelInput(command.input, {
+        const modelKey = this.project.config.resolveModelInput(command.input, {
           currentModelKey: this.runtimeSlot.current.modelKey,
         })
         return { ...(modelKey ? { modelKey } : {}) } satisfies WireResolveModelResult
       }
 
       case 'set-default-model': {
-        this.host.config.setDefaultModel(command.reference)
-        await this.host.config.save()
+        this.project.config.setDefaultModel(command.reference)
+        await this.project.config.save()
         return this.buildModelsResult()
       }
 
       case 'list-sessions':
-        return { sessions: await this.host.store.list() } satisfies WireSessionsResult
+        return { sessions: await this.project.store.list() } satisfies WireSessionsResult
 
       case 'reload-agents':
-        return { count: await this.host.reloadAgentDefinitions() } satisfies WireReloadCountResult
+        return { count: await this.project.reloadAgentDefinitions() } satisfies WireReloadCountResult
 
       case 'reload-skills':
-        return { count: await this.host.reloadSkills() } satisfies WireReloadCountResult
+        return { count: await this.project.reloadSkills() } satisfies WireReloadCountResult
 
       case 'reload-settings': {
-        const { needsRuntimeRebuild } = await this.host.reloadSettings()
+        const { needsRuntimeRebuild } = await this.project.reloadSettings()
         if (!needsRuntimeRebuild) {
           return {
             needsRuntimeRebuild,
@@ -504,9 +514,9 @@ export class SessionHost {
         // Rebuilt here rather than asked of the client: that hooks are captured
         // at runtime-construction time is host trivia a renderer should not know.
         const currentKey = this.runtimeSlot.current.modelKey
-        const nextKey = resolveRuntimeModelKeyAfterConfigChange(this.host.config, currentKey, 'models')
+        const nextKey = resolveRuntimeModelKeyAfterConfigChange(this.project.config, currentKey, 'models')
           ?? currentKey
-        const next = this.host.createRuntime(nextKey, this.session, this.ledger.list())
+        const next = this.scope.createRuntime(nextKey, this.session, this.ledger.list())
         this.runtimeSlot.current.loop.clearCachedSections()
         this.runtimeSlot.replace(next)
         this.runtimeSlot.reapplyEffort()
@@ -516,12 +526,12 @@ export class SessionHost {
 
       case 'list-background-tasks':
         return {
-          tasks: [...this.host.backgroundTasks.getSnapshot(this.session.id)],
+          tasks: [...this.project.backgroundTasks.getSnapshot(this.session.id)],
         } satisfies WireBackgroundTasksResult
 
       case 'peek-task-output':
         return {
-          output: this.host.backgroundTasks.peekOutput(
+          output: this.project.backgroundTasks.peekOutput(
             this.session.id,
             command.taskId,
             command.maxBytes,
@@ -529,7 +539,7 @@ export class SessionHost {
         } satisfies WireTaskOutputResult
 
       case 'kill-task': {
-        const task = await this.host.backgroundTasks.killShell(
+        const task = await this.project.backgroundTasks.killShell(
           this.session.id,
           command.taskId,
           command.reason,
@@ -538,7 +548,7 @@ export class SessionHost {
       }
 
       case 'shutdown':
-        await this.host.shutdown(command.reason)
+        await this.project.shutdown(command.reason)
         return { ok: true }
     }
 
@@ -601,7 +611,8 @@ export class SessionHost {
    */
   private commandContext(): CommandContext {
     return createHostCommandContext({
-      host: this.host,
+      project: this.project,
+      scope: this.scope,
       runtimeSlot: this.runtimeSlot,
       controller: this.controller,
       getSession: () => this.session,
@@ -633,19 +644,19 @@ export class SessionHost {
 
   private switchDeps(): SessionSwitchDeps {
     return {
-      host: this.host,
+      // One field from each half rather than the merged host: switching a
+      // session needs the project's store and *this* scope's runtime factory.
+      host: { store: this.project.store, createRuntime: this.scope.createRuntime },
       runtimeSlot: this.runtimeSlot,
       controller: this.controller,
-      backgroundTasks: this.host.backgroundTasks,
+      backgroundTasks: this.project.backgroundTasks,
     }
   }
 
   private applySessionSwitch(result: SessionSwitchResult): WireSessionSwitchResult {
     this.session = result.session
     this.ledger.rebase(result.records)
-    // Folded here rather than inside the switch: only a host has the MCP status,
-    // and a terminal shell shows the diagnostics without it.
-    const notices = buildStartupNotices({ diagnostics: result.diagnostics, mcp: this.host.mcp })
+    const notices = this.startupNotices(result.diagnostics)
     // Pushed rather than left to the reply: a `/clear` arriving as a
     // `run-command` switches the session too, and only the host knows the draft
     // id it just minted.
@@ -666,12 +677,22 @@ export class SessionHost {
     return { session: result.session, records: result.records, notices }
   }
 
+  /**
+   * Diagnostics folded together with the project's MCP status.
+   *
+   * Kept here rather than inside `switchToExistingSession`: only a host has the
+   * MCP status, and a terminal shell shows the diagnostics without it.
+   */
+  private startupNotices(diagnostics: RuntimeDiagnostic[]): StartupNotice[] {
+    return buildStartupNotices({ diagnostics, mcp: this.project.mcp })
+  }
+
   private buildModelsResult(): WireModelsResult {
-    const configured = this.host.config.get().models
+    const configured = this.project.config.get().models
     const models: WireModelInfo[] = Object.keys(configured).map((key) => {
       // Field by field, never a spread: resolveModel folds the endpoint's
       // apiKey and baseUrl into what it returns.
-      const resolved = this.host.config.getModel(key)
+      const resolved = this.project.config.getModel(key)
       const info: WireModelInfo = { key }
       if (resolved?.model !== undefined) info.model = resolved.model
       if (resolved?.provider !== undefined) info.provider = resolved.provider
@@ -679,9 +700,9 @@ export class SessionHost {
       if (resolved?.maxEffort !== undefined) info.maxEffort = resolved.maxEffort
       return info
     })
-    const defaultModelKey = this.host.config.resolveModelReference(this.host.config.get().defaultModel)
+    const defaultModelKey = this.project.config.resolveModelReference(this.project.config.get().defaultModel)
     const pickerOptions = buildModelPickerOptions(
-      this.host.config,
+      this.project.config,
       this.runtimeSlot.current.modelKey,
       Object.keys(configured),
     )
@@ -694,7 +715,7 @@ export class SessionHost {
     const { modelKey, ...rest } = overrides
     return {
       ...rest,
-      ...(modelKey ? { model: this.host.createActiveModelRuntime(modelKey) } : {}),
+      ...(modelKey ? { model: this.project.createActiveModelRuntime(modelKey) } : {}),
     }
   }
 

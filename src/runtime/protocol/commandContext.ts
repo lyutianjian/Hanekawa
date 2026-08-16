@@ -20,7 +20,7 @@ import {
   getSubagentDetails,
   listLatestSubagentTasks,
 } from '../subagentInspection.js'
-import type { RuntimeHost } from '../types.js'
+import type { ProjectRuntime, SessionScope } from '../types.js'
 import type { CommandEffect } from './wire.js'
 
 /**
@@ -40,7 +40,8 @@ import type { CommandEffect } from './wire.js'
  * exactly that and then reads the new model back to print it.
  */
 export interface HostCommandContextDeps {
-  host: RuntimeHost
+  project: ProjectRuntime
+  scope: SessionScope
   runtimeSlot: RuntimeSlot
   controller: SessionController
   getSession: () => SessionMeta
@@ -96,15 +97,15 @@ export const COMMAND_CONTEXT_COVERAGE = {
 } as const satisfies Record<keyof CommandContext, 'host' | CommandEffect['kind']>
 
 export function createHostCommandContext(deps: HostCommandContextDeps): CommandContext {
-  const { host, runtimeSlot, controller } = deps
+  const { project, scope, runtimeSlot, controller } = deps
 
   const modelSwitchDeps = (): ModelSwitchDeps => ({
-    config: host.config,
+    config: project.config,
     runtimeSlot,
     // Read fresh: `/provider` and `reload-settings` can add or remove keys
     // while this process is up.
-    availableModelKeys: Object.keys(host.config.get().models),
-    createRuntime: host.createRuntime,
+    availableModelKeys: Object.keys(project.config.get().models),
+    createRuntime: scope.createRuntime,
     getSession: deps.getSession,
     getRecords: deps.getRecords,
   })
@@ -118,7 +119,7 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
   const planFileDeps = { getPlanModeManager: () => runtimeSlot.current.planModeManager }
 
   return {
-    cwd: host.cwd,
+    cwd: project.cwd,
     get sessionId() {
       return deps.getSession().id
     },
@@ -135,13 +136,13 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     clearCachedSections: () => runtimeSlot.current.loop.clearCachedSections(),
     invalidateRecordsCache: () => runtimeSlot.current.loop.invalidateRecordsCache(),
 
-    repairRecords: async () => host.store.repairRecords(deps.getSession().id),
+    repairRecords: async () => project.store.repairRecords(deps.getSession().id),
     resetCompactFailureCount: async () => {
       const sessionId = deps.getSession().id
-      await host.store.setCompactFailureCount(sessionId, 0)
+      await project.store.setCompactFailureCount(sessionId, 0)
       resetAutoCompactFailureState(sessionId)
     },
-    getSessionMetricsSummary: async () => host.store.loadMetricsSummary(deps.getSession().id),
+    getSessionMetricsSummary: async () => project.store.loadMetricsSummary(deps.getSession().id),
 
     getUsage: (): CommandUsage => {
       const total = controller.getSnapshot().usage.total
@@ -161,23 +162,23 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     getEffort: () => runtimeSlot.getEffort(),
     setEffort: (level) => { runtimeSlot.setEffort(level) },
 
-    reloadAgentDefinitions: () => host.reloadAgentDefinitions(),
-    reloadSkills: () => host.reloadSkills(),
+    reloadAgentDefinitions: () => project.reloadAgentDefinitions(),
+    reloadSkills: () => project.reloadSkills(),
 
-    getPermissionMode: () => host.permissionGate.getMode(),
+    getPermissionMode: () => scope.permissionGate.getMode(),
     // No snapshot push needed: `PermissionGate.setMode` notifies its own
     // listeners, and the host is subscribed to them.
     enterPlanMode: () => {
-      applyPermissionModeTransition(host.permissionGate, runtimeSlot.current.planModeManager, 'plan')
+      applyPermissionModeTransition(scope.permissionGate, runtimeSlot.current.planModeManager, 'plan')
     },
     readPlanFile: () => readCurrentPlanFile(planFileDeps),
     openPlanFile: () => openPlanFileInEditor(planFileDeps),
 
     submitQuery: async (input, options) => {
       await controller.submit(input, buildRunOverrides({
-        config: host.config,
+        config: project.config,
         runtimeSlot,
-        createActiveModelRuntime: host.createActiveModelRuntime,
+        createActiveModelRuntime: project.createActiveModelRuntime,
       }, options))
     },
     runShellCommand: async (command) => {
@@ -193,10 +194,10 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
       }
     },
 
-    listSubagentTasks: () => listLatestSubagentTasks(host.store, deps.getSession().id),
+    listSubagentTasks: () => listLatestSubagentTasks(project.store, deps.getSession().id),
     getSubagentDetails: (agentIdOrPrefix) =>
-      getSubagentDetails(host.store, deps.getSession().id, agentIdOrPrefix),
+      getSubagentDetails(project.store, deps.getSession().id, agentIdOrPrefix),
     cleanupSubagentWorktrees: ({ apply }) =>
-      cleanupSubagentWorktrees(host.store, deps.getSession().id, host.cwd, apply),
+      cleanupSubagentWorktrees(project.store, deps.getSession().id, project.cwd, apply),
   }
 }

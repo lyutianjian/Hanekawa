@@ -15,8 +15,7 @@ import type { McpServerConfig } from '../../services/mcp/index.js'
 import { bootstrap, RuntimeStartupError } from '../../runtime/index.js'
 import type { RuntimeHost } from '../../runtime/index.js'
 import { buildStartupNotices, resolveInitialQueuedPrompt } from '../../runtime/startupNotices.js'
-import { RuntimeSlot } from '../../runtime/runtimeSlot.js'
-import { SessionController } from '../../runtime/sessionController.js'
+import { createSessionPane } from '../../runtime/sessionWorkspace.js'
 import { App } from '../components/App.js'
 import { TUI_USAGE, isResumableSession, parseTuiStartupCommand, resolveStartupSession } from './cli.js'
 import type { TuiStartupCommand } from './cli.js'
@@ -84,20 +83,14 @@ async function main() {
     throw error
   }
 
-  const initialRuntime = host.createRuntime(host.initialModelKey, session, host.existingRecords)
-
   // The runtime slot and the session controller are the headless half of the
-  // app. They are assembled here rather than inside App so a different shell
-  // can reuse them verbatim and only replace the view layer.
-  const runtimeSlot = new RuntimeSlot(initialRuntime, host.initialEffort ?? host.configuredEffortLevel)
-  const sessionController = new SessionController({
-    cwd,
-    store,
-    session,
-    existingRecords: host.existingRecords,
-    recordProxy: host.bridges.record,
-    getSession: () => runtimeSlot.current,
-  })
+  // app. `createSessionPane` assembles them so a different shell — or a second
+  // tab in the same process — reuses them verbatim and only replaces the view
+  // layer. `host` stands in for both halves here: `RuntimeHost` is exactly the
+  // intersection of the project and its one scope.
+  const pane = createSessionPane(host, host)
+  const runtimeSlot = pane.runtimeSlot
+  const sessionController = pane.controller
 
   const initialQueuedPrompt = resolveInitialQueuedPrompt(host.hasRecoverableInterruption)
 

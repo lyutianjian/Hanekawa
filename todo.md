@@ -356,11 +356,104 @@ API key、不需要 Electron —— 每一件都能当天验证。
   已在本进程注册的会话不二次 restore、孤儿记录同时进磁盘与返回列表
 - [x] **源码级守卫**：`App.tsx` 不得再出现 `.retarget(` / 孤儿字面量 / `restoreSession(`。
   三条**都做过变异验证**（逐个塞回去，都能被测出）。React 组件本身按仓库惯例不做渲染测试。
-- [ ] **手动冒烟未执行**（需 TTY + 真实 key）。**本阶段唯一有真实回归面的是 `App.tsx` 的两处会话切换**，
-  其余对运行中的 TUI 全是惰性的（协议层 TUI 不构造，四个共享模块是等价搬迁）。按顺序走：
+- [x] **手动冒烟已执行**。**本阶段唯一有真实回归面的是 `App.tsx` 的两处会话切换**，
+  其余对运行中的 TUI 全是惰性的（协议层 TUI 不构造，四个共享模块是等价搬迁）。走过的顺序：
   含工具调用的一个 turn → `/clear`（usage 归零、transcript 清空、队列清空、无残留 draft）→
   `/resume` 切到另一个会话（transcript 重建、诊断 banner 仍**只有诊断且不含 MCP 行**、
   后台任务恢复且不重复注册）→ `/model` 切换 → `/cost` → `/plan` → `/agents` → Ctrl+C 退出无残留进程。
+
+---
+
+## 阶段 3a — 多会话容器（headless）`[x]` 已完成
+
+阶段 3 第一条 bullet 括号里的那半句：「剩下的是每标签一套 slot+controller 的容器与生命周期」。
+选择标准仍与 2b-2a / 2b-2b 一样：不需要 TTY、不需要真实 API key、不需要 Electron。
+
+开工时**工作树里已有一份未提交、未记录在本文件里的在制品**，正是这块的地基，且差一个 import 就能编译。
+本阶段把它收尾并补上它缺的那一层。
+
+### 产出
+
+- [x] **`RuntimeHost` 拆成两半**（在制品，本轮收尾）。`ProjectRuntime` = 每个 `cwd` 只有一份的东西
+  （`config` / `store` / `ToolRegistry` / MCP / `backgroundTasks` / 三个 reload / `shutdown`）；
+  `SessionScope` = 每个会话一份的东西（`bridges` / `permissionGate` / `promptSections` /
+  `createRuntime` / `existingRecords` / `diagnostics` / `dispose`）。
+  `RuntimeHost = ProjectRuntime & SessionScope`，所以既有消费者一个都没改。
+  - 三样东西共享就是**错的**，不是浪费：bridges 每个 proxy 只有一个 handler 槽（第二个会话的权限提示会
+    送到第一个会话的 UI）；gate 持有 mode / 会话规则 / 否决计数（一个 tab 的「always allow」会静默放行
+    另一个，进 plan 模式会把另一个拖进去）；`promptSections` 缓存的 `# Environment` 里**嵌着模型名**。
+  - `src/runtime/sessionScope.ts` — `createSessionScope()`，即原先内联在 `bootstrap()` 里、一个进程只跑
+    一次的那段装配；孤儿对账改用现成的 `reconcileOrphanedAgents`。
+  - `bootstrap()` 持有 `Set<SessionScope>`、暴露 `openScope()`；`reloadSettings()` 把新规则发给**每个**
+    打开的 scope（只发最新一个会让别的 tab 继续执行进程启动时的规则）；`shutdown()` 释放全部。
+  - `SessionHost` / `createHostCommandContext` 改吃 `project` + `scope` 两半。
+- [x] **`src/runtime/sessionWorkspace.ts`** — `createSessionPane()` + `SessionPane` + `SessionWorkspace`。
+  pane = scope + `RuntimeSlot` + `SessionController`，即一个标签页的全部；workspace = 一个
+  `ProjectRuntime` 上打开的所有 pane。`createSessionPane` 是 `tui.tsx` 那三行的**逐字提取**。
+  - **一个会话最多一个 pane**：两个 pane 指同一个 session id = 两个 `AgentLoop` 往同一条 JSONL 追加 +
+    两个 `CheckpointService` 指着同一个工作树。`open()` 遇到已打开的会话**返回既有 pane**（它就是那个
+    会话的 pane），`switchPane()` 在换任何东西**之前**拒绝。
+  - **`paneForSession` 是扫描而不是索引**。派生出来的答案不会陈旧；按 session id 建 Map 就得在每次
+    `/clear` / `/resume` 换键，而漏换的那一个调用方会悄悄废掉上一条保证。同理
+    `SessionPane.getSession()` 读 controller（新增 `SessionController.getSessionMeta()`），不存副本 ——
+    `scope.session` 是它**构建时**的那个，不跟着动。
+  - **`close()` 四步定序**：`interrupt('exit')` → controller → slot → scope。`'exit'` 而非
+    `'user-cancel'` 是为了不给「没人会去 resume 的 tab」写 `turn_interruption`；scope 放最后，因为
+    drain 它的 bridges 才是解开一个停泊在权限提示上的 turn 的那一步。幂等，因为 `shutdown()` 也会兜底
+    dispose 每个 scope。
+  - **关 pane 不停后台任务**。`/clear` 停是因为会话被丢弃；关标签更像 `/resume` 切走 —— 会话还在磁盘上、
+    还能再打开（`restoreSession` 的 already-registered 守卫让重开不会二次注册），而停掉的 shell 无法复原。
+    `ProjectRuntime.shutdown()` 是唯一 `stopAll` 的地方。
+  - `switchPane` / `clearPane` 只是 `sessionSwitch.ts` 的薄壳，编排仍然只有一份。pane **不持有**
+    `SessionRecordLedger`：结果原样返回，由调用方 rebase 自己那份记录视图。
+- [x] **`tui.tsx` 接入 `createSessionPane(host, host)`**（`host` 同时充当两半，`RuntimeHost` 就是它们的
+  交集）。`App.tsx` 零改动，teardown 仍留在 `App` 的 unmount（`App.tsx:214-215`）。
+- [x] 门面补齐：`createSessionScope` / `hasRecoverableInterruption` / `SessionScopeDeps` /
+  `ProjectRuntime` / `SessionScope` / `createSessionPane` / `SessionPane` / `SessionWorkspace` 等
+  全部进 `runtime/index.ts`（2b-2b 的顺带修掉 #1 就是漏了门面，没重犯）。
+
+### 顺带修掉的真 bug
+
+1. [x] **`test/protocolChildProcess.test.ts` 里的 `SessionHost` 构造是坏的**。在制品把 dep 从 `host`
+   改成 `project` + `scope`，但那个文件是把 host 侧脚本**当字符串写进临时 `.mjs`** 的，`tsc` 看不见它 ——
+   于是 `npx tsc --noEmit` 全绿而子进程一起来就 `Cannot read properties of undefined (reading 'session')`。
+   **只有全量跑才会暴露**，是这一轮唯一真正坏掉的东西：任何跨进程/Electron 外壳都会在构造 host 时就炸。
+2. [x] **`SessionController.getSession` 这个名字已经被占了** —— 它是构造期注入的 dep，返回的是
+   `AgentSession`（runtime），不是 `SessionMeta`。新访问器叫 `getSessionMeta()`。
+
+### 已核实：一个项目 N 个会话是安全的，一个进程 N 个项目不是
+
+- 安全：`agentCacheSource(sessionId, cwd)` 按会话+项目分区；`compact.ts` 的 `circuitKey` 就是 session id；
+  `toolSchemaCache` 按内容哈希键控；`ToolRegistry.runtimeToolSets` 本来就是 `Set`，多个并发 runtime 一起
+  splice。
+- 不安全（**本阶段不碰**）：`src/commands/registry.ts` 是模块级 `Map`（B 项目的 skill 命令会漏进 A）；
+  `setCacheBreakDiagnosticsRoot(cwd)` 是进程级单值。
+
+### 验证
+
+- [x] `npx tsc --noEmit` 干净
+- [x] `npm run test` — **1673 passed / 0 failed / 39 suites**（较 1651 基线新增 22 个）。
+  注意：并发全量跑时 `toolcall-integration.test.ts` 会挂在那个已知的 runner IPC 报错上；
+  `--test-concurrency=1` 跑是 **1673 / 0**，该文件单独跑 3/3。
+- [x] `npm run build` + 纯 node import `dist/runtime/bootstrap.js`，`dist/runtime/` 深度守恒
+- [x] `test/sessionScope.test.ts`（8）：两个 scope 的提示各回各家、mode 不互相污染、
+  `reloadSettings` 到达每个 scope、否决计数各写各的会话、`dispose()` 放回**不对称**的四个兜底值并结清
+  停泊的请求、`shutdown()` 释放全部 scope、开在已 live 的会话上不二次 restore、项目诊断只由初始 scope 带
+- [x] `test/sessionWorkspace.test.ts`（14）：record bridge 不串台、重复 `open` 返回同一 pane、
+  `adopt` 不再开一个、close 的四步顺序与 `'exit'` sentinel、close 幂等且可重开、`closeAll` 后
+  `shutdown` 无害、pane 报告的是当前会话而非构建时的、switch 走 `sessionSwitch` 且旧 runtime 后 dispose、
+  别的 pane 持有的会话被拒且什么都没换、切到自己当前的会话允许、`clearPane` 铸 draft、
+  不属于本 workspace 的 pane 被拒、两个 pane 的 usage 不互相累加、裸 `createSessionPane` 给出的就是
+  `tui.tsx` 拿到的那三样
+- [x] **变异验证 7 条**（逐个塞回去，都能被测出，且都是被**预期的那条**用例抓住）：
+  `reloadSettings` 只发最新一个 scope、`open()` 去掉已打开检查、`interrupt` 改成 `'user-cancel'`、
+  close 顺序里 scope 提到 slot 前面、`switchPane` 去掉冲突守卫、`getSession()` 改读 `scope.session`、
+  `close()` 不做 `onClose` 注销
+- [ ] **手动冒烟未执行**（需 TTY + 真实 key）。**唯一有真实回归面的是 `tui.tsx` 的 pane 装配**（等价搬迁，
+  参数逐字相同），其余对运行中的 TUI 全是惰性的（TUI 不构造 workspace）。走：启动 → 一个含工具调用的
+  turn → 权限弹窗 → `/clear` → `/resume` → `/model` → Ctrl+C 退出无残留进程。
+  顺带留意一个已知的行为变化（无害）：`host.shutdown()` 现在会 dispose 初始 scope，于是退出时
+  `drainPending()` 会把仍然停泊的权限提示以 `false` 结清 —— 改动前它们就那样悬着直到进程退出。
 
 ---
 
@@ -388,9 +481,17 @@ API key、不需要 Electron —— 每一件都能当天验证。
 
 ---
 
-## 阶段 3 — 桌面独有能力 `[ ]` 未开始
+## 阶段 3 — 桌面独有能力 `[~]` 部分完成
 
-- [ ] 多标签会话 / 多项目窗口（cwd 参数化、队列实例化、`SessionController`/`RuntimeSlot`、协议层、跨进程文件锁、cacheBreak 按项目分区均已就绪；剩下的是每标签一套 slot+controller 的容器与生命周期）
+- [~] 多标签会话 / 多项目窗口。**headless 那一半已在阶段 3a 完成**（`ProjectRuntime`/`SessionScope` 拆分、
+  `SessionPane` + `SessionWorkspace` 的容器与生命周期，外加此前就绪的 cwd 参数化、队列实例化、
+  `SessionController`/`RuntimeSlot`、协议层、跨进程文件锁、cacheBreak 按项目分区）。剩下两件：
+  - [ ] **跨进程 workspace 协议**：`RuntimeChannel` 多路复用（一条 transport 上 N 条 lane，每条 lane 仍是
+    现在这套单会话协议 —— **27 个 `HostCommand` 一个都不用改**，每个 pane 一对
+    `SessionHost`/`SessionClient`）+ `open-pane` / `close-pane` / `list-panes` 这层命令。
+    没有它，渲染进程拿不到第二个 pane。
+  - [ ] **一个进程多个项目**：被模块级 `src/commands/registry.ts`（B 项目的 skill 命令会漏进 A）与进程级
+    `setCacheBreakDiagnosticsRoot` 挡住。多标签**同项目**不受此限。
 - [ ] diff 面板、文件树等 DOM 才划算的 UI
 
 ---
@@ -425,6 +526,19 @@ API key、不需要 Electron —— 每一件都能当天验证。
 - `RuntimeSlot.replace()` 必须先装新 runtime 再 dispose 旧的：晚到的 dispose 会拆掉继任者的 plan-slug provider。
 - `SessionController` **独占** `RecordProxy` 的三个 setter。UI 只能 `onEvent` 订阅，不能自己 `setHandler`，否则记录会被处理两次。
 - `SessionEvent` 的 `turn-end.aborted` 是 signal 状态，不是「是否抛异常」；`transcript-reset.bumpGeneration` 只在真正换了会话视图时为 `true`。
+- **三层归属搞错就是错**（`types.ts` / `sessionScope.ts` / `sessionWorkspace.ts`）：`ProjectRuntime` 是每个
+  `cwd` 一份，`SessionScope` 是每个会话一份，`SessionPane` 是 scope + `RuntimeSlot` + `SessionController`。
+  往 `ProjectRuntime` 上放会话级状态，等于让第二个 tab 改第一个 tab 的行为 ——
+  bridges 每个 proxy 只有一个 handler 槽、gate 持有 mode/会话规则/否决计数、`promptSections` 缓存的
+  `# Environment` 里嵌着模型名。`RuntimeHost` 是两者的交集，单会话外壳用它。
+  `reloadSettings()` 必须发给**每个**打开的 scope。
+- **一个会话最多一个 pane**：两个 `AgentLoop` 往同一条 JSONL 追加 + 两个 `CheckpointService` 指同一个工作树。
+  `SessionWorkspace.open()` 返回既有 pane，`switchPane()` 在换任何东西之前拒绝。`paneForSession` 故意**扫描
+  不建索引**，`SessionPane.getSession()` 故意读 controller 而非存副本 —— 两者都是「没有键要记得换」。
+- **`SessionPane.close()` 四步定序**：`interrupt('exit')` → controller → slot → scope。`'exit'` 不写
+  `turn_interruption`；scope 最后，因为 drain 它的 bridges 才解开停泊在权限提示上的 turn。
+  幂等（`shutdown()` 会兜底 dispose 每个 scope）。**关 pane 不停后台任务**，只有
+  `ProjectRuntime.shutdown()` 会 `stopAll`。
 - **协议层**：`SessionClient` 换快照前必须逐字段 diff，**后台任务列表同理**。`SessionController.publish` 是按引用比 `usage`/`taskSnapshot` 的，而反序列化出来的每条消息都是新对象图——照搬会让 `useSyncExternalStore` 无限重渲染。
 - **协议层**：往 `HostEvent`/`HostCommand` 上加字段前先确认它过得了 `structuredClone`。`memoryChannel` 每次 `post` 都克隆就是为了当场炸出来；Node 的 `child_process.send` 默认走 JSON，会**静默吞掉**函数（`test/protocolChildProcess.test.ts` 有一条专门钉这个）。
 - **协议层**：`execute()` **没有 `default` 分支**，但真正强制穷尽性的是 switch 之后那句
@@ -457,21 +571,25 @@ API key、不需要 Electron —— 每一件都能当天验证。
 - **`client.ts` 的值导入禁区是四个**：`harness/`、`services/`、`sessions/`、**`commands/`**。
   最后一个会把整个斜杠命令注册表、并经 `skills.ts` 把文件系统拖进渲染进程包体。
 - **渲染器深 import `protocol/client.js`，不要走 `protocol/index.js`**：桶经 `host.ts`/`permissionDto.ts` 传递性拉进 `node:fs`。`test/protocolClientParity.test.ts` 钉住了 `client.ts` 只 type-import harness。
+- **`test/protocolChildProcess.test.ts` 里的 host 侧脚本是字符串**（写进临时 `.mjs`），`tsc` **看不见它**。
+  改 `SessionHost` 的构造 deps 时必须手动同步那一段 —— 阶段 3a 就是靠全量跑才发现在制品把它漏掉了，
+  而 `npx tsc --noEmit` 当时是全绿的。
 
 **验证命令**：
 
 ```bash
 npm run typecheck
-npm run test                                          # 1651 tests / 39 suites, ~40s
+npm run test                                          # 1673 tests / 39 suites, ~40s
 npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 
 node --import tsx --test test/protocolWire.test.ts test/protocolHost.test.ts \
   test/protocolClient.test.ts test/protocolClientParity.test.ts test/bridgesPending.test.ts
 node --import tsx --test test/protocolCommandSchema.test.ts   # 入站校验 + 防漂移
 node --import tsx --test test/distBuild.test.ts               # emit 后用纯 node 载入
-node --import tsx --test test/protocolChildProcess.test.ts   # 真实进程边界
+node --import tsx --test test/protocolChildProcess.test.ts   # 真实进程边界（tsc 看不见的那段）
 node --import tsx --test test/sessionFileLock.test.ts        # 含双进程并发写
 node --import tsx --test test/sessionSwitch.test.ts           # 切会话编排 + App.tsx 源码守卫
+node --import tsx --test test/sessionScope.test.ts test/sessionWorkspace.test.ts  # 多会话隔离与容器
 node --import tsx --test test/modelSwitch.test.ts test/runOverrides.test.ts \
   test/subagentInspection.test.ts                             # TUI 与 host 共享的四个模块
 node --import tsx --test test/permissionPresentation.test.ts test/usePermission.test.ts \
@@ -483,8 +601,9 @@ npm run dev:tui                                       # 手动冒烟，需 TTY
 
 **改文档时注意**：`AGENTS.md` 是 `CLAUDE.md` 的逐字镜像，只有第 1、3 行不同（Codex / Claude Code）。它**未被 git 跟踪**，但改了 `CLAUDE.md` 就要同步它。
 
-**已知不稳定**：`test/toolcall-integration.test.ts` 在**全量并发跑**时偶发
+**已知不稳定**：`test/toolcall-integration.test.ts` 在**全量并发跑**时会挂在
 `Unable to deserialize cloned data due to invalid or unsupported version` —— 这是 Node test runner
-自己的 IPC 报错，不是断言失败。单独跑必过，且在**未改动的基线上同样复现**（基线两次全量跑里挂了一次）。
-与本阶段改动无关，重跑即可。
+自己的 IPC 报错，不是断言失败。单独跑必过（3/3），且在**未改动的基线上同样复现**。
+阶段 3a 那轮它连续两次都挂，用 `node --import tsx --test --test-concurrency=1 test/**/*.test.ts`
+串行跑是 **1673 / 0**；要一个干净的全量数字就用这条。
 

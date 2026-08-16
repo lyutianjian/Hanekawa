@@ -10,7 +10,7 @@ import { SessionHost } from '../src/runtime/protocol/host.js'
 import type { HostCommand, HostEvent } from '../src/runtime/protocol/wire.js'
 import type { SessionController, SessionEvent } from '../src/runtime/sessionController.js'
 import type { RuntimeSlot } from '../src/runtime/runtimeSlot.js'
-import type { RuntimeHost } from '../src/runtime/types.js'
+import type { ProjectRuntime, SessionScope } from '../src/runtime/types.js'
 import type { PermissionRequest } from '../src/harness/permissions.js'
 import type { SessionRecord, Tool } from '../src/harness/types.js'
 import { SessionStore } from '../src/sessions/service.js'
@@ -217,7 +217,10 @@ async function createHarness(): Promise<Harness> {
     channel: hostSide,
     controller: controller as unknown as SessionController,
     runtimeSlot: runtimeSlot as unknown as RuntimeSlot,
-    host: runtimeHost as unknown as RuntimeHost,
+    // One fake satisfies both halves: `RuntimeHost` *is* their intersection, so
+    // a single-session host sees exactly what it used to.
+    project: runtimeHost as unknown as ProjectRuntime,
+    scope: runtimeHost as unknown as SessionScope,
   })
 
   return {

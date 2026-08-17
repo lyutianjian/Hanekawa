@@ -24,7 +24,7 @@
  * The `node:fs` imports and the wall-clock commands stay here, never in the
  * renderer bundle.
  */
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -243,6 +243,8 @@ async function openPane(options: { sessionId?: string; title?: string }): Promis
       },
     })
 
+    guardNavigation(entryWindow)
+
     const channel = createElectronMainChannel(mainIpc, entryWindow.webContents)
     const sessionHost = new SessionHost({
       channel,
@@ -338,6 +340,36 @@ function findEntryBySessionId(sessionId: string): PaneEntry | undefined {
     if (entry.pane.getSession().id === sessionId) return entry
   }
   return undefined
+}
+
+/**
+ * Keep every navigation out of the pane's own window.
+ *
+ * The renderer is a single `loadFile`, so following a link in place would replace
+ * the whole UI with a web page and leave the `SessionHost` talking to a renderer
+ * that no longer exists. Markdown links (`dom/markdownView.ts`) carry
+ * `target="_blank"`, which lands in `setWindowOpenHandler`; `will-navigate`
+ * catches the rest (a dragged URL, a same-window link a future view forgets to
+ * mark). Both hand `http(s)` to the OS browser and drop anything else — the href
+ * already passed `safeHref` in the parser, and this is the second net.
+ *
+ * Untested, like everything else in this file: `main.ts` cannot be imported under
+ * plain node. Verified by smoke only.
+ */
+function guardNavigation(window: BrowserWindow): void {
+  const openExternally = (url: string): void => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
+  }
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    openExternally(url)
+    return { action: 'deny' }
+  })
+
+  window.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault()
+    openExternally(url)
+  })
 }
 
 /**

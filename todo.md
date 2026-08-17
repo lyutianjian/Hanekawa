@@ -34,6 +34,7 @@ Tauri 还得挂 Node sidecar。
 | 3c | 渲染器变可用视图：9 个 model 模块 + 5 个 dom 模块、四个阻塞对话框、流式输出、Esc 中断、斜杠命令与补全、四个 surface 面板、行级 diff | 1801 |
 | 3b | 跨进程 workspace 协议：`open-pane`/`close-pane`/`list-panes` + `pane-list` 事件、`PaneRegistry`、`main.ts` 一窗一 pane、渲染器标签栏（`model/tabBar.ts` + `dom/tabBarView.ts`）；顺带 `list-commands` + `WireCommandInfo` | 1818 |
 | 3d | 收 3b 的账：shell `panes` Map 改用 `BrowserWindow.id`、启动用 `openPane({ sessionId })`、`broadcastPaneListToOthers` 跨窗口广播、`test/protocolChildProcess.test.ts` 子进程字符串补齐三 dep；新增 `paneId follows controller across /clear` 用例 | 1819 |
+| 3e | Markdown 渲染：`model/markdown.ts`（marked lexer → 自有 union）+ `dom/markdownView.ts`（只用 `el()`）、assistant 消息与计划正文接线、`main.ts` 导航守卫、CSS | 1846 |
 
 各阶段的设计理由已全部写进 `CLAUDE.md`。下面只留**没进那份文档、但下一轮仍要知道**的东西。
 
@@ -132,8 +133,6 @@ Tauri 还得挂 Node sidecar。
 
 ### 渲染器还缺的（阶段 3c 刻意留下）
 
-- [ ] **Markdown 渲染**：`marked` 出 HTML 串，而渲染器禁 `innerHTML`（模型产出里的 `onerror=` 不受 CSP 管），
-  要先有 sanitizer 或手写块渲染器。目前 assistant 消息与计划正文都是 `white-space: pre-wrap` 纯文本。
 - [ ] **文件树 / `@` 补全**：没有能列目录的 wire 消息。
 - [ ] **rewind / checkpoint 面板**：四步破坏性流程。
 - [ ] **费用显示**：`ModelPricing` 不在 `WireRuntimeSnapshot` 上。
@@ -141,7 +140,12 @@ Tauri 还得挂 Node sidecar。
 - [ ] **面板可点选**：`/model` 列出三档但要靠 `/model <tier>` 选。要能点就得让渲染器知道每行对应哪条命令 ——
   一次小的协议决定。
 
-（标签栏已在 3b 补上，见上表；它不在这份清单里过。）
+（标签栏已在 3b 补上、Markdown 已在 3e 补上，见上表；它们不在这份清单里过。）
+
+**3e 顺带留下的两条**：① **代码块没有语法高亮** —— TUI 用的 `cli-highlight` 出 ANSI 且是 Node 侧的，
+浏览器侧要另选一个能进 renderer bundle（无 Node 依赖）的库，是独立一档；② `markdownNode` 每次都重建整棵
+子树，`transcriptView` 又是每 token 全量重画 —— 解析有 LRU 兜着，**建节点没有**。真机上若长会话流式发卡，
+按 `transcriptView` 文件头写的那条路走（按 item id 建 key 增量更新），不要回头去搞 static/live 分区。
 
 ### 杂项
 
@@ -171,6 +175,14 @@ Tauri 还得挂 Node sidecar。
 - [ ] **3d 修复的回归冒烟**：3b 那条按顺序走完，且额外加两点验证：
   ① 窗口 A 切到 `/resume` 一个旧会话（不是新建），A 的标签页仍可点可关（验证 `paneId` 在 `/resume` 后也没漂移）；
   ② Ctrl+W 与点标签页 X 两条关窗路径都试一遍，验证它们走的是同一份回调栈。
+- [ ] **3e 的 Markdown 冒烟**（`guardNavigation` 和整个 DOM 层都没有测试覆盖）：
+  ① 一个含标题、列表、表格与围栏代码块的回答，流式过程中不错位、定稿后排版正确；
+  ② 计划对话框（`ExitPlanMode`）正文是富文本而不是裸 `#`/`-`；
+  ③ 点回答里的一条 http 链接 → 走系统浏览器，**Electron 窗口不跳走**（这是 `setWindowOpenHandler` +
+  `will-navigate` 唯一的验证手段）；
+  ④ 让模型输出 `<img src=x onerror=alert(1)>` 与 `[x](javascript:alert(1))` → 页面显示字面文本、
+  没有弹窗、DevTools 控制台无 CSP 报错；
+  ⑤ 权限对话框里的命令块与 diff 仍然逐字（**没有**被 markdown 化）。
 
 ---
 
@@ -178,7 +190,7 @@ Tauri 还得挂 Node sidecar。
 
 ```bash
 npm run typecheck                                     # 三段：base + preload + renderer
-npm run test                                          # 1819 tests / 39 suites, ~40s
+npm run test                                          # 1846 tests / 39 suites, ~40s
 npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 npm run build:desktop                                 # tsc emit + 两个 esbuild bundle + 拷 index.html
 npm run start:desktop                                 # 真实 Electron，需要桌面
@@ -195,7 +207,7 @@ node --import tsx --test test/sessionScope.test.ts test/sessionWorkspace.test.ts
 node --import tsx --test test/electronChannel.test.ts test/bridgeChannel.test.ts \
   test/desktopMain.test.ts test/desktopBuild.test.ts
 node --import tsx --test test/rendererImports.test.ts test/rendererShellModel.test.ts \
-  test/rendererTranscriptModel.test.ts test/rendererPermissionView.test.ts \
+  test/rendererMarkdown.test.ts test/rendererTranscriptModel.test.ts test/rendererPermissionView.test.ts \
   test/rendererAskUserQuestionView.test.ts test/rendererPlanDialogViews.test.ts \
   test/rendererDiffRows.test.ts test/rendererTabBarModel.test.ts test/desktopUiRoundTrip.test.ts
 node --import tsx --test test/permissionPresentation.test.ts test/planPresentation.test.ts \

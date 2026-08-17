@@ -39,8 +39,14 @@ const ALLOWED_SHARED_IMPORTS = [
   '../../../config/effort.js',
 ]
 
-/** Bare specifiers that bundle for a browser. Both verified in the build test. */
-const ALLOWED_PACKAGES = ['diff', 'fuse.js']
+/**
+ * Bare specifiers that bundle for a browser, all verified in the build test.
+ *
+ * `marked` earns its place by being dependency-free ESM whose `exports` map has a
+ * single entry — and the renderer uses only its *lexer*: the parser's output is an
+ * HTML string, which `dom/dom.ts` has nowhere to put.
+ */
+const ALLOWED_PACKAGES = ['diff', 'fuse.js', 'marked']
 
 const FORBIDDEN_LAYERS = /(^|\/)(harness|services|sessions|commands|tui)\//
 

@@ -443,6 +443,18 @@ mutation). `tsconfig.renderer.json`'s `include` list documents the allowed share
   cross-layer imports — a single value import there breaks the renderer bundle.
 - **No `innerHTML` anywhere in the renderer.** Transcript text, tool output and diffs are model- or
   filesystem-authored, and `script-src 'self'` does nothing about an `onerror=` attribute.
+- **Markdown is parsed, never rendered to HTML.** `renderer/model/markdown.ts` uses `marked`'s **lexer**
+  and folds the tokens into its own `MdBlock`/`MdInline` union; `renderer/dom/markdownView.ts` walks that
+  with `el()`. `marked.parse()` is unusable here — its output is an HTML string, and the rule above leaves
+  nowhere to put one. Three downgrades happen at *parse* time rather than as a later filter, so no code
+  path exists that could skip them: an `html` token becomes literal text, a link whose href is not
+  `http:`/`https:`/`mailto:` loses its anchor and keeps its words (`textContent` does nothing about
+  `<a href="javascript:">`), and an image becomes `alt (url)` text. Only assistant messages and the plan
+  body render as markdown — tool lines, user messages and the permission dialog's command block stay
+  verbatim. The FNV-1a LRU is a deliberate second copy of `src/tui/markdown.ts`'s (that module is behind
+  the `tui/` import ban); without it a streamed answer re-parses every settled message on every token.
+  Anchors carry `target="_blank"`, which is what `guardNavigation()` in `desktop/main.ts` turns into
+  `shell.openExternal` — following a link in place would replace the single-`loadFile` renderer.
 
 ### Sessions & state — `src/sessions/`, `.myagent/`
 

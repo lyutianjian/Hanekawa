@@ -3,6 +3,7 @@ import type { EnterPlanViewModel, ExitPlanViewModel } from '../model/planDialogs
 import type { PermissionViewModel } from '../model/permissionDialog.js'
 import { previewNode } from './diffView.js'
 import { el, replace, show } from './dom.js'
+import { markdownNode } from './markdownView.js'
 
 /**
  * The four blocking requests, drawn into one modal panel.
@@ -99,7 +100,10 @@ export function createOverlayView(container: HTMLElement, panel: HTMLElement): O
       open(
         'caution',
         el('div', 'title', view.title),
-        el('div', 'plan', view.planPreview),
+        // The plan is markdown the model just wrote; the permission dialog's
+        // `.block` and diff below stay literal, because those are the exact
+        // command and the exact bytes the user is being asked to approve.
+        markdownNode(view.planPreview, 'plan md'),
         el('div', 'subtitle', view.planFilePath),
         optionList(view.options.map((option, index) => ({
           label: option.label,

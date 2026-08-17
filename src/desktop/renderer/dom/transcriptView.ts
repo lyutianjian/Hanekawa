@@ -1,5 +1,6 @@
 import type { TranscriptItem, TranscriptState } from '../model/transcript.js'
 import { el, replace, show } from './dom.js'
+import { markdownNode } from './markdownView.js'
 
 /**
  * Paints the transcript and the in-flight tool line.
@@ -42,6 +43,14 @@ function itemNode(item: TranscriptItem): HTMLElement {
   const classes = ['item', item.kind]
   if (item.pending) classes.push('pending')
   if (item.failed) classes.push('failed')
+  // Only the assistant writes markdown. A tool line, a user message and a notice
+  // are commands, paths and diagnostics — they have to read back character for
+  // character, so `*` stays a `*` there.
+  //
+  // The draft is rendered the same way while it streams: a half-written fence is
+  // just a code block whose end has not arrived, and the parse cache means the
+  // cost is one parse of the draft rather than one of every settled message.
+  if (item.kind === 'assistant') return markdownNode(item.text, `${classes.join(' ')} md`)
   return el('div', classes.join(' '), item.text)
 }
 

@@ -1,23 +1,33 @@
 import type { CommandViewRow } from '../model/commandRouting.js'
-import type { SurfaceView } from '../model/surfaces.js'
+import type { SurfaceAction, SurfaceView } from '../model/surfaces.js'
 import { el, replace, show } from './dom.js'
 
 /**
  * The dismissible panel: a picker, or a slash command's structured view.
  *
- * Rows are inert text. A picker that could be *acted on* would need the renderer
- * to know which command each row maps to; today `/model sonnet` is how you pick,
- * and this panel is how you find out what to type. That is a deliberate stopping
- * point rather than an oversight — see the plan's deferred list.
+ * Picker rows are pickable — by click, or by the arrows and Enter that
+ * `keymap.ts` routes here while the composer is empty. What a row *does* is not
+ * decided in this file: the model attaches a `SurfaceAction` to each row and
+ * this closure hands whichever one was chosen back to `app.ts`, exactly the way
+ * `tabBarView.ts` does. A row with no action (a tier with no model configured)
+ * is drawn to explain itself and is not clickable.
+ *
+ * A command view's rows stay inert — those are a table of facts, not choices.
+ *
+ * No `innerHTML`: labels are model- and filesystem-authored, and `script-src
+ * 'self'` does nothing about an `onerror=` attribute. The `el()` helper is what
+ * keeps that honest.
  */
 export interface SurfacePanel {
-  showSurface(view: SurfaceView): void
+  showSurface(view: SurfaceView, selectedIndex: number): void
   showCommandView(title: string, rows: readonly CommandViewRow[]): void
   hide(): void
   isOpen(): boolean
 }
 
-export function createSurfacePanel(container: HTMLElement): SurfacePanel {
+export type SurfaceActivate = (action: SurfaceAction) => void
+
+export function createSurfacePanel(container: HTMLElement, onActivate: SurfaceActivate): SurfacePanel {
   let open = false
 
   const paint = (title: string, children: HTMLElement[]) => {
@@ -27,14 +37,22 @@ export function createSurfacePanel(container: HTMLElement): SurfacePanel {
   }
 
   return {
-    showSurface(view) {
-      const rows = view.rows.map((row) => {
+    showSurface(view, selectedIndex) {
+      const rows = view.rows.map((row, index) => {
         const classes = ['row']
         if (row.current) classes.push('current')
         if (row.disabled) classes.push('disabled')
+        if (row.action && index === selectedIndex) classes.push('selected')
         const node = el('div', classes.join(' '))
+        node.dataset.rowId = row.id
         node.appendChild(el('span', 'label', `${row.current ? '● ' : '  '}${row.label}`))
         node.appendChild(el('span', 'value', row.disabledReason ?? row.detail))
+        const action = row.action
+        if (action) {
+          node.setAttribute('role', 'option')
+          node.setAttribute('aria-selected', String(index === selectedIndex))
+          node.addEventListener('click', () => onActivate(action))
+        }
         return node
       })
       paint(

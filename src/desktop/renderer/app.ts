@@ -26,12 +26,18 @@ import { createBridgeChannel } from './bridgeChannel.js'
 import {
   classifyInput,
   commandEffectToIntent,
-  completionsFor,
-  moveCompletion,
+} from './model/commandRouting.js'
+import {
   acceptCompletion,
+  applyFileResponse,
+  beginFileRequest,
+  closeCompletions as clearCompletions,
+  commandCompletions,
+  fileCompletionQuery,
+  moveCompletion,
   NO_COMPLETIONS,
   type CompletionState,
-} from './model/commandRouting.js'
+} from './model/completion.js'
 import { resolveKey, type ShellState } from './model/keymap.js'
 import {
   applySessionEvent,
@@ -77,12 +83,17 @@ import {
   type ExitPlanState,
 } from './model/planDialogs.js'
 import {
+  activateSurfaceRow,
   backgroundTasksView,
   effortPickerView,
+  initialSurfaceSelection,
   isSupportedSurface,
   modelPickerView,
+  moveSurfaceSelection,
   resumePickerView,
   type SupportedSurface,
+  type SurfaceAction,
+  type SurfaceView,
 } from './model/surfaces.js'
 import { required } from './dom/dom.js'
 import { createTranscriptView } from './dom/transcriptView.js'
@@ -104,7 +115,9 @@ const client = new SessionClient(createBridgeChannel(bridge, window))
 
 const transcriptView = createTranscriptView(required('transcript'), required('tool-progress'))
 const overlay = createOverlayView(required('overlay'), required('overlay-panel'))
-const surface = createSurfacePanel(required('surface'))
+const surface = createSurfacePanel(required('surface'), (action) => {
+  void runSurfaceAction(action)
+})
 const suggestions = createSuggestionsView(required('suggestions'))
 const status = createStatusView({
   model: required('status-model'),
@@ -128,6 +141,14 @@ let queue: UiQueueState = createUiQueue()
 let completions: CompletionState = NO_COMPLETIONS
 let commands: WireCommandInfo[] = []
 let panes: readonly WirePaneInfo[] = Object.freeze([])
+/**
+ * The picker currently on screen, and the row the keyboard is on.
+ *
+ * Undefined while a command *view* is showing: those rows are facts, not
+ * choices, so there is nothing to select.
+ */
+let surfaceView: SurfaceView | undefined
+let surfaceIndex = 0
 
 /**
  * Maps a tab-bar intent to a side effect. The renderer never closes the
@@ -181,10 +202,56 @@ function shellState(): ShellState {
   return {
     hasOverlay: activeRequest(queue) !== undefined,
     hasSurface: surface.isOpen(),
-    hasCompletions: completions.suggestions.length > 0,
+    completions: completions.kind,
     isStreaming: client.getSnapshot().isStreaming,
     inputEmpty: composer.value().trim().length === 0,
   }
+}
+
+function renderSurface(): void {
+  if (surfaceView) surface.showSurface(surfaceView, surfaceIndex)
+}
+
+function hideSurface(): void {
+  surface.hide()
+  surfaceView = undefined
+  surfaceIndex = 0
+}
+
+/**
+ * Runs whatever the chosen row asked for.
+ *
+ * The panel closes first, because every one of these changes what the panel was
+ * describing — a stale model picker still listing the old current tier is worse
+ * than no picker. Exhaustive by `assertNever`: a fourth action kind must be a
+ * compile error here rather than a click that does nothing.
+ */
+async function runSurfaceAction(action: SurfaceAction): Promise<void> {
+  hideSurface()
+  try {
+    switch (action.kind) {
+      case 'run-command':
+        await client.runCommand(action.line)
+        void refreshCommands()
+        return
+      case 'open-pane':
+        await client.openPane({ sessionId: action.sessionId })
+        return
+      case 'peek-task': {
+        const output = await client.peekTaskOutput(action.taskId)
+        note(output.trim().length > 0 ? output : 'No new output.')
+        return
+      }
+      default:
+        return assertNever(action)
+    }
+  } catch (error) {
+    note(describe(error), 'error')
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled surface action: ${JSON.stringify(value)}`)
 }
 
 function renderTranscript(): void {
@@ -393,6 +460,8 @@ client.onCommandEffect((effect) => {
       note(intent.text)
       return
     case 'show-view':
+      surfaceView = undefined
+      surfaceIndex = 0
       surface.showCommandView(intent.view.title, intent.rows)
       return
     case 'open-surface':
@@ -416,30 +485,33 @@ client.onPanesChanged((next) => {
 
 async function openSurface(name: SupportedSurface): Promise<void> {
   try {
-    switch (name) {
-      case 'model-picker':
-        surface.showSurface(modelPickerView(await client.listModels()))
-        return
-      case 'effort-picker': {
-        const runtime = client.getRuntimeSnapshot()
-        surface.showSurface(effortPickerView({
-          current: runtime?.effort ?? '',
-          ...(runtime?.maxEffort ? { maxEffort: runtime.maxEffort } : {}),
-        }))
-        return
-      }
-      case 'background-tasks':
-        surface.showSurface(backgroundTasksView(await client.listBackgroundTasks()))
-        return
-      case 'resume-picker':
-        surface.showSurface(resumePickerView({
-          sessions: await client.listSessions(),
-          ...(client.getSession() ? { currentSessionId: client.getSession()!.id } : {}),
-        }))
-        return
-    }
+    const view = await buildSurfaceView(name)
+    surfaceView = view
+    surfaceIndex = initialSurfaceSelection(view)
+    renderSurface()
   } catch (error) {
     note(`Could not open ${name}: ${describe(error)}`, 'error')
+  }
+}
+
+async function buildSurfaceView(name: SupportedSurface): Promise<SurfaceView> {
+  switch (name) {
+    case 'model-picker':
+      return modelPickerView(await client.listModels())
+    case 'effort-picker': {
+      const runtime = client.getRuntimeSnapshot()
+      return effortPickerView({
+        current: runtime?.effort ?? '',
+        ...(runtime?.maxEffort ? { maxEffort: runtime.maxEffort } : {}),
+      })
+    }
+    case 'background-tasks':
+      return backgroundTasksView(await client.listBackgroundTasks())
+    case 'resume-picker':
+      return resumePickerView({
+        sessions: await client.listSessions(),
+        ...(client.getSession() ? { currentSessionId: client.getSession()!.id } : {}),
+      })
   }
 }
 
@@ -457,13 +529,39 @@ client.subscribe(() => {
 
 // --- input ------------------------------------------------------------------
 
+/**
+ * Recomputes the dropdown after a keystroke.
+ *
+ * Commands are answered from the list already in hand. A file mention is not:
+ * the host has to read the filesystem, so the request goes out and the answer is
+ * folded in later — and only if no newer request has been issued since, which is
+ * what the echoed `seq` decides. Nothing here awaits, so typing never blocks on
+ * IPC.
+ */
 function refreshCompletions(): void {
-  completions = completionsFor(composer.value(), commands)
-  suggestions.render(completions)
+  const text = composer.value()
+  const query = fileCompletionQuery(text, composer.cursorPos())
+  if (!query) {
+    completions = commandCompletions(completions, text, commands)
+    suggestions.render(completions)
+    return
+  }
+
+  const started = beginFileRequest(completions)
+  completions = started.state
+  void client.fileSuggestions(query.input, query.cursorPos)
+    .then((found) => {
+      completions = applyFileResponse(completions, started.seq, found)
+      suggestions.render(completions)
+    })
+    .catch(() => {
+      // Completion is a convenience; a failed lookup must not disturb the
+      // composer or clobber whatever the user has typed since.
+    })
 }
 
 function closeCompletions(): void {
-  completions = NO_COMPLETIONS
+  completions = clearCompletions(completions)
   suggestions.render(completions)
 }
 
@@ -499,17 +597,19 @@ document.addEventListener('keydown', (event) => {
       return
     case 'accept-completion': {
       event.preventDefault()
-      const applied = acceptCompletion(completions)
+      const applied = acceptCompletion(completions, composer.value(), composer.cursorPos())
       if (applied) composer.setValue(applied.text, applied.cursorPos)
       closeCompletions()
       return
     }
     case 'submit-completion': {
       event.preventDefault()
-      const applied = acceptCompletion(completions)
+      const applied = acceptCompletion(completions, composer.value(), composer.cursorPos())
       closeCompletions()
       if (!applied) return
-      // Accept *and* run, the way the terminal does; Tab is accept-only.
+      // Accept *and* run, the way the terminal does; Tab is accept-only. Only
+      // command suggestions reach here — `keymap.ts` degrades a file mention to
+      // `accept-completion`, because it is a fragment of a sentence, not a line.
       composer.setValue(applied.text.trim())
       void send()
       return
@@ -530,8 +630,27 @@ document.addEventListener('keydown', (event) => {
       return
     case 'close-surface':
       event.preventDefault()
-      surface.hide()
+      hideSurface()
       return
+    case 'move-surface-up':
+    case 'move-surface-down': {
+      event.preventDefault()
+      if (!surfaceView) return
+      surfaceIndex = moveSurfaceSelection(
+        surfaceView,
+        surfaceIndex,
+        action === 'move-surface-up' ? 'up' : 'down',
+      )
+      renderSurface()
+      return
+    }
+    case 'activate-surface': {
+      event.preventDefault()
+      if (!surfaceView) return
+      const chosen = activateSurfaceRow(surfaceView, surfaceIndex)
+      if (chosen) void runSurfaceAction(chosen)
+      return
+    }
     case 'interrupt':
       event.preventDefault()
       void client.interrupt('user-cancel').catch((error) => note(describe(error), 'error'))

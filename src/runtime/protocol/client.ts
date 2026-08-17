@@ -9,6 +9,7 @@ import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeMa
 import type { BackgroundTaskSnapshot } from '../../services/backgroundTasks/registry.js'
 import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
 import type { SessionMeta } from '../../sessions/service.js'
+import type { FileSuggestion } from '../suggestions/atToken.js'
 import { createEmptySessionUsage, type SessionUsage } from '../sessionUsage.js'
 import type { RewindSummaryDecision } from '../rewindSummary.js'
 import type { SessionControllerSnapshot, SessionEvent } from '../sessionController.js'
@@ -27,6 +28,7 @@ import {
   type WireCommandInfo,
   type WireCommandsResult,
   type WireEffortResult,
+  type WireFileSuggestionsResult,
   type WireHelloResult,
   type WireListPanesResult,
   type WireModelsResult,
@@ -302,6 +304,24 @@ export class SessionClient {
   async listCommands(): Promise<WireCommandInfo[]> {
     const result = await this.send({ type: 'list-commands', id: randomUUID() }) as WireCommandsResult
     return result.commands
+  }
+
+  /**
+   * `@` file candidates for the composer's current text and caret.
+   *
+   * Deliberately not cached and not debounced here: both are the caller's
+   * decisions, and a caller that fires one of these per keystroke **must**
+   * discard answers that arrive out of order — nothing about a `send()` promise
+   * guarantees that the newest request settles last.
+   */
+  async fileSuggestions(input: string, cursorPos: number): Promise<FileSuggestion[]> {
+    const result = await this.send({
+      type: 'file-suggestions',
+      id: randomUUID(),
+      input,
+      cursorPos,
+    }) as WireFileSuggestionsResult
+    return result.suggestions
   }
 
   async getCheckpoints(): Promise<CheckpointWithDiff[]> {

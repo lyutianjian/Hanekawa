@@ -1,24 +1,18 @@
-import {
-  applyCommandSuggestion,
-  generateCommandSuggestions,
-  hasCommandArgs,
-  isCommandInput,
-  type CommandSuggestion,
-} from '../../../runtime/suggestions/commandSuggestions.js'
+import { isCommandInput } from '../../../runtime/suggestions/commandSuggestions.js'
 import type { CommandView } from '../../../commands/types.js'
-import type { CommandEffect, CommandSurface, WireCommandInfo } from '../../../runtime/protocol/wire.js'
+import type { CommandEffect, CommandSurface } from '../../../runtime/protocol/wire.js'
 
 /**
  * Where a line of composer text goes, and what a slash command's effects mean.
  *
  * The shipped renderer sent everything to `client.submit`, so typing `/model`
  * put the literal string in front of the model — a typo cost a request. Routing
- * is the fix; the completion dropdown below is what makes the commands
- * discoverable at all, since `/help` arrives as prose and cannot drive a listbox.
+ * is the fix.
  *
- * Ranking is `runtime/suggestions/commandSuggestions.ts`, the same module the TUI
- * uses, driven over `WireCommandInfo` — which is why that module takes a widened
- * source type rather than `CommandDefinition`.
+ * The completion dropdown that makes the commands discoverable lives in
+ * `completion.ts`, which owns both sources; it moved out of this file when file
+ * mentions arrived, because those are asynchronous and needed a sequence guard
+ * that has nothing to do with routing.
  *
  * DOM-free on purpose; see `diffRows.ts`.
  */
@@ -36,42 +30,6 @@ export function classifyInput(raw: string): InputClass {
   // leading slash is never prose.
   if (isCommandInput(text)) return { kind: 'command', line: text }
   return { kind: 'prompt', text }
-}
-
-export interface CompletionState {
-  readonly suggestions: readonly CommandSuggestion<WireCommandInfo>[]
-  readonly selectedIndex: number
-}
-
-export const NO_COMPLETIONS: CompletionState = { suggestions: [], selectedIndex: 0 }
-
-/**
- * Completions for the current composer text.
- *
- * Suppressed once arguments have been typed (`hasCommandArgs`), matching the
- * terminal: `/model sonnet` is a command being written, not a name being looked
- * up.
- */
-export function completionsFor(raw: string, commands: readonly WireCommandInfo[]): CompletionState {
-  const text = raw.trimStart()
-  if (!isCommandInput(text) || hasCommandArgs(text)) return NO_COMPLETIONS
-  const suggestions = generateCommandSuggestions(text, [...commands])
-  return suggestions.length === 0 ? NO_COMPLETIONS : { suggestions, selectedIndex: 0 }
-}
-
-export function moveCompletion(state: CompletionState, direction: 'up' | 'down'): CompletionState {
-  const total = state.suggestions.length
-  if (total === 0) return state
-  const step = direction === 'up' ? -1 : 1
-  // Wraps, because a dropdown of five is a ring rather than a list with ends.
-  return { ...state, selectedIndex: ((state.selectedIndex + step) % total + total) % total }
-}
-
-/** The composer text after accepting a completion, plus where the caret goes. */
-export function acceptCompletion(state: CompletionState): { text: string; cursorPos: number } | undefined {
-  const suggestion = state.suggestions[state.selectedIndex]
-  if (!suggestion) return undefined
-  return applyCommandSuggestion(suggestion)
 }
 
 // --- effects ----------------------------------------------------------------

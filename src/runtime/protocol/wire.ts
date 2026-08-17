@@ -18,6 +18,7 @@ import type { RewindSummaryDecision } from '../rewindSummary.js'
 import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
 import type { FileToolPreview } from '../../services/fileToolPreview.js'
 import type { SessionMeta } from '../../sessions/service.js'
+import type { FileSuggestion } from '../suggestions/atToken.js'
 import type { SessionControllerSnapshot, SessionEvent } from '../sessionController.js'
 import type { StartupNotice } from '../startupNotices.js'
 
@@ -109,6 +110,17 @@ export type HostCommand =
    * arrives as a `write-line` string and cannot drive a listbox.
    */
   | { type: 'list-commands'; id: string }
+  /**
+   * Candidates for an `@` file mention, ranked host-side.
+   *
+   * Unlike `list-commands` this cannot be fetched once and cached: the answer
+   * depends on the whole composer text and the caret, and it reads the
+   * filesystem — `generateFileSuggestions` walks a directory, consults
+   * `.gitignore` and ranks with Fuse. None of that can cross into a renderer
+   * bundle, so the round trip happens per keystroke and the client is
+   * responsible for discarding answers that arrive out of order.
+   */
+  | { type: 'file-suggestions'; id: string; input: string; cursorPos: number }
   | { type: 'checkpoints'; id: string }
   | { type: 'restore-code'; id: string; commitHash: string }
   /**
@@ -390,6 +402,21 @@ export interface WireCommandInfo {
 
 export interface WireCommandsResult {
   commands: WireCommandInfo[]
+}
+
+/**
+ * `@` file candidates.
+ *
+ * `FileSuggestion` crosses as itself, like `SessionMeta` and `CheckpointWithDiff`
+ * do: it is plain data with no functions and nothing folded in from a
+ * `ModelConfig`, and it comes from `suggestions/atToken.ts`, which the renderer
+ * is allowed to import anyway — so the view hands what it receives straight back
+ * to `applyFileSuggestion` with no adapter in between. The host still builds each
+ * one field by field; see the note on `WireCommandInfo` for why that rule holds
+ * even where a spread would currently be harmless.
+ */
+export interface WireFileSuggestionsResult {
+  suggestions: FileSuggestion[]
 }
 
 /** `SessionMeta` crosses verbatim: it is already the JSON shape in index.json. */

@@ -17,6 +17,8 @@
         --bg: #1a1a1a;
         --bg-raised: #232323;
         --bg-input: #252526;
+        /* The row the keyboard is on, in either list. */
+        --bg-active: #2f3a38;
         --fg: #d4d4d4;
         --muted: #808080;
         --accent: #4ec9b0;
@@ -170,6 +172,10 @@
       }
       #surface h2 { font-size: 12px; margin: 0 0 6px; color: var(--accent); font-weight: 600; }
       #surface .row { display: flex; gap: 10px; padding: 2px 0; font-size: 13px; }
+      #surface .row[role="option"] { cursor: pointer; padding: 2px 6px; margin: 0 -6px; }
+      #surface .row[role="option"]:hover { background: var(--bg-input); }
+      #surface .row.selected { background: var(--bg-active); }
+      #surface .row.selected .label { color: var(--accent); }
       #surface .row .label { min-width: 22ch; }
       #surface .row .value { color: var(--muted); flex: 1 1 auto; }
       #surface .row.current .label { color: var(--accent); }
@@ -191,7 +197,7 @@
       #suggestions .suggestion { display: flex; gap: 10px; padding: 3px 12px; font-size: 13px; }
       #suggestions .suggestion .name { color: var(--fg); min-width: 18ch; }
       #suggestions .suggestion .description { color: var(--muted); }
-      #suggestions .suggestion.selected { background: #2f3a38; }
+      #suggestions .suggestion.selected { background: var(--bg-active); }
       #suggestions .suggestion.selected .name { color: var(--accent); }
 
       /* --- composer --- */

@@ -16,7 +16,7 @@ npm run typecheck                  # three passes: base + tsconfig.preload.json 
 npm run build                      # tsc -p tsconfig.build.json → dist/ (only a desktop shell needs this)
 npm run build:desktop              # build + esbuild preload/renderer bundles + copy index.html
 npm run start:desktop              # electron . (needs a real display)
-npm run test                       # full suite: 1818 tests / 39 suites, ~40s
+npm run test                       # full suite: 1870 tests / 39 suites, ~40s
 node --import tsx --test test/compact.test.ts                    # single file (space-separate for several)
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
 ```
@@ -288,7 +288,7 @@ scope). `SessionClient` mirrors `SessionController`'s shape for a renderer.
   `SessionController.publish` compares `usage` and `taskSnapshot` by reference while every deserialized
   message is a fresh object graph.
 - **Everything inbound is validated; nothing outbound is.** `parseHostCommand`
-  (`protocol/commandSchema.ts`) runs a `.strict()` discriminated union over all 31 `HostCommand` variants
+  (`protocol/commandSchema.ts`) runs a `.strict()` discriminated union over all 32 `HostCommand` variants
   before `handleMessage` dispatches — the client half is the less trusted end, and `set-permission-mode`
   reaches `PermissionGate` directly. The schema is a second description of the union, kept honest by two
   compile-time guards: a keyed `satisfies Record<HostCommand['type'], …>` table that fails *by name*, and
@@ -437,7 +437,31 @@ mutation). `tsconfig.renderer.json`'s `include` list documents the allowed share
 - The composer gates Enter *and* the button on `isStreaming`: `requestSubmit()` ignores a disabled button,
   and `SessionController.submit` has no in-flight guard, so a second turn overwrites the live
   `AbortController` and the first becomes impossible to interrupt. With a completion dropdown open, Enter
-  is "accept **and** run" and Tab is accept-only, matching `useKeyboardShortcuts.ts:286-291`.
+  is "accept **and** run" and Tab is accept-only, matching `useKeyboardShortcuts.ts:286-291` — **except for
+  a file mention**, where Enter only accepts. `@src/foo.ts` is a fragment of a sentence still being
+  written, so submitting there sends half a prompt; `ShellState.completions` is a three-valued
+  `'none' | 'command' | 'file'` rather than a boolean for exactly that one branch.
+- **`@` completion is split by dependency, not by convenience.** `runtime/suggestions/atToken.ts` holds the
+  pure half — where the `@…` token starts, and what the text looks like after accepting one — and is on the
+  renderer's allowlist; `fileSuggestions.ts` keeps `generateFileSuggestions`, which needs `node:fs`,
+  `fuse.js` and the gitignore reader, and re-exports the pure half so no existing caller moved. The search
+  therefore runs host-side per keystroke over `file-suggestions`, and **nothing orders those answers** —
+  `renderer/model/completion.ts` carries a monotonic `seq` and `applyFileResponse` drops anything that is
+  not the answer to the newest request. Every transition bumps it, so typing `/` or dismissing the dropdown
+  invalidates a file lookup already in flight. The guard lives in `model/` because that is the only place a
+  test can reach it.
+- **A picker row's action is a slash-command line, not the matching `SessionClient` method.**
+  `SurfaceAction` (`renderer/model/surfaces.ts`) resolves `/model <tier>` and `/effort <level>` through
+  `run-command`, because `set-model` and `switchModel` are deliberately two layers: the wire command only
+  points the current runtime elsewhere, while `/model` is the user expressing a preference and is what
+  writes the tier back to config. Calling `client.setModel` from a row would silently drop that
+  persistence. `resume-picker` is the exception — `/resume` takes no argument, so it uses `open-pane`, the
+  same "one pane per session" semantics the tab bar already defines. A disabled row carries no action at
+  all, and `moveSurfaceSelection` steps over it, so Enter can never land on something inert.
+- **Picker navigation is gated on an empty composer.** The panel does not block, so a user who opened
+  `/model` and then typed a message means "send it"; taking Enter unconditionally would switch models
+  instead. This also makes the panel and the dropdown mutually exclusive by construction — completions
+  require a typed `/` or `@`, so `inputEmpty` is false whenever they are open.
 - Shared presentation lives in `runtime/permissionPresentation.ts` and `runtime/planPresentation.ts`,
   which both shells import so they cannot offer different options. Both are pure with type-only
   cross-layer imports — a single value import there breaks the renderer bundle.

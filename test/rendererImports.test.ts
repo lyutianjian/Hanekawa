@@ -36,6 +36,10 @@ const ALLOWED_SHARED_IMPORTS = [
   '../../../runtime/permissionPresentation.js',
   '../../../runtime/planPresentation.js',
   '../../../runtime/suggestions/commandSuggestions.js',
+  // The pure half of `@` file completion. `fileSuggestions.js` is the other half
+  // and is *not* here: it value-imports `node:fs/promises`, which is why the two
+  // were split at all.
+  '../../../runtime/suggestions/atToken.js',
   '../../../config/effort.js',
 ]
 

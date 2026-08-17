@@ -5,17 +5,22 @@ import { CODE_TEXT_EXTENSIONS } from '../../harness/atMentions.js'
 import { gitIgnoredPaths } from '../../utils/gitIgnore.js'
 import { assertInsideCwd } from '../../utils/paths.js'
 import { isProtectedPath } from '../../utils/permissions/protectedPaths.js'
-import type { SuggestionItem } from './types.js'
+import { extractAtCompletionToken, type FileSuggestion } from './atToken.js'
 
-export interface FileSuggestionMetadata {
-  replacementText: string
-  path: string
-  kind: 'directory' | 'file'
-}
-
-export type FileSuggestion = SuggestionItem<FileSuggestionMetadata> & {
-  metadata: FileSuggestionMetadata
-}
+/**
+ * Finding the candidates — the half that needs a filesystem.
+ *
+ * The token parsing and the splice back into the composer live in
+ * `atToken.js`, which has no Node dependency so the desktop renderer can import
+ * it directly. They are re-exported here so every existing caller keeps its
+ * import path.
+ */
+export {
+  applyFileSuggestion,
+  extractAtCompletionToken,
+  type FileSuggestion,
+  type FileSuggestionMetadata,
+} from './atToken.js'
 
 interface FileSearchItem {
   path: string
@@ -25,26 +30,6 @@ interface FileSearchItem {
 
 const MAX_FILE_SUGGESTIONS = 15
 const IGNORED_DIR_NAMES = new Set(['.git', '.myagent', 'node_modules', 'build', 'coverage'])
-
-export function extractAtCompletionToken(text: string, cursorPos: number): {
-  token: string
-  startPos: number
-} | null {
-  const before = text.slice(0, cursorPos)
-  const quotedIndex = before.lastIndexOf('@"')
-  if (quotedIndex >= 0 && (quotedIndex === 0 || /\s/.test(before[quotedIndex - 1]!))) {
-    const token = before.slice(quotedIndex)
-    if (!token.slice(2).includes('"')) {
-      return { token, startPos: quotedIndex }
-    }
-  }
-
-  const atIndex = before.lastIndexOf('@')
-  if (atIndex < 0 || (atIndex > 0 && !/\s/.test(before[atIndex - 1]!))) return null
-  const token = before.slice(atIndex)
-  if (/\s/.test(token) || token.startsWith('@"')) return null
-  return { token, startPos: atIndex }
-}
 
 export async function generateFileSuggestions(
   input: string,
@@ -64,24 +49,6 @@ export async function generateFileSuggestions(
 
   const forceQuoted = token.token.startsWith('@"')
   return matches.slice(0, MAX_FILE_SUGGESTIONS).map(({ item }) => createFileSuggestion(item, forceQuoted))
-}
-
-export function applyFileSuggestion(
-  input: string,
-  cursorPos: number,
-  suggestion: FileSuggestion,
-): { text: string; cursorPos: number } {
-  const token = extractAtCompletionToken(input, cursorPos)
-  if (!token) return { text: input, cursorPos }
-
-  const replacement = suggestion.metadata.kind === 'directory'
-    ? suggestion.metadata.replacementText
-    : `${suggestion.metadata.replacementText} `
-  const text = input.slice(0, token.startPos) + replacement + input.slice(cursorPos)
-  return {
-    text,
-    cursorPos: token.startPos + replacement.length,
-  }
 }
 
 function searchToken(token: string): string {

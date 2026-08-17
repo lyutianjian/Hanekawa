@@ -12,6 +12,7 @@ import { buildModelPickerOptions } from '../modelPicker.js'
 import { resolveRuntimeModelKeyAfterConfigChange } from '../providerRuntime.js'
 import { SessionRecordLedger } from '../recordLedger.js'
 import { buildRewindSummaryRewrite } from '../rewindSummary.js'
+import { generateFileSuggestions } from '../suggestions/fileSuggestions.js'
 import type { RuntimeSlot } from '../runtimeSlot.js'
 import type { SessionController, SessionEvent } from '../sessionController.js'
 import {
@@ -40,6 +41,7 @@ import {
   type WireCommandsResult,
   type WireClosePaneResult,
   type WireEffortResult,
+  type WireFileSuggestionsResult,
   type WireHelloResult,
   type WireListPanesResult,
   type WireModelInfo,
@@ -481,6 +483,29 @@ export class SessionHost {
       case 'list-commands':
         // Already filtered for `isHidden`/`isEnabled` by the registry.
         return { commands: listCommands().map(toWireCommandInfo) } satisfies WireCommandsResult
+
+      case 'file-suggestions': {
+        // Built field by field rather than forwarded: `createFileSuggestion` is
+        // free to grow a field, and a spread would put it on the wire without
+        // anyone deciding to. `metadata` is rebuilt for the same reason.
+        const suggestions = await generateFileSuggestions(
+          command.input,
+          command.cursorPos,
+          this.project.cwd,
+        )
+        return {
+          suggestions: suggestions.map((suggestion) => ({
+            id: suggestion.id,
+            displayText: suggestion.displayText,
+            ...(suggestion.description === undefined ? {} : { description: suggestion.description }),
+            metadata: {
+              replacementText: suggestion.metadata.replacementText,
+              path: suggestion.metadata.path,
+              kind: suggestion.metadata.kind,
+            },
+          })),
+        } satisfies WireFileSuggestionsResult
+      }
 
       case 'checkpoints':
         return { checkpoints: await this.controller.getCheckpointService().getCheckpointsWithDiffs() }

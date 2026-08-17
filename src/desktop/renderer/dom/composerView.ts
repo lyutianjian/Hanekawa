@@ -1,4 +1,4 @@
-import type { CompletionState } from '../model/commandRouting.js'
+import { completionRows, type CompletionState } from '../model/completion.js'
 import type { SessionControllerSnapshot } from '../../../runtime/sessionController.js'
 import type { WireRuntimeSnapshot } from '../../../runtime/protocol/wire.js'
 import { el, replace, show } from './dom.js'
@@ -57,17 +57,21 @@ export interface SuggestionsView {
 export function createSuggestionsView(container: HTMLElement): SuggestionsView {
   return {
     render(state) {
-      if (state.suggestions.length === 0) {
+      // Both sources reduce to the same two fields, which is the whole reason
+      // this file did not have to learn what a file mention is.
+      const rows = completionRows(state)
+      if (rows.length === 0) {
         show(container, false)
         replace(container)
         return
       }
-      replace(container, ...state.suggestions.map((suggestion, index) => {
-        const node = el('div', `suggestion${index === state.selectedIndex ? ' selected' : ''}`)
+      const selectedIndex = state.kind === 'none' ? -1 : state.selectedIndex
+      replace(container, ...rows.map((row, index) => {
+        const node = el('div', `suggestion${index === selectedIndex ? ' selected' : ''}`)
         node.setAttribute('role', 'option')
-        node.setAttribute('aria-selected', String(index === state.selectedIndex))
-        node.appendChild(el('span', 'name', suggestion.displayText))
-        node.appendChild(el('span', 'description', suggestion.description ?? ''))
+        node.setAttribute('aria-selected', String(index === selectedIndex))
+        node.appendChild(el('span', 'name', row.displayText))
+        node.appendChild(el('span', 'description', row.description ?? ''))
         return node
       }))
       show(container, true)
@@ -77,6 +81,12 @@ export function createSuggestionsView(container: HTMLElement): SuggestionsView {
 
 export interface ComposerView {
   value(): string
+  /**
+   * The caret offset. `applyFileSuggestion` splices over the `@…` token that
+   * ends here, so "the end of the text" is not a usable substitute — a mention
+   * edited in the middle of a line would rewrite the wrong span.
+   */
+  cursorPos(): number
   setValue(text: string, cursorPos?: number): void
   clear(): void
   focus(): void
@@ -99,6 +109,9 @@ export function createComposerView(els: {
 
   return {
     value: () => els.input.value,
+    // `selectionStart` is null only for input types that have no selection;
+    // a textarea always reports one, and the end of the text is the safe read.
+    cursorPos: () => els.input.selectionStart ?? els.input.value.length,
     setValue(text, cursorPos) {
       els.input.value = text
       if (cursorPos !== undefined) els.input.setSelectionRange(cursorPos, cursorPos)

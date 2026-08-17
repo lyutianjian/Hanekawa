@@ -2,20 +2,26 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { resolveKey, type ShellState } from '../src/desktop/renderer/model/keymap.js'
 import {
-  NO_COMPLETIONS,
-  acceptCompletion,
   classifyInput,
   commandEffectToIntent,
   commandViewRows,
-  completionsFor,
-  moveCompletion,
 } from '../src/desktop/renderer/model/commandRouting.js'
 import {
+  NO_COMPLETIONS,
+  acceptCompletion,
+  commandCompletions,
+  moveCompletion,
+} from '../src/desktop/renderer/model/completion.js'
+import {
   SUPPORTED_SURFACES,
+  activateSurfaceRow,
+  activateSurfaceRowById,
   backgroundTasksView,
   effortPickerView,
+  initialSurfaceSelection,
   isSupportedSurface,
   modelPickerView,
+  moveSurfaceSelection,
   resumePickerView,
 } from '../src/desktop/renderer/model/surfaces.js'
 import type { CommandSurface, WireCommandInfo, WireModelsResult } from '../src/runtime/protocol/wire.js'
@@ -27,13 +33,16 @@ import type { CommandSurface, WireCommandInfo, WireModelsResult } from '../src/r
  * answer the dialog, never interrupt. Interrupting does not release a turn parked
  * on a permission prompt (`ToolRunner.run` never passes its signal into
  * `PermissionGate.approve`), so getting this backwards wedges the app.
+ *
+ * The dual-source completion state itself lives in `rendererCompletion.test.ts`;
+ * what is here is how a keystroke is *routed* given that state.
  */
 
 function shell(overrides: Partial<ShellState> = {}): ShellState {
   return {
     hasOverlay: false,
     hasSurface: false,
-    hasCompletions: false,
+    completions: 'none',
     isStreaming: false,
     inputEmpty: false,
     ...overrides,
@@ -45,7 +54,7 @@ test('Escape answers an open dialog and never interrupts, even mid-turn', () => 
   // Everything else defers too: the dialog owns the keyboard outright.
   assert.equal(resolveKey({ key: 'Enter' }, shell({ hasOverlay: true })), 'overlay')
   assert.equal(resolveKey({ key: 'y' }, shell({ hasOverlay: true })), 'overlay')
-  assert.equal(resolveKey({ key: 'Tab' }, shell({ hasOverlay: true, hasCompletions: true })), 'overlay')
+  assert.equal(resolveKey({ key: 'Tab' }, shell({ hasOverlay: true, completions: 'command' })), 'overlay')
 })
 
 test('Escape interrupts only when nothing is open and a turn is running', () => {
@@ -64,7 +73,7 @@ test('Enter submits only when idle and non-empty; Shift+Enter is a newline', () 
 })
 
 test('the completion dropdown owns Tab, the arrows and Enter while open', () => {
-  const open = shell({ hasCompletions: true })
+  const open = shell({ completions: 'command' })
   assert.equal(resolveKey({ key: 'Tab' }, open), 'accept-completion')
   // Enter accepts *and runs*, the way `useKeyboardShortcuts.ts:286-291` submits a
   // command suggestion. Tab is the accept-only affordance.
@@ -76,9 +85,48 @@ test('the completion dropdown owns Tab, the arrows and Enter while open', () => 
   assert.equal(resolveKey({ key: 'Enter', shiftKey: true }, open), 'newline')
   // Mid-turn there is nothing to submit into, so Enter degrades to accepting.
   assert.equal(
-    resolveKey({ key: 'Enter' }, shell({ hasCompletions: true, isStreaming: true })),
+    resolveKey({ key: 'Enter' }, shell({ completions: 'command', isStreaming: true })),
     'accept-completion',
   )
+})
+
+test('Enter on a file mention accepts without submitting', () => {
+  // `@src/foo.ts` is a fragment of a sentence still being written. Submitting
+  // there would send half a prompt — and cost a request to say so.
+  assert.equal(resolveKey({ key: 'Enter' }, shell({ completions: 'file' })), 'accept-completion')
+  // Everything else about the dropdown is unchanged.
+  assert.equal(resolveKey({ key: 'Tab' }, shell({ completions: 'file' })), 'accept-completion')
+  assert.equal(resolveKey({ key: 'ArrowDown' }, shell({ completions: 'file' })), 'move-completion-down')
+  assert.equal(resolveKey({ key: 'Escape' }, shell({ completions: 'file' })), 'close-completions')
+})
+
+test('an open picker takes the arrows and Enter, but only while the composer is empty', () => {
+  const browsing = shell({ hasSurface: true, inputEmpty: true })
+  assert.equal(resolveKey({ key: 'ArrowDown' }, browsing), 'move-surface-down')
+  assert.equal(resolveKey({ key: 'ArrowUp' }, browsing), 'move-surface-up')
+  assert.equal(resolveKey({ key: 'Enter' }, browsing), 'activate-surface')
+  assert.equal(resolveKey({ key: 'Escape' }, browsing), 'close-surface')
+
+  // The panel does not block. A user who opened `/model`, then typed a message,
+  // means "send it" — silently switching models instead would be indefensible.
+  const typing = shell({ hasSurface: true, inputEmpty: false })
+  assert.equal(resolveKey({ key: 'Enter' }, typing), 'submit')
+  assert.equal(resolveKey({ key: 'ArrowDown' }, typing), 'none')
+  // Escape still closes it, though: dismissing is not picking.
+  assert.equal(resolveKey({ key: 'Escape' }, typing), 'close-surface')
+
+  // Shift+Enter is still a newline, not an activation.
+  assert.equal(resolveKey({ key: 'Enter', shiftKey: true }, browsing), 'newline')
+})
+
+test('a picker and the dropdown can never contend, and the dropdown wins if they do', () => {
+  // Completions require a typed `/` or `@`, so `inputEmpty` is false whenever
+  // they are open — the two are mutually exclusive by construction. Pinned
+  // anyway, because the ordering in `resolveKey` is what guarantees it.
+  const both = shell({ hasSurface: true, completions: 'command', inputEmpty: true })
+  assert.equal(resolveKey({ key: 'ArrowDown' }, both), 'move-completion-down')
+  assert.equal(resolveKey({ key: 'Enter' }, both), 'submit-completion')
+  assert.equal(resolveKey({ key: 'Escape' }, both), 'close-completions')
 })
 
 test('a leading slash is a command, never prose', () => {
@@ -95,24 +143,34 @@ const COMMANDS: WireCommandInfo[] = [
 ]
 
 test('completions rank exact and prefix matches, and stop once args are typed', () => {
-  assert.deepEqual(completionsFor('/', COMMANDS).suggestions.map((s) => s.displayText),
-    ['/clear', '/cost', '/model'])
+  const rows = (raw: string) => {
+    const state = commandCompletions(NO_COMPLETIONS, raw, COMMANDS)
+    return state.kind === 'none' ? [] : state.items.map((item) => item.displayText)
+  }
 
-  assert.equal(completionsFor('/mo', COMMANDS).suggestions[0]?.displayText, '/model')
-  assert.equal(completionsFor('/m', COMMANDS).suggestions[0]?.displayText, '/model', 'alias wins')
-  assert.deepEqual(completionsFor('/model sonnet', COMMANDS), NO_COMPLETIONS)
-  assert.deepEqual(completionsFor('hello', COMMANDS), NO_COMPLETIONS)
-  assert.deepEqual(completionsFor('/zzz', COMMANDS), NO_COMPLETIONS)
+  assert.deepEqual(rows('/'), ['/clear', '/cost', '/model'])
+  assert.equal(rows('/mo')[0], '/model')
+  assert.equal(rows('/m')[0], '/model', 'alias wins')
+  assert.equal(commandCompletions(NO_COMPLETIONS, '/model sonnet', COMMANDS).kind, 'none')
+  assert.equal(commandCompletions(NO_COMPLETIONS, 'hello', COMMANDS).kind, 'none')
+  assert.equal(commandCompletions(NO_COMPLETIONS, '/zzz', COMMANDS).kind, 'none')
 })
 
 test('the dropdown wraps, and accepting rewrites the composer', () => {
-  const state = completionsFor('/', COMMANDS)
+  const state = commandCompletions(NO_COMPLETIONS, '/', COMMANDS)
+  assert.equal(state.kind, 'command')
+  assert.ok(state.kind === 'command')
   assert.equal(state.selectedIndex, 0)
-  assert.equal(moveCompletion(state, 'up').selectedIndex, 2, 'up from the top wraps')
-  assert.equal(moveCompletion(state, 'down').selectedIndex, 1)
+  const moved = moveCompletion(state, 'up')
+  assert.ok(moved.kind === 'command')
+  assert.equal(moved.selectedIndex, 2, 'up from the top wraps')
+  const down = moveCompletion(state, 'down')
+  assert.ok(down.kind === 'command')
+  assert.equal(down.selectedIndex, 1)
 
-  assert.deepEqual(acceptCompletion(state), { text: '/clear ', cursorPos: 7 })
-  assert.equal(acceptCompletion(NO_COMPLETIONS), undefined)
+  // A command replaces the whole line, so the text and caret passed in are ignored.
+  assert.deepEqual(acceptCompletion(state, '/', 1), { text: '/clear ', cursorPos: 7 })
+  assert.equal(acceptCompletion(NO_COMPLETIONS, '', 0), undefined)
 })
 
 test('all three command effects map to something the view can do', () => {
@@ -150,18 +208,18 @@ test('an info view flattens sections into headed rows with their tones', () => {
   ])
 })
 
-test('the model picker marks the current tier and explains a disabled one', () => {
-  const result: WireModelsResult = {
-    models: [],
-    defaultModelKey: 'sonnet',
-    pickerOptions: [
-      { tier: 'fast', label: 'Fast', modelKey: 'haiku', modelId: 'claude-haiku', providerName: 'anthropic', isCurrent: false, isDefault: false },
-      { tier: 'balanced', label: 'Balanced', modelKey: 'sonnet', modelId: 'claude-sonnet', providerName: 'anthropic', isCurrent: true, isDefault: true },
-      { tier: 'powerful', label: 'Powerful', disabledReason: 'no model configured', isCurrent: false, isDefault: false },
-    ],
-  }
+const MODELS: WireModelsResult = {
+  models: [],
+  defaultModelKey: 'sonnet',
+  pickerOptions: [
+    { tier: 'fast', label: 'Fast', modelKey: 'haiku', modelId: 'claude-haiku', providerName: 'anthropic', isCurrent: false, isDefault: false },
+    { tier: 'balanced', label: 'Balanced', modelKey: 'sonnet', modelId: 'claude-sonnet', providerName: 'anthropic', isCurrent: true, isDefault: true },
+    { tier: 'powerful', label: 'Powerful', disabledReason: 'no model configured', isCurrent: false, isDefault: false },
+  ],
+}
 
-  const view = modelPickerView(result)
+test('the model picker marks the current tier and explains a disabled one', () => {
+  const view = modelPickerView(MODELS)
 
   assert.deepEqual(view.rows.map((row) => row.id), ['fast', 'balanced', 'powerful'])
   assert.equal(view.rows[1]?.current, true)
@@ -223,4 +281,81 @@ test('the provider panel is the one surface this shell does not draw', () => {
   for (const surface of ['model-picker', 'effort-picker', 'background-tasks', 'resume-picker'] as const) {
     assert.equal(isSupportedSurface(surface), true)
   }
+})
+
+// --- picking a row ----------------------------------------------------------
+
+test('picking a model or an effort runs the slash command, never the wire setter', () => {
+  // Load-bearing, not roundabout. `set-model` only points the current runtime
+  // elsewhere; `/model` is the user expressing a preference and is what writes
+  // the tier back to config. Calling `client.setModel` from a picker row would
+  // silently drop that persistence.
+  const models = modelPickerView(MODELS)
+  assert.deepEqual(activateSurfaceRowById(models, 'balanced'), {
+    kind: 'run-command',
+    line: '/model balanced',
+  })
+
+  const effort = effortPickerView({ current: 'high' })
+  assert.deepEqual(activateSurfaceRowById(effort, 'low'), { kind: 'run-command', line: '/effort low' })
+})
+
+test('a disabled row explains itself and cannot be picked', () => {
+  const models = modelPickerView(MODELS)
+  const powerful = models.rows.find((row) => row.id === 'powerful')
+  assert.equal(powerful?.disabled, true)
+  assert.equal(powerful?.action, undefined)
+  assert.equal(activateSurfaceRowById(models, 'powerful'), undefined)
+  assert.equal(activateSurfaceRowById(models, 'nonexistent'), undefined)
+})
+
+test('resuming opens the pane that owns the session; a task row peeks its output', () => {
+  // `/resume` takes no argument — it exists only to open this panel — and the
+  // tab bar already defines switching as `open-pane`, one pane per session.
+  const sessions = resumePickerView({
+    sessions: [{ id: 'a', shortId: 'a1', createdAt: 'x', updatedAt: 'y', messageCount: 1 }],
+  })
+  assert.deepEqual(activateSurfaceRowById(sessions, 'a'), { kind: 'open-pane', sessionId: 'a' })
+
+  // Peek, not kill: killing is destructive and gets no keyboard-adjacent
+  // affordance in this pass.
+  const tasks = backgroundTasksView([
+    { id: 't1', sessionId: 's', kind: 'shell', status: 'running', command: 'npm test', startedAt: 0, outputBytes: 10, unreadBytes: 4 },
+  ])
+  assert.deepEqual(activateSurfaceRowById(tasks, 't1'), { kind: 'peek-task', taskId: 't1' })
+})
+
+test('moving through a picker skips the rows that cannot be picked', () => {
+  const view = effortPickerView({ current: 'low', maxEffort: 'medium' })
+  // low, medium are selectable; high, xhigh, max are above the ceiling.
+  assert.deepEqual(view.rows.map((row) => row.action !== undefined), [true, true, false, false, false])
+
+  assert.equal(moveSurfaceSelection(view, 0, 'down'), 1)
+  // Down from the last selectable row wraps past the three disabled ones.
+  assert.equal(moveSurfaceSelection(view, 1, 'down'), 0)
+  assert.equal(moveSurfaceSelection(view, 0, 'up'), 1, 'up from the top wraps to the last selectable')
+})
+
+test('a picker with nothing selectable is inert rather than looping', () => {
+  const view = effortPickerView({ current: 'low', maxEffort: undefined })
+  const allDisabled = { ...view, rows: view.rows.map((row) => ({ ...row, action: undefined })) }
+  assert.equal(moveSurfaceSelection(allDisabled, 2, 'down'), 2)
+  assert.equal(activateSurfaceRow(allDisabled, 2), undefined)
+
+  assert.equal(moveSurfaceSelection({ ...view, rows: [] }, 0, 'down'), 0)
+})
+
+test('a freshly opened picker starts on the current row when it is pickable', () => {
+  const models = modelPickerView(MODELS)
+  assert.equal(models.rows[1]?.current, true)
+  assert.equal(initialSurfaceSelection(models), 1)
+
+  // With no current row, the first pickable one. The disabled tier is skipped
+  // even when it comes first.
+  const noCurrent = {
+    ...models,
+    rows: models.rows.map((row) => ({ ...row, current: false })).reverse(),
+  }
+  assert.equal(noCurrent.rows[0]?.disabled, true)
+  assert.equal(initialSurfaceSelection(noCurrent), 1)
 })

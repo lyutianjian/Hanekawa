@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createUiBridges } from '../src/runtime/bridges.js'
@@ -35,6 +35,8 @@ interface Harness {
   bridges: ReturnType<typeof createUiBridges>
   /** The real store behind the stub controller, for the commands that write. */
   store: SessionStore
+  /** The temp project root, for the commands that read the filesystem. */
+  cwd: string
   sessionId: string
   calls: {
     submits: string[]
@@ -284,6 +286,7 @@ async function createHarness(): Promise<Harness> {
     },
     bridges,
     store,
+    cwd,
     sessionId: session.id,
     calls,
     changeMode: (mode: string) => { for (const listener of [...modeListeners]) listener(mode) },
@@ -1056,6 +1059,53 @@ test('a malformed ui-response is never answered with a fail', async () => {
   // There is no command id to fail against, and inventing one would reject a
   // request the client never made.
   assert.equal(harness.received.some((event) => event.type === 'fail'), false)
+  harness.dispose()
+})
+
+test('file-suggestions resolves against the project root and ships plain data', async () => {
+  const harness = await createHarness()
+  await writeFile(path.join(harness.cwd, 'alpha.ts'), 'export {}\n')
+  await mkdir(path.join(harness.cwd, 'nested'), { recursive: true })
+
+  harness.send({ type: 'file-suggestions', id: 'fs1', input: 'read @alp', cursorPos: 9 })
+  const reply = await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'fs1'),
+    'the file-suggestions reply',
+  )
+  assert.ok(reply.type === 'reply')
+  const result = reply.result as { suggestions: Array<Record<string, unknown>> }
+
+  const match = result.suggestions.find((suggestion) => suggestion.displayText === 'alpha.ts')
+  assert.ok(match, 'the file in the project root is offered')
+  // The renderer hands this straight back to `applyFileSuggestion`, so the
+  // nesting has to survive the boundary intact.
+  assert.deepEqual(match.metadata, {
+    replacementText: '@alpha.ts',
+    path: 'alpha.ts',
+    kind: 'file',
+  })
+
+  // The memory channel clones every post, so arriving at all proves this is
+  // structured-clone-safe -- which is the property Electron's IPC needs and
+  // would otherwise break silently.
+  for (const suggestion of result.suggestions) {
+    assert.equal(typeof suggestion.id, 'string')
+    assert.equal(typeof suggestion.displayText, 'string')
+  }
+  harness.dispose()
+})
+
+test('file-suggestions answers nothing when the caret is not in a mention', async () => {
+  const harness = await createHarness()
+  await writeFile(path.join(harness.cwd, 'beta.ts'), 'export {}\n')
+
+  harness.send({ type: 'file-suggestions', id: 'fs2', input: 'no mention here', cursorPos: 15 })
+  const reply = await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'fs2'),
+    'the empty file-suggestions reply',
+  )
+  assert.ok(reply.type === 'reply')
+  assert.deepEqual((reply.result as { suggestions: unknown[] }).suggestions, [])
   harness.dispose()
 })
 

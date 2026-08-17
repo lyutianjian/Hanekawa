@@ -35,6 +35,7 @@ Tauri 还得挂 Node sidecar。
 | 3b | 跨进程 workspace 协议：`open-pane`/`close-pane`/`list-panes` + `pane-list` 事件、`PaneRegistry`、`main.ts` 一窗一 pane、渲染器标签栏（`model/tabBar.ts` + `dom/tabBarView.ts`）；顺带 `list-commands` + `WireCommandInfo` | 1818 |
 | 3d | 收 3b 的账：shell `panes` Map 改用 `BrowserWindow.id`、启动用 `openPane({ sessionId })`、`broadcastPaneListToOthers` 跨窗口广播、`test/protocolChildProcess.test.ts` 子进程字符串补齐三 dep；新增 `paneId follows controller across /clear` 用例 | 1819 |
 | 3e | Markdown 渲染：`model/markdown.ts`（marked lexer → 自有 union）+ `dom/markdownView.ts`（只用 `el()`）、assistant 消息与计划正文接线、`main.ts` 导航守卫、CSS | 1846 |
+| 3f | 选择与补全：四个面板可键选/点选（`SurfaceAction` + `moveSurfaceSelection`）、`@` 文件补全（`suggestions/atToken.ts` 拆分 + `file-suggestions` 命令 + 双源下拉与序号守卫） | 1870 |
 
 各阶段的设计理由已全部写进 `CLAUDE.md`。下面只留**没进那份文档、但下一轮仍要知道**的东西。
 
@@ -66,6 +67,17 @@ Tauri 还得挂 Node sidecar。
   `broadcastPaneList` 只到自己 channel（这是 31 个 `HostCommand` 同构切片的硬约束，不是疏忽）；shell 的 fan-out
   跳过发起者，因为 host 已经把它自己的更新送到了发起窗口 —— 重复推送 `SessionClient.onPanesChanged` 是幂等替换
   但更省事。OS 关窗路径（`'closed'` 回调）也要广播一次，因为那条不经过 host。
+- **3f：面板行的动作走 `run-command` 而不是 client 的直通 setter**（`model/surfaces.ts` 的 `SurfaceAction`）。
+  这条正是上面「`activateModelKey` 与 `switchModel` 故意分两层」的下游后果 —— 点一行走 `client.setModel`
+  会把 tier 持久化悄悄丢掉。`resume-picker` 是例外，因为 `/resume` 根本不收参数，于是复用标签栏已经定义好的
+  `open-pane`（一个 session 一个 pane）。`background-tasks` 只给 peek 不给 kill。
+- **3f：`@` 补全的拆分线是「依赖」而不是「职责」**。`extractAtCompletionToken`/`applyFileSuggestion` 零 import，
+  搬进 `suggestions/atToken.ts` 上渲染器 allowlist；`generateFileSuggestions` 要 `node:fs` + `fuse.js` +
+  gitignore，留在 `fileSuggestions.ts` 并 re-export 前者，所以 TUI 侧一行没动。代价是每次击键一趟 IPC，
+  而**没有任何东西保证这些回答按序到达** —— 序号守卫（`model/completion.ts` 的 `seq`）因此是必需品而不是优化。
+  每次状态迁移都 bump，所以「打了 `@` 又改打 `/`」和「按 Esc 关掉下拉」都会让在途回答作废。
+- **3f：面板导航只在输入框为空时抢键**。面板不阻塞，用户完全可能开着 `/model` 再打一句话；无条件吃 Enter
+  就变成选模型。副作用是面板与补全下拉**构造上互斥**（补全的前提是打了 `/` 或 `@`，那时 `inputEmpty` 必为假）。
 
 ### 工作方法（本项目的验收惯例）
 
@@ -93,7 +105,7 @@ Tauri 还得挂 Node sidecar。
 - [x] **跨进程 workspace 协议**（多标签的另一半）。落地后与当初的预判有两处出入，记下来：
   - **"28 个 `HostCommand` 一个都不用改"是错的**，两层意义上：数字本身当时就抄错了（`HostCommand` 那时是
     **27** 个变体，`CLAUDE.md` 写着 28），而且确实得加命令 —— `open-pane`/`close-pane`/`list-panes` 加上
-    渲染器补全要用的 `list-commands`，现在是 **31**。真正没改的是那 27 条：pane 命令是**旁挂**的一层，
+    渲染器补全要用的 `list-commands`，当时是 **31**（3f 又加了 `file-suggestions`，现在 **32**）。真正没改的是那 27 条：pane 命令是**旁挂**的一层，
     不是把既有命令参数化。
   - **`SessionHost` 不自己建窗口**：它拿 `PaneRegistry`（`SessionWorkspace` 的结构化切片）解析 + 注册 pane，
     再通过 `onPaneOpened`/`onPaneClosed` 把 `BrowserWindow` 那步交回 shell。协议层不 import electron 的
@@ -133,14 +145,14 @@ Tauri 还得挂 Node sidecar。
 
 ### 渲染器还缺的（阶段 3c 刻意留下）
 
-- [ ] **文件树 / `@` 补全**：没有能列目录的 wire 消息。
-- [ ] **rewind / checkpoint 面板**：四步破坏性流程。
-- [ ] **费用显示**：`ModelPricing` 不在 `WireRuntimeSnapshot` 上。
+- [ ] **rewind / checkpoint 面板**：四步破坏性流程。读写两侧的命令（`checkpoints`/`restore-code`/
+  `truncate-session`/`summarize-rewind`）在 `SessionClient` 上**都已经有了**，纯渲染器活；参照
+  `src/tui/components/RestoreMode.tsx`（422 行）。
+- [ ] **费用显示**：`ModelPricing` 不在 `WireRuntimeSnapshot` 上（`/cost` 已经能用，缺的是状态栏常驻）。
 - [ ] **消息队列**：要记录流；在 `SessionController.submit` 的在途守卫进内核之前，正确的临时行为是关闸而非排队。
-- [ ] **面板可点选**：`/model` 列出三档但要靠 `/model <tier>` 选。要能点就得让渲染器知道每行对应哪条命令 ——
-  一次小的协议决定。
 
-（标签栏已在 3b 补上、Markdown 已在 3e 补上，见上表；它们不在这份清单里过。）
+（标签栏已在 3b 补上、Markdown 已在 3e 补上、**面板可点选与 `@` 文件补全已在 3f 补上**，见上表；
+它们不在这份清单里过。）
 
 **3e 顺带留下的两条**：① **代码块没有语法高亮** —— TUI 用的 `cli-highlight` 出 ANSI 且是 Node 侧的，
 浏览器侧要另选一个能进 renderer bundle（无 Node 依赖）的库，是独立一档；② `markdownNode` 每次都重建整棵
@@ -183,6 +195,14 @@ Tauri 还得挂 Node sidecar。
   ④ 让模型输出 `<img src=x onerror=alert(1)>` 与 `[x](javascript:alert(1))` → 页面显示字面文本、
   没有弹窗、DevTools 控制台无 CSP 报错；
   ⑤ 权限对话框里的命令块与 diff 仍然逐字（**没有**被 markdown 化）。
+- [ ] **3f 的选择与补全冒烟**（`dom/surfaceView.ts`、`dom/composerView.ts` 与 `app.ts` 的接线都没有测试覆盖；
+  模型层已被 `test/rendererCompletion.test.ts` + `test/rendererShellModel.test.ts` 钉死，缺的是真机那一段）：
+  ① `/model` → ↑↓ 选中 → Enter，transcript 出现 "Model set to: …"、状态栏模型跟着变、面板自动关掉；
+  ② 同一个面板改用鼠标点一行，结果一致（两条路走同一个 `runSurfaceAction`）；
+  ③ 面板开着时先打几个字再按 Enter → **发消息而不是选模型**；Esc 仍然只关面板；
+  ④ 打 `@src/desk` → 出现文件下拉 → Enter **只补全不提交**，Tab 同样；选目录不带尾空格、选文件带；
+  ⑤ 快速连打再退格，下拉不闪回旧结果（序号守卫）；打 `@` 后改打 `/`，不会有文件结果盖上来；
+  ⑥ `/tasks` 选一行 → 输出写进 transcript；`/resume` 选一个旧会话 → 对应窗口聚焦/新开，标签栏两边都更新。
 
 ---
 
@@ -190,7 +210,7 @@ Tauri 还得挂 Node sidecar。
 
 ```bash
 npm run typecheck                                     # 三段：base + preload + renderer
-npm run test                                          # 1846 tests / 39 suites, ~40s
+npm run test                                          # 1870 tests / 39 suites, ~48s
 npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 npm run build:desktop                                 # tsc emit + 两个 esbuild bundle + 拷 index.html
 npm run start:desktop                                 # 真实 Electron，需要桌面
@@ -209,6 +229,7 @@ node --import tsx --test test/electronChannel.test.ts test/bridgeChannel.test.ts
 node --import tsx --test test/rendererImports.test.ts test/rendererShellModel.test.ts \
   test/rendererMarkdown.test.ts test/rendererTranscriptModel.test.ts test/rendererPermissionView.test.ts \
   test/rendererAskUserQuestionView.test.ts test/rendererPlanDialogViews.test.ts \
+  test/rendererCompletion.test.ts \
   test/rendererDiffRows.test.ts test/rendererTabBarModel.test.ts test/desktopUiRoundTrip.test.ts
 node --import tsx --test test/permissionPresentation.test.ts test/planPresentation.test.ts \
   test/usePermission.test.ts test/fileToolPreview.test.ts test/modelPicker.test.ts
@@ -220,3 +241,8 @@ node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 `Unable to deserialize cloned data due to invalid or unsupported version` —— 这是 Node test runner 自己的 IPC 报错，
 不是断言失败。单独跑必过（3/3），在未改动的基线上同样复现，`--test-concurrency=1` 串行干净。
 它是**间歇的**：既不要因为一次并发跑绿了就认为已修，也不要因为它挂了就去找自己的回归。
+
+第二个（3f 期间观察到）：`test/backgroundTasks.test.ts` 的
+`background Bash returns immediately and BashOutput consumes incremental output` 在全量并发跑时偶尔超时红一次
+（该用例本身要等一个真实子进程吐增量输出，1.7s 量级）。单独跑 3/3 全绿，紧接着的全量跑也全绿；
+它只 import `services/backgroundTasks/` 与三个 bash 工具，与桌面端毫无交集。同样是**间歇**，不要当回归追。

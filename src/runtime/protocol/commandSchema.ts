@@ -100,6 +100,17 @@ const COMMAND_SCHEMAS = {
     .strict(),
   'run-command': z.object({ type: z.literal('run-command'), id: commandId, input: z.string() }).strict(),
   'list-commands': z.object({ type: z.literal('list-commands'), id: commandId }).strict(),
+  // `cursorPos` is a plain number, not a bounded index: `extractAtCompletionToken`
+  // slices with it and an out-of-range value simply yields no token. Narrowing
+  // content is the job of the code that suffers from it; this validates shape.
+  'file-suggestions': z
+    .object({
+      type: z.literal('file-suggestions'),
+      id: commandId,
+      input: z.string(),
+      cursorPos: z.number(),
+    })
+    .strict(),
   checkpoints: z.object({ type: z.literal('checkpoints'), id: commandId }).strict(),
   'restore-code': z
     .object({ type: z.literal('restore-code'), id: commandId, commitHash: z.string() })

@@ -16,6 +16,31 @@ import type { SessionMeta } from '../../../sessions/service.js'
  * DOM-free on purpose; see `diffRows.ts`.
  */
 
+/**
+ * What activating a row does.
+ *
+ * Three of the four pickers resolve to a **slash command line**, not to the
+ * matching `SessionClient` method, and that is load-bearing rather than
+ * roundabout. `set-model` and `switchModel` are deliberately two layers: the
+ * wire command only points the current runtime somewhere else, while `/model`
+ * is the user expressing a preference and is what writes the tier back to
+ * config (`protocol/commandContext.ts` wires `setModel` to `switchModel`).
+ * Calling `client.setModel` from here would silently drop that persistence, and
+ * would let the two shells drift apart on a decision neither of them owns.
+ *
+ * `resume-picker` is the exception because `/resume` takes no argument — it
+ * exists only to open this panel. The desktop equivalent of switching sessions
+ * is already defined by the tab bar: one pane per session, so `open-pane`
+ * focuses the window that has it or opens one.
+ *
+ * `background-tasks` peeks rather than kills. `killTask` is destructive and gets
+ * no keyboard-adjacent affordance in this pass.
+ */
+export type SurfaceAction =
+  | { readonly kind: 'run-command'; readonly line: string }
+  | { readonly kind: 'open-pane'; readonly sessionId: string }
+  | { readonly kind: 'peek-task'; readonly taskId: string }
+
 export interface SurfaceRow {
   readonly id: string
   readonly label: string
@@ -23,6 +48,8 @@ export interface SurfaceRow {
   readonly current?: boolean
   readonly disabled?: boolean
   readonly disabledReason?: string
+  /** Absent on a disabled row, which is shown to explain itself, not to be picked. */
+  readonly action?: SurfaceAction
 }
 
 export interface SurfaceView {
@@ -76,7 +103,9 @@ function modelRow(option: ModelPickerOption): SurfaceRow {
     label: `${option.label}${option.modelKey ? ` — ${option.modelKey}` : ''}`,
     detail,
     ...(option.isCurrent ? { current: true } : {}),
-    ...(option.disabledReason ? { disabled: true, disabledReason: option.disabledReason } : {}),
+    ...(option.disabledReason
+      ? { disabled: true, disabledReason: option.disabledReason }
+      : { action: { kind: 'run-command', line: `/model ${option.tier}` } as const }),
   }
 }
 
@@ -103,7 +132,7 @@ export function effortPickerView(input: {
         ...(level === input.current ? { current: true } : {}),
         ...(beyondCeiling
           ? { disabled: true, disabledReason: `above this model's maximum (${input.maxEffort})` }
-          : {}),
+          : { action: { kind: 'run-command', line: `/effort ${level}` } as const }),
       }
     }),
     emptyMessage: '',
@@ -124,6 +153,7 @@ export function backgroundTasksView(tasks: readonly BackgroundTaskSnapshot[]): S
         task.exitCode !== undefined && task.exitCode !== null ? `exit ${task.exitCode}` : undefined,
         task.unreadBytes > 0 ? `${task.unreadBytes} new bytes` : undefined,
       ].filter((part): part is string => typeof part === 'string').join(' · '),
+      action: { kind: 'peek-task', taskId: task.id } as const,
     })),
     emptyMessage: 'No background tasks.',
   }
@@ -141,7 +171,54 @@ export function resumePickerView(input: {
       label: session.title ?? session.shortId,
       detail: `${session.messageCount} message${session.messageCount === 1 ? '' : 's'} · ${session.updatedAt}`,
       ...(session.id === input.currentSessionId ? { current: true } : {}),
+      action: { kind: 'open-pane', sessionId: session.id } as const,
     })),
     emptyMessage: 'No other sessions yet.',
   }
+}
+
+// --- selection --------------------------------------------------------------
+
+/**
+ * Moving through the rows, skipping the ones that cannot be picked.
+ *
+ * A disabled row is still *drawn* — a tier with no model configured should say
+ * why — but stepping onto it would leave Enter doing nothing, which reads as the
+ * app having hung. Wraps like the completion dropdown does.
+ *
+ * Returns the same index when nothing is selectable, so a panel of nothing but
+ * disabled rows is inert rather than looping forever.
+ */
+export function moveSurfaceSelection(
+  view: SurfaceView,
+  selectedIndex: number,
+  direction: 'up' | 'down',
+): number {
+  const total = view.rows.length
+  if (total === 0) return selectedIndex
+  const step = direction === 'up' ? -1 : 1
+  let index = selectedIndex
+  for (let hops = 0; hops < total; hops += 1) {
+    index = ((index + step) % total + total) % total
+    if (view.rows[index]?.action) return index
+  }
+  return selectedIndex
+}
+
+/** The first row a freshly opened panel should sit on. */
+export function initialSurfaceSelection(view: SurfaceView): number {
+  const current = view.rows.findIndex((row) => row.current && row.action)
+  if (current >= 0) return current
+  const first = view.rows.findIndex((row) => row.action)
+  return first >= 0 ? first : 0
+}
+
+/** The action for a row, or undefined when the row is disabled or absent. */
+export function activateSurfaceRow(view: SurfaceView, selectedIndex: number): SurfaceAction | undefined {
+  return view.rows[selectedIndex]?.action
+}
+
+/** Same answer, addressed by row id — the shape a click handler has. */
+export function activateSurfaceRowById(view: SurfaceView, id: string): SurfaceAction | undefined {
+  return view.rows.find((row) => row.id === id)?.action
 }

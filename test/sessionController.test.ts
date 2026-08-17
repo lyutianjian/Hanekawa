@@ -416,3 +416,79 @@ test('checkpoints are skipped when the shadow repo fails to initialize', async (
 
   assert.deepEqual(harness.checkpointCalls, [])
 })
+
+test('a second submit while a turn is in flight is rejected, not run', async () => {
+  // The guard exists because everything after it assigns `this.abortController`:
+  // a concurrent run would overwrite the live one and leave the first turn
+  // impossible to interrupt. It throws rather than returning quietly, because a
+  // dropped message is indistinguishable from one that was sent and answered with
+  // nothing — a shell is supposed to catch this and queue the input instead
+  // (`SessionHost.pumpQueue`, `App.tsx`'s `handleSubmit`).
+  let release: (() => void) | undefined
+  const runs: string[] = []
+  const harness = await createHarness({
+    run: async (input) => {
+      runs.push(input)
+      // Only the first turn parks; later ones return straight away, or the
+      // "accepts the next message" assertion below would wait forever.
+      if (runs.length === 1) await new Promise<void>((resolve) => { release = resolve })
+      return okResult()
+    },
+  })
+
+  const first = harness.controller.submit('first')
+  await waitUntil(() => runs.length === 1, 'the first turn to start')
+
+  await assert.rejects(
+    () => harness.controller.submit('second'),
+    /already running/,
+    'the second submit must reject',
+  )
+  assert.deepEqual(runs, ['first'], 'and must not reach the loop')
+
+  release?.()
+  await first
+  // The guard clears with the turn rather than latching: the same controller has
+  // to accept the next message.
+  assert.equal(harness.controller.getSnapshot().isStreaming, false)
+  await harness.controller.submit('third')
+  assert.deepEqual(runs, ['first', 'third'])
+})
+
+test('the first turn is still interruptible after a second submit was refused', async () => {
+  // The point of the guard: the live AbortController must still be the first
+  // turn's. If the refused submit had gone through, `interrupt()` would abort the
+  // *second* turn's signal and the first would run on unstoppably.
+  const seen: Array<AbortSignal | undefined> = []
+  const harness = await createHarness({
+    run: async (_input, signal) => {
+      seen.push(signal)
+      await new Promise<void>((resolve) => {
+        if (signal?.aborted) resolve()
+        else signal?.addEventListener('abort', () => resolve())
+      })
+      const error = new Error('aborted')
+      error.name = 'AbortError'
+      throw error
+    },
+  })
+
+  const first = harness.controller.submit('first')
+  await waitUntil(() => seen.length === 1, 'the first turn to start')
+  await assert.rejects(() => harness.controller.submit('second'), /already running/)
+
+  harness.controller.interrupt('user-cancel')
+  await first
+
+  assert.equal(seen.length, 1, 'only one turn ever reached the loop')
+  assert.equal(seen[0]?.aborted, true, 'and interrupting reached that turn')
+})
+
+/** Polls rather than sleeping, so the wait is as short as the work allows. */
+async function waitUntil(ready: () => boolean, what: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (ready()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(`Timed out waiting for ${what}`)
+}

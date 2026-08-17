@@ -47,6 +47,8 @@ const SAMPLES = {
   'open-pane': { type: 'open-pane', id: '1' },
   'close-pane': { type: 'close-pane', id: '1', paneId: 'p' },
   'list-panes': { type: 'list-panes', id: '1' },
+  'enqueue-message': { type: 'enqueue-message', id: '1', content: 'later, please' },
+  'clear-queue': { type: 'clear-queue', id: '1' },
   shutdown: { type: 'shutdown', id: '1', reason: 'bye' },
 } as const satisfies Record<HostCommand['type'], HostCommand>
 

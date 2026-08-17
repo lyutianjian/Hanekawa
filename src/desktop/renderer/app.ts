@@ -106,14 +106,20 @@ import {
   type RewindIntent,
   type RewindState,
 } from './model/rewindPanel.js'
+import { queuedMessagesView } from './model/queuedMessages.js'
 import { required } from './dom/dom.js'
 import { createTranscriptView } from './dom/transcriptView.js'
 import { createOverlayView } from './dom/overlayView.js'
 import { createRewindView } from './dom/rewindView.js'
+import { createQueueView } from './dom/queueView.js'
 import { createSurfacePanel } from './dom/surfaceView.js'
 import { createComposerView, createStatusView, createSuggestionsView } from './dom/composerView.js'
 import { createTabBarView } from './dom/tabBarView.js'
-import type { AskUserQuestionRequest, AskUserQuestionResult } from '../../harness/types.js'
+import type {
+  AskUserQuestionRequest,
+  AskUserQuestionResult,
+  PersistedQueuedMessage,
+} from '../../harness/types.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeManager.js'
 import type { PermissionRequestDto, UiRequest, WireCommandInfo, WirePaneInfo } from '../../runtime/protocol/wire.js'
 
@@ -134,10 +140,14 @@ const surface = createSurfacePanel(required('surface'), (action) => {
   void runSurfaceAction(action)
 })
 const suggestions = createSuggestionsView(required('suggestions'))
+const queueStrip = createQueueView(required('queue'), () => {
+  void client.clearQueue().catch((error) => note(describe(error), 'error'))
+})
 const status = createStatusView({
   model: required('status-model'),
   mode: required('status-mode'),
   usage: required('status-usage'),
+  cost: required('status-cost'),
   streaming: required('status-streaming'),
   session: required('status-session'),
 })
@@ -156,6 +166,14 @@ let queue: UiQueueState = createUiQueue()
 let completions: CompletionState = NO_COMPLETIONS
 let commands: WireCommandInfo[] = []
 let panes: readonly WirePaneInfo[] = Object.freeze([])
+/**
+ * Messages the host is holding until the running turn ends.
+ *
+ * A mirror of `client.getQueuedMessages()` rather than the source: the host owns
+ * the queue and pumps it on events this window never sent, so the only correct
+ * move here is to draw whatever the last `queued-messages` event said.
+ */
+let queued: readonly PersistedQueuedMessage[] = Object.freeze([])
 /**
  * The picker currently on screen, and the row the keyboard is on.
  *
@@ -351,6 +369,10 @@ async function executeRewind(
 
 function renderTranscript(): void {
   transcriptView.render(transcript)
+}
+
+function renderQueue(): void {
+  queueStrip.render(queuedMessagesView(queued))
 }
 
 function note(text: string, level: 'system' | 'error' = 'system'): void {
@@ -584,6 +606,16 @@ client.onPanesChanged((next) => {
   renderTabBar()
 })
 
+/**
+ * Queue updates. Pushed on every mutation *and* on every session switch, since
+ * the host is also the one that pumps — a row disappearing here is usually the
+ * host having just sent it, not this window doing anything.
+ */
+client.onQueueChanged((next) => {
+  queued = next
+  renderQueue()
+})
+
 async function openSurface(name: SupportedSurface): Promise<void> {
   try {
     const view = await buildSurfaceView(name)
@@ -618,7 +650,7 @@ async function buildSurfaceView(name: SupportedSurface): Promise<SurfaceView> {
 
 client.subscribe(() => {
   const snapshot = client.getSnapshot()
-  status.render(snapshot)
+  status.render(snapshot, client.getCost())
   composer.setStreaming(snapshot.isStreaming)
   const runtime = client.getRuntimeSnapshot()
   if (runtime) status.renderRuntime(runtime)
@@ -777,6 +809,10 @@ document.addEventListener('keydown', (event) => {
       event.preventDefault()
       void send()
       return
+    case 'enqueue':
+      event.preventDefault()
+      void queueMessage()
+      return
     case 'newline':
     case 'none':
       return
@@ -790,9 +826,14 @@ required<HTMLTextAreaElement>('input').addEventListener('input', () => {
 
 form.addEventListener('submit', (event) => {
   event.preventDefault()
-  // Enter is handled by the global key map, which knows about the streaming gate;
-  // this is the button path, and it must apply the same rule.
-  if (client.getSnapshot().isStreaming) return
+  // Enter is handled by the global key map, which decides between sending and
+  // queueing; this is the button path and it must reach the same verdict. The
+  // button is no longer disabled mid-turn, so this branch is now load-bearing
+  // rather than a guard against a click that could not happen.
+  if (client.getSnapshot().isStreaming) {
+    void queueMessage()
+    return
+  }
   void send()
 })
 
@@ -819,6 +860,41 @@ async function send(): Promise<void> {
     await client.submit(classified.text)
   } catch (error) {
     note(`Failed: ${describe(error)}`, 'error')
+  } finally {
+    composer.focus()
+  }
+}
+
+/**
+ * Hands the composer's text to the host's queue instead of starting a turn.
+ *
+ * A slash command is *not* queued — it runs immediately. Commands are not prompts:
+ * `SessionController.submit` is not involved, so there is nothing to wait behind,
+ * and queueing `/model` until the turn ended would be a surprising delay on
+ * something the user expects to take effect now. (`keymap.ts` never routes a
+ * command here anyway — the dropdown degrades Enter to accept-only mid-turn — but
+ * the button path can, so the branch has to exist.)
+ *
+ * The composer is cleared optimistically, then restored on failure: the strip is
+ * driven by the host's `queued-messages` event, so leaving the text in place until
+ * the round trip lands would show the message twice.
+ */
+async function queueMessage(): Promise<void> {
+  const classified = classifyInput(composer.value())
+  if (classified.kind === 'empty') return
+  if (classified.kind === 'command') {
+    await send()
+    return
+  }
+
+  const text = classified.text
+  composer.clear()
+  closeCompletions()
+  try {
+    await client.enqueueMessage(text)
+  } catch (error) {
+    composer.setValue(text, text.length)
+    note(`Failed to queue: ${describe(error)}`, 'error')
   } finally {
     composer.focus()
   }
@@ -851,7 +927,7 @@ void (async () => {
   }
   renderTranscript()
 
-  status.render(client.getSnapshot())
+  status.render(client.getSnapshot(), client.getCost())
   const runtime = client.getRuntimeSnapshot()
   if (runtime) status.renderRuntime(runtime)
   // Only after `hello()` resolves, which is what makes the window title an
@@ -859,6 +935,11 @@ void (async () => {
   status.renderSession(hello.session)
   boundSessionId = hello.session.id
   composer.setStreaming(client.getSnapshot().isStreaming)
+
+  // Whatever the last window left waiting. The queue is replayed from the session
+  // log, so this is not always empty even on a cold start.
+  queued = hello.queuedMessages
+  renderQueue()
 
   await refreshCommands()
 

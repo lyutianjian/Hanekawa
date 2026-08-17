@@ -7,6 +7,7 @@ import type {
   PermissionRule,
 } from '../../harness/permissions.js'
 import type { RiskLevel, SessionRecord } from '../../harness/types.js'
+import type { MessageQueuePriority, PersistedQueuedMessage } from '../../harness/types.js'
 import type {
   AskUserQuestionRequest,
   AskUserQuestionResult,
@@ -46,8 +47,19 @@ export type HostEvent =
   /**
    * Pull state. `subagentProgress` rides along because the controller exposes
    * it as a live `Map` that a `Map` cannot cross the boundary as.
+   *
+   * `cost` is derived here rather than by the viewer, for the same reason
+   * `PermissionRequestDto` ships a rendered preview: it needs `ModelPricing`
+   * plus `harness/usage.ts`, and a renderer may import neither. Absent when the
+   * active model has no complete pricing — "not priced" and "free" are different
+   * answers.
    */
-  | { type: 'snapshot'; snapshot: SessionControllerSnapshot; subagentProgress: Array<[string, string]> }
+  | {
+      type: 'snapshot'
+      snapshot: SessionControllerSnapshot
+      subagentProgress: Array<[string, string]>
+      cost?: WireUsageCost
+    }
   | { type: 'runtime-snapshot'; snapshot: WireRuntimeSnapshot }
   /**
    * Push, because the registry is a `useSyncExternalStore` source. The host
@@ -76,6 +88,15 @@ export type HostEvent =
   /** A blocking question for the UI. The client must eventually answer it. */
   | { type: 'ui-request'; request: UiRequest }
   | { type: 'pane-list'; panes: WirePaneInfo[] }
+  /**
+   * The messages waiting behind the running turn.
+   *
+   * Pushed rather than polled, and for a reason the client cannot see: the host
+   * owns both the queue and the pump, so the list moves on events a renderer
+   * never sent — a turn ending, a permission prompt being answered, a `/clear`
+   * migrating the queue to a new session.
+   */
+  | { type: 'queued-messages'; messages: PersistedQueuedMessage[] }
   | { type: 'reply'; id: string; result: unknown }
   | { type: 'fail'; id: string; message: string }
 
@@ -159,6 +180,18 @@ export type HostCommand =
   | { type: 'open-pane'; id: string; sessionId?: string; title?: string }
   | { type: 'close-pane'; id: string; paneId: string }
   | { type: 'list-panes'; id: string }
+  // --- message queue --------------------------------------------------------
+  /**
+   * Hold a message until the running turn is over.
+   *
+   * The queue lives host-side because it is persisted (`message_queue` records,
+   * so it survives a restart) and because the pump's gate reads state only the
+   * host has — whether a turn is in flight, and whether a blocking UI request is
+   * outstanding. There is deliberately no `dequeue`: a client asking for the
+   * next message would race the host's own pump.
+   */
+  | { type: 'enqueue-message'; id: string; content: string; priority?: MessageQueuePriority }
+  | { type: 'clear-queue'; id: string }
   | { type: 'shutdown'; id: string; reason: string }
 
 export type InterruptReason = 'user-cancel' | 'exit'
@@ -345,8 +378,28 @@ export interface WireHelloResult {
   notices: StartupNotice[]
   hasRecoverableInterruption: boolean
   initialQueuedPrompt?: string
+  /**
+   * Messages already waiting when the client attached.
+   *
+   * Startup-shaped like `records`: the queue is replayed from the session log,
+   * so a window reopened after a crash finds whatever the last one left behind.
+   * Distinct from `initialQueuedPrompt`, which is an *interrupted* prompt handed
+   * back to the composer rather than a message anyone queued.
+   */
+  queuedMessages: PersistedQueuedMessage[]
   /** Before clamping, for a picker that wants to show the configured value. */
   configuredEffortLevel: EffortLevel
+}
+
+/** Token cost for the session so far, computed host-side. */
+export interface WireUsageCost {
+  amount: number
+  currency: string
+}
+
+/** Echoes the stored message so a client can paint the row it just created. */
+export interface WireEnqueueResult {
+  message: PersistedQueuedMessage
 }
 
 /**

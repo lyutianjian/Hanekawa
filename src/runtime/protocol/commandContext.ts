@@ -7,7 +7,7 @@ import type {
 } from '../../commands/types.js'
 import { resetAutoCompactFailureState } from '../../harness/compact.js'
 import type { SessionRecord } from '../../harness/types.js'
-import { calculateTokenCost, hasCompletePricing } from '../../harness/usage.js'
+import { resolveUsageWithCost } from '../../harness/usage.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import { switchModel, type ModelSwitchDeps } from '../modelSwitch.js'
 import { applyPermissionModeTransition } from '../permissionMode.js'
@@ -146,16 +146,13 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     },
     getSessionMetricsSummary: async () => project.store.loadMetricsSummary(deps.getSession().id),
 
-    getUsage: (): CommandUsage => {
-      const total = controller.getSnapshot().usage.total
-      const pricing = runtimeSlot.current.modelConfig.pricing
-      if (!hasCompletePricing(pricing)) return total
-      return {
-        ...total,
-        cost: calculateTokenCost(total, pricing),
-        currency: pricing.currency ?? 'USD',
-      }
-    },
+    // Shared with the desktop status bar, which reads the same value off the
+    // `snapshot` event. Both go through one function so `/cost` and the always-on
+    // readout cannot print different numbers for the same turn.
+    getUsage: (): CommandUsage => resolveUsageWithCost(
+      controller.getSnapshot().usage.total,
+      runtimeSlot.current.modelConfig.pricing,
+    ),
 
     getModel: currentModel,
     // The full `/model` semantics, including the tier write-back that the

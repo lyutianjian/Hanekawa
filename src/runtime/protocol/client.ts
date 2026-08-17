@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { SessionRecord, TaskDisplaySnapshot } from '../../harness/types.js'
+import type { MessageQueuePriority, PersistedQueuedMessage } from '../../harness/types.js'
 import type { PermissionMode } from '../../harness/permissions.js'
 import type {
   AskUserQuestionRequest,
@@ -28,6 +29,7 @@ import {
   type WireCommandInfo,
   type WireCommandsResult,
   type WireEffortResult,
+  type WireEnqueueResult,
   type WireFileSuggestionsResult,
   type WireHelloResult,
   type WireListPanesResult,
@@ -45,9 +47,11 @@ import {
   type WireSessionsResult,
   type WireTaskOutputResult,
   type WireTaskResult,
+  type WireUsageCost,
 } from './wire.js'
 
 const EMPTY_TASKS: readonly BackgroundTaskSnapshot[] = Object.freeze([])
+const EMPTY_QUEUE: readonly PersistedQueuedMessage[] = Object.freeze([])
 
 /** Answers the four blocking questions a host can ask. */
 export interface SessionClientHandlers {
@@ -78,6 +82,7 @@ export class SessionClient {
   private readonly eventListeners = new Set<(event: SessionEvent) => void>()
   private readonly effectListeners = new Set<(effect: CommandEffect) => void>()
   private readonly paneListeners = new Set<(panes: readonly WirePaneInfo[]) => void>()
+  private readonly queueListeners = new Set<(messages: readonly PersistedQueuedMessage[]) => void>()
   private readonly listeners = new Set<() => void>()
   private handlers: SessionClientHandlers = {}
 
@@ -88,11 +93,22 @@ export class SessionClient {
     spinnerSubText: undefined,
   })
   private subagentProgress: ReadonlyMap<string, string> = new Map()
+  /**
+   * Session cost, as computed by the host.
+   *
+   * Folded into the same diff as the snapshot rather than kept as its own
+   * signal: it is a function of the token totals, so it moves exactly when
+   * `usage` does and would otherwise wake every subscriber on a turn where
+   * nothing else changed.
+   */
+  private cost: WireUsageCost | undefined
   private runtimeSnapshot: WireRuntimeSnapshot | undefined
   private session: SessionMeta | undefined
   private backgroundTasks: readonly BackgroundTaskSnapshot[] = EMPTY_TASKS
   /** Pane list, kept identity-stable across `pane-list` events that re-announce the same set. */
   private panes: readonly WirePaneInfo[] = Object.freeze([])
+  /** Queued messages, identity-stable the same way and for the same reason. */
+  private queuedMessages: readonly PersistedQueuedMessage[] = EMPTY_QUEUE
   private readonly teardown: Array<() => void> = []
   private disposed = false
 
@@ -177,6 +193,30 @@ export class SessionClient {
     return () => {
       this.paneListeners.delete(listener)
     }
+  }
+
+  /**
+   * Messages the host is holding until the running turn ends.
+   *
+   * Empty until the first `queued-messages` event; a shell that needs the
+   * initial set to paint takes it from `hello()`'s result instead of waiting.
+   */
+  getQueuedMessages = (): readonly PersistedQueuedMessage[] => this.queuedMessages
+
+  /** Notified when the queue changes, including when the host pumps one out of it. */
+  onQueueChanged(listener: (messages: readonly PersistedQueuedMessage[]) => void): () => void {
+    this.queueListeners.add(listener)
+    return () => {
+      this.queueListeners.delete(listener)
+    }
+  }
+
+  /**
+   * Session cost so far, or `undefined` when the active model has no complete
+   * pricing. Derived host-side; see the `snapshot` event in `wire.ts`.
+   */
+  getCost(): WireUsageCost | undefined {
+    return this.cost
   }
 
   // --- commands ---------------------------------------------------------
@@ -433,6 +473,29 @@ export class SessionClient {
     return result.panes
   }
 
+  /**
+   * Holds a message until the running turn is over.
+   *
+   * There is no matching `dequeue`: the host pumps its own queue, and a client
+   * that also popped from it would race that pump. The reply echoes the stored
+   * message, but the authoritative list still arrives as a `queued-messages`
+   * event — including the one that removes this message again when it is sent.
+   */
+  async enqueueMessage(content: string, priority?: MessageQueuePriority): Promise<PersistedQueuedMessage> {
+    const result = await this.send({
+      type: 'enqueue-message',
+      id: randomUUID(),
+      content,
+      ...(priority ? { priority } : {}),
+    }) as WireEnqueueResult
+    return result.message
+  }
+
+  /** Drops every waiting message. Does not touch the turn already running. */
+  async clearQueue(): Promise<void> {
+    await this.send({ type: 'clear-queue', id: randomUUID() })
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
@@ -440,9 +503,11 @@ export class SessionClient {
     this.failAllPending('The client was disposed.')
     this.backgroundTasks = EMPTY_TASKS
     this.panes = Object.freeze([])
+    this.queuedMessages = EMPTY_QUEUE
     this.eventListeners.clear()
     this.effectListeners.clear()
     this.paneListeners.clear()
+    this.queueListeners.clear()
     this.listeners.clear()
   }
 
@@ -467,7 +532,7 @@ export class SessionClient {
         return
       case 'snapshot':
         this.subagentProgress = new Map(event.subagentProgress)
-        this.applySnapshot(event.snapshot)
+        this.applySnapshot(event.snapshot, event.cost)
         return
       case 'runtime-snapshot':
         this.runtimeSnapshot = event.snapshot
@@ -481,6 +546,9 @@ export class SessionClient {
         return
       case 'pane-list':
         this.applyPanes(event.panes)
+        return
+      case 'queued-messages':
+        this.applyQueuedMessages(event.messages)
         return
       case 'command-effect':
         for (const listener of [...this.effectListeners]) listener(event.effect)
@@ -500,21 +568,28 @@ export class SessionClient {
   /**
    * Swaps the snapshot only when a field actually differs, so `getSnapshot()`
    * keeps returning the same object while nothing has changed.
+   *
+   * `cost` participates in the same decision even though it lives outside the
+   * snapshot object: it rides on this event, so treating it separately would
+   * mean either a second `notify()` per tick or a stale readout.
    */
-  private applySnapshot(next: SessionControllerSnapshot): void {
+  private applySnapshot(next: SessionControllerSnapshot, cost?: WireUsageCost): void {
     const previous = this.snapshot
     const usage = sameUsage(previous.usage, next.usage) ? previous.usage : next.usage
     const taskSnapshot = sameTaskSnapshot(previous.taskSnapshot, next.taskSnapshot)
       ? previous.taskSnapshot
       : next.taskSnapshot
+    const costChanged = !sameCost(this.cost, cost)
 
     if (
-      previous.isStreaming === next.isStreaming
+      !costChanged
+      && previous.isStreaming === next.isStreaming
       && previous.spinnerSubText === next.spinnerSubText
       && usage === previous.usage
       && taskSnapshot === previous.taskSnapshot
     ) return
 
+    this.cost = cost
     this.snapshot = Object.freeze({
       isStreaming: next.isStreaming,
       usage,
@@ -572,6 +647,18 @@ export class SessionClient {
     this.panes = Object.freeze([...next])
     this.notify()
     for (const listener of [...this.paneListeners]) listener(this.panes)
+  }
+
+  /**
+   * Same identity discipline as the pane list. The host re-announces the queue
+   * on every mutation *and* on every session switch, so a fresh array each time
+   * would repaint the strip while it says the same thing.
+   */
+  private applyQueuedMessages(next: readonly PersistedQueuedMessage[]): void {
+    if (sameQueuedMessages(this.queuedMessages, next)) return
+    this.queuedMessages = next.length === 0 ? EMPTY_QUEUE : Object.freeze([...next])
+    this.notify()
+    for (const listener of [...this.queueListeners]) listener(this.queuedMessages)
   }
 
   /**
@@ -702,4 +789,35 @@ function samePaneList(a: readonly WirePaneInfo[], b: readonly WirePaneInfo[]): b
     if (left.sessionTitle !== right.sessionTitle) return false
   }
   return true
+}
+
+/**
+ * Order matters as much as membership — the queue *is* an order — so this is a
+ * positional walk rather than a set comparison.
+ *
+ * Spelled out here rather than reusing `MessageQueue`'s own private comparison:
+ * that module value-imports `node:crypto`, and this file is bundled for a
+ * renderer.
+ */
+function sameQueuedMessages(
+  a: readonly PersistedQueuedMessage[],
+  b: readonly PersistedQueuedMessage[],
+): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  for (let index = 0; index < a.length; index += 1) {
+    const left = a[index]!
+    const right = b[index]!
+    if (left.id !== right.id) return false
+    if (left.content !== right.content) return false
+    if (left.priority !== right.priority) return false
+    if (left.createdAt !== right.createdAt) return false
+  }
+  return true
+}
+
+function sameCost(a: WireUsageCost | undefined, b: WireUsageCost | undefined): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.amount === b.amount && a.currency === b.currency
 }

@@ -377,3 +377,107 @@ test('listCommands unwraps to the metadata array', async () => {
   assert.deepEqual(await pending, [{ name: 'help', description: 'Show help' }])
   harness.client.dispose()
 })
+
+// --- the message queue ------------------------------------------------------
+
+function queued(id: string, content: string) {
+  return { id, content, priority: 'next' as const, createdAt: '2026-08-17T00:00:00.000Z' }
+}
+
+test('an unchanged queue keeps its identity and does not notify', async () => {
+  const harness = createHarness()
+  let notifications = 0
+  let announcements = 0
+  harness.client.subscribe(() => { notifications += 1 })
+  harness.client.onQueueChanged(() => { announcements += 1 })
+
+  harness.post({ type: 'queued-messages', messages: [queued('a', 'first')] })
+  await settle()
+  const first = harness.client.getQueuedMessages()
+  assert.equal(first.length, 1)
+  assert.equal(notifications, 1)
+  assert.equal(announcements, 1)
+
+  // The host re-announces the queue on every mutation *and* on every session
+  // switch, so an identical payload must not repaint a strip that says the same
+  // thing.
+  harness.post({ type: 'queued-messages', messages: [queued('a', 'first')] })
+  await settle()
+  assert.equal(harness.client.getQueuedMessages(), first, 'identity must survive a re-announcement')
+  assert.equal(notifications, 1)
+  assert.equal(announcements, 1)
+
+  harness.post({ type: 'queued-messages', messages: [queued('a', 'first'), queued('b', 'second')] })
+  await settle()
+  assert.notEqual(harness.client.getQueuedMessages(), first)
+  assert.equal(notifications, 2)
+  assert.equal(announcements, 2)
+  harness.client.dispose()
+})
+
+test('the queue is compared positionally, because a queue is an order', async () => {
+  const harness = createHarness()
+  harness.post({ type: 'queued-messages', messages: [queued('a', 'first'), queued('b', 'second')] })
+  await settle()
+  const before = harness.client.getQueuedMessages()
+
+  // Same membership, different order. A set comparison would call this unchanged
+  // and the strip would keep claiming the wrong send order.
+  harness.post({ type: 'queued-messages', messages: [queued('b', 'second'), queued('a', 'first')] })
+  await settle()
+
+  assert.notEqual(harness.client.getQueuedMessages(), before)
+  assert.deepEqual(harness.client.getQueuedMessages().map((entry) => entry.id), ['b', 'a'])
+  harness.client.dispose()
+})
+
+test('an emptied queue is reported as empty', async () => {
+  const harness = createHarness()
+  harness.post({ type: 'queued-messages', messages: [queued('a', 'first')] })
+  await settle()
+
+  harness.post({ type: 'queued-messages', messages: [] })
+  await settle()
+  assert.deepEqual(harness.client.getQueuedMessages(), [])
+  harness.client.dispose()
+})
+
+// --- derived cost -----------------------------------------------------------
+
+test('the cost rides on the snapshot diff rather than notifying on its own', async () => {
+  const harness = createHarness()
+  let notifications = 0
+  harness.client.subscribe(() => { notifications += 1 })
+
+  harness.post({ type: 'snapshot', snapshot: snapshot(), subagentProgress: [], cost: { amount: 1, currency: 'USD' } })
+  await settle()
+  assert.deepEqual(harness.client.getCost(), { amount: 1, currency: 'USD' })
+  assert.equal(notifications, 1)
+
+  // Identical snapshot *and* identical cost: nothing to tell anyone.
+  harness.post({ type: 'snapshot', snapshot: snapshot(), subagentProgress: [], cost: { amount: 1, currency: 'USD' } })
+  await settle()
+  assert.equal(notifications, 1, 'a re-sent cost must not wake subscribers')
+
+  // A cost that moved has to wake them even though every snapshot field is equal
+  // — it is a function of the token totals, which the host may have rounded to the
+  // same values here.
+  harness.post({ type: 'snapshot', snapshot: snapshot(), subagentProgress: [], cost: { amount: 2, currency: 'USD' } })
+  await settle()
+  assert.deepEqual(harness.client.getCost(), { amount: 2, currency: 'USD' })
+  assert.equal(notifications, 2)
+  harness.client.dispose()
+})
+
+test('a snapshot with no cost clears one that was there', async () => {
+  const harness = createHarness()
+  harness.post({ type: 'snapshot', snapshot: snapshot(), subagentProgress: [], cost: { amount: 1, currency: 'USD' } })
+  await settle()
+
+  // Reachable through a model switch: the new model may have no pricing, and a
+  // stale figure from the old one would be worse than none.
+  harness.post({ type: 'snapshot', snapshot: snapshot(), subagentProgress: [] })
+  await settle()
+  assert.equal(harness.client.getCost(), undefined)
+  harness.client.dispose()
+})

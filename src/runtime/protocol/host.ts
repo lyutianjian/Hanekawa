@@ -6,10 +6,13 @@ import { saveEffortLevel } from '../../config/settings.js'
 import type { PermissionRequest } from '../../harness/permissions.js'
 import type { RuntimeDiagnostic } from '../../harness/diagnostics.js'
 import type { SessionRecord } from '../../harness/types.js'
+import { resolveUsageWithCost } from '../../harness/usage.js'
 import type { SessionMeta } from '../../sessions/service.js'
+import { MessageQueue } from '../messageQueue.js'
 import { applyPermissionModeTransition } from '../permissionMode.js'
 import { buildModelPickerOptions } from '../modelPicker.js'
 import { resolveRuntimeModelKeyAfterConfigChange } from '../providerRuntime.js'
+import { canPumpQueue } from '../queuePump.js'
 import { SessionRecordLedger } from '../recordLedger.js'
 import { buildRewindSummaryRewrite } from '../rewindSummary.js'
 import { generateFileSuggestions } from '../suggestions/fileSuggestions.js'
@@ -41,6 +44,7 @@ import {
   type WireCommandsResult,
   type WireClosePaneResult,
   type WireEffortResult,
+  type WireEnqueueResult,
   type WireFileSuggestionsResult,
   type WireHelloResult,
   type WireListPanesResult,
@@ -59,6 +63,7 @@ import {
   type WireSessionsResult,
   type WireTaskOutputResult,
   type WireTaskResult,
+  type WireUsageCost,
 } from './wire.js'
 
 function isEffortLevel(value: string): value is EffortLevel {
@@ -167,6 +172,19 @@ export class SessionHost {
   /** Kept host-side so `onAlwaysAllow` survives the round trip. */
   private readonly livePermissionRequests = new Map<string, PermissionRequest>()
   private readonly ledger: SessionRecordLedger
+  /**
+   * Messages the user submitted while a turn was running.
+   *
+   * Host-side rather than shell-side, unlike the terminal's — where `App.tsx`
+   * owns the instance — because it is persisted through `store.appendRecord` and
+   * because the pump's gate reads two things only this process knows: whether a
+   * turn is in flight, and whether a blocking UI request is outstanding. Letting
+   * a renderer own it would mean an `append-record` command, i.e. handing the
+   * less-trusted end of this protocol the whole `SessionRecord` union.
+   */
+  private readonly messages: MessageQueue
+  /** A pump run has dequeued but not finished handing off. See `canPumpQueue`. */
+  private pumping = false
   private readonly teardown: Array<() => void> = []
   private session: SessionMeta
   private disposed = false
@@ -183,6 +201,13 @@ export class SessionHost {
     this.onPaneClosed = deps.onPaneClosed
     this.session = deps.scope.session
     this.ledger = new SessionRecordLedger(deps.scope.existingRecords)
+    // Same three arguments the terminal passes (`App.tsx`), so a session's queue
+    // replays identically whichever shell reopens it.
+    this.messages = new MessageQueue(
+      deps.scope.session.id,
+      deps.scope.existingRecords,
+      (sessionId, record) => this.project.store.appendRecord(sessionId, record),
+    )
 
     this.teardown.push(this.controller.onEvent(this.forwardSessionEvent))
     this.teardown.push(this.controller.subscribe(this.postSnapshot))
@@ -191,6 +216,7 @@ export class SessionHost {
     // touching RuntimeSlot, so without this the client's mode goes stale.
     this.teardown.push(this.scope.permissionGate.onModeChange(this.postRuntimeSnapshot))
     this.teardown.push(this.project.backgroundTasks.subscribe(this.scheduleBackgroundTaskPost))
+    this.teardown.push(this.messages.subscribe(this.postQueuedMessages))
     this.teardown.push(this.channel.onMessage(this.handleMessage))
     this.teardown.push(this.channel.onClose(this.handleClose))
 
@@ -226,11 +252,45 @@ export class SessionHost {
   }
 
   private postSnapshot = (): void => {
+    // Also the pump's main trigger: this fires when `streaming` flips back to
+    // false, which is the moment a queued message becomes sendable.
+    const cost = this.currentCost()
     this.post({
       type: 'snapshot',
       snapshot: this.controller.getSnapshot(),
       subagentProgress: [...this.controller.getSubagentProgress()],
+      ...(cost ? { cost } : {}),
     })
+    this.pumpQueue()
+  }
+
+  /**
+   * Session cost, through the same projection `/cost` reads.
+   *
+   * Derived here because a renderer may not import `harness/` — the bargain
+   * `PermissionRequestDto` already makes with its preview.
+   */
+  private currentCost(): WireUsageCost | undefined {
+    const usage = resolveUsageWithCost(
+      this.controller.getSnapshot().usage.total,
+      this.runtimeSlot.current.modelConfig.pricing,
+    )
+    if (usage.cost === undefined) return undefined
+    return { amount: usage.cost, currency: usage.currency ?? 'USD' }
+  }
+
+  /**
+   * Announces the queue, and takes it as a cue to try the pump.
+   *
+   * Wired here rather than at each mutation so every path that can grow the queue
+   * is covered by one edge: `enqueue-message`, the `hydrate` after a rewind, and
+   * the `migrateTo` a `/clear` runs. Re-entrancy is safe — a pump in progress
+   * dequeues, which notifies, which lands back here, where `canPumpQueue`'s
+   * `running` guard turns it away.
+   */
+  private postQueuedMessages = (): void => {
+    this.post({ type: 'queued-messages', messages: [...this.messages.getSnapshot()] })
+    this.pumpQueue()
   }
 
   private postRuntimeSnapshot = (): void => {
@@ -347,7 +407,74 @@ export class SessionHost {
     this.post({ type: 'ui-request', request })
     return pending.finally(() => {
       this.pendingKinds.delete(request.requestId)
+      // A dialog closing can unblock the pump; nothing else notices that.
+      this.pumpQueue()
     })
+  }
+
+  // --- the message queue ------------------------------------------------
+
+  /**
+   * Sends the next queued message, if the gate lets it through.
+   *
+   * The policy is `canPumpQueue`, shared with the terminal so the domain rule —
+   * one at a time, never during a turn — cannot fork. Only `uiBlocked` differs
+   * between the shells, and this is where the desktop's answer lives: a pending
+   * *blocking* request, not any open panel. The `/rewind` panel and the pickers
+   * hold the user, not the agent loop, so they do not stop the queue.
+   *
+   * Fire-and-forget by design. Every trigger (an enqueue, a turn ending, a
+   * dialog being answered) is a place that must not wait for a whole turn, so
+   * the work is detached and the tail re-checks rather than looping: after an
+   * await this is a fresh microtask, not recursion.
+   *
+   * Because it is detached, both `disposed` checks below are defence in depth
+   * rather than load-bearing, and it is worth knowing which is which. What
+   * actually stops a closed pane from pumping is `dispose()` draining
+   * `this.teardown`, which unsubscribes the snapshot and queue listeners — remove
+   * either check by mutation and the suite stays green, because nothing calls this
+   * afterwards. They are kept for the same reason `post()` carries one: the cost
+   * is a branch, and the failure they guard against is a real turn starting on a
+   * host nobody is listening to, with the bridges already detached so every
+   * permission prompt inside it auto-denies. The second one, after the await,
+   * covers a race the suite cannot hit deterministically — `dequeue()` writes to
+   * disk, and a `dispose()` landing inside that await is past the first check.
+   * Losing the dequeued message when the window closes is the lesser evil, and
+   * matches what a Ctrl+C mid-pump does in the terminal.
+   */
+  private pumpQueue(): void {
+    if (this.disposed) return
+    if (!canPumpQueue({
+      pending: this.messages.getSnapshot().length,
+      running: this.pumping,
+      turnActive: this.controller.getSnapshot().isStreaming,
+      uiBlocked: this.pendingKinds.size > 0,
+    })) return
+
+    this.pumping = true
+    void (async () => {
+      try {
+        const next = await this.messages.dequeue()
+        if (next && !this.disposed) await this.controller.submit(next.content)
+      } catch (error) {
+        // Synthesized rather than routed through the controller: the message
+        // never became a turn, so there is no turn to attach a notice to. Same
+        // shape `applySessionSwitch` posts for its startup notices.
+        this.post({
+          type: 'session-event',
+          event: {
+            type: 'notice',
+            level: 'error',
+            content: `Failed to send queued message: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        })
+      } finally {
+        this.pumping = false
+        // More may be waiting, and the turn that just ended already fired its
+        // own `postSnapshot` while this flag was still set.
+        this.pumpQueue()
+      }
+    })()
   }
 
   /**
@@ -428,6 +555,7 @@ export class SessionHost {
         this.postSnapshot()
         this.postRuntimeSnapshot()
         this.postBackgroundTasks()
+        this.postQueuedMessages()
         const queued = resolveInitialQueuedPrompt(this.scope.hasRecoverableInterruption)
         return {
           sessionId: this.session.id,
@@ -437,6 +565,7 @@ export class SessionHost {
           notices: this.startupNotices(this.scope.diagnostics),
           hasRecoverableInterruption: this.scope.hasRecoverableInterruption,
           ...(queued ? { initialQueuedPrompt: queued } : {}),
+          queuedMessages: [...this.messages.getSnapshot()],
           configuredEffortLevel: this.project.configuredEffortLevel,
         } satisfies WireHelloResult
       }
@@ -456,13 +585,27 @@ export class SessionHost {
       }
 
       case 'retarget':
-        return this.applySessionSwitch(await switchToExistingSession(this.switchDeps(), command.sessionId))
+        return this.applySessionSwitch(await switchToExistingSession(
+          // `reset`, not `migrateTo`: `/resume` goes *to* an existing session,
+          // which has a queue of its own replayed from its own log. Carrying this
+          // session's pending messages over would put them in a conversation the
+          // user did not write them for.
+          this.switchDeps((next, records) => this.messages.reset(next.id, records)),
+          command.sessionId,
+        ))
 
       case 'create-session':
-        return this.applySessionSwitch(await switchToNewSession(this.switchDeps(), {
-          previousSessionId: this.session.id,
-          ...(command.title ? { title: command.title } : {}),
-        }))
+        return this.applySessionSwitch(await switchToNewSession(
+          // `migrateTo`, because `/clear` is the same conversation continuing in a
+          // fresh log: anything queued but unsent still means what it meant, and
+          // the compensating `clear` goes to the *old* session's log so a later
+          // replay cannot resurrect it.
+          this.switchDeps((next) => this.messages.migrateTo(next.id, [])),
+          {
+            previousSessionId: this.session.id,
+            ...(command.title ? { title: command.title } : {}),
+          },
+        ))
 
       case 'run-tool': {
         const result = await this.runtimeSlot.current.loop.runTool({
@@ -654,6 +797,18 @@ export class SessionHost {
 
       case 'list-panes':
         return this.handleListPanes() satisfies WireListPanesResult
+
+      case 'enqueue-message': {
+        // `MessageQueue` notifies its subscribers, and `postQueuedMessages` both
+        // announces the new list and asks the pump — so an idle host has already
+        // started sending this by the time the reply goes out.
+        const message = await this.messages.enqueue(command.content, command.priority)
+        return { message } satisfies WireEnqueueResult
+      }
+
+      case 'clear-queue':
+        await this.messages.clear()
+        return { ok: true }
     }
 
     // Not a `default` branch, and it must not become one. The switch above has
@@ -722,9 +877,13 @@ export class SessionHost {
       getSession: () => this.session,
       getRecords: () => this.ledger.list(),
       startNewSession: async () => {
-        this.applySessionSwitch(await switchToNewSession(this.switchDeps(), {
-          previousSessionId: this.session.id,
-        }))
+        // Same `migrateTo` as the `create-session` command: `/clear` arrives
+        // through here, and a queue left keyed to the old session would pump into
+        // the new one.
+        this.applySessionSwitch(await switchToNewSession(
+          this.switchDeps((next) => this.messages.migrateTo(next.id, [])),
+          { previousSessionId: this.session.id },
+        ))
       },
       emit: this.emitCommandEffect,
     })
@@ -743,10 +902,15 @@ export class SessionHost {
     this.runtimeSlot.current.loop.invalidateRecordsCache()
     const records = await this.controller.reload()
     this.ledger.rebase(records)
+    // The rewind may have cut away the `message_queue` records the live queue was
+    // built from, so it is replayed off the new list rather than trusted.
+    await this.messages.hydrate(records)
     return records
   }
 
-  private switchDeps(): SessionSwitchDeps {
+  private switchDeps(
+    beforeApply?: (session: SessionMeta, records: readonly SessionRecord[]) => Promise<void>,
+  ): SessionSwitchDeps {
     return {
       // One field from each half rather than the merged host: switching a
       // session needs the project's store and *this* scope's runtime factory.
@@ -754,6 +918,10 @@ export class SessionHost {
       runtimeSlot: this.runtimeSlot,
       controller: this.controller,
       backgroundTasks: this.project.backgroundTasks,
+      // Rebinding the message queue has to happen here rather than after the
+      // switch returns: past `RuntimeSlot.replace` there is an await boundary on
+      // which a queue still keyed to the old session could pump into the new one.
+      ...(beforeApply ? { beforeApply } : {}),
     }
   }
 
@@ -778,6 +946,11 @@ export class SessionHost {
     })
     this.postBackgroundTasks()
     this.postRuntimeSnapshot()
+    // Unconditional rather than left to `MessageQueue`'s own subscription: a
+    // switch between two empty queues changes nothing it would notify about, and
+    // the client still needs to hear that the list it is showing now belongs to a
+    // different session.
+    this.postQueuedMessages()
     return { session: result.session, records: result.records, notices }
   }
 

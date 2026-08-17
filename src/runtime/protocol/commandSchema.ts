@@ -1,6 +1,7 @@
 import { z } from 'zod/v3'
 import { VALID_EFFORT_LEVELS } from '../../config/effort.js'
 import type { PermissionMode } from '../../harness/permissions.js'
+import type { MessageQueuePriority } from '../../harness/types.js'
 import type { RewindSummaryDecision } from '../rewindSummary.js'
 import type { HostCommand, UiRequest } from './wire.js'
 
@@ -186,6 +187,21 @@ const COMMAND_SCHEMAS = {
     .object({ type: z.literal('close-pane'), id: commandId, paneId: z.string() })
     .strict(),
   'list-panes': z.object({ type: z.literal('list-panes'), id: commandId }).strict(),
+  // Spelled out like the two enums above rather than derived, and `_NoDrift` is
+  // what keeps it honest. `content` is unbounded on purpose: it becomes a user
+  // message, and the composer is the only thing that ever decides how long a
+  // prompt may be.
+  'enqueue-message': z
+    .object({
+      type: z.literal('enqueue-message'),
+      id: commandId,
+      content: z.string(),
+      priority: z
+        .enum(['now', 'next', 'later'] as const satisfies readonly MessageQueuePriority[])
+        .optional(),
+    })
+    .strict(),
+  'clear-queue': z.object({ type: z.literal('clear-queue'), id: commandId }).strict(),
   shutdown: z.object({ type: z.literal('shutdown'), id: commandId, reason: z.string() }).strict(),
   // Drift guard #1, and the one that names the culprit: on a fresh object
   // literal this fails by key in both directions -- a variant added to

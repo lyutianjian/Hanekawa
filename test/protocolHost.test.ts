@@ -32,6 +32,13 @@ interface Harness {
   sendRaw: (message: unknown) => void
   emit: (event: SessionEvent) => void
   publishSnapshot: () => void
+  /** Sets the turn state rather than toggling it; the queue pump reads the edge. */
+  setStreaming: (value: boolean) => void
+  setUsageTotal: (total: { inputTokens: number; cacheReadInputTokens: number; outputTokens: number }) => void
+  /** Gives the active model a price list, which is what makes a cost derivable. */
+  setPricing: (pricing: Record<string, unknown> | undefined) => void
+  /** Makes the next `controller.submit` reject, for the pump's failure path. */
+  failNextSubmit: (message: string) => void
   bridges: ReturnType<typeof createUiBridges>
   /** The real store behind the stub controller, for the commands that write. */
   store: SessionStore
@@ -99,6 +106,8 @@ async function createHarness(): Promise<Harness> {
 
   const eventListeners = new Set<(event: SessionEvent) => void>()
   const snapshotListeners = new Set<() => void>()
+  /** Set by `failNextSubmit`; consumed by the next `controller.submit`. */
+  let submitFailure: string | undefined
   let snapshot = {
     isStreaming: false,
     usage: { lastRequest: null, total: { inputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0 } },
@@ -117,7 +126,14 @@ async function createHarness(): Promise<Harness> {
     },
     getSnapshot: () => snapshot,
     getSubagentProgress: () => new Map([['agent-1', 'Reading file']]),
-    submit: async (input: string) => { calls.submits.push(input) },
+    submit: async (input: string) => {
+      if (submitFailure !== undefined) {
+        const message = submitFailure
+        submitFailure = undefined
+        throw new Error(message)
+      }
+      calls.submits.push(input)
+    },
     interrupt: (reason: unknown) => { calls.interrupts.push(reason) },
     // Reads the real store and emits the reset the real controller emits, so a
     // command that rewrote the file on disk is observable through the boundary.
@@ -284,6 +300,28 @@ async function createHarness(): Promise<Harness> {
       snapshot = { ...snapshot, isStreaming: !snapshot.isStreaming }
       for (const listener of [...snapshotListeners]) listener()
     },
+    /**
+     * Sets the turn state and notifies, the way the real controller does at both
+     * ends of `submit`. Distinct from `publishSnapshot`, which toggles: the queue
+     * pump's whole job is to fire on the false edge, so a test needs to say which
+     * edge it means.
+     */
+    setStreaming: (value: boolean) => {
+      snapshot = { ...snapshot, isStreaming: value }
+      for (const listener of [...snapshotListeners]) listener()
+    },
+    setUsageTotal: (total: { inputTokens: number; cacheReadInputTokens: number; outputTokens: number }) => {
+      snapshot = { ...snapshot, usage: { ...snapshot.usage, total } }
+      for (const listener of [...snapshotListeners]) listener()
+    },
+    /** Gives the active model a price list, which is what makes a cost derivable. */
+    setPricing: (pricing: Record<string, unknown> | undefined) => {
+      const config = agentSession.modelConfig as Record<string, unknown>
+      if (pricing === undefined) delete config.pricing
+      else config.pricing = pricing
+    },
+    /** Makes the next `controller.submit` reject, for the pump's failure path. */
+    failNextSubmit: (message: string) => { submitFailure = message },
     bridges,
     store,
     cwd,
@@ -1136,5 +1174,387 @@ test('list-commands ships metadata only, with no callable on the wire', async ()
   }
 
   assert.doesNotThrow(() => structuredClone(result))
+  harness.dispose()
+})
+
+// --- the message queue ------------------------------------------------------
+//
+// The queue lives host-side for the desktop shell (the terminal's belongs to
+// `App.tsx`), because it is persisted through `store.appendRecord` and because
+// the pump's gate reads two things only this process knows: whether a turn is in
+// flight, and whether a blocking UI request is outstanding.
+
+/** The messages the most recent `queued-messages` event announced. */
+function latestQueue(received: HostEvent[]): string[] {
+  const last = received.filter((event) => event.type === 'queued-messages').at(-1)
+  return last && last.type === 'queued-messages'
+    ? last.messages.map((message) => message.content)
+    : []
+}
+
+/**
+ * Long enough that a pump which *was* allowed to run has finished.
+ *
+ * Every assertion below of the form "nothing was sent" needs a time budget,
+ * because the pump is detached (`void (async () => …)`) and its first step is a
+ * `MessageQueue.dequeue` that writes to disk. Asserting immediately after the
+ * enqueue reply proves nothing: the work simply has not started yet, and the
+ * assertion passes whether the gate held or not — verified by mutation, which is
+ * why this exists at all. The unblocked path lands in ~30ms in this suite, so
+ * this is a comfortable multiple of it.
+ */
+const PUMP_BUDGET_MS = 150
+const givePumpAChance = () => new Promise((resolve) => setTimeout(resolve, PUMP_BUDGET_MS))
+
+/**
+ * `waitFor` for a reader that has to hit the disk.
+ *
+ * Separate rather than widening `waitFor`, whose reader is synchronous: an async
+ * reader passed there returns a promise, which is never `undefined`, so the poll
+ * would "succeed" on the first attempt with the promise itself.
+ */
+async function waitForAsync<T>(read: () => Promise<T | undefined>, what: string): Promise<T> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const value = await read()
+    if (value !== undefined) return value
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(`Timed out waiting for ${what}`)
+}
+
+test('a message queued mid-turn is held, then sent when the turn ends', async () => {
+  const harness = await createHarness()
+  harness.setStreaming(true)
+
+  harness.send({ type: 'enqueue-message', id: 'q1', content: 'second thought' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'q1'),
+    'the enqueue reply',
+  )
+  await givePumpAChance()
+
+  assert.deepEqual(harness.calls.submits, [], 'nothing may be sent while a turn is running')
+  assert.deepEqual(latestQueue(harness.received), ['second thought'])
+
+  // The false edge is the pump's trigger: it arrives as a snapshot publish, which
+  // is the only signal the host gets that a turn is over.
+  harness.setStreaming(false)
+  await waitFor(
+    () => (harness.calls.submits.length > 0 ? true : undefined),
+    'the queued message to be sent',
+  )
+
+  assert.deepEqual(harness.calls.submits, ['second thought'])
+  assert.deepEqual(latestQueue(harness.received), [], 'the queue empties as it drains')
+  harness.dispose()
+})
+
+test('the queue drains in order', async () => {
+  const harness = await createHarness()
+  harness.setStreaming(true)
+  harness.send({ type: 'enqueue-message', id: 'q1', content: 'first' })
+  harness.send({ type: 'enqueue-message', id: 'q2', content: 'second' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'q2'),
+    'both enqueue replies',
+  )
+  assert.deepEqual(latestQueue(harness.received), ['first', 'second'])
+
+  harness.setStreaming(false)
+  // Both land because this fake `submit` resolves without ever setting
+  // `isStreaming`; the tail re-check in `pumpQueue` is what picks up the second.
+  await waitFor(
+    () => (harness.calls.submits.length === 2 ? true : undefined),
+    'both messages to be sent',
+  )
+  assert.deepEqual(harness.calls.submits, ['first', 'second'], 'order is the queue')
+  harness.dispose()
+})
+
+test('a pending permission prompt holds the queue back until it is answered', async () => {
+  const harness = await createHarness()
+  // Idle, so the dialog is the only thing blocking. This is the desktop's answer
+  // to `canPumpQueue`'s `uiBlocked`: the terminal counts any overlay, the host
+  // counts an outstanding *blocking* request.
+  const pending = harness.bridges.prompt.prompt(permissionRequest())
+  await settle()
+  const request = harness.received.find((event) => event.type === 'ui-request')
+  assert.ok(request && request.type === 'ui-request')
+
+  harness.send({ type: 'enqueue-message', id: 'q1', content: 'held' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'q1'),
+    'the enqueue reply',
+  )
+  await givePumpAChance()
+  assert.deepEqual(harness.calls.submits, [], 'a blocking dialog must hold the pump')
+  assert.deepEqual(latestQueue(harness.received), ['held'], 'and the message stays queued')
+
+  harness.send({
+    type: 'ui-response',
+    requestId: request.request.requestId,
+    response: { kind: 'permission', approved: true },
+  })
+  assert.equal(await pending, true)
+
+  await waitFor(
+    () => (harness.calls.submits.length > 0 ? true : undefined),
+    'the message to be sent',
+  )
+  assert.deepEqual(harness.calls.submits, ['held'], 'answering the dialog releases the pump')
+  harness.dispose()
+})
+
+test('an idle host sends a queued message immediately', async () => {
+  const harness = await createHarness()
+
+  harness.send({ type: 'enqueue-message', id: 'q1', content: 'now' })
+  await waitFor(
+    () => (harness.calls.submits.length > 0 ? true : undefined),
+    'the message to be sent',
+  )
+
+  assert.deepEqual(harness.calls.submits, ['now'])
+  harness.dispose()
+})
+
+test('a disposed host stops pumping, so a later turn end sends nothing', async () => {
+  const harness = await createHarness()
+  harness.setStreaming(true)
+  harness.send({ type: 'enqueue-message', id: 'q1', content: 'orphaned' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'q1'),
+    'the enqueue reply',
+  )
+
+  harness.dispose()
+  // The turn the message was waiting behind now ends. Before `dispose()` this is
+  // exactly the edge that releases the pump; after it, nothing may start a turn on
+  // a host with detached bridges, where every permission prompt auto-denies.
+  //
+  // What this pins is the *teardown* — `dispose()` draining `this.teardown`
+  // unsubscribes the snapshot listener, so `pumpQueue` is never reached. The two
+  // `disposed` checks inside `pumpQueue` are defence in depth on top of that:
+  // removing either one by mutation leaves this green, which is why the comment
+  // there says so rather than claiming this test covers them.
+  harness.setStreaming(false)
+  await givePumpAChance()
+
+  assert.deepEqual(harness.calls.submits, [], 'a disposed host must not start a turn')
+})
+
+test('hello carries the messages already waiting', async () => {
+  const harness = await createHarness()
+  harness.setStreaming(true)
+  harness.send({ type: 'enqueue-message', id: 'q1', content: 'waiting' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'q1'),
+    'the enqueue reply',
+  )
+
+  harness.send({ type: 'hello', id: 'h1' })
+  const reply = await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'h1'),
+    'the hello reply',
+  )
+  assert.ok(reply.type === 'reply')
+  const result = reply.result as { queuedMessages: Array<{ content: string }> }
+  assert.deepEqual(result.queuedMessages.map((message) => message.content), ['waiting'])
+  harness.dispose()
+})
+
+test('clear-queue drops what is waiting without touching the running turn', async () => {
+  const harness = await createHarness()
+  harness.setStreaming(true)
+  harness.send({ type: 'enqueue-message', id: 'q1', content: 'never mind' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'q1'),
+    'the enqueue reply',
+  )
+
+  harness.send({ type: 'clear-queue', id: 'c1' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'c1'),
+    'the clear reply',
+  )
+  assert.deepEqual(latestQueue(harness.received), [])
+
+  harness.setStreaming(false)
+  await givePumpAChance()
+  assert.deepEqual(harness.calls.submits, [], 'a cleared message must not surface later')
+  harness.dispose()
+})
+
+test('a /clear carries pending messages into the new session', async () => {
+  const harness = await createHarness()
+  harness.setStreaming(true)
+  harness.send({ type: 'enqueue-message', id: 'q1', content: 'still relevant' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'q1'),
+    'the enqueue reply',
+  )
+
+  harness.send({ type: 'create-session', id: 'cs1' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'cs1'),
+    'the create-session reply',
+  )
+
+  assert.deepEqual(latestQueue(harness.received), ['still relevant'])
+
+  // The load-bearing half is *which log the queue is now writing to*, not what the
+  // wire says: without the rebind the in-memory snapshot looks identical and the
+  // message still sends, but every later `message_queue` record goes to the
+  // session that was left — so a restart replays the queue into the wrong
+  // conversation. Only the persisted side can tell the two apart.
+  const changed = harness.received.find((event) => event.type === 'session-changed')
+  assert.ok(changed && changed.type === 'session-changed')
+  const nextSessionId = changed.session.id
+  assert.notEqual(nextSessionId, harness.sessionId, 'a /clear must mint a new session')
+
+  const migrated = await waitForAsync(async () => {
+    const loaded = await harness.store.loadRecordsWithDiagnostics(nextSessionId)
+    const enqueues = loaded.records.filter((record) =>
+      record.type === 'message_queue' && record.operation === 'enqueue')
+    return enqueues.length > 0 ? enqueues : undefined
+  }, 'the enqueue record in the new session log')
+  assert.equal(migrated.length, 1)
+  assert.equal(
+    migrated[0]?.type === 'message_queue' && migrated[0].operation === 'enqueue'
+      ? migrated[0].message.content
+      : undefined,
+    'still relevant',
+  )
+
+  // And the old log gets a compensating `clear`, so replaying it later cannot
+  // resurrect a message that now lives elsewhere.
+  const previous = await harness.store.loadRecordsWithDiagnostics(harness.sessionId)
+  assert.ok(
+    previous.records.some((record) => record.type === 'message_queue' && record.operation === 'clear'),
+    'the session that was left must be compensated',
+  )
+
+  harness.setStreaming(false)
+  await waitFor(
+    () => (harness.calls.submits.length > 0 ? true : undefined),
+    'the migrated message to be sent',
+  )
+  assert.deepEqual(harness.calls.submits, ['still relevant'])
+  harness.dispose()
+})
+
+test('a /resume swaps in the target session\'s own queue instead of carrying one over', async () => {
+  const harness = await createHarness()
+  const other = await harness.store.create('somewhere else')
+  harness.setStreaming(true)
+  harness.send({ type: 'enqueue-message', id: 'q1', content: 'meant for this session' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'q1'),
+    'the enqueue reply',
+  )
+
+  harness.send({ type: 'retarget', id: 'rt1', sessionId: other.id })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'rt1'),
+    'the retarget reply',
+  )
+
+  // `reset`, not `migrateTo`: `/resume` goes to a different conversation, which has
+  // a queue of its own replayed from its own log. Carrying the pending message over
+  // would send it into a conversation the user did not write it for.
+  assert.deepEqual(latestQueue(harness.received), [])
+
+  harness.setStreaming(false)
+  await givePumpAChance()
+  assert.deepEqual(harness.calls.submits, [], 'and it must not be sent to the wrong session')
+  harness.dispose()
+})
+
+test('a queued message that cannot be sent reports itself instead of vanishing', async () => {
+  const harness = await createHarness()
+  harness.failNextSubmit('provider exploded')
+
+  harness.send({ type: 'enqueue-message', id: 'q1', content: 'doomed' })
+  const notice = await waitFor(
+    () => harness.received.find((event) => event.type === 'session-event'
+      && event.event.type === 'notice'
+      && event.event.content.includes('provider exploded')),
+    'the failure notice',
+  )
+  assert.ok(notice.type === 'session-event' && notice.event.type === 'notice')
+  assert.equal(notice.event.level, 'error')
+  // Dequeued before the send, so a message that reliably throws cannot wedge the
+  // pump in a retry loop.
+  assert.deepEqual(latestQueue(harness.received), [])
+  harness.dispose()
+})
+
+// --- derived cost -----------------------------------------------------------
+
+/** The `cost` on the most recent snapshot event. */
+function latestCost(received: HostEvent[]): { amount: number; currency: string } | undefined {
+  const last = received.filter((event) => event.type === 'snapshot').at(-1)
+  return last && last.type === 'snapshot' ? last.cost : undefined
+}
+
+test('the snapshot carries a derived cost once the model has pricing', async () => {
+  const harness = await createHarness()
+  harness.setPricing({ inputPerMillionTokens: 3, outputPerMillionTokens: 15, currency: 'USD' })
+  harness.setUsageTotal({ inputTokens: 1_000_000, cacheReadInputTokens: 0, outputTokens: 1_000_000 })
+  await settle()
+
+  // Derived host-side because a renderer may not import `harness/` — the same
+  // bargain `PermissionRequestDto` makes by shipping a rendered preview.
+  assert.deepEqual(latestCost(harness.received), { amount: 18, currency: 'USD' })
+  harness.dispose()
+})
+
+test('the snapshot omits the cost when the model has no complete pricing', async () => {
+  const harness = await createHarness()
+  harness.setUsageTotal({ inputTokens: 500, cacheReadInputTokens: 0, outputTokens: 500 })
+  await settle()
+
+  // Absent rather than zero: "not priced" and "free" are different answers, so the
+  // status bar shows nothing instead of a misleading 0.
+  assert.equal(latestCost(harness.received), undefined)
+  harness.dispose()
+})
+
+test('/cost and the status bar report the same number', async () => {
+  // The reason `resolveUsageWithCost` exists. Both readouts used to compute the
+  // cost from `usage.total` plus `modelConfig.pricing` in their own eight lines —
+  // `/cost` through `CommandContext.getUsage`, the desktop status bar through the
+  // snapshot event — so they could drift on rounding, on the currency default, or
+  // on what "incomplete pricing" means. This drives both and compares.
+  registerBuiltinCommands()
+  const harness = await createHarness()
+  harness.setPricing({ inputPerMillionTokens: 3, outputPerMillionTokens: 15, currency: 'USD' })
+  harness.setUsageTotal({ inputTokens: 1_234_567, cacheReadInputTokens: 89_000, outputTokens: 4_321 })
+  await settle()
+
+  const cost = latestCost(harness.received)
+  assert.ok(cost, 'the snapshot must carry a cost')
+
+  harness.send({ type: 'run-command', id: 'rc1', input: '/cost' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'rc1'),
+    'the /cost reply',
+  )
+
+  const view = harness.received.find((event) =>
+    event.type === 'command-effect' && event.effect.kind === 'open-command-view')
+  assert.ok(view && view.type === 'command-effect' && view.effect.kind === 'open-command-view')
+  // `CommandView` is a union; `/cost` opens the `info` kind, which is the only
+  // one with sections.
+  const opened = view.effect.view
+  assert.equal(opened.kind, 'info')
+  assert.ok(opened.kind === 'info')
+  const rows = opened.sections.flatMap((section) => section.rows)
+  const total = rows.find((row) => row.label === 'Total cost')
+  assert.ok(total, '/cost must report a total')
+
+  // `/cost` prints six decimals and the status bar rounds; the agreement that
+  // matters is the underlying number, so compare at `/cost`'s precision.
+  assert.equal(total.value, `${cost.currency} ${cost.amount.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`)
   harness.dispose()
 })

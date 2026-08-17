@@ -37,6 +37,7 @@ Tauri 还得挂 Node sidecar。
 | 3e | Markdown 渲染：`model/markdown.ts`（marked lexer → 自有 union）+ `dom/markdownView.ts`（只用 `el()`）、assistant 消息与计划正文接线、`main.ts` 导航守卫、CSS | 1846 |
 | 3f | 选择与补全：四个面板可键选/点选（`SurfaceAction` + `moveSurfaceSelection`）、`@` 文件补全（`suggestions/atToken.ts` 拆分 + `file-suggestions` 命令 + 双源下拉与序号守卫） | 1870 |
 | 3g | rewind / checkpoint 面板：`runtime/rewindPresentation.ts`（第三个共享 presentation 模块，含 `rewindStepsFor` 与五条结果文案）、`model/rewindPanel.ts` + `dom/rewindView.ts`、`/rewind` 斜杠命令（两端共享）、`keymap` 新增 `hasRewind` 档位、`#rewind` 独立模态层 | 1907 |
+| 3h | 消息队列跨进程 + 费用常驻：`SessionController.submit` 补在途守卫、`SessionHost` 持有 `MessageQueue` 并驱动泵、`enqueue-message`/`clear-queue` + `queued-messages` 事件、`resolveUsageWithCost` 收掉三份重复、`model/queuedMessages.ts` + `dom/queueView.ts` + `#status-cost` | 1943 |
 
 各阶段的设计理由已全部写进 `CLAUDE.md`。下面只留**没进那份文档、但下一轮仍要知道**的东西。
 
@@ -105,6 +106,42 @@ Tauri 还得挂 Node sidecar。
 - **3g：共享模块的 re-export 用「函数身份」钉死**（`test/rewindPresentation.test.ts` 的 `===` 断言）。
   这正是本文件「测的实现必须就是出货的实现」那条的预防性应用：`RestoreMode.tsx` 里换成第二份实现，
   行为测试全都还是绿的，只有身份断言会红。已变异验证。
+- **3h：消息队列归 host，而不是渲染器 —— 这是两端所有权唯一分叉的地方**（TUI 侧仍是 `App.tsx` 持有）。
+  两个结构性理由：① 它靠 `store.appendRecord` 持久化，让渲染器持有就得开一条 `append-record` 命令，
+  把整个 `SessionRecord` 联合体交给协议里**不受信的那一端**去校验；② 泵的判据要读只有 host 知道的状态。
+  连带后果：`sessionSwitch.ts` 那句「It belongs to the shell rather than the host」当场作废，已改写成
+  「哪一侧持有取决于 shell」。
+- **3h：`uiBlocked` 只算四个阻塞请求**（`pendingKinds.size > 0`），rewind 面板与 surface 不算 ——
+  它们扣着用户但不扣着 agent loop。这就是 `queuePump.ts` 早先留的那条「终端用任意 overlay、
+  桌面端用待答权限提示」分界线第一次真的被用上。
+- **3h：负向断言必须给泵留时间预算，否则测的是竞态不是闸门**。`pumpQueue` 是脱钩的
+  （`void (async () => …)`），第一步 `dequeue` 还要落盘；紧跟 enqueue 回复就断言「什么都没发」，
+  闸门开着也照样绿。**变异验证第一次跑就暴露了这点**：把 `uiBlocked` 改成 `false`，用例仍然通过。
+  于是有了 `givePumpAChance()`（150ms，是放行路径实测 ~30ms 的舒适倍数）。两条闸门现在各自被
+  对应用例钉死：改 `uiBlocked` 只红「权限提示挡住队列」，改 `turnActive` 只红另外两条。
+- **3h：守卫要抛而不是静默 no-op**，且 `try` 必须紧跟 `streaming = true` 之后开。
+  原本 `publish()` 与 `createCheckpoint()` 落在 `try` 之外，一个会抛的订阅者就能让 `streaming`
+  永久卡住 —— 加守卫之前这只是转圈图标不消失，加了之后**后续每一次 submit 都会被拒**。
+  `createCheckpoint` 自己吞掉一切异常，但 `publish()` 会同步调订阅者，而其中一个就是 channel post。
+- **3h：费用由 host 算，不把 `ModelPricing` 送过界**。渲染器不能 value-import `harness/`
+  （`FORBIDDEN_LAYERS`），而 allowlist 只放 `runtime/`+`config/`；把 `harness/usage.ts` 加进 allowlist
+  会破坏「共享模块只做 type-only 跨层 import」那条既有约束。顺带收掉了**三份**重复的同一段投影
+  （`protocol/commandContext.ts`、`tui/hooks/useCommands.ts`、以及本轮要新增的第三处），
+  用「`/cost` 与状态栏必须报同一个数」这条行为断言钉死 —— 比函数身份断言更贴切，因为这里没有 re-export。
+- **3h：`test/desktopMain.test.ts` 与 `test/desktopUiRoundTrip.test.ts` 的假 controller 都在
+  `usage.total` 上撒谎**（写成 `null`，而 `SessionUsage.total` 不可空），只因为整个对象被 cast 才编译通过。
+  host 现在要读它来派生费用，谎言当场炸成 `Cannot read properties of null`。修的是假货而不是给 host 加
+  防御分支 —— 生产路径里 `createEmptySessionUsage()` 保证它非空。**这是本文件那条
+  「`as unknown as` 关掉的正是编译器唯一能抓 API 谎言的机会」第三次应验。**
+- **3h：`migrateTo` 与「什么都不做」在协议层完全同形，只有落盘那一侧能区分**。第一版 `/clear` 用例只看
+  `queued-messages` 事件与「消息最终发出去了」，**变异验证直接放行**：不 rebind 的话
+  `MessageQueue` 的内存快照原样保留、消息照样发，唯一的差别是后续 `message_queue` 记录写进了**被离开的
+  那个会话**的日志 —— 重启后队列会重放进错误的对话。用例因此改成去读**新会话日志里的 enqueue 记录**
+  与**旧会话日志里的补偿 `clear`**。教训比这条 bug 本身通用：**只要被测行为的差别在持久化侧，
+  断言就不能只站在 wire 上。**
+- **3h：四条不变式各自被对应用例钉死**（逐条变异验证过，且只红对应那条）：
+  `uiBlocked→false` 红「权限提示挡住队列」、`turnActive→false` 红另外两条、
+  `/clear` 去掉 `migrateTo` 红 `/clear` 那条、`/resume` 的 `reset` 换成 `migrateTo` 红 `/resume` 那条。
 
 ### 工作方法（本项目的验收惯例）
 
@@ -132,7 +169,8 @@ Tauri 还得挂 Node sidecar。
 - [x] **跨进程 workspace 协议**（多标签的另一半）。落地后与当初的预判有两处出入，记下来：
   - **"28 个 `HostCommand` 一个都不用改"是错的**，两层意义上：数字本身当时就抄错了（`HostCommand` 那时是
     **27** 个变体，`CLAUDE.md` 写着 28），而且确实得加命令 —— `open-pane`/`close-pane`/`list-panes` 加上
-    渲染器补全要用的 `list-commands`，当时是 **31**（3f 又加了 `file-suggestions`，现在 **32**）。真正没改的是那 27 条：pane 命令是**旁挂**的一层，
+    渲染器补全要用的 `list-commands`，当时是 **31**（3f 又加了 `file-suggestions`，3h 又加了
+    `enqueue-message`/`clear-queue`，现在 **34**）。真正没改的是那 27 条：pane 命令是**旁挂**的一层，
     不是把既有命令参数化。
   - **`SessionHost` 不自己建窗口**：它拿 `PaneRegistry`（`SessionWorkspace` 的结构化切片）解析 + 注册 pane，
     再通过 `onPaneOpened`/`onPaneClosed` 把 `BrowserWindow` 那步交回 shell。协议层不 import electron 的
@@ -180,11 +218,17 @@ Tauri 还得挂 Node sidecar。
   - **决策的编排本身也是共享物**，不只是"选项列表"。`rewindStepsFor` + 五条结果文案 + 那条部分失败文案
     一起进了 `runtime/rewindPresentation.ts`，`App.tsx` 的 `handleRestoreSelect` 从 45 行的 if 链改成读
     步骤表。原来那份 `formatRestoreMessagePreview` 是 App.tsx 私有的，两端各写一份就会在引号里的文本上分叉。
-- [ ] **费用显示**：`ModelPricing` 不在 `WireRuntimeSnapshot` 上（`/cost` 已经能用，缺的是状态栏常驻）。
-- [ ] **消息队列**：要记录流；在 `SessionController.submit` 的在途守卫进内核之前，正确的临时行为是关闸而非排队。
+- [x] **费用显示**（3h 落地）：`ModelPricing` **没有**上 `WireRuntimeSnapshot` —— 改为 host 侧派生，
+  `snapshot` 事件带 `cost?: { amount, currency }`，理由见上面的决策留痕。
+- [x] **消息队列**（3h 落地）。与当初的预判有两处出入：
+  - **"要记录流"这个前置条件不成立**。`MessageQueue` 要的只是 `store.appendRecord`，host 本来就有；
+    真正的前置条件是另一条 —— `SessionController.submit` 的在途守卫，而那条当时就已经写在清单里了。
+  - **"关闸而非排队"是权宜之计，这轮把它换掉了**：守卫进内核之后，`keymap.ts` 的 Enter 分支从
+    `'none'` 改成 `'enqueue'`，`#submit` 按钮不再 disable 而是改字为 "Queue"（`requestSubmit()` 会忽略
+    disabled 按钮，所以键路径与按钮路径必须同时改，漏一边就是静默吞掉点击）。
 
 （标签栏已在 3b 补上、Markdown 已在 3e 补上、面板可点选与 `@` 文件补全已在 3f 补上、
-**rewind 面板已在 3g 补上**，见上表；它们不在这份清单里过。）
+rewind 面板已在 3g 补上、**消息队列与费用显示已在 3h 补上**，见上表；它们不在这份清单里过。）
 
 **3e 顺带留下的两条**：① **代码块没有语法高亮** —— TUI 用的 `cli-highlight` 出 ANSI 且是 Node 侧的，
 浏览器侧要另选一个能进 renderer bundle（无 Node 依赖）的库，是独立一档；② `markdownNode` 每次都重建整棵
@@ -248,6 +292,21 @@ Tauri 还得挂 Node sidecar。
   ⑥ 面板开着按 Ctrl+W 仍然关窗（tab-bar 和弦在 keymap 之前解析）；按住普通字母键什么也不该发生；
   ⑦ 在窗口里 `/clear` → rewind 面板若开着应当**自动关掉**（不是留着报 "Message not found"）；
   ⑧ TUI 侧回归：`/rewind` 与 Esc-Esc 打开的是同一个面板，且五条结果文案与桌面端逐字相同。
+- [ ] **3h 的队列与费用冒烟**（`dom/queueView.ts`、`dom/composerView.ts` 的状态栏与 `app.ts` 的接线都没有
+  测试覆盖；模型层与协议层已被 `test/rendererQueuedMessages.test.ts` + `protocolHost` 的 10 条
+  + `desktopUiRoundTrip` 的 2 条钉死，缺的是真机那一段。① 需要一个真的长 turn，所以要真实 API key）：
+  ① 发一个长 turn → 流式中打字按 Enter → 消息进 `#queue` 条**而不是消失**、按钮字样是 "Queue"
+     → turn 结束后自动发出、`#queue` 条自己消失；
+  ② 连续入队两条 → 顺序正确、逐条发出（不是并发两个 turn）；
+  ③ 入队后点 Clear → 条目清空，且 turn 结束后**不会**突然冒出来；
+  ④ 入队后来一条权限提示 → 答完之前不泵，答完才泵（这条模型层测不到真实 `PermissionGate`）；
+  ⑤ 入队后 `/clear` → 队列跟着新会话走（`migrateTo`）；`/resume` 一个旧会话 → 队列换成那个会话自己的
+     （`reset`），不是带过去；
+  ⑥ 关窗再开 → `hello.queuedMessages` 把还没发的那条重新画出来（队列是从会话日志重放的）；
+  ⑦ 状态栏 `#status-cost` 随 turn 增长；`/cost` 的数字与它一致（有 `test/protocolHost.test.ts` 的
+     行为断言兜着，但真机要确认状态栏那一格真的在画）；换到一个**没配 pricing** 的模型 → 那一格变空，
+     而不是显示 0；
+  ⑧ TUI 侧回归：Enter 排队、Esc-Esc 清队列、`/cost` 三者都没变（本轮只把 `getUsage` 换成了共享函数）。
 
 ---
 
@@ -255,7 +314,7 @@ Tauri 还得挂 Node sidecar。
 
 ```bash
 npm run typecheck                                     # 三段：base + preload + renderer
-npm run test                                          # 1907 tests / 39 suites, ~45s
+npm run test                                          # 1943 tests / 39 suites, ~45s
 npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 npm run build:desktop                                 # tsc emit + 两个 esbuild bundle + 拷 index.html
 npm run start:desktop                                 # 真实 Electron，需要桌面
@@ -274,7 +333,7 @@ node --import tsx --test test/electronChannel.test.ts test/bridgeChannel.test.ts
 node --import tsx --test test/rendererImports.test.ts test/rendererShellModel.test.ts \
   test/rendererMarkdown.test.ts test/rendererTranscriptModel.test.ts test/rendererPermissionView.test.ts \
   test/rendererAskUserQuestionView.test.ts test/rendererPlanDialogViews.test.ts \
-  test/rendererCompletion.test.ts test/rendererRewindPanel.test.ts \
+  test/rendererCompletion.test.ts test/rendererRewindPanel.test.ts test/rendererQueuedMessages.test.ts \
   test/rendererDiffRows.test.ts test/rendererTabBarModel.test.ts test/desktopUiRoundTrip.test.ts
 node --import tsx --test test/permissionPresentation.test.ts test/planPresentation.test.ts \
   test/rewindPresentation.test.ts test/restoreMode.test.ts test/restoreMode.property.test.ts \
@@ -293,6 +352,14 @@ node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 （该用例本身要等一个真实子进程吐增量输出，1.7s 量级）。单独跑 3/3 全绿，紧接着的全量跑也全绿；
 它只 import `services/backgroundTasks/` 与三个 bash 工具，与桌面端毫无交集。同样是**间歇**，不要当回归追。
 
+第三个（3h 期间观察到，只见过一次）：`test/agentTool.test.ts` 的
+`parent bypass mode still takes precedence for background agents`。单独跑 81/81 连过两轮，
+与 3h 改动零交集（不碰 `agentTool.ts` 也不碰权限门）。**注意 `toolcall-integration` 那条在
+`--test-concurrency=1` 下也会红** —— 上面写的"串行干净"是 3g 时的观察，3h 期间串行跑 3 次里红了 2 次，
+所以串行**不是**它的解药。3h 的实测分布：串行 3 轮里 1 轮全清（只剩下面那条环境依赖的），
+另 2 轮多一条 `toolcall-integration`。基线（`git stash` 后）2 轮全清 —— 这个差值仍在间歇的方差内，
+不要据此推断某轮改动引入了不稳定；判据是"单独跑是否稳定通过"。
+
 **已知环境依赖失败**（3g 期间查明，与桌面端无关，尚未修）：`test/config.test.ts` 的
 `providers report dynamic ToolSearch support conservatively` 在**设置了 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`
 的环境里必定红**（在 Claude Code 里跑 `npm run test` 就是这种环境）。它不是间歇、也不是回归：
@@ -300,4 +367,4 @@ node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 `isExperimentalToolSearchBetaDisabled()`（`src/utils/toolSearch.ts:132-135`）读的是**两个**变量的或；
 第二个还留在环境里，于是 `AnthropicProvider.supportsDynamicToolSearch('claude-sonnet-4')` 返回 false，
 第一条断言（期望 true）就挂。已用 `git stash` 在干净基线上复现。修法是让该用例对两个变量都做隔离
-（文件里已有 `setEnv` 助手）。**在这种环境下 1907 里应当只有这一条红。**
+（文件里已有 `setEnv` 助手）。**在这种环境下 1943 里应当只有这一条红**（3h 落地后实测仍然如此）。

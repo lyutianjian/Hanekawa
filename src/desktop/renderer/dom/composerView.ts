@@ -1,12 +1,12 @@
 import { completionRows, type CompletionState } from '../model/completion.js'
 import type { SessionControllerSnapshot } from '../../../runtime/sessionController.js'
-import type { WireRuntimeSnapshot } from '../../../runtime/protocol/wire.js'
+import type { WireRuntimeSnapshot, WireUsageCost } from '../../../runtime/protocol/wire.js'
 import { el, replace, show } from './dom.js'
 
 /** The status bar, the completion dropdown and the composer's own controls. */
 
 export interface StatusView {
-  render(snapshot: SessionControllerSnapshot): void
+  render(snapshot: SessionControllerSnapshot, cost?: WireUsageCost): void
   renderRuntime(runtime: WireRuntimeSnapshot): void
   renderSession(session: { id: string; title?: string; messageCount?: number }): void
 }
@@ -15,11 +15,12 @@ export function createStatusView(els: {
   model: HTMLElement
   mode: HTMLElement
   usage: HTMLElement
+  cost: HTMLElement
   streaming: HTMLElement
   session: HTMLElement
 }): StatusView {
   return {
-    render(snapshot) {
+    render(snapshot, cost) {
       els.streaming.textContent = snapshot.isStreaming
         ? `streaming${snapshot.spinnerSubText ? `: ${snapshot.spinnerSubText}` : ''}`
         : 'idle'
@@ -27,6 +28,10 @@ export function createStatusView(els: {
       els.usage.textContent = total.inputTokens === 0 && total.outputTokens === 0
         ? ''
         : `${format(total.inputTokens)} in / ${format(total.outputTokens)} out`
+      // Absent rather than zero when the model has no complete pricing: "not
+      // priced" and "free" are different answers, and the host already decided
+      // which one this is (`resolveUsageWithCost`).
+      els.cost.textContent = cost ? `${cost.currency} ${formatCost(cost.amount)}` : ''
     },
 
     renderRuntime(runtime) {
@@ -48,6 +53,19 @@ export function createStatusView(els: {
 
 function format(n: number): string {
   return n.toLocaleString('en-US')
+}
+
+/**
+ * Enough digits to see a cheap turn move the number, without a wall of zeros.
+ *
+ * Deliberately its own formatter rather than a shared one with `/cost`
+ * (`commands/cost.ts`): that view has a whole row to fill and prints six
+ * decimals, while this one sits in a status bar between four other fields.
+ */
+function formatCost(amount: number): string {
+  if (amount === 0) return '0'
+  if (amount < 0.01) return amount.toFixed(4)
+  return amount.toFixed(2)
 }
 
 export interface SuggestionsView {
@@ -90,12 +108,25 @@ export interface ComposerView {
   setValue(text: string, cursorPos?: number): void
   clear(): void
   focus(): void
-  /** Gates submission on the turn state; see the note in `keymap.ts`. */
+  /**
+   * Retargets the submit button between sending and queueing.
+   *
+   * It used to *disable* the button, because a second `SessionController.submit`
+   * would overwrite the live `AbortController` and leave the first turn
+   * impossible to interrupt. The kernel now rejects that outright, so mid-turn
+   * input has somewhere to go: the host's message queue. Both this button and the
+   * Enter path have to agree on which it is — `requestSubmit()` ignores a
+   * disabled button, so a mismatch here silently swallows a click.
+   */
   setStreaming(streaming: boolean): void
   autosize(): void
 }
 
 export const MAX_COMPOSER_HEIGHT_PX = 200
+
+/** What the submit button says in each of its two jobs. */
+export const SUBMIT_LABEL = 'Send'
+export const QUEUE_LABEL = 'Queue'
 
 export function createComposerView(els: {
   input: HTMLTextAreaElement
@@ -125,12 +156,11 @@ export function createComposerView(els: {
       els.input.focus()
     },
     setStreaming(streaming) {
-      // Both the button and the Enter path have to be gated: `requestSubmit()`
-      // ignores a disabled *button*, and `SessionController.submit` has no
-      // in-flight guard, so a second turn would overwrite the live
-      // AbortController and leave the first one impossible to interrupt.
-      els.submit.disabled = streaming
-      show(els.submit, !streaming)
+      // Enabled in both states now, with the label carrying the difference. Stop
+      // appears alongside rather than instead of it: interrupting the turn and
+      // queueing the next message are both things a user may want mid-turn.
+      els.submit.disabled = false
+      els.submit.textContent = streaming ? QUEUE_LABEL : SUBMIT_LABEL
       show(els.stop, streaming)
     },
     autosize,

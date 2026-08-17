@@ -167,8 +167,23 @@ export class SessionController {
 
   // --- commands -------------------------------------------------------------
 
-  /** Runs one turn. Resolves when the turn is over, however it ended. */
+  /**
+   * Runs one turn. Resolves when the turn is over, however it ended.
+   *
+   * Rejects rather than queueing when a turn is already in flight: everything
+   * below assigns to `this.abortController`, so a second concurrent run would
+   * overwrite the live one and leave the first turn impossible to interrupt.
+   * Deciding *what* to do with the rejected input is a shell's job — the two
+   * shells answer differently (both enqueue it, but "the UI is blocked" means
+   * different things; see `queuePump.ts`) — and both callers catch it.
+   *
+   * It throws rather than silently returning because a dropped message is
+   * indistinguishable from a message that was sent and answered with nothing.
+   */
   async submit(input: string, options?: AgentRunOverrides): Promise<void> {
+    if (this.streaming) {
+      throw new Error('A turn is already running; queue the message instead of submitting it.')
+    }
     const agentSession = this.getSession()
     const loop = agentSession.loop
     const messageId = randomUUID()
@@ -182,17 +197,26 @@ export class SessionController {
 
     this.streaming = true
     this.spinnerSubText = undefined
-    this.publish()
-
-    await this.createCheckpoint(messageId)
 
     const ac = new AbortController()
-    this.abortController = ac
-    this.didRollback = false
-    this.loopStartMs = Date.now()
     let completedResult: AgentRunResult | undefined
 
+    // The `try` starts here rather than after the checkpoint so that *every*
+    // statement past `streaming = true` is covered by the `finally` that clears
+    // it. `publish()` calls its subscribers synchronously and one of them is a
+    // channel post, so a dead renderer used to be able to throw out of this
+    // method with the flag still set — which merely wedged the spinner before
+    // the guard above existed, and would now reject every later turn as well.
+    // Ordering inside is unchanged: publish, then checkpoint, then run.
     try {
+      this.publish()
+
+      await this.createCheckpoint(messageId)
+
+      this.abortController = ac
+      this.didRollback = false
+      this.loopStartMs = Date.now()
+
       const result = await loop.run(input, ac.signal, messageId, options)
       completedResult = result
       this.usage = {

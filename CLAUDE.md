@@ -16,7 +16,7 @@ npm run typecheck                  # three passes: base + tsconfig.preload.json 
 npm run build                      # tsc -p tsconfig.build.json → dist/ (only a desktop shell needs this)
 npm run build:desktop              # build + esbuild preload/renderer bundles + copy index.html
 npm run start:desktop              # electron . (needs a real display)
-npm run test                       # full suite: 1907 tests / 39 suites, ~45s
+npm run test                       # full suite: 1943 tests / 39 suites, ~45s
 node --import tsx --test test/compact.test.ts                    # single file (space-separate for several)
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
 ```
@@ -262,11 +262,11 @@ stream into Ink; `hooks/useKeyboardShortcuts.ts` is the one global key handler (
   literal (`test/tuiTheme.test.ts` also makes *source-level* assertions about `Markdown.tsx` and
   `UserMessage.tsx`). Animation ticks off one shared clock (`clock/ClockContext.tsx`, 16ms) that pauses on
   focus loss or overlay; don't add `setInterval` in components.
-- The message queue is a **`MessageQueue` instance** owned by `App` (one per session, persisted as
-  `message_queue` records); Enter always enqueues and a guarded effect pumps it. `subscribe`/`getSnapshot`
-  are bound methods so `useSyncExternalStore` sees stable identities. The pump's guard is `canPumpQueue`
-  (`src/runtime/queuePump.ts`), which separates "a turn is running" from "the UI is blocked" so a
-  non-terminal shell can define the latter differently.
+- The message queue is a **`MessageQueue` instance** owned by `App` in the TUI (one per session, persisted
+  as `message_queue` records; `SessionHost` owns the desktop's — see below); Enter always enqueues and a
+  guarded effect pumps it. `subscribe`/`getSnapshot` are bound methods so `useSyncExternalStore` sees stable
+  identities. The pump's guard is `canPumpQueue` (`src/runtime/queuePump.ts`), which separates "a turn is
+  running" from "the UI is blocked" so a non-terminal shell can define the latter differently.
 - Slash commands (`src/commands/`) are a module-level `Map` of plain `{name, description, run}` objects
   that render nothing — all effects go through optional `CommandContext` callbacks, so every command must
   tolerate `undefined` ones. Skill commands are prompt macros with per-invocation model/effort/tool
@@ -286,9 +286,11 @@ scope). `SessionClient` mirrors `SessionController`'s shape for a renderer.
   functions.
 - **`SessionClient` must field-diff before swapping its snapshot *and* its background-task list**, because
   `SessionController.publish` compares `usage` and `taskSnapshot` by reference while every deserialized
-  message is a fresh object graph.
+  message is a fresh object graph. The queued-message list and the derived `cost` obey the same rule; `cost`
+  is folded into `applySnapshot`'s comparison rather than kept as its own signal, since it rides on the
+  `snapshot` event and a separate check would mean a second `notify()` per tick.
 - **Everything inbound is validated; nothing outbound is.** `parseHostCommand`
-  (`protocol/commandSchema.ts`) runs a `.strict()` discriminated union over all 32 `HostCommand` variants
+  (`protocol/commandSchema.ts`) runs a `.strict()` discriminated union over all 34 `HostCommand` variants
   before `handleMessage` dispatches — the client half is the less trusted end, and `set-permission-mode`
   reaches `PermissionGate` directly. The schema is a second description of the union, kept honest by two
   compile-time guards: a keyed `satisfies Record<HostCommand['type'], …>` table that fails *by name*, and
@@ -306,10 +308,32 @@ scope). `SessionClient` mirrors `SessionController`'s shape for a renderer.
   `preview` (bounded by `capFileToolPreview`) and precomputed `destructiveWarnings`; `toPermissionDto`
   (`protocol/permissionDto.ts`) takes `cwd` explicitly and is shared by `SessionHost` and the TUI's
   `usePermission`, so both dialogs render from identical input. `WireModelsResult.pickerOptions` is the
-  same bargain (`buildModelPickerOptions` needs `ConfigService.getModel`). **Anything projected from
+  same bargain (`buildModelPickerOptions` needs `ConfigService.getModel`), and so is the `snapshot` event's
+  `cost`, which needs `ModelPricing` plus `harness/usage.ts`. All three go through
+  `resolveUsageWithCost` — the one projection behind `/cost` in both shells *and* the desktop status bar, so
+  they cannot print different numbers for one turn; absent rather than zero when pricing is incomplete,
+  because "not priced" and "free" are different answers. **Anything projected from
   `ModelConfig` is built field by field, never spread** — `resolveModel` folds the endpoint's `apiKey` and
   `baseUrl` into what it returns, so one spread in `WireModelInfo` ships every configured key to the
   renderer.
+- **The desktop's message queue lives in `SessionHost`, not the renderer**, which is the one place the two
+  shells' ownership differs (`App.tsx` owns the terminal's). Two reasons, both structural: it is persisted
+  through `store.appendRecord`, and letting a client own it would mean an `append-record` command handing
+  the less-trusted end of this protocol the whole `SessionRecord` union; and the pump's gate reads state
+  only the host has. That gate is `canPumpQueue`, shared, with `uiBlocked = pendingKinds.size > 0` — an
+  outstanding *blocking* request, not any open panel, since `/rewind` and the pickers hold the user rather
+  than the agent loop. `pumpQueue()` is detached and re-checks in its own `finally` (after an await, so a
+  fresh microtask rather than recursion); its triggers are an enqueue, `postSnapshot` (the false edge of
+  `isStreaming` is the only signal a turn ended) and `askUi`'s `finally`. There is deliberately no
+  `dequeue` command — a client popping from the queue would race that pump. Session switches rebind through
+  `beforeApply`: `migrateTo` for `/clear` (same conversation, fresh log) and `reset` for `/resume` (a
+  different conversation with its own replayed queue).
+- **`SessionController.submit` rejects a second concurrent turn**, which is what makes queueing safe rather
+  than merely convenient: everything past that guard assigns `this.abortController`, so a concurrent run
+  would overwrite the live one and leave the first turn impossible to interrupt. It throws rather than
+  no-oping (a dropped message is indistinguishable from one answered with nothing) and every caller catches
+  it. The `try` opens immediately after `streaming = true` so the `finally` that clears it covers
+  `publish()` too — a throwing subscriber would otherwise latch the flag and reject every later turn.
 - **`client.ts` must not *value*-import `harness/`, `services/`, `sessions/` or `commands/`** — the last
   would drag the slash-command registry, and through `skills.ts` the filesystem, into a renderer bundle
   (`test/protocolClientParity.test.ts` pins all four). `protocol/index.js` transitively pulls `node:fs`,
@@ -450,13 +474,20 @@ mutation). `tsconfig.renderer.json`'s `include` list documents the allowed share
   and falls back to `UI_REQUEST_FALLBACKS[kind]()` (same asymmetry as the bridges); without it a throwing
   dialog posts no `ui-response` and the agent loop waits for the life of the process. The renderer's own
   handlers are the second net.
-- The composer gates Enter *and* the button on `isStreaming`: `requestSubmit()` ignores a disabled button,
-  and `SessionController.submit` has no in-flight guard, so a second turn overwrites the live
-  `AbortController` and the first becomes impossible to interrupt. With a completion dropdown open, Enter
+- **Enter mid-turn queues rather than sends, and both the key path and the button must agree** —
+  `requestSubmit()` ignores a disabled button, so a mismatch silently swallows a click. The button therefore
+  stays *enabled* while streaming and relabels to "Queue" (it used to be disabled, back when
+  `SessionController.submit` had no in-flight guard and a dropped message was the only safe option). The
+  waiting messages are drawn by `renderer/model/queuedMessages.ts` + `dom/queueView.ts`, which are read-only
+  apart from Clear — there is no per-row remove because the wire has no `dequeue`. Clear is a button rather
+  than a chord so Escape does not gain a third meaning on top of "answer the dialog before interrupting".
+  With a completion dropdown open, Enter
   is "accept **and** run" and Tab is accept-only, matching `useKeyboardShortcuts.ts:286-291` — **except for
   a file mention**, where Enter only accepts. `@src/foo.ts` is a fragment of a sentence still being
   written, so submitting there sends half a prompt; `ShellState.completions` is a three-valued
-  `'none' | 'command' | 'file'` rather than a boolean for exactly that one branch.
+  `'none' | 'command' | 'file'` rather than a boolean for exactly that one branch. A slash command is never
+  queued: commands are not prompts, so nothing is waiting behind, and `/model` held until the turn ended
+  would be a surprising delay.
 - **`@` completion is split by dependency, not by convenience.** `runtime/suggestions/atToken.ts` holds the
   pure half — where the `@…` token starts, and what the text looks like after accepting one — and is on the
   renderer's allowlist; `fileSuggestions.ts` keeps `generateFileSuggestions`, which needs `node:fs`,

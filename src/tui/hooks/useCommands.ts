@@ -13,7 +13,7 @@ import type {
 } from '../../commands/types.js'
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
 import type { ModelPricing, TokenUsage } from '../../harness/types.js'
-import { calculateTokenCost, hasCompletePricing } from '../../harness/usage.js'
+import { resolveUsageWithCost } from '../../harness/usage.js'
 import { resetAutoCompactFailureState } from '../../harness/compact.js'
 import {
   cleanupSubagentWorktrees,
@@ -184,18 +184,7 @@ export function useCommands({
           await storeRef.current.setCompactFailureCount(sessionRef.current.id, 0)
           resetAutoCompactFailureState(sessionRef.current.id)
         },
-        getUsage: () => {
-          const total = usageRef.current.total
-          const currentPricing = pricingRef.current
-          if (!hasCompletePricing(currentPricing)) {
-            return total
-          }
-          return {
-            ...total,
-            cost: calculateTokenCost(total, currentPricing),
-            currency: currentPricing.currency ?? 'USD',
-          }
-        },
+        getUsage: () => resolveUsageWithCost(usageRef.current.total, pricingRef.current),
         getSessionMetricsSummary: async () => storeRef.current.loadMetricsSummary(sessionRef.current.id),
         getModel: () => modelRef.current,
         setModel: (m) => setModelRef.current(m),

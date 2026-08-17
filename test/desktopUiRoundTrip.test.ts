@@ -38,6 +38,10 @@ interface Harness {
   host: SessionHost
   client: SessionClient
   cwd: string
+  /** Inputs the controller was actually asked to run, in order. */
+  submits: string[]
+  /** Flips the turn state and notifies, the way the real controller does. */
+  setStreaming: (value: boolean) => void
   dispose: () => void
 }
 
@@ -68,7 +72,10 @@ async function createHarness(): Promise<Harness> {
   const project = {
     cwd,
     config: {},
-    store: {},
+    // Only `appendRecord` is reached: the host's `MessageQueue` persists every
+    // mutation as a `message_queue` record, which is exactly why the queue lives
+    // host-side rather than in the renderer.
+    store: { appendRecord: async () => undefined },
     backgroundTasks: { subscribe: () => () => undefined, getSnapshot: () => [] },
     mcp: { connected: [], failed: [] },
     initialModelKey: 'main',
@@ -77,16 +84,29 @@ async function createHarness(): Promise<Harness> {
     shutdown: async () => undefined,
   } as unknown as ProjectRuntime
 
+  const submits: string[] = []
+  const snapshotListeners = new Set<() => void>()
+  let streaming = false
+
   const controller = {
     onEvent: () => () => undefined,
-    subscribe: () => () => undefined,
+    subscribe: (listener: () => void) => {
+      snapshotListeners.add(listener)
+      return () => snapshotListeners.delete(listener)
+    },
     getSnapshot: () => ({
-      isStreaming: false,
-      usage: { total: null, lastRequest: null },
+      isStreaming: streaming,
+      // `total` is not nullable on `SessionUsage`; the real controller seeds it
+      // with `createEmptySessionUsage()`, and the host reads it to derive the cost.
+      usage: {
+        total: { inputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0 },
+        lastRequest: null,
+      },
       taskSnapshot: undefined,
       spinnerSubText: undefined,
     }),
     getSubagentProgress: () => new Map<string, string>(),
+    submit: async (input: string) => { submits.push(input) },
   } as unknown as SessionController
 
   const runtimeSlot = {
@@ -123,6 +143,11 @@ async function createHarness(): Promise<Harness> {
     host,
     client,
     cwd,
+    submits,
+    setStreaming: (value: boolean) => {
+      streaming = value
+      for (const listener of [...snapshotListeners]) listener()
+    },
     dispose: () => {
       host.dispose()
       client.dispose()
@@ -294,5 +319,62 @@ test('the whole DTO survives structured clone, preview included', async () => {
   await harness.scope.bridges.prompt.prompt(writeRequest())
   assert.doesNotThrow(() => structuredClone(seen))
   assert.equal(JSON.stringify(seen).includes('"execute"'), false, 'no Tool crossed the boundary')
+  harness.dispose()
+})
+
+/**
+ * The mid-turn Enter path, end to end with only the DOM left out.
+ *
+ * The model layer cannot cover this: `keymap.ts` decides that the keystroke means
+ * "queue", but whether the message actually survives the round trip, appears in
+ * the strip and is sent afterwards depends on the host owning the queue, on
+ * `PersistedQueuedMessage` being clone-safe, and on the pump firing off the
+ * snapshot publish that ends the turn.
+ */
+test('a message queued mid-turn crosses the boundary, shows up, and is sent when the turn ends', async () => {
+  const harness = await createHarness()
+  const announced: string[][] = []
+  harness.client.onQueueChanged((messages) => {
+    announced.push(messages.map((message) => message.content))
+  })
+
+  harness.setStreaming(true)
+  // What `resolveKey` returning `'enqueue'` leads to in `app.ts`.
+  const stored = await harness.client.enqueueMessage('the next thing')
+
+  assert.equal(stored.content, 'the next thing')
+  assert.equal(stored.priority, 'next')
+  assert.doesNotThrow(() => structuredClone(stored))
+
+  await settle()
+  assert.deepEqual(harness.client.getQueuedMessages().map((entry) => entry.content), ['the next thing'])
+  // This is what the strip draws from; `queuedMessagesView` turns it into rows.
+  assert.deepEqual(announced.at(0), ['the next thing'])
+  assert.deepEqual(harness.submits, [], 'and nothing was sent while the turn ran')
+
+  harness.setStreaming(false)
+  await settle()
+
+  assert.deepEqual(harness.submits, ['the next thing'], 'the turn ending is what releases it')
+  assert.deepEqual(harness.client.getQueuedMessages(), [], 'and the strip empties')
+  assert.deepEqual(announced.at(-1), [])
+  harness.dispose()
+})
+
+test('clearing the queue reaches the host and empties the strip', async () => {
+  const harness = await createHarness()
+  harness.setStreaming(true)
+  await harness.client.enqueueMessage('never mind')
+  await settle()
+  assert.equal(harness.client.getQueuedMessages().length, 1)
+
+  // The Clear button in `dom/queueView.ts`.
+  await harness.client.clearQueue()
+  await settle()
+
+  assert.deepEqual(harness.client.getQueuedMessages(), [])
+  harness.setStreaming(false)
+  await settle()
+  assert.deepEqual(harness.submits, [], 'a cleared message must not surface later')
   harness.dispose()
 })

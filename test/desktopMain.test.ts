@@ -100,7 +100,11 @@ function fakeController(): SessionController {
     subscribe: () => () => undefined,
     getSnapshot: () => ({
       isStreaming: false,
-      usage: { total: null, lastRequest: null },
+      // `total` is not nullable on `SessionUsage`, and the real controller
+      // initializes it with `createEmptySessionUsage()`. It used to be `null`
+      // here, which only compiled because this whole object is cast — and the
+      // host now reads it to derive the session cost.
+      usage: { total: { inputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0 }, lastRequest: null },
       taskSnapshot: undefined,
       spinnerSubText: undefined,
     }),

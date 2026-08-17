@@ -62,6 +62,8 @@ export type KeyAction =
   | 'close-completions'
   | 'interrupt'
   | 'submit'
+  /** A turn is in flight: hand the text to the host's message queue instead. */
+  | 'enqueue'
   | 'newline'
   | 'none'
 
@@ -120,10 +122,14 @@ export function resolveKey(chord: KeyChord, state: ShellState): KeyAction {
 
   if (chord.key === 'Enter') {
     if (chord.shiftKey === true) return 'newline'
-    // A turn in flight blocks submission rather than queueing behind it:
-    // `SessionController.submit` has no in-flight guard and would overwrite the
-    // live `AbortController`, leaving the first turn impossible to interrupt.
-    if (state.isStreaming || state.inputEmpty) return 'none'
+    if (state.inputEmpty) return 'none'
+    // A turn in flight queues the message rather than sending it, matching the
+    // terminal (`App.tsx`'s `handleSubmit` enqueues whenever a turn is running).
+    // It used to be dropped instead, because `SessionController.submit` had no
+    // in-flight guard and a second call would overwrite the live
+    // `AbortController`, leaving the first turn impossible to interrupt. The
+    // guard is now in the kernel, so the message has somewhere to go.
+    if (state.isStreaming) return 'enqueue'
     return 'submit'
   }
 

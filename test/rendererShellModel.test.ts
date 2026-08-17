@@ -88,13 +88,17 @@ test('Escape while the rewind panel is open never interrupts the turn', () => {
   assert.equal(resolveKey({ key: 'Escape' }, shell({ hasRewind: true, isStreaming: true })), 'rewind')
 })
 
-test('Enter submits only when idle and non-empty; Shift+Enter is a newline', () => {
+test('Enter submits when idle, queues mid-turn, and never fires on an empty composer', () => {
   assert.equal(resolveKey({ key: 'Enter' }, shell()), 'submit')
   assert.equal(resolveKey({ key: 'Enter', shiftKey: true }, shell()), 'newline')
   assert.equal(resolveKey({ key: 'Enter' }, shell({ inputEmpty: true })), 'none')
-  // A second turn would overwrite the controller's AbortController and leave the
-  // first one impossible to interrupt.
-  assert.equal(resolveKey({ key: 'Enter' }, shell({ isStreaming: true })), 'none')
+  // Queued rather than dropped, matching the terminal. Sending it outright would
+  // overwrite the controller's live AbortController and leave the first turn
+  // impossible to interrupt — which is why the kernel rejects a second submit
+  // outright and this returns `enqueue` instead of `submit`.
+  assert.equal(resolveKey({ key: 'Enter' }, shell({ isStreaming: true })), 'enqueue')
+  // An empty composer still has nothing to queue.
+  assert.equal(resolveKey({ key: 'Enter' }, shell({ isStreaming: true, inputEmpty: true })), 'none')
 })
 
 test('the completion dropdown owns Tab, the arrows and Enter while open', () => {

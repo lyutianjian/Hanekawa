@@ -29,12 +29,17 @@ export interface SessionSwitchDeps {
   /**
    * Runs once the records are loaded and before the runtime is swapped.
    *
-   * The message queue is why this exists. It belongs to the shell rather than
-   * the host, and it has to be rebound *before* the new runtime goes live: past
-   * `RuntimeSlot.replace` there is an await boundary on which a queue still
-   * keyed to the previous session could pump into the new one. A new session's
-   * id does not exist until `createDraft()`, so no caller can do this ahead of
-   * the call.
+   * The message queue is why this exists, and it has to be rebound *before* the
+   * new runtime goes live: past `RuntimeSlot.replace` there is an await boundary
+   * on which a queue still keyed to the previous session could pump into the new
+   * one. A new session's id does not exist until `createDraft()`, so no caller
+   * can do this ahead of the call.
+   *
+   * Which side owns that queue depends on the shell, so this hook does not care:
+   * the terminal's belongs to `App.tsx`, while the desktop's lives in
+   * `SessionHost` (it is persisted through `store.appendRecord`, and its pump
+   * gate reads whether a blocking UI request is outstanding — neither of which a
+   * renderer can see). Both pass a closure over their own instance.
    */
   beforeApply?: (session: SessionMeta, records: readonly SessionRecord[]) => Promise<void>
 }

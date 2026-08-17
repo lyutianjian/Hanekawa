@@ -186,8 +186,49 @@
       #surface .row.tone-error .value { color: var(--error); }
       #surface .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
 
-      /* --- completions --- */
-      #suggestions {
+      /*
+        --- the queued-message strip ---
+        Sits directly above the composer, because it is about what will be sent
+        next rather than about what has happened. Read-only apart from Clear: the
+        wire has no per-message dequeue (the host pumps its own queue).
+      */
+      #queue {
+        flex: 0 0 auto;
+        max-height: 22vh;
+        overflow-y: auto;
+        border-top: 1px solid var(--border);
+        background: var(--bg-raised);
+        padding: 6px 12px;
+        font-size: 12px;
+      }
+      #queue .queue-header {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        margin-bottom: 4px;
+      }
+      #queue .queue-title { color: var(--warning); flex: 1 1 auto; }
+      #queue .queue-clear {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--border-strong);
+        border-radius: 3px;
+        padding: 1px 8px;
+        font: inherit;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      #queue .queue-clear:hover { color: var(--danger); border-color: var(--danger); }
+      #queue .queue-row { display: flex; gap: 8px; padding: 1px 0; color: var(--muted); }
+      #queue .queue-position { flex: 0 0 auto; opacity: 0.7; }
+      #queue .queue-label {
+        flex: 1 1 auto;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* --- completions --- */      #suggestions {
         flex: 0 0 auto;
         border-top: 1px solid var(--border);
         background: var(--bg-raised);
@@ -452,6 +493,7 @@
       <span><span class="dot">●</span><span id="status-model">…</span></span>
       <span id="status-mode">default</span>
       <span id="status-usage"></span>
+      <span id="status-cost"></span>
       <span id="status-streaming" style="color: var(--muted);">idle</span>
       <span id="status-session"></span>
     </div>
@@ -459,6 +501,7 @@
     <div id="tool-progress" hidden></div>
     <div id="surface" hidden></div>
     <div id="suggestions" hidden role="listbox" aria-label="Slash commands"></div>
+    <div id="queue" hidden aria-live="polite" aria-label="Queued messages"></div>
     <form id="input-row">
       <textarea
         id="input"

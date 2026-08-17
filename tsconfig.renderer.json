@@ -1,0 +1,42 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx"
+  },
+  // The renderer's entry points plus the shared modules it is allowed to reach.
+  //
+  // This list documents that surface; it is **not** what enforces it. TypeScript
+  // follows imports past `include`, so this program already contains ~130 host
+  // files (`client.ts` pulls the wire types, which pull `harness/`, which pull
+  // `src/utils/paths.ts`). One consequence is worth knowing: `paths.ts` imports
+  // `node:fs`, so `@types/node`'s globals reach this pass despite `"types": []`,
+  // and a renderer file using `process.env` typechecks clean in *both* passes and
+  // then `ReferenceError`s in Chromium. `test/rendererImports.test.ts` is the
+  // actual guard.
+  "include": [
+    "src/desktop/renderer/**/*.ts",
+    "src/desktop/types.ts",
+    "src/desktop/preload.ts",
+    "src/types/picomatch.d.ts",
+    "src/runtime/protocol/channel.ts",
+    "src/runtime/protocol/client.ts",
+    "src/runtime/protocol/wire.ts",
+    "src/runtime/protocol/pendingRequests.ts",
+    "src/runtime/permissionPresentation.ts",
+    "src/runtime/planPresentation.ts",
+    "src/runtime/suggestions/commandSuggestions.ts",
+    "src/config/effort.ts"
+  ],
+  // `exclude` is inherited, and the base config excludes exactly the two DOM
+  // paths this config exists to check — so it has to be overridden here or the
+  // program ends up empty.
+  "exclude": ["node_modules", "dist"]
+}

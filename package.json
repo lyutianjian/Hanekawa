@@ -2,6 +2,7 @@
   "name": "myagent",
   "version": "0.1.0",
   "type": "module",
+  "main": "dist/desktop/main.js",
   "engines": {
     "node": ">=22"
   },
@@ -12,7 +13,9 @@
   "scripts": {
     "dev:tui": "tsx src/tui/entrypoints/tui.tsx",
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "build:desktop": "tsc -p tsconfig.build.json && esbuild src/desktop/preload.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/desktop/preload.js --external:electron && esbuild src/desktop/renderer/app.ts --bundle --platform=neutral --format=esm --target=chrome120 --main-fields= --alias:node:crypto=./src/desktop/renderer/runtime/nodeCryptoShim.ts --outfile=dist/desktop/renderer/app.js && node scripts/copy-desktop-assets.mjs",
+    "start:desktop": "electron .",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.renderer.json",
     "test": "node --import tsx --test test/**/*.test.ts",
     "postinstall": "patch-package"
   },
@@ -37,10 +40,12 @@
   },
   "devDependencies": {
     "@types/diff": "^7.0.2",
-    "@types/turndown": "^5.0.5",
     "@types/ink": "^0.5.2",
     "@types/node": "latest",
     "@types/react": "^19.2.14",
+    "@types/turndown": "^5.0.5",
+    "electron": "^43.4.0",
+    "esbuild": "^0.28.2",
     "fast-check": "^3.23.2",
     "ink-testing-library": "^4.0.0",
     "patch-package": "^8.0.0",

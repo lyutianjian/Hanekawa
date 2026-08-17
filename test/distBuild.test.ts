@@ -50,6 +50,18 @@ test('.tsx sources emit alongside the rest', () => {
   assert.ok(existsSync(path.join(dist, 'tui', 'entrypoints', 'tui.js')), 'expected dist/tui/entrypoints/tui.js')
 })
 
+test('the desktop main process lands at dist/desktop/main.js (depth pinned)', () => {
+  // `rootDir: "src"` keeps the emit depth aligned with the source layout, which
+  // is what lets `desktop/main.ts` import `'../sessions/service.js'` against the
+  // actual emitted path. `tsconfig.build.json` excludes the renderer and preload
+  // (esbuild handles them), so this assertion belongs here and not in
+  // `desktopBuild.test.ts`.
+  assert.ok(
+    existsSync(path.join(dist, 'desktop', 'main.js')),
+    'expected dist/desktop/main.js from the tsc build',
+  )
+})
+
 test('the emitted version lookup still finds the real package.json', () => {
   // The depth coupling itself, pinned without exporting anything for the test:
   // this is the exact resolution `otlp.js` performs at module load.

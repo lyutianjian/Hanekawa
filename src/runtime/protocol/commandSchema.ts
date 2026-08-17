@@ -99,6 +99,7 @@ const COMMAND_SCHEMAS = {
     .object({ type: z.literal('run-tool'), id: commandId, name: z.string(), input: z.unknown() })
     .strict(),
   'run-command': z.object({ type: z.literal('run-command'), id: commandId, input: z.string() }).strict(),
+  'list-commands': z.object({ type: z.literal('list-commands'), id: commandId }).strict(),
   checkpoints: z.object({ type: z.literal('checkpoints'), id: commandId }).strict(),
   'restore-code': z
     .object({ type: z.literal('restore-code'), id: commandId, commitHash: z.string() })
@@ -162,6 +163,18 @@ const COMMAND_SCHEMAS = {
       reason: z.string().optional(),
     })
     .strict(),
+  'open-pane': z
+    .object({
+      type: z.literal('open-pane'),
+      id: commandId,
+      sessionId: z.string().optional(),
+      title: z.string().optional(),
+    })
+    .strict(),
+  'close-pane': z
+    .object({ type: z.literal('close-pane'), id: commandId, paneId: z.string() })
+    .strict(),
+  'list-panes': z.object({ type: z.literal('list-panes'), id: commandId }).strict(),
   shutdown: z.object({ type: z.literal('shutdown'), id: commandId, reason: z.string() }).strict(),
   // Drift guard #1, and the one that names the culprit: on a fresh object
   // literal this fails by key in both directions -- a variant added to

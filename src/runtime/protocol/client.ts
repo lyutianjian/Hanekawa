@@ -15,6 +15,7 @@ import type { SessionControllerSnapshot, SessionEvent } from '../sessionControll
 import type { RuntimeChannel } from './channel.js'
 import { PendingRequests } from './pendingRequests.js'
 import {
+  UI_REQUEST_FALLBACKS,
   type CommandEffect,
   type HostCommand,
   type HostEvent,
@@ -22,9 +23,15 @@ import {
   type PermissionRequestDto,
   type UiResponse,
   type WireBackgroundTasksResult,
+  type WireClosePaneResult,
+  type WireCommandInfo,
+  type WireCommandsResult,
   type WireEffortResult,
   type WireHelloResult,
+  type WireListPanesResult,
   type WireModelsResult,
+  type WireOpenPaneResult,
+  type WirePaneInfo,
   type WireReloadCountResult,
   type WireReloadSettingsResult,
   type WireResolveModelResult,
@@ -68,6 +75,7 @@ export class SessionClient {
   private readonly replies = new PendingRequests<{ ok: true; result: unknown } | { ok: false; message: string }>()
   private readonly eventListeners = new Set<(event: SessionEvent) => void>()
   private readonly effectListeners = new Set<(effect: CommandEffect) => void>()
+  private readonly paneListeners = new Set<(panes: readonly WirePaneInfo[]) => void>()
   private readonly listeners = new Set<() => void>()
   private handlers: SessionClientHandlers = {}
 
@@ -81,6 +89,8 @@ export class SessionClient {
   private runtimeSnapshot: WireRuntimeSnapshot | undefined
   private session: SessionMeta | undefined
   private backgroundTasks: readonly BackgroundTaskSnapshot[] = EMPTY_TASKS
+  /** Pane list, kept identity-stable across `pane-list` events that re-announce the same set. */
+  private panes: readonly WirePaneInfo[] = Object.freeze([])
   private readonly teardown: Array<() => void> = []
   private disposed = false
 
@@ -142,6 +152,28 @@ export class SessionClient {
     this.effectListeners.add(listener)
     return () => {
       this.effectListeners.delete(listener)
+    }
+  }
+
+  /**
+   * The most recent pane topology the host has announced.
+   *
+   * Empty until the first `pane-list` event arrives; a shell that needs the
+   * initial set to paint should call `listPanes()` instead of waiting.
+   */
+  getPanes = (): readonly WirePaneInfo[] => this.panes
+
+  /**
+   * Notified when the pane topology changes.
+   *
+   * The host pushes `pane-list` whenever a pane opens or closes; the client
+   * field-diffs to keep the listener identity stable across re-announcements
+   * of the same set.
+   */
+  onPanesChanged(listener: (panes: readonly WirePaneInfo[]) => void): () => void {
+    this.paneListeners.add(listener)
+    return () => {
+      this.paneListeners.delete(listener)
     }
   }
 
@@ -261,6 +293,17 @@ export class SessionClient {
     return this.send({ type: 'run-command', id: randomUUID(), input }) as Promise<WireRunCommandResult>
   }
 
+  /**
+   * Metadata for the registered slash commands, for a completion dropdown.
+   *
+   * Worth re-asking after `reloadSkills()`: skill commands come off disk and the
+   * set changes without any event announcing it.
+   */
+  async listCommands(): Promise<WireCommandInfo[]> {
+    const result = await this.send({ type: 'list-commands', id: randomUUID() }) as WireCommandsResult
+    return result.commands
+  }
+
   async getCheckpoints(): Promise<CheckpointWithDiff[]> {
     const result = await this.send({ type: 'checkpoints', id: randomUUID() }) as { checkpoints: CheckpointWithDiff[] }
     return result.checkpoints
@@ -339,14 +382,47 @@ export class SessionClient {
     }
   }
 
+  // --- pane (multi-tab) commands ----------------------------------------
+
+  /**
+   * Opens a new tab. Without `sessionId` the host mints a fresh draft; with
+   * one, the host resolves the existing session (returning the pane that
+   * already shows it, if any — one pane per session).
+   *
+   * The reply is the same shape `hello` returns: the caller learns the
+   * session id, the records that should be on screen, and the startup notices
+   * for the new tab.
+   */
+  async openPane(options: { sessionId?: string; title?: string } = {}): Promise<WireOpenPaneResult> {
+    return this.send({
+      type: 'open-pane',
+      id: randomUUID(),
+      ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+      ...(options.title ? { title: options.title } : {}),
+    }) as Promise<WireOpenPaneResult>
+  }
+
+  /** Closes a tab by pane id. `paneId` is the same value `WirePaneInfo.paneId` carries. */
+  async closePane(paneId: string): Promise<void> {
+    await this.send({ type: 'close-pane', id: randomUUID(), paneId })
+  }
+
+  /** Lists every open tab. */
+  async listPanes(): Promise<readonly WirePaneInfo[]> {
+    const result = await this.send({ type: 'list-panes', id: randomUUID() }) as WireListPanesResult
+    return result.panes
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     for (const off of this.teardown.splice(0)) off()
     this.failAllPending('The client was disposed.')
     this.backgroundTasks = EMPTY_TASKS
+    this.panes = Object.freeze([])
     this.eventListeners.clear()
     this.effectListeners.clear()
+    this.paneListeners.clear()
     this.listeners.clear()
   }
 
@@ -382,6 +458,9 @@ export class SessionClient {
         return
       case 'session-changed':
         this.applySession(event.session)
+        return
+      case 'pane-list':
+        this.applyPanes(event.panes)
         return
       case 'command-effect':
         for (const listener of [...this.effectListeners]) listener(event.effect)
@@ -459,8 +538,42 @@ export class SessionClient {
     this.notify()
   }
 
+  /**
+   * Pane topology is field-diffed by id-set comparison: a re-announcement of
+   * the same pane ids in the same order does not swap the array, so a tab bar
+   * built on this signal does not re-render on every event the host pushes.
+   *
+   * The internal array is frozen, so a consumer that destructures it sees a
+   * stable object across calls — and so does `onPanesChanged`, who receives
+   * the same reference until the topology actually changes.
+   */
+  private applyPanes(next: readonly WirePaneInfo[]): void {
+    if (samePaneList(this.panes, next)) return
+    this.panes = Object.freeze([...next])
+    this.notify()
+    for (const listener of [...this.paneListeners]) listener(this.panes)
+  }
+
+  /**
+   * Answers a host's blocking question, and *always* answers.
+   *
+   * The try/catch is load-bearing rather than defensive: `handleMessage` calls
+   * this as `void this.answer(...)`, so a handler that throws would leave no
+   * `ui-response` on the wire at all. Nothing else releases the host —
+   * `PermissionGate.approve` has no timeout, and `ToolRunner.run` does not pass
+   * its abort signal into it, so interrupting the turn will not free it either.
+   * The agent loop would wait for the rest of the process's life.
+   *
+   * The fallback is the kind's own, so the asymmetry survives: deny a tool,
+   * reject a question, but *approve* entering plan mode.
+   */
   private async answer(request: Extract<HostEvent, { type: 'ui-request' }>['request']): Promise<void> {
-    const response = await this.resolveUiRequest(request)
+    let response: UiResponse
+    try {
+      response = await this.resolveUiRequest(request)
+    } catch {
+      response = UI_REQUEST_FALLBACKS[request.kind]()
+    }
     this.channel.post({ type: 'ui-response', requestId: request.requestId, response } satisfies HostCommand)
   }
 
@@ -551,4 +664,22 @@ function sameTaskSnapshot(a: TaskDisplaySnapshot | undefined, b: TaskDisplaySnap
   if (a === b) return true
   if (!a || !b) return false
   return JSON.stringify(a) === JSON.stringify(b)
+}
+
+/**
+ * Two pane lists are the same when every pane id matches in the same order and
+ * every title still matches. A re-announcement of the same topology — which the
+ * host does on every open / close — must not wake the tab bar.
+ */
+function samePaneList(a: readonly WirePaneInfo[], b: readonly WirePaneInfo[]): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  for (let index = 0; index < a.length; index += 1) {
+    const left = a[index]!
+    const right = b[index]!
+    if (left.paneId !== right.paneId) return false
+    if (left.sessionId !== right.sessionId) return false
+    if (left.sessionTitle !== right.sessionTitle) return false
+  }
+  return true
 }

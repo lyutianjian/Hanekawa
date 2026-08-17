@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { getCommand } from '../../commands/index.js'
-import type { CommandContext } from '../../commands/types.js'
+import { getCommand, listCommands } from '../../commands/index.js'
+import type { CommandContext, CommandDefinition } from '../../commands/types.js'
 import { VALID_EFFORT_LEVELS, type EffortLevel } from '../../config/effort.js'
 import { saveEffortLevel } from '../../config/settings.js'
 import type { PermissionRequest } from '../../harness/permissions.js'
@@ -22,6 +22,7 @@ import {
 } from '../sessionSwitch.js'
 import { buildStartupNotices, resolveInitialQueuedPrompt, type StartupNotice } from '../startupNotices.js'
 import type { ProjectRuntime, SessionScope } from '../types.js'
+import type { SessionPane } from '../sessionWorkspace.js'
 import type { RuntimeChannel } from './channel.js'
 import { createHostCommandContext } from './commandContext.js'
 import { parseHostCommand, type HostCommandParseFailure } from './commandSchema.js'
@@ -35,10 +36,16 @@ import {
   type UiRequest,
   type UiResponse,
   type WireBackgroundTasksResult,
+  type WireCommandInfo,
+  type WireCommandsResult,
+  type WireClosePaneResult,
   type WireEffortResult,
   type WireHelloResult,
+  type WireListPanesResult,
   type WireModelInfo,
   type WireModelsResult,
+  type WireOpenPaneResult,
+  type WirePaneInfo,
   type WireReloadCountResult,
   type WireReloadSettingsResult,
   type WireResolveModelResult,
@@ -60,6 +67,17 @@ function assertNever(value: never): never {
   throw new Error(`Unhandled host command: ${JSON.stringify(value)}`)
 }
 
+/**
+ * Four fields, copied one at a time. A spread would put `run` and `isEnabled` on
+ * the wire; see `WireCommandInfo`.
+ */
+function toWireCommandInfo(command: CommandDefinition): WireCommandInfo {
+  const info: WireCommandInfo = { name: command.name, description: command.description }
+  if (command.aliases !== undefined) info.aliases = [...command.aliases]
+  if (command.argumentHint !== undefined) info.argumentHint = command.argumentHint
+  return info
+}
+
 export interface SessionHostDeps {
   channel: RuntimeChannel
   controller: SessionController
@@ -72,6 +90,48 @@ export interface SessionHostDeps {
    */
   project: ProjectRuntime
   scope: SessionScope
+  /**
+   * The registry of open panes.
+   *
+   * A pane is identified by the session it is bound to (one pane per session),
+   * so `close-pane` / `list-panes` use the session id as the pane id. The host
+   * is the only consumer that ever needs to reach for the workspace, and the
+   * surface it relies on is documented by the `PaneRegistry` interface below.
+   */
+  workspace: PaneRegistry
+  /**
+   * Called when an `open-pane` command resolves to a fresh `SessionPane` that
+   * needs a window, channel and host wired up by the shell.
+   *
+   * Hosts do not create `BrowserWindow`s themselves — they have no handle on
+   * the Electron module — so the shell owns that step. The host still
+   * resolves the pane (so the wire reply is the same shape regardless of pane
+   * owner) and registers it in the workspace, then hands the constructed
+   * pane off to the callback for window creation.
+   */
+  onPaneOpened: (pane: SessionPane, sessionId: string | undefined) => void
+  /**
+   * Called when a `close-pane` resolves to a real teardown. The shell detaches
+   * the window, but the host is the one that ran `pane.close()` (which is
+   * fixed-order: `interrupt('exit')` → controller → slot → scope), so the host
+   * drives the command and the shell catches the side effect.
+   */
+  onPaneClosed: (paneId: string) => void
+}
+
+/**
+ * The slice of `SessionWorkspace` the host reaches for.
+ *
+ * Declared structurally here so this file does not have to know that the
+ * registry is a class; it also documents, by type, exactly which surface area
+ * the host relies on.
+ */
+export interface PaneRegistry {
+  list(): readonly SessionPane[]
+  paneForSession(sessionId: string): SessionPane | undefined
+  open(session: SessionMeta): Promise<SessionPane>
+  adopt(scope: SessionScope, options: { modelKey?: string }): SessionPane
+  close(pane: SessionPane): void
 }
 
 /**
@@ -95,6 +155,9 @@ export class SessionHost {
   private readonly runtimeSlot: RuntimeSlot
   private readonly project: ProjectRuntime
   private readonly scope: SessionScope
+  private readonly workspace: PaneRegistry
+  private readonly onPaneOpened: (pane: SessionPane, sessionId: string | undefined) => void
+  private readonly onPaneClosed: (paneId: string) => void
 
   private readonly pendingUi = new PendingRequests<UiResponse>()
   /** Request kind per outstanding id, so each settles with its own fallback. */
@@ -113,6 +176,9 @@ export class SessionHost {
     this.runtimeSlot = deps.runtimeSlot
     this.project = deps.project
     this.scope = deps.scope
+    this.workspace = deps.workspace
+    this.onPaneOpened = deps.onPaneOpened
+    this.onPaneClosed = deps.onPaneClosed
     this.session = deps.scope.session
     this.ledger = new SessionRecordLedger(deps.scope.existingRecords)
 
@@ -412,6 +478,10 @@ export class SessionHost {
       case 'run-command':
         return this.runSlashCommand(command.input)
 
+      case 'list-commands':
+        // Already filtered for `isHidden`/`isEnabled` by the registry.
+        return { commands: listCommands().map(toWireCommandInfo) } satisfies WireCommandsResult
+
       case 'checkpoints':
         return { checkpoints: await this.controller.getCheckpointService().getCheckpointsWithDiffs() }
 
@@ -550,6 +620,15 @@ export class SessionHost {
       case 'shutdown':
         await this.project.shutdown(command.reason)
         return { ok: true }
+
+      case 'open-pane':
+        return this.handleOpenPane(command)
+
+      case 'close-pane':
+        return this.handleClosePane(command)
+
+      case 'list-panes':
+        return this.handleListPanes() satisfies WireListPanesResult
     }
 
     // Not a `default` branch, and it must not become one. The switch above has
@@ -722,5 +801,104 @@ export class SessionHost {
   /** Exposed for hosts that need the ledger (model switches fold it into task state). */
   getRecords(): readonly SessionRecord[] {
     return this.ledger.list()
+  }
+
+  // --- pane (multi-tab) handlers ----------------------------------------
+
+  /**
+   * Resolves the requested pane and asks the shell to open a window for it.
+   *
+   * The split is the same as everywhere else in this file: the host owns
+   * runtime and persistence, the shell owns the `BrowserWindow`. The host
+   * resolves the pane and registers it in the workspace **before** handing
+   * off, so the shell sees a pane by the time it iterates `workspace.list()`
+   * (notably during its own initial setup).
+   *
+   * `paneId` is the session id: a pane is identified by the session it is
+   * bound to (one pane per session), and a renderer's `close-pane` carries
+   * the same value the renderer sees in `WirePaneInfo.paneId`.
+   */
+  private async handleOpenPane(
+    command: Extract<HostCommand, { type: 'open-pane' }>,
+  ): Promise<WireOpenPaneResult> {
+    let pane: SessionPane
+    if (command.sessionId) {
+      // `paneForSession` is the one-pane-per-session invariant: returning the
+      // existing pane is the whole point, since two panes on one session id
+      // means two `AgentLoop`s appending to one JSONL.
+      const existing = this.workspace.paneForSession(command.sessionId)
+      if (existing) {
+        pane = existing
+      } else {
+        const session = await this.project.store.resolve(command.sessionId)
+        if (!session) throw new Error(`Session not found: ${command.sessionId}`)
+        pane = await this.workspace.open(session)
+      }
+    } else {
+      const scope = await this.project.openScope(this.project.store.createDraft(command.title))
+      pane = this.workspace.adopt(scope, {})
+    }
+
+    const session = pane.getSession()
+    const records = await this.project.store.loadRecordsWithDiagnostics(session.id)
+
+    // The callback is what wires the new pane's `BrowserWindow` and builds
+    // its `SessionHost`. We post the topology update **after** the shell has
+    // finished construction so the listing is never ahead of reality.
+    this.onPaneOpened(pane, command.sessionId)
+    this.broadcastPaneList()
+
+    return {
+      paneId: session.id,
+      session,
+      records: records.records,
+      notices: this.startupNotices(records.diagnostics),
+    }
+  }
+
+  /**
+   * Looks the pane up by id, then runs the fixed teardown order. The shell
+   * detaches the window in response to the callback — the host does not
+   * touch `BrowserWindow`s.
+   *
+   * Throwing on an unknown pane keeps the symmetry with `retarget`: a
+   * renderer that has gone stale is better off getting a fail than a silent
+   * no-op.
+   */
+  private handleClosePane(command: Extract<HostCommand, { type: 'close-pane' }>): WireClosePaneResult {
+    const pane = this.workspace.list().find((candidate) => candidate.getSession().id === command.paneId)
+    if (!pane) throw new Error(`Pane not found: ${command.paneId}`)
+    this.workspace.close(pane)
+    this.onPaneClosed(command.paneId)
+    this.broadcastPaneList()
+    return { ok: true }
+  }
+
+  /** Pane topology snapshot. The shape mirrors the `pane-list` event intentionally. */
+  private handleListPanes(): WireListPanesResult {
+    return { panes: this.collectPanes() }
+  }
+
+  /**
+   * Pushes the current pane topology to every connected renderer.
+   *
+   * Only this host's channel is reachable here, so a true multi-pane broadcast
+   * is the shell's job (it iterates every `SessionHost`). What this host does
+   * is post to its own channel, which is the only pane that ever sees its own
+   * `open-pane` / `close-pane` replies and therefore the one that needs the
+   * update most.
+   */
+  private broadcastPaneList(): void {
+    this.post({ type: 'pane-list', panes: this.collectPanes() })
+  }
+
+  /** Field-by-field projection. Never spread `SessionPane` — see `WirePaneInfo`. */
+  private collectPanes(): WirePaneInfo[] {
+    return this.workspace.list().map((pane) => {
+      const session = pane.getSession()
+      const info: WirePaneInfo = { paneId: session.id, sessionId: session.id }
+      if (session.title !== undefined) info.sessionTitle = session.title
+      return info
+    })
   }
 }

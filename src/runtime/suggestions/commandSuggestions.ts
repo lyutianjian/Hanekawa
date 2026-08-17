@@ -2,23 +2,47 @@ import Fuse, { type FuseResult } from 'fuse.js'
 import type { CommandDefinition } from '../../commands/types.js'
 import type { SuggestionItem } from './types.js'
 
-export type CommandSuggestion = SuggestionItem<CommandDefinition> & {
-  metadata: CommandDefinition
+/**
+ * The subset of a command this module actually reads.
+ *
+ * Widened from `CommandDefinition` for the desktop renderer: `run` is a function
+ * and cannot cross the process boundary, so a client only ever holds name,
+ * description and aliases. The default type parameter below keeps every existing
+ * caller — all of which pass real `CommandDefinition`s — unchanged.
+ */
+export interface CommandSuggestionSource {
+  name: string
+  description: string
+  aliases?: string[]
+  isHidden?: boolean
+  isEnabled?: () => boolean
 }
 
-interface CommandSearchItem {
+export type CommandSuggestion<T extends CommandSuggestionSource = CommandDefinition> =
+  SuggestionItem<T> & {
+    metadata: T
+  }
+
+interface CommandSearchItem<T extends CommandSuggestionSource> {
   name: string
   aliases: string[]
   description: string
-  command: CommandDefinition
+  command: T
 }
 
-const fuseCache = new WeakMap<CommandDefinition[], Fuse<CommandSearchItem>>()
-
-function getCommandFuse(commands: CommandDefinition[]): Fuse<CommandSearchItem> {
-  const cached = fuseCache.get(commands)
-  if (cached) return cached
-
+/**
+ * Built per call, deliberately.
+ *
+ * There used to be a `WeakMap<CommandDefinition[], Fuse>` here "to avoid
+ * re-indexing on every keystroke". It never hit once, in the TUI or anywhere
+ * else: the key was the array returned by `commands.filter(...)` below, freshly
+ * allocated on every call. Keying on the *unfiltered* array instead would be
+ * wrong rather than slow — `isEnabled()` is dynamic, so the visible set can
+ * change without the array's identity changing.
+ */
+function buildCommandFuse<T extends CommandSuggestionSource>(
+  commands: T[],
+): Fuse<CommandSearchItem<T>> {
   const data = commands.map((command) => ({
     name: command.name,
     aliases: command.aliases ?? [],
@@ -26,7 +50,7 @@ function getCommandFuse(commands: CommandDefinition[]): Fuse<CommandSearchItem> 
     command,
   }))
 
-  const fuse = new Fuse(data, {
+  return new Fuse(data, {
     includeScore: true,
     threshold: 0.35,
     location: 0,
@@ -37,9 +61,6 @@ function getCommandFuse(commands: CommandDefinition[]): Fuse<CommandSearchItem> 
       { name: 'description', weight: 0.5 },
     ],
   })
-
-  fuseCache.set(commands, fuse)
-  return fuse
 }
 
 export function isCommandInput(input: string): boolean {
@@ -53,7 +74,9 @@ export function hasCommandArgs(input: string): boolean {
   return input.slice(spaceIndex + 1).trim().length > 0
 }
 
-export function createCommandSuggestion(command: CommandDefinition): CommandSuggestion {
+export function createCommandSuggestion<T extends CommandSuggestionSource>(
+  command: T,
+): CommandSuggestion<T> {
   return {
     id: command.name,
     displayText: `/${command.name}`,
@@ -62,10 +85,10 @@ export function createCommandSuggestion(command: CommandDefinition): CommandSugg
   }
 }
 
-export function generateCommandSuggestions(
+export function generateCommandSuggestions<T extends CommandSuggestionSource>(
   input: string,
-  commands: CommandDefinition[],
-): CommandSuggestion[] {
+  commands: T[],
+): CommandSuggestion<T>[] {
   if (!isCommandInput(input) || hasCommandArgs(input)) return []
 
   const query = input.slice(1).trim().toLowerCase()
@@ -73,19 +96,21 @@ export function generateCommandSuggestions(
 
   if (query === '') {
     return [...visibleCommands]
-      .sort((a: CommandDefinition, b: CommandDefinition) => a.name.localeCompare(b.name))
-      .map(createCommandSuggestion)
+      .sort((a: T, b: T) => a.name.localeCompare(b.name))
+      .map((command) => createCommandSuggestion(command))
   }
 
-  const fuse = getCommandFuse(visibleCommands)
+  const fuse = buildCommandFuse(visibleCommands)
   return [...fuse.search(query)]
-    .sort((a: FuseResult<CommandSearchItem>, b: FuseResult<CommandSearchItem>) => (
+    .sort((a: FuseResult<CommandSearchItem<T>>, b: FuseResult<CommandSearchItem<T>>) => (
       compareCommandMatches(query, a, b)
     ))
-    .map((result: FuseResult<CommandSearchItem>) => createCommandSuggestion(result.item.command))
+    .map((result: FuseResult<CommandSearchItem<T>>) => createCommandSuggestion(result.item.command))
 }
 
-export function applyCommandSuggestion(suggestion: CommandSuggestion): {
+export function applyCommandSuggestion<T extends CommandSuggestionSource>(
+  suggestion: CommandSuggestion<T>,
+): {
   text: string
   cursorPos: number
 } {
@@ -94,10 +119,10 @@ export function applyCommandSuggestion(suggestion: CommandSuggestion): {
   return { text, cursorPos: text.length }
 }
 
-function compareCommandMatches(
+function compareCommandMatches<T extends CommandSuggestionSource>(
   query: string,
-  a: FuseResult<CommandSearchItem>,
-  b: FuseResult<CommandSearchItem>,
+  a: FuseResult<CommandSearchItem<T>>,
+  b: FuseResult<CommandSearchItem<T>>,
 ): number {
   const aRank = matchRank(query, a.item)
   const bRank = matchRank(query, b.item)
@@ -110,7 +135,10 @@ function compareCommandMatches(
   return (a.score ?? 0) - (b.score ?? 0)
 }
 
-function matchRank(query: string, item: CommandSearchItem): number {
+function matchRank<T extends CommandSuggestionSource>(
+  query: string,
+  item: CommandSearchItem<T>,
+): number {
   const name = item.name.toLowerCase()
   const aliases = item.aliases.map((alias) => alias.toLowerCase())
 

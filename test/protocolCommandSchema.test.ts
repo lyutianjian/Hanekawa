@@ -23,6 +23,7 @@ const SAMPLES = {
   retarget: { type: 'retarget', id: '1', sessionId: 's' },
   'run-tool': { type: 'run-tool', id: '1', name: 'Read', input: { file_path: '/tmp/x' } },
   'run-command': { type: 'run-command', id: '1', input: '/help' },
+  'list-commands': { type: 'list-commands', id: '1' },
   checkpoints: { type: 'checkpoints', id: '1' },
   'restore-code': { type: 'restore-code', id: '1', commitHash: 'abc' },
   'truncate-session': { type: 'truncate-session', id: '1', messageId: 'm1' },
@@ -42,6 +43,9 @@ const SAMPLES = {
   'list-background-tasks': { type: 'list-background-tasks', id: '1' },
   'peek-task-output': { type: 'peek-task-output', id: '1', taskId: 't' },
   'kill-task': { type: 'kill-task', id: '1', taskId: 't' },
+  'open-pane': { type: 'open-pane', id: '1' },
+  'close-pane': { type: 'close-pane', id: '1', paneId: 'p' },
+  'list-panes': { type: 'list-panes', id: '1' },
   shutdown: { type: 'shutdown', id: '1', reason: 'bye' },
 } as const satisfies Record<HostCommand['type'], HostCommand>
 

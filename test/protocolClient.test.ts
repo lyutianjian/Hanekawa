@@ -318,3 +318,62 @@ test('retarget returns the session alongside its records', async () => {
   assert.deepEqual(result.records, [])
   harness.client.dispose()
 })
+
+test('a handler that throws still answers, with its own kind\'s fallback', async () => {
+  const harness = createHarness()
+  harness.client.setHandlers({
+    permission: async () => { throw new Error('the dialog blew up') },
+    enterPlan: async () => { throw new Error('the dialog blew up') },
+  })
+
+  harness.post({ type: 'ui-request', request: { kind: 'permission', requestId: 'r1', payload: {
+    toolName: 'Bash',
+    riskLevel: 'confirm',
+    input: {},
+    reason: 'test',
+    source: 'mode',
+    denialStreak: 0,
+    canAlwaysAllow: false,
+    destructiveWarnings: [],
+  } } })
+  harness.post({ type: 'ui-request', request: { kind: 'enter-plan', requestId: 'r2' } })
+  await settle()
+  await settle()
+
+  const responses = harness.sent.filter((entry) => entry.type === 'ui-response')
+  // `handleMessage` calls `answer` as `void this.answer(...)`, so a throw used to
+  // mean no response was ever posted -- and nothing else releases the host:
+  // `PermissionGate.approve` has no timeout and `ToolRunner.run` does not pass
+  // its abort signal into it, so even interrupting the turn would not free it.
+  assert.equal(responses.length, 2, 'a throwing dialog must not park the agent loop')
+
+  const permission = responses.find((entry) =>
+    entry.type === 'ui-response' && entry.requestId === 'r1')
+  assert.ok(permission && permission.type === 'ui-response'
+    && permission.response.kind === 'permission')
+  assert.equal(permission.response.approved, false)
+
+  const enterPlan = responses.find((entry) =>
+    entry.type === 'ui-response' && entry.requestId === 'r2')
+  assert.ok(enterPlan && enterPlan.type === 'ui-response'
+    && enterPlan.response.kind === 'enter-plan')
+  assert.equal(enterPlan.response.approved, true, 'the fallback stays asymmetric')
+  harness.client.dispose()
+})
+
+test('listCommands unwraps to the metadata array', async () => {
+  const harness = createHarness()
+  const pending = harness.client.listCommands()
+  await settle()
+
+  const sent = harness.sent.find((entry) => entry.type === 'list-commands')
+  assert.ok(sent)
+  harness.post({
+    type: 'reply',
+    id: sent.id,
+    result: { commands: [{ name: 'help', description: 'Show help' }] },
+  })
+
+  assert.deepEqual(await pending, [{ name: 'help', description: 'Show help' }])
+  harness.client.dispose()
+})

@@ -74,6 +74,7 @@ export type HostEvent =
   | { type: 'command-effect'; effect: CommandEffect }
   /** A blocking question for the UI. The client must eventually answer it. */
   | { type: 'ui-request'; request: UiRequest }
+  | { type: 'pane-list'; panes: WirePaneInfo[] }
   | { type: 'reply'; id: string; result: unknown }
   | { type: 'fail'; id: string; message: string }
 
@@ -99,6 +100,15 @@ export type HostCommand =
    * the raw line and reads the effects that come back.
    */
   | { type: 'run-command'; id: string; input: string }
+  /**
+   * The command *metadata* a completion dropdown needs.
+   *
+   * A renderer cannot import `commands/` (that drags the registry and, through
+   * `skills.ts`, the filesystem into its bundle), and the set is per-project and
+   * changes on `/skills reload`, so a baked-in list would go stale. `/help`
+   * arrives as a `write-line` string and cannot drive a listbox.
+   */
+  | { type: 'list-commands'; id: string }
   | { type: 'checkpoints'; id: string }
   | { type: 'restore-code'; id: string; commitHash: string }
   /**
@@ -128,6 +138,15 @@ export type HostCommand =
   | { type: 'peek-task-output'; id: string; taskId: string; maxBytes?: number }
   | { type: 'kill-task'; id: string; taskId: string; reason?: string }
   // --- lifecycle ------------------------------------------------------------
+  // --- panes (multi-tab) ---------------------------------------------------
+  /**
+   * Open a new tab. If `sessionId` is given, the new pane takes that session
+   * (returning the existing pane if it is already open — one pane per session).
+   * Otherwise a fresh draft session is adopted.
+   */
+  | { type: 'open-pane'; id: string; sessionId?: string; title?: string }
+  | { type: 'close-pane'; id: string; paneId: string }
+  | { type: 'list-panes'; id: string }
   | { type: 'shutdown'; id: string; reason: string }
 
 export type InterruptReason = 'user-cancel' | 'exit'
@@ -349,6 +368,30 @@ export interface WireResolveModelResult {
   modelKey?: string
 }
 
+/**
+ * One registered slash command, built field by field.
+ *
+ * Never spread a `CommandDefinition` into this: it carries `run` and may carry
+ * `isEnabled`, both functions. `createMemoryChannelPair` clones on every post so
+ * that fails loudly in tests, but `ipcRenderer.send` uses structured clone in
+ * production and **silently drops functions** — the renderer would receive a
+ * command whose metadata looked fine and whose behaviour was gone.
+ *
+ * `isHidden`/`isEnabled` are deliberately absent rather than projected: the host
+ * already applied them (`listCommands()` filters both), and shipping a stale
+ * boolean invites a client to re-filter on data that has since changed.
+ */
+export interface WireCommandInfo {
+  name: string
+  description: string
+  aliases?: string[]
+  argumentHint?: string
+}
+
+export interface WireCommandsResult {
+  commands: WireCommandInfo[]
+}
+
 /** `SessionMeta` crosses verbatim: it is already the JSON shape in index.json. */
 export interface WireSessionsResult {
   sessions: SessionMeta[]
@@ -386,4 +429,36 @@ export interface WireTaskOutputResult {
 
 export interface WireTaskResult {
   task?: BackgroundTaskSnapshot
+}
+
+// --- pane (multi-tab) payloads --------------------------------------------
+
+/**
+ * One open pane, projected to metadata.
+ *
+ * Built field by field, never spread from `SessionPane` — the host-side object
+ * holds runtime state and the controller. A string `paneId` is the host's
+ * token for the pane's IPC channel; it survives the renderer losing the
+ * reference and is what `close-pane` carries.
+ */
+export interface WirePaneInfo {
+  paneId: string
+  sessionId: string
+  /** May be absent for a fresh draft that has never received a title. */
+  sessionTitle?: string
+}
+
+export interface WireOpenPaneResult {
+  paneId: string
+  session: SessionMeta
+  records: SessionRecord[]
+  notices: StartupNotice[]
+}
+
+export interface WireClosePaneResult {
+  ok: true
+}
+
+export interface WireListPanesResult {
+  panes: WirePaneInfo[]
 }

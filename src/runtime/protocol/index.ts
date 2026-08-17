@@ -34,6 +34,8 @@ export type {
   UiResponse,
   WireBackgroundTasksResult,
   WireCheckpointsResult,
+  WireCommandInfo,
+  WireCommandsResult,
   WireEffortResult,
   WireHelloResult,
   WireModelInfo,

@@ -10,7 +10,7 @@ export {
   hasCommandArgs,
   isCommandInput,
 } from './commandSuggestions.js'
-export type { CommandSuggestion } from './commandSuggestions.js'
+export type { CommandSuggestion, CommandSuggestionSource } from './commandSuggestions.js'
 export { applyFileSuggestion, extractAtCompletionToken, generateFileSuggestions } from './fileSuggestions.js'
 export type { FileSuggestion, FileSuggestionMetadata } from './fileSuggestions.js'
 export type { SuggestionItem, SuggestionType } from './types.js'

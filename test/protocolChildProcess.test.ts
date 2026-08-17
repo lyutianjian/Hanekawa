@@ -102,12 +102,25 @@ const runtimeHost = {
   createActiveModelRuntime: (key) => ({ model: key }),
 }
 
+// workspace is a minimal PaneRegistry stub: the child never sends pane
+// commands, but tsc cannot see this string literal — keep the shape
+// faithful to the interface so adding a new dep here (or removing one) is
+// caught at edit time, not at runtime. See todo.md (工作方法).
 const host = new SessionHost({
   channel: createNodeProcessChannel(process),
   controller,
   runtimeSlot,
   project: runtimeHost,
   scope: runtimeHost,
+  workspace: {
+    list: () => [],
+    paneForSession: () => undefined,
+    open: async () => ({}),
+    adopt: () => ({}),
+    close: () => {},
+  },
+  onPaneOpened: () => {},
+  onPaneClosed: () => {},
 })
 
 // Lets the parent trigger a permission prompt from inside the child.

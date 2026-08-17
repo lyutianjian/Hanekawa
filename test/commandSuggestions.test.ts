@@ -7,6 +7,7 @@ import {
   applyCommandSuggestion,
   generateCommandSuggestions,
 } from '../src/runtime/suggestions/commandSuggestions.js'
+import type { CommandSuggestionSource } from '../src/runtime/suggestions/commandSuggestions.js'
 import type { CommandDefinition } from '../src/commands/types.js'
 import { getCommand, hasCommand, listCommands, registerCommand } from '../src/commands/index.js'
 import { registerSkillCommands } from '../src/commands/skills.js'
@@ -18,6 +19,26 @@ function command(overrides: Partial<CommandDefinition> & { name: string }): Comm
     ...overrides,
   }
 }
+
+test('suggestions work over a bare source with no run, as a renderer holds them', () => {
+  // `CommandDefinition.run` is a function and cannot cross the process
+  // boundary, so `WireCommandInfo` carries metadata only. Ranking must not
+  // require the callable.
+  const wireShaped: CommandSuggestionSource[] = [
+    { name: 'model', description: 'Switch model', aliases: ['m'] },
+    { name: 'clear', description: 'Clear the session' },
+    { name: 'secret', description: 'hidden one', isHidden: true },
+  ]
+
+  const all = generateCommandSuggestions('/', wireShaped)
+  assert.deepEqual(all.map((suggestion) => suggestion.displayText), ['/clear', '/model'])
+
+  const byAlias = generateCommandSuggestions('/m', wireShaped)
+  assert.equal(byAlias[0]?.displayText, '/model')
+  assert.deepEqual(applyCommandSuggestion(byAlias[0]!), { text: '/model ', cursorPos: 7 })
+  // The metadata that comes back is the same object identity, untouched.
+  assert.equal(byAlias[0]?.metadata, wireShaped[0])
+})
 
 test('slash command suggestions list enabled visible commands for empty query', () => {
   const suggestions = generateCommandSuggestions('/', [

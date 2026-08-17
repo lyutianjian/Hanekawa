@@ -7,12 +7,15 @@ import { createUiBridges } from '../src/runtime/bridges.js'
 import { registerBuiltinCommands } from '../src/commands/index.js'
 import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.js'
 import { SessionHost } from '../src/runtime/protocol/host.js'
+import type { PaneRegistry } from '../src/runtime/protocol/host.js'
 import type { HostCommand, HostEvent } from '../src/runtime/protocol/wire.js'
+import type { SessionPane } from '../src/runtime/sessionWorkspace.js'
 import type { SessionController, SessionEvent } from '../src/runtime/sessionController.js'
 import type { RuntimeSlot } from '../src/runtime/runtimeSlot.js'
 import type { ProjectRuntime, SessionScope } from '../src/runtime/types.js'
 import type { PermissionRequest } from '../src/harness/permissions.js'
 import type { SessionRecord, Tool } from '../src/harness/types.js'
+import type { SessionMeta } from '../src/sessions/service.js'
 import { SessionStore } from '../src/sessions/service.js'
 
 /**
@@ -42,6 +45,11 @@ interface Harness {
     modeChanges: string[]
     cacheInvalidations: number
     summarized: SessionRecord[][]
+    openedPanes: string[]
+    adoptedPanes: string[]
+    closedPanes: string[]
+    openedCallbacks: Array<{ paneId: string }>
+    closedCallbacks: string[]
   }
   /** Drives the two subscriptions the host installs on the runtime host. */
   changeMode: (mode: string) => void
@@ -57,6 +65,19 @@ async function createHarness(): Promise<Harness> {
   await store.init()
   const session = await store.create('protocol test')
 
+  /**
+   * A bare-bones `SessionPane` for the registry's `open` / `adopt` stubs.
+   *
+   * The host only touches `getSession()` on it through the registry, so the
+   * rest can be left uninitialized; using a cast keeps the fixture inside the
+   * test file rather than spreading fake-pane construction across the suite.
+   */
+  function fakePane(s: SessionMeta): SessionPane {
+    return {
+      getSession: () => s,
+    } as unknown as SessionPane
+  }
+
   const bridges = createUiBridges()
   const calls: Harness['calls'] = {
     submits: [],
@@ -67,6 +88,11 @@ async function createHarness(): Promise<Harness> {
     modeChanges: [],
     cacheInvalidations: 0,
     summarized: [],
+    openedPanes: [],
+    adoptedPanes: [],
+    closedPanes: [],
+    openedCallbacks: [],
+    closedCallbacks: [],
   }
 
   const eventListeners = new Set<(event: SessionEvent) => void>()
@@ -213,6 +239,26 @@ async function createHarness(): Promise<Harness> {
   const received: HostEvent[] = []
   clientSide.onMessage((message) => received.push(message as HostEvent))
 
+  // The pane registry the host reaches for. Tests that need to drive it install
+  // a custom one; the default is a no-op that swallows opens and records closes,
+  // so a host built from this fixture cannot accidentally crash on a stray
+  // open-pane command in a test that does not care about panes.
+  const paneRegistry: PaneRegistry = {
+    list: () => [],
+    paneForSession: () => undefined,
+    open: async (session) => {
+      calls.openedPanes.push(session.id)
+      return fakePane(session)
+    },
+    adopt: (scope) => {
+      calls.adoptedPanes.push(scope.session.id)
+      return fakePane(scope.session)
+    },
+    close: () => {
+      calls.closedPanes.push('test')
+    },
+  }
+
   const host = new SessionHost({
     channel: hostSide,
     controller: controller as unknown as SessionController,
@@ -221,6 +267,9 @@ async function createHarness(): Promise<Harness> {
     // a single-session host sees exactly what it used to.
     project: runtimeHost as unknown as ProjectRuntime,
     scope: runtimeHost as unknown as SessionScope,
+    workspace: paneRegistry,
+    onPaneOpened: (pane, sessionId) => { calls.openedCallbacks.push({ paneId: sessionId ?? pane.getSession().id }) },
+    onPaneClosed: (paneId) => { calls.closedCallbacks.push(paneId) },
   })
 
   return {
@@ -1007,5 +1056,35 @@ test('a malformed ui-response is never answered with a fail', async () => {
   // There is no command id to fail against, and inventing one would reject a
   // request the client never made.
   assert.equal(harness.received.some((event) => event.type === 'fail'), false)
+  harness.dispose()
+})
+
+test('list-commands ships metadata only, with no callable on the wire', async () => {
+  registerBuiltinCommands()
+  const harness = await createHarness()
+
+  harness.send({ type: 'list-commands', id: 'lc1' })
+  const reply = await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'lc1'),
+    'the list-commands reply',
+  )
+  assert.ok(reply.type === 'reply')
+  const result = reply.result as { commands: Array<Record<string, unknown>> }
+
+  assert.ok(result.commands.length > 0, 'the built-ins are registered')
+  assert.ok(result.commands.some((command) => command.name === 'help'))
+
+  for (const command of result.commands) {
+    assert.equal(typeof command.name, 'string')
+    assert.equal(typeof command.description, 'string')
+    // A spread would carry `run` here. The memory channel clones every post, so
+    // this reply proves cloneability too -- but Electron's IPC drops functions
+    // *silently*, which is what this assertion is really guarding.
+    assert.equal('run' in command, false, `${String(command.name)} must not ship its run function`)
+    assert.equal('isEnabled' in command, false)
+    assert.equal('isHidden' in command, false)
+  }
+
+  assert.doesNotThrow(() => structuredClone(result))
   harness.dispose()
 })

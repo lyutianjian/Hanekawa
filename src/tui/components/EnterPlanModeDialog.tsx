@@ -1,21 +1,18 @@
 import { useState } from 'react'
 import { Box, Text, useInput } from '../ink.js'
 import { theme } from '../theme.js'
+import { ENTER_PLAN_OPTIONS, type EnterPlanOption } from '../../runtime/planPresentation.js'
 
 export interface EnterPlanModeDialogProps {
   onResolve(approved: boolean): void
 }
 
-interface EntryOption {
-  readonly value: 'yes' | 'no'
-  readonly label: string
-  readonly hotkey: '1' | '2'
-}
+// Moved to `runtime/planPresentation.ts` so the desktop renderer offers the same
+// two options in the same order; re-exported for callers that look here.
+export { ENTER_PLAN_OPTIONS }
+export type { EnterPlanOption }
 
-const OPTIONS: readonly EntryOption[] = [
-  { value: 'yes', label: 'Yes, enter plan mode', hotkey: '1' },
-  { value: 'no', label: 'No, start implementing now', hotkey: '2' },
-] as const
+const OPTIONS = ENTER_PLAN_OPTIONS
 
 /**
  * Dedicated entry confirmation for model-driven `EnterPlanMode` calls.

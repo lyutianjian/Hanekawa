@@ -109,6 +109,21 @@ export type {
   PermissionTone,
 } from './permissionPresentation.js'
 export {
+  EMPTY_PLAN_OPTIONS,
+  ENTER_PLAN_OPTIONS,
+  buildExitPlanModeOptions,
+  elevatedExitPlanModeDecision,
+  exitPlanDecisionFor,
+  exitPlanOptionsFor,
+  isEmptyPlan,
+  previewMarkdownLines,
+} from './planPresentation.js'
+export type {
+  DecisionOption,
+  ElevatedExitPlanModeDecision,
+  EnterPlanOption,
+} from './planPresentation.js'
+export {
   buildStartupNotices,
   formatMcpStatus,
   resolveInitialQueuedPrompt,

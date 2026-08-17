@@ -91,6 +91,7 @@ export const COMMAND_CONTEXT_COVERAGE = {
   openProviderPanel: 'open-surface',
   openBackgroundTasks: 'open-surface',
   openResumePicker: 'open-surface',
+  openRewindPanel: 'open-surface',
   listSubagentTasks: 'host',
   getSubagentDetails: 'host',
   cleanupSubagentWorktrees: 'host',
@@ -131,6 +132,7 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     openProviderPanel: () => deps.emit({ kind: 'open-surface', surface: 'provider-panel' }),
     openBackgroundTasks: () => deps.emit({ kind: 'open-surface', surface: 'background-tasks' }),
     openResumePicker: () => deps.emit({ kind: 'open-surface', surface: 'resume-picker' }),
+    openRewindPanel: () => deps.emit({ kind: 'open-surface', surface: 'rewind-panel' }),
 
     clearMessages: () => deps.startNewSession(),
     clearCachedSections: () => runtimeSlot.current.loop.clearCachedSections(),

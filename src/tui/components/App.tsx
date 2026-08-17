@@ -26,6 +26,13 @@ import { TaskListBlock } from './TaskListBlock.js'
 import { PermissionDialog } from './PermissionDialog.js'
 import { StatusLine } from './StatusLine.js'
 import { RestoreMode, type RestoreDecision } from './RestoreMode.js'
+import {
+  formatRestoreMessagePreview,
+  isSummarizeDecision,
+  rewindPartialFailureMessage,
+  rewindStepsFor,
+  rewindSuccessMessage,
+} from '../../runtime/rewindPresentation.js'
 import { BackgroundTasksPanel } from './BackgroundTasksPanel.js'
 import { SessionResumePicker } from './SessionResumePicker.js'
 import { invalidateResolvedCwdCache } from '../../utils/paths.js'
@@ -531,6 +538,24 @@ export function App({
     setMode('tasks')
   }, [closePickerSurfaces])
   const closeBackgroundTasks = useCallback(() => setMode('idle'), [])
+
+  // Defined here rather than next to the other restore handlers below, because
+  // `useCommands` closes over it for `/rewind` and a `const` declared after that
+  // call would be a TDZ error. Same placement rule as `openBackgroundTasks` and
+  // `openResumePicker` above.
+  const handleEnterRestoreMode = useCallback(async () => {
+    try {
+      const cpService = sessionController.getCheckpointService()
+      const cpList = await cpService.getCheckpointsWithDiffs()
+      setCheckpoints(cpList)
+      setMode('restore')
+    } catch {
+      // If fetching checkpoints fails, just stay in idle
+      setCheckpoints([])
+      setMode('restore')
+    }
+  }, [sessionController])
+
   const openResumePicker = useCallback(() => {
     closePickerSurfaces()
     setResumeLoading(true)
@@ -632,6 +657,7 @@ export function App({
     },
     openBackgroundTasks,
     openResumePicker,
+    openRewindPanel: () => { void handleEnterRestoreMode() },
     getEffort: () => effortLevel,
     setEffort: handleSetEffort,
   })
@@ -754,19 +780,6 @@ export function App({
     void finalizeAndExit()
   }, [activeSession.id, isStreaming, interrupt, onBeforeExit, store])
 
-  const handleEnterRestoreMode = useCallback(async () => {
-    try {
-      const cpService = sessionController.getCheckpointService()
-      const cpList = await cpService.getCheckpointsWithDiffs()
-      setCheckpoints(cpList)
-      setMode('restore')
-    } catch {
-      // If fetching checkpoints fails, just stay in idle
-      setCheckpoints([])
-      setMode('restore')
-    }
-  }, [sessionController])
-
   const handleRestoreCancel = useCallback(() => {
     setMode('idle')
   }, [])
@@ -807,51 +820,44 @@ export function App({
     await messageQueue.hydrate(records)
   }, [store, activeSession.id, runtime.loop, reloadMessages, rebaseSessionRecords, messageQueue])
 
+  /**
+   * The decision → side effects mapping is `rewindStepsFor`, shared with the
+   * desktop panel, and so are the five outcome strings. Neither shell gets to
+   * decide that `restore-code-and-conversation` truncates before it reverts
+   * files: that ordering is the whole reason the partial-failure message exists.
+   */
   const handleRestoreSelect = useCallback(async (checkpoint: CheckpointWithDiff, decision: RestoreDecision) => {
     const messagePreview = formatRestoreMessagePreview(checkpoint.messageContent)
+    const steps = rewindStepsFor(decision)
+    if (steps.length === 0) return
 
-    if (decision === 'summarize-from-here') {
-      await summarizeRewindSegment(checkpoint, decision)
-      addSystemMessage(`Summarized from "${messagePreview}"`)
-      setMode('idle')
-      return
-    }
-
-    if (decision === 'summarize-up-to-here') {
-      await summarizeRewindSegment(checkpoint, decision)
-      addSystemMessage(`Summarized up to before "${messagePreview}"`)
-      setMode('idle')
-      return
-    }
-
-    if (decision === 'restore-conversation') {
-      await restoreConversationToCheckpoint(checkpoint)
-      addSystemMessage(`Conversation rewound to before "${messagePreview}"`)
-      setMode('idle')
-      return
-    }
-
-    if (decision === 'restore-code') {
-      await restoreCodeToCheckpoint(checkpoint)
-      addSystemMessage(`Code restored to before "${messagePreview}"`)
-      setMode('idle')
-      return
-    }
-
-    if (decision === 'restore-code-and-conversation') {
-      await restoreConversationToCheckpoint(checkpoint)
+    let truncated = false
+    for (const step of steps) {
+      if (step === 'summarize' && isSummarizeDecision(decision)) {
+        await summarizeRewindSegment(checkpoint, decision)
+        continue
+      }
+      if (step === 'truncate') {
+        await restoreConversationToCheckpoint(checkpoint)
+        truncated = true
+        continue
+      }
       try {
         await restoreCodeToCheckpoint(checkpoint)
       } catch (error) {
-        addSystemMessage(
-          `Conversation rewound to before "${messagePreview}", but file state could not be reverted: ${error instanceof Error ? error.message : String(error)}`,
-        )
+        // The conversation is already cut; saying "rewind failed" would be a lie.
+        if (!truncated) throw error
+        addSystemMessage(rewindPartialFailureMessage(
+          messagePreview,
+          error instanceof Error ? error.message : String(error),
+        ))
         setMode('idle')
         return
       }
-      addSystemMessage(`Code and conversation rewound to before "${messagePreview}"`)
-      setMode('idle')
     }
+
+    addSystemMessage(rewindSuccessMessage(decision, messagePreview))
+    setMode('idle')
   }, [addSystemMessage, restoreCodeToCheckpoint, restoreConversationToCheckpoint, summarizeRewindSegment])
 
   // Clean up abort timeout when streaming stops
@@ -1116,11 +1122,5 @@ export function App({
       )}
     </Box>
   )
-}
-
-function formatRestoreMessagePreview(content: string): string {
-  const normalized = content.replace(/\s+/g, ' ').trim()
-  if (normalized.length <= 50) return normalized
-  return `${normalized.slice(0, 47)}...`
 }
 

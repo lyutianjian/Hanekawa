@@ -32,6 +32,7 @@
     "src/runtime/protocol/pendingRequests.ts",
     "src/runtime/permissionPresentation.ts",
     "src/runtime/planPresentation.ts",
+    "src/runtime/rewindPresentation.ts",
     "src/runtime/suggestions/commandSuggestions.ts",
     "src/runtime/suggestions/atToken.ts",
     "src/config/effort.ts"

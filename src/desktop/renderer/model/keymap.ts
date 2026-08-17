@@ -25,6 +25,12 @@ export interface KeyChord {
 export interface ShellState {
   /** A blocking UI request is being drawn. It owns the keyboard outright. */
   readonly hasOverlay: boolean
+  /**
+   * The `/rewind` panel is open. Modal — it owns the keyboard the way the
+   * terminal's restore mode blocks input — but it ranks *below* `hasOverlay`,
+   * because nothing in the agent loop is waiting on it.
+   */
+  readonly hasRewind: boolean
   /** A picker or command view is open. Dismissible, and blocks nothing. */
   readonly hasSurface: boolean
   /**
@@ -43,6 +49,8 @@ export interface ShellState {
 export type KeyAction =
   /** Hand the chord to the dialog's own key map. */
   | 'overlay'
+  /** Hand the chord to the rewind panel's own key map. */
+  | 'rewind'
   | 'close-surface'
   | 'move-surface-up'
   | 'move-surface-down'
@@ -61,7 +69,14 @@ export function resolveKey(chord: KeyChord, state: ShellState): KeyAction {
   // 1. A blocking request first, always. See the note above.
   if (state.hasOverlay) return 'overlay'
 
-  // 2. The completion dropdown, which owns Tab/arrows/Enter while it is open.
+  // 2. The rewind panel, which is modal but not blocking. It sits here rather
+  //    than first because a permission prompt is holding the agent loop and this
+  //    is only holding the user — and it sits above everything below because
+  //    every one of its options is destructive, so a keystroke must not fall
+  //    through to the composer while a confirm screen is up.
+  if (state.hasRewind) return 'rewind'
+
+  // 3. The completion dropdown, which owns Tab/arrows/Enter while it is open.
   if (state.completions !== 'none') {
     if (chord.key === 'Tab') return 'accept-completion'
     if (chord.key === 'ArrowUp') return 'move-completion-up'
@@ -81,10 +96,10 @@ export function resolveKey(chord: KeyChord, state: ShellState): KeyAction {
     }
   }
 
-  // 3. A dismissible panel.
+  // 4. A dismissible panel.
   if (state.hasSurface && chord.key === 'Escape') return 'close-surface'
 
-  // 4. Picking a row out of that panel — but only while the composer is empty.
+  // 5. Picking a row out of that panel — but only while the composer is empty.
   //
   // The panel does not block, so a user may open `/model`, start typing, and hit
   // Enter meaning "send my message". Taking Enter unconditionally would silently
@@ -98,7 +113,7 @@ export function resolveKey(chord: KeyChord, state: ShellState): KeyAction {
   }
 
   if (chord.key === 'Escape') {
-    // 5. Only now does Escape mean "stop the turn".
+    // 6. Only now does Escape mean "stop the turn".
     if (state.isStreaming) return 'interrupt'
     return 'none'
   }

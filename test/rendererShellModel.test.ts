@@ -41,6 +41,7 @@ import type { CommandSurface, WireCommandInfo, WireModelsResult } from '../src/r
 function shell(overrides: Partial<ShellState> = {}): ShellState {
   return {
     hasOverlay: false,
+    hasRewind: false,
     hasSurface: false,
     completions: 'none',
     isStreaming: false,
@@ -61,6 +62,30 @@ test('Escape interrupts only when nothing is open and a turn is running', () => 
   assert.equal(resolveKey({ key: 'Escape' }, shell({ isStreaming: true })), 'interrupt')
   assert.equal(resolveKey({ key: 'Escape' }, shell({ isStreaming: false })), 'none')
   assert.equal(resolveKey({ key: 'Escape' }, shell({ isStreaming: true, hasSurface: true })), 'close-surface')
+})
+
+test('a blocking dialog outranks the rewind panel, which outranks everything else', () => {
+  // The order between these two is the whole point. A permission prompt is
+  // holding the agent loop and `interrupt()` will not release it, so it has to
+  // win; the rewind panel is only holding the user, so it yields — but it beats
+  // the composer, the dropdown and the dismissible panel, because every option on
+  // its confirm screen destroys work.
+  assert.equal(resolveKey({ key: 'Escape' }, shell({ hasOverlay: true, hasRewind: true })), 'overlay')
+  assert.equal(resolveKey({ key: 'Enter' }, shell({ hasOverlay: true, hasRewind: true })), 'overlay')
+
+  const open = shell({ hasRewind: true })
+  assert.equal(resolveKey({ key: 'Escape' }, open), 'rewind')
+  assert.equal(resolveKey({ key: 'Enter' }, open), 'rewind')
+  assert.equal(resolveKey({ key: 'ArrowDown' }, open), 'rewind')
+  assert.equal(resolveKey({ key: '1' }, open), 'rewind')
+  assert.equal(resolveKey({ key: 'Tab' }, shell({ hasRewind: true, completions: 'command' })), 'rewind')
+  assert.equal(resolveKey({ key: 'Enter' }, shell({ hasRewind: true, hasSurface: true, inputEmpty: true })), 'rewind')
+})
+
+test('Escape while the rewind panel is open never interrupts the turn', () => {
+  // Interrupting from here would leave the panel up with a half-run rewind behind
+  // it; the panel's own key map is what decides between "back" and "close".
+  assert.equal(resolveKey({ key: 'Escape' }, shell({ hasRewind: true, isStreaming: true })), 'rewind')
 })
 
 test('Enter submits only when idle and non-empty; Shift+Enter is a newline', () => {
@@ -281,6 +306,17 @@ test('the provider panel is the one surface this shell does not draw', () => {
   for (const surface of ['model-picker', 'effort-picker', 'background-tasks', 'resume-picker'] as const) {
     assert.equal(isSupportedSurface(surface), true)
   }
+})
+
+test('the rewind panel is outside SUPPORTED_SURFACES but is still drawn', () => {
+  // Not an oversight and not an ignored surface: `SUPPORTED_SURFACES` is the set
+  // that becomes a `SurfaceView` row list, and rewind is a two-screen modal with
+  // its own state. `app.ts` resolves it by name *before* consulting this
+  // predicate — so a reader must not conclude from `false` here that the desktop
+  // shell drops `/rewind` the way it drops `/provider`.
+  const rewindPanel: CommandSurface = 'rewind-panel'
+  assert.equal(isSupportedSurface(rewindPanel), false)
+  assert.equal((SUPPORTED_SURFACES as readonly CommandSurface[]).includes(rewindPanel), false)
 })
 
 // --- picking a row ----------------------------------------------------------

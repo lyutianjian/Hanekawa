@@ -119,6 +119,8 @@ export interface CommandContext {
   openProviderPanel?: () => void
   openBackgroundTasks?: () => void
   openResumePicker?: () => void
+  /** `/rewind`: the checkpoint panel. Terminal-side this is also Escape-Escape. */
+  openRewindPanel?: () => void
   listSubagentTasks?: () => Promise<Array<Extract<SessionRecord, { type: 'subagent_task' }>>>
   getSubagentDetails?: (agentIdOrPrefix: string) => Promise<CommandSubagentDetails | null>
   cleanupSubagentWorktrees?: (options: { apply: boolean }) => Promise<CommandSubagentCleanupResult>

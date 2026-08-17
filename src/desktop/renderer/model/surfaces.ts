@@ -7,11 +7,15 @@ import type { SessionMeta } from '../../../sessions/service.js'
 /**
  * The pickers a slash command can ask for, as row lists.
  *
- * A `CommandEffect` of kind `open-surface` names one of five surfaces; a shell
- * that has no panel for one ignores it *by name*, which is why the five collapse
- * into a single wire variant. This renderer implements four and ignores
- * `provider-panel`: everything it would show comes off `ConfigService`, which a
- * renderer cannot reach, and no wire message projects it.
+ * A `CommandEffect` of kind `open-surface` names one of six surfaces; a shell
+ * that has no panel for one ignores it *by name*, which is why they collapse
+ * into a single wire variant. This renderer draws five of them, but only four
+ * are here: `rewind-panel` is a two-screen modal with its own state
+ * (`model/rewindPanel.ts`) rather than a row list, so `app.ts` resolves it
+ * before consulting `isSupportedSurface` — a `false` from that predicate means
+ * "not a row list", not "not drawn". `provider-panel` is the one genuinely
+ * ignored: everything it would show comes off `ConfigService`, which a renderer
+ * cannot reach, and no wire message projects it.
  *
  * DOM-free on purpose; see `diffRows.ts`.
  */
@@ -59,7 +63,12 @@ export interface SurfaceView {
   readonly emptyMessage: string
 }
 
-/** Surfaces this shell can draw. `provider-panel` is deliberately absent. */
+/**
+ * The surfaces this shell draws *as a row list*.
+ *
+ * `provider-panel` is absent because it is not drawn at all; `rewind-panel` is
+ * absent because it is drawn by `model/rewindPanel.ts` instead. See the header.
+ */
 export type SupportedSurface = 'model-picker' | 'effort-picker' | 'background-tasks' | 'resume-picker'
 
 export const SUPPORTED_SURFACES: readonly SupportedSurface[] = [

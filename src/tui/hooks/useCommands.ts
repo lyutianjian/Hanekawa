@@ -47,6 +47,7 @@ interface UseCommandsOptions {
   openProviderPanel?: () => void
   openBackgroundTasks?: () => void
   openResumePicker?: () => void
+  openRewindPanel?: () => void
   getEffort?: () => string
   setEffort?: (level: string) => void | Promise<void>
 }
@@ -76,6 +77,7 @@ export function useCommands({
   openProviderPanel,
   openBackgroundTasks,
   openResumePicker,
+  openRewindPanel,
   getEffort,
   setEffort,
   runShellCommand,
@@ -138,6 +140,8 @@ export function useCommands({
   openBackgroundTasksRef.current = openBackgroundTasks
   const openResumePickerRef = useRef(openResumePicker)
   openResumePickerRef.current = openResumePicker
+  const openRewindPanelRef = useRef(openRewindPanel)
+  openRewindPanelRef.current = openRewindPanel
   const getEffortRef = useRef(getEffort)
   getEffortRef.current = getEffort
   const setEffortRef = useRef(setEffort)
@@ -210,6 +214,7 @@ export function useCommands({
         openProviderPanel: openProviderPanelRef.current,
         openBackgroundTasks: openBackgroundTasksRef.current,
         openResumePicker: openResumePickerRef.current,
+        openRewindPanel: openRewindPanelRef.current,
         listSubagentTasks: async () => listLatestSubagentTasks(storeRef.current, sessionRef.current.id),
         getSubagentDetails: async (agentIdOrPrefix) => getSubagentDetails(
           storeRef.current,

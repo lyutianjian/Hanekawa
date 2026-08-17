@@ -229,9 +229,9 @@ export interface PermissionRequestDto {
  * open a panel. They are the reason `run-command` needs an event channel rather
  * than a richer reply.
  *
- * The five panel openers collapse into one `open-surface` rather than five
- * variants: a shell that has no provider panel can ignore that surface by name,
- * and adding a sixth panel does not widen the union.
+ * The panel openers collapse into one `open-surface` rather than one variant
+ * each: a shell that has no provider panel can ignore that surface by name, and
+ * adding a seventh panel does not widen the union.
  */
 export type CommandEffect =
   | { kind: 'write-line'; text: string }
@@ -244,6 +244,7 @@ export type CommandSurface =
   | 'provider-panel'
   | 'background-tasks'
   | 'resume-picker'
+  | 'rewind-panel'
 
 /**
  * Mirrors what the TUI's `dispatch` returns, deliberately including its

@@ -16,7 +16,7 @@ npm run typecheck                  # three passes: base + tsconfig.preload.json 
 npm run build                      # tsc -p tsconfig.build.json → dist/ (only a desktop shell needs this)
 npm run build:desktop              # build + esbuild preload/renderer bundles + copy index.html
 npm run start:desktop              # electron . (needs a real display)
-npm run test                       # full suite: 1870 tests / 39 suites, ~40s
+npm run test                       # full suite: 1907 tests / 39 suites, ~45s
 node --import tsx --test test/compact.test.ts                    # single file (space-separate for several)
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
 ```
@@ -355,8 +355,8 @@ The second consumer of the runtime, one `BrowserWindow` per pane: `main.ts` is `
 `new SessionWorkspace(host)` → per window a `SessionPane`, a channel and a `SessionHost`, which is the
 same assembly `tui.tsx` does exactly once. `preload.ts` exposes only `{send, onMessage, close}` on
 `window.hanekawa`; `renderer/app.ts` imports no Node module and draws the four blocking requests,
-streaming output, slash commands, the tab bar and four of the five `CommandSurface` pickers
-(`provider-panel` is the one it ignores by name — that is why the five collapse into a single wire
+streaming output, slash commands, the tab bar, the `/rewind` panel and four of the six `CommandSurface`
+openers (`provider-panel` is the one it ignores by name — that is why they collapse into a single wire
 variant).
 
 **A tab is a window here, not a pane inside one.** Every window renders the *whole* workspace in its tab
@@ -425,6 +425,22 @@ mutation). `tsconfig.renderer.json`'s `include` list documents the allowed share
 - **Escape must answer an open dialog before it interrupts** (`renderer/model/keymap.ts`); a turn parked
   on a permission prompt is not released by interrupting, so the two branches in the wrong order wedge the
   window.
+- **The `/rewind` panel is modal but not blocking, and that fixes its rank in `resolveKey`:** below
+  `hasOverlay` (a permission prompt holds the agent loop; this only holds the user) and above the
+  dropdown, the dismissible panel and the composer (every option on its confirm screen destroys work, so
+  no keystroke may fall through). It also gets its own container — `#rewind` at `z-index: 5` under
+  `#overlay`'s 10 — so a prompt arriving mid-rewind draws on top instead of fighting for one panel.
+  `runtime/rewindPresentation.ts` is the third shared-presentation module: it owns the option slots, the
+  five outcome strings **and `rewindStepsFor`**, whose order for `restore-code-and-conversation`
+  (truncate, *then* revert files) is the only reason `rewindPartialFailureMessage` exists. The executor
+  (`renderer/model/rewindPanel.ts`'s `runRewind`) takes a structural client, and has to convert
+  `restore-code`'s `{ success: false }` into a throw — that command *reports* while `truncate-session`
+  *throws*. It must not rebuild the transcript: `SessionHost.afterRewind()` already pushed a
+  `transcript-reset`. `app.ts` closes the panel when the bound session id changes, since after `/clear` or
+  `/resume` every checkpoint on screen resolves to a message the new session never had.
+- **`SUPPORTED_SURFACES` is the set of surfaces drawn as a *row list*, not the set this shell handles.**
+  `rewind-panel` is deliberately outside it and resolved by name before `isSupportedSurface`, so a
+  `false` there does not mean the surface is ignored the way `provider-panel` is.
 - **Tab-bar chords are resolved *before* the keymap, and that is only safe because they are all
   modifier-gated.** `tabBarKeyToIntent` (`renderer/model/tabBar.ts`) returns `'none'` unless
   `ctrlKey`/`metaKey` is set, so Ctrl+T / Ctrl+W / Ctrl+1–9 win over an open dialog the way a browser's do
@@ -462,9 +478,11 @@ mutation). `tsconfig.renderer.json`'s `include` list documents the allowed share
   `/model` and then typed a message means "send it"; taking Enter unconditionally would switch models
   instead. This also makes the panel and the dropdown mutually exclusive by construction — completions
   require a typed `/` or `@`, so `inputEmpty` is false whenever they are open.
-- Shared presentation lives in `runtime/permissionPresentation.ts` and `runtime/planPresentation.ts`,
-  which both shells import so they cannot offer different options. Both are pure with type-only
-  cross-layer imports — a single value import there breaks the renderer bundle.
+- Shared presentation lives in `runtime/permissionPresentation.ts`, `runtime/planPresentation.ts` and
+  `runtime/rewindPresentation.ts`, which both shells import so they cannot offer different options. All
+  three are pure with type-only cross-layer imports — a single value import there breaks the renderer
+  bundle. `RestoreMode.tsx` re-exports what moved out of it, and `test/rewindPresentation.test.ts` asserts
+  *function identity* so a re-export cannot quietly fork into a second copy.
 - **No `innerHTML` anywhere in the renderer.** Transcript text, tool output and diffs are model- or
   filesystem-authored, and `script-src 'self'` does nothing about an `onerror=` attribute.
 - **Markdown is parsed, never rendered to HTML.** `renderer/model/markdown.ts` uses `marked`'s **lexer**

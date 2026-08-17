@@ -95,9 +95,21 @@ import {
   type SurfaceAction,
   type SurfaceView,
 } from './model/surfaces.js'
+import {
+  applyRewindIntent,
+  beginRewindRun,
+  createRewindState,
+  failRewindRun,
+  rewindKeyToIntent,
+  rewindViewModel,
+  runRewind,
+  type RewindIntent,
+  type RewindState,
+} from './model/rewindPanel.js'
 import { required } from './dom/dom.js'
 import { createTranscriptView } from './dom/transcriptView.js'
 import { createOverlayView } from './dom/overlayView.js'
+import { createRewindView } from './dom/rewindView.js'
 import { createSurfacePanel } from './dom/surfaceView.js'
 import { createComposerView, createStatusView, createSuggestionsView } from './dom/composerView.js'
 import { createTabBarView } from './dom/tabBarView.js'
@@ -115,6 +127,9 @@ const client = new SessionClient(createBridgeChannel(bridge, window))
 
 const transcriptView = createTranscriptView(required('transcript'), required('tool-progress'))
 const overlay = createOverlayView(required('overlay'), required('overlay-panel'))
+const rewindPanel = createRewindView(required('rewind'), required('rewind-panel'), (intent) => {
+  handleRewindIntent(intent)
+})
 const surface = createSurfacePanel(required('surface'), (action) => {
   void runSurfaceAction(action)
 })
@@ -149,6 +164,10 @@ let panes: readonly WirePaneInfo[] = Object.freeze([])
  */
 let surfaceView: SurfaceView | undefined
 let surfaceIndex = 0
+/** The `/rewind` panel's state while it is open; undefined when it is not. */
+let rewind: RewindState | undefined
+/** The session the panel above belongs to, so a rebind can retire it. */
+let boundSessionId: string | undefined
 
 /**
  * Maps a tab-bar intent to a side effect. The renderer never closes the
@@ -201,6 +220,7 @@ let exitPlan: ExitPlanState | undefined
 function shellState(): ShellState {
   return {
     hasOverlay: activeRequest(queue) !== undefined,
+    hasRewind: rewind !== undefined,
     hasSurface: surface.isOpen(),
     completions: completions.kind,
     isStreaming: client.getSnapshot().isStreaming,
@@ -252,6 +272,81 @@ async function runSurfaceAction(action: SurfaceAction): Promise<void> {
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled surface action: ${JSON.stringify(value)}`)
+}
+
+// --- the rewind panel -------------------------------------------------------
+
+/**
+ * Opens `/rewind`.
+ *
+ * The dismissible panel is closed first: a surface does not block the composer,
+ * so a user can open `/model`, type `/rewind` and submit it, which would
+ * otherwise leave two panels stacked.
+ *
+ * A failed checkpoint read still opens the panel, empty — the same choice the
+ * terminal makes (`App.tsx`'s `handleEnterRestoreMode`). Showing "No checkpoints
+ * available" explains itself; a command that appears to do nothing does not.
+ */
+async function openRewindPanel(): Promise<void> {
+  hideSurface()
+  try {
+    rewind = createRewindState(await client.getCheckpoints())
+  } catch (error) {
+    rewind = failRewindRun(createRewindState([]), describe(error))
+  }
+  renderRewind()
+}
+
+function renderRewind(): void {
+  if (rewind) rewindPanel.render(rewindViewModel(rewind))
+}
+
+function closeRewindPanel(): void {
+  rewind = undefined
+  rewindPanel.hide()
+  composer.focus()
+}
+
+/** One path for both the key map and a click, since both produce an intent. */
+function handleRewindIntent(intent: RewindIntent): void {
+  if (!rewind) return
+  const outcome = applyRewindIntent(rewind, intent)
+  rewind = outcome.state
+
+  if ('close' in outcome) {
+    closeRewindPanel()
+    return
+  }
+  if ('run' in outcome) {
+    rewind = beginRewindRun(rewind)
+    renderRewind()
+    void executeRewind(outcome.run.decision, outcome.run.checkpoint)
+    return
+  }
+  renderRewind()
+}
+
+/**
+ * Runs the chosen decision, then closes.
+ *
+ * The transcript is *not* rebuilt here: the host's `afterRewind()` reloads the
+ * session and pushes a `transcript-reset`, which the regular `onEvent` path
+ * already folds in. A failure keeps the panel open with the reason on it, so a
+ * different option is one keystroke away.
+ */
+async function executeRewind(
+  decision: Parameters<typeof runRewind>[1],
+  checkpoint: Parameters<typeof runRewind>[2],
+): Promise<void> {
+  try {
+    const result = await runRewind(client, decision, checkpoint)
+    closeRewindPanel()
+    note(result.message, result.partial ? 'error' : 'system')
+  } catch (error) {
+    if (!rewind) return
+    rewind = failRewindRun(rewind, describe(error))
+    renderRewind()
+  }
 }
 
 function renderTranscript(): void {
@@ -465,6 +560,12 @@ client.onCommandEffect((effect) => {
       surface.showCommandView(intent.view.title, intent.rows)
       return
     case 'open-surface':
+      // The rewind panel is a modal of its own rather than a row list, so it is
+      // resolved by name before the four that build a `SurfaceView`.
+      if (intent.surface === 'rewind-panel') {
+        void openRewindPanel()
+        return
+      }
       // A shell without a panel for a surface ignores it by name; that is why the
       // five collapse into one wire variant.
       if (isSupportedSurface(intent.surface)) void openSurface(intent.surface)
@@ -523,6 +624,14 @@ client.subscribe(() => {
   if (runtime) status.renderRuntime(runtime)
   const session = client.getSession()
   if (session) status.renderSession(session)
+  // A `/clear` or `/resume` rebinds the host to another session, and the
+  // checkpoints on screen belong to the one it left: every option would resolve
+  // to a message the new session has never heard of. Close rather than let the
+  // user pick one and read "Message not found".
+  if (session && session.id !== boundSessionId) {
+    boundSessionId = session.id
+    if (rewind) closeRewindPanel()
+  }
   // The active tab follows the session the host is bound to.
   renderTabBar()
 })
@@ -594,6 +703,15 @@ document.addEventListener('keydown', (event) => {
     case 'overlay':
       event.preventDefault()
       handleOverlayKey(event)
+      return
+    case 'rewind':
+      event.preventDefault()
+      if (rewind) {
+        handleRewindIntent(rewindKeyToIntent(
+          { key: event.key, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey },
+          rewind,
+        ))
+      }
       return
     case 'accept-completion': {
       event.preventDefault()
@@ -739,6 +857,7 @@ void (async () => {
   // Only after `hello()` resolves, which is what makes the window title an
   // end-to-end proof readable from outside the process.
   status.renderSession(hello.session)
+  boundSessionId = hello.session.id
   composer.setStreaming(client.getSnapshot().isStreaming)
 
   await refreshCommands()

@@ -2,25 +2,39 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Box, Text, useInput, useStdout } from 'ink'
 import { theme } from '../theme.js'
 import type { CheckpointDiffSummary, CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
+import {
+  buildRestoreOptions,
+  formatDiffSummary,
+  formatRelativeTime,
+  getCheckpointRenderKey,
+  isSummarizeDecision,
+  sortCheckpointsChronological,
+  sortCheckpointsReverseChronological,
+  truncateMessage,
+  type RestoreDecision,
+  type RestoreOption,
+} from '../../runtime/rewindPresentation.js'
 import { commandVisibleRows, CommandHintBar, CommandListItem, CommandPane, getVisibleWindow } from './CommandUI.js'
 
-export type RestoreDecision =
-  | 'restore-code-and-conversation'
-  | 'restore-conversation'
-  | 'restore-code'
-  | 'summarize-from-here'
-  | 'summarize-up-to-here'
-  | 'nevermind'
+// The option slots, the sorting, the diff wording and the message truncation
+// moved to `runtime/rewindPresentation.ts` so the desktop renderer can offer the
+// same choices — and report the same outcomes — without importing ink.
+// Re-exported here because this is where every existing caller and test looks
+// for them.
+export {
+  buildRestoreOptions,
+  formatDiffSummary,
+  getCheckpointRenderKey,
+  sortCheckpointsChronological,
+  sortCheckpointsReverseChronological,
+  truncateMessage,
+}
+export type { RestoreDecision, RestoreOption }
 
 export interface RestoreModeProps {
   checkpoints: CheckpointWithDiff[]
   onSelect: (checkpoint: CheckpointWithDiff, decision: RestoreDecision) => Promise<void>
   onCancel: () => void
-}
-
-export interface RestoreOption {
-  decision: RestoreDecision
-  label: string
 }
 
 type RestoreScreen = 'select-node' | 'confirm'
@@ -117,7 +131,7 @@ export function RestoreMode({ checkpoints, onSelect, onCancel }: RestoreModeProp
     setError(null)
     try {
       await onSelect(checkpoint, option.decision)
-      if (option.decision === 'summarize-from-here' || option.decision === 'summarize-up-to-here') {
+      if (isSummarizeDecision(option.decision)) {
         setScreen('select-node')
         setSelectedOptionIndex(0)
       }
@@ -230,7 +244,7 @@ function ConfirmScreen({
 }) {
   if (!checkpoint) return null
   const selectedDecision = options[selectedOptionIndex]?.decision
-  const loadingLabel = selectedDecision === 'summarize-from-here' || selectedDecision === 'summarize-up-to-here'
+  const loadingLabel = selectedDecision !== undefined && isSummarizeDecision(selectedDecision)
     ? 'Summarizing...'
     : 'Rewinding...'
   return (
@@ -355,68 +369,8 @@ function DiffSummaryText({ summary }: { summary: CheckpointDiffSummary }) {
   )
 }
 
-export function buildRestoreOptions(hasCodeChanges: boolean): readonly RestoreOption[] {
-  const conversationOnly: RestoreOption[] = [
-    { decision: 'restore-conversation', label: 'Restore conversation' },
-    { decision: 'summarize-from-here', label: 'Summarize from here' },
-    { decision: 'summarize-up-to-here', label: 'Summarize up to here' },
-    { decision: 'nevermind', label: 'Never mind' },
-  ]
-  if (!hasCodeChanges) return conversationOnly
-  return [
-    { decision: 'restore-code-and-conversation', label: 'Restore code and conversation' },
-    { decision: 'restore-conversation', label: 'Restore conversation' },
-    { decision: 'restore-code', label: 'Restore code' },
-    { decision: 'summarize-from-here', label: 'Summarize from here' },
-    { decision: 'summarize-up-to-here', label: 'Summarize up to here' },
-    { decision: 'nevermind', label: 'Never mind' },
-  ]
-}
-
-export function sortCheckpointsReverseChronological(checkpoints: CheckpointWithDiff[]): CheckpointWithDiff[] {
-  return [...checkpoints].sort(
-    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-  )
-}
-
-export function sortCheckpointsChronological(checkpoints: CheckpointWithDiff[]): CheckpointWithDiff[] {
-  return [...checkpoints].sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-  )
-}
-
-export function getCheckpointRenderKey(checkpoint: Pick<CheckpointWithDiff, 'messageId'>): string {
-  return checkpoint.messageId
-}
-
-export function formatDiffSummary(summary: CheckpointDiffSummary): string {
-  if (!summary.hasChanges) return 'unchanged'
-  const filePart = summary.firstFile
-    ? `in ${summary.firstFile}${summary.fileCount > 1 ? ` and ${summary.fileCount - 1} other ${summary.fileCount - 1 === 1 ? 'file' : 'files'}` : ''}`
-    : `across ${summary.fileCount} ${summary.fileCount === 1 ? 'file' : 'files'}`
-  return `+${summary.additions} -${summary.deletions} ${filePart}`
-}
-
-export function truncateMessage(content: string, maxLength: number): string {
-  if (content.length <= maxLength) return content
-  return `${content.slice(0, Math.max(0, maxLength - 3))}...`
-}
-
 function parseNumericOption(input: string, optionCount: number): number | null {
   if (!/^[1-9]$/.test(input)) return null
   const index = Number.parseInt(input, 10) - 1
   return index >= 0 && index < optionCount ? index : null
-}
-
-function formatRelativeTime(isoTimestamp: string): string {
-  const timestamp = new Date(isoTimestamp).getTime()
-  if (!Number.isFinite(timestamp)) return isoTimestamp
-  const elapsedMs = Math.max(0, Date.now() - timestamp)
-  const minuteMs = 60_000
-  const hourMs = 60 * minuteMs
-  const dayMs = 24 * hourMs
-  if (elapsedMs < minuteMs) return 'just now'
-  if (elapsedMs < hourMs) return `${Math.floor(elapsedMs / minuteMs)}m ago`
-  if (elapsedMs < dayMs) return `${Math.floor(elapsedMs / hourMs)}h ago`
-  return `${Math.floor(elapsedMs / dayMs)}d ago`
 }

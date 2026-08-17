@@ -36,6 +36,7 @@ Tauri 还得挂 Node sidecar。
 | 3d | 收 3b 的账：shell `panes` Map 改用 `BrowserWindow.id`、启动用 `openPane({ sessionId })`、`broadcastPaneListToOthers` 跨窗口广播、`test/protocolChildProcess.test.ts` 子进程字符串补齐三 dep；新增 `paneId follows controller across /clear` 用例 | 1819 |
 | 3e | Markdown 渲染：`model/markdown.ts`（marked lexer → 自有 union）+ `dom/markdownView.ts`（只用 `el()`）、assistant 消息与计划正文接线、`main.ts` 导航守卫、CSS | 1846 |
 | 3f | 选择与补全：四个面板可键选/点选（`SurfaceAction` + `moveSurfaceSelection`）、`@` 文件补全（`suggestions/atToken.ts` 拆分 + `file-suggestions` 命令 + 双源下拉与序号守卫） | 1870 |
+| 3g | rewind / checkpoint 面板：`runtime/rewindPresentation.ts`（第三个共享 presentation 模块，含 `rewindStepsFor` 与五条结果文案）、`model/rewindPanel.ts` + `dom/rewindView.ts`、`/rewind` 斜杠命令（两端共享）、`keymap` 新增 `hasRewind` 档位、`#rewind` 独立模态层 | 1907 |
 
 各阶段的设计理由已全部写进 `CLAUDE.md`。下面只留**没进那份文档、但下一轮仍要知道**的东西。
 
@@ -78,6 +79,32 @@ Tauri 还得挂 Node sidecar。
   每次状态迁移都 bump，所以「打了 `@` 又改打 `/`」和「按 Esc 关掉下拉」都会让在途回答作废。
 - **3f：面板导航只在输入框为空时抢键**。面板不阻塞，用户完全可能开着 `/model` 再打一句话；无条件吃 Enter
   就变成选模型。副作用是面板与补全下拉**构造上互斥**（补全的前提是打了 `/` 或 `@`，那时 `inputEmpty` 必为假）。
+- **3g：rewind 面板的键位档位在 overlay 之下、其余一切之上**。它 modal 但**不阻塞** —— 权限提示扣着 agent
+  loop（`interrupt()` 放不掉），rewind 只扣着用户，所以让位；但它压住下拉、压住 surface、压住输入框，因为
+  确认屏上每个选项都在毁工作，键不能漏下去。对应地它有自己的容器（`#rewind`，`z-index: 5`，在 `#overlay`
+  的 10 之下），而不是跟四个阻塞对话框抢同一个 panel —— rewind 开着时来一条权限提示，画在它**上面**。
+- **3g：`SUPPORTED_SURFACES` 是「画成行列表的 surface」，不是「本 shell 处理的 surface」**。
+  `rewind-panel` 故意不在里面，由 `app.ts` 在 `isSupportedSurface` **之前**按名字分流。所以那个谓词返回
+  `false` **不等于**这个 surface 被忽略（`provider-panel` 才是真忽略）—— 三处注释都改了措辞，因为原话
+  「四个里实现四个、忽略 provider-panel」现在会把读者引到错的结论上。
+- **3g：`restore-code` 报告失败、`truncate-session` 抛失败，这条不对称必须在执行器里抹平**。
+  host 侧 `restore-code` 返回 `{ success:false }`（`host.ts:513`），忘了看 `success` 就会把一次失败的
+  git 恢复当成功报出去；`runRewind` 把它转成 throw。反过来 `truncate-session` 找不到消息就抛，于是
+  「陈旧的 checkpoint 列表」会浮上来而不是静默 no-op。
+- **3g：`restore-code-and-conversation` 先截断、后回滚文件**，这个顺序**就是**那条部分失败文案存在的理由
+  （JSONL 已经剪了、git 却失败）。顺序编进 `rewindStepsFor` 而不是各自的调用处，两个 shell 都从那里读。
+  变异验证：把顺序倒过来，4 条用例报红，包含两条专讲「哪一半落地了」的。
+- **3g：渲染器不重建 transcript**。`SessionHost.afterRewind()` 已经 `invalidateRecordsCache` →
+  `controller.reload()` → `ledger.rebase()`，`reload()` 自己发 `transcript-reset`；回复里的 `records`
+  只作旁证，再折一次就是双份重绘。
+- **3g：`session-changed` 一到就关面板**。`/clear`、`/resume` 之后手上那份 checkpoint 属于旧会话，
+  每个选项都会解析到新会话从没有过的 message id，留着只换来一句 "Message not found"。
+- **3g：`handleEnterRestoreMode` 必须挪到 `useCommands({…})` 调用之前**（App.tsx）。`useCommands` 在 637
+  行结束、原定义在 757 行，直接引用是 TDZ 错误 —— 与 `openBackgroundTasks`/`openResumePicker` 已经建立的
+  「先定义后 useCommands」惯例一致，不加 ref 间接层。
+- **3g：共享模块的 re-export 用「函数身份」钉死**（`test/rewindPresentation.test.ts` 的 `===` 断言）。
+  这正是本文件「测的实现必须就是出货的实现」那条的预防性应用：`RestoreMode.tsx` 里换成第二份实现，
+  行为测试全都还是绿的，只有身份断言会红。已变异验证。
 
 ### 工作方法（本项目的验收惯例）
 
@@ -145,14 +172,19 @@ Tauri 还得挂 Node sidecar。
 
 ### 渲染器还缺的（阶段 3c 刻意留下）
 
-- [ ] **rewind / checkpoint 面板**：四步破坏性流程。读写两侧的命令（`checkpoints`/`restore-code`/
-  `truncate-session`/`summarize-rewind`）在 `SessionClient` 上**都已经有了**，纯渲染器活；参照
-  `src/tui/components/RestoreMode.tsx`（422 行）。
+- [x] **rewind / checkpoint 面板**（3g 落地）。与当初的预判有两处出入：
+  - **"纯渲染器活"不完全成立**。读写命令确实都在 `SessionClient` 上了，但**入口**得从某处来 ——
+    选了 `/rewind` 斜杠命令、走既定的 `CommandContext` → `COMMAND_CONTEXT_COVERAGE` → `open-surface`
+    机制，于是宿主侧多了 6 处 1-3 行的改动（含 `CommandSurface` 加第六个值），TUI 也顺带有了 `/rewind`
+    （原来只有 Esc-Esc）。换来的是两端入口一致、且 `/` 下拉里能看见它。
+  - **决策的编排本身也是共享物**，不只是"选项列表"。`rewindStepsFor` + 五条结果文案 + 那条部分失败文案
+    一起进了 `runtime/rewindPresentation.ts`，`App.tsx` 的 `handleRestoreSelect` 从 45 行的 if 链改成读
+    步骤表。原来那份 `formatRestoreMessagePreview` 是 App.tsx 私有的，两端各写一份就会在引号里的文本上分叉。
 - [ ] **费用显示**：`ModelPricing` 不在 `WireRuntimeSnapshot` 上（`/cost` 已经能用，缺的是状态栏常驻）。
 - [ ] **消息队列**：要记录流；在 `SessionController.submit` 的在途守卫进内核之前，正确的临时行为是关闸而非排队。
 
-（标签栏已在 3b 补上、Markdown 已在 3e 补上、**面板可点选与 `@` 文件补全已在 3f 补上**，见上表；
-它们不在这份清单里过。）
+（标签栏已在 3b 补上、Markdown 已在 3e 补上、面板可点选与 `@` 文件补全已在 3f 补上、
+**rewind 面板已在 3g 补上**，见上表；它们不在这份清单里过。）
 
 **3e 顺带留下的两条**：① **代码块没有语法高亮** —— TUI 用的 `cli-highlight` 出 ANSI 且是 Node 侧的，
 浏览器侧要另选一个能进 renderer bundle（无 Node 依赖）的库，是独立一档；② `markdownNode` 每次都重建整棵
@@ -203,6 +235,19 @@ Tauri 还得挂 Node sidecar。
   ④ 打 `@src/desk` → 出现文件下拉 → Enter **只补全不提交**，Tab 同样；选目录不带尾空格、选文件带；
   ⑤ 快速连打再退格，下拉不闪回旧结果（序号守卫）；打 `@` 后改打 `/`，不会有文件结果盖上来；
   ⑥ `/tasks` 选一行 → 输出写进 transcript；`/resume` 选一个旧会话 → 对应窗口聚焦/新开，标签栏两边都更新。
+- [ ] **3g 的 rewind 冒烟**（`dom/rewindView.ts` 与 `app.ts` 的接线没有测试覆盖，模型层已被
+  `test/rendererRewindPanel.test.ts` 27 个用例钉死；其中 ③④ 会真花钱/真改工作树，最后做）：
+  ① `/rewind` → 面板出现、光标停在 **"(current)"**、Esc 关掉；
+  ② ↑ 选一个 checkpoint → Enter 进确认屏 → Esc **回到列表而不是关掉面板**；
+  ③ 选 `Restore conversation` → transcript 重绘到那条消息之前、系统行是
+     `Conversation rewound to before "…"`、面板自动关；
+  ④ 一个改过文件的 checkpoint 选 `Restore code and conversation` → 工作树真回滚；
+     再试一次 `Summarize up to here`（真实 provider 调用，慢）→ 出现 compact 边界；
+  ⑤ 面板开着时让一个工具触发权限提示（`window.hanekawa.send({type:'run-tool',name:'Write',…})`）→
+     提示画在 rewind 面板**之上**，答完之后 rewind 面板还在、还能用；
+  ⑥ 面板开着按 Ctrl+W 仍然关窗（tab-bar 和弦在 keymap 之前解析）；按住普通字母键什么也不该发生；
+  ⑦ 在窗口里 `/clear` → rewind 面板若开着应当**自动关掉**（不是留着报 "Message not found"）；
+  ⑧ TUI 侧回归：`/rewind` 与 Esc-Esc 打开的是同一个面板，且五条结果文案与桌面端逐字相同。
 
 ---
 
@@ -210,7 +255,7 @@ Tauri 还得挂 Node sidecar。
 
 ```bash
 npm run typecheck                                     # 三段：base + preload + renderer
-npm run test                                          # 1870 tests / 39 suites, ~48s
+npm run test                                          # 1907 tests / 39 suites, ~45s
 npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 npm run build:desktop                                 # tsc emit + 两个 esbuild bundle + 拷 index.html
 npm run start:desktop                                 # 真实 Electron，需要桌面
@@ -229,9 +274,10 @@ node --import tsx --test test/electronChannel.test.ts test/bridgeChannel.test.ts
 node --import tsx --test test/rendererImports.test.ts test/rendererShellModel.test.ts \
   test/rendererMarkdown.test.ts test/rendererTranscriptModel.test.ts test/rendererPermissionView.test.ts \
   test/rendererAskUserQuestionView.test.ts test/rendererPlanDialogViews.test.ts \
-  test/rendererCompletion.test.ts \
+  test/rendererCompletion.test.ts test/rendererRewindPanel.test.ts \
   test/rendererDiffRows.test.ts test/rendererTabBarModel.test.ts test/desktopUiRoundTrip.test.ts
 node --import tsx --test test/permissionPresentation.test.ts test/planPresentation.test.ts \
+  test/rewindPresentation.test.ts test/restoreMode.test.ts test/restoreMode.property.test.ts \
   test/usePermission.test.ts test/fileToolPreview.test.ts test/modelPicker.test.ts
 node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts \
   test/modelSwitch.test.ts test/runOverrides.test.ts test/subagentInspection.test.ts
@@ -246,3 +292,12 @@ node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 `background Bash returns immediately and BashOutput consumes incremental output` 在全量并发跑时偶尔超时红一次
 （该用例本身要等一个真实子进程吐增量输出，1.7s 量级）。单独跑 3/3 全绿，紧接着的全量跑也全绿；
 它只 import `services/backgroundTasks/` 与三个 bash 工具，与桌面端毫无交集。同样是**间歇**，不要当回归追。
+
+**已知环境依赖失败**（3g 期间查明，与桌面端无关，尚未修）：`test/config.test.ts` 的
+`providers report dynamic ToolSearch support conservatively` 在**设置了 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`
+的环境里必定红**（在 Claude Code 里跑 `npm run test` 就是这种环境）。它不是间歇、也不是回归：
+用例只 save/delete/restore 了 `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS`，而它测的
+`isExperimentalToolSearchBetaDisabled()`（`src/utils/toolSearch.ts:132-135`）读的是**两个**变量的或；
+第二个还留在环境里，于是 `AnthropicProvider.supportsDynamicToolSearch('claude-sonnet-4')` 返回 false，
+第一条断言（期望 true）就挂。已用 `git stash` 在干净基线上复现。修法是让该用例对两个变量都做隔离
+（文件里已有 `setEnv` 助手）。**在这种环境下 1907 里应当只有这一条红。**

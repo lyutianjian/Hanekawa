@@ -9,6 +9,7 @@ import {
   type ContextManagementConfig,
 } from '../prompts/budget.js'
 import { getRecordsAfterLastCompact } from './requestPrep.js'
+import { compactCacheSource } from './cacheBreakDetection.js'
 import { wrapInSystemReminder } from './systemReminder.js'
 import { getCompactPrompt, formatCompactSummary } from '../prompts/compactPrompt.js'
 import { trySessionMemoryCompaction } from '../services/sessionMemory/compact.js'
@@ -71,6 +72,11 @@ export interface ContinuationSummaryInput {
   preTokens?: number
   /** Custom instructions to append to the compact prompt. */
   compactInstructions?: string
+  /**
+   * Project root, so the `compact` cache source is bound to it. Two projects
+   * compacting in one process would otherwise share a cache-read baseline.
+   */
+  cwd?: string
 }
 
 export interface ContinuationSummaryResult {
@@ -168,6 +174,7 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
       promptCacheRetention: input.promptCacheRetention,
       preTokens: tokenCount,
       compactInstructions: input.compactInstructions,
+      cwd: input.cwd,
     })
     const postTokens = countTextTokens(summary.content)
     const compactDurationMs = Date.now() - compactStartedAt
@@ -384,7 +391,7 @@ export async function summarizeRecordsForContinuation(input: ContinuationSummary
     tools: [],
     model,
     promptCacheRetention,
-    cacheSource: 'compact',
+    cacheSource: compactCacheSource(input.cwd),
     retry: { callerKind: 'background', persistent: true },
   })
 

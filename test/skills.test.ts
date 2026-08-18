@@ -4,7 +4,7 @@ import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { toolToAPISchema } from '../src/harness/toolApiSchema.js'
-import { getCommand, registerCommand } from '../src/commands/index.js'
+import { CommandRegistry } from '../src/commands/index.js'
 import { buildSkillCommandPrompt, buildSkillPrompt, registerSkillCommands } from '../src/commands/skills.js'
 import { SkillsService } from '../src/services/skills/skillsService.js'
 import { createSkillTool } from '../src/tools/skillTool.js'
@@ -488,8 +488,9 @@ test('registerSkillCommands registers disk skills as slash commands', async () =
       'utf8',
     )
 
-    const result = await registerSkillCommands(dir)
-    const command = getCommand('slash-runner')
+    const registry = new CommandRegistry()
+    const result = await registerSkillCommands(registry, dir)
+    const command = registry.get('slash-runner')
     const submitted: Array<{ input: string; options?: unknown }> = []
 
     assert.deepEqual(result, { registered: 1, skipped: [] })
@@ -530,8 +531,9 @@ test('registered skill command display input omits trailing space without args',
       'utf8',
     )
 
-    await registerSkillCommands(dir)
-    const command = getCommand('slash-display')
+    const registry = new CommandRegistry()
+    await registerSkillCommands(registry, dir)
+    const command = registry.get('slash-display')
     const submitted: Array<{ input: string; options?: unknown }> = []
 
     assert.ok(command)
@@ -582,8 +584,9 @@ test('registered skill command submits rich execution options', async () => {
       'utf8',
     )
 
-    await registerSkillCommands(dir)
-    const command = getCommand('slash-rich')
+    const registry = new CommandRegistry()
+    await registerSkillCommands(registry, dir)
+    const command = registry.get('slash-rich')
     const submitted: Array<{ input: string; options?: unknown }> = []
     const shellCommands: string[] = []
 
@@ -629,8 +632,9 @@ test('registered skill command requires shell helper for inline shell', async ()
       'utf8',
     )
 
-    await registerSkillCommands(dir)
-    const command = getCommand('slash-shell')
+    const registry = new CommandRegistry()
+    await registerSkillCommands(registry, dir)
+    const command = registry.get('slash-shell')
 
     assert.ok(command)
     await assert.rejects(
@@ -653,7 +657,11 @@ test('registered skill command requires shell helper for inline shell', async ()
 test('registerSkillCommands skips commands whose names are already registered', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skill-command-conflict-'))
   try {
-    registerCommand({
+    // Registered explicitly rather than leaning on whatever the rest of the
+    // suite left in a shared map: the registry is per-project now, so the
+    // collision has to be set up inside the one under test.
+    const registry = new CommandRegistry()
+    registry.register({
       name: 'slash-conflict-target',
       description: 'Existing command',
       run: async () => {},
@@ -667,10 +675,10 @@ test('registerSkillCommands skips commands whose names are already registered', 
       'utf8',
     )
 
-    const result = await registerSkillCommands(dir)
+    const result = await registerSkillCommands(registry, dir)
 
     assert.deepEqual(result, { registered: 0, skipped: ['slash-conflict-target'] })
-    assert.equal(getCommand('slash-conflict-target')?.description, 'Existing command')
+    assert.equal(registry.get('slash-conflict-target')?.description, 'Existing command')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -687,8 +695,9 @@ test('skill slash command reports missing query submission support', async () =>
       'utf8',
     )
 
-    await registerSkillCommands(dir)
-    const command = getCommand('slash-requires-submit')
+    const registry = new CommandRegistry()
+    await registerSkillCommands(registry, dir)
+    const command = registry.get('slash-requires-submit')
 
     assert.ok(command)
     await assert.rejects(

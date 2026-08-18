@@ -7,7 +7,6 @@ import {
 } from '../config/settings.js'
 import { clampEffort } from '../config/effort.js'
 import { permissionRulesFromSettings } from '../harness/permissions.js'
-import { setCacheBreakDiagnosticsRoot } from '../harness/cacheBreakDetection.js'
 import type { RuntimeDiagnostic } from '../harness/diagnostics.js'
 import { getAllTools } from '../tools/index.js'
 import { BUILT_IN_AGENT_DEFINITIONS } from '../tools/agentTool.js'
@@ -16,6 +15,7 @@ import { AgentDefinitionLoader } from '../services/agents/agentDefinitionLoader.
 import { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
 import type { SessionMeta } from '../sessions/service.js'
 import { registerBuiltinCommands } from '../commands/index.js'
+import { CommandRegistry } from '../commands/registry.js'
 import { registerSkillCommands } from '../commands/skills.js'
 import { createActiveModelRuntimeFactory } from './createRuntime.js'
 import { RuntimeStartupError } from './errors.js'
@@ -43,11 +43,14 @@ function mergeAgentDefinitions<T extends { type: string }>(base: readonly T[], o
 export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost> {
   const { cwd, store, session, confirmMcpTrust } = options
 
-  setCacheBreakDiagnosticsRoot(cwd)
-
   const backgroundTasks = new BackgroundTaskRegistry(
     (sessionId, record) => store.appendRecord(sessionId, record),
   )
+
+  // One per project, like `toolRegistry` below: `registerSkillCommands` reads
+  // `<cwd>/.myagent/skills/`, so a process-wide registry would let a second
+  // project's skills answer this one's slash commands.
+  const commands = new CommandRegistry()
 
   // Mutable so `reloadSettings()` can replace it; `createRuntime` reads it
   // through a getter, so the next runtime built picks up the new contents.
@@ -105,7 +108,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
    */
   const reloadSkills = async (): Promise<number> => {
     skills = await new SkillsService(cwd).list()
-    await registerSkillCommands(cwd)
+    await registerSkillCommands(commands, cwd)
     return skills.length
   }
 
@@ -156,8 +159,8 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     },
   })
 
-  registerBuiltinCommands()
-  await registerSkillCommands(cwd)
+  registerBuiltinCommands(commands)
+  await registerSkillCommands(commands, cwd)
 
   const contextManagement = config.get().agent.contextManagement
   const isGitRepo = existsSync(join(cwd, '.git'))
@@ -208,6 +211,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     config,
     store,
     backgroundTasks,
+    commands,
     mcp: mcp.status,
     initialModelKey,
     initialEffort: typeof clampedInitialEffort === 'string' ? clampedInitialEffort : undefined,

@@ -9,7 +9,7 @@ import {
 } from '../src/runtime/suggestions/commandSuggestions.js'
 import type { CommandSuggestionSource } from '../src/runtime/suggestions/commandSuggestions.js'
 import type { CommandDefinition } from '../src/commands/types.js'
-import { getCommand, hasCommand, listCommands, registerCommand } from '../src/commands/index.js'
+import { CommandRegistry } from '../src/commands/index.js'
 import { registerSkillCommands } from '../src/commands/skills.js'
 
 function command(overrides: Partial<CommandDefinition> & { name: string }): CommandDefinition {
@@ -91,12 +91,13 @@ test('applying a command suggestion inserts slash command and trailing space', (
 })
 
 test('command registry supports aliases and hides hidden commands from listings', () => {
-  registerCommand(command({ name: 'autocomplete-alias-target', aliases: ['aat'] }))
-  registerCommand(command({ name: 'autocomplete-hidden-target', isHidden: true }))
+  const registry = new CommandRegistry()
+  registry.register(command({ name: 'autocomplete-alias-target', aliases: ['aat'] }))
+  registry.register(command({ name: 'autocomplete-hidden-target', isHidden: true }))
 
-  assert.equal(getCommand('aat')?.name, 'autocomplete-alias-target')
-  assert.equal(hasCommand('aat'), true)
-  assert.equal(listCommands().some((item) => item.name === 'autocomplete-hidden-target'), false)
+  assert.equal(registry.get('aat')?.name, 'autocomplete-alias-target')
+  assert.equal(registry.has('aat'), true)
+  assert.equal(registry.list().some((item) => item.name === 'autocomplete-hidden-target'), false)
 })
 
 test('slash command suggestions include registered skill commands', async () => {
@@ -110,8 +111,9 @@ test('slash command suggestions include registered skill commands', async () => 
       'utf8',
     )
 
-    await registerSkillCommands(dir)
-    const suggestions = generateCommandSuggestions('/suggestion', listCommands())
+    const registry = new CommandRegistry()
+    await registerSkillCommands(registry, dir)
+    const suggestions = generateCommandSuggestions('/suggestion', registry.list())
 
     assert.ok(suggestions.some((suggestion) => suggestion.displayText === '/suggestion-skill'))
   } finally {

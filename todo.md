@@ -38,6 +38,7 @@ Tauri 还得挂 Node sidecar。
 | 3f | 选择与补全：四个面板可键选/点选（`SurfaceAction` + `moveSurfaceSelection`）、`@` 文件补全（`suggestions/atToken.ts` 拆分 + `file-suggestions` 命令 + 双源下拉与序号守卫） | 1870 |
 | 3g | rewind / checkpoint 面板：`runtime/rewindPresentation.ts`（第三个共享 presentation 模块，含 `rewindStepsFor` 与五条结果文案）、`model/rewindPanel.ts` + `dom/rewindView.ts`、`/rewind` 斜杠命令（两端共享）、`keymap` 新增 `hasRewind` 档位、`#rewind` 独立模态层 | 1907 |
 | 3h | 消息队列跨进程 + 费用常驻：`SessionController.submit` 补在途守卫、`SessionHost` 持有 `MessageQueue` 并驱动泵、`enqueue-message`/`clear-queue` + `queued-messages` 事件、`resolveUsageWithCost` 收掉三份重复、`model/queuedMessages.ts` + `dom/queueView.ts` + `#status-cost` | 1943 |
+| 3i | 一个进程多个项目（core）：`CommandRegistry` 挂上 `ProjectRuntime`、`createHelpCommand(registry)` 闭包、三个字面量 cache source 在 mint 处绑 root、删掉 `setCacheBreakDiagnosticsRoot`、`test/multiProject.test.ts` | 1948 |
 
 各阶段的设计理由已全部写进 `CLAUDE.md`。下面只留**没进那份文档、但下一轮仍要知道**的东西。
 
@@ -142,6 +143,36 @@ Tauri 还得挂 Node sidecar。
 - **3h：四条不变式各自被对应用例钉死**（逐条变异验证过，且只红对应那条）：
   `uiBlocked→false` 红「权限提示挡住队列」、`turnActive→false` 红另外两条、
   `/clear` 去掉 `migrateTo` 红 `/clear` 那条、`/resume` 的 `reset` 换成 `migrateTo` 红 `/resume` 那条。
+- **3i：`CommandContext` 一个字段都没加，因为只有 `/help` 读注册表**。原本以为要加 `commands` 成员，
+  于是要动 `COMMAND_CONTEXT_COVERAGE`、两个 context 构造处、外加 `test/skills.test.ts` 里一堆内联的
+  context 字面量；实测 grep 下来，`run()` 里碰注册表的只有 `help.ts` 一个。于是改成
+  `createHelpCommand(registry)` 闭包（`src/tools/` 的 `createXxxTool(deps)` 同款），
+  `CommandContext` 与覆盖表零改动。**这条的通用形式是：先数清楚真实消费者，再决定把依赖放进上下文还是闭包。**
+- **3i：`setCacheBreakDiagnosticsRoot` 的真危害不是诊断文件写错目录**。`defaultRoot` 只被 `rootFor()`
+  读，而 `rootFor()` 只服务 `writeCacheBreakDiagnostic`（`MYAGENT_DEBUG_PROVIDER=1` 才走）。
+  真正的 bug 在**身份**：`'compact'` 在每个项目里都是同一个字符串，于是 `previousSnapshots` 里
+  两个项目共用一条 cache-read 基线，第二个项目答完就把第一个的 `prevCacheReadTokens` 覆写掉。
+  修法是 `compactCacheSource(cwd)`/`toolUseSummaryCacheSource(cwd)` 在 mint 处绑 root，
+  `root` 保持可选，所以没有 cwd 的调用方行为不变。
+- **3i：`cacheSource === 'compact'` 这种字面量比较在测试里有 5 处，绑 root 之后全部失效**。
+  生产代码里一处都没有（唯一读 source 字符串的 `writeCacheBreakDiagnostic` 本来就先过
+  `displayCacheSource`），所以这是纯测试侧的修正 —— 但**其中一处藏在 provider 回调里**
+  （`test/loop.test.ts` 的 `compactProvider`），断言抛出被摘要路径吞掉，浮上来的是**另一个**
+  外层断言失败。按报错行去找会找错地方。
+- **3i：`as unknown as ProjectRuntime` 第四次应验，而且这次是真的静默**。
+  五个假 project 里，`protocolHost.test.ts` 拿掉 `commands` 会红 11 条（它真发斜杠命令），
+  但 `desktopMain.test.ts`／`desktopUiRoundTrip.test.ts`／`sessionWorkspace.test.ts` 拿掉之后
+  **25 条全绿** —— 它们从不跑斜杠命令，于是那条 API 谎言完全没人接得住。已变异验证。
+  加字段到 `ProjectRuntime` 时，必须手动 grep 这五处，`tsc` 帮不上忙。
+- **3i：`protocolClientParity` 的 COVERAGE 表第三次接住了新 App prop**。它解析 `tui.tsx` 里
+  `<App` 的 props 源码，加 `commands={host.commands}` 当场逼出一行
+  `{ prop: 'commands', via: 'client', members: ['listCommands', 'runCommand'] }`。
+  这个守卫是免费的，别绕过它。
+- **3i：`reloadSkills` 的一个既有瑕疵（本轮没修，只记账）**：`registerSkillCommands` 用
+  `registry.has(name)` 挡重名，所以一个**已注册**的 skill 改了 description 之后 reload 不会更新它，
+  只会打一行 "command name is already in use" 的 warn（`test/multiProject.test.ts` 跑起来就能看见）。
+  跨项目隔离与它无关。修法大概是「先清掉本项目上一轮注册的 skill 命令，再重新注册」，
+  但那需要注册表能区分「内建」与「skill」两类条目。
 
 ### 工作方法（本项目的验收惯例）
 
@@ -177,8 +208,20 @@ Tauri 还得挂 Node sidecar。
     约束因此没破。
   - **"每个 pane 一对 `SessionHost`/`SessionClient`"确认成立**，`test/desktopMain.test.ts:270` 用两对真
     host/client + 一个共享 registry 覆盖；Electron 侧确实不需要多路复用。
-- [ ] **一个进程多个项目**：被模块级 `src/commands/registry.ts`（B 项目的 skill 命令会漏进 A）与进程级
-  `setCacheBreakDiagnosticsRoot` 挡住。多标签**同项目**不受此限。
+- [~] **一个进程多个项目**。**core 已落地（3i）**：两个进程级全局都没了 ——
+  `src/commands/registry.ts` 变成挂在 `ProjectRuntime` 上的 `CommandRegistry`，
+  `setCacheBreakDiagnosticsRoot` 删除、三个字面量 source 改在 mint 处绑 root。
+  另外扫过一遍 `src/` 里其余模块级可变状态，**没有第三个阻塞点**：`compact.ts` 的 `circuitKey` 是
+  session UUID、`projectContext.ts` 按 cwd 建键、`sessionMemory` 的 `sessionStates` 按 session id、
+  `paths.ts` 的 `resolvedCwdCache` 按 cwd、`tools/display.ts` 的 `cachedTools` 只含内建工具、
+  `promptHistory.ts` 的 `appendOperation` 守的是 `~/.myagent/history.jsonl` 这一个共享文件。
+  `test/multiProject.test.ts` 在一个进程里 bootstrap 两个项目，是这条结论的唯一凭据。
+  多标签**同项目**本来就不受此限。**缺的是下面那条**。
+- [ ] **桌面端打开第二个项目**（3i 的另一半）：`main.ts` 的 `host`/`workspace` 两个模块级变量要变成
+  `Map<cwd, ProjectEntry>`、`teardown` 循环每个项目、`dialog.showOpenDialog` 加入口、
+  `WirePaneInfo` 加 `projectRoot`、标签栏按项目分组。注意 `open-pane` 是 host 命令而 host 只认识
+  自己那个 `SessionWorkspace`，所以**跨项目开 pane 只能走 shell**，不能参数化既有命令。
+  这半边 `main.ts` 一行测试都没有（模块顶层就 `app.requestSingleInstanceLock()`），只能靠真机冒烟。
 
 ### workspace 协议留下的缺陷（读代码查出，尚未修）
 
@@ -314,7 +357,7 @@ rewind 面板已在 3g 补上、**消息队列与费用显示已在 3h 补上**�
 
 ```bash
 npm run typecheck                                     # 三段：base + preload + renderer
-npm run test                                          # 1943 tests / 39 suites, ~45s
+npm run test                                          # 1948 tests / 39 suites, ~45s
 npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 npm run build:desktop                                 # tsc emit + 两个 esbuild bundle + 拷 index.html
 npm run start:desktop                                 # 真实 Electron，需要桌面
@@ -328,6 +371,8 @@ node --import tsx --test test/protocolChildProcess.test.ts    # 真实进程边�
 node --import tsx --test test/distBuild.test.ts               # emit 后用纯 node 载入
 node --import tsx --test test/sessionScope.test.ts test/sessionWorkspace.test.ts \
   test/sessionSwitch.test.ts test/sessionFileLock.test.ts
+node --import tsx --test test/multiProject.test.ts test/commands.test.ts \
+  test/commandSuggestions.test.ts test/skills.test.ts test/cacheBreakDetection.test.ts   # 项目隔离
 node --import tsx --test test/electronChannel.test.ts test/bridgeChannel.test.ts \
   test/desktopMain.test.ts test/desktopBuild.test.ts
 node --import tsx --test test/rendererImports.test.ts test/rendererShellModel.test.ts \
@@ -367,4 +412,5 @@ node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 `isExperimentalToolSearchBetaDisabled()`（`src/utils/toolSearch.ts:132-135`）读的是**两个**变量的或；
 第二个还留在环境里，于是 `AnthropicProvider.supportsDynamicToolSearch('claude-sonnet-4')` 返回 false，
 第一条断言（期望 true）就挂。已用 `git stash` 在干净基线上复现。修法是让该用例对两个变量都做隔离
-（文件里已有 `setEnv` 助手）。**在这种环境下 1943 里应当只有这一条红**（3h 落地后实测仍然如此）。
+（文件里已有 `setEnv` 助手）。**在这种环境下 1948 里应当只有这一条红**（3i 落地后实测 1947 pass / 1 fail，
+且已用 `git stash` 在干净基线上复现同一条）。

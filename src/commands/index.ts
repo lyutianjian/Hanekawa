@@ -1,8 +1,8 @@
-export { registerCommand, getCommand, listCommands, hasCommand } from './registry.js'
+export { CommandRegistry } from './registry.js'
 export type { CommandDefinition, CommandContext, CommandResult } from './types.js'
 
-import { registerCommand } from './registry.js'
-import { helpCommand } from './help.js'
+import type { CommandRegistry } from './registry.js'
+import { createHelpCommand } from './help.js'
 import { clearCommand } from './clear.js'
 import { costCommand } from './cost.js'
 import { modelCommand } from './model.js'
@@ -19,20 +19,22 @@ import { resumeCommand } from './resume.js'
 import { rewindCommand } from './rewind.js'
 
 // Register all built-in commands
-export function registerBuiltinCommands(): void {
-  registerCommand(helpCommand)
-  registerCommand(clearCommand)
-  registerCommand(costCommand)
-  registerCommand(modelCommand)
-  registerCommand(sessionCommand)
-  registerCommand(skillsCommand)
-  registerCommand(compactCommand)
-  registerCommand(repairCommand)
-  registerCommand(agentsCommand)
-  registerCommand(providerCommand)
-  registerCommand(planCommand)
-  registerCommand(effortCommand)
-  registerCommand(tasksCommand)
-  registerCommand(resumeCommand)
-  registerCommand(rewindCommand)
+export function registerBuiltinCommands(registry: CommandRegistry): void {
+  // `/help` is the only one that reads the registry back, so it is built
+  // against the very registry it is being registered into.
+  registry.register(createHelpCommand(registry))
+  registry.register(clearCommand)
+  registry.register(costCommand)
+  registry.register(modelCommand)
+  registry.register(sessionCommand)
+  registry.register(skillsCommand)
+  registry.register(compactCommand)
+  registry.register(repairCommand)
+  registry.register(agentsCommand)
+  registry.register(providerCommand)
+  registry.register(planCommand)
+  registry.register(effortCommand)
+  registry.register(tasksCommand)
+  registry.register(resumeCommand)
+  registry.register(rewindCommand)
 }

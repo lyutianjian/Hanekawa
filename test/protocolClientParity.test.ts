@@ -31,6 +31,12 @@ const COVERAGE: Array<{ prop: string; via: 'client' | 'shell'; members: string[]
     note: 'the two rewind writes are the store methods RestoreMode reaches for',
   },
   { prop: 'session', via: 'client', members: ['hello', 'getSession'] },
+  {
+    prop: 'commands',
+    via: 'client',
+    members: ['listCommands', 'runCommand'],
+    note: 'the registry is per-project now; a renderer reads it over the wire instead of importing commands/',
+  },
   { prop: 'availableModelKeys', via: 'client', members: ['listModels'] },
   { prop: 'providerConfig', via: 'client', members: ['listModels', 'resolveModel', 'setDefaultModel'] },
   { prop: 'createRuntime', via: 'client', members: ['setModel', 'retarget', 'createSession'] },

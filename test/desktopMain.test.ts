@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createUiBridges } from '../src/runtime/bridges.js'
+import { CommandRegistry } from '../src/commands/registry.js'
 import { SessionHost } from '../src/runtime/protocol/host.js'
 import { SessionClient } from '../src/runtime/protocol/client.js'
 import type { RuntimeChannel } from '../src/runtime/protocol/channel.js'
@@ -177,6 +178,10 @@ function fakeProject(): ProjectRuntime {
   return {
     cwd: '/tmp/fixture',
     config: {} as never,
+    // Real, because `ProjectRuntime.commands` is what the host resolves slash
+    // commands through and the cast at the bottom of this function would hide
+    // a missing one until something actually ran `/help`.
+    commands: new CommandRegistry(),
     store: {
       createDraft: (title?: string) => ({
         id: `draft-${Math.random().toString(36).slice(2)}`,

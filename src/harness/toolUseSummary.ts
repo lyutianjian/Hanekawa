@@ -1,11 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import type { ModelProvider, ModelRequest, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
+import { toolUseSummaryCacheSource } from './cacheBreakDetection.js'
 
 export interface SummarizeToolUseParams {
   provider: ModelProvider
   model: string
   promptCacheRetention?: 'in_memory' | '24h'
   toolResults: ToolResultRecord[]
+  /**
+   * Project root, so the `tool_use_summary` cache source is bound to it. Two
+   * projects summarizing in one process would otherwise share a baseline.
+   */
+  cwd?: string
 }
 
 export interface SummarizeToolUseResult {
@@ -34,7 +40,7 @@ export async function summarizeToolUse(params: SummarizeToolUseParams): Promise<
   const request: ModelRequest = {
     model,
     promptCacheRetention,
-    cacheSource: 'tool_use_summary',
+    cacheSource: toolUseSummaryCacheSource(params.cwd),
     system: 'You are a summarizer. Produce a single concise line (max 120 chars) describing what these tool calls accomplished. No preamble, no explanation — just the summary line.',
     messages: [
       {

@@ -53,7 +53,6 @@ export function agentCacheSource(agentId: string, root?: string): CacheBreakSour
  */
 const ROOT_TAG = '@root-'
 const rootBySource = new Map<CacheBreakSource, string>()
-let defaultRoot: string | undefined
 
 function bindRoot(base: string, root: string | undefined): CacheBreakSource {
   if (!root) return base as CacheBreakSource
@@ -67,7 +66,7 @@ function bindRoot(base: string, root: string | undefined): CacheBreakSource {
 }
 
 function rootFor(source: CacheBreakSource): string {
-  return rootBySource.get(source) ?? defaultRoot ?? process.cwd()
+  return rootBySource.get(source) ?? process.cwd()
 }
 
 /** The source without its root suffix, for diagnostics output and filenames. */
@@ -77,13 +76,24 @@ export function displayCacheSource(source: CacheBreakSource): string {
 }
 
 /**
- * Fallback root for sources nobody bound — the fixed literals (`compact`,
- * `tool_use_summary`, …) minted where no cwd is in reach. Set once per
- * `bootstrap()`; last caller wins, which is why binding at the source is
- * preferred wherever a cwd is available.
+ * The fixed-literal sources, bound to the project that minted them.
+ *
+ * These exist because `compact` and `tool_use_summary` are the same string in
+ * every project, so without a root two projects running at once share one
+ * cache-read baseline: whichever one answers second is measured against the
+ * other's `prevCacheReadTokens` and reports a break that never happened. The
+ * root also decides which `.myagent/diagnostics/` the debug JSON lands in.
+ *
+ * `root` stays optional so a caller with no cwd in reach still gets the bare
+ * literal — the pre-existing behaviour, and the reason there is no process-wide
+ * default to set any more.
  */
-export function setCacheBreakDiagnosticsRoot(cwd: string | undefined): void {
-  defaultRoot = cwd
+export function compactCacheSource(root?: string): CacheBreakSource {
+  return bindRoot('compact', root)
+}
+
+export function toolUseSummaryCacheSource(root?: string): CacheBreakSource {
+  return bindRoot('tool_use_summary', root)
 }
 
 export function forkCacheSource(parentSessionId: string, root?: string): CacheBreakSource {

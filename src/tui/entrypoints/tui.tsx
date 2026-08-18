@@ -110,6 +110,7 @@ async function main() {
       sessionController={sessionController}
       store={store}
       session={session}
+      commands={host.commands}
       availableModelKeys={Object.keys(host.config.get().models)}
       providerConfig={host.config}
       createRuntime={host.createRuntime}

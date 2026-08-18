@@ -16,7 +16,7 @@ npm run typecheck                  # three passes: base + tsconfig.preload.json 
 npm run build                      # tsc -p tsconfig.build.json → dist/ (only a desktop shell needs this)
 npm run build:desktop              # build + esbuild preload/renderer bundles + copy index.html
 npm run start:desktop              # electron . (needs a real display)
-npm run test                       # full suite: 1943 tests / 39 suites, ~45s
+npm run test                       # full suite: 1948 tests / 39 suites, ~45s
 node --import tsx --test test/compact.test.ts                    # single file (space-separate for several)
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
 ```
@@ -52,8 +52,8 @@ tui/ (Ink)  →  harness/ (loop, toolRunner, permissions, contextBuilder)  →  
 
 Which tier a collaborator sits on is a correctness question, not a taste one:
 
-- **`ProjectRuntime`** — one per `cwd`: `config`, `store`, `ToolRegistry`, MCP connections,
-  `BackgroundTaskRegistry`, the reload functions, `shutdown`.
+- **`ProjectRuntime`** — one per `cwd`: `config`, `store`, `ToolRegistry`, `CommandRegistry`, MCP
+  connections, `BackgroundTaskRegistry`, the reload functions, `shutdown`.
 - **`SessionScope`** (`createSessionScope`) — one per conversation: `bridges`, `permissionGate`,
   `promptSections`, and the `createRuntime` closed over all three. Sharing any across sessions is a bug:
   bridges have one handler slot per proxy (session B's prompts land in A's UI); the gate owns the mode,
@@ -82,10 +82,17 @@ scope; `shutdown()` disposes all of them and is the only thing that stops backgr
   A pane owns **no** `SessionRecordLedger`; the result comes back raw for the caller to rebase its own
   record view.
 
-**N sessions per project is safe; N projects per process is not.** `agentCacheSource(sessionId, cwd)`,
-`compact.ts`'s `circuitKey` and the content-hashed `toolSchemaCache` partition correctly, but
-`src/commands/registry.ts` is a module-level `Map` and `setCacheBreakDiagnosticsRoot(cwd)` is
-process-wide.
+**N sessions per project is safe, and so is N projects per process.** Everything module-level that is
+project-scoped partitions on something that cannot collide: `agentCacheSource(sessionId, cwd)`,
+`compact.ts`'s `circuitKey` (a session UUID), the content-hashed `toolSchemaCache`, `contextByCwd`,
+`resolvedCwdCache`, and `sessionMemory`'s `sessionStates`. The remaining module-level caches are
+genuinely process-wide facts (`bash.ts`'s detected shell, `toolSearch.ts`'s env-derived budget,
+`display.ts`'s built-in tool map) or guard one shared file (`promptHistory.ts` serializing
+`~/.myagent/history.jsonl`). The two that did *not* partition are now instance state: the slash-command
+registry is `CommandRegistry` on `ProjectRuntime`, and the fixed-literal cache sources bind their root at
+the mint site (`compactCacheSource(cwd)` / `toolUseSummaryCacheSource(cwd)`) instead of reading a
+process-wide default. `test/multiProject.test.ts` bootstraps two projects side by side and is what keeps
+this true. What is still missing is a *shell* that opens a second project — see `todo.md`.
 
 ### The turn loop — `src/harness/loop.ts`
 
@@ -138,9 +145,13 @@ literals in `DEFAULT_CONFIG` (`src/config/service.ts`); keep them in sync.
   or a per-run model override there is only the time-based stage. `pinEdits()` is wired but never called
   in production.
 - **The provider owns cache-break detection** (`cacheBreakDetection.ts`); the loop only emits the metric.
-  State is partitioned by `CacheBreakSource` (`agentCacheSource`/`planCacheSource`/`forkCacheSource`, each
-  folding in a digest of the project root) — reusing one across unrelated request streams poisons the
-  baseline. Use `displayCacheSource()` for anything user-visible; the source is hashed into
+  State is partitioned by `CacheBreakSource` — **every** minting helper folds a digest of the project root
+  into the string itself (`agentCacheSource`/`planCacheSource`/`forkCacheSource`, and
+  `compactCacheSource`/`toolUseSummaryCacheSource` for the two fixed literals). It travels *inside* the
+  source because detection runs in the provider, which has no cwd; a side table keyed by source could not
+  work, since two projects mint the same logical source. Reusing one across unrelated request streams
+  poisons the baseline. Use `displayCacheSource()` for anything that compares against a bare literal or is
+  user-visible — `source === 'compact'` is false once a root is bound; the source is hashed into
   `prompt_cache_key` on the OpenAI path.
 
 ### Tools — `src/tools/`
@@ -267,10 +278,13 @@ stream into Ink; `hooks/useKeyboardShortcuts.ts` is the one global key handler (
   guarded effect pumps it. `subscribe`/`getSnapshot` are bound methods so `useSyncExternalStore` sees stable
   identities. The pump's guard is `canPumpQueue` (`src/runtime/queuePump.ts`), which separates "a turn is
   running" from "the UI is blocked" so a non-terminal shell can define the latter differently.
-- Slash commands (`src/commands/`) are a module-level `Map` of plain `{name, description, run}` objects
-  that render nothing — all effects go through optional `CommandContext` callbacks, so every command must
-  tolerate `undefined` ones. Skill commands are prompt macros with per-invocation model/effort/tool
-  overrides; built-ins always shadow same-named skills.
+- Slash commands (`src/commands/`) are a per-project `CommandRegistry` of plain
+  `{name, description, run}` objects that render nothing — all effects go through optional
+  `CommandContext` callbacks, so every command must tolerate `undefined` ones. `/help` is the only one
+  that reads the registry back, so it is `createHelpCommand(registry)` — a closure over the registry it is
+  registered into, rather than a `CommandContext` member the other fourteen would have to ignore. Skill
+  commands are prompt macros with per-invocation model/effort/tool overrides; built-ins always shadow
+  same-named skills.
 
 ### The process boundary — `src/runtime/protocol/`
 

@@ -8,15 +8,21 @@ import { promisify } from 'node:util'
 import { createElement as h } from 'react'
 import { Box, Text } from 'ink'
 import { cleanup, render } from 'ink-testing-library'
-import { registerCommand } from '../src/commands/index.js'
+import { CommandRegistry } from '../src/commands/index.js'
 import { useKeyboardShortcuts } from '../src/tui/hooks/useKeyboardShortcuts.js'
 
 afterEach(() => cleanup())
 
 const execFile = promisify(execFileCallback)
 
+// One registry for the file, standing in for the project's. Each test registers
+// its own uniquely-prefixed names and filters the dropdown by that prefix, so
+// sharing it across tests is the same accumulation the module-level map used to
+// give — just no longer shared with the rest of the suite.
+const testCommands = new CommandRegistry()
+
 function registerTestCommand(name: string): void {
-  registerCommand({
+  testCommands.register({
     name,
     description: `${name} command`,
     run: async () => {},
@@ -39,6 +45,7 @@ function AutocompleteHarness({
     onEnterRestoreMode: () => {},
     onCyclePermissionMode: () => {},
     onToggleTranscript: () => {},
+    commands: testCommands,
     isStreaming: false,
     isRestoreMode: false,
     isPermissionVisible: false,

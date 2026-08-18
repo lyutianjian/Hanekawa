@@ -13,6 +13,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { SessionRecord, ModelProvider, TokenUsage } from '../../harness/types.js'
 import { EMPTY_TOKEN_USAGE } from '../../harness/usage.js'
+import { compactCacheSource } from '../../harness/cacheBreakDetection.js'
 import { countTextTokens } from '../../prompts/budget.js'
 import { getMyAgentDir } from '../../utils/paths.js'
 import type { SessionMemoryState, SessionMemoryConfig, ExtractionResult } from './types.js'
@@ -166,7 +167,7 @@ export async function extractSessionMemory(
     model,
     thinking: { type: 'disabled' },
     maxOutputTokens: config.maxMemoryTokens,
-    cacheSource: 'compact',
+    cacheSource: compactCacheSource(params.cwd),
   } as Parameters<ModelProvider['createMessage']>[0])
 
   let content = response.content.trim()

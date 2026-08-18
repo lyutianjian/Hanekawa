@@ -241,6 +241,7 @@ export class AgentLoop {
         model: this.activeModel.model,
         compactRuntime: this.options.compactModel,
         promptCacheRetention: this.activeModel.promptCacheRetention,
+        cwd: this.options.toolContext.cwd,
       })
       return {
         summary: result.content,
@@ -991,6 +992,7 @@ export class AgentLoop {
         model: runtime.model,
         promptCacheRetention: runtime.promptCacheRetention,
         toolResults: summarizableResults,
+        cwd: this.options.toolContext.cwd,
       }),
     }
     entry.promise.then((summary) => {

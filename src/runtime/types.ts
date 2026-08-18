@@ -8,6 +8,7 @@ import type { ConfigService, ModelConfig } from '../config/service.js'
 import type { EffortLevel } from '../config/effort.js'
 import type { SessionMeta, SessionStore } from '../sessions/service.js'
 import type { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
+import type { CommandRegistry } from '../commands/registry.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
 import type { UiBridges } from './bridges.js'
 
@@ -64,6 +65,12 @@ export interface ProjectRuntime {
   config: ConfigService
   store: SessionStore
   backgroundTasks: BackgroundTaskRegistry
+  /**
+   * The slash commands for this project. Per-project rather than module-level
+   * because skill commands are read from `<cwd>/.myagent/skills/`, so a shared
+   * one leaks the second project's skills into the first.
+   */
+  commands: CommandRegistry
   mcp: McpConnectionStatus
   initialModelKey: string
   /** Startup effort after clamping to the model's max, when it is a level. */

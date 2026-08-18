@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { getCommand, listCommands } from '../../commands/index.js'
 import type { CommandContext, CommandDefinition } from '../../commands/types.js'
 import { VALID_EFFORT_LEVELS, type EffortLevel } from '../../config/effort.js'
 import { saveEffortLevel } from '../../config/settings.js'
@@ -625,7 +624,7 @@ export class SessionHost {
 
       case 'list-commands':
         // Already filtered for `isHidden`/`isEnabled` by the registry.
-        return { commands: listCommands().map(toWireCommandInfo) } satisfies WireCommandsResult
+        return { commands: this.project.commands.list().map(toWireCommandInfo) } satisfies WireCommandsResult
 
       case 'file-suggestions': {
         // Built field by field rather than forwarded: `createFileSuggestion` is
@@ -839,7 +838,7 @@ export class SessionHost {
     // The shell owns its own teardown; it calls `shutdown` when it is ready.
     if (name === 'exit') return { handled: true, exit: true }
 
-    const command = getCommand(name)
+    const command = this.project.commands.get(name)
     if (!command) {
       this.emitCommandEffect({
         kind: 'write-line',

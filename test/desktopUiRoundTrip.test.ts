@@ -4,6 +4,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createUiBridges } from '../src/runtime/bridges.js'
+import { CommandRegistry } from '../src/commands/registry.js'
 import { SessionHost } from '../src/runtime/protocol/host.js'
 import { SessionClient } from '../src/runtime/protocol/client.js'
 import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.js'
@@ -77,6 +78,9 @@ async function createHarness(): Promise<Harness> {
     // host-side rather than in the renderer.
     store: { appendRecord: async () => undefined },
     backgroundTasks: { subscribe: () => () => undefined, getSnapshot: () => [] },
+    // Real: `ProjectRuntime.commands` is what the host resolves slash commands
+    // through, and the cast below is exactly what would hide its absence.
+    commands: new CommandRegistry(),
     mcp: { connected: [], failed: [] },
     initialModelKey: 'main',
     configuredEffortLevel: 'high',

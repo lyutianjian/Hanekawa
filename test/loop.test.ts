@@ -1366,7 +1366,7 @@ test('agent loop generates tool-use summary with compact model for the next requ
     name: 'compact',
     async createMessage(request) {
       summaryModelSeen = request.model
-      assert.equal(request.cacheSource, 'tool_use_summary')
+      assert.equal(displayCacheSource(request.cacheSource!), 'tool_use_summary')
       assert.match(request.messages[0]?.content ?? '', /"value":"hello"/)
       return { content: 'echo returned hello', toolCalls: [] }
     },
@@ -1490,7 +1490,9 @@ test('agent loop excludes compact summarizer usage from status usage', async () 
   const provider: ModelProvider = {
     name: 'fake',
     async createMessage(request) {
-      if (request.cacheSource === 'compact') {
+      // `displayCacheSource`, not `===`: the source carries a digest of the
+      // project root now, so a fixed literal only matches after it is stripped.
+      if (displayCacheSource(request.cacheSource!) === 'compact') {
         return {
           content: 'compact summary',
           toolCalls: [],
@@ -1988,7 +1990,7 @@ test('agent loop auto-compacts without preparing records twice in the same itera
       ) ?? false
       if (isCompactRequest) {
         assert.equal(request.tools?.length, 0)
-        assert.equal(request.cacheSource, 'compact')
+        assert.equal(displayCacheSource(request.cacheSource!), 'compact')
         return {
           content: 'summary',
           toolCalls: [],
@@ -2201,7 +2203,7 @@ test('agent loop checks auto-compact before later model requests in a tool loop'
       ) ?? false
       if (isCompactRequest) {
         providerCalls.push('compact')
-        assert.equal(request.cacheSource, 'compact')
+        assert.equal(displayCacheSource(request.cacheSource!), 'compact')
         return {
           content: 'second-iteration summary',
           toolCalls: [],
@@ -2413,7 +2415,7 @@ test('agent loop continues the turn when auto-compact summary fails', async () =
   const provider: ModelProvider = {
     name: 'fake',
     async createMessage(request) {
-      const isCompactRequest = request.cacheSource === 'compact'
+      const isCompactRequest = displayCacheSource(request.cacheSource!) === 'compact'
       if (isCompactRequest) {
         providerCalls.push('compact')
         throw new Error('compact summarizer failed')

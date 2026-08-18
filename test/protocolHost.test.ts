@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createUiBridges } from '../src/runtime/bridges.js'
 import { registerBuiltinCommands } from '../src/commands/index.js'
+import { CommandRegistry } from '../src/commands/registry.js'
 import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.js'
 import { SessionHost } from '../src/runtime/protocol/host.js'
 import type { PaneRegistry } from '../src/runtime/protocol/host.js'
@@ -27,6 +28,8 @@ import { SessionStore } from '../src/sessions/service.js'
 interface Harness {
   host: SessionHost
   received: HostEvent[]
+  /** This harness's project registry, for tests that need the built-ins in it. */
+  commands: CommandRegistry
   send: (command: HostCommand) => void
   /** Malformed payloads, which `send` is deliberately too well typed to express. */
   sendRaw: (message: unknown) => void
@@ -186,6 +189,10 @@ async function createHarness(): Promise<Harness> {
     session,
     store,
     bridges,
+    // A real registry, not a stub. `ProjectRuntime.commands` is what the host
+    // resolves `/help` and `list-commands` through, and the `as unknown as`
+    // below would happily hide its absence until the first slash command threw.
+    commands: new CommandRegistry(),
     existingRecords: [] as SessionRecord[],
     diagnostics: [],
     mcp: { connected: [], failed: [] },
@@ -293,6 +300,8 @@ async function createHarness(): Promise<Harness> {
   return {
     host,
     received,
+    /** This harness's project registry, for tests that need the built-ins in it. */
+    commands: runtimeHost.commands,
     send: (command) => clientSide.post(command),
     sendRaw: (message) => clientSide.post(message),
     emit: (event) => { for (const listener of [...eventListeners]) listener(event) },
@@ -629,8 +638,8 @@ function commandTraffic(harness: Harness): string[] {
 }
 
 test('a slash command\'s effects all arrive before its reply', async () => {
-  registerBuiltinCommands()
   const harness = await createHarness()
+  registerBuiltinCommands(harness.commands)
 
   harness.send({ type: 'run-command', id: 'c1', input: '/help' })
   await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
@@ -658,8 +667,8 @@ test('input that is not a slash command comes back unhandled', async () => {
 })
 
 test('an unknown command is handled, and explains itself as a written line', async () => {
-  registerBuiltinCommands()
   const harness = await createHarness()
+  registerBuiltinCommands(harness.commands)
 
   harness.send({ type: 'run-command', id: 'c1', input: '/nosuchthing' })
   const reply = await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
@@ -688,8 +697,8 @@ test('/exit asks the shell to close rather than shutting the host down', async (
 })
 
 test('a command that throws is reported through a written line, not a fail', async () => {
-  registerBuiltinCommands()
   const harness = await createHarness()
+  registerBuiltinCommands(harness.commands)
   // Two agents sharing a prefix: `resolveAgentId` refuses to guess and throws,
   // which is a genuine throw out of `command.run` rather than a handled miss.
   for (const agentId of ['abc111', 'abc222']) {
@@ -720,8 +729,8 @@ test('a command that throws is reported through a written line, not a fail', asy
 })
 
 test('/model with an argument switches the runtime and persists the tier', async () => {
-  registerBuiltinCommands()
   const harness = await createHarness()
+  registerBuiltinCommands(harness.commands)
 
   harness.send({ type: 'run-command', id: 'c1', input: '/model fast' })
   await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
@@ -733,8 +742,8 @@ test('/model with an argument switches the runtime and persists the tier', async
 })
 
 test('/model with an unknown argument writes a line and leaves the runtime alone', async () => {
-  registerBuiltinCommands()
   const harness = await createHarness()
+  registerBuiltinCommands(harness.commands)
 
   harness.send({ type: 'run-command', id: 'c1', input: '/model nope' })
   await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
@@ -748,8 +757,8 @@ test('/model with an unknown argument writes a line and leaves the runtime alone
 })
 
 test('/model with no argument asks for the picker', async () => {
-  registerBuiltinCommands()
   const harness = await createHarness()
+  registerBuiltinCommands(harness.commands)
 
   harness.send({ type: 'run-command', id: 'c1', input: '/model' })
   await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
@@ -761,8 +770,8 @@ test('/model with no argument asks for the picker', async () => {
 })
 
 test('/clear switches to a fresh session and announces it', async () => {
-  registerBuiltinCommands()
   const harness = await createHarness()
+  registerBuiltinCommands(harness.commands)
   harness.emit({
     type: 'record',
     record: { type: 'message', id: 'm1', role: 'user', content: 'a', createdAt: 'now' },
@@ -792,8 +801,8 @@ test('/clear switches to a fresh session and announces it', async () => {
 })
 
 test('/plan reaches the permission gate', async () => {
-  registerBuiltinCommands()
   const harness = await createHarness()
+  registerBuiltinCommands(harness.commands)
 
   harness.send({ type: 'run-command', id: 'c1', input: '/plan' })
   await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
@@ -804,8 +813,8 @@ test('/plan reaches the permission gate', async () => {
 })
 
 test('the command context reads the session through a getter, not a capture', async () => {
-  registerBuiltinCommands()
   const harness = await createHarness()
+  registerBuiltinCommands(harness.commands)
 
   harness.send({ type: 'run-command', id: 'c1', input: '/clear' })
   const changed = await waitFor(
@@ -1148,8 +1157,8 @@ test('file-suggestions answers nothing when the caret is not in a mention', asyn
 })
 
 test('list-commands ships metadata only, with no callable on the wire', async () => {
-  registerBuiltinCommands()
   const harness = await createHarness()
+  registerBuiltinCommands(harness.commands)
 
   harness.send({ type: 'list-commands', id: 'lc1' })
   const reply = await waitFor(
@@ -1526,8 +1535,8 @@ test('/cost and the status bar report the same number', async () => {
   // `/cost` through `CommandContext.getUsage`, the desktop status bar through the
   // snapshot event — so they could drift on rounding, on the currency default, or
   // on what "incomplete pricing" means. This drives both and compares.
-  registerBuiltinCommands()
   const harness = await createHarness()
+  registerBuiltinCommands(harness.commands)
   harness.setPricing({ inputPerMillionTokens: 3, outputPerMillionTokens: 15, currency: 'USD' })
   harness.setUsageTotal({ inputTokens: 1_234_567, cacheReadInputTokens: 89_000, outputTokens: 4_321 })
   await settle()

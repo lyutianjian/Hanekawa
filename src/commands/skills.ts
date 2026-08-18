@@ -2,7 +2,7 @@ import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { TextDecoder } from 'node:util'
 import type { CommandDefinition, CommandShellResult } from './types.js'
-import { hasCommand, registerCommand } from './registry.js'
+import type { CommandRegistry } from './registry.js'
 import { SkillsService, type SkillDefinition } from '../services/skills/skillsService.js'
 
 const ARGUMENTS_PLACEHOLDER = '$ARGUMENTS'
@@ -135,19 +135,22 @@ export async function appendSkillAttachments(prompt: string, skill: SkillDefinit
   ].join('\n\n')
 }
 
-export async function registerSkillCommands(cwd: string): Promise<{ registered: number; skipped: string[] }> {
+export async function registerSkillCommands(
+  registry: CommandRegistry,
+  cwd: string,
+): Promise<{ registered: number; skipped: string[] }> {
   const skills = await new SkillsService(cwd).list()
   const skipped: string[] = []
   let registered = 0
 
   for (const skill of skills) {
-    if (RESERVED_SKILL_COMMAND_NAMES.has(skill.name) || hasCommand(skill.name)) {
+    if (RESERVED_SKILL_COMMAND_NAMES.has(skill.name) || registry.has(skill.name)) {
       skipped.push(skill.name)
       console.warn(`Skipping skill slash command /${skill.name}: command name is already in use.`)
       continue
     }
 
-    registerCommand(createSkillCommand(cwd, skill.name, skill.description))
+    registry.register(createSkillCommand(cwd, skill.name, skill.description))
     registered += 1
   }
 

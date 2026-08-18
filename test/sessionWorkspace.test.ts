@@ -4,6 +4,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createUiBridges } from '../src/runtime/bridges.js'
+import { CommandRegistry } from '../src/commands/registry.js'
 import { SessionWorkspace, createSessionPane } from '../src/runtime/sessionWorkspace.js'
 import type { SessionPane } from '../src/runtime/sessionWorkspace.js'
 import type { ProjectRuntime, SessionScope } from '../src/runtime/types.js'
@@ -101,6 +102,7 @@ async function createHarness(): Promise<Harness> {
       return makeScope(session)
     },
     createActiveModelRuntime: () => ({}),
+    commands: new CommandRegistry(),
     reloadAgentDefinitions: async () => 0,
     reloadSkills: async () => 0,
     reloadSettings: async () => ({ needsRuntimeRebuild: false }),

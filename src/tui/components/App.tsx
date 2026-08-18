@@ -8,6 +8,7 @@ import type { PermissionGate, PermissionMode } from '../../harness/permissions.j
 import type { ConfigService } from '../../config/service.js'
 import type { SessionRecord } from '../../harness/types.js'
 import type { CommandSubmitQueryOptions, CommandView, SetModelResult } from '../../commands/types.js'
+import type { CommandRegistry } from '../../commands/registry.js'
 import type { TUIDisplayItem, TUIStaticItem } from '../types.js'
 import { useAgentLoop } from '../hooks/useAgentLoop.js'
 import { recordsToDisplayItems } from '../transcript.js'
@@ -90,6 +91,8 @@ interface AppProps {
   sessionController: SessionController
   store: SessionStore
   session: SessionMeta
+  /** This project's slash commands. See `ProjectRuntime.commands`. */
+  commands: CommandRegistry
   availableModelKeys: string[]
   providerConfig: ConfigService
   createRuntime: (modelKey: string, session: SessionMeta, records?: readonly SessionRecord[]) => AppRuntime
@@ -115,6 +118,7 @@ export function App({
   sessionController,
   store,
   session: initialSession,
+  commands,
   availableModelKeys,
   providerConfig,
   createRuntime,
@@ -612,6 +616,7 @@ export function App({
   const { dispatch } = useCommands({
     store,
     session: activeSession,
+    commands,
     cwd: process.cwd(),
     model: {
       key: runtime.modelKey,
@@ -885,6 +890,7 @@ export function App({
     onEnterRestoreMode: handleEnterRestoreMode,
     onCyclePermissionMode: cyclePermissionMode,
     onToggleTranscript: handleToggleTranscript,
+    commands,
     history: promptHistory,
     isStreaming,
     hasQueuedMessages: queuedMessages.length > 0,

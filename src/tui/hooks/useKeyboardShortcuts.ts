@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useInput as useInkInput, type Key } from 'ink'
 import { DoubleTapDetector } from '../utils/doubleTapDetector.js'
 import { loadKeybindingsConfig } from '../../config/keybindings.js'
-import { listCommands } from '../../commands/index.js'
+import type { CommandRegistry } from '../../commands/registry.js'
 import {
   applyCommandSuggestion,
   generateCommandSuggestions,
@@ -23,6 +23,8 @@ export interface KeyboardShortcutOptions {
   onEnterRestoreMode: () => void
   onCyclePermissionMode: (direction: 1 | -1) => void
   onToggleTranscript: () => void
+  /** This project's slash commands, for the `/` dropdown. */
+  commands: CommandRegistry
   isStreaming: boolean
   hasQueuedMessages?: boolean
   isRestoreMode: boolean
@@ -77,6 +79,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     onEnterRestoreMode,
     onCyclePermissionMode,
     onToggleTranscript,
+    commands,
     isStreaming,
     hasQueuedMessages = false,
     isRestoreMode,
@@ -203,7 +206,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
       return
     }
 
-    const commandSuggestions = generateCommandSuggestions(value, listCommands())
+    const commandSuggestions = generateCommandSuggestions(value, commands.list())
     const nextType: SuggestionType = commandSuggestions.length > 0 ? 'command' : 'file'
     const nextSuggestions = commandSuggestions.length > 0
       ? commandSuggestions
@@ -217,7 +220,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
       return Math.min(current, nextSuggestions.length - 1)
     })
     setSuggestionType(nextSuggestions.length > 0 ? nextType : 'none')
-  }, [clearSuggestions, cwd, isPermissionVisible, isRestoreMode, isStreaming])
+  }, [clearSuggestions, commands, cwd, isPermissionVisible, isRestoreMode, isStreaming])
 
   useEffect(() => {
     void refreshSuggestions(text, cursorPos)

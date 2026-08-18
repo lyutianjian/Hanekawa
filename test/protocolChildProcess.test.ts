@@ -35,6 +35,7 @@ function childSource(): string {
 import { SessionHost } from ${toUrl('src/runtime/protocol/host.js')}
 import { createNodeProcessChannel } from ${toUrl('src/runtime/protocol/nodeChannel.js')}
 import { createUiBridges } from ${toUrl('src/runtime/bridges.js')}
+import { CommandRegistry } from ${toUrl('src/commands/registry.js')}
 
 const bridges = createUiBridges()
 const eventListeners = new Set()
@@ -91,6 +92,9 @@ const runtimeHost = {
   session: { id: 'child-session' },
   store: {},
   bridges,
+  // Per-project slash commands. The child never sends \`run-command\`, but tsc
+  // cannot see this string — keep it faithful, per todo.md (工作方法).
+  commands: new CommandRegistry(),
   existingRecords: [],
   diagnostics: [],
   mcp: { connected: [], failed: [] },

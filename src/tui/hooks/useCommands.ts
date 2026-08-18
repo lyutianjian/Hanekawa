@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react'
 import { useApp } from 'ink'
-import { getCommand } from '../../commands/index.js'
+import type { CommandRegistry } from '../../commands/registry.js'
 import type {
   CommandContext,
   CommandModelInfo,
@@ -24,6 +24,8 @@ import {
 interface UseCommandsOptions {
   store: SessionStore
   session: SessionMeta
+  /** This project's slash commands. See `ProjectRuntime.commands`. */
+  commands: CommandRegistry
   cwd: string
   model: CommandModelInfo
   setModel: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
@@ -55,6 +57,7 @@ interface UseCommandsOptions {
 export function useCommands({
   store,
   session,
+  commands,
   cwd,
   model,
   setModel,
@@ -150,6 +153,8 @@ export function useCommands({
   storeRef.current = store
   const cwdRef = useRef(cwd)
   cwdRef.current = cwd
+  const commandsRef = useRef(commands)
+  commandsRef.current = commands
 
   const dispatch = useCallback(
     async (input: string): Promise<boolean> => {
@@ -165,7 +170,7 @@ export function useCommands({
         return true
       }
 
-      const command = getCommand(name)
+      const command = commandsRef.current.get(name)
       if (!command) {
         addSystemMessageRef.current(`Unknown command: /${name}. Type /help for available commands.`)
         return true

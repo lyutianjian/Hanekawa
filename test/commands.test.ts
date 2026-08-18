@@ -10,9 +10,8 @@ import { planCommand } from '../src/commands/plan.js'
 import { providerCommand } from '../src/commands/provider.js'
 import { tasksCommand } from '../src/commands/tasks.js'
 import { resumeCommand } from '../src/commands/resume.js'
-import { helpCommand } from '../src/commands/help.js'
 import { sessionCommand } from '../src/commands/session.js'
-import { getCommand, registerBuiltinCommands } from '../src/commands/index.js'
+import { CommandRegistry, registerBuiltinCommands } from '../src/commands/index.js'
 import type { CommandContext, CommandView } from '../src/commands/types.js'
 
 function createContext(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -26,11 +25,12 @@ function createContext(overrides: Partial<CommandContext> = {}): CommandContext 
 }
 
 test('built-in command registry includes /plan and excludes /bypass', () => {
-  registerBuiltinCommands()
+  const registry = new CommandRegistry()
+  registerBuiltinCommands(registry)
 
-  assert.equal(getCommand('plan')?.name, 'plan')
-  assert.equal(getCommand('resume')?.name, 'resume')
-  assert.equal(getCommand('bypass'), undefined)
+  assert.equal(registry.get('plan')?.name, 'plan')
+  assert.equal(registry.get('resume')?.name, 'resume')
+  assert.equal(registry.get('bypass'), undefined)
 })
 
 test('/cost reports injected usage and real cost', async () => {
@@ -544,9 +544,10 @@ test('/provider reports unavailable outside TUI panel host', async () => {
 })
 
 test('/help opens a structured list view when hosted by the TUI', async () => {
-  registerBuiltinCommands()
+  const registry = new CommandRegistry()
+  registerBuiltinCommands(registry)
   let view: CommandView | undefined
-  await helpCommand.run('', createContext({
+  await registry.get('help')!.run('', createContext({
     openCommandView: (next) => { view = next },
     writeLine: () => assert.fail('structured help should not write into chat'),
   }))

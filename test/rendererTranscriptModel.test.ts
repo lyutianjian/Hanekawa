@@ -89,8 +89,44 @@ test('a streamed draft is replaced by the assistant record, not appended twice',
   assert.equal(assistant[0]?.pending, undefined, 'the committed record is not pending')
 })
 
-test('a draft that never became a record is dropped at turn-end', () => {
+/**
+ * The user's own message is drawn twice unless `applyRecord` is idempotent by
+ * id: `turn-start` puts it on screen immediately under `event.messageId`, and
+ * `SessionController.submit` hands that very id to `AgentLoop`, which stamps it
+ * on the persisted `message` record. The TUI dodges this by ignoring user
+ * records entirely (`useAgentLoop.ts` only folds `role === 'assistant'`); here
+ * the record is the authoritative text, so it replaces in place.
+ */
+test('the user message record replaces its turn-start bubble instead of doubling it', () => {
+  const record: SessionRecord = {
+    type: 'message', id: 'm1', role: 'user', content: '<long prompt>',
+    displayContent: '/skill arg', createdAt: 'now',
+  }
+
   const { state } = fold([
+    { type: 'turn-start', messageId: 'm1', displayInput: 'hi', createdAt: 'now' },
+    { type: 'record', record },
+  ])
+
+  const user = state.items.filter((item) => item.kind === 'user')
+  assert.equal(user.length, 1, 'two identical bubbles is the desktop smoke-test duplicate')
+  assert.equal(user[0]?.text, '/skill arg', 'the record carries displayContent; turn-start does not')
+})
+
+test('a user record for a different turn still appends', () => {
+  const { state } = fold([
+    { type: 'turn-start', messageId: 'm1', displayInput: 'first', createdAt: 'now' },
+    { type: 'record', record: message('m1', 'user', 'first') },
+    { type: 'record', record: message('m2', 'user', 'second') },
+  ])
+
+  assert.deepEqual(
+    state.items.filter((item) => item.kind === 'user').map((item) => item.text),
+    ['first', 'second'],
+  )
+})
+
+test('a draft that never became a record is dropped at turn-end', () => {  const { state } = fold([
     { type: 'stream', event: { type: 'text_delta', text: 'partial' } },
     { type: 'turn-end', aborted: true, rolledBack: false, durationMs: 900 },
   ])

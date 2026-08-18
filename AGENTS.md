@@ -16,7 +16,7 @@ npm run typecheck                  # base + tsconfig.preload.json + tsconfig.ren
 npm run build                      # tsc -p tsconfig.build.json → dist/ (Electron main only)
 npm run build:desktop              # build + esbuild preload/renderer bundles + copy index.html
 npm run start:desktop              # electron . (needs a real display)
-npm run test                       # full suite: 1948 tests / 39 suites, ~45s
+npm run test                       # full suite: 1951 tests / 39 suites, ~45s
 node --import tsx --test test/compact.test.ts          # single file (space-separate several)
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
 ```
@@ -223,7 +223,9 @@ stdin; MCP trust prompts before Ink owns stdin). It builds a `RuntimeSlot` + `Se
 - **Slash commands** (`src/commands/`) are a per-project `CommandRegistry` of `{name, description, run}`
   that render nothing; effects go through optional `CommandContext` callbacks, so commands must tolerate
   `undefined` ones. `/help` is `createHelpCommand(registry)`. Skill commands are prompt macros with
-  per-invocation model/effort/tool overrides; built-ins shadow same-named skills.
+  per-invocation model/effort/tool overrides; built-ins shadow same-named skills. Skill entries go in
+  through `registerSkill()` and are dropped by `clearSkills()` at the top of every `registerSkillCommands`
+  pass — a reload has to *replace* them, since `has()` cannot tell a built-in from last pass's own entry.
 
 ### The process boundary — `src/runtime/protocol/`
 

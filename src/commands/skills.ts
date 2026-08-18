@@ -143,6 +143,11 @@ export async function registerSkillCommands(
   const skipped: string[] = []
   let registered = 0
 
+  // Drop the previous pass's entries first: this function is the reload path as
+  // well as the first-run path, and `registry.has()` below cannot tell "a
+  // built-in owns this name" from "I registered this same skill a moment ago".
+  registry.clearSkills()
+
   for (const skill of skills) {
     if (RESERVED_SKILL_COMMAND_NAMES.has(skill.name) || registry.has(skill.name)) {
       skipped.push(skill.name)
@@ -150,7 +155,7 @@ export async function registerSkillCommands(
       continue
     }
 
-    registry.register(createSkillCommand(cwd, skill.name, skill.description))
+    registry.registerSkill(createSkillCommand(cwd, skill.name, skill.description))
     registered += 1
   }
 

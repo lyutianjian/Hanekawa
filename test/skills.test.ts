@@ -684,8 +684,63 @@ test('registerSkillCommands skips commands whose names are already registered', 
   }
 })
 
-test('skill slash command reports missing query submission support', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skill-command-submit-'))
+/**
+ * `registerSkillCommands` is the reload path too (`ProjectRuntime.reloadSkills`
+ * calls nothing else), so a second pass has to *replace* what the first one
+ * registered. Before `clearSkills()` existed, the pass saw its own entry through
+ * `has()`, logged "command name is already in use" and kept the stale copy.
+ */
+test('registerSkillCommands replaces its own previous entries on reload', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skill-command-reload-'))
+  try {
+    const skillsDir = path.join(dir, '.myagent', 'skills')
+    const skillFile = path.join(skillsDir, 'slash-reload', 'SKILL.md')
+    await mkdir(path.join(skillsDir, 'slash-reload'), { recursive: true })
+    await writeFile(
+      skillFile,
+      '---\nname: slash-reload\ndescription: First description\n---\n\nFirst prompt',
+      'utf8',
+    )
+
+    // A built-in that must survive every reload, and shadow a same-named skill
+    // on each pass rather than only on the first.
+    const registry = new CommandRegistry()
+    registry.register({ name: 'slash-builtin', description: 'Built-in', run: async () => {} })
+    await mkdir(path.join(skillsDir, 'slash-builtin'), { recursive: true })
+    await writeFile(
+      path.join(skillsDir, 'slash-builtin', 'SKILL.md'),
+      '---\nname: slash-builtin\ndescription: Skill copy\n---\n\nSkill content',
+      'utf8',
+    )
+
+    const first = await registerSkillCommands(registry, dir)
+    assert.deepEqual(first, { registered: 1, skipped: ['slash-builtin'] })
+    assert.equal(registry.get('slash-reload')?.description, 'First description')
+
+    await writeFile(
+      skillFile,
+      '---\nname: slash-reload\ndescription: Second description\n---\n\nSecond prompt',
+      'utf8',
+    )
+
+    const second = await registerSkillCommands(registry, dir)
+    assert.deepEqual(second, { registered: 1, skipped: ['slash-builtin'] })
+    assert.equal(registry.get('slash-reload')?.description, 'Second description')
+    assert.equal(registry.get('slash-builtin')?.description, 'Built-in')
+
+    // A deleted skill loses its command instead of outliving its file.
+    await rm(path.join(skillsDir, 'slash-reload'), { recursive: true, force: true })
+    const third = await registerSkillCommands(registry, dir)
+    assert.deepEqual(third, { registered: 0, skipped: ['slash-builtin'] })
+    assert.equal(registry.get('slash-reload'), undefined)
+    assert.equal(registry.list().some((command) => command.name === 'slash-reload'), false)
+    assert.ok(registry.get('slash-builtin'), 'built-ins are not skill-owned')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('skill slash command reports missing query submission support', async () => {  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skill-command-submit-'))
   try {
     const skillsDir = path.join(dir, '.myagent', 'skills')
     await mkdir(path.join(skillsDir, 'slash-requires-submit'), { recursive: true })

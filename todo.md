@@ -34,6 +34,7 @@
 | 3g | rewind / checkpoint 面板：`rewindPresentation.ts` 共享决策、`/rewind` 斜杠命令（两端共享）、`#rewind` 独立模态层 | 1907 |
 | 3h | 消息队列跨进程（归 host）+ 费用常驻：`enqueue-message`/`clear-queue`、`resolveUsageWithCost` 收掉三份重复、`#status-cost` | 1943 |
 | 3i | 一个进程多个项目（core）：`CommandRegistry` 挂上 `ProjectRuntime`、三个字面量 cache source 在 mint 处绑 root、`multiProject.test.ts` | 1948 |
+| 3i-pre | 清账：桌面端用户消息重复气泡（`applyRecord` 按 id 幂等）、`CommandRegistry.registerSkill`/`clearSkills` 让 `reloadSkills` 真的重注册 | 1951 |
 
 ### 决策留痕（只留 `CLAUDE.md` 未覆盖的）
 
@@ -102,10 +103,6 @@
 
 ### 已知缺陷（记账未修）
 
-- **`reloadSkills` 不更新已注册 skill 的 description**：`registerSkillCommands` 用 `registry.has(name)`
-  挡重名，已注册条目 reload 只打一行 "command name is already in use" 的 warn
-  （`test/multiProject.test.ts` 跑起来就能看见）。修法：注册表区分「内建」与「skill」条目，reload 先清掉
-  本项目上一轮注册的 skill 命令再重注册。
 - **3e 遗留两条**：① **代码块没有语法高亮** —— TUI 用的 `cli-highlight` 出 ANSI 且是 Node 侧的，浏览器
   侧要另选一个能进 renderer bundle（无 Node 依赖）的库，独立一档；② `markdownNode` 每次重建整棵子树、
   `transcriptView` 每 token 全量重画 —— 解析有 LRU 兜着，**建节点没有**。真机上长会话流式若卡，按
@@ -121,25 +118,25 @@
 
 ### 未执行的手动冒烟（都需要 TTY + 真实 API key）
 
-- [ ] **2b-1 的权限对话框 TUI 冒烟**（欠得最久，且后续几轮**都没碰过 TUI 渲染路径**，风险面没变化）：
+- [x] **2b-1 的权限对话框 TUI 冒烟**（欠得最久，且后续几轮**都没碰过 TUI 渲染路径**，风险面没变化）：
   ① 文件写入 diff 预览与改动前逐字一致 ② 200 行以上文件的「... (N more lines)」计数
   ③ 破坏性 Bash 仍显示 `DANGER` 且默认选中 `[N]` ④ 选 `[A]` 后规则真的生效（验证 `onAlwaysAllow` 新时序）
   ⑤ 多请求排队时 Tab 切换与 `Also waiting:` ⑥ 工具执行中 Ctrl+C ⑦ `/model` → `/clear` → `/resume`
-- [ ] **3a 的 `tui.tsx` pane 装配**（等价搬迁，参数逐字相同，其余对运行中的 TUI 全惰性）：
+- [x] **3a 的 `tui.tsx` pane 装配**（等价搬迁，参数逐字相同，其余对运行中的 TUI 全惰性）：
   启动 → 含工具调用的一个 turn → 权限弹窗 → `/clear` → `/resume` → `/model` → Ctrl+C 退出无残留进程。
   已知无害行为变化：`host.shutdown()` 现在会 dispose 初始 scope，退出时 `drainPending()` 把仍停泊的权限提示
   以 `false` 结清（改动前它们悬着直到进程退出）。
-- [ ] **3c 的两件**：① 流式 token 与 `#tool-progress` 行、Stop 按钮与 Esc 中断；
+- [x] **3c 的两件**：① 流式 token 与 `#tool-progress` 行、Stop 按钮与 Esc 中断；
   ② 多个权限提示同时排队时的 Tab 切换与 `Also waiting:` 行 —— 注意 `AgentLoop.runTool` 走 `enqueue()` 的单一
   在途槽，两次 `run-tool` **不可能**并发出两个提示，真并发只来自一个 turn 内被批处理的工具调用。
-- [ ] **3b 的多窗口冒烟**（`main.ts` 没有任何测试覆盖，这是唯一的验证手段）：
+- [x] **3b 的多窗口冒烟**（`main.ts` 没有任何测试覆盖，这是唯一的验证手段）：
   启动看到的是**最近一个会话**而不是空 draft → Ctrl+T 开第二个窗口 →
   两个窗口的标签栏都列出两个 pane → 在窗口 A 里 `/clear` 后，A 自己的标签页仍可点可关、B 的标签栏也跟着更新
   → Ctrl+W 关掉 A，窗口真的消失 → 关掉最后一个窗口，`before-quit` 走完 `host.shutdown()`，无残留进程。
-- [ ] **3d 修复的回归冒烟**：3b 那条按顺序走完，且额外加两点验证：
+- [x] **3d 修复的回归冒烟**：3b 那条按顺序走完，且额外加两点验证：
   ① 窗口 A 切到 `/resume` 一个旧会话（不是新建），A 的标签页仍可点可关（验证 `paneId` 在 `/resume` 后也没漂移）；
   ② Ctrl+W 与点标签页 X 两条关窗路径都试一遍，验证它们走的是同一份回调栈。
-- [ ] **3e 的 Markdown 冒烟**（`guardNavigation` 和整个 DOM 层都没有测试覆盖）：
+- [x] **3e 的 Markdown 冒烟**（`guardNavigation` 和整个 DOM 层都没有测试覆盖）：
   ① 一个含标题、列表、表格与围栏代码块的回答，流式过程中不错位、定稿后排版正确；
   ② 计划对话框（`ExitPlanMode`）正文是富文本而不是裸 `#`/`-`；
   ③ 点回答里的一条 http 链接 → 走系统浏览器，**Electron 窗口不跳走**（这是 `setWindowOpenHandler` +
@@ -147,7 +144,7 @@
   ④ 让模型输出 `<img src=x onerror=alert(1)>` 与 `[x](javascript:alert(1))` → 页面显示字面文本、
   没有弹窗、DevTools 控制台无 CSP 报错；
   ⑤ 权限对话框里的命令块与 diff 仍然逐字（**没有**被 markdown 化）。
-- [ ] **3f 的选择与补全冒烟**（`dom/surfaceView.ts`、`dom/composerView.ts` 与 `app.ts` 的接线都没有测试覆盖；
+- [x] **3f 的选择与补全冒烟**（`dom/surfaceView.ts`、`dom/composerView.ts` 与 `app.ts` 的接线都没有测试覆盖；
   模型层已被 `test/rendererCompletion.test.ts` + `test/rendererShellModel.test.ts` 钉死，缺的是真机那一段）：
   ① `/model` → ↑↓ 选中 → Enter，transcript 出现 "Model set to: …"、状态栏模型跟着变、面板自动关掉；
   ② 同一个面板改用鼠标点一行，结果一致（两条路走同一个 `runSurfaceAction`）；
@@ -155,7 +152,7 @@
   ④ 打 `@src/desk` → 出现文件下拉 → Enter **只补全不提交**，Tab 同样；选目录不带尾空格、选文件带；
   ⑤ 快速连打再退格，下拉不闪回旧结果（序号守卫）；打 `@` 后改打 `/`，不会有文件结果盖上来；
   ⑥ `/tasks` 选一行 → 输出写进 transcript；`/resume` 选一个旧会话 → 对应窗口聚焦/新开，标签栏两边都更新。
-- [ ] **3g 的 rewind 冒烟**（`dom/rewindView.ts` 与 `app.ts` 的接线没有测试覆盖，模型层已被
+- [x] **3g 的 rewind 冒烟**（`dom/rewindView.ts` 与 `app.ts` 的接线没有测试覆盖，模型层已被
   `test/rendererRewindPanel.test.ts` 27 个用例钉死；其中 ③④ 会真花钱/真改工作树，最后做）：
   ① `/rewind` → 面板出现、光标停在 **"(current)"**、Esc 关掉；
   ② ↑ 选一个 checkpoint → Enter 进确认屏 → Esc **回到列表而不是关掉面板**；
@@ -168,7 +165,7 @@
   ⑥ 面板开着按 Ctrl+W 仍然关窗（tab-bar 和弦在 keymap 之前解析）；按住普通字母键什么也不该发生；
   ⑦ 在窗口里 `/clear` → rewind 面板若开着应当**自动关掉**（不是留着报 "Message not found"）；
   ⑧ TUI 侧回归：`/rewind` 与 Esc-Esc 打开的是同一个面板，且五条结果文案与桌面端逐字相同。
-- [ ] **3h 的队列与费用冒烟**（`dom/queueView.ts`、`dom/composerView.ts` 的状态栏与 `app.ts` 的接线都没有
+- [x] **3h 的队列与费用冒烟**（`dom/queueView.ts`、`dom/composerView.ts` 的状态栏与 `app.ts` 的接线都没有
   测试覆盖；模型层与协议层已被 `test/rendererQueuedMessages.test.ts` + `protocolHost` 的 10 条
   + `desktopUiRoundTrip` 的 2 条钉死，缺的是真机那一段。① 需要一个真的长 turn，所以要真实 API key）：
   ① 发一个长 turn → 流式中打字按 Enter → 消息进 `#queue` 条**而不是消失**、按钮字样是 "Queue"
@@ -184,13 +181,17 @@
      而不是显示 0；
   ⑧ TUI 侧回归：Enter 排队、Esc-Esc 清队列、`/cost` 三者都没变（本轮只把 `getUsage` 换成了共享函数）。
 
+ps:手动冒烟测试基本完成，发现最大的问题是 user 发送后 message 会重复显示 —— **已修**（3i-pre）：
+`turn-start` 用 `event.messageId` 先画一条，而那个 id 就是随后落盘的 `message` 记录 id
+（`sessionController.ts:189` → `loop.ts:312`），renderer 的 `applyRecord` 又追加了一遍；现改为按 id 就地
+替换（记录侧带 `displayContent`，是更权威的那一份）。TUI 没这毛病是因为它整条忽略 user 记录。
 ---
 
 ## 验证
 
 ```bash
 npm run typecheck                                     # 三段：base + preload + renderer
-npm run test                                          # 1948 tests / 39 suites, ~45s
+npm run test                                          # 1951 tests / 39 suites, ~45s
 npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 npm run build:desktop                                 # tsc emit + 两个 esbuild bundle + 拷 index.html
 npm run start:desktop                                 # 真实 Electron，需要桌面
@@ -237,5 +238,6 @@ node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 的环境里必定红（在 Claude Code 里跑 `npm run test` 就是这种环境）。它不是间歇、也不是回归：用例只
 save/delete/restore 了 `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS`，而它测的 `isExperimentalToolSearchBetaDisabled()`
 （`src/utils/toolSearch.ts:132-135`）读的是**两个**变量的或，第二个还留在环境里。已用 `git stash` 在干净基线
-复现。修法是让该用例对两个变量都做隔离（文件里已有 `setEnv` 助手）。**这种环境下 1948 里应当只有这一条红**
-（3i 落地后实测 1947 pass / 1 fail）。
+复现。修法是让该用例对两个变量都做隔离（文件里已有 `setEnv` 助手）。**这种环境下 1951 里应当只有这一条红**
+（3i-pre 落地后实测 1948 pass / 2 fail，第二条是上面那条 `toolcall-integration` 的间歇 IPC 崩溃 ——
+它一崩，runner 就把整个文件按 1 条计，所以总数显示 1950 而不是 1951；单独跑 3/3 全绿）。

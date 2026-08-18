@@ -242,7 +242,20 @@ function applyRecord(state: TranscriptState, record: SessionRecord): TranscriptS
     }
   }
 
-  return { ...state, items: [...withoutDraft, ...items] }
+  // Idempotent by id. The user's message is already on screen: `turn-start`
+  // placed it there under `event.messageId`, and that id *is* the record id
+  // (`SessionController.submit` mints it and `AgentLoop.runInternal` uses it
+  // verbatim), so appending the record would draw the same bubble twice — the
+  // duplicate the desktop smoke test found. Replacing rather than dropping,
+  // because the record carries `displayContent`, which is the authoritative
+  // text (a skill command's `displayInput` arrives only this way).
+  const next = [...withoutDraft]
+  for (const item of items) {
+    const index = next.findIndex((existing) => existing.id === item.id)
+    if (index === -1) next.push(item)
+    else next[index] = item
+  }
+  return { ...state, items: next }
 }
 
 /** One record to zero or more items. Records with no visual meaning yield none. */

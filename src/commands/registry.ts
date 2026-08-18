@@ -12,9 +12,35 @@ import type { CommandDefinition } from './types.js'
  */
 export class CommandRegistry {
   private readonly commands = new Map<string, CommandDefinition>()
+  /**
+   * Which entries came from `.myagent/skills/`.
+   *
+   * Skills are re-read on `/skills reload` (and on every `reloadSkills()`), so
+   * the registration has to be *replaceable*: without this set the second pass
+   * saw its own previous entry through `has()`, skipped it as a name clash and
+   * left the stale description and prompt in place, while a deleted skill kept
+   * its slash command forever.
+   */
+  private readonly skillNames = new Set<string>()
 
   register(def: CommandDefinition): void {
     this.commands.set(def.name, def)
+  }
+
+  /** Same as `register`, but the entry is owned by `clearSkills()`. */
+  registerSkill(def: CommandDefinition): void {
+    this.commands.set(def.name, def)
+    this.skillNames.add(def.name)
+  }
+
+  /**
+   * Drop every skill-sourced entry, leaving built-ins untouched — the first
+   * step of a reload, so the pass that follows sees a clean slate and built-ins
+   * still shadow a same-named skill.
+   */
+  clearSkills(): void {
+    for (const name of this.skillNames) this.commands.delete(name)
+    this.skillNames.clear()
   }
 
   get(name: string): CommandDefinition | undefined {

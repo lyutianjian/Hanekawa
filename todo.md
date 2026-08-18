@@ -8,188 +8,77 @@
 ## 目标
 
 让 agent 内核被桌面 app（Electron）复用，TUI 与桌面端共享同一套 headless 运行时。
-终端的天花板就是 `transcript.ts`（存在的唯一理由是 Ink `<Static>` 不可回收）与 `layout.ts`（手工重算行高），
-这两类问题在 DOM 里根本不存在。
-
-实测前提（非估计）：`src/` 中 `tui/` 之外 import `ink`/`tui/` 的文件 **0** 个、用 `process.stdout/stdin/isTTY` 的 **0** 个、
-出现 ANSI 的 **0** 个；核心约 24.8k 行对 UI 完全无知，`src/tui/` 约 14.7k 行里约 10k 是纯终端资产（不迁移）。
-选 Electron 而非 Tauri：依赖面（`child_process`、MCP stdio、fast-glob、shadow-git、patch-package）全是 Node，
-Tauri 还得挂 Node sidecar。
+核心约 24.8k 行对 UI 完全无知（`src/` 中 `tui/` 之外 import `ink`/ANSI/stdout 的文件为 0），
+终端的天花板 `transcript.ts`（Ink `<Static>` 不可回收）与 `layout.ts`（手工重算行高）在 DOM 里不存在。
+选 Electron 而非 Tauri：依赖面（`child_process`、MCP stdio、fast-glob、shadow-git、patch-package）全是 Node。
 
 ---
 
 ## 已完成阶段
 
+设计理由与不变式已写进 `CLAUDE.md`，此处只留时间线。
+
 | 阶段 | 内容 | 测试基线 |
 |---|---|---|
-| 0 | 抽出 headless 运行时 `src/runtime/`（`bridges`/`toolRegistry`/`mcp`/`createRuntime`/`bootstrap`），`tui.tsx` 597→177 行 | 1386 |
-| 0.5 | 缺陷清理（denialState 绑死初始会话、plan-slug provider 后到者胜、`syncActiveModel` 白建 runtime、`sessionRecords` 不刷新）+ `MessageQueue` 类化 + cwd 参数化 | 1394 |
-| 1 | `SessionController` + `RuntimeSlot` + `queuePump`：turn 生命周期从 React hooks 下沉，`useAgentLoop` 687→378 行 | 1415 |
+| 0 | 抽出 headless 运行时 `src/runtime/`（bridges/toolRegistry/mcp/createRuntime/bootstrap），`tui.tsx` 597→177 行 | 1386 |
+| 0.5 | 缺陷清理 + `MessageQueue` 类化 + cwd 参数化 | 1394 |
+| 1 | `SessionController` + `RuntimeSlot` + `queuePump`：turn 生命周期从 React hooks 下沉 | 1415 |
 | 2a | 进程协议：`RuntimeChannel`、`HostEvent`/`HostCommand`、`SessionHost`/`SessionClient`、memory·node channel、权限 bridge 改排队 | 1468 |
-| 2b-1 | 把协议补到「足以驱动一个渲染器」：11 个新命令、`hello`→`WireHelloResult`、`fileToolPreview` 下沉并加上限、`permissionPresentation` 共享、DTO 携带派生数据 | 1534 |
-| 2b-2a | `npm run build`（`rootDir: "src"`）、入站 zod 校验 + 两个防漂移守卫、`assertNever` 穷尽性、`modelPicker` 下沉 | 1592 |
-| 2b-2b | `run-command` 跨进程斜杠命令 + `CommandEffect`、`/rewind` 写路径、四个共享模块、`App.tsx` 接入 `sessionSwitch.ts` | 1651 |
-| 3a | `ProjectRuntime`/`SessionScope` 拆分、`SessionPane` + `SessionWorkspace`（多标签的 headless 那一半） | 1673 |
-| 2b-2 | Electron 外壳：`main.ts`/`preload.ts`/`electronChannel.ts`/`bridgeChannel.ts` + 三个 tsconfig + `build:desktop`；修掉 4 个开机即死 bug | 1703 |
-| 3c | 渲染器变可用视图：9 个 model 模块 + 5 个 dom 模块、四个阻塞对话框、流式输出、Esc 中断、斜杠命令与补全、四个 surface 面板、行级 diff | 1801 |
-| 3b | 跨进程 workspace 协议：`open-pane`/`close-pane`/`list-panes` + `pane-list` 事件、`PaneRegistry`、`main.ts` 一窗一 pane、渲染器标签栏（`model/tabBar.ts` + `dom/tabBarView.ts`）；顺带 `list-commands` + `WireCommandInfo` | 1818 |
-| 3d | 收 3b 的账：shell `panes` Map 改用 `BrowserWindow.id`、启动用 `openPane({ sessionId })`、`broadcastPaneListToOthers` 跨窗口广播、`test/protocolChildProcess.test.ts` 子进程字符串补齐三 dep；新增 `paneId follows controller across /clear` 用例 | 1819 |
-| 3e | Markdown 渲染：`model/markdown.ts`（marked lexer → 自有 union）+ `dom/markdownView.ts`（只用 `el()`）、assistant 消息与计划正文接线、`main.ts` 导航守卫、CSS | 1846 |
-| 3f | 选择与补全：四个面板可键选/点选（`SurfaceAction` + `moveSurfaceSelection`）、`@` 文件补全（`suggestions/atToken.ts` 拆分 + `file-suggestions` 命令 + 双源下拉与序号守卫） | 1870 |
-| 3g | rewind / checkpoint 面板：`runtime/rewindPresentation.ts`（第三个共享 presentation 模块，含 `rewindStepsFor` 与五条结果文案）、`model/rewindPanel.ts` + `dom/rewindView.ts`、`/rewind` 斜杠命令（两端共享）、`keymap` 新增 `hasRewind` 档位、`#rewind` 独立模态层 | 1907 |
-| 3h | 消息队列跨进程 + 费用常驻：`SessionController.submit` 补在途守卫、`SessionHost` 持有 `MessageQueue` 并驱动泵、`enqueue-message`/`clear-queue` + `queued-messages` 事件、`resolveUsageWithCost` 收掉三份重复、`model/queuedMessages.ts` + `dom/queueView.ts` + `#status-cost` | 1943 |
-| 3i | 一个进程多个项目（core）：`CommandRegistry` 挂上 `ProjectRuntime`、`createHelpCommand(registry)` 闭包、三个字面量 cache source 在 mint 处绑 root、删掉 `setCacheBreakDiagnosticsRoot`、`test/multiProject.test.ts` | 1948 |
+| 2b | 协议补到「足以驱动一个渲染器」（11 个新命令、DTO 携带派生数据、`fileToolPreview` 下沉）+ 入站 zod 校验与两个防漂移守卫 + `run-command` 跨进程斜杠命令 + Electron 外壳（`main.ts`/`preload.ts`/channels、三个 tsconfig、`build:desktop`；修 4 个开机即死 bug） | 1703 |
+| 3a | `ProjectRuntime`/`SessionScope` 拆分、`SessionPane` + `SessionWorkspace` | 1673 |
+| 3b | 多标签协议：`open-pane`/`close-pane`/`list-panes` + `pane-list` 事件、`PaneRegistry`、一窗一 pane、渲染器标签栏；顺带 `list-commands` | 1818 |
+| 3c | 渲染器可用视图：model/dom 模块、四个阻塞对话框、流式输出、Esc 中断、斜杠补全、四个 surface 面板、行级 diff | 1801 |
+| 3d | 收 3b 的账（详见下面 main.ts 簿记一条）：`panes` Map 改 `BrowserWindow.id`、启动 `openPane({sessionId})` 恢复会话、`broadcastPaneListToOthers` 跨窗口广播、子进程字符串脚本补 dep | 1819 |
+| 3e | Markdown 渲染（marked lexer → 自有 union，无 innerHTML）、`main.ts` 导航守卫 | 1846 |
+| 3f | 面板键选/点选（`SurfaceAction`）、`@` 文件补全（纯半边下沉 + 序号守卫） | 1870 |
+| 3g | rewind / checkpoint 面板：`rewindPresentation.ts` 共享决策、`/rewind` 斜杠命令（两端共享）、`#rewind` 独立模态层 | 1907 |
+| 3h | 消息队列跨进程（归 host）+ 费用常驻：`enqueue-message`/`clear-queue`、`resolveUsageWithCost` 收掉三份重复、`#status-cost` | 1943 |
+| 3i | 一个进程多个项目（core）：`CommandRegistry` 挂上 `ProjectRuntime`、三个字面量 cache source 在 mint 处绑 root、`multiProject.test.ts` | 1948 |
 
-各阶段的设计理由已全部写进 `CLAUDE.md`。下面只留**没进那份文档、但下一轮仍要知道**的东西。
+### 决策留痕（只留 `CLAUDE.md` 未覆盖的）
 
-### 决策留痕
-
-- **`activateModelKey` 与 `switchModel` 故意分两层**：`set-model` 只把当前 runtime 指到别处，`/model` 才是用户
-  表达偏好、才回写 tier。把持久化折进下层，fallback 激活或选择器预览就会改写用户默认值。
-- **`ToolRegistry.refresh()` 把 Agent 工具移到末尾是对的，不要"修"**：新建 runtime 恒为
-  `buildRuntimeTools()` + `push(agentTool)`，refresh 重现这个顺序才能让「MCP 重连过的 runtime」与「新建的」
-  工具数组逐位相同 —— 工具顺序是 prompt 缓存键的一部分。
-- **`bootstrap()` 的步骤顺序有意义**：MCP 连接必须在 `registerBuiltinCommands()` 之前；整个 `bootstrap()`
-  必须在 Ink `render()` 之前完成（trust 提示要抢在 Ink 接管 stdin 前）。
-- **`createRuntime` 里的 `onActiveSessionChange?.(id)` 放在所有会抛的校验之后**：模型 key 无效时不能已经把
-  会话级状态切过去了。
-- **`cacheBreakDetection` 的 root 编进 source 字符串本身**（`@root-<sha256 前 8 位>`）：旁挂一张 `source → root`
-  表挡不住两个项目铸出同名 source（同一 session id，或 `compact` 这类固定字面量）。
-- **三条启动错误分支确认不可达已删**；真问题是名字拼错时 `resolveModelReference` 返回 `undefined` 与「没配置」
-  无法区分而被静默忽略 —— 改为校验原始配置字符串，`fallbackModel`/`compactModel` 出 `RuntimeDiagnostic` 警告
-  而不拦启动。
-- **跨进程 `SessionStore` 安全**：`fileLock.ts` 的 `O_EXCL` 锁套在原有进程内 mutex **内层**（进程内链条先便宜地
-  排好自己人，syscall 每个临界区一次）；超时**放行而非死等**；`repairRecords` 的整文件重写也进锁；
-  `writeJsonFile` 改 tmp+rename（`index.json` 原本是唯一没走原子写的）。
-- **shell 的 `panes` Map 改用 `BrowserWindow.id` 而不是 session id 作键**：session id 在 `/clear`、`/resume` 后
-  会动，window id 不会动。`paneId` 字段仍然保留只用于渲染器侧的 `WirePaneInfo`（一个 pane 一个 session 的不变量）；
-  shell 这边任何 `panes.set/get/delete` 都走窗口 id，`onPaneOpened` 用线性扫描定位（`workspace` 自身已经是这么做的，
-  不引入第二份会漂移的索引）。`onPaneClosed` 改成闭包到自己的 `entryWindow`，不再用 map 查找 —— 因为那条 callback
-  拿到的 `paneId` 永远是 host 视角的**当前**会话 id，而 map 键是**开窗时**的会话 id，两边从来就对不上。
-- **`broadcastPaneListToOthers(ignoredEntry)` 在 shell 层补上 host 跨窗口看不见的广播**：host 的
-  `broadcastPaneList` 只到自己 channel（这是 31 个 `HostCommand` 同构切片的硬约束，不是疏忽）；shell 的 fan-out
-  跳过发起者，因为 host 已经把它自己的更新送到了发起窗口 —— 重复推送 `SessionClient.onPanesChanged` 是幂等替换
-  但更省事。OS 关窗路径（`'closed'` 回调）也要广播一次，因为那条不经过 host。
-- **3f：面板行的动作走 `run-command` 而不是 client 的直通 setter**（`model/surfaces.ts` 的 `SurfaceAction`）。
-  这条正是上面「`activateModelKey` 与 `switchModel` 故意分两层」的下游后果 —— 点一行走 `client.setModel`
-  会把 tier 持久化悄悄丢掉。`resume-picker` 是例外，因为 `/resume` 根本不收参数，于是复用标签栏已经定义好的
-  `open-pane`（一个 session 一个 pane）。`background-tasks` 只给 peek 不给 kill。
-- **3f：`@` 补全的拆分线是「依赖」而不是「职责」**。`extractAtCompletionToken`/`applyFileSuggestion` 零 import，
-  搬进 `suggestions/atToken.ts` 上渲染器 allowlist；`generateFileSuggestions` 要 `node:fs` + `fuse.js` +
-  gitignore，留在 `fileSuggestions.ts` 并 re-export 前者，所以 TUI 侧一行没动。代价是每次击键一趟 IPC，
-  而**没有任何东西保证这些回答按序到达** —— 序号守卫（`model/completion.ts` 的 `seq`）因此是必需品而不是优化。
-  每次状态迁移都 bump，所以「打了 `@` 又改打 `/`」和「按 Esc 关掉下拉」都会让在途回答作废。
-- **3f：面板导航只在输入框为空时抢键**。面板不阻塞，用户完全可能开着 `/model` 再打一句话；无条件吃 Enter
-  就变成选模型。副作用是面板与补全下拉**构造上互斥**（补全的前提是打了 `/` 或 `@`，那时 `inputEmpty` 必为假）。
-- **3g：rewind 面板的键位档位在 overlay 之下、其余一切之上**。它 modal 但**不阻塞** —— 权限提示扣着 agent
-  loop（`interrupt()` 放不掉），rewind 只扣着用户，所以让位；但它压住下拉、压住 surface、压住输入框，因为
-  确认屏上每个选项都在毁工作，键不能漏下去。对应地它有自己的容器（`#rewind`，`z-index: 5`，在 `#overlay`
-  的 10 之下），而不是跟四个阻塞对话框抢同一个 panel —— rewind 开着时来一条权限提示，画在它**上面**。
-- **3g：`SUPPORTED_SURFACES` 是「画成行列表的 surface」，不是「本 shell 处理的 surface」**。
-  `rewind-panel` 故意不在里面，由 `app.ts` 在 `isSupportedSurface` **之前**按名字分流。所以那个谓词返回
-  `false` **不等于**这个 surface 被忽略（`provider-panel` 才是真忽略）—— 三处注释都改了措辞，因为原话
-  「四个里实现四个、忽略 provider-panel」现在会把读者引到错的结论上。
-- **3g：`restore-code` 报告失败、`truncate-session` 抛失败，这条不对称必须在执行器里抹平**。
-  host 侧 `restore-code` 返回 `{ success:false }`（`host.ts:513`），忘了看 `success` 就会把一次失败的
-  git 恢复当成功报出去；`runRewind` 把它转成 throw。反过来 `truncate-session` 找不到消息就抛，于是
-  「陈旧的 checkpoint 列表」会浮上来而不是静默 no-op。
-- **3g：`restore-code-and-conversation` 先截断、后回滚文件**，这个顺序**就是**那条部分失败文案存在的理由
-  （JSONL 已经剪了、git 却失败）。顺序编进 `rewindStepsFor` 而不是各自的调用处，两个 shell 都从那里读。
-  变异验证：把顺序倒过来，4 条用例报红，包含两条专讲「哪一半落地了」的。
-- **3g：渲染器不重建 transcript**。`SessionHost.afterRewind()` 已经 `invalidateRecordsCache` →
-  `controller.reload()` → `ledger.rebase()`，`reload()` 自己发 `transcript-reset`；回复里的 `records`
-  只作旁证，再折一次就是双份重绘。
-- **3g：`session-changed` 一到就关面板**。`/clear`、`/resume` 之后手上那份 checkpoint 属于旧会话，
-  每个选项都会解析到新会话从没有过的 message id，留着只换来一句 "Message not found"。
-- **3g：`handleEnterRestoreMode` 必须挪到 `useCommands({…})` 调用之前**（App.tsx）。`useCommands` 在 637
-  行结束、原定义在 757 行，直接引用是 TDZ 错误 —— 与 `openBackgroundTasks`/`openResumePicker` 已经建立的
-  「先定义后 useCommands」惯例一致，不加 ref 间接层。
-- **3g：共享模块的 re-export 用「函数身份」钉死**（`test/rewindPresentation.test.ts` 的 `===` 断言）。
-  这正是本文件「测的实现必须就是出货的实现」那条的预防性应用：`RestoreMode.tsx` 里换成第二份实现，
-  行为测试全都还是绿的，只有身份断言会红。已变异验证。
-- **3h：消息队列归 host，而不是渲染器 —— 这是两端所有权唯一分叉的地方**（TUI 侧仍是 `App.tsx` 持有）。
-  两个结构性理由：① 它靠 `store.appendRecord` 持久化，让渲染器持有就得开一条 `append-record` 命令，
-  把整个 `SessionRecord` 联合体交给协议里**不受信的那一端**去校验；② 泵的判据要读只有 host 知道的状态。
-  连带后果：`sessionSwitch.ts` 那句「It belongs to the shell rather than the host」当场作废，已改写成
-  「哪一侧持有取决于 shell」。
-- **3h：`uiBlocked` 只算四个阻塞请求**（`pendingKinds.size > 0`），rewind 面板与 surface 不算 ——
-  它们扣着用户但不扣着 agent loop。这就是 `queuePump.ts` 早先留的那条「终端用任意 overlay、
-  桌面端用待答权限提示」分界线第一次真的被用上。
-- **3h：负向断言必须给泵留时间预算，否则测的是竞态不是闸门**。`pumpQueue` 是脱钩的
-  （`void (async () => …)`），第一步 `dequeue` 还要落盘；紧跟 enqueue 回复就断言「什么都没发」，
-  闸门开着也照样绿。**变异验证第一次跑就暴露了这点**：把 `uiBlocked` 改成 `false`，用例仍然通过。
-  于是有了 `givePumpAChance()`（150ms，是放行路径实测 ~30ms 的舒适倍数）。两条闸门现在各自被
-  对应用例钉死：改 `uiBlocked` 只红「权限提示挡住队列」，改 `turnActive` 只红另外两条。
-- **3h：守卫要抛而不是静默 no-op**，且 `try` 必须紧跟 `streaming = true` 之后开。
-  原本 `publish()` 与 `createCheckpoint()` 落在 `try` 之外，一个会抛的订阅者就能让 `streaming`
-  永久卡住 —— 加守卫之前这只是转圈图标不消失，加了之后**后续每一次 submit 都会被拒**。
-  `createCheckpoint` 自己吞掉一切异常，但 `publish()` 会同步调订阅者，而其中一个就是 channel post。
-- **3h：费用由 host 算，不把 `ModelPricing` 送过界**。渲染器不能 value-import `harness/`
-  （`FORBIDDEN_LAYERS`），而 allowlist 只放 `runtime/`+`config/`；把 `harness/usage.ts` 加进 allowlist
-  会破坏「共享模块只做 type-only 跨层 import」那条既有约束。顺带收掉了**三份**重复的同一段投影
-  （`protocol/commandContext.ts`、`tui/hooks/useCommands.ts`、以及本轮要新增的第三处），
-  用「`/cost` 与状态栏必须报同一个数」这条行为断言钉死 —— 比函数身份断言更贴切，因为这里没有 re-export。
-- **3h：`test/desktopMain.test.ts` 与 `test/desktopUiRoundTrip.test.ts` 的假 controller 都在
-  `usage.total` 上撒谎**（写成 `null`，而 `SessionUsage.total` 不可空），只因为整个对象被 cast 才编译通过。
-  host 现在要读它来派生费用，谎言当场炸成 `Cannot read properties of null`。修的是假货而不是给 host 加
-  防御分支 —— 生产路径里 `createEmptySessionUsage()` 保证它非空。**这是本文件那条
-  「`as unknown as` 关掉的正是编译器唯一能抓 API 谎言的机会」第三次应验。**
-- **3h：`migrateTo` 与「什么都不做」在协议层完全同形，只有落盘那一侧能区分**。第一版 `/clear` 用例只看
-  `queued-messages` 事件与「消息最终发出去了」，**变异验证直接放行**：不 rebind 的话
-  `MessageQueue` 的内存快照原样保留、消息照样发，唯一的差别是后续 `message_queue` 记录写进了**被离开的
-  那个会话**的日志 —— 重启后队列会重放进错误的对话。用例因此改成去读**新会话日志里的 enqueue 记录**
-  与**旧会话日志里的补偿 `clear`**。教训比这条 bug 本身通用：**只要被测行为的差别在持久化侧，
-  断言就不能只站在 wire 上。**
-- **3h：四条不变式各自被对应用例钉死**（逐条变异验证过，且只红对应那条）：
-  `uiBlocked→false` 红「权限提示挡住队列」、`turnActive→false` 红另外两条、
-  `/clear` 去掉 `migrateTo` 红 `/clear` 那条、`/resume` 的 `reset` 换成 `migrateTo` 红 `/resume` 那条。
-- **3i：`CommandContext` 一个字段都没加，因为只有 `/help` 读注册表**。原本以为要加 `commands` 成员，
-  于是要动 `COMMAND_CONTEXT_COVERAGE`、两个 context 构造处、外加 `test/skills.test.ts` 里一堆内联的
-  context 字面量；实测 grep 下来，`run()` 里碰注册表的只有 `help.ts` 一个。于是改成
-  `createHelpCommand(registry)` 闭包（`src/tools/` 的 `createXxxTool(deps)` 同款），
-  `CommandContext` 与覆盖表零改动。**这条的通用形式是：先数清楚真实消费者，再决定把依赖放进上下文还是闭包。**
-- **3i：`setCacheBreakDiagnosticsRoot` 的真危害不是诊断文件写错目录**。`defaultRoot` 只被 `rootFor()`
-  读，而 `rootFor()` 只服务 `writeCacheBreakDiagnostic`（`MYAGENT_DEBUG_PROVIDER=1` 才走）。
-  真正的 bug 在**身份**：`'compact'` 在每个项目里都是同一个字符串，于是 `previousSnapshots` 里
-  两个项目共用一条 cache-read 基线，第二个项目答完就把第一个的 `prevCacheReadTokens` 覆写掉。
-  修法是 `compactCacheSource(cwd)`/`toolUseSummaryCacheSource(cwd)` 在 mint 处绑 root，
-  `root` 保持可选，所以没有 cwd 的调用方行为不变。
-- **3i：`cacheSource === 'compact'` 这种字面量比较在测试里有 5 处，绑 root 之后全部失效**。
-  生产代码里一处都没有（唯一读 source 字符串的 `writeCacheBreakDiagnostic` 本来就先过
-  `displayCacheSource`），所以这是纯测试侧的修正 —— 但**其中一处藏在 provider 回调里**
-  （`test/loop.test.ts` 的 `compactProvider`），断言抛出被摘要路径吞掉，浮上来的是**另一个**
-  外层断言失败。按报错行去找会找错地方。
-- **3i：`as unknown as ProjectRuntime` 第四次应验，而且这次是真的静默**。
-  五个假 project 里，`protocolHost.test.ts` 拿掉 `commands` 会红 11 条（它真发斜杠命令），
-  但 `desktopMain.test.ts`／`desktopUiRoundTrip.test.ts`／`sessionWorkspace.test.ts` 拿掉之后
-  **25 条全绿** —— 它们从不跑斜杠命令，于是那条 API 谎言完全没人接得住。已变异验证。
-  加字段到 `ProjectRuntime` 时，必须手动 grep 这五处，`tsc` 帮不上忙。
-- **3i：`protocolClientParity` 的 COVERAGE 表第三次接住了新 App prop**。它解析 `tui.tsx` 里
-  `<App` 的 props 源码，加 `commands={host.commands}` 当场逼出一行
-  `{ prop: 'commands', via: 'client', members: ['listCommands', 'runCommand'] }`。
-  这个守卫是免费的，别绕过它。
-- **3i：`reloadSkills` 的一个既有瑕疵（本轮没修，只记账）**：`registerSkillCommands` 用
-  `registry.has(name)` 挡重名，所以一个**已注册**的 skill 改了 description 之后 reload 不会更新它，
-  只会打一行 "command name is already in use" 的 warn（`test/multiProject.test.ts` 跑起来就能看见）。
-  跨项目隔离与它无关。修法大概是「先清掉本项目上一轮注册的 skill 命令，再重新注册」，
-  但那需要注册表能区分「内建」与「skill」两类条目。
+- **`ToolRegistry.refresh()` 把 Agent 工具移到数组末尾是对的，不要"修"**：新建 runtime 恒为
+  `buildRuntimeTools()` + `push(agentTool)`，refresh 重现该顺序，「MCP 重连过的 runtime」与「新建的」
+  工具数组才逐位相同 —— 工具顺序是 prompt 缓存键的一部分。
+- **`createRuntime` 里 `onActiveSessionChange?.(id)` 放在所有会抛的校验之后**：模型 key 无效时不能
+  已经把会话级状态切过去。
+- **配置串校验**：名字拼错时 `resolveModelReference` 返回 `undefined` 与「没配置」无法区分而被静默忽略 ——
+  已改为校验原始配置字符串，`fallbackModel`/`compactModel` 出 `RuntimeDiagnostic` 警告而不拦启动
+  （三条确认不可达的启动错误分支已删）。
+- **main.ts 的窗↔pane 簿记（3d，下一个任务「打开第二个项目」会直接改这段）**：`panes` Map 以
+  `BrowserWindow.id` 为键 —— session id 随 `/clear`、`/resume` 移动，window id 不动；`paneId` 字段只用于
+  渲染器侧 `WirePaneInfo`。`onPaneOpened` 用线性扫描定位（`workspace` 自身就这么做，不引入第二份会漂移的
+  索引）；`onPaneClosed` 闭包到自己的 `entryWindow` 而非查 map —— 回调拿到的 `paneId` 是 host 视角的
+  **当前**会话 id，与开窗时的键从来对不上。`broadcastPaneListToOthers` 跳过发起者（host 已把更新送到发起
+  窗口，重复推送幂等但省事）；OS 关窗路径（`'closed'` 回调）也要广播一次，那条不经过 host。
+- **App.tsx「先定义后 `useCommands`」惯例**：传进 `useCommands({…})` 的 handler 必须定义在调用之前
+  （TDZ），`openBackgroundTasks`/`openResumePicker`/`handleEnterRestoreMode` 都遵守，不加 ref 间接层。
 
 ### 工作方法（本项目的验收惯例）
 
-- **变异验证**：每加一条不变式，就把 bug 逐个塞回去，确认是**预期的那条**用例报红。已用它证伪过多条文档断言
-  （例如「没有 `default` 分支就能强制穷尽」实测是假的）。
-- **测的实现必须就是出货的实现**：renderer channel 曾有两份（测试一份、`app.ts` 内联一份），结果 main 侧工厂的
-  两处 API 谎言被专门写的 mock 一路放行。
-- **`as unknown as` 关掉的正是编译器唯一能抓 API 谎言的机会**：2b-2 四个开机即死 bug 里有三个藏在这种 cast 后面。
-- **`test/protocolChildProcess.test.ts` 的 host 侧脚本是字符串**（写进临时 `.mjs`），`tsc` 看不见它 —— 改
-  `SessionHost` 构造 deps 时必须手动同步那一段。阶段 3a 就是靠全量跑才发现它坏了，而 `tsc --noEmit` 全绿。
-  **3b 又踩了一次，而且这次全量跑也没红**（新增的三个 dep 只在 pane 命令里用到，子进程从不发）—— 所以
-  这条不能靠测试兜底，只能靠改 deps 时手动 grep。
-- **真机验证不需要截图、不需要给产品加调试开关**：`electron . --remote-debugging-port=9222` +
-  node 内置 `WebSocket` 直连 CDP，`Runtime.evaluate` 读 DOM、`Input.dispatchKeyEvent` 发真键、`Input.insertText` 打字。
-  权限对话框用 `window.hanekawa.send({type:'run-tool', name:'Write', ...})` 零 API 花费触发。
-  另有一条零侵入探针：`app.ts` 只在 `await client.hello()` **返回之后**才设 `document.title`，所以
-  `Get-Process electron | Select MainWindowTitle` 给出 `Hanekawa — <会话标题>` 就等于整条链通了。
+- **变异验证**：每加一条不变式，就把 bug 逐个塞回去，确认是**预期的那条**用例报红（已用它证伪过多条
+  文档断言，如「没有 `default` 分支就能强制穷尽」实测是假的）。
+- **测的实现必须就是出货的实现**：renderer channel 曾有测试/出货两份，main 侧工厂的两处 API 谎言
+  被专门写的 mock 一路放行。
+- **`as unknown as` 关掉的正是编译器唯一能抓 API 谎言的机会** —— 已四次应验：2b-2 三个开机即死 bug；
+  3h 假 controller 的 `usage.total: null`；3i 五个假 project 拿掉 `commands` 字段后 25 条全绿
+  （`protocolHost.test.ts` 会红 11 条，其余三个测试文件完全不接）。给 `ProjectRuntime` 加字段必须手动
+  grep 五处假货，`tsc` 帮不上忙。
+- **`test/protocolChildProcess.test.ts` 的 host 侧脚本是字符串**（写进临时 `.mjs`），`tsc` 看不见 ——
+  改 `SessionHost` 构造 deps 必须手动同步（3a、3b 各踩一次，3b 那次连全量跑都没红）。
+- **负向断言要给异步留时间预算**（`givePumpAChance()` 150ms）：`pumpQueue` 脱钩、`dequeue` 还要落盘，
+  紧跟 enqueue 就断言「什么都没发」测的是竞态不是闸门 —— 3h 第一次变异验证就因此放行。
+- **被测行为的差别在持久化侧时，断言不能只站在 wire 上**：`/clear` 的 `migrateTo` 与「什么都不做」
+  协议层完全同形，用例得读新会话日志里的 enqueue 记录与旧会话日志里的补偿 `clear`。
+- **provider 回调里抛的断言会被摘要路径吞掉**，浮上来的是另一个外层断言（`test/loop.test.ts` 的
+  `compactProvider`）—— 按报错行找会找错地方。
+- **`protocolClientParity` 的 COVERAGE 表解析 `tui.tsx` 的 `<App` props 源码**，免费接住新 prop
+  （已三次），别绕过它。
+- **真机验证走 CDP，不加调试开关**：`electron . --remote-debugging-port=9222` + node 内置 `WebSocket`
+  直连，`Runtime.evaluate` 读 DOM、`Input.dispatchKeyEvent` 发真键、`Input.insertText` 打字；权限对话框用
+  `window.hanekawa.send({type:'run-tool', name:'Write', ...})` 零 API 花费触发。零侵入探针：`app.ts` 只在
+  `await client.hello()` 返回后才设 `document.title`，`Get-Process electron | Select MainWindowTitle`
+  给出 `Hanekawa — <会话标题>` 就等于整条链通了。
 
 ---
 
@@ -197,94 +86,38 @@ Tauri 还得挂 Node sidecar。
 
 ### 阶段 3 — 桌面独有能力 `[~]`
 
-- [x] **跨进程 workspace 协议**（多标签的另一半）。落地后与当初的预判有两处出入，记下来：
-  - **"28 个 `HostCommand` 一个都不用改"是错的**，两层意义上：数字本身当时就抄错了（`HostCommand` 那时是
-    **27** 个变体，`CLAUDE.md` 写着 28），而且确实得加命令 —— `open-pane`/`close-pane`/`list-panes` 加上
-    渲染器补全要用的 `list-commands`，当时是 **31**（3f 又加了 `file-suggestions`，3h 又加了
-    `enqueue-message`/`clear-queue`，现在 **34**）。真正没改的是那 27 条：pane 命令是**旁挂**的一层，
-    不是把既有命令参数化。
-  - **`SessionHost` 不自己建窗口**：它拿 `PaneRegistry`（`SessionWorkspace` 的结构化切片）解析 + 注册 pane，
-    再通过 `onPaneOpened`/`onPaneClosed` 把 `BrowserWindow` 那步交回 shell。协议层不 import electron 的
-    约束因此没破。
-  - **"每个 pane 一对 `SessionHost`/`SessionClient`"确认成立**，`test/desktopMain.test.ts:270` 用两对真
-    host/client + 一个共享 registry 覆盖；Electron 侧确实不需要多路复用。
-- [~] **一个进程多个项目**。**core 已落地（3i）**：两个进程级全局都没了 ——
-  `src/commands/registry.ts` 变成挂在 `ProjectRuntime` 上的 `CommandRegistry`，
-  `setCacheBreakDiagnosticsRoot` 删除、三个字面量 source 改在 mint 处绑 root。
-  另外扫过一遍 `src/` 里其余模块级可变状态，**没有第三个阻塞点**：`compact.ts` 的 `circuitKey` 是
-  session UUID、`projectContext.ts` 按 cwd 建键、`sessionMemory` 的 `sessionStates` 按 session id、
-  `paths.ts` 的 `resolvedCwdCache` 按 cwd、`tools/display.ts` 的 `cachedTools` 只含内建工具、
-  `promptHistory.ts` 的 `appendOperation` 守的是 `~/.myagent/history.jsonl` 这一个共享文件。
-  `test/multiProject.test.ts` 在一个进程里 bootstrap 两个项目，是这条结论的唯一凭据。
-  多标签**同项目**本来就不受此限。**缺的是下面那条**。
-- [ ] **桌面端打开第二个项目**（3i 的另一半）：`main.ts` 的 `host`/`workspace` 两个模块级变量要变成
-  `Map<cwd, ProjectEntry>`、`teardown` 循环每个项目、`dialog.showOpenDialog` 加入口、
-  `WirePaneInfo` 加 `projectRoot`、标签栏按项目分组。注意 `open-pane` 是 host 命令而 host 只认识
-  自己那个 `SessionWorkspace`，所以**跨项目开 pane 只能走 shell**，不能参数化既有命令。
+- [x] **跨进程 workspace 协议**（3b+3d）：`HostCommand` 从 27 增到 34，pane 命令是**旁挂**的一层而非
+  参数化既有命令；`SessionHost` 经 `PaneRegistry` 解析/注册、建窗经 `onPaneOpened`/`onPaneClosed` 交回
+  shell；一 pane 一对 `SessionHost`/`SessionClient`，Electron 侧无需多路复用
+  （`test/desktopMain.test.ts:270`）。
+- [x] **一个进程多个项目 — core**（3i）：两个进程级全局清零（`CommandRegistry` 挂 runtime、字面量
+  cache source 在 mint 处绑 root）；扫过 `src/` 其余模块级可变状态，**没有第三个阻塞点**（其余的都按
+  session id / cwd 天然分区或守单个共享文件）；`test/multiProject.test.ts` 是唯一凭据。同项目多标签
+  本就不受限。
+- [ ] **桌面端打开第二个项目**（3i 的另一半，下一个主任务）：`main.ts` 的 `host`/`workspace` 两个模块级
+  变量要变成 `Map<cwd, ProjectEntry>`、`teardown` 循环每个项目、`dialog.showOpenDialog` 加入口、
+  `WirePaneInfo` 加 `projectRoot`、标签栏按项目分组。注意 `open-pane` 是 host 命令而 host 只认识自己那个
+  `SessionWorkspace`，所以**跨项目开 pane 只能走 shell**，不能参数化既有命令。
   这半边 `main.ts` 一行测试都没有（模块顶层就 `app.requestSingleInstanceLock()`），只能靠真机冒烟。
 
-### workspace 协议留下的缺陷（读代码查出，尚未修）
+### 已知缺陷（记账未修）
 
-`main.ts` 在 node 下不可 import（模块顶层就 `app.requestSingleInstanceLock()`），所以窗口↔pane 的记账
-一行测试都没有 —— 下面四条全落在那里。按修复顺序排：
-
-- [x] **启动打开的是空白新会话，不是恢复的那个**（`main.ts:150,163-164`）：`main()` 取 `sessions.at(0)`
-  引导、`workspace.adopt(host)` 把它注册成第一个 pane，然后 `await openPane({})` —— 无 `sessionId` 走
-  else 分支**新建一个 draft** 并把窗口给了它。于是每次启动都是空会话，且标签栏里多一个没有窗口的幽灵
-  pane。改成 `openPane({ sessionId: session.id })` 即可（会命中 `paneForSession` 拿到已 adopt 的那个）。
-- [x] **`paneId` 用会话 id，而它会在 `/clear`、`/resume` 时移动**（`host.ts:896` + `main.ts:75,218,259-292`）：
-  host 侧 `collectPanes()` 读的是**当前** session id，`main.ts` 的 `panes` Map 却按开窗时捕获的
-  `entryPaneId` 建键。窗口内 `/clear` 之后两边分叉：Ctrl+W 发 `close-pane(新 id)` → host 扫描命中、真把
-  pane 拆了 → `onPaneClosed(新 id)` 在 map 里查不到 → **窗口不销毁、`sessionHost` 不 dispose**；点标签页
-  的 X（用的是陈旧的 `row.paneId`）则反过来报 `Pane not found`；活动标签高亮也丢。
-  这正是 `CLAUDE.md` 里"按 session id 建索引每次 `/clear`、`/resume` 都要 re-key"警告过的事，在 shell 层
-  被重新引入了。两条路：shell 收到 `session-changed` 就 re-key，或者给 pane 一个不随会话移动的 id。
-- [x] **`pane-list` 从不跨窗口广播**（`host.ts:891`）：`broadcastPaneList()` 只 post 自己那条 channel，
-  注释自己写着"真正的多 pane 广播是 shell 的活（它遍历每个 `SessionHost`）"，而 `main.ts` 没有这段遍历；
-  OS 关窗路径（`main.ts:283`）更是一次都不广播。于是窗口 B 的标签栏永远停在旧拓扑。
-- [x] **`test/protocolChildProcess.test.ts:105-111` 没跟着改**：子进程侧那段字符串脚本的
-  `new SessionHost({...})` 缺 `workspace`/`onPaneOpened`/`onPaneClosed` 三个必填 dep。测试仍绿，只因为
-  子进程从不发 pane 命令 —— 那里 `this.workspace` 是 `undefined`，真发一条 `list-panes` 就是 TypeError。
-  **这就是本文件"工作方法"里那条陷阱的原样复现**：`tsc` 看不见字符串。
-- [x] **把标题当成 modelKey 传**（`main.ts:216`，潜伏、当前不可达）：
-  `adopt(scope, options.title ? { modelKey: options.title } : {})` —— `modelKey` 会喂给 `createRuntime`，
-  无效 key 会抛。今天没有调用方传 `title`，host 侧同一逻辑（`host.ts:846`）是对的。
-
-
-### 渲染器还缺的（阶段 3c 刻意留下）
-
-- [x] **rewind / checkpoint 面板**（3g 落地）。与当初的预判有两处出入：
-  - **"纯渲染器活"不完全成立**。读写命令确实都在 `SessionClient` 上了，但**入口**得从某处来 ——
-    选了 `/rewind` 斜杠命令、走既定的 `CommandContext` → `COMMAND_CONTEXT_COVERAGE` → `open-surface`
-    机制，于是宿主侧多了 6 处 1-3 行的改动（含 `CommandSurface` 加第六个值），TUI 也顺带有了 `/rewind`
-    （原来只有 Esc-Esc）。换来的是两端入口一致、且 `/` 下拉里能看见它。
-  - **决策的编排本身也是共享物**，不只是"选项列表"。`rewindStepsFor` + 五条结果文案 + 那条部分失败文案
-    一起进了 `runtime/rewindPresentation.ts`，`App.tsx` 的 `handleRestoreSelect` 从 45 行的 if 链改成读
-    步骤表。原来那份 `formatRestoreMessagePreview` 是 App.tsx 私有的，两端各写一份就会在引号里的文本上分叉。
-- [x] **费用显示**（3h 落地）：`ModelPricing` **没有**上 `WireRuntimeSnapshot` —— 改为 host 侧派生，
-  `snapshot` 事件带 `cost?: { amount, currency }`，理由见上面的决策留痕。
-- [x] **消息队列**（3h 落地）。与当初的预判有两处出入：
-  - **"要记录流"这个前置条件不成立**。`MessageQueue` 要的只是 `store.appendRecord`，host 本来就有；
-    真正的前置条件是另一条 —— `SessionController.submit` 的在途守卫，而那条当时就已经写在清单里了。
-  - **"关闸而非排队"是权宜之计，这轮把它换掉了**：守卫进内核之后，`keymap.ts` 的 Enter 分支从
-    `'none'` 改成 `'enqueue'`，`#submit` 按钮不再 disable 而是改字为 "Queue"（`requestSubmit()` 会忽略
-    disabled 按钮，所以键路径与按钮路径必须同时改，漏一边就是静默吞掉点击）。
-
-（标签栏已在 3b 补上、Markdown 已在 3e 补上、面板可点选与 `@` 文件补全已在 3f 补上、
-rewind 面板已在 3g 补上、**消息队列与费用显示已在 3h 补上**，见上表；它们不在这份清单里过。）
-
-**3e 顺带留下的两条**：① **代码块没有语法高亮** —— TUI 用的 `cli-highlight` 出 ANSI 且是 Node 侧的，
-浏览器侧要另选一个能进 renderer bundle（无 Node 依赖）的库，是独立一档；② `markdownNode` 每次都重建整棵
-子树，`transcriptView` 又是每 token 全量重画 —— 解析有 LRU 兜着，**建节点没有**。真机上若长会话流式发卡，
-按 `transcriptView` 文件头写的那条路走（按 item id 建 key 增量更新），不要回头去搞 static/live 分区。
+- **`reloadSkills` 不更新已注册 skill 的 description**：`registerSkillCommands` 用 `registry.has(name)`
+  挡重名，已注册条目 reload 只打一行 "command name is already in use" 的 warn
+  （`test/multiProject.test.ts` 跑起来就能看见）。修法：注册表区分「内建」与「skill」条目，reload 先清掉
+  本项目上一轮注册的 skill 命令再重注册。
+- **3e 遗留两条**：① **代码块没有语法高亮** —— TUI 用的 `cli-highlight` 出 ANSI 且是 Node 侧的，浏览器
+  侧要另选一个能进 renderer bundle（无 Node 依赖）的库，独立一档；② `markdownNode` 每次重建整棵子树、
+  `transcriptView` 每 token 全量重画 —— 解析有 LRU 兜着，**建节点没有**。真机上长会话流式若卡，按
+  `transcriptView` 文件头写的那条路走（按 item id 建 key 增量更新），不要回头去搞 static/live 分区。
 
 ### 杂项
 
-- [ ] **固定 `typescript` 版本**：`package.json` 里仍是 `"latest"`（实际 7.0.2），用不固定的 major 做 emit 是真实风险。
-  卡在内网 npm 镜像（`http://172.16.9.57:8081/repository/npm-group/` 不代理 electron，`npm ping` `ECONNRESET`），
-  网络恢复后做。
-- [ ] **`design_guidance.md` 未落地**：一份 129 行的深色 UI 设计规范（Codex 桌面端提炼），目前渲染器完全没有
-  按它实现。要么排期做视觉层，要么明确它只是参考资料。
+- [ ] **固定 `typescript` 版本**：`package.json` 里仍是 `"latest"`（实际 7.0.2），用不固定的 major 做
+  emit 是真实风险。卡在内网 npm 镜像（`http://172.16.9.57:8081/repository/npm-group/` 不代理 electron，
+  `npm ping` `ECONNRESET`），网络恢复后做。
+- [ ] **`design_guidance.md` 未落地**：一份 129 行的深色 UI 设计规范（Codex 桌面端提炼），目前渲染器
+  完全没有按它实现。要么排期做视觉层，要么明确它只是参考资料。
 
 ### 未执行的手动冒烟（都需要 TTY + 真实 API key）
 
@@ -299,8 +132,8 @@ rewind 面板已在 3g 补上、**消息队列与费用显示已在 3h 补上**�
 - [ ] **3c 的两件**：① 流式 token 与 `#tool-progress` 行、Stop 按钮与 Esc 中断；
   ② 多个权限提示同时排队时的 Tab 切换与 `Also waiting:` 行 —— 注意 `AgentLoop.runTool` 走 `enqueue()` 的单一
   在途槽，两次 `run-tool` **不可能**并发出两个提示，真并发只来自一个 turn 内被批处理的工具调用。
-- [ ] **3b 的多窗口冒烟**（`main.ts` 没有任何测试覆盖，这是唯一的验证手段；上面四条缺陷就是读代码查出来的，
-  修完必须真机复验）：启动看到的是**最近一个会话**而不是空 draft → Ctrl+T 开第二个窗口 →
+- [ ] **3b 的多窗口冒烟**（`main.ts` 没有任何测试覆盖，这是唯一的验证手段）：
+  启动看到的是**最近一个会话**而不是空 draft → Ctrl+T 开第二个窗口 →
   两个窗口的标签栏都列出两个 pane → 在窗口 A 里 `/clear` 后，A 自己的标签页仍可点可关、B 的标签栏也跟着更新
   → Ctrl+W 关掉 A，窗口真的消失 → 关掉最后一个窗口，`before-quit` 走完 `host.shutdown()`，无残留进程。
 - [ ] **3d 修复的回归冒烟**：3b 那条按顺序走完，且额外加两点验证：
@@ -387,30 +220,22 @@ node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
   test/modelSwitch.test.ts test/runOverrides.test.ts test/subagentInspection.test.ts
 ```
 
-**已知不稳定**：`test/toolcall-integration.test.ts` 在全量**并发**跑时会挂在
-`Unable to deserialize cloned data due to invalid or unsupported version` —— 这是 Node test runner 自己的 IPC 报错，
-不是断言失败。单独跑必过（3/3），在未改动的基线上同样复现，`--test-concurrency=1` 串行干净。
-它是**间歇的**：既不要因为一次并发跑绿了就认为已修，也不要因为它挂了就去找自己的回归。
+**已知不稳定**（三条都是**间歇**：既不要因为一次并发跑绿了就认为已修，也不要因为挂了就去找自己的回归；
+判据一律是「单独跑是否稳定通过」）：
 
-第二个（3f 期间观察到）：`test/backgroundTasks.test.ts` 的
-`background Bash returns immediately and BashOutput consumes incremental output` 在全量并发跑时偶尔超时红一次
-（该用例本身要等一个真实子进程吐增量输出，1.7s 量级）。单独跑 3/3 全绿，紧接着的全量跑也全绿；
-它只 import `services/backgroundTasks/` 与三个 bash 工具，与桌面端毫无交集。同样是**间歇**，不要当回归追。
+- `test/toolcall-integration.test.ts`：全量并发跑挂 `Unable to deserialize cloned data due to invalid or
+  unsupported version` —— Node test runner 自己的 IPC 报错，不是断言失败；单独跑必过，未改动基线上同样
+  复现。**`--test-concurrency=1` 串行也会红**（3g 时观察串行干净，3h 期间 3 次里红 2 次）—— 串行不是它的解药。
+- `test/backgroundTasks.test.ts` 的 `background Bash returns immediately and BashOutput consumes incremental
+  output`（3f 观察）：全量并发偶尔超时红一次（用例本身要等真实子进程吐增量输出，1.7s 量级）；单独跑 3/3
+  全绿；只 import `services/backgroundTasks/` 与三个 bash 工具，与桌面端无交集。
+- `test/agentTool.test.ts` 的 `parent bypass mode still takes precedence for background agents`
+  （3h 观察，仅一次）：单独跑 81/81 连过两轮，与 3h 改动零交集（不碰 `agentTool.ts` 也不碰权限门）。
 
-第三个（3h 期间观察到，只见过一次）：`test/agentTool.test.ts` 的
-`parent bypass mode still takes precedence for background agents`。单独跑 81/81 连过两轮，
-与 3h 改动零交集（不碰 `agentTool.ts` 也不碰权限门）。**注意 `toolcall-integration` 那条在
-`--test-concurrency=1` 下也会红** —— 上面写的"串行干净"是 3g 时的观察，3h 期间串行跑 3 次里红了 2 次，
-所以串行**不是**它的解药。3h 的实测分布：串行 3 轮里 1 轮全清（只剩下面那条环境依赖的），
-另 2 轮多一条 `toolcall-integration`。基线（`git stash` 后）2 轮全清 —— 这个差值仍在间歇的方差内，
-不要据此推断某轮改动引入了不稳定；判据是"单独跑是否稳定通过"。
-
-**已知环境依赖失败**（3g 期间查明，与桌面端无关，尚未修）：`test/config.test.ts` 的
-`providers report dynamic ToolSearch support conservatively` 在**设置了 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`
-的环境里必定红**（在 Claude Code 里跑 `npm run test` 就是这种环境）。它不是间歇、也不是回归：
-用例只 save/delete/restore 了 `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS`，而它测的
-`isExperimentalToolSearchBetaDisabled()`（`src/utils/toolSearch.ts:132-135`）读的是**两个**变量的或；
-第二个还留在环境里，于是 `AnthropicProvider.supportsDynamicToolSearch('claude-sonnet-4')` 返回 false，
-第一条断言（期望 true）就挂。已用 `git stash` 在干净基线上复现。修法是让该用例对两个变量都做隔离
-（文件里已有 `setEnv` 助手）。**在这种环境下 1948 里应当只有这一条红**（3i 落地后实测 1947 pass / 1 fail，
-且已用 `git stash` 在干净基线上复现同一条）。
+**已知环境依赖失败**（3g 查明，与桌面端无关，尚未修）：`test/config.test.ts` 的
+`providers report dynamic ToolSearch support conservatively` 在设置了 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`
+的环境里必定红（在 Claude Code 里跑 `npm run test` 就是这种环境）。它不是间歇、也不是回归：用例只
+save/delete/restore 了 `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS`，而它测的 `isExperimentalToolSearchBetaDisabled()`
+（`src/utils/toolSearch.ts:132-135`）读的是**两个**变量的或，第二个还留在环境里。已用 `git stash` 在干净基线
+复现。修法是让该用例对两个变量都做隔离（文件里已有 `setEnv` 助手）。**这种环境下 1948 里应当只有这一条红**
+（3i 落地后实测 1947 pass / 1 fail）。

@@ -1,8 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { createUiBridges } from '../src/runtime/bridges.js'
 import { CommandRegistry } from '../src/commands/registry.js'
 import { SessionHost } from '../src/runtime/protocol/host.js'
+import { ProjectDirectory, projectRootKey } from '../src/runtime/projectDirectory.js'
 import { SessionClient } from '../src/runtime/protocol/client.js'
 import type { RuntimeChannel } from '../src/runtime/protocol/channel.js'
 import type { SessionController } from '../src/runtime/sessionController.js'
@@ -174,9 +176,10 @@ function fakeScope(): SessionScope {
   } as unknown as SessionScope
 }
 
-function fakeProject(): ProjectRuntime {
+/** `cwd` is a parameter so the cross-project test can hold two of these. */
+function fakeProject(cwd = '/tmp/fixture'): ProjectRuntime {
   return {
-    cwd: '/tmp/fixture',
+    cwd,
     config: {} as never,
     // Real, because `ProjectRuntime.commands` is what the host resolves slash
     // commands through and the cast at the bottom of this function would hide
@@ -492,5 +495,160 @@ test('paneId follows the controller across /clear and close-pane still resolves'
   } finally {
     host.dispose()
     client.dispose()
+  }
+})
+
+/**
+ * Two projects in one process, which is the shape `main.ts` grew into.
+ *
+ * Each project keeps its own `SessionWorkspace` and its own `SessionHost` — a
+ * host resolves sessions out of its own store, so it can only ever *create* a
+ * pane in its own project. Everything that spans projects goes through the
+ * shell: the pane list it projects from its windows, and the two hand-off
+ * commands. This test stands in for that shell, since `main.ts` itself cannot be
+ * imported under plain node.
+ */
+test('two projects: the tab list spans both, and cross-project work goes through the shell', async () => {
+  const ROOT_A = process.cwd()
+  const ROOT_B = join(process.cwd(), 'src')
+
+  function fakePane(meta: SessionMeta): SessionPane {
+    return { getSession: () => meta } as unknown as SessionPane
+  }
+  function session(id: string, title: string): SessionMeta {
+    return { id, shortId: id.slice(0, 2), title, createdAt: '0', updatedAt: '0', messageCount: 0 }
+  }
+  /** One project's panes, in the `PaneRegistry` shape the host is handed. */
+  function fakeWorkspace(seed: SessionMeta[]) {
+    const panes = new Map<string, SessionPane>(seed.map((meta) => [meta.id, fakePane(meta)]))
+    return {
+      panes,
+      list: () => [...panes.values()],
+      paneForSession: (sessionId: string) => panes.get(sessionId),
+      open: async (meta: SessionMeta) => {
+        panes.set(meta.id, fakePane(meta))
+        return panes.get(meta.id)!
+      },
+      adopt: (scope: SessionScope) => {
+        panes.set(scope.session.id, fakePane(scope.session))
+        return panes.get(scope.session.id)!
+      },
+      close: (pane: SessionPane) => {
+        panes.delete(pane.getSession().id)
+      },
+      closeAll: () => panes.clear(),
+    }
+  }
+
+  const sessionA = session('ses-a', 'pane-a')
+  const sessionB = session('ses-b', 'pane-b')
+  const workspaceA = fakeWorkspace([sessionA])
+  const workspaceB = fakeWorkspace([sessionB])
+
+  const directory = new ProjectDirectory<ProjectRuntime, ReturnType<typeof fakeWorkspace>>()
+  directory.add(fakeProject(ROOT_A), workspaceA)
+  directory.add(fakeProject(ROOT_B), workspaceB)
+
+  // The shell's window bookkeeping. `describePanes` projects from *this*, not
+  // from the workspaces, so a pane without a window is never advertised.
+  const windows: Array<{ pane: SessionPane }> = [{ pane: workspaceA.list()[0]! }, { pane: workspaceB.list()[0]! }]
+  const describePanes = () => directory.describe(windows.map((entry) => entry.pane))
+  const focused: string[] = []
+  const projectRequests: Array<string | undefined> = []
+  const onFocusPane = (paneId: string): boolean => {
+    const found = windows.some((entry) => entry.pane.getSession().id === paneId)
+    if (found) focused.push(paneId)
+    return found
+  }
+
+  const [hostAChannel, clientAChannel] = createMemoryChannelPair()
+  const [hostBChannel, clientBChannel] = createMemoryChannelPair()
+  const closedByA: string[] = []
+
+  const hostA = new SessionHost({
+    channel: hostAChannel,
+    controller: fakeController(),
+    runtimeSlot: fakeRuntimeSlot(),
+    project: fakeProject(ROOT_A),
+    scope: { ...fakeScope(), session: sessionA },
+    workspace: workspaceA,
+    onPaneOpened: () => undefined,
+    onPaneClosed: (paneId) => closedByA.push(paneId),
+    onFocusPane,
+    onOpenProject: (path) => projectRequests.push(path),
+    describePanes,
+  })
+  const hostB = new SessionHost({
+    channel: hostBChannel,
+    controller: fakeController(),
+    runtimeSlot: fakeRuntimeSlot(),
+    project: fakeProject(ROOT_B),
+    scope: { ...fakeScope(), session: sessionB },
+    workspace: workspaceB,
+    onPaneOpened: () => undefined,
+    onPaneClosed: () => undefined,
+    onFocusPane,
+    onOpenProject: (path) => projectRequests.push(path),
+    describePanes,
+  })
+
+  const clientA = new SessionClient(clientAChannel)
+  const clientB = new SessionClient(clientBChannel)
+
+  try {
+    const [helloA, helloB] = await Promise.all([clientA.hello(), clientB.hello()])
+    // Each window learns its own project, normalized the way the pane list
+    // carries it — that comparison is what makes a row "mine".
+    assert.equal(helloA.projectRoot, projectRootKey(ROOT_A))
+    assert.equal(helloB.projectRoot, projectRootKey(ROOT_B))
+    assert.notEqual(helloA.projectRoot, helloB.projectRoot)
+
+    // Both windows see both projects' tabs, each stamped with its owner.
+    for (const list of await Promise.all([clientA.listPanes(), clientB.listPanes()])) {
+      assert.deepEqual(list.map((pane) => pane.sessionId), ['ses-a', 'ses-b'])
+      assert.deepEqual(list.map((pane) => pane.projectRoot), [
+        projectRootKey(ROOT_A),
+        projectRootKey(ROOT_B),
+      ])
+      assert.equal(list[1]?.projectName, 'src')
+    }
+
+    // A tab click on the *other* project's row: pure hand-off, no workspace
+    // lookup, no session resolution.
+    assert.equal(await clientA.focusPane('ses-b'), true)
+    assert.deepEqual(focused, ['ses-b'])
+
+    // A row whose window is gone answers false so the renderer re-lists.
+    assert.equal(await clientA.focusPane('ses-ghost'), false)
+
+    // Opening a project is the shell's job too — a host only knows its own.
+    await clientA.openProject()
+    await clientB.openProject(ROOT_A)
+    assert.deepEqual(projectRequests, [undefined, ROOT_A])
+
+    // A host refuses to close another project's pane, which is what backs the
+    // tab bar drawing no × on a foreign row: its own registry is the only one it
+    // has, and `SessionWorkspace.close` would silently ignore a stranger.
+    await assert.rejects(clientA.closePane('ses-b'), /Pane not found/)
+    assert.equal(workspaceB.panes.size, 1, "B's pane must survive A's attempt")
+    assert.deepEqual(closedByA, [])
+
+    // Its own pane closes normally.
+    await clientA.closePane('ses-a')
+    assert.deepEqual(closedByA, ['ses-a'])
+    assert.equal(workspaceA.panes.size, 0)
+    // The shell destroys A's window in response; even before it does, a pane its
+    // workspace no longer lists has already stopped being a tab.
+    assert.deepEqual((await clientB.listPanes()).map((pane) => pane.sessionId), ['ses-b'])
+
+    // A pane registered without a window is not a tab either: the shell projects
+    // from its window map precisely so every row can be focused.
+    await workspaceA.open(session('ses-c', 'window-less'))
+    assert.deepEqual((await clientB.listPanes()).map((pane) => pane.sessionId), ['ses-b'])
+  } finally {
+    hostA.dispose()
+    hostB.dispose()
+    clientA.dispose()
+    clientB.dispose()
   }
 })

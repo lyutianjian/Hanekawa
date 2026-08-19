@@ -167,6 +167,13 @@ let completions: CompletionState = NO_COMPLETIONS
 let commands: WireCommandInfo[] = []
 let panes: readonly WirePaneInfo[] = Object.freeze([])
 /**
+ * This window's own project root, from `hello.cwd` (already normalized host-side).
+ *
+ * Undefined until `hello()` resolves; the tab bar treats that as "everything is
+ * mine", which is true at that point — the only pane it knows about is this one.
+ */
+let ownProjectRoot: string | undefined
+/**
  * Messages the host is holding until the running turn ends.
  *
  * A mirror of `client.getQueuedMessages()` rather than the source: the host owns
@@ -196,18 +203,27 @@ let boundSessionId: string | undefined
 const tabBarView = createTabBarView(tabBarContainer, (intent) => {
   switch (intent.kind) {
     case 'switch':
-      // Switching is a request to focus the clicked tab. Each renderer owns
-      // exactly one pane (this one), so the only meaningful switch is to a
-      // *different* session — that requires opening the other pane.
-      void client.openPane({ sessionId: intent.paneId }).catch((error) =>
-        note(describe(error), 'error'),
-      )
+      // Every row in the bar is a pane that already exists, so a click is a
+      // focus — not an open. That is also what makes another project's tab
+      // clickable at all: only the shell can find its window, and `focus-pane`
+      // is handed straight to it. `false` means the bar is stale.
+      void client
+        .focusPane(intent.paneId)
+        .then((focused) => {
+          if (!focused) void refreshPanes()
+        })
+        .catch((error) => note(describe(error), 'error'))
       return
     case 'close':
       void client.closePane(intent.paneId).catch((error) => note(describe(error), 'error'))
       return
     case 'new':
       void client.openPane({}).catch((error) => note(describe(error), 'error'))
+      return
+    case 'open-project':
+      // The shell puts up a native directory picker; nothing comes back here
+      // except a `pane-list` once the new project's first window is up.
+      void client.openProject().catch((error) => note(describe(error), 'error'))
       return
   }
 })
@@ -217,13 +233,26 @@ const tabBarView = createTabBarView(tabBarContainer, (intent) => {
  * active session. A pane is "active" when its session id matches the one
  * the host is bound to; that is the only sane answer on the renderer side
  * since each renderer is its own process.
+ *
+ * `ownProjectRoot` is what makes a row's project *this* window's or somebody
+ * else's, which decides grouping order and whether the row can be closed.
  */
 function currentTabBarState(): TabBarState {
-  return createTabBarState(panes, client.getSession()?.id)
+  return createTabBarState(panes, client.getSession()?.id, ownProjectRoot)
 }
 
 function renderTabBar(): void {
   tabBarView.render(buildTabBarView(currentTabBarState()))
+}
+
+/** Re-reads the topology after a focus that found nothing, so the bar self-heals. */
+async function refreshPanes(): Promise<void> {
+  try {
+    panes = await client.listPanes()
+  } catch {
+    return
+  }
+  renderTabBar()
 }
 
 /** One resolver per outstanding request, keyed the way the queue is. */
@@ -722,11 +751,18 @@ document.addEventListener('keydown', (event) => {
   if (tabBarIntent.kind !== 'none') {
     event.preventDefault()
     if (tabBarIntent.kind === 'switch') {
-      void client.openPane({ sessionId: tabBarIntent.paneId }).catch((error) => note(describe(error), 'error'))
+      void client
+        .focusPane(tabBarIntent.paneId)
+        .then((focused) => {
+          if (!focused) void refreshPanes()
+        })
+        .catch((error) => note(describe(error), 'error'))
     } else if (tabBarIntent.kind === 'close') {
       void client.closePane(tabBarIntent.paneId).catch((error) => note(describe(error), 'error'))
     } else if (tabBarIntent.kind === 'new') {
       void client.openPane({}).catch((error) => note(describe(error), 'error'))
+    } else if (tabBarIntent.kind === 'open-project') {
+      void client.openProject().catch((error) => note(describe(error), 'error'))
     }
     return
   }
@@ -934,6 +970,10 @@ void (async () => {
   // end-to-end proof readable from outside the process.
   status.renderSession(hello.session)
   boundSessionId = hello.session.id
+  // Which project this window belongs to, so the bar can tell its own tabs from
+  // another project's. `projectRoot`, not `cwd`: the pane list carries the
+  // normalized key, and on Windows the raw path may differ in case.
+  ownProjectRoot = hello.projectRoot
   composer.setStreaming(client.getSnapshot().isStreaming)
 
   // Whatever the last window left waiting. The queue is replayed from the session

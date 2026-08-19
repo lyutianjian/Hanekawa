@@ -123,6 +123,42 @@
         cursor: pointer;
       }
       .tab-add:hover { color: var(--accent); border-color: var(--accent); }
+      /* One project's tabs, behind its own heading. Only drawn from two projects up. */
+      .tab-group {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding-left: 6px;
+        border-left: 1px solid var(--border);
+      }
+      .tab-group:first-child { padding-left: 0; border-left: 0; }
+      .tab-group-label {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+        padding: 0 4px;
+        max-width: 140px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .tab-group.own .tab-group-label { color: var(--fg); }
+      /* Another project's tab: focus only, so it reads as secondary and has no ×. */
+      .tab.foreign { opacity: 0.7; border-style: dashed; }
+      .tab.foreign:hover { opacity: 1; }
+      .tab-open-project {
+        background: transparent;
+        color: var(--muted);
+        border: 1px dashed var(--border-strong);
+        border-radius: 4px;
+        padding: 4px 10px;
+        font: inherit;
+        font-size: 12px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .tab-open-project:hover { color: var(--accent); border-color: var(--accent); }
 
       /* --- transcript --- */
       #transcript {

@@ -12,6 +12,7 @@ import { applyPermissionModeTransition } from '../permissionMode.js'
 import { buildModelPickerOptions } from '../modelPicker.js'
 import { resolveRuntimeModelKeyAfterConfigChange } from '../providerRuntime.js'
 import { canPumpQueue } from '../queuePump.js'
+import { projectDisplayName, projectRootKey } from '../projectDirectory.js'
 import { SessionRecordLedger } from '../recordLedger.js'
 import { buildRewindSummaryRewrite } from '../rewindSummary.js'
 import { generateFileSuggestions } from '../suggestions/fileSuggestions.js'
@@ -45,11 +46,13 @@ import {
   type WireEffortResult,
   type WireEnqueueResult,
   type WireFileSuggestionsResult,
+  type WireFocusPaneResult,
   type WireHelloResult,
   type WireListPanesResult,
   type WireModelInfo,
   type WireModelsResult,
   type WireOpenPaneResult,
+  type WireOpenProjectResult,
   type WirePaneInfo,
   type WireReloadCountResult,
   type WireReloadSettingsResult,
@@ -123,6 +126,44 @@ export interface SessionHostDeps {
    * drives the command and the shell catches the side effect.
    */
   onPaneClosed: (paneId: string) => void
+  /**
+   * Brings an arbitrary pane's window forward. Returns false when the shell has
+   * no window for it.
+   *
+   * The three members below are optional, and not because a missing one is
+   * harmless — a `focus-pane` without this rejects. They are optional because
+   * `SessionHostDeps` has one construction site the compiler cannot see:
+   * `test/protocolChildProcess.test.ts` builds the host inside a *string* script
+   * written to a temp `.mjs`. A required member there fails at runtime only, and
+   * that trap has already been sprung twice (3a, 3b). A shell that owns one
+   * project needs none of them.
+   */
+  onFocusPane?: (paneId: string) => boolean
+  /**
+   * Asks the shell to open another project. With no path the shell puts up its
+   * own directory picker; the host neither waits for it nor learns the outcome.
+   */
+  onOpenProject?: (path?: string) => void
+  /**
+   * The whole pane topology, when the shell knows more panes than this host's
+   * project does.
+   *
+   * With several projects open the host is no longer the authority on the tab
+   * list: it can only see its own `SessionWorkspace`. The shell projects from its
+   * *windows*, which also makes "listed ⇒ focusable" true — a pane is registered
+   * in its workspace before its window exists.
+   */
+  describePanes?: () => WirePaneInfo[]
+  /**
+   * Fired after this host has announced a new pane topology on its own channel.
+   *
+   * The shell's cue to fan the same list out to its other windows — the host can
+   * only reach the renderer it is paired with. Every announcement goes through
+   * here, including the one a `/clear` or `/resume` triggers: a pane's id *is*
+   * its session id, so a switch changes the topology without opening or closing
+   * anything.
+   */
+  onPaneListChanged?: () => void
 }
 
 /**
@@ -164,6 +205,10 @@ export class SessionHost {
   private readonly workspace: PaneRegistry
   private readonly onPaneOpened: (pane: SessionPane, sessionId: string | undefined) => void
   private readonly onPaneClosed: (paneId: string) => void
+  private readonly onFocusPane: ((paneId: string) => boolean) | undefined
+  private readonly onOpenProject: ((path?: string) => void) | undefined
+  private readonly describePanes: (() => WirePaneInfo[]) | undefined
+  private readonly onPaneListChanged: (() => void) | undefined
 
   private readonly pendingUi = new PendingRequests<UiResponse>()
   /** Request kind per outstanding id, so each settles with its own fallback. */
@@ -198,6 +243,10 @@ export class SessionHost {
     this.workspace = deps.workspace
     this.onPaneOpened = deps.onPaneOpened
     this.onPaneClosed = deps.onPaneClosed
+    this.onFocusPane = deps.onFocusPane
+    this.onOpenProject = deps.onOpenProject
+    this.describePanes = deps.describePanes
+    this.onPaneListChanged = deps.onPaneListChanged
     this.session = deps.scope.session
     this.ledger = new SessionRecordLedger(deps.scope.existingRecords)
     // Same three arguments the terminal passes (`App.tsx`), so a session's queue
@@ -560,6 +609,7 @@ export class SessionHost {
           sessionId: this.session.id,
           session: this.session,
           cwd: this.project.cwd,
+          projectRoot: projectRootKey(this.project.cwd),
           records: [...this.ledger.list()],
           notices: this.startupNotices(this.scope.diagnostics),
           hasRecoverableInterruption: this.scope.hasRecoverableInterruption,
@@ -797,6 +847,12 @@ export class SessionHost {
       case 'list-panes':
         return this.handleListPanes() satisfies WireListPanesResult
 
+      case 'focus-pane':
+        return this.handleFocusPane(command) satisfies WireFocusPaneResult
+
+      case 'open-project':
+        return this.handleOpenProject(command) satisfies WireOpenProjectResult
+
       case 'enqueue-message': {
         // `MessageQueue` notifies its subscribers, and `postQueuedMessages` both
         // announces the new list and asks the pump — so an idle host has already
@@ -950,6 +1006,11 @@ export class SessionHost {
     // the client still needs to hear that the list it is showing now belongs to a
     // different session.
     this.postQueuedMessages()
+    // A pane *is* its session id (`WirePaneInfo.paneId`), so a switch is a
+    // topology change even though no pane opened or closed. Without this every
+    // tab bar keeps the pre-switch id: the row still draws, but closing it fails
+    // with "Pane not found" and focusing it has to self-heal through a re-list.
+    this.broadcastPaneList()
     return { session: result.session, records: result.records, notices }
   }
 
@@ -1077,23 +1138,69 @@ export class SessionHost {
   }
 
   /**
+   * Pure hand-off: no workspace lookup, no session resolution.
+   *
+   * A host cannot answer this on its own — with several projects open, the pane
+   * asked for may live in a workspace this host has never seen. Throwing when the
+   * shell has no callback is deliberate (the client's promise rejects and the
+   * renderer can say so); answering `{ ok: true }` would look like a focus that
+   * silently did nothing.
+   */
+  private handleFocusPane(
+    command: Extract<HostCommand, { type: 'focus-pane' }>,
+  ): WireFocusPaneResult {
+    if (!this.onFocusPane) throw new Error('This shell cannot focus panes')
+    return { ok: this.onFocusPane(command.paneId) }
+  }
+
+  /**
+   * Also a pure hand-off, and asynchronous on the shell's side: the reply says
+   * the shell accepted the request, not that a project is open. Bootstrapping a
+   * project takes MCP connections and a store, and the user may still have a
+   * directory dialog in front of them.
+   */
+  private handleOpenProject(
+    command: Extract<HostCommand, { type: 'open-project' }>,
+  ): WireOpenProjectResult {
+    if (!this.onOpenProject) throw new Error('This shell cannot open projects')
+    this.onOpenProject(command.path)
+    return { ok: true }
+  }
+
+  /**
    * Pushes the current pane topology to every connected renderer.
    *
    * Only this host's channel is reachable here, so a true multi-pane broadcast
-   * is the shell's job (it iterates every `SessionHost`). What this host does
-   * is post to its own channel, which is the only pane that ever sees its own
-   * `open-pane` / `close-pane` replies and therefore the one that needs the
-   * update most.
+   * is the shell's job: `onPaneListChanged` is the hook it hangs its fan-out on,
+   * and it fires for *every* announcement — a pane opening, a pane closing, and a
+   * session switch that moves a pane's id under it.
    */
   private broadcastPaneList(): void {
     this.post({ type: 'pane-list', panes: this.collectPanes() })
+    this.onPaneListChanged?.()
   }
 
-  /** Field-by-field projection. Never spread `SessionPane` — see `WirePaneInfo`. */
+  /**
+   * Field-by-field projection. Never spread `SessionPane` — see `WirePaneInfo`.
+   *
+   * The shell's `describePanes` wins when it exists: with more than one project
+   * open, this host's workspace is a *subset* of the tabs the user sees, and a
+   * partial list posted over a full one makes tabs blink out of existence. The
+   * own-project projection below stays as the single-project answer, which is
+   * what the terminal shell and every fake registry in the tests use.
+   */
   private collectPanes(): WirePaneInfo[] {
+    const described = this.describePanes?.()
+    if (described) return described
+    const projectName = projectDisplayName(this.project.cwd)
     return this.workspace.list().map((pane) => {
       const session = pane.getSession()
-      const info: WirePaneInfo = { paneId: session.id, sessionId: session.id }
+      const info: WirePaneInfo = {
+        paneId: session.id,
+        sessionId: session.id,
+        projectRoot: projectRootKey(this.project.cwd),
+        projectName,
+      }
       if (session.title !== undefined) info.sessionTitle = session.title
       return info
     })

@@ -47,6 +47,8 @@ const SAMPLES = {
   'open-pane': { type: 'open-pane', id: '1' },
   'close-pane': { type: 'close-pane', id: '1', paneId: 'p' },
   'list-panes': { type: 'list-panes', id: '1' },
+  'focus-pane': { type: 'focus-pane', id: '1', paneId: 'p' },
+  'open-project': { type: 'open-project', id: '1' },
   'enqueue-message': { type: 'enqueue-message', id: '1', content: 'later, please' },
   'clear-queue': { type: 'clear-queue', id: '1' },
   shutdown: { type: 'shutdown', id: '1', reason: 'bye' },
@@ -190,4 +192,18 @@ test('the failure message is bounded', () => {
   ) })
   assert.equal(parsed.ok, false)
   assert.ok(parsed.message.length <= 501, `message was ${parsed.message.length} chars`)
+})
+
+test('the two shell hand-off commands are strict about their own fields', () => {
+  // Both are pure forwards to a shell callback, so the host does no resolving
+  // that would catch a bogus payload later -- the schema is the only gate.
+  assert.equal(parseHostCommand({ type: 'focus-pane', id: '1' }).ok, false)
+  assert.equal(parseHostCommand({ type: 'focus-pane', id: '1', paneId: 'p', sessionId: 's' }).ok, false)
+  assert.equal(parseHostCommand({ type: 'focus-pane', id: '1', paneId: 42 }).ok, false)
+
+  // `path` is optional (the shell owns the picker) but must be a string when
+  // present, and nothing else may ride along with it.
+  assert.equal(parseHostCommand({ type: 'open-project', id: '1', path: 'C:/repo' }).ok, true)
+  assert.equal(parseHostCommand({ type: 'open-project', id: '1', path: 42 }).ok, false)
+  assert.equal(parseHostCommand({ type: 'open-project', id: '1', cwd: 'C:/repo' }).ok, false)
 })

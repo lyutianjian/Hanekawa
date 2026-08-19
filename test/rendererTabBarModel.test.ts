@@ -21,13 +21,27 @@ function pane(overrides: Partial<WirePaneInfo> = {}): WirePaneInfo {
   const result: WirePaneInfo = {
     paneId: overrides.paneId ?? 'pane-1',
     sessionId: overrides.sessionId ?? 's1',
+    projectRoot: overrides.projectRoot ?? OWN_ROOT,
+    projectName: overrides.projectName ?? 'own',
   }
   if (overrides.sessionTitle !== undefined) result.sessionTitle = overrides.sessionTitle
   return result
 }
 
+/**
+ * The default helper builds panes in `OWN_ROOT`, and `stateWith` leaves
+ * `ownProjectRoot` unset — which the model reads as "everything is mine". The
+ * cross-project cases below pass it explicitly.
+ */
+const OWN_ROOT = 'c:/repo/own'
+const OTHER_ROOT = 'c:/repo/other'
+
 function stateWith(panes: WirePaneInfo[], activePaneId?: string): TabBarState {
   return createTabBarState(panes, activePaneId)
+}
+
+function stateAcross(panes: WirePaneInfo[], activePaneId?: string): TabBarState {
+  return createTabBarState(panes, activePaneId, OWN_ROOT)
 }
 
 test('tabBarView produces one row per pane, marking the active one', () => {
@@ -54,7 +68,7 @@ test('canCreate=false hides the "+" button', () => {
   assert.equal(view.hasNewTab, false)
 })
 
-test('every row is closable today; a future "pinned" flag lives on the row', () => {
+test('a row in this window\'s own project is closable', () => {
   const view = tabBarView(stateWith([pane({ paneId: 'a' })]))
   assert.equal(view.rows[0]?.closable, true)
 })
@@ -129,4 +143,104 @@ test('row.paneId matches WirePaneInfo.paneId, never the session id', () => {
   const view = tabBarView(stateWith([pane({ paneId: 'token-1', sessionId: 'real-session' })]))
   assert.equal(view.rows[0]?.paneId, 'token-1')
   assert.equal(view.rows[0]?.sessionId, 'real-session')
+})
+
+// --- several projects in one bar ---------------------------------------------
+
+test('panes are grouped by project, this window\'s own project first', () => {
+  // Wire order is "the order projects were opened", so a window belonging to the
+  // second project would otherwise find its own tabs in the middle of the bar.
+  const view = tabBarView(
+    stateAcross([
+      pane({ paneId: 'x1', projectRoot: OTHER_ROOT, projectName: 'other' }),
+      pane({ paneId: 'a1', projectRoot: OWN_ROOT, projectName: 'own' }),
+      pane({ paneId: 'x2', projectRoot: OTHER_ROOT, projectName: 'other' }),
+      pane({ paneId: 'a2', projectRoot: OWN_ROOT, projectName: 'own' }),
+    ]),
+  )
+
+  assert.deepEqual(view.groups.map((group) => group.projectName), ['own', 'other'])
+  assert.deepEqual(view.groups.map((group) => group.own), [true, false])
+  // Within a project the host's order stands.
+  assert.deepEqual(view.groups[0]?.rows.map((row) => row.paneId), ['a1', 'a2'])
+  assert.deepEqual(view.groups[1]?.rows.map((row) => row.paneId), ['x1', 'x2'])
+  // `rows` is the flattened visual order, which is what the digit chords index.
+  assert.deepEqual(view.rows.map((row) => row.paneId), ['a1', 'a2', 'x1', 'x2'])
+})
+
+test('project labels appear only from the second project up', () => {
+  const single = tabBarView(stateAcross([pane({ paneId: 'a' })]))
+  assert.equal(single.showProjectLabels, false)
+
+  const across = tabBarView(
+    stateAcross([pane({ paneId: 'a' }), pane({ paneId: 'x', projectRoot: OTHER_ROOT, projectName: 'other' })]),
+  )
+  assert.equal(across.showProjectLabels, true)
+})
+
+test('another project\'s row is focus-only: not closable, and findClose refuses it', () => {
+  // Its pane lives in another `SessionWorkspace`, which this window's host
+  // cannot close -- and before `focus-pane` existed, asking it to would have
+  // destroyed this window instead.
+  const state = stateAcross([
+    pane({ paneId: 'a' }),
+    pane({ paneId: 'x', projectRoot: OTHER_ROOT, projectName: 'other' }),
+  ])
+  const view = tabBarView(state)
+
+  assert.equal(view.rows.find((row) => row.paneId === 'a')?.closable, true)
+  assert.equal(view.rows.find((row) => row.paneId === 'x')?.closable, false)
+  assert.deepEqual(findClose(state, 'x'), { kind: 'none' })
+  // Focusing it is fine -- that is the whole point of listing it.
+  assert.deepEqual(findSwitch(state, 'x'), { kind: 'switch', paneId: 'x' })
+})
+
+test('Ctrl+1-9 index the visible order, not the wire order', () => {
+  const state = stateAcross([
+    pane({ paneId: 'x1', projectRoot: OTHER_ROOT, projectName: 'other' }),
+    pane({ paneId: 'a1', projectRoot: OWN_ROOT }),
+  ])
+  // Wire index 0 is the foreign pane; on screen it is second.
+  assert.deepEqual(tabBarKeyToIntent({ key: '1', ctrlKey: true }, state), { kind: 'switch', paneId: 'a1' })
+  assert.deepEqual(tabBarKeyToIntent({ key: '2', ctrlKey: true }, state), { kind: 'switch', paneId: 'x1' })
+})
+
+test('Ctrl+W refuses to close another project\'s pane', () => {
+  // Reachable if the host reports a foreign pane as this window's session --
+  // which should not happen, but the chord must not act on it if it does.
+  const state = stateAcross(
+    [pane({ paneId: 'x', projectRoot: OTHER_ROOT, projectName: 'other' })],
+    'x',
+  )
+  assert.deepEqual(tabBarKeyToIntent({ key: 'w', ctrlKey: true }, state), { kind: 'none' })
+})
+
+test('Ctrl+Shift+O opens a project; Ctrl+O alone does nothing', () => {
+  const state = stateWith([pane({ paneId: 'a' })], 'a')
+  // A browser reports the shifted letter, so both cases have to map.
+  assert.deepEqual(tabBarKeyToIntent({ key: 'O', ctrlKey: true, shiftKey: true }, state), { kind: 'open-project' })
+  assert.deepEqual(tabBarKeyToIntent({ key: 'o', ctrlKey: true, shiftKey: true }, state), { kind: 'open-project' })
+  assert.deepEqual(tabBarKeyToIntent({ key: 'o', metaKey: true, shiftKey: true }, state), { kind: 'open-project' })
+  assert.deepEqual(tabBarKeyToIntent({ key: 'o', ctrlKey: true }, state), { kind: 'none' })
+  assert.deepEqual(tabBarKeyToIntent({ key: 'O', shiftKey: true }, state), { kind: 'none' })
+})
+
+test('before hello, with no own project known, every row stays closable', () => {
+  // `ownProjectRoot` is undefined until `hello()` resolves; at that point the
+  // only pane in the list is this window's own.
+  const state = stateWith([pane({ paneId: 'a', projectRoot: OTHER_ROOT })], 'a')
+  assert.equal(tabBarView(state).rows[0]?.closable, true)
+  assert.deepEqual(tabBarKeyToIntent({ key: 'w', ctrlKey: true }, state), { kind: 'close', paneId: 'a' })
+})
+
+test('canCreate=false hides both action buttons', () => {
+  // Same gate for "+" and "Open project…": both open something, and both are
+  // wrong while a blocking dialog is up.
+  const view = tabBarView({ panes: [], activePaneId: undefined, canCreate: false })
+  assert.equal(view.hasNewTab, false)
+  assert.equal(view.hasOpenProject, false)
+})
+
+test('the hint names the open-project chord', () => {
+  assert.match(tabBarView(createTabBarState()).hint, /Ctrl\+Shift\+O/)
 })

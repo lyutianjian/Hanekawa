@@ -31,6 +31,7 @@ import {
   type WireEffortResult,
   type WireEnqueueResult,
   type WireFileSuggestionsResult,
+  type WireFocusPaneResult,
   type WireHelloResult,
   type WireListPanesResult,
   type WireModelsResult,
@@ -146,8 +147,10 @@ export class SessionClient {
   /**
    * The session the host is bound to, once it has said so.
    *
-   * `undefined` until the first `session-changed` or `hello`; a shell that needs
-   * it to paint should take it from `hello()`'s result instead of waiting.
+   * `undefined` only before `hello()` resolves — that reply seeds it, so a shell
+   * that has attached always has an answer. The desktop tab bar's active row is
+   * derived from this, which is why `hello` records it rather than leaving the
+   * first `session-changed` to.
    */
   getSession = (): SessionMeta | undefined => this.session
 
@@ -222,7 +225,14 @@ export class SessionClient {
   // --- commands ---------------------------------------------------------
 
   async hello(): Promise<WireHelloResult> {
-    return this.send({ type: 'hello', id: randomUUID() }) as Promise<WireHelloResult>
+    const result = await this.send({ type: 'hello', id: randomUUID() }) as WireHelloResult
+    // `hello` *is* an announcement of the bound session, so record it rather than
+    // waiting for the first `session-changed`. Without this `getSession()` stays
+    // undefined through the whole first session, and anything deriving from it —
+    // the tab bar's active row, for one — is wrong until a `/clear` or `/resume`
+    // happens to fix it.
+    this.session = result.session
+    return result
   }
 
   async submit(input: string, overrides?: WireRunOverrides): Promise<void> {
@@ -471,6 +481,38 @@ export class SessionClient {
   async listPanes(): Promise<readonly WirePaneInfo[]> {
     const result = await this.send({ type: 'list-panes', id: randomUUID() }) as WireListPanesResult
     return result.panes
+  }
+
+  /**
+   * Brings an already-open pane's window forward.
+   *
+   * This — not `openPane` — is what a tab click means: every row in the tab bar
+   * is a pane that exists, and with several projects open the pane may belong to
+   * a project this host knows nothing about. `false` means the shell no longer
+   * has a window for it, so the caller should re-list rather than report an error.
+   */
+  async focusPane(paneId: string): Promise<boolean> {
+    const result = await this.send({
+      type: 'focus-pane',
+      id: randomUUID(),
+      paneId,
+    }) as WireFocusPaneResult
+    return result.ok
+  }
+
+  /**
+   * Asks the shell to open another project in this process.
+   *
+   * Resolving means the shell accepted the request; the project is bootstrapped
+   * afterwards, in its own window. `path` is for a smoke harness — a client
+   * normally omits it and lets the shell put up its native directory picker.
+   */
+  async openProject(path?: string): Promise<void> {
+    await this.send({
+      type: 'open-project',
+      id: randomUUID(),
+      ...(path ? { path } : {}),
+    })
   }
 
   /**
@@ -777,6 +819,10 @@ function sameTaskSnapshot(a: TaskDisplaySnapshot | undefined, b: TaskDisplaySnap
  * Two pane lists are the same when every pane id matches in the same order and
  * every title still matches. A re-announcement of the same topology — which the
  * host does on every open / close — must not wake the tab bar.
+ *
+ * The project fields count too: they decide which group a row is drawn under and
+ * whether it gets a close button, so a list that only differs there is a list
+ * the tab bar has to repaint.
  */
 function samePaneList(a: readonly WirePaneInfo[], b: readonly WirePaneInfo[]): boolean {
   if (a === b) return true
@@ -787,6 +833,8 @@ function samePaneList(a: readonly WirePaneInfo[], b: readonly WirePaneInfo[]): b
     if (left.paneId !== right.paneId) return false
     if (left.sessionId !== right.sessionId) return false
     if (left.sessionTitle !== right.sessionTitle) return false
+    if (left.projectRoot !== right.projectRoot) return false
+    if (left.projectName !== right.projectName) return false
   }
   return true
 }

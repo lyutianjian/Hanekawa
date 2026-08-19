@@ -1,25 +1,37 @@
 /**
  * The Electron main process.
  *
- * Multi-pane desktop shell: one `BrowserWindow` per session, all sharing the
- * same `ProjectRuntime`. The composition mirrors `src/tui/entrypoints/tui.tsx`
- * — `bootstrap()` returns the merged `RuntimeHost`, a `SessionWorkspace` keeps
- * the panes alive, and `SessionHost` does the runtime/protocol work for each
- * one. Everything TUI-shaped is not here; everything renderer-shaped is not here.
+ * Multi-project, multi-pane desktop shell: one `BrowserWindow` per session, one
+ * `ProjectRuntime` + `SessionWorkspace` per project root, and a
+ * `ProjectDirectory` above them holding the bookkeeping that spans projects. The
+ * composition of any single project mirrors `src/tui/entrypoints/tui.tsx` —
+ * `bootstrap()` returns the merged `RuntimeHost`, a `SessionWorkspace` keeps the
+ * panes alive, and `SessionHost` does the runtime/protocol work for each one.
+ * Everything TUI-shaped is not here; everything renderer-shaped is not here.
  *
  * Lifecycle:
- *  1. `bootstrap()` runs with a synchronous `confirmMcpTrust` that drives
+ *  1. `openProject(cwd)` is the only way a project comes into existence, and the
+ *     first project goes through it exactly like the fifth. Inside it,
+ *     `bootstrap()` runs with a synchronous `confirmMcpTrust` that drives
  *     `dialog.showMessageBoxSync` for each untrusted MCP server — this fires
  *     before any channel exists, the only place a pre-channel prompt can live.
- *  2. `openPane({ sessionId?, title? })` builds the window, wires the channel
- *     and constructs `SessionHost` **before** loading the page. The channel is
- *     what makes the attach lossless, and there is deliberately no ready
- *     handshake. The same routine opens the first pane and every subsequent
- *     tab, so a renderer-initiated `open-pane` reaches the same wiring.
- *  3. On `before-quit` we tear down every pane in order and wait for it,
- *     because `ProjectRuntime.shutdown` is the only call site that stops
- *     background tasks.
- *  4. `window-all-closed` quits only when there are no panes left.
+ *  2. `openPane(project, { sessionId?, title? })` builds the window, wires the
+ *     channel and constructs `SessionHost` **before** loading the page. The
+ *     channel is what makes the attach lossless, and there is deliberately no
+ *     ready handshake. The same routine opens the first pane and every
+ *     subsequent tab, so a renderer-initiated `open-pane` reaches the same wiring.
+ *  3. A project is shut down when its last window closes (`afterPaneDetached`) —
+ *     `ProjectRuntime.shutdown` is the only call that stops background tasks and
+ *     MCP clients, so keeping a window-less project alive would leave child
+ *     processes running with nothing on screen to stop them.
+ *  4. On `before-quit` we tear down every pane in order and wait for it, then
+ *     shut every project down. `window-all-closed` quits only when there are no
+ *     panes left.
+ *
+ * Two keys, and they are not interchangeable: `panes` is keyed by
+ * `BrowserWindow.id` (session ids move under `/clear` and `/resume`, window ids
+ * do not), and the project map inside `ProjectDirectory` is keyed by the
+ * normalized project root.
  *
  * The `node:fs` imports and the wall-clock commands stay here, never in the
  * renderer bundle.
@@ -31,11 +43,8 @@ import { fileURLToPath } from 'node:url'
 import { SessionStore } from '../sessions/service.js'
 import { logDiagnostics } from '../harness/diagnostics.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
-import {
-  bootstrap,
-  RuntimeStartupError,
-  type RuntimeHost,
-} from '../runtime/index.js'
+import { bootstrap, RuntimeStartupError } from '../runtime/index.js'
+import { ProjectDirectory, type ProjectEntry } from '../runtime/projectDirectory.js'
 import {
   SessionWorkspace,
   type SessionPane,
@@ -69,6 +78,8 @@ interface PaneEntry {
   pane: SessionPane
   sessionHost: SessionHost
   window: BrowserWindow
+  /** The project this window belongs to. Never moves; a pane cannot change project. */
+  project: ProjectEntry
 }
 
 /**
@@ -80,10 +91,14 @@ interface PaneEntry {
  * window id does not. Indexing by the moving key would mean an `onPaneClosed`
  * from the host (which carries the post-`/clear` session id) never finds the
  * entry to destroy, and the window leaks alongside its `SessionHost`.
+ *
+ * Insertion-ordered, which is what makes this the source of the tab list: the
+ * projection only describes panes that have a window, so every row the renderer
+ * draws is a row it can focus.
  */
 const panes = new Map<number, PaneEntry>()
-let host: RuntimeHost | null = null
-let workspace: SessionWorkspace | null = null
+/** Every open project. All decisions that used to be module-level variables live here. */
+const directory = new ProjectDirectory()
 let quitting = false
 
 if (!app.requestSingleInstanceLock()) {
@@ -92,14 +107,11 @@ if (!app.requestSingleInstanceLock()) {
   // `bootstrap()` (MCP connects, store init) on a process that is exiting.
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    // A second instance opens a new tab in the existing window rather than a
-    // second window — keeps the workspace as the single shared surface.
-    const focused = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-    if (focused) {
-      if (focused.isMinimized()) focused.restore()
-      focused.focus()
-    }
+  app.on('second-instance', (_event, argv, workingDirectory) => {
+    // A second launch is a request for *that* directory's project: open it if it
+    // is new, focus it if it is already here. Launching in the same directory
+    // therefore behaves as it always did — focus, no second runtime.
+    void openProjectInteractive(resolveCwd(argv, workingDirectory))
   })
 
   app.on('window-all-closed', () => {
@@ -112,7 +124,7 @@ if (!app.requestSingleInstanceLock()) {
     if (quitting) return
     quitting = true
     // Teardown is async and Electron will not wait for it on its own:
-    // `host.shutdown()` is the only place background tasks get stopped, so
+    // `project.shutdown()` is the only place background tasks get stopped, so
     // exiting out from under it leaks child processes. Cancel this quit, drain,
     // then quit again — the guard above lets the second pass through.
     event.preventDefault()
@@ -122,17 +134,18 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.on('activate', () => {
-    // On macOS the dock icon survives a window close; if the workspace is still
-    // alive but the last window was closed, spawn a fresh tab so the user is
+    // On macOS the dock icon survives a window close; if a project is still
+    // alive but its last window was closed, spawn a fresh tab so the user is
     // not staring at an empty dock.
-    if (BrowserWindow.getAllWindows().length === 0 && host && workspace) {
-      void openPane({})
+    if (BrowserWindow.getAllWindows().length === 0) {
+      const first = directory.entries()[0]
+      if (first) void openPane(first, {})
     }
   })
 
   void app.whenReady().then(async () => {
     try {
-      await main()
+      await openProject(resolveCwd())
     } catch (error) {
       if (error instanceof RuntimeStartupError) {
         dialog.showErrorBox('Hanekawa failed to start', error.message)
@@ -147,8 +160,24 @@ if (!app.requestSingleInstanceLock()) {
   })
 }
 
-async function main(): Promise<void> {
-  const cwd = resolveCwd()
+/**
+ * Brings a project into the process, or focuses it if it is already here.
+ *
+ * The idempotence is the point: `directory.add` refuses a duplicate root, since
+ * two `ProjectRuntime`s over one `.myagent/` means two `SessionStore`s appending
+ * to the same JSONL files. Checking first turns "open this project" into a safe
+ * request no matter how often the user makes it.
+ *
+ * Throws rather than reporting: the startup path wants an error box and a quit,
+ * the interactive path wants an error box and to carry on. `openProjectInteractive`
+ * is that second policy.
+ */
+async function openProject(cwd: string): Promise<void> {
+  const open = directory.get(cwd)
+  if (open) {
+    focusProject(open)
+    return
+  }
 
   const store = new SessionStore(cwd)
   await store.init()
@@ -160,72 +189,112 @@ async function main(): Promise<void> {
   const sessions = await store.list()
   const session = sessions.at(0) ?? store.createDraft()
 
-  host = await bootstrap({
+  const project = await bootstrap({
     cwd,
     store,
     session,
     confirmMcpTrust: promptTrustMcpServer,
   })
 
-  logDiagnostics(host.diagnostics)
-  workspace = new SessionWorkspace(host)
+  logDiagnostics(project.diagnostics)
+  const workspace = new SessionWorkspace(project)
   // The bootstrap session is the first pane; `adopt` registers the existing
   // scope without rebuilding it (which `open` would). Pass the resumed
   // session id so `openPane` resolves to the adopted pane rather than minting
   // a fresh draft and leaving a window-less ghost behind in the workspace.
-  workspace.adopt(host)
-  await openPane({ sessionId: session.id })
-}
+  workspace.adopt(project)
+  const entry = directory.add(project, workspace)
 
-async function teardown(): Promise<void> {
-  // Closing every pane is the only call that stops background tasks per-pane.
-  // The fixed four-step order inside `workspace.close` keeps each scope
-  // shutdown ordered: `interrupt('exit')` → controller → slot → scope.
-  for (const entry of [...panes.values()]) {
-    entry.sessionHost.dispose()
-    workspace?.close(entry.pane)
-    if (!entry.window.isDestroyed()) entry.window.destroy()
+  const opened = await openPane(entry, { sessionId: session.id })
+  if (!opened) {
+    // The window failed to build and `openPane` already said so. Do not leave a
+    // project with no way to reach it — that is a live MCP connection set and a
+    // background task registry nothing on screen can stop.
+    await directory.closeProject(entry, 'window-failed')
   }
-  panes.clear()
-  if (host) {
-    await host.shutdown('app-quit')
-    host = null
-  }
-  workspace = null
 }
 
 /**
- * Opens a new tab.
+ * The interactive policy for `openProject`: pick a directory if none was given,
+ * report failures without taking the process down.
  *
- * The argument shape matches `HostCommand.open-pane`: omit `sessionId` to mint
- * a fresh draft (rare from this entry point — the bootstrap already does
- * that), or pass one to retarget. The shell's role is the same either way:
- * build a window, build a `RuntimeChannel` over it, attach a `SessionHost`.
+ * `path` comes from the wire (`open-project`), where it is optional so this can
+ * be driven without touching a native modal — CDP cannot click one.
  */
-async function openPane(options: { sessionId?: string; title?: string }): Promise<void> {
-  if (!host || !workspace) {
-    throw new Error('Runtime was not built before a pane was opened')
+async function openProjectInteractive(path?: string): Promise<void> {
+  try {
+    const target = path ?? (await promptForProjectDirectory())
+    if (!target) return
+    await openProject(target)
+  } catch (error) {
+    dialog.showErrorBox(
+      'Hanekawa could not open that project',
+      error instanceof Error ? error.message : String(error),
+    )
   }
+}
 
+/** Native directory picker. Cancelling is a no-op, not an error. */
+async function promptForProjectDirectory(): Promise<string | undefined> {
+  const result = await dialog.showOpenDialog({
+    title: 'Open project',
+    buttonLabel: 'Open',
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  if (result.canceled) return undefined
+  return result.filePaths[0]
+}
+
+async function teardown(): Promise<void> {
+  // Every pane first, in the fixed four-step order inside `workspace.close`
+  // (`interrupt('exit')` → controller → slot → scope), then the projects: a
+  // project shut down under a live pane pulls the tools out from beneath a turn
+  // that is still draining.
+  for (const entry of [...panes.values()]) {
+    entry.sessionHost.dispose()
+    entry.project.workspace.close(entry.pane)
+    if (!entry.window.isDestroyed()) entry.window.destroy()
+  }
+  panes.clear()
+  await directory.shutdownAll('app-quit')
+}
+
+/**
+ * Opens a new tab in `project`.
+ *
+ * The options shape matches `HostCommand.open-pane`: omit `sessionId` to mint a
+ * fresh draft, or pass one to resolve an existing session. The shell's role is
+ * the same either way: build a window, build a `RuntimeChannel` over it, attach
+ * a `SessionHost`.
+ *
+ * A pane is always created in the project the requesting host belongs to — a
+ * host resolves sessions out of its own store, and cross-project work reaches
+ * the shell through `focus-pane` / `open-project` instead. Returns the entry, or
+ * `undefined` after reporting a failure.
+ */
+async function openPane(
+  owner: ProjectEntry,
+  options: { sessionId?: string; title?: string },
+): Promise<PaneEntry | undefined> {
   let entry: PaneEntry | null = null
 
   try {
     // 1. Find or build the pane for the requested session.
     let pane: SessionPane
     if (options.sessionId) {
-      const existing = workspace.paneForSession(options.sessionId)
+      const existing = owner.workspace.paneForSession(options.sessionId)
       if (existing) {
         pane = existing
       } else {
-        const session = await host.store.resolve(options.sessionId)
+        const session = await owner.project.store.resolve(options.sessionId)
         if (!session) throw new Error(`Session not found: ${options.sessionId}`)
-        pane = await workspace.open(session)
+        pane = await owner.workspace.open(session)
       }
     } else {
       // A fresh draft. Mirrors `bootstrap()`: `store.createDraft` is in-memory
       // until the first message record.
-      const scope = await host.openScope(host.store.createDraft(options.title))
-      pane = workspace.adopt(scope, {})
+      const scope = await owner.project.openScope(owner.project.store.createDraft(options.title))
+      pane = owner.workspace.adopt(scope, {})
     }
 
     // 2. Build the window and the channel. `ipcMain.on` is registered the
@@ -250,9 +319,9 @@ async function openPane(options: { sessionId?: string; title?: string }): Promis
       channel,
       controller: pane.controller,
       runtimeSlot: pane.runtimeSlot,
-      project: host,
+      project: owner.project,
       scope: pane.scope,
-      workspace,
+      workspace: owner.workspace,
       onPaneOpened: (nextPane, requestSessionId) => {
         // Another pane was opened from this renderer. The host has already
         // registered it in the workspace; we just need to materialize the
@@ -260,29 +329,35 @@ async function openPane(options: { sessionId?: string; title?: string }): Promis
         const target = requestSessionId ?? nextPane.getSession().id
         // The map is keyed by window id, so look up by session id instead —
         // there is at most one window per session by the workspace's invariant.
-        const existing = findEntryBySessionId(target)
-        if (existing && !existing.window.isDestroyed()) {
-          if (existing.window.isMinimized()) existing.window.restore()
-          existing.window.focus()
-          return
-        }
-        void openPane({ sessionId: target })
+        if (focusPaneWindow(target)) return
+        void openPane(owner, { sessionId: target })
       },
-      onPaneClosed: () => {
-        // The host has already removed the pane from the workspace; we just
-        // need to destroy the window. By the time this fires, `entry` is the
-        // entry for THIS callback's host (the closure captures it), so the
-        // window id is the right key regardless of any `/clear` that the
-        // pane already went through.
-        if (!entry) return
-        if (!entry.window.isDestroyed()) entry.window.destroy()
-        // The 'closed' lifecycle handler will delete from `panes` and run
-        // the last-pane exit check, so this callback stays focused on the
-        // single responsibility of tearing the window down.
+      onPaneClosed: (paneId) => {
+        // The host has already closed the pane in its workspace; the window is
+        // ours to destroy. Look the window up by the pane that closed rather
+        // than assuming it is this callback's own: a renderer can close another
+        // tab, and closing over `entry` unconditionally would take down the
+        // wrong window. `getSessionMeta()` still answers after
+        // `controller.dispose()`, so the scan resolves post-teardown.
+        detachPane(findEntryBySessionId(paneId) ?? entry, 'pane-closed')
+      },
+      onFocusPane: focusPaneWindow,
+      onOpenProject: (path) => {
+        void openProjectInteractive(path)
+      },
+      // With several projects open a host's own workspace is a subset of the
+      // tabs on screen, so the shell answers instead — from its window map, so
+      // every row the renderer draws is a row it can focus.
+      describePanes: describeAllPanes,
+      // The host has just told its own renderer; the other windows are ours to
+      // tell. Fires for a session switch too, which is a topology change even
+      // though no pane opened or closed (`paneId` is the session id).
+      onPaneListChanged: () => {
+        if (entry) broadcastPaneListToOthers(entry)
       },
     })
 
-    entry = { pane, sessionHost, window: entryWindow }
+    entry = { pane, sessionHost, window: entryWindow, project: owner }
     panes.set(entryWindow.id, entry)
     // Tell every other window that the pane list changed. The host will
     // push its own `pane-list` to the originating renderer once it boots;
@@ -292,54 +367,108 @@ async function openPane(options: { sessionId?: string; title?: string }): Promis
 
     // The renderer's `close` (window control, Cmd+W, …) flows through
     // `webContents.on('destroyed')`; the channel handler there closes the
-    // SessionHost. We also detach the host from the map right here so a
-    // subsequent 'closed' event for the same window is a no-op.
+    // SessionHost. `detachPane` is idempotent, so the OS path and the
+    // host-driven path can both arrive.
     entryWindow.on('closed', () => {
       const held = panes.get(entryWindow.id)
-      if (!held) return
-      held.sessionHost.dispose()
-      workspace?.close(held.pane)
-      panes.delete(entryWindow.id)
-      broadcastPaneListToOthers(held)
-      if (panes.size === 0 && process.platform !== 'darwin') {
-        app.quit()
-      }
+      if (held) detachPane(held, 'window-closed')
     })
 
     try {
       await entryWindow.loadFile(join(bundleDir, 'renderer', 'index.html'))
     } catch (error) {
-      entry.sessionHost.dispose()
-      workspace.close(entry.pane)
-      if (!entry.window.isDestroyed()) entry.window.destroy()
-      panes.delete(entryWindow.id)
-      broadcastPaneListToOthers(entry)
+      detachPane(entry, 'load-failed')
       throw error
     }
+
+    return entry
   } catch (error) {
-    // `openPane` is called from `second-instance` and `activate`; propagate
-    // the failure as a dialog rather than a silent log so the user can act.
+    // `openPane` is called from `second-instance`, `activate` and the host
+    // callbacks; propagate the failure as a dialog rather than a silent log so
+    // the user can act.
     dialog.showErrorBox(
       'Hanekawa could not open a tab',
       error instanceof Error ? error.message : String(error),
     )
+    return undefined
   }
+}
+
+/**
+ * Tears one window down: its `SessionHost`, its pane, the window itself.
+ *
+ * The single exit path for all three ways a pane can go away (the OS closing the
+ * window, a renderer's `close-pane`, a failed `loadFile`), so the project-level
+ * bookkeeping in `afterPaneDetached` cannot be reached by only two of them.
+ * Idempotent: the map entry is dropped first, and `window.destroy()` re-enters
+ * through the `'closed'` handler.
+ */
+function detachPane(entry: PaneEntry | null, reason: string): void {
+  if (!entry) return
+  if (panes.get(entry.window.id) !== entry) return
+  panes.delete(entry.window.id)
+  entry.sessionHost.dispose()
+  entry.project.workspace.close(entry.pane)
+  if (!entry.window.isDestroyed()) entry.window.destroy()
+  broadcastPaneListToOthers(entry)
+  afterPaneDetached(entry, reason)
+}
+
+/**
+ * A project outlives its windows only until this runs.
+ *
+ * `shutdown()` is the only call that stops background tasks and MCP clients, so
+ * a project whose last window is gone has to be shut down here or it keeps child
+ * processes alive with no UI able to stop them. Reopening the same project
+ * bootstraps it again, which costs a fraction of a second.
+ *
+ * Skipped entirely while quitting: `teardown()` owns the ordering then, and
+ * closing projects from underneath it would race its own pane loop.
+ */
+function afterPaneDetached(entry: PaneEntry, reason: string): void {
+  if (quitting) return
+  const stillOpen = [...panes.values()].some((held) => held.project === entry.project)
+  if (!stillOpen) void directory.closeProject(entry.project, reason)
+  if (panes.size === 0 && process.platform !== 'darwin') app.quit()
 }
 
 /**
  * Linear scan for the entry whose pane currently shows a given session id.
  *
- * The `panes` map is keyed by window id, but `onPaneOpened` arrives with a
- * session id (the renderer's `open-pane` payload). The workspace guarantees
- * at most one pane per session, so at most one window — a scan is fine, and
- * "scan" is what `paneForSession` already does, so a Map<sessionId, ...>
- * would be a duplicate index that drifts on every `/clear`.
+ * The `panes` map is keyed by window id, but the host callbacks arrive with a
+ * session id (the renderer's `open-pane` / `focus-pane` payload). The workspace
+ * guarantees at most one pane per session, so at most one window — a scan is
+ * fine, and "scan" is what `paneForSession` already does, so a
+ * Map<sessionId, …> would be a duplicate index that drifts on every `/clear`.
  */
 function findEntryBySessionId(sessionId: string): PaneEntry | undefined {
   for (const entry of panes.values()) {
     if (entry.pane.getSession().id === sessionId) return entry
   }
   return undefined
+}
+
+/**
+ * `focus-pane`: bring an existing pane's window forward, whichever project owns
+ * it. `false` tells the renderer its tab list is stale.
+ */
+function focusPaneWindow(paneId: string): boolean {
+  const entry = findEntryBySessionId(paneId)
+  if (!entry || entry.window.isDestroyed()) return false
+  focusWindow(entry.window)
+  return true
+}
+
+/** The most recently opened window of a project, for "this project is already open". */
+function focusProject(project: ProjectEntry): void {
+  const owned = [...panes.values()].filter((entry) => entry.project === project)
+  const latest = owned.at(-1)
+  if (latest && !latest.window.isDestroyed()) focusWindow(latest.window)
+}
+
+function focusWindow(window: BrowserWindow): void {
+  if (window.isMinimized()) window.restore()
+  window.focus()
 }
 
 /**
@@ -373,21 +502,16 @@ function guardNavigation(window: BrowserWindow): void {
 }
 
 /**
- * Project the live pane set into the renderer's `WirePaneInfo[]` shape.
+ * The whole tab topology, across every project.
  *
- * Field-by-field rather than a spread: `SessionPane` carries the controller
- * and runtime slot, and the renderer reads only `paneId` / `sessionId` /
- * `sessionTitle`. Anything else is a privacy surface.
+ * Projected from the *windows* rather than from the workspaces, and the
+ * difference matters: a pane is registered in its workspace before its window
+ * exists, so describing workspaces would advertise tabs nothing can focus. The
+ * field-by-field projection itself lives in `ProjectDirectory.describe` — one
+ * copy, shared with whatever the hosts report.
  */
-function collectAllPanes(): WirePaneInfo[] {
-  const out: WirePaneInfo[] = []
-  for (const entry of panes.values()) {
-    const session = entry.pane.getSession()
-    const info: WirePaneInfo = { paneId: session.id, sessionId: session.id }
-    if (session.title !== undefined) info.sessionTitle = session.title
-    out.push(info)
-  }
-  return out
+function describeAllPanes(): WirePaneInfo[] {
+  return directory.describe([...panes.values()].map((entry) => entry.pane))
 }
 
 /**
@@ -401,7 +525,7 @@ function collectAllPanes(): WirePaneInfo[] {
  * skip the destination without an extra channel-roundtrip check.
  */
 function broadcastPaneListToOthers(ignoredEntry: PaneEntry): void {
-  const list = collectAllPanes()
+  const list = describeAllPanes()
   for (const entry of panes.values()) {
     if (entry === ignoredEntry) continue
     if (entry.window.isDestroyed()) continue
@@ -415,7 +539,7 @@ function broadcastPaneListToOthers(ignoredEntry: PaneEntry): void {
 /**
  * MCP trust prompt. `confirmMcpTrust` is awaited inside `bootstrap()`, before
  * any channel exists, so this cannot be a renderer dialog — a native modal is
- * the only thing available this early.
+ * the only thing available this early. Every project asks for its own servers.
  *
  * `showMessageBoxSync` returns the button *index*; it is the async
  * `showMessageBox` that returns `{ response }`. Reading `.response` off the
@@ -446,17 +570,18 @@ async function promptTrustMcpServer(
 }
 
 /**
- * Resolve the working directory from argv or environment.
+ * Resolve a project directory from a command line.
  *
- * The TUI defaults to `process.cwd()` so it launches in the shell's directory,
- * and we keep that. `--cwd=…` overrides it; "open another project" is a
- * stage-3 feature.
+ * The first instance defaults to `process.cwd()` so it launches in the shell's
+ * directory; a second instance passes its own argv and working directory, which
+ * is what makes `hanekawa` in another folder open that folder's project.
+ * `--cwd=…` overrides either.
  */
-function resolveCwd(): string {
-  const flag = process.argv.find((arg) => arg.startsWith('--cwd='))
+function resolveCwd(argv: readonly string[] = process.argv, fallback: string = process.cwd()): string {
+  const flag = argv.find((arg) => arg.startsWith('--cwd='))
   if (flag) {
     const value = flag.slice('--cwd='.length)
     if (existsSync(value)) return value
   }
-  return process.cwd()
+  return fallback
 }

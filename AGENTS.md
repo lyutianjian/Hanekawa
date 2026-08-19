@@ -16,7 +16,7 @@ npm run typecheck                  # base + tsconfig.preload.json + tsconfig.ren
 npm run build                      # tsc -p tsconfig.build.json → dist/ (Electron main only)
 npm run build:desktop              # build + esbuild preload/renderer bundles + copy index.html
 npm run start:desktop              # electron . (needs a real display)
-npm run test                       # full suite: 1951 tests / 39 suites, ~45s
+npm run test                       # full suite: 1989 tests / 39 suites, ~48s
 node --import tsx --test test/compact.test.ts          # single file (space-separate several)
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
 ```
@@ -45,7 +45,7 @@ tui/ (Ink)  →  harness/ (loop, toolRunner, permissions, contextBuilder)  →  
               sessions/ (JSONL)            prompts/ (budget, composer)      tools/   services/
 ```
 
-### Runtime tiers — `src/runtime/types.ts`, `sessionScope.ts`, `sessionWorkspace.ts`
+### Runtime tiers — `src/runtime/types.ts`, `sessionScope.ts`, `sessionWorkspace.ts`, `projectDirectory.ts`
 
 - **`ProjectRuntime`** — one per `cwd`: `config`, `store`, `ToolRegistry`, `CommandRegistry`, MCP
   connections, `BackgroundTaskRegistry`, reload functions, `shutdown`.
@@ -55,6 +55,7 @@ tui/ (Ink)  →  harness/ (loop, toolRunner, permissions, contextBuilder)  →  
   the model name.
 - **`SessionPane`** — a scope plus the `RuntimeSlot` and `SessionController` driving it; the unit a
   desktop tab owns.
+- **`ProjectDirectory`** — every open project, and the only pane bookkeeping that spans them.
 
 `bootstrap()` returns `RuntimeHost = ProjectRuntime & SessionScope` for one-session shells; `SessionHost`
 takes the halves separately. `reloadSettings()` fans out to every open scope; `shutdown()` disposes all
@@ -72,11 +73,29 @@ scopes and is the only thing that stops background tasks.
 - `switchPane`/`clearPane` wrap `sessionSwitch.ts`, the only copy of that choreography. Panes own no
   `SessionRecordLedger` — results come back raw for the caller to rebase.
 
-**N sessions per project and N projects per process are both safe.** Module-level project-scoped state
-partitions on `agentCacheSource(sessionId, cwd)`, `compact.ts`'s `circuitKey`, the content-hashed
-`toolSchemaCache`, `contextByCwd`, `resolvedCwdCache`, `sessionMemory`'s `sessionStates`; the slash-command
-registry and fixed-literal cache sources are instance/root-bound. `test/multiProject.test.ts` keeps this
-true. Still missing: a shell that opens a second project (`todo.md`).
+`ProjectDirectory` rules (`projectDirectory.ts`) — the tier a multi-project shell needs, and the reason
+`main.ts` holds no module-level project state:
+
+- **Keyed by `projectRootKey(cwd)`** = `resolve` + `normalizeCaseForComparison` (`src/utils/paths.ts`), so
+  `C:\Repo` and `c:/repo/` are one project. `add()` **throws** on a duplicate rather than replacing — two
+  `ProjectRuntime`s over one `.myagent/` means two `SessionStore`s appending to the same JSONL. A shell
+  that wants "open or focus" calls `get()` first.
+- **`closeProject()` is `workspace.closeAll()` → `project.shutdown()`**, in that order (the reverse tears
+  the tools out from under panes that are still draining), idempotent, and it drops the entry.
+- **`describe(panes)` is the one projection onto `WirePaneInfo[]`** and takes the panes to describe rather
+  than reading the workspaces: a pane is registered before its window exists, so a shell passes what it
+  has windows for and "listed ⇒ focusable" stays true. Panes no open project owns are dropped.
+- **Generic over its two halves with the real types as defaults** (`ProjectDirectory<RuntimeHost,
+  SessionWorkspace>`), so the shell gets full types and a test writes
+  `new ProjectDirectory<FakeProject, FakeWorkspace>()` with **no `as unknown as`** — the constraints still
+  check the fake against the members the class calls. `bootstrap()` deliberately stays outside: the shell
+  owns the MCP trust prompt and the error dialogs, and hands the assembled halves to `add()`.
+
+**N sessions per project and N projects per process are both safe**, in the core and in the desktop shell.
+Module-level project-scoped state partitions on `agentCacheSource(sessionId, cwd)`, `compact.ts`'s
+`circuitKey`, the content-hashed `toolSchemaCache`, `contextByCwd`, `resolvedCwdCache`, `sessionMemory`'s
+`sessionStates`; the slash-command registry and fixed-literal cache sources are instance/root-bound.
+`test/multiProject.test.ts` and `test/projectDirectory.test.ts` keep this true.
 
 ### The turn loop — `src/harness/loop.ts`
 
@@ -241,7 +260,7 @@ for a renderer.
   `SessionController.publish` compares by reference, but every deserialized message is a fresh object
   graph.
 - **Inbound is validated, outbound isn't.** `parseHostCommand` (`commandSchema.ts`) runs a `.strict()`
-  union over all 34 `HostCommand` variants; kept honest by a keyed `satisfies` table (fails *by name*) and
+  union over all 36 `HostCommand` variants; kept honest by a keyed `satisfies` table (fails *by name*) and
   a mutual-assignability assertion. A malformed `ui-response` is settled with that kind's own fallback —
   nothing else releases the pending prompt. Traps: `PERMISSION_MODES` is the Shift+Tab *cycle order*
   (4 values, no `'readonly'`), not the mode set; `set-effort.level` is `z.string()` (raw token budget as
@@ -278,21 +297,45 @@ for a renderer.
 - **Pane commands are the only host reach past its own session.** `open-pane`/`close-pane`/`list-panes`
   work off `PaneRegistry`, declared *structurally*. One pane per session; `onPaneOpened`/`onPaneClosed`
   fire for *resolved* panes, so shell callbacks must be idempotent.
-- **`paneId` is the pane's *current* session id — not a stable key** (`/clear`/`/resume` move it).
-  `broadcastPaneList()` fires only from open/close and posts to this host's channel alone, so the shell
-  owns the cross-window bookkeeping: `main.ts` keys its `panes` map by `BrowserWindow.id` (never moves, so
-  no re-keying on `session-changed`), closes over the window entry in `onPaneClosed` (that callback's
-  `paneId` is the host's *current* session id and never matches an open-time key), and fans `pane-list` out
-  itself via `broadcastPaneListToOthers` — skipping the initiator (host already delivered its update) and
-  firing from the OS `'closed'` path too, which bypasses host.
+- **A host can *create* a pane only in its own project; anything cross-project goes to the shell.**
+  `focus-pane` and `open-project` are side-mounted hand-offs — the host touches no workspace and resolves
+  no session, it calls `onFocusPane` / `onOpenProject` and answers `{ ok }`. So a tab click is a
+  `focus-pane` (every row is a pane that exists), `open-pane` stays "create-or-resolve in my project", and
+  `open-pane` was **not** given a `projectRoot`. A missing callback **rejects** rather than answering
+  `{ ok: true }`, which would look like a focus that silently did nothing. `focus-pane` answering
+  `ok: false` means the shell has no window for that row — a client's cue to re-list, not an error.
+  `open-project`'s optional `path` is what makes the feature smoke-testable: CDP cannot click a native
+  directory dialog.
+- **With several projects open the shell, not the host, is the pane-list authority.** `describePanes?`
+  (shell-supplied, projected from its *windows*) wins over the host's own-project `collectPanes()`, which
+  stays as the single-project answer the TUI and every fake registry use. `onFocusPane` /
+  `onOpenProject` / `describePanes` / `onPaneListChanged` are all **optional for one reason**:
+  `test/protocolChildProcess.test.ts` builds its `SessionHostDeps` inside a *string* script, where tsc
+  cannot see a required member and the failure would be runtime-only (3a and 3b each sprang that trap).
+- **`paneId` is the pane's *current* session id — not a stable key** (`/clear`/`/resume` move it), so a
+  session switch is a topology change: `applySessionSwitch` ends with `broadcastPaneList()`, or every tab
+  bar keeps the pre-switch id and closing that row fails with "Pane not found". `broadcastPaneList()`
+  reaches this host's channel only and then fires `onPaneListChanged` — the shell's cue to fan the same
+  list out to its other windows. `main.ts` keys its `panes` map by `BrowserWindow.id` (never moves, so no
+  re-keying on `session-changed`), looks the window up **by the closing pane's id** in `onPaneClosed` (a
+  renderer can close another tab; closing over its own entry unconditionally took down the wrong window),
+  and fans out via `broadcastPaneListToOthers` — skipping the initiator (host already delivered its
+  update) and firing from the OS `'closed'` path too, which bypasses host.
+- **`hello` seeds `SessionClient.session`.** It is an announcement of the bound session, and the desktop
+  tab bar derives its active row from `getSession()` — left to the first `session-changed`, no row is
+  marked active for the whole first session.
 
 ### Electron shell — `src/desktop/`
 
-One `BrowserWindow` per pane: `bootstrap()` → `new SessionWorkspace(host)` → per window a `SessionPane` +
-channel + `SessionHost`. `preload.ts` exposes only `{send, onMessage, close}` on `window.hanekawa`.
-**A tab is a window:** every tab bar renders the whole workspace; switching = `open-pane({sessionId})`
-resolving to an existing pane → focus call. N channels share one `ipcMain`, claiming traffic by
-`event.sender` (`test/electronChannel.test.ts`).
+One `BrowserWindow` per pane, N projects per process: `openProject(cwd)` → `bootstrap()` →
+`new SessionWorkspace(project)` → `directory.add(...)` → per window a `SessionPane` + channel +
+`SessionHost`. The first project goes through `openProject` exactly like the fifth. `preload.ts` exposes
+only `{send, onMessage, close}` on `window.hanekawa`. **A tab is a window:** every tab bar renders every
+pane in the process, grouped by project; switching = `focus-pane` → the shell raises that window. N
+channels share one `ipcMain`, claiming traffic by `event.sender` (`test/electronChannel.test.ts`).
+
+Two keys, not interchangeable: `panes` is keyed by `BrowserWindow.id` (session ids move under `/clear` and
+`/resume`, window ids do not), the project map by `projectRootKey(cwd)`.
 
 Transport interfaces (`ipc/electronChannel.ts`) are **structural, not imported from `electron`** —
 loadable from plain-node tests. Each rule below was a launch-blocking bug `tsc` couldn't see:
@@ -306,11 +349,20 @@ loadable from plain-node tests. Each rule below was a launch-blocking bug `tsc` 
   `__ready`). If any constructor subscription ever fires on registration, revisit this ordering.
 - **`dist/desktop/` paths anchor to the module's own directory** — never count `..` (emitted depth ≠
   source depth).
-- **`before-quit` must `preventDefault()` and await teardown** — `sessionHost.dispose()` → each
-  `pane.close()` → the single shared `host.shutdown()` — then re-`quit()` behind a flag.
+- **`detachPane` is the single exit path** for all three ways a window goes away (OS close, a renderer's
+  `close-pane`, a failed `loadFile`), so the project-level bookkeeping behind it cannot be reached by only
+  two of them. It drops the map entry first, making it idempotent under the re-entrant `'closed'` event.
+- **A project is shut down when its last window closes** (`afterPaneDetached`): `shutdown()` is the only
+  call that stops background tasks and MCP clients, so a window-less project would keep child processes
+  alive with no UI able to stop them. Skipped entirely while `quitting` — `teardown()` owns the ordering
+  then. Reopening costs a fresh `bootstrap()`, which is also how a smoke can *prove* the shutdown happened:
+  a project still in the directory would be focused, and no new window would appear.
+- **`before-quit` must `preventDefault()` and await teardown** — every window's `sessionHost.dispose()` →
+  `pane.close()` → window destroy, then `directory.shutdownAll()` — then re-`quit()` behind a flag.
 - **Nothing in `main.ts` is tested** (`app.requestSingleInstanceLock()` at module top level throws under
-  plain node); `test/desktopMain.test.ts` drives channel + host + client with a fake `PaneRegistry`
-  instead. Push decisions into `SessionHost` or `model/` modules rather than adding here.
+  plain node); `test/desktopMain.test.ts` drives channel + host + client with fake `PaneRegistry`s and a
+  real `ProjectDirectory` instead. Push decisions into `SessionHost`, `ProjectDirectory` or `model/`
+  modules rather than adding here.
 - **One implementation per side** — the renderer channel is `renderer/bridgeChannel.ts`, used by both
   `app.ts` and the tests.
 
@@ -340,7 +392,16 @@ import of `harness/|services/|sessions/|commands/|tui/`, an import allowlist, no
   resolves by name before `isSupportedSurface`; `provider-panel` is the one ignored by name.
 - **Tab-bar chords resolve *before* the keymap** — only safe because `tabBarKeyToIntent`
   (`model/tabBar.ts`) returns `'none'` unless ctrl/meta is held. An unmodified key would silently shadow
-  every dialog.
+  every dialog. `Ctrl+Shift+O` (an `'open-project'` intent) is checked before the unshifted letters, since
+  a browser reports the shifted key as `'O'`.
+- **The tab bar groups by project, this window's own project first.** `groupRows` is the single source of
+  that order: `tabBarView` renders it and `tabBarKeyToIntent` indexes it, so `Ctrl+1`–`9` hit the nth tab
+  *on screen* rather than the nth on the wire. Headings appear only from two projects up
+  (`showProjectLabels`), and `ownProjectRoot` (from `hello.projectRoot`, the normalized key — not `cwd`,
+  which is raw and may differ in case) is what makes a row this window's. Another project's row is
+  **focus-only**: `closable: false` and `findClose` refuses it, because its pane lives in a
+  `SessionWorkspace` this window's host cannot reach. `ownProjectRoot` undefined (pre-`hello`) means "all
+  mine", which is true at that point.
 - **A blocking request must always be answered** — `SessionClient.answer` try/catches handlers and falls
   back to `UI_REQUEST_FALLBACKS[kind]()`; otherwise a throwing dialog wedges the loop for the life of the
   process.

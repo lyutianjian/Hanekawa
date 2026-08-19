@@ -187,6 +187,16 @@ const COMMAND_SCHEMAS = {
     .object({ type: z.literal('close-pane'), id: commandId, paneId: z.string() })
     .strict(),
   'list-panes': z.object({ type: z.literal('list-panes'), id: commandId }).strict(),
+  'focus-pane': z
+    .object({ type: z.literal('focus-pane'), id: commandId, paneId: z.string() })
+    .strict(),
+  // `path` is unvalidated beyond "a string": it names a directory the shell is
+  // about to bootstrap, and the only sender is our own renderer bundle. What
+  // guards it is the same thing that guards `run-tool` — the host process is the
+  // trust boundary, not this schema.
+  'open-project': z
+    .object({ type: z.literal('open-project'), id: commandId, path: z.string().optional() })
+    .strict(),
   // Spelled out like the two enums above rather than derived, and `_NoDrift` is
   // what keeps it honest. `content` is unbounded on purpose: it becomes a user
   // message, and the composer is the only thing that ever decides how long a

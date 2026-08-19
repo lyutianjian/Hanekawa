@@ -35,6 +35,7 @@
 | 3h | 消息队列跨进程（归 host）+ 费用常驻：`enqueue-message`/`clear-queue`、`resolveUsageWithCost` 收掉三份重复、`#status-cost` | 1943 |
 | 3i | 一个进程多个项目（core）：`CommandRegistry` 挂上 `ProjectRuntime`、三个字面量 cache source 在 mint 处绑 root、`multiProject.test.ts` | 1948 |
 | 3i-pre | 清账：桌面端用户消息重复气泡（`applyRecord` 按 id 幂等）、`CommandRegistry.registerSkill`/`clearSkills` 让 `reloadSkills` 真的重注册 | 1951 |
+| 3j | 桌面端打开第二个项目：`ProjectDirectory`（键=规范化 root、close→shutdown 顺序、唯一一份 `WirePaneInfo` 投影）、`focus-pane`/`open-project` 两条旁挂命令、`WirePaneInfo` 带 `projectRoot`/`projectName`、标签栏按项目分组（外来行只聚焦）、最后一个窗口关掉即 shutdown 该项目 | 1989 |
 
 ### 决策留痕（只留 `CLAUDE.md` 未覆盖的）
 
@@ -46,19 +47,47 @@
 - **配置串校验**：名字拼错时 `resolveModelReference` 返回 `undefined` 与「没配置」无法区分而被静默忽略 ——
   已改为校验原始配置字符串，`fallbackModel`/`compactModel` 出 `RuntimeDiagnostic` 警告而不拦启动
   （三条确认不可达的启动错误分支已删）。
-- **main.ts 的窗↔pane 簿记（3d，下一个任务「打开第二个项目」会直接改这段）**：`panes` Map 以
+- **main.ts 的窗↔pane 簿记（3d，3j 改过一次）**：`panes` Map 以
   `BrowserWindow.id` 为键 —— session id 随 `/clear`、`/resume` 移动，window id 不动；`paneId` 字段只用于
   渲染器侧 `WirePaneInfo`。`onPaneOpened` 用线性扫描定位（`workspace` 自身就这么做，不引入第二份会漂移的
-  索引）；`onPaneClosed` 闭包到自己的 `entryWindow` 而非查 map —— 回调拿到的 `paneId` 是 host 视角的
-  **当前**会话 id，与开窗时的键从来对不上。`broadcastPaneListToOthers` 跳过发起者（host 已把更新送到发起
+  索引）。`onPaneClosed` 原本闭包到自己的 `entryWindow`，理由写的是「回调拿到的 `paneId` 是 host 视角的
+  **当前**会话 id，与开窗时的键从来对不上」—— 前半句对（键是 window id），**结论错**：按 `paneId` 线性扫
+  `pane.getSession().id` 就能找到，而闭包到自己的窗口意味着一个渲染器关别人的标签会关错窗口。3j 改成
+  `findEntryBySessionId(paneId) ?? entry`。`broadcastPaneListToOthers` 跳过发起者（host 已把更新送到发起
   窗口，重复推送幂等但省事）；OS 关窗路径（`'closed'` 回调）也要广播一次，那条不经过 host。
 - **App.tsx「先定义后 `useCommands`」惯例**：传进 `useCommands({…})` 的 handler 必须定义在调用之前
   （TDZ），`openBackgroundTasks`/`openResumePicker`/`handleEnterRestoreMode` 都遵守，不加 ref 间接层。
+- **3j 的四个决策**（问过一轮，全部按推荐落地）：① 一个项目的最后一个窗口关掉就 `shutdown` 它
+  （否则 MCP 子进程和后台任务留在没有 UI 能停它的进程里；重开只是一次 bootstrap，几百 ms）；② 入口是标签栏
+  「Open project…」按钮 + `Ctrl+Shift+O`，不做原生 File 菜单（决策进 `model/tabBar.ts` 就能被纯函数测到，
+  `main.ts` 只留 `showOpenDialog` 那几行）；③ 别的项目的标签**只能聚焦、不给关闭按钮**（`TabRow.closable`
+  的注释本来就是为这种情况留的，host 的 `PaneRegistry` 语义因此完全不变）；④ 跨项目一律走 shell 旁挂命令，
+  **没有**给 `open-pane` 加 `projectRoot`。
+- **3j 顺手修的两条现存缺陷**（都不是本轮引入，但都被本轮的不变式/冒烟逼出来）：
+  ① `main.ts` 的 `onPaneClosed` 无条件销毁**自己**的窗口 —— 单项目下点别人标签的 × 就会关错窗口，改成按
+  关闭的那个 pane 的 id 查窗口（`getSessionMeta()` 在 `controller.dispose()` 之后仍返回最后的 meta）；
+  ② `applySessionSwitch` 不广播 `pane-list` —— `/clear`、`/resume` 移动了 `paneId`，所有标签栏都留着旧 id，
+  那一行还在画但关不掉（"Pane not found"）。顺带 `SessionClient.hello()` 现在记下会话：不然
+  `getSession()` 整个首个会话都是 `undefined`，桌面端**没有任何标签被标成 active**。
+- **`ProjectDirectory` 用泛型而不是 `as unknown as`**：默认类型参数给外壳完整的 `RuntimeHost`/
+  `SessionWorkspace`，测试写 `new ProjectDirectory<FakeProject, FakeWorkspace>()` 就不需要任何 cast，
+  约束仍然检查假货有没有被真正调用的那几个成员 —— 这是「`as unknown as` 关掉的正是编译器唯一能抓 API 谎言的
+  机会」那条经验的正解，值得往别的假货上推。
 
 ### 工作方法（本项目的验收惯例）
 
 - **变异验证**：每加一条不变式，就把 bug 逐个塞回去，确认是**预期的那条**用例报红（已用它证伪过多条
-  文档断言，如「没有 `default` 分支就能强制穷尽」实测是假的）。
+  文档断言，如「没有 `default` 分支就能强制穷尽」实测是假的）。3j 做了 7 条（`describePanes` 回落、外来行
+  可关、`focus-pane` 恒真、`closeProject` 顺序、`samePaneList` 少比字段、`applySessionSwitch` 不广播、
+  `hello` 不记会话），全部只红预期的那几条。**手工 patch/revert 要 grep 回滚结果**：本轮两次「以为改回去了」
+  实际没匹配上（mutation 只删了调用行，注释留着，revert 的搜索串就对不上了），是全量跑变红才发现的。
+- **真机冒烟先怀疑驱动，再怀疑 app**：3j 的冒烟卡了四轮，三轮都是 CDP 驱动自己的问题 ——
+  ① 每步重新 attach/detach 一个 DevTools session 会和浏览器自己的簿记打架，socket 一掉就长得像 app 卡死
+  （改成一窗一 socket 全程持有）；② 让窗口关闭**自己**的 pane 时不能 `await` 那个 evaluate 的回包，渲染器
+  会在回包之前就被销毁；③ 「我的标签」要按 `.active` 找，不能按「第一个非外来标签」（同项目两个窗口时那是
+  兄弟窗口的）。判据：**先在没有 CDP 的情况下复现**（本轮用改 `dist/desktop/main.js` 自动开第二个 pane +
+  `did-finish-load`/`render-process-gone` 日志，一次就证明 app 侧是好的），再拿 `git worktree` + node_modules
+  junction 建一份 HEAD 基线对照。`Target.setDiscoverTargets` 会让新窗口的渲染器不启动，别开它。
 - **测的实现必须就是出货的实现**：renderer channel 曾有测试/出货两份，main 侧工厂的两处 API 谎言
   被专门写的 mock 一路放行。
 - **`as unknown as` 关掉的正是编译器唯一能抓 API 谎言的机会** —— 已四次应验：2b-2 三个开机即死 bug；
@@ -85,7 +114,7 @@
 
 ## 待办
 
-### 阶段 3 — 桌面独有能力 `[~]`
+### 阶段 3 — 桌面独有能力 `[x]`
 
 - [x] **跨进程 workspace 协议**（3b+3d）：`HostCommand` 从 27 增到 34，pane 命令是**旁挂**的一层而非
   参数化既有命令；`SessionHost` 经 `PaneRegistry` 解析/注册、建窗经 `onPaneOpened`/`onPaneClosed` 交回
@@ -95,11 +124,13 @@
   cache source 在 mint 处绑 root）；扫过 `src/` 其余模块级可变状态，**没有第三个阻塞点**（其余的都按
   session id / cwd 天然分区或守单个共享文件）；`test/multiProject.test.ts` 是唯一凭据。同项目多标签
   本就不受限。
-- [ ] **桌面端打开第二个项目**（3i 的另一半，下一个主任务）：`main.ts` 的 `host`/`workspace` 两个模块级
-  变量要变成 `Map<cwd, ProjectEntry>`、`teardown` 循环每个项目、`dialog.showOpenDialog` 加入口、
-  `WirePaneInfo` 加 `projectRoot`、标签栏按项目分组。注意 `open-pane` 是 host 命令而 host 只认识自己那个
-  `SessionWorkspace`，所以**跨项目开 pane 只能走 shell**，不能参数化既有命令。
-  这半边 `main.ts` 一行测试都没有（模块顶层就 `app.requestSingleInstanceLock()`），只能靠真机冒烟。
+- [x] **桌面端打开第二个项目**（3j）：`main.ts` 的两个模块级变量换成 `ProjectDirectory`（键=规范化 root，
+  `add` 拒绝重复），`main()` 收敛成 `openProject(resolveCwd())` —— 首个项目和第 N 个走同一条路径；
+  `HostCommand` 34 → 36（`focus-pane`/`open-project`，纯转交，host 不碰 workspace）；多项目下 pane 列表的
+  权威移到 shell（`describePanes` 从**窗口** map 投影，所以「列出来的 ⇒ 能聚焦」为真），`onPaneListChanged`
+  是跨窗口扇出的钩子；标签栏按项目分组、自己项目在前、`Ctrl+1-9` 打可见序、外来行只聚焦不可关；
+  `second-instance` 带着自己的 cwd 进来就开那个项目。`main.ts` 仍然一行测试都没有，凭据是
+  `test/projectDirectory.test.ts` + `test/desktopMain.test.ts` 的跨项目用例 + 下面那条真机冒烟。
 
 ### 已知缺陷（记账未修）
 
@@ -185,13 +216,30 @@ ps:手动冒烟测试基本完成，发现最大的问题是 user 发送后 mess
 `turn-start` 用 `event.messageId` 先画一条，而那个 id 就是随后落盘的 `message` 记录 id
 （`sessionController.ts:189` → `loop.ts:312`），renderer 的 `applyRecord` 又追加了一遍；现改为按 id 就地
 替换（记录侧带 `displayContent`，是更权威的那一份）。TUI 没这毛病是因为它整条忽略 user 记录。
+
+- [x] **3j 的多项目冒烟**（全部 CDP 自动化，零 API 花费；驱动脚本在
+  `%TEMP%/hanekawa-smoke.mjs`，一窗一 socket 全程持有，用 `window.hanekawa.send` 直接发协议命令 +
+  读 `#tab-bar` 的 DOM，最后 `taskkill` 收尾）。10 条全绿：
+  ① 单项目：无分组标签、一个标签可关且被标成 active、`+` 与「Open project…」都在；
+  ② `open-project` 带 path（避开点不到的原生框）→ 第二个窗口起来，两边标签栏都分成两组、各自项目在前；
+  ③ 外来标签没有 ×；对它 `focus-pane` → `ok:true` 且窗口真被拿到前面，对幽灵 id → `ok:false`（自愈重拉）；
+  ④ 对外来 pane 发 `close-pane` → host 拒绝（"Pane not found"），那个窗口安然无恙；
+  ⑤ `Ctrl+T` 在**自己项目**里加一个标签，可见顺序是自己项目在前；
+  ⑥ 项目 B 最后一个窗口关掉 → B 从 directory 摘掉并 shutdown（凭据：再 `open-project` 同一路径**新开了**
+     一个窗口 —— 若还在 directory 里就只会聚焦、什么都不出现）；
+  ⑦ 对**已开**的项目再 `open-project` → 不新开窗口；
+  ⑧ `/clear` → 自己的标签 id 变了且仍可关，**另一个项目的窗口也看到了新 id**（这条就是上面修的第②个缺陷）；
+  ⑨ `Ctrl+Shift+O` → 原生目录框弹出、app 仍然响应（**点取消需要人**，CDP 点不到原生模态）；
+  ⑩ 收尾无残留 electron 进程。
+  唯一"best-effort"的一条：点外来标签后靠 `document.hasFocus()` 判断窗口是否被拿到前面 —— OS 焦点在自动化下
+  不保证，本轮实测是抬起来了，但没当断言。
 ---
 
 ## 验证
 
 ```bash
 npm run typecheck                                     # 三段：base + preload + renderer
-npm run test                                          # 1951 tests / 39 suites, ~45s
+npm run test                                          # 1989 tests / 39 suites, ~48s
 npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 npm run build:desktop                                 # tsc emit + 两个 esbuild bundle + 拷 index.html
 npm run start:desktop                                 # 真实 Electron，需要桌面
@@ -238,6 +286,6 @@ node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 的环境里必定红（在 Claude Code 里跑 `npm run test` 就是这种环境）。它不是间歇、也不是回归：用例只
 save/delete/restore 了 `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS`，而它测的 `isExperimentalToolSearchBetaDisabled()`
 （`src/utils/toolSearch.ts:132-135`）读的是**两个**变量的或，第二个还留在环境里。已用 `git stash` 在干净基线
-复现。修法是让该用例对两个变量都做隔离（文件里已有 `setEnv` 助手）。**这种环境下 1951 里应当只有这一条红**
-（3i-pre 落地后实测 1948 pass / 2 fail，第二条是上面那条 `toolcall-integration` 的间歇 IPC 崩溃 ——
-它一崩，runner 就把整个文件按 1 条计，所以总数显示 1950 而不是 1951；单独跑 3/3 全绿）。
+复现。修法是让该用例对两个变量都做隔离（文件里已有 `setEnv` 助手）。**这种环境下 1989 里应当只有这一条红**
+（3j 落地后实测 1988 pass / 1 fail；3i-pre 时实测 1948 pass / 2 fail，第二条是上面那条 `toolcall-integration`
+的间歇 IPC 崩溃 —— 它一崩，runner 就把整个文件按 1 条计，总数会少显示一条；单独跑 3/3 全绿）。

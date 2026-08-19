@@ -180,6 +180,26 @@ export type HostCommand =
   | { type: 'open-pane'; id: string; sessionId?: string; title?: string }
   | { type: 'close-pane'; id: string; paneId: string }
   | { type: 'list-panes'; id: string }
+  /**
+   * Bring an already-open pane's window to the front.
+   *
+   * Side-mounted rather than folded into `open-pane`, because a host only knows
+   * its *own* project: it can create a pane in that project, but a shell holding
+   * several projects is the only thing that can find an arbitrary pane's window.
+   * So this command carries no session and touches no workspace — the host hands
+   * it straight to the shell. `ok: false` means the shell has no window for that
+   * pane any more, which is a client's cue to re-list rather than an error.
+   */
+  | { type: 'focus-pane'; id: string; paneId: string }
+  /**
+   * Open another project in the same process.
+   *
+   * `path` is optional because the shell owns the picker: with no path the shell
+   * puts up its native directory dialog, and cancelling is a no-op. A client
+   * never sends one — but the field is what lets the whole feature be driven
+   * from a smoke harness, since a native modal cannot be clicked over CDP.
+   */
+  | { type: 'open-project'; id: string; path?: string }
   // --- message queue --------------------------------------------------------
   /**
    * Hold a message until the running turn is over.
@@ -374,6 +394,16 @@ export interface WireHelloResult {
   sessionId: string
   session: SessionMeta
   cwd: string
+  /**
+   * The same `cwd`, normalized the way `WirePaneInfo.projectRoot` is
+   * (`projectRootKey`).
+   *
+   * Separate from `cwd` because that one is for display and this one is for
+   * comparison: on Windows and macOS the filesystem does not care about case, so
+   * a raw `cwd` from argv may not match the key the pane list carries — and the
+   * tab bar decides from that comparison whether a row is closable.
+   */
+  projectRoot: string
   records: SessionRecord[]
   notices: StartupNotice[]
   hasRecoverableInterruption: boolean
@@ -527,6 +557,17 @@ export interface WirePaneInfo {
   sessionId: string
   /** May be absent for a fresh draft that has never received a title. */
   sessionTitle?: string
+  /**
+   * Which project this pane belongs to, normalized (`projectRootKey`).
+   *
+   * Required rather than optional so the compiler makes every projection site
+   * fill it: a pane whose project is unknown cannot be grouped, and the tab bar
+   * has to decide from this whether a row is its own window's project (closable)
+   * or somebody else's (focus only).
+   */
+  projectRoot: string
+  /** Display name for the group label — `basename`, or the root for a filesystem root. */
+  projectName: string
 }
 
 export interface WireOpenPaneResult {
@@ -542,4 +583,18 @@ export interface WireClosePaneResult {
 
 export interface WireListPanesResult {
   panes: WirePaneInfo[]
+}
+
+/** `false` when the shell has no window for that pane — the client should re-list. */
+export interface WireFocusPaneResult {
+  ok: boolean
+}
+
+/**
+ * `ok` means the shell accepted the request, not that a project is open: with no
+ * `path` the user still has a directory dialog to answer, and bootstrapping
+ * happens after this reply. `false` is a shell that cannot open projects at all.
+ */
+export interface WireOpenProjectResult {
+  ok: boolean
 }

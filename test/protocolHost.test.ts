@@ -9,7 +9,7 @@ import { CommandRegistry } from '../src/commands/registry.js'
 import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.js'
 import { SessionHost } from '../src/runtime/protocol/host.js'
 import type { PaneRegistry } from '../src/runtime/protocol/host.js'
-import type { HostCommand, HostEvent } from '../src/runtime/protocol/wire.js'
+import type { HostCommand, HostEvent, WirePaneInfo } from '../src/runtime/protocol/wire.js'
 import type { SessionPane } from '../src/runtime/sessionWorkspace.js'
 import type { SessionController, SessionEvent } from '../src/runtime/sessionController.js'
 import type { RuntimeSlot } from '../src/runtime/runtimeSlot.js'
@@ -18,6 +18,7 @@ import type { PermissionRequest } from '../src/harness/permissions.js'
 import type { SessionRecord, Tool } from '../src/harness/types.js'
 import type { SessionMeta } from '../src/sessions/service.js'
 import { SessionStore } from '../src/sessions/service.js'
+import { projectRootKey } from '../src/runtime/projectDirectory.js'
 
 /**
  * The host is exercised against stub collaborators rather than a real runtime:
@@ -62,6 +63,10 @@ interface Harness {
     closedPanes: string[]
     openedCallbacks: Array<{ paneId: string }>
     closedCallbacks: string[]
+    focusedPanes: string[]
+    openedProjects: Array<string | undefined>
+    /** How often the shell was asked to fan a pane list out to its other windows. */
+    paneListFanOuts: number
   }
   /** Drives the two subscriptions the host installs on the runtime host. */
   changeMode: (mode: string) => void
@@ -71,7 +76,22 @@ interface Harness {
   dispose: () => void
 }
 
-async function createHarness(): Promise<Harness> {
+/**
+ * Knobs for the pane/project surface. Everything else about the fixture is
+ * fixed — a test that needs a different runtime builds its own.
+ */
+interface HarnessOptions {
+  /** Omit the three shell callbacks: a shell that owns exactly one project. */
+  singleProject?: boolean
+  /** What `onFocusPane` answers. Defaults to "the window was there". */
+  focusFound?: boolean
+  /** The whole-topology projection a multi-project shell supplies. */
+  describePanes?: () => WirePaneInfo[]
+  /** What this host's *own* workspace lists, for the fallback projection. */
+  workspacePanes?: SessionMeta[]
+}
+
+async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-protocol-'))
   const store = new SessionStore(cwd)
   await store.init()
@@ -105,6 +125,9 @@ async function createHarness(): Promise<Harness> {
     closedPanes: [],
     openedCallbacks: [],
     closedCallbacks: [],
+    focusedPanes: [],
+    openedProjects: [],
+    paneListFanOuts: 0,
   }
 
   const eventListeners = new Set<(event: SessionEvent) => void>()
@@ -269,7 +292,7 @@ async function createHarness(): Promise<Harness> {
   // so a host built from this fixture cannot accidentally crash on a stray
   // open-pane command in a test that does not care about panes.
   const paneRegistry: PaneRegistry = {
-    list: () => [],
+    list: () => (options.workspacePanes ?? []).map(fakePane),
     paneForSession: () => undefined,
     open: async (session) => {
       calls.openedPanes.push(session.id)
@@ -284,6 +307,27 @@ async function createHarness(): Promise<Harness> {
     },
   }
 
+  /**
+   * The three shell callbacks a multi-project shell supplies. Omitted entirely
+   * with `singleProject`, which is the shape `test/protocolChildProcess.test.ts`
+   * and the terminal build have — and the reason they are optional at all.
+   */
+  const shellDeps = options.singleProject
+    ? {}
+    : {
+        onFocusPane: (paneId: string) => {
+          calls.focusedPanes.push(paneId)
+          return options.focusFound ?? true
+        },
+        onOpenProject: (path?: string) => {
+          calls.openedProjects.push(path)
+        },
+        onPaneListChanged: () => {
+          calls.paneListFanOuts += 1
+        },
+        ...(options.describePanes ? { describePanes: options.describePanes } : {}),
+      }
+
   const host = new SessionHost({
     channel: hostSide,
     controller: controller as unknown as SessionController,
@@ -295,6 +339,7 @@ async function createHarness(): Promise<Harness> {
     workspace: paneRegistry,
     onPaneOpened: (pane, sessionId) => { calls.openedCallbacks.push({ paneId: sessionId ?? pane.getSession().id }) },
     onPaneClosed: (paneId) => { calls.closedCallbacks.push(paneId) },
+    ...shellDeps,
   })
 
   return {
@@ -1565,5 +1610,156 @@ test('/cost and the status bar report the same number', async () => {
   // `/cost` prints six decimals and the status bar rounds; the agreement that
   // matters is the underlying number, so compare at `/cost`'s precision.
   assert.equal(total.value, `${cost.currency} ${cost.amount.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`)
+  harness.dispose()
+})
+
+// --- panes across projects ---------------------------------------------------
+
+/** The one shape a pane list takes on the wire, spelled out for the assertions. */
+function paneInfo(overrides: Partial<WirePaneInfo> & { paneId: string }): WirePaneInfo {
+  return {
+    sessionId: overrides.sessionId ?? overrides.paneId,
+    projectRoot: overrides.projectRoot ?? 'c:/repo/other',
+    projectName: overrides.projectName ?? 'other',
+    paneId: overrides.paneId,
+    ...(overrides.sessionTitle !== undefined ? { sessionTitle: overrides.sessionTitle } : {}),
+  }
+}
+
+async function replyTo(harness: Harness, command: HostCommand, id: string): Promise<unknown> {
+  harness.send(command)
+  await settle()
+  const reply = harness.received.find((event) => event.type === 'reply' && event.id === id)
+  assert.ok(reply && reply.type === 'reply', `expected a reply for ${id}`)
+  return reply.result
+}
+
+test('focus-pane is handed straight to the shell, with its answer passed back', async () => {
+  // No workspace lookup at all: with several projects open the pane may live in
+  // a `SessionWorkspace` this host has never seen.
+  const harness = await createHarness()
+  const result = await replyTo(harness, { type: 'focus-pane', id: 'f1', paneId: 'pane-9' }, 'f1')
+
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(harness.calls.focusedPanes, ['pane-9'])
+  assert.deepEqual(harness.calls.openedPanes, [], 'focusing must not resolve a session')
+  assert.deepEqual(harness.calls.adoptedPanes, [], 'focusing must not adopt a scope')
+  harness.dispose()
+})
+
+test('a focus the shell could not satisfy answers ok:false, not a failure', async () => {
+  // The renderer re-lists on false; a rejection would make a stale tab look like
+  // a broken host.
+  const harness = await createHarness({ focusFound: false })
+  const result = await replyTo(harness, { type: 'focus-pane', id: 'f1', paneId: 'ghost' }, 'f1')
+
+  assert.deepEqual(result, { ok: false })
+  assert.equal(harness.received.some((event) => event.type === 'fail'), false)
+  harness.dispose()
+})
+
+test('open-project forwards the path when given one, and undefined when not', async () => {
+  const harness = await createHarness()
+  assert.deepEqual(await replyTo(harness, { type: 'open-project', id: 'p1' }, 'p1'), { ok: true })
+  assert.deepEqual(
+    await replyTo(harness, { type: 'open-project', id: 'p2', path: 'C:/repo/other' }, 'p2'),
+    { ok: true },
+  )
+  // `undefined` means "put your own picker up"; the shell owns the dialog.
+  assert.deepEqual(harness.calls.openedProjects, [undefined, 'C:/repo/other'])
+  harness.dispose()
+})
+
+test('a single-project shell fails both hand-offs instead of pretending', async () => {
+  // The callbacks are optional so the string-script host in
+  // `protocolChildProcess.test.ts` keeps compiling, but a missing one must
+  // reject: answering `{ ok: true }` would look like a focus that did nothing.
+  const harness = await createHarness({ singleProject: true })
+  harness.send({ type: 'focus-pane', id: 'f1', paneId: 'p' })
+  harness.send({ type: 'open-project', id: 'p1' })
+  await settle()
+
+  const failures = harness.received.filter((event) => event.type === 'fail')
+  assert.deepEqual(failures.map((event) => event.type === 'fail' && event.id), ['f1', 'p1'])
+  assert.match(failures.map((event) => (event.type === 'fail' ? event.message : '')).join(' '), /cannot focus panes/)
+  assert.match(failures.map((event) => (event.type === 'fail' ? event.message : '')).join(' '), /cannot open projects/)
+  harness.dispose()
+})
+
+test('list-panes reports the shell topology when the shell has one', async () => {
+  // With more than one project open this host's own workspace is a subset of the
+  // tabs on screen, so its own projection would blink the others out.
+  const shellPanes = [
+    paneInfo({ paneId: 'mine', projectRoot: 'c:/repo/mine', projectName: 'mine' }),
+    paneInfo({ paneId: 'theirs', sessionTitle: 'Other project' }),
+  ]
+  const harness = await createHarness({
+    describePanes: () => shellPanes,
+    workspacePanes: [{ id: 'mine' } as SessionMeta],
+  })
+
+  assert.deepEqual(await replyTo(harness, { type: 'list-panes', id: 'l1' }, 'l1'), { panes: shellPanes })
+  harness.dispose()
+})
+
+test('without a shell projection, list-panes describes its own project', async () => {
+  // The single-project answer, which is what the terminal and every fake
+  // registry use. `projectRoot` comes from the host's own cwd, normalized the
+  // same way `WirePaneInfo` carries it.
+  const harness = await createHarness({
+    singleProject: true,
+    workspacePanes: [
+      { id: 's1', title: 'First' } as SessionMeta,
+      { id: 's2' } as SessionMeta,
+    ],
+  })
+
+  const result = await replyTo(harness, { type: 'list-panes', id: 'l1' }, 'l1') as { panes: WirePaneInfo[] }
+  assert.deepEqual(result.panes.map((info) => info.paneId), ['s1', 's2'])
+  assert.equal(result.panes[0]?.projectRoot, projectRootKey(harness.cwd))
+  assert.equal(result.panes[0]?.projectName, path.basename(harness.cwd))
+  assert.equal(result.panes[0]?.sessionTitle, 'First')
+  assert.equal('sessionTitle' in (result.panes[1] ?? {}), false, 'an untitled draft carries no title key')
+  harness.dispose()
+})
+
+test('the pane-list event pushed on close carries the shell topology too', async () => {
+  // `broadcastPaneList` and `list-panes` must not disagree: one is the push, the
+  // other the pull, and a renderer paints whichever arrived last.
+  const shellPanes = [paneInfo({ paneId: 'left', projectRoot: 'c:/repo/mine', projectName: 'mine' })]
+  const harness = await createHarness({
+    describePanes: () => shellPanes,
+    // The pane the close resolves against; the id is the registry's, not the
+    // fixture session's, so the command can be written without waiting for one.
+    workspacePanes: [{ id: 'doomed' } as SessionMeta],
+  })
+
+  harness.send({ type: 'close-pane', id: 'c1', paneId: 'doomed' })
+  await settle()
+
+  assert.deepEqual(harness.calls.closedCallbacks, ['doomed'])
+  const pushed = harness.received.filter((event) => event.type === 'pane-list')
+  assert.ok(pushed.length > 0, 'closing a pane must announce the new topology')
+  assert.deepEqual(pushed.at(-1), { type: 'pane-list', panes: shellPanes })
+  harness.dispose()
+})
+
+test('a session switch announces the new topology to every window', async () => {
+  // A pane *is* its session id, so `/clear` and `/resume` move it. Without an
+  // announcement every tab bar keeps the old id: the row still draws, closing it
+  // fails with "Pane not found", and focusing it only works after a re-list.
+  const shellPanes = [paneInfo({ paneId: 'whatever' })]
+  const harness = await createHarness({ describePanes: () => shellPanes })
+  const before = harness.received.filter((event) => event.type === 'pane-list').length
+
+  harness.send({ type: 'create-session', id: 'n1' })
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'n1'),
+    'the create-session reply',
+  )
+
+  const announcements = harness.received.filter((event) => event.type === 'pane-list')
+  assert.ok(announcements.length > before, 'the switch must push a pane-list')
+  assert.ok(harness.calls.paneListFanOuts > 0, 'and the shell must be asked to reach its other windows')
   harness.dispose()
 })

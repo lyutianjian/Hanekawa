@@ -481,3 +481,108 @@ test('a snapshot with no cost clears one that was there', async () => {
   assert.equal(harness.client.getCost(), undefined)
   harness.client.dispose()
 })
+
+// --- pane topology ------------------------------------------------------------
+
+test('a re-announced pane list keeps its identity and does not notify', async () => {
+  // The host re-announces on every open / close, and the tab bar rebuilds every
+  // node it is handed — so an identical list must be a no-op.
+  const harness = createHarness()
+  const panes = [
+    { paneId: 'a', sessionId: 'a', projectRoot: 'c:/repo/one', projectName: 'one', sessionTitle: 'A' },
+  ]
+  let announcements = 0
+  harness.client.onPanesChanged(() => { announcements += 1 })
+
+  harness.post({ type: 'pane-list', panes })
+  await settle()
+  const first = harness.client.getPanes()
+  assert.equal(announcements, 1)
+
+  // A fresh object graph with the same content: this is what every deserialized
+  // message looks like.
+  harness.post({ type: 'pane-list', panes: panes.map((pane) => ({ ...pane })) })
+  await settle()
+  assert.equal(harness.client.getPanes(), first, 'identity must survive a re-announcement')
+  assert.equal(announcements, 1)
+})
+
+test('a pane list that only changed project changes identity', async () => {
+  // `projectRoot` decides which group a row is drawn under and whether it gets a
+  // close button, so ignoring it here would leave a stale bar on screen.
+  const harness = createHarness()
+  const base = { paneId: 'a', sessionId: 'a', projectName: 'one' }
+  let announcements = 0
+  harness.client.onPanesChanged(() => { announcements += 1 })
+
+  harness.post({ type: 'pane-list', panes: [{ ...base, projectRoot: 'c:/repo/one' }] })
+  await settle()
+  assert.equal(announcements, 1)
+
+  harness.post({ type: 'pane-list', panes: [{ ...base, projectRoot: 'c:/repo/two' }] })
+  await settle()
+  assert.equal(announcements, 2, 'a moved pane must repaint the bar')
+  assert.equal(harness.client.getPanes()[0]?.projectRoot, 'c:/repo/two')
+
+  // Same for the display name, which is the group heading.
+  harness.post({
+    type: 'pane-list',
+    panes: [{ ...base, projectRoot: 'c:/repo/two', projectName: 'renamed' }],
+  })
+  await settle()
+  assert.equal(announcements, 3)
+})
+
+test('focusPane asks the shell and returns its answer; openProject omits an absent path', async () => {
+  const harness = createHarness()
+
+  const focusing = harness.client.focusPane('pane-7')
+  await settle()
+  const focus = harness.sent.find((command) => command.type === 'focus-pane')
+  assert.ok(focus && focus.type === 'focus-pane')
+  assert.equal(focus.paneId, 'pane-7')
+  harness.post({ type: 'reply', id: focus.id, result: { ok: false } })
+  assert.equal(await focusing, false, 'a stale tab must come back as false, not a rejection')
+
+  const opening = harness.client.openProject()
+  await settle()
+  const open = harness.sent.find((command) => command.type === 'open-project')
+  assert.ok(open && open.type === 'open-project')
+  // The key must be absent rather than undefined: the schema is `.strict()` and
+  // Electron IPC clones what it is given.
+  assert.equal('path' in open, false)
+  harness.post({ type: 'reply', id: open.id, result: { ok: true } })
+  await opening
+})
+
+test('hello seeds the bound session, so the first paint knows which pane is its own', async () => {
+  // `getSession()` used to stay undefined until the first `session-changed`,
+  // which meant the desktop tab bar marked no row active for the whole first
+  // session — and the row it marks active is how a window says "this one is mine".
+  const harness = createHarness()
+  assert.equal(harness.client.getSession(), undefined)
+
+  const pending = harness.client.hello()
+  await settle()
+  const sent = harness.sent.find((command) => command.type === 'hello')
+  assert.ok(sent && sent.type === 'hello')
+  harness.post({
+    type: 'reply',
+    id: sent.id,
+    result: {
+      sessionId: 's1',
+      session: { id: 's1', shortId: 's1', title: 'First', messageCount: 0, updatedAt: 0 },
+      cwd: 'C:/repo',
+      projectRoot: 'c:/repo',
+      records: [],
+      notices: [],
+      hasRecoverableInterruption: false,
+      queuedMessages: [],
+      configuredEffortLevel: 'high',
+    },
+  })
+
+  const hello = await pending
+  assert.equal(hello.projectRoot, 'c:/repo')
+  assert.equal(harness.client.getSession()?.id, 's1')
+})

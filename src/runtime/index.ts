@@ -65,6 +65,13 @@ export { RuntimeSlot } from './runtimeSlot.js'
 export type { RuntimeSlotSnapshot } from './runtimeSlot.js'
 export { SessionPane, SessionWorkspace, createSessionPane } from './sessionWorkspace.js'
 export type { CreateSessionPaneOptions, SessionWorkspaceOptions } from './sessionWorkspace.js'
+export { ProjectDirectory, projectDisplayName, projectRootKey } from './projectDirectory.js'
+export type {
+  DirectoryProject,
+  DirectoryWorkspace,
+  PaneLike,
+  ProjectEntry,
+} from './projectDirectory.js'
 export { SessionRecordLedger } from './recordLedger.js'
 export { canPumpQueue } from './queuePump.js'
 export { buildModelPickerOptions } from './modelPicker.js'

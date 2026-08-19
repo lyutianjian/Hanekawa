@@ -263,12 +263,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
         // test can tell "resolved" from "was already a key".
         return input in { main: 1, fast: 1, broken: 1 } ? input : `${input}-resolved`
       },
-      findTierForModel: (modelKey: string) => (modelKey === 'fast' ? 'fast' : undefined),
       resolveModelReference: (reference: string | undefined) => reference,
-      getActiveProfile: () => ({
-        name: 'default',
-        profile: { fast: 'fast', balanced: 'main', powerful: 'main' },
-      }),
       setDefaultModel: (name: string) => { calls.defaultModels.push(name) },
       save: async () => {},
     },
@@ -773,7 +768,7 @@ test('a command that throws is reported through a written line, not a fail', asy
   harness.dispose()
 })
 
-test('/model with an argument switches the runtime and persists the tier', async () => {
+test('/model with an argument switches the runtime and persists the model', async () => {
   const harness = await createHarness()
   registerBuiltinCommands(harness.commands)
 
@@ -781,7 +776,7 @@ test('/model with an argument switches the runtime and persists the tier', async
   await waitFor(() => harness.received.find((event) => event.type === 'reply'), 'the reply')
 
   assert.deepEqual(harness.calls.createdRuntimes, [{ modelKey: 'fast', recordCount: 0 }])
-  // The tier write-back is what separates /model from the set-model command.
+  // The write-back is what separates /model from the set-model command.
   assert.deepEqual(harness.calls.defaultModels, ['fast'])
   harness.dispose()
 })
@@ -797,7 +792,7 @@ test('/model with an unknown argument writes a line and leaves the runtime alone
   assert.deepEqual(harness.calls.defaultModels, [])
   const effect = harness.received.find((event) => event.type === 'command-effect')
   assert.ok(effect?.type === 'command-effect' && effect.effect.kind === 'write-line')
-  assert.match(effect.effect.text, /Unknown model or tier: nope/)
+  assert.match(effect.effect.text, /Unknown model: nope/)
   harness.dispose()
 })
 
@@ -950,7 +945,7 @@ test('the model list never carries an apiKey or a baseUrl', async () => {
   const result = reply.result as {
     models: Array<{ key: string; model?: string }>
     defaultModelKey?: string
-    pickerOptions: Array<{ tier: string; modelKey?: string; disabledReason?: string }>
+    pickerOptions: Array<{ key: string; modelKey?: string; disabledReason?: string }>
   }
   assert.deepEqual(result.models.map((entry) => entry.key), ['main', 'fast', 'broken'])
   assert.equal(result.models[0]?.model, 'main-model')
@@ -961,8 +956,10 @@ test('the model list never carries an apiKey or a baseUrl', async () => {
   // The picker rides along, resolved host-side because building it needs
   // getModel -- the same call that folds the secrets in above. Asserted
   // non-empty so the serialized check is not passing over an empty array.
-  assert.deepEqual(result.pickerOptions.map((option) => option.tier), ['fast', 'balanced', 'powerful'])
-  assert.deepEqual(result.pickerOptions.map((option) => option.modelKey), ['fast', 'main', 'main'])
+  assert.deepEqual(result.pickerOptions.map((option) => option.key), ['main', 'fast', 'broken'])
+  assert.deepEqual(result.pickerOptions.map((option) => option.modelKey), ['main', 'fast', undefined])
+  // The key that will not load is listed and disabled rather than dropped.
+  assert.match(result.pickerOptions[2]?.disabledReason ?? '', /could not be loaded/)
   harness.dispose()
 })
 

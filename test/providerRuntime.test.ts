@@ -25,9 +25,6 @@ async function createConfig(): Promise<ConfigService> {
   config.setModelConfig('main-a', { provider: 'openai', model: 'main-a' })
   config.setModelConfig('main-b', { provider: 'anthropic', model: 'main-b' })
   config.setDefaultModel('main-a')
-  config.setProfile('a', { fast: 'fast-a', balanced: 'main-a' })
-  config.setProfile('b', { fast: 'fast-a', balanced: 'main-b' })
-  config.setActiveProfile('a')
   return config
 }
 
@@ -38,18 +35,18 @@ test('endpoint and model config changes keep the current model selected', async 
   assert.equal(resolveRuntimeModelKeyAfterConfigChange(config, 'fast-a', 'models'), 'fast-a')
 })
 
-test('profile config changes immediately re-resolve the main runtime model', async () => {
-  const config = await createConfig()
-  config.setActiveProfile('b')
-
-  assert.equal(resolveRuntimeModelKeyAfterConfigChange(config, 'main-a', 'profiles'), 'main-b')
-})
-
 test('routing config changes immediately re-resolve the main runtime model', async () => {
   const config = await createConfig()
-  config.setRouting({ main: 'fast' })
+  config.setRouting({ main: 'fast-a' })
 
   assert.equal(resolveRuntimeModelKeyAfterConfigChange(config, 'main-a', 'routing'), 'fast-a')
+})
+
+test('routing back to inherit re-resolves to the model in hand', async () => {
+  const config = await createConfig()
+  config.setRouting({ main: 'inherit' })
+
+  assert.equal(resolveRuntimeModelKeyAfterConfigChange(config, 'main-b', 'routing'), 'main-b')
 })
 
 test('removing the selected model falls back to the configured main model', async () => {

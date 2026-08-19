@@ -83,7 +83,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     )
   }
   const modelConfig = config.getModel(initialModelKey)!
-  const modelDiagnostics = checkOptionalModelReferences(config)
+  const modelDiagnostics = [
+    ...checkLegacyModelTiers(config),
+    ...checkOptionalModelReferences(config),
+  ]
   const clampedInitialEffort = clampEffort(configuredEffortLevel, modelConfig.maxEffort)
 
   const toolRegistry = new ToolRegistry(await getAllTools(backgroundTasks))
@@ -240,6 +243,23 @@ function configuredModelName(reference: string | undefined): string | undefined 
   const trimmed = reference?.trim()
   if (!trimmed || trimmed.toLowerCase() === 'inherit') return undefined
   return trimmed
+}
+
+/**
+ * Surfaces tier-era config that `ConfigService.load()` already migrated.
+ *
+ * The `fast`/`balanced`/`powerful` tiers and the `profiles` layer under them are
+ * gone; a config written before that still parses, so the only way the user
+ * learns their `routing` no longer means what it said is a warning here. Reports
+ * rather than throws, for the same reason `checkOptionalModelReferences` does:
+ * refusing to start over a setting we already repaired helps nobody.
+ */
+function checkLegacyModelTiers(config: ConfigService): RuntimeDiagnostic[] {
+  return config.getLegacyModelFindings().map((message) => ({
+    code: 'legacy_model_tiers',
+    severity: 'warning' as const,
+    message,
+  }))
 }
 
 /**

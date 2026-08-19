@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Box, Text, useInput } from '../ink.js'
 import { theme } from '../theme.js'
-import type { Tier } from '../../config/routing.js'
 import { CommandListItem, CommandPane } from './CommandUI.js'
 
-export type ModelTierChoice = Tier
 export type ModelPickerAction = 'set-default' | 'session-only'
 
 // Declared with the builder, in `src/runtime/`: the options are resolved
@@ -78,7 +76,7 @@ export function ModelPickerDialog({ options, onResolve }: ModelPickerDialogProps
   return (
     <CommandPane
       title="Select model"
-      subtitle="Choose the model tier for this session or make it the default."
+      subtitle="Choose the model for this session or make it the default."
       hints={[
         { key: '↑/↓', action: 'navigate' },
         { key: 'Enter', action: 'set default' },
@@ -92,7 +90,7 @@ export function ModelPickerDialog({ options, onResolve }: ModelPickerDialogProps
           const disabled = option.disabledReason !== undefined
           return (
             <CommandListItem
-              key={option.tier}
+              key={option.key}
               focused={selected}
               selected={option.isCurrent}
               disabled={disabled}

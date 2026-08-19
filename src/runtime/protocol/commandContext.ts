@@ -155,7 +155,7 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     ),
 
     getModel: currentModel,
-    // The full `/model` semantics, including the tier write-back that the
+    // The full `/model` semantics, including the config write-back that the
     // `set-model` command deliberately omits.
     setModel: (input): SetModelResult => switchModel(modelSwitchDeps(), input),
     getEffort: () => runtimeSlot.getEffort(),

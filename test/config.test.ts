@@ -401,7 +401,7 @@ test('ConfigService renameModel moves config and cascades references', async () 
     service.get().defaultModel = 'old-name'
     service.get().fallbackModel = 'old-name'
     service.get().compactModel = 'old-name'
-    service.setProfile('default', { fast: 'old-name', balanced: 'old-name', powerful: 'old-name' })
+    service.setRouting({ plan: 'old-name', subagent: { explore: 'old-name' } })
 
     service.renameModel('old-name', 'new-name')
 
@@ -411,9 +411,8 @@ test('ConfigService renameModel moves config and cascades references', async () 
     assert.equal(cfg.defaultModel, 'new-name')
     assert.equal(cfg.fallbackModel, 'new-name')
     assert.equal(cfg.compactModel, 'new-name')
-    assert.equal(cfg.profiles?.default?.fast, 'new-name')
-    assert.equal(cfg.profiles?.default?.balanced, 'new-name')
-    assert.equal(cfg.profiles?.default?.powerful, 'new-name')
+    assert.equal(cfg.routing?.plan, 'new-name')
+    assert.equal(cfg.routing?.subagent?.explore, 'new-name')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -491,6 +490,27 @@ test('validateSettings accepts model, agent, and cache settings', () => {
       ttl1h: true,
     },
   })
+
+  assert.equal(result.valid, true)
+  assert.deepEqual(result.errors, [])
+})
+
+test('validateSettings rejects a defaultModel that names no configured model', () => {
+  // With tiers gone, `defaultModel` can only be a model key, so a name that is
+  // not one is a typo rather than a routing shorthand.
+  const result = validateSettings({
+    models: { local: { provider: 'openai', model: 'gpt-local' } },
+    defaultModel: 'balanced',
+  })
+
+  assert.equal(result.valid, false)
+  assert.deepEqual(result.errors, ['defaultModel "balanced" is not a key in models'])
+})
+
+test('validateSettings leaves defaultModel alone when this layer declares no models', () => {
+  // `models` may live entirely in `config.json`, which `validateSettings` never
+  // sees; checking unconditionally would reject a perfectly good split config.
+  const result = validateSettings({ defaultModel: 'lives-in-config-json' })
 
   assert.equal(result.valid, true)
   assert.deepEqual(result.errors, [])

@@ -97,7 +97,7 @@ test('an unresolvable model is a throw, since a skill named it explicitly', () =
 
   assert.throws(
     () => buildRunOverrides(deps, { model: 'ghost' }),
-    /Unknown model or tier for skill command: ghost/,
+    /Unknown model for skill command: ghost/,
   )
 })
 

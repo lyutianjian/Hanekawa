@@ -254,10 +254,10 @@ test('/compact reset clears persistent failure circuit', async () => {
   ])
 })
 
-test('/model with tier delegates tier input to runtime resolver', async () => {
+test('/model delegates its raw argument to the runtime resolver', async () => {
   let requestedModel = ''
   let output = ''
-  await modelCommand.run('powerful', createContext({
+  await modelCommand.run('opus-like', createContext({
     writeLine: (message) => {
       output = message
     },
@@ -274,7 +274,7 @@ test('/model with tier delegates tier input to runtime resolver', async () => {
     },
   }))
 
-  assert.equal(requestedModel, 'powerful')
+  assert.equal(requestedModel, 'opus-like')
   assert.match(output, /Model set to: opus-like \(openai: configured-power-model\)/)
 })
 

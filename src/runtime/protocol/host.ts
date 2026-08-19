@@ -768,9 +768,7 @@ export class SessionHost {
         return this.buildModelsResult()
 
       case 'resolve-model': {
-        const modelKey = this.project.config.resolveModelInput(command.input, {
-          currentModelKey: this.runtimeSlot.current.modelKey,
-        })
+        const modelKey = this.project.config.resolveModelInput(command.input)
         return { ...(modelKey ? { modelKey } : {}) } satisfies WireResolveModelResult
       }
 

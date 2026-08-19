@@ -9,10 +9,7 @@ import type {
 } from '../../config/service.js'
 import type {
   Endpoint,
-  Profile,
   Routing,
-  Tier,
-  TierOrInherit,
 } from '../../config/routing.js'
 import { pingEndpoint, type EndpointPingResult } from '../../config/endpointPing.js'
 import {
@@ -21,10 +18,18 @@ import {
 } from '../../config/providers/registry.js'
 import type { ProviderConfigChangeScope } from '../../runtime/providerRuntime.js'
 
-type Tab = 'endpoints' | 'models' | 'profiles' | 'routing'
-const TABS: readonly Tab[] = ['endpoints', 'models', 'profiles', 'routing']
-const TIER_OPTIONS: readonly TierOrInherit[] = ['inherit', 'fast', 'balanced', 'powerful']
+type Tab = 'endpoints' | 'models' | 'routing'
+const TABS: readonly Tab[] = ['endpoints', 'models', 'routing']
 const CONTEXT_WINDOW_OPTIONS: readonly string[] = ['(default)', '200K', '400K', '1M']
+
+/**
+ * What a routing role can be set to: inherit the main model, or any configured
+ * model key. Derived from the live config rather than a constant, because with
+ * tiers gone the choices *are* the user's models.
+ */
+function routingOptions(cfg: Config): readonly string[] {
+  return ['inherit', ...Object.keys(cfg.models)]
+}
 
 function contextWindowToLabel(n: number | undefined): string {
   if (n === undefined) return '(default)'
@@ -47,7 +52,6 @@ type FormState =
   | { kind: 'list' }
   | { kind: 'endpoint-edit'; nameInput: string; provider: string; baseUrl: string; apiKey: string; field: 'nameInput' | 'provider' | 'baseUrl' | 'apiKey'; cursor: number; original: string | null }
   | { kind: 'model-edit'; nameInput: string; modelId: string; endpointName: string; contextWindow: string; field: 'nameInput' | 'modelId' | 'endpointName' | 'contextWindow'; cursor: number; original: string | null }
-  | { kind: 'profile-edit'; nameInput: string; fast: string; balanced: string; powerful: string; field: 'nameInput' | 'fast' | 'balanced' | 'powerful'; cursor: number; original: string | null }
   | { kind: 'routing-edit'; role: RoutingRoleKey; valueIndex: number }
   | { kind: 'confirm-delete'; what: string; targetId: string }
   | { kind: 'busy'; message: string }
@@ -151,7 +155,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
     if (form.kind === 'busy') return
 
     // Forms own their own keystrokes; only Esc bubbles up to cancel.
-    if (form.kind === 'endpoint-edit' || form.kind === 'model-edit' || form.kind === 'profile-edit') {
+    if (form.kind === 'endpoint-edit' || form.kind === 'model-edit') {
       handleFormInput(input, key)
       return
     }
@@ -221,10 +225,6 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
       handleEdit()
       return
     }
-    if ((input === 'a' || input === 'A') && tab === 'profiles') {
-      handleActivateProfile()
-      return
-    }
     if (input === 'd') {
       handleDelete()
       return
@@ -245,15 +245,6 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
 
   function handleEnter() {
     handleEdit()
-  }
-
-  function handleActivateProfile() {
-    const item = items[selectedIndex]
-    if (!item || tab !== 'profiles') return
-    void persist(
-      () => config.setActiveProfile(item.id),
-      `Active profile set to "${item.id}"`,
-    )
   }
 
   function handleNew() {
@@ -282,24 +273,6 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         modelId: '',
         endpointName: firstEndpoint,
         contextWindow: '(default)',
-        field: 'nameInput',
-        cursor: 0,
-        original: null,
-      })
-      return
-    }
-    if (tab === 'profiles') {
-      const firstModel = Object.keys(cfg.models)[0] ?? ''
-      if (!firstModel) {
-        flashStatus('Create a model before adding a profile', 'error')
-        return
-      }
-      setForm({
-        kind: 'profile-edit',
-        nameInput: '',
-        fast: firstModel,
-        balanced: firstModel,
-        powerful: firstModel,
         field: 'nameInput',
         cursor: 0,
         original: null,
@@ -341,26 +314,12 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
       })
       return
     }
-    if (tab === 'profiles') {
-      const p = cfg.profiles?.[item.id]
-      if (!p) return
-      setForm({
-        kind: 'profile-edit',
-        nameInput: item.id,
-        fast: p.fast ?? '',
-        balanced: p.balanced ?? '',
-        powerful: p.powerful ?? '',
-        field: 'fast',
-        cursor: (p.fast ?? '').length,
-        original: item.id,
-      })
-      return
-    }
     if (tab === 'routing') {
       const role = ROUTING_ROLES[selectedIndex]
       if (!role) return
+      const options = routingOptions(cfg)
       const current = currentRoutingValue(cfg, role)
-      const valueIndex = Math.max(0, TIER_OPTIONS.indexOf(current))
+      const valueIndex = Math.max(0, options.indexOf(current))
       setForm({ kind: 'routing-edit', role, valueIndex })
       return
     }
@@ -369,7 +328,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
   function handleDelete() {
     const item = items[selectedIndex]
     if (!item) return
-    if (tab === 'endpoints' || tab === 'models' || tab === 'profiles') {
+    if (tab === 'endpoints' || tab === 'models') {
       setForm({ kind: 'confirm-delete', what: tab, targetId: item.id })
     }
   }
@@ -381,7 +340,6 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
     void persist(() => {
       if (what === 'endpoints') config.removeEndpoint(targetId)
       else if (what === 'models') config.removeModel(targetId)
-      else if (what === 'profiles') config.removeProfile(targetId)
     }, `Deleted ${what.slice(0, -1)} "${targetId}"`)
   }
 
@@ -414,8 +372,6 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
       handleEndpointFormInput(input, key)
     } else if (form.kind === 'model-edit') {
       handleModelFormInput(input, key)
-    } else if (form.kind === 'profile-edit') {
-      handleProfileFormInput(input, key)
     }
   }
 
@@ -529,72 +485,24 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
     setForm(applyKeyToForm(form, input, key))
   }
 
-  function handleProfileFormInput(input: string, key: InkKey) {
-    if (form.kind !== 'profile-edit') return
-    const fields: Array<typeof form.field> = ['nameInput', 'fast', 'balanced', 'powerful']
-    if (key.tab) {
-      const next = fields[moveCyclicIndex(fields.indexOf(form.field), fields.length, key.shift ? -1 : 1)]!
-      setForm({ ...form, field: next, cursor: form[next].length })
-      return
-    }
-    if (key.upArrow || key.downArrow) {
-      const direction = key.upArrow ? -1 : 1
-      const next = fields[moveBoundedIndex(fields.indexOf(form.field), fields.length, direction)]!
-      setForm({ ...form, field: next, cursor: form[next].length })
-      return
-    }
-    if (key.return || isSaveKey(input, key)) {
-      const name = form.nameInput.trim()
-      if (!name) return flashStatus('Name is required', 'error')
-      if (!form.fast.trim() || !form.balanced.trim() || !form.powerful.trim()) {
-        return flashStatus('Fast, balanced, and powerful models are required', 'error')
-      }
-      const profile: Profile = {}
-      if (form.fast.trim()) profile.fast = form.fast.trim()
-      if (form.balanced.trim()) profile.balanced = form.balanced.trim()
-      if (form.powerful.trim()) profile.powerful = form.powerful.trim()
-      const knownModels = new Set(Object.keys(cfg.models))
-      for (const v of Object.values(profile)) {
-        if (v && !knownModels.has(v)) {
-          return flashStatus(`Unknown model "${v}"`, 'error')
-        }
-      }
-      void persist(() => {
-        if (form.original && form.original !== name) {
-          config.removeProfile(form.original)
-        }
-        config.setProfile(name, profile)
-      }, `Saved profile "${name}"`)
-      return
-    }
-    if (form.field === 'fast' || form.field === 'balanced' || form.field === 'powerful') {
-      const direction = choiceDirection(key)
-      if (direction !== 0) {
-        const models = Object.keys(cfg.models)
-        const value = cycleChoiceValue(form[form.field], models, direction)
-        setForm({ ...form, [form.field]: value, cursor: value.length })
-      }
-      return
-    }
-    setForm(applyKeyToForm(form, input, key))
-  }
-
   function handleRoutingFormInput(input: string, key: { return?: boolean; escape?: boolean; upArrow?: boolean; downArrow?: boolean; leftArrow?: boolean; rightArrow?: boolean }) {
     if (form.kind !== 'routing-edit') return
+    const options = routingOptions(cfg)
     if (key.escape) {
       setForm({ kind: 'list' })
       return
     }
     if (key.upArrow || key.leftArrow) {
-      setForm({ ...form, valueIndex: (form.valueIndex - 1 + TIER_OPTIONS.length) % TIER_OPTIONS.length })
+      setForm({ ...form, valueIndex: (form.valueIndex - 1 + options.length) % options.length })
       return
     }
     if (key.downArrow || key.rightArrow) {
-      setForm({ ...form, valueIndex: (form.valueIndex + 1) % TIER_OPTIONS.length })
+      setForm({ ...form, valueIndex: (form.valueIndex + 1) % options.length })
       return
     }
     if (key.return) {
-      const value = TIER_OPTIONS[form.valueIndex]!
+      const value = options[form.valueIndex]
+      if (value === undefined) return
       const role = form.role
       const next = applyRoutingChange(config.getRouting(), role, value)
       void persist(() => config.setRouting(next), `Routing ${role} -> ${value}`)
@@ -606,7 +514,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
   return (
     <CommandPane
       title="Provider configuration"
-      subtitle="Manage endpoints, models, profiles, and request routing."
+      subtitle="Manage endpoints, models, and request routing."
       hints={footerHints(tab, form)}
       status={statusMessage ? (
         <Text color={statusKind === 'error' ? theme.error : statusKind === 'success' ? theme.success : theme.dimText}>
@@ -631,8 +539,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         )}
         {form.kind === 'endpoint-edit' && renderEndpointForm(form)}
         {form.kind === 'model-edit' && renderModelForm(form, cfg)}
-        {form.kind === 'profile-edit' && renderProfileForm(form, cfg)}
-        {form.kind === 'routing-edit' && renderRoutingForm(form)}
+        {form.kind === 'routing-edit' && renderRoutingForm(form, routingOptions(cfg))}
         {form.kind === 'confirm-delete' && (
           <Text color={theme.warning}>
             Delete {form.what.slice(0, -1)} "{form.targetId}"? [y/N]
@@ -668,18 +575,6 @@ function collectListItems(cfg: Config, tab: Tab): ListItem[] {
       secondary: m.model,
     }))
   }
-  if (tab === 'profiles') {
-    return Object.entries(cfg.profiles ?? {}).map(([name, p]) => {
-      const tiers = (['fast', 'balanced', 'powerful'] as const)
-        .map((t) => `${t}=${p[t] ?? '-'}`)
-        .join('  ')
-      return {
-        id: name,
-        primary: name + (cfg.activeProfile === name ? '  (active)' : ''),
-        secondary: tiers,
-      }
-    })
-  }
   // routing
   return ROUTING_ROLES.map((role) => ({
     id: role,
@@ -688,21 +583,21 @@ function collectListItems(cfg: Config, tab: Tab): ListItem[] {
   }))
 }
 
-function currentRoutingValue(cfg: Config, role: RoutingRoleKey): TierOrInherit {
+/**
+ * What a role resolves to today. Absent means `'inherit'` for every role —
+ * `DEFAULT_ROUTING` no longer promotes plan or demotes compact, because with
+ * tiers gone there is nothing to promote to.
+ */
+function currentRoutingValue(cfg: Config, role: RoutingRoleKey): string {
   const r = cfg.routing ?? {}
-  if (role === 'main') return r.main ?? 'balanced'
-  if (role === 'plan') return r.plan ?? 'powerful'
-  if (role === 'compact') return r.compact ?? 'fast'
+  if (role === 'main') return r.main ?? 'inherit'
+  if (role === 'plan') return r.plan ?? 'inherit'
+  if (role === 'compact') return r.compact ?? 'inherit'
   const subType = role.slice('subagent.'.length)
-  const sub = r.subagent?.[subType]
-  if (sub !== undefined) return sub
-  if (subType === 'general' || subType === 'fork') return 'inherit'
-  if (subType === 'explore') return 'balanced'
-  if (subType === 'plan') return 'powerful'
-  return 'inherit'
+  return r.subagent?.[subType] ?? 'inherit'
 }
 
-function applyRoutingChange(routing: Routing, role: RoutingRoleKey, value: TierOrInherit): Routing {
+function applyRoutingChange(routing: Routing, role: RoutingRoleKey, value: string): Routing {
   const next: Routing = {
     main: routing.main,
     plan: routing.plan,
@@ -740,7 +635,7 @@ function renderList(
           <CommandListItem
             key={item.id}
             focused={selected}
-            selected={tab === 'profiles' && item.primary.includes('(active)')}
+            selected={false}
             showMoreAbove={i === 0 && hasAbove}
             showMoreBelow={i === items.length - 1 && hasBelow}
             description={item.secondary ? maskMaybe(tab, item.secondary, item.id, cfg) : undefined}
@@ -805,24 +700,12 @@ function renderModelForm(form: Extract<FormState, { kind: 'model-edit' }>, cfg: 
   )
 }
 
-function renderProfileForm(form: Extract<FormState, { kind: 'profile-edit' }>, cfg: Config) {
-  return (
-    <Box flexDirection="column">
-      <Text bold color={theme.brand}>{form.original ? `Edit profile "${form.original}"` : 'New profile'}</Text>
-      <FieldRow label="Name"     value={form.nameInput} active={form.field === 'nameInput'}     cursor={form.field === 'nameInput'     ? form.cursor : undefined} />
-      <ChoiceFieldRow label="Fast" value={modelChoiceLabel(form.fast, cfg)} active={form.field === 'fast'} />
-      <ChoiceFieldRow label="Balanced" value={modelChoiceLabel(form.balanced, cfg)} active={form.field === 'balanced'} />
-      <ChoiceFieldRow label="Powerful" value={modelChoiceLabel(form.powerful, cfg)} active={form.field === 'powerful'} />
-    </Box>
-  )
-}
-
-function renderRoutingForm(form: Extract<FormState, { kind: 'routing-edit' }>) {
+function renderRoutingForm(form: Extract<FormState, { kind: 'routing-edit' }>, options: readonly string[]) {
   return (
     <Box flexDirection="column">
       <Text bold color={theme.brand}>Routing: {form.role}</Text>
       <Box marginTop={1} flexDirection="column">
-        {TIER_OPTIONS.map((opt, i) => (
+        {options.map((opt, i) => (
           <Text key={opt} color={i === form.valueIndex ? theme.brand : theme.assistantText}>
             {i === form.valueIndex ? '>' : '  '}
             {opt}
@@ -899,7 +782,7 @@ function maskKey(key: string): string {
 }
 
 function footerHints(tab: Tab, form: FormState): CommandHint[] {
-  if (form.kind === 'endpoint-edit' || form.kind === 'model-edit' || form.kind === 'profile-edit') {
+  if (form.kind === 'endpoint-edit' || form.kind === 'model-edit') {
     const action = isChoiceField(form) ? 'change' : 'cursor'
     return [
       { key: '↑/↓', action: 'change field' },
@@ -920,16 +803,12 @@ function footerHints(tab: Tab, form: FormState): CommandHint[] {
     { key: '←/→', action: 'switch section' },
   ]
   if (tab === 'routing') return [...base, { key: 'Enter', action: 'edit' }, { key: 'Esc', action: 'close' }]
-  if (tab === 'profiles') {
-    return [...base, { key: 'Enter', action: 'edit' }, { key: 'Esc', action: 'close' }, { key: 'A', action: 'activate' }, { key: 'N', action: 'new' }]
-  }
   return [...base, { key: 'Esc', action: 'close' }, { key: 'N', action: 'new' }, { key: 'E', action: 'edit' }, { key: 'D', action: 'delete' }]
 }
 
-function isChoiceField(form: Extract<FormState, { kind: 'endpoint-edit' | 'model-edit' | 'profile-edit' }>): boolean {
+function isChoiceField(form: Extract<FormState, { kind: 'endpoint-edit' | 'model-edit' }>): boolean {
   if (form.kind === 'endpoint-edit') return form.field === 'provider'
-  if (form.kind === 'model-edit') return form.field === 'endpointName' || form.field === 'contextWindow'
-  return form.field === 'fast' || form.field === 'balanced' || form.field === 'powerful'
+  return form.field === 'endpointName' || form.field === 'contextWindow'
 }
 
 function capitalize(s: string): string {

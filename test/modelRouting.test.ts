@@ -6,9 +6,7 @@ import { ConfigService } from '../src/config/service.js'
 import {
   DEFAULT_ROUTING,
   mergeRouting,
-  parseTierInput,
-  pickTier,
-  resolveTier,
+  pickRoutedModel,
 } from '../src/config/routing.js'
 import { tmpdir } from 'node:os'
 import { mkdtempSync } from 'node:fs'
@@ -32,69 +30,43 @@ async function writeConfig(dir: string, content: object): Promise<void> {
   await writeFile(path.join(dir, '.myagent', 'config.json'), JSON.stringify(content))
 }
 
-test('resolveTier: fast falls back to balanced then powerful', () => {
-  assert.equal(resolveTier({ powerful: 'p' }, 'fast'), 'p')
-  assert.equal(resolveTier({ balanced: 'b', powerful: 'p' }, 'fast'), 'b')
-  assert.equal(resolveTier({ fast: 'f', balanced: 'b' }, 'fast'), 'f')
-})
-
-test('resolveTier: balanced prefers powerful then fast', () => {
-  assert.equal(resolveTier({ fast: 'f' }, 'balanced'), 'f')
-  assert.equal(resolveTier({ powerful: 'p', fast: 'f' }, 'balanced'), 'p')
-  assert.equal(resolveTier({ balanced: 'b', powerful: 'p' }, 'balanced'), 'b')
-})
-
-test('resolveTier: powerful prefers balanced then fast', () => {
-  assert.equal(resolveTier({ fast: 'f' }, 'powerful'), 'f')
-  assert.equal(resolveTier({ balanced: 'b', fast: 'f' }, 'powerful'), 'b')
-  assert.equal(resolveTier({ powerful: 'p' }, 'powerful'), 'p')
-})
-
-test('resolveTier: empty profile returns undefined', () => {
-  assert.equal(resolveTier({}, 'fast'), undefined)
-  assert.equal(resolveTier(undefined, 'balanced'), undefined)
-})
-
-test('parseTierInput: accepts only Hanekawa tier names', () => {
-  assert.equal(parseTierInput('fast'), 'fast')
-  assert.equal(parseTierInput(' BALANCED '), 'balanced')
-  assert.equal(parseTierInput('powerful'), 'powerful')
-  assert.equal(parseTierInput('haiku'), undefined)
-  assert.equal(parseTierInput('opus'), undefined)
-  assert.equal(parseTierInput('inherit'), undefined)
-})
-
-test('mergeRouting: defaults applied when nothing provided', () => {
+test('mergeRouting: every role inherits by default', () => {
   const merged = mergeRouting()
   assert.equal(merged.main, DEFAULT_ROUTING.main)
   assert.equal(merged.plan, DEFAULT_ROUTING.plan)
   assert.equal(merged.compact, DEFAULT_ROUTING.compact)
+  // No tiers means no role has anything to be promoted or demoted to: plan no
+  // longer upgrades and compact no longer downgrades.
+  assert.equal(merged.main, 'inherit')
+  assert.equal(merged.plan, 'inherit')
+  assert.equal(merged.compact, 'inherit')
   assert.equal(merged.subagent?.fork, 'inherit')
-  assert.equal(merged.subagent?.explore, 'balanced')
+  assert.equal(merged.subagent?.explore, 'inherit')
+  assert.equal(merged.subagent?.plan, 'inherit')
 })
 
 test('mergeRouting: deep-merges subagent overrides', () => {
   const merged = mergeRouting(
-    { subagent: { explore: 'powerful' } },
-    { main: 'fast' },
+    { subagent: { explore: 'big' } },
+    { main: 'small' },
   )
-  assert.equal(merged.main, 'fast')
-  assert.equal(merged.subagent?.explore, 'powerful')
+  assert.equal(merged.main, 'small')
+  assert.equal(merged.subagent?.explore, 'big')
   // Untouched defaults preserved.
   assert.equal(merged.subagent?.fork, 'inherit')
 })
 
-test('pickTier: subagent type override beats general fallback', () => {
+test('pickRoutedModel: subagent type override beats general fallback', () => {
   const routing = mergeRouting({
-    subagent: { general: 'fast', explore: 'powerful' },
+    subagent: { general: 'small', explore: 'big' },
   })
-  assert.equal(pickTier(routing, { kind: 'subagent', type: 'explore' }), 'powerful')
-  assert.equal(pickTier(routing, { kind: 'subagent', type: 'unknown-custom' }), 'fast')
+  assert.equal(pickRoutedModel(routing, { kind: 'subagent', type: 'explore' }), 'big')
+  assert.equal(pickRoutedModel(routing, { kind: 'subagent', type: 'unknown-custom' }), 'small')
 })
 
-test('pickTier: subagent without general falls through to inherit', () => {
-  const routing = mergeRouting({ subagent: { explore: 'fast' } })
-  assert.equal(pickTier(routing, { kind: 'subagent', type: 'something-else' }), 'inherit')
+test('pickRoutedModel: subagent without general falls through to inherit', () => {
+  const routing = mergeRouting({ subagent: { explore: 'small' } })
+  assert.equal(pickRoutedModel(routing, { kind: 'subagent', type: 'something-else' }), 'inherit')
 })
 
 test('ConfigService.resolveModel: legacy inline model still works', async () => {
@@ -181,7 +153,7 @@ test('ConfigService.resolveModel: missing endpoint reference returns undefined',
   }
 })
 
-test('ConfigService.resolveModelKeyFor: uses active profile + tier routing', async () => {
+test('ConfigService.resolveModelKeyFor: routing names model keys directly', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
@@ -190,15 +162,12 @@ test('ConfigService.resolveModelKeyFor: uses active profile + tier routing', asy
         med: { provider: 'openai', model: 'med' },
         big: { provider: 'openai', model: 'big' },
       },
-      profiles: {
-        cn: { fast: 'small', balanced: 'med', powerful: 'big' },
-      },
-      activeProfile: 'cn',
       defaultModel: 'med',
+      routing: { plan: 'big', compact: 'small' },
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
-    // Defaults: main=balanced, plan=powerful, compact=fast.
+    // main is unset, so it inherits the current model.
     assert.equal(cfg.resolveModelKeyFor({ kind: 'main' }, { currentModelKey: 'med' }), 'med')
     assert.equal(cfg.resolveModelKeyFor({ kind: 'plan' }, { currentModelKey: 'med' }), 'big')
     assert.equal(cfg.resolveModelKeyFor({ kind: 'compact' }, { currentModelKey: 'med' }), 'small')
@@ -207,63 +176,69 @@ test('ConfigService.resolveModelKeyFor: uses active profile + tier routing', asy
   }
 })
 
-test('ConfigService.resolveModelKeyFor: subagent fork inherits parent', async () => {
+test('ConfigService.resolveModelKeyFor: unrouted subagents inherit the parent model', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
       models: {
-        small: { provider: 'openai', model: 'small' },
         med: { provider: 'openai', model: 'med' },
         big: { provider: 'openai', model: 'big' },
       },
-      profiles: {
-        cn: { fast: 'small', balanced: 'med', powerful: 'big' },
-      },
-      activeProfile: 'cn',
       defaultModel: 'med',
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
-    assert.equal(
-      cfg.resolveModelKeyFor({ kind: 'subagent', type: 'fork' }, { currentModelKey: 'med' }),
-      'med',
-    )
-    // explore default is balanced -> med
-    assert.equal(
-      cfg.resolveModelKeyFor({ kind: 'subagent', type: 'explore' }, { currentModelKey: 'med' }),
-      'med',
-    )
-    // plan default is powerful -> big
-    assert.equal(
-      cfg.resolveModelKeyFor({ kind: 'subagent', type: 'plan' }, { currentModelKey: 'med' }),
-      'big',
-    )
+    for (const type of ['fork', 'explore', 'plan', 'general']) {
+      assert.equal(
+        cfg.resolveModelKeyFor({ kind: 'subagent', type }, { currentModelKey: 'med' }),
+        'med',
+        `subagent ${type} should inherit`,
+      )
+    }
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('ConfigService.resolveModelKeyFor: tier fallback when profile has only powerful', async () => {
+test('ConfigService.resolveModelKeyFor: an explicit "inherit" falls back to the current model', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
-      models: { only: { provider: 'openai', model: 'only' } },
-      profiles: { p: { powerful: 'only' } },
-      activeProfile: 'p',
-      defaultModel: 'only',
+      models: {
+        med: { provider: 'openai', model: 'med' },
+        big: { provider: 'openai', model: 'big' },
+      },
+      defaultModel: 'big',
+      routing: { plan: 'inherit' },
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
-    // compact wants fast, but only powerful is present; should pick powerful.
-    assert.equal(cfg.resolveModelKeyFor({ kind: 'compact' }, { currentModelKey: 'only' }), 'only')
-    // main wants balanced -> falls through powerful.
-    assert.equal(cfg.resolveModelKeyFor({ kind: 'main' }, { currentModelKey: 'only' }), 'only')
+    assert.equal(cfg.resolveModelKeyFor({ kind: 'plan' }, { currentModelKey: 'med' }), 'med')
+    // With no current model there is nothing to inherit, so defaultModel answers.
+    assert.equal(cfg.resolveModelKeyFor({ kind: 'plan' }), 'big')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('ConfigService.resolveModelKeyFor: no profile -> falls back to currentModelKey/defaultModel', async () => {
+test('ConfigService.resolveModelKeyFor: routing at a model that does not exist degrades to the fallback', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: { only: { provider: 'openai', model: 'only' } },
+      defaultModel: 'only',
+      routing: { plan: 'deleted-model' },
+    })
+    const cfg = new ConfigService(dir)
+    await cfg.load()
+    // Deleting a model that routing pointed at must not leave the role unusable.
+    assert.equal(cfg.resolveModelKeyFor({ kind: 'plan' }, { currentModelKey: 'only' }), 'only')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService.resolveModelKeyFor: no routing -> falls back to currentModelKey/defaultModel', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
@@ -272,7 +247,6 @@ test('ConfigService.resolveModelKeyFor: no profile -> falls back to currentModel
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
-    // Without profiles, all roles should resolve to the inherit/default key.
     assert.equal(cfg.resolveModelKeyFor({ kind: 'main' }, { currentModelKey: 'only' }), 'only')
     assert.equal(cfg.resolveModelKeyFor({ kind: 'plan' }, { currentModelKey: 'only' }), 'only')
     assert.equal(cfg.resolveModelKeyFor({ kind: 'compact' }, { currentModelKey: 'only' }), 'only')
@@ -300,55 +274,32 @@ test('ConfigService.resolveModelKeyFor: invalid current falls back to valid defa
   }
 })
 
-test('ConfigService.resolveModelInput: exact model keys and tiers resolve, inherit is rejected', async () => {
+test('ConfigService.resolveModelInput: only model keys resolve; tiers and inherit do not', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
       models: {
-        fastModel: { provider: 'openai', model: 'fast' },
         main: { provider: 'openai', model: 'main' },
         power: { provider: 'openai', model: 'power' },
       },
-      profiles: {
-        p: { fast: 'fastModel', balanced: 'main', powerful: 'power' },
-      },
-      activeProfile: 'p',
       defaultModel: 'main',
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
     assert.equal(cfg.resolveModelInput('main'), 'main')
-    assert.equal(cfg.resolveModelInput('fast'), 'fastModel')
-    assert.equal(cfg.resolveModelInput('powerful'), 'power')
+    assert.equal(cfg.resolveModelInput('power'), 'power')
     assert.equal(cfg.resolveModelInput('inherit'), undefined)
+    // The tier names are ordinary unknown strings now.
+    assert.equal(cfg.resolveModelInput('fast'), undefined)
+    assert.equal(cfg.resolveModelInput('balanced'), undefined)
+    assert.equal(cfg.resolveModelInput('powerful'), undefined)
     assert.equal(cfg.resolveModelInput('sonnet'), undefined)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('ConfigService.resolveModelInput: exact model key wins over tier spelling', async () => {
-  const dir = await tmpDir()
-  try {
-    await writeConfig(dir, {
-      models: {
-        fast: { provider: 'openai', model: 'literal-fast' },
-        routedFast: { provider: 'openai', model: 'routed-fast' },
-        main: { provider: 'openai', model: 'main' },
-      },
-      profiles: { p: { fast: 'routedFast', balanced: 'main' } },
-      activeProfile: 'p',
-      defaultModel: 'main',
-    })
-    const cfg = new ConfigService(dir)
-    await cfg.load()
-    assert.equal(cfg.resolveModelInput('fast'), 'fast')
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-
-test('ConfigService model reference fields may use tiers', async () => {
+test('ConfigService: model reference fields must name model keys', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
@@ -357,13 +308,9 @@ test('ConfigService model reference fields may use tiers', async () => {
         main: { provider: 'openai', model: 'main-id' },
         power: { provider: 'openai', model: 'power-id' },
       },
-      profiles: {
-        p: { fast: 'fastModel', balanced: 'main', powerful: 'power' },
-      },
-      activeProfile: 'p',
-      defaultModel: 'balanced',
-      fallbackModel: 'fast',
-      compactModel: 'powerful',
+      defaultModel: 'main',
+      fallbackModel: 'fastModel',
+      compactModel: 'power',
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
@@ -374,26 +321,23 @@ test('ConfigService model reference fields may use tiers', async () => {
     assert.equal(cfg.getDefaultModel()?.model, 'main-id')
     assert.equal(cfg.getFallbackModel()?.model, 'fast-id')
     assert.equal(cfg.getCompactModel()?.model, 'power-id')
-    assert.equal(cfg.resolveModelKeyFor({ kind: 'main' }, { currentModelKey: cfg.get().defaultModel }), 'main')
+    assert.equal(cfg.resolveModelKeyFor({ kind: 'main' }, { currentModelKey: 'main' }), 'main')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('ConfigService.resolveModelKeyFor: routing override beats default tier', async () => {
+test('ConfigService.resolveModelKeyFor: subagent routing override beats the inherit default', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
       models: {
-        small: { provider: 'openai', model: 's' },
         med: { provider: 'openai', model: 'm' },
         big: { provider: 'openai', model: 'b' },
       },
-      profiles: { p: { fast: 'small', balanced: 'med', powerful: 'big' } },
-      activeProfile: 'p',
       defaultModel: 'med',
       routing: {
-        subagent: { explore: 'powerful' },
+        subagent: { explore: 'big' },
       },
     })
     const cfg = new ConfigService(dir)
@@ -402,32 +346,14 @@ test('ConfigService.resolveModelKeyFor: routing override beats default tier', as
       cfg.resolveModelKeyFor({ kind: 'subagent', type: 'explore' }, { currentModelKey: 'med' }),
       'big',
     )
-    // Untouched defaults still apply.
-    assert.equal(cfg.resolveModelKeyFor({ kind: 'compact' }, { currentModelKey: 'med' }), 'small')
+    // Untouched roles still inherit.
+    assert.equal(cfg.resolveModelKeyFor({ kind: 'compact' }, { currentModelKey: 'med' }), 'med')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('ConfigService.getActiveProfile: returns single profile when activeProfile not set', async () => {
-  const dir = await tmpDir()
-  try {
-    await writeConfig(dir, {
-      models: { x: { provider: 'openai', model: 'x' } },
-      profiles: { only: { fast: 'x' } },
-      defaultModel: 'x',
-    })
-    const cfg = new ConfigService(dir)
-    await cfg.load()
-    const active = cfg.getActiveProfile()
-    assert.ok(active)
-    assert.equal(active!.name, 'only')
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-
-test('ConfigService write-back: setEndpoint + setModelConfig + setProfile persist', async () => {
+test('ConfigService write-back: setEndpoint + setModelConfig persist', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
@@ -438,17 +364,12 @@ test('ConfigService write-back: setEndpoint + setModelConfig + setProfile persis
     await cfg.load()
     cfg.setEndpoint('e1', { provider: 'anthropic', baseUrl: 'https://x' })
     cfg.setModelConfig('m1', { endpoint: 'e1', model: 'm1' })
-    cfg.setProfile('p1', { fast: 'm1' })
-    cfg.setActiveProfile('p1')
     await cfg.save()
 
     const reloaded = new ConfigService(dir)
     await reloaded.load()
     assert.equal(reloaded.getEndpoint('e1')?.baseUrl, 'https://x')
     assert.equal(reloaded.resolveModel('m1')?.baseUrl, 'https://x')
-    const active = reloaded.getActiveProfile()
-    assert.equal(active?.name, 'p1')
-    assert.equal(active?.profile.fast, 'm1')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -470,7 +391,7 @@ test('ConfigService write-back: removeEndpoint refuses while a model references 
   }
 })
 
-test('ConfigService write-back: removeModel refuses while a profile references it', async () => {
+test('ConfigService write-back: removeModel refuses while routing references it', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
@@ -478,12 +399,31 @@ test('ConfigService write-back: removeModel refuses while a profile references i
         a: { provider: 'anthropic', model: 'a' },
         b: { provider: 'anthropic', model: 'b' },
       },
-      profiles: { p: { fast: 'a', balanced: 'b' } },
       defaultModel: 'b',
+      routing: { plan: 'a' },
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
-    assert.throws(() => cfg.removeModel('a'), /referenced by profile "p\.fast"/)
+    assert.throws(() => cfg.removeModel('a'), /referenced by routing\.plan/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService write-back: removeModel refuses while a subagent route references it', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: {
+        a: { provider: 'anthropic', model: 'a' },
+        b: { provider: 'anthropic', model: 'b' },
+      },
+      defaultModel: 'b',
+      routing: { subagent: { explore: 'a' } },
+    })
+    const cfg = new ConfigService(dir)
+    await cfg.load()
+    assert.throws(() => cfg.removeModel('a'), /referenced by routing\.subagent\.explore/)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -504,19 +444,24 @@ test('ConfigService write-back: removeModel refuses removing the defaultModel', 
   }
 })
 
-test('ConfigService write-back: removeProfile clears activeProfile when it matches', async () => {
+test('ConfigService write-back: renameModel follows the key through routing', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
-      models: { x: { provider: 'openai', model: 'x' } },
-      profiles: { p: { fast: 'x' } },
-      activeProfile: 'p',
-      defaultModel: 'x',
+      models: {
+        a: { provider: 'anthropic', model: 'a' },
+        b: { provider: 'anthropic', model: 'b' },
+      },
+      defaultModel: 'b',
+      routing: { plan: 'a', subagent: { explore: 'a' } },
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
-    cfg.removeProfile('p')
-    assert.equal(cfg.get().activeProfile, undefined)
+    cfg.renameModel('a', 'a2')
+    const routing = cfg.get().routing
+    assert.equal(routing?.plan, 'a2')
+    assert.equal(routing?.subagent?.explore, 'a2')
+    assert.equal(cfg.resolveModelKeyFor({ kind: 'plan' }, { currentModelKey: 'b' }), 'a2')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -526,22 +471,148 @@ test('ConfigService write-back: setRouting persists deep-merged routing', async 
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
-      models: { x: { provider: 'openai', model: 'x' } },
+      models: {
+        x: { provider: 'openai', model: 'x' },
+        y: { provider: 'openai', model: 'y' },
+      },
       defaultModel: 'x',
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
     const before = cfg.getRouting()
-    cfg.setRouting({ ...before, main: 'fast', subagent: { ...before.subagent, explore: 'powerful' } })
+    cfg.setRouting({ ...before, main: 'y', subagent: { ...before.subagent, explore: 'y' } })
     await cfg.save()
 
     const reloaded = new ConfigService(dir)
     await reloaded.load()
     const after = reloaded.getRouting()
-    assert.equal(after.main, 'fast')
-    assert.equal(after.subagent?.explore, 'powerful')
+    assert.equal(after.main, 'y')
+    assert.equal(after.subagent?.explore, 'y')
     // Untouched defaults preserved through reload.
     assert.equal(after.subagent?.fork, 'inherit')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// --- migration off the tier era ---------------------------------------------
+
+test('migration: profiles / activeProfile warn and do not block startup', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: {
+        small: { provider: 'openai', model: 'small' },
+        big: { provider: 'openai', model: 'big' },
+      },
+      profiles: { cn: { fast: 'small', balanced: 'big' } },
+      activeProfile: 'cn',
+      defaultModel: 'big',
+    })
+    const cfg = new ConfigService(dir)
+    // Loading must not throw: a stale config starts with a warning, not a wall.
+    await cfg.load()
+
+    const findings = cfg.getLegacyModelFindings()
+    assert.ok(findings.some((f) => f.includes('`profiles`')), findings.join('\n'))
+    assert.ok(findings.some((f) => f.includes('`activeProfile`')), findings.join('\n'))
+    // The still-valid defaultModel is left alone.
+    assert.equal(cfg.get().defaultModel, 'big')
+    assert.equal(cfg.getDefaultModel()?.model, 'big')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('migration: a defaultModel naming a tier lands on the first resolvable model', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: {
+        broken: { endpoint: 'missing', model: 'broken' },
+        good: { provider: 'openai', model: 'good' },
+      },
+      profiles: { p: { balanced: 'good' } },
+      defaultModel: 'balanced',
+    })
+    const cfg = new ConfigService(dir)
+    await cfg.load()
+
+    // "first resolvable", not "first": `broken` has a dangling endpoint.
+    assert.equal(cfg.get().defaultModel, 'good')
+    assert.equal(cfg.getDefaultModel()?.model, 'good')
+    assert.ok(
+      cfg.getLegacyModelFindings().some((f) => f.includes('defaultModel was the tier "balanced"')),
+      cfg.getLegacyModelFindings().join('\n'),
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('migration: routing values naming tiers become inherit', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: { only: { provider: 'openai', model: 'only' } },
+      defaultModel: 'only',
+      routing: { plan: 'powerful', compact: 'fast', subagent: { explore: 'balanced' } },
+    })
+    const cfg = new ConfigService(dir)
+    await cfg.load()
+
+    const routing = cfg.get().routing
+    assert.equal(routing?.plan, 'inherit')
+    assert.equal(routing?.compact, 'inherit')
+    assert.equal(routing?.subagent?.explore, 'inherit')
+
+    const findings = cfg.getLegacyModelFindings()
+    assert.ok(findings.some((f) => f.includes('routing.plan')), findings.join('\n'))
+    assert.ok(findings.some((f) => f.includes('routing.subagent.explore')), findings.join('\n'))
+
+    // And every role now resolves to the one real model.
+    assert.equal(cfg.resolveModelKeyFor({ kind: 'plan' }, { currentModelKey: 'only' }), 'only')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('migration: a model actually keyed "fast" is left alone', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: {
+        fast: { provider: 'openai', model: 'a-real-model' },
+        other: { provider: 'openai', model: 'other' },
+      },
+      defaultModel: 'fast',
+      routing: { compact: 'fast' },
+    })
+    const cfg = new ConfigService(dir)
+    await cfg.load()
+
+    // This is a valid new-style config that merely spells a key like an old
+    // tier. Rewriting it would break a working setup to fix an imaginary one.
+    assert.deepEqual(cfg.getLegacyModelFindings(), [])
+    assert.equal(cfg.get().defaultModel, 'fast')
+    assert.equal(cfg.get().routing?.compact, 'fast')
+    assert.equal(cfg.resolveModelKeyFor({ kind: 'compact' }, { currentModelKey: 'other' }), 'fast')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('migration: a clean config reports nothing', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: { only: { provider: 'openai', model: 'only' } },
+      defaultModel: 'only',
+      routing: { plan: 'inherit' },
+    })
+    const cfg = new ConfigService(dir)
+    await cfg.load()
+    assert.deepEqual(cfg.getLegacyModelFindings(), [])
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

@@ -91,17 +91,6 @@ const SUPPORTED_SETTINGS: SettingDef[] = [
     },
   },
   {
-    key: 'activeProfile',
-    type: 'string',
-    description: 'Active model profile name (maps tiers to model keys)',
-    get: (s) => s.activeProfile,
-    set: (s, v) => { s.activeProfile = v as string },
-    validate: (v) => {
-      if (typeof v !== 'string' || v.trim() === '') return 'activeProfile must be a non-empty string'
-      return null
-    },
-  },
-  {
     key: 'permissions.mode',
     type: 'enum',
     description: 'Default permission mode for tool execution',

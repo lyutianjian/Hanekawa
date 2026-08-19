@@ -778,20 +778,20 @@ test('AskUserQuestionDialog renders preview pane for single-select preview quest
   assert.match(frame, /Other/)
 })
 
-test('ModelPickerDialog renders tier options and hints', () => {
+test('ModelPickerDialog renders one row per model key, with hints', () => {
   const frame = render(h(ModelPickerDialog, {
     options: modelPickerOptions(),
     onResolve: () => {},
   })).lastFrame() ?? ''
 
   assert.match(frame, /Select model/)
-  assert.match(frame, /1\. Fast/)
+  assert.match(frame, /1\. fast-key/)
   assert.match(frame, /fast-key · openai: fast-id/)
-  assert.match(frame, /2\. Balanced/)
+  assert.match(frame, /2\. balanced-key/)
   assert.match(frame, /balanced-key · anthropic: balanced-id/)
   assert.match(frame, /default/)
   assert.match(frame, /current/)
-  assert.match(frame, /3\. Powerful/)
+  assert.match(frame, /3\. powerful-key/)
   assert.match(frame, /Enter to set default/)
   assert.match(frame, /S to use for this session/)
 })
@@ -807,7 +807,7 @@ test('ModelPickerDialog resolves Enter as default and s as session-only', async 
   await waitForInk()
 
   assert.equal(decisions[0]?.action, 'set-default')
-  assert.equal(decisions[0]?.action === 'set-default' ? decisions[0].option.tier : '', 'fast')
+  assert.equal(decisions[0]?.action === 'set-default' ? decisions[0].option.key : '', 'fast-key')
 
   cleanup()
   const sessionInstance = render(h(ModelPickerDialog, {
@@ -819,7 +819,7 @@ test('ModelPickerDialog resolves Enter as default and s as session-only', async 
   await waitForInk()
 
   assert.equal(decisions[1]?.action, 'session-only')
-  assert.equal(decisions[1]?.action === 'session-only' ? decisions[1].option.tier : '', 'fast')
+  assert.equal(decisions[1]?.action === 'session-only' ? decisions[1].option.key : '', 'fast-key')
 })
 
 test('ModelPickerDialog supports arrows, numeric selection, Esc, and disabled rows', async () => {
@@ -835,7 +835,7 @@ test('ModelPickerDialog supports arrows, numeric selection, Esc, and disabled ro
   await waitForInk()
 
   assert.equal(decisions[0]?.action, 'set-default')
-  assert.equal(decisions[0]?.action === 'set-default' ? decisions[0].option.tier : '', 'balanced')
+  assert.equal(decisions[0]?.action === 'set-default' ? decisions[0].option.key : '', 'balanced-key')
 
   cleanup()
   const arrowInstance = render(h(ModelPickerDialog, {
@@ -849,7 +849,7 @@ test('ModelPickerDialog supports arrows, numeric selection, Esc, and disabled ro
   await waitForInk()
 
   assert.equal(decisions[1]?.action, 'session-only')
-  assert.equal(decisions[1]?.action === 'session-only' ? decisions[1].option.tier : '', 'balanced')
+  assert.equal(decisions[1]?.action === 'session-only' ? decisions[1].option.key : '', 'balanced-key')
 
   cleanup()
   const cancelInstance = render(h(ModelPickerDialog, {
@@ -1287,8 +1287,8 @@ test('StaticDisplayItem renders welcome banner as a static header item', () => {
 function modelPickerOptions(): ModelPickerOption[] {
   return [
     {
-      tier: 'fast',
-      label: 'Fast',
+      key: 'fast-key',
+      label: 'fast-key',
       modelKey: 'fast-key',
       providerName: 'openai',
       modelId: 'fast-id',
@@ -1296,8 +1296,8 @@ function modelPickerOptions(): ModelPickerOption[] {
       isDefault: false,
     },
     {
-      tier: 'balanced',
-      label: 'Balanced',
+      key: 'balanced-key',
+      label: 'balanced-key',
       modelKey: 'balanced-key',
       providerName: 'anthropic',
       modelId: 'balanced-id',
@@ -1305,8 +1305,8 @@ function modelPickerOptions(): ModelPickerOption[] {
       isDefault: true,
     },
     {
-      tier: 'powerful',
-      label: 'Powerful',
+      key: 'powerful-key',
+      label: 'powerful-key',
       modelKey: 'powerful-key',
       providerName: 'openai',
       modelId: 'powerful-id',

@@ -15,6 +15,8 @@
 单窗口 + 侧边栏全量会话历史、设置界面、按 `design_guidance.md` 重做视觉。
 附带取消三档模型路由。
 
+**进度**：4c 已完成（先做，理由见 4c 一节）。4a / 4b / 4d / 4e / 4f 未开始。
+
 ---
 
 ## 阶段 4 的六条决策
@@ -26,7 +28,7 @@
 | 3 | 设置覆盖四块：Provider、权限、Agent、通用+MCP+上下文 |
 | 4 | **effort 不进设置**，放在输入框右下角，随时可调 |
 | 5 | 中文界面；共享 presentation 层加 `locale` 参数，桌面传 `zh`、TUI 传 `en`；chrome 用系统无衬线，代码/diff/命令预览保持等宽 |
-| 6 | **彻底移除三档模型机制**（`fast`/`balanced`/`powerful`），路由直接指向具体模型键，子 agent 默认 `inherit` |
+| 6 | **彻底移除三档模型机制**（`fast`/`balanced`/`powerful`），路由直接指向具体模型键，子 agent 默认 `inherit`。**已落地**：连带失去「plan 自动升档」与「compact 自动降档」——没有档就没得升，`compactModel` 是保留的逃生口 |
 
 ### 架构决定：单窗口 + lane 多路复用
 
@@ -105,29 +107,47 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
 - [ ] 凭据：`test/rendererSidebar.test.ts`、`test/paneBudget.test.ts`、
   `test/desktopShellHost.test.ts` 补删除路径。
 
-### 4c — 取消三档模型 `[ ]`
+### 4c — 取消三档模型 `[x]`
 
-破坏性变更，README / CLAUDE.md 都要记一笔。
+破坏性变更，README / CLAUDE.md 都已记一笔。**先于 4a 做**：4c 自足、每步保持全绿，
+而且它是 4d/4e 的事实前置——4d 的 Provider 卡片要渲染 routing、4e 的胶囊要显示模型，
+按三档做完再拆等于同一块界面做两遍。
 
-- [ ] `src/config/routing.ts`：删 `Tier` / `TierOrInherit` / `Profile` /
+- [x] `src/config/routing.ts`：删 `Tier` / `TierOrInherit` / `Profile` /
   `parseTierInput` / `resolveTier`；`Routing` 的值类型变成 `string`（模型键或
-  `'inherit'`）；`DEFAULT_ROUTING` 全部改 `'inherit'`——没有三档就没有「plan 自动升档」
-  这回事，默认继承主模型是唯一诚实的默认。
-- [ ] `src/config/service.ts`：删 `profiles` / `activeProfile` 与
+  `'inherit'`）；`pickTier` → `pickRoutedModel`；`DEFAULT_ROUTING` 全部改 `'inherit'`。
+- [x] `src/config/service.ts`：删 `profiles` / `activeProfile` 与
   `setProfile` / `removeProfile` / `setActiveProfile` / `getActiveProfile` /
   `findTierForModel`；`resolveModelReference` 只认模型键；`resolveModelKeyFor`
   变成「查 routing → 是模型键就用 → 否则 `inherit`/未配 → `defaultModel`」。
-- [ ] `src/config/settings.ts` 去掉 `profiles`/`activeProfile`，校验补
-  「`defaultModel` 必须是 `models` 里存在的键」。
-- [ ] `src/runtime/modelPicker.ts`：`ModelPickerOption.tier` 换成 `key`，
-  枚举 `knownModelKeys` 而不是三个档位。`/model <modelKey>` 本就走得通
-  （`setDefaultModel` 经 `resolveModelReference` 校验）。
-- [ ] 连带：`src/runtime/modelSwitch.ts`、`src/tools/configTool.ts`、
-  `src/tui/components/ProviderPanel.tsx`（删 profiles 页签，routing 页签换模型键下拉）。
-- [ ] 测试要改的七个：`modelPicker` / `modelRouting` / `modelSwitch` / `protocolHost` /
-  `providerPanel` / `rendererShellModel` / `tuiRender`。
-- [ ] **迁移**：启动时读到 `profiles`/三档字符串 → 出 `RuntimeDiagnostic` 警告并把
-  `defaultModel` 落到第一个可解析的模型键，**不拦启动**（沿用既有决策）。
+- [x] `src/config/settings.ts` 去掉 `profiles`/`activeProfile`，校验补
+  「`defaultModel` 必须是 `models` 里存在的键」——**只在 `settings.models` 存在时判**，
+  否则 models 只配在 `config.json` 的合法配置会被误报。
+- [x] `src/runtime/modelPicker.ts`：`ModelPickerOption.tier` 换成 `key`，
+  枚举 `knownModelKeys`。顺手把入参收窄成结构化的 `ModelPickerConfig`，
+  测试因此不再需要 `as unknown as ConfigService`（见工作方法里那条）。
+- [x] 连带：`modelSwitch.ts`、`providerRuntime.ts`（scope 去掉 `'profiles'`）、
+  `runOverrides.ts`、`configTool.ts`、`commands/provider.ts`、`protocol/host.ts`、
+  `renderer/model/surfaces.ts`、`ModelPickerDialog.tsx`、`App.tsx`、
+  `ProviderPanel.tsx`（删 profiles 页签，routing 页签换成「`inherit` + 模型键」下拉）。
+- [x] **迁移**：`ConfigService.load()` 扫原始层，`getLegacyModelFindings()` 暴露；
+  `bootstrap.ts` 的 `checkLegacyModelTiers` 转成 `RuntimeDiagnostic` 警告，**不拦启动**。
+  三档 routing 值归一成 `'inherit'`，三档 `defaultModel` 落到第一个可解析的模型键。
+- [x] 测试：`modelRouting`（重写，29 条）/ `modelPicker`（重写）/ `providerPanel` /
+  `modelSwitch` / `protocolHost` / `rendererShellModel` / `tuiRender` / `config` /
+  `providerRuntime` / `runOverrides` / `commands`。
+
+**新增的四条不变式**（都做过变异验证，报红的是预期那条）：
+
+- `removeModel` 拒绝删除 routing 仍指向的模型 —— 这是被删掉那条 profile 引用检查的
+  正统继承者，不是新增范围；`renameModel` 同样要把新键写回 routing。
+- 迁移只在「三档字面量**且不是**真实模型键」时才动手：用户真有个叫 `fast` 的模型、
+  `routing.main: "fast"` 是合法的新式配置，改写它是拿一个想象中的问题去破坏一个能跑的设置。
+  （`resolveModelInput` 一直就是按「模型键优先」解这个歧义的。）
+- 模型键解析不了时，picker 行仍然**画出来**并说明原因，而不是丢掉——配置了却选不了的
+  模型必须自己解释自己。
+- routing 指向一个已不存在的键时**降级为 `inherit`** 而不是失败，这正是「删模型是可恢复的
+  错误」的依据。
 
 ### 4d — 设置界面 `[ ]`
 
@@ -204,7 +224,7 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
 
 - [ ] `CLAUDE.md` + `AGENTS.md`（逐字镜像）：改「Electron shell」「The renderer」
   两节（一个窗口 N lane，不再是 window-per-pane），新增 laneChannel / ShellHost
-  两段不变式，`Providers` 一节删掉三档路由的描述。
+  两段不变式。~~`Providers` 一节删掉三档路由的描述~~（4c 已做，两文件已用 diff 验证仍逐字一致）。
 - [ ] `design_guidance.md` 从「未落地的参考资料」变成 4e 的依据。
 
 ### 已知缺陷（记账未修）
@@ -229,7 +249,12 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
   不能已经把会话级状态切过去。
 - **配置串校验**：名字拼错时 `resolveModelReference` 返回 `undefined` 与「没配置」无法区分
   而被静默忽略 —— 已改为校验原始配置字符串，`fallbackModel`/`compactModel` 出
-  `RuntimeDiagnostic` 警告而不拦启动。4c 的三档迁移沿用这条。
+  `RuntimeDiagnostic` 警告而不拦启动。4c 的三档迁移沿用了这条（`checkLegacyModelTiers`
+  就挂在 `checkOptionalModelReferences` 旁边）。
+- **4c：`as unknown as` 的正解在这里也适用**。`buildModelPickerOptions` 的入参从
+  `ConfigService` 收窄成结构化的 `ModelPickerConfig`（只含它真读的三个成员），
+  测试就能传普通对象、不需要任何 cast，而约束仍然检查假货 —— 与 `ProjectDirectory`
+  用泛型那条同源。给别的「只读几个成员」的函数推这个手法。
 - **main.ts 的窗↔pane 簿记（3d，3j 改过一次；4a 将改为 lane↔pane）**：键必须是**不随
   `/clear`、`/resume` 移动**的那个。`onPaneClosed` 原本闭包到自己的 `entryWindow`，
   理由写的是「回调拿到的 `paneId` 是 host 视角的**当前**会话 id，与开窗时的键从来对不上」
@@ -299,8 +324,11 @@ node --import tsx --test test/laneChannel.test.ts test/desktopShellHost.test.ts 
   test/paneBudget.test.ts
 node --import tsx --test test/rendererSidebar.test.ts test/rendererSettingsModel.test.ts \
   test/rendererStyleTokens.test.ts
+
+# 4c 触及的（已全绿）
 node --import tsx --test test/modelPicker.test.ts test/modelRouting.test.ts \
-  test/modelSwitch.test.ts test/providerPanel.test.ts
+  test/modelSwitch.test.ts test/providerPanel.test.ts test/providerRuntime.test.ts \
+  test/config.test.ts test/runOverrides.test.ts
 
 # 既有主题
 node --import tsx --test test/protocolWire.test.ts test/protocolHost.test.ts \

@@ -107,42 +107,11 @@ test('ProviderPanel requires models to reference an endpoint', async () => {
   }
 })
 
-test('ProviderPanel profile choices require a model for every tier', async () => {
-  const { config, cwd } = await createConfig()
-  try {
-    config.setModelConfig('fast-model', { provider: 'openai', model: 'fast-id' })
-    const panel = render(h(ProviderPanel, {
-      config,
-      onChange: () => {},
-      onClose: () => {},
-    }))
-
-    await writeInput(panel, '\t')
-    await writeInput(panel, '\t')
-    await writeInput(panel, 'n')
-    assert.match(panel.lastFrame() ?? '', /Fast\s+: fast-model/)
-    await writeInput(panel, 'default')
-    await writeInput(panel, '\t')
-    assert.match(panel.lastFrame() ?? '', /‹ fast-model ›/)
-    await writeInput(panel, '\r')
-    await flush()
-
-    assert.deepEqual(config.get().profiles?.default, {
-      fast: 'fast-model',
-      balanced: 'fast-model',
-      powerful: 'fast-model',
-    })
-  } finally {
-    await rm(cwd, { recursive: true, force: true })
-  }
-})
-
 test('ProviderPanel marks unsupported and missing legacy references', async () => {
   const { config, cwd } = await createConfig()
   try {
     config.setEndpoint('legacy', { provider: 'custom' })
     config.setModelConfig('broken-model', { endpoint: 'missing-endpoint', model: 'id' })
-    config.setProfile('broken-profile', { fast: 'missing-model' })
     const panel = render(h(ProviderPanel, {
       config,
       onChange: () => {},
@@ -159,18 +128,12 @@ test('ProviderPanel marks unsupported and missing legacy references', async () =
     assert.match(panel.lastFrame() ?? '', /missing-endpoint \(missing\)/)
     await writeInput(panel, '\r')
     assert.match(panel.lastFrame() ?? '', /Unknown endpoint "missing-endpoint"/)
-    await writeEscape(panel)
-    await writeInput(panel, '\t')
-    await writeInput(panel, 'e')
-    assert.match(panel.lastFrame() ?? '', /missing-model \(missing\)/)
-    await writeInput(panel, '\r')
-    assert.match(panel.lastFrame() ?? '', /Fast, balanced, and powerful models are required/)
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
 })
 
-test('ProviderPanel requires upstream configuration before creating models or profiles', async () => {
+test('ProviderPanel requires an endpoint before creating a model', async () => {
   const { config, cwd } = await createConfig()
   try {
     const panel = render(h(ProviderPanel, {
@@ -183,11 +146,33 @@ test('ProviderPanel requires upstream configuration before creating models or pr
     await writeInput(panel, 'n')
     assert.match(panel.lastFrame() ?? '', /Create an endpoint before adding a model/)
     assert.doesNotMatch(panel.lastFrame() ?? '', /New model/)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
 
-    await writeInput(panel, '\t')
-    await writeInput(panel, 'n')
-    assert.match(panel.lastFrame() ?? '', /Create a model before adding a profile/)
-    assert.doesNotMatch(panel.lastFrame() ?? '', /New profile/)
+test('the panel has exactly three sections; profiles is gone', async () => {
+  const { config, cwd } = await createConfig()
+  try {
+    const panel = render(h(ProviderPanel, {
+      config,
+      onChange: () => {},
+      onClose: () => {},
+    }))
+
+    const frame = panel.lastFrame() ?? ''
+    assert.match(frame, /Endpoints/)
+    assert.match(frame, /Models/)
+    assert.match(frame, /Routing/)
+    assert.doesNotMatch(frame, /Profiles/)
+
+    // Three tabs, so three right-arrows return to the first.
+    await writeKey(panel, '\x1B[C')
+    assert.match(panel.lastFrame() ?? '', /\[Models\]/)
+    await writeKey(panel, '\x1B[C')
+    assert.match(panel.lastFrame() ?? '', /\[Routing\]/)
+    await writeKey(panel, '\x1B[C')
+    assert.match(panel.lastFrame() ?? '', /\[Endpoints\]/)
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
@@ -258,7 +243,7 @@ test('ProviderPanel supports Shift+Tab reverse field navigation and bounded Up/D
   }
 })
 
-test('ProviderPanel edits models and profiles with arrow-first navigation', async () => {
+test('ProviderPanel edits models with arrow-first navigation', async () => {
   const { config, cwd } = await createConfig()
   try {
     config.setEndpoint('first-endpoint', { provider: 'anthropic' })
@@ -285,23 +270,6 @@ test('ProviderPanel edits models and profiles with arrow-first navigation', asyn
       model: 'remote-id',
       endpoint: 'second-endpoint',
     })
-
-    await writeKey(panel, '\x1B[C')
-    await writeInput(panel, 'n')
-    await writeInput(panel, 'arrow-profile')
-    await writeKey(panel, '\x1B[B')
-    await writeKey(panel, '\x1B[C')
-    await writeKey(panel, '\x1B[B')
-    await writeKey(panel, '\x1B[C')
-    await writeKey(panel, '\x1B[B')
-    assert.match(panel.lastFrame() ?? '', /> Powerful\s+:/)
-    await writeInput(panel, '\r')
-    await waitForFrame(panel, /Saved profile "arrow-profile"/)
-    assert.deepEqual(config.get().profiles?.['arrow-profile'], {
-      fast: 'second-model',
-      balanced: 'second-model',
-      powerful: 'first-model',
-    })
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
@@ -312,6 +280,8 @@ test('ProviderPanel supports Home/End list jumps and both Routing axes', async (
   try {
     config.setEndpoint('alpha', { provider: 'anthropic' })
     config.setEndpoint('beta', { provider: 'openai' })
+    config.setModelConfig('model-a', { provider: 'openai', model: 'a' })
+    config.setModelConfig('model-b', { provider: 'openai', model: 'b' })
     const panel = render(h(ProviderPanel, {
       config,
       onChange: () => {},
@@ -327,52 +297,31 @@ test('ProviderPanel supports Home/End list jumps and both Routing axes', async (
     assert.match(panel.lastFrame() ?? '', /Edit endpoint "alpha"/)
     await writeEscape(panel)
 
+    // Left from the first tab wraps to the last, which is Routing now that
+    // Profiles is gone.
     await writeKey(panel, '\x1B[D')
     assert.match(panel.lastFrame() ?? '', /\[Routing\]/)
     await writeInput(panel, '\r')
+
+    // The choices are the configured model keys plus inherit — never tiers.
+    const options = panel.lastFrame() ?? ''
+    assert.match(options, /inherit/)
+    assert.match(options, /model-a/)
+    assert.match(options, /model-b/)
+    assert.doesNotMatch(options, /balanced|powerful/)
+
+    // main starts at 'inherit' (index 0); Up wraps to the last model key.
     await writeKey(panel, '\x1B[A')
     await writeInput(panel, '\r')
-    await waitForFrame(panel, /Routing main -> fast/)
-    assert.equal(config.getRouting().main, 'fast')
+    await waitForFrame(panel, /Routing main -> model-b/)
+    assert.equal(config.getRouting().main, 'model-b')
 
+    // Reopen on 'model-b' (index 2); Right wraps forward to 'inherit'.
     await writeInput(panel, '\r')
     await writeKey(panel, '\x1B[C')
     await writeInput(panel, '\r')
-    await waitForFrame(panel, /Routing main -> balanced/)
-    assert.equal(config.getRouting().main, 'balanced')
-  } finally {
-    await rm(cwd, { recursive: true, force: true })
-  }
-})
-
-test('ProviderPanel uses Enter to edit profiles and a to activate them', async () => {
-  const { config, cwd } = await createConfig()
-  try {
-    config.setModelConfig('configured-model', { provider: 'openai', model: 'configured-id' })
-    config.setProfile('work', {
-      fast: 'configured-model',
-      balanced: 'configured-model',
-      powerful: 'configured-model',
-    })
-    const panel = render(h(ProviderPanel, {
-      config,
-      onChange: () => {},
-      onClose: () => {},
-    }))
-
-    await writeKey(panel, '\x1B[C')
-    await writeKey(panel, '\x1B[C')
-    assert.match(panel.lastFrame() ?? '', /Enter to edit/)
-    assert.match(panel.lastFrame() ?? '', /A to activate/)
-
-    await writeInput(panel, '\r')
-    assert.match(panel.lastFrame() ?? '', /Edit profile "work"/)
-    await writeEscape(panel)
-    assert.notEqual(config.get().activeProfile, 'work')
-
-    await writeInput(panel, 'a')
-    await waitForFrame(panel, /Active profile set to "work"/)
-    assert.equal(config.get().activeProfile, 'work')
+    await waitForFrame(panel, /Routing main -> inherit/)
+    assert.equal(config.getRouting().main, 'inherit')
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }

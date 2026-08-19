@@ -241,16 +241,16 @@ const MODELS: WireModelsResult = {
   models: [],
   defaultModelKey: 'sonnet',
   pickerOptions: [
-    { tier: 'fast', label: 'Fast', modelKey: 'haiku', modelId: 'claude-haiku', providerName: 'anthropic', isCurrent: false, isDefault: false },
-    { tier: 'balanced', label: 'Balanced', modelKey: 'sonnet', modelId: 'claude-sonnet', providerName: 'anthropic', isCurrent: true, isDefault: true },
-    { tier: 'powerful', label: 'Powerful', disabledReason: 'no model configured', isCurrent: false, isDefault: false },
+    { key: 'haiku', label: 'haiku', modelKey: 'haiku', modelId: 'claude-haiku', providerName: 'anthropic', isCurrent: false, isDefault: false },
+    { key: 'sonnet', label: 'sonnet', modelKey: 'sonnet', modelId: 'claude-sonnet', providerName: 'anthropic', isCurrent: true, isDefault: true },
+    { key: 'broken', label: 'broken', disabledReason: 'no model configured', isCurrent: false, isDefault: false },
   ],
 }
 
-test('the model picker marks the current tier and explains a disabled one', () => {
+test('the model picker marks the current model and explains a disabled one', () => {
   const view = modelPickerView(MODELS)
 
-  assert.deepEqual(view.rows.map((row) => row.id), ['fast', 'balanced', 'powerful'])
+  assert.deepEqual(view.rows.map((row) => row.id), ['haiku', 'sonnet', 'broken'])
   assert.equal(view.rows[1]?.current, true)
   assert.match(view.rows[1]?.detail ?? '', /default/)
   assert.equal(view.rows[2]?.disabled, true)
@@ -328,12 +328,12 @@ test('the rewind panel is outside SUPPORTED_SURFACES but is still drawn', () => 
 test('picking a model or an effort runs the slash command, never the wire setter', () => {
   // Load-bearing, not roundabout. `set-model` only points the current runtime
   // elsewhere; `/model` is the user expressing a preference and is what writes
-  // the tier back to config. Calling `client.setModel` from a picker row would
+  // the choice back to config. Calling `client.setModel` from a picker row would
   // silently drop that persistence.
   const models = modelPickerView(MODELS)
-  assert.deepEqual(activateSurfaceRowById(models, 'balanced'), {
+  assert.deepEqual(activateSurfaceRowById(models, 'sonnet'), {
     kind: 'run-command',
-    line: '/model balanced',
+    line: '/model sonnet',
   })
 
   const effort = effortPickerView({ current: 'high' })
@@ -342,10 +342,10 @@ test('picking a model or an effort runs the slash command, never the wire setter
 
 test('a disabled row explains itself and cannot be picked', () => {
   const models = modelPickerView(MODELS)
-  const powerful = models.rows.find((row) => row.id === 'powerful')
-  assert.equal(powerful?.disabled, true)
-  assert.equal(powerful?.action, undefined)
-  assert.equal(activateSurfaceRowById(models, 'powerful'), undefined)
+  const broken = models.rows.find((row) => row.id === 'broken')
+  assert.equal(broken?.disabled, true)
+  assert.equal(broken?.action, undefined)
+  assert.equal(activateSurfaceRowById(models, 'broken'), undefined)
   assert.equal(activateSurfaceRowById(models, 'nonexistent'), undefined)
 })
 
@@ -390,7 +390,7 @@ test('a freshly opened picker starts on the current row when it is pickable', ()
   assert.equal(models.rows[1]?.current, true)
   assert.equal(initialSurfaceSelection(models), 1)
 
-  // With no current row, the first pickable one. The disabled tier is skipped
+  // With no current row, the first pickable one. The disabled row is skipped
   // even when it comes first.
   const noCurrent = {
     ...models,

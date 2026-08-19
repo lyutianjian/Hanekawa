@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import type { AgentConfig, ModelConfig } from './service.js'
-import type { Endpoint, Profile, Routing } from './routing.js'
+import type { Endpoint, Routing } from './routing.js'
 import type { EffortLevel } from './effort.js'
 import type { HookCommand } from '../harness/hooks.js'
 import type { PermissionMode } from '../harness/permissions.js'
@@ -41,8 +41,6 @@ export interface MyAgentSettings {
   }
   models?: Record<string, ModelConfig>
   endpoints?: Record<string, Endpoint>
-  profiles?: Record<string, Profile>
-  activeProfile?: string
   routing?: Routing
   defaultModel?: string
   fallbackModel?: string
@@ -114,14 +112,6 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
 
     if (source.endpoints) {
       result.endpoints = { ...result.endpoints, ...source.endpoints }
-    }
-
-    if (source.profiles) {
-      result.profiles = { ...result.profiles, ...source.profiles }
-    }
-
-    if (source.activeProfile !== undefined) {
-      result.activeProfile = source.activeProfile
     }
 
     if (source.routing) {
@@ -337,6 +327,16 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
 
   if (settings.defaultModel !== undefined && (typeof settings.defaultModel !== 'string' || settings.defaultModel.trim() === '')) {
     errors.push('defaultModel must be a non-empty string')
+  } else if (
+    // Only checkable when this layer also declares the models. `models` may live
+    // entirely in `config.json`, which `validateSettings` never sees, so an
+    // unconditional check would reject perfectly good configs.
+    settings.models !== undefined
+    && typeof settings.defaultModel === 'string'
+    && settings.defaultModel.trim() !== ''
+    && settings.models[settings.defaultModel.trim()] === undefined
+  ) {
+    errors.push(`defaultModel "${settings.defaultModel.trim()}" is not a key in models`)
   }
 
   if (settings.fallbackModel !== undefined && (typeof settings.fallbackModel !== 'string' || settings.fallbackModel.trim() === '')) {

@@ -7,14 +7,19 @@ import type { MyAgentSettings } from './settings.js'
 import type { EffortLevel } from './effort.js'
 import {
   mergeRouting,
-  pickTier,
-  parseTierInput,
-  resolveTier,
+  pickRoutedModel,
   type Endpoint,
-  type Profile,
   type Routing,
   type RoutingRole,
 } from './routing.js'
+
+/**
+ * The three tier names that `routing` / `defaultModel` used to hold.
+ *
+ * Kept only so a config written before tiers were removed can be recognized and
+ * warned about; nothing resolves through them any more.
+ */
+const LEGACY_TIER_NAMES: readonly string[] = ['fast', 'balanced', 'powerful']
 
 export type ThinkingConfig =
   | { type: 'adaptive' }
@@ -45,8 +50,6 @@ export interface AgentConfig {
 export interface Config {
   endpoints?: Record<string, Endpoint>
   models: Record<string, ModelConfig>
-  profiles?: Record<string, Profile>
-  activeProfile?: string
   routing?: Routing
   defaultModel?: string
   fallbackModel?: string
@@ -77,6 +80,8 @@ export class ConfigService {
   private config: Config
   private configPath: string
   private globalConfigPath: string | null
+  /** Human-readable notes about tier-era config found by the last `load()`. */
+  private legacyModelFindings: string[] = []
 
   constructor(cwd: string, options?: ConfigServiceOptions) {
     this.configPath = getConfigPath(cwd)
@@ -97,6 +102,87 @@ export class ConfigService {
       deepMergeConfig(deepMergeConfig(DEFAULT_CONFIG, settingsConfig), globalLoaded),
       loaded,
     )
+    // The raw layers, not the merged result: `Config` no longer has a `profiles`
+    // field, so a tier-era file's profiles survive only as untyped extras on the
+    // objects we just read.
+    this.legacyModelFindings = this.migrateLegacyTiers([settings, globalLoaded, loaded])
+  }
+
+  /**
+   * What the last `load()` found left over from the tier era, already repaired.
+   *
+   * Reported rather than thrown, following `fallbackModel` / `compactModel`:
+   * a stale config should start with a warning and a sane model, not refuse to
+   * launch. `bootstrap()` turns these into `RuntimeDiagnostic`s.
+   */
+  getLegacyModelFindings(): readonly string[] {
+    return this.legacyModelFindings
+  }
+
+  /**
+   * Recognize tier-era config, warn about it, and leave something workable.
+   *
+   * A tier name is only legacy when it does *not* name a real model. A user with
+   * a model literally keyed `fast` and `routing.main: "fast"` has written a
+   * perfectly valid new-style config, and rewriting it to `'inherit'` would
+   * break a working setup to fix an imaginary one. (`resolveModelInput` has
+   * always had to answer this same ambiguity in the model's favour.)
+   *
+   * Two repairs, both chosen so the agent still starts with a real model:
+   *  - a `routing` value naming a tier becomes `'inherit'`, since the role it
+   *    described no longer exists and inheriting the main model is the closest
+   *    honest reading;
+   *  - a `defaultModel` naming a tier becomes the first model key that actually
+   *    resolves, because leaving it would make `getDefaultModel()` return
+   *    undefined and nothing would answer "which model am I".
+   */
+  private migrateLegacyTiers(rawLayers: readonly (object | undefined)[]): string[] {
+    const findings: string[] = []
+    const isStaleTier = (value: string): boolean =>
+      LEGACY_TIER_NAMES.includes(value.trim()) && !this.resolveModel(value.trim())
+
+    for (const layer of rawLayers) {
+      if (!layer) continue
+      const record = layer as Record<string, unknown>
+      if (record.profiles !== undefined) {
+        findings.push('`profiles` is no longer supported; routing now names model keys directly.')
+      }
+      if (record.activeProfile !== undefined) {
+        findings.push('`activeProfile` is no longer supported; routing now names model keys directly.')
+      }
+    }
+
+    const routing = this.config.routing
+    if (routing) {
+      for (const role of ['main', 'plan', 'compact'] as const) {
+        const value = routing[role]
+        if (value !== undefined && isStaleTier(value)) {
+          findings.push(`routing.${role} was the tier "${value}"; treating it as "inherit".`)
+          routing[role] = 'inherit'
+        }
+      }
+      for (const [type, value] of Object.entries(routing.subagent ?? {})) {
+        if (value !== undefined && isStaleTier(value)) {
+          findings.push(`routing.subagent.${type} was the tier "${value}"; treating it as "inherit".`)
+          routing.subagent![type] = 'inherit'
+        }
+      }
+    }
+
+    const defaultModel = this.config.defaultModel
+    if (defaultModel !== undefined && isStaleTier(defaultModel)) {
+      const replacement = Object.keys(this.config.models).find((key) => this.resolveModel(key))
+      if (replacement) {
+        findings.push(`defaultModel was the tier "${defaultModel}"; using model "${replacement}" instead.`)
+        this.config.defaultModel = replacement
+      } else {
+        findings.push(`defaultModel was the tier "${defaultModel}" and no configured model resolves; it has been dropped.`)
+        delete this.config.defaultModel
+      }
+    }
+
+    // Deduplicate: `profiles` in two layers is one story, not two.
+    return [...new Set(findings)]
   }
 
   /**
@@ -142,15 +228,6 @@ export class ConfigService {
     }
   }
 
-  findTierForModel(modelKey: string): string | undefined {
-    const profile = this.getActiveProfile()?.profile
-    if (!profile) return undefined
-    for (const [tier, key] of Object.entries(profile)) {
-      if (key === modelKey) return tier
-    }
-    return undefined
-  }
-
   addModel(name: string, model: ModelConfig): void {
     this.config.models[name] = model
   }
@@ -174,51 +251,35 @@ export class ConfigService {
     return resolved.provider ? resolved : undefined
   }
 
+  /**
+   * Which model key a role should run on.
+   *
+   * Three steps, and there is no fourth: look the role up in `routing`; if it
+   * named a model key that resolves, use it; otherwise — `'inherit'`, absent, or
+   * a name that no longer resolves — fall back to the current model, then to
+   * `defaultModel`. An unresolvable routing entry degrading to the parent model
+   * is deliberate: it is what makes deleting a model a recoverable mistake.
+   */
   resolveModelKeyFor(role: RoutingRole, options: { currentModelKey?: string } = {}): string | undefined {
     const fallback = this.resolveFallbackModelKey(options.currentModelKey)
-
-    if (role.kind === 'main') {
-      const defaultTier = parseTierInput(this.config.defaultModel ?? '')
-      if (defaultTier) {
-        const active = this.getActiveProfile()
-        const routed = resolveTier(active?.profile, defaultTier)
-        if (routed && this.resolveModel(routed)) return routed
-        return fallback
-      }
-    }
-
-    const tier = pickTier(this.getRouting(), role)
-    if (tier === undefined || tier === 'inherit') return fallback
-
-    const active = this.getActiveProfile()
-    const routed = resolveTier(active?.profile, tier)
-    return routed && this.resolveModel(routed) ? routed : fallback
+    const routed = pickRoutedModel(this.getRouting(), role)
+    if (routed === undefined || routed === 'inherit') return fallback
+    return this.resolveModel(routed) ? routed : fallback
   }
 
-  resolveModelInput(input: string, options: { currentModelKey?: string } = {}): string | undefined {
-    const trimmed = input.trim()
-    if (!trimmed) return undefined
-    if (trimmed.toLowerCase() === 'inherit') return undefined
-
-    return this.resolveModelReference(trimmed)
-      ?? (parseTierInput(trimmed) ? this.resolveFallbackModelKey(options.currentModelKey) : undefined)
+  resolveModelInput(input: string): string | undefined {
+    return this.resolveModelReference(input)
   }
 
+  /**
+   * A configured name to a usable model key. `'inherit'` is not a
+   * misconfiguration — it resolves to nothing on purpose.
+   */
   resolveModelReference(reference: string | undefined): string | undefined {
     const trimmed = reference?.trim()
     if (!trimmed) return undefined
     if (trimmed.toLowerCase() === 'inherit') return undefined
-
-    if (this.resolveModel(trimmed)) return trimmed
-
-    const tier = parseTierInput(trimmed)
-    if (!tier) return undefined
-
-    const active = this.getActiveProfile()
-    const routed = resolveTier(active?.profile, tier)
-    return routed && this.resolveModel(routed)
-      ? routed
-      : undefined
+    return this.resolveModel(trimmed) ? trimmed : undefined
   }
 
   private resolveFallbackModelKey(currentModelKey?: string): string | undefined {
@@ -259,11 +320,12 @@ export class ConfigService {
     if (this.config.compactModel === name) {
       throw new Error(`Cannot remove model "${name}": it is the compactModel.`)
     }
-    for (const [profileName, profile] of Object.entries(this.config.profiles ?? {})) {
-      for (const tier of ['fast', 'balanced', 'powerful'] as const) {
-        if (profile[tier] === name) {
-          throw new Error(`Cannot remove model "${name}": referenced by profile "${profileName}.${tier}".`)
-        }
+    // Routing holds model keys now, so it is the fourth place a model can be
+    // spoken for — the successor to the profile check this replaced. Without it
+    // a removal silently leaves a role pointing at nothing.
+    for (const [role, value] of routingReferences(this.config.routing)) {
+      if (value === name) {
+        throw new Error(`Cannot remove model "${name}": referenced by routing.${role}.`)
       }
     }
     delete this.config.models[name]
@@ -282,44 +344,15 @@ export class ConfigService {
     if (this.config.fallbackModel === oldKey) this.config.fallbackModel = newKey
     if (this.config.compactModel === oldKey) this.config.compactModel = newKey
 
-    if (this.config.profiles) {
-      for (const profile of Object.values(this.config.profiles)) {
-        for (const tier of ['fast', 'balanced', 'powerful'] as const) {
-          if (profile[tier] === oldKey) profile[tier] = newKey
-        }
+    const routing = this.config.routing
+    if (routing) {
+      for (const role of ['main', 'plan', 'compact'] as const) {
+        if (routing[role] === oldKey) routing[role] = newKey
+      }
+      for (const [type, value] of Object.entries(routing.subagent ?? {})) {
+        if (value === oldKey) routing.subagent![type] = newKey
       }
     }
-  }
-
-  setProfile(name: string, profile: Profile): void {
-    this.config.profiles = { ...this.config.profiles, [name]: profile }
-  }
-
-  removeProfile(name: string): void {
-    if (!this.config.profiles?.[name]) return
-    const { [name]: _removed, ...rest } = this.config.profiles
-    this.config.profiles = Object.keys(rest).length > 0 ? rest : undefined
-    if (this.config.activeProfile === name) {
-      delete this.config.activeProfile
-    }
-  }
-
-  setActiveProfile(name: string): void {
-    if (!this.config.profiles?.[name]) {
-      throw new Error(`Unknown profile: ${name}`)
-    }
-    this.config.activeProfile = name
-  }
-
-  getActiveProfile(): { name: string; profile: Profile } | undefined {
-    if (this.config.activeProfile) {
-      const profile = this.config.profiles?.[this.config.activeProfile]
-      return profile ? { name: this.config.activeProfile, profile } : undefined
-    }
-    const entries = Object.entries(this.config.profiles ?? {})
-    if (entries.length !== 1) return undefined
-    const [name, profile] = entries[0]!
-    return { name, profile }
   }
 
   getRouting(): Routing {
@@ -331,14 +364,30 @@ export class ConfigService {
   }
 }
 
+/**
+ * Every `role -> value` pair in a routing map, subagents included, as
+ * `['plan', 'sonnet']` / `['subagent.explore', 'haiku']`. One walk shared by the
+ * removal check and anything else that has to ask "who points at this model".
+ */
+function routingReferences(routing: Routing | undefined): Array<[string, string]> {
+  if (!routing) return []
+  const pairs: Array<[string, string]> = []
+  for (const role of ['main', 'plan', 'compact'] as const) {
+    const value = routing[role]
+    if (value !== undefined) pairs.push([role, value])
+  }
+  for (const [type, value] of Object.entries(routing.subagent ?? {})) {
+    if (value !== undefined) pairs.push([`subagent.${type}`, value])
+  }
+  return pairs
+}
+
 function configFromSettings(settings?: MyAgentSettings): Partial<Config> {
   if (!settings) return {}
 
   return {
     ...(settings.models ? { models: settings.models } : {}),
     ...(settings.endpoints ? { endpoints: settings.endpoints } : {}),
-    ...(settings.profiles ? { profiles: settings.profiles } : {}),
-    ...(settings.activeProfile !== undefined ? { activeProfile: settings.activeProfile } : {}),
     ...(settings.routing ? { routing: settings.routing } : {}),
     ...(settings.defaultModel !== undefined ? { defaultModel: settings.defaultModel } : {}),
     ...(settings.fallbackModel !== undefined ? { fallbackModel: settings.fallbackModel } : {}),
@@ -352,8 +401,6 @@ function deepMergeConfig(base: Config, overrides: Partial<Config>): Config {
   return {
     endpoints: { ...base.endpoints, ...overrides.endpoints },
     models: { ...base.models, ...overrides.models },
-    profiles: { ...base.profiles, ...overrides.profiles },
-    activeProfile: overrides.activeProfile ?? base.activeProfile,
     routing: mergeRouting(base.routing, overrides.routing),
     defaultModel: overrides.defaultModel ?? base.defaultModel,
     fallbackModel: overrides.fallbackModel ?? base.fallbackModel,

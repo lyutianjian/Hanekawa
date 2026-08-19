@@ -1,28 +1,32 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildModelPickerOptions } from '../src/runtime/modelPicker.js'
-import type { ConfigService } from '../src/config/service.js'
+import { buildModelPickerOptions, type ModelPickerConfig } from '../src/runtime/modelPicker.js'
 
 /**
  * This ran inside `App.tsx` with no coverage of its own until it moved into
  * `src/runtime/`. The stub deliberately folds `apiKey`/`baseUrl` into what
  * `getModel` returns, exactly as `resolveModel` does, because keeping those out
  * of the result is the reason the function is host-side at all.
+ *
+ * Typed as `ModelPickerConfig` rather than cast to `ConfigService`: with no
+ * `as unknown as` in the way, the compiler still checks the fake against every
+ * member the builder calls.
  */
 
 interface StubOptions {
   models?: Record<string, unknown>
   defaultModel?: string
-  profile?: Record<string, string>
   /** Keys `getModel` refuses to resolve, as a broken endpoint reference would. */
   unresolvable?: string[]
 }
 
-function stubConfig(options: StubOptions = {}): ConfigService {
-  const models = options.models ?? { fast: {}, main: {}, big: {} }
+const DEFAULT_MODELS = { small: {}, main: {}, big: {} }
+
+function stubConfig(options: StubOptions = {}): ModelPickerConfig {
+  const models = options.models ?? DEFAULT_MODELS
   const unresolvable = new Set(options.unresolvable ?? [])
   return {
-    get: () => ({ models, defaultModel: options.defaultModel ?? 'main' }),
+    get: () => ({ defaultModel: options.defaultModel ?? 'main' }),
     getModel: (key: string) =>
       unresolvable.has(key) || !(key in models)
         ? undefined
@@ -34,83 +38,68 @@ function stubConfig(options: StubOptions = {}): ConfigService {
           baseUrl: 'https://secret.example.com',
         },
     resolveModelReference: (reference: string | undefined) => reference,
-    getActiveProfile: () =>
-      options.profile === undefined
-        ? undefined
-        : { name: 'p', profile: options.profile },
-  } as unknown as ConfigService
+  }
 }
 
-const keys = (options: StubOptions = {}) => Object.keys(options.models ?? { fast: {}, main: {}, big: {} })
+const keys = (options: StubOptions = {}) => Object.keys(options.models ?? DEFAULT_MODELS)
 
-test('there is exactly one option per tier, in cycle order', () => {
+test('there is exactly one option per configured model key, in the order given', () => {
   const options = buildModelPickerOptions(stubConfig(), 'main', keys())
-  assert.deepEqual(options.map((option) => option.tier), ['fast', 'balanced', 'powerful'])
-  assert.deepEqual(options.map((option) => option.label), ['Fast', 'Balanced', 'Powerful'])
+  assert.deepEqual(options.map((option) => option.key), ['small', 'main', 'big'])
+  // The key is the label: with tiers gone there is no other name for a row.
+  assert.deepEqual(options.map((option) => option.label), ['small', 'main', 'big'])
 })
 
-test('a routed tier resolves to its own model', () => {
-  const profile = { fast: 'fast', balanced: 'main', powerful: 'big' }
-  const options = buildModelPickerOptions(stubConfig({ profile }), 'main', keys())
-  assert.deepEqual(options.map((option) => option.modelKey), ['fast', 'main', 'big'])
-  assert.deepEqual(options.map((option) => option.modelId), ['fast-model', 'main-model', 'big-model'])
+test('each row carries its own model key and id', () => {
+  const options = buildModelPickerOptions(stubConfig(), 'main', keys())
+  assert.deepEqual(options.map((option) => option.modelKey), ['small', 'main', 'big'])
+  assert.deepEqual(options.map((option) => option.modelId), ['small-model', 'main-model', 'big-model'])
+  assert.deepEqual(options.map((option) => option.providerName), ['anthropic', 'anthropic', 'anthropic'])
 })
 
 test('isCurrent and isDefault mark the active and configured models', () => {
-  const profile = { fast: 'fast', balanced: 'main', powerful: 'big' }
-  const options = buildModelPickerOptions(stubConfig({ profile, defaultModel: 'big' }), 'fast', keys())
+  const options = buildModelPickerOptions(stubConfig({ defaultModel: 'big' }), 'small', keys())
   assert.deepEqual(options.map((option) => option.isCurrent), [true, false, false])
   assert.deepEqual(options.map((option) => option.isDefault), [false, false, true])
 })
 
-test('an unroutable tier falls back to the current model, then to the default', () => {
-  // resolveTierModelKey's three steps, exercised through the public function.
-  const noProfile = buildModelPickerOptions(stubConfig(), 'big', keys())
-  assert.deepEqual(noProfile.map((option) => option.modelKey), ['big', 'big', 'big'])
-
-  // With no usable current model either, every tier lands on defaultModel.
-  const defaulted = buildModelPickerOptions(stubConfig({ defaultModel: 'main' }), 'gone', keys())
-  assert.deepEqual(defaulted.map((option) => option.modelKey), ['main', 'main', 'main'])
+test('the caller decides which keys are listed', () => {
+  // `App` passes React state that can legitimately lag behind config, so the
+  // key list is an argument rather than something read back out of the service.
+  const options = buildModelPickerOptions(stubConfig(), 'main', ['main', 'big'])
+  assert.deepEqual(options.map((option) => option.key), ['main', 'big'])
 })
 
-test('a tier resolving outside the known keys is disabled', () => {
-  const profile = { fast: 'fast', balanced: 'main', powerful: 'big' }
-  // `big` resolves but the caller does not list it: App passes React state that
-  // can legitimately lag behind config.
-  const options = buildModelPickerOptions(stubConfig({ profile }), 'main', ['fast', 'main'])
-  assert.equal(options[2]?.disabledReason, 'No configured model resolves for this tier.')
-  assert.equal(options[2]?.modelKey, undefined)
-  assert.equal(options[2]?.isCurrent, false)
-  assert.equal(options[2]?.isDefault, false)
+test('an empty key list yields no rows rather than a placeholder', () => {
+  assert.deepEqual(buildModelPickerOptions(stubConfig(), 'main', []), [])
 })
 
-test('a known key that will not load is a distinguishable failure', () => {
-  // Reached only when getModel goes from resolvable to not between the two
-  // calls, so the two disabled branches stay separately diagnosable.
-  const config = stubConfig()
-  let calls = 0
-  const flaky = {
-    ...config,
-    getModel: (key: string) => (key === 'main' && ++calls > 1 ? undefined : config.getModel(key)),
-  } as unknown as ConfigService
-
-  const options = buildModelPickerOptions(flaky, 'main', keys())
-  assert.equal(options[0]?.disabledReason, 'Configured model "main" could not be loaded.')
-  assert.notEqual(options[0]?.disabledReason, 'No configured model resolves for this tier.')
+test('a key that will not load is listed, disabled, and says why', () => {
+  const options = buildModelPickerOptions(stubConfig({ unresolvable: ['main'] }), 'main', keys())
+  const broken = options[1]!
+  assert.equal(broken.key, 'main')
+  assert.equal(broken.disabledReason, 'Configured model "main" could not be loaded.')
+  assert.equal(broken.modelKey, undefined)
+  assert.equal(broken.modelId, undefined)
+  // A row that cannot be chosen is never the current or default one.
+  assert.equal(broken.isCurrent, false)
+  assert.equal(broken.isDefault, false)
+  // Its neighbours are unaffected.
+  assert.equal(options[0]?.disabledReason, undefined)
+  assert.equal(options[2]?.disabledReason, undefined)
 })
 
 test('providerName falls back to unknown', () => {
-  const config = stubConfig()
-  const anonymous = {
-    ...config,
+  const anonymous: ModelPickerConfig = {
+    get: () => ({ defaultModel: 'main' }),
     getModel: (key: string) => ({ model: `${key}-model` }),
-  } as unknown as ConfigService
+    resolveModelReference: (reference) => reference,
+  }
   assert.equal(buildModelPickerOptions(anonymous, 'main', keys())[0]?.providerName, 'unknown')
 })
 
 test('the result crosses the wire and carries no credentials', () => {
-  const profile = { fast: 'fast', balanced: 'main', powerful: 'big' }
-  const options = buildModelPickerOptions(stubConfig({ profile }), 'main', keys())
+  const options = buildModelPickerOptions(stubConfig(), 'main', keys())
 
   const serialized = JSON.stringify(structuredClone(options))
   assert.ok(!serialized.includes('SECRET'), 'apiKey must not reach a renderer')

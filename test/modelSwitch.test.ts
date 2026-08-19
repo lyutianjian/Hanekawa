@@ -9,9 +9,10 @@ import type { AgentSession } from '../src/runtime/types.js'
 
 /**
  * `/model` is a superset of the `set-model` host command: it also writes the
- * tier back to config. That difference had no coverage while this lived inline
- * in `App.tsx`, and it is the whole reason the two are separate functions -- a
- * fallback activation or a picker preview must not rewrite the user's default.
+ * chosen model back to config. That difference had no coverage while this lived
+ * inline in `App.tsx`, and it is the whole reason the two are separate functions
+ * -- a fallback activation or a picker preview must not rewrite the user's
+ * default.
  */
 
 interface Calls {
@@ -26,7 +27,6 @@ interface Calls {
 function createDeps(overrides: {
   availableModelKeys?: string[]
   resolveModelInput?: (input: string) => string | undefined
-  findTierForModel?: (modelKey: string) => string | undefined
   createRuntimeThrows?: string
 } = {}): { deps: ModelSwitchDeps; calls: Calls } {
   const calls: Calls = {
@@ -59,7 +59,6 @@ function createDeps(overrides: {
     resolveModelInput: overrides.resolveModelInput
       ? (input: string) => overrides.resolveModelInput!(input)
       : (input: string) => (input === 'nope' ? undefined : input),
-    findTierForModel: overrides.findTierForModel ?? (() => undefined),
     setDefaultModel: (name: string) => { calls.defaultModels.push(name) },
     save: async () => { calls.saves += 1 },
   } as unknown as ConfigService
@@ -106,9 +105,8 @@ test('activateModelKey leaves the runtime alone for a key that is not configured
 
   assert.equal(result.ok, false)
   assert.ok(!result.ok && result.message.includes('Unknown model: ghost'))
-  // The three tier names are offerable whether or not they are keys.
-  assert.deepEqual(!result.ok && result.availableModels,
-    ['current', 'other', 'fastModel', 'fast', 'balanced', 'powerful'])
+  // Only configured keys are offerable; the tier names are gone.
+  assert.deepEqual(!result.ok && result.availableModels, ['current', 'other', 'fastModel'])
   assert.deepEqual(calls.replaced, [])
   assert.equal(calls.clearedCachedSections, 0, 'a refused switch must not invalidate the prompt cache')
 })
@@ -123,44 +121,35 @@ test('activateModelKey turns a construction failure into a message, not a throw'
   assert.deepEqual(calls.replaced, [])
 })
 
-test('switchModel persists the tier when the input names one', () => {
+test('switchModel persists the resolved model key, not the raw input', () => {
   const { deps, calls } = createDeps({
-    resolveModelInput: (input) => (input === 'fast' ? 'fastModel' : input),
+    resolveModelInput: (input) => (input === 'Other' ? 'other' : input),
   })
 
-  const result = switchModel(deps, 'fast')
+  const result = switchModel(deps, 'Other')
 
   assert.ok(result.ok)
-  assert.equal(result.model.key, 'fastModel')
-  assert.deepEqual(calls.defaultModels, ['fast'], 'this is what set-model deliberately does not do')
+  assert.equal(result.model.key, 'other')
+  assert.deepEqual(calls.defaultModels, ['other'], 'this is what set-model deliberately does not do')
   assert.equal(calls.saves, 1)
 })
 
-test('switchModel falls back to the tier the model happens to sit in', () => {
-  const { deps, calls } = createDeps({ findTierForModel: () => 'balanced' })
-
-  const result = switchModel(deps, 'other')
-
-  assert.ok(result.ok)
-  assert.deepEqual(calls.defaultModels, ['balanced'])
-})
-
-test('switchModel persists nothing when the model belongs to no tier', () => {
+test('switchModel persists every successful switch', () => {
   const { deps, calls } = createDeps()
 
   assert.ok(switchModel(deps, 'other').ok)
-  assert.deepEqual(calls.defaultModels, [])
-  assert.equal(calls.saves, 0)
+  // With no tiers there is no "belongs to no tier" case left: naming a model is
+  // always a preference worth remembering.
+  assert.deepEqual(calls.defaultModels, ['other'])
+  assert.equal(calls.saves, 1)
 })
 
-test('switchModel does not persist a tier for a switch that failed', () => {
-  const { deps, calls } = createDeps({
-    findTierForModel: () => 'balanced',
-    createRuntimeThrows: 'boom',
-  })
+test('switchModel does not persist a model for a switch that failed', () => {
+  const { deps, calls } = createDeps({ createRuntimeThrows: 'boom' })
 
   assert.equal(switchModel(deps, 'other').ok, false)
   assert.deepEqual(calls.defaultModels, [], 'persisting here would leave config pointing at a model that failed')
+  assert.equal(calls.saves, 0)
 })
 
 test('switchModel explains inherit rather than calling it unknown', () => {
@@ -171,11 +160,11 @@ test('switchModel explains inherit rather than calling it unknown', () => {
   assert.ok(!result.ok && result.message.includes('only valid in routing/subagent settings'))
 
   const other = switchModel(deps, 'sonnet-9')
-  assert.ok(!other.ok && other.message.includes('Unknown model or tier: sonnet-9'))
+  assert.ok(!other.ok && other.message.includes('Unknown model: sonnet-9'))
 })
 
 test('a failed config save does not turn a live switch into a failure', async () => {
-  const { deps, calls } = createDeps({ findTierForModel: () => 'balanced' })
+  const { deps, calls } = createDeps()
   ;(deps.config as unknown as { save: () => Promise<void> }).save = async () => {
     calls.saves += 1
     throw new Error('disk full')

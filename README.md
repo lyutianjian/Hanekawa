@@ -51,6 +51,36 @@ A project can override any of this by creating `.myagent/config.json` in its own
 merged key by key, with the project file winning. Model changes made from the TUI are written back to
 whichever of the two files applies — the project one if it exists, otherwise the global one.
 
+### Routing
+
+`routing` sends a particular role to a particular model. Every value is a key from `models`, or
+`"inherit"` to follow the main loop's model:
+
+```json
+{
+  "routing": {
+    "main": "inherit",
+    "plan": "claude",
+    "compact": "openai-compatible",
+    "subagent": {
+      "general": "inherit",
+      "explore": "openai-compatible"
+    }
+  }
+}
+```
+
+A `subagent` type with no entry of its own falls back to `subagent.general`, then to `inherit`.
+Everything defaults to `inherit`, so a one-model setup needs no `routing` block at all.
+
+> **Breaking change.** The `fast` / `balanced` / `powerful` tiers and the `profiles` layer that mapped
+> them to models are gone; `routing` names model keys directly. A config still using them starts
+> normally and prints a warning: tier-valued `routing` entries are read as `"inherit"`, and a
+> `defaultModel` naming a tier falls back to the first model that resolves. Two behaviors went away
+> with the tiers — plan mode no longer upgrades the model automatically, and compaction no longer
+> downgrades it. Set `routing.plan` / `routing.compact` (or the standalone `compactModel`) to get
+> either back.
+
 The `.myagent/` directory is also where sessions, skills, and local runtime state are stored. Those
 stay per-project: only `config.json` and `settings.json` have a `~/.myagent/` counterpart.
 

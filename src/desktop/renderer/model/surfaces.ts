@@ -27,7 +27,7 @@ import type { SessionMeta } from '../../../sessions/service.js'
  * matching `SessionClient` method, and that is load-bearing rather than
  * roundabout. `set-model` and `switchModel` are deliberately two layers: the
  * wire command only points the current runtime somewhere else, while `/model`
- * is the user expressing a preference and is what writes the tier back to
+ * is the user expressing a preference and is what writes the model back to
  * config (`protocol/commandContext.ts` wires `setModel` to `switchModel`).
  * Calling `client.setModel` from here would silently drop that persistence, and
  * would let the two shells drift apart on a decision neither of them owns.
@@ -106,15 +106,14 @@ function modelRow(option: ModelPickerOption): SurfaceRow {
   ].filter((part): part is string => typeof part === 'string' && part.length > 0).join(' · ')
 
   return {
-    // The tier, not the model key: a disabled tier has no key, and the tier is
-    // what `/model <tier>` accepts.
-    id: option.tier,
+    // The model key: it is the row's stable id and exactly what `/model` takes.
+    id: option.key,
     label: `${option.label}${option.modelKey ? ` — ${option.modelKey}` : ''}`,
     detail,
     ...(option.isCurrent ? { current: true } : {}),
     ...(option.disabledReason
       ? { disabled: true, disabledReason: option.disabledReason }
-      : { action: { kind: 'run-command', line: `/model ${option.tier}` } as const }),
+      : { action: { kind: 'run-command', line: `/model ${option.key}` } as const }),
   }
 }
 
@@ -191,7 +190,7 @@ export function resumePickerView(input: {
 /**
  * Moving through the rows, skipping the ones that cannot be picked.
  *
- * A disabled row is still *drawn* — a tier with no model configured should say
+ * A disabled row is still *drawn* — a model key that cannot be loaded should say
  * why — but stepping onto it would leave Enter doing nothing, which reads as the
  * app having hung. Wraps like the completion dropdown does.
  *

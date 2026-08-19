@@ -1,32 +1,23 @@
 /**
- * Tiered model routing.
+ * Model routing.
  *
  * Three layers of configuration:
  *  - endpoints:     provider + baseUrl + apiKey
  *  - models:        a model id + reference to an endpoint (or legacy inline endpoint fields)
- *  - profiles:      a tier -> model-key mapping (fast / balanced / powerful)
  *
- * Plus a `routing` map from semantic role to tier:
+ * Plus a `routing` map from semantic role to a **model key**:
  *  - main:     the main loop
  *  - plan:     used while permissionMode === 'plan'
  *  - compact:  used by autoCompact and tool-use summarizer
  *  - subagent: per subagent_type (general / explore / plan / fork / ...)
  *
- * The router accepts a `'inherit'` sentinel to mean "fall back to the parent /
+ * The router accepts an `'inherit'` sentinel to mean "fall back to the parent /
  * main loop model", which is essential for fork-style sub-agents that share
  * the parent's prompt-cache stream.
+ *
+ * There is deliberately no tier layer. Routing names a model key directly, and
+ * anything that is not a resolvable key degrades to `'inherit'` at the service.
  */
-
-export type Tier = 'fast' | 'balanced' | 'powerful'
-
-export type TierOrInherit = Tier | 'inherit'
-
-export function parseTierInput(input: string): Tier | undefined {
-  const normalized = input.trim().toLowerCase()
-  return normalized === 'fast' || normalized === 'balanced' || normalized === 'powerful'
-    ? normalized
-    : undefined
-}
 
 export interface Endpoint {
   provider: string
@@ -34,41 +25,43 @@ export interface Endpoint {
   apiKey?: string
 }
 
-export type Profile = Partial<Record<Tier, string>>
+/** A model key, or the `'inherit'` sentinel. */
+export type RoutedModel = string
 
 export interface SubagentRouting {
-  general?: TierOrInherit
-  fork?: TierOrInherit
-  explore?: TierOrInherit
-  plan?: TierOrInherit
+  general?: RoutedModel
+  fork?: RoutedModel
+  explore?: RoutedModel
+  plan?: RoutedModel
   /** Custom subagent types declared via `.myagent/agents/*.md`. */
-  [type: string]: TierOrInherit | undefined
+  [type: string]: RoutedModel | undefined
 }
 
 export interface Routing {
-  main?: TierOrInherit
-  plan?: TierOrInherit
-  compact?: TierOrInherit
+  main?: RoutedModel
+  plan?: RoutedModel
+  compact?: RoutedModel
   subagent?: SubagentRouting
 }
 
 /**
  * Default routing applied on top of any user-provided routing config.
- * Designed so a one-model setup degrades gracefully:
- * - When only `defaultModel` is configured (no profile / tiers), every role
- *   falls back to the default model via tier fallback in `resolveTier`.
- * - When all three tiers are configured, plan-mode automatically upgrades and
- *   compact / explore-style subagents downgrade.
+ *
+ * Every role inherits. With no tiers there is no tier to promote *to*, so
+ * "plan mode automatically upgrades" and "compaction automatically downgrades"
+ * have no honest default to express — following the main model is the only one
+ * that is true for a config the user has not spoken about. A user who wants a
+ * cheaper compaction model still has the dedicated `compactModel` setting.
  */
 export const DEFAULT_ROUTING: Required<Pick<Routing, 'main' | 'plan' | 'compact'>> & { subagent: Required<Pick<SubagentRouting, 'general' | 'fork' | 'explore' | 'plan'>> } = {
-  main: 'balanced',
-  plan: 'powerful',
-  compact: 'fast',
+  main: 'inherit',
+  plan: 'inherit',
+  compact: 'inherit',
   subagent: {
     general: 'inherit',
     fork: 'inherit',
-    explore: 'balanced',
-    plan: 'powerful',
+    explore: 'inherit',
+    plan: 'inherit',
   },
 }
 
@@ -97,29 +90,6 @@ export function mergeRouting(...sources: (Routing | undefined)[]): Routing {
   return result
 }
 
-/**
- * Resolve a tier to a concrete model key by walking a fallback chain.
- *
- * Why this shape:
- *   - `fast` requested but missing -> try balanced -> powerful (upgrade gracefully).
- *   - `balanced` -> powerful -> fast.
- *   - `powerful` -> balanced -> fast.
- * Returns undefined if the profile has no tiers populated; callers should
- * then fall back to `Config.defaultModel`.
- */
-export function resolveTier(profile: Profile | undefined, tier: Tier): string | undefined {
-  if (!profile) return undefined
-  const order: Tier[] =
-    tier === 'fast' ? ['fast', 'balanced', 'powerful']
-    : tier === 'balanced' ? ['balanced', 'powerful', 'fast']
-    : ['powerful', 'balanced', 'fast']
-  for (const candidate of order) {
-    const value = profile[candidate]
-    if (value && value.trim() !== '') return value
-  }
-  return undefined
-}
-
 export type RoutingRole =
   | { kind: 'main' }
   | { kind: 'plan' }
@@ -127,11 +97,11 @@ export type RoutingRole =
   | { kind: 'subagent'; type: string }
 
 /**
- * Pick which tier a given role wants. Returns `'inherit'` to mean "use the
- * parent / main loop model directly", or a concrete `Tier`. Returns undefined
- * if the routing entry is not configured (caller should treat as 'inherit').
+ * Pick which model a given role wants. Returns `'inherit'` to mean "use the
+ * parent / main loop model directly", or a model key. Returns undefined if the
+ * routing entry is not configured (caller should treat as 'inherit').
  */
-export function pickTier(routing: Routing | undefined, role: RoutingRole): TierOrInherit | undefined {
+export function pickRoutedModel(routing: Routing | undefined, role: RoutingRole): RoutedModel | undefined {
   const r = routing ?? {}
   switch (role.kind) {
     case 'main':

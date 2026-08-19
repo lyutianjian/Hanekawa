@@ -32,11 +32,9 @@ export function buildRunOverrides(
   let effortOverride = options.effort
 
   if (options.model) {
-    const modelKey = deps.config.resolveModelInput(options.model, {
-      currentModelKey: deps.runtimeSlot.current.modelKey,
-    })
+    const modelKey = deps.config.resolveModelInput(options.model)
     if (!modelKey) {
-      throw new Error(`Unknown model or tier for skill command: ${options.model}`)
+      throw new Error(`Unknown model for skill command: ${options.model}`)
     }
     const modelConfig = deps.config.getModel(modelKey)
     if (!modelConfig) {

@@ -289,7 +289,7 @@ function hideSurface(): void {
  * Runs whatever the chosen row asked for.
  *
  * The panel closes first, because every one of these changes what the panel was
- * describing — a stale model picker still listing the old current tier is worse
+ * describing — a stale model picker still listing the old current model is worse
  * than no picker. Exhaustive by `assertNever`: a fourth action kind must be a
  * compile error here rather than a click that does nothing.
  */

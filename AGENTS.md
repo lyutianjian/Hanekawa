@@ -186,8 +186,11 @@ because of this.
 
 ### Providers — `src/config/`
 
-Layers: `endpoints` ← `models` ← `profiles` (`fast|balanced|powerful`); `Routing` maps roles (`main`,
-`plan`, `compact`, `subagent[type]`) to a tier or `inherit`.
+Layers: `endpoints` ← `models`; `Routing` maps roles (`main`, `plan`, `compact`,
+`subagent[type]`) straight to a **model key** or `inherit`. There are no tiers: `DEFAULT_ROUTING` is
+all-`inherit`, so plan mode does not auto-upgrade and compaction does not auto-downgrade —
+`compactModel` is the escape hatch. A routing value that no longer resolves degrades to `inherit`
+rather than failing, and `removeModel` refuses a key routing still points at.
 
 Settings: `~/.myagent/settings.json` → `<cwd>/.myagent/settings.json` → legacy `mcp.json` →
 `settings.local.json` (permissions/hooks arrays **concatenate**, scalars last-wins); then `config.json`
@@ -417,8 +420,9 @@ import of `harness/|services/|sessions/|commands/|tui/`, an import allowlist, no
   (renderer-allowlisted); `fileSuggestions.ts` needs `node:fs` + fuse.js, so search runs host-side over
   `file-suggestions` — and **nothing orders the answers**: `model/completion.ts` carries a monotonic
   `seq`; `applyFileResponse` drops anything stale. Every transition bumps `seq`.
-- **A picker row's action is a slash-command line**, not the `SessionClient` method — `/model <tier>` via
-  `run-command` writes the tier back to config; `client.setModel` would silently drop that persistence.
+- **A picker row's action is a slash-command line**, not the `SessionClient` method — `/model <modelKey>`
+  via `run-command` writes the choice back to config; `client.setModel` would silently drop that
+  persistence.
   `resume-picker` uses `open-pane` (`/resume` takes no argument). Disabled rows carry no action;
   `moveSurfaceSelection` steps over them.
 - **Picker navigation is gated on an empty composer** — typing after opening `/model` means "send". Also

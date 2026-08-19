@@ -1,6 +1,6 @@
 import type { ConfigService } from '../config/service.js'
 
-export type ProviderConfigChangeScope = 'endpoints' | 'models' | 'profiles' | 'routing'
+export type ProviderConfigChangeScope = 'endpoints' | 'models' | 'routing'
 
 /** Resolve the model that should back the live runtime after /provider changes. */
 export function resolveRuntimeModelKeyAfterConfigChange(
@@ -8,7 +8,7 @@ export function resolveRuntimeModelKeyAfterConfigChange(
   currentModelKey: string,
   scope: ProviderConfigChangeScope,
 ): string | undefined {
-  if (scope === 'profiles' || scope === 'routing') {
+  if (scope === 'routing') {
     return config.resolveModelKeyFor({ kind: 'main' }, { currentModelKey })
   }
 

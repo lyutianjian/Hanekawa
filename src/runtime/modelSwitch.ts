@@ -1,4 +1,3 @@
-import { parseTierInput } from '../config/routing.js'
 import type { ConfigService } from '../config/service.js'
 import type { SessionRecord } from '../harness/types.js'
 import type { SetModelResult } from '../commands/types.js'
@@ -11,7 +10,7 @@ import type { RuntimeSlot } from './runtimeSlot.js'
  *
  * This is a superset of the `set-model` host command, and the difference is
  * deliberate: `set-model` points the current runtime somewhere else, while
- * `/model` is the user naming a preference, so it also writes the tier back to
+ * `/model` is the user naming a preference, so it also writes the choice back to
  * config. Do not fold the persistence into `set-model` — a fallback activation
  * or a picker preview would start rewriting the user's default.
  *
@@ -29,9 +28,9 @@ export interface ModelSwitchDeps {
   getRecords: () => readonly SessionRecord[]
 }
 
-/** The three tier names are always offerable, whether or not they are keys. */
+/** The configured model keys — with tiers gone, there is nothing else to offer. */
 function availableModels(deps: ModelSwitchDeps): string[] {
-  return [...deps.availableModelKeys, 'fast', 'balanced', 'powerful']
+  return [...deps.availableModelKeys]
 }
 
 /**
@@ -73,32 +72,27 @@ export function activateModelKey(deps: ModelSwitchDeps, modelKey: string): SetMo
 }
 
 /**
- * `activateModelKey` plus the tier write-back, resolving a model *or* tier name.
+ * `activateModelKey` plus the write-back that makes the choice stick.
  *
  * The config save is fire-and-forget on purpose: the switch has already taken
  * effect in the live slot, and failing to persist a preference must not read as
  * a failed switch.
  */
 export function switchModel(deps: ModelSwitchDeps, input: string): SetModelResult {
-  const modelKey = deps.config.resolveModelInput(input, {
-    currentModelKey: deps.runtimeSlot.current.modelKey,
-  })
+  const modelKey = deps.config.resolveModelInput(input)
   if (!modelKey) {
     return {
       ok: false,
       message: input.trim().toLowerCase() === 'inherit'
         ? '/model inherit is not supported. inherit is only valid in routing/subagent settings.'
-        : `Unknown model or tier: ${input}`,
+        : `Unknown model: ${input}`,
       availableModels: availableModels(deps),
     }
   }
   const result = activateModelKey(deps, modelKey)
   if (result.ok) {
-    const tier = parseTierInput(input) ?? deps.config.findTierForModel(modelKey)
-    if (tier) {
-      deps.config.setDefaultModel(tier)
-      void deps.config.save().catch(() => {})
-    }
+    deps.config.setDefaultModel(modelKey)
+    void deps.config.save().catch(() => {})
   }
   return result
 }

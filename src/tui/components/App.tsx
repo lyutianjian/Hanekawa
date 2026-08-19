@@ -452,13 +452,13 @@ export function App({
 
     const modelKey = decision.option.modelKey
     if (!modelKey) {
-      addSystemMessage(`Model tier unavailable: ${decision.option.label}`)
+      addSystemMessage(`Model unavailable: ${decision.option.label}`)
       return
     }
 
     if (decision.action === 'set-default') {
       try {
-        providerConfig.setDefaultModel(decision.option.tier)
+        providerConfig.setDefaultModel(decision.option.key)
         await providerConfig.save()
         setModelKeys(Object.keys(providerConfig.get().models))
       } catch (error) {

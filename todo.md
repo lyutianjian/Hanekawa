@@ -141,9 +141,12 @@
 
 ### 杂项
 
-- [ ] **固定 `typescript` 版本**：`package.json` 里仍是 `"latest"`（实际 7.0.2），用不固定的 major 做
-  emit 是真实风险。卡在内网 npm 镜像（`http://172.16.9.57:8081/repository/npm-group/` 不代理 electron，
-  `npm ping` `ECONNRESET`），网络恢复后做。
+- [x] **固定 `typescript` 版本**（2026-08-19 完成）：`"latest"` → `"7.0.2"` 精确钉死（当前 `latest`
+  恰好就是 7.0.2，钉住即锁定已验证基线，零版本变动）。registry 已回官方
+  `https://registry.npmjs.org/`，`npm install` 同步锁文件时顺带修复了 lockfile 漏记的
+  `esbuild: "^0.28.2"` 条目（package.json 有而锁文件无的漂移）。验证：typecheck 三段 +
+  `npm run build` + 全量 1989 全绿。**其余 `"latest"` 依赖（`tsx`、`zod`、`openai` 等）本条不动** ——
+  它们不参与 emit，要清理另开一条。
 - [ ] **`design_guidance.md` 未落地**：一份 129 行的深色 UI 设计规范（Codex 桌面端提炼），目前渲染器
   完全没有按它实现。要么排期做视觉层，要么明确它只是参考资料。
 

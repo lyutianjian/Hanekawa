@@ -50,6 +50,6 @@
     "ink-testing-library": "^4.0.0",
     "patch-package": "^8.0.0",
     "tsx": "latest",
-    "typescript": "latest"
+    "typescript": "7.0.2"
   }
 }

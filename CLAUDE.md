@@ -29,7 +29,9 @@ without it tsc emits into `dist/src/**` and every `import.meta.url`-relative pat
 (`test/distBuild.test.ts` pins this). The base `lib` has no DOM, so browser-side files
 (`src/desktop/renderer/**`, `src/desktop/preload.ts`) sit in its `exclude`. `tsconfig.preload.json` /
 `tsconfig.renderer.json` add the DOM libs for exactly those files and **must declare their own `exclude`**
-(inherited), or both programs come up empty and report a false green.
+(inherited), or both programs come up empty and report a false green. `typescript` itself is pinned exact
+(`7.0.2`, same style as `ink`) — tsc is the emit toolchain, so a drifting major silently changes `dist/`;
+bump it deliberately, with typecheck + build + full suite as the gate.
 
 ## Architecture
 

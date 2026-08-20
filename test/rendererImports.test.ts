@@ -33,6 +33,12 @@ const rendererRoot = fileURLToPath(new URL('../src/desktop/renderer/', import.me
 const ALLOWED_SHARED_IMPORTS = [
   '../../runtime/protocol/client.js',
   '../../../runtime/protocol/wire.js',
+  // The lane multiplexer both sides of the desktop shell run over one IPC
+  // channel. Pure by construction: no imports at all beyond the channel type.
+  '../../runtime/protocol/laneChannel.js',
+  // The pending-request ledger shared by the protocol client and the shell
+  // client. Pure, no imports.
+  '../../runtime/protocol/pendingRequests.js',
   '../../../runtime/permissionPresentation.js',
   '../../../runtime/planPresentation.js',
   '../../../runtime/rewindPresentation.js',

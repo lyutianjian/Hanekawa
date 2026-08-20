@@ -1,0 +1,167 @@
+import type { RuntimeChannel } from '../../runtime/protocol/channel.js'
+import { PendingRequests } from '../../runtime/protocol/pendingRequests.js'
+import type {
+  ShellCommand,
+  ShellEvent,
+  WireLaneInfo,
+  WireShellOpenProjectResult,
+  WireShellOpenSessionResult,
+  WireShellPanesResult,
+} from '../shellProtocol.js'
+
+/**
+ * The renderer's client for the `__shell` lane.
+ *
+ * A deliberate miniature of `SessionClient`: same reply/fail envelopes, same
+ * `PendingRequests` ledger, same fail-on-channel-death. What it does not have
+ * is a protocol of its own — three commands, two events, and the lane list
+ * kept identity-stable across `lanes` events that re-announce the same set,
+ * because the tab bar re-renders on every one of them.
+ *
+ * Lives in the renderer tree so the test drives the shipping implementation,
+ * the same rule `bridgeChannel.ts` follows. Browser-safe by construction: the
+ * only value imports are the pending-request ledger and the protocol types'
+ * module, and ids come from the global `crypto`, never `node:crypto`.
+ */
+export class ShellClient {
+  private readonly channel: RuntimeChannel
+  private readonly replies = new PendingRequests<
+    { ok: true; result: unknown } | { ok: false; message: string }
+  >()
+  private readonly laneListeners = new Set<(lanes: readonly WireLaneInfo[]) => void>()
+  private readonly activateListeners = new Set<(lane: string) => void>()
+  private lanes: readonly WireLaneInfo[] = Object.freeze([])
+  private readonly teardown: Array<() => void> = []
+  private disposed = false
+
+  constructor(channel: RuntimeChannel) {
+    this.channel = channel
+    this.teardown.push(channel.onMessage(this.handleMessage))
+    this.teardown.push(channel.onClose(this.handleClose))
+  }
+
+  /** The most recent topology the host announced. Empty until the first event or `panes()`. */
+  getLanes = (): readonly WireLaneInfo[] => this.lanes
+
+  onLanes(listener: (lanes: readonly WireLaneInfo[]) => void): () => void {
+    this.laneListeners.add(listener)
+    return () => {
+      this.laneListeners.delete(listener)
+    }
+  }
+
+  onActivate(listener: (lane: string) => void): () => void {
+    this.activateListeners.add(listener)
+    return () => {
+      this.activateListeners.delete(listener)
+    }
+  }
+
+  /** Pulls the topology. Startup uses this rather than trusting early pushes: a renderer that attaches mid-session would otherwise wait for the next change to learn what already exists. */
+  async panes(): Promise<readonly WireLaneInfo[]> {
+    const result = (await this.send({ type: 'panes', id: crypto.randomUUID() })) as WireShellPanesResult
+    this.applyLanes(result.lanes)
+    return this.lanes
+  }
+
+  async openSession(options: { sessionId?: string; title?: string; projectRoot?: string } = {}): Promise<WireShellOpenSessionResult> {
+    return this.send({
+      type: 'open-session',
+      id: crypto.randomUUID(),
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      ...(options.title !== undefined ? { title: options.title } : {}),
+      ...(options.projectRoot !== undefined ? { projectRoot: options.projectRoot } : {}),
+    }) as Promise<WireShellOpenSessionResult>
+  }
+
+  async openProject(path?: string): Promise<WireShellOpenProjectResult> {
+    return this.send({
+      type: 'open-project',
+      id: crypto.randomUUID(),
+      ...(path !== undefined ? { path } : {}),
+    }) as Promise<WireShellOpenProjectResult>
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    for (const off of this.teardown.splice(0)) off()
+    this.failAllPending('The shell client was disposed.')
+    this.lanes = Object.freeze([])
+    this.laneListeners.clear()
+    this.activateListeners.clear()
+  }
+
+  // --- internals -----------------------------------------------------------
+
+  private handleMessage = (message: unknown): void => {
+    const event = message as ShellEvent
+    if (!event || typeof event !== 'object' || typeof event.type !== 'string') return
+
+    switch (event.type) {
+      case 'lanes':
+        this.applyLanes(event.lanes)
+        return
+      case 'activate':
+        for (const listener of [...this.activateListeners]) listener(event.lane)
+        return
+      case 'reply':
+        this.replies.settle(event.id, { ok: true, result: event.result })
+        return
+      case 'fail':
+        this.replies.settle(event.id, { ok: false, message: event.message })
+        return
+    }
+  }
+
+  /**
+   * Swaps the list only when it actually differs, so `getLanes()` keeps its
+   * identity across re-announcements and a tab bar diffing on it stays quiet.
+   */
+  private applyLanes(next: WireLaneInfo[]): void {
+    if (sameLaneList(this.lanes, next)) return
+    this.lanes = Object.freeze([...next])
+    for (const listener of [...this.laneListeners]) listener(this.lanes)
+  }
+
+  private async send(command: ShellCommand): Promise<unknown> {
+    if (this.disposed) throw new Error('The shell client was disposed.')
+    const pending = this.replies.create(command.id)
+    this.channel.post(command)
+    const settled = await pending
+    if (!settled.ok) throw new Error(settled.message)
+    return settled.result
+  }
+
+  private handleClose = (): void => {
+    this.failAllPending('The shell host disconnected.')
+  }
+
+  private failAllPending(message: string): void {
+    this.replies.settleAll(() => ({ ok: false, message }))
+  }
+}
+
+/**
+ * Compared field by field, in order: the fields a tab row renders are exactly
+ * the ones that move (`sessionId` travels under `/clear`, titles arrive late),
+ * and a lane whose nothing changed must not wake its listeners.
+ */
+function sameLaneList(current: readonly WireLaneInfo[], next: readonly WireLaneInfo[]): boolean {
+  if (current.length !== next.length) return false
+  for (let index = 0; index < current.length; index += 1) {
+    const a = current[index]!
+    const b = next[index]!
+    if (
+      a.lane !== b.lane ||
+      a.paneId !== b.paneId ||
+      a.sessionId !== b.sessionId ||
+      a.projectRoot !== b.projectRoot ||
+      a.projectName !== b.projectName ||
+      a.sessionTitle !== b.sessionTitle
+    ) {
+      return false
+    }
+  }
+  return true
+}

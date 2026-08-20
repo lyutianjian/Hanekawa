@@ -13,6 +13,10 @@ import type { ProjectRuntime, SessionScope } from '../src/runtime/types.js'
 import type { SessionPane } from '../src/runtime/sessionWorkspace.js'
 import type { SessionMeta } from '../src/sessions/service.js'
 import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.js'
+import { createLaneMux } from '../src/runtime/protocol/laneChannel.js'
+import { ShellHost } from '../src/desktop/shellHost.js'
+import { ShellClient } from '../src/desktop/renderer/shellClient.js'
+import { SHELL_LANE } from '../src/desktop/shellProtocol.js'
 import {
   createElectronMainChannel,
   ELECTRON_RUNTIME_CHANNEL,
@@ -214,7 +218,9 @@ function fakeProject(cwd = '/tmp/fixture'): ProjectRuntime {
     initialEffort: undefined,
     configuredEffortLevel: 'high',
     createActiveModelRuntime: () => ({} as never),
-    openScope: async () => fakeScope(),
+    // Echoes the session so the scope, the pane and the wire all agree on the
+    // id — the real `openScope` opens a scope *for* that session.
+    openScope: async (session: SessionMeta) => ({ ...fakeScope(), session }),
     reloadAgentDefinitions: async () => 0,
     reloadSkills: async () => 0,
     reloadSettings: async () => ({ needsRuntimeRebuild: false }),
@@ -651,4 +657,180 @@ test('two projects: the tab list spans both, and cross-project work goes through
     clientA.dispose()
     clientB.dispose()
   }
+})
+
+/**
+ * The single-window layout, end to end over one electron-shaped transport.
+ *
+ * One channel, one mux per side: a real `ShellHost` on the `__shell` lane, one
+ * real `SessionHost` per pane lane built through the same occupant factory
+ * `main.ts` uses, and the shipping `ShellClient` driving the renderer side.
+ * This is the only place the envelope, the shell protocol and the session
+ * protocol all cross the same seam at once.
+ *
+ * The renderer attaches *after* the main side has already opened the first
+ * lane — the startup ordering of `openProject` — and learns the topology
+ * through `panes()` rather than a push, which is exactly what the renderer does
+ * when Electron has dropped everything posted before its bridge listener
+ * existed. (The buffering itself is unit-tested in `laneChannel.test.ts`.)
+ */
+test('single window: two lanes on one transport, opened, listed, closed through the shell', async () => {
+  const pair = createPair()
+  const mainMux = createLaneMux(pair.main)
+  const rendererMux = createLaneMux(pair.renderer)
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+  const ROOT = process.cwd()
+  const panes = new Map<string, SessionPane>()
+  function livePane(meta: SessionMeta): SessionPane {
+    // A pane the occupant factory can actually build a `SessionHost` over: the
+    // controller, slot and scope are the same fakes every other host here uses.
+    return {
+      getSession: () => meta,
+      controller: fakeController(),
+      runtimeSlot: fakeRuntimeSlot(),
+      scope: { ...fakeScope(), session: meta },
+    } as unknown as SessionPane
+  }
+  function createLiveWorkspace() {
+    return {
+      list: () => [...panes.values()],
+      closeAll: () => panes.clear(),
+      paneForSession: (sessionId: string) => panes.get(sessionId),
+      open: async (meta: SessionMeta) => {
+        panes.set(meta.id, livePane(meta))
+        return panes.get(meta.id)!
+      },
+      adopt: (scope: SessionScope) => {
+        panes.set(scope.session.id, livePane(scope.session))
+        return panes.get(scope.session.id)!
+      },
+      close: (pane: SessionPane) => {
+        for (const [key, value] of panes.entries()) {
+          if (value === pane) panes.delete(key)
+        }
+      },
+    }
+  }
+  type LiveWorkspace = ReturnType<typeof createLiveWorkspace>
+
+  const workspace = createLiveWorkspace()
+  const directory = new ProjectDirectory<ProjectRuntime, LiveWorkspace>()
+  const entry = directory.add(fakeProject(ROOT), workspace)
+
+  let laneCounter = 0
+  const allClosed: string[] = []
+  let shellHost: ShellHost<ProjectRuntime, SessionPane, LiveWorkspace> | undefined
+  const host = new ShellHost<ProjectRuntime, SessionPane, LiveWorkspace>({
+    mux: mainMux,
+    directory,
+    nextLaneKey: () => `${++laneCounter}`,
+    // The production occupant factory, verbatim in shape: a SessionHost wired
+    // straight back into the ShellHost's callbacks.
+    createOccupant: (attach) => {
+      const sessionHost = new SessionHost({
+        channel: attach.channel,
+        controller: attach.pane.controller,
+        runtimeSlot: attach.pane.runtimeSlot,
+        project: attach.project.project,
+        scope: attach.pane.scope,
+        workspace: attach.project.workspace,
+        onPaneOpened: (pane) => shellHost?.attachPane(attach.project, pane),
+        onPaneClosed: (paneId) => shellHost?.detachLaneBySessionId(paneId, 'pane-closed'),
+        onFocusPane: (paneId) => {
+          const lane = shellHost?.laneForSessionId(paneId)
+          if (lane === undefined) return false
+          shellHost?.requestActivate(lane)
+          return true
+        },
+        describePanes: () => shellHost?.describeLanes() ?? [],
+        onPaneListChanged: () => shellHost?.broadcastLanes(),
+      })
+      return { dispose: () => sessionHost.dispose() }
+    },
+    isQuitting: () => false,
+    onAllLanesClosed: (reason) => allClosed.push(reason),
+  })
+  shellHost = host
+
+  // The initial lane opens main-side, exactly as `openProject` does — before
+  // the renderer has attached anything but its own mux.
+  const first = await host.openLane(entry, { sessionId: 'ses-1' })
+  assert.equal(first.lane, '1')
+
+  const shellClient = new ShellClient(rendererMux.lane(SHELL_LANE))
+  const activates: string[] = []
+  shellClient.onActivate((lane) => activates.push(lane))
+
+  const client1 = new SessionClient(rendererMux.lane('1'))
+  let client2: SessionClient | undefined
+  let laneTwoCloses = 0
+
+  try {
+    // The startup pull: the renderer asks rather than trusting early pushes.
+    const lanes = await shellClient.panes()
+    assert.deepEqual(lanes.map((lane) => lane.lane), ['1'])
+    assert.equal(lanes[0]!.paneId, 'ses-1')
+    assert.equal(lanes[0]!.projectRoot, projectRootKey(ROOT))
+
+    // Session traffic rides the lane untouched.
+    const hello1 = await client1.hello()
+    assert.equal(hello1.session.id, 'ses-1')
+    assert.equal(hello1.projectRoot, projectRootKey(ROOT))
+
+    // A second pane through the shell protocol: the shell mints the lane, the
+    // occupant factory builds its host, and the topology + activation reach
+    // the renderer.
+    const second = await shellClient.openSession({ projectRoot: projectRootKey(ROOT) })
+    await settle()
+    assert.equal(second.lane, '2')
+    assert.ok(second.pane.paneId.startsWith('draft-'), 'no sessionId means a fresh draft')
+    assert.deepEqual(shellClient.getLanes().map((lane) => lane.lane), ['1', '2'])
+    assert.ok(activates.includes('2'), 'a new lane asks the renderer to activate it')
+
+    client2 = new SessionClient(rendererMux.lane('2'))
+    const hello2 = await client2.hello()
+    assert.equal(hello2.session.id, second.pane.paneId)
+
+    // Each lane's host answers with the *shell's* whole topology, so both
+    // clients agree on what tabs exist.
+    assert.equal((await client1.listPanes()).length, 2)
+    assert.equal((await client2.listPanes()).length, 2)
+
+    // Closing a pane through its own lane tears that lane down end to end:
+    // the workspace drops the pane, the shell detaches, and the close control
+    // frame is what the renderer-side lane sees. The `close-pane` reply never
+    // lands — the lane closed underneath it — so the pending request fails
+    // with the disconnect, the same failure the client absorbs when a window
+    // used to die.
+    rendererMux.lane('2').onClose(() => {
+      laneTwoCloses += 1
+    })
+    await assert.rejects(client2.closePane(second.pane.paneId), /disconnected/)
+    await settle()
+    assert.equal(laneTwoCloses, 1, 'the lane close reached the renderer side')
+    assert.deepEqual(shellClient.getLanes().map((lane) => lane.lane), ['1'])
+    assert.equal(panes.size, 1, 'only the first pane remains in the workspace')
+
+    // The surviving lane is unaffected by the other's death.
+    assert.equal((await client1.listPanes()).length, 1)
+
+    // The `open-pane` protocol path (`/resume` in production): a lane's host
+    // creates the pane in its workspace, `onPaneOpened` hands it to the shell,
+    // and a third lane appears.
+    const opened = await client1.openPane({})
+    await settle()
+    // The shell minted lane '3' for the new pane ('2' is closed and its key is
+    // never reused), and the topology carries both live lanes.
+    assert.deepEqual(shellClient.getLanes().map((lane) => lane.lane), ['1', '3'])
+    assert.equal(opened.paneId, shellClient.getLanes().at(-1)!.paneId)
+    assert.ok(activates.includes('3'))
+  } finally {
+    for (const key of host.laneKeys()) host.detachLane(key, 'test-end')
+    client1.dispose()
+    client2?.dispose()
+    shellClient.dispose()
+  }
+  assert.equal(panes.size, 0, 'detaching every lane closed every pane')
+  assert.equal(workspace.list().length, 0)
 })

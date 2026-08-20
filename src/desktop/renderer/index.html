@@ -160,35 +160,50 @@
       }
       .tab-open-project:hover { color: var(--accent); border-color: var(--accent); }
 
-      /* --- transcript --- */
-      #transcript {
+      /* --- transcript ---
+         One subtree per pane: switching panes toggles visibility, so scroll
+         positions survive and nothing repaints. The mount and the wrapper
+         carry the flex column; `.transcript` itself is the scroll container. */
+      #transcript-area {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .pane {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .transcript {
         flex: 1 1 auto;
         overflow-y: auto;
         padding: 12px;
         font-size: 13px;
       }
-      #transcript .item { margin-bottom: 10px; white-space: pre-wrap; word-break: break-word; }
+      .transcript .item { margin-bottom: 10px; white-space: pre-wrap; word-break: break-word; }
       /*
         Markdown items are real block elements, so the pre-wrap above would turn
         every newline between blocks into a blank line. Only the code inside a
         fence keeps whitespace.
       */
-      #transcript .item.md { white-space: normal; }
-      #transcript .item.user { color: var(--user); }
-      #transcript .item.assistant { color: var(--fg); }
-      #transcript .item.thinking { color: var(--muted); font-style: italic; opacity: 0.8; }
-      #transcript .item.notice { color: var(--muted); font-style: italic; }
-      #transcript .item.error { color: var(--error); }
-      #transcript .item.subagent { color: var(--accent); }
-      #transcript .item.duration { color: var(--muted); font-size: 12px; }
-      #transcript .item.tool {
+      .transcript .item.md { white-space: normal; }
+      .transcript .item.user { color: var(--user); }
+      .transcript .item.assistant { color: var(--fg); }
+      .transcript .item.thinking { color: var(--muted); font-style: italic; opacity: 0.8; }
+      .transcript .item.notice { color: var(--muted); font-style: italic; }
+      .transcript .item.error { color: var(--error); }
+      .transcript .item.subagent { color: var(--accent); }
+      .transcript .item.duration { color: var(--muted); font-size: 12px; }
+      .transcript .item.tool {
         color: var(--muted);
         border-left: 2px solid var(--border-strong);
         padding-left: 8px;
       }
-      #transcript .item.tool.failed { color: var(--error); border-left-color: var(--danger); }
-      #transcript .item.pending::after { content: " ▌"; color: var(--accent); }
-      #tool-progress {
+      .transcript .item.tool.failed { color: var(--error); border-left-color: var(--danger); }
+      .transcript .item.pending::after { content: " ▌"; color: var(--accent); }
+      .tool-progress {
         flex: 0 0 auto;
         padding: 4px 12px;
         color: var(--muted);
@@ -533,8 +548,7 @@
       <span id="status-streaming" style="color: var(--muted);">idle</span>
       <span id="status-session"></span>
     </div>
-    <div id="transcript" aria-live="polite"></div>
-    <div id="tool-progress" hidden></div>
+    <div id="transcript-area"></div>
     <div id="surface" hidden></div>
     <div id="suggestions" hidden role="listbox" aria-label="Slash commands"></div>
     <div id="queue" hidden aria-live="polite" aria-label="Queued messages"></div>

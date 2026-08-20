@@ -304,15 +304,16 @@ for a renderer.
   fire for *resolved* panes, so shell callbacks must be idempotent.
 - **A host can *create* a pane only in its own project; anything cross-project goes to the shell.**
   `focus-pane` and `open-project` are side-mounted hand-offs — the host touches no workspace and resolves
-  no session, it calls `onFocusPane` / `onOpenProject` and answers `{ ok }`. So a tab click is a
-  `focus-pane` (every row is a pane that exists), `open-pane` stays "create-or-resolve in my project", and
-  `open-pane` was **not** given a `projectRoot`. A missing callback **rejects** rather than answering
-  `{ ok: true }`, which would look like a focus that silently did nothing. `focus-pane` answering
-  `ok: false` means the shell has no window for that row — a client's cue to re-list, not an error.
+  no session, it calls `onFocusPane` / `onOpenProject` and answers `{ ok }`. `open-pane` stays
+  "create-or-resolve in my project" and was **not** given a `projectRoot` — the desktop shell attaches
+  the lane in `onPaneOpened`, so the command needs no cross-project reach. A missing callback **rejects**
+  rather than answering `{ ok: true }`, which would look like a focus that silently did nothing. The
+  desktop renderer no longer sends `focus-pane` at all (switching is local to the single window); the
+  command stays for the TUI, and the desktop's `onFocusPane` maps it onto `requestActivate`.
   `open-project`'s optional `path` is what makes the feature smoke-testable: CDP cannot click a native
   directory dialog.
 - **With several projects open the shell, not the host, is the pane-list authority.** `describePanes?`
-  (shell-supplied, projected from its *windows*) wins over the host's own-project `collectPanes()`, which
+  (shell-supplied, projected from its *lanes*) wins over the host's own-project `collectPanes()`, which
   stays as the single-project answer the TUI and every fake registry use. `onFocusPane` /
   `onOpenProject` / `describePanes` / `onPaneListChanged` are all **optional for one reason**:
   `test/protocolChildProcess.test.ts` builds its `SessionHostDeps` inside a *string* script, where tsc
@@ -320,27 +321,61 @@ for a renderer.
 - **`paneId` is the pane's *current* session id — not a stable key** (`/clear`/`/resume` move it), so a
   session switch is a topology change: `applySessionSwitch` ends with `broadcastPaneList()`, or every tab
   bar keeps the pre-switch id and closing that row fails with "Pane not found". `broadcastPaneList()`
-  reaches this host's channel only and then fires `onPaneListChanged` — the shell's cue to fan the same
-  list out to its other windows. `main.ts` keys its `panes` map by `BrowserWindow.id` (never moves, so no
-  re-keying on `session-changed`), looks the window up **by the closing pane's id** in `onPaneClosed` (a
-  renderer can close another tab; closing over its own entry unconditionally took down the wrong window),
-  and fans out via `broadcastPaneListToOthers` — skipping the initiator (host already delivered its
-  update) and firing from the OS `'closed'` path too, which bypasses host.
+  reaches this host's channel only and then fires `onPaneListChanged` — the desktop shell's cue to
+  re-broadcast the lane topology. The **lane key** is the stable handle that survives the switch; the
+  shell scans `pane.getSession()` to find it, never a cached id.
+- **Lane multiplexing** (`laneChannel.ts`): every message rides one transport inside a
+  `{kind: 'data' | 'close', lane, body}` envelope — never a `paneId` field on the 36 commands, which
+  would pollute a wire the TUI and `protocolChildProcess` also speak. A lane-level close is a **control
+  frame**, because `SessionHost.dispose()` does not close the channel and that frame is what releases
+  the peer's pending requests. Inbound frames for an unattached lane are **buffered, bounded** (256;
+  overflow closes the lane rather than dropping the frame whose reply would hang), draining in order on
+  first attach — the main side builds a lane before the renderer calls `lane(key)`. `lane()` is
+  idempotent per key and hands back a *closed* view after `closeLane` (late subscribers fire
+  immediately); transport death closes every lane on both sides; a remote close is never echoed.
 - **`hello` seeds `SessionClient.session`.** It is an announcement of the bound session, and the desktop
   tab bar derives its active row from `getSession()` — left to the first `session-changed`, no row is
   marked active for the whole first session.
 
 ### Electron shell — `src/desktop/`
 
-One `BrowserWindow` per pane, N projects per process: `openProject(cwd)` → `bootstrap()` →
-`new SessionWorkspace(project)` → `directory.add(...)` → per window a `SessionPane` + channel +
-`SessionHost`. The first project goes through `openProject` exactly like the fifth. `preload.ts` exposes
-only `{send, onMessage, close}` on `window.hanekawa`. **A tab is a window:** every tab bar renders every
-pane in the process, grouped by project; switching = `focus-pane` → the shell raises that window. N
-channels share one `ipcMain`, claiming traffic by `event.sender` (`test/electronChannel.test.ts`).
+One `BrowserWindow`, N live panes: `openProject(cwd)` → `bootstrap()` → `new SessionWorkspace(project)` →
+`directory.add(...)` → `ensureShell()` (the one window, its transport, the lane mux and the `ShellHost`)
+→ the initial lane. Every pane is a **lane** on the window's single IPC transport carrying an untouched
+`SessionHost`; the reserved `__shell` lane carries the `ShellHost` — the class every lane/project decision
+lives in, because nothing in `main.ts` can be tested (`app.requestSingleInstanceLock()` runs at module
+top level). What stays in `main.ts`: the `BrowserWindow`'s lifecycle, the native dialogs, `bootstrap()`.
+`preload.ts` exposes only `{send, onMessage, close}` on `window.hanekawa`; the envelope crosses it
+untouched.
 
-Two keys, not interchangeable: `panes` is keyed by `BrowserWindow.id` (session ids move under `/clear` and
-`/resume`, window ids do not), the project map by `projectRootKey(cwd)`.
+Two keys, not interchangeable: **lane keys** are minted by `ShellHost` (monotonic, never reused — session
+ids travel under `/clear` and `/resume`, lane keys do not), and the project map by `projectRootKey(cwd)`.
+
+`ShellHost` (`shellHost.ts`) rules:
+
+- **`detachLane` is the single exit path** for every way a lane dies (a renderer's `close-pane` through
+  `onPaneClosed`, the OS closing the window, a failed `loadFile`, app teardown). It drops the map entry
+  *first* — idempotent under re-entry — then disposes the occupant, `mux.closeLane`s (the control frame
+  that releases the renderer's pending requests; `SessionHost.dispose()` alone does not close the
+  channel), closes the pane, broadcasts. `isQuitting()` makes it skip project shutdown — `teardown()`
+  owns the ordering then.
+- **A project is shut down when its last lane closes.** `shutdown()` is the only call that stops
+  background tasks and MCP clients, so a lane-less project is a set of orphaned child processes. On
+  non-darwin the last lane closing quits the app; on darwin the empty window stays (its tab bar still
+  offers new tabs and "Open project"). Reopening costs a fresh `bootstrap()`, which is also how a smoke
+  can *prove* the shutdown happened.
+- **Lane creation dedups on pane identity** (`openLane` / `attachPane`): a pane that already has a lane
+  is *activated*, never given a second occupant — the single-window equivalent of focusing an existing
+  window. `openLane` owns the pane-resolution choreography (`paneForSession` → `store.resolve` →
+  `workspace.open`, else `openScope`+`createDraft`+`adopt`) that used to live inline in `main.ts`, and
+  `attachPane` is the `onPaneOpened` hand-off. `lanes` is posted before `activate` — one channel is FIFO,
+  so the renderer always builds a pane session before being asked to switch to it.
+- **Generic over `<P, PaneT, W>`** with `RuntimeHost`/`SessionPane`/`SessionWorkspace` defaults and
+  `Satisfied<Real, Ours>` compile-time assertions, so `test/desktopShellHost.test.ts` drives a real
+  `ProjectDirectory` with plain fakes and **no `as unknown as`** (the `ProjectDirectory` pattern). The
+  occupant is deliberately opaque (`{ dispose() }`): production passes a `SessionHost` factory, the test a
+  recorder. Inbound shell commands are zod `.strict()`-validated with a keyed `satisfies` table, the
+  `commandSchema.ts` discipline again.
 
 Transport interfaces (`ipc/electronChannel.ts`) are **structural, not imported from `electron`** —
 loadable from plain-node tests. Each rule below was a launch-blocking bug `tsc` couldn't see:
@@ -350,33 +385,29 @@ loadable from plain-node tests. Each rule below was a launch-blocking bug `tsc` 
 - **`webContents` is an `EventEmitter`** (`.on`/`.removeListener`); the DOM `window` is an `EventTarget`.
   **`ipcMain.on`/`ipcRenderer.on` return `this`, not an unsubscriber** — teardown goes through
   `removeListener` on every close path, or listeners leak on the process-wide `ipcMain` one per pane.
-- **Channel + `SessionHost` are wired before `loadFile`**, no handshake (`nodeChannel.ts` does need
-  `__ready`). If any constructor subscription ever fires on registration, revisit this ordering.
+- **Channel + mux + hosts are wired before `loadFile`**, no handshake (`nodeChannel.ts` does need
+  `__ready`). The renderer still *pulls* its startup topology with `panes` rather than trusting pushes:
+  Electron drops IPC posted before the bridge listener exists, so no critical state may depend on an
+  early push. The lane mux's pre-attach buffer is what makes late lane attachment lossless.
 - **`dist/desktop/` paths anchor to the module's own directory** — never count `..` (emitted depth ≠
   source depth).
-- **`detachPane` is the single exit path** for all three ways a window goes away (OS close, a renderer's
-  `close-pane`, a failed `loadFile`), so the project-level bookkeeping behind it cannot be reached by only
-  two of them. It drops the map entry first, making it idempotent under the re-entrant `'closed'` event.
-- **A project is shut down when its last window closes** (`afterPaneDetached`): `shutdown()` is the only
-  call that stops background tasks and MCP clients, so a window-less project would keep child processes
-  alive with no UI able to stop them. Skipped entirely while `quitting` — `teardown()` owns the ordering
-  then. Reopening costs a fresh `bootstrap()`, which is also how a smoke can *prove* the shutdown happened:
-  a project still in the directory would be focused, and no new window would appear.
-- **`before-quit` must `preventDefault()` and await teardown** — every window's `sessionHost.dispose()` →
-  `pane.close()` → window destroy, then `directory.shutdownAll()` — then re-`quit()` behind a flag.
+- **`before-quit` must `preventDefault()` and await teardown** — every lane's `detachLane('app-quit')` →
+  window destroy, then `directory.shutdownAll()` — then re-`quit()` behind a flag.
 - **Nothing in `main.ts` is tested** (`app.requestSingleInstanceLock()` at module top level throws under
-  plain node); `test/desktopMain.test.ts` drives channel + host + client with fake `PaneRegistry`s and a
-  real `ProjectDirectory` instead. Push decisions into `SessionHost`, `ProjectDirectory` or `model/`
-  modules rather than adding here.
-- **One implementation per side** — the renderer channel is `renderer/bridgeChannel.ts`, used by both
-  `app.ts` and the tests.
+  plain node); `test/desktopMain.test.ts` drives the real channel adapters, mux, `ShellHost` and
+  `SessionHost` lanes end-to-end, and `test/desktopShellHost.test.ts` covers the shell decisions. Push
+  decisions into `ShellHost`, `SessionHost`, `ProjectDirectory` or `model/` modules rather than adding
+  here.
+- **One implementation per side** — the renderer channel is `renderer/bridgeChannel.ts` and the shell
+  client is `renderer/shellClient.ts`; both are the shipping implementations the tests drive.
 
 ### The renderer — `src/desktop/renderer/`
 
 **`model/` + `dom/` split is a correctness constraint:** `model/*` holds every decision (dialog options,
-keystroke → answer, how a `stream` event folds into the transcript) as pure functions; `dom/*` and
-`app.ts` only build nodes/listeners. No DOM in the test runner, so decisions must be DOM-free — `model/`
-modules take structural key shapes (`{ key, shiftKey }`), never `KeyboardEvent`/`HTMLElement`.
+keystroke → answer, how a `stream` event folds into the transcript) as pure functions; `dom/*`,
+`app.ts` and `paneSession.ts` only turn those decisions into nodes and events. No DOM in the test runner,
+so decisions must be DOM-free — `model/` modules take structural key shapes (`{ key, shiftKey }`), never
+`KeyboardEvent`/`HTMLElement`.
 
 **Node globals are invisible to both typecheck passes in renderer code:** the renderer program pulls ~130
 host files via the wire types, so `@types/node` globals are in scope despite `"types": []` — `process.env`
@@ -384,6 +415,17 @@ compiles clean, then `ReferenceError`s in Chromium. `test/rendererImports.test.t
 import of `harness/|services/|sessions/|commands/|tui/`, an import allowlist, no Node global.
 `node:crypto` alone is permitted (aliased to `nodeCryptoShim.ts` by `build:desktop`).
 
+- **One `PaneSession` per lane** (`paneSession.ts`): the session client, every dialog/completion/queue
+  decision, and its own transcript DOM subtree (`.pane > .transcript + .tool-progress`,
+  visibility-toggled — scroll positions survive a switch and nothing repaints). The singleton views
+  (status, composer, tab bar, overlay, surfaces, queue strip) are driven by the *active* pane only; a
+  background pane still folds every event into its state — a turn keeps streaming, a permission request
+  parks until the user comes back — it just does not paint. `deactivate()` banks the composer draft and
+  clears the *paint* (not the state) off the shared panels, so a background pane's dialogs cannot leak
+  onto the active one; `activate()` repaints everything once. `app.ts` owns the window: the mux, the
+  `ShellClient` on `__shell`, the pane-session map, and the global key handler routing to the active
+  pane. A pane's lane channel closing removes its session (the `lanes` event diff is the other half of
+  that, and both are idempotent).
 - **Escape answers an open dialog before it interrupts** (`model/keymap.ts`) — a turn parked on a
   permission prompt isn't released by interrupting.
 - **`/rewind` panel is modal but not blocking**, fixing its `resolveKey` rank: below `hasOverlay` (holds
@@ -392,21 +434,20 @@ import of `harness/|services/|sessions/|commands/|tui/`, an import allowlist, no
   `runtime/rewindPresentation.ts` owns the option slots, outcome strings and `rewindStepsFor` — whose
   truncate-*then*-revert order is the only reason `rewindPartialFailureMessage` exists. `runRewind`
   (`model/rewindPanel.ts`) must not rebuild the transcript (`SessionHost.afterRewind()` already pushed a
-  `transcript-reset`); `app.ts` closes the panel on session change.
+  `transcript-reset`); `paneSession.ts` closes the panel on session change.
 - **`SUPPORTED_SURFACES` = surfaces drawn as a row list**, not what this shell handles — `rewind-panel`
   resolves by name before `isSupportedSurface`; `provider-panel` is the one ignored by name.
 - **Tab-bar chords resolve *before* the keymap** — only safe because `tabBarKeyToIntent`
   (`model/tabBar.ts`) returns `'none'` unless ctrl/meta is held. An unmodified key would silently shadow
   every dialog. `Ctrl+Shift+O` (an `'open-project'` intent) is checked before the unshifted letters, since
   a browser reports the shifted key as `'O'`.
-- **The tab bar groups by project, this window's own project first.** `groupRows` is the single source of
-  that order: `tabBarView` renders it and `tabBarKeyToIntent` indexes it, so `Ctrl+1`–`9` hit the nth tab
-  *on screen* rather than the nth on the wire. Headings appear only from two projects up
-  (`showProjectLabels`), and `ownProjectRoot` (from `hello.projectRoot`, the normalized key — not `cwd`,
-  which is raw and may differ in case) is what makes a row this window's. Another project's row is
-  **focus-only**: `closable: false` and `findClose` refuses it, because its pane lives in a
-  `SessionWorkspace` this window's host cannot reach. `ownProjectRoot` undefined (pre-`hello`) means "all
-  mine", which is true at that point.
+- **The tab bar groups by project and feeds off the shell lane.** `app.ts` builds the state from
+  `ShellClient.getLanes()` — pane ids *and* lane keys in one list — so switching is a local
+  `activateLane` (never a `focus-pane` round trip) and every row is closable: the row's own lane client
+  reaches whichever `SessionWorkspace` owns the pane. `ownProjectRoot` is deliberately passed as
+  `undefined` (the model's "all mine"), which turns `closable` on for every row; grouping still follows
+  each pane's `projectRoot`, own-first degenerating to open order, with headings from two projects up
+  (`showProjectLabels`). `Ctrl+1`–`9` index `groupRows`' visual order, the same list the view renders.
 - **A blocking request must always be answered** — `SessionClient.answer` try/catches handlers and falls
   back to `UI_REQUEST_FALLBACKS[kind]()`; otherwise a throwing dialog wedges the loop for the life of the
   process.

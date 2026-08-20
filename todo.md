@@ -15,7 +15,7 @@
 单窗口 + 侧边栏全量会话历史、设置界面、按 `design_guidance.md` 重做视觉。
 附带取消三档模型路由。
 
-**进度**：4c 已完成（先做，理由见 4c 一节）。4a / 4b / 4d / 4e / 4f 未开始。
+**进度**：4a、4c 已完成（4c 先做，理由见 4c 一节；4a 的落地见 4a 一节的完成注记）。4b / 4d / 4e / 4f 未开始。
 
 ---
 
@@ -62,33 +62,41 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
 
 ## 待办
 
-### 4a — 信道复用 + 单窗口骨架 `[ ]`
+### 4a — 信道复用 + 单窗口骨架 `[x]`
 
 视觉不动，先把「一个窗口 N 个活 pane」跑通。
 
-- [ ] 新增 `src/runtime/protocol/laneChannel.ts`：`createLaneMux(transport)` →
+- [x] 新增 `src/runtime/protocol/laneChannel.ts`：`createLaneMux(transport)` →
   `{ lane(key), closeLane(key), close() }`。lane 级 close 走**控制帧**，否则
   `SessionClient` 的 pending 请求在对端 pane 消失时永远悬着；未 attach 的 lane
-  的入站消息**有界缓冲**。纯函数，用 `createMemoryChannelPair` 在纯 node 下测。
-- [ ] 新增 `src/desktop/shellHost.ts` + `shellProtocol.ts`。本期只做
-  `panes` / `open-session` / `open-project` 三条。做成 `SessionHost` 同款的类，
-  因为 **`main.ts` 一行测试都没有**，凡是决策都必须落在可测模块里；入站同样
-  zod `.strict()` 校验 + keyed `satisfies` 表。
-- [ ] 改 `src/desktop/main.ts`：只建一个 `BrowserWindow`；`panes` 的键从
-  `BrowserWindow.id` 换成 **lane key**（外壳自铸的单调 id，`/clear`、`/resume`
-  都不动它——这正是当初选 window id 的理由，现在 lane key 顶上）；
-  `openPane` → `openLane`；`detachPane` → `detachLane`，仍是三条消亡路径的唯一出口；
-  「最后一个窗口关掉即 shutdown 项目」改为「最后一个 lane 关掉即 shutdown 项目」；
-  `before-quit` 顺序不变；`second-instance` 改成「聚焦唯一窗口 + `openProject(cwd)`」。
-- [ ] 改 `src/desktop/renderer/app.ts`：抽出 `paneSession.ts`（每 lane 一份
-  `{ client, transcript, uiQueue, completions, rewind, draftText, transcriptEl }`），
-  `app.ts` 退化为「按 activePane 渲染」+ 一个 `ShellClient`。`dom/*` 本就是
-  `render(viewModel)` 的无状态渲染器，可跨 pane 复用；**唯一例外是 transcript**
-  ——每 pane 一个 DOM 子树，只切显隐，滚动位置天然保留、切换零重绘。
-- [ ] 凭据：`test/laneChannel.test.ts`（lane 关闭释放对端 pending / 未 attach 缓冲 /
-  一个 lane 的消息不漏给另一个）、`test/desktopShellHost.test.ts`（真
-  `ProjectDirectory` + 假 workspace，沿用 3j 的泛型假货手法，**零 `as unknown as`**）、
-  `test/desktopMain.test.ts` 改造成驱动 lane mux。
+  的入站消息**有界缓冲**（上限 256，溢出关闭 lane 而非丢帧——丢一个 reply 就永悬）。
+  纯函数，用 `createMemoryChannelPair` 在纯 node 下测。控制帧与缓冲上限均已变异验证。
+- [x] 新增 `src/desktop/shellHost.ts` + `shellProtocol.ts` + `renderer/shellClient.ts`。本期只做
+  `panes` / `open-session` / `open-project` 三条（`lanes` / `activate` 两个事件 + reply/fail）。
+  做成 `SessionHost` 同款的类，因为 **`main.ts` 一行测试都没有**，凡是决策都必须落在可测模块里；
+  入站 zod `.strict()` 校验 + keyed `satisfies` 表 + `_NoDrift`（抄 commandSchema 手法）。
+  **`SessionHost` 一行未动**——shell 行为全部走现成的可选回调，protocolChildProcess 的字符串
+  脚本陷阱因此完全绕开。
+- [x] 改 `src/desktop/main.ts`：只建一个 `BrowserWindow`（`ensureShell` 幂等）；lane key 由
+  `ShellHost` 自铸（单调、不复用，`/clear`、`/resume` 不动它——这正是当初选 window id 的理由，
+  现在 lane key 顶上）；`detachPane` → `ShellHost.detachLane`，仍是消亡路径唯一出口（先删 map）；
+  「最后一个 lane 关掉即 shutdown 项目」；`before-quit` 顺序不变；`second-instance` =
+  聚焦唯一窗口 + `openProjectInteractive(cwd)`。
+- [x] 改 `src/desktop/renderer/app.ts`：抽出 `paneSession.ts`（每 lane 一份会话级状态 + 草稿
+  显式化 + 每 pane transcript DOM 子树 `.pane > .transcript + .tool-progress`），`app.ts` =
+  mux + ShellClient(`__shell`) + paneSession map + activeLane + 全局键路由。背景 pane 只更状态
+  不做 DOM；`deactivate()` 存草稿并清**绘制**（不清状态）。tab bar 数据源换成
+  `shellClient.getLanes()`，切换纯本地（渲染器不再调 `focus-pane`），`/exit` 只关本 pane。
+- [x] 凭据：`test/laneChannel.test.ts`（11 条）、`test/desktopShellHost.test.ts`（22 条，真
+  `ProjectDirectory` + 泛型假货，**零 `as unknown as`**，closeLane/最后 lane shutdown/幂等
+  三条不变式变异验证）、`test/desktopMain.test.ts` 新增第五用例（单传输双侧 mux + 真 ShellHost
+  + 双 lane SessionHost/SessionClient + 出货 ShellClient 端到端）。全量 2023 pass / 0 fail。
+
+**完成注记**：lane 复用信封 `{kind:'data'|'close', lane, body}`；renderer 侧 value-import 登记
+`laneChannel.js`/`pendingRequests.js` 两处白名单 + tsconfig.renderer include；`ShellHost` 泛型
+`<P, PaneT, W>` 的默认值陷阱与 close-pane 自毁路径详见「决策留痕」。**4a 未做真机冒烟**——
+单窗口多 lane 的 CDP 冒烟整体后移到 4f（其第 1、2、6 条即 4a 的验收），当前凭据是
+desktopMain 第五用例的端到端通道。
 
 ### 4b — 侧边栏、会话历史、删除 `[ ]`
 
@@ -220,9 +228,9 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
 9. [ ] 输入框右下角改 effort → 状态与后续 turn 生效；
 10. [ ] 收尾无残留 electron 进程。
 
-### 文档 `[ ]`
+### 文档 `[~]`
 
-- [ ] `CLAUDE.md` + `AGENTS.md`（逐字镜像）：改「Electron shell」「The renderer」
+- [x] `CLAUDE.md` + `AGENTS.md`（逐字镜像）：改「Electron shell」「The renderer」
   两节（一个窗口 N lane，不再是 window-per-pane），新增 laneChannel / ShellHost
   两段不变式。~~`Providers` 一节删掉三档路由的描述~~（4c 已做，两文件已用 diff 验证仍逐字一致）。
 - [ ] `design_guidance.md` 从「未落地的参考资料」变成 4e 的依据。
@@ -242,6 +250,31 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
 
 ## 决策留痕（只留 `CLAUDE.md` 未覆盖的）
 
+- **4a：`ShellHost` 的泛型默认值陷阱**：约束 `W extends ShellLaneWorkspace<PaneT>` 引用了
+  前面的类型参数，而类型参数的**默认值**在 `PaneT` 未解算时就要满足约束——`SessionWorkspace`
+  只有在 `PaneT` 已知为 `SessionPane` 时才代入，写不成默认值。解法：默认值写结构切片
+  `ShellLaneWorkspace<PaneT>`，main.ts 显式写全三元组
+  `new ShellHost<RuntimeHost, SessionPane, SessionWorkspace>(…)`。`PaneT` 必须单列：occupant
+  工厂要真 pane 的 controller/runtimeSlot/scope，`PaneLike` 会把它们抹掉，逼出 cast。
+- **4a：close-pane 是自毁命令，reply 天然丢失**：lane 的 host 在 `onPaneClosed` 里被
+  `detachLane` → `occupant.dispose()` 自毁，`mux.closeLane` 的控制帧先于 reply 发出，reply 落进
+  已关闭信道被丢弃。渲染器的 pending 由 lane close 触发 `failAllPending('The host
+  disconnected')` 吸收——与旧「窗口销毁时 in-flight 命令」同形。测试里表现为
+  `assert.rejects(/disconnected/)`，生产里 `/exit` 路径的 catch 只 note 一下（pane 已销毁，无害）。
+- **4a：渲染器初始化一律拉取**：Electron 会丢弃 preload 监听器注册前投递的 IPC，所以
+  renderer 启动只信 `shellClient.panes()` 拉取 + 之后的 `lanes` 事件，不信任何早期推送；
+  main 侧先建 lane 后 loadFile 的时序因此只是便利而非正确性依赖。laneChannel 的有界缓冲
+  兜住「main 建 lane 早于 renderer `lane(key)`」的窗口。
+- **4a：`deactivate()` 清绘制不清状态**：单例面板（overlay/rewind/surface/suggestions/队列条）
+  上一个 pane 的 paint 若不清，切 pane 后会画着别人的对话框，而键盘路由只认 active pane——
+  画着却不可应答的对话框是陷阱。状态留在 paneSession 里，`activate()` 一次性重绘回来。
+- **4a：tab bar 的 `ownProjectRoot` 恒传 `undefined`**：`model/tabBar.ts` 里 undefined ⇒ 全部
+  own ⇒ 全部 closable——单窗口下每行都有自己的 lane client 能关自己的 pane（包括跨项目行，
+  旧「focus-only」的存在理由是别的 window 的 host 够不着，lane 化后不成立）。分组仍按
+  pane.projectRoot 生效。4b 侧栏接管时整套 tabBar 模型会被替换。
+- **4a：darwin 最后一个 lane 关掉保留空窗口**（非 darwin 照旧 quit）。行为变化、一行可回退；
+  空窗口的 tab bar 仍显示「+ / Open project」（`show(container, rows>0 || hasNewTab ||
+  hasOpenProject)`），是 4b 侧栏空态的地基。
 - **`ToolRegistry.refresh()` 把 Agent 工具移到数组末尾是对的，不要"修"**：新建 runtime 恒为
   `buildRuntimeTools()` + `push(agentTool)`，refresh 重现该顺序，「MCP 重连过的 runtime」与
   「新建的」工具数组才逐位相同 —— 工具顺序是 prompt 缓存键的一部分。
@@ -319,11 +352,10 @@ npm run build:desktop                                 # tsc emit + 两个 esbuil
 npm run start:desktop                                 # 真实 Electron，需要桌面
 npm run dev:tui                                       # 手动冒烟，需 TTY
 
-# 阶段 4 新增的三组
-node --import tsx --test test/laneChannel.test.ts test/desktopShellHost.test.ts \
-  test/paneBudget.test.ts
-node --import tsx --test test/rendererSidebar.test.ts test/rendererSettingsModel.test.ts \
-  test/rendererStyleTokens.test.ts
+# 阶段 4 新增的三组（4a 一组已存在；后两组等 4b/4d/4e 落地）
+node --import tsx --test test/laneChannel.test.ts test/desktopShellHost.test.ts
+node --import tsx --test test/rendererSidebar.test.ts test/paneBudget.test.ts \
+  test/rendererSettingsModel.test.ts test/rendererStyleTokens.test.ts
 
 # 4c 触及的（已全绿）
 node --import tsx --test test/modelPicker.test.ts test/modelRouting.test.ts \

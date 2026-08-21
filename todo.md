@@ -15,8 +15,9 @@
 单窗口 + 侧边栏全量会话历史、设置界面、按 `design_guidance.md` 重做视觉。
 附带取消三档模型路由。
 
-**进度**：4a、4b、4c、4e 已完成（4c 与 4e 都先于原定顺序做，理由见各自一节；4a 的落地见 4a 一节的完成注记）。
-4d / 4f 未开始。
+**进度**：4a、4b、4c、4e 已完成；**4d 完成骨架 + Provider 全套**（4c 与 4e 都先于原定顺序做，
+理由见各自一节；4a 的落地见 4a 一节的完成注记）。
+4d 的其余三块拆成 4d-2，4f 未开始。
 
 ---
 
@@ -259,58 +260,91 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
   `desktopBuild` 的真实 esbuild + 拷贝链路 + `npm run build:desktop` 跑通。
   **Step 3/4 的判据本质上是视觉的，没有任何用例能替代肉眼看一次窗口。**
 
-### 4d — 设置界面 `[ ]`
+### 4d — 设置界面 `[~]`
 
-左下角 `⚙ 设置` 进入，占满 canvas（不是 modal），左侧分类 + 右侧卡片分组表单。
-**4e 已经落地**，所以设置界面的样式是往 `styles.css` 里加设置行规则（外层大卡片 + 发丝线分隔 +
-左标题右控件），用现成的 `--surface-*` / `--radius-*` / `--font-*` 令牌，不再需要新造视觉。
-`sidebarView.ts` 的 footer 已经在那里（`dom/sidebarView.ts` 的 `button()` 现在还支持图标），
-加一个 `{ kind: 'open-settings' }` 意图即可——注意 `app.ts` 的 `runSidebarIntent`
-**没有 `default` 也没有 `assertNever`**，漏一个 case 会编译通过且什么都不做。
+**本期（骨架 + Provider 全套）已完成**；权限 / Agent / 通用+MCP+上下文 三块是禁用的占位分类，
+连同它们各自的决策留在 4d-2。
 
-**动工前要先定的三个坑**（4e 期间查出来的，每个都需要一次决策）：
+左下角 `⚙ 设置` 或 `Ctrl+,` 进入，占满 canvas（不是 modal），左侧分类 + 右侧卡片分组表单。
 
-- **MCP 没有 untrust，也没有增删改**。`trustMcpServerLocally` 只会追加；`McpServerConfig`
-  完全没有写入 API。而且连接只在 bootstrap 发生一次，`reloadSettings()` **不重连**——
-  所以一个「信任开关」在下次 bootstrap 之前不生效。要么补 `mcp.ts` 的热重连
-  （`refreshMcpServerTools` / `connectManagedMcpServer` 已经在那儿），要么界面上老实说明。
-- **`agent.contextManagement` 在 bootstrap 时被快照进 `scopeDeps`**（`bootstrap.ts:168`），
-  改完对**已开的 scope 无效**，`reloadSettings()` 也够不到。六个数值要么接上重建路径，
-  要么标注「重启后生效」。
-- **权限数组跨设置层是拼接语义**（`mergeSettings`：`permissions.allow/deny/ask` 与所有
-  `hooks.*` 都 concat）。渲染合并结果再写回 `settings.local.json` 会把用户层与项目层的
-  条目复制一份进本地层。「写整组」必须只对本地层自己的条目生效，或者写入前去重。
+**动工前查出的两个事实，它们改变了设计形状**（都亲自核对过）：
 
-- [ ] shell 协议补 `get-settings` / `settings-change`：**一条命令带一个
-  `SettingsChange` 可辨识联合**，而不是十条命令；zod `.strict()` 校验，
-  keyed `satisfies` 表保证新增变体按名字失败。
-- [ ] `WireSettingsSnapshot` 逐字段投影，**apiKey 一律掩码**——`resolveModel` 会把
-  endpoint 的 key 折进返回值，一次 spread 就把用户所有 key 送进渲染器。
-  （`ProviderPanel` 的 `maskKey` 搬到共享处。）
-- [ ] **Provider**：endpoints / models / routing（main / plan / compact /
-  subagent[type] → 具体模型或 inherit）。复用 `ConfigService` 现成的
-  `setEndpoint` / `removeEndpoint` / `setModelConfig` / `removeModel` /
-  `renameModel` / `setRouting` / `setDefaultModel` + `save()`；删除时的三条引用
-  检查本就在里面。
-- [ ] **权限**：启动模式 + allow/deny/ask 三组规则增删改。`settings.ts` 现在只有
-  「追加单条」（`persistPermissionRule`），需补一个导出的「写整组」函数，仍走
-  `writeSettingsAtomic` 落 `.myagent/settings.local.json`。
-- [ ] **Agent**：列出 `AgentDefinitionLoader.list()`（内置四个 + 自定义），
-  展示 type/description/tools/permissionMode，**只读**；可编辑的是它们的 routing
-  与「重新加载」。`ProjectRuntime` 需补 `listAgentDefinitions()`（今天只有
-  `reloadAgentDefinitions()` 返回计数）。
-- [ ] **通用 + MCP + 上下文**：autoCompact 阈值、cache ttl1h、
-  `agent.contextManagement` 六个数值、MCP server 列表与信任开关。
-- [ ] 配置改完要让**同项目每个 pane** 的 runtime 重建：`SessionHost` 的
-  `reload-settings` 分支已经是这套动作，抽成公开方法 `refreshAfterConfigChange()`，
-  由外壳扇出——与 `onPaneListChanged` 完全同构。
-- [ ] **顺带兑现 4b 推过来的 `rename-session`**：同一个形状——外壳要能对某条 lane 的 host 说话，
-  而 `LaneOccupant` 今天只有 `dispose()`。改名要 `SessionController` 刷新私有的 `SessionMeta`
-  （`retarget` 太重，它会 interrupt）并推一条 `session-changed`，否则状态栏与
-  `WireLaneInfo.sessionTitle` 会滞后到下一次会话切换。和 `refreshAfterConfigChange()`
-  一起把 occupant 拓宽一次，别拓两次。
-- [ ] 凭据：`test/rendererSettingsModel.test.ts`、`test/desktopShellHost.test.ts`
-  补 settings 往返、`test/settingsPersistence.test.ts`。
+- **`reloadSettings()` 会重读配置层**。`src/runtime/bootstrap.ts:143` 是 `await config.load(settings)`，
+  所以**未 `save()` 的内存改动会被它抹掉**。每次设置写入的顺序因此被钉死为
+  `mutate → config.save() → project.reloadSettings() → 扇出`。顺序反了是**数据丢失**，
+  而且回包看起来还是对的——到下一次拉取之前都装作成功。
+- **`needsRuntimeRebuild` 只等于 `hooksChanged`**（`bootstrap.ts:141,146`）。provider / model / routing
+  的改动它一律返回 `false`。照搬 `reload-settings` 分支的判据会得到一个「存盘了、界面也变了、
+  但要重启才生效」的设置屏幕——**在屏幕上与正常工作无法区分**。所以 `refreshAfterConfigChange`
+  接收显式的 `rebuild`，而不是读那个标志。
+
+- [x] shell 协议补 `get-settings` / `settings-change` / `rename-session`：**一条命令带一个
+  `SettingsChange` 可辨识联合**（`scope` 分卡片、`kind` 分操作），而不是十条命令；zod `.strict()`
+  校验，keyed `satisfies` 表 + `_NoSettingsDrift` 保证新增变体按名字失败。
+- [x] `WireSettingsSnapshot` 逐字段投影，**apiKey 一律掩码**（新增 `src/config/maskKey.ts`，
+  从 `ProviderPanel.tsx` 逐字搬出）。字段名叫 `apiKeyMasked` 而**不是** `apiKey`——
+  掩码值因此不可赋值给任何 `SettingsChange` 字段，「把 key 画出来再原样送回」根本编译不过。
+- [x] **Provider**：endpoints / models / routing（main / plan / compact / subagent[type] → 具体模型
+  或 inherit）全套增删改。复用 `ConfigService` 现成的九个方法 + `save()`；删除时的三条引用检查
+  本就在里面，直接让它抛。
+- [x] `refreshAfterConfigChange()` 从 `SessionHost` 的 `reload-settings` 分支抽出（`WireReloadSettingsResult`
+  逐字节不变，`test/protocolHost.test.ts` 零改动保持绿），由外壳按项目扇出——
+  **`reloadSettings()` 每项目一次，不是每 lane 一次**。
+- [x] **兑现 4b 推过来的 `rename-session`**：与配置扇出**共用一次** `LaneOccupant` 拓宽
+  （`refreshAfterConfigChange` + `refreshSessionMeta`，两个都是必需成员）。
+  `SessionController` 加了轻量的 `refreshSessionMeta`（**带 id 断言守卫**，永远不能变成绕过
+  `sessionSwitch.ts` 的后门），而不是用 `retarget`——后者会 interrupt 并清掉 usage / 工具进度 /
+  checkpoint，为一个标题不值当。
+- [x] 渲染器：纯模型 `model/settings.ts` + `dom/settingsView.ts` + 新增 `dom/controls.ts`
+  （`button()` 从 `sidebarView.ts` 上移，加 `textField` / `selectField`）；`dom/icons.ts` 加 `gear`；
+  `index.html` 加一个 `#settings`；`styles.css` 加设置行规则（**没有新增 `:root` 令牌**）。
+- [x] 凭据：`test/rendererSettingsModel.test.ts`（35 条）、`test/settingsPersistence.test.ts`
+  （9 条，真 `ConfigService` + 临时目录）、`test/desktopShellHost.test.ts`（30 → 47）、
+  `test/protocolHost.test.ts`（+3）。**全量 2160 tests / 2160 pass / 0 fail**（基线 2096）。
+
+**完成注记**：
+
+- **`runSidebarIntent` 的陷阱已经堵死，不再是记账项**。原来它没有 `default` 也没有 `assertNever`，
+  漏一个 case 会编译通过且什么都不做。现在加了 `assertNeverIntent(value: never)`，
+  变异验证过：删掉 `open-settings` 那个 case，`tsc` 直接按变体名报错。
+- **`ShellLaneProject` 拿 `config` 而不是走 occupant**：一个项目一个 `ConfigService` 却有 N 条 lane，
+  走 occupant 等于随便挑一条；而且设置屏幕可以停在一个你并没有在看其 lane 列表的项目上。
+  切片只列 `ConfigService` 上**真实存在**的十二个成员——写 `setFallbackModel`（不存在）会打破
+  `Satisfied<RuntimeHost, ShellLaneProject>`，这也是 `fallbackModel`/`compactModel` 本期只读的原因。
+- **`as unknown as` 第六次应验，而且这次两边都点名了**：`desktopMain.test.ts` 的 `createOccupant`
+  不是 cast，所以 `LaneOccupant` 拓宽时 tsc 直接报了它；但同文件的 `fakeProject()` 仍是
+  `as unknown as ProjectRuntime`，`config` 与 `store.rename` 一声不响，手工补的。
+- **变异验证抓到一条「假货在撒谎」，掩码那条用例原本是空的**：`FakeConfig.resolveModel` 当初
+  直接返回 `models[name]`，**没有像真的那样把 endpoint 的 `apiKey`/`baseUrl` 折进去**，
+  于是把投影换成 `...resolveModel(key)` 的 spread 时用例全绿。把假货改成逐字镜像真实实现之后，
+  同一个变异立刻报红。**教训：断言只值它的假货那么多钱**——凡是用例守的是「真实现会做 X」，
+  假货就必须真的做 X。
+- **四条变异验证都是预期那条报红**（save/reload 顺序、每项目一次 reload、掩码、
+  `clearCachedSections`），手工 revert 后一律 grep 过回滚结果。
+- **4d 未做真机冒烟**——按原安排留给 4f（第 8 条即本期验收）。当前凭据是纯函数用例 +
+  `desktopShellHost` 的端到端往返 + `settingsPersistence` 的真实文件系统 + `build:desktop` 跑通。
+  **分类栏布局与 `min-height: 0` 本质上是视觉的，没有任何用例能替代肉眼看一次窗口。**
+
+### 4d-2 — 设置界面剩余三块 `[ ]`
+
+三个坑各自需要一次决策，**已定但未实现**：
+
+- **权限**：新增导出的「写整组」函数，只重写 `settings.local.json` **自己的**条目，仍走
+  `writeSettingsAtomic`；继承自用户层/项目层的条目在界面上**只读**。
+  理由：`mergeSettings` 把 `permissions.allow/deny/ask` 与所有 `hooks.*` **拼接**，
+  把合并结果写回本地层会把上层条目复制一份进来。`settings.ts` 今天只有「追加单条」
+  （`persistPermissionRule`），`writeSettingsAtomic` 与 `loadSettingsFile` 都未导出。
+- **`agent.contextManagement`**：在 `bootstrap.ts:168` 被快照进 `scopeDeps`，`reloadSettings()`
+  够不到，改完对**已开的 scope 无效**。六个数值在界面上标注**「重启后生效」**，不接重建路径。
+- **MCP**：补真正的热重连（`src/mcp.ts` 的 `refreshMcpServerTools` / `connectManagedMcpServer`）
+  + 信任开关。`trustMcpServerLocally` 只会追加、没有 untrust，`McpServerConfig` 完全没有写入 API，
+  而且连接只在 bootstrap 发生一次——没有热重连的开关到下次启动前都是死的。
+- **Agent**：`ProjectRuntime` 需补 `listAgentDefinitions()`（今天只有 `reloadAgentDefinitions()`
+  返回计数）。展示 type/description/tools/permissionMode **只读**；可编辑的是它们的 routing
+  与「重新加载」。
+- 三块的界面骨架已经在那儿：`LIVE_CATEGORIES` 加一个名字，`SettingsChange` 加一组变体，
+  `settingsView` 加一个 `providerCards` 同款的函数即可，**命令、schema、扇出都不用动**。
+
 
 ### 4f — 真机冒烟（CDP，沿用 3j 的驱动）`[ ]`
 
@@ -327,6 +361,8 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
 7. [ ] `Ctrl+B` 收起/展开侧栏；
 8. [ ] 设置里改 endpoint / 加 model / 改 routing / 改权限规则 → 保存后状态栏跟着变、
    重启后仍在；改 provider 配置时另一个开着的会话也跟着重建 runtime；
+   （4d 已把 Provider 那半做完并有用例；这里要看的是真机上的**视觉**——分类栏布局、
+   `min-height: 0` 是否真的让长表单在屏幕内滚动而不是把输入框顶出窗口。权限那半等 4d-2。）
 9. [ ] 输入框右下角改 effort → 状态与后续 turn 生效；
 10. [ ] 收尾无残留 electron 进程。
 
@@ -358,8 +394,10 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
 - **`PaneSession` 有四个成员已无人调用**：`panes` / `refreshPanes`（4a 起就死了——tab bar 换成
   `shellClient.getLanes()` 之后没人读）、`ownProjectRoot` / `isActive`（4b 死的，侧栏改从
   `WireLaneInfo` 与 activeLane 推）。无害（`onPanesChanged` 那条订阅仍会触发 `onShellChanged`，
-  正是侧栏要的重绘）。**4e 动了 `paneSession.ts` 却没顺手收掉**——那一步只加了 `renderRuntime`
-  与两个 picker 方法，删成员是独立的一次改动，留给 4d。
+  正是侧栏要的重绘）。**4e 动了 `paneSession.ts` 却没顺手收掉**；4d 也没有——删成员是独立的
+  一次改动，不该混进设置改动里。留给 4d-2 或任何一次单独提交。
+- ~~**`runSidebarIntent` 没有 `default` 也没有 `assertNever`**~~ **已修**（4d：加了
+  `assertNeverIntent(value: never)`，变异验证过——删掉一个 case，`tsc` 按变体名报错）。
 - **`Ctrl+W` / 侧栏关闭不检查 `blocked`**，而 LRU 驱逐是**绝不**碰有未答阻塞请求的 pane 的
   （`paneBudget.isPinned`，理由是 teardown 会以**拒绝**收尾、静默失败用户的工具调用）。
   两者机制相同但情境不同：驱逐用户没要求，`Ctrl+W` 是用户明确要求。要做得更好得加个确认，
@@ -461,6 +499,11 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
   （已用它证伪过多条文档断言，如「没有 `default` 分支就能强制穷尽」实测是假的）。
   **手工 patch/revert 要 grep 回滚结果**：3j 两次「以为改回去了」实际没匹配上
   （mutation 只删了调用行，注释留着，revert 的搜索串就对不上了），是全量跑变红才发现的。
+- **断言只值它的假货那么多钱**（4d 新增）：变异验证抓到 `get-settings` 的掩码用例原本是**空的**——
+  `FakeConfig.resolveModel` 直接返回 `models[name]`，没有像真的那样把 endpoint 的 `apiKey`
+  折进去，于是「把投影换成 `...resolveModel(key)`」这个真实泄漏 bug 一路全绿。
+  凡是用例守的是「真实现会做 X，所以我们必须防着 X」，**假货就必须真的做 X**，
+  否则守的是一个不存在的世界。
 - **真机冒烟先怀疑驱动，再怀疑 app**：3j 的冒烟卡了四轮，三轮都是 CDP 驱动自己的问题 ——
   ① 每步重新 attach/detach 一个 DevTools session 会和浏览器自己的簿记打架（改成一窗一 socket
   全程持有）；② 让窗口关闭自己的 pane 时不能 `await` 那个 evaluate 的回包；
@@ -499,13 +542,14 @@ npm run build:desktop                                 # tsc emit + 两个 esbuil
 npm run start:desktop                                 # 真实 Electron，需要桌面
 npm run dev:tui                                       # 手动冒烟，需 TTY
 
-# 阶段 4 新增的三组（4a、4b、4e 三组均已全绿；settings 那组等 4d 落地）
+# 阶段 4 新增的四组（4a、4b、4e、4d 四组均已全绿）
 node --import tsx --test test/laneChannel.test.ts test/desktopShellHost.test.ts
 node --import tsx --test test/rendererSidebar.test.ts test/paneBudget.test.ts \
   test/checkpointService.test.ts test/rendererImports.test.ts
 node --import tsx --test test/rendererStyleTokens.test.ts test/rendererComposerChip.test.ts \
   test/permissionPresentation.test.ts test/planPresentation.test.ts test/rewindPresentation.test.ts
-node --import tsx --test test/rendererSettingsModel.test.ts    # 4d 落地后
+node --import tsx --test test/rendererSettingsModel.test.ts test/settingsPersistence.test.ts \
+  test/desktopShellHost.test.ts test/protocolHost.test.ts    # 4d
 
 # 4c 触及的（已全绿）
 node --import tsx --test test/modelPicker.test.ts test/modelRouting.test.ts \

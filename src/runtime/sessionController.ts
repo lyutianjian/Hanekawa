@@ -302,6 +302,23 @@ export class SessionController {
     this.publish()
   }
 
+  /**
+   * Refreshes the session meta *in place* — the session did not move, only its
+   * metadata did (a rename).
+   *
+   * `retarget` is the wrong tool for that: it is the session-switch path and
+   * clears usage, tool progress and the checkpoint service. The id guard is the
+   * invariant that keeps the distinction real — this must never become a back
+   * door around `sessionSwitch.ts`.
+   */
+  refreshSessionMeta(session: SessionMeta): void {
+    if (session.id !== this.session.id) {
+      throw new Error('refreshSessionMeta cannot change the session id; use retarget')
+    }
+    this.session = session
+    this.publish()
+  }
+
   /** The one checkpoint service for the active session; also drives `/rewind`. */
   getCheckpointService(): CheckpointService {
     return this.checkpointService

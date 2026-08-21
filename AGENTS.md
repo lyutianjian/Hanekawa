@@ -374,15 +374,52 @@ ids travel under `/clear` and `/resume`, lane keys do not), and the project map 
   `detachLane`, and deleting a closed one changes no lane — `ShellClient` swallows an identical list by
   design, so the renderer refreshes off the command's own reply.
 - **`list-sessions` is history, not topology** — every project's `store.list()` in `ProjectDirectory`
-  order, including projects with no lane open. It reuses `SessionMeta` rather than reducing it to a
-  sidebar DTO: that type is already on the wire (`WireSessionsResult`, `session-changed`).
+  order, including projects with no lane open. Projected field by field into `WireSessionSummary`
+  rather than shipping `SessionMeta`, which was the first attempt: this answers with *every* session
+  in *every* project, and two fields no row reads (`checkpoints`, `denialState`) grow without bound.
+- **Settings are per project, and the project — not the occupant — is the seam.** `ShellLaneProject`
+  carries a narrow structural slice of `ConfigService` (twelve members, every one real; naming a
+  `setFallbackModel` that does not exist breaks `Satisfied<RuntimeHost, ShellLaneProject>`, which is
+  why those two fields are read-only in the snapshot). There is one `ConfigService` per project and up
+  to N lanes over it, so reaching config through a lane would mean picking an arbitrary one — and the
+  screen can be pointed at a project whose lanes you are not looking at.
+- **`settings-change`'s order is fixed, and the first step is a data-loss guard.** Mutate →
+  **`config.save()`** → `project.reloadSettings()` → fan out. `reloadSettings` ends in
+  `config.load()` (`bootstrap.ts:143`), which re-reads the layers from disk: an unsaved mutation is
+  *destroyed* by it, and the reply would still look right. The reload is **once per project**, not per
+  lane. `test/desktopShellHost.test.ts` pins both with a call-order log and a call count.
+- **`needsRuntimeRebuild` is not the rebuild decision.** It is only `hooksChanged`
+  (`bootstrap.ts:141`), so a provider or routing edit reports `false`; the shell passes
+  `rebuild: true` explicitly. Trusting the flag yields a screen that saves, redraws, and does nothing
+  until the next launch — indistinguishable from working.
+- **The settings snapshot is projected field by field and never spreads `resolveModel()`**, which
+  folds the endpoint's `apiKey`/`baseUrl` into what it returns; `resolveModel` is called only for the
+  `resolves` boolean, and keys leave as `apiKeyMasked` (`config/maskKey.ts`). The wire field is named
+  so a masked value is not assignable to a `SettingsChange` — "render the key, send it back" cannot
+  typecheck. The guard asserts on the whole serialized reply, not field by field, because that is the
+  assertion that survives a future spread. **The fake's `resolveModel` must mirror the real fold** or
+  the guard is vacuous — it was, until a mutation run caught it.
+- **One `SettingsChange` discriminated union on one command**, not ten commands: the three unbuilt
+  cards add variants without touching the command, its schema or the fan-out. Keyed `satisfies` +
+  `_NoSettingsDrift`, the `commandSchema.ts` discipline one level down. An absent `apiKey` means
+  "leave it"; clearing is its own variant, because an optional field cannot tell "untouched" from
+  "emptied" once a form seeded with a mask has round-tripped it.
 - **Generic over `<P, PaneT, W>`** with `RuntimeHost`/`SessionPane`/`SessionWorkspace` defaults and
   `Satisfied<Real, Ours>` compile-time assertions, so `test/desktopShellHost.test.ts` drives a real
-  `ProjectDirectory` with plain fakes and **no `as unknown as`** (the `ProjectDirectory` pattern). The
-  occupant is deliberately opaque (`{ dispose() }`): production passes a `SessionHost` factory, the test
-  a recorder — hence renaming a *live* session waits for 4d's config fan-out (it needs the pane's
-  controller meta refreshed and a `session-changed` pushed). Inbound shell commands are zod
-  `.strict()`-validated with a keyed `satisfies` table, the `commandSchema.ts` discipline again.
+  `ProjectDirectory` with plain fakes and **no `as unknown as`** (the `ProjectDirectory` pattern).
+  `LaneOccupant` is the whole of what the shell may say to a lane, and it was widened **once** for
+  both of its callers: `refreshAfterConfigChange` (the settings fan-out) and `refreshSessionMeta` (a
+  sidebar rename). Both required, not optional — production passes a `SessionHost`, a test passes a
+  recorder, and tsc names whichever member either forgets. Nothing was added to `SessionHostDeps`,
+  which is what keeps `test/protocolChildProcess.test.ts`'s string script untouched. Inbound shell
+  commands are zod `.strict()`-validated with a keyed `satisfies` table, the `commandSchema.ts`
+  discipline again.
+- **`rename-session` broadcasts; `delete-session` does not.** `sessionTitle` is a `WireLaneInfo`
+  field and part of `ShellClient`'s list comparison, so the topology genuinely differs. It resolves
+  the id first for the same reason delete does: the store takes a prefix, `laneForSessionId` compares
+  whole ids. Host side it is `SessionController.refreshSessionMeta`, **not** `retarget` — that is the
+  session-*switch* path and would interrupt the turn and reset usage for a title. The id guard on
+  that method is what keeps it from becoming a back door around `sessionSwitch.ts`.
 
 Transport interfaces (`ipc/electronChannel.ts`) are **structural, not imported from `electron`** —
 loadable from plain-node tests. Each rule below was a launch-blocking bug `tsc` couldn't see:
@@ -530,6 +567,36 @@ import of `harness/|services/|sessions/|commands/|tui/`, an import allowlist, no
   over-ceiling levels disabled-with-a-reason. The status bar no longer carries the model: one field,
   one place. `MAX_COMPOSER_HEIGHT_PX` and the CSS `max-height` are two copies on purpose; the JS one
   is load-bearing.
+- **The settings screen is a screen, not a dialog.** It lives *inside* `#canvas` as a sibling of the
+  transcript and composer, and `#canvas.settings-open` hides those siblings from the stylesheet —
+  `app.ts` only toggles the class. `#overlay`/`#rewind` are body children with `position: fixed` and
+  cover the sidebar, which is what makes *them* modal; settings never parks the agent loop and the
+  session list stays usable beside it. It therefore takes **no `resolveKey` rank**, and follows the
+  sidebar's two-entry-point rule instead: `settingsChordToIntent` (`Ctrl+,`) resolves before
+  `resolveKey` and is safe only because it answers `'none'` without ctrl/meta, while
+  `settingsKeyToIntent` is bound to the container and answers `'none'` for anything modified. Escape
+  unwinds one layer at a time — form, then delete confirmation, then the screen — so a reflexive
+  Escape cannot discard an open form. `min-height: 0` on `#settings` and `#settings-body` is
+  load-bearing and untested: without it the flex child refuses to shrink and the screen grows past
+  the window instead of scrolling inside it.
+- **`model/settings.ts` holds every settings decision**, including all of the Chinese labels — the
+  view builds nodes and nothing else. The API-key rule is the load-bearing one: an edited endpoint
+  seeds its key field **empty** (not with the mask) and `keyTouched` decides whether `apiKey` enters
+  the change at all, because the host reads an absent key as "leave it". A routing select keeps a key
+  that does not resolve, labelled, rather than filtering it out — dropping it would hide why a role
+  misbehaves and would rewrite the config the moment any *other* select moved. Renaming a model emits
+  **two** changes, rename first: a `set-model` under the new key would create a second model and
+  leave the old one behind.
+- **`runSidebarIntent` is exhaustive by `assertNever`.** It was not, and that was a documented trap —
+  a sidebar button whose case was missing compiled fine and silently did nothing. The `never`
+  parameter now names the missing variant at build time. Same discipline as `execute()` in
+  `protocol/host.ts`; do not add a catch-all `default` that swallows one.
+- **`dom/controls.ts` owns `button()`, `textField()` and `selectField()`.** `button()` moved out of
+  `sidebarView.ts` when settings became its second caller; its `stopPropagation()` on click is
+  load-bearing for sidebar rows and inert elsewhere. Text fields commit on `change` and Enter,
+  **never per keystroke** — each commit ends in a config write plus a runtime rebuild fanned out to
+  every lane of the project. A select assigns `.value` *after* appending its options, or the
+  assignment silently no-ops and the control looks like it forgot the user's setting.
 - **`dom/icons.ts` is the only file that calls `createElementNS`** — `el()` makes HTML
   elements, and an `"svg"` created in the HTML namespace renders nothing at all. Icons
   inherit `currentColor`, which is what keeps accents on `color` rather than on a `fill` the

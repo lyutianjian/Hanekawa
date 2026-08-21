@@ -368,6 +368,8 @@ export type SidebarIntent =
   | { kind: 'close'; lane: string }
   | { kind: 'new'; projectRoot?: string }
   | { kind: 'open-project' }
+  /** Swap the canvas for the settings screen. Window-level, not per session. */
+  | { kind: 'open-settings' }
   | { kind: 'toggle-collapse' }
   | { kind: 'request-delete'; sessionId: string }
   | { kind: 'confirm-delete'; projectRoot: string; sessionId: string }

@@ -30,6 +30,7 @@ export type IconName =
   | 'dot'
   | 'send'
   | 'stop'
+  | 'gear'
 
 interface IconSpec {
   /** Path data on a 16×16 grid. */
@@ -59,6 +60,12 @@ const ICONS = {
   dot: { paths: ['M8 5a3 3 0 1 1 0 6 3 3 0 0 1 0-6z'], filled: true },
   send: { paths: ['M8 13V3.6', 'M3.8 7.8 8 3.5l4.2 4.3'] },
   stop: { paths: ['M5.2 5.2h5.6v5.6H5.2z'], filled: true },
+  gear: {
+    paths: [
+      'M8 10a2 2 0 1 1 0-4 2 2 0 0 1 0 4z',
+      'M12.9 9.5a1 1 0 0 0 .2 1.1l.1.1a1.2 1.2 0 1 1-1.7 1.7l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9v.2a1.2 1.2 0 0 1-2.4 0V13a1 1 0 0 0-.7-.9 1 1 0 0 0-1.1.2l-.1.1a1.2 1.2 0 1 1-1.7-1.7l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6h-.2a1.2 1.2 0 0 1 0-2.4H3a1 1 0 0 0 .9-.7 1 1 0 0 0-.2-1.1l-.1-.1a1.2 1.2 0 1 1 1.7-1.7l.1.1a1 1 0 0 0 1.1.2H6.6a1 1 0 0 0 .6-.9v-.2a1.2 1.2 0 0 1 2.4 0V3a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a1.2 1.2 0 1 1 1.7 1.7l-.1.1a1 1 0 0 0-.2 1.1v.1a1 1 0 0 0 .9.6h.2a1.2 1.2 0 0 1 0 2.4H13a1 1 0 0 0-.9.6z',
+    ],
+  },
 } as const satisfies Record<IconName, IconSpec>
 
 export function icon(name: IconName, className = 'icon'): SVGSVGElement {

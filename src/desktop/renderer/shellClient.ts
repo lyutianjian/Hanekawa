@@ -5,6 +5,10 @@ import type {
   ShellEvent,
   WireLaneInfo,
   WireShellDeleteSessionResult,
+  WireShellSettingsResult,
+  WireShellSettingsChangeResult,
+  WireShellRenameSessionResult,
+  SettingsChange,
   WireShellOpenProjectResult,
   WireShellOpenSessionResult,
   WireShellPanesResult,
@@ -103,6 +107,45 @@ export class ShellClient {
       projectRoot,
       sessionId,
     }) as Promise<WireShellDeleteSessionResult>
+  }
+
+  /** The settings screen's whole read model. Like `listSessions`, never cached here. */
+  async getSettings(projectRoot?: string): Promise<WireShellSettingsResult> {
+    return this.send({
+      type: 'get-settings',
+      id: crypto.randomUUID(),
+      ...(projectRoot !== undefined ? { projectRoot } : {}),
+    }) as Promise<WireShellSettingsResult>
+  }
+
+  /**
+   * One settings edit. The reply carries a fresh snapshot — the renderer never
+   * re-derives one by applying the change to the copy it is holding.
+   */
+  async changeSettings(
+    projectRoot: string,
+    change: SettingsChange,
+  ): Promise<WireShellSettingsChangeResult> {
+    return this.send({
+      type: 'settings-change',
+      id: crypto.randomUUID(),
+      projectRoot,
+      change,
+    }) as Promise<WireShellSettingsChangeResult>
+  }
+
+  async renameSession(
+    projectRoot: string,
+    sessionId: string,
+    title: string,
+  ): Promise<WireShellRenameSessionResult> {
+    return this.send({
+      type: 'rename-session',
+      id: crypto.randomUUID(),
+      projectRoot,
+      sessionId,
+      title,
+    }) as Promise<WireShellRenameSessionResult>
   }
 
   dispose(): void {

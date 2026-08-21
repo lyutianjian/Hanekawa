@@ -14,7 +14,7 @@ import {
   type ShellLaneWorkspace,
 } from '../src/desktop/shellHost.js'
 import { ShellClient } from '../src/desktop/renderer/shellClient.js'
-import { SHELL_LANE, type ShellCommand, type WireLaneInfo } from '../src/desktop/shellProtocol.js'
+import { SHELL_LANE, type ShellCommand, type SettingsChange, type WireLaneInfo } from '../src/desktop/shellProtocol.js'
 import { createLaneMux } from '../src/runtime/protocol/laneChannel.js'
 import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.js'
 import { shadowRepoPath } from '../src/services/checkpoint/checkpointService.js'
@@ -25,6 +25,8 @@ import {
 } from '../src/runtime/projectDirectory.js'
 import type { RuntimeChannel } from '../src/runtime/protocol/channel.js'
 import type { SessionMeta } from '../src/sessions/service.js'
+import type { Config, ModelConfig } from '../src/config/service.js'
+import { mergeRouting, type Endpoint, type Routing } from '../src/config/routing.js'
 
 /**
  * `ShellHost` — every lane/project decision the single-window shell makes, with
@@ -74,6 +76,7 @@ class FakeStore {
   readonly sessions = new Map<string, SessionMeta>()
   readonly drafts: SessionMeta[] = []
   readonly deleted: string[] = []
+  readonly renamed: Array<{ id: string; title: string }> = []
   /** Set to make `resolve` behave like the real prefix resolver. */
   resolvePrefixes = false
 
@@ -103,18 +106,143 @@ class FakeStore {
     this.log.push(`store-delete:${idOrPrefix}`)
     this.sessions.delete(idOrPrefix)
   }
+
+  async rename(idOrPrefix: string, title: string): Promise<void> {
+    this.renamed.push({ id: idOrPrefix, title })
+    this.log.push(`store-rename:${idOrPrefix}`)
+    const session = this.sessions.get(idOrPrefix)
+    if (session) this.sessions.set(idOrPrefix, { ...session, title })
+  }
+}
+
+/**
+ * A config fake that records call order.
+ *
+ * The order matters more than the values here: `save()` landing *after*
+ * `reloadSettings()` would be silently destroyed by the latter's
+ * `config.load()`, so the log is what pins it.
+ */
+class FakeConfig {
+  config: Config = { models: {}, agent: {} }
+  saves = 0
+
+  constructor(private readonly log: string[] = []) {}
+
+  get(): Config {
+    return this.config
+  }
+
+  getRouting(): Routing {
+    return mergeRouting(this.config.routing)
+  }
+
+  setRouting(routing: Routing): void {
+    this.config.routing = routing
+  }
+
+  setEndpoint(name: string, endpoint: Endpoint): void {
+    this.config.endpoints = { ...this.config.endpoints, [name]: endpoint }
+  }
+
+  removeEndpoint(name: string): void {
+    const referencing = Object.entries(this.config.models).find(([, model]) => model.endpoint === name)
+    if (referencing) throw new Error(`Endpoint ${name} is used by model ${referencing[0]}`)
+    const next = { ...this.config.endpoints }
+    delete next[name]
+    this.config.endpoints = next
+  }
+
+  setModelConfig(name: string, model: ModelConfig): void {
+    this.config.models = { ...this.config.models, [name]: model }
+  }
+
+  removeModel(name: string): void {
+    const routing = this.getRouting()
+    const routed = [routing.main, routing.plan, routing.compact].includes(name)
+    if (routed) throw new Error(`Model ${name} is still referenced by routing`)
+    const next = { ...this.config.models }
+    delete next[name]
+    this.config.models = next
+  }
+
+  renameModel(oldKey: string, newKey: string): void {
+    const model = this.config.models[oldKey]
+    if (!model) throw new Error(`No model named ${oldKey}`)
+    const next = { ...this.config.models }
+    delete next[oldKey]
+    next[newKey] = model
+    this.config.models = next
+    const routing = this.getRouting()
+    for (const role of ['main', 'plan', 'compact'] as const) {
+      if (routing[role] === oldKey) routing[role] = newKey
+    }
+    this.config.routing = routing
+  }
+
+  setDefaultModel(name: string): void {
+    // Mirrors the real service: unresolvable keys are a silent no-op.
+    if (!this.config.models[name]) return
+    this.config.defaultModel = name
+  }
+
+  /**
+   * Mirrors the real `ConfigService.resolveModel`, **including that it folds the
+   * endpoint's `apiKey` and `baseUrl` into what it returns**.
+   *
+   * That fold is the whole reason `describeSettings` must project field by
+   * field. A fake that skipped it would make the "no raw key on the wire" case
+   * vacuous — it passed a deliberate `...resolveModel(key)` mutation until this
+   * was fixed.
+   */
+  resolveModel(name: string): ModelConfig | undefined {
+    const model = this.config.models[name]
+    if (!model) return undefined
+    if (!model.endpoint) return model.provider ? { ...model } : undefined
+    const endpoint = this.config.endpoints?.[model.endpoint]
+    if (!endpoint) return undefined
+    const resolved: ModelConfig = {
+      provider: endpoint.provider,
+      ...(endpoint.baseUrl !== undefined ? { baseUrl: endpoint.baseUrl } : {}),
+      ...(endpoint.apiKey !== undefined ? { apiKey: endpoint.apiKey } : {}),
+      ...model,
+    }
+    return resolved.provider ? resolved : undefined
+  }
+
+  getSaveTarget(): string {
+    return `${this.cwdLabel}/.myagent/config.json`
+  }
+
+  cwdLabel = 'project'
+
+  async save(): Promise<void> {
+    this.saves += 1
+    this.log.push('config-save')
+  }
 }
 
 class FakeProject implements ShellLaneProject {
   readonly store: FakeStore
+  readonly config: FakeConfig
   readonly openedScopes: SessionMeta[] = []
   readonly shutdowns: string[] = []
+  reloads = 0
 
   constructor(
     readonly cwd: string,
     private readonly log: string[],
   ) {
     this.store = new FakeStore(log)
+    this.config = new FakeConfig(log)
+    this.config.cwdLabel = cwd
+  }
+
+  async reloadSettings(): Promise<{ needsRuntimeRebuild: boolean }> {
+    this.reloads += 1
+    this.log.push(`reload-settings:${this.cwd}`)
+    // The real one reports `hooksChanged` only — a provider edit reports false,
+    // which is exactly why the shell does not consult it.
+    return { needsRuntimeRebuild: false }
   }
 
   async openScope(session: SessionMeta): Promise<FakeScope> {
@@ -185,6 +313,8 @@ interface Harness {
   workspace: FakeWorkspace
   attaches: LaneAttach<FakeProject, FakePane, FakeWorkspace>[]
   disposed: string[]
+  configRefreshes: Array<{ lane: string; rebuild: boolean; scope: string }>
+  metaRefreshes: Array<{ lane: string; session: SessionMeta }>
   activates: string[]
   laneEvents: WireLaneInfo[][]
   allLanesClosed: string[]
@@ -214,6 +344,8 @@ function createHarness(options: { withOpenProject?: boolean } = {}): Harness {
 
   const attaches: LaneAttach<FakeProject, FakePane, FakeWorkspace>[] = []
   const disposed: string[] = []
+  const configRefreshes: Array<{ lane: string; rebuild: boolean; scope: string }> = []
+  const metaRefreshes: Array<{ lane: string; session: SessionMeta }> = []
   const activates: string[] = []
   const laneEvents: WireLaneInfo[][] = []
   const allLanesClosed: string[] = []
@@ -227,7 +359,17 @@ function createHarness(options: { withOpenProject?: boolean } = {}): Harness {
     nextLaneKey: () => `${++nextKey}`,
     createOccupant: (attach) => {
       attaches.push(attach)
-      return { dispose: () => disposed.push(attach.lane) }
+      return {
+        dispose: () => disposed.push(attach.lane),
+        refreshAfterConfigChange: (options) => configRefreshes.push({ lane: attach.lane, ...options }),
+        refreshSessionMeta: (session) => {
+          metaRefreshes.push({ lane: attach.lane, session })
+          // Mirrors production: the host hands the meta to its controller, and
+          // `SessionPane.getSession()` reads back through it — which is what
+          // makes the following `broadcastLanes()` carry the new title.
+          attach.pane.session = session
+        },
+      }
     },
     ...(options.withOpenProject === false
       ? {}
@@ -250,6 +392,8 @@ function createHarness(options: { withOpenProject?: boolean } = {}): Harness {
     workspace: first.workspace,
     attaches,
     disposed,
+    configRefreshes,
+    metaRefreshes,
     activates,
     laneEvents,
     allLanesClosed,
@@ -294,7 +438,52 @@ const COMMAND_SAMPLES = {
   'open-project': { type: 'open-project', id: 'c', path: 'C:\\repo' },
   'list-sessions': { type: 'list-sessions', id: 'd' },
   'delete-session': { type: 'delete-session', id: 'e', projectRoot: 'r', sessionId: 's1' },
+  'get-settings': { type: 'get-settings', id: 'f', projectRoot: 'r' },
+  'settings-change': {
+    type: 'settings-change',
+    id: 'g',
+    projectRoot: 'r',
+    change: { scope: 'provider', kind: 'set-routing', role: 'main', value: 'inherit' },
+  },
+  'rename-session': { type: 'rename-session', id: 'h', projectRoot: 'r', sessionId: 's1', title: 'T' },
 } as const satisfies Record<ShellCommand['type'], ShellCommand>
+
+/**
+ * One sample per `SettingsChange` variant. The keyed `satisfies` is the guard —
+ * a variant added without a schema in `SETTINGS_CHANGE_SCHEMAS` fails by name,
+ * and this array proves each one actually parses rather than merely typechecks.
+ */
+const SETTINGS_CHANGE_SAMPLES = {
+  'set-endpoint': { scope: 'provider', kind: 'set-endpoint', name: 'e1', provider: 'anthropic' },
+  'clear-endpoint-key': { scope: 'provider', kind: 'clear-endpoint-key', name: 'e1' },
+  'remove-endpoint': { scope: 'provider', kind: 'remove-endpoint', name: 'e1' },
+  'set-model': { scope: 'provider', kind: 'set-model', key: 'm1', model: 'claude-x' },
+  'rename-model': { scope: 'provider', kind: 'rename-model', from: 'm1', to: 'm2' },
+  'remove-model': { scope: 'provider', kind: 'remove-model', key: 'm1' },
+  'set-default-model': { scope: 'provider', kind: 'set-default-model', key: 'm1' },
+  'set-routing': { scope: 'provider', kind: 'set-routing', role: 'plan', value: 'm1' },
+  'set-subagent-routing': { scope: 'provider', kind: 'set-subagent-routing', type: 'explore', value: 'm1' },
+} as const satisfies Record<SettingsChange['kind'], SettingsChange>
+
+test('every settings change variant round-trips through its schema', () => {
+  for (const change of Object.values(SETTINGS_CHANGE_SAMPLES)) {
+    const parsed = parseShellCommand({ type: 'settings-change', id: 'x', projectRoot: 'r', change })
+    assert.equal(parsed.ok, true, `expected ${change.kind} to parse`)
+    if (parsed.ok && parsed.command.type === 'settings-change') {
+      assert.deepEqual(parsed.command.change, change)
+    }
+  }
+})
+
+test('a settings change with an unknown field is rejected', () => {
+  const parsed = parseShellCommand({
+    type: 'settings-change',
+    id: 'x',
+    projectRoot: 'r',
+    change: { scope: 'provider', kind: 'remove-model', key: 'm1', sneaky: 1 },
+  })
+  assert.equal(parsed.ok, false, '.strict() must reject an extra field')
+})
 
 test('every shell command variant round-trips through its schema', () => {
   for (const command of Object.values(COMMAND_SAMPLES)) {
@@ -304,7 +493,16 @@ test('every shell command variant round-trips through its schema', () => {
   }
   assert.deepEqual(
     Object.keys(COMMAND_SAMPLES).sort(),
-    ['delete-session', 'list-sessions', 'open-project', 'open-session', 'panes'],
+    [
+      'delete-session',
+      'get-settings',
+      'list-sessions',
+      'open-project',
+      'open-session',
+      'panes',
+      'rename-session',
+      'settings-change',
+    ],
     'a variant added to ShellCommand must fail the satisfies table by name',
   )
 })
@@ -361,7 +559,11 @@ test('open-session with no project open fails', async () => {
     mux: createLaneMux(mainTransport),
     directory: emptyDirectory,
     nextLaneKey: () => '1',
-    createOccupant: () => ({ dispose: () => {} }),
+    createOccupant: () => ({
+      dispose: () => {},
+      refreshAfterConfigChange: () => {},
+      refreshSessionMeta: () => {},
+    }),
   })
   void host
   const client = new ShellClient(createLaneMux(rendererTransport).lane(SHELL_LANE))
@@ -782,4 +984,285 @@ test('deleting a closed session leaves the topology untouched', async () => {
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
+})
+
+// --- settings ----------------------------------------------------------------
+
+/** Seeds a config with one keyed endpoint and two models, one of them routed. */
+function seedConfig(project: FakeProject): void {
+  project.config.config = {
+    endpoints: {
+      main: { provider: 'anthropic', baseUrl: 'https://api.example', apiKey: 'sk-abcdefghijkl' },
+    },
+    models: {
+      big: { model: 'claude-big', endpoint: 'main', contextWindow: 200_000 },
+      small: { model: 'claude-small', endpoint: 'main' },
+    },
+    routing: { main: 'big' },
+    defaultModel: 'big',
+    agent: {},
+  }
+}
+
+test('get-settings never lets a raw api key across the wire', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+
+  const result = await h.client.getSettings(h.entry.root)
+
+  // Asserted on the whole serialized reply rather than field by field: that is
+  // the assertion that survives someone adding a spread of `resolveModel()`
+  // later, which is the one bug here that leaks every key the user owns.
+  assert.ok(
+    !JSON.stringify(result).includes('sk-abcdefghijkl'),
+    'the raw key must not appear anywhere in the reply',
+  )
+  assert.equal(result.settings.endpoints[0]?.apiKeyMasked, 'sk-a...ijkl')
+  assert.equal(result.settings.endpoints[0]?.baseUrl, 'https://api.example')
+})
+
+test('get-settings projects models, routing and the save target', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+
+  const { settings, projects } = await h.client.getSettings(h.entry.root)
+
+  assert.deepEqual(
+    settings.models.map((model) => model.key),
+    ['big', 'small'],
+  )
+  assert.equal(settings.models[0]?.contextWindow, 200_000)
+  assert.equal(settings.routing.main, 'big')
+  assert.equal(settings.routing.plan, 'inherit', 'an unset role reads as inherit')
+  assert.deepEqual(
+    settings.routing.subagent.map((row) => row.type),
+    ['general', 'fork', 'explore', 'plan'],
+    'the four built-ins always get a row',
+  )
+  assert.match(settings.saveTarget, /config\.json$/)
+  assert.deepEqual(settings.providers, ['anthropic', 'openai'])
+  assert.deepEqual(projects, [{ projectRoot: h.entry.root, projectName: 'alpha' }])
+})
+
+test('a configured model that cannot resolve is still listed, and says so', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+  // A model pointing at an endpoint that does not exist — which is what
+  // `resolveModel` returns undefined for. It must keep its row: a model that is
+  // configured but unusable has to explain itself rather than vanish.
+  h.project.config.config.models.broken = { model: 'gone', endpoint: 'missing' }
+
+  const { settings } = await h.client.getSettings(h.entry.root)
+
+  const broken = settings.models.find((model) => model.key === 'broken')
+  assert.ok(broken, 'the unresolvable model is still drawn')
+  assert.equal(broken?.resolves, false)
+  assert.equal(settings.models.find((model) => model.key === 'big')?.resolves, true)
+})
+
+test('settings-change saves before reloading, or the reload would discard the edit', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+
+  await h.client.changeSettings(h.entry.root, {
+    scope: 'provider',
+    kind: 'set-routing',
+    role: 'plan',
+    value: 'small',
+  })
+
+  const saveAt = h.log.indexOf('config-save')
+  const reloadAt = h.log.indexOf(`reload-settings:${h.project.cwd}`)
+  assert.ok(saveAt >= 0 && reloadAt >= 0, 'both ran')
+  assert.ok(
+    saveAt < reloadAt,
+    'save must precede reloadSettings: reloadSettings ends in config.load(), which re-reads ' +
+      'the layers from disk and destroys an unsaved in-memory mutation',
+  )
+  assert.equal(h.project.config.config.routing?.plan, 'small', 'and the edit survived')
+})
+
+test('one edit reloads the project once and refreshes every lane of it', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+  for (const id of ['s1', 's2', 's3']) h.project.store.sessions.set(id, sessionOf(id))
+  for (const id of ['s1', 's2', 's3']) {
+    await h.client.openSession({ sessionId: id, projectRoot: h.entry.root })
+  }
+  await settle()
+
+  const result = await h.client.changeSettings(h.entry.root, {
+    scope: 'provider',
+    kind: 'set-routing',
+    role: 'main',
+    value: 'small',
+  })
+
+  assert.equal(h.project.reloads, 1, 'reloadSettings is per project, not per lane')
+  assert.equal(h.configRefreshes.length, 3, 'every lane of the project rebuilt')
+  assert.equal(result.rebuiltLanes, 3)
+  assert.deepEqual(
+    h.configRefreshes.map((refresh) => refresh.scope),
+    ['routing', 'routing', 'routing'],
+    'a routing edit re-resolves against routing, not models',
+  )
+  assert.ok(
+    h.configRefreshes.every((refresh) => refresh.rebuild),
+    'rebuild is unconditional - needsRuntimeRebuild is only hooksChanged',
+  )
+})
+
+test('an edit in one project leaves another projects lanes alone', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+  const other = h.addProject('C:\\repo\\beta')
+  seedConfig(other.project)
+  h.project.store.sessions.set('s1', sessionOf('s1'))
+  other.project.store.sessions.set('s2', sessionOf('s2'))
+  await h.client.openSession({ sessionId: 's1', projectRoot: h.entry.root })
+  await h.client.openSession({ sessionId: 's2', projectRoot: other.entry.root })
+  await settle()
+
+  await h.client.changeSettings(h.entry.root, {
+    scope: 'provider',
+    kind: 'set-default-model',
+    key: 'small',
+  })
+
+  assert.equal(h.configRefreshes.length, 1)
+  assert.equal(other.project.reloads, 0, 'the other project never reloaded')
+})
+
+test('a rejected reference check saves nothing', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+
+  await assert.rejects(
+    h.client.changeSettings(h.entry.root, {
+      scope: 'provider',
+      kind: 'remove-model',
+      key: 'big',
+    }),
+    /still referenced by routing/,
+  )
+  assert.equal(h.project.config.saves, 0, 'the mutation threw before anything was written')
+  assert.ok(h.project.config.config.models.big, 'and the model is untouched')
+})
+
+test('set-endpoint without an apiKey leaves the stored key alone', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+
+  // What the form sends when the user edited the base URL but never touched the
+  // key field, which is showing a mask.
+  await h.client.changeSettings(h.entry.root, {
+    scope: 'provider',
+    kind: 'set-endpoint',
+    name: 'main',
+    provider: 'anthropic',
+    baseUrl: 'https://api.changed',
+  })
+
+  assert.equal(h.project.config.config.endpoints?.main?.apiKey, 'sk-abcdefghijkl')
+  assert.equal(h.project.config.config.endpoints?.main?.baseUrl, 'https://api.changed')
+})
+
+test('clear-endpoint-key is the only way a key is removed', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+
+  await h.client.changeSettings(h.entry.root, {
+    scope: 'provider',
+    kind: 'clear-endpoint-key',
+    name: 'main',
+  })
+
+  assert.equal(h.project.config.config.endpoints?.main?.apiKey, undefined)
+  assert.equal(h.project.config.config.endpoints?.main?.provider, 'anthropic', 'the rest survives')
+})
+
+test('set-default-model with an unresolvable key is a no-op, as the service defines it', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+
+  const result = await h.client.changeSettings(h.entry.root, {
+    scope: 'provider',
+    kind: 'set-default-model',
+    key: 'nope',
+  })
+
+  assert.equal(result.settings.defaultModel, 'big', 'the default did not move')
+})
+
+test('rename-model carries the routing reference with it', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+
+  const result = await h.client.changeSettings(h.entry.root, {
+    scope: 'provider',
+    kind: 'rename-model',
+    from: 'big',
+    to: 'huge',
+  })
+
+  assert.equal(result.settings.routing.main, 'huge')
+  assert.ok(result.settings.models.some((model) => model.key === 'huge'))
+})
+
+test('rename-session resolves a prefix and refreshes only that lane', async () => {
+  const h = createHarness()
+  h.project.store.resolvePrefixes = true
+  h.project.store.sessions.set('abcdef1234', sessionOf('abcdef1234'))
+  h.project.store.sessions.set('zzzz', sessionOf('zzzz'))
+  await h.client.openSession({ sessionId: 'abcdef1234', projectRoot: h.entry.root })
+  await h.client.openSession({ sessionId: 'zzzz', projectRoot: h.entry.root })
+  await settle()
+
+  const result = await h.client.renameSession(h.entry.root, 'abcdef', 'new title')
+  await settle()
+
+  assert.deepEqual(result, { ok: true, title: 'new title' })
+  assert.deepEqual(
+    h.project.store.renamed,
+    [{ id: 'abcdef1234', title: 'new title' }],
+    'the store is given the resolved id, never the prefix',
+  )
+  assert.equal(h.metaRefreshes.length, 1, 'only the renamed session lane heard about it')
+  assert.equal(h.metaRefreshes[0]?.session.title, 'new title')
+})
+
+test('renaming a closed session succeeds and refreshes no occupant', async () => {
+  const h = createHarness()
+  h.project.store.sessions.set('s1', sessionOf('s1'))
+
+  const result = await h.client.renameSession(h.entry.root, 's1', 'renamed')
+  await settle()
+
+  assert.equal(result.ok, true)
+  assert.equal(h.metaRefreshes.length, 0)
+})
+
+test('rename-session broadcasts, because sessionTitle is a lane field', async () => {
+  const h = createHarness()
+  h.project.store.sessions.set('s1', sessionOf('s1'))
+  await h.client.openSession({ sessionId: 's1', projectRoot: h.entry.root })
+  await settle()
+  const before = h.laneEvents.length
+
+  await h.client.renameSession(h.entry.root, 's1', 'renamed')
+  await settle()
+
+  assert.ok(
+    h.laneEvents.length > before,
+    'unlike delete-session this does change the topology the client compares',
+  )
+})
+
+test('settings commands fail cleanly for a project that is not open', async () => {
+  const h = createHarness()
+  await assert.rejects(h.client.getSettings('C:\\repo\\never-opened'), /No project is open/)
+  await assert.rejects(
+    h.client.renameSession('C:\\repo\\never-opened', 's1', 'x'),
+    /No project is open/,
+  )
 })

@@ -10,7 +10,7 @@ import type { SessionMeta } from '../../sessions/service.js'
 import { MessageQueue } from '../messageQueue.js'
 import { applyPermissionModeTransition } from '../permissionMode.js'
 import { buildModelPickerOptions } from '../modelPicker.js'
-import { resolveRuntimeModelKeyAfterConfigChange } from '../providerRuntime.js'
+import { resolveRuntimeModelKeyAfterConfigChange, type ProviderConfigChangeScope } from '../providerRuntime.js'
 import { canPumpQueue } from '../queuePump.js'
 import { projectDisplayName, projectRootKey } from '../projectDirectory.js'
 import { SessionRecordLedger } from '../recordLedger.js'
@@ -789,24 +789,10 @@ export class SessionHost {
 
       case 'reload-settings': {
         const { needsRuntimeRebuild } = await this.project.reloadSettings()
-        if (!needsRuntimeRebuild) {
-          return {
-            needsRuntimeRebuild,
-            rebuilt: false,
-            modelKey: this.runtimeSlot.current.modelKey,
-          } satisfies WireReloadSettingsResult
-        }
-        // Rebuilt here rather than asked of the client: that hooks are captured
-        // at runtime-construction time is host trivia a renderer should not know.
-        const currentKey = this.runtimeSlot.current.modelKey
-        const nextKey = resolveRuntimeModelKeyAfterConfigChange(this.project.config, currentKey, 'models')
-          ?? currentKey
-        const next = this.scope.createRuntime(nextKey, this.session, this.ledger.list())
-        this.runtimeSlot.current.loop.clearCachedSections()
-        this.runtimeSlot.replace(next)
-        this.runtimeSlot.reapplyEffort()
-        this.postRuntimeSnapshot()
-        return { needsRuntimeRebuild, rebuilt: true, modelKey: nextKey } satisfies WireReloadSettingsResult
+        return {
+          needsRuntimeRebuild,
+          ...this.refreshAfterConfigChange({ rebuild: needsRuntimeRebuild, scope: 'models' }),
+        } satisfies WireReloadSettingsResult
       }
 
       case 'list-background-tasks':
@@ -1163,6 +1149,59 @@ export class SessionHost {
     if (!this.onOpenProject) throw new Error('This shell cannot open projects')
     this.onOpenProject(command.path)
     return { ok: true }
+  }
+
+  /**
+   * Rebuilds this session's runtime after its *project's* config changed.
+   *
+   * Public because two callers need it: the `reload-settings` command, and the
+   * desktop shell fanning a settings edit out over every lane of one project
+   * (`LaneOccupant.refreshAfterConfigChange`). The reload itself is deliberately
+   * *not* in here — it is a project-level call, and doing it per lane would
+   * re-read and re-validate the settings files once per open session.
+   *
+   * `rebuild` is the caller's decision rather than something read off
+   * `reloadSettings()`. That call's `needsRuntimeRebuild` is only
+   * `hooksChanged`, so a provider or routing edit reports `false`; a settings
+   * screen trusting it would persist the change and keep running the old
+   * runtime until the next launch.
+   *
+   * The order inside is the usual one: clear the cached sections first
+   * (`# Environment` embeds the model name), then install the new runtime
+   * before disposing the old, then re-apply the effort the slot owns.
+   */
+  refreshAfterConfigChange(options: {
+    rebuild: boolean
+    scope: ProviderConfigChangeScope
+  }): { rebuilt: boolean; modelKey: string } {
+    const currentKey = this.runtimeSlot.current.modelKey
+    if (!options.rebuild) return { rebuilt: false, modelKey: currentKey }
+    // Rebuilt here rather than asked of the client: that hooks are captured
+    // at runtime-construction time is host trivia a renderer should not know.
+    const nextKey =
+      resolveRuntimeModelKeyAfterConfigChange(this.project.config, currentKey, options.scope) ?? currentKey
+    const next = this.scope.createRuntime(nextKey, this.session, this.ledger.list())
+    this.runtimeSlot.current.loop.clearCachedSections()
+    this.runtimeSlot.replace(next)
+    this.runtimeSlot.reapplyEffort()
+    this.postRuntimeSnapshot()
+    return { rebuilt: true, modelKey: nextKey }
+  }
+
+  /**
+   * The session's meta moved without the session moving — today, a rename from
+   * the shell's sidebar.
+   *
+   * Deliberately not `retarget`: that is the session-*switch* path, and it
+   * interrupts the turn, resets usage and rebuilds the checkpoint service. For a
+   * title, the controller only needs its copy refreshed and the renderer told.
+   * `broadcastPaneList` because `sessionTitle` is a `WirePaneInfo` field.
+   */
+  refreshSessionMeta(session: SessionMeta): void {
+    this.session = session
+    this.controller.refreshSessionMeta(session)
+    this.post({ type: 'session-changed', session })
+    this.broadcastPaneList()
   }
 
   /**

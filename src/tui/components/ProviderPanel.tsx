@@ -12,6 +12,7 @@ import type {
   Routing,
 } from '../../config/routing.js'
 import { pingEndpoint, type EndpointPingResult } from '../../config/endpointPing.js'
+import { maskKey } from '../../config/maskKey.js'
 import {
   isSupportedProviderName,
   SUPPORTED_PROVIDER_NAMES,
@@ -773,12 +774,6 @@ function ChoiceFieldRow({ label, value, active }: ChoiceFieldRowProps) {
 function modelChoiceLabel(value: string, cfg: Config): string {
   if (!value) return '(missing model)'
   return cfg.models[value] ? value : `${value} (missing)`
-}
-
-function maskKey(key: string): string {
-  if (!key) return ''
-  if (key.length <= 8) return '*'.repeat(key.length)
-  return key.slice(0, 4) + '...' + key.slice(-4)
 }
 
 function footerHints(tab: Tab, form: FormState): CommandHint[] {

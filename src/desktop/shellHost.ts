@@ -1,5 +1,10 @@
 import { z } from 'zod/v3'
+import { maskKey } from '../config/maskKey.js'
+import { SUPPORTED_PROVIDER_NAMES } from '../config/providers/registry.js'
+import type { Config, ModelConfig } from '../config/service.js'
+import type { Endpoint, Routing } from '../config/routing.js'
 import { deleteSessionArtifacts } from '../runtime/deleteSession.js'
+import type { ProviderConfigChangeScope } from '../runtime/providerRuntime.js'
 import type { SessionMeta } from '../sessions/service.js'
 import type {
   DirectoryProject,
@@ -24,6 +29,13 @@ import {
   type WireShellPanesResult,
   type WireSessionSummary,
   type WireShellSessionsResult,
+  type WireShellRenameSessionResult,
+  type WireShellSettingsChangeResult,
+  type WireShellSettingsResult,
+  type WireSettingsSnapshot,
+  type WireEndpointInfo,
+  type WireModelInfo,
+  type SettingsChange,
 } from './shellProtocol.js'
 
 /**
@@ -45,9 +57,9 @@ import {
  * by scanning `pane.getSession()` — never by assuming the key.
  *
  * The occupant of a lane is opaque. Production passes a factory that builds a
- * `SessionHost` over the pane; a test passes a recorder. All this class needs
- * from either is `dispose()`, which is what keeps the shell protocol testable
- * without casting a `SessionHost`'s concrete deps.
+ * `SessionHost` over the pane; a test passes a recorder. All this class asks of
+ * either is the three members of `LaneOccupant`, which is what keeps the shell
+ * protocol testable without casting a `SessionHost`'s concrete deps.
  */
 
 // --- the structural halves, generic for the same reason ProjectDirectory is --
@@ -64,7 +76,39 @@ export interface ShellLaneProject extends DirectoryProject {
     /** The sidebar's history: every session on disk, newest first. */
     list(): Promise<SessionMeta[]>
     delete(idOrPrefix: string): Promise<void>
+    rename(idOrPrefix: string, title: string): Promise<void>
   }
+  /**
+   * The settings screen's read *and* write surface.
+   *
+   * A narrow structural slice rather than `ConfigService` itself, and every
+   * member here exists on it with exactly this signature — `Satisfied<RuntimeHost,
+   * ShellLaneProject>` below is what keeps that true. Do not add
+   * `setFallbackModel` / `setCompactModel` / `removeRouting`: they do not exist,
+   * which is why those two fields are read-only in the snapshot.
+   *
+   * The project is the right seam. There is one `ConfigService` per project and
+   * up to N lanes over it, so reaching config through a lane's occupant would
+   * mean picking an arbitrary one — and the settings screen can be pointed at a
+   * project whose lanes you are not looking at. The occupant is only asked to
+   * *react* (`refreshAfterConfigChange`).
+   */
+  readonly config: {
+    get(): Config
+    getRouting(): Routing
+    setRouting(routing: Routing): void
+    setEndpoint(name: string, endpoint: Endpoint): void
+    removeEndpoint(name: string): void
+    setModelConfig(name: string, model: ModelConfig): void
+    removeModel(name: string): void
+    renameModel(oldKey: string, newKey: string): void
+    setDefaultModel(name: string): void
+    resolveModel(name: string): ModelConfig | undefined
+    getSaveTarget(): string
+    save(): Promise<void>
+  }
+  /** Re-reads the settings layers. Per *project*, so the shell calls it once per edit. */
+  reloadSettings(): Promise<{ needsRuntimeRebuild: boolean }>
   /** The scope type is opaque here: the shell mints it and hands it straight to `adopt`. */
   openScope(session: SessionMeta): Promise<unknown>
 }
@@ -83,9 +127,35 @@ export interface ShellLaneWorkspace<PaneT extends PaneLike = SessionPane> extend
   close(pane: PaneT): void
 }
 
-/** Everything a lane holds besides its key. The shell speaks to it only through `dispose()`. */
+/**
+ * Everything a lane holds besides its key.
+ *
+ * Deliberately small, and every member required. Production passes a
+ * `SessionHost`; a test passes a recorder — and because the interface is
+ * structural, tsc names a member either of them forgets. The two beyond
+ * `dispose()` were added together on purpose: both are "the shell needs to
+ * speak to one lane's host", and widening this once for both was the whole
+ * reason `rename-session` waited for the settings fan-out.
+ */
 export interface LaneOccupant {
   dispose(): void
+  /**
+   * This lane's project config changed.
+   *
+   * `rebuild` is the shell's decision, not something the host reads off
+   * `reloadSettings()`. That call's `needsRuntimeRebuild` is *only*
+   * `hooksChanged` (`bootstrap.ts:141`), so a provider or routing edit reports
+   * `false` — trusting it would produce a settings screen that saves, redraws,
+   * and does nothing until the next launch, which is indistinguishable from
+   * working.
+   */
+  refreshAfterConfigChange(options: { rebuild: boolean; scope: ProviderConfigChangeScope }): void
+  /**
+   * The session's meta moved without the session moving — a rename. The host
+   * refreshes its controller's copy and pushes `session-changed`; anything
+   * heavier (`retarget`) would interrupt the turn and reset usage for a title.
+   */
+  refreshSessionMeta(session: SessionMeta): void
 }
 
 export interface LaneAttach<
@@ -152,6 +222,83 @@ const sessionWorkspaceSatisfiesShellLaneWorkspace: Satisfied<
 
 const commandId = z.string()
 
+/**
+ * The settings edits, keyed by `kind` for the same reason the commands are
+ * keyed by `type`: a variant added to `SettingsChange` without a schema here
+ * fails the build *by name*, and `_NoSettingsDrift` below catches a field that
+ * drifted rather than a whole variant that went missing.
+ */
+const SETTINGS_CHANGE_SCHEMAS = {
+  'set-endpoint': z
+    .object({
+      scope: z.literal('provider'),
+      kind: z.literal('set-endpoint'),
+      name: z.string(),
+      provider: z.string(),
+      baseUrl: z.string().optional(),
+      apiKey: z.string().optional(),
+    })
+    .strict(),
+  'clear-endpoint-key': z
+    .object({ scope: z.literal('provider'), kind: z.literal('clear-endpoint-key'), name: z.string() })
+    .strict(),
+  'remove-endpoint': z
+    .object({ scope: z.literal('provider'), kind: z.literal('remove-endpoint'), name: z.string() })
+    .strict(),
+  'set-model': z
+    .object({
+      scope: z.literal('provider'),
+      kind: z.literal('set-model'),
+      key: z.string(),
+      model: z.string(),
+      provider: z.string().optional(),
+      endpoint: z.string().optional(),
+      contextWindow: z.number().optional(),
+      maxOutputTokens: z.number().optional(),
+    })
+    .strict(),
+  'rename-model': z
+    .object({
+      scope: z.literal('provider'),
+      kind: z.literal('rename-model'),
+      from: z.string(),
+      to: z.string(),
+    })
+    .strict(),
+  'remove-model': z
+    .object({ scope: z.literal('provider'), kind: z.literal('remove-model'), key: z.string() })
+    .strict(),
+  'set-default-model': z
+    .object({ scope: z.literal('provider'), kind: z.literal('set-default-model'), key: z.string() })
+    .strict(),
+  'set-routing': z
+    .object({
+      scope: z.literal('provider'),
+      kind: z.literal('set-routing'),
+      role: z.union([z.literal('main'), z.literal('plan'), z.literal('compact')]),
+      value: z.string(),
+    })
+    .strict(),
+  'set-subagent-routing': z
+    .object({
+      scope: z.literal('provider'),
+      kind: z.literal('set-subagent-routing'),
+      type: z.string(),
+      value: z.string(),
+    })
+    .strict(),
+} as const satisfies Record<SettingsChange['kind'], z.ZodTypeAny>
+
+type SettingsChangeOption = (typeof SETTINGS_CHANGE_SCHEMAS)[SettingsChange['kind']]
+
+const settingsChangeSchema = z.discriminatedUnion(
+  'kind',
+  Object.values(SETTINGS_CHANGE_SCHEMAS) as unknown as [
+    SettingsChangeOption,
+    ...SettingsChangeOption[],
+  ],
+)
+
 const SHELL_COMMAND_SCHEMAS = {
   panes: z.object({ type: z.literal('panes'), id: commandId }).strict(),
   'open-session': z
@@ -175,6 +322,26 @@ const SHELL_COMMAND_SCHEMAS = {
       sessionId: z.string(),
     })
     .strict(),
+  'get-settings': z
+    .object({ type: z.literal('get-settings'), id: commandId, projectRoot: z.string().optional() })
+    .strict(),
+  'settings-change': z
+    .object({
+      type: z.literal('settings-change'),
+      id: commandId,
+      projectRoot: z.string(),
+      change: settingsChangeSchema,
+    })
+    .strict(),
+  'rename-session': z
+    .object({
+      type: z.literal('rename-session'),
+      id: commandId,
+      projectRoot: z.string(),
+      sessionId: z.string(),
+      title: z.string(),
+    })
+    .strict(),
 } as const satisfies Record<ShellCommand['type'], z.ZodTypeAny>
 
 type CommandOption = (typeof SHELL_COMMAND_SCHEMAS)[ShellCommand['type']]
@@ -190,6 +357,8 @@ type Assert<T extends true> = T
 type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
 /** Field-level drift guard: a wrong type or a missing field reddens the build. */
 type _NoDrift = Assert<MutuallyAssignable<ShellCommand, ParsedShellCommand>>
+/** The same guard one level down, where the four settings cards will all land. */
+type _NoSettingsDrift = Assert<MutuallyAssignable<SettingsChange, z.infer<typeof settingsChangeSchema>>>
 
 export interface ShellCommandParseFailure {
   ok: false
@@ -407,6 +576,12 @@ export class ShellHost<
         return this.listSessions()
       case 'delete-session':
         return this.deleteSession(command.projectRoot, command.sessionId)
+      case 'get-settings':
+        return this.getSettings(command.projectRoot)
+      case 'settings-change':
+        return this.applySettingsChange(command.projectRoot, command.change)
+      case 'rename-session':
+        return this.renameSession(command.projectRoot, command.sessionId, command.title)
       default:
         return assertNever(command)
     }
@@ -477,6 +652,161 @@ export class ShellHost<
 
     await deleteSessionArtifacts(cwd, store, session.id)
     return { ok: true } satisfies WireShellDeleteSessionResult
+  }
+
+  // --- settings ------------------------------------------------------------
+
+  /** The settings read model, plus the project list the screen's selector needs. */
+  private getSettings(projectRoot?: string): WireShellSettingsResult {
+    const entry =
+      projectRoot !== undefined ? this.deps.directory.get(projectRoot) : this.deps.directory.entries()[0]
+    if (!entry) throw new Error('No project is open.')
+    return {
+      settings: this.describeSettings(entry),
+      projects: this.deps.directory.entries().map((open) => ({
+        projectRoot: open.root,
+        projectName: projectDisplayName(open.cwd),
+      })),
+    } satisfies WireShellSettingsResult
+  }
+
+  /**
+   * One settings edit. The order here is fixed and two steps of it are not
+   * obvious:
+   *
+   *  - **`save()` before `reloadSettings()`.** `reloadSettings` ends in
+   *    `config.load(settings)` (`bootstrap.ts:143`), which re-reads the config
+   *    layers from disk. An in-memory mutation that has not been saved is
+   *    *destroyed* by it. Swapping these two lines silently discards the user's
+   *    edit while answering with a snapshot that looks right until the next pull.
+   *  - **`reloadSettings()` once per project, not per lane.** It is a
+   *    project-level call — N lanes over one project would re-read and
+   *    re-validate the settings files N times for one edit.
+   *
+   * The fan-out is unconditional: the entire point of the screen is that the
+   * change takes effect in every open session now. `needsRuntimeRebuild` is not
+   * consulted — see `LaneOccupant.refreshAfterConfigChange`.
+   */
+  private async applySettingsChange(
+    projectRoot: string,
+    change: SettingsChange,
+  ): Promise<WireShellSettingsChangeResult> {
+    const entry = this.deps.directory.get(projectRoot)
+    if (!entry) throw new Error(`No project is open at ${projectRoot}`)
+
+    // `ConfigService` owns the three reference checks (a routed model, an
+    // endpoint a model still points at, a rename onto an existing key). Letting
+    // it throw keeps them in one place — and nothing has been saved yet, so a
+    // rejection leaves the config exactly as it was.
+    const scope = applyProviderChange(entry.project.config, change)
+    await entry.project.config.save()
+    await entry.project.reloadSettings()
+
+    let rebuiltLanes = 0
+    for (const held of this.lanes.values()) {
+      if (held.project !== entry) continue
+      held.occupant.refreshAfterConfigChange({ rebuild: true, scope })
+      rebuiltLanes += 1
+    }
+    return { settings: this.describeSettings(entry), rebuiltLanes } satisfies WireShellSettingsChangeResult
+  }
+
+  /**
+   * Retitles a session, refreshing its lane if one is open.
+   *
+   * The id is resolved first for the same reason `delete-session` does it: the
+   * store takes a prefix, but `laneForSessionId` compares whole ids.
+   *
+   * Unlike `delete-session` this *does* broadcast. `sessionTitle` is a
+   * `WireLaneInfo` field and part of `ShellClient`'s list comparison, so the
+   * topology genuinely differs and the swallow-identical-lists rule does not
+   * apply.
+   */
+  private async renameSession(
+    projectRoot: string,
+    sessionId: string,
+    title: string,
+  ): Promise<WireShellRenameSessionResult> {
+    const entry = this.deps.directory.get(projectRoot)
+    if (!entry) throw new Error(`No project is open at ${projectRoot}`)
+    const { store } = entry.project
+
+    const session = await store.resolve(sessionId)
+    if (!session) throw new Error(`Session not found: ${sessionId}`)
+
+    await store.rename(session.id, title)
+
+    const lane = this.laneForSessionId(session.id)
+    if (lane !== undefined) {
+      const updated = await store.resolve(session.id)
+      if (updated) this.lanes.get(lane)?.occupant.refreshSessionMeta(updated)
+    }
+    this.broadcastLanes()
+    return { ok: true, title } satisfies WireShellRenameSessionResult
+  }
+
+  /**
+   * The settings snapshot, projected **field by field**.
+   *
+   * Never a spread, and never the return of `resolveModel()`: that method folds
+   * the referenced endpoint's `apiKey` and `baseUrl` into what it hands back
+   * (`config/service.ts`), so one spread ships every key the user owns across
+   * the preload boundary. It is called here only for the `resolves` boolean.
+   */
+  private describeSettings(entry: ProjectEntry<P, W>): WireSettingsSnapshot {
+    const { config } = entry.project
+    const raw = config.get()
+    const routing = config.getRouting()
+
+    const endpoints = Object.entries(raw.endpoints ?? {}).map(([name, endpoint]) => {
+      const info: WireEndpointInfo = { name, provider: endpoint.provider }
+      if (endpoint.baseUrl !== undefined) info.baseUrl = endpoint.baseUrl
+      if (endpoint.apiKey) info.apiKeyMasked = maskKey(endpoint.apiKey)
+      return info
+    })
+
+    const models = Object.entries(raw.models).map(([key, model]) => {
+      const info: WireModelInfo = {
+        key,
+        model: model.model,
+        resolves: config.resolveModel(key) !== undefined,
+      }
+      if (model.provider !== undefined) info.provider = model.provider
+      if (model.endpoint !== undefined) info.endpoint = model.endpoint
+      if (model.contextWindow !== undefined) info.contextWindow = model.contextWindow
+      if (model.maxOutputTokens !== undefined) info.maxOutputTokens = model.maxOutputTokens
+      if (model.maxEffort !== undefined) info.maxEffort = model.maxEffort
+      if (model.baseUrl !== undefined) info.baseUrl = model.baseUrl
+      if (model.apiKey) info.apiKeyMasked = maskKey(model.apiKey)
+      return info
+    })
+
+    // The four built-ins unioned with whatever routing already names, so a
+    // custom `.myagent/agents/*.md` type that has been routed keeps its row.
+    const subagentTypes = [...new Set([...BUILTIN_SUBAGENT_TYPES, ...Object.keys(routing.subagent ?? {})])]
+
+    const snapshot: WireSettingsSnapshot = {
+      projectRoot: entry.root,
+      projectName: projectDisplayName(entry.cwd),
+      saveTarget: config.getSaveTarget(),
+      endpoints,
+      models,
+      routing: {
+        main: routing.main ?? 'inherit',
+        plan: routing.plan ?? 'inherit',
+        compact: routing.compact ?? 'inherit',
+        subagent: subagentTypes.map((type) => ({
+          type,
+          value: routing.subagent?.[type] ?? 'inherit',
+        })),
+      },
+      providers: [...SUPPORTED_PROVIDER_NAMES],
+      subagentTypes,
+    }
+    if (raw.defaultModel !== undefined) snapshot.defaultModel = raw.defaultModel
+    if (raw.fallbackModel !== undefined) snapshot.fallbackModel = raw.fallbackModel
+    if (raw.compactModel !== undefined) snapshot.compactModel = raw.compactModel
+    return snapshot
   }
 
   // --- internals -----------------------------------------------------------
@@ -552,6 +882,96 @@ function summarize(session: SessionMeta): WireSessionSummary {
   }
   if (session.title !== undefined) summary.title = session.title
   return summary
+}
+
+/**
+ * The subagent types that always get a routing row, whether or not the config
+ * has spoken about them. Mirrors the built-ins `.myagent/agents/` may override.
+ */
+const BUILTIN_SUBAGENT_TYPES = ['general', 'fork', 'explore', 'plan'] as const
+
+/**
+ * Applies one provider edit to the config **in memory** and reports which
+ * routing scope the runtimes must be re-resolved against.
+ *
+ * Nothing here saves: `applySettingsChange` owns the save/reload ordering, and
+ * keeping the mutation separate is what lets a rejected reference check leave
+ * the on-disk config untouched.
+ *
+ * Exhaustive by `assertNeverChange`, so a variant added to `SettingsChange`
+ * cannot reach production as a silent no-op.
+ */
+function applyProviderChange(
+  config: ShellLaneProject['config'],
+  change: SettingsChange,
+): ProviderConfigChangeScope {
+  switch (change.kind) {
+    case 'set-endpoint': {
+      const existing = config.get().endpoints?.[change.name]
+      const endpoint: Endpoint = { provider: change.provider }
+      if (change.baseUrl !== undefined && change.baseUrl !== '') endpoint.baseUrl = change.baseUrl
+      // An absent `apiKey` means "leave it alone", so the stored key is carried
+      // forward. Clearing is `clear-endpoint-key`, precisely so this branch
+      // never has to guess what an empty string meant.
+      if (change.apiKey !== undefined) {
+        if (change.apiKey !== '') endpoint.apiKey = change.apiKey
+      } else if (existing?.apiKey !== undefined) {
+        endpoint.apiKey = existing.apiKey
+      }
+      config.setEndpoint(change.name, endpoint)
+      return 'endpoints'
+    }
+    case 'clear-endpoint-key': {
+      const existing = config.get().endpoints?.[change.name]
+      if (!existing) throw new Error(`No endpoint named ${change.name}`)
+      const endpoint: Endpoint = { provider: existing.provider }
+      if (existing.baseUrl !== undefined) endpoint.baseUrl = existing.baseUrl
+      config.setEndpoint(change.name, endpoint)
+      return 'endpoints'
+    }
+    case 'remove-endpoint':
+      config.removeEndpoint(change.name)
+      return 'endpoints'
+    case 'set-model': {
+      const model: ModelConfig = { model: change.model }
+      if (change.provider !== undefined && change.provider !== '') model.provider = change.provider
+      if (change.endpoint !== undefined && change.endpoint !== '') model.endpoint = change.endpoint
+      if (change.contextWindow !== undefined) model.contextWindow = change.contextWindow
+      if (change.maxOutputTokens !== undefined) model.maxOutputTokens = change.maxOutputTokens
+      config.setModelConfig(change.key, model)
+      return 'models'
+    }
+    case 'rename-model':
+      // Rewrites every reference, routing included — which is why this is a
+      // dedicated variant rather than a remove plus an add.
+      config.renameModel(change.from, change.to)
+      return 'models'
+    case 'remove-model':
+      config.removeModel(change.key)
+      return 'models'
+    case 'set-default-model':
+      config.setDefaultModel(change.key)
+      return 'models'
+    case 'set-routing': {
+      const routing = config.getRouting()
+      config.setRouting({ ...routing, [change.role]: change.value })
+      return 'routing'
+    }
+    case 'set-subagent-routing': {
+      const routing = config.getRouting()
+      config.setRouting({
+        ...routing,
+        subagent: { ...routing.subagent, [change.type]: change.value },
+      })
+      return 'routing'
+    }
+    default:
+      return assertNeverChange(change)
+  }
+}
+
+function assertNeverChange(value: never): never {
+  throw new Error(`Unhandled settings change: ${JSON.stringify(value)}`)
 }
 
 export {

@@ -317,7 +317,19 @@ async function ensureShell(): Promise<Shell> {
           shellHost?.broadcastLanes()
         },
       })
-      return { dispose: () => sessionHost.dispose() }
+      // Delegated one for one rather than handing the `SessionHost` over as the
+      // occupant: `LaneOccupant` is what `ShellHost` is allowed to say to a
+      // lane, and keeping it a three-method view is what stops the shell from
+      // reaching into a session's runtime.
+      return {
+        dispose: () => sessionHost.dispose(),
+        refreshAfterConfigChange: (options) => {
+          sessionHost.refreshAfterConfigChange(options)
+        },
+        refreshSessionMeta: (session) => {
+          sessionHost.refreshSessionMeta(session)
+        },
+      }
     },
     onOpenProject: (path) => {
       void openProjectInteractive(path)

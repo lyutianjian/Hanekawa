@@ -54,7 +54,19 @@ import {
   type SidebarState,
 } from './model/sidebar.js'
 import { rewindKeyToIntent } from './model/rewindPanel.js'
+import {
+  applySettingsIntent,
+  createSettingsState,
+  loadSettings,
+  runSettingsChanges,
+  settingsChordToIntent,
+  settingsKeyToIntent,
+  settingsView,
+  type SettingsIntent,
+} from './model/settings.js'
+import type { SettingsChange } from '../shellProtocol.js'
 import { required } from './dom/dom.js'
+import { createSettingsView } from './dom/settingsView.js'
 import { createOverlayView } from './dom/overlayView.js'
 import { createRewindView } from './dom/rewindView.js'
 import { createSurfacePanel } from './dom/surfaceView.js'
@@ -109,6 +121,7 @@ const composer = createComposerView({
 })
 const form = required<HTMLFormElement>('input-row')
 const sidebarContainer = required('sidebar')
+const canvas = required('canvas')
 const rewindPanel = createRewindView(required('rewind'), required('rewind-panel'), (intent) => {
   activePane()?.handleRewindIntent(intent)
 })
@@ -361,6 +374,9 @@ function runSidebarIntent(intent: SidebarIntent): void {
       // lane arrives as a `lanes` event once it is up.
       void shellClient.openProject().catch((error) => activePane()?.note(describe(error), 'error'))
       return
+    case 'open-settings':
+      runSettingsIntent({ kind: 'open' })
+      return
     case 'toggle-collapse':
       collapsed = !collapsed
       renderSidebar()
@@ -383,7 +399,18 @@ function runSidebarIntent(intent: SidebarIntent): void {
       return
     case 'none':
       return
+    default:
+      // Exhaustiveness, the `commandSchema.ts` discipline. Without it this
+      // switch compiles with a variant missing and silently does nothing — a
+      // sidebar button that looks wired and is not. A warn rather than a throw
+      // because this runs on a keystroke, and a dead intent should not take the
+      // window down.
+      assertNeverIntent(intent)
   }
+}
+
+function assertNeverIntent(value: never): void {
+  console.warn('Unhandled sidebar intent', value)
 }
 
 /**
@@ -403,6 +430,54 @@ async function deleteSession(projectRoot: string, sessionId: string): Promise<vo
   }
   // Always, even on failure: the host may have closed the lane before throwing.
   await refreshSessions()
+}
+
+// --- settings ---------------------------------------------------------------
+
+/**
+ * The settings screen. Window-level, like the sidebar — one instance, not one
+ * per pane, because there is one `ConfigService` per *project* and the screen
+ * can be pointed at a project none of the open lanes belong to.
+ */
+let settingsState = createSettingsState()
+
+const settingsView_ = createSettingsView(
+  required('settings'),
+  (intent) => runSettingsIntent(intent),
+  (chord) => {
+    const intent = settingsKeyToIntent(chord, settingsState)
+    if (intent.kind === 'none') return false
+    runSettingsIntent(intent)
+    return true
+  },
+)
+
+function renderSettings(): void {
+  canvas.classList.toggle('settings-open', settingsState.open)
+  settingsView_.render(settingsView(settingsState))
+}
+
+function runSettingsIntent(intent: SettingsIntent): void {
+  const outcome = applySettingsIntent(settingsState, intent)
+  settingsState = outcome.state
+  renderSettings()
+  if (outcome.load) void loadSettingsNow()
+  if (outcome.changes) void runSettingsChangesNow(outcome.changes)
+}
+
+async function loadSettingsNow(): Promise<void> {
+  settingsState = await loadSettings(shellClient, settingsState)
+  renderSettings()
+}
+
+async function runSettingsChangesNow(changes: readonly SettingsChange[]): Promise<void> {
+  settingsState = await runSettingsChanges(shellClient, settingsState, changes)
+  renderSettings()
+  // A provider edit can move the model every open lane runs on, and the status
+  // bar reads it off the pane's own snapshot — which the host has already
+  // re-posted from `refreshAfterConfigChange`. Nothing to pull here; the
+  // sidebar is repainted only because the project list may have moved.
+  renderSidebar()
 }
 
 const sidebar = createSidebarView(
@@ -447,6 +522,14 @@ document.addEventListener('keydown', (event) => {
   // pane and reads the composer draft once per pane, on every keypress while
   // typing.
   if (chord.ctrlKey || chord.metaKey) {
+    // Settings first, and for the same reason: it answers `'none'` without
+    // ctrl/meta, so a bare comma still reaches the composer.
+    const settingsIntent = settingsChordToIntent(chord)
+    if (settingsIntent.kind !== 'none') {
+      event.preventDefault()
+      runSettingsIntent(settingsIntent)
+      return
+    }
     const sidebarIntent = sidebarChordToIntent(chord, currentSidebarState())
     if (sidebarIntent.kind !== 'none') {
       event.preventDefault()

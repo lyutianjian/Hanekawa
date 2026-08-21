@@ -57,6 +57,8 @@ interface Harness {
     shutdowns: string[]
     modeChanges: string[]
     cacheInvalidations: number
+    /** `clearCachedSections()` calls — `# Environment` embeds the model name. */
+    clearedSections: number
     summarized: SessionRecord[][]
     openedPanes: string[]
     adoptedPanes: string[]
@@ -119,6 +121,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     shutdowns: [],
     modeChanges: [],
     cacheInvalidations: 0,
+    clearedSections: 0,
     summarized: [],
     openedPanes: [],
     adoptedPanes: [],
@@ -179,7 +182,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
 
   const loop = {
     runTool: async () => ({ ok: true, content: 'ran' }),
-    clearCachedSections: () => {},
+    clearCachedSections: () => { calls.clearedSections += 1 },
     invalidateRecordsCache: () => { calls.cacheInvalidations += 1 },
     summarizeRecordsForRewind: async (records: SessionRecord[]) => {
       calls.summarized.push(records)
@@ -1758,5 +1761,48 @@ test('a session switch announces the new topology to every window', async () => 
   const announcements = harness.received.filter((event) => event.type === 'pane-list')
   assert.ok(announcements.length > before, 'the switch must push a pane-list')
   assert.ok(harness.calls.paneListFanOuts > 0, 'and the shell must be asked to reach its other windows')
+  harness.dispose()
+})
+
+test('refreshAfterConfigChange rebuilds the runtime and posts a snapshot', async () => {
+  const harness = await createHarness()
+  const created = harness.calls.createdRuntimes.length
+  harness.received.length = 0
+
+  const result = harness.host.refreshAfterConfigChange({ rebuild: true, scope: 'models' })
+
+  assert.equal(result.rebuilt, true)
+  assert.equal(harness.calls.createdRuntimes.length, created + 1, 'a new runtime was built')
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'runtime-snapshot'),
+    'a runtime-snapshot telling the renderer the runtime moved',
+  )
+  harness.dispose()
+})
+
+test('refreshAfterConfigChange with rebuild:false touches nothing', async () => {
+  const harness = await createHarness()
+  const created = harness.calls.createdRuntimes.length
+  harness.received.length = 0
+
+  const result = harness.host.refreshAfterConfigChange({ rebuild: false, scope: 'models' })
+
+  assert.equal(result.rebuilt, false)
+  assert.equal(result.modelKey, 'main')
+  assert.equal(harness.calls.createdRuntimes.length, created, 'no runtime was built')
+  assert.equal(harness.received.length, 0, 'and nothing was posted')
+  harness.dispose()
+})
+
+test('a rebuild clears the cached system sections, because Environment names the model', async () => {
+  const harness = await createHarness()
+  const before = harness.calls.clearedSections
+
+  harness.host.refreshAfterConfigChange({ rebuild: true, scope: 'models' })
+
+  assert.ok(
+    harness.calls.clearedSections > before,
+    'a runtime swap that keeps the cached `# Environment` block serves the old model name',
+  )
   harness.dispose()
 })

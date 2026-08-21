@@ -218,6 +218,7 @@ function fakeProject(cwd = '/tmp/fixture'): ProjectRuntime {
         },
       ],
       delete: async () => undefined,
+      rename: async () => undefined,
       loadRecordsWithDiagnostics: async () => ({ records: [], diagnostics: [] }),
     } as never,
     backgroundTasks: {
@@ -760,7 +761,15 @@ test('single window: two lanes on one transport, opened, listed, closed through 
         describePanes: () => shellHost?.describeLanes() ?? [],
         onPaneListChanged: () => shellHost?.broadcastLanes(),
       })
-      return { dispose: () => sessionHost.dispose() }
+      return {
+        dispose: () => sessionHost.dispose(),
+        refreshAfterConfigChange: (options) => {
+          sessionHost.refreshAfterConfigChange(options)
+        },
+        refreshSessionMeta: (session) => {
+          sessionHost.refreshSessionMeta(session)
+        },
+      }
     },
     isQuitting: () => false,
     onAllLanesClosed: (reason) => allClosed.push(reason),

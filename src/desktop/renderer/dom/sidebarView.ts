@@ -10,6 +10,7 @@ import {
   type SidebarView,
 } from '../model/sidebar.js'
 import { el, replace, show } from './dom.js'
+import { button } from './controls.js'
 import { icon, type IconName } from './icons.js'
 
 /**
@@ -254,33 +255,15 @@ export function createSidebarView(
           onIntent({ kind: 'open-project' }),
           { enabled: view.canCreate, icon: 'folder' },
         ),
+        // Always enabled, unlike the two above: settings is a window-level
+        // screen and does not need a project to be open to be reached.
+        button('sidebar-settings', '设置', '打开设置（Ctrl+,）', () =>
+          onIntent({ kind: 'open-settings' }),
+          { icon: 'gear' },
+        ),
         el('div', 'sidebar-hint', SIDEBAR_HINT),
       )
     },
   }
 }
 
-function button(
-  className: string,
-  label: string,
-  title: string,
-  onClick: () => void,
-  options: { enabled?: boolean; icon?: IconName } = {},
-): HTMLButtonElement {
-  const node = el('button', className)
-  node.type = 'button'
-  node.title = title
-  node.setAttribute('aria-label', title)
-  // Built up rather than assigned as `textContent`, because an icon child would
-  // be wiped by it. An icon-only button passes an empty label and relies on the
-  // `aria-label` above for its name.
-  if (options.icon) node.appendChild(icon(options.icon))
-  if (label) node.appendChild(el('span', 'btn-label', label))
-  node.disabled = options.enabled === false
-  node.addEventListener('click', (event) => {
-    // Rows are clickable too; a button inside one must not also activate it.
-    event.stopPropagation()
-    onClick()
-  })
-  return node
-}

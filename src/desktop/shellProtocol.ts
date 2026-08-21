@@ -71,6 +71,125 @@ export type ShellCommand =
    * the user still has a directory dialog to answer.
    */
   | { type: 'open-project'; id: string; path?: string }
+  /**
+   * The settings screen's whole read model for one project, in one pull.
+   * Without `projectRoot` the first open project answers, matching
+   * `open-session`.
+   */
+  | { type: 'get-settings'; id: string; projectRoot?: string }
+  /**
+   * One edit. A single command carrying a discriminated `SettingsChange`
+   * rather than ten commands: the four settings cards will otherwise add a
+   * command apiece, and every one of them would repeat the same
+   * project-lookup / save / reload / fan-out choreography.
+   */
+  | { type: 'settings-change'; id: string; projectRoot: string; change: SettingsChange }
+  /**
+   * Retitles a session. `sessionId` may be a prefix — the host resolves it,
+   * for the same reason `delete-session` does.
+   */
+  | { type: 'rename-session'; id: string; projectRoot: string; sessionId: string; title: string }
+
+// --- settings ----------------------------------------------------------------
+
+/** The settings screen's left-hand categories. Three are placeholders today. */
+export type SettingsCategory = 'provider' | 'permissions' | 'agent' | 'general'
+
+/**
+ * An endpoint as the screen shows it.
+ *
+ * The field is `apiKeyMasked`, never `apiKey`, and that naming is the actual
+ * safeguard: a masked value is then not assignable to any `SettingsChange`
+ * field, so "render the key, send it back on save" cannot typecheck.
+ */
+export interface WireEndpointInfo {
+  name: string
+  provider: string
+  baseUrl?: string
+  apiKeyMasked?: string
+}
+
+export interface WireModelInfo {
+  key: string
+  model: string
+  provider?: string
+  endpoint?: string
+  contextWindow?: number
+  maxOutputTokens?: number
+  maxEffort?: string
+  /** Only when set inline on the model rather than inherited from an endpoint. */
+  baseUrl?: string
+  apiKeyMasked?: string
+  /**
+   * `resolveModel(key) !== undefined`. Carried so the row can be drawn *and*
+   * explain itself: a model that is configured but cannot run must say so
+   * rather than silently vanish from the list (the 4c invariant).
+   */
+  resolves: boolean
+}
+
+export interface WireRoutingInfo {
+  main: string
+  plan: string
+  compact: string
+  /** An array, not a Record: it pins the order the selects are drawn in. */
+  subagent: Array<{ type: string; value: string }>
+}
+
+export interface WireSettingsSnapshot {
+  projectRoot: string
+  projectName: string
+  /** `getSaveTarget()` — the screen says which file it is about to write. */
+  saveTarget: string
+  endpoints: WireEndpointInfo[]
+  models: WireModelInfo[]
+  routing: WireRoutingInfo
+  defaultModel?: string
+  /**
+   * Read-only for now: `ConfigService` has `setDefaultModel` but no
+   * `setFallbackModel` / `setCompactModel`, and inventing them belongs to a
+   * separate, tested change rather than to the screen that wants them.
+   */
+  fallbackModel?: string
+  compactModel?: string
+  /** `SUPPORTED_PROVIDER_NAMES` — the provider select's choices. */
+  providers: string[]
+  /** The built-in subagent types unioned with any the routing already names. */
+  subagentTypes: string[]
+}
+
+/**
+ * One settings edit.
+ *
+ * `scope` picks the card and `kind` the operation, so the three cards still to
+ * be built add variants here without touching the command, its schema, or the
+ * fan-out.
+ *
+ * `apiKey` absent means "leave it alone"; clearing is its own variant rather
+ * than `apiKey: null`, because an optional field cannot distinguish "the user
+ * did not touch this" from "the user emptied it" once it has round-tripped
+ * through a form whose input was seeded with a mask.
+ */
+export type SettingsChange =
+  | { scope: 'provider'; kind: 'set-endpoint'; name: string; provider: string; baseUrl?: string; apiKey?: string }
+  | { scope: 'provider'; kind: 'clear-endpoint-key'; name: string }
+  | { scope: 'provider'; kind: 'remove-endpoint'; name: string }
+  | {
+      scope: 'provider'
+      kind: 'set-model'
+      key: string
+      model: string
+      provider?: string
+      endpoint?: string
+      contextWindow?: number
+      maxOutputTokens?: number
+    }
+  | { scope: 'provider'; kind: 'rename-model'; from: string; to: string }
+  | { scope: 'provider'; kind: 'remove-model'; key: string }
+  | { scope: 'provider'; kind: 'set-default-model'; key: string }
+  | { scope: 'provider'; kind: 'set-routing'; role: 'main' | 'plan' | 'compact'; value: string }
+  | { scope: 'provider'; kind: 'set-subagent-routing'; type: string; value: string }
+
 
 // --- main → renderer ---------------------------------------------------------
 
@@ -138,3 +257,25 @@ export interface WireShellDeleteSessionResult {
 export interface WireShellOpenProjectResult {
   ok: true
 }
+
+export interface WireShellSettingsResult {
+  settings: WireSettingsSnapshot
+  /**
+   * Every open project. Settings are per project and N may be open, so the
+   * screen needs a selector — the sidebar's grouping does not carry over here.
+   */
+  projects: Array<{ projectRoot: string; projectName: string }>
+}
+
+export interface WireShellSettingsChangeResult {
+  /** A fresh snapshot. The renderer never re-derives one from the change. */
+  settings: WireSettingsSnapshot
+  /** How many live lanes of that project rebuilt their runtime. */
+  rebuiltLanes: number
+}
+
+export interface WireShellRenameSessionResult {
+  ok: true
+  title: string
+}
+

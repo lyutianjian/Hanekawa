@@ -55,6 +55,13 @@
             </div>
           </div>
         </form>
+        <!--
+          The settings screen fills the canvas rather than floating over the
+          window: it is a screen, not a dialog, and nothing in the agent loop
+          waits on it. `#canvas.settings-open` hides its siblings from the
+          stylesheet, so no view has to know about the others.
+        -->
+        <section id="settings" hidden aria-label="设置"></section>
       </main>
     </div>
     <div id="rewind" hidden role="dialog" aria-modal="true" aria-label="回退">

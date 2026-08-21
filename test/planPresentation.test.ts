@@ -4,6 +4,8 @@ import {
   EMPTY_PLAN_OPTIONS,
   ENTER_PLAN_OPTIONS,
   buildExitPlanModeOptions,
+  emptyPlanOptions,
+  enterPlanOptions,
   elevatedExitPlanModeDecision,
   exitPlanDecisionFor,
   exitPlanOptionsFor,
@@ -88,4 +90,32 @@ test('the preview leaves a short plan byte-identical and handles maxLines 1', ()
 
   const single = previewMarkdownLines('a\nb\nc', 1)
   assert.equal(single, 'a\n[... 2 lines omitted from preview ...]')
+})
+
+// --- locale -----------------------------------------------------------------
+
+test('the locale parameter defaults to English, which is what keeps the TUI untouched', () => {
+  assert.deepEqual(enterPlanOptions(), ENTER_PLAN_OPTIONS)
+  assert.deepEqual(emptyPlanOptions(), EMPTY_PLAN_OPTIONS)
+  assert.equal(ENTER_PLAN_OPTIONS[0]?.label, 'Yes, enter plan mode')
+  assert.equal(
+    buildExitPlanModeOptions({ isBypassAvailable: true })[0]?.label,
+    'Yes, and bypass permissions',
+  )
+  assert.match(previewMarkdownLines('a\nb\nc', 2), /lines omitted from preview/)
+})
+
+test('Chinese changes the labels, never the slots', () => {
+  const zh = buildExitPlanModeOptions({ isBypassAvailable: true, locale: 'zh' })
+  assert.deepEqual(
+    zh.map((option) => option.kind),
+    buildExitPlanModeOptions({ isBypassAvailable: true }).map((option) => option.kind),
+    'the slot order is the hotkey map',
+  )
+  assert.equal(zh[0]?.label, '好，并绕过权限确认')
+  assert.equal(enterPlanOptions('zh')[0]?.label, '好，进入计划模式')
+  assert.deepEqual(enterPlanOptions('zh').map((option) => option.hotkey), ['1', '2'])
+  assert.deepEqual(emptyPlanOptions('zh').map((option) => option.kind), ['approve_restore_keep', 'reject'])
+  assert.deepEqual(exitPlanOptionsFor({ planContent: '  ', locale: 'zh' }), emptyPlanOptions('zh'))
+  assert.match(previewMarkdownLines('a\nb\nc', 2, 'zh'), /预览中省略/)
 })

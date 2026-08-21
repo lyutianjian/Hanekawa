@@ -1,11 +1,12 @@
 import { describe, it, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile, mkdir, readFile, access, unlink } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
-import { CheckpointService } from '../src/services/checkpoint/checkpointService.js'
+import { CheckpointService, removeShadowRepo, shadowRepoPath } from '../src/services/checkpoint/checkpointService.js'
 import { writeJsonFile } from '../src/utils/json.js'
 import { getSessionsDir } from '../src/utils/paths.js'
 
@@ -53,6 +54,7 @@ async function cleanup(dir: string): Promise<void> {
 }
 
 const SESSION_ID = '00000000-0000-4000-8000-000000000000'
+const OTHER_SESSION_ID = '11111111-1111-4111-8111-111111111111'
 
 describe('CheckpointService', () => {
   let gitAvailable = false
@@ -428,6 +430,85 @@ describe('CheckpointService', () => {
       const service = new CheckpointService(cwd, SESSION_ID)
       const checkpoints = await service.getCheckpoints()
       assert.deepEqual(checkpoints, [])
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+})
+
+/**
+ * `removeShadowRepo` — the other end of the shadow repo's life.
+ *
+ * Deleting a session used to remove its three files and leave
+ * `.myagent/shadow-git/<id>` behind forever. These cases cover the removal and,
+ * more importantly, the guard: the caller's session id arrives over the shell
+ * protocol's `delete-session` and lands in an `rm` with `recursive: true`, so a
+ * separator or a `..` segment would resolve to `.myagent/shadow-git` itself and
+ * take every other session's snapshots with it.
+ *
+ * No git needed — this is filesystem only, so nothing here skips.
+ */
+describe('removeShadowRepo', () => {
+  it('removes the session shadow repo and leaves its siblings alone', async () => {
+    const cwd = await makeTempCwd()
+    try {
+      const mine = shadowRepoPath(cwd, SESSION_ID)
+      const other = shadowRepoPath(cwd, OTHER_SESSION_ID)
+      await mkdir(path.join(mine, 'objects'), { recursive: true })
+      await writeFile(path.join(mine, 'HEAD'), 'ref: refs/heads/main\n', 'utf8')
+      await mkdir(other, { recursive: true })
+
+      await removeShadowRepo(cwd, SESSION_ID)
+
+      assert.equal(existsSync(mine), false)
+      assert.equal(existsSync(other), true, 'a sibling session keeps its snapshots')
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('is a no-op for a session that never snapshotted', async () => {
+    const cwd = await makeTempCwd()
+    try {
+      await removeShadowRepo(cwd, SESSION_ID)
+      assert.equal(existsSync(shadowRepoPath(cwd, SESSION_ID)), false)
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('refuses an id that would resolve outside its own directory', async () => {
+    const cwd = await makeTempCwd()
+    try {
+      const root = path.join(cwd, '.myagent', 'shadow-git')
+      await mkdir(shadowRepoPath(cwd, SESSION_ID), { recursive: true })
+
+      for (const bad of ['', '.', '..', '../..', 'a/b', 'a\\b', `${SESSION_ID}/..`]) {
+        await assert.rejects(
+          () => removeShadowRepo(cwd, bad),
+          /Invalid session ID/,
+          `expected ${JSON.stringify(bad)} to be refused`,
+        )
+      }
+
+      // The point of the guard: nothing was deleted on the way to those throws.
+      assert.equal(existsSync(root), true)
+      assert.equal(existsSync(shadowRepoPath(cwd, SESSION_ID)), true)
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('agrees with CheckpointService about where the repo lives', async () => {
+    const cwd = await makeTempCwd()
+    try {
+      // The service's own `init()` is the writer; if the two ever disagreed,
+      // deleting a session would silently leave the real directory behind.
+      await mkdir(shadowRepoPath(cwd, SESSION_ID), { recursive: true })
+      assert.equal(
+        shadowRepoPath(cwd, SESSION_ID),
+        path.join(cwd, '.myagent', 'shadow-git', SESSION_ID),
+      )
     } finally {
       await cleanup(cwd)
     }

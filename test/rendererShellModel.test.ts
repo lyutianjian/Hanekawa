@@ -252,7 +252,7 @@ test('the model picker marks the current model and explains a disabled one', () 
 
   assert.deepEqual(view.rows.map((row) => row.id), ['haiku', 'sonnet', 'broken'])
   assert.equal(view.rows[1]?.current, true)
-  assert.match(view.rows[1]?.detail ?? '', /default/)
+  assert.match(view.rows[1]?.detail ?? '', /默认/)
   assert.equal(view.rows[2]?.disabled, true)
   assert.equal(view.rows[2]?.disabledReason, 'no model configured')
 
@@ -268,9 +268,9 @@ test('the effort picker shows levels above the model ceiling as unavailable', ()
   assert.deepEqual(view.rows.map((row) => row.id), ['low', 'medium', 'high', 'xhigh', 'max'])
   assert.equal(view.rows.find((row) => row.id === 'high')?.current, true)
   assert.equal(view.rows.find((row) => row.id === 'xhigh')?.disabled, true)
-  assert.match(view.rows.find((row) => row.id === 'max')?.disabledReason ?? '', /above this model's maximum/)
+  assert.match(view.rows.find((row) => row.id === 'max')?.disabledReason ?? '', /超过该模型上限/)
   // A configured level the active model cannot honour is still visible.
-  assert.equal(view.rows.find((row) => row.id === 'max')?.detail, 'configured')
+  assert.equal(view.rows.find((row) => row.id === 'max')?.detail, '已配置')
 
   const unclamped = effortPickerView({ current: 'low' })
   assert.equal(unclamped.rows.some((row) => row.disabled), false)
@@ -286,7 +286,7 @@ test('background tasks and sessions render with their status and counts', () => 
   assert.equal(tasks.rows[1]?.label, 'explore: find it')
   assert.match(tasks.rows[1]?.detail ?? '', /completed · exit 0/)
   assert.equal(backgroundTasksView([]).rows.length, 0)
-  assert.equal(backgroundTasksView([]).emptyMessage, 'No background tasks.')
+  assert.equal(backgroundTasksView([]).emptyMessage, '没有后台任务。')
 
   const sessions = resumePickerView({
     sessions: [
@@ -296,9 +296,9 @@ test('background tasks and sessions render with their status and counts', () => 
     currentSessionId: 'a',
   })
   assert.equal(sessions.rows[0]?.current, true)
-  assert.match(sessions.rows[0]?.detail ?? '', /1 message /)
+  assert.match(sessions.rows[0]?.detail ?? '', /1 条消息/)
   assert.equal(sessions.rows[1]?.label, 'b2', 'an untitled session falls back to its short id')
-  assert.match(sessions.rows[1]?.detail ?? '', /4 messages/)
+  assert.match(sessions.rows[1]?.detail ?? '', /4 条消息/)
 })
 
 test('the provider panel is the one surface this shell does not draw', () => {

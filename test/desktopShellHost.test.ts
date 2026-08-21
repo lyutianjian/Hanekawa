@@ -1,5 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import {
   ShellHost,
   parseShellCommand,
@@ -13,6 +17,7 @@ import { ShellClient } from '../src/desktop/renderer/shellClient.js'
 import { SHELL_LANE, type ShellCommand, type WireLaneInfo } from '../src/desktop/shellProtocol.js'
 import { createLaneMux } from '../src/runtime/protocol/laneChannel.js'
 import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.js'
+import { shadowRepoPath } from '../src/services/checkpoint/checkpointService.js'
 import {
   ProjectDirectory,
   type PaneLike,
@@ -68,9 +73,19 @@ interface FakeScope {
 class FakeStore {
   readonly sessions = new Map<string, SessionMeta>()
   readonly drafts: SessionMeta[] = []
+  readonly deleted: string[] = []
+  /** Set to make `resolve` behave like the real prefix resolver. */
+  resolvePrefixes = false
+
+  constructor(private readonly log: string[] = []) {}
 
   async resolve(idOrPrefix: string): Promise<SessionMeta | undefined> {
-    return this.sessions.get(idOrPrefix)
+    const exact = this.sessions.get(idOrPrefix)
+    if (exact || !this.resolvePrefixes) return exact
+    const matches = [...this.sessions.values()].filter((session) =>
+      session.id.startsWith(idOrPrefix),
+    )
+    return matches.length === 1 ? matches[0] : undefined
   }
 
   createDraft(title?: string): SessionMeta {
@@ -78,17 +93,29 @@ class FakeStore {
     this.drafts.push(draft)
     return draft
   }
+
+  async list(): Promise<SessionMeta[]> {
+    return [...this.sessions.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  }
+
+  async delete(idOrPrefix: string): Promise<void> {
+    this.deleted.push(idOrPrefix)
+    this.log.push(`store-delete:${idOrPrefix}`)
+    this.sessions.delete(idOrPrefix)
+  }
 }
 
 class FakeProject implements ShellLaneProject {
-  readonly store = new FakeStore()
+  readonly store: FakeStore
   readonly openedScopes: SessionMeta[] = []
   readonly shutdowns: string[] = []
 
   constructor(
     readonly cwd: string,
     private readonly log: string[],
-  ) {}
+  ) {
+    this.store = new FakeStore(log)
+  }
 
   async openScope(session: SessionMeta): Promise<FakeScope> {
     this.openedScopes.push(session)
@@ -162,6 +189,13 @@ interface Harness {
   laneEvents: WireLaneInfo[][]
   allLanesClosed: string[]
   openProjectRequests: Array<string | undefined>
+  /**
+   * The interleaved action log the fakes append to (`close-pane:<id>`,
+   * `store-delete:<id>`, `shutdown:<cwd>:<reason>`, `closeAll`). The only place
+   * *relative order* between the workspace and the store is observable — two
+   * separate arrays cannot tell "closed the lane first" from "closed it after".
+   */
+  log: string[]
   /** The renderer-side mux: `lane(key)` observes a lane's death from that side. */
   rendererMux: ReturnType<typeof createLaneMux>
   setQuitting(value: boolean): void
@@ -220,6 +254,7 @@ function createHarness(options: { withOpenProject?: boolean } = {}): Harness {
     laneEvents,
     allLanesClosed,
     openProjectRequests,
+    log,
     rendererMux,
     setQuitting: (value: boolean) => {
       quitting = value
@@ -257,6 +292,8 @@ const COMMAND_SAMPLES = {
   panes: { type: 'panes', id: 'a' },
   'open-session': { type: 'open-session', id: 'b', sessionId: 's1', title: 'T', projectRoot: 'r' },
   'open-project': { type: 'open-project', id: 'c', path: 'C:\\repo' },
+  'list-sessions': { type: 'list-sessions', id: 'd' },
+  'delete-session': { type: 'delete-session', id: 'e', projectRoot: 'r', sessionId: 's1' },
 } as const satisfies Record<ShellCommand['type'], ShellCommand>
 
 test('every shell command variant round-trips through its schema', () => {
@@ -267,7 +304,7 @@ test('every shell command variant round-trips through its schema', () => {
   }
   assert.deepEqual(
     Object.keys(COMMAND_SAMPLES).sort(),
-    ['open-project', 'open-session', 'panes'],
+    ['delete-session', 'list-sessions', 'open-project', 'open-session', 'panes'],
     'a variant added to ShellCommand must fail the satisfies table by name',
   )
 })
@@ -575,4 +612,174 @@ test('a malformed command on the wire fails by id, not silently', async () => {
   assert.equal(fails.length, 1)
   assert.equal(fails[0]!.id, 'bad-1')
   assert.match(fails[0]!.message, /bogus/)
+})
+
+// --- session history -------------------------------------------------------------
+
+test('list-sessions reports every project, in open order, with sessions newest first', async () => {
+  const h = createHarness()
+  h.project.store.sessions.set('a-old', { ...sessionOf('a-old', 'Old'), updatedAt: '2026-08-01T00:00:00.000Z' })
+  h.project.store.sessions.set('a-new', { ...sessionOf('a-new', 'New'), updatedAt: '2026-08-19T00:00:00.000Z' })
+  const beta = h.addProject('C:\\repo\\beta')
+  beta.project.store.sessions.set('b-1', sessionOf('b-1', 'In beta'))
+
+  const result = await h.client.listSessions()
+
+  assert.deepEqual(
+    result.projects.map((project) => project.projectName),
+    ['alpha', 'beta'],
+  )
+  assert.equal(result.projects[0]!.projectRoot, h.entry.root)
+  assert.deepEqual(
+    result.projects[0]!.sessions.map((session) => session.id),
+    ['a-new', 'a-old'],
+  )
+  assert.deepEqual(result.projects[1]!.sessions.map((session) => session.id), ['b-1'])
+})
+
+test('list-sessions lists a project with no lane open — history is not the topology', async () => {
+  const h = createHarness()
+  h.project.store.sessions.set('s1', sessionOf('s1', 'Never opened'))
+
+  const result = await h.client.listSessions()
+
+  assert.deepEqual(await h.client.panes(), [], 'no lane exists')
+  assert.equal(result.projects.length, 1)
+  assert.equal(result.projects[0]!.sessions.length, 1)
+})
+
+// --- deleting sessions -----------------------------------------------------------
+
+test('delete-session removes the files and the shadow repo of a closed session', async () => {
+  const h = createHarness()
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-delete-'))
+  try {
+    const project = h.addProject(cwd)
+    project.project.store.sessions.set('s1', sessionOf('s1', 'Closed'))
+    const repo = shadowRepoPath(cwd, 's1')
+    await mkdir(repo, { recursive: true })
+
+    const result = await h.client.deleteSession(project.entry.root, 's1')
+
+    assert.deepEqual(result, { ok: true })
+    assert.deepEqual(project.project.store.deleted, ['s1'])
+    assert.equal(existsSync(repo), false, 'the shadow repo went with the session')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('delete-session closes the open lane first, then deletes — no ghost row', async () => {
+  const h = createHarness()
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-delete-'))
+  try {
+    const project = h.addProject(cwd)
+    project.project.store.sessions.set('s1', sessionOf('s1', 'Open'))
+    const opened = await h.client.openSession({ sessionId: 's1', projectRoot: project.entry.root })
+    await settle()
+    assert.equal(h.host.laneForSessionId('s1'), opened.lane)
+
+    const result = await h.client.deleteSession(project.entry.root, 's1')
+    await settle()
+
+    assert.deepEqual(result, { ok: true })
+    assert.deepEqual(h.disposed, [opened.lane], 'the occupant was disposed')
+    assert.equal(h.host.laneForSessionId('s1'), undefined)
+    assert.deepEqual(await h.client.panes(), [], 'the row is gone, not stale')
+    // The order, not just the outcome: a pane still bound to a session whose
+    // JSONL just vanished recreates the file on its next append, so the close
+    // has to land before the store is touched. Asserted on the shared log,
+    // which is the only place the two fakes' relative order is visible.
+    assert.deepEqual(
+      h.log.filter((line) => line.startsWith('close-pane:') || line.startsWith('store-delete:')),
+      ['close-pane:s1', 'store-delete:s1'],
+    )
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('delete-session deletes by the resolved id, not the prefix it was given', async () => {
+  // `SessionStore.delete` accepts a prefix; `removeShadowRepo` does not. Passing
+  // the raw wire string through would delete the right session and leave (or
+  // worse, mis-target) the shadow repo.
+  const h = createHarness()
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-delete-'))
+  try {
+    const project = h.addProject(cwd)
+    project.project.store.resolvePrefixes = true
+    project.project.store.sessions.set('abcdef12-full-id', sessionOf('abcdef12-full-id', 'Prefixed'))
+    const repo = shadowRepoPath(cwd, 'abcdef12-full-id')
+    await mkdir(repo, { recursive: true })
+
+    await h.client.deleteSession(project.entry.root, 'abcdef12')
+
+    assert.deepEqual(project.project.store.deleted, ['abcdef12-full-id'])
+    assert.equal(existsSync(repo), false)
+    assert.equal(existsSync(shadowRepoPath(cwd, 'abcdef12')), false)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('delete-session rejects an unknown session and an unopened project', async () => {
+  const h = createHarness()
+  await assert.rejects(h.client.deleteSession(h.entry.root, 'nope'), /Session not found: nope/)
+  await assert.rejects(
+    h.client.deleteSession('C:\\repo\\never-opened', 's1'),
+    /No project is open at/,
+  )
+})
+
+test('deleting the session behind a project last lane still reaches the store', async () => {
+  // The order trap: `detachLane` shuts the project down, after which
+  // `directory.get()` no longer finds it. The store and cwd must have been
+  // captured before that.
+  const h = createHarness()
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-delete-'))
+  try {
+    const project = h.addProject(cwd)
+    project.project.store.sessions.set('s1', sessionOf('s1', 'Only one'))
+    const repo = shadowRepoPath(cwd, 's1')
+    await mkdir(repo, { recursive: true })
+    await h.client.openSession({ sessionId: 's1', projectRoot: project.entry.root })
+    await settle()
+
+    await h.client.deleteSession(project.entry.root, 's1')
+    await settle()
+
+    assert.deepEqual(project.project.shutdowns, ['session-deleted'], 'the project went down')
+    assert.equal(h.directory.get(cwd), undefined, 'and left the directory')
+    assert.deepEqual(project.project.store.deleted, ['s1'])
+    assert.equal(existsSync(repo), false)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('deleting a closed session leaves the topology untouched', async () => {
+  // Why the renderer must refresh its history off the delete's own reply rather
+  // than off a `lanes` event: no lane changed, and `ShellClient` swallows a
+  // re-announcement of an identical list on purpose (identity stability). A
+  // broadcast here would be dead weight that looked like a refresh signal.
+  const h = createHarness()
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-delete-'))
+  try {
+    const project = h.addProject(cwd)
+    project.project.store.sessions.set('s1', sessionOf('s1'))
+    project.project.store.sessions.set('s2', sessionOf('s2'))
+    await h.client.openSession({ sessionId: 's2', projectRoot: project.entry.root })
+    await settle()
+    const before = h.laneEvents.length
+    const lanesBefore = h.client.getLanes()
+
+    await h.client.deleteSession(project.entry.root, 's1')
+    await settle()
+
+    assert.equal(h.laneEvents.length, before, 'no listener was woken')
+    assert.equal(h.client.getLanes(), lanesBefore, 'and the list kept its identity')
+    assert.deepEqual(project.project.store.deleted, ['s1'])
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
 })

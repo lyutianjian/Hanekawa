@@ -42,11 +42,11 @@ function press(state: ExitPlanState, keys: string[]): {
 test('entering plan mode offers two options and explains what will happen', () => {
   const view = enterPlanViewModel()
 
-  assert.equal(view.title, 'Enter plan mode?')
+  assert.equal(view.title, '进入计划模式？')
   assert.deepEqual(view.options.map((option) => option.value), ['yes', 'no'])
   assert.equal(view.selectedIndex, 0)
   assert.ok(view.bullets.length > 0)
-  assert.match(view.reassurance, /No code changes/)
+  assert.match(view.reassurance, /不会修改任何代码/)
 })
 
 test('entry keys move, pick by number, and decline on Escape', () => {
@@ -63,7 +63,7 @@ test('entry keys move, pick by number, and decline on Escape', () => {
 test('exiting shows the plan, its file path and three options', () => {
   const view = exitPlanViewModel(createExitPlanState(input()))
 
-  assert.equal(view.title, 'Ready to code?')
+  assert.equal(view.title, '可以开始写代码了吗？')
   assert.match(view.planPreview, /do the thing/)
   assert.equal(view.planFilePath, '.myagent/plans/plan.md')
   assert.deepEqual(view.options.map((option) => option.kind), [
@@ -122,10 +122,10 @@ test('Escape keeps planning with empty feedback, even mid-typing', () => {
 test('an empty plan gets two options and a different title', () => {
   const view = exitPlanViewModel(createExitPlanState(input({ planContent: '   \n ' })))
 
-  assert.equal(view.title, 'Exit plan mode?')
+  assert.equal(view.title, '退出计划模式？')
   assert.equal(view.isEmptyPlan, true)
   assert.deepEqual(view.options.map((option) => option.kind), ['approve_restore_keep', 'reject'])
-  assert.match(view.hint, /\[1-2\] Quick/)
+  assert.match(view.hint, /\[1-2\] 快选/)
 
   const approved = press(createExitPlanState(input({ planContent: '' })), ['1'])
   assert.equal(approved.decision?.kind, 'approve_restore_keep')
@@ -136,7 +136,7 @@ test('a long plan is previewed with the middle collapsed', () => {
   const view = exitPlanViewModel(createExitPlanState(input({ planContent: long })))
 
   assert.equal(view.planPreview.split('\n').length, PLAN_PREVIEW_LINES)
-  assert.match(view.planPreview, /lines omitted from preview/)
+  assert.match(view.planPreview, /预览中省略/)
   assert.match(view.planPreview, /step 1/)
   assert.match(view.planPreview, new RegExp(`step ${PLAN_PREVIEW_LINES + 30}`))
 })

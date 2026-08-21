@@ -14,6 +14,7 @@ import {
 } from '../../../runtime/rewindPresentation.js'
 import type { CheckpointWithDiff } from '../../../services/checkpoint/checkpointService.js'
 import type { RewindSummaryDecision } from '../../../runtime/rewindSummary.js'
+import { UI_LOCALE } from './locale.js'
 
 /**
  * The `/rewind` panel: pick a checkpoint, confirm what to undo, run it.
@@ -114,36 +115,36 @@ export function rewindViewModel(state: RewindState): RewindViewModel {
   if (state.checkpoints.length === 0) {
     return {
       screen: 'select',
-      title: 'Rewind',
-      subtitle: 'Return to an earlier point in this session.',
+      title: '回退',
+      subtitle: '回到本次会话中更早的时刻。',
       rows: [],
       options: [],
       messagePreview: '',
       timeLabel: '',
       codeEffect: '',
-      emptyMessage: 'No checkpoints available',
+      emptyMessage: '没有可用的检查点',
       ...(state.error === undefined ? {} : { error: state.error }),
-      hint: '[Esc] Close',
+      hint: '[Esc] 关闭',
     }
   }
 
   if (state.screen === 'select') {
     return {
       screen: 'select',
-      title: 'Rewind',
-      subtitle: 'Restore the code and/or conversation to the point before...',
+      title: '回退',
+      subtitle: '把代码与／或对话恢复到某条消息发送之前……',
       rows: [
         ...state.checkpoints.map((entry, index) => ({
           id: entry.messageId,
           label: truncateMessage(entry.messageContent.replace(/\s+/g, ' '), MESSAGE_ROW_WIDTH)
-            || '(no message)',
+            || '（无内容）',
           detail: diffRowDetail(entry),
           selected: index === state.checkpointIndex,
           isCurrent: false,
         })),
         {
           id: 'current',
-          label: '(current)',
+          label: '（当前）',
           detail: '',
           selected: state.checkpointIndex >= state.checkpoints.length,
           isCurrent: true,
@@ -154,18 +155,18 @@ export function rewindViewModel(state: RewindState): RewindViewModel {
       timeLabel: '',
       codeEffect: '',
       ...(state.error === undefined ? {} : { error: state.error }),
-      hint: '[↑↓] Move  [Enter] Select  [Esc] Close',
+      hint: '[↑↓] 移动　[Enter] 选择　[Esc] 关闭',
     }
   }
 
-  const options = buildRestoreOptions(checkpoint?.restoreDiff.hasChanges === true)
+  const options = buildRestoreOptions(checkpoint?.restoreDiff.hasChanges === true, UI_LOCALE)
   const selectedIndex = clamp(state.optionIndex, 0, options.length - 1)
   const hasCodeChanges = checkpoint?.restoreDiff.hasChanges === true
 
   return {
     screen: 'confirm',
-    title: 'Confirm you want to restore to the point before you sent this message:',
-    subtitle: 'The conversation will be forked.',
+    title: '确认恢复到你发送这条消息之前的状态：',
+    subtitle: '对话将从该处分叉。',
     rows: [],
     options: options.map((option, index) => ({
       decision: option.decision,
@@ -174,31 +175,31 @@ export function rewindViewModel(state: RewindState): RewindViewModel {
       selected: index === selectedIndex,
     })),
     messagePreview: checkpoint
-      ? truncateMessage(checkpoint.messageContent, CONFIRM_MESSAGE_WIDTH) || '(no message)'
+      ? truncateMessage(checkpoint.messageContent, CONFIRM_MESSAGE_WIDTH) || '（无内容）'
       : '(no message)',
-    timeLabel: checkpoint ? formatRelativeTime(checkpoint.timestamp) : '',
+    timeLabel: checkpoint ? formatRelativeTime(checkpoint.timestamp, UI_LOCALE) : '',
     codeEffect: hasCodeChanges && checkpoint
-      ? `The code will be restored ${formatDiffSummary(checkpoint.restoreDiff)}.`
-      : 'The code will be unchanged.',
+      ? `代码将被恢复，${formatDiffSummary(checkpoint.restoreDiff, UI_LOCALE)}。`
+      : '代码不会改动。',
     ...(hasCodeChanges
-      ? { warning: 'Warning: Rewinding does not affect files edited manually or via bash.' }
+      ? { warning: '注意：回退不会影响手动或经由 bash 修改的文件。' }
       : {}),
     ...(state.busy ? { busyLabel: busyLabelFor(options[selectedIndex]) } : {}),
     ...(state.error === undefined ? {} : { error: state.error }),
-    hint: `[↑↓] Move  [1–${options.length}] Choose  [Enter] Confirm  [Esc] Back`,
+    hint: `[↑↓] 移动　[1–${options.length}] 选择　[Enter] 确认　[Esc] 返回`,
   }
 }
 
 function diffRowDetail(checkpoint: CheckpointWithDiff): string {
   const summary = checkpoint.turnDiff
-  if (!summary.hasChanges) return 'No code changes'
-  const files = `${summary.fileCount} ${summary.fileCount === 1 ? 'file' : 'files'} changed`
+  if (!summary.hasChanges) return '无代码改动'
+  const files = `${summary.fileCount} 个文件有改动`
   return `${files} +${summary.additions} -${summary.deletions}`
 }
 
 function busyLabelFor(option: RestoreOption | undefined): string {
-  if (option && isSummarizeDecision(option.decision)) return 'Summarizing...'
-  return 'Rewinding...'
+  if (option && isSummarizeDecision(option.decision)) return '正在摘要……'
+  return '正在回退……'
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -245,7 +246,7 @@ export function rewindKeyToIntent(chord: RewindChord, state: RewindState): Rewin
     return { kind: 'none' }
   }
 
-  const options = buildRestoreOptions(selectedCheckpoint(state)?.restoreDiff.hasChanges === true)
+  const options = buildRestoreOptions(selectedCheckpoint(state)?.restoreDiff.hasChanges === true, UI_LOCALE)
   if (chord.key === 'Enter') {
     const option = options[clamp(state.optionIndex, 0, options.length - 1)]
     return option ? { kind: 'choose', decision: option.decision } : { kind: 'none' }
@@ -327,13 +328,13 @@ function moveSelection(state: RewindState, direction: 'up' | 'down'): RewindStat
     const next = clamp(state.checkpointIndex + (direction === 'up' ? -1 : 1), 0, last)
     return { ...state, checkpointIndex: next }
   }
-  const options = buildRestoreOptions(selectedCheckpoint(state)?.restoreDiff.hasChanges === true)
+  const options = buildRestoreOptions(selectedCheckpoint(state)?.restoreDiff.hasChanges === true, UI_LOCALE)
   const next = clamp(state.optionIndex + (direction === 'up' ? -1 : 1), 0, options.length - 1)
   return { ...state, optionIndex: next }
 }
 
 function optionIndexOf(state: RewindState, decision: RestoreDecision): number {
-  const options = buildRestoreOptions(selectedCheckpoint(state)?.restoreDiff.hasChanges === true)
+  const options = buildRestoreOptions(selectedCheckpoint(state)?.restoreDiff.hasChanges === true, UI_LOCALE)
   const index = options.findIndex((option) => option.decision === decision)
   return index < 0 ? state.optionIndex : index
 }
@@ -403,12 +404,12 @@ export async function runRewind(
 
     const restored = await client.restoreCode(checkpoint.commitHash)
     if (restored.success) continue
-    const reason = restored.error ?? 'Failed to restore file state'
+    const reason = restored.error ?? '文件状态恢复失败'
     // Only half-done if the conversation was already cut; on its own this is a
     // plain failure and the caller shows it in the panel.
     if (!truncated) throw new Error(reason)
-    return { message: rewindPartialFailureMessage(preview, reason), partial: true }
+    return { message: rewindPartialFailureMessage(preview, reason, UI_LOCALE), partial: true }
   }
 
-  return { message: rewindSuccessMessage(decision, preview), partial: false }
+  return { message: rewindSuccessMessage(decision, preview, UI_LOCALE), partial: false }
 }

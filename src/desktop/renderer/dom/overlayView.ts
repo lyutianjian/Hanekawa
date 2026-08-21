@@ -49,7 +49,7 @@ export function createOverlayView(container: HTMLElement, panel: HTMLElement): O
           selected: index === view.selectedIndex,
         }))),
         view.alsoWaiting.length > 0
-          && el('div', 'also-waiting', `Also waiting: ${view.alsoWaiting.join(', ')}`),
+          && el('div', 'also-waiting', `还在等待：${view.alsoWaiting.join('、')}`),
         el('div', 'hint', view.hint),
       )
     },
@@ -59,7 +59,7 @@ export function createOverlayView(container: HTMLElement, panel: HTMLElement): O
         'normal',
         el('div', 'title', `[${view.header}] ${view.question}`),
         view.questionTotal > 1
-          && el('div', 'subtitle', `Question ${view.questionNumber} of ${view.questionTotal}`),
+          && el('div', 'subtitle', `第 ${view.questionNumber}/${view.questionTotal} 个问题`),
         optionList(view.rows.map((row, index) => ({
           // A multi-select row shows its toggle state; "Other" never toggles.
           label: view.multiSelect && !row.isOther

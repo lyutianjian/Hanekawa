@@ -29,7 +29,9 @@ import type {
 } from '../../harness/types.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeManager.js'
 import type { PermissionRequestDto, UiRequest, WireCommandInfo, WirePaneInfo } from '../../runtime/protocol/wire.js'
-import type { ComposerView, StatusView, SuggestionsView } from './dom/composerView.js'
+import type { ComposerView } from './dom/composerView.js'
+import type { StatusView } from './dom/statusView.js'
+import type { SuggestionsView } from './dom/suggestionsView.js'
 import type { OverlayView } from './dom/overlayView.js'
 import type { RewindPanel } from './dom/rewindView.js'
 import type { SurfacePanel } from './dom/surfaceView.js'
@@ -161,6 +163,13 @@ export interface PaneSession {
   onComposerInput(): void
   // --- panel entry points ---
   openRewindPanel(): Promise<void>
+  /**
+   * The composer chip's two halves. They open the *same* surfaces `/model` and
+   * `/effort` do, so the chip cannot drift from the slash commands — and so
+   * choosing from it still persists through `run-command`.
+   */
+  openModelPicker(): Promise<void>
+  openEffortPicker(): Promise<void>
   runSurfaceAction(action: SurfaceAction): Promise<void>
   clearQueue(): Promise<void>
   refreshPanes(): Promise<void>
@@ -251,6 +260,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.status.render(client.getSnapshot(), client.getCost())
     deps.composer.setStreaming(client.getSnapshot().isStreaming)
     const runtime = client.getRuntimeSnapshot()
+    // The chip is repainted even when the snapshot is missing, so a pane that
+    // has not finished starting shows the placeholder rather than the previous
+    // pane's model.
+    deps.composer.renderRuntime(runtime)
     if (runtime) deps.status.renderRuntime(runtime)
     const session = client.getSession()
     if (session) deps.status.renderSession(session)
@@ -933,6 +946,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       refreshCompletions()
     },
     openRewindPanel,
+    openModelPicker: () => openSurface('model-picker'),
+    openEffortPicker: () => openSurface('effort-picker'),
     runSurfaceAction,
     clearQueue,
     refreshPanes,

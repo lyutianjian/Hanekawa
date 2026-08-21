@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
- * Copy non-TypeScript assets (the renderer's `index.html`) into the build
- * output after `tsc` and `esbuild` finish. Two prior stages of
+ * Copy non-TypeScript assets (the renderer's `index.html` and `styles.css`) into
+ * the build output after `tsc` and `esbuild` finish. Two prior stages of
  * `npm run build:desktop` already wrote the compiled `.js` files; this script
  * makes the corresponding `.html` available where `desktop/main.ts` reads it
- * (`<dest>/desktop/renderer/index.html`).
+ * (`<dest>/desktop/renderer/index.html`), and the stylesheet the HTML links
+ * beside it — `loadFile` resolves `./styles.css` relative to the page, so a
+ * missing copy is an unstyled window rather than a build error.
  *
  * Kept as a standalone file rather than an `npm run` chain to avoid quoting
  * headaches on Windows where `&&` inside JSON script strings is fussy and `cp`
@@ -27,7 +29,10 @@ const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(here, '..')
 const destRoot = process.argv[2] ? resolve(process.argv[2]) : join(repoRoot, 'dist')
 
-const sources = [['src/desktop/renderer/index.html', 'desktop/renderer/index.html']]
+const sources = [
+  ['src/desktop/renderer/index.html', 'desktop/renderer/index.html'],
+  ['src/desktop/renderer/styles.css', 'desktop/renderer/styles.css'],
+]
 
 for (const [from, to] of sources) {
   const absoluteFrom = join(repoRoot, from)

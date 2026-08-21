@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
 /**
- * Smoke for the desktop shell build pipeline. Four artifacts must land at the
+ * Smoke for the desktop shell build pipeline. Five artifacts must land at the
  * right depths of the output directory:
  *
  *  - `desktop/main.js` — the Node-targeted main process. `electron` is left
@@ -18,6 +18,8 @@ import { promisify } from 'node:util'
  *    aliased to a small shim so Web Crypto's `randomUUID` stands in.
  *  - `desktop/renderer/index.html` — copied, because `BrowserWindow.loadFile`
  *    needs it beside `app.js`.
+ *  - `desktop/renderer/styles.css` — copied for the same reason: the page links
+ *    it relatively, so a missing copy is a silently unstyled window.
  *
  * Note this file bundles `main.ts` with esbuild while `npm run build:desktop`
  * emits it with `tsc`. That is deliberate: esbuild resolving the whole main
@@ -153,13 +155,33 @@ test('the bundled renderer loads and fails only for want of a DOM', async () => 
   assert.notEqual(error.code, 'ERR_MODULE_NOT_FOUND', 'the bundle must not resolve anything at runtime')
 })
 
-test('copy-desktop-assets mirrors index.html next to the bundle', async () => {
+test('copy-desktop-assets mirrors the renderer assets next to the bundle', async () => {
   // The renderer is a `BrowserWindow.loadFile` away — the HTML must live next to
-  // `app.js`. The copy script takes the destination root as an argument, so this
-  // stays inside the temp build and never touches the repo's `dist/`.
-  const dest = join(buildRoot, 'desktop', 'renderer', 'index.html')
-  rmSync(dest, { force: true })
+  // `app.js`, and so must everything the HTML references relatively. The copy
+  // script takes the destination root as an argument, so this stays inside the
+  // temp build and never touches the repo's `dist/`.
+  const rendererDir = join(buildRoot, 'desktop', 'renderer')
+  const copied = ['index.html', 'styles.css']
+  for (const name of copied) rmSync(join(rendererDir, name), { force: true })
+
   await run(process.execPath, ['scripts/copy-desktop-assets.mjs', buildRoot], { cwd: repoRoot })
-  assert.ok(existsSync(dest), 'expected the HTML to be copied next to app.js')
-  assert.ok(statSync(dest).size > 0, 'copy of index.html must be non-empty')
+
+  for (const name of copied) {
+    const dest = join(rendererDir, name)
+    assert.ok(existsSync(dest), `expected ${name} to be copied next to app.js`)
+    assert.ok(statSync(dest).size > 0, `copy of ${name} must be non-empty`)
+  }
+
+  // The generalisation that keeps `sources` honest as the page grows: an asset
+  // added to `index.html` but not to the copy script is a stylesheet that 404s
+  // — an unstyled window, with nothing failing at build time to say so.
+  const html = readFileSync(join(rendererDir, 'index.html'), 'utf8')
+  const referenced = [...html.matchAll(/(?:href|src)="\.\/([^"]+)"/g)].map((match) => match[1]!)
+  assert.ok(referenced.length >= 2, `expected the page to reference its assets, saw ${referenced.length}`)
+  for (const name of referenced) {
+    assert.ok(
+      existsSync(join(rendererDir, name)),
+      `index.html references ./${name}; add it to copy-desktop-assets.mjs`,
+    )
+  }
 })

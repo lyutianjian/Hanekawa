@@ -24,32 +24,45 @@
  * This file owns the window, not any conversation: the lane mux over the
  * bridge, one `ShellClient` on the `__shell` lane, one `PaneSession` per pane
  * lane, and the singleton views the *active* pane drives. Switching panes is a
- * renderer-local act (the tab bar never asks the host to focus anything) —
+ * renderer-local act (the sidebar never asks the host to focus anything) —
  * which is the whole point of the single-window design: a background pane
  * keeps streaming and its prompts keep parking until the user comes back.
+ *
+ * It also owns the three pieces of bookkeeping that make the sidebar and the
+ * resident-pane budget work, and that nothing else can hold: which lane was
+ * activated when, each lane's last streaming state (the falling edge is the cue
+ * to re-read the history), and the last pulled session list. The *decisions*
+ * over that state live in `model/sidebar.ts` and `../paneBudget.ts`.
  */
 
 import { createBridgeChannel } from './bridgeChannel.js'
 import { createPaneSession, type PaneSession } from './paneSession.js'
 import { ShellClient } from './shellClient.js'
 import { SHELL_LANE } from '../shellProtocol.js'
+import { DEFAULT_PANE_LIMIT, selectEvictions, type PaneBudgetEntry } from '../paneBudget.js'
 import { createLaneMux } from '../../runtime/protocol/laneChannel.js'
 import { resolveKey, type ShellState } from './model/keymap.js'
 import {
-  createTabBarState,
-  tabBarKeyToIntent,
-  tabBarView as buildTabBarView,
-  type TabBarIntent,
-  type TabBarState,
-} from './model/tabBar.js'
+  createSidebarState,
+  moveSelection,
+  sidebarChordToIntent,
+  sidebarKeyToIntent,
+  sidebarView as buildSidebarView,
+  type SidebarIntent,
+  type SidebarLaneStatus,
+  type SidebarProjectSessions,
+  type SidebarState,
+} from './model/sidebar.js'
 import { rewindKeyToIntent } from './model/rewindPanel.js'
 import { required } from './dom/dom.js'
 import { createOverlayView } from './dom/overlayView.js'
 import { createRewindView } from './dom/rewindView.js'
 import { createSurfacePanel } from './dom/surfaceView.js'
 import { createQueueView } from './dom/queueView.js'
-import { createComposerView, createStatusView, createSuggestionsView } from './dom/composerView.js'
-import { createTabBarView } from './dom/tabBarView.js'
+import { createComposerView } from './dom/composerView.js'
+import { createStatusView } from './dom/statusView.js'
+import { createSuggestionsView } from './dom/suggestionsView.js'
+import { createSidebarView } from './dom/sidebarView.js'
 
 const bridge = window.hanekawa
 if (!bridge) {
@@ -73,7 +86,6 @@ const queueStrip = createQueueView(required('queue'), () => {
   void activePane()?.clearQueue()
 })
 const status = createStatusView({
-  model: required('status-model'),
   mode: required('status-mode'),
   usage: required('status-usage'),
   cost: required('status-cost'),
@@ -84,9 +96,19 @@ const composer = createComposerView({
   input: required<HTMLTextAreaElement>('input'),
   submit: required<HTMLButtonElement>('submit'),
   stop: required<HTMLButtonElement>('stop'),
+  attach: required<HTMLButtonElement>('composer-attach'),
+  chipModel: required<HTMLButtonElement>('chip-model'),
+  chipEffort: required<HTMLButtonElement>('chip-effort'),
+}, {
+  // Both halves of the chip go through the pane's surface path, so they open
+  // the same pickers `/model` and `/effort` do — and persist the choice the
+  // same way. See `dom/composerView.ts`'s header for why not `setModel`.
+  onOpenModelPicker: () => void activePane()?.openModelPicker(),
+  onOpenEffortPicker: () => void activePane()?.openEffortPicker(),
+  onAttach: () => activePane()?.onComposerInput(),
 })
 const form = required<HTMLFormElement>('input-row')
-const tabBarContainer = required('tab-bar')
+const sidebarContainer = required('sidebar')
 const rewindPanel = createRewindView(required('rewind'), required('rewind-panel'), (intent) => {
   activePane()?.handleRewindIntent(intent)
 })
@@ -97,6 +119,16 @@ const transcriptArea = required('transcript-area')
 /** One live pane per lane, in attach order; the last entry is the fallback on removal. */
 const paneSessions = new Map<string, PaneSession>()
 let activeLane: string | undefined
+
+/**
+ * When each lane was last activated. A monotonic counter rather than a clock,
+ * because `paneBudget` orders on it and two activations inside a millisecond are
+ * a real tie.
+ */
+const lastActiveTick = new Map<string, number>()
+let tick = 0
+/** Lanes already asked to close for budget reasons, so a repeat pass is a no-op. */
+const evicting = new Set<string>()
 
 function activePane(): PaneSession | undefined {
   return activeLane !== undefined ? paneSessions.get(activeLane) : undefined
@@ -116,10 +148,11 @@ function attachPaneSession(lane: string): void {
     status,
     composer,
     onShellChanged: () => {
-      // The bar's active row follows the active pane's session, so only the
-      // active pane's changes repaint it. Topology itself arrives on the shell
-      // lane instead.
-      if (session.isActive()) renderTabBar()
+      // Every pane repaints the sidebar, not just the active one: the badges are
+      // per row, so a background pane starting a turn has to show up. Cached
+      // state only — the view's own signature guard absorbs the ticks that
+      // change nothing, and the filesystem pull hangs off `turn-end` below.
+      renderSidebar()
     },
     onExit: () => {
       // `/exit` closes this pane, not the window: the single window holds every
@@ -132,6 +165,20 @@ function attachPaneSession(lane: string): void {
     onClosed: () => removePaneSession(lane),
   })
   paneSessions.set(lane, session)
+  if (!lastActiveTick.has(lane)) lastActiveTick.set(lane, tick)
+
+  // A finished turn is when the store's derived fields move — the title a
+  // session gets from its first message, its `messageCount`, its `updatedAt`.
+  // The event says so directly; watching `isStreaming` for a falling edge was a
+  // per-lane map reconstructing a signal already on the wire. It also fires for
+  // an aborted or failed turn, which move those fields too.
+  session.client.onEvent((event) => {
+    if (event.type !== 'turn-end') return
+    void refreshSessions()
+    // A pane pinned by its turn is evictable again the moment the turn ends.
+    applyPaneBudget()
+  })
+
   void session.start().catch((error) => {
     session.note(`Failed to start: ${describe(error)}`, 'error')
   })
@@ -141,71 +188,172 @@ function activateLane(lane: string): void {
   if (!paneSessions.has(lane) || activeLane === lane) return
   activePane()?.deactivate()
   activeLane = lane
+  lastActiveTick.set(lane, ++tick)
   paneSessions.get(lane)!.activate()
-  renderTabBar()
+  applyPaneBudget()
+  renderSidebar()
 }
 
 function removePaneSession(lane: string): void {
   const session = paneSessions.get(lane)
   if (!session) return
   paneSessions.delete(lane)
+  lastActiveTick.delete(lane)
+  evicting.delete(lane)
   session.dispose()
   if (activeLane === lane) {
     activeLane = undefined
     // Nothing is active now; the composer showed the removed pane's draft.
     composer.clear()
-    const next = [...paneSessions.keys()].at(-1)
+    // The most recently *used* pane, not the most recently attached: the same
+    // order `paneBudget` evicts by, so the fallback is the one the budget would
+    // have protected.
+    const next = [...paneSessions.keys()].sort(
+      (a, b) => (lastActiveTick.get(b) ?? 0) - (lastActiveTick.get(a) ?? 0),
+    )[0]
     if (next !== undefined) activateLane(next)
   }
-  renderTabBar()
+  renderSidebar()
 }
 
-// --- the tab bar ----------------------------------------------------------------
+// --- the resident-pane budget ---------------------------------------------------
+
+/** What each live lane contributes that no wire field carries. Built once per pass. */
+function laneStatuses(): Map<string, SidebarLaneStatus> {
+  const statuses = new Map<string, SidebarLaneStatus>()
+  for (const [lane, session] of paneSessions) {
+    statuses.set(lane, {
+      streaming: session.client.getSnapshot().isStreaming,
+      // `hasOverlay` is "a blocking request is drawn *or* parked" — the pane
+      // folds every request into its queue whether or not it is painting.
+      blocked: session.shellState().hasOverlay,
+    })
+  }
+  return statuses
+}
 
 /**
- * The bar's data comes from the shell lane — the one place that knows the
- * whole topology, pane ids and lane keys together. `ownProjectRoot` is
- * deliberately absent: in a single window every row has a live client that can
- * close its own pane, so every row is closable.
+ * Releases the coldest idle panes when too many are resident.
+ *
+ * Closing a pane is not closing a session: the session stays on disk and the
+ * sidebar keeps its row, just without a lane. The decision is
+ * `paneBudget.selectEvictions`, which never picks the active pane, one running a
+ * turn, or one holding an unanswered prompt — the last because a pane's teardown
+ * drains its bridge with a *denial*, so evicting it would fail the user's tool
+ * call instead of asking about it.
  */
-function currentTabBarState(): TabBarState {
-  return createTabBarState(shellClient.getLanes(), activePane()?.client.getSession()?.id, undefined)
+function applyPaneBudget(): void {
+  const statuses = laneStatuses()
+  const entries: PaneBudgetEntry[] = [...paneSessions.keys()].map((lane) => ({
+    lane,
+    active: lane === activeLane,
+    streaming: statuses.get(lane)?.streaming ?? false,
+    blocked: statuses.get(lane)?.blocked ?? false,
+    lastActiveTick: lastActiveTick.get(lane) ?? 0,
+  }))
+
+  for (const lane of selectEvictions({ entries, limit: DEFAULT_PANE_LIMIT })) {
+    if (evicting.has(lane)) continue
+    const session = paneSessions.get(lane)
+    const paneId = session?.client.getSession()?.id
+    if (!session || paneId === undefined) continue
+    evicting.add(lane)
+    // Through the lane's own client, exactly like a close from the sidebar: it
+    // reaches whichever `SessionWorkspace` owns the pane.
+    void session.client.closePane(paneId).catch(() => {
+      // The pane may already be gone; the `lanes` diff is the source of truth.
+      evicting.delete(lane)
+    })
+  }
 }
 
-function renderTabBar(): void {
-  tabBarView.render(buildTabBarView(currentTabBarState()))
+// --- the sidebar ----------------------------------------------------------------
+
+/** History, as last pulled. Kept so a repaint never has to reach the host. */
+let projects: readonly SidebarProjectSessions[] = []
+let collapsed = false
+let selectedIndex = -1
+let pendingDelete: string | undefined
+let sessionsInFlight = false
+let sessionsAgain = false
+
+function currentSidebarState(): SidebarState {
+  return createSidebarState({
+    projects,
+    lanes: shellClient.getLanes(),
+    laneStatus: laneStatuses(),
+    activeLane,
+    collapsed,
+    selectedIndex,
+    pendingDelete,
+    now: Date.now(),
+    // Both buttons open something, which is wrong while a blocking dialog is up.
+    canCreate: !(activePane()?.shellState().hasOverlay ?? false),
+  })
 }
 
-function laneByPaneId(paneId: string): string | undefined {
-  return shellClient.getLanes().find((lane) => lane.paneId === paneId)?.lane
+function renderSidebar(): void {
+  sidebar.render(buildSidebarView(currentSidebarState()))
 }
 
-function runTabBarIntent(intent: TabBarIntent): void {
+/**
+ * Pulls the session history, coalescing concurrent callers.
+ *
+ * This is the only thing in the renderer that reaches the filesystem, so it runs
+ * on four occasions and no others: startup, a topology change, a turn ending, and
+ * a delete. A second request while one is in flight is folded into one more pass
+ * rather than queued — the answer is a whole snapshot, so only the last one
+ * matters.
+ */
+async function refreshSessions(): Promise<void> {
+  if (sessionsInFlight) {
+    sessionsAgain = true
+    return
+  }
+  sessionsInFlight = true
+  try {
+    do {
+      sessionsAgain = false
+      const result = await shellClient.listSessions()
+      projects = result.projects
+      renderSidebar()
+    } while (sessionsAgain)
+  } catch (error) {
+    // Keep the last good list: a sidebar that empties itself on a transient
+    // failure looks like the sessions were deleted.
+    activePane()?.note(`Failed to list sessions: ${describe(error)}`, 'error')
+  } finally {
+    sessionsInFlight = false
+  }
+}
+
+function closeLane(lane: string): void {
+  const session = paneSessions.get(lane)
+  const paneId = session?.client.getSession()?.id
+  if (!session || paneId === undefined) return
+  void session.client.closePane(paneId).catch((error) => session.note(describe(error), 'error'))
+}
+
+function runSidebarIntent(intent: SidebarIntent): void {
   switch (intent.kind) {
-    case 'switch': {
-      // Every row is a pane that already exists, so switching is local — no
+    case 'switch':
+      // Every live row is a pane that already exists, so switching is local — no
       // `focus-pane` round trip, nothing for the host to do.
-      const lane = laneByPaneId(intent.paneId)
-      if (lane !== undefined) activateLane(lane)
-      else void shellClient.panes().catch(() => {})
+      activateLane(intent.lane)
       return
-    }
-    case 'close': {
-      // The row's own lane owns the pane; its client reaches the workspace
-      // that can actually close it (which may be another project's).
-      const lane = laneByPaneId(intent.paneId)
-      const session = lane !== undefined ? paneSessions.get(lane) : undefined
-      if (session) {
-        void session.client.closePane(intent.paneId).catch((error) => session.note(describe(error), 'error'))
-      }
-      return
-    }
-    case 'new':
-      // "New tab" is a window-level act, so it goes to the shell — the same
-      // path the 4b sidebar will use — with the active pane's project as the
-      // target.
+    case 'open':
       void shellClient
-        .openSession({ ...(activePane()?.ownProjectRoot ? { projectRoot: activePane()!.ownProjectRoot } : {}) })
+        .openSession({ sessionId: intent.sessionId, projectRoot: intent.projectRoot })
+        .catch((error) => activePane()?.note(describe(error), 'error'))
+      return
+    case 'close':
+      closeLane(intent.lane)
+      return
+    case 'new':
+      // "New session" is a window-level act, so it goes to the shell, targeting
+      // the active pane's project.
+      void shellClient
+        .openSession(intent.projectRoot !== undefined ? { projectRoot: intent.projectRoot } : {})
         .catch((error) => activePane()?.note(describe(error), 'error'))
       return
     case 'open-project':
@@ -213,12 +361,60 @@ function runTabBarIntent(intent: TabBarIntent): void {
       // lane arrives as a `lanes` event once it is up.
       void shellClient.openProject().catch((error) => activePane()?.note(describe(error), 'error'))
       return
+    case 'toggle-collapse':
+      collapsed = !collapsed
+      renderSidebar()
+      return
+    case 'request-delete':
+      pendingDelete = intent.sessionId
+      renderSidebar()
+      return
+    case 'cancel-delete':
+      if (pendingDelete === undefined) return
+      pendingDelete = undefined
+      renderSidebar()
+      return
+    case 'confirm-delete':
+      void deleteSession(intent.projectRoot, intent.sessionId)
+      return
+    case 'move':
+      selectedIndex = moveSelection(buildSidebarView(currentSidebarState()), intent.direction)
+      renderSidebar()
+      return
+    case 'none':
+      return
   }
 }
 
-const tabBarView = createTabBarView(tabBarContainer, (intent) => {
-  runTabBarIntent(intent)
-})
+/**
+ * Deletes a session for good.
+ *
+ * The confirmation is withdrawn *before* the request rather than after: the row
+ * is about to disappear, and leaving it asking while the delete is in flight
+ * invites a second Enter.
+ */
+async function deleteSession(projectRoot: string, sessionId: string): Promise<void> {
+  pendingDelete = undefined
+  renderSidebar()
+  try {
+    await shellClient.deleteSession(projectRoot, sessionId)
+  } catch (error) {
+    activePane()?.note(`Failed to delete session: ${describe(error)}`, 'error')
+  }
+  // Always, even on failure: the host may have closed the lane before throwing.
+  await refreshSessions()
+}
+
+const sidebar = createSidebarView(
+  sidebarContainer,
+  (intent) => runSidebarIntent(intent),
+  (chord) => {
+    const intent = sidebarKeyToIntent(chord, currentSidebarState())
+    if (intent.kind === 'none') return false
+    runSidebarIntent(intent)
+    return true
+  },
+)
 
 // --- the global key handler -------------------------------------------------------
 
@@ -240,14 +436,23 @@ document.addEventListener('keydown', (event) => {
     metaKey: event.metaKey,
   }
 
-  // Tab-bar shortcuts are checked before the global keymap: a Ctrl+T is
-  // always "new tab" regardless of the active dialog, mirroring the browser's
-  // behavior. The keymap only knows shell-level transitions.
-  const tabBarIntent = tabBarKeyToIntent(chord, currentTabBarState())
-  if (tabBarIntent.kind !== 'none') {
-    event.preventDefault()
-    runTabBarIntent(tabBarIntent)
-    return
+  // Sidebar chords are checked before the global keymap: a Ctrl+T is always
+  // "new session" regardless of the active dialog, mirroring the browser's tab
+  // behavior. Only safe because `sidebarChordToIntent` answers `'none'` for
+  // anything without ctrl/meta — an unmodified key resolving there would shadow
+  // every dialog in the window.
+  //
+  // That same modifier test is repeated here rather than left to the model, so a
+  // plain keystroke never pays for `currentSidebarState()` — which walks every
+  // pane and reads the composer draft once per pane, on every keypress while
+  // typing.
+  if (chord.ctrlKey || chord.metaKey) {
+    const sidebarIntent = sidebarChordToIntent(chord, currentSidebarState())
+    if (sidebarIntent.kind !== 'none') {
+      event.preventDefault()
+      runSidebarIntent(sidebarIntent)
+      return
+    }
   }
 
   const pane = activePane()
@@ -339,7 +544,11 @@ shellClient.onLanes((lanes) => {
   for (const lane of [...paneSessions.keys()]) {
     if (!live.has(lane)) removePaneSession(lane)
   }
-  renderTabBar()
+  applyPaneBudget()
+  renderSidebar()
+  // A topology change is also a history change: a new draft appeared, or a
+  // `/clear` moved a pane onto a session the last pull had never heard of.
+  void refreshSessions()
 })
 
 shellClient.onActivate((lane) => activateLane(lane))
@@ -348,10 +557,14 @@ void (async () => {
   // Pull the topology rather than trusting early pushes: anything main posted
   // before the bridge listener existed was dropped by Electron, so a pane
   // created before this point reaches the renderer only through this call.
+  //
+  // The history pull is *not* repeated here: `panes()` applies the lane list
+  // synchronously, which fires `onLanes` above, which already owns that trigger.
   const lanes = await shellClient.panes()
   for (const info of lanes) attachPaneSession(info.lane)
   const first = lanes[0]
   if (first) activateLane(first.lane)
+  renderSidebar()
 })().catch((error) => {
   document.body.textContent = `Failed to start: ${describe(error)}`
 })

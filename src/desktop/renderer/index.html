@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta
@@ -7,561 +7,57 @@
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none';"
     />
     <title>Hanekawa</title>
-    <style>
-      /*
-        Semantic names, not literals, for the same reason `src/tui/theme.ts` is a
-        frozen object: a view asks for "danger", never for a hex value, so the two
-        shells can be re-skinned independently without hunting for colours.
-      */
-      :root {
-        --bg: #1a1a1a;
-        --bg-raised: #232323;
-        --bg-input: #252526;
-        /* The row the keyboard is on, in either list. */
-        --bg-active: #2f3a38;
-        --fg: #d4d4d4;
-        --muted: #808080;
-        --accent: #4ec9b0;
-        --user: #569cd6;
-        --error: #f48771;
-        --warning: #d7ba7d;
-        --success: #6a9955;
-        --danger: #f14c4c;
-        --border: #2d2d2d;
-        --border-strong: #3f3f3f;
-        --diff-add-fg: #b5cea8;
-        --diff-add-bg: #1e2a1e;
-        --diff-del-fg: #f4a49b;
-        --diff-del-bg: #2c1e1e;
-      }
-      * { box-sizing: border-box; }
-      html, body { height: 100%; margin: 0; }
-      body {
-        background: var(--bg);
-        color: var(--fg);
-        font: 14px/1.5 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-        display: flex;
-        flex-direction: column;
-        height: 100vh;
-        overflow: hidden;
-      }
-      [hidden] { display: none !important; }
-
-      /* --- status bar --- */
-      #status {
-        flex: 0 0 auto;
-        padding: 6px 12px;
-        border-bottom: 1px solid var(--border);
-        color: var(--muted);
-        font-size: 12px;
-        display: flex;
-        gap: 16px;
-        align-items: baseline;
-      }
-      #status .dot { color: var(--accent); margin-right: 4px; }
-      #status-session { margin-left: auto; }
-
-      /* --- tab bar (multi-tab) --- */
-      #tab-bar {
-        flex: 0 0 auto;
-        display: flex;
-        align-items: stretch;
-        gap: 2px;
-        padding: 4px 6px;
-        background: var(--bg-raised);
-        border-bottom: 1px solid var(--border);
-        overflow-x: auto;
-        overflow-y: hidden;
-      }
-      .tab {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        background: var(--bg);
-        color: var(--muted);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        padding: 4px 8px;
-        font: inherit;
-        font-size: 12px;
-        cursor: pointer;
-        max-width: 220px;
-        min-width: 80px;
-      }
-      .tab.active {
-        background: var(--bg-raised);
-        color: var(--fg);
-        border-color: var(--border-strong);
-      }
-      .tab .tab-title {
-        flex: 1 1 auto;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        text-align: left;
-      }
-      .tab.active .tab-title { color: var(--accent); }
-      .tab .tab-close {
-        background: transparent;
-        color: var(--muted);
-        border: 0;
-        padding: 0 4px;
-        font: inherit;
-        line-height: 1;
-        cursor: pointer;
-        border-radius: 3px;
-      }
-      .tab .tab-close:hover { color: var(--danger); background: var(--bg-input); }
-      .tab-add {
-        background: transparent;
-        color: var(--muted);
-        border: 1px dashed var(--border-strong);
-        border-radius: 4px;
-        padding: 4px 10px;
-        font: inherit;
-        font-size: 14px;
-        cursor: pointer;
-      }
-      .tab-add:hover { color: var(--accent); border-color: var(--accent); }
-      /* One project's tabs, behind its own heading. Only drawn from two projects up. */
-      .tab-group {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        padding-left: 6px;
-        border-left: 1px solid var(--border);
-      }
-      .tab-group:first-child { padding-left: 0; border-left: 0; }
-      .tab-group-label {
-        color: var(--muted);
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        white-space: nowrap;
-        padding: 0 4px;
-        max-width: 140px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .tab-group.own .tab-group-label { color: var(--fg); }
-      /* Another project's tab: focus only, so it reads as secondary and has no ×. */
-      .tab.foreign { opacity: 0.7; border-style: dashed; }
-      .tab.foreign:hover { opacity: 1; }
-      .tab-open-project {
-        background: transparent;
-        color: var(--muted);
-        border: 1px dashed var(--border-strong);
-        border-radius: 4px;
-        padding: 4px 10px;
-        font: inherit;
-        font-size: 12px;
-        white-space: nowrap;
-        cursor: pointer;
-      }
-      .tab-open-project:hover { color: var(--accent); border-color: var(--accent); }
-
-      /* --- transcript ---
-         One subtree per pane: switching panes toggles visibility, so scroll
-         positions survive and nothing repaints. The mount and the wrapper
-         carry the flex column; `.transcript` itself is the scroll container. */
-      #transcript-area {
-        flex: 1 1 auto;
-        min-height: 0;
-        display: flex;
-        flex-direction: column;
-      }
-      .pane {
-        flex: 1 1 auto;
-        min-height: 0;
-        display: flex;
-        flex-direction: column;
-      }
-      .transcript {
-        flex: 1 1 auto;
-        overflow-y: auto;
-        padding: 12px;
-        font-size: 13px;
-      }
-      .transcript .item { margin-bottom: 10px; white-space: pre-wrap; word-break: break-word; }
-      /*
-        Markdown items are real block elements, so the pre-wrap above would turn
-        every newline between blocks into a blank line. Only the code inside a
-        fence keeps whitespace.
-      */
-      .transcript .item.md { white-space: normal; }
-      .transcript .item.user { color: var(--user); }
-      .transcript .item.assistant { color: var(--fg); }
-      .transcript .item.thinking { color: var(--muted); font-style: italic; opacity: 0.8; }
-      .transcript .item.notice { color: var(--muted); font-style: italic; }
-      .transcript .item.error { color: var(--error); }
-      .transcript .item.subagent { color: var(--accent); }
-      .transcript .item.duration { color: var(--muted); font-size: 12px; }
-      .transcript .item.tool {
-        color: var(--muted);
-        border-left: 2px solid var(--border-strong);
-        padding-left: 8px;
-      }
-      .transcript .item.tool.failed { color: var(--error); border-left-color: var(--danger); }
-      .transcript .item.pending::after { content: " ▌"; color: var(--accent); }
-      .tool-progress {
-        flex: 0 0 auto;
-        padding: 4px 12px;
-        color: var(--muted);
-        font-size: 12px;
-        border-top: 1px solid var(--border);
-        white-space: pre-wrap;
-      }
-
-      /* --- surfaces (pickers, command views) --- */
-      #surface {
-        flex: 0 0 auto;
-        max-height: 40vh;
-        overflow-y: auto;
-        border-top: 1px solid var(--border-strong);
-        background: var(--bg-raised);
-        padding: 8px 12px;
-      }
-      #surface h2 { font-size: 12px; margin: 0 0 6px; color: var(--accent); font-weight: 600; }
-      #surface .row { display: flex; gap: 10px; padding: 2px 0; font-size: 13px; }
-      #surface .row[role="option"] { cursor: pointer; padding: 2px 6px; margin: 0 -6px; }
-      #surface .row[role="option"]:hover { background: var(--bg-input); }
-      #surface .row.selected { background: var(--bg-active); }
-      #surface .row.selected .label { color: var(--accent); }
-      #surface .row .label { min-width: 22ch; }
-      #surface .row .value { color: var(--muted); flex: 1 1 auto; }
-      #surface .row.current .label { color: var(--accent); }
-      #surface .row.disabled { opacity: 0.55; }
-      #surface .row.heading .label { color: var(--accent); }
-      #surface .row.tone-success .value { color: var(--success); }
-      #surface .row.tone-warning .value { color: var(--warning); }
-      #surface .row.tone-error .value { color: var(--error); }
-      #surface .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
-
-      /*
-        --- the queued-message strip ---
-        Sits directly above the composer, because it is about what will be sent
-        next rather than about what has happened. Read-only apart from Clear: the
-        wire has no per-message dequeue (the host pumps its own queue).
-      */
-      #queue {
-        flex: 0 0 auto;
-        max-height: 22vh;
-        overflow-y: auto;
-        border-top: 1px solid var(--border);
-        background: var(--bg-raised);
-        padding: 6px 12px;
-        font-size: 12px;
-      }
-      #queue .queue-header {
-        display: flex;
-        align-items: baseline;
-        gap: 10px;
-        margin-bottom: 4px;
-      }
-      #queue .queue-title { color: var(--warning); flex: 1 1 auto; }
-      #queue .queue-clear {
-        background: transparent;
-        color: var(--muted);
-        border: 1px solid var(--border-strong);
-        border-radius: 3px;
-        padding: 1px 8px;
-        font: inherit;
-        font-size: 11px;
-        cursor: pointer;
-      }
-      #queue .queue-clear:hover { color: var(--danger); border-color: var(--danger); }
-      #queue .queue-row { display: flex; gap: 8px; padding: 1px 0; color: var(--muted); }
-      #queue .queue-position { flex: 0 0 auto; opacity: 0.7; }
-      #queue .queue-label {
-        flex: 1 1 auto;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      /* --- completions --- */      #suggestions {
-        flex: 0 0 auto;
-        border-top: 1px solid var(--border);
-        background: var(--bg-raised);
-        max-height: 30vh;
-        overflow-y: auto;
-      }
-      #suggestions .suggestion { display: flex; gap: 10px; padding: 3px 12px; font-size: 13px; }
-      #suggestions .suggestion .name { color: var(--fg); min-width: 18ch; }
-      #suggestions .suggestion .description { color: var(--muted); }
-      #suggestions .suggestion.selected { background: var(--bg-active); }
-      #suggestions .suggestion.selected .name { color: var(--accent); }
-
-      /* --- composer --- */
-      #input-row {
-        flex: 0 0 auto;
-        display: flex;
-        border-top: 1px solid var(--border);
-        padding: 8px;
-        gap: 8px;
-        align-items: flex-end;
-      }
-      #input {
-        flex: 1 1 auto;
-        background: var(--bg-input);
-        color: var(--fg);
-        border: 1px solid var(--border);
-        padding: 6px 8px;
-        font: inherit;
-        resize: none;
-        min-height: 32px;
-        max-height: 200px;
-      }
-      #submit, #stop {
-        background: var(--accent);
-        color: #000;
-        border: 0;
-        padding: 6px 16px;
-        font: inherit;
-        cursor: pointer;
-      }
-      #stop { background: var(--warning); }
-      #submit[disabled] { opacity: 0.5; cursor: not-allowed; }
-
-      /* --- overlay: the four blocking requests --- */
-      #overlay {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.6);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 24px;
-        z-index: 10;
-      }
-      #overlay-panel {
-        background: var(--bg-raised);
-        border: 1px solid var(--border-strong);
-        border-top-width: 3px;
-        max-width: 90ch;
-        width: 100%;
-        max-height: 100%;
-        overflow-y: auto;
-        padding: 12px 16px;
-        font-size: 13px;
-      }
-      #overlay-panel.tone-danger { border-top-color: var(--danger); }
-      #overlay-panel.tone-caution { border-top-color: var(--warning); }
-      #overlay-panel.tone-normal { border-top-color: var(--accent); }
-      #overlay-panel .title { font-weight: 600; margin-bottom: 2px; }
-      #overlay-panel.tone-danger .title { color: var(--danger); }
-      #overlay-panel.tone-caution .title { color: var(--warning); }
-      #overlay-panel.tone-normal .title { color: var(--accent); }
-      #overlay-panel .subtitle,
-      #overlay-panel .hint,
-      #overlay-panel .also-waiting { color: var(--muted); font-size: 12px; }
-      #overlay-panel .reason { margin: 8px 0; }
-      #overlay-panel .warning { color: var(--danger); }
-      #overlay-panel .streak { color: var(--warning); font-size: 12px; }
-      #overlay-panel .block {
-        background: var(--bg-input);
-        border: 1px solid var(--border);
-        padding: 6px 8px;
-        margin: 8px 0;
-        white-space: pre-wrap;
-        word-break: break-all;
-      }
-      #overlay-panel .block-label { color: var(--muted); font-size: 11px; }
-      #overlay-panel .options { margin: 10px 0 6px; }
-      #overlay-panel .option { padding: 1px 0; }
-      #overlay-panel .option.selected { color: var(--accent); font-weight: 600; }
-      #overlay-panel .option .hotkey { color: var(--warning); }
-      #overlay-panel .plan {
-        background: var(--bg-input);
-        border: 1px solid var(--border);
-        padding: 8px;
-        margin: 8px 0;
-        max-height: 40vh;
-        overflow-y: auto;
-        white-space: pre-wrap;
-      }
-      #overlay-panel .bullets { color: var(--muted); margin: 6px 0; }
-      #overlay-panel .feedback {
-        background: var(--bg-input);
-        border: 1px solid var(--border);
-        padding: 4px 6px;
-        margin: 4px 0 0 4ch;
-        min-height: 1.5em;
-        white-space: pre-wrap;
-      }
-      #overlay-panel .feedback.focused { border-color: var(--accent); }
-      #overlay-panel .feedback::after { content: "▌"; color: var(--accent); }
-      #overlay-panel .preview-title { color: var(--muted); font-size: 12px; margin-top: 8px; }
-
-      /*
-        --- the rewind panel ---
-        Its own layer, stacked *below* #overlay (z-index 10): a permission prompt
-        that arrives while this is open is holding the agent loop and has to be
-        answered first, so it draws on top.
-      */
-      #rewind {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.6);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 24px;
-        z-index: 5;
-      }
-      #rewind-panel {
-        background: var(--bg-raised);
-        border: 1px solid var(--border-strong);
-        border-top: 3px solid var(--warning);
-        max-width: 90ch;
-        width: 100%;
-        max-height: 100%;
-        overflow-y: auto;
-        padding: 12px 16px;
-        font-size: 13px;
-      }
-      #rewind-panel .title { font-weight: 600; color: var(--warning); margin-bottom: 2px; }
-      #rewind-panel .subtitle,
-      #rewind-panel .hint { color: var(--muted); font-size: 12px; }
-      #rewind-panel .error { color: var(--error); margin: 8px 0; }
-      #rewind-panel .rows { margin: 10px 0 6px; }
-      #rewind-panel .row { display: flex; gap: 10px; padding: 2px 6px; margin: 0 -6px; cursor: pointer; }
-      #rewind-panel .row:hover { background: var(--bg-input); }
-      #rewind-panel .row.selected { background: var(--bg-active); }
-      #rewind-panel .row.selected .label { color: var(--accent); }
-      #rewind-panel .row .label { flex: 1 1 auto; white-space: pre-wrap; word-break: break-word; }
-      #rewind-panel .row .value { color: var(--muted); flex: 0 0 auto; }
-      #rewind-panel .row.current .label { color: var(--muted); }
-      #rewind-panel .confirm { margin: 10px 0 6px; }
-      #rewind-panel .confirm .message {
-        background: var(--bg-input);
-        border-left: 2px solid var(--border-strong);
-        padding: 6px 8px;
-        margin-bottom: 4px;
-        white-space: pre-wrap;
-        word-break: break-word;
-      }
-      #rewind-panel .options { margin: 10px 0 6px; }
-      #rewind-panel .option { padding: 1px 6px; margin: 0 -6px; cursor: pointer; }
-      #rewind-panel .option:hover { background: var(--bg-input); }
-      #rewind-panel .option.selected { color: var(--accent); font-weight: 600; }
-      #rewind-panel .option .hotkey { color: var(--warning); }
-      #rewind-panel .busy { color: var(--accent); margin: 10px 0 6px; }
-      #rewind-panel .warning { color: var(--danger); margin-top: 8px; }
-
-      /* --- markdown (assistant messages and plan bodies) --- */
-      .md > :first-child { margin-top: 0; }
-      .md > :last-child { margin-bottom: 0; }
-      .md p { margin: 0 0 8px; }
-      .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
-        margin: 12px 0 6px;
-        color: var(--accent);
-        font-weight: 600;
-        line-height: 1.3;
-      }
-      .md h1 { font-size: 1.35em; }
-      .md h2 { font-size: 1.2em; }
-      .md h3 { font-size: 1.08em; }
-      .md h4, .md h5, .md h6 { font-size: 1em; }
-      .md ul, .md ol { margin: 0 0 8px; padding-left: 2.2ch; }
-      .md li { margin: 2px 0; }
-      .md li > ul, .md li > ol { margin-bottom: 0; }
-      .md li.md-task { list-style: none; margin-left: -2.2ch; }
-      .md .md-check { color: var(--accent); }
-      .md blockquote {
-        margin: 0 0 8px;
-        padding-left: 10px;
-        border-left: 2px solid var(--border-strong);
-        color: var(--muted);
-      }
-      .md hr { border: 0; border-top: 1px solid var(--border-strong); margin: 12px 0; }
-      .md a { color: var(--user); text-decoration: none; }
-      .md a:hover { text-decoration: underline; }
-      .md .md-inline-code {
-        background: var(--bg-input);
-        border: 1px solid var(--border);
-        border-radius: 3px;
-        padding: 0 4px;
-        color: var(--accent);
-      }
-      .md .md-code {
-        background: var(--bg-input);
-        border: 1px solid var(--border);
-        border-radius: 3px;
-        margin: 0 0 8px;
-        overflow: hidden;
-      }
-      .md .md-code-lang {
-        color: var(--muted);
-        font-size: 11px;
-        padding: 2px 8px;
-        border-bottom: 1px solid var(--border);
-      }
-      .md .md-code pre {
-        margin: 0;
-        padding: 6px 8px;
-        overflow-x: auto;
-        white-space: pre;
-        font: inherit;
-      }
-      .md .md-code code { font: inherit; }
-      .md .md-table { border-collapse: collapse; margin: 0 0 8px; }
-      .md .md-table th, .md .md-table td {
-        border: 1px solid var(--border);
-        padding: 2px 8px;
-        text-align: left;
-      }
-      .md .md-table th { color: var(--accent); font-weight: 600; }
-      /* The plan body keeps its own panel chrome; markdown only replaces the text. */
-      #overlay-panel .plan.md { white-space: normal; }
-
-      /* --- diff --- */
-      .diff {
-        border: 1px solid var(--border);
-        margin: 6px 0;
-        max-height: 45vh;
-        overflow: auto;
-        font-size: 12px;
-      }
-      .diff-row { display: flex; white-space: pre; }
-      .diff-row .gutter {
-        flex: 0 0 8ch;
-        color: var(--muted);
-        text-align: right;
-        padding-right: 8px;
-        user-select: none;
-      }
-      .diff-row .text { flex: 1 1 auto; padding-right: 8px; }
-      .diff-row.add { background: var(--diff-add-bg); color: var(--diff-add-fg); }
-      .diff-row.del { background: var(--diff-del-bg); color: var(--diff-del-fg); }
-      .diff-row.ctx { color: var(--fg); opacity: 0.75; }
-      .diff-row.elided { color: var(--muted); font-style: italic; }
-    </style>
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div id="tab-bar" hidden role="tablist" aria-label="Open tabs"></div>
-    <div id="status">
-      <span><span class="dot">●</span><span id="status-model">…</span></span>
-      <span id="status-mode">default</span>
-      <span id="status-usage"></span>
-      <span id="status-cost"></span>
-      <span id="status-streaming" style="color: var(--muted);">idle</span>
-      <span id="status-session"></span>
+    <!--
+      Two columns: the sidebar owns navigation across every project, and the
+      canvas holds the one visible pane. Every pane's transcript lives inside
+      `#transcript-area` as its own subtree, visibility-toggled, so switching
+      sessions keeps scroll positions and repaints nothing.
+    -->
+    <div id="shell">
+      <aside id="sidebar" aria-label="会话与项目"></aside>
+      <main id="canvas">
+        <div id="status">
+          <span id="status-mode">default</span>
+          <span id="status-usage"></span>
+          <span id="status-cost"></span>
+          <span id="status-streaming">idle</span>
+          <span id="status-session"></span>
+        </div>
+        <div id="transcript-area"></div>
+        <div id="surface" hidden></div>
+        <div id="suggestions" hidden role="listbox" aria-label="斜杠命令"></div>
+        <div id="queue" hidden aria-live="polite" aria-label="排队消息"></div>
+        <!--
+          The anchored composite input: one capsule holding the textarea and an
+          inline action bar. `#chip-model` / `#chip-effort` are two buttons drawn
+          as one pill — nesting buttons is invalid, and each half opens a
+          different picker.
+        -->
+        <form id="input-row">
+          <div id="composer">
+            <textarea
+              id="input"
+              placeholder="给 Hanekawa 发消息，或用 / 唤出命令。Shift+Enter 换行。"
+              rows="1"
+            ></textarea>
+            <div id="composer-bar">
+              <button id="composer-attach" type="button"></button>
+              <span class="composer-spacer"></span>
+              <div id="composer-chip" role="group" aria-label="模型与思考强度">
+                <button id="chip-model" type="button">…</button>
+                <button id="chip-effort" type="button">…</button>
+              </div>
+              <button id="stop" type="button" hidden></button>
+              <button id="submit" type="submit"></button>
+            </div>
+          </div>
+        </form>
+      </main>
     </div>
-    <div id="transcript-area"></div>
-    <div id="surface" hidden></div>
-    <div id="suggestions" hidden role="listbox" aria-label="Slash commands"></div>
-    <div id="queue" hidden aria-live="polite" aria-label="Queued messages"></div>
-    <form id="input-row">
-      <textarea
-        id="input"
-        placeholder="Send a message, or /help for commands. Shift+Enter for newline."
-        rows="1"
-      ></textarea>
-      <button id="submit" type="submit">Send</button>
-      <button id="stop" type="button" hidden>Stop</button>
-    </form>
-    <div id="rewind" hidden role="dialog" aria-modal="true" aria-label="Rewind">
+    <div id="rewind" hidden role="dialog" aria-modal="true" aria-label="回退">
       <div id="rewind-panel"></div>
     </div>
     <div id="overlay" hidden role="dialog" aria-modal="true">

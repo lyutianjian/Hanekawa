@@ -265,7 +265,7 @@ test('a destructive command arrives with its warnings and no always-allow option
   const view = permissionViewModel({ request: seen as never, selectedIndex: 0 })
   assert.deepEqual(view.options.map((option) => option.action), ['allow', 'deny'])
   assert.equal(view.tone, 'danger')
-  assert.equal(view.denialStreakNote, 'Denied once already.')
+  assert.equal(view.denialStreakNote, '已拒绝过一次。')
   harness.dispose()
 })
 

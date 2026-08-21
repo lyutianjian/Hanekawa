@@ -116,22 +116,22 @@ test('the view carries the input block, reason, streak note and diff preview', (
     selectedIndex: 0,
   })
 
-  assert.equal(view.title, 'Write file')
+  assert.equal(view.title, '写入文件')
   assert.equal(view.inputBlock.kind, 'file')
   assert.equal(view.inputBlock.content, 'a.txt')
-  assert.match(view.reason, /requires confirmation/)
-  assert.equal(view.denialStreakNote, 'Denied 2 times already.')
+  assert.match(view.reason, /要求确认/)
+  assert.equal(view.denialStreakNote, '已拒绝过 2 次。')
   assert.equal(view.preview?.kind, 'diff')
   assert.ok(view.preview?.kind === 'diff' && view.preview.rows.length === 1)
 })
 
 test('the subtitle is the only place the pending counter appears', () => {
   const single = permissionViewModel({ request: dto(), selectedIndex: 0 })
-  assert.equal(single.subtitle.includes('pending'), false)
+  assert.equal(single.subtitle.includes('待处理'), false)
 
   const third = permissionViewModel({ request: dto(), selectedIndex: 0, activeIndex: 2, total: 4 })
-  assert.match(third.subtitle, /3\/4 pending/)
-  assert.match(third.hint, /\[Tab\] Next request/)
+  assert.match(third.subtitle, /第 3\/4 条待处理/)
+  assert.match(third.hint, /\[Tab\] 下一条请求/)
 })
 
 test('also-waiting names a few and counts the rest', () => {

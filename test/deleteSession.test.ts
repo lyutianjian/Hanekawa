@@ -1,0 +1,138 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import {
+  deleteSessionArtifacts,
+  removeSubagentTranscripts,
+} from '../src/runtime/deleteSession.js'
+import { shadowRepoPath } from '../src/services/checkpoint/checkpointService.js'
+import { getSubagentTranscriptDir } from '../src/harness/sidechainRecordStream.js'
+import { getMyAgentDir } from '../src/utils/paths.js'
+
+/**
+ * `deleteSessionArtifacts` — the one place that knows what a session leaves on
+ * disk.
+ *
+ * The reason it exists is the reason these cases matter: the list used to be
+ * spelled inline in `ShellHost.deleteSession` with two of the four entries, so
+ * `session-memory/<id>.json` and `sessions/subagents/<id>/` outlived every other
+ * trace of a deleted session. A test per artifact is what makes the fifth one
+ * someone adds get noticed.
+ */
+
+const SESSION = '00000000-0000-4000-8000-000000000000'
+const OTHER = '11111111-1111-4111-8111-111111111111'
+
+async function makeCwd(): Promise<string> {
+  return mkdtemp(path.join(os.tmpdir(), 'myagent-delete-session-'))
+}
+
+function memoryPath(cwd: string, sessionId: string): string {
+  return path.join(getMyAgentDir(cwd), 'session-memory', `${sessionId}.json`)
+}
+
+/** Every artifact for one session, so a removal can be checked to be complete. */
+async function seed(cwd: string, sessionId: string): Promise<string[]> {
+  const shadow = shadowRepoPath(cwd, sessionId)
+  const subagents = getSubagentTranscriptDir(cwd, sessionId)
+  const memory = memoryPath(cwd, sessionId)
+
+  await mkdir(path.join(shadow, 'objects'), { recursive: true })
+  await writeFile(path.join(shadow, 'HEAD'), 'ref: refs/heads/main\n', 'utf8')
+  await mkdir(subagents, { recursive: true })
+  await writeFile(path.join(subagents, 'agent-1.jsonl'), '{}\n', 'utf8')
+  await mkdir(path.dirname(memory), { recursive: true })
+  await writeFile(memory, '{}', 'utf8')
+
+  return [shadow, subagents, memory]
+}
+
+class RecordingStore {
+  readonly deleted: string[] = []
+  async delete(idOrPrefix: string): Promise<void> {
+    this.deleted.push(idOrPrefix)
+  }
+}
+
+test('every artifact of a session is removed, not just the store files', async () => {
+  const cwd = await makeCwd()
+  try {
+    const mine = await seed(cwd, SESSION)
+    const theirs = await seed(cwd, OTHER)
+    const store = new RecordingStore()
+
+    await deleteSessionArtifacts(cwd, store, SESSION)
+
+    assert.deepEqual(store.deleted, [SESSION])
+    for (const target of mine) {
+      assert.equal(existsSync(target), false, `expected ${path.basename(target)} to be gone`)
+    }
+    for (const target of theirs) {
+      assert.equal(existsSync(target), true, `expected another session's ${path.basename(target)} to survive`)
+    }
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('a session that wrote nothing beyond its store files deletes cleanly', async () => {
+  const cwd = await makeCwd()
+  try {
+    const store = new RecordingStore()
+    await deleteSessionArtifacts(cwd, store, SESSION)
+    assert.deepEqual(store.deleted, [SESSION])
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('the store goes first, so a later failure leaves an orphan rather than a half-deleted row', async () => {
+  const cwd = await makeCwd()
+  try {
+    const order: string[] = []
+    const store = {
+      async delete(id: string): Promise<void> {
+        order.push(`store:${id}`)
+      },
+    }
+    await seed(cwd, SESSION)
+    await deleteSessionArtifacts(cwd, store, SESSION)
+    assert.deepEqual(order, [`store:${SESSION}`])
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('a malformed id is refused before anything is deleted', async () => {
+  // The id reaches here from the shell's `delete-session`, and two of the four
+  // removals are `recursive` — `''` and `'.'` both collapse to the directory
+  // holding every session's copy of that artifact.
+  const cwd = await makeCwd()
+  try {
+    await seed(cwd, SESSION)
+    const store = new RecordingStore()
+    const roots = [
+      path.join(getMyAgentDir(cwd), 'shadow-git'),
+      path.join(getMyAgentDir(cwd), 'sessions', 'subagents'),
+      path.join(getMyAgentDir(cwd), 'session-memory'),
+    ]
+
+    for (const bad of ['', '.', '..', 'a/b', 'a\\b', `${SESSION}/..`]) {
+      await assert.rejects(
+        () => deleteSessionArtifacts(cwd, store, bad),
+        /Invalid session ID/,
+        `expected ${JSON.stringify(bad)} to be refused`,
+      )
+      await assert.rejects(() => removeSubagentTranscripts(cwd, bad), /Invalid session ID/)
+    }
+
+    assert.deepEqual(store.deleted, [], 'and the store was never asked')
+    for (const root of roots) assert.equal(existsSync(root), true, `${root} survived`)
+    assert.equal(existsSync(shadowRepoPath(cwd, SESSION)), true)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})

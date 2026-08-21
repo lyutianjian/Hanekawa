@@ -1,5 +1,5 @@
 import {
-  ENTER_PLAN_OPTIONS,
+  enterPlanOptions,
   exitPlanDecisionFor,
   exitPlanOptionsFor,
   isEmptyPlan,
@@ -8,6 +8,7 @@ import {
   type EnterPlanOption,
 } from '../../../runtime/planPresentation.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../../harness/planModeManager.js'
+import { UI_LOCALE } from './locale.js'
 
 /**
  * The two plan-mode dialogs as data.
@@ -27,6 +28,13 @@ import type { ExitDialogInput, ExitPlanDecision } from '../../../harness/planMod
 /** Lines of plan to show before collapsing the middle. */
 export const PLAN_PREVIEW_LINES = 40
 
+/**
+ * Resolved once, at module scope, because the view and the key map must read
+ * the *same* array: `enterPlanKeyToIntent` answers Enter by indexing it, so a
+ * second call would let the two disagree about which option index 0 is.
+ */
+const ENTER_OPTIONS = enterPlanOptions(UI_LOCALE)
+
 // --- entering ---------------------------------------------------------------
 
 export interface EnterPlanViewModel {
@@ -41,18 +49,18 @@ export interface EnterPlanViewModel {
 
 export function enterPlanViewModel(selectedIndex = 0): EnterPlanViewModel {
   return {
-    title: 'Enter plan mode?',
-    body: 'The agent wants to enter plan mode to explore and design an implementation approach.',
+    title: '进入计划模式？',
+    body: '助手希望进入计划模式，先探索代码并设计实现方案。',
     bullets: [
-      'Explore the codebase thoroughly',
-      'Identify existing patterns',
-      'Design an implementation strategy',
-      'Present a plan for your approval',
+      '通读相关代码',
+      '找出既有的模式与惯例',
+      '设计实现策略',
+      '给出方案供你确认',
     ],
-    reassurance: 'No code changes will be made until you approve the plan.',
-    options: ENTER_PLAN_OPTIONS,
-    selectedIndex: clamp(selectedIndex, 0, ENTER_PLAN_OPTIONS.length - 1),
-    hint: '[↑↓] Move  [1-2] Quick  [Enter] Select  [Esc] Decline',
+    reassurance: '在你确认方案之前，不会修改任何代码。',
+    options: ENTER_OPTIONS,
+    selectedIndex: clamp(selectedIndex, 0, ENTER_OPTIONS.length - 1),
+    hint: '[↑↓] 移动　[1-2] 快选　[Enter] 确定　[Esc] 拒绝',
   }
 }
 
@@ -66,7 +74,7 @@ export function enterPlanKeyToIntent(
   state: { selectedIndex: number },
 ): EnterPlanIntent {
   if (event.ctrlKey === true || event.metaKey === true) return { kind: 'none' }
-  const last = ENTER_PLAN_OPTIONS.length - 1
+  const last = ENTER_OPTIONS.length - 1
 
   switch (event.key) {
     case 'ArrowUp':
@@ -78,7 +86,7 @@ export function enterPlanKeyToIntent(
     case '2':
       return { kind: 'answer', approved: false }
     case 'Enter':
-      return { kind: 'answer', approved: ENTER_PLAN_OPTIONS[state.selectedIndex]?.value === 'yes' }
+      return { kind: 'answer', approved: ENTER_OPTIONS[state.selectedIndex]?.value === 'yes' }
     case 'Escape':
       // Declining entry is safe: the agent simply keeps working as it was.
       return { kind: 'answer', approved: false }
@@ -116,15 +124,16 @@ export function exitPlanViewModel(state: ExitPlanState): ExitPlanViewModel {
   const options = exitPlanOptionsFor({
     planContent: state.input.planContent,
     isBypassAvailable: state.input.isBypassAvailable === true,
+    locale: UI_LOCALE,
   })
   const selectedIndex = clamp(state.selectedIndex, 0, options.length - 1)
   const empty = isEmptyPlan(state.input.planContent)
 
   return {
-    title: empty ? 'Exit plan mode?' : 'Ready to code?',
+    title: empty ? '退出计划模式？' : '可以开始写代码了吗？',
     planPreview: empty
-      ? 'Hanekawa wants to exit plan mode'
-      : previewMarkdownLines(state.input.planContent, PLAN_PREVIEW_LINES),
+      ? 'Hanekawa 希望退出计划模式'
+      : previewMarkdownLines(state.input.planContent, PLAN_PREVIEW_LINES, UI_LOCALE),
     planFilePath: state.input.planFilePath,
     isEmptyPlan: empty,
     options,
@@ -132,8 +141,8 @@ export function exitPlanViewModel(state: ExitPlanState): ExitPlanViewModel {
     feedbackFocused: options[selectedIndex]?.kind === 'reject',
     feedback: state.feedback,
     hint: empty
-      ? '[↑↓] Move  [1-2] Quick  [Enter] Select  [Esc] Keep planning'
-      : `[↑↓] Move  [1-${options.length}] Quick  [Enter] Select  [Esc] Keep planning`,
+      ? '[↑↓] 移动　[1-2] 快选　[Enter] 确定　[Esc] 继续规划'
+      : `[↑↓] 移动　[1-${options.length}] 快选　[Enter] 确定　[Esc] 继续规划`,
   }
 }
 

@@ -52,8 +52,8 @@ export function queuedMessagesView(
     rows,
     title: rows.length === 0
       ? undefined
-      : `Queued (${rows.length}) — sent when the current turn ends`,
-    clearLabel: 'Clear',
+      : `已排队 ${rows.length} 条 — 当前轮次结束后发送`,
+    clearLabel: '清空',
   }
 }
 

@@ -48,6 +48,14 @@ const ALLOWED_SHARED_IMPORTS = [
   // were split at all.
   '../../../runtime/suggestions/atToken.js',
   '../../../config/effort.js',
+  // The desktop shell's own shared modules, one directory up. Both are pure:
+  // `shellProtocol.ts` is types plus one string constant, `paneBudget.ts` has no
+  // imports at all. Listed rather than waved through because they sit *outside*
+  // `renderer/` — a relative specifier that escapes this tree used to read as
+  // "local" to the check below, which made the allowlist optional for exactly
+  // the files most likely to drag the host in.
+  '../shellProtocol.js',
+  '../paneBudget.js',
 ]
 
 /**
@@ -100,19 +108,24 @@ test('no renderer module value-imports a host layer', () => {
   for (const file of rendererFiles()) {
     const source = readFileSync(file, 'utf8')
     for (const specifier of valueImports(source)) {
-      if (specifier.startsWith('.') && !specifier.includes('/runtime/') && !specifier.includes('/config/')) {
+      if (specifier.startsWith('.')) {
+        // Resolved, not pattern-matched: "is this still inside `renderer/`" is a
+        // question about the *path*, and a specifier like `../paneBudget.js`
+        // matches none of the forbidden-layer patterns while still leaving the
+        // tree. Anything that escapes needs an allowlist entry.
+        const resolved = path.resolve(path.dirname(file), specifier)
+        if (!resolved.startsWith(rendererRoot)) {
+          assert.ok(
+            ALLOWED_SHARED_IMPORTS.includes(specifier),
+            `${path.relative(rendererRoot, file)} value-imports ${specifier}, which is not on the shared allowlist`,
+          )
+          continue
+        }
         // A local renderer import.
         assert.equal(
           FORBIDDEN_LAYERS.test(specifier),
           false,
           `${path.relative(rendererRoot, file)} value-imports ${specifier}`,
-        )
-        continue
-      }
-      if (specifier.startsWith('.')) {
-        assert.ok(
-          ALLOWED_SHARED_IMPORTS.includes(specifier),
-          `${path.relative(rendererRoot, file)} value-imports ${specifier}, which is not on the shared allowlist`,
         )
         continue
       }
@@ -128,20 +141,37 @@ test('every allowlisted shared module is actually reachable and pure', () => {
   // A stale allowlist entry is a licence nobody is using; a missing file would
   // make the assertion above pass for the wrong reason.
   //
+  // Each entry is resolved against the renderer file that *actually* imports it
+  // rather than assumed to hang off `src/`: the entries are written relative to
+  // their importer, and two of them (`../shellProtocol.js`, `../paneBudget.js`)
+  // live in `src/desktop/` rather than under `src/` directly. Guessing the path
+  // is how this check would go green on a file it never opened.
+  //
   // `node:crypto` is the one permitted Node import, and only because
   // `build:desktop` aliases it to `renderer/runtime/nodeCryptoShim.ts`
   // (`package.json`, mirrored in `test/desktopBuild.test.ts`). Any other `node:`
   // specifier has no alias and fails the bundle.
+  const importers = new Map<string, string>()
+  for (const file of rendererFiles()) {
+    for (const specifier of valueImports(readFileSync(file, 'utf8'))) {
+      if (ALLOWED_SHARED_IMPORTS.includes(specifier) && !importers.has(specifier)) {
+        importers.set(specifier, file)
+      }
+    }
+  }
+
   for (const specifier of ALLOWED_SHARED_IMPORTS) {
-    const relative = specifier.replace(/^(\.\.\/)+/, '').replace(/\.js$/, '.ts')
-    const full = fileURLToPath(new URL(`../src/${relative}`, import.meta.url))
+    const importer = importers.get(specifier)
+    assert.ok(importer, `${specifier} is on the allowlist but nothing value-imports it`)
+    const full = path.resolve(path.dirname(importer), specifier).replace(/\.js$/, '.ts')
     const source = readFileSync(full, 'utf8')
+    const shown = path.relative(fileURLToPath(new URL('../src/', import.meta.url)), full)
     for (const nested of valueImports(source)) {
       if (!nested.startsWith('node:')) continue
       assert.equal(
         nested,
         'node:crypto',
-        `${relative} value-imports ${nested}, which the desktop build has no alias for`,
+        `${shown} value-imports ${nested}, which the desktop build has no alias for`,
       )
     }
   }
@@ -188,5 +218,36 @@ test('the renderer deep-imports the protocol client, never the barrel', () => {
         `${path.relative(rendererRoot, file)} imports the protocol barrel, which pulls node:fs through host.ts`,
       )
     }
+  }
+})
+
+test('every element the renderer requires exists in index.html', () => {
+  // `required()` throws on a miss, and the misses happen at *module scope* in
+  // `app.ts` — so a renamed or dropped id is a blank window with one line in the
+  // console, not a degraded feature. Neither typecheck pass can see it and no
+  // other test opens the HTML, which makes restructuring the page (4b moved
+  // everything into `#shell > #sidebar + #canvas`) the exact moment to have this.
+  //
+  // Lives here rather than in `desktopBuild.test.ts` so it walks the renderer
+  // tree through `rendererFiles()` — the one place that scan is spelled.
+  const html = readFileSync(new URL('../src/desktop/renderer/index.html', import.meta.url), 'utf8')
+  const present = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]!))
+  assert.ok(present.size >= 10, `expected the page's ids, found ${present.size}`)
+
+  const requested = new Map<string, string>()
+  for (const file of rendererFiles()) {
+    // `required('x')` and `required<HTMLFormElement>('x')`; the declaration in
+    // `dom.ts` takes an identifier, so it never matches the string-literal form.
+    for (const match of readFileSync(file, 'utf8').matchAll(/\brequired\s*(?:<[^>]*>)?\s*\(\s*'([^']+)'/g)) {
+      requested.set(match[1]!, file)
+    }
+  }
+
+  assert.ok(requested.size >= 10, `expected the renderer's required ids, found ${requested.size}`)
+  for (const [id, file] of requested) {
+    assert.ok(
+      present.has(id),
+      `${path.relative(rendererRoot, file)} calls required('${id}'), which index.html does not define`,
+    )
   }
 })

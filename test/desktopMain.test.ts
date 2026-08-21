@@ -204,6 +204,20 @@ function fakeProject(cwd = '/tmp/fixture'): ProjectRuntime {
         messageCount: 0,
         updatedAt: 0,
       }),
+      // `ShellHost.listSessions`/`deleteSession` reach these. The cast below
+      // hides a missing one from tsc, so they are added by hand — the fifth
+      // fake in the "grep five fakes when `ProjectRuntime` grows" list.
+      list: async () => [
+        {
+          id: `${cwd}-s1`,
+          shortId: 's1',
+          title: 'on disk',
+          messageCount: 2,
+          createdAt: '2026-08-20T00:00:00.000Z',
+          updatedAt: '2026-08-20T00:00:00.000Z',
+        },
+      ],
+      delete: async () => undefined,
       loadRecordsWithDiagnostics: async () => ({ records: [], diagnostics: [] }),
     } as never,
     backgroundTasks: {

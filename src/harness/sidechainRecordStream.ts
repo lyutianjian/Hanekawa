@@ -9,7 +9,18 @@ import { parseJsonLinesWithDiagnostics } from '../utils/json.js'
 import { getMyAgentDir } from '../utils/paths.js'
 
 export function getSubagentTranscriptPath(cwd: string, parentSessionId: string, agentId: string): string {
-  return path.join(getMyAgentDir(cwd), 'sessions', 'subagents', parentSessionId, `${agentId}.jsonl`)
+  return path.join(getSubagentTranscriptDir(cwd, parentSessionId), `${agentId}.jsonl`)
+}
+
+/**
+ * The directory holding every subagent transcript of one parent session.
+ *
+ * Exported so deleting a session can remove the whole thing — one transcript per
+ * background agent it ever ran, and nothing else knows they are keyed by the
+ * parent's id.
+ */
+export function getSubagentTranscriptDir(cwd: string, parentSessionId: string): string {
+  return path.join(getMyAgentDir(cwd), 'sessions', 'subagents', parentSessionId)
 }
 
 export class SidechainRecordStream implements RecordStream {

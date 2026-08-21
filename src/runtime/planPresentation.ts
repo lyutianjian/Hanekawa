@@ -1,4 +1,5 @@
 import type { ExitPlanDecision } from '../harness/planModeManager.js'
+import { DEFAULT_LOCALE, type Locale } from './locale.js'
 
 /**
  * How the two plan-mode dialogs are presented, independent of any view.
@@ -26,10 +27,61 @@ export interface EnterPlanOption {
   readonly hotkey: '1' | '2'
 }
 
-export const ENTER_PLAN_OPTIONS: readonly EnterPlanOption[] = [
-  { value: 'yes', label: 'Yes, enter plan mode', hotkey: '1' },
-  { value: 'no', label: 'No, start implementing now', hotkey: '2' },
-] as const
+/**
+ * Every user-visible string here, per locale. Keyed `satisfies`, so a missing
+ * translation fails the build by name rather than rendering `undefined`.
+ */
+interface PlanStrings {
+  readonly enterYes: string
+  readonly enterNo: string
+  readonly bypassKeep: string
+  readonly acceptEditsKeep: string
+  readonly restoreKeep: string
+  readonly reject: string
+  readonly emptyYes: string
+  readonly emptyNo: string
+  readonly linesOmitted: (count: number) => string
+}
+
+const STRINGS = {
+  en: {
+    enterYes: 'Yes, enter plan mode',
+    enterNo: 'No, start implementing now',
+    bypassKeep: 'Yes, and bypass permissions',
+    acceptEditsKeep: 'Yes, auto-accept edits',
+    restoreKeep: 'Yes, manually approve edits',
+    reject: 'No, keep planning',
+    emptyYes: 'Yes',
+    emptyNo: 'No',
+    linesOmitted: (count) => `[... ${count} lines omitted from preview ...]`,
+  },
+  zh: {
+    enterYes: '好，进入计划模式',
+    enterNo: '不用，现在就开始实现',
+    bypassKeep: '好，并绕过权限确认',
+    acceptEditsKeep: '好，自动接受修改',
+    restoreKeep: '好，逐条确认修改',
+    reject: '不，继续规划',
+    emptyYes: '好',
+    emptyNo: '不',
+    linesOmitted: (count) => `[... 预览中省略 ${count} 行 ...]`,
+  },
+} as const satisfies Record<Locale, PlanStrings>
+
+export function enterPlanOptions(locale: Locale = DEFAULT_LOCALE): readonly EnterPlanOption[] {
+  const strings = STRINGS[locale]
+  return [
+    { value: 'yes', label: strings.enterYes, hotkey: '1' },
+    { value: 'no', label: strings.enterNo, hotkey: '2' },
+  ] as const
+}
+
+/**
+ * The English options, kept as a constant because the TUI and the runtime
+ * barrel already import it by that name. `enterPlanOptions(locale)` is the
+ * form a localised shell calls.
+ */
+export const ENTER_PLAN_OPTIONS: readonly EnterPlanOption[] = enterPlanOptions('en')
 
 /**
  * Build the option list for the exit dialog. When bypass is available the user
@@ -41,33 +93,35 @@ export const ENTER_PLAN_OPTIONS: readonly EnterPlanOption[] = [
  */
 export function buildExitPlanModeOptions(input: boolean | {
   isBypassAvailable?: boolean
+  locale?: Locale
 }): readonly DecisionOption[] {
   const isBypassAvailable = typeof input === 'boolean' ? input : input.isBypassAvailable === true
+  const strings = STRINGS[typeof input === 'boolean' ? DEFAULT_LOCALE : input.locale ?? DEFAULT_LOCALE]
   const options: DecisionOption[] = []
 
   // Slot 1: keep-context with elevated mode (higher privilege first).
   if (isBypassAvailable) {
     options.push({
       kind: 'approve_bypass_keep',
-      label: 'Yes, and bypass permissions',
+      label: strings.bypassKeep,
     })
   } else {
     options.push({
       kind: 'approve_acceptEdits_keep',
-      label: 'Yes, auto-accept edits',
+      label: strings.acceptEditsKeep,
     })
   }
 
   // Slot 2: always-present default keep-context (manual approval).
   options.push({
     kind: 'approve_restore_keep',
-    label: 'Yes, manually approve edits',
+    label: strings.restoreKeep,
   })
 
   // Slot 3: always-present reject with feedback.
   options.push({
     kind: 'reject',
-    label: 'No, keep planning',
+    label: strings.reject,
   })
 
   return options
@@ -87,10 +141,16 @@ export function elevatedExitPlanModeDecision(input: boolean | {
  * The two options an *empty* plan gets. An empty plan has nothing to
  * auto-accept, so the elevated slot is dropped rather than shown inert.
  */
-export const EMPTY_PLAN_OPTIONS: readonly DecisionOption[] = [
-  { kind: 'approve_restore_keep', label: 'Yes' },
-  { kind: 'reject', label: 'No' },
-] as const
+export function emptyPlanOptions(locale: Locale = DEFAULT_LOCALE): readonly DecisionOption[] {
+  const strings = STRINGS[locale]
+  return [
+    { kind: 'approve_restore_keep', label: strings.emptyYes },
+    { kind: 'reject', label: strings.emptyNo },
+  ] as const
+}
+
+/** The English form, kept as a constant for the TUI and the runtime barrel. */
+export const EMPTY_PLAN_OPTIONS: readonly DecisionOption[] = emptyPlanOptions('en')
 
 export function isEmptyPlan(planContent: string): boolean {
   return planContent.trim().length === 0
@@ -100,9 +160,11 @@ export function isEmptyPlan(planContent: string): boolean {
 export function exitPlanOptionsFor(input: {
   planContent: string
   isBypassAvailable?: boolean
+  locale?: Locale
 }): readonly DecisionOption[] {
-  if (isEmptyPlan(input.planContent)) return EMPTY_PLAN_OPTIONS
-  return buildExitPlanModeOptions({ isBypassAvailable: input.isBypassAvailable === true })
+  const locale = input.locale ?? DEFAULT_LOCALE
+  if (isEmptyPlan(input.planContent)) return emptyPlanOptions(locale)
+  return buildExitPlanModeOptions({ isBypassAvailable: input.isBypassAvailable === true, locale })
 }
 
 /**
@@ -120,12 +182,17 @@ export function exitPlanDecisionFor(
   return { kind: option.kind, planContent: state.planContent }
 }
 
-export function previewMarkdownLines(content: string, maxLines: number): string {
+export function previewMarkdownLines(
+  content: string,
+  maxLines: number,
+  locale: Locale = DEFAULT_LOCALE,
+): string {
+  const omittedLabel = STRINGS[locale].linesOmitted
   const lines = content.split(/\r?\n/)
   if (lines.length <= maxLines) return content
   const safeMax = Math.max(1, maxLines)
   if (safeMax === 1) {
-    return `${lines[0] ?? ''}\n[... ${lines.length - 1} lines omitted from preview ...]`
+    return `${lines[0] ?? ''}\n${omittedLabel(lines.length - 1)}`
   }
 
   const omitted = lines.length - safeMax + 1
@@ -135,7 +202,7 @@ export function previewMarkdownLines(content: string, maxLines: number): string 
   const tail = tailCount > 0 ? lines.slice(lines.length - tailCount) : []
   return [
     ...head,
-    `[... ${omitted} lines omitted from preview ...]`,
+    omittedLabel(omitted),
     ...tail,
   ].join('\n')
 }

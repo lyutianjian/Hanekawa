@@ -116,16 +116,16 @@ test('Enter on "(current)" closes rather than arming a rewind', () => {
 
 test('an empty session draws an explanation instead of a list', () => {
   const view = rewindViewModel(createRewindState([]))
-  assert.equal(view.emptyMessage, 'No checkpoints available')
+  assert.equal(view.emptyMessage, '没有可用的检查点')
   assert.deepEqual(view.rows, [])
-  assert.equal(view.hint, '[Esc] Close')
+  assert.equal(view.hint, '[Esc] 关闭')
 })
 
 test('a failed checkpoint read still shows the reason', () => {
   // `app.ts` opens the panel empty rather than swallowing the failure.
   const view = rewindViewModel(failRewindRun(createRewindState([]), 'shadow git is missing'))
   assert.equal(view.error, 'shadow git is missing')
-  assert.equal(view.emptyMessage, 'No checkpoints available')
+  assert.equal(view.emptyMessage, '没有可用的检查点')
 })
 
 // --- the select screen ------------------------------------------------------
@@ -138,8 +138,8 @@ test('the list ends with "(current)" and marks the cursor row', () => {
   assert.equal(view.rows[2]?.isCurrent, true)
   assert.equal(view.rows[2]?.selected, true, 'the cursor starts on "(current)"')
   // Turn diffs are summarized per row so a user can see which turn touched code.
-  assert.equal(view.rows[0]?.detail, 'No code changes')
-  assert.equal(view.rows[1]?.detail, '2 files changed +12 -3')
+  assert.equal(view.rows[0]?.detail, '无代码改动')
+  assert.equal(view.rows[1]?.detail, '2 个文件有改动 +12 -3')
 })
 
 test('moving clamps at both ends rather than wrapping', () => {
@@ -186,7 +186,7 @@ test('the option list follows whether restoring would change files', () => {
     'summarize-up-to-here',
     'nevermind',
   ])
-  assert.equal(noCode.codeEffect, 'The code will be unchanged.')
+  assert.equal(noCode.codeEffect, '代码不会改动。')
   assert.equal(noCode.warning, undefined, 'no manual-edit warning when nothing is restored')
 
   const withCode = rewindViewModel(confirmOn('m2'))
@@ -198,8 +198,8 @@ test('the option list follows whether restoring would change files', () => {
     'summarize-up-to-here',
     'nevermind',
   ])
-  assert.match(withCode.codeEffect, /^The code will be restored \+12 -3 in src\/parser\.ts/)
-  assert.match(withCode.warning ?? '', /files edited manually or via bash/)
+  assert.match(withCode.codeEffect, /^代码将被恢复，\+12 -3 位于 src\/parser\.ts/)
+  assert.match(withCode.warning ?? '', /手动或经由 bash 修改的文件/)
   // Hotkeys are the 1-based render order, matching the terminal's numeric keys.
   assert.deepEqual(withCode.options.map((option) => option.hotkey), ['1', '2', '3', '4', '5', '6'])
 })
@@ -242,13 +242,13 @@ test('the busy label names the operation rather than a generic spinner', () => {
     kind: 'choose',
     decision: 'restore-code',
   }).state)
-  assert.equal(rewindViewModel(restoring).busyLabel, 'Rewinding...')
+  assert.equal(rewindViewModel(restoring).busyLabel, '正在回退……')
 
   const summarizing = beginRewindRun(applyRewindIntent(confirmOn('m2'), {
     kind: 'choose',
     decision: 'summarize-up-to-here',
   }).state)
-  assert.equal(rewindViewModel(summarizing).busyLabel, 'Summarizing...')
+  assert.equal(rewindViewModel(summarizing).busyLabel, '正在摘要……')
   // The options are withdrawn while it runs; a second choice would race the first.
   assert.equal(rewindKeyToIntent({ key: 'Enter' }, summarizing).kind, 'none')
   assert.equal(rewindKeyToIntent({ key: 'Escape' }, summarizing).kind, 'none')
@@ -284,9 +284,9 @@ test('Enter and the numeric hotkeys choose from the confirm screen', () => {
   assert.equal(rewindKeyToIntent({ key: '5' }, confirmOn('m1')).kind, 'none')
 })
 
-test('a modified chord is left alone so the tab-bar chords keep working', () => {
+test('a modified chord is left alone so the sidebar chords keep working', () => {
   const state = createRewindState(twoCheckpoints())
-  // Ctrl+W must reach `tabBarKeyToIntent`, which is resolved before the keymap.
+  // Ctrl+W must reach `sidebarChordToIntent`, which is resolved before the keymap.
   assert.equal(rewindKeyToIntent({ key: 'w', ctrlKey: true }, state).kind, 'none')
   assert.equal(rewindKeyToIntent({ key: 't', metaKey: true }, state).kind, 'none')
 })
@@ -305,7 +305,7 @@ test('restore-conversation truncates and nothing else', async () => {
   const { client, calls } = stubClient()
   const result = await runRewind(client, 'restore-conversation', checkpoint())
   assert.deepEqual(calls, ['truncate:m1'])
-  assert.deepEqual(result, { message: 'Conversation rewound to before "add the parser"', partial: false })
+  assert.deepEqual(result, { message: '对话已回退到“add the parser”之前', partial: false })
 })
 
 test('restore-code reverts files and leaves the conversation alone', async () => {
@@ -357,14 +357,14 @@ test('a restore that fails after the truncate reports the half that landed', asy
   const result = await runRewind(client, 'restore-code-and-conversation', checkpoint())
   assert.deepEqual(calls, ['truncate:m1'])
   assert.equal(result.partial, true)
-  assert.match(result.message, /Conversation rewound to before "add the parser"/)
-  assert.match(result.message, /could not be reverted: dirty working tree/)
+  assert.match(result.message, /对话已回退到“add the parser”之前/)
+  assert.match(result.message, /文件状态无法还原：dirty working tree/)
 })
 
 test('a missing error string still produces a reason', async () => {
   const { client } = stubClient({ restoreCode: async () => ({ success: false }) })
   const result = await runRewind(client, 'restore-code-and-conversation', checkpoint())
-  assert.match(result.message, /Failed to restore file state/)
+  assert.match(result.message, /文件状态恢复失败/)
 })
 
 test('a truncate rejection propagates, so a stale checkpoint list is visible', async () => {

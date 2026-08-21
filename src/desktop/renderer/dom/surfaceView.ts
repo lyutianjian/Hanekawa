@@ -9,7 +9,7 @@ import { el, replace, show } from './dom.js'
  * `keymap.ts` routes here while the composer is empty. What a row *does* is not
  * decided in this file: the model attaches a `SurfaceAction` to each row and
  * this closure hands whichever one was chosen back to `app.ts`, exactly the way
- * `tabBarView.ts` does. A row with no action (a model key that cannot be loaded)
+ * `sidebarView.ts` does. A row with no action (a model key that cannot be loaded)
  * is drawn to explain itself and is not clickable.
  *
  * A command view's rows stay inert — those are a table of facts, not choices.

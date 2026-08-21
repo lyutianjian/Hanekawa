@@ -132,3 +132,44 @@ test('RestoreMode re-exports the shared module rather than keeping a copy', () =
   assert.equal(restoreMode.formatDiffSummary, formatDiffSummary)
   assert.equal(restoreMode.truncateMessage, truncateMessage)
 })
+
+// --- locale -----------------------------------------------------------------
+
+test('the locale parameter defaults to English, which is what keeps the TUI untouched', () => {
+  // The whole reason it is optional: the terminal's call sites did not have to
+  // change. If the default ever flips, it fails here rather than in a shell.
+  assert.equal(buildRestoreOptions(false)[0]?.label, 'Restore conversation')
+  assert.equal(rewindSuccessMessage('restore-code', 'x'), 'Code restored to before "x"')
+  assert.equal(
+    formatDiffSummary({ hasChanges: false, additions: 0, deletions: 0, fileCount: 0 }),
+    'unchanged',
+  )
+})
+
+test('Chinese changes the words, never the decisions', () => {
+  const zh = buildRestoreOptions(true, 'zh')
+  assert.deepEqual(
+    zh.map((option) => option.decision),
+    buildRestoreOptions(true).map((option) => option.decision),
+    'the list and its order are the numeric hotkey map; only labels may move',
+  )
+  assert.equal(zh[0]?.label, '恢复代码与对话')
+  assert.equal(rewindSuccessMessage('restore-code', 'x', 'zh'), '代码已恢复到“x”之前')
+  assert.equal(
+    rewindSuccessMessage('nevermind', 'x', 'zh'),
+    '',
+    'never mind performs nothing and so says nothing, in either language',
+  )
+  assert.match(rewindPartialFailureMessage('x', 'dirty tree', 'zh'), /文件状态无法还原：dirty tree/)
+  assert.equal(
+    formatDiffSummary({ hasChanges: false, additions: 0, deletions: 0, fileCount: 0 }, 'zh'),
+    '无改动',
+  )
+  assert.match(
+    formatDiffSummary(
+      { hasChanges: true, additions: 2, deletions: 1, fileCount: 3, firstFile: 'a.ts' },
+      'zh',
+    ),
+    /\+2 -1 位于 a\.ts 及另外 2 个文件/,
+  )
+})

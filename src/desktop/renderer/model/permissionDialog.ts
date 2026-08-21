@@ -18,6 +18,7 @@ import {
 import type { DestructiveCommandWarning } from '../../../harness/destructiveCommands.js'
 import type { PermissionRequestDto, UiResponse } from '../../../runtime/protocol/wire.js'
 import { previewView, type PreviewView } from './diffRows.js'
+import { UI_LOCALE } from './locale.js'
 
 /**
  * The permission dialog as data.
@@ -68,18 +69,18 @@ export function permissionViewModel(input: {
 }): PermissionViewModel {
   const { request } = input
   const warnings = destructiveWarningsForRequest(request)
-  const options = permissionOptionsForRequest(request)
+  const options = permissionOptionsForRequest(request, UI_LOCALE)
   const total = input.total ?? 1
   const activeIndex = input.activeIndex ?? 0
 
   return {
-    title: formatPermissionTitle(request),
+    title: formatPermissionTitle(request, UI_LOCALE),
     // Already carries "n/m pending" when total > 1 — a view must not print a
     // second counter of its own.
-    subtitle: formatPermissionSubtitle(request, activeIndex, total),
-    reason: formatPermissionReason(request),
+    subtitle: formatPermissionSubtitle(request, activeIndex, total, UI_LOCALE),
+    reason: formatPermissionReason(request, UI_LOCALE),
     tone: permissionToneForRequest(request, warnings),
-    inputBlock: formatPermissionInputBlock(request),
+    inputBlock: formatPermissionInputBlock(request, UI_LOCALE),
     warnings,
     denialStreakNote: denialStreakNote(request.denialStreak),
     options,
@@ -168,14 +169,14 @@ function alsoWaitingLabels(others: readonly PermissionRequestDto[]): string[] {
 function denialStreakNote(denialStreak: number): string | undefined {
   if (denialStreak <= 0) return undefined
   return denialStreak === 1
-    ? 'Denied once already.'
-    : `Denied ${denialStreak} times already.`
+    ? '已拒绝过一次。'
+    : `已拒绝过 ${denialStreak} 次。`
 }
 
 function hintFor(options: readonly PermissionOption[], total: number): string {
   const keys = options.map((option) => option.hotkey.toUpperCase()).join('/')
-  const base = `[↑↓] Move  [${keys}] Quick  [Enter] Select  [Esc] Deny`
-  return total > 1 ? `${base}  [Tab] Next request` : base
+  const base = `[↑↓] 移动　[${keys}] 快选　[Enter] 确定　[Esc] 拒绝`
+  return total > 1 ? `${base}　[Tab] 下一条请求` : base
 }
 
 function clampIndex(index: number, total: number): number {

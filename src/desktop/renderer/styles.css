@@ -1,0 +1,806 @@
+/*
+  The desktop renderer's stylesheet.
+
+  Lifted out of `index.html`'s inline `<style>` in 4e: the sheet was already the
+  bulk of that file and the settings screen 4d adds would have doubled it. The
+  CSP header allows it (`style-src 'self'`), and `scripts/copy-desktop-assets.mjs`
+  copies it next to `app.js` — a `BrowserWindow.loadFile` resolves `./styles.css`
+  relative to the HTML, so the copy is not optional.
+
+  Semantic names, not literals, for the same reason `src/tui/theme.ts` is a
+  frozen object: a view asks for "danger", never for a hex value, so the two
+  shells can be re-skinned independently without hunting for colours.
+  `test/rendererStyleTokens.test.ts` asserts that at source level.
+*/
+:root {
+  /* --- surfaces: four layers, darkest first ---
+     The sidebar is the app's *base*, and the canvas is a lighter panel nested
+     inside it. That is the inverse of what this shell did before 4e, and it is
+     the whole point: depth comes from the canvas sitting on top of the frame,
+     not from the frame being brighter than its contents. */
+  --surface-base: #0f0f11;
+  --surface-canvas: #17171a;
+  --surface-card: #1f1f23;
+  /* Pointer-over. Its own step because the four-layer ladder has no room for
+     one: rows inside a panel sit *on* --surface-card, so hovering them to
+     --surface-card would be invisible, and hovering them to --surface-active
+     would make hover indistinguishable from selection. */
+  --surface-hover: #25252b;
+  /* The row the keyboard is on, in either list. */
+  --surface-active: #2a2a30;
+  /* What a modal dims the app with. A token because both #overlay and #rewind
+     draw it, and they must dim by the same amount or stacking them reads as a
+     bug. */
+  --surface-scrim: rgba(0, 0, 0, 0.55);
+
+  /* --- text: three levels plus the one interactive colour --- */
+  --text-primary: #f2f2f5;
+  --text-secondary: #9aa0aa;
+  --text-tertiary: #6b7078;
+  --link: #6aa8ff;
+
+  /* --- accents ---
+     Icons, badges and 1–3px state rules only. Never a fill, never a page of
+     body text: the interface stays neutral and colour means something when it
+     does appear. `test/rendererStyleTokens.test.ts` enforces the property list. */
+  --accent-info: #5b9dff;
+  --accent-tool: #a97bff;
+  --accent-review: #4cc38a;
+  --accent-warn: #e0a355;
+  --accent-danger: #f0616e;
+
+  /* Text that has to carry a state colour asks for it by *its own* name, so no
+     rule ever spells `--accent-*` on a paragraph and the rule above stays
+     literally checkable. */
+  --text-danger: var(--accent-danger);
+  --text-warn: var(--accent-warn);
+  --text-success: var(--accent-review);
+
+  /* --- lines ---
+     Hairlines, and few of them: grouping is done with cards and spacing. */
+  --border-subtle: #26262b;
+  --border-strong: #34343b;
+  --focus-ring: #5b9dff;
+  --caret: #f2f2f5;
+
+  /* --- shape ---
+     Large for the panels the eye frames the app by, medium for cards and
+     wells, pill for anything that reads as a control. */
+  --radius-lg: 14px;
+  --radius-md: 9px;
+  --radius-pill: 9999px;
+
+  /* --- type ---
+     The chrome is proportional; anything the user has to read character by
+     character is not. `--font-mono` is re-declared on those selectors rather
+     than inherited, so the dependency is visible where it matters — and
+     `test/rendererStyleTokens.test.ts` checks the list. */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui,
+             "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+               "Cascadia Mono", monospace;
+
+  /* --- diff ---
+     Content colours, not interface colours, and exempt from the neutrality rule
+     for the same reason `theme.markdown` and `theme.syntax` are exempt in
+     `src/tui/theme.ts`: red and green *are* the meaning here. */
+  --diff-add-fg: #b5cea8;
+  --diff-add-bg: #16251a;
+  --diff-del-fg: #f4a49b;
+  --diff-del-bg: #2a1a1c;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font: 14px/1.5 var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+[hidden] { display: none !important; }
+
+/* --- icons ---
+   `dom/icons.ts` draws these as SVG inheriting `currentColor`, so an icon is
+   coloured by whatever rule colours its button. Sized here rather than on the
+   element so the whole set rescales in one place. */
+.icon { flex: 0 0 auto; display: block; width: 14px; height: 14px; }
+.btn-label { white-space: nowrap; }
+
+/* --- status bar --- */
+#status {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+}
+#status-streaming { color: var(--text-tertiary); }
+#status-session { margin-left: auto; }
+
+/* --- the two-column shell ---
+   The sidebar is the app's base surface and the canvas is a lighter panel
+   floating inside it, per `design_guidance.md`'s layered-surface model. The
+   canvas's margin is what separates the two columns — a gap, not a rule, which
+   is the same "cards, not lines" move the group containers below make.
+
+   `overflow: hidden` is not decoration: the transcript scrolls inside this
+   panel, and without it the scrollbar squares off the corner the layout is
+   built around. */
+#shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+#canvas {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 8px 8px 8px 0;
+  background: var(--surface-canvas);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+/* --- sidebar --- */
+#sidebar {
+  flex: 0 0 260px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-base);
+  overflow: hidden;
+}
+/* Collapsed keeps the rail so the toggle stays reachable by mouse —
+   otherwise Ctrl+B is the only way back. */
+#sidebar.collapsed { flex-basis: 44px; }
+#sidebar.collapsed .sidebar-mark,
+#sidebar.collapsed .sidebar-new { display: none; }
+.sidebar-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 10px 8px;
+}
+.sidebar-mark {
+  flex: 1 1 auto;
+  color: var(--text-primary);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-new,
+.sidebar-open-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sidebar-new:hover:enabled,
+.sidebar-open-project:hover:enabled {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+.sidebar-new:disabled,
+.sidebar-open-project:disabled { opacity: 0.4; cursor: default; }
+.sidebar-collapse {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: var(--radius-pill);
+  padding: 4px;
+  font: inherit;
+  cursor: pointer;
+}
+.sidebar-collapse:hover { color: var(--text-primary); background: var(--surface-hover); }
+.sidebar-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.sidebar-list:focus { outline: 1px solid var(--focus-ring); outline-offset: -1px; }
+.sidebar-empty { color: var(--text-secondary); font-size: 12px; padding: 10px 12px; }
+.sidebar-footer {
+  flex: 0 0 auto;
+  padding: 8px 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sidebar-hint { color: var(--text-tertiary); font-size: 10px; line-height: 1.4; }
+
+/* One project's sessions, behind its own heading. Only drawn from two up. */
+.project-label {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 12px 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-group.own .project-label { color: var(--text-primary); }
+.session-section-label {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  padding: 6px 12px 2px;
+}
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 1px 6px;
+  padding: 2px 6px 2px 8px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.session-row:hover { background: var(--surface-hover); }
+.session-row.selected { background: var(--surface-active); }
+.session-row.active .session-title { color: var(--text-primary); }
+.session-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  border: 0;
+  padding: 3px 0;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+/* A session that is only history reads as secondary until it is opened. */
+.session-row:not(.open) .session-open { color: var(--text-secondary); }
+.session-title {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-badge { flex: 0 0 auto; display: inline-flex; align-items: center; }
+.session-badge .icon { width: 8px; height: 8px; }
+.session-badge.running { color: var(--accent-info); }
+.session-badge.awaiting-input { color: var(--accent-warn); }
+.session-actions { flex: 0 0 auto; display: flex; gap: 2px; opacity: 0; }
+.session-row:hover .session-actions,
+.session-row.selected .session-actions { opacity: 1; }
+.session-delete {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  padding: 3px;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--radius-pill);
+}
+.session-delete:hover { color: var(--text-danger); background: var(--surface-hover); }
+.session-row.confirming { background: var(--surface-card); }
+.session-confirm-text { flex: 1 1 auto; color: var(--text-warn); font-size: 11px; }
+.session-confirm-yes,
+.session-confirm-no {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.session-confirm-yes { color: var(--text-danger); border-color: var(--text-danger); }
+.session-confirm-no { color: var(--text-secondary); }
+
+/* --- transcript ---
+   One subtree per pane: switching panes toggles visibility, so scroll
+   positions survive and nothing repaints. The mount and the wrapper
+   carry the flex column; `.transcript` itself is the scroll container. */
+#transcript-area {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.transcript {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 12px;
+  font-size: 13px;
+}
+.transcript .item { margin-bottom: 10px; white-space: pre-wrap; word-break: break-word; }
+/*
+  Markdown items are real block elements, so the pre-wrap above would turn
+  every newline between blocks into a blank line. Only the code inside a
+  fence keeps whitespace.
+*/
+.transcript .item.md { white-space: normal; }
+/* The user's turn reads as a compact bubble on the right, per
+   `design_guidance.md`'s conversation-stream layout — a surface rather than a
+   colour, which is what freed `--user` (a blue) from the palette entirely. */
+.transcript .item.user {
+  width: fit-content;
+  max-width: 80%;
+  margin-left: auto;
+  padding: 6px 10px;
+  background: var(--surface-card);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+}
+.transcript .item.assistant { color: var(--text-primary); }
+.transcript .item.thinking { color: var(--text-tertiary); font-style: italic; opacity: 0.8; }
+.transcript .item.notice { color: var(--text-secondary); font-style: italic; }
+.transcript .item.error { color: var(--text-danger); }
+.transcript .item.subagent { color: var(--accent-tool); }
+.transcript .item.duration { color: var(--text-tertiary); font-size: 12px; }
+/* Tool lines are command text and tool output: they have to stay monospaced or
+   a `git status` loses its columns under the proportional chrome font. */
+.transcript .item.tool {
+  color: var(--text-secondary);
+  border-left: 2px solid var(--border-strong);
+  padding-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.transcript .item.tool.failed { color: var(--text-danger); border-left-color: var(--text-danger); }
+.transcript .item.pending::after { content: " ▌"; color: var(--caret); }
+.tool-progress {
+  flex: 0 0 auto;
+  padding: 4px 14px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+
+/* --- surfaces (pickers, command views) ---
+   A card floating in the canvas rather than a strip ruled off from it: the
+   group container *is* the separator, which is `design_guidance.md`'s fourth
+   checklist rule. `#queue` and `#suggestions` below are the same shape. */
+#surface {
+  flex: 0 0 auto;
+  max-height: 40vh;
+  overflow-y: auto;
+  margin: 0 8px 8px;
+  background: var(--surface-card);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+}
+#surface h2 { font-size: 12px; margin: 0 0 6px; color: var(--text-primary); font-weight: 600; }
+#surface .row { display: flex; gap: 10px; padding: 2px 0; font-size: 13px; }
+#surface .row[role="option"] { cursor: pointer; padding: 2px 6px; margin: 0 -6px; border-radius: 6px; }
+#surface .row[role="option"]:hover { background: var(--surface-hover); }
+#surface .row.selected { background: var(--surface-active); }
+#surface .row.selected .label { color: var(--text-primary); }
+#surface .row .label { min-width: 11rem; }
+#surface .row .value { color: var(--text-secondary); flex: 1 1 auto; }
+#surface .row.current .label { color: var(--text-primary); }
+#surface .row.disabled { opacity: 0.55; }
+#surface .row.heading .label { color: var(--text-primary); }
+#surface .row.tone-success .value { color: var(--text-success); }
+#surface .row.tone-warning .value { color: var(--text-warn); }
+#surface .row.tone-error .value { color: var(--text-danger); }
+#surface .hint { color: var(--text-secondary); font-size: 11px; margin-top: 6px; }
+
+/*
+  --- the queued-message strip ---
+  Sits directly above the composer, because it is about what will be sent
+  next rather than about what has happened. Read-only apart from Clear: the
+  wire has no per-message dequeue (the host pumps its own queue).
+*/
+#queue {
+  flex: 0 0 auto;
+  max-height: 22vh;
+  overflow-y: auto;
+  margin: 0 8px 8px;
+  background: var(--surface-card);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+#queue .queue-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+#queue .queue-title { color: var(--text-warn); flex: 1 1 auto; }
+#queue .queue-clear {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  padding: 1px 10px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+#queue .queue-clear:hover { color: var(--text-danger); border-color: var(--text-danger); }
+#queue .queue-row { display: flex; gap: 8px; padding: 1px 0; color: var(--text-secondary); }
+#queue .queue-position { flex: 0 0 auto; opacity: 0.7; }
+#queue .queue-label {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- completions --- */
+#suggestions {
+  flex: 0 0 auto;
+  margin: 0 8px 8px;
+  background: var(--surface-card);
+  border-radius: var(--radius-md);
+  max-height: 30vh;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+#suggestions .suggestion { display: flex; gap: 10px; padding: 3px 12px; font-size: 13px; }
+#suggestions .suggestion .name { color: var(--text-primary); min-width: 9rem; }
+#suggestions .suggestion .description { color: var(--text-secondary); }
+#suggestions .suggestion.selected { background: var(--surface-active); }
+#suggestions .suggestion.selected .name { color: var(--text-primary); }
+
+/* --- composer ---
+   `design_guidance.md`'s anchored composite input: one large-radius capsule
+   holding the textarea and an inline action bar — `+` on the left, the
+   "model · effort" pill and a round send button on the right. The chip is where
+   stage-4 decision 4 lands: effort is adjusted next to the message it affects,
+   and never appears in settings. */
+#input-row {
+  flex: 0 0 auto;
+  padding: 0 8px 10px;
+}
+#composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 8px 10px;
+}
+#composer:focus-within { border-color: var(--border-strong); }
+#input {
+  background: transparent;
+  color: var(--text-primary);
+  border: 0;
+  outline: none;
+  padding: 2px;
+  font: inherit;
+  resize: none;
+  min-height: 28px;
+  /* Kept in step with `MAX_COMPOSER_HEIGHT_PX` in `dom/composerView.ts`, which
+     is the load-bearing copy: `autosize` clamps `scrollHeight` against it, and
+     a stylesheet cannot do that arithmetic. */
+  max-height: 200px;
+}
+#composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.composer-spacer { flex: 1 1 auto; }
+#composer-attach {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+#composer-attach:hover { color: var(--text-primary); background: var(--surface-hover); }
+/* Two buttons drawn as one pill: nesting buttons is invalid markup, and each
+   half opens a different picker. */
+#composer-chip {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+#chip-model,
+#chip-effort {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#chip-effort { border-left: 1px solid var(--border-subtle); }
+#chip-model:hover:enabled,
+#chip-effort:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+#chip-model:disabled,
+#chip-effort:disabled { opacity: 0.5; cursor: default; }
+#submit, #stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+/* The one high-contrast fill in the interface, and it is neutral: an accent
+   here would be the "coloured background" the palette rules out. */
+#submit { background: var(--text-primary); color: var(--surface-base); }
+#stop { background: var(--surface-hover); color: var(--text-warn); }
+#submit[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+/* --- overlay: the four blocking requests --- */
+#overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--surface-scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 10;
+}
+#overlay-panel {
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-top-width: 3px;
+  border-radius: var(--radius-lg);
+  max-width: 44rem;
+  width: 100%;
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 16px 20px;
+  font-size: 13px;
+}
+#overlay-panel.tone-danger { border-top-color: var(--accent-danger); }
+#overlay-panel.tone-caution { border-top-color: var(--accent-warn); }
+#overlay-panel.tone-normal { border-top-color: var(--accent-info); }
+#overlay-panel .title { font-weight: 600; margin-bottom: 2px; }
+#overlay-panel.tone-danger .title { color: var(--text-danger); }
+#overlay-panel.tone-caution .title { color: var(--text-warn); }
+#overlay-panel.tone-normal .title { color: var(--accent-info); }
+#overlay-panel .subtitle,
+#overlay-panel .hint,
+#overlay-panel .also-waiting { color: var(--text-secondary); font-size: 12px; }
+#overlay-panel .reason { margin: 8px 0; }
+#overlay-panel .warning { color: var(--text-danger); }
+#overlay-panel .streak { color: var(--text-warn); font-size: 12px; }
+/* The command, the plan and the feedback field are inset wells inside the card,
+   and every one of them is read character by character — hence both the darker
+   surface and the monospace. */
+#overlay-panel .block {
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  margin: 8px 0;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+#overlay-panel .block-label { color: var(--text-tertiary); font-size: 11px; }
+#overlay-panel .options { margin: 10px 0 6px; }
+#overlay-panel .option { padding: 1px 0; }
+#overlay-panel .option.selected { color: var(--text-primary); font-weight: 600; }
+#overlay-panel .option .hotkey { color: var(--text-warn); }
+#overlay-panel .plan {
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  margin: 8px 0;
+  max-height: 40vh;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+#overlay-panel .bullets { color: var(--text-secondary); margin: 6px 0; }
+#overlay-panel .feedback {
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  margin: 4px 0 0 2rem;
+  min-height: 1.5em;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+#overlay-panel .feedback.focused { border-color: var(--focus-ring); }
+#overlay-panel .feedback::after { content: "▌"; color: var(--caret); }
+#overlay-panel .preview-title { color: var(--text-tertiary); font-size: 12px; margin-top: 8px; }
+
+/*
+  --- the rewind panel ---
+  Its own layer, stacked *below* #overlay (z-index 10): a permission prompt
+  that arrives while this is open is holding the agent loop and has to be
+  answered first, so it draws on top.
+*/
+#rewind {
+  position: fixed;
+  inset: 0;
+  background: var(--surface-scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 5;
+}
+#rewind-panel {
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-top-width: 3px;
+  border-top-color: var(--accent-warn);
+  border-radius: var(--radius-lg);
+  max-width: 44rem;
+  width: 100%;
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 16px 20px;
+  font-size: 13px;
+}
+#rewind-panel .title { font-weight: 600; color: var(--text-warn); margin-bottom: 2px; }
+#rewind-panel .subtitle,
+#rewind-panel .hint { color: var(--text-secondary); font-size: 12px; }
+#rewind-panel .error { color: var(--text-danger); margin: 8px 0; }
+#rewind-panel .rows { margin: 10px 0 6px; }
+#rewind-panel .row { display: flex; gap: 10px; padding: 3px 6px; margin: 0 -6px; border-radius: 6px; cursor: pointer; }
+#rewind-panel .row:hover { background: var(--surface-hover); }
+#rewind-panel .row.selected { background: var(--surface-active); }
+#rewind-panel .row.selected .label { color: var(--text-primary); }
+#rewind-panel .row .label { flex: 1 1 auto; white-space: pre-wrap; word-break: break-word; }
+#rewind-panel .row .value { color: var(--text-secondary); flex: 0 0 auto; }
+#rewind-panel .row.current .label { color: var(--text-secondary); }
+#rewind-panel .confirm { margin: 10px 0 6px; }
+#rewind-panel .confirm .message {
+  background: var(--surface-canvas);
+  border-left: 2px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#rewind-panel .options { margin: 10px 0 6px; }
+#rewind-panel .option { padding: 2px 6px; margin: 0 -6px; border-radius: 6px; cursor: pointer; }
+#rewind-panel .option:hover { background: var(--surface-hover); }
+#rewind-panel .option.selected { color: var(--text-primary); font-weight: 600; }
+#rewind-panel .option .hotkey { color: var(--text-warn); }
+#rewind-panel .busy { color: var(--accent-info); margin: 10px 0 6px; }
+#rewind-panel .warning { color: var(--text-danger); margin-top: 8px; }
+
+/* --- markdown (assistant messages and plan bodies) --- */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 8px; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+  margin: 12px 0 6px;
+  color: var(--text-primary);
+  font-weight: 600;
+  line-height: 1.3;
+}
+.md h1 { font-size: 1.35em; }
+.md h2 { font-size: 1.2em; }
+.md h3 { font-size: 1.08em; }
+.md h4, .md h5, .md h6 { font-size: 1em; }
+.md ul, .md ol { margin: 0 0 8px; padding-left: 1.4rem; }
+.md li { margin: 2px 0; }
+.md li > ul, .md li > ol { margin-bottom: 0; }
+.md li.md-task { list-style: none; margin-left: -1.4rem; }
+.md .md-check { color: var(--accent-review); }
+.md blockquote {
+  margin: 0 0 8px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+.md hr { border: 0; border-top: 1px solid var(--border-strong); margin: 12px 0; }
+.md a { color: var(--link); text-decoration: none; }
+.md a:hover { text-decoration: underline; }
+.md .md-inline-code {
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 0 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+.md .md-code {
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  margin: 0 0 8px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+.md .md-code-lang {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.md .md-code pre {
+  margin: 0;
+  padding: 6px 8px;
+  overflow-x: auto;
+  white-space: pre;
+  font: inherit;
+}
+.md .md-code code { font: inherit; }
+.md .md-table { border-collapse: collapse; margin: 0 0 8px; }
+.md .md-table th, .md .md-table td {
+  border: 1px solid var(--border-subtle);
+  padding: 2px 8px;
+  text-align: left;
+}
+.md .md-table th { color: var(--text-primary); font-weight: 600; }
+/* The plan body keeps its own panel chrome; markdown only replaces the text. */
+#overlay-panel .plan.md { white-space: normal; }
+
+/* --- diff --- */
+.diff {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  margin: 6px 0;
+  max-height: 45vh;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.diff-row { display: flex; white-space: pre; }
+/* `ch` is the width of a `0`, so this column is only stable while the rule is
+   monospaced — which is why the family is re-declared here rather than left to
+   `.diff`. `dom/diffView.ts` pads line numbers to three columns against it. */
+.diff-row .gutter {
+  flex: 0 0 8ch;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  text-align: right;
+  padding-right: 8px;
+  user-select: none;
+}
+.diff-row .text { flex: 1 1 auto; padding-right: 8px; }
+.diff-row.add { background: var(--diff-add-bg); color: var(--diff-add-fg); }
+.diff-row.del { background: var(--diff-del-bg); color: var(--diff-del-fg); }
+.diff-row.ctx { color: var(--text-primary); opacity: 0.75; }
+.diff-row.elided { color: var(--text-secondary); font-style: italic; }

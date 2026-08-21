@@ -10,7 +10,7 @@ import { el, replace, show } from './dom.js'
  *
  * Every decision is already made in the view model. Rows and options are
  * clickable and hand back a `RewindIntent`, the same shape the key map produces,
- * so `app.ts` has one code path for both (`tabBarView.ts` does this too).
+ * so `app.ts` has one code path for both (`sidebarView.ts` does this too).
  *
  * No `innerHTML`, and **no markdown**: a checkpoint label is the user's own
  * message, and this dialog is asking them to confirm destroying work. It shows

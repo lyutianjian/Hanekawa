@@ -1,101 +1,24 @@
-import { completionRows, type CompletionState } from '../model/completion.js'
-import type { SessionControllerSnapshot } from '../../../runtime/sessionController.js'
-import type { WireRuntimeSnapshot, WireUsageCost } from '../../../runtime/protocol/wire.js'
-import { el, replace, show } from './dom.js'
-
-/** The status bar, the completion dropdown and the composer's own controls. */
-
-export interface StatusView {
-  render(snapshot: SessionControllerSnapshot, cost?: WireUsageCost): void
-  renderRuntime(runtime: WireRuntimeSnapshot): void
-  renderSession(session: { id: string; title?: string; messageCount?: number }): void
-}
-
-export function createStatusView(els: {
-  model: HTMLElement
-  mode: HTMLElement
-  usage: HTMLElement
-  cost: HTMLElement
-  streaming: HTMLElement
-  session: HTMLElement
-}): StatusView {
-  return {
-    render(snapshot, cost) {
-      els.streaming.textContent = snapshot.isStreaming
-        ? `streaming${snapshot.spinnerSubText ? `: ${snapshot.spinnerSubText}` : ''}`
-        : 'idle'
-      const total = snapshot.usage.total ?? { inputTokens: 0, outputTokens: 0 }
-      els.usage.textContent = total.inputTokens === 0 && total.outputTokens === 0
-        ? ''
-        : `${format(total.inputTokens)} in / ${format(total.outputTokens)} out`
-      // Absent rather than zero when the model has no complete pricing: "not
-      // priced" and "free" are different answers, and the host already decided
-      // which one this is (`resolveUsageWithCost`).
-      els.cost.textContent = cost ? `${cost.currency} ${formatCost(cost.amount)}` : ''
-    },
-
-    renderRuntime(runtime) {
-      const provider = runtime.providerName ? ` (${runtime.providerName})` : ''
-      els.model.textContent = `${runtime.model}${provider} · effort ${runtime.effort}`
-      els.mode.textContent = `mode: ${runtime.permissionMode}`
-    },
-
-    renderSession(session) {
-      const name = session.title ?? session.id
-      // The window title is also the desktop shell's end-to-end proof: it is only
-      // set after `hello()` returns, so reading it from outside the process shows
-      // the whole chain worked.
-      document.title = `Hanekawa — ${name}`
-      els.session.textContent = name
-    },
-  }
-}
-
-function format(n: number): string {
-  return n.toLocaleString('en-US')
-}
+import { composerChipView, insertMentionToken, submitLabel } from '../model/composer.js'
+import type { WireRuntimeSnapshot } from '../../../runtime/protocol/wire.js'
+import { replace, show } from './dom.js'
+import { icon } from './icons.js'
 
 /**
- * Enough digits to see a cheap turn move the number, without a wall of zeros.
+ * The composer: a capsule containing the textarea and an inline action bar.
  *
- * Deliberately its own formatter rather than a shared one with `/cost`
- * (`commands/cost.ts`): that view has a whole row to fill and prints six
- * decimals, while this one sits in a status bar between four other fields.
+ * `design_guidance.md`'s anchored composite input — attachment control bottom
+ * left, a "model · effort" chip and a round send button bottom right. The chip
+ * is where stage-4 decision 4 lands: effort is adjustable next to the message
+ * it will affect, and never appears in settings.
+ *
+ * Both halves of the chip open the *existing* pickers by running `/model` and
+ * `/effort`, not by calling `SessionClient.setModel` / `setEffort`. That is the
+ * rule `model/surfaces.ts` already states: the slash command is the user
+ * expressing a preference, and it is what writes the choice back to config —
+ * `setModel` only points the live runtime somewhere else and silently drops the
+ * persistence. The effort picker additionally draws over-ceiling levels as
+ * disabled-with-a-reason, which a chip cycling blindly could not.
  */
-function formatCost(amount: number): string {
-  if (amount === 0) return '0'
-  if (amount < 0.01) return amount.toFixed(4)
-  return amount.toFixed(2)
-}
-
-export interface SuggestionsView {
-  render(state: CompletionState): void
-}
-
-export function createSuggestionsView(container: HTMLElement): SuggestionsView {
-  return {
-    render(state) {
-      // Both sources reduce to the same two fields, which is the whole reason
-      // this file did not have to learn what a file mention is.
-      const rows = completionRows(state)
-      if (rows.length === 0) {
-        show(container, false)
-        replace(container)
-        return
-      }
-      const selectedIndex = state.kind === 'none' ? -1 : state.selectedIndex
-      replace(container, ...rows.map((row, index) => {
-        const node = el('div', `suggestion${index === selectedIndex ? ' selected' : ''}`)
-        node.setAttribute('role', 'option')
-        node.setAttribute('aria-selected', String(index === selectedIndex))
-        node.appendChild(el('span', 'name', row.displayText))
-        node.appendChild(el('span', 'description', row.description ?? ''))
-        return node
-      }))
-      show(container, true)
-    },
-  }
-}
 
 export interface ComposerView {
   value(): string
@@ -119,24 +42,57 @@ export interface ComposerView {
    * disabled button, so a mismatch here silently swallows a click.
    */
   setStreaming(streaming: boolean): void
+  /** Repaints the model · effort chip. Driven by the active pane's snapshot. */
+  renderRuntime(runtime: WireRuntimeSnapshot | undefined): void
   autosize(): void
 }
 
 export const MAX_COMPOSER_HEIGHT_PX = 200
 
-/** What the submit button says in each of its two jobs. */
-export const SUBMIT_LABEL = 'Send'
-export const QUEUE_LABEL = 'Queue'
-
 export function createComposerView(els: {
   input: HTMLTextAreaElement
   submit: HTMLButtonElement
   stop: HTMLButtonElement
+  attach: HTMLButtonElement
+  chipModel: HTMLButtonElement
+  chipEffort: HTMLButtonElement
+}, actions: {
+  onOpenModelPicker: () => void
+  onOpenEffortPicker: () => void
+  /**
+   * The attachment control. There is no host command behind a file dialog, so
+   * it seeds an `@` and lets the existing mention completion take over — the
+   * same path typing `@` follows. The callback is what tells the pane to
+   * recompute completions, since a programmatic edit fires no `input` event.
+   */
+  onAttach: () => void
 }): ComposerView {
   const autosize = () => {
+    // Kept in step with `#composer` / `#input`'s `max-height` in `styles.css`;
+    // this one is load-bearing, because `scrollHeight` has to be clamped by
+    // something the stylesheet cannot know.
     els.input.style.height = 'auto'
     els.input.style.height = `${Math.min(els.input.scrollHeight, MAX_COMPOSER_HEIGHT_PX)}px`
   }
+
+  // Icon-only controls; the accessible name comes from `aria-label`, refreshed
+  // by `setStreaming` for the one button whose meaning changes.
+  replace(els.submit, icon('send'))
+  replace(els.stop, icon('stop'))
+  replace(els.attach, icon('plus'))
+  els.attach.setAttribute('aria-label', '插入文件引用')
+  els.attach.title = '插入文件引用（@）'
+
+  els.attach.addEventListener('click', () => {
+    const next = insertMentionToken(els.input.value, els.input.selectionStart ?? els.input.value.length)
+    els.input.value = next.text
+    els.input.setSelectionRange(next.cursorPos, next.cursorPos)
+    autosize()
+    els.input.focus()
+    actions.onAttach()
+  })
+  els.chipModel.addEventListener('click', () => actions.onOpenModelPicker())
+  els.chipEffort.addEventListener('click', () => actions.onOpenEffortPicker())
 
   return {
     value: () => els.input.value,
@@ -160,8 +116,21 @@ export function createComposerView(els: {
       // appears alongside rather than instead of it: interrupting the turn and
       // queueing the next message are both things a user may want mid-turn.
       els.submit.disabled = false
-      els.submit.textContent = streaming ? QUEUE_LABEL : SUBMIT_LABEL
+      const label = submitLabel(streaming)
+      els.submit.setAttribute('aria-label', label)
+      els.submit.title = label
       show(els.stop, streaming)
+    },
+    renderRuntime(runtime) {
+      const chip = composerChipView(runtime)
+      els.chipModel.textContent = chip.model
+      els.chipModel.title = chip.modelTitle
+      els.chipModel.setAttribute('aria-label', chip.modelTitle)
+      els.chipModel.disabled = !chip.enabled
+      els.chipEffort.textContent = chip.effort
+      els.chipEffort.title = chip.effortTitle
+      els.chipEffort.setAttribute('aria-label', chip.effortTitle)
+      els.chipEffort.disabled = !chip.enabled
     },
     autosize,
   }

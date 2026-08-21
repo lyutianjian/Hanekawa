@@ -1,4 +1,5 @@
 import { z } from 'zod/v3'
+import { deleteSessionArtifacts } from '../runtime/deleteSession.js'
 import type { SessionMeta } from '../sessions/service.js'
 import type {
   DirectoryProject,
@@ -7,6 +8,7 @@ import type {
   ProjectDirectory,
   ProjectEntry,
 } from '../runtime/projectDirectory.js'
+import { projectDisplayName } from '../runtime/projectDirectory.js'
 import type { RuntimeChannel } from '../runtime/protocol/channel.js'
 import type { LaneMux } from '../runtime/protocol/laneChannel.js'
 import type { SessionPane, SessionWorkspace } from '../runtime/sessionWorkspace.js'
@@ -16,9 +18,12 @@ import {
   type ShellCommand,
   type ShellEvent,
   type WireLaneInfo,
+  type WireShellDeleteSessionResult,
   type WireShellOpenProjectResult,
   type WireShellOpenSessionResult,
   type WireShellPanesResult,
+  type WireSessionSummary,
+  type WireShellSessionsResult,
 } from './shellProtocol.js'
 
 /**
@@ -56,6 +61,9 @@ export interface ShellLaneProject extends DirectoryProject {
   readonly store: {
     resolve(idOrPrefix: string): Promise<SessionMeta | undefined>
     createDraft(title?: string): SessionMeta
+    /** The sidebar's history: every session on disk, newest first. */
+    list(): Promise<SessionMeta[]>
+    delete(idOrPrefix: string): Promise<void>
   }
   /** The scope type is opaque here: the shell mints it and hands it straight to `adopt`. */
   openScope(session: SessionMeta): Promise<unknown>
@@ -157,6 +165,15 @@ const SHELL_COMMAND_SCHEMAS = {
     .strict(),
   'open-project': z
     .object({ type: z.literal('open-project'), id: commandId, path: z.string().optional() })
+    .strict(),
+  'list-sessions': z.object({ type: z.literal('list-sessions'), id: commandId }).strict(),
+  'delete-session': z
+    .object({
+      type: z.literal('delete-session'),
+      id: commandId,
+      projectRoot: z.string(),
+      sessionId: z.string(),
+    })
     .strict(),
 } as const satisfies Record<ShellCommand['type'], z.ZodTypeAny>
 
@@ -386,9 +403,80 @@ export class ShellHost<
         this.deps.onOpenProject(command.path)
         return { ok: true } satisfies WireShellOpenProjectResult
       }
+      case 'list-sessions':
+        return this.listSessions()
+      case 'delete-session':
+        return this.deleteSession(command.projectRoot, command.sessionId)
       default:
         return assertNever(command)
     }
+  }
+
+  /**
+   * Every project's session history, in the order projects were opened.
+   *
+   * `Promise.all` because the reads are independent and each one is a lock file,
+   * a `readdir` and an index parse — bounded by open projects, so this saves tens
+   * of milliseconds rather than seconds, but there is no reason to serialize it.
+   * The sessions are projected field by field: this answers with *every* session
+   * in *every* project, and `SessionMeta` carries two unbounded arrays
+   * (`checkpoints`, `denialState`) that no row reads.
+   */
+  private async listSessions(): Promise<WireShellSessionsResult> {
+    const projects = await Promise.all(
+      this.deps.directory.entries().map(async (entry) => ({
+        projectRoot: entry.root,
+        projectName: projectDisplayName(entry.cwd),
+        sessions: (await entry.project.store.list()).map(summarize),
+      })),
+    )
+    return { projects } satisfies WireShellSessionsResult
+  }
+
+  /**
+   * Deletes a session, lane and all. The order is fixed and every step of it is
+   * load-bearing:
+   *
+   *  1. The entry's `store` and `cwd` are captured **before** anything closes.
+   *     Deleting the session behind a project's last lane runs `closeProject`,
+   *     after which `directory.get()` no longer finds it — reading them later
+   *     would work until the day someone deletes their only open session.
+   *  2. The id is **resolved** first. `SessionStore.delete` accepts a prefix but
+   *     `removeShadowRepo` does not, so passing the raw wire string through
+   *     would delete the right session and the wrong shadow repo (or throw on
+   *     the guard). An id that resolves to nothing fails rather than silently
+   *     answering `ok`.
+   *  3. The lane goes before the files. `detachLane` is the single exit path,
+   *     and a pane still holding a session whose JSONL just vanished is a ghost
+   *     row whose next append recreates the file.
+   *  4. `deleteSessionArtifacts` owns *what* gets deleted — store files, shadow
+   *     repo, session memory, subagent transcripts. This method deliberately
+   *     does not enumerate them: it did once, with two of the four, and the
+   *     other two leaked.
+   *
+   * No topology broadcast at the end. Deleting an *open* session already
+   * announced one from `detachLane`; deleting a closed one changes no lane, and
+   * `ShellClient` swallows a re-announcement of an identical list by design. The
+   * renderer refreshes its history off this command's own reply instead — which
+   * is also the only signal that would work for a closed session.
+   */
+  private async deleteSession(
+    projectRoot: string,
+    sessionId: string,
+  ): Promise<WireShellDeleteSessionResult> {
+    const entry = this.deps.directory.get(projectRoot)
+    if (!entry) throw new Error(`No project is open at ${projectRoot}`)
+    const { store } = entry.project
+    const { cwd } = entry
+
+    const session = await store.resolve(sessionId)
+    if (!session) throw new Error(`Session not found: ${sessionId}`)
+
+    const lane = this.laneForSessionId(session.id)
+    if (lane !== undefined) this.detachLane(lane, 'session-deleted')
+
+    await deleteSessionArtifacts(cwd, store, session.id)
+    return { ok: true } satisfies WireShellDeleteSessionResult
   }
 
   // --- internals -----------------------------------------------------------
@@ -449,6 +537,21 @@ export class ShellHost<
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled shell command: ${JSON.stringify(value)}`)
+}
+
+/**
+ * `SessionMeta` → the four fields a sidebar row reads. Field by field, never a
+ * spread: `checkpoints` gains an entry per turn and `denialState` accumulates
+ * streaks, and neither is read by anything downstream of this command.
+ */
+function summarize(session: SessionMeta): WireSessionSummary {
+  const summary: WireSessionSummary = {
+    id: session.id,
+    updatedAt: session.updatedAt,
+    messageCount: session.messageCount,
+  }
+  if (session.title !== undefined) summary.title = session.title
+  return summary
 }
 
 export {

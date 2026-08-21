@@ -21,7 +21,7 @@ import type {
  * DOM-free on purpose; see `diffRows.ts`.
  */
 
-export const OTHER_LABEL = 'Other'
+export const OTHER_LABEL = '其他'
 
 export interface AskState {
   readonly request: AskUserQuestionRequest
@@ -129,7 +129,7 @@ export function applyAskIntent(state: AskState, intent: AskIntent): AskOutcome {
   const question = currentQuestion(state)
   if (!question) {
     // An empty request cannot be answered; rejecting is the only honest reply.
-    return { state, result: { kind: 'rejected', feedback: 'No questions were asked.' } }
+    return { state, result: { kind: 'rejected', feedback: '没有提出任何问题。' } }
   }
   const labels = optionLabels(question)
 
@@ -262,10 +262,10 @@ export function askViewModel(state: AskState): AskViewModel | undefined {
       ? undefined
       : question.options[state.selectedIndex]?.preview,
     hint: state.otherMode
-      ? '[Enter] Submit  [Esc] Back'
+      ? '[Enter] 提交　[Esc] 返回'
       : question.multiSelect === true
-        ? '[↑↓] Move  [Space] Toggle  [Enter] Submit  [Esc] Cancel'
-        : '[↑↓] Move  [Enter] Select  [Esc] Cancel',
+        ? '[↑↓] 移动　[Space] 勾选　[Enter] 提交　[Esc] 取消'
+        : '[↑↓] 移动　[Enter] 选择　[Esc] 取消',
   }
 }
 

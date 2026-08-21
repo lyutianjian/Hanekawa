@@ -25,6 +25,7 @@
     "src/desktop/renderer/**/*.ts",
     "src/desktop/types.ts",
     "src/desktop/shellProtocol.ts",
+    "src/desktop/paneBudget.ts",
     "src/desktop/preload.ts",
     "src/types/picomatch.d.ts",
     "src/runtime/protocol/channel.ts",

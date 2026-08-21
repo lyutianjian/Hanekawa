@@ -36,7 +36,7 @@ export function createQueueView(container: HTMLElement, onClear: () => void): Qu
       const clear = el('button', 'queue-clear')
       clear.type = 'button'
       clear.textContent = view.clearLabel
-      clear.setAttribute('aria-label', 'Clear queued messages')
+      clear.setAttribute('aria-label', '清空排队消息')
       clear.addEventListener('click', onClear)
       header.appendChild(clear)
 

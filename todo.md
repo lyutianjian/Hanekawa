@@ -15,7 +15,8 @@
 单窗口 + 侧边栏全量会话历史、设置界面、按 `design_guidance.md` 重做视觉。
 附带取消三档模型路由。
 
-**进度**：4a、4c 已完成（4c 先做，理由见 4c 一节；4a 的落地见 4a 一节的完成注记）。4b / 4d / 4e / 4f 未开始。
+**进度**：4a、4b、4c、4e 已完成（4c 与 4e 都先于原定顺序做，理由见各自一节；4a 的落地见 4a 一节的完成注记）。
+4d / 4f 未开始。
 
 ---
 
@@ -98,22 +99,73 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
 单窗口多 lane 的 CDP 冒烟整体后移到 4f（其第 1、2、6 条即 4a 的验收），当前凭据是
 desktopMain 第五用例的端到端通道。
 
-### 4b — 侧边栏、会话历史、删除 `[ ]`
+### 4b — 侧边栏、会话历史、删除 `[x]`
 
-- [ ] 纯模型 `renderer/model/sidebar.ts`：分组（自己项目在前，`groupRows` 的顺序规则
-  从 `model/tabBar.ts` 搬过来并扩成「项目 → 会话」两级）、时间分节、徽标推导
-  （`running` / `awaiting-input` 由该 pane 的 `client.getSnapshot()` 与 uiQueue 得出，
-  **不新增 wire 字段**）、键盘导航、`Ctrl+B` 折叠。
-- [ ] `dom/sidebarView.ts`；删 `dom/tabBarView.ts` / `model/tabBar.ts` 及其测试。
-- [ ] shell 协议补 `list-sessions`（跨项目）/ `delete-session` / `rename-session`。
-  删除顺序：先关该会话的 lane（若开着）→ `SessionStore.delete()`
-  （`sessions/service.ts:515`）→ **新增清理 `.myagent/shadow-git/<id>`**
-  （今天泄漏；`checkpointService.ts:52` 是唯一知道该路径的地方，导出一个
-  `removeShadowRepo(cwd, sessionId)`）。删除要二次确认。
-- [ ] LRU：新增 `src/desktop/paneBudget.ts`（纯函数）。上限 4 个常驻，
-  **永不驱逐**「活跃 / 正在跑 turn / 有未答阻塞请求」的 pane。驱逐即 `detachLane`。
-- [ ] 凭据：`test/rendererSidebar.test.ts`、`test/paneBudget.test.ts`、
-  `test/desktopShellHost.test.ts` 补删除路径。
+- [x] 纯模型 `renderer/model/sidebar.ts`：分组（活动 pane 的项目在前，`groupRows` 的**稳定分区**
+  手法从旧 tab bar 搬过来并扩成「项目 → 时间分节 → 会话」三级）、时间分节（按**日历日**而非
+  流逝小时，`now` 由入参注入）、徽标推导（`running` / `awaiting-input` 由该 pane 的
+  `client.getSnapshot().isStreaming` 与 `shellState().hasOverlay` 得出，**没有新增 wire 字段**；
+  `awaiting-input` 压过 `running`）、键盘导航、`Ctrl+B` 折叠。
+- [x] `dom/sidebarView.ts`；删 `dom/tabBarView.ts` / `model/tabBar.ts` / `test/rendererTabBarModel.test.ts`
+  （21 条）。`index.html` 的 body 从纵向 flex 改成 `#shell = #sidebar + #canvas`，CSS 仍内联
+  （4e 重做）；`#overlay`/`#rewind` 仍是 body 直接子节点，`position: fixed` 因此照旧盖满窗口。
+- [x] shell 协议补 `list-sessions`（跨项目）/ `delete-session`。删除顺序：**先抓 `store` 与 `cwd`**
+  → `store.resolve()` 拿解析后的 id → 关该会话的 lane（若开着）→ `deleteSessionArtifacts()`。
+  删除走侧栏内联二次确认。
+- [x] **新增 `src/runtime/deleteSession.ts`——「删一个会话」终于有了归属**。原计划只修 shadow-git，
+  复查（altitude）grep 出**另外两处同类泄漏**：`.myagent/session-memory/<id>.json` 与
+  `.myagent/sessions/subagents/<id>/`。`SessionStore.delete` 只能删它自己那三个文件（另外三样都在
+  `sessions/` 之上的层，反向调用是环），所以清单必须有个地方落——落在 `runtime/`（同时依赖
+  `harness/` 与 `services/` 的那一层），而不是在外壳里逐条列（那正是四样里漏了两样的原因）。
+  以后新增 `.myagent/<x>/<sessionId>` 类工件都往这里登记。
+- [x] LRU：新增 `src/desktop/paneBudget.ts`（纯函数）。上限 4 个常驻，
+  **永不驱逐**「活跃 / 正在跑 turn / 有未答阻塞请求」的 pane；全 pinned 时宁可超额。
+  驱逐 = 该 lane 自己的 `closePane`，落到 `onPaneClosed` → `detachLane`。
+  兑现决策 2 的**「不给关闭按钮」**：行上只有删除，释放常驻额度是 LRU 的事，用户不该被要求
+  去想「运行时」这个概念。`Ctrl+W` 保留（不是按钮），模型里的 `close` 意图由它使用。
+- [x] 凭据：`test/rendererSidebar.test.ts`（30 条）、`test/paneBudget.test.ts`（11 条）、
+  `test/desktopShellHost.test.ts`（22 → 30，补 list/delete 六条）、`test/checkpointService.test.ts`
+  （+4 条 `removeShadowRepo`）、`test/deleteSession.test.ts`（4 条，逐工件断言）、
+  `test/rendererImports.test.ts`（+1 条「渲染器 `required()` 的每个 id 都在 index.html 里」——
+  `required()` 在 `app.ts` 模块作用域就抛，改页面结构时那是一扇空白窗口加一行 console，
+  两段 typecheck 都看不见）。全量 2063 tests / 2062 pass（唯一红的是已知环境依赖那条）。
+
+**完成注记**：
+
+- **`rename-session` 推迟到 4d**（见 4d 一节）。会话正开着时改名要刷新 `SessionController` 私有的
+  `SessionMeta` 并推一条 `session-changed`，而 `ShellHost` 的 occupant 是**故意不透明**的
+  （只有 `dispose()`），够不到那个 host。「让外壳对某条 lane 的 host 说话」与 4d 的
+  `refreshAfterConfigChange()` 扇出是同一个形状，应当一起设计，而不是为改名单独把
+  `LaneOccupant` 拓宽一次。删除没这个问题——lane 反正要拆掉。
+- **`resolveKey` / `ShellState` 一行未动**。原计划要给那张载重的优先级表插一档放删除确认；
+  实际做成侧栏内联确认 + 侧栏容器自带 keydown（Esc 取消、Enter 确认）+ `focusout` 撤销就够了。
+  代价是消费掉的按键必须 `stopPropagation()`——全局 handler 挂在 `document` 上，放一个 Enter
+  过去会既激活行又把 composer 的内容发出去。
+- **计划里的「删完再 `broadcastLanes()`」被用例证伪并删掉**：`ShellClient` 按设计吞掉内容相同的
+  重复 `lanes`（身份稳定），所以删闭着的会话那条广播根本唤不醒监听器；删开着的会话
+  `detachLane` 已经广播过。渲染器改为**用 delete 命令自己的回包**当刷新信号，并写成用例
+  （「deleting a closed session leaves the topology untouched」）钉住这个理由。
+- **顺手补严了 `test/rendererImports.test.ts` 的一个洞**：原判据是「相对路径且不含
+  `/runtime/`、`/config/` ⇒ 算本地 import」，于是 `../shellProtocol.js`（4a 起就有）和
+  `../paneBudget.js` 这类**逃出 `renderer/` 的**说明符被一路放行。改成解析真实路径判断是否
+  仍在 `renderer/` 内，逃出的必须上白名单；顺带把「白名单条目可达」那条改成按**真正 import 它的
+  文件**去解析，而不是猜 `src/<rest>`（`../shellProtocol.js` 就猜错）。已变异验证。
+- **`/simplify` 复查（四个角度并行）抓出的四件事，都已修**：
+  ① **复用共享 id 闸门时把 `'.'` 漏掉了，是一个删数据的回归**——`assertSafeSessionId` 原本是给
+  `${id}.json` 那个形状校准的（`'.'` 落成 `..json`，无害），而 `removeShadowRepo` 是第一个把 id
+  当**整个目录名**用的调用方，`path.join(dir,'.')` collapse 回 `dir` 然后进 `rm -r`。
+  自己写的用例当场报红。教训：复用一条校验规则时要问它是按**哪个形状**校准的。
+  ② **`+ 新建会话` 按钮与 `Ctrl+T` 目标项目不一致**——按钮发的是无 root 的 `{kind:'new'}`，
+  `ShellHost` 于是回退到 `directory.entries()[0]`（**最先打开的**项目）。旧 tab bar 是在唯一的
+  applier 里解析项目的，4b 把解析搬进了两个 producer 之一。已抽 `newSessionIntent()`，与
+  `activateRow` 同款。
+  ③ **`canCreate` 只关按钮不关快捷键**，违反「key path and button must agree」。已修。
+  ④ **侧栏整树重绘比 `transcriptView` 那条记账缺陷更糟**：`onShellChanged` 由
+  `client.subscribe()` 驱动，而 `sameTaskList` 比 `outputBytes`——后台跑个 `npm test` 就会按
+  输出刷新率重建**每一行历史**（行数是盘上会话数，不是消息数）。已加 `sidebarRenderSignature`
+  字段签名闸门（`applySnapshot`/`applyLanes` 同款纪律）+ 折叠时直接不建行。
+- **4b 未做真机冒烟**——按 todo 原安排整体留给 4f（其第 3、4、6、7 条即 4b 的验收）。当前凭据是
+  四组纯函数用例 + `desktopShellHost` 的端到端删除路径 + `desktopBuild` 的「bundle 只因缺 DOM 而失败」。
 
 ### 4c — 取消三档模型 `[x]`
 
@@ -157,9 +209,93 @@ desktopMain 第五用例的端到端通道。
 - routing 指向一个已不存在的键时**降级为 `inherit`** 而不是失败，这正是「删模型是可恢复的
   错误」的依据。
 
+### 4e — 视觉重构（design_guidance 落地）`[x]`
+
+**先于 4d 做**，与当初 4c 抢在 4a 前面同源：`design_guidance.md` 描述得最具体的那块界面
+（卡片包裹的设置行、右对齐控件）**正是 4d 要建的**。先做 4d 等于把约 400 行设置界面 CSS
+内联进 `index.html`，再在 4e 全部重写一遍；反过来 4e 先立好令牌与 `styles.css`，4d 只是往
+已有的表里加设置行规则。`index.html` 当时的注释也已写明双栏结构是「4e 要上样式而不是重建的东西」。
+
+- [x] 新增 `src/desktop/renderer/styles.css`（`index.html` 的 606 行内联表**逐字**搬出，
+  再换令牌、再改结构，分三步以便回退），`build:desktop` 的 `copy-desktop-assets.mjs` 跟着拷。
+  CSP 的 `style-src 'self'` 允许外部表。
+- [x] 设计令牌按 guidance 的层级：`--surface-base`（外框/侧栏，**最暗**）、`--surface-canvas`
+  （主面板）、`--surface-card`、`--surface-hover`、`--surface-active`；文本三级 + `--link`；
+  语义点缀色五个，**只允许出现在 `color`/`fill`/`border-*-color`，绝不做填充**。
+  明暗阶因此**反转**了：旧表里侧栏 `#232323` 比画布 `#1a1a1a` 亮。
+- [x] 结构：`#canvas` 变成 `--radius-lg` + `overflow: hidden` 的嵌套面板，靠 8px 外边距与
+  侧栏分开（**间距代替竖线**）；`#surface` / `#queue` / `#suggestions` 从「顶边线 + 底色」
+  改成浮在画布里的卡片；共去掉 8 条发丝线；用户消息改成右对齐 `--surface-card` 气泡
+  （`--user` 那个蓝色因此整个从调色板里消失）。圆角层级 large/medium/pill。
+- [x] **输入区改成胶囊复合框**：左下 `+`、右下「模型 · effort」胶囊、圆形发送按钮。兑现决策 4。
+  新增纯模型 `model/composer.ts`（`composerChipView` / `EFFORT_LABELS` / `submitLabel` /
+  `insertMentionToken`），复用 `src/config/effort.ts`。**删掉了 `#status-model`**——模型与
+  effort 已在胶囊里，状态栏留第二份必然漂移。
+- [x] 字体：chrome 用 `--font-ui`（Segoe UI Variable / -apple-system / system-ui / 中文回退）；
+  `--font-mono` 显式重声明在 8 个选择器上——决策 3 的六个，**外加** `.transcript .item.tool`
+  与 `.tool-progress`（它们承载命令行与工具输出，比例字体下 `git status` 会掉列）。
+  顺手修了 7 处 `ch` 宽度（`ch` 是字符 `0` 的宽度，换比例字体后全部失准）；
+  `.diff-row .gutter` 保留 `8ch` 并**自己声明** `--font-mono`。`lang` 改 `zh-CN`。
+- [x] 图标：新增 `dom/icons.ts`，`document.createElementNS` 造 SVG（`el()` 只会
+  `createElement`，HTML 命名空间里的 `"svg"` 什么都不画；`innerHTML` 是硬规则）。
+  换掉 🗑（彩色 emoji，比例字体下最扎眼的一处）、⟨⟩、`+`、徽标 `●`。
+- [x] 中文化：三个 presentation 模块加**可选** `locale`，默认 `'en'`；新增 `src/runtime/locale.ts`
+  与渲染器侧 `model/locale.ts` 的 `UI_LOCALE`（一处拼写，不是十二处 `'zh'` 字面量）。
+  桌面 12 处调用点 + 渲染器自有文案（含 `index.html` 的 placeholder 与 aria-label）全部中文。
+- [x] 凭据：`test/rendererStyleTokens.test.ts`（12 条）、`test/rendererComposerChip.test.ts`
+  （13 条）、`test/desktopBuild.test.ts`（断言 `styles.css` 被拷贝，**并按 HTML 里的相对
+  引用反查**，于是以后新增资源漏进 copy 脚本会报红）、三个 presentation 测试各加
+  「zh 用例 + 默认仍是英文」。**全量 2096 tests / 41 suites / 2096 pass / 0 fail**（基线 2063）。
+
+**完成注记**：
+
+- **`--accent`（青绿，26 处）不对应任何单个新令牌**，它同时在干五件事，必须按职责拆开：
+  品牌/标题/选中文字 → `--text-primary`，光标 → `--caret`，聚焦边框 → `--focus-ring`，
+  状态字形与色条 → `--accent-info`，任务勾选 → `--accent-review`，主操作填充 →
+  `--text-primary` 底 + `--surface-base` 字形。不拆就只是「换了色相的旧界面」。
+- **计划里的四层令牌不够，补了第五层 `--surface-hover`**。把旧的 `--bg-input` 与
+  `--bg-raised` 一起并进 `--surface-card` 之后，面板**自身**就是 card，于是面板内行的
+  hover 变成同色 = 不可见；用 `--surface-active` 又会让 hover 与选中不可分。四个状态
+  （底 / 面板 / 悬停 / 选中）本来就需要四级以上。
+- **`#submit` 是全界面唯一的高对比填充，而且是中性的**：`--text-primary` 底。
+  用点缀色做按钮底正是 guidance「95% 中性」要排除的那件事。
+- **`locale` 选可选、默认 `'en'`，是被两条既有断言逼出来的**：
+  `test/rewindPresentation.test.ts` 按**函数身份**断言（只能加参数，不能 fork 或包一层），
+  而 `test/tuiRender.test.ts` 断言 TUI 的英文帧。必填参数意味着改约 25 处终端调用点、
+  零收益，且每一处都是把 `'zh'` 打进终端的机会。三个测试各加了一条「不传参数仍是英文」
+  ——那是 TUI 与静默换语言之间唯一的闸门。
+- **`PERMISSION_OPTIONS` / `ENTER_PLAN_OPTIONS` / `EMPTY_PLAN_OPTIONS` 是常量且被用作默认
+  参数值**，所以保留为英文常量、旁边加 `…Options(locale)` 函数，而不是改成函数了事。
+- **`riskLevel` 与权限来源两个 wire 枚举也要查表**：它们被原样打进副标题，不译的话中文
+  对话框里会出现「dangerous - bash safety」。
+- **`#composer-attach` 暂时接成「在光标处插入 `@`」**（`insertMentionToken`，含「词中先补空格」
+  与「已有 `@` 不重复」两条），因为没有对应的 host 命令；正好接上现成的 `@` 文件补全。
+  留给 4f 冒烟。
+- **4e 未做真机冒烟**——按 todo 原安排整体留给 4f。当前凭据是三组纯函数/源码级用例 +
+  `desktopBuild` 的真实 esbuild + 拷贝链路 + `npm run build:desktop` 跑通。
+  **Step 3/4 的判据本质上是视觉的，没有任何用例能替代肉眼看一次窗口。**
+
 ### 4d — 设置界面 `[ ]`
 
 左下角 `⚙ 设置` 进入，占满 canvas（不是 modal），左侧分类 + 右侧卡片分组表单。
+**4e 已经落地**，所以设置界面的样式是往 `styles.css` 里加设置行规则（外层大卡片 + 发丝线分隔 +
+左标题右控件），用现成的 `--surface-*` / `--radius-*` / `--font-*` 令牌，不再需要新造视觉。
+`sidebarView.ts` 的 footer 已经在那里（`dom/sidebarView.ts` 的 `button()` 现在还支持图标），
+加一个 `{ kind: 'open-settings' }` 意图即可——注意 `app.ts` 的 `runSidebarIntent`
+**没有 `default` 也没有 `assertNever`**，漏一个 case 会编译通过且什么都不做。
+
+**动工前要先定的三个坑**（4e 期间查出来的，每个都需要一次决策）：
+
+- **MCP 没有 untrust，也没有增删改**。`trustMcpServerLocally` 只会追加；`McpServerConfig`
+  完全没有写入 API。而且连接只在 bootstrap 发生一次，`reloadSettings()` **不重连**——
+  所以一个「信任开关」在下次 bootstrap 之前不生效。要么补 `mcp.ts` 的热重连
+  （`refreshMcpServerTools` / `connectManagedMcpServer` 已经在那儿），要么界面上老实说明。
+- **`agent.contextManagement` 在 bootstrap 时被快照进 `scopeDeps`**（`bootstrap.ts:168`），
+  改完对**已开的 scope 无效**，`reloadSettings()` 也够不到。六个数值要么接上重建路径，
+  要么标注「重启后生效」。
+- **权限数组跨设置层是拼接语义**（`mergeSettings`：`permissions.allow/deny/ask` 与所有
+  `hooks.*` 都 concat）。渲染合并结果再写回 `settings.local.json` 会把用户层与项目层的
+  条目复制一份进本地层。「写整组」必须只对本地层自己的条目生效，或者写入前去重。
 
 - [ ] shell 协议补 `get-settings` / `settings-change`：**一条命令带一个
   `SettingsChange` 可辨识联合**，而不是十条命令；zod `.strict()` 校验，
@@ -184,31 +320,13 @@ desktopMain 第五用例的端到端通道。
 - [ ] 配置改完要让**同项目每个 pane** 的 runtime 重建：`SessionHost` 的
   `reload-settings` 分支已经是这套动作，抽成公开方法 `refreshAfterConfigChange()`，
   由外壳扇出——与 `onPaneListChanged` 完全同构。
+- [ ] **顺带兑现 4b 推过来的 `rename-session`**：同一个形状——外壳要能对某条 lane 的 host 说话，
+  而 `LaneOccupant` 今天只有 `dispose()`。改名要 `SessionController` 刷新私有的 `SessionMeta`
+  （`retarget` 太重，它会 interrupt）并推一条 `session-changed`，否则状态栏与
+  `WireLaneInfo.sessionTitle` 会滞后到下一次会话切换。和 `refreshAfterConfigChange()`
+  一起把 occupant 拓宽一次，别拓两次。
 - [ ] 凭据：`test/rendererSettingsModel.test.ts`、`test/desktopShellHost.test.ts`
   补 settings 往返、`test/settingsPersistence.test.ts`。
-
-### 4e — 视觉重构（design_guidance 落地）`[ ]`
-
-- [ ] 新增 `src/desktop/renderer/styles.css`，`build:desktop` 跟着拷。现在 500 行 CSS
-  内联在 `index.html` 里，翻倍后不可维护；CSP 的 `style-src 'self'` 允许外部表。
-- [ ] 设计令牌按 guidance 的四层：`--surface-base`（外框/侧栏）、`--surface-canvas`
-  （主面板）、`--surface-card`（卡片/输入框）、`--surface-active`（选中/胶囊）；
-  文本三级 + 链接色；语义点缀色**只用于图标与开关**。
-- [ ] 结构：侧栏（固定宽，顶部标识+新建 / 中部分组 / 底部设置）+ 主画布包成
-  12–16px 大圆角面板；圆角层级 large/medium/pill；设置行 = 左标题+说明 / 右控件。
-- [ ] **输入区改成胶囊复合框**：左下 `+`，右下「模型 · effort」标签胶囊
-  （走现有 `list-models` / `set-effort`）+ 圆形发送按钮。兑现决策 4。
-- [ ] 字体：chrome 用 `Segoe UI Variable / -apple-system / system-ui`；
-  `.md .md-code`、`.diff`、权限对话框的命令块与 diff **保持等宽**（必须逐字读）。
-- [ ] 图标：`dom/icons.ts` 用 `document.createElementNS` 造 SVG——`dom.ts` 的 `el()`
-  只会 `createElement`，而**禁用 `innerHTML` 是硬规则**。
-- [ ] 中文化：`runtime/permissionPresentation.ts` / `planPresentation.ts` /
-  `rewindPresentation.ts` 加 `locale: 'zh' | 'en'` 参数，字面量提成查表；
-  桌面传 `zh`、TUI 传 `en`。`test/rewindPresentation.test.ts` 按**函数身份**断言，
-  所以只能加参数、不能复制一份。渲染器自有文案直接写中文。
-- [ ] 凭据：`test/rendererStyleTokens.test.ts`（源码级断言：视图只用语义变量、
-  不出现十六进制字面量——与 `test/tuiTheme.test.ts` 同款手法）、三个 presentation
-  测试补 zh 用例。
 
 ### 4f — 真机冒烟（CDP，沿用 3j 的驱动）`[ ]`
 
@@ -228,12 +346,21 @@ desktopMain 第五用例的端到端通道。
 9. [ ] 输入框右下角改 effort → 状态与后续 turn 生效；
 10. [ ] 收尾无残留 electron 进程。
 
-### 文档 `[~]`
+### 文档 `[x]`
 
 - [x] `CLAUDE.md` + `AGENTS.md`（逐字镜像）：改「Electron shell」「The renderer」
   两节（一个窗口 N lane，不再是 window-per-pane），新增 laneChannel / ShellHost
   两段不变式。~~`Providers` 一节删掉三档路由的描述~~（4c 已做，两文件已用 diff 验证仍逐字一致）。
-- [ ] `design_guidance.md` 从「未落地的参考资料」变成 4e 的依据。
+  4b：tab bar 段换成侧栏三段（两个键入口 / 历史与拓扑取并集 / 拉取只挂四个时机），
+  `ShellHost` 段补 `delete-session` 顺序与 `list-sessions`，新增 `paneBudget` 一段，
+  `Sessions` 一节补 `removeShadowRepo` 的闸门。仍用 diff 验证两文件逐字一致。
+  4e：「The renderer」补四段——`styles.css` 的令牌系统与三条源码级不变式、胶囊输入框与
+  「胶囊走 `run-command` 而非 `setModel`」、`dom/icons.ts` 的 `createElementNS`、
+  `locale` 默认 `en` 及其两条约束；`Commands` 一节的测试计数与 copy 清单一并更新。
+  用 `diff <(sed -n '4,$p' …)` 验证第 4 行起逐字一致（只有标题与 guidance 行不同）。
+- [x] `design_guidance.md` 从「未落地的参考资料」变成 4e 的依据。**它只规定了明暗阶的
+  顺序、圆角档位与组件解剖，没有任何十六进制值、px 字号或字体栈**——那套中性深色阶是
+  4e 造的，现在钉在 `test/rendererStyleTokens.test.ts` 的「按值」那条用例里。
 
 ### 已知缺陷（记账未修）
 
@@ -242,14 +369,52 @@ desktopMain 第五用例的端到端通道。
   ② `markdownNode` 每次重建整棵子树、`transcriptView` 每 token 全量重画 —— 解析有
   LRU 兜着，**建节点没有**。真机上长会话流式若卡，按 `transcriptView` 文件头写的那条路
   走（按 item id 建 key 增量更新），不要回头去搞 static/live 分区。
-- **`.myagent/shadow-git/<id>` 在删会话时泄漏** —— 4b 顺手修。
+- **`.myagent/shadow-git/<id>` 在删会话时泄漏** —— ~~4b 顺手修~~ **已修**（4b：`removeShadowRepo`，
+  带「空 / 含分隔符 / 含 `..` 一律抛错」的闸门，因为那个 id 是从线上来的且直通 `rm -r`）。
 - **其余 `"latest"` 依赖**（`tsx`、`zod`、`openai` 等）未钉版本；它们不参与 emit，
   要清理另开一条。
+- **`PaneSession` 有四个成员已无人调用**：`panes` / `refreshPanes`（4a 起就死了——tab bar 换成
+  `shellClient.getLanes()` 之后没人读）、`ownProjectRoot` / `isActive`（4b 死的，侧栏改从
+  `WireLaneInfo` 与 activeLane 推）。无害（`onPanesChanged` 那条订阅仍会触发 `onShellChanged`，
+  正是侧栏要的重绘）。**4e 动了 `paneSession.ts` 却没顺手收掉**——那一步只加了 `renderRuntime`
+  与两个 picker 方法，删成员是独立的一次改动，留给 4d。
+- **`Ctrl+W` / 侧栏关闭不检查 `blocked`**，而 LRU 驱逐是**绝不**碰有未答阻塞请求的 pane 的
+  （`paneBudget.isPinned`，理由是 teardown 会以**拒绝**收尾、静默失败用户的工具调用）。
+  两者机制相同但情境不同：驱逐用户没要求，`Ctrl+W` 是用户明确要求。要做得更好得加个确认，
+  是新范围——记账未做。
+- **`SessionStore.list()` 用 `localeCompare` 排 ISO 串**（`sessions/service.ts`），比 `<` 慢约两个
+  数量级。本来只在 `/resume` 时跑一次，4b 之后每个 turn 结束都跑一次。先存后续。
+- **`sidebarRenderSignature` 是字符串比较**，行数极多时 O(rows) 建串。比重建 DOM 便宜几个数量级，
+  够用；真要更进一步是按 item id 做增量行更新（与 `transcriptView` 那条同一条路）。
 
 ---
 
 ## 决策留痕（只留 `CLAUDE.md` 未覆盖的）
 
+- **4b：侧栏的两个键入口必须分开**。全局那个（`sidebarChordToIntent`）在 `resolveKey` **之前**解析，
+  所以不带 ctrl/meta 必须恒返回 `'none'`——这是 4a 那条陷阱的直接延续。侧栏聚焦那个
+  （`sidebarKeyToIntent`）挂在容器上，方向键/Enter 因此不会从 composer 手里抢走。合成一个入口
+  就必然要么让方向键全局生效，要么给 `resolveKey` 加一档。
+- **4b：分组的 `own` 语义变了，不是照搬**。旧 tab bar 里 `own` 决定「能不能关」，所以
+  `ownProjectRoot === undefined` 解释成「全部是自己的」；侧栏里 `own` 只决定**组的顺序**，
+  把每组都置顶等于都不置顶，所以 undefined 解释成「都不是」，线上顺序原样保留。
+  只有**跨项目**切换才会重排，同项目内列表永不动。
+- **4b：徽标不新增 wire 字段是可行的**，`getSnapshot().isStreaming` + `shellState().hasOverlay`
+  就够（后者是「有阻塞请求被画着**或**停着」，背景 pane 也照样折进自己的队列）。
+  代价是 `onShellChanged` 要给**每个** pane 重绘侧栏，不能再只在 `isActive()` 时重绘。
+- **4b：盘上拉取只挂四个时机**（启动 / `lanes` 事件 / 某 pane 的 `isStreaming` **下降沿** /
+  删除之后），绝不挂 snapshot tick——`onShellChanged` 由 `client.subscribe()` 驱动，一个 turn 里
+  会响多次。下降沿是「标题 / `messageCount` / `updatedAt` 刚动过」的唯一便宜信号。
+- **4b：驱逐宁可超额也不杀正在跑的**。`selectEvictions` 在「剩下的全 pinned」时返回**不足数**。
+  多留一个常驻 pane 只花内存；驱逐一个停着提示的 pane 会让它的 bridge 以**拒绝**收尾，
+  用户的工具调用于是静默失败——比超额糟得多。
+- **4b：`removeShadowRepo` 的参数闸门不是洁癖**。`delete-session.sessionId` 是线上字符串，
+  直通一次 `rm(recursive)`；`''` / `'..'` / 带分隔符都会解析到 `.myagent/shadow-git` 本身。
+  同理调用方必须传 `store.resolve()` 之后的 id：`store.delete` 认前缀，`removeShadowRepo` 不认。
+- **4b：`as unknown as` 又应验一次（第五次）**。`ShellLaneProject.store` 加 `list`/`delete` 后，
+  `desktopShellHost.test.ts` 的 `implements` 假货被 tsc 按名字点出来了；而
+  `desktopMain.test.ts` 的 `fakeProject()` 是 `as unknown as ProjectRuntime`，一声不响。
+  手工补上了那两个成员。
 - **4a：`ShellHost` 的泛型默认值陷阱**：约束 `W extends ShellLaneWorkspace<PaneT>` 引用了
   前面的类型参数，而类型参数的**默认值**在 `PaneT` 未解算时就要满足约束——`SessionWorkspace`
   只有在 `PaneT` 已知为 `SessionPane` 时才代入，写不成默认值。解法：默认值写结构切片
@@ -271,10 +436,10 @@ desktopMain 第五用例的端到端通道。
 - **4a：tab bar 的 `ownProjectRoot` 恒传 `undefined`**：`model/tabBar.ts` 里 undefined ⇒ 全部
   own ⇒ 全部 closable——单窗口下每行都有自己的 lane client 能关自己的 pane（包括跨项目行，
   旧「focus-only」的存在理由是别的 window 的 host 够不着，lane 化后不成立）。分组仍按
-  pane.projectRoot 生效。4b 侧栏接管时整套 tabBar 模型会被替换。
+  pane.projectRoot 生效。**4b 已用侧栏整套替换了 tabBar 模型**，`own` 的语义随之改变（见上）。
 - **4a：darwin 最后一个 lane 关掉保留空窗口**（非 darwin 照旧 quit）。行为变化、一行可回退；
-  空窗口的 tab bar 仍显示「+ / Open project」（`show(container, rows>0 || hasNewTab ||
-  hasOpenProject)`），是 4b 侧栏空态的地基。
+  空窗口的侧栏仍显示「+ 新建会话 / 打开项目…」（4b 起由 `SidebarView.isEmpty` 与
+  `hasNewSession` / `hasOpenProject` 决定），这正是当初留它的用处。
 - **`ToolRegistry.refresh()` 把 Agent 工具移到数组末尾是对的，不要"修"**：新建 runtime 恒为
   `buildRuntimeTools()` + `push(agentTool)`，refresh 重现该顺序，「MCP 重连过的 runtime」与
   「新建的」工具数组才逐位相同 —— 工具顺序是 prompt 缓存键的一部分。
@@ -346,16 +511,19 @@ desktopMain 第五用例的端到端通道。
 
 ```bash
 npm run typecheck                                     # 三段：base + preload + renderer
-npm run test                                          # 全量，~48s
+npm run test                                          # 全量，~42s
 npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 npm run build:desktop                                 # tsc emit + 两个 esbuild bundle + 拷 index.html/styles.css
 npm run start:desktop                                 # 真实 Electron，需要桌面
 npm run dev:tui                                       # 手动冒烟，需 TTY
 
-# 阶段 4 新增的三组（4a 一组已存在；后两组等 4b/4d/4e 落地）
+# 阶段 4 新增的三组（4a、4b、4e 三组均已全绿；settings 那组等 4d 落地）
 node --import tsx --test test/laneChannel.test.ts test/desktopShellHost.test.ts
 node --import tsx --test test/rendererSidebar.test.ts test/paneBudget.test.ts \
-  test/rendererSettingsModel.test.ts test/rendererStyleTokens.test.ts
+  test/checkpointService.test.ts test/rendererImports.test.ts
+node --import tsx --test test/rendererStyleTokens.test.ts test/rendererComposerChip.test.ts \
+  test/permissionPresentation.test.ts test/planPresentation.test.ts test/rewindPresentation.test.ts
+node --import tsx --test test/rendererSettingsModel.test.ts    # 4d 落地后
 
 # 4c 触及的（已全绿）
 node --import tsx --test test/modelPicker.test.ts test/modelRouting.test.ts \
@@ -402,9 +570,13 @@ node --import tsx --test test/toolRegistry.test.ts test/runtimeBootstrap.test.ts
 
 **已知环境依赖失败**（3g 查明，与桌面端无关，尚未修）：`test/config.test.ts` 的
 `providers report dynamic ToolSearch support conservatively` 在设置了
-`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` 的环境里必定红（在 Claude Code 里跑 `npm run test`
-就是这种环境）。它不是间歇、也不是回归：用例只 save/delete/restore 了
-`HANEKAWA_DISABLE_EXPERIMENTAL_BETAS`，而它测的 `isExperimentalToolSearchBetaDisabled()`
-（`src/utils/toolSearch.ts:132-135`）读的是**两个**变量的或，第二个还留在环境里。已用
-`git stash` 在干净基线复现。修法是让该用例对两个变量都做隔离（文件里已有 `setEnv` 助手）。
-**这种环境下应当只有这一条红**（3j 落地后实测 1988 pass / 1 fail）。
+`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` 的环境里必定红。它不是间歇、也不是回归：
+用例只 save/delete/restore 了 `HANEKAWA_DISABLE_EXPERIMENTAL_BETAS`，而它测的
+`isExperimentalToolSearchBetaDisabled()`（`src/utils/toolSearch.ts:132-135`）读的是**两个**
+变量的或，第二个还留在环境里。已用 `git stash` 在干净基线复现。修法是让该用例对两个变量
+都做隔离（文件里已有 `setEnv` 助手）。
+
+**注意：这条依赖的是环境变量，不是「在 Claude Code 里跑」。** 4b 那次记的是
+2063 / 2062 pass / 1 fail；4e 落地后在**没有**设该变量的 shell 里实测
+**2096 tests / 41 suites / 2096 pass / 0 fail**。所以看到这条红先 `echo`
+一下那两个变量，别当成回归。

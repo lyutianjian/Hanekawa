@@ -92,9 +92,9 @@ export function isSupportedSurface(surface: CommandSurface): surface is Supporte
 export function modelPickerView(result: WireModelsResult): SurfaceView {
   return {
     surface: 'model-picker',
-    title: 'Select a model',
+    title: '选择模型',
     rows: result.pickerOptions.map(modelRow),
-    emptyMessage: 'No models are configured.',
+    emptyMessage: '尚未配置任何模型。',
   }
 }
 
@@ -102,7 +102,7 @@ function modelRow(option: ModelPickerOption): SurfaceRow {
   const detail = [
     option.modelId,
     option.providerName,
-    option.isDefault ? 'default' : undefined,
+    option.isDefault ? '默认' : undefined,
   ].filter((part): part is string => typeof part === 'string' && part.length > 0).join(' · ')
 
   return {
@@ -129,17 +129,17 @@ export function effortPickerView(input: {
 }): SurfaceView {
   return {
     surface: 'effort-picker',
-    title: 'Select reasoning effort',
+    title: '选择思考强度',
     rows: VALID_EFFORT_LEVELS.map((level) => {
       const beyondCeiling = input.maxEffort !== undefined
         && EFFORT_RANK[level] > EFFORT_RANK[input.maxEffort]
       return {
         id: level,
         label: level,
-        detail: input.configured === level && input.configured !== input.current ? 'configured' : '',
+        detail: input.configured === level && input.configured !== input.current ? '已配置' : '',
         ...(level === input.current ? { current: true } : {}),
         ...(beyondCeiling
-          ? { disabled: true, disabledReason: `above this model's maximum (${input.maxEffort})` }
+          ? { disabled: true, disabledReason: `超过该模型上限（${input.maxEffort}）` }
           : { action: { kind: 'run-command', line: `/effort ${level}` } as const }),
       }
     }),
@@ -150,7 +150,7 @@ export function effortPickerView(input: {
 export function backgroundTasksView(tasks: readonly BackgroundTaskSnapshot[]): SurfaceView {
   return {
     surface: 'background-tasks',
-    title: 'Background tasks',
+    title: '后台任务',
     rows: tasks.map((task) => ({
       id: task.id,
       label: task.kind === 'agent'
@@ -163,7 +163,7 @@ export function backgroundTasksView(tasks: readonly BackgroundTaskSnapshot[]): S
       ].filter((part): part is string => typeof part === 'string').join(' · '),
       action: { kind: 'peek-task', taskId: task.id } as const,
     })),
-    emptyMessage: 'No background tasks.',
+    emptyMessage: '没有后台任务。',
   }
 }
 
@@ -173,15 +173,15 @@ export function resumePickerView(input: {
 }): SurfaceView {
   return {
     surface: 'resume-picker',
-    title: 'Resume a session',
+    title: '恢复会话',
     rows: input.sessions.map((session) => ({
       id: session.id,
       label: session.title ?? session.shortId,
-      detail: `${session.messageCount} message${session.messageCount === 1 ? '' : 's'} · ${session.updatedAt}`,
+      detail: `${session.messageCount} 条消息 · ${session.updatedAt}`,
       ...(session.id === input.currentSessionId ? { current: true } : {}),
       action: { kind: 'open-pane', sessionId: session.id } as const,
     })),
-    emptyMessage: 'No other sessions yet.',
+    emptyMessage: '还没有其他会话。',
   }
 }
 

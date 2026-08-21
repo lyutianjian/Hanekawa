@@ -41,14 +41,14 @@ test('rows are numbered from one, in queue order', () => {
     [1, 'a', 'first'],
     [2, 'b', 'second'],
   ])
-  assert.match(view.title ?? '', /Queued \(2\)/)
+  assert.match(view.title ?? '', /已排队 2 条/)
   // The title has to say *why* they are waiting; "Queued (2)" alone reads like an
   // error state rather than a turn that is still running.
-  assert.match(view.title ?? '', /current turn ends/)
+  assert.match(view.title ?? '', /当前轮次结束后发送/)
 })
 
 test('the count in the title tracks the rows', () => {
-  assert.match(queuedMessagesView([message()]).title ?? '', /Queued \(1\)/)
+  assert.match(queuedMessagesView([message()]).title ?? '', /已排队 1 条/)
 })
 
 test('a multi-line message collapses to one line', () => {

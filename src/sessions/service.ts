@@ -63,6 +63,34 @@ interface DraftSessionState {
 
 const EMPTY_SESSION_CLEANUP_GRACE_MS = 10 * 60 * 1000
 
+/**
+ * Rejects a session id that must not become a path component.
+ *
+ * The one rule, shared: `SessionStore`'s own file paths go through it, and so
+ * does `removeShadowRepo` (`services/checkpoint/checkpointService.ts`), whose id
+ * arrives over the desktop shell's `delete-session` and lands in an `rm` with
+ * `recursive: true`. Two validators with slightly different rules on the same
+ * value is how one of them ends up being the lenient one.
+ *
+ * `''`, `'.'` and `'..'` are rejected as whole ids, not merely as substrings,
+ * because the two callers use the id at *different shapes*: `sessionPath` makes
+ * it `${id}.json`, where `'.'` is the harmless `..json`, while
+ * `removeShadowRepo` makes it a whole directory component, where `path.join`
+ * collapses it and `rm -r` then lands on the directory holding every session's
+ * snapshots. Calibrating this for the filename shape alone is exactly the bug
+ * that reached a red test.
+ */
+export function assertSafeSessionId(id: string): void {
+  if (id === '' || id === '.' || id === '..') {
+    throw new Error(`Invalid session ID: ${JSON.stringify(id)}`)
+  }
+  // Path separators, traversal, drive letters and NUL — anything that could
+  // escape the directory the caller means to write in.
+  if (/[\\/:\x00]/.test(id) || id.includes('..')) {
+    throw new Error(`Invalid session ID: ${JSON.stringify(id)}`)
+  }
+}
+
 interface RunningCacheSummary {
   totalTurns: number
   totalInputTokens: number
@@ -512,6 +540,14 @@ export class SessionStore {
     })
   }
 
+  /**
+   * Removes a session's three files and its index entry.
+   *
+   * **Not** its shadow repo — `.myagent/shadow-git/<id>` belongs to
+   * `services/checkpoint/`, which sits above `sessions/` in the layering, so
+   * "delete a session" is two calls the caller composes (see
+   * `ShellHost.deleteSession`). Calling this one alone leaks the snapshots.
+   */
   async delete(sessionIdOrPrefix: string): Promise<void> {
     const draft = this.resolveDraft(sessionIdOrPrefix)
     if (draft) {
@@ -968,11 +1004,7 @@ export class SessionStore {
   }
 
   private validateSessionId(id: string): void {
-    // Session IDs must be UUIDs or short prefixes — reject anything with
-    // path-separator, traversal, or null characters to prevent directory escape.
-    if (/[\\/:\x00]/.test(id) || id.includes('..')) {
-      throw new Error(`Invalid session ID: ${JSON.stringify(id)}`)
-    }
+    assertSafeSessionId(id)
   }
 
   private sessionPath(id: string): string {

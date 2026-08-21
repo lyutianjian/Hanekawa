@@ -4,9 +4,11 @@ import type {
   ShellCommand,
   ShellEvent,
   WireLaneInfo,
+  WireShellDeleteSessionResult,
   WireShellOpenProjectResult,
   WireShellOpenSessionResult,
   WireShellPanesResult,
+  WireShellSessionsResult,
 } from '../shellProtocol.js'
 
 /**
@@ -80,6 +82,27 @@ export class ShellClient {
       id: crypto.randomUUID(),
       ...(path !== undefined ? { path } : {}),
     }) as Promise<WireShellOpenProjectResult>
+  }
+
+  /**
+   * The sidebar's history. Deliberately not cached here: the caller decides
+   * *when* to pull (topology change, turn end, after a delete) and owns the
+   * coalescing, because this one reaches the filesystem on the host side.
+   */
+  async listSessions(): Promise<WireShellSessionsResult> {
+    return this.send({
+      type: 'list-sessions',
+      id: crypto.randomUUID(),
+    }) as Promise<WireShellSessionsResult>
+  }
+
+  async deleteSession(projectRoot: string, sessionId: string): Promise<WireShellDeleteSessionResult> {
+    return this.send({
+      type: 'delete-session',
+      id: crypto.randomUUID(),
+      projectRoot,
+      sessionId,
+    }) as Promise<WireShellDeleteSessionResult>
   }
 
   dispose(): void {

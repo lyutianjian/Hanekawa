@@ -13,6 +13,7 @@ import {
   formatPermissionSubtitle,
   formatPermissionTitle,
   nextPermissionIndex,
+  permissionOptions,
   permissionOptionsForRequest,
   permissionToneForRequest,
   resolvePermissionAction,
@@ -423,3 +424,58 @@ function rule(
     source: 'config',
   }
 }
+
+describe('locale', () => {
+  it('defaults to English, which is what keeps the TUI untouched', () => {
+    // The parameter is optional precisely so the terminal's ~25 call sites did
+    // not have to change. If the default ever flips, it fails here rather than
+    // in someone's shell.
+    const dto = request('Bash', { command: 'ls' }, 'ask rule', 'confirm', 'needs a look', {
+      matchedRule: askRule('Bash', 'ls:*'),
+    })
+    assert.equal(formatPermissionTitle(dto), 'Bash command')
+    assert.match(formatPermissionReason(dto), /requires confirmation/)
+    assert.equal(formatPermissionInputBlock(dto).label, 'Command')
+    assert.equal(formatPermissionSource(dto), 'ask rule')
+    assert.deepEqual(permissionOptions(), PERMISSION_OPTIONS)
+  })
+
+  it('renders the whole dialog in Chinese when asked', () => {
+    const dto = request('Write', { filePath: 'a.txt' }, 'ask rule', 'dangerous', 'needs a look', {
+      matchedRule: askRule('Write'),
+    })
+    assert.equal(formatPermissionTitle(dto, 'zh'), '写入文件')
+    assert.equal(formatPermissionReason(dto, 'zh'), '权限规则 Write 要求确认。')
+    assert.equal(formatPermissionInputBlock(dto, 'zh').label, '路径')
+    assert.equal(formatPermissionSource(dto, 'zh'), '询问规则')
+    assert.equal(permissionOptions('zh')[0]?.label, '允许一次')
+    assert.deepEqual(
+      permissionOptions('zh').map((option) => option.hotkey),
+      PERMISSION_OPTIONS.map((option) => option.hotkey),
+      'hotkeys are keyboard facts, not prose',
+    )
+  })
+
+  it('translates the two wire enums the subtitle prints raw', () => {
+    // Without their tables the subtitle reads "dangerous - ask rule" in the
+    // middle of a Chinese sentence: they are the only enum values that reach a
+    // user unmediated.
+    const dto = request('Write', { filePath: 'a.txt' }, 'ask rule', 'dangerous')
+    const subtitle = formatPermissionSubtitle(dto, 2, 4, 'zh')
+    assert.match(subtitle, /危险/)
+    assert.match(subtitle, /询问规则/)
+    assert.match(subtitle, /第 3\/4 条待处理/)
+  })
+
+  it('translates the always-allow row without touching the rule syntax', () => {
+    const dto = request('Bash', { command: 'ls' }, 'mode', 'confirm', 'r', {
+      // The helper supplies `onAlwaysAllow` alongside the rule, which is what
+      // makes the DTO's `canAlwaysAllow` true — the gate sets both together.
+      alwaysAllowRule: allowRule('Bash', 'ls:*'),
+    })
+    const options = permissionOptionsForRequest(dto, 'zh')
+    assert.deepEqual(options.map((option) => option.action), ['allow', 'deny', 'always'])
+    assert.match(options[2]!.label, /始终允许/)
+    assert.match(options[2]!.label, /Bash\(ls:\*\)/, 'rule syntax is not prose')
+  })
+})

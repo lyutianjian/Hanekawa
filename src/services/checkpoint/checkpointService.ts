@@ -1,8 +1,9 @@
-import { mkdir, access, readFile } from 'node:fs/promises'
+import { mkdir, access, readFile, rm } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
-import { SessionStore } from '../../sessions/service.js'
+import { SessionStore, assertSafeSessionId } from '../../sessions/service.js'
+import { getMyAgentDir } from '../../utils/paths.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -40,6 +41,32 @@ export interface CheckpointMapping {
   createdAt: string
 }
 
+/**
+ * Where a session's shadow repo lives. The only place that knows that layout,
+ * so deleting a session and snapshotting one cannot disagree about the path.
+ * `.myagent` itself comes from `getMyAgentDir` — `utils/paths.ts` owns that
+ * literal, and every other `.myagent` path already routes through it.
+ */
+export function shadowRepoPath(cwd: string, sessionId: string): string {
+  return path.join(getMyAgentDir(cwd), 'shadow-git', sessionId)
+}
+
+/**
+ * Deletes a session's shadow repo. Called when a session itself is deleted —
+ * until this existed the repo outlived every other trace of the session and
+ * leaked for the life of the project.
+ *
+ * The guard is load-bearing rather than defensive: the caller's `sessionId`
+ * comes off the wire (`delete-session`) and lands in an `rm` with
+ * `recursive: true`, one bad argument away from `.myagent/shadow-git` itself.
+ * It is `SessionStore`'s own validator so the two cannot drift, and callers pass
+ * the id the store *resolved*, never a prefix.
+ */
+export async function removeShadowRepo(cwd: string, sessionId: string): Promise<void> {
+  assertSafeSessionId(sessionId)
+  await rm(shadowRepoPath(cwd, sessionId), { recursive: true, force: true })
+}
+
 export class CheckpointService {
   private readonly shadowGitDir: string
   private readonly worktree: string
@@ -49,7 +76,7 @@ export class CheckpointService {
   constructor(cwd: string, sessionId: string) {
     this.cwd = cwd
     this.sessionId = sessionId
-    this.shadowGitDir = path.join(cwd, '.myagent', 'shadow-git', sessionId)
+    this.shadowGitDir = shadowRepoPath(cwd, sessionId)
     this.worktree = cwd
   }
 

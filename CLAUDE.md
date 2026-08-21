@@ -14,9 +14,9 @@ npm install                        # postinstall runs patch-package (required, s
 npm run dev:tui                    # start the TUI; also: resume <id> | --continue | c | list
 npm run typecheck                  # base + tsconfig.preload.json + tsconfig.renderer.json
 npm run build                      # tsc -p tsconfig.build.json → dist/ (Electron main only)
-npm run build:desktop              # build + esbuild preload/renderer bundles + copy index.html
+npm run build:desktop              # build + esbuild preload/renderer bundles + copy index.html/styles.css
 npm run start:desktop              # electron . (needs a real display)
-npm run test                       # full suite: 1989 tests / 39 suites, ~48s
+npm run test                       # full suite: 2096 tests / 41 suites, ~42s
 node --import tsx --test test/compact.test.ts          # single file (space-separate several)
 node --import tsx --test --test-name-pattern "cache break" test/cacheBreakDetection.test.ts
 ```
@@ -334,7 +334,7 @@ for a renderer.
   idempotent per key and hands back a *closed* view after `closeLane` (late subscribers fire
   immediately); transport death closes every lane on both sides; a remote close is never echoed.
 - **`hello` seeds `SessionClient.session`.** It is an announcement of the bound session, and the desktop
-  tab bar derives its active row from `getSession()` — left to the first `session-changed`, no row is
+  sidebar derives its active row from `getSession()` — left to the first `session-changed`, no row is
   marked active for the whole first session.
 
 ### Electron shell — `src/desktop/`
@@ -361,21 +361,34 @@ ids travel under `/clear` and `/resume`, lane keys do not), and the project map 
   owns the ordering then.
 - **A project is shut down when its last lane closes.** `shutdown()` is the only call that stops
   background tasks and MCP clients, so a lane-less project is a set of orphaned child processes. On
-  non-darwin the last lane closing quits the app; on darwin the empty window stays (its tab bar still
-  offers new tabs and "Open project"). Reopening costs a fresh `bootstrap()`, which is also how a smoke
-  can *prove* the shutdown happened.
+  non-darwin the last lane closing quits the app; on darwin the empty window stays (its sidebar still
+  offers a new session and "Open project"). Reopening costs a fresh `bootstrap()`, which is also how a
+  smoke can *prove* the shutdown happened.
 - **Lane creation dedups on pane identity** (`openLane` / `attachPane`): a pane that already has a lane
   is *activated*, never given a second occupant — the single-window equivalent of focusing an existing
   window. `openLane` owns the pane-resolution choreography (`paneForSession` → `store.resolve` →
   `workspace.open`, else `openScope`+`createDraft`+`adopt`) that used to live inline in `main.ts`, and
   `attachPane` is the `onPaneOpened` hand-off. `lanes` is posted before `activate` — one channel is FIFO,
   so the renderer always builds a pane session before being asked to switch to it.
+- **`delete-session`'s order is fixed and every step of it is load-bearing.** Capture `store` and `cwd`
+  off the entry **first** (step 3 can shut the project down, after which `directory.get()` finds
+  nothing) → `store.resolve()` for the **real** id (`SessionStore.delete` takes a prefix, the artifact
+  paths do not; the raw wire string would delete the right index entry and miss the rest) →
+  `detachLane` if a lane holds it (a pane bound to a vanished JSONL recreates it on the next append) →
+  `deleteSessionArtifacts`. **No trailing broadcast:** deleting an open session already broadcast from
+  `detachLane`, and deleting a closed one changes no lane — `ShellClient` swallows an identical list by
+  design, so the renderer refreshes off the command's own reply.
+- **`list-sessions` is history, not topology** — every project's `store.list()` in `ProjectDirectory`
+  order, including projects with no lane open. It reuses `SessionMeta` rather than reducing it to a
+  sidebar DTO: that type is already on the wire (`WireSessionsResult`, `session-changed`).
 - **Generic over `<P, PaneT, W>`** with `RuntimeHost`/`SessionPane`/`SessionWorkspace` defaults and
   `Satisfied<Real, Ours>` compile-time assertions, so `test/desktopShellHost.test.ts` drives a real
   `ProjectDirectory` with plain fakes and **no `as unknown as`** (the `ProjectDirectory` pattern). The
   occupant is deliberately opaque (`{ dispose() }`): production passes a `SessionHost` factory, the test a
-  recorder. Inbound shell commands are zod `.strict()`-validated with a keyed `satisfies` table, the
-  `commandSchema.ts` discipline again.
+  recorder — which is also why renaming a *live* session has no home here yet (it needs the pane's
+  controller meta refreshed and a `session-changed` pushed; that lands with 4d's config fan-out). Inbound
+  shell commands are zod `.strict()`-validated with a keyed `satisfies` table, the `commandSchema.ts`
+  discipline again.
 
 Transport interfaces (`ipc/electronChannel.ts`) are **structural, not imported from `electron`** —
 loadable from plain-node tests. Each rule below was a launch-blocking bug `tsc` couldn't see:
@@ -418,9 +431,10 @@ import of `harness/|services/|sessions/|commands/|tui/`, an import allowlist, no
 - **One `PaneSession` per lane** (`paneSession.ts`): the session client, every dialog/completion/queue
   decision, and its own transcript DOM subtree (`.pane > .transcript + .tool-progress`,
   visibility-toggled — scroll positions survive a switch and nothing repaints). The singleton views
-  (status, composer, tab bar, overlay, surfaces, queue strip) are driven by the *active* pane only; a
+  (status, composer, overlay, surfaces, queue strip) are driven by the *active* pane only; a
   background pane still folds every event into its state — a turn keeps streaming, a permission request
-  parks until the user comes back — it just does not paint. `deactivate()` banks the composer draft and
+  parks until the user comes back — it just does not paint. The **sidebar is the exception**: every
+  pane repaints it, because the badges are per row. `deactivate()` banks the composer draft and
   clears the *paint* (not the state) off the shared panels, so a background pane's dialogs cannot leak
   onto the active one; `activate()` repaints everything once. `app.ts` owns the window: the mux, the
   `ShellClient` on `__shell`, the pane-session map, and the global key handler routing to the active
@@ -437,17 +451,51 @@ import of `harness/|services/|sessions/|commands/|tui/`, an import allowlist, no
   `transcript-reset`); `paneSession.ts` closes the panel on session change.
 - **`SUPPORTED_SURFACES` = surfaces drawn as a row list**, not what this shell handles — `rewind-panel`
   resolves by name before `isSupportedSurface`; `provider-panel` is the one ignored by name.
-- **Tab-bar chords resolve *before* the keymap** — only safe because `tabBarKeyToIntent`
-  (`model/tabBar.ts`) returns `'none'` unless ctrl/meta is held. An unmodified key would silently shadow
+- **Sidebar chords resolve *before* the keymap** — only safe because `sidebarChordToIntent`
+  (`model/sidebar.ts`) returns `'none'` unless ctrl/meta is held. An unmodified key would silently shadow
   every dialog. `Ctrl+Shift+O` (an `'open-project'` intent) is checked before the unshifted letters, since
   a browser reports the shifted key as `'O'`.
-- **The tab bar groups by project and feeds off the shell lane.** `app.ts` builds the state from
-  `ShellClient.getLanes()` — pane ids *and* lane keys in one list — so switching is a local
-  `activateLane` (never a `focus-pane` round trip) and every row is closable: the row's own lane client
-  reaches whichever `SessionWorkspace` owns the pane. `ownProjectRoot` is deliberately passed as
-  `undefined` (the model's "all mine"), which turns `closable` on for every row; grouping still follows
-  each pane's `projectRoot`, own-first degenerating to open order, with headings from two projects up
-  (`showProjectLabels`). `Ctrl+1`–`9` index `groupRows`' visual order, the same list the view renders.
+- **The sidebar has *two* key entry points and they are not interchangeable.** `sidebarChordToIntent` is
+  the global one above; `sidebarKeyToIntent` (arrows/Enter/Escape/Delete) is bound to the sidebar
+  *container* and answers `'none'` for anything modified. Scoping it to sidebar focus is what keeps
+  arrows out of the composer and lets Escape cancel a pending delete without a `resolveKey` rank — the
+  view `stopPropagation()`s a consumed key, or an Enter would activate the row *and* send the composer.
+  A pending delete is withdrawn on `focusout`, so it can never become a confirm that is drawn but
+  unanswerable.
+- **The sidebar lists history, not topology, and the two are unioned.** `list-sessions` (shell lane) is
+  the store's answer per project; `ShellClient.getLanes()` says which of those are open, and a lane with
+  no file behind it (a fresh draft) still gets a row or the session being typed into disappears. Badges
+  (`running`/`awaiting-input`) are *derived* from each pane's `getSnapshot().isStreaming` and
+  `shellState().hasOverlay` — **no wire field carries them**, so nothing can go stale. `awaiting-input`
+  outranks `running` (a turn parked on a prompt is still streaming). Grouping keeps the old tab bar's
+  stable partition (`filter` twice, never a comparator on a boolean), active project first, headings from
+  two projects up; `Ctrl+1`–`9` indexes `liveRows`, **not** `rows` — the chord means "switch between live
+  panes", and reaching into history would turn a switch into an open.
+- **The sidebar view is signature-guarded, and that guard is what makes it affordable.**
+  `sidebarRenderSignature` (`model/sidebar.ts`) → `render()` returns early when nothing it draws moved,
+  the same field-diff discipline as `SessionClient.applySnapshot` / `ShellClient.applyLanes`. Needed
+  because `onShellChanged` fires on *every* snapshot change, and `sameTaskList` compares
+  `outputBytes` — so a backgrounded `npm test` would rebuild every history row at output-flush rate, and
+  rows are sessions on disk, not messages. **A field drawn but not signed goes stale on screen**;
+  `updatedAt` is deliberately unsigned because it is bucketed, never drawn. Collapsed returns before
+  building rows at all.
+- **Two decisions the sidebar keeps in exactly one place**, both because the second copy diverged:
+  `activateRow` (open-or-switch: click and Enter) and `newSessionIntent` (which project a new session
+  lands in — the `+` button emitted a rootless intent while `Ctrl+T` resolved one, and `ShellHost` falls
+  back to `directory.entries()[0]`, so the button created sessions in the *first-opened* project).
+  `state.canCreate` gates the chords as well as the buttons: "key path and button must agree".
+- **The renderer's only filesystem reach is `refreshSessions()`**, and it runs on exactly four occasions:
+  startup (via the `lanes` event `panes()` fires, not a second call), a `lanes` event, a `turn-end`
+  event, and after a delete. `turn-end` rather than watching `isStreaming` for a falling edge — the
+  event says it directly and covers aborted turns too. Never on a snapshot tick. Concurrent callers
+  coalesce into one extra pass, which is load-bearing: a delete awaits its own refresh, so dropping the
+  re-pull would leave the deleted row on screen.
+- **`paneBudget.ts` caps resident panes at `DEFAULT_PANE_LIMIT` (4).** Pure: `selectEvictions` orders on a
+  monotonic `lastActiveTick` (not a clock — ties are real) and **never returns a pinned lane** (active,
+  streaming, or holding an unanswered blocking request). All-pinned deliberately returns *fewer* than the
+  excess: going over budget costs memory, evicting a parked prompt drains that bridge with a **denial**
+  and fails the user's tool call silently. `app.ts` applies it by `closePane`-ing the chosen lanes, which
+  is releasing a runtime, not deleting a session.
 - **A blocking request must always be answered** — `SessionClient.answer` try/catches handlers and falls
   back to `UI_REQUEST_FALLBACKS[kind]()`; otherwise a throwing dialog wedges the loop for the life of the
   process.
@@ -472,6 +520,42 @@ import of `harness/|services/|sessions/|commands/|tui/`, an import allowlist, no
   `rewindPresentation.ts`) is pure with type-only cross-layer imports — one value import breaks the
   renderer bundle. `test/rewindPresentation.test.ts` asserts *function identity* so a re-export can't
   fork.
+- **The stylesheet is `renderer/styles.css`, and it is a token system.** Five surfaces
+  (`--surface-base`, the sidebar and frame → `--surface-canvas`, the nested rounded panel →
+  `--surface-card` → `--surface-hover` → `--surface-active`), three text levels, and five
+  `--accent-*` colours that may appear only on `color`/`fill`/`border-*-color` — **never a
+  `background`**. `test/rendererStyleTokens.test.ts` parses the sheet and asserts all of it:
+  that the surface ladder's luminance is monotonic (the sidebar used to be *lighter* than the
+  canvas, which is the inversion 4e made), that every `var(--x)` resolves — the one CSS
+  failure that is reported nowhere, since a typo'd custom property just inherits — and that
+  no rule outside `:root` spells a colour. Views hold no colour literals at all, and
+  `.style.*` is limited to `height` (the composer's autosize, which needs `scrollHeight`).
+  Two structural rules: `#canvas` must keep `overflow: hidden` or its scrollbar squares off
+  the corner the layout is built on, and `ch` units are legal only in a rule that also
+  declares `--font-mono` — `ch` is the width of a `0`, and the chrome font is proportional.
+- **The composer is a capsule with an inline action bar**, and its "model · effort" chip is
+  where effort lives (stage-4 decision 4: never in settings). Both halves open the *existing*
+  pickers by running `/model` and `/effort` through `run-command` — `client.setModel` would
+  point the runtime somewhere else and silently drop the persistence `/model` performs, and
+  the effort picker is what draws over-ceiling levels disabled-with-a-reason. The status bar
+  no longer carries the model: one field, one place. `MAX_COMPOSER_HEIGHT_PX` and the CSS
+  `max-height` are two copies on purpose; the JS one is load-bearing.
+- **`dom/icons.ts` is the only file that calls `createElementNS`** — `el()` makes HTML
+  elements, and an `"svg"` created in the HTML namespace renders nothing at all. Icons
+  inherit `currentColor`, which is what keeps accents on `color` rather than on a `fill` the
+  style test would have to special-case. The set is a keyed `satisfies`, so a name added to
+  `IconName` without a path fails the build instead of drawing an empty box.
+- **Shared presentation takes an optional `locale`, defaulting to `'en'`.** The desktop
+  passes `'zh'` through `model/locale.ts`'s `UI_LOCALE`; the TUI passes nothing and needed no
+  edits. Optional rather than required because `test/rewindPresentation.test.ts` asserts
+  *function identity* (so these modules may only gain a parameter, never be forked) while
+  `test/tuiRender.test.ts` asserts English frames — a required parameter would have meant
+  touching ~25 terminal call sites for no behavioural gain. Each of the three presentation
+  tests pins the default, which is the only thing standing between the terminal and a silent
+  language switch. `PERMISSION_OPTIONS` / `ENTER_PLAN_OPTIONS` / `EMPTY_PLAN_OPTIONS` remain
+  as the English constants beside their new `…Options(locale)` functions, because they are
+  also default parameter values. `riskLevel` and the permission decision source get lookup
+  tables too — they are the only wire enums printed to a user unmediated.
 - **No `innerHTML`; markdown is parsed, never rendered to HTML.** `model/markdown.ts` uses marked's
   **lexer** into its own `MdBlock`/`MdInline` union; `dom/markdownView.ts` walks it with `el()`. Three
   downgrades happen at *parse* time: `html` tokens → literal text; non-http(s)/mailto links lose anchors;
@@ -493,7 +577,19 @@ for cross-process safety. Reads self-heal and report `SessionDiagnostic[]` rathe
 
 `services/checkpoint/` snapshots the working tree each turn into a **shadow git repo** at
 `.myagent/shadow-git/<sessionId>` (`core.worktree` → project root), so `/rewind` never touches the user's
-repo.
+repo. `shadowRepoPath()` is the one place that knows that layout.
+
+**`deleteSessionArtifacts` (`src/runtime/deleteSession.ts`) is what "delete a session" means** — store
+files, shadow repo, session memory, subagent transcripts. `SessionStore.delete` can only ever remove the
+first, since the rest belong to modules *above* `sessions/` and calling back down would be a cycle; so
+the composition lives in `runtime/`, the layer that already depends on both `harness/` and `services/`.
+Spelling the list inline in the caller is exactly how two of the four leaked. **A new
+`.myagent/<x>/<sessionId>` artifact is registered there or it is unremovable.** The id is validated by
+`assertSafeSessionId` (`sessions/service.ts`, shared with the store's own paths): it rejects `''`, `'.'`,
+`'..'` and any separator, because two of the removals are `recursive` and `path.join(dir, '')` is `dir`.
+Callers pass the id the store *resolved*, never a prefix. The `'.'` case is not hypothetical — the
+validator was first calibrated for the `${id}.json` shape, where `'.'` is harmless, and reusing it for a
+whole directory component turned that into an `rm -r` on the shared parent.
 
 ## Conventions
 

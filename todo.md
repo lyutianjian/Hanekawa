@@ -67,210 +67,194 @@ ProjectDirectory ─┤ SessionHost(lane a) ─┐        │   │ ┌ SessionC
 
 视觉不动，先把「一个窗口 N 个活 pane」跑通。
 
-- [x] 新增 `src/runtime/protocol/laneChannel.ts`：`createLaneMux(transport)` →
-  `{ lane(key), closeLane(key), close() }`。lane 级 close 走**控制帧**，否则
-  `SessionClient` 的 pending 请求在对端 pane 消失时永远悬着；未 attach 的 lane
-  的入站消息**有界缓冲**（上限 256，溢出关闭 lane 而非丢帧——丢一个 reply 就永悬）。
-  纯函数，用 `createMemoryChannelPair` 在纯 node 下测。控制帧与缓冲上限均已变异验证。
+- [x] 新增 `src/runtime/protocol/laneChannel.ts`：`createLaneMux(transport)` → `{ lane(key),
+  closeLane(key), close() }`。lane 级 close 走**控制帧**（否则 `SessionClient` 的 pending 请求
+  在对端 pane 消失时永悬）；未 attach 的 lane 入站消息**有界缓冲**（上限 256，溢出关 lane
+  而非丢帧）。纯函数，`createMemoryChannelPair` 纯 node 下测；控制帧与缓冲上限均已变异验证。
 - [x] 新增 `src/desktop/shellHost.ts` + `shellProtocol.ts` + `renderer/shellClient.ts`。本期只做
   `panes` / `open-session` / `open-project` 三条（`lanes` / `activate` 两个事件 + reply/fail）。
-  做成 `SessionHost` 同款的类，因为 **`main.ts` 一行测试都没有**，凡是决策都必须落在可测模块里；
-  入站 zod `.strict()` 校验 + keyed `satisfies` 表 + `_NoDrift`（抄 commandSchema 手法）。
-  **`SessionHost` 一行未动**——shell 行为全部走现成的可选回调，protocolChildProcess 的字符串
-  脚本陷阱因此完全绕开。
+  做成 `SessionHost` 同款的类——**`main.ts` 一行测试都没有**，决策必须落在可测模块；入站
+  zod `.strict()` + keyed `satisfies` 表 + `_NoDrift`（抄 commandSchema 手法）。**`SessionHost`
+  一行未动**——shell 行为全走现成可选回调，绕开 protocolChildProcess 的字符串脚本陷阱。
 - [x] 改 `src/desktop/main.ts`：只建一个 `BrowserWindow`（`ensureShell` 幂等）；lane key 由
-  `ShellHost` 自铸（单调、不复用，`/clear`、`/resume` 不动它——这正是当初选 window id 的理由，
-  现在 lane key 顶上）；`detachPane` → `ShellHost.detachLane`，仍是消亡路径唯一出口（先删 map）；
-  「最后一个 lane 关掉即 shutdown 项目」；`before-quit` 顺序不变；`second-instance` =
-  聚焦唯一窗口 + `openProjectInteractive(cwd)`。
-- [x] 改 `src/desktop/renderer/app.ts`：抽出 `paneSession.ts`（每 lane 一份会话级状态 + 草稿
-  显式化 + 每 pane transcript DOM 子树 `.pane > .transcript + .tool-progress`），`app.ts` =
-  mux + ShellClient(`__shell`) + paneSession map + activeLane + 全局键路由。背景 pane 只更状态
-  不做 DOM；`deactivate()` 存草稿并清**绘制**（不清状态）。tab bar 数据源换成
-  `shellClient.getLanes()`，切换纯本地（渲染器不再调 `focus-pane`），`/exit` 只关本 pane。
+  `ShellHost` 自铸（单调、不复用，`/clear`、`/resume` 不动它）；`detachPane` → `ShellHost.detachLane`
+  （消亡路径唯一出口，先删 map）；「最后一个 lane 关掉即 shutdown 项目」；`before-quit` 顺序不变；
+  `second-instance` = 聚焦唯一窗口 + `openProjectInteractive(cwd)`。
+- [x] 改 `src/desktop/renderer/app.ts`：抽出 `paneSession.ts`（每 lane 会话级状态 + 草稿显式化 +
+  每 pane transcript DOM 子树 `.pane > .transcript + .tool-progress`），`app.ts` = mux +
+  ShellClient(`__shell`) + paneSession map + activeLane + 全局键路由。背景 pane 只更状态不做 DOM；
+  `deactivate()` 存草稿并清**绘制**（不清状态）。tab bar 数据源换成 `shellClient.getLanes()`，
+  切换纯本地（渲染器不再调 `focus-pane`），`/exit` 只关本 pane。
 - [x] 凭据：`test/laneChannel.test.ts`（11 条）、`test/desktopShellHost.test.ts`（22 条，真
-  `ProjectDirectory` + 泛型假货，**零 `as unknown as`**，closeLane/最后 lane shutdown/幂等
-  三条不变式变异验证）、`test/desktopMain.test.ts` 新增第五用例（单传输双侧 mux + 真 ShellHost
-  + 双 lane SessionHost/SessionClient + 出货 ShellClient 端到端）。全量 2023 pass / 0 fail。
+  `ProjectDirectory` + 泛型假货，**零 `as unknown as`**，closeLane/最后 lane shutdown/幂等三条
+  不变式变异验证）、`test/desktopMain.test.ts` 第五用例（单传输双侧 mux + 真 ShellHost + 双 lane
+  SessionHost/SessionClient + 出货 ShellClient 端到端）。全量 2023 pass / 0 fail。
 
 **完成注记**：lane 复用信封 `{kind:'data'|'close', lane, body}`；renderer 侧 value-import 登记
-`laneChannel.js`/`pendingRequests.js` 两处白名单 + tsconfig.renderer include；`ShellHost` 泛型
-`<P, PaneT, W>` 的默认值陷阱与 close-pane 自毁路径详见「决策留痕」。**4a 未做真机冒烟**——
-单窗口多 lane 的 CDP 冒烟整体后移到 4f（其第 1、2、6 条即 4a 的验收），当前凭据是
-desktopMain 第五用例的端到端通道。
+`laneChannel.js`/`pendingRequests.js` 白名单 + tsconfig.renderer include；`ShellHost` 泛型
+`<P, PaneT, W>` 默认值陷阱与 close-pane 自毁路径详见「决策留痕」。**未做真机冒烟**——CDP 冒烟
+整体后移到 4f（第 1、2、6 条即 4a 验收），当前凭据是 desktopMain 第五用例的端到端通道。
 
 ### 4b — 侧边栏、会话历史、删除 `[x]`
 
-- [x] 纯模型 `renderer/model/sidebar.ts`：分组（活动 pane 的项目在前，`groupRows` 的**稳定分区**
-  手法从旧 tab bar 搬过来并扩成「项目 → 时间分节 → 会话」三级）、时间分节（按**日历日**而非
-  流逝小时，`now` 由入参注入）、徽标推导（`running` / `awaiting-input` 由该 pane 的
-  `client.getSnapshot().isStreaming` 与 `shellState().hasOverlay` 得出，**没有新增 wire 字段**；
-  `awaiting-input` 压过 `running`）、键盘导航、`Ctrl+B` 折叠。
-- [x] `dom/sidebarView.ts`；删 `dom/tabBarView.ts` / `model/tabBar.ts` / `test/rendererTabBarModel.test.ts`
-  （21 条）。`index.html` 的 body 从纵向 flex 改成 `#shell = #sidebar + #canvas`，CSS 仍内联
-  （4e 重做）；`#overlay`/`#rewind` 仍是 body 直接子节点，`position: fixed` 因此照旧盖满窗口。
+- [x] 纯模型 `renderer/model/sidebar.ts`：分组（活动 pane 的项目在前，`groupRows` 稳定分区，
+  「项目 → 时间分节 → 会话」三级）、时间分节（按**日历日**而非流逝小时，`now` 由入参注入）、
+  徽标推导（`running` / `awaiting-input` 由该 pane 的 `getSnapshot().isStreaming` 与
+  `shellState().hasOverlay` 得出，**没有新增 wire 字段**；`awaiting-input` 压过 `running`）、
+  键盘导航、`Ctrl+B` 折叠。
+- [x] `dom/sidebarView.ts`；删 `dom/tabBarView.ts` / `model/tabBar.ts` /
+  `test/rendererTabBarModel.test.ts`（21 条）。`index.html` body 改成 `#shell = #sidebar + #canvas`，
+  CSS 仍内联（4e 重做）；`#overlay`/`#rewind` 仍是 body 直接子节点，`position: fixed` 盖满窗口。
 - [x] shell 协议补 `list-sessions`（跨项目）/ `delete-session`。删除顺序：**先抓 `store` 与 `cwd`**
   → `store.resolve()` 拿解析后的 id → 关该会话的 lane（若开着）→ `deleteSessionArtifacts()`。
   删除走侧栏内联二次确认。
 - [x] **新增 `src/runtime/deleteSession.ts`——「删一个会话」终于有了归属**。原计划只修 shadow-git，
-  复查（altitude）grep 出**另外两处同类泄漏**：`.myagent/session-memory/<id>.json` 与
-  `.myagent/sessions/subagents/<id>/`。`SessionStore.delete` 只能删它自己那三个文件（另外三样都在
-  `sessions/` 之上的层，反向调用是环），所以清单必须有个地方落——落在 `runtime/`（同时依赖
-  `harness/` 与 `services/` 的那一层），而不是在外壳里逐条列（那正是四样里漏了两样的原因）。
-  以后新增 `.myagent/<x>/<sessionId>` 类工件都往这里登记。
-- [x] LRU：新增 `src/desktop/paneBudget.ts`（纯函数）。上限 4 个常驻，
-  **永不驱逐**「活跃 / 正在跑 turn / 有未答阻塞请求」的 pane；全 pinned 时宁可超额。
-  驱逐 = 该 lane 自己的 `closePane`，落到 `onPaneClosed` → `detachLane`。
-  兑现决策 2 的**「不给关闭按钮」**：行上只有删除，释放常驻额度是 LRU 的事，用户不该被要求
-  去想「运行时」这个概念。`Ctrl+W` 保留（不是按钮），模型里的 `close` 意图由它使用。
+  复查 grep 出**另外两处同类泄漏**：`.myagent/session-memory/<id>.json` 与
+  `.myagent/sessions/subagents/<id>/`。`SessionStore.delete` 只能删它自己那三个文件（其余都在
+  `sessions/` 之上的层，反向调用是环），清单必须落在 `runtime/`（同时依赖 `harness/` 与
+  `services/` 的那一层）。以后新增 `.myagent/<x>/<sessionId>` 类工件都往这里登记。
+- [x] LRU：新增 `src/desktop/paneBudget.ts`（纯函数）。上限 4 个常驻，**永不驱逐**「活跃 / 正在跑
+  turn / 有未答阻塞请求」的 pane；全 pinned 时宁可超额。驱逐 = 该 lane 自己的 `closePane` →
+  `onPaneClosed` → `detachLane`。兑现决策 2 的**「不给关闭按钮」**：行上只有删除，释放常驻额度是
+  LRU 的事，用户不该被要求去想「运行时」。`Ctrl+W` 保留（不是按钮）。
 - [x] 凭据：`test/rendererSidebar.test.ts`（30 条）、`test/paneBudget.test.ts`（11 条）、
   `test/desktopShellHost.test.ts`（22 → 30，补 list/delete 六条）、`test/checkpointService.test.ts`
   （+4 条 `removeShadowRepo`）、`test/deleteSession.test.ts`（4 条，逐工件断言）、
   `test/rendererImports.test.ts`（+1 条「渲染器 `required()` 的每个 id 都在 index.html 里」——
-  `required()` 在 `app.ts` 模块作用域就抛，改页面结构时那是一扇空白窗口加一行 console，
-  两段 typecheck 都看不见）。全量 2063 tests / 2062 pass（唯一红的是已知环境依赖那条）。
+  `required()` 在 `app.ts` 模块作用域就抛，改页面结构时是一扇空白窗口加一行 console，两段
+  typecheck 都看不见）。全量 2063 tests / 2062 pass（唯一红的是已知环境依赖那条）。
 
 **完成注记**：
 
-- **`rename-session` 推迟到 4d**（见 4d 一节）。会话正开着时改名要刷新 `SessionController` 私有的
-  `SessionMeta` 并推一条 `session-changed`，而 `ShellHost` 的 occupant 是**故意不透明**的
-  （只有 `dispose()`），够不到那个 host。「让外壳对某条 lane 的 host 说话」与 4d 的
-  `refreshAfterConfigChange()` 扇出是同一个形状，应当一起设计，而不是为改名单独把
-  `LaneOccupant` 拓宽一次。删除没这个问题——lane 反正要拆掉。
-- **`resolveKey` / `ShellState` 一行未动**。原计划要给那张载重的优先级表插一档放删除确认；
-  实际做成侧栏内联确认 + 侧栏容器自带 keydown（Esc 取消、Enter 确认）+ `focusout` 撤销就够了。
-  代价是消费掉的按键必须 `stopPropagation()`——全局 handler 挂在 `document` 上，放一个 Enter
-  过去会既激活行又把 composer 的内容发出去。
+- **`rename-session` 推迟到 4d**：会话正开着时改名要刷新 `SessionController` 私有的 `SessionMeta`
+  并推 `session-changed`，而 `ShellHost` 的 occupant 是**故意不透明**的（只有 `dispose()`），
+  够不到那个 host。「让外壳对某条 lane 的 host 说话」与 4d 的 `refreshAfterConfigChange()` 扇出
+  是同一个形状，应一起设计，而不是为改名单独把 `LaneOccupant` 拓宽一次。
+- **`resolveKey` / `ShellState` 一行未动**。删除确认做成侧栏内联确认 + 容器自带 keydown
+  （Esc 取消、Enter 确认）+ `focusout` 撤销就够了；代价是消费掉的按键必须 `stopPropagation()`——
+  全局 handler 挂在 `document` 上，放一个 Enter 过去会既激活行又把 composer 的内容发出去。
 - **计划里的「删完再 `broadcastLanes()`」被用例证伪并删掉**：`ShellClient` 按设计吞掉内容相同的
-  重复 `lanes`（身份稳定），所以删闭着的会话那条广播根本唤不醒监听器；删开着的会话
-  `detachLane` 已经广播过。渲染器改为**用 delete 命令自己的回包**当刷新信号，并写成用例
+  重复 `lanes`（身份稳定），删闭着的会话那条广播唤不醒监听器，删开着的会话 `detachLane` 已广播过。
+  渲染器改为**用 delete 命令自己的回包**当刷新信号，并写成用例
   （「deleting a closed session leaves the topology untouched」）钉住这个理由。
-- **顺手补严了 `test/rendererImports.test.ts` 的一个洞**：原判据是「相对路径且不含
-  `/runtime/`、`/config/` ⇒ 算本地 import」，于是 `../shellProtocol.js`（4a 起就有）和
-  `../paneBudget.js` 这类**逃出 `renderer/` 的**说明符被一路放行。改成解析真实路径判断是否
-  仍在 `renderer/` 内，逃出的必须上白名单；顺带把「白名单条目可达」那条改成按**真正 import 它的
-  文件**去解析，而不是猜 `src/<rest>`（`../shellProtocol.js` 就猜错）。已变异验证。
+- **顺手补严了 `test/rendererImports.test.ts` 的一个洞**：原判据让 `../shellProtocol.js`（4a 起
+  就有）和 `../paneBudget.js` 这类**逃出 `renderer/` 的**说明符一路放行。改成解析真实路径判断是否
+  仍在 `renderer/` 内，逃出的必须上白名单；白名单条目按**真正 import 它的文件**解析，而不是猜
+  `src/<rest>`。已变异验证。
 - **`/simplify` 复查（四个角度并行）抓出的四件事，都已修**：
-  ① **复用共享 id 闸门时把 `'.'` 漏掉了，是一个删数据的回归**——`assertSafeSessionId` 原本是给
-  `${id}.json` 那个形状校准的（`'.'` 落成 `..json`，无害），而 `removeShadowRepo` 是第一个把 id
-  当**整个目录名**用的调用方，`path.join(dir,'.')` collapse 回 `dir` 然后进 `rm -r`。
-  自己写的用例当场报红。教训：复用一条校验规则时要问它是按**哪个形状**校准的。
-  ② **`+ 新建会话` 按钮与 `Ctrl+T` 目标项目不一致**——按钮发的是无 root 的 `{kind:'new'}`，
-  `ShellHost` 于是回退到 `directory.entries()[0]`（**最先打开的**项目）。旧 tab bar 是在唯一的
-  applier 里解析项目的，4b 把解析搬进了两个 producer 之一。已抽 `newSessionIntent()`，与
-  `activateRow` 同款。
+  ① **复用共享 id 闸门时把 `'.'` 漏掉了，是删数据的回归**——`assertSafeSessionId` 原本按
+  `${id}.json` 那个形状校准（`'.'` 落成 `..json`，无害），而 `removeShadowRepo` 是第一个把 id
+  当**整个目录名**用的调用方，`path.join(dir,'.')` collapse 回 `dir` 然后进 `rm -r`。教训：复用
+  校验规则时要问它是按**哪个形状**校准的。
+  ② **`+ 新建会话` 按钮与 `Ctrl+T` 目标项目不一致**——按钮发无 root 的 `{kind:'new'}`，
+  `ShellHost` 回退到 `directory.entries()[0]`（**最先打开的**项目）。已抽 `newSessionIntent()`，
+  与 `activateRow` 同款。
   ③ **`canCreate` 只关按钮不关快捷键**，违反「key path and button must agree」。已修。
-  ④ **侧栏整树重绘比 `transcriptView` 那条记账缺陷更糟**：`onShellChanged` 由
-  `client.subscribe()` 驱动，而 `sameTaskList` 比 `outputBytes`——后台跑个 `npm test` 就会按
-  输出刷新率重建**每一行历史**（行数是盘上会话数，不是消息数）。已加 `sidebarRenderSignature`
-  字段签名闸门（`applySnapshot`/`applyLanes` 同款纪律）+ 折叠时直接不建行。
-- **4b 未做真机冒烟**——按 todo 原安排整体留给 4f（其第 3、4、6、7 条即 4b 的验收）。当前凭据是
+  ④ **侧栏整树重绘**：`onShellChanged` 由 `client.subscribe()` 驱动，而 `sameTaskList` 比
+  `outputBytes`——后台跑个 `npm test` 就会按输出刷新率重建**每一行历史**。已加
+  `sidebarRenderSignature` 字段签名闸门（`applySnapshot`/`applyLanes` 同款纪律）+ 折叠时直接不建行。
+- **4b 未做真机冒烟**——按 todo 原安排整体留给 4f（第 3、4、6、7 条即 4b 的验收）。当前凭据是
   四组纯函数用例 + `desktopShellHost` 的端到端删除路径 + `desktopBuild` 的「bundle 只因缺 DOM 而失败」。
 
 ### 4c — 取消三档模型 `[x]`
 
-破坏性变更，README / CLAUDE.md 都已记一笔。**先于 4a 做**：4c 自足、每步保持全绿，
-而且它是 4d/4e 的事实前置——4d 的 Provider 卡片要渲染 routing、4e 的胶囊要显示模型，
-按三档做完再拆等于同一块界面做两遍。
+破坏性变更，README / CLAUDE.md 都已记一笔。**先于 4a 做**：4c 自足、每步保持全绿，而且是
+4d/4e 的事实前置——4d 的 Provider 卡片要渲染 routing、4e 的胶囊要显示模型，按三档做完再拆等于
+同一块界面做两遍。
 
-- [x] `src/config/routing.ts`：删 `Tier` / `TierOrInherit` / `Profile` /
-  `parseTierInput` / `resolveTier`；`Routing` 的值类型变成 `string`（模型键或
-  `'inherit'`）；`pickTier` → `pickRoutedModel`；`DEFAULT_ROUTING` 全部改 `'inherit'`。
+- [x] `src/config/routing.ts`：删 `Tier` / `TierOrInherit` / `Profile` / `parseTierInput` /
+  `resolveTier`；`Routing` 值类型变成 `string`（模型键或 `'inherit'`）；`pickTier` →
+  `pickRoutedModel`；`DEFAULT_ROUTING` 全部改 `'inherit'`。
 - [x] `src/config/service.ts`：删 `profiles` / `activeProfile` 与
-  `setProfile` / `removeProfile` / `setActiveProfile` / `getActiveProfile` /
-  `findTierForModel`；`resolveModelReference` 只认模型键；`resolveModelKeyFor`
-  变成「查 routing → 是模型键就用 → 否则 `inherit`/未配 → `defaultModel`」。
-- [x] `src/config/settings.ts` 去掉 `profiles`/`activeProfile`，校验补
-  「`defaultModel` 必须是 `models` 里存在的键」——**只在 `settings.models` 存在时判**，
-  否则 models 只配在 `config.json` 的合法配置会被误报。
-- [x] `src/runtime/modelPicker.ts`：`ModelPickerOption.tier` 换成 `key`，
-  枚举 `knownModelKeys`。顺手把入参收窄成结构化的 `ModelPickerConfig`，
-  测试因此不再需要 `as unknown as ConfigService`（见工作方法里那条）。
-- [x] 连带：`modelSwitch.ts`、`providerRuntime.ts`（scope 去掉 `'profiles'`）、
-  `runOverrides.ts`、`configTool.ts`、`commands/provider.ts`、`protocol/host.ts`、
-  `renderer/model/surfaces.ts`、`ModelPickerDialog.tsx`、`App.tsx`、
-  `ProviderPanel.tsx`（删 profiles 页签，routing 页签换成「`inherit` + 模型键」下拉）。
-- [x] **迁移**：`ConfigService.load()` 扫原始层，`getLegacyModelFindings()` 暴露；
-  `bootstrap.ts` 的 `checkLegacyModelTiers` 转成 `RuntimeDiagnostic` 警告，**不拦启动**。
-  三档 routing 值归一成 `'inherit'`，三档 `defaultModel` 落到第一个可解析的模型键。
-- [x] 测试：`modelRouting`（重写，29 条）/ `modelPicker`（重写）/ `providerPanel` /
-  `modelSwitch` / `protocolHost` / `rendererShellModel` / `tuiRender` / `config` /
-  `providerRuntime` / `runOverrides` / `commands`。
+  `setProfile` / `removeProfile` / `setActiveProfile` / `getActiveProfile` / `findTierForModel`；
+  `resolveModelReference` 只认模型键；`resolveModelKeyFor` 变成「查 routing → 是模型键就用 →
+  否则 `inherit`/未配 → `defaultModel`」。
+- [x] `src/config/settings.ts` 去掉 `profiles`/`activeProfile`，校验补「`defaultModel` 必须是
+  `models` 里存在的键」——**只在 `settings.models` 存在时判**，否则 models 只配在 `config.json`
+  的合法配置会被误报。
+- [x] `src/runtime/modelPicker.ts`：`ModelPickerOption.tier` 换成 `key`，枚举 `knownModelKeys`；
+  入参收窄成结构化 `ModelPickerConfig`（测试因此不再需要 `as unknown as ConfigService`）。
+- [x] 连带：`modelSwitch.ts`、`providerRuntime.ts`（scope 去掉 `'profiles'`）、`runOverrides.ts`、
+  `configTool.ts`、`commands/provider.ts`、`protocol/host.ts`、`renderer/model/surfaces.ts`、
+  `ModelPickerDialog.tsx`、`App.tsx`、`ProviderPanel.tsx`（删 profiles 页签，routing 页签换成
+  「`inherit` + 模型键」下拉）。
+- [x] **迁移**：`ConfigService.load()` 扫原始层，`getLegacyModelFindings()` 暴露；`bootstrap.ts`
+  的 `checkLegacyModelTiers` 转成 `RuntimeDiagnostic` 警告，**不拦启动**。三档 routing 值归一成
+  `'inherit'`，三档 `defaultModel` 落到第一个可解析的模型键。
+- [x] 测试：`modelRouting`（重写，29 条）/ `modelPicker`（重写）/ `providerPanel` / `modelSwitch` /
+  `protocolHost` / `rendererShellModel` / `tuiRender` / `config` / `providerRuntime` /
+  `runOverrides` / `commands`。
 
 **新增的四条不变式**（都做过变异验证，报红的是预期那条）：
 
-- `removeModel` 拒绝删除 routing 仍指向的模型 —— 这是被删掉那条 profile 引用检查的
-  正统继承者，不是新增范围；`renameModel` 同样要把新键写回 routing。
+- `removeModel` 拒绝删除 routing 仍指向的模型——这是被删掉那条 profile 引用检查的正统继承者；
+  `renameModel` 同样要把新键写回 routing。
 - 迁移只在「三档字面量**且不是**真实模型键」时才动手：用户真有个叫 `fast` 的模型、
-  `routing.main: "fast"` 是合法的新式配置，改写它是拿一个想象中的问题去破坏一个能跑的设置。
-  （`resolveModelInput` 一直就是按「模型键优先」解这个歧义的。）
-- 模型键解析不了时，picker 行仍然**画出来**并说明原因，而不是丢掉——配置了却选不了的
-  模型必须自己解释自己。
-- routing 指向一个已不存在的键时**降级为 `inherit`** 而不是失败，这正是「删模型是可恢复的
-  错误」的依据。
+  `routing.main: "fast"` 是合法的新式配置，改写它是拿想象中的问题去破坏能跑的设置。
+- 模型键解析不了时，picker 行仍然**画出来**并说明原因，而不是丢掉——配置了却选不了的模型必须
+  自己解释自己。
+- routing 指向已不存在的键时**降级为 `inherit`** 而不是失败，这正是「删模型是可恢复的错误」的依据。
 
 ### 4e — 视觉重构（design_guidance 落地）`[x]`
 
-**先于 4d 做**，与当初 4c 抢在 4a 前面同源：`design_guidance.md` 描述得最具体的那块界面
-（卡片包裹的设置行、右对齐控件）**正是 4d 要建的**。先做 4d 等于把约 400 行设置界面 CSS
-内联进 `index.html`，再在 4e 全部重写一遍；反过来 4e 先立好令牌与 `styles.css`，4d 只是往
-已有的表里加设置行规则。`index.html` 当时的注释也已写明双栏结构是「4e 要上样式而不是重建的东西」。
+**先于 4d 做**：`design_guidance.md` 描述得最具体的界面（卡片包裹的设置行、右对齐控件）**正是
+4d 要建的**。先做 4d 等于把约 400 行设置界面 CSS 内联进 `index.html`，再在 4e 全部重写一遍；
+反过来 4e 先立好令牌与 `styles.css`，4d 只是往已有的表里加设置行规则。
 
-- [x] 新增 `src/desktop/renderer/styles.css`（`index.html` 的 606 行内联表**逐字**搬出，
-  再换令牌、再改结构，分三步以便回退），`build:desktop` 的 `copy-desktop-assets.mjs` 跟着拷。
-  CSP 的 `style-src 'self'` 允许外部表。
-- [x] 设计令牌按 guidance 的层级：`--surface-base`（外框/侧栏，**最暗**）、`--surface-canvas`
-  （主面板）、`--surface-card`、`--surface-hover`、`--surface-active`；文本三级 + `--link`；
-  语义点缀色五个，**只允许出现在 `color`/`fill`/`border-*-color`，绝不做填充**。
-  明暗阶因此**反转**了：旧表里侧栏 `#232323` 比画布 `#1a1a1a` 亮。
-- [x] 结构：`#canvas` 变成 `--radius-lg` + `overflow: hidden` 的嵌套面板，靠 8px 外边距与
-  侧栏分开（**间距代替竖线**）；`#surface` / `#queue` / `#suggestions` 从「顶边线 + 底色」
-  改成浮在画布里的卡片；共去掉 8 条发丝线；用户消息改成右对齐 `--surface-card` 气泡
-  （`--user` 那个蓝色因此整个从调色板里消失）。圆角层级 large/medium/pill。
+- [x] 新增 `src/desktop/renderer/styles.css`（`index.html` 的 606 行内联表**逐字**搬出，再换令牌、
+  再改结构，分三步以便回退），`build:desktop` 的 `copy-desktop-assets.mjs` 跟着拷。CSP 的
+  `style-src 'self'` 允许外部表。
+- [x] 设计令牌按 guidance 的层级：`--surface-base`（外框/侧栏，**最暗**）→ `--surface-canvas`
+  （主面板）→ `--surface-card` → `--surface-hover` → `--surface-active`；文本三级 + `--link`；
+  语义点缀色五个，**只允许出现在 `color`/`fill`/`border-*-color`，绝不做填充**。明暗阶因此
+  **反转**了（旧表里侧栏 `#232323` 比画布 `#1a1a1a` 亮）。
+- [x] 结构：`#canvas` 变成 `--radius-lg` + `overflow: hidden` 的嵌套面板，靠 8px 外边距与侧栏分开
+  （**间距代替竖线**）；`#surface` / `#queue` / `#suggestions` 从「顶边线 + 底色」改成浮在画布里的
+  卡片；共去掉 8 条发丝线；用户消息改成右对齐 `--surface-card` 气泡（`--user` 那个蓝色因此整个
+  从调色板里消失）。圆角层级 large/medium/pill。
 - [x] **输入区改成胶囊复合框**：左下 `+`、右下「模型 · effort」胶囊、圆形发送按钮。兑现决策 4。
   新增纯模型 `model/composer.ts`（`composerChipView` / `EFFORT_LABELS` / `submitLabel` /
-  `insertMentionToken`），复用 `src/config/effort.ts`。**删掉了 `#status-model`**——模型与
-  effort 已在胶囊里，状态栏留第二份必然漂移。
+  `insertMentionToken`），复用 `src/config/effort.ts`。**删掉了 `#status-model`**——模型与 effort
+  已在胶囊里，状态栏留第二份必然漂移。
 - [x] 字体：chrome 用 `--font-ui`（Segoe UI Variable / -apple-system / system-ui / 中文回退）；
-  `--font-mono` 显式重声明在 8 个选择器上——决策 3 的六个，**外加** `.transcript .item.tool`
-  与 `.tool-progress`（它们承载命令行与工具输出，比例字体下 `git status` 会掉列）。
-  顺手修了 7 处 `ch` 宽度（`ch` 是字符 `0` 的宽度，换比例字体后全部失准）；
-  `.diff-row .gutter` 保留 `8ch` 并**自己声明** `--font-mono`。`lang` 改 `zh-CN`。
-- [x] 图标：新增 `dom/icons.ts`，`document.createElementNS` 造 SVG（`el()` 只会
-  `createElement`，HTML 命名空间里的 `"svg"` 什么都不画；`innerHTML` 是硬规则）。
-  换掉 🗑（彩色 emoji，比例字体下最扎眼的一处）、⟨⟩、`+`、徽标 `●`。
+  `--font-mono` 显式重声明在 8 个选择器上——决策 3 的六个，**外加** `.transcript .item.tool` 与
+  `.tool-progress`（它们承载命令行与工具输出，比例字体下 `git status` 会掉列）。顺手修了 7 处
+  `ch` 宽度（`ch` 是字符 `0` 的宽度，换比例字体后全部失准）；`.diff-row .gutter` 保留 `8ch` 并
+  **自己声明** `--font-mono`。`lang` 改 `zh-CN`。
+- [x] 图标：新增 `dom/icons.ts`，`document.createElementNS` 造 SVG（`el()` 只会 `createElement`，
+  HTML 命名空间里的 `"svg"` 什么都不画；`innerHTML` 是硬规则）。换掉 🗑（彩色 emoji，比例字体下
+  最扎眼的一处）、⟨⟩、`+`、徽标 `●`。
 - [x] 中文化：三个 presentation 模块加**可选** `locale`，默认 `'en'`；新增 `src/runtime/locale.ts`
-  与渲染器侧 `model/locale.ts` 的 `UI_LOCALE`（一处拼写，不是十二处 `'zh'` 字面量）。
-  桌面 12 处调用点 + 渲染器自有文案（含 `index.html` 的 placeholder 与 aria-label）全部中文。
+  与渲染器侧 `model/locale.ts` 的 `UI_LOCALE`（一处拼写，不是十二处 `'zh'` 字面量）。桌面 12 处
+  调用点 + 渲染器自有文案（含 `index.html` 的 placeholder 与 aria-label）全部中文。
 - [x] 凭据：`test/rendererStyleTokens.test.ts`（12 条）、`test/rendererComposerChip.test.ts`
-  （13 条）、`test/desktopBuild.test.ts`（断言 `styles.css` 被拷贝，**并按 HTML 里的相对
-  引用反查**，于是以后新增资源漏进 copy 脚本会报红）、三个 presentation 测试各加
-  「zh 用例 + 默认仍是英文」。**全量 2096 tests / 41 suites / 2096 pass / 0 fail**（基线 2063）。
+  （13 条）、`test/desktopBuild.test.ts`（断言 `styles.css` 被拷贝，**并按 HTML 里的相对引用反查**，
+  以后新增资源漏进 copy 脚本会报红）、三个 presentation 测试各加「zh 用例 + 默认仍是英文」。
+  **全量 2096 tests / 41 suites / 2096 pass / 0 fail**（基线 2063）。
 
 **完成注记**：
 
 - **`--accent`（青绿，26 处）不对应任何单个新令牌**，它同时在干五件事，必须按职责拆开：
   品牌/标题/选中文字 → `--text-primary`，光标 → `--caret`，聚焦边框 → `--focus-ring`，
-  状态字形与色条 → `--accent-info`，任务勾选 → `--accent-review`，主操作填充 →
-  `--text-primary` 底 + `--surface-base` 字形。不拆就只是「换了色相的旧界面」。
-- **计划里的四层令牌不够，补了第五层 `--surface-hover`**。把旧的 `--bg-input` 与
-  `--bg-raised` 一起并进 `--surface-card` 之后，面板**自身**就是 card，于是面板内行的
-  hover 变成同色 = 不可见；用 `--surface-active` 又会让 hover 与选中不可分。四个状态
-  （底 / 面板 / 悬停 / 选中）本来就需要四级以上。
-- **`#submit` 是全界面唯一的高对比填充，而且是中性的**：`--text-primary` 底。
-  用点缀色做按钮底正是 guidance「95% 中性」要排除的那件事。
-- **`locale` 选可选、默认 `'en'`，是被两条既有断言逼出来的**：
-  `test/rewindPresentation.test.ts` 按**函数身份**断言（只能加参数，不能 fork 或包一层），
-  而 `test/tuiRender.test.ts` 断言 TUI 的英文帧。必填参数意味着改约 25 处终端调用点、
-  零收益，且每一处都是把 `'zh'` 打进终端的机会。三个测试各加了一条「不传参数仍是英文」
-  ——那是 TUI 与静默换语言之间唯一的闸门。
-- **`PERMISSION_OPTIONS` / `ENTER_PLAN_OPTIONS` / `EMPTY_PLAN_OPTIONS` 是常量且被用作默认
-  参数值**，所以保留为英文常量、旁边加 `…Options(locale)` 函数，而不是改成函数了事。
-- **`riskLevel` 与权限来源两个 wire 枚举也要查表**：它们被原样打进副标题，不译的话中文
-  对话框里会出现「dangerous - bash safety」。
+  状态字形与色条 → `--accent-info`，任务勾选 → `--accent-review`，主操作填充 → `--text-primary`
+  底 + `--surface-base` 字形。不拆就只是「换了色相的旧界面」。
+- **计划里的四层令牌不够，补了第五层 `--surface-hover`**：把旧的 `--bg-input` 与 `--bg-raised`
+  并进 `--surface-card` 之后，面板**自身**就是 card，于是面板内行的 hover 变成同色 = 不可见；
+  用 `--surface-active` 又会让 hover 与选中不可分。四个状态（底 / 面板 / 悬停 / 选中）本来就需要
+  四级以上。
+- **`#submit` 是全界面唯一的高对比填充，而且是中性的**：`--text-primary` 底。用点缀色做按钮底
+  正是 guidance「95% 中性」要排除的那件事。
+- **`locale` 选可选、默认 `'en'`，是被两条既有断言逼出来的**：`test/rewindPresentation.test.ts`
+  按**函数身份**断言（只能加参数，不能 fork 或包一层），而 `test/tuiRender.test.ts` 断言 TUI 的
+  英文帧。必填参数意味着改约 25 处终端调用点、零收益，且每一处都是把 `'zh'` 打进终端的机会。
+  三个测试各加了一条「不传参数仍是英文」——那是 TUI 与静默换语言之间唯一的闸门。
+- **`PERMISSION_OPTIONS` / `ENTER_PLAN_OPTIONS` / `EMPTY_PLAN_OPTIONS` 是常量且被用作默认参数值**，
+  所以保留为英文常量、旁边加 `…Options(locale)` 函数，而不是改成函数了事。
+- **`riskLevel` 与权限来源两个 wire 枚举也要查表**：它们被原样打进副标题，不译的话中文对话框里
+  会出现「dangerous - bash safety」。
 - **`#composer-attach` 暂时接成「在光标处插入 `@`」**（`insertMentionToken`，含「词中先补空格」
-  与「已有 `@` 不重复」两条），因为没有对应的 host 命令；正好接上现成的 `@` 文件补全。
-  留给 4f 冒烟。
+  与「已有 `@` 不重复」两条），因为没有对应的 host 命令；正好接上现成的 `@` 文件补全。留给 4f
+  冒烟。
 - **4e 未做真机冒烟**——按 todo 原安排整体留给 4f。当前凭据是三组纯函数/源码级用例 +
   `desktopBuild` 的真实 esbuild + 拷贝链路 + `npm run build:desktop` 跑通。
   **Step 3/4 的判据本质上是视觉的，没有任何用例能替代肉眼看一次窗口。**
@@ -348,19 +332,17 @@ desktopMain 第五用例的端到端通道。
 
 ### 文档 `[x]`
 
-- [x] `CLAUDE.md` + `AGENTS.md`（逐字镜像）：改「Electron shell」「The renderer」
-  两节（一个窗口 N lane，不再是 window-per-pane），新增 laneChannel / ShellHost
-  两段不变式。~~`Providers` 一节删掉三档路由的描述~~（4c 已做，两文件已用 diff 验证仍逐字一致）。
-  4b：tab bar 段换成侧栏三段（两个键入口 / 历史与拓扑取并集 / 拉取只挂四个时机），
-  `ShellHost` 段补 `delete-session` 顺序与 `list-sessions`，新增 `paneBudget` 一段，
-  `Sessions` 一节补 `removeShadowRepo` 的闸门。仍用 diff 验证两文件逐字一致。
-  4e：「The renderer」补四段——`styles.css` 的令牌系统与三条源码级不变式、胶囊输入框与
-  「胶囊走 `run-command` 而非 `setModel`」、`dom/icons.ts` 的 `createElementNS`、
-  `locale` 默认 `en` 及其两条约束；`Commands` 一节的测试计数与 copy 清单一并更新。
-  用 `diff <(sed -n '4,$p' …)` 验证第 4 行起逐字一致（只有标题与 guidance 行不同）。
-- [x] `design_guidance.md` 从「未落地的参考资料」变成 4e 的依据。**它只规定了明暗阶的
-  顺序、圆角档位与组件解剖，没有任何十六进制值、px 字号或字体栈**——那套中性深色阶是
-  4e 造的，现在钉在 `test/rendererStyleTokens.test.ts` 的「按值」那条用例里。
+- [x] `CLAUDE.md` + `AGENTS.md`（逐字镜像）：4a 起改「Electron shell」「The renderer」两节（一个
+  窗口 N lane，不再是 window-per-pane）并新增 laneChannel / ShellHost 两段不变式；4b 的 tab bar
+  段换成侧栏三段（两个键入口 / 历史与拓扑取并集 / 拉取只挂四个时机），`ShellHost` 段补
+  `delete-session` 顺序与 `list-sessions`，新增 `paneBudget` 一段，`Sessions` 一节补
+  `removeShadowRepo` 的闸门；4e 的「The renderer」补四段——`styles.css` 的令牌系统与三条源码级
+  不变式、胶囊输入框与「胶囊走 `run-command` 而非 `setModel`」、`dom/icons.ts` 的
+  `createElementNS`、`locale` 默认 `en` 及其两条约束，`Commands` 一节的测试计数与 copy 清单一并
+  更新。用 `diff <(sed -n '4,$p' …)` 验证第 4 行起逐字一致（只有标题与 guidance 行不同）。
+- [x] `design_guidance.md` 从「未落地的参考资料」变成 4e 的依据。**它只规定了明暗阶的顺序、圆角
+  档位与组件解剖，没有任何十六进制值、px 字号或字体栈**——那套中性深色阶是 4e 造的，现在钉在
+  `test/rendererStyleTokens.test.ts` 的「按值」那条用例里。
 
 ### 已知缺陷（记账未修）
 

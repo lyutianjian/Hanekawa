@@ -15,6 +15,9 @@ docs/
 .agents/
 .test-home/
 
+# Desktop smoke run output (screenshots, logs, summaries) — scripts/smoke-desktop.mjs
+.smoke/
+
 # Debug logs
 *.log
 .kiro/

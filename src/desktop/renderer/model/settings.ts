@@ -12,6 +12,7 @@ import {
   type WireShellSettingsChangeResult,
   type WireShellSettingsResult,
 } from '../../shellProtocol.js'
+import { DEFAULT_THEME_PREFERENCE, THEME_PREFERENCES, type ThemePreference } from './theme.js'
 
 /**
  * The settings screen: pick a category, edit one thing at a time, save.
@@ -30,10 +31,12 @@ import {
  * settings is a window-level surface, not a modal), so it never blocks the
  * agent loop and never takes a `resolveKey` rank.
  *
- * All four categories are live. `cardsFor` is a `switch` with no `default`, so a
- * fifth category cannot be added without building it — a stronger guard than the
- * list of "live" categories this replaced, which only failed at runtime and only
- * by drawing a disabled row.
+ * The host categories are live via `cardsFor`, a `switch` with no `default`, so a
+ * fifth host category cannot be added without building it — a stronger guard than
+ * the list of "live" categories this replaced, which only failed at runtime and
+ * only by drawing a disabled row. `appearance` is renderer-local (theme only, no
+ * host data): `settingsView` returns its card before the snapshot guard, and
+ * `cardsFor` is narrowed to `HostCategory` so it stays exhaustive without it.
  */
 
 // --- state -------------------------------------------------------------------
@@ -85,10 +88,12 @@ export interface SettingsState {
   readonly draft?: SettingsDraft
   readonly confirmingRemove?: { readonly kind: 'endpoint' | 'model'; readonly name: string }
   readonly error?: string
+  /** Renderer-local theme preference; `app.ts` seeds it from `localStorage`. */
+  readonly themePref: ThemePreference
 }
 
 export function createSettingsState(): SettingsState {
-  return { open: false, category: 'provider', busy: false, projects: [] }
+  return { open: false, category: 'provider', busy: false, projects: [], themePref: DEFAULT_THEME_PREFERENCE }
 }
 
 export const CATEGORY_LABELS: Record<SettingsCategory, string> = {
@@ -96,6 +101,7 @@ export const CATEGORY_LABELS: Record<SettingsCategory, string> = {
   permissions: '权限',
   agent: 'Agent',
   general: '通用',
+  appearance: '外观',
 }
 
 /** The `inherit` sentinel, spelled once. */
@@ -202,7 +208,13 @@ export interface SettingsViewModel {
   readonly confirming?: { readonly message: string }
 }
 
-const ALL_CATEGORIES: readonly SettingsCategory[] = ['provider', 'permissions', 'agent', 'general']
+const ALL_CATEGORIES: readonly SettingsCategory[] = [
+  'provider',
+  'permissions',
+  'agent',
+  'general',
+  'appearance',
+]
 
 export function settingsView(state: SettingsState): SettingsViewModel {
   const nav = ALL_CATEGORIES.map((category) => ({
@@ -226,6 +238,13 @@ export function settingsView(state: SettingsState): SettingsViewModel {
       : {}),
   }
 
+  // Theme is renderer-local: no host data, so draw it before the snapshot guard
+  // (a project need not be loaded to change the theme). Narrows `state.category`
+  // to `HostCategory` for the calls below.
+  if (state.category === 'appearance') {
+    return { ...base, title: CATEGORY_LABELS.appearance, cards: appearanceCards(state.themePref) }
+  }
+
   if (!state.snapshot) {
     return { ...base, title: CATEGORY_LABELS[state.category], cards: [] }
   }
@@ -241,8 +260,11 @@ export function settingsView(state: SettingsState): SettingsViewModel {
   }
 }
 
-/** Exhaustive by construction: a new category cannot compile without cards. */
-function cardsFor(category: SettingsCategory, snapshot: WireSettingsSnapshot): SettingsCard[] {
+/** The host-backed categories: everything except renderer-local `appearance`. */
+type HostCategory = Exclude<SettingsCategory, 'appearance'>
+
+/** Exhaustive by construction: a new host category cannot compile without cards. */
+function cardsFor(category: HostCategory, snapshot: WireSettingsSnapshot): SettingsCard[] {
   switch (category) {
     case 'provider':
       return providerCards(snapshot)
@@ -253,6 +275,43 @@ function cardsFor(category: SettingsCategory, snapshot: WireSettingsSnapshot): S
     case 'general':
       return generalCards(snapshot)
   }
+}
+
+const THEME_LABELS: Record<ThemePreference, string> = {
+  system: '跟随系统',
+  dark: '深色',
+  light: '浅色',
+}
+
+/** Junk from the DOM `<select>` narrows back to the union. */
+function asThemePreference(value: string): ThemePreference {
+  return value === 'dark' || value === 'light' ? value : 'system'
+}
+
+function appearanceCards(pref: ThemePreference): SettingsCard[] {
+  return [
+    {
+      id: 'appearance',
+      title: '主题',
+      note: '主题只保存在本机，不写入项目配置。',
+      rows: [
+        {
+          id: 'appearance:theme',
+          label: '界面主题',
+          detail: '跟随系统时，会随系统深浅色自动切换。',
+          control: {
+            kind: 'select',
+            value: pref,
+            choices: THEME_PREFERENCES.map((value) => ({ value, label: THEME_LABELS[value] })),
+            intentOnChange: (value: string): SettingsIntent => ({
+              kind: 'set-theme',
+              preference: asThemePreference(value),
+            }),
+          },
+        },
+      ],
+    },
+  ]
 }
 
 function removeConfirmMessage(target: { kind: 'endpoint' | 'model'; name: string }): string {
@@ -980,6 +1039,7 @@ export type SettingsIntent =
   | { kind: 'set-context-value'; field: WireContextManagementField; value: string }
   | { kind: 'set-mcp-trust'; name: string; trusted: boolean }
   | { kind: 'reconnect-mcp' }
+  | { kind: 'set-theme'; preference: ThemePreference }
   | { kind: 'none' }
 
 export interface SettingsOutcome {
@@ -988,6 +1048,11 @@ export interface SettingsOutcome {
   readonly changes?: readonly SettingsChange[]
   /** The caller should (re)load the snapshot for `state.projectRoot`. */
   readonly load?: boolean
+  /**
+   * A renderer-local theme write. Never a `SettingsChange`: the theme has no host
+   * config. `app.ts` persists it to `localStorage` and applies it to the document.
+   */
+  readonly themePreference?: ThemePreference
 }
 
 /**
@@ -1010,6 +1075,10 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
       return { state: { ...cleared, open: false, draft: undefined } }
     case 'select-category':
       return { state: { ...cleared, category: intent.category, draft: undefined } }
+    case 'set-theme':
+      // Renderer-local: no wire change, no reload. `app.ts` performs the two side
+      // effects (localStorage + document) off `themePreference`.
+      return { state: { ...cleared, themePref: intent.preference }, themePreference: intent.preference }
     case 'select-project':
       if (intent.projectRoot === state.projectRoot) return { state }
       return {

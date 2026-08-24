@@ -95,9 +95,32 @@ const css = readFileSync(stylesheetPath, 'utf8')
 const html = readFileSync(htmlPath, 'utf8')
 const blocks = parseCss(css)
 const declarations = blocks.flatMap((block) => block.decls)
-const tokens = new Map(
-  declarations.filter((d) => d.selector === ':root' && d.prop.startsWith('--')).map((d) => [d.prop, d.value]),
-)
+
+/**
+ * The two token blocks. Dark is the bare `:root` (the primary palette); light
+ * overrides a subset under an attribute selector. `app.ts` resolves the
+ * preference and writes `[data-theme]`, so there is no `@media` — the parser
+ * stays flat and the nested-at-rule prohibition below still holds.
+ */
+const LIGHT_SELECTOR = ':root[data-theme="light"]'
+const TOKEN_SELECTORS = new Set([':root', LIGHT_SELECTOR])
+
+function tokensForSelector(selector: string): Map<string, string> {
+  return new Map(
+    declarations.filter((d) => d.selector === selector && d.prop.startsWith('--')).map((d) => [d.prop, d.value]),
+  )
+}
+
+const tokens = tokensForSelector(':root') // the dark palette
+const lightOverrides = tokensForSelector(LIGHT_SELECTOR)
+/** The effective light palette: dark defaults with the light block layered on. */
+const lightTokens = new Map([...tokens, ...lightOverrides])
+
+/** Both themes, with the direction their foreground brightness runs (see the ladder test). */
+const THEMES = [
+  { name: 'dark', tokens, sign: 1 },
+  { name: 'light', tokens: lightTokens, sign: -1 },
+] as const
 
 const COLOUR_LITERAL = /#[0-9a-fA-F]{3}\b|#[0-9a-fA-F]{6}\b|\brgba?\(|\bhsla?\(/
 
@@ -122,6 +145,15 @@ test('the stylesheet parses exactly, so nothing below can pass vacuously', () =>
   const files = rendererFiles()
   assert.ok(files.length >= 10, `expected the renderer tree, found ${files.length} files`)
   assert.ok(files.some((file) => file.endsWith('app.ts')))
+
+  // The light theme is a second token block, not an at-rule. If it stops parsing
+  // (or someone reintroduces it as `@media`), the per-theme assertions below would
+  // quietly run against an empty override map.
+  assert.ok(
+    blocks.some((block) => block.selector === LIGHT_SELECTOR),
+    `expected a ${LIGHT_SELECTOR} block; the light palette is missing or nested`,
+  )
+  assert.ok(lightOverrides.size >= 18, `parsed only ${lightOverrides.size} light overrides`)
 })
 
 test('the page links the stylesheet and carries no CSS of its own', () => {
@@ -148,7 +180,7 @@ test('every token is used and every use is declared', () => {
 
 test('colours live in the token block, not in the rules', () => {
   for (const { selector, prop, value } of declarations) {
-    if (selector === ':root') continue
+    if (TOKEN_SELECTORS.has(selector)) continue
     assert.doesNotMatch(
       value,
       COLOUR_LITERAL,
@@ -204,8 +236,8 @@ function luminance(value: string): number {
   return 0.2126 * red + 0.7152 * green + 0.0722 * blue
 }
 
-function tokenValue(name: string): string {
-  const value = tokens.get(name)
+function tokenValue(name: string, from: Map<string, string> = tokens): string {
+  const value = from.get(name)
   assert.ok(value, `${name} is not declared`)
   return value
 }
@@ -248,75 +280,150 @@ test('the palette is the one that was agreed, value for value', () => {
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace',
     },
   )
+
+  // The light palette, pinned the same way. It is the dark palette with the light
+  // block layered on: scrim, the three `--text-*` aliases, radii and fonts are
+  // theme-independent and carry through from `:root`.
+  assert.deepEqual(
+    Object.fromEntries([...lightTokens].filter(([name]) => !name.startsWith('--diff-'))),
+    {
+      '--surface-base': '#f3f3f5',
+      '--surface-canvas': '#ffffff',
+      '--surface-card': '#fafafc',
+      '--surface-hover': '#eaebee',
+      '--surface-active': '#e5e7eb',
+      '--surface-scrim': 'rgba(0, 0, 0, 0.55)',
+      '--text-primary': '#1a1a1e',
+      '--text-secondary': '#686b75',
+      '--text-tertiary': '#9ca3af',
+      '--link': '#2563eb',
+      '--accent-info': '#2563eb',
+      '--accent-tool': '#9333ea',
+      '--accent-review': '#16a34a',
+      '--accent-warn': '#d97706',
+      '--accent-danger': '#dc2626',
+      '--text-danger': 'var(--accent-danger)',
+      '--text-warn': 'var(--accent-warn)',
+      '--text-success': 'var(--accent-review)',
+      '--border-subtle': '#e5e7eb',
+      '--border-strong': '#d1d5db',
+      '--focus-ring': '#2563eb',
+      '--caret': '#1a1a1e',
+      '--radius-lg': '14px',
+      '--radius-md': '9px',
+      '--radius-pill': '9999px',
+      '--font-ui':
+        '"Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
+      '--font-mono':
+        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace',
+    },
+  )
 })
 
-test('the surface ladder climbs and the text ladder descends', () => {
-  // The half that carries meaning rather than values. `design_guidance.md` asks
-  // for depth built from base → canvas → card → active, and this shell used to
-  // do the opposite (a #232323 sidebar against a #1a1a1a canvas). This is the
-  // assertion that reddens if someone "fixes" it back.
-  const surfaces = [
-    '--surface-base',
-    '--surface-canvas',
-    '--surface-card',
-    '--surface-hover',
-    '--surface-active',
+test('the light block overrides only colours, and adds no token the dark palette lacks', () => {
+  // Every override must shadow a real dark token — a light-only token would be a
+  // colour the dark theme silently drops to nothing. And the theme-independent
+  // tokens (shape, type, the aliases that follow their accent) must NOT be
+  // redeclared, or the two themes could drift on something that is not a colour.
+  for (const name of lightOverrides.keys()) {
+    assert.ok(tokens.has(name), `${LIGHT_SELECTOR} declares ${name}, which has no dark default`)
+  }
+  const THEME_INDEPENDENT = [
+    '--surface-scrim',
+    '--text-danger',
+    '--text-warn',
+    '--text-success',
+    '--radius-lg',
+    '--radius-md',
+    '--radius-pill',
+    '--font-ui',
+    '--font-mono',
   ]
-  for (let index = 1; index < surfaces.length; index += 1) {
-    const below = surfaces[index - 1]!
-    const above = surfaces[index]!
+  for (const name of THEME_INDEPENDENT) {
     assert.ok(
-      luminance(tokenValue(above)) > luminance(tokenValue(below)),
-      `${above} must sit above ${below} in the surface ladder`,
-    )
-  }
-
-  const texts = ['--text-primary', '--text-secondary', '--text-tertiary']
-  for (let index = 1; index < texts.length; index += 1) {
-    const brighter = texts[index - 1]!
-    const dimmer = texts[index]!
-    assert.ok(
-      luminance(tokenValue(dimmer)) < luminance(tokenValue(brighter)),
-      `${dimmer} must read dimmer than ${brighter}`,
+      !lightOverrides.has(name),
+      `${name} is theme-independent; the light block must not redeclare it`,
     )
   }
 })
 
-test('surfaces and text stay neutral; accents and links do not', () => {
-  const NEUTRAL_PREFIXES = ['--surface-', '--text-', '--border-', '--caret']
-  const CHROMATIC = ['--accent-', '--link', '--focus-ring']
-
-  let neutrals = 0
-  let chromatics = 0
-  for (const [name, value] of tokens) {
-    if (!value.startsWith('#')) continue // aliases resolve to a token checked below
-    if (name.startsWith('--diff-')) continue // content colours, exempt (see the sheet)
-
-    const isNeutral = NEUTRAL_PREFIXES.some((prefix) => name.startsWith(prefix))
-    const isChromatic = CHROMATIC.some((prefix) => name.startsWith(prefix))
-    // Neither list matching means a new token slipped in unclassified, which is
-    // how this test would quietly stop covering the palette.
-    assert.notEqual(
-      isNeutral,
-      isChromatic,
-      `${name} is in neither the neutral nor the chromatic group; classify it`,
+test('the surface ladder climbs and the text ladder descends, in both themes', () => {
+  // The half that carries meaning rather than values. `design_guidance.md` asks
+  // for depth built from canvas → card → active, and this shell used to do the
+  // opposite (a #232323 sidebar against a #1a1a1a canvas). The `sign` captures
+  // that light inverts it: dark reads brightest-forward, light darkest-forward.
+  //
+  // The full [base, canvas, …] list is deliberately NOT asserted monotonic — in
+  // light the canvas is pure white, the peak, and cards/states step *down* from
+  // it. What holds in both themes is that the canvas sits above its frame.
+  for (const { name, tokens: palette, sign } of THEMES) {
+    assert.ok(
+      luminance(tokenValue('--surface-canvas', palette)) > luminance(tokenValue('--surface-base', palette)),
+      `${name}: the canvas must sit above the base frame`,
     )
 
-    if (isNeutral) {
-      neutrals += 1
+    const surfaces = ['--surface-canvas', '--surface-card', '--surface-hover', '--surface-active']
+    for (let index = 1; index < surfaces.length; index += 1) {
+      const below = surfaces[index - 1]!
+      const above = surfaces[index]!
       assert.ok(
-        saturation(value) <= 20,
-        `${name} (${value}) is a tinted surface; the interface stays neutral`,
+        sign * (luminance(tokenValue(above, palette)) - luminance(tokenValue(below, palette))) > 0,
+        `${name}: ${above} must step past ${below} in the surface ladder`,
       )
-    } else {
-      chromatics += 1
+    }
+
+    const texts = ['--text-primary', '--text-secondary', '--text-tertiary']
+    for (let index = 1; index < texts.length; index += 1) {
+      const stronger = texts[index - 1]!
+      const weaker = texts[index]!
       assert.ok(
-        saturation(value) >= 40,
-        `${name} (${value}) is too grey to read as a semantic colour`,
+        sign * (luminance(tokenValue(weaker, palette)) - luminance(tokenValue(stronger, palette))) < 0,
+        `${name}: ${weaker} must read fainter than ${stronger}`,
       )
     }
   }
-  assert.ok(neutrals >= 8 && chromatics >= 5, `classified ${neutrals} neutral / ${chromatics} chromatic`)
+})
+
+test('surfaces and text stay neutral; accents and links do not, in both themes', () => {
+  const NEUTRAL_PREFIXES = ['--surface-', '--text-', '--border-', '--caret']
+  const CHROMATIC = ['--accent-', '--link', '--focus-ring']
+
+  for (const { name: themeName, tokens: palette } of THEMES) {
+    let neutrals = 0
+    let chromatics = 0
+    for (const [name, value] of palette) {
+      if (!value.startsWith('#')) continue // aliases resolve to a token checked below
+      if (name.startsWith('--diff-')) continue // content colours, exempt (see the sheet)
+
+      const isNeutral = NEUTRAL_PREFIXES.some((prefix) => name.startsWith(prefix))
+      const isChromatic = CHROMATIC.some((prefix) => name.startsWith(prefix))
+      // Neither list matching means a new token slipped in unclassified, which is
+      // how this test would quietly stop covering the palette.
+      assert.notEqual(
+        isNeutral,
+        isChromatic,
+        `${themeName}: ${name} is in neither the neutral nor the chromatic group; classify it`,
+      )
+
+      if (isNeutral) {
+        neutrals += 1
+        assert.ok(
+          saturation(value) <= 20,
+          `${themeName}: ${name} (${value}) is a tinted surface; the interface stays neutral`,
+        )
+      } else {
+        chromatics += 1
+        assert.ok(
+          saturation(value) >= 40,
+          `${themeName}: ${name} (${value}) is too grey to read as a semantic colour`,
+        )
+      }
+    }
+    assert.ok(
+      neutrals >= 8 && chromatics >= 5,
+      `${themeName}: classified ${neutrals} neutral / ${chromatics} chromatic`,
+    )
+  }
 })
 
 test('accents are for icons and state rules, never for fills', () => {
@@ -446,4 +553,44 @@ test('ch units survive only where the font is monospaced', () => {
     }
   }
   assert.ok(seen >= 1, 'expected at least one ch measurement to still exist, or delete this test')
+})
+
+test('every button the renderer builds is styled by this sheet', () => {
+  // An unstyled `<button>` does not disappear — it falls back to the user agent's
+  // own control, which under Chromium is a filled light-grey box with the icon
+  // out of line. That is how 4d's settings button became the single
+  // highest-contrast fill in a 95%-neutral interface, the one thing `#submit` is
+  // supposed to be, and neither typecheck pass nor any other test could see it.
+  //
+  // `controls.ts`'s `button()` takes the class list first, so the call sites are
+  // the complete list of controls this sheet has to cover. A modifier (`selected`,
+  // `danger`) may be unstyled on its own; what must exist is a rule for at least
+  // one class of every button.
+  // A resting-state rule, not merely *a* rule: `.x:hover` and `.x:disabled` say
+  // nothing about how the control looks before it is touched, which is exactly
+  // the state that fell back to the user agent. The lookahead rejects a class
+  // that only ever appears with a pseudo-class attached, and forbidding `-` and
+  // word characters as well is what stops the regex backtracking into a shorter
+  // name to satisfy itself.
+  const styled = new Set<string>()
+  for (const block of blocks) {
+    for (const match of block.selector.matchAll(/\.([A-Za-z][\w-]*)(?![\w-:])/g)) {
+      if (match[1]) styled.add(match[1])
+    }
+  }
+
+  let seen = 0
+  for (const file of rendererFiles()) {
+    if (file.endsWith(path.join('dom', 'controls.ts'))) continue
+    const code = stripComments(readFileSync(file, 'utf8'))
+    for (const match of code.matchAll(/\bbutton\(\s*'([^']+)'/g)) {
+      const classes = (match[1] ?? '').split(/\s+/).filter(Boolean)
+      seen += 1
+      assert.ok(
+        classes.some((name) => styled.has(name)),
+        `${path.basename(file)} builds button('${match[1]}') and styles.css has no rule for any of its classes`,
+      )
+    }
+  }
+  assert.ok(seen >= 5, `expected the renderer to build buttons through button(); found ${seen}`)
 })

@@ -92,8 +92,13 @@ export type ShellCommand =
 
 // --- settings ----------------------------------------------------------------
 
-/** The settings screen's left-hand categories. */
-export type SettingsCategory = 'provider' | 'permissions' | 'agent' | 'general'
+/**
+ * The settings screen's left-hand categories.
+ *
+ * `appearance` is renderer-local (theme preference); it carries no host config and
+ * never rides a `SettingsChange`. Every other category maps to a wire `scope`.
+ */
+export type SettingsCategory = 'provider' | 'permissions' | 'agent' | 'general' | 'appearance'
 
 /**
  * An endpoint as the screen shows it.

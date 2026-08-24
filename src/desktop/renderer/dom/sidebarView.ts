@@ -8,9 +8,10 @@ import {
   type SidebarRow,
   type SidebarSection,
   type SidebarView,
+  type SidebarWorkspace,
 } from '../model/sidebar.js'
 import { el, replace, show } from './dom.js'
-import { button } from './controls.js'
+import { button, textField } from './controls.js'
 import { icon, type IconName } from './icons.js'
 
 /**
@@ -60,6 +61,18 @@ export function createSidebarView(
   onKey: (chord: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => boolean,
 ): SidebarDom {
   const header = el('div', 'sidebar-header')
+  // Persistent, not rebuilt by `render()`: the sidebar repaints on every shell
+  // snapshot, and re-creating the input on each pass would drop the caret and the
+  // focus mid-search. `app.ts` holds the query as the source of truth, so this
+  // never has its `value` written back — it only reports edits outward.
+  const search = textField({
+    className: 'sidebar-search',
+    value: '',
+    ariaLabel: '搜索会话',
+    placeholder: '搜索会话…',
+    onCommit: (value) => onIntent({ kind: 'search', query: value }),
+  })
+  search.addEventListener('input', () => onIntent({ kind: 'search', query: search.value }))
   const list = el('div', 'sidebar-list')
   list.setAttribute('role', 'listbox')
   list.setAttribute('aria-label', '会话')
@@ -69,10 +82,15 @@ export function createSidebarView(
   const footer = el('div', 'sidebar-footer')
 
   container.appendChild(header)
+  container.appendChild(search)
   container.appendChild(list)
   container.appendChild(footer)
 
   container.addEventListener('keydown', (event) => {
+    // The search box lives inside the sidebar, so its keystrokes bubble to this
+    // handler — and Backspace/arrows/Enter there mean "edit the query", not
+    // "delete a row" or "move the cursor". Let the input own its own keys.
+    if (event.target === search) return
     const consumed = onKey({
       key: event.key,
       shiftKey: event.shiftKey,
@@ -86,6 +104,10 @@ export function createSidebarView(
     event.stopPropagation()
   })
 
+  // The last-drawn menu state, so `focusout` can close an open workspace dropdown
+  // when the user's attention leaves the sidebar without having to guess.
+  let menuOpen = false
+
   container.addEventListener('focusout', (event) => {
     const next = event.relatedTarget
     // `null` means focus went nowhere, which is exactly what this view's own
@@ -95,6 +117,9 @@ export function createSidebarView(
     // lands on some other element.
     if (next === null) return
     if (next instanceof Node && container.contains(next)) return
+    // `toggle-workspace-menu` is only emitted while it is open, so it can only
+    // ever close here.
+    if (menuOpen) onIntent({ kind: 'toggle-workspace-menu' })
     onIntent({ kind: 'cancel-delete' })
   })
 
@@ -132,7 +157,9 @@ export function createSidebarView(
       const badge = el('span', `session-badge ${row.badge}`)
       badge.setAttribute('aria-label', BADGE_LABELS[row.badge])
       badge.title = BADGE_LABELS[row.badge]
-      badge.appendChild(icon('dot'))
+      // Running spins; awaiting-input is a still dot. The spinner is stroked so
+      // the `.running` colour rule reaches it through `currentColor`.
+      badge.appendChild(icon(row.badge === 'running' ? 'spinner' : 'dot'))
       open.appendChild(badge)
     }
     // Through the model so a click and Enter cannot disagree about "open or
@@ -189,6 +216,43 @@ export function createSidebarView(
   }
 
   /**
+   * The workspace dropdown: a trigger showing the active project, and — when the
+   * model says it is open — a menu of every project the window can switch to.
+   * Picking one is one decision in the model (`selectWorkspaceIntent`), so the
+   * click resolves to the same switch/new a row would.
+   */
+  const workspaceNode = (view: SidebarView): HTMLElement => {
+    const wrapper = el('div', 'sidebar-workspace-shell')
+    wrapper.appendChild(
+      button(
+        `sidebar-workspace${view.workspaceMenuOpen ? ' open' : ''}`,
+        view.workspaceName ?? 'Hanekawa',
+        view.workspaces.length > 1 ? '切换工作区' : '当前工作区',
+        () => onIntent({ kind: 'toggle-workspace-menu' }),
+        { icon: 'chevron-down' },
+      ),
+    )
+    if (view.workspaceMenuOpen && view.workspaces.length > 0) {
+      const menu = el('div', 'sidebar-workspace-menu')
+      menu.setAttribute('role', 'menu')
+      for (const workspace of view.workspaces) {
+        menu.appendChild(workspaceItem(workspace))
+      }
+      wrapper.appendChild(menu)
+    }
+    return wrapper
+  }
+
+  const workspaceItem = (workspace: SidebarWorkspace): HTMLElement =>
+    button(
+      `sidebar-workspace-item${workspace.active ? ' active' : ''}`,
+      workspace.projectName,
+      workspace.projectRoot,
+      () => onIntent({ kind: 'select-workspace', projectRoot: workspace.projectRoot }),
+      { icon: 'folder' },
+    )
+
+  /**
    * The last drawn view's signature. The guard below is what makes this view
    * affordable: it repaints from `onShellChanged`, which fires on every
    * `SessionClient` snapshot change — including background-task `outputBytes`,
@@ -202,6 +266,7 @@ export function createSidebarView(
       const signature = sidebarRenderSignature(view)
       if (signature === drawn) return
       drawn = signature
+      menuOpen = view.workspaceMenuOpen
 
       // One index lookup built per render, so the row → cursor mapping is the
       // view's flattened order rather than a per-group count that could drift.
@@ -211,7 +276,7 @@ export function createSidebarView(
 
       replace(
         header,
-        el('span', 'sidebar-mark', 'Hanekawa'),
+        workspaceNode(view),
         button(
           'sidebar-new',
           '新建会话',
@@ -236,6 +301,7 @@ export function createSidebarView(
       // rather than after building means a collapsed sidebar builds no rows at
       // all — the guard above already banked the signature, so expanding
       // repaints.
+      show(search, !view.collapsed)
       show(list, !view.collapsed)
       show(footer, !view.collapsed)
       if (view.collapsed) return
@@ -244,9 +310,11 @@ export function createSidebarView(
         list,
         ...(view.isEmpty
           ? [el('div', 'sidebar-empty', '还没有会话。')]
-          : view.groups.map((group) =>
-              groupNode(group, view.showProjectLabels, indexOf, view.selectedIndex),
-            )),
+          : view.noMatches
+            ? [el('div', 'sidebar-empty', '没有匹配的会话。')]
+            : view.groups.map((group) =>
+                groupNode(group, view.showProjectLabels, indexOf, view.selectedIndex),
+              )),
       )
 
       replace(

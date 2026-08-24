@@ -169,6 +169,40 @@ node --import tsx --test test/config.test.ts
 node --import tsx --test test/config.test.ts test/cacheBreakDetection.test.ts
 ```
 
+### Desktop smoke run (the real app, real credentials)
+
+`npm test` never launches Electron: it is offline and hermetic, and worth keeping that
+way. The desktop shell is therefore verified by a separate driver that launches the real
+app, drives it over the Chrome DevTools Protocol, and checks what only a running window
+can show — that a background session keeps streaming, that a parked permission prompt
+survives a session switch, that deleting a session removes every artifact, that the
+settings screen persists across a restart.
+
+```bash
+npm run build:desktop      # it refuses to run against a stale dist/
+npm run smoke:desktop
+```
+
+It needs a display and a working provider, so it is a local check rather than a CI one.
+
+- **It does not touch your data.** The app is pointed at scratch projects in the OS temp
+  directory, seeded from `~/.myagent/config.json`; the repository's own `.myagent/` is
+  never the project it has open. Four assertions afterwards confirm that your session
+  index, your session files, `~/.myagent/config.json` and `~/.myagent/settings.json` were
+  all left untouched. The seeded copy contains your API keys, so it is written `0600` and
+  the scratch directory is deleted when the run finishes (`--keep` retains it, and the
+  summary always prints the path).
+- **It spends nothing by default.** One item — a live turn continuing in the background —
+  needs a real model turn, and it only runs with `--paid-turn`. That turn is capped by a
+  one-shot latch, pinned to the cheapest configured model, and interrupted if it overruns.
+- Screenshots, logs and a summary land in `.smoke/<timestamp>/` (gitignored). The summary
+  ends with a list of what to look at in each screenshot: category layout, control
+  alignment, how the switches read — the judgements no assertion can make.
+
+Useful flags: `--only=S3,S8` to run named steps, `--verbose` to print passing assertions,
+`--kill-stale` when a previous Electron is still holding the single-instance lock,
+`--model=<key>` and `--paid-prompt=<text>` for the paid turn.
+
 ## Architecture
 
 ### Agent Loop

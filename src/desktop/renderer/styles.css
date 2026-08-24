@@ -89,6 +89,44 @@
   --diff-del-fg: #f4a49b;
   --diff-del-bg: #2a1a1c;
 }
+
+/* --- light theme ---
+   Overrides only what differs from the dark defaults above. `app.ts` resolves the
+   preference (including "follow system") to a concrete theme and writes it to
+   `documentElement[data-theme]`, so this is a plain attribute selector, not an
+   `@media` block — the token test parses flat blocks and forbids nested at-rules.
+   Scrim, the three `--text-*` aliases (they follow the overridden accents),
+   `--radius-*` and `--font-*` are theme-independent and stay as declared above.
+   Values from design_guidance.md 六.1; neutrals kept within the ≤20 saturation the
+   sheet's neutrality test enforces (so #1a1a1e / #686b75, not #111827 / #6b7280). */
+:root[data-theme="light"] {
+  --surface-base: #f3f3f5;
+  --surface-canvas: #ffffff;
+  --surface-card: #fafafc;
+  --surface-hover: #eaebee;
+  --surface-active: #e5e7eb;
+
+  --text-primary: #1a1a1e;
+  --text-secondary: #686b75;
+  --text-tertiary: #9ca3af;
+  --link: #2563eb;
+
+  --accent-info: #2563eb;
+  --accent-tool: #9333ea;
+  --accent-review: #16a34a;
+  --accent-warn: #d97706;
+  --accent-danger: #dc2626;
+
+  --border-subtle: #e5e7eb;
+  --border-strong: #d1d5db;
+  --focus-ring: #2563eb;
+  --caret: #1a1a1e;
+
+  --diff-add-fg: #1a7f37;
+  --diff-add-bg: #e6ffec;
+  --diff-del-fg: #cf222e;
+  --diff-del-bg: #ffebe9;
+}
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
@@ -161,23 +199,93 @@ body {
 /* Collapsed keeps the rail so the toggle stays reachable by mouse —
    otherwise Ctrl+B is the only way back. */
 #sidebar.collapsed { flex-basis: 44px; }
-#sidebar.collapsed .sidebar-mark,
+#sidebar.collapsed .sidebar-workspace-shell,
 #sidebar.collapsed .sidebar-new { display: none; }
 .sidebar-header {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 12px 10px 8px;
 }
-.sidebar-mark {
-  flex: 1 1 auto;
+.sidebar-workspace-shell { flex: 1 1 auto; min-width: 0; }
+/* The workspace trigger: the active project's name in the primary text colour,
+   with a dropdown caret. Reads as a heading, not a control, until hovered. */
+.sidebar-workspace {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  background: transparent;
   color: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 3px 6px;
+  font: inherit;
   font-size: 13px;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
 }
+.sidebar-workspace:hover,
+.sidebar-workspace.open { background: var(--surface-hover); }
+.sidebar-workspace .btn-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A floating menu below the trigger. Absolute so it does not shove the session
+   list down when it opens; the header is the positioned ancestor. */
+.sidebar-workspace-menu {
+  position: absolute;
+  top: 100%;
+  left: 6px;
+  right: 6px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+}
+.sidebar-workspace-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.sidebar-workspace-item:hover { background: var(--surface-hover); color: var(--text-primary); }
+.sidebar-workspace-item.active { color: var(--text-primary); }
+/* The session search box, a pill input between the header and the list. */
+.sidebar-search {
+  flex: 0 0 auto;
+  margin: 0 10px 6px;
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12px;
+}
+.sidebar-search::placeholder { color: var(--text-tertiary); }
+.sidebar-search:focus { outline: none; border-color: var(--focus-ring); }
 .sidebar-new,
 .sidebar-open-project {
   display: inline-flex;
@@ -201,6 +309,25 @@ body {
 }
 .sidebar-new:disabled,
 .sidebar-open-project:disabled { opacity: 0.4; cursor: default; }
+/* The footer settings entry reads as a user-profile row (gear + name), left
+   aligned and full width, rather than the pill the two buttons above use — it is
+   the personal corner of the sidebar, not another action. */
+.sidebar-settings {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sidebar-settings:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
 .sidebar-collapse {
   display: inline-flex;
   align-items: center;
@@ -285,7 +412,12 @@ body {
 .session-badge { flex: 0 0 auto; display: inline-flex; align-items: center; }
 .session-badge .icon { width: 8px; height: 8px; }
 .session-badge.running { color: var(--accent-info); }
+/* The running badge is a spinning ring rather than a static dot; awaiting-input
+   stays a still dot. The spinner path is stroked, so `.running`'s colour reaches
+   it through `currentColor`. */
+.session-badge.running .icon { animation: spin 0.9s linear infinite; }
 .session-badge.awaiting-input { color: var(--accent-warn); }
+@keyframes spin { to { transform: rotate(360deg); } }
 .session-actions { flex: 0 0 auto; display: flex; gap: 2px; opacity: 0; }
 .session-row:hover .session-actions,
 .session-row.selected .session-actions { opacity: 1; }
@@ -828,6 +960,12 @@ body {
   min-height: 0;
   overflow: hidden;
 }
+/* The screen takes focus when it opens, so its own Esc works; the ring that
+   would come with that is suppressed deliberately. `.sidebar-list:focus` keeps
+   its inset ring because it is one of two competing key targets in a two-column
+   layout — this one fills the whole canvas, so a ring around it says nothing the
+   user cannot already see, at the size of the entire screen. */
+#settings:focus { outline: none; }
 
 #settings[hidden] {
   display: none;

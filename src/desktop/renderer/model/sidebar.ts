@@ -75,6 +75,15 @@ export interface SidebarSection {
   readonly rows: readonly SidebarRow[]
 }
 
+/** One switchable project, as the workspace dropdown lists it. */
+export interface SidebarWorkspace {
+  readonly projectRoot: string
+  readonly projectName: string
+  /** The project the active pane belongs to, marked in the menu. */
+  readonly active: boolean
+}
+
+
 export interface SidebarGroup {
   readonly projectRoot: string
   readonly projectName: string
@@ -108,6 +117,16 @@ export interface SidebarView {
   readonly canCreate: boolean
   /** Nothing to list at all — the empty state, not merely a collapsed sidebar. */
   readonly isEmpty: boolean
+  /** The current search text, so the box can reflect it and the miss state read. */
+  readonly searchQuery: string
+  /** A search is active but matched nothing — distinct from an empty project. */
+  readonly noMatches: boolean
+  /** The projects the workspace dropdown offers, in the order they were opened. */
+  readonly workspaces: readonly SidebarWorkspace[]
+  /** The active project's name, shown on the dropdown trigger. */
+  readonly workspaceName: string | undefined
+  /** Whether the workspace dropdown is expanded. */
+  readonly workspaceMenuOpen: boolean
 }
 
 /**
@@ -147,6 +166,10 @@ export interface SidebarState {
   readonly now: number
   /** False while a blocking dialog is up: both buttons open something. */
   readonly canCreate: boolean
+  /** The session-search text; empty means no filter. */
+  readonly searchQuery: string
+  /** Whether the workspace dropdown is expanded. */
+  readonly workspaceMenuOpen: boolean
 }
 
 export function createSidebarState(overrides: Partial<SidebarState> = {}): SidebarState {
@@ -160,6 +183,8 @@ export function createSidebarState(overrides: Partial<SidebarState> = {}): Sideb
     pendingDelete: undefined,
     now: Date.UTC(2026, 7, 20, 12, 0, 0),
     canCreate: true,
+    searchQuery: '',
+    workspaceMenuOpen: false,
     ...overrides,
   }
 }
@@ -219,6 +244,13 @@ export function sidebarView(state: SidebarState): SidebarView {
   const laneBySession = new Map<string, WireLaneInfo>()
   for (const lane of state.lanes) laneBySession.set(lane.paneId, lane)
 
+  // Case-insensitive title substring. Empty query keeps every row — the filter
+  // reads on the built row's `title`, which is where the "未命名会话" fallback
+  // already lives, so a search matches what the user actually sees.
+  const needle = state.searchQuery.trim().toLowerCase()
+  const matches = (row: SidebarRow): boolean =>
+    needle === '' || row.title.toLowerCase().includes(needle)
+
   // Keyed by project root and insertion-ordered, so projects appear in the order
   // `list-sessions` reported them and a project known only from a lane lands
   // after the ones with history.
@@ -237,7 +269,8 @@ export function sidebarView(state: SidebarState): SidebarView {
     for (const session of project.sessions) {
       seen.add(session.id)
       const lane = laneBySession.get(session.id)
-      bucket.rows.push(rowFor(session, project.projectRoot, lane?.lane, active?.paneId, state))
+      const row = rowFor(session, project.projectRoot, lane?.lane, active?.paneId, state)
+      if (matches(row)) bucket.rows.push(row)
     }
   }
 
@@ -260,14 +293,19 @@ export function sidebarView(state: SidebarState): SidebarView {
       updatedAt: new Date(state.now).toISOString(),
       messageCount: 0,
     }
-    bucketFor(lane.projectRoot, lane.projectName).rows.push(
-      rowFor(draft, lane.projectRoot, lane.lane, active?.paneId, state),
-    )
+    const row = rowFor(draft, lane.projectRoot, lane.lane, active?.paneId, state)
+    const bucket = bucketFor(lane.projectRoot, lane.projectName)
+    if (matches(row)) bucket.rows.push(row)
   }
 
-  const groups = [...byProject.entries()].map(([projectRoot, bucket]) =>
-    groupOf(projectRoot, bucket.projectName, active?.projectRoot, bucket.rows, state),
-  )
+  // Drop projects the filter emptied. A no-op when nothing is searched (every
+  // bucket holds at least the session or lane that created it), so the empty
+  // state and grouping behaviour are unchanged for `searchQuery === ''`.
+  const groups = [...byProject.entries()]
+    .filter(([, bucket]) => bucket.rows.length > 0)
+    .map(([projectRoot, bucket]) =>
+      groupOf(projectRoot, bucket.projectName, active?.projectRoot, bucket.rows, state),
+    )
 
   // A stable partition, not a sort: `filter` twice keeps first-seen order inside
   // each half, where a comparator on a boolean would leave it to the engine.
@@ -276,6 +314,8 @@ export function sidebarView(state: SidebarState): SidebarView {
   const ordered = [...groups.filter((group) => group.own), ...groups.filter((group) => !group.own)]
   const rows = ordered.flatMap((group) => group.rows)
 
+  const searching = needle !== ''
+  const workspaces = workspacesOf(state, active?.projectRoot)
   return {
     groups: ordered,
     rows,
@@ -285,8 +325,41 @@ export function sidebarView(state: SidebarState): SidebarView {
     showProjectLabels: ordered.length > 1,
     selectedIndex: clampIndex(state.selectedIndex, rows.length),
     canCreate: state.canCreate,
-    isEmpty: rows.length === 0,
+    isEmpty: rows.length === 0 && !searching,
+    searchQuery: state.searchQuery,
+    noMatches: rows.length === 0 && searching,
+    workspaces,
+    // From the workspace list, not the active lane's own `projectName`, so the
+    // trigger label and the menu's marked row always read the same name.
+    workspaceName: workspaces.find((workspace) => workspace.active)?.projectName,
+    workspaceMenuOpen: state.workspaceMenuOpen,
   }
+}
+
+/**
+ * The projects the workspace dropdown can switch to.
+ *
+ * Built from `state` rather than the (search-filtered) groups, so filtering the
+ * session list never removes a project the user could jump to. History projects
+ * come first in wire order; a project known only from a lane lands after them —
+ * the same ordering the row list uses.
+ */
+function workspacesOf(
+  state: SidebarState,
+  activeProjectRoot: string | undefined,
+): readonly SidebarWorkspace[] {
+  const byRoot = new Map<string, string>()
+  for (const project of state.projects) {
+    if (!byRoot.has(project.projectRoot)) byRoot.set(project.projectRoot, project.projectName)
+  }
+  for (const lane of state.lanes) {
+    if (!byRoot.has(lane.projectRoot)) byRoot.set(lane.projectRoot, lane.projectName)
+  }
+  return [...byRoot.entries()].map(([projectRoot, projectName]) => ({
+    projectRoot,
+    projectName,
+    active: activeProjectRoot !== undefined && projectRoot === activeProjectRoot,
+  }))
 }
 
 function rowFor(
@@ -371,6 +444,12 @@ export type SidebarIntent =
   /** Swap the canvas for the settings screen. Window-level, not per session. */
   | { kind: 'open-settings' }
   | { kind: 'toggle-collapse' }
+  /** Set the session-search filter. */
+  | { kind: 'search'; query: string }
+  /** Open or close the workspace dropdown. */
+  | { kind: 'toggle-workspace-menu' }
+  /** Jump to a project: switch to its open lane, or start a session there. */
+  | { kind: 'select-workspace'; projectRoot: string }
   | { kind: 'request-delete'; sessionId: string }
   | { kind: 'confirm-delete'; projectRoot: string; sessionId: string }
   | { kind: 'cancel-delete' }
@@ -503,6 +582,21 @@ export function newSessionIntent(projectRoot: string | undefined): SidebarIntent
 }
 
 /**
+ * What picking a project from the workspace dropdown means.
+ *
+ * There is no host command for "switch active project": a project becomes active
+ * by its lane becoming the visible one. So switch to an open lane in that project
+ * if there is one, and otherwise start a session there — the same "open or
+ * create" split `activateRow`/`newSessionIntent` make for a row. Kept here as one
+ * decision so the click path cannot drift from it.
+ */
+export function selectWorkspaceIntent(state: SidebarState, projectRoot: string): SidebarIntent {
+  const lane = state.lanes.find((candidate) => candidate.projectRoot === projectRoot)
+  if (lane !== undefined) return { kind: 'switch', lane: lane.lane }
+  return newSessionIntent(projectRoot)
+}
+
+/**
  * Everything the DOM draws, as one comparable string.
  *
  * The sidebar repaints from `onShellChanged`, which fires on every
@@ -523,9 +617,16 @@ export function sidebarRenderSignature(view: SidebarView): string {
     view.collapsed ? 'c' : '-',
     view.canCreate ? 'n' : '-',
     view.isEmpty ? 'e' : '-',
+    view.noMatches ? 'm' : '-',
     view.showProjectLabels ? 'l' : '-',
+    view.workspaceMenuOpen ? 'w' : '-',
     String(view.selectedIndex),
+    `q:${view.searchQuery}`,
+    `wn:${view.workspaceName ?? ''}`,
   ]
+  for (const workspace of view.workspaces) {
+    parts.push(`w:${workspace.projectRoot}${workspace.active ? '1' : '0'}`)
+  }
   for (const group of view.groups) {
     parts.push(`g:${group.projectRoot}${group.projectName}${group.own ? '1' : '0'}`)
     for (const section of group.sections) {

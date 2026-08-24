@@ -28,6 +28,7 @@ export type IconName =
   | 'chevron-right'
   | 'chevron-down'
   | 'dot'
+  | 'spinner'
   | 'send'
   | 'stop'
   | 'gear'
@@ -58,6 +59,9 @@ const ICONS = {
   'chevron-right': { paths: ['M6 3.5 10.5 8 6 12.5'] },
   'chevron-down': { paths: ['M3.5 6 8 10.5 12.5 6'] },
   dot: { paths: ['M8 5a3 3 0 1 1 0 6 3 3 0 0 1 0-6z'], filled: true },
+  // A three-quarter ring with a gap, so a CSS rotation reads as spinning. Stroked
+  // (not filled) so it inherits `currentColor` like every other outline.
+  spinner: { paths: ['M8 3.5a4.5 4.5 0 1 1-4.5 4.5'] },
   send: { paths: ['M8 13V3.6', 'M3.8 7.8 8 3.5l4.2 4.3'] },
   stop: { paths: ['M5.2 5.2h5.6v5.6H5.2z'], filled: true },
   gear: {

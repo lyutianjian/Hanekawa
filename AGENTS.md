@@ -18,6 +18,7 @@ npm run typecheck     # base, preload, and renderer TypeScript programs
 npm run build         # compile Node/Electron main sources
 npm run build:desktop
 npm run test
+npm run smoke:desktop # real Electron over CDP; needs a display, not part of `npm test`
 ```
 
 Focused tests use:
@@ -175,6 +176,12 @@ to `dom/` and the app shell. Every blocking UI request must be answered or settl
   a globally unique `kind`; the keyed `satisfies` and `assertNever` are what fail the build by name.
 - Deleting a session requires resolving the real session ID first, detaching an open lane if necessary,
   and removing all associated artifacts through the runtime deletion path.
+- `main.ts` still has no unit test, so `scripts/smoke-desktop.mjs` is what covers it: it launches the real
+  app against scratch projects (`--cwd=`), drives it over CDP, and asserts the ten stage-4 acceptance items.
+  It stays out of `npm test` (it needs a display, an endpoint and credentials) and it must stay pointed at a
+  temp directory — its own tripwires assert the repo's `.myagent/` and both global files were untouched.
+  Anything reachable only through a native modal cannot be smoke-tested: those block the main process, and a
+  screenshot cannot see them. Keep `open-project` answerable with a `path`.
 
 ## Regression tests by area
 
@@ -223,6 +230,17 @@ otherwise a passing test can contaminate later cases.
 - Checkpoints use a per-session shadow Git repository and must not modify the user's working tree.
 - Use `src/runtime/deleteSession.ts` to delete a session; removing only its JSONL leaves shadow, memory,
   or subagent artifacts behind.
+- The sidebar repaints only when something calls `onShellChanged`, and its badges are derived from
+  `shellState()`. Anything that moves `hasOverlay` or `isStreaming` must announce it: a `hasOverlay`
+  transition that stays silent leaves a badge that is corrected only by the next unrelated snapshot tick.
+- A screen with its own `keydown` handler must take focus when it opens, or its documented keys are dead.
+  The settings screen is `tabindex="-1"` and focuses itself on the open transition only — focusing on every
+  render would pull the caret out of a form field.
+- Every class passed to `controls.ts`'s `button()` needs a **resting-state** rule in `styles.css`; an
+  unstyled button falls back to the user agent's filled control, which no typecheck can see.
+  `rendererStyleTokens.test.ts` enforces it, and `:hover`/`:disabled` rules alone do not count.
+- `paneSession.ts` and `dom/` have no unit tests (the test runner has no DOM), so behaviour there is covered
+  by `scripts/smoke-desktop.mjs`. Prefer moving a decision into `model/` when it can be tested directly.
 
 ## Conventions and patches
 

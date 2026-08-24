@@ -45,6 +45,7 @@ import { resolveKey, type ShellState } from './model/keymap.js'
 import {
   createSidebarState,
   moveSelection,
+  selectWorkspaceIntent,
   sidebarChordToIntent,
   sidebarKeyToIntent,
   sidebarView as buildSidebarView,
@@ -65,6 +66,13 @@ import {
   type SettingsIntent,
 } from './model/settings.js'
 import type { SettingsChange } from '../shellProtocol.js'
+import {
+  THEME_STORAGE_KEY,
+  parseThemePreference,
+  resolveTheme,
+  systemThemeFromMatches,
+  type ThemePreference,
+} from './model/theme.js'
 import { required } from './dom/dom.js'
 import { createSettingsView } from './dom/settingsView.js'
 import { createOverlayView } from './dom/overlayView.js'
@@ -81,6 +89,21 @@ if (!bridge) {
   document.body.textContent = 'Preload script not loaded; please reinstall the app.'
   throw new Error('Preload bridge is missing')
 }
+
+// Theme. The preference lives in localStorage; the resolved theme is written to
+// `documentElement.dataset.theme`, which the stylesheet reads. "Follow system"
+// is resolved here (in JS), so the sheet stays flat token blocks — see
+// `model/theme.ts`. A light-preference user sees a brief dark frame first (the
+// bare `:root` default): CSP forbids an inline pre-paint script.
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)')
+let themePreference: ThemePreference = parseThemePreference(localStorage.getItem(THEME_STORAGE_KEY))
+function applyResolvedTheme(preference: ThemePreference): void {
+  document.documentElement.dataset.theme = resolveTheme(preference, systemThemeFromMatches(darkQuery.matches))
+}
+applyResolvedTheme(themePreference)
+darkQuery.addEventListener('change', () => {
+  if (themePreference === 'system') applyResolvedTheme(themePreference)
+})
 
 // One transport, many lanes: session traffic rides per-pane lanes untouched,
 // and the reserved `__shell` lane speaks for the window.
@@ -287,6 +310,8 @@ let projects: readonly SidebarProjectSessions[] = []
 let collapsed = false
 let selectedIndex = -1
 let pendingDelete: string | undefined
+let searchQuery = ''
+let workspaceMenuOpen = false
 let sessionsInFlight = false
 let sessionsAgain = false
 
@@ -302,6 +327,8 @@ function currentSidebarState(): SidebarState {
     now: Date.now(),
     // Both buttons open something, which is wrong while a blocking dialog is up.
     canCreate: !(activePane()?.shellState().hasOverlay ?? false),
+    searchQuery,
+    workspaceMenuOpen,
   })
 }
 
@@ -381,6 +408,21 @@ function runSidebarIntent(intent: SidebarIntent): void {
       collapsed = !collapsed
       renderSidebar()
       return
+    case 'search':
+      searchQuery = intent.query
+      renderSidebar()
+      return
+    case 'toggle-workspace-menu':
+      workspaceMenuOpen = !workspaceMenuOpen
+      renderSidebar()
+      return
+    case 'select-workspace':
+      // Close the menu first, then resolve to a switch or a new session through
+      // the model — the same "open or create" decision a row makes.
+      workspaceMenuOpen = false
+      renderSidebar()
+      runSidebarIntent(selectWorkspaceIntent(currentSidebarState(), intent.projectRoot))
+      return
     case 'request-delete':
       pendingDelete = intent.sessionId
       renderSidebar()
@@ -440,6 +482,8 @@ async function deleteSession(projectRoot: string, sessionId: string): Promise<vo
  * can be pointed at a project none of the open lanes belong to.
  */
 let settingsState = createSettingsState()
+// Seed the model with the persisted theme so the appearance picker shows it.
+settingsState = { ...settingsState, themePref: themePreference }
 
 const settingsView_ = createSettingsView(
   required('settings'),
@@ -461,6 +505,11 @@ function runSettingsIntent(intent: SettingsIntent): void {
   const outcome = applySettingsIntent(settingsState, intent)
   settingsState = outcome.state
   renderSettings()
+  if (outcome.themePreference) {
+    themePreference = outcome.themePreference
+    localStorage.setItem(THEME_STORAGE_KEY, themePreference)
+    applyResolvedTheme(themePreference)
+  }
   if (outcome.load) void loadSettingsNow()
   if (outcome.changes) void runSettingsChangesNow(outcome.changes)
 }

@@ -375,7 +375,7 @@ test('a duplicate endpoint name is rejected only when creating', () => {
 // --- the view model ----------------------------------------------------------
 
 test('every category draws its own cards, and none draws a placeholder', () => {
-  for (const category of ['provider', 'permissions', 'agent', 'general'] as const) {
+  for (const category of ['provider', 'permissions', 'agent', 'general', 'appearance'] as const) {
     const view = settingsView(openState({ category }))
     assert.ok(view.cards.length > 0, `${category} has no cards`)
     assert.ok(
@@ -385,8 +385,32 @@ test('every category draws its own cards, and none draws a placeholder', () => {
   }
   assert.deepEqual(
     settingsView(openState()).nav.map((item) => item.category),
-    ['provider', 'permissions', 'agent', 'general'],
+    ['provider', 'permissions', 'agent', 'general', 'appearance'],
   )
+})
+
+test('appearance draws its card even with no project loaded', () => {
+  // Theme is renderer-local, so the appearance page must render before (and
+  // without) a host snapshot — the early return ahead of the snapshot guard.
+  const view = settingsView(openState({ category: 'appearance', snapshot: undefined, projectRoot: undefined }))
+  const card = view.cards.find((c) => c.id === 'appearance')
+  assert.ok(card, 'appearance card is drawn without a snapshot')
+  const row = card.rows.find((r) => r.id === 'appearance:theme')
+  assert.ok(row && row.control.kind === 'select', 'theme is a select row')
+  assert.equal(row.control.value, 'system', 'the select is seeded from state.themePref')
+  assert.deepEqual(row.control.choices.map((c) => c.value), ['system', 'dark', 'light'])
+  assert.deepEqual(row.control.intentOnChange('dark'), { kind: 'set-theme', preference: 'dark' })
+})
+
+test('set-theme is a client-only write: it updates state but never touches the wire', () => {
+  const outcome = applySettingsIntent(openState({ themePref: 'system' }), {
+    kind: 'set-theme',
+    preference: 'light',
+  })
+  assert.equal(outcome.state.themePref, 'light')
+  assert.equal(outcome.themePreference, 'light')
+  assert.equal(outcome.changes, undefined, 'the theme is not a SettingsChange')
+  assert.equal(outcome.load, undefined, 'the theme needs no reload')
 })
 
 test('the view says which file it writes', () => {

@@ -53,10 +53,27 @@ export function createSettingsView(
   container.appendChild(nav)
   container.appendChild(body)
 
+  // Programmatically focusable but not a tab stop, exactly like the sidebar's
+  // list. Without focus *inside* the screen the `keydown` above never fires, and
+  // this screen is reached by `Ctrl+,` from a composer that the stylesheet then
+  // hides — which left focus on `<body>` and made the close button's own promise,
+  // 关闭设置（Esc）, false until the user happened to click something.
+  container.tabIndex = -1
+  let wasOpen = false
+
   return {
     render(view: SettingsViewModel): void {
       show(container, view.open)
-      if (!view.open) return
+      if (!view.open) {
+        wasOpen = false
+        return
+      }
+      // Only on the transition: focusing on every render would pull the caret out
+      // of a form field mid-edit.
+      if (!wasOpen) {
+        wasOpen = true
+        container.focus()
+      }
 
       replace(
         nav,

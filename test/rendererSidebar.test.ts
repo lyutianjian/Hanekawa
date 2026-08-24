@@ -7,6 +7,7 @@ import {
   moveSelection,
   newSessionIntent,
   sectionFor,
+  selectWorkspaceIntent,
   sidebarChordToIntent,
   sidebarKeyToIntent,
   sidebarRenderSignature,
@@ -248,6 +249,100 @@ test('a lane with no status entry yet carries no badge', () => {
     }),
   )
   assert.equal(view.rows[0]!.badge, 'none')
+})
+
+// --- search -----------------------------------------------------------------
+
+test('the search box filters rows by title, case-insensitively and across projects', () => {
+  const state = stateWith({
+    searchQuery: 'REPORT',
+    projects: [
+      project('/a', 'alpha', [
+        session('a1', { title: 'Weekly report' }),
+        session('a2', { title: 'Bugfix' }),
+      ]),
+      project('/b', 'beta', [session('b1', { title: 'Report draft' })]),
+    ],
+  })
+  const view = sidebarView(state)
+  assert.deepEqual(view.rows.map((row) => row.sessionId), ['a1', 'b1'])
+  // Beta kept a match, alpha's second session did not; both groups still stand.
+  assert.deepEqual(view.groups.map((group) => group.projectName), ['alpha', 'beta'])
+})
+
+test('an empty query keeps every row', () => {
+  const view = sidebarView(
+    stateWith({
+      searchQuery: '   ',
+      projects: [project('/a', 'alpha', [session('a1', { title: 'One' }), session('a2', { title: 'Two' })])],
+    }),
+  )
+  assert.deepEqual(view.rows.map((row) => row.sessionId), ['a1', 'a2'])
+  assert.equal(view.noMatches, false)
+  assert.equal(view.isEmpty, false)
+})
+
+test('a search that matches nothing reports noMatches, not the empty state', () => {
+  // The two are different screens: "no sessions yet" versus "nothing matched
+  // your search", and the sidebar draws a different message for each.
+  const view = sidebarView(
+    stateWith({
+      searchQuery: 'zzz',
+      projects: [project('/a', 'alpha', [session('a1', { title: 'One' })])],
+    }),
+  )
+  assert.deepEqual(view.rows, [])
+  assert.equal(view.noMatches, true)
+  assert.equal(view.isEmpty, false)
+
+  // A genuinely empty directory is the empty state, never noMatches.
+  const empty = sidebarView(stateWith({ searchQuery: '' }))
+  assert.equal(empty.isEmpty, true)
+  assert.equal(empty.noMatches, false)
+})
+
+// --- workspaces -------------------------------------------------------------
+
+test('the workspace list carries every project, with the active one marked', () => {
+  const state = stateWith({
+    projects: [project('/a', 'alpha', [session('a1')]), project('/b', 'beta', [session('b1')])],
+    lanes: [lane('2', 'b1', '/b')],
+    activeLane: '2',
+  })
+  const view = sidebarView(state)
+  assert.deepEqual(
+    view.workspaces.map((workspace) => [workspace.projectName, workspace.active]),
+    [['alpha', false], ['beta', true]],
+  )
+  assert.equal(view.workspaceName, 'beta')
+})
+
+test('the workspace list survives a search that empties the session rows', () => {
+  // Filtering the session list must never remove a project the user can jump to.
+  const view = sidebarView(
+    stateWith({
+      searchQuery: 'zzz',
+      projects: [project('/a', 'alpha', [session('a1', { title: 'One' })])],
+    }),
+  )
+  assert.equal(view.rows.length, 0)
+  assert.deepEqual(view.workspaces.map((workspace) => workspace.projectName), ['alpha'])
+})
+
+test('a lane-only project still appears as a workspace', () => {
+  const view = sidebarView(stateWith({ lanes: [lane('1', 'x', 'C:\\repo\\solo')] }))
+  assert.deepEqual(view.workspaces.map((workspace) => workspace.projectRoot), ['C:\\repo\\solo'])
+})
+
+test('picking a workspace switches to its open lane, or starts a session there', () => {
+  // No host command switches the active project; a project becomes active by its
+  // lane becoming visible. So this resolves to the same switch/new a row would.
+  const state = stateWith({
+    projects: [project('/a', 'alpha', [session('a1')]), project('/b', 'beta', [session('b1')])],
+    lanes: [lane('9', 'b1', '/b')],
+  })
+  assert.deepEqual(selectWorkspaceIntent(state, '/b'), { kind: 'switch', lane: '9' })
+  assert.deepEqual(selectWorkspaceIntent(state, '/a'), newSessionIntent('/a'))
 })
 
 // --- global chords ----------------------------------------------------------
@@ -507,6 +602,10 @@ test('the signature moves for everything the view draws', () => {
     ['canCreate', { ...base, canCreate: false }],
     ['selectedIndex', { ...base, selectedIndex: 1 }],
     ['pendingDelete', { ...base, pendingDelete: 'a1' }],
+    // 'o' matches both 'One' and 'Two', so the row set is unchanged — this
+    // isolates the query field itself moving the signature.
+    ['searchQuery', { ...base, searchQuery: 'o' }],
+    ['workspaceMenuOpen', { ...base, workspaceMenuOpen: true }],
     ['badge', { ...base, laneStatus: new Map([['1', { streaming: true, blocked: false }]]) }],
     ['title', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'Renamed' }), session('a2', { title: 'Two' })])] }],
     ['messageCount', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'One', messageCount: 99 }), session('a2', { title: 'Two' })])] }],

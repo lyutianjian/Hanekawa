@@ -294,6 +294,13 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       resolvers.set(request.requestId, resolve as (response: unknown) => void)
       prepareActive()
       renderOverlay()
+      // The sidebar's `awaiting-input` badge is derived from `shellState().hasOverlay`
+      // (`app.ts:242`), and the sidebar only repaints when it is told to. Without
+      // this the badge rides on whatever unrelated snapshot tick happens next:
+      // it appeared only because tool activity follows a permission request, and
+      // it stayed on a row whose prompt had been answered until something else
+      // moved. Both `hasOverlay` transitions have to announce themselves.
+      deps.onShellChanged?.()
     })
   }
 
@@ -303,6 +310,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     queue = removeUiRequest(queue, requestId)
     prepareActive()
     renderOverlay()
+    deps.onShellChanged?.()
     resolve?.(response)
   }
 

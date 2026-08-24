@@ -6,6 +6,7 @@ import {
   draftToChange,
   draftToChanges,
   loadSettings,
+  matchesQuery,
   routingOptions,
   runSettingsChanges,
   settingsChordToIntent,
@@ -13,6 +14,7 @@ import {
   settingsView,
   type SettingsClient,
   type SettingsDraft,
+  type SettingsIntent,
   type SettingsState,
 } from '../src/desktop/renderer/model/settings.js'
 import type {
@@ -218,7 +220,7 @@ test('the scoped handler ignores modified keys so the global chords still land',
   assert.deepEqual(settingsKeyToIntent({ key: 'Enter', metaKey: true }, state), { kind: 'none' })
 })
 
-test('escape unwinds form, then confirmation, then the screen — in that order', () => {
+test('escape unwinds form, then confirmation, then the filter, then the screen — in that order', () => {
   const withDraft = applySettingsIntent(openState(), { kind: 'new-model' }).state
   assert.deepEqual(settingsKeyToIntent({ key: 'Escape' }, withDraft), { kind: 'cancel-draft' })
 
@@ -228,6 +230,16 @@ test('escape unwinds form, then confirmation, then the screen — in that order'
   }).state
   assert.deepEqual(settingsKeyToIntent({ key: 'Escape' }, confirming), { kind: 'cancel-remove' })
   assert.deepEqual(settingsKeyToIntent({ key: 'Enter' }, confirming), { kind: 'confirm-remove' })
+
+  const searching = applySettingsIntent(openState(), { kind: 'search', query: 'MCP' }).state
+  assert.deepEqual(settingsKeyToIntent({ key: 'Escape' }, searching), { kind: 'clear-search' })
+
+  // The two inner layers outrank the filter: a filter is a state of the screen,
+  // and dismissing it must not cost a half-typed form or an armed delete.
+  const draftingAndSearching = applySettingsIntent(withDraft, { kind: 'search', query: 'MCP' }).state
+  assert.deepEqual(settingsKeyToIntent({ key: 'Escape' }, draftingAndSearching), { kind: 'cancel-draft' })
+  const confirmingAndSearching = applySettingsIntent(confirming, { kind: 'search', query: 'MCP' }).state
+  assert.deepEqual(settingsKeyToIntent({ key: 'Escape' }, confirmingAndSearching), { kind: 'cancel-remove' })
 
   assert.deepEqual(settingsKeyToIntent({ key: 'Escape' }, openState()), { kind: 'close' })
 })
@@ -384,9 +396,217 @@ test('every category draws its own cards, and none draws a placeholder', () => {
     )
   }
   assert.deepEqual(
-    settingsView(openState()).nav.map((item) => item.category),
-    ['provider', 'permissions', 'agent', 'general', 'appearance'],
+    settingsView(openState()).navGroups.flatMap((group) => group.items.map((item) => item.category)),
+    ['general', 'appearance', 'provider', 'permissions', 'agent'],
   )
+})
+
+test('the nav is three named sections, and every page lands in exactly one', () => {
+  const groups = settingsView(openState()).navGroups
+  assert.deepEqual(
+    groups.map((group) => [group.group, group.label]),
+    [
+      ['personal', '个人'],
+      ['integration', '集成'],
+      ['coding', '编码'],
+    ],
+  )
+  assert.deepEqual(
+    groups.map((group) => group.items.map((item) => item.category)),
+    [['general', 'appearance'], ['provider'], ['permissions', 'agent']],
+  )
+  // Each item carries the section it was filed under, so the DOM never has to
+  // re-derive the grouping (two views of one list is how they come to disagree).
+  for (const group of groups) {
+    assert.ok(group.items.length > 0, `${group.group} is an empty section`)
+    for (const item of group.items) assert.equal(item.group, group.group)
+  }
+})
+
+// --- the search box ----------------------------------------------------------
+
+test('the query filters the nav to the pages that hold a match', () => {
+  // 「MCP」 appears only on the general page (the MCP server card), so the coding
+  // and integration sections drop out entirely.
+  const view = settingsView(openState({ category: 'general', query: 'MCP' }))
+  assert.deepEqual(
+    view.navGroups.map((group) => group.items.map((item) => item.category)),
+    [['general']],
+  )
+})
+
+test('the selected page never leaves the nav, however unmatched it is', () => {
+  // Otherwise a query can delete the row the user is standing on, and there is no
+  // way back to it — which is also why the nav has no empty state.
+  const view = settingsView(openState({ category: 'agent', query: 'MCP' }))
+  const categories = view.navGroups.flatMap((group) => group.items.map((item) => item.category))
+  assert.ok(categories.includes('agent'), 'the selected page survives its own filter')
+  assert.ok(categories.includes('general'), 'and the page that actually matched is there too')
+  const selected = view.navGroups.flatMap((group) => group.items).filter((item) => item.selected)
+  assert.deepEqual(selected.map((item) => item.category), ['agent'])
+})
+
+test('a card that matches on its own title keeps all of its rows', () => {
+  // Searching 「MCP」 must show the server list, not an empty MCP card.
+  const view = settingsView(openState({ category: 'general', query: 'MCP' }))
+  assert.deepEqual(view.cards.map((card) => card.id), ['mcp'])
+  assert.equal(view.cards[0]?.rows.length, snapshotOf().mcpServers.length)
+  assert.equal(view.searchEmpty, undefined)
+})
+
+test('a card that does not match itself keeps only its matching rows', () => {
+  const view = settingsView(openState({ category: 'general', query: '压缩预留' }))
+  assert.deepEqual(view.cards.map((card) => card.id), ['context'])
+  assert.deepEqual(
+    view.cards[0]?.rows.map((row) => row.id),
+    ['context:autoCompactBufferTokens', 'context:manualCompactBufferTokens'],
+  )
+})
+
+test('matching is case-insensitive and trimmed', () => {
+  // Asserted on the matcher itself, in both directions: the screen's own text
+  // happens to contain 「MCP」 in both cases, so a view-level assertion alone
+  // passes even when the folding is gone.
+  assert.equal(matchesQuery('MCP', 'npx github-mcp'), true)
+  assert.equal(matchesQuery('mcp', 'MCP 服务器'), true)
+  assert.equal(matchesQuery('  mcp  ', 'MCP 服务器'), true)
+  assert.equal(matchesQuery('mcp', '上下文管理'), false)
+  assert.equal(matchesQuery('mcp', undefined), false)
+  // An empty query matches everything, so callers need no special case.
+  assert.equal(matchesQuery('', undefined), true)
+  assert.equal(matchesQuery('   ', '上下文管理'), true)
+
+  const loud = settingsView(openState({ category: 'general', query: '  mcp  ' }))
+  assert.deepEqual(loud.cards.map((card) => card.id), ['mcp'])
+  assert.equal(
+    loud.cards[0]?.rows.length,
+    snapshotOf().mcpServers.length,
+    'the folded query matched the card title, so the card keeps every row',
+  )
+  // A query of nothing but whitespace is not a query at all.
+  const blank = settingsView(openState({ category: 'general', query: '   ' }))
+  assert.deepEqual(blank.cards.map((card) => card.id), ['general', 'mcp', 'context'])
+  assert.equal(blank.searchEmpty, undefined)
+})
+
+test('an unmatched page draws one line, not a screen of empty cards', () => {
+  const view = settingsView(openState({ category: 'general', query: 'zzz-nothing' }))
+  assert.deepEqual(view.cards, [])
+  assert.match(view.searchEmpty ?? '', /zzz-nothing/)
+})
+
+test('a page that has not loaded says so by staying silent, not by claiming no matches', () => {
+  // 「还没有加载」 and 「没有匹配」 are different facts. Conflating them would tell
+  // the user their query failed when the truth is that no project is open yet.
+  const view = settingsView(openState({ snapshot: undefined, projectRoot: undefined, query: 'MCP' }))
+  assert.deepEqual(view.cards, [])
+  assert.equal(view.searchEmpty, undefined)
+})
+
+test('typing does not disarm a pending delete or clear an error', () => {
+  const confirming = applySettingsIntent(openState({ error: '写入失败' }), {
+    kind: 'request-remove',
+    target: { kind: 'model', name: 'big' },
+  }).state
+  const typed = applySettingsIntent({ ...confirming, error: '写入失败' }, {
+    kind: 'search',
+    query: 'MCP',
+  }).state
+  assert.equal(typed.query, 'MCP')
+  assert.deepEqual(typed.confirmingRemove, { kind: 'model', name: 'big' })
+  assert.equal(typed.error, '写入失败')
+})
+
+test('clear-search empties the query and touches nothing else', () => {
+  const searching = applySettingsIntent(openState({ category: 'agent' }), {
+    kind: 'search',
+    query: 'MCP',
+  }).state
+  const cleared = applySettingsIntent(searching, { kind: 'clear-search' })
+  assert.equal(cleared.state.query, '')
+  assert.equal(cleared.state.category, 'agent')
+  assert.equal(cleared.changes, undefined, 'the filter is renderer-local')
+  assert.equal(cleared.load, undefined)
+})
+
+test('reopening the screen starts with an empty query', () => {
+  const searching = applySettingsIntent(openState(), { kind: 'search', query: 'MCP' }).state
+  const closed = applySettingsIntent(searching, { kind: 'close' }).state
+  assert.equal(closed.query, 'MCP', 'closing alone does not reset it')
+  const reopened = applySettingsIntent(closed, { kind: 'open' }).state
+  assert.equal(reopened.query, '', 'a freshly opened screen is not still filtered')
+})
+
+// --- the pill dropdowns ------------------------------------------------------
+
+test('toggling a dropdown opens it, and toggling the same one closes it', () => {
+  const opened = applySettingsIntent(openState(), { kind: 'toggle-menu', menu: 'row:routing:main' })
+  assert.equal(opened.state.openMenu, 'row:routing:main')
+  assert.equal(opened.changes, undefined, 'expanding a picker is not a config write')
+  const closed = applySettingsIntent(opened.state, { kind: 'toggle-menu', menu: 'row:routing:main' })
+  assert.equal(closed.state.openMenu, undefined)
+})
+
+test('opening a second dropdown closes the first', () => {
+  // One field rather than a set: two open menus can overlap, and the screen has a
+  // dozen selects on it at once.
+  const first = applySettingsIntent(openState(), { kind: 'toggle-menu', menu: 'row:routing:main' })
+  const second = applySettingsIntent(first.state, { kind: 'toggle-menu', menu: 'row:routing:plan' })
+  assert.equal(second.state.openMenu, 'row:routing:plan')
+})
+
+test('close-menu is idempotent, because focus loss and Escape both mean closed', () => {
+  const open = applySettingsIntent(openState(), { kind: 'toggle-menu', menu: 'row:routing:main' }).state
+  assert.equal(applySettingsIntent(open, { kind: 'close-menu' }).state.openMenu, undefined)
+  const already = openState()
+  assert.equal(applySettingsIntent(already, { kind: 'close-menu' }).state, already, 'no needless copy')
+})
+
+test('picking a value closes the dropdown, and so does anything else on screen', () => {
+  const open = applySettingsIntent(openState(), { kind: 'toggle-menu', menu: 'row:routing:main' }).state
+  // The intent a menu item emits goes through `cleared`, which is what makes
+  // "picking dismisses the menu" free rather than something each row remembers.
+  for (const intent of [
+    { kind: 'set-routing', role: 'main', value: 'inherit' },
+    { kind: 'select-category', category: 'general' },
+    { kind: 'search', query: 'MCP' },
+    { kind: 'clear-search' },
+    { kind: 'request-remove', target: { kind: 'model', name: 'big' } },
+    { kind: 'close' },
+  ] as const satisfies readonly SettingsIntent[]) {
+    assert.equal(
+      applySettingsIntent(open, intent).state.openMenu,
+      undefined,
+      `${intent.kind} left a menu hanging open`,
+    )
+  }
+  const armed = applySettingsIntent(open, {
+    kind: 'request-remove',
+    target: { kind: 'model', name: 'big' },
+  }).state
+  assert.equal(applySettingsIntent(armed, { kind: 'cancel-remove' }).state.openMenu, undefined)
+})
+
+test('expanding a picker does not throw away an unread error', () => {
+  const failed = { ...openState(), error: '写入失败' }
+  const opened = applySettingsIntent(failed, { kind: 'toggle-menu', menu: 'row:routing:main' })
+  assert.equal(opened.state.error, '写入失败')
+  assert.equal(opened.state.openMenu, 'row:routing:main')
+})
+
+test('escape closes an open dropdown before it touches the form', () => {
+  const drafting = applySettingsIntent(openState(), { kind: 'new-model' }).state
+  const withMenu = applySettingsIntent(drafting, { kind: 'toggle-menu', menu: 'row:x' }).state
+  assert.deepEqual(settingsKeyToIntent({ key: 'Escape' }, withMenu), { kind: 'close-menu' })
+  // A form field's menu is drawn on top of the form, so dismissing it must not
+  // cost the half-typed form underneath.
+  assert.ok(withMenu.draft, 'the form is still there to lose')
+})
+
+test('reopening the screen leaves no dropdown expanded', () => {
+  const open = applySettingsIntent(openState(), { kind: 'toggle-menu', menu: 'row:routing:main' }).state
+  const closed = applySettingsIntent(open, { kind: 'close' }).state
+  assert.equal(applySettingsIntent(closed, { kind: 'open' }).state.openMenu, undefined)
 })
 
 test('appearance draws its card even with no project loaded', () => {
@@ -400,6 +620,15 @@ test('appearance draws its card even with no project loaded', () => {
   assert.equal(row.control.value, 'system', 'the select is seeded from state.themePref')
   assert.deepEqual(row.control.choices.map((c) => c.value), ['system', 'dark', 'light'])
   assert.deepEqual(row.control.intentOnChange('dark'), { kind: 'set-theme', preference: 'dark' })
+})
+
+test('the renderer-local appearance page is searchable on its own, without a snapshot', () => {
+  const base = { category: 'appearance', snapshot: undefined, projectRoot: undefined } as const
+  const hit = settingsView(openState({ ...base, query: '主题' }))
+  assert.deepEqual(hit.cards.map((card) => card.id), ['appearance'])
+  const miss = settingsView(openState({ ...base, query: 'zzz-nothing' }))
+  assert.deepEqual(miss.cards, [])
+  assert.match(miss.searchEmpty ?? '', /zzz-nothing/)
 })
 
 test('set-theme is a client-only write: it updates state but never touches the wire', () => {

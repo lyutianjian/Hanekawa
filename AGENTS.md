@@ -243,13 +243,16 @@ otherwise a passing test can contaminate later cases.
   render would pull the caret out of a form field.
 - Every class passed to `controls.ts`'s `button()` needs a **resting-state** rule in `styles.css`; an
   unstyled button falls back to the user agent's filled control, which no typecheck can see.
-  `rendererStyleTokens.test.ts` enforces it, and `:hover`/`:disabled` rules alone do not count.
+  `rendererStyleTokens.test.ts` enforces it, and `:hover`/`:disabled` rules alone do not count. Its scan
+  skips `controls.ts` itself, so a control built *inside* that file (the toggle, the pill dropdown) is
+  covered only by the explicit class list in the same test — extend that list when adding one.
 - `paneSession.ts` has no unit tests, so behaviour there is covered by `scripts/smoke-desktop.mjs`.
-  `dom/` can now be tested: `test/helpers/domStub.ts` is a hand-written stand-in for the four `document`
-  members `dom/dom.ts`, `dom/controls.ts` and `dom/icons.ts` use, and `test/rendererWelcomeView.test.ts`
-  is the pattern (install per test, assert through the returned handle, and keep the source-scan guard
-  that fails when a helper grows a DOM call the stub lacks). Still prefer moving a decision into `model/`
-  when it can be tested directly.
+  `dom/` can now be tested: `test/helpers/domStub.ts` is a hand-written stand-in for the `document`
+  members `dom/dom.ts`, `dom/controls.ts` and `dom/icons.ts` use, plus a `Node` binding (a `focusout`
+  handler's `instanceof Node` is a ReferenceError without it). `test/rendererWelcomeView.test.ts` and
+  `test/rendererSettingsView.test.ts` are the pattern (install per test, assert through the returned
+  handle, and keep the source-scan guard that fails when a helper grows a DOM call the stub lacks — it
+  reads comments too). Still prefer moving a decision into `model/` when it can be tested directly.
 
 ## Conventions and patches
 

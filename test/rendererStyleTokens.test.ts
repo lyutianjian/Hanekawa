@@ -594,3 +594,26 @@ test('every button the renderer builds is styled by this sheet', () => {
   }
   assert.ok(seen >= 5, `expected the renderer to build buttons through button(); found ${seen}`)
 })
+
+test('the controls built inside controls.ts are styled too', () => {
+  // The scan above skips `controls.ts`, because that file's own `button()` is the
+  // helper being scanned for. Everything it builds internally is therefore
+  // invisible to it — including 5f's pill dropdown, which is exactly the shape of
+  // control that fell back to the user agent in 4d. Named explicitly instead.
+  // A *lone* occurrence of the class, stricter than the scan above: that one's
+  // lookahead forbids a trailing pseudo-class but not a trailing `.`, so
+  // `.settings-pill.open` alone would satisfy it — and a control whose only rule
+  // is its open state is exactly the user-agent fallback this guards against.
+  // Verified by mutation: deleting `.settings-pill { … }` reds this test.
+  const restingRule = (name: string): boolean =>
+    blocks.some((block) => new RegExp(`\\.${name}(?![\\w\\-:.\\[])`).test(block.selector))
+
+  const built = ['settings-toggle', 'settings-pill', 'settings-menu-item', 'settings-menu-shell']
+  const source = readFileSync(path.join(rendererRoot, 'dom', 'controls.ts'), 'utf8')
+  for (const name of built) {
+    // Non-vacuity: the class has to still be built there, or this list is a
+    // decoration that outlived the control it was guarding.
+    assert.ok(source.includes(`'${name}'`), `controls.ts no longer builds .${name}`)
+    assert.ok(restingRule(name), `controls.ts builds .${name} and styles.css has no resting rule for it`)
+  }
+})

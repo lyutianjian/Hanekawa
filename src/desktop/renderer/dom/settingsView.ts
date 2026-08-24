@@ -1,11 +1,12 @@
 import { el, replace, show } from './dom.js'
-import { button, selectField, textField, toggleField } from './controls.js'
+import { button, pillSelect, selectField, textField, toggleField } from './controls.js'
 import type {
   SettingsButton,
   SettingsCard,
   SettingsChord,
   SettingsForm,
   SettingsIntent,
+  SettingsNavItem,
   SettingsRow,
   SettingsViewModel,
 } from '../model/settings.js'
@@ -32,7 +33,24 @@ export function createSettingsView(
   onIntent: (intent: SettingsIntent) => void,
   onKey: (chord: SettingsChord) => boolean,
 ): SettingsViewHandle {
+  // Built once, outside `render()`: it lives in the nav column, which is replaced
+  // on every render, and an `<input>` rebuilt under the user would drop the caret.
+  const search = textField({
+    className: 'settings-search',
+    value: '',
+    ariaLabel: '搜索设置',
+    placeholder: '搜索设置…',
+    onCommit: (query) => onIntent({ kind: 'search', query }),
+  })
+  // `textField` commits on blur/Enter, which is right for a setting and wrong for
+  // a filter: the list has to move while typing.
+  search.addEventListener('input', () => onIntent({ kind: 'search', query: search.value }))
+
   container.addEventListener('keydown', (event) => {
+    // Backspace and the arrows belong to the search box. Escape does not: it is
+    // this screen's documented way out, and `settingsKeyToIntent` is what decides
+    // whether it clears the query or closes the screen.
+    if (event.target === search && event.key !== 'Escape') return
     const consumed = onKey({
       key: event.key,
       shiftKey: event.shiftKey,
@@ -46,8 +64,25 @@ export function createSettingsView(
     event.stopPropagation()
   })
 
+  // Focus leaving the screen closes an open dropdown. `relatedTarget === null` is
+  // this view's own `replace()` — every render fires one — and a target still
+  // inside the container is a move between the trigger and its items.
+  container.addEventListener('focusout', (event) => {
+    const next = event.relatedTarget
+    if (next === null) return
+    if (next instanceof Node && container.contains(next)) return
+    onIntent({ kind: 'close-menu' })
+  })
+
   const nav = el('div', 'settings-nav')
   nav.id = 'settings-nav'
+  const navList = el('div', 'settings-nav-list')
+  const close = button('settings-nav-close', '返回会话', '关闭设置（Esc）', () =>
+    onIntent({ kind: 'close' }),
+  )
+  nav.appendChild(search)
+  nav.appendChild(navList)
+  nav.appendChild(close)
   const body = el('div', 'settings-body')
   body.id = 'settings-body'
   container.appendChild(nav)
@@ -75,18 +110,21 @@ export function createSettingsView(
         container.focus()
       }
 
+      // The only write-back, and conditional on purpose: `input` is synchronous,
+      // so the model can only disagree with the box when something *other* than
+      // typing emptied the query — Escape, or reopening the screen.
+      if (view.query === '' && search.value !== '') search.value = ''
+
       replace(
-        nav,
-        ...view.nav.map((item) =>
-          button(
-            item.selected ? 'settings-nav-item selected' : 'settings-nav-item',
-            item.label,
-            item.label,
-            () => onIntent({ kind: 'select-category', category: item.category }),
+        navList,
+        ...view.navGroups.map((group) =>
+          el(
+            'div',
+            'settings-nav-group',
+            el('div', 'settings-nav-group-label', group.label),
+            ...group.items.map((item) => navItemNode(item, onIntent)),
           ),
         ),
-        el('div', 'settings-nav-spacer'),
-        button('settings-nav-close', '返回会话', '关闭设置（Esc）', () => onIntent({ kind: 'close' })),
       )
 
       replace(
@@ -95,11 +133,24 @@ export function createSettingsView(
         view.error ? el('div', 'settings-error', view.error) : null,
         view.confirming ? confirmNode(view.confirming.message, onIntent) : null,
         view.form ? formNode(view.form, onIntent) : null,
-        ...view.cards.map((card) => cardNode(card, onIntent)),
+        view.searchEmpty ? el('div', 'settings-empty', view.searchEmpty) : null,
+        ...view.cards.map((card) => cardNode(card, onIntent, view.openMenu)),
       )
       container.classList.toggle('busy', view.busy)
     },
   }
+}
+
+function navItemNode(
+  item: SettingsNavItem,
+  onIntent: (intent: SettingsIntent) => void,
+): HTMLButtonElement {
+  return button(
+    item.selected ? 'settings-nav-item selected' : 'settings-nav-item',
+    item.label,
+    item.label,
+    () => onIntent({ kind: 'select-category', category: item.category }),
+  )
 }
 
 function headerNode(
@@ -135,13 +186,17 @@ function confirmNode(message: string, onIntent: (intent: SettingsIntent) => void
   )
 }
 
-function cardNode(card: SettingsCard, onIntent: (intent: SettingsIntent) => void): HTMLElement {
+function cardNode(
+  card: SettingsCard,
+  onIntent: (intent: SettingsIntent) => void,
+  openMenu: string | undefined,
+): HTMLElement {
   const node = el('section', 'settings-card', el('div', 'settings-card-title', card.title))
   if (card.note) node.appendChild(el('div', 'settings-card-note', card.note))
   if (card.rows.length === 0 && card.empty) {
     node.appendChild(el('div', 'settings-empty', card.empty))
   }
-  for (const row of card.rows) node.appendChild(rowNode(row, onIntent))
+  for (const row of card.rows) node.appendChild(rowNode(row, onIntent, openMenu))
   if (card.footerButtons?.length) {
     const footer = el('div', 'settings-card-footer')
     for (const spec of card.footerButtons) footer.appendChild(buttonNode(spec, onIntent))
@@ -150,7 +205,11 @@ function cardNode(card: SettingsCard, onIntent: (intent: SettingsIntent) => void
   return node
 }
 
-function rowNode(row: SettingsRow, onIntent: (intent: SettingsIntent) => void): HTMLElement {
+function rowNode(
+  row: SettingsRow,
+  onIntent: (intent: SettingsIntent) => void,
+  openMenu: string | undefined,
+): HTMLElement {
   const label = el('div', 'settings-row-label', el('div', 'settings-row-name', row.label))
   if (row.detail) label.appendChild(el('div', 'settings-row-desc', row.detail))
   if (row.warning) label.appendChild(el('div', 'settings-row-warning', row.warning))
@@ -164,11 +223,16 @@ function rowNode(row: SettingsRow, onIntent: (intent: SettingsIntent) => void): 
       break
     case 'select': {
       const { intentOnChange } = row.control
+      // Keyed by row id, which is already unique per page. The key stays in the
+      // DOM so `SettingsControl` — and every model test of it — is untouched.
+      const menu = `row:${row.id}`
       control.appendChild(
-        selectField({
+        pillSelect({
           value: row.control.value,
           ariaLabel: row.label,
           choices: row.control.choices,
+          open: openMenu === menu,
+          onToggle: () => onIntent({ kind: 'toggle-menu', menu }),
           onChange: (value) => onIntent(intentOnChange(value)),
         }),
       )

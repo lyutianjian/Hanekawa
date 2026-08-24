@@ -80,8 +80,40 @@
 - [ ] **5e — 输入框 + 画布头栏**：composer 加权限模式胶囊（4 模式，调已有 `set-permission-mode`，删状态栏
   那份模式文字）；发送按钮 idle/ready/streaming 三态 + 进度环；画布头栏（会话身份 + ⋯ 菜单复用
   `rename-session`/`delete-session` + 「打开位置」）。
-- [ ] **5f — 设置分组重构**：`SettingsNavItem` 加 `group`，分个人/集成/编码三段（只收纳已有页，无后端页不出现，
-  分组用穷尽 switch）；顶部搜索设置框；原生 `<select>` 改胶囊下拉观感。
+- [x] **5f — 设置分组重构**（本次；跳序做的，5d/5e 仍未开始）：三段各自独立可验。
+  ① **分组**：`SettingsNavItem` 加 `group`，新 `SettingsNavGroup`，`SettingsViewModel.nav` **换成**
+  `navGroups`（不并存两份——`src`/`test` 各只有一个消费者，两份同一列表正是过滤器自相矛盾的来源）；
+  归组是 `groupOf()` 一个 `default`-less switch，**开在全部五个分类上而不是 `HostCategory`**（`appearance`
+  是渲染器本地的，但它仍是导航里的一页）；映射为 个人=通用+外观｜集成=模型与服务商｜编码=权限+Agent；
+  `settings-nav-spacer` 连节点带规则一起删（导航列改成 search + 可滚动 `settings-nav-list` + 常驻返回按钮）。
+  ② **搜索框**：`SettingsState.query` + 导出的纯 `matchesQuery(query, ...haystack)`（trim + 小写 + 子串，
+  空查询恒真）。匹配**只认屏幕上真有的文字**：分类标签，或该页任一卡片的 `title`/`note`/行 `label`/行 `detail`
+  （不认 `warning`、选项标签、按钮 title——那些是派生的，会让「为什么这行命中」无法解释）。导航过滤掉不命中的页
+  但**当前页永不掉出**，所以导航不可能空、无需空态；正文里**靠 title/note 命中的卡片保留全部行**（搜「MCP」
+  要看到服务器列表，不是一张空卡），否则只留命中行；全不命中给 `searchEmpty` 一行。查询住 `SettingsState`
+  而不是 `app.ts`：设置界面只由自己的 intent 重绘，model 可以是唯一权威。DOM 侧搜索框**在 `render()` 外建一次**
+  （沿 5b 侧栏先例），只有 `settings-nav-list` 进 `replace()`；容器 keydown 对 `event.target===search` 早返回
+  **但放 Escape 过**（否则焦点一进搜索框，按钮上写的「关闭设置（Esc）」就成了假话）；唯一一次回写是
+  `view.query===''` 时清空输入框——`input` 是同步的，所以它只可能和「非打字来源清空了查询」对齐，打不起来。
+  ③ **胶囊下拉**：`controls.ts` 新增 `pillSelect()`（触发器 + `role="listbox"`），`SettingsControl.kind==='select'`
+  **不动**（`assertNeverControl` 与全部既有 model 断言因此原样保绿），开态是 `SettingsState.openMenu` 单键字段
+  （一次只开一个），键在 DOM 里推成 `row:${row.id}`。intent 是 `toggle-menu` + **幂等**的 `close-menu`
+  （比 5b 那个「只在开着时才发 toggle」的形状严格更好，顺手免掉视图里的镜像变量）。`cleared` 里加
+  `openMenu: undefined`，于是「选完就关」免费且无法遗漏；四个 spread `state` 的分支显式补上。
+  **只换设置行内的 select**：头部项目选择器与表单字段仍是原生 `<select>`（只穿了胶囊皮）——原生的键盘/读屏
+  完整性是免费的，而表单是键盘流程。键盘自己实现了 Enter/Space（`button()` 免费）、Esc、Tab、
+  ArrowDown/ArrowUp 循环、Home/End；焦点用 `event.target` 定位而**不读** `document.activeElement`。
+  Esc 五层顺序（由内到外）：下拉 → 表单 → 删除确认 → 查询 → 关屏。CSS：菜单挂 `position: relative` 的
+  `.settings-menu-shell`（**不挂 `.settings-row`**），因为 `.settings-body` 会滚动、一个轴非 visible 就连另一个
+  一起裁；**零新 token、零新图标**（design doc 的 `#17171a`/`#34343b`/`9999px`/`4px 12px` 正好就是
+  `--surface-canvas`/`--border-strong`/`--radius-pill`）。
+  **前置一并做了**：`test/helpers/domStub.ts` 扩出 `dispatch(node,type,{target,relatedTarget,key})` /
+  `focus` / `activeElement` / 元素 `contains()`，并**装了 `globalThis.Node`**——`focusout` 处理器里
+  `next instanceof Node` 在没有该绑定时是 ReferenceError，这是 5b 起就无法 DOM 测的真正原因。
+  新 `test/rendererSettingsView.test.ts`（19 条）是 `dom/` 的第二个单测。
+  **验证**：新增 39 条（settings model 18 / settingsView DOM 19 / styleTokens 1 / 其余为既有用例扩写），
+  全量 **2284 pass / 0 fail**（三条已知不稳定这次都绿），typecheck 四段全过，`build:desktop` emit 正常，
+  七条变异验证全部报红在预期用例上（含一次**判据太宽被抓**，见下）。真机冒烟未跑（需显示器+凭据）。
 - [ ] **新增 seam（跨层，谨慎）**：① `shellProtocol.ts`+`shellHost.ts`+`main.ts` 加 `open-in-editor`
   命令 `spawn('code', [cwd])`（补 `desktopShellHost` 用例）；~~② host 读 `<cwd>/.git/HEAD`~~ —— ② 已在 5c
   落地，走 `WireHelloResult.gitBranch`，见下方决策留痕。
@@ -143,6 +175,29 @@
 
 ---
 
+### 5f 新记的账
+
+- **`rendererStyleTokens` 的「静息态规则」判据比它自称的宽**：4f 那条按钮守卫的
+  `\.([A-Za-z][\w-]*)(?![\w-:])` 只拒绝紧跟**伪类**的类名，**不拒绝紧跟 `.` 的**，所以
+  `.settings-pill.open` 单独存在就能骗过它——把 `.settings-pill { … }` 整块删掉，那条用例仍然全绿
+  （实测）。5f 新加的 `the controls built inside controls.ts are styled too` 用的是更严的
+  `(?![\w\-:.\[])`，但**只对它自己那四个类生效**；原来那条守卫的洞没补（补它要重跑一遍全部类名，
+  可能连带报红既有类），独立一档。
+- **`rendererStyleTokens` 的按钮扫描仍跳过 `controls.ts`**，所以 `.settings-pill` /
+  `.settings-menu-item` / `.settings-toggle` 只靠 5f 那条显式清单覆盖；清单里加类名要手动。
+- **靠正文滚动区底部的行，菜单会把滚动区撑长而不向上翻转**。翻转需要按次测量坐标，而样式测试只允许
+  内联 `height`，body 级 portal 因此不是选项。明文接受。
+- **胶囊菜单没有 typeahead**，原生 `<select>` 本来免费有。
+- **点界面内不可聚焦的装饰（行标签、卡片标题）不会关菜单**（不触发 `focusout`）——这条承自 5b 的工作区菜单，
+  两处同一个洞。要补得加 `document` 级 `mousedown`，为一个装饰性弹层加全局监听，没做。
+- **`close-menu` 会在任何一次「焦点离开设置界面」时发出，哪怕没有菜单开着**：reducer 里返回同一个
+  state 对象，但 `app.ts` 仍会整屏重绘一次。无害，未优化。
+- **无 snapshot 时导航搜索只匹配页面标签**：四个宿主页的卡片还不存在。首个 `get-settings` 回来后的
+  下一次渲染自动纠正，陈旧性上界 = 一次往返。
+- **头部项目选择器与表单里带 `choices` 的字段仍是原生 `<select>`**，只是重新贴了胶囊样式。design doc
+  五.3.③.2 说的是卡片行的右侧控件列，这次就只做到那里。
+- **`.settings-nav-group-label` 是纯装饰的 `div`**，不是 `<h2>`/`role=group`；读屏上三段之间没有语义边界。
+
 ### 5c 新记的账
 
 - **`.pane.empty` 这个类没有任何用例**。它由 `paneSession.ts` 的 `renderTranscript()` 设置，那个文件没有
@@ -154,6 +209,37 @@
   弹出侧栏工作区菜单、发一条消息后 Hero 消失。本次没有显示器与凭据，**未跑**。
 
 ## 决策留痕（只留 `CLAUDE.md` 未覆盖的）
+
+- **5f：`SettingsViewModel.nav` 换成 `navGroups`，不并存两份**。分组和搜索过滤都作用在同一份列表上，
+  留两份视图迟早会分叉；两侧各只有一个消费者，换掉的成本是一处断言。
+- **5f：`groupOf` 开在 `SettingsCategory` 而不是 `HostCategory`**。`cardsFor` 收窄成 `HostCategory` 是因为
+  `appearance` 没有宿主数据，但它**有一页导航**，所以归组必须覆盖它——否则加第六个分类时，编译器只会拦住
+  「没有卡片」，不会拦住「没有分组」。
+- **5f：搜索只匹配屏幕上真有的文字**（分类标签 / 卡片 title、note / 行 label、detail），不匹配 `warning`、
+  选项标签、按钮 title。派生文本命中会让用户无法解释「这行为什么在」。**明确不做跨页结果列表**：那需要给每张
+  卡片挂「来自哪一页」、一个合成页和点击结果的导航语义；五个页面不值这个价，导航过滤已经回答了「在哪」。
+- **5f：无 snapshot 时不给 `searchEmpty`**。「还没有加载」和「没有匹配」是两件不同的事，屏幕不能在原因是
+  前者时宣称后者——与侧栏把 `noMatches` 与 `isEmpty` 分开是同一条规矩。
+- **5f：搜索框的那一次回写是有条件的**（`view.query === '' && search.value !== ''`）。侧栏的规矩是「绝不回写」，
+  这里收敛成「绝不**无条件**回写」：`input` 事件是同步的，所以 model 与输入框只可能在**非打字来源**
+  （Esc、重开界面）清空查询时不一致，回写打不到正在打字的人身上。少了这一句，「Esc 清空查询」就是假的。
+- **5f：容器 keydown 对搜索框早返回，但放 Escape 过**。侧栏那份是一刀切（`event.target===search` 全放行），
+  但设置界面的 Esc 是它自己写在按钮上的承诺，且 `settingsKeyToIntent` 才是决定「Esc 清查询还是关屏」的地方。
+- **5f：`openMenu` 是单键字段 + 幂等 `close-menu`，不是 5b 的单 toggle**。5b 那个形状只在「视图镜像了开态、
+  且仅在开着时才发」的前提下正确；幂等的 close 把正确性从视图挪回 reducer，顺手删掉镜像变量。开态键在 **DOM**
+  里推成 `row:${row.id}`，所以 `SettingsControl` 一个字段都没动，`assertNeverControl` 与全部既有断言原样保绿。
+- **5f：菜单挂 `.settings-menu-shell`（`position: relative`），不挂 `.settings-row`**，也不做 body 级 portal。
+  `.settings-body` 是 `overflow-y: auto`，一个轴非 `visible` 会连另一个轴一起裁，所以必须有定位祖先；给行本身
+  加定位会让它成为后来任何东西的包含块。portal 要按次测量坐标，而 `rendererStyleTokens` 只允许内联 `height`。
+  代价是靠底部的行把滚动区撑长而不向上翻转，接受。
+- **5f：只把行内 `select` 换成胶囊，头部项目选择器与表单字段留原生**。原生 `<select>` 的键盘、typeahead、
+  读屏行为是免费的；表单是 Tab 流程，把字段换成 button+menu 会把 Tab 引进展开的菜单里，而项目选择器一旦误触
+  会重载整屏。这是对 design doc 的一次**故意的部分实现**，doc 五.3.③.2 说的本来就是卡片行的右侧控件列。
+- **5f：`pillSelect` 用 `event.target` 定位焦点，不读 `document.activeElement`**。keydown 在被聚焦的项上触发
+  并冒泡到外壳，target 就是位置；顺带避免给 domStub 再加一个 document 成员（不过注释里提到这个名字就已经
+  被那条源码扫描守卫抓了一次——它连注释一起扫，所以 stub 还是补了 `activeElement`）。
+- **5f：domStub 必须装 `globalThis.Node`**。`focusout` 处理器里 `next instanceof Node` 在没有该绑定时是
+  **ReferenceError**，不是 false——这就是 5b 的工作区菜单一直没法 DOM 测的真正原因，不是「stub 缺 focus」。
 
 - **5c：git 分支放 `WireHelloResult`，不放 `WirePaneInfo`/`WireLaneInfo`，也不开新命令**。`WirePaneInfo`
   至少两处投影且是跨项目的，每处都要一个它并不总持有的 `cwd`，而且 shell 每次拓扑变化会按 pane 各读一次；
@@ -229,7 +315,10 @@
   「最后看到的值」**——`waitFor` 只报「超时」时没法区分「应用没动」和「应用动错了」。
 - **变异验证也会打在用例自己身上**：4f 给「每个按钮都得有样式」补的用例，第一版把 `:hover`/`:disabled`
   也算作「有规则」，把 bug 塞回去仍全绿——报废的是**判据**，不是实现。**变异验证失败时，先怀疑自己的
-  判据太宽，别急着放过 bug。**
+  判据太宽，别急着放过 bug。** 5f 第二次应验，而且是同一条守卫：它的 `(?![\w-:])` 拒绝伪类却不拒绝 `.`，
+  于是 `.settings-pill.open` 一条就够骗过它；5f 还有一次是「大小写不敏感」的断言站在视图上，而那段被搜的
+  文字恰好两种写法都能命中（`npx github-mcp` 里有小写 `mcp`），改成直接断言 `matchesQuery` 两个方向才抓住。
+  **凡是判据里有「某段文字命中」的，先确认那段文字不会用别的路径也命中。**
 - **真机验证走 CDP，不加调试开关**：`electron . --remote-debugging-port=9222` + node 内置 `WebSocket`
   直连，`Runtime.evaluate` 读 DOM、`Input.dispatchKeyEvent` 发真键；权限对话框用 `run-tool` 零花费触发。
 - **测的实现必须就是出货的实现**：renderer channel 曾有测试/出货两份，main 侧工厂的 API 谎言被专门写的
@@ -272,6 +361,10 @@ node --import tsx --test test/rendererWelcome.test.ts test/rendererWelcomeView.t
   test/gitBranch.test.ts test/rendererImports.test.ts
 npx tsc --noEmit -p tsconfig.domtest.json             # 第四段单独跑
 
+# 5f 新增（设置分组 + 搜索 + 胶囊下拉）
+node --import tsx --test test/rendererSettingsModel.test.ts test/rendererSettingsView.test.ts \
+  test/rendererStyleTokens.test.ts test/rendererImports.test.ts
+
 # 既有主题（回归）
 node --import tsx --test test/protocolWire.test.ts test/protocolHost.test.ts \
   test/protocolClientParity.test.ts test/protocolCommandSchema.test.ts
@@ -290,5 +383,7 @@ node --import tsx --test test/rendererImports.test.ts test/desktopMain.test.ts \
 **这条依赖的是环境变量，不是「在 Claude Code 里跑」。** 看到它报红先 `echo` 一下那两个变量，别当成回归。
 
 **阶段 4 基线**：4f 后全量共 2199 条，实测 2199 pass / 0 fail，typecheck 三段全过，真机冒烟十条全绿。
-**阶段 5 基线**：5b 后 2214 条；5c 后 **2245** 条，实测 2244 pass / 1 fail（`backgroundTasks` 增量输出，
-单跑全绿），typecheck **四段**全过。阶段 5 的新增用例应在此基线上累加。
+**阶段 5 基线**：5b 后 2214 条；5c 后 2245 条；5f 后 **2284** 条，实测 **2284 pass / 0 fail**
+（三条已知不稳定这次都绿），typecheck **四段**全过。阶段 5 的新增用例应在此基线上累加。
+**5f 待跑的冒烟项**：三段导航读作 个人/集成/编码 且只有五个真实页；输入「MCP」后 通用 仍在导航里且正文跳到
+MCP 卡片；路由胶囊展开的菜单不被正文滚动区裁掉，选中 / Esc / 点别处都能关；Tab + 方向键能纯键盘操作展开的菜单。

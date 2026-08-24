@@ -17,6 +17,7 @@
   "exclude": [
     "src/desktop/renderer/**",
     "src/desktop/preload.ts",
+    "test/rendererSettingsView.test.ts",
     "test/rendererWelcomeView.test.ts",
     "test/helpers/**",
     "node_modules",

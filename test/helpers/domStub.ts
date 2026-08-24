@@ -27,9 +27,22 @@ const ID_REGISTRY = new Map<string, StubElement>()
 
 interface StubEvent {
   readonly type: string
+  /** The node the event started on. Defaults to the node it is dispatched on. */
+  readonly target: unknown
+  /** `focusout`'s incoming node. `null` is "focus left the document", which is
+   *  also what a view's own `replace()` produces — handlers must tell them apart. */
+  readonly relatedTarget: unknown
+  readonly key: string
   defaultPrevented: boolean
   preventDefault(): void
   stopPropagation(): void
+}
+
+/** What `dispatch` may override on the synthetic event. */
+export interface StubEventInit {
+  readonly target?: unknown
+  readonly relatedTarget?: unknown
+  readonly key?: string
 }
 
 type Listener = (event: StubEvent) => void
@@ -144,9 +157,29 @@ class StubElement {
     else this.listeners.set(type, [listener])
   }
 
-  dispatch(type: string): StubEvent {
+  /** As `Node.contains`: true for itself and any descendant. */
+  contains(other: unknown): boolean {
+    for (let at = other; at instanceof StubElement; at = at.parent) {
+      if (at === this) return true
+    }
+    return false
+  }
+
+  /**
+   * Records focus. There is no bubbling `focusin`/`focusout` here: a view that
+   * closes a menu on focus loss is tested by dispatching `focusout` on the
+   * container with an explicit `relatedTarget`, which is what the browser hands it.
+   */
+  focus(): void {
+    activeElement = this
+  }
+
+  dispatch(type: string, init: StubEventInit = {}): StubEvent {
     const event: StubEvent = {
       type,
+      target: init.target ?? this,
+      relatedTarget: init.relatedTarget ?? null,
+      key: init.key ?? '',
       defaultPrevented: false,
       preventDefault() {
         event.defaultPrevented = true
@@ -157,6 +190,9 @@ class StubElement {
     return event
   }
 }
+
+/** The focused node, as `document.activeElement`. Cleared by `uninstall()`. */
+let activeElement: StubElement | undefined
 
 /** What a test may ask about a rendered node. Read-only, and identity-preserving. */
 export interface StubView {
@@ -184,6 +220,16 @@ export interface DomStub {
   inspect(node: unknown): StubView
   /** Fires a `click`, as `controls.ts`'s `button()` listens for. */
   click(node: unknown): void
+  /**
+   * Fires any other event. `init.target` is what a delegating handler reads to
+   * decide whether the event was aimed at one of its own persistent children;
+   * `init.relatedTarget` is `focusout`'s destination; `init.key` is for `keydown`.
+   */
+  dispatch(node: unknown, type: string, init?: StubEventInit): void
+  /** Moves focus, so `activeElement` can be asserted after a keyboard intent. */
+  focus(node: unknown): void
+  /** The focused node, or `undefined`. */
+  activeElement(): unknown
   /** Whether the stub's `document` carries a member, for the source-scan guard. */
   hasDocumentMember(name: string): boolean
   uninstall(): void
@@ -223,9 +269,19 @@ export function installDomStub(): DomStub {
     getElementById(id: string): StubElement | null {
       return ID_REGISTRY.get(id) ?? null
     },
+    // Present because the source scan counts a mention in a comment too, and
+    // `controls.ts` explains there why it reads `event.target` *instead* of this.
+    // Cheap to answer honestly, and it keeps the guard from needing an exception.
+    get activeElement(): StubElement | undefined {
+      return activeElement
+    },
   }
 
   Reflect.set(globalThis, 'document', document)
+  // `focusout` handlers narrow `event.relatedTarget` with `instanceof Node` before
+  // calling `contains`. Without a `Node` binding that line is a ReferenceError, so
+  // the stub answers for it: every node it builds is a `StubElement`.
+  Reflect.set(globalThis, 'Node', StubElement)
 
   return {
     createContainer(className?: string): HTMLElement {
@@ -242,12 +298,23 @@ export function installDomStub(): DomStub {
     click(node: unknown): void {
       asElement(node).dispatch('click')
     },
+    dispatch(node: unknown, type: string, init: StubEventInit = {}): void {
+      asElement(node).dispatch(type, init)
+    },
+    focus(node: unknown): void {
+      asElement(node).focus()
+    },
+    activeElement(): unknown {
+      return activeElement
+    },
     hasDocumentMember(name: string): boolean {
       return Object.hasOwn(document, name)
     },
     uninstall(): void {
       ID_REGISTRY.clear()
+      activeElement = undefined
       Reflect.deleteProperty(globalThis, 'document')
+      Reflect.deleteProperty(globalThis, 'Node')
     },
   }
 }

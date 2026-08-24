@@ -90,10 +90,24 @@ export interface SettingsState {
   readonly error?: string
   /** Renderer-local theme preference; `app.ts` seeds it from `localStorage`. */
   readonly themePref: ThemePreference
+  /** The search box. Filters the nav and the selected page; never the wire. */
+  readonly query: string
+  /**
+   * Which pill dropdown is expanded, keyed by the DOM. At most one: two open
+   * menus can overlap, and the screen has a dozen selects on it at once.
+   */
+  readonly openMenu?: string
 }
 
 export function createSettingsState(): SettingsState {
-  return { open: false, category: 'provider', busy: false, projects: [], themePref: DEFAULT_THEME_PREFERENCE }
+  return {
+    open: false,
+    category: 'provider',
+    busy: false,
+    projects: [],
+    themePref: DEFAULT_THEME_PREFERENCE,
+    query: '',
+  }
 }
 
 export const CATEGORY_LABELS: Record<SettingsCategory, string> = {
@@ -106,6 +120,35 @@ export const CATEGORY_LABELS: Record<SettingsCategory, string> = {
 
 /** The `inherit` sentinel, spelled once. */
 export const INHERIT = 'inherit'
+
+export type SettingsGroup = 'personal' | 'integration' | 'coding'
+
+export const SETTINGS_GROUP_ORDER: readonly SettingsGroup[] = ['personal', 'integration', 'coding']
+
+export const SETTINGS_GROUP_LABELS: Record<SettingsGroup, string> = {
+  personal: '个人',
+  integration: '集成',
+  coding: '编码',
+}
+
+/**
+ * Exhaustive by construction: a sixth category cannot compile without a group.
+ *
+ * Deliberately over `SettingsCategory` and not `HostCategory` — `appearance` is
+ * renderer-local but it is still a page in the nav, so it still needs a section.
+ */
+function groupOf(category: SettingsCategory): SettingsGroup {
+  switch (category) {
+    case 'general':
+    case 'appearance':
+      return 'personal'
+    case 'provider':
+      return 'integration'
+    case 'permissions':
+    case 'agent':
+      return 'coding'
+  }
+}
 
 export type PermissionBehavior = WirePermissionGroup['behavior']
 
@@ -121,6 +164,14 @@ export interface SettingsNavItem {
   readonly category: SettingsCategory
   readonly label: string
   readonly selected: boolean
+  readonly group: SettingsGroup
+}
+
+/** One section of the nav column. A section with no items is not produced. */
+export interface SettingsNavGroup {
+  readonly group: SettingsGroup
+  readonly label: string
+  readonly items: readonly SettingsNavItem[]
 }
 
 /** A control on the right-hand side of a row. */
@@ -196,7 +247,7 @@ export interface SettingsForm {
 
 export interface SettingsViewModel {
   readonly open: boolean
-  readonly nav: readonly SettingsNavItem[]
+  readonly navGroups: readonly SettingsNavGroup[]
   readonly title: string
   readonly subtitle?: string
   readonly cards: readonly SettingsCard[]
@@ -206,6 +257,12 @@ export interface SettingsViewModel {
   readonly projectChoices: ReadonlyArray<{ value: string; label: string }>
   readonly projectValue: string
   readonly confirming?: { readonly message: string }
+  /** Echoed back so the DOM can tell "the model cleared it" from "the user typed". */
+  readonly query: string
+  /** Set only when a non-empty query filtered the page down to nothing. */
+  readonly searchEmpty?: string
+  /** The expanded pill dropdown's key, as the DOM spells it. */
+  readonly openMenu?: string
 }
 
 const ALL_CATEGORIES: readonly SettingsCategory[] = [
@@ -216,22 +273,104 @@ const ALL_CATEGORIES: readonly SettingsCategory[] = [
   'appearance',
 ]
 
-export function settingsView(state: SettingsState): SettingsViewModel {
-  const nav = ALL_CATEGORIES.map((category) => ({
-    category,
-    label: CATEGORY_LABELS[category],
-    selected: state.category === category,
-  }))
+/**
+ * The nav column, grouped. `keep` is the search filter; step-order matters only
+ * in that the *item* order inside a section stays `ALL_CATEGORIES` order, so a
+ * query cannot shuffle the list under the pointer.
+ */
+function navGroupsFor(
+  state: SettingsState,
+  keep: (category: SettingsCategory) => boolean,
+): SettingsNavGroup[] {
+  const groups: SettingsNavGroup[] = []
+  for (const group of SETTINGS_GROUP_ORDER) {
+    const items = ALL_CATEGORIES.filter(
+      (category) => groupOf(category) === group && keep(category),
+    ).map((category) => ({
+      category,
+      label: CATEGORY_LABELS[category],
+      selected: state.category === category,
+      group,
+    }))
+    if (items.length > 0) groups.push({ group, label: SETTINGS_GROUP_LABELS[group], items })
+  }
+  return groups
+}
 
+/**
+ * Case-insensitive, trimmed substring match against the text that is *on screen*.
+ *
+ * An empty query matches everything, so callers can pass `state.query` straight
+ * through rather than each remembering to special-case it.
+ */
+export function matchesQuery(query: string, ...haystack: ReadonlyArray<string | undefined>): boolean {
+  const needle = query.trim().toLowerCase()
+  if (needle === '') return true
+  return haystack.some((text) => text !== undefined && text.toLowerCase().includes(needle))
+}
+
+/** A card matches on its own text, or through any of its rows. */
+function cardMatches(card: SettingsCard, query: string): boolean {
+  if (matchesQuery(query, card.title, card.note)) return true
+  return card.rows.some((row) => matchesQuery(query, row.label, row.detail))
+}
+
+/**
+ * Whether a *page* has anything to show for the query: its nav label, or any of
+ * its cards. `appearance` is renderer-local, so it can answer with no snapshot;
+ * the four host pages fall back to label-only until one is loaded.
+ */
+function categoryMatches(category: SettingsCategory, state: SettingsState, query: string): boolean {
+  if (matchesQuery(query, CATEGORY_LABELS[category])) return true
+  const cards =
+    category === 'appearance'
+      ? appearanceCards(state.themePref)
+      : state.snapshot
+        ? cardsFor(category, state.snapshot)
+        : []
+  return cards.some((card) => cardMatches(card, query))
+}
+
+/**
+ * The body-side filter. A card that matched on its own title keeps *all* of its
+ * rows — searching 「MCP」 should show the server list, not an empty MCP card.
+ */
+function filterCards(
+  cards: readonly SettingsCard[],
+  query: string,
+): { cards: SettingsCard[]; searchEmpty?: string } {
+  if (query.trim() === '') return { cards: [...cards] }
+  const kept: SettingsCard[] = []
+  for (const card of cards) {
+    if (matchesQuery(query, card.title, card.note)) {
+      kept.push(card)
+      continue
+    }
+    const rows = card.rows.filter((row) => matchesQuery(query, row.label, row.detail))
+    if (rows.length > 0) kept.push({ ...card, rows })
+  }
+  if (kept.length > 0) return { cards: kept }
+  return { cards: kept, searchEmpty: `没有匹配「${query.trim()}」的设置。` }
+}
+
+export function settingsView(state: SettingsState): SettingsViewModel {
+  const searching = state.query.trim() !== ''
   const base = {
     open: state.open,
-    nav,
+    // The selected page is never filtered out: the nav therefore cannot go empty
+    // and the user cannot lose their place, which is also why there is no
+    // "no matching pages" empty state in the nav column.
+    navGroups: navGroupsFor(state, (category) =>
+      !searching || category === state.category || categoryMatches(category, state, state.query),
+    ),
     busy: state.busy,
+    query: state.query,
     projectChoices: state.projects.map((project) => ({
       value: project.projectRoot,
       label: project.projectName,
     })),
     projectValue: state.projectRoot ?? '',
+    ...(state.openMenu !== undefined ? { openMenu: state.openMenu } : {}),
     ...(state.error !== undefined ? { error: state.error } : {}),
     ...(state.confirmingRemove
       ? { confirming: { message: removeConfirmMessage(state.confirmingRemove) } }
@@ -242,9 +381,15 @@ export function settingsView(state: SettingsState): SettingsViewModel {
   // (a project need not be loaded to change the theme). Narrows `state.category`
   // to `HostCategory` for the calls below.
   if (state.category === 'appearance') {
-    return { ...base, title: CATEGORY_LABELS.appearance, cards: appearanceCards(state.themePref) }
+    return {
+      ...base,
+      title: CATEGORY_LABELS.appearance,
+      ...filterCards(appearanceCards(state.themePref), state.query),
+    }
   }
 
+  // No `searchEmpty` here on purpose: 「还没有加载」 and 「没有匹配」 are different
+  // facts, and the screen must not claim the second when the cause is the first.
   if (!state.snapshot) {
     return { ...base, title: CATEGORY_LABELS[state.category], cards: [] }
   }
@@ -255,7 +400,7 @@ export function settingsView(state: SettingsState): SettingsViewModel {
     // Only the provider page has one file to name for the whole page; the other
     // three mix `config.json` with `settings.local.json`, so those say it per card.
     ...(state.category === 'provider' ? { subtitle: `配置写入 ${state.snapshot.saveTarget}` } : {}),
-    cards: cardsFor(state.category, state.snapshot),
+    ...filterCards(cardsFor(state.category, state.snapshot), state.query),
     ...(state.draft ? { form: draftForm(state.draft, state.snapshot) } : {}),
   }
 }
@@ -995,16 +1140,21 @@ export function settingsChordToIntent(chord: SettingsChord): SettingsIntent {
 /**
  * The *scoped* entry point, bound to the settings container.
  *
- * Escape unwinds one layer at a time — form, then delete confirmation, then the
- * screen — so an open form cannot be lost by a reflexive Escape aimed at the
- * screen. Answers `'none'` for any modified key so the global chords still get
- * through.
+ * Escape unwinds one layer at a time, by visual nesting — the open dropdown,
+ * then the form, then the delete confirmation, then the filtered list, then the
+ * screen. The dropdown is innermost because a form field's menu is drawn *on top
+ * of* the form, so dismissing it must not cost a half-typed form; the filter is
+ * outermost-but-one because it is a state of the screen, and cancelling it must
+ * not cost either of the layers inside it. Answers `'none'` for any modified key
+ * so the global chords still get through.
  */
 export function settingsKeyToIntent(chord: SettingsChord, state: SettingsState): SettingsIntent {
   if (chord.ctrlKey || chord.metaKey) return { kind: 'none' }
   if (chord.key === 'Escape') {
+    if (state.openMenu !== undefined) return { kind: 'close-menu' }
     if (state.draft) return { kind: 'cancel-draft' }
     if (state.confirmingRemove) return { kind: 'cancel-remove' }
+    if (state.query !== '') return { kind: 'clear-search' }
     return { kind: 'close' }
   }
   if (chord.key === 'Enter' && state.confirmingRemove) return { kind: 'confirm-remove' }
@@ -1040,6 +1190,11 @@ export type SettingsIntent =
   | { kind: 'set-mcp-trust'; name: string; trusted: boolean }
   | { kind: 'reconnect-mcp' }
   | { kind: 'set-theme'; preference: ThemePreference }
+  | { kind: 'search'; query: string }
+  | { kind: 'clear-search' }
+  | { kind: 'toggle-menu'; menu: string }
+  /** Idempotent on purpose: focus loss and Escape both mean "closed", not "flipped". */
+  | { kind: 'close-menu' }
   | { kind: 'none' }
 
 export interface SettingsOutcome {
@@ -1062,19 +1217,38 @@ export interface SettingsOutcome {
  * second discards the first rather than stacking), and any transition that
  * changes what is on screen clears a stale error, so a failure message cannot
  * outlive the thing it was about.
+ *
+ * `cleared` also closes an open dropdown, which is what makes "picking a value
+ * dismisses the menu" free: the intent a menu item emits is one of these.
  */
 export function applySettingsIntent(state: SettingsState, intent: SettingsIntent): SettingsOutcome {
-  const cleared = { ...state, error: undefined, confirmingRemove: undefined }
+  const cleared = { ...state, error: undefined, confirmingRemove: undefined, openMenu: undefined }
   switch (intent.kind) {
     case 'none':
       return { state }
     case 'open':
       if (state.open) return { state }
-      return { state: { ...cleared, open: true, draft: undefined }, load: true }
+      return { state: { ...cleared, open: true, draft: undefined, query: '' }, load: true }
     case 'close':
       return { state: { ...cleared, open: false, draft: undefined } }
     case 'select-category':
       return { state: { ...cleared, category: intent.category, draft: undefined } }
+    // Typing is not a transition that invalidates what is on screen: it must not
+    // dismiss an armed delete or a failure message, so neither uses `cleared`.
+    // The dropdown does close — the row holding it can be filtered away.
+    case 'search':
+      return { state: { ...state, query: intent.query, openMenu: undefined } }
+    case 'clear-search':
+      return { state: { ...state, query: '', openMenu: undefined } }
+    case 'toggle-menu':
+      // Spreads `state`, not `cleared`: expanding a picker is not a reason to
+      // discard an error the user has not read yet.
+      return {
+        state: { ...state, openMenu: state.openMenu === intent.menu ? undefined : intent.menu },
+      }
+    case 'close-menu':
+      if (state.openMenu === undefined) return { state }
+      return { state: { ...state, openMenu: undefined } }
     case 'set-theme':
       // Renderer-local: no wire change, no reload. `app.ts` performs the two side
       // effects (localStorage + document) off `themePreference`.
@@ -1167,14 +1341,14 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
     case 'submit-draft': {
       if (!state.draft || !state.snapshot) return { state }
       const changes = draftToChanges(state.draft, state.snapshot)
-      if ('error' in changes) return { state: { ...state, error: changes.error } }
+      if ('error' in changes) return { state: { ...state, error: changes.error, openMenu: undefined } }
       return { state: { ...cleared, draft: undefined, busy: true }, changes }
     }
 
     case 'request-remove':
-      return { state: { ...state, error: undefined, confirmingRemove: intent.target } }
+      return { state: { ...state, error: undefined, confirmingRemove: intent.target, openMenu: undefined } }
     case 'cancel-remove':
-      return { state: { ...state, confirmingRemove: undefined } }
+      return { state: { ...state, confirmingRemove: undefined, openMenu: undefined } }
     case 'confirm-remove': {
       const target = state.confirmingRemove
       if (!target) return { state }
@@ -1245,7 +1419,7 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
       }
     case 'set-context-value': {
       const parsed = parseContextValue(intent.field, intent.value)
-      if (typeof parsed !== 'number') return { state: { ...state, error: parsed.error } }
+      if (typeof parsed !== 'number') return { state: { ...state, error: parsed.error, openMenu: undefined } }
       return {
         state: { ...cleared, busy: true },
         changes: [

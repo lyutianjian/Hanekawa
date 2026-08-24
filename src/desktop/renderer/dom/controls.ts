@@ -132,3 +132,95 @@ export function selectField(options: {
   node.addEventListener('change', () => options.onChange(node.value))
   return node
 }
+
+/**
+ * A pill dropdown: a trigger button plus a `role="listbox"` of buttons.
+ *
+ * Used for the settings *rows*; the header's project picker and the form fields
+ * stay on `selectField`, because a native `<select>` is keyboard- and
+ * screen-reader-complete for free and a form is a keyboard flow. Everything this
+ * one has to re-implement by hand is below.
+ *
+ * Open/closed is not held here: it lives in `SettingsState.openMenu`, so a
+ * re-render (which rebuilds this whole subtree) reproduces it rather than losing it.
+ */
+export function pillSelect(options: {
+  value: string
+  ariaLabel: string
+  choices: ReadonlyArray<{ value: string; label: string }>
+  open: boolean
+  onToggle: () => void
+  onChange: (value: string) => void
+}): HTMLElement {
+  // The menu is absolutely positioned against this shell. It cannot be a
+  // body-level portal: that needs measured coordinates, and the stylesheet test
+  // allows exactly one inline style property (`height`).
+  const shell = el('div', 'settings-menu-shell')
+  const selected = options.choices.find((choice) => choice.value === options.value)
+  // Falls back to the raw value: a config that names something outside `choices`
+  // must be visible, not silently read as the first option.
+  const trigger = button(
+    options.open ? 'settings-pill open' : 'settings-pill',
+    selected?.label ?? options.value,
+    options.ariaLabel,
+    options.onToggle,
+    { icon: 'chevron-down' },
+  )
+  trigger.setAttribute('aria-haspopup', 'listbox')
+  trigger.setAttribute('aria-expanded', options.open ? 'true' : 'false')
+  shell.appendChild(trigger)
+
+  const items: HTMLButtonElement[] = []
+  if (options.open) {
+    const menu = el('div', 'settings-menu')
+    menu.setAttribute('role', 'listbox')
+    menu.setAttribute('aria-label', options.ariaLabel)
+    for (const choice of options.choices) {
+      const current = choice.value === options.value
+      const item = button(
+        current ? 'settings-menu-item active' : 'settings-menu-item',
+        choice.label,
+        choice.label,
+        () => options.onChange(choice.value),
+      )
+      item.setAttribute('role', 'option')
+      item.setAttribute('aria-selected', current ? 'true' : 'false')
+      items.push(item)
+      menu.appendChild(item)
+    }
+    shell.appendChild(menu)
+  }
+
+  shell.addEventListener('keydown', (event) => {
+    const { key } = event
+    if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'Home' && key !== 'End') return
+    if (!options.open) {
+      // ArrowDown only opens: the menu does not exist yet, so focusing its first
+      // item waits for the render this toggle causes.
+      if (key !== 'ArrowDown') return
+      event.preventDefault()
+      event.stopPropagation()
+      options.onToggle()
+      return
+    }
+    if (items.length === 0) return
+    // `event.target` rather than `document.activeElement`: the keydown fires on
+    // the focused item and bubbles here, so the target *is* the position.
+    const at = items.indexOf(event.target as HTMLButtonElement)
+    const next =
+      key === 'Home'
+        ? 0
+        : key === 'End'
+          ? items.length - 1
+          : at < 0
+            ? key === 'ArrowDown'
+              ? 0
+              : items.length - 1
+            : (at + (key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+    event.preventDefault()
+    event.stopPropagation()
+    items[next]?.focus()
+  })
+
+  return shell
+}

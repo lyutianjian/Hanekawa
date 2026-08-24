@@ -58,6 +58,75 @@ function snapshotOf(overrides: Partial<WireSettingsSnapshot> = {}): WireSettings
     defaultModel: 'big',
     providers: ['anthropic', 'openai'],
     subagentTypes: ['general', 'explore'],
+    permissions: {
+      localPath: 'C:\\repo\\alpha\\.myagent\\settings.local.json',
+      mode: 'default',
+      modeIsLocal: false,
+      groups: [
+        { behavior: 'allow', local: ['Bash(git status:*)'], inherited: ['Read'] },
+        { behavior: 'ask', local: [], inherited: [] },
+        { behavior: 'deny', local: [], inherited: ['Bash(rm -rf:*)'] },
+      ],
+    },
+    agents: [
+      {
+        type: 'general',
+        description: 'General-purpose sub-agent.',
+        builtIn: true,
+        maxTurns: 30,
+        isReadOnlyAgent: true,
+        routing: 'inherit',
+      },
+      {
+        type: 'reviewer',
+        description: 'Reviews a diff.',
+        builtIn: false,
+        permissionMode: 'plan',
+        tools: ['Read', 'Grep'],
+        model: 'claude-big',
+        maxTurns: 12,
+        isReadOnlyAgent: true,
+        routing: 'big',
+      },
+    ],
+    mcpServers: [
+      {
+        name: 'github',
+        transport: 'stdio',
+        target: 'npx github-mcp',
+        trusted: true,
+        trustEditable: true,
+        status: 'connected',
+        toolCount: 3,
+      },
+      {
+        name: 'shared',
+        transport: 'sse',
+        target: 'https://mcp.example',
+        trusted: true,
+        trustEditable: false,
+        status: 'failed',
+        error: 'connect ECONNREFUSED',
+      },
+      {
+        name: 'cold',
+        transport: 'stdio',
+        target: 'cold-server',
+        trusted: false,
+        trustEditable: true,
+        status: 'failed',
+        error: 'not trusted',
+      },
+    ],
+    contextManagement: {
+      contextWindow: 200_000,
+      summaryOutputTokens: 20_000,
+      autoCompactBufferTokens: 13_000,
+      manualCompactBufferTokens: 3_000,
+      microCompactThresholdRatio: 0.9,
+      autoCompactThresholdRatio: 0.93,
+    },
+    general: { localPath: 'C:\\repo\\alpha\\.myagent\\settings.local.json' },
     ...overrides,
   }
 }
@@ -185,9 +254,14 @@ test('opening asks for a load; closing does not', () => {
   assert.equal(closed.load, undefined)
 })
 
-test('a disabled category cannot be selected', () => {
-  const next = applySettingsIntent(openState(), { kind: 'select-category', category: 'permissions' })
-  assert.equal(next.state.category, 'provider', 'the three placeholder cards are not reachable yet')
+test('every category can be selected, and switching one drops an open form', () => {
+  // Replaces "a disabled category cannot be selected": all four are built, and
+  // `cardsFor` is now a `switch` with no `default`, so the compiler is what
+  // stops a fifth from shipping empty.
+  const drafting = applySettingsIntent(openState(), { kind: 'new-endpoint' })
+  const next = applySettingsIntent(drafting.state, { kind: 'select-category', category: 'permissions' })
+  assert.equal(next.state.category, 'permissions')
+  assert.equal(next.state.draft, undefined, 'a provider form must not survive onto another page')
 })
 
 test('switching project drops the stale snapshot and reloads', () => {
@@ -300,11 +374,19 @@ test('a duplicate endpoint name is rejected only when creating', () => {
 
 // --- the view model ----------------------------------------------------------
 
-test('the view marks the three unbuilt categories disabled with a reason', () => {
-  const view = settingsView(openState())
-  const disabled = view.nav.filter((item) => item.disabled).map((item) => item.category)
-  assert.deepEqual(disabled, ['permissions', 'agent', 'general'])
-  assert.ok(view.nav.every((item) => !item.disabled || item.disabledReason))
+test('every category draws its own cards, and none draws a placeholder', () => {
+  for (const category of ['provider', 'permissions', 'agent', 'general'] as const) {
+    const view = settingsView(openState({ category }))
+    assert.ok(view.cards.length > 0, `${category} has no cards`)
+    assert.ok(
+      view.cards.every((card) => card.id !== 'pending'),
+      `${category} still draws the placeholder card`,
+    )
+  }
+  assert.deepEqual(
+    settingsView(openState()).nav.map((item) => item.category),
+    ['provider', 'permissions', 'agent', 'general'],
+  )
 })
 
 test('the view says which file it writes', () => {
@@ -362,6 +444,262 @@ test('every configured subagent type gets its own routing row', () => {
 test('with no snapshot yet the screen draws no cards rather than empty ones', () => {
   const view = settingsView({ ...openState(), snapshot: undefined })
   assert.deepEqual(view.cards, [])
+})
+
+// --- permissions --------------------------------------------------------------
+
+function permissionsView(overrides: Partial<WireSettingsSnapshot> = {}) {
+  return settingsView(openState({ category: 'permissions', snapshot: snapshotOf(overrides) }))
+}
+
+test('an inherited rule is drawn, labelled, and has no delete button', () => {
+  // Drawn rather than hidden: it is being enforced. Hiding it would explain
+  // neither why a tool is denied nor why deleting the rule you *can* see did
+  // nothing.
+  const allow = permissionsView().cards.find((card) => card.id === 'permissions:allow')
+  const local = allow?.rows.find((row) => row.label === 'Bash(git status:*)')
+  const inherited = allow?.rows.find((row) => row.label === 'Read')
+
+  assert.ok(local && local.control.kind === 'buttons')
+  assert.equal(local.control.buttons.length, 1, 'the local rule can be removed')
+  assert.ok(inherited && inherited.control.kind === 'text')
+  assert.equal(inherited.control.muted, true)
+  assert.match(inherited.detail ?? '', /上层设置/)
+})
+
+test('adding a rule sends the whole local group, not just the new line', () => {
+  const opened = applySettingsIntent(
+    openState({ category: 'permissions' }),
+    { kind: 'new-permission-rule', behavior: 'allow' },
+  )
+  const typed = applySettingsIntent(opened.state, { kind: 'draft-field', field: 'entry', value: 'Read' })
+  const submitted = applySettingsIntent(typed.state, { kind: 'submit-draft' })
+
+  assert.deepEqual(submitted.changes, [
+    {
+      scope: 'permissions',
+      kind: 'set-permission-entries',
+      behavior: 'allow',
+      // The host rewrites the local layer outright: sending only `Read` would
+      // delete the rule that was already there.
+      entries: ['Bash(git status:*)', 'Read'],
+    },
+  ])
+})
+
+test('a rule already in the local layer is rejected instead of duplicated', () => {
+  const opened = applySettingsIntent(
+    openState({ category: 'permissions' }),
+    { kind: 'new-permission-rule', behavior: 'allow' },
+  )
+  const typed = applySettingsIntent(opened.state, {
+    kind: 'draft-field',
+    field: 'entry',
+    value: '  Bash(git status:*)  ',
+  })
+  const submitted = applySettingsIntent(typed.state, { kind: 'submit-draft' })
+
+  assert.equal(submitted.changes, undefined)
+  assert.match(submitted.state.error ?? '', /已经有这条规则/)
+})
+
+test('the new-rule form can change which group it lands in', () => {
+  const opened = applySettingsIntent(
+    openState({ category: 'permissions' }),
+    { kind: 'new-permission-rule', behavior: 'allow' },
+  )
+  const switched = applySettingsIntent(opened.state, { kind: 'draft-field', field: 'behavior', value: 'deny' })
+  const typed = applySettingsIntent(switched.state, { kind: 'draft-field', field: 'entry', value: 'Delete' })
+  const submitted = applySettingsIntent(typed.state, { kind: 'submit-draft' })
+
+  assert.deepEqual(submitted.changes, [
+    // `deny` has an inherited entry and no local one, so the group written is
+    // exactly the one new line — the inherited rule stays in its own file.
+    { scope: 'permissions', kind: 'set-permission-entries', behavior: 'deny', entries: ['Delete'] },
+  ])
+})
+
+test('removing a rule drops one copy, not every match', () => {
+  const state = openState({
+    category: 'permissions',
+    snapshot: snapshotOf({
+      permissions: {
+        localPath: 'C:\\repo\\alpha\\.myagent\\settings.local.json',
+        mode: 'default',
+        modeIsLocal: true,
+        groups: [
+          { behavior: 'allow', local: ['Read', 'Read', 'Write'], inherited: [] },
+          { behavior: 'ask', local: [], inherited: [] },
+          { behavior: 'deny', local: [], inherited: [] },
+        ],
+      },
+    }),
+  })
+
+  const outcome = applySettingsIntent(state, {
+    kind: 'remove-permission-rule',
+    behavior: 'allow',
+    entry: 'Read',
+  })
+  assert.deepEqual(outcome.changes, [
+    {
+      scope: 'permissions',
+      kind: 'set-permission-entries',
+      behavior: 'allow',
+      entries: ['Read', 'Write'],
+    },
+  ])
+})
+
+test('the startup mode row says it does not reach an open session', () => {
+  const card = permissionsView().cards.find((card) => card.id === 'permission-mode')
+  const row = card?.rows[0]
+  assert.ok(row && row.control.kind === 'select')
+  assert.equal(row.control.value, 'default')
+  assert.match(row.detail ?? '', /已经打开的会话/)
+  assert.deepEqual(row.control.intentOnChange('bypass'), {
+    kind: 'set-startup-permission-mode',
+    mode: 'bypass',
+  })
+  // The mode is last-writer-wins across layers and the local layer is last, so
+  // an inherited mode is still editable — unlike the concatenated groups.
+  assert.match(card?.note ?? '', /settings\.local\.json/)
+})
+
+// --- agents -------------------------------------------------------------------
+
+test('every agent definition gets a row, with its routing select', () => {
+  const card = settingsView(openState({ category: 'agent' })).cards.find((card) => card.id === 'agents')
+  const reviewer = card?.rows.find((row) => row.id === 'agent:reviewer')
+
+  assert.deepEqual(card?.rows.map((row) => row.id), ['agent:general', 'agent:reviewer'])
+  assert.ok(reviewer && reviewer.control.kind === 'select')
+  assert.equal(reviewer.control.value, 'big')
+  // Reuses the provider page's routing variant rather than inventing a second
+  // path to the same config field.
+  assert.deepEqual(reviewer.control.intentOnChange('inherit'), {
+    kind: 'set-subagent-routing',
+    type: 'reviewer',
+    value: 'inherit',
+  })
+  assert.deepEqual(
+    reviewer.control.choices,
+    routingOptions(snapshotOf()),
+    'the same choices the provider routing card offers',
+  )
+})
+
+test('an agent with no tool list says "all tools", not "no tools"', () => {
+  const card = settingsView(openState({ category: 'agent' })).cards.find((card) => card.id === 'agents')
+  assert.match(card?.rows.find((row) => row.id === 'agent:general')?.detail ?? '', /工具：全部/)
+  assert.match(card?.rows.find((row) => row.id === 'agent:reviewer')?.detail ?? '', /工具：Read、Grep/)
+  assert.match(card?.rows.find((row) => row.id === 'agent:general')?.detail ?? '', /内置/)
+  assert.match(card?.rows.find((row) => row.id === 'agent:reviewer')?.detail ?? '', /自定义/)
+})
+
+test('reloading definitions is one change and nothing else', () => {
+  const outcome = applySettingsIntent(openState({ category: 'agent' }), {
+    kind: 'reload-agent-definitions',
+  })
+  assert.deepEqual(outcome.changes, [{ scope: 'agent', kind: 'reload-agent-definitions' }])
+  assert.equal(outcome.state.busy, true)
+})
+
+// --- general, MCP and the context budget --------------------------------------
+
+test('an unset cache toggle says it follows the environment variable', () => {
+  const view = settingsView(openState({ category: 'general' }))
+  const row = view.cards.find((card) => card.id === 'general')?.rows[0]
+  assert.ok(row && row.control.kind === 'toggle')
+  assert.equal(row.control.value, false)
+  // Unset is not the same as false: `should1hCacheTTL` falls through to
+  // MYAGENT_PROMPT_CACHE_1H, and a bare "off" would misreport that.
+  assert.match(row.detail ?? '', /MYAGENT_PROMPT_CACHE_1H/)
+  assert.deepEqual(row.control.intentOnChange(true), { kind: 'set-cache-ttl', enabled: true })
+})
+
+test('a trust granted by an upper layer is drawn but not toggleable', () => {
+  const card = settingsView(openState({ category: 'general' })).cards.find((card) => card.id === 'mcp')
+  const shared = card?.rows.find((row) => row.id === 'mcp:shared')
+  const github = card?.rows.find((row) => row.id === 'mcp:github')
+  const cold = card?.rows.find((row) => row.id === 'mcp:cold')
+
+  assert.ok(shared && shared.control.kind === 'toggle')
+  assert.equal(shared.control.disabled, true, 'trust is unioned across layers; this one cannot be revoked here')
+  assert.ok(github && github.control.kind === 'toggle')
+  assert.equal(github.control.disabled, false)
+  assert.match(github.detail ?? '', /已连接 · 3 个工具/)
+
+  // `not trusted` is not a connection failure to warn about — it is the next
+  // step, and the detail says so.
+  assert.equal(cold?.warning, undefined)
+  assert.match(cold?.detail ?? '', /未信任/)
+  assert.match(shared.warning ?? '', /ECONNREFUSED/)
+})
+
+test('reconnecting and trusting are separate changes', () => {
+  const trust = applySettingsIntent(openState({ category: 'general' }), {
+    kind: 'set-mcp-trust',
+    name: 'cold',
+    trusted: true,
+  })
+  assert.deepEqual(trust.changes, [
+    { scope: 'general', kind: 'set-mcp-trust', name: 'cold', trusted: true },
+  ])
+  const reconnect = applySettingsIntent(openState({ category: 'general' }), { kind: 'reconnect-mcp' })
+  assert.deepEqual(reconnect.changes, [{ scope: 'general', kind: 'reconnect-mcp' }])
+})
+
+test('the context card names its file and says the numbers need a restart', () => {
+  const card = settingsView(openState({ category: 'general' })).cards.find((card) => card.id === 'context')
+  assert.match(card?.note ?? '', /config\.json/)
+  assert.match(card?.note ?? '', /重启后生效/)
+  assert.deepEqual(
+    card?.rows.map((row) => row.id),
+    [
+      'context:contextWindow',
+      'context:summaryOutputTokens',
+      'context:autoCompactBufferTokens',
+      'context:manualCompactBufferTokens',
+      'context:microCompactThresholdRatio',
+      'context:autoCompactThresholdRatio',
+    ],
+  )
+  const window = card?.rows[0]
+  assert.ok(window && window.control.kind === 'input')
+  assert.equal(window.control.value, '200000')
+  assert.deepEqual(window.control.intentOnCommit('400000'), {
+    kind: 'set-context-value',
+    field: 'contextWindow',
+    value: '400000',
+  })
+})
+
+test('a context number is validated here, so a typo is not a host error', () => {
+  const state = openState({ category: 'general' })
+  const cases: Array<{ field: 'contextWindow' | 'autoCompactThresholdRatio'; value: string; error: RegExp }> = [
+    { field: 'contextWindow', value: '', error: /不能为空/ },
+    { field: 'contextWindow', value: '2e5x', error: /必须是数字/ },
+    { field: 'contextWindow', value: '0', error: /正整数/ },
+    { field: 'contextWindow', value: '1.5', error: /正整数/ },
+    { field: 'autoCompactThresholdRatio', value: '1.5', error: /比例/ },
+    { field: 'autoCompactThresholdRatio', value: '0', error: /比例/ },
+  ]
+  for (const { field, value, error } of cases) {
+    const outcome = applySettingsIntent(state, { kind: 'set-context-value', field, value })
+    assert.equal(outcome.changes, undefined, `${field}=${value} must not be sent`)
+    assert.match(outcome.state.error ?? '', error)
+  }
+
+  // A ratio of exactly 1 is legitimate: compact only when the window is full.
+  const accepted = applySettingsIntent(state, {
+    kind: 'set-context-value',
+    field: 'autoCompactThresholdRatio',
+    value: '1',
+  })
+  assert.deepEqual(accepted.changes, [
+    { scope: 'general', kind: 'set-context-management', field: 'autoCompactThresholdRatio', value: 1 },
+  ])
 })
 
 // --- effects -----------------------------------------------------------------

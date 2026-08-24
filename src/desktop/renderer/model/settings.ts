@@ -1,11 +1,16 @@
-import type {
-  SettingsCategory,
-  SettingsChange,
-  WireEndpointInfo,
-  WireModelInfo,
-  WireSettingsSnapshot,
-  WireShellSettingsChangeResult,
-  WireShellSettingsResult,
+import {
+  CONTEXT_MANAGEMENT_FIELDS,
+  type SettingsCategory,
+  type SettingsChange,
+  type WireAgentDefinitionInfo,
+  type WireContextManagementField,
+  type WireEndpointInfo,
+  type WireMcpServerInfo,
+  type WireModelInfo,
+  type WirePermissionGroup,
+  type WireSettingsSnapshot,
+  type WireShellSettingsChangeResult,
+  type WireShellSettingsResult,
 } from '../../shellProtocol.js'
 
 /**
@@ -25,10 +30,10 @@ import type {
  * settings is a window-level surface, not a modal), so it never blocks the
  * agent loop and never takes a `resolveKey` rank.
  *
- * Only the provider category is live. The other three are drawn disabled: each
- * one needs a decision that is not the screen's to make — permission rules
- * concatenate across settings layers, `agent.contextManagement` is snapshotted
- * at bootstrap, and MCP does not reconnect without new plumbing.
+ * All four categories are live. `cardsFor` is a `switch` with no `default`, so a
+ * fifth category cannot be added without building it — a stronger guard than the
+ * list of "live" categories this replaced, which only failed at runtime and only
+ * by drawing a disabled row.
  */
 
 // --- state -------------------------------------------------------------------
@@ -63,6 +68,11 @@ export type SettingsDraft =
       readonly contextWindow: string
       readonly maxOutputTokens: string
     }
+  | {
+      readonly kind: 'permission-rule'
+      readonly behavior: PermissionBehavior
+      readonly entry: string
+    }
 
 export interface SettingsState {
   readonly open: boolean
@@ -81,9 +91,6 @@ export function createSettingsState(): SettingsState {
   return { open: false, category: 'provider', busy: false, projects: [] }
 }
 
-/** Categories that actually do something. The rest are drawn with a reason. */
-export const LIVE_CATEGORIES: readonly SettingsCategory[] = ['provider']
-
 export const CATEGORY_LABELS: Record<SettingsCategory, string> = {
   provider: '模型与服务商',
   permissions: '权限',
@@ -91,10 +98,16 @@ export const CATEGORY_LABELS: Record<SettingsCategory, string> = {
   general: '通用',
 }
 
-const CATEGORY_PENDING_REASON = '即将支持'
-
 /** The `inherit` sentinel, spelled once. */
 export const INHERIT = 'inherit'
+
+export type PermissionBehavior = WirePermissionGroup['behavior']
+
+const BEHAVIOR_LABELS: Record<PermissionBehavior, string> = {
+  allow: '自动允许',
+  ask: '每次询问',
+  deny: '始终拒绝',
+}
 
 // --- view model --------------------------------------------------------------
 
@@ -102,8 +115,6 @@ export interface SettingsNavItem {
   readonly category: SettingsCategory
   readonly label: string
   readonly selected: boolean
-  readonly disabled: boolean
-  readonly disabledReason?: string
 }
 
 /** A control on the right-hand side of a row. */
@@ -114,6 +125,24 @@ export type SettingsControl =
       readonly value: string
       readonly choices: ReadonlyArray<{ value: string; label: string }>
       readonly intentOnChange: (value: string) => SettingsIntent
+    }
+  /** A switch. `disabled` is for a setting this layer genuinely cannot change. */
+  | {
+      readonly kind: 'toggle'
+      readonly value: boolean
+      readonly disabled?: boolean
+      readonly intentOnChange: (value: boolean) => SettingsIntent
+    }
+  /**
+   * A single-line field that commits on blur or Enter, never per keystroke: a
+   * keystroke-level commit would write the config once per character typed.
+   */
+  | {
+      readonly kind: 'input'
+      readonly value: string
+      readonly placeholder?: string
+      readonly mono?: boolean
+      readonly intentOnCommit: (value: string) => SettingsIntent
     }
   | { readonly kind: 'buttons'; readonly buttons: readonly SettingsButton[] }
 
@@ -176,17 +205,11 @@ export interface SettingsViewModel {
 const ALL_CATEGORIES: readonly SettingsCategory[] = ['provider', 'permissions', 'agent', 'general']
 
 export function settingsView(state: SettingsState): SettingsViewModel {
-  const nav = ALL_CATEGORIES.map((category) => {
-    const disabled = !LIVE_CATEGORIES.includes(category)
-    const item: SettingsNavItem = {
-      category,
-      label: CATEGORY_LABELS[category],
-      selected: state.category === category,
-      disabled,
-      ...(disabled ? { disabledReason: CATEGORY_PENDING_REASON } : {}),
-    }
-    return item
-  })
+  const nav = ALL_CATEGORIES.map((category) => ({
+    category,
+    label: CATEGORY_LABELS[category],
+    selected: state.category === category,
+  }))
 
   const base = {
     open: state.open,
@@ -206,20 +229,29 @@ export function settingsView(state: SettingsState): SettingsViewModel {
   if (!state.snapshot) {
     return { ...base, title: CATEGORY_LABELS[state.category], cards: [] }
   }
-  if (state.category !== 'provider') {
-    return {
-      ...base,
-      title: CATEGORY_LABELS[state.category],
-      cards: [{ id: 'pending', title: CATEGORY_LABELS[state.category], rows: [], empty: CATEGORY_PENDING_REASON }],
-    }
-  }
 
   return {
     ...base,
-    title: CATEGORY_LABELS.provider,
-    subtitle: `配置写入 ${state.snapshot.saveTarget}`,
-    cards: providerCards(state.snapshot),
+    title: CATEGORY_LABELS[state.category],
+    // Only the provider page has one file to name for the whole page; the other
+    // three mix `config.json` with `settings.local.json`, so those say it per card.
+    ...(state.category === 'provider' ? { subtitle: `配置写入 ${state.snapshot.saveTarget}` } : {}),
+    cards: cardsFor(state.category, state.snapshot),
     ...(state.draft ? { form: draftForm(state.draft, state.snapshot) } : {}),
+  }
+}
+
+/** Exhaustive by construction: a new category cannot compile without cards. */
+function cardsFor(category: SettingsCategory, snapshot: WireSettingsSnapshot): SettingsCard[] {
+  switch (category) {
+    case 'provider':
+      return providerCards(snapshot)
+    case 'permissions':
+      return permissionCards(snapshot)
+    case 'agent':
+      return agentCards(snapshot)
+    case 'general':
+      return generalCards(snapshot)
   }
 }
 
@@ -394,9 +426,341 @@ export function routingOptions(
   ]
 }
 
+// --- permissions --------------------------------------------------------------
+
+const BEHAVIOR_NOTES: Record<PermissionBehavior, string> = {
+  allow: '匹配到的工具调用不再提示。',
+  ask: '匹配到的工具调用一定提示，即使处于自动接受模式。',
+  deny: '匹配到的工具调用直接拒绝，bypass 模式也不例外。',
+}
+
+const PERMISSION_MODE_LABELS: Record<'default' | 'acceptEdits' | 'bypass', string> = {
+  default: 'default（按规则提示）',
+  acceptEdits: 'acceptEdits（自动接受文件编辑）',
+  bypass: 'bypass（跳过提示，仍然遵守拒绝规则）',
+}
+
+/**
+ * `default` for anything else.
+ *
+ * The select only ever offers the three, so this is unreachable — but it is what
+ * keeps the intent's `mode` a union without a cast, and it mirrors the same
+ * narrowing the host does on the way out.
+ */
+function asStartupMode(value: string): 'default' | 'acceptEdits' | 'bypass' {
+  return value === 'acceptEdits' || value === 'bypass' ? value : 'default'
+}
+
+function permissionCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
+  const { permissions } = snapshot
+  const modeCard: SettingsCard = {
+    id: 'permission-mode',
+    title: '默认权限模式',
+    note: permissions.modeIsLocal
+      ? `写入 ${permissions.localPath}`
+      : `当前值来自上层设置文件；改动写入 ${permissions.localPath}`,
+    rows: [
+      {
+        id: 'permissions:mode',
+        label: '新会话的起始模式',
+        // Not a hedge: the gate reads this when a scope is built, so an open
+        // session keeps the mode it opened with — including one the user has
+        // since toggled by hand, which this must not fight over.
+        detail: '对已经打开的会话无效，下一个新会话生效。',
+        control: {
+          kind: 'select',
+          value: permissions.mode,
+          choices: (['default', 'acceptEdits', 'bypass'] as const).map((mode) => ({
+            value: mode,
+            label: PERMISSION_MODE_LABELS[mode],
+          })),
+          intentOnChange: (value: string): SettingsIntent => ({
+            kind: 'set-startup-permission-mode',
+            mode: asStartupMode(value),
+          }),
+        },
+      },
+    ],
+  }
+  return [modeCard, ...permissions.groups.map((group) => permissionGroupCard(group, permissions.localPath))]
+}
+
+/**
+ * One behaviour's rules, local ones first.
+ *
+ * Inherited rules are drawn and labelled rather than hidden: they are being
+ * enforced, so a screen that showed only the editable ones would explain
+ * neither why a tool is denied nor why removing the rule you *can* see changed
+ * nothing.
+ */
+function permissionGroupCard(group: WirePermissionGroup, localPath: string): SettingsCard {
+  const local: SettingsRow[] = group.local.map((entry, index) => ({
+    // The index is in the id because the same literal may legitimately be listed
+    // twice, and two rows with one id is a DOM bug waiting for a keyed update.
+    id: `permission:${group.behavior}:local:${index}`,
+    label: entry,
+    control: {
+      kind: 'buttons' as const,
+      buttons: [
+        {
+          label: '',
+          title: `删除 ${entry}`,
+          icon: 'trash' as const,
+          danger: true,
+          intent: {
+            kind: 'remove-permission-rule',
+            behavior: group.behavior,
+            entry,
+          } as SettingsIntent,
+        },
+      ],
+    },
+  }))
+  const inherited: SettingsRow[] = group.inherited.map((entry, index) => ({
+    id: `permission:${group.behavior}:inherited:${index}`,
+    label: entry,
+    detail: '来自上层设置文件，只能在那里改。',
+    control: { kind: 'text' as const, value: '继承', muted: true },
+  }))
+  return {
+    id: `permissions:${group.behavior}`,
+    title: BEHAVIOR_LABELS[group.behavior],
+    note: `${BEHAVIOR_NOTES[group.behavior]}本地规则写入 ${localPath}`,
+    empty: '还没有规则。',
+    rows: [...local, ...inherited],
+    footerButtons: [
+      {
+        label: '新增规则',
+        title: `新增${BEHAVIOR_LABELS[group.behavior]}规则`,
+        icon: 'plus',
+        intent: { kind: 'new-permission-rule', behavior: group.behavior },
+      },
+    ],
+  }
+}
+
+// --- agents -------------------------------------------------------------------
+
+function agentCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
+  const choices = routingOptions(snapshot)
+  return [
+    {
+      id: 'agents',
+      title: '子 agent',
+      note: `定义来自 .myagent/agents/ 下的 md 文件，这里只读；路由写入 ${snapshot.saveTarget}`,
+      empty: '没有可用的子 agent 定义。',
+      rows: snapshot.agents.map((agent) => ({
+        id: `agent:${agent.type}`,
+        label: agent.type,
+        detail: agentDetail(agent),
+        control: {
+          kind: 'select' as const,
+          value: agent.routing,
+          choices,
+          intentOnChange: (value: string): SettingsIntent => ({
+            kind: 'set-subagent-routing',
+            type: agent.type,
+            value,
+          }),
+        },
+      })),
+      footerButtons: [
+        {
+          label: '重新加载定义',
+          title: '重新读取 .myagent/agents/，并让已开的会话用上新定义',
+          intent: { kind: 'reload-agent-definitions' },
+        },
+      ],
+    },
+  ]
+}
+
+function agentDetail(agent: WireAgentDefinitionInfo): string {
+  const parts = [agent.builtIn ? '内置' : '自定义', agent.description]
+  // Absent means every tool, which is the opposite of "no tools" — spelling it
+  // out is the only way the row cannot be read backwards.
+  parts.push(agent.tools ? `工具：${agent.tools.join('、')}` : '工具：全部')
+  if (agent.permissionMode) parts.push(`权限模式：${agent.permissionMode}`)
+  if (agent.model) parts.push(`模型：${agent.model}`)
+  if (agent.isReadOnlyAgent) parts.push('只读')
+  parts.push(`最多 ${agent.maxTurns} 轮`)
+  return parts.join(' · ')
+}
+
+// --- general, MCP and the context budget --------------------------------------
+
+const CONTEXT_LABELS: Record<WireContextManagementField, string> = {
+  contextWindow: '上下文窗口',
+  summaryOutputTokens: '摘要输出上限',
+  autoCompactBufferTokens: '自动压缩预留',
+  manualCompactBufferTokens: '手动压缩预留',
+  microCompactThresholdRatio: '微压缩触发比例',
+  autoCompactThresholdRatio: '自动压缩触发比例',
+}
+
+const CONTEXT_DETAILS: Record<WireContextManagementField, string> = {
+  contextWindow: '模型上下文窗口的 token 数。',
+  summaryOutputTokens: '压缩摘要自身允许占用的输出 token。',
+  autoCompactBufferTokens: '自动压缩时预留出来的空间。',
+  manualCompactBufferTokens: '手动压缩时预留出来的空间。',
+  microCompactThresholdRatio: '占用超过这个比例时开始微压缩。',
+  autoCompactThresholdRatio: '占用超过这个比例时自动压缩。',
+}
+
+const CONTEXT_RATIO_FIELDS: readonly WireContextManagementField[] = [
+  'microCompactThresholdRatio',
+  'autoCompactThresholdRatio',
+]
+
+function generalCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
+  return [cacheCard(snapshot), mcpCard(snapshot), contextCard(snapshot)]
+}
+
+function cacheCard(snapshot: WireSettingsSnapshot): SettingsCard {
+  const { general } = snapshot
+  return {
+    id: 'general',
+    title: '通用',
+    note: `写入 ${general.localPath}`,
+    rows: [
+      {
+        id: 'general:cache-ttl',
+        label: '1 小时提示词缓存',
+        detail:
+          general.cacheTtl1h === undefined
+            ? '未设置：跟随环境变量 MYAGENT_PROMPT_CACHE_1H。'
+            : '缓存的命中窗口更长，代价是写入更贵。',
+        control: {
+          kind: 'toggle',
+          value: general.cacheTtl1h === true,
+          intentOnChange: (enabled: boolean): SettingsIntent => ({ kind: 'set-cache-ttl', enabled }),
+        },
+      },
+    ],
+  }
+}
+
+function mcpCard(snapshot: WireSettingsSnapshot): SettingsCard {
+  return {
+    id: 'mcp',
+    title: 'MCP 服务器',
+    note: '信任写入 settings.local.json。上层设置授予的信任在这里撤销不了——信任列表是跨层求并集的。',
+    empty: '没有配置 MCP 服务器。',
+    rows: snapshot.mcpServers.map((server) => ({
+      id: `mcp:${server.name}`,
+      label: server.name,
+      detail: mcpDetail(server),
+      // Only when trust is not the reason: an untrusted server "fails" with
+      // `not trusted`, which the detail already explains as the next step.
+      ...(server.trusted && server.status === 'failed' && server.error
+        ? { warning: `连接失败：${server.error}` }
+        : {}),
+      control: {
+        kind: 'toggle' as const,
+        value: server.trusted,
+        disabled: !server.trustEditable,
+        intentOnChange: (trusted: boolean): SettingsIntent => ({
+          kind: 'set-mcp-trust',
+          name: server.name,
+          trusted,
+        }),
+      },
+    })),
+    footerButtons: [
+      {
+        label: '重新连接',
+        title: '关掉并重新连接所有 MCP 服务器',
+        intent: { kind: 'reconnect-mcp' },
+      },
+    ],
+  }
+}
+
+function mcpDetail(server: WireMcpServerInfo): string {
+  const parts: string[] = [server.transport]
+  if (server.target) parts.push(server.target)
+  if (!server.trusted) parts.push('未信任：打开开关后会尝试连接')
+  else if (server.status === 'connected') parts.push(`已连接 · ${server.toolCount ?? 0} 个工具`)
+  else parts.push('未连接')
+  return parts.join(' · ')
+}
+
+function contextCard(snapshot: WireSettingsSnapshot): SettingsCard {
+  return {
+    id: 'context',
+    title: '上下文管理',
+    // Not a disclaimer: the numbers are snapshotted into every session scope when
+    // the project boots, so neither a settings reload nor a runtime rebuild can
+    // reach a session that is already open.
+    note: `写入 ${snapshot.saveTarget}；重启后生效——这些数值在项目启动时就读进了每个会话。`,
+    rows: CONTEXT_MANAGEMENT_FIELDS.map((field) => ({
+      id: `context:${field}`,
+      label: CONTEXT_LABELS[field],
+      detail: CONTEXT_DETAILS[field],
+      control: {
+        kind: 'input' as const,
+        value: String(snapshot.contextManagement[field]),
+        intentOnCommit: (value: string): SettingsIntent => ({
+          kind: 'set-context-value',
+          field,
+          value,
+        }),
+      },
+    })),
+  }
+}
+
+/**
+ * A typed context number, or the reason it is not one.
+ *
+ * Checked here as well as in `ConfigService` on purpose: the service throws, and
+ * a throw becomes a `fail` reply the screen shows as a raw error. Catching it in
+ * the reducer keeps a mistyped digit from looking like a broken host.
+ */
+function parseContextValue(
+  field: WireContextManagementField,
+  raw: string,
+): number | { error: string } {
+  const trimmed = raw.trim()
+  const label = CONTEXT_LABELS[field]
+  if (!trimmed) return { error: `${label}不能为空。` }
+  const value = Number(trimmed)
+  if (!Number.isFinite(value)) return { error: `${label}必须是数字。` }
+  if (CONTEXT_RATIO_FIELDS.includes(field)) {
+    if (value <= 0 || value > 1) return { error: `${label}必须是 0 到 1 之间的比例。` }
+    return value
+  }
+  if (!Number.isSafeInteger(value) || value < 1) return { error: `${label}必须是正整数。` }
+  return value
+}
+
 // --- forms -------------------------------------------------------------------
 
 function draftForm(draft: SettingsDraft, snapshot: WireSettingsSnapshot): SettingsForm {
+  if (draft.kind === 'permission-rule') {
+    return {
+      title: `新增${BEHAVIOR_LABELS[draft.behavior]}规则`,
+      submitLabel: '添加',
+      fields: [
+        {
+          id: 'behavior',
+          label: '行为',
+          value: draft.behavior,
+          choices: (['allow', 'ask', 'deny'] as const).map((behavior) => ({
+            value: behavior,
+            label: BEHAVIOR_LABELS[behavior],
+          })),
+        },
+        {
+          id: 'entry',
+          label: '规则',
+          value: draft.entry,
+          mono: true,
+          placeholder: '例如 Bash(git status:*)、Read 或 Write(src/**)',
+        },
+      ],
+    }
+  }
   if (draft.kind === 'endpoint') {
     return {
       title: draft.isNew ? '新增接入点' : `编辑接入点 ${draft.name}`,
@@ -462,6 +826,22 @@ export function draftToChange(
   draft: SettingsDraft,
   snapshot: WireSettingsSnapshot,
 ): SettingsChange | { error: string } {
+  if (draft.kind === 'permission-rule') {
+    const entry = draft.entry.trim()
+    if (!entry) return { error: '规则不能为空。' }
+    const local = localEntries(snapshot, draft.behavior)
+    if (local.includes(entry)) {
+      return { error: `${BEHAVIOR_LABELS[draft.behavior]}里已经有这条规则了。` }
+    }
+    // The whole group, local plus the new line: the host rewrites the local layer
+    // outright, and sending only the new entry would drop every other one.
+    return {
+      scope: 'permissions',
+      kind: 'set-permission-entries',
+      behavior: draft.behavior,
+      entries: [...local, entry],
+    }
+  }
   if (draft.kind === 'endpoint') {
     const name = draft.name.trim()
     if (!name) return { error: '名称不能为空。' }
@@ -505,6 +885,11 @@ function parseCount(raw: string): number | undefined | 'invalid' {
   if (!/^\d+$/.test(trimmed)) return 'invalid'
   const value = Number(trimmed)
   return Number.isSafeInteger(value) && value > 0 ? value : 'invalid'
+}
+
+/** The editable half of one permission group. */
+function localEntries(snapshot: WireSettingsSnapshot, behavior: PermissionBehavior): string[] {
+  return [...(snapshot.permissions.groups.find((group) => group.behavior === behavior)?.local ?? [])]
 }
 
 /**
@@ -587,6 +972,14 @@ export type SettingsIntent =
   | { kind: 'set-default-model'; key: string }
   | { kind: 'set-routing'; role: 'main' | 'plan' | 'compact'; value: string }
   | { kind: 'set-subagent-routing'; type: string; value: string }
+  | { kind: 'new-permission-rule'; behavior: PermissionBehavior }
+  | { kind: 'remove-permission-rule'; behavior: PermissionBehavior; entry: string }
+  | { kind: 'set-startup-permission-mode'; mode: 'default' | 'acceptEdits' | 'bypass' }
+  | { kind: 'reload-agent-definitions' }
+  | { kind: 'set-cache-ttl'; enabled: boolean }
+  | { kind: 'set-context-value'; field: WireContextManagementField; value: string }
+  | { kind: 'set-mcp-trust'; name: string; trusted: boolean }
+  | { kind: 'reconnect-mcp' }
   | { kind: 'none' }
 
 export interface SettingsOutcome {
@@ -616,7 +1009,6 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
     case 'close':
       return { state: { ...cleared, open: false, draft: undefined } }
     case 'select-category':
-      if (!LIVE_CATEGORIES.includes(intent.category)) return { state }
       return { state: { ...cleared, category: intent.category, draft: undefined } }
     case 'select-project':
       if (intent.projectRoot === state.projectRoot) return { state }
@@ -744,10 +1136,82 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
           { scope: 'provider', kind: 'set-subagent-routing', type: intent.type, value: intent.value },
         ],
       }
+
+    case 'new-permission-rule':
+      return {
+        state: {
+          ...cleared,
+          draft: { kind: 'permission-rule', behavior: intent.behavior, entry: '' },
+        },
+      }
+    case 'remove-permission-rule': {
+      if (!state.snapshot) return { state }
+      const entries = localEntries(state.snapshot, intent.behavior)
+      // By index, not by filter: the same literal can legitimately be listed
+      // twice, and a filter would delete both when the user asked for one.
+      const index = entries.indexOf(intent.entry)
+      if (index === -1) return { state }
+      entries.splice(index, 1)
+      return {
+        state: { ...cleared, busy: true },
+        changes: [
+          { scope: 'permissions', kind: 'set-permission-entries', behavior: intent.behavior, entries },
+        ],
+      }
+    }
+    case 'set-startup-permission-mode':
+      return {
+        state: { ...cleared, busy: true },
+        changes: [{ scope: 'permissions', kind: 'set-startup-permission-mode', mode: intent.mode }],
+      }
+    case 'reload-agent-definitions':
+      return {
+        state: { ...cleared, busy: true },
+        changes: [{ scope: 'agent', kind: 'reload-agent-definitions' }],
+      }
+    case 'set-cache-ttl':
+      return {
+        state: { ...cleared, busy: true },
+        changes: [{ scope: 'general', kind: 'set-cache-ttl', enabled: intent.enabled }],
+      }
+    case 'set-context-value': {
+      const parsed = parseContextValue(intent.field, intent.value)
+      if (typeof parsed !== 'number') return { state: { ...state, error: parsed.error } }
+      return {
+        state: { ...cleared, busy: true },
+        changes: [
+          { scope: 'general', kind: 'set-context-management', field: intent.field, value: parsed },
+        ],
+      }
+    }
+    case 'set-mcp-trust':
+      return {
+        state: { ...cleared, busy: true },
+        changes: [
+          { scope: 'general', kind: 'set-mcp-trust', name: intent.name, trusted: intent.trusted },
+        ],
+      }
+    case 'reconnect-mcp':
+      return {
+        state: { ...cleared, busy: true },
+        changes: [{ scope: 'general', kind: 'reconnect-mcp' }],
+      }
   }
 }
 
 function withField(draft: SettingsDraft, field: string, value: string): SettingsDraft {
+  if (draft.kind === 'permission-rule') {
+    switch (field) {
+      case 'behavior':
+        return value === 'allow' || value === 'ask' || value === 'deny'
+          ? { ...draft, behavior: value }
+          : draft
+      case 'entry':
+        return { ...draft, entry: value }
+      default:
+        return draft
+    }
+  }
   if (draft.kind === 'endpoint') {
     switch (field) {
       case 'name':

@@ -1,7 +1,7 @@
-import test from 'node:test'
+import test, { beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync, mkdtempSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
@@ -27,6 +27,10 @@ import type { RuntimeChannel } from '../src/runtime/protocol/channel.js'
 import type { SessionMeta } from '../src/sessions/service.js'
 import type { Config, ModelConfig } from '../src/config/service.js'
 import { mergeRouting, type Endpoint, type Routing } from '../src/config/routing.js'
+import { loadMergedSettings, type MyAgentSettings } from '../src/config/settings.js'
+import type { ContextManagementConfig } from '../src/prompts/budget.js'
+import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../src/tools/agentTool.js'
+import type { McpConnectionStatus } from '../src/runtime/types.js'
 
 /**
  * `ShellHost` — every lane/project decision the single-window shell makes, with
@@ -48,6 +52,15 @@ import { mergeRouting, type Endpoint, type Routing } from '../src/config/routing
  */
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+// The settings cards read the *local* layer off disk and `loadMergedSettings`
+// layers `~/.myagent/settings.json` under it, so without its own home this file
+// would read the developer's settings and assert differently per machine.
+beforeEach(() => {
+  const testHome = mkdtempSync(path.join(os.tmpdir(), 'myagent-home-'))
+  process.env.USERPROFILE = testHome
+  process.env.HOME = testHome
+})
 
 function sessionOf(id: string, title?: string): SessionMeta {
   return {
@@ -215,6 +228,26 @@ class FakeConfig {
 
   cwdLabel = 'project'
 
+  /**
+   * Mirrors the real service, **including that it throws on a value that cannot
+   * mean anything**. The shell lets that rejection propagate, so a fake which
+   * accepted anything would make the "a rejected value writes nothing" case
+   * vacuous.
+   */
+  setContextManagement(patch: Partial<ContextManagementConfig>): void {
+    for (const [field, value] of Object.entries(patch) as Array<[string, number]>) {
+      if (field.endsWith('Ratio')) {
+        if (!(value > 0 && value <= 1)) throw new Error(`${field} must be a ratio in (0, 1]`)
+      } else if (!Number.isSafeInteger(value) || value < 1) {
+        throw new Error(`${field} must be a positive integer`)
+      }
+    }
+    this.config.agent = {
+      ...this.config.agent,
+      contextManagement: { ...this.config.agent.contextManagement, ...patch },
+    }
+  }
+
   async save(): Promise<void> {
     this.saves += 1
     this.log.push('config-save')
@@ -227,6 +260,12 @@ class FakeProject implements ShellLaneProject {
   readonly openedScopes: SessionMeta[] = []
   readonly shutdowns: string[] = []
   reloads = 0
+  agentReloads = 0
+  mcpReloads = 0
+  /** The merged settings, as the last load read them off disk. */
+  settings: MyAgentSettings = {}
+  agentDefinitions: BaseAgentDefinition[] = [...BUILT_IN_AGENT_DEFINITIONS]
+  readonly mcp: McpConnectionStatus = { connected: [], failed: [] }
 
   constructor(
     readonly cwd: string,
@@ -237,12 +276,41 @@ class FakeProject implements ShellLaneProject {
     this.config.cwdLabel = cwd
   }
 
+  /** What `bootstrap()` does before any UI exists; a constructor cannot await. */
+  async loadSettings(): Promise<void> {
+    this.settings = await loadMergedSettings(this.cwd)
+  }
+
   async reloadSettings(): Promise<{ needsRuntimeRebuild: boolean }> {
     this.reloads += 1
     this.log.push(`reload-settings:${this.cwd}`)
+    // The real one re-reads all four layers and replaces what `getSettings()`
+    // answers. Doing the same here is what makes a settings-layer edit
+    // observable at all: those writes go to `settings.local.json` on disk, not
+    // through this fake.
+    await this.loadSettings()
     // The real one reports `hooksChanged` only — a provider edit reports false,
     // which is exactly why the shell does not consult it.
     return { needsRuntimeRebuild: false }
+  }
+
+  getSettings(): MyAgentSettings {
+    return this.settings
+  }
+
+  listAgentDefinitions(): readonly BaseAgentDefinition[] {
+    return this.agentDefinitions
+  }
+
+  async reloadAgentDefinitions(): Promise<number> {
+    this.agentReloads += 1
+    this.log.push(`reload-agents:${this.cwd}`)
+    return this.agentDefinitions.length
+  }
+
+  async reloadMcpServers(): Promise<void> {
+    this.mcpReloads += 1
+    this.log.push(`reload-mcp:${this.cwd}`)
   }
 
   async openScope(session: SessionMeta): Promise<FakeScope> {
@@ -333,14 +401,17 @@ interface Harness {
   addProject(cwd: string): { project: FakeProject; workspace: FakeWorkspace; entry: ProjectEntry<FakeProject, FakeWorkspace> }
 }
 
-function createHarness(options: { withOpenProject?: boolean } = {}): Harness {
+function createHarness(options: { withOpenProject?: boolean; cwd?: string } = {}): Harness {
   const [mainTransport, rendererTransport] = createMemoryChannelPair()
   const mainMux = createLaneMux(mainTransport)
   const rendererMux = createLaneMux(rendererTransport)
 
   const directory = new ProjectDirectory<FakeProject, FakeWorkspace>()
   const log: string[] = []
-  const first = createProject(directory, 'C:\\repo\\alpha', log)
+  // A real directory only when a case actually writes settings files into one;
+  // everything else stays on a path that does not exist, which is exactly what
+  // the local-layer reader treats as "no local settings".
+  const first = createProject(directory, options.cwd ?? 'C:\\repo\\alpha', log)
 
   const attaches: LaneAttach<FakeProject, FakePane, FakeWorkspace>[] = []
   const disposed: string[] = []
@@ -463,6 +534,27 @@ const SETTINGS_CHANGE_SAMPLES = {
   'set-default-model': { scope: 'provider', kind: 'set-default-model', key: 'm1' },
   'set-routing': { scope: 'provider', kind: 'set-routing', role: 'plan', value: 'm1' },
   'set-subagent-routing': { scope: 'provider', kind: 'set-subagent-routing', type: 'explore', value: 'm1' },
+  'set-permission-entries': {
+    scope: 'permissions',
+    kind: 'set-permission-entries',
+    behavior: 'allow',
+    entries: ['Bash(git status:*)'],
+  },
+  'set-startup-permission-mode': {
+    scope: 'permissions',
+    kind: 'set-startup-permission-mode',
+    mode: 'acceptEdits',
+  },
+  'reload-agent-definitions': { scope: 'agent', kind: 'reload-agent-definitions' },
+  'set-cache-ttl': { scope: 'general', kind: 'set-cache-ttl', enabled: true },
+  'set-context-management': {
+    scope: 'general',
+    kind: 'set-context-management',
+    field: 'contextWindow',
+    value: 400_000,
+  },
+  'set-mcp-trust': { scope: 'general', kind: 'set-mcp-trust', name: 'github', trusted: true },
+  'reconnect-mcp': { scope: 'general', kind: 'reconnect-mcp' },
 } as const satisfies Record<SettingsChange['kind'], SettingsChange>
 
 test('every settings change variant round-trips through its schema', () => {
@@ -1108,7 +1200,7 @@ test('one edit reloads the project once and refreshes every lane of it', async (
   )
   assert.ok(
     h.configRefreshes.every((refresh) => refresh.rebuild),
-    'rebuild is unconditional - needsRuntimeRebuild is only hooksChanged',
+    'a provider edit always rebuilds - needsRuntimeRebuild is only hooksChanged, so it cannot be consulted',
   )
 })
 
@@ -1207,6 +1299,321 @@ test('rename-model carries the routing reference with it', async () => {
 
   assert.equal(result.settings.routing.main, 'huge')
   assert.ok(result.settings.models.some((model) => model.key === 'huge'))
+})
+
+// --- permissions, agents, MCP and the context budget -------------------------
+
+/**
+ * A harness whose project is a real directory.
+ *
+ * The provider cases above need none of this — they go through `FakeConfig`. A
+ * permissions, trust or cache edit goes through the shipping
+ * `settings.local.json` writer, so there has to be a directory to write into and
+ * a `settings.json` above it to inherit from.
+ */
+async function withSettingsDir(
+  projectSettings: Record<string, unknown>,
+  run: (h: Harness, cwd: string) => Promise<void>,
+): Promise<void> {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-settings-'))
+  try {
+    await mkdir(path.join(cwd, '.myagent'), { recursive: true })
+    await writeFile(
+      path.join(cwd, '.myagent', 'settings.json'),
+      JSON.stringify(projectSettings),
+      'utf8',
+    )
+    const h = createHarness({ cwd })
+    seedConfig(h.project)
+    // Stands in for the load `bootstrap()` does; a constructor cannot await.
+    await h.project.loadSettings()
+    await run(h, cwd)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+}
+
+async function readLocalLayer(cwd: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(path.join(cwd, '.myagent', 'settings.local.json'), 'utf8')) as Record<
+    string,
+    unknown
+  >
+}
+
+/** One open lane, so "did this rebuild anything" is observable. */
+async function openOneLane(h: Harness): Promise<void> {
+  h.project.store.sessions.set('s1', sessionOf('s1'))
+  await h.client.openSession({ sessionId: 's1', projectRoot: h.entry.root })
+  await settle()
+}
+
+test('a permissions edit writes the local layer, saves no config and rebuilds nothing', async () => {
+  await withSettingsDir({ permissions: { allow: ['Read'] } }, async (h, cwd) => {
+    await openOneLane(h)
+
+    const result = await h.client.changeSettings(h.entry.root, {
+      scope: 'permissions',
+      kind: 'set-permission-entries',
+      behavior: 'allow',
+      entries: ['Bash(ls:*)'],
+    })
+
+    // `config.save()` writes the whole merged `Config`, so calling it here would
+    // copy every settings-declared model and endpoint into config.json as a side
+    // effect of adding one rule.
+    assert.equal(h.project.config.saves, 0)
+    assert.deepEqual((await readLocalLayer(cwd)).permissions, { allow: ['Bash(ls:*)'] })
+    // Rules are read live by `reloadSettings`, so replacing the runtimes would
+    // throw away their prompt caches for nothing.
+    assert.equal(h.configRefreshes.length, 0)
+    assert.equal(result.rebuiltLanes, 0)
+
+    const allow = result.settings.permissions.groups.find((group) => group.behavior === 'allow')
+    assert.deepEqual(allow, { behavior: 'allow', local: ['Bash(ls:*)'], inherited: ['Read'] })
+    assert.match(result.settings.permissions.localPath, /settings\.local\.json$/)
+  })
+})
+
+test('an inherited rule is never copied into the local layer by an edit', async () => {
+  await withSettingsDir({ permissions: { deny: ['Bash(rm -rf:*)'] } }, async (h, cwd) => {
+    // The whole-group write is what makes this possible *and* what would break
+    // it: writing the merged group back is the bug this guards.
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'permissions',
+      kind: 'set-permission-entries',
+      behavior: 'deny',
+      entries: ['Delete'],
+    })
+
+    assert.deepEqual((await readLocalLayer(cwd)).permissions, { deny: ['Delete'] })
+    const { settings } = await h.client.getSettings(h.entry.root)
+    const deny = settings.permissions.groups.find((group) => group.behavior === 'deny')
+    assert.deepEqual(deny, { behavior: 'deny', local: ['Delete'], inherited: ['Bash(rm -rf:*)'] })
+  })
+})
+
+test('a removal is a shorter group, and it really shortens the file', async () => {
+  await withSettingsDir({}, async (h, cwd) => {
+    const write = (entries: string[]) =>
+      h.client.changeSettings(h.entry.root, {
+        scope: 'permissions',
+        kind: 'set-permission-entries',
+        behavior: 'ask',
+        entries,
+      })
+
+    await write(['Bash(git push:*)', 'Delete'])
+    const result = await write(['Delete'])
+
+    assert.deepEqual((await readLocalLayer(cwd)).permissions, { ask: ['Delete'] })
+    const ask = result.settings.permissions.groups.find((group) => group.behavior === 'ask')
+    assert.deepEqual(ask?.local, ['Delete'])
+  })
+})
+
+test('the startup mode is stored locally and reported as local', async () => {
+  await withSettingsDir({ permissions: { mode: 'default' } }, async (h, cwd) => {
+    const before = await h.client.getSettings(h.entry.root)
+    assert.equal(before.settings.permissions.mode, 'default')
+    assert.equal(before.settings.permissions.modeIsLocal, false, 'it came from the project layer')
+
+    const result = await h.client.changeSettings(h.entry.root, {
+      scope: 'permissions',
+      kind: 'set-startup-permission-mode',
+      mode: 'acceptEdits',
+    })
+
+    assert.deepEqual((await readLocalLayer(cwd)).permissions, { mode: 'acceptEdits' })
+    // Last-writer-wins across layers and the local layer is last, so unlike the
+    // concatenated groups this really does override what sits above it.
+    assert.equal(result.settings.permissions.mode, 'acceptEdits')
+    assert.equal(result.settings.permissions.modeIsLocal, true)
+    assert.equal(h.project.config.saves, 0)
+  })
+})
+
+test('the cache toggle rebuilds the lanes; the context numbers do not', async () => {
+  await withSettingsDir({}, async (h, cwd) => {
+    await openOneLane(h)
+
+    // `cacheRuntime` is captured when a runtime is built, so this one is only
+    // applied by replacing the runtime.
+    const cache = await h.client.changeSettings(h.entry.root, {
+      scope: 'general',
+      kind: 'set-cache-ttl',
+      enabled: true,
+    })
+    assert.deepEqual((await readLocalLayer(cwd)).cache, { ttl1h: true })
+    assert.equal(cache.settings.general.cacheTtl1h, true)
+    assert.equal(cache.rebuiltLanes, 1)
+    assert.equal(h.project.config.saves, 0)
+
+    // The context numbers are snapshotted into the session scope at bootstrap, so
+    // a rebuild would not reach them either — and pretending otherwise is what
+    // the "restart to apply" note on those rows exists to avoid.
+    const context = await h.client.changeSettings(h.entry.root, {
+      scope: 'general',
+      kind: 'set-context-management',
+      field: 'contextWindow',
+      value: 400_000,
+    })
+    assert.equal(context.rebuiltLanes, 0)
+    assert.equal(h.project.config.saves, 1, 'this one is config.json, so it does save')
+    assert.equal(context.settings.contextManagement.contextWindow, 400_000)
+    assert.equal(
+      context.settings.contextManagement.summaryOutputTokens,
+      20_000,
+      'the other five keep their values',
+    )
+  })
+})
+
+test('a context number that cannot mean anything is rejected and saves nothing', async () => {
+  await withSettingsDir({}, async (h) => {
+    await assert.rejects(
+      h.client.changeSettings(h.entry.root, {
+        scope: 'general',
+        kind: 'set-context-management',
+        field: 'autoCompactThresholdRatio',
+        value: 1.5,
+      }),
+      /ratio in \(0, 1]/,
+    )
+    assert.equal(h.project.config.saves, 0)
+    assert.equal(h.project.reloads, 0, 'the reload never ran either')
+  })
+})
+
+test('trusting a server writes the local layer and then reconnects, in that order', async () => {
+  await withSettingsDir(
+    { mcpServers: { github: { transport: 'stdio', command: 'npx', args: ['github-mcp'] } } },
+    async (h, cwd) => {
+      const result = await h.client.changeSettings(h.entry.root, {
+        scope: 'general',
+        kind: 'set-mcp-trust',
+        name: 'github',
+        trusted: true,
+      })
+
+      assert.deepEqual((await readLocalLayer(cwd)).mcp, { trustedServers: ['github'] })
+      assert.equal(h.project.mcpReloads, 1)
+      // The reconnect reads the settings the *runtime* holds, so it has to run
+      // after the reload has replaced them — otherwise it re-applies the trust
+      // list from before this edit and the server stays untrusted.
+      const reloadAt = h.log.indexOf(`reload-settings:${h.project.cwd}`)
+      const reconnectAt = h.log.indexOf(`reload-mcp:${h.project.cwd}`)
+      assert.ok(reloadAt >= 0 && reconnectAt >= 0, 'both ran')
+      assert.ok(reloadAt < reconnectAt, 'the reconnect must see the new trust list')
+      assert.equal(result.settings.mcpServers[0]?.trusted, true)
+      assert.equal(result.settings.mcpServers[0]?.trustEditable, true)
+    },
+  )
+})
+
+test('a trust that came from above is reported as not editable here', async () => {
+  await withSettingsDir(
+    {
+      mcpServers: { shared: { transport: 'sse', url: 'https://mcp.example' } },
+      mcp: { trustedServers: ['shared'] },
+    },
+    async (h) => {
+      h.project.mcp.failed.push({ name: 'shared', error: 'connect ECONNREFUSED' })
+
+      const { settings } = await h.client.getSettings(h.entry.root)
+
+      // `mcp.trustedServers` is unioned across layers, so removing it from the
+      // local layer cannot revoke it. A toggle that silently did nothing would
+      // be worse than a disabled one.
+      assert.deepEqual(settings.mcpServers, [
+        {
+          name: 'shared',
+          transport: 'sse',
+          target: 'https://mcp.example',
+          trusted: true,
+          trustEditable: false,
+          status: 'failed',
+          error: 'connect ECONNREFUSED',
+        },
+      ])
+    },
+  )
+})
+
+test('reconnect-mcp reconnects once per project and writes nothing at all', async () => {
+  await withSettingsDir({}, async (h) => {
+    const other = h.addProject('C:\\repo\\beta')
+    seedConfig(other.project)
+
+    const result = await h.client.changeSettings(h.entry.root, {
+      scope: 'general',
+      kind: 'reconnect-mcp',
+    })
+
+    assert.equal(h.project.mcpReloads, 1)
+    assert.equal(other.project.mcpReloads, 0)
+    assert.equal(h.project.config.saves, 0)
+    assert.equal(result.rebuiltLanes, 0)
+  })
+})
+
+test('reloading agent definitions rebuilds the lanes, so the live Agent tool sees them', async () => {
+  await withSettingsDir({}, async (h) => {
+    await openOneLane(h)
+
+    const result = await h.client.changeSettings(h.entry.root, {
+      scope: 'agent',
+      kind: 'reload-agent-definitions',
+    })
+
+    assert.equal(h.project.agentReloads, 1)
+    assert.equal(h.project.config.saves, 0)
+    // A runtime hands its Agent tool the definitions that existed when it was
+    // built, so without this the reload only reaches the *next* runtime.
+    assert.equal(result.rebuiltLanes, 1)
+    assert.deepEqual(h.configRefreshes.map((refresh) => refresh.rebuild), [true])
+  })
+})
+
+test('get-settings projects the agent definitions and the context budget', async () => {
+  await withSettingsDir({}, async (h) => {
+    h.project.agentDefinitions = [
+      ...BUILT_IN_AGENT_DEFINITIONS,
+      {
+        type: 'reviewer',
+        description: 'Reviews a diff',
+        tools: ['Read'],
+        permissionMode: 'plan',
+        disallowedTools: ['Agent'],
+        maxTurns: 12,
+        isReadOnlyAgent: true,
+        getSystemPrompt: () => 'review it',
+      },
+    ]
+    h.project.config.config.routing = { main: 'big', subagent: { reviewer: 'small' } }
+
+    const { settings } = await h.client.getSettings(h.entry.root)
+
+    const reviewer = settings.agents.find((agent) => agent.type === 'reviewer')
+    assert.deepEqual(reviewer, {
+      type: 'reviewer',
+      description: 'Reviews a diff',
+      builtIn: false,
+      permissionMode: 'plan',
+      tools: ['Read'],
+      maxTurns: 12,
+      isReadOnlyAgent: true,
+      routing: 'small',
+    })
+    const general = settings.agents.find((agent) => agent.type === 'general')
+    assert.equal(general?.builtIn, true)
+    assert.equal(general?.tools, undefined, 'no tool list means every tool, and the wire says so by omission')
+    // Functions cannot cross `structuredClone`, so the projection must be field
+    // by field — a spread would put `getSystemPrompt` on the wire.
+    assert.ok(!JSON.stringify(settings.agents).includes('review it'))
+
+    assert.equal(settings.contextManagement.contextWindow, 200_000, 'merged over the defaults')
+    assert.equal(settings.general.cacheTtl1h, undefined, 'unset is not false')
+  })
 })
 
 test('rename-session resolves a prefix and refreshes only that lane', async () => {

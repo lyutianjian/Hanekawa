@@ -6,10 +6,12 @@ import type { AgentRunResult, SessionRecord } from '../harness/types.js'
 import type { RuntimeDiagnostic } from '../harness/diagnostics.js'
 import type { ConfigService, ModelConfig } from '../config/service.js'
 import type { EffortLevel } from '../config/effort.js'
+import type { MyAgentSettings } from '../config/settings.js'
 import type { SessionMeta, SessionStore } from '../sessions/service.js'
 import type { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
 import type { CommandRegistry } from '../commands/registry.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
+import type { BaseAgentDefinition } from '../tools/agentTool.js'
 import type { UiBridges } from './bridges.js'
 
 /**
@@ -71,6 +73,11 @@ export interface ProjectRuntime {
    * one leaks the second project's skills into the first.
    */
   commands: CommandRegistry
+  /**
+   * The MCP servers as they currently stand. Mutated in place by
+   * {@link ProjectRuntime.reloadMcpServers} rather than replaced: a holder of
+   * this object would otherwise keep reading a snapshot from startup.
+   */
   mcp: McpConnectionStatus
   initialModelKey: string
   /** Startup effort after clamping to the model's max, when it is a level. */
@@ -83,9 +90,31 @@ export interface ProjectRuntime {
    * gate and prompt-section cache. Callers must `dispose()` what they open.
    */
   openScope(session: SessionMeta): Promise<SessionScope>
+  /**
+   * The settings the runtime is currently running on — merged, and live: it is
+   * the same object `reloadSettings()` replaces. Read it rather than re-reading
+   * the layers off disk, or a caller sees a different merge than the loop does.
+   */
+  getSettings(): MyAgentSettings
+  /**
+   * The built-in agent definitions merged with the project's own, which is what
+   * a runtime hands to its Agent tool. Read-only inspection; editing them means
+   * editing the files under `.myagent/agents/`.
+   */
+  listAgentDefinitions(): readonly BaseAgentDefinition[]
   reloadAgentDefinitions(): Promise<number>
   /** Re-reads `.myagent/skills/` and re-registers their slash commands. */
   reloadSkills(): Promise<number>
+  /**
+   * Closes every MCP client, drops its tools, and connects the servers the
+   * current settings name.
+   *
+   * Untrusted servers are *not* prompted for here — a reload can happen while
+   * the UI owns the screen, and there is nowhere for a pre-channel prompt to
+   * live. They are reported as `not trusted`, which the trust setting exists to
+   * fix.
+   */
+  reloadMcpServers(): Promise<void>
   /**
    * Re-reads the settings layers. Permission rules and the config layer take
    * effect immediately — for *every* open scope — while hooks are captured at

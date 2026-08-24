@@ -92,7 +92,7 @@ export type ShellCommand =
 
 // --- settings ----------------------------------------------------------------
 
-/** The settings screen's left-hand categories. Three are placeholders today. */
+/** The settings screen's left-hand categories. */
 export type SettingsCategory = 'provider' | 'permissions' | 'agent' | 'general'
 
 /**
@@ -136,6 +136,102 @@ export interface WireRoutingInfo {
   subagent: Array<{ type: string; value: string }>
 }
 
+/**
+ * One permission group, split by the file it lives in.
+ *
+ * Split rather than flagged per entry because that is the shape of the
+ * constraint: `mergeSettings` *concatenates* `permissions.allow/deny/ask`
+ * across layers, so the only group this screen can rewrite is the local one,
+ * and writing a merged group back would copy every inherited entry into the
+ * local file.
+ */
+export interface WirePermissionGroup {
+  behavior: 'allow' | 'deny' | 'ask'
+  local: string[]
+  inherited: string[]
+}
+
+export interface WirePermissionsInfo {
+  /** `<cwd>/.myagent/settings.local.json` — the screen says what it writes. */
+  localPath: string
+  /**
+   * The startup mode as merged. Editable whatever layer set it: unlike the
+   * groups, `permissions.mode` is last-writer-wins, and the local layer is last.
+   */
+  mode: 'default' | 'acceptEdits' | 'bypass'
+  /** Whether the local layer is what set the mode, for the row's own detail. */
+  modeIsLocal: boolean
+  groups: WirePermissionGroup[]
+}
+
+/**
+ * An agent definition as the screen shows it: read-only, field by field.
+ *
+ * Projected rather than shipped because `BaseAgentDefinition` carries
+ * `getSystemPrompt` — a function, which `structuredClone` refuses outright.
+ */
+export interface WireAgentDefinitionInfo {
+  type: string
+  description: string
+  /** A built-in cannot be edited by editing a file; a custom one can. */
+  builtIn: boolean
+  permissionMode?: string
+  /** Absent means every tool: the definition says `tools: ['*']` or nothing. */
+  tools?: string[]
+  model?: string
+  maxTurns: number
+  isReadOnlyAgent: boolean
+  /** `routing.subagent[type]`, or `inherit`. The one editable field here. */
+  routing: string
+}
+
+export interface WireMcpServerInfo {
+  name: string
+  transport: 'stdio' | 'sse'
+  /** The command with its args, or the URL — whichever the transport uses. */
+  target: string
+  trusted: boolean
+  /**
+   * False when a layer above trusts it. `mcp.trustedServers` is *unioned*
+   * across layers, so this screen can grant trust but cannot take that grant
+   * away — and a toggle that silently does nothing is worse than a disabled one.
+   */
+  trustEditable: boolean
+  status: 'connected' | 'failed' | 'unknown'
+  toolCount?: number
+  error?: string
+}
+
+/**
+ * The six context-budget numbers, in the order the screen draws them.
+ *
+ * Exported as a value because both the schema and the rows iterate it; spelled
+ * once so a seventh field cannot be added to one and forgotten in the other.
+ */
+export const CONTEXT_MANAGEMENT_FIELDS = [
+  'contextWindow',
+  'summaryOutputTokens',
+  'autoCompactBufferTokens',
+  'manualCompactBufferTokens',
+  'microCompactThresholdRatio',
+  'autoCompactThresholdRatio',
+] as const
+
+export type WireContextManagementField = (typeof CONTEXT_MANAGEMENT_FIELDS)[number]
+
+/** Merged over the defaults, so every field has a number to draw. */
+export type WireContextManagementInfo = Record<WireContextManagementField, number>
+
+export interface WireGeneralInfo {
+  /** `<cwd>/.myagent/settings.local.json`, same file the permission groups use. */
+  localPath: string
+  /**
+   * `cache.ttl1h`. Absent is not `false`: unset falls through to the
+   * `MYAGENT_PROMPT_CACHE_1H` environment variable, and the row says so.
+   */
+  cacheTtl1h?: boolean
+}
+
 export interface WireSettingsSnapshot {
   projectRoot: string
   projectName: string
@@ -156,14 +252,20 @@ export interface WireSettingsSnapshot {
   providers: string[]
   /** The built-in subagent types unioned with any the routing already names. */
   subagentTypes: string[]
+  permissions: WirePermissionsInfo
+  agents: WireAgentDefinitionInfo[]
+  mcpServers: WireMcpServerInfo[]
+  /** From `config.json`, not the settings layers — see `setContextManagement`. */
+  contextManagement: WireContextManagementInfo
+  general: WireGeneralInfo
 }
 
 /**
  * One settings edit.
  *
- * `scope` picks the card and `kind` the operation, so the three cards still to
- * be built add variants here without touching the command, its schema, or the
- * fan-out.
+ * `scope` picks the card and `kind` the operation. `kind` is unique across the
+ * whole union, not just within a scope: the host's schema table is keyed by it
+ * and so is the dispatch switch.
  *
  * `apiKey` absent means "leave it alone"; clearing is its own variant rather
  * than `apiKey: null`, because an optional field cannot distinguish "the user
@@ -189,7 +291,20 @@ export type SettingsChange =
   | { scope: 'provider'; kind: 'set-default-model'; key: string }
   | { scope: 'provider'; kind: 'set-routing'; role: 'main' | 'plan' | 'compact'; value: string }
   | { scope: 'provider'; kind: 'set-subagent-routing'; type: string; value: string }
-
+  /**
+   * The whole group, not one entry. Rewriting the group is what makes a removal
+   * possible and what keeps inherited entries out of the local file; the
+   * renderer therefore sends `local` plus or minus one line.
+   */
+  | { scope: 'permissions'; kind: 'set-permission-entries'; behavior: 'allow' | 'deny' | 'ask'; entries: string[] }
+  | { scope: 'permissions'; kind: 'set-startup-permission-mode'; mode: 'default' | 'acceptEdits' | 'bypass' }
+  /** An action, not a write: re-reads `.myagent/agents/` and rebuilds runtimes. */
+  | { scope: 'agent'; kind: 'reload-agent-definitions' }
+  | { scope: 'general'; kind: 'set-cache-ttl'; enabled: boolean }
+  | { scope: 'general'; kind: 'set-context-management'; field: WireContextManagementField; value: number }
+  | { scope: 'general'; kind: 'set-mcp-trust'; name: string; trusted: boolean }
+  /** Also an action. Never prompts for trust — see `ProjectRuntime.reloadMcpServers`. */
+  | { scope: 'general'; kind: 'reconnect-mcp' }
 
 // --- main → renderer ---------------------------------------------------------
 

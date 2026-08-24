@@ -3,9 +3,22 @@ import { maskKey } from '../config/maskKey.js'
 import { SUPPORTED_PROVIDER_NAMES } from '../config/providers/registry.js'
 import type { Config, ModelConfig } from '../config/service.js'
 import type { Endpoint, Routing } from '../config/routing.js'
+import {
+  loadLocalSettings,
+  localSettingsPath,
+  setLocalCacheTtl1h,
+  setLocalPermissionEntries,
+  setLocalStartupPermissionMode,
+  setMcpServerTrustLocally,
+  type MyAgentSettings,
+  type StartupPermissionMode,
+} from '../config/settings.js'
+import { DEFAULT_CONTEXT_MANAGEMENT, type ContextManagementConfig } from '../prompts/budget.js'
 import { deleteSessionArtifacts } from '../runtime/deleteSession.js'
 import type { ProviderConfigChangeScope } from '../runtime/providerRuntime.js'
 import type { SessionMeta } from '../sessions/service.js'
+import type { McpServerConfig } from '../services/mcp/index.js'
+import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../tools/agentTool.js'
 import type {
   DirectoryProject,
   DirectoryWorkspace,
@@ -17,8 +30,9 @@ import { projectDisplayName } from '../runtime/projectDirectory.js'
 import type { RuntimeChannel } from '../runtime/protocol/channel.js'
 import type { LaneMux } from '../runtime/protocol/laneChannel.js'
 import type { SessionPane, SessionWorkspace } from '../runtime/sessionWorkspace.js'
-import type { RuntimeHost } from '../runtime/types.js'
+import type { McpConnectionStatus, RuntimeHost } from '../runtime/types.js'
 import {
+  CONTEXT_MANAGEMENT_FIELDS,
   SHELL_LANE,
   type ShellCommand,
   type ShellEvent,
@@ -33,8 +47,13 @@ import {
   type WireShellSettingsChangeResult,
   type WireShellSettingsResult,
   type WireSettingsSnapshot,
+  type WireAgentDefinitionInfo,
+  type WireContextManagementInfo,
   type WireEndpointInfo,
+  type WireMcpServerInfo,
   type WireModelInfo,
+  type WirePermissionGroup,
+  type WirePermissionsInfo,
   type SettingsChange,
 } from './shellProtocol.js'
 
@@ -103,10 +122,24 @@ export interface ShellLaneProject extends DirectoryProject {
     removeModel(name: string): void
     renameModel(oldKey: string, newKey: string): void
     setDefaultModel(name: string): void
+    setContextManagement(patch: Partial<ContextManagementConfig>): void
     resolveModel(name: string): ModelConfig | undefined
     getSaveTarget(): string
     save(): Promise<void>
   }
+  /**
+   * The merged settings the runtime is *running on*, for the cards that read
+   * settings rather than config. Read here rather than re-merged off disk: a
+   * second merge can differ from the loop's, and a screen showing rules the gate
+   * is not enforcing is worse than a screen showing none.
+   */
+  getSettings(): MyAgentSettings
+  /** Read-only: the agent cards list these; editing them means editing files. */
+  listAgentDefinitions(): readonly BaseAgentDefinition[]
+  reloadAgentDefinitions(): Promise<number>
+  /** As it stands now. Mutated in place by `reloadMcpServers`, never replaced. */
+  readonly mcp: McpConnectionStatus
+  reloadMcpServers(): Promise<void>
   /** Re-reads the settings layers. Per *project*, so the shell calls it once per edit. */
   reloadSettings(): Promise<{ needsRuntimeRebuild: boolean }>
   /** The scope type is opaque here: the shell mints it and hands it straight to `adopt`. */
@@ -286,6 +319,48 @@ const SETTINGS_CHANGE_SCHEMAS = {
       type: z.string(),
       value: z.string(),
     })
+    .strict(),
+  'set-permission-entries': z
+    .object({
+      scope: z.literal('permissions'),
+      kind: z.literal('set-permission-entries'),
+      behavior: z.union([z.literal('allow'), z.literal('deny'), z.literal('ask')]),
+      entries: z.array(z.string()),
+    })
+    .strict(),
+  'set-startup-permission-mode': z
+    .object({
+      scope: z.literal('permissions'),
+      kind: z.literal('set-startup-permission-mode'),
+      mode: z.union([z.literal('default'), z.literal('acceptEdits'), z.literal('bypass')]),
+    })
+    .strict(),
+  'reload-agent-definitions': z
+    .object({ scope: z.literal('agent'), kind: z.literal('reload-agent-definitions') })
+    .strict(),
+  'set-cache-ttl': z
+    .object({ scope: z.literal('general'), kind: z.literal('set-cache-ttl'), enabled: z.boolean() })
+    .strict(),
+  'set-context-management': z
+    .object({
+      scope: z.literal('general'),
+      kind: z.literal('set-context-management'),
+      // The same list the rows are drawn from, so a seventh field cannot reach
+      // one and miss the other.
+      field: z.enum(CONTEXT_MANAGEMENT_FIELDS),
+      value: z.number(),
+    })
+    .strict(),
+  'set-mcp-trust': z
+    .object({
+      scope: z.literal('general'),
+      kind: z.literal('set-mcp-trust'),
+      name: z.string(),
+      trusted: z.boolean(),
+    })
+    .strict(),
+  'reconnect-mcp': z
+    .object({ scope: z.literal('general'), kind: z.literal('reconnect-mcp') })
     .strict(),
 } as const satisfies Record<SettingsChange['kind'], z.ZodTypeAny>
 
@@ -657,12 +732,12 @@ export class ShellHost<
   // --- settings ------------------------------------------------------------
 
   /** The settings read model, plus the project list the screen's selector needs. */
-  private getSettings(projectRoot?: string): WireShellSettingsResult {
+  private async getSettings(projectRoot?: string): Promise<WireShellSettingsResult> {
     const entry =
       projectRoot !== undefined ? this.deps.directory.get(projectRoot) : this.deps.directory.entries()[0]
     if (!entry) throw new Error('No project is open.')
     return {
-      settings: this.describeSettings(entry),
+      settings: await this.describeSettings(entry),
       projects: this.deps.directory.entries().map((open) => ({
         projectRoot: open.root,
         projectName: projectDisplayName(open.cwd),
@@ -671,20 +746,27 @@ export class ShellHost<
   }
 
   /**
-   * One settings edit. The order here is fixed and two steps of it are not
+   * One settings edit. The order here is fixed and four steps of it are not
    * obvious:
    *
    *  - **`save()` before `reloadSettings()`.** `reloadSettings` ends in
-   *    `config.load(settings)` (`bootstrap.ts:143`), which re-reads the config
+   *    `config.load(settings)` (`bootstrap.ts`), which re-reads the config
    *    layers from disk. An in-memory mutation that has not been saved is
    *    *destroyed* by it. Swapping these two lines silently discards the user's
    *    edit while answering with a snapshot that looks right until the next pull.
+   *  - **`save()` only when the config was mutated.** `save()` writes the whole
+   *    merged `Config`, so calling it for a permissions or MCP edit would copy
+   *    every settings-declared model and endpoint into `config.json` as a side
+   *    effect of adding one rule.
    *  - **`reloadSettings()` once per project, not per lane.** It is a
    *    project-level call — N lanes over one project would re-read and
    *    re-validate the settings files N times for one edit.
+   *  - **`afterReload` after it.** An MCP reconnect reads the settings the
+   *    runtime now holds, so it has to run once the reload has replaced them.
    *
-   * The fan-out is unconditional: the entire point of the screen is that the
-   * change takes effect in every open session now. `needsRuntimeRebuild` is not
+   * The fan-out is per variant rather than unconditional: permission rules and
+   * the config layer are read live, and rebuilding a runtime for them would
+   * throw away the prompt cache for nothing. `needsRuntimeRebuild` is still not
    * consulted — see `LaneOccupant.refreshAfterConfigChange`.
    */
   private async applySettingsChange(
@@ -694,21 +776,27 @@ export class ShellHost<
     const entry = this.deps.directory.get(projectRoot)
     if (!entry) throw new Error(`No project is open at ${projectRoot}`)
 
-    // `ConfigService` owns the three reference checks (a routed model, an
-    // endpoint a model still points at, a rename onto an existing key). Letting
-    // it throw keeps them in one place — and nothing has been saved yet, so a
-    // rejection leaves the config exactly as it was.
-    const scope = applyProviderChange(entry.project.config, change)
-    await entry.project.config.save()
+    // `ConfigService` owns the reference checks (a routed model, an endpoint a
+    // model still points at, a rename onto an existing key, a context number
+    // that cannot mean anything). Letting it throw keeps them in one place — and
+    // nothing has been saved yet, so a rejection leaves the config as it was.
+    const effect = await applySettingsEffect(entry, change)
+    if (effect.saveConfig) await entry.project.config.save()
     await entry.project.reloadSettings()
+    if (effect.afterReload) await effect.afterReload()
 
     let rebuiltLanes = 0
-    for (const held of this.lanes.values()) {
-      if (held.project !== entry) continue
-      held.occupant.refreshAfterConfigChange({ rebuild: true, scope })
-      rebuiltLanes += 1
+    if (effect.rebuild) {
+      for (const held of this.lanes.values()) {
+        if (held.project !== entry) continue
+        held.occupant.refreshAfterConfigChange({ rebuild: true, scope: effect.scope })
+        rebuiltLanes += 1
+      }
     }
-    return { settings: this.describeSettings(entry), rebuiltLanes } satisfies WireShellSettingsChangeResult
+    return {
+      settings: await this.describeSettings(entry),
+      rebuiltLanes,
+    } satisfies WireShellSettingsChangeResult
   }
 
   /**
@@ -752,11 +840,17 @@ export class ShellHost<
    * the referenced endpoint's `apiKey` and `baseUrl` into what it hands back
    * (`config/service.ts`), so one spread ships every key the user owns across
    * the preload boundary. It is called here only for the `resolves` boolean.
+   *
+   * Async because the permission and MCP cards need the *local* settings layer
+   * beside the merged one — the merge concatenates and unions, so it cannot say
+   * which entries this screen is allowed to rewrite.
    */
-  private describeSettings(entry: ProjectEntry<P, W>): WireSettingsSnapshot {
+  private async describeSettings(entry: ProjectEntry<P, W>): Promise<WireSettingsSnapshot> {
     const { config } = entry.project
     const raw = config.get()
     const routing = config.getRouting()
+    const merged = entry.project.getSettings()
+    const local = await loadLocalSettings(entry.cwd)
 
     const endpoints = Object.entries(raw.endpoints ?? {}).map(([name, endpoint]) => {
       const info: WireEndpointInfo = { name, provider: endpoint.provider }
@@ -785,6 +879,44 @@ export class ShellHost<
     // custom `.myagent/agents/*.md` type that has been routed keeps its row.
     const subagentTypes = [...new Set([...BUILTIN_SUBAGENT_TYPES, ...Object.keys(routing.subagent ?? {})])]
 
+    const permissions: WirePermissionsInfo = {
+      localPath: localSettingsPath(entry.cwd),
+      mode: startupMode(merged.permissions?.mode),
+      modeIsLocal: local.permissions?.mode !== undefined,
+      groups: (['allow', 'ask', 'deny'] as const).map((behavior) =>
+        splitPermissionGroup(behavior, merged, local),
+      ),
+    }
+
+    const builtInTypes = new Set(BUILT_IN_AGENT_DEFINITIONS.map((definition) => definition.type))
+    const agents = entry.project.listAgentDefinitions().map((definition) => {
+      const info: WireAgentDefinitionInfo = {
+        type: definition.type,
+        description: definition.description,
+        builtIn: builtInTypes.has(definition.type),
+        maxTurns: definition.maxTurns,
+        isReadOnlyAgent: definition.isReadOnlyAgent,
+        routing: routing.subagent?.[definition.type] ?? 'inherit',
+      }
+      if (definition.permissionMode !== undefined) info.permissionMode = definition.permissionMode
+      if (definition.tools !== undefined) info.tools = [...definition.tools]
+      if (definition.model !== undefined) info.model = definition.model
+      return info
+    })
+
+    const locallyTrusted = new Set(local.mcp?.trustedServers ?? [])
+    const trusted = new Set(merged.mcp?.trustedServers ?? [])
+    const mcpServers = Object.entries(merged.mcpServers ?? {}).map(([name, server]) =>
+      describeMcpServer(name, server, entry.project.mcp, trusted, locallyTrusted),
+    )
+
+    // Merged over the defaults rather than reported as written: `config.json` may
+    // name one field, and the screen has to show the number the budget will use.
+    const contextValues = { ...DEFAULT_CONTEXT_MANAGEMENT, ...raw.agent.contextManagement }
+    const contextManagement = Object.fromEntries(
+      CONTEXT_MANAGEMENT_FIELDS.map((field) => [field, contextValues[field]]),
+    ) as WireContextManagementInfo
+
     const snapshot: WireSettingsSnapshot = {
       projectRoot: entry.root,
       projectName: projectDisplayName(entry.cwd),
@@ -802,6 +934,14 @@ export class ShellHost<
       },
       providers: [...SUPPORTED_PROVIDER_NAMES],
       subagentTypes,
+      permissions,
+      agents,
+      mcpServers,
+      contextManagement,
+      general: {
+        localPath: localSettingsPath(entry.cwd),
+        ...(merged.cache?.ttl1h !== undefined ? { cacheTtl1h: merged.cache.ttl1h } : {}),
+      },
     }
     if (raw.defaultModel !== undefined) snapshot.defaultModel = raw.defaultModel
     if (raw.fallbackModel !== undefined) snapshot.fallbackModel = raw.fallbackModel
@@ -891,6 +1031,171 @@ function summarize(session: SessionMeta): WireSessionSummary {
 const BUILTIN_SUBAGENT_TYPES = ['general', 'fork', 'explore', 'plan'] as const
 
 /**
+ * The startup mode the screen is able to write back.
+ *
+ * `StartupPermissionMode` is `Exclude<PermissionMode, 'plan'>`, so its type also
+ * admits `readonly` — but `validateSettings` accepts only these three, meaning a
+ * file naming `readonly` never loads at all. Reporting the default instead keeps
+ * the select from offering a value that would make the next reload throw.
+ */
+function startupMode(mode: StartupPermissionMode | undefined): WirePermissionsInfo['mode'] {
+  return mode === 'acceptEdits' || mode === 'bypass' ? mode : 'default'
+}
+
+/**
+ * One permission group, split into "in the local layer" and "from somewhere
+ * else".
+ *
+ * Subtracted by *count*, not as a set: a literal that appears in both the
+ * project and the local layer really is in the merge twice, and exactly one of
+ * those copies is the one this screen can remove. Treating them as sets would
+ * report the entry as purely inherited and then quietly delete it anyway.
+ */
+function splitPermissionGroup(
+  behavior: 'allow' | 'deny' | 'ask',
+  merged: MyAgentSettings,
+  local: MyAgentSettings,
+): WirePermissionGroup {
+  const localEntries = [...(local.permissions?.[behavior] ?? [])]
+  const unmatched = [...localEntries]
+  const inherited: string[] = []
+  for (const entry of merged.permissions?.[behavior] ?? []) {
+    const index = unmatched.indexOf(entry)
+    if (index !== -1) {
+      unmatched.splice(index, 1)
+      continue
+    }
+    inherited.push(entry)
+  }
+  return { behavior, local: localEntries, inherited }
+}
+
+/**
+ * One MCP server row: what it is, whether it is trusted, and what the last
+ * connection attempt made of it.
+ *
+ * The configuration comes from the settings rather than from the live client —
+ * `ManagedMcpClient` keeps its config private, and a server that failed to
+ * connect has no client at all but still needs a row.
+ */
+function describeMcpServer(
+  name: string,
+  server: McpServerConfig,
+  status: McpConnectionStatus,
+  trusted: ReadonlySet<string>,
+  locallyTrusted: ReadonlySet<string>,
+): WireMcpServerInfo {
+  const connected = status.connected.find((entry) => entry.name === name)
+  const failed = status.failed.find((entry) => entry.name === name)
+  const info: WireMcpServerInfo = {
+    name,
+    transport: server.transport,
+    target:
+      server.transport === 'stdio'
+        ? [server.command ?? '', ...(server.args ?? [])].join(' ').trim()
+        : server.url ?? '',
+    trusted: trusted.has(name),
+    // Trust is unioned across layers, so a grant from above cannot be revoked
+    // here. Granting is always possible; taking away is not.
+    trustEditable: !trusted.has(name) || locallyTrusted.has(name),
+    status: connected ? 'connected' : failed ? 'failed' : 'unknown',
+  }
+  if (connected) info.toolCount = connected.toolCount
+  if (failed) info.error = failed.error
+  return info
+}
+
+/** What one edit costs beyond the mutation itself. */
+interface SettingsChangeEffect {
+  /** The in-memory `Config` was changed and has to be saved before the reload. */
+  saveConfig: boolean
+  /** Every live lane of this project rebuilds its runtime after the reload. */
+  rebuild: boolean
+  /**
+   * Which routing scope a rebuild re-resolves the model against. `'models'` for
+   * everything that is not a provider edit: it keeps the current model key when
+   * that key still resolves, which is what "rebuild but do not change model"
+   * means.
+   */
+  scope: ProviderConfigChangeScope
+  /**
+   * Runs after `reloadSettings()`. For anything that reads the settings the
+   * runtime now holds — an MCP reconnect would otherwise re-apply the trust list
+   * from before the edit.
+   */
+  afterReload?: () => Promise<void>
+}
+
+/**
+ * Applies one edit and reports what the shell owes it afterwards.
+ *
+ * Split by scope rather than one flat switch because the two halves write to
+ * different places: provider edits mutate the in-memory `Config` (and are saved
+ * by the caller), while everything else writes a settings layer or performs an
+ * action. Exhaustive by `assertNeverChange` either way, so a new variant cannot
+ * reach production as a silent no-op.
+ */
+async function applySettingsEffect<P extends ShellLaneProject, W extends ShellLaneWorkspace<PaneLike>>(
+  entry: ProjectEntry<P, W>,
+  change: SettingsChange,
+): Promise<SettingsChangeEffect> {
+  if (change.scope === 'provider') {
+    return {
+      saveConfig: true,
+      rebuild: true,
+      scope: applyProviderChange(entry.project.config, change),
+    }
+  }
+
+  switch (change.kind) {
+    case 'set-permission-entries':
+      await setLocalPermissionEntries(entry.cwd, change.behavior, change.entries)
+      // No rebuild: `reloadSettings()` pushes the new rules into every open
+      // scope's gate, and replacing a runtime would drop its prompt cache for
+      // nothing.
+      return { saveConfig: false, rebuild: false, scope: 'models' }
+    case 'set-startup-permission-mode':
+      // Startup only, and deliberately so: the mode is read when a scope builds
+      // its gate, so this reaches the *next* session rather than fighting with
+      // the mode the user has toggled in an open one.
+      await setLocalStartupPermissionMode(entry.cwd, change.mode)
+      return { saveConfig: false, rebuild: false, scope: 'models' }
+    case 'reload-agent-definitions':
+      await entry.project.reloadAgentDefinitions()
+      // A runtime hands its Agent tool the definitions that existed when it was
+      // built, so without the rebuild the reload only reaches the next one.
+      return { saveConfig: false, rebuild: true, scope: 'models' }
+    case 'set-cache-ttl':
+      await setLocalCacheTtl1h(entry.cwd, change.enabled)
+      // `cacheRuntime` is captured at runtime construction, so this one does
+      // need the rebuild.
+      return { saveConfig: false, rebuild: true, scope: 'models' }
+    case 'set-context-management':
+      entry.project.config.setContextManagement({ [change.field]: change.value })
+      // No rebuild, because a rebuild would not help: the numbers are snapshotted
+      // into the session scope at bootstrap, which is why the rows say so.
+      return { saveConfig: true, rebuild: false, scope: 'models' }
+    case 'set-mcp-trust':
+      await setMcpServerTrustLocally(entry.cwd, change.name, change.trusted)
+      return {
+        saveConfig: false,
+        rebuild: false,
+        scope: 'models',
+        afterReload: () => entry.project.reloadMcpServers(),
+      }
+    case 'reconnect-mcp':
+      return {
+        saveConfig: false,
+        rebuild: false,
+        scope: 'models',
+        afterReload: () => entry.project.reloadMcpServers(),
+      }
+    default:
+      return assertNeverChange(change)
+  }
+}
+
+/**
  * Applies one provider edit to the config **in memory** and reports which
  * routing scope the runtimes must be re-resolved against.
  *
@@ -903,7 +1208,7 @@ const BUILTIN_SUBAGENT_TYPES = ['general', 'fork', 'explore', 'plan'] as const
  */
 function applyProviderChange(
   config: ShellLaneProject['config'],
-  change: SettingsChange,
+  change: Extract<SettingsChange, { scope: 'provider' }>,
 ): ProviderConfigChangeScope {
   switch (change.kind) {
     case 'set-endpoint': {

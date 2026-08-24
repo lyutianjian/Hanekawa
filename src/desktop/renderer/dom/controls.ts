@@ -73,6 +73,41 @@ export function textField(options: {
 }
 
 /**
+ * A switch.
+ *
+ * A `<button role="switch">` rather than a checkbox: a checkbox has to be
+ * un-styled before it can be re-styled (`appearance: none` plus a replacement
+ * for every state), while a button is a blank surface already, and `aria-checked`
+ * says the same thing to a screen reader that `checked` would.
+ *
+ * The knob is a child element rather than a pseudo-element so the stylesheet can
+ * move it without either file knowing a colour.
+ */
+export function toggleField(options: {
+  className?: string
+  value: boolean
+  ariaLabel: string
+  enabled?: boolean
+  onChange: (value: boolean) => void
+}): HTMLButtonElement {
+  const node = el('button', options.className ?? 'settings-toggle')
+  node.type = 'button'
+  node.setAttribute('role', 'switch')
+  node.setAttribute('aria-checked', options.value ? 'true' : 'false')
+  node.setAttribute('aria-label', options.ariaLabel)
+  node.title = options.ariaLabel
+  node.disabled = options.enabled === false
+  if (options.value) node.classList.add('on')
+  node.appendChild(el('span', 'settings-toggle-knob'))
+  node.addEventListener('click', (event) => {
+    // Same reason as `button()`: settings rows are clickable containers.
+    event.stopPropagation()
+    options.onChange(!options.value)
+  })
+  return node
+}
+
+/**
  * A select. `value` is assigned *after* the options are appended — assigning it
  * to an empty select silently does nothing, which reads as "the control forgot
  * the user's setting" and is invisible in review.

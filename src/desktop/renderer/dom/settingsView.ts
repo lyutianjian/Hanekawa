@@ -1,5 +1,5 @@
 import { el, replace, show } from './dom.js'
-import { button, selectField, textField } from './controls.js'
+import { button, selectField, textField, toggleField } from './controls.js'
 import type {
   SettingsButton,
   SettingsCard,
@@ -60,16 +60,14 @@ export function createSettingsView(
 
       replace(
         nav,
-        ...view.nav.map((item) => {
-          const node = button(
+        ...view.nav.map((item) =>
+          button(
             item.selected ? 'settings-nav-item selected' : 'settings-nav-item',
             item.label,
-            item.disabledReason ? `${item.label}（${item.disabledReason}）` : item.label,
+            item.label,
             () => onIntent({ kind: 'select-category', category: item.category }),
-            { enabled: !item.disabled },
-          )
-          return node
-        }),
+          ),
+        ),
         el('div', 'settings-nav-spacer'),
         button('settings-nav-close', '返回会话', '关闭设置（Esc）', () => onIntent({ kind: 'close' })),
       )
@@ -159,11 +157,45 @@ function rowNode(row: SettingsRow, onIntent: (intent: SettingsIntent) => void): 
       )
       break
     }
+    case 'toggle': {
+      const { intentOnChange } = row.control
+      control.appendChild(
+        toggleField({
+          value: row.control.value,
+          ariaLabel: row.label,
+          ...(row.control.disabled ? { enabled: false } : {}),
+          onChange: (value) => onIntent(intentOnChange(value)),
+        }),
+      )
+      break
+    }
+    case 'input': {
+      const { intentOnCommit } = row.control
+      control.appendChild(
+        textField({
+          value: row.control.value,
+          ariaLabel: row.label,
+          ...(row.control.placeholder !== undefined ? { placeholder: row.control.placeholder } : {}),
+          ...(row.control.mono ? { mono: true } : {}),
+          onCommit: (value) => onIntent(intentOnCommit(value)),
+        }),
+      )
+      break
+    }
     case 'buttons':
       for (const spec of row.control.buttons) control.appendChild(buttonNode(spec, onIntent))
       break
+    default:
+      // A control kind with no case here would draw an *empty* cell — a row whose
+      // setting silently cannot be changed. `runSidebarIntent` was caught by the
+      // same omission, which is why this is a compile error instead.
+      assertNeverControl(row.control)
   }
   return el('div', 'settings-row', label, control)
+}
+
+function assertNeverControl(value: never): never {
+  throw new Error(`Unhandled settings control: ${JSON.stringify(value)}`)
 }
 
 function buttonNode(spec: SettingsButton, onIntent: (intent: SettingsIntent) => void): HTMLButtonElement {

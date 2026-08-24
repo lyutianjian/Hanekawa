@@ -84,6 +84,26 @@ Everything defaults to `inherit`, so a one-model setup needs no `routing` block 
 The `.myagent/` directory is also where sessions, skills, and local runtime state are stored. Those
 stay per-project: only `config.json` and `settings.json` have a `~/.myagent/` counterpart.
 
+### The desktop settings screen
+
+The desktop app has a settings screen (`⚙ 设置` at the bottom of the sidebar, or Ctrl+,) covering the
+same configuration. Which file each page writes is not uniform, and the screen names the file it is
+about to change:
+
+| Page | Writes |
+|---|---|
+| Models and providers, subagent routing, context management | `config.json` (the project one if it exists, else `~/.myagent/config.json`) |
+| Permission rules, startup permission mode, prompt-cache TTL, MCP trust | `<project>/.myagent/settings.local.json` |
+
+Two consequences worth knowing:
+
+- Permission rules **concatenate** across settings layers and MCP trust is **unioned**, so the screen can
+  only edit the entries in `settings.local.json`. Rules inherited from `~/.myagent/settings.json` or the
+  project's `settings.json` are listed as read-only, and a trust granted in one of those files cannot be
+  revoked from the screen — remove it there.
+- The six context-management numbers are read once when a project starts, so changing them takes effect
+  after a restart. Everything else on the screen applies to open sessions immediately.
+
 ## Start
 
 Use the TUI for the interactive agent experience:

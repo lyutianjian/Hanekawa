@@ -362,6 +362,38 @@ export class ConfigService {
   setRouting(routing: Routing): void {
     this.config.routing = mergeRouting(routing)
   }
+
+  /**
+   * Patches `agent.contextManagement`, one field or several.
+   *
+   * Written here rather than into a settings layer because `load()` stacks
+   * `config.json` *on top of* settings (`configFromSettings`), so a value
+   * written to `settings.local.json` would be silently overridden by any
+   * `config.json` that names the same field.
+   *
+   * Throws on a value that cannot mean anything, the way `removeModel` does:
+   * these six numbers feed the token budget, and a zero context window or a
+   * ratio above 1 does not degrade — it makes every turn either compact
+   * immediately or never.
+   */
+  setContextManagement(patch: Partial<ContextManagementConfig>): void {
+    const sanitized = sanitizeContextManagement(patch)
+    if (!sanitized) return
+    for (const [field, value] of Object.entries(sanitized) as Array<[keyof ContextManagementConfig, number]>) {
+      const isRatio = field === 'microCompactThresholdRatio' || field === 'autoCompactThresholdRatio'
+      if (isRatio) {
+        if (!Number.isFinite(value) || value <= 0 || value > 1) {
+          throw new Error(`agent.contextManagement.${field} must be a ratio in (0, 1].`)
+        }
+      } else if (!Number.isSafeInteger(value) || value < 1) {
+        throw new Error(`agent.contextManagement.${field} must be a positive integer.`)
+      }
+    }
+    this.config.agent = {
+      ...this.config.agent,
+      contextManagement: { ...this.config.agent.contextManagement, ...sanitized },
+    }
+  }
 }
 
 /**

@@ -98,3 +98,27 @@ test('runtime tools built after a server connected include its tools', () => {
 
   assert.deepEqual(toolNames(registry.buildRuntimeTools()), ['Read', 'mcp__github__search'])
 })
+
+test('removeServerTools drops a server from every registered array, in place', () => {
+  const registry = new ToolRegistry([testTool('Read')])
+  const runtimeTools = registry.buildRuntimeTools()
+  const agentTool = testTool('Agent')
+  runtimeTools.push(agentTool)
+  registry.register(runtimeTools)
+  registry.setServerTools('a', [testTool('mcp__a__one')])
+  registry.setServerTools('b', [testTool('mcp__b__one')])
+
+  // What a reconnect does before reconnecting: a server the settings no longer
+  // name is never mentioned again, so nothing else would ever take its tools
+  // out of a live runtime's array.
+  registry.removeServerTools('a')
+
+  assert.deepEqual(toolNames(runtimeTools), ['Read', 'mcp__b__one', 'Agent'])
+  assert.equal(registry.serverToolCount('a'), 0)
+  assert.deepEqual(toolNames(registry.buildRuntimeTools()), ['Read', 'mcp__b__one'])
+
+  // Removing what was never there is a no-op rather than a refresh, so it
+  // cannot disturb the array either.
+  registry.removeServerTools('a')
+  assert.deepEqual(toolNames(runtimeTools), ['Read', 'mcp__b__one', 'Agent'])
+})

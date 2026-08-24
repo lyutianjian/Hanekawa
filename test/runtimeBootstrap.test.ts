@@ -337,3 +337,114 @@ test('invalid settings on reload are rejected without clobbering the live ones',
   })
   await host.shutdown('test over')
 })
+
+test('getSettings answers with the merge the loop is running on, not the startup one', async () => {
+  // The settings screen reads this instead of re-reading the layers off disk:
+  // two merges of the same files can differ (a mid-flight edit), and a screen
+  // showing a different merge than the loop enforces is worse than no screen.
+  const { cwd, store, session } = await createProject({
+    settings: { permissions: { ask: ['Bash(git push:*)'] } },
+  })
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+
+  assert.deepEqual(host.getSettings().permissions?.ask, ['Bash(git push:*)'])
+
+  await writeFile(
+    path.join(cwd, '.myagent', 'settings.local.json'),
+    JSON.stringify({ permissions: { ask: ['Bash(rm:*)'] } }),
+    'utf8',
+  )
+  await host.reloadSettings()
+
+  assert.deepEqual(
+    host.getSettings().permissions?.ask,
+    ['Bash(git push:*)', 'Bash(rm:*)'],
+    'the local layer concatenates onto the project one, which is why the screen must not merge for itself',
+  )
+  await host.shutdown('test over')
+})
+
+test('listAgentDefinitions shows the built-ins, and a reload adds a new file to them', async () => {
+  const { cwd, store, session } = await createProject()
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+
+  const builtIns = host.listAgentDefinitions().map((definition) => definition.type)
+  assert.ok(builtIns.includes('general'), `expected the built-ins, got ${builtIns.join(', ')}`)
+  assert.equal(builtIns.includes('reviewer'), false)
+
+  await mkdir(path.join(cwd, '.myagent', 'agents'), { recursive: true })
+  await writeFile(
+    path.join(cwd, '.myagent', 'agents', 'reviewer.md'),
+    '---\nname: reviewer\ndescription: Reviews a diff\ntools: [Read, Grep]\npermissionMode: plan\n---\n\nReview it.\n',
+    'utf8',
+  )
+
+  assert.equal(await host.reloadAgentDefinitions(), 1)
+  const reviewer = host.listAgentDefinitions().find((definition) => definition.type === 'reviewer')
+  assert.deepEqual(reviewer?.tools, ['Read', 'Grep'])
+  assert.equal(reviewer?.permissionMode, 'plan')
+  assert.equal(reviewer?.description, 'Reviews a diff')
+  await host.shutdown('test over')
+})
+
+test('reloadMcpServers re-runs the trust check without ever asking again', async () => {
+  // The trust prompt is a *pre-channel* prompt by construction, so a reload
+  // cannot ask: an untrusted server stays reported as such, and the trust
+  // setting is what changes the answer. Refusing trust at startup and then
+  // granting it on disk is the whole path, and it needs no live MCP server —
+  // `does-not-exist` fails to spawn, and the failure reason is what proves a
+  // connection was attempted this time.
+  const { cwd, store, session } = await createProject({
+    settings: { mcpServers: { untrusted: { transport: 'stdio', command: 'does-not-exist' } } },
+  })
+  let prompts = 0
+  const host = await bootstrap({
+    cwd,
+    store,
+    session,
+    confirmMcpTrust: async () => {
+      prompts += 1
+      return false
+    },
+  })
+
+  const statusObject = host.mcp
+  assert.deepEqual(host.mcp.failed, [{ name: 'untrusted', error: 'not trusted' }])
+  assert.equal(prompts, 1)
+
+  await writeFile(
+    path.join(cwd, '.myagent', 'settings.local.json'),
+    JSON.stringify({ mcp: { trustedServers: ['untrusted'] } }),
+    'utf8',
+  )
+  await host.reloadSettings()
+  await host.reloadMcpServers()
+
+  assert.equal(prompts, 1, 'a reload never prompts')
+  assert.equal(host.mcp.failed.length, 1)
+  assert.notEqual(
+    host.mcp.failed[0]?.error,
+    'not trusted',
+    'trust was granted, so this time the failure is the connection itself',
+  )
+  // Identity, not contents: hosts hold `ProjectRuntime.mcp` directly, so
+  // replacing the object would leave them all reading the startup snapshot.
+  assert.equal(host.mcp, statusObject)
+  await host.shutdown('test over')
+})
+
+test('a server dropped from the settings loses its tools on reload', async () => {
+  const { cwd, store, session } = await createProject({
+    settings: { mcpServers: { gone: { transport: 'stdio', command: 'does-not-exist' } } },
+  })
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+  assert.deepEqual(host.mcp.failed.map((entry) => entry.name), ['gone'])
+
+  await writeFile(path.join(cwd, '.myagent', 'settings.json'), JSON.stringify({}), 'utf8')
+  await host.reloadSettings()
+  await host.reloadMcpServers()
+
+  assert.deepEqual(host.mcp.failed, [], 'a server nobody configures any more is not a failure')
+  assert.deepEqual(host.mcp.connected, [])
+  await host.shutdown('test over')
+})

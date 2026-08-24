@@ -1010,6 +1010,49 @@ body {
   min-width: 140px;
 }
 
+/* The switch. `#submit` is the precedent for the "on" state: a neutral
+   high-contrast fill, not an accent one — an accent as a background is exactly
+   what the 95%-neutral rule excludes, and `rendererStyleTokens` enforces it.
+   The accent is allowed on the border, which is where the state reads from. */
+.settings-toggle {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  width: 40px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-base);
+  cursor: pointer;
+}
+
+.settings-toggle.on {
+  justify-content: flex-end;
+  border-color: var(--accent-info);
+  background: var(--surface-active);
+}
+
+.settings-toggle:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.settings-toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.settings-toggle-knob {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-pill);
+  background: var(--text-tertiary);
+}
+
+.settings-toggle.on .settings-toggle-knob {
+  background: var(--text-primary);
+}
+
 .settings-btn {
   display: flex;
   align-items: center;

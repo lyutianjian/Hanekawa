@@ -1,9 +1,20 @@
-import test from 'node:test'
+import test, { beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises'
+import { existsSync, mkdtempSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ConfigService } from '../src/config/service.js'
+import {
+  loadLocalSettings,
+  loadMergedSettings,
+  localSettingsPath,
+  setLocalCacheTtl1h,
+  setLocalPermissionEntries,
+  setLocalStartupPermissionMode,
+  setMcpServerTrustLocally,
+  updateLocalSettings,
+} from '../src/config/settings.js'
 
 /**
  * The settings screen's writes, against a real `ConfigService` and a real
@@ -20,6 +31,16 @@ import { ConfigService } from '../src/config/service.js'
  * developer's own `~/.myagent/config.json` and the assertions would depend on
  * whose machine ran them.
  */
+
+// `loadMergedSettings` layers `~/.myagent/settings.json` under the project one,
+// so the local-layer cases below would otherwise read the developer's own
+// settings. `ConfigService` is already isolated by `globalConfigPath: null`.
+test.beforeEach(() => {
+  const testHome = mkdtempSync(path.join(os.tmpdir(), 'myagent-home-'))
+  process.env.USERPROFILE = testHome
+  process.env.HOME = testHome
+})
+
 
 async function withProject(
   run: (cwd: string, config: ConfigService) => Promise<void>,
@@ -169,5 +190,159 @@ test('a routing value naming a model that no longer exists degrades to inherit',
     // The stored value is kept as written; resolution is what degrades, which
     // is what makes deleting a model a recoverable mistake rather than a crash.
     assert.equal(reloaded.resolveModelKeyFor({ kind: 'plan' }, { currentModelKey: 'big' }), 'big')
+  })
+})
+
+// --- context management -------------------------------------------------------
+
+test('the six context numbers survive a fresh load, in config.json', async () => {
+  await withProject(async (cwd, config) => {
+    config.setContextManagement({ contextWindow: 400_000, autoCompactThresholdRatio: 0.8 })
+    await config.save()
+
+    const reloaded = await reload(cwd)
+    assert.equal(reloaded.get().agent.contextManagement?.contextWindow, 400_000)
+    assert.equal(reloaded.get().agent.contextManagement?.autoCompactThresholdRatio, 0.8)
+    // Patching one field must not blank the other five, which is what a plain
+    // assignment of the patch would do.
+    assert.equal(reloaded.get().agent.contextManagement?.summaryOutputTokens, 20_000)
+  })
+})
+
+test('a context value that cannot mean anything is rejected instead of stored', async () => {
+  await withProject(async (cwd, config) => {
+    assert.throws(() => config.setContextManagement({ autoCompactThresholdRatio: 1.5 }), /ratio in \(0, 1]/)
+    assert.throws(() => config.setContextManagement({ microCompactThresholdRatio: 0 }), /ratio in \(0, 1]/)
+    assert.throws(() => config.setContextManagement({ contextWindow: 0 }), /positive integer/)
+    assert.throws(() => config.setContextManagement({ summaryOutputTokens: 1.5 }), /positive integer/)
+
+    // Nothing was half-applied: a rejected patch leaves the live config alone.
+    assert.equal(config.get().agent.contextManagement?.contextWindow, 200_000)
+    await config.save()
+    const reloaded = await reload(cwd)
+    assert.equal(reloaded.get().agent.contextManagement?.autoCompactThresholdRatio, 0.93)
+  })
+})
+
+// --- the local settings layer -------------------------------------------------
+
+/**
+ * A project whose *project* layer already carries settings, so every case below
+ * has something inherited to read past. That is the whole difficulty: the local
+ * layer is the only file the screen may rewrite, and `mergeSettings`
+ * concatenates permission groups rather than overriding them.
+ */
+async function withLocalLayer(
+  projectSettings: Record<string, unknown>,
+  run: (cwd: string) => Promise<void>,
+): Promise<void> {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-local-'))
+  try {
+    await mkdir(path.join(cwd, '.myagent'), { recursive: true })
+    await writeFile(
+      path.join(cwd, '.myagent', 'settings.json'),
+      JSON.stringify(projectSettings),
+      'utf8',
+    )
+    await run(cwd)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+}
+
+test('rewriting a permission group leaves the inherited entries in their own file', async () => {
+  await withLocalLayer({ permissions: { allow: ['Read'] } }, async (cwd) => {
+    await setLocalPermissionEntries(cwd, 'allow', ['Bash(git status:*)'])
+
+    // The mutation this guards against is writing the *merged* group back, which
+    // would copy `Read` into the local layer and then show it twice.
+    assert.deepEqual((await loadLocalSettings(cwd)).permissions, { allow: ['Bash(git status:*)'] })
+    assert.deepEqual(
+      (await loadMergedSettings(cwd)).permissions?.allow,
+      ['Read', 'Bash(git status:*)'],
+    )
+  })
+})
+
+test('a local rule can be removed, which appending one at a time never could', async () => {
+  await withLocalLayer({ permissions: { allow: ['Read'] } }, async (cwd) => {
+    await setLocalPermissionEntries(cwd, 'allow', ['Bash(ls:*)', 'Bash(git status:*)'])
+    await setLocalPermissionEntries(cwd, 'allow', ['Bash(ls:*)'])
+
+    assert.deepEqual((await loadMergedSettings(cwd)).permissions?.allow, ['Read', 'Bash(ls:*)'])
+  })
+})
+
+test('an invalid group is rejected before the file is written', async () => {
+  await withLocalLayer({}, async (cwd) => {
+    await setLocalPermissionEntries(cwd, 'deny', ['Bash(rm -rf:*)'])
+
+    // Validation has to happen before the write: `reloadSettings()` *throws* on
+    // invalid settings, so a bad file leaves the project unable to reload at all.
+    await assert.rejects(() => setLocalPermissionEntries(cwd, 'deny', ['  ']), /Invalid settings/)
+    assert.deepEqual((await loadLocalSettings(cwd)).permissions?.deny, ['Bash(rm -rf:*)'])
+  })
+})
+
+test('a patch rewrites the keys it names and nothing else', async () => {
+  await withLocalLayer({}, async (cwd) => {
+    // A local layer with a key the patch type cannot even express: hand-written
+    // files are the normal case, and a read-modify-write that forgets them is a
+    // silent truncation.
+    await writeFile(
+      localSettingsPath(cwd),
+      JSON.stringify({ models: { hand: { provider: 'anthropic', model: 'by-hand' } } }),
+      'utf8',
+    )
+
+    await setLocalCacheTtl1h(cwd, true)
+    await setLocalStartupPermissionMode(cwd, 'acceptEdits')
+
+    const local = await loadLocalSettings(cwd)
+    assert.equal(local.cache?.ttl1h, true)
+    assert.equal(local.permissions?.mode, 'acceptEdits')
+    assert.equal(local.models?.hand?.model, 'by-hand', 'the untouched key is still there')
+
+    await updateLocalSettings(cwd, { cache: undefined })
+    assert.equal((await loadLocalSettings(cwd)).cache, undefined, 'undefined deletes rather than writing null')
+    assert.equal((await loadLocalSettings(cwd)).permissions?.mode, 'acceptEdits')
+  })
+})
+
+test('untrusting an MCP server only reaches the local layer', async () => {
+  await withLocalLayer({ mcp: { trustedServers: ['shared'] } }, async (cwd) => {
+    await setMcpServerTrustLocally(cwd, 'own', true)
+    assert.deepEqual((await loadMergedSettings(cwd)).mcp?.trustedServers, ['shared', 'own'])
+
+    await setMcpServerTrustLocally(cwd, 'own', false)
+    assert.deepEqual((await loadMergedSettings(cwd)).mcp?.trustedServers, ['shared'])
+
+    // `mcp.trustedServers` is *unioned* across layers, so a name trusted above
+    // cannot be revoked from here. This is why the screen marks such a row
+    // read-only instead of drawing a toggle that does nothing.
+    await setMcpServerTrustLocally(cwd, 'shared', false)
+    assert.deepEqual(
+      (await loadMergedSettings(cwd)).mcp?.trustedServers,
+      ['shared'],
+      'the inherited trust survives, and the UI has to say so',
+    )
+  })
+})
+
+test('a permissions edit does not write config.json', async () => {
+  await withLocalLayer({}, async (cwd) => {
+    const config = new ConfigService(cwd, { globalConfigPath: null })
+    await config.load(await loadMergedSettings(cwd))
+
+    await setLocalPermissionEntries(cwd, 'ask', ['Bash(git push:*)'])
+
+    // The shell must not call `config.save()` for a settings-layer edit: `save()`
+    // writes the *merged* `Config`, which would copy every settings-declared
+    // model and endpoint into config.json as a side effect of adding one rule.
+    assert.equal(
+      existsSync(path.join(cwd, '.myagent', 'config.json')),
+      false,
+      'config.json was created by a change that has nothing to do with it',
+    )
   })
 })

@@ -273,6 +273,9 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     reloadAgentDefinitions: async () => 3,
     reloadSkills: async () => 4,
     reloadSettings: async () => ({ needsRuntimeRebuild: false }),
+    reloadMcpServers: async () => {},
+    getSettings: () => ({}),
+    listAgentDefinitions: () => [],
     shutdown: async (reason: string) => { calls.shutdowns.push(reason) },
     createRuntime: (modelKey: string, _session: unknown, records?: readonly SessionRecord[]) => {
       calls.createdRuntimes.push({ modelKey, recordCount: records?.length ?? 0 })

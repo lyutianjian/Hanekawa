@@ -236,9 +236,12 @@ function fakeProject(cwd = '/tmp/fixture'): ProjectRuntime {
     // Echoes the session so the scope, the pane and the wire all agree on the
     // id — the real `openScope` opens a scope *for* that session.
     openScope: async (session: SessionMeta) => ({ ...fakeScope(), session }),
+    getSettings: () => ({}),
+    listAgentDefinitions: () => [],
     reloadAgentDefinitions: async () => 0,
     reloadSkills: async () => 0,
     reloadSettings: async () => ({ needsRuntimeRebuild: false }),
+    reloadMcpServers: async () => undefined,
     shutdown: async () => undefined,
   } as unknown as ProjectRuntime
 }

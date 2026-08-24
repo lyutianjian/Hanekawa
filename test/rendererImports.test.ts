@@ -55,6 +55,10 @@ const ALLOWED_SHARED_IMPORTS = [
   // "local" to the check below, which made the allowlist optional for exactly
   // the files most likely to drag the host in.
   '../shellProtocol.js',
+  // The same module from one level deeper (`model/settings.ts` reads the context
+  // field list from it). Listed per specifier rather than per resolved path
+  // because that is what makes each entry a decision about one importer.
+  '../../shellProtocol.js',
   '../paneBudget.js',
 ]
 

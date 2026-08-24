@@ -55,6 +55,18 @@ export class ToolRegistry {
     return this.toolsByServer.get(name)?.length ?? 0
   }
 
+  /**
+   * Forgets a server entirely and propagates the removal.
+   *
+   * Distinct from `setServerTools(name, [])`, which keeps an empty entry: a
+   * server dropped from the settings has to stop being a server, or a later
+   * reconnect of a *different* server list still counts it.
+   */
+  removeServerTools(name: string): void {
+    if (!this.toolsByServer.delete(name)) return
+    this.refresh()
+  }
+
   private refresh(): void {
     const mcpTools = [...this.toolsByServer.values()].flat()
     for (const tools of this.runtimeToolSets) {

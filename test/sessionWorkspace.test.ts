@@ -106,6 +106,9 @@ async function createHarness(): Promise<Harness> {
     reloadAgentDefinitions: async () => 0,
     reloadSkills: async () => 0,
     reloadSettings: async () => ({ needsRuntimeRebuild: false }),
+    reloadMcpServers: async () => {},
+    getSettings: () => ({}),
+    listAgentDefinitions: () => [],
     shutdown: async () => { order.push('shutdown') },
   } as unknown as ProjectRuntime
 

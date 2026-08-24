@@ -22,7 +22,8 @@ import { RuntimeStartupError } from './errors.js'
 import { connectMcpServers } from './mcp.js'
 import { createSessionScope, type SessionScopeDeps } from './sessionScope.js'
 import { ToolRegistry } from './toolRegistry.js'
-import type { BootstrapOptions, RuntimeHost, SessionScope } from './types.js'
+import type { ManagedMcpClient, McpServerConfig } from '../services/mcp/index.js'
+import type { BootstrapOptions, McpConnectionStatus, RuntimeHost, SessionScope } from './types.js'
 
 function mergeAgentDefinitions<T extends { type: string }>(base: readonly T[], overrides: readonly T[]): T[] {
   const merged = new Map<string, T>()
@@ -148,19 +149,53 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
 
   // Fail-open: a server that fails to connect is reported but does not block
   // startup. Trust is confirmed through the host, before it owns stdin.
-  const mcp = await connectMcpServers({
-    cwd,
-    settings,
-    registry: toolRegistry,
-    confirmTrust: confirmMcpTrust,
-    onConnectFailure: async (name, error) => {
-      await store.appendMetric(session.id, {
-        event: 'mcp_connect_failed',
-        server: name,
-        error,
-      })
-    },
-  })
+  const recordMcpFailure = async (name: string, error: string): Promise<void> => {
+    await store.appendMetric(session.id, {
+      event: 'mcp_connect_failed',
+      server: name,
+      error,
+    })
+  }
+
+  let mcpClients: ManagedMcpClient[] = []
+  // One object for the life of the project: hosts read `ProjectRuntime.mcp`
+  // directly, so a reload rewrites its contents instead of replacing it.
+  const mcpStatus: McpConnectionStatus = { connected: [], failed: [] }
+  const connectMcp = async (
+    confirmTrust: (name: string, server: McpServerConfig) => Promise<boolean>,
+  ): Promise<void> => {
+    const result = await connectMcpServers({
+      cwd,
+      settings,
+      registry: toolRegistry,
+      confirmTrust,
+      onConnectFailure: recordMcpFailure,
+    })
+    mcpClients = result.clients
+    mcpStatus.connected.splice(0, mcpStatus.connected.length, ...result.status.connected)
+    mcpStatus.failed.splice(0, mcpStatus.failed.length, ...result.status.failed)
+  }
+  await connectMcp(confirmMcpTrust)
+
+  /**
+   * Reconnects every MCP server from the current settings.
+   *
+   * Tools are dropped *before* reconnecting: a server the settings no longer
+   * name would otherwise keep its tools in every live runtime's tool array,
+   * since the registry only ever hears about servers that connect.
+   *
+   * Never prompts. `confirmMcpTrust` is a pre-channel prompt by construction
+   * (it runs before any UI exists), and a reload happens while a UI is up, so
+   * an untrusted server is reported as such rather than asked about.
+   */
+  const reloadMcpServers = async (): Promise<void> => {
+    const previousClients = mcpClients
+    const previousServers = mcpStatus.connected.map((entry) => entry.name)
+    mcpClients = []
+    await Promise.allSettled(previousClients.map((client) => client.close()))
+    for (const name of previousServers) toolRegistry.removeServerTools(name)
+    await connectMcp(async () => false)
+  }
 
   registerBuiltinCommands(commands)
   await registerSkillCommands(commands, cwd)
@@ -215,19 +250,22 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     store,
     backgroundTasks,
     commands,
-    mcp: mcp.status,
+    mcp: mcpStatus,
     initialModelKey,
     initialEffort: typeof clampedInitialEffort === 'string' ? clampedInitialEffort : undefined,
     configuredEffortLevel,
     createActiveModelRuntime,
     openScope,
+    getSettings: () => settings,
+    listAgentDefinitions: () => agentDefinitions,
     reloadAgentDefinitions,
     reloadSkills,
     reloadSettings,
+    reloadMcpServers,
     shutdown: async (reason: string) => {
       // Swallow errors so a misbehaving server cannot prevent a clean exit.
       await backgroundTasks.stopAll(undefined, reason)
-      await Promise.allSettled(mcp.clients.map((client) => client.close()))
+      await Promise.allSettled(mcpClients.map((client) => client.close()))
       for (const scope of [...scopes]) scope.dispose()
     },
   }

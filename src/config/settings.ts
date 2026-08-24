@@ -269,30 +269,131 @@ async function writeSettingsAtomic(filePath: string, settings: MyAgentSettings):
   await rename(`${filePath}.tmp`, filePath)
 }
 
-export async function trustMcpServerLocally(cwd: string, serverName: string): Promise<void> {
-  const localSettingsPath = join(cwd, '.myagent', 'settings.local.json')
-  const localSettings = await loadSettingsFile(localSettingsPath)
-  const trustedServers = new Set(localSettings.mcp?.trustedServers ?? [])
-  trustedServers.add(serverName)
-  localSettings.mcp = {
-    ...localSettings.mcp,
-    trustedServers: [...trustedServers].sort(),
+/**
+ * The layer every in-app write lands in: an "always allow", an MCP trust
+ * decision, and everything the desktop settings screen edits outside
+ * `config.json`.
+ */
+export function localSettingsPath(cwd: string): string {
+  return join(cwd, '.myagent', 'settings.local.json')
+}
+
+/**
+ * The project-local layer on its own, unmerged.
+ *
+ * A UI needs this *beside* the merged settings to tell "yours" from
+ * "inherited". `mergeSettings` concatenates `permissions.*` and unions
+ * `mcp.trustedServers`, so the merged view cannot say which file an entry came
+ * from — and only the entries in this one can be edited by rewriting it.
+ */
+export async function loadLocalSettings(cwd: string): Promise<MyAgentSettings> {
+  return loadSettingsFile(localSettingsPath(cwd))
+}
+
+/** The keys {@link updateLocalSettings} is allowed to rewrite. */
+export type LocalSettingsPatch = {
+  [K in 'permissions' | 'mcp' | 'cache']?: MyAgentSettings[K]
+}
+
+const LOCAL_PATCH_KEYS = ['permissions', 'mcp', 'cache'] as const
+
+/**
+ * Rewrites the named keys in the local layer and leaves the rest of that file
+ * alone.
+ *
+ * A key present in `patch` is replaced **outright**, and that is the whole
+ * point: `permissions.allow/deny/ask` and `hooks.*` *concatenate* across
+ * layers, so writing a merged group back here would copy every inherited entry
+ * into this file — and replacing the group is the only way a removal can
+ * happen at all. A key explicitly set to `undefined` is deleted rather than
+ * written as `null`.
+ *
+ * Validated **before** the write: `reloadSettings()` throws on invalid
+ * settings, so a bad write would leave the project unable to reload until
+ * someone edited the file by hand.
+ */
+export async function updateLocalSettings(cwd: string, patch: LocalSettingsPatch): Promise<void> {
+  const filePath = localSettingsPath(cwd)
+  const next = await loadSettingsFile(filePath)
+  for (const key of LOCAL_PATCH_KEYS) {
+    if (!Object.hasOwn(patch, key)) continue
+    const value = patch[key]
+    if (value === undefined) delete next[key]
+    else next[key] = value
   }
-  await writeSettingsAtomic(localSettingsPath, localSettings)
+
+  const validation = validateSettings(next)
+  if (!validation.valid) {
+    throw new Error(`Invalid settings: ${validation.errors.join('; ')}`)
+  }
+  await writeSettingsAtomic(filePath, next)
+}
+
+/** Replaces one permission group in the local layer. */
+export async function setLocalPermissionEntries(
+  cwd: string,
+  behavior: 'allow' | 'deny' | 'ask',
+  entries: readonly string[],
+): Promise<void> {
+  const local = await loadLocalSettings(cwd)
+  await updateLocalSettings(cwd, {
+    permissions: { ...local.permissions, [behavior]: [...entries] },
+  })
+}
+
+/**
+ * The startup permission mode, in the local layer.
+ *
+ * Startup only: `SessionScope` reads it once when it builds its
+ * `PermissionGate`, and `reloadSettings()` refreshes the *rules* but never the
+ * mode. Already-open sessions keep the mode they opened with.
+ */
+export async function setLocalStartupPermissionMode(
+  cwd: string,
+  mode: StartupPermissionMode,
+): Promise<void> {
+  const local = await loadLocalSettings(cwd)
+  await updateLocalSettings(cwd, { permissions: { ...local.permissions, mode } })
+}
+
+/**
+ * Adds or removes one server in the local layer's trust list.
+ *
+ * Removal only reaches *this* layer: `mcp.trustedServers` is unioned across
+ * layers, so a name trusted in the user or project layer cannot be revoked
+ * from here. Callers that offer a toggle have to say so.
+ */
+export async function setMcpServerTrustLocally(
+  cwd: string,
+  serverName: string,
+  trusted: boolean,
+): Promise<void> {
+  const local = await loadLocalSettings(cwd)
+  const trustedServers = new Set(local.mcp?.trustedServers ?? [])
+  if (trusted) trustedServers.add(serverName)
+  else trustedServers.delete(serverName)
+  await updateLocalSettings(cwd, {
+    mcp: { ...local.mcp, trustedServers: [...trustedServers].sort() },
+  })
+}
+
+export async function trustMcpServerLocally(cwd: string, serverName: string): Promise<void> {
+  await setMcpServerTrustLocally(cwd, serverName, true)
+}
+
+/** The 1-hour prompt-cache TTL, in the local layer. */
+export async function setLocalCacheTtl1h(cwd: string, enabled: boolean): Promise<void> {
+  const local = await loadLocalSettings(cwd)
+  await updateLocalSettings(cwd, { cache: { ...local.cache, ttl1h: enabled } })
 }
 
 export async function persistPermissionRule(cwd: string, rule: PermissionRule): Promise<void> {
-  const localSettingsPath = join(cwd, '.myagent', 'settings.local.json')
-  const localSettings = await loadSettingsFile(localSettingsPath)
+  const local = await loadLocalSettings(cwd)
   const key = rule.behavior
-  const entries = [...(localSettings.permissions?.[key] ?? [])]
+  const entries = [...(local.permissions?.[key] ?? [])]
   const entry = permissionRuleToEntry(rule)
   if (!entries.includes(entry)) entries.push(entry)
-  localSettings.permissions = {
-    ...localSettings.permissions,
-    [key]: entries,
-  }
-  await writeSettingsAtomic(localSettingsPath, localSettings)
+  await setLocalPermissionEntries(cwd, key, entries)
 }
 
 export async function saveEffortLevel(level: EffortLevel): Promise<void> {

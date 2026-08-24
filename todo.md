@@ -58,9 +58,23 @@
   signature 补 `searchQuery`/`workspaceMenuOpen`/`workspaceName`/workspace 项，变异表加两行并做了变异验证。
   **验证**：focused（sidebar+styleTokens+imports+theme）全过、typecheck 三段全过、全量 2214 pass / 0 fail、
   `build:desktop` emit 正常。真机冒烟未跑（需显示器+凭据）。
-- [ ] **5c — 空状态欢迎页**：新增 `model/welcome.ts` + `dom/welcomeView.ts`，transcript 为空时显示；
-  Hero 标题（项目名虚线下划线可点切项目）；3 张推荐卡（仅视觉引导，点击只聚焦输入框）；
-  上下文胶囊条（项目 + 本地 + 分支）。
+- [x] **5c — 空状态欢迎页**：新增 `model/welcome.ts`（`isTranscriptEmpty` 用
+  `COUNTS_AS_CONVERSATION` 键表——`notice`/`error` 为 false，因为新草稿开局就带启动通知；`toolProgress`/
+  `isThinking` 也算「已开始」）+ `dom/welcomeView.ts`（签名守卫，不可见时 `replace(container)` 丢掉子树
+  而不只是 `hidden`，免得留下 Tab 停靠点）；Hero 拆 `titleBefore/projectLabel/titleAfter` 三段，中间是
+  `button.welcome-project`（虚线下划线，`projectSwitchable` 为假时 disabled）；3 张卡点击**只**
+  `composer.focus()`；胶囊条是 `span` 不是 `button`（只读），分支缺席时整条不产出。挂在 **pane 子树**
+  `paneEl` 内（不是 index.html 单例），所以背景 pane 的 Hero 不会漏到活动 pane。`icons.ts` 加六个手绘图标
+  （thought-bubble/megaphone/hammer/refresh/monitor/branch），卡片颜色走 `color` + `currentColor`，
+  **零新 token**（`--accent-info/-tool/-review` 5a 就在了）。`app.ts` 的 `openWorkspaceSwitcher()` 组合
+  「先展开侧栏 → toggle 菜单 → `sidebar.focusWorkspace()`」，最后一步是必需的：菜单靠容器 `focusout` 关。
+  **前置一并做了**：① `test/helpers/domStub.ts` + `tsconfig.domtest.json`（第四个 TS 程序）+ typecheck 四段，
+  `dom/` 第一次有单元测试；② git 分支 seam 走 `WireHelloResult.projectName/gitBranch` + 新
+  `src/runtime/gitBranch.ts`。
+  **验证**：新增 31 条（gitBranch 7 / protocolHost 1 / rendererWelcome 14 / rendererWelcomeView 8 /
+  tsconfig 漂移守卫 1），全量 2245 pass / 1 fail（`backgroundTasks` 增量输出，单跑 8/8，见「已知不稳定」），
+  typecheck 四段全过（并验证第四段非空：故意弄坏一个类型确认它会红），`build:desktop` emit 正常，
+  九条变异验证全部报红在预期用例上。真机冒烟未跑（需显示器+凭据）。
 - [ ] **5d — 对话流增强**：思考链可折叠头（流式展开 / 完成折叠成「已处理 Xm Xs ⌵」，折叠态存 `paneSession`）；
   用户消息内文件胶囊（`transcriptView.ts` 文本 token 化）；浮动回到底部按钮；「正在思考」呼吸标签。
 - [ ] **5e — 输入框 + 画布头栏**：composer 加权限模式胶囊（4 模式，调已有 `set-permission-mode`，删状态栏
@@ -69,8 +83,8 @@
 - [ ] **5f — 设置分组重构**：`SettingsNavItem` 加 `group`，分个人/集成/编码三段（只收纳已有页，无后端页不出现，
   分组用穷尽 switch）；顶部搜索设置框；原生 `<select>` 改胶囊下拉观感。
 - [ ] **新增 seam（跨层，谨慎）**：① `shellProtocol.ts`+`shellHost.ts`+`main.ts` 加 `open-in-editor`
-  命令 `spawn('code', [cwd])`（补 `desktopShellHost` 用例）；② host 读 `<cwd>/.git/HEAD` 给渲染器提供
-  分支字符串（读失败则分支胶囊不显示，不阻塞）。
+  命令 `spawn('code', [cwd])`（补 `desktopShellHost` 用例）；~~② host 读 `<cwd>/.git/HEAD`~~ —— ② 已在 5c
+  落地，走 `WireHelloResult.gitBranch`，见下方决策留痕。
 
 ---
 
@@ -114,10 +128,10 @@
 
 ### 4f 新记的账
 
-- **`paneSession.ts` 与整个 `dom/` 没有任何单元测试**（测试运行器里没有 DOM，devDeps 里也没有 jsdom）。
-  4f 修的两个 bug 都在这里，**唯一的凭据是冒烟的 S2 / S8**。要么给渲染器加一个最小 DOM stub
-  （`el()` 只用到 `createElement`/`appendChild`/`replaceChildren`/`hidden`/`classList`），要么继续把
-  决策往 `model/` 挪。独立一档。**（阶段 5 会大量动 `dom/`，这条更值得先做。）**
+- ~~**`paneSession.ts` 与整个 `dom/` 没有任何单元测试**~~ —— `dom/` 部分已在 5c 解决：
+  `test/helpers/domStub.ts` + `tsconfig.domtest.json`（第四个 TS 程序），`test/rendererWelcomeView.test.ts`
+  是范例。**`paneSession.ts` 仍无单元测试**，`renderTranscript()` 里那次 `welcome.render` 与
+  `classList.toggle('empty')` 只有冒烟能看见。
 - **系统提示语没有本地化**：真机上一次 turn 里出现的 `Effort set to: low` / `Switched to step-3.5-flash.` /
   `Worked for 3.6s` 都还是英文，夹在全中文界面里。4e 的 `locale` 只加在三个 presentation 模块上，这些
   note 来自命令与运行时的 note 路径（TUI 也在用），是另一条通路。
@@ -129,7 +143,36 @@
 
 ---
 
+### 5c 新记的账
+
+- **`.pane.empty` 这个类没有任何用例**。它由 `paneSession.ts` 的 `renderTranscript()` 设置，那个文件没有
+  单元覆盖，而样式测试无从得知一个类有没有被应用上——把 `classList.toggle` 整行删掉，全量仍然全绿
+  （变异验证实测）。要冒烟项，要么就一直是账。
+- **分支胶囊会陈旧**：`gitBranch` 在 `hello` 时读一次，会话中途 `git switch` 到 pane 重建之前都不会更新。
+  明文接受，逃生口见决策留痕。
+- **待跑的冒烟项**：新 pane 上 Hero 在（含项目名/本地/分支三个胶囊）、点卡片只把焦点给输入框、点项目名
+  弹出侧栏工作区菜单、发一条消息后 Hero 消失。本次没有显示器与凭据，**未跑**。
+
 ## 决策留痕（只留 `CLAUDE.md` 未覆盖的）
+
+- **5c：git 分支放 `WireHelloResult`，不放 `WirePaneInfo`/`WireLaneInfo`，也不开新命令**。`WirePaneInfo`
+  至少两处投影且是跨项目的，每处都要一个它并不总持有的 `cwd`，而且 shell 每次拓扑变化会按 pane 各读一次；
+  新开 shell 命令要 `ShellCommand` 变体 + zod + dispatch + `assertNever` + client 方法 + 用例，为一个只读
+  装饰性胶囊。代价是陈旧性上界 = pane 寿命，而欢迎页只在 transcript 为空时存在。**逃生口**：将来真要活的
+  分支，一次性提升为 shell 命令，schema 的活付一次。
+- **5c：`hello` 现在会让出事件循环**（多了一次 `.git/HEAD` 读）。这不是纯内部细节：
+  `test/protocolChildProcess.test.ts` 的「killing the host rejects the parent's in-flight commands」
+  原本是**赛跑**——子进程的 `getCheckpointsWithDiffs` 立刻应答，谁先过 IPC 管道决定成败，`hello` 一让出
+  就翻了面（实测 2/6 通过，HEAD 基线 6/6）。修法不是调 sleep，而是让子进程**真的**park 住那个命令
+  （`__hang_checkpoints`），这样「命令在飞」是事实而不是时序巧合。凡是「杀掉宿主时正在飞的命令」这类断言，
+  被测的那条命令必须是子进程答不出来的。
+- **5c：欢迎页挂 pane 子树，不挂 index.html 单例**。「空」是*某个* transcript 的属性，而 transcript 是每
+  pane 的；`paneEl` 已经按需要的生命周期做可见性切换。做成单例就要新 id、要在 `deactivate()` 里清绘制，
+  并重新引入「上一个 pane 的绘制还留在屏上」那个坑。
+- **5c：Hero 的项目名用回调而不是把工作区知识给 pane**。`runSidebarIntent` 需要 `currentSidebarState()`
+  （遍历每个 pane 并读 composer）与 `state.lanes`，都是窗口级状态；把 `SidebarState` 或 `ShellClient`
+  传进 pane 会反转「shell 才是拓扑权威」。`app.ts` 的 `openWorkspaceSwitcher()` 里那句
+  `sidebar.focusWorkspace()` 不是装饰：菜单靠容器 `focusout` 关，焦点从未进过侧栏它就永不触发。
 
 - **4b：侧栏的两个键入口必须分开**。全局那个（`sidebarChordToIntent`）在 `resolveKey` **之前**解析，
   所以不带 ctrl/meta 必须恒返回 `'none'`；侧栏聚焦那个（`sidebarKeyToIntent`）挂在容器上，方向键/Enter
@@ -205,7 +248,7 @@
 ## 验证
 
 ```bash
-npm run typecheck                                     # 三段：base + preload + renderer
+npm run typecheck                                     # 四段：base + preload + renderer + domtest
 npm run test                                          # 全量，~42s
 npm run build                                         # emit 到 dist/（只有桌面外壳需要）
 npm run build:desktop                                 # tsc emit + 两个 esbuild bundle + 拷 index.html/styles.css
@@ -223,6 +266,11 @@ npm run smoke:desktop -- --kill-stale                 # 上一次的 electron �
 node --import tsx --test test/rendererStyleTokens.test.ts test/rendererSettingsModel.test.ts \
   test/rendererSidebar.test.ts test/rendererTranscriptModel.test.ts test/rendererComposerChip.test.ts
 node --import tsx --test test/desktopShellHost.test.ts test/settingsPersistence.test.ts
+
+# 5c 新增（欢迎页 + DOM 地基 + 分支 seam）
+node --import tsx --test test/rendererWelcome.test.ts test/rendererWelcomeView.test.ts \
+  test/gitBranch.test.ts test/rendererImports.test.ts
+npx tsc --noEmit -p tsconfig.domtest.json             # 第四段单独跑
 
 # 既有主题（回归）
 node --import tsx --test test/protocolWire.test.ts test/protocolHost.test.ts \
@@ -242,4 +290,5 @@ node --import tsx --test test/rendererImports.test.ts test/desktopMain.test.ts \
 **这条依赖的是环境变量，不是「在 Claude Code 里跑」。** 看到它报红先 `echo` 一下那两个变量，别当成回归。
 
 **阶段 4 基线**：4f 后全量共 2199 条，实测 2199 pass / 0 fail，typecheck 三段全过，真机冒烟十条全绿。
-阶段 5 的新增用例应在此基线上累加。
+**阶段 5 基线**：5b 后 2214 条；5c 后 **2245** 条，实测 2244 pass / 1 fail（`backgroundTasks` 增量输出，
+单跑全绿），typecheck **四段**全过。阶段 5 的新增用例应在此基线上累加。

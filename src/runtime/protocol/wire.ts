@@ -404,6 +404,19 @@ export interface WireHelloResult {
    * tab bar decides from that comparison whether a row is closable.
    */
   projectRoot: string
+  /** `basename(cwd)` — the same value `WirePaneInfo.projectName` carries. */
+  projectName: string
+  /**
+   * The branch `<cwd>/.git/HEAD` names, absent when it is unreadable, the
+   * directory is not a repository, or HEAD is detached.
+   *
+   * Read once, at attach, like everything else on this result. A mid-session
+   * `git switch` therefore leaves it stale until the pane is rebuilt — accepted,
+   * because the only thing that draws it is the empty-state screen, which exists
+   * for the moment right after an attach or a `/clear`. Promote it to a shell
+   * command if something ever needs it live.
+   */
+  gitBranch?: string
   records: SessionRecord[]
   notices: StartupNotice[]
   hasRecoverableInterruption: boolean

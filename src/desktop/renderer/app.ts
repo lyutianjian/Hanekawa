@@ -190,6 +190,7 @@ function attachPaneSession(lane: string): void {
       // change nothing, and the filesystem pull hangs off `turn-end` below.
       renderSidebar()
     },
+    onSwitchWorkspace: () => openWorkspaceSwitcher(),
     onExit: () => {
       // `/exit` closes this pane, not the window: the single window holds every
       // other lane, and `window.close()` would take them all down.
@@ -372,6 +373,19 @@ function closeLane(lane: string): void {
   const paneId = session?.client.getSession()?.id
   if (!session || paneId === undefined) return
   void session.client.closePane(paneId).catch((error) => session.note(describe(error), 'error'))
+}
+
+/**
+ * The welcome screen's Hero project name, resolved to the sidebar's dropdown.
+ *
+ * Expands the rail first — a menu drawn inside a collapsed sidebar cannot be
+ * clicked — and takes focus last, because the menu is closed by the sidebar's own
+ * `focusout`, which never fires for focus that never arrived.
+ */
+function openWorkspaceSwitcher(): void {
+  if (collapsed) runSidebarIntent({ kind: 'toggle-collapse' })
+  runSidebarIntent({ kind: 'toggle-workspace-menu' })
+  sidebar.focusWorkspace()
 }
 
 function runSidebarIntent(intent: SidebarIntent): void {

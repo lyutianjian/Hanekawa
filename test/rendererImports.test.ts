@@ -255,3 +255,34 @@ test('every element the renderer requires exists in index.html', () => {
     )
   }
 })
+
+test('a test that imports dom/ is excluded from the base program and checked by the DOM one', () => {
+  // Two lists that have to move together. The base program's `lib` is `ES2022`
+  // only — that absence is what stops host code from touching `document` — so a
+  // test importing `dom/` must be excluded there and picked up by
+  // `tsconfig.domtest.json` instead. Miss the first and `npm run typecheck` goes
+  // red on a DOM global; miss the second and nothing type-checks the file at all.
+  const repoRoot = fileURLToPath(new URL('../', import.meta.url))
+  const readJsonc = (name: string): { include?: string[]; exclude?: string[] } =>
+    // Comments only; no trailing commas in either file.
+    JSON.parse(readFileSync(path.join(repoRoot, name), 'utf8').replace(/^\s*\/\/.*$/gm, ''))
+
+  const base = readJsonc('tsconfig.json')
+  const domtest = readJsonc('tsconfig.domtest.json')
+  const covered = (patterns: readonly string[], file: string): boolean =>
+    patterns.some((pattern) => pattern === file || (pattern.includes('*')
+      && new RegExp(`^${pattern.replace(/\*\*\/\*/g, '.*').replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*')}$`).test(file)))
+
+  const importers = readdirSync(path.join(repoRoot, 'test'))
+    .filter((name) => name.endsWith('.test.ts'))
+    .filter((name) => /from '\.\.\/src\/desktop\/renderer\/dom\//.test(
+      readFileSync(path.join(repoRoot, 'test', name), 'utf8'),
+    ))
+
+  assert.ok(importers.length >= 1, 'no test imports dom/ — this guard has nothing to hold')
+  for (const name of importers) {
+    const file = `test/${name}`
+    assert.ok(covered(base.exclude ?? [], file), `${file} must be in tsconfig.json's exclude`)
+    assert.ok(covered(domtest.include ?? [], file), `${file} must be in tsconfig.domtest.json's include`)
+  }
+})

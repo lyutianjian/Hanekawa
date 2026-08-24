@@ -516,6 +516,101 @@ body {
   white-space: pre-wrap;
 }
 
+/* --- welcome (empty state) ---
+   The ceremony a new conversation opens with: a mark, a Hero line naming the
+   project, three guidance cards and a strip of read-only context pills. Only
+   drawn while the pane has no conversation; `model/welcome.ts` owns that
+   verdict and `dom/welcomeView.ts` drops the subtree when it is false.
+
+   `.pane.empty` takes the transcript out of the flex stretch so the block below
+   centres in the canvas instead of sharing it with an almost-empty scroller.
+   The startup notices a fresh draft carries stay visible underneath — never
+   hide output the host emitted. */
+.pane.empty .transcript { flex: 0 0 auto; overflow: visible; }
+.welcome {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 24px;
+}
+.welcome-mark { color: var(--text-tertiary); }
+/* `icon()` writes width/height as presentation attributes, which CSS outranks —
+   so the Hero mark is scaled here rather than through a second icon API. */
+.welcome-mark .icon { width: 48px; height: 48px; }
+.welcome-title {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+}
+/* The project name inside the sentence. A dashed underline rather than a solid
+   one: it reads as "there is more here" without looking like a link. */
+.welcome-project {
+  padding: 0 2px;
+  border: none;
+  border-bottom: 1px dashed var(--border-strong);
+  border-radius: 0;
+  background: none;
+  font: inherit;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.welcome-project:hover { background: var(--surface-hover); color: var(--link); }
+.welcome-project:disabled { cursor: default; border-bottom-color: var(--border-subtle); }
+.welcome-cards {
+  display: grid;
+  /* Three equal tracks, no media query: the token test parses a flat sheet and
+     asserts no nested at-rules. `minmax(0, …)` is what stops a long card title
+     from widening its own track. */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+  max-width: 640px;
+}
+.welcome-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 96px;
+  padding: 12px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.welcome-card:hover { background: var(--surface-hover); }
+/* Card titles wrap to two lines by design, against the global button nowrap. */
+.welcome-card .btn-label { white-space: normal; }
+/* The only colour on this screen, and it lands on `color` so the SVG picks it up
+   through `currentColor` — never a fill. */
+.welcome-card.explore .icon { color: var(--accent-info); }
+.welcome-card.build .icon { color: var(--accent-tool); }
+.welcome-card.review .icon { color: var(--accent-review); }
+.welcome-pills { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+/* Spans, not buttons: these report the environment and nothing more. */
+.welcome-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.welcome-pill-label { white-space: nowrap; }
+
 /* --- surfaces (pickers, command views) ---
    A card floating in the canvas rather than a strip ruled off from it: the
    group container *is* the separator, which is `design_guidance.md`'s fourth

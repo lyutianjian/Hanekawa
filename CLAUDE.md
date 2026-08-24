@@ -14,7 +14,7 @@ tracked `patch-package` patches.
 ```bash
 npm run dev:tui       # terminal UI
 npm run start:desktop # Electron desktop UI
-npm run typecheck     # base, preload, and renderer TypeScript programs
+npm run typecheck     # base, preload, renderer, and DOM-test TypeScript programs
 npm run build         # compile Node/Electron main sources
 npm run build:desktop
 npm run test
@@ -35,6 +35,11 @@ The TypeScript programs are coupled but intentional: the base config covers Node
 `tsconfig.build.json` emits `src/**` to `dist/**` and requires `rootDir: "src"`, while
 `tsconfig.preload.json` and `tsconfig.renderer.json` add DOM libraries. The preload and renderer
 configs must keep their own `exclude`, or they can become empty programs and report a false green.
+
+`tsconfig.domtest.json` is the fourth program: tests that import `src/desktop/renderer/dom/`. The base
+`lib` is `ES2022` only, and that absence is the only thing stopping host and TUI code from touching
+`document` — so such a test is listed in the base `exclude` and checked here instead. Both lists have to
+move together; `test/rendererImports.test.ts` asserts they do.
 
 ## Architecture
 
@@ -239,8 +244,12 @@ otherwise a passing test can contaminate later cases.
 - Every class passed to `controls.ts`'s `button()` needs a **resting-state** rule in `styles.css`; an
   unstyled button falls back to the user agent's filled control, which no typecheck can see.
   `rendererStyleTokens.test.ts` enforces it, and `:hover`/`:disabled` rules alone do not count.
-- `paneSession.ts` and `dom/` have no unit tests (the test runner has no DOM), so behaviour there is covered
-  by `scripts/smoke-desktop.mjs`. Prefer moving a decision into `model/` when it can be tested directly.
+- `paneSession.ts` has no unit tests, so behaviour there is covered by `scripts/smoke-desktop.mjs`.
+  `dom/` can now be tested: `test/helpers/domStub.ts` is a hand-written stand-in for the four `document`
+  members `dom/dom.ts`, `dom/controls.ts` and `dom/icons.ts` use, and `test/rendererWelcomeView.test.ts`
+  is the pattern (install per test, assert through the returned handle, and keep the source-scan guard
+  that fails when a helper grows a DOM call the stub lacks). Still prefer moving a decision into `model/`
+  when it can be tested directly.
 
 ## Conventions and patches
 

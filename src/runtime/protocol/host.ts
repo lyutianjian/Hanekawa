@@ -8,6 +8,7 @@ import type { SessionRecord } from '../../harness/types.js'
 import { resolveUsageWithCost } from '../../harness/usage.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import { MessageQueue } from '../messageQueue.js'
+import { readGitBranch } from '../gitBranch.js'
 import { applyPermissionModeTransition } from '../permissionMode.js'
 import { buildModelPickerOptions } from '../modelPicker.js'
 import { resolveRuntimeModelKeyAfterConfigChange, type ProviderConfigChangeScope } from '../providerRuntime.js'
@@ -605,11 +606,14 @@ export class SessionHost {
         this.postBackgroundTasks()
         this.postQueuedMessages()
         const queued = resolveInitialQueuedPrompt(this.scope.hasRecoverableInterruption)
+        const gitBranch = await readGitBranch(this.project.cwd)
         return {
           sessionId: this.session.id,
           session: this.session,
           cwd: this.project.cwd,
           projectRoot: projectRootKey(this.project.cwd),
+          projectName: projectDisplayName(this.project.cwd),
+          ...(gitBranch ? { gitBranch } : {}),
           records: [...this.ledger.list()],
           notices: this.startupNotices(this.scope.diagnostics),
           hasRecoverableInterruption: this.scope.hasRecoverableInterruption,

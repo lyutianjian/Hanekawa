@@ -38,6 +38,8 @@ import type { SurfacePanel } from './dom/surfaceView.js'
 import type { QueueDom } from './dom/queueView.js'
 import { append, el, show } from './dom/dom.js'
 import { createTranscriptView, type TranscriptView } from './dom/transcriptView.js'
+import { createWelcomeView } from './dom/welcomeView.js'
+import { isTranscriptEmpty, welcomeView } from './model/welcome.js'
 import { classifyInput, commandEffectToIntent } from './model/commandRouting.js'
 import {
   acceptCompletion as applyCompletion,
@@ -124,6 +126,13 @@ export interface PaneSessionDeps {
   composer: ComposerView
   /** Shell chrome (the tab bar) re-renders from the active session. */
   onShellChanged?: () => void
+  /**
+   * Window-level: open the workspace switcher. The welcome screen's Hero names
+   * this pane's project and offers to switch it, but "which projects exist" is
+   * the shell's knowledge, not a pane's — so the pane only reports the click.
+   * Absent means the Hero's project name is not offered as a control.
+   */
+  onSwitchWorkspace?: () => void
   /** `/exit` was accepted by the host — close whatever this shell calls "this pane". */
   onExit: () => void
   /** The lane died from the host side (pane closed, window closing). */
@@ -183,13 +192,21 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   // switch: `show()` flips `hidden`, the scroll position stays where the user
   // left it, and no item is ever rebuilt because of a switch.
   const paneEl = el('div', 'pane')
+  // Before the transcript, so the startup notices a fresh draft carries read as a
+  // footnote under the Hero rather than pushing it off the top of the canvas.
+  const welcomeEl = el('div', 'welcome')
   const transcriptEl = el('div', 'transcript')
   transcriptEl.setAttribute('aria-live', 'polite')
   const toolProgressEl = el('div', 'tool-progress')
   toolProgressEl.hidden = true
-  append(paneEl, [transcriptEl, toolProgressEl])
+  append(paneEl, [welcomeEl, transcriptEl, toolProgressEl])
   deps.mount.appendChild(paneEl)
   const transcriptView: TranscriptView = createTranscriptView(transcriptEl, toolProgressEl)
+  const welcome = createWelcomeView(
+    welcomeEl,
+    () => deps.onSwitchWorkspace?.(),
+    () => deps.composer.focus(),
+  )
 
   // --- state -----------------------------------------------------------------
 
@@ -199,6 +216,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   let commands: WireCommandInfo[] = []
   let panes: readonly WirePaneInfo[] = Object.freeze([])
   let ownProjectRoot: string | undefined
+  /** From `hello`, for the welcome screen's Hero and its context pills. */
+  let projectName: string | undefined
+  let gitBranch: string | undefined
   /**
    * Messages the host is holding until the running turn ends — a mirror of
    * `client.getQueuedMessages()`, drawn from the last `queued-messages` event.
@@ -224,6 +244,15 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   function renderTranscript(): void {
     if (!active) return
     transcriptView.render(transcript)
+    // The one place that decides whether this pane has a conversation, so the
+    // transcript and the welcome screen cannot disagree about it.
+    welcome.render(welcomeView({
+      transcript,
+      projectName,
+      branch: gitBranch,
+      canSwitchWorkspace: deps.onSwitchWorkspace !== undefined,
+    }))
+    paneEl.classList.toggle('empty', isTranscriptEmpty(transcript))
   }
 
   function renderQueue(): void {
@@ -804,6 +833,12 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 
   async function start(): Promise<void> {
     const hello = await client.hello()
+
+    // Before the first paint, not with the other `hello` bookkeeping below: the
+    // welcome screen names the project, and setting these after
+    // `renderTranscript()` would show one frame of the「当前项目」fallback.
+    projectName = hello.projectName
+    gitBranch = hello.gitBranch
 
     transcript = createTranscriptState(hello.records)
     for (const notice of hello.notices) {

@@ -47,6 +47,9 @@ let snapshot = {
 }
 const snapshotListeners = new Set()
 
+/** Flipped by the parent's \`__hang_checkpoints\`; see the checkpoint service below. */
+let hangCheckpoints = false
+
 const controller = {
   onEvent: (fn) => { eventListeners.add(fn); return () => eventListeners.delete(fn) },
   subscribe: (fn) => { snapshotListeners.add(fn); return () => snapshotListeners.delete(fn) },
@@ -66,7 +69,12 @@ const controller = {
   interrupt: () => {},
   reload: async () => [],
   retarget: () => {},
-  getCheckpointService: () => ({ getCheckpointsWithDiffs: async () => [], restoreToCommit: async () => ({ success: true }) }),
+  getCheckpointService: () => ({
+    // The parent can park this one on request, so "a command was in flight when
+    // the host died" is a fact rather than a race with the reply.
+    getCheckpointsWithDiffs: async () => hangCheckpoints ? new Promise(() => {}) : [],
+    restoreToCommit: async () => ({ success: true }),
+  }),
 }
 
 const agentSession = {
@@ -142,6 +150,10 @@ process.on('message', (message) => {
   }
   if (message && message.type === '__echo_request') {
     process.send({ type: '__echo', payload: message })
+  }
+  if (message && message.type === '__hang_checkpoints') {
+    hangCheckpoints = true
+    process.send({ type: '__hanging' })
   }
 })
 
@@ -263,6 +275,17 @@ test('killing the host rejects the parent\'s in-flight commands', async (t) => {
   t.after(() => child.kill())
 
   await child.client.hello()
+
+  // Park the child's checkpoint service first. Without this the test races the
+  // reply against the kill: `getCheckpointsWithDiffs` answers immediately, so
+  // whether anything is still in flight depends on which crosses the IPC pipe
+  // first — and it flipped the moment `hello` grew a disk read (the git branch),
+  // because that changed when the child yields.
+  child.proc.send({ type: '__hang_checkpoints' } as never)
+  await waitFor(
+    () => child.raw.find((message) => (message as { type?: string })?.type === '__hanging'),
+    'the child to park its checkpoint service',
+  )
 
   // Attached before the kill so the rejection is never briefly unhandled.
   const pending = assert.rejects(child.client.getCheckpoints(), /host disconnected/)

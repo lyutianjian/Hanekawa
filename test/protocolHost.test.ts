@@ -455,7 +455,13 @@ test('hello replays both snapshots and never leaks the model apiKey', async () =
     'the endpoint credential must never reach a renderer')
 
   assert.ok(harness.received.some((event) => event.type === 'snapshot'))
-  assert.ok(harness.received.some((event) => event.type === 'reply' && event.id === 'c1'))
+  // The reply waits on a disk read (`.git/HEAD` for the branch pill), so one
+  // macrotask is no longer enough — the two snapshots above still are, because
+  // the host posts them before that read.
+  await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'c1'),
+    'a hello reply',
+  )
   harness.dispose()
 })
 
@@ -982,6 +988,8 @@ test('hello carries everything a shell needs to paint its first frame', async ()
     sessionId: string
     session: { id: string }
     cwd: string
+    projectName: string
+    gitBranch?: string
     records: SessionRecord[]
     notices: unknown[]
     hasRecoverableInterruption: boolean
@@ -989,10 +997,29 @@ test('hello carries everything a shell needs to paint its first frame', async ()
   }
   assert.equal(result.session.id, result.sessionId)
   assert.equal(typeof result.cwd, 'string')
+  assert.equal(result.projectName, path.basename(harness.cwd))
+  // The scratch project is not a repository, so the branch pill has nothing to
+  // draw — absent, not an empty string.
+  assert.equal(result.gitBranch, undefined)
   assert.deepEqual(result.records, [])
   assert.deepEqual(result.notices, [])
   assert.equal(result.hasRecoverableInterruption, false)
   assert.equal(result.configuredEffortLevel, 'medium')
+  harness.dispose()
+})
+
+test('hello carries the git branch when the project root is a repository', async () => {
+  const harness = await createHarness()
+  await mkdir(path.join(harness.cwd, '.git'), { recursive: true })
+  await writeFile(path.join(harness.cwd, '.git', 'HEAD'), 'ref: refs/heads/topic\n')
+
+  harness.send({ type: 'hello', id: 'h2' })
+  const reply = await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'h2'),
+    'a hello reply',
+  )
+  assert.ok(reply.type === 'reply')
+  assert.equal((reply.result as { gitBranch?: string }).gitBranch, 'topic')
   harness.dispose()
 })
 

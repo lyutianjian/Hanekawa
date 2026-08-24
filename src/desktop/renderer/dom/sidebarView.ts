@@ -42,6 +42,15 @@ export type SidebarAction = (intent: SidebarIntent) => void
 
 export interface SidebarDom {
   render(view: SidebarView): void
+  /**
+   * Moves focus to the workspace dropdown's trigger.
+   *
+   * Not decoration: the menu is closed by this container's `focusout`, which
+   * never fires for focus that never arrived. Something outside the sidebar that
+   * opens the menu — the welcome screen's Hero project name — would otherwise
+   * leave it open until the user happened to click into the sidebar and out again.
+   */
+  focusWorkspace(): void
 }
 
 const BADGE_LABELS = {
@@ -107,6 +116,9 @@ export function createSidebarView(
   // The last-drawn menu state, so `focusout` can close an open workspace dropdown
   // when the user's attention leaves the sidebar without having to guess.
   let menuOpen = false
+
+  /** The workspace trigger from the last render; the header rebuilds it each pass. */
+  let workspaceTrigger: HTMLButtonElement | undefined
 
   container.addEventListener('focusout', (event) => {
     const next = event.relatedTarget
@@ -223,15 +235,14 @@ export function createSidebarView(
    */
   const workspaceNode = (view: SidebarView): HTMLElement => {
     const wrapper = el('div', 'sidebar-workspace-shell')
-    wrapper.appendChild(
-      button(
-        `sidebar-workspace${view.workspaceMenuOpen ? ' open' : ''}`,
-        view.workspaceName ?? 'Hanekawa',
-        view.workspaces.length > 1 ? '切换工作区' : '当前工作区',
-        () => onIntent({ kind: 'toggle-workspace-menu' }),
-        { icon: 'chevron-down' },
-      ),
+    workspaceTrigger = button(
+      `sidebar-workspace${view.workspaceMenuOpen ? ' open' : ''}`,
+      view.workspaceName ?? 'Hanekawa',
+      view.workspaces.length > 1 ? '切换工作区' : '当前工作区',
+      () => onIntent({ kind: 'toggle-workspace-menu' }),
+      { icon: 'chevron-down' },
     )
+    wrapper.appendChild(workspaceTrigger)
     if (view.workspaceMenuOpen && view.workspaces.length > 0) {
       const menu = el('div', 'sidebar-workspace-menu')
       menu.setAttribute('role', 'menu')
@@ -262,6 +273,9 @@ export function createSidebarView(
   let drawn: string | undefined
 
   return {
+    focusWorkspace() {
+      workspaceTrigger?.focus()
+    },
     render(view) {
       const signature = sidebarRenderSignature(view)
       if (signature === drawn) return

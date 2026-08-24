@@ -32,6 +32,13 @@ export type IconName =
   | 'send'
   | 'stop'
   | 'gear'
+  // --- the empty-state screen (5c) ---
+  | 'thought-bubble'
+  | 'megaphone'
+  | 'hammer'
+  | 'refresh'
+  | 'monitor'
+  | 'branch'
 
 interface IconSpec {
   /** Path data on a 16×16 grid. */
@@ -68,6 +75,41 @@ const ICONS = {
     paths: [
       'M8 10a2 2 0 1 1 0-4 2 2 0 0 1 0 4z',
       'M12.9 9.5a1 1 0 0 0 .2 1.1l.1.1a1.2 1.2 0 1 1-1.7 1.7l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9v.2a1.2 1.2 0 0 1-2.4 0V13a1 1 0 0 0-.7-.9 1 1 0 0 0-1.1.2l-.1.1a1.2 1.2 0 1 1-1.7-1.7l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6h-.2a1.2 1.2 0 0 1 0-2.4H3a1 1 0 0 0 .9-.7 1 1 0 0 0-.2-1.1l-.1-.1a1.2 1.2 0 1 1 1.7-1.7l.1.1a1 1 0 0 0 1.1.2H6.6a1 1 0 0 0 .6-.9v-.2a1.2 1.2 0 0 1 2.4 0V3a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a1.2 1.2 0 1 1 1.7 1.7l-.1.1a1 1 0 0 0-.2 1.1v.1a1 1 0 0 0 .9.6h.2a1.2 1.2 0 0 1 0 2.4H13a1 1 0 0 0-.9.6z',
+    ],
+  },
+  // --- the empty-state screen ---
+  // A cloud with a terminal prompt inside it, per design_guidance 三.2①. Drawn at
+  // 48px there, which is why the shapes are outlines and not detail.
+  'thought-bubble': {
+    paths: [
+      'M5 12a2.6 2.6 0 0 1-.5-5.1 3.4 3.4 0 0 1 6.4-1.3A2.7 2.7 0 0 1 11.4 12z',
+      'M6.2 9.6h3.6',
+    ],
+  },
+  megaphone: { paths: ['M4.4 6.3 11.2 3.3v9.4L4.4 9.7z', 'M4.4 6.3H2.7v3.4h1.7', 'M6.7 10.1v2.6'] },
+  hammer: { paths: ['M8.9 2.8l4.3 4.3-2 2-4.3-4.3z', 'M6.9 6.8 3 10.7l2.3 2.3 3.9-3.9'] },
+  refresh: {
+    paths: [
+      'M3.2 8a4.8 4.8 0 0 1 8.2-3.4',
+      'M12.8 8a4.8 4.8 0 0 1-8.2 3.4',
+      'M11.4 2v2.7H8.7',
+      'M4.6 14v-2.7h2.7',
+    ],
+  },
+  monitor: {
+    paths: [
+      'M2.5 4.2a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v5.4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z',
+      'M8 10.6v2.2',
+      'M6 12.8h4',
+    ],
+  },
+  branch: {
+    paths: [
+      'M4.5 2.6a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z',
+      'M4.5 10.4a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z',
+      'M11.5 2.6a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z',
+      'M4.5 5.6v4.8',
+      'M11.5 5.6v1.4a2.5 2.5 0 0 1-2.5 2.5H7a2.5 2.5 0 0 0-2.5 2.5',
     ],
   },
 } as const satisfies Record<IconName, IconSpec>

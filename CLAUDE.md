@@ -179,11 +179,19 @@ to `dom/` and the app shell. Every blocking UI request must be answered or settl
   that is already read live. Each `SettingsChange` variant declares this in one place.
 - `SettingsChange` is keyed by `kind` alone in the host's schema table and dispatch, so a new variant needs
   a globally unique `kind`; the keyed `satisfies` and `assertNever` are what fail the build by name.
-- The canvas header, the sidebar and the settings screen are *window*-level views: everything the header
-  draws comes off `WireLaneInfo`, so session identity has one source and no pane is involved. The status
-  bar carries usage, cost and streaming only — the model and effort live on the composer's chip, the
+- The canvas header, the title bar, the sidebar and the settings screen are *window*-level views:
+  everything the header draws comes off `WireLaneInfo`, so session identity has one source and no pane is
+  involved. The status line carries usage, cost and streaming only, sits under the composer (never across
+  the top of the canvas) and is empty while idle — the model and effort live on the composer's chip, the
   permission mode on its pill, and the session name in the header. `document.title` stays in
   `statusView.renderSession`, where it still means "a `hello()` came back".
+- The window is frameless (`titleBarStyle: 'hidden'`), so `#titlebar` is a drag region and every control
+  in it must be `no-drag`; the strip on its right is where Windows paints its own three buttons and must
+  stay empty. `main.ts` sets `backgroundColor` (no white flash) and clears the application menu off
+  darwin. `WINDOW_CHROME` in `main.ts` is the one place outside `styles.css` allowed to spell a colour —
+  the overlay is OS-painted chrome no stylesheet reaches — and `set-window-theme` is what repaints it;
+  unlike `open-project`/`open-in-editor`, a shell with no overlay answers `ok` rather than rejecting.
+  Every title-bar menu item must map to an intent that already exists, and there is no 编辑 menu.
 - `open-in-editor` is awaited by the shell (unlike `open-project`, which is fire-and-forget), so a missing
   `code` reaches the renderer as a `fail` rather than a native box. It carries `projectRoot` — the only
   project handle the renderer has — and the host resolves it to `entry.cwd`, never handing the normalized
@@ -257,6 +265,11 @@ otherwise a passing test can contaminate later cases.
   as an ancestor's descendant or under a state class. Controls built inside `controls.ts`, the
   transcript's own, and the 5e header/composer chrome are therefore covered by three explicit class lists
   in the same test — extend the right list when adding a control.
+- `--accent-*` may colour a glyph, a hairline or a state rule, never a `background`. The single exception is
+  `.settings-toggle.on`, named in `ACCENT_FILL_EXCEPTIONS` in `rendererStyleTokens.test.ts` (a switch has no
+  label, so the coloured track *is* the state); the list is checked for non-vacuity, so do not widen it and
+  do not leave a stale entry. The transcript and the composer share one reading column (`.transcript-column`
+  / `.composer-column`, ~760px): the scroller stays full width so its scrollbar keeps to the panel's edge.
 - `paneSession.ts` has no unit tests, so behaviour there is covered by `scripts/smoke-desktop.mjs`.
   `dom/` can now be tested: `test/helpers/domStub.ts` is a hand-written stand-in for the `document`
   members `dom/dom.ts`, `dom/controls.ts` and `dom/icons.ts` use, plus a `Node` binding (a `focusout`
@@ -268,6 +281,14 @@ otherwise a passing test can contaminate later cases.
   DOM call the stub lacks — it reads comments too). The scan covers `document` members only, so element
   members the stub fakes are unguarded. Still prefer moving a decision into `model/` when it can be tested
   directly.
+- `app.ts`'s **top-level order is load-bearing**: the transport (`mux` / `shellClient`) must be built before
+  the theme block, because `applyResolvedTheme` runs at module top level and tells the main process to
+  repaint the native overlay. Reading a `const` still in its dead zone there throws before any view is
+  constructed, and the window opens showing nothing but `index.html` — no typecheck program sees it (`const`
+  hoisting makes the forward reference legal). `test/rendererBoot.test.ts` is the guard: it boots the real
+  esbuild bundle against `helpers/domStub.ts` plus a bridge that answers `panes`, and asserts the title bar
+  and sidebar are non-empty. Any test importing that stub needs the DOM lib, so it belongs in
+  `tsconfig.domtest.json`'s include and the base `exclude` — `rendererImports.test.ts` checks both lists.
 
 ## Conventions and patches
 

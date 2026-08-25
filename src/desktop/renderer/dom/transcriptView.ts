@@ -57,7 +57,15 @@ export function createTranscriptView(
   return {
     render(state, toggledThinking) {
       const atBottom = isScrolledToBottom(container)
-      replace(container, ...state.items.map((item) => itemNode(item, toggledThinking, onToggleThinking)))
+      // One column inside the scroller, not a `max-width` on the scroller itself:
+      // the reading column is ~760px (design_guidance 四.2) while the scrollbar
+      // has to stay at the panel's edge, and the user bubble's right alignment is
+      // `margin-left: auto` — which only means "right of the column" if the
+      // column is a real box.
+      replace(
+        container,
+        el('div', 'transcript-column', ...state.items.map((item) => itemNode(item, toggledThinking, onToggleThinking))),
+      )
 
       // Follow the tail only if the user was already there, so reading back
       // through a long turn is not yanked away on every token.

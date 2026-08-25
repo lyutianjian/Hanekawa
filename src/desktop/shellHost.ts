@@ -39,6 +39,7 @@ import {
   type WireLaneInfo,
   type WireShellDeleteSessionResult,
   type WireShellOpenInEditorResult,
+  type WireShellSetWindowThemeResult,
   type WireShellOpenProjectResult,
   type WireShellOpenSessionResult,
   type WireShellPanesResult,
@@ -235,6 +236,13 @@ export interface ShellHostDeps<
    */
   onOpenInEditor?: (cwd: string) => Promise<void>
   /**
+   * Repaints the native title-bar overlay for the resolved theme (5g).
+   *
+   * Not awaited and allowed to be absent: see the `set-window-theme` arm of
+   * `execute`.
+   */
+  onWindowTheme?: (theme: 'dark' | 'light') => void
+  /**
    * While quitting, `detachLane` skips project shutdown: teardown owns the
    * ordering then, and closing projects mid-loop would race its own sweep.
    */
@@ -428,6 +436,13 @@ const SHELL_COMMAND_SCHEMAS = {
     .strict(),
   'open-in-editor': z
     .object({ type: z.literal('open-in-editor'), id: commandId, projectRoot: z.string() })
+    .strict(),
+  'set-window-theme': z
+    .object({
+      type: z.literal('set-window-theme'),
+      id: commandId,
+      theme: z.enum(['dark', 'light']),
+    })
     .strict(),
 } as const satisfies Record<ShellCommand['type'], z.ZodTypeAny>
 
@@ -671,6 +686,14 @@ export class ShellHost<
         return this.renameSession(command.projectRoot, command.sessionId, command.title)
       case 'open-in-editor':
         return this.openInEditor(command.projectRoot)
+      case 'set-window-theme': {
+        // Unlike `open-project` / `open-in-editor`, a missing callback answers
+        // `ok` rather than rejecting: the overlay is chrome, a shell without one
+        // (every non-Windows build, and the test host) is not broken, and a
+        // rejection here would put a native-chrome detail in the transcript.
+        this.deps.onWindowTheme?.(command.theme)
+        return { ok: true } satisfies WireShellSetWindowThemeResult
+      }
       default:
         return assertNever(command)
     }

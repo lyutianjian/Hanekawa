@@ -16,6 +16,12 @@
       `#transcript-area` as its own subtree, visibility-toggled, so switching
       sessions keeps scroll positions and repaints nothing.
     -->
+    <!--
+      The frameless window's own title bar (5g). It is a drag region; the OS
+      still paints minimize/maximize/close into the reserved strip on its right
+      (`titleBarOverlay`), which is why nothing may be drawn there.
+    -->
+    <header id="titlebar"></header>
     <div id="shell">
       <aside id="sidebar" aria-label="会话与项目"></aside>
       <main id="canvas">
@@ -25,11 +31,6 @@
           list, so it belongs to the window rather than to any pane.
         -->
         <header id="canvas-header" hidden></header>
-        <div id="status">
-          <span id="status-usage"></span>
-          <span id="status-cost"></span>
-          <span id="status-streaming">idle</span>
-        </div>
         <div id="transcript-area"></div>
         <div id="surface" hidden></div>
         <div id="suggestions" hidden role="listbox" aria-label="斜杠命令"></div>
@@ -41,30 +42,46 @@
           different picker.
         -->
         <form id="input-row">
-          <div id="composer">
-            <textarea
-              id="input"
-              placeholder="给 Hanekawa 发消息，或用 / 唤出命令。Shift+Enter 换行。"
-              rows="1"
-            ></textarea>
-            <div id="composer-bar">
-              <button id="composer-attach" type="button"></button>
+          <!--
+            The composer shares the transcript's reading column, so a message and
+            the answer to it sit on one axis. The status line hangs under it
+            (5g): usage, cost and "生成中" are metadata about the turn being
+            typed, and a strip across the top of the canvas is the one thing the
+            reference builds never have.
+          -->
+          <div class="composer-column">
+            <div id="composer">
               <!--
-                The permission-mode pill. Its menu is built into this shell by
-                `dom/composerView.ts`, which is why the shell is positioned and
-                the trigger is not.
+                A short placeholder, deliberately: the keys it used to spell out
+                (Shift+Enter, `/`) live in the sidebar's `?` panel, and a
+                sentence-long placeholder is the first thing that reads as a
+                prototype.
               -->
-              <div id="composer-permission">
-                <button id="chip-permission" type="button">…</button>
+              <textarea id="input" placeholder="随心输入" rows="1"></textarea>
+              <div id="composer-bar">
+                <button id="composer-attach" type="button"></button>
+                <!--
+                  The permission-mode pill. Its menu is built into this shell by
+                  `dom/composerView.ts`, which is why the shell is positioned and
+                  the trigger is not.
+                -->
+                <div id="composer-permission">
+                  <button id="chip-permission" type="button">…</button>
+                </div>
+                <span class="composer-spacer"></span>
+                <span id="composer-progress" hidden></span>
+                <div id="composer-chip" role="group" aria-label="模型与思考强度">
+                  <button id="chip-model" type="button">…</button>
+                  <button id="chip-effort" type="button">…</button>
+                </div>
+                <button id="stop" type="button" hidden></button>
+                <button id="submit" type="submit"></button>
               </div>
-              <span class="composer-spacer"></span>
-              <span id="composer-progress" hidden></span>
-              <div id="composer-chip" role="group" aria-label="模型与思考强度">
-                <button id="chip-model" type="button">…</button>
-                <button id="chip-effort" type="button">…</button>
-              </div>
-              <button id="stop" type="button" hidden></button>
-              <button id="submit" type="submit"></button>
+            </div>
+            <div id="status">
+              <span id="status-streaming"></span>
+              <span id="status-usage"></span>
+              <span id="status-cost"></span>
             </div>
           </div>
         </form>

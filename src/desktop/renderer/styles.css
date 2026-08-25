@@ -28,6 +28,11 @@
   --surface-hover: #25252b;
   /* The row the keyboard is on, in either list. */
   --surface-active: #2a2a30;
+  /* The knob of a switch that is on. Its own token because it is the one
+     surface that must NOT follow the theme: it sits on `--accent-info`, which is
+     a saturated blue in both themes, so `--text-primary` would turn it near-black
+     in light mode. White in both. */
+  --surface-knob: #ffffff;
   /* What a modal dims the app with. A token because both #overlay and #rewind
      draw it, and they must dim by the same amount or stacking them reads as a
      bug. */
@@ -148,6 +153,107 @@ body {
 }
 [hidden] { display: none !important; }
 
+/* --- scrollbars ---
+   Chromium's default is a wide light track, and on the canvas it lands right
+   against the rounded corner the layout is built around — the one piece of
+   chrome in the window that ignores the palette entirely. These are ordinary
+   selector blocks, not at-rules, so `rendererStyleTokens`'s flat parser still
+   holds. `scrollbar-width`/`-color` is the standard property (and the only one
+   Firefox reads); the `::-webkit-` rules are what Chromium actually applies. */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: var(--radius-pill);
+  /* Painting the thumb through its border box is what leaves the 3px inset
+     above transparent — a `background` would fill it. */
+  background-clip: content-box;
+  background-color: var(--border-strong);
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--text-tertiary); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* --- title bar ---
+   The frameless window's own caption strip (5g). `-webkit-app-region: drag` is
+   what makes the window movable at all once `frame` is gone, and every control
+   inside has to opt back out or it becomes a place to grab the window rather
+   than a button. The right padding is the space Windows paints its three
+   buttons into (`titleBarOverlay`); nothing may be drawn there. */
+#titlebar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 40px;
+  padding: 0 148px 0 8px;
+  background: var(--surface-base);
+  -webkit-app-region: drag;
+}
+#titlebar button { -webkit-app-region: no-drag; }
+.titlebar-rail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: var(--radius-md);
+  font: inherit;
+  cursor: pointer;
+}
+.titlebar-rail:hover { color: var(--text-primary); background: var(--surface-hover); }
+/* Positioned so the menu hangs off its trigger; the bar is not inside a
+   scroller, so `overflow` can stay visible here. */
+.titlebar-menu-shell { position: relative; display: inline-flex; }
+.titlebar-menu-trigger {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.titlebar-menu-trigger:hover { color: var(--text-primary); background: var(--surface-hover); }
+.titlebar-menu-trigger.open { color: var(--text-primary); background: var(--surface-active); }
+.titlebar-menu {
+  position: absolute;
+  top: 32px;
+  left: 0;
+  z-index: 6;
+  min-width: 13rem;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+}
+.titlebar-menu-item {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  background: transparent;
+  color: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.titlebar-menu-item:hover:enabled { background: var(--surface-hover); }
+.titlebar-menu-item:disabled { color: var(--text-tertiary); cursor: default; }
+.titlebar-menu-item .btn-label { flex: 1 1 auto; }
+.titlebar-menu-chord { color: var(--text-tertiary); font-size: 11px; }
+
 /* --- icons ---
    `dom/icons.ts` draws these as SVG inheriting `currentColor`, so an icon is
    coloured by whatever rule colours its button. Sized here rather than on the
@@ -256,17 +362,22 @@ body {
 }
 .canvas-open-location:hover { color: var(--text-primary); background: var(--surface-hover); }
 
-/* --- status bar --- */
+/* --- status line ---
+   Under the composer, right-aligned, and empty while nothing is happening. It
+   used to be a strip across the top of the canvas that permanently read「空闲」—
+   a label for the absence of news, in the one place the design reserves for the
+   session's identity (design_guidance 四.2). Everything it carries is metadata
+   about the turn being typed, so it belongs beside the thing typing it. */
 #status {
-  flex: 0 0 auto;
-  padding: 8px 14px;
-  color: var(--text-secondary);
-  font-size: 12px;
   display: flex;
-  gap: 16px;
+  justify-content: flex-end;
+  gap: 12px;
   align-items: baseline;
+  padding: 4px 8px 0;
+  min-height: 18px;
+  color: var(--text-tertiary);
+  font-size: 11px;
 }
-#status-streaming { color: var(--text-tertiary); }
 
 /* --- the two-column shell ---
    The sidebar is the app's base surface and the canvas is a lighter panel
@@ -297,7 +408,7 @@ body {
 
 /* --- sidebar --- */
 #sidebar {
-  flex: 0 0 260px;
+  flex: 0 0 268px;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -307,8 +418,7 @@ body {
 /* Collapsed keeps the rail so the toggle stays reachable by mouse —
    otherwise Ctrl+B is the only way back. */
 #sidebar.collapsed { flex-basis: 44px; }
-#sidebar.collapsed .sidebar-workspace-shell,
-#sidebar.collapsed .sidebar-new { display: none; }
+#sidebar.collapsed .sidebar-workspace-shell { display: none; }
 .sidebar-header {
   position: relative;
   flex: 0 0 auto;
@@ -394,29 +504,28 @@ body {
 }
 .sidebar-search::placeholder { color: var(--text-tertiary); }
 .sidebar-search:focus { outline: none; border-color: var(--focus-ring); }
-.sidebar-new,
-.sidebar-open-project {
+/* The first-level actions. Rows, not pills: they sit in the same column the
+   session rows do, and a bordered capsule there reads as a second kind of
+   thing (design_guidance 三.2). */
+.sidebar-nav { flex: 0 0 auto; display: flex; flex-direction: column; padding: 2px 6px 6px; }
+.sidebar-nav-item {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
+  width: 100%;
   background: transparent;
   color: var(--text-secondary);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-pill);
-  padding: 4px 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 7px 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
+  text-align: left;
   white-space: nowrap;
   cursor: pointer;
 }
-.sidebar-new:hover:enabled,
-.sidebar-open-project:hover:enabled {
-  color: var(--text-primary);
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
-}
-.sidebar-new:disabled,
-.sidebar-open-project:disabled { opacity: 0.4; cursor: default; }
+.sidebar-nav-item:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+.sidebar-nav-item:disabled { opacity: 0.4; cursor: default; }
 /* The footer settings entry reads as a user-profile row (gear + name), left
    aligned and full width, rather than the pill the two buttons above use — it is
    the personal corner of the sidebar, not another action. */
@@ -463,7 +572,35 @@ body {
   flex-direction: column;
   gap: 6px;
 }
-.sidebar-hint { color: var(--text-tertiary); font-size: 10px; line-height: 1.4; }
+/* The chord list, behind the footer's `?`. Present only while it is open, so
+   there is no permanently-on wall of 10px text under the footer. */
+.sidebar-hint {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.sidebar-footer-row { display: flex; align-items: center; gap: 4px; }
+.sidebar-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  color: var(--text-tertiary);
+  border: 0;
+  border-radius: var(--radius-pill);
+  font: inherit;
+  cursor: pointer;
+}
+.sidebar-help:hover { color: var(--text-primary); background: var(--surface-hover); }
+.sidebar-help.open { color: var(--text-primary); background: var(--surface-active); }
 
 /* One project's sessions, behind its own heading. Only drawn from two up. */
 .project-label {
@@ -479,15 +616,16 @@ body {
 .project-group.own .project-label { color: var(--text-primary); }
 .session-section-label {
   color: var(--text-tertiary);
-  font-size: 10px;
-  padding: 6px 12px 2px;
+  font-size: 11px;
+  padding: 10px 12px 2px;
 }
 .session-row {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-height: 32px;
   margin: 1px 6px;
-  padding: 2px 6px 2px 8px;
+  padding: 2px 6px 2px 10px;
   border-radius: var(--radius-md);
   cursor: pointer;
 }
@@ -505,7 +643,7 @@ body {
   border: 0;
   padding: 3px 0;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
 }
@@ -580,9 +718,17 @@ body {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: 12px;
-  font-size: 13px;
+  font-size: 14px;
 }
-.transcript .item { margin-bottom: 10px; white-space: pre-wrap; word-break: break-word; }
+/* The reading column. A 1200px window makes a full-width paragraph 150+
+   characters long, which is a readability problem rather than a taste one; the
+   scroller stays full width so its scrollbar keeps to the panel's edge. Kept in
+   step with `.composer-column`, or the composer stops sharing the text's axis. */
+.transcript-column { max-width: 760px; margin: 0 auto; }
+/* 16px between turns, and the line-height a wall of prose needs. Both are the
+   rhythm half of design_guidance 四.2 — the old 10px/1.5 ran the assistant's
+   answer and the next question together. */
+.transcript .item { margin-bottom: 16px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
 /*
   Markdown items are real block elements, so the pre-wrap above would turn
   every newline between blocks into a blank line. Only the code inside a
@@ -596,9 +742,9 @@ body {
   width: fit-content;
   max-width: 80%;
   margin-left: auto;
-  padding: 6px 10px;
+  padding: 10px 14px;
   background: var(--surface-card);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   color: var(--text-primary);
 }
 .transcript .item.assistant { color: var(--text-primary); }
@@ -894,8 +1040,11 @@ body {
    and never appears in settings. */
 #input-row {
   flex: 0 0 auto;
-  padding: 0 8px 10px;
+  padding: 0 12px 10px;
 }
+/* The composer's half of the reading column; kept in step with
+   `.transcript-column`, so a question and its answer share one axis. */
+.composer-column { max-width: 760px; margin: 0 auto; }
 #composer {
   display: flex;
   flex-direction: column;
@@ -903,7 +1052,7 @@ body {
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  padding: 8px 10px;
+  padding: 10px 12px;
 }
 #composer:focus-within { border-color: var(--border-strong); }
 #input {
@@ -1022,8 +1171,8 @@ body {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border: 0;
   border-radius: var(--radius-pill);
   cursor: pointer;
@@ -1282,6 +1431,8 @@ body {
    a colour — every value is a token, which is what
    `test/rendererStyleTokens.test.ts` checks. */
 
+/* `#status` is not listed: it moved inside `#input-row` in 5g, so hiding the
+   composer hides it too. */
 #canvas.settings-open > #canvas-header,
 #canvas.settings-open > #transcript-area,
 #canvas.settings-open > #surface,
@@ -1413,9 +1564,11 @@ body {
   padding-bottom: 14px;
 }
 
+/* The page's H1 (design_guidance 六). It reads as a heading, not as another
+   card title — which is what 15px made it, since the card titles are 14px. */
 .settings-title {
   color: var(--text-primary);
-  font-size: 15px;
+  font-size: 20px;
   font-weight: 600;
 }
 
@@ -1425,9 +1578,13 @@ body {
   font-size: 12px;
 }
 
+/* A group is a card with a hairline of its own (design_guidance 六): in light
+   mode `--surface-card` is a hair off white and the border is the only thing
+   that says where the group ends. */
 .settings-card {
   margin-bottom: 16px;
-  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
   background: var(--surface-card);
   overflow: hidden;
 }
@@ -1609,10 +1766,12 @@ body {
   color: var(--text-primary);
 }
 
-/* The switch. `#submit` is the precedent for the "on" state: a neutral
-   high-contrast fill, not an accent one — an accent as a background is exactly
-   what the 95%-neutral rule excludes, and `rendererStyleTokens` enforces it.
-   The accent is allowed on the border, which is where the state reads from. */
+/* The switch, and the one place in the sheet where an accent *is* a fill
+   (design_guidance 六 / 七.4). A switch has no label of its own: the coloured
+   track is the state, which is why both reference builds draw it and why the
+   neutral version read as "disabled" at a glance. `rendererStyleTokens`'s
+   accent-fill rule therefore carries a named exception for `.settings-toggle.on`
+   and nothing else — do not widen it. */
 .settings-toggle {
   display: flex;
   flex: 0 0 auto;
@@ -1628,7 +1787,7 @@ body {
 .settings-toggle.on {
   justify-content: flex-end;
   border-color: var(--accent-info);
-  background: var(--surface-active);
+  background: var(--accent-info);
 }
 
 .settings-toggle:focus-visible {
@@ -1649,7 +1808,7 @@ body {
 }
 
 .settings-toggle.on .settings-toggle-knob {
-  background: var(--text-primary);
+  background: var(--surface-knob);
 }
 
 .settings-btn {

@@ -254,6 +254,7 @@ test('the palette is the one that was agreed, value for value', () => {
       '--surface-card': '#1f1f23',
       '--surface-hover': '#25252b',
       '--surface-active': '#2a2a30',
+      '--surface-knob': '#ffffff',
       '--surface-scrim': 'rgba(0, 0, 0, 0.55)',
       '--text-primary': '#f2f2f5',
       '--text-secondary': '#9aa0aa',
@@ -293,6 +294,9 @@ test('the palette is the one that was agreed, value for value', () => {
       '--surface-card': '#fafafc',
       '--surface-hover': '#eaebee',
       '--surface-active': '#e5e7eb',
+      // Carried through from `:root`, deliberately: the knob sits on the blue
+      // track in both themes, so it is white in both.
+      '--surface-knob': '#ffffff',
       '--surface-scrim': 'rgba(0, 0, 0, 0.55)',
       '--text-primary': '#1a1a1e',
       '--text-secondary': '#686b75',
@@ -451,15 +455,40 @@ test('accents are for icons and state rules, never for fills', () => {
     '--text-success',
   ]
 
+  /**
+   * The one fill the rule allows, named rather than inferred.
+   *
+   * A switch carries no label: the coloured track *is* the state, which is what
+   * the neutral version could not say — it read as "disabled" at a glance
+   * (design_guidance 六 and 七.4). Written as an exact selector/property pair so
+   * widening it is an edit to this list rather than a side effect: `.settings-toggle`
+   * at rest, and every other control, stays under the rule.
+   */
+  const ACCENT_FILL_EXCEPTIONS: readonly { selector: string; prop: string }[] = [
+    { selector: '.settings-toggle.on', prop: 'background' },
+  ]
+
   let seen = 0
+  let exceptionsSeen = 0
   for (const { selector, prop, value } of declarations) {
     if (!/var\(\s*--accent-/.test(value)) continue
     seen += 1
+    if (ACCENT_FILL_EXCEPTIONS.some((one) => one.selector === selector && one.prop === prop)) {
+      exceptionsSeen += 1
+      continue
+    }
     assert.ok(
       PAINTABLE.includes(prop),
       `${selector} { ${prop} } paints with an accent; accents are for icons, hairlines and switches`,
     )
   }
+  // Non-vacuity: an exception that no longer matches anything is a hole left
+  // open for a rule that has since moved.
+  assert.equal(
+    exceptionsSeen,
+    ACCENT_FILL_EXCEPTIONS.length,
+    'an accent-fill exception matches no declaration; drop it or fix the selector',
+  )
   assert.ok(seen >= 8, `expected the accents to be in use, found ${seen} declarations`)
 })
 

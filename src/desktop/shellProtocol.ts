@@ -102,6 +102,17 @@ export type ShellCommand =
    * error box the renderer never hears about.
    */
   | { type: 'open-in-editor'; id: string; projectRoot: string }
+  /**
+   * Repaints the window's native title-bar overlay for the resolved theme.
+   *
+   * The frameless chrome (5g) keeps Windows' own three buttons, drawn by the OS
+   * into an overlay the *main* process owns — so the renderer, which is where the
+   * theme preference lives, has no other way to tell it that dark just became
+   * light. Carries the resolved theme, never a colour: colours belong to the
+   * stylesheet, and a renderer that could name one would be painting chrome the
+   * token test cannot see.
+   */
+  | { type: 'set-window-theme'; id: string; theme: 'dark' | 'light' }
 
 // --- settings ----------------------------------------------------------------
 
@@ -410,6 +421,11 @@ export interface WireShellSettingsChangeResult {
 export interface WireShellRenameSessionResult {
   ok: true
   title: string
+}
+
+/** `ok` means the overlay was repainted, or that this shell has no overlay. */
+export interface WireShellSetWindowThemeResult {
+  ok: true
 }
 
 /** `ok` means the editor process started, not that it drew a window. */

@@ -39,7 +39,7 @@
  * The `node:fs` imports and the wall-clock commands stay here, never in the
  * renderer bundle.
  */
-import { app, BrowserWindow, dialog, ipcMain, shell as electronShell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell as electronShell } from 'electron'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -73,6 +73,20 @@ import {
  * Depth is now nobody's business but the bundler's.
  */
 const bundleDir = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * The native title-bar overlay, per theme.
+ *
+ * The one place in the app that spells colours outside `styles.css`, and it has
+ * to be: these are painted by Windows into chrome the document does not reach,
+ * so no stylesheet rule and no renderer token can describe them. Kept in step
+ * with `--surface-base` / `--text-secondary` by hand — a drift here shows up as
+ * a three-button strip that does not match the frame under it.
+ */
+const WINDOW_CHROME = {
+  dark: { color: '#0f0f11', symbolColor: '#9aa0aa', height: 40 },
+  light: { color: '#f3f3f5', symbolColor: '#686b75', height: 40 },
+} as const
 
 // A plain annotation rather than `as unknown as`: `ipcMain` really is
 // assignable to `MainSideIpc`, and letting the compiler confirm that is what
@@ -138,6 +152,13 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   void app.whenReady().then(async () => {
+    // No application menu (5g): the window is frameless, and Electron's default
+    // menu is an English File/Edit/View/Window bar in an otherwise Chinese
+    // interface. The renderer draws 文件 / 视图 / 帮助 in the title bar instead,
+    // and the editing accelerators a textarea needs are the platform's own.
+    // Not on darwin, where removing the menu also removes 退出 and the standard
+    // clipboard roles, and the traffic lights are drawn by the OS regardless.
+    if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
     try {
       await openProject(resolveCwd())
     } catch (error) {
@@ -257,6 +278,14 @@ async function ensureShell(): Promise<Shell> {
   const window = new BrowserWindow({
     width: 1200,
     height: 800,
+    // Frameless chrome (5g): the renderer draws the title bar — the rail toggle
+    // and the Chinese menus — and Windows keeps drawing its own three buttons
+    // into `titleBarOverlay`, so no window-control IPC has to exist at all.
+    // `backgroundColor` is what the frame is painted with before the first
+    // frame arrives; without it the app opens as a white flash.
+    backgroundColor: WINDOW_CHROME.dark.color,
+    titleBarStyle: 'hidden',
+    ...(process.platform === 'darwin' ? {} : { titleBarOverlay: WINDOW_CHROME.dark }),
     webPreferences: {
       preload: join(bundleDir, 'preload.js'),
       contextIsolation: true,
@@ -339,6 +368,14 @@ async function ensureShell(): Promise<Shell> {
     // not installed" comes back as a `fail` the renderer writes into the
     // transcript, instead of a native box no test can see.
     onOpenInEditor: (cwd) => openInEditor(cwd),
+    // The overlay is drawn by the OS, so the renderer — where the theme
+    // preference lives — cannot repaint it itself. `setTitleBarOverlay` only
+    // exists on Windows; elsewhere the command still answers `ok`, because the
+    // shell treats a missing overlay as "this platform has none".
+    onWindowTheme: (theme) => {
+      if (process.platform === 'darwin') return
+      window.setTitleBarOverlay(WINDOW_CHROME[theme])
+    },
     isQuitting: () => quitting,
     onAllLanesClosed: () => {
       // The last lane of the single window is the single-window equivalent of

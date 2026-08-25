@@ -31,6 +31,7 @@ interface Rendered {
   render(state: TranscriptState, toggledThinking?: ReadonlySet<string>): void
   jump(): StubView
   items(): readonly StubView[]
+  column(): StubView
 }
 
 function mount(t: { after(fn: () => void): void }): Rendered {
@@ -46,6 +47,12 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     assert.ok(found, 'no .scroll-bottom in the float host')
     return found
   }
+  const column = (): StubView => {
+    const children = stub.inspect(container).children
+    const found = children.find((child) => child.classes.includes('transcript-column'))
+    assert.ok(found, `no .transcript-column in the scroller (children: ${children.length})`)
+    return found
+  }
   return {
     stub,
     container,
@@ -54,7 +61,12 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     toggled,
     render: (state, toggledThinking = new Set()) => view.render(state, toggledThinking),
     jump,
-    items: () => stub.inspect(container).children,
+    // Through `.transcript-column`, the one box the items live in: the scroller
+    // stays full width (its scrollbar belongs at the panel's edge) while the text
+    // is capped at a reading measure. `the items paint inside one reading column`
+    // below is what keeps this indirection honest.
+    items: () => column().children,
+    column,
   }
 }
 
@@ -131,6 +143,30 @@ test('the transcript follows the tail only when the reader is already there', (t
   scrolledUpBy(stub, container, 400)
   render(transcript([{ id: 'a', kind: 'assistant', text: 'xy' }]))
   assert.equal(stub.inspect(container).scrollTop, 400, 'reading back: stay put')
+})
+
+test('the items paint inside one reading column, and the scroller stays bare', (t) => {
+  // The reading measure (design_guidance 四.2) is a box, not a `max-width` on the
+  // scroller: the user bubble is right-aligned with `margin-left: auto`, which
+  // only means "the right edge of the column" while the column is a real element,
+  // and the scrollbar has to stay at the panel's edge rather than at 760px.
+  // Verified by mutation: rendering the items straight into the scroller reds this.
+  const { render, column, container, stub } = mount(t)
+
+  render(transcript([
+    { id: 'a', kind: 'user', text: 'hi' },
+    { id: 'b', kind: 'assistant', text: 'ok' },
+  ]))
+
+  const children = stub.inspect(container).children
+  assert.equal(children.length, 1, 'the scroller holds the column and nothing else')
+  assert.equal(children[0]?.className, 'transcript-column')
+  assert.deepEqual(column().children.map((item) => item.classes[0]), ['item', 'item'])
+
+  // And it is rebuilt, not accumulated: `replace()` empties the scroller, so a
+  // second paint must not leave two columns behind.
+  render(transcript([{ id: 'a', kind: 'user', text: 'hi' }]))
+  assert.equal(stub.inspect(container).children.length, 1)
 })
 
 test('items and the tool line paint the way they always did', (t) => {

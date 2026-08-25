@@ -82,6 +82,10 @@ export function createSidebarView(
     onCommit: (value) => onIntent({ kind: 'search', query: value }),
   })
   search.addEventListener('input', () => onIntent({ kind: 'search', query: search.value }))
+  // The first-level actions, between the search box and the history. A row, not
+  // a bordered pill: it belongs to the same column of destinations the session
+  // rows are in (design_guidance 三.2).
+  const nav = el('div', 'sidebar-nav')
   const list = el('div', 'sidebar-list')
   list.setAttribute('role', 'listbox')
   list.setAttribute('aria-label', '会话')
@@ -92,6 +96,7 @@ export function createSidebarView(
 
   container.appendChild(header)
   container.appendChild(search)
+  container.appendChild(nav)
   container.appendChild(list)
   container.appendChild(footer)
 
@@ -288,24 +293,39 @@ export function createSidebarView(
       view.rows.forEach((row, index) => indices.set(row.sessionId, index))
       const indexOf = (row: SidebarRow): number => indices.get(row.sessionId) ?? -1
 
+      // The header is the workspace and the rail toggle, and nothing else: a
+      // third control here is what squeezed the project name down to
+      // `Hanekawa-…` at 268px (design_guidance 三.2). "New session" moved to the
+      // nav row below the search box.
       replace(
         header,
         workspaceNode(view),
-        button(
-          'sidebar-new',
-          '新建会话',
-          '在当前项目里新建会话',
-          // Through the model, so this and `Ctrl+T` cannot disagree about *which*
-          // project — the same rule the row buttons follow via `activateRow`.
-          () => onIntent(newSessionIntent(view.activeProjectRoot)),
-          { enabled: view.canCreate, icon: 'plus' },
-        ),
         button(
           'sidebar-collapse',
           '',
           view.collapsed ? '展开侧栏（Ctrl+B）' : '收起侧栏（Ctrl+B）',
           () => onIntent({ kind: 'toggle-collapse' }),
           { icon: view.collapsed ? 'chevron-right' : 'chevron-left' },
+        ),
+      )
+
+      replace(
+        nav,
+        button(
+          'sidebar-nav-item',
+          '新建会话',
+          '在当前项目里新建会话（Ctrl+T）',
+          // Through the model, so this and `Ctrl+T` cannot disagree about *which*
+          // project — the same rule the row buttons follow via `activateRow`.
+          () => onIntent(newSessionIntent(view.activeProjectRoot)),
+          { enabled: view.canCreate, icon: 'plus' },
+        ),
+        button(
+          'sidebar-nav-item',
+          '打开项目…',
+          '打开另一个项目（Ctrl+Shift+O）',
+          () => onIntent({ kind: 'open-project' }),
+          { enabled: view.canCreate, icon: 'folder' },
         ),
       )
 
@@ -316,6 +336,7 @@ export function createSidebarView(
       // all — the guard above already banked the signature, so expanding
       // repaints.
       show(search, !view.collapsed)
+      show(nav, !view.collapsed)
       show(list, !view.collapsed)
       show(footer, !view.collapsed)
       if (view.collapsed) return
@@ -331,19 +352,32 @@ export function createSidebarView(
               )),
       )
 
-      replace(
-        footer,
-        button('sidebar-open-project', '打开项目…', '打开另一个项目（Ctrl+Shift+O）', () =>
-          onIntent({ kind: 'open-project' }),
-          { enabled: view.canCreate, icon: 'folder' },
-        ),
-        // Always enabled, unlike the two above: settings is a window-level
-        // screen and does not need a project to be open to be reached.
+      // A profile row and a `?`, side by side, with the chord list behind the `?`
+      // rather than printed under them (design_guidance 三.2). "Open project…"
+      // moved up to the nav block, where it reads as an action rather than as
+      // part of the personal corner.
+      const footerRow = el('div', 'sidebar-footer-row')
+      // Always enabled, unlike the nav items: settings is a window-level screen
+      // and does not need a project to be open to be reached.
+      footerRow.appendChild(
         button('sidebar-settings', '设置', '打开设置（Ctrl+,）', () =>
           onIntent({ kind: 'open-settings' }),
           { icon: 'gear' },
         ),
-        el('div', 'sidebar-hint', SIDEBAR_HINT),
+      )
+      footerRow.appendChild(
+        button(
+          `sidebar-help${view.helpOpen ? ' open' : ''}`,
+          '',
+          view.helpOpen ? '收起快捷键' : '快捷键',
+          () => onIntent({ kind: 'toggle-help' }),
+          { icon: 'help' },
+        ),
+      )
+      replace(
+        footer,
+        ...(view.helpOpen ? [el('div', 'sidebar-hint', SIDEBAR_HINT)] : []),
+        footerRow,
       )
     },
   }

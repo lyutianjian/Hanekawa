@@ -169,6 +169,30 @@ export const canvasHeader = () => `(() => {
 export const clickHeaderMenu = () =>
   clickOr('#canvas-header .canvas-menu-trigger', 'the canvas header menu')
 
+/**
+ * The frameless window's title bar (6a).
+ *
+ * `menus` is what the window says instead of Electron's English File/Edit/View —
+ * the stage-6 item is that this row exists at all, that its menus open, and that
+ * `items` are the app's own commands rather than new ones. The drag region and
+ * the OS-painted buttons on the right cannot be read from here: the overlay is
+ * outside the document, so a screenshot is the only evidence.
+ */
+export const titleBar = () => `(() => {
+  const bar = document.getElementById('titlebar')
+  if (!bar) return { present: false }
+  return {
+    present: true,
+    rail: bar.querySelector('.titlebar-rail') !== null,
+    menus: [...bar.querySelectorAll('.titlebar-menu-trigger')].map((node) => node.textContent),
+    open: [...bar.querySelectorAll('.titlebar-menu-trigger.open')].map((node) => node.textContent),
+    items: [...bar.querySelectorAll('.titlebar-menu-item')].map((node) => node.textContent),
+  }
+})()`
+
+export const clickTitleBarMenu = (index = 0) =>
+  clickOr(`#titlebar .titlebar-menu-shell:nth-of-type(${index + 1}) .titlebar-menu-trigger`, 'a title bar menu')
+
 export const chip = () => `(() => ({
   model: (document.getElementById('chip-model') || {}).textContent || '',
   effort: (document.getElementById('chip-effort') || {}).textContent || '',

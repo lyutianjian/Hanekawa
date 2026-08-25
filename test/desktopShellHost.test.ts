@@ -391,6 +391,8 @@ interface Harness {
   editorRequests: string[]
   /** Makes the next `open-in-editor` reject, the way an uninstalled `code` does. */
   failEditor(message: string | undefined): void
+  /** The themes `set-window-theme` handed to the window overlay, in order. */
+  windowThemes: Array<'dark' | 'light'>
   /**
    * The interleaved action log the fakes append to (`close-pane:<id>`,
    * `store-delete:<id>`, `shutdown:<cwd>:<reason>`, `closeAll`). The only place
@@ -406,7 +408,13 @@ interface Harness {
 }
 
 function createHarness(
-  options: { withOpenProject?: boolean; withOpenInEditor?: boolean; cwd?: string } = {},
+  options: {
+    withOpenProject?: boolean
+    withOpenInEditor?: boolean
+    /** A shell with no native overlay — every non-Windows build. */
+    withWindowTheme?: boolean
+    cwd?: string
+  } = {},
 ): Harness {
   const [mainTransport, rendererTransport] = createMemoryChannelPair()
   const mainMux = createLaneMux(mainTransport)
@@ -428,6 +436,7 @@ function createHarness(
   const allLanesClosed: string[] = []
   const openProjectRequests: Array<string | undefined> = []
   const editorRequests: string[] = []
+  const windowThemes: Array<'dark' | 'light'> = []
   let editorFailure: string | undefined
   let quitting = false
   let nextKey = 0
@@ -463,6 +472,9 @@ function createHarness(
             if (editorFailure !== undefined) throw new Error(editorFailure)
           },
         }),
+    ...(options.withWindowTheme === false
+      ? {}
+      : { onWindowTheme: (theme: 'dark' | 'light') => windowThemes.push(theme) }),
     isQuitting: () => quitting,
     onAllLanesClosed: (reason) => allLanesClosed.push(reason),
   })
@@ -488,6 +500,7 @@ function createHarness(
     allLanesClosed,
     openProjectRequests,
     editorRequests,
+    windowThemes,
     failEditor: (message: string | undefined) => {
       editorFailure = message
     },
@@ -540,6 +553,7 @@ const COMMAND_SAMPLES = {
   },
   'rename-session': { type: 'rename-session', id: 'h', projectRoot: 'r', sessionId: 's1', title: 'T' },
   'open-in-editor': { type: 'open-in-editor', id: 'i', projectRoot: 'r' },
+  'set-window-theme': { type: 'set-window-theme', id: 'j', theme: 'light' },
 } as const satisfies Record<ShellCommand['type'], ShellCommand>
 
 /**
@@ -617,6 +631,7 @@ test('every shell command variant round-trips through its schema', () => {
       'open-session',
       'panes',
       'rename-session',
+      'set-window-theme',
       'settings-change',
     ],
     'a variant added to ShellCommand must fail the satisfies table by name',
@@ -1721,6 +1736,27 @@ test('open-in-editor rejects when the shell has no editor and for an unknown pro
   const h = createHarness()
   await assert.rejects(h.client.openInEditor('C:\\repo\\never-opened'), /No project is open/)
   assert.deepEqual(h.editorRequests, [], 'an unknown project must not reach the editor at all')
+})
+
+// --- set-window-theme (5g) ---------------------------------------------------
+
+test('set-window-theme reaches the window, and carries a theme rather than a colour', async () => {
+  const h = createHarness()
+
+  assert.deepEqual(await h.client.setWindowTheme('light'), { ok: true })
+  assert.deepEqual(await h.client.setWindowTheme('dark'), { ok: true })
+  assert.deepEqual(h.windowThemes, ['light', 'dark'])
+})
+
+test('set-window-theme answers ok on a shell with no overlay', async () => {
+  // Unlike `open-project` and `open-in-editor`, whose missing callbacks reject:
+  // those are user-visible actions that silently did nothing, while an overlay is
+  // chrome that a platform may simply not have. Rejecting would put a native-chrome
+  // detail into the transcript on every theme switch.
+  const h = createHarness({ withWindowTheme: false })
+
+  assert.deepEqual(await h.client.setWindowTheme('dark'), { ok: true })
+  assert.deepEqual(h.windowThemes, [])
 })
 
 test('settings commands fail cleanly for a project that is not open', async () => {

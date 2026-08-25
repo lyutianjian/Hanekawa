@@ -30,9 +30,12 @@ export function createStatusView(els: {
 }): StatusView {
   return {
     render(snapshot, cost) {
+      // Empty while idle, not「空闲」: this line sits under the composer now, and
+      // a permanent label for "nothing is happening" is noise the reference
+      // builds do not carry (design_guidance 四.2).
       els.streaming.textContent = snapshot.isStreaming
         ? `生成中${snapshot.spinnerSubText ? `：${snapshot.spinnerSubText}` : ''}`
-        : '空闲'
+        : ''
       const total = snapshot.usage.total ?? { inputTokens: 0, outputTokens: 0 }
       els.usage.textContent = total.inputTokens === 0 && total.outputTokens === 0
         ? ''

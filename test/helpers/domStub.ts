@@ -3,7 +3,7 @@
  *
  * There is no jsdom in `devDependencies` and this file is not an argument for
  * adding one: the whole of `dom/dom.ts`, `dom/controls.ts` and `dom/icons.ts`
- * reaches for exactly four `document` members and a dozen element members, so a
+ * reaches for a handful of `document` members and a dozen element members, so a
  * real DOM implementation would be two orders of magnitude more machinery than
  * the thing under test.
  *
@@ -13,6 +13,12 @@
  * it reads those three files, extracts every `document.<member>`, and asserts the
  * stub has it. That guard is not optional; without it this file is the kind of
  * fake `todo.md` records under 「断言只值它的假货那么多钱」.
+ *
+ * The scan covers `document.<member>` only, so the **element** members faked
+ * here are unguarded and the list keeps growing: `scrollTop`/`scrollHeight`/
+ * `clientHeight`/`scrollTo`/`style.height`/`selectionStart`/`setSelectionRange`/
+ * `dispatch`/`focus`/`contains()`/`dataset`. Add to that list rather than
+ * starting a second one.
  *
  * Installation writes `globalThis.document` and `uninstall()` deletes it again.
  * Contamination is bounded even so: `node --test` runs one process per file, and
@@ -81,6 +87,12 @@ class StubElement {
   readonly style: { height: string } = { height: '' }
   /** A textarea's caret. `setSelectionRange` moves it, as in the browser. */
   selectionStart = 0
+  /**
+   * `data-*` attributes, as a plain bag rather than a live view of
+   * `attributes`. Nothing reads a `data-` attribute back through
+   * `getAttribute`, so the two never have to agree.
+   */
+  readonly dataset: Record<string, string> = {}
 
   setSelectionRange(start: number, _end: number): void {
     this.selectionStart = start
@@ -267,6 +279,10 @@ export interface DomStub {
   setMetrics(node: unknown, metrics: { scrollTop?: number; scrollHeight?: number; clientHeight?: number }): void
   /** The focused node, or `undefined`. */
   activeElement(): unknown
+  /** `<html>`, whose `dataset.theme` the stylesheet reads. */
+  documentElement(): unknown
+  /** `<body>`, where a failed startup leaves its message. */
+  body(): unknown
   /** Whether the stub's `document` carries a member, for the source-scan guard. */
   hasDocumentMember(name: string): boolean
   uninstall(): void
@@ -294,7 +310,24 @@ function viewOf(element: StubElement): StubView {
 }
 
 export function installDomStub(): DomStub {
+  // The page's two fixed nodes. `<html>` carries `dataset.theme` (the whole
+  // stylesheet hangs off it) and `<body>` is where `app.ts` writes the message
+  // it shows when startup fails — a test that never looks at it lets a thrown
+  // bootstrap pass for a healthy one.
+  const documentElement = new StubElement('HTML', undefined)
+  const body = new StubElement('BODY', undefined)
+  // A listener host for `document.addEventListener`: the global keydown that
+  // carries the window's chords is installed there, not on any element.
+  const documentNode = new StubElement('#document', undefined)
+
   const document = {
+    documentElement,
+    body,
+    /** Written by `statusView.renderSession` — the window's own title. */
+    title: '',
+    addEventListener(type: string, listener: Listener): void {
+      documentNode.addEventListener(type, listener)
+    },
     createElement(tag: string): StubElement {
       return new StubElement(tag.toUpperCase(), undefined)
     },
@@ -350,6 +383,12 @@ export function installDomStub(): DomStub {
     },
     activeElement(): unknown {
       return activeElement
+    },
+    documentElement(): unknown {
+      return documentElement
+    },
+    body(): unknown {
+      return body
     },
     hasDocumentMember(name: string): boolean {
       return Object.hasOwn(document, name)

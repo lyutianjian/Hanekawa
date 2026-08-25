@@ -9,6 +9,7 @@ import type {
   WireShellSettingsChangeResult,
   WireShellRenameSessionResult,
   WireShellOpenInEditorResult,
+  WireShellSetWindowThemeResult,
   SettingsChange,
   WireShellOpenProjectResult,
   WireShellOpenSessionResult,
@@ -160,6 +161,20 @@ export class ShellClient {
       id: crypto.randomUUID(),
       projectRoot,
     }) as Promise<WireShellOpenInEditorResult>
+  }
+
+  /**
+   * Repaints the native title-bar overlay after a theme change (5g).
+   *
+   * Fire-and-forget at the call site: the overlay is chrome, and a shell without
+   * one answers `ok` anyway — there is nothing here for the user to act on.
+   */
+  async setWindowTheme(theme: 'dark' | 'light'): Promise<WireShellSetWindowThemeResult> {
+    return this.send({
+      type: 'set-window-theme',
+      id: crypto.randomUUID(),
+      theme,
+    }) as Promise<WireShellSetWindowThemeResult>
   }
 
   dispose(): void {

@@ -43,6 +43,9 @@ export type IconName =
   | 'branch'
   // --- the canvas header (5e) ---
   | 'code'
+  // --- the sidebar footer and the title bar (5g) ---
+  | 'help'
+  | 'sidebar'
 
 interface IconSpec {
   /** Path data on a 16×16 grid. */
@@ -131,6 +134,23 @@ const ICONS = {
   // one thing in the interface that ignores `currentColor`, and the header is
   // the same neutral chrome the sidebar is.
   code: { paths: ['M5.6 5 2.6 8l3 3', 'M10.4 5l3 3-3 3', 'M9.2 3.4 6.8 12.6'] },
+  // A panel with its left column ruled off: the rail toggle. The same mark the
+  // reference builds put in the same corner.
+  sidebar: {
+    paths: [
+      'M2.6 4a1.4 1.4 0 0 1 1.4-1.4h8a1.4 1.4 0 0 1 1.4 1.4v8a1.4 1.4 0 0 1-1.4 1.4H4A1.4 1.4 0 0 1 2.6 12z',
+      'M6.4 2.6v10.8',
+    ],
+  },
+  // A ringed question mark: the sidebar footer's shortcut panel. The ring is what
+  // makes it read as a control at 14px, where a bare `?` reads as punctuation.
+  help: {
+    paths: [
+      'M8 2.2a5.8 5.8 0 1 1 0 11.6 5.8 5.8 0 0 1 0-11.6z',
+      'M6.4 6.4a1.7 1.7 0 1 1 2.3 1.6c-.5.2-.7.6-.7 1.1v.3',
+      'M8 11.4v.6',
+    ],
+  },
 } as const satisfies Record<IconName, IconSpec>
 
 export function icon(name: IconName, className = 'icon'): SVGSVGElement {

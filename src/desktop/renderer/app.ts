@@ -45,6 +45,7 @@ import { resolveKey, type ShellState } from './model/keymap.js'
 import {
   createSidebarState,
   moveSelection,
+  newSessionIntent,
   selectWorkspaceIntent,
   sidebarChordToIntent,
   sidebarKeyToIntent,
@@ -85,6 +86,8 @@ import { createComposerView } from './dom/composerView.js'
 import { createStatusView } from './dom/statusView.js'
 import { createSuggestionsView } from './dom/suggestionsView.js'
 import { createSidebarView } from './dom/sidebarView.js'
+import { createTitleBarView } from './dom/titleBarView.js'
+import { TITLE_BAR_MENUS, type TitleBarAction } from './model/titleBar.js'
 
 const bridge = window.hanekawa
 if (!bridge) {
@@ -92,25 +95,37 @@ if (!bridge) {
   throw new Error('Preload bridge is missing')
 }
 
+// One transport, many lanes: session traffic rides per-pane lanes untouched,
+// and the reserved `__shell` lane speaks for the window.
+const mux = createLaneMux(createBridgeChannel(bridge, window))
+const shellClient = new ShellClient(mux.lane(SHELL_LANE))
+
 // Theme. The preference lives in localStorage; the resolved theme is written to
 // `documentElement.dataset.theme`, which the stylesheet reads. "Follow system"
 // is resolved here (in JS), so the sheet stays flat token blocks — see
 // `model/theme.ts`. A light-preference user sees a brief dark frame first (the
 // bare `:root` default): CSP forbids an inline pre-paint script.
+//
+// This block must stay *after* the transport: `applyResolvedTheme` runs at
+// module top level and tells the main process to repaint the native overlay, so
+// `shellClient` has to be initialised by then. It was below once, and reading a
+// `const` still in its temporal dead zone threw before a single view was built
+// — a window with nothing in it but the static HTML.
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)')
 let themePreference: ThemePreference = parseThemePreference(localStorage.getItem(THEME_STORAGE_KEY))
 function applyResolvedTheme(preference: ThemePreference): void {
-  document.documentElement.dataset.theme = resolveTheme(preference, systemThemeFromMatches(darkQuery.matches))
+  const theme = resolveTheme(preference, systemThemeFromMatches(darkQuery.matches))
+  document.documentElement.dataset.theme = theme
+  // The window's three buttons are painted by the OS into chrome the document
+  // does not reach (5g), so the main process has to be told. Fire-and-forget:
+  // a shell without an overlay answers `ok`, and there is nothing here for the
+  // user to act on if it does not.
+  void shellClient.setWindowTheme(theme).catch(() => {})
 }
 applyResolvedTheme(themePreference)
 darkQuery.addEventListener('change', () => {
   if (themePreference === 'system') applyResolvedTheme(themePreference)
 })
-
-// One transport, many lanes: session traffic rides per-pane lanes untouched,
-// and the reserved `__shell` lane speaks for the window.
-const mux = createLaneMux(createBridgeChannel(bridge, window))
-const shellClient = new ShellClient(mux.lane(SHELL_LANE))
 
 // --- the singleton views ------------------------------------------------------
 
@@ -330,6 +345,9 @@ let selectedIndex = -1
 let pendingDelete: string | undefined
 let searchQuery = ''
 let workspaceMenuOpen = false
+let helpOpen = false
+/** The title bar's open menu, if any. Window-level, like the bar itself. */
+let titleBarMenu: string | undefined
 let sessionsInFlight = false
 let sessionsAgain = false
 
@@ -347,11 +365,26 @@ function currentSidebarState(): SidebarState {
     canCreate: !(activePane()?.shellState().hasOverlay ?? false),
     searchQuery,
     workspaceMenuOpen,
+    helpOpen,
   })
 }
 
 function renderSidebar(): void {
-  sidebar.render(buildSidebarView(currentSidebarState()))
+  const view = buildSidebarView(currentSidebarState())
+  sidebar.render(view)
+  // The bar's two live fields are the sidebar's: whether the rail is collapsed,
+  // and whether anything may be opened right now. One call site, so they cannot
+  // drift apart — the bar's own signature guard absorbs the repaints.
+  titleBar.render({
+    menus: TITLE_BAR_MENUS,
+    openMenu: titleBarMenu,
+    sidebarCollapsed: view.collapsed,
+    canCreate: view.canCreate,
+  })
+}
+
+function renderTitleBar(): void {
+  renderSidebar()
 }
 
 /**
@@ -445,6 +478,10 @@ function runSidebarIntent(intent: SidebarIntent): void {
       return
     case 'toggle-workspace-menu':
       workspaceMenuOpen = !workspaceMenuOpen
+      renderSidebar()
+      return
+    case 'toggle-help':
+      helpOpen = !helpOpen
       renderSidebar()
       return
     case 'select-workspace':
@@ -661,6 +698,43 @@ async function runSettingsChangesNow(changes: readonly SettingsChange[]): Promis
   renderSidebar()
 }
 
+/**
+ * The title bar's menus, which only ever re-enter the app through intents that
+ * already existed — the rule `model/titleBar.ts` states.
+ */
+function runTitleBarAction(action: TitleBarAction): void {
+  switch (action) {
+    case 'new-session':
+      runSidebarIntent(newSessionIntent(buildSidebarView(currentSidebarState()).activeProjectRoot))
+      return
+    case 'open-project':
+      runSidebarIntent({ kind: 'open-project' })
+      return
+    case 'open-settings':
+      runSidebarIntent({ kind: 'open-settings' })
+      return
+    case 'toggle-sidebar':
+      runSidebarIntent({ kind: 'toggle-collapse' })
+      return
+    case 'toggle-help':
+      // Opening the chord panel means showing the sidebar it lives in.
+      if (collapsed) runSidebarIntent({ kind: 'toggle-collapse' })
+      if (!helpOpen) runSidebarIntent({ kind: 'toggle-help' })
+      return
+    default:
+      assertNeverIntent(action)
+  }
+}
+
+const titleBar = createTitleBarView(
+  required('titlebar'),
+  (action) => runTitleBarAction(action),
+  (id) => {
+    titleBarMenu = id
+    renderTitleBar()
+  },
+)
+
 const sidebar = createSidebarView(
   sidebarContainer,
   (intent) => runSidebarIntent(intent),
@@ -826,6 +900,12 @@ void (async () => {
   // The history pull is *not* repeated here: `panes()` applies the lane list
   // synchronously, which fires `onLanes` above, which already owns that trigger.
   const lanes = await shellClient.panes()
+  // Repaint the native overlay now that a round trip has proved the transport
+  // is up. The module-eval call above happens before anything has answered, and
+  // `main.ts` opens the window on the dark chrome unconditionally — so a light
+  // user whose first send went nowhere would keep a dark three-button strip.
+  // Idempotent: same `dataset.theme`, same command, `setTitleBarOverlay` twice.
+  applyResolvedTheme(themePreference)
   for (const info of lanes) attachPaneSession(info.lane)
   const first = lanes[0]
   if (first) activateLane(first.lane)

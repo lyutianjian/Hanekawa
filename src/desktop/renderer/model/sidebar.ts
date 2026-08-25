@@ -127,6 +127,15 @@ export interface SidebarView {
   readonly workspaceName: string | undefined
   /** Whether the workspace dropdown is expanded. */
   readonly workspaceMenuOpen: boolean
+  /**
+   * Whether the `?` panel is showing {@link SIDEBAR_HINT}.
+   *
+   * The chord list used to be printed under the footer at all times, which put a
+   * two-line wall of 10px text where the reference builds have a user row and a
+   * `?` (design_guidance 三.2). The text is the same; the difference is that it
+   * is now asked for.
+   */
+  readonly helpOpen: boolean
 }
 
 /**
@@ -170,6 +179,8 @@ export interface SidebarState {
   readonly searchQuery: string
   /** Whether the workspace dropdown is expanded. */
   readonly workspaceMenuOpen: boolean
+  /** Whether the footer's `?` panel is open. */
+  readonly helpOpen: boolean
 }
 
 export function createSidebarState(overrides: Partial<SidebarState> = {}): SidebarState {
@@ -185,6 +196,7 @@ export function createSidebarState(overrides: Partial<SidebarState> = {}): Sideb
     canCreate: true,
     searchQuery: '',
     workspaceMenuOpen: false,
+    helpOpen: false,
     ...overrides,
   }
 }
@@ -333,6 +345,7 @@ export function sidebarView(state: SidebarState): SidebarView {
     // trigger label and the menu's marked row always read the same name.
     workspaceName: workspaces.find((workspace) => workspace.active)?.projectName,
     workspaceMenuOpen: state.workspaceMenuOpen,
+    helpOpen: state.helpOpen,
   }
 }
 
@@ -448,6 +461,8 @@ export type SidebarIntent =
   | { kind: 'search'; query: string }
   /** Open or close the workspace dropdown. */
   | { kind: 'toggle-workspace-menu' }
+  /** Open or close the footer's `?` panel. */
+  | { kind: 'toggle-help' }
   /** Jump to a project: switch to its open lane, or start a session there. */
   | { kind: 'select-workspace'; projectRoot: string }
   | { kind: 'request-delete'; sessionId: string }
@@ -620,6 +635,9 @@ export function sidebarRenderSignature(view: SidebarView): string {
     view.noMatches ? 'm' : '-',
     view.showProjectLabels ? 'l' : '-',
     view.workspaceMenuOpen ? 'w' : '-',
+    // Signed, or the panel opens and the render guard swallows the repaint —
+    // the failure this signature exists to prevent.
+    view.helpOpen ? 'h' : '-',
     String(view.selectedIndex),
     `q:${view.searchQuery}`,
     `wn:${view.workspaceName ?? ''}`,

@@ -256,12 +256,18 @@ test('every element the renderer requires exists in index.html', () => {
   }
 })
 
-test('a test that imports dom/ is excluded from the base program and checked by the DOM one', () => {
+test('a test that needs the DOM lib is excluded from the base program and checked by the DOM one', () => {
   // Two lists that have to move together. The base program's `lib` is `ES2022`
   // only — that absence is what stops host code from touching `document` — so a
   // test importing `dom/` must be excluded there and picked up by
   // `tsconfig.domtest.json` instead. Miss the first and `npm run typecheck` goes
   // red on a DOM global; miss the second and nothing type-checks the file at all.
+  //
+  // Importing `helpers/domStub.ts` counts the same way, and not by analogy: the
+  // stub's one `HTMLElement` cast needs the DOM lib, and `tsc` type-checks a file
+  // reached through an import whether or not `exclude` names it. A test may reach
+  // the stub without naming `dom/` at all — `rendererBoot.test.ts` imports the
+  // built bundle — so keying only on `dom/` would leave those uncovered.
   const repoRoot = fileURLToPath(new URL('../', import.meta.url))
   const readJsonc = (name: string): { include?: string[]; exclude?: string[] } =>
     // Comments only; no trailing commas in either file.
@@ -275,11 +281,11 @@ test('a test that imports dom/ is excluded from the base program and checked by 
 
   const importers = readdirSync(path.join(repoRoot, 'test'))
     .filter((name) => name.endsWith('.test.ts'))
-    .filter((name) => /from '\.\.\/src\/desktop\/renderer\/dom\//.test(
+    .filter((name) => /from '(?:\.\.\/src\/desktop\/renderer\/dom\/|\.\/helpers\/domStub)/.test(
       readFileSync(path.join(repoRoot, 'test', name), 'utf8'),
     ))
 
-  assert.ok(importers.length >= 1, 'no test imports dom/ — this guard has nothing to hold')
+  assert.ok(importers.length >= 1, 'no test needs the DOM lib — this guard has nothing to hold')
   for (const name of importers) {
     const file = `test/${name}`
     assert.ok(covered(base.exclude ?? [], file), `${file} must be in tsconfig.json's exclude`)

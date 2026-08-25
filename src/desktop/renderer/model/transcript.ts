@@ -39,6 +39,11 @@ export interface TranscriptItem {
   readonly pending?: boolean
   readonly failed?: boolean
   readonly toolName?: string
+  /**
+   * A sealed thinking block's header label — this turn's elapsed time. `text` is
+   * the reasoning itself, so the two cannot share a field.
+   */
+  readonly summary?: string
 }
 
 export interface TranscriptState {
@@ -48,6 +53,13 @@ export interface TranscriptState {
   /** In-flight tool summary line, from `tool-progress`. */
   readonly toolProgress: string | undefined
   readonly isThinking: boolean
+  /**
+   * How many thinking blocks this state has ever minted, and the source of their
+   * ids. **Not** `items.length`: `turn-end` drops the draft, so the list shrinks
+   * and two blocks could be minted at the same length — one toggle would then
+   * fold both.
+   */
+  readonly thinkingCount: number
 }
 
 /** What the caller must act on outside the transcript itself. */
@@ -64,9 +76,6 @@ export interface TranscriptOutcome {
 }
 
 const DRAFT_ID = '__draft__'
-const THINKING_ID = '__thinking__'
-/** Thinking is a peek, not a transcript entry; keep the tail bounded. */
-export const THINKING_PREVIEW_CHARS = 240
 
 export function createTranscriptState(records: readonly SessionRecord[] = []): TranscriptState {
   return {
@@ -74,6 +83,7 @@ export function createTranscriptState(records: readonly SessionRecord[] = []): T
     generation: 0,
     toolProgress: undefined,
     isThinking: false,
+    thinkingCount: 0,
   }
 }
 
@@ -137,13 +147,16 @@ export function applySessionEvent(state: TranscriptState, event: SessionEvent): 
 
     case 'turn-end': {
       // Drop a draft that never became a record (an aborted or failed turn), or
-      // it would sit there looking like it was still arriving.
-      const items = state.items.filter((item) => item.id !== DRAFT_ID && item.id !== THINKING_ID)
+      // it would sit there looking like it was still arriving. Thinking is *not*
+      // dropped any more: it becomes this turn's collapsible header, and the
+      // summary it carries is why no separate duration line follows.
+      const kept = state.items.filter((item) => item.id !== DRAFT_ID)
       const summary = formatTurnSummary(event)
+      const { items, sealed } = sealThinking(kept, summary)
       return {
         state: {
           ...state,
-          items: summary
+          items: summary && !sealed
             ? [...items, { id: `duration-${items.length}`, kind: 'duration', text: summary }]
             : items,
           toolProgress: undefined,
@@ -164,8 +177,55 @@ export function applySessionEvent(state: TranscriptState, event: SessionEvent): 
  */
 export function formatTurnSummary(event: Extract<SessionEvent, { type: 'turn-end' }>): string | undefined {
   if (event.aborted) return undefined
-  const seconds = Math.max(0, Math.round(event.durationMs / 100) / 10)
-  return `Worked for ${seconds}s`
+  return `已处理 ${formatWorkedDuration(event.durationMs)}`
+}
+
+/**
+ * `7m 38s`, the shape `design_guidance.md` asks the collapsed thinking header for,
+ * and the same one the TUI's own elapsed line uses.
+ *
+ * Sub-second turns keep a tenth, because `已处理 0s` reads as a broken clock. Above
+ * a second the fraction is noise, so it floors.
+ */
+export function formatWorkedDuration(ms: number): string {
+  const total = Math.max(0, ms) / 1000
+  if (total < 1) return `${Math.round(total * 10) / 10}s`
+  const seconds = Math.floor(total)
+  const minutes = Math.floor(seconds / 60)
+  return minutes > 0 ? `${minutes}m ${seconds % 60}s` : `${seconds}s`
+}
+
+/**
+ * Closes the turn's thinking block: clears `pending` (which is what the view reads
+ * as "collapse me now") and hands the last one the turn's elapsed time.
+ *
+ * Only one block can be pending at a time — `appendThinking` appends to it rather
+ * than minting a second — but the sweep is written over all of them so a block that
+ * somehow missed its `turn-end` is closed by the next one instead of breathing
+ * forever.
+ */
+function sealThinking(
+  items: readonly TranscriptItem[],
+  summary: string | undefined,
+): { items: TranscriptItem[]; sealed: boolean } {
+  const last = lastPendingThinking(items)
+  if (last === -1) return { items: [...items], sealed: false }
+  return {
+    items: items.map((item, index) => {
+      if (item.kind !== 'thinking' || item.pending !== true) return item
+      const closed: TranscriptItem = { id: item.id, kind: item.kind, text: item.text }
+      return index === last && summary ? { ...closed, summary } : closed
+    }),
+    sealed: true,
+  }
+}
+
+function lastPendingThinking(items: readonly TranscriptItem[]): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!
+    if (item.kind === 'thinking' && item.pending === true) return index
+  }
+  return -1
 }
 
 function applyStream(state: TranscriptState, event: Extract<SessionEvent, { type: 'stream' }>['event']): TranscriptState {
@@ -177,11 +237,7 @@ function applyStream(state: TranscriptState, event: Extract<SessionEvent, { type
         items: appendToLive(state.items, DRAFT_ID, 'assistant', event.text),
       }
     case 'thinking_delta':
-      return {
-        ...state,
-        isThinking: true,
-        items: appendToLive(state.items, THINKING_ID, 'thinking', event.thinking, THINKING_PREVIEW_CHARS),
-      }
+      return appendThinking(state, event.thinking)
     case 'thinking_stop':
       return { ...state, isThinking: false }
     case 'message_start':
@@ -195,30 +251,54 @@ function applyStream(state: TranscriptState, event: Extract<SessionEvent, { type
 
 /**
  * Appends to the live item of that id, creating it if absent.
- *
- * `maxChars` keeps the *tail*, because a thinking peek is only interesting where
- * it currently is.
  */
 function appendToLive(
   items: readonly TranscriptItem[],
   id: string,
   kind: TranscriptItemKind,
   text: string,
-  maxChars?: number,
 ): TranscriptItem[] {
   const index = items.findIndex((item) => item.id === id)
   if (index === -1) {
-    return [...items, { id, kind, text: clampTail(text, maxChars), pending: true }]
+    return [...items, { id, kind, text, pending: true }]
   }
   const next = [...items]
   const existing = next[index]!
-  next[index] = { ...existing, text: clampTail(existing.text + text, maxChars) }
+  next[index] = { ...existing, text: existing.text + text }
   return next
 }
 
-function clampTail(text: string, maxChars?: number): string {
-  if (maxChars === undefined || text.length <= maxChars) return text
-  return `…${text.slice(text.length - maxChars)}`
+/**
+ * Thinking is grouped by **the open block**, not by turn identity: a delta extends
+ * the last still-pending thinking item, and only mints a new one when there is
+ * none. `turn-end` is what closes one, so the next turn's first delta necessarily
+ * starts a fresh block — no turn id has to be carried in the state, and a
+ * `transcript-reset` mid-turn cannot leave the grouping keyed to a turn that is
+ * gone.
+ *
+ * The consequence, accepted: a second block after a tool round trip joins the one
+ * above those tool rows instead of reading where it happened. One block per turn is
+ * what lets a single collapsed header own the turn's elapsed time.
+ */
+function appendThinking(state: TranscriptState, text: string): TranscriptState {
+  const index = lastPendingThinking(state.items)
+  if (index === -1) {
+    return {
+      ...state,
+      isThinking: true,
+      thinkingCount: state.thinkingCount + 1,
+      items: [...state.items, {
+        id: `thinking-${state.thinkingCount}`,
+        kind: 'thinking',
+        text,
+        pending: true,
+      }],
+    }
+  }
+  const items = [...state.items]
+  const existing = items[index]!
+  items[index] = { ...existing, text: existing.text + text }
+  return { ...state, isThinking: true, items }
 }
 
 function applyRecord(state: TranscriptState, record: SessionRecord): TranscriptState {
@@ -227,9 +307,10 @@ function applyRecord(state: TranscriptState, record: SessionRecord): TranscriptS
 
   // An assistant message *replaces* the streamed draft rather than following it.
   // Appending both is the duplicate-bubble bug the terminal avoids by never
-  // committing a live message twice.
+  // committing a live message twice. The turn's thinking block stays: it is closed
+  // by `turn-end`, not by the message it was reasoning towards.
   const withoutDraft = record.type === 'message' && record.role !== 'user'
-    ? state.items.filter((item) => item.id !== DRAFT_ID && item.id !== THINKING_ID)
+    ? state.items.filter((item) => item.id !== DRAFT_ID)
     : state.items
 
   // A tool_result supersedes the pending tool_use row it answers.

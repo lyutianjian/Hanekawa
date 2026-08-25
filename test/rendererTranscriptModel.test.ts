@@ -1,10 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  THINKING_PREVIEW_CHARS,
   applySessionEvent,
   createTranscriptState,
   formatTurnSummary,
+  formatWorkedDuration,
   toolCallSummary,
 } from '../src/desktop/renderer/model/transcript.js'
 import type { TranscriptState } from '../src/desktop/renderer/model/transcript.js'
@@ -134,22 +134,144 @@ test('a draft that never became a record is dropped at turn-end', () => {  const
   assert.deepEqual(state.items, [], 'a pending bubble would sit there looking live forever')
 })
 
-test('thinking is a bounded tail preview and clears when the turn ends', () => {
-  const long = 'x'.repeat(THINKING_PREVIEW_CHARS + 50)
-  const { state: mid } = fold([{ type: 'stream', event: { type: 'thinking_delta', thinking: long } }])
+// --- thinking blocks (5d) ---------------------------------------------------
+//
+// The contract changed in 5d: a thinking block used to be a 240-character tail
+// peek that `turn-end` deleted. It is now the turn's collapsible header, so it is
+// retained in full, sealed rather than dropped, and it carries the elapsed time
+// that used to be a separate `duration` line.
 
-  const thinking = mid.items.find((item) => item.kind === 'thinking')
-  assert.ok(thinking)
-  assert.equal(thinking.text.length, THINKING_PREVIEW_CHARS + 1, 'the ellipsis plus the tail')
-  assert.ok(thinking.text.startsWith('…'))
-  assert.equal(mid.isThinking, true)
+const thinkingDelta = (thinking: string): SessionEvent => ({
+  type: 'stream',
+  event: { type: 'thinking_delta', thinking },
+})
 
-  const { state: after } = fold(
-    [{ type: 'turn-end', aborted: false, rolledBack: false, durationMs: 100 }],
+const turnEnd = (durationMs: number, aborted = false): SessionEvent => ({
+  type: 'turn-end', aborted, rolledBack: false, durationMs,
+})
+
+const thinkingItems = (state: TranscriptState) => state.items.filter((item) => item.kind === 'thinking')
+
+test('a turn keeps one thinking block, and its text is retained in full', () => {
+  const long = 'x'.repeat(500)
+  const { state } = fold([
+    { type: 'turn-start', messageId: 'm1', displayInput: 'hi', createdAt: 'now' },
+    thinkingDelta(long),
+    thinkingDelta('!'),
+  ])
+
+  assert.deepEqual(thinkingItems(state).map((item) => [item.id, item.text.length, item.pending]), [
+    ['thinking-0', 501, true],
+  ])
+  assert.equal(state.isThinking, true)
+  assert.equal(state.thinkingCount, 1)
+})
+
+test('a second block after a tool round trip joins the turn is first one', () => {
+  // `message_start` and the assistant record are both mid-turn boundaries that used
+  // to delete the block. They must not, or the header loses the reasoning it
+  // promises to expand.
+  const { state } = fold([
+    thinkingDelta('before'),
+    { type: 'record', record: message('a1', 'assistant', 'calling a tool') },
+    { type: 'stream', event: { type: 'message_start' } },
+    thinkingDelta(' after'),
+  ])
+
+  assert.deepEqual(thinkingItems(state).map((item) => item.text), ['before after'])
+})
+
+test('thinking_stop does not close the block, so the live face survives it', () => {
+  // This is what pins「活标签由 item.pending 驱动，不由 state.isThinking 驱动」:
+  // the flag goes false here while the very same block keeps arriving.
+  const { state } = fold([
+    thinkingDelta('a'),
+    { type: 'stream', event: { type: 'thinking_stop' } },
+    thinkingDelta('b'),
+  ])
+
+  assert.deepEqual(thinkingItems(state).map((item) => [item.id, item.text, item.pending]), [
+    ['thinking-0', 'ab', true],
+  ])
+})
+
+test('turn-end seals the block and hands it the turn is elapsed time', () => {
+  const { state } = fold([thinkingDelta('why'), turnEnd(458_000)])
+
+  assert.deepEqual(thinkingItems(state).map((item) => [item.pending, item.summary]), [
+    [undefined, '已处理 7m 38s'],
+  ])
+  assert.equal(state.isThinking, false)
+})
+
+test('a turn that thought has no separate duration line; one that did not still does', () => {
+  const { state: thought } = fold([thinkingDelta('why'), turnEnd(1200)])
+  assert.equal(thought.items.some((item) => item.kind === 'duration'), false, 'the header already says it')
+
+  const { state: quiet } = fold([
+    { type: 'stream', event: { type: 'text_delta', text: 'hi' } },
+    { type: 'record', record: message('a1', 'assistant', 'hi') },
+    turnEnd(1200),
+  ])
+  assert.deepEqual(
+    quiet.items.filter((item) => item.kind === 'duration').map((item) => item.text),
+    ['已处理 1s'],
+  )
+})
+
+test('an aborted turn seals the block without a summary', () => {
+  const { state } = fold([thinkingDelta('why'), turnEnd(900, true)])
+
+  assert.deepEqual(thinkingItems(state).map((item) => [item.pending, item.summary]), [[undefined, undefined]])
+  assert.equal(state.items.some((item) => item.kind === 'duration'), false)
+})
+
+test('a later turn-end leaves an earlier turn is block alone', () => {
+  const { state } = fold([
+    thinkingDelta('first'),
+    turnEnd(458_000),
+    thinkingDelta('second'),
+    turnEnd(2000),
+  ])
+
+  assert.deepEqual(thinkingItems(state).map((item) => [item.id, item.text, item.summary]), [
+    ['thinking-0', 'first', '已处理 7m 38s'],
+    ['thinking-1', 'second', '已处理 2s'],
+  ])
+})
+
+test('block ids come from a counter, not from the list length', () => {
+  // `turn-end` drops the draft, so the list shrinks between turns: two blocks would
+  // be minted at the same length and a single toggle would fold both.
+  const { state } = fold([
+    thinkingDelta('first'),
+    { type: 'stream', event: { type: 'text_delta', text: 'partial' } },
+    turnEnd(1000, true),
+    thinkingDelta('second'),
+  ])
+
+  assert.deepEqual(thinkingItems(state).map((item) => item.id), ['thinking-0', 'thinking-1'])
+})
+
+test('transcript-reset drops a block that was still arriving', () => {
+  const { state: mid } = fold([thinkingDelta('half a thought')])
+  const { state } = fold(
+    [{ type: 'transcript-reset', records: [], systemMessages: [], bumpGeneration: false }],
     mid,
   )
-  assert.equal(after.items.some((item) => item.kind === 'thinking'), false)
-  assert.equal(after.isThinking, false)
+
+  assert.deepEqual(thinkingItems(state), [])
+  assert.equal(state.thinkingCount, 0, 'and the counter restarts — which is why the view prunes its toggles')
+})
+
+test('the elapsed time reads as minutes and seconds, with a tenth under a second', () => {
+  assert.equal(formatWorkedDuration(458_000), '7m 38s')
+  assert.equal(formatWorkedDuration(62_000), '1m 2s')
+  assert.equal(formatWorkedDuration(3400), '3s', 'above a second the fraction is noise')
+  assert.equal(formatWorkedDuration(1000), '1s')
+  // `已处理 0s` reads as a broken clock, so a sub-second turn keeps its fraction.
+  assert.equal(formatWorkedDuration(420), '0.4s')
+  assert.equal(formatWorkedDuration(-5), '0s')
 })
 
 test('a tool result replaces the pending call row it answers', () => {
@@ -235,7 +357,7 @@ test('tool progress is state, not an item', () => {
 })
 
 test('a failed turn still gets its duration line; an aborted one does not', () => {
-  assert.equal(formatTurnSummary({ type: 'turn-end', aborted: false, rolledBack: false, durationMs: 1250 }), 'Worked for 1.3s')
+  assert.equal(formatTurnSummary({ type: 'turn-end', aborted: false, rolledBack: false, durationMs: 1250 }), '已处理 1s')
   assert.equal(formatTurnSummary({ type: 'turn-end', aborted: true, rolledBack: false, durationMs: 1250 }), undefined)
 })
 

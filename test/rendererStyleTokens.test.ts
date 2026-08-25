@@ -271,6 +271,7 @@ test('the palette is the one that was agreed, value for value', () => {
       '--border-strong': '#34343b',
       '--focus-ring': '#5b9dff',
       '--caret': '#f2f2f5',
+      '--shadow-float': '0 2px 10px rgba(0, 0, 0, 0.45)',
       '--radius-lg': '14px',
       '--radius-md': '9px',
       '--radius-pill': '9999px',
@@ -309,6 +310,7 @@ test('the palette is the one that was agreed, value for value', () => {
       '--border-strong': '#d1d5db',
       '--focus-ring': '#2563eb',
       '--caret': '#1a1a1e',
+      '--shadow-float': '0 4px 14px rgba(0, 0, 0, 0.14)',
       '--radius-lg': '14px',
       '--radius-md': '9px',
       '--radius-pill': '9999px',
@@ -477,6 +479,7 @@ const MONOSPACED = [
   '#overlay-panel .plan',
   '#overlay-panel .feedback',
   '.transcript .item.tool',
+  '.file-chip-label',
   '.tool-progress',
 ]
 
@@ -593,6 +596,22 @@ test('every button the renderer builds is styled by this sheet', () => {
     }
   }
   assert.ok(seen >= 5, `expected the renderer to build buttons through button(); found ${seen}`)
+})
+
+test('the transcript controls carry a rule of their own, not only a contextual one', () => {
+  // The scan above cannot see the difference. Its lookahead rejects a class that
+  // only ever appears with a pseudo-class attached, but `.thinking-header .icon`
+  // and `.item.thinking.live .thinking-header` both satisfy it while saying nothing
+  // about how the control looks at rest — which is the user-agent fallback the whole
+  // guard exists to catch. Closing that hole in general needs a notion of "state
+  // qualifier" the parser does not have (`todo.md` records it), so the two controls
+  // 5d adds are named here and required to own a selector outright.
+  // Verified by mutation: deleting either rule reds this test and nothing else.
+  for (const selector of ['.thinking-header', '.scroll-bottom']) {
+    const block = blocks.find((candidate) => candidate.selector === selector)
+    assert.ok(block, `no rule whose whole selector is ${selector}; a descendant rule is not a resting state`)
+    assert.ok(block.decls.length >= 3, `${selector} has ${block.decls.length} declarations; that cannot be a control`)
+  }
 })
 
 test('the controls built inside controls.ts are styled too', () => {

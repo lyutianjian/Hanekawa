@@ -10,6 +10,7 @@ import {
   extractAtMentionedFiles,
   parseAtMentionedFileLines,
 } from '../src/harness/atMentions.js'
+import { extractAtMentions } from '../src/runtime/suggestions/atToken.js'
 import type { ToolContext } from '../src/harness/types.js'
 
 const execFile = promisify(execFileCallback)
@@ -22,6 +23,28 @@ function context(cwd: string): ToolContext {
     readFileState: new Map(),
   }
 }
+
+test('the host and the desktop renderer agree on what a mention is', () => {
+  // 5d moved the two patterns into `runtime/suggestions/atToken.ts` so the renderer
+  // could draw a pill for each mention without importing this file (it needs
+  // `node:fs`). This is what stops the two readers from drifting: the host keeps its
+  // own order and dedupe, but never its own idea of the syntax.
+  const inputs = [
+    'read @src/a.py @"src/with space.cpp"#L3-4 @src/c.ts#L10-20',
+    'mail me at foo@bar.com',
+    '@a.ts is broken',
+    'no mention at all',
+    '把 @a.ts 的逻辑搬到 @b.ts',
+  ]
+
+  for (const input of inputs) {
+    assert.deepEqual(
+      [...extractAtMentions(input).map((span) => span.mention)].sort(),
+      [...new Set(extractAtMentionedFiles(input).map((mention) => mention.raw))].sort(),
+      input,
+    )
+  }
+})
 
 test('extractAtMentionedFiles parses regular, quoted, line ranges, and deduplicates', () => {
   const mentions = extractAtMentionedFiles('read @src/a.py @src/a.py @"src/with space.cpp"#L3-4 @"src/b.ts" @src/c.ts#L10-20')

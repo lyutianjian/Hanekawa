@@ -75,8 +75,28 @@
   tsconfig 漂移守卫 1），全量 2245 pass / 1 fail（`backgroundTasks` 增量输出，单跑 8/8，见「已知不稳定」），
   typecheck 四段全过（并验证第四段非空：故意弄坏一个类型确认它会红），`build:desktop` emit 正常，
   九条变异验证全部报红在预期用例上。真机冒烟未跑（需显示器+凭据）。
-- [ ] **5d — 对话流增强**：思考链可折叠头（流式展开 / 完成折叠成「已处理 Xm Xs ⌵」，折叠态存 `paneSession`）；
-  用户消息内文件胶囊（`transcriptView.ts` 文本 token 化）；浮动回到底部按钮；「正在思考」呼吸标签。
+- [x] **5d — 对话流增强**（本次）：三段各自独立可验。
+  ① **浮动回到底部按钮**：`icons.ts` 加 `arrow-down`；`transcriptView.ts` 收第三个参数 `floatHost`（传的是
+  `paneEl`，因为 `.pane` 才是定位祖先，而滚动容器里的绝对定位子节点会锚在**内容**底部而不是视窗底部，还会被
+  每次 `replace()` 抹掉），按钮在 `render()` 外建一次、用 `hidden` 不丢子树（`[hidden]{display:none!important}`
+  已经把它从布局/Tab 序/a11y 树里摘掉，单个 button 也没有子树要重建）；可见性由**同一个** `isScrolledToBottom`
+  在 `scroll` 与 `render()` **两处**重算；点击走 `scrollTo({behavior:'smooth'})`。唯一的新 token
+  `--shadow-float`（两个主题各一个值）。顺手删掉 `render()` 里那段等价于 `if (atBottom)` 的 `lastCount` 死逻辑。
+  ② **思考链折叠头 + 呼吸标签**：`TranscriptItem` 加 `summary?`，`TranscriptState` 加**必填** `thinkingCount`；
+  thinking 分组按「最后一条 pending 的 thinking 项」（不需要 turn 身份，`turn-end` 是唯一的封口处），id 来自
+  计数器而**不是** `items.length`（丢草稿会让长度回缩、两条同号、一次 toggle 翻两条）；`turn-end` 与
+  `applyRecord` 两处**只**再过滤 `DRAFT_ID`，改为封存（去 `pending`）+ 给最后一条挂 `summary`，**这一 turn
+  有 thinking 就不再追加 `duration` 项**；新 `model/thinking.ts` 出两张脸的标签、`isThinkingCollapsed`
+  （`Set` 记的是「与默认不一致」）、`pruneThinkingToggles`；折叠时 body 节点**不产出**（`.transcript` 是
+  `aria-live`）；新导出 `formatWorkedDuration`，`formatTurnSummary` 出「已处理 7m 38s」。
+  ③ **行内文件胶囊**：两条 `@` 正则提到 `runtime/suggestions/atToken.ts`（渲染器能进的那半），新
+  `extractAtMentions` 带偏移并**按位置排序**（引号那遍先跑，不排序就会把句子读乱）；`harness/atMentions.ts`
+  改为 import 那两条正则但**保留自己的两遍顺序**（引号优先是它的可观察行为，有用例钉着）；新
+  `model/userMessage.ts` 的 `splitFileMentions` 原地切段，胶囊是 `span` 不是 `button`。
+  **验证**：新增 39 条（transcript model 11 / thinking 4 / transcriptView 14 / userMessage 10（含一条
+  fast-check 重组性质）/ atMentions 奇偶性 1 / styleTokens 1 — 另有既有用例扩写），全量 **2323 pass / 0 fail**，
+  typecheck 四段全过，`build:desktop` emit 正常，十四条变异验证全部报红在预期用例上（含一次**判据太宽被抓**，
+  见下）。真机冒烟未跑（需显示器+凭据）。
 - [ ] **5e — 输入框 + 画布头栏**：composer 加权限模式胶囊（4 模式，调已有 `set-permission-mode`，删状态栏
   那份模式文字）；发送按钮 idle/ready/streaming 三态 + 进度环；画布头栏（会话身份 + ⋯ 菜单复用
   `rename-session`/`delete-session` + 「打开位置」）。
@@ -164,9 +184,10 @@
   `test/helpers/domStub.ts` + `tsconfig.domtest.json`（第四个 TS 程序），`test/rendererWelcomeView.test.ts`
   是范例。**`paneSession.ts` 仍无单元测试**，`renderTranscript()` 里那次 `welcome.render` 与
   `classList.toggle('empty')` 只有冒烟能看见。
-- **系统提示语没有本地化**：真机上一次 turn 里出现的 `Effort set to: low` / `Switched to step-3.5-flash.` /
-  `Worked for 3.6s` 都还是英文，夹在全中文界面里。4e 的 `locale` 只加在三个 presentation 模块上，这些
+- **系统提示语没有本地化**：真机上一次 turn 里出现的 `Effort set to: low` / `Switched to step-3.5-flash.`
+  都还是英文，夹在全中文界面里。4e 的 `locale` 只加在三个 presentation 模块上，这些
   note 来自命令与运行时的 note 路径（TUI 也在用），是另一条通路。
+  （`Worked for 3.6s` 已在 5d 修掉——它来自渲染器自己的 `formatTurnSummary`，现在是「已处理 Xm Xs」。）
 - **效力选择器里的档位是英文原值**（`surfaces.ts` 的 `label: level`），而胶囊用的是 `EFFORT_LABELS` 的
   中文（`低/中/高/极高/最高`）。同一个概念在相邻两个控件里两种写法，选一种。
 - **`sessions/index.json` 每个 turn 结束都被整目录扫一遍**：`SessionStore.list()` 的 `localeCompare`
@@ -174,6 +195,31 @@
   `.jsonl` 还要 `readFileSync` + 全量解析。4b 之后这条路每个 turn 走一次（每项目一次）。
 
 ---
+
+### 5d 新记的账
+
+- **`.pane { position: relative }` 没有任何用例**：删掉它全量仍然全绿（变异验证实测），而按钮会改锚到
+  `#canvas` 并飘到输入框上。同 `.pane.empty` 那条，只能靠冒烟。
+- **`rendererStyleTokens` 那条按钮守卫这次又被判据太宽咬了**：删掉 `.thinking-header { … }` 整块，全量仍然
+  全绿——因为 `.thinking-header .icon` 与 `.item.thinking.live .thinking-header` 都满足它的 lookahead（拒绝
+  紧跟伪类，不拒绝「作为后代出现」）。补法**没有**去改那条通用守卫（要区分「状态限定类」得给 parser 一个它
+  没有的概念，5f 那条账仍然成立），而是新加一条 `the transcript controls carry a rule of their own`：点名
+  `.thinking-header` / `.scroll-bottom`，要求存在**整条选择器就等于该类**的规则。加类要手动进那张单子。
+- **`pruneThinkingToggles` 的调用点在 `paneSession.ts`，仍无单测**：函数本身有用例，「每次绘制都剪」这件事
+  没有。同一文件里第三份只靠冒烟的视图状态（另两份是 `welcome.render` 与 `classList.toggle('empty')`）。
+- **`--shadow-float` 在 `rendererStyleTokens` 的中性/彩色分类里是**未分类的**：分类循环 `if (!value.startsWith('#')) continue`
+  会静默跳过它。将来若出现 `#` 值的 `--shadow-*`，那条用例会以一个很费解的理由报红。
+- **`test/helpers/domStub.ts` 的**元素**成员没有漂移守卫**：源码扫描只覆盖 `document.<member>`。本次新增
+  四个（`scrollTop`/`scrollHeight`/`clientHeight`/`scrollTo`）。
+- **没有 `prefers-reduced-motion`**：任何 `@media` 都会让 `the stylesheet parses exactly` 报红（styles.css:97
+  明文写着），而 `@keyframes` 能过。呼吸与 spinner 一样无条件跑。要做得先教那个 parser 认 at-rule。
+- **去掉思维链的 240 尾截断之后，`transcriptView` 每 token 全量重建在长链上明显更贵**：加剧既有 3e 那条
+  （建节点没有 LRU），不是新的一类问题。
+- **靠底部的浮动按钮可能压在多行 `.tool-progress` 上**：按钮定位在 `.pane` 右下 12px，而工具进度行是
+  `pre-wrap` 可换行的。明文接受（进度行是瞬态的，且文字左对齐）。
+- **待跑的冒烟项**：向上滚动露出圆按钮、点它平滑回到底部、按钮不与工具进度行/输入框重叠且在圆角裁剪内、
+  浅色模式阴影可见；真实 turn 结束后思考链自动折叠成真的「已处理 Xm Xs」（要 `--paid-turn`）；呼吸动画在跑
+  且克制；折叠态按 pane 独立并活过一次 pane 切换；经真实 `@` 补全打出来的路径渲染成胶囊。
 
 ### 5f 新记的账
 
@@ -209,6 +255,40 @@
   弹出侧栏工作区菜单、发一条消息后 Hero 消失。本次没有显示器与凭据，**未跑**。
 
 ## 决策留痕（只留 `CLAUDE.md` 未覆盖的）
+
+- **5d：thinking 按「最后一条 pending 的 thinking 项」分组，不按 `turn-start.messageId`**。不需要在 state 里
+  带 turn 身份，`turn-end` 成为唯一的封口处，中途 `transcript-reset` 也不会让分组挂在一个已经不存在的 turn 上。
+  id 来自 `thinkingCount` 计数器而**不是** `items.length`：丢草稿会让列表回缩，两条可能同号，一次 toggle 翻两条。
+- **5d：一 turn 一项，代价是时间顺序交织**。今天 thinking 在每次 assistant 记录落地时被删，所以工具往返之后的
+  第二段思考渲染在工具行**之后**；合并之后它回到 turn 顶部，落在引发它的工具行之上，工具密集的长 turn 里活文本
+  也会长在滚动尾部之上。买到的是「一个 turn 只有一个耗时归属、一个一致的折叠标签」。逃生口：改回每块一项、
+  摘要只挂最后一块。
+- **5d：`pending` 不能兼职「折叠位」**。它驱动 `.item.pending::after` 的 `▌`，留着会画出多个光标，提前清掉又
+  会让折叠头在 turn 中途没有耗时可显。默认折叠态是 `pending !== true`，而 pane 里那个 `Set` 记的是**「用户与
+  默认不一致」**而不是「折叠着」——这才让 turn 中途的展开活过封存那一刻，且不需要第二个字段。
+- **5d：toggle 集合每次绘制都按活着的 id 剪一次**。`transcript-reset` 把 `thinkingCount` 归零，而 `generation`
+  只在被要求时才 bump，所以 id 复用会静默继承陈旧 toggle。与侧栏那条陈旧徽标同类。
+- **5d：`正在思考` 与 `已处理 Xm Xs` 是同一个节点的两张脸，由 `item.pending` 驱动，绝不由 `state.isThinking`**。
+  `thinking_stop` 会清 `isThinking` 而那一块还在流。**接受的后果**：不产出 thinking delta 的模型从 Enter 到第一个
+  文字 token 之间**没有**任何「在忙」标签——它是思考阶段指示器，不是通用的在飞指示器（今天也是如此，合并没有
+  让它更差）。
+- **5d：折叠时思考正文从 DOM 里缺席，不是藏起来**。`.transcript` 是 `aria-live="polite"`，藏而不删的流式正文
+  是没人要的朗读，也是 5c 避开的 Tab 停靠点。
+- **5d：浮动按钮用 `hidden`，不丢子树**。`[hidden] { display:none !important }` 已经把它从布局、Tab 序、a11y
+  树里摘掉，单个 `<button>` 也没有子树要重建；5c 丢子树是因为 Hero 有四个可聚焦控件。它挂 `paneEl` 而不是
+  滚动容器内：`replace()` 每次绘制会清空滚动容器，而滚动容器里的绝对定位子节点锚的是**内容**底部。
+- **5d：可见性在 `scroll` 与 `render()` 两处重算，共用一个 `isScrolledToBottom`**。只挂 `scroll` 会漏掉「内容
+  变短」——`turn-end` 丢草稿、`transcript-reset` 都能让读者在没滚动的情况下变成「已在尾部」。共用一个判据是
+  为了两处不会在那 24px 松弛的边界上互相矛盾。
+- **5d：`@` 扫描器的两条正则提到 `runtime/suggestions/atToken.ts`，不在渲染器里抄一份**，但
+  `harness/atMentions.ts` **保留自己的两遍顺序**（引号优先），只借正则。理由：`extractAtMentions` 按位置排序，
+  而 harness 的顺序在附件上限处可观察且有用例钉着——统一顺序等于改 harness 行为，本阶段没那个必要。
+  正则每次调用**新建**（都是 `/g`，共享实例会把 `lastIndex` 带给下一个调用者）。
+- **5d：文件胶囊原地内联，正文逐字不变**。design doc 三.3① 说的是提到气泡开头，但这里的 mention 是句子的一部分
+  （「把 @a.ts 搬到 @b.ts」），提走就等于改写用户原文并留下一个洞。胶囊标签去掉 `@` 与引号（图标已经说了那件事），
+  但 segment 上保留源子串，于是「没有任何字符被丢弃或重排」是一条 fast-check 性质而不是注释里的说法。
+- **5d：`formatWorkedDuration` 住 `model/transcript.ts`**，它唯一的消费者，且 `formatTurnSummary` 本来就在那儿。
+  等 5e 的进度环要用到经过时间再提升为 `model/duration.ts`。不足一秒给一位小数：`已处理 0s` 读起来像坏了。
 
 - **5f：`SettingsViewModel.nav` 换成 `navGroups`，不并存两份**。分组和搜索过滤都作用在同一份列表上，
   留两份视图迟早会分叉；两侧各只有一个消费者，换掉的成本是一处断言。
@@ -318,6 +398,9 @@
   判据太宽，别急着放过 bug。** 5f 第二次应验，而且是同一条守卫：它的 `(?![\w-:])` 拒绝伪类却不拒绝 `.`，
   于是 `.settings-pill.open` 一条就够骗过它；5f 还有一次是「大小写不敏感」的断言站在视图上，而那段被搜的
   文字恰好两种写法都能命中（`npx github-mcp` 里有小写 `mcp`），改成直接断言 `matchesQuery` 两个方向才抓住。
+  5d 第三次应验，仍是那条守卫的**另一个**洞：它也不拒绝「作为后代出现」，所以只要留着 `.thinking-header .icon`，
+  把 `.thinking-header { … }` 整块删掉仍然全绿——补法是新加一条点名清单用例（要求整条选择器就等于该类），
+  而不是去改那条通用守卫（见「5d 新记的账」）。
   **凡是判据里有「某段文字命中」的，先确认那段文字不会用别的路径也命中。**
 - **真机验证走 CDP，不加调试开关**：`electron . --remote-debugging-port=9222` + node 内置 `WebSocket`
   直连，`Runtime.evaluate` 读 DOM、`Input.dispatchKeyEvent` 发真键；权限对话框用 `run-tool` 零花费触发。
@@ -365,6 +448,10 @@ npx tsc --noEmit -p tsconfig.domtest.json             # 第四段单独跑
 node --import tsx --test test/rendererSettingsModel.test.ts test/rendererSettingsView.test.ts \
   test/rendererStyleTokens.test.ts test/rendererImports.test.ts
 
+# 5d 新增（对话流：浮动按钮 + 思考链 + 文件胶囊）
+node --import tsx --test test/rendererTranscriptView.test.ts test/rendererThinking.test.ts \
+  test/rendererTranscriptModel.test.ts test/rendererUserMessage.test.ts test/atMentions.test.ts
+
 # 既有主题（回归）
 node --import tsx --test test/protocolWire.test.ts test/protocolHost.test.ts \
   test/protocolClientParity.test.ts test/protocolCommandSchema.test.ts
@@ -383,7 +470,8 @@ node --import tsx --test test/rendererImports.test.ts test/desktopMain.test.ts \
 **这条依赖的是环境变量，不是「在 Claude Code 里跑」。** 看到它报红先 `echo` 一下那两个变量，别当成回归。
 
 **阶段 4 基线**：4f 后全量共 2199 条，实测 2199 pass / 0 fail，typecheck 三段全过，真机冒烟十条全绿。
-**阶段 5 基线**：5b 后 2214 条；5c 后 2245 条；5f 后 **2284** 条，实测 **2284 pass / 0 fail**
-（三条已知不稳定这次都绿），typecheck **四段**全过。阶段 5 的新增用例应在此基线上累加。
+**阶段 5 基线**：5b 后 2214 条；5c 后 2245 条；5f 后 2284 条；5d 后 **2323** 条，实测
+**2323 pass / 0 fail**（三条已知不稳定这次都绿），typecheck **四段**全过。阶段 5 的新增用例应在此基线上累加。
 **5f 待跑的冒烟项**：三段导航读作 个人/集成/编码 且只有五个真实页；输入「MCP」后 通用 仍在导航里且正文跳到
 MCP 卡片；路由胶囊展开的菜单不被正文滚动区裁掉，选中 / Esc / 点别处都能关；Tab + 方向键能纯键盘操作展开的菜单。
+**5d 待跑的冒烟项**：见上方「5d 新记的账」末尾那条。

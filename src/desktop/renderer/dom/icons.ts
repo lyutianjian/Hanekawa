@@ -24,9 +24,11 @@ export type IconName =
   | 'plus'
   | 'trash'
   | 'folder'
+  | 'file'
   | 'chevron-left'
   | 'chevron-right'
   | 'chevron-down'
+  | 'arrow-down'
   | 'dot'
   | 'spinner'
   | 'send'
@@ -62,9 +64,19 @@ const ICONS = {
     ],
   },
   folder: { paths: ['M2 5a1.5 1.5 0 0 1 1.5-1.5h2.2L7 5h5.5A1.5 1.5 0 0 1 14 6.5v5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5z'] },
+  // A sheet with a folded corner, for the inline file pills in a user message.
+  file: {
+    paths: [
+      'M4 2.6h4.4L12 6.2v7.2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V3.6a1 1 0 0 1 1-1z',
+      'M8.4 2.6v3.6H12',
+    ],
+  },
   'chevron-left': { paths: ['M10 3.5 5.5 8l4.5 4.5'] },
   'chevron-right': { paths: ['M6 3.5 10.5 8 6 12.5'] },
   'chevron-down': { paths: ['M3.5 6 8 10.5 12.5 6'] },
+  // A full arrow, not the chevron: the jump-to-bottom button is the only place
+  // that means "go to the end", and a bare chevron there reads as "collapse".
+  'arrow-down': { paths: ['M8 3.2v9.6', 'M4 8.8 8 12.8l4-4'] },
   dot: { paths: ['M8 5a3 3 0 1 1 0 6 3 3 0 0 1 0-6z'], filled: true },
   // A three-quarter ring with a gap, so a CSS rotation reads as spinning. Stroked
   // (not filled) so it inherits `currentColor` like every other outline.

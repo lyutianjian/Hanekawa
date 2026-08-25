@@ -66,6 +66,24 @@ class StubElement {
   title = ''
   value = ''
   placeholder = ''
+  /**
+   * Scroll metrics. There is no layout here, so a test sets them with
+   * `setMetrics` and the view reads them exactly as it would in the browser.
+   */
+  scrollTop = 0
+  scrollHeight = 0
+  clientHeight = 0
+
+  /**
+   * As `Element.scrollTo({ top })`, and it fires `scroll` — synchronously here,
+   * asynchronously (and repeatedly, under `behavior: 'smooth'`) in the browser.
+   * A view that relies on that event to repaint is therefore tested on the same
+   * path it takes for real, instead of on an assumption about the click handler.
+   */
+  scrollTo(options: { top?: number }): void {
+    if (options.top !== undefined) this.scrollTop = options.top
+    this.dispatch('scroll')
+  }
 
   constructor(readonly tagName: string, readonly namespaceURI: string | undefined) {}
 
@@ -209,6 +227,8 @@ export interface StubView {
   readonly children: readonly StubView[]
   /** Element and text children interleaved, in document order. */
   readonly nodes: readonly (StubView | string)[]
+  /** Where the scroller is, so "followed the tail" is assertable. */
+  readonly scrollTop: number
   /** The node itself, for asserting nothing was rebuilt between renders. */
   readonly node: unknown
 }
@@ -228,6 +248,11 @@ export interface DomStub {
   dispatch(node: unknown, type: string, init?: StubEventInit): void
   /** Moves focus, so `activeElement` can be asserted after a keyboard intent. */
   focus(node: unknown): void
+  /**
+   * Stands in for layout: a scroll container's metrics. Only the members given
+   * are written, so a test can move `scrollTop` alone without restating the size.
+   */
+  setMetrics(node: unknown, metrics: { scrollTop?: number; scrollHeight?: number; clientHeight?: number }): void
   /** The focused node, or `undefined`. */
   activeElement(): unknown
   /** Whether the stub's `document` carries a member, for the source-scan guard. */
@@ -251,6 +276,7 @@ function viewOf(element: StubElement): StubView {
     attributes: element.attributes,
     children: element.childNodes.filter((c): c is StubElement => c instanceof StubElement).map(viewOf),
     nodes: element.childNodes.map((child) => (child instanceof StubText ? child.data : viewOf(child))),
+    scrollTop: element.scrollTop,
     node: element,
   }
 }
@@ -303,6 +329,12 @@ export function installDomStub(): DomStub {
     },
     focus(node: unknown): void {
       asElement(node).focus()
+    },
+    setMetrics(node, metrics): void {
+      const element = asElement(node)
+      if (metrics.scrollTop !== undefined) element.scrollTop = metrics.scrollTop
+      if (metrics.scrollHeight !== undefined) element.scrollHeight = metrics.scrollHeight
+      if (metrics.clientHeight !== undefined) element.clientHeight = metrics.clientHeight
     },
     activeElement(): unknown {
       return activeElement

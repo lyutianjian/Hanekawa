@@ -53,6 +53,7 @@ import {
   type CompletionState,
 } from './model/completion.js'
 import type { ShellState } from './model/keymap.js'
+import { pruneThinkingToggles } from './model/thinking.js'
 import { applySessionEvent, createTranscriptState, type TranscriptState } from './model/transcript.js'
 import {
   activeIndex,
@@ -201,7 +202,15 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   toolProgressEl.hidden = true
   append(paneEl, [welcomeEl, transcriptEl, toolProgressEl])
   deps.mount.appendChild(paneEl)
-  const transcriptView: TranscriptView = createTranscriptView(transcriptEl, toolProgressEl)
+  // `paneEl` is the float host: `.pane` is the positioned ancestor, and a button
+  // placed inside the scroller would both be wiped by every repaint and anchor to
+  // the bottom of the content instead of the viewport.
+  const transcriptView: TranscriptView = createTranscriptView(
+    transcriptEl,
+    toolProgressEl,
+    paneEl,
+    (id) => toggleThinking(id),
+  )
   const welcome = createWelcomeView(
     welcomeEl,
     () => deps.onSwitchWorkspace?.(),
@@ -211,6 +220,12 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   // --- state -----------------------------------------------------------------
 
   let transcript: TranscriptState = createTranscriptState()
+  /**
+   * Thinking blocks the user opened or closed against the default (streaming is
+   * open, sealed is closed). Per pane, like every other `let` here — a window-level
+   * set would fold a block in a session the user never touched.
+   */
+  let toggledThinking: ReadonlySet<string> = new Set()
   let queue: UiQueueState = createUiQueue()
   let completions: CompletionState = NO_COMPLETIONS
   let commands: WireCommandInfo[] = []
@@ -243,7 +258,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 
   function renderTranscript(): void {
     if (!active) return
-    transcriptView.render(transcript)
+    // Pruned every paint, not on reset: `transcript-reset` restarts the block
+    // counter, so `thinking-0` can be minted again and would inherit the toggle a
+    // different block left behind.
+    toggledThinking = pruneThinkingToggles(transcript.items, toggledThinking)
+    transcriptView.render(transcript, toggledThinking)
     // The one place that decides whether this pane has a conversation, so the
     // transcript and the welcome screen cannot disagree about it.
     welcome.render(welcomeView({
@@ -253,6 +272,14 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       canSwitchWorkspace: deps.onSwitchWorkspace !== undefined,
     }))
     paneEl.classList.toggle('empty', isTranscriptEmpty(transcript))
+  }
+
+  function toggleThinking(id: string): void {
+    const next = new Set(toggledThinking)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    toggledThinking = next
+    renderTranscript()
   }
 
   function renderQueue(): void {

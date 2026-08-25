@@ -20,6 +20,7 @@
   // `harness/` in, and the ambient declaration has to come with them.
   "include": [
     "test/rendererSettingsView.test.ts",
+    "test/rendererTranscriptView.test.ts",
     "test/rendererWelcomeView.test.ts",
     "test/helpers/**/*.ts",
     "src/types/picomatch.d.ts"

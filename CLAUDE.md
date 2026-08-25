@@ -243,16 +243,21 @@ otherwise a passing test can contaminate later cases.
   render would pull the caret out of a form field.
 - Every class passed to `controls.ts`'s `button()` needs a **resting-state** rule in `styles.css`; an
   unstyled button falls back to the user agent's filled control, which no typecheck can see.
-  `rendererStyleTokens.test.ts` enforces it, and `:hover`/`:disabled` rules alone do not count. Its scan
-  skips `controls.ts` itself, so a control built *inside* that file (the toggle, the pill dropdown) is
-  covered only by the explicit class list in the same test — extend that list when adding one.
+  `rendererStyleTokens.test.ts` enforces it, and `:hover`/`:disabled` rules alone do not count. That scan
+  is coarse in two known ways: it skips `controls.ts` itself, and it accepts a class that only ever appears
+  as an ancestor's descendant or under a state class. Controls built inside `controls.ts`, and the
+  transcript's own, are therefore covered by two explicit class lists in the same test — extend the right
+  list when adding a control.
 - `paneSession.ts` has no unit tests, so behaviour there is covered by `scripts/smoke-desktop.mjs`.
   `dom/` can now be tested: `test/helpers/domStub.ts` is a hand-written stand-in for the `document`
   members `dom/dom.ts`, `dom/controls.ts` and `dom/icons.ts` use, plus a `Node` binding (a `focusout`
-  handler's `instanceof Node` is a ReferenceError without it). `test/rendererWelcomeView.test.ts` and
-  `test/rendererSettingsView.test.ts` are the pattern (install per test, assert through the returned
-  handle, and keep the source-scan guard that fails when a helper grows a DOM call the stub lacks — it
-  reads comments too). Still prefer moving a decision into `model/` when it can be tested directly.
+  handler's `instanceof Node` is a ReferenceError without it), plus stand-ins for layout it cannot compute
+  (`scrollTop`/`scrollHeight`/`clientHeight`, set through `setMetrics`). `test/rendererWelcomeView.test.ts`,
+  `test/rendererSettingsView.test.ts` and `test/rendererTranscriptView.test.ts` are the pattern (install per
+  test, assert through the returned handle, and keep the source-scan guard that fails when a helper grows a
+  DOM call the stub lacks — it reads comments too). The scan covers `document` members only, so element
+  members the stub fakes are unguarded. Still prefer moving a decision into `model/` when it can be tested
+  directly.
 
 ## Conventions and patches
 

@@ -29,7 +29,7 @@ function item(kind: TranscriptItemKind, id: string = kind): TranscriptItem {
 }
 
 function transcript(overrides: Partial<TranscriptState> = {}): TranscriptState {
-  return { items: [], generation: 0, toolProgress: undefined, isThinking: false, ...overrides }
+  return { items: [], generation: 0, toolProgress: undefined, isThinking: false, thinkingCount: 0, ...overrides }
 }
 
 function stateWith(overrides: Partial<WelcomeState> = {}): WelcomeState {

@@ -5,6 +5,7 @@ import fg from 'fast-glob'
 import type { AtMentionContextRecord, AtMentionFileContext, ToolContext } from './types.js'
 import { wrapInSystemReminder } from './systemReminder.js'
 import { readFileAndRemember } from '../tools/fileState.js'
+import { atMentionPatterns } from '../runtime/suggestions/atToken.js'
 import { filterGitIgnoredPaths } from '../utils/gitIgnore.js'
 import { assertInsideCwd } from '../utils/paths.js'
 import { isProtectedPath } from '../utils/permissions/protectedPaths.js'
@@ -78,12 +79,18 @@ export function extractAtMentionedFiles(input: string): ParsedAtMention[] {
   }
 
   let match: RegExpExecArray | null
-  const quoted = /(^|\s)@"([^"]+)"((?:#L\d+(?:-\d+)?)?)(?:#[^\s]*)?/g
+  // The patterns live in `runtime/suggestions/atToken.ts`, the pure half of `@`
+  // handling: the desktop renderer draws a chip for every mention and cannot import
+  // this file (it reaches for `node:fs`). Two readers, one definition.
+  //
+  // Still two passes in this order, and not `extractAtMentions`'s single ordered
+  // one: the quoted form is reported first here, and the attachment cap makes that
+  // order observable.
+  const { quoted, regular } = atMentionPatterns()
   while ((match = quoted.exec(input)) !== null) {
     if (match[2]) add(`${match[2]}${match[3] ?? ''}`)
   }
 
-  const regular = /(^|\s)@([^\s"]+)/g
   while ((match = regular.exec(input)) !== null) {
     const raw = match[2]
     if (raw) add(raw)

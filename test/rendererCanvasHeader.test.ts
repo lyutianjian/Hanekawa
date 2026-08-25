@@ -1,0 +1,112 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  UNTITLED_SESSION,
+  canvasHeaderView,
+  renameCommit,
+} from '../src/desktop/renderer/model/canvasHeader.js'
+import type { WireLaneInfo } from '../src/desktop/shellProtocol.js'
+
+/**
+ * The canvas header's decisions, with no DOM in sight — the `model/` half of the
+ * renderer's split, same as `test/rendererSidebar.test.ts`.
+ */
+
+function lane(overrides: Partial<WireLaneInfo> = {}): WireLaneInfo {
+  return {
+    lane: '1',
+    paneId: 's1',
+    sessionId: 's1',
+    projectRoot: 'c:\\repo\\alpha',
+    projectName: 'alpha',
+    ...overrides,
+  }
+}
+
+test('no active lane means no header at all', () => {
+  const view = canvasHeaderView({
+    lane: undefined,
+    menuOpen: true,
+    renaming: true,
+    pendingDelete: 's1',
+  })
+  assert.equal(view.visible, false)
+  assert.deepEqual(view.menuItems, [], 'an empty window has no session to act on')
+})
+
+test('the header names the session, falling back the way a sidebar row does', () => {
+  const titled = canvasHeaderView({
+    lane: lane({ sessionTitle: '重构缓存层' }),
+    menuOpen: false,
+    renaming: false,
+    pendingDelete: undefined,
+  })
+  assert.equal(titled.visible, true)
+  assert.equal(titled.title, '重构缓存层')
+
+  const draft = canvasHeaderView({
+    lane: lane(),
+    menuOpen: false,
+    renaming: false,
+    pendingDelete: undefined,
+  })
+  // One session, one name: the sidebar shows the same string for the same draft.
+  assert.equal(draft.title, UNTITLED_SESSION)
+})
+
+test('the menu offers rename and delete, and delete asks a second time', () => {
+  const first = canvasHeaderView({
+    lane: lane(),
+    menuOpen: true,
+    renaming: false,
+    pendingDelete: undefined,
+  })
+  assert.deepEqual(first.menuItems.map((item) => item.id), ['rename', 'delete'])
+
+  const confirming = canvasHeaderView({
+    lane: lane(),
+    menuOpen: true,
+    renaming: false,
+    pendingDelete: 's1',
+  })
+  assert.deepEqual(confirming.menuItems.map((item) => item.id), ['confirm-delete', 'cancel-delete'])
+  assert.equal(confirming.menuItems[0]?.danger, true)
+})
+
+test('a pending delete belongs to its session, not to the header', () => {
+  // The header redraws from whichever lane is active. A bare boolean would carry
+  // a confirmation onto the next session the user switched to — and that click
+  // would delete a session nobody asked about.
+  const view = canvasHeaderView({
+    lane: lane({ sessionId: 's2', paneId: 's2' }),
+    menuOpen: true,
+    renaming: false,
+    pendingDelete: 's1',
+  })
+  assert.deepEqual(view.menuItems.map((item) => item.id), ['rename', 'delete'])
+})
+
+test('renaming closes the menu, because Escape cannot mean two things', () => {
+  const view = canvasHeaderView({
+    lane: lane(),
+    menuOpen: true,
+    renaming: true,
+    pendingDelete: undefined,
+  })
+  assert.equal(view.renaming, true)
+  assert.equal(view.menuOpen, false)
+})
+
+test('a rename that changes nothing is not sent', () => {
+  // `rename-session` writes the index and broadcasts to every lane; blurring the
+  // field without typing must not cost that.
+  assert.equal(renameCommit('old', 'old'), undefined)
+  assert.equal(renameCommit('old', '  old  '), undefined)
+  assert.equal(renameCommit('old', '   '), undefined)
+  assert.equal(renameCommit('old', ''), undefined)
+})
+
+test('a real rename is trimmed before it is sent', () => {
+  assert.equal(renameCommit('old', '  new title '), 'new title')
+  assert.equal(renameCommit('', 'first name'), 'first name')
+})

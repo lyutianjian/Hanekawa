@@ -1,29 +1,32 @@
 import type { SessionControllerSnapshot } from '../../../runtime/sessionController.js'
-import type { WireRuntimeSnapshot, WireUsageCost } from '../../../runtime/protocol/wire.js'
+import type { WireUsageCost } from '../../../runtime/protocol/wire.js'
 
 /**
- * The status bar.
+ * The status bar: usage, cost, and whether a turn is running.
  *
  * Split out of `composerView.ts` in 4e, when the composer grew its action bar
- * and the one file stopped being one thing.
+ * and the one file stopped being one thing. Two fields have since left it, both
+ * for the same reason — one field, one place, or they drift:
  *
- * It no longer shows the model: that moved into the composer's chip, next to
- * the effort level it is always read together with. A second copy here would be
- * a second thing to keep in step with `renderRuntime`.
+ * - the model, to the composer's chip beside the effort level it is read with;
+ * - the permission mode (5e), to the composer's pill, beside the message it
+ *   governs; and the session name, to the canvas header, which owns identity.
+ *
+ * `document.title` still happens here rather than in the header, and that is
+ * deliberate: it is the desktop shell's end-to-end proof (the smoke driver reads
+ * it from outside the process), and it means "a `hello()` came back" only as
+ * long as it is written on the pane's path rather than off the lane list.
  */
 
 export interface StatusView {
   render(snapshot: SessionControllerSnapshot, cost?: WireUsageCost): void
-  renderRuntime(runtime: WireRuntimeSnapshot): void
   renderSession(session: { id: string; title?: string; messageCount?: number }): void
 }
 
 export function createStatusView(els: {
-  mode: HTMLElement
   usage: HTMLElement
   cost: HTMLElement
   streaming: HTMLElement
-  session: HTMLElement
 }): StatusView {
   return {
     render(snapshot, cost) {
@@ -40,17 +43,12 @@ export function createStatusView(els: {
       els.cost.textContent = cost ? `${cost.currency} ${formatCost(cost.amount)}` : ''
     },
 
-    renderRuntime(runtime) {
-      els.mode.textContent = `模式：${runtime.permissionMode}`
-    },
-
     renderSession(session) {
       const name = session.title ?? session.id
       // The window title is also the desktop shell's end-to-end proof: it is only
       // set after `hello()` returns, so reading it from outside the process shows
       // the whole chain worked.
       document.title = `Hanekawa — ${name}`
-      els.session.textContent = name
     },
   }
 }

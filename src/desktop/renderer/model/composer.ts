@@ -1,4 +1,5 @@
 import { EFFORT_RANK, VALID_EFFORT_LEVELS, type EffortLevel } from '../../../config/effort.js'
+import type { PermissionMode } from '../../../harness/permissions.js'
 import type { WireRuntimeSnapshot } from '../../../runtime/protocol/wire.js'
 
 /**
@@ -93,6 +94,119 @@ export function composerChipView(runtime: WireRuntimeSnapshot | undefined): Comp
  */
 export function submitLabel(streaming: boolean): string {
   return streaming ? '加入队列' : '发送'
+}
+
+/**
+ * The send button's three *visual* states (`design_guidance.md` 四.2②.3).
+ *
+ * Visual only, deliberately. The document draws the streaming state as a `■`
+ * that replaces the arrow, but this shell keeps interrupting and queueing as two
+ * separate affordances: mid-turn the round button still means "queue" (see
+ * `submitLabel`) and `#stop` sits beside it. Merging them would leave the queue
+ * path reachable only by Enter and break the "button and keymap reach the same
+ * verdict" rule the whole composer is built on.
+ *
+ * `idle` is "there is nothing to send", not "sending is impossible": the button
+ * is never disabled, because `requestSubmit()` ignores a disabled button and the
+ * click would vanish with no error anywhere.
+ */
+export type SubmitButtonState = 'idle' | 'ready' | 'streaming'
+
+export interface SubmitButtonView {
+  readonly state: SubmitButtonState
+  readonly label: string
+  /** The spinning ring beside the model chip; on exactly while a turn is in flight. */
+  readonly progress: boolean
+}
+
+export function submitButtonView(input: { streaming: boolean; empty: boolean }): SubmitButtonView {
+  return {
+    // Streaming wins over emptiness: the ring and the "queue" label describe the
+    // turn, not the textarea, and an empty composer mid-turn must not read as idle.
+    state: input.streaming ? 'streaming' : input.empty ? 'idle' : 'ready',
+    label: submitLabel(input.streaming),
+    progress: input.streaming,
+  }
+}
+
+/**
+ * The permission-mode pill, `design_guidance.md` 四.2①.2.
+ *
+ * Renderer-owned Chinese, like `EFFORT_LABELS`: nothing in the TUI draws this.
+ * `readonly` has a label but is **not** in `PERMISSION_PILL_MODES` — the stage-5
+ * decision table lists four modes for the menu, and `readonly` is a mode the
+ * built-in `explore`/`plan` agents run under rather than one a user picks for a
+ * conversation. It still needs a label, because a snapshot can carry it and a
+ * pill that cannot name its own current value is worse than one with an
+ * unreachable label.
+ */
+export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
+  default: '帮我批准',
+  acceptEdits: '接受编辑',
+  plan: '计划模式',
+  bypass: '绕过权限',
+  readonly: '只读',
+}
+
+export const PERMISSION_PILL_MODES: readonly PermissionMode[] = [
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypass',
+] as const
+
+export interface PermissionPillOption {
+  readonly mode: PermissionMode
+  readonly label: string
+  readonly current: boolean
+}
+
+export interface PermissionPillView {
+  readonly label: string
+  readonly title: string
+  /** False until a runtime snapshot has arrived; the pill is inert until then. */
+  readonly enabled: boolean
+  readonly open: boolean
+  readonly options: readonly PermissionPillOption[]
+}
+
+/**
+ * Switching modes goes through `set-permission-mode`, not through a slash
+ * command: unlike `/model` and `/effort` there is nothing to persist — the mode
+ * is a property of the live gate, and `permissions.mode` in settings is only the
+ * *startup* mode (`sessionScope.ts` snapshots it when the scope is built).
+ */
+export function permissionPillView(input: {
+  runtime: WireRuntimeSnapshot | undefined
+  open: boolean
+}): PermissionPillView {
+  const current = input.runtime?.permissionMode
+  const options = PERMISSION_PILL_MODES.map((mode) => ({
+    mode,
+    label: PERMISSION_MODE_LABELS[mode],
+    current: mode === current,
+  }))
+
+  if (!current) {
+    return {
+      label: PLACEHOLDER,
+      title: '尚未收到运行时快照',
+      enabled: false,
+      open: false,
+      options,
+    }
+  }
+
+  const label = PERMISSION_MODE_LABELS[current]
+  return {
+    label,
+    title: `权限模式：${label} · 点击切换`,
+    enabled: true,
+    // Never open while inert, so a snapshot arriving late cannot leave a menu
+    // hanging over a pill that has nothing to switch.
+    open: input.open,
+    options,
+  }
 }
 
 /**

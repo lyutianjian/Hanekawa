@@ -19,6 +19,8 @@
   // it: TypeScript follows imports past `include`, so the transcript types drag
   // `harness/` in, and the ambient declaration has to come with them.
   "include": [
+    "test/rendererCanvasHeaderView.test.ts",
+    "test/rendererComposerView.test.ts",
     "test/rendererSettingsView.test.ts",
     "test/rendererTranscriptView.test.ts",
     "test/rendererWelcomeView.test.ts",

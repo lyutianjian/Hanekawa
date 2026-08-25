@@ -41,6 +41,8 @@ export type IconName =
   | 'refresh'
   | 'monitor'
   | 'branch'
+  // --- the canvas header (5e) ---
+  | 'code'
 
 interface IconSpec {
   /** Path data on a 16×16 grid. */
@@ -124,6 +126,11 @@ const ICONS = {
       'M11.5 5.6v1.4a2.5 2.5 0 0 1-2.5 2.5H7a2.5 2.5 0 0 0-2.5 2.5',
     ],
   },
+  // Angle brackets and a slash — "open in an editor". Monochrome like every
+  // other icon here: the design document's coloured VS Code mark would be the
+  // one thing in the interface that ignores `currentColor`, and the header is
+  // the same neutral chrome the sidebar is.
+  code: { paths: ['M5.6 5 2.6 8l3 3', 'M10.4 5l3 3-3 3', 'M9.2 3.4 6.8 12.6'] },
 } as const satisfies Record<IconName, IconSpec>
 
 export function icon(name: IconName, className = 'icon'): SVGSVGElement {

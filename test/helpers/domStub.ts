@@ -73,6 +73,18 @@ class StubElement {
   scrollTop = 0
   scrollHeight = 0
   clientHeight = 0
+  /**
+   * The one inline style the renderer is allowed to write (`autosize` clamps a
+   * `scrollHeight` no stylesheet can compute — `rendererStyleTokens.test.ts`
+   * enforces that it stays the only one).
+   */
+  readonly style: { height: string } = { height: '' }
+  /** A textarea's caret. `setSelectionRange` moves it, as in the browser. */
+  selectionStart = 0
+
+  setSelectionRange(start: number, _end: number): void {
+    this.selectionStart = start
+  }
 
   /**
    * As `Element.scrollTo({ top })`, and it fires `scroll` — synchronously here,

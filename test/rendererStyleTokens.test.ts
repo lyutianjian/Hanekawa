@@ -614,6 +614,28 @@ test('the transcript controls carry a rule of their own, not only a contextual o
   }
 })
 
+test('the 5e chrome controls carry a rule of their own, not only a contextual one', () => {
+  // Same hole as the transcript controls above, one stage later: the header's
+  // menu items and the composer's mode menu are `button()` call sites, so the
+  // general scan sees them — but it would accept `.canvas-menu .canvas-menu-item`
+  // or `.canvas-menu-item.danger` alone, neither of which says how the control
+  // looks at rest. Named here and required to own a selector outright, with the
+  // stricter lookahead 5f introduced (no trailing `.` either).
+  // Verified by mutation: deleting any one of these rules reds this test.
+  const restingRule = (name: string): boolean =>
+    blocks.some((block) => new RegExp(`^\\.${name}(?![\\w\\-:.\\[])`).test(block.selector.trim()))
+
+  for (const name of [
+    'canvas-menu-trigger',
+    'canvas-menu-item',
+    'canvas-open-location',
+    'canvas-title-input',
+    'composer-menu-item',
+  ]) {
+    assert.ok(restingRule(name), `styles.css has no resting rule for .${name}`)
+  }
+})
+
 test('the controls built inside controls.ts are styled too', () => {
   // The scan above skips `controls.ts`, because that file's own `button()` is the
   // helper being scanned for. Everything it builds internally is therefore

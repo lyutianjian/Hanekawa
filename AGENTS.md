@@ -179,6 +179,15 @@ to `dom/` and the app shell. Every blocking UI request must be answered or settl
   that is already read live. Each `SettingsChange` variant declares this in one place.
 - `SettingsChange` is keyed by `kind` alone in the host's schema table and dispatch, so a new variant needs
   a globally unique `kind`; the keyed `satisfies` and `assertNever` are what fail the build by name.
+- The canvas header, the sidebar and the settings screen are *window*-level views: everything the header
+  draws comes off `WireLaneInfo`, so session identity has one source and no pane is involved. The status
+  bar carries usage, cost and streaming only — the model and effort live on the composer's chip, the
+  permission mode on its pill, and the session name in the header. `document.title` stays in
+  `statusView.renderSession`, where it still means "a `hello()` came back".
+- `open-in-editor` is awaited by the shell (unlike `open-project`, which is fire-and-forget), so a missing
+  `code` reaches the renderer as a `fail` rather than a native box. It carries `projectRoot` — the only
+  project handle the renderer has — and the host resolves it to `entry.cwd`, never handing the normalized
+  key to a process. The spawn itself lives in `src/desktop/openInEditor.ts` so it can be unit-tested.
 - Deleting a session requires resolving the real session ID first, detaching an open lane if necessary,
   and removing all associated artifacts through the runtime deletion path.
 - `main.ts` still has no unit test, so `scripts/smoke-desktop.mjs` is what covers it: it launches the real
@@ -245,14 +254,15 @@ otherwise a passing test can contaminate later cases.
   unstyled button falls back to the user agent's filled control, which no typecheck can see.
   `rendererStyleTokens.test.ts` enforces it, and `:hover`/`:disabled` rules alone do not count. That scan
   is coarse in two known ways: it skips `controls.ts` itself, and it accepts a class that only ever appears
-  as an ancestor's descendant or under a state class. Controls built inside `controls.ts`, and the
-  transcript's own, are therefore covered by two explicit class lists in the same test — extend the right
-  list when adding a control.
+  as an ancestor's descendant or under a state class. Controls built inside `controls.ts`, the
+  transcript's own, and the 5e header/composer chrome are therefore covered by three explicit class lists
+  in the same test — extend the right list when adding a control.
 - `paneSession.ts` has no unit tests, so behaviour there is covered by `scripts/smoke-desktop.mjs`.
   `dom/` can now be tested: `test/helpers/domStub.ts` is a hand-written stand-in for the `document`
   members `dom/dom.ts`, `dom/controls.ts` and `dom/icons.ts` use, plus a `Node` binding (a `focusout`
   handler's `instanceof Node` is a ReferenceError without it), plus stand-ins for layout it cannot compute
-  (`scrollTop`/`scrollHeight`/`clientHeight`, set through `setMetrics`). `test/rendererWelcomeView.test.ts`,
+  (`scrollTop`/`scrollHeight`/`clientHeight`, set through `setMetrics`) and for the one inline style the
+  renderer writes (`style.height`, with a textarea's `selectionStart`). `test/rendererWelcomeView.test.ts`,
   `test/rendererSettingsView.test.ts` and `test/rendererTranscriptView.test.ts` are the pattern (install per
   test, assert through the returned handle, and keep the source-scan guard that fails when a helper grows a
   DOM call the stub lacks — it reads comments too). The scan covers `document` members only, so element

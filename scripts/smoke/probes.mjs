@@ -132,21 +132,49 @@ export const surface = () => `(() => {
   }
 })()`
 
+/**
+ * The status bar plus the two fields that left it in 5e: the permission mode is
+ * now the composer's pill, and the session name is the canvas header's. Both are
+ * still read here, because the stages that assert on them are asking "what does
+ * the window say about this session", not "what is in the status bar".
+ */
 export const status = () => `(() => {
   const text = (id) => (document.getElementById(id) || {}).textContent || ''
+  const el = (selector) => document.querySelector(selector)
   return {
-    mode: text('status-mode'),
+    mode: text('chip-permission'),
     usage: text('status-usage'),
     cost: text('status-cost'),
     streaming: text('status-streaming'),
-    session: text('status-session'),
+    session: (el('#canvas-header .canvas-title') || {}).textContent || '',
     title: document.title,
   }
 })()`
 
+/** The canvas header: identity on the left, "open location" on the right. */
+export const canvasHeader = () => `(() => {
+  const header = document.getElementById('canvas-header')
+  if (!header) return { present: false }
+  const pick = (selector) => (header.querySelector(selector) || {}).textContent || ''
+  return {
+    present: true,
+    hidden: header.hidden,
+    title: pick('.canvas-title'),
+    renaming: header.querySelector('.canvas-title-input') !== null,
+    menuItems: [...header.querySelectorAll('.canvas-menu-item')].map((node) => node.textContent),
+    openLocation: pick('.canvas-open-location'),
+  }
+})()`
+
+export const clickHeaderMenu = () =>
+  clickOr('#canvas-header .canvas-menu-trigger', 'the canvas header menu')
+
 export const chip = () => `(() => ({
   model: (document.getElementById('chip-model') || {}).textContent || '',
   effort: (document.getElementById('chip-effort') || {}).textContent || '',
+  permission: (document.getElementById('chip-permission') || {}).textContent || '',
+  submitState: (document.getElementById('submit') || { className: '' }).className,
+  progress: (document.getElementById('composer-progress') || {}).hidden,
 }))()`
 
 /**

@@ -73,7 +73,9 @@ import {
   systemThemeFromMatches,
   type ThemePreference,
 } from './model/theme.js'
+import { canvasHeaderView, type CanvasHeaderMenuItem } from './model/canvasHeader.js'
 import { required } from './dom/dom.js'
+import { createCanvasHeaderView } from './dom/canvasHeaderView.js'
 import { createSettingsView } from './dom/settingsView.js'
 import { createOverlayView } from './dom/overlayView.js'
 import { createRewindView } from './dom/rewindView.js'
@@ -121,11 +123,9 @@ const queueStrip = createQueueView(required('queue'), () => {
   void activePane()?.clearQueue()
 })
 const status = createStatusView({
-  mode: required('status-mode'),
   usage: required('status-usage'),
   cost: required('status-cost'),
   streaming: required('status-streaming'),
-  session: required('status-session'),
 })
 const composer = createComposerView({
   input: required<HTMLTextAreaElement>('input'),
@@ -134,12 +134,19 @@ const composer = createComposerView({
   attach: required<HTMLButtonElement>('composer-attach'),
   chipModel: required<HTMLButtonElement>('chip-model'),
   chipEffort: required<HTMLButtonElement>('chip-effort'),
+  chipPermission: required<HTMLButtonElement>('chip-permission'),
+  permissionShell: required('composer-permission'),
+  progress: required('composer-progress'),
 }, {
   // Both halves of the chip go through the pane's surface path, so they open
   // the same pickers `/model` and `/effort` do — and persist the choice the
   // same way. See `dom/composerView.ts`'s header for why not `setModel`.
   onOpenModelPicker: () => void activePane()?.openModelPicker(),
   onOpenEffortPicker: () => void activePane()?.openEffortPicker(),
+  // The pill is the exception: the mode is the live gate's state, so it goes
+  // straight to `set-permission-mode` and repaints off the snapshot that comes
+  // back.
+  onSelectPermissionMode: (mode) => void activePane()?.setPermissionMode(mode),
   onAttach: () => activePane()?.onComposerInput(),
 })
 const form = required<HTMLFormElement>('input-row')
@@ -189,6 +196,9 @@ function attachPaneSession(lane: string): void {
       // state only — the view's own signature guard absorbs the ticks that
       // change nothing, and the filesystem pull hangs off `turn-end` below.
       renderSidebar()
+      // The header names the active session, and a `/clear` or a rename moves
+      // that name without any lane opening or closing.
+      renderCanvasHeader()
     },
     onSwitchWorkspace: () => openWorkspaceSwitcher(),
     onExit: () => {
@@ -229,6 +239,12 @@ function activateLane(lane: string): void {
   paneSessions.get(lane)!.activate()
   applyPaneBudget()
   renderSidebar()
+  // A switch changes which session the header is about, so a rename in progress
+  // and a pending confirmation both belong to the pane being left.
+  headerRenaming = false
+  headerMenuOpen = false
+  headerPendingDelete = undefined
+  renderCanvasHeader()
 }
 
 function removePaneSession(lane: string): void {
@@ -251,6 +267,7 @@ function removePaneSession(lane: string): void {
     if (next !== undefined) activateLane(next)
   }
   renderSidebar()
+  renderCanvasHeader()
 }
 
 // --- the resident-pane budget ---------------------------------------------------
@@ -488,6 +505,107 @@ async function deleteSession(projectRoot: string, sessionId: string): Promise<vo
   await refreshSessions()
 }
 
+// --- the canvas header ----------------------------------------------------------
+
+/**
+ * Session identity, at the top of the canvas.
+ *
+ * Window-level like the sidebar, and for the same reason: everything it draws is
+ * on `WireLaneInfo`, which the host re-broadcasts whenever a title, a session or
+ * a project moves. No pane is involved, so `paneSession.ts` gained nothing for
+ * it — and a rename started here survives the repaint that answering it causes.
+ */
+let headerMenuOpen = false
+let headerRenaming = false
+/** The session the header's delete is asking about, not a flag — see the model. */
+let headerPendingDelete: string | undefined
+
+function activeLaneInfo() {
+  return activeLane === undefined
+    ? undefined
+    : shellClient.getLanes().find((info) => info.lane === activeLane)
+}
+
+function renderCanvasHeader(): void {
+  canvasHeader.render(canvasHeaderView({
+    lane: activeLaneInfo(),
+    menuOpen: headerMenuOpen,
+    renaming: headerRenaming,
+    pendingDelete: headerPendingDelete,
+  }))
+}
+
+function closeHeaderMenu(): void {
+  // Idempotent, the 5f rule: a `focusout` fires whether or not a menu is open,
+  // and an unconditional repaint here would run on every click in the header.
+  if (!headerMenuOpen && headerPendingDelete === undefined) return
+  headerMenuOpen = false
+  headerPendingDelete = undefined
+  renderCanvasHeader()
+}
+
+function runHeaderMenuItem(id: CanvasHeaderMenuItem['id']): void {
+  const lane = activeLaneInfo()
+  if (!lane) return
+  switch (id) {
+    case 'rename':
+      headerMenuOpen = false
+      headerRenaming = true
+      renderCanvasHeader()
+      return
+    case 'delete':
+      headerPendingDelete = lane.sessionId
+      renderCanvasHeader()
+      return
+    case 'cancel-delete':
+      headerPendingDelete = undefined
+      renderCanvasHeader()
+      return
+    case 'confirm-delete':
+      headerMenuOpen = false
+      headerPendingDelete = undefined
+      renderCanvasHeader()
+      // The same path the sidebar's confirmation takes, so a delete is one
+      // choreography however it was asked for.
+      void deleteSession(lane.projectRoot, lane.sessionId)
+      return
+  }
+}
+
+const canvasHeader = createCanvasHeaderView(required('canvas-header'), {
+  onToggleMenu: () => {
+    headerMenuOpen = !headerMenuOpen
+    if (!headerMenuOpen) headerPendingDelete = undefined
+    renderCanvasHeader()
+  },
+  onCloseMenu: () => closeHeaderMenu(),
+  onMenuItem: (id) => runHeaderMenuItem(id),
+  onRename: (title) => {
+    const lane = activeLaneInfo()
+    headerRenaming = false
+    renderCanvasHeader()
+    if (!lane) return
+    void shellClient
+      .renameSession(lane.projectRoot, lane.sessionId, title)
+      // The lanes broadcast that follows is what repaints the title, here and in
+      // the sidebar; nothing is written locally in the meantime.
+      .catch((error) => activePane()?.note(`Failed to rename: ${describe(error)}`, 'error'))
+  },
+  onCancelRename: () => {
+    if (!headerRenaming) return
+    headerRenaming = false
+    renderCanvasHeader()
+    composer.focus()
+  },
+  onOpenLocation: () => {
+    const lane = activeLaneInfo()
+    if (!lane) return
+    void shellClient
+      .openInEditor(lane.projectRoot)
+      .catch((error) => activePane()?.note(describe(error), 'error'))
+  },
+})
+
 // --- settings ---------------------------------------------------------------
 
 /**
@@ -692,6 +810,7 @@ shellClient.onLanes((lanes) => {
   }
   applyPaneBudget()
   renderSidebar()
+  renderCanvasHeader()
   // A topology change is also a history change: a new draft appeared, or a
   // `/clear` moved a pane onto a session the last pull had never heard of.
   void refreshSessions()
@@ -711,6 +830,7 @@ void (async () => {
   const first = lanes[0]
   if (first) activateLane(first.lane)
   renderSidebar()
+  renderCanvasHeader()
 })().catch((error) => {
   document.body.textContent = `Failed to start: ${describe(error)}`
 })

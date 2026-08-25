@@ -387,6 +387,10 @@ interface Harness {
   laneEvents: WireLaneInfo[][]
   allLanesClosed: string[]
   openProjectRequests: Array<string | undefined>
+  /** The cwds `open-in-editor` handed over, in order. */
+  editorRequests: string[]
+  /** Makes the next `open-in-editor` reject, the way an uninstalled `code` does. */
+  failEditor(message: string | undefined): void
   /**
    * The interleaved action log the fakes append to (`close-pane:<id>`,
    * `store-delete:<id>`, `shutdown:<cwd>:<reason>`, `closeAll`). The only place
@@ -401,7 +405,9 @@ interface Harness {
   addProject(cwd: string): { project: FakeProject; workspace: FakeWorkspace; entry: ProjectEntry<FakeProject, FakeWorkspace> }
 }
 
-function createHarness(options: { withOpenProject?: boolean; cwd?: string } = {}): Harness {
+function createHarness(
+  options: { withOpenProject?: boolean; withOpenInEditor?: boolean; cwd?: string } = {},
+): Harness {
   const [mainTransport, rendererTransport] = createMemoryChannelPair()
   const mainMux = createLaneMux(mainTransport)
   const rendererMux = createLaneMux(rendererTransport)
@@ -421,6 +427,8 @@ function createHarness(options: { withOpenProject?: boolean; cwd?: string } = {}
   const laneEvents: WireLaneInfo[][] = []
   const allLanesClosed: string[] = []
   const openProjectRequests: Array<string | undefined> = []
+  const editorRequests: string[] = []
+  let editorFailure: string | undefined
   let quitting = false
   let nextKey = 0
 
@@ -445,6 +453,16 @@ function createHarness(options: { withOpenProject?: boolean; cwd?: string } = {}
     ...(options.withOpenProject === false
       ? {}
       : { onOpenProject: (path?: string) => openProjectRequests.push(path) }),
+    ...(options.withOpenInEditor === false
+      ? {}
+      : {
+          onOpenInEditor: async (cwd: string) => {
+            editorRequests.push(cwd)
+            // Rejecting *after* recording: the host must have handed the path
+            // over before it can report the launch failing.
+            if (editorFailure !== undefined) throw new Error(editorFailure)
+          },
+        }),
     isQuitting: () => quitting,
     onAllLanesClosed: (reason) => allLanesClosed.push(reason),
   })
@@ -469,6 +487,10 @@ function createHarness(options: { withOpenProject?: boolean; cwd?: string } = {}
     laneEvents,
     allLanesClosed,
     openProjectRequests,
+    editorRequests,
+    failEditor: (message: string | undefined) => {
+      editorFailure = message
+    },
     log,
     rendererMux,
     setQuitting: (value: boolean) => {
@@ -517,6 +539,7 @@ const COMMAND_SAMPLES = {
     change: { scope: 'provider', kind: 'set-routing', role: 'main', value: 'inherit' },
   },
   'rename-session': { type: 'rename-session', id: 'h', projectRoot: 'r', sessionId: 's1', title: 'T' },
+  'open-in-editor': { type: 'open-in-editor', id: 'i', projectRoot: 'r' },
 } as const satisfies Record<ShellCommand['type'], ShellCommand>
 
 /**
@@ -589,6 +612,7 @@ test('every shell command variant round-trips through its schema', () => {
       'delete-session',
       'get-settings',
       'list-sessions',
+      'open-in-editor',
       'open-project',
       'open-session',
       'panes',
@@ -1663,6 +1687,40 @@ test('rename-session broadcasts, because sessionTitle is a lane field', async ()
     h.laneEvents.length > before,
     'unlike delete-session this does change the topology the client compares',
   )
+})
+
+// --- open-in-editor ----------------------------------------------------------
+
+test('open-in-editor hands over the project cwd, not the normalized root', async () => {
+  // The lane list only carries the *key*, so that is what the renderer can name;
+  // handing that key to a process would pass a case-folded path on Windows.
+  const h = createHarness({ cwd: 'C:\\Repo\\Alpha' })
+
+  const result = await h.client.openInEditor(h.entry.root)
+
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(h.editorRequests, ['C:\\Repo\\Alpha'])
+  assert.notEqual(h.entry.root, 'C:\\Repo\\Alpha', 'the key differs from the cwd, or this proves nothing')
+})
+
+test('open-in-editor reports a launch failure rather than answering ok', async () => {
+  const h = createHarness()
+  h.failEditor('code is not installed')
+
+  await assert.rejects(h.client.openInEditor(h.entry.root), /code is not installed/)
+  assert.equal(h.editorRequests.length, 1, 'the path was handed over before the failure')
+})
+
+test('open-in-editor rejects when the shell has no editor and for an unknown project', async () => {
+  const withoutEditor = createHarness({ withOpenInEditor: false })
+  await assert.rejects(
+    withoutEditor.client.openInEditor(withoutEditor.entry.root),
+    /cannot open an editor/,
+  )
+
+  const h = createHarness()
+  await assert.rejects(h.client.openInEditor('C:\\repo\\never-opened'), /No project is open/)
+  assert.deepEqual(h.editorRequests, [], 'an unknown project must not reach the editor at all')
 })
 
 test('settings commands fail cleanly for a project that is not open', async () => {

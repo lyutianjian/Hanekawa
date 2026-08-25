@@ -38,6 +38,7 @@ import {
   type ShellEvent,
   type WireLaneInfo,
   type WireShellDeleteSessionResult,
+  type WireShellOpenInEditorResult,
   type WireShellOpenProjectResult,
   type WireShellOpenSessionResult,
   type WireShellPanesResult,
@@ -225,6 +226,14 @@ export interface ShellHostDeps<
   createOccupant: (attach: LaneAttach<P, PaneT, W>) => LaneOccupant
   /** `open-project` hand-off. A shell that cannot open projects rejects the command. */
   onOpenProject?: (path?: string) => void
+  /**
+   * `open-in-editor` hand-off, given the project's real `cwd`.
+   *
+   * Awaited, unlike `onOpenProject`: launching an editor usually fails by not
+   * being installed, and that has to come back as a `fail` the renderer can put
+   * in the transcript. A shell without one rejects the command.
+   */
+  onOpenInEditor?: (cwd: string) => Promise<void>
   /**
    * While quitting, `detachLane` skips project shutdown: teardown owns the
    * ordering then, and closing projects mid-loop would race its own sweep.
@@ -416,6 +425,9 @@ const SHELL_COMMAND_SCHEMAS = {
       sessionId: z.string(),
       title: z.string(),
     })
+    .strict(),
+  'open-in-editor': z
+    .object({ type: z.literal('open-in-editor'), id: commandId, projectRoot: z.string() })
     .strict(),
 } as const satisfies Record<ShellCommand['type'], z.ZodTypeAny>
 
@@ -657,6 +669,8 @@ export class ShellHost<
         return this.applySettingsChange(command.projectRoot, command.change)
       case 'rename-session':
         return this.renameSession(command.projectRoot, command.sessionId, command.title)
+      case 'open-in-editor':
+        return this.openInEditor(command.projectRoot)
       default:
         return assertNever(command)
     }
@@ -831,6 +845,24 @@ export class ShellHost<
     }
     this.broadcastLanes()
     return { ok: true, title } satisfies WireShellRenameSessionResult
+  }
+
+  /**
+   * Hands the project's directory to an editor.
+   *
+   * `entry.cwd`, not `entry.root`: the root is the normalized comparison key
+   * (`projectRootKey` lower-cases on Windows), and handing a case-folded path to
+   * a process is a path that may not exist. The root is what the *renderer*
+   * names, because it is the only project handle the lane list carries.
+   */
+  private async openInEditor(projectRoot: string): Promise<WireShellOpenInEditorResult> {
+    const entry = this.deps.directory.get(projectRoot)
+    if (!entry) throw new Error(`No project is open at ${projectRoot}`)
+    // Missing callback rejects rather than answering `ok`, the same rule
+    // `open-project` follows: silence is indistinguishable from success.
+    if (!this.deps.onOpenInEditor) throw new Error('The shell cannot open an editor.')
+    await this.deps.onOpenInEditor(entry.cwd)
+    return { ok: true } satisfies WireShellOpenInEditorResult
   }
 
   /**

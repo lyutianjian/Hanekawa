@@ -1,0 +1,116 @@
+import type { WireLaneInfo } from '../../shellProtocol.js'
+
+/**
+ * The canvas header bar (`design_guidance.md` 三.1).
+ *
+ * Session identity on the left — folder icon, title, a `⋯` menu — and "open in
+ * editor" on the right. The two items the document puts beside it (split view,
+ * right inspector) have no backend and are omitted, per the stage-5 decision
+ * table.
+ *
+ * Derived entirely from `WireLaneInfo`, which already carries the session id,
+ * its title, and the project the lane belongs to — and which the host
+ * re-broadcasts on a rename (`sessionTitle` is a lane field). So the header is a
+ * *window*-level view like the sidebar: it never reaches into a `PaneSession`,
+ * and `paneSession.ts` needs no new dependency for it.
+ *
+ * Pure, DOM-free, and therefore unit-tested directly; `dom/canvasHeaderView.ts`
+ * only turns this into nodes.
+ */
+
+export interface CanvasHeaderMenuItem {
+  readonly id: 'rename' | 'delete' | 'confirm-delete' | 'cancel-delete'
+  readonly label: string
+  /** Destructive items are drawn in the danger colour and read out as such. */
+  readonly danger?: boolean
+}
+
+export interface CanvasHeaderView {
+  /** False when no lane is active: an empty window draws no header at all. */
+  readonly visible: boolean
+  readonly title: string
+  /** The project the session belongs to, for the "open in editor" button's name. */
+  readonly projectName: string
+  readonly projectRoot: string
+  readonly sessionId: string
+  readonly menuOpen: boolean
+  readonly menuItems: readonly CanvasHeaderMenuItem[]
+  /** True while the title is being edited; the header swaps the label for an input. */
+  readonly renaming: boolean
+  readonly openLocationLabel: string
+  readonly openLocationTitle: string
+}
+
+/** The same fallback the sidebar rows use, so one session has one name. */
+export const UNTITLED_SESSION = '未命名会话'
+
+const EMPTY: CanvasHeaderView = {
+  visible: false,
+  title: '',
+  projectName: '',
+  projectRoot: '',
+  sessionId: '',
+  menuOpen: false,
+  menuItems: [],
+  renaming: false,
+  openLocationLabel: '',
+  openLocationTitle: '',
+}
+
+export function canvasHeaderView(input: {
+  lane: WireLaneInfo | undefined
+  menuOpen: boolean
+  renaming: boolean
+  /**
+   * The session the menu is asking about, not a boolean: the header is redrawn
+   * from whichever lane is active, and a bare flag would carry a pending
+   * confirmation onto the next session the user switched to.
+   */
+  pendingDelete: string | undefined
+}): CanvasHeaderView {
+  const { lane } = input
+  if (!lane) return EMPTY
+
+  const confirming = input.pendingDelete !== undefined && input.pendingDelete === lane.sessionId
+  // Two steps in the menu itself rather than deferring to the sidebar's own
+  // confirmation: the row may be filtered out by the search box or scrolled out
+  // of view, and a delete that asks somewhere the user is not looking reads as
+  // nothing having happened.
+  const menuItems: CanvasHeaderMenuItem[] = confirming
+    ? [
+        { id: 'confirm-delete', label: '确认删除', danger: true },
+        { id: 'cancel-delete', label: '取消' },
+      ]
+    : [
+        { id: 'rename', label: '重命名' },
+        { id: 'delete', label: '删除会话', danger: true },
+      ]
+
+  return {
+    visible: true,
+    title: lane.sessionTitle ?? UNTITLED_SESSION,
+    projectName: lane.projectName,
+    projectRoot: lane.projectRoot,
+    sessionId: lane.sessionId,
+    // A menu cannot be open while the title is being edited: both want the same
+    // keystrokes, and Escape has to mean one thing.
+    menuOpen: input.menuOpen && !input.renaming,
+    menuItems,
+    renaming: input.renaming,
+    openLocationLabel: '打开位置',
+    openLocationTitle: `在 VS Code 中打开 ${lane.projectName}`,
+  }
+}
+
+/**
+ * What a committed rename should send, or `undefined` when it is a no-op.
+ *
+ * Trimmed, and an unchanged or empty title is *not* sent: `rename-session`
+ * writes the index and broadcasts to every lane, and blurring the input without
+ * typing must not cost that.
+ */
+export function renameCommit(current: string, next: string): string | undefined {
+  const trimmed = next.trim()
+  if (trimmed.length === 0 || trimmed === current) return undefined
+  return trimmed
+}

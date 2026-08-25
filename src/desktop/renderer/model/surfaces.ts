@@ -1,4 +1,5 @@
 import { EFFORT_RANK, VALID_EFFORT_LEVELS, type EffortLevel } from '../../../config/effort.js'
+import { EFFORT_LABELS } from './composer.js'
 import type { ModelPickerOption } from '../../../runtime/modelPicker.js'
 import type { CommandSurface, WireModelsResult } from '../../../runtime/protocol/wire.js'
 import type { BackgroundTaskSnapshot } from '../../../services/backgroundTasks/registry.js'
@@ -131,15 +132,21 @@ export function effortPickerView(input: {
     surface: 'effort-picker',
     title: '选择思考强度',
     rows: VALID_EFFORT_LEVELS.map((level) => {
-      const beyondCeiling = input.maxEffort !== undefined
-        && EFFORT_RANK[level] > EFFORT_RANK[input.maxEffort]
+      // Bound to a local so the "beyond the ceiling" branch can name the ceiling
+      // without an assertion the compiler cannot check.
+      const ceiling = input.maxEffort
+      const beyondCeiling = ceiling !== undefined && EFFORT_RANK[level] > EFFORT_RANK[ceiling]
       return {
         id: level,
-        label: level,
+        // The same label the composer's chip shows. One concept, one spelling:
+        // the picker used to print the raw `low`/`medium`/`high` next to a chip
+        // saying 低/中/高 (`todo.md`'s 4f accounting). The *command* is still
+        // built from the raw level — that is an argument, not a label.
+        label: EFFORT_LABELS[level],
         detail: input.configured === level && input.configured !== input.current ? '已配置' : '',
         ...(level === input.current ? { current: true } : {}),
         ...(beyondCeiling
-          ? { disabled: true, disabledReason: `超过该模型上限（${input.maxEffort}）` }
+          ? { disabled: true, disabledReason: `超过该模型上限（${ceiling ? EFFORT_LABELS[ceiling] : ''}）` }
           : { action: { kind: 'run-command', line: `/effort ${level}` } as const }),
       }
     }),

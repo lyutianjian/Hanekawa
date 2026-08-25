@@ -8,6 +8,7 @@ import type {
   WireShellSettingsResult,
   WireShellSettingsChangeResult,
   WireShellRenameSessionResult,
+  WireShellOpenInEditorResult,
   SettingsChange,
   WireShellOpenProjectResult,
   WireShellOpenSessionResult,
@@ -146,6 +147,19 @@ export class ShellClient {
       sessionId,
       title,
     }) as Promise<WireShellRenameSessionResult>
+  }
+
+  /**
+   * The canvas header's "open location". Rejects when the editor cannot start,
+   * which is the common case (no `code` on PATH) — the caller writes it into the
+   * transcript rather than losing it.
+   */
+  async openInEditor(projectRoot: string): Promise<WireShellOpenInEditorResult> {
+    return this.send({
+      type: 'open-in-editor',
+      id: crypto.randomUUID(),
+      projectRoot,
+    }) as Promise<WireShellOpenInEditorResult>
   }
 
   dispose(): void {

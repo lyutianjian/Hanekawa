@@ -161,6 +161,15 @@ async function step2(ctx) {
   await activate(ctx, a2)
   ctx.note(`A2 is on lane ${opened.lane}`)
 
+  // 5e: the canvas header names whichever session is active. Asserted against the
+  // sidebar's own row rather than against a literal — one session, one name is
+  // the invariant, and both views derive it from the same lane list.
+  const headerA2 = await read(ctx, probes.canvasHeader())
+  const rowA2 = rowFor(await read(ctx, probes.sidebar()), a2.id)
+  ctx.ok('the canvas header is drawn for the active session', headerA2.hidden === false, JSON.stringify(headerA2))
+  ctx.eq('and it names the same session the sidebar row does', headerA2.title, rowA2?.title ?? '')
+  ctx.ok('and it offers 打开位置', headerA2.openLocation.includes('打开位置'), headerA2.openLocation)
+
   const prompt = await raisePrompt(ctx, opened.lane, 'smoke-write-target.txt')
   const dialog = await waitFor('the permission dialog to be drawn', async () => {
     const view = await read(ctx, probes.overlay())
@@ -619,7 +628,9 @@ async function step8(ctx) {
   // Not a bug: `permissions.mode` is read once when a scope is built
   // (`sessionScope.ts:74`), so the row promises the next new session, not this
   // one. S8R checks the other half after the restart.
-  ctx.ok('the startup mode does not retroactively change an open session', statusNow.mode.includes('default'), statusNow.mode)
+  // Read off the composer's permission pill since 5e — the status bar no longer
+  // carries the mode, and 帮我批准 is what `default` is called there.
+  ctx.ok('the startup mode does not retroactively change an open session', statusNow.mode.includes('帮我批准'), statusNow.mode)
 
   // 8d — a reconnect must not open a native window. The reply arriving at all is
   // the assertion: `showMessageBoxSync` would have frozen the main process.
@@ -818,11 +829,12 @@ async function step8Restart(ctx) {
   ctx.eq('the cache toggle survived', snapshot.general.cacheTtl1h, true)
   // The other half of 8c: the startup mode reaches a session only through a new
   // scope, which is what a restart is.
-  const status = await waitFor('the status bar to show the restored mode', async () => {
+  // 5e: the mode lives on the composer's pill now, where 接受编辑 is `acceptEdits`.
+  const status = await waitFor('the permission pill to show the restored mode', async () => {
     const view = await read(ctx, probes.status())
-    return view.mode.includes('acceptEdits') ? view : undefined
+    return view.mode.includes('接受编辑') ? view : undefined
   }).catch(() => read(ctx, probes.status()))
-  ctx.ok('the restored startup mode is now the session mode', status.mode.includes('acceptEdits'), status.mode)
+  ctx.ok('the restored startup mode is now the session mode', status.mode.includes('接受编辑'), status.mode)
 
   const view = await read(ctx, probes.sidebar())
   const deleted = [...ctx.state.deleted]

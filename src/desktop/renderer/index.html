@@ -19,12 +19,16 @@
     <div id="shell">
       <aside id="sidebar" aria-label="会话与项目"></aside>
       <main id="canvas">
+        <!--
+          The canvas header owns session identity: the title, the `⋯` menu that
+          renames and deletes, and "open in editor". Built entirely from the lane
+          list, so it belongs to the window rather than to any pane.
+        -->
+        <header id="canvas-header" hidden></header>
         <div id="status">
-          <span id="status-mode">default</span>
           <span id="status-usage"></span>
           <span id="status-cost"></span>
           <span id="status-streaming">idle</span>
-          <span id="status-session"></span>
         </div>
         <div id="transcript-area"></div>
         <div id="surface" hidden></div>
@@ -45,7 +49,16 @@
             ></textarea>
             <div id="composer-bar">
               <button id="composer-attach" type="button"></button>
+              <!--
+                The permission-mode pill. Its menu is built into this shell by
+                `dom/composerView.ts`, which is why the shell is positioned and
+                the trigger is not.
+              -->
+              <div id="composer-permission">
+                <button id="chip-permission" type="button">…</button>
+              </div>
               <span class="composer-spacer"></span>
+              <span id="composer-progress" hidden></span>
               <div id="composer-chip" role="group" aria-label="模型与思考强度">
                 <button id="chip-model" type="button">…</button>
                 <button id="chip-effort" type="button">…</button>

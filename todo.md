@@ -37,106 +37,56 @@
 
 ## 阶段 5 待办
 
-- [x] **5a — 双主题基础 + 外观设置页**：`styles.css` 加 `:root[data-theme="light"]` 覆盖块（按
-  design_guidance「六、1」逐值填浅色，中性守 ≤20 饱和度：用 `#1a1a1e`/`#686b75` 而非 doc 的 `#111827`/`#6b7280`；
-  `--accent-warn/-danger` 与 `--diff-*` doc 未给，选定 amber-600/red-600 + GitHub 风格 diff 色）；`app.ts` +
-  新增纯函数 `model/theme.ts` 处理 `localStorage['ui-theme']`（`system|dark|light`，默认 `system`）与
-  `prefers-color-scheme` 订阅，写 `documentElement.dataset.theme`（跟随系统在 JS 里解析，CSS 不用 `@media`）；
-  `model/settings.ts` 加 `appearance` 分类（客户端卡片，走新的 `SettingsOutcome.themePreference` 通道，不发 wire；
-  `cardsFor` 收窄成 `Exclude<…,'appearance'>` 保穷尽守卫，`settingsView` 在 snapshot 守卫前早返回 appearance）。
-  `rendererStyleTokens.test.ts` 已改双主题两组（parser 读两个 token 块、palette/阶梯/中性各按 dark+light 参数化，
-  阶梯用 `sign` 承接浅色反转）；新增 `rendererTheme.test.ts`；`rendererSettingsModel.test.ts` 补 appearance 用例。
-  **验证**：focused 四件套 76 pass、typecheck 三段全过、protocol/desktop 回归全绿。
-- [x] **5b — 侧栏改造**：工作区下拉（`model/sidebar.ts` 加 `SidebarWorkspace` + `workspacesOf`，触发器显活动
-  项目名、菜单列全部已知项目；选中走新纯函数 `selectWorkspaceIntent`——该项目有 lane 则 `switch`，无则
-  `newSessionIntent`，复用现有意图零新 wire）；会话搜索框（`SidebarState.searchQuery` + `sidebarView` 建 group
-  前按 title 大小写不敏感子串过滤；`noMatches` 与 `isEmpty` 分开两种空态；搜索框是**持久节点**不进 `replace()`
-  区、`input` 事件驱动、`app.ts` 持真值不回写，容器 keydown 对 `event.target===search` 早返回免得 Backspace/
-  方向键被当成删行/移光标）；`running` 徽标换 `icons.ts` 新增 `spinner` 弧线图标 + `@keyframes spin`（awaiting-input
-  仍静态点）；footer 齿轮从胶囊重排成用户档案行样式（图标+「设置」左对齐、`?` 帮助本就不存在故无需删）；
-  `workspaceMenuOpen` 由触发器翻转、选中/焦点离开侧栏（复用 `focusout`，仅在 open 时发 toggle 故只会关）关闭。
-  signature 补 `searchQuery`/`workspaceMenuOpen`/`workspaceName`/workspace 项，变异表加两行并做了变异验证。
-  **验证**：focused（sidebar+styleTokens+imports+theme）全过、typecheck 三段全过、全量 2214 pass / 0 fail、
-  `build:desktop` emit 正常。真机冒烟未跑（需显示器+凭据）。
-- [x] **5c — 空状态欢迎页**：新增 `model/welcome.ts`（`isTranscriptEmpty` 用
-  `COUNTS_AS_CONVERSATION` 键表——`notice`/`error` 为 false，因为新草稿开局就带启动通知；`toolProgress`/
-  `isThinking` 也算「已开始」）+ `dom/welcomeView.ts`（签名守卫，不可见时 `replace(container)` 丢掉子树
-  而不只是 `hidden`，免得留下 Tab 停靠点）；Hero 拆 `titleBefore/projectLabel/titleAfter` 三段，中间是
-  `button.welcome-project`（虚线下划线，`projectSwitchable` 为假时 disabled）；3 张卡点击**只**
-  `composer.focus()`；胶囊条是 `span` 不是 `button`（只读），分支缺席时整条不产出。挂在 **pane 子树**
-  `paneEl` 内（不是 index.html 单例），所以背景 pane 的 Hero 不会漏到活动 pane。`icons.ts` 加六个手绘图标
-  （thought-bubble/megaphone/hammer/refresh/monitor/branch），卡片颜色走 `color` + `currentColor`，
-  **零新 token**（`--accent-info/-tool/-review` 5a 就在了）。`app.ts` 的 `openWorkspaceSwitcher()` 组合
-  「先展开侧栏 → toggle 菜单 → `sidebar.focusWorkspace()`」，最后一步是必需的：菜单靠容器 `focusout` 关。
-  **前置一并做了**：① `test/helpers/domStub.ts` + `tsconfig.domtest.json`（第四个 TS 程序）+ typecheck 四段，
-  `dom/` 第一次有单元测试；② git 分支 seam 走 `WireHelloResult.projectName/gitBranch` + 新
-  `src/runtime/gitBranch.ts`。
-  **验证**：新增 31 条（gitBranch 7 / protocolHost 1 / rendererWelcome 14 / rendererWelcomeView 8 /
-  tsconfig 漂移守卫 1），全量 2245 pass / 1 fail（`backgroundTasks` 增量输出，单跑 8/8，见「已知不稳定」），
-  typecheck 四段全过（并验证第四段非空：故意弄坏一个类型确认它会红），`build:desktop` emit 正常，
-  九条变异验证全部报红在预期用例上。真机冒烟未跑（需显示器+凭据）。
-- [x] **5d — 对话流增强**（本次）：三段各自独立可验。
-  ① **浮动回到底部按钮**：`icons.ts` 加 `arrow-down`；`transcriptView.ts` 收第三个参数 `floatHost`（传的是
-  `paneEl`，因为 `.pane` 才是定位祖先，而滚动容器里的绝对定位子节点会锚在**内容**底部而不是视窗底部，还会被
-  每次 `replace()` 抹掉），按钮在 `render()` 外建一次、用 `hidden` 不丢子树（`[hidden]{display:none!important}`
-  已经把它从布局/Tab 序/a11y 树里摘掉，单个 button 也没有子树要重建）；可见性由**同一个** `isScrolledToBottom`
-  在 `scroll` 与 `render()` **两处**重算；点击走 `scrollTo({behavior:'smooth'})`。唯一的新 token
-  `--shadow-float`（两个主题各一个值）。顺手删掉 `render()` 里那段等价于 `if (atBottom)` 的 `lastCount` 死逻辑。
-  ② **思考链折叠头 + 呼吸标签**：`TranscriptItem` 加 `summary?`，`TranscriptState` 加**必填** `thinkingCount`；
-  thinking 分组按「最后一条 pending 的 thinking 项」（不需要 turn 身份，`turn-end` 是唯一的封口处），id 来自
-  计数器而**不是** `items.length`（丢草稿会让长度回缩、两条同号、一次 toggle 翻两条）；`turn-end` 与
-  `applyRecord` 两处**只**再过滤 `DRAFT_ID`，改为封存（去 `pending`）+ 给最后一条挂 `summary`，**这一 turn
-  有 thinking 就不再追加 `duration` 项**；新 `model/thinking.ts` 出两张脸的标签、`isThinkingCollapsed`
-  （`Set` 记的是「与默认不一致」）、`pruneThinkingToggles`；折叠时 body 节点**不产出**（`.transcript` 是
-  `aria-live`）；新导出 `formatWorkedDuration`，`formatTurnSummary` 出「已处理 7m 38s」。
-  ③ **行内文件胶囊**：两条 `@` 正则提到 `runtime/suggestions/atToken.ts`（渲染器能进的那半），新
-  `extractAtMentions` 带偏移并**按位置排序**（引号那遍先跑，不排序就会把句子读乱）；`harness/atMentions.ts`
-  改为 import 那两条正则但**保留自己的两遍顺序**（引号优先是它的可观察行为，有用例钉着）；新
-  `model/userMessage.ts` 的 `splitFileMentions` 原地切段，胶囊是 `span` 不是 `button`。
-  **验证**：新增 39 条（transcript model 11 / thinking 4 / transcriptView 14 / userMessage 10（含一条
-  fast-check 重组性质）/ atMentions 奇偶性 1 / styleTokens 1 — 另有既有用例扩写），全量 **2323 pass / 0 fail**，
-  typecheck 四段全过，`build:desktop` emit 正常，十四条变异验证全部报红在预期用例上（含一次**判据太宽被抓**，
-  见下）。真机冒烟未跑（需显示器+凭据）。
-- [ ] **5e — 输入框 + 画布头栏**：composer 加权限模式胶囊（4 模式，调已有 `set-permission-mode`，删状态栏
-  那份模式文字）；发送按钮 idle/ready/streaming 三态 + 进度环；画布头栏（会话身份 + ⋯ 菜单复用
-  `rename-session`/`delete-session` + 「打开位置」）。
-- [x] **5f — 设置分组重构**（本次；跳序做的，5d/5e 仍未开始）：三段各自独立可验。
-  ① **分组**：`SettingsNavItem` 加 `group`，新 `SettingsNavGroup`，`SettingsViewModel.nav` **换成**
-  `navGroups`（不并存两份——`src`/`test` 各只有一个消费者，两份同一列表正是过滤器自相矛盾的来源）；
-  归组是 `groupOf()` 一个 `default`-less switch，**开在全部五个分类上而不是 `HostCategory`**（`appearance`
-  是渲染器本地的，但它仍是导航里的一页）；映射为 个人=通用+外观｜集成=模型与服务商｜编码=权限+Agent；
-  `settings-nav-spacer` 连节点带规则一起删（导航列改成 search + 可滚动 `settings-nav-list` + 常驻返回按钮）。
-  ② **搜索框**：`SettingsState.query` + 导出的纯 `matchesQuery(query, ...haystack)`（trim + 小写 + 子串，
-  空查询恒真）。匹配**只认屏幕上真有的文字**：分类标签，或该页任一卡片的 `title`/`note`/行 `label`/行 `detail`
-  （不认 `warning`、选项标签、按钮 title——那些是派生的，会让「为什么这行命中」无法解释）。导航过滤掉不命中的页
-  但**当前页永不掉出**，所以导航不可能空、无需空态；正文里**靠 title/note 命中的卡片保留全部行**（搜「MCP」
-  要看到服务器列表，不是一张空卡），否则只留命中行；全不命中给 `searchEmpty` 一行。查询住 `SettingsState`
-  而不是 `app.ts`：设置界面只由自己的 intent 重绘，model 可以是唯一权威。DOM 侧搜索框**在 `render()` 外建一次**
-  （沿 5b 侧栏先例），只有 `settings-nav-list` 进 `replace()`；容器 keydown 对 `event.target===search` 早返回
-  **但放 Escape 过**（否则焦点一进搜索框，按钮上写的「关闭设置（Esc）」就成了假话）；唯一一次回写是
-  `view.query===''` 时清空输入框——`input` 是同步的，所以它只可能和「非打字来源清空了查询」对齐，打不起来。
-  ③ **胶囊下拉**：`controls.ts` 新增 `pillSelect()`（触发器 + `role="listbox"`），`SettingsControl.kind==='select'`
-  **不动**（`assertNeverControl` 与全部既有 model 断言因此原样保绿），开态是 `SettingsState.openMenu` 单键字段
-  （一次只开一个），键在 DOM 里推成 `row:${row.id}`。intent 是 `toggle-menu` + **幂等**的 `close-menu`
-  （比 5b 那个「只在开着时才发 toggle」的形状严格更好，顺手免掉视图里的镜像变量）。`cleared` 里加
-  `openMenu: undefined`，于是「选完就关」免费且无法遗漏；四个 spread `state` 的分支显式补上。
-  **只换设置行内的 select**：头部项目选择器与表单字段仍是原生 `<select>`（只穿了胶囊皮）——原生的键盘/读屏
-  完整性是免费的，而表单是键盘流程。键盘自己实现了 Enter/Space（`button()` 免费）、Esc、Tab、
-  ArrowDown/ArrowUp 循环、Home/End；焦点用 `event.target` 定位而**不读** `document.activeElement`。
-  Esc 五层顺序（由内到外）：下拉 → 表单 → 删除确认 → 查询 → 关屏。CSS：菜单挂 `position: relative` 的
-  `.settings-menu-shell`（**不挂 `.settings-row`**），因为 `.settings-body` 会滚动、一个轴非 visible 就连另一个
-  一起裁；**零新 token、零新图标**（design doc 的 `#17171a`/`#34343b`/`9999px`/`4px 12px` 正好就是
-  `--surface-canvas`/`--border-strong`/`--radius-pill`）。
-  **前置一并做了**：`test/helpers/domStub.ts` 扩出 `dispatch(node,type,{target,relatedTarget,key})` /
-  `focus` / `activeElement` / 元素 `contains()`，并**装了 `globalThis.Node`**——`focusout` 处理器里
-  `next instanceof Node` 在没有该绑定时是 ReferenceError，这是 5b 起就无法 DOM 测的真正原因。
-  新 `test/rendererSettingsView.test.ts`（19 条）是 `dom/` 的第二个单测。
-  **验证**：新增 39 条（settings model 18 / settingsView DOM 19 / styleTokens 1 / 其余为既有用例扩写），
-  全量 **2284 pass / 0 fail**（三条已知不稳定这次都绿），typecheck 四段全过，`build:desktop` emit 正常，
-  七条变异验证全部报红在预期用例上（含一次**判据太宽被抓**，见下）。真机冒烟未跑（需显示器+凭据）。
-- [ ] **新增 seam（跨层，谨慎）**：① `shellProtocol.ts`+`shellHost.ts`+`main.ts` 加 `open-in-editor`
-  命令 `spawn('code', [cwd])`（补 `desktopShellHost` 用例）；~~② host 读 `<cwd>/.git/HEAD`~~ —— ② 已在 5c
-  落地，走 `WireHelloResult.gitBranch`，见下方决策留痕。
+- [x] **5a — 双主题基础 + 外观设置页**：`styles.css` 加 `:root[data-theme="light"]` 覆盖块（中性守
+  ≤20 饱和度；doc 未给的 `--accent-warn/-danger`、`--diff-*` 选定 amber-600/red-600 + GitHub 风格）；
+  新 `model/theme.ts` 管 `localStorage['ui-theme']`（`system|dark|light`，默认 `system`，跟随系统在
+  JS 里解析，CSS 不用 `@media`）；设置页加 `appearance` 分类（纯客户端，走新的
+  `SettingsOutcome.themePreference` 通道，不发 wire）。
+- [x] **5b — 侧栏改造**：工作区下拉（`SidebarWorkspace`+`workspacesOf`，选中走 `selectWorkspaceIntent`
+  ——有 lane 则 switch、无则 newSession，复用现有意图零新 wire）；会话搜索框（持久节点不进
+  `replace()` 区、`input` 事件驱动、真值住 `app.ts` 不回写，`noMatches` 与 `isEmpty` 分开）；
+  `running` 徽标换 spinner 弧线图标；footer 齿轮改用户档案行样式；`workspaceMenuOpen` 靠容器
+  `focusout` 关。
+- [x] **5c — 空状态欢迎页**：`model/welcome.ts`（`isTranscriptEmpty` 按 `COUNTS_AS_CONVERSATION` 键表）
+  + `dom/welcomeView.ts`（签名守卫，不可见时 `replace()` 丢子树）；Hero 项目名是
+  `button.welcome-project`（不可切换时 disabled）、三张卡只 `composer.focus()`、胶囊只读且分支缺席
+  整条不产出；挂 **pane 子树 `paneEl`**（每 pane 一份，非 index.html 单例）。**前置一并做了**：
+  `test/helpers/domStub.ts` + `tsconfig.domtest.json`（第四个 TS 程序，`dom/` 第一次有单测）+
+  git 分支 seam 走 `WireHelloResult.gitBranch` + 新 `src/runtime/gitBranch.ts`。
+- [x] **5d — 对话流增强**：① 浮动回到底部按钮（挂 `paneEl`、`hidden` 不丢子树，可见性由同一个
+  `isScrolledToBottom` 在 `scroll` 与 `render()` 两处重算；唯一新 token `--shadow-float`）；
+  ② 思考链折叠头 + 呼吸标签（`TranscriptItem` 加 `summary`、id 来自 `thinkingCount` 计数器，
+  `turn-end`/`applyRecord` 封存并挂「已处理 Xm Xs」、该 turn 不再追加 `duration` 项；折叠时 body
+  节点不产出；新 `model/thinking.ts` + `formatWorkedDuration`）；③ 行内文件胶囊（`@` 两条正则提到
+  `runtime/suggestions/atToken.ts`，`extractAtMentions` 带偏移按位置排序；`splitFileMentions` 原地
+  切段，胶囊是 `span`）。
+- [x] **5e — 输入框 + 画布头栏**：① 权限模式胶囊（`permissionPillView` 四模式，直接调
+  `set-permission-mode`——模式是活的 gate 的状态，没有要持久化的东西；菜单开合住视图本地布尔，
+  选中/Esc/`focusout` 三处收口 + `deactivate()` 调 `closeMenus()`）；② 发送按钮
+  idle/ready/streaming 三态 + 进度环（**只改视觉**：生成中仍是「加入队列」，`■` 仍是旁边独立键，
+  见决策留痕）；③ 画布头栏 `model/canvasHeader.ts` + `dom/canvasHeaderView.ts`（全由
+  `WireLaneInfo` 推出，**不碰 `paneSession.ts`**；重命名输入框是持久节点、只在 idle→renaming
+  回写一次；两步删除复用 app.ts 已有的 `deleteSession()`）；④ 状态栏删 `#status-mode` 与
+  `#status-session`，`document.title` 仍留在 `statusView.renderSession`（它是冒烟的端到端证据）。
+  顺带修掉 4f 那条账：效力选择器改用 `EFFORT_LABELS`。
+- [x] **5f — 设置分组重构**（跳序做的）：① 导航分三组（个人=通用+外观｜集成=模型与服务商｜编码=权限+
+  Agent），`SettingsViewModel.nav` 换成 `navGroups` 不并存两份，`settings-nav-spacer` 连节点带规则删除；
+  ② 设置搜索（纯 `matchesQuery`：trim+小写+子串；匹配只认屏幕上真有的文字，当前页永不掉出导航，
+  `searchEmpty` 与「无 snapshot」分开；查询住 `SettingsState`，搜索框在 `render()` 外建一次）；
+  ③ `controls.ts` 新增 `pillSelect()`，行内 select 换胶囊下拉（`SettingsState.openMenu` 单键字段 +
+  幂等 `close-menu`，Esc 由内到外五层，零新 token/零新图标；头部项目选择器与表单字段留原生
+  `<select>`）。domStub 扩 `dispatch`/`focus`/`activeElement`/`contains()` 并装 `globalThis.Node`。
+
+> 5a–5f 全部已过 focused + 全量（基线见「验证」）+ typecheck 四段 + 变异验证 + `build:desktop`；
+> 实现细节见 git log 与下方决策留痕。**各阶段未跑的真机冒烟项**记在下方对应「新记的账」末尾。
+
+- [x] **新增 seam（跨层，谨慎）**：① `open-in-editor` 已在 5e 落地——`shellProtocol.ts` 加命令（带
+  `projectRoot`，host 解析成 `entry.cwd`）、`shellHost.ts` 加严格 schema + `onOpenInEditor` 回调
+  （**被 await**，所以启动失败是 `fail` 而不是主进程里的原生框）、新 `src/desktop/openInEditor.ts`
+  （不放 `main.ts`，那文件没有单测）+ `test/openInEditor.test.ts`；~~② host 读 `<cwd>/.git/HEAD`~~ ——
+  ② 已在 5c 落地，走 `WireHelloResult.gitBranch`，见下方决策留痕。
+
+**阶段 5 的待办到此清空。**
 
 ---
 
@@ -188,13 +138,36 @@
   都还是英文，夹在全中文界面里。4e 的 `locale` 只加在三个 presentation 模块上，这些
   note 来自命令与运行时的 note 路径（TUI 也在用），是另一条通路。
   （`Worked for 3.6s` 已在 5d 修掉——它来自渲染器自己的 `formatTurnSummary`，现在是「已处理 Xm Xs」。）
-- **效力选择器里的档位是英文原值**（`surfaces.ts` 的 `label: level`），而胶囊用的是 `EFFORT_LABELS` 的
-  中文（`低/中/高/极高/最高`）。同一个概念在相邻两个控件里两种写法，选一种。
+- ~~**效力选择器里的档位是英文原值**（`surfaces.ts` 的 `label: level`）~~ —— 5e 修掉：`effortPickerView`
+  改用 `EFFORT_LABELS`，超上限那条的原因串也换成中文标签。命令行仍由原始档位拼（那是参数不是标签）。
 - **`sessions/index.json` 每个 turn 结束都被整目录扫一遍**：`SessionStore.list()` 的 `localeCompare`
   只是表层，真正贵的是它下面的 `readIndex → recoverIndex`——`readdir` 整个 sessions 目录，对不在 index 里的
   `.jsonl` 还要 `readFileSync` + 全量解析。4b 之后这条路每个 turn 走一次（每项目一次）。
 
 ---
+
+### 5e 新记的账
+
+- **`deactivate()` 里那句 `composer.closeMenus()` 只有冒烟能看见**：`paneSession.ts` 仍无单测，
+  `closeMenus()` 本身有用例（`rendererComposerView`），「切走 pane 时会调它」这件事没有。这是同一文件里
+  第四份只靠冒烟的视图状态（另三份是 `welcome.render`、`classList.toggle('empty')`、`pruneThinkingToggles`）。
+- **`app.ts` 的头栏状态同样没有单测**：`renderCanvasHeader` 的四个调用点（`onShellChanged` /
+  `activateLane` / `removePaneSession` / `onLanes`）、以及「切 pane 时清掉进行中的重命名与待确认删除」
+  都只在 `app.ts` 里，而 `app.ts` 是 wiring 层没有用例。model 与 view 两半都钉住了，接缝没有。
+- **Windows 上「code 没装」是靠退出码判定的**：`cmd.exe` 本身永远能起来，所以 `spawn` 成功什么也不证明。
+  `openInEditor` 因此等 `exit`，非 0 一律报「找不到 code 命令」——**任何**非 0 退出都会被说成没装。
+  另有 5s 看门狗：前台不退出的启动器视为成功（否则渲染器的请求永远悬着）。
+- **`test/helpers/domStub.ts` 的元素成员又多了三个**（`style.height`、`selectionStart`、
+  `setSelectionRange`），仍然**没有漂移守卫**——源码扫描只覆盖 `document.<member>`（承自 5d 那条账）。
+- **权限胶囊的菜单开合住在视图里，不在 reducer 里**：composer 是单例、没有 `SettingsState` 那样的状态机，
+  所以 5f「正确性收回 reducer」那条在这里没有对应物。代价是「点界面内不可聚焦装饰不关菜单」的老洞第三次
+  出现（5b 工作区菜单、5f 设置胶囊、5e 权限胶囊与头栏 `⋯`）。
+- **头栏菜单往下开、权限胶囊菜单往上开**，两者都不做 body 级 portal，也都不按坐标翻转（同 5f 那条账）。
+- **待跑的冒烟项**：胶囊四项菜单能改模式且状态栏……胶囊本身随之变；生成中发送键读「加入队列」、`■` 仍在
+  旁边可点、进度环在转且克制；头栏 `⋯` 重命名后侧栏行同步改名（一次 `lanes` 广播）；两步删除；
+  「打开位置」真的拉起 VS Code，未装时 transcript 里出现可读中文错误；设置界面打开时头栏跟着消失。
+  本次没有显示器与凭据，**未跑**。（`probes.canvasHeader()` / `probes.clickHeaderMenu()` 已就位，
+  S2 里加了一条「头栏与侧栏行同名」的断言。）
 
 ### 5d 新记的账
 
@@ -256,127 +229,86 @@
 
 ## 决策留痕（只留 `CLAUDE.md` 未覆盖的）
 
-- **5d：thinking 按「最后一条 pending 的 thinking 项」分组，不按 `turn-start.messageId`**。不需要在 state 里
-  带 turn 身份，`turn-end` 成为唯一的封口处，中途 `transcript-reset` 也不会让分组挂在一个已经不存在的 turn 上。
-  id 来自 `thinkingCount` 计数器而**不是** `items.length`：丢草稿会让列表回缩，两条可能同号，一次 toggle 翻两条。
-- **5d：一 turn 一项，代价是时间顺序交织**。今天 thinking 在每次 assistant 记录落地时被删，所以工具往返之后的
-  第二段思考渲染在工具行**之后**；合并之后它回到 turn 顶部，落在引发它的工具行之上，工具密集的长 turn 里活文本
-  也会长在滚动尾部之上。买到的是「一个 turn 只有一个耗时归属、一个一致的折叠标签」。逃生口：改回每块一项、
-  摘要只挂最后一块。
-- **5d：`pending` 不能兼职「折叠位」**。它驱动 `.item.pending::after` 的 `▌`，留着会画出多个光标，提前清掉又
-  会让折叠头在 turn 中途没有耗时可显。默认折叠态是 `pending !== true`，而 pane 里那个 `Set` 记的是**「用户与
-  默认不一致」**而不是「折叠着」——这才让 turn 中途的展开活过封存那一刻，且不需要第二个字段。
-- **5d：toggle 集合每次绘制都按活着的 id 剪一次**。`transcript-reset` 把 `thinkingCount` 归零，而 `generation`
-  只在被要求时才 bump，所以 id 复用会静默继承陈旧 toggle。与侧栏那条陈旧徽标同类。
-- **5d：`正在思考` 与 `已处理 Xm Xs` 是同一个节点的两张脸，由 `item.pending` 驱动，绝不由 `state.isThinking`**。
-  `thinking_stop` 会清 `isThinking` 而那一块还在流。**接受的后果**：不产出 thinking delta 的模型从 Enter 到第一个
-  文字 token 之间**没有**任何「在忙」标签——它是思考阶段指示器，不是通用的在飞指示器（今天也是如此，合并没有
-  让它更差）。
-- **5d：折叠时思考正文从 DOM 里缺席，不是藏起来**。`.transcript` 是 `aria-live="polite"`，藏而不删的流式正文
-  是没人要的朗读，也是 5c 避开的 Tab 停靠点。
-- **5d：浮动按钮用 `hidden`，不丢子树**。`[hidden] { display:none !important }` 已经把它从布局、Tab 序、a11y
-  树里摘掉，单个 `<button>` 也没有子树要重建；5c 丢子树是因为 Hero 有四个可聚焦控件。它挂 `paneEl` 而不是
-  滚动容器内：`replace()` 每次绘制会清空滚动容器，而滚动容器里的绝对定位子节点锚的是**内容**底部。
-- **5d：可见性在 `scroll` 与 `render()` 两处重算，共用一个 `isScrolledToBottom`**。只挂 `scroll` 会漏掉「内容
-  变短」——`turn-end` 丢草稿、`transcript-reset` 都能让读者在没滚动的情况下变成「已在尾部」。共用一个判据是
-  为了两处不会在那 24px 松弛的边界上互相矛盾。
-- **5d：`@` 扫描器的两条正则提到 `runtime/suggestions/atToken.ts`，不在渲染器里抄一份**，但
-  `harness/atMentions.ts` **保留自己的两遍顺序**（引号优先），只借正则。理由：`extractAtMentions` 按位置排序，
-  而 harness 的顺序在附件上限处可观察且有用例钉着——统一顺序等于改 harness 行为，本阶段没那个必要。
-  正则每次调用**新建**（都是 `/g`，共享实例会把 `lastIndex` 带给下一个调用者）。
-- **5d：文件胶囊原地内联，正文逐字不变**。design doc 三.3① 说的是提到气泡开头，但这里的 mention 是句子的一部分
-  （「把 @a.ts 搬到 @b.ts」），提走就等于改写用户原文并留下一个洞。胶囊标签去掉 `@` 与引号（图标已经说了那件事），
-  但 segment 上保留源子串，于是「没有任何字符被丢弃或重排」是一条 fast-check 性质而不是注释里的说法。
-- **5d：`formatWorkedDuration` 住 `model/transcript.ts`**，它唯一的消费者，且 `formatTurnSummary` 本来就在那儿。
-  等 5e 的进度环要用到经过时间再提升为 `model/duration.ts`。不足一秒给一位小数：`已处理 0s` 读起来像坏了。
+### 阶段 5
 
-- **5f：`SettingsViewModel.nav` 换成 `navGroups`，不并存两份**。分组和搜索过滤都作用在同一份列表上，
-  留两份视图迟早会分叉；两侧各只有一个消费者，换掉的成本是一处断言。
-- **5f：`groupOf` 开在 `SettingsCategory` 而不是 `HostCategory`**。`cardsFor` 收窄成 `HostCategory` 是因为
-  `appearance` 没有宿主数据，但它**有一页导航**，所以归组必须覆盖它——否则加第六个分类时，编译器只会拦住
-  「没有卡片」，不会拦住「没有分组」。
-- **5f：搜索只匹配屏幕上真有的文字**（分类标签 / 卡片 title、note / 行 label、detail），不匹配 `warning`、
-  选项标签、按钮 title。派生文本命中会让用户无法解释「这行为什么在」。**明确不做跨页结果列表**：那需要给每张
-  卡片挂「来自哪一页」、一个合成页和点击结果的导航语义；五个页面不值这个价，导航过滤已经回答了「在哪」。
-- **5f：无 snapshot 时不给 `searchEmpty`**。「还没有加载」和「没有匹配」是两件不同的事，屏幕不能在原因是
-  前者时宣称后者——与侧栏把 `noMatches` 与 `isEmpty` 分开是同一条规矩。
-- **5f：搜索框的那一次回写是有条件的**（`view.query === '' && search.value !== ''`）。侧栏的规矩是「绝不回写」，
-  这里收敛成「绝不**无条件**回写」：`input` 事件是同步的，所以 model 与输入框只可能在**非打字来源**
-  （Esc、重开界面）清空查询时不一致，回写打不到正在打字的人身上。少了这一句，「Esc 清空查询」就是假的。
-- **5f：容器 keydown 对搜索框早返回，但放 Escape 过**。侧栏那份是一刀切（`event.target===search` 全放行），
-  但设置界面的 Esc 是它自己写在按钮上的承诺，且 `settingsKeyToIntent` 才是决定「Esc 清查询还是关屏」的地方。
-- **5f：`openMenu` 是单键字段 + 幂等 `close-menu`，不是 5b 的单 toggle**。5b 那个形状只在「视图镜像了开态、
-  且仅在开着时才发」的前提下正确；幂等的 close 把正确性从视图挪回 reducer，顺手删掉镜像变量。开态键在 **DOM**
-  里推成 `row:${row.id}`，所以 `SettingsControl` 一个字段都没动，`assertNeverControl` 与全部既有断言原样保绿。
-- **5f：菜单挂 `.settings-menu-shell`（`position: relative`），不挂 `.settings-row`**，也不做 body 级 portal。
-  `.settings-body` 是 `overflow-y: auto`，一个轴非 `visible` 会连另一个轴一起裁，所以必须有定位祖先；给行本身
-  加定位会让它成为后来任何东西的包含块。portal 要按次测量坐标，而 `rendererStyleTokens` 只允许内联 `height`。
-  代价是靠底部的行把滚动区撑长而不向上翻转，接受。
-- **5f：只把行内 `select` 换成胶囊，头部项目选择器与表单字段留原生**。原生 `<select>` 的键盘、typeahead、
-  读屏行为是免费的；表单是 Tab 流程，把字段换成 button+menu 会把 Tab 引进展开的菜单里，而项目选择器一旦误触
-  会重载整屏。这是对 design doc 的一次**故意的部分实现**，doc 五.3.③.2 说的本来就是卡片行的右侧控件列。
-- **5f：`pillSelect` 用 `event.target` 定位焦点，不读 `document.activeElement`**。keydown 在被聚焦的项上触发
-  并冒泡到外壳，target 就是位置；顺带避免给 domStub 再加一个 document 成员（不过注释里提到这个名字就已经
-  被那条源码扫描守卫抓了一次——它连注释一起扫，所以 stub 还是补了 `activeElement`）。
-- **5f：domStub 必须装 `globalThis.Node`**。`focusout` 处理器里 `next instanceof Node` 在没有该绑定时是
-  **ReferenceError**，不是 false——这就是 5b 的工作区菜单一直没法 DOM 测的真正原因，不是「stub 缺 focus」。
+- **5e：发送按钮的三态是纯视觉，`■` 不与它合并**。design doc 四.2②.3 画的是生成中变 `■` 中止，但这个
+  外壳把「中止」和「排队」当两个都想要的动作：合并之后中途排队就只剩 Enter 一条路，而 CLAUDE.md 明文要求
+  `submitFromForm` 与 `keymap` 同判据。按钮在任何状态下都**不 disabled**（`requestSubmit()` 会静默吞掉
+  disabled 按钮的点击），`idle` 只是「还没有可发的东西」。
+- **5e：权限胶囊直连 `set-permission-mode`，不走斜杠命令**——与模型/效力两个胶囊相反，但理由一致：那两个
+  要**持久化**（`/model`、`/effort` 才写 config），而权限模式就是活的 gate 的状态，设置页里的
+  `permissions.mode` 只是**启动**模式。host 处理完会回推 runtime 快照，所以胶囊从和别人一样的路径重绘，
+  不猜、不做乐观更新。`readonly` 有标签但不进菜单（内置 `explore`/`plan` 用它，用户不为一次会话挑它），
+  快照带它时照样如实显示。
+- **5e：画布头栏全部由 `WireLaneInfo` 推出，是窗口级视图**（`sessionTitle`/`projectRoot`/`projectName`
+  都在上面，rename 会广播 `lanes`），所以 `paneSession.ts` 一行没加、也没有第二条取名字的路。
+  重命名输入框是**持久节点**、只在 idle→renaming 回写一次（头栏会在流式期间每个快照 tick 重绘，
+  重建就丢光标和半句话）；blur 也提交，但 `renameCommit` 把「没改」和「空」判成不发——`rename-session`
+  要写 index 并广播给每条 lane。`pendingDelete` 存的是 **sessionId 不是布尔**，否则确认会跟着用户
+  切到下一个会话。
+- **5e：`document.title` 留在 `statusView.renderSession`，可见的会话名搬去头栏**。两者不是同一件事：
+  窗口标题是冒烟从进程外读的端到端证据，只有写在 pane 的 `hello()` 之后才代表「整条链通了」；而头栏读
+  lane 列表，比它早。
+- **5e：`open-in-editor` 的回调被 `await`**（`onOpenProject` 是即发即忘）：编辑器最常见的失败就是没装，
+  那必须变成渲染器能写进 transcript 的 `fail`。命令带 `projectRoot`（渲染器只有这个把手）而 host 交出去的
+  是 `entry.cwd`——`root` 是规范化比较键，Windows 上被小写过，交给进程就是一个可能不存在的路径。
+- **5d：thinking 按「最后一条 pending 的 thinking 项」分组、`turn-end` 是唯一封口处；id 来自
+  `thinkingCount` 计数器而非 `items.length`**（丢草稿让列表回缩、两条同号、一次 toggle 翻两条）。一 turn
+  一项的代价是时间顺序交织（工具往返后的第二段思考回到 turn 顶部）；逃生口：改回每块一项、摘要只挂
+  最后一块。
+- **5d：`pending` 不能兼职「折叠位」**（它驱动 `▌` 光标）。默认折叠态是 `pending !== true`，pane 里那个
+  `Set` 记**「与默认不一致」**；且每次绘制按活着的 id 剪一次（`transcript-reset` 归零 `thinkingCount` 而
+  `generation` 不 bump，id 复用会静默继承陈旧 toggle）。「正在思考 / 已处理 Xm Xs」是同一节点的两张脸，
+  由 `item.pending` 驱动、**绝不由 `state.isThinking`**；不产 thinking delta 的模型从 Enter 到首个文字
+  token 之间没有任何在忙标签（它是思考阶段指示器，非通用在飞指示器，接受）。
+- **5d：折叠时思考正文从 DOM 缺席，不是藏起来**（`.transcript` 是 `aria-live="polite"`，也是 Tab 停靠点）。
+  浮动按钮用 `hidden` 不丢子树、挂 `paneEl`（`replace()` 会清滚动容器，容器内绝对定位子节点锚的是
+  **内容**底部）；可见性在 `scroll` 与 `render()` 两处共用 `isScrolledToBottom`（只挂 scroll 会漏
+  「内容变短」——`turn-end` 丢草稿、`transcript-reset` 都能在没滚动的情况下变成「已在尾部」）。
+- **5d：`@` 两条正则提到 `runtime/suggestions/atToken.ts`，渲染器不抄一份；harness 保留自己的两遍顺序**
+  （引号优先是可观察行为，有用例钉着）；正则每次**新建**（`/g` 共享实例会把 `lastIndex` 带给下一个调用者）。
+  文件胶囊原地内联、正文逐字不变（fast-check 性质），标签去 `@` 与引号但 segment 保留源子串。
+  `formatWorkedDuration` 住 `model/transcript.ts`，等 5e 进度环要用再提升。
+- **5f：`nav` 换 `navGroups` 不并存两份**（分组和搜索都作用在同一份列表上，两份迟早分叉）；`groupOf` 开在
+  全部五个 `SettingsCategory` 上而非 `HostCategory`（`appearance` 没有宿主卡片**但有导航页**，编译器要能
+  拦住「没有分组」）。搜索只认屏幕上真有的文字（分类标签、卡片 title/note、行 label/detail），不匹配
+  `warning`/选项标签/按钮 title；无 snapshot 不给 `searchEmpty`（「还没加载」≠「没有匹配」）；明确不做
+  跨页结果列表。
+- **5f：`openMenu` 单键字段 + 幂等 `close-menu`**（比 5b「仅在开着时才发 toggle」严格更好，正确性收回
+  reducer），键在 DOM 里推成 `row:${row.id}`；菜单挂 `position:relative` 的 `.settings-menu-shell` 而非
+  `.settings-row`（一个轴非 `visible` 会连另一轴一起裁），不做 body 级 portal。只换行内 select：头部项目
+  选择器与表单字段留原生（键盘/typeahead/读屏免费，表单是 Tab 流程，项目选择器误触会重载整屏）——
+  对 design doc 五.3.③.2 的**故意部分实现**。`pillSelect` 用 `event.target` 定位焦点，不读
+  `document.activeElement`。搜索框唯一一次回写是 `view.query===''` 时清空输入框（只对齐「非打字来源清空」，
+  打不起来）；容器 keydown 对搜索框早返回**但放 Escape 过**。domStub 必须装 `globalThis.Node`——
+  `instanceof Node` 无绑定时是 **ReferenceError 不是 false**。
+- **5c：git 分支放 `WireHelloResult`**，不放 `WirePaneInfo`/`WireLaneInfo`、也不开新命令（`PaneInfo` 两处投影
+  且跨项目，新开命令的 schema 活太贵；代价是陈旧性上界 = pane 寿命；逃生口：一次性提升为 shell 命令）。
+  `hello` 因此让出事件循环：「杀掉宿主时在飞的命令」类断言必须让子进程**真的** park 住
+  （`__hang_checkpoints`），不能靠时序赛跑。欢迎页挂 pane 子树不挂单例（「空」是每个 transcript 的属性）；
+  Hero 项目名用回调拿窗口级状态（不把工作区知识给 pane）；`openWorkspaceSwitcher()` 里
+  `sidebar.focusWorkspace()` 不是装饰——菜单靠容器 `focusout` 关，焦点从未进过侧栏它就永不触发。
 
-- **5c：git 分支放 `WireHelloResult`，不放 `WirePaneInfo`/`WireLaneInfo`，也不开新命令**。`WirePaneInfo`
-  至少两处投影且是跨项目的，每处都要一个它并不总持有的 `cwd`，而且 shell 每次拓扑变化会按 pane 各读一次；
-  新开 shell 命令要 `ShellCommand` 变体 + zod + dispatch + `assertNever` + client 方法 + 用例，为一个只读
-  装饰性胶囊。代价是陈旧性上界 = pane 寿命，而欢迎页只在 transcript 为空时存在。**逃生口**：将来真要活的
-  分支，一次性提升为 shell 命令，schema 的活付一次。
-- **5c：`hello` 现在会让出事件循环**（多了一次 `.git/HEAD` 读）。这不是纯内部细节：
-  `test/protocolChildProcess.test.ts` 的「killing the host rejects the parent's in-flight commands」
-  原本是**赛跑**——子进程的 `getCheckpointsWithDiffs` 立刻应答，谁先过 IPC 管道决定成败，`hello` 一让出
-  就翻了面（实测 2/6 通过，HEAD 基线 6/6）。修法不是调 sleep，而是让子进程**真的**park 住那个命令
-  （`__hang_checkpoints`），这样「命令在飞」是事实而不是时序巧合。凡是「杀掉宿主时正在飞的命令」这类断言，
-  被测的那条命令必须是子进程答不出来的。
-- **5c：欢迎页挂 pane 子树，不挂 index.html 单例**。「空」是*某个* transcript 的属性，而 transcript 是每
-  pane 的；`paneEl` 已经按需要的生命周期做可见性切换。做成单例就要新 id、要在 `deactivate()` 里清绘制，
-  并重新引入「上一个 pane 的绘制还留在屏上」那个坑。
-- **5c：Hero 的项目名用回调而不是把工作区知识给 pane**。`runSidebarIntent` 需要 `currentSidebarState()`
-  （遍历每个 pane 并读 composer）与 `state.lanes`，都是窗口级状态；把 `SidebarState` 或 `ShellClient`
-  传进 pane 会反转「shell 才是拓扑权威」。`app.ts` 的 `openWorkspaceSwitcher()` 里那句
-  `sidebar.focusWorkspace()` 不是装饰：菜单靠容器 `focusout` 关，焦点从未进过侧栏它就永不触发。
+### 阶段 4 及更早
 
-- **4b：侧栏的两个键入口必须分开**。全局那个（`sidebarChordToIntent`）在 `resolveKey` **之前**解析，
-  所以不带 ctrl/meta 必须恒返回 `'none'`；侧栏聚焦那个（`sidebarKeyToIntent`）挂在容器上，方向键/Enter
-  因此不会从 composer 手里抢走。合成一个入口就必然要么让方向键全局生效，要么给 `resolveKey` 加一档。
-- **4b：分组的 `own` 语义变了**。旧 tab bar 里 `own` 决定「能不能关」，所以
-  `ownProjectRoot === undefined` 解释成「全部是自己的」；侧栏里 `own` 只决定**组的顺序**，把每组都置顶
-  等于都不置顶，所以 undefined 解释成「都不是」。只有**跨项目**切换才重排，同项目内列表永不动。
-- **4b：徽标不新增 wire 字段是可行的**，`getSnapshot().isStreaming` + `shellState().hasOverlay` 就够。
-  代价是 `onShellChanged` 要给**每个** pane 重绘侧栏。
-- **4b：盘上拉取只挂四个时机**（启动 / `lanes` 事件 / 某 pane 的 `isStreaming` **下降沿** / 删除之后），
-  绝不挂 snapshot tick——`onShellChanged` 一个 turn 里会响多次。
-- **4b：驱逐宁可超额也不杀正在跑的**。`selectEvictions` 在「剩下的全 pinned」时返回**不足数**。多留一个
-  常驻 pane 只花内存；驱逐一个停着提示的 pane 会让它的 bridge 以**拒绝**收尾，用户的工具调用静默失败。
-- **4b：`removeShadowRepo` 的参数闸门不是洁癖**。`delete-session.sessionId` 是线上字符串，直通一次
-  `rm(recursive)`；`''` / `'..'` / 带分隔符都会解析到 `.myagent/shadow-git` 本身。调用方必须传
-  `store.resolve()` 之后的 id：`store.delete` 认前缀，`removeShadowRepo` 不认。
-- **4a：`ShellHost` 的泛型默认值陷阱**：约束 `W extends ShellLaneWorkspace<PaneT>` 引用了前面的类型参数，
-  而**默认值**在 `PaneT` 未解算时就要满足约束。解法：默认值写结构切片 `ShellLaneWorkspace<PaneT>`，
-  main.ts 显式写全三元组。
-- **4a：close-pane 是自毁命令，reply 天然丢失**：渲染器的 pending 由 lane close 触发
-  `failAllPending('The host disconnected')` 吸收；测试里是 `assert.rejects(/disconnected/)`。
-- **4a：渲染器初始化一律拉取**：Electron 会丢弃 preload 监听器注册前投递的 IPC，所以 renderer 启动只信
-  `shellClient.panes()` 拉取 + 之后的 `lanes` 事件。
-- **4a：`deactivate()` 清绘制不清状态**：单例面板上一个 pane 的 paint 若不清，切 pane 后会画着别人的
-  对话框，而键盘路由只认 active pane。状态留在 paneSession 里，`activate()` 一次性重绘回来。
-- **4a：darwin 最后一个 lane 关掉保留空窗口**（非 darwin 照旧 quit）。空窗口侧栏仍显示「+ 新建会话 /
-  打开项目…」，这正是留它的用处。
-- **main.ts 的 lane↔pane 簿记**：键必须是**不随 `/clear`、`/resume` 移动**的那个。按 `paneId` 线性扫
-  `pane.getSession().id` 就能找到；闭包到自己意味着一个渲染器关别人的标签会关错窗口。
-- **`ToolRegistry.refresh()` 把 Agent 工具移到数组末尾是对的**：工具顺序是 prompt 缓存键的一部分，
-  「MCP 重连过的 runtime」与「新建的」工具数组必须逐位相同。
-- **`createRuntime` 里 `onActiveSessionChange?.(id)` 放在所有会抛的校验之后**：模型 key 无效时不能已经
-  把会话级状态切过去。
-- **配置串校验**：名字拼错时 `resolveModelReference` 返回 `undefined` 与「没配置」无法区分而被静默忽略
-  —— 已改为校验原始配置字符串，`fallbackModel`/`compactModel` 出 `RuntimeDiagnostic` 警告而不拦启动。
-- **App.tsx「先定义后 `useCommands`」惯例**：传进 `useCommands({…})` 的 handler 必须定义在调用之前（TDZ）。
-- **3j 的四个决策**：① 一个项目的最后一个窗口关掉就 `shutdown` 它；② 入口是「Open project…」按钮 +
-  `Ctrl+Shift+O`，不做原生 File 菜单；③ 别的项目的标签**只能聚焦**；④ 跨项目一律走 shell 旁挂命令。
+- **4b：侧栏的两个键入口必须分开**——全局 chord 在 `resolveKey` **之前**解析、不带 ctrl/meta 恒返回
+  `'none'`；侧栏聚焦的挂容器，方向键/Enter 才不会从 composer 抢键。分组 `own` 语义变了：侧栏里只决定组
+  序，`undefined` 解释成「都不是」（都置顶等于都不置顶），只有跨项目切换才重排。
+- **4b：徽标不新增 wire 字段**（`isStreaming` + `hasOverlay` 够，代价是 `onShellChanged` 给每个 pane 重绘）；
+  盘上拉取只挂四个时机（启动 / `lanes` / `isStreaming` 下降沿 / 删除后），**绝不挂 snapshot tick**。驱逐
+  宁超额也不杀正在跑的（`selectEvictions` 剩下全 pinned 时返回**不足数**）；`removeShadowRepo` 必须收
+  `store.resolve()` 之后的 id（线上字符串直通 `rm(recursive)`，`''`/`'..'`/带分隔符都会解析到
+  shadow-git 本身）。
+- **4a**：`ShellHost` 泛型默认值用结构切片 `ShellLaneWorkspace<PaneT>`，main.ts 显式写全三元组；
+  close-pane 是自毁命令、reply 天然丢失（pending 由 `failAllPending` 吸收）；渲染器初始化一律拉取
+  （Electron 丢弃 preload 注册前投递的 IPC）；`deactivate()` 清绘制不清状态；darwin 最后一个 lane 关掉
+  保留空窗口（非 darwin 照旧 quit）；main.ts 的 lane↔pane 簿记按 `paneId` 线性扫（键必须不随 `/clear`、
+  `/resume` 移动，闭包到自己会关错窗口）。
+- **其余**：`ToolRegistry.refresh()` 把 Agent 工具移到数组末尾（工具顺序是 prompt 缓存键的一部分）；
+  `createRuntime` 的 `onActiveSessionChange` 放在所有会抛的校验之后；`fallbackModel`/`compactModel`
+  校验原始配置串（拼错 ≠ 没配置，否则被静默忽略）；App.tsx 先定义后 `useCommands`（TDZ）；3j 四决策——
+  项目最后一个窗口关掉即 `shutdown`、入口「Open project…」+ `Ctrl+Shift+O` 不做原生 File 菜单、别的项目
+  的标签只能聚焦、跨项目一律走 shell 旁挂命令。
 
 ---
 
@@ -452,6 +384,10 @@ node --import tsx --test test/rendererSettingsModel.test.ts test/rendererSetting
 node --import tsx --test test/rendererTranscriptView.test.ts test/rendererThinking.test.ts \
   test/rendererTranscriptModel.test.ts test/rendererUserMessage.test.ts test/atMentions.test.ts
 
+# 5e 新增（权限胶囊 + 三态发送 + 画布头栏 + open-in-editor）
+node --import tsx --test test/rendererComposerChip.test.ts test/rendererComposerView.test.ts   test/rendererCanvasHeader.test.ts test/rendererCanvasHeaderView.test.ts   test/rendererStyleTokens.test.ts test/rendererImports.test.ts
+node --import tsx --test test/desktopShellHost.test.ts test/openInEditor.test.ts
+
 # 既有主题（回归）
 node --import tsx --test test/protocolWire.test.ts test/protocolHost.test.ts \
   test/protocolClientParity.test.ts test/protocolCommandSchema.test.ts
@@ -470,8 +406,10 @@ node --import tsx --test test/rendererImports.test.ts test/desktopMain.test.ts \
 **这条依赖的是环境变量，不是「在 Claude Code 里跑」。** 看到它报红先 `echo` 一下那两个变量，别当成回归。
 
 **阶段 4 基线**：4f 后全量共 2199 条，实测 2199 pass / 0 fail，typecheck 三段全过，真机冒烟十条全绿。
-**阶段 5 基线**：5b 后 2214 条；5c 后 2245 条；5f 后 2284 条；5d 后 **2323** 条，实测
-**2323 pass / 0 fail**（三条已知不稳定这次都绿），typecheck **四段**全过。阶段 5 的新增用例应在此基线上累加。
+**阶段 5 基线**：5b 后 2214 条；5c 后 2245 条；5f 后 2284 条；5d 后 2323 条；5e 后 **2362** 条，实测
+**2362 pass / 0 fail**（三条已知不稳定这次都绿），typecheck **四段**全过，`build:desktop` 通过。
+阶段 5 之后的新增用例应在此基线上累加。
 **5f 待跑的冒烟项**：三段导航读作 个人/集成/编码 且只有五个真实页；输入「MCP」后 通用 仍在导航里且正文跳到
 MCP 卡片；路由胶囊展开的菜单不被正文滚动区裁掉，选中 / Esc / 点别处都能关；Tab + 方向键能纯键盘操作展开的菜单。
 **5d 待跑的冒烟项**：见上方「5d 新记的账」末尾那条。
+**5e 待跑的冒烟项**：见上方「5e 新记的账」末尾那条。

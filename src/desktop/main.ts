@@ -56,6 +56,7 @@ import { SessionHost } from '../runtime/protocol/host.js'
 import { createLaneMux } from '../runtime/protocol/laneChannel.js'
 import type { RuntimeHost } from '../runtime/types.js'
 import { ShellHost } from './shellHost.js'
+import { openInEditor } from './openInEditor.js'
 import {
   createElectronMainChannel,
   type MainSideIpc,
@@ -334,6 +335,10 @@ async function ensureShell(): Promise<Shell> {
     onOpenProject: (path) => {
       void openProjectInteractive(path)
     },
+    // Returned rather than fired-and-forgotten: the shell awaits it so "code is
+    // not installed" comes back as a `fail` the renderer writes into the
+    // transcript, instead of a native box no test can see.
+    onOpenInEditor: (cwd) => openInEditor(cwd),
     isQuitting: () => quitting,
     onAllLanesClosed: () => {
       // The last lane of the single window is the single-window equivalent of

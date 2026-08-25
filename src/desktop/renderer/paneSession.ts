@@ -28,6 +28,7 @@ import type {
   PersistedQueuedMessage,
 } from '../../harness/types.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeManager.js'
+import type { PermissionMode } from '../../harness/permissions.js'
 import type { PermissionRequestDto, UiRequest, WireCommandInfo, WirePaneInfo } from '../../runtime/protocol/wire.js'
 import type { ComposerView } from './dom/composerView.js'
 import type { StatusView } from './dom/statusView.js'
@@ -166,6 +167,8 @@ export interface PaneSession {
   moveSurfaceSelection(direction: 'up' | 'down'): void
   activateSurfaceRow(): void
   interrupt(): Promise<void>
+  /** The composer's permission pill; applies to the live gate, not to config. */
+  setPermissionMode(mode: PermissionMode): Promise<void>
   send(): Promise<void>
   queueMessage(): Promise<void>
   /** The form/button path: the same send-or-queue verdict as the keymap. */
@@ -320,7 +323,6 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // has not finished starting shows the placeholder rather than the previous
     // pane's model.
     deps.composer.renderRuntime(runtime)
-    if (runtime) deps.status.renderRuntime(runtime)
     const session = client.getSession()
     if (session) deps.status.renderSession(session)
   }
@@ -849,6 +851,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.surface.hide()
     deps.queueStrip.hide()
     deps.suggestions.render(NO_COMPLETIONS)
+    // The composer is a singleton the active pane drives, so an open permission
+    // menu would hang over the next pane and act on *its* runtime.
+    deps.composer.closeMenus()
   }
 
   function dispose(): void {
@@ -961,6 +966,23 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     }
   }
 
+  /**
+   * The composer's permission pill.
+   *
+   * Straight to `set-permission-mode` rather than through a slash command,
+   * unlike the model and effort chips: there is nothing to persist here (the
+   * mode belongs to the live gate) and the host posts a fresh runtime snapshot
+   * on the way out, so the pill repaints from the same path everything else does
+   * instead of holding an optimistic guess.
+   */
+  async function setPermissionMode(mode: PermissionMode): Promise<void> {
+    try {
+      await client.setPermissionMode(mode)
+    } catch (error) {
+      note(describe(error), 'error')
+    }
+  }
+
   async function clearQueue(): Promise<void> {
     try {
       await client.clearQueue()
@@ -1008,6 +1030,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     moveSurfaceSelection,
     activateSurfaceRow,
     interrupt,
+    setPermissionMode,
     send,
     queueMessage,
     submitFromForm,

@@ -89,6 +89,19 @@ export type ShellCommand =
    * for the same reason `delete-session` does.
    */
   | { type: 'rename-session'; id: string; projectRoot: string; sessionId: string; title: string }
+  /**
+   * Opens the project's directory in VS Code (`code <cwd>`), the canvas
+   * header's "open location".
+   *
+   * Carries `projectRoot` — the normalized key the lane list uses — rather than
+   * a path, because a renderer must not be able to name a directory the shell
+   * has not opened. The host resolves it to that project's real `cwd`.
+   *
+   * The reply waits for the editor to actually start: "not installed" is the
+   * likely answer and it has to reach the user as a `fail`, not as a native
+   * error box the renderer never hears about.
+   */
+  | { type: 'open-in-editor'; id: string; projectRoot: string }
 
 // --- settings ----------------------------------------------------------------
 
@@ -397,5 +410,10 @@ export interface WireShellSettingsChangeResult {
 export interface WireShellRenameSessionResult {
   ok: true
   title: string
+}
+
+/** `ok` means the editor process started, not that it drew a window. */
+export interface WireShellOpenInEditorResult {
+  ok: true
 }
 

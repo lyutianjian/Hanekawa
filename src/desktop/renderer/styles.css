@@ -155,6 +155,107 @@ body {
 .icon { flex: 0 0 auto; display: block; width: 14px; height: 14px; }
 .btn-label { white-space: nowrap; }
 
+/* --- canvas header ---
+   `design_guidance.md` 三.1: session identity on the left, tools on the right,
+   no bottom rule — the status bar underneath is separation enough. The two
+   items the document puts beside "open location" (split view, inspector) have
+   no backend and are omitted. */
+#canvas-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 40px;
+  padding: 0 12px 0 14px;
+}
+.canvas-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+.canvas-title {
+  color: var(--text-primary);
+  font-size: 13px;
+  /* The title is the one unbounded string up here; everything else is fixed. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40rem;
+}
+.canvas-title-input {
+  background: var(--surface-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 13px;
+  min-width: 16rem;
+}
+.canvas-title-input:focus { outline: 1px solid var(--focus-ring); }
+/* Positioned so the menu hangs off the trigger; `overflow` stays visible here,
+   unlike the settings rows, because the header is not inside a scroller. */
+.canvas-menu-shell { position: relative; display: inline-flex; }
+.canvas-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: var(--radius-pill);
+  font: inherit;
+  cursor: pointer;
+}
+.canvas-menu-trigger:hover { color: var(--text-primary); background: var(--surface-hover); }
+.canvas-menu {
+  position: absolute;
+  top: 28px;
+  left: 0;
+  z-index: 5;
+  min-width: 9rem;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+}
+.canvas-menu-item {
+  text-align: left;
+  background: transparent;
+  color: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.canvas-menu-item:hover { background: var(--surface-hover); }
+.canvas-menu-item.danger { color: var(--text-danger); }
+.canvas-header-controls { display: flex; align-items: center; gap: 8px; }
+.canvas-open-location {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-card);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.canvas-open-location:hover { color: var(--text-primary); background: var(--surface-hover); }
+
 /* --- status bar --- */
 #status {
   flex: 0 0 auto;
@@ -166,7 +267,6 @@ body {
   align-items: baseline;
 }
 #status-streaming { color: var(--text-tertiary); }
-#status-session { margin-left: auto; }
 
 /* --- the two-column shell ---
    The sidebar is the app's base surface and the canvas is a lighter panel
@@ -839,6 +939,58 @@ body {
   cursor: pointer;
 }
 #composer-attach:hover { color: var(--text-primary); background: var(--surface-hover); }
+/* The permission-mode pill and its menu (design_guidance 四.2①.2). The menu
+   opens *upward*: the composer is anchored to the bottom of the canvas, so a
+   downward menu would be off-screen. */
+#composer-permission { position: relative; display: inline-flex; }
+#chip-permission {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface-canvas);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  padding: 3px 8px 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#chip-permission:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+#chip-permission.open { color: var(--text-primary); border-color: var(--border-strong); }
+#chip-permission:disabled { opacity: 0.5; cursor: default; }
+.composer-menu {
+  position: absolute;
+  bottom: 30px;
+  left: 0;
+  z-index: 5;
+  min-width: 8rem;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+}
+.composer-menu-item {
+  text-align: left;
+  background: transparent;
+  color: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.composer-menu-item:hover { background: var(--surface-hover); }
+.composer-menu-item.active { background: var(--surface-active); }
+/* The in-flight ring, beside the model chip. Same rotation the sidebar's
+   running badge uses — one animation, one duration. */
+#composer-progress { display: inline-flex; color: var(--text-secondary); }
+#composer-progress .icon { animation: spin 0.9s linear infinite; }
 /* Two buttons drawn as one pill: nesting buttons is invalid markup, and each
    half opens a different picker. */
 #composer-chip {
@@ -877,8 +1029,13 @@ body {
   cursor: pointer;
 }
 /* The one high-contrast fill in the interface, and it is neutral: an accent
-   here would be the "coloured background" the palette rules out. */
+   here would be the "coloured background" the palette rules out.
+   Three states (design_guidance 四.2②.3), and *visual only* — the button still
+   means "send or queue" in all of them, because `model/keymap.ts` says so and
+   the two must agree. `.idle` is "nothing typed yet", not "disabled": a disabled
+   button would make `requestSubmit()` swallow the click. */
 #submit { background: var(--text-primary); color: var(--surface-base); }
+#submit.idle { background: var(--surface-hover); color: var(--text-secondary); }
 #stop { background: var(--surface-hover); color: var(--text-warn); }
 #submit[disabled] { opacity: 0.5; cursor: not-allowed; }
 
@@ -1125,6 +1282,7 @@ body {
    a colour — every value is a token, which is what
    `test/rendererStyleTokens.test.ts` checks. */
 
+#canvas.settings-open > #canvas-header,
 #canvas.settings-open > #transcript-area,
 #canvas.settings-open > #surface,
 #canvas.settings-open > #suggestions,

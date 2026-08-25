@@ -2,8 +2,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   EFFORT_LABELS,
+  PERMISSION_MODE_LABELS,
+  PERMISSION_PILL_MODES,
   composerChipView,
   insertMentionToken,
+  permissionPillView,
+  submitButtonView,
   submitLabel,
 } from '../src/desktop/renderer/model/composer.js'
 import type { WireRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
@@ -87,6 +91,64 @@ test('the send button relabels rather than disabling mid-turn', () => {
   // same verdict: `requestSubmit()` ignores a disabled button, so a disagreement
   // here swallows the click silently.
   assert.notEqual(submitLabel(true), submitLabel(false))
+})
+
+test('the send button has three visual states, and streaming outranks emptiness', () => {
+  assert.equal(submitButtonView({ streaming: false, empty: true }).state, 'idle')
+  assert.equal(submitButtonView({ streaming: false, empty: false }).state, 'ready')
+  // An empty composer mid-turn is still "a turn is running", not "nothing to do".
+  assert.equal(submitButtonView({ streaming: true, empty: true }).state, 'streaming')
+  assert.equal(submitButtonView({ streaming: true, empty: false }).state, 'streaming')
+})
+
+test('the ring is on exactly while a turn is in flight, and the label still queues', () => {
+  assert.equal(submitButtonView({ streaming: true, empty: false }).progress, true)
+  assert.equal(submitButtonView({ streaming: false, empty: false }).progress, false)
+  // The three states are visual only: mid-turn the button still means "queue",
+  // which is what `model/keymap.ts` decides for Enter. If this ever says
+  // "interrupt", the two paths have drifted.
+  assert.equal(submitButtonView({ streaming: true, empty: false }).label, submitLabel(true))
+  assert.equal(submitButtonView({ streaming: false, empty: true }).label, submitLabel(false))
+})
+
+// --- the permission pill ----------------------------------------------------
+
+test('the pill is inert until a runtime snapshot arrives', () => {
+  const view = permissionPillView({ runtime: undefined, open: true })
+  assert.equal(view.enabled, false)
+  assert.equal(view.label, '…')
+  // Never open while inert: a menu over a pill with nothing to switch would sit
+  // there until the snapshot landed.
+  assert.equal(view.open, false)
+})
+
+test('the pill names the live mode and offers the four switchable ones', () => {
+  const view = permissionPillView({ runtime: runtime({ permissionMode: 'acceptEdits' }), open: true })
+  assert.equal(view.label, PERMISSION_MODE_LABELS.acceptEdits)
+  assert.equal(view.enabled, true)
+  assert.equal(view.open, true)
+  assert.deepEqual(view.options.map((option) => option.mode), [...PERMISSION_PILL_MODES])
+  assert.deepEqual(
+    view.options.filter((option) => option.current).map((option) => option.mode),
+    ['acceptEdits'],
+    'exactly one option is the current one',
+  )
+})
+
+test('a mode outside the menu is still named rather than mislabelled', () => {
+  // `readonly` is not offered — the built-in `explore`/`plan` agents run under it
+  // and a user does not pick it for a conversation — but a snapshot can carry it,
+  // and a pill that showed the first option instead would be a lie about the gate.
+  const view = permissionPillView({ runtime: runtime({ permissionMode: 'readonly' }), open: false })
+  assert.equal(view.label, PERMISSION_MODE_LABELS.readonly)
+  assert.equal(view.options.some((option) => option.current), false)
+  assert.equal(PERMISSION_PILL_MODES.includes('readonly'), false)
+})
+
+test('every permission mode has a label, including the unoffered one', () => {
+  for (const mode of ['default', 'plan', 'acceptEdits', 'bypass', 'readonly'] as const) {
+    assert.ok(PERMISSION_MODE_LABELS[mode].length > 0, `${mode} has no label`)
+  }
 })
 
 // --- the attachment control -------------------------------------------------

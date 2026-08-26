@@ -72,6 +72,10 @@ to a `RecordStream`, not directly to `SessionStore`, so persistence remains behi
 - `SessionScope`/`SessionPane` is per conversation. Do not share bridges, permission gates, prompt
   section caches, or agent loops between sessions.
 - `ProjectDirectory` owns multiple projects and must not create duplicate runtimes for one project.
+  A `closeProject` in flight is held on the directory, so `shutdownAll` awaits the ones already leaving
+  (they are out of `entries()` before the first await) as well as the ones still registered. Its
+  `timeoutMs` is the quit's watchdog — `SHUTDOWN_DEADLINE_MS`, passed by `main.ts`'s `teardown()` — and
+  hitting it only stops waiting; nothing is cancelled.
 - `SessionWorkspace` enforces one pane per session and owns session switching/clearing choreography.
 - `SessionHost` is the host-side protocol endpoint. Desktop `ShellHost` multiplexes panes as lanes and
   owns cross-project pane topology.
@@ -170,7 +174,11 @@ to `dom/` and the app shell. Every blocking UI request must be answered or settl
 - One BrowserWindow carries multiple pane lanes over one transport. A lane key is stable; a session ID
   is not.
 - All lane exits use the common detach/dispose path. The last lane closing a project is what permits
-  project shutdown; application teardown must preserve this ordering.
+  project shutdown; application teardown must preserve this ordering. `detachLane`'s tail —
+  `closeProject` plus `onAllLanesClosed`, which quits the app off darwin — is `settleAfterLastLane`,
+  and only `deleteSession` defers it (`{ deferExit }`), because deleting the window's last session
+  opens a draft in its place instead of quitting. A caller that defers owns running it if the
+  replacement fails. Do not branch that tail on `reason`: it is a free string for logs and `shutdown()`.
 - The shell, not an individual host, is the authority for pane topology across projects. A host creates
   or manages panes only within its own project and delegates cross-project actions to the shell.
 - Settings changes follow `mutate -> save (only if the config changed) -> reload -> after-reload action ->
@@ -265,6 +273,13 @@ otherwise a passing test can contaminate later cases.
   as an ancestor's descendant or under a state class. Controls built inside `controls.ts`, the
   transcript's own, and the 5e header/composer chrome are therefore covered by three explicit class lists
   in the same test — extend the right list when adding a control.
+- A row-level dropdown (`pillSelect`) is absolutely positioned against its own `.settings-menu-shell` and
+  opens downward without measuring anything, so **no ancestor of it inside the settings screen may clip**:
+  `.settings-card` carries its bottom corners on `> :last-child` rather than `overflow: hidden`, and
+  `.settings-body` scrolls (`auto`), which extends instead of cutting. `rendererSettingsView.test.ts`
+  asserts the chain at selector level (`helpers/rendererCss.ts` parses the sheet for both it and
+  `rendererStyleTokens.test.ts`); only smoke step 8's `elementFromPoint` probe can prove the pixels,
+  because a clipped node still reports its full rect.
 - `--accent-*` may colour a glyph, a hairline or a state rule, never a `background`. The single exception is
   `.settings-toggle.on`, named in `ACCENT_FILL_EXCEPTIONS` in `rendererStyleTokens.test.ts` (a switch has no
   label, so the coloured track *is* the state); the list is checked for non-vacuity, so do not widen it and

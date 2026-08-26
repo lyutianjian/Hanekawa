@@ -1580,13 +1580,28 @@ body {
 
 /* A group is a card with a hairline of its own (design_guidance 六): in light
    mode `--surface-card` is a hair off white and the border is the only thing
-   that says where the group ends. */
+   that says where the group ends.
+
+   No `overflow: hidden` here, deliberately: a row's pill dropdown is absolutely
+   positioned against `.settings-menu-shell` and opens *below* its row, so a card
+   that clips would swallow the menu whole — the 外观 page's theme card is one row
+   tall and every option landed outside it. The corners are clipped by the last
+   child instead (below), which is the only thing that needed the card's overflow. */
 .settings-card {
   margin-bottom: 16px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   background: var(--surface-card);
-  overflow: hidden;
+}
+
+/* The card's bottom corners, moved onto whatever ends up last — a row (its
+   `:hover` fill is what would square them off), a footer, or the empty note.
+   Same device as `.md > :last-child` above. The top two corners need nothing:
+   `cardNode`/`formNode` always open with `.settings-card-title`, which paints
+   no background of its own. */
+.settings-card > :last-child {
+  border-bottom-left-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-lg);
 }
 
 .settings-card-title {
@@ -1739,6 +1754,7 @@ body {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   background: var(--surface-card);
+  box-shadow: var(--shadow-float);
 }
 
 .settings-menu-item {

@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+
+import { parseCss, rendererRoot, stylesheetPath, type Block } from './helpers/rendererCss.js'
 
 /**
  * The renderer's stylesheet, asserted at source level.
@@ -10,7 +11,8 @@ import { fileURLToPath } from 'node:url'
  * Same reasoning as `test/tuiTheme.test.ts`: a view asks for a *name*, never for
  * a colour, so the two shells can be re-skinned independently. The TUI can be
  * checked by importing its frozen `theme` object; CSS has no such handle, so
- * this file parses the sheet instead.
+ * this file parses the sheet instead — through `helpers/rendererCss.ts`, shared
+ * with the settings view's clipping assertion so there is one notion of "a rule".
  *
  * CSS is worth this trouble because it fails **silently**. A typo'd
  * `var(--text-primry)` is not an error anywhere — the property just inherits,
@@ -19,8 +21,6 @@ import { fileURLToPath } from 'node:url'
  * it.
  */
 
-const rendererRoot = fileURLToPath(new URL('../src/desktop/renderer/', import.meta.url))
-const stylesheetPath = path.join(rendererRoot, 'styles.css')
 const htmlPath = path.join(rendererRoot, 'index.html')
 
 /**
@@ -32,47 +32,6 @@ const htmlPath = path.join(rendererRoot, 'index.html')
  * `scrollHeight` and clamps it — a number no stylesheet can know.
  */
 const ALLOWED_INLINE_STYLE_PROPS = ['height']
-
-interface Declaration {
-  readonly selector: string
-  readonly prop: string
-  readonly value: string
-}
-
-interface Block {
-  readonly selector: string
-  readonly decls: readonly Declaration[]
-}
-
-/**
- * A deliberately small CSS parser: strip comments, then take every
- * `selector { … }` block. Exact only while the sheet has no nested at-rule,
- * which `the stylesheet parses exactly` below is what pins.
- *
- * Values are whitespace-collapsed so a declaration that wraps across lines (the
- * font stacks do) compares as the one string it means.
- */
-function parseCss(css: string): Block[] {
-  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '')
-  const blocks: Block[] = []
-  for (const match of withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    const selector = (match[1] ?? '').trim().replace(/\s+/g, ' ')
-    const decls: Declaration[] = []
-    for (const part of (match[2] ?? '').split(';')) {
-      const text = part.trim()
-      if (!text) continue
-      const colon = text.indexOf(':')
-      if (colon === -1) continue
-      decls.push({
-        selector,
-        prop: text.slice(0, colon).trim(),
-        value: text.slice(colon + 1).trim().replace(/\s+/g, ' '),
-      })
-    }
-    blocks.push({ selector, decls })
-  }
-  return blocks
-}
 
 function rendererFiles(dir = rendererRoot): string[] {
   return readdirSync(dir).flatMap((entry) => {
@@ -567,6 +526,20 @@ test('the canvas is a clipped rounded panel', () => {
     '#canvas must carry the large radius; it is the panel the design nests everything in',
   )
   assert.ok(declares(canvas, 'overflow', 'hidden'), '#canvas must clip its scrolling contents')
+})
+
+test('every floating menu is lifted off the page it covers', () => {
+  // The four dropdowns are the same object at four sizes, and a menu without the
+  // float shadow does not look wrong so much as *flat*: in light mode
+  // `--surface-card` is a hair off the body it covers, and the border alone is
+  // not enough to say the panel is above rather than in the text. `.settings-menu`
+  // was the one that shipped without it.
+  for (const selector of ['.titlebar-menu', '.canvas-menu', '.composer-menu', '.settings-menu']) {
+    assert.ok(
+      declares(blockFor(selector), 'box-shadow', 'var(--shadow-float)'),
+      `${selector} floats over other content and must carry var(--shadow-float)`,
+    )
+  }
 })
 
 test('ch units survive only where the font is monospaced', () => {

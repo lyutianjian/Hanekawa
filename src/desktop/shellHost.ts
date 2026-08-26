@@ -563,8 +563,15 @@ export class ShellHost<
    * topology update, a project with no lanes left is shut down: `shutdown()`
    * is the only call that stops background tasks and MCP clients, and a
    * project nothing on screen can reach is a set of orphaned child processes.
+   *
+   * `deferExit` hands that tail to the caller — the one caller that is about to
+   * put a lane *back* (`deleteSession`). An explicit flag rather than a check on
+   * `reason`: `reason` is a free string for logs and `shutdown()`, and making it
+   * carry control flow turns every future reason into a semantic branch. **A
+   * caller that defers owns what happens next**, including calling
+   * `settleAfterLastLane` itself if it cannot replace the lane after all.
    */
-  detachLane(key: string, reason: string): void {
+  detachLane(key: string, reason: string, options: { deferExit?: boolean } = {}): void {
     const entry = this.lanes.get(key)
     if (!entry) return
     this.lanes.delete(key)
@@ -573,8 +580,21 @@ export class ShellHost<
     entry.project.workspace.close(entry.pane)
     this.broadcastLanes()
     if (this.deps.isQuitting?.()) return
-    const projectStillOpen = [...this.lanes.values()].some((held) => held.project === entry.project)
-    if (!projectStillOpen) void this.deps.directory.closeProject(entry.project, reason)
+    if (options.deferExit) return
+    this.settleAfterLastLane(entry.project, reason)
+  }
+
+  /**
+   * What a detach means for the project and for the window: the last lane of a
+   * project shuts it down, and the last lane of the window is the single-window
+   * equivalent of "the last window closed".
+   *
+   * Split out of `detachLane` so a caller that defers it can run it later — or
+   * not at all, when the lane has been replaced.
+   */
+  private settleAfterLastLane(project: ProjectEntry<P, W>, reason: string): void {
+    const projectStillOpen = [...this.lanes.values()].some((held) => held.project === project)
+    if (!projectStillOpen) void this.deps.directory.closeProject(project, reason)
     if (this.lanes.size === 0) this.deps.onAllLanesClosed?.(reason)
   }
 
@@ -746,6 +766,16 @@ export class ShellHost<
    * `ShellClient` swallows a re-announcement of an identical list by design. The
    * renderer refreshes its history off this command's own reply instead — which
    * is also the only signal that would work for a closed session.
+   *
+   * The fifth step is conditional: deleting the session behind the window's
+   * *only* lane used to run `onAllLanesClosed`, which quits the app off darwin —
+   * "clean up this history" and "I am done with this window" were the same event
+   * in `detachLane`. So that one case defers the tail and opens a draft instead:
+   * an empty window is far closer to what was asked for, and a fresh draft is
+   * what "new session" has always meant here. The draft is created **after**
+   * `deleteSessionArtifacts`, so the sweep only ever faces the id being deleted.
+   * A project's last lane in a *multi-project* window still shuts that project
+   * down, exactly as closing its last pane does.
    */
   private async deleteSession(
     projectRoot: string,
@@ -760,9 +790,26 @@ export class ShellHost<
     if (!session) throw new Error(`Session not found: ${sessionId}`)
 
     const lane = this.laneForSessionId(session.id)
-    if (lane !== undefined) this.detachLane(lane, 'session-deleted')
+    // The window's last lane: the project must stay open, because the draft
+    // below is going to be opened on it.
+    const replacing = lane !== undefined && this.lanes.size === 1
+    if (lane !== undefined) this.detachLane(lane, 'session-deleted', { deferExit: replacing })
 
     await deleteSessionArtifacts(cwd, store, session.id)
+
+    if (replacing) {
+      try {
+        // No `sessionId`: a draft, and `registerLane` already broadcasts and
+        // asks the renderer to activate it.
+        await this.openLane(entry)
+      } catch (error) {
+        // The replacement is what the deferral was for. Without it the project
+        // would sit in the directory with no lanes and no shutdown — orphaned
+        // background tasks and MCP clients nothing on screen can reach.
+        this.settleAfterLastLane(entry, 'session-deleted')
+        throw error
+      }
+    }
     return { ok: true } satisfies WireShellDeleteSessionResult
   }
 

@@ -77,6 +77,25 @@ export function projectRootKey(cwd: string): string {
 }
 
 /**
+ * How long a quit waits for every project to drain before going anyway.
+ *
+ * Eight seconds rather than five because six of them can be legitimate:
+ * `terminateProcessTree` gives a shell task `FORCE_KILL_DELAY_MS` (5s) after
+ * SIGTERM and `FINAL_WAIT_MS` (1s) after SIGKILL
+ * (`services/backgroundTasks/processTree.ts`), so a shorter deadline would fire
+ * on the *working* kill path and orphan the child it was about to reap. What it
+ * is actually guarding is the unbounded half of `ProjectRuntime.shutdown()` —
+ * a subagent's `stop()` and `mcpClient.close()` have no timeout of their own,
+ * and a promise that never settles used to mean the second `app.quit()` was
+ * never sent: window gone, process still running.
+ *
+ * Lives here rather than in `main.ts` because `main.ts` cannot be imported
+ * under plain node, and a constant nothing can read is a constant nothing can
+ * test.
+ */
+export const SHUTDOWN_DEADLINE_MS = 8_000
+
+/**
  * A directory entry's display name.
  *
  * `basename` is empty for a filesystem root (`C:\`, `/`), so those fall back to
@@ -103,8 +122,18 @@ export class ProjectDirectory<
 > {
   /** Insertion-ordered by construction (`Map`), which is "the order projects were opened". */
   private readonly entries_ = new Map<string, ProjectEntry<P, W>>()
-  /** Roots whose teardown is in flight, so a second close is a no-op rather than a double shutdown. */
-  private readonly closing = new Set<string>()
+  /**
+   * Roots whose teardown is in flight, mapped to it.
+   *
+   * A `Set` would be enough for the dedup, but not for the quit: `closeProject`
+   * removes the entry from {@link entries_} before it awaits, so a close started
+   * by `ShellHost.settleAfterLastLane` (a bare `void closeProject(...)`) is
+   * invisible to {@link shutdownAll} — which would then skip it and let the app
+   * exit *concurrently* with a project that is still stopping child processes.
+   * Holding the promise is what makes "wait for the ones already leaving"
+   * expressible.
+   */
+  private readonly closing = new Map<string, Promise<void>>()
 
   get size(): number {
     return this.entries_.size
@@ -190,13 +219,26 @@ export class ProjectDirectory<
    * under panes that are still draining.
    *
    * Idempotent, and re-entrant-safe: `before-quit` can arrive while the last
-   * window's `'closed'` handler is already here.
+   * window's `'closed'` handler is already here — the second caller is handed
+   * the first one's promise instead of a resolved one, so awaiting a close
+   * somebody else started really does wait for it.
    */
-  async closeProject(entry: ProjectEntry<P, W>, reason: string): Promise<void> {
-    if (this.closing.has(entry.root)) return
-    if (this.entries_.get(entry.root) !== entry) return
-    this.closing.add(entry.root)
+  closeProject(entry: ProjectEntry<P, W>, reason: string): Promise<void> {
+    const inFlight = this.closing.get(entry.root)
+    if (inFlight) return inFlight
+    if (this.entries_.get(entry.root) !== entry) return Promise.resolve()
     this.entries_.delete(entry.root)
+    const run = this.runClose(entry, reason)
+    // The tracked copy swallows: `ShellHost.settleAfterLastLane` calls this as
+    // `void closeProject(...)`, and a rejected `shutdown()` sitting in the map
+    // with nobody awaiting it is an unhandled rejection — which on node 22
+    // takes the main process down on the way out. Callers that await get `run`
+    // itself, so the failure still reaches them.
+    this.closing.set(entry.root, run.catch(() => undefined))
+    return run
+  }
+
+  private async runClose(entry: ProjectEntry<P, W>, reason: string): Promise<void> {
     try {
       entry.workspace.closeAll()
       await entry.project.shutdown(reason)
@@ -206,10 +248,47 @@ export class ProjectDirectory<
   }
 
   /**
-   * Every project, in parallel. `allSettled` so one misbehaving MCP server
+   * Every project, in parallel: the ones still registered *and* the ones whose
+   * teardown was already in flight. `allSettled` so one misbehaving MCP server
    * cannot keep the process alive on the way out.
+   *
+   * `timeoutMs` is the quit's watchdog and is the caller's to set — nothing here
+   * knows how long a user will stare at a dead window. Hitting it does **not**
+   * cancel anything (there is nothing to cancel: `shutdown()` is a promise, not
+   * an operation with a handle); it only stops waiting, which is the difference
+   * between an app that exits and one that does not.
    */
-  async shutdownAll(reason: string): Promise<void> {
-    await Promise.allSettled(this.entries().map((entry) => this.closeProject(entry, reason)))
+  async shutdownAll(
+    reason: string,
+    options: { timeoutMs?: number } = {},
+  ): Promise<'drained' | 'timed-out'> {
+    // Snapshot first: `closeProject` mutates `closing` as it settles.
+    const inFlight = [...this.closing.values()]
+    const closes = this.entries().map((entry) => this.closeProject(entry, reason))
+    const drained = Promise.allSettled([...inFlight, ...closes])
+    if (options.timeoutMs === undefined) {
+      await drained
+      return 'drained'
+    }
+    return withDeadline(drained, options.timeoutMs)
+  }
+}
+
+/**
+ * Resolve when `work` does, or when the deadline passes — whichever is first.
+ *
+ * The timer is cleared on the winning path so a drained shutdown does not hold
+ * an event loop handle open for the rest of the deadline (which under `node
+ * --test` is the difference between a suite that ends and one that hangs).
+ */
+async function withDeadline(work: Promise<unknown>, timeoutMs: number): Promise<'drained' | 'timed-out'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<'timed-out'>((resolve) => {
+    timer = setTimeout(() => resolve('timed-out'), timeoutMs)
+  })
+  try {
+    return await Promise.race([work.then(() => 'drained' as const), deadline])
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }

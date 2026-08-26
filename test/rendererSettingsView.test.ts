@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
+import { cssBlocks, type Block } from './helpers/rendererCss.js'
 import { createSettingsView } from '../src/desktop/renderer/dom/settingsView.js'
 import {
   applySettingsIntent,
@@ -336,6 +337,68 @@ test('a closed pill opens on ArrowDown rather than swallowing the key', (t) => {
   })
 
   assert.deepEqual(intents, [{ kind: 'toggle-menu', menu: 'row:routing:main' }])
+})
+
+/** The chain from the screen's root down to the first node carrying `className`. */
+function pathTo(view: StubView, className: string): StubView[] {
+  // `StubView` has no parent link, so the path is found on the way down.
+  const walk = (node: StubView): StubView[] | undefined => {
+    if (node.classes.includes(className)) return [node]
+    for (const kid of node.children) {
+      const below = walk(kid)
+      if (below) return [node, ...below]
+    }
+    return undefined
+  }
+  const found = walk(view)
+  assert.ok(found, `no .${className} anywhere in the screen`)
+  return found
+}
+
+const CLIPPING = new Set(['hidden', 'clip'])
+
+/** Rules whose whole selector is `.name` — the ones that apply to it unconditionally. */
+function rulesFor(className: string): Block[] {
+  return cssBlocks().filter((block) => block.selector === `.${className}`)
+}
+
+test('an open dropdown has no clipping ancestor inside the screen', (t) => {
+  // D3: `.settings-card` used to carry `overflow: hidden`, and the 外观 page's
+  // theme card is one row tall — every option of the menu below it was cut off.
+  //
+  // The judgement is selector-level because it has to be: `domStub` computes no
+  // layout, so "is it visible" is not a question that can be asked here. What
+  // this holds is the property the fix rests on — nothing between the menu and
+  // the screen's root clips its overflow. `.settings-body` scrolls (`overflow-y:
+  // auto`), which *extends* rather than cuts, and is the documented trade-off in
+  // `styles.css`. The real proof is smoke step 8's `elementFromPoint` probe.
+  const { view, apply } = mount(t)
+  apply({ kind: 'toggle-menu', menu: 'row:routing:main' })
+  const chain = pathTo(view(), 'settings-menu')
+
+  // Non-vacuity, twice: the menu must really be inside the card (or this asserts
+  // over a chain that never contained the offender), and that card must really
+  // have rules in the sheet (or a rename turns the loop below into a no-op).
+  const ancestors = chain.slice(0, -1)
+  assert.ok(
+    ancestors.some((node) => node.classes.includes('settings-card')),
+    `the dropdown is not inside a card: ${ancestors.map((node) => node.className).join(' > ')}`,
+  )
+  assert.ok(rulesFor('settings-card').length > 0, 'styles.css has no `.settings-card` rule')
+
+  for (const ancestor of ancestors) {
+    for (const name of ancestor.classes) {
+      for (const block of rulesFor(name)) {
+        for (const decl of block.decls) {
+          if (!['overflow', 'overflow-x', 'overflow-y'].includes(decl.prop)) continue
+          assert.ok(
+            !CLIPPING.has(decl.value),
+            `.${name} { ${decl.prop}: ${decl.value} } clips the open dropdown below it`,
+          )
+        }
+      }
+    }
+  }
 })
 
 // --- focus loss --------------------------------------------------------------

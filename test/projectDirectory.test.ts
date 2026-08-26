@@ -196,12 +196,22 @@ test('closeProject closes every pane before shutting the project down', () => {
 test('closeProject is idempotent, so quit and last-window-closed can both arrive', async () => {
   const dir = directory()
   const root = process.cwd()
-  const entry = dir.add(fakeProject(root), fakeWorkspace(root))
+  const slow = fakeProject(root)
+  let done = false
+  slow.shutdown = async (reason) => {
+    slow.shutdowns.push(reason)
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+    done = true
+  }
+  const entry = dir.add(slow, fakeWorkspace(root))
 
+  // The second caller is handed the first close, not a resolved promise: it is
+  // waiting for "this project is down", and it has to actually be down.
   await Promise.all([
     dir.closeProject(entry, 'first'),
     dir.closeProject(entry, 'second'),
   ])
+  assert.equal(done, true)
   await dir.closeProject(entry, 'third')
 
   assert.deepEqual(entry.project.shutdowns, ['first'])
@@ -238,6 +248,86 @@ test('shutdownAll does not let one failing project keep the others open', async 
 
   assert.deepEqual(entryB.project.shutdowns, ['app-quit'])
   assert.equal(dir.size, 0)
+})
+
+/**
+ * The quit-vs-teardown race: `ShellHost.settleAfterLastLane` closes a project
+ * with a bare `void closeProject(...)`, and the entry is out of the map before
+ * the first await. A directory that only remembered *that* a root was closing
+ * would let `shutdownAll` return while that project was still stopping child
+ * processes — the app exits, the subprocesses outlive it.
+ */
+test('shutdownAll waits for a close that was already in flight', async () => {
+  const dir = directory()
+  const root = process.cwd()
+  const slow = fakeProject(root)
+  let release = (): void => {}
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  slow.shutdown = async (reason) => {
+    slow.shutdowns.push(reason)
+    await blocked
+  }
+  const entry = dir.add(slow, fakeWorkspace(root))
+
+  void dir.closeProject(entry, 'last-lane')
+  let settled = false
+  const quitting = dir.shutdownAll('app-quit').then((outcome) => {
+    settled = true
+    return outcome
+  })
+
+  // Several turns of the microtask queue: enough for a `shutdownAll` that
+  // skipped the in-flight close to have resolved by now.
+  for (let turn = 0; turn < 5; turn += 1) await Promise.resolve()
+  assert.equal(settled, false, 'the quit must not outrun a project that is still closing')
+
+  release()
+  assert.equal(await quitting, 'drained')
+  // The in-flight close is the only shutdown: `shutdownAll` did not start a
+  // second one behind it.
+  assert.deepEqual(slow.shutdowns, ['last-lane'])
+})
+
+/**
+ * The watchdog. `ProjectRuntime.shutdown()` awaits a subagent's `stop()` and
+ * every `mcpClient.close()`, neither of which has a timeout, and `before-quit`
+ * has already destroyed the window by the time it runs.
+ */
+test('shutdownAll gives up on a project that never drains and still reports the others', async () => {
+  const dir = directory()
+  const a = process.cwd()
+  const b = `${process.cwd()}${sep}src`
+  const stuck = fakeProject(a)
+  stuck.shutdown = async (reason) => {
+    stuck.shutdowns.push(reason)
+    await new Promise<never>(() => {})
+  }
+  dir.add(stuck, fakeWorkspace(a))
+  const entryB = dir.add(fakeProject(b), fakeWorkspace(b))
+
+  const outcome = await dir.shutdownAll('app-quit', { timeoutMs: 20 })
+
+  assert.equal(outcome, 'timed-out')
+  assert.deepEqual(stuck.shutdowns, ['app-quit'], 'the hung project was asked, it just never answered')
+  assert.deepEqual(entryB.project.shutdowns, ['app-quit'])
+})
+
+test('without a deadline shutdownAll still waits as long as it takes', async () => {
+  const dir = directory()
+  const root = process.cwd()
+  const slow = fakeProject(root)
+  let finished = false
+  slow.shutdown = async (reason) => {
+    slow.shutdowns.push(reason)
+    await new Promise<void>((resolve) => setTimeout(resolve, 30))
+    finished = true
+  }
+  dir.add(slow, fakeWorkspace(root))
+
+  assert.equal(await dir.shutdownAll('app-quit'), 'drained')
+  assert.equal(finished, true)
 })
 
 test('projectDisplayName is the basename, falling back to the path for a root', () => {

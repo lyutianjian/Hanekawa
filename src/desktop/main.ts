@@ -28,8 +28,10 @@
  *     and MCP clients, so a lane-less project would leave child processes
  *     running with nothing on screen to stop them.
  *  4. On `before-quit` we tear every lane down in order and wait for it, then
- *     shut every project down. `window-all-closed` quits only when there are no
- *     panes left.
+ *     shut every project down — but only up to `SHUTDOWN_DEADLINE_MS`. The
+ *     window is destroyed in the first half of `teardown()`, so a project that
+ *     never finishes draining used to leave a running process with nothing on
+ *     screen. `window-all-closed` quits only when there are no panes left.
  *
  * Two keys, and they are not interchangeable: lane keys are minted by the
  * `ShellHost` and never move (session ids travel under `/clear` and `/resume`),
@@ -47,7 +49,11 @@ import { SessionStore } from '../sessions/service.js'
 import { logDiagnostics } from '../harness/diagnostics.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
 import { bootstrap, RuntimeStartupError } from '../runtime/index.js'
-import { ProjectDirectory, type ProjectEntry } from '../runtime/projectDirectory.js'
+import {
+  ProjectDirectory,
+  SHUTDOWN_DEADLINE_MS,
+  type ProjectEntry,
+} from '../runtime/projectDirectory.js'
 import {
   SessionWorkspace,
   type SessionPane,
@@ -421,7 +427,15 @@ async function teardown(): Promise<void> {
     for (const key of shell.host.laneKeys()) shell.host.detachLane(key, 'app-quit')
     if (!shell.window.isDestroyed()) shell.window.destroy()
   }
-  await directory.shutdownAll('app-quit')
+  // Bounded, because `before-quit` has already cancelled the real quit and is
+  // waiting on this: an unbounded await here is how "the window closed but the
+  // process is still running" happens. Timing out is not a failure to report to
+  // the user — there is no UI left — so it goes to stderr like every other
+  // main-process diagnostic.
+  const outcome = await directory.shutdownAll('app-quit', { timeoutMs: SHUTDOWN_DEADLINE_MS })
+  if (outcome === 'timed-out') {
+    console.error(`[hanekawa] shutdown did not drain in ${SHUTDOWN_DEADLINE_MS}ms; quitting anyway`)
+  }
 }
 
 /**

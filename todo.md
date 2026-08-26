@@ -1,361 +1,261 @@
-# Hanekawa 桌面端适配 — 进度与待办
+# Hanekawa 桌面端 — 待办
 
-> 交接文档。**架构与不变式在 `CLAUDE.md`**，本文件只讲进度、决策留痕和没做完的事。
-> 状态：`[x]` 完成并验证 · `[~]` 部分完成 · `[ ]` 未开始
-> 已完成阶段（0–5）的记录已压缩为概要，完整过程与理由见 git 历史。
-
----
-
-## 目标
-
-**阶段 0–3j（已完成，归档）**：agent 内核抽成 headless 运行时搬进 Electron，跑通协议层命令、多标签、
-多项目、markdown、rewind、消息队列与费用。时间线见 git log（`34fbea0` 之前）。
-
-**阶段 4（已完成，归档）**：外壳从开发者原型做成产品形态——单窗口 + lane 多路复用、侧栏全量会话
-历史、删除会话、设置界面、`design_guidance.md` 首轮视觉、真机冒烟（CDP 驱动纳入 git）。遗留缺陷见
-下方「已知缺陷」。
-
-**阶段 5（已完成，冒烟待跑）**：按重写后的 `design_guidance.md` 落地其中**能映射到现有能力**的部分 +
-双主题；无对应后端的设计项（拉取请求、插件生态、语音、电脑操控、浏览器、Git、Worktrees、钩子界面、
-通知铃铛、分栏/检查器等）**一律省略**。要点：双主题 + 「外观」设置页（默认跟随系统）；画布头栏 =
-会话身份 + 「打开位置」（固定 `code <cwd>`，未装回可读错误）；侧栏头部 = 工作区下拉 + 会话搜索框；
-思考链流式展开、turn 结束折叠；权限胶囊露 default / acceptEdits / plan / bypass，复用现有
-`set-permission-mode`。子项概要见下。
+> 只讲没做完的事。架构与不变式在 `CLAUDE.md`／`AGENTS.md`，长什么样与为什么在 `design_guidance.md`。
+> 状态：`[x]` 完成并验证 · `[~]` 部分完成 · `[ ]` 未开始。
+> 「截图」指 `.smoke/20260826-015222/`（`npm run build:desktop && npm run smoke:desktop -- --kill-stale`
+> 的产物，重跑会生成新目录）。该次是 S2 之后的基线：11 passed / 1 skipped（S1 需 `--paid-turn`），
+> 视觉档尚未开工，所以下面每条视觉待办引用的文件名在这一份里仍然对得上。
 
 ---
 
-## 阶段 5（已完成）
+## 一、缺陷
 
-> 5a–5f 均已过 focused + 全量（基线见「验证」）+ typecheck 四段 + 变异验证 + `build:desktop`。
-> **未跑的真机冒烟项**合并记在下方「阶段 5 新记的账」末尾。
+### D1 删除当前显示的会话会把整个应用退掉 — 已修（S1）
 
-- **5a** 双主题基础 + 「外观」设置页：`model/theme.ts` 管 `localStorage['ui-theme']`（默认
-  `system`，跟随系统在 JS 里解析）；设置页新增纯客户端 `appearance` 分类
-  （`SettingsOutcome.themePreference`，不发 wire）。
-- **5b** 侧栏改造：工作区下拉（复用 `selectWorkspaceIntent`，零新 wire）、会话搜索框、`running`
-  徽标换 spinner、footer 改用户档案行、菜单靠容器 `focusout` 关。
-- **5c** 空状态欢迎页（`model/welcome.ts` + `dom/welcomeView.ts`，挂 `paneEl` 每 pane 一份）；前置
-  立了 `test/helpers/domStub.ts` + `tsconfig.domtest.json`（第四个 TS 程序，`dom/` 首次有单测）；
-  分支 seam 走 `WireHelloResult.gitBranch`（新 `src/runtime/gitBranch.ts`）。
-- **5d** 对话流增强：浮动回到底部按钮、思考链折叠头 + 呼吸标签（`turn-end` 封存「已处理 Xm Xs」）、
-  行内 `@` 文件胶囊（正则住 `runtime/suggestions/atToken.ts`）。
-- **5e** 输入框 + 画布头栏：权限模式胶囊（直连 `set-permission-mode`）、发送键三态 + 进度环（纯
-  视觉）、`model/canvasHeader.ts` + `dom/canvasHeaderView.ts`（全由 `WireLaneInfo` 推出，不碰
-  `paneSession.ts`）；新 seam `open-in-editor`（`shellProtocol.ts` 命令 + `shellHost.ts` 严格
-  schema + 新 `src/desktop/openInEditor.ts`）。顺带修 4f 效力档位英文账（`EFFORT_LABELS`）。
-- **5f** 设置分组重构：三组导航（`nav` 换 `navGroups`）、设置搜索（`matchesQuery`）、`controls.ts`
-  新 `pillSelect()` 胶囊下拉；domStub 扩 `dispatch`/`focus`/`activeElement`/`contains()` 并装
-  `globalThis.Node`。
+**复现**：只开着一个会话（只有一条 lane）时，从侧栏或画布头栏 `⋯` 删除它 → 窗口消失。
 
----
+**根因**（一条直路，三处）：
 
-## 阶段 6（已完成，冒烟待跑）：按参考图重打磨 + `design_guidance.md` 重构
+1. `shellHost.ts:763` — `deleteSession()` 对开着的会话先 `detachLane(lane, 'session-deleted')`。
+2. `shellHost.ts:577-579` — `detachLane` 结尾：`this.lanes.size === 0` 时调 `onAllLanesClosed`。
+3. `main.ts:380-386` — `onAllLanesClosed` 在非 darwin 上直接 `app.quit()`。
 
-**起因**：真机截图与参考图逐块对比，差距集中在窗口外框、侧栏信息密度、画布顶部状态条、正文行长、
-输入框五处；同时 `design_guidance.md` 仍把没有后端的设计项写成规范、浅色 token 与实现不符。
-**做法**：先把文档重构成「与实现一致 + 可执行 + 标注哪条测试守哪句」，再按它落地。
+「删掉最后一个会话」和「关掉最后一个面板」在 `detachLane` 里是同一个事件，而用户意图完全不同：
+前者是「清理这条历史」，后者才是「我不要这个窗口了」。冒烟 S4 之所以全绿，是因为它删的时候还有
+别的 lane 开着，走不到这个分支。
 
-- [x] **文档重构**：`design_guidance.md` 整篇重写——「不实现」表、以实现为准的 token 表、五节结构
-  规范、**有意偏离参考图**一览、G1–G10 改进清单、防退化清单（每条括注守它的测试名）。
-- [x] **6e 设置**：开关 ON 改 accent 填充 + 新中性 token `--surface-knob`（白滑块，两主题同值）；
-  `rendererStyleTokens` 的 accent-fill 守卫加**具名例外** `ACCENT_FILL_EXCEPTIONS`（带非空断言，
-  例外失配也报红）；分组卡片补发丝边框 + `--radius-lg`；H1 15→20px。
-- [x] **6c 画布与对话流**：`#status` 从画布顶部搬到输入框下沿、空闲渲染空串（不再常驻「空闲」）；
-  新 `.transcript-column` / `.composer-column` 居中阅读列（~760px，滚动条仍在面板边缘）；轮次间距
-  10→16px、`line-height: 1.65`、正文 13→14px；用户气泡 `10px 14px` + `--radius-lg`；细滚动条
-  （`scrollbar-width` + `::-webkit-scrollbar*`，都是普通选择器块，平解析器仍成立）。
-- [x] **6d 输入框**：占位符改「随心输入」（长句说明进 `?` 浮层）；随列宽居中；`padding` 加大；
-  发送/停止键 28→30px。
-- [x] **6b 侧栏**：头部只剩工作区 + 折叠（项目名不再被截断）；「新建会话 / 打开项目…」改成搜索框下方
-  的 `.sidebar-nav-item` 行；footer 改「设置行 + `?`」，`SIDEBAR_HINT` 进 `?` 浮层（新 `helpOpen`
-  进 state/view/**签名**与新 intent `toggle-help`）；会话行 `min-height: 32px`、13px；侧栏 268px。
-- [x] **6a 无边框标题栏**：`main.ts` 加 `backgroundColor` + `titleBarStyle: 'hidden'` +
-  `titleBarOverlay`（Windows 三键仍由系统画，**零窗口控制 IPC**）、非 darwin 清空应用菜单；新
-  `model/titleBar.ts` + `dom/titleBarView.ts` 画 `◧` + 文件/视图/帮助，**每项只映射既有 intent**、
-  不做「编辑」菜单；新 shell 命令 `set-window-theme`（严格 schema + `assertNever` 分支 +
-  `onWindowTheme`，**无 overlay 的外壳答 `ok` 不 reject**）由 `applyResolvedTheme` 触发。
-- [x] **新增用例**：`test/rendererSidebarView.test.ts`（5 条）、`test/rendererTitleBarView.test.ts`
-  （7 条）、transcript 阅读列 1 条、`desktopShellHost` 的 `set-window-theme` 2 条；三份 domtest
-  文件同时进 `tsconfig.json` 的 exclude 与 `tsconfig.domtest.json` 的 include（`rendererImports`
-  守着这两张单子一致）。
+**修法（建议）**：让删除路径不触发 `onAllLanesClosed`（`reason` 已在参数里，但 `'session-deleted'`
+目前和 `'pane-closed'` 同权），改为在同一个项目里建一个新的草稿会话并激活——空窗口比退出更接近预期，
+也和「新会话是内存草稿」的既有行为一致。`deleteSession` 的四步顺序（id 先解析、lane 先于文件）是
+承重的，新 lane 必须在 `deleteSessionArtifacts` 之后建，否则新草稿会被同一次清理扫到。
 
-- [x] **6f 白屏修复 + 启动守卫**（阶段 6 落地后发现）：6a 往 `applyResolvedTheme` 里加的
-  `shellClient.setWindowTheme(...)`，其唯一调用点在**模块顶层**且排在 `const shellClient` **之前** ——
-  TDZ 抛错、`app.ts` 顶层中断，全部单例视图与引导 IIFE 都没执行，窗口只剩 `index.html` 骨架
-  （主题 token 已生效，因为 `dataset.theme` 那行在抛错之前）。修法：`mux` / `shellClient` 整体提到主题块
-  之前（不包 `try`、不 `queueMicrotask` —— 那只是把崩溃换成静默不生效）；引导里 `panes()` 往返之后再
-  幂等发一次 `setWindowTheme`（早发若被丢，浅色用户的三键区会一直是深色）。新
-  `test/rendererBoot.test.ts`：把真 esbuild bundle 装进 domStub + 假 bridge（只答 `panes`）里跑起来，
-  断言 `#titlebar` / `#sidebar` 非空、`<body>` 没有失败文案、`dataset.theme` 已解析。
+**回归**：`test/desktopShellHost.test.ts` 加「删掉唯一一条 lane 不调 `onAllLanesClosed`」；冒烟 S4
+扩一条单 lane 分支。
 
-### 阶段 6 新记的账
+### D2 退出之后 electron 进程还留在后台 — 已修（S2，防御性）
 
-- **`WINDOW_CHROME`（`main.ts`）是 `styles.css` 之外唯一写死颜色的地方**，且**没有守卫**：它是
-  OS 画的 overlay，文档够不着，只能与 `--surface-base` / `--text-secondary` 手工对齐。样式测试扫的是
-  渲染器目录，看不见 `main.ts`。
-- **`#titlebar` 右侧 148px 是硬编码的留白**：Windows 的三键宽度不是常量（缩放、语言、Win10/11 略有
-  差异）。写窄了按钮会压在菜单上，写宽了右边多一块空。只有真机能看出来。
-- **标题栏菜单第四次踩同一个洞**：点栏内不可聚焦装饰不会关菜单（承 5b / 5e / 5f），仍靠容器
-  `focusout`，仍不做 body 级 portal，也不按坐标翻转。
-- **`renderTitleBar()` 就是 `renderSidebar()`**：两者的活字段同源（collapsed / canCreate），所以合成
-  一个调用点，代价是开一次菜单会连侧栏一起走一遍签名比较。
-- **`app.ts` 的标题栏接线仍无单测**（承 5e 那条）：`runTitleBarAction` 的五个分支、`titleBarMenu` 的
-  持有都在 wiring 层，model 与 view 两半都钉住了。**6f 之后 `app.ts` 不再是零覆盖**：
-  `rendererBoot.test.ts` 守着「模块能求值完 + 首帧非空 + 启动发出 `panes` 与 `set-window-theme`」，
-  但**只有这四条**——分支逻辑仍然只有冒烟看得见。
-- **6f 第 2 步（引导里补发 `setWindowTheme`）没有守卫**：删掉它 `rendererBoot` 仍全绿，因为模块求值期
-  那次已经满足了「发过 `set-window-theme`」。它防的是「早发被丢」这个未被证实的情形，纯防御。要钉住
-  得让假 host 只在往返之后才接受命令，判据比它防的问题还长，明文接受。
-- **domStub 的 `dataset` 也进了「无守卫的元素成员」清单**（6f 加）：`sidebarView` / `rewindView` /
-  `surfaceView` 早就在写它，只是既有用例碰巧没走到那几行 —— 这类漂移仍然只有跑到才知道。
-- **`darwin` 上没有这套外框**：`titleBarOverlay` 不设、应用菜单不清，`set-window-theme` 直接返回。
-  没有 mac 机器验证过。
-- **待跑的冒烟项**：**启动后侧栏 / 标题栏 / 输入框有内容、DevTools 控制台无报错**（6f 白屏的真机复现
-  路径；`rendererBoot` 只能证明 bundle 在假 DOM 里活着，真 Chromium 与真 host 是另一回事）；
-  无边框标题栏能拖动、三键可用、文件/视图/帮助能开且各项落到既有行为；侧栏头部项目名
-  完整、`?` 浮层能开合、`新建会话 / 打开项目…` 成行；画布顶部无「空闲」条、状态在输入框下沿且空闲为空；
-  正文成居中列、滚动条为细条；输入框占位符是「随心输入」；设置里开关 ON 为蓝底白滑块；深浅主题切换时
-  三键区域跟着换色。本次没有显示器与凭据，**未跑**。
-  （`probes.titleBar()` / `probes.clickTitleBarMenu()` 已就位；拖拽区与 OS 画的三键**读不到**——overlay 在
-  文档之外，只有截图能作证。）
+`main.ts:130-141` 的 `before-quit` 是 `preventDefault()` → `await teardown()` → `.finally(app.quit)`。
+**`teardown()` 没有超时**：它 await 到 `bootstrap.ts:265` 的 `shutdown()`，第一步
+`backgroundTasks.stopAll()` 等真实子进程退出，第二步逐个 `mcpClient.close()`。任何一个不肯退的子进程
+都会让那个 promise 永远不 resolve，第二次 `app.quit()` 就永远不发——而窗口已经在 `teardown()` 第一段
+被 `destroy()` 了，看到的正是「界面没了、进程还在」。
 
----
+还有一处顺序缝：D1 的路径上 `detachLane` 已经 `void closeProject(...)`，而 `closeProject` 用
+`this.closing` 去重（`projectDirectory.ts:194`），所以随后的 `shutdownAll()` 会**跳过**这个还在飞的
+项目而不是等它——退出与项目 teardown 因此是并发的。
 
-## 待办（记账未修）
+**已做**：看门狗落在 `ProjectDirectory.shutdownAll(reason, { timeoutMs })`（而不是 `main.ts` 里内联——
+`main.ts` 进不了单测），`main.ts` 的 `teardown()` 传 `SHUTDOWN_DEADLINE_MS`；在飞的 `closeProject`
+promise 记在 `closing: Map` 上，`shutdownAll` 连它一起 `allSettled`。**没有真机复现**（按拍板：只做防御），
+所以「机制未证实」这句仍然成立——两条缝都是代码上确认的，不是抓到的现场。要复现的话手法照旧：
+开一个长跑的 Bash 后台任务再退出。
 
-下面是记账未修的缺陷，每条都是独立的一档。
+### D3 设置里的胶囊下拉被卡片裁掉 — 已修（S3）
 
-### 已知缺陷（记账未修）
+`.settings-card` 有 `overflow: hidden`（`styles.css:1584-1590`），而 `pillSelect()` 的菜单是挂在行内
+`.settings-menu-shell` 上的 `position: absolute`（`styles.css:1727`，`top: calc(100% + 4px)`）。
+外观页的「主题」卡片只有一行，菜单向下展开的三行整个落在卡片边界之外，被裁掉；`.settings-body` 的
+`overflow-y: auto`（`styles.css:1551`）是第二层裁剪。
 
-- **3e 遗留两条**：① **代码块没有语法高亮** —— `cli-highlight` 出 ANSI 且是 Node 侧的，浏览器侧要
-  另选能进 renderer bundle（无 Node 依赖）的库，独立一档；② `markdownNode` 每次重建整棵子树、
-  `transcriptView` 每 token 全量重画 —— 解析有 LRU 兜着，**建节点没有**（5d 去掉思考链 240 尾截断
-  后长链上更贵）。真机上长会话流式若卡，按 `transcriptView` 文件头写的那条路走（按 item id 建 key
-  增量更新），不要回头去搞 static/live 分区。
-- **系统提示语没有本地化**（4f）：`Effort set to: low` / `Switched to step-3.5-flash.` 等仍是英文，
-  夹在全中文界面里。4e 的 `locale` 只加在三个 presentation 模块上，这些 note 来自命令与运行时的
-  note 路径（TUI 也在用），是另一条通路。
-- **`sessions/index.json` 每个 turn 结束都被整目录扫一遍**（4f）：`SessionStore.list()` 用
-  `localeCompare` 排 ISO 串（比 `<` 慢约两个数量级）只是表层，真正贵的是它下面的
-  `readIndex → recoverIndex`——`readdir` 整个 sessions 目录，对不在 index 里的 `.jsonl` 还要
-  `readFileSync` + 全量解析。4b 之后每项目每 turn 走一次。
-- **其余 `"latest"` 依赖**（`tsx`、`zod`、`openai` 等）未钉版本；不参与 emit，要清理另开一条。
-- **`PaneSession` 有四个成员已无人调用**：`panes` / `refreshPanes`（4a 死）、`ownProjectRoot` /
-  `isActive`（4b 死）。无害，留给任何一次单独提交。
-- **`StartupPermissionMode` 的类型比校验宽**：类型上允许 `'readonly'`，`validateSettings` 只认
-  default / acceptEdits / bypass——写 `readonly` 的设置文件根本加载不了；4d-2 的 `startupMode()`
-  只在投影处兜到 `'default'`，源头那对不齐没修。
-- **自定义 agent 定义不能写 `permissionMode: readonly`**：`parseOptionalPermissionMode` 不认，而内置
-  的 `explore` / `plan` 用的正是它；文件被跳过并只打一行 warning。
-- **`settings.autoCompact` / `autoCompactThreshold` 无人消费**：要么接上真正的自动压缩，要么连
-  `configTool` 里的两条一起删——独立一档。
-- **`Ctrl+W` / 侧栏关闭不检查 `blocked`**（LRU 驱逐绝不碰有未答阻塞请求的 pane）；用户明确要求的
-  关闭是另一情境，要做得更好得加确认，是新范围。
-- **`sidebarRenderSignature` 是字符串比较**，行数极多时 O(rows) 建串；够用，真要更进一步是按
-  item id 做增量行更新（与 `transcriptView` 那条同一条路）。
-- **MCP 服务器不能在界面上增删改**（`McpServerConfig` 没有写入 API）、`hooks` 没有界面、
-  `fallbackModel` / `compactModel` 只读（`ConfigService` 没有对应 setter）。
-- 已修（勿再记账）：shadow-git 删会话泄漏（4b `removeShadowRepo`）、`runSidebarIntent` 穷尽检查
-  （4d `assertNeverIntent`）、`settings.local.json` 写整组与 untrust（4d-2 `updateLocalSettings`）、
-  MCP 只在 bootstrap 连一次（4d-2 `reloadMcpServers`）、权限徽标 / 设置 Esc / `.sidebar-settings`
-  样式（4f）、`Worked for 3.6s` 本地化（5d `formatTurnSummary`）、效力档位英文标签（5e
-  `EFFORT_LABELS`）、`dom/` 无单测（5c domStub）。
+卡片的 `overflow: hidden` 不是装饰（行分隔线要被圆角裁住），不能直接删。三条可选：① 菜单向上翻
+（但「不按坐标翻转」是现有决策）；② 去掉卡片级 `overflow`，让行自己裁；③ 菜单挂到设置屏这一层的
+定位壳上（仍不做 body 级 portal）。**推荐 ②**：改动最小且不引入坐标测量。顺带：`.settings-menu`
+缺 `box-shadow: var(--shadow-float)`，而标题栏／画布／输入框三个菜单都有，浅色下它会糊在正文上。
+
+**已做**：按 ②。`.settings-card` 去掉 `overflow: hidden`，底部两角改由 `.settings-card > :last-child`
+自己裁（照搬 `.md > :last-child` 的写法，一条规则同时覆盖最后一行的 hover 底色、页脚和空态）；
+`.settings-menu` 补 `box-shadow: var(--shadow-float)`。`.settings-body` 的 `overflow-y: auto` 不动——
+它是 scroll container，溢出撑大滚动区而不是裁掉。**回归**：`rendererSettingsView.test.ts` 加「展开的
+菜单在屏内没有裁剪祖先」（选择器级，domStub 算不了布局，带两条非空守卫）；`rendererStyleTokens.test.ts`
+加「四个浮层菜单都有 `--shadow-float`」。CSS 解析器抽到 `test/helpers/rendererCss.ts` 两处共用。
+**实证**：冒烟 S8 的 `外观` 页新增三条断言（菜单确实伸出卡片 / 在视口内 / `elementFromPoint` 打得到
+最后一项——被裁的元素命中不到，而 `getBoundingClientRect` 对被裁元素照样返回完整矩形），截图
+`08a-settings-menu-open`。已在本机跑过 `--only=S8`：33 条断言全绿。
+
+### D4 四个阻塞对话框完全不能用鼠标
+
+`dom/overlayView.ts` 里 `addEventListener` 出现 **0 次**：`optionList()`（`overlayView.ts:136`）把每个
+选项画成 `div.option`，内容是 `> [y] 允许一次` 这样的文本，没有 `role="option"`、没有 click。受影响的
+是权限确认、AskUserQuestion、计划审批、退出计划模式——桌面端最关键的那几次交互只能用键盘
+（`app.ts:760` 的全局 keydown 兜住了键盘路径，所以功能是通的，鼠标是死的）。`dom/suggestionsView.ts`
+同样 0 个监听（命令／文件补全条也点不动）。对照组：`rewindView.ts:71,100`、`surfaceView.ts:54` 的行
+是可点的，只是长得还是 TUI 的样子。
+
+形态部分见 V5，建议同一档做完。
+
+### D5 侧栏看不出「当前是哪个会话」
+
+`styles.css:634` 只有 `.session-row.active .session-title { color: var(--text-primary) }`——激活行没有底色
+胶囊，而 `--surface-active` 的胶囊被给了 `.selected`（键盘所在行）。`design_guidance.md` 三.2 写的是
+「激活行 = `--surface-active` 胶囊 + 主文本色」。截图 `07a` 里八行有五行是亮的（开着 lane 的都亮），
+真正显示中的那一个分辨不出来。同一处还要区分「已打开但不在前台」与「正在显示」两档。
+
+### D6 删除确认把会话名顶掉了
+
+截图 `03a`：确认状态把整行文字换成「删除此会话？ [删除][取消]」，用户此刻看不到自己要删的是哪一个
+（`.session-row.confirming`，`styles.css:684`）。改法：名字留在原位，确认按钮占右侧 `.session-actions`。
+
+### D7 冒烟驱动有两条断言已经过期（假红） — 已修（S0）
+
+- `scripts/smoke/steps.mjs:526` `all four categories are live` 期望 4，实际 5：导航早已是五页
+  （通用／外观／模型与服务商／权限／Agent）。
+- `steps.mjs:551` `the shell still fills exactly one window` 期望 `shellHeight === viewport`，实际
+  480 vs 520：无边框标题栏占 40px，`#shell` 本来就该比视口矮一个标题栏。
+
+两条都按现状改判据（高度那条改成 `viewport - 标题栏高度`，**不要**放宽成 `>=`），否则 S8 永远红，
+真回归会被淹掉。
+
+### D8 侧栏折叠键有三个
+
+标题栏左上有 `◧`，侧栏头部还留着一个 `<`（`.sidebar-collapse`，截图 `07a`），折叠后又变成一条 44px
+空轨道上挂一个 `>`（截图 `07b`）。规范里写明的是标题栏那个；侧栏里那个应当去掉，折叠态收到 0 宽。
 
 ---
 
-### 阶段 5 新记的账（5c–5f 合并）
+## 二、视觉打磨（按 `design_guidance.md` 的节次）
 
-- **`paneSession.ts` 仍无单元测试**（`dom/` 已在 5c 由 domStub 解决）：`welcome.render`、
-  `classList.toggle('empty')`、`pruneThinkingToggles`、`deactivate()` 里的 `composer.closeMenus()`
-  四份视图状态只有冒烟能看见。
-- **`app.ts` 是 wiring 层、没有用例**：`renderCanvasHeader` 的四个调用点（`onShellChanged` /
-  `activateLane` / `removePaneSession` / `onLanes`）与「切 pane 时清掉进行中的重命名与待确认删除」
-  都只在这里；model 与 view 两半都钉住了，接缝没有。
-- **`test/helpers/domStub.ts` 的元素成员没有漂移守卫**（源码扫描只覆盖 `document.<member>`）：已累计
-  `scrollTop`/`scrollHeight`/`clientHeight`/`scrollTo`/`style.height`/`selectionStart`/
-  `setSelectionRange`/`dispatch`/`focus`/`activeElement`/`contains()`，再长也没有守卫。
-- **弹层菜单同一个洞（5b 工作区菜单起，5e/5f 连踩）**：点界面内**不可聚焦的装饰**不触发
-  `focusout`、菜单不关；菜单都不做 body 级 portal、也不按坐标翻转（贴滚动区底部的行会把滚动区撑长，
-  明文接受）；权限胶囊的菜单开合住在视图里不在 reducer（composer 单例、没有 `SettingsState` 那样的
-  状态机）。
-- **`rendererStyleTokens` 的静息态守卫判据偏宽**（只拒紧跟伪类，不拒 `.` 后缀、也不拒「作为后代
-  出现」，4f/5f/5d 三次应验）：通用守卫的洞至今未补（补它要重跑全部类名、可能连带报红既有类，独立
-  一档），靠点名清单兜——`.thinking-header` / `.scroll-bottom` 要求存在**整条选择器就等于该类**的
-  规则，`controls.ts` 自建控件另有显式清单；按钮扫描本身仍跳过 `controls.ts`，加类要手动进对应清单。
-- **没有 `prefers-reduced-motion`**：任何 `@media` 都会让「样式表可平解析」那条报红（styles.css 明文
-  写着），`@keyframes` 能过，呼吸与 spinner 无条件跑；要做得先教那个 parser 认 at-rule。
-- **Windows 上「code 没装」靠退出码判定**：`cmd.exe` 永远能起来，`spawn` 成功什么也不证明，
-  `openInEditor` 等 `exit`、**任何**非 0 退出都被说成没装；另有 5s 看门狗，前台不退出的启动器视为
-  成功（否则渲染器请求永远悬着）。
-- **`.pane { position: relative }` 与 `.pane.empty` 没有任何用例**：删掉全量仍绿（变异验证实测，按钮
-  会改锚到 `#canvas` 飘到输入框上），只能靠冒烟。
-- **细碎接受项**：浮动回底按钮可能压多行 `.tool-progress`（瞬态）；分支胶囊会陈旧到 pane 重建
-  （`gitBranch` 只在 `hello` 读一次，逃生口见决策留痕）；`close-menu` 没有菜单开着也空发一次整屏重绘
-  （无害）；胶囊菜单没有 typeahead；无 snapshot 时导航搜索只匹配页面标签（一次往返后自愈）；头部项目
-  选择器与带 `choices` 的表单字段留原生 `<select>`（对 design doc 的故意部分实现）；
-  `.settings-nav-group-label` 是纯装饰 div、读屏无语义边界；`--shadow-float` 在 token 中性/彩色分类里
-  未分类（非 `#` 值被静默跳过）。
-- **待跑的冒烟项**（无显示器与凭据，**未跑**；`probes.canvasHeader()` / `probes.clickHeaderMenu()` /
-  `probes.titleBar()` / `probes.clickTitleBarMenu()` 已就位，S2 里有「头栏与侧栏行同名」断言）：
-  - 5c：新 pane 上 Hero 在（项目名/本地/分支三胶囊）、点卡片只聚焦输入框、点项目名弹工作区菜单、
-    发一条消息后 Hero 消失。
-  - 5d：向上滚动露出圆按钮、点它平滑回底、不与工具进度行/输入框重叠且在圆角裁剪内；浅色模式阴影
-    可见；真实 turn 结束后思考链折叠成「已处理 Xm Xs」（要 `--paid-turn`）、呼吸动画在跑且克制；
-    折叠态按 pane 独立并活过一次 pane 切换；经真实 `@` 补全的路径渲染成胶囊。
-  - 5e：权限胶囊四项菜单能改模式且胶囊本身随之变；生成中发送键读「加入队列」、`■` 仍在旁边可点、
-    进度环在转且克制；头栏 `⋯` 重命名后侧栏行同步改名（一次 `lanes` 广播）；两步删除；「打开位置」
-    真的拉起 VS Code、未装时 transcript 里出现可读中文错误；设置界面打开时头栏跟着消失。
-  - 5f：三段导航读作 个人/集成/编码 且只有五个真实页；输入「MCP」后「通用」仍在导航里且正文跳到
-    MCP 卡片；胶囊展开的菜单不被正文滚动区裁掉，选中 / Esc / 点别处都能关；Tab + 方向键能纯键盘
-    操作展开的菜单。
+> 原则不变：「参考图里有、我们没有」不是待办。下面每条要么是规范已写而实现没跟上，要么是实机截图上
+> 明显读错的东西。
 
-## 决策留痕（只留 `CLAUDE.md` 未覆盖的；完整理由见 git 历史）
+### V1 画布浮不起来（三 / 四）
 
-### 阶段 5（要点）
+深色下 `--surface-base #0f0f11` 与 `--surface-canvas #17171a` 只差 8 个亮度级，`#canvas` 又没有边框、
+没有阴影，截图 `07a` 上左右两栏读成一整块黑——「画布必须浮在基底之上」这条规范在深色主题里事实上
+不成立。可选：给 `#canvas` 加一条 `--border-subtle` 发丝边（最省，浅色下同样受益），或把
+`--surface-canvas` 提一级。**改 token 必须同步 `test/rendererStyleTokens.test.ts` 的两张 map**（故意的）。
 
-> 已入 CLAUDE.md 不重复的三条：画布头栏全部由 `WireLaneInfo` 推出（rename 广播 `lanes`）；
-> `document.title` 留在 `statusView.renderSession`；`open-in-editor` 被 `await`、host 交 `entry.cwd`
-> 不交规范化比较键。
+### V2 空会话的画布是一大片空
 
-- **5e**：发送键三态纯视觉、`■` 不与它合并、任何状态都不 disabled（`requestSubmit()` 会静默吞掉
-  disabled 的点击）；权限胶囊直连 `set-permission-mode` 不走斜杠（权限模式是活 gate 的状态、无需
-  持久化）、不做乐观更新、`readonly` 有标签不进菜单；头栏重命名输入框是持久节点、只在 idle→
-  renaming 回写一次（流式期间每 tick 重绘会丢光标），blur 也提交但「没改」和「空」都不发；
-  `pendingDelete` 存 sessionId 不是布尔（否则确认跟着用户切到下一个会话）。
-- **5d**：thinking 按「最后一条 pending 的 thinking 项」分组、`turn-end` 是唯一封口处；id 来自
-  `thinkingCount` 计数器而非 `items.length`；默认折叠态 = `pending !== true`（`pending` 驱动 `▌`
-  光标、不能兼职折叠位），pane 的 `Set` 只记「与默认不一致」且每次绘制按活着的 id 剪一次；「正在
-  思考 / 已处理 Xm Xs」是同一节点的两张脸，只由 `item.pending` 驱动、绝不由 `state.isThinking`；
-  折叠时正文从 DOM **缺席**而非藏起来（`aria-live` 与 Tab 停靠点）；浮动按钮 `hidden` 不丢子树、挂
-  `paneEl`，可见性在 `scroll` 与 `render()` 两处重算；`@` 正则住
-  `runtime/suggestions/atToken.ts`、渲染器不抄一份、每次**新建**（`/g` 共享实例会带 `lastIndex`），
-  胶囊原地内联、正文逐字不变。
-- **5f**：`nav` 换 `navGroups` 不并存两份；`groupOf` 开在全部五个 `SettingsCategory` 上
-  （`appearance` 没有宿主卡片但有导航页）；搜索只认屏幕上真有的文字、无 snapshot 不给
-  `searchEmpty`、明确不做跨页结果列表；`openMenu` 单键字段 + 幂等 `close-menu`（正确性收回
-  reducer）；菜单挂 `position:relative` 的 `.settings-menu-shell`，不做 body 级 portal；只换行内
-  select，头部项目选择器与表单字段留原生；`pillSelect` 用 `event.target` 定位焦点；搜索框唯一一次
-  回写是 `view.query===''` 时清空；容器 keydown 对搜索框早返回但放 Escape 过。
-- **5c**：git 分支放 `WireHelloResult`、不放 `WirePaneInfo`/`WireLaneInfo`、也不开新命令（陈旧性上界
-  = pane 寿命，逃生口：一次性提升为 shell 命令）；**测试不变式**：`hello` 让出事件循环——「杀掉宿主
-  时在飞的命令」类断言必须让子进程**真的** park 住（`__hang_checkpoints`），不能靠时序赛跑；欢迎页
-  挂 pane 子树不挂单例（「空」是每个 transcript 的属性）；Hero 项目名用回调拿窗口级状态；
-  `openWorkspaceSwitcher()` 里 `sidebar.focusWorkspace()` 不是装饰。
+截图 `07a`：一条用户气泡贴在顶部，下面 900px 空白，输入框在最底。只有全新草稿才有欢迎页
+（`.pane.empty`），一个「有历史但很短」的会话什么都不给。要么让短会话的内容贴着输入框往上排，要么在
+空白里保留上下文胶囊条。
 
-### 阶段 4 及更早（要点）
+### V3 `#surface` / `#queue` 是两块通栏板砖（四.2）
 
-- **4b**：侧栏的两个键入口必须分开——全局 chord 在 `resolveKey` 之前解析、不带 ctrl/meta 恒返回
-  `'none'`，侧栏聚焦的挂容器，方向键/Enter 才不会从 composer 抢键；分组 `own` 在侧栏里只决定组序
-  （`undefined` 解释成「都不是」），只有跨项目切换才重排。徽标不新增 wire 字段（`isStreaming` +
-  `hasOverlay` 够，代价是 `onShellChanged` 给每个 pane 重绘）；盘上会话拉取只挂四个时机（启动 /
-  `lanes` / `isStreaming` 下降沿 / 删除后），**绝不挂 snapshot tick**；驱逐宁超额也不杀正在跑的
-  （`selectEvictions` 剩下全 pinned 时返回**不足数**）；`removeShadowRepo` 必须收 `store.resolve()`
-  之后的 id（线上字符串直通 `rm(recursive)`，`''`/`'..'`/带分隔符都会解析到 shadow-git 本身）。
-- **4a**：`ShellHost` 泛型默认值用结构切片 `ShellLaneWorkspace<PaneT>`；close-pane 是自毁命令、
-  reply 天然丢失（pending 由 `failAllPending` 吸收）；渲染器初始化一律拉取（Electron 丢弃 preload
-  注册前投递的 IPC）；`deactivate()` 清绘制不清状态；darwin 最后一个 lane 关掉保留空窗口；
-  lane↔pane 簿记按 `paneId` 线性扫（键必须不随 `/clear`、`/resume` 移动）。
-- **其余**：`ToolRegistry.refresh()` 把 Agent 工具移到数组末尾（工具顺序是 prompt 缓存键的一部分）；
-  `fallbackModel`/`compactModel` 校验原始配置串（拼错 ≠ 没配置，否则被静默忽略）；3j 四决策——
-  项目最后一个窗口关掉即 `shutdown`、入口「Open project…」+ `Ctrl+Shift+O` 不做原生 File 菜单、
-  别的项目的标签只能聚焦、跨项目一律走 shell 旁挂命令。
+截图 `09a`：思考强度选择器从画布左边缘一路铺到右边缘，`--radius-md`、无边框，和它自己的触发点
+（输入框右下角的胶囊）隔了整整一屏（`styles.css:951` / `:982`）。至少收进 `.composer-column` 那条
+760px 阅读列并换 `--radius-lg` + 发丝边；更好的是锚在胶囊上的浮层——那要么按坐标定位（现有决策明确
+拒绝），要么挪进 `#composer` 的定位壳里，**推荐后者**。
+
+### V4 胶囊下拉的 `⌵` 在左边（六）
+
+规范写「左图标 + 文本 + `⌵`」，实际是 `⌵ 跟随系统`（截图 `08a-settings-外观`）：`controls.ts:29` 的
+`button()` 无条件把 icon 插在 label 之前。给 `pillSelect` 一个显式的 `trailingIcon` 参数，别让排布靠
+调用点记着。
+
+### V5 对话框的语气还是 TUI 的（四 / 六）
+
+`[↑↓] 移动　[Y/N/A] 快选　[Enter] 确定　[Esc] 拒绝` 这类提示行、`> [y]` 前缀、`● ` 标记都是 TUI 的
+转写，`model/{permissionDialog,askUserQuestion,planDialogs,rewindPanel}.ts` 里各有一份 `hint`。桌面端
+应当是主按钮／次按钮 + 快捷键角标，危险动作用 `--accent-danger` 描边（不是填充，见规范七.4），预览块
+保留等宽。另外 `overlay` 是 `position: fixed` 罩满整个窗口（`styles.css:1195`），弹在侧栏之上；一个属于
+某条 lane 的请求，罩住画布更讲得通。与 D4 同一档。
+
+### V6 权限预览里还有英文
+
+截图 `02a`：中文标题下面是 `Create file: smoke-write-target.txt` / `smoke-write-target.txt will be
+created`。这些来自工具预览与运行时 note 路径（TUI 也在用），不在渲染器那三个 presentation 模块的
+`locale` 里。独立一档，且要连 TUI 一起想。
+
+### V7 设置正文没有阅读列
+
+截图 `08a`：卡片通栏，行左边是「界面主题」，右边控件在 1000px 之外。对话流已经有 760px 阅读列，设置
+正文也该有一条（宽一些，比如 880px），否则「行右侧控件严格右对齐」在宽窗口下反而变成缺陷。
+
+### V8 窄窗口下侧栏不让位
+
+截图 `08a-settings-squeezed`（1000×520）：268px 固定侧栏 + 设置的二级导航 = 一半宽度给了导航。没有
+`@media` 可用（样式测试的解析器不认 at-rule），断点只能在 JS 里做：由 `app.ts` 按窗口宽度写一个
+`data-*` 到 `documentElement`，样式表用属性选择器命中。**这会开「渲染器在 TS 里做布局决策」的先例，
+动手前先确认要不要开这个口子。**
+
+### V9 浅色主题从未在实机上看过
+
+`:root[data-theme="light"]` 全套 token 都在，但截图全是深色，冒烟也没有切主题的步骤。`--shadow-float`
+与 `--surface-card` 在纯白画布上的表现、以及 Windows 三键 overlay 跟着换色，都只有真机能看。加一条
+冒烟步骤：切浅色 → 截图 → 切回。
 
 ---
 
-## 工作方法（本项目的验收惯例）
+## 三、动手路径
 
-- **变异验证**：每加一条不变式，就把 bug 逐个塞回去，确认是**预期的那条**用例报红。**手工 patch/revert
-  要 grep 回滚结果**：mutation 可能只删了调用行、注释留着，revert 的搜索串就对不上，全量跑变红才发现。
-- **断言只值它的假货那么多钱**：变异验证抓到 `get-settings` 的掩码用例原本是**空的**——`FakeConfig.resolveModel`
-  没有像真的那样把 endpoint 的 `apiKey` 折进去，于是真实泄漏 bug 一路全绿。凡是用例守的是「真实现会做 X，
-  所以必须防着 X」，**假货就必须真的做 X**。
-- **`as unknown as` 关掉的正是编译器唯一能抓 API 谎言的机会** —— 已七次应验。**正解是泛型或结构切片**：
-  `ProjectDirectory<FakeProject, FakeWorkspace>`、把入参从 `ConfigService` 收窄成只含它真读几个成员的切片
-  —— 测试传普通对象、零 cast，约束仍然检查假货。
-- **真机冒烟先怀疑驱动，再怀疑 app**：判据是**先在没有 CDP 的情况下复现**，再拿 `git worktree` 建一份
-  HEAD 基线对照。`Target.setDiscoverTargets` 会让新窗口的渲染器不启动，别开它。**驱动的失败信息必须带
-  「最后看到的值」**——`waitFor` 只报「超时」时没法区分「应用没动」和「应用动错了」。
-- **变异验证也会打在用例自己身上**：4f 给「每个按钮都得有样式」补的用例，第一版把 `:hover`/`:disabled`
-  也算作「有规则」，把 bug 塞回去仍全绿——报废的是**判据**，不是实现。**变异验证失败时，先怀疑自己的
-  判据太宽，别急着放过 bug。** 5f 第二次应验，而且是同一条守卫：它的 `(?![\w-:])` 拒绝伪类却不拒绝 `.`，
-  于是 `.settings-pill.open` 一条就够骗过它；5f 还有一次是「大小写不敏感」的断言站在视图上，而那段被搜的
-  文字恰好两种写法都能命中（`npx github-mcp` 里有小写 `mcp`），改成直接断言 `matchesQuery` 两个方向才抓住。
-  5d 第三次应验，仍是那条守卫的**另一个**洞：它也不拒绝「作为后代出现」，所以只要留着 `.thinking-header .icon`，
-  把 `.thinking-header { … }` 整块删掉仍然全绿——补法是新加一条点名清单用例（要求整条选择器就等于该类），
-  而不是去改那条通用守卫（见「阶段 5 新记的账」）。
-  **凡是判据里有「某段文字命中」的，先确认那段文字不会用别的路径也命中。**
-- **真机验证走 CDP，不加调试开关**：`electron . --remote-debugging-port=9222` + node 内置 `WebSocket`
-  直连，`Runtime.evaluate` 读 DOM、`Input.dispatchKeyEvent` 发真键；权限对话框用 `run-tool` 零花费触发。
-- **测的实现必须就是出货的实现**：renderer channel 曾有测试/出货两份，main 侧工厂的 API 谎言被专门写的
-  mock 一路放行。
-- **`test/protocolChildProcess.test.ts` 的 host 侧脚本是字符串**（写进临时 `.mjs`），`tsc` 看不见 ——
-  改 `SessionHost` 构造 deps 必须手动同步。这也是 `SessionHostDeps` 里几个成员**故意是可选**的原因。
-- **负向断言要给异步留时间预算**（`givePumpAChance()` 150ms）：紧跟 enqueue 就断言「什么都没发」测的是
-  竞态不是闸门。
-- **被测行为的差别在持久化侧时，断言不能只站在 wire 上**：`/clear` 的 `migrateTo` 与「什么都不做」协议层
-  完全同形，用例得读会话日志里的 enqueue / 补偿 `clear` 记录。
-- **provider 回调里抛的断言会被摘要路径吞掉**，浮上来的是另一个外层断言 —— 按报错行找会找错地方。
-- **`protocolClientParity` 的 COVERAGE 表解析 `tui.tsx` 的 `<App` props 源码**，免费接住新 prop，别绕过它。
+每一档是一次会话的量：读少量模块 + 改 + 最窄用例 + typecheck。两处与「按缺陷编号排」的直觉不同：
+**D7 提到最前**（假红不修，后面每一档的冒烟验收都是脏的，且 D1 要动同一个 `steps.mjs`）；
+**D4/V5 拆成三档**（`overlayView` 的 0 个监听、四个 model 的 `hint`、`overlay` 的定位层级，一次做不完）。
 
----
+**[x] S0 · 修冒烟驱动（D7）** — 前置：无，后面每档都依赖它。
+`steps.mjs` 的分类数 4→5；「shell 填满窗口」拆成两条等值断言：标题栏 === `TITLE_BAR_HEIGHT`（40，
+本地常量指回 `main.ts` 的 `WINDOW_CHROME`），`#shell` === `viewport - TITLE_BAR_HEIGHT`（**没有**放宽成
+`>=`）。`probes.mjs` 的 `settings()` 新增 `titleBarHeight`，同时守住 `styles.css` 与 `main.ts` 两个高度源。
+**冒烟本身待在有显示器与凭据的机器上跑一次**（`npm run build:desktop && npm run smoke:desktop -- --kill-stale`）。
 
-## 验证
+**[x] S1 · 删除会话不再退应用（D1）** — 前置：S0。
+`detachLane` 的尾巴（`closeProject` + `onAllLanesClosed`）抽成 `settleAfterLastLane`，并加显式的
+`{ deferExit }` 参数（**不是**按 `reason` 分支——`reason` 是自由字符串，让它承担控制流会把每个新 reason
+变成语义分支）；`deleteSession` 只在「删的是窗口最后一条 lane」时 defer，并在 `deleteSessionArtifacts`
+**之后**开草稿 lane（`openLane` → `registerLane` 自带广播与激活），补开失败则回退到 `settleAfterLastLane`。
+多项目下删掉某项目的最后一条 lane 仍照旧关掉那个项目。回归：`desktopShellHost.test.ts` 加四条（窗口最后
+一条 lane 不调 `onAllLanesClosed` / 草稿在清理之后建 / 补开失败回退 / 多项目仍关项目）；冒烟新增末位步骤
+`S4b`（收到单 lane → 删 → `liveness` + 新草稿 lane + 活动行）。变异验证：去掉 `deferExit` 分支，报红的正是
+这几条。**冒烟本身待在有显示器与凭据的机器上跑一次。**
 
-```bash
-npm run typecheck                                     # 四段：base + preload + renderer + domtest
-npm run test                                          # 全量，~42s
-npm run build                                         # emit 到 dist/（只有桌面外壳需要）
-npm run build:desktop                                 # tsc emit + 两个 esbuild bundle + 拷 index.html/styles.css
-npm run start:desktop                                 # 真实 Electron，需要桌面
-npm run dev:tui                                       # 手动冒烟，需 TTY
+**[x] S2 · 退出挂住（D2）** — 前置：S1（同一条 detach 路径）。
+只做防御，未复现。`shutdownAll(reason, { timeoutMs })` 是看门狗（**8s**，不是 5s：`terminateProcessTree`
+在 posix 上合法最坏是 SIGTERM 等 5s + SIGKILL 等 1s，5s 会在正常杀进程路径上误触发并把子进程留成孤儿），
+超时只停止等待、不取消任何东西；`closing` 从 `Set` 改成 `Map<root, Promise>`，`shutdownAll` 把在飞的
+close 一并 await，`closeProject` 的重入调用拿到的也是同一个 promise（存进 map 的那份 `.catch` 掉，
+因为 `settleAfterLastLane` 是 `void closeProject(...)`）。回归全在 `projectDirectory.test.ts`（三条新增 +
+既有幂等用例加一条「重入调用真的等到关完」）；`desktopMain.test.ts` 不需要动，它从不导入 `main.ts`。
+变异验证：`shutdownAll` 不带在飞的那批 → 第一条红；去掉 deadline → 第二条挂死。验收沿用冒烟 S10
+（「优雅退出 + 无残留 electron 进程」），**待在有显示器与凭据的机器上跑一次**。
 
-# 真机冒烟（要显示器 + 真实 endpoint/凭据，**不在 npm test 里**）
-npm run build:desktop && npm run smoke:desktop        # 默认不花钱，十条里第 1 条 SKIP
-npm run smoke:desktop -- --paid-turn                  # 加上唯一那次真实 turn
-npm run smoke:desktop -- --only=S7,S2 --verbose       # 改驱动时的窄跑法
-npm run smoke:desktop -- --kill-stale                 # 上一次的 electron 还占着单实例锁时
-# 截图与 summary 落在 .smoke/<时间戳>/；summary 末尾列出每张图要看什么
+**[x] S3 · 设置下拉被裁 + 阴影（D3）** — 前置：无。最小一档。
+去掉 `.settings-card` 的 `overflow: hidden`，底部圆角改由 `.settings-card > :last-child` 自身裁；
+`.settings-menu` 补 `box-shadow: var(--shadow-float)`。回归：`rendererSettingsView.test.ts` 的选择器级
+断言 + `rendererStyleTokens.test.ts` 的浮层阴影断言，解析器抽到 `test/helpers/rendererCss.ts`；冒烟 S8
+加 `elementFromPoint` 实证与 `08a-settings-menu-open` 截图。变异验证：加回 `overflow: hidden` 只红新用例，
+删掉阴影只红阴影那条。
 
-# 阶段 5 用例（渲染器模型/视图 + 样式 + imports + 分支 seam，一并跑；按域窄跑另见 AGENTS.md）
-node --import tsx --test test/rendererWelcome.test.ts test/rendererWelcomeView.test.ts \
-  test/rendererSettingsModel.test.ts test/rendererSettingsView.test.ts \
-  test/rendererTranscriptModel.test.ts test/rendererTranscriptView.test.ts \
-  test/rendererThinking.test.ts test/rendererUserMessage.test.ts test/atMentions.test.ts \
-  test/rendererComposerChip.test.ts test/rendererComposerView.test.ts \
-  test/rendererCanvasHeader.test.ts test/rendererCanvasHeaderView.test.ts \
-  test/rendererSidebar.test.ts test/rendererStyleTokens.test.ts test/rendererImports.test.ts \
-  test/gitBranch.test.ts
-node --import tsx --test test/desktopShellHost.test.ts test/settingsPersistence.test.ts test/openInEditor.test.ts
-npx tsc --noEmit -p tsconfig.domtest.json             # 第四段单独跑
+**[ ] S4 · 对话框可点（D4，只做功能）** — 前置：S0。
+`overlayView.ts` 的 `optionList()` 加 `role="option"` + click/hover，`suggestionsView.ts` 同办；键盘路径
+（`app.ts:760`）不变，两条路径共用一个放在 `model/` 的 select 决策函数。回归：新建
+`test/rendererOverlayView.test.ts`（照 `rendererTranscriptView.test.ts` 的 domStub 模式，记得进
+`tsconfig.domtest.json` 的 include 与基础 `exclude`——`rendererImports.test.ts` 会查）。
 
-# 既有主题（回归）
-node --import tsx --test test/protocolWire.test.ts test/protocolHost.test.ts \
-  test/protocolClientParity.test.ts test/protocolCommandSchema.test.ts
-node --import tsx --test test/rendererImports.test.ts test/desktopMain.test.ts \
-  test/desktopBuild.test.ts test/desktopUiRoundTrip.test.ts
-```
+**[ ] S5 · 对话框语气（V5 上半）** — 前置：S4。
+`model/{permissionDialog,askUserQuestion,planDialogs,rewindPanel}.ts` 的 `hint` 换成主/次按钮 + 快捷键
+角标数据，危险动作 `--accent-danger` **描边**；去掉 `> [y]`、`● ` 前缀，预览块保留等宽。新按钮类要在
+`styles.css` 有 resting-state 规则并登记进 `rendererStyleTokens.test.ts` 的显式类名列表。
 
-**已知不稳定**（三条都是**间歇**，判据一律是「单独跑是否稳定通过」）：`test/toolcall-integration.test.ts`
-（Node test runner IPC 报错，非断言失败；`--test-concurrency=1` 也会红）、`test/backgroundTasks.test.ts`
-的增量输出用例（要等真实子进程，1.7s 量级）、`test/agentTool.test.ts` 的 bypass 用例（仅观察到一次）。
+**[ ] S6 · overlay 定位（V5 下半）** — 前置：S5。排在 S7/S8 之前，因为它动 `#canvas` 的 stacking context。
+`overlay` 从 `position: fixed` 罩满窗口改为罩住所属 lane 的画布（`#canvas` 的定位壳）。回归：
+`rendererOverlayView.test.ts` 加层级断言 + 冒烟截图。
 
-**已知环境依赖失败**（与桌面端无关）：`test/config.test.ts` 的
-`providers report dynamic ToolSearch support conservatively` 在设置了
-`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` 的环境里必定红——用例只隔离了
-`HANEKAWA_DISABLE_EXPERIMENTAL_BETAS`，而 `isExperimentalToolSearchBetaDisabled()` 读的是两个变量的或。
-**这条依赖的是环境变量，不是「在 Claude Code 里跑」。** 看到它报红先 `echo` 一下那两个变量，别当成回归。
+**[ ] S7 · 侧栏三件套（D5 + D6 + D8）** — 前置：无，但排在 S6 之后避免和 overlay 抢 z-index。
+激活行 `--surface-active` 胶囊 + 主文本色，并区分「已打开但不在前台」与「正在显示」两档；确认删除时
+名字留原位、按钮进 `.session-actions`；删掉 `.sidebar-collapse`，折叠态收到 0 宽。
 
-**阶段 6 相关（标题栏 + 侧栏 + 对话流 + 设置）**：
+**[ ] S8 · 画布浮起 + 设置阅读列（V1 + V7）** — 前置：S6 / S7。
+`#canvas` 加一条 `--border-subtle` 发丝边（比提 `--surface-canvas` 省，浅色同样受益）；设置正文加
+880px 阅读列。**改 token 必须同步 `rendererStyleTokens.test.ts` 的两张 map。**
 
-```bash
-node --import tsx --test test/rendererTitleBarView.test.ts test/rendererSidebarView.test.ts   test/rendererTranscriptView.test.ts test/rendererStyleTokens.test.ts test/rendererImports.test.ts
-# 6f：启动守卫（自己 esbuild 一次 renderer bundle，~0.5s）
-node --import tsx --test test/rendererBoot.test.ts test/desktopBuild.test.ts test/rendererImports.test.ts
-node --import tsx --test test/desktopShellHost.test.ts test/protocolCommandSchema.test.ts
-```
+**[ ] S9 · 触发点与浮层（V3 + V4）** — 前置：S8。
+`#surface` / `#queue` 收进 `.composer-column` 的 760px 列，`--radius-lg` + 发丝边，并挪进 `#composer`
+的定位壳（不按坐标定位）；`pillSelect` 加显式 `trailingIcon`，`controls.ts` 的 `button()` 不再无条件把
+icon 前置。
 
-**当前基线**：5e 后全量 2362 条；阶段 6 后 2377 条；**6f 后 2379 条，实测 2379 pass / 0 fail**
-（46s，`agentTool` 那条已知不稳定这次没复现），typecheck **四段**全过，`build:desktop` 通过；
-之后的新增用例应在此基线上累加。（阶段 4 基线：2199 条、
-typecheck 三段、真机冒烟十条全绿。）
-**5c–5f 待跑的冒烟项**：合并记在上方「阶段 5 新记的账」末尾那条。
+**[ ] S10 · 短会话的画布（V2）** — 前置：S8。可与 S9 并行。
+两种做法（内容贴输入框向上排 / 空白里留上下文胶囊条）在本档先定一个再实现。
+
+**[ ] S11 · 浅色主题冒烟（V9）** — 前置：S8 / S9（要看最终配色）。
+加冒烟步骤：切浅色 → 截图 → 切回，确认 `--shadow-float` / `--surface-card` 在白底的表现，以及
+`set-window-theme` 对 Windows 三键 overlay 的重绘。
+
+### 排在路径外
+
+- **V6**：来源在工具预览与运行时 note（TUI 共用），属于 `tools/` + `services/` 层的本地化。单独一档，
+  且**先定 locale 归属层**，否则会在渲染器里长出第二套翻译。
+- **V8**：要开「渲染器在 TS 里做布局决策」的先例，未排期，等拍板。
+
+每档验收沿用惯例：先跑最窄的用例，再 `npm run typecheck`（四段）+ 全量；跨层改动（S1 / S2 / S6 / S8）
+补 `build:desktop` 与冒烟；新加不变式要做变异验证（把 bug 塞回去，确认报红的是那条用例）。

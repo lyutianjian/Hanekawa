@@ -1,5 +1,7 @@
 /**
- * The ten acceptance items of stage 4, one named step each.
+ * The ten acceptance items of stage 4, one named step each — except item 4,
+ * which has two: S4 deletes an open session with other lanes around it, S4b
+ * deletes the window's last one (D1).
  *
  * Ordering is a set of constraints, not a preference:
  *
@@ -16,8 +18,11 @@
  *   still open to observe a config fan-out across lanes.
  * - **S9 before S1**: "subsequent turns reflect it" is only observable if the
  *   effort change precedes the one paid turn.
- * - **S1 last**: the only step that spends money. Everything else fails before
- *   the charge.
+ * - **S1 last of the paid ones**: the only step that spends money. Everything
+ *   else fails before the charge.
+ * - **S4b after S1**: it collapses the window to a single lane (project B
+ *   included, which shuts that project down), so nothing may need a lane after
+ *   it. It is also the one step whose regression takes the whole app down.
  *
  * Item 10 is not a step: it is the harness's own before/after process accounting.
  *
@@ -426,6 +431,83 @@ async function step4(ctx) {
   await ctx.shot('04-after-open-delete', 'after deleting the open session: no ghost pane, one visible transcript, a sane active row')
 }
 
+// --- S4b: deleting the *last* lane ----------------------------------------------
+
+/**
+ * The single-lane branch of S4 (D1).
+ *
+ * S4 always deletes with other lanes still open, which is exactly why the bug
+ * survived it: `detachLane` fired `onAllLanesClosed` only when the map emptied,
+ * and that quits the app off darwin. So this step first collapses the window to
+ * one lane, then deletes the session behind it, and asserts the window is still
+ * there with a draft in its place.
+ *
+ * Last in the run, and for two reasons: it closes every other lane (project B
+ * included, so that project shuts down), and it is the one step that would take
+ * the whole app down with it if it regressed.
+ */
+async function step4b(ctx) {
+  const topology = await lanes(ctx)
+  // A project A fixture, not a draft and not project B: `delete-session`
+  // resolves through the store (a draft has no index entry), and the artifact
+  // sweep below is asserted against project A's directory.
+  const survivor = topology.find(
+    (info) => ctx.sessionsA.some((session) => session.id === info.paneId) && !ctx.state.deleted.has(info.paneId),
+  )
+  ctx.ok('a fixture lane can be left alone as the last one', survivor !== undefined, JSON.stringify(topology.map((info) => info.lane)))
+  if (!survivor) return
+
+  // `close-pane` self-destructs its lane's host, so its reply is lost by
+  // construction (see `app.reply`): post, then wait on the topology.
+  for (const info of topology) {
+    if (info.lane === survivor.lane) continue
+    await app.post(ctx.app, info.lane, { type: 'close-pane', paneId: info.paneId })
+  }
+  const only = await waitFor('the window to be down to one lane', async () => {
+    const now = await lanes(ctx)
+    return now.length === 1 && now[0].lane === survivor.lane ? now[0] : undefined
+  })
+  await ctx.shot('04b-last-lane', 'the window with a single lane left, about to lose it')
+
+  await app.shell(ctx.app, {
+    type: 'delete-session',
+    projectRoot: only.projectRoot,
+    sessionId: only.paneId,
+  })
+  ctx.state.deleted.add(only.paneId)
+
+  // The bug: this is where the app used to quit. `liveness` is the detector that
+  // survives a dead main process — a screenshot of a gone window proves nothing.
+  let alive = 'quit'
+  try {
+    alive = (await app.liveness(ctx.app)) ? 'answering' : 'silent'
+  } catch (error) {
+    alive = error instanceof Error ? error.message : String(error)
+  }
+  ctx.eq('deleting the last session does not take the window with it', alive, 'answering')
+  ctx.ok('and the process is still there', app.isAlive(ctx.app.pid), `pid ${ctx.app.pid}`)
+
+  const replaced = await waitFor('a replacement lane', async () => {
+    const now = await lanes(ctx)
+    return now.length === 1 && now[0].lane !== survivor.lane ? now[0] : undefined
+  })
+  ctx.ok('the deleted session did not come back as its own replacement', replaced.paneId !== only.paneId, replaced.paneId)
+  ctx.eq('the replacement belongs to the same project', replaced.projectRoot, only.projectRoot)
+  const view = await waitFor('the replacement row to go active', async () => {
+    const now = await read(ctx, probes.sidebar())
+    return now.rows.some((row) => row.active) ? now : undefined
+  })
+  ctx.ok('the row for the deleted session is gone', rowFor(view, only.paneId) === undefined)
+  let gone = 'clean'
+  try {
+    assertArtifactsGone(ctx.projectA, only.paneId)
+  } catch (error) {
+    gone = error instanceof Error ? error.message : String(error)
+  }
+  ctx.eq('the artifacts went with it', gone, 'clean')
+  await ctx.shot('04c-after-last-delete', 'after deleting the last session: an empty draft, not a closed window')
+}
+
 // --- S5: a second project ------------------------------------------------------
 
 async function step5(ctx) {
@@ -507,6 +589,9 @@ async function step5(ctx) {
 
 // --- S8: settings ---------------------------------------------------------------
 
+/** `WINDOW_CHROME.*.height` in `src/desktop/main.ts`, and `#titlebar` in `styles.css`. */
+const TITLE_BAR_HEIGHT = 40
+
 async function step8(ctx) {
   const rootA = ctx.state.projectRootA ?? (await lanes(ctx))[0].projectRoot
   // Two lanes of project A, so the fan-out has more than one runtime to rebuild.
@@ -523,7 +608,7 @@ async function step8(ctx) {
     return view.open ? view : undefined
   })
   ctx.ok('Ctrl+, opens settings over the canvas', open.canvasOpen === true, `canvasOpen=${open.canvasOpen}`)
-  ctx.eq('all four categories are live', open.nav.length, 4)
+  ctx.eq('all five categories are live', open.nav.length, 5)
   ctx.eq('the screen loaded without an error', open.error, '')
   ctx.note(`focus after opening: ${open.focus} (inside the screen: ${open.focusInside})`)
 
@@ -537,18 +622,46 @@ async function step8(ctx) {
     ctx.ok(`the ${item.label} page draws cards`, page.cards.length > 0, page.cards.join(' | '))
     if (page.rowCount > longest.rowCount) longest = { ...page, label: item.label }
     await ctx.shot(`08a-settings-${item.label}`, `the ${item.label} category: column layout, row density, control alignment`)
+
+    // The 外观 page is the one that showed todo D3: its theme card is a single
+    // row, so the dropdown opens entirely outside the card and used to be clipped
+    // away by it. Done here, at the default viewport — the squeeze below would
+    // change what fits on screen.
+    if (item.label === '外观') {
+      await read(ctx, probes.clickSettingsPill())
+      const menu = await waitFor('the theme dropdown', async () => {
+        const view = await read(ctx, probes.settingsMenu())
+        return view.open ? view : undefined
+      })
+      ctx.ok('the theme dropdown really hangs out of its card', menu.menuBottom > menu.cardBottom, `menu ${menu.menuBottom} > card ${menu.cardBottom}`)
+      ctx.ok('the dropdown is on screen to be hit-tested', menu.inViewport === true, `body bottom ${menu.bodyBottom}`)
+      // Hit testing, not geometry: a clipped node still reports its full rect.
+      ctx.ok('the last option is really painted, not clipped away', menu.lastItemHit === true, `elementFromPoint hit ${menu.hitClass}`)
+      await ctx.shot('08a-settings-menu-open', 'the theme dropdown open over the card below it: three options, a float shadow, nothing cut off')
+      // Closed through the trigger rather than Escape, which this screen also
+      // reads as "leave settings" when no menu is open.
+      await read(ctx, probes.clickSettingsPill())
+      await waitFor('the theme dropdown to close', async () => {
+        const view = await read(ctx, probes.settingsMenu())
+        return view.open ? undefined : view
+      })
+    }
   }
   ctx.note(`longest page: ${longest.label}, ${longest.rowCount} rows, ${longest.toggles} toggles`)
 
   // The layout claim, as numbers. A short viewport forces the overflow on any
-  // monitor; `min-height: 0` is what should keep it inside the panel.
+  // monitor; `min-height: 0` is what should keep it inside the panel. Since the
+  // window went frameless (`titleBarStyle: 'hidden'`), `body` is `#titlebar` plus
+  // `#shell`, so `#shell` is *meant* to be one title bar shorter than the viewport
+  // — that is not the defect it reads like.
   await read(ctx, probes.clickSettingsNav(longest.label))
   await setViewport(ctx.cdp, 1000, 520)
   await sleep(300)
   const squeezed = await read(ctx, probes.settings())
   ctx.ok('the long form overflows at a short viewport', squeezed.scrollHeight > squeezed.clientHeight, `${squeezed.scrollHeight} > ${squeezed.clientHeight}`)
   ctx.eq('the document never grows past the window', squeezed.docScroll, squeezed.viewport)
-  ctx.eq('the shell still fills exactly one window', squeezed.shellHeight, squeezed.viewport)
+  ctx.eq('the title bar is the documented height', squeezed.titleBarHeight, TITLE_BAR_HEIGHT)
+  ctx.eq('the shell fills the window below the title bar', squeezed.shellHeight, squeezed.viewport - TITLE_BAR_HEIGHT)
   ctx.ok('the composer is hidden rather than pushed out', squeezed.composerHidden === true, `composerHidden=${squeezed.composerHidden}`)
   await ctx.shot('08a-settings-squeezed', 'the longest form at 1000x520: it must scroll inside its own panel, nothing clipped off-window')
   await clearViewport(ctx.cdp)
@@ -853,6 +966,7 @@ export const STEPS = [
   { id: 'S8', item: 8, name: 'settings edit, fan out, and lay out inside the window', timeout: 180000, run: step8 },
   { id: 'S9', item: 9, name: 'the composer chip changes effort without persisting it', timeout: 45000, run: step9 },
   { id: 'S1', item: 1, name: 'a live turn keeps running in the background', timeout: 180000, run: step1, paid: true },
+  { id: 'S4b', item: 4, name: 'deleting the last session leaves a draft, not a closed window', timeout: 60000, run: step4b },
 ]
 
 export const RESTART_STEPS = [

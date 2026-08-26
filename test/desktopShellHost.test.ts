@@ -1018,7 +1018,10 @@ test('delete-session closes the open lane first, then deletes — no ghost row',
     assert.deepEqual(result, { ok: true })
     assert.deepEqual(h.disposed, [opened.lane], 'the occupant was disposed')
     assert.equal(h.host.laneForSessionId('s1'), undefined)
-    assert.deepEqual(await h.client.panes(), [], 'the row is gone, not stale')
+    // The window's last lane, so a draft takes its place; what must not survive
+    // is a row still pointing at `s1`.
+    const rows = await h.client.panes()
+    assert.deepEqual(rows.map((row) => row.sessionId), ['draft-1'], 'the row is gone, not stale')
     // The order, not just the outcome: a pane still bound to a session whose
     // JSONL just vanished recreates the file on its next append, so the close
     // has to land before the store is touched. Asserted on the shared log,
@@ -1064,13 +1067,18 @@ test('delete-session rejects an unknown session and an unopened project', async 
   )
 })
 
-test('deleting the session behind a project last lane still reaches the store', async () => {
+test('deleting a project last lane still reaches the store, and shuts that project down', async () => {
   // The order trap: `detachLane` shuts the project down, after which
   // `directory.get()` no longer finds it. The store and cwd must have been
   // captured before that.
+  //
+  // A *second* project holds a lane throughout, which is what keeps this on the
+  // multi-project side of the split: the window is not losing its last lane, so
+  // "this project's last pane went away" means the same thing it always did.
   const h = createHarness()
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-delete-'))
   try {
+    await h.client.openSession({ projectRoot: h.entry.root })
     const project = h.addProject(cwd)
     project.project.store.sessions.set('s1', sessionOf('s1', 'Only one'))
     const repo = shadowRepoPath(cwd, 's1')
@@ -1085,6 +1093,99 @@ test('deleting the session behind a project last lane still reaches the store', 
     assert.equal(h.directory.get(cwd), undefined, 'and left the directory')
     assert.deepEqual(project.project.store.deleted, ['s1'])
     assert.equal(existsSync(repo), false)
+    assert.deepEqual(h.allLanesClosed, [], 'the other project still holds a lane')
+    assert.deepEqual(project.project.store.drafts, [], 'a closing project gets no replacement draft')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('deleting the window last lane replaces it with a draft instead of quitting', async () => {
+  // D1: `detachLane` treated "the last session was deleted" and "the last pane
+  // was closed" as one event, and `onAllLanesClosed` quits the app off darwin —
+  // so deleting the only open session took the window with it.
+  const h = createHarness()
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-delete-'))
+  try {
+    const project = h.addProject(cwd)
+    project.project.store.sessions.set('s1', sessionOf('s1', 'Only one'))
+    const opened = await h.client.openSession({ sessionId: 's1', projectRoot: project.entry.root })
+    await settle()
+
+    await h.client.deleteSession(project.entry.root, 's1')
+    await settle()
+
+    assert.deepEqual(h.allLanesClosed, [], 'nothing asked the window to go away')
+    assert.deepEqual(project.project.shutdowns, [], 'and the project stayed up')
+    assert.equal(h.directory.get(cwd), project.entry, 'still in the directory')
+    assert.deepEqual(project.project.store.deleted, ['s1'])
+
+    const [draft] = project.project.store.drafts
+    assert.ok(draft, 'a draft took the deleted session place')
+    const lanes = h.client.getLanes()
+    assert.equal(lanes.length, 1)
+    assert.equal(lanes[0]!.sessionId, draft.id)
+    assert.notEqual(lanes[0]!.lane, opened.lane, 'a new lane key, never the deleted one')
+    assert.equal(h.activates.at(-1), lanes[0]!.lane, 'and the renderer was asked to show it')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('the replacement draft is created after the artifacts are gone', async () => {
+  // Order, not just outcome: the sweep must only ever face the id being deleted,
+  // so the draft cannot exist while `deleteSessionArtifacts` is running.
+  const h = createHarness()
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-delete-'))
+  try {
+    const project = h.addProject(cwd)
+    project.project.store.sessions.set('s1', sessionOf('s1', 'Only one'))
+    await h.client.openSession({ sessionId: 's1', projectRoot: project.entry.root })
+    await settle()
+    const drafts: string[] = []
+    // The scope opened for the draft is the first observable moment of it, and
+    // the shared log is the only place its order against the store is visible.
+    const openScope = project.project.openScope.bind(project.project)
+    project.project.openScope = async (session) => {
+      h.log.push(`open-scope:${session.id}`)
+      drafts.push(session.id)
+      return openScope(session)
+    }
+
+    await h.client.deleteSession(project.entry.root, 's1')
+    await settle()
+
+    assert.equal(drafts.length, 1)
+    assert.deepEqual(
+      h.log.filter((line) => /^(close-pane|store-delete|open-scope):/.test(line)),
+      ['close-pane:s1', 'store-delete:s1', `open-scope:${drafts[0]}`],
+    )
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('a replacement that cannot be opened falls back to the exit path', async () => {
+  // The deferral is a promise to put a lane back. If that fails, the project is
+  // sitting in the directory with no lanes and no shutdown — orphaned background
+  // tasks nothing on screen can reach — so the deferred tail has to run after all.
+  const h = createHarness()
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-delete-'))
+  try {
+    const project = h.addProject(cwd)
+    project.project.store.sessions.set('s1', sessionOf('s1', 'Only one'))
+    await h.client.openSession({ sessionId: 's1', projectRoot: project.entry.root })
+    await settle()
+    project.project.openScope = async () => {
+      throw new Error('no scope today')
+    }
+
+    await assert.rejects(h.client.deleteSession(project.entry.root, 's1'), /no scope today/)
+    await settle()
+
+    assert.deepEqual(project.project.store.deleted, ['s1'], 'the delete itself still happened')
+    assert.deepEqual(project.project.shutdowns, ['session-deleted'], 'the project went down')
+    assert.deepEqual(h.allLanesClosed, ['session-deleted'], 'and the window heard about it')
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }

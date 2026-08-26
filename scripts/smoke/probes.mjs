@@ -213,6 +213,7 @@ export const settings = () => `(() => {
   const container = document.getElementById('settings')
   const body = document.getElementById('settings-body')
   const shell = document.getElementById('shell')
+  const titleBar = document.getElementById('titlebar')
   const composer = document.getElementById('input-row')
   const active = document.activeElement
   return {
@@ -236,7 +237,48 @@ export const settings = () => `(() => {
     docScroll: document.documentElement.scrollHeight,
     viewport: window.innerHeight,
     shellHeight: shell ? Math.round(shell.getBoundingClientRect().height) : 0,
+    // The strip has two sources that must agree: \`#titlebar\`'s CSS height and
+    // \`titleBarOverlay.height\` in \`main.ts\` (the OS paints its three buttons on
+    // the same band). Measuring it lets one assertion cover both.
+    titleBarHeight: titleBar ? Math.round(titleBar.getBoundingClientRect().height) : 0,
     composerHidden: composer ? getComputedStyle(composer).display === 'none' : null,
+  }
+})()`
+
+/**
+ * An open pill dropdown, and whether anything is clipping it (todo D3).
+ *
+ * `lastItemHit` is the assertion that matters, and it is the only one available:
+ * a clipped element still reports its full `getBoundingClientRect()`, so the
+ * geometry alone cannot tell "hangs out of the card" from "cut off at its edge".
+ * Hit testing can — `elementFromPoint` returns what is actually painted at a
+ * point, and a clipped-away option is not.
+ *
+ * `menuBottom > cardBottom` is the non-vacuity half: if the menu no longer
+ * extends past its card, this probe stopped exercising the defect.
+ */
+export const settingsMenu = () => `(() => {
+  const menu = document.querySelector('#settings .settings-menu')
+  if (!menu) return { open: false }
+  const items = [...menu.querySelectorAll('.settings-menu-item')]
+  const last = items[items.length - 1]
+  const card = menu.closest('.settings-card')
+  const body = document.getElementById('settings-body')
+  const box = last ? last.getBoundingClientRect() : null
+  const x = box ? Math.round(box.left + box.width / 2) : 0
+  const y = box ? Math.round(box.top + box.height / 2) : 0
+  const inViewport = box ? y > 0 && y < window.innerHeight && x > 0 && x < window.innerWidth : false
+  const hit = inViewport ? document.elementFromPoint(x, y) : null
+  return {
+    open: true,
+    itemCount: items.length,
+    menuBottom: Math.round(menu.getBoundingClientRect().bottom),
+    cardBottom: card ? Math.round(card.getBoundingClientRect().bottom) : 0,
+    bodyBottom: body ? Math.round(body.getBoundingClientRect().bottom) : 0,
+    inViewport,
+    // Not identity with the item: the hit may land on a child of it.
+    lastItemHit: hit ? menu.contains(hit) : false,
+    hitClass: hit ? (hit.className || hit.tagName) : 'none',
   }
 })()`
 
@@ -261,6 +303,9 @@ export const clickConfirmYes = (sessionId) =>
 export const clickSurfaceRow = (rowId) => clickOr(`#surface .row[data-row-id="${rowId}"]`, 'surface row')
 
 export const clickChipEffort = () => clickOr('#chip-effort', 'effort chip')
+
+/** The first row-level pill on the current settings page. */
+export const clickSettingsPill = () => clickOr('#settings .settings-pill', 'settings pill')
 
 /** Settings nav items are identified by their visible label, which is their id. */
 export const clickSettingsNav = (label) => `(() => {

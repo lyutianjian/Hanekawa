@@ -104,6 +104,25 @@
   --radius-md: 9px;
   --radius-pill: 9999px;
 
+  /* The conversation's reading axis. `.transcript-column` and `.composer-column`
+     must both resolve their width from here — sharing one axis is the whole
+     reason the composer lines up with the text above it. */
+  --reading-measure: 1100px;
+  /* The gutter the column keeps from the canvas edge. Load-bearing once the
+     window is narrower than `--reading-measure`: the column then resolves to
+     100% and, without this, text and composer would run flush into the panel's
+     rounded corners. It is padding on `.transcript` rather than a margin on the
+     column, so the scrollbar still keeps to the panel's edge, and `#input-row`
+     repeats the same value — the two are one axis. */
+  --reading-gutter: 32px;
+  /* How far the composer capsule overhangs the reading column on each side.
+     It is not a decoration: `#composer` carries 12px of its own padding, so a
+     capsule aligned edge-to-edge with the transcript puts its *text* 12px
+     inside the text above it, and the composer reads as the narrower box. The
+     overhang cancels that — the capsule is wider, the two runs of text are not.
+     Matched to `#composer`'s horizontal padding; move them together. */
+  --composer-overhang: 12px;
+
   /* --- type ---
      The chrome is proportional; anything the user has to read character by
      character is not. `--font-mono` is re-declared on those selectors rather
@@ -794,7 +813,7 @@ body {
 .transcript {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 12px;
+  padding: 12px var(--reading-gutter);
   font-size: 14px;
   /* A flex column purely so the reading column below can claim the leftover
      height with an auto margin (todo V2). **Not** `justify-content: flex-end`:
@@ -804,10 +823,13 @@ body {
   display: flex;
   flex-direction: column;
 }
-/* The reading column. A 1200px window makes a full-width paragraph 150+
-   characters long, which is a readability problem rather than a taste one; the
-   scroller stays full width so its scrollbar keeps to the panel's edge. Kept in
-   step with `.composer-column`, or the composer stops sharing the text's axis.
+/* The reading column, bounded by `--reading-measure`. A full-bleed paragraph is
+   a readability problem rather than a taste one, but the old 760px cap left
+   300px of dead canvas on either side of a 1600px window; 1100px tops out
+   around 190 characters, which still reads. The scroller stays full width so
+   its scrollbar keeps to the panel's edge. Kept in step with
+   `.composer-column` — that is what the shared token is for — or the composer
+   stops sharing the text's axis.
 
    `margin-top: auto` is what pushes a short conversation down against the
    composer instead of leaving it stranded under the canvas header (todo V2).
@@ -823,7 +845,7 @@ body {
    line and a short conversation renders as a narrow strip pushed to the right
    edge. Block layout (what this was before todo V2 made `.transcript` a flex
    column) sized it to the container for free; flex layout does not. */
-.transcript-column { width: 100%; max-width: 760px; margin: auto auto 0; flex-shrink: 0; }
+.transcript-column { width: 100%; max-width: var(--reading-measure); margin: auto auto 0; flex-shrink: 0; }
 /* 16px between turns, and the line-height a wall of prose needs. Both are the
    rhythm half of design_guidance 四.2 — the old 10px/1.5 ran the assistant's
    answer and the next question together. */
@@ -1152,14 +1174,23 @@ body {
    and never appears in settings. */
 #input-row {
   flex: 0 0 auto;
-  padding: 0 12px 10px;
+  /* `.transcript`'s gutter, less the overhang: the capsule reaches closer to the
+     canvas edge than the transcript does, so the text inside it still lands on
+     the transcript's axis at every window width. */
+  padding: 0 calc(var(--reading-gutter) - var(--composer-overhang)) 10px;
 }
 /* The composer's half of the reading column; kept in step with
-   `.transcript-column`, so a question and its answer share one axis.
+   `.transcript-column`, so a question and its answer share one axis — one
+   `--composer-overhang` wider on each side, because the capsule's own padding
+   would otherwise inset its text off that axis.
    `position: relative` makes it the containing block for `#composer-popovers`,
    and — exactly as with `.settings-column` and the settings screen's pill menus
    — it must therefore never grow an `overflow`, which would clip them. */
-.composer-column { position: relative; max-width: 760px; margin: 0 auto; }
+.composer-column {
+  position: relative;
+  max-width: calc(var(--reading-measure) + 2 * var(--composer-overhang));
+  margin: 0 auto;
+}
 /*
   The panels the composer raises: the picker, the completion list, the queued
   strip (todo V3). They were full-bleed blocks in the canvas's flex column, a

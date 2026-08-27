@@ -190,3 +190,78 @@ test('modifier combinations are left to the browser', () => {
   assert.deepEqual(askKeyToIntent({ key: 'a', ctrlKey: true }, state), { kind: 'none' })
   assert.deepEqual(askKeyToIntent({ key: 'ArrowDown', metaKey: true }, state), { kind: 'none' })
 })
+
+// --- the mouse ---------------------------------------------------------------
+
+test('clicking a single-select row answers with that row', () => {
+  const state = createAskState(request([{}]))
+  const outcome = applyAskIntent(state, { kind: 'select', index: 1 })
+
+  assert.ok('result' in outcome)
+  assert.deepEqual(outcome.result, { kind: 'answers', answers: { 'Question 1?': 'Second' } })
+})
+
+test('the 提交 button submits a multi-select answer, the way Enter does', () => {
+  // The gap S4 left: ticking boxes was reachable with the mouse, committing them
+  // was not. The button is a dialog-level action, so it goes through `commit` —
+  // the same intent Enter produces, and nothing the keyboard cannot do.
+  const state = createAskState(request([{ question: 'Which?', multiSelect: true }]))
+  const view = askViewModel(state)
+  assert.deepEqual(view?.actions.map((action) => action.role), ['secondary', 'primary'])
+  assert.deepEqual(view?.actions.map((action) => action.shortcut), ['Esc', 'Enter'])
+  assert.equal(view?.actions[1]?.label, '提交')
+
+  const ticked = applyAskIntent(state, { kind: 'select', index: 1 }).state
+  const outcome = applyAskIntent(ticked, { kind: 'commit' })
+  assert.ok('result' in outcome)
+  assert.deepEqual(outcome.result, { kind: 'answers', answers: { 'Which?': 'Second' } })
+
+  // And the secondary is Escape: it rejects the request rather than the question.
+  const cancelled = applyAskIntent(ticked, { kind: 'cancel' })
+  assert.ok('result' in cancelled)
+  assert.deepEqual(cancelled.result, { kind: 'rejected' })
+})
+
+test('the free-text field relabels the buttons rather than growing new ones', () => {
+  const state = applyAskIntent(createAskState(request([{ multiSelect: true }])), {
+    kind: 'select',
+    index: 2,
+  }).state
+  const view = askViewModel(state)
+  // Escape has two levels here, so the secondary says 返回, not 取消.
+  assert.deepEqual(view?.actions.map((action) => action.label), ['返回', '提交'])
+})
+
+test('clicking a multi-select row ticks it instead of submitting', () => {
+  const state = createAskState(request([{ multiSelect: true }]))
+  const first = applyAskIntent(state, { kind: 'select', index: 1 })
+
+  assert.ok(!('result' in first), 'the question stays open — the answer is 提交')
+  assert.deepEqual(first.state.toggled, [1])
+  assert.equal(first.state.selectedIndex, 1, 'and the row is focused, so Enter lands on it')
+
+  // A second click unticks it, exactly as Space does.
+  const second = applyAskIntent(first.state, { kind: 'select', index: 1 })
+  assert.deepEqual(second.state.toggled, [])
+})
+
+test('clicking the Other row opens the text field rather than answering with its label', () => {
+  const state = createAskState(request([{ multiSelect: true }]))
+  const other = applyAskIntent(state, { kind: 'select', index: 2 })
+
+  assert.ok(!('result' in other))
+  assert.equal(other.state.otherMode, true)
+  assert.equal(other.state.otherText, '')
+  assert.notEqual(OTHER_LABEL, '', 'the row clicked is the automatic one')
+})
+
+test('a click is inert while the free-text field is open, and out of range', () => {
+  const typing = applyAskIntent(createAskState(request([{}])), { kind: 'select', index: 2 })
+  assert.equal(typing.state.otherMode, true)
+  const again = applyAskIntent(typing.state, { kind: 'select', index: 0 })
+  assert.deepEqual(again.state, typing.state, 'the list is not the target while typing')
+
+  const state = createAskState(request([{}]))
+  assert.deepEqual(applyAskIntent(state, { kind: 'select', index: 9 }).state, state)
+  assert.deepEqual(applyAskIntent(state, { kind: 'select', index: -1 }).state, state)
+})

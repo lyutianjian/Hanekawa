@@ -11,6 +11,7 @@ import {
   type SidebarState,
   type SidebarView,
 } from '../src/desktop/renderer/model/sidebar.js'
+import type { WireLaneInfo } from '../src/desktop/shellProtocol.js'
 
 /**
  * The sidebar's four regions, as DOM.
@@ -58,18 +59,127 @@ const region = (root: StubView, className: string): StubView => {
   return found
 }
 
-test('the header is the workspace and the rail toggle, and nothing else', (t) => {
-  // The regression this pins: "new session" used to sit here as a third control,
-  // and at the sidebar's width that is what left room for `Hanekawa-…` instead of
-  // the project's name (design_guidance 三.2).
+/** Every node in the rendered subtree, root included. */
+const descendants = (node: StubView): StubView[] =>
+  [node, ...node.children.flatMap(descendants)]
+
+const find = (root: StubView, className: string): StubView | undefined =>
+  descendants(root).find((node) => node.classes.includes(className))
+
+const sessionRows = (root: StubView): StubView[] =>
+  descendants(root).filter((node) => node.classes.includes('session-row'))
+
+/** One project with three sessions: the visible one, a background lane, history. */
+function tieredState(): Partial<SidebarState> {
+  const root = '/w/app'
+  const laneOf = (key: string, paneId: string): WireLaneInfo => ({
+    lane: key,
+    paneId,
+    sessionId: paneId,
+    projectRoot: root,
+    projectName: 'app',
+  })
+  return {
+    projects: [
+      {
+        projectRoot: root,
+        projectName: 'app',
+        sessions: [
+          { id: 'shown', title: '正在显示', updatedAt: new Date(Date.UTC(2026, 7, 20, 11)).toISOString(), messageCount: 4 },
+          { id: 'background', title: '后台 lane', updatedAt: new Date(Date.UTC(2026, 7, 20, 10)).toISOString(), messageCount: 2 },
+          { id: 'history', title: '只是历史', updatedAt: new Date(Date.UTC(2026, 7, 20, 9)).toISOString(), messageCount: 7 },
+        ],
+      },
+    ],
+    lanes: [laneOf('l1', 'shown'), laneOf('l2', 'background')],
+    activeLane: 'l1',
+  }
+}
+
+test('the header is the workspace and nothing else', (t) => {
+  // Two regressions in one assertion. "New session" used to sit here as a second
+  // control, and at the sidebar's width that is what left room for `Hanekawa-…`
+  // instead of the project's name (design_guidance 三.2); the rail toggle was the
+  // third of three ways to collapse the sidebar, and the spec names the title
+  // bar's (三.1) — so it is gone from here entirely (todo D8).
   const { render, root } = mount(t)
   render(viewOf())
 
   const header = region(root(), 'sidebar-header')
+  assert.deepEqual(header.children.map((child) => child.className), ['sidebar-workspace-shell'])
+  assert.equal(find(root(), 'sidebar-collapse'), undefined, 'the sidebar grew a second collapse control')
+
+  // 「项目名 + `⌵`」 (design_guidance 三.2): the caret follows the name rather
+  // than leading it, which is also what lets the name be the part that truncates
+  // (todo V4). Verified by mutation: `trailingIcon` back to `icon` reds this.
+  const trigger = find(root(), 'sidebar-workspace')
+  assert.ok(trigger, 'the workspace trigger is gone')
+  assert.equal(trigger.children[0]?.className, 'btn-label')
+  assert.equal(trigger.children.at(-1)?.tagName, 'svg')
+})
+
+test('collapsing hides every region, the header included', (t) => {
+  // The rail survived only so this view's own toggle stayed clickable. With that
+  // toggle in the title bar, a collapsed sidebar is zero width — and a header
+  // still drawn would be what keeps the column from reaching it.
+  const { render, root } = mount(t)
+  render(viewOf({ collapsed: true }))
+
+  for (const name of ['sidebar-header', 'sidebar-search', 'sidebar-nav', 'sidebar-list', 'sidebar-footer']) {
+    assert.equal(region(root(), name).hidden, true, `.${name} is still on screen while collapsed`)
+  }
+})
+
+test('a row says which of the three tiers it is in', (t) => {
+  // `active` is the one the window is showing, `open` is a lane that exists but
+  // is not in front, and neither class is history. Before 5h every open row read
+  // identically, so the visible one could not be picked out of five (todo D5).
+  const { render, root } = mount(t)
+  render(viewOf(tieredState()))
+
   assert.deepEqual(
-    header.children.map((child) => child.className),
-    ['sidebar-workspace-shell', 'sidebar-collapse'],
+    sessionRows(root()).map((row) => [
+      find(row, 'session-title')?.text,
+      row.classes.filter((name) => name !== 'session-row'),
+    ]),
+    [
+      ['正在显示', ['active', 'open']],
+      ['后台 lane', ['open']],
+      ['只是历史', []],
+    ],
   )
+})
+
+test('the delete confirmation keeps the name and takes over the actions slot', (t) => {
+  // The regression: the confirmation used to replace the whole row, so the one
+  // moment the user had to know *which* session they were deleting was the one
+  // moment its name was off screen (todo D6).
+  const { render, root, stub, intents } = mount(t)
+  render(viewOf({ ...tieredState(), pendingDelete: 'background' }))
+
+  const row = sessionRows(root()).find((node) => node.classes.includes('confirming'))
+  assert.ok(row, 'no row is asking for confirmation')
+  assert.ok(row.classes.includes('confirming'))
+  assert.equal(find(row, 'session-title')?.text, '后台 lane', 'the name left the row')
+
+  // Disabled, not merely unlistened: a name that still looks clickable invites an
+  // answer the row will not give.
+  const open = find(row, 'session-open')
+  assert.equal(open?.disabled, true)
+  stub.click(open?.node)
+  assert.deepEqual(intents, [], 'the title answered something while the row was asking')
+
+  const actions = find(row, 'session-actions')
+  assert.deepEqual(
+    actions?.children.map((child) => child.className),
+    ['session-confirm-yes', 'session-confirm-no'],
+  )
+  stub.click(actions?.children[0]?.node)
+  stub.click(actions?.children[1]?.node)
+  assert.deepEqual(intents, [
+    { kind: 'confirm-delete', projectRoot: '/w/app', sessionId: 'background' },
+    { kind: 'cancel-delete' },
+  ])
 })
 
 test('the first-level actions are rows under the search box', (t) => {

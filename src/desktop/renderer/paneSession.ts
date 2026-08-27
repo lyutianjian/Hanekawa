@@ -51,9 +51,10 @@ import {
   fileCompletionQuery,
   moveCompletion as moveCompletionState,
   NO_COMPLETIONS,
+  selectCompletion,
   type CompletionState,
 } from './model/completion.js'
-import type { ShellState } from './model/keymap.js'
+import { completionAcceptMode, type ShellState } from './model/keymap.js'
 import { pruneThinkingToggles } from './model/thinking.js'
 import { applySessionEvent, createTranscriptState, type TranscriptState } from './model/transcript.js'
 import {
@@ -66,26 +67,34 @@ import {
   removeUiRequest,
   type UiQueueState,
 } from './model/uiQueue.js'
+import type { OverlayAction } from './model/dialogActions.js'
 import {
   initialPermissionIndex,
+  permissionIndexToIntent,
   permissionKeyToIntent,
   permissionResponseFor,
   permissionViewModel,
+  type PermissionIntent,
 } from './model/permissionDialog.js'
 import {
   applyAskIntent,
   askKeyToIntent,
   askViewModel,
   createAskState,
+  type AskIntent,
   type AskState,
 } from './model/askUserQuestion.js'
 import {
   applyExitPlanIntent,
   createExitPlanState,
+  enterPlanIndexToIntent,
   enterPlanKeyToIntent,
   enterPlanViewModel,
+  exitPlanIndexToIntent,
   exitPlanKeyToIntent,
   exitPlanViewModel,
+  type EnterPlanIntent,
+  type ExitPlanIntent,
   type ExitPlanState,
 } from './model/planDialogs.js'
 import {
@@ -162,6 +171,11 @@ export interface PaneSession {
   handleRewindIntent(intent: RewindIntent): void
   acceptCompletion(mode: 'accept' | 'submit'): Promise<void>
   moveCompletion(direction: 'up' | 'down'): void
+  // --- mouse entry points (routed here by the two views' own listeners) ---
+  /** An option row in the blocking dialog was clicked, by slot. */
+  handleOverlayAction(action: OverlayAction): void
+  /** A completion row was clicked, by slot. Accepts, and submits when Enter would. */
+  acceptCompletionAt(index: number): Promise<void>
   closeCompletions(): void
   hideSurface(): void
   moveSurfaceSelection(direction: 'up' | 'down'): void
@@ -448,51 +462,134 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     switch (current.kind) {
       case 'permission': {
         const view = permissionViewModel({ request: current.payload, selectedIndex: permissionIndex })
-        const intent = permissionKeyToIntent(chord, { selectedIndex: permissionIndex, options: view.options })
-        if (intent.kind === 'move') {
-          permissionIndex = intent.selectedIndex
-          renderOverlay()
-          return
-        }
-        if (intent.kind === 'cycle') {
-          queue = cycleActive(queue, intent.direction)
-          prepareActive()
-          renderOverlay()
-          return
-        }
-        if (intent.kind === 'answer') settle(current.requestId, permissionResponseFor(intent.action))
+        applyPermissionIntent(
+          current.requestId,
+          permissionKeyToIntent(chord, { selectedIndex: permissionIndex, options: view.options }),
+        )
         return
       }
 
       case 'ask-user-question': {
         if (!askState) return
-        const outcome = applyAskIntent(askState, askKeyToIntent(chord, askState))
-        askState = outcome.state
-        if ('result' in outcome) settle(current.requestId, outcome.result)
-        else renderOverlay()
+        applyAsk(current.requestId, askKeyToIntent(chord, askState))
         return
       }
 
-      case 'enter-plan': {
-        const intent = enterPlanKeyToIntent(chord, { selectedIndex: enterPlanIndex })
-        if (intent.kind === 'move') {
-          enterPlanIndex = intent.selectedIndex
-          renderOverlay()
-          return
-        }
-        if (intent.kind === 'answer') settle(current.requestId, intent.approved)
+      case 'enter-plan':
+        applyEnterPlanIntent(current.requestId, enterPlanKeyToIntent(chord, { selectedIndex: enterPlanIndex }))
         return
-      }
 
       case 'exit-plan': {
         if (!exitPlan) return
-        const outcome = applyExitPlanIntent(exitPlan, exitPlanKeyToIntent(chord, exitPlanViewModel(exitPlan)))
-        exitPlan = outcome.state
-        if ('decision' in outcome) settle(current.requestId, outcome.decision)
-        else renderOverlay()
+        applyExitPlan(current.requestId, exitPlanKeyToIntent(chord, exitPlanViewModel(exitPlan)))
         return
       }
     }
+  }
+
+  /**
+   * Routes a click in the dialog: an option slot, or the button bar.
+   *
+   * A slot goes through the same `*IndexToIntent` its number key uses, and the
+   * four `apply*` helpers below are shared with `handleOverlayKey` — so the mouse
+   * cannot answer anything the keyboard would not, and a dialog that is drawn but
+   * not focused (a background pane never paints) has nothing to click.
+   *
+   * `primary`/`secondary` exist only where an option is *not* an action: the ask
+   * dialog (whose multi-select answer had no submit affordance at all before) and
+   * the exit-plan dialog. The permission and enter-plan bars are made of slots,
+   * so those two cases cannot arrive there.
+   */
+  function handleOverlayAction(action: OverlayAction): void {
+    const current = activeRequest(queue)
+    if (!current) return
+
+    switch (current.kind) {
+      case 'permission': {
+        if (action.kind !== 'slot') return
+        const view = permissionViewModel({ request: current.payload, selectedIndex: permissionIndex })
+        applyPermissionIntent(current.requestId, permissionIndexToIntent(action.index, view.options))
+        return
+      }
+
+      case 'ask-user-question': {
+        if (!askState) return
+        applyAsk(
+          current.requestId,
+          action.kind === 'slot'
+            ? { kind: 'select', index: action.index }
+            // Enter and Escape, by their buttons.
+            : action.kind === 'primary'
+              ? { kind: 'commit' }
+              : { kind: 'cancel' },
+        )
+        return
+      }
+
+      case 'enter-plan':
+        if (action.kind !== 'slot') return
+        applyEnterPlanIntent(current.requestId, enterPlanIndexToIntent(action.index))
+        return
+
+      case 'exit-plan': {
+        if (!exitPlan) return
+        const view = exitPlanViewModel(exitPlan)
+        applyExitPlan(
+          current.requestId,
+          action.kind === 'slot'
+            ? exitPlanIndexToIntent(action.index, view)
+            // 继续规划 is Escape: it rejects with no feedback, which is why the
+            // model comments that it is the one button that can discard typing.
+            : action.kind === 'primary'
+              ? { kind: 'commit' }
+              : { kind: 'reject' },
+        )
+        return
+      }
+    }
+  }
+
+  // The four intents, applied. Each one is reached from both the keyboard and the
+  // mouse, so cursor state, `settle` and the repaint stay in one place per dialog.
+
+  function applyPermissionIntent(requestId: string, intent: PermissionIntent): void {
+    if (intent.kind === 'move') {
+      permissionIndex = intent.selectedIndex
+      renderOverlay()
+      return
+    }
+    if (intent.kind === 'cycle') {
+      queue = cycleActive(queue, intent.direction)
+      prepareActive()
+      renderOverlay()
+      return
+    }
+    if (intent.kind === 'answer') settle(requestId, permissionResponseFor(intent.action))
+  }
+
+  function applyAsk(requestId: string, intent: AskIntent): void {
+    if (!askState) return
+    const outcome = applyAskIntent(askState, intent)
+    askState = outcome.state
+    if ('result' in outcome) settle(requestId, outcome.result)
+    else renderOverlay()
+  }
+
+  function applyEnterPlanIntent(requestId: string, intent: EnterPlanIntent): void {
+    if (intent.kind === 'move') {
+      enterPlanIndex = intent.selectedIndex
+      renderOverlay()
+      return
+    }
+    if (intent.kind === 'answer') settle(requestId, intent.approved)
+  }
+
+  function applyExitPlan(requestId: string, intent: ExitPlanIntent): void {
+    if (!exitPlan) return
+    const outcome = applyExitPlanIntent(exitPlan, intent)
+    exitPlan = outcome.state
+    if ('decision' in outcome) settle(requestId, outcome.decision)
+    else renderOverlay()
   }
 
   // Installed before `hello()`: the host may post a `ui-request` at any time,
@@ -946,6 +1043,19 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     renderSuggestions()
   }
 
+  /**
+   * A clicked completion row: focus it, then accept it exactly as Enter would.
+   *
+   * `completionAcceptMode` is the keymap's own rule, so a click on `/model` runs
+   * it and a click on an `@` mention only fills it in — the difference is not
+   * restated here.
+   */
+  async function acceptCompletionAt(index: number): Promise<void> {
+    completions = selectCompletion(completions, index)
+    renderSuggestions()
+    await acceptCompletion(completionAcceptMode(shellState()))
+  }
+
   function moveSurfaceSelection(direction: 'up' | 'down'): void {
     if (!surfaceView) return
     surfaceIndex = stepSurfaceSelection(surfaceView, surfaceIndex, direction)
@@ -1025,6 +1135,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     handleRewindIntent,
     acceptCompletion,
     moveCompletion,
+    handleOverlayAction,
+    acceptCompletionAt,
     closeCompletions,
     hideSurface,
     moveSurfaceSelection,

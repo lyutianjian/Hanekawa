@@ -90,8 +90,10 @@ const bundleDir = dirname(fileURLToPath(import.meta.url))
  * a three-button strip that does not match the frame under it.
  */
 const WINDOW_CHROME = {
-  dark: { color: '#0f0f11', symbolColor: '#9aa0aa', height: 40 },
-  light: { color: '#f3f3f5', symbolColor: '#686b75', height: 40 },
+  // `--surface-base`, not one of the wash colours: the overlay strip sits at the
+  // window's right edge, where both blobs have already faded back to the base.
+  dark: { color: '#1c2125', symbolColor: '#9b9992', height: 40 },
+  light: { color: '#edf4f9', symbolColor: '#73716b', height: 40 },
 } as const
 
 // A plain annotation rather than `as unknown as`: `ipcMain` really is

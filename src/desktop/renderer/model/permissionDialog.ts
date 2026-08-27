@@ -18,6 +18,7 @@ import {
 import type { DestructiveCommandWarning } from '../../../harness/destructiveCommands.js'
 import type { PermissionRequestDto, UiResponse } from '../../../runtime/protocol/wire.js'
 import { previewView, type PreviewView } from './diffRows.js'
+import type { DialogAction } from './dialogActions.js'
 import { UI_LOCALE } from './locale.js'
 
 /**
@@ -49,7 +50,8 @@ export interface PermissionViewModel {
   readonly preview: PreviewView | undefined
   /** Labels of the other requests waiting, for the "Also waiting" line. */
   readonly alsoWaiting: readonly string[]
-  readonly hint: string
+  /** The options again, as buttons: here an option *is* the action. */
+  readonly actions: readonly DialogAction[]
 }
 
 /** How many other pending requests to name before summarising the rest. */
@@ -72,6 +74,7 @@ export function permissionViewModel(input: {
   const options = permissionOptionsForRequest(request, UI_LOCALE)
   const total = input.total ?? 1
   const activeIndex = input.activeIndex ?? 0
+  const tone = permissionToneForRequest(request, warnings)
 
   return {
     title: formatPermissionTitle(request, UI_LOCALE),
@@ -79,7 +82,7 @@ export function permissionViewModel(input: {
     // second counter of its own.
     subtitle: formatPermissionSubtitle(request, activeIndex, total, UI_LOCALE),
     reason: formatPermissionReason(request, UI_LOCALE),
-    tone: permissionToneForRequest(request, warnings),
+    tone,
     inputBlock: formatPermissionInputBlock(request, UI_LOCALE),
     warnings,
     denialStreakNote: denialStreakNote(request.denialStreak),
@@ -87,7 +90,7 @@ export function permissionViewModel(input: {
     selectedIndex: clampIndex(input.selectedIndex, options.length),
     preview: request.preview ? previewView(request.preview) : undefined,
     alsoWaiting: alsoWaitingLabels(input.others ?? []),
-    hint: hintFor(options, total),
+    actions: actionsFor(options, tone),
   }
 }
 
@@ -138,10 +141,25 @@ export function permissionKeyToIntent(
   // Numeric shortcuts by slot, as every other dialog in this project offers.
   const slot = Number.parseInt(event.key, 10)
   if (!Number.isNaN(slot) && slot >= 1 && slot <= total) {
-    return { kind: 'answer', action: state.options[slot - 1]!.action }
+    return permissionIndexToIntent(slot - 1, state.options)
   }
 
   return { kind: 'none' }
+}
+
+/**
+ * A slot to an intent, for both the numeric hotkey and a click on the row.
+ *
+ * The two paths must not diverge: a click on 「允许一次」 answers exactly what
+ * pressing its number answers. `resolvePermissionOption` is what maps the index,
+ * so an out-of-range slot cannot resolve to a neighbouring option here.
+ */
+export function permissionIndexToIntent(
+  index: number,
+  options: readonly PermissionOption[],
+): PermissionIntent {
+  if (index < 0 || index >= options.length) return { kind: 'none' }
+  return { kind: 'answer', action: resolvePermissionOption(index, options).action }
 }
 
 /**
@@ -173,10 +191,29 @@ function denialStreakNote(denialStreak: number): string | undefined {
     : `已拒绝过 ${denialStreak} 次。`
 }
 
-function hintFor(options: readonly PermissionOption[], total: number): string {
-  const keys = options.map((option) => option.hotkey.toUpperCase()).join('/')
-  const base = `[↑↓] 移动　[${keys}] 快选　[Enter] 确定　[Esc] 拒绝`
-  return total > 1 ? `${base}　[Tab] 下一条请求` : base
+/**
+ * The options as buttons, in the order the list already has them.
+ *
+ * Exactly one primary, and it is 允许一次. Denying is what Escape does and what a
+ * destructive request starts focused on, so it must not be the loud one — and
+ * neither may 始终允许, which writes a rule that outlives this request. Two
+ * primaries would say the same thing about both.
+ *
+ * Approving a request that carries destructive warnings is drawn as danger: an
+ * outline and a text colour, never a fill. `permissionOptionsForRequest` drops
+ * 始终允许 from exactly those requests, so only 允许一次 can carry it.
+ */
+function actionsFor(
+  options: readonly PermissionOption[],
+  tone: PermissionTone,
+): DialogAction[] {
+  return options.map((option, index) => ({
+    label: option.label,
+    shortcut: option.hotkey.toUpperCase(),
+    role: option.action === 'allow' ? 'primary' : 'secondary',
+    ...(option.action === 'allow' && tone === 'danger' ? { tone: 'danger' as const } : {}),
+    slot: index,
+  }))
 }
 
 function clampIndex(index: number, total: number): number {

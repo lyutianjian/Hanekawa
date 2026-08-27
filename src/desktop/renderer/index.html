@@ -32,9 +32,6 @@
         -->
         <header id="canvas-header" hidden></header>
         <div id="transcript-area"></div>
-        <div id="surface" hidden></div>
-        <div id="suggestions" hidden role="listbox" aria-label="斜杠命令"></div>
-        <div id="queue" hidden aria-live="polite" aria-label="排队消息"></div>
         <!--
           The anchored composite input: one capsule holding the textarea and an
           inline action bar. `#chip-model` / `#chip-effort` are two buttons drawn
@@ -50,6 +47,20 @@
             reference builds never have.
           -->
           <div class="composer-column">
+            <!--
+              The three panels the composer can raise (S9): the picker / command
+              view, the completion list, and the queued-message strip. They used
+              to be full-bleed blocks between the transcript and the composer,
+              one screen away from the chip that opens them; now they are one
+              stack floating on the composer's upper edge, on the same 760px
+              axis as the text. Last in the stack is `#queue`, which is the one
+              that is about the message being typed.
+            -->
+            <div id="composer-popovers">
+              <div id="surface" hidden></div>
+              <div id="suggestions" hidden role="listbox" aria-label="斜杠命令"></div>
+              <div id="queue" hidden aria-live="polite" aria-label="排队消息"></div>
+            </div>
             <div id="composer">
               <!--
                 A short placeholder, deliberately: the keys it used to spell out
@@ -92,13 +103,25 @@
           stylesheet, so no view has to know about the others.
         -->
         <section id="settings" hidden aria-label="设置"></section>
+        <!--
+          The two modal layers live *inside* the canvas (S6): a blocking request
+          belongs to one lane and parks that lane's agent loop, so it covers that
+          lane's canvas rather than the window. The sidebar stays fully usable
+          beneath them — switching to another session while one is parked is a
+          supported move, not something to dim out. Last two children, so DOM
+          order and stacking order say the same thing.
+
+          Which is also why neither carries `aria-modal="true"` any more: that
+          attribute tells a screen reader everything outside the dialog is inert,
+          and the sidebar is not.
+        -->
+        <div id="rewind" hidden role="dialog" aria-label="回退">
+          <div id="rewind-panel"></div>
+        </div>
+        <div id="overlay" hidden role="dialog">
+          <div id="overlay-panel"></div>
+        </div>
       </main>
-    </div>
-    <div id="rewind" hidden role="dialog" aria-modal="true" aria-label="回退">
-      <div id="rewind-panel"></div>
-    </div>
-    <div id="overlay" hidden role="dialog" aria-modal="true">
-      <div id="overlay-panel"></div>
     </div>
     <script type="module" src="./app.js"></script>
   </body>

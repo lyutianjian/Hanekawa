@@ -13,7 +13,13 @@ export interface SuggestionsView {
   render(state: CompletionState): void
 }
 
-export function createSuggestionsView(container: HTMLElement): SuggestionsView {
+/** A row was picked with the mouse; the index is its slot in `completionRows`. */
+export type SuggestionSelect = (index: number) => void
+
+export function createSuggestionsView(
+  container: HTMLElement,
+  onSelect: SuggestionSelect,
+): SuggestionsView {
   return {
     render(state) {
       const rows = completionRows(state)
@@ -29,6 +35,14 @@ export function createSuggestionsView(container: HTMLElement): SuggestionsView {
         node.setAttribute('aria-selected', String(index === selectedIndex))
         node.appendChild(el('span', 'name', row.displayText))
         node.appendChild(el('span', 'description', row.description ?? ''))
+        // `mousedown` with the default prevented, not `click`: accepting a
+        // suggestion splices over the `@…` token *at the caret*, and the browser's
+        // default mousedown would take focus — and the caret — off the textarea
+        // before the handler ever ran.
+        node.addEventListener('mousedown', (event) => {
+          event.preventDefault()
+          onSelect(index)
+        })
         return node
       }))
       show(container, true)

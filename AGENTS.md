@@ -200,6 +200,13 @@ to `dom/` and the app shell. Every blocking UI request must be answered or settl
   the overlay is OS-painted chrome no stylesheet reaches — and `set-window-theme` is what repaints it;
   unlike `open-project`/`open-in-editor`, a shell with no overlay answers `ok` rather than rejecting.
   Every title-bar menu item must map to an intent that already exists, and there is no 编辑 menu.
+- The window frame is one pane of *painted* glass, and `body` is the only thing that paints it: two
+  `radial-gradient` blobs (`--surface-wash-warm`, `--surface-wash-mint`) over `--surface-base`. The
+  frosted look is fixed colour, not a composite — no `backdrop-filter`, no `backgroundMaterial` — so
+  `#titlebar` and `#sidebar` must stay `background: transparent`; a fill on either cuts the field in two
+  along the caption strip's foot. `#canvas` is opaque, which is what stops the wash at its edge, and
+  `WINDOW_CHROME` carries `--surface-base` rather than a wash colour because the OS strip sits at the
+  right edge, where both blobs have faded out.
 - `open-in-editor` is awaited by the shell (unlike `open-project`, which is fire-and-forget), so a missing
   `code` reaches the renderer as a `fail` rather than a native box. It carries `projectRoot` — the only
   project handle the renderer has — and the host resolves it to `entry.cwd`, never handing the normalized
@@ -211,7 +218,11 @@ to `dom/` and the app shell. Every blocking UI request must be answered or settl
   It stays out of `npm test` (it needs a display, an endpoint and credentials) and it must stay pointed at a
   temp directory — its own tripwires assert the repo's `.myagent/` and both global files were untouched.
   Anything reachable only through a native modal cannot be smoke-tested: those block the main process, and a
-  screenshot cannot see them. Keep `open-project` answerable with a `path`.
+  screenshot cannot see them. Keep `open-project` answerable with a `path`. The native title-bar overlay is the
+  same blind spot — `Page.captureScreenshot` renders the page only — so a theme change is asserted as far as
+  `set-window-theme` answering `ok` and no further. `--cwd=` does not isolate the renderer's `localStorage`
+  (`main.ts` never sets `userData`), so the theme preference is the developer's own: the step that changes it
+  restores it in a `finally`.
 
 ## Regression tests by area
 
@@ -227,7 +238,8 @@ cross-layer changes.
   command or tool tests.
 - Protocol/desktop: `protocolWire.test.ts`, `protocolHost.test.ts`, `protocolCommandSchema.test.ts`,
   `protocolClientParity.test.ts`, `desktopShellHost.test.ts`, and `desktopMain.test.ts`.
-- TUI/renderer: `tuiLayout.test.ts`, `tuiTheme.test.ts`, `rendererImports.test.ts`, the corresponding
+- TUI/renderer: `tuiLayout.test.ts`, `tuiTheme.test.ts`, `rendererImports.test.ts`,
+  `rendererOverlayView.test.ts` for the blocking dialog and the completion dropdown, the corresponding
   renderer model test, and `desktopUiRoundTrip.test.ts` for an end-to-end UI path.
 - Build/patches: `distBuild.test.ts`, `desktopBuild.test.ts`, and `tuiInkPatch.test.ts`.
 
@@ -263,6 +275,15 @@ otherwise a passing test can contaminate later cases.
 - The sidebar repaints only when something calls `onShellChanged`, and its badges are derived from
   `shellState()`. Anything that moves `hasOverlay` or `isStreaming` must announce it: a `hasOverlay`
   transition that stays silent leaves a badge that is corrected only by the next unrelated snapshot tick.
+- A session row has **three** tiers, and they are three rules whose order in `styles.css` is load-bearing
+  (`.selected` before `.active` before `.confirming`, each overriding the previous `background`): history
+  is `--text-secondary` with no fill, an open-but-not-shown lane is primary text with no fill, and the row
+  the window is showing carries the `--surface-active` capsule. `.selected` is the *keyboard cursor*, an
+  orthogonal axis — it owned the capsule until S7, which is why every open row read alike. The delete
+  confirmation swaps only `.session-actions`; the name stays in place, and `rowNode()` keeps one
+  construction path so badge/active/truncation stay one decision each. Collapsing takes the column to zero
+  width and hides the header too: the one collapse control is the title bar's `.titlebar-rail`, and
+  `#sidebar.collapsed + #canvas` restores the inset the sidebar was providing.
 - A screen with its own `keydown` handler must take focus when it opens, or its documented keys are dead.
   The settings screen is `tabindex="-1"` and focuses itself on the open transition only — focusing on every
   render would pull the caret out of a form field.
@@ -271,8 +292,10 @@ otherwise a passing test can contaminate later cases.
   `rendererStyleTokens.test.ts` enforces it, and `:hover`/`:disabled` rules alone do not count. That scan
   is coarse in two known ways: it skips `controls.ts` itself, and it accepts a class that only ever appears
   as an ancestor's descendant or under a state class. Controls built inside `controls.ts`, the
-  transcript's own, and the 5e header/composer chrome are therefore covered by three explicit class lists
-  in the same test — extend the right list when adding a control.
+  transcript's own, the 5e header/composer chrome, and the dialog button bar are therefore covered by four
+  explicit class lists in the same test — extend the right list when adding a control. The bar's list asks
+  for a rule whose selector *ends* in exactly `.dialog-btn`, because those rules are scoped to
+  `#overlay-panel` / `#rewind-panel` and belong to neither.
 - A row-level dropdown (`pillSelect`) is absolutely positioned against its own `.settings-menu-shell` and
   opens downward without measuring anything, so **no ancestor of it inside the settings screen may clip**:
   `.settings-card` carries its bottom corners on `> :last-child` rather than `overflow: hidden`, and
@@ -284,7 +307,53 @@ otherwise a passing test can contaminate later cases.
   `.settings-toggle.on`, named in `ACCENT_FILL_EXCEPTIONS` in `rendererStyleTokens.test.ts` (a switch has no
   label, so the coloured track *is* the state); the list is checked for non-vacuity, so do not widen it and
   do not leave a stale entry. The transcript and the composer share one reading column (`.transcript-column`
-  / `.composer-column`, ~760px): the scroller stays full width so its scrollbar keeps to the panel's edge.
+  / `.composer-column`, ~760px), and the settings body has its own (`.settings-column`, 880px — wider because
+  a settings row is label-left/control-right): in all three the scroller stays full width so its scrollbar
+  keeps to the panel's edge, and `.settings-column` must stay free of `overflow`, since it is now on an open
+  pill dropdown's ancestor chain. `.composer-column` is the same kind of ancestor and carries the same
+  prohibition: since S9 the three panels the composer raises (`#surface`, `#suggestions`, `#queue`) hang off
+  it in `#composer-popovers` — `absolute; bottom: 100%`, so they float on the composer's upper edge instead
+  of spanning the canvas and shoving the transcript. The shell is `pointer-events: none` and each panel opts
+  back in with `auto`: it outlives all three being hidden, and its `gap` is its own area, so without that it
+  would eat clicks meant for the transcript. Its `z-index: 4` is under every menu (5–6) and therefore under
+  `#rewind`/`#overlay`. They are no longer children of `#canvas`, so `#canvas.settings-open` does not list
+  them; hiding `#input-row` is what hides them.
+- A conversation shorter than the canvas sits against the composer, not under the canvas header (S10).
+  `.transcript` is a flex column and `.transcript-column` carries `margin-top: auto` plus `flex-shrink: 0`.
+  Both halves are load-bearing and neither is interchangeable with the obvious alternative: an auto margin
+  resolves to 0 once the content overflows, so a long session scrolls exactly as before, while
+  `justify-content: flex-end` would put the top of overflowing content out of reach in a scroll container;
+  and without `flex-shrink: 0` the column is capped at the scroller's height and its content spills out of
+  a box nothing scrolls. The column must stay the scroller's **only** child — a sibling would split the
+  free space the auto margin claims. `.pane.empty` (the welcome screen) takes the scroller out of the
+  stretch and so does not take part. No height is measured in TypeScript.
+- A `⌵` follows its label. `controls.ts`'s `button()` takes `icon` (leading) and `trailingIcon` separately,
+  because it used to insert one icon unconditionally *before* the label and drew every dropdown backwards;
+  the three call sites the spec names are `pillSelect`, the sidebar workspace trigger, and the thinking
+  header. A trailing glyph needs `flex: 1 1 auto` on `.btn-label`, or a long label pushes it out of the pill.
+- `#canvas`'s floating hairline is an `outline` with `outline-offset: -1px`, never a `border`: `#overlay` and
+  `#rewind` are `absolute; inset: 0`, so a border would inset both scrims by 1px and break smoke S2's
+  per-edge equality with `#canvas` (an exact judgement, deliberately not loosened). An inset `box-shadow`
+  is out too — it paints below descendants, and `#canvas-header` would cover the top edge.
+- A blocking dialog is a row list, a button bar, or both, decided in `model/`: an option that *is* an
+  action (allow, deny, enter plan mode, a rewind decision) is a button carrying its `slot`; an option that
+  is content (an answer with a description, the plan decision that grows a feedback field) stays a row, and
+  the bar then carries dialog-level `primary`/`secondary` actions instead. Both are `OverlayAction`s
+  (`model/dialogActions.ts`), and a `slot` resolves through the same `*IndexToIntent` its number key uses
+  (`permissionIndexToIntent`, `enterPlanIndexToIntent`, `exitPlanIndexToIntent`, `rewindActionToIntent`,
+  and `AskIntent`'s `select`), so a click can never answer something the keyboard would not;
+  `paneSession` funnels both entry points into one `apply*Intent` per dialog. There is no hint line: a key
+  is a badge on its button, and a key with no button (`↑↓`, `Tab`) is not printed. The exit-plan secondary
+  is Escape exactly — it rejects with empty feedback — which makes it the one button that can discard
+  typing, and `planDialogs.ts` says so where it is built. The overlay backdrop is deliberately not a dismiss target — an unanswered
+  request parks the agent loop — and hover must stay a CSS affordance: moving `selectedIndex` with the
+  pointer would slide the permission dialog's safe default out from under Enter. `#suggestions` listens
+  on `mousedown` with the default prevented, because accepting splices at the composer's caret.
+  `#overlay` and `#rewind` live inside `#canvas` and are `position: absolute`, so a request covers the
+  canvas of the lane it belongs to and not the window: the sidebar stays live, because switching away
+  from a parked pane is a supported move. `#canvas` is their containing block (`position: relative`,
+  and no `z-index` — that would trap them under the sidebar's own popovers), their 9/10 is what keeps
+  them over every 5–6 popover, and the canvas's `overflow: hidden` is what rounds their corners.
 - `paneSession.ts` has no unit tests, so behaviour there is covered by `scripts/smoke-desktop.mjs`.
   `dom/` can now be tested: `test/helpers/domStub.ts` is a hand-written stand-in for the `document`
   members `dom/dom.ts`, `dom/controls.ts` and `dom/icons.ts` use, plus a `Node` binding (a `focusout`

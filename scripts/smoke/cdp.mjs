@@ -243,6 +243,21 @@ export async function key(cdp, chord) {
 }
 
 /**
+ * Clicks at a viewport point with a real mouse event.
+ *
+ * Not `element.click()` through `evaluate`: that dispatches straight at the node
+ * and would pass even if the row were covered, hidden behind another layer, or
+ * had `pointer-events: none`. Chromium hit-tests these, so what they prove is
+ * that the pixel the user aims at is the pixel that answers.
+ */
+export async function mouseClick(cdp, x, y) {
+  const base = { x: Math.round(x), y: Math.round(y), button: 'left', buttons: 1, clickCount: 1 }
+  await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mouseMoved', buttons: 0 })
+  await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mousePressed' })
+  await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mouseReleased', buttons: 0 })
+}
+
+/**
  * Writes a PNG of the page.
  *
  * `captureBeyondViewport` stays off deliberately: several of the visual checks

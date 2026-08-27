@@ -163,6 +163,21 @@ export function moveCompletion(state: CompletionState, direction: 'up' | 'down')
 }
 
 /**
+ * Focuses a row by index — a click, where `moveCompletion` is an arrow key.
+ *
+ * Clamped rather than wrapped: an index out of range is a stale row, not a step
+ * off the end of a ring. The sequence does not move, for the same reason it does
+ * not in `moveCompletion`.
+ */
+export function selectCompletion(state: CompletionState, index: number): CompletionState {
+  if (state.kind === 'none') return state
+  const total = state.items.length
+  if (total === 0) return state
+  const selectedIndex = index < 0 ? 0 : index > total - 1 ? total - 1 : index
+  return { ...state, selectedIndex }
+}
+
+/**
  * The composer text after accepting the selected row, plus where the caret goes.
  *
  * A command replaces the whole line; a file mention splices over just its `@…`

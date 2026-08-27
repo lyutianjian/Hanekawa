@@ -29,6 +29,12 @@
  * - **money is opt-in**: one model turn, only with `--paid-turn`, behind a
  *   one-shot latch, on the cheapest configured model, interrupted if it overruns.
  *
+ * One thing `--cwd=` does **not** isolate: the renderer's `localStorage`, which
+ * holds the theme preference (`main.ts` never sets `userData`, so it is the
+ * developer's own). S11 switches the theme and therefore restores it in a
+ * `finally`. No tripwire covers it — Chromium flushes its leveldb lazily, so a
+ * file check there would be red for timing reasons rather than for real ones.
+ *
  * Exit codes: 0 pass (skips allowed), 1 an assertion failed — the app is wrong,
  * 2 preflight or teardown failed — do not trust the run at all.
  *

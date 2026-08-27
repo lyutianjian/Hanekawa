@@ -1,7 +1,9 @@
 /**
  * The ten acceptance items of stage 4, one named step each — except item 4,
  * which has two: S4 deletes an open session with other lanes around it, S4b
- * deletes the window's last one (D1).
+ * deletes the window's last one (D1). Item 8 has two as well: S8 is the settings
+ * screen, and S11 is the theme that lives on its 外观 page (todo V9). Neither is
+ * an eleventh acceptance item; both ride the number of the item they extend.
  *
  * Ordering is a set of constraints, not a preference:
  *
@@ -18,6 +20,10 @@
  *   still open to observe a config fan-out across lanes.
  * - **S9 before S1**: "subsequent turns reflect it" is only observable if the
  *   effort change precedes the one paid turn.
+ * - **S11 between S9 and S1**: it is the one step that changes how everything
+ *   looks, so it runs after every other visual screenshot has been taken in the
+ *   dark theme. It also leans on the settings screen and the composer popovers,
+ *   which S8 and S9 have proved by then — so a red S11 is about the theme.
  * - **S1 last of the paid ones**: the only step that spends money. Everything
  *   else fails before the charge.
  * - **S4b after S1**: it collapses the window to a single lane (project B
@@ -46,7 +52,7 @@ import * as app from './app.mjs'
 import { existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { clearViewport, evaluate, key, setViewport, sleep, waitFor } from './cdp.mjs'
+import { clearViewport, evaluate, key, mouseClick, setViewport, sleep, waitFor } from './cdp.mjs'
 import * as probes from './probes.mjs'
 import { assertArtifactsGone, existingArtifacts, readLocalSettings, readProjectConfig } from './fixtures.mjs'
 
@@ -125,11 +131,47 @@ async function raisePrompt(ctx, lane, fileName) {
 
 // --- S7: Ctrl+B ---------------------------------------------------------------
 
+/** `.transcript`'s padding in `styles.css`; the only gap under the reading column. */
+const TRANSCRIPT_PADDING = 12
+
 async function step7(ctx) {
   const before = await read(ctx, probes.sidebar())
   ctx.ok('the sidebar starts expanded', before.collapsed === false, `collapsed=${before.collapsed}`)
   ctx.ok('the fixture sessions are listed', before.rowCount >= 8, `${before.rowCount} rows`)
   await ctx.shot('07a-sidebar-expanded', 'the expanded sidebar: group heading, date sections, row density')
+
+  // todo V2, and this step is where it is observable: the app bootstraps the
+  // youngest fixture session (`main.ts:184-185`), and a fixture is exactly one
+  // user message (`fixtures.mjs:seedSession`) — a real short history, which used
+  // to hang one bubble under the canvas header above 900px of nothing. Asserted
+  // before Ctrl+B, while the canvas is at its full width.
+  const short = await read(ctx, probes.conversation())
+  ctx.ok('a pane is showing a conversation', short !== null, 'no visible pane with a transcript')
+  if (short) {
+    // Without this the two judgements below could pass vacuously on a
+    // conversation that simply fills the canvas.
+    ctx.ok(
+      'the session is short enough to leave the canvas unfilled',
+      short.items >= 1 && short.scrollHeight === short.clientHeight,
+      `items=${short.items} scrollHeight=${short.scrollHeight} clientHeight=${short.clientHeight}`,
+    )
+    // Exact, not `<=`: the only thing between the last message and the composer
+    // is the scroller's own padding. D7 set the precedent that a layout judgement
+    // stays exact rather than being loosened into something that cannot fail.
+    ctx.eq(
+      'a short conversation is pushed down against the composer',
+      short.scroller.bottom - short.column.bottom,
+      TRANSCRIPT_PADDING,
+    )
+    // The other half: it was *moved* there. Sitting at the top with a short
+    // scroller would satisfy the line above just as well.
+    ctx.ok(
+      'and the blank space is above it, not below',
+      short.column.top - short.scroller.top > TRANSCRIPT_PADDING,
+      `column top=${short.column.top} scroller top=${short.scroller.top}`,
+    )
+  }
+  await ctx.shot('07c-short-session', 'a two-message session: does the conversation meet the composer, or float under the header')
 
   await key(ctx.cdp, 'Ctrl+b')
   const collapsed = await waitFor('the sidebar to collapse', async () => {
@@ -143,7 +185,10 @@ async function step7(ctx) {
   // guarantees — and what the rail is for — is that none of them is on screen
   // while the toggle still is.
   ctx.eq('no row is on screen while collapsed', collapsed.visibleRowCount, 0)
-  await ctx.shot('07b-sidebar-collapsed', 'the collapsed rail: is the toggle still reachable, does the canvas reflow cleanly')
+  // And the column itself is gone, not narrowed to a rail: the toggle that rail
+  // existed for is in the title bar, so there is nothing left to keep reachable.
+  ctx.eq('the rail is gone entirely', collapsed.width, 0)
+  await ctx.shot('07b-sidebar-collapsed', 'the collapsed sidebar: the column is gone and the canvas keeps its 8px inset')
 
   await key(ctx.cdp, 'Ctrl+b')
   const after = await waitFor('the sidebar to expand again', async () => {
@@ -184,8 +229,40 @@ async function step2(ctx) {
   // reads 写入文件), so matching 'Write' would be asserting the English build.
   ctx.ok('the dialog names the file it would write', dialog.subtitle.includes('smoke-write-target.txt'), dialog.subtitle)
   ctx.ok('the dialog has a title', dialog.title.length > 0, dialog.title)
-  ctx.ok('the dialog offers the y/n hotkeys', dialog.hotkeys.includes('y') && dialog.hotkeys.includes('n'), dialog.hotkeys.join(''))
-  await ctx.shot('02a-permission-dialog', 'the permission dialog: title, reason, the file preview block, the hint line')
+  // Upper case as of S5: the keys are badges on the buttons, not a transcribed
+  // `[y/n]` hint line.
+  ctx.ok('the dialog badges the Y/N keys', dialog.hotkeys.includes('Y') && dialog.hotkeys.includes('N'), dialog.hotkeys.join(''))
+  // Exactly one primary, and it is 允许一次: neither 拒绝 (which Escape does) nor
+  // 始终允许 (which writes a lasting rule) may look like the recommended answer.
+  ctx.ok(
+    'the answers are buttons, with exactly one primary',
+    dialog.actions.length >= 2 && dialog.actions.filter((action) => action.primary).length === 1,
+    JSON.stringify(dialog.actions),
+  )
+  // S6: the request belongs to a lane, so its scrim covers that lane's canvas
+  // and nothing else. Equality on all four edges, not `>=`: a scrim that merely
+  // starts right of the sidebar could still be the old window-wide one shifted.
+  const scope = await read(ctx, probes.modalScope())
+  ctx.ok(
+    'the scrim covers exactly the canvas',
+    scope.overlay && scope.canvas
+      && scope.overlay.left === scope.canvas.left && scope.overlay.top === scope.canvas.top
+      && scope.overlay.right === scope.canvas.right && scope.overlay.bottom === scope.canvas.bottom,
+    JSON.stringify(scope),
+  )
+  // The hit test is the evidence: a covered node still reports its full rect.
+  ctx.ok(
+    'the sidebar is not under the scrim — a parked pane can be switched away from',
+    scope.atSidebar?.inSidebar === true && scope.atSidebar?.inOverlay === false,
+    JSON.stringify(scope.atSidebar),
+  )
+  // And the converse, so the two above cannot pass on a scrim that never painted.
+  ctx.ok(
+    'the canvas is under it',
+    scope.atCanvas?.inOverlay === true,
+    JSON.stringify(scope.atCanvas),
+  )
+  await ctx.shot('02a-permission-dialog', 'the permission dialog over the canvas only — the sidebar is not dimmed — with its title, reason, file preview block and button bar')
 
   await activate(ctx, a1)
   const away = await waitFor('the parked pane to show the awaiting-input badge', async () => {
@@ -209,9 +286,18 @@ async function step2(ctx) {
   })
   ctx.ok('coming back restores the same dialog', back.subtitle.includes('smoke-write-target.txt'), back.subtitle)
 
-  await key(ctx.cdp, 'y')
+  // Answered with a **real mouse event**, not `y` and not `element.click()`.
+  // Until S4 `overlayView.ts` had zero listeners, so the whole dialog was
+  // keyboard-only; a synthetic click would have passed even then, and it would
+  // still pass over a row that is covered or clipped. What follows — the tool
+  // ran, the file landed, the dialog closed — is the proof the pixel answered.
+  // 允许一次 rather than 允许, so a dialog that also offers 始终允许 cannot match
+  // the wrong button and write a rule into the scratch project's settings.
+  const allow = back.actions.find((action) => action.label.includes('允许一次'))
+  ctx.ok('the dialog offers a clickable 允许一次 button', allow !== undefined, JSON.stringify(back.actions))
+  await mouseClick(ctx.cdp, allow.x, allow.y)
   const result = await app.reply(ctx.app, prompt.id, { label: 'run-tool Write', timeout: 20000 })
-  ctx.ok('answering y runs the tool', result !== undefined, JSON.stringify(result).slice(0, 120))
+  ctx.ok('clicking 允许一次 runs the tool', result !== undefined, JSON.stringify(result).slice(0, 120))
   ctx.ok(
     'the tool actually wrote the file into the scratch project',
     existsSync(join(ctx.projectA.root, 'smoke-write-target.txt')),
@@ -350,6 +436,9 @@ async function step3(ctx) {
   const seeded = existingArtifacts(ctx.projectA, target.id)
   ctx.eq('the session has every seeded artifact on disk before the delete', seeded.length, 5)
 
+  const named = rowFor(await read(ctx, probes.sidebar()), target.id)
+  ctx.ok('the row to be deleted has a name to keep', (named?.title ?? '') !== '', named?.title ?? 'none')
+
   await read(ctx, probes.clickDelete(target.id))
   const confirming = await waitFor('the row to ask for confirmation', async () => {
     const view = await read(ctx, probes.sidebar())
@@ -357,7 +446,10 @@ async function step3(ctx) {
     return row?.confirming ? row : undefined
   })
   ctx.ok('the confirmation replaces the row inline', confirming.confirming === true, JSON.stringify(confirming))
-  ctx.eq('the row shows no title while confirming', confirming.title, '')
+  // The name stays put and the buttons take the actions slot (S7/D6). It used to
+  // be replaced wholesale, which took the session's name off screen at exactly
+  // the moment the user had to decide which session they were deleting.
+  ctx.eq('the name is still on screen while confirming', confirming.title, named?.title ?? '')
   await ctx.shot('03a-delete-confirm', 'the inline delete confirmation: an answerable question, not a broken row')
 
   await read(ctx, probes.clickConfirmYes(target.id))
@@ -612,6 +704,14 @@ async function step8(ctx) {
   ctx.eq('the screen loaded without an error', open.error, '')
   ctx.note(`focus after opening: ${open.focus} (inside the screen: ${open.focusInside})`)
 
+  // 8a2 — todo V1. The other half of S2's "the scrim covers exactly the canvas":
+  // a border here would inset `#overlay`'s `inset: 0` by 1px on every side.
+  ctx.ok(
+    'the canvas floats on an outline, not on a border',
+    open.canvasHairline?.outlineWidth === '1px' && open.canvasHairline?.borderTopWidth === '0px',
+    JSON.stringify(open.canvasHairline),
+  )
+
   let longest = { rowCount: -1, label: '' }
   for (const item of open.nav) {
     await read(ctx, probes.clickSettingsNav(item.label))
@@ -649,6 +749,30 @@ async function step8(ctx) {
   }
   ctx.note(`longest page: ${longest.label}, ${longest.rowCount} rows, ${longest.toggles} toggles`)
 
+  // 8a3 — todo V7, the reading column, which only a wide window can show: at the
+  // default 1200 the body's content box is already narrower than 880, so the
+  // clamp never engages and any `max-width` would pass. Widen, then assert the
+  // measure exactly (not `<= 880`) and that the scroller kept its own full width.
+  const columnAt = async (label) => {
+    const view = await read(ctx, probes.settings())
+    const available = view.bodyContent ? view.bodyContent.right - view.bodyContent.left : 0
+    const gaps = view.column && view.bodyContent
+      ? [view.column.left - view.bodyContent.left, view.bodyContent.right - view.column.right]
+      : []
+    ctx.eq(`the settings body reads in an 880px column at ${label}`, view.column?.width, Math.min(880, available))
+    ctx.ok(
+      `the column is centred inside the full-width scroller at ${label}`,
+      gaps.length === 2 && Math.abs(gaps[0] - gaps[1]) <= 1,
+      `gaps ${gaps.join(' / ')} inside ${available}px`,
+    )
+  }
+  await setViewport(ctx.cdp, 1600, 900)
+  await sleep(300)
+  await columnAt('1600x900')
+  await ctx.shot('08a-settings-wide', 'the settings body at 1600x900: the cards stay in an 880px column, the scroller keeps the panel width')
+  await clearViewport(ctx.cdp)
+  await sleep(300)
+
   // The layout claim, as numbers. A short viewport forces the overflow on any
   // monitor; `min-height: 0` is what should keep it inside the panel. Since the
   // window went frameless (`titleBarStyle: 'hidden'`), `body` is `#titlebar` plus
@@ -663,6 +787,8 @@ async function step8(ctx) {
   ctx.eq('the title bar is the documented height', squeezed.titleBarHeight, TITLE_BAR_HEIGHT)
   ctx.eq('the shell fills the window below the title bar', squeezed.shellHeight, squeezed.viewport - TITLE_BAR_HEIGHT)
   ctx.ok('the composer is hidden rather than pushed out', squeezed.composerHidden === true, `composerHidden=${squeezed.composerHidden}`)
+  // The narrow end of the same claim: the column gives way instead of overflowing.
+  await columnAt('1000x520')
   await ctx.shot('08a-settings-squeezed', 'the longest form at 1000x520: it must scroll inside its own panel, nothing clipped off-window')
   await clearViewport(ctx.cdp)
 
@@ -780,6 +906,9 @@ async function step9(ctx) {
     JSON.stringify(chipBefore),
   )
 
+  // Read while the picker is shut, so the transcript's height has a before.
+  const shut = await read(ctx, probes.surface())
+
   await read(ctx, probes.clickChipEffort())
   const picker = await waitFor('the effort picker', async () => {
     const view = await read(ctx, probes.surface())
@@ -787,7 +916,23 @@ async function step9(ctx) {
   })
   ctx.eq('the chip opens the effort picker', picker.title, '选择思考强度')
   ctx.eq('every effort level is offered', picker.rows.map((row) => row.id), ['low', 'medium', 'high', 'xhigh', 'max'])
-  await ctx.shot('09a-effort-picker', 'the effort picker: the current level marked, any over-ceiling level explaining itself')
+
+  // todo V3. The panel used to span the canvas edge to edge, one screen above
+  // the chip that opens it, shoving the transcript up as it appeared.
+  ctx.ok(
+    'the picker sits on the reading column, not across the canvas',
+    picker.rect.left === picker.column.left && picker.rect.right === picker.column.right,
+    `panel=${picker.rect.left}..${picker.rect.right} column=${picker.column.left}..${picker.column.right}`,
+  )
+  ctx.ok('and that column is the 760px reading axis', picker.column.width <= 760, `${picker.column.width}px`)
+  ctx.ok(
+    'it opens on the composer’s upper edge, where its trigger is',
+    picker.rect.bottom <= picker.composerTop,
+    `panel bottom=${picker.rect.bottom} composer top=${picker.composerTop}`,
+  )
+  // A float, not a flex sibling: opening it must not resize the conversation.
+  ctx.eq('and floats over the transcript instead of squeezing it', picker.transcriptHeight, shut.transcriptHeight)
+  await ctx.shot('09a-effort-picker', 'the effort picker: floating on the composer, the current level marked, any over-ceiling level explaining itself')
 
   const since = (await app.events(ctx.app, 0)).seq
   await read(ctx, probes.clickSurfaceRow('low'))
@@ -810,6 +955,210 @@ async function step9(ctx) {
   const after = existsSync(globalSettings) ? statSync(globalSettings).mtimeMs : undefined
   ctx.eq('changing effort from the chip does not touch ~/.myagent/settings.json', after, before)
   await ctx.shot('09b-chip-low', 'the model/effort capsule: does it read as one control with two halves')
+}
+
+// --- S11: the light theme, on a real screen -------------------------------------
+
+/** `THEME_LABELS` in `src/desktop/renderer/model/settings.ts`. */
+const THEME_LABELS = { system: '跟随系统', dark: '深色', light: '浅色' }
+
+/** `parseThemePreference`: junk, null and unknown all mean "follow the system". */
+const themeLabelFor = (stored) => THEME_LABELS[stored] ?? THEME_LABELS.system
+
+/**
+ * Relative brightness of a computed `rgb(...)` colour, 0..255.
+ *
+ * Rec. 601 weights rather than sRGB luminance: the only question asked of it is
+ * "is the text darker than the surface it sits on", and for that the cheap
+ * version and the correct one never disagree.
+ */
+function brightness(colour) {
+  const channels = rgb(colour)
+  if (!channels) return undefined
+  return 0.299 * channels[0] + 0.587 * channels[1] + 0.114 * channels[2]
+}
+
+/**
+ * `#rrggbb` or `rgb(...)` to three numbers.
+ *
+ * Both spellings are in play and neither is negotiable: a custom property comes
+ * back as the literal the sheet declared, while a resolved `background-color`
+ * always comes back as `rgb(...)`. Comparing the strings would fail on notation
+ * rather than on colour.
+ */
+function rgb(colour) {
+  const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec((colour ?? '').trim())
+  if (hex) return [1, 2, 3].map((index) => Number.parseInt(hex[index], 16))
+  const fn = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(colour ?? '')
+  return fn ? [Number(fn[1]), Number(fn[2]), Number(fn[3])] : undefined
+}
+
+const sameColour = (a, b) => {
+  const left = rgb(a)
+  const right = rgb(b)
+  return left !== undefined && right !== undefined && left.every((value, index) => value === right[index])
+}
+
+/** Opens settings on the 外观 page, whatever the screen was showing. */
+async function openAppearance(ctx) {
+  const before = await read(ctx, probes.settings())
+  if (!before.open) await key(ctx.cdp, 'Ctrl+,')
+  await waitFor('the settings screen', async () => {
+    const view = await read(ctx, probes.settings())
+    return view.open ? view : undefined
+  })
+  await read(ctx, probes.clickSettingsNav('外观'))
+  return waitFor('the 外观 page', async () => {
+    const view = await read(ctx, probes.settings())
+    return view.nav.find((entry) => entry.label === '外观')?.selected ? view : undefined
+  })
+}
+
+/** Picks a theme through the pill dropdown, and waits for the paint to follow. */
+async function chooseTheme(ctx, label, expected) {
+  await read(ctx, probes.clickSettingsPill())
+  const menu = await waitFor('the theme dropdown', async () => {
+    const view = await read(ctx, probes.settingsMenu())
+    return view.open ? view : undefined
+  })
+  if (!menu.labels.includes(label)) throw new Error(`the theme dropdown does not offer ${label}: ${menu.labels.join(',')}`)
+  await read(ctx, probes.clickSettingsMenuItem(label))
+  return waitFor(`the window to repaint as ${expected}`, async () => {
+    const view = await read(ctx, probes.theme())
+    return view.resolved === expected ? view : undefined
+  })
+}
+
+/**
+ * todo V9: the light palette has never been on a screen.
+ *
+ * The unit tests already pin the light block hard (`rendererStyleTokens.test.ts`
+ * parses it and checks the overrides, the ladder and the contrast), so what is
+ * missing is not another parse — it is a real window painting it. Three things
+ * only a machine can answer: does the whole palette engage rather than half of
+ * it, does `--shadow-float` still separate a floating panel from a white page,
+ * and does `set-window-theme` reach the main process.
+ *
+ * **The native three buttons are not in evidence here.** They are painted by
+ * Windows into chrome the document does not reach (`main.ts:92`), and
+ * `Page.captureScreenshot` renders the page only — the same blind spot as a
+ * native modal (`cdp.mjs` rule 4). The wire round trip below is as far as an
+ * assertion can go; the pixels are a human's job.
+ *
+ * **Dark is forced first, deliberately.** The developer's own machine may sit in
+ * light already (the preference is `system` by default), and then "every token
+ * changed" would pass on nothing at all.
+ *
+ * The preference lives in `localStorage`, which `--cwd=` does *not* isolate
+ * (`main.ts` never sets `userData`), so the restore is a safety requirement of
+ * the same kind as the scratch project — hence the `finally`.
+ */
+async function step11(ctx) {
+  const base = await read(ctx, probes.theme())
+  ctx.note(`theme before: stored=${JSON.stringify(base.stored)} resolved=${base.resolved}`)
+
+  try {
+    await openAppearance(ctx)
+    const dark = await chooseTheme(ctx, THEME_LABELS.dark, 'dark')
+    const light = await chooseTheme(ctx, THEME_LABELS.light, 'light')
+
+    // Both halves of the switch: the attribute the stylesheet reads, and the
+    // preference that outlives the window (`app.ts:684-687` does the two together).
+    ctx.eq('picking 浅色 resolves the document to the light theme', light.resolved, 'light')
+    ctx.eq('and the preference is persisted', light.stored, 'light')
+
+    // The palette, as three separate judgements — they fail separately.
+    const changed = Object.keys(light.tokens).filter((name) => light.tokens[name] !== dark.tokens[name])
+    ctx.eq(
+      'every themed token took its light value',
+      changed.sort(),
+      Object.keys(light.tokens).sort(),
+    )
+    ctx.eq(
+      'the two theme-independent tokens stayed put',
+      light.fixed,
+      dark.fixed,
+    )
+    // The tokens changing is not the same as a rule using them: a half-applied
+    // palette is exactly what light-mode blindness produces.
+    ctx.ok(
+      'the canvas paints the light surface token',
+      sameColour(light.canvas?.background, light.tokens['--surface-canvas']),
+      `${light.canvas?.background} vs ${light.tokens['--surface-canvas']}`,
+    )
+    const text = brightness(light.body?.color)
+    const surface = brightness(light.canvas?.background)
+    ctx.ok(
+      'and the text is dark on it, not light on light',
+      text !== undefined && surface !== undefined && text < surface,
+      `text ${light.body?.color} on canvas ${light.canvas?.background}`,
+    )
+
+    // The native overlay: the wire, not the pixels. What this pins is the main
+    // process — `setTitleBarOverlay` neither threw nor blocked (a blocked main
+    // process answers nothing at all). It does not pin the renderer's own
+    // fire-and-forget call, which by construction has no reply to observe.
+    const repaint = await app.shell(ctx.app, { type: 'set-window-theme', theme: 'light' })
+    ctx.ok('the main process repaints its native chrome on request', repaint?.ok === true, JSON.stringify(repaint))
+
+    // The float shadow, in the one place it was added for (D3) and the one place
+    // it matters (a white page: on the dark canvas the border does the work).
+    await read(ctx, probes.clickSettingsPill())
+    const menu = await waitFor('the theme dropdown', async () => {
+      const view = await read(ctx, probes.settingsMenu())
+      return view.open ? view : undefined
+    })
+    ctx.ok('the dropdown still floats off the page in light mode', menu.shadow !== 'none' && menu.shadow !== '', menu.shadow)
+    ctx.ok(
+      'and it is a card, not the page',
+      sameColour(menu.background, light.tokens['--surface-card']),
+      `${menu.background} vs ${light.tokens['--surface-card']}`,
+    )
+    await ctx.shot('11b-light-settings-menu', 'the theme dropdown in light mode: does the shadow lift it off the white card under it')
+    await read(ctx, probes.clickSettingsPill())
+    await waitFor('the theme dropdown to close', async () => {
+      const view = await read(ctx, probes.settingsMenu())
+      return view.open ? undefined : view
+    })
+
+    await key(ctx.cdp, 'Escape')
+    await waitFor('settings to close', async () => {
+      const view = await read(ctx, probes.settings())
+      return view.open === false ? view : undefined
+    })
+    await ctx.shot('11a-light-window', 'the whole window in light mode: the canvas hairline, the sidebar tiers, the conversation')
+
+    await read(ctx, probes.clickChipEffort())
+    const picker = await waitFor('the effort picker', async () => {
+      const view = await read(ctx, probes.surface())
+      return view.open ? view : undefined
+    })
+    ctx.ok('a composer popover floats in light mode too', picker.shadow !== 'none' && picker.shadow !== '', picker.shadow)
+    await ctx.shot('11c-light-popover', 'the effort picker in light mode: does it read as a layer above the conversation')
+    await key(ctx.cdp, 'Escape')
+    await waitFor('the effort picker to close', async () => {
+      const view = await read(ctx, probes.surface())
+      return view.open ? undefined : view
+    })
+
+    // Back to where the developer left it, through the same path a user would.
+    await openAppearance(ctx)
+    const restored = await chooseTheme(ctx, themeLabelFor(base.stored), base.resolved)
+    // Against the *effective* preference, not the raw slot: a machine that never
+    // set one reads `null` and means `system`, and clicking 跟随系统 writes the
+    // word. The `finally` puts the slot itself back either way.
+    ctx.eq('the run gives the theme back as it found it', restored.stored, base.stored ?? 'system')
+    await key(ctx.cdp, 'Escape')
+    await waitFor('settings to close again', async () => {
+      const view = await read(ctx, probes.settings())
+      return view.open === false ? view : undefined
+    })
+  } finally {
+    // Not an assertion: this protects the developer's own window even when the
+    // step threw halfway through the switch. `localStorage` is shared with the
+    // real app — the scratch project never covered it.
+    await read(ctx, probes.setStoredTheme(base.stored)).catch(() => {})
+  }
 }
 
 // --- S1: the one paid turn ------------------------------------------------------
@@ -965,6 +1314,7 @@ export const STEPS = [
   { id: 'S5', item: 5, name: 'a second project opens, shuts down, and re-bootstraps', timeout: 150000, run: step5 },
   { id: 'S8', item: 8, name: 'settings edit, fan out, and lay out inside the window', timeout: 180000, run: step8 },
   { id: 'S9', item: 9, name: 'the composer chip changes effort without persisting it', timeout: 45000, run: step9 },
+  { id: 'S11', item: 8, name: 'the light theme paints, floats, and is given back', timeout: 90000, run: step11 },
   { id: 'S1', item: 1, name: 'a live turn keeps running in the background', timeout: 180000, run: step1, paid: true },
   { id: 'S4b', item: 4, name: 'deleting the last session leaves a draft, not a closed window', timeout: 60000, run: step4b },
 ]

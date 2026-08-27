@@ -140,8 +140,11 @@ function thinkingNode(
   // on `thinking_stop` while the block is still arriving.
   if (item.pending === true) classes.push('live')
   const label = thinkingHeaderLabel(item)
+  // 「已处理 Xm Xs `⌵`」 (design_guidance 四.3): the glyph follows the label and
+  // still flips to point up while the block is open — that rule matches on the
+  // class, not on the position.
   const header = button('thinking-header', label, label, () => onToggleThinking(item.id), {
-    icon: 'chevron-down',
+    trailingIcon: 'chevron-down',
   })
   header.setAttribute('aria-expanded', collapsed ? 'false' : 'true')
   return el(

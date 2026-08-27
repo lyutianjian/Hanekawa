@@ -231,6 +231,35 @@ test('an unmatched page says so in the body', (t) => {
   assert.match(findOne(body, 'settings-empty').text, /zzz-nothing/)
 })
 
+test('the body scrolls and the column inside it holds the reading measure', (t) => {
+  // todo V7: the scroller has to stay full width or its scrollbar detaches from
+  // the canvas edge, so the 880px measure lives on a node of its own — the same
+  // split as `.transcript-column` inside the transcript's scroller.
+  const { view, apply } = mount(t)
+  const body = child(view(), 'settings-body')
+
+  assert.deepEqual(
+    body.children.map((node) => node.className),
+    ['settings-column'],
+    'the body holds exactly one child, the column; everything else is rebuilt inside it',
+  )
+  const column = body.children[0]!
+  assert.ok(findAll(column, 'settings-header').length === 1)
+  assert.ok(findAll(column, 'settings-card').length > 0, 'the cards render inside the column')
+
+  // Still true after a render that replaces the region, and for a form page.
+  apply({ kind: 'new-model' })
+  const after = child(view(), 'settings-body')
+  assert.deepEqual(after.children.map((node) => node.className), ['settings-column'])
+  assert.equal(findAll(after.children[0]!, 'settings-form').length, 1)
+
+  // Non-vacuity: a class no rule ever mentions would make the node decorative.
+  const widths = rulesFor('settings-column').flatMap((block) =>
+    block.decls.filter((decl) => decl.prop === 'max-width'),
+  )
+  assert.equal(widths.length, 1, '.settings-column must carry exactly one max-width')
+})
+
 // --- the pill dropdown -------------------------------------------------------
 
 /** The routing card's main-role row: a `select` control on the provider page. */
@@ -250,13 +279,20 @@ test('a row-level select is a closed pill, not a native control', (t) => {
   assert.equal(findAll(shell, 'settings-menu').length, 0, 'closed means the menu is absent')
   // The label is the selected choice's text, not its raw value.
   assert.match(trigger.text, /big/)
+
+  // 「左图标 + 文本 + `⌵`」 (design_guidance 六). `button()` used to insert its
+  // icon before the label unconditionally, which drew this as `⌵ big` (todo V4);
+  // the caret is now an explicit `trailingIcon`. Verified by mutation: switching
+  // it back to `icon` reds this and nothing else.
+  assert.equal(trigger.children[0]?.className, 'btn-label')
+  assert.equal(trigger.children.at(-1)?.tagName, 'svg')
 })
 
 test('the header project picker and the form fields stay native selects', (t) => {
   // The deliberate scope limit of stage 5f: a native `<select>` is keyboard- and
   // screen-reader-complete for free, and a form is a keyboard flow.
   const { view, apply } = mount(t)
-  const header = child(child(view(), 'settings-body'), 'settings-header')
+  const header = findOne(child(view(), 'settings-body'), 'settings-header')
   assert.equal(findOne(header, 'settings-project').tagName, 'SELECT')
 
   apply({ kind: 'new-model' })

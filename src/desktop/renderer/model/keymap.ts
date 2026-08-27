@@ -67,6 +67,18 @@ export type KeyAction =
   | 'newline'
   | 'none'
 
+/**
+ * Whether accepting a completion should also send it.
+ *
+ * Shared by Enter and by a click on the row, so the mouse cannot end up
+ * submitting where the keyboard only fills in. Both exceptions are the same:
+ * a file mention is a fragment of a sentence, and mid-turn there is nothing to
+ * submit into.
+ */
+export function completionAcceptMode(state: ShellState): 'accept' | 'submit' {
+  return state.isStreaming || state.completions === 'file' ? 'accept' : 'submit'
+}
+
 export function resolveKey(chord: KeyChord, state: ShellState): KeyAction {
   // 1. A blocking request first, always. See the note above.
   if (state.hasOverlay) return 'overlay'
@@ -92,9 +104,7 @@ export function resolveKey(chord: KeyChord, state: ShellState): KeyAction {
     // A file mention is the exception, and mid-turn there is nothing to submit
     // into, so both degrade to accepting.
     if (chord.key === 'Enter' && chord.shiftKey !== true) {
-      return state.isStreaming || state.completions === 'file'
-        ? 'accept-completion'
-        : 'submit-completion'
+      return completionAcceptMode(state) === 'accept' ? 'accept-completion' : 'submit-completion'
     }
   }
 

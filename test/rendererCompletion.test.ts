@@ -12,6 +12,7 @@ import {
   fileCompletionQuery,
   isOpen,
   moveCompletion,
+  selectCompletion,
   type CompletionState,
 } from '../src/desktop/renderer/model/completion.js'
 import type { FileSuggestion } from '../src/runtime/suggestions/atToken.js'
@@ -198,4 +199,21 @@ test('an empty state answers nothing rather than throwing', () => {
   assert.equal(isOpen(NO_COMPLETIONS), false)
   assert.equal(acceptCompletion(NO_COMPLETIONS, 'x', 1), undefined)
   assert.equal(moveCompletion(NO_COMPLETIONS, 'down'), NO_COMPLETIONS)
+})
+
+test('a clicked row is focused by index, clamped and without re-requesting', () => {
+  const started = beginFileRequest(NO_COMPLETIONS)
+  const state = applyFileResponse(started.state, started.seq, [file('a.ts'), file('b.ts')])
+
+  const picked = selectCompletion(state, 1)
+  assert.ok(picked.kind === 'file')
+  assert.equal(picked.selectedIndex, 1)
+  assert.equal(picked.seq, state.seq, 'a click is not a new request either')
+  assert.equal(acceptCompletion(picked, '@', 1)?.text, '@b.ts ')
+
+  // Clamped rather than wrapped: an index off the end is a stale row, not a step
+  // around a ring.
+  assert.equal((selectCompletion(state, 9) as { selectedIndex: number }).selectedIndex, 1)
+  assert.equal((selectCompletion(state, -3) as { selectedIndex: number }).selectedIndex, 0)
+  assert.equal(selectCompletion(NO_COMPLETIONS, 0), NO_COMPLETIONS)
 })

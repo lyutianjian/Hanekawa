@@ -5,6 +5,7 @@ import {
   beginRewindRun,
   createRewindState,
   failRewindRun,
+  rewindActionToIntent,
   rewindKeyToIntent,
   rewindViewModel,
   runRewind,
@@ -118,7 +119,44 @@ test('an empty session draws an explanation instead of a list', () => {
   const view = rewindViewModel(createRewindState([]))
   assert.equal(view.emptyMessage, '没有可用的检查点')
   assert.deepEqual(view.rows, [])
-  assert.equal(view.hint, '[Esc] 关闭')
+  assert.deepEqual(view.actions, [{ label: '关闭', shortcut: 'Esc', role: 'secondary' }])
+})
+
+test('the confirm screen offers its decisions as buttons, danger only where files move', () => {
+  const state = { ...createRewindState(twoCheckpoints()), checkpointIndex: 0, screen: 'confirm' as const }
+  const view = rewindViewModel(state)
+
+  // One button per option, addressing the same slot the digit does.
+  assert.deepEqual(view.actions.map((action) => action.slot), view.options.map((_, i) => i))
+  assert.deepEqual(view.actions.map((action) => action.shortcut), view.options.map((o) => o.hotkey))
+  for (const action of view.actions) {
+    const option = view.options[action.slot!]!
+    assert.equal(action.label, option.label)
+    assert.equal(action.role, option.decision === 'nevermind' ? 'secondary' : 'primary')
+    const touchesFiles = option.decision === 'restore-code' || option.decision === 'restore-code-and-conversation'
+    assert.equal(action.tone, touchesFiles ? 'danger' : undefined, option.decision)
+  }
+
+  // A button resolves through the same array, so it cannot pick a decision the
+  // number key would not.
+  assert.deepEqual(
+    rewindActionToIntent({ kind: 'slot', index: 0 }, view),
+    { kind: 'choose', decision: view.options[0]!.decision },
+  )
+  assert.deepEqual(rewindActionToIntent({ kind: 'secondary' }, view), { kind: 'close' })
+  assert.deepEqual(rewindActionToIntent({ kind: 'slot', index: 99 }, view), { kind: 'none' })
+})
+
+test('a running decision withdraws the buttons along with the options', () => {
+  const state = beginRewindRun({
+    ...createRewindState(twoCheckpoints()),
+    checkpointIndex: 0,
+    screen: 'confirm' as const,
+  })
+  const view = rewindViewModel(state)
+  assert.ok(view.busyLabel !== undefined)
+  // Not disabled — absent. The panel is taking no input at all.
+  assert.deepEqual(view.actions, [])
 })
 
 test('a failed checkpoint read still shows the reason', () => {

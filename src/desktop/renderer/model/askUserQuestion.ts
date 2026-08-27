@@ -5,6 +5,7 @@ import type {
   AskUserQuestionRequest,
   AskUserQuestionResult,
 } from '../../../harness/types.js'
+import type { DialogAction } from './dialogActions.js'
 
 /**
  * The AskUserQuestion dialog as a state machine.
@@ -55,7 +56,8 @@ export interface AskViewModel {
   readonly otherText: string
   /** The focused option's preview, for the side-by-side layout. */
   readonly preview: string | undefined
-  readonly hint: string
+  /** Dialog-level buttons; the options themselves stay a row list. */
+  readonly actions: readonly DialogAction[]
 }
 
 export function createAskState(request: AskUserQuestionRequest): AskState {
@@ -73,6 +75,8 @@ export function createAskState(request: AskUserQuestionRequest): AskState {
 
 export type AskIntent =
   | { kind: 'move'; direction: 'up' | 'down' }
+  /** A row was picked outright — the mouse's only intent. See `applyAskIntent`. */
+  | { kind: 'select'; index: number }
   | { kind: 'toggle' }
   | { kind: 'commit' }
   | { kind: 'other-type'; text: string }
@@ -138,6 +142,22 @@ export function applyAskIntent(state: AskState, intent: AskIntent): AskOutcome {
       const delta = intent.direction === 'up' ? -1 : 1
       const next = clamp(state.selectedIndex + delta, 0, labels.length - 1)
       return { state: { ...state, selectedIndex: next } }
+    }
+
+    // A click on a row: focus it, then do to it what the keyboard would.
+    //
+    // Which key that is depends on the row: Space on a multi-select option (so a
+    // click ticks the box and the question stays open — the submit affordance is
+    // still Enter until the dialog grows buttons), Enter on anything else, which
+    // is what routes 「其他」 into `otherMode` rather than answering with its label.
+    // While the free-text field is open the list is not the target at all.
+    case 'select': {
+      if (state.otherMode) return { state }
+      if (intent.index < 0 || intent.index >= labels.length) return { state }
+      const focused: AskState = { ...state, selectedIndex: intent.index }
+      return question.multiSelect === true && !isOtherIndex(intent.index, labels)
+        ? applyAskIntent(focused, { kind: 'toggle' })
+        : commit(focused, question, labels)
     }
 
     case 'toggle': {
@@ -261,11 +281,22 @@ export function askViewModel(state: AskState): AskViewModel | undefined {
     preview: question.multiSelect === true
       ? undefined
       : question.options[state.selectedIndex]?.preview,
-    hint: state.otherMode
-      ? '[Enter] 提交　[Esc] 返回'
-      : question.multiSelect === true
-        ? '[↑↓] 移动　[Space] 勾选　[Enter] 提交　[Esc] 取消'
-        : '[↑↓] 移动　[Enter] 选择　[Esc] 取消',
+    // The submit button is the multi-select answer: ticking boxes with the mouse
+    // was reachable before it, but committing them was not (Enter only).
+    // Escape's two levels are preserved — in the free-text field it backs out,
+    // in the list it rejects the request.
+    actions: [
+      {
+        label: state.otherMode ? '返回' : '取消',
+        shortcut: 'Esc',
+        role: 'secondary',
+      },
+      {
+        label: state.otherMode || question.multiSelect === true ? '提交' : '选择',
+        shortcut: 'Enter',
+        role: 'primary',
+      },
+    ],
   }
 }
 

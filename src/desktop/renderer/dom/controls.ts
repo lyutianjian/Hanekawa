@@ -18,7 +18,7 @@ export function button(
   label: string,
   title: string,
   onClick: () => void,
-  options: { enabled?: boolean; icon?: IconName } = {},
+  options: { enabled?: boolean; icon?: IconName; trailingIcon?: IconName } = {},
 ): HTMLButtonElement {
   const node = el('button', className)
   node.type = 'button'
@@ -27,8 +27,15 @@ export function button(
   // Built up rather than assigned as `textContent`, because an icon child would
   // be wiped by it. An icon-only button passes an empty label and relies on the
   // `aria-label` above for its name.
+  //
+  // Two parameters rather than one plus a convention: `icon` used to be inserted
+  // before the label unconditionally, which drew every dropdown as `⌵ 跟随系统`
+  // while `design_guidance.md` asks for 「左图标 + 文本 + `⌵`」 (六), 「项目名 +
+  // `⌵`」 (三.2) and 「已处理 Xm Xs `⌵`」 (四.3). Where the glyph goes is now the
+  // call site's explicit decision instead of something it has to remember.
   if (options.icon) node.appendChild(icon(options.icon))
   if (label) node.appendChild(el('span', 'btn-label', label))
+  if (options.trailingIcon) node.appendChild(icon(options.trailingIcon))
   node.disabled = options.enabled === false
   node.addEventListener('click', (event) => {
     // Rows are clickable too; a button inside one must not also activate it.
@@ -164,7 +171,7 @@ export function pillSelect(options: {
     selected?.label ?? options.value,
     options.ariaLabel,
     options.onToggle,
-    { icon: 'chevron-down' },
+    { trailingIcon: 'chevron-down' },
   )
   trigger.setAttribute('aria-haspopup', 'listbox')
   trigger.setAttribute('aria-expanded', options.open ? 'true' : 'false')

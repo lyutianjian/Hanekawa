@@ -1,6 +1,8 @@
 import type { AskViewModel } from '../model/askUserQuestion.js'
+import type { DialogAction, OverlayAction } from '../model/dialogActions.js'
 import type { EnterPlanViewModel, ExitPlanViewModel } from '../model/planDialogs.js'
 import type { PermissionViewModel } from '../model/permissionDialog.js'
+import { button } from './controls.js'
 import { previewNode } from './diffView.js'
 import { el, replace, show } from './dom.js'
 import { markdownNode } from './markdownView.js'
@@ -11,6 +13,16 @@ import { markdownNode } from './markdownView.js'
  * Every decision — which options exist, which is focused, what the tone is —
  * arrives already made in the view model. This file only turns that into nodes,
  * which is what keeps the interesting parts testable without a DOM.
+ *
+ * Two shapes, decided in `model/`: an option that *is* an action (allow, deny,
+ * enter plan mode) is drawn as a button in the bar at the bottom, and an option
+ * that is content (an answer with a description, a plan decision that grows a
+ * feedback field) stays a row above it. Both hand back an `OverlayAction`, which
+ * each dialog's model turns into the same intent its key produces.
+ *
+ * The backdrop is deliberately **not** clickable: every one of these four
+ * requests is holding the agent loop, so there is no dismissing them — see
+ * `paneSession.ts`'s `enqueue`.
  */
 export interface OverlayView {
   permission(view: PermissionViewModel): void
@@ -20,7 +32,17 @@ export interface OverlayView {
   hide(): void
 }
 
-export function createOverlayView(container: HTMLElement, panel: HTMLElement): OverlayView {
+/** What the panel reports when something is picked. */
+export type OverlaySelect = (action: OverlayAction) => void
+
+export function createOverlayView(
+  container: HTMLElement,
+  panel: HTMLElement,
+  onSelect: OverlaySelect,
+): OverlayView {
+  const optionList = (rows: OptionRow[]) => optionListNode(rows, onSelect)
+  const actions = (list: readonly DialogAction[], selectedIndex?: number) =>
+    actionBar(list, onSelect, selectedIndex)
   const open = (tone: 'danger' | 'caution' | 'normal', ...children: Array<Node | string | false>) => {
     panel.className = `tone-${tone}`
     replace(panel, ...children)
@@ -43,31 +65,28 @@ export function createOverlayView(container: HTMLElement, panel: HTMLElement): O
           el('div', 'block', view.inputBlock.content),
         ),
         view.preview !== undefined && previewNode(view.preview),
-        optionList(view.options.map((option, index) => ({
-          label: option.label,
-          hotkey: option.hotkey,
-          selected: index === view.selectedIndex,
-        }))),
         view.alsoWaiting.length > 0
           && el('div', 'also-waiting', `还在等待：${view.alsoWaiting.join('、')}`),
-        el('div', 'hint', view.hint),
+        actions(view.actions, view.selectedIndex),
       )
     },
 
     ask(view) {
       open(
         'normal',
-        el('div', 'title', `[${view.header}] ${view.question}`),
+        // The header is a chip, not `[bracketed]`: it is a category label the
+        // tool supplies, and the brackets were the terminal's way of saying so.
+        el('div', 'title', el('span', 'dialog-chip', view.header), el('span', undefined, view.question)),
         view.questionTotal > 1
           && el('div', 'subtitle', `第 ${view.questionNumber}/${view.questionTotal} 个问题`),
-        optionList(view.rows.map((row, index) => ({
-          // A multi-select row shows its toggle state; "Other" never toggles.
-          label: view.multiSelect && !row.isOther
-            ? `${row.toggled ? '[x]' : '[ ]'} ${row.label}`
-            : row.label,
+        optionList(view.rows.map((row) => ({
+          label: row.label,
           description: row.description,
           selected: row.selected,
-          hotkey: String(index + 1),
+          // A multi-select row carries a tick box; "Other" never toggles. No
+          // number badge: `askKeyToIntent` does not read digits, and a badge for
+          // a key that does nothing is worse than none.
+          ...(view.multiSelect && !row.isOther ? { toggled: row.toggled } : {}),
         }))),
         view.otherMode && el(
           'div',
@@ -76,7 +95,7 @@ export function createOverlayView(container: HTMLElement, panel: HTMLElement): O
           el('div', 'feedback focused', view.otherText),
         ),
         view.preview !== undefined && el('div', 'block', view.preview),
-        el('div', 'hint', view.hint),
+        actions(view.actions),
       )
     },
 
@@ -87,12 +106,7 @@ export function createOverlayView(container: HTMLElement, panel: HTMLElement): O
         el('div', 'reason', view.body),
         el('div', 'bullets', view.bullets.map((bullet) => ` · ${bullet}`).join('\n')),
         el('div', 'subtitle', view.reassurance),
-        optionList(view.options.map((option, index) => ({
-          label: option.label,
-          hotkey: option.hotkey,
-          selected: index === view.selectedIndex,
-        }))),
-        el('div', 'hint', view.hint),
+        actions(view.actions, view.selectedIndex),
       )
     },
 
@@ -107,6 +121,7 @@ export function createOverlayView(container: HTMLElement, panel: HTMLElement): O
         el('div', 'subtitle', view.planFilePath),
         optionList(view.options.map((option, index) => ({
           label: option.label,
+          // The digits do work here, unlike the ask dialog's.
           hotkey: String(index + 1),
           selected: index === view.selectedIndex,
           // The reject slot grows a feedback field once it is focused.
@@ -114,7 +129,7 @@ export function createOverlayView(container: HTMLElement, panel: HTMLElement): O
             ? el('div', `feedback${view.feedbackFocused ? ' focused' : ''}`, view.feedback)
             : undefined,
         }))),
-        el('div', 'hint', view.hint),
+        actions(view.actions),
       )
     },
 
@@ -127,22 +142,72 @@ export function createOverlayView(container: HTMLElement, panel: HTMLElement): O
 
 interface OptionRow {
   label: string
-  hotkey: string
   selected: boolean
+  /** Only when the digit actually answers; the ask dialog's did not. */
+  hotkey?: string
   description?: string
+  /** Present on a multi-select row, and only there: the tick box's state. */
+  toggled?: boolean
   extra?: HTMLElement | undefined
 }
 
-function optionList(rows: OptionRow[]): HTMLElement {
+function optionListNode(rows: OptionRow[], onSelect: OverlaySelect): HTMLElement {
   const list = el('div', 'options')
-  for (const row of rows) {
+  list.setAttribute('role', 'listbox')
+  rows.forEach((row, index) => {
     const line = el('div', `option${row.selected ? ' selected' : ''}`)
-    line.appendChild(document.createTextNode(row.selected ? '> [' : '  ['))
-    line.appendChild(el('span', 'hotkey', row.hotkey))
-    line.appendChild(document.createTextNode(`] ${row.label}`))
-    if (row.description) line.appendChild(el('span', 'subtitle', ` — ${row.description}`))
+    line.setAttribute('role', 'option')
+    line.setAttribute('aria-selected', String(row.selected))
+    if (row.toggled !== undefined) {
+      // A box rather than a `[x]`, so the state is a shape and not a character
+      // the user has to read. `aria-checked` is what says it out loud.
+      line.appendChild(el('span', `option-tick${row.toggled ? ' on' : ''}`))
+      line.setAttribute('aria-checked', String(row.toggled))
+    }
+    line.appendChild(el('span', 'option-label', row.label))
+    if (row.description) line.appendChild(el('span', 'option-desc', row.description))
+    if (row.hotkey) line.appendChild(el('span', 'kbd', row.hotkey))
+    line.addEventListener('click', () => onSelect({ kind: 'slot', index }))
     list.appendChild(line)
+    // The feedback field belongs to the row above it but is not part of it: a
+    // click there is aimed at the text, not at picking the option again.
     if (row.extra) list.appendChild(row.extra)
-  }
+  })
   return list
+}
+
+/**
+ * The button bar a dialog ends with.
+ *
+ * Built through `controls.ts`'s `button()` for the same reasons everything else
+ * is: the click handler stops propagation, the title doubles as the accessible
+ * name, and `rendererStyleTokens.test.ts`'s scan of `button('…')` call sites is
+ * what guarantees the class has a resting-state rule rather than falling back to
+ * the user agent's grey box.
+ *
+ * `selectedIndex` marks the keyboard cursor on a bar whose buttons are slots —
+ * it is the safe default Enter is about to hit, and on a destructive permission
+ * request that default is *deny*, so it has to be visible.
+ */
+export function actionBar(
+  actions: readonly DialogAction[],
+  onSelect: OverlaySelect,
+  selectedIndex?: number,
+): HTMLElement {
+  const bar = el('div', 'dialog-actions')
+  for (const action of actions) {
+    const focused = action.slot !== undefined && action.slot === selectedIndex
+    const classes = [
+      'dialog-btn',
+      action.role,
+      ...(action.tone === 'danger' ? ['danger'] : []),
+      ...(focused ? ['selected'] : []),
+    ].join(' ')
+    const node = button(classes, action.label, action.label, () => {
+      onSelect(action.slot === undefined ? { kind: action.role } : { kind: 'slot', index: action.slot })
+    })
+    if (action.shortcut) node.appendChild(el('span', 'kbd', action.shortcut))
+    bar.appendChild(node)
+  }
+  return bar
 }

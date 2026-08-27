@@ -16,10 +16,11 @@ import type {
  * say, what a keystroke means — already happened in `model/settings.ts`; this
  * file only builds elements and forwards intents.
  *
- * The screen lives *inside* `#canvas` rather than being a body-level overlay:
- * `#overlay` and `#rewind` are `position: fixed` and cover the sidebar, which
- * makes them modal. Settings is not modal — it never parks the agent loop, and
- * the session list stays usable beside it.
+ * The screen fills `#canvas` rather than floating over it. `#overlay` and
+ * `#rewind` cover the same canvas (S6) but are modal: each of them parks that
+ * lane's agent loop until it is answered. Settings never parks anything, so it
+ * hides its siblings from the stylesheet instead of scrimming them, and the
+ * sidebar stays usable beside all three.
  *
  * No colours and no `.style.*` here; `styles.css` owns all of it.
  */
@@ -85,6 +86,12 @@ export function createSettingsView(
   nav.appendChild(close)
   const body = el('div', 'settings-body')
   body.id = 'settings-body'
+  // Two nodes, two jobs (todo V7): `body` is the full-width scroller, so its
+  // scrollbar stays on the canvas edge, and `column` is the 880px reading measure
+  // everything is rebuilt into. Built once here rather than per render — the
+  // replaced region is the column's children.
+  const column = el('div', 'settings-column')
+  body.appendChild(column)
   container.appendChild(nav)
   container.appendChild(body)
 
@@ -128,7 +135,7 @@ export function createSettingsView(
       )
 
       replace(
-        body,
+        column,
         headerNode(view, onIntent),
         view.error ? el('div', 'settings-error', view.error) : null,
         view.confirming ? confirmNode(view.confirming.message, onIntent) : null,

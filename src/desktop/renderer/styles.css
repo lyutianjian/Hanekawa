@@ -13,21 +13,44 @@
   `test/rendererStyleTokens.test.ts` asserts that at source level.
 */
 :root {
-  /* --- surfaces: four layers, darkest first ---
-     The sidebar is the app's *base*, and the canvas is a lighter panel nested
-     inside it. That is the inverse of what this shell did before 4e, and it is
-     the whole point: depth comes from the canvas sitting on top of the frame,
-     not from the frame being brighter than its contents. */
-  --surface-base: #0f0f11;
-  --surface-canvas: #17171a;
-  --surface-card: #1f1f23;
+  /* --- surfaces: the canvas anchors, the frame is one rung up ---
+     The canvas is the *extreme* of the theme — the deepest well in dark, pure
+     white in light — and everything else steps away from it along one ladder:
+     card, hover, active. `--surface-base` (the window frame: title bar, sidebar,
+     the gutter around the canvas) is a rung on that same ladder, between the
+     canvas and hover. So in light the frame reads darker than the canvas and in
+     dark it reads *lighter*, which is not a contradiction but the same rule:
+     the frame recedes, the canvas is where the eye lands.
+
+     Tint lives in exactly two places, and nowhere else. The canvas is faintly
+     *warm* (r > g > b) — it is the surface a conversation is read off, and a
+     warm grey is what keeps a wall of text from reading as a screen. The frame
+     is faintly *cool*, and carries the wash below. Everything between them
+     (card, hover, active) is as near neutral as makes no difference, so a row
+     looks the same whether it is drawn on the glass or on the canvas. All of it
+     stays far inside the ≤20 saturation the neutrality guard enforces. */
+  --surface-base: #1c2125;
+  --surface-canvas: #1a1918;
+  --surface-card: #222120;
   /* Pointer-over. Its own step because the four-layer ladder has no room for
      one: rows inside a panel sit *on* --surface-card, so hovering them to
      --surface-card would be invisible, and hovering them to --surface-active
      would make hover indistinguishable from selection. */
-  --surface-hover: #25252b;
+  --surface-hover: #2a2927;
   /* The row the keyboard is on, in either list. */
-  --surface-active: #2a2a30;
+  --surface-active: #323130;
+
+  /* --- the wash under the glass ---
+     Two blobs of pigment sitting under the frosted frame, painted by `body` and
+     therefore continuous from the title bar into the sidebar: warm around 42%
+     of the window's width, cool-green around 74%, both anchored above the top
+     edge so they fade out well before the sidebar's foot. They are FIXED
+     colours, not a composite of whatever is behind the window — the frosted
+     look here is entirely painted, so it is identical on every desktop and
+     costs no `backdrop-filter`. Amplitude is a handful of levels: the field has
+     to read as "not flat", never as "coloured". */
+  --surface-wash-warm: #25211a;
+  --surface-wash-mint: #1d2121;
   /* The knob of a switch that is on. Its own token because it is the one
      surface that must NOT follow the theme: it sits on `--accent-info`, which is
      a saturated blue in both themes, so `--text-primary` would turn it near-black
@@ -39,16 +62,16 @@
   --surface-scrim: rgba(0, 0, 0, 0.55);
 
   /* --- text: three levels plus the one interactive colour --- */
-  --text-primary: #f2f2f5;
-  --text-secondary: #9aa0aa;
-  --text-tertiary: #6b7078;
-  --link: #6aa8ff;
+  --text-primary: #f4f3f1;
+  --text-secondary: #9b9992;
+  --text-tertiary: #6d6b66;
+  --link: #78b0ff;
 
   /* --- accents ---
      Icons, badges and 1–3px state rules only. Never a fill, never a page of
      body text: the interface stays neutral and colour means something when it
      does appear. `test/rendererStyleTokens.test.ts` enforces the property list. */
-  --accent-info: #5b9dff;
+  --accent-info: #6ba6ff;
   --accent-tool: #a97bff;
   --accent-review: #4cc38a;
   --accent-warn: #e0a355;
@@ -63,10 +86,10 @@
 
   /* --- lines ---
      Hairlines, and few of them: grouping is done with cards and spacing. */
-  --border-subtle: #26262b;
-  --border-strong: #34343b;
-  --focus-ring: #5b9dff;
-  --caret: #f2f2f5;
+  --border-subtle: #2b2a28;
+  --border-strong: #3a3835;
+  --focus-ring: #6ba6ff;
+  --caret: #f4f3f1;
 
   /* The one elevation in the sheet. Only a floating control that overlaps
      scrolling content asks for it: on the dark canvas the shadow barely reads and
@@ -111,27 +134,30 @@
    Values from design_guidance.md 六.1; neutrals kept within the ≤20 saturation the
    sheet's neutrality test enforces (so #1a1a1e / #686b75, not #111827 / #6b7280). */
 :root[data-theme="light"] {
-  --surface-base: #f3f3f5;
+  --surface-base: #edf4f9;
   --surface-canvas: #ffffff;
-  --surface-card: #fafafc;
-  --surface-hover: #eaebee;
-  --surface-active: #e5e7eb;
+  --surface-card: #faf9f7;
+  --surface-hover: #ebeced;
+  --surface-active: #e1e2e4;
 
-  --text-primary: #1a1a1e;
-  --text-secondary: #686b75;
-  --text-tertiary: #9ca3af;
-  --link: #2563eb;
+  --surface-wash-warm: #f9f2e6;
+  --surface-wash-mint: #e9f6f8;
 
-  --accent-info: #2563eb;
+  --text-primary: #171614;
+  --text-secondary: #73716b;
+  --text-tertiary: #a5a39d;
+  --link: #3b7ae4;
+
+  --accent-info: #3b7ae4;
   --accent-tool: #9333ea;
   --accent-review: #16a34a;
   --accent-warn: #d97706;
   --accent-danger: #dc2626;
 
-  --border-subtle: #e5e7eb;
-  --border-strong: #d1d5db;
-  --focus-ring: #2563eb;
-  --caret: #1a1a1e;
+  --border-subtle: #e8e7e4;
+  --border-strong: #d6d4d0;
+  --focus-ring: #3b7ae4;
+  --caret: #171614;
 
   --shadow-float: 0 4px 14px rgba(0, 0, 0, 0.14);
 
@@ -143,7 +169,16 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
-  background: var(--surface-base);
+  /* The window frame's material, in one place. `#titlebar` and `#sidebar` are
+     transparent and let this through, which is what makes the wash a single
+     field crossing from the caption strip into the sidebar rather than two that
+     have to be kept in step. `#canvas` is opaque, so the wash stops at its edge.
+     The blobs fade to `transparent`, not to a colour: Chromium interpolates
+     gradients in premultiplied alpha, so there is no grey fringe to avoid. */
+  background:
+    radial-gradient(55% 120% at 44% -5%, var(--surface-wash-warm), transparent 85%),
+    radial-gradient(28% 300% at 74% -3%, var(--surface-wash-mint), transparent),
+    var(--surface-base);
   color: var(--text-primary);
   font: 14px/1.5 var(--font-ui);
   display: flex;
@@ -187,7 +222,9 @@ body {
   gap: 2px;
   height: 40px;
   padding: 0 148px 0 8px;
-  background: var(--surface-base);
+  /* Transparent, not `--surface-base`: the frame's material is `body`'s, and a
+     fill here would cut the wash in half along the caption strip's foot. */
+  background: transparent;
   -webkit-app-region: drag;
 }
 #titlebar button { -webkit-app-region: no-drag; }
@@ -387,7 +424,15 @@ body {
 
    `overflow: hidden` is not decoration: the transcript scrolls inside this
    panel, and without it the scrollbar squares off the corner the layout is
-   built around. */
+   built around. It also clips the two modal scrims to the canvas's rounded
+   corners, which is why neither of them carries a `border-radius`.
+
+   `position: relative` is load-bearing (S6): it is the containing block for
+   `#overlay` and `#rewind`, which cover this panel rather than the window.
+   Deliberately **no** `z-index` here: leaving it `auto` keeps the canvas out of
+   its own stacking context, so the two modal layers still compare against every
+   other layer in the sheet (the sidebar's menus among them) instead of being
+   trapped under a lower-numbered sibling. */
 #shell {
   flex: 1 1 auto;
   min-height: 0;
@@ -395,6 +440,7 @@ body {
   align-items: stretch;
 }
 #canvas {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -404,6 +450,23 @@ body {
   background: var(--surface-canvas);
   border-radius: var(--radius-lg);
   overflow: hidden;
+  /* The hairline that makes the panel *float* (todo V1). In dark the canvas is
+     eight luminance steps off the base and the two columns read as one black
+     rectangle; the token ladder holds symbolically and not in pixels.
+
+     An `outline` and not a `border`, deliberately, twice over:
+     - `#overlay`/`#rewind` are `absolute; inset: 0` since S6, which positions
+       them against the *padding* box. A border would inset them by 1px on every
+       side and break smoke S2's per-edge equality with `#canvas` — a judgement
+       D7 already decided must stay exact rather than be loosened.
+     - An inset `box-shadow` paints above this element's background but *below*
+       its descendants, so `#canvas-header` would cover the top edge. An outline
+       is painted after all in-flow descendants, and never enters
+       `getBoundingClientRect()`.
+     `overflow: hidden` does not clip an element's own outline, and the outline
+     follows `border-radius`. Same idiom as `.sidebar-list:focus` below. */
+  outline: 1px solid var(--border-subtle);
+  outline-offset: -1px;
 }
 
 /* --- sidebar --- */
@@ -412,13 +475,17 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--surface-base);
+  /* See `#titlebar`: the sidebar is the same pane of glass, so it draws no fill
+     of its own and the wash runs down through it. */
+  background: transparent;
   overflow: hidden;
 }
-/* Collapsed keeps the rail so the toggle stays reachable by mouse —
-   otherwise Ctrl+B is the only way back. */
-#sidebar.collapsed { flex-basis: 44px; }
-#sidebar.collapsed .sidebar-workspace-shell { display: none; }
+/* Collapsed is zero width, not a rail: the toggle it used to keep reachable now
+   lives in the title bar (`.titlebar-rail`), which collapsing does not touch.
+   The canvas has no left margin of its own — it borrows the sidebar's edge — so
+   it has to grow one here, or it reads as glued to the window frame. */
+#sidebar.collapsed { flex-basis: 0; }
+#sidebar.collapsed + #canvas { margin-left: 8px; }
 .sidebar-header {
   position: relative;
   flex: 0 0 auto;
@@ -450,7 +517,12 @@ body {
 }
 .sidebar-workspace:hover,
 .sidebar-workspace.open { background: var(--surface-hover); }
+/* The name takes the row and the caret keeps the right edge (S9). Without the
+   `flex` pair a long project name would push `⌵` out of the pill instead of
+   truncating itself. */
 .sidebar-workspace .btn-label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -545,18 +617,6 @@ body {
   cursor: pointer;
 }
 .sidebar-settings:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
-.sidebar-collapse {
-  display: inline-flex;
-  align-items: center;
-  background: transparent;
-  color: var(--text-secondary);
-  border: 0;
-  border-radius: var(--radius-pill);
-  padding: 4px;
-  font: inherit;
-  cursor: pointer;
-}
-.sidebar-collapse:hover { color: var(--text-primary); background: var(--surface-hover); }
 .sidebar-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -629,9 +689,21 @@ body {
   border-radius: var(--radius-md);
   cursor: pointer;
 }
+/* Three tiers, and the order of these rules is load-bearing — each one overrides
+   the `background` of the one above it (design_guidance 三.2, todo D5):
+     history        → no fill, `--text-secondary` (the `:not(.open)` rule below)
+     open, not shown→ no fill, primary text
+     showing        → the `--surface-active` capsule
+   `.selected` is the *keyboard cursor*, an orthogonal axis: it used to own the
+   capsule, which is why every open row read the same and the visible one could
+   not be picked out. A hairline instead, so `active + selected` still shows both. */
 .session-row:hover { background: var(--surface-hover); }
-.session-row.selected { background: var(--surface-active); }
-.session-row.active .session-title { color: var(--text-primary); }
+.session-row.selected {
+  background: var(--surface-hover);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.session-row.active { background: var(--surface-active); }
+.session-row.active .session-open { color: var(--text-primary); font-weight: 600; }
 .session-open {
   flex: 1 1 auto;
   min-width: 0;
@@ -680,8 +752,13 @@ body {
   border-radius: var(--radius-pill);
 }
 .session-delete:hover { color: var(--text-danger); background: var(--surface-hover); }
+/* After `.active`, or the capsule would win and the row asking the question would
+   be the one row that does not look like it is. The name stays where it was and
+   the two buttons take the actions slot, so the question is "delete *this*?"
+   rather than "delete something?" (todo D6). */
 .session-row.confirming { background: var(--surface-card); }
-.session-confirm-text { flex: 1 1 auto; color: var(--text-warn); font-size: 11px; }
+.session-row.confirming .session-actions { opacity: 1; }
+.session-row.confirming .session-open { cursor: default; }
 .session-confirm-yes,
 .session-confirm-no {
   background: transparent;
@@ -719,12 +796,34 @@ body {
   overflow-y: auto;
   padding: 12px;
   font-size: 14px;
+  /* A flex column purely so the reading column below can claim the leftover
+     height with an auto margin (todo V2). **Not** `justify-content: flex-end`:
+     in a scroll container that makes the top of overflowing content
+     unreachable, while an auto margin resolves to 0 the moment the content is
+     taller than the box — so a long session scrolls exactly as it did. */
+  display: flex;
+  flex-direction: column;
 }
 /* The reading column. A 1200px window makes a full-width paragraph 150+
    characters long, which is a readability problem rather than a taste one; the
    scroller stays full width so its scrollbar keeps to the panel's edge. Kept in
-   step with `.composer-column`, or the composer stops sharing the text's axis. */
-.transcript-column { max-width: 760px; margin: 0 auto; }
+   step with `.composer-column`, or the composer stops sharing the text's axis.
+
+   `margin-top: auto` is what pushes a short conversation down against the
+   composer instead of leaving it stranded under the canvas header (todo V2).
+   `flex-shrink: 0` is load-bearing next to it: as a flex item the column would
+   otherwise be squeezed to the scroller's height, and its content would spill
+   out of a box nothing scrolls. `.pane.empty` is unaffected — it takes the
+   scroller out of the stretch, so there is no free space for the auto margin to
+   eat and the Hero stays centred.
+
+   `width: 100%` is the third load-bearing part: the horizontal `auto` margins
+   that centre the column also *cancel* the flex item's default cross-axis
+   stretch, so without an explicit width the column shrink-to-fits its longest
+   line and a short conversation renders as a narrow strip pushed to the right
+   edge. Block layout (what this was before todo V2 made `.transcript` a flex
+   column) sized it to the container for free; flex layout does not. */
+.transcript-column { width: 100%; max-width: 760px; margin: auto auto 0; flex-shrink: 0; }
 /* 16px between turns, and the line-height a wall of prose needs. Both are the
    rhythm half of design_guidance 四.2 — the old 10px/1.5 ran the assistant's
    answer and the next question together. */
@@ -947,14 +1046,17 @@ body {
 /* --- surfaces (pickers, command views) ---
    A card floating in the canvas rather than a strip ruled off from it: the
    group container *is* the separator, which is `design_guidance.md`'s fourth
-   checklist rule. `#queue` and `#suggestions` below are the same shape. */
+   checklist rule. `#queue` and `#suggestions` below are the same shape, and
+   since S9 all three live in `#composer-popovers` — see that rule for why they
+   carry no margin of their own. */
 #surface {
-  flex: 0 0 auto;
   max-height: 40vh;
   overflow-y: auto;
-  margin: 0 8px 8px;
+  pointer-events: auto;
   background: var(--surface-card);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
   padding: 8px 12px;
 }
 #surface h2 { font-size: 12px; margin: 0 0 6px; color: var(--text-primary); font-weight: 600; }
@@ -963,6 +1065,11 @@ body {
 #surface .row[role="option"]:hover { background: var(--surface-hover); }
 #surface .row.selected { background: var(--surface-active); }
 #surface .row.selected .label { color: var(--text-primary); }
+/* The "in force" mark. A fixed slot that is present on every picker row, so the
+   labels line up whether or not one is marked — the `● `/`  ` text prefix it
+   replaces was the TUI keeping that column with spaces (todo V5). */
+#surface .row-mark { flex: 0 0 12px; display: flex; align-items: center; color: var(--text-primary); }
+#surface .row-mark .icon { width: 6px; height: 6px; }
 #surface .row .label { min-width: 11rem; }
 #surface .row .value { color: var(--text-secondary); flex: 1 1 auto; }
 #surface .row.current .label { color: var(--text-primary); }
@@ -980,12 +1087,13 @@ body {
   wire has no per-message dequeue (the host pumps its own queue).
 */
 #queue {
-  flex: 0 0 auto;
   max-height: 22vh;
   overflow-y: auto;
-  margin: 0 8px 8px;
+  pointer-events: auto;
   background: var(--surface-card);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
   padding: 8px 12px;
   font-size: 12px;
 }
@@ -1018,15 +1126,19 @@ body {
 
 /* --- completions --- */
 #suggestions {
-  flex: 0 0 auto;
-  margin: 0 8px 8px;
-  background: var(--surface-card);
-  border-radius: var(--radius-md);
   max-height: 30vh;
   overflow-y: auto;
+  pointer-events: auto;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
   padding: 4px 0;
 }
-#suggestions .suggestion { display: flex; gap: 10px; padding: 3px 12px; font-size: 13px; }
+#suggestions .suggestion { display: flex; gap: 10px; padding: 3px 12px; font-size: 13px; cursor: pointer; }
+/* Hover is only an affordance: it says the row is clickable, it does not move the
+   selection. The keyboard's own row stays `.selected` under the pointer. */
+#suggestions .suggestion:hover { background: var(--surface-hover); }
 #suggestions .suggestion .name { color: var(--text-primary); min-width: 9rem; }
 #suggestions .suggestion .description { color: var(--text-secondary); }
 #suggestions .suggestion.selected { background: var(--surface-active); }
@@ -1043,8 +1155,45 @@ body {
   padding: 0 12px 10px;
 }
 /* The composer's half of the reading column; kept in step with
-   `.transcript-column`, so a question and its answer share one axis. */
-.composer-column { max-width: 760px; margin: 0 auto; }
+   `.transcript-column`, so a question and its answer share one axis.
+   `position: relative` makes it the containing block for `#composer-popovers`,
+   and — exactly as with `.settings-column` and the settings screen's pill menus
+   — it must therefore never grow an `overflow`, which would clip them. */
+.composer-column { position: relative; max-width: 760px; margin: 0 auto; }
+/*
+  The panels the composer raises: the picker, the completion list, the queued
+  strip (todo V3). They were full-bleed blocks in the canvas's flex column, a
+  screen away from the chip that opens them and pushing the transcript around
+  every time one appeared. Now they are one stack anchored to the composer's
+  upper edge, on the reading column's own axis — a popover, but positioned by
+  the box tree rather than by measured coordinates, which is the decision
+  `controls.ts`'s `pillSelect` already records.
+
+  `bottom: 100%` is against the whole column (composer *and* status line), so
+  the stack sits on top of the capsule. DOM order is visual order, top to
+  bottom, which puts `#queue` nearest the composer: it is the one that is about
+  the message being typed.
+
+  `z-index: 4` — over the transcript and `.scroll-bottom` (neither declares
+  one), under every real menu in the sheet (5–6) and therefore under the two
+  modal layers (`#rewind` 9, `#overlay` 10).
+
+  `pointer-events: none` is load-bearing: the shell stays in the box tree while
+  all three children are hidden, and the `gap` between two open ones is its own
+  area too — either would silently eat clicks on the transcript underneath.
+*/
+#composer-popovers {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+  pointer-events: none;
+}
 #composer {
   display: flex;
   flex-direction: column;
@@ -1188,9 +1337,12 @@ body {
 #stop { background: var(--surface-hover); color: var(--text-warn); }
 #submit[disabled] { opacity: 0.5; cursor: not-allowed; }
 
-/* --- overlay: the four blocking requests --- */
+/* --- overlay: the four blocking requests ---
+   Absolute, not fixed: the request belongs to one lane, so it covers that
+   lane's canvas and leaves the sidebar live (S6). `#canvas` is the containing
+   block, and the corners come from its `overflow: hidden`. */
 #overlay {
-  position: fixed;
+  position: absolute;
   inset: 0;
   background: var(--surface-scrim);
   display: flex;
@@ -1214,12 +1366,22 @@ body {
 #overlay-panel.tone-danger { border-top-color: var(--accent-danger); }
 #overlay-panel.tone-caution { border-top-color: var(--accent-warn); }
 #overlay-panel.tone-normal { border-top-color: var(--accent-info); }
-#overlay-panel .title { font-weight: 600; margin-bottom: 2px; }
+#overlay-panel .title { display: flex; align-items: baseline; gap: 8px; font-weight: 600; margin-bottom: 2px; }
+/* The ask dialog's category label, which the terminal wrote as `[header]`. */
+#overlay-panel .dialog-chip {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--surface-canvas);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 500;
+}
 #overlay-panel.tone-danger .title { color: var(--text-danger); }
 #overlay-panel.tone-caution .title { color: var(--text-warn); }
 #overlay-panel.tone-normal .title { color: var(--accent-info); }
 #overlay-panel .subtitle,
-#overlay-panel .hint,
 #overlay-panel .also-waiting { color: var(--text-secondary); font-size: 12px; }
 #overlay-panel .reason { margin: 8px 0; }
 #overlay-panel .warning { color: var(--text-danger); }
@@ -1239,9 +1401,39 @@ body {
 }
 #overlay-panel .block-label { color: var(--text-tertiary); font-size: 11px; }
 #overlay-panel .options { margin: 10px 0 6px; }
-#overlay-panel .option { padding: 1px 0; }
-#overlay-panel .option.selected { color: var(--text-primary); font-weight: 600; }
-#overlay-panel .option .hotkey { color: var(--text-warn); }
+/* The negative margin is what makes the whole row a target rather than just its
+   text: the panel's own padding is the only thing to the left of the glyphs.
+   Hover marks the row as clickable and nothing else — moving `selected` with the
+   pointer would slide the permission dialog's safe default (deny) out from under
+   whatever Enter is about to hit. */
+#overlay-panel .option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  margin: 0 -8px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+#overlay-panel .option:hover { background: var(--surface-hover); }
+#overlay-panel .option.selected { background: var(--surface-active); }
+#overlay-panel .option.selected .option-label { color: var(--text-primary); font-weight: 600; }
+#overlay-panel .option-label { flex: 0 1 auto; }
+#overlay-panel .option-desc { flex: 1 1 auto; color: var(--text-secondary); font-size: 12px; }
+/* The multi-select tick. A shape rather than a `[x]`: the row is read as a
+   control, and `aria-checked` on the row is what says it to a screen reader. */
+#overlay-panel .option-tick {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+/* Neutral, not accent: a fill here would be a second coloured fill in a 95%
+   neutral interface, and the only one of those is the settings switch. */
+#overlay-panel .option-tick.on { border-color: var(--text-primary); background: var(--text-primary); }
 #overlay-panel .plan {
   background: var(--surface-canvas);
   border: 1px solid var(--border-subtle);
@@ -1259,7 +1451,7 @@ body {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   padding: 6px 8px;
-  margin: 4px 0 0 2rem;
+  margin: 4px 0 0;
   min-height: 1.5em;
   font-family: var(--font-mono);
   white-space: pre-wrap;
@@ -1269,20 +1461,89 @@ body {
 #overlay-panel .preview-title { color: var(--text-tertiary); font-size: 12px; margin-top: 8px; }
 
 /*
+  --- the dialog button bar ---
+  Shared by #overlay-panel and #rewind-panel, which are the same object at two
+  z-indexes. The primary is a *raised neutral surface*, not a fill: the one
+  high-contrast solid in this interface is `#submit` (design_guidance 五), and a
+  dialog that shouts louder than the send button is the wrong hierarchy.
+  A danger action is an outline and a text colour only (七.4).
+*/
+#overlay-panel .dialog-actions,
+#rewind-panel .dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+#overlay-panel .dialog-btn,
+#rewind-panel .dialog-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--surface-card);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+#overlay-panel .dialog-btn.primary,
+#rewind-panel .dialog-btn.primary {
+  background: var(--surface-active);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+#overlay-panel .dialog-btn.danger,
+#rewind-panel .dialog-btn.danger {
+  border-color: var(--accent-danger);
+  color: var(--text-danger);
+}
+#overlay-panel .dialog-btn:hover,
+#rewind-panel .dialog-btn:hover { background: var(--surface-hover); }
+/* Where Enter is aimed. On a destructive permission request that is *deny*, so
+   this is not decoration — it is the answer about to be given. */
+#overlay-panel .dialog-btn.selected,
+#rewind-panel .dialog-btn.selected { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+#overlay-panel .dialog-btn:focus-visible,
+#rewind-panel .dialog-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* The key badge. Monospaced because a key name is read character by character,
+   and it is the only place a shortcut is printed now that the hint line is gone. */
+#overlay-panel .kbd,
+#rewind-panel .kbd {
+  padding: 0 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-canvas);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/*
   --- the rewind panel ---
   Its own layer, stacked *below* #overlay (z-index 10): a permission prompt
   that arrives while this is open is holding the agent loop and has to be
   answered first, so it draws on top.
+
+  Both numbers are above 5–6, which is where every popover in the app sits (the
+  title bar's and canvas header's menus, the permission pill's, the settings
+  row's, the scroll-to-bottom button). Since S6 the two scrims are `absolute`
+  inside `#canvas` rather than `fixed` over the window, so they no longer win by
+  being last in the body — the ordering is these two numbers.
 */
 #rewind {
-  position: fixed;
+  position: absolute;
   inset: 0;
   background: var(--surface-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  z-index: 5;
+  z-index: 9;
 }
 #rewind-panel {
   background: var(--surface-card);
@@ -1298,8 +1559,7 @@ body {
   font-size: 13px;
 }
 #rewind-panel .title { font-weight: 600; color: var(--text-warn); margin-bottom: 2px; }
-#rewind-panel .subtitle,
-#rewind-panel .hint { color: var(--text-secondary); font-size: 12px; }
+#rewind-panel .subtitle { color: var(--text-secondary); font-size: 12px; }
 #rewind-panel .error { color: var(--text-danger); margin: 8px 0; }
 #rewind-panel .rows { margin: 10px 0 6px; }
 #rewind-panel .row { display: flex; gap: 10px; padding: 3px 6px; margin: 0 -6px; border-radius: 6px; cursor: pointer; }
@@ -1319,11 +1579,6 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
-#rewind-panel .options { margin: 10px 0 6px; }
-#rewind-panel .option { padding: 2px 6px; margin: 0 -6px; border-radius: 6px; cursor: pointer; }
-#rewind-panel .option:hover { background: var(--surface-hover); }
-#rewind-panel .option.selected { color: var(--text-primary); font-weight: 600; }
-#rewind-panel .option .hotkey { color: var(--text-warn); }
 #rewind-panel .busy { color: var(--accent-info); margin: 10px 0 6px; }
 #rewind-panel .warning { color: var(--text-danger); margin-top: 8px; }
 
@@ -1432,12 +1687,12 @@ body {
    `test/rendererStyleTokens.test.ts` checks. */
 
 /* `#status` is not listed: it moved inside `#input-row` in 5g, so hiding the
-   composer hides it too. */
+   composer hides it too. Nor are `#surface` / `#suggestions` / `#queue`, for
+   the same reason since S9 — they hang off `.composer-column`. Which is also
+   what keeps `probes.surface()` honest: it reports "open" from
+   `getClientRects()`, not from the `hidden` attribute. */
 #canvas.settings-open > #canvas-header,
 #canvas.settings-open > #transcript-area,
-#canvas.settings-open > #surface,
-#canvas.settings-open > #suggestions,
-#canvas.settings-open > #queue,
 #canvas.settings-open > #input-row {
   display: none;
 }
@@ -1555,6 +1810,20 @@ body {
   overflow-y: auto;
   padding: 14px 20px 40px;
 }
+
+/* The settings reading column (todo V7). Wider than the transcript's 760px on
+   purpose: a settings row is label-left/control-right, and at 760 the control
+   crowds the label it belongs to — the same measure that fixes a paragraph's
+   line length makes a two-end row worse. At 1200px+ without it the control sat
+   a thousand pixels from its own name, which is what "strictly right-aligned"
+   turns into on a wide window.
+
+   The scroller stays `.settings-body`, full width, so its scrollbar keeps to the
+   canvas edge — the same split as `.transcript-column` inside its scroller.
+   Deliberately no `overflow` here: a row's pill dropdown opens downward and this
+   node is now on its ancestor chain (see `.settings-card` below, and the
+   "no clipping ancestor" test). */
+.settings-column { max-width: 880px; margin: 0 auto; }
 
 .settings-header {
   display: flex;
@@ -1730,6 +1999,10 @@ body {
   text-align: left;
   cursor: pointer;
 }
+
+/* Same as `.sidebar-workspace`: the label takes the pill's width so the trailing
+   `⌵` lands on the right edge rather than beside the text. */
+.settings-pill .btn-label { flex: 1 1 auto; }
 
 .settings-pill:hover:enabled {
   background: var(--surface-hover);

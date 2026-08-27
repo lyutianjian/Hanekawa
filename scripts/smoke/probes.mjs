@@ -46,6 +46,9 @@ export const sidebar = () => `(() => {
   }))
   return {
     collapsed: container.classList.contains('collapsed'),
+    // Collapsed is zero width now, not a 44px rail (S7): the toggle it used to
+    // keep reachable lives in the title bar.
+    width: Math.round(container.getBoundingClientRect().width),
     listHidden: list ? list.hidden : null,
     footerHidden: (container.querySelector('.sidebar-footer') || {}).hidden ?? null,
     rowCount: rows.length,
@@ -87,6 +90,44 @@ export const panes = () => `(() => {
   })
 })()`
 
+/**
+ * The visible pane's conversation, as boxes.
+ *
+ * todo V2: a short history used to hang one bubble under the canvas header with
+ * the rest of the canvas blank. The three facts fail separately — is this even
+ * the short case (nothing to scroll), does the column meet the composer, and was
+ * it actually pushed down rather than merely starting there.
+ *
+ * `null` when no pane is visible, so a step asserts on the shape rather than on
+ * a zero that could mean either thing. No backticks in here: this is a template
+ * literal.
+ */
+export const conversation = () => `(() => {
+  const area = document.getElementById('transcript-area')
+  const pane = [...area.children].find((node) => !node.hidden)
+  if (!pane) return null
+  const scroller = pane.querySelector('.transcript')
+  const column = pane.querySelector('.transcript-column')
+  if (!scroller || !column) return null
+  const scrollerBox = scroller.getBoundingClientRect()
+  const columnBox = column.getBoundingClientRect()
+  const round = (box) => ({
+    top: Math.round(box.top),
+    bottom: Math.round(box.bottom),
+    left: Math.round(box.left),
+    right: Math.round(box.right),
+  })
+  return {
+    items: column.children.length,
+    // Equal means the conversation does not fill the scroller, which is the
+    // only case this probe has anything to say about.
+    scrollHeight: scroller.scrollHeight,
+    clientHeight: scroller.clientHeight,
+    scroller: round(scrollerBox),
+    column: round(columnBox),
+  }
+})()`
+
 /** One pane, found by the fixture marker its transcript contains. */
 export const paneByMarker = (marker) => `(() => {
   const area = document.getElementById('transcript-area')
@@ -107,19 +148,107 @@ export const overlay = () => `(() => {
     subtitle: pick('.subtitle'),
     reason: pick('.reason'),
     block: pick('.block'),
-    hint: pick('.hint'),
-    hotkeys: [...panel.querySelectorAll('.hotkey')].map((node) => node.textContent),
+    // The hint line is gone as of S5: a key is printed on the button it belongs
+    // to, as a .kbd badge, and a key with no button is not printed at all.
+    // (No backticks in here either — see the note below.)
+    hotkeys: [...panel.querySelectorAll('.kbd')].map((node) => node.textContent),
+    // Centres, so a step can aim a real mouse event at a row or a button. A rect
+    // alone proves nothing about hit-testing (getBoundingClientRect answers in
+    // full for a clipped or covered node), so the evidence is what the click does.
+    // No backticks in here: this whole probe is a template literal.
+    options: [...panel.querySelectorAll('.option')].map((node) => {
+      const rect = node.getBoundingClientRect()
+      return {
+        label: node.textContent,
+        selected: node.classList.contains('selected'),
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      }
+    }),
+    actions: [...panel.querySelectorAll('.dialog-btn')].map((node) => {
+      const rect = node.getBoundingClientRect()
+      return {
+        label: node.textContent,
+        primary: node.classList.contains('primary'),
+        danger: node.classList.contains('danger'),
+        selected: node.classList.contains('selected'),
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      }
+    }),
+  }
+})()`
+
+/**
+ * Where the open dialog's scrim actually is (S6).
+ *
+ * Two questions, and only the second one is evidence: `getBoundingClientRect`
+ * answers in full for a node that is covered or clipped, so matching rectangles
+ * would still pass if the scrim were painted over the sidebar. `elementFromPoint`
+ * is the hit test — what the mouse would reach at a point in the sidebar, and
+ * what it would reach in the middle of the canvas.
+ */
+export const modalScope = () => `(() => {
+  const rect = (id) => {
+    const node = document.getElementById(id)
+    if (!node) return null
+    const box = node.getBoundingClientRect()
+    return { left: Math.round(box.left), top: Math.round(box.top), right: Math.round(box.right), bottom: Math.round(box.bottom) }
+  }
+  const overlay = document.getElementById('overlay')
+  const sidebar = document.getElementById('sidebar')
+  const canvasBox = rect('canvas')
+  const describe = (x, y) => {
+    const hit = document.elementFromPoint(x, y)
+    if (!hit) return { id: 'none', inSidebar: false, inOverlay: false }
+    return {
+      id: hit.id || hit.className || hit.tagName,
+      inSidebar: sidebar ? sidebar.contains(hit) : false,
+      inOverlay: overlay ? overlay.contains(hit) || hit === overlay : false,
+    }
+  }
+  const sidebarBox = sidebar ? sidebar.getBoundingClientRect() : null
+  return {
+    overlay: rect('overlay'),
+    canvas: canvasBox,
+    sidebar: sidebarBox ? { left: Math.round(sidebarBox.left), right: Math.round(sidebarBox.right) } : null,
+    atSidebar: sidebarBox ? describe(sidebarBox.left + sidebarBox.width / 2, sidebarBox.top + 120) : null,
+    atCanvas: canvasBox ? describe((canvasBox.left + canvasBox.right) / 2, (canvasBox.top + canvasBox.bottom) / 2) : null,
   }
 })()`
 
 export const surface = () => `(() => {
   const container = document.getElementById('surface')
+  const composer = document.getElementById('composer')
+  const column = document.querySelector('.composer-column')
+  const transcript = document.getElementById('transcript-area')
+  const box = container.getClientRects().length > 0 ? container.getBoundingClientRect() : null
+  const columnBox = column ? column.getBoundingClientRect() : null
+  const composerBox = composer ? composer.getBoundingClientRect() : null
   return {
     // Both conditions: the settings screen hides its siblings from the
     // stylesheet, so the hidden *attribute* alone would report a panel as open
-    // while nothing is on screen.
+    // while nothing is on screen. Since S9 the panel is inside \`#input-row\`, so
+    // what the settings screen hides is its ancestor — the rect is still the
+    // honest reading, and the attribute still is not.
     open: !container.hidden && container.getClientRects().length > 0,
     attributeOpen: !container.hidden,
+    // todo V3: the panel is one stack floating on the composer's upper edge, on
+    // the reading column's own axis. Three separate facts, because they fail
+    // separately: does it share the column, is it *above* the composer, and does
+    // it leave the transcript's height alone (a float, not a flex sibling).
+    rect: box
+      ? { left: Math.round(box.left), right: Math.round(box.right), top: Math.round(box.top), bottom: Math.round(box.bottom) }
+      : null,
+    column: columnBox
+      ? { width: Math.round(columnBox.width), left: Math.round(columnBox.left), right: Math.round(columnBox.right) }
+      : null,
+    composerTop: composerBox ? Math.round(composerBox.top) : null,
+    // todo V9, same question as the settings menu's: a floating panel on a white
+    // page is separated by its shadow, not by its hairline.
+    shadow: getComputedStyle(container).boxShadow,
+    background: getComputedStyle(container).backgroundColor,
+    transcriptHeight: transcript ? Math.round(transcript.getBoundingClientRect().height) : 0,
     // The surface paints its title as a bare h2 (dom/surfaceView.ts:34), not a
     // classed node like the overlay does.
     title: (container.querySelector('h2') || {}).textContent || '',
@@ -216,6 +345,15 @@ export const settings = () => `(() => {
   const titleBar = document.getElementById('titlebar')
   const composer = document.getElementById('input-row')
   const active = document.activeElement
+  const canvas = document.getElementById('canvas')
+  const column = container.querySelector('.settings-column')
+  // The reading column against the box it is centred in (todo V7). \`body\` is the
+  // scroller and keeps its full width; only its content box is the measure to
+  // compare against, so the padding is taken out here rather than in the step.
+  const bodyStyle = body ? getComputedStyle(body) : null
+  const bodyBox = body ? body.getBoundingClientRect() : null
+  const columnBox = column ? column.getBoundingClientRect() : null
+  const canvasStyle = canvas ? getComputedStyle(canvas) : null
   return {
     open: !container.hidden,
     canvasOpen: document.getElementById('canvas').classList.contains('settings-open'),
@@ -242,6 +380,78 @@ export const settings = () => `(() => {
     // the same band). Measuring it lets one assertion cover both.
     titleBarHeight: titleBar ? Math.round(titleBar.getBoundingClientRect().height) : 0,
     composerHidden: composer ? getComputedStyle(composer).display === 'none' : null,
+    column: columnBox
+      ? { width: Math.round(columnBox.width), left: Math.round(columnBox.left), right: Math.round(columnBox.right) }
+      : null,
+    // Derived from \`clientWidth\`, not from the bounding rect: once the form is
+    // long enough to scroll, the scrollbar eats into the padding box, and
+    // \`right - paddingRight\` would claim ~10px the column can never have.
+    bodyContent: body && bodyBox && bodyStyle
+      ? (() => {
+          const left = Math.round(bodyBox.left + parseFloat(bodyStyle.paddingLeft))
+          const width = Math.round(
+            body.clientWidth - parseFloat(bodyStyle.paddingLeft) - parseFloat(bodyStyle.paddingRight),
+          )
+          return { left, right: left + width }
+        })()
+      : null,
+    // todo V1/S8: the canvas hairline is an \`outline\`, never a \`border\` — a border
+    // would inset \`#overlay\`'s \`inset: 0\` by 1px and break S2's per-edge equality.
+    canvasHairline: canvasStyle
+      ? { outlineWidth: canvasStyle.outlineWidth, borderTopWidth: canvasStyle.borderTopWidth }
+      : null,
+  }
+})()`
+
+/**
+ * The resolved theme, the preference behind it, and what the palette actually
+ * paints (todo V9).
+ *
+ * Three readings rather than one, because they fail separately: the attribute
+ * (`app.ts` resolved the preference and wrote it), the tokens (the light block
+ * layered on) and the paint (a rule really used them). A half-applied palette —
+ * the failure that light-mode blindness produces — changes the attribute and
+ * leaves the paint dark-on-dark, so the attribute alone proves nothing.
+ *
+ * `stored` is `localStorage['ui-theme']`, which lives in Electron's *default*
+ * userData: `--cwd=` does not isolate it, so a step that changes it owes the
+ * developer's machine a restore.
+ */
+export const theme = () => `(() => {
+  const root = document.documentElement
+  const style = getComputedStyle(root)
+  const token = (name) => style.getPropertyValue(name).trim()
+  const paintOf = (node) => {
+    if (!node) return null
+    const own = getComputedStyle(node)
+    return { background: own.backgroundColor, color: own.color }
+  }
+  return {
+    resolved: root.dataset.theme || 'none',
+    stored: localStorage.getItem('ui-theme'),
+    // Named, not swept: a sweep would compare whatever happens to be declared
+    // and could not tell a missing override from a token that has none.
+    tokens: {
+      '--surface-base': token('--surface-base'),
+      '--surface-canvas': token('--surface-canvas'),
+      '--surface-card': token('--surface-card'),
+      '--surface-hover': token('--surface-hover'),
+      '--surface-active': token('--surface-active'),
+      '--text-primary': token('--text-primary'),
+      '--text-secondary': token('--text-secondary'),
+      '--border-subtle': token('--border-subtle'),
+      '--border-strong': token('--border-strong'),
+      '--shadow-float': token('--shadow-float'),
+    },
+    // The two the light block deliberately does not override (styles.css:33-39):
+    // the knob sits on a saturated blue in both themes, and both scrims must dim
+    // by the same amount or stacking them reads as a bug.
+    fixed: {
+      '--surface-knob': token('--surface-knob'),
+      '--surface-scrim': token('--surface-scrim'),
+    },
+    canvas: paintOf(document.getElementById('canvas')),
+    body: paintOf(document.body),
   }
 })()`
 
@@ -269,9 +479,15 @@ export const settingsMenu = () => `(() => {
   const y = box ? Math.round(box.top + box.height / 2) : 0
   const inViewport = box ? y > 0 && y < window.innerHeight && x > 0 && x < window.innerWidth : false
   const hit = inViewport ? document.elementFromPoint(x, y) : null
+  const own = getComputedStyle(menu)
   return {
     open: true,
     itemCount: items.length,
+    labels: items.map((item) => item.textContent),
+    // todo V9: the float shadow D3 added is the thing that only matters on a
+    // white page — on the dark canvas the border does the separating.
+    shadow: own.boxShadow,
+    background: own.backgroundColor,
     menuBottom: Math.round(menu.getBoundingClientRect().bottom),
     cardBottom: card ? Math.round(card.getBoundingClientRect().bottom) : 0,
     bodyBottom: body ? Math.round(body.getBoundingClientRect().bottom) : 0,
@@ -313,4 +529,30 @@ export const clickSettingsNav = (label) => `(() => {
   if (!item) throw new Error('no settings category labelled ' + ${json(label)})
   item.click()
   return true
+})()`
+
+/** An option in an open pill dropdown, by its visible label (dom/controls.ts:188). */
+export const clickSettingsMenuItem = (label) => `(() => {
+  const item = [...document.querySelectorAll('#settings .settings-menu-item')].find(
+    (node) => node.textContent === ${json(label)},
+  )
+  if (!item) throw new Error('no dropdown option labelled ' + ${json(label)})
+  item.click()
+  return true
+})()`
+
+/**
+ * Writes `localStorage['ui-theme']` directly.
+ *
+ * The one probe that bypasses the app's own path, and it exists for exactly one
+ * job: S11's `finally`. The preference is not isolated by `--cwd=`, so a step
+ * that dies mid-switch would otherwise leave the developer's real window in a
+ * theme they did not pick. Everything a step *asserts* still goes through the
+ * settings screen.
+ */
+export const setStoredTheme = (value) => `(() => {
+  const next = ${json(value)}
+  if (next === null) localStorage.removeItem('ui-theme')
+  else localStorage.setItem('ui-theme', next)
+  return localStorage.getItem('ui-theme')
 })()`

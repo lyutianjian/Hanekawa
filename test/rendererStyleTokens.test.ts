@@ -208,18 +208,20 @@ test('the palette is the one that was agreed, value for value', () => {
   assert.deepEqual(
     Object.fromEntries([...tokens].filter(([name]) => !name.startsWith('--diff-'))),
     {
-      '--surface-base': '#0f0f11',
-      '--surface-canvas': '#17171a',
-      '--surface-card': '#1f1f23',
-      '--surface-hover': '#25252b',
-      '--surface-active': '#2a2a30',
+      '--surface-base': '#1c2125',
+      '--surface-canvas': '#1a1918',
+      '--surface-card': '#222120',
+      '--surface-hover': '#2a2927',
+      '--surface-active': '#323130',
+      '--surface-wash-warm': '#25211a',
+      '--surface-wash-mint': '#1d2121',
       '--surface-knob': '#ffffff',
       '--surface-scrim': 'rgba(0, 0, 0, 0.55)',
-      '--text-primary': '#f2f2f5',
-      '--text-secondary': '#9aa0aa',
-      '--text-tertiary': '#6b7078',
-      '--link': '#6aa8ff',
-      '--accent-info': '#5b9dff',
+      '--text-primary': '#f4f3f1',
+      '--text-secondary': '#9b9992',
+      '--text-tertiary': '#6d6b66',
+      '--link': '#78b0ff',
+      '--accent-info': '#6ba6ff',
       '--accent-tool': '#a97bff',
       '--accent-review': '#4cc38a',
       '--accent-warn': '#e0a355',
@@ -227,10 +229,10 @@ test('the palette is the one that was agreed, value for value', () => {
       '--text-danger': 'var(--accent-danger)',
       '--text-warn': 'var(--accent-warn)',
       '--text-success': 'var(--accent-review)',
-      '--border-subtle': '#26262b',
-      '--border-strong': '#34343b',
-      '--focus-ring': '#5b9dff',
-      '--caret': '#f2f2f5',
+      '--border-subtle': '#2b2a28',
+      '--border-strong': '#3a3835',
+      '--focus-ring': '#6ba6ff',
+      '--caret': '#f4f3f1',
       '--shadow-float': '0 2px 10px rgba(0, 0, 0, 0.45)',
       '--radius-lg': '14px',
       '--radius-md': '9px',
@@ -248,20 +250,22 @@ test('the palette is the one that was agreed, value for value', () => {
   assert.deepEqual(
     Object.fromEntries([...lightTokens].filter(([name]) => !name.startsWith('--diff-'))),
     {
-      '--surface-base': '#f3f3f5',
+      '--surface-base': '#edf4f9',
       '--surface-canvas': '#ffffff',
-      '--surface-card': '#fafafc',
-      '--surface-hover': '#eaebee',
-      '--surface-active': '#e5e7eb',
+      '--surface-card': '#faf9f7',
+      '--surface-hover': '#ebeced',
+      '--surface-active': '#e1e2e4',
+      '--surface-wash-warm': '#f9f2e6',
+      '--surface-wash-mint': '#e9f6f8',
       // Carried through from `:root`, deliberately: the knob sits on the blue
       // track in both themes, so it is white in both.
       '--surface-knob': '#ffffff',
       '--surface-scrim': 'rgba(0, 0, 0, 0.55)',
-      '--text-primary': '#1a1a1e',
-      '--text-secondary': '#686b75',
-      '--text-tertiary': '#9ca3af',
-      '--link': '#2563eb',
-      '--accent-info': '#2563eb',
+      '--text-primary': '#171614',
+      '--text-secondary': '#73716b',
+      '--text-tertiary': '#a5a39d',
+      '--link': '#3b7ae4',
+      '--accent-info': '#3b7ae4',
       '--accent-tool': '#9333ea',
       '--accent-review': '#16a34a',
       '--accent-warn': '#d97706',
@@ -269,10 +273,10 @@ test('the palette is the one that was agreed, value for value', () => {
       '--text-danger': 'var(--accent-danger)',
       '--text-warn': 'var(--accent-warn)',
       '--text-success': 'var(--accent-review)',
-      '--border-subtle': '#e5e7eb',
-      '--border-strong': '#d1d5db',
-      '--focus-ring': '#2563eb',
-      '--caret': '#1a1a1e',
+      '--border-subtle': '#e8e7e4',
+      '--border-strong': '#d6d4d0',
+      '--focus-ring': '#3b7ae4',
+      '--caret': '#171614',
       '--shadow-float': '0 4px 14px rgba(0, 0, 0, 0.14)',
       '--radius-lg': '14px',
       '--radius-md': '9px',
@@ -314,17 +318,24 @@ test('the light block overrides only colours, and adds no token the dark palette
 
 test('the surface ladder climbs and the text ladder descends, in both themes', () => {
   // The half that carries meaning rather than values. `design_guidance.md` asks
-  // for depth built from canvas → card → active, and this shell used to do the
-  // opposite (a #232323 sidebar against a #1a1a1a canvas). The `sign` captures
-  // that light inverts it: dark reads brightest-forward, light darkest-forward.
+  // for depth built from canvas → card → active. The `sign` captures that light
+  // inverts it: dark reads brightest-forward, light darkest-forward.
   //
-  // The full [base, canvas, …] list is deliberately NOT asserted monotonic — in
-  // light the canvas is pure white, the peak, and cards/states step *down* from
-  // it. What holds in both themes is that the canvas sits above its frame.
+  // `--surface-base` is asserted separately because it is not the bottom of that
+  // ladder — it is a rung *on* it, between the canvas and hover. The canvas is
+  // the extreme of the theme (deepest in dark, pure white in light) and the
+  // window frame steps one rung away from it, so in dark the frame is lighter
+  // than the canvas and in light it is darker. Naming it "darkest first" was
+  // what made that read as a contradiction; it is one rule under `sign`.
   for (const { name, tokens: palette, sign } of THEMES) {
+    const base = luminance(tokenValue('--surface-base', palette))
     assert.ok(
-      luminance(tokenValue('--surface-canvas', palette)) > luminance(tokenValue('--surface-base', palette)),
-      `${name}: the canvas must sit above the base frame`,
+      sign * (base - luminance(tokenValue('--surface-canvas', palette))) > 0,
+      `${name}: the window frame must step off the canvas, away from it`,
+    )
+    assert.ok(
+      sign * (luminance(tokenValue('--surface-hover', palette)) - base) > 0,
+      `${name}: the frame must stay below hover, or a hovered row vanishes into it`,
     )
 
     const surfaces = ['--surface-canvas', '--surface-card', '--surface-hover', '--surface-active']
@@ -526,6 +537,221 @@ test('the canvas is a clipped rounded panel', () => {
     '#canvas must carry the large radius; it is the panel the design nests everything in',
   )
   assert.ok(declares(canvas, 'overflow', 'hidden'), '#canvas must clip its scrolling contents')
+
+  // The hairline that makes it float (todo V1), and the reason it is an outline.
+  // `#overlay`/`#rewind` are `absolute; inset: 0` since S6 — positioned against
+  // the padding box — and smoke S2 asserts the scrim matches `#canvas` edge for
+  // edge. A border would inset the scrim by 1px on all four sides, and D7 already
+  // decided that judgement stays exact rather than being loosened. An outline
+  // takes no layout at all, so this assertion *is* that decision.
+  const outline = canvas.decls.find((decl) => decl.prop === 'outline')
+  assert.ok(outline, '#canvas must carry a hairline; in dark it is otherwise flush with the base')
+  assert.match(outline.value, /var\(--border-subtle\)/)
+  assert.ok(
+    declares(canvas, 'outline-offset', '-1px'),
+    '#canvas draws its hairline inside itself, or the panel grows past its margin',
+  )
+  assert.ok(
+    !canvas.decls.some((decl) => decl.prop === 'border' || decl.prop.startsWith('border-width')),
+    '#canvas must not use a border: it would move the modal scrim off the canvas edge',
+  )
+})
+
+test('the settings screen scrolls full width and reads in a column', () => {
+  // todo V7: two nodes, two jobs. Merging them back into one gives the reading
+  // measure a scrollbar of its own, floating mid-canvas.
+  const column = blockFor('.settings-column')
+  assert.ok(
+    column.decls.some((decl) => decl.prop === 'max-width'),
+    '.settings-column is the reading measure and must bound its width',
+  )
+  assert.ok(declares(column, 'margin', '0 auto'), '.settings-column must be centred in its scroller')
+  assert.ok(
+    !column.decls.some((decl) => decl.prop.startsWith('overflow')),
+    '.settings-column is on an open dropdown’s ancestor chain and must not clip',
+  )
+  assert.ok(
+    declares(blockFor('.settings-body'), 'overflow-y', 'auto'),
+    '.settings-body stays the scroller, so its scrollbar keeps to the canvas edge',
+  )
+})
+
+test('a short conversation sits against the composer, and a long one still scrolls from the top', () => {
+  // todo V2: a session with a short history used to hang one bubble under the
+  // canvas header with 900px of nothing below it. Only a brand-new draft had an
+  // empty state; a two-message session had neither that nor a conversation to
+  // fill the canvas.
+  //
+  // The fix is one auto margin, and both halves of this test are the reasons it
+  // is an auto margin rather than the obvious alternatives.
+  const scroller = blockFor('.transcript')
+  assert.ok(declares(scroller, 'display', 'flex'), '.transcript must be a flex column for the column below to claim its free space')
+  assert.ok(declares(scroller, 'flex-direction', 'column'), '.transcript stacks one reading column; the axis has to say so')
+  assert.ok(declares(scroller, 'overflow-y', 'auto'), '.transcript stays the scroller')
+  // The alternative that looks equivalent and is not: in a scroll container,
+  // `justify-content: flex-end` puts the *top* of overflowing content out of
+  // reach, so a long session could never be scrolled back to its first message.
+  assert.ok(
+    !scroller.decls.some((decl) => decl.prop.startsWith('justify-content')),
+    '.transcript must not bottom-align with justify-content: it makes overflowing content unreachable at the top',
+  )
+
+  const column = blockFor('.transcript-column')
+  const margin = column.decls.find((decl) => decl.prop === 'margin')
+  assert.ok(margin, '.transcript-column must set a margin: the top one is what pushes a short conversation down')
+  assert.match(
+    margin.value,
+    /^auto\b/,
+    '.transcript-column needs margin-top: auto — it eats the free space when short and resolves to 0 when long',
+  )
+  assert.ok(
+    column.decls.some((decl) => decl.prop === 'max-width'),
+    '.transcript-column is the reading measure and must bound its width',
+  )
+  // The horizontal `auto` margins that centre it also cancel the flex item's
+  // default cross-axis stretch, so the width has to be stated: otherwise a short
+  // conversation shrink-to-fits into a narrow strip against the right edge.
+  assert.ok(
+    declares(column, 'width', '100%'),
+    '.transcript-column needs width: 100% — auto side margins turn off the flex stretch that used to size it',
+  )
+  // Without this the column is squeezed to the scroller's height and its content
+  // spills out of a box nothing scrolls — the long-session half of the bargain.
+  assert.ok(
+    declares(column, 'flex-shrink', '0'),
+    '.transcript-column must not shrink: as a flex item it would otherwise be capped at the scroller height',
+  )
+
+  // The empty state is a different layout and must stay one: it takes the
+  // scroller out of the stretch, so there is no free space to push anything into
+  // and the Hero keeps the canvas.
+  assert.ok(
+    declares(blockFor('.pane.empty .transcript'), 'flex', '0 0 auto'),
+    '.pane.empty keeps the welcome screen centred; it does not take part in the bottom alignment',
+  )
+})
+
+test('the session the window is showing is not the same thing as the keyboard cursor', () => {
+  // Two axes that used to share one paint: `--surface-active` was given to
+  // `.selected` (the cursor), so the row actually on screen had nothing but a
+  // text colour every *open* row already had — five bright rows and no way to
+  // tell which one you were looking at (todo D5, design_guidance 三.2).
+  //
+  // Verified by mutation: dropping the capsule from `.active`, or putting it back
+  // on `.selected`, reds this and nothing else.
+  const active = blockFor('.session-row.active')
+  assert.ok(
+    declares(active, 'background', 'var(--surface-active)'),
+    '.session-row.active must carry the capsule; it is the only row on screen',
+  )
+  assert.ok(
+    declares(blockFor('.session-row.active .session-open'), 'color', 'var(--text-primary)'),
+    '.session-row.active must lift its title to the primary text colour',
+  )
+  const selected = blockFor('.session-row.selected')
+  assert.ok(
+    !declares(selected, 'background', 'var(--surface-active)'),
+    '.session-row.selected must not wear the active capsule; the two states would read alike',
+  )
+
+  // Ordering, which no specificity rule saves here: `.active`, `.selected` and
+  // `.confirming` are all one class on `.session-row`, so the *last* one in the
+  // sheet wins the fill. Confirming has to be able to override the capsule, or
+  // the row asking the question is the one row that does not look like it is.
+  const order = (selector: string): number => {
+    const index = blocks.findIndex((block) => block.selector === selector)
+    assert.notEqual(index, -1, `no rule for ${selector}`)
+    return index
+  }
+  assert.ok(
+    order('.session-row.selected') < order('.session-row.active'),
+    '.session-row.active must come after .selected, or the cursor paints over the visible row',
+  )
+  assert.ok(
+    order('.session-row.active') < order('.session-row.confirming'),
+    '.session-row.confirming must come after .active, or the capsule hides the question',
+  )
+})
+
+test('a collapsed sidebar is gone, and the canvas grows the margin it borrowed', () => {
+  // The 44px rail existed so `.sidebar-collapse` stayed clickable; that control
+  // moved to the title bar, so collapsing now means zero width (todo D8). The
+  // canvas is `margin: 8px 8px 8px 0` — it uses the sidebar as its left inset, so
+  // without this it would end up glued to the window frame.
+  // Verified by mutation: restoring `44px` reds the first assertion, deleting the
+  // sibling rule reds the second.
+  assert.ok(
+    declares(blockFor('#sidebar.collapsed'), 'flex-basis', '0'),
+    'a collapsed sidebar must take no width; the rail it used to keep is now in the title bar',
+  )
+  assert.ok(
+    declares(blockFor('#sidebar.collapsed + #canvas'), 'margin-left', '8px'),
+    '#canvas must replace the inset the sidebar was providing',
+  )
+})
+
+test('the composer raises its three panels, and they no longer span the canvas', () => {
+  // todo V3: `#surface`, `#suggestions` and `#queue` were full-bleed blocks in
+  // the canvas's flex column — `margin: 0 8px 8px`, square-ish corners, no edge —
+  // opened by a chip in the composer's bottom right and drawn a screen away from
+  // it, pushing the transcript around on the way. S9 makes them one stack
+  // anchored to the composer's upper edge, on the reading column's axis.
+  //
+  // Verified by mutation: `position: static` on the shell, dropping its
+  // `pointer-events`, or giving `.composer-column` an `overflow` each red this
+  // test and nothing else.
+  const shell = blockFor('#composer-popovers')
+  assert.ok(declares(shell, 'position', 'absolute'), 'the stack floats; it must not take flow space')
+  assert.ok(declares(shell, 'bottom', '100%'), 'the stack sits on the composer’s upper edge')
+  // The shell outlives every panel it holds: with all three hidden it is still a
+  // box over the transcript, and the `gap` between two open ones is its own area.
+  assert.ok(
+    declares(shell, 'pointer-events', 'none'),
+    '#composer-popovers must not eat clicks meant for the transcript underneath',
+  )
+
+  const column = blockFor('.composer-column')
+  assert.ok(declares(column, 'position', 'relative'), '.composer-column is the containing block')
+  assert.ok(
+    !column.decls.some((decl) => decl.prop.startsWith('overflow')),
+    '.composer-column is on the stack’s ancestor chain and must not clip it — same rule as .settings-column',
+  )
+
+  for (const selector of ['#surface', '#suggestions', '#queue']) {
+    const panel = blockFor(selector)
+    assert.ok(
+      declares(panel, 'border-radius', 'var(--radius-lg)'),
+      `${selector} is a floating panel now, not a strip ruled off the canvas`,
+    )
+    assert.ok(
+      declares(panel, 'border', '1px solid var(--border-subtle)'),
+      `${selector} needs the hairline that separates it from the transcript behind it`,
+    )
+    assert.ok(
+      declares(panel, 'box-shadow', 'var(--shadow-float)'),
+      `${selector} floats over other content and must carry var(--shadow-float)`,
+    )
+    assert.ok(
+      declares(panel, 'pointer-events', 'auto'),
+      `${selector} has to opt back in; its shell is pointer-events: none`,
+    )
+    // The shell owns the spacing now. A leftover margin would offset the panel
+    // from the reading column the composer sits on.
+    assert.ok(
+      !panel.decls.some((decl) => decl.prop.startsWith('margin')),
+      `${selector} must not keep a margin of its own; #composer-popovers spaces the stack`,
+    )
+  }
+
+  // The three used to be listed as direct children of `#canvas.settings-open`.
+  // They hang off the composer now, so hiding `#input-row` hides them — and a
+  // stale rule would still match nothing, silently.
+  for (const selector of blocks.map((block) => block.selector)) {
+    assert.ok(
+      !/#canvas\.settings-open > #(surface|suggestions|queue)\b/.test(selector),
+      `${selector} matches nothing: those three are no longer children of #canvas`,
+    )
+  }
 })
 
 test('every floating menu is lifted off the page it covers', () => {
@@ -634,6 +860,29 @@ test('the 5e chrome controls carry a rule of their own, not only a contextual on
     'canvas-title-input',
     'composer-menu-item',
   ]) {
+    assert.ok(restingRule(name), `styles.css has no resting rule for .${name}`)
+  }
+})
+
+test('the dialog action buttons carry a rule of their own, not only a contextual one', () => {
+  // The fourth named list, and the same hole as the two above: the general scan
+  // sees `button('dialog-btn primary', …)` in `overlayView.ts` and would be
+  // satisfied by `.dialog-btn.primary` alone — a control whose only rule is one
+  // of its variants, which at rest is still the user agent's grey box. The bar
+  // and the key badge are not `button()` call sites at all, so nothing else
+  // covers them.
+  // Verified by mutation: deleting any one of these three rules reds this test.
+  //
+  // These live under `#overlay-panel` / `#rewind-panel` (the bar is shared by the
+  // two modals and belongs to neither), so the shape required is "the selector
+  // *ends* in exactly `.name`" — an ancestor is fine, a trailing `.primary`,
+  // `.danger` or `:hover` is not.
+  const restingRule = (name: string): boolean =>
+    blocks.some((block) =>
+      block.decls.length >= 3
+      && block.selector.split(',').some((one) => new RegExp(`\\.${name}$`).test(one.trim())))
+
+  for (const name of ['dialog-actions', 'dialog-btn', 'kbd']) {
     assert.ok(restingRule(name), `styles.css has no resting rule for .${name}`)
   }
 })

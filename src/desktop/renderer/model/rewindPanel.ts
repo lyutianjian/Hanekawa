@@ -14,6 +14,7 @@ import {
 } from '../../../runtime/rewindPresentation.js'
 import type { CheckpointWithDiff } from '../../../services/checkpoint/checkpointService.js'
 import type { RewindSummaryDecision } from '../../../runtime/rewindSummary.js'
+import type { DialogAction, OverlayAction } from './dialogActions.js'
 import { UI_LOCALE } from './locale.js'
 
 /**
@@ -103,7 +104,13 @@ export interface RewindViewModel {
   readonly emptyMessage?: string
   readonly busyLabel?: string
   readonly error?: string
-  readonly hint: string
+  /**
+   * The button bar. On the confirm screen the options *are* the buttons (slots);
+   * on the list screen there is only 关闭. While a decision runs the bar is
+   * empty, for the same reason the options are withdrawn: the panel is not
+   * accepting input at all.
+   */
+  readonly actions: readonly DialogAction[]
 }
 
 const MESSAGE_ROW_WIDTH = 88
@@ -124,7 +131,7 @@ export function rewindViewModel(state: RewindState): RewindViewModel {
       codeEffect: '',
       emptyMessage: '没有可用的检查点',
       ...(state.error === undefined ? {} : { error: state.error }),
-      hint: '[Esc] 关闭',
+      actions: [CLOSE_ACTION],
     }
   }
 
@@ -155,7 +162,7 @@ export function rewindViewModel(state: RewindState): RewindViewModel {
       timeLabel: '',
       codeEffect: '',
       ...(state.error === undefined ? {} : { error: state.error }),
-      hint: '[↑↓] 移动　[Enter] 选择　[Esc] 关闭',
+      actions: [CLOSE_ACTION],
     }
   }
 
@@ -186,8 +193,38 @@ export function rewindViewModel(state: RewindState): RewindViewModel {
       : {}),
     ...(state.busy ? { busyLabel: busyLabelFor(options[selectedIndex]) } : {}),
     ...(state.error === undefined ? {} : { error: state.error }),
-    hint: `[↑↓] 移动　[1–${options.length}] 选择　[Enter] 确认　[Esc] 返回`,
+    actions: state.busy ? [] : options.map((option, index) => ({
+      label: option.label,
+      shortcut: String(index + 1),
+      role: option.decision === 'nevermind' ? 'secondary' : 'primary',
+      // Only the decisions that write to the working tree are drawn as danger.
+      // Truncating the conversation is undone by nothing either, but it is what
+      // the panel is *for*; overwriting files is the part that surprises.
+      ...(TOUCHES_FILES.has(option.decision) ? { tone: 'danger' as const } : {}),
+      slot: index,
+    })),
   }
+}
+
+/** Closing the panel performs nothing, so it is never a primary. */
+const CLOSE_ACTION: DialogAction = { label: '关闭', shortcut: 'Esc', role: 'secondary' }
+
+const TOUCHES_FILES: ReadonlySet<RestoreDecision> = new Set([
+  'restore-code',
+  'restore-code-and-conversation',
+])
+
+/**
+ * A button to an intent, the mouse's half of `rewindKeyToIntent`.
+ *
+ * A slot resolves through the same `options` array the view was built from, so a
+ * button cannot choose a decision the number key would not; the list screen's
+ * lone button closes, which is what Escape does there.
+ */
+export function rewindActionToIntent(action: OverlayAction, view: RewindViewModel): RewindIntent {
+  if (action.kind !== 'slot') return { kind: 'close' }
+  const option = view.options[action.index]
+  return option ? { kind: 'choose', decision: option.decision } : { kind: 'none' }
 }
 
 function diffRowDetail(checkpoint: CheckpointWithDiff): string {

@@ -8,6 +8,7 @@ import {
   type EnterPlanOption,
 } from '../../../runtime/planPresentation.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../../harness/planModeManager.js'
+import type { DialogAction } from './dialogActions.js'
 import { UI_LOCALE } from './locale.js'
 
 /**
@@ -44,7 +45,8 @@ export interface EnterPlanViewModel {
   readonly reassurance: string
   readonly options: readonly EnterPlanOption[]
   readonly selectedIndex: number
-  readonly hint: string
+  /** The options again, as buttons: here an option *is* the action. */
+  readonly actions: readonly DialogAction[]
 }
 
 export function enterPlanViewModel(selectedIndex = 0): EnterPlanViewModel {
@@ -60,7 +62,13 @@ export function enterPlanViewModel(selectedIndex = 0): EnterPlanViewModel {
     reassurance: '在你确认方案之前，不会修改任何代码。',
     options: ENTER_OPTIONS,
     selectedIndex: clamp(selectedIndex, 0, ENTER_OPTIONS.length - 1),
-    hint: '[↑↓] 移动　[1-2] 快选　[Enter] 确定　[Esc] 拒绝',
+    // Entering plan mode changes nothing on disk, so neither option is danger.
+    actions: ENTER_OPTIONS.map((option, index) => ({
+      label: option.label,
+      shortcut: option.hotkey,
+      role: option.value === 'yes' ? 'primary' : 'secondary',
+      slot: index,
+    })),
   }
 }
 
@@ -82,9 +90,9 @@ export function enterPlanKeyToIntent(
     case 'ArrowDown':
       return { kind: 'move', selectedIndex: clamp(state.selectedIndex + 1, 0, last) }
     case '1':
-      return { kind: 'answer', approved: true }
+      return enterPlanIndexToIntent(0)
     case '2':
-      return { kind: 'answer', approved: false }
+      return enterPlanIndexToIntent(1)
     case 'Enter':
       return { kind: 'answer', approved: ENTER_OPTIONS[state.selectedIndex]?.value === 'yes' }
     case 'Escape':
@@ -93,6 +101,19 @@ export function enterPlanKeyToIntent(
     default:
       return { kind: 'none' }
   }
+}
+
+/**
+ * A slot to an intent, for both the numeric hotkey and a click on the row.
+ *
+ * Reads `ENTER_OPTIONS` rather than hard-coding "1 is yes", for the reason that
+ * array is resolved once at module scope: the view, the key map and the mouse
+ * must all agree on which option index 0 is.
+ */
+export function enterPlanIndexToIntent(index: number): EnterPlanIntent {
+  const option = ENTER_OPTIONS[index]
+  if (!option) return { kind: 'none' }
+  return { kind: 'answer', approved: option.value === 'yes' }
 }
 
 // --- exiting ----------------------------------------------------------------
@@ -113,7 +134,8 @@ export interface ExitPlanViewModel {
   /** True when the focused option is the one that collects feedback. */
   readonly feedbackFocused: boolean
   readonly feedback: string
-  readonly hint: string
+  /** Dialog-level buttons; the options themselves stay a row list. */
+  readonly actions: readonly DialogAction[]
 }
 
 export function createExitPlanState(input: ExitDialogInput): ExitPlanState {
@@ -140,9 +162,15 @@ export function exitPlanViewModel(state: ExitPlanState): ExitPlanViewModel {
     selectedIndex,
     feedbackFocused: options[selectedIndex]?.kind === 'reject',
     feedback: state.feedback,
-    hint: empty
-      ? '[↑↓] 移动　[1-2] 快选　[Enter] 确定　[Esc] 继续规划'
-      : `[↑↓] 移动　[1-${options.length}] 快选　[Enter] 确定　[Esc] 继续规划`,
+    // The secondary button is Escape, exactly: it rejects with *no* feedback.
+    // Anything typed into the reject slot's field is submitted by 确认, which is
+    // the only place the two differ and the only button in the app that can
+    // discard what the user just typed. Making it commit the reject slot instead
+    // would be kinder and would answer something the keyboard does not.
+    actions: [
+      { label: '继续规划', shortcut: 'Esc', role: 'secondary' },
+      { label: '确认', shortcut: 'Enter', role: 'primary' },
+    ],
   }
 }
 
@@ -180,11 +208,7 @@ export function exitPlanKeyToIntent(
 
   const slot = Number.parseInt(event.key, 10)
   if (!Number.isNaN(slot) && slot >= 1 && slot <= view.options.length) {
-    // A numeric hotkey on the reject slot moves there rather than rejecting
-    // outright, so the user gets to type feedback first.
-    return view.options[slot - 1]?.kind === 'reject'
-      ? { kind: 'move', selectedIndex: slot - 1 }
-      : { kind: 'select', selectedIndex: slot - 1 }
+    return exitPlanIndexToIntent(slot - 1, view)
   }
 
   if (view.feedbackFocused && event.key.length === 1) {
@@ -192,6 +216,22 @@ export function exitPlanKeyToIntent(
   }
 
   return { kind: 'none' }
+}
+
+/**
+ * A slot to an intent, for both the numeric hotkey and a click on the row.
+ *
+ * The reject slot **moves** rather than rejecting: that option collects feedback,
+ * and answering on the first press would take the field away before anything
+ * could be typed into it. A click has to behave the same way, or the feedback
+ * field would be unreachable with a mouse.
+ */
+export function exitPlanIndexToIntent(index: number, view: ExitPlanViewModel): ExitPlanIntent {
+  const option = view.options[index]
+  if (!option) return { kind: 'none' }
+  return option.kind === 'reject'
+    ? { kind: 'move', selectedIndex: index }
+    : { kind: 'select', selectedIndex: index }
 }
 
 export type ExitPlanOutcome =

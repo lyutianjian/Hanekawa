@@ -159,6 +159,10 @@ test('the items paint inside one reading column, and the scroller stays bare', (
   ]))
 
   const children = stub.inspect(container).children
+  // Also load-bearing since todo V2: the scroller is a flex column and the
+  // column's `margin-top: auto` claims *all* of its free space. A second child
+  // would split that space and a short conversation would stop meeting the
+  // composer.
   assert.equal(children.length, 1, 'the scroller holds the column and nothing else')
   assert.equal(children[0]?.className, 'transcript-column')
   assert.deepEqual(column().children.map((item) => item.classes[0]), ['item', 'item'])
@@ -230,6 +234,12 @@ test('a sealed block is collapsed, shows the elapsed time, and drops its body', 
   assert.deepEqual(block.classes, ['item', 'thinking', 'collapsed'])
   assert.equal(block.children[0]?.text, '已处理 7m 38s')
   assert.equal(block.children[0]?.attributes.get('aria-expanded'), 'false')
+  // 「已处理 Xm Xs `⌵`」 (design_guidance 四.3): the caret trails the label. The
+  // rule that flips it while the block is open matches on the class, so the
+  // position is free to be the spec's. Verified by mutation: `trailingIcon` back
+  // to `icon` reds this.
+  assert.equal(block.children[0]?.children[0]?.className, 'btn-label')
+  assert.equal(block.children[0]?.children.at(-1)?.tagName, 'svg')
   // Absent, not hidden: the transcript is an `aria-live` region, and a collapsed
   // block must not be read out.
   assert.equal(block.children.length, 1)

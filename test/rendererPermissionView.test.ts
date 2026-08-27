@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   ALSO_WAITING_LIMIT,
   initialPermissionIndex,
+  permissionIndexToIntent,
   permissionKeyToIntent,
   permissionResponseFor,
   permissionViewModel,
@@ -131,7 +132,33 @@ test('the subtitle is the only place the pending counter appears', () => {
 
   const third = permissionViewModel({ request: dto(), selectedIndex: 0, activeIndex: 2, total: 4 })
   assert.match(third.subtitle, /第 3\/4 条待处理/)
-  assert.match(third.hint, /\[Tab\] 下一条请求/)
+})
+
+test('the options are the buttons, and denying is never the loud one', () => {
+  const plain = permissionViewModel({
+    request: dto({ canAlwaysAllow: true, alwaysAllowRule: rule('Bash') }),
+    selectedIndex: 0,
+  })
+  // One button per option, in the same order and addressing the same slot: the
+  // mouse and the number key resolve through `resolvePermissionOption` alike.
+  assert.deepEqual(plain.actions.map((action) => action.slot), plain.options.map((_, i) => i))
+  assert.deepEqual(plain.actions.map((action) => action.label), plain.options.map((o) => o.label))
+  assert.deepEqual(plain.actions.map((action) => action.shortcut), ['Y', 'N', 'A'])
+  // Exactly one primary: 始终允许 writes a rule that outlives this request, so it
+  // does not get to look like the recommended answer either.
+  assert.deepEqual(plain.actions.map((action) => action.role), ['primary', 'secondary', 'secondary'])
+  // Nothing is danger on an ordinary request.
+  assert.deepEqual(plain.actions.map((action) => action.tone), [undefined, undefined, undefined])
+
+  const destructive = permissionViewModel({
+    request: dto({ destructiveWarnings: [{ kind: 'x', detail: 'y' } as never] }),
+    selectedIndex: initialPermissionIndex(dto({ destructiveWarnings: [{ kind: 'x', detail: 'y' } as never] })),
+  })
+  // Approving a destructive command is drawn as danger — an outline, per
+  // design_guidance 七.4 — and deny stays the secondary *and* the focused one.
+  assert.deepEqual(destructive.actions.map((action) => action.tone), ['danger', undefined])
+  assert.equal(destructive.actions[1]?.role, 'secondary')
+  assert.equal(destructive.selectedIndex, 1)
 })
 
 test('also-waiting names a few and counts the rest', () => {
@@ -255,4 +282,25 @@ test('the teardown answers keep the asymmetry the bridges have', () => {
   assert.ok(settled[2]?.response.kind === 'exit-plan' && settled[2].response.decision.kind === 'reject')
   assert.ok(settled[3]?.response.kind === 'ask-user-question'
     && settled[3].response.result.kind === 'rejected')
+})
+
+test('a click on a row answers exactly what its number key answers', () => {
+  const view = permissionViewModel({
+    request: dto({ canAlwaysAllow: true, alwaysAllowRule: rule('Bash') }),
+    selectedIndex: 0,
+  })
+  assert.ok(view.options.length >= 2)
+
+  view.options.forEach((option, index) => {
+    const clicked = permissionIndexToIntent(index, view.options)
+    const typed = permissionKeyToIntent({ key: String(index + 1) }, { selectedIndex: 0, options: view.options })
+    assert.deepEqual(clicked, typed, `slot ${index + 1} agrees between mouse and keyboard`)
+    assert.deepEqual(clicked, { kind: 'answer', action: option.action })
+  })
+})
+
+test('a click outside the offered options answers nothing', () => {
+  const view = permissionViewModel({ request: dto(), selectedIndex: 0 })
+  assert.deepEqual(permissionIndexToIntent(view.options.length, view.options), { kind: 'none' })
+  assert.deepEqual(permissionIndexToIntent(-1, view.options), { kind: 'none' })
 })

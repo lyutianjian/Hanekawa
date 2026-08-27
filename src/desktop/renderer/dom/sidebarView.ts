@@ -17,11 +17,11 @@ import { icon, type IconName } from './icons.js'
 /**
  * The sidebar as DOM.
  *
- * Three fixed regions, following `design_guidance.md`'s two-column shell: a
- * header carrying the app mark and "new session", a scrolling middle of project
- * groups and age sections, and a footer with "open project…" (4d hangs settings
- * off the same footer). 4e restyles all of it; the structure is here so that
- * stage is a stylesheet rather than a rewrite.
+ * Five fixed regions, following `design_guidance.md` 三.2 top to bottom: the
+ * workspace header, the session search box, the first-level actions, a scrolling
+ * middle of project groups and age sections, and a footer carrying 设置 and the
+ * `?` panel. Collapsing hides all five and the stylesheet takes the column to
+ * zero width — the one collapse control is the title bar's `.titlebar-rail`.
  *
  * Every decision — which rows exist, what order they are in, what a keystroke
  * means, whether a row is asking for confirmation — belongs to
@@ -153,19 +153,11 @@ export function createSidebarView(
     node.setAttribute('role', 'option')
     node.setAttribute('aria-selected', String(row.active))
 
-    if (row.confirmingDelete) {
-      node.appendChild(el('span', 'session-confirm-text', '删除此会话？'))
-      node.appendChild(
-        button('session-confirm-yes', '删除', '确认删除', () =>
-          onIntent({ kind: 'confirm-delete', projectRoot: row.projectRoot, sessionId: row.sessionId }),
-        ),
-      )
-      node.appendChild(
-        button('session-confirm-no', '取消', '取消删除', () => onIntent({ kind: 'cancel-delete' })),
-      )
-      return node
-    }
-
+    // One construction path, confirming or not: the confirmation used to replace
+    // the whole row, which took the session's name off screen at exactly the
+    // moment the user had to decide *which* session they were deleting (S7/D6).
+    // Only the right-hand actions swap; the name, the badge and the truncation
+    // are one decision each, as they are in `model/sidebar.ts`.
     const open = el('button', 'session-open')
     open.type = 'button'
     open.title = `${row.title} · ${row.messageCount} 条消息`
@@ -179,9 +171,15 @@ export function createSidebarView(
       badge.appendChild(icon(row.badge === 'running' ? 'spinner' : 'dot'))
       open.appendChild(badge)
     }
-    // Through the model so a click and Enter cannot disagree about "open or
-    // switch".
-    open.addEventListener('click', () => onIntent(activateRow(row)))
+    if (row.confirmingDelete) {
+      // Disabled rather than merely unlistened: the row is asking a question, and
+      // a name that still looks clickable invites an answer it will not give.
+      open.disabled = true
+    } else {
+      // Through the model so a click and Enter cannot disagree about "open or
+      // switch".
+      open.addEventListener('click', () => onIntent(activateRow(row)))
+    }
     node.appendChild(open)
 
     const actions = el('div', 'session-actions')
@@ -190,12 +188,26 @@ export function createSidebarView(
     // silently. "Close" would ask them to think about runtimes rather than
     // sessions — `Ctrl+W` is still there for the habit, and delete is the only
     // action on a row that means anything to them.
-    actions.appendChild(
-      button('session-delete', '', '删除会话', () =>
-        onIntent({ kind: 'request-delete', sessionId: row.sessionId }),
-        { icon: 'trash' },
-      ),
-    )
+    if (row.confirmingDelete) {
+      // The question is carried by the two buttons and the row's own surface, not
+      // by a sentence: at 268px a "删除此会话？" label and a title cannot both fit,
+      // and the title is the half only the user can supply.
+      actions.appendChild(
+        button('session-confirm-yes', '删除', '确认删除', () =>
+          onIntent({ kind: 'confirm-delete', projectRoot: row.projectRoot, sessionId: row.sessionId }),
+        ),
+      )
+      actions.appendChild(
+        button('session-confirm-no', '取消', '取消删除', () => onIntent({ kind: 'cancel-delete' })),
+      )
+    } else {
+      actions.appendChild(
+        button('session-delete', '', '删除会话', () =>
+          onIntent({ kind: 'request-delete', sessionId: row.sessionId }),
+          { icon: 'trash' },
+        ),
+      )
+    }
     node.appendChild(actions)
     return node
   }
@@ -245,7 +257,9 @@ export function createSidebarView(
       view.workspaceName ?? 'Hanekawa',
       view.workspaces.length > 1 ? '切换工作区' : '当前工作区',
       () => onIntent({ kind: 'toggle-workspace-menu' }),
-      { icon: 'chevron-down' },
+      // 「项目名 + `⌵`」 (design_guidance 三.2): the glyph sits at the pill's
+      // right edge, and the name — which is what gets truncated — takes the rest.
+      { trailingIcon: 'chevron-down' },
     )
     wrapper.appendChild(workspaceTrigger)
     if (view.workspaceMenuOpen && view.workspaces.length > 0) {
@@ -293,21 +307,13 @@ export function createSidebarView(
       view.rows.forEach((row, index) => indices.set(row.sessionId, index))
       const indexOf = (row: SidebarRow): number => indices.get(row.sessionId) ?? -1
 
-      // The header is the workspace and the rail toggle, and nothing else: a
-      // third control here is what squeezed the project name down to
-      // `Hanekawa-…` at 268px (design_guidance 三.2). "New session" moved to the
-      // nav row below the search box.
-      replace(
-        header,
-        workspaceNode(view),
-        button(
-          'sidebar-collapse',
-          '',
-          view.collapsed ? '展开侧栏（Ctrl+B）' : '收起侧栏（Ctrl+B）',
-          () => onIntent({ kind: 'toggle-collapse' }),
-          { icon: view.collapsed ? 'chevron-right' : 'chevron-left' },
-        ),
-      )
+      // The header is the workspace and nothing else: a second control here is
+      // what squeezed the project name down to `Hanekawa-…` at 268px
+      // (design_guidance 三.2). "New session" moved to the nav row below the
+      // search box, and the rail toggle to the title bar — `titlebar-rail` is the
+      // single collapse control the spec names (三.1), so a duplicate here was a
+      // third way to do one thing (S7/D8).
+      replace(header, workspaceNode(view))
 
       replace(
         nav,
@@ -330,11 +336,14 @@ export function createSidebarView(
       )
 
       container.classList.toggle('collapsed', view.collapsed)
-      // Collapsed hides the *contents*, not the rail: the toggle has to stay
-      // reachable by mouse, or Ctrl+B becomes the only way back. Returning here
+      // Collapsed hides *everything*, header included, and the stylesheet takes
+      // the column to zero width. The rail that used to survive existed only so
+      // this view's own toggle stayed reachable by mouse; that toggle now lives in
+      // the title bar, which a collapsed sidebar does not touch. Returning here
       // rather than after building means a collapsed sidebar builds no rows at
       // all — the guard above already banked the signature, so expanding
       // repaints.
+      show(header, !view.collapsed)
       show(search, !view.collapsed)
       show(nav, !view.collapsed)
       show(list, !view.collapsed)

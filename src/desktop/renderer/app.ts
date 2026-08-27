@@ -129,11 +129,18 @@ darkQuery.addEventListener('change', () => {
 
 // --- the singleton views ------------------------------------------------------
 
-const overlay = createOverlayView(required('overlay'), required('overlay-panel'))
+// The two window-level singletons only ever paint for the active pane, so a click
+// in either belongs to `activePane()` — the same routing `surface` and
+// `rewindPanel` below already use.
+const overlay = createOverlayView(required('overlay'), required('overlay-panel'), (action) => {
+  activePane()?.handleOverlayAction(action)
+})
 const surface = createSurfacePanel(required('surface'), (action) => {
   void activePane()?.runSurfaceAction(action)
 })
-const suggestions = createSuggestionsView(required('suggestions'))
+const suggestions = createSuggestionsView(required('suggestions'), (index) => {
+  void activePane()?.acceptCompletionAt(index)
+})
 const queueStrip = createQueueView(required('queue'), () => {
   void activePane()?.clearQueue()
 })

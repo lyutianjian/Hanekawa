@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveKey, type ShellState } from '../src/desktop/renderer/model/keymap.js'
+import { completionAcceptMode, resolveKey, type ShellState } from '../src/desktop/renderer/model/keymap.js'
 import {
   classifyInput,
   commandEffectToIntent,
@@ -398,4 +398,21 @@ test('a freshly opened picker starts on the current row when it is pickable', ()
   }
   assert.equal(noCurrent.rows[0]?.disabled, true)
   assert.equal(initialSurfaceSelection(noCurrent), 1)
+})
+
+test('a clicked completion accepts or submits exactly where Enter does', () => {
+  const cases: ShellState[] = [
+    shell({ completions: 'command' }),
+    shell({ completions: 'file' }),
+    shell({ completions: 'command', isStreaming: true }),
+    shell({ completions: 'file', isStreaming: true }),
+  ]
+
+  for (const state of cases) {
+    const typed = resolveKey({ key: 'Enter' }, state)
+    // The mouse has no second rule of its own: `#suggestions` and the Enter
+    // branch both read `completionAcceptMode`, so a click can never submit where
+    // Enter would only fill in.
+    assert.equal(`${completionAcceptMode(state)}-completion`, typed, JSON.stringify(state))
+  }
 })

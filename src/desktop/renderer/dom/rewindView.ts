@@ -1,5 +1,7 @@
+import { rewindActionToIntent } from '../model/rewindPanel.js'
 import type { RewindIntent, RewindViewModel } from '../model/rewindPanel.js'
 import { el, replace, show } from './dom.js'
+import { actionBar } from './overlayView.js'
 
 /**
  * The `/rewind` panel: a checkpoint list, then a confirm screen.
@@ -39,8 +41,17 @@ export function createRewindView(
         view.subtitle.length > 0 && el('div', 'subtitle', view.subtitle),
         view.error !== undefined && el('div', 'error', view.error),
         view.emptyMessage !== undefined && el('div', 'subtitle', view.emptyMessage),
-        view.screen === 'select' ? selectScreen(view, onIntent) : confirmScreen(view, onIntent),
-        el('div', 'hint', view.hint),
+        view.screen === 'select' ? selectScreen(view, onIntent) : confirmScreen(view),
+        // The same bar the blocking dialogs end with, and the same rule: a slot
+        // resolves through `view.options`, so a button cannot pick a decision
+        // the number key would not.
+        actionBar(
+          view.actions,
+          (action) => onIntent(rewindActionToIntent(action, view)),
+          // Where the cursor is, so Enter's target is visible. `-1` on the list
+          // screen, whose bar is a single non-slot button.
+          view.options.findIndex((option) => option.selected),
+        ),
       )
       show(container, true)
       open = true
@@ -74,7 +85,7 @@ function selectScreen(view: RewindViewModel, onIntent: RewindActivate): HTMLElem
   return list
 }
 
-function confirmScreen(view: RewindViewModel, onIntent: RewindActivate): HTMLElement {
+function confirmScreen(view: RewindViewModel): HTMLElement {
   const body = el('div', 'confirm')
   body.appendChild(el('div', 'message', view.messagePreview))
   if (view.timeLabel.length > 0) body.appendChild(el('div', 'subtitle', view.timeLabel))
@@ -83,25 +94,12 @@ function confirmScreen(view: RewindViewModel, onIntent: RewindActivate): HTMLEle
   if (view.busyLabel !== undefined) {
     // Options are withdrawn rather than disabled while a decision runs: the
     // panel is not accepting input at all, and leaving them clickable would say
-    // otherwise.
+    // otherwise. The view model empties `actions` for the same reason.
     body.appendChild(el('div', 'busy', view.busyLabel))
     return body
   }
 
-  const options = el('div', 'options')
-  for (const option of view.options) {
-    const node = el('div', `option${option.selected ? ' selected' : ''}`)
-    node.dataset.decision = option.decision
-    node.setAttribute('role', 'option')
-    node.setAttribute('aria-selected', String(option.selected))
-    node.appendChild(document.createTextNode(option.selected ? '> [' : '  ['))
-    node.appendChild(el('span', 'hotkey', option.hotkey))
-    node.appendChild(document.createTextNode(`] ${option.label}`))
-    node.addEventListener('click', () => onIntent({ kind: 'choose', decision: option.decision }))
-    options.appendChild(node)
-  }
-  body.appendChild(options)
-
+  // The decisions themselves are the button bar below, not rows.
   if (view.warning !== undefined) body.appendChild(el('div', 'warning', view.warning))
   return body
 }

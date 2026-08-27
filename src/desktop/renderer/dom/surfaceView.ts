@@ -1,6 +1,7 @@
 import type { CommandViewRow } from '../model/commandRouting.js'
 import type { SurfaceAction, SurfaceView } from '../model/surfaces.js'
 import { el, replace, show } from './dom.js'
+import { icon } from './icons.js'
 
 /**
  * The dismissible panel: a picker, or a slash command's structured view.
@@ -45,7 +46,14 @@ export function createSurfacePanel(container: HTMLElement, onActivate: SurfaceAc
         if (row.action && index === selectedIndex) classes.push('selected')
         const node = el('div', classes.join(' '))
         node.dataset.rowId = row.id
-        node.appendChild(el('span', 'label', `${row.current ? '● ' : '  '}${row.label}`))
+        // The "this is the one in force" marker is a glyph in a fixed-width slot,
+        // not the `● `/`  ` text prefix this was transcribed from — that was the
+        // TUI's way of keeping labels aligned with a monospaced font, and under
+        // the chrome font it neither aligned nor read as a mark (todo V5).
+        const mark = el('span', 'row-mark')
+        if (row.current) mark.appendChild(icon('dot'))
+        node.appendChild(mark)
+        node.appendChild(el('span', 'label', row.label))
         node.appendChild(el('span', 'value', row.disabledReason ?? row.detail))
         const action = row.action
         if (action) {

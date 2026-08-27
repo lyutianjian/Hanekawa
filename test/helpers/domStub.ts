@@ -268,8 +268,12 @@ export interface DomStub {
    * Fires any other event. `init.target` is what a delegating handler reads to
    * decide whether the event was aimed at one of its own persistent children;
    * `init.relatedTarget` is `focusout`'s destination; `init.key` is for `keydown`.
+   *
+   * Returns what the handlers left on the event: `defaultPrevented` is the only
+   * observable difference between a listener that suppressed the browser's own
+   * behaviour and one that did not.
    */
-  dispatch(node: unknown, type: string, init?: StubEventInit): void
+  dispatch(node: unknown, type: string, init?: StubEventInit): { readonly defaultPrevented: boolean }
   /** Moves focus, so `activeElement` can be asserted after a keyboard intent. */
   focus(node: unknown): void
   /**
@@ -369,8 +373,8 @@ export function installDomStub(): DomStub {
     click(node: unknown): void {
       asElement(node).dispatch('click')
     },
-    dispatch(node: unknown, type: string, init: StubEventInit = {}): void {
-      asElement(node).dispatch(type, init)
+    dispatch(node: unknown, type: string, init: StubEventInit = {}): { readonly defaultPrevented: boolean } {
+      return asElement(node).dispatch(type, init)
     },
     focus(node: unknown): void {
       asElement(node).focus()

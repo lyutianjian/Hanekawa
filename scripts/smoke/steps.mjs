@@ -906,36 +906,44 @@ async function step9(ctx) {
     JSON.stringify(chipBefore),
   )
 
-  // Read while the picker is shut, so the transcript's height has a before.
-  const shut = await read(ctx, probes.surface())
+  // Read while the popover is shut, so the transcript's height has a before.
+  const shut = await read(ctx, probes.chipMenu())
 
-  await read(ctx, probes.clickChipEffort())
-  const picker = await waitFor('the effort picker', async () => {
-    const view = await read(ctx, probes.surface())
+  await read(ctx, probes.clickChip())
+  const menu = await waitFor('the chip popover', async () => {
+    const view = await read(ctx, probes.chipMenu())
     return view.open ? view : undefined
   })
-  ctx.eq('the chip opens the effort picker', picker.title, '选择思考强度')
-  ctx.eq('every effort level is offered', picker.rows.map((row) => row.id), ['low', 'medium', 'high', 'xhigh', 'max'])
-
-  // todo V3. The panel used to span the canvas edge to edge, one screen above
-  // the chip that opens it, shoving the transcript up as it appeared.
+  ctx.eq('the chip opens one popover for both fields', menu.rows.map((row) => row.label), ['模型', '推理强度'])
+  ctx.eq('each row names the value in force', menu.rows[1].value, chipBefore.effort)
   ctx.ok(
-    'the picker sits on the reading column, not across the canvas',
-    picker.rect.left === picker.column.left && picker.rect.right === picker.column.right,
-    `panel=${picker.rect.left}..${picker.rect.right} column=${picker.column.left}..${picker.column.right}`,
-  )
-  ctx.ok('and that column is the 760px reading axis', picker.column.width <= 760, `${picker.column.width}px`)
-  ctx.ok(
-    'it opens on the composer’s upper edge, where its trigger is',
-    picker.rect.bottom <= picker.composerTop,
-    `panel bottom=${picker.rect.bottom} composer top=${picker.composerTop}`,
+    'it hangs off the chip rather than spanning the reading column',
+    menu.rect.bottom <= menu.composerTop && menu.rect.right - menu.rect.left < 400,
+    `panel=${menu.rect.left}..${menu.rect.right} bottom=${menu.rect.bottom} composer top=${menu.composerTop}`,
   )
   // A float, not a flex sibling: opening it must not resize the conversation.
-  ctx.eq('and floats over the transcript instead of squeezing it', picker.transcriptHeight, shut.transcriptHeight)
-  await ctx.shot('09a-effort-picker', 'the effort picker: floating on the composer, the current level marked, any over-ceiling level explaining itself')
+  ctx.eq('and floats over the transcript instead of squeezing it', menu.transcriptHeight, shut.transcriptHeight)
+
+  await read(ctx, probes.hoverChipRow('推理强度'))
+  const flown = await waitFor('the effort flyout', async () => {
+    const view = await read(ctx, probes.chipMenu())
+    return view.flyout ? view : undefined
+  })
+  ctx.eq('hovering a row offers its levels', flown.flyout.title, '选择思考强度')
+  ctx.eq(
+    'every effort level is offered',
+    flown.flyout.items.map((item) => item.label),
+    ['低', '中', '高', '极高', '最高'],
+  )
+  ctx.ok(
+    'and the flyout opens beside the popover, not over it',
+    flown.flyout.right <= flown.rect.left,
+    `flyout right=${flown.flyout.right} popover left=${flown.rect.left}`,
+  )
+  await ctx.shot('09a-effort-flyout', 'the chip popover with the effort flyout open: the level in force ticked, any over-ceiling level explaining itself')
 
   const since = (await app.events(ctx.app, 0)).seq
-  await read(ctx, probes.clickSurfaceRow('low'))
+  await read(ctx, probes.clickChipFlyoutItem('低'))
   const chipAfter = await waitFor('the chip to show the new level', async () => {
     const view = await read(ctx, probes.chip())
     return view.effort === '低' ? view : undefined
@@ -947,14 +955,31 @@ async function step9(ctx) {
     entries.some((entry) => entry.type === 'runtime-snapshot' && entry.effort === 'low'),
     entries.filter((entry) => entry.type === 'runtime-snapshot').map((entry) => `${entry.lane}:${entry.effort}`).join(',') || 'none',
   )
-  const surfaceAfter = await read(ctx, probes.surface())
-  ctx.ok('the picker closes', surfaceAfter.open === false, `open=${surfaceAfter.open}`)
+  const menuAfter = await read(ctx, probes.chipMenu())
+  ctx.ok('the popover closes', menuAfter.open === false, `open=${menuAfter.open}`)
+  await ctx.shot('09b-chip-low', 'the model · effort chip, shut: does it read as one status label')
+
+  // The chip is a second *route* to the choice, not a replacement for the slash
+  // command: `/effort` still opens its own `#surface` card, and both end in the
+  // same `/effort <level>`.
+  await read(ctx, probes.submitLine('/effort'))
+  const card = await waitFor('the effort picker', async () => {
+    const view = await read(ctx, probes.surface())
+    return view.open ? view : undefined
+  })
+  ctx.eq('/effort still opens the picker card', card.title, '选择思考强度')
+  ctx.eq('with the same five levels', card.rows.map((row) => row.id), ['low', 'medium', 'high', 'xhigh', 'max'])
+  await read(ctx, probes.clickSurfaceRow('high'))
+  const restored = await waitFor('the chip to follow the card', async () => {
+    const view = await read(ctx, probes.chip())
+    return view.effort === '高' ? view : undefined
+  })
+  ctx.eq('and the chip follows it', restored.effort, '高')
   // The UI path must not persist: `set-effort` with `persist: true` writes the
   // user's *global* settings file (`config/settings.ts:399`), and the chip runs
   // `/effort` instead — which is why a smoke run can drive it at all.
   const after = existsSync(globalSettings) ? statSync(globalSettings).mtimeMs : undefined
   ctx.eq('changing effort from the chip does not touch ~/.myagent/settings.json', after, before)
-  await ctx.shot('09b-chip-low', 'the model/effort capsule: does it read as one control with two halves')
 }
 
 // --- S11: the light theme, on a real screen -------------------------------------
@@ -1128,16 +1153,16 @@ async function step11(ctx) {
     })
     await ctx.shot('11a-light-window', 'the whole window in light mode: the canvas hairline, the sidebar tiers, the conversation')
 
-    await read(ctx, probes.clickChipEffort())
-    const picker = await waitFor('the effort picker', async () => {
-      const view = await read(ctx, probes.surface())
+    await read(ctx, probes.clickChip())
+    const menu = await waitFor('the chip popover', async () => {
+      const view = await read(ctx, probes.chipMenu())
       return view.open ? view : undefined
     })
-    ctx.ok('a composer popover floats in light mode too', picker.shadow !== 'none' && picker.shadow !== '', picker.shadow)
-    await ctx.shot('11c-light-popover', 'the effort picker in light mode: does it read as a layer above the conversation')
-    await key(ctx.cdp, 'Escape')
-    await waitFor('the effort picker to close', async () => {
-      const view = await read(ctx, probes.surface())
+    ctx.ok('a composer popover floats in light mode too', menu.shadow !== 'none' && menu.shadow !== '', menu.shadow)
+    await ctx.shot('11c-light-popover', 'the chip popover in light mode: does it read as a layer above the conversation')
+    await read(ctx, probes.clickChip())
+    await waitFor('the chip popover to close', async () => {
+      const view = await read(ctx, probes.chipMenu())
       return view.open ? undefined : view
     })
 

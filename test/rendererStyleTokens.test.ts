@@ -755,12 +755,20 @@ test('the composer raises its three panels, and they no longer span the canvas',
 })
 
 test('every floating menu is lifted off the page it covers', () => {
-  // The four dropdowns are the same object at four sizes, and a menu without the
+  // The dropdowns are the same object at several sizes, and a menu without the
   // float shadow does not look wrong so much as *flat*: in light mode
   // `--surface-card` is a hair off the body it covers, and the border alone is
   // not enough to say the panel is above rather than in the text. `.settings-menu`
-  // was the one that shipped without it.
-  for (const selector of ['.titlebar-menu', '.canvas-menu', '.composer-menu', '.settings-menu']) {
+  // was the one that shipped without it. `.chip-flyout` is the one that floats
+  // over another menu rather than over the page, and needs it most.
+  for (const selector of [
+    '.titlebar-menu',
+    '.canvas-menu',
+    '.composer-menu',
+    '.settings-menu',
+    '.chip-menu',
+    '.chip-flyout',
+  ]) {
     assert.ok(
       declares(blockFor(selector), 'box-shadow', 'var(--shadow-float)'),
       `${selector} floats over other content and must carry var(--shadow-float)`,

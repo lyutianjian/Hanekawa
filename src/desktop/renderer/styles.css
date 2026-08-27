@@ -1289,32 +1289,111 @@ body {
    running badge uses — one animation, one duration. */
 #composer-progress { display: inline-flex; color: var(--text-secondary); }
 #composer-progress .icon { animation: spin 0.9s linear infinite; }
-/* Two buttons drawn as one pill: nesting buttons is invalid markup, and each
-   half opens a different picker. */
-#composer-chip {
+/* One status label for both fields, and the shell its popover is drawn into —
+   the same construction `#composer-permission` uses. This was two buttons split
+   by a hairline, each opening a full-width `#surface` card; the model and the
+   effort are one decision about the next turn, so they are one control with a
+   local menu now. No `overflow` here: the popover and its flyout are absolutely
+   positioned children and would be clipped away. */
+#composer-chip { position: relative; display: inline-flex; }
+#chip-runtime {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   background: var(--surface-canvas);
+  color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-pill);
-  overflow: hidden;
-}
-#chip-model,
-#chip-effort {
-  background: transparent;
-  color: var(--text-secondary);
-  border: 0;
   padding: 3px 10px;
   font: inherit;
   font-size: 12px;
   white-space: nowrap;
   cursor: pointer;
 }
-#chip-effort { border-left: 1px solid var(--border-subtle); }
-#chip-model:hover:enabled,
-#chip-effort:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
-#chip-model:disabled,
-#chip-effort:disabled { opacity: 0.5; cursor: default; }
+.chip-effort-label { color: var(--text-tertiary); }
+#chip-runtime:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+#chip-runtime.open { color: var(--text-primary); border-color: var(--border-strong); }
+#chip-runtime:disabled { opacity: 0.5; cursor: default; }
+/* The popover, and the flyout hanging off one of its rows. The same card as
+   `.composer-menu` on the same layer (5): over `#composer-popovers` (4), under
+   `#rewind` (9) and `#overlay` (10). It opens upward and right-aligned, because
+   the chip sits at the bottom right of a composer anchored to the bottom of the
+   canvas. */
+.chip-menu {
+  position: absolute;
+  bottom: 30px;
+  right: 0;
+  z-index: 5;
+  min-width: 15rem;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+}
+.chip-menu-shell { position: relative; display: flex; }
+.chip-menu-row {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  background: transparent;
+  color: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+/* The label takes the free space, so the value and the `›` stay at the right
+   edge whatever the label's length — the rule every trailing-glyph control in
+   `controls.ts` follows. */
+.chip-menu-row .btn-label { flex: 1 1 auto; }
+.chip-menu-value { color: var(--text-secondary); }
+.chip-menu-row .icon { color: var(--text-tertiary); width: 14px; height: 14px; }
+.chip-menu-row:hover,
+.chip-menu-row.open { background: var(--surface-hover); }
+.chip-flyout {
+  position: absolute;
+  right: 100%;
+  bottom: 0;
+  z-index: 6;
+  min-width: 13rem;
+  max-height: 50vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  margin-right: 6px;
+  padding: 4px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+}
+.chip-flyout-title { color: var(--text-tertiary); font-size: 12px; padding: 4px 8px; }
+.chip-flyout-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  background: transparent;
+  color: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.chip-flyout-item .btn-label { flex: 1 1 auto; }
+.chip-flyout-note { color: var(--text-secondary); font-size: 11px; }
+.chip-flyout-item .icon { color: var(--text-primary); width: 14px; height: 14px; }
+.chip-flyout-item:hover:enabled { background: var(--surface-hover); }
+.chip-flyout-item.disabled { opacity: 0.55; cursor: default; }
 #submit, #stop {
   display: inline-flex;
   align-items: center;

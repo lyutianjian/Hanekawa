@@ -322,13 +322,54 @@ export const titleBar = () => `(() => {
 export const clickTitleBarMenu = (index = 0) =>
   clickOr(`#titlebar .titlebar-menu-shell:nth-of-type(${index + 1}) .titlebar-menu-trigger`, 'a title bar menu')
 
-export const chip = () => `(() => ({
-  model: (document.getElementById('chip-model') || {}).textContent || '',
-  effort: (document.getElementById('chip-effort') || {}).textContent || '',
-  permission: (document.getElementById('chip-permission') || {}).textContent || '',
-  submitState: (document.getElementById('submit') || { className: '' }).className,
-  progress: (document.getElementById('composer-progress') || {}).hidden,
-}))()`
+export const chip = () => `(() => {
+  const pick = (selector) => (document.querySelector(selector) || {}).textContent || ''
+  return {
+    model: pick('#chip-runtime .chip-model-label'),
+    effort: pick('#chip-runtime .chip-effort-label'),
+    permission: (document.getElementById('chip-permission') || {}).textContent || '',
+    submitState: (document.getElementById('submit') || { className: '' }).className,
+    progress: (document.getElementById('composer-progress') || {}).hidden,
+  }
+})()`
+
+/**
+ * The chip's popover and the flyout hanging off one of its rows (S12).
+ *
+ * The two used to be one full-width `#surface` card per field. `rect` and
+ * `transcriptHeight` are still read for the same reason they are on `surface()`:
+ * a popover must float over the conversation rather than resize it.
+ */
+export const chipMenu = () => `(() => {
+  const menu = document.querySelector('.chip-menu')
+  const transcript = document.getElementById('transcript-area')
+  const composer = document.getElementById('composer')
+  const height = transcript ? Math.round(transcript.getBoundingClientRect().height) : 0
+  if (!menu) return { open: false, transcriptHeight: height }
+  const flyout = menu.querySelector('.chip-flyout')
+  const rect = menu.getBoundingClientRect()
+  return {
+    open: true,
+    rows: [...menu.querySelectorAll('.chip-menu-row')].map((node) => ({
+      label: (node.querySelector('.btn-label') || {}).textContent || '',
+      value: (node.querySelector('.chip-menu-value') || {}).textContent || '',
+      open: node.classList.contains('open'),
+    })),
+    flyout: flyout === null ? undefined : {
+      title: (flyout.querySelector('.chip-flyout-title') || {}).textContent || '',
+      items: [...flyout.querySelectorAll('.chip-flyout-item')].map((node) => ({
+        label: (node.querySelector('.btn-label') || {}).textContent || '',
+        current: node.classList.contains('active'),
+        disabled: node.classList.contains('disabled'),
+      })),
+      right: Math.round(flyout.getBoundingClientRect().right),
+    },
+    rect: { left: Math.round(rect.left), right: Math.round(rect.right), bottom: Math.round(rect.bottom) },
+    shadow: getComputedStyle(menu).boxShadow,
+    composerTop: composer ? Math.round(composer.getBoundingClientRect().top) : 0,
+    transcriptHeight: height,
+  }
+})()`
 
 /**
  * The settings screen, including the numbers that stand in for "does the long
@@ -518,7 +559,49 @@ export const clickConfirmYes = (sessionId) =>
 
 export const clickSurfaceRow = (rowId) => clickOr(`#surface .row[data-row-id="${rowId}"]`, 'surface row')
 
-export const clickChipEffort = () => clickOr('#chip-effort', 'effort chip')
+/**
+ * Types a line into the composer and sends it, the way a user does.
+ *
+ * `Input.insertText` per character would be the more faithful path, but the
+ * renderer recomputes everything it cares about from one `input` event, and this
+ * is the only step that needs a slash command rather than a wire command —
+ * `app.post` would bypass `classifyInput`, which is exactly the part under test.
+ */
+export const submitLine = (line) => `(() => {
+  const input = document.getElementById('input')
+  const submit = document.getElementById('submit')
+  if (!input || !submit) throw new Error('no composer to type into')
+  input.value = ${json(line)}
+  input.dispatchEvent(new Event('input'))
+  submit.click()
+  return true
+})()`
+
+export const clickChip = () => clickOr('#chip-runtime', 'the model · effort chip')
+
+/**
+ * Opens a row's flyout. The affordance is hover, and `Input.dispatchMouseEvent`
+ * cannot be aimed without measuring the row first, so the event is dispatched at
+ * the node — the listener is on the row itself and does not rely on bubbling.
+ */
+export const hoverChipRow = (label) => `(() => {
+  const row = [...document.querySelectorAll('.chip-menu-row')].find(
+    (node) => (node.querySelector('.btn-label') || {}).textContent === ${json(label)},
+  )
+  if (!row) throw new Error('no chip menu row labelled ' + ${json(label)})
+  row.dispatchEvent(new MouseEvent('mouseenter'))
+  return true
+})()`
+
+/** An option in the open flyout, by its visible label. */
+export const clickChipFlyoutItem = (label) => `(() => {
+  const item = [...document.querySelectorAll('.chip-flyout-item')].find(
+    (node) => (node.querySelector('.btn-label') || {}).textContent === ${json(label)},
+  )
+  if (!item) throw new Error('no flyout option labelled ' + ${json(label)})
+  item.click()
+  return true
+})()`
 
 /** The first row-level pill on the current settings page. */
 export const clickSettingsPill = () => clickOr('#settings .settings-pill', 'settings pill')

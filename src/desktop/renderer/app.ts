@@ -154,17 +154,17 @@ const composer = createComposerView({
   submit: required<HTMLButtonElement>('submit'),
   stop: required<HTMLButtonElement>('stop'),
   attach: required<HTMLButtonElement>('composer-attach'),
-  chipModel: required<HTMLButtonElement>('chip-model'),
-  chipEffort: required<HTMLButtonElement>('chip-effort'),
+  chipRuntime: required<HTMLButtonElement>('chip-runtime'),
+  chipShell: required('composer-chip'),
   chipPermission: required<HTMLButtonElement>('chip-permission'),
   permissionShell: required('composer-permission'),
   progress: required('composer-progress'),
 }, {
-  // Both halves of the chip go through the pane's surface path, so they open
-  // the same pickers `/model` and `/effort` do — and persist the choice the
-  // same way. See `dom/composerView.ts`'s header for why not `setModel`.
-  onOpenModelPicker: () => void activePane()?.openModelPicker(),
-  onOpenEffortPicker: () => void activePane()?.openEffortPicker(),
+  // The chip's popover is built from the same picker rows `/model` and `/effort`
+  // open, and picking from it runs the same slash command — so the choice
+  // persists. See `dom/composerView.ts`'s header for why not `setModel`.
+  onOpenRuntimeMenu: () => void activePane()?.openRuntimeMenu(),
+  onRuntimeAction: (action) => void activePane()?.runSurfaceAction(action),
   // The pill is the exception: the mode is the live gate's state, so it goes
   // straight to `set-permission-mode` and repaints off the snapshot that comes
   // back.

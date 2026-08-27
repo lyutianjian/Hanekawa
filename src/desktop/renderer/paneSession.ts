@@ -29,7 +29,13 @@ import type {
 } from '../../harness/types.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeManager.js'
 import type { PermissionMode } from '../../harness/permissions.js'
-import type { PermissionRequestDto, UiRequest, WireCommandInfo, WirePaneInfo } from '../../runtime/protocol/wire.js'
+import type {
+  PermissionRequestDto,
+  UiRequest,
+  WireCommandInfo,
+  WireModelsResult,
+  WirePaneInfo,
+} from '../../runtime/protocol/wire.js'
 import type { ComposerView } from './dom/composerView.js'
 import type { StatusView } from './dom/statusView.js'
 import type { SuggestionsView } from './dom/suggestionsView.js'
@@ -110,6 +116,7 @@ import {
   type SurfaceAction,
   type SurfaceView,
 } from './model/surfaces.js'
+import { runtimeMenuView } from './model/runtimeMenu.js'
 import {
   applyRewindIntent,
   beginRewindRun,
@@ -191,12 +198,21 @@ export interface PaneSession {
   // --- panel entry points ---
   openRewindPanel(): Promise<void>
   /**
-   * The composer chip's two halves. They open the *same* surfaces `/model` and
-   * `/effort` do, so the chip cannot drift from the slash commands — and so
-   * choosing from it still persists through `run-command`.
+   * `/model` and `/effort`'s own `#surface` cards. Still reached by the slash
+   * commands; the composer chip goes through `openRuntimeMenu` instead.
    */
   openModelPicker(): Promise<void>
   openEffortPicker(): Promise<void>
+  /**
+   * The composer chip's popover. Fetches the model list, folds it together with
+   * the runtime snapshot, and hands the rows to the composer — which is a
+   * singleton, so only the active pane may fill it.
+   *
+   * The rows are the *same* ones the two pickers above draw, and choosing one
+   * runs the same `run-command`, so the chip cannot drift from the slash
+   * commands and the choice still persists.
+   */
+  openRuntimeMenu(): Promise<void>
   runSurfaceAction(action: SurfaceAction): Promise<void>
   clearQueue(): Promise<void>
   refreshPanes(): Promise<void>
@@ -721,6 +737,22 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   }
 
   /**
+   * The composer chip's popover. A failed model list still opens it: the effort
+   * half is answerable from the snapshot alone, and a chip that silently refuses
+   * to open reads as the app having hung.
+   */
+  async function openRuntimeMenu(): Promise<void> {
+    let models: WireModelsResult | undefined
+    try {
+      models = await client.listModels()
+    } catch (error) {
+      note(`Could not list models: ${describe(error)}`, 'error')
+    }
+    if (!active) return
+    deps.composer.showRuntimeMenu(runtimeMenuView({ runtime: client.getRuntimeSnapshot(), models }))
+  }
+
+  /**
    * Runs whatever the chosen row asked for. The panel closes first: every one
    * of these changes what the panel was describing.
    */
@@ -1153,6 +1185,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     openRewindPanel,
     openModelPicker: () => openSurface('model-picker'),
     openEffortPicker: () => openSurface('effort-picker'),
+    openRuntimeMenu,
     runSurfaceAction,
     clearQueue,
     refreshPanes,

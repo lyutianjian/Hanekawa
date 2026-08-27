@@ -30,6 +30,7 @@ export type IconName =
   | 'chevron-down'
   | 'arrow-down'
   | 'dot'
+  | 'check'
   | 'spinner'
   | 'send'
   | 'stop'
@@ -83,6 +84,10 @@ const ICONS = {
   // that means "go to the end", and a bare chevron there reads as "collapse".
   'arrow-down': { paths: ['M8 3.2v9.6', 'M4 8.8 8 12.8l4-4'] },
   dot: { paths: ['M8 5a3 3 0 1 1 0 6 3 3 0 0 1 0-6z'], filled: true },
+  // The chip menu's "this is the one in force" mark. A tick rather than the
+  // `dot` the `#surface` rows use: there the mark sits in a fixed column before
+  // the label, here it trails a flyout row the way a menu check does.
+  check: { paths: ['M3.5 8.6 6.6 11.7 12.5 4.8'] },
   // A three-quarter ring with a gap, so a CSS rotation reads as spinning. Stroked
   // (not filled) so it inherits `currentColor` like every other outline.
   spinner: { paths: ['M8 3.5a4.5 4.5 0 1 1-4.5 4.5'] },

@@ -6,9 +6,11 @@ import { fileURLToPath } from 'node:url'
 
 import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
 import { createComposerView, type ComposerView } from '../src/desktop/renderer/dom/composerView.js'
-import { PERMISSION_MODE_LABELS } from '../src/desktop/renderer/model/composer.js'
+import { EFFORT_LABELS, PERMISSION_MODE_LABELS } from '../src/desktop/renderer/model/composer.js'
+import { runtimeMenuView, type RuntimeMenuView } from '../src/desktop/renderer/model/runtimeMenu.js'
+import type { SurfaceAction } from '../src/desktop/renderer/model/surfaces.js'
 import type { PermissionMode } from '../src/harness/permissions.js'
-import type { WireRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
+import type { WireModelsResult, WireRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
 
 /**
  * The composer's *nodes* — the half `rendererComposerChip.test.ts` cannot reach.
@@ -46,14 +48,30 @@ interface Rendered {
   readonly stub: DomStub
   readonly composer: ComposerView
   readonly els: Record<
-    'input' | 'submit' | 'stop' | 'attach' | 'chipModel' | 'chipEffort' | 'chipPermission' | 'permissionShell' | 'progress',
+    | 'input'
+    | 'submit'
+    | 'stop'
+    | 'attach'
+    | 'chipRuntime'
+    | 'chipShell'
+    | 'chipPermission'
+    | 'permissionShell'
+    | 'progress',
     HTMLElement
   >
   readonly picked: PermissionMode[]
   readonly attaches: number[]
+  /** Every `onOpenRuntimeMenu`, so "asked once" is assertable. */
+  readonly menuRequests: number[]
+  /** The `SurfaceAction`s a flyout row handed back. */
+  readonly ran: SurfaceAction[]
   view(name: keyof Rendered['els']): StubView
-  /** The menu's items, or an empty list when it is closed. */
+  /** The permission menu's items, or an empty list when it is closed. */
   menuItems(): StubView[]
+  /** The chip popover's two rows, or an empty list when it is shut. */
+  chipRows(): StubView[]
+  /** The open flyout's option items, or an empty list when none is open. */
+  flyoutItems(): StubView[]
 }
 
 /** The textarea, typed for the one member a test writes. */
@@ -70,31 +88,34 @@ function render(t: { after(fn: () => void): void }): Rendered {
     submit: stub.createContainer(),
     stop: stub.createContainer(),
     attach: stub.createContainer(),
-    chipModel: stub.createContainer(),
-    chipEffort: stub.createContainer(),
+    chipRuntime: stub.createContainer(),
+    chipShell: stub.createContainer(),
     chipPermission: stub.createContainer(),
     permissionShell: stub.createContainer(),
     progress: stub.createContainer(),
   }
   els.permissionShell.appendChild(els.chipPermission)
+  els.chipShell.appendChild(els.chipRuntime)
 
   const picked: PermissionMode[] = []
   const attaches: number[] = []
+  const menuRequests: number[] = []
+  const ran: SurfaceAction[] = []
   const composer = createComposerView(
     {
       input: els.input as HTMLTextAreaElement,
       submit: els.submit as HTMLButtonElement,
       stop: els.stop as HTMLButtonElement,
       attach: els.attach as HTMLButtonElement,
-      chipModel: els.chipModel as HTMLButtonElement,
-      chipEffort: els.chipEffort as HTMLButtonElement,
+      chipRuntime: els.chipRuntime as HTMLButtonElement,
+      chipShell: els.chipShell,
       chipPermission: els.chipPermission as HTMLButtonElement,
       permissionShell: els.permissionShell,
       progress: els.progress,
     },
     {
-      onOpenModelPicker: () => {},
-      onOpenEffortPicker: () => {},
+      onOpenRuntimeMenu: () => menuRequests.push(1),
+      onRuntimeAction: (action) => ran.push(action),
       onSelectPermissionMode: (mode) => picked.push(mode),
       onAttach: () => attaches.push(1),
     },
@@ -102,6 +123,12 @@ function render(t: { after(fn: () => void): void }): Rendered {
 
   const menu = (): StubView | undefined =>
     stub.inspect(els.permissionShell).children.find((child) => child.classes.includes('composer-menu'))
+  const chipMenu = (): StubView | undefined =>
+    stub.inspect(els.chipShell).children.find((child) => child.classes.includes('chip-menu'))
+  const flyout = (): StubView | undefined =>
+    chipMenu()
+      ?.children.flatMap((shell) => [...shell.children])
+      .find((child) => child.classes.includes('chip-flyout'))
 
   return {
     stub,
@@ -109,9 +136,33 @@ function render(t: { after(fn: () => void): void }): Rendered {
     els,
     picked,
     attaches,
+    menuRequests,
+    ran,
     view: (name) => stub.inspect(els[name]),
     menuItems: () => [...(menu()?.children ?? [])],
+    // The row is the shell's first child; the flyout, when open, is its second.
+    chipRows: () => (chipMenu()?.children ?? []).map((shell) => shell.children[0]!),
+    flyoutItems: () =>
+      (flyout()?.children ?? []).filter((child) => child.classes.includes('chip-flyout-item')),
   }
+}
+
+const MODELS: WireModelsResult = {
+  models: [],
+  pickerOptions: [
+    { key: 'sonnet', label: 'Sonnet', modelKey: 'sonnet', modelId: 'claude-sonnet-5', isCurrent: true, isDefault: true },
+    { key: 'opus', label: 'Opus', modelKey: 'opus', modelId: 'claude-opus-5', isCurrent: false, isDefault: false },
+  ],
+}
+
+/** The chip popover's rows, built the way the pane builds them. */
+function menuView(snapshot: WireRuntimeSnapshot = runtime()): RuntimeMenuView {
+  return runtimeMenuView({ runtime: snapshot, models: MODELS })
+}
+
+/** What the pane hands over before the first snapshot: nothing to switch. */
+function inertMenuView(): RuntimeMenuView {
+  return runtimeMenuView({ runtime: undefined, models: MODELS })
 }
 
 test('the pill is disabled and menuless until a snapshot arrives', (t) => {
@@ -185,6 +236,169 @@ test('a background pane cannot leave its menu hanging over the next one', (t) =>
   r.composer.closeMenus()
 
   assert.deepEqual(r.menuItems(), [])
+})
+
+// --- the chip's popover --------------------------------------------------------
+
+test('the chip is one label carrying both fields, inert until a snapshot arrives', (t) => {
+  const r = render(t)
+  assert.equal(r.view('chipRuntime').disabled, true)
+
+  r.composer.renderRuntime(runtime())
+  assert.deepEqual(
+    r.view('chipRuntime').children.map((child) => [child.className, child.text]),
+    [['chip-model-label', 'claude-sonnet-5'], ['chip-effort-label', EFFORT_LABELS.high]],
+  )
+  assert.equal(r.view('chipRuntime').disabled, false)
+})
+
+test('clicking the chip asks the pane for the rows rather than opening anything', (t) => {
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+
+  r.stub.click(r.els.chipRuntime)
+  assert.deepEqual(r.menuRequests, [1])
+  assert.deepEqual(r.chipRows(), [], 'nothing is drawn until the rows come back')
+
+  r.composer.showRuntimeMenu(menuView())
+  assert.deepEqual(r.chipRows().map((row) => row.text), [
+    `模型claude-sonnet-5`,
+    `推理强度${EFFORT_LABELS.high}`,
+  ])
+  assert.equal(r.view('chipRuntime').attributes.get('aria-expanded'), 'true')
+  // The popover opens as its two rows and nothing else. Focus lands on the first
+  // one, and a flyout on focus would put the model list over the menu the user
+  // has not read yet.
+  assert.deepEqual(r.flyoutItems(), [])
+  r.stub.dispatch(r.chipRows()[0]!.node, 'focus')
+  assert.deepEqual(r.flyoutItems(), [])
+})
+
+test('an answer nobody asked for is dropped', (t) => {
+  // The rows are a round trip, so one can land after the pane went to the
+  // background — which would hang a menu over the *next* pane's runtime.
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+
+  r.composer.showRuntimeMenu(menuView())
+  assert.deepEqual(r.chipRows(), [])
+
+  r.stub.click(r.els.chipRuntime)
+  r.composer.closeMenus()
+  r.composer.showRuntimeMenu(menuView())
+  assert.deepEqual(r.chipRows(), [], 'closing the menus also withdraws the request')
+})
+
+test('a snapshotless menu refuses to open, and the next click asks again', (t) => {
+  const r = render(t)
+  r.stub.click(r.els.chipRuntime)
+  r.composer.showRuntimeMenu(inertMenuView())
+
+  assert.deepEqual(r.chipRows(), [])
+  r.stub.click(r.els.chipRuntime)
+  assert.deepEqual(r.menuRequests, [1, 1], 'the second click asks, it does not read as "close"')
+})
+
+test('hovering a row opens its flyout, and only one is open at a time', (t) => {
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+  r.stub.click(r.els.chipRuntime)
+  r.composer.showRuntimeMenu(menuView())
+
+  const [model, effort] = r.chipRows()
+  r.stub.dispatch(effort!.node, 'mouseenter')
+  assert.deepEqual(
+    r.flyoutItems().map((item) => item.children[0]!.text),
+    [EFFORT_LABELS.low, EFFORT_LABELS.medium, EFFORT_LABELS.high, EFFORT_LABELS.xhigh, EFFORT_LABELS.max],
+  )
+  // The level in force is marked, and the row it is on says so to a reader.
+  assert.deepEqual(
+    r.flyoutItems().filter((item) => item.classes.includes('active')).map((item) => item.children[0]!.text),
+    [EFFORT_LABELS.high],
+  )
+
+  r.stub.dispatch(model!.node, 'mouseenter')
+  assert.deepEqual(r.flyoutItems().map((item) => item.children[0]!.text), ['Sonnet', 'Opus'])
+  assert.equal(r.chipRows().filter((row) => row.classes.includes('open')).length, 1)
+})
+
+test('re-entering the row a flyout already belongs to does not rebuild it', (t) => {
+  // The rows are kept across a flyout change on purpose: rebuilding one under
+  // the pointer fires `mouseenter` on the replacement, and the render loop that
+  // follows has no exit.
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+  r.stub.click(r.els.chipRuntime)
+  r.composer.showRuntimeMenu(menuView())
+
+  const row = r.chipRows()[1]!
+  r.stub.dispatch(row.node, 'mouseenter')
+  const first = r.flyoutItems()[0]!.node
+  r.stub.dispatch(row.node, 'mouseenter')
+
+  assert.equal(r.flyoutItems()[0]!.node, first)
+  assert.equal(r.chipRows()[1]!.node, row.node)
+})
+
+test('choosing a level runs its command once and shuts the popover', (t) => {
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+  r.stub.click(r.els.chipRuntime)
+  r.composer.showRuntimeMenu(menuView())
+  r.stub.dispatch(r.chipRows()[1]!.node, 'mouseenter')
+
+  r.stub.click(r.flyoutItems()[0]!.node)
+
+  // The slash command, not `set-effort`: that is what writes the choice back to
+  // config (`model/surfaces.ts`).
+  assert.deepEqual(r.ran, [{ kind: 'run-command', line: '/effort low' }])
+  assert.deepEqual(r.chipRows(), [])
+  assert.equal(r.view('chipRuntime').attributes.get('aria-expanded'), 'false')
+})
+
+test('a level over the model’s ceiling explains itself instead of being pickable', (t) => {
+  const r = render(t)
+  const snapshot = runtime({ effort: 'medium', maxEffort: 'high' })
+  r.composer.renderRuntime(snapshot)
+  r.stub.click(r.els.chipRuntime)
+  r.composer.showRuntimeMenu(menuView(snapshot))
+  r.stub.dispatch(r.chipRows()[1]!.node, 'mouseenter')
+
+  const over = r.flyoutItems().filter((item) => item.classes.includes('disabled'))
+  assert.deepEqual(over.map((item) => item.children[0]!.text), [EFFORT_LABELS.xhigh, EFFORT_LABELS.max])
+  assert.equal(over[0]!.disabled, true)
+  r.stub.click(over[0]!.node)
+  assert.deepEqual(r.ran, [], 'a disabled row is drawn to explain itself, not to be picked')
+})
+
+test('Escape closes the flyout first and the popover second', (t) => {
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+  r.stub.click(r.els.chipRuntime)
+  r.composer.showRuntimeMenu(menuView())
+  r.stub.dispatch(r.chipRows()[1]!.node, 'mouseenter')
+
+  const first = r.stub.dispatch(r.els.chipShell, 'keydown', { key: 'Escape' })
+  assert.equal(first.defaultPrevented, true, 'consumed here, or it also closes a surface behind the composer')
+  assert.deepEqual(r.flyoutItems(), [])
+  assert.equal(r.chipRows().length, 2, 'the popover itself is still open')
+
+  r.stub.dispatch(r.els.chipShell, 'keydown', { key: 'Escape' })
+  assert.deepEqual(r.chipRows(), [])
+  assert.equal(r.stub.activeElement(), r.els.chipRuntime)
+})
+
+test('focus leaving the chip shell closes the popover; moving inside it does not', (t) => {
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+  r.stub.click(r.els.chipRuntime)
+  r.composer.showRuntimeMenu(menuView())
+
+  r.stub.dispatch(r.els.chipShell, 'focusout', { relatedTarget: r.chipRows()[0]!.node })
+  assert.equal(r.chipRows().length, 2)
+
+  r.stub.dispatch(r.els.chipShell, 'focusout', { relatedTarget: r.els.input })
+  assert.deepEqual(r.chipRows(), [])
 })
 
 test('the send button is idle when empty, ready when typed into', (t) => {

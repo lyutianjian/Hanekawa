@@ -34,9 +34,9 @@
         <div id="transcript-area"></div>
         <!--
           The anchored composite input: one capsule holding the textarea and an
-          inline action bar. `#chip-model` / `#chip-effort` are two buttons drawn
-          as one pill — nesting buttons is invalid, and each half opens a
-          different picker.
+          inline action bar. `#chip-runtime` is a single status label carrying
+          the model *and* the effort level; it opens a local popover whose two
+          rows fly out into the levels they can take.
         -->
         <form id="input-row">
           <!--
@@ -81,9 +81,14 @@
                 </div>
                 <span class="composer-spacer"></span>
                 <span id="composer-progress" hidden></span>
-                <div id="composer-chip" role="group" aria-label="模型与思考强度">
-                  <button id="chip-model" type="button">…</button>
-                  <button id="chip-effort" type="button">…</button>
+                <!--
+                  One status label for both fields. Its menu is built into this
+                  shell by `dom/composerView.ts` — same construction as the
+                  permission pill, which is why the shell is positioned and the
+                  trigger is not.
+                -->
+                <div id="composer-chip">
+                  <button id="chip-runtime" type="button">…</button>
                 </div>
                 <button id="stop" type="button" hidden></button>
                 <button id="submit" type="submit"></button>

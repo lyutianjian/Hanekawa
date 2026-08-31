@@ -1,17 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  SIDEBAR_SECTION_LABELS,
   activateRow,
   createSidebarState,
   moveSelection,
   newSessionIntent,
-  sectionFor,
-  selectWorkspaceIntent,
   sidebarChordToIntent,
   sidebarKeyToIntent,
   sidebarRenderSignature,
   sidebarView,
+  toggleProject,
+  workspaceRootsOf,
   type SidebarProjectSessions,
   type SidebarState,
   type SidebarView,
@@ -20,8 +19,8 @@ import type { WireLaneInfo } from '../src/desktop/shellProtocol.js'
 import type { WireSessionSummary } from '../src/desktop/shellProtocol.js'
 
 /**
- * The sidebar model — grouping, age sections, badges, and the two key entry
- * points.
+ * The sidebar model — grouping by workspace, folding, badges, and the two key
+ * entry points.
  *
  * Assertions land on `kind` rather than on labels: 4e localizes every string in
  * the shell, and a suite pinned to literals would have to be rewritten alongside
@@ -35,10 +34,10 @@ import type { WireSessionSummary } from '../src/desktop/shellProtocol.js'
  *   switch into an open.
  * - A live lane with no file behind it still gets a row, or the session the user
  *   is typing into disappears from the list.
+ * - A folded workspace contributes no rows to `rows`/`liveRows`, or the cursor
+ *   and `Ctrl+1`–`9` step into sessions that are not on screen.
  */
 
-// 2026-08-20T12:00:00 local — sections are calendar-day based, so the fixtures
-// are built from the same local midnight the model uses.
 const NOW = new Date(2026, 7, 20, 12, 0, 0).getTime()
 const DAY = 24 * 60 * 60 * 1000
 
@@ -73,27 +72,11 @@ function stateWith(overrides: Partial<SidebarState> = {}): SidebarState {
   return createSidebarState({ now: NOW, ...overrides })
 }
 
-// --- age sections ------------------------------------------------------------
+// --- ordering inside a workspace ---------------------------------------------
 
-test('sections split on calendar days, not on elapsed hours', () => {
-  assert.equal(sectionFor(at(0), NOW), 'today')
-  assert.equal(sectionFor(at(11 * 60 * 60 * 1000), NOW), 'today', '01:00 the same day')
-  // 13 hours back from noon is 23:00 yesterday: less than a day elapsed, but the
-  // word a reader means is "yesterday".
-  assert.equal(sectionFor(at(13 * 60 * 60 * 1000), NOW), 'yesterday')
-  assert.equal(sectionFor(at(2 * DAY), NOW), 'week')
-  assert.equal(sectionFor(at(6 * DAY), NOW), 'week')
-  assert.equal(sectionFor(at(30 * DAY), NOW), 'older')
-})
-
-test('an unparseable timestamp lands in the oldest section rather than throwing', () => {
-  // The store self-heals rather than rejecting bad records, so a row the user can
-  // still delete beats a sidebar that will not draw.
-  assert.equal(sectionFor('not a date', NOW), 'older')
-  assert.equal(sectionFor('', NOW), 'older')
-})
-
-test('sections render in age order and empty ones are dropped', () => {
+test('a workspace lists its sessions newest first, with no age sections', () => {
+  // The age sections are gone: workspace is the only grouping axis, and inside a
+  // group the list is simply a timeline.
   const view = sidebarView(
     stateWith({
       projects: [
@@ -107,15 +90,26 @@ test('sections render in age order and empty ones are dropped', () => {
   )
 
   assert.deepEqual(
-    view.groups[0]!.sections.map((section) => section.kind),
-    ['today', 'week', 'older'],
-    'yesterday had nothing in it',
-  )
-  assert.deepEqual(
     view.rows.map((row) => row.sessionId),
     ['s-today', 's-week', 's-old'],
   )
-  assert.equal(view.groups[0]!.sections[0]!.label, SIDEBAR_SECTION_LABELS.today)
+  assert.deepEqual(view.groups[0]!.rows, view.rows, 'the group carries the same order')
+})
+
+test('an unparseable timestamp sorts oldest rather than throwing', () => {
+  // The store self-heals rather than rejecting bad records, so a row the user can
+  // still delete beats a sidebar that will not draw.
+  const view = sidebarView(
+    stateWith({
+      projects: [
+        project('/a', 'alpha', [
+          session('broken', { updatedAt: 'not a date' }),
+          session('fine', { updatedAt: at(40 * DAY) }),
+        ]),
+      ],
+    }),
+  )
+  assert.deepEqual(view.rows.map((row) => row.sessionId), ['fine', 'broken'])
 })
 
 // --- grouping ---------------------------------------------------------------
@@ -153,16 +147,76 @@ test('with no active lane nothing is own and the wire order stands', () => {
   assert.deepEqual(view.groups.map((group) => group.projectName), ['alpha', 'beta'])
 })
 
-test('project headings appear from two projects up', () => {
-  const one = sidebarView(stateWith({ projects: [project('/a', 'alpha', [session('a1')])] }))
-  assert.equal(one.showProjectLabels, false)
+// --- folding ----------------------------------------------------------------
 
-  const two = sidebarView(
+test('a folded workspace keeps its rows but contributes none to the cursor', () => {
+  // The heading still says how many are inside (`group.rows`), but `rows` is the
+  // index space for the cursor and `Ctrl+1`–`9`, and both have to mean what is on
+  // screen.
+  const state = stateWith({
+    projects: [project('/a', 'alpha', [session('a1'), session('a2')]), project('/b', 'beta', [session('b1')])],
+    lanes: [lane('1', 'a1', '/a'), lane('2', 'b1', '/b')],
+    collapsedProjects: new Set(['/a']),
+  })
+  const view = sidebarView(state)
+
+  assert.deepEqual(view.groups.map((group) => group.collapsed), [true, false])
+  assert.equal(view.groups[0]!.rows.length, 2, 'the folded group still knows what it holds')
+  assert.deepEqual(view.rows.map((row) => row.sessionId), ['b1'])
+  assert.deepEqual(view.liveRows.map((row) => row.lane), ['2'])
+  assert.deepEqual(sidebarChordToIntent({ key: '1', ctrlKey: true }, state), { kind: 'switch', lane: '2' })
+  assert.deepEqual(
+    sidebarChordToIntent({ key: '2', ctrlKey: true }, state),
+    { kind: 'none' },
+    'the folded workspace\u2019s lane is not reachable by chord',
+  )
+})
+
+test('folding every workspace is not the empty state', () => {
+  // "Nothing here" and "you folded it all up" are different screens, and the
+  // second one still has headings to click.
+  const view = sidebarView(
     stateWith({
-      projects: [project('/a', 'alpha', [session('a1')]), project('/b', 'beta', [session('b1')])],
+      projects: [project('/a', 'alpha', [session('a1')])],
+      collapsedProjects: new Set(['/a']),
     }),
   )
-  assert.equal(two.showProjectLabels, true)
+  assert.deepEqual(view.rows, [])
+  assert.equal(view.isEmpty, false)
+  assert.equal(view.noMatches, false)
+})
+
+test('a search unfolds everything, or its matches would be hidden', () => {
+  const view = sidebarView(
+    stateWith({
+      searchQuery: 'one',
+      projects: [project('/a', 'alpha', [session('a1', { title: 'One' })])],
+      collapsedProjects: new Set(['/a']),
+    }),
+  )
+  assert.equal(view.groups[0]!.collapsed, false)
+  assert.deepEqual(view.rows.map((row) => row.sessionId), ['a1'])
+})
+
+test('toggleProject folds, unfolds, and takes a forced answer', () => {
+  const shut = toggleProject(new Set(), '/a')
+  assert.deepEqual([...shut], ['/a'])
+  assert.deepEqual([...toggleProject(shut, '/a')], [], 'a second toggle opens it again')
+  // The reveal path forces "open" rather than toggling: clicking the Hero project
+  // name of an already-open workspace must not fold it.
+  assert.deepEqual([...toggleProject(shut, '/a', false)], [])
+  assert.deepEqual([...toggleProject(new Set(), '/a', false)], [])
+})
+
+test('the workspace roots are every project, with the active pane\u2019s first', () => {
+  const roots = workspaceRootsOf(
+    stateWith({
+      projects: [project('/a', 'alpha', [session('a1')]), project('/b', 'beta', [session('b1')])],
+      lanes: [lane('2', 'b1', '/b'), lane('3', 'x', 'C:\\repo\\solo')],
+      activeLane: '2',
+    }),
+  )
+  assert.deepEqual(roots, ['/b', '/a', 'C:\\repo\\solo'])
 })
 
 // --- history × topology -----------------------------------------------------
@@ -181,7 +235,6 @@ test('a live lane with nothing on disk still gets a row', () => {
   assert.deepEqual(view.rows.map((row) => row.sessionId), ['draft-1', 'a1'])
   assert.equal(view.rows[0]!.lane, '1')
   assert.equal(view.rows[0]!.active, true)
-  assert.equal(view.groups[0]!.sections[0]!.kind, 'today', 'a draft belongs where it was made')
 })
 
 test('a session on disk carries its lane when one is open', () => {
@@ -299,50 +352,6 @@ test('a search that matches nothing reports noMatches, not the empty state', () 
   const empty = sidebarView(stateWith({ searchQuery: '' }))
   assert.equal(empty.isEmpty, true)
   assert.equal(empty.noMatches, false)
-})
-
-// --- workspaces -------------------------------------------------------------
-
-test('the workspace list carries every project, with the active one marked', () => {
-  const state = stateWith({
-    projects: [project('/a', 'alpha', [session('a1')]), project('/b', 'beta', [session('b1')])],
-    lanes: [lane('2', 'b1', '/b')],
-    activeLane: '2',
-  })
-  const view = sidebarView(state)
-  assert.deepEqual(
-    view.workspaces.map((workspace) => [workspace.projectName, workspace.active]),
-    [['alpha', false], ['beta', true]],
-  )
-  assert.equal(view.workspaceName, 'beta')
-})
-
-test('the workspace list survives a search that empties the session rows', () => {
-  // Filtering the session list must never remove a project the user can jump to.
-  const view = sidebarView(
-    stateWith({
-      searchQuery: 'zzz',
-      projects: [project('/a', 'alpha', [session('a1', { title: 'One' })])],
-    }),
-  )
-  assert.equal(view.rows.length, 0)
-  assert.deepEqual(view.workspaces.map((workspace) => workspace.projectName), ['alpha'])
-})
-
-test('a lane-only project still appears as a workspace', () => {
-  const view = sidebarView(stateWith({ lanes: [lane('1', 'x', 'C:\\repo\\solo')] }))
-  assert.deepEqual(view.workspaces.map((workspace) => workspace.projectRoot), ['C:\\repo\\solo'])
-})
-
-test('picking a workspace switches to its open lane, or starts a session there', () => {
-  // No host command switches the active project; a project becomes active by its
-  // lane becoming visible. So this resolves to the same switch/new a row would.
-  const state = stateWith({
-    projects: [project('/a', 'alpha', [session('a1')]), project('/b', 'beta', [session('b1')])],
-    lanes: [lane('9', 'b1', '/b')],
-  })
-  assert.deepEqual(selectWorkspaceIntent(state, '/b'), { kind: 'switch', lane: '9' })
-  assert.deepEqual(selectWorkspaceIntent(state, '/a'), newSessionIntent('/a'))
 })
 
 // --- global chords ----------------------------------------------------------
@@ -605,14 +614,16 @@ test('the signature moves for everything the view draws', () => {
     // 'o' matches both 'One' and 'Two', so the row set is unchanged — this
     // isolates the query field itself moving the signature.
     ['searchQuery', { ...base, searchQuery: 'o' }],
-    ['workspaceMenuOpen', { ...base, workspaceMenuOpen: true }],
+    ['a folded workspace', { ...base, collapsedProjects: new Set(['/a']) }],
     ['badge', { ...base, laneStatus: new Map([['1', { streaming: true, blocked: false }]]) }],
     ['title', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'Renamed' }), session('a2', { title: 'Two' })])] }],
     ['messageCount', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'One', messageCount: 99 }), session('a2', { title: 'Two' })])] }],
     ['a row gained a lane', { ...base, lanes: [lane('1', 'a1', '/a'), lane('2', 'a2', '/a')] }],
     ['active row', { ...base, lanes: [lane('1', 'a2', '/a')] }],
     ['row set', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'One' })])] }],
-    ['section', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'One', updatedAt: at(40 * DAY) }), session('a2', { title: 'Two' })])] }],
+    // The order the rows sort into is what the timeline shows up as, now that
+    // there are no section headings to sign.
+    ['row order', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'One', updatedAt: at(40 * DAY) }), session('a2', { title: 'Two' })])] }],
     ['a second project', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'One' }), session('a2', { title: 'Two' })]), project('/b', 'beta', [session('b1')])] }],
   ]
   for (const [what, state] of moved) {
@@ -621,13 +632,13 @@ test('the signature moves for everything the view draws', () => {
 })
 
 test('the signature ignores what the view does not draw', () => {
-  // `updatedAt` is bucketed, never rendered — so a change inside the same
-  // section must not force a rebuild of every row.
+  // `updatedAt` is sorted on, never rendered — so a change that does not move a
+  // row must not force a rebuild of every row.
   const rows = (updatedAt: string): SidebarState =>
     stateWith({ projects: [project('/a', 'alpha', [session('a1', { title: 'One', updatedAt })])] })
   assert.equal(
     sidebarRenderSignature(sidebarView(rows(at(0)))),
     sidebarRenderSignature(sidebarView(rows(at(60 * 1000)))),
-    'a minute later, same section, same paint',
+    'a minute later, same order, same paint',
   )
 })

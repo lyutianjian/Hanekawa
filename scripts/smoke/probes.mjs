@@ -60,12 +60,16 @@ export const sidebar = () => `(() => {
       (row) => row.getClientRects().length > 0,
     ).length,
     rows,
+    // One group per workspace, always headed. The age sections are gone: the
+    // workspace is the list's only grouping axis, and a group folds shut behind
+    // its own heading.
     groups: [...container.querySelectorAll('.project-group')].map((group) => ({
       own: group.classList.contains('own'),
-      label: (group.querySelector('.project-label') || {}).textContent || '',
+      collapsed: group.classList.contains('collapsed'),
+      label: (group.querySelector('.project-heading .btn-label') || {}).textContent || '',
+      count: (group.querySelector('.project-count') || {}).textContent || '',
       rows: group.querySelectorAll('.session-row').length,
     })),
-    sections: [...container.querySelectorAll('.session-section-label')].map((node) => node.textContent),
     empty: container.querySelector('.sidebar-empty') !== null,
   }
 })()`

@@ -339,10 +339,20 @@ function applyRecord(state: TranscriptState, record: SessionRecord): TranscriptS
   return { ...state, items: next }
 }
 
+/** Mirror of `wrapInSystemReminder`'s output (`src/harness/systemReminder.ts`).
+ * The renderer may not import `harness/`, so the format check is duplicated here. */
+function isSystemReminderBlock(text: string): boolean {
+  const trimmed = text.trim()
+  return trimmed.startsWith('<system-reminder>') && trimmed.endsWith('</system-reminder>')
+}
+
 /** One record to zero or more items. Records with no visual meaning yield none. */
 function recordItems(record: SessionRecord): TranscriptItem[] {
   switch (record.type) {
     case 'message':
+      // A `<system-reminder>` user record is a model-facing nudge, not user input;
+      // it must not surface as a bubble, so it yields no item.
+      if (record.role === 'user' && isSystemReminderBlock(messageText(record))) return []
       return [{
         id: record.id,
         kind: record.role === 'user' ? 'user' : 'assistant',

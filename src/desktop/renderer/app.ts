@@ -46,7 +46,7 @@ import {
   createSidebarState,
   moveSelection,
   newSessionIntent,
-  selectWorkspaceIntent,
+  toggleProject,
   sidebarChordToIntent,
   sidebarKeyToIntent,
   sidebarView as buildSidebarView,
@@ -222,7 +222,12 @@ function attachPaneSession(lane: string): void {
       // that name without any lane opening or closing.
       renderCanvasHeader()
     },
-    onSwitchWorkspace: () => openWorkspaceSwitcher(),
+    // The lane's project is read at click time, not captured: a lane outlives any
+    // one `lanes` snapshot, and the sidebar is where the answer lives.
+    onSwitchWorkspace: () => {
+      const root = shellClient.getLanes().find((info) => info.lane === lane)?.projectRoot
+      if (root !== undefined) revealWorkspace(root)
+    },
     onExit: () => {
       // `/exit` closes this pane, not the window: the single window holds every
       // other lane, and `window.close()` would take them all down.
@@ -351,7 +356,8 @@ let collapsed = false
 let selectedIndex = -1
 let pendingDelete: string | undefined
 let searchQuery = ''
-let workspaceMenuOpen = false
+/** The workspaces folded shut in the sidebar. View state; nothing persists it. */
+let collapsedProjects: ReadonlySet<string> = new Set()
 let helpOpen = false
 /** The title bar's open menu, if any. Window-level, like the bar itself. */
 let titleBarMenu: string | undefined
@@ -371,7 +377,7 @@ function currentSidebarState(): SidebarState {
     // Both buttons open something, which is wrong while a blocking dialog is up.
     canCreate: !(activePane()?.shellState().hasOverlay ?? false),
     searchQuery,
-    workspaceMenuOpen,
+    collapsedProjects,
     helpOpen,
   })
 }
@@ -433,16 +439,19 @@ function closeLane(lane: string): void {
 }
 
 /**
- * The welcome screen's Hero project name, resolved to the sidebar's dropdown.
+ * The welcome screen's Hero project name, resolved to that workspace's group.
  *
- * Expands the rail first — a menu drawn inside a collapsed sidebar cannot be
- * clicked — and takes focus last, because the menu is closed by the sidebar's own
- * `focusout`, which never fires for focus that never arrived.
+ * There is no workspace dropdown to open any more: every workspace has a heading
+ * in the sidebar, so the useful answer to "this session is in *app*" is to put
+ * *app*'s group on screen. Expands the rail first — a heading inside a collapsed
+ * sidebar cannot be scrolled to — then unfolds the group, and takes focus last,
+ * after the render that built the heading being focused.
  */
-function openWorkspaceSwitcher(): void {
+function revealWorkspace(projectRoot: string): void {
   if (collapsed) runSidebarIntent({ kind: 'toggle-collapse' })
-  runSidebarIntent({ kind: 'toggle-workspace-menu' })
-  sidebar.focusWorkspace()
+  collapsedProjects = toggleProject(collapsedProjects, projectRoot, false)
+  renderSidebar()
+  sidebar.focusProject(projectRoot)
 }
 
 function runSidebarIntent(intent: SidebarIntent): void {
@@ -483,20 +492,13 @@ function runSidebarIntent(intent: SidebarIntent): void {
       searchQuery = intent.query
       renderSidebar()
       return
-    case 'toggle-workspace-menu':
-      workspaceMenuOpen = !workspaceMenuOpen
+    case 'toggle-project':
+      collapsedProjects = toggleProject(collapsedProjects, intent.projectRoot)
       renderSidebar()
       return
     case 'toggle-help':
       helpOpen = !helpOpen
       renderSidebar()
-      return
-    case 'select-workspace':
-      // Close the menu first, then resolve to a switch or a new session through
-      // the model — the same "open or create" decision a row makes.
-      workspaceMenuOpen = false
-      renderSidebar()
-      runSidebarIntent(selectWorkspaceIntent(currentSidebarState(), intent.projectRoot))
       return
     case 'request-delete':
       pendingDelete = intent.sessionId

@@ -6,22 +6,24 @@ import {
   type SidebarGroup,
   type SidebarIntent,
   type SidebarRow,
-  type SidebarSection,
   type SidebarView,
-  type SidebarWorkspace,
 } from '../model/sidebar.js'
 import { el, replace, show } from './dom.js'
 import { button, textField } from './controls.js'
-import { icon, type IconName } from './icons.js'
+import { icon } from './icons.js'
 
 /**
  * The sidebar as DOM.
  *
- * Five fixed regions, following `design_guidance.md` 三.2 top to bottom: the
- * workspace header, the session search box, the first-level actions, a scrolling
- * middle of project groups and age sections, and a footer carrying 设置 and the
- * `?` panel. Collapsing hides all five and the stylesheet takes the column to
- * zero width — the one collapse control is the title bar's `.titlebar-rail`.
+ * Four fixed regions, following `design_guidance.md` 三.2 top to bottom: the
+ * session search box, the first-level actions, a scrolling middle of workspace
+ * groups, and a footer carrying 设置 and the `?` panel. Collapsing hides all four
+ * and the stylesheet takes the column to zero width — the one collapse control is
+ * the title bar's `.titlebar-rail`.
+ *
+ * The header that used to sit above the search box is gone with the workspace
+ * dropdown it held: every workspace now has a heading *in the list*, so a control
+ * whose job was to choose which one you could see had nothing left to do.
  *
  * Every decision — which rows exist, what order they are in, what a keystroke
  * means, whether a row is asking for confirmation — belongs to
@@ -43,14 +45,14 @@ export type SidebarAction = (intent: SidebarIntent) => void
 export interface SidebarDom {
   render(view: SidebarView): void
   /**
-   * Moves focus to the workspace dropdown's trigger.
+   * Moves focus to one workspace's heading and scrolls it into view.
    *
-   * Not decoration: the menu is closed by this container's `focusout`, which
-   * never fires for focus that never arrived. Something outside the sidebar that
-   * opens the menu — the welcome screen's Hero project name — would otherwise
-   * leave it open until the user happened to click into the sidebar and out again.
+   * The reveal path for something outside the sidebar that names a project — the
+   * welcome screen's Hero project name. Focus rather than a highlight, because
+   * the heading is a real button and the next Tab or Enter should be about the
+   * group the user just asked for.
    */
-  focusWorkspace(): void
+  focusProject(projectRoot: string): void
 }
 
 const BADGE_LABELS = {
@@ -69,7 +71,6 @@ export function createSidebarView(
    */
   onKey: (chord: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => boolean,
 ): SidebarDom {
-  const header = el('div', 'sidebar-header')
   // Persistent, not rebuilt by `render()`: the sidebar repaints on every shell
   // snapshot, and re-creating the input on each pass would drop the caret and the
   // focus mid-search. `app.ts` holds the query as the source of truth, so this
@@ -94,7 +95,6 @@ export function createSidebarView(
   list.tabIndex = 0
   const footer = el('div', 'sidebar-footer')
 
-  container.appendChild(header)
   container.appendChild(search)
   container.appendChild(nav)
   container.appendChild(list)
@@ -118,12 +118,8 @@ export function createSidebarView(
     event.stopPropagation()
   })
 
-  // The last-drawn menu state, so `focusout` can close an open workspace dropdown
-  // when the user's attention leaves the sidebar without having to guess.
-  let menuOpen = false
-
-  /** The workspace trigger from the last render; the header rebuilds it each pass. */
-  let workspaceTrigger: HTMLButtonElement | undefined
+  /** The group headings from the last render, so `focusProject` can reach one. */
+  const projectHeadings = new Map<string, HTMLButtonElement>()
 
   container.addEventListener('focusout', (event) => {
     const next = event.relatedTarget
@@ -134,9 +130,6 @@ export function createSidebarView(
     // lands on some other element.
     if (next === null) return
     if (next instanceof Node && container.contains(next)) return
-    // `toggle-workspace-menu` is only emitted while it is open, so it can only
-    // ever close here.
-    if (menuOpen) onIntent({ kind: 'toggle-workspace-menu' })
     onIntent({ kind: 'cancel-delete' })
   })
 
@@ -212,75 +205,46 @@ export function createSidebarView(
     return node
   }
 
-  const sectionNode = (
-    section: SidebarSection,
-    indexOf: (row: SidebarRow) => number,
-    selectedIndex: number,
-  ): HTMLElement => {
-    const wrapper = el('div', 'session-section')
-    wrapper.appendChild(el('div', 'session-section-label', section.label))
-    for (const row of section.rows) {
-      const index = indexOf(row)
-      wrapper.appendChild(rowNode(row, index, index === selectedIndex))
-    }
-    return wrapper
-  }
-
+  /**
+   * One workspace: a heading that folds the group, and its rows.
+   *
+   * The heading is a real `<button>` rather than the `<div>` label it replaced —
+   * it toggles, and it is the target `focusProject` reveals to. Drawn for a
+   * single project too: the workspace is the sidebar's only grouping axis now, so
+   * hiding the heading when there is one of them would hide *what the axis is*.
+   */
   const groupNode = (
     group: SidebarGroup,
-    showLabel: boolean,
     indexOf: (row: SidebarRow) => number,
     selectedIndex: number,
   ): HTMLElement => {
-    const wrapper = el('div', `project-group${group.own ? ' own' : ''}`)
-    if (showLabel) {
-      const label = el('div', 'project-label', group.projectName)
-      label.title = group.projectRoot
-      wrapper.appendChild(label)
-    }
-    for (const section of group.sections) {
-      wrapper.appendChild(sectionNode(section, indexOf, selectedIndex))
-    }
-    return wrapper
-  }
-
-  /**
-   * The workspace dropdown: a trigger showing the active project, and — when the
-   * model says it is open — a menu of every project the window can switch to.
-   * Picking one is one decision in the model (`selectWorkspaceIntent`), so the
-   * click resolves to the same switch/new a row would.
-   */
-  const workspaceNode = (view: SidebarView): HTMLElement => {
-    const wrapper = el('div', 'sidebar-workspace-shell')
-    workspaceTrigger = button(
-      `sidebar-workspace${view.workspaceMenuOpen ? ' open' : ''}`,
-      view.workspaceName ?? 'Hanekawa',
-      view.workspaces.length > 1 ? '切换工作区' : '当前工作区',
-      () => onIntent({ kind: 'toggle-workspace-menu' }),
-      // 「项目名 + `⌵`」 (design_guidance 三.2): the glyph sits at the pill's
-      // right edge, and the name — which is what gets truncated — takes the rest.
-      { trailingIcon: 'chevron-down' },
+    const wrapper = el(
+      'div',
+      `project-group${group.own ? ' own' : ''}${group.collapsed ? ' collapsed' : ''}`,
     )
-    wrapper.appendChild(workspaceTrigger)
-    if (view.workspaceMenuOpen && view.workspaces.length > 0) {
-      const menu = el('div', 'sidebar-workspace-menu')
-      menu.setAttribute('role', 'menu')
-      for (const workspace of view.workspaces) {
-        menu.appendChild(workspaceItem(workspace))
+    const heading = button(
+      'project-heading',
+      group.projectName,
+      group.projectRoot,
+      () => onIntent({ kind: 'toggle-project', projectRoot: group.projectRoot }),
+      // Leading glyph, and it points where the fold goes: `⌄` for an open group,
+      // `›` for a shut one.
+      { icon: group.collapsed ? 'chevron-right' : 'chevron-down' },
+    )
+    heading.setAttribute('aria-expanded', String(!group.collapsed))
+    // The count is the only thing a collapsed group says about what is inside it.
+    heading.appendChild(el('span', 'project-count', String(group.rows.length)))
+    projectHeadings.set(group.projectRoot, heading)
+    wrapper.appendChild(heading)
+
+    if (!group.collapsed) {
+      for (const row of group.rows) {
+        const index = indexOf(row)
+        wrapper.appendChild(rowNode(row, index, index === selectedIndex))
       }
-      wrapper.appendChild(menu)
     }
     return wrapper
   }
-
-  const workspaceItem = (workspace: SidebarWorkspace): HTMLElement =>
-    button(
-      `sidebar-workspace-item${workspace.active ? ' active' : ''}`,
-      workspace.projectName,
-      workspace.projectRoot,
-      () => onIntent({ kind: 'select-workspace', projectRoot: workspace.projectRoot }),
-      { icon: 'folder' },
-    )
 
   /**
    * The last drawn view's signature. The guard below is what makes this view
@@ -292,28 +256,22 @@ export function createSidebarView(
   let drawn: string | undefined
 
   return {
-    focusWorkspace() {
-      workspaceTrigger?.focus()
+    focusProject(projectRoot) {
+      const heading = projectHeadings.get(projectRoot)
+      if (!heading) return
+      heading.scrollIntoView({ block: 'nearest' })
+      heading.focus()
     },
     render(view) {
       const signature = sidebarRenderSignature(view)
       if (signature === drawn) return
       drawn = signature
-      menuOpen = view.workspaceMenuOpen
 
       // One index lookup built per render, so the row → cursor mapping is the
       // view's flattened order rather than a per-group count that could drift.
       const indices = new Map<string, number>()
       view.rows.forEach((row, index) => indices.set(row.sessionId, index))
       const indexOf = (row: SidebarRow): number => indices.get(row.sessionId) ?? -1
-
-      // The header is the workspace and nothing else: a second control here is
-      // what squeezed the project name down to `Hanekawa-…` at 268px
-      // (design_guidance 三.2). "New session" moved to the nav row below the
-      // search box, and the rail toggle to the title bar — `titlebar-rail` is the
-      // single collapse control the spec names (三.1), so a duplicate here was a
-      // third way to do one thing (S7/D8).
-      replace(header, workspaceNode(view))
 
       replace(
         nav,
@@ -336,29 +294,28 @@ export function createSidebarView(
       )
 
       container.classList.toggle('collapsed', view.collapsed)
-      // Collapsed hides *everything*, header included, and the stylesheet takes
-      // the column to zero width. The rail that used to survive existed only so
-      // this view's own toggle stayed reachable by mouse; that toggle now lives in
-      // the title bar, which a collapsed sidebar does not touch. Returning here
-      // rather than after building means a collapsed sidebar builds no rows at
-      // all — the guard above already banked the signature, so expanding
-      // repaints.
-      show(header, !view.collapsed)
+      // Collapsed hides *everything* and the stylesheet takes the column to zero
+      // width. The rail that used to survive existed only so this view's own
+      // toggle stayed reachable by mouse; that toggle now lives in the title bar,
+      // which a collapsed sidebar does not touch. Returning here rather than after
+      // building means a collapsed sidebar builds no rows at all — the guard above
+      // already banked the signature, so expanding repaints.
       show(search, !view.collapsed)
       show(nav, !view.collapsed)
       show(list, !view.collapsed)
       show(footer, !view.collapsed)
       if (view.collapsed) return
 
+      // Rebuilt from the groups actually drawn, so a heading that is gone cannot
+      // be revealed and a stale node cannot be focused into a detached tree.
+      projectHeadings.clear()
       replace(
         list,
         ...(view.isEmpty
           ? [el('div', 'sidebar-empty', '还没有会话。')]
           : view.noMatches
             ? [el('div', 'sidebar-empty', '没有匹配的会话。')]
-            : view.groups.map((group) =>
-                groupNode(group, view.showProjectLabels, indexOf, view.selectedIndex),
-              )),
+            : view.groups.map((group) => groupNode(group, indexOf, view.selectedIndex))),
       )
 
       // A profile row and a `?`, side by side, with the chord list behind the `?`

@@ -1,14 +1,21 @@
 import type { WireLaneInfo, WireSessionSummary } from '../../shellProtocol.js'
 
 /**
- * The sidebar as data: every session this process can reach, grouped by project
- * and sectioned by age, with the open ones marked.
+ * The sidebar as data: every session this process can reach, grouped by
+ * workspace, with the open ones marked.
  *
  * Replaces `model/tabBar.ts`, which only ever listed *open* panes. The ordering
  * discipline is inherited wholesale — a stable partition rather than a
  * comparator on a boolean, one flattened row list that both the view renders and
  * the digit chords index — and extended a level, from "project → tab" to
- * "project → age → session".
+ * "workspace → session".
+ *
+ * Workspace is the *only* grouping axis. It used to be two ("project → age →
+ * session") behind a header dropdown that switched which project you were
+ * looking at, which made the workspace something you navigated *to* before you
+ * could see its sessions. Every workspace is now on screen at once, its group
+ * collapsible, and the age sections are gone — inside a group the rows are
+ * simply newest first.
  *
  * Two things this file is careful about:
  *
@@ -30,26 +37,10 @@ import type { WireLaneInfo, WireSessionSummary } from '../../shellProtocol.js'
 
 // --- text --------------------------------------------------------------------
 
-/**
- * Section labels, in one table.
- *
- * The view carries `kind` *and* `label` so tests assert the kind: 4e localizes
- * every string in the shell, and a suite pinned to literals would have to be
- * rewritten alongside it for no gain in coverage.
- */
-export const SIDEBAR_SECTION_LABELS: Record<SidebarSectionKind, string> = {
-  today: '今天',
-  yesterday: '昨天',
-  week: '最近 7 天',
-  older: '更早',
-}
-
 export const SIDEBAR_HINT =
   '[Ctrl+1-9] 切换  [Ctrl+T] 新会话  [Ctrl+W] 关闭  [Ctrl+B] 收起侧栏  [Ctrl+Shift+O] 打开项目'
 
 // --- the view ----------------------------------------------------------------
-
-export type SidebarSectionKind = 'today' | 'yesterday' | 'week' | 'older'
 
 /** What a row says about the pane behind it, if there is one. */
 export type SidebarBadge = 'none' | 'running' | 'awaiting-input'
@@ -69,36 +60,31 @@ export interface SidebarRow {
   readonly confirmingDelete: boolean
 }
 
-export interface SidebarSection {
-  readonly kind: SidebarSectionKind
-  readonly label: string
-  readonly rows: readonly SidebarRow[]
-}
-
-/** One switchable project, as the workspace dropdown lists it. */
-export interface SidebarWorkspace {
-  readonly projectRoot: string
-  readonly projectName: string
-  /** The project the active pane belongs to, marked in the menu. */
-  readonly active: boolean
-}
-
-
+/** One workspace's sessions, under its own heading. */
 export interface SidebarGroup {
   readonly projectRoot: string
   readonly projectName: string
   /** This is the project the active pane belongs to; its group sorts first. */
   readonly own: boolean
-  readonly sections: readonly SidebarSection[]
-  /** The group's rows flattened, in the order the sections render them. */
+  /**
+   * Folded shut, so the view draws the heading and none of the rows.
+   *
+   * A collapsed group's rows are still carried here (the heading shows how
+   * many), but they are absent from {@link SidebarView.rows} — the cursor and
+   * `Ctrl+1`–`9` walk what is on screen, and a keyboard that steps into a hidden
+   * row is a cursor the user cannot see.
+   */
+  readonly collapsed: boolean
+  /** The group's sessions, newest first. Populated even while collapsed. */
   readonly rows: readonly SidebarRow[]
 }
 
 export interface SidebarView {
   readonly groups: readonly SidebarGroup[]
   /**
-   * Every row, flattened in **visual** order. Keyboard navigation walks this,
-   * so the cursor and the screen cannot disagree.
+   * Every *visible* row, flattened in **visual** order — collapsed groups
+   * contribute nothing. Keyboard navigation walks this, so the cursor and the
+   * screen cannot disagree.
    */
   readonly rows: readonly SidebarRow[]
   /**
@@ -110,8 +96,6 @@ export interface SidebarView {
   /** The active pane's project, which is also the group hoisted to the top. */
   readonly activeProjectRoot: string | undefined
   readonly collapsed: boolean
-  /** Headings are noise for a single project, so they appear from two up. */
-  readonly showProjectLabels: boolean
   readonly selectedIndex: number
   /** Whether "new session" and "open project" are offered. */
   readonly canCreate: boolean
@@ -121,12 +105,6 @@ export interface SidebarView {
   readonly searchQuery: string
   /** A search is active but matched nothing — distinct from an empty project. */
   readonly noMatches: boolean
-  /** The projects the workspace dropdown offers, in the order they were opened. */
-  readonly workspaces: readonly SidebarWorkspace[]
-  /** The active project's name, shown on the dropdown trigger. */
-  readonly workspaceName: string | undefined
-  /** Whether the workspace dropdown is expanded. */
-  readonly workspaceMenuOpen: boolean
   /**
    * Whether the `?` panel is showing {@link SIDEBAR_HINT}.
    *
@@ -171,14 +149,20 @@ export interface SidebarState {
   readonly selectedIndex: number
   /** The session whose row is asking for confirmation, if any. */
   readonly pendingDelete: string | undefined
-  /** Milliseconds, injected so section boundaries are testable. */
+  /** Milliseconds, injected so a draft's synthesized timestamp is testable. */
   readonly now: number
   /** False while a blocking dialog is up: both buttons open something. */
   readonly canCreate: boolean
   /** The session-search text; empty means no filter. */
   readonly searchQuery: string
-  /** Whether the workspace dropdown is expanded. */
-  readonly workspaceMenuOpen: boolean
+  /**
+   * The workspaces folded shut, by project root.
+   *
+   * Renderer-local and deliberately not persisted: it is a view fold, not a
+   * preference, and a project that came back collapsed after a restart would
+   * look like its sessions were gone.
+   */
+  readonly collapsedProjects: ReadonlySet<string>
   /** Whether the footer's `?` panel is open. */
   readonly helpOpen: boolean
 }
@@ -195,7 +179,7 @@ export function createSidebarState(overrides: Partial<SidebarState> = {}): Sideb
     now: Date.UTC(2026, 7, 20, 12, 0, 0),
     canCreate: true,
     searchQuery: '',
-    workspaceMenuOpen: false,
+    collapsedProjects: new Set(),
     helpOpen: false,
     ...overrides,
   }
@@ -203,32 +187,16 @@ export function createSidebarState(overrides: Partial<SidebarState> = {}): Sideb
 
 // --- building the view -------------------------------------------------------
 
-const DAY_MS = 24 * 60 * 60 * 1000
-const SECTION_ORDER: readonly SidebarSectionKind[] = ['today', 'yesterday', 'week', 'older']
-
 /**
- * Which section a session falls in, by local calendar day rather than by elapsed
- * hours: a session touched at 23:50 is "yesterday" at 00:10, not "today", which
- * is what a reader means by the word.
+ * A row's place on the timeline, as a number.
  *
- * An unparseable `updatedAt` lands in `older` rather than throwing — the store
+ * An unparseable `updatedAt` sorts oldest rather than throwing — the store
  * self-heals rather than rejecting bad records, and a row the user can still
  * delete is more useful than a sidebar that will not draw.
  */
-export function sectionFor(updatedAt: string, now: number): SidebarSectionKind {
+function touchedAt(updatedAt: string): number {
   const touched = Date.parse(updatedAt)
-  if (!Number.isFinite(touched)) return 'older'
-  const startOfToday = startOfDay(now)
-  if (touched >= startOfToday) return 'today'
-  if (touched >= startOfToday - DAY_MS) return 'yesterday'
-  if (touched >= startOfToday - 6 * DAY_MS) return 'week'
-  return 'older'
-}
-
-function startOfDay(timestamp: number): number {
-  const date = new Date(timestamp)
-  date.setHours(0, 0, 0, 0)
-  return date.getTime()
+  return Number.isFinite(touched) ? touched : 0
 }
 
 function badgeFor(lane: string | undefined, state: SidebarState): SidebarBadge {
@@ -287,9 +255,9 @@ export function sidebarView(state: SidebarState): SidebarView {
   }
 
   // Lanes with nothing behind them on disk: a fresh draft has no index entry
-  // until its first message. Appended after a project's history because that is
-  // where the newest thing belongs — and never dropped, since dropping one would
-  // hide the session the user is typing into.
+  // until its first message. Appended to the bucket and sorted into place by
+  // `groupOf` — and never dropped, since dropping one would hide the session the
+  // user is typing into.
   //
   // Synthesized into the same summary shape rather than built by a second row
   // constructor: badge, active and confirming are one decision each, and two
@@ -300,8 +268,8 @@ export function sidebarView(state: SidebarState): SidebarView {
     const draft: WireSessionSummary = {
       id: lane.paneId,
       ...(lane.sessionTitle !== undefined ? { title: lane.sessionTitle } : {}),
-      // Nothing written yet, so "now" is the truth — and it puts the draft under
-      // 今天 where the user just made it.
+      // Nothing written yet, so "now" is the truth — and it puts the draft at the
+      // top of its group, where the user just made it.
       updatedAt: new Date(state.now).toISOString(),
       messageCount: 0,
     }
@@ -313,10 +281,16 @@ export function sidebarView(state: SidebarState): SidebarView {
   // Drop projects the filter emptied. A no-op when nothing is searched (every
   // bucket holds at least the session or lane that created it), so the empty
   // state and grouping behaviour are unchanged for `searchQuery === ''`.
+  const searching = needle !== ''
   const groups = [...byProject.entries()]
     .filter(([, bucket]) => bucket.rows.length > 0)
     .map(([projectRoot, bucket]) =>
-      groupOf(projectRoot, bucket.projectName, active?.projectRoot, bucket.rows, state),
+      groupOf(projectRoot, bucket.projectName, active?.projectRoot, bucket.rows, {
+        // A search un-folds everything: the whole point of the query is to find a
+        // session, and a match hidden behind a collapsed heading reads as "no
+        // such session".
+        collapsed: !searching && state.collapsedProjects.has(projectRoot),
+      }),
     )
 
   // A stable partition, not a sort: `filter` twice keeps first-seen order inside
@@ -324,55 +298,28 @@ export function sidebarView(state: SidebarState): SidebarView {
   // Inherited verbatim from the tab bar this replaced, and it only reorders on a
   // *cross-project* switch — within one project the list never moves.
   const ordered = [...groups.filter((group) => group.own), ...groups.filter((group) => !group.own)]
-  const rows = ordered.flatMap((group) => group.rows)
+  // Collapsed groups are drawn as a heading and nothing else, so they are absent
+  // here: this list is the cursor's and the digit chords' index space, and both
+  // have to mean what is on screen.
+  const rows = ordered.filter((group) => !group.collapsed).flatMap((group) => group.rows)
 
-  const searching = needle !== ''
-  const workspaces = workspacesOf(state, active?.projectRoot)
+  // `groups` is empty only when there is genuinely nothing; a collapsed group is
+  // still something to show, so the empty state reads on the groups rather than
+  // on the visible rows.
+  const nothing = ordered.length === 0
   return {
     groups: ordered,
     rows,
     liveRows: rows.filter((row) => row.lane !== undefined),
     activeProjectRoot: active?.projectRoot,
     collapsed: state.collapsed,
-    showProjectLabels: ordered.length > 1,
     selectedIndex: clampIndex(state.selectedIndex, rows.length),
     canCreate: state.canCreate,
-    isEmpty: rows.length === 0 && !searching,
+    isEmpty: nothing && !searching,
     searchQuery: state.searchQuery,
-    noMatches: rows.length === 0 && searching,
-    workspaces,
-    // From the workspace list, not the active lane's own `projectName`, so the
-    // trigger label and the menu's marked row always read the same name.
-    workspaceName: workspaces.find((workspace) => workspace.active)?.projectName,
-    workspaceMenuOpen: state.workspaceMenuOpen,
+    noMatches: nothing && searching,
     helpOpen: state.helpOpen,
   }
-}
-
-/**
- * The projects the workspace dropdown can switch to.
- *
- * Built from `state` rather than the (search-filtered) groups, so filtering the
- * session list never removes a project the user could jump to. History projects
- * come first in wire order; a project known only from a lane lands after them —
- * the same ordering the row list uses.
- */
-function workspacesOf(
-  state: SidebarState,
-  activeProjectRoot: string | undefined,
-): readonly SidebarWorkspace[] {
-  const byRoot = new Map<string, string>()
-  for (const project of state.projects) {
-    if (!byRoot.has(project.projectRoot)) byRoot.set(project.projectRoot, project.projectName)
-  }
-  for (const lane of state.lanes) {
-    if (!byRoot.has(lane.projectRoot)) byRoot.set(lane.projectRoot, lane.projectName)
-  }
-  return [...byRoot.entries()].map(([projectRoot, projectName]) => ({
-    projectRoot,
-    projectName,
-    active: activeProjectRoot !== undefined && projectRoot === activeProjectRoot,
-  }))
 }
 
 function rowFor(
@@ -396,35 +343,21 @@ function rowFor(
 }
 
 /**
- * Splits a project's rows into age sections, dropping empty ones.
+ * One workspace's group: its rows, newest first.
  *
- * The row order *within* a section is the order it arrived, which for the store
- * is newest-first (`SessionStore.list` sorts on `updatedAt` descending). This
- * does not re-sort: two sources feed the list, and re-sorting would move a draft
- * that has no meaningful timestamp yet.
+ * Sorted here rather than trusted, because two sources feed the list —
+ * `SessionStore.list` already answers newest-first, but the drafts appended
+ * after it are the *newest* things in the group and arrive last. A stable sort
+ * keeps same-instant rows in arrival order, so a draft made in the same
+ * millisecond as a save does not shuffle between paints.
  */
 function groupOf(
   projectRoot: string,
   projectName: string,
   activeProjectRoot: string | undefined,
   rows: readonly SidebarRow[],
-  state: SidebarState,
+  options: { collapsed: boolean },
 ): SidebarGroup {
-  const buckets = new Map<SidebarSectionKind, SidebarRow[]>()
-  for (const row of rows) {
-    const kind = sectionFor(row.updatedAt, state.now)
-    const bucket = buckets.get(kind)
-    if (bucket) bucket.push(row)
-    else buckets.set(kind, [row])
-  }
-
-  const sections: SidebarSection[] = []
-  for (const kind of SECTION_ORDER) {
-    const bucket = buckets.get(kind)
-    if (!bucket || bucket.length === 0) continue
-    sections.push({ kind, label: SIDEBAR_SECTION_LABELS[kind], rows: bucket })
-  }
-
   return {
     projectRoot,
     projectName,
@@ -433,8 +366,8 @@ function groupOf(
     // row could be closed; here it only governs group order, and hoisting every
     // group is the same as hoisting none.
     own: activeProjectRoot !== undefined && projectRoot === activeProjectRoot,
-    sections,
-    rows: sections.flatMap((section) => section.rows),
+    collapsed: options.collapsed,
+    rows: [...rows].sort((left, right) => touchedAt(right.updatedAt) - touchedAt(left.updatedAt)),
   }
 }
 
@@ -459,12 +392,10 @@ export type SidebarIntent =
   | { kind: 'toggle-collapse' }
   /** Set the session-search filter. */
   | { kind: 'search'; query: string }
-  /** Open or close the workspace dropdown. */
-  | { kind: 'toggle-workspace-menu' }
+  /** Fold one workspace's group shut, or open it again. */
+  | { kind: 'toggle-project'; projectRoot: string }
   /** Open or close the footer's `?` panel. */
   | { kind: 'toggle-help' }
-  /** Jump to a project: switch to its open lane, or start a session there. */
-  | { kind: 'select-workspace'; projectRoot: string }
   | { kind: 'request-delete'; sessionId: string }
   | { kind: 'confirm-delete'; projectRoot: string; sessionId: string }
   | { kind: 'cancel-delete' }
@@ -597,18 +528,42 @@ export function newSessionIntent(projectRoot: string | undefined): SidebarIntent
 }
 
 /**
- * What picking a project from the workspace dropdown means.
+ * The workspaces with a group on screen, in visual order.
  *
- * There is no host command for "switch active project": a project becomes active
- * by its lane becoming the visible one. So switch to an open lane in that project
- * if there is one, and otherwise start a session there — the same "open or
- * create" split `activateRow`/`newSessionIntent` make for a row. Kept here as one
- * decision so the click path cannot drift from it.
+ * Built from `state` rather than from a built view so callers that only need the
+ * roots — "which project does this pane belong to", the reveal path — do not pay
+ * for grouping. History projects come first in wire order; a project known only
+ * from a lane lands after them, and the active pane's is hoisted, exactly as
+ * `sidebarView` orders the groups.
  */
-export function selectWorkspaceIntent(state: SidebarState, projectRoot: string): SidebarIntent {
-  const lane = state.lanes.find((candidate) => candidate.projectRoot === projectRoot)
-  if (lane !== undefined) return { kind: 'switch', lane: lane.lane }
-  return newSessionIntent(projectRoot)
+export function workspaceRootsOf(state: SidebarState): readonly string[] {
+  const roots: string[] = []
+  const add = (root: string): void => {
+    if (!roots.includes(root)) roots.push(root)
+  }
+  for (const project of state.projects) add(project.projectRoot)
+  for (const lane of state.lanes) add(lane.projectRoot)
+  const own = activeProjectRootOf(state)
+  return own === undefined ? roots : [...roots.filter((root) => root === own), ...roots.filter((root) => root !== own)]
+}
+
+/**
+ * Folding a workspace open or shut, as the next collapsed set.
+ *
+ * A `Set` rather than a toggle on the state so `app.ts` holds one field and this
+ * file owns what "toggle" means — including that revealing a project is the same
+ * operation with the answer fixed.
+ */
+export function toggleProject(
+  collapsed: ReadonlySet<string>,
+  projectRoot: string,
+  force?: boolean,
+): ReadonlySet<string> {
+  const next = new Set(collapsed)
+  const shut = force ?? !next.has(projectRoot)
+  if (shut) next.add(projectRoot)
+  else next.delete(projectRoot)
+  return next
 }
 
 /**
@@ -624,8 +579,8 @@ export function selectWorkspaceIntent(state: SidebarState, projectRoot: string):
  * moved — the same field-diff discipline `SessionClient.applySnapshot` and
  * `ShellClient.applyLanes` use, and for the same reason. It must cover every
  * field `render()` reads: a field drawn but not signed goes stale on screen.
- * `updatedAt` is deliberately absent — it is not drawn, only bucketed, and the
- * bucket shows up as `section.kind`.
+ * `updatedAt` is deliberately absent — it is not drawn, only sorted on, and the
+ * order it produces shows up as the order the rows are signed in.
  */
 export function sidebarRenderSignature(view: SidebarView): string {
   const parts: string[] = [
@@ -633,28 +588,25 @@ export function sidebarRenderSignature(view: SidebarView): string {
     view.canCreate ? 'n' : '-',
     view.isEmpty ? 'e' : '-',
     view.noMatches ? 'm' : '-',
-    view.showProjectLabels ? 'l' : '-',
-    view.workspaceMenuOpen ? 'w' : '-',
     // Signed, or the panel opens and the render guard swallows the repaint —
     // the failure this signature exists to prevent.
     view.helpOpen ? 'h' : '-',
     String(view.selectedIndex),
     `q:${view.searchQuery}`,
-    `wn:${view.workspaceName ?? ''}`,
   ]
-  for (const workspace of view.workspaces) {
-    parts.push(`w:${workspace.projectRoot}${workspace.active ? '1' : '0'}`)
-  }
   for (const group of view.groups) {
-    parts.push(`g:${group.projectRoot}${group.projectName}${group.own ? '1' : '0'}`)
-    for (const section of group.sections) {
-      parts.push(`s:${section.kind}`)
-      for (const row of section.rows) {
-        parts.push(
-          `r:${row.sessionId}${row.lane ?? ''}${row.badge}${row.active ? '1' : '0'}`
-            + `${row.confirmingDelete ? '1' : '0'}${row.title}${row.messageCount}`,
-        )
-      }
+    // The count is drawn on the heading, a collapsed group's included, so it is
+    // signed even where the rows below it are not.
+    parts.push(
+      `g:${group.projectRoot}${group.projectName}${group.own ? '1' : '0'}`
+        + `${group.collapsed ? '1' : '0'}${group.rows.length}`,
+    )
+    if (group.collapsed) continue
+    for (const row of group.rows) {
+      parts.push(
+        `r:${row.sessionId}${row.lane ?? ''}${row.badge}${row.active ? '1' : '0'}`
+          + `${row.confirmingDelete ? '1' : '0'}${row.title}${row.messageCount}`,
+      )
     }
   }
   return parts.join('')

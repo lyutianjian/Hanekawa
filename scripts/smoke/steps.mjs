@@ -138,7 +138,7 @@ async function step7(ctx) {
   const before = await read(ctx, probes.sidebar())
   ctx.ok('the sidebar starts expanded', before.collapsed === false, `collapsed=${before.collapsed}`)
   ctx.ok('the fixture sessions are listed', before.rowCount >= 8, `${before.rowCount} rows`)
-  await ctx.shot('07a-sidebar-expanded', 'the expanded sidebar: group heading, date sections, row density')
+  await ctx.shot('07a-sidebar-expanded', 'the expanded sidebar: workspace headings, folding, row density')
 
   // todo V2, and this step is where it is observable: the app bootstraps the
   // youngest fixture session (`main.ts:184-185`), and a fixture is exactly one

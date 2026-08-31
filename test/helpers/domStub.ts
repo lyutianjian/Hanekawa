@@ -16,8 +16,8 @@
  *
  * The scan covers `document.<member>` only, so the **element** members faked
  * here are unguarded and the list keeps growing: `scrollTop`/`scrollHeight`/
- * `clientHeight`/`scrollTo`/`style.height`/`selectionStart`/`setSelectionRange`/
- * `dispatch`/`focus`/`contains()`/`dataset`. Add to that list rather than
+ * `clientHeight`/`scrollTo`/`scrollIntoView`/`style.height`/`selectionStart`/
+ * `setSelectionRange`/`dispatch`/`focus`/`contains()`/`dataset`. Add to that list rather than
  * starting a second one.
  *
  * Installation writes `globalThis.document` and `uninstall()` deletes it again.
@@ -108,6 +108,14 @@ class StubElement {
     if (options.top !== undefined) this.scrollTop = options.top
     this.dispatch('scroll')
   }
+
+  /**
+   * A no-op, unlike `scrollTo`: the sidebar's reveal path calls it to bring a
+   * workspace heading on screen, and there is no layout here to scroll. Present
+   * so calling it is not a `TypeError`, which is the only way the browser could
+   * differ from this stub for a method whose return value nobody reads.
+   */
+  scrollIntoView(): void {}
 
   constructor(readonly tagName: string, readonly namespaceURI: string | undefined) {}
 

@@ -77,7 +77,7 @@ export function createWelcomeView(
         button(
           'welcome-project',
           view.projectLabel,
-          view.projectSwitchable ? '切换项目工作区' : view.projectLabel,
+          view.projectSwitchable ? '在侧栏中定位该工作区' : view.projectLabel,
           onSwitchWorkspace,
           { enabled: view.projectSwitchable },
         ),

@@ -10,6 +10,7 @@ import {
 import type { TranscriptState } from '../src/desktop/renderer/model/transcript.js'
 import type { SessionEvent } from '../src/runtime/sessionController.js'
 import type { SessionRecord } from '../src/harness/types.js'
+import { wrapInSystemReminder } from '../src/harness/systemReminder.js'
 
 /**
  * The desktop transcript's fold over the controller's event stream.
@@ -370,6 +371,33 @@ test('bookkeeping records render nothing, and the visible ones read plainly', ()
   ])
 
   assert.deepEqual(state.items.map((item) => item.text), ['Interrupted.', 'Context compacted.'])
+})
+
+test('a system-reminder user record is hidden from the transcript', () => {
+  // The harness appends these as model-facing nudges (e.g. "all tool calls in
+  // the previous turn failed"); the wrapper tag must not render as a user bubble.
+  const record: SessionRecord = {
+    type: 'message', id: 'r1', role: 'user',
+    content: wrapInSystemReminder('All tool calls in the previous turn failed.'),
+    createdAt: 'now',
+  }
+
+  const { state } = fold([{ type: 'record', record }])
+
+  assert.equal(state.items.some((item) => item.kind === 'user'), false)
+  assert.equal(state.items.length, 0, 'the nudge yields no item at all')
+})
+
+test('a user message that merely mentions the tag inline is still shown', () => {
+  // Only an entire `<system-reminder>` block is hidden; an inline mention is real text.
+  const { state } = fold([{
+    type: 'record',
+    record: message('m1', 'user', 'see <system-reminder> in the docs'),
+  }])
+
+  const user = state.items.filter((item) => item.kind === 'user')
+  assert.equal(user.length, 1)
+  assert.equal(user[0]?.text, 'see <system-reminder> in the docs')
 })
 
 test('the tool summary picks the most identifying argument', () => {

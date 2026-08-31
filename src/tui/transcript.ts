@@ -415,6 +415,13 @@ export function commitPrecedingLiveItemsToStatic(state: TuiTranscriptState): Tui
   }
 }
 
+/** Mirror of `wrapInSystemReminder`'s output (`src/harness/systemReminder.ts`);
+ * kept local so the transcript's hide rule is self-contained. */
+function isSystemReminderBlock(text: string): boolean {
+  const trimmed = text.trim()
+  return trimmed.startsWith('<system-reminder>') && trimmed.endsWith('</system-reminder>')
+}
+
 export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[] {
   const items: TUIDisplayItem[] = []
   const toolCalls = new Map<string, Extract<TUIDisplayItem, { kind: 'tool_call' }>>()
@@ -429,7 +436,12 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
 
   for (const record of records) {
     if (record.type === 'message') {
-      items.push(messageRecordToDisplayItem(record))
+      // A `<system-reminder>` user record is a model-facing nudge, not user input;
+      // skip it so the tag never renders as a user bubble here either.
+      const resolvedText = record.displayContent ?? (typeof record.content === 'string' ? record.content : '')
+      if (!(record.role === 'user' && isSystemReminderBlock(resolvedText))) {
+        items.push(messageRecordToDisplayItem(record))
+      }
       groupSegmentId += 1
     } else if (record.type === 'tool_use') {
       if (isHiddenToolCall(record.tool)) {

@@ -17,11 +17,10 @@ import type { WireLaneInfo } from '../src/desktop/shellProtocol.js'
  * The sidebar's four regions, as DOM.
  *
  * `test/rendererSidebar.test.ts` covers the model — which rows exist, what a key
- * means. What only shows up here is the 5g shape: the header carries the
- * workspace and the rail toggle and *nothing else* (a third control there is what
- * truncated the project name to `Hanekawa-…`), the first-level actions are rows
- * under the search box, and the chord list lives behind the footer's `?` instead
- * of being printed under it.
+ * means. What only shows up here is the shape: the workspace header is gone and
+ * every workspace has a folding heading *in the list*, the first-level actions
+ * are rows under the search box, and the chord list lives behind the footer's `?`
+ * instead of being printed under it.
  *
  * Not in the base TypeScript program; see `tsconfig.domtest.json`.
  */
@@ -31,6 +30,7 @@ interface Rendered {
   readonly container: HTMLElement
   readonly intents: SidebarIntent[]
   render(view: SidebarView): void
+  focusProject(projectRoot: string): void
   root(): StubView
 }
 
@@ -49,6 +49,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     container,
     intents,
     render: (view) => dom.render(view),
+    focusProject: (projectRoot) => dom.focusProject(projectRoot),
     root: () => stub.inspect(container),
   }
 }
@@ -96,38 +97,79 @@ function tieredState(): Partial<SidebarState> {
   }
 }
 
-test('the header is the workspace and nothing else', (t) => {
-  // Two regressions in one assertion. "New session" used to sit here as a second
-  // control, and at the sidebar's width that is what left room for `Hanekawa-…`
-  // instead of the project's name (design_guidance 三.2); the rail toggle was the
-  // third of three ways to collapse the sidebar, and the spec names the title
-  // bar's (三.1) — so it is gone from here entirely (todo D8).
+test('the sidebar opens on the search box: there is no workspace header', (t) => {
+  // The dropdown that used to live here made a workspace something you navigated
+  // *to* before you could see its sessions. Every workspace is a heading in the
+  // list now, so the control that chose between them has nothing left to do.
   const { render, root } = mount(t)
   render(viewOf())
 
-  const header = region(root(), 'sidebar-header')
-  assert.deepEqual(header.children.map((child) => child.className), ['sidebar-workspace-shell'])
+  assert.equal(root().children[0]?.className, 'sidebar-search')
+  assert.equal(find(root(), 'sidebar-header'), undefined, 'the workspace header came back')
+  assert.equal(find(root(), 'sidebar-workspace'), undefined, 'the workspace dropdown came back')
   assert.equal(find(root(), 'sidebar-collapse'), undefined, 'the sidebar grew a second collapse control')
-
-  // 「项目名 + `⌵`」 (design_guidance 三.2): the caret follows the name rather
-  // than leading it, which is also what lets the name be the part that truncates
-  // (todo V4). Verified by mutation: `trailingIcon` back to `icon` reds this.
-  const trigger = find(root(), 'sidebar-workspace')
-  assert.ok(trigger, 'the workspace trigger is gone')
-  assert.equal(trigger.children[0]?.className, 'btn-label')
-  assert.equal(trigger.children.at(-1)?.tagName, 'svg')
 })
 
-test('collapsing hides every region, the header included', (t) => {
+test('collapsing hides every region', (t) => {
   // The rail survived only so this view's own toggle stayed clickable. With that
-  // toggle in the title bar, a collapsed sidebar is zero width — and a header
+  // toggle in the title bar, a collapsed sidebar is zero width — and a region
   // still drawn would be what keeps the column from reaching it.
   const { render, root } = mount(t)
   render(viewOf({ collapsed: true }))
 
-  for (const name of ['sidebar-header', 'sidebar-search', 'sidebar-nav', 'sidebar-list', 'sidebar-footer']) {
+  for (const name of ['sidebar-search', 'sidebar-nav', 'sidebar-list', 'sidebar-footer']) {
     assert.equal(region(root(), name).hidden, true, `.${name} is still on screen while collapsed`)
   }
+})
+
+test('every workspace gets a folding heading, single project included', (t) => {
+  // Drawn even for one project: the workspace is the list's only grouping axis,
+  // so hiding the heading when there is one of them hides *what the axis is*.
+  const { render, root, stub, intents } = mount(t)
+  render(viewOf(tieredState()))
+
+  const heading = find(root(), 'project-heading')
+  assert.ok(heading, 'no workspace heading in the list')
+  assert.equal(find(heading, 'btn-label')?.text, 'app')
+  assert.equal(find(heading, 'project-count')?.text, '3', 'the heading must say how many are inside')
+  assert.equal(heading.attributes.get('aria-expanded'), 'true')
+
+  stub.click(heading.node)
+  assert.deepEqual(intents, [{ kind: 'toggle-project', projectRoot: '/w/app' }])
+})
+
+test('a folded workspace draws its heading and none of its rows', (t) => {
+  const { render, root } = mount(t)
+  render(viewOf({ ...tieredState(), collapsedProjects: new Set(['/w/app']) }))
+
+  const group = find(root(), 'project-group')
+  assert.ok(group?.classes.includes('collapsed'))
+  assert.deepEqual(sessionRows(root()), [], 'a folded workspace still drew its sessions')
+  // The count survives the fold — it is the only thing the heading can say about
+  // what is behind it.
+  assert.equal(find(root(), 'project-count')?.text, '3')
+  assert.equal(find(root(), 'project-heading')?.attributes.get('aria-expanded'), 'false')
+})
+
+test('focusProject reaches the heading drawn by the last render', (t) => {
+  // The reveal path for the welcome screen's Hero project name. The headings are
+  // rebuilt every pass, so this has to read the current one — focusing a node from
+  // a previous render would silently do nothing.
+  const { render, root, stub, focusProject } = mount(t)
+  render(viewOf(tieredState()))
+  // A second paint that rebuilds the list, so a heading cached from the first one
+  // would now be detached.
+  render(viewOf({ ...tieredState(), pendingDelete: 'history' }))
+
+  focusProject('/w/app')
+  assert.equal(stub.activeElement(), find(root(), 'project-heading')?.node)
+
+  focusProject('/w/nothing-here')
+  assert.equal(
+    stub.activeElement(),
+    find(root(), 'project-heading')?.node,
+    'an unknown project must not move focus',
+  )
 })
 
 test('a row says which of the three tiers it is in', (t) => {

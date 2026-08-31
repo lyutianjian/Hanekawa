@@ -7,6 +7,7 @@ import { getTaskVisual } from '../src/tui/components/TaskListBlock.js'
 import { getToolActivityDescription, getToolDisplay, shouldDisplayToolResult } from '../src/tools/display.js'
 import { theme } from '../src/tui/theme.js'
 import type { SessionRecord, TaskDisplayItem } from '../src/harness/types.js'
+import { wrapInSystemReminder } from '../src/harness/systemReminder.js'
 
 test('recordsToDisplayItems preserves tool error codes for TUI rendering', () => {
   const records: SessionRecord[] = [
@@ -100,6 +101,32 @@ test('recordsToDisplayItems hides plan mode transition tool rows', () => {
   ]
 
   assert.equal(recordsToDisplayItems(records).some((item) => item.kind === 'tool_call'), false)
+})
+
+test('recordsToDisplayItems hides system-reminder user messages', () => {
+  // The harness appends these as model-facing nudges; the wrapper tag must not
+  // render as a user bubble in the batch path either.
+  const records: SessionRecord[] = [
+    {
+      id: 'reminder-1',
+      type: 'message',
+      role: 'user',
+      content: wrapInSystemReminder('All tool calls in the previous turn failed.'),
+      createdAt: '2026-05-24T00:00:00.000Z',
+    },
+    {
+      id: 'real-1',
+      type: 'message',
+      role: 'user',
+      content: 'what is the build status?',
+      createdAt: '2026-05-24T00:00:01.000Z',
+    },
+  ]
+
+  const items = recordsToDisplayItems(records)
+  assert.equal(items.some((item) => item.kind === 'user' && item.id === 'reminder-1'), false)
+  assert.equal(items.filter((item) => item.kind === 'user').length, 1)
+  assert.equal(items[0]?.kind === 'user' && items[0].content, 'what is the build status?')
 })
 
 test('recordsToDisplayItems hides task management tool rows', () => {

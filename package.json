@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "myagent-tui": "./src/tui/entrypoints/tui.tsx"
+    "hanekawa": "./bin/hanekawa.mjs",
+    "myagent-tui": "./bin/hanekawa.mjs"
   },
   "scripts": {
     "dev:tui": "tsx src/tui/entrypoints/tui.tsx",

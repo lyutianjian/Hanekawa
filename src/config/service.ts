@@ -1,5 +1,6 @@
 import { readJsonFile, writeJsonFile } from '../utils/json.js'
-import { getConfigPath } from '../utils/paths.js'
+import { existsSync } from 'node:fs'
+import { getConfigPath, getGlobalConfigPath } from '../utils/paths.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { ModelPricing } from '../harness/types.js'
 import type { MyAgentSettings } from './settings.js'
@@ -67,23 +68,49 @@ const DEFAULT_CONFIG: Config = {
   },
 }
 
+export interface ConfigServiceOptions {
+  /** Absolute path to the shared config layer; `null` disables it (tests). */
+  globalConfigPath?: string | null
+}
+
 export class ConfigService {
   private config: Config
   private configPath: string
+  private globalConfigPath: string | null
 
-  constructor(cwd: string) {
+  constructor(cwd: string, options?: ConfigServiceOptions) {
     this.configPath = getConfigPath(cwd)
+    const global = options?.globalConfigPath === undefined ? getGlobalConfigPath() : options.globalConfigPath
+    // Running directly inside the home directory would otherwise load the same
+    // file as both layers.
+    this.globalConfigPath = global === this.configPath ? null : global
     this.config = structuredClone(DEFAULT_CONFIG)
   }
 
   async load(settings?: MyAgentSettings): Promise<void> {
+    const globalLoaded = this.globalConfigPath
+      ? await readJsonFile<Partial<Config>>(this.globalConfigPath, {})
+      : {}
     const loaded = await readJsonFile<Partial<Config>>(this.configPath, {})
     const settingsConfig = configFromSettings(settings)
-    this.config = deepMergeConfig(deepMergeConfig(DEFAULT_CONFIG, settingsConfig), loaded)
+    this.config = deepMergeConfig(
+      deepMergeConfig(deepMergeConfig(DEFAULT_CONFIG, settingsConfig), globalLoaded),
+      loaded,
+    )
+  }
+
+  /**
+   * Project config wins when it exists, so a repo that opted into its own
+   * config keeps owning it. Otherwise writes go to the shared layer rather than
+   * scattering API keys into every directory the agent is launched from.
+   */
+  getSaveTarget(): string {
+    if (!this.globalConfigPath) return this.configPath
+    return existsSync(this.configPath) ? this.configPath : this.globalConfigPath
   }
 
   async save(): Promise<void> {
-    await writeJsonFile(this.configPath, this.config)
+    await writeJsonFile(this.getSaveTarget(), this.config)
   }
 
   get(): Config {

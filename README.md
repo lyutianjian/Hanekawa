@@ -22,7 +22,7 @@ npm install
 
 ## Configure
 
-Create `.myagent/config.json` in the repository root:
+Create `~/.myagent/config.json` to configure models once for every project:
 
 ```json
 {
@@ -47,7 +47,12 @@ Create `.myagent/config.json` in the repository root:
 }
 ```
 
-The `.myagent/` directory is also where sessions, skills, and local runtime state are stored.
+A project can override any of this by creating `.myagent/config.json` in its own root; the two are
+merged key by key, with the project file winning. Model changes made from the TUI are written back to
+whichever of the two files applies — the project one if it exists, otherwise the global one.
+
+The `.myagent/` directory is also where sessions, skills, and local runtime state are stored. Those
+stay per-project: only `config.json` and `settings.json` have a `~/.myagent/` counterpart.
 
 ## Start
 

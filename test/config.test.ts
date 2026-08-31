@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import test from 'node:test'
+import test, { beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
 import { ConfigService } from '../src/config/service.js'
@@ -33,6 +33,18 @@ import { getAllTools, getBuiltinTools } from '../src/tools/index.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
 import { resetCacheTTLEvaluation, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from '../src/harness/cacheControl.js'
 import type { ModelRequest } from '../src/harness/types.js'
+import { tmpdir } from 'node:os'
+import { mkdtempSync, existsSync } from 'node:fs'
+
+// ConfigService layers a shared `~/.myagent/config.json` under the project one.
+// A fresh home per test keeps these off the developer's config and stops a
+// save() in one test (which targets the shared layer when no project config
+// exists) from leaking models into the next.
+beforeEach(() => {
+  const testHome = mkdtempSync(path.join(tmpdir(), 'myagent-home-'))
+  process.env.USERPROFILE = testHome
+  process.env.HOME = testHome
+})
 
 function countCacheControlMarkers(value: unknown): number {
   if (Array.isArray(value)) {
@@ -230,6 +242,82 @@ test('ConfigService gives config.json priority over settings config fields', asy
     assert.equal(config.agent.system, 'config system')
     assert.equal(config.agent.contextManagement?.contextWindow, 999)
     assert.equal(config.agent.contextManagement?.summaryOutputTokens, 111)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService reads the global config layer from any working directory', async () => {
+  const home = process.env.USERPROFILE!
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    await mkdir(path.join(home, '.myagent'), { recursive: true })
+    await writeFile(path.join(home, '.myagent', 'config.json'), JSON.stringify({
+      models: { globalModel: { provider: 'anthropic', model: 'claude-global' } },
+      defaultModel: 'globalModel',
+    }), 'utf8')
+
+    // No project config.json in `dir` at all.
+    const service = new ConfigService(dir)
+    await service.load()
+
+    assert.equal(service.get().defaultModel, 'globalModel')
+    assert.equal(service.getDefaultModel()?.model, 'claude-global')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService gives project config.json priority over the global layer', async () => {
+  const home = process.env.USERPROFILE!
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    await mkdir(path.join(home, '.myagent'), { recursive: true })
+    await writeFile(path.join(home, '.myagent', 'config.json'), JSON.stringify({
+      models: { globalModel: { provider: 'anthropic', model: 'claude-global' } },
+      defaultModel: 'globalModel',
+    }), 'utf8')
+    await mkdir(path.join(dir, '.myagent'), { recursive: true })
+    await writeFile(path.join(dir, '.myagent', 'config.json'), JSON.stringify({
+      models: { projectModel: { provider: 'anthropic', model: 'claude-project' } },
+      defaultModel: 'projectModel',
+    }), 'utf8')
+
+    const service = new ConfigService(dir)
+    await service.load()
+
+    const config = service.get()
+    assert.equal(config.defaultModel, 'projectModel')
+    // Global models stay reachable; the project layer only overrides.
+    assert.deepEqual(Object.keys(config.models).sort(), ['globalModel', 'projectModel'])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService saves to the global layer unless a project config exists', async () => {
+  const home = process.env.USERPROFILE!
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    const globalPath = path.join(home, '.myagent', 'config.json')
+    const projectPath = path.join(dir, '.myagent', 'config.json')
+
+    // No project config: writes go to the shared layer rather than scattering
+    // API keys into every directory the agent is launched from.
+    const service = new ConfigService(dir)
+    await service.load()
+    service.addModel('added', { provider: 'anthropic', model: 'claude-added' })
+    assert.equal(service.getSaveTarget(), globalPath)
+    await service.save()
+    assert.equal(existsSync(projectPath), false)
+    assert.equal(JSON.parse(await readFile(globalPath, 'utf8')).models.added.model, 'claude-added')
+
+    // Once a project opts in, it keeps owning its own config.
+    await mkdir(path.dirname(projectPath), { recursive: true })
+    await writeFile(projectPath, JSON.stringify({ models: {} }), 'utf8')
+    const scoped = new ConfigService(dir)
+    await scoped.load()
+    assert.equal(scoped.getSaveTarget(), projectPath)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

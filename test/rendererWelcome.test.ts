@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   WELCOME_CARD_ORDER,
   WELCOME_CARD_TITLES,
+  WELCOME_GLOBAL_LOCATION,
+  WELCOME_GLOBAL_TITLE,
   WELCOME_LOCAL_LABEL,
   WELCOME_PROJECT_FALLBACK,
   WELCOME_TITLE_AFTER,
@@ -41,6 +43,8 @@ function stateWith(overrides: Partial<WelcomeState> = {}): WelcomeState {
 test('the constants are the agreed values', () => {
   assert.equal(WELCOME_TITLE_BEFORE, '你想让我们在 ')
   assert.equal(WELCOME_TITLE_AFTER, ' 中构建什么？')
+  assert.equal(WELCOME_GLOBAL_TITLE, '你想让我们构建什么？')
+  assert.equal(WELCOME_GLOBAL_LOCATION, '~/.myagent')
   assert.equal(WELCOME_PROJECT_FALLBACK, '当前项目')
   assert.equal(WELCOME_LOCAL_LABEL, '本地')
   assert.deepEqual(WELCOME_CARD_TITLES, {
@@ -101,6 +105,18 @@ test('the hero names the project, and falls back before hello answers', () => {
   assert.equal(welcomeView(stateWith({ projectName: undefined })).projectLabel, WELCOME_PROJECT_FALLBACK)
 })
 
+test('the global workspace drops the project segment from the hero', () => {
+  // No project is loaded: nothing to name, nothing to switch to — the whole
+  // hero is the ask, and the pill says where the records land instead.
+  const view = welcomeView(stateWith({ global: true }))
+  assert.equal(view.titleBefore, WELCOME_GLOBAL_TITLE)
+  assert.equal(view.titleAfter, '')
+  assert.equal(view.projectLabel, '')
+  assert.equal(view.projectSwitchable, false, 'even with a switcher and a name, there is nothing to reveal')
+  assert.equal(view.pills[0]?.label, WELCOME_GLOBAL_LOCATION)
+  assert.equal(view.pills[0]?.kind, 'project')
+})
+
 test('the project name is only a control when both halves are there', () => {
   assert.equal(welcomeView(stateWith()).projectSwitchable, true)
   assert.equal(welcomeView(stateWith({ canSwitchWorkspace: false })).projectSwitchable, false)
@@ -133,6 +149,11 @@ test('a known branch adds a third pill carrying its name', () => {
 // --- the render signature ----------------------------------------------------
 
 const of = (state: WelcomeState): string => welcomeRenderSignature(welcomeView(state))
+
+test('the global hero moves the signature', () => {
+  // Different text on screen; the guard must not swallow the repaint.
+  assert.notEqual(of(stateWith({ global: true })), of(stateWith()))
+})
 
 test('the same state signs the same way', () => {
   assert.equal(of(stateWith({ branch: 'master' })), of(stateWith({ branch: 'master' })))

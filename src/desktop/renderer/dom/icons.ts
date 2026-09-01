@@ -29,6 +29,7 @@ export type IconName =
   | 'chevron-right'
   | 'chevron-down'
   | 'arrow-down'
+  | 'arrow-left'
   | 'dot'
   | 'check'
   | 'spinner'
@@ -83,6 +84,10 @@ const ICONS = {
   // A full arrow, not the chevron: the jump-to-bottom button is the only place
   // that means "go to the end", and a bare chevron there reads as "collapse".
   'arrow-down': { paths: ['M8 3.2v9.6', 'M4 8.8 8 12.8l4-4'] },
+  // The settings screen's way out. A full arrow for the same reason
+  // `arrow-down` is one: `chevron-left` beside a label reads as "collapse this",
+  // not as "go back".
+  'arrow-left': { paths: ['M12.8 8H3.2', 'M7.2 4 3.2 8l4 4'] },
   dot: { paths: ['M8 5a3 3 0 1 1 0 6 3 3 0 0 1 0-6z'], filled: true },
   // The chip menu's "this is the one in force" mark. A tick rather than the
   // `dot` the `#surface` rows use: there the mark sits in a fixed column before

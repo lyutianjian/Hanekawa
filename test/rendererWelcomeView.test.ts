@@ -34,6 +34,7 @@ const RENDERER = path.join(import.meta.dirname, '..', 'src', 'desktop', 'rendere
 function welcomeViewFixture(overrides: Partial<WelcomeView> = {}): WelcomeView {
   return {
     visible: true,
+    global: false,
     titleBefore: '你想让我们在 ',
     projectLabel: 'Hanekawa-main',
     titleAfter: ' 中构建什么？',
@@ -121,6 +122,34 @@ test('the empty state draws a mark, a hero, three cards and the pills', (t) => {
     '构建新功能、应用或工具',
     '审查代码并提出修改建议',
   ])
+})
+
+test('the global workspace hero is one text node with no project control', (t) => {
+  // Nothing is loaded: no project to name, so no button in the middle of the
+  // sentence — and nothing left for Tab to walk into.
+  const { view } = render(
+    t,
+    welcomeViewFixture({
+      global: true,
+      titleBefore: '你想让我们构建什么？',
+      titleAfter: '',
+      projectLabel: '',
+      projectSwitchable: false,
+      pills: [
+        { kind: 'project', label: '~/.myagent', icon: 'folder' },
+        { kind: 'local', label: '本地', icon: 'monitor' },
+      ],
+    }),
+  )
+
+  const title = child(view(), 'welcome-title')
+  assert.equal(title.nodes.length, 1)
+  assert.equal(title.nodes[0], '你想让我们构建什么？')
+  assert.equal(
+    view().children.find((node) => node.classes.includes('welcome-project')),
+    undefined,
+    'the global hero has no project button',
+  )
 })
 
 test('the context pills are spans, because they are read-only', (t) => {

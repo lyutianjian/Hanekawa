@@ -135,13 +135,35 @@ async function raisePrompt(ctx, lane, fileName) {
 const TRANSCRIPT_PADDING = 12
 
 async function step7(ctx) {
+  // Startup lands in a NEW empty session — never the newest fixture — so the
+  // first thing on the canvas is the welcome screen, and the fresh draft has
+  // no row in the sidebar (empty sessions are invisible by design).
+  const launch = (await lanes(ctx))[0]
+  const hero = await waitFor('the welcome hero to come up', async () => {
+    const view = await read(ctx, probes.welcome())
+    return view !== null && view.title.includes('projA') ? view : undefined
+  })
+  ctx.ok('startup shows the welcome hero naming the project', hero.title.includes('projA'), hero.title)
+  const initial = await waitFor('the fixture sessions to be listed', async () => {
+    const view = await read(ctx, probes.sidebar())
+    return view.rowCount >= 8 ? view : undefined
+  })
+  ctx.ok(
+    'the fresh empty session has no sidebar row yet',
+    initial.rows.every((row) => row.sessionId !== launch.paneId),
+    `lane pane ${launch.paneId}`,
+  )
+
+  // A fixture supplies the short conversation this step is about: open the
+  // youngest one, the way a user picking history off the sidebar would.
+  await openSession(ctx, ctx.sessionsA[0])
+
   const before = await read(ctx, probes.sidebar())
   ctx.ok('the sidebar starts expanded', before.collapsed === false, `collapsed=${before.collapsed}`)
   ctx.ok('the fixture sessions are listed', before.rowCount >= 8, `${before.rowCount} rows`)
   await ctx.shot('07a-sidebar-expanded', 'the expanded sidebar: workspace headings, folding, row density')
 
-  // todo V2, and this step is where it is observable: the app bootstraps the
-  // youngest fixture session (`main.ts:184-185`), and a fixture is exactly one
+  // todo V2, and this step is where it is observable: a fixture is exactly one
   // user message (`fixtures.mjs:seedSession`) — a real short history, which used
   // to hang one bubble under the canvas header above 900px of nothing. Asserted
   // before Ctrl+B, while the canvas is at its full width.
@@ -585,11 +607,20 @@ async function step4b(ctx) {
   })
   ctx.ok('the deleted session did not come back as its own replacement', replaced.paneId !== only.paneId, replaced.paneId)
   ctx.eq('the replacement belongs to the same project', replaced.projectRoot, only.projectRoot)
-  const view = await waitFor('the replacement row to go active', async () => {
-    const now = await read(ctx, probes.sidebar())
-    return now.rows.some((row) => row.active) ? now : undefined
+  // The replacement is a fresh empty session — invisible in the sidebar by
+  // design — so the proof of activation is its welcome screen on the visible
+  // pane, not a row going active.
+  await waitFor('the replacement to activate and show its welcome screen', async () => {
+    const hero = await read(ctx, probes.welcome())
+    return hero !== null && hero.title.includes('projA') ? hero : undefined
   })
+  const view = await read(ctx, probes.sidebar())
   ctx.ok('the row for the deleted session is gone', rowFor(view, only.paneId) === undefined)
+  ctx.ok(
+    'the empty replacement has no row of its own',
+    rowFor(view, replaced.paneId) === undefined,
+    `replacement pane ${replaced.paneId}`,
+  )
   let gone = 'clean'
   try {
     assertArtifactsGone(ctx.projectA, only.paneId)
@@ -616,45 +647,59 @@ async function step5(ctx) {
   ctx.state.projectRootB = rootB
   for (const info of withB.topology) ctx.state.lanesSeen.add(Number(info.lane))
   ctx.ok('project B opened with a lane', withB.lane !== undefined, `${withB.lane.lane} @ ${rootB}`)
-  // A fresh project bootstraps `sessions.at(0)` — the newest fixture.
-  ctx.eq('the new project opens its newest session', markerOf(ctx, withB.lane.paneId), ctx.sessionsB[0].marker)
+  // Every entry into a project is a NEW empty session — never its newest
+  // fixture. The pane carries no fixture marker and the welcome hero names
+  // project B.
+  ctx.ok(
+    'the new project opens a new empty session',
+    markerOf(ctx, withB.lane.paneId) === undefined,
+    `pane ${withB.lane.paneId} unexpectedly carries fixture ${markerOf(ctx, withB.lane.paneId) ?? ''}`,
+  )
+  await waitFor('project B to land in its welcome screen', async () => {
+    const hero = await read(ctx, probes.welcome())
+    return hero !== null && hero.title.includes('projB') ? hero : undefined
+  })
 
+  // The sidebar lists every *added* project — the registry — not just open
+  // ones, so the machine's own registered projects ride along; every count
+  // below filters to the roots this run created.
   const listed = await app.shell(ctx.app, { type: 'list-sessions' })
-  ctx.eq('both projects report their history', listed.projects.length, 2)
-  const view = await waitFor('the sidebar to show two project groups', async () => {
+  const listedRoots = listed.projects.map((project) => project.projectRoot)
+  ctx.ok(
+    'both projects report their history',
+    listedRoots.includes(rootA) && listedRoots.includes(rootB),
+    JSON.stringify(listedRoots),
+  )
+  const view = await waitFor('the sidebar to show both project groups', async () => {
     const now = await read(ctx, probes.sidebar())
-    return now.groups.length === 2 ? now : undefined
+    const roots = now.groups.map((group) => group.root)
+    return roots.includes(rootA) && roots.includes(rootB) ? now : undefined
   })
   ctx.ok(
     'each group is labelled once there is more than one project',
-    view.groups.every((group) => group.label.length > 0),
+    view.groups
+      .filter((group) => group.root === rootA || group.root === rootB)
+      .every((group) => group.label.length > 0),
     JSON.stringify(view.groups.map((group) => group.label)),
   )
   await ctx.shot('05a-two-projects', 'two labelled project groups: does this read as two projects rather than one long list')
 
-  // Close B's lanes: the first through the real chord, the rest over the wire.
-  const bLanes = (await lanes(ctx)).filter((info) => info.projectRoot === rootB)
-  const first = ctx.sessionsB.find((session) => session.id === bLanes[0]?.paneId)
-  if (first) {
-    await activate(ctx, first)
-    await key(ctx.cdp, 'Ctrl+w')
-  }
-  for (const info of bLanes.slice(1)) {
-    // Not awaited: `close-pane` self-destructs the lane's host, so its reply is
-    // lost by construction (`shellHost.ts:540`).
-    await app.post(ctx.app, info.lane, { type: 'close-pane', paneId: info.paneId })
-  }
+  // B's single lane is its fresh draft — invisible in the sidebar (empty) and
+  // active from the open — so the real chord is the way to close it.
+  await key(ctx.cdp, 'Ctrl+w')
   await waitFor('every project B lane to close', async () => {
     const now = await lanes(ctx)
     return now.every((info) => info.projectRoot !== rootB)
   })
-  // `listSessions` walks `directory.entries()`, so B's absence *is* the evidence
-  // that the project was shut down rather than merely hidden.
-  const afterClose = await waitFor('project B to leave the directory', async () => {
-    const now = await app.shell(ctx.app, { type: 'list-sessions' })
-    return now.projects.length === 1 ? now : undefined
-  })
-  ctx.eq('closing its last lane shuts the project down', afterClose.projects.length, 1)
+  // `list-sessions` walks the registry, so B staying listed is the new point,
+  // not a leak: a closed project's history is exactly what the sidebar keeps.
+  // The runtime shutdown shows up one paragraph below, as the fresh bootstrap.
+  const afterClose = await app.shell(ctx.app, { type: 'list-sessions' })
+  ctx.ok(
+    "closing B's last lane keeps its history listed",
+    afterClose.projects.some((project) => project.projectRoot === rootB),
+    JSON.stringify(afterClose.projects.map((project) => project.projectRoot)),
+  )
 
   const highest = Math.max(...ctx.state.lanesSeen)
   await app.shell(ctx.app, { type: 'open-project', path: ctx.projectB.root })
@@ -682,7 +727,7 @@ async function step5(ctx) {
 // --- S8: settings ---------------------------------------------------------------
 
 /** `WINDOW_CHROME.*.height` in `src/desktop/main.ts`, and `#titlebar` in `styles.css`. */
-const TITLE_BAR_HEIGHT = 40
+const TITLE_BAR_HEIGHT = 32
 
 async function step8(ctx) {
   const rootA = ctx.state.projectRootA ?? (await lanes(ctx))[0].projectRoot
@@ -700,6 +745,13 @@ async function step8(ctx) {
     return view.open ? view : undefined
   })
   ctx.ok('Ctrl+, opens settings over the canvas', open.canvasOpen === true, `canvasOpen=${open.canvasOpen}`)
+  // The screen owns the whole window now: the sidebar it used to leave live is
+  // what made「新建会话」open a session behind it.
+  ctx.ok(
+    'the settings screen covers the sidebar too',
+    open.bodyOpen === true && open.sidebarBoxes === 0,
+    `bodyOpen=${open.bodyOpen} sidebarBoxes=${open.sidebarBoxes}`,
+  )
   ctx.eq('all five categories are live', open.nav.length, 5)
   ctx.eq('the screen loaded without an error', open.error, '')
   ctx.note(`focus after opening: ${open.focus} (inside the screen: ${open.focusInside})`)
@@ -868,8 +920,8 @@ async function step8(ctx) {
   // (`sessionScope.ts:74`), so the row promises the next new session, not this
   // one. S8R checks the other half after the restart.
   // Read off the composer's permission pill since 5e — the status bar no longer
-  // carries the mode, and 帮我批准 is what `default` is called there.
-  ctx.ok('the startup mode does not retroactively change an open session', statusNow.mode.includes('帮我批准'), statusNow.mode)
+  // carries the mode, and 请求批准 is what `default` is called there.
+  ctx.ok('the startup mode does not retroactively change an open session', statusNow.mode.includes('请求批准'), statusNow.mode)
 
   // 8d — a reconnect must not open a native window. The reply arriving at all is
   // the assertion: `showMessageBoxSync` would have frozen the main process.
@@ -1154,11 +1206,11 @@ async function step11(ctx) {
     await ctx.shot('11a-light-window', 'the whole window in light mode: the canvas hairline, the sidebar tiers, the conversation')
 
     await read(ctx, probes.clickChip())
-    const menu = await waitFor('the chip popover', async () => {
+    const popover = await waitFor('the chip popover', async () => {
       const view = await read(ctx, probes.chipMenu())
       return view.open ? view : undefined
     })
-    ctx.ok('a composer popover floats in light mode too', menu.shadow !== 'none' && menu.shadow !== '', menu.shadow)
+    ctx.ok('a composer popover floats in light mode too', popover.shadow !== 'none' && popover.shadow !== '', popover.shadow)
     await ctx.shot('11c-light-popover', 'the chip popover in light mode: does it read as a layer above the conversation')
     await read(ctx, probes.clickChip())
     await waitFor('the chip popover to close', async () => {
@@ -1326,7 +1378,16 @@ async function step8Restart(ctx) {
   const view = await read(ctx, probes.sidebar())
   const deleted = [...ctx.state.deleted]
   ctx.ok('the deleted sessions did not come back', deleted.every((id) => rowFor(view, id) === undefined), `${deleted.length} deleted`)
-  ctx.eq('the surviving fixtures are still listed', view.rowCount, 8 - deleted.length)
+  // The sidebar lists every added project now, so the row set is wider than
+  // this run's fixtures — count only the fixture ids this run created. Project
+  // B's fixtures stay listed too: B remains in the registry after its runtime
+  // shut down, which is exactly the "history is not the topology" guarantee.
+  const fixtureIds = new Set([...ctx.sessionsA, ...ctx.sessionsB].map((session) => session.id))
+  ctx.eq(
+    'the surviving fixtures are still listed',
+    view.rows.filter((row) => fixtureIds.has(row.sessionId)).length,
+    ctx.sessionsA.length + ctx.sessionsB.length - deleted.length,
+  )
   await ctx.shot('08R-after-restart', 'after the restart: persisted settings and an intact history')
 }
 

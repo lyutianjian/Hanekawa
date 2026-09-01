@@ -407,6 +407,16 @@ export interface WireHelloResult {
   /** `basename(cwd)` — the same value `WirePaneInfo.projectName` carries. */
   projectName: string
   /**
+   * Whether this pane runs in the global (home-rooted) workspace rather than a
+   * project — the desktop's fallback when nothing is opened, whose records land
+   * in `~/.myagent/sessions`.
+   *
+   * A boolean on the wire rather than a name the renderer could match: display
+   * names are localized and mutable, and the empty-state screen has to know the
+   * difference structurally (it drops its "在 X 中" hero segment).
+   */
+  projectIsGlobal: boolean
+  /**
    * The branch `<cwd>/.git/HEAD` names, absent when it is unreadable, the
    * directory is not a repository, or HEAD is detached.
    *

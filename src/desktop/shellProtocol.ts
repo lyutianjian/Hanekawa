@@ -72,6 +72,16 @@ export type ShellCommand =
    */
   | { type: 'open-project'; id: string; path?: string }
   /**
+   * Forgets a project: unregisters it from `~/.myagent/projects.json` and
+   * releases any lane it still holds.
+   *
+   * **Deletes nothing.** The project's `.myagent/` directory and every session
+   * in it survive, so re-opening the directory restores the group and its
+   * history — which is what makes this safe as the sidebar's only way to make a
+   * project row go away. The global workspace is not removable.
+   */
+  | { type: 'remove-project'; id: string; projectRoot: string }
+  /**
    * The settings screen's whole read model for one project, in one pull.
    * Without `projectRoot` the first open project answers, matching
    * `open-session`.
@@ -386,6 +396,14 @@ export interface WireSessionSummary {
 export interface WireShellProjectSessions {
   projectRoot: string
   projectName: string
+  /**
+   * The home directory's implicit workspace rather than an added project.
+   *
+   * Carried rather than derived, because the renderer must not string-match the
+   * display name (`最近`) to recognize it — and it needs to, since the global
+   * workspace is the one group with no "remove from sidebar".
+   */
+  isGlobal: boolean
   sessions: WireSessionSummary[]
 }
 
@@ -399,6 +417,11 @@ export interface WireShellDeleteSessionResult {
 }
 
 export interface WireShellOpenProjectResult {
+  ok: true
+}
+
+/** `ok` means the project is unregistered and its lanes are gone. No files were touched. */
+export interface WireShellRemoveProjectResult {
   ok: true
 }
 

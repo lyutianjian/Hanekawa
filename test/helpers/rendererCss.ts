@@ -32,9 +32,17 @@ export interface Block {
 
 /**
  * A deliberately small CSS parser: strip comments, then take every
- * `selector { … }` block. Exact only while the sheet has no nested at-rule,
- * which `rendererStyleTokens.test.ts`'s "the stylesheet parses exactly" is what
- * pins — that test is also the non-vacuity guard for this function.
+ * `selector { … }` block.
+ *
+ * A nested at-rule is not rejected so much as *flattened*: the regex cannot match
+ * across the inner `{`, so the prelude (`@media …`, `@keyframes …`) is skipped
+ * and the rules inside it come through as ordinary blocks. That is how
+ * `@keyframes` has always parsed here, and it is why the sheet's one `@media`
+ * block — the reduced-motion override — uses a selector (`*, *::before,
+ * *::after`) that collides with no real rule: flattened, it must still be
+ * findable and must not shadow anything. `rendererStyleTokens.test.ts`'s "the
+ * stylesheet parses exactly" pins the list of at-rules allowed to do this, and is
+ * also the non-vacuity guard for this function.
  *
  * Values are whitespace-collapsed so a declaration that wraps across lines (the
  * font stacks do) compares as the one string it means.

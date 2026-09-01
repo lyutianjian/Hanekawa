@@ -83,6 +83,9 @@ function render(t: { after(fn: () => void): void }): Rendered {
         menuOpen: state.menuOpen ?? false,
         renaming: state.renaming ?? false,
         pendingDelete: state.pendingDelete,
+        // Every case here is about a conversation on screen; the draft case (no
+        // header at all) is a model decision and is asserted there.
+        hasConversation: true,
       }))
     },
     identity,

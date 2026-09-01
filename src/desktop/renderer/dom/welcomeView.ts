@@ -70,19 +70,23 @@ export function createWelcomeView(
       const mark = el('div', 'welcome-mark')
       mark.appendChild(icon('thought-bubble'))
 
-      const title = el(
-        'h1',
-        'welcome-title',
-        view.titleBefore,
-        button(
-          'welcome-project',
-          view.projectLabel,
-          view.projectSwitchable ? '在侧栏中定位该工作区' : view.projectLabel,
-          onSwitchWorkspace,
-          { enabled: view.projectSwitchable },
-        ),
-        view.titleAfter,
-      )
+      const title = view.global
+        ? // The global workspace has no project to name — the whole Hero is the
+          // ask, and no button belongs in the middle of it.
+          el('h1', 'welcome-title', view.titleBefore)
+        : el(
+            'h1',
+            'welcome-title',
+            view.titleBefore,
+            button(
+              'welcome-project',
+              view.projectLabel,
+              view.projectSwitchable ? '在侧栏中定位该工作区' : view.projectLabel,
+              onSwitchWorkspace,
+              { enabled: view.projectSwitchable },
+            ),
+            view.titleAfter,
+          )
 
       const cards = el('div', 'welcome-cards')
       for (const card of view.cards) cards.appendChild(cardNode(card))

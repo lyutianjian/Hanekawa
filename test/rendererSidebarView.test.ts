@@ -131,8 +131,10 @@ test('every workspace gets a folding heading, single project included', (t) => {
   const heading = find(root(), 'project-heading')
   assert.ok(heading, 'no workspace heading in the list')
   assert.equal(find(heading, 'btn-label')?.text, 'app')
-  assert.equal(find(heading, 'project-count')?.text, '3', 'the heading must say how many are inside')
   assert.equal(heading.attributes.get('aria-expanded'), 'true')
+  // Where the session count used to be. A number told the user what the rows
+  // below already say; this is the action they came to the heading for.
+  assert.ok(find(root(), 'project-new'), 'the heading row must offer a new session')
 
   stub.click(heading.node)
   assert.deepEqual(intents, [{ kind: 'toggle-project', projectRoot: '/w/app' }])
@@ -145,10 +147,95 @@ test('a folded workspace draws its heading and none of its rows', (t) => {
   const group = find(root(), 'project-group')
   assert.ok(group?.classes.includes('collapsed'))
   assert.deepEqual(sessionRows(root()), [], 'a folded workspace still drew its sessions')
-  // The count survives the fold — it is the only thing the heading can say about
-  // what is behind it.
-  assert.equal(find(root(), 'project-count')?.text, '3')
+  // The `+` survives the fold: "new session here" is about the project, not
+  // about whichever of its sessions happen to be on screen.
+  assert.ok(find(root(), 'project-new'))
   assert.equal(find(root(), 'project-heading')?.attributes.get('aria-expanded'), 'false')
+})
+
+test('the heading + creates a session in *its own* project', (t) => {
+  // The reason `newSessionIntent` is reached through the model rather than
+  // spelled here: `Ctrl+T` resolves the active project and this resolves the one
+  // under the cursor, and the two must not disagree about what "new" targets.
+  const { render, root, stub, intents } = mount(t)
+  render(viewOf(tieredState()))
+
+  const plus = find(root(), 'project-new')
+  assert.ok(plus, 'no + on the heading row')
+  stub.click(plus.node)
+  assert.deepEqual(intents, [{ kind: 'new', projectRoot: '/w/app' }])
+})
+
+test('the + is disabled while a blocking dialog is up', (t) => {
+  // Same gate the nav buttons are behind: a control that opens something must
+  // not look available while a pane is parked on a permission prompt.
+  const { render, root } = mount(t)
+  render(viewOf({ ...tieredState(), canCreate: false }))
+
+  assert.equal(find(root(), 'project-new')?.disabled, true)
+})
+
+test('right-clicking a heading opens its menu, and the menu item asks first', (t) => {
+  const { render, root, stub, intents } = mount(t)
+  render(viewOf(tieredState()))
+
+  const row = find(root(), 'project-row')
+  assert.ok(row, 'no heading row to right-click')
+  const event = stub.dispatch(row.node, 'contextmenu')
+  assert.equal(event.defaultPrevented, true, 'the OS menu must not also open')
+  assert.deepEqual(intents, [{ kind: 'open-project-menu', projectRoot: '/w/app' }])
+
+  // The menu is state, so it only exists once the model says so.
+  assert.equal(find(root(), 'project-menu'), undefined)
+  intents.length = 0
+  render(viewOf({ ...tieredState(), projectMenu: '/w/app' }))
+  const item = find(root(), 'project-menu-item')
+  assert.ok(item, 'the menu drew nothing to click')
+  stub.click(item.node)
+  assert.deepEqual(intents, [{ kind: 'request-remove-project', projectRoot: '/w/app' }])
+})
+
+test('the confirming heading replaces its + with an answer', (t) => {
+  const { render, root, stub, intents } = mount(t)
+  render(viewOf({ ...tieredState(), pendingRemoveProject: '/w/app' }))
+
+  assert.equal(find(root(), 'project-new'), undefined, 'the + must not survive the question')
+  const yes = find(root(), 'session-confirm-yes')
+  const no = find(root(), 'session-confirm-no')
+  assert.ok(yes && no)
+  stub.click(yes.node)
+  stub.click(no.node)
+  assert.deepEqual(intents, [
+    { kind: 'confirm-remove-project', projectRoot: '/w/app' },
+    { kind: 'cancel-remove-project' },
+  ])
+})
+
+test('the global workspace has no remove menu', (t) => {
+  // There is no registry entry to forget, and `isGlobal` comes off the wire —
+  // the renderer must not recognize it by matching the display name.
+  const { render, root, stub, intents } = mount(t)
+  render(
+    viewOf({
+      projects: [{ projectRoot: '/home/me', projectName: '最近', isGlobal: true, sessions: [] }],
+    }),
+  )
+
+  const row = find(root(), 'project-row')
+  assert.ok(row)
+  stub.dispatch(row.node, 'contextmenu')
+  assert.deepEqual(intents, [])
+})
+
+test('a project with no sessions still draws its heading', (t) => {
+  // Deleting the last session used to delete the only way back to the project.
+  const { render, root } = mount(t)
+  render(viewOf({ projects: [{ projectRoot: '/w/app', projectName: 'app', sessions: [] }] }))
+
+  assert.equal(find(root(), 'project-heading')?.text?.includes('app'), true)
+  assert.deepEqual(sessionRows(root()), [])
+  assert.ok(find(root(), 'project-empty'), 'an empty group must say it is empty, not look unloaded')
+  assert.equal(find(root(), 'sidebar-empty'), undefined, 'this is not the empty state')
 })
 
 test('focusProject reaches the heading drawn by the last render', (t) => {
@@ -172,10 +259,12 @@ test('focusProject reaches the heading drawn by the last render', (t) => {
   )
 })
 
-test('a row says which of the three tiers it is in', (t) => {
+test('a row carries its tier as data — and no tier paints anything', (t) => {
   // `active` is the one the window is showing, `open` is a lane that exists but
-  // is not in front, and neither class is history. Before 5h every open row read
-  // identically, so the visible one could not be picked out of five (todo D5).
+  // is not in front, and neither class is history. All three paint identically
+  // now — activation is imperceptible by design — but the classes stay: they
+  // feed `aria-selected` and the smoke probes, and this is the guard that they
+  // still exist on the nodes.
   const { render, root } = mount(t)
   render(viewOf(tieredState()))
 

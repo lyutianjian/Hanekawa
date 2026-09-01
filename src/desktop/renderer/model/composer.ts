@@ -141,7 +141,7 @@ export function submitButtonView(input: { streaming: boolean; empty: boolean }):
  * unreachable label.
  */
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
-  default: '帮我批准',
+  default: '请求批准',
   acceptEdits: '接受编辑',
   plan: '计划模式',
   bypass: '绕过权限',

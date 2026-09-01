@@ -222,6 +222,10 @@ function attachPaneSession(lane: string): void {
       // that name without any lane opening or closing.
       renderCanvasHeader()
     },
+    // The sidebar's row for a lane-only session appears on this edge, and the
+    // pull it triggers is what swaps「未命名会话」for the real first-message
+    // title — the same trigger `turn-end` uses, one interaction earlier.
+    onFirstContent: () => void refreshSessions(),
     // The lane's project is read at click time, not captured: a lane outlives any
     // one `lanes` snapshot, and the sidebar is where the answer lives.
     onSwitchWorkspace: () => {
@@ -260,6 +264,10 @@ function attachPaneSession(lane: string): void {
 
 function activateLane(lane: string): void {
   if (!paneSessions.has(lane) || activeLane === lane) return
+  // Whatever the route in — the sidebar, `Ctrl+T`, the title bar menu, a lane the
+  // host opened and asked us to focus — a session coming on screen is the end of
+  // the settings screen. This is the single choke point for every one of them.
+  leaveSettings()
   activePane()?.deactivate()
   activeLane = lane
   lastActiveTick.set(lane, ++tick)
@@ -308,6 +316,11 @@ function laneStatuses(): Map<string, SidebarLaneStatus> {
       // `hasOverlay` is "a blocking request is drawn *or* parked" — the pane
       // folds every request into its queue whether or not it is painting.
       blocked: session.shellState().hasOverlay,
+      // A background process the loop left behind keeps the session busy.
+      processes: session.client.getBackgroundTasks().some((task) => task.status === 'running'),
+      // A lane-only session's row exists exactly once its pane has a
+      // conversation — the "new sessions are invisible" rule.
+      hasConversation: session.hasConversation(),
     })
   }
   return statuses
@@ -355,6 +368,10 @@ let projects: readonly SidebarProjectSessions[] = []
 let collapsed = false
 let selectedIndex = -1
 let pendingDelete: string | undefined
+/** The project heading with a context menu open, if any. */
+let projectMenu: string | undefined
+/** The project heading asking "remove from the sidebar?", if any. */
+let pendingRemoveProject: string | undefined
 let searchQuery = ''
 /** The workspaces folded shut in the sidebar. View state; nothing persists it. */
 let collapsedProjects: ReadonlySet<string> = new Set()
@@ -373,6 +390,8 @@ function currentSidebarState(): SidebarState {
     collapsed,
     selectedIndex,
     pendingDelete,
+    projectMenu,
+    pendingRemoveProject,
     now: Date.now(),
     // Both buttons open something, which is wrong while a blocking dialog is up.
     canCreate: !(activePane()?.shellState().hasOverlay ?? false),
@@ -469,13 +488,34 @@ function runSidebarIntent(intent: SidebarIntent): void {
     case 'close':
       closeLane(intent.lane)
       return
-    case 'new':
+    case 'new': {
+      // Before anything else, and unconditionally: "new session" means "put me in
+      // a conversation", so it leaves the settings screen whether or not a lane
+      // ends up moving. Waiting for the host's round trip (or for the early
+      // return below) would leave the click looking like it did nothing.
+      leaveSettings()
+      // Already in a fresh session *of the project being asked about*? Then
+      // "new session" is a no-op — an empty session is invisible in the sidebar,
+      // so minting another would only pile up panes nobody can see. The composer
+      // keeps whatever was typed.
+      //
+      // The project check is load-bearing now that every group heading has its
+      // own `+`: without it, clicking `+` on project B while sitting in an empty
+      // session of project A silently does nothing.
+      const active = activePane()
+      const activeRoot = activeLaneInfo()?.projectRoot
+      const sameProject = intent.projectRoot === undefined || intent.projectRoot === activeRoot
+      if (active && sameProject && !active.hasConversation()) {
+        composer.focus()
+        return
+      }
       // "New session" is a window-level act, so it goes to the shell, targeting
       // the active pane's project.
       void shellClient
         .openSession(intent.projectRoot !== undefined ? { projectRoot: intent.projectRoot } : {})
         .catch((error) => activePane()?.note(describe(error), 'error'))
       return
+    }
     case 'open-project':
       // The shell puts up a native directory picker; the new project's first
       // lane arrives as a `lanes` event once it is up.
@@ -495,6 +535,34 @@ function runSidebarIntent(intent: SidebarIntent): void {
     case 'toggle-project':
       collapsedProjects = toggleProject(collapsedProjects, intent.projectRoot)
       renderSidebar()
+      return
+    case 'open-project-menu': {
+      // "Close whatever is open" arrives on every `focusout`, so a no-op has to
+      // stay a no-op rather than a repaint per focus change.
+      const next = projectMenu === intent.projectRoot ? undefined : intent.projectRoot
+      if (next === projectMenu) return
+      // Right-clicking the heading that already has a menu closes it, the same
+      // toggle the title bar's menus use.
+      projectMenu = next
+      // A menu opening cancels a confirmation on some *other* heading: two
+      // headings asking two different questions at once is a state nobody asked
+      // for and the keyboard cannot navigate.
+      if (projectMenu !== undefined) pendingRemoveProject = undefined
+      renderSidebar()
+      return
+    }
+    case 'request-remove-project':
+      projectMenu = undefined
+      pendingRemoveProject = intent.projectRoot
+      renderSidebar()
+      return
+    case 'cancel-remove-project':
+      if (pendingRemoveProject === undefined) return
+      pendingRemoveProject = undefined
+      renderSidebar()
+      return
+    case 'confirm-remove-project':
+      void removeProject(intent.projectRoot)
       return
     case 'toggle-help':
       helpOpen = !helpOpen
@@ -551,6 +619,28 @@ async function deleteSession(projectRoot: string, sessionId: string): Promise<vo
   await refreshSessions()
 }
 
+/**
+ * Takes a project off the sidebar.
+ *
+ * Nothing is deleted — the host unregisters the root and releases its lanes, so
+ * re-opening the directory brings the group and its sessions back. The
+ * confirmation is withdrawn before the request for the same reason
+ * `deleteSession` withdraws its own: the heading is about to disappear, and one
+ * still asking invites a second answer.
+ */
+async function removeProject(projectRoot: string): Promise<void> {
+  pendingRemoveProject = undefined
+  projectMenu = undefined
+  renderSidebar()
+  try {
+    await shellClient.removeProject(projectRoot)
+  } catch (error) {
+    activePane()?.note(`Failed to remove project: ${describe(error)}`, 'error')
+  }
+  // Always: a failure may still have closed lanes, and the list is the truth.
+  await refreshSessions()
+}
+
 // --- the canvas header ----------------------------------------------------------
 
 /**
@@ -578,6 +668,9 @@ function renderCanvasHeader(): void {
     menuOpen: headerMenuOpen,
     renaming: headerRenaming,
     pendingDelete: headerPendingDelete,
+    // A draft draws no header: see the model. The pane is the only holder of
+    // that answer — the lane list cannot tell a fresh session from an empty one.
+    hasConversation: activePane()?.hasConversation() ?? false,
   }))
 }
 
@@ -676,7 +769,25 @@ const settingsView_ = createSettingsView(
 
 function renderSettings(): void {
   canvas.classList.toggle('settings-open', settingsState.open)
+  // The screen covers the whole window, not just the canvas: the class on `body`
+  // is what takes the sidebar out, and the one on `#canvas` is what hides the
+  // conversation's own three regions. Two classes because the two questions have
+  // different answers — a collapsed sidebar is not an open settings screen.
+  document.body.classList.toggle('settings-open', settingsState.open)
   settingsView_.render(settingsView(settingsState))
+}
+
+/**
+ * Leaves the settings screen, if it is up.
+ *
+ * Called from every path that puts a *conversation* on screen, which is what
+ * makes "new session" outrank the screen the user happens to be on: settings is
+ * a place you go, never a place a session opens behind. Idempotent, so the
+ * activation path can call it unconditionally.
+ */
+function leaveSettings(): void {
+  if (!settingsState.open) return
+  runSettingsIntent({ kind: 'close' })
 }
 
 function runSettingsIntent(intent: SettingsIntent): void {

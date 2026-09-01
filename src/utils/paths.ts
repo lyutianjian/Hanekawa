@@ -14,6 +14,19 @@ export function getGlobalMyAgentDir(): string {
   return path.join(homedir(), '.myagent')
 }
 
+/**
+ * Whether `cwd` is the user's home directory — the workspace sessions fall
+ * back to when no project is open (the 全局/「最近」 workspace, whose records
+ * land in `~/.myagent/sessions`).
+ *
+ * Case-insensitive on the platforms whose filesystems are, the same discipline
+ * `projectRootKey` compares roots with: a home directory reached through a
+ * different-but-equivalent casing is still the global workspace.
+ */
+export function isGlobalWorkspaceRoot(cwd: string): boolean {
+  return normalizeCaseForComparison(path.resolve(cwd)) === normalizeCaseForComparison(path.resolve(homedir()))
+}
+
 const MAX_PATH_DEPTH = 50
 const CASE_INSENSITIVE_PLATFORM = process.platform === 'win32' || process.platform === 'darwin'
 

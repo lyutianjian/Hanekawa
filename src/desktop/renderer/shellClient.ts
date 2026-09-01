@@ -12,6 +12,7 @@ import type {
   WireShellSetWindowThemeResult,
   SettingsChange,
   WireShellOpenProjectResult,
+  WireShellRemoveProjectResult,
   WireShellOpenSessionResult,
   WireShellPanesResult,
   WireShellSessionsResult,
@@ -88,6 +89,18 @@ export class ShellClient {
       id: crypto.randomUUID(),
       ...(path !== undefined ? { path } : {}),
     }) as Promise<WireShellOpenProjectResult>
+  }
+
+  /**
+   * Forgets a project: unregisters it and releases its lanes. Deletes nothing —
+   * re-opening the directory brings the group and its sessions back.
+   */
+  async removeProject(projectRoot: string): Promise<WireShellRemoveProjectResult> {
+    return this.send({
+      type: 'remove-project',
+      id: crypto.randomUUID(),
+      projectRoot,
+    }) as Promise<WireShellRemoveProjectResult>
   }
 
   /**

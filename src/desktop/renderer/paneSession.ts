@@ -145,6 +145,13 @@ export interface PaneSessionDeps {
   /** Shell chrome (the tab bar) re-renders from the active session. */
   onShellChanged?: () => void
   /**
+   * This pane's transcript just went from nothing to something — its first
+   * input or output. The sidebar's row for a lane-only session appears on this
+   * edge, and the history pull it triggers is what replaces the「未命名会话」
+   * fallback with the session's real title.
+   */
+  onFirstContent?: () => void
+  /**
    * Window-level: open the workspace switcher. The welcome screen's Hero names
    * this pane's project and offers to switch it, but "which projects exist" is
    * the shell's knowledge, not a pane's — so the pane only reports the click.
@@ -173,6 +180,8 @@ export interface PaneSession {
   start(): Promise<void>
   shellState(): ShellState
   note(text: string, level?: 'system' | 'error'): void
+  /** Whether this pane's session has had any input or output yet. */
+  hasConversation(): boolean
   // --- keyboard entry points (routed here by the app's global handler) ---
   handleOverlayKey(event: KeyboardEvent): void
   handleRewindIntent(intent: RewindIntent): void
@@ -266,6 +275,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   let ownProjectRoot: string | undefined
   /** From `hello`, for the welcome screen's Hero and its context pills. */
   let projectName: string | undefined
+  /** From `hello`: this pane runs in the global (home-rooted) workspace. */
+  let projectGlobal = false
   let gitBranch: string | undefined
   /**
    * Messages the host is holding until the running turn ends — a mirror of
@@ -301,10 +312,28 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     welcome.render(welcomeView({
       transcript,
       projectName,
+      global: projectGlobal,
       branch: gitBranch,
       canSwitchWorkspace: deps.onSwitchWorkspace !== undefined,
     }))
     paneEl.classList.toggle('empty', isTranscriptEmpty(transcript))
+  }
+
+  /**
+   * The conversation-presence edge the sidebar's visibility hangs on. Tracked
+   * here rather than in `app.ts` so the "empty → content" moment is one
+   * decision, made where the transcript is folded.
+   */
+  let hadConversation = false
+  function noteConversationState(): void {
+    const has = !isTranscriptEmpty(transcript)
+    if (has && !hadConversation) deps.onFirstContent?.()
+    hadConversation = has
+  }
+
+  /** Whether this pane's session has had any input or output. */
+  function hasConversation(): boolean {
+    return !isTranscriptEmpty(transcript)
   }
 
   function toggleThinking(id: string): void {
@@ -637,6 +666,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   client.onEvent((event) => {
     const outcome = applySessionEvent(transcript, event)
     transcript = outcome.state
+    noteConversationState()
     renderTranscript()
 
     // The controller rolled back an interrupted prompt; the record is already
@@ -999,6 +1029,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // welcome screen names the project, and setting these after
     // `renderTranscript()` would show one frame of the「当前项目」fallback.
     projectName = hello.projectName
+    projectGlobal = hello.projectIsGlobal
     gitBranch = hello.gitBranch
 
     transcript = createTranscriptState(hello.records)
@@ -1009,6 +1040,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
         content: notice.content,
       }).state
     }
+    // Baseline, not an edge: a session opened *with* history already has its
+    // content — only later transitions are "first content".
+    hadConversation = !isTranscriptEmpty(transcript)
     renderTranscript()
     renderStatus()
 
@@ -1163,6 +1197,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     start,
     shellState,
     note,
+    hasConversation,
     handleOverlayKey,
     handleRewindIntent,
     acceptCompletion,

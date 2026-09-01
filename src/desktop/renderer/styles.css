@@ -64,7 +64,10 @@
   /* --- text: three levels plus the one interactive colour --- */
   --text-primary: #f4f3f1;
   --text-secondary: #9b9992;
-  --text-tertiary: #6d6b66;
+  /* Metadata, and only metadata: anything the user can click asks for one of
+     the two rungs above. Lifted off the old #6d6b66, which sat close enough to
+     the canvas that a project heading drawn in it read as disabled. */
+  --text-tertiary: #8a8880;
   --link: #78b0ff;
 
   /* --- accents ---
@@ -103,6 +106,25 @@
   --radius-lg: 14px;
   --radius-md: 9px;
   --radius-pill: 9999px;
+
+  /* --- motion ---
+     Three durations and one curve, because an interface with a dozen ad-hoc
+     timings reads as several interfaces. Fast is a state change under the
+     pointer (it must not lag the cursor), base is something appearing that was
+     not there (a menu, a screen), slow is a layout that moves other things with
+     it (the sidebar's width, and the canvas margin that follows it).
+
+     The curve leaves immediately and settles late — the standard "decelerate"
+     shape. There is no paired ease-in: nothing here animates *out*, because
+     every panel in this app is removed from the DOM (or `hidden`) the instant it
+     closes, and an exit animation would need a state machine no view has.
+
+     `@media (prefers-reduced-motion: reduce)` at the foot of this sheet collapses
+     all of it; it is the one nested at-rule `rendererStyleTokens` allows. */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 240ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
 
   /* The conversation's reading axis. `.transcript-column` and `.composer-column`
      must both resolve their width from here — sharing one axis is the whole
@@ -164,7 +186,7 @@
 
   --text-primary: #171614;
   --text-secondary: #73716b;
-  --text-tertiary: #a5a39d;
+  --text-tertiary: #8f8d87;
   --link: #3b7ae4;
 
   --accent-info: #3b7ae4;
@@ -239,7 +261,10 @@ body {
   display: flex;
   align-items: center;
   gap: 2px;
-  height: 40px;
+  /* Kept in step with `WINDOW_CHROME.*.height` in `src/desktop/main.ts`: the OS
+     paints its three buttons onto the same band, and the two numbers disagreeing
+     puts the caption text off the controls' centre line. */
+  height: 32px;
   padding: 0 148px 0 8px;
   /* Transparent, not `--surface-base`: the frame's material is `body`'s, and a
      fill here would cut the wash in half along the caption strip's foot. */
@@ -251,8 +276,8 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   margin-right: 6px;
   background: transparent;
   color: var(--text-secondary);
@@ -270,7 +295,7 @@ body {
   color: var(--text-secondary);
   border: 0;
   border-radius: var(--radius-md);
-  padding: 4px 10px;
+  padding: 3px 10px;
   font: inherit;
   font-size: 13px;
   cursor: pointer;
@@ -279,7 +304,7 @@ body {
 .titlebar-menu-trigger.open { color: var(--text-primary); background: var(--surface-active); }
 .titlebar-menu {
   position: absolute;
-  top: 32px;
+  top: 28px;
   left: 0;
   z-index: 6;
   min-width: 13rem;
@@ -328,7 +353,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  height: 40px;
+  height: 34px;
   padding: 0 12px 0 14px;
 }
 .canvas-identity {
@@ -429,8 +454,12 @@ body {
   justify-content: flex-end;
   gap: 12px;
   align-items: baseline;
-  padding: 4px 8px 0;
-  min-height: 18px;
+  padding: 2px 8px 0;
+  /* No reserved height: `statusView` writes empty strings while nothing is
+     happening, and three empty flex items generate no line box — so the strip
+     collapses to nothing on a fresh session instead of holding a band of dead
+     space under the composer. It grows on its own once a turn has run. */
+  min-height: 0;
   color: var(--text-tertiary);
   font-size: 11px;
 }
@@ -486,6 +515,9 @@ body {
      follows `border-radius`. Same idiom as `.sidebar-list:focus` below. */
   outline: 1px solid var(--border-subtle);
   outline-offset: -1px;
+  /* Follows the sidebar's own width animation: the canvas borrows that column
+     as its left inset, so the two have to move on one timing or the gap pumps. */
+  transition: margin-left var(--motion-slow) var(--ease-standard);
 }
 
 /* --- sidebar --- */
@@ -498,6 +530,7 @@ body {
      of its own and the wash runs down through it. */
   background: transparent;
   overflow: hidden;
+  transition: flex-basis var(--motion-slow) var(--ease-standard);
 }
 /* Collapsed is zero width, not a rail: the toggle it used to keep reachable now
    lives in the title bar (`.titlebar-rail`), which collapsing does not touch.
@@ -505,6 +538,12 @@ body {
    it has to grow one here, or it reads as glued to the window frame. */
 #sidebar.collapsed { flex-basis: 0; }
 #sidebar.collapsed + #canvas { margin-left: 8px; }
+/* The settings screen takes the whole window rather than the canvas alone, so
+   the sidebar goes with the composer and the header. Two rules, not one: the
+   canvas has to replace the inset the sidebar was providing, exactly as it does
+   for the collapsed rail above. `app.ts`'s `renderSettings()` owns the class. */
+body.settings-open #sidebar { display: none; }
+body.settings-open #canvas { margin-left: 8px; }
 /* The session search box, the sidebar's first region. It carries the column's
    top inset now that the workspace header above it is gone — the workspaces are
    headings inside the list, not a dropdown over it. */
@@ -519,19 +558,23 @@ body {
   font: inherit;
   font-size: 12px;
 }
-.sidebar-search::placeholder { color: var(--text-tertiary); }
+.sidebar-search::placeholder { color: var(--text-secondary); }
 .sidebar-search:focus { outline: none; border-color: var(--focus-ring); }
 /* The first-level actions. Rows, not pills: they sit in the same column the
    session rows do, and a bordered capsule there reads as a second kind of
    thing (design_guidance 三.2). */
 .sidebar-nav { flex: 0 0 auto; display: flex; flex-direction: column; padding: 2px 6px 6px; }
+/* Primary at rest, not secondary: this column's rule is "anything you can click
+   is bright, only commentary is grey". A first-level action drawn in the same
+   colour as the metadata beside a row read as unavailable. Hover still only
+   changes the fill. */
 .sidebar-nav-item {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   width: 100%;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   border: 0;
   border-radius: var(--radius-md);
   padding: 7px 8px;
@@ -552,7 +595,7 @@ body {
   gap: 8px;
   width: 100%;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   border: 0;
   border-radius: var(--radius-md);
   padding: 6px 8px;
@@ -568,7 +611,12 @@ body {
   overflow-y: auto;
   padding: 4px 0;
 }
-.sidebar-list:focus { outline: 1px solid var(--focus-ring); outline-offset: -1px; }
+/* `:focus-visible`, not `:focus`: this list takes focus on a plain click (its
+   `tabindex` is what makes the arrow keys work the moment it is entered), and a
+   ring around the whole column every time the user picked a session read as an
+   error state. Keyboard entry still shows it — that is the only time it says
+   anything the user cannot already see. */
+.sidebar-list:focus-visible { outline: 1px solid var(--focus-ring); outline-offset: -1px; }
 .sidebar-empty { color: var(--text-secondary); font-size: 12px; padding: 10px 12px; }
 .sidebar-footer {
   flex: 0 0 auto;
@@ -598,7 +646,7 @@ body {
   width: 26px;
   height: 26px;
   background: transparent;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   border: 0;
   border-radius: var(--radius-pill);
   font: inherit;
@@ -611,26 +659,40 @@ body {
    it folds the group — and it is drawn for a single project too: the workspace
    is the list's only grouping axis, so hiding the heading would hide what the
    axis is. */
+/* The heading and its `+` are siblings, not nested: a `<button>` cannot contain
+   a `<button>`, which is exactly why the session count this replaced could live
+   inside the heading and the action cannot. `position: relative` so the context
+   menu is drawn under it, in flow. */
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+}
 .project-heading {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   background: transparent;
-  color: var(--text-tertiary);
+  /* The workspace's name, and the sidebar's most-read label — primary, at the
+     list's own size. It was 11px uppercase tertiary: a small-caps treatment says
+     nothing at all about a Chinese project name (`text-transform` is a no-op on
+     it) and the tertiary rung made the one thing naming the group the dimmest
+     text on screen. */
+  color: var(--text-primary);
   border: 0;
   border-radius: var(--radius-md);
   margin: 6px 0 2px;
   padding: 4px 12px 4px 8px;
   font: inherit;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
-/* The name takes the row and the count keeps the right edge, so a long project
-   name truncates instead of pushing the count out of the heading. */
+/* The name takes the row and the `+` keeps the right edge, so a long project
+   name truncates instead of pushing the action out of the row. */
 .project-heading .btn-label {
   flex: 1 1 auto;
   min-width: 0;
@@ -640,14 +702,66 @@ body {
 }
 .project-heading .icon { flex: 0 0 auto; width: 12px; height: 12px; }
 .project-heading:hover { color: var(--text-primary); background: var(--surface-hover); }
-.project-group.own > .project-heading { color: var(--text-primary); }
-/* How many sessions are in there — the only thing a folded group says about its
-   contents. */
-.project-count {
+/* Where the session count used to be. A number told the user what they could
+   already see; this is the action they came to the heading for, so unlike
+   `.session-actions` it does not hide until hover — a project with no sessions
+   has nothing else on screen to reveal it. */
+.project-actions {
   flex: 0 0 auto;
-  color: var(--text-tertiary);
-  font-size: 10px;
-  letter-spacing: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.project-new {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: var(--radius-pill);
+  padding: 3px;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.project-new:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+.project-new:disabled { color: var(--border-strong); cursor: default; }
+/* The heading's context menu. Same card as `.titlebar-menu`, but *in flow*
+   rather than absolute: `.sidebar-list` is the scroller, so an absolutely
+   positioned popover here would be clipped by its `overflow` the moment the
+   group sat near the bottom — the one thing the dropdown rule forbids. A menu
+   that pushes the rows down for as long as it is open cannot be cut off. */
+.project-menu {
+  margin: 0 6px 2px 22px;
+  min-width: 10rem;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+}
+.project-menu-item {
+  display: flex;
+  align-items: center;
+  background: transparent;
+  color: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.project-menu-item:hover:enabled { background: var(--surface-hover); }
+/* A project kept for its own sake says so, rather than reading as a list that
+   has not finished loading. */
+.project-empty {
+  padding: 4px 12px 6px 22px;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 .session-row {
   display: flex;
@@ -659,21 +773,26 @@ body {
   border-radius: var(--radius-md);
   cursor: pointer;
 }
-/* Three tiers, and the order of these rules is load-bearing — each one overrides
-   the `background` of the one above it (design_guidance 三.2, todo D5):
-     history        → no fill, `--text-secondary` (the `:not(.open)` rule below)
-     open, not shown→ no fill, primary text
-     showing        → the `--surface-active` capsule
-   `.selected` is the *keyboard cursor*, an orthogonal axis: it used to own the
-   capsule, which is why every open row read the same and the visible one could
-   not be picked out. A hairline instead, so `active + selected` still shows both. */
+/* Four row states, and the cascade order below is the whole design:
+   hover (the pointer is here) → selected (the keyboard cursor, a hairline, so it
+   can coexist with a fill) → active (the session on screen) → confirming (the
+   row asking to be deleted, which must win outright).
+
+   The active fill is `--surface-active`, the same surface `.settings-nav-item.selected`
+   uses: the app has one way of saying "you are on this one". Only *showing on
+   screen* paints — a session merely open in a background lane still reads as
+   history, which is why `.open` stays on the node as data and styles nothing. */
 .session-row:hover { background: var(--surface-hover); }
 .session-row.selected {
   background: var(--surface-hover);
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
+/* After `.selected`, so the row that is both the cursor *and* the open session
+   keeps the active fill and gains the cursor's hairline rather than losing one
+   of the two. Deliberately no `:hover` override: `--surface-hover` is a step
+   *below* this one, so repainting it under the pointer would read as the active
+   row dimming. */
 .session-row.active { background: var(--surface-active); }
-.session-row.active .session-open { color: var(--text-primary); font-weight: 600; }
 .session-open {
   flex: 1 1 auto;
   min-width: 0;
@@ -689,8 +808,6 @@ body {
   text-align: left;
   cursor: pointer;
 }
-/* A session that is only history reads as secondary until it is opened. */
-.session-row:not(.open) .session-open { color: var(--text-secondary); }
 .session-title {
   flex: 1 1 auto;
   white-space: nowrap;
@@ -764,7 +881,7 @@ body {
 .transcript {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 12px var(--reading-gutter);
+  padding: 8px var(--reading-gutter);
   font-size: 14px;
   /* A flex column purely so the reading column below can claim the leftover
      height with an auto margin (todo V2). **Not** `justify-content: flex-end`:
@@ -939,13 +1056,13 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 20px;
-  padding: 24px;
+  gap: 14px;
+  padding: 16px;
 }
 .welcome-mark { color: var(--text-tertiary); }
 /* `icon()` writes width/height as presentation attributes, which CSS outranks —
    so the Hero mark is scaled here rather than through a second icon API. */
-.welcome-mark .icon { width: 48px; height: 48px; }
+.welcome-mark .icon { width: 40px; height: 40px; }
 .welcome-title {
   margin: 0;
   font-size: 21px;
@@ -982,7 +1099,7 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
-  min-height: 96px;
+  min-height: 84px;
   padding: 12px;
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
@@ -1128,7 +1245,7 @@ body {
   /* `.transcript`'s gutter, less the overhang: the capsule reaches closer to the
      canvas edge than the transcript does, so the text inside it still lands on
      the transcript's axis at every window width. */
-  padding: 0 calc(var(--reading-gutter) - var(--composer-overhang)) 10px;
+  padding: 0 calc(var(--reading-gutter) - var(--composer-overhang)) 8px;
 }
 /* The composer's half of the reading column; kept in step with
    `.transcript-column`, so a question and its answer share one axis — one
@@ -1183,7 +1300,7 @@ body {
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  padding: 10px 12px;
+  padding: 8px 12px;
 }
 #composer:focus-within { border-color: var(--border-strong); }
 #input {
@@ -1742,10 +1859,14 @@ body {
 .diff-row.elided { color: var(--text-secondary); font-style: italic; }
 
 /* --- settings ---------------------------------------------------------------
-   A screen, not a dialog: it fills the canvas and hides its siblings, so it
-   never covers the sidebar and never parks the agent loop. Nothing here spells
-   a colour — every value is a token, which is what
-   `test/rendererStyleTokens.test.ts` checks. */
+   A screen, not a dialog: it takes the whole window below the title bar — the
+   canvas *and* the sidebar (see `body.settings-open` above) — and never parks
+   the agent loop. Covering the sidebar is the point: while this screen is up the
+   navigation it holds is not the thing the user is looking at, and leaving it
+   live is what made「新建会话」open a session behind the settings page.
+   `app.ts` closes the screen on any lane activation, so every route back to a
+   conversation lands on the conversation. Nothing here spells a colour — every
+   value is a token, which is what `test/rendererStyleTokens.test.ts` checks. */
 
 /* `#status` is not listed: it moved inside `#input-row` in 5g, so hiding the
    composer hides it too. Nor are `#surface` / `#suggestions` / `#queue`, for
@@ -1828,7 +1949,7 @@ body {
 
 .settings-nav-group-label {
   padding: 4px 10px;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-size: 11px;
   font-weight: 600;
 }
@@ -1842,10 +1963,20 @@ body {
   border: 0;
   border-radius: var(--radius-md);
   background: none;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+/* The way out, and the first thing in the column — this screen covers the whole
+   window now, so it has to carry its own exit where the eye starts rather than
+   at the foot of a list the user may have scrolled. Secondary, unlike the
+   categories: it is not one of them. */
+.settings-nav-close {
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
 }
 
 .settings-nav-item:hover:enabled,
@@ -2135,7 +2266,6 @@ body {
 }
 
 .settings-toggle.on {
-  justify-content: flex-end;
   border-color: var(--accent-info);
   background: var(--accent-info);
 }
@@ -2150,14 +2280,23 @@ body {
   cursor: default;
 }
 
+/* The knob travels on a `transform` rather than on the track's
+   `justify-content`, which was how it flipped before: alignment is not an
+   animatable property, so the knob teleported across a switch that is otherwise
+   the most physical control in the app. 20px is the travel: the track is
+   `border-box` 40px, less two 1px borders and 2px of padding a side, leaves a
+   34px content box, and the knob is 14 of it. */
 .settings-toggle-knob {
   width: 14px;
   height: 14px;
   border-radius: var(--radius-pill);
   background: var(--text-tertiary);
+  transition: transform var(--motion-fast) var(--ease-standard),
+              background-color var(--motion-fast) var(--ease-standard);
 }
 
 .settings-toggle.on .settings-toggle-knob {
+  transform: translateX(20px);
   background: var(--surface-knob);
 }
 
@@ -2226,4 +2365,118 @@ body {
   border-top: 1px solid var(--border-subtle);
   color: var(--text-tertiary);
   font-size: 12px;
+}
+
+/* --- motion -----------------------------------------------------------------
+   Collected here rather than spread through the sheet above, for the same
+   reason the palette is one block: timing is a system, and a duration written
+   next to the control that happens to use it is a duration nobody can compare.
+
+   Two mechanisms, and the split between them is not stylistic:
+
+   - **Transitions** for a state a node already had — hover, focus, disabled,
+     pressed. They need the node to survive the change, which every control
+     below does: the views rebuild rows only when their render signature moves,
+     and hovering does not move it.
+   - **Entrance animations** for a node (or a `hidden` box) that appears. These
+     replay whenever the element is re-inserted, so they are attached *only* to
+     containers whose existence tracks an open/closed state and whose contents
+     can change underneath them: the scrims, the three composer popovers, the
+     settings screen, and the menus, which are built at open.
+
+   Two places deliberately have no entrance animation, and both would replay
+   themselves to death: transcript items (`dom/transcriptView.ts` rebuilds the
+   whole scroller on every paint, which during a stream is every token) and the
+   two dialog panels (`#overlay-panel`/`#rewind-panel` re-render as the
+   selection moves — the animation lives on the scrim behind them instead). */
+.titlebar-rail,
+.titlebar-menu-trigger,
+.titlebar-menu-item,
+.canvas-menu-trigger,
+.canvas-menu-item,
+.canvas-open-location,
+.sidebar-nav-item,
+.sidebar-settings,
+.sidebar-help,
+.sidebar-search,
+.project-heading,
+.project-new,
+.project-menu-item,
+.session-row,
+.session-open,
+.session-delete,
+.session-confirm-yes,
+.session-confirm-no,
+.session-actions,
+.welcome-card,
+.welcome-project,
+.scroll-bottom,
+#composer,
+#composer-attach,
+#chip-permission,
+#chip-runtime,
+.composer-menu-item,
+.chip-menu-row,
+.chip-flyout-item,
+#submit,
+#stop,
+.settings-nav-item,
+.settings-nav-close,
+.settings-search,
+.settings-pill,
+.settings-menu-item,
+.settings-btn,
+.settings-toggle,
+.settings-row,
+#surface .row,
+#suggestions .suggestion,
+#overlay-panel .option,
+#overlay-panel .dialog-btn,
+#rewind-panel .row,
+#rewind-panel .dialog-btn {
+  transition: background-color var(--motion-fast) var(--ease-standard),
+              color var(--motion-fast) var(--ease-standard),
+              border-color var(--motion-fast) var(--ease-standard),
+              box-shadow var(--motion-fast) var(--ease-standard),
+              opacity var(--motion-fast) var(--ease-standard),
+              transform var(--motion-fast) var(--ease-standard);
+}
+/* The one press affordance in the app, on the one button that commits
+   something. Scale rather than a colour: the send button is already the sheet's
+   single high-contrast fill and has nowhere brighter to go. */
+#submit:active, #stop:active { transform: scale(0.94); }
+
+@keyframes fade-in { from { opacity: 0; } }
+/* A menu that hangs *below* its trigger arrives from above it, and one that
+   opens upward from below — the panel appears to come out of the control rather
+   than to land on top of it. */
+@keyframes drop-in { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(4px); } }
+@keyframes slide-in { from { opacity: 0; transform: translateX(6px); } }
+
+#settings:not([hidden]) { animation: rise-in var(--motion-base) var(--ease-standard); }
+#overlay:not([hidden]),
+#rewind:not([hidden]) { animation: fade-in var(--motion-fast) var(--ease-standard); }
+#surface:not([hidden]),
+#suggestions:not([hidden]),
+#queue:not([hidden]) { animation: rise-in var(--motion-base) var(--ease-standard); }
+.titlebar-menu,
+.canvas-menu,
+.project-menu,
+.settings-menu { animation: drop-in var(--motion-base) var(--ease-standard); }
+.composer-menu,
+.chip-menu { animation: rise-in var(--motion-base) var(--ease-standard); }
+.chip-flyout { animation: slide-in var(--motion-base) var(--ease-standard); }
+
+/* The one nested at-rule this sheet is allowed (`rendererStyleTokens` names it
+   explicitly). Not zero: a `0s` transition never fires `transitionend`, and
+   `1ms` keeps every listener's contract while being imperceptible. The universal
+   selector is deliberate — it has to reach the two `infinite` animations
+   (`spin`, `breathe`) as well as everything declared above. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
 }

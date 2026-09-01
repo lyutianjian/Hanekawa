@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { setImmediate as tick } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
-import { installDomStub, type DomStub } from './helpers/domStub.js'
+import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
 
 /**
  * Does the shipped renderer actually come up?
@@ -199,6 +199,52 @@ test('the shipped renderer boots and paints its window chrome', async (t) => {
   // The theme is resolved in JS and read back by the stylesheet off `<html>`.
   const { theme } = (dom.documentElement() as { dataset: Record<string, string | undefined> }).dataset
   assert.ok(theme === 'dark' || theme === 'light', `expected a resolved theme, got ${String(theme)}`)
+})
+
+/** The first descendant carrying `className`, depth-first, or `undefined`. */
+function findByClass(view: StubView, className: string): StubView | undefined {
+  if (view.classes.includes(className)) return view
+  for (const child of view.children) {
+    const hit = findByClass(child, className)
+    if (hit) return hit
+  }
+  return undefined
+}
+
+test('a new session leaves the settings screen instead of opening behind it', async (t) => {
+  // The screen covers the whole window now, so this is not a nicety: with the
+  // sidebar hidden there is no second place for the new conversation to appear,
+  // and a click that only mutated host state would look like nothing happened.
+  // Asserted through the shipped bundle because the wiring is `app.ts`'s alone —
+  // `runSidebarIntent` and `renderSettings` are not reachable from any unit test.
+  const dom = installDomStub()
+  const host = fakeHost()
+  host.install()
+  const page = mountPage(dom)
+  t.after(() => {
+    host.uninstall()
+    dom.uninstall()
+  })
+
+  await import(`${pathToFileURL(bundle).href}?settings`)
+  await tick()
+
+  const bodyClasses = () => dom.inspect(dom.body()).classes
+  const sidebar = () => dom.inspect(page.get('sidebar'))
+  const settingsOpen = () => !dom.inspect(page.get('settings')).hidden
+
+  const gear = findByClass(sidebar(), 'sidebar-settings')
+  assert.ok(gear, 'the sidebar footer must offer 设置')
+  dom.click(gear.node)
+  assert.equal(settingsOpen(), true, 'the gear must open the screen')
+  assert.ok(bodyClasses().includes('settings-open'), '<body> is what hides the sidebar')
+
+  // The first nav item is 新建会话 (`dom/sidebarView.ts` builds it first).
+  const create = findByClass(sidebar(), 'sidebar-nav-item')
+  assert.ok(create, 'the sidebar must offer 新建会话')
+  dom.click(create.node)
+  assert.equal(settingsOpen(), false, 'creating a session must leave the settings screen')
+  assert.ok(!bodyClasses().includes('settings-open'), 'the sidebar must come back with it')
 })
 
 test('booting pulls the topology and repaints the native title-bar overlay', async () => {

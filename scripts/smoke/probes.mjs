@@ -62,12 +62,15 @@ export const sidebar = () => `(() => {
     rows,
     // One group per workspace, always headed. The age sections are gone: the
     // workspace is the list's only grouping axis, and a group folds shut behind
-    // its own heading.
+    // its own heading. The root field is the heading's title — the normalized
+    // key the lanes carry too, so driver-side comparisons need no path math.
     groups: [...container.querySelectorAll('.project-group')].map((group) => ({
-      own: group.classList.contains('own'),
+      root: (group.querySelector('.project-heading') || {}).title || '',
       collapsed: group.classList.contains('collapsed'),
       label: (group.querySelector('.project-heading .btn-label') || {}).textContent || '',
-      count: (group.querySelector('.project-count') || {}).textContent || '',
+      hasNew: group.querySelector('.project-new') !== null,
+      menu: group.querySelector('.project-menu') !== null,
+      empty: group.querySelector('.project-empty') !== null,
       rows: group.querySelectorAll('.session-row').length,
     })),
     empty: container.querySelector('.sidebar-empty') !== null,
@@ -130,6 +133,16 @@ export const conversation = () => `(() => {
     scroller: round(scrollerBox),
     column: round(columnBox),
   }
+})()`
+
+/** The visible pane's welcome screen: null when a conversation is showing. */
+export const welcome = () => `(() => {
+  const area = document.getElementById('transcript-area')
+  const pane = [...area.children].find((node) => !node.hidden)
+  const welcome = pane ? pane.querySelector('.welcome') : null
+  if (!welcome || welcome.hidden) return null
+  const title = (welcome.querySelector('.welcome-title') || {}).textContent || ''
+  return { title: title.trim() }
 })()`
 
 /** One pane, found by the fixture marker its transcript contains. */
@@ -402,6 +415,11 @@ export const settings = () => `(() => {
   return {
     open: !container.hidden,
     canvasOpen: document.getElementById('canvas').classList.contains('settings-open'),
+    // The screen covers the whole window, sidebar included: \`body\` carries the
+    // class that takes the column out, and the hit test is the honest question —
+    // \`display: none\` is a rule, not an attribute anything else can see.
+    bodyOpen: document.body.classList.contains('settings-open'),
+    sidebarBoxes: (document.getElementById('sidebar') || { getClientRects: () => [] }).getClientRects().length,
     // Which element holds focus decides whether the screen's own keydown handler
     // (and therefore its documented Esc) can fire at all.
     focus: active ? (active.id || active.className || active.tagName) : 'none',

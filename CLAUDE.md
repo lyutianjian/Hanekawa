@@ -72,6 +72,28 @@ points or views.
   `shutdownAll`. Shutdown timeouts stop waiting but do not cancel work.
 - Desktop lane keys are stable and distinct from mutable session IDs. Closing a pane releases a runtime;
   it does not delete the session or stop project background tasks.
+- Startup always lands in a **new empty session**. `main.ts ensureProject` (not `openProject`) is the only
+  way a project comes into existence: it bootstraps, registers the root in `~/.myagent/projects.json`,
+  and adopts the bootstrap session as the first pane. Startup picks the root from that registry (the
+  project of the most recent session anywhere, else the newest registered root) and never treats bare
+  `process.cwd()` as a project; `--cwd=`/second-instance directories are explicit and still open.
+  The registry is in **added order** (first added first) and `recordProjectOpen` appends rather than
+  hoists: it is also the sidebar's group order, so re-opening a project must never move its row.
+- The home directory is the **global workspace** (display name 最近): sessions land in
+  `~/.myagent/sessions`, and both `loadMergedSettings` and `ConfigService` must skip the project layer
+  when it is the user layer (same file, double merge). `hello` carries `projectIsGlobal`; the renderer
+  must not string-match the display name.
+- The sidebar lists **every added project** (the registry, read live) plus open projects plus the global
+  workspace — closed projects come from a read-only index peek, never a bootstrapped runtime.
+  `open-session`/`delete-session`/`rename-session` on a registered-but-closed root bootstrap on demand
+  (over the named session) or use a transient `SessionStore`. Sessions with no input and no output are
+  invisible: history rows need `messageCount > 0`, and lane-only rows need the pane's `hasConversation`.
+- A **project outlives its sessions**. An added project keeps its group with nothing under it; only the
+  global workspace has to earn its row (open, or with sessions). `sidebarView` drops an empty group for a
+  *search* miss and nothing else. `remove-project` is the only way a project row goes away: it detaches
+  the project's lanes and calls `onForgetProject` (registry only, no files), refuses the global
+  workspace, and — like `delete-session` — defers the last-lane exit and opens a global-workspace draft
+  rather than letting `onAllLanesClosed` quit the app.
 
 ## Loop, tools, and context
 
@@ -133,6 +155,10 @@ points or views.
   composer; model/effort belongs on its chip, permission mode on its pill, and session name in the header.
 - The frameless title bar is draggable; every control in it is `no-drag`, and the Windows control strip
   stays empty. `WINDOW_CHROME` is the only color allowed outside `styles.css`; theme changes repaint it.
+  Its `height` and `#titlebar`'s CSS height are one number (32px); the smoke's `TITLE_BAR_HEIGHT` pins it.
+- The settings screen takes the whole window: `#canvas.settings-open` hides the conversation's regions and
+  `body.settings-open` hides the sidebar. Anything that puts a conversation on screen leaves it —
+  `activateLane` and the `new` sidebar intent both call `leaveSettings()`.
 - `body` alone paints the window wash; `#titlebar` and `#sidebar` stay transparent, while `#canvas` is
   opaque. Do not introduce `backdrop-filter` or `backgroundMaterial`.
 - `open-in-editor` is awaited and carries `projectRoot`; resolve it to the real `entry.cwd`. Keep process
@@ -149,8 +175,14 @@ points or views.
   modify the working tree.
 - Changes to `hasOverlay` or `isStreaming` must call `onShellChanged`, because sidebar badges derive from
   `shellState()`.
-- Session row CSS order is load-bearing: `.selected`, then `.active`, then `.confirming`. Keyboard cursor,
-  open lane, visible lane, and delete confirmation are separate states.
+- Session row CSS order is load-bearing and is the precedence: `:hover`, `.selected` (keyboard cursor),
+  `.active` (the session on screen, filled with `--surface-active`), then `.confirming`. `.open` stays on
+  the node as data (`aria-selected`, the smoke probes) and must gain no rule — a background lane is not a
+  state the user asked to see. Keyboard cursor and delete confirmation remain separate states.
+- A project heading is `.project-heading` and its `+` a sibling inside `.project-row` — a `<button>`
+  cannot nest one. The heading's context menu is drawn *in flow* under the row, because `.sidebar-list`
+  is the scroller and an absolute popover there would clip. `menuOpen`/`confirmingRemove` must stay in
+  `sidebarRenderSignature`, or the render guard swallows the right-click.
 - Every class passed to `controls.ts`'s `button()` needs a resting-state CSS rule. Update the explicit
   control lists in `rendererStyleTokens.test.ts` where its scan cannot infer coverage.
 - Dropdown/popover ancestor chains (`.settings-column`, `.composer-column`, menu shells) must not clip via
@@ -168,6 +200,12 @@ points or views.
 - Blocking dialogs derive rows/buttons and intents in `model/`. Mouse and keyboard actions share the same
   intent mapping; the backdrop never dismisses a request. Suggestions accept on prevented `mousedown`.
 - Screens with key handlers take focus once when opened, not on every render.
+- Motion is tokenised (`--motion-fast|base|slow`, `--ease-standard`) in one block at the foot of
+  `styles.css`. Transitions only go on nodes that survive their state change; entrance animations only on
+  containers whose existence tracks open/closed — never on transcript items or the two dialog panels,
+  which re-render underneath themselves. `@media (prefers-reduced-motion: reduce)` is the sheet's one
+  permitted nested at-rule.
+- Focus rings on containers use `:focus-visible`; only real text inputs paint on `:focus`.
 - In `app.ts`, construct `mux`/`shellClient` before the top-level theme block; `rendererBoot.test.ts` guards
   this runtime-only ordering constraint.
 - Prefer pure model tests. DOM tests use `test/helpers/domStub.ts`; keep its source-scan guards synchronized

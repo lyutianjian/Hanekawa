@@ -264,6 +264,22 @@ test('rewriting a permission group leaves the inherited entries in their own fil
   })
 })
 
+test('the home directory does not merge its user layer twice', async () => {
+  // The home directory *is* the global workspace, so its "project" layer is
+  // `~/.myagent/settings.json` itself. `mergeSettings` concatenates permission
+  // groups, so loading both copies would double every entry — and run every
+  // hook twice.
+  const home = process.env.USERPROFILE!
+  await mkdir(path.join(home, '.myagent'), { recursive: true })
+  await writeFile(
+    path.join(home, '.myagent', 'settings.json'),
+    JSON.stringify({ permissions: { allow: ['Read'] } }),
+    'utf8',
+  )
+
+  assert.deepEqual((await loadMergedSettings(home)).permissions?.allow, ['Read'])
+})
+
 test('a local rule can be removed, which appending one at a time never could', async () => {
   await withLocalLayer({ permissions: { allow: ['Read'] } }, async (cwd) => {
     await setLocalPermissionEntries(cwd, 'allow', ['Bash(ls:*)', 'Bash(git status:*)'])

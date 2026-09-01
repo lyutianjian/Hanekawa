@@ -159,15 +159,19 @@ test('the nav draws one section per group, labelled, in order', (t) => {
   )
 })
 
-test('the close button stays at the bottom of the column, outside the replaced region', (t) => {
+test('the close button leads the column, outside the replaced region', (t) => {
   const { view, render } = mount(t)
   const before = child(view(), 'settings-nav')
   const closeBefore = findOne(before, 'settings-nav-close').node
+  // First, not last: this screen covers the whole window (the sidebar included),
+  // so the way back has to be where the eye starts rather than under a list the
+  // user may have scrolled.
+  assert.equal(before.children[0]?.node, closeBefore)
   // The list is what gets rebuilt; the search box and the close button are not.
   render(stateOf({ category: 'agent' }))
   const after = child(view(), 'settings-nav')
   assert.equal(findOne(after, 'settings-nav-close').node, closeBefore)
-  assert.equal(after.children.at(-1)?.node, closeBefore)
+  assert.equal(after.children[0]?.node, closeBefore)
 })
 
 // --- the search box ----------------------------------------------------------

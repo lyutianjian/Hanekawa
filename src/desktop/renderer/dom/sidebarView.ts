@@ -131,6 +131,11 @@ export function createSidebarView(
     if (next === null) return
     if (next instanceof Node && container.contains(next)) return
     onIntent({ kind: 'cancel-delete' })
+    // The heading's question and its context menu are scoped to sidebar focus
+    // for the same reason the row's confirmation is: neither may survive as a
+    // dialog drawn where nothing can answer it.
+    onIntent({ kind: 'cancel-remove-project' })
+    onIntent({ kind: 'open-project-menu', projectRoot: undefined })
   })
 
   const rowNode = (row: SidebarRow, index: number, selected: boolean): HTMLElement => {
@@ -206,22 +211,32 @@ export function createSidebarView(
   }
 
   /**
-   * One workspace: a heading that folds the group, and its rows.
+   * One workspace: a heading that folds the group, a `+`, and its rows.
    *
    * The heading is a real `<button>` rather than the `<div>` label it replaced —
    * it toggles, and it is the target `focusProject` reveals to. Drawn for a
    * single project too: the workspace is the sidebar's only grouping axis now, so
    * hiding the heading when there is one of them would hide *what the axis is*.
+   * Drawn for an *empty* project too, which is the whole point of the group
+   * surviving its last session: the project is a place to come back to, not a
+   * label on a pile of sessions.
+   *
+   * The heading and the `+` are siblings inside `.project-row` rather than
+   * nested, because a `<button>` cannot contain a `<button>` — which is also why
+   * the count that used to live inside the heading could be a `<span>` and its
+   * replacement cannot.
    */
   const groupNode = (
     group: SidebarGroup,
     indexOf: (row: SidebarRow) => number,
     selectedIndex: number,
+    canCreate: boolean,
   ): HTMLElement => {
     const wrapper = el(
       'div',
-      `project-group${group.own ? ' own' : ''}${group.collapsed ? ' collapsed' : ''}`,
+      `project-group${group.collapsed ? ' collapsed' : ''}`,
     )
+    const headingRow = el('div', 'project-row')
     const heading = button(
       'project-heading',
       group.projectName,
@@ -232,16 +247,67 @@ export function createSidebarView(
       { icon: group.collapsed ? 'chevron-right' : 'chevron-down' },
     )
     heading.setAttribute('aria-expanded', String(!group.collapsed))
-    // The count is the only thing a collapsed group says about what is inside it.
-    heading.appendChild(el('span', 'project-count', String(group.rows.length)))
     projectHeadings.set(group.projectRoot, heading)
-    wrapper.appendChild(heading)
+    headingRow.appendChild(heading)
+
+    const actions = el('div', 'project-actions')
+    if (group.confirmingRemove) {
+      // The same two-button answer a session row gives, and for the same reason
+      // the question is not spelled out: the project name is right there, and it
+      // is the half only the user can supply.
+      actions.appendChild(
+        button('session-confirm-yes', '移除', '从侧边栏移除此项目', () =>
+          onIntent({ kind: 'confirm-remove-project', projectRoot: group.projectRoot }),
+        ),
+      )
+      actions.appendChild(
+        button('session-confirm-no', '取消', '取消移除', () =>
+          onIntent({ kind: 'cancel-remove-project' }),
+        ),
+      )
+    } else {
+      // Replaces the session count. A number told the user something they could
+      // already see; this is the action they came to the heading for.
+      actions.appendChild(
+        button('project-new', '', `在 ${group.projectName} 新建会话`, () =>
+          onIntent(newSessionIntent(group.projectRoot)),
+          { enabled: canCreate, icon: 'plus' },
+        ),
+      )
+    }
+    headingRow.appendChild(actions)
+
+    // The global workspace has no registry entry to forget, so it has no menu —
+    // and `isGlobal` comes off the wire rather than from matching the display
+    // name, which the renderer is not allowed to do.
+    if (!group.isGlobal) {
+      headingRow.addEventListener('contextmenu', (event) => {
+        event.preventDefault()
+        onIntent({ kind: 'open-project-menu', projectRoot: group.projectRoot })
+      })
+    }
+    wrapper.appendChild(headingRow)
+
+    if (group.menuOpen) {
+      const menu = el('div', 'project-menu')
+      menu.setAttribute('role', 'menu')
+      menu.appendChild(
+        button('project-menu-item', '从侧边栏移除', '从侧边栏移除此项目（会话文件保留）', () =>
+          onIntent({ kind: 'request-remove-project', projectRoot: group.projectRoot }),
+        ),
+      )
+      wrapper.appendChild(menu)
+    }
 
     if (!group.collapsed) {
       for (const row of group.rows) {
         const index = indexOf(row)
         wrapper.appendChild(rowNode(row, index, index === selectedIndex))
       }
+      // A project kept for its own sake rather than for its sessions has to say
+      // so; an empty group with nothing under the heading reads as a load that
+      // has not finished.
+      if (group.rows.length === 0) wrapper.appendChild(el('div', 'project-empty', '还没有会话'))
     }
     return wrapper
   }
@@ -315,7 +381,9 @@ export function createSidebarView(
           ? [el('div', 'sidebar-empty', '还没有会话。')]
           : view.noMatches
             ? [el('div', 'sidebar-empty', '没有匹配的会话。')]
-            : view.groups.map((group) => groupNode(group, indexOf, view.selectedIndex))),
+            : view.groups.map((group) =>
+                groupNode(group, indexOf, view.selectedIndex, view.canCreate),
+              )),
       )
 
       // A profile row and a `?`, side by side, with the chord list behind the `?`

@@ -12,11 +12,19 @@
  * `ProjectDirectory` already draws.
  *
  * Lifecycle:
- *  1. `openProject(cwd)` is the only way a project comes into existence, and
+ *  1. `ensureProject(cwd)` is the only way a project comes into existence, and
  *     the first project goes through it exactly like the fifth. Inside it,
  *     `bootstrap()` runs with a synchronous `confirmMcpTrust` that drives
  *     `dialog.showMessageBoxSync` for each untrusted MCP server — this fires
  *     before any channel exists, the only place a pre-channel prompt can live.
+ *     Every project is entered through a *new empty session* — `openProject`
+ *     from startup/`--cwd=`/the picker, or the shell's on-demand path when a
+ *     history row of a not-yet-open project is clicked. Startup resolves the
+ *     directory from the "added projects" registry (the project of the most
+ *     recent session anywhere), falling back to the global workspace — the
+ *     home directory, whose records land in `~/.myagent`. The registry keeps
+ *     *added* order and re-opening does not move an entry, because it is also
+ *     the sidebar's group order.
  *  2. `ensureShell()` builds the one window there is, wires the transport,
  *     the mux and the `ShellHost`, then loads the page. The initial lane opens
  *     after the window is up: the renderer's startup pulls the topology with
@@ -45,7 +53,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell as electronShell } fro
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { SessionStore } from '../sessions/service.js'
+import { SessionStore, type SessionMeta } from '../sessions/service.js'
 import { logDiagnostics } from '../harness/diagnostics.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
 import { bootstrap, RuntimeStartupError } from '../runtime/index.js'
@@ -54,6 +62,13 @@ import {
   SHUTDOWN_DEADLINE_MS,
   type ProjectEntry,
 } from '../runtime/projectDirectory.js'
+import { isGlobalWorkspaceRoot } from '../utils/paths.js'
+import {
+  recordProjectOpen,
+  resolveStartupRoot,
+  loadRecentProjects,
+  forgetRecentProject,
+} from './recentProjects.js'
 import {
   SessionWorkspace,
   type SessionPane,
@@ -92,8 +107,11 @@ const bundleDir = dirname(fileURLToPath(import.meta.url))
 const WINDOW_CHROME = {
   // `--surface-base`, not one of the wash colours: the overlay strip sits at the
   // window's right edge, where both blobs have already faded back to the base.
-  dark: { color: '#1c2125', symbolColor: '#9b9992', height: 40 },
-  light: { color: '#edf4f9', symbolColor: '#73716b', height: 40 },
+  // `height` is `#titlebar`'s in `styles.css`; the OS paints its three buttons
+  // onto the same band, so the two numbers move together or the caption row and
+  // the controls stop sharing a centre line.
+  dark: { color: '#1c2125', symbolColor: '#9b9992', height: 32 },
+  light: { color: '#edf4f9', symbolColor: '#73716b', height: 32 },
 } as const
 
 // A plain annotation rather than `as unknown as`: `ipcMain` really is
@@ -125,9 +143,11 @@ if (!app.requestSingleInstanceLock()) {
     // A second launch is a request for *that* directory's project: open it if it
     // is new, focus it if it is already here. There is only one window now, so
     // focusing it is the whole of "bring Hanekawa to the front" — the project
-    // itself gets its newest lane activated through the shell protocol.
+    // itself gets its newest lane activated through the shell protocol. The
+    // launch directory is explicit intent here, unlike a first launch's bare
+    // `process.cwd()`.
     if (shell && !shell.window.isDestroyed()) focusWindow(shell.window)
-    void openProjectInteractive(resolveCwd(argv, workingDirectory))
+    void openProjectInteractive(explicitCwd(argv) ?? workingDirectory)
   })
 
   app.on('window-all-closed', () => {
@@ -152,10 +172,15 @@ if (!app.requestSingleInstanceLock()) {
   app.on('activate', () => {
     // On macOS the dock icon survives a window close; projects do not (their
     // last lane died with the window), so this reopens whichever entry is left
-    // — a fresh bootstrap, the same cost as the first open.
+    // — and when nothing is, the registry's answer, the same resolution a
+    // fresh launch would make.
     if (BrowserWindow.getAllWindows().length === 0) {
       const first = directory.entries()[0]
-      if (first) void openProject(first.cwd)
+      if (first) {
+        void openProject(first.cwd)
+      } else {
+        void resolveStartupRoot().then((resolution) => openProject(resolution.root))
+      }
     }
   })
 
@@ -168,7 +193,7 @@ if (!app.requestSingleInstanceLock()) {
     // clipboard roles, and the traffic lights are drawn by the OS regardless.
     if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
     try {
-      await openProject(resolveCwd())
+      await openProject(await resolveStartupProject())
     } catch (error) {
       if (error instanceof RuntimeStartupError) {
         dialog.showErrorBox('Hanekawa failed to start', error.message)
@@ -184,35 +209,46 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 /**
- * Brings a project into the process, or focuses its newest lane if it is
- * already here.
+ * Brings a project into the process — bootstrap, pane, directory, registry —
+ * without opening a lane.
  *
- * The idempotence is the point: `directory.add` refuses a duplicate root, since
- * two `ProjectRuntime`s over one `.myagent/` means two `SessionStore`s appending
- * to the same JSONL files. Checking first turns "open this project" into a safe
- * request no matter how often the user makes it.
+ * Split from `openProject` because two callers need the halves separately: the
+ * sidebar's history opens a *named* session of a not-yet-open project
+ * (bootstrapped over that session, so the project's first pane is the pane the
+ * click asked for, never a throwaway), while startup and "open project…" want
+ * a fresh draft.
  *
- * Throws for bootstrap failures (the startup path wants an error box and a
- * quit); a failure *after* bootstrap is reported here and the project closed —
- * a project nothing on screen can reach is a set of child processes with no UI
- * to stop them.
+ * Idempotent: `directory.add` refuses a duplicate root, since two
+ * `ProjectRuntime`s over one `.myagent/` means two `SessionStore`s appending
+ * to the same JSONL files, so an already-open project is handed back as-is —
+ * which is also what makes repeated "open this project" requests safe.
+ *
+ * Throws for bootstrap failures; the startup path wants an error box and a
+ * quit.
  */
-async function openProject(cwd: string): Promise<void> {
+async function ensureProject(
+  cwd: string,
+  options: { sessionId?: string } = {},
+): Promise<{ entry: ProjectEntry; session: SessionMeta | undefined }> {
   const open = directory.get(cwd)
-  if (open) {
-    focusProject(open)
-    return
-  }
+  if (open) return { entry: open, session: undefined }
 
   const store = new SessionStore(cwd)
   await store.init()
 
-  // `list()` is sorted newest-first, so `at(0)` resumes the most recent
-  // session. A project that has never run the agent gets an in-memory draft,
-  // exactly as the TUI does — nothing touches disk until the first `message`
-  // record, so this costs nothing if the user closes the window immediately.
-  const sessions = await store.list()
-  const session = sessions.at(0) ?? store.createDraft()
+  // Every entry into a project is a *new* session — startup never resumes
+  // history (`sessions.at(0)` is gone). A history row names the session it
+  // wants, so the bootstrap scope is built over it; anything else gets an
+  // in-memory draft, and nothing touches disk until the first `message`
+  // record either way.
+  let session: SessionMeta
+  if (options.sessionId !== undefined) {
+    const named = await store.resolve(options.sessionId)
+    if (!named) throw new Error(`Session not found: ${options.sessionId}`)
+    session = named
+  } else {
+    session = store.createDraft()
+  }
 
   const project = await bootstrap({
     cwd,
@@ -224,15 +260,38 @@ async function openProject(cwd: string): Promise<void> {
   logDiagnostics(project.diagnostics)
   const workspace = new SessionWorkspace(project)
   // The bootstrap session is the first pane; `adopt` registers the existing
-  // scope without rebuilding it (which `open` would). The initial lane resolves
-  // to this adopted pane through `paneForSession`, so no ghost pane is left
-  // behind in the workspace.
+  // scope without rebuilding it (which `open` would). Handing the session back
+  // alongside the entry is what lets `openProject` open its lane *on this
+  // pane*, rather than minting a second draft and leaving this one lane-less.
   workspace.adopt(project)
   const entry = directory.add(project, workspace)
 
+  // The registry is the desktop's memory of "added projects": it decides the
+  // next launch's startup directory and the sidebar's full history *and its
+  // order*, which is why this write appends rather than hoists. The global
+  // workspace is implicit — always a startup candidate, never a member.
+  if (!isGlobalWorkspaceRoot(cwd)) await recordProjectOpen(cwd)
+  return { entry, session }
+}
+
+/**
+ * Opens a project and lands in a new empty session — the path every explicit
+ * "open this project" takes: startup, `--cwd=`, a second instance, the
+ * directory picker. An already-open project is focused instead.
+ */
+async function openProject(cwd: string): Promise<void> {
+  const open = directory.get(cwd)
+  if (open) {
+    focusProject(open)
+    return
+  }
+
+  const { entry, session } = await ensureProject(cwd)
   try {
     const built = await ensureShell()
-    await built.host.openLane(entry, { sessionId: session.id })
+    // The bootstrap pane (over the fresh draft) is the lane's pane — exactly
+    // one pane per open, never a ghost draft pane left in the workspace.
+    await built.host.openLane(entry, session !== undefined ? { sessionId: session.id } : {})
   } catch (error) {
     dialog.showErrorBox(
       'Hanekawa could not open a tab',
@@ -284,8 +343,14 @@ async function ensureShell(): Promise<Shell> {
   if (shell) return shell
 
   const window = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    // Sized for the layout rather than for the screen: the transcript reads in a
+    // 1100px column and the sidebar is 268 of the rest, so a wider default only
+    // buys canvas nobody writes into. The minimums are where the two columns and
+    // the composer's action bar still fit without wrapping.
+    width: 1080,
+    height: 720,
+    minWidth: 900,
+    minHeight: 620,
     // Frameless chrome (5g): the renderer draws the title bar — the rail toggle
     // and the Chinese menus — and Windows keeps drawing its own three buttons
     // into `titleBarOverlay`, so no window-control IPC has to exist at all.
@@ -371,6 +436,22 @@ async function ensureShell(): Promise<Shell> {
     },
     onOpenProject: (path) => {
       void openProjectInteractive(path)
+    },
+    // The sidebar's history is every *added* project, most of them without an
+    // open runtime — the registry is the source, read live so a project added
+    // by another window (or a stale root) is never cached wrong.
+    knownProjects: async () =>
+      (await loadRecentProjects()).filter(
+        (cwd) => !isGlobalWorkspaceRoot(cwd) && existsSync(cwd),
+      ),
+    // A history row of a not-yet-open project bootstraps it on demand, over
+    // the session the click named.
+    ensureProject: async (cwd, options) => (await ensureProject(cwd, options)).entry,
+    // The write half of "从侧边栏移除": registry only. The shell has already
+    // closed the lanes by the time this runs, and nothing on disk is deleted —
+    // opening the directory again restores the group and its history.
+    onForgetProject: async (cwd) => {
+      await forgetRecentProject(cwd)
     },
     // Returned rather than fired-and-forgotten: the shell awaits it so "code is
     // not installed" comes back as a `fail` the renderer writes into the
@@ -522,18 +603,31 @@ async function promptTrustMcpServer(
 }
 
 /**
- * Resolve a project directory from a command line.
+ * The `--cwd=` flag, when it names a directory that exists.
  *
- * The first instance defaults to `process.cwd()` so it launches in the shell's
- * directory; a second instance passes its own argv and working directory, which
- * is what makes `hanekawa` in another folder open that folder's project.
- * `--cwd=…` overrides either.
+ * Explicit only: the launch's own working directory is deliberately *not* a
+ * candidate anywhere else — a shortcut whose working directory is the install
+ * folder, or a terminal sitting anywhere else, is not a statement about which
+ * project to open.
  */
-function resolveCwd(argv: readonly string[] = process.argv, fallback: string = process.cwd()): string {
+function explicitCwd(argv: readonly string[] = process.argv): string | undefined {
   const flag = argv.find((arg) => arg.startsWith('--cwd='))
-  if (flag) {
-    const value = flag.slice('--cwd='.length)
-    if (existsSync(value)) return value
-  }
-  return fallback
+  if (!flag) return undefined
+  const value = flag.slice('--cwd='.length)
+  return existsSync(value) ? value : undefined
+}
+
+/**
+ * Where a fresh launch lands.
+ *
+ * An explicit `--cwd=` wins. Otherwise the registry's answer to
+ * “最近一次会话的目录”： the project whose newest session is the newest
+ * anywhere, the most recently added project when nothing has sessions yet, or
+ * the global workspace (the home directory) when no project has ever been
+ * added — the welcome-screen state whose records land in `~/.myagent`.
+ */
+async function resolveStartupProject(): Promise<string> {
+  const explicit = explicitCwd()
+  if (explicit !== undefined) return explicit
+  return (await resolveStartupRoot()).root
 }

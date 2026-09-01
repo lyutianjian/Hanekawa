@@ -29,9 +29,25 @@ test('no active lane means no header at all', () => {
     menuOpen: true,
     renaming: true,
     pendingDelete: 's1',
+    hasConversation: true,
   })
   assert.equal(view.visible, false)
   assert.deepEqual(view.menuItems, [], 'an empty window has no session to act on')
+})
+
+test('a session with nothing in it draws no header either', () => {
+  // The welcome screen already names the project, and rename/delete are about a
+  // session that has yet to say anything — so the bar would be 34px spent on a
+  // placeholder title. It arrives with the first message.
+  const view = canvasHeaderView({
+    lane: lane(),
+    menuOpen: true,
+    renaming: false,
+    pendingDelete: undefined,
+    hasConversation: false,
+  })
+  assert.equal(view.visible, false)
+  assert.deepEqual(view.menuItems, [])
 })
 
 test('the header names the session, falling back the way a sidebar row does', () => {
@@ -40,6 +56,7 @@ test('the header names the session, falling back the way a sidebar row does', ()
     menuOpen: false,
     renaming: false,
     pendingDelete: undefined,
+    hasConversation: true,
   })
   assert.equal(titled.visible, true)
   assert.equal(titled.title, '重构缓存层')
@@ -49,6 +66,7 @@ test('the header names the session, falling back the way a sidebar row does', ()
     menuOpen: false,
     renaming: false,
     pendingDelete: undefined,
+    hasConversation: true,
   })
   // One session, one name: the sidebar shows the same string for the same draft.
   assert.equal(draft.title, UNTITLED_SESSION)
@@ -60,6 +78,7 @@ test('the menu offers rename and delete, and delete asks a second time', () => {
     menuOpen: true,
     renaming: false,
     pendingDelete: undefined,
+    hasConversation: true,
   })
   assert.deepEqual(first.menuItems.map((item) => item.id), ['rename', 'delete'])
 
@@ -68,6 +87,7 @@ test('the menu offers rename and delete, and delete asks a second time', () => {
     menuOpen: true,
     renaming: false,
     pendingDelete: 's1',
+    hasConversation: true,
   })
   assert.deepEqual(confirming.menuItems.map((item) => item.id), ['confirm-delete', 'cancel-delete'])
   assert.equal(confirming.menuItems[0]?.danger, true)
@@ -82,6 +102,7 @@ test('a pending delete belongs to its session, not to the header', () => {
     menuOpen: true,
     renaming: false,
     pendingDelete: 's1',
+    hasConversation: true,
   })
   assert.deepEqual(view.menuItems.map((item) => item.id), ['rename', 'delete'])
 })
@@ -92,6 +113,7 @@ test('renaming closes the menu, because Escape cannot mean two things', () => {
     menuOpen: true,
     renaming: true,
     pendingDelete: undefined,
+    hasConversation: true,
   })
   assert.equal(view.renaming, true)
   assert.equal(view.menuOpen, false)

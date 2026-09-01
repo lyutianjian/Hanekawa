@@ -80,10 +80,15 @@ export function createSettingsView(
   const navList = el('div', 'settings-nav-list')
   const close = button('settings-nav-close', '返回会话', '关闭设置（Esc）', () =>
     onIntent({ kind: 'close' }),
+    { icon: 'arrow-left' },
   )
+  // First in the column, above the search box: this screen covers the whole
+  // window (the sidebar included), so the way back has to be where the eye
+  // starts. At the foot of the category list it was below a scroller, which is
+  // the one place an exit must not be.
+  nav.appendChild(close)
   nav.appendChild(search)
   nav.appendChild(navList)
-  nav.appendChild(close)
   const body = el('div', 'settings-body')
   body.id = 'settings-body'
   // Two nodes, two jobs (todo V7): `body` is the full-width scroller, so its

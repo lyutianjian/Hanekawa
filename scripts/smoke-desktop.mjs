@@ -179,7 +179,10 @@ async function main() {
     // "only local entries" assertion in the settings step still means something.
     seedLocalSettings(projectA, { permissions: { ask: ['Write'] } })
     seedLocalSettings(projectB, { permissions: { ask: ['Write'] } })
-    // Newest first: A1 is what the app bootstraps by itself.
+    // Seeded by hand: the app recovers these into project A's index when its
+    // store initializes at launch. Startup no longer *opens* any of them — a
+    // fresh launch lands in a new empty session — but step7 opens the youngest
+    // (A1) as history, so its age ordering still matters.
     const sessionsA = Array.from({ length: 8 }, (_, index) =>
       seedSession(projectA, { marker: `SMOKE-A${index + 1} fixture session`, ageMinutes: index + 1 }),
     )

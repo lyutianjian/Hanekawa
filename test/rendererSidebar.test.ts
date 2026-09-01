@@ -11,6 +11,7 @@ import {
   sidebarView,
   toggleProject,
   workspaceRootsOf,
+  type SidebarLaneStatus,
   type SidebarProjectSessions,
   type SidebarState,
   type SidebarView,
@@ -68,6 +69,11 @@ function lane(key: string, paneId: string, projectRoot: string, overrides: Parti
   }
 }
 
+/** A pane's live contribution. Defaults to "has a conversation, nothing running". */
+function paneStatus(overrides: Partial<SidebarLaneStatus> = {}): SidebarLaneStatus {
+  return { streaming: false, blocked: false, processes: false, hasConversation: true, ...overrides }
+}
+
 function stateWith(overrides: Partial<SidebarState> = {}): SidebarState {
   return createSidebarState({ now: NOW, ...overrides })
 }
@@ -114,7 +120,9 @@ test('an unparseable timestamp sorts oldest rather than throwing', () => {
 
 // --- grouping ---------------------------------------------------------------
 
-test('the active pane project sorts first, and the rest keep wire order', () => {
+test('the wire order stands regardless of which pane is active', () => {
+  // Activation is imperceptible: no group is hoisted, no heading highlighted —
+  // switching sessions must not move anything on screen.
   const state = stateWith({
     projects: [
       project('/a', 'alpha', [session('a1')]),
@@ -128,23 +136,11 @@ test('the active pane project sorts first, and the rest keep wire order', () => 
   const view = sidebarView(state)
   assert.deepEqual(
     view.groups.map((group) => group.projectName),
-    ['beta', 'alpha', 'gamma'],
+    ['alpha', 'beta', 'gamma'],
   )
-  assert.deepEqual(view.groups.map((group) => group.own), [true, false, false])
-  assert.deepEqual(view.rows.map((row) => row.sessionId), ['b1', 'a1', 'c1'])
-})
-
-test('with no active lane nothing is own and the wire order stands', () => {
-  // Not "everything is own" — that was the old tab bar's choice, where own governed
-  // closability. Here it only governs group order, and hoisting every group is
-  // the same as hoisting none.
-  const view = sidebarView(
-    stateWith({
-      projects: [project('/a', 'alpha', [session('a1')]), project('/b', 'beta', [session('b1')])],
-    }),
-  )
-  assert.deepEqual(view.groups.map((group) => group.own), [false, false])
-  assert.deepEqual(view.groups.map((group) => group.projectName), ['alpha', 'beta'])
+  assert.deepEqual(view.rows.map((row) => row.sessionId), ['a1', 'b1', 'c1'])
+  // The active row still *knows* it is the shown one — data without styling.
+  assert.deepEqual(view.rows.map((row) => row.active), [false, true, false])
 })
 
 // --- folding ----------------------------------------------------------------
@@ -208,7 +204,8 @@ test('toggleProject folds, unfolds, and takes a forced answer', () => {
   assert.deepEqual([...toggleProject(new Set(), '/a', false)], [])
 })
 
-test('the workspace roots are every project, with the active pane\u2019s first', () => {
+test('the workspace roots are every project, in wire order', () => {
+  // No hoisting here either — activation must not move anything.
   const roots = workspaceRootsOf(
     stateWith({
       projects: [project('/a', 'alpha', [session('a1')]), project('/b', 'beta', [session('b1')])],
@@ -216,18 +213,45 @@ test('the workspace roots are every project, with the active pane\u2019s first',
       activeLane: '2',
     }),
   )
-  assert.deepEqual(roots, ['/b', '/a', 'C:\\repo\\solo'])
+  assert.deepEqual(roots, ['/a', '/b', 'C:\\repo\\solo'])
 })
 
 // --- history × topology -----------------------------------------------------
 
-test('a live lane with nothing on disk still gets a row', () => {
-  // A fresh draft has no index entry until its first message. Dropping the row
-  // would hide the session the user is typing into.
+test('a live lane with nothing on disk stays invisible until it has content', () => {
+  // The rule the product asked for: a new session with no input and no output
+  // draws no「未命名会话」row. Fresh boot, the sidebar shows only history.
   const view = sidebarView(
     stateWith({
       projects: [project('/a', 'alpha', [session('a1', { title: 'Yesterday', updatedAt: at(30 * DAY) })])],
       lanes: [lane('1', 'draft-1', '/a')],
+      laneStatus: new Map([['1', paneStatus({ hasConversation: false })]]),
+      activeLane: '1',
+    }),
+  )
+
+  assert.deepEqual(view.rows.map((row) => row.sessionId), ['a1'])
+  assert.equal(view.isEmpty, false, 'history still draws')
+
+  // With no status entry at all (a pane the renderer has not built yet), the
+  // same answer: hidden.
+  const unbuilt = sidebarView(
+    stateWith({
+      projects: [],
+      lanes: [lane('1', 'draft-1', '/a')],
+    }),
+  )
+  assert.deepEqual(unbuilt.rows, [])
+})
+
+test('a live lane with nothing on disk gets a row once it has content', () => {
+  // First input lands mid-turn, before the history pull ever hears of the
+  // session: the pane's own transcript is the live truth.
+  const view = sidebarView(
+    stateWith({
+      projects: [project('/a', 'alpha', [session('a1', { title: 'Yesterday', updatedAt: at(30 * DAY) })])],
+      lanes: [lane('1', 'draft-1', '/a')],
+      laneStatus: new Map([['1', paneStatus({ hasConversation: true })]]),
       activeLane: '1',
     }),
   )
@@ -235,6 +259,30 @@ test('a live lane with nothing on disk still gets a row', () => {
   assert.deepEqual(view.rows.map((row) => row.sessionId), ['draft-1', 'a1'])
   assert.equal(view.rows[0]!.lane, '1')
   assert.equal(view.rows[0]!.active, true)
+})
+
+test('a session listed with messageCount 0 shows through its lane once it has content', () => {
+  // The store lists a session the moment its first record lands, but its
+  // `messageCount` in the *pulled* snapshot can lag the turn. The lane's
+  // conversation bit is what keeps the row on screen.
+  const view = sidebarView(
+    stateWith({
+      projects: [project('/a', 'alpha', [session('fresh-1', { messageCount: 0, title: undefined })])],
+      lanes: [lane('1', 'fresh-1', '/a')],
+      laneStatus: new Map([['1', paneStatus({ hasConversation: true })]]),
+    }),
+  )
+  assert.deepEqual(view.rows.map((row) => row.sessionId), ['fresh-1'])
+
+  // And a closed empty session — history with nothing in it — stays hidden.
+  const closed = sidebarView(
+    stateWith({ projects: [project('/a', 'alpha', [session('empty-1', { messageCount: 0 })])] }),
+  )
+  assert.deepEqual(closed.rows, [])
+  // The *row* is hidden, but the project it belongs to is not: a listed project
+  // keeps its heading whether or not anything under it is visible.
+  assert.deepEqual(closed.groups.map((group) => group.projectRoot), ['/a'])
+  assert.equal(closed.isEmpty, false, 'the project is still on screen')
 })
 
 test('a session on disk carries its lane when one is open', () => {
@@ -252,7 +300,10 @@ test('a session on disk carries its lane when one is open', () => {
 
 test('a lane whose project has no history entry is grouped from its own fields', () => {
   const view = sidebarView(
-    stateWith({ lanes: [lane('1', 'x', 'C:\\repo\\solo')] }),
+    stateWith({
+      lanes: [lane('1', 'x', 'C:\\repo\\solo')],
+      laneStatus: new Map([['1', paneStatus({ hasConversation: true })]]),
+    }),
   )
   assert.equal(view.groups.length, 1)
   assert.equal(view.groups[0]!.projectName, 'solo')
@@ -272,18 +323,103 @@ test('an empty directory reports the empty state', () => {
   assert.equal(view.selectedIndex, -1)
 })
 
+// --- projects outlive their sessions -----------------------------------------
+
+test('a listed project keeps its group with no sessions at all', () => {
+  // The point of the change: a project is a place to come back to, not a label
+  // on a pile of sessions. Deleting the last session used to delete the row that
+  // was the only way back to the project.
+  const view = sidebarView(stateWith({ projects: [project('/a', 'alpha', [])] }))
+
+  assert.deepEqual(view.groups.map((group) => group.projectRoot), ['/a'])
+  assert.deepEqual(view.rows, [])
+  assert.equal(view.isEmpty, false)
+  assert.equal(view.noMatches, false)
+})
+
+test('a search still drops the groups it emptied', () => {
+  // The empty group survives *absence of sessions*, not a filter: a heading with
+  // no match under it reads as "here is your result" and is not one.
+  const view = sidebarView(
+    stateWith({
+      projects: [
+        project('/a', 'alpha', [session('a1', { title: 'report' })]),
+        project('/b', 'beta', [session('b1', { title: 'other' })]),
+        project('/c', 'gamma', []),
+      ],
+      searchQuery: 'report',
+    }),
+  )
+
+  assert.deepEqual(view.groups.map((group) => group.projectRoot), ['/a'])
+})
+
+test('the global workspace is marked from the wire, never from its name', () => {
+  const view = sidebarView(
+    stateWith({
+      projects: [
+        { projectRoot: '/home/me', projectName: '最近', isGlobal: true, sessions: [] },
+        project('/a', 'alpha', []),
+      ],
+    }),
+  )
+
+  assert.deepEqual(view.groups.map((group) => group.isGlobal), [true, false])
+})
+
+test('the heading carries its own menu and confirmation state', () => {
+  const view = sidebarView(
+    stateWith({
+      projects: [project('/a', 'alpha', []), project('/b', 'beta', [])],
+      projectMenu: '/a',
+      pendingRemoveProject: '/b',
+    }),
+  )
+
+  assert.deepEqual(view.groups.map((group) => group.menuOpen), [true, false])
+  assert.deepEqual(view.groups.map((group) => group.confirmingRemove), [false, true])
+})
+
+test('Escape backs out of the heading menu before the row confirmation', () => {
+  // Innermost first, the settings-screen ordering: one layer per keystroke.
+  const base = stateWith({
+    projects: [project('/a', 'alpha', [session('a1')])],
+    pendingDelete: 'a1',
+    pendingRemoveProject: '/a',
+    projectMenu: '/a',
+  })
+
+  assert.deepEqual(sidebarKeyToIntent({ key: 'Escape' }, base), {
+    kind: 'open-project-menu',
+    projectRoot: undefined,
+  })
+  assert.deepEqual(sidebarKeyToIntent({ key: 'Escape' }, { ...base, projectMenu: undefined }), {
+    kind: 'cancel-remove-project',
+  })
+  assert.deepEqual(
+    sidebarKeyToIntent(
+      { key: 'Escape' },
+      { ...base, projectMenu: undefined, pendingRemoveProject: undefined },
+    ),
+    { kind: 'cancel-delete' },
+  )
+})
+
 // --- badges -----------------------------------------------------------------
 
 test('badges come off the pane snapshot, with awaiting-input outranking running', () => {
   const state = stateWith({
-    projects: [project('/a', 'alpha', [session('a1'), session('a2'), session('a3'), session('a4')])],
-    lanes: [lane('1', 'a1', '/a'), lane('2', 'a2', '/a'), lane('3', 'a3', '/a')],
+    projects: [project('/a', 'alpha', [session('a1'), session('a2'), session('a3'), session('a4'), session('a5'), session('a6')])],
+    lanes: [lane('1', 'a1', '/a'), lane('2', 'a2', '/a'), lane('3', 'a3', '/a'), lane('4', 'a4', '/a'), lane('5', 'a5', '/a')],
     laneStatus: new Map([
-      ['1', { streaming: true, blocked: false }],
+      ['1', paneStatus({ streaming: true })],
       // Still streaming, but parked on a prompt: "waiting for you" is the
       // actionable half, so it wins.
-      ['2', { streaming: true, blocked: true }],
-      ['3', { streaming: false, blocked: false }],
+      ['2', paneStatus({ streaming: true, blocked: true })],
+      ['3', paneStatus()],
+      // The turn ended but a process it left behind is still running.
+      ['4', paneStatus({ processes: true })],
+      ['5', paneStatus()],
     ]),
   })
 
@@ -291,7 +427,9 @@ test('badges come off the pane snapshot, with awaiting-input outranking running'
   assert.equal(badges.get('a1'), 'running')
   assert.equal(badges.get('a2'), 'awaiting-input')
   assert.equal(badges.get('a3'), 'none')
-  assert.equal(badges.get('a4'), 'none', 'a closed session has no pane to report')
+  assert.equal(badges.get('a4'), 'running', 'a leftover background process keeps the session busy')
+  assert.equal(badges.get('a5'), 'none')
+  assert.equal(badges.get('a6'), 'none', 'a closed session has no pane to report')
 })
 
 test('a lane with no status entry yet carries no badge', () => {
@@ -383,9 +521,9 @@ test('Ctrl+1-9 switches among open lanes in visual order', () => {
     activeLane: '6',
   })
 
-  // Visual order hoists beta (the active pane's project), so its lane is first.
-  assert.deepEqual(sidebarChordToIntent({ key: '1', ctrlKey: true }, state), { kind: 'switch', lane: '6' })
-  assert.deepEqual(sidebarChordToIntent({ key: '2', ctrlKey: true }, state), { kind: 'switch', lane: '5' })
+  // Visual order is wire order (alpha before beta), activation irrelevant.
+  assert.deepEqual(sidebarChordToIntent({ key: '1', ctrlKey: true }, state), { kind: 'switch', lane: '5' })
+  assert.deepEqual(sidebarChordToIntent({ key: '2', ctrlKey: true }, state), { kind: 'switch', lane: '6' })
   assert.deepEqual(sidebarChordToIntent({ key: '3', ctrlKey: true }, state), { kind: 'none' })
 })
 
@@ -615,7 +753,7 @@ test('the signature moves for everything the view draws', () => {
     // isolates the query field itself moving the signature.
     ['searchQuery', { ...base, searchQuery: 'o' }],
     ['a folded workspace', { ...base, collapsedProjects: new Set(['/a']) }],
-    ['badge', { ...base, laneStatus: new Map([['1', { streaming: true, blocked: false }]]) }],
+    ['badge', { ...base, laneStatus: new Map([['1', paneStatus({ streaming: true })]]) }],
     ['title', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'Renamed' }), session('a2', { title: 'Two' })])] }],
     ['messageCount', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'One', messageCount: 99 }), session('a2', { title: 'Two' })])] }],
     ['a row gained a lane', { ...base, lanes: [lane('1', 'a1', '/a'), lane('2', 'a2', '/a')] }],
@@ -625,6 +763,10 @@ test('the signature moves for everything the view draws', () => {
     // there are no section headings to sign.
     ['row order', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'One', updatedAt: at(40 * DAY) }), session('a2', { title: 'Two' })])] }],
     ['a second project', { ...base, projects: [project('/a', 'alpha', [session('a1', { title: 'One' }), session('a2', { title: 'Two' })]), project('/b', 'beta', [session('b1')])] }],
+    // Both are drawn on the heading and neither changes a row, so an unsigned
+    // one is a right-click (or a confirmation) the render guard swallows whole.
+    ['the heading menu', { ...base, projectMenu: '/a' }],
+    ['the heading confirmation', { ...base, pendingRemoveProject: '/a' }],
   ]
   for (const [what, state] of moved) {
     assert.notEqual(of(state), reference, `expected ${what} to move the signature`)

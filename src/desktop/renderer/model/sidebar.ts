@@ -64,8 +64,18 @@ export interface SidebarRow {
 export interface SidebarGroup {
   readonly projectRoot: string
   readonly projectName: string
-  /** This is the project the active pane belongs to; its group sorts first. */
-  readonly own: boolean
+  /**
+   * The home directory's implicit workspace rather than an added project.
+   *
+   * Read off the wire (`WireShellProjectSessions.isGlobal`), never matched on
+   * the display name. The one group that cannot be removed from the sidebar,
+   * because there is no registry entry to forget.
+   */
+  readonly isGlobal: boolean
+  /** This group's context menu is open, so the view draws it under the heading. */
+  readonly menuOpen: boolean
+  /** This group is asking "remove?" and has replaced its `+` with the answer. */
+  readonly confirmingRemove: boolean
   /**
    * Folded shut, so the view draws the heading and none of the rows.
    *
@@ -126,6 +136,8 @@ export interface SidebarView {
 export interface SidebarProjectSessions {
   readonly projectRoot: string
   readonly projectName: string
+  /** See {@link SidebarGroup.isGlobal}. Absent is treated as "an added project". */
+  readonly isGlobal?: boolean
   readonly sessions: readonly WireSessionSummary[]
 }
 
@@ -134,6 +146,14 @@ export interface SidebarLaneStatus {
   readonly streaming: boolean
   /** An unanswered blocking request is parked on this pane. */
   readonly blocked: boolean
+  /** A background process (shell or agent task) is still running on this pane. */
+  readonly processes: boolean
+  /**
+   * Whether the pane's transcript has any conversation in it — the visibility
+   * rule for a session that exists only as a lane: a new session stays
+   * invisible until its first input or output.
+   */
+  readonly hasConversation: boolean
 }
 
 export interface SidebarState {
@@ -149,6 +169,10 @@ export interface SidebarState {
   readonly selectedIndex: number
   /** The session whose row is asking for confirmation, if any. */
   readonly pendingDelete: string | undefined
+  /** The project whose heading has a context menu open, if any. */
+  readonly projectMenu: string | undefined
+  /** The project whose heading is asking "remove from the sidebar?", if any. */
+  readonly pendingRemoveProject: string | undefined
   /** Milliseconds, injected so a draft's synthesized timestamp is testable. */
   readonly now: number
   /** False while a blocking dialog is up: both buttons open something. */
@@ -176,6 +200,8 @@ export function createSidebarState(overrides: Partial<SidebarState> = {}): Sideb
     collapsed: false,
     selectedIndex: -1,
     pendingDelete: undefined,
+    projectMenu: undefined,
+    pendingRemoveProject: undefined,
     now: Date.UTC(2026, 7, 20, 12, 0, 0),
     canCreate: true,
     searchQuery: '',
@@ -206,7 +232,9 @@ function badgeFor(lane: string | undefined, state: SidebarState): SidebarBadge {
   // Awaiting input outranks running: a turn parked on a permission prompt is
   // technically still streaming, and "waiting for you" is the actionable half.
   if (status.blocked) return 'awaiting-input'
-  return status.streaming ? 'running' : 'none'
+  // "Running" is the agent loop *or* a process it left behind — a backgrounded
+  // command keeps the session busy after the turn ends.
+  return status.streaming || status.processes ? 'running' : 'none'
 }
 
 /**
@@ -231,22 +259,37 @@ export function sidebarView(state: SidebarState): SidebarView {
   const matches = (row: SidebarRow): boolean =>
     needle === '' || row.title.toLowerCase().includes(needle)
 
-  // Keyed by project root and insertion-ordered, so projects appear in the order
-  // `list-sessions` reported them and a project known only from a lane lands
+  // Keyed by project root and insertion-ordered, so projects appear in the
+  // order `list-sessions` reported them and a project known only from a lane lands
   // after the ones with history.
-  const byProject = new Map<string, { projectName: string; rows: SidebarRow[] }>()
-  const bucketFor = (projectRoot: string, projectName: string) => {
+  const byProject = new Map<
+    string,
+    { projectName: string; isGlobal: boolean; rows: SidebarRow[] }
+  >()
+  const bucketFor = (projectRoot: string, projectName: string, isGlobal = false) => {
     const existing = byProject.get(projectRoot)
     if (existing) return existing
-    const created = { projectName, rows: [] as SidebarRow[] }
+    const created = { projectName, isGlobal, rows: [] as SidebarRow[] }
     byProject.set(projectRoot, created)
     return created
   }
 
+  /** Whether a lane's session has had any input or output — see the lane pass. */
+  const laneHasConversation = (lane: string): boolean =>
+    state.laneStatus.get(lane)?.hasConversation ?? false
+
+  // Sessions the history pull listed *and drew*. A listed-but-hidden (still
+  // empty) session must not count as seen — the lane pass below is what brings
+  // it on screen the moment its pane has content, without waiting for the next
+  // pull.
   const seen = new Set<string>()
   for (const project of state.projects) {
-    const bucket = bucketFor(project.projectRoot, project.projectName)
+    const bucket = bucketFor(project.projectRoot, project.projectName, project.isGlobal ?? false)
     for (const session of project.sessions) {
+      // A session with no input and no output stays invisible — that is the
+      // whole rule for new sessions, and history with nothing in it (a
+      // not-yet-cleaned empty session) gets the same answer.
+      if (session.messageCount === 0) continue
       seen.add(session.id)
       const lane = laneBySession.get(session.id)
       const row = rowFor(session, project.projectRoot, lane?.lane, active?.paneId, state)
@@ -254,17 +297,19 @@ export function sidebarView(state: SidebarState): SidebarView {
     }
   }
 
-  // Lanes with nothing behind them on disk: a fresh draft has no index entry
-  // until its first message. Appended to the bucket and sorted into place by
-  // `groupOf` — and never dropped, since dropping one would hide the session the
-  // user is typing into.
+  // Lanes the history pull cannot speak for: a fresh draft has no index entry
+  // until its first message, and a mid-first-turn session is listed with
+  // `messageCount: 0` until the next pull. Either way the pane's own transcript
+  // is the live truth — the row exists exactly when there is a conversation in
+  // it, so a new session is invisible until its first input or output and
+  // cannot blink out between submit and the turn's end.
   //
   // Synthesized into the same summary shape rather than built by a second row
   // constructor: badge, active and confirming are one decision each, and two
   // constructors is two places for them to drift.
   for (const lane of state.lanes) {
     if (seen.has(lane.paneId)) continue
-    seen.add(lane.paneId)
+    if (!laneHasConversation(lane.lane)) continue
     const draft: WireSessionSummary = {
       id: lane.paneId,
       ...(lane.sessionTitle !== undefined ? { title: lane.sessionTitle } : {}),
@@ -278,26 +323,36 @@ export function sidebarView(state: SidebarState): SidebarView {
     if (matches(row)) bucket.rows.push(row)
   }
 
-  // Drop projects the filter emptied. A no-op when nothing is searched (every
-  // bucket holds at least the session or lane that created it), so the empty
-  // state and grouping behaviour are unchanged for `searchQuery === ''`.
+  // Drop only what the *search* emptied. Without a query an empty bucket keeps
+  // its group: a project is a place, not a label on a pile of sessions, so one
+  // whose sessions were all deleted still draws its heading — and stays
+  // clickable — until the user removes it from the sidebar on purpose. The host
+  // decides which projects are listed at all (`listSessions`); this filter used
+  // to quietly overrule it.
   const searching = needle !== ''
   const groups = [...byProject.entries()]
-    .filter(([, bucket]) => bucket.rows.length > 0)
+    .filter(([, bucket]) => !searching || bucket.rows.length > 0)
     .map(([projectRoot, bucket]) =>
-      groupOf(projectRoot, bucket.projectName, active?.projectRoot, bucket.rows, {
+      groupOf(projectRoot, bucket.projectName, bucket.rows, {
         // A search un-folds everything: the whole point of the query is to find a
         // session, and a match hidden behind a collapsed heading reads as "no
         // such session".
         collapsed: !searching && state.collapsedProjects.has(projectRoot),
+        isGlobal: bucket.isGlobal,
+        // A menu or a confirmation on a group that is being searched away would
+        // be unanswerable, so both read on the same filtered set the view draws.
+        menuOpen: state.projectMenu === projectRoot,
+        confirmingRemove: state.pendingRemoveProject === projectRoot,
       }),
     )
 
-  // A stable partition, not a sort: `filter` twice keeps first-seen order inside
-  // each half, where a comparator on a boolean would leave it to the engine.
-  // Inherited verbatim from the tab bar this replaced, and it only reorders on a
-  // *cross-project* switch — within one project the list never moves.
-  const ordered = [...groups.filter((group) => group.own), ...groups.filter((group) => !group.own)]
+  // The wire order stands: registry order (the order projects were added, first
+  // added first, global workspace last). Activation is deliberately
+  // imperceptible — no hoisting, no highlight — so switching sessions never
+  // moves anything on screen; the canvas header, not the sidebar, says where you
+  // are. The registry itself is stable across opens, so creating a session in a
+  // project cannot move its group either.
+  const ordered = groups
   // Collapsed groups are drawn as a heading and nothing else, so they are absent
   // here: this list is the cursor's and the digit chords' index space, and both
   // have to mean what is on screen.
@@ -354,18 +409,15 @@ function rowFor(
 function groupOf(
   projectRoot: string,
   projectName: string,
-  activeProjectRoot: string | undefined,
   rows: readonly SidebarRow[],
-  options: { collapsed: boolean },
+  options: { collapsed: boolean; isGlobal: boolean; menuOpen: boolean; confirmingRemove: boolean },
 ): SidebarGroup {
   return {
     projectRoot,
     projectName,
-    // Unknown active project ⇒ nothing is own, so the wire order stands. Not
-    // "everything is own" (the old tab bar's choice): there, own governed whether a
-    // row could be closed; here it only governs group order, and hoisting every
-    // group is the same as hoisting none.
-    own: activeProjectRoot !== undefined && projectRoot === activeProjectRoot,
+    isGlobal: options.isGlobal,
+    menuOpen: options.menuOpen,
+    confirmingRemove: options.confirmingRemove,
     collapsed: options.collapsed,
     rows: [...rows].sort((left, right) => touchedAt(right.updatedAt) - touchedAt(left.updatedAt)),
   }
@@ -394,6 +446,13 @@ export type SidebarIntent =
   | { kind: 'search'; query: string }
   /** Fold one workspace's group shut, or open it again. */
   | { kind: 'toggle-project'; projectRoot: string }
+  /** Open a heading's context menu, or close whatever is open (`undefined`). */
+  | { kind: 'open-project-menu'; projectRoot: string | undefined }
+  /** Ask the heading "remove from the sidebar?" — the menu item's answer. */
+  | { kind: 'request-remove-project'; projectRoot: string }
+  /** Unregister the project. Its sessions stay on disk; only the row goes. */
+  | { kind: 'confirm-remove-project'; projectRoot: string }
+  | { kind: 'cancel-remove-project' }
   /** Open or close the footer's `?` panel. */
   | { kind: 'toggle-help' }
   | { kind: 'request-delete'; sessionId: string }
@@ -465,6 +524,11 @@ export function sidebarKeyToIntent(chord: SidebarChord, state: SidebarState): Si
   if (chord.ctrlKey === true || chord.metaKey === true) return { kind: 'none' }
 
   if (chord.key === 'Escape') {
+    // Innermost first, the `settingsKeyToIntent` ordering: a menu, then the
+    // question it opened, then the row's own confirmation. Escape backs out one
+    // layer at a time rather than clearing everything at once.
+    if (state.projectMenu !== undefined) return { kind: 'open-project-menu', projectRoot: undefined }
+    if (state.pendingRemoveProject !== undefined) return { kind: 'cancel-remove-project' }
     return state.pendingDelete !== undefined ? { kind: 'cancel-delete' } : { kind: 'none' }
   }
   if (chord.key === 'ArrowUp') return { kind: 'move', direction: 'up' }
@@ -532,9 +596,9 @@ export function newSessionIntent(projectRoot: string | undefined): SidebarIntent
  *
  * Built from `state` rather than from a built view so callers that only need the
  * roots — "which project does this pane belong to", the reveal path — do not pay
- * for grouping. History projects come first in wire order; a project known only
- * from a lane lands after them, and the active pane's is hoisted, exactly as
- * `sidebarView` orders the groups.
+ * for grouping. History projects come first in wire order (added order, first
+ * added first); a project known only from a lane lands after them. No hoisting:
+ * activation is imperceptible, so the order never moves.
  */
 export function workspaceRootsOf(state: SidebarState): readonly string[] {
   const roots: string[] = []
@@ -543,8 +607,7 @@ export function workspaceRootsOf(state: SidebarState): readonly string[] {
   }
   for (const project of state.projects) add(project.projectRoot)
   for (const lane of state.lanes) add(lane.projectRoot)
-  const own = activeProjectRootOf(state)
-  return own === undefined ? roots : [...roots.filter((root) => root === own), ...roots.filter((root) => root !== own)]
+  return roots
 }
 
 /**
@@ -595,11 +658,12 @@ export function sidebarRenderSignature(view: SidebarView): string {
     `q:${view.searchQuery}`,
   ]
   for (const group of view.groups) {
-    // The count is drawn on the heading, a collapsed group's included, so it is
-    // signed even where the rows below it are not.
+    // The menu and the confirmation are drawn on the heading, a collapsed
+    // group's included, so they are signed even where the rows below are not —
+    // an unsigned `menuOpen` is a right-click the render guard swallows.
     parts.push(
-      `g:${group.projectRoot}${group.projectName}${group.own ? '1' : '0'}`
-        + `${group.collapsed ? '1' : '0'}${group.rows.length}`,
+      `g:${group.projectRoot}${group.projectName}${group.collapsed ? '1' : '0'}${group.isGlobal ? 'g' : '-'}`
+        + `${group.menuOpen ? 'm' : '-'}${group.confirmingRemove ? 'r' : '-'}${group.rows.length}`,
     )
     if (group.collapsed) continue
     for (const row of group.rows) {

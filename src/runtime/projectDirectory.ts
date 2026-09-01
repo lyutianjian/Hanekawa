@@ -1,5 +1,5 @@
 import { basename, resolve } from 'node:path'
-import { normalizeCaseForComparison } from '../utils/paths.js'
+import { isGlobalWorkspaceRoot, normalizeCaseForComparison } from '../utils/paths.js'
 import type { SessionMeta } from '../sessions/service.js'
 import type { WirePaneInfo } from './protocol/wire.js'
 import type { SessionWorkspace } from './sessionWorkspace.js'
@@ -102,9 +102,16 @@ export const SHUTDOWN_DEADLINE_MS = 8_000
  * the path itself rather than rendering a nameless tab group.
  */
 export function projectDisplayName(cwd: string): string {
+  // The home directory is not "a project like any other": it is the workspace
+  // sessions fall back to when nothing is opened, and its basename (a username)
+  // says nothing. One name for it everywhere — sidebar groups, lane info, hello.
+  if (isGlobalWorkspaceRoot(cwd)) return GLOBAL_WORKSPACE_NAME
   const resolved = resolve(cwd)
   return basename(resolved) || resolved
 }
+
+/** What the home-rooted (global) workspace is called wherever a name is drawn. */
+export const GLOBAL_WORKSPACE_NAME = '最近'
 
 /**
  * The generic parameters default to the real types, so the shell writes

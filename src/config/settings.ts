@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
+import { isGlobalWorkspaceRoot } from '../utils/paths.js'
 import type { AgentConfig, ModelConfig } from './service.js'
 import type { Endpoint, Routing } from './routing.js'
 import type { EffortLevel } from './effort.js'
@@ -256,7 +257,13 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
 
 export async function loadMergedSettings(cwd: string): Promise<MyAgentSettings> {
   const userSettings = await loadSettingsFile(join(homedir(), '.myagent', 'settings.json'))
-  const projectSettings = await loadSettingsFile(join(cwd, '.myagent', 'settings.json'))
+  // The home directory *is* the global workspace, and its "project" layer is
+  // the user layer. Loading both would apply every permission entry and hook
+  // twice — the same double-load `ConfigService` already guards against for
+  // `config.json`.
+  const projectSettings = isGlobalWorkspaceRoot(cwd)
+    ? {}
+    : await loadSettingsFile(join(cwd, '.myagent', 'settings.json'))
   const legacyMcpSettings = await loadLegacyMcpSettings(cwd)
   const localSettings = await loadSettingsFile(join(cwd, '.myagent', 'settings.local.json'))
 

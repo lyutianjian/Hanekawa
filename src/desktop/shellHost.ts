@@ -1,4 +1,5 @@
 import { z } from 'zod/v3'
+import { homedir } from 'node:os'
 import { maskKey } from '../config/maskKey.js'
 import { SUPPORTED_PROVIDER_NAMES } from '../config/providers/registry.js'
 import type { Config, ModelConfig } from '../config/service.js'
@@ -17,8 +18,11 @@ import { DEFAULT_CONTEXT_MANAGEMENT, type ContextManagementConfig } from '../pro
 import { deleteSessionArtifacts } from '../runtime/deleteSession.js'
 import type { ProviderConfigChangeScope } from '../runtime/providerRuntime.js'
 import type { SessionMeta } from '../sessions/service.js'
+import { SessionStore } from '../sessions/service.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
 import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../tools/agentTool.js'
+import { peekSessions } from './recentProjects.js'
+import { isGlobalWorkspaceRoot } from '../utils/paths.js'
 import type {
   DirectoryProject,
   DirectoryWorkspace,
@@ -26,7 +30,7 @@ import type {
   ProjectDirectory,
   ProjectEntry,
 } from '../runtime/projectDirectory.js'
-import { projectDisplayName } from '../runtime/projectDirectory.js'
+import { projectDisplayName, projectRootKey } from '../runtime/projectDirectory.js'
 import type { RuntimeChannel } from '../runtime/protocol/channel.js'
 import type { LaneMux } from '../runtime/protocol/laneChannel.js'
 import type { SessionPane, SessionWorkspace } from '../runtime/sessionWorkspace.js'
@@ -41,6 +45,7 @@ import {
   type WireShellOpenInEditorResult,
   type WireShellSetWindowThemeResult,
   type WireShellOpenProjectResult,
+  type WireShellRemoveProjectResult,
   type WireShellOpenSessionResult,
   type WireShellPanesResult,
   type WireSessionSummary,
@@ -249,6 +254,34 @@ export interface ShellHostDeps<
   isQuitting?: () => boolean
   /** Fired when the last lane goes — the single window's "nothing left" moment. */
   onAllLanesClosed?: (reason: string) => void
+  /**
+   * The persisted "added projects" registry, most recently opened first. The
+   * sidebar's history lists every one of these — most without an open runtime —
+   * beside the open projects and the global workspace.
+   *
+   * Optional so a test that only exercises open projects needs no fake; the
+   * production shell always provides it.
+   */
+  knownProjects?: () => Promise<readonly string[]>
+  /**
+   * Opens a project on demand — a history row of a not-yet-open project was
+   * clicked, or "new session" fired with nothing open at all. Bootstraps the
+   * runtime and hands back the directory entry; when `sessionId` names the
+   * session being opened, the bootstrap scope is built *over* it so the
+   * project's first pane is the pane the click asked for.
+   *
+   * Optional for the same reason `knownProjects` is.
+   */
+  ensureProject?: (
+    cwd: string,
+    options?: { sessionId?: string },
+  ) => Promise<ProjectEntry<P, W>>
+  /**
+   * Drops a project from the "added projects" registry — the write half of
+   * `remove-project`. Optional for the same reason `knownProjects` is; a shell
+   * without one still closes the lanes, it just cannot make the row stay gone.
+   */
+  onForgetProject?: (cwd: string) => Promise<void>
 }
 
 interface LaneEntry<P extends DirectoryProject, W extends DirectoryWorkspace, PaneT extends PaneLike> {
@@ -404,6 +437,9 @@ const SHELL_COMMAND_SCHEMAS = {
     .strict(),
   'open-project': z
     .object({ type: z.literal('open-project'), id: commandId, path: z.string().optional() })
+    .strict(),
+  'remove-project': z
+    .object({ type: z.literal('remove-project'), id: commandId, projectRoot: z.string() })
     .strict(),
   'list-sessions': z.object({ type: z.literal('list-sessions'), id: commandId }).strict(),
   'delete-session': z
@@ -623,6 +659,44 @@ export class ShellHost<
   // --- topology ------------------------------------------------------------
 
   /**
+   * The cwd of a *known but not open* project, by the wire's normalized root
+   * key. `undefined` when the root names nothing the registry ever saw.
+   */
+  private async knownCwdForRoot(projectRoot: string): Promise<string | undefined> {
+    if (!this.deps.knownProjects) return undefined
+    const known = await this.deps.knownProjects()
+    return known.find((cwd) => projectRootKey(cwd) === projectRoot)
+  }
+
+  /**
+   * Which project an `open-session` lands on.
+   *
+   * Three cases, in order: a root that is already open; a root the registry
+   * knows (bootstrapped on demand, over the session the command named, so the
+   * bootstrap pane *is* the pane being asked for); and no root at all — the
+   * first open project, else the global workspace, because "new session"
+   * with nothing open is the global workspace's most ordinary entry.
+   */
+  private async resolveProjectEntry(
+    projectRoot: string | undefined,
+    sessionId: string | undefined,
+  ): Promise<ProjectEntry<P, W>> {
+    if (projectRoot !== undefined) {
+      const open = this.deps.directory.get(projectRoot)
+      if (open) return open
+      const cwd = await this.knownCwdForRoot(projectRoot)
+      if (cwd !== undefined && this.deps.ensureProject) {
+        return this.deps.ensureProject(cwd, sessionId !== undefined ? { sessionId } : {})
+      }
+      throw new Error(`No project is open at ${projectRoot}`)
+    }
+    const first = this.deps.directory.entries()[0]
+    if (first) return first
+    if (this.deps.ensureProject) return this.deps.ensureProject(homedir())
+    throw new Error('No project is open.')
+  }
+
+  /**
    * The whole lane topology, across every project. The same projection every
    * `SessionHost`'s `describePanes` answers with, extended with the lane key —
    * so the renderer's tab bar and the hosts' pane lists can never disagree
@@ -680,11 +754,7 @@ export class ShellHost<
       case 'panes':
         return { lanes: this.describeLanes() } satisfies WireShellPanesResult
       case 'open-session': {
-        const entry =
-          command.projectRoot !== undefined
-            ? this.deps.directory.get(command.projectRoot)
-            : this.deps.directory.entries()[0]
-        if (!entry) throw new Error('No project is open.')
+        const entry = await this.resolveProjectEntry(command.projectRoot, command.sessionId)
         return this.openLane(entry, { sessionId: command.sessionId, title: command.title })
       }
       case 'open-project': {
@@ -694,6 +764,8 @@ export class ShellHost<
         this.deps.onOpenProject(command.path)
         return { ok: true } satisfies WireShellOpenProjectResult
       }
+      case 'remove-project':
+        return this.removeProject(command.projectRoot)
       case 'list-sessions':
         return this.listSessions()
       case 'delete-session':
@@ -720,24 +792,110 @@ export class ShellHost<
   }
 
   /**
-   * Every project's session history, in the order projects were opened.
+   * Every *added* project's session history, in the order the registry keeps
+   * (the order they were added, first added first), with the global workspace's
+   * own sessions last — the sidebar's whole world, not just what is open right
+   * now. The registry order is stable across opens, which is what keeps a group
+   * from moving when one of its sessions is created; see `recentProjects.ts`.
    *
-   * `Promise.all` because the reads are independent and each one is a lock file,
-   * a `readdir` and an index parse — bounded by open projects, so this saves tens
-   * of milliseconds rather than seconds, but there is no reason to serialize it.
-   * The sessions are projected field by field: this answers with *every* session
-   * in *every* project, and `SessionMeta` carries two unbounded arrays
-   * (`checkpoints`, `denialState`) that no row reads.
+   * Two sources per root: an open project reads through its live store, a
+   * registered-but-closed one through the read-only index peek (no runtime, no
+   * lock). Open projects the registry somehow missed are appended defensively,
+   * because a project on screen must be a project with history. `Promise.all`
+   * because every read is independent — locks, `readdir`s and tiny JSON parses.
+   *
+   * The sessions are projected field by field: `SessionMeta` carries two
+   * unbounded arrays (`checkpoints`, `denialState`) that no row reads.
    */
   private async listSessions(): Promise<WireShellSessionsResult> {
+    const roots: string[] = []
+    const addRoot = (cwd: string): void => {
+      const key = projectRootKey(cwd)
+      if (!roots.some((existing) => projectRootKey(existing) === key)) roots.push(cwd)
+    }
+    if (this.deps.knownProjects) {
+      for (const cwd of await this.deps.knownProjects()) addRoot(cwd)
+    }
+    for (const entry of this.deps.directory.entries()) addRoot(entry.cwd)
+    // The global workspace: always known, always listed, anchored last — a
+    // project is where work belongs; the fallback is where it lands when
+    // nothing is opened.
+    addRoot(homedir())
+
     const projects = await Promise.all(
-      this.deps.directory.entries().map(async (entry) => ({
-        projectRoot: entry.root,
-        projectName: projectDisplayName(entry.cwd),
-        sessions: (await entry.project.store.list()).map(summarize),
-      })),
+      roots.map(async (cwd) => {
+        const entry = this.deps.directory.get(cwd)
+        const sessions = entry ? await entry.project.store.list() : await peekSessions(cwd)
+        return {
+          cwd,
+          open: entry !== undefined,
+          projectRoot: projectRootKey(cwd),
+          projectName: projectDisplayName(cwd),
+          isGlobal: isGlobalWorkspaceRoot(cwd),
+          sessions: sessions.map(summarize),
+        }
+      }),
     )
-    return { projects } satisfies WireShellSessionsResult
+    return {
+      projects: projects
+        // Every *added* project is listed unconditionally, history or not: the
+        // registry is what the sidebar draws a project row from, so a project
+        // whose sessions were all deleted stays reachable and only
+        // `remove-project` takes it off screen. The global workspace is the
+        // exception — it is implicit rather than added, so it earns its row by
+        // being open or by having sessions.
+        .filter((project) => !project.isGlobal || project.open || project.sessions.length > 0)
+        .map(({ cwd: _cwd, open: _open, ...project }) => project),
+    } satisfies WireShellSessionsResult
+  }
+
+  /**
+   * Forgets a project: its lanes go, its runtime shuts down, and the registry
+   * entry is dropped. Nothing on disk is touched — the sessions are still there
+   * if the directory is opened again.
+   *
+   * The lane teardown borrows `deleteSession`'s deferral (below): detaching the
+   * window's *last* lane fires `onAllLanesClosed`, which quits the app off
+   * darwin. "Remove this project from my sidebar" is not "I am done with this
+   * window", so the last-lane case defers the exit and lands on a fresh global
+   * workspace draft instead — the same answer `deleteSession` gives, and the
+   * reason `deferExit` is a flag rather than a check on `reason`.
+   */
+  private async removeProject(projectRoot: string): Promise<WireShellRemoveProjectResult> {
+    const entry = this.deps.directory.get(projectRoot)
+    const cwd = entry?.cwd ?? (await this.knownCwdForRoot(projectRoot))
+    if (cwd === undefined) throw new Error(`No project is open at ${projectRoot}`)
+    // The global workspace is not a registry member, so there is nothing to
+    // forget and nowhere for its sessions to go. Rejecting is the honest answer.
+    if (isGlobalWorkspaceRoot(cwd)) throw new Error('The global workspace cannot be removed.')
+
+    const lanes = [...this.lanes.entries()]
+      .filter(([, held]) => held.project === entry)
+      .map(([lane]) => lane)
+    // True when this project holds every lane in the window: the exit has to be
+    // deferred and a replacement lane opened, or the app quits under the user.
+    const replacing = lanes.length > 0 && lanes.length === this.lanes.size
+    for (const lane of lanes) this.detachLane(lane, 'project-removed', { deferExit: replacing })
+    // The project itself still has to come down when its exit was deferred —
+    // `deferExit` skips `settleAfterLastLane` entirely, and the replacement
+    // below belongs to a *different* project.
+    if (replacing && entry) void this.deps.directory.closeProject(entry, 'project-removed')
+
+    await this.deps.onForgetProject?.(cwd)
+
+    if (replacing) {
+      try {
+        if (!this.deps.ensureProject) throw new Error('The shell cannot open the global workspace.')
+        await this.openLane(await this.deps.ensureProject(homedir()))
+      } catch (error) {
+        // The replacement is what the deferral was for. Without it the window
+        // sits with zero lanes and the "nothing left" moment never fires, so
+        // hand it over explicitly before reporting the failure.
+        this.deps.onAllLanesClosed?.('project-removed')
+        throw error
+      }
+    }
+    return { ok: true } satisfies WireShellRemoveProjectResult
   }
 
   /**
@@ -782,7 +940,19 @@ export class ShellHost<
     sessionId: string,
   ): Promise<WireShellDeleteSessionResult> {
     const entry = this.deps.directory.get(projectRoot)
-    if (!entry) throw new Error(`No project is open at ${projectRoot}`)
+    if (!entry) {
+      // A closed project's history is still deletable — through a transient
+      // store, without bootstrapping a runtime for a deletion. No lane can
+      // exist for a project the directory does not hold, so this is purely a
+      // filesystem deletion.
+      const cwd = await this.knownCwdForRoot(projectRoot)
+      if (cwd === undefined) throw new Error(`No project is open at ${projectRoot}`)
+      const store = new SessionStore(cwd)
+      const session = await store.resolve(sessionId)
+      if (!session) throw new Error(`Session not found: ${sessionId}`)
+      await deleteSessionArtifacts(cwd, store, session.id)
+      return { ok: true } satisfies WireShellDeleteSessionResult
+    }
     const { store } = entry.project
     const { cwd } = entry
 
@@ -900,7 +1070,18 @@ export class ShellHost<
     title: string,
   ): Promise<WireShellRenameSessionResult> {
     const entry = this.deps.directory.get(projectRoot)
-    if (!entry) throw new Error(`No project is open at ${projectRoot}`)
+    if (!entry) {
+      // Same rule as delete: a transient store, no runtime. There is no lane to
+      // refresh and no topology to broadcast — a closed session's title moves
+      // only its index row.
+      const cwd = await this.knownCwdForRoot(projectRoot)
+      if (cwd === undefined) throw new Error(`No project is open at ${projectRoot}`)
+      const store = new SessionStore(cwd)
+      const session = await store.resolve(sessionId)
+      if (!session) throw new Error(`Session not found: ${sessionId}`)
+      await store.rename(session.id, title)
+      return { ok: true, title } satisfies WireShellRenameSessionResult
+    }
     const { store } = entry.project
 
     const session = await store.resolve(sessionId)
@@ -1112,11 +1293,17 @@ function assertNever(value: never): never {
 }
 
 /**
- * `SessionMeta` → the four fields a sidebar row reads. Field by field, never a
- * spread: `checkpoints` gains an entry per turn and `denialState` accumulates
- * streaks, and neither is read by anything downstream of this command.
+ * A session index row → the four fields a sidebar row reads. Field by field,
+ * never a spread: `SessionMeta` gains entries (`checkpoints` per turn,
+ * `denialState` streaks) that nothing downstream of this command reads, and the
+ * registry peek's narrower rows satisfy the same shape.
  */
-function summarize(session: SessionMeta): WireSessionSummary {
+function summarize(session: {
+  id: string
+  updatedAt: string
+  messageCount: number
+  title?: string
+}): WireSessionSummary {
   const summary: WireSessionSummary = {
     id: session.id,
     updatedAt: session.updatedAt,

@@ -20,11 +20,12 @@ import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.j
 import { shadowRepoPath } from '../src/services/checkpoint/checkpointService.js'
 import {
   ProjectDirectory,
+  projectRootKey,
   type PaneLike,
   type ProjectEntry,
 } from '../src/runtime/projectDirectory.js'
 import type { RuntimeChannel } from '../src/runtime/protocol/channel.js'
-import type { SessionMeta } from '../src/sessions/service.js'
+import { SessionStore, type SessionMeta } from '../src/sessions/service.js'
 import type { Config, ModelConfig } from '../src/config/service.js'
 import { mergeRouting, type Endpoint, type Routing } from '../src/config/routing.js'
 import { loadMergedSettings, type MyAgentSettings } from '../src/config/settings.js'
@@ -72,6 +73,10 @@ function sessionOf(id: string, title?: string): SessionMeta {
     ...(title !== undefined ? { title } : {}),
   }
 }
+
+/** An ISO timestamp `minutesAgo` before a fixed instant, for index fixtures. */
+const at = (minutesAgo: number): string =>
+  new Date(Date.UTC(2026, 7, 20, 12, 0, 0) - minutesAgo * 60_000).toISOString()
 
 class FakePane implements PaneLike {
   constructor(public session: SessionMeta) {}
@@ -393,6 +398,8 @@ interface Harness {
   failEditor(message: string | undefined): void
   /** The themes `set-window-theme` handed to the window overlay, in order. */
   windowThemes: Array<'dark' | 'light'>
+  /** The cwds `remove-project` handed to the registry, in order. */
+  forgottenProjects: string[]
   /**
    * The interleaved action log the fakes append to (`close-pane:<id>`,
    * `store-delete:<id>`, `shutdown:<cwd>:<reason>`, `closeAll`). The only place
@@ -414,6 +421,15 @@ function createHarness(
     /** A shell with no native overlay — every non-Windows build. */
     withWindowTheme?: boolean
     cwd?: string
+    /** The registry the sidebar's full history is built from. */
+    knownProjects?: () => Promise<readonly string[]>
+    /** Boots a project the registry knows but the directory does not hold. */
+    ensureProject?: (
+      cwd: string,
+      options?: { sessionId?: string },
+    ) => Promise<ProjectEntry<FakeProject, FakeWorkspace>>
+    /** A shell that cannot write the registry — `remove-project` still detaches. */
+    withForgetProject?: boolean
   } = {},
 ): Harness {
   const [mainTransport, rendererTransport] = createMemoryChannelPair()
@@ -437,6 +453,7 @@ function createHarness(
   const openProjectRequests: Array<string | undefined> = []
   const editorRequests: string[] = []
   const windowThemes: Array<'dark' | 'light'> = []
+  const forgottenProjects: string[] = []
   let editorFailure: string | undefined
   let quitting = false
   let nextKey = 0
@@ -475,6 +492,15 @@ function createHarness(
     ...(options.withWindowTheme === false
       ? {}
       : { onWindowTheme: (theme: 'dark' | 'light') => windowThemes.push(theme) }),
+    ...(options.knownProjects ? { knownProjects: options.knownProjects } : {}),
+    ...(options.ensureProject ? { ensureProject: options.ensureProject } : {}),
+    ...(options.withForgetProject === false
+      ? {}
+      : {
+          onForgetProject: async (cwd: string) => {
+            forgottenProjects.push(cwd)
+          },
+        }),
     isQuitting: () => quitting,
     onAllLanesClosed: (reason) => allLanesClosed.push(reason),
   })
@@ -501,6 +527,7 @@ function createHarness(
     openProjectRequests,
     editorRequests,
     windowThemes,
+    forgottenProjects,
     failEditor: (message: string | undefined) => {
       editorFailure = message
     },
@@ -554,6 +581,7 @@ const COMMAND_SAMPLES = {
   'rename-session': { type: 'rename-session', id: 'h', projectRoot: 'r', sessionId: 's1', title: 'T' },
   'open-in-editor': { type: 'open-in-editor', id: 'i', projectRoot: 'r' },
   'set-window-theme': { type: 'set-window-theme', id: 'j', theme: 'light' },
+  'remove-project': { type: 'remove-project', id: 'k', projectRoot: 'r' },
 } as const satisfies Record<ShellCommand['type'], ShellCommand>
 
 /**
@@ -630,6 +658,7 @@ test('every shell command variant round-trips through its schema', () => {
       'open-project',
       'open-session',
       'panes',
+      'remove-project',
       'rename-session',
       'set-window-theme',
       'settings-change',
@@ -979,6 +1008,249 @@ test('list-sessions lists a project with no lane open — history is not the top
   assert.deepEqual(await h.client.panes(), [], 'no lane exists')
   assert.equal(result.projects.length, 1)
   assert.equal(result.projects[0]!.sessions.length, 1)
+})
+
+test('list-sessions covers the registry and the global workspace, not just open projects', async () => {
+  // A real registered-but-never-opened project with a real index: the closed
+  // half of the sidebar reads through the index peek, not a runtime.
+  const closedDir = await mkdtemp(path.join(os.tmpdir(), 'myagent-closed-'))
+  await mkdir(path.join(closedDir, '.myagent', 'sessions'), { recursive: true })
+  await writeFile(
+    path.join(closedDir, '.myagent', 'sessions', 'index.json'),
+    JSON.stringify({ sessions: [{ id: 'c-1', shortId: 'c-1', createdAt: at(5), updatedAt: at(5), messageCount: 2, title: 'Closed history' }] }),
+    'utf8',
+  )
+  // The scratch home the beforeEach installed, with one global session.
+  const home = process.env.USERPROFILE!
+  await mkdir(path.join(home, '.myagent', 'sessions'), { recursive: true })
+  await writeFile(
+    path.join(home, '.myagent', 'sessions', 'index.json'),
+    JSON.stringify({ sessions: [{ id: 'g-1', shortId: 'g-1', createdAt: at(1), updatedAt: at(1), messageCount: 1, title: 'Global' }] }),
+    'utf8',
+  )
+  try {
+    const h = createHarness({ knownProjects: () => Promise.resolve([closedDir]) })
+    h.project.store.sessions.set('a-1', sessionOf('a-1', 'Open'))
+
+    const result = await h.client.listSessions()
+
+    // Registry first, open entries the registry missed next, global workspace
+    // always last. An empty home (the usual case) is simply absent.
+    assert.deepEqual(
+      result.projects.map((project) => project.projectName),
+      [path.basename(closedDir), 'alpha', '最近'],
+    )
+    assert.deepEqual(
+      result.projects[0]!.sessions.map((session) => session.id),
+      ['c-1'],
+    )
+    assert.equal(result.projects[0]!.sessions[0]!.title, 'Closed history')
+    assert.equal(result.projects[2]!.projectRoot, projectRootKey(home))
+  } finally {
+    await rm(closedDir, { recursive: true, force: true })
+  }
+})
+
+test('list-sessions keeps a registered project that has no sessions at all', async () => {
+  // The row is how the user gets back to the project. Filtering it out on "no
+  // history" meant deleting the last session deleted the way back.
+  const emptyDir = await mkdtemp(path.join(os.tmpdir(), 'myagent-empty-'))
+  try {
+    const h = createHarness({ knownProjects: () => Promise.resolve([emptyDir]) })
+
+    const result = await h.client.listSessions()
+
+    assert.deepEqual(
+      result.projects.map((project) => project.projectName),
+      [path.basename(emptyDir), 'alpha'],
+      'the registered project is listed with nothing under it; the empty home is not',
+    )
+    assert.deepEqual(result.projects[0]!.sessions, [])
+    assert.deepEqual(
+      result.projects.map((project) => project.isGlobal),
+      [false, false],
+      'isGlobal rides the wire so the renderer never matches on the name',
+    )
+  } finally {
+    await rm(emptyDir, { recursive: true, force: true })
+  }
+})
+
+test('remove-project unregisters a closed project without touching its files', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-forget-'))
+  try {
+    const h = createHarness({ knownProjects: () => Promise.resolve([dir]) })
+
+    const result = await h.client.removeProject(projectRootKey(dir))
+
+    assert.deepEqual(result, { ok: true })
+    assert.deepEqual(h.forgottenProjects, [dir], 'the real cwd, not the wire key')
+    assert.deepEqual(h.project.store.deleted, [], 'nothing was deleted')
+    assert.deepEqual(h.allLanesClosed, [], 'a closed project holds no lanes to lose')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('remove-project releases the open project lanes before forgetting it', async () => {
+  const h = createHarness()
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-forget-open-'))
+  try {
+    const project = h.addProject(cwd)
+    project.project.store.sessions.set('s1', sessionOf('s1', 'One'))
+    project.project.store.sessions.set('s2', sessionOf('s2', 'Two'))
+    // A lane on the *other* project, so this is not the window's last lane.
+    await h.client.openSession({ sessionId: 's1', projectRoot: project.entry.root })
+    await h.client.openSession({ sessionId: 's2', projectRoot: project.entry.root })
+    await h.client.openSession({ projectRoot: h.entry.root })
+    await settle()
+
+    await h.client.removeProject(project.entry.root)
+    await settle()
+
+    assert.deepEqual(
+      h.client.getLanes().map((lane) => lane.projectRoot),
+      [h.entry.root],
+      'both of the removed project lanes are gone',
+    )
+    assert.equal(project.project.shutdowns.length, 1, 'and its runtime came down')
+    assert.equal(h.directory.get(cwd), undefined)
+    assert.deepEqual(h.forgottenProjects, [cwd])
+    assert.deepEqual(h.allLanesClosed, [], 'the window still has a lane')
+    assert.deepEqual(project.project.store.deleted, [], 'no session was deleted')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('removing the window only project lands on the global workspace, not on quit', async () => {
+  // The `deleteSession` lesson: detaching the last lane fires `onAllLanesClosed`,
+  // which quits off darwin. "Take this off my sidebar" is not "I am done".
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-forget-last-'))
+  const home = process.env.USERPROFILE!
+  try {
+    let global: ReturnType<Harness['addProject']> | undefined
+    const h = createHarness({
+      cwd,
+      ensureProject: (target) => {
+        global ??= h.addProject(target)
+        return Promise.resolve(global.entry)
+      },
+    })
+    h.project.store.sessions.set('s1', sessionOf('s1', 'Only one'))
+    await h.client.openSession({ sessionId: 's1', projectRoot: h.entry.root })
+    await settle()
+
+    await h.client.removeProject(h.entry.root)
+    await settle()
+
+    assert.deepEqual(h.allLanesClosed, [], 'nothing asked the window to go away')
+    assert.deepEqual(h.forgottenProjects, [cwd])
+    assert.equal(h.directory.get(cwd), undefined, 'the removed project is down')
+    assert.equal(h.project.shutdowns.length, 1)
+
+    const lanes = h.client.getLanes()
+    assert.equal(lanes.length, 1, 'a replacement lane took its place')
+    assert.equal(lanes[0]!.projectRoot, projectRootKey(home))
+    assert.equal(h.activates.at(-1), lanes[0]!.lane, 'and the renderer was asked to show it')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('remove-project refuses the global workspace and roots it never saw', async () => {
+  const home = process.env.USERPROFILE!
+  const h = createHarness({ cwd: home })
+
+  await assert.rejects(
+    h.client.removeProject(projectRootKey(home)),
+    /global workspace cannot be removed/,
+  )
+  await assert.rejects(
+    h.client.removeProject('C:\\repo\\never-opened'),
+    /No project is open at/,
+  )
+  assert.deepEqual(h.forgottenProjects, [])
+})
+
+test('open-session bootstraps a registered project on demand, over the named session', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-ondemand-'))
+  try {
+    const calls: Array<{ cwd: string; sessionId?: string }> = []
+    const h = createHarness({
+      knownProjects: () => Promise.resolve([dir]),
+      ensureProject: (cwd, options) => {
+        calls.push({ cwd, ...(options?.sessionId !== undefined ? { sessionId: options.sessionId } : {}) })
+        const opened = h.addProject(cwd)
+        opened.project.store.sessions.set('s-remote', sessionOf('s-remote', 'From history'))
+        return Promise.resolve(opened.entry)
+      },
+    })
+
+    const result = await h.client.openSession({ sessionId: 's-remote', projectRoot: projectRootKey(dir) })
+    await settle()
+
+    assert.deepEqual(calls, [{ cwd: dir, sessionId: 's-remote' }], 'bootstrapped over the named session')
+    assert.equal(result.pane.paneId, 's-remote')
+    assert.ok(h.attaches.some((attach) => attach.pane.getSession().id === 's-remote'))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('open-session with nothing open falls back to the global workspace', async () => {
+  const calls: string[] = []
+  const [mainTransport, rendererTransport] = createMemoryChannelPair()
+  const emptyDirectory = new ProjectDirectory<FakeProject, FakeWorkspace>()
+  let ensure: ((cwd: string) => ProjectEntry<FakeProject, FakeWorkspace>) | undefined
+  const host = new ShellHost<FakeProject, FakePane, FakeWorkspace>({
+    mux: createLaneMux(mainTransport),
+    directory: emptyDirectory,
+    nextLaneKey: () => '1',
+    createOccupant: () => ({
+      dispose: () => {},
+      refreshAfterConfigChange: () => {},
+      refreshSessionMeta: () => {},
+    }),
+    knownProjects: () => Promise.resolve([]),
+    ensureProject: (cwd) => {
+      calls.push(cwd)
+      return Promise.resolve(ensure!(cwd))
+    },
+  })
+  void host
+  const client = new ShellClient(createLaneMux(rendererTransport).lane(SHELL_LANE))
+
+  const home = process.env.USERPROFILE!
+  ensure = (cwd) => {
+    const opened = createProject(emptyDirectory, cwd, [])
+    opened.project.store.sessions.set('g-new', sessionOf('g-new'))
+    return opened.entry
+  }
+  const result = await client.openSession()
+  await settle()
+
+  assert.deepEqual(calls, [home])
+  assert.equal(result.pane.projectRoot, projectRootKey(home))
+})
+
+test('delete-session and rename-session work on a registered project with no runtime', async () => {
+  // Real files: the transient `SessionStore` resolves and rewrites a real index.
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-closed-delete-'))
+  const store = new SessionStore(dir)
+  await store.init()
+  const created = await store.create('Transient target')
+  try {
+    const h = createHarness({ knownProjects: () => Promise.resolve([dir]) })
+
+    await h.client.renameSession(projectRootKey(dir), created.id, 'Renamed while closed')
+    assert.equal((await store.list()).at(0)?.title, 'Renamed while closed')
+
+    await h.client.deleteSession(projectRootKey(dir), created.id)
+    assert.deepEqual(await store.list(), [], 'the closed project history is gone')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 // --- deleting sessions -----------------------------------------------------------

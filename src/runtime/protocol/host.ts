@@ -14,6 +14,7 @@ import { buildModelPickerOptions } from '../modelPicker.js'
 import { resolveRuntimeModelKeyAfterConfigChange, type ProviderConfigChangeScope } from '../providerRuntime.js'
 import { canPumpQueue } from '../queuePump.js'
 import { projectDisplayName, projectRootKey } from '../projectDirectory.js'
+import { isGlobalWorkspaceRoot } from '../../utils/paths.js'
 import { SessionRecordLedger } from '../recordLedger.js'
 import { buildRewindSummaryRewrite } from '../rewindSummary.js'
 import { generateFileSuggestions } from '../suggestions/fileSuggestions.js'
@@ -613,6 +614,7 @@ export class SessionHost {
           cwd: this.project.cwd,
           projectRoot: projectRootKey(this.project.cwd),
           projectName: projectDisplayName(this.project.cwd),
+          projectIsGlobal: isGlobalWorkspaceRoot(this.project.cwd),
           ...(gitBranch ? { gitBranch } : {}),
           records: [...this.ledger.list()],
           notices: this.startupNotices(this.scope.diagnostics),

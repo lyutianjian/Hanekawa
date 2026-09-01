@@ -26,7 +26,10 @@ export interface CanvasHeaderMenuItem {
 }
 
 export interface CanvasHeaderView {
-  /** False when no lane is active: an empty window draws no header at all. */
+  /**
+   * False when no lane is active, and false while the active pane is still a
+   * draft: an empty window and a fresh session both draw no header at all.
+   */
   readonly visible: boolean
   readonly title: string
   /** The project the session belongs to, for the "open in editor" button's name. */
@@ -67,9 +70,20 @@ export function canvasHeaderView(input: {
    * confirmation onto the next session the user switched to.
    */
   pendingDelete: string | undefined
+  /**
+   * Whether the pane has a conversation yet.
+   *
+   * A draft has nothing this bar can say: its title is the placeholder, and
+   * rename/delete are about a session that is not on disk in any meaningful
+   * sense. Drawing the row anyway cost 34px above a welcome screen that already
+   * names the project — the same "a label for the absence of news" the status
+   * line was cured of. It appears with the first message, which
+   * `onFirstContent` already repaints on.
+   */
+  hasConversation: boolean
 }): CanvasHeaderView {
   const { lane } = input
-  if (!lane) return EMPTY
+  if (!lane || !input.hasConversation) return EMPTY
 
   const confirming = input.pendingDelete !== undefined && input.pendingDelete === lane.sessionId
   // Two steps in the menu itself rather than deferring to the sidebar's own

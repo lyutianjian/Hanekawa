@@ -989,6 +989,7 @@ test('hello carries everything a shell needs to paint its first frame', async ()
     session: { id: string }
     cwd: string
     projectName: string
+    projectIsGlobal: boolean
     gitBranch?: string
     records: SessionRecord[]
     notices: unknown[]
@@ -998,6 +999,8 @@ test('hello carries everything a shell needs to paint its first frame', async ()
   assert.equal(result.session.id, result.sessionId)
   assert.equal(typeof result.cwd, 'string')
   assert.equal(result.projectName, path.basename(harness.cwd))
+  // A scratch project is a project, not the global workspace.
+  assert.equal(result.projectIsGlobal, false)
   // The scratch project is not a repository, so the branch pill has nothing to
   // draw — absent, not an empty string.
   assert.equal(result.gitBranch, undefined)
@@ -1021,6 +1024,34 @@ test('hello carries the git branch when the project root is a repository', async
   assert.ok(reply.type === 'reply')
   assert.equal((reply.result as { gitBranch?: string }).gitBranch, 'topic')
   harness.dispose()
+})
+
+test('hello reports the global workspace when cwd is the home directory', async () => {
+  const harness = await createHarness()
+  // `os.homedir()` answers from USERPROFILE/HOME on the platforms this suite
+  // runs on; pointing both at the scratch project makes it the global root
+  // without a filesystem move. Restored before any other assertion can run.
+  const previousProfile = process.env.USERPROFILE
+  const previousHome = process.env.HOME
+  process.env.USERPROFILE = harness.cwd
+  process.env.HOME = harness.cwd
+  try {
+    harness.send({ type: 'hello', id: 'h3' })
+    const reply = await waitFor(
+      () => harness.received.find((event) => event.type === 'reply' && event.id === 'h3'),
+      'a hello reply',
+    )
+    assert.ok(reply.type === 'reply')
+    const result = reply.result as { projectIsGlobal: boolean; projectName: string }
+    assert.equal(result.projectIsGlobal, true)
+    assert.equal(result.projectName, '最近')
+  } finally {
+    if (previousProfile === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = previousProfile
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    harness.dispose()
+  }
 })
 
 test('switching sessions rebuilds the runtime and resets the transcript', async () => {

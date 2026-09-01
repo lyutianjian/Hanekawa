@@ -92,12 +92,17 @@ test('the stylesheet parses exactly, so nothing below can pass vacuously', () =>
   assert.ok(declarations.length >= 300, `parsed only ${declarations.length} declarations`)
   assert.ok(tokens.size >= 15, `expected the token block, found ${tokens.size} custom properties`)
 
-  // The parser takes `selector { … }` with no nesting. An `@media` or `@layer`
-  // block would put a `{` inside a `{`, and the regex would mis-split rather
-  // than fail — so forbid them until someone teaches it.
-  assert.doesNotMatch(
-    css.replace(/\/\*[\s\S]*?\*\//g, ''),
-    /@(?:media|supports|container|layer|scope)\b[^;{]*\{/,
+  // The parser takes `selector { … }` with no nesting: a nested at-rule's
+  // prelude is dropped and its inner rules come through as ordinary blocks (the
+  // same way `@keyframes` already does — see `helpers/rendererCss.ts`). That is
+  // exact enough for one known block and nothing else, so exactly one is allowed
+  // through: the reduced-motion override at the foot of the sheet, whose
+  // selector (`*, *::before, *::after`) collides with no real rule.
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const atRules = [...withoutComments.matchAll(/@(?:media|supports|container|layer|scope)\b[^;{]*\{/g)]
+  assert.deepEqual(
+    atRules.map((match) => match[0].replace(/\s+/g, ' ').trim()),
+    ['@media (prefers-reduced-motion: reduce) {'],
     'a nested at-rule needs a real parser here first',
   )
 
@@ -219,7 +224,7 @@ test('the palette is the one that was agreed, value for value', () => {
       '--surface-scrim': 'rgba(0, 0, 0, 0.55)',
       '--text-primary': '#f4f3f1',
       '--text-secondary': '#9b9992',
-      '--text-tertiary': '#6d6b66',
+      '--text-tertiary': '#8a8880',
       '--link': '#78b0ff',
       '--accent-info': '#6ba6ff',
       '--accent-tool': '#a97bff',
@@ -237,6 +242,10 @@ test('the palette is the one that was agreed, value for value', () => {
       '--radius-lg': '14px',
       '--radius-md': '9px',
       '--radius-pill': '9999px',
+      '--motion-fast': '120ms',
+      '--motion-base': '180ms',
+      '--motion-slow': '240ms',
+      '--ease-standard': 'cubic-bezier(0.2, 0, 0, 1)',
       '--reading-measure': '1100px',
       '--reading-gutter': '32px',
       '--composer-overhang': '12px',
@@ -266,7 +275,7 @@ test('the palette is the one that was agreed, value for value', () => {
       '--surface-scrim': 'rgba(0, 0, 0, 0.55)',
       '--text-primary': '#171614',
       '--text-secondary': '#73716b',
-      '--text-tertiary': '#a5a39d',
+      '--text-tertiary': '#8f8d87',
       '--link': '#3b7ae4',
       '--accent-info': '#3b7ae4',
       '--accent-tool': '#9333ea',
@@ -284,6 +293,10 @@ test('the palette is the one that was agreed, value for value', () => {
       '--radius-lg': '14px',
       '--radius-md': '9px',
       '--radius-pill': '9999px',
+      '--motion-fast': '120ms',
+      '--motion-base': '180ms',
+      '--motion-slow': '240ms',
+      '--ease-standard': 'cubic-bezier(0.2, 0, 0, 1)',
       '--reading-measure': '1100px',
       '--reading-gutter': '32px',
       '--composer-overhang': '12px',
@@ -311,6 +324,10 @@ test('the light block overrides only colours, and adds no token the dark palette
     '--radius-lg',
     '--radius-md',
     '--radius-pill',
+    '--motion-fast',
+    '--motion-base',
+    '--motion-slow',
+    '--ease-standard',
     '--font-ui',
     '--font-mono',
   ]
@@ -637,45 +654,56 @@ test('a short conversation sits against the composer, and a long one still scrol
   )
 })
 
-test('the session the window is showing is not the same thing as the keyboard cursor', () => {
-  // Two axes that used to share one paint: `--surface-active` was given to
-  // `.selected` (the cursor), so the row actually on screen had nothing but a
-  // text colour every *open* row already had — five bright rows and no way to
-  // tell which one you were looking at (todo D5, design_guidance 三.2).
+test('the session on screen is painted, and the four row states stack in order', () => {
+  // The row the user is *looking at* carries `--surface-active`, the same
+  // surface `.settings-nav-item.selected` uses: one way of saying "you are on
+  // this one" across the app. Everything else about a row stays unpainted —
+  // being open in a background lane is not a state the user asked to see, so
+  // `.open` remains data (`aria-selected`, the smoke probes) and styles nothing.
   //
-  // Verified by mutation: dropping the capsule from `.active`, or putting it back
-  // on `.selected`, reds this and nothing else.
-  const active = blockFor('.session-row.active')
+  // Verified by mutation: dropping `.session-row.active`, moving it above
+  // `.selected`, or re-adding any of the forbidden tiers below reds this test
+  // and nothing else.
   assert.ok(
-    declares(active, 'background', 'var(--surface-active)'),
-    '.session-row.active must carry the capsule; it is the only row on screen',
+    declares(blockFor('.session-row.active'), 'background', 'var(--surface-active)'),
+    'the session on screen must be the one row that is filled',
   )
-  assert.ok(
-    declares(blockFor('.session-row.active .session-open'), 'color', 'var(--text-primary)'),
-    '.session-row.active must lift its title to the primary text colour',
-  )
-  const selected = blockFor('.session-row.selected')
-  assert.ok(
-    !declares(selected, 'background', 'var(--surface-active)'),
-    '.session-row.selected must not wear the active capsule; the two states would read alike',
-  )
+  for (const selector of [
+    '.session-row.active .session-open',
+    '.session-row:not(.open) .session-open',
+    '.project-group.own > .project-heading',
+  ]) {
+    assert.equal(
+      blocks.find((block) => block.selector === selector),
+      undefined,
+      `${selector} must not exist; only the active row's own fill paints`,
+    )
+  }
 
-  // Ordering, which no specificity rule saves here: `.active`, `.selected` and
-  // `.confirming` are all one class on `.session-row`, so the *last* one in the
-  // sheet wins the fill. Confirming has to be able to override the capsule, or
-  // the row asking the question is the one row that does not look like it is.
+  // All four are one class on `.session-row`, so the sheet's order *is* the
+  // precedence: hover under the cursor, the cursor under the active fill (a row
+  // that is both keeps the fill and gains the hairline), and confirming last —
+  // the row asking "delete this?" must be the one row that looks like it is.
   const order = (selector: string): number => {
     const index = blocks.findIndex((block) => block.selector === selector)
     assert.notEqual(index, -1, `no rule for ${selector}`)
     return index
   }
   assert.ok(
+    declares(blockFor('.session-row.selected'), 'background', 'var(--surface-hover)'),
+    'the keyboard cursor keeps its hover fill and hairline',
+  )
+  assert.ok(
+    order('.session-row:hover') < order('.session-row.selected'),
+    '.session-row.selected must come after :hover, or the cursor is invisible under the pointer',
+  )
+  assert.ok(
     order('.session-row.selected') < order('.session-row.active'),
-    '.session-row.active must come after .selected, or the cursor paints over the visible row',
+    '.session-row.active must come after .selected, or the cursor fill hides which session is open',
   )
   assert.ok(
     order('.session-row.active') < order('.session-row.confirming'),
-    '.session-row.confirming must come after .active, or the capsule hides the question',
+    '.session-row.confirming must come last, or the active paint hides the question',
   )
 })
 
@@ -780,6 +808,60 @@ test('every floating menu is lifted off the page it covers', () => {
       `${selector} floats over other content and must carry var(--shadow-float)`,
     )
   }
+})
+
+test('motion comes from the tokens, and the things that rebuild themselves have none', () => {
+  // Same argument as the palette: a duration written beside the control that
+  // happens to use it is a duration nobody can compare, and a sheet with a dozen
+  // ad-hoc timings reads as several interfaces.
+  let transitions = 0
+  for (const block of blocks) {
+    for (const decl of block.decls) {
+      if (decl.prop !== 'transition') continue
+      transitions += 1
+      assert.match(
+        decl.value,
+        /var\(--motion-(fast|base|slow)\)/,
+        `${block.selector} { transition: ${decl.value} } spells its own duration`,
+      )
+      assert.match(
+        decl.value,
+        /var\(--ease-standard\)/,
+        `${block.selector} { transition: ${decl.value} } spells its own curve`,
+      )
+    }
+  }
+  assert.ok(transitions >= 3, `expected the motion rules, found ${transitions} transitions`)
+
+  // The two places an entrance animation would replay itself to death:
+  // `dom/transcriptView.ts` rebuilds the whole scroller on every paint (during a
+  // stream, every token), and the two dialog panels re-render as the selection
+  // moves — their animation belongs on the scrim behind them, which is why
+  // `#overlay`/`#rewind` are the ones that carry it.
+  // Only the *entrance* animations: `breathe` on the thinking header is a
+  // looping state, and re-running it on a rebuild is what it means anyway.
+  const ENTRANCES = /\b(fade-in|drop-in|rise-in|slide-in)\b/
+  for (const block of blocks) {
+    const animated = block.decls.some(
+      (decl) => decl.prop === 'animation' && ENTRANCES.test(decl.value),
+    )
+    if (!animated) continue
+    assert.ok(
+      !/^(\.transcript \.item|#overlay-panel|#rewind-panel)\b/.test(block.selector),
+      `${block.selector} is rebuilt on every render; an entrance animation there replays forever`,
+    )
+  }
+
+  // The reduced-motion override, which is the one nested at-rule this sheet is
+  // allowed. `1ms` rather than `0s`: a zero-length transition never fires
+  // `transitionend`, and no listener should have to know about the setting.
+  const reduced = blockFor('*, *::before, *::after')
+  assert.ok(declares(reduced, 'transition-duration', '1ms !important'), 'transitions must collapse')
+  assert.ok(declares(reduced, 'animation-duration', '1ms !important'), 'animations must collapse')
+  assert.ok(
+    declares(reduced, 'animation-iteration-count', '1 !important'),
+    'the two infinite animations (spin, breathe) must stop as well',
+  )
 })
 
 test('ch units survive only where the font is monospaced', () => {

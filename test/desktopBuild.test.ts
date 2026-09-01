@@ -1,6 +1,14 @@
 import test, { before } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { execFile } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
 /**
- * Smoke for the desktop shell build pipeline. Five artifacts must land at the
+ * Smoke for the desktop shell build pipeline. Seven artifacts must land at the
  * right depths of the output directory:
  *
  *  - `desktop/main.js` — the Node-targeted main process. `electron` is left
@@ -20,6 +28,11 @@ import { promisify } from 'node:util'
  *    needs it beside `app.js`.
  *  - `desktop/renderer/styles.css` — copied for the same reason: the page links
  *    it relatively, so a missing copy is a silently unstyled window.
+ *  - `desktop/renderer/fonts.css` and `desktop/renderer/fonts/*.woff2` — the
+ *    webfonts, copied for the same reason: the page links the sheet and
+ *    preloads two of the woff2 relatively, so a missing copy is a silently
+ *    fallback-font window. The directory ride along through `cpSync`
+ *    recursion rather than the per-file `sources` list.
  *
  * Note this file bundles `main.ts` with esbuild while `npm run build:desktop`
  * emits it with `tsc`. That is deliberate: esbuild resolving the whole main
@@ -161,8 +174,9 @@ test('copy-desktop-assets mirrors the renderer assets next to the bundle', async
   // script takes the destination root as an argument, so this stays inside the
   // temp build and never touches the repo's `dist/`.
   const rendererDir = join(buildRoot, 'desktop', 'renderer')
-  const copied = ['index.html', 'styles.css']
+  const copied = ['index.html', 'styles.css', 'fonts.css']
   for (const name of copied) rmSync(join(rendererDir, name), { force: true })
+  rmSync(join(rendererDir, 'fonts'), { recursive: true, force: true })
 
   await run(process.execPath, ['scripts/copy-desktop-assets.mjs', buildRoot], { cwd: repoRoot })
 
@@ -170,6 +184,19 @@ test('copy-desktop-assets mirrors the renderer assets next to the bundle', async
     const dest = join(rendererDir, name)
     assert.ok(existsSync(dest), `expected ${name} to be copied next to app.js`)
     assert.ok(statSync(dest).size > 0, `copy of ${name} must be non-empty`)
+  }
+
+  // The webfont directory arrives via the recursive branch of the copy script.
+  // "At least one woff2" rather than an exact count, so adding a subset does
+  // not churn this test — the referenced-assets loop below pins the specific
+  // files the page asks for by name, and the source directory is what says how
+  // many there are.
+  const fontsDir = join(rendererDir, 'fonts')
+  assert.ok(existsSync(fontsDir), 'expected desktop/renderer/fonts/ to be copied')
+  const woff2 = readdirSync(fontsDir).filter((name) => name.endsWith('.woff2'))
+  assert.ok(woff2.length > 0, 'expected at least one woff2 under desktop/renderer/fonts/')
+  for (const name of woff2) {
+    assert.ok(statSync(join(fontsDir, name)).size > 0, `copy of fonts/${name} must be non-empty`)
   }
 
   // The generalisation that keeps `sources` honest as the page grows: an asset

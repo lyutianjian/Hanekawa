@@ -7,6 +7,15 @@
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none';"
     />
     <title>Hanekawa</title>
+    <!--
+      The bundled webfonts (see `fonts.css`): the two faces the first paint
+      needs — the sans body and the serif display title — are preloaded so
+      their bytes arrive beside the CSS rather than after it. `crossorigin` is
+      required even same-origin: fonts are always fetched in CORS mode.
+    -->
+    <link rel="preload" href="./fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="./fonts/source-serif-4-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="./fonts.css" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>

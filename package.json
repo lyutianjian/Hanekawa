@@ -40,6 +40,9 @@
     "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/source-serif-4": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@types/diff": "^7.0.2",
     "@types/ink": "^0.5.2",
     "@types/node": "latest",

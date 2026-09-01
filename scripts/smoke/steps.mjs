@@ -727,7 +727,7 @@ async function step5(ctx) {
 // --- S8: settings ---------------------------------------------------------------
 
 /** `WINDOW_CHROME.*.height` in `src/desktop/main.ts`, and `#titlebar` in `styles.css`. */
-const TITLE_BAR_HEIGHT = 32
+const TITLE_BAR_HEIGHT = 40
 
 async function step8(ctx) {
   const rootA = ctx.state.projectRootA ?? (await lanes(ctx))[0].projectRoot

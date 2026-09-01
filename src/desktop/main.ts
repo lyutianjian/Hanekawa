@@ -105,13 +105,15 @@ const bundleDir = dirname(fileURLToPath(import.meta.url))
  * a three-button strip that does not match the frame under it.
  */
 const WINDOW_CHROME = {
-  // `--surface-base`, not one of the wash colours: the overlay strip sits at the
-  // window's right edge, where both blobs have already faded back to the base.
+  // `--surface-base`, the frame's own rung (design_guidance 六.1): the overlay
+  // strip sits at the window's right edge, on the same flat base the title bar
+  // and sidebar are painted over — there has been no wash to fade out since
+  // the 2026 re-skin, so the strip matches by being the same colour, full stop.
   // `height` is `#titlebar`'s in `styles.css`; the OS paints its three buttons
   // onto the same band, so the two numbers move together or the caption row and
   // the controls stop sharing a centre line.
-  dark: { color: '#1c2125', symbolColor: '#9b9992', height: 32 },
-  light: { color: '#edf4f9', symbolColor: '#73716b', height: 32 },
+  dark: { color: '#262523', symbolColor: '#a19a90', height: 40 },
+  light: { color: '#f2efe9', symbolColor: '#6b655c', height: 40 },
 } as const
 
 // A plain annotation rather than `as unknown as`: `ipcMain` really is

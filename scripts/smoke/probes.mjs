@@ -384,6 +384,7 @@ export const chipMenu = () => `(() => {
     rect: { left: Math.round(rect.left), right: Math.round(rect.right), bottom: Math.round(rect.bottom) },
     shadow: getComputedStyle(menu).boxShadow,
     composerTop: composer ? Math.round(composer.getBoundingClientRect().top) : 0,
+    chipTop: Math.round(document.getElementById('chip-runtime').getBoundingClientRect().top),
     transcriptHeight: height,
   }
 })()`
@@ -505,13 +506,14 @@ export const theme = () => `(() => {
       '--border-subtle': token('--border-subtle'),
       '--border-strong': token('--border-strong'),
       '--shadow-float': token('--shadow-float'),
+      '--surface-scrim': token('--surface-scrim'),
     },
-    // The two the light block deliberately does not override (styles.css:33-39):
-    // the knob sits on a saturated blue in both themes, and both scrims must dim
-    // by the same amount or stacking them reads as a bug.
+    // The one the light block deliberately does not override: the knob rides
+    // a saturated accent fill in both themes. The scrim used to sit here, but
+    // the 2026 palette made it themed — light paper needs the harder dim — so
+    // it is asserted with the themed tokens above now.
     fixed: {
       '--surface-knob': token('--surface-knob'),
-      '--surface-scrim': token('--surface-scrim'),
     },
     canvas: paintOf(document.getElementById('canvas')),
     body: paintOf(document.body),

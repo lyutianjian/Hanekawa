@@ -61,6 +61,23 @@ const read = (ctx, probe) => evaluate(ctx.cdp, probe)
 /** The lane topology, straight from the shell. */
 const lanes = (ctx) => app.shell(ctx.app, { type: 'panes' }).then((result) => result.lanes)
 
+/**
+ * Waits out the sheet's entrance animations, so a geometry read measures the
+ * settled layout rather than the keyframe's first frame — rise-in/slide-in
+ * carry a translate that leaves a freshly opened panel a few px off its
+ * resting place, and `getBoundingClientRect` reports the translated box. The
+ * two infinite animations (spin, breathe) are excluded: their `finished`
+ * promises never resolve. A cancelled animation rejects `finished`, which is
+ * not a failure here — the element is gone, and its resting place with it.
+ */
+async function settleAnimations(ctx) {
+  await evaluate(ctx.cdp, `Promise.all(
+    document.getAnimations()
+      .filter((animation) => animation.effect && animation.effect.getTiming().iterations !== Infinity)
+      .map((animation) => animation.finished.catch(() => {}))
+  ).then(() => true)`)
+}
+
 /** Opens a fixture session as a lane and waits for its row to go active. */
 async function openSession(ctx, session, projectRoot) {
   const result = await app.shell(ctx.app, {
@@ -132,7 +149,7 @@ async function raisePrompt(ctx, lane, fileName) {
 // --- S7: Ctrl+B ---------------------------------------------------------------
 
 /** `.transcript`'s padding in `styles.css`; the only gap under the reading column. */
-const TRANSCRIPT_PADDING = 12
+const TRANSCRIPT_PADDING = 8
 
 async function step7(ctx) {
   // Startup lands in a NEW empty session — never the newest fixture — so the
@@ -196,9 +213,13 @@ async function step7(ctx) {
   await ctx.shot('07c-short-session', 'a two-message session: does the conversation meet the composer, or float under the header')
 
   await key(ctx.cdp, 'Ctrl+b')
+  // Collapsed for geometry purposes means the width has settled at zero, not
+  // just that the class flipped: `#sidebar` animates its flex-basis over
+  // `--motion-slow`, and a read on the first frame after the class lands would
+  // still see the whole 268px column.
   const collapsed = await waitFor('the sidebar to collapse', async () => {
     const view = await read(ctx, probes.sidebar())
-    return view.collapsed ? view : undefined
+    return view.collapsed && view.width === 0 ? view : undefined
   })
   ctx.ok('the list is hidden when collapsed', collapsed.listHidden === true, `listHidden=${collapsed.listHidden}`)
   ctx.ok('the footer is hidden when collapsed', collapsed.footerHidden === true, `footerHidden=${collapsed.footerHidden}`)
@@ -968,13 +989,21 @@ async function step9(ctx) {
   })
   ctx.eq('the chip opens one popover for both fields', menu.rows.map((row) => row.label), ['模型', '推理强度'])
   ctx.eq('each row names the value in force', menu.rows[1].value, chipBefore.effort)
+  // Geometry is read on the settled frame: rise-in's translate is still live
+  // on the frame the waitFor returns on, and the judgement below is about
+  // where the popover lives, not where its entrance is taking it. The popover
+  // hangs off the chip — `bottom: 30px` above the chip shell — so it clears
+  // its trigger and may legitimately cover the composer's input row above it;
+  // that is the construction the design prototype draws.
+  await settleAnimations(ctx)
+  const settled = await read(ctx, probes.chipMenu())
   ctx.ok(
     'it hangs off the chip rather than spanning the reading column',
-    menu.rect.bottom <= menu.composerTop && menu.rect.right - menu.rect.left < 400,
-    `panel=${menu.rect.left}..${menu.rect.right} bottom=${menu.rect.bottom} composer top=${menu.composerTop}`,
+    settled.rect.bottom <= settled.chipTop && settled.rect.right - settled.rect.left < 400,
+    `panel=${settled.rect.left}..${settled.rect.right} bottom=${settled.rect.bottom} chip top=${settled.chipTop}`,
   )
   // A float, not a flex sibling: opening it must not resize the conversation.
-  ctx.eq('and floats over the transcript instead of squeezing it', menu.transcriptHeight, shut.transcriptHeight)
+  ctx.eq('and floats over the transcript instead of squeezing it', settled.transcriptHeight, shut.transcriptHeight)
 
   await read(ctx, probes.hoverChipRow('推理强度'))
   const flown = await waitFor('the effort flyout', async () => {
@@ -987,10 +1016,14 @@ async function step9(ctx) {
     flown.flyout.items.map((item) => item.label),
     ['低', '中', '高', '极高', '最高'],
   )
+  // Same settled-frame rule as the popover above: slide-in's translateX is
+  // what a read on the first frame would measure — not the flyout's place.
+  await settleAnimations(ctx)
+  const flownSettled = await read(ctx, probes.chipMenu())
   ctx.ok(
     'and the flyout opens beside the popover, not over it',
-    flown.flyout.right <= flown.rect.left,
-    `flyout right=${flown.flyout.right} popover left=${flown.rect.left}`,
+    flownSettled.flyout.right <= flownSettled.rect.left,
+    `flyout right=${flownSettled.flyout.right} popover left=${flownSettled.rect.left}`,
   )
   await ctx.shot('09a-effort-flyout', 'the chip popover with the effort flyout open: the level in force ticked, any over-ceiling level explaining itself')
 
@@ -1152,7 +1185,7 @@ async function step11(ctx) {
       Object.keys(light.tokens).sort(),
     )
     ctx.eq(
-      'the two theme-independent tokens stayed put',
+      'the theme-independent knob stayed put',
       light.fixed,
       dark.fixed,
     )

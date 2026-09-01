@@ -88,7 +88,7 @@
 | [x] **P1-3** 调色板换血 | 按设计文档二.2/二.3 重写 `styles.css` 的 `:root` 与 `:root[data-theme="light"]`：新增 `--accent-brand`、`--accent-brand-strong`、`--on-brand`、`--font-serif`；删除 `--surface-wash-warm`/`--surface-wash-mint`；`body` 背景退化为单一 `--surface-base`；diff 四色换暖纸系；`--shadow-modal` 新增（亮暗两值）。**同一次会话内**同步 `rendererStyleTokens.test.ts` 的钉死表（两份）、`THEME_INDEPENDENT`、中性/色度分类（`--on-brand` 归中性、两个 brand 归色度） | `styles.css`、`test/rendererStyleTokens.test.ts` | `node --import tsx --test test/rendererStyleTokens.test.ts test/rendererTheme.test.ts` |
 | [x] **P1-4** 字体栈落地 + 对比度守卫 | `--font-ui`/`--font-mono` 换成含 Inter / JetBrains Mono 的新栈，新增 `--font-serif`；`body` 的 `font` 简写同步；数值类选择器加 `font-variant-numeric: tabular-nums`；`body` 加 `font-feature-settings: "cv05"`。测试侧：钉死表更新三条字体栈，新增 `contrast()` 断言——`--accent-brand-strong` 对 `--surface-canvas` ≥ 4.5、`--on-brand` 对 `--accent-brand-strong` ≥ 4.5、`--accent-brand` 只允许出现在非文本属性 | `styles.css`、`test/rendererStyleTokens.test.ts` | 同上 |
 | [x] **P1-5** 窗口色与标题栏高度 | `main.ts` 的 `WINDOW_CHROME` 换新值并 `height: 40`；`styles.css` 的 `#titlebar height: 40px`；`scripts/smoke/steps.mjs` 的 `TITLE_BAR_HEIGHT: 32 → 40`；标题栏右内边距**实测后重钉**（设计文档九.2：在 40px 高度下量 Windows 控制条实际宽度，不要猜） | `src/desktop/main.ts`、`styles.css`、`scripts/smoke/steps.mjs` | `node --import tsx --test test/desktopMain.test.ts` |
-| [ ] **P1-6** P1 收口 | 跑全套渲染器测试组 + 类型检查 + 烟雾；修 P1-1..5 留下的连带断裂 | — | `npm run typecheck`；`node --import tsx --test test/renderer*.test.ts test/desktopBuild.test.ts`；`npm run smoke:desktop` |
+| [x] **P1-6** P1 收口 | 跑全套渲染器测试组 + 类型检查 + 烟雾；修 P1-1..5 留下的连带断裂 | — | `npm run typecheck`；`node --import tsx --test test/renderer*.test.ts test/desktopBuild.test.ts`；`npm run smoke:desktop` |
 
 > P1-3 与 P1-4 拆开是因为一次会话同时改颜色和字体，钉死表会有两处大 diff 互相掩盖失败原因。
 

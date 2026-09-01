@@ -209,36 +209,43 @@ function tokenValue(name: string, from: Map<string, string> = tokens): string {
 test('the palette is the one that was agreed, value for value', () => {
   // Pinned the way `test/tuiTheme.test.ts` pins the terminal palette: the point
   // of a token is that it is a decision, and a decision that can be edited
-  // without anything noticing is a preference.
+  // without anything noticing is a preference. The 2026 redesign's values
+  // (design_guidance.md 二.2/二.3): one warm-neutral ladder, a two-rung clay
+  // brand, no wash. `--link` and `--focus-ring` are pinned as the aliases they
+  // now are — links are brand-coloured *text* (the strong rung), the focus ring
+  // is the brand at hairline weight — so these pins are the equality itself,
+  // and the tokens they resolve to carry the hexes.
   assert.deepEqual(
     Object.fromEntries([...tokens].filter(([name]) => !name.startsWith('--diff-'))),
     {
-      '--surface-base': '#1c2125',
-      '--surface-canvas': '#1a1918',
-      '--surface-card': '#222120',
-      '--surface-hover': '#2a2927',
-      '--surface-active': '#323130',
-      '--surface-wash-warm': '#25211a',
-      '--surface-wash-mint': '#1d2121',
+      '--surface-base': '#262523',
+      '--surface-canvas': '#1c1b19',
+      '--surface-card': '#232220',
+      '--surface-hover': '#2e2c29',
+      '--surface-active': '#383530',
       '--surface-knob': '#ffffff',
       '--surface-scrim': 'rgba(0, 0, 0, 0.55)',
-      '--text-primary': '#f4f3f1',
-      '--text-secondary': '#9b9992',
-      '--text-tertiary': '#8a8880',
-      '--link': '#78b0ff',
-      '--accent-info': '#6ba6ff',
-      '--accent-tool': '#a97bff',
-      '--accent-review': '#4cc38a',
-      '--accent-warn': '#e0a355',
-      '--accent-danger': '#f0616e',
+      '--text-primary': '#ede9e3',
+      '--text-secondary': '#a19a90',
+      '--text-tertiary': '#857e74',
+      '--link': 'var(--accent-brand-strong)',
+      '--accent-brand': '#d97757',
+      '--accent-brand-strong': '#d97757',
+      '--on-brand': '#1c1b19',
+      '--accent-info': '#4385be',
+      '--accent-tool': '#8b7ec8',
+      '--accent-review': '#879a39',
+      '--accent-warn': '#d0a215',
+      '--accent-danger': '#d14d41',
       '--text-danger': 'var(--accent-danger)',
       '--text-warn': 'var(--accent-warn)',
       '--text-success': 'var(--accent-review)',
-      '--border-subtle': '#2b2a28',
-      '--border-strong': '#3a3835',
-      '--focus-ring': '#6ba6ff',
-      '--caret': '#f4f3f1',
-      '--shadow-float': '0 2px 10px rgba(0, 0, 0, 0.45)',
+      '--border-subtle': '#322f2b',
+      '--border-strong': '#45413b',
+      '--focus-ring': 'var(--accent-brand)',
+      '--caret': '#ede9e3',
+      '--shadow-float': '0 6px 20px rgba(0, 0, 0, 0.45)',
+      '--shadow-modal': '0 16px 48px rgba(0, 0, 0, 0.6)',
       '--radius-lg': '14px',
       '--radius-md': '9px',
       '--radius-pill': '9999px',
@@ -253,43 +260,50 @@ test('the palette is the one that was agreed, value for value', () => {
         '"Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace',
+      '--font-serif':
+        '"Source Serif 4 Variable", Georgia, "Songti SC", "Noto Serif CJK SC", serif',
     },
   )
 
   // The light palette, pinned the same way. It is the dark palette with the light
-  // block layered on: scrim, the three `--text-*` aliases, radii and fonts are
-  // theme-independent and carry through from `:root`.
+  // block layered on: the aliases (`--text-*`, `--link`, `--focus-ring` — they
+  // follow the overridden accents), `--surface-knob`, radii, motion and fonts
+  // are theme-independent and carry through from `:root`. The scrim and both
+  // shadows no longer are: light dims with a warm cast and shadows with the
+  // paper's own pigment (design_guidance.md 二.2).
   assert.deepEqual(
     Object.fromEntries([...lightTokens].filter(([name]) => !name.startsWith('--diff-'))),
     {
-      '--surface-base': '#edf4f9',
-      '--surface-canvas': '#ffffff',
-      '--surface-card': '#faf9f7',
-      '--surface-hover': '#ebeced',
-      '--surface-active': '#e1e2e4',
-      '--surface-wash-warm': '#f9f2e6',
-      '--surface-wash-mint': '#e9f6f8',
-      // Carried through from `:root`, deliberately: the knob sits on the blue
-      // track in both themes, so it is white in both.
+      '--surface-base': '#f2efe9',
+      '--surface-canvas': '#fdfcf9',
+      '--surface-card': '#f7f4ef',
+      '--surface-hover': '#ede9e2',
+      '--surface-active': '#e3ded5',
+      // Carried through from `:root`, deliberately: the knob sits on the
+      // accent track in both themes, so it is white in both.
       '--surface-knob': '#ffffff',
-      '--surface-scrim': 'rgba(0, 0, 0, 0.55)',
-      '--text-primary': '#171614',
-      '--text-secondary': '#73716b',
-      '--text-tertiary': '#8f8d87',
-      '--link': '#3b7ae4',
-      '--accent-info': '#3b7ae4',
-      '--accent-tool': '#9333ea',
-      '--accent-review': '#16a34a',
-      '--accent-warn': '#d97706',
-      '--accent-danger': '#dc2626',
+      '--surface-scrim': 'rgba(28, 25, 21, 0.32)',
+      '--text-primary': '#1a1815',
+      '--text-secondary': '#6b655c',
+      '--text-tertiary': '#8f887d',
+      '--link': 'var(--accent-brand-strong)',
+      '--accent-brand': '#c96442',
+      '--accent-brand-strong': '#a8492b',
+      '--on-brand': '#ffffff',
+      '--accent-info': '#205ea6',
+      '--accent-tool': '#5e409d',
+      '--accent-review': '#66800b',
+      '--accent-warn': '#ad8301',
+      '--accent-danger': '#af3029',
       '--text-danger': 'var(--accent-danger)',
       '--text-warn': 'var(--accent-warn)',
       '--text-success': 'var(--accent-review)',
-      '--border-subtle': '#e8e7e4',
-      '--border-strong': '#d6d4d0',
-      '--focus-ring': '#3b7ae4',
-      '--caret': '#171614',
-      '--shadow-float': '0 4px 14px rgba(0, 0, 0, 0.14)',
+      '--border-subtle': '#e6e1d8',
+      '--border-strong': '#d5cfc4',
+      '--focus-ring': 'var(--accent-brand)',
+      '--caret': '#1a1815',
+      '--shadow-float': '0 6px 20px rgba(28, 25, 21, 0.08), 0 1px 2px rgba(28, 25, 21, 0.06)',
+      '--shadow-modal': '0 16px 48px rgba(28, 25, 21, 0.16)',
       '--radius-lg': '14px',
       '--radius-md': '9px',
       '--radius-pill': '9999px',
@@ -304,6 +318,8 @@ test('the palette is the one that was agreed, value for value', () => {
         '"Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace',
+      '--font-serif':
+        '"Source Serif 4 Variable", Georgia, "Songti SC", "Noto Serif CJK SC", serif',
     },
   )
 })
@@ -311,16 +327,20 @@ test('the palette is the one that was agreed, value for value', () => {
 test('the light block overrides only colours, and adds no token the dark palette lacks', () => {
   // Every override must shadow a real dark token — a light-only token would be a
   // colour the dark theme silently drops to nothing. And the theme-independent
-  // tokens (shape, type, the aliases that follow their accent) must NOT be
-  // redeclared, or the two themes could drift on something that is not a colour.
+  // tokens (the knob, shape, type, and the aliases that follow their accent)
+  // must NOT be redeclared, or the two themes could drift on something that is
+  // not a colour. The scrim and both shadows are theme-*dependent* under the
+  // redesign, so they are absent from this list on purpose.
   for (const name of lightOverrides.keys()) {
     assert.ok(tokens.has(name), `${LIGHT_SELECTOR} declares ${name}, which has no dark default`)
   }
   const THEME_INDEPENDENT = [
-    '--surface-scrim',
+    '--surface-knob',
     '--text-danger',
     '--text-warn',
     '--text-success',
+    '--link',
+    '--focus-ring',
     '--radius-lg',
     '--radius-md',
     '--radius-pill',
@@ -330,6 +350,7 @@ test('the light block overrides only colours, and adds no token the dark palette
     '--ease-standard',
     '--font-ui',
     '--font-mono',
+    '--font-serif',
   ]
   for (const name of THEME_INDEPENDENT) {
     assert.ok(
@@ -384,7 +405,12 @@ test('the surface ladder climbs and the text ladder descends, in both themes', (
 })
 
 test('surfaces and text stay neutral; accents and links do not, in both themes', () => {
-  const NEUTRAL_PREFIXES = ['--surface-', '--text-', '--border-', '--caret']
+  // `--on-brand` is named in full rather than as a prefix: it is the one token
+  // outside the surface/text/border families that is still a *surface* — the
+  // colour that sits on a brand fill, white on clay in light and the canvas's
+  // near-black in dark. It must not fall into the chromatic group just because
+  // it is declared beside the brand accents.
+  const NEUTRAL_PREFIXES = ['--surface-', '--text-', '--border-', '--caret', '--on-brand']
   const CHROMATIC = ['--accent-', '--link', '--focus-ring']
 
   for (const { name: themeName, tokens: palette } of THEMES) {
@@ -440,25 +466,33 @@ test('accents are for icons and state rules, never for fills', () => {
     'border-left-color',
     'outline-color',
     'caret-color',
-    // The three aliases, spelled out rather than allowing every custom property:
+    // The five aliases, spelled out rather than allowing every custom property:
     // aliasing an accent into `--surface-x` would otherwise slip past the
-    // neutrality check, which only sees literal values.
+    // neutrality check, which only sees literal values. `--link` and
+    // `--focus-ring` joined the aliases with the redesign — both point at the
+    // brand, and both are inherently paint roles (a text colour and a ring
+    // colour), not surfaces.
     '--text-danger',
     '--text-warn',
     '--text-success',
+    '--link',
+    '--focus-ring',
   ]
 
   /**
-   * The one fill the rule allows, named rather than inferred.
+   * The fills the rule allows, named rather than inferred.
    *
    * A switch carries no label: the coloured track *is* the state, which is what
    * the neutral version could not say — it read as "disabled" at a glance
-   * (design_guidance 六 and 七.4). Written as an exact selector/property pair so
-   * widening it is an edit to this list rather than a side effect: `.settings-toggle`
-   * at rest, and every other control, stays under the rule.
+   * (design_guidance 六 and 七.4). `#submit` is the redesign's one brand solid,
+   * the "this app belongs to its brand" signal (六.4) — the strong rung, under
+   * `--on-brand`. Both are exact selector/property pairs so widening the list is
+   * an edit here rather than a side effect: every other control stays under the
+   * rule.
    */
   const ACCENT_FILL_EXCEPTIONS: readonly { selector: string; prop: string }[] = [
     { selector: '.settings-toggle.on', prop: 'background' },
+    { selector: '#submit', prop: 'background' },
   ]
 
   let seen = 0
@@ -532,12 +566,14 @@ test('everything read character by character stays monospaced', () => {
     'body must set the chrome font from the token',
   )
 
-  // No stack may be spelled outside the two tokens, or a third font appears and
-  // the list above stops meaning anything.
+  // No stack may be spelled outside the three tokens, or a fourth font appears
+  // and the list above stops meaning anything. `--font-serif` is display-only;
+  // which selectors may name it is the serif whitelist's question, not this
+  // test's.
   for (const { selector, prop, value } of declarations) {
     if (prop === 'font-family') {
       assert.ok(
-        value === 'var(--font-mono)' || value === 'var(--font-ui)',
+        value === 'var(--font-mono)' || value === 'var(--font-ui)' || value === 'var(--font-serif)',
         `${selector} { font-family: ${value} } spells a stack instead of naming a token`,
       )
     }

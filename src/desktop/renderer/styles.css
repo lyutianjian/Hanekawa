@@ -14,71 +14,77 @@
 */
 :root {
   /* --- surfaces: the canvas anchors, the frame is one rung up ---
-     The canvas is the *extreme* of the theme — the deepest well in dark, pure
-     white in light — and everything else steps away from it along one ladder:
-     card, hover, active. `--surface-base` (the window frame: title bar, sidebar,
-     the gutter around the canvas) is a rung on that same ladder, between the
-     canvas and hover. So in light the frame reads darker than the canvas and in
-     dark it reads *lighter*, which is not a contradiction but the same rule:
-     the frame recedes, the canvas is where the eye lands.
+     The canvas is the *extreme* of the theme — the deepest well in dark, the
+     brightest paper in light — and everything else steps away from it along one
+     ladder: card, hover, active. `--surface-base` (the window frame: title bar,
+     sidebar, the gutter around the canvas) is a rung on that same ladder,
+     between the canvas and hover. So in light the frame reads darker than the
+     canvas and in dark it reads *lighter*, which is not a contradiction but the
+     same rule: the frame recedes, the canvas is where the eye lands.
 
-     Tint lives in exactly two places, and nowhere else. The canvas is faintly
-     *warm* (r > g > b) — it is the surface a conversation is read off, and a
-     warm grey is what keeps a wall of text from reading as a screen. The frame
-     is faintly *cool*, and carries the wash below. Everything between them
-     (card, hover, active) is as near neutral as makes no difference, so a row
-     looks the same whether it is drawn on the glass or on the canvas. All of it
-     stays far inside the ≤20 saturation the neutrality guard enforces. */
-  --surface-base: #1c2125;
-  --surface-canvas: #1a1918;
-  --surface-card: #222120;
+     The ladder is warm-neutral end to end (r > g > b in both themes): the
+     paper metaphor does not survive a cool frame around a warm canvas, so the
+     old warm-canvas/cool-frame split is gone along with the wash it carried.
+     Everything stays far inside the ≤20 saturation the neutrality guard
+     enforces. */
+  --surface-base: #262523;
+  --surface-canvas: #1c1b19;
+  --surface-card: #232220;
   /* Pointer-over. Its own step because the four-layer ladder has no room for
      one: rows inside a panel sit *on* --surface-card, so hovering them to
      --surface-card would be invisible, and hovering them to --surface-active
      would make hover indistinguishable from selection. */
-  --surface-hover: #2a2927;
+  --surface-hover: #2e2c29;
   /* The row the keyboard is on, in either list. */
-  --surface-active: #323130;
+  --surface-active: #383530;
 
-  /* --- the wash under the glass ---
-     Two blobs of pigment sitting under the frosted frame, painted by `body` and
-     therefore continuous from the title bar into the sidebar: warm around 42%
-     of the window's width, cool-green around 74%, both anchored above the top
-     edge so they fade out well before the sidebar's foot. They are FIXED
-     colours, not a composite of whatever is behind the window — the frosted
-     look here is entirely painted, so it is identical on every desktop and
-     costs no `backdrop-filter`. Amplitude is a handful of levels: the field has
-     to read as "not flat", never as "coloured". */
-  --surface-wash-warm: #25211a;
-  --surface-wash-mint: #1d2121;
   /* The knob of a switch that is on. Its own token because it is the one
-     surface that must NOT follow the theme: it sits on `--accent-info`, which is
-     a saturated blue in both themes, so `--text-primary` would turn it near-black
-     in light mode. White in both. */
+     surface that must NOT follow the theme: it sits on a saturated accent fill
+     in both themes, so `--text-primary` would turn it near-black in light mode.
+     White in both. */
   --surface-knob: #ffffff;
   /* What a modal dims the app with. A token because both #overlay and #rewind
      draw it, and they must dim by the same amount or stacking them reads as a
-     bug. */
+     bug. Follows the theme: dark dims harder with plain black, light dims less
+     and with the paper's own warm cast. */
   --surface-scrim: rgba(0, 0, 0, 0.55);
 
   /* --- text: three levels plus the one interactive colour --- */
-  --text-primary: #f4f3f1;
-  --text-secondary: #9b9992;
+  --text-primary: #ede9e3;
+  --text-secondary: #a19a90;
   /* Metadata, and only metadata: anything the user can click asks for one of
-     the two rungs above. Lifted off the old #6d6b66, which sat close enough to
-     the canvas that a project heading drawn in it read as disabled. */
-  --text-tertiary: #8a8880;
-  --link: #78b0ff;
+     the two rungs above. */
+  --text-tertiary: #857e74;
+  /* Links are brand-coloured text, and the *strong* brand rung is the one
+     cleared for text — `--accent-brand` itself carries only 3.9:1 on the paper
+     (design_guidance 二.2). An alias, so the equality cannot drift. */
+  --link: var(--accent-brand-strong);
 
   /* --- accents ---
-     Icons, badges and 1–3px state rules only. Never a fill, never a page of
-     body text: the interface stays neutral and colour means something when it
-     does appear. `test/rendererStyleTokens.test.ts` enforces the property list. */
-  --accent-info: #6ba6ff;
-  --accent-tool: #a97bff;
-  --accent-review: #4cc38a;
-  --accent-warn: #e0a355;
-  --accent-danger: #f0616e;
+     Icons, badges and 1–3px state rules only, outside the named fills the token
+     test allows. Never a page of body text: the interface stays neutral and
+     colour means something when it does appear.
+     `test/rendererStyleTokens.test.ts` enforces the property list.
+
+     The brand is two tokens, not one. `--accent-brand` is the clay orange for
+     glyphs, hairlines and indicator bars — 3.9:1 on the paper, enough for a
+     rule, not for text. `--accent-brand-strong` is the rung cleared for text
+     and fills (5.6:1 on paper, 5.8:1 under its own white). Dark keeps both at
+     the lighter clay: on charcoal the deep variant would read as mud, and the
+     fill pairs with dark text instead (design_guidance 二.2/二.3). */
+  --accent-brand: #d97757;
+  --accent-brand-strong: #d97757;
+  /* The colour cleared to sit *on* a brand fill. Not `--surface-knob`: the knob
+     is white in both themes, while this flips — white on clay in light, the
+     canvas's own near-black in dark. */
+  --on-brand: #1c1b19;
+  /* The five semantic states, Flexoki-tinted to sit on warm paper rather than
+     on a cool one. */
+  --accent-info: #4385be;
+  --accent-tool: #8b7ec8;
+  --accent-review: #879a39;
+  --accent-warn: #d0a215;
+  --accent-danger: #d14d41;
 
   /* Text that has to carry a state colour asks for it by *its own* name, so no
      rule ever spells `--accent-*` on a paragraph and the rule above stays
@@ -89,16 +95,24 @@
 
   /* --- lines ---
      Hairlines, and few of them: grouping is done with cards and spacing. */
-  --border-subtle: #2b2a28;
-  --border-strong: #3a3835;
-  --focus-ring: #6ba6ff;
-  --caret: #f4f3f1;
+  --border-subtle: #322f2b;
+  --border-strong: #45413b;
+  /* The focus ring *is* the brand colour (design_guidance 二.2「焦点环 = 品牌色」)
+     — the brand's one permitted appearance at hairline weight. An alias for
+     the same reason `--link` is: the decision is the equality itself. */
+  --focus-ring: var(--accent-brand);
+  --caret: #ede9e3;
 
-  /* The one elevation in the sheet. Only a floating control that overlaps
-     scrolling content asks for it: on the dark canvas the shadow barely reads and
-     the border does the work, while in light mode it is what separates a white
-     pill from a white page (design_guidance 三.3「柔和弥散阴影」). */
-  --shadow-float: 0 2px 10px rgba(0, 0, 0, 0.45);
+  /* --- elevation ---
+     Two depths, and shadows for nothing else: only things that float over
+     scrolling content may carry one (design_guidance 四.4). `--shadow-float` is
+     the menu/popover depth — in light it is what separates a paper-coloured
+     pill from the paper it covers, in dark the border does most of that work.
+     `--shadow-modal` is the modal panels' depth: they sit above a dimmed app,
+     not above text, and need the wider spread to read as above rather than in.
+     Both follow the theme — light shadows carry the paper's warm cast. */
+  --shadow-float: 0 6px 20px rgba(0, 0, 0, 0.45);
+  --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.6);
 
   /* --- shape ---
      Large for the panels the eye frames the app by, medium for cards and
@@ -154,15 +168,22 @@
              "PingFang SC", "Microsoft YaHei UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
                "Cascadia Mono", monospace;
+  /* Display serif, whitelisted to three kinds of spot — the welcome Hero, the
+     settings section titles, the two dialog titles (design_guidance 三.4) —
+     everything else stays sans so mixed CJK never drops into a Songti. The
+     family name is the one `fonts.css` registers: fontsource's variable faces
+     are named "… Variable", not the upstream family name. */
+  --font-serif: "Source Serif 4 Variable", Georgia, "Songti SC", "Noto Serif CJK SC", serif;
 
   /* --- diff ---
      Content colours, not interface colours, and exempt from the neutrality rule
      for the same reason `theme.markdown` and `theme.syntax` are exempt in
-     `src/tui/theme.ts`: red and green *are* the meaning here. */
-  --diff-add-fg: #b5cea8;
-  --diff-add-bg: #16251a;
-  --diff-del-fg: #f4a49b;
-  --diff-del-bg: #2a1a1c;
+     `src/tui/theme.ts`: red and green *are* the meaning here. Flexoki values,
+     tuned for the warm paper rather than a neutral one (design_guidance 二.3). */
+  --diff-add-fg: #a8c06a;
+  --diff-add-bg: #1f2618;
+  --diff-del-fg: #e08a7f;
+  --diff-del-bg: #2a1c1a;
 }
 
 /* --- light theme ---
@@ -170,56 +191,63 @@
    preference (including "follow system") to a concrete theme and writes it to
    `documentElement[data-theme]`, so this is a plain attribute selector, not an
    `@media` block — the token test parses flat blocks and forbids nested at-rules.
-   Scrim, the three `--text-*` aliases (they follow the overridden accents),
-   `--radius-*` and `--font-*` are theme-independent and stay as declared above.
-   Values from design_guidance.md 六.1; neutrals kept within the ≤20 saturation the
-   sheet's neutrality test enforces (so #1a1a1e / #686b75, not #111827 / #6b7280). */
+   The aliases that follow their accents (`--text-danger` & co, `--link`,
+   `--focus-ring`), `--surface-knob`, `--radius-*`, `--motion-*` and `--font-*` are
+   theme-independent and stay as declared above; the scrim and both shadows
+   follow the theme. Light is the redesign's baseline theme — dark is the
+   equivalent mapping, not the other way round. Values from design_guidance.md
+   二.2; neutrals kept within the ≤20 saturation the sheet's neutrality test
+   enforces (so #e3ded5, not #d9d4c9 — chroma, not lightness, is what the guard
+   bounds). */
 :root[data-theme="light"] {
-  --surface-base: #edf4f9;
-  --surface-canvas: #ffffff;
-  --surface-card: #faf9f7;
-  --surface-hover: #ebeced;
-  --surface-active: #e1e2e4;
+  --surface-base: #f2efe9;
+  --surface-canvas: #fdfcf9;
+  --surface-card: #f7f4ef;
+  --surface-hover: #ede9e2;
+  --surface-active: #e3ded5;
 
-  --surface-wash-warm: #f9f2e6;
-  --surface-wash-mint: #e9f6f8;
+  /* The paper dims with its own warm cast, and less hard than dark's black. */
+  --surface-scrim: rgba(28, 25, 21, 0.32);
 
-  --text-primary: #171614;
-  --text-secondary: #73716b;
-  --text-tertiary: #8f8d87;
-  --link: #3b7ae4;
+  --text-primary: #1a1815;
+  --text-secondary: #6b655c;
+  --text-tertiary: #8f887d;
 
-  --accent-info: #3b7ae4;
-  --accent-tool: #9333ea;
-  --accent-review: #16a34a;
-  --accent-warn: #d97706;
-  --accent-danger: #dc2626;
+  /* Here the two brand rungs split: #C96442 is the icon/hairline clay, #A8492B
+     the text-and-fill clay (5.6:1 on the paper). Dark has no use for the split
+     and keeps both at the lighter value. */
+  --accent-brand: #c96442;
+  --accent-brand-strong: #a8492b;
+  --on-brand: #ffffff;
+  --accent-info: #205ea6;
+  --accent-tool: #5e409d;
+  --accent-review: #66800b;
+  --accent-warn: #ad8301;
+  --accent-danger: #af3029;
 
-  --border-subtle: #e8e7e4;
-  --border-strong: #d6d4d0;
-  --focus-ring: #3b7ae4;
-  --caret: #171614;
+  --border-subtle: #e6e1d8;
+  --border-strong: #d5cfc4;
+  --caret: #1a1815;
 
-  --shadow-float: 0 4px 14px rgba(0, 0, 0, 0.14);
+  --shadow-float: 0 6px 20px rgba(28, 25, 21, 0.08), 0 1px 2px rgba(28, 25, 21, 0.06);
+  --shadow-modal: 0 16px 48px rgba(28, 25, 21, 0.16);
 
-  --diff-add-fg: #1a7f37;
-  --diff-add-bg: #e6ffec;
-  --diff-del-fg: #cf222e;
-  --diff-del-bg: #ffebe9;
+  --diff-add-fg: #3a6b22;
+  --diff-add-bg: #edf3e2;
+  --diff-del-fg: #9e2b25;
+  --diff-del-bg: #f8eae8;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
   /* The window frame's material, in one place. `#titlebar` and `#sidebar` are
-     transparent and let this through, which is what makes the wash a single
-     field crossing from the caption strip into the sidebar rather than two that
-     have to be kept in step. `#canvas` is opaque, so the wash stops at its edge.
-     The blobs fade to `transparent`, not to a colour: Chromium interpolates
-     gradients in premultiplied alpha, so there is no grey fringe to avoid. */
-  background:
-    radial-gradient(55% 120% at 44% -5%, var(--surface-wash-warm), transparent 85%),
-    radial-gradient(28% 300% at 74% -3%, var(--surface-wash-mint), transparent),
-    var(--surface-base);
+     transparent and let this through, which is what makes the frame one
+     continuous surface from the caption strip into the sidebar rather than two
+     that have to be kept in step. `#canvas` is opaque, so the frame stops at its
+     edge. A single flat colour, deliberately: the two-blob wash the redesign
+     deleted never survived contact with the paper metaphor it was paired with,
+     and the ladder — not pigment drift — is what does the work now. */
+  background: var(--surface-base);
   color: var(--text-primary);
   font: 14px/1.5 var(--font-ui);
   display: flex;
@@ -267,7 +295,7 @@ body {
   height: 32px;
   padding: 0 148px 0 8px;
   /* Transparent, not `--surface-base`: the frame's material is `body`'s, and a
-     fill here would cut the wash in half along the caption strip's foot. */
+     fill here would seam that material along the caption strip's foot. */
   background: transparent;
   -webkit-app-region: drag;
 }
@@ -526,8 +554,8 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  /* See `#titlebar`: the sidebar is the same pane of glass, so it draws no fill
-     of its own and the wash runs down through it. */
+  /* See `#titlebar`: the sidebar is the same pane of the frame, so it draws no
+     fill of its own and `body`'s material runs down through it. */
   background: transparent;
   overflow: hidden;
   transition: flex-basis var(--motion-slow) var(--ease-standard);
@@ -1065,6 +1093,10 @@ body.settings-open #canvas { margin-left: 8px; }
 .welcome-mark .icon { width: 40px; height: 40px; }
 .welcome-title {
   margin: 0;
+  /* Serif: the welcome Hero is one of the three display spots the design
+     whitelists for `--font-serif` (design_guidance 三.4) — short, pure, and
+     never a long mixed-CJK run. The size/weight ladder is P2's scale work. */
+  font-family: var(--font-serif);
   font-size: 21px;
   font-weight: 600;
   color: var(--text-primary);
@@ -1504,13 +1536,16 @@ body.settings-open #canvas { margin-left: 8px; }
   border-radius: var(--radius-pill);
   cursor: pointer;
 }
-/* The one high-contrast fill in the interface, and it is neutral: an accent
-   here would be the "coloured background" the palette rules out.
-   Three states (design_guidance 四.2②.3), and *visual only* — the button still
-   means "send or queue" in all of them, because `model/keymap.ts` says so and
-   the two must agree. `.idle` is "nothing typed yet", not "disabled": a disabled
-   button would make `requestSubmit()` swallow the click. */
-#submit { background: var(--text-primary); color: var(--surface-base); }
+/* The interface's one brand-coloured solid — the "this app belongs to its
+   brand" signal (design_guidance 六.4) — and the reason the accent-fill rule
+   keeps a named exception for exactly this rule. The *strong* rung, not
+   `--accent-brand`: a fill owes its text full contrast, and the clay at 3.9:1
+   on paper does not have it. `--on-brand` is the colour cleared to sit on it.
+   Three states, and *visual only* — the button still means "send or queue" in
+   all of them, because `model/keymap.ts` says so and the two must agree.
+   `.idle` is "nothing typed yet", not "disabled": a disabled button would make
+   `requestSubmit()` swallow the click. */
+#submit { background: var(--accent-brand-strong); color: var(--on-brand); }
 #submit.idle { background: var(--surface-hover); color: var(--text-secondary); }
 #stop { background: var(--surface-hover); color: var(--text-warn); }
 #submit[disabled] { opacity: 0.5; cursor: not-allowed; }
@@ -1534,6 +1569,7 @@ body.settings-open #canvas { margin-left: 8px; }
   border: 1px solid var(--border-strong);
   border-top-width: 3px;
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
   max-width: 44rem;
   width: 100%;
   max-height: 100%;
@@ -1642,7 +1678,7 @@ body.settings-open #canvas { margin-left: 8px; }
   --- the dialog button bar ---
   Shared by #overlay-panel and #rewind-panel, which are the same object at two
   z-indexes. The primary is a *raised neutral surface*, not a fill: the one
-  high-contrast solid in this interface is `#submit` (design_guidance 五), and a
+  brand solid in this interface is `#submit` (design_guidance 六.4), and a
   dialog that shouts louder than the send button is the wrong hierarchy.
   A danger action is an outline and a text colour only (七.4).
 */
@@ -1729,6 +1765,7 @@ body.settings-open #canvas { margin-left: 8px; }
   border-top-width: 3px;
   border-top-color: var(--accent-warn);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
   max-width: 44rem;
   width: 100%;
   max-height: 100%;
@@ -2443,7 +2480,7 @@ body.settings-open #canvas { margin-left: 8px; }
 }
 /* The one press affordance in the app, on the one button that commits
    something. Scale rather than a colour: the send button is already the sheet's
-   single high-contrast fill and has nowhere brighter to go. */
+   single brand fill and has nowhere brighter to go. */
 #submit:active, #stop:active { transform: scale(0.94); }
 
 @keyframes fade-in { from { opacity: 0; } }

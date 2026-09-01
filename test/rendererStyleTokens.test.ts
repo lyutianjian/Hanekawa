@@ -200,6 +200,28 @@ function luminance(value: string): number {
   return 0.2126 * red + 0.7152 * green + 0.0722 * blue
 }
 
+/**
+ * WCAG relative luminance — the gamma-corrected one, not the ordering helper
+ * above. Contrast is a threshold business: without the sRGB transfer curve the
+ * light theme's 5.6:1 pair measures as 2.5:1, and the assertion below would be
+ * pinning the wrong physics while still looking rigorous.
+ */
+function relativeLuminance(value: string): number {
+  const channels = parseHex(value).map((channel) => {
+    const scaled = channel / 255
+    return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!
+}
+
+/** WCAG contrast ratio — `(L1 + 0.05) / (L2 + 0.05)`, lighter rung over darker. */
+function contrast(foreground: string, background: string): number {
+  const [lighter, darker] = [relativeLuminance(foreground), relativeLuminance(background)].sort(
+    (a, b) => b - a,
+  )
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
 function tokenValue(name: string, from: Map<string, string> = tokens): string {
   const value = from.get(name)
   assert.ok(value, `${name} is not declared`)
@@ -257,9 +279,9 @@ test('the palette is the one that was agreed, value for value', () => {
       '--reading-gutter': '32px',
       '--composer-overhang': '12px',
       '--font-ui':
-        '"Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
+        '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
-        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace',
+        '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Cascadia Mono", monospace',
       '--font-serif':
         '"Source Serif 4 Variable", Georgia, "Songti SC", "Noto Serif CJK SC", serif',
     },
@@ -315,9 +337,9 @@ test('the palette is the one that was agreed, value for value', () => {
       '--reading-gutter': '32px',
       '--composer-overhang': '12px',
       '--font-ui':
-        '"Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
+        '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
-        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace',
+        '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Cascadia Mono", monospace',
       '--font-serif':
         '"Source Serif 4 Variable", Georgia, "Songti SC", "Noto Serif CJK SC", serif',
     },
@@ -401,6 +423,31 @@ test('the surface ladder climbs and the text ladder descends, in both themes', (
         `${name}: ${weaker} must read fainter than ${stronger}`,
       )
     }
+  }
+})
+
+test('the brand rungs clear the contrast they are pinned to, in both themes', () => {
+  // design_guidance 二.2's promise, made executable. The brand is two tokens
+  // precisely because the clay itself is ~3.9:1 on the paper — enough for a
+  // glyph, a hairline or an indicator bar, never for text. The *strong* rung is
+  // the one cleared for text (links are it: `--link` aliases it) and for fills,
+  // and `--on-brand` is the text cleared to sit on that fill (`#submit`). These
+  // two margins are the only thing standing between those decisions and an edit
+  // that quietly repaints body text in `--accent-brand`: AA asks 4.5:1 for text,
+  // and the pinned values hold ~5.6 in light and ~5.5 in dark — real margin,
+  // not a rounding accident.
+  for (const { name, tokens: palette } of THEMES) {
+    const strong = tokenValue('--accent-brand-strong', palette)
+    const onPaper = contrast(strong, tokenValue('--surface-canvas', palette))
+    assert.ok(
+      onPaper >= 4.5,
+      `${name}: --accent-brand-strong on --surface-canvas reads ${onPaper.toFixed(2)}:1; brand text must clear the 4.5:1 AA threshold`,
+    )
+    const onFill = contrast(tokenValue('--on-brand', palette), strong)
+    assert.ok(
+      onFill >= 4.5,
+      `${name}: --on-brand on --accent-brand-strong reads ${onFill.toFixed(2)}:1; a brand fill owes its own label 4.5:1`,
+    )
   }
 })
 
@@ -519,6 +566,31 @@ test('accents are for icons and state rules, never for fills', () => {
   assert.ok(seen >= 8, `expected the accents to be in use, found ${seen} declarations`)
 })
 
+test('the weak brand rung never carries text', () => {
+  // The other half of the two-rung rule the contrast test pins. `--accent-brand`
+  // holds ~3.9:1 on the paper in light — a glyph, a hairline, an indicator bar,
+  // not a paragraph. Brand-coloured *text* is the strong rung's job (`--link`,
+  // `#submit`), and this is the assertion that keeps the rungs from converging
+  // as rules land in later stages. `--focus-ring` is checked alongside it
+  // because it is pinned as the weak rung's alias: text painted in it would be
+  // brand text by another name, invisible to a check on the token itself.
+  const TEXT_PROPS = ['color', 'caret-color']
+  const WEAK_RUNG = /var\(\s*(?:--accent-brand|--focus-ring)\s*\)/
+  let nonText = 0
+  for (const { selector, prop, value } of declarations) {
+    if (TOKEN_SELECTORS.has(selector)) continue // the token block's own alias
+    if (!WEAK_RUNG.test(value)) continue
+    assert.ok(
+      !TEXT_PROPS.includes(prop),
+      `${selector} { ${prop} } carries the weak brand rung; brand text belongs to --accent-brand-strong`,
+    )
+    nonText += 1
+  }
+  // Non-vacuity: the focus ring alone supplies several of these today. Zero
+  // means the weak rung fell out of use entirely and this guard went quiet.
+  assert.ok(nonText >= 3, `expected the weak brand rung in use, found ${nonText} declarations`)
+})
+
 // --- type and structure -----------------------------------------------------
 
 /**
@@ -581,6 +653,17 @@ test('everything read character by character stays monospaced', () => {
       assert.ok(
         value === 'inherit' || value.includes('var(--font-'),
         `${selector} { font: ${value} } spells a stack instead of naming a token`,
+      )
+    }
+    // And not through a custom property either: the two checks above read
+    // `font-family`/`font`, so a rule declaring `--font-mono: <its own stack>`
+    // slips past both and becomes a fourth font the tokens know nothing about.
+    // `.settings-input.mono` carried exactly that until the redesign collapsed
+    // the sheet to one spelling per stack.
+    if (prop.startsWith('--font-')) {
+      assert.ok(
+        TOKEN_SELECTORS.has(selector),
+        `${selector} declares ${prop} outside the token blocks; a font stack belongs to :root`,
       )
     }
   }

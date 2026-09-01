@@ -163,10 +163,18 @@
      The chrome is proportional; anything the user has to read character by
      character is not. `--font-mono` is re-declared on those selectors rather
      than inherited, so the dependency is visible where it matters — and
-     `test/rendererStyleTokens.test.ts` checks the list. */
-  --font-ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui,
-             "PingFang SC", "Microsoft YaHei UI", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+     `test/rendererStyleTokens.test.ts` checks the list.
+
+     Each stack leads with a face `fonts.css` bundles and falls through to the
+     platform (design_guidance 三.1/三.2). CJK is deliberately *not* bundled: any
+     packable CJK family is 5MB+ while PingFang SC and Microsoft YaHei UI are
+     each platform's own best answer, so Latin runs in Inter and Chinese in the
+     system font by decision, not by omission. The family names are the ones
+     `fonts.css` registers — fontsource's variable faces are named "… Variable",
+     not the upstream family name. */
+  --font-ui: "Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system,
+             system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
                "Cascadia Mono", monospace;
   /* Display serif, whitelisted to three kinds of spot — the welcome Hero, the
      settings section titles, the two dialog titles (design_guidance 三.4) —
@@ -250,6 +258,13 @@ body {
   background: var(--surface-base);
   color: var(--text-primary);
   font: 14px/1.5 var(--font-ui);
+  /* Inter's tailed lowercase l (design_guidance 三.3): the straight l reads as
+     a 1 or an I beside digits and capitals. It must come *after* the `font`
+     shorthand — that shorthand resets every font longhand it does not spell, so
+     the order is load-bearing — and it costs the fallback faces nothing: a font
+     without the feature ignores it. Inherited, so one declaration covers the
+     whole tree. */
+  font-feature-settings: "cv05";
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -490,6 +505,10 @@ body {
   min-height: 0;
   color: var(--text-tertiary);
   font-size: 11px;
+  /* Usage and cost are rewritten on every usage event while a turn streams, and
+     proportional figures make the line's tail jump horizontally on each one.
+     Tabular figures hold the column still (design_guidance 三.3). */
+  font-variant-numeric: tabular-nums;
 }
 
 /* --- the two-column shell ---
@@ -997,6 +1016,9 @@ body.settings-open #canvas { margin-left: 8px; }
   color: var(--text-tertiary);
   font: inherit;
   font-size: 12px;
+  /* The sealed label carries the turn's elapsed time; tabular figures keep
+     the digits steady as they land (design_guidance 三.3). */
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
 .thinking-header:hover { color: var(--text-secondary); }
@@ -1020,7 +1042,13 @@ body.settings-open #canvas { margin-left: 8px; }
 .transcript .item.notice { color: var(--text-secondary); font-style: italic; }
 .transcript .item.error { color: var(--text-danger); }
 .transcript .item.subagent { color: var(--accent-tool); }
-.transcript .item.duration { color: var(--text-tertiary); font-size: 12px; }
+.transcript .item.duration {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  /* 「已处理 Xm Xs」, the same string the thinking header seals to — tabular
+     figures keep the two renderings and stacked turn summaries steady. */
+  font-variant-numeric: tabular-nums;
+}
 /* Tool lines are command text and tool output: they have to stay monospaced or
    a `git status` loses its columns under the proportional chrome font. */
 .transcript .item.tool {
@@ -2186,11 +2214,10 @@ body.settings-open #canvas { margin-left: 8px; }
   outline-offset: -1px;
 }
 
-/* Keys, base URLs and model ids are read character by character. Declaring
-   --font-mono here is also what licenses the `ch` width. */
+/* Keys, base URLs and model ids are read character by character. The
+   `font-family` line is what licenses the `ch` width — the family itself comes
+   from the `:root` token, which is the sheet's one spelling of the stack. */
 .settings-input.mono {
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-               "Cascadia Mono", monospace;
   min-width: 34ch;
   font-family: var(--font-mono);
 }

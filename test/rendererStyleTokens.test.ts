@@ -584,13 +584,16 @@ test('accents are for icons and state rules, never for fills', () => {
    * the neutral version could not say — it read as "disabled" at a glance
    * (design_guidance 六 and 七.4). `#submit` is the redesign's one brand solid,
    * the "this app belongs to its brand" signal (六.4) — the strong rung, under
-   * `--on-brand`. Both are exact selector/property pairs so widening the list is
-   * an edit here rather than a side effect: every other control stays under the
-   * rule.
+   * `--on-brand`. The session bar is a 3px indicator, not a surface — it is the
+   * weak rung's proper shape, and it is listed because the parser sees a
+   * `background` either way. All three are exact selector/property pairs so
+   * widening the list is an edit here rather than a side effect: every other
+   * control stays under the rule.
    */
   const ACCENT_FILL_EXCEPTIONS: readonly { selector: string; prop: string }[] = [
     { selector: '.settings-toggle.on', prop: 'background' },
     { selector: '#submit', prop: 'background' },
+    { selector: '.session-row::before', prop: 'background' },
   ]
 
   let seen = 0
@@ -905,6 +908,23 @@ test('the session on screen is painted, and the four row states stack in order',
   assert.ok(
     order('.session-row.active') < order('.session-row.confirming'),
     '.session-row.confirming must come last, or the active paint hides the question',
+  )
+
+  // The brand bar beside the fill. It has to exist on the resting row — a
+  // pseudo-element created by `.active` would appear at full height with nothing
+  // to animate from — so the resting rule carries the paint at `scaleY(0)` and
+  // `.active` only reopens it.
+  const bar = blockFor('.session-row::before')
+  assert.ok(declares(bar, 'transform', 'scaleY(0)'), 'the resting bar must be collapsed, not absent')
+  assert.ok(declares(bar, 'transform-origin', 'center'), 'the bar grows from the row’s middle')
+  assert.ok(declares(bar, 'width', '3px'), 'the bar is a 3px rule, not a stripe')
+  assert.ok(
+    declares(blockFor('.session-row.active::before'), 'transform', 'scaleY(1)'),
+    'only the session on screen shows the bar',
+  )
+  assert.ok(
+    order('.session-row::before') < order('.session-row.active::before'),
+    'the resting bar must come first, or the active row never opens it',
   )
 })
 

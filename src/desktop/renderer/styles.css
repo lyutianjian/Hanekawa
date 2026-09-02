@@ -911,6 +911,7 @@ body.settings-open #sidebar { display: none; }
    (design_guidance 四.3). The vertical padding lives here and not on
    `.session-open` inside it, so the hit area and the paint are the same box. */
 .session-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-1);
@@ -919,6 +920,27 @@ body.settings-open #sidebar { display: none; }
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   cursor: pointer;
+}
+/* The active row's brand bar. It lives on *every* row at `scaleY(0)` rather than
+   only on `.active`, because a pseudo-element that comes into existence with the
+   class has nothing to transition from — the same rule that keeps entrance
+   animations off nodes that re-render underneath themselves. Collapsed to zero
+   height it paints nothing, so the fill is invisible until the row is the one on
+   screen. `transform-origin: center` is the design: the bar grows out of the
+   row's middle rather than dropping in from the top (design_guidance 六.2). */
+.session-row::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-brand);
+  transform: scaleY(0);
+  transform-origin: center;
+  transition: transform var(--motion-fast) var(--ease-standard);
 }
 /* Four row states, and the cascade order below is the whole design:
    hover (the pointer is here) → selected (the keyboard cursor, a hairline, so it
@@ -940,6 +962,7 @@ body.settings-open #sidebar { display: none; }
    *below* this one, so repainting it under the pointer would read as the active
    row dimming. */
 .session-row.active { background: var(--surface-active); }
+.session-row.active::before { transform: scaleY(1); }
 .session-open {
   flex: 1 1 auto;
   min-width: 0;

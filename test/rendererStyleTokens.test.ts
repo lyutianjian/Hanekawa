@@ -928,6 +928,37 @@ test('the session on screen is painted, and the four row states stack in order',
   )
 })
 
+test('the search box and the composer chips are grooves at rest, not outlined fields', () => {
+  // design_guidance 六.2 / 六.4. Three bordered capsules — the search box on the
+  // sidebar's paper, the two chips over the composer's own hairline — read as
+  // line noise; the fill alone says "this is a control". The border stays in the
+  // box as `transparent` so raising it on hover cannot move anything.
+  const search = blockFor('.sidebar-search')
+  assert.ok(declares(search, 'background', 'var(--surface-card)'), 'the search box is a card groove')
+  assert.ok(declares(search, 'border', '0'), 'the search box carries no border at rest')
+  assert.ok(
+    declares(blockFor('.sidebar-search:focus'), 'box-shadow', '0 0 0 1px var(--focus-ring)'),
+    'focus rings the groove with a shadow, not a border that would resize the box',
+  )
+
+  for (const chip of ['#chip-permission', '#chip-runtime']) {
+    const rest = blockFor(chip)
+    assert.ok(declares(rest, 'background', 'var(--surface-card)'), `${chip} is a card capsule`)
+    assert.ok(
+      declares(rest, 'border', '1px solid transparent'),
+      `${chip} must reserve its border, or hover reflows the composer's bottom row`,
+    )
+    assert.ok(
+      declares(blockFor(`${chip}:hover:enabled`), 'border-color', 'var(--border-subtle)'),
+      `${chip} raises a hairline on hover`,
+    )
+    assert.ok(
+      declares(blockFor(`${chip}.open`), 'border-color', 'var(--border-strong)'),
+      `${chip} raises a strong hairline while its menu is open`,
+    )
+  }
+})
+
 test('a collapsed sidebar is gone, and the column inside it does not resize with it', () => {
   // The 44px rail existed so `.sidebar-collapse` stayed clickable; that control
   // moved to the title bar, so collapsing now means zero width (todo D8).

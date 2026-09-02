@@ -670,16 +670,22 @@ body.settings-open #sidebar { display: none; }
 .sidebar-search {
   flex: 0 0 auto;
   margin: var(--space-3) var(--space-3) var(--space-2);
-  background: var(--surface-canvas);
+  /* A groove, not a form field (design_guidance 六.2): the sidebar shares the
+     title bar's paper, and a white capsule behind a strong hairline reads there
+     as something waiting to be filled in. Card fill, no border at all. */
+  background: var(--surface-card);
   color: var(--text-primary);
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-pill);
   padding: var(--space-1) var(--space-3);
   font: inherit;
   font-size: var(--type-meta);
 }
 .sidebar-search::placeholder { color: var(--text-secondary); }
-.sidebar-search:focus { outline: none; border-color: var(--focus-ring); }
+/* The focus ring is a box shadow rather than a border, so gaining focus cannot
+   change the box and shift the list below it. A real text input, so `:focus`
+   and not `:focus-visible`. */
+.sidebar-search:focus { outline: none; box-shadow: 0 0 0 1px var(--focus-ring); }
 /* The first-level actions. Rows, not pills: they sit in the same column the
    session rows do, and a bordered capsule there reads as a second kind of
    thing (design_guidance 三.2). */
@@ -1532,13 +1538,17 @@ body.settings-open #sidebar { display: none; }
    opens *upward*: the composer is anchored to the bottom of the canvas, so a
    downward menu would be off-screen. */
 #composer-permission { position: relative; display: inline-flex; }
+/* Borderless at rest (design_guidance 六.4): two bordered capsules plus the
+   composer's own hairline put three lines across the bottom of the input area.
+   The border is kept in the box as `transparent` and only coloured on hover and
+   while open, so raising it cannot move the row. */
 #chip-permission {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  background: var(--surface-canvas);
+  background: var(--surface-card);
   color: var(--text-secondary);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   border-radius: var(--radius-pill);
   padding: var(--space-1) var(--space-3);
   font: inherit;
@@ -1546,7 +1556,11 @@ body.settings-open #sidebar { display: none; }
   white-space: nowrap;
   cursor: pointer;
 }
-#chip-permission:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+#chip-permission:hover:enabled {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+  border-color: var(--border-subtle);
+}
 #chip-permission.open { color: var(--text-primary); border-color: var(--border-strong); }
 #chip-permission:disabled { opacity: 0.5; cursor: default; }
 /* `bottom` clears the chip's own box — one `--type-meta` line at 1.5 inside
@@ -1590,13 +1604,14 @@ body.settings-open #sidebar { display: none; }
    local menu now. No `overflow` here: the popover and its flyout are absolutely
    positioned children and would be clipped away. */
 #composer-chip { position: relative; display: inline-flex; }
+/* Same capsule as `#chip-permission`, same borderless resting state. */
 #chip-runtime {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  background: var(--surface-canvas);
+  background: var(--surface-card);
   color: var(--text-secondary);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   border-radius: var(--radius-pill);
   padding: var(--space-1) var(--space-3);
   font: inherit;
@@ -1605,7 +1620,11 @@ body.settings-open #sidebar { display: none; }
   cursor: pointer;
 }
 .chip-effort-label { color: var(--text-tertiary); }
-#chip-runtime:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+#chip-runtime:hover:enabled {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+  border-color: var(--border-subtle);
+}
 #chip-runtime.open { color: var(--text-primary); border-color: var(--border-strong); }
 #chip-runtime:disabled { opacity: 0.5; cursor: default; }
 /* The popover, and the flyout hanging off one of its rows. The same card as

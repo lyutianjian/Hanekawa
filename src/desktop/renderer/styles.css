@@ -144,17 +144,21 @@
      not there (a menu, a screen), slow is a layout that moves other things with
      it (the sidebar's width, and the canvas margin that follows it).
 
-     The curve leaves immediately and settles late — the standard "decelerate"
-     shape. There is no paired ease-in: nothing here animates *out*, because
-     every panel in this app is removed from the DOM (or `hidden`) the instant it
-     closes, and an exit animation would need a state machine no view has.
+     The standard curve leaves immediately and settles late — the "decelerate"
+     shape. `--ease-exit` is its opposite and is only for the few things that
+     animate *out*: most panels here are removed from the DOM (or `hidden`) the
+     instant they close, and an exit needs a state machine the view has to own.
 
      `@media (prefers-reduced-motion: reduce)` at the foot of this sheet collapses
      all of it; it is the one nested at-rule `rendererStyleTokens` allows. */
-  --motion-fast: 120ms;
-  --motion-base: 180ms;
-  --motion-slow: 240ms;
-  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-fast: 140ms;
+  --motion-base: 220ms;
+  --motion-slow: 320ms;
+  --ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
+  /* The one curve that is allowed to leave slowly and land hard: it exists for
+     the states that animate *out* under a state machine (the sidebar's collapse
+     middle state), not for entrances. */
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 
   /* The conversation's reading axis. `.transcript-column` and `.composer-column`
      must both resolve their width from here — sharing one axis is the whole
@@ -625,7 +629,14 @@ body {
    lives in the title bar (`.titlebar-rail`), which collapsing does not touch.
    The canvas has no left margin of its own — it borrows the sidebar's edge — so
    it has to grow one here, or it reads as glued to the window frame. */
-#sidebar.collapsed { flex-basis: 0; }
+/* The collapse is the one direction that leaves rather than arrives, so it
+   takes `--ease-exit` while the expansion keeps the decelerating standard curve
+   declared above. A transition on the state class, not on the base rule, is how
+   CSS spells "one curve per direction". */
+#sidebar.collapsed {
+  flex-basis: 0;
+  transition: flex-basis var(--motion-slow) var(--ease-exit);
+}
 #sidebar.collapsed + #canvas { margin-left: 8px; }
 /* The settings screen takes the whole window rather than the canvas alone, so
    the sidebar goes with the composer and the header. Two rules, not one: the

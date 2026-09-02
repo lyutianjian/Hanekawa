@@ -107,7 +107,7 @@
 | 任务 | 内容 | 验收 |
 | --- | --- | --- |
 | [x] **P3-1** 动效刻度换代 | `--motion-fast 120→140`、`--motion-base 180→220`、`--motion-slow 240→320`、`--ease-standard` 换 `cubic-bezier(0.32, 0.72, 0, 1)`、新增 `--ease-exit`。同步钉死表与 `THEME_INDEPENDENT`。现有「每条 transition 必须引用 motion token 与 ease-standard」的断言需要放宽到「`--ease-standard` 或 `--ease-exit`」 | `rendererStyleTokens` |
-| [ ] **P3-2** 折叠状态机（模型层） | 在 `renderer/model/` 内落地四态枚举与迁移函数（纯函数：`(current, wantCollapsed, event) → next`），并进 `sidebarRenderSignature`。**本任务不碰 DOM**，先把决定和它的测试做完 | `rendererShellModel` / `rendererSidebar`（模型侧） |
+| [x] **P3-2** 折叠状态机（模型层） | 在 `renderer/model/` 内落地四态枚举与迁移函数（纯函数：`(current, wantCollapsed, event) → next`），并进 `sidebarRenderSignature`。**本任务不碰 DOM**，先把决定和它的测试做完 | `rendererShellModel` / `rendererSidebar`（模型侧） |
 | [ ] **P3-3** 折叠 DOM 三修 | ①`#sidebar` 内加固定 `width: 280px; flex: 0 0 280px` 的内容壳，外层 `overflow: hidden`；②内容壳跑 `opacity` + `translateX(-8px)`，`show(false)`/停止建行推迟到 `transitionend` 或兜底定时器；③删除 `#sidebar.collapsed + #canvas { margin-left: 8px }`，`#canvas` 常驻 `margin-left: var(--space-2)`。清理定时器与监听器 | `node --import tsx --test test/rendererSidebarView.test.ts`（新增：中间态期间内容仍在 DOM、迁移完成后才卸载、重复切换不泄漏定时器） |
 | [ ] **P3-4** 其余动效 | 分组展开改 `grid-template-rows: 0fr → 1fr` + `overflow: hidden` 配 `--motion-base`；`drop-in`/`rise-in`/`slide-in` 位移加到 8px 并加 `scale(0.98) → 1`；`#submit` 按下压暗到 `--accent-brand-strong`。**不加退出动画、主题切换不加过渡** | `rendererStyleTokens`、`rendererSidebarView` |
 | [ ] **P3-5** P3 收口 | `prefers-reduced-motion` 那条 `@media` 仍能压住两个 `infinite` 动画且仍是唯一嵌套 at-rule；跑类型检查与烟雾 | `npm run typecheck`；`npm run smoke:desktop` |

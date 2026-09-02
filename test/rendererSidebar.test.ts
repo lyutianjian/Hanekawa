@@ -5,12 +5,15 @@ import {
   createSidebarState,
   moveSelection,
   newSessionIntent,
+  nextCollapsePhase,
+  sidebarContentMounted,
   sidebarChordToIntent,
   sidebarKeyToIntent,
   sidebarRenderSignature,
   sidebarView,
   toggleProject,
   workspaceRootsOf,
+  type SidebarCollapsePhase,
   type SidebarLaneStatus,
   type SidebarProjectSessions,
   type SidebarState,
@@ -767,6 +770,9 @@ test('the signature moves for everything the view draws', () => {
     // one is a right-click (or a confirmation) the render guard swallows whole.
     ['the heading menu', { ...base, projectMenu: '/a' }],
     ['the heading confirmation', { ...base, pendingRemoveProject: '/a' }],
+    // The middle of the fold is a frame the guard would swallow otherwise: the
+    // intent has not moved, only where the rail has got to.
+    ['the fold mid-animation', { ...base, collapsed: true, collapsePhase: 'collapsing' }],
   ]
   for (const [what, state] of moved) {
     assert.notEqual(of(state), reference, `expected ${what} to move the signature`)
@@ -783,4 +789,65 @@ test('the signature ignores what the view does not draw', () => {
     sidebarRenderSignature(sidebarView(rows(at(60 * 1000)))),
     'a minute later, same order, same paint',
   )
+})
+
+// --- the fold's state machine ------------------------------------------------
+
+test('a fold runs through its middle state and rests where the intent points', () => {
+  assert.equal(nextCollapsePhase('expanded', true, 'intent'), 'collapsing')
+  assert.equal(nextCollapsePhase('collapsing', true, 'settled'), 'collapsed')
+  assert.equal(nextCollapsePhase('collapsed', false, 'intent'), 'expanding')
+  assert.equal(nextCollapsePhase('expanding', false, 'settled'), 'expanded')
+})
+
+test('an intent that agrees with a resting fold moves nothing', () => {
+  // The rail is asked to collapse from several places (`Ctrl+B`, and the two
+  // spots that expand it before revealing a heading). Asking for the width it
+  // already has must not restart an animation.
+  assert.equal(nextCollapsePhase('collapsed', true, 'intent'), 'collapsed')
+  assert.equal(nextCollapsePhase('expanded', false, 'intent'), 'expanded')
+})
+
+test('a reversal mid-animation turns around rather than queueing', () => {
+  assert.equal(nextCollapsePhase('collapsing', false, 'intent'), 'expanding')
+  assert.equal(nextCollapsePhase('expanding', true, 'intent'), 'collapsing')
+})
+
+test('a late settle from a superseded move is dropped', () => {
+  // The DOM layer clears its listener and its fallback timer on every
+  // transition, but a `transitionend` already queued cannot be recalled. If it
+  // landed, the rail would rest at the width the user just cancelled.
+  assert.equal(nextCollapsePhase('expanding', true, 'settled'), 'expanding')
+  assert.equal(nextCollapsePhase('collapsing', false, 'settled'), 'collapsing')
+  // And a settle with nothing to settle leaves the resting phase alone.
+  assert.equal(nextCollapsePhase('expanded', false, 'settled'), 'expanded')
+  assert.equal(nextCollapsePhase('collapsed', true, 'settled'), 'collapsed')
+})
+
+test('the transition is total, and every phase it names is reachable', () => {
+  const phases: readonly SidebarCollapsePhase[] = [
+    'expanded',
+    'collapsing',
+    'collapsed',
+    'expanding',
+  ]
+  const reached = new Set<SidebarCollapsePhase>()
+  for (const phase of phases) {
+    for (const want of [true, false]) {
+      for (const event of ['intent', 'settled'] as const) {
+        const next = nextCollapsePhase(phase, want, event)
+        assert.ok(phases.includes(next), `${phase}/${want}/${event} left the enum`)
+        reached.add(next)
+      }
+    }
+  }
+  assert.equal(reached.size, phases.length, 'a phase nothing can reach is a phase to delete')
+})
+
+test('the rail keeps its content until the collapse has finished', () => {
+  // The reason the enum exists: unmounting on the click fades an empty column.
+  assert.equal(sidebarContentMounted('collapsing'), true)
+  assert.equal(sidebarContentMounted('expanding'), true)
+  assert.equal(sidebarContentMounted('expanded'), true)
+  assert.equal(sidebarContentMounted('collapsed'), false)
 })

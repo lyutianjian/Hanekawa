@@ -60,6 +60,69 @@ export interface SidebarRow {
   readonly confirmingDelete: boolean
 }
 
+/**
+ * Where the rail is between its two resting widths.
+ *
+ * A boolean cannot express the frame the collapse actually needs: the rows have
+ * to stay in the DOM while the column narrows, or the animation is a fade of
+ * nothing. So the fold is four states — two resting, two moving — and the
+ * unmounting waits for `'collapsed'` rather than for the click.
+ */
+export type SidebarCollapsePhase = 'expanded' | 'collapsing' | 'collapsed' | 'expanding'
+
+/**
+ * What moves the fold along.
+ *
+ * `'intent'` is the user asking (the toggle, or one of the places that expands
+ * the rail to reveal a heading). `'settled'` is the animation reporting that it
+ * finished — `transitionend` on `flex-basis`, or the timer that stands in for it
+ * when the transition never runs (a hidden window, `prefers-reduced-motion`).
+ */
+export type SidebarCollapseEvent = 'intent' | 'settled'
+
+/**
+ * The fold's one transition function.
+ *
+ * Pure, and total over the eight `(phase, event)` pairs, because the two things
+ * that drive it are both unreliable: a user can toggle twice inside one
+ * animation, and a `settled` can arrive from a transition that has already been
+ * superseded. Both come out here as "no move" rather than as a rail that ends up
+ * the wrong width.
+ *
+ * `wantCollapsed` is the intent the caller holds, not a copy of the phase: an
+ * `'intent'` event is read against it, and a `'settled'` only rests where the
+ * direction it was travelling agrees with it. A `settled` that disagrees is late
+ * — the intent that reversed the phase has already been through here — so it is
+ * dropped and the move it interrupted keeps running.
+ */
+export function nextCollapsePhase(
+  current: SidebarCollapsePhase,
+  wantCollapsed: boolean,
+  event: SidebarCollapseEvent,
+): SidebarCollapsePhase {
+  if (event === 'intent') {
+    if (wantCollapsed) return current === 'collapsed' ? 'collapsed' : 'collapsing'
+    return current === 'expanded' ? 'expanded' : 'expanding'
+  }
+  if (current === 'collapsing') return wantCollapsed ? 'collapsed' : current
+  if (current === 'expanding') return wantCollapsed ? current : 'expanded'
+  // A `settled` in a resting phase is a callback from a move that already
+  // finished (or a bare timer firing after `transitionend` beat it). Resting is
+  // the answer either way.
+  return current
+}
+
+/**
+ * Whether the rail's rows, search box, nav and footer belong in the DOM.
+ *
+ * The only phase that unmounts them is the settled one: `'collapsing'` still
+ * has a column to draw them in, and `'expanding'` needs them built *before* the
+ * width arrives or the rail opens onto a blank pane.
+ */
+export function sidebarContentMounted(phase: SidebarCollapsePhase): boolean {
+  return phase !== 'collapsed'
+}
+
 /** One workspace's sessions, under its own heading. */
 export interface SidebarGroup {
   readonly projectRoot: string
@@ -105,7 +168,10 @@ export interface SidebarView {
   readonly liveRows: readonly SidebarRow[]
   /** The active pane's project, which is also the group hoisted to the top. */
   readonly activeProjectRoot: string | undefined
+  /** The intent: what the user last asked the rail to be. */
   readonly collapsed: boolean
+  /** Where the rail is between the two widths. See {@link SidebarCollapsePhase}. */
+  readonly collapsePhase: SidebarCollapsePhase
   readonly selectedIndex: number
   /** Whether "new session" and "open project" are offered. */
   readonly canCreate: boolean
@@ -164,7 +230,15 @@ export interface SidebarState {
   /** Keyed by lane. A lane with no entry contributes no badge. */
   readonly laneStatus: ReadonlyMap<string, SidebarLaneStatus>
   readonly activeLane: string | undefined
+  /** The intent the toggle writes; {@link nextCollapsePhase} reads it. */
   readonly collapsed: boolean
+  /**
+   * The fold's visual state, which lags the intent by one animation.
+   *
+   * Held beside `collapsed` rather than derived from it because that lag is the
+   * whole point: the two disagree for exactly as long as the rail is moving.
+   */
+  readonly collapsePhase: SidebarCollapsePhase
   /** The keyboard cursor into {@link SidebarView.rows}; `-1` for "no cursor". */
   readonly selectedIndex: number
   /** The session whose row is asking for confirmation, if any. */
@@ -198,6 +272,7 @@ export function createSidebarState(overrides: Partial<SidebarState> = {}): Sideb
     laneStatus: new Map(),
     activeLane: undefined,
     collapsed: false,
+    collapsePhase: 'expanded',
     selectedIndex: -1,
     pendingDelete: undefined,
     projectMenu: undefined,
@@ -368,6 +443,7 @@ export function sidebarView(state: SidebarState): SidebarView {
     liveRows: rows.filter((row) => row.lane !== undefined),
     activeProjectRoot: active?.projectRoot,
     collapsed: state.collapsed,
+    collapsePhase: state.collapsePhase,
     selectedIndex: clampIndex(state.selectedIndex, rows.length),
     canCreate: state.canCreate,
     isEmpty: nothing && !searching,
@@ -648,6 +724,9 @@ export function toggleProject(
 export function sidebarRenderSignature(view: SidebarView): string {
   const parts: string[] = [
     view.collapsed ? 'c' : '-',
+    // The middle phases are frames the guard would otherwise swallow: without
+    // this, a collapse would repaint only once it had already finished.
+    `p:${view.collapsePhase}`,
     view.canCreate ? 'n' : '-',
     view.isEmpty ? 'e' : '-',
     view.noMatches ? 'm' : '-',

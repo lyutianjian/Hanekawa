@@ -34,3 +34,13 @@ capability-gap-reference.md
 # OS
 .DS_Store
 Thumbs.db
+
+design_implementation.md
+design_guidance.md
+INTERVIEW_PREP.md
+prototype/
+
+# Interview-prep measurement scripts (chapter 14) — local only, and
+# measure-api.ts spends real money against the configured provider.
+scripts/measure-perf.ts
+scripts/measure-api.ts

@@ -2630,10 +2630,13 @@ body.settings-open #sidebar { display: none; }
 @keyframes fade-in { from { opacity: 0; } }
 /* A menu that hangs *below* its trigger arrives from above it, and one that
    opens upward from below — the panel appears to come out of the control rather
-   than to land on top of it. */
-@keyframes drop-in { from { opacity: 0; transform: translateY(-4px); } }
-@keyframes rise-in { from { opacity: 0; transform: translateY(4px); } }
-@keyframes slide-in { from { opacity: 0; transform: translateX(6px); } }
+   than to land on top of it. 8px rather than the 4–6px these started at: on the
+   new 220ms base the shorter travel read as a flicker, not as a move. The
+   `scale(0.98)` is the other half of "comes out of the control" — a panel that
+   only slides looks like it was already the right size somewhere off screen. */
+@keyframes drop-in { from { opacity: 0; transform: translateY(-8px) scale(0.98); } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
+@keyframes slide-in { from { opacity: 0; transform: translateX(8px) scale(0.98); } }
 
 #settings:not([hidden]) { animation: rise-in var(--motion-base) var(--ease-standard); }
 #overlay:not([hidden]),

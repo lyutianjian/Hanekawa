@@ -1080,6 +1080,24 @@ test('motion comes from the tokens, and the things that rebuild themselves have 
     )
   }
 
+  // The three entrance keyframes travel one distance and arrive from one scale.
+  // The parser flattens `@keyframes`, so its `from` steps come through as blocks
+  // named `from` — every one of them that moves is one of these three.
+  let entranceSteps = 0
+  for (const block of blocks) {
+    if (block.selector !== 'from') continue
+    for (const decl of block.decls) {
+      if (decl.prop !== 'transform') continue
+      entranceSteps += 1
+      assert.match(
+        decl.value,
+        /^translate[XY]\(-?8px\) scale\(0\.98\)$/,
+        `from { transform: ${decl.value} } is not the 8px + 0.98 entrance`,
+      )
+    }
+  }
+  assert.equal(entranceSteps, 3, 'expected drop-in, rise-in and slide-in to move')
+
   // The reduced-motion override, which is the one nested at-rule this sheet is
   // allowed. `1ms` rather than `0s`: a zero-length transition never fires
   // `transitionend`, and no listener should have to know about the setting.

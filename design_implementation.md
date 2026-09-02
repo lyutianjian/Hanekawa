@@ -99,7 +99,7 @@
 | [x] **P2-1** 尺度 token 落地 | `:root` 新增 `--space-1..7`、`--radius-sm`、`--type-*` 七级；`--radius-lg 14→20`、`--radius-md 9→12`；`--reading-measure 1100→980`、`--reading-gutter 32→40`。同步钉死表与 `THEME_INDEPENDENT`。**本任务只加 token 与改这几个值，不改任何组件规则** | `rendererStyleTokens` |
 | [x] **P2-2** 窗口框推间距 | 侧边栏 268→280、会话行内边距 `6px 10px → 8px 12px`（行高约 34px）、项目标题行字号/字距、标题栏内部间距，全部换成 `--space-*` / `--type-*` | `rendererSidebarView`、`rendererSidebar`、`rendererCanvasHeaderView` |
 | [x] **P2-3** 对话流推间距 | 轮次间距 16→24、正文 `--type-body`、用户气泡 `--radius-lg` + `12px 16px`、思考块去掉 `opacity: 0.8`、工具行 `--type-code`、文件小胶囊 `--radius-sm`。`.transcript-column { margin-top: auto; flex-shrink: 0 }` **不得**改动 | `rendererTranscriptView`、`rendererUserMessage`、`rendererThinking`、`rendererDiffRows` |
-| [ ] **P2-4** 输入区与设置页推间距 | 输入区内边距 `8px 12px → 12px 16px`，`--composer-overhang` 与内边距同步（两处数字一起动）；设置页卡片分隔从边框改 `--space-5` 留白，分区标题上 `--font-serif` + `--type-title` | `rendererComposerView`、`rendererComposerChip`、`rendererSettingsView` |
+| [x] **P2-4** 输入区与设置页推间距 | 输入区内边距 `8px 12px → 12px 16px`，`--composer-overhang` 与内边距同步（两处数字一起动）；设置页卡片分隔从边框改 `--space-5` 留白，分区标题上 `--font-serif` + `--type-title` | `rendererComposerView`、`rendererComposerChip`、`rendererSettingsView` |
 | [ ] **P2-5** 衬线白名单 + 收口 | 欢迎页/空状态大标题、设置分区标题、`#overlay-panel`/`#rewind-panel` 标题行三处上 `--font-serif`；在 `rendererStyleTokens.test.ts` 加一条断言：`var(--font-serif)` 只允许出现在这三组选择器（白名单数组，带非空性断言，与 `ACCENT_FILL_EXCEPTIONS` 同款写法）。跑全套渲染器测试 | `npm run typecheck` + `test/renderer*.test.ts` |
 
 ### P3 — 动效（曲线换代 + 侧边栏折叠三修）

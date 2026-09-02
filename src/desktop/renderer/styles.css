@@ -168,12 +168,12 @@
      repeats the same value — the two are one axis. */
   --reading-gutter: 40px;
   /* How far the composer capsule overhangs the reading column on each side.
-     It is not a decoration: `#composer` carries 12px of its own padding, so a
-     capsule aligned edge-to-edge with the transcript puts its *text* 12px
+     It is not a decoration: `#composer` carries 16px of its own padding, so a
+     capsule aligned edge-to-edge with the transcript puts its *text* 16px
      inside the text above it, and the composer reads as the narrower box. The
      overhang cancels that — the capsule is wider, the two runs of text are not.
      Matched to `#composer`'s horizontal padding; move them together. */
-  --composer-overhang: 12px;
+  --composer-overhang: 16px;
 
   /* --- type ---
      The chrome is proportional; anything the user has to read character by
@@ -1361,7 +1361,7 @@ body.settings-open #canvas { margin-left: 8px; }
   /* `.transcript`'s gutter, less the overhang: the capsule reaches closer to the
      canvas edge than the transcript does, so the text inside it still lands on
      the transcript's axis at every window width. */
-  padding: 0 calc(var(--reading-gutter) - var(--composer-overhang)) 8px;
+  padding: 0 calc(var(--reading-gutter) - var(--composer-overhang)) var(--space-2);
 }
 /* The composer's half of the reading column; kept in step with
    `.transcript-column`, so a question and its answer share one axis — one
@@ -1405,18 +1405,20 @@ body.settings-open #canvas { margin-left: 8px; }
   z-index: 4;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
   pointer-events: none;
 }
+/* The horizontal padding is `--composer-overhang`'s other half; the two are one
+   number and move together (see that token). */
 #composer {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  padding: 8px 12px;
+  padding: var(--space-3) var(--space-4);
 }
 #composer:focus-within { border-color: var(--border-strong); }
 #input {
@@ -1436,7 +1438,7 @@ body.settings-open #canvas { margin-left: 8px; }
 #composer-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .composer-spacer { flex: 1 1 auto; }
 #composer-attach {
@@ -1459,29 +1461,32 @@ body.settings-open #canvas { margin-left: 8px; }
 #chip-permission {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   background: var(--surface-canvas);
   color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-pill);
-  padding: 3px 8px 3px 10px;
+  padding: var(--space-1) var(--space-3);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-meta);
   white-space: nowrap;
   cursor: pointer;
 }
 #chip-permission:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
 #chip-permission.open { color: var(--text-primary); border-color: var(--border-strong); }
 #chip-permission:disabled { opacity: 0.5; cursor: default; }
+/* `bottom` clears the chip's own box — one `--type-meta` line at 1.5 inside
+   `--space-1` padding and a hairline — so the card hangs above the pill rather
+   than over it. */
 .composer-menu {
   position: absolute;
-  bottom: 30px;
+  bottom: var(--space-6);
   left: 0;
   z-index: 5;
   min-width: 8rem;
   display: flex;
   flex-direction: column;
-  padding: 4px;
+  padding: var(--space-1);
   background: var(--surface-card);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
@@ -1493,9 +1498,9 @@ body.settings-open #canvas { margin-left: 8px; }
   color: var(--text-primary);
   border: 0;
   border-radius: var(--radius-md);
-  padding: 5px 8px;
+  padding: var(--space-1) var(--space-2);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--type-ui);
   cursor: pointer;
 }
 .composer-menu-item:hover { background: var(--surface-hover); }
@@ -1514,14 +1519,14 @@ body.settings-open #canvas { margin-left: 8px; }
 #chip-runtime {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1);
   background: var(--surface-canvas);
   color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-pill);
-  padding: 3px 10px;
+  padding: var(--space-1) var(--space-3);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-meta);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -1536,13 +1541,13 @@ body.settings-open #canvas { margin-left: 8px; }
    canvas. */
 .chip-menu {
   position: absolute;
-  bottom: 30px;
+  bottom: var(--space-6);
   right: 0;
   z-index: 5;
   min-width: 15rem;
   display: flex;
   flex-direction: column;
-  padding: 4px;
+  padding: var(--space-1);
   background: var(--surface-card);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
@@ -1553,15 +1558,15 @@ body.settings-open #canvas { margin-left: 8px; }
   flex: 1 1 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   text-align: left;
   background: transparent;
   color: var(--text-primary);
   border: 0;
   border-radius: var(--radius-md);
-  padding: 6px 8px;
+  padding: var(--space-2);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--type-ui);
   cursor: pointer;
 }
 /* The label takes the free space, so the value and the `›` stay at the right
@@ -1582,30 +1587,30 @@ body.settings-open #canvas { margin-left: 8px; }
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  margin-right: 6px;
-  padding: 4px;
+  margin-right: var(--space-1);
+  padding: var(--space-1);
   background: var(--surface-card);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-float);
 }
-.chip-flyout-title { color: var(--text-tertiary); font-size: 12px; padding: 4px 8px; }
+.chip-flyout-title { color: var(--text-tertiary); font-size: var(--type-meta); padding: var(--space-1) var(--space-2); }
 .chip-flyout-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   text-align: left;
   background: transparent;
   color: var(--text-primary);
   border: 0;
   border-radius: var(--radius-md);
-  padding: 5px 8px;
+  padding: var(--space-1) var(--space-2);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--type-ui);
   cursor: pointer;
 }
 .chip-flyout-item .btn-label { flex: 1 1 auto; }
-.chip-flyout-note { color: var(--text-secondary); font-size: 11px; }
+.chip-flyout-note { color: var(--text-secondary); font-size: var(--type-micro); }
 .chip-flyout-item .icon { color: var(--text-primary); width: 14px; height: 14px; }
 .chip-flyout-item:hover:enabled { background: var(--surface-hover); }
 .chip-flyout-item.disabled { opacity: 0.55; cursor: default; }
@@ -2026,19 +2031,19 @@ body.settings-open #canvas { margin-left: 8px; }
   flex-direction: column;
   gap: 2px;
   min-height: 0;
-  padding: 14px 10px;
+  padding: var(--space-4) var(--space-3);
 }
 
 .settings-search {
   flex: 0 0 auto;
-  margin-bottom: 10px;
-  padding: 4px 12px;
+  margin-bottom: var(--space-3);
+  padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-pill);
   background: var(--surface-canvas);
   color: var(--text-primary);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .settings-search::placeholder {
@@ -2065,13 +2070,13 @@ body.settings-open #canvas { margin-left: 8px; }
 }
 
 .settings-nav-group + .settings-nav-group {
-  margin-top: 14px;
+  margin-top: var(--space-4);
 }
 
 .settings-nav-group-label {
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-3);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--type-micro);
   font-weight: 600;
 }
 
@@ -2079,8 +2084,8 @@ body.settings-open #canvas { margin-left: 8px; }
 .settings-nav-close {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border: 0;
   border-radius: var(--radius-md);
   background: none;
@@ -2095,9 +2100,9 @@ body.settings-open #canvas { margin-left: 8px; }
    at the foot of a list the user may have scrolled. Secondary, unlike the
    categories: it is not one of them. */
 .settings-nav-close {
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--type-ui);
 }
 
 .settings-nav-item:hover:enabled,
@@ -2121,7 +2126,7 @@ body.settings-open #canvas { margin-left: 8px; }
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 14px 20px var(--space-7);
+  padding: var(--space-4) var(--space-5) var(--space-7);
 }
 
 /* The settings reading column (todo V7). Wider than the transcript's 760px on
@@ -2142,8 +2147,8 @@ body.settings-open #canvas { margin-left: 8px; }
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
-  padding-bottom: 14px;
+  gap: var(--space-3);
+  padding-bottom: var(--space-4);
 }
 
 /* The page's H1 (design_guidance 六). It reads as a heading, not as another
@@ -2157,12 +2162,14 @@ body.settings-open #canvas { margin-left: 8px; }
 .settings-subtitle {
   flex: 1 1 100%;
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
-/* A group is a card with a hairline of its own (design_guidance 六): in light
-   mode `--surface-card` is a hair off white and the border is the only thing
-   that says where the group ends.
+/* A group is a card, and what says where it ends is the `--space-5` of paper
+   after it, not a rule around it (design_guidance 六.5). The hairline came off
+   with that change: the card keeps its own surface and its 20px corners, and the
+   rules *inside* it — each row's `border-top` — are the only lines left, so a
+   group reads as one block of rows rather than as a boxed form.
 
    No `overflow: hidden` here, deliberately: a row's pill dropdown is absolutely
    positioned against `.settings-menu-shell` and opens *below* its row, so a card
@@ -2170,8 +2177,7 @@ body.settings-open #canvas { margin-left: 8px; }
    tall and every option landed outside it. The corners are clipped by the last
    child instead (below), which is the only thing that needed the card's overflow. */
 .settings-card {
-  margin-bottom: 16px;
-  border: 1px solid var(--border-subtle);
+  margin-bottom: var(--space-5);
   border-radius: var(--radius-lg);
   background: var(--surface-card);
 }
@@ -2186,16 +2192,22 @@ body.settings-open #canvas { margin-left: 8px; }
   border-bottom-right-radius: var(--radius-lg);
 }
 
+/* One of the three places the serif is allowed (design_guidance 三.4): a section
+   heading is short, and it is what separates one group from the next now that
+   the card has no border. The size is the page's own title rung — the H1 above
+   is the only thing larger. */
 .settings-card-title {
-  padding: 12px 14px 8px;
+  padding: var(--space-3) var(--space-4) var(--space-2);
   color: var(--text-primary);
+  font-family: var(--font-serif);
+  font-size: var(--type-title);
   font-weight: 600;
 }
 
 .settings-card-note {
-  padding: 0 14px 10px;
+  padding: 0 var(--space-4) var(--space-3);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 /* The separator is the row's own top border, so the rule under the card title
@@ -2203,8 +2215,8 @@ body.settings-open #canvas { margin-left: 8px; }
 .settings-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -2223,19 +2235,19 @@ body.settings-open #canvas { margin-left: 8px; }
 
 .settings-row-desc {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .settings-row-warning {
   color: var(--text-warn);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .settings-row-control {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .settings-row-value {
@@ -2248,15 +2260,15 @@ body.settings-open #canvas { margin-left: 8px; }
 
 .settings-card-footer {
   display: flex;
-  gap: 8px;
-  padding: 10px 14px;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border-subtle);
 }
 
 .settings-input,
 .settings-select {
   min-width: 200px;
-  padding: 5px 8px;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--surface-base);
@@ -2281,7 +2293,7 @@ body.settings-open #canvas { margin-left: 8px; }
 .settings-project {
   min-width: 140px;
   border-radius: var(--radius-pill);
-  padding: 4px 12px;
+  padding: var(--space-1) var(--space-3);
 }
 
 /* The pill dropdown for row-level choices. The menu is positioned against the
@@ -2299,15 +2311,15 @@ body.settings-open #canvas { margin-left: 8px; }
 .settings-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1);
   min-width: 140px;
-  padding: 4px 12px;
+  padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-pill);
   background: var(--surface-canvas);
   color: var(--text-primary);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-meta);
   text-align: left;
   cursor: pointer;
 }

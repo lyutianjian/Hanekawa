@@ -285,7 +285,7 @@ test('the palette is the one that was agreed, value for value', () => {
       '--ease-standard': 'cubic-bezier(0.2, 0, 0, 1)',
       '--reading-measure': '980px',
       '--reading-gutter': '40px',
-      '--composer-overhang': '12px',
+      '--composer-overhang': '16px',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
@@ -359,7 +359,7 @@ test('the palette is the one that was agreed, value for value', () => {
       '--ease-standard': 'cubic-bezier(0.2, 0, 0, 1)',
       '--reading-measure': '980px',
       '--reading-gutter': '40px',
-      '--composer-overhang': '12px',
+      '--composer-overhang': '16px',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':

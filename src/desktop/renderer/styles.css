@@ -432,7 +432,7 @@ body {
 .btn-label { white-space: nowrap; }
 
 /* --- canvas header ---
-   `design_guidance.md` 三.1: session identity on the left, tools on the right,
+   `design_guidance.md` 六.1: session identity on the left, tools on the right,
    no bottom rule — the status bar underneath is separation enough. The two
    items the document puts beside "open location" (split view, inspector) have
    no backend and are omitted. */
@@ -536,7 +536,7 @@ body {
    Under the composer, right-aligned, and empty while nothing is happening. It
    used to be a strip across the top of the canvas that permanently read「空闲」—
    a label for the absence of news, in the one place the design reserves for the
-   session's identity (design_guidance 四.2). Everything it carries is metadata
+   session's identity (design_guidance 六.1). Everything it carries is metadata
    about the turn being typed, so it belongs beside the thing typing it. */
 #status {
   display: flex;
@@ -559,7 +559,7 @@ body {
 
 /* --- the two-column shell ---
    The sidebar is the app's base surface and the canvas is a lighter panel
-   floating inside it, per `design_guidance.md`'s layered-surface model. The
+   floating inside it, per `design_guidance.md` 二.1's lightness ladder. The
    canvas's margin is what separates the two columns — a gap, not a rule, which
    is the same "cards, not lines" move the group containers below make.
 
@@ -688,7 +688,7 @@ body.settings-open #sidebar { display: none; }
 .sidebar-search:focus { outline: none; box-shadow: 0 0 0 1px var(--focus-ring); }
 /* The first-level actions. Rows, not pills: they sit in the same column the
    session rows do, and a bordered capsule there reads as a second kind of
-   thing (design_guidance 三.2). */
+   thing (design_guidance 六.2). */
 .sidebar-nav { flex: 0 0 auto; display: flex; flex-direction: column; padding: 0 var(--space-2) var(--space-2); }
 /* Primary at rest, not secondary: this column's rule is "anything you can click
    is bright, only commentary is grey". A first-level action drawn in the same
@@ -1091,7 +1091,7 @@ body.settings-open #sidebar { display: none; }
    column) sized it to the container for free; flex layout does not. */
 .transcript-column { width: 100%; max-width: var(--reading-measure); margin: auto auto 0; flex-shrink: 0; }
 /* 24px between turns, and the line-height a wall of prose needs. Both are the
-   rhythm half of design_guidance 四.2 — the old 10px/1.5 ran the assistant's
+   rhythm half of design_guidance 四.3 — the old 10px/1.5 ran the assistant's
    answer and the next question together, and 16px still read as one block once
    the body size went up. 1.7 is the pairing `--type-body` is specified at. */
 .transcript .item { margin-bottom: var(--space-5); line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
@@ -1116,8 +1116,8 @@ body.settings-open #sidebar { display: none; }
 .transcript .item.assistant { color: var(--text-primary); }
 /* --- inline file pills ---
    A referenced file inside the user's bubble. `--surface-canvas` under a card-backed
-   bubble is the「纯白/浅灰微型小胶囊 + 细微发丝边框」 of design_guidance 三.3① in light
-   mode and a well in dark. No margins: the spacing is the user's own text, which the
+   bubble is the inset label of design_guidance 六.3 —「--surface-canvas 底 +
+   --border-subtle 发丝线」— in light mode, and a well in dark. No margins: the spacing is the user's own text, which the
    bubble preserves with `pre-wrap`. */
 .file-chip {
   display: inline-flex;
@@ -1331,8 +1331,8 @@ body.settings-open #sidebar { display: none; }
 
 /* --- surfaces (pickers, command views) ---
    A card floating in the canvas rather than a strip ruled off from it: the
-   group container *is* the separator, which is `design_guidance.md`'s fourth
-   checklist rule. `#queue` and `#suggestions` below are the same shape, and
+   group container *is* the separator, which is `design_guidance.md` 一.3's
+   grouping rule. `#queue` and `#suggestions` below are the same shape, and
    since S9 all three live in `#composer-popovers` — see that rule for why they
    carry no margin of their own. */
 #surface {
@@ -1431,7 +1431,7 @@ body.settings-open #sidebar { display: none; }
 #suggestions .suggestion.selected .name { color: var(--text-primary); }
 
 /* --- composer ---
-   `design_guidance.md`'s anchored composite input: one large-radius capsule
+   `design_guidance.md` 六.4's anchored composite input: one large-radius capsule
    holding the textarea and an inline action bar — `+` on the left, the
    "model · effort" pill and a round send button on the right. The chip is where
    stage-4 decision 4 lands: effort is adjusted next to the message it affects,
@@ -1505,7 +1505,8 @@ body.settings-open #sidebar { display: none; }
 /* Focus lifts the capsule off the page rather than recolouring it further: the
    composer is the one control the user returns to between every turn, and a
    border that merely darkens reads as a disabled field waking up. The shadow is
-   the same `--shadow-float` the menus use — one "this is above the page" depth.
+   the same `--shadow-float` the menus use (design_guidance 六.4) — one "this is
+   above the page" depth.
    `#composer` survives its own state change, so the transition has a carrier. */
 #composer:focus-within {
   border-color: var(--border-strong);
@@ -1544,7 +1545,7 @@ body.settings-open #sidebar { display: none; }
   cursor: pointer;
 }
 #composer-attach:hover { color: var(--text-primary); background: var(--surface-hover); }
-/* The permission-mode pill and its menu (design_guidance 四.2①.2). The menu
+/* The permission-mode pill and its menu (design_guidance 六.4). The menu
    opens *upward*: the composer is anchored to the bottom of the canvas, so a
    downward menu would be off-screen. */
 #composer-permission { position: relative; display: inline-flex; }
@@ -1886,7 +1887,7 @@ body.settings-open #sidebar { display: none; }
   z-indexes. The primary is a *raised neutral surface*, not a fill: the one
   brand solid in this interface is `#submit` (design_guidance 六.4), and a
   dialog that shouts louder than the send button is the wrong hierarchy.
-  A danger action is an outline and a text colour only (七.4).
+  A danger action is an outline and a text colour only (六.6).
 */
 #overlay-panel .dialog-actions,
 #rewind-panel .dialog-actions {
@@ -2276,7 +2277,7 @@ body.settings-open #sidebar { display: none; }
   padding-bottom: var(--space-4);
 }
 
-/* The page's H1 (design_guidance 六). It reads as a heading, not as another
+/* The page's H1 (design_guidance 六.5). It reads as a heading, not as another
    card title — which is what 15px made it, since the card titles are 14px. */
 .settings-title {
   color: var(--text-primary);
@@ -2505,7 +2506,7 @@ body.settings-open #sidebar { display: none; }
 }
 
 /* The switch, and the one place in the sheet where an accent *is* a fill
-   (design_guidance 六 / 七.4). A switch has no label of its own: the coloured
+   (design_guidance 六.5 / 七.3). A switch has no label of its own: the coloured
    track is the state, which is why both reference builds draw it and why the
    neutral version read as "disabled" at a glance. `rendererStyleTokens`'s
    accent-fill rule therefore carries a named exception for `.settings-toggle.on`
@@ -2524,7 +2525,7 @@ body.settings-open #sidebar { display: none; }
 
 /* Brand, not `--accent-info`: an "on" switch is the app saying yes in its own
    voice, and the blue read as a status colour borrowed from elsewhere in the
-   sheet (design_guidance 六.4). The *weak* rung is right here where `#submit`
+   sheet (design_guidance 六.5). The *weak* rung is right here where `#submit`
    needs the strong one: the track carries no text — only the knob sits on it,
    and `--surface-knob` is white in both themes precisely so it can. */
 .settings-toggle.on {

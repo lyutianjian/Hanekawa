@@ -155,12 +155,14 @@ points or views.
   composer; model/effort belongs on its chip, permission mode on its pill, and session name in the header.
 - The frameless title bar is draggable; every control in it is `no-drag`, and the Windows control strip
   stays empty. `WINDOW_CHROME` is the only color allowed outside `styles.css`; theme changes repaint it.
-  Its `height` and `#titlebar`'s CSS height are one number (32px); the smoke's `TITLE_BAR_HEIGHT` pins it.
+  Its `height` and `#titlebar`'s CSS height are one number (40px); the smoke's `TITLE_BAR_HEIGHT` pins it,
+  and the right padding is the measured Windows control strip, never a guess.
 - The settings screen takes the whole window: `#canvas.settings-open` hides the conversation's regions and
   `body.settings-open` hides the sidebar. Anything that puts a conversation on screen leaves it —
   `activateLane` and the `new` sidebar intent both call `leaveSettings()`.
-- `body` alone paints the window wash; `#titlebar` and `#sidebar` stay transparent, while `#canvas` is
-  opaque. Do not introduce `backdrop-filter` or `backgroundMaterial`.
+- `body` alone paints the window base — one flat `--surface-base`, no wash gradient; `#titlebar` and
+  `#sidebar` stay transparent, while `#canvas` is opaque. Do not introduce `backdrop-filter` or
+  `backgroundMaterial`.
 - `open-in-editor` is awaited and carries `projectRoot`; resolve it to the real `entry.cwd`. Keep process
   spawning in `src/desktop/openInEditor.ts`.
 - Delete sessions through `src/runtime/deleteSession.ts` after resolving the real session ID and detaching
@@ -188,8 +190,15 @@ points or views.
 - Dropdown/popover ancestor chains (`.settings-column`, `.composer-column`, menu shells) must not clip via
   `overflow`. Composer popovers remain absolute above the composer with the established pointer-event and
   z-index layering.
-- `--accent-*` does not fill backgrounds except `.settings-toggle.on`; keep
-  `ACCENT_FILL_EXCEPTIONS` exact.
+- `--accent-*` does not fill backgrounds except the three named spots — `.settings-toggle.on`, `#submit`,
+  and `.session-row.active::before`; keep `ACCENT_FILL_EXCEPTIONS` exact. `--accent-brand` is the weak rung
+  (icons, hairlines, indicator bars, switch tracks); anything carrying text uses `--accent-brand-strong`
+  over `--on-brand`, and `rendererStyleTokens.test.ts`'s `contrast()` assertions enforce that split.
+- Spacing, radius, and type come from tokens: `--space-1..7`, `--radius-lg|md|sm|pill` (20/12/8/pill), and
+  the seven `--type-*` rungs — not ad-hoc pixel values. `--font-serif` is display-only and whitelisted to
+  the welcome/empty-state hero, the settings section headings, and the two dialog titles.
+- Depth is two steps: menus and popovers take `--radius-md` + `--shadow-float` (the focused composer joins
+  them), and the two modal panels take `--radius-lg` + `--shadow-modal`. Nothing invents a third.
 - Model and effort are one `#chip-runtime` control. Its rows reuse picker decisions and persist changes via
   `run-command`; keep rows stable while switching flyouts and cancel stale opens in `closeMenus()`.
 - Short transcripts bottom-align through `.transcript-column { margin-top: auto; flex-shrink: 0; }`; it
@@ -200,11 +209,18 @@ points or views.
 - Blocking dialogs derive rows/buttons and intents in `model/`. Mouse and keyboard actions share the same
   intent mapping; the backdrop never dismisses a request. Suggestions accept on prevented `mousedown`.
 - Screens with key handlers take focus once when opened, not on every render.
-- Motion is tokenised (`--motion-fast|base|slow`, `--ease-standard`) in one block at the foot of
-  `styles.css`. Transitions only go on nodes that survive their state change; entrance animations only on
+- Motion is tokenised (`--motion-fast|base|slow`, `--ease-standard`, `--ease-exit`) in one block at the
+  foot of `styles.css`; a transition names a duration token and one of the two curves. Transitions only go on nodes that survive their state change; entrance animations only on
   containers whose existence tracks open/closed — never on transcript items or the two dialog panels,
   which re-render underneath themselves. `@media (prefers-reduced-motion: reduce)` is the sheet's one
   permitted nested at-rule.
+- The sidebar fold is a four-state machine (`expanded`/`collapsing`/`collapsed`/`expanding`) decided in
+  `renderer/model/` and part of `sidebarRenderSignature`. Content lives in a fixed-width shell inside an
+  `overflow: hidden` sidebar, so collapsing never reflows it; unmounting waits for `transitionend` or the
+  fallback timer, and each transition clears the previous listener and timer. `#canvas` keeps a constant
+  `margin-left`, so `flex-basis` is the fold's only animated property. Project groups fold the same way
+  via `grid-template-rows: 1fr → 0fr` over reused `.project-group`/`.project-body` nodes; a row inside a
+  folding group has index -1, which is not the "no cursor" -1.
 - Focus rings on containers use `:focus-visible`; only real text inputs paint on `:focus`.
 - In `app.ts`, construct `mux`/`shellClient` before the top-level theme block; `rendererBoot.test.ts` guards
   this runtime-only ordering constraint.

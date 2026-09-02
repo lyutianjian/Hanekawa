@@ -268,15 +268,23 @@ test('the palette is the one that was agreed, value for value', () => {
       '--caret': '#ede9e3',
       '--shadow-float': '0 6px 20px rgba(0, 0, 0, 0.45)',
       '--shadow-modal': '0 16px 48px rgba(0, 0, 0, 0.6)',
-      '--radius-lg': '14px',
-      '--radius-md': '9px',
+      '--space-1': '4px',
+      '--space-2': '8px',
+      '--space-3': '12px',
+      '--space-4': '16px',
+      '--space-5': '24px',
+      '--space-6': '32px',
+      '--space-7': '48px',
+      '--radius-lg': '20px',
+      '--radius-md': '12px',
+      '--radius-sm': '8px',
       '--radius-pill': '9999px',
       '--motion-fast': '120ms',
       '--motion-base': '180ms',
       '--motion-slow': '240ms',
       '--ease-standard': 'cubic-bezier(0.2, 0, 0, 1)',
-      '--reading-measure': '1100px',
-      '--reading-gutter': '32px',
+      '--reading-measure': '980px',
+      '--reading-gutter': '40px',
       '--composer-overhang': '12px',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
@@ -284,13 +292,21 @@ test('the palette is the one that was agreed, value for value', () => {
         '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Cascadia Mono", monospace',
       '--font-serif':
         '"Source Serif 4 Variable", Georgia, "Songti SC", "Noto Serif CJK SC", serif',
+      '--type-display': '28px',
+      '--type-title': '20px',
+      '--type-body': '15px',
+      '--type-ui': '14px',
+      '--type-meta': '12.5px',
+      '--type-micro': '11px',
+      '--type-code': '13px',
     },
   )
 
   // The light palette, pinned the same way. It is the dark palette with the light
   // block layered on: the aliases (`--text-*`, `--link`, `--focus-ring` — they
-  // follow the overridden accents), `--surface-knob`, radii, motion and fonts
-  // are theme-independent and carry through from `:root`. The scrim and both
+  // follow the overridden accents), `--surface-knob`, the space/shape/type
+  // scales, motion and fonts are theme-independent and carry through from
+  // `:root`. The scrim and both
   // shadows no longer are: light dims with a warm cast and shadows with the
   // paper's own pigment (design_guidance.md 二.2).
   assert.deepEqual(
@@ -326,15 +342,23 @@ test('the palette is the one that was agreed, value for value', () => {
       '--caret': '#1a1815',
       '--shadow-float': '0 6px 20px rgba(28, 25, 21, 0.08), 0 1px 2px rgba(28, 25, 21, 0.06)',
       '--shadow-modal': '0 16px 48px rgba(28, 25, 21, 0.16)',
-      '--radius-lg': '14px',
-      '--radius-md': '9px',
+      '--space-1': '4px',
+      '--space-2': '8px',
+      '--space-3': '12px',
+      '--space-4': '16px',
+      '--space-5': '24px',
+      '--space-6': '32px',
+      '--space-7': '48px',
+      '--radius-lg': '20px',
+      '--radius-md': '12px',
+      '--radius-sm': '8px',
       '--radius-pill': '9999px',
       '--motion-fast': '120ms',
       '--motion-base': '180ms',
       '--motion-slow': '240ms',
       '--ease-standard': 'cubic-bezier(0.2, 0, 0, 1)',
-      '--reading-measure': '1100px',
-      '--reading-gutter': '32px',
+      '--reading-measure': '980px',
+      '--reading-gutter': '40px',
       '--composer-overhang': '12px',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
@@ -342,6 +366,13 @@ test('the palette is the one that was agreed, value for value', () => {
         '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Cascadia Mono", monospace',
       '--font-serif':
         '"Source Serif 4 Variable", Georgia, "Songti SC", "Noto Serif CJK SC", serif',
+      '--type-display': '28px',
+      '--type-title': '20px',
+      '--type-body': '15px',
+      '--type-ui': '14px',
+      '--type-meta': '12.5px',
+      '--type-micro': '11px',
+      '--type-code': '13px',
     },
   )
 })
@@ -349,7 +380,8 @@ test('the palette is the one that was agreed, value for value', () => {
 test('the light block overrides only colours, and adds no token the dark palette lacks', () => {
   // Every override must shadow a real dark token — a light-only token would be a
   // colour the dark theme silently drops to nothing. And the theme-independent
-  // tokens (the knob, shape, type, and the aliases that follow their accent)
+  // tokens (the knob, space, shape, type, motion, and the aliases that follow
+  // their accent)
   // must NOT be redeclared, or the two themes could drift on something that is
   // not a colour. The scrim and both shadows are theme-*dependent* under the
   // redesign, so they are absent from this list on purpose.
@@ -363,8 +395,16 @@ test('the light block overrides only colours, and adds no token the dark palette
     '--text-success',
     '--link',
     '--focus-ring',
+    '--space-1',
+    '--space-2',
+    '--space-3',
+    '--space-4',
+    '--space-5',
+    '--space-6',
+    '--space-7',
     '--radius-lg',
     '--radius-md',
+    '--radius-sm',
     '--radius-pill',
     '--motion-fast',
     '--motion-base',
@@ -373,6 +413,13 @@ test('the light block overrides only colours, and adds no token the dark palette
     '--font-ui',
     '--font-mono',
     '--font-serif',
+    '--type-display',
+    '--type-title',
+    '--type-body',
+    '--type-ui',
+    '--type-meta',
+    '--type-micro',
+    '--type-code',
   ]
   for (const name of THEME_INDEPENDENT) {
     assert.ok(

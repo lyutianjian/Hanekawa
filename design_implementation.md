@@ -96,7 +96,7 @@
 
 | 任务 | 内容 | 验收 |
 | --- | --- | --- |
-| [ ] **P2-1** 尺度 token 落地 | `:root` 新增 `--space-1..7`、`--radius-sm`、`--type-*` 七级；`--radius-lg 14→20`、`--radius-md 9→12`；`--reading-measure 1100→980`、`--reading-gutter 32→40`。同步钉死表与 `THEME_INDEPENDENT`。**本任务只加 token 与改这几个值，不改任何组件规则** | `rendererStyleTokens` |
+| [x] **P2-1** 尺度 token 落地 | `:root` 新增 `--space-1..7`、`--radius-sm`、`--type-*` 七级；`--radius-lg 14→20`、`--radius-md 9→12`；`--reading-measure 1100→980`、`--reading-gutter 32→40`。同步钉死表与 `THEME_INDEPENDENT`。**本任务只加 token 与改这几个值，不改任何组件规则** | `rendererStyleTokens` |
 | [ ] **P2-2** 窗口框推间距 | 侧边栏 268→280、会话行内边距 `6px 10px → 8px 12px`（行高约 34px）、项目标题行字号/字距、标题栏内部间距，全部换成 `--space-*` / `--type-*` | `rendererSidebarView`、`rendererSidebar`、`rendererCanvasHeaderView` |
 | [ ] **P2-3** 对话流推间距 | 轮次间距 16→24、正文 `--type-body`、用户气泡 `--radius-lg` + `12px 16px`、思考块去掉 `opacity: 0.8`、工具行 `--type-code`、文件小胶囊 `--radius-sm`。`.transcript-column { margin-top: auto; flex-shrink: 0 }` **不得**改动 | `rendererTranscriptView`、`rendererUserMessage`、`rendererThinking`、`rendererDiffRows` |
 | [ ] **P2-4** 输入区与设置页推间距 | 输入区内边距 `8px 12px → 12px 16px`，`--composer-overhang` 与内边距同步（两处数字一起动）；设置页卡片分隔从边框改 `--space-5` 留白，分区标题上 `--font-serif` + `--type-title` | `rendererComposerView`、`rendererComposerChip`、`rendererSettingsView` |

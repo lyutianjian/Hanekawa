@@ -1089,6 +1089,75 @@ test('every floating menu is lifted off the page it covers', () => {
   }
 })
 
+test('depth is two steps: menus float, modals sit deeper, and the composer joins them on focus', () => {
+  // Three surfaces, two shadows. Menus and the focused composer are *over the
+  // page*; the two dialog panels are over a dimmed app and carry the heavier
+  // `--shadow-modal`. Anything that reaches for a third depth is inventing one.
+  for (const selector of ['.titlebar-menu', '.canvas-menu', '.composer-menu', '.settings-menu', '.chip-menu', '.chip-flyout', '.project-menu']) {
+    assert.ok(
+      declares(blockFor(selector), 'border-radius', 'var(--radius-md)'),
+      `${selector} is a menu card and takes the menu radius`,
+    )
+  }
+  for (const selector of ['#overlay-panel', '#rewind-panel']) {
+    const panel = blockFor(selector)
+    assert.ok(
+      declares(panel, 'border-radius', 'var(--radius-lg)'),
+      `${selector} is a modal panel, not a menu: it takes --radius-lg`,
+    )
+    assert.ok(
+      declares(panel, 'box-shadow', 'var(--shadow-modal)'),
+      `${selector} sits over a dimmed app and must carry var(--shadow-modal)`,
+    )
+  }
+
+  const focused = blockFor('#composer:focus-within')
+  assert.ok(
+    declares(focused, 'border-color', 'var(--border-strong)'),
+    'the focused composer firms its hairline',
+  )
+  assert.ok(
+    declares(focused, 'box-shadow', 'var(--shadow-float)'),
+    'the focused composer lifts off the page instead of only recolouring',
+  )
+  // A shadow that snaps on is a flicker at every focus change; `#composer`
+  // outlives the state, so it is a legal carrier for the transition.
+  assert.ok(
+    blockFor('#composer').decls.some((decl) => decl.prop === 'transition'),
+    '#composer must animate into its focused depth',
+  )
+
+  // The layering the popovers were built against: composer stack under every
+  // menu, menus under both modal layers, rewind under overlay (a permission
+  // prompt has to beat the rewind sheet).
+  for (const [selector, z] of [
+    ['#composer-popovers', '4'],
+    ['.composer-menu', '5'],
+    ['.chip-menu', '5'],
+    ['.settings-menu', '5'],
+    ['.canvas-menu', '5'],
+    ['.chip-flyout', '6'],
+    ['#rewind', '9'],
+    ['#overlay', '10'],
+  ] as const) {
+    assert.ok(declares(blockFor(selector), 'z-index', z), `${selector} belongs on layer ${z}`)
+  }
+
+  // Every popover here is absolute against one of these shells; an `overflow`
+  // on any of them clips the card the moment it hangs past the shell's box.
+  for (const selector of [
+    '.chip-menu-shell',
+    '.canvas-menu-shell',
+    '.settings-menu-shell',
+    '.titlebar-menu-shell',
+  ]) {
+    assert.ok(
+      !blockFor(selector).decls.some((decl) => decl.prop.startsWith('overflow')),
+      `${selector} is on a popover's ancestor chain and must not clip it`,
+    )
+  }
+})
+
 test('motion comes from the tokens, and the things that rebuild themselves have none', () => {
   // Same argument as the palette: a duration written beside the control that
   // happens to use it is a duration nobody can compare, and a sheet with a dozen

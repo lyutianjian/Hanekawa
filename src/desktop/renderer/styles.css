@@ -1499,8 +1499,18 @@ body.settings-open #sidebar { display: none; }
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   padding: var(--space-3) var(--space-4);
+  transition: border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
 }
-#composer:focus-within { border-color: var(--border-strong); }
+/* Focus lifts the capsule off the page rather than recolouring it further: the
+   composer is the one control the user returns to between every turn, and a
+   border that merely darkens reads as a disabled field waking up. The shadow is
+   the same `--shadow-float` the menus use — one "this is above the page" depth.
+   `#composer` survives its own state change, so the transition has a carrier. */
+#composer:focus-within {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-float);
+}
 #input {
   background: transparent;
   color: var(--text-primary);

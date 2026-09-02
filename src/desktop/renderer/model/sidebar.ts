@@ -113,6 +113,17 @@ export function nextCollapsePhase(
 }
 
 /**
+ * How long to wait for a `settled` that may never come, in milliseconds.
+ *
+ * `--motion-slow` plus a frame of slack. `transitionend` is not a guarantee: a
+ * hidden window runs no transitions, `prefers-reduced-motion` cuts them to 1ms,
+ * and a `display: none` ancestor (the settings screen) cancels them outright.
+ * Without the timer the fold would sit in `'collapsing'` forever and never
+ * unmount its rows. `rendererStyleTokens` pins this against the token.
+ */
+export const SIDEBAR_COLLAPSE_FALLBACK_MS = 380
+
+/**
  * Whether the rail's rows, search box, nav and footer belong in the DOM.
  *
  * The only phase that unmounts them is the settled one: `'collapsing'` still
@@ -518,6 +529,12 @@ export type SidebarIntent =
   /** Swap the canvas for the settings screen. Window-level, not per session. */
   | { kind: 'open-settings' }
   | { kind: 'toggle-collapse' }
+  /**
+   * The fold's animation reported that it finished — `transitionend`, or the
+   * fallback timer standing in for one that never ran. View-generated: no key
+   * and no button produces it, which is why `sidebarChordToIntent` cannot.
+   */
+  | { kind: 'collapse-settled' }
   /** Set the session-search filter. */
   | { kind: 'search'; query: string }
   /** Fold one workspace's group shut, or open it again. */

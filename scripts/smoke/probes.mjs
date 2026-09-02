@@ -33,7 +33,6 @@ const json = (value) => JSON.stringify(value)
 /** The sidebar: collapse state, groups, and every row's badge and flags. */
 export const sidebar = () => `(() => {
   const container = document.getElementById('sidebar')
-  const list = container.querySelector('.sidebar-list')
   const rows = [...container.querySelectorAll('.session-row')].map((row) => ({
     sessionId: row.dataset.sessionId,
     index: Number(row.dataset.index),
@@ -49,8 +48,9 @@ export const sidebar = () => `(() => {
     // Collapsed is zero width now, not a 44px rail (S7): the toggle it used to
     // keep reachable lives in the title bar.
     width: Math.round(container.getBoundingClientRect().width),
-    listHidden: list ? list.hidden : null,
-    footerHidden: (container.querySelector('.sidebar-footer') || {}).hidden ?? null,
+    // The four regions share one shell now, and that shell is what render()
+    // hides — once the fold has settled, not when the class flips.
+    shellHidden: (container.querySelector('.sidebar-shell') || {}).hidden ?? null,
     rowCount: rows.length,
     // Rows survive a collapse inside the hidden container: render() returns
     // before rebuilding the list (dom/sidebarView.ts:236-241), so "no rows"

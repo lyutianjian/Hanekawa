@@ -4,6 +4,7 @@ import test from 'node:test'
 import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
 import { createSidebarView } from '../src/desktop/renderer/dom/sidebarView.js'
 import {
+  SIDEBAR_COLLAPSE_FALLBACK_MS,
   SIDEBAR_HINT,
   sidebarView,
   createSidebarState,
@@ -54,9 +55,17 @@ function mount(t: { after(fn: () => void): void }): Rendered {
   }
 }
 
+/** The one child of `#sidebar`: the column the four regions live in. */
+const shell = (root: StubView): StubView => {
+  const found = root.children.find((node) => node.classes.includes('sidebar-shell'))
+  assert.ok(found, `no .sidebar-shell in ${root.children.map((c) => c.className).join(' | ')}`)
+  return found
+}
+
 const region = (root: StubView, className: string): StubView => {
-  const found = root.children.find((node) => node.classes.includes(className))
-  assert.ok(found, `no .${className} in ${root.children.map((c) => c.className).join(' | ')}`)
+  const within = shell(root)
+  const found = within.children.find((node) => node.classes.includes(className))
+  assert.ok(found, `no .${className} in ${within.children.map((c) => c.className).join(' | ')}`)
   return found
 }
 
@@ -104,22 +113,90 @@ test('the sidebar opens on the search box: there is no workspace header', (t) =>
   const { render, root } = mount(t)
   render(viewOf())
 
-  assert.equal(root().children[0]?.className, 'sidebar-search')
+  assert.equal(shell(root()).children[0]?.className, 'sidebar-search')
   assert.equal(find(root(), 'sidebar-header'), undefined, 'the workspace header came back')
   assert.equal(find(root(), 'sidebar-workspace'), undefined, 'the workspace dropdown came back')
   assert.equal(find(root(), 'sidebar-collapse'), undefined, 'the sidebar grew a second collapse control')
 })
 
-test('collapsing hides every region', (t) => {
+test('a settled collapse takes the whole column off screen', (t) => {
   // The rail survived only so this view's own toggle stayed clickable. With that
   // toggle in the title bar, a collapsed sidebar is zero width — and a region
-  // still drawn would be what keeps the column from reaching it.
+  // still drawn would be what keeps the column from reaching it. One `show()` on
+  // the shell rather than four, now that the regions share a parent.
   const { render, root } = mount(t)
-  render(viewOf({ collapsed: true }))
+  render(viewOf({ collapsed: true, collapsePhase: 'collapsed' }))
 
-  for (const name of ['sidebar-search', 'sidebar-nav', 'sidebar-list', 'sidebar-footer']) {
-    assert.equal(region(root(), name).hidden, true, `.${name} is still on screen while collapsed`)
-  }
+  assert.equal(shell(root()).hidden, true, 'the shell is still on screen while collapsed')
+  assert.ok(root().classes.includes('collapsed'), '#sidebar must carry the class the width animates on')
+})
+
+test('the column stays mounted while the fold is still moving', (t) => {
+  // The reason the phase is not a boolean: unmounting on the click would leave
+  // the collapse animating an empty column, and expanding would open onto a
+  // blank pane for one frame before the rows arrived.
+  const { render, root } = mount(t)
+  render(viewOf({ ...tieredState(), collapsed: true, collapsePhase: 'collapsing' }))
+
+  assert.equal(shell(root()).hidden, false, 'the shell went out before the width did')
+  assert.ok(sessionRows(root()).length > 0, 'the rows have to be there to slide out')
+  assert.ok(
+    root().classes.includes('collapsed'),
+    'the class goes on at the start of the move, not at the end of it',
+  )
+
+  // And the other direction: the rows are built before the column has width.
+  render(viewOf({ ...tieredState(), collapsed: false, collapsePhase: 'expanding' }))
+  assert.equal(shell(root()).hidden, false)
+  assert.ok(sessionRows(root()).length > 0, 'expanding must build the rows the width is about to reveal')
+  assert.equal(root().classes.includes('collapsed'), false)
+})
+
+test('the fold reports it settled, from the transition or from the timer', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { render, root, container, stub, intents } = mount(t)
+
+  render(viewOf({ collapsed: true, collapsePhase: 'collapsing' }))
+  // `transitionend` bubbles from every hover colour and from the shell's own
+  // fade; only the sidebar's own width may settle the fold.
+  stub.dispatch(container, 'transitionend', { propertyName: 'opacity' })
+  assert.deepEqual(intents, [], 'a bubbled transition settled the fold')
+  stub.dispatch(container, 'transitionend', { propertyName: 'flex-basis' })
+  assert.deepEqual(intents, [{ kind: 'collapse-settled' }])
+
+  // And the transition that never runs — a hidden window, or reduced motion
+  // cutting it to nothing — is what the fallback timer is for.
+  intents.length = 0
+  render(viewOf({ collapsed: false, collapsePhase: 'expanding' }))
+  t.mock.timers.tick(SIDEBAR_COLLAPSE_FALLBACK_MS + 1)
+  assert.deepEqual(intents, [{ kind: 'collapse-settled' }])
+})
+
+test('a superseded fold leaves no timer behind', (t) => {
+  // The failure this guards: a collapse cancelled mid-flight, whose timer still
+  // fires and settles the expansion that replaced it — a rail that unmounts its
+  // rows a third of a second after being opened.
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { render, container, stub, intents } = mount(t)
+
+  render(viewOf({ collapsed: true, collapsePhase: 'collapsing' }))
+  t.mock.timers.tick(SIDEBAR_COLLAPSE_FALLBACK_MS - 100)
+  render(viewOf({ collapsed: false, collapsePhase: 'expanding' }))
+  t.mock.timers.tick(101)
+  assert.deepEqual(intents, [], 'the interrupted move fired its own timer')
+
+  t.mock.timers.tick(SIDEBAR_COLLAPSE_FALLBACK_MS)
+  assert.deepEqual(intents, [{ kind: 'collapse-settled' }], 'exactly one timer may be live')
+
+  // A rested fold arms nothing at all, so a repaint at rest cannot queue work.
+  intents.length = 0
+  render(viewOf({ collapsed: false, collapsePhase: 'expanded' }))
+  t.mock.timers.tick(SIDEBAR_COLLAPSE_FALLBACK_MS * 4)
+  assert.deepEqual(intents, [])
+  // The listener is installed once and consults the phase, so no toggle can add
+  // a second one — this is what makes the add/remove pair unnecessary.
+  stub.dispatch(container, 'transitionend', { propertyName: 'flex-basis' })
+  assert.equal(intents.length, 1, 'the transition listener was installed more than once')
 })
 
 test('every workspace gets a folding heading, single project included', (t) => {

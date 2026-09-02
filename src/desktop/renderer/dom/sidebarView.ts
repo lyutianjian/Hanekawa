@@ -1,7 +1,9 @@
 import {
+  SIDEBAR_COLLAPSE_FALLBACK_MS,
   SIDEBAR_HINT,
   activateRow,
   newSessionIntent,
+  sidebarContentMounted,
   sidebarRenderSignature,
   type SidebarGroup,
   type SidebarIntent,
@@ -17,9 +19,15 @@ import { icon } from './icons.js'
  *
  * Four fixed regions, following `design_guidance.md` 三.2 top to bottom: the
  * session search box, the first-level actions, a scrolling middle of workspace
- * groups, and a footer carrying 设置 and the `?` panel. Collapsing hides all four
- * and the stylesheet takes the column to zero width — the one collapse control is
- * the title bar's `.titlebar-rail`.
+ * groups, and a footer carrying 设置 and the `?` panel. All four live in one
+ * shell held at the open width; the stylesheet takes `#sidebar` around it to zero
+ * — the one collapse control is the title bar's `.titlebar-rail`.
+ *
+ * The fold is the third thing this file owns that the model cannot: the phase
+ * comes in on the view, but the *evidence* that a move finished is a
+ * `transitionend` (or the timer standing in for one that never ran), and both are
+ * DOM. It reports them back as `collapse-settled` and lets `nextCollapsePhase`
+ * decide what they mean.
  *
  * The header that used to sit above the search box is gone with the workspace
  * dropdown it held: every workspace now has a heading *in the list*, so a control
@@ -95,10 +103,41 @@ export function createSidebarView(
   list.tabIndex = 0
   const footer = el('div', 'sidebar-footer')
 
-  container.appendChild(search)
-  container.appendChild(nav)
-  container.appendChild(list)
-  container.appendChild(footer)
+  // The four regions live in a shell held at the open width rather than directly
+  // in `#sidebar`, which is the element that animates. A flex column narrowing
+  // to zero reflows on every frame; the shell keeps its 280px, `#sidebar` crops
+  // it, and the collapse is a slide rather than a re-wrap. See `styles.css`.
+  const shell = el('div', 'sidebar-shell')
+  shell.appendChild(search)
+  shell.appendChild(nav)
+  shell.appendChild(list)
+  shell.appendChild(footer)
+  container.appendChild(shell)
+
+  /**
+   * The fallback timer for the fold, and the only thing here that needs
+   * clearing.
+   *
+   * The `transitionend` listener below is installed once and never removed —
+   * one listener that consults the current phase cannot accumulate, which is the
+   * leak an add/remove pair per toggle exists to avoid. The timer is per move,
+   * so an unfired one from the move being superseded is cancelled here.
+   */
+  let settleTimer: ReturnType<typeof setTimeout> | undefined
+  const clearSettleTimer = (): void => {
+    if (settleTimer === undefined) return
+    clearTimeout(settleTimer)
+    settleTimer = undefined
+  }
+
+  container.addEventListener('transitionend', (event) => {
+    // Only the sidebar's own width: the rows inside it transition too (hover
+    // colours, the shell's own fade), and every one of those bubbles to here.
+    if (event.target !== container) return
+    if (event.propertyName !== 'flex-basis') return
+    clearSettleTimer()
+    onIntent({ kind: 'collapse-settled' })
+  })
 
   container.addEventListener('keydown', (event) => {
     // The search box lives inside the sidebar, so its keystrokes bubble to this
@@ -359,18 +398,33 @@ export function createSidebarView(
         ),
       )
 
-      container.classList.toggle('collapsed', view.collapsed)
-      // Collapsed hides *everything* and the stylesheet takes the column to zero
-      // width. The rail that used to survive existed only so this view's own
+      // The class goes on at the *start* of the collapse and comes off at the
+      // start of the expansion — it is what the width transitions between, so it
+      // follows the moving phase rather than the settled one.
+      const shut = view.collapsePhase === 'collapsing' || view.collapsePhase === 'collapsed'
+      container.classList.toggle('collapsed', shut)
+
+      // Arm the fallback the moment a move starts, and disarm it the moment one
+      // rests. A move that supersedes another lands here too, so the timer that
+      // belonged to the interrupted move never outlives it.
+      clearSettleTimer()
+      if (view.collapsePhase === 'collapsing' || view.collapsePhase === 'expanding') {
+        settleTimer = setTimeout(() => {
+          settleTimer = undefined
+          onIntent({ kind: 'collapse-settled' })
+        }, SIDEBAR_COLLAPSE_FALLBACK_MS)
+      }
+
+      // The rail that used to survive a collapse existed only so this view's own
       // toggle stayed reachable by mouse; that toggle now lives in the title bar,
-      // which a collapsed sidebar does not touch. Returning here rather than after
-      // building means a collapsed sidebar builds no rows at all — the guard above
-      // already banked the signature, so expanding repaints.
-      show(search, !view.collapsed)
-      show(nav, !view.collapsed)
-      show(list, !view.collapsed)
-      show(footer, !view.collapsed)
-      if (view.collapsed) return
+      // which a collapsed sidebar does not touch. Unmounting waits for the fold
+      // to *finish*: taken out on the click, the collapse would be a fade of an
+      // empty column. Returning here rather than after building means a settled
+      // collapse builds no rows at all — the guard above already banked the
+      // signature, so expanding repaints.
+      const mounted = sidebarContentMounted(view.collapsePhase)
+      show(shell, mounted)
+      if (!mounted) return
 
       // Rebuilt from the groups actually drawn, so a heading that is gone cannot
       // be revealed and a stale node cannot be focused into a detached tree.

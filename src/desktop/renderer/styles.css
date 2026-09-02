@@ -587,7 +587,12 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  margin: 8px 8px 8px 0;
+  /* Even on all four sides, and unconditional. It used to be `8px 8px 8px 0`
+     with two sibling rules growing the left inset back whenever the sidebar
+     went away — an inset that appeared and disappeared, animated against a
+     column that was animating too, so the gap pumped mid-collapse. The canvas
+     now owns its own margin and the sidebar's width is the only thing moving. */
+  margin: var(--space-2);
   background: var(--surface-canvas);
   border-radius: var(--radius-lg);
   overflow: hidden;
@@ -608,9 +613,6 @@ body {
      follows `border-radius`. Same idiom as `.sidebar-list:focus` below. */
   outline: 1px solid var(--border-subtle);
   outline-offset: -1px;
-  /* Follows the sidebar's own width animation: the canvas borrows that column
-     as its left inset, so the two have to move on one timing or the gap pumps. */
-  transition: margin-left var(--motion-slow) var(--ease-standard);
 }
 
 /* --- sidebar --- */
@@ -625,25 +627,43 @@ body {
   overflow: hidden;
   transition: flex-basis var(--motion-slow) var(--ease-standard);
 }
+/* The column that holds the four regions, at the sidebar's *open* width and
+   never narrower. `#sidebar` is the thing that animates, and a flex column that
+   reflows from 280px to 0 would re-wrap every session title on the way — the
+   collapse would read as the list tearing itself up rather than sliding out.
+   So the shell keeps its width, `#sidebar`'s `overflow: hidden` crops it, and
+   the rows go out on opacity and 8px of travel instead. */
+.sidebar-shell {
+  flex: 0 0 280px;
+  width: 280px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  transition: opacity var(--motion-base) var(--ease-standard),
+              transform var(--motion-base) var(--ease-standard);
+}
 /* Collapsed is zero width, not a rail: the toggle it used to keep reachable now
    lives in the title bar (`.titlebar-rail`), which collapsing does not touch.
-   The canvas has no left margin of its own — it borrows the sidebar's edge — so
-   it has to grow one here, or it reads as glued to the window frame. */
-/* The collapse is the one direction that leaves rather than arrives, so it
-   takes `--ease-exit` while the expansion keeps the decelerating standard curve
+   The collapse is the one direction that leaves rather than arrives, so it takes
+   `--ease-exit` while the expansion keeps the decelerating standard curve
    declared above. A transition on the state class, not on the base rule, is how
-   CSS spells "one curve per direction". */
+   CSS spells "one curve per direction".
+   The shell's fade is left on the standard curve and the shorter step: it has to
+   be gone well before the column finishes closing, or the last frames are legible
+   text being sliced by the crop. */
 #sidebar.collapsed {
   flex-basis: 0;
   transition: flex-basis var(--motion-slow) var(--ease-exit);
 }
-#sidebar.collapsed + #canvas { margin-left: 8px; }
+#sidebar.collapsed .sidebar-shell {
+  opacity: 0;
+  transform: translateX(-8px);
+}
 /* The settings screen takes the whole window rather than the canvas alone, so
-   the sidebar goes with the composer and the header. Two rules, not one: the
-   canvas has to replace the inset the sidebar was providing, exactly as it does
-   for the collapsed rail above. `app.ts`'s `renderSettings()` owns the class. */
+   the sidebar goes with the composer and the header. One rule now, not two: the
+   canvas carries its own margin, so nothing has to give it back an inset the
+   sidebar is no longer providing. `app.ts`'s `renderSettings()` owns the class. */
 body.settings-open #sidebar { display: none; }
-body.settings-open #canvas { margin-left: 8px; }
 /* The session search box, the sidebar's first region. It carries the column's
    top inset now that the workspace header above it is gone — the workspaces are
    headings inside the list, not a dropdown over it. */

@@ -46,10 +46,12 @@ import {
   createSidebarState,
   moveSelection,
   newSessionIntent,
+  nextCollapsePhase,
   toggleProject,
   sidebarChordToIntent,
   sidebarKeyToIntent,
   sidebarView as buildSidebarView,
+  type SidebarCollapsePhase,
   type SidebarIntent,
   type SidebarLaneStatus,
   type SidebarProjectSessions,
@@ -365,7 +367,10 @@ function applyPaneBudget(): void {
 
 /** History, as last pulled. Kept so a repaint never has to reach the host. */
 let projects: readonly SidebarProjectSessions[] = []
+/** What the user last asked the rail to be. */
 let collapsed = false
+/** Where the rail has got to. Lags `collapsed` by one animation. */
+let collapsePhase: SidebarCollapsePhase = 'expanded'
 let selectedIndex = -1
 let pendingDelete: string | undefined
 /** The project heading with a context menu open, if any. */
@@ -388,6 +393,7 @@ function currentSidebarState(): SidebarState {
     laneStatus: laneStatuses(),
     activeLane,
     collapsed,
+    collapsePhase,
     selectedIndex,
     pendingDelete,
     projectMenu,
@@ -526,8 +532,19 @@ function runSidebarIntent(intent: SidebarIntent): void {
       return
     case 'toggle-collapse':
       collapsed = !collapsed
+      collapsePhase = nextCollapsePhase(collapsePhase, collapsed, 'intent')
       renderSidebar()
       return
+    case 'collapse-settled': {
+      // Arrives from the view's `transitionend` or its fallback timer, and both
+      // can be late — a settle that no longer matches the intent comes back
+      // unchanged, and an unchanged phase must not repaint.
+      const next = nextCollapsePhase(collapsePhase, collapsed, 'settled')
+      if (next === collapsePhase) return
+      collapsePhase = next
+      renderSidebar()
+      return
+    }
     case 'search':
       searchQuery = intent.query
       renderSidebar()

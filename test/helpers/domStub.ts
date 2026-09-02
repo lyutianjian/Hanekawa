@@ -39,6 +39,8 @@ interface StubEvent {
    *  also what a view's own `replace()` produces — handlers must tell them apart. */
   readonly relatedTarget: unknown
   readonly key: string
+  /** `transitionend`'s property. The sidebar's fold listens for `flex-basis`. */
+  readonly propertyName: string
   defaultPrevented: boolean
   preventDefault(): void
   stopPropagation(): void
@@ -49,6 +51,7 @@ export interface StubEventInit {
   readonly target?: unknown
   readonly relatedTarget?: unknown
   readonly key?: string
+  readonly propertyName?: string
 }
 
 type Listener = (event: StubEvent) => void
@@ -230,6 +233,7 @@ class StubElement {
       target: init.target ?? this,
       relatedTarget: init.relatedTarget ?? null,
       key: init.key ?? '',
+      propertyName: init.propertyName ?? '',
       defaultPrevented: false,
       preventDefault() {
         event.defaultPrevented = true

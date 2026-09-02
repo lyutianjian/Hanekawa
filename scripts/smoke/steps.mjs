@@ -219,10 +219,12 @@ async function step7(ctx) {
   // still see the whole 280px column.
   const collapsed = await waitFor('the sidebar to collapse', async () => {
     const view = await read(ctx, probes.sidebar())
-    return view.collapsed && view.width === 0 ? view : undefined
+    return view.collapsed && view.width === 0 && view.shellHidden === true ? view : undefined
   })
-  ctx.ok('the list is hidden when collapsed', collapsed.listHidden === true, `listHidden=${collapsed.listHidden}`)
-  ctx.ok('the footer is hidden when collapsed', collapsed.footerHidden === true, `footerHidden=${collapsed.footerHidden}`)
+  // One `show()` on the shell, and it happens on `transitionend` (or the
+  // fallback timer) rather than on the click: taken out when the class flipped,
+  // the collapse would be an empty column sliding shut.
+  ctx.ok('the column is hidden once collapsed', collapsed.shellHidden === true, `shellHidden=${collapsed.shellHidden}`)
   // Not "no rows exist": `render()` returns before rebuilding the list, so the
   // rows built while expanded stay in the hidden container. What collapse
   // guarantees — and what the rail is for — is that none of them is on screen

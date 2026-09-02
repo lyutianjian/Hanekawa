@@ -4,6 +4,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 import { parseCss, rendererRoot, stylesheetPath, type Block } from './helpers/rendererCss.js'
+import { SIDEBAR_COLLAPSE_FALLBACK_MS } from '../src/desktop/renderer/model/sidebar.js'
 
 /**
  * The renderer's stylesheet, asserted at source level.
@@ -907,20 +908,47 @@ test('the session on screen is painted, and the four row states stack in order',
   )
 })
 
-test('a collapsed sidebar is gone, and the canvas grows the margin it borrowed', () => {
+test('a collapsed sidebar is gone, and the column inside it does not resize with it', () => {
   // The 44px rail existed so `.sidebar-collapse` stayed clickable; that control
-  // moved to the title bar, so collapsing now means zero width (todo D8). The
-  // canvas is `margin: 8px 8px 8px 0` — it uses the sidebar as its left inset, so
-  // without this it would end up glued to the window frame.
-  // Verified by mutation: restoring `44px` reds the first assertion, deleting the
-  // sibling rule reds the second.
+  // moved to the title bar, so collapsing now means zero width (todo D8).
+  // Verified by mutation: restoring `44px` reds the first assertion, giving the
+  // shell a flexible basis reds the second.
   assert.ok(
     declares(blockFor('#sidebar.collapsed'), 'flex-basis', '0'),
     'a collapsed sidebar must take no width; the rail it used to keep is now in the title bar',
   )
+  // The regions ride out on opacity and travel instead of being re-laid out at
+  // every width between 280 and 0 — a reflow per frame is the collapse reading
+  // as the list tearing itself up.
   assert.ok(
-    declares(blockFor('#sidebar.collapsed + #canvas'), 'margin-left', '8px'),
-    '#canvas must replace the inset the sidebar was providing',
+    declares(blockFor('.sidebar-shell'), 'width', '280px'),
+    'the shell must hold the open width while `#sidebar` animates around it',
+  )
+  assert.ok(
+    declares(blockFor('#sidebar.collapsed .sidebar-shell'), 'opacity', '0'),
+    'the column has to fade, or the crop slices legible text',
+  )
+  // The canvas owns its margin on all four sides now. The two rules that used to
+  // hand it back a left inset (a collapsed sidebar, and the settings screen)
+  // animated an inset against a column that was itself animating, and the gap
+  // between them pumped.
+  assert.equal(
+    blocks.find((block) => block.selector === '#sidebar.collapsed + #canvas'),
+    undefined,
+    '#canvas must not borrow its left inset back from the sidebar',
+  )
+})
+
+test('the fold falls back on a timer just past the slow token', () => {
+  // `transitionend` is not a guarantee — a hidden window runs no transitions and
+  // reduced motion cuts them to 1ms — so the view arms a timer beside it. Pinned
+  // here because the two live in different files: a token retimed without this
+  // would leave the fold unmounting its rows before the animation had finished.
+  const slow = Number.parseInt(tokens.get('--motion-slow') ?? '', 10)
+  assert.ok(Number.isFinite(slow), '--motion-slow must be a ms duration')
+  assert.ok(
+    SIDEBAR_COLLAPSE_FALLBACK_MS > slow && SIDEBAR_COLLAPSE_FALLBACK_MS <= slow + 100,
+    `the fallback (${SIDEBAR_COLLAPSE_FALLBACK_MS}ms) must sit just past --motion-slow (${slow}ms)`,
   )
 })
 

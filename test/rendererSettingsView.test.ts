@@ -50,6 +50,8 @@ function snapshotOf(): WireSettingsSnapshot {
       ],
     },
     agents: [],
+    skills: [],
+    skillsDir: 'C:\\repo\\alpha\\.myagent\\skills',
     mcpServers: [],
     contextManagement: {
       contextWindow: 200_000,
@@ -155,7 +157,7 @@ test('the nav draws one section per group, labelled, in order', (t) => {
   )
   assert.deepEqual(
     groups.map((group) => findAll(group, 'settings-nav-item').map((item) => item.text)),
-    [['通用', '外观'], ['模型与服务商'], ['权限', 'Agent']],
+    [['通用', '外观'], ['模型与服务商', '技能和 MCP'], ['权限', 'Agent']],
   )
 })
 

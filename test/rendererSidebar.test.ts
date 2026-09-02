@@ -370,6 +370,40 @@ test('the global workspace is marked from the wire, never from its name', () => 
   assert.deepEqual(view.groups.map((group) => group.isGlobal), [true, false])
 })
 
+test('the recent filter lists the global workspace and nothing else', () => {
+  const state = stateWith({
+    projects: [
+      {
+        projectRoot: '/home/me',
+        projectName: '最近',
+        isGlobal: true,
+        sessions: [session('g1', { title: 'loose' })],
+      },
+      project('/a', 'alpha', [session('a1', { title: 'work' })]),
+    ],
+    recentOnly: true,
+  })
+  const view = sidebarView(state)
+
+  assert.deepEqual(view.groups.map((group) => group.projectRoot), ['/home/me'])
+  // The cursor and `Ctrl+1`–`9` index what is on screen, so a filtered-away row
+  // must not be reachable from either.
+  assert.deepEqual(view.rows.map((row) => row.sessionId), ['g1'])
+  assert.equal(view.recentOnly, true)
+  // Off again, both workspaces are back — the filter drops nothing on the way.
+  assert.equal(sidebarView({ ...state, recentOnly: false }).groups.length, 2)
+})
+
+test('the recent filter with nothing loose is an empty state of its own', () => {
+  const view = sidebarView(
+    stateWith({ projects: [project('/a', 'alpha', [session('a1')])], recentOnly: true }),
+  )
+
+  // `isEmpty`, not `noMatches`: nothing was searched for. The view says which
+  // empty it is, and `dom/sidebarView.ts` picks the sentence from `recentOnly`.
+  assert.deepEqual([view.isEmpty, view.noMatches], [true, false])
+})
+
 test('the heading carries its own menu and confirmation state', () => {
   const view = sidebarView(
     stateWith({
@@ -773,6 +807,9 @@ test('the signature moves for everything the view draws', () => {
     // The middle of the fold is a frame the guard would swallow otherwise: the
     // intent has not moved, only where the rail has got to.
     ['the fold mid-animation', { ...base, collapsed: true, collapsePhase: 'collapsing' }],
+    // The nav row carries an on-state and the empty text changes with it, so an
+    // unsigned filter is a click the render guard swallows.
+    ['the recent filter', { ...base, recentOnly: true }],
   ]
   for (const [what, state] of moved) {
     assert.notEqual(of(state), reference, `expected ${what} to move the signature`)

@@ -6,6 +6,7 @@ import {
   type WireContextManagementField,
   type WireEndpointInfo,
   type WireMcpServerInfo,
+  type WireSkillInfo,
   type WireModelInfo,
   type WirePermissionGroup,
   type WireSettingsSnapshot,
@@ -112,6 +113,7 @@ export function createSettingsState(): SettingsState {
 
 export const CATEGORY_LABELS: Record<SettingsCategory, string> = {
   provider: '模型与服务商',
+  extensions: '技能和 MCP',
   permissions: '权限',
   agent: 'Agent',
   general: '通用',
@@ -143,6 +145,7 @@ function groupOf(category: SettingsCategory): SettingsGroup {
     case 'appearance':
       return 'personal'
     case 'provider':
+    case 'extensions':
       return 'integration'
     case 'permissions':
     case 'agent':
@@ -267,6 +270,7 @@ export interface SettingsViewModel {
 
 const ALL_CATEGORIES: readonly SettingsCategory[] = [
   'provider',
+  'extensions',
   'permissions',
   'agent',
   'general',
@@ -413,6 +417,8 @@ function cardsFor(category: HostCategory, snapshot: WireSettingsSnapshot): Setti
   switch (category) {
     case 'provider':
       return providerCards(snapshot)
+    case 'extensions':
+      return extensionsCards(snapshot)
     case 'permissions':
       return permissionCards(snapshot)
     case 'agent':
@@ -791,7 +797,7 @@ function agentDetail(agent: WireAgentDefinitionInfo): string {
   return parts.join(' · ')
 }
 
-// --- general, MCP and the context budget --------------------------------------
+// --- general and the context budget -------------------------------------------
 
 const CONTEXT_LABELS: Record<WireContextManagementField, string> = {
   contextWindow: '上下文窗口',
@@ -817,7 +823,7 @@ const CONTEXT_RATIO_FIELDS: readonly WireContextManagementField[] = [
 ]
 
 function generalCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
-  return [cacheCard(snapshot), mcpCard(snapshot), contextCard(snapshot)]
+  return [cacheCard(snapshot), contextCard(snapshot)]
 }
 
 function cacheCard(snapshot: WireSettingsSnapshot): SettingsCard {
@@ -827,6 +833,19 @@ function cacheCard(snapshot: WireSettingsSnapshot): SettingsCard {
     title: '通用',
     note: `写入 ${general.localPath}`,
     rows: [
+      {
+        id: 'general:thinking',
+        label: '扩展思考',
+        detail:
+          general.thinking === false
+            ? '关闭：请求不带 thinking 参数，模型直接作答。'
+            : '开启：模型按需思考，思考量由推理强度决定。',
+        control: {
+          kind: 'toggle',
+          value: general.thinking !== false,
+          intentOnChange: (enabled: boolean): SettingsIntent => ({ kind: 'set-thinking', enabled }),
+        },
+      },
       {
         id: 'general:cache-ttl',
         label: '1 小时提示词缓存',
@@ -842,6 +861,68 @@ function cacheCard(snapshot: WireSettingsSnapshot): SettingsCard {
       },
     ],
   }
+}
+
+// --- skills and MCP -----------------------------------------------------------
+
+function extensionsCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
+  return [skillsCard(snapshot), mcpCard(snapshot)]
+}
+
+/**
+ * The skills on disk, each with its switch.
+ *
+ * The switch is never `disabled`, unlike MCP trust: `skills.disabled` is
+ * *replaced* by the settings merge rather than unioned, so the local layer can
+ * always switch a skill back on — there is no "granted from above" state here.
+ */
+function skillsCard(snapshot: WireSettingsSnapshot): SettingsCard {
+  return {
+    id: 'skills',
+    title: '技能',
+    note: `定义来自 ${snapshot.skillsDir} 下的 SKILL.md，内容在这里只读；开关写入 settings.local.json`,
+    empty: '还没有技能。',
+    rows: snapshot.skills.map((skill) => ({
+      id: `skill:${skill.name}`,
+      label: `/${skill.name}`,
+      detail: skillDetail(skill),
+      control: {
+        kind: 'toggle' as const,
+        value: skill.enabled,
+        intentOnChange: (enabled: boolean): SettingsIntent => ({
+          kind: 'set-skill-enabled',
+          name: skill.name,
+          enabled,
+        }),
+      },
+    })),
+    footerButtons: [
+      {
+        label: '重新加载技能',
+        title: '重新读取 .myagent/skills/，并让已开的会话用上新定义',
+        intent: { kind: 'reload-skills' },
+      },
+    ],
+  }
+}
+
+const SKILL_INCLUSION_LABELS: Record<WireSkillInfo['inclusion'], string> = {
+  always: '总是加载',
+  manual: '手动调用',
+  fileMatch: '按文件匹配',
+}
+
+function skillDetail(skill: WireSkillInfo): string {
+  const parts = [skill.description, SKILL_INCLUSION_LABELS[skill.inclusion]]
+  if (skill.paths?.length) parts.push(`匹配 ${skill.paths.join('、')}`)
+  // Absent means every tool, the same asymmetry `agentDetail` spells out.
+  parts.push(skill.allowedTools ? `工具：${skill.allowedTools.join('、')}` : '工具：全部')
+  if (skill.model) parts.push(`模型：${skill.model}`)
+  if (skill.effort) parts.push(`推理强度：${skill.effort}`)
+  if (skill.hasHooks) parts.push('带 hooks')
+  if (skill.attachments) parts.push(`${skill.attachments} 个附件`)
+  if (!skill.enabled) parts.push('已关闭：不进提示词，斜杠命令也不注册')
+  return parts.join(' · ')
 }
 
 function mcpCard(snapshot: WireSettingsSnapshot): SettingsCard {
@@ -888,6 +969,8 @@ function mcpDetail(server: WireMcpServerInfo): string {
   else parts.push('未连接')
   return parts.join(' · ')
 }
+
+// --- the context budget -------------------------------------------------------
 
 function contextCard(snapshot: WireSettingsSnapshot): SettingsCard {
   return {
@@ -1186,7 +1269,10 @@ export type SettingsIntent =
   | { kind: 'set-startup-permission-mode'; mode: 'default' | 'acceptEdits' | 'bypass' }
   | { kind: 'reload-agent-definitions' }
   | { kind: 'set-cache-ttl'; enabled: boolean }
+  | { kind: 'set-thinking'; enabled: boolean }
   | { kind: 'set-context-value'; field: WireContextManagementField; value: string }
+  | { kind: 'set-skill-enabled'; name: string; enabled: boolean }
+  | { kind: 'reload-skills' }
   | { kind: 'set-mcp-trust'; name: string; trusted: boolean }
   | { kind: 'reconnect-mcp' }
   | { kind: 'set-theme'; preference: ThemePreference }
@@ -1417,6 +1503,11 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
         state: { ...cleared, busy: true },
         changes: [{ scope: 'general', kind: 'set-cache-ttl', enabled: intent.enabled }],
       }
+    case 'set-thinking':
+      return {
+        state: { ...cleared, busy: true },
+        changes: [{ scope: 'general', kind: 'set-thinking', enabled: intent.enabled }],
+      }
     case 'set-context-value': {
       const parsed = parseContextValue(intent.field, intent.value)
       if (typeof parsed !== 'number') return { state: { ...state, error: parsed.error, openMenu: undefined } }
@@ -1427,17 +1518,29 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
         ],
       }
     }
+    case 'set-skill-enabled':
+      return {
+        state: { ...cleared, busy: true },
+        changes: [
+          { scope: 'extensions', kind: 'set-skill-enabled', name: intent.name, enabled: intent.enabled },
+        ],
+      }
+    case 'reload-skills':
+      return {
+        state: { ...cleared, busy: true },
+        changes: [{ scope: 'extensions', kind: 'reload-skills' }],
+      }
     case 'set-mcp-trust':
       return {
         state: { ...cleared, busy: true },
         changes: [
-          { scope: 'general', kind: 'set-mcp-trust', name: intent.name, trusted: intent.trusted },
+          { scope: 'extensions', kind: 'set-mcp-trust', name: intent.name, trusted: intent.trusted },
         ],
       }
     case 'reconnect-mcp':
       return {
         state: { ...cleared, busy: true },
-        changes: [{ scope: 'general', kind: 'reconnect-mcp' }],
+        changes: [{ scope: 'extensions', kind: 'reconnect-mcp' }],
       }
   }
 }

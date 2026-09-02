@@ -83,11 +83,19 @@ class StubElement {
   scrollHeight = 0
   clientHeight = 0
   /**
-   * The one inline style the renderer is allowed to write (`autosize` clamps a
-   * `scrollHeight` no stylesheet can compute — `rendererStyleTokens.test.ts`
-   * enforces that it stays the only one).
+   * The inline style, which the renderer may reach in exactly two ways
+   * (`rendererStyleTokens.test.ts` enforces both): `height`, because `autosize`
+   * clamps a `scrollHeight` no stylesheet can compute, and `setProperty` for a
+   * *custom* property — the sidebar's width, whose rules and fallback still
+   * live in the sheet.
    */
-  readonly style: { height: string } = { height: '' }
+  readonly style = {
+    height: '',
+    properties: new Map<string, string>(),
+    setProperty(name: string, value: string): void {
+      this.properties.set(name, value)
+    },
+  }
   /** A textarea's caret. `setSelectionRange` moves it, as in the browser. */
   selectionStart = 0
   /**

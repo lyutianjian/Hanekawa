@@ -1,5 +1,5 @@
 import { createProvider } from '../config/providers.js'
-import type { ConfigService } from '../config/service.js'
+import type { ConfigService, ThinkingConfig } from '../config/service.js'
 import type { EffortLevel, EffortValue } from '../config/effort.js'
 import type { RoutingRole } from '../config/routing.js'
 import type { MyAgentSettings } from '../config/settings.js'
@@ -174,6 +174,13 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
     const planSlugProvider = () => planModeManager.getSlug()
     permissionGate.setPlanSlugProvider(planSlugProvider)
 
+    // `thinking: false` in settings means "send no thinking parameter"; unset is
+    // the adaptive default. Read per runtime, so a settings reload followed by a
+    // rebuild is all it takes for the switch to reach a session.
+    const thinking: ThinkingConfig = getSettings().thinking === false
+      ? { type: 'disabled' }
+      : { type: 'adaptive' }
+
     const runtimeTools = toolRegistry.buildRuntimeTools()
     runtimeTools.push(createAgentTool({
       provider: targetProvider,
@@ -199,6 +206,8 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       isGitRepo,
       hooks: getSettings().hooks,
       cacheRuntime: { settings: getSettings(), env: process.env },
+      // Subagents follow the same switch as the main loop.
+      thinking,
       compactModel,
       onSubagentProgress: (event) => bridges.record.onProgress(event),
       resolveSubagentModel: (subagentType, requestedModelKey) => requestedModelKey
@@ -254,7 +263,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       isGitRepo,
       hooks: getSettings().hooks,
       cacheRuntime: { settings: getSettings(), env: process.env },
-      thinking: { type: 'adaptive' },
+      thinking,
       effort: typeof initialEffort === 'string' ? initialEffort as EffortLevel : undefined,
       permissionMode: () => permissionGate.getMode(),
       planModeManager,

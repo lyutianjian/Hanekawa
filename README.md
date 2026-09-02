@@ -84,6 +84,20 @@ Everything defaults to `inherit`, so a one-model setup needs no `routing` block 
 The `.myagent/` directory is also where sessions, skills, and local runtime state are stored. Those
 stay per-project: only `config.json` and `settings.json` have a `~/.myagent/` counterpart.
 
+### Thinking
+
+Extended thinking is on by default: requests carry the provider's adaptive thinking config, and
+`/effort <low|medium|high|xhigh|max>` tunes how much of it the model spends.
+
+`/thinking off` turns it off — requests then carry no `thinking` parameter at all — and `/thinking on`
+turns it back on. Either form writes `thinking` to `<project>/.myagent/settings.local.json` and applies
+to the session you are in; the desktop settings screen has the same switch under 通用 › 扩展思考. The
+switch is read when a runtime is built, so it also covers subagents.
+
+```json
+{ "thinking": false }
+```
+
 ### The desktop settings screen
 
 The desktop app has a settings screen (`⚙ 设置` at the bottom of the sidebar, or Ctrl+,) covering the
@@ -93,7 +107,7 @@ about to change:
 | Page | Writes |
 |---|---|
 | Models and providers, subagent routing, context management | `config.json` (the project one if it exists, else `~/.myagent/config.json`) |
-| Permission rules, startup permission mode, prompt-cache TTL, MCP trust | `<project>/.myagent/settings.local.json` |
+| Permission rules, startup permission mode, extended thinking, prompt-cache TTL, MCP trust | `<project>/.myagent/settings.local.json` |
 
 Two consequences worth knowing:
 

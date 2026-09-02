@@ -5,6 +5,7 @@ import type {
   CommandUsage,
   SetModelResult,
 } from '../../commands/types.js'
+import { setLocalThinking } from '../../config/settings.js'
 import { resetAutoCompactFailureState } from '../../harness/compact.js'
 import type { SessionRecord } from '../../harness/types.js'
 import { resolveUsageWithCost } from '../../harness/usage.js'
@@ -78,6 +79,8 @@ export const COMMAND_CONTEXT_COVERAGE = {
   setModel: 'host',
   getEffort: 'host',
   setEffort: 'host',
+  getThinking: 'host',
+  setThinking: 'host',
   openModelPicker: 'open-surface',
   openEffortPicker: 'open-surface',
   reloadAgentDefinitions: 'host',
@@ -160,6 +163,14 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     setModel: (input): SetModelResult => switchModel(modelSwitchDeps(), input),
     getEffort: () => runtimeSlot.getEffort(),
     setEffort: (level) => { runtimeSlot.setEffort(level) },
+    getThinking: () => runtimeSlot.current.loop.getThinking()?.type !== 'disabled',
+    // Written to the local settings layer *and* reloaded, so the next runtime
+    // this project builds agrees with the loop this just changed.
+    setThinking: async (enabled) => {
+      await setLocalThinking(project.cwd, enabled)
+      await project.reloadSettings()
+      runtimeSlot.current.loop.setThinking(enabled ? { type: 'adaptive' } : { type: 'disabled' })
+    },
 
     reloadAgentDefinitions: () => project.reloadAgentDefinitions(),
     reloadSkills: () => project.reloadSkills(),

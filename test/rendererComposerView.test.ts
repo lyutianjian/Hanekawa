@@ -6,6 +6,12 @@ import { fileURLToPath } from 'node:url'
 
 import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
 import { createComposerView, type ComposerView } from '../src/desktop/renderer/dom/composerView.js'
+import {
+  createPermissionRequestView,
+  permissionGlyphFor,
+} from '../src/desktop/renderer/dom/permissionRequestView.js'
+import type { OverlayAction } from '../src/desktop/renderer/model/dialogActions.js'
+import type { PermissionViewModel } from '../src/desktop/renderer/model/permissionDialog.js'
 import { EFFORT_LABELS, PERMISSION_MODE_LABELS } from '../src/desktop/renderer/model/composer.js'
 import { runtimeMenuView, type RuntimeMenuView } from '../src/desktop/renderer/model/runtimeMenu.js'
 import type { SurfaceAction } from '../src/desktop/renderer/model/surfaces.js'
@@ -461,4 +467,156 @@ test('the stub carries every document member the dom helpers reach for', (t) => 
   for (const member of members) {
     assert.equal(r.stub.hasDocumentMember(member), true, `the stub is missing document.${member}`)
   }
+})
+
+// --- the inline permission request -------------------------------------------
+
+/**
+ * The permission request moved out of the modal layer and into the capsule
+ * (`dom/permissionRequestView.ts`): three of the four blocking requests are
+ * still `#overlay`'s, but this one transforms the composer instead.
+ *
+ * What it *says* is still `model/permissionDialog.ts`'s view model, so nothing
+ * about the options is asserted here — only that the card hands back the same
+ * `OverlayAction` the modal did, and that showing and hiding leave the composer
+ * in the two states it has: a card with no textarea, or a textarea with no card.
+ */
+
+function permissionFixture(
+  overrides: Partial<PermissionViewModel> = {},
+): PermissionViewModel {
+  return {
+    title: 'Bash 命令',
+    subtitle: '需确认 · 权限模式',
+    reason: '当前权限模式要求确认。',
+    tone: 'normal',
+    inputBlock: { kind: 'bash', label: '命令', content: 'rm -rf ./tmp' },
+    warnings: [],
+    denialStreakNote: undefined,
+    options: [
+      { label: '允许一次', hotkey: 'y', action: 'allow' },
+      { label: '拒绝', hotkey: 'n', action: 'deny' },
+    ],
+    selectedIndex: 0,
+    preview: undefined,
+    alsoWaiting: [],
+    actions: [
+      { label: '允许一次', shortcut: 'Y', role: 'primary', slot: 0 },
+      { label: '拒绝', shortcut: 'N', role: 'secondary', slot: 1 },
+    ],
+    ...overrides,
+  }
+}
+
+interface Card {
+  readonly stub: DomStub
+  readonly composer: HTMLElement
+  readonly container: HTMLElement
+  readonly view: ReturnType<typeof createPermissionRequestView>
+  readonly picked: OverlayAction[]
+  buttons(): StubView[]
+}
+
+function card(t: { after(fn: () => void): void }): Card {
+  const stub = installDomStub()
+  t.after(() => stub.uninstall())
+  const composer = stub.createContainer('composer')
+  const container = stub.createContainer('composer-request')
+  const picked: OverlayAction[] = []
+  const view = createPermissionRequestView(composer, container, (action) => picked.push(action))
+  const buttons = () => {
+    const bar = stub.inspect(container).children.find((child) =>
+      child.classes.includes('dialog-actions'))
+    assert.ok(bar, 'the card ends with the shared button bar')
+    return [...bar.children]
+  }
+  return { stub, composer, container, view, picked, buttons }
+}
+
+test('the request transforms the composer rather than covering the lane', (t) => {
+  const c = card(t)
+  assert.equal(c.stub.inspect(c.container).hidden, true, 'nothing is drawn at rest')
+
+  c.view.show(permissionFixture())
+
+  // The class is what the stylesheet hangs `display: none` for the textarea and
+  // the action bar on. Without it the request would be drawn *above* a live
+  // composer, which is the modal it replaced with an extra step.
+  assert.ok(c.stub.inspect(c.composer).classes.includes('request-open'))
+  assert.equal(c.stub.inspect(c.container).hidden, false)
+  // The tone is on the card, never on the capsule: the composer's border is a
+  // focus affordance, and recolouring it would read as a validation error.
+  assert.ok(c.stub.inspect(c.container).classes.includes('tone-normal'))
+  assert.equal(c.stub.inspect(c.composer).classes.includes('tone-normal'), false)
+
+  c.view.hide()
+  assert.equal(c.stub.inspect(c.composer).classes.includes('request-open'), false)
+  assert.equal(c.stub.inspect(c.container).hidden, true)
+  // Emptied, not merely hidden: a stale button answers a settled request, and a
+  // hidden one is still a Tab stop in some engines.
+  assert.equal(c.stub.inspect(c.container).children.length, 0)
+})
+
+test('the card answers by slot, exactly as the modal did', (t) => {
+  const c = card(t)
+  c.view.show(permissionFixture({ selectedIndex: 1 }))
+
+  const [allow, deny] = c.buttons()
+  assert.equal(allow!.text, '允许一次Y', 'the label carries its key as a badge')
+  assert.ok(allow!.classes.includes('primary'))
+  // Where Enter is aimed — on a destructive request the model focuses deny, so
+  // this mark is the answer about to be given rather than decoration.
+  assert.equal(allow!.classes.includes('selected'), false)
+  assert.ok(deny!.classes.includes('selected'))
+
+  c.stub.click(deny!.node)
+  c.stub.click(allow!.node)
+  assert.deepEqual(c.picked, [{ kind: 'slot', index: 1 }, { kind: 'slot', index: 0 }])
+})
+
+test('nothing in the card is a target except its buttons', (t) => {
+  const c = card(t)
+  c.view.show(permissionFixture({
+    denialStreakNote: '已拒绝过一次。',
+    alsoWaiting: ['Write'],
+  }))
+
+  // The request is holding the agent loop, so there is no dismissing it by
+  // clicking beside it — the same rule the modal's backdrop follows.
+  for (const child of c.stub.inspect(c.container).children) {
+    if (child.classes.includes('dialog-actions')) continue
+    c.stub.click(child.node)
+  }
+  c.stub.click(c.container)
+  c.stub.click(c.composer)
+  assert.deepEqual(c.picked, [])
+})
+
+test('the glyph names what is being asked for, and comes off the input block', (t) => {
+  // Read off the block rather than off a tool name: the block is already the
+  // projection that knows a Bash request carries a command and a file tool
+  // carries a path, and a second list of tool names here would drift from it.
+  assert.equal(permissionGlyphFor('bash'), 'terminal')
+  assert.equal(permissionGlyphFor('file'), 'file')
+  assert.equal(permissionGlyphFor('json'), 'shield')
+  assert.equal(permissionGlyphFor('none'), 'shield')
+})
+
+test('the capsule holds the card, and the page still has somewhere to put it', () => {
+  // Asserted against the page for the reason the composer popovers are: `app.ts`
+  // finds both by `getElementById`, so nothing in the renderer would notice the
+  // card drifting out of the capsule — only the shape on screen would.
+  const html = readFileSync(path.join(RENDERER, 'index.html'), 'utf8')
+  const start = html.indexOf('<div id="composer">')
+  assert.ok(start !== -1, 'the page still has the composer capsule')
+  const end = html.indexOf('<div id="status">', start)
+  assert.ok(end !== -1, 'the status line still follows the capsule')
+  const capsule = html.slice(start, end)
+
+  const request = capsule.indexOf('id="composer-request"')
+  assert.ok(request !== -1, 'the request card left the capsule')
+  // Before the textarea it replaces, so the request reads top-down where the
+  // message being typed used to be.
+  assert.ok(request < capsule.indexOf('id="input"'))
+  assert.ok(request < capsule.indexOf('id="composer-bar"'))
 })

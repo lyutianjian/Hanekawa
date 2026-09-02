@@ -54,6 +54,12 @@ const COVERAGE: Array<{ prop: string; via: 'client' | 'shell'; members: string[]
   { prop: 'reloadSkills', via: 'client', members: ['reloadSkills'] },
   { prop: 'onEffortLevelChange', via: 'client', members: ['setEffort'] },
   {
+    prop: 'onThinkingChange',
+    via: 'client',
+    members: ['runCommand'],
+    note: 'the renderer reaches the same switch through /thinking and the settings screen',
+  },
+  {
     prop: 'backgroundTasks',
     via: 'client',
     members: ['getBackgroundTasks', 'listBackgroundTasks', 'peekTaskOutput', 'killTask'],

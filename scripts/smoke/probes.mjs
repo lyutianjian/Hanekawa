@@ -197,6 +197,58 @@ export const overlay = () => `(() => {
 })()`
 
 /**
+ * The permission request, which is **not** in the overlay: it transforms the
+ * composer (`dom/permissionRequestView.ts`).
+ *
+ * Three things are read rather than one, because "drawn" is not the claim: the
+ * card has to be on screen *and* the textarea it replaced has to be gone, or the
+ * request is a panel floating over a live composer — the modal it replaced with
+ * an extra step. `getClientRects()` is what answers that, since the stylesheet
+ * hides both halves with `display: none` rather than the `hidden` attribute.
+ */
+export const permissionRequest = () => `(() => {
+  const card = document.getElementById('composer-request')
+  const composer = document.getElementById('composer')
+  const input = document.getElementById('input')
+  const bar = document.getElementById('composer-bar')
+  const pick = (selector) => (card.querySelector(selector) || {}).textContent || ''
+  const onScreen = (node) => Boolean(node) && node.getClientRects().length > 0
+  const box = onScreen(card) ? card.getBoundingClientRect() : null
+  const composerBox = composer ? composer.getBoundingClientRect() : null
+  return {
+    open: !card.hidden && onScreen(card),
+    transformed: Boolean(composer) && composer.classList.contains('request-open'),
+    // The two halves the card stands in for. Both must be off screen while it is
+    // up: a Tab stop left behind would swallow the keys the buttons want.
+    inputVisible: onScreen(input),
+    barVisible: onScreen(bar),
+    title: pick('.request-title'),
+    subtitle: pick('.request-subtitle'),
+    reason: pick('.request-question'),
+    block: pick('.request-block'),
+    hotkeys: [...card.querySelectorAll('.kbd')].map((node) => node.textContent),
+    // Inside the capsule, not merely near it — the claim is that the input
+    // *became* the request. No backticks in here: this is a template literal.
+    insideComposer: Boolean(composer) && composer.contains(card),
+    box: box ? { left: Math.round(box.left), right: Math.round(box.right) } : null,
+    composerBox: composerBox
+      ? { left: Math.round(composerBox.left), right: Math.round(composerBox.right) }
+      : null,
+    actions: [...card.querySelectorAll('.dialog-btn')].map((node) => {
+      const rect = node.getBoundingClientRect()
+      return {
+        label: node.textContent,
+        primary: node.classList.contains('primary'),
+        danger: node.classList.contains('danger'),
+        selected: node.classList.contains('selected'),
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      }
+    }),
+  }
+})()`
+
+/**
  * Where the open dialog's scrim actually is (S6).
  *
  * Two questions, and only the second one is evidence: `getBoundingClientRect`

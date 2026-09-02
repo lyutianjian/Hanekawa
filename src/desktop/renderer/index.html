@@ -33,6 +33,18 @@
     <header id="titlebar"></header>
     <div id="shell">
       <aside id="sidebar" aria-label="会话与项目"></aside>
+      <!--
+        The rail's drag handle. A sibling of the two columns rather than a child
+        of either: it sits in the gap the canvas's margin already leaves, so
+        nothing has to give up width for it, and `#sidebar.collapsed` hides it
+        through the adjacent-sibling rule in `styles.css`.
+      -->
+      <div
+        id="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整侧边栏宽度"
+      ></div>
       <main id="canvas">
         <!--
           The canvas header owns session identity: the title, the `⋯` menu that
@@ -71,6 +83,14 @@
               <div id="queue" hidden aria-live="polite" aria-label="排队消息"></div>
             </div>
             <div id="composer">
+              <!--
+                The permission request, drawn inside the capsule instead of over
+                the lane: `#composer.request-open` hides the textarea and the
+                action bar while it is up, so the input the user's hand is
+                already on becomes the thing they answer with. The other three
+                blocking requests stay modal — see `dom/permissionRequestView.ts`.
+              -->
+              <div id="composer-request" hidden></div>
               <!--
                 A short placeholder, deliberately: the keys it used to spell out
                 (Shift+Enter, `/`) live in the sidebar's `?` panel, and a

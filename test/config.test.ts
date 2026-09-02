@@ -495,6 +495,21 @@ test('validateSettings accepts model, agent, and cache settings', () => {
   assert.deepEqual(result.errors, [])
 })
 
+test('validateSettings checks the disabled skill list', () => {
+  assert.deepEqual(validateSettings({ skills: { disabled: ['demo'] } }).errors, [])
+  // Rejected here rather than at the write, because `updateLocalSettings`
+  // validates before writing: an unvalidated list would leave the project
+  // unable to reload until someone edited the file by hand.
+  assert.deepEqual(
+    validateSettings({ skills: { disabled: 'demo' } } as never).errors,
+    ['skills.disabled must be an array of strings'],
+  )
+  assert.deepEqual(
+    validateSettings({ skills: { disabled: ['  '] } }).errors,
+    ['skills.disabled must be an array of non-empty strings'],
+  )
+})
+
 test('validateSettings rejects a defaultModel that names no configured model', () => {
   // With tiers gone, `defaultModel` can only be a model key, so a name that is
   // not one is a typo rather than a routing shorthand.

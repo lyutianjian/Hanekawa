@@ -266,6 +266,7 @@ class FakeProject implements ShellLaneProject {
   readonly shutdowns: string[] = []
   reloads = 0
   agentReloads = 0
+  skillReloads = 0
   mcpReloads = 0
   /** The merged settings, as the last load read them off disk. */
   settings: MyAgentSettings = {}
@@ -311,6 +312,12 @@ class FakeProject implements ShellLaneProject {
     this.agentReloads += 1
     this.log.push(`reload-agents:${this.cwd}`)
     return this.agentDefinitions.length
+  }
+
+  async reloadSkills(): Promise<number> {
+    this.skillReloads += 1
+    this.log.push(`reload-skills:${this.cwd}`)
+    return 0
   }
 
   async reloadMcpServers(): Promise<void> {
@@ -612,14 +619,22 @@ const SETTINGS_CHANGE_SAMPLES = {
   },
   'reload-agent-definitions': { scope: 'agent', kind: 'reload-agent-definitions' },
   'set-cache-ttl': { scope: 'general', kind: 'set-cache-ttl', enabled: true },
+  'set-thinking': { scope: 'general', kind: 'set-thinking', enabled: false },
   'set-context-management': {
     scope: 'general',
     kind: 'set-context-management',
     field: 'contextWindow',
     value: 400_000,
   },
-  'set-mcp-trust': { scope: 'general', kind: 'set-mcp-trust', name: 'github', trusted: true },
-  'reconnect-mcp': { scope: 'general', kind: 'reconnect-mcp' },
+  'set-skill-enabled': {
+    scope: 'extensions',
+    kind: 'set-skill-enabled',
+    name: 'demo',
+    enabled: false,
+  },
+  'reload-skills': { scope: 'extensions', kind: 'reload-skills' },
+  'set-mcp-trust': { scope: 'extensions', kind: 'set-mcp-trust', name: 'github', trusted: true },
+  'reconnect-mcp': { scope: 'extensions', kind: 'reconnect-mcp' },
 } as const satisfies Record<SettingsChange['kind'], SettingsChange>
 
 test('every settings change variant round-trips through its schema', () => {
@@ -1071,6 +1086,9 @@ test('list-sessions keeps a registered project that has no sessions at all', asy
       [false, false],
       'isGlobal rides the wire so the renderer never matches on the name',
     )
+    // The key is carried even though the group is not: the welcome screen's
+    //「不在项目中工作」names the home workspace exactly when it has no row.
+    assert.equal(result.globalRoot, projectRootKey(process.env.USERPROFILE!))
   } finally {
     await rm(emptyDir, { recursive: true, force: true })
   }
@@ -1196,6 +1214,27 @@ test('open-session bootstraps a registered project on demand, over the named ses
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('open-session on the global root bootstraps the home workspace by name', async () => {
+  // The welcome screen's「不在项目中工作」names the root explicitly, and the home
+  // directory is deliberately not a registry member — so without the host's own
+  // fallback this is the one root that can be named and never resolved.
+  const home = process.env.USERPROFILE!
+  const calls: string[] = []
+  const h = createHarness({
+    knownProjects: () => Promise.resolve([]),
+    ensureProject: (cwd) => {
+      calls.push(cwd)
+      return Promise.resolve(h.addProject(cwd).entry)
+    },
+  })
+
+  const result = await h.client.openSession({ projectRoot: projectRootKey(home) })
+  await settle()
+
+  assert.deepEqual(calls, [home])
+  assert.equal(result.pane.projectRoot, projectRootKey(home))
 })
 
 test('open-session with nothing open falls back to the global workspace', async () => {
@@ -1901,7 +1940,7 @@ test('trusting a server writes the local layer and then reconnects, in that orde
     { mcpServers: { github: { transport: 'stdio', command: 'npx', args: ['github-mcp'] } } },
     async (h, cwd) => {
       const result = await h.client.changeSettings(h.entry.root, {
-        scope: 'general',
+        scope: 'extensions',
         kind: 'set-mcp-trust',
         name: 'github',
         trusted: true,
@@ -1951,13 +1990,95 @@ test('a trust that came from above is reported as not editable here', async () =
   )
 })
 
+/** Writes `<cwd>/.myagent/skills/<name>/SKILL.md` with the frontmatter a skill needs. */
+async function writeSkill(cwd: string, name: string, description: string): Promise<void> {
+  const dir = path.join(cwd, '.myagent', 'skills', name)
+  await mkdir(dir, { recursive: true })
+  await writeFile(
+    path.join(dir, 'SKILL.md'),
+    `---\nname: ${name}\ndescription: ${description}\n---\n\nBody of ${name}.\n`,
+    'utf8',
+  )
+}
+
+test('the snapshot lists every skill on disk, switched-off ones included', async () => {
+  await withSettingsDir({ skills: { disabled: ['beta'] } }, async (h, cwd) => {
+    await writeSkill(cwd, 'alpha', 'The first skill')
+    await writeSkill(cwd, 'beta', 'The second skill')
+
+    const { settings } = await h.client.getSettings(h.entry.root)
+
+    assert.deepEqual(
+      settings.skills.map((skill) => [skill.name, skill.enabled]),
+      [
+        ['alpha', true],
+        ['beta', false],
+      ],
+      'a disabled skill still has a row — it is what the switch turns back on',
+    )
+    assert.equal(settings.skills[0]?.inclusion, 'manual')
+    assert.equal(settings.skills[0]?.description, 'The first skill')
+    assert.equal(settings.skillsDir, path.join(cwd, '.myagent', 'skills'))
+  })
+})
+
+test('switching a skill off writes the local layer, reloads the skills and rebuilds the lanes', async () => {
+  await withSettingsDir({}, async (h, cwd) => {
+    await writeSkill(cwd, 'demo', 'A demo skill')
+    await openOneLane(h)
+
+    const result = await h.client.changeSettings(h.entry.root, {
+      scope: 'extensions',
+      kind: 'set-skill-enabled',
+      name: 'demo',
+      enabled: false,
+    })
+
+    assert.deepEqual((await readLocalLayer(cwd)).skills, { disabled: ['demo'] })
+    assert.equal(h.project.config.saves, 0, 'nothing belongs in config.json')
+    assert.equal(h.project.skillReloads, 1)
+    // The service decides what is on from the *merged* layers, so the reload
+    // has to run after `reloadSettings()` has replaced them.
+    const reloadAt = h.log.indexOf(`reload-settings:${h.project.cwd}`)
+    const skillsAt = h.log.indexOf(`reload-skills:${h.project.cwd}`)
+    assert.ok(reloadAt >= 0 && skillsAt >= 0, 'both ran')
+    assert.ok(reloadAt < skillsAt, 'the skill reload must see the new disabled list')
+    // A runtime is handed the skill list it was built with, so without the
+    // rebuild the switch would only reach the next session.
+    assert.equal(result.rebuiltLanes, 1)
+    assert.equal(result.settings.skills[0]?.enabled, false)
+
+    const back = await h.client.changeSettings(h.entry.root, {
+      scope: 'extensions',
+      kind: 'set-skill-enabled',
+      name: 'demo',
+      enabled: true,
+    })
+    assert.deepEqual((await readLocalLayer(cwd)).skills, { disabled: [] })
+    assert.equal(back.settings.skills[0]?.enabled, true)
+  })
+})
+
+test('reload-skills reloads once per project and writes nothing at all', async () => {
+  await withSettingsDir({}, async (h) => {
+    const other = h.addProject('C:\\repo\\beta')
+    seedConfig(other.project)
+
+    await h.client.changeSettings(h.entry.root, { scope: 'extensions', kind: 'reload-skills' })
+
+    assert.equal(h.project.skillReloads, 1)
+    assert.equal(other.project.skillReloads, 0)
+    assert.equal(h.project.config.saves, 0)
+  })
+})
+
 test('reconnect-mcp reconnects once per project and writes nothing at all', async () => {
   await withSettingsDir({}, async (h) => {
     const other = h.addProject('C:\\repo\\beta')
     seedConfig(other.project)
 
     const result = await h.client.changeSettings(h.entry.root, {
-      scope: 'general',
+      scope: 'extensions',
       kind: 'reconnect-mcp',
     })
 

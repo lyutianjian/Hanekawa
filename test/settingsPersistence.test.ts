@@ -13,6 +13,7 @@ import {
   setLocalPermissionEntries,
   setLocalStartupPermissionMode,
   setMcpServerTrustLocally,
+  setSkillEnabledLocally,
   updateLocalSettings,
 } from '../src/config/settings.js'
 
@@ -342,6 +343,28 @@ test('untrusting an MCP server only reaches the local layer', async () => {
       ['shared'],
       'the inherited trust survives, and the UI has to say so',
     )
+  })
+})
+
+test('a skill switched off above can be switched back on locally', async () => {
+  await withLocalLayer({ skills: { disabled: ['inherited', 'shared'] } }, async (cwd) => {
+    await setSkillEnabledLocally(cwd, 'own', false)
+    // The local list *replaces* the project one — it is not concatenated like
+    // `permissions.*` nor unioned like `mcp.trustedServers`. The whole point:
+    // a switch that could not turn a skill back on would be a switch that
+    // silently does nothing.
+    assert.deepEqual((await loadMergedSettings(cwd)).skills?.disabled, ['own'])
+
+    await setSkillEnabledLocally(cwd, 'shared', false)
+    assert.deepEqual(
+      (await loadMergedSettings(cwd)).skills?.disabled,
+      ['own', 'shared'],
+      'the list is sorted, so the file does not churn on every toggle',
+    )
+
+    await setSkillEnabledLocally(cwd, 'own', true)
+    assert.deepEqual((await loadMergedSettings(cwd)).skills?.disabled, ['shared'])
+    assert.deepEqual((await loadLocalSettings(cwd)).skills?.disabled, ['shared'])
   })
 })
 

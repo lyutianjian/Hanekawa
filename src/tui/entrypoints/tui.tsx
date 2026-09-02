@@ -6,7 +6,7 @@ import { stdin as input, stdout as output } from 'node:process'
 import { render } from '../ink.js'
 import { ClockProvider } from '../clock/ClockContext.js'
 import { installTerminalFocusFilter } from '../clock/terminalFocusState.js'
-import { saveEffortLevel } from '../../config/settings.js'
+import { saveEffortLevel, setLocalThinking } from '../../config/settings.js'
 import type { EffortLevel } from '../../config/effort.js'
 import { SessionStore } from '../../sessions/service.js'
 import type { SessionMeta } from '../../sessions/service.js'
@@ -129,6 +129,13 @@ async function main() {
       reloadSkills={host.reloadSkills}
       onEffortLevelChange={async (level) => {
         try { await saveEffortLevel(level as EffortLevel) } catch { /* non-critical */ }
+      }}
+      // Reloaded as well as written: a later runtime rebuild reads the settings
+      // the project holds, not the file, so without this `/thinking off` would
+      // come back on at the next `/model` switch.
+      onThinkingChange={async (enabled) => {
+        await setLocalThinking(host.cwd, enabled)
+        await host.reloadSettings()
       }}
       />
       </ClockProvider>,

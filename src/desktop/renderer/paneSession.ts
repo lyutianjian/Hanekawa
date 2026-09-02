@@ -40,6 +40,7 @@ import type { ComposerView } from './dom/composerView.js'
 import type { StatusView } from './dom/statusView.js'
 import type { SuggestionsView } from './dom/suggestionsView.js'
 import type { OverlayView } from './dom/overlayView.js'
+import type { PermissionRequestView } from './dom/permissionRequestView.js'
 import type { RewindPanel } from './dom/rewindView.js'
 import type { SurfacePanel } from './dom/surfaceView.js'
 import type { QueueDom } from './dom/queueView.js'
@@ -47,6 +48,15 @@ import { append, el, show } from './dom/dom.js'
 import { createTranscriptView, type TranscriptView } from './dom/transcriptView.js'
 import { createWelcomeView } from './dom/welcomeView.js'
 import { isTranscriptEmpty, welcomeView } from './model/welcome.js'
+import {
+  createWorkspacePickerState,
+  moveWorkspaceSelection,
+  workspacePickerKeyToIntent,
+  workspacePickerView,
+  type WorkspaceOption,
+  type WorkspacePickerIntent,
+  type WorkspacePickerState,
+} from './model/workspacePicker.js'
 import { classifyInput, commandEffectToIntent } from './model/commandRouting.js'
 import {
   acceptCompletion as applyCompletion,
@@ -136,6 +146,12 @@ export interface PaneSessionDeps {
   /** `#transcript-area`; this pane's subtree is appended here. */
   mount: HTMLElement
   overlay: OverlayView
+  /**
+   * The permission request's home: the composer, not the modal layer. Held
+   * separately from `overlay` because the two are painted on different nodes and
+   * a request must never leave one of them behind — see `renderOverlay`.
+   */
+  permissionRequest: PermissionRequestView
   rewindPanel: RewindPanel
   surface: SurfacePanel
   suggestions: SuggestionsView
@@ -152,16 +168,34 @@ export interface PaneSessionDeps {
    */
   onFirstContent?: () => void
   /**
-   * Window-level: open the workspace switcher. The welcome screen's Hero names
-   * this pane's project and offers to switch it, but "which projects exist" is
-   * the shell's knowledge, not a pane's — so the pane only reports the click.
-   * Absent means the Hero's project name is not offered as a control.
+   * Window-level: put this pane's own workspace on screen in the sidebar. The
+   * switcher's row for the project the pane is already in resolves to this —
+   * nothing to open, so the useful answer is "here it is".
    */
   onSwitchWorkspace?: () => void
+  /**
+   * Every workspace the shell knows, read at paint time rather than captured:
+   * the list is `app.ts`'s (it owns the `list-sessions` pull) and it moves under
+   * this pane whenever a project is added or removed.
+   */
+  workspaces?: () => WorkspaceListing
+  /**
+   * A row or action in the workspace picker was chosen. The pane reports it;
+   * *acting* on it — opening a session, raising the directory picker — is
+   * window-level and belongs to `app.ts`, exactly like `onSwitchWorkspace`.
+   */
+  onWorkspaceIntent?: (intent: WorkspacePickerIntent) => void
   /** `/exit` was accepted by the host — close whatever this shell calls "this pane". */
   onExit: () => void
   /** The lane died from the host side (pane closed, window closing). */
   onClosed?: () => void
+}
+
+/** What `app.ts` hands the picker: the workspaces, plus the global one's key. */
+export interface WorkspaceListing {
+  readonly options: readonly WorkspaceOption[]
+  /** From `list-sessions`; `undefined` until the first pull answers. */
+  readonly globalRoot: string | undefined
 }
 
 export interface PaneSession {
@@ -182,6 +216,17 @@ export interface PaneSession {
   note(text: string, level?: 'system' | 'error'): void
   /** Whether this pane's session has had any input or output yet. */
   hasConversation(): boolean
+  /**
+   * Repaint the empty state. `app.ts` calls it when the workspace list moves —
+   * the picker reads that list, and nothing else would repaint an idle pane.
+   */
+  refreshWelcome(): void
+  /**
+   * Re-read the slash-command list. `app.ts` calls it after a settings change
+   * that adds or removes skill commands — the composer's completion list is
+   * cached per pane, and nothing else would notice a skill being switched off.
+   */
+  refreshCommands(): void
   // --- keyboard entry points (routed here by the app's global handler) ---
   handleOverlayKey(event: KeyboardEvent): void
   handleRewindIntent(intent: RewindIntent): void
@@ -253,11 +298,17 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     paneEl,
     (id) => toggleThinking(id),
   )
-  const welcome = createWelcomeView(
-    welcomeEl,
-    () => deps.onSwitchWorkspace?.(),
-    () => deps.composer.focus(),
-  )
+  const welcome = createWelcomeView(welcomeEl, {
+    onSwitchWorkspace: () => toggleWorkspacePicker(),
+    onFocusComposer: () => deps.composer.focus(),
+    onPickerIntent: (intent) => runWorkspacePickerIntent(intent),
+    onPickerKey: (chord) => {
+      const intent = workspacePickerKeyToIntent(chord, currentPickerView())
+      if (intent.kind === 'none') return false
+      runWorkspacePickerIntent(intent)
+      return true
+    },
+  })
 
   // --- state -----------------------------------------------------------------
 
@@ -278,6 +329,12 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   /** From `hello`: this pane runs in the global (home-rooted) workspace. */
   let projectGlobal = false
   let gitBranch: string | undefined
+  /**
+   * The welcome screen's workspace switcher. Per pane like every other `let`
+   * here: the popover belongs to the Hero it hangs off, and a window-level one
+   * would still be open over the session the user just opened from it.
+   */
+  let picker: WorkspacePickerState = createWorkspacePickerState()
   /**
    * Messages the host is holding until the running turn ends — a mirror of
    * `client.getQueuedMessages()`, drawn from the last `queued-messages` event.
@@ -300,6 +357,87 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 
   // --- rendering (state always updates; paint only when active) --------------
 
+  /**
+   * The workspace picker's state, as the model wants it.
+   *
+   * Assembled per read rather than held: the options and the global root are
+   * `app.ts`'s (they move when a project is added or removed), and the only
+   * thing this pane owns is whether the popover is open and what is typed in it.
+   */
+  function currentPickerState(): WorkspacePickerState {
+    const listing = deps.workspaces?.()
+    return {
+      ...picker,
+      options: listing?.options ?? [],
+      globalRoot: listing?.globalRoot,
+      currentRoot: ownProjectRoot,
+    }
+  }
+
+  function currentPickerView() {
+    return workspacePickerView(currentPickerState())
+  }
+
+  /** The Hero's project name. Opens the switcher, or closes the open one. */
+  function toggleWorkspacePicker(): void {
+    if (deps.onWorkspaceIntent === undefined) return
+    runWorkspacePickerIntent({ kind: picker.open ? 'close' : 'open' })
+  }
+
+  function runWorkspacePickerIntent(intent: WorkspacePickerIntent): void {
+    switch (intent.kind) {
+      case 'open':
+        // A fresh cursor and an empty query every time: the popover is short
+        // enough that resuming last time's filter reads as a broken list.
+        picker = { ...picker, open: true, query: '', selectedIndex: -1 }
+        renderTranscript()
+        welcome.focusPicker()
+        return
+      case 'close':
+        if (!picker.open) return
+        picker = { ...createWorkspacePickerState(), open: false }
+        renderTranscript()
+        // Focus has to land somewhere the user expects, and the composer is
+        // where they were going anyway.
+        deps.composer.focus()
+        return
+      case 'search':
+        // The cursor is dropped rather than clamped: the row it pointed at may
+        // not be in the filtered list at all.
+        picker = { ...picker, query: intent.query, selectedIndex: -1 }
+        renderTranscript()
+        return
+      case 'move':
+        picker = {
+          ...picker,
+          selectedIndex: moveWorkspaceSelection(currentPickerView(), intent.direction),
+        }
+        renderTranscript()
+        return
+      case 'reveal':
+        // Nothing opens: the pane is already there. Close, then let the shell
+        // put that project's group on screen.
+        picker = createWorkspacePickerState()
+        renderTranscript()
+        deps.onSwitchWorkspace?.()
+        return
+      case 'pick':
+      case 'new-project':
+      case 'no-project':
+        // Every one of these puts a different session on screen, so the popover
+        // is withdrawn *before* the request rather than after — a picker left
+        // open over an arriving conversation is a dialog nobody asked for.
+        picker = createWorkspacePickerState()
+        renderTranscript()
+        deps.onWorkspaceIntent?.(intent)
+        return
+      case 'none':
+        return
+      default:
+        assertNever(intent)
+    }
+  }
+
   function renderTranscript(): void {
     if (!active) return
     // Pruned every paint, not on reset: `transcript-reset` restarts the block
@@ -314,7 +452,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       projectName,
       global: projectGlobal,
       branch: gitBranch,
-      canSwitchWorkspace: deps.onSwitchWorkspace !== undefined,
+      canSwitchWorkspace: deps.onWorkspaceIntent !== undefined,
+      picker: currentPickerState(),
     }))
     paneEl.classList.toggle('empty', isTranscriptEmpty(transcript))
   }
@@ -452,6 +591,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     if (!current) {
       if (active) {
         deps.overlay.hide()
+        // The composer is only worth focusing once it is a composer again.
+        deps.permissionRequest.hide()
         deps.composer.focus()
       }
       return
@@ -465,7 +606,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
         settle(current.requestId, { kind: 'rejected', feedback: 'No questions were asked.' })
         return
       }
-      if (active) deps.overlay.ask(view)
+      if (active) {
+        deps.permissionRequest.hide()
+        deps.overlay.ask(view)
+      }
       return
     }
     if (!active) return
@@ -475,7 +619,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
         const others = permissionRequests(queue)
           .filter((entry) => entry.requestId !== current.requestId)
           .map((entry) => entry.payload)
-        deps.overlay.permission(permissionViewModel({
+        // The one request that is not modal: it transforms the composer instead.
+        // The modal layer is closed first, because a permission request can
+        // arrive on top of a plan decision that was drawn there.
+        deps.overlay.hide()
+        deps.permissionRequest.show(permissionViewModel({
           request: current.payload,
           selectedIndex: permissionIndex,
           activeIndex: activeIndex(queue),
@@ -485,10 +633,14 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
         return
       }
       case 'enter-plan':
+        deps.permissionRequest.hide()
         deps.overlay.enterPlan(enterPlanViewModel(enterPlanIndex))
         return
       case 'exit-plan':
-        if (exitPlan) deps.overlay.exitPlan(exitPlanViewModel(exitPlan))
+        if (exitPlan) {
+          deps.permissionRequest.hide()
+          deps.overlay.exitPlan(exitPlanViewModel(exitPlan))
+        }
         return
     }
   }
@@ -1006,6 +1158,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // comes back. Keys never reach a background pane (the app routes to the
     // active one), so a painted-but-inert dialog would be a trap.
     deps.overlay.hide()
+    // The composer is a singleton too, so a background pane's request would
+    // otherwise sit in the next pane's capsule and answer *its* gate.
+    deps.permissionRequest.hide()
     deps.rewindPanel.hide()
     deps.surface.hide()
     deps.queueStrip.hide()
@@ -1198,6 +1353,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     shellState,
     note,
     hasConversation,
+    refreshWelcome: renderTranscript,
+    refreshCommands: () => {
+      void refreshCommands()
+    },
     handleOverlayKey,
     handleRewindIntent,
     acceptCompletion,
@@ -1228,7 +1387,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 }
 
 function assertNever(value: never): never {
-  throw new Error(`Unhandled surface action: ${JSON.stringify(value)}`)
+  throw new Error(`Unhandled variant: ${JSON.stringify(value)}`)
 }
 
 function describe(error: unknown): string {

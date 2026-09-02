@@ -105,6 +105,10 @@ export interface CommandContext {
   setModel?: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
   getEffort?: () => string
   setEffort?: (level: string) => void | Promise<void>
+  /** Whether requests carry a `thinking` parameter at all. */
+  getThinking?: () => boolean
+  /** Persists the switch *and* applies it to the live loop. */
+  setThinking?: (enabled: boolean) => void | Promise<void>
   openModelPicker?: () => void
   openEffortPicker?: () => void
   reloadAgentDefinitions?: () => Promise<number>

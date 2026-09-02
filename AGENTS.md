@@ -86,7 +86,9 @@ points or views.
 - The sidebar lists **every added project** (the registry, read live) plus open projects plus the global
   workspace — closed projects come from a read-only index peek, never a bootstrapped runtime.
   `open-session`/`delete-session`/`rename-session` on a registered-but-closed root bootstrap on demand
-  (over the named session) or use a transient `SessionStore`. Sessions with no input and no output are
+  (over the named session) or use a transient `SessionStore`. `open-session` also resolves the home root
+  explicitly — it is not a registry member — and `list-sessions` carries `globalRoot` whether or not the
+  global group earned a row, because that is how the renderer names it without matching `最近`. Sessions with no input and no output are
   invisible: history rows need `messageCount > 0`, and lane-only rows need the pane's `hasConversation`.
 - A **project outlives its sessions**. An added project keeps its group with nothing under it; only the
   global workspace has to earn its row (open, or with sessions). `sidebarView` drops an empty group for a
@@ -106,6 +108,10 @@ points or views.
 - Compaction must retain the latest user message. Automatic failures are fail-open behind the per-session
   circuit breaker. Cache sources and module state must not cross sessions, streams, or projects.
 - Provider-supported micro-compaction uses cache editing; never mutate local session records as a stand-in.
+- Thinking is the `thinking` setting, read in `createRuntime` and handed to the loop and the Agent
+  tool: unset means `{ type: 'adaptive' }`, `false` means `{ type: 'disabled' }`, which is the only way
+  the payload omits the parameter. `/thinking` writes the local layer, reloads settings, and updates the
+  live loop; the desktop toggle writes it and rebuilds.
 
 ## Permissions and configuration
 
@@ -122,6 +128,10 @@ points or views.
   not call `save()` on the merged config.
 - `permissions.*` and `hooks.*` concatenate across settings layers; `mcp.trustedServers` is unioned.
   Write a group whole and do not claim inherited entries can be removed from the local layer.
+- `skills.disabled` is the exception: it is **replaced** layer by layer, so the local layer can switch a
+  skill back on. `SkillsService.list()` applies it (fail-open) and `listAll()` does not — that split is
+  what lets the settings screen draw a switched-off skill while the prompt, the slash commands and the
+  `Skill` tool cannot reach it.
 - Routing targets a model key or `inherit`; missing targets degrade to `inherit`. Register providers in
   `src/config/providers/registry.ts` and preserve native/proxy capability checks.
 - `FallbackTriggeredError` is a retry signal and must reach the loop's fallback activation path.
@@ -151,6 +161,10 @@ points or views.
   replacement fails. Do not branch it on the free-form `reason` string.
 - Settings changes follow `mutate -> save if config changed -> reload -> after-reload action -> optional
   refresh/rebuild`. Each `SettingsChange` declares this once and has a globally unique `kind`.
+- Every settings category except renderer-local `appearance` maps to one wire `scope`. 「技能和 MCP」 is
+  `extensions`, and it owns the skill switch, the skill reload and both MCP variants. A skill change
+  rebuilds the project's lanes — a runtime is handed the skill list it was built with — and `app.ts` also
+  calls `PaneSession.refreshCommands()`, because the composer's completion list is a renderer-side cache.
 - Window-level views derive session identity from `WireLaneInfo`. Usage/cost/streaming belongs below the
   composer; model/effort belongs on its chip, permission mode on its pill, and session name in the header.
 - The frameless title bar is draggable; every control in it is `no-drag`, and the Windows control strip
@@ -182,9 +196,24 @@ points or views.
   the node as data (`aria-selected`, the smoke probes) and must gain no rule — a background lane is not a
   state the user asked to see. Keyboard cursor and delete confirmation remain separate states.
 - A project heading is `.project-heading` and its `+` a sibling inside `.project-row` — a `<button>`
-  cannot nest one. The heading's context menu is drawn *in flow* under the row, because `.sidebar-list`
-  is the scroller and an absolute popover there would clip. `menuOpen`/`confirmingRemove` must stay in
-  `sidebarRenderSignature`, or the render guard swallows the right-click.
+  cannot nest one. Its leading glyph says *what the group is* (`folder`, `clock` for the global
+  workspace), not where its fold goes. The heading's context menu is drawn *in flow* under the row,
+  because `.sidebar-list` is the scroller and an absolute popover there would clip.
+  `menuOpen`/`confirmingRemove` must stay in `sidebarRenderSignature`, or the render guard swallows the
+  right-click.
+- The sidebar's「最近」nav row is a **filter**, not a destination: it opens nothing, stays enabled while a
+  blocking dialog is up, keeps only `isGlobal` groups, and is renderer-local — `recentOnly` is never
+  persisted and must stay in `sidebarRenderSignature`.
+- The rail's width is `--sidebar-width`: `#sidebar`'s `flex-basis` and `.sidebar-shell`'s `width` read the
+  same property, `styles.css` declares the default, and `model/sidebarWidth.ts` owns the range and the
+  localStorage key. `app.ts` writes it with `setProperty` (the only property TypeScript may write, beside
+  the composer's `height`), and `body.resizing` suspends the collapse transition for the drag's duration.
+- The welcome Hero's project name opens the **workspace picker** (`model/workspacePicker.ts`), not a
+  reveal: another project means a new session *there* (a live session cannot change its cwd), the current
+  one reveals its sidebar group, and「不在项目中工作」opens a global-workspace session. Its state is the
+  pane's; the workspace list is `app.ts`'s and is read at paint time. `dom/welcomeView.ts` keeps the Hero's
+  scaffolding — above all the picker's search input — across repaints, because the empty state repaints
+  once per streamed token and a rebuilt input loses the caret.
 - Every class passed to `controls.ts`'s `button()` needs a resting-state CSS rule. Update the explicit
   control lists in `rendererStyleTokens.test.ts` where its scan cannot infer coverage.
 - Dropdown/popover ancestor chains (`.settings-column`, `.composer-column`, menu shells) must not clip via
@@ -208,6 +237,12 @@ points or views.
   inside the positioned, overflow-hidden canvas and above popovers without giving `#canvas` a z-index.
 - Blocking dialogs derive rows/buttons and intents in `model/`. Mouse and keyboard actions share the same
   intent mapping; the backdrop never dismisses a request. Suggestions accept on prevented `mousedown`.
+- Only three of the four blocking requests are modal. The **permission** request is drawn in the composer
+  (`dom/permissionRequestView.ts` into `#composer-request`), and `#composer.request-open` hides `#input`
+  and `#composer-bar` for its duration — so `renderOverlay` must close whichever of the two it is not
+  using, and `deactivate()` clears both. It shares `permissionViewModel` and `overlayView.ts`'s
+  `actionBar`, and `hasOverlay` still routes keys to `'overlay'`. The sidebar's `awaiting-input` badge
+  names itself in words, because a request parked on a background lane is otherwise invisible.
 - Screens with key handlers take focus once when opened, not on every render.
 - Motion is tokenised (`--motion-fast|base|slow`, `--ease-standard`, `--ease-exit`) in one block at the
   foot of `styles.css`; a transition names a duration token and one of the two curves. Transitions only go on nodes that survive their state change; entrance animations only on

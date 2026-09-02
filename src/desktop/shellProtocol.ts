@@ -132,7 +132,13 @@ export type ShellCommand =
  * `appearance` is renderer-local (theme preference); it carries no host config and
  * never rides a `SettingsChange`. Every other category maps to a wire `scope`.
  */
-export type SettingsCategory = 'provider' | 'permissions' | 'agent' | 'general' | 'appearance'
+export type SettingsCategory =
+  | 'provider'
+  | 'extensions'
+  | 'permissions'
+  | 'agent'
+  | 'general'
+  | 'appearance'
 
 /**
  * An endpoint as the screen shows it.
@@ -224,6 +230,29 @@ export interface WireAgentDefinitionInfo {
   routing: string
 }
 
+/**
+ * One skill as the screen shows it.
+ *
+ * A projection for the same reason `WireAgentDefinitionInfo` is one: a
+ * `SkillDefinition` carries the whole `SKILL.md` body and its hook commands,
+ * neither of which a settings row has any use for.
+ */
+export interface WireSkillInfo {
+  name: string
+  description: string
+  /** False when `skills.disabled` names it in any settings layer. */
+  enabled: boolean
+  inclusion: 'always' | 'manual' | 'fileMatch'
+  /** Only for `fileMatch`: the globs that pull the skill in. */
+  paths?: string[]
+  allowedTools?: string[]
+  model?: string
+  effort?: string
+  /** The definition declares hooks; the rows say so rather than listing them. */
+  hasHooks: boolean
+  attachments?: number
+}
+
 export interface WireMcpServerInfo {
   name: string
   transport: 'stdio' | 'sse'
@@ -269,6 +298,11 @@ export interface WireGeneralInfo {
    * `MYAGENT_PROMPT_CACHE_1H` environment variable, and the row says so.
    */
   cacheTtl1h?: boolean
+  /**
+   * `thinking`. Absent is not `false`: unset means extended thinking is on,
+   * which is what the row says.
+   */
+  thinking?: boolean
 }
 
 export interface WireSettingsSnapshot {
@@ -293,6 +327,9 @@ export interface WireSettingsSnapshot {
   subagentTypes: string[]
   permissions: WirePermissionsInfo
   agents: WireAgentDefinitionInfo[]
+  skills: WireSkillInfo[]
+  /** `.myagent/skills/` — the skills card names the directory it is reading. */
+  skillsDir: string
   mcpServers: WireMcpServerInfo[]
   /** From `config.json`, not the settings layers — see `setContextManagement`. */
   contextManagement: WireContextManagementInfo
@@ -340,10 +377,20 @@ export type SettingsChange =
   /** An action, not a write: re-reads `.myagent/agents/` and rebuilds runtimes. */
   | { scope: 'agent'; kind: 'reload-agent-definitions' }
   | { scope: 'general'; kind: 'set-cache-ttl'; enabled: boolean }
+  | { scope: 'general'; kind: 'set-thinking'; enabled: boolean }
   | { scope: 'general'; kind: 'set-context-management'; field: WireContextManagementField; value: number }
-  | { scope: 'general'; kind: 'set-mcp-trust'; name: string; trusted: boolean }
+  /**
+   * A skill's on/off switch, written to the local layer.
+   *
+   * `extensions` rather than `general`: the trust toggle and the reconnect
+   * moved onto the skills page with it, and one page is one scope.
+   */
+  | { scope: 'extensions'; kind: 'set-skill-enabled'; name: string; enabled: boolean }
+  /** An action: re-reads `.myagent/skills/` and re-registers their commands. */
+  | { scope: 'extensions'; kind: 'reload-skills' }
+  | { scope: 'extensions'; kind: 'set-mcp-trust'; name: string; trusted: boolean }
   /** Also an action. Never prompts for trust — see `ProjectRuntime.reloadMcpServers`. */
-  | { scope: 'general'; kind: 'reconnect-mcp' }
+  | { scope: 'extensions'; kind: 'reconnect-mcp' }
 
 // --- main → renderer ---------------------------------------------------------
 
@@ -410,6 +457,16 @@ export interface WireShellProjectSessions {
 export interface WireShellSessionsResult {
   /** In the order projects were opened, which is `ProjectDirectory`'s order. */
   projects: WireShellProjectSessions[]
+  /**
+   * The global workspace's root key, whether or not it earned a group above.
+   *
+   * The renderer needs to be able to *name* the home-rooted workspace — the
+   * welcome screen's「不在项目中工作」opens a session in it — and it is forbidden
+   * from string-matching the display name (`最近`) to find it. `projects` cannot
+   * answer: the global group is filtered out until it is open or has history,
+   * which is exactly the case where the user is asking for it.
+   */
+  globalRoot: string
 }
 
 export interface WireShellDeleteSessionResult {

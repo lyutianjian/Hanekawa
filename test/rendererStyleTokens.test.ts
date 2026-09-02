@@ -5,6 +5,7 @@ import path from 'node:path'
 
 import { parseCss, rendererRoot, stylesheetPath, type Block } from './helpers/rendererCss.js'
 import { SIDEBAR_COLLAPSE_FALLBACK_MS } from '../src/desktop/renderer/model/sidebar.js'
+import { SIDEBAR_WIDTH_DEFAULT } from '../src/desktop/renderer/model/sidebarWidth.js'
 
 /**
  * The renderer's stylesheet, asserted at source level.
@@ -33,6 +34,16 @@ const htmlPath = path.join(rendererRoot, 'index.html')
  * `scrollHeight` and clamps it — a number no stylesheet can know.
  */
 const ALLOWED_INLINE_STYLE_PROPS = ['height']
+
+/**
+ * Identifiers a `setProperty` call may name instead of a `'--literal'`.
+ *
+ * The scan below cannot follow an import to see what a constant holds, so the
+ * few that carry a custom-property name are listed here — one line per
+ * exception, which is the point: a `setProperty(SOME_CONST, …)` that is *not*
+ * on this list fails, and adding it is a decision on the record.
+ */
+const ALLOWED_STYLE_PROPERTY_CONSTANTS = ['SIDEBAR_WIDTH_VARIABLE']
 
 function rendererFiles(dir = rendererRoot): string[] {
   return readdirSync(dir).flatMap((entry) => {
@@ -168,11 +179,28 @@ test('no renderer view paints from TypeScript', () => {
       `${shown} sets a style attribute; add a class and a rule`,
     )
 
-    for (const match of code.matchAll(/\.style\.([A-Za-z]+)/g)) {
+    // `setProperty` is not an inline property assignment; it has its own rule
+    // below, and matching it here would report it as `.style.setProperty`.
+    for (const match of code.matchAll(/\.style\.(?!setProperty\b)([A-Za-z]+)/g)) {
       const prop = match[1]!
       assert.ok(
         ALLOWED_INLINE_STYLE_PROPS.includes(prop),
         `${shown} sets .style.${prop} inline; only ${ALLOWED_INLINE_STYLE_PROPS.join(', ')} are allowed`,
+      )
+    }
+
+    // `setProperty` is the other door into the style attribute, and the scan
+    // above cannot see through it. Only custom properties may go this way: a
+    // property the stylesheet *declares* is one it still owns — every rule that
+    // reads it, and its fallback, stay in the sheet where the tests can see them.
+    for (const match of code.matchAll(/setProperty\(\s*([A-Za-z_$][\w$]*|['"][^'"]*['"])/g)) {
+      const argument = match[1]!
+      const named = /^['"]/.test(argument) ? argument.slice(1, -1) : undefined
+      assert.ok(
+        named === undefined
+          ? ALLOWED_STYLE_PROPERTY_CONSTANTS.includes(argument)
+          : named.startsWith('--'),
+        `${shown} sets ${argument} through setProperty; only custom properties may be written from TypeScript`,
       )
     }
   }
@@ -288,6 +316,10 @@ test('the palette is the one that was agreed, value for value', () => {
       '--reading-measure': '980px',
       '--reading-gutter': '40px',
       '--composer-overhang': '16px',
+      // The rail's resting width. A layout number, not a colour: `app.ts`
+      // re-declares it on the document element when the handle is dragged, and
+      // this declaration is the fallback every fresh profile resolves.
+      '--sidebar-width': '280px',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
@@ -363,6 +395,10 @@ test('the palette is the one that was agreed, value for value', () => {
       '--reading-measure': '980px',
       '--reading-gutter': '40px',
       '--composer-overhang': '16px',
+      // The rail's resting width. A layout number, not a colour: `app.ts`
+      // re-declares it on the document element when the handle is dragged, and
+      // this declaration is the fallback every fresh profile resolves.
+      '--sidebar-width': '280px',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
@@ -767,10 +803,12 @@ test('the canvas is a clipped rounded panel', () => {
 
   // The hairline that makes it float (todo V1), and the reason it is an outline.
   // `#overlay`/`#rewind` are `absolute; inset: 0` since S6 — positioned against
-  // the padding box — and smoke S2 asserts the scrim matches `#canvas` edge for
-  // edge. A border would inset the scrim by 1px on all four sides, and D7 already
-  // decided that judgement stays exact rather than being loosened. An outline
-  // takes no layout at all, so this assertion *is* that decision.
+  // the padding box — so a scrim must match `#canvas` edge for edge. A border
+  // would inset it by 1px on all four sides, and D7 already decided that
+  // judgement stays exact rather than being loosened. An outline takes no layout
+  // at all, so this assertion *is* that decision. (Since the permission request
+  // moved into the composer no smoke step raises a scrim at all, which is why the
+  // claim is pinned here rather than there.)
   const outline = canvas.decls.find((decl) => decl.prop === 'outline')
   assert.ok(outline, '#canvas must carry a hairline; in dark it is otherwise flush with the base')
   assert.match(outline.value, /var\(--border-subtle\)/)
@@ -971,9 +1009,32 @@ test('a collapsed sidebar is gone, and the column inside it does not resize with
   // The regions ride out on opacity and travel instead of being re-laid out at
   // every width between 280 and 0 — a reflow per frame is the collapse reading
   // as the list tearing itself up.
+  // One axis, and it is the property the drag handle writes: the shell and the
+  // rail must resolve their width from the *same* custom property, or a resized
+  // sidebar would crop its own column.
   assert.ok(
-    declares(blockFor('.sidebar-shell'), 'width', '280px'),
+    declares(blockFor('.sidebar-shell'), 'width', 'var(--sidebar-width)'),
     'the shell must hold the open width while `#sidebar` animates around it',
+  )
+  assert.ok(
+    declares(blockFor('#sidebar'), 'flex', '0 0 var(--sidebar-width)'),
+    'the rail and the shell must read one width',
+  )
+  // The default lives in the token block, where a first run (and every test that
+  // never touches localStorage) resolves it. Pinned against the model's constant
+  // so the two cannot drift.
+  assert.equal(
+    tokens.get('--sidebar-width'),
+    `${SIDEBAR_WIDTH_DEFAULT}px`,
+    'the stylesheet default and model/sidebarWidth.ts must agree',
+  )
+  // ...and it holds that width through `width`, not through a flex basis:
+  // `#sidebar` is a column, so a basis there is a fixed *height*. `0 0 280px`
+  // capped the shell at 280px tall, which left `.sidebar-list` nothing to grow
+  // into and stranded `.sidebar-footer` — the settings row — in mid-column.
+  assert.ok(
+    declares(blockFor('.sidebar-shell'), 'flex', '1 1 auto'),
+    'the shell must fill the sidebar on the main axis; a basis here is a height, not a width',
   )
   assert.ok(
     declares(blockFor('#sidebar.collapsed .sidebar-shell'), 'opacity', '0'),
@@ -1166,6 +1227,10 @@ test('motion comes from the tokens, and the things that rebuild themselves have 
   for (const block of blocks) {
     for (const decl of block.decls) {
       if (decl.prop !== 'transition') continue
+      // `none` is the one value that is not a timing: it *suspends* a transition
+      // declared elsewhere (the sidebar's collapse, while its edge is being
+      // dragged), and there is no duration or curve for it to name.
+      if (decl.value.trim() === 'none') continue
       transitions += 1
       assert.match(
         decl.value,

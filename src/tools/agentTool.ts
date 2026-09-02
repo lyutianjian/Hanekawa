@@ -23,6 +23,7 @@ import {
   type SubagentWorktreeManager,
 } from '../services/agents/subagentWorktree.js'
 import type { CacheRuntime } from '../harness/cacheControl.js'
+import type { ThinkingConfig } from '../config/service.js'
 import { runLifecycleHooks, type Hooks } from '../harness/hooks.js'
 import type { AgentRunResult, ModelProvider, SessionRecord, SubagentTaskStatus, TokenUsage, Tool, ToolContext, ToolProgressEvent } from '../harness/types.js'
 import { countSessionRecordTokens } from '../prompts/budget.js'
@@ -281,6 +282,8 @@ export interface CreateAgentToolOptions {
   isGitRepo?: boolean
   hooks?: Hooks
   cacheRuntime?: CacheRuntime
+  /** Inherited from the parent runtime; defaults to adaptive thinking. */
+  thinking?: ThinkingConfig
   resolveSubagentModel?(subagentType: string, requestedModelKey?: string): ActiveModelRuntime | undefined
   onSubagentProgress?(event: ToolProgressEvent): void
   getCompactFailureCount?(): Promise<number>
@@ -686,7 +689,7 @@ async function runSubagent({
       maxTurns: parsed.maxTurns ?? agentDefinition.maxTurns,
       maxTurnsExceededBehavior: 'partial',
       maxOutputTokens: parsed.maxOutputTokens,
-      thinking: { type: 'adaptive' },
+      thinking: options.thinking ?? { type: 'adaptive' },
       effort: agentDefinition.effort as 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined,
       fallbackModel: options.fallbackModel,
       compactModel: options.compactModel,

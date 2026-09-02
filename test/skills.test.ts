@@ -235,6 +235,75 @@ test('SkillsService.load() throws when skill not found', async () => {
   }
 })
 
+/**
+ * A project with two skills, one of which `settings.local.json` switches off.
+ *
+ * `HOME`/`USERPROFILE` are redirected because `loadMergedSettings` layers
+ * `~/.myagent/settings.json` under the project's — without this the assertions
+ * would depend on whose machine ran them.
+ */
+async function withDisabledSkill(run: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skills-'))
+  const home = await mkdtemp(path.join(os.tmpdir(), 'myagent-home-'))
+  const previous = { home: process.env.HOME, profile: process.env.USERPROFILE }
+  process.env.HOME = home
+  process.env.USERPROFILE = home
+  try {
+    const skillsDir = path.join(dir, '.myagent', 'skills')
+    for (const name of ['kept', 'gone']) {
+      await mkdir(path.join(skillsDir, name), { recursive: true })
+      await writeFile(
+        path.join(skillsDir, name, 'SKILL.md'),
+        `---\nname: ${name}\ndescription: The ${name} skill\n---\n\nBody.`,
+        'utf8',
+      )
+    }
+    await writeFile(
+      path.join(dir, '.myagent', 'settings.local.json'),
+      JSON.stringify({ skills: { disabled: ['gone'] } }),
+      'utf8',
+    )
+    await run(dir)
+  } finally {
+    process.env.HOME = previous.home
+    process.env.USERPROFILE = previous.profile
+    await rm(home, { recursive: true, force: true })
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
+test('a disabled skill is invisible to list(), load() and the slash commands', async () => {
+  await withDisabledSkill(async (dir) => {
+    const service = new SkillsService(dir)
+
+    assert.deepEqual((await service.list()).map((skill) => skill.name), ['kept'])
+    // The filter is in the service so that "off" means off at every call site:
+    // the prompt, the slash commands and the Skill tool all go through it.
+    await assert.rejects(() => service.load('gone'), /Skill not found: gone/)
+
+    const registry = new CommandRegistry()
+    await registerSkillCommands(registry, dir)
+    assert.equal(registry.has('kept'), true)
+    assert.equal(registry.has('gone'), false)
+
+    const tool = createSkillTool()
+    const result = await tool.execute(
+      { skill: 'gone' },
+      { cwd: dir, sessionId: 's1', readFiles: new Set(), readFileState: new Map() } as never,
+    ).catch((error: unknown) => error)
+    assert.ok(result instanceof Error, 'the Skill tool cannot load it either')
+  })
+})
+
+test('listAll() still reports the disabled skill, which is what the settings screen draws', async () => {
+  await withDisabledSkill(async (dir) => {
+    assert.deepEqual(
+      (await new SkillsService(dir).listAll()).map((skill) => skill.name).sort(),
+      ['gone', 'kept'],
+    )
+  })
+})
+
 test('SkillsService skips skills with missing SKILL.md', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skills-'))
   try {

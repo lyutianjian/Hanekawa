@@ -179,6 +179,14 @@
      Matched to `#composer`'s horizontal padding; move them together. */
   --composer-overhang: 16px;
 
+  /* The rail's width, and the only layout number the renderer is allowed to
+     write: `app.ts` re-declares this property on `documentElement` when the
+     handle between the two columns is dragged, and `model/sidebarWidth.ts` owns
+     the default and the range. Declared here so a first run — and every test
+     that never touches localStorage — resolves to the resting width.
+     `#sidebar` and `.sidebar-shell` both read it; they are one axis. */
+  --sidebar-width: 280px;
+
   /* --- type ---
      The chrome is proportional; anything the user has to read character by
      character is not. `--font-mono` is re-declared on those selectors rather
@@ -617,7 +625,7 @@ body {
 
 /* --- sidebar --- */
 #sidebar {
-  flex: 0 0 280px;
+  flex: 0 0 var(--sidebar-width);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -632,10 +640,17 @@ body {
    reflows from 280px to 0 would re-wrap every session title on the way — the
    collapse would read as the list tearing itself up rather than sliding out.
    So the shell keeps its width, `#sidebar`'s `overflow: hidden` crops it, and
-   the rows go out on opacity and 8px of travel instead. */
+   the rows go out on opacity and 8px of travel instead.
+
+   The open width is held by `width`, and it has to be: `#sidebar` is a *column*,
+   so flex-basis here would be a fixed **height**, not a width — `flex: 0 0 280px`
+   pinned this shell to 280px tall, left `.sidebar-list` nothing to grow into and
+   parked `.sidebar-footer` in mid-air with half the column blank under it. On the
+   main axis the shell must fill the sidebar; `width` is the cross axis and
+   `flex-shrink` never touches it, so the crop still works. */
 .sidebar-shell {
-  flex: 0 0 280px;
-  width: 280px;
+  flex: 1 1 auto;
+  width: var(--sidebar-width);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -664,6 +679,39 @@ body {
    canvas carries its own margin, so nothing has to give it back an inset the
    sidebar is no longer providing. `app.ts`'s `renderSettings()` owns the class. */
 body.settings-open #sidebar { display: none; }
+/* The drag handle between the two columns. It lives in the gap the canvas's
+   margin already leaves, so it costs the rail no width; the hit area is 6px and
+   the line it paints on hover is one pixel of `--border-strong`, drawn by a
+   child-less pseudo-element so the handle itself stays invisible at rest. */
+#sidebar-resizer {
+  position: relative;
+  flex: 0 0 6px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+}
+#sidebar-resizer::after {
+  content: '';
+  position: absolute;
+  top: var(--space-5);
+  bottom: var(--space-5);
+  left: 50%;
+  width: 1px;
+  background: var(--border-strong);
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-standard);
+}
+#sidebar-resizer:hover::after,
+body.resizing #sidebar-resizer::after { opacity: 1; }
+/* A collapsed rail has no edge to drag, and the settings screen has no rail at
+   all. Adjacent-sibling rather than a class the view has to remember to write. */
+#sidebar.collapsed + #sidebar-resizer,
+body.settings-open #sidebar-resizer { display: none; }
+/* The collapse animates `flex-basis`; a drag writes it once per frame. Left on,
+   every dragged frame would chase a 320ms curve and the rail would lag the
+   pointer by a third of a second. `app.ts` owns the class for the drag's
+   duration only. */
+body.resizing #sidebar { transition: none; }
 /* The session search box, the sidebar's first region. It carries the column's
    top inset now that the workspace header above it is gone — the workspaces are
    headings inside the list, not a dropdown over it. */
@@ -711,6 +759,9 @@ body.settings-open #sidebar { display: none; }
   cursor: pointer;
 }
 .sidebar-nav-item:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+/* The「最近」filter while it is on. Same idiom as `.sidebar-help.open`: a filled
+   row, because the state is one the user has to be able to see they are in. */
+.sidebar-nav-item.on { color: var(--text-primary); background: var(--surface-active); }
 .sidebar-nav-item:disabled { opacity: 0.4; cursor: default; }
 /* The footer settings entry reads as a user-profile row (gear + name), left
    aligned and full width, rather than the pill the two buttons above use — it is
@@ -997,7 +1048,17 @@ body.settings-open #sidebar { display: none; }
    stays a still dot. The spinner path is stroked, so `.running`'s colour reaches
    it through `currentColor`. */
 .session-badge.running .icon { animation: spin 0.9s linear infinite; }
-.session-badge.awaiting-input { color: var(--accent-warn); }
+.session-badge.awaiting-input { color: var(--accent-warn); gap: 4px; }
+/* "Waiting for you", in words. The permission request is drawn in one lane's
+   composer now, so a request parked on a background session has nothing on
+   screen anywhere else — and an 8px dot is only findable by someone already
+   looking for it. Text, not a filled pill: `--accent-*` fills exactly three
+   named spots in this sheet and this is not one of them. */
+.session-badge-label {
+  flex: 0 0 auto;
+  font-size: var(--type-meta);
+  white-space: nowrap;
+}
 @keyframes spin { to { transform: rotate(360deg); } }
 .session-actions { flex: 0 0 auto; display: flex; gap: 2px; opacity: 0; }
 .session-row:hover .session-actions,
@@ -1280,6 +1341,92 @@ body.settings-open #sidebar { display: none; }
 }
 .welcome-project:hover { background: var(--surface-hover); color: var(--link); }
 .welcome-project:disabled { cursor: default; border-bottom-color: var(--border-subtle); }
+/* The Hero's row, which exists only to be the picker's anchor. `position:
+   relative` is the whole point: the popover is placed against this box by the
+   stylesheet, so nothing in the renderer measures or writes geometry. */
+.welcome-title-row { position: relative; align-self: stretch; }
+.welcome-title-slot { display: block; }
+/* The workspace picker. A menu, so it takes the menu depth — `--radius-md` and
+   `--shadow-float` — rather than inventing a third step. It floats *above* the
+   Hero (the reference build's placement) and is centred on it; `#canvas` is the
+   overflow-hidden ancestor and it is nowhere near an edge, so nothing clips. */
+.welcome-picker-host { position: absolute; left: 50%; bottom: calc(100% + var(--space-3)); }
+.workspace-picker {
+  position: relative;
+  left: -50%;
+  width: 20rem;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+  text-align: left;
+}
+.workspace-picker-search {
+  flex: 0 0 auto;
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: var(--type-ui);
+}
+.workspace-picker-search::placeholder { color: var(--text-secondary); }
+.workspace-picker-search:focus { outline: none; box-shadow: 0 0 0 1px var(--focus-ring); }
+.workspace-picker-body { overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.workspace-picker-row,
+.workspace-picker-action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: transparent;
+  color: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: var(--type-ui);
+  text-align: left;
+  cursor: pointer;
+}
+.workspace-picker-row .icon,
+.workspace-picker-action .icon { flex: 0 0 auto; color: var(--text-secondary); }
+/* The name takes the row so a long project name truncates instead of pushing the
+   tick out — the same rule `.project-heading .btn-label` follows. */
+.workspace-picker-row .btn-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.workspace-picker-row:hover,
+.workspace-picker-action:hover { background: var(--surface-hover); }
+/* The keyboard cursor, which is not the same state as the pointer being over a
+   row — the sidebar keeps the two apart for the same reason. */
+.workspace-picker-row.selected { background: var(--surface-active); }
+/* The tick trails the label rather than sitting in a column before it, the way
+   the runtime chip's flyout marks "the one in force". The strong rung, because
+   it is drawn beside text at text size and the weak one is for hairlines. */
+.workspace-picker-check { color: var(--accent-brand-strong); margin-left: auto; }
+.workspace-picker-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--border-subtle);
+}
+.workspace-picker-empty {
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--type-meta);
+}
 .welcome-cards {
   display: grid;
   /* Three equal tracks, no media query: the token test parses a flat sheet and
@@ -1511,6 +1658,75 @@ body.settings-open #sidebar { display: none; }
 #composer:focus-within {
   border-color: var(--border-strong);
   box-shadow: var(--shadow-float);
+}
+/* --- the composer's permission request ---
+   The one blocking request that is not modal. It is drawn *inside* the capsule
+   and the capsule's two halves step aside for it, so the control the hand is
+   already on becomes the thing that answers — no scrim, no jump, and the
+   transcript behind it stays readable, which matters because the request is
+   usually about the command printed two lines above.
+
+   `display: none` rather than a collapse: there is nothing to animate between a
+   textarea and a question, and a hidden-but-present textarea is still a Tab stop
+   that would swallow the keys the bar wants. */
+#composer.request-open > #input,
+#composer.request-open > #composer-bar { display: none; }
+/* The tone lives on the card, never on the capsule: `#composer`'s border is the
+   focus affordance, and recolouring it would read as "this field is wrong".
+   A 2px rule down the leading edge — the same weak-brand indicator-bar idiom
+   `.session-row.active::before` uses — rather than a tinted fill. */
+#composer-request {
+  border-left-width: 2px;
+  border-left-style: solid;
+  border-left-color: var(--accent-brand);
+  padding: 2px 0 2px var(--space-3);
+  font-size: 13px;
+}
+#composer-request.tone-danger { border-left-color: var(--accent-danger); }
+#composer-request.tone-caution { border-left-color: var(--accent-warn); }
+.request-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--type-meta);
+}
+/* Inherits the head's own `--text-secondary`: the brand is already carrying the
+   rule down the leading edge, and a second brand mark on the same 20px of card
+   is the interface starting to shout. */
+.request-head .icon { flex: 0 0 auto; }
+.request-title { color: var(--text-primary); font-weight: 600; }
+/* The path, the risk and the "n/m pending" counter. Truncated rather than
+   wrapped: it is context for the question below, and a second line of it would
+   push the question off the first screen of the capsule. */
+.request-subtitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The question itself, and the only thing here at body size: everything above
+   is a label and everything below is evidence. */
+.request-question { margin: var(--space-2) 0; color: var(--text-primary); }
+.request-streak { color: var(--text-warn); font-size: var(--type-meta); }
+.request-warning { color: var(--text-danger); font-size: var(--type-meta); }
+.request-waiting { color: var(--text-secondary); font-size: var(--type-meta); }
+/* The exact bytes being approved — the same inset well the dialog's `.block` is,
+   and capped, because a request can carry a heredoc and the composer must not
+   grow past the transcript it is anchored under. */
+.request-block,
+#composer-request .block {
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) 10px;
+  max-height: 160px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--type-code);
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 #input {
   background: transparent;
@@ -1820,7 +2036,8 @@ body.settings-open #sidebar { display: none; }
   white-space: pre-wrap;
   word-break: break-all;
 }
-#overlay-panel .block-label { color: var(--text-tertiary); font-size: 11px; }
+#overlay-panel .block-label,
+#composer-request .block-label { color: var(--text-tertiary); font-size: 11px; }
 #overlay-panel .options { margin: 10px 0 6px; }
 /* The negative margin is what makes the whole row a target rather than just its
    text: the panel's own padding is the only thing to the left of the glyphs.
@@ -1879,18 +2096,23 @@ body.settings-open #sidebar { display: none; }
 }
 #overlay-panel .feedback.focused { border-color: var(--focus-ring); }
 #overlay-panel .feedback::after { content: "▌"; color: var(--caret); }
-#overlay-panel .preview-title { color: var(--text-tertiary); font-size: 12px; margin-top: 8px; }
+#overlay-panel .preview-title,
+#composer-request .preview-title { color: var(--text-tertiary); font-size: 12px; margin-top: 8px; }
 
 /*
   --- the dialog button bar ---
-  Shared by #overlay-panel and #rewind-panel, which are the same object at two
-  z-indexes. The primary is a *raised neutral surface*, not a fill: the one
+  Shared by #overlay-panel, #rewind-panel and the composer's inline permission
+  request. The first two are the same object at two z-indexes; the third is not
+  modal at all, but it asks the same question with the same two buttons, and one
+  bar is what keeps「拒绝 / 允许一次」looking and behaving identically wherever it
+  is drawn. The primary is a *raised neutral surface*, not a fill: the one
   brand solid in this interface is `#submit` (design_guidance 六.4), and a
   dialog that shouts louder than the send button is the wrong hierarchy.
   A danger action is an outline and a text colour only (六.6).
 */
 #overlay-panel .dialog-actions,
-#rewind-panel .dialog-actions {
+#rewind-panel .dialog-actions,
+#composer-request .dialog-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -1898,7 +2120,8 @@ body.settings-open #sidebar { display: none; }
   margin-top: 14px;
 }
 #overlay-panel .dialog-btn,
-#rewind-panel .dialog-btn {
+#rewind-panel .dialog-btn,
+#composer-request .dialog-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1912,28 +2135,34 @@ body.settings-open #sidebar { display: none; }
   cursor: pointer;
 }
 #overlay-panel .dialog-btn.primary,
-#rewind-panel .dialog-btn.primary {
+#rewind-panel .dialog-btn.primary,
+#composer-request .dialog-btn.primary {
   background: var(--surface-active);
   border-color: var(--border-strong);
   color: var(--text-primary);
 }
 #overlay-panel .dialog-btn.danger,
-#rewind-panel .dialog-btn.danger {
+#rewind-panel .dialog-btn.danger,
+#composer-request .dialog-btn.danger {
   border-color: var(--accent-danger);
   color: var(--text-danger);
 }
 #overlay-panel .dialog-btn:hover,
-#rewind-panel .dialog-btn:hover { background: var(--surface-hover); }
+#rewind-panel .dialog-btn:hover,
+#composer-request .dialog-btn:hover { background: var(--surface-hover); }
 /* Where Enter is aimed. On a destructive permission request that is *deny*, so
    this is not decoration — it is the answer about to be given. */
 #overlay-panel .dialog-btn.selected,
-#rewind-panel .dialog-btn.selected { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+#rewind-panel .dialog-btn.selected,
+#composer-request .dialog-btn.selected { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 #overlay-panel .dialog-btn:focus-visible,
-#rewind-panel .dialog-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+#rewind-panel .dialog-btn:focus-visible,
+#composer-request .dialog-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 /* The key badge. Monospaced because a key name is read character by character,
    and it is the only place a shortcut is printed now that the hint line is gone. */
 #overlay-panel .kbd,
-#rewind-panel .kbd {
+#rewind-panel .kbd,
+#composer-request .kbd {
   padding: 0 5px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -2732,6 +2961,11 @@ body.settings-open #sidebar { display: none; }
 .settings-menu { animation: drop-in var(--motion-base) var(--ease-standard); }
 .composer-menu,
 .chip-menu { animation: rise-in var(--motion-base) var(--ease-standard); }
+/* The workspace picker opens *upward* out of the Hero's project name, so it
+   arrives from below like the composer's menus do. Safe as an entrance because
+   the panel's existence tracks open/closed — `dom/welcomeView.ts` keeps the host
+   across repaints and only this node comes and goes. */
+.workspace-picker:not([hidden]) { animation: rise-in var(--motion-base) var(--ease-standard); }
 .chip-flyout { animation: slide-in var(--motion-base) var(--ease-standard); }
 
 /* The one nested at-rule this sheet is allowed (`rendererStyleTokens` names it

@@ -37,6 +37,13 @@ export interface MyAgentSettings {
   mcp?: {
     trustedServers?: string[]
   }
+  skills?: {
+    /**
+     * Skill names that are switched off: no prompt section, no slash command,
+     * and the `Skill` tool cannot load them.
+     */
+    disabled?: string[]
+  }
   cache?: {
     ttl1h?: boolean
   }
@@ -50,6 +57,11 @@ export interface MyAgentSettings {
   autoCompact?: boolean
   autoCompactThreshold?: number
   effortLevel?: EffortLevel
+  /**
+   * Extended thinking. Unset means on: the request carries the provider's
+   * adaptive thinking config. `false` sends no `thinking` parameter at all.
+   */
+  thinking?: boolean
 }
 
 interface LegacyMcpSettings {
@@ -231,6 +243,14 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
       }
     }
 
+    // Replaced outright, unlike `permissions.*` (concatenated) and
+    // `mcp.trustedServers` (unioned): a union would make a name disabled in the
+    // user layer impossible to switch back on from the project or local layer,
+    // which is a toggle that visibly does nothing.
+    if (source.skills) {
+      result.skills = { ...result.skills, ...source.skills }
+    }
+
     if (source.cache) {
       result.cache = {
         ...result.cache,
@@ -248,6 +268,10 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
 
     if (source.effortLevel !== undefined) {
       result.effortLevel = source.effortLevel
+    }
+
+    if (source.thinking !== undefined) {
+      result.thinking = source.thinking
     }
 
   }
@@ -299,10 +323,10 @@ export async function loadLocalSettings(cwd: string): Promise<MyAgentSettings> {
 
 /** The keys {@link updateLocalSettings} is allowed to rewrite. */
 export type LocalSettingsPatch = {
-  [K in 'permissions' | 'mcp' | 'cache']?: MyAgentSettings[K]
+  [K in 'permissions' | 'mcp' | 'skills' | 'cache' | 'thinking']?: MyAgentSettings[K]
 }
 
-const LOCAL_PATCH_KEYS = ['permissions', 'mcp', 'cache'] as const
+const LOCAL_PATCH_KEYS = ['permissions', 'mcp', 'skills', 'cache', 'thinking'] as const
 
 /**
  * Rewrites the named keys in the local layer and leaves the rest of that file
@@ -326,7 +350,10 @@ export async function updateLocalSettings(cwd: string, patch: LocalSettingsPatch
     if (!Object.hasOwn(patch, key)) continue
     const value = patch[key]
     if (value === undefined) delete next[key]
-    else next[key] = value
+    // Indexed through a wider type on purpose: the key is one of
+    // `LOCAL_PATCH_KEYS` and the value came from `patch[key]`, but the compiler
+    // distributes the union over both sides and asks for their intersection.
+    else (next as Record<string, unknown>)[key] = value
   }
 
   const validation = validateSettings(next)
@@ -384,8 +411,45 @@ export async function setMcpServerTrustLocally(
   })
 }
 
+/**
+ * Switches one skill on or off in the local layer.
+ *
+ * Unlike {@link setMcpServerTrustLocally} this reaches every layer's decision:
+ * `skills` is *replaced* by the merge rather than unioned, so the list written
+ * here is the list that counts, and no skill can be stuck off from above.
+ */
+export async function setSkillEnabledLocally(
+  cwd: string,
+  skillName: string,
+  enabled: boolean,
+): Promise<void> {
+  const local = await loadLocalSettings(cwd)
+  const disabled = new Set(local.skills?.disabled ?? [])
+  if (enabled) disabled.delete(skillName)
+  else disabled.add(skillName)
+  await updateLocalSettings(cwd, {
+    skills: { ...local.skills, disabled: [...disabled].sort() },
+  })
+}
+
+/** The names {@link MyAgentSettings.skills} switches off, as a set. */
+export function disabledSkillNames(settings: MyAgentSettings): Set<string> {
+  return new Set(settings.skills?.disabled ?? [])
+}
+
 export async function trustMcpServerLocally(cwd: string, serverName: string): Promise<void> {
   await setMcpServerTrustLocally(cwd, serverName, true)
+}
+
+/**
+ * Extended thinking, in the local layer.
+ *
+ * Written as an explicit boolean rather than deleted when enabled: "on" and
+ * "unset" behave the same, but only a written `true` survives a `thinking:
+ * false` in a layer above this one.
+ */
+export async function setLocalThinking(cwd: string, enabled: boolean): Promise<void> {
+  await updateLocalSettings(cwd, { thinking: enabled })
 }
 
 /** The 1-hour prompt-cache TTL, in the local layer. */
@@ -490,8 +554,20 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
     }
   }
 
+  if (settings.skills?.disabled !== undefined) {
+    if (!Array.isArray(settings.skills.disabled)) {
+      errors.push('skills.disabled must be an array of strings')
+    } else if (settings.skills.disabled.some((name) => typeof name !== 'string' || name.trim() === '')) {
+      errors.push('skills.disabled must be an array of non-empty strings')
+    }
+  }
+
   if (settings.cache?.ttl1h !== undefined && typeof settings.cache.ttl1h !== 'boolean') {
     errors.push('cache.ttl1h must be a boolean')
+  }
+
+  if (settings.thinking !== undefined && typeof settings.thinking !== 'boolean') {
+    errors.push('thinking must be a boolean')
   }
 
   if (settings.effortLevel !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(settings.effortLevel)) {

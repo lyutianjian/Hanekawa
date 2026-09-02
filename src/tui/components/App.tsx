@@ -110,6 +110,8 @@ interface AppProps {
   reloadAgentDefinitions?: () => Promise<number>
   reloadSkills?: () => Promise<number>
   onEffortLevelChange?: (level: string) => void
+  /** Persists the thinking switch and reloads settings; the loop is updated here. */
+  onThinkingChange?: (enabled: boolean) => Promise<void> | void
   backgroundTasks: BackgroundTaskRegistry
 }
 
@@ -136,6 +138,7 @@ export function App({
   reloadAgentDefinitions: reloadRuntimeAgentDefinitions,
   reloadSkills: reloadRuntimeSkills,
   onEffortLevelChange,
+  onThinkingChange,
   backgroundTasks,
 }: AppProps) {
   const [mode, setMode] = useState<AppMode>('idle')
@@ -441,6 +444,11 @@ export function App({
     onEffortLevelChange?.(clampedLevel)
   }, [onEffortLevelChange, runtimeSlot])
 
+  const handleSetThinking = useCallback(async (enabled: boolean) => {
+    runtimeSlot.current.loop.setThinking(enabled ? { type: 'adaptive' } : { type: 'disabled' })
+    await onThinkingChange?.(enabled)
+  }, [onThinkingChange, runtimeSlot])
+
   const modelPickerOptions = useMemo(
     () => buildModelPickerOptions(providerConfig, runtime.modelKey, modelKeys),
     [providerConfig, runtime.modelKey, modelKeys],
@@ -665,6 +673,8 @@ export function App({
     openRewindPanel: () => { void handleEnterRestoreMode() },
     getEffort: () => effortLevel,
     setEffort: handleSetEffort,
+    getThinking: () => runtimeSlot.current.loop.getThinking()?.type !== 'disabled',
+    setThinking: handleSetThinking,
   })
 
   const executeQueuedInput = useCallback(async (text: string) => {

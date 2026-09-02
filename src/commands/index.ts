@@ -14,6 +14,7 @@ import { agentsCommand } from './agents.js'
 import { providerCommand } from './provider.js'
 import { planCommand } from './plan.js'
 import { effortCommand } from './effort.js'
+import { thinkingCommand } from './thinking.js'
 import { tasksCommand } from './tasks.js'
 import { resumeCommand } from './resume.js'
 import { rewindCommand } from './rewind.js'
@@ -34,6 +35,7 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
   registry.register(providerCommand)
   registry.register(planCommand)
   registry.register(effortCommand)
+  registry.register(thinkingCommand)
   registry.register(tasksCommand)
   registry.register(resumeCommand)
   registry.register(rewindCommand)

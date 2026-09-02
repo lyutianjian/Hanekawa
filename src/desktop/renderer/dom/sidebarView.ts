@@ -1,6 +1,10 @@
 import {
   SIDEBAR_COLLAPSE_FALLBACK_MS,
+  SIDEBAR_EMPTY_RECENT_TEXT,
+  SIDEBAR_EMPTY_TEXT,
   SIDEBAR_HINT,
+  SIDEBAR_NO_MATCHES_TEXT,
+  SIDEBAR_RECENT_LABEL,
   activateRow,
   newSessionIntent,
   sidebarContentMounted,
@@ -299,6 +303,15 @@ export function createSidebarView(
       // Running spins; awaiting-input is a still dot. The spinner is stroked so
       // the `.running` colour rule reaches it through `currentColor`.
       badge.appendChild(icon(row.badge === 'running' ? 'spinner' : 'dot'))
+      // Awaiting input says so in words, and running does not. The asymmetry is
+      // the point: the permission request is now drawn in the *composer* of one
+      // lane, so a request parked on a background session has nothing on screen
+      // at all — the rail is the only place it can be seen, and a 8px dot the
+      // user has to already suspect is not a notification. "Running" needs no
+      // label; it is the state a session is in most of the time.
+      if (row.badge === 'awaiting-input') {
+        badge.appendChild(el('span', 'session-badge-label', BADGE_LABELS[row.badge]))
+      }
       open.appendChild(badge)
     }
     if (row.confirmingDelete) {
@@ -380,9 +393,12 @@ export function createSidebarView(
       group.projectName,
       group.projectRoot,
       () => onIntent({ kind: 'toggle-project', projectRoot: group.projectRoot }),
-      // Leading glyph, and it points where the fold goes: `⌄` for an open group,
-      // `›` for a shut one.
-      { icon: group.collapsed ? 'chevron-right' : 'chevron-down' },
+      // The leading glyph says *what the group is*, not where its fold goes: a
+      // folder for a project on disk, a clock for the global workspace, which is
+      // not a directory the user opened. The fold direction was the chevron's
+      // job and is now carried by the rows themselves being there or not — the
+      // row is still the toggle, and `aria-expanded` still says which way.
+      { icon: group.isGlobal ? 'clock' : 'folder' },
     )
     heading.setAttribute('aria-expanded', String(!group.collapsed))
     projectHeadings.set(group.projectRoot, heading)
@@ -506,6 +522,15 @@ export function createSidebarView(
           () => onIntent({ kind: 'open-project' }),
           { enabled: view.canCreate, icon: 'folder' },
         ),
+        // A filter, not a destination: it opens nothing, so unlike the two rows
+        // above it stays enabled while a blocking dialog is up.
+        button(
+          `sidebar-nav-item${view.recentOnly ? ' on' : ''}`,
+          SIDEBAR_RECENT_LABEL,
+          view.recentOnly ? '显示全部工作区' : '只看不属于任何项目的会话',
+          () => onIntent({ kind: 'toggle-recent' }),
+          { icon: 'clock' },
+        ),
       )
 
       // The class goes on at the *start* of the collapse and comes off at the
@@ -542,9 +567,17 @@ export function createSidebarView(
       replace(
         list,
         ...(view.isEmpty
-          ? [el('div', 'sidebar-empty', '还没有会话。')]
+          ? [
+              el(
+                'div',
+                'sidebar-empty',
+                // The filter's own empty state: "还没有会话" under a「最近」that
+                // is switched on reads as every project having disappeared.
+                view.recentOnly ? SIDEBAR_EMPTY_RECENT_TEXT : SIDEBAR_EMPTY_TEXT,
+              ),
+            ]
           : view.noMatches
-            ? [el('div', 'sidebar-empty', '没有匹配的会话。')]
+            ? [el('div', 'sidebar-empty', SIDEBAR_NO_MATCHES_TEXT)]
             : view.groups.map((group) =>
                 groupNode(group, indexOf, view.selectedIndex, view.canCreate),
               )),

@@ -266,17 +266,17 @@ async function step2(ctx) {
   ctx.ok('and it offers 打开位置', headerA2.openLocation.includes('打开位置'), headerA2.openLocation)
 
   const prompt = await raisePrompt(ctx, opened.lane, 'smoke-write-target.txt')
-  const dialog = await waitFor('the permission dialog to be drawn', async () => {
-    const view = await read(ctx, probes.overlay())
+  const dialog = await waitFor('the permission request to be drawn', async () => {
+    const view = await read(ctx, probes.permissionRequest())
     return view.open ? view : undefined
   })
-  // Asserted on the *file*, not the tool name: the dialog is localized (the title
+  // Asserted on the *file*, not the tool name: the card is localized (the title
   // reads 写入文件), so matching 'Write' would be asserting the English build.
-  ctx.ok('the dialog names the file it would write', dialog.subtitle.includes('smoke-write-target.txt'), dialog.subtitle)
-  ctx.ok('the dialog has a title', dialog.title.length > 0, dialog.title)
+  ctx.ok('the request names the file it would write', dialog.subtitle.includes('smoke-write-target.txt'), dialog.subtitle)
+  ctx.ok('the request has a title', dialog.title.length > 0, dialog.title)
   // Upper case as of S5: the keys are badges on the buttons, not a transcribed
   // `[y/n]` hint line.
-  ctx.ok('the dialog badges the Y/N keys', dialog.hotkeys.includes('Y') && dialog.hotkeys.includes('N'), dialog.hotkeys.join(''))
+  ctx.ok('the request badges the Y/N keys', dialog.hotkeys.includes('Y') && dialog.hotkeys.includes('N'), dialog.hotkeys.join(''))
   // Exactly one primary, and it is 允许一次: neither 拒绝 (which Escape does) nor
   // 始终允许 (which writes a lasting rule) may look like the recommended answer.
   ctx.ok(
@@ -284,30 +284,44 @@ async function step2(ctx) {
     dialog.actions.length >= 2 && dialog.actions.filter((action) => action.primary).length === 1,
     JSON.stringify(dialog.actions),
   )
-  // S6: the request belongs to a lane, so its scrim covers that lane's canvas
-  // and nothing else. Equality on all four edges, not `>=`: a scrim that merely
-  // starts right of the sidebar could still be the old window-wide one shifted.
+  // The request transforms the composer instead of covering the lane: it is
+  // *inside* the capsule, on the capsule's own axis, and the textarea and the
+  // action bar it stands in for are off screen. A card drawn over a live
+  // composer would be the modal it replaced with an extra step.
+  ctx.ok('the request is drawn inside the composer capsule', dialog.insideComposer === true, JSON.stringify(dialog.box))
+  ctx.ok('the capsule reports the transform', dialog.transformed === true, `transformed=${dialog.transformed}`)
+  ctx.ok(
+    'the textarea and the action bar stepped aside for it',
+    dialog.inputVisible === false && dialog.barVisible === false,
+    `input=${dialog.inputVisible} bar=${dialog.barVisible}`,
+  )
+  ctx.ok(
+    'and it sits on the composer axis rather than floating on its own',
+    dialog.box && dialog.composerBox && dialog.box.right <= dialog.composerBox.right
+      && dialog.box.left >= dialog.composerBox.left,
+    JSON.stringify({ card: dialog.box, composer: dialog.composerBox }),
+  )
+  // The modal layer stays shut: three blocking requests still live there, and a
+  // scrim raised beside the card would dim the transcript the question is about.
+  // The hit test is the evidence — `getBoundingClientRect` answers in full for a
+  // node that is covered, so "the overlay reports hidden" alone would still pass
+  // over a scrim that had painted.
+  const overlayNow = await read(ctx, probes.overlay())
+  ctx.ok('no scrim is raised for a permission request', overlayNow.open === false, `open=${overlayNow.open}`)
   const scope = await read(ctx, probes.modalScope())
   ctx.ok(
-    'the scrim covers exactly the canvas',
-    scope.overlay && scope.canvas
-      && scope.overlay.left === scope.canvas.left && scope.overlay.top === scope.canvas.top
-      && scope.overlay.right === scope.canvas.right && scope.overlay.bottom === scope.canvas.bottom,
-    JSON.stringify(scope),
+    'the transcript the question is about is still reachable',
+    scope.atCanvas?.inOverlay === false,
+    JSON.stringify(scope.atCanvas),
   )
-  // The hit test is the evidence: a covered node still reports its full rect.
+  // And the sidebar, so switching away from a parked pane stays a supported move
+  // — which is the whole reason the badge below has to be visible.
   ctx.ok(
-    'the sidebar is not under the scrim — a parked pane can be switched away from',
+    'the sidebar is live while a request is parked',
     scope.atSidebar?.inSidebar === true && scope.atSidebar?.inOverlay === false,
     JSON.stringify(scope.atSidebar),
   )
-  // And the converse, so the two above cannot pass on a scrim that never painted.
-  ctx.ok(
-    'the canvas is under it',
-    scope.atCanvas?.inOverlay === true,
-    JSON.stringify(scope.atCanvas),
-  )
-  await ctx.shot('02a-permission-dialog', 'the permission dialog over the canvas only — the sidebar is not dimmed — with its title, reason, file preview block and button bar')
+  await ctx.shot('02a-permission-request', 'the permission request drawn inside the composer capsule — no scrim, the transcript still readable — with its title, question, command block and button bar')
 
   await activate(ctx, a1)
   const away = await waitFor('the parked pane to show the awaiting-input badge', async () => {
@@ -317,29 +331,31 @@ async function step2(ctx) {
   })
   ctx.eq('the parked pane shows 等待授权', away.row.badge, '等待授权')
   ctx.ok('the switched-to row is the active one', rowFor(away.view, a1.id)?.active === true, JSON.stringify(rowFor(away.view, a1.id)))
-  // `deactivate()` clears the paint but not the state: a dialog drawn while its
-  // pane is not the keyboard target would be unanswerable, which is the trap the
-  // per-pane overlay rule exists to prevent.
-  const overlayAway = await read(ctx, probes.overlay())
-  ctx.ok('the dialog is not left painted over another pane', overlayAway.open === false, `open=${overlayAway.open}`)
+  // `deactivate()` clears the paint but not the state: a request drawn while its
+  // pane is not the keyboard target would be unanswerable, and here it would be
+  // worse than unanswerable — the composer is a singleton, so a card left behind
+  // would sit in the *next* pane's capsule and answer its gate.
+  const awayCard = await read(ctx, probes.permissionRequest())
+  ctx.ok('the request is not left in another pane\'s composer', awayCard.open === false, `open=${awayCard.open}`)
+  ctx.ok('and that pane has its composer back', awayCard.inputVisible === true, `input=${awayCard.inputVisible}`)
   await ctx.shot('02b-awaiting-badge', 'the 等待授权 badge on a background row, next to the active row')
 
   await activate(ctx, a2)
-  const back = await waitFor('the dialog to come back with the pane', async () => {
-    const view = await read(ctx, probes.overlay())
+  const back = await waitFor('the request to come back with the pane', async () => {
+    const view = await read(ctx, probes.permissionRequest())
     return view.open ? view : undefined
   })
-  ctx.ok('coming back restores the same dialog', back.subtitle.includes('smoke-write-target.txt'), back.subtitle)
+  ctx.ok('coming back restores the same request', back.subtitle.includes('smoke-write-target.txt'), back.subtitle)
 
   // Answered with a **real mouse event**, not `y` and not `element.click()`.
   // Until S4 `overlayView.ts` had zero listeners, so the whole dialog was
   // keyboard-only; a synthetic click would have passed even then, and it would
   // still pass over a row that is covered or clipped. What follows — the tool
-  // ran, the file landed, the dialog closed — is the proof the pixel answered.
-  // 允许一次 rather than 允许, so a dialog that also offers 始终允许 cannot match
+  // ran, the file landed, the card closed — is the proof the pixel answered.
+  // 允许一次 rather than 允许, so a card that also offers 始终允许 cannot match
   // the wrong button and write a rule into the scratch project's settings.
   const allow = back.actions.find((action) => action.label.includes('允许一次'))
-  ctx.ok('the dialog offers a clickable 允许一次 button', allow !== undefined, JSON.stringify(back.actions))
+  ctx.ok('the request offers a clickable 允许一次 button', allow !== undefined, JSON.stringify(back.actions))
   await mouseClick(ctx.cdp, allow.x, allow.y)
   const result = await app.reply(ctx.app, prompt.id, { label: 'run-tool Write', timeout: 20000 })
   ctx.ok('clicking 允许一次 runs the tool', result !== undefined, JSON.stringify(result).slice(0, 120))
@@ -348,8 +364,9 @@ async function step2(ctx) {
     existsSync(join(ctx.projectA.root, 'smoke-write-target.txt')),
     join(ctx.projectA.root, 'smoke-write-target.txt'),
   )
-  const written = await read(ctx, probes.overlay())
-  ctx.ok('the dialog closes after the answer', written.open === false, `open=${written.open}`)
+  const written = await read(ctx, probes.permissionRequest())
+  ctx.ok('the request closes after the answer', written.open === false, `open=${written.open}`)
+  ctx.ok('and the composer is a composer again', written.inputVisible === true, `input=${written.inputVisible}`)
   let badge = 'unread'
   try {
     await waitFor(
@@ -948,7 +965,7 @@ async function step8(ctx) {
 
   // 8d — a reconnect must not open a native window. The reply arriving at all is
   // the assertion: `showMessageBoxSync` would have frozen the main process.
-  await app.shell(ctx.app, { type: 'settings-change', projectRoot: rootA, change: { scope: 'general', kind: 'reconnect-mcp' } }, { timeout: 8000 })
+  await app.shell(ctx.app, { type: 'settings-change', projectRoot: rootA, change: { scope: 'extensions', kind: 'reconnect-mcp' } }, { timeout: 8000 })
   ctx.ok('reconnecting MCP answers, so no native dialog was opened', true, 'reply received within budget')
 
   // 8e — the one setting that genuinely needs a rebuild.

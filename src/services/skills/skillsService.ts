@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { getSkillsDir } from '../../utils/paths.js'
 import { parseYamlFrontmatter } from '../../utils/frontmatter.js'
+import { disabledSkillNames, loadMergedSettings } from '../../config/settings.js'
 import type { EffortLevel } from '../../config/effort.js'
 import type { HookCommand, Hooks } from '../../harness/hooks.js'
 
@@ -24,7 +25,27 @@ export type SkillInclusion = 'always' | 'manual' | 'fileMatch'
 export class SkillsService {
   constructor(private readonly cwd: string) {}
 
+  /**
+   * The skills that are switched on: what the prompt, the slash commands and
+   * the `Skill` tool all see.
+   *
+   * Filtered here rather than at each of the four call sites, because that is
+   * what makes "off" mean off everywhere. The settings read is fail-open: a
+   * layer that cannot be read must not silently disable every skill.
+   */
   async list(): Promise<SkillDefinition[]> {
+    const all = await this.listAll()
+    let disabled: Set<string>
+    try {
+      disabled = disabledSkillNames(await loadMergedSettings(this.cwd))
+    } catch {
+      return all
+    }
+    return all.filter((skill) => !disabled.has(skill.name))
+  }
+
+  /** Every skill on disk, switched off ones included. For the settings screen. */
+  async listAll(): Promise<SkillDefinition[]> {
     const skillsDir = getSkillsDir(this.cwd)
     let entries: string[]
 

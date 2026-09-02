@@ -8,9 +8,12 @@ import {
   loadLocalSettings,
   localSettingsPath,
   setLocalCacheTtl1h,
+  setLocalThinking,
   setLocalPermissionEntries,
   setLocalStartupPermissionMode,
   setMcpServerTrustLocally,
+  setSkillEnabledLocally,
+  disabledSkillNames,
   type MyAgentSettings,
   type StartupPermissionMode,
 } from '../config/settings.js'
@@ -21,8 +24,9 @@ import type { SessionMeta } from '../sessions/service.js'
 import { SessionStore } from '../sessions/service.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
 import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../tools/agentTool.js'
+import { SkillsService, type SkillDefinition } from '../services/skills/skillsService.js'
 import { peekSessions } from './recentProjects.js'
-import { isGlobalWorkspaceRoot } from '../utils/paths.js'
+import { getSkillsDir, isGlobalWorkspaceRoot } from '../utils/paths.js'
 import type {
   DirectoryProject,
   DirectoryWorkspace,
@@ -58,6 +62,7 @@ import {
   type WireContextManagementInfo,
   type WireEndpointInfo,
   type WireMcpServerInfo,
+  type WireSkillInfo,
   type WireModelInfo,
   type WirePermissionGroup,
   type WirePermissionsInfo,
@@ -144,6 +149,8 @@ export interface ShellLaneProject extends DirectoryProject {
   /** Read-only: the agent cards list these; editing them means editing files. */
   listAgentDefinitions(): readonly BaseAgentDefinition[]
   reloadAgentDefinitions(): Promise<number>
+  /** Re-reads `.myagent/skills/` and re-registers their slash commands. */
+  reloadSkills(): Promise<number>
   /** As it stands now. Mutated in place by `reloadMcpServers`, never replaced. */
   readonly mcp: McpConnectionStatus
   reloadMcpServers(): Promise<void>
@@ -391,6 +398,9 @@ const SETTINGS_CHANGE_SCHEMAS = {
   'set-cache-ttl': z
     .object({ scope: z.literal('general'), kind: z.literal('set-cache-ttl'), enabled: z.boolean() })
     .strict(),
+  'set-thinking': z
+    .object({ scope: z.literal('general'), kind: z.literal('set-thinking'), enabled: z.boolean() })
+    .strict(),
   'set-context-management': z
     .object({
       scope: z.literal('general'),
@@ -401,16 +411,27 @@ const SETTINGS_CHANGE_SCHEMAS = {
       value: z.number(),
     })
     .strict(),
+  'set-skill-enabled': z
+    .object({
+      scope: z.literal('extensions'),
+      kind: z.literal('set-skill-enabled'),
+      name: z.string(),
+      enabled: z.boolean(),
+    })
+    .strict(),
+  'reload-skills': z
+    .object({ scope: z.literal('extensions'), kind: z.literal('reload-skills') })
+    .strict(),
   'set-mcp-trust': z
     .object({
-      scope: z.literal('general'),
+      scope: z.literal('extensions'),
       kind: z.literal('set-mcp-trust'),
       name: z.string(),
       trusted: z.boolean(),
     })
     .strict(),
   'reconnect-mcp': z
-    .object({ scope: z.literal('general'), kind: z.literal('reconnect-mcp') })
+    .object({ scope: z.literal('extensions'), kind: z.literal('reconnect-mcp') })
     .strict(),
 } as const satisfies Record<SettingsChange['kind'], z.ZodTypeAny>
 
@@ -684,7 +705,12 @@ export class ShellHost<
     if (projectRoot !== undefined) {
       const open = this.deps.directory.get(projectRoot)
       if (open) return open
-      const cwd = await this.knownCwdForRoot(projectRoot)
+      // The home directory is deliberately *not* a registry member (it is the
+      // implicit global workspace), so `knownCwdForRoot` can never answer for
+      // it — and without this branch「不在项目中工作」would fail with "no project
+      // is open" exactly when the workspace it names has never been opened.
+      const cwd = (await this.knownCwdForRoot(projectRoot))
+        ?? (projectRootKey(homedir()) === projectRoot ? homedir() : undefined)
       if (cwd !== undefined && this.deps.ensureProject) {
         return this.deps.ensureProject(cwd, sessionId !== undefined ? { sessionId } : {})
       }
@@ -837,6 +863,10 @@ export class ShellHost<
       }),
     )
     return {
+      // Carried even when the filter below drops the global group: the renderer
+      // must be able to name the home workspace without matching its display
+      // name, and「不在项目中工作」asks for it precisely when it has no row.
+      globalRoot: projectRootKey(homedir()),
       projects: projects
         // Every *added* project is listed unconditionally, history or not: the
         // registry is what the sidebar draws a project row from, so a project
@@ -1187,6 +1217,13 @@ export class ShellHost<
       return info
     })
 
+    // Read off disk rather than through the runtime: `getSkills()` is already
+    // filtered, and the card has to draw the switched-off ones too.
+    const disabledSkills = disabledSkillNames(merged)
+    const skills = (await new SkillsService(entry.cwd).listAll()).map((skill) =>
+      describeSkill(skill, !disabledSkills.has(skill.name)),
+    )
+
     const locallyTrusted = new Set(local.mcp?.trustedServers ?? [])
     const trusted = new Set(merged.mcp?.trustedServers ?? [])
     const mcpServers = Object.entries(merged.mcpServers ?? {}).map(([name, server]) =>
@@ -1219,11 +1256,14 @@ export class ShellHost<
       subagentTypes,
       permissions,
       agents,
+      skills,
+      skillsDir: getSkillsDir(entry.cwd),
       mcpServers,
       contextManagement,
       general: {
         localPath: localSettingsPath(entry.cwd),
         ...(merged.cache?.ttl1h !== undefined ? { cacheTtl1h: merged.cache.ttl1h } : {}),
+        ...(merged.thinking !== undefined ? { thinking: merged.thinking } : {}),
       },
     }
     if (raw.defaultModel !== undefined) snapshot.defaultModel = raw.defaultModel
@@ -1359,6 +1399,25 @@ function splitPermissionGroup(
   return { behavior, local: localEntries, inherited }
 }
 
+/** One skill row: its frontmatter, minus the body and the hook commands. */
+function describeSkill(skill: SkillDefinition, enabled: boolean): WireSkillInfo {
+  const info: WireSkillInfo = {
+    name: skill.name,
+    description: skill.description,
+    enabled,
+    // The parser defaults an absent `inclusion` to `manual`; the fallback is
+    // for a definition that reached here from somewhere else.
+    inclusion: skill.inclusion ?? 'manual',
+    hasHooks: skill.hooks !== undefined,
+  }
+  if (skill.paths?.length) info.paths = [...skill.paths]
+  if (skill.allowedTools?.length) info.allowedTools = [...skill.allowedTools]
+  if (skill.model !== undefined) info.model = skill.model
+  if (skill.effort !== undefined) info.effort = skill.effort
+  if (skill.attachments?.length) info.attachments = skill.attachments.length
+  return info
+}
+
 /**
  * One MCP server row: what it is, whether it is trusted, and what the last
  * connection attempt made of it.
@@ -1459,11 +1518,39 @@ async function applySettingsEffect<P extends ShellLaneProject, W extends ShellLa
       // `cacheRuntime` is captured at runtime construction, so this one does
       // need the rebuild.
       return { saveConfig: false, rebuild: true, scope: 'models' }
+    case 'set-thinking':
+      await setLocalThinking(entry.cwd, change.enabled)
+      // Same reason as the cache TTL: the loop is handed its thinking config
+      // when the runtime is built, so only a rebuild reaches an open session.
+      return { saveConfig: false, rebuild: true, scope: 'models' }
     case 'set-context-management':
       entry.project.config.setContextManagement({ [change.field]: change.value })
       // No rebuild, because a rebuild would not help: the numbers are snapshotted
       // into the session scope at bootstrap, which is why the rows say so.
       return { saveConfig: true, rebuild: false, scope: 'models' }
+    case 'set-skill-enabled':
+      await setSkillEnabledLocally(entry.cwd, change.name, change.enabled)
+      // The reload comes after `reloadSettings()` because `SkillsService` reads
+      // the merged layers to decide what is switched on; the rebuild is for the
+      // same reason the agent reload needs one — a runtime is handed the skill
+      // list it was built with.
+      return {
+        saveConfig: false,
+        rebuild: true,
+        scope: 'models',
+        afterReload: async () => {
+          await entry.project.reloadSkills()
+        },
+      }
+    case 'reload-skills':
+      return {
+        saveConfig: false,
+        rebuild: true,
+        scope: 'models',
+        afterReload: async () => {
+          await entry.project.reloadSkills()
+        },
+      }
     case 'set-mcp-trust':
       await setMcpServerTrustLocally(entry.cwd, change.name, change.trusted)
       return {

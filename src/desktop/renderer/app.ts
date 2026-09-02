@@ -58,6 +58,15 @@ import {
   type SidebarState,
 } from './model/sidebar.js'
 import { rewindKeyToIntent } from './model/rewindPanel.js'
+import type { WorkspacePickerIntent } from './model/workspacePicker.js'
+import {
+  SIDEBAR_WIDTH_STORAGE_KEY,
+  clampSidebarWidth,
+  parseSidebarWidth,
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_VARIABLE,
+  sidebarWidthVariable,
+} from './model/sidebarWidth.js'
 import {
   applySettingsIntent,
   createSettingsState,
@@ -81,6 +90,7 @@ import { required } from './dom/dom.js'
 import { createCanvasHeaderView } from './dom/canvasHeaderView.js'
 import { createSettingsView } from './dom/settingsView.js'
 import { createOverlayView } from './dom/overlayView.js'
+import { createPermissionRequestView } from './dom/permissionRequestView.js'
 import { createRewindView } from './dom/rewindView.js'
 import { createSurfacePanel } from './dom/surfaceView.js'
 import { createQueueView } from './dom/queueView.js'
@@ -129,6 +139,21 @@ darkQuery.addEventListener('change', () => {
   if (themePreference === 'system') applyResolvedTheme(themePreference)
 })
 
+// The rail's width. A local preference like the theme above, and written the
+// same way: a custom property on the document element, which both `#sidebar` and
+// `.sidebar-shell` read. Never `.style.width` — painting and layout numbers
+// belong to the stylesheet, and a property it declares a fallback for is the one
+// hole that keeps them there.
+let sidebarWidth = parseSidebarWidth(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY))
+function applySidebarWidth(px: number): void {
+  sidebarWidth = clampSidebarWidth(px)
+  document.documentElement.style.setProperty(
+    SIDEBAR_WIDTH_VARIABLE,
+    sidebarWidthVariable(sidebarWidth),
+  )
+}
+applySidebarWidth(sidebarWidth)
+
 // --- the singleton views ------------------------------------------------------
 
 // The two window-level singletons only ever paint for the active pane, so a click
@@ -137,6 +162,16 @@ darkQuery.addEventListener('change', () => {
 const overlay = createOverlayView(required('overlay'), required('overlay-panel'), (action) => {
   activePane()?.handleOverlayAction(action)
 })
+// The fourth blocking request, and the only one that is not modal: it transforms
+// the composer. Same routing and the same handler as the panel above, so a click
+// there answers exactly what a click in the modal used to.
+const permissionRequest = createPermissionRequestView(
+  required('composer'),
+  required('composer-request'),
+  (action) => {
+    activePane()?.handleOverlayAction(action)
+  },
+)
 const surface = createSurfacePanel(required('surface'), (action) => {
   void activePane()?.runSurfaceAction(action)
 })
@@ -208,6 +243,7 @@ function attachPaneSession(lane: string): void {
     channel: mux.lane(lane),
     mount: transcriptArea,
     overlay,
+    permissionRequest,
     rewindPanel,
     surface,
     suggestions,
@@ -234,6 +270,17 @@ function attachPaneSession(lane: string): void {
       const root = shellClient.getLanes().find((info) => info.lane === lane)?.projectRoot
       if (root !== undefined) revealWorkspace(root)
     },
+    // Read at paint time, never captured: the list moves whenever a project is
+    // added or removed, and the pane must not hold a snapshot of it.
+    workspaces: () => ({
+      options: projects.map((project) => ({
+        projectRoot: project.projectRoot,
+        projectName: project.projectName,
+        isGlobal: project.isGlobal ?? false,
+      })),
+      globalRoot,
+    }),
+    onWorkspaceIntent: (intent) => runWorkspaceIntent(intent),
     onExit: () => {
       // `/exit` closes this pane, not the window: the single window holds every
       // other lane, and `window.close()` would take them all down.
@@ -367,6 +414,15 @@ function applyPaneBudget(): void {
 
 /** History, as last pulled. Kept so a repaint never has to reach the host. */
 let projects: readonly SidebarProjectSessions[] = []
+/**
+ * The global workspace's root key, from `list-sessions`.
+ *
+ * Held separately because `projects` cannot carry it: the global group is
+ * filtered out of the list until it is open or has history, and「不在项目中工作」
+ * needs to name it in exactly that case. Never derived from the display name —
+ * the renderer is not allowed to string-match `最近`.
+ */
+let globalRoot: string | undefined
 /** What the user last asked the rail to be. */
 let collapsed = false
 /** Where the rail has got to. Lags `collapsed` by one animation. */
@@ -381,6 +437,8 @@ let searchQuery = ''
 /** The workspaces folded shut in the sidebar. View state; nothing persists it. */
 let collapsedProjects: ReadonlySet<string> = new Set()
 let helpOpen = false
+/** The「最近」filter: only the sessions that belong to no project. Not persisted. */
+let recentOnly = false
 /** The title bar's open menu, if any. Window-level, like the bar itself. */
 let titleBarMenu: string | undefined
 let sessionsInFlight = false
@@ -404,6 +462,7 @@ function currentSidebarState(): SidebarState {
     searchQuery,
     collapsedProjects,
     helpOpen,
+    recentOnly,
   })
 }
 
@@ -445,7 +504,12 @@ async function refreshSessions(): Promise<void> {
       sessionsAgain = false
       const result = await shellClient.listSessions()
       projects = result.projects
+      globalRoot = result.globalRoot
       renderSidebar()
+      // The empty state's workspace picker reads this list, and nothing else
+      // repaints an idle pane — a project added while the Hero is up would
+      // otherwise be missing from the popover until the next keystroke.
+      activePane()?.refreshWelcome()
     } while (sessionsAgain)
   } catch (error) {
     // Keep the last good list: a sidebar that empties itself on a transient
@@ -477,6 +541,45 @@ function revealWorkspace(projectRoot: string): void {
   collapsedProjects = toggleProject(collapsedProjects, projectRoot, false)
   renderSidebar()
   sidebar.focusProject(projectRoot)
+}
+
+/**
+ * The welcome screen's workspace picker, resolved to things the shell already
+ * does.
+ *
+ * Every branch re-enters through `runSidebarIntent`, which is the rule the title
+ * bar's menus follow: a second path to "open a session" is a second place for
+ * the settings screen, the empty-session check and the error note to drift.
+ * `reveal` never arrives here — the pane answers it through `onSwitchWorkspace`.
+ */
+function runWorkspaceIntent(intent: WorkspacePickerIntent): void {
+  switch (intent.kind) {
+    case 'pick':
+      // A new session *in* that project: a live session cannot change its own
+      // cwd, so this is the same act the group heading's `+` performs.
+      runSidebarIntent(newSessionIntent(intent.projectRoot))
+      return
+    case 'new-project':
+      runSidebarIntent({ kind: 'open-project' })
+      return
+    case 'no-project':
+      // The global workspace. Without a root key there is nothing to name, and
+      // an untargeted "new session" would land in the first open project.
+      if (globalRoot === undefined) return
+      runSidebarIntent(newSessionIntent(globalRoot))
+      return
+    // The popover's own state — opening, typing, moving, closing — is the pane's
+    // and never reaches the window.
+    case 'open':
+    case 'close':
+    case 'search':
+    case 'move':
+    case 'reveal':
+    case 'none':
+      return
+    default:
+      assertNeverIntent(intent)
+  }
 }
 
 function runSidebarIntent(intent: SidebarIntent): void {
@@ -583,6 +686,13 @@ function runSidebarIntent(intent: SidebarIntent): void {
       return
     case 'toggle-help':
       helpOpen = !helpOpen
+      renderSidebar()
+      return
+    case 'toggle-recent':
+      recentOnly = !recentOnly
+      // The cursor indexes the *visible* rows, and the filter has just changed
+      // which those are — keeping it would point at a different session.
+      selectedIndex = -1
       renderSidebar()
       return
     case 'request-delete':
@@ -825,9 +935,24 @@ async function loadSettingsNow(): Promise<void> {
   renderSettings()
 }
 
+/** Changes that add or remove skill slash commands, so the panes' cached completion list is stale. */
+function changesCommandSet(changes: readonly SettingsChange[]): boolean {
+  return changes.some(
+    (change) => change.kind === 'set-skill-enabled' || change.kind === 'reload-skills',
+  )
+}
+
 async function runSettingsChangesNow(changes: readonly SettingsChange[]): Promise<void> {
+  const projectRoot = settingsState.projectRoot
   settingsState = await runSettingsChanges(shellClient, settingsState, changes)
   renderSettings()
+  // The host rebuilt the runtimes, but the composer's completion list is the
+  // renderer's own cache, refreshed only after a slash command runs.
+  if (changesCommandSet(changes)) {
+    for (const pane of paneSessions.values()) {
+      if (pane.ownProjectRoot === projectRoot) pane.refreshCommands()
+    }
+  }
   // A provider edit can move the model every open lane runs on, and the status
   // bar reads it off the pane's own snapshot — which the host has already
   // re-posted from `refreshAfterConfigChange`. Nothing to pull here; the
@@ -882,6 +1007,56 @@ const sidebar = createSidebarView(
     return true
   },
 )
+
+// --- the rail's drag handle ---------------------------------------------------
+
+/**
+ * Dragging the sidebar's right edge.
+ *
+ * Pointer events with capture rather than document-level mouse listeners: the
+ * pointer leaves the 4px handle on the first frame of any real drag, and capture
+ * is what keeps the moves coming without a listener the teardown has to
+ * remember. `body.resizing` is not cosmetic — `#sidebar` transitions
+ * `flex-basis` for the collapse, so without it every dragged frame would chase a
+ * 320ms curve.
+ */
+const sidebarResizer = required('sidebar-resizer')
+let dragStartX = 0
+let dragStartWidth = SIDEBAR_WIDTH_DEFAULT
+
+sidebarResizer.addEventListener('pointerdown', (event) => {
+  // Primary button only: a right-click here belongs to nothing, and starting a
+  // drag on it would leave the rail following a pointer the user is not moving.
+  if (event.button !== 0) return
+  event.preventDefault()
+  dragStartX = event.clientX
+  dragStartWidth = sidebarWidth
+  sidebarResizer.setPointerCapture(event.pointerId)
+  document.body.classList.add('resizing')
+})
+
+sidebarResizer.addEventListener('pointermove', (event) => {
+  if (!sidebarResizer.hasPointerCapture(event.pointerId)) return
+  applySidebarWidth(dragStartWidth + (event.clientX - dragStartX))
+})
+
+function endSidebarDrag(event: PointerEvent): void {
+  if (!sidebarResizer.hasPointerCapture(event.pointerId)) return
+  sidebarResizer.releasePointerCapture(event.pointerId)
+  document.body.classList.remove('resizing')
+  // Written once at the end, not per frame: a drag is one decision, and
+  // `localStorage` is synchronous.
+  localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth))
+}
+sidebarResizer.addEventListener('pointerup', endSidebarDrag)
+// A cancelled pointer (the window losing focus mid-drag) must not leave the body
+// stuck in `resizing`, which would kill the collapse animation for good.
+sidebarResizer.addEventListener('pointercancel', endSidebarDrag)
+
+sidebarResizer.addEventListener('dblclick', () => {
+  applySidebarWidth(SIDEBAR_WIDTH_DEFAULT)
+  localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth))
+})
 
 // --- the global key handler -------------------------------------------------------
 

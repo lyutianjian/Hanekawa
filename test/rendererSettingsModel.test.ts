@@ -91,6 +91,28 @@ function snapshotOf(overrides: Partial<WireSettingsSnapshot> = {}): WireSettings
         routing: 'big',
       },
     ],
+    skills: [
+      {
+        name: 'release',
+        description: 'Cuts a release.',
+        enabled: true,
+        inclusion: 'manual',
+        hasHooks: false,
+      },
+      {
+        name: 'review',
+        description: 'Reviews a diff.',
+        enabled: false,
+        inclusion: 'fileMatch',
+        paths: ['src/**'],
+        allowedTools: ['Read', 'Grep'],
+        model: 'claude-big',
+        effort: 'high',
+        hasHooks: true,
+        attachments: 2,
+      },
+    ],
+    skillsDir: 'C:\\repo\\alpha\\.myagent\\skills',
     mcpServers: [
       {
         name: 'github',
@@ -387,7 +409,7 @@ test('a duplicate endpoint name is rejected only when creating', () => {
 // --- the view model ----------------------------------------------------------
 
 test('every category draws its own cards, and none draws a placeholder', () => {
-  for (const category of ['provider', 'permissions', 'agent', 'general', 'appearance'] as const) {
+  for (const category of ['provider', 'extensions', 'permissions', 'agent', 'general', 'appearance'] as const) {
     const view = settingsView(openState({ category }))
     assert.ok(view.cards.length > 0, `${category} has no cards`)
     assert.ok(
@@ -397,7 +419,7 @@ test('every category draws its own cards, and none draws a placeholder', () => {
   }
   assert.deepEqual(
     settingsView(openState()).navGroups.flatMap((group) => group.items.map((item) => item.category)),
-    ['general', 'appearance', 'provider', 'permissions', 'agent'],
+    ['general', 'appearance', 'provider', 'extensions', 'permissions', 'agent'],
   )
 })
 
@@ -413,7 +435,7 @@ test('the nav is three named sections, and every page lands in exactly one', () 
   )
   assert.deepEqual(
     groups.map((group) => group.items.map((item) => item.category)),
-    [['general', 'appearance'], ['provider'], ['permissions', 'agent']],
+    [['general', 'appearance'], ['provider', 'extensions'], ['permissions', 'agent']],
   )
   // Each item carries the section it was filed under, so the DOM never has to
   // re-derive the grouping (two views of one list is how they come to disagree).
@@ -426,12 +448,12 @@ test('the nav is three named sections, and every page lands in exactly one', () 
 // --- the search box ----------------------------------------------------------
 
 test('the query filters the nav to the pages that hold a match', () => {
-  // 「MCP」 appears only on the general page (the MCP server card), so the coding
-  // and integration sections drop out entirely.
-  const view = settingsView(openState({ category: 'general', query: 'MCP' }))
+  // 「MCP」 appears only on the extensions page (the MCP server card), so the
+  // personal and coding sections drop out entirely.
+  const view = settingsView(openState({ category: 'extensions', query: 'MCP' }))
   assert.deepEqual(
     view.navGroups.map((group) => group.items.map((item) => item.category)),
-    [['general']],
+    [['extensions']],
   )
 })
 
@@ -441,14 +463,14 @@ test('the selected page never leaves the nav, however unmatched it is', () => {
   const view = settingsView(openState({ category: 'agent', query: 'MCP' }))
   const categories = view.navGroups.flatMap((group) => group.items.map((item) => item.category))
   assert.ok(categories.includes('agent'), 'the selected page survives its own filter')
-  assert.ok(categories.includes('general'), 'and the page that actually matched is there too')
+  assert.ok(categories.includes('extensions'), 'and the page that actually matched is there too')
   const selected = view.navGroups.flatMap((group) => group.items).filter((item) => item.selected)
   assert.deepEqual(selected.map((item) => item.category), ['agent'])
 })
 
 test('a card that matches on its own title keeps all of its rows', () => {
   // Searching 「MCP」 must show the server list, not an empty MCP card.
-  const view = settingsView(openState({ category: 'general', query: 'MCP' }))
+  const view = settingsView(openState({ category: 'extensions', query: 'MCP' }))
   assert.deepEqual(view.cards.map((card) => card.id), ['mcp'])
   assert.equal(view.cards[0]?.rows.length, snapshotOf().mcpServers.length)
   assert.equal(view.searchEmpty, undefined)
@@ -476,7 +498,7 @@ test('matching is case-insensitive and trimmed', () => {
   assert.equal(matchesQuery('', undefined), true)
   assert.equal(matchesQuery('   ', '上下文管理'), true)
 
-  const loud = settingsView(openState({ category: 'general', query: '  mcp  ' }))
+  const loud = settingsView(openState({ category: 'extensions', query: '  mcp  ' }))
   assert.deepEqual(loud.cards.map((card) => card.id), ['mcp'])
   assert.equal(
     loud.cards[0]?.rows.length,
@@ -485,7 +507,7 @@ test('matching is case-insensitive and trimmed', () => {
   )
   // A query of nothing but whitespace is not a query at all.
   const blank = settingsView(openState({ category: 'general', query: '   ' }))
-  assert.deepEqual(blank.cards.map((card) => card.id), ['general', 'mcp', 'context'])
+  assert.deepEqual(blank.cards.map((card) => card.id), ['general', 'context'])
   assert.equal(blank.searchEmpty, undefined)
 })
 
@@ -862,7 +884,7 @@ test('reloading definitions is one change and nothing else', () => {
 
 test('an unset cache toggle says it follows the environment variable', () => {
   const view = settingsView(openState({ category: 'general' }))
-  const row = view.cards.find((card) => card.id === 'general')?.rows[0]
+  const row = view.cards.find((card) => card.id === 'general')?.rows.find((row) => row.id === 'general:cache-ttl')
   assert.ok(row && row.control.kind === 'toggle')
   assert.equal(row.control.value, false)
   // Unset is not the same as false: `should1hCacheTTL` falls through to
@@ -871,8 +893,36 @@ test('an unset cache toggle says it follows the environment variable', () => {
   assert.deepEqual(row.control.intentOnChange(true), { kind: 'set-cache-ttl', enabled: true })
 })
 
+test('the thinking toggle reads unset as on and off as a real off', () => {
+  const unset = settingsView(openState({ category: 'general' }))
+    .cards.find((card) => card.id === 'general')
+    ?.rows.find((row) => row.id === 'general:thinking')
+  assert.ok(unset && unset.control.kind === 'toggle')
+  // Absent means on: `createRuntime` only sends `disabled` for an explicit false.
+  assert.equal(unset.control.value, true)
+  assert.deepEqual(unset.control.intentOnChange(false), { kind: 'set-thinking', enabled: false })
+
+  const off = settingsView(openState({
+    category: 'general',
+    snapshot: snapshotOf({
+      general: { localPath: 'C:\\repo\\alpha\\.myagent\\settings.local.json', thinking: false },
+    }),
+  }))
+    .cards.find((card) => card.id === 'general')
+    ?.rows.find((row) => row.id === 'general:thinking')
+  assert.ok(off && off.control.kind === 'toggle')
+  assert.equal(off.control.value, false)
+  assert.match(off.detail ?? '', /不带 thinking 参数/)
+
+  const outcome = applySettingsIntent(openState({ category: 'general' }), {
+    kind: 'set-thinking',
+    enabled: false,
+  })
+  assert.deepEqual(outcome.changes, [{ scope: 'general', kind: 'set-thinking', enabled: false }])
+})
+
 test('a trust granted by an upper layer is drawn but not toggleable', () => {
-  const card = settingsView(openState({ category: 'general' })).cards.find((card) => card.id === 'mcp')
+  const card = settingsView(openState({ category: 'extensions' })).cards.find((card) => card.id === 'mcp')
   const shared = card?.rows.find((row) => row.id === 'mcp:shared')
   const github = card?.rows.find((row) => row.id === 'mcp:github')
   const cold = card?.rows.find((row) => row.id === 'mcp:cold')
@@ -891,16 +941,91 @@ test('a trust granted by an upper layer is drawn but not toggleable', () => {
 })
 
 test('reconnecting and trusting are separate changes', () => {
-  const trust = applySettingsIntent(openState({ category: 'general' }), {
+  const trust = applySettingsIntent(openState({ category: 'extensions' }), {
     kind: 'set-mcp-trust',
     name: 'cold',
     trusted: true,
   })
   assert.deepEqual(trust.changes, [
-    { scope: 'general', kind: 'set-mcp-trust', name: 'cold', trusted: true },
+    { scope: 'extensions', kind: 'set-mcp-trust', name: 'cold', trusted: true },
   ])
-  const reconnect = applySettingsIntent(openState({ category: 'general' }), { kind: 'reconnect-mcp' })
-  assert.deepEqual(reconnect.changes, [{ scope: 'general', kind: 'reconnect-mcp' }])
+  const reconnect = applySettingsIntent(openState({ category: 'extensions' }), { kind: 'reconnect-mcp' })
+  assert.deepEqual(reconnect.changes, [{ scope: 'extensions', kind: 'reconnect-mcp' }])
+})
+
+// --- skills -------------------------------------------------------------------
+
+test('the skills card lists every skill, switched-off ones included', () => {
+  const card = settingsView(openState({ category: 'extensions' })).cards.find(
+    (card) => card.id === 'skills',
+  )
+  assert.match(card?.note ?? '', /\.myagent\\skills/)
+  assert.deepEqual(card?.rows.map((row) => row.id), ['skill:release', 'skill:review'])
+  assert.equal(card?.rows[0]?.label, '/release')
+
+  const release = card?.rows[0]
+  assert.ok(release && release.control.kind === 'toggle')
+  assert.equal(release.control.value, true)
+  // Never disabled, unlike MCP trust: `skills.disabled` is replaced by the
+  // merge rather than unioned, so the local layer can always switch one back on.
+  assert.equal(release.control.disabled, undefined)
+  assert.match(release.detail ?? '', /手动调用/)
+  assert.match(release.detail ?? '', /工具：全部/)
+
+  const review = card?.rows[1]
+  assert.ok(review && review.control.kind === 'toggle')
+  assert.equal(review.control.value, false)
+  assert.match(review.detail ?? '', /按文件匹配/)
+  assert.match(review.detail ?? '', /匹配 src\/\*\*/)
+  assert.match(review.detail ?? '', /工具：Read、Grep/)
+  assert.match(review.detail ?? '', /模型：claude-big/)
+  assert.match(review.detail ?? '', /推理强度：high/)
+  assert.match(review.detail ?? '', /带 hooks/)
+  assert.match(review.detail ?? '', /2 个附件/)
+  assert.match(review.detail ?? '', /已关闭/)
+})
+
+test('the skills card has an empty state and a reload button', () => {
+  const card = settingsView(
+    openState({ category: 'extensions', snapshot: snapshotOf({ skills: [] }) }),
+  ).cards.find((card) => card.id === 'skills')
+  assert.equal(card?.rows.length, 0)
+  assert.match(card?.empty ?? '', /还没有技能/)
+  assert.deepEqual(card?.footerButtons?.map((button) => button.intent), [{ kind: 'reload-skills' }])
+})
+
+test('a skill switch and a skill reload are each one change', () => {
+  const card = settingsView(openState({ category: 'extensions' })).cards.find(
+    (card) => card.id === 'skills',
+  )
+  const release = card?.rows[0]
+  assert.ok(release && release.control.kind === 'toggle')
+  assert.deepEqual(release.control.intentOnChange(false), {
+    kind: 'set-skill-enabled',
+    name: 'release',
+    enabled: false,
+  })
+
+  const off = applySettingsIntent(openState({ category: 'extensions' }), {
+    kind: 'set-skill-enabled',
+    name: 'release',
+    enabled: false,
+  })
+  assert.deepEqual(off.changes, [
+    { scope: 'extensions', kind: 'set-skill-enabled', name: 'release', enabled: false },
+  ])
+  assert.equal(off.state.busy, true)
+
+  const reload = applySettingsIntent(openState({ category: 'extensions' }), { kind: 'reload-skills' })
+  assert.deepEqual(reload.changes, [{ scope: 'extensions', kind: 'reload-skills' }])
+})
+
+test('the extensions page is the skills card and the MCP card, in that order', () => {
+  const view = settingsView(openState({ category: 'extensions' }))
+  assert.deepEqual(view.cards.map((card) => card.id), ['skills', 'mcp'])
+  // And the general page no longer carries MCP.
+  const general = settingsView(openState({ category: 'general' }))
+  assert.deepEqual(general.cards.map((card) => card.id), ['general', 'context'])
 })
 
 test('the context card names its file and says the numbers need a restart', () => {

@@ -32,6 +32,8 @@ export type IconName =
   | 'arrow-left'
   | 'dot'
   | 'check'
+  | 'close'
+  | 'clock'
   | 'spinner'
   | 'send'
   | 'stop'
@@ -48,6 +50,9 @@ export type IconName =
   // --- the sidebar footer and the title bar (5g) ---
   | 'help'
   | 'sidebar'
+  // --- the inline permission request ---
+  | 'terminal'
+  | 'shield'
 
 interface IconSpec {
   /** Path data on a 16×16 grid. */
@@ -93,6 +98,12 @@ const ICONS = {
   // `dot` the `#surface` rows use: there the mark sits in a fixed column before
   // the label, here it trails a flyout row the way a menu check does.
   check: { paths: ['M3.5 8.6 6.6 11.7 12.5 4.8'] },
+  // Two crossed strokes, not a ringed ✕: this marks the workspace picker's
+  // "work outside a project" row, which is a choice rather than a dismissal.
+  close: { paths: ['M4.2 4.2 11.8 11.8', 'M11.8 4.2 4.2 11.8'] },
+  // A dial with two hands — the「最近」filter. A folder would say "project",
+  // which is the one thing the global workspace is not.
+  clock: { paths: ['M8 2.4a5.6 5.6 0 1 1 0 11.2A5.6 5.6 0 0 1 8 2.4z', 'M8 5.1V8l2.1 1.6'] },
   // A three-quarter ring with a gap, so a CSS rotation reads as spinning. Stroked
   // (not filled) so it inherits `currentColor` like every other outline.
   spinner: { paths: ['M8 3.5a4.5 4.5 0 1 1-4.5 4.5'] },
@@ -159,6 +170,22 @@ const ICONS = {
       'M8 2.2a5.8 5.8 0 1 1 0 11.6 5.8 5.8 0 0 1 0-11.6z',
       'M6.4 6.4a1.7 1.7 0 1 1 2.3 1.6c-.5.2-.7.6-.7 1.1v.3',
       'M8 11.4v.6',
+    ],
+  },
+  // The inline request's leading glyph, chosen by what is being asked for: a
+  // shell prompt in a window for a command, a shield for everything else. It
+  // names the *kind* of thing the agent wants, the way the sidebar heading's
+  // glyph names the kind of group — see `dom/permissionRequestView.ts`.
+  terminal: {
+    paths: [
+      'M2.4 4.2a1.2 1.2 0 0 1 1.2-1.2h8.8a1.2 1.2 0 0 1 1.2 1.2v7.6a1.2 1.2 0 0 1-1.2 1.2H3.6a1.2 1.2 0 0 1-1.2-1.2z',
+      'M5 6.6 6.9 8.3 5 10',
+      'M8.6 10.2h2.6',
+    ],
+  },
+  shield: {
+    paths: [
+      'M8 2.2 12.8 4v3.4c0 3-2 5.2-4.8 6.4C5.2 12.6 3.2 10.4 3.2 7.4V4z',
     ],
   },
 } as const satisfies Record<IconName, IconSpec>

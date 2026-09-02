@@ -38,6 +38,14 @@ const SUPPORTED_SETTINGS: SettingDef[] = [
     },
   },
   {
+    key: 'thinking',
+    type: 'boolean',
+    description: 'Extended thinking; false sends no thinking parameter',
+    get: (s) => s.thinking,
+    set: (s, v) => { s.thinking = v as boolean },
+    validate: (v) => typeof v !== 'boolean' ? 'thinking must be a boolean' : null,
+  },
+  {
     key: 'autoCompact',
     type: 'boolean',
     description: 'Automatically compact conversation when context is full',

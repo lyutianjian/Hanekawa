@@ -474,26 +474,38 @@ test('the first-level actions are rows under the search box', (t) => {
   render(viewOf())
 
   const nav = region(root(), 'sidebar-nav')
-  assert.deepEqual(nav.children.map((child) => child.text), ['新建会话', '打开项目…'])
+  assert.deepEqual(nav.children.map((child) => child.text), ['新建会话', '打开项目…', '最近'])
   // Rows, not the bordered pills they used to be: they belong to the same column
   // of destinations the session rows are in.
   assert.deepEqual(nav.children.map((child) => child.classes), [
+    ['sidebar-nav-item'],
     ['sidebar-nav-item'],
     ['sidebar-nav-item'],
   ])
 
   stub.click(nav.children[0]?.node)
   stub.click(nav.children[1]?.node)
-  assert.deepEqual(intents.map((intent) => intent.kind), ['new', 'open-project'])
+  stub.click(nav.children[2]?.node)
+  assert.deepEqual(intents.map((intent) => intent.kind), ['new', 'open-project', 'toggle-recent'])
 })
 
-test('both nav rows are disabled while a blocking dialog is up', (t) => {
-  // `canCreate` is false exactly then, and both rows open something.
+test('the recent filter says it is on, and unlike the other two rows never disables', (t) => {
+  const { render, root } = mount(t)
+  render(viewOf({ recentOnly: true, canCreate: false }))
+
+  const rows = region(root(), 'sidebar-nav').children
+  assert.deepEqual(rows.map((child) => child.classes.includes('on')), [false, false, true])
+  // A filter opens nothing, so a blocking dialog is no reason to withhold it.
+  assert.deepEqual(rows.map((child) => child.disabled), [true, true, false])
+})
+
+test('both opening nav rows are disabled while a blocking dialog is up', (t) => {
+  // `canCreate` is false exactly then, and both of those rows open something.
   const { render, root } = mount(t)
   render(viewOf({ canCreate: false }))
 
   assert.deepEqual(
-    region(root(), 'sidebar-nav').children.map((child) => child.disabled),
+    region(root(), 'sidebar-nav').children.slice(0, 2).map((child) => child.disabled),
     [true, true],
   )
 })
@@ -536,4 +548,35 @@ test('a repaint that only flips the help panel is not swallowed by the render gu
   assert.ok(
     region(root(), 'sidebar-footer').children.some((child) => child.classes.includes('sidebar-hint')),
   )
+})
+
+test('a session waiting for approval says so in words; a running one does not', (t) => {
+  // The permission request is drawn in the *active* lane's composer now
+  // (`dom/permissionRequestView.ts`), so a request parked on a background
+  // session has nothing on screen anywhere but here — and an 8px dot is only
+  // findable by someone already looking for it. "Running" keeps the bare
+  // spinner: it is the state a session is in most of the time.
+  const r = mount(t)
+  const base = tieredState()
+  r.render(sidebarView(createSidebarState({
+    ...base,
+    laneStatus: new Map([
+      ['l1', { streaming: true, blocked: false, processes: false, hasConversation: true }],
+      ['l2', { streaming: true, blocked: true, processes: false, hasConversation: true }],
+    ]),
+  })))
+
+  const [running, waiting] = sessionRows(r.root()).map((row) => find(row, 'session-badge'))
+  assert.ok(running, 'the streaming lane has a badge')
+  assert.ok(running.classes.includes('running'))
+  assert.equal(find(running, 'session-badge-label'), undefined, 'running stays a bare spinner')
+
+  assert.ok(waiting, 'the parked lane has a badge')
+  assert.ok(waiting.classes.includes('awaiting-input'))
+  const label = find(waiting, 'session-badge-label')
+  assert.ok(label, 'a parked request names itself on the row')
+  assert.equal(label.text, '等待授权')
+  // The label is the visible half of what `aria-label` already said; both stay,
+  // because the badge is still the thing being described.
+  assert.equal(waiting.attributes.get('aria-label'), '等待授权')
 })

@@ -52,6 +52,8 @@ interface UseCommandsOptions {
   openRewindPanel?: () => void
   getEffort?: () => string
   setEffort?: (level: string) => void | Promise<void>
+  getThinking?: () => boolean
+  setThinking?: (enabled: boolean) => void | Promise<void>
 }
 
 export function useCommands({
@@ -83,6 +85,8 @@ export function useCommands({
   openRewindPanel,
   getEffort,
   setEffort,
+  getThinking,
+  setThinking,
   runShellCommand,
 }: UseCommandsOptions) {
   const { exit } = useApp()
@@ -149,6 +153,10 @@ export function useCommands({
   getEffortRef.current = getEffort
   const setEffortRef = useRef(setEffort)
   setEffortRef.current = setEffort
+  const getThinkingRef = useRef(getThinking)
+  getThinkingRef.current = getThinking
+  const setThinkingRef = useRef(setThinking)
+  setThinkingRef.current = setThinking
   const storeRef = useRef(store)
   storeRef.current = store
   const cwdRef = useRef(cwd)
@@ -195,6 +203,8 @@ export function useCommands({
         setModel: (m) => setModelRef.current(m),
         getEffort: getEffortRef.current ? () => getEffortRef.current!() : undefined,
         setEffort: setEffortRef.current ? (level) => setEffortRef.current!(level) : undefined,
+        getThinking: getThinkingRef.current ? () => getThinkingRef.current!() : undefined,
+        setThinking: setThinkingRef.current ? (enabled) => setThinkingRef.current!(enabled) : undefined,
         reloadAgentDefinitions: reloadAgentDefinitionsRef.current,
         reloadSkills: reloadSkillsRef.current,
         getPermissionMode: getPermissionModeRef.current,

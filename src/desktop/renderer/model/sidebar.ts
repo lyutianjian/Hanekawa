@@ -37,6 +37,14 @@ import type { WireLaneInfo, WireSessionSummary } from '../../shellProtocol.js'
 
 // --- text --------------------------------------------------------------------
 
+/** The nav row that turns the「最近」filter on and off. */
+export const SIDEBAR_RECENT_LABEL = '最近'
+/** The three things the list can say when it has no rows to draw. */
+export const SIDEBAR_EMPTY_TEXT = '还没有会话。'
+/** The「最近」filter is on and the global workspace has no history yet. */
+export const SIDEBAR_EMPTY_RECENT_TEXT = '还没有无项目会话。'
+export const SIDEBAR_NO_MATCHES_TEXT = '没有匹配的会话。'
+
 export const SIDEBAR_HINT =
   '[Ctrl+1-9] 切换  [Ctrl+T] 新会话  [Ctrl+W] 关闭  [Ctrl+B] 收起侧栏  [Ctrl+Shift+O] 打开项目'
 
@@ -193,6 +201,14 @@ export interface SidebarView {
   /** A search is active but matched nothing — distinct from an empty project. */
   readonly noMatches: boolean
   /**
+   * The「最近」filter is on, so only the global workspace's group is listed.
+   *
+   * A filter and not a destination: it opens nothing and creates nothing, which
+   * is what makes it safe to leave on — the sessions that belong to no project
+   * are simply the only ones on screen until it is turned off.
+   */
+  readonly recentOnly: boolean
+  /**
    * Whether the `?` panel is showing {@link SIDEBAR_HINT}.
    *
    * The chord list used to be printed under the footer at all times, which put a
@@ -274,6 +290,14 @@ export interface SidebarState {
   readonly collapsedProjects: ReadonlySet<string>
   /** Whether the footer's `?` panel is open. */
   readonly helpOpen: boolean
+  /**
+   * Show only the global workspace — the sessions that belong to no project.
+   *
+   * Renderer-local and deliberately not persisted, for the reason
+   * `collapsedProjects` is not: it is a view the user is standing in, and a
+   * filter that survived a restart would look like every project had vanished.
+   */
+  readonly recentOnly: boolean
 }
 
 export function createSidebarState(overrides: Partial<SidebarState> = {}): SidebarState {
@@ -293,6 +317,7 @@ export function createSidebarState(overrides: Partial<SidebarState> = {}): Sideb
     searchQuery: '',
     collapsedProjects: new Set(),
     helpOpen: false,
+    recentOnly: false,
     ...overrides,
   }
 }
@@ -417,6 +442,10 @@ export function sidebarView(state: SidebarState): SidebarView {
   // to quietly overrule it.
   const searching = needle !== ''
   const groups = [...byProject.entries()]
+    // The「最近」filter, applied before the search's own: it selects *which
+    // workspaces* are on screen, so a project group emptied by it is not an
+    // empty project — it is not being listed at all.
+    .filter(([, bucket]) => !state.recentOnly || bucket.isGlobal)
     .filter(([, bucket]) => !searching || bucket.rows.length > 0)
     .map(([projectRoot, bucket]) =>
       groupOf(projectRoot, bucket.projectName, bucket.rows, {
@@ -461,6 +490,7 @@ export function sidebarView(state: SidebarState): SidebarView {
     searchQuery: state.searchQuery,
     noMatches: nothing && searching,
     helpOpen: state.helpOpen,
+    recentOnly: state.recentOnly,
   }
 }
 
@@ -548,6 +578,8 @@ export type SidebarIntent =
   | { kind: 'cancel-remove-project' }
   /** Open or close the footer's `?` panel. */
   | { kind: 'toggle-help' }
+  /** Show only the sessions that belong to no project, or every workspace again. */
+  | { kind: 'toggle-recent' }
   | { kind: 'request-delete'; sessionId: string }
   | { kind: 'confirm-delete'; projectRoot: string; sessionId: string }
   | { kind: 'cancel-delete' }
@@ -750,6 +782,9 @@ export function sidebarRenderSignature(view: SidebarView): string {
     // Signed, or the panel opens and the render guard swallows the repaint —
     // the failure this signature exists to prevent.
     view.helpOpen ? 'h' : '-',
+    // Signed for the same reason: the nav row carries an on-state, and the
+    // empty text it produces is different from the plain one.
+    view.recentOnly ? 'r' : '-',
     String(view.selectedIndex),
     `q:${view.searchQuery}`,
   ]

@@ -128,7 +128,7 @@
 
 | 任务 | 内容 | 验收 |
 | --- | --- | --- |
-| [ ] **P4-1** 提交按钮与开关 | `#submit` 改品牌色实心（`background: var(--accent-brand-strong)` + `color: var(--on-brand)` + `--radius-pill`）；`.settings-toggle.on` 底色从 `--accent-info` 改 `--accent-brand`（滑块恒定白）。`ACCENT_FILL_EXCEPTIONS` 从 1 条扩到 2 条 | `rendererStyleTokens`、`rendererComposerView`、`rendererSettingsView` |
+| [x] **P4-1** 提交按钮与开关 | `#submit` 改品牌色实心（`background: var(--accent-brand-strong)` + `color: var(--on-brand)` + `--radius-pill`）；`.settings-toggle.on` 底色从 `--accent-info` 改 `--accent-brand`（滑块恒定白）。`ACCENT_FILL_EXCEPTIONS` 从 1 条扩到 2 条 | `rendererStyleTokens`、`rendererComposerView`、`rendererSettingsView` |
 | [ ] **P4-2** 当前会话竖条 | `.session-row.active::before` 3px 品牌色圆角竖条，`transform: scaleY()` 从中心展开；`ACCENT_FILL_EXCEPTIONS` 补到 3 条。**会话行 CSS 顺序（`:hover` → `.selected` → `.active` → `.confirming`）是承重优先级，`.open` 仍不得有任何规则** | `rendererSidebarView`、`rendererStyleTokens` |
 | [ ] **P4-3** 搜索框与 chip | 侧边栏搜索框改无边框凹槽（`--surface-card` + `--radius-pill`，聚焦加 1px `--focus-ring` 环）；权限 pill 与模型/强度 chip 改无边框 `--surface-card` 胶囊，只在 `:hover`/`.open` 升边框。每个新 class 都要有静息态规则，必要时补 `rendererStyleTokens.test.ts` 的显式控件清单 | `rendererSidebarView`、`rendererComposerChip`、`rendererRuntimeMenu` |
 | [ ] **P4-4** 输入区与弹层质感 | 输入区 `:focus-within` 升 `--border-strong` + `--shadow-float`；菜单/弹层 `--radius-md` + `--shadow-float`，模态面板 `--radius-lg` + `--shadow-modal`。祖先链不得出现 `overflow` 裁剪；z 分层（弹层壳 4 / 菜单 5 / rewind 9 / overlay 10）不变；背景永不关闭阻塞请求 | `rendererOverlayView`、`rendererRewindPanel`、`rendererPermissionView`、`rendererStyleTokens` |

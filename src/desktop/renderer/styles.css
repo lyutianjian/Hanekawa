@@ -2470,9 +2470,14 @@ body.settings-open #sidebar { display: none; }
   cursor: pointer;
 }
 
+/* Brand, not `--accent-info`: an "on" switch is the app saying yes in its own
+   voice, and the blue read as a status colour borrowed from elsewhere in the
+   sheet (design_guidance 六.4). The *weak* rung is right here where `#submit`
+   needs the strong one: the track carries no text — only the knob sits on it,
+   and `--surface-knob` is white in both themes precisely so it can. */
 .settings-toggle.on {
-  border-color: var(--accent-info);
-  background: var(--accent-info);
+  border-color: var(--accent-brand);
+  background: var(--accent-brand);
 }
 
 .settings-toggle:focus-visible {

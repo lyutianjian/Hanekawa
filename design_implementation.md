@@ -110,10 +110,10 @@
 | [x] **P3-2** 折叠状态机（模型层） | 在 `renderer/model/` 内落地四态枚举与迁移函数（纯函数：`(current, wantCollapsed, event) → next`），并进 `sidebarRenderSignature`。**本任务不碰 DOM**，先把决定和它的测试做完 | `rendererShellModel` / `rendererSidebar`（模型侧） |
 | [x] **P3-3** 折叠 DOM 三修 | ①`#sidebar` 内加固定 `width: 280px; flex: 0 0 280px` 的内容壳，外层 `overflow: hidden`；②内容壳跑 `opacity` + `translateX(-8px)`，`show(false)`/停止建行推迟到 `transitionend` 或兜底定时器；③删除 `#sidebar.collapsed + #canvas { margin-left: 8px }`，`#canvas` 常驻 `margin-left: var(--space-2)`。清理定时器与监听器 | `node --import tsx --test test/rendererSidebarView.test.ts`（新增：中间态期间内容仍在 DOM、迁移完成后才卸载、重复切换不泄漏定时器） |
 | [x] **P3-4** 其余动效 | `drop-in`/`rise-in`/`slide-in` 位移加到 8px 并加 `scale(0.98) → 1`（钉死为断言：三条 `from` 步进只允许 `translateX/Y(±8px) scale(0.98)`）。**不加退出动画、主题切换不加过渡**。两处按方案外的既定事实落空，见下 | `rendererStyleTokens`、`rendererSidebarView` |
-| [ ] **P3-4b** 分组折叠动画 | 见下方说明：需要给 `.project-group` 做节点复用或视图内的每组状态机，`grid-template-rows: 0fr → 1fr` 才有东西可过渡 | 待定 |
+| [x] **P3-4b** 分组折叠动画 | `sidebarView` 为每个 project 保留 `.project-group`/`.project-head`/`.project-body`/`.project-rows` 节点（跨重绘复用，body 永不脱离父节点），折叠走 `grid-template-rows: 1fr → 0fr` + `--motion-base`；行在 `transitionend`（`grid-template-rows`，target 为 body）或复用的 `SIDEBAR_COLLAPSE_FALLBACK_MS` 兜底定时器到达后才卸载；折叠中行的索引为 -1，不得与「无光标」的 -1 混同 | `node --import tsx --test test/rendererSidebarView.test.ts`（新增四条：节点复用、中间态保行、兜底/反转不泄漏定时器、折叠中不画光标） |
 > P3-4 的两处落空，都是方案写作时的前提在仓库里不成立：
 >
-> 1. **分组展开的 `grid-template-rows` 过渡没有载体**。`sidebarView.render()` 每次都 `replace()`
+> 1. **分组展开的 `grid-template-rows` 过渡没有载体**（已由 P3-4b 通过节点复用解决）。`sidebarView.render()` 每次都 `replace()`
 >    整条列表，`.project-group` 是新节点——新插入的元素不跑 transition。改成入场 `@keyframes` 也
 >    不行：`sidebarRenderSignature` 签了 `badge`，流式回答期间侧边栏持续重绘，动画会反复重放，正是
 >    `CLAUDE.md`「入场动画只能给存在性等同开/关的容器」禁止的那件事。要做只能先让分组节点跨重绘存活

@@ -160,6 +160,99 @@ export function createSidebarView(
   /** The group headings from the last render, so `focusProject` can reach one. */
   const projectHeadings = new Map<string, HTMLButtonElement>()
 
+  /**
+   * One workspace's nodes, kept across repaints.
+   *
+   * The reason this map exists at all: `render()` rebuilds the list wholesale,
+   * and a node that is new every pass cannot transition — a freshly inserted
+   * element starts at its final style. The group's fold is `grid-template-rows:
+   * 1fr → 0fr`, so the element it runs on has to outlive the repaint that
+   * changes it, which is the same rule the stylesheet's motion block states
+   * (`CLAUDE.md`: transitions only on nodes that survive their state change).
+   *
+   * An entrance `@keyframes` was the alternative and is not available here:
+   * `sidebarRenderSignature` signs the badges, so a streaming answer repaints
+   * this list continuously and the animation would replay on every flush.
+   *
+   * `head` and `body` are the two halves that make the reuse cheap — the heading
+   * row is thrown away and rebuilt each pass (it carries the menu, the
+   * confirmation and their listeners), while `body`/`rows` are never detached,
+   * because detaching is exactly what cancels a running transition.
+   */
+  interface GroupNodes {
+    readonly wrapper: HTMLElement
+    /** The heading row and its context menu; rebuilt every render. */
+    readonly head: HTMLElement
+    /** The animated track. `rows` is its single, shrinkable child. */
+    readonly body: HTMLElement
+    readonly rows: HTMLElement
+    /** The fold state this group was last drawn in. */
+    shut: boolean
+    /** The fold finished moving, so the rows are gone from the DOM. */
+    settled: boolean
+    timer?: ReturnType<typeof setTimeout>
+  }
+  const groupNodes = new Map<string, GroupNodes>()
+
+  /**
+   * The fold arrived. Unmounting waits for this rather than for the click, for
+   * the reason the rail's phase is four states and not a boolean: rows taken out
+   * on the click would leave the fold animating an empty box.
+   */
+  const settleGroup = (entry: GroupNodes): void => {
+    if (entry.timer !== undefined) {
+      clearTimeout(entry.timer)
+      entry.timer = undefined
+    }
+    if (!entry.shut || entry.settled) return
+    entry.settled = true
+    replace(entry.rows)
+  }
+
+  /** Arms the fallback for one group's move, cancelling the one it supersedes. */
+  const startGroupMove = (entry: GroupNodes): void => {
+    if (entry.timer !== undefined) clearTimeout(entry.timer)
+    // The rail's constant, reused deliberately: it is an upper bound (the group
+    // folds at `--motion-base`, the rail at `--motion-slow`) and it is the one
+    // already pinned against the tokens. A `transitionend` that does arrive
+    // disarms it long before it fires.
+    entry.timer = setTimeout(() => {
+      entry.timer = undefined
+      settleGroup(entry)
+    }, SIDEBAR_COLLAPSE_FALLBACK_MS)
+  }
+
+  const ensureGroupNodes = (group: SidebarGroup): GroupNodes => {
+    const existing = groupNodes.get(group.projectRoot)
+    if (existing) return existing
+    const wrapper = el('div', 'project-group')
+    const head = el('div', 'project-head')
+    const body = el('div', 'project-body')
+    const rows = el('div', 'project-rows')
+    body.appendChild(rows)
+    wrapper.appendChild(head)
+    wrapper.appendChild(body)
+    // A group first drawn shut has nothing to animate out and no rows to keep:
+    // it starts settled, so the first paint is a heading and nothing else.
+    const entry: GroupNodes = {
+      wrapper,
+      head,
+      body,
+      rows,
+      shut: group.collapsed,
+      settled: group.collapsed,
+    }
+    body.addEventListener('transitionend', (event) => {
+      // The rows inside transition too (hover colours, the active bar), and
+      // every one of those bubbles through here.
+      if (event.target !== body) return
+      if (event.propertyName !== 'grid-template-rows') return
+      settleGroup(entry)
+    })
+    groupNodes.set(group.projectRoot, entry)
+    return entry
+  }
+
   container.addEventListener('focusout', (event) => {
     const next = event.relatedTarget
     // `null` means focus went nowhere, which is exactly what this view's own
@@ -264,6 +357,10 @@ export function createSidebarView(
    * nested, because a `<button>` cannot contain a `<button>` — which is also why
    * the count that used to live inside the heading could be a `<span>` and its
    * replacement cannot.
+   *
+   * Draws *into* the nodes `ensureGroupNodes` keeps rather than building a
+   * wrapper: the fold is a transition, and a transition needs an element that
+   * outlives the repaint that changes it.
    */
   const groupNode = (
     group: SidebarGroup,
@@ -271,10 +368,12 @@ export function createSidebarView(
     selectedIndex: number,
     canCreate: boolean,
   ): HTMLElement => {
-    const wrapper = el(
-      'div',
-      `project-group${group.collapsed ? ' collapsed' : ''}`,
-    )
+    const entry = ensureGroupNodes(group)
+    if (group.collapsed !== entry.shut) {
+      entry.shut = group.collapsed
+      entry.settled = false
+      startGroupMove(entry)
+    }
     const headingRow = el('div', 'project-row')
     const heading = button(
       'project-heading',
@@ -325,30 +424,41 @@ export function createSidebarView(
         onIntent({ kind: 'open-project-menu', projectRoot: group.projectRoot })
       })
     }
-    wrapper.appendChild(headingRow)
 
-    if (group.menuOpen) {
-      const menu = el('div', 'project-menu')
+    const menu = group.menuOpen ? el('div', 'project-menu') : undefined
+    if (menu) {
       menu.setAttribute('role', 'menu')
       menu.appendChild(
         button('project-menu-item', '从侧边栏移除', '从侧边栏移除此项目（会话文件保留）', () =>
           onIntent({ kind: 'request-remove-project', projectRoot: group.projectRoot }),
         ),
       )
-      wrapper.appendChild(menu)
     }
+    replace(entry.head, headingRow, menu)
 
-    if (!group.collapsed) {
-      for (const row of group.rows) {
-        const index = indexOf(row)
-        wrapper.appendChild(rowNode(row, index, index === selectedIndex))
-      }
-      // A project kept for its own sake rather than for its sessions has to say
-      // so; an empty group with nothing under the heading reads as a load that
-      // has not finished.
-      if (group.rows.length === 0) wrapper.appendChild(el('div', 'project-empty', '还没有会话'))
+    // The class the fold transitions on, toggled on the surviving wrapper.
+    entry.wrapper.classList.toggle('collapsed', group.collapsed)
+
+    if (entry.shut && entry.settled) {
+      // Rest: the fold is over and the rows are not merely hidden but gone, so
+      // no button behind a shut heading can be reached with Tab.
+      replace(entry.rows)
+      return entry.wrapper
     }
-    return wrapper
+    // Still moving (or open): the rows have to be in the DOM for the track to
+    // have a height to travel to. A collapsing group's rows are already out of
+    // `view.rows`, so `indexOf` answers -1 for them — which must not read as the
+    // "no cursor" index and paint every one of them selected.
+    const children: HTMLElement[] = group.rows.map((row) => {
+      const index = indexOf(row)
+      return rowNode(row, index, index >= 0 && index === selectedIndex)
+    })
+    // A project kept for its own sake rather than for its sessions has to say
+    // so; an empty group with nothing under the heading reads as a load that
+    // has not finished.
+    if (group.rows.length === 0) children.push(el('div', 'project-empty', '还没有会话'))
+    replace(entry.rows, ...children)
+    return entry.wrapper
   }
 
   /**
@@ -439,6 +549,17 @@ export function createSidebarView(
                 groupNode(group, indexOf, view.selectedIndex, view.canCreate),
               )),
       )
+
+      // Workspaces that are no longer listed. Their nodes are detached by the
+      // `replace` above, but a pending fallback timer would still fire on them —
+      // and the map is what keeps a group's fold state across repaints, so it is
+      // also what would keep a removed project's state forever.
+      const listed = new Set(view.groups.map((group) => group.projectRoot))
+      for (const [projectRoot, entry] of groupNodes) {
+        if (listed.has(projectRoot)) continue
+        if (entry.timer !== undefined) clearTimeout(entry.timer)
+        groupNodes.delete(projectRoot)
+      }
 
       // A profile row and a `?`, side by side, with the chord list behind the `?`
       // rather than printed under them (design_guidance 三.2). "Open project…"

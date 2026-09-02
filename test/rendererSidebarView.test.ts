@@ -230,6 +230,85 @@ test('a folded workspace draws its heading and none of its rows', (t) => {
   assert.equal(find(root(), 'project-heading')?.attributes.get('aria-expanded'), 'false')
 })
 
+test('the group node survives the repaint that folds it', (t) => {
+  // The whole reason `sidebarView` keeps a node map: `render()` rebuilds the
+  // list wholesale, and a wrapper that is new every pass cannot transition —
+  // a freshly inserted element starts at its final style. The fold is
+  // `grid-template-rows: 1fr → 0fr`, so this identity *is* the animation.
+  const { render, root } = mount(t)
+  render(viewOf(tieredState()))
+  const first = find(root(), 'project-group')?.node
+  const body = find(root(), 'project-body')?.node
+  assert.ok(first && body, 'the group draws a wrapper and an animated body')
+
+  render(viewOf({ ...tieredState(), collapsedProjects: new Set(['/w/app']) }))
+  assert.equal(find(root(), 'project-group')?.node, first, 'the wrapper was rebuilt, so nothing animates')
+  assert.equal(find(root(), 'project-body')?.node, body, 'detaching the body cancels its transition')
+  assert.ok(find(root(), 'project-group')?.classes.includes('collapsed'))
+})
+
+test('a folding group keeps its rows until the fold arrives', (t) => {
+  // Same discipline as the rail's four phases: rows taken out on the click would
+  // leave the fold animating an empty box. They go when the transition reports
+  // it finished — and then they are *gone*, not merely hidden, so no button
+  // behind a shut heading can be reached with Tab.
+  const { render, root, stub } = mount(t)
+  render(viewOf(tieredState()))
+  assert.equal(sessionRows(root()).length, 3)
+
+  render(viewOf({ ...tieredState(), collapsedProjects: new Set(['/w/app']) }))
+  assert.equal(sessionRows(root()).length, 3, 'the rows have to be there to fold')
+
+  const body = find(root(), 'project-body')
+  assert.ok(body)
+  // The rows inside transition too, and every one of those bubbles to the body.
+  stub.dispatch(body.node, 'transitionend', { propertyName: 'background-color' })
+  assert.equal(sessionRows(root()).length, 3, 'a bubbled transition settled the fold')
+  stub.dispatch(body.node, 'transitionend', { propertyName: 'grid-template-rows' })
+  assert.deepEqual(sessionRows(root()), [], 'the settled fold left its rows in the DOM')
+
+  // And back: the rows are rebuilt before the track has height to show them in.
+  render(viewOf(tieredState()))
+  assert.equal(sessionRows(root()).length, 3)
+})
+
+test('a group fold that never animates still settles, and cannot leak a timer', (t) => {
+  // `transitionend` is not a guarantee — a hidden window runs none, reduced
+  // motion cuts them to 1ms — so the group arms the rail's fallback beside it.
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { render, root } = mount(t)
+  const open = () => viewOf(tieredState())
+  const shut = () => viewOf({ ...tieredState(), collapsedProjects: new Set(['/w/app']) })
+
+  render(open())
+  render(shut())
+  t.mock.timers.tick(SIDEBAR_COLLAPSE_FALLBACK_MS + 1)
+  assert.deepEqual(sessionRows(root()), [], 'the fold never arrived and the rows stayed')
+
+  // A fold reversed mid-flight: the timer that belonged to the interrupted move
+  // must not fire on the group that replaced it and empty a group the user just
+  // opened.
+  render(shut())
+  render(open())
+  t.mock.timers.tick(SIDEBAR_COLLAPSE_FALLBACK_MS * 4)
+  assert.equal(sessionRows(root()).length, 3, 'a superseded fold unmounted an open group')
+})
+
+test('a folding group paints no row as the cursor', (t) => {
+  // A collapsing group's rows are already out of `view.rows`, so their index is
+  // -1 — which is also the "no cursor" index, and reading them as equal would
+  // paint every folding row selected.
+  const { render, root } = mount(t)
+  render(viewOf(tieredState()))
+  render(viewOf({ ...tieredState(), collapsedProjects: new Set(['/w/app']) }))
+
+  assert.deepEqual(
+    sessionRows(root()).filter((row) => row.classes.includes('selected')),
+    [],
+    'the folding rows took the cursor with them',
+  )
+})
+
 test('the heading + creates a session in *its own* project', (t) => {
   // The reason `newSessionIntent` is reached through the model rather than
   // spelled here: `Ctrl+T` resolves the active project and this resolves the one

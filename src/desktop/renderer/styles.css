@@ -880,6 +880,26 @@ body.settings-open #sidebar { display: none; }
   cursor: pointer;
 }
 .project-menu-item:hover:enabled { background: var(--surface-hover); }
+/* The rows behind a heading, and the one thing in the list that folds.
+   `grid-template-rows: 1fr → 0fr` over a single track is the only way to animate
+   to *content height* without measuring it in JS; `.project-rows` carries the
+   `min-height: 0` that lets the track actually shrink, and `overflow: hidden`
+   crops the rows while it does.
+
+   It works only because `sidebarView` keeps this node across repaints — the list
+   is otherwise rebuilt wholesale, and a freshly inserted element starts at its
+   final style rather than transitioning to it. An entrance `@keyframes` is not
+   the alternative: the render signature covers the badges, so a streaming answer
+   repaints this list continuously and the animation would replay on every flush.
+   The rows are unmounted when the fold *settles*, not when it starts. */
+.project-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  overflow: hidden;
+  transition: grid-template-rows var(--motion-base) var(--ease-standard);
+}
+.project-group.collapsed > .project-body { grid-template-rows: 0fr; }
+.project-rows { min-height: 0; }
 /* A project kept for its own sake says so, rather than reading as a list that
    has not finished loading. */
 .project-empty {

@@ -122,7 +122,7 @@
 > 2. **`#submit` 按下无处可压暗**。静息态已经是 `--accent-brand-strong`（对比度决定的，见 P1-4），
 >    没有更深的品牌色 token，按下仍只有 `scale(0.94)`——`styles.css` 里那条注释已经说明这一点。
 
-| [ ] **P3-5** P3 收口 | `prefers-reduced-motion` 那条 `@media` 仍能压住两个 `infinite` 动画且仍是唯一嵌套 at-rule；跑类型检查与烟雾 | `npm run typecheck`；`npm run smoke:desktop` |
+| [x] **P3-5** P3 收口 | `prefers-reduced-motion` 那条 `@media` 仍能压住两个 `infinite` 动画且仍是唯一嵌套 at-rule；跑类型检查与烟雾 | `npm run typecheck`；`npm run smoke:desktop` |
 
 ### P4 — 组件质感（三条 accent-fill 例外在这里才被用上）
 

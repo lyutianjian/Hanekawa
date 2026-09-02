@@ -1638,7 +1638,11 @@ body.settings-open #sidebar { display: none; }
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  margin-right: var(--space-1);
+  /* `right: 100%` resolves against `.chip-menu-shell`, which sits *inside* the
+     popover's border and padding — so the gap has to pay those back before it
+     buys any daylight: 1px border + `--space-1` padding, then `--space-2` of
+     actual clearance. The smoke measures this (flyout right <= popover left). */
+  margin-right: calc(var(--space-2) + var(--space-1) + 1px);
   padding: var(--space-1);
   background: var(--surface-card);
   border: 1px solid var(--border-strong);

@@ -1010,10 +1010,11 @@ body.settings-open #canvas { margin-left: 8px; }
    edge. Block layout (what this was before todo V2 made `.transcript` a flex
    column) sized it to the container for free; flex layout does not. */
 .transcript-column { width: 100%; max-width: var(--reading-measure); margin: auto auto 0; flex-shrink: 0; }
-/* 16px between turns, and the line-height a wall of prose needs. Both are the
+/* 24px between turns, and the line-height a wall of prose needs. Both are the
    rhythm half of design_guidance 四.2 — the old 10px/1.5 ran the assistant's
-   answer and the next question together. */
-.transcript .item { margin-bottom: var(--space-4); line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+   answer and the next question together, and 16px still read as one block once
+   the body size went up. 1.7 is the pairing `--type-body` is specified at. */
+.transcript .item { margin-bottom: var(--space-5); line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 /*
   Markdown items are real block elements, so the pre-wrap above would turn
   every newline between blocks into a blank line. Only the code inside a
@@ -1027,7 +1028,7 @@ body.settings-open #canvas { margin-left: 8px; }
   width: fit-content;
   max-width: 80%;
   margin-left: auto;
-  padding: 10px 14px;
+  padding: var(--space-3) var(--space-4);
   background: var(--surface-card);
   border-radius: var(--radius-lg);
   color: var(--text-primary);
@@ -1042,11 +1043,14 @@ body.settings-open #canvas { margin-left: 8px; }
   display: inline-flex;
   align-items: baseline;
   gap: 3px;
-  padding: 0 6px;
+  padding: 0 var(--space-1);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-pill);
+  /* `--radius-sm`, not the pill: inside a 20px bubble a fully rounded chip reads
+     as a second control. The small rung is what the scale reserves for an
+     inline capsule this size (design_guidance 四.2). */
+  border-radius: var(--radius-sm);
   background: var(--surface-canvas);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 .file-chip .icon { width: 12px; height: 12px; }
 .file-chip-label { font-family: var(--font-mono); }
@@ -1058,13 +1062,13 @@ body.settings-open #canvas { margin-left: 8px; }
 .thinking-header {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 0;
   border: none;
   background: none;
   color: var(--text-tertiary);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-meta);
   /* The sealed label carries the turn's elapsed time; tabular figures keep
      the digits steady as they land (design_guidance 三.3). */
   font-variant-numeric: tabular-nums;
@@ -1074,11 +1078,14 @@ body.settings-open #canvas { margin-left: 8px; }
 .thinking-header:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 /* Points down while closed (the affordance) and up while open (the state). */
 .transcript .item.thinking:not(.collapsed) .thinking-header .icon { transform: rotate(180deg); }
+/* No `opacity` here any more: `--text-tertiary` already states the rung, and
+   dimming a colour that was chosen against the page produces a value the palette
+   never agreed to — one that fails the ladder in light mode (design_guidance
+   六.3). The italic and the colour carry the whole distinction. */
 .thinking-body {
-  margin-top: 4px;
+  margin-top: var(--space-1);
   color: var(--text-tertiary);
   font-style: italic;
-  opacity: 0.8;
 }
 /* A breath, not a blink: the label is next to streaming text and must not compete
    with it. There is no `prefers-reduced-motion` here because the token test's
@@ -1093,7 +1100,7 @@ body.settings-open #canvas { margin-left: 8px; }
 .transcript .item.subagent { color: var(--accent-tool); }
 .transcript .item.duration {
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: var(--type-meta);
   /* 「已处理 Xm Xs」, the same string the thinking header seals to — tabular
      figures keep the two renderings and stacked turn summaries steady. */
   font-variant-numeric: tabular-nums;
@@ -1103,17 +1110,17 @@ body.settings-open #canvas { margin-left: 8px; }
 .transcript .item.tool {
   color: var(--text-secondary);
   border-left: 2px solid var(--border-strong);
-  padding-left: 8px;
+  padding-left: var(--space-3);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--type-code);
 }
 .transcript .item.tool.failed { color: var(--text-danger); border-left-color: var(--text-danger); }
 .transcript .item.pending::after { content: " ▌"; color: var(--caret); }
 .tool-progress {
   flex: 0 0 auto;
-  padding: var(--space-1) 14px;
+  padding: var(--space-1) var(--space-4);
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: var(--type-code);
   font-family: var(--font-mono);
   white-space: pre-wrap;
 }
@@ -1948,7 +1955,7 @@ body.settings-open #canvas { margin-left: 8px; }
 .diff {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  margin: 6px 0;
+  margin: var(--space-2) 0;
   max-height: 45vh;
   overflow: auto;
   font-family: var(--font-mono);
@@ -1963,10 +1970,10 @@ body.settings-open #canvas { margin-left: 8px; }
   font-family: var(--font-mono);
   color: var(--text-tertiary);
   text-align: right;
-  padding-right: 8px;
+  padding-right: var(--space-2);
   user-select: none;
 }
-.diff-row .text { flex: 1 1 auto; padding-right: 8px; }
+.diff-row .text { flex: 1 1 auto; padding-right: var(--space-2); }
 .diff-row.add { background: var(--diff-add-bg); color: var(--diff-add-fg); }
 .diff-row.del { background: var(--diff-del-bg); color: var(--diff-del-fg); }
 .diff-row.ctx { color: var(--text-primary); opacity: 0.75; }

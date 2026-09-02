@@ -216,7 +216,7 @@ async function step7(ctx) {
   // Collapsed for geometry purposes means the width has settled at zero, not
   // just that the class flipped: `#sidebar` animates its flex-basis over
   // `--motion-slow`, and a read on the first frame after the class lands would
-  // still see the whole 268px column.
+  // still see the whole 280px column.
   const collapsed = await waitFor('the sidebar to collapse', async () => {
     const view = await read(ctx, probes.sidebar())
     return view.collapsed && view.width === 0 ? view : undefined

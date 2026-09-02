@@ -1669,7 +1669,17 @@ body.settings-open #canvas { margin-left: 8px; }
 #overlay-panel.tone-danger { border-top-color: var(--accent-danger); }
 #overlay-panel.tone-caution { border-top-color: var(--accent-warn); }
 #overlay-panel.tone-normal { border-top-color: var(--accent-info); }
-#overlay-panel .title { display: flex; align-items: baseline; gap: 8px; font-weight: 600; margin-bottom: 2px; }
+/* The third serif spot (design_guidance 三.4). The chip beside it keeps its own
+   size, so raising the title to the title rung does not drag the label with it. */
+#overlay-panel .title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-family: var(--font-serif);
+  font-size: var(--type-title);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
 /* The ask dialog's category label, which the terminal wrote as `[header]`. */
 #overlay-panel .dialog-chip {
   flex: 0 0 auto;
@@ -1862,7 +1872,15 @@ body.settings-open #canvas { margin-left: 8px; }
   padding: 16px 20px;
   font-size: 13px;
 }
-#rewind-panel .title { font-weight: 600; color: var(--text-warn); margin-bottom: 2px; }
+/* The same dialog title as `#overlay-panel .title` — the two panels are one
+   object at two sizes, so they carry one treatment. */
+#rewind-panel .title {
+  font-family: var(--font-serif);
+  font-size: var(--type-title);
+  font-weight: 600;
+  color: var(--text-warn);
+  margin-bottom: 2px;
+}
 #rewind-panel .subtitle { color: var(--text-secondary); font-size: 12px; }
 #rewind-panel .error { color: var(--text-danger); margin: 8px 0; }
 #rewind-panel .rows { margin: 10px 0 6px; }

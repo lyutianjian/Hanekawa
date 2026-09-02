@@ -716,6 +716,37 @@ test('everything read character by character stays monospaced', () => {
   }
 })
 
+test('the serif is display-only, and only in the three whitelisted spots', () => {
+  // design_guidance 三.4: the serif may carry a short, pure heading and nothing
+  // else. Body text in it drops mixed CJK into a Songti — the fallback stack's
+  // own next entry — and the run breaks visibly mid-sentence. There is no way to
+  // see that in a DOM test, so the discipline lives here as a whitelist: three
+  // spots, spelled out, and every other selector naming `--font-serif` fails.
+  const SERIF_WHITELIST = [
+    '.welcome-title', // the welcome Hero
+    '.settings-card-title', // the settings sections
+    '#overlay-panel .title', // the two dialog titles, which are one object
+    '#rewind-panel .title',
+  ]
+
+  const seen = new Set<string>()
+  for (const { selector, prop, value } of declarations) {
+    if (TOKEN_SELECTORS.has(selector)) continue // the token's own declaration
+    if (!/var\(\s*--font-serif\s*\)/.test(value)) continue
+    assert.ok(
+      SERIF_WHITELIST.includes(selector),
+      `${selector} { ${prop} } takes the serif; it is whitelisted to headings only`,
+    )
+    seen.add(selector)
+  }
+
+  // Non-vacuity, per entry: a whitelisted selector that no longer names the
+  // serif is a licence left lying around for whatever moves into that name.
+  for (const selector of SERIF_WHITELIST) {
+    assert.ok(seen.has(selector), `${selector} no longer uses the serif; drop it from the whitelist`)
+  }
+})
+
 test('the canvas is a clipped rounded panel', () => {
   // `overflow: hidden` is load-bearing, not tidiness: the transcript scrolls
   // inside this panel and its scrollbar would otherwise square off the corner

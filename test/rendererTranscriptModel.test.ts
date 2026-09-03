@@ -5,9 +5,14 @@ import {
   createTranscriptState,
   formatTurnSummary,
   formatWorkedDuration,
+  groupTranscript,
   toolCallSummary,
 } from '../src/desktop/renderer/model/transcript.js'
-import type { TranscriptState } from '../src/desktop/renderer/model/transcript.js'
+import type {
+  ActivityGroup,
+  TranscriptItem,
+  TranscriptState,
+} from '../src/desktop/renderer/model/transcript.js'
 import type { SessionEvent } from '../src/runtime/sessionController.js'
 import type { SessionRecord } from '../src/harness/types.js'
 import { wrapInSystemReminder } from '../src/harness/systemReminder.js'
@@ -405,4 +410,192 @@ test('the tool summary picks the most identifying argument', () => {
   assert.equal(toolCallSummary('Read', { filePath: 'a.txt' }), 'Read(a.txt)')
   assert.equal(toolCallSummary('Grep', { pattern: 'foo' }), 'Grep(foo)')
   assert.equal(toolCallSummary('Weird', { unknown: 1 }), 'Weird')
+})
+
+/**
+ * 活动组（`activity_group_design.md` §4）: the replay path only — the live fold
+ * keeps its shape until T3 moves `message_start` onto the same segmentation.
+ * `groupTranscript` is a pure projection over `items`, so these read records in
+ * and the group tree out.
+ */
+
+function stamped(record: SessionRecord, turnId: string, createdAt: string): SessionRecord {
+  return { ...record, turnId, createdAt } as SessionRecord
+}
+
+function assistant(
+  id: string,
+  turnId: string,
+  createdAt: string,
+  content: string,
+  thinking?: string[],
+): SessionRecord {
+  return {
+    type: 'message', id, role: 'assistant', content, createdAt, turnId,
+    ...(thinking ? { thinkingBlocks: thinking.map((text) => ({ type: 'thinking' as const, thinking: text })) } : {}),
+  }
+}
+
+function toolUse(id: string, turnId: string, createdAt: string): SessionRecord {
+  return { type: 'tool_use', id, tool: 'Read', input: { filePath: 'a.txt' }, riskLevel: 'safe', createdAt, turnId }
+}
+
+function toolResult(toolUseId: string, turnId: string, createdAt: string, ok = true): SessionRecord {
+  return {
+    type: 'tool_result', id: `${toolUseId}-r`, toolUseId, tool: 'Read', ok,
+    content: ok ? 'contents' : 'boom', createdAt, turnId,
+  }
+}
+
+function groupAt(entries: ReturnType<typeof groupTranscript>, index: number): ActivityGroup {
+  const entry = entries[index]
+  assert.equal(entry?.kind, 'group')
+  return (entry as { kind: 'group'; group: ActivityGroup }).group
+}
+
+function itemAt(entries: ReturnType<typeof groupTranscript>, index: number): TranscriptItem {
+  const entry = entries[index]
+  assert.equal(entry?.kind, 'item')
+  return (entry as { kind: 'item'; item: TranscriptItem }).item
+}
+
+function groupsOf(records: SessionRecord[]) {
+  return groupTranscript(createTranscriptState(records).items)
+}
+
+test('a turn becomes one activity group: thinking and tools are steps, the answer stays outside', () => {
+  const entries = groupsOf([
+    stamped(message('u1', 'user', 'go'), 't1', '2026-01-01T00:00:00.000Z'),
+    assistant('a1', 't1', '2026-01-01T00:00:01.000Z', '', ['思考A']),
+    toolUse('tu1', 't1', '2026-01-01T00:00:01.500Z'),
+    toolResult('tu1', 't1', '2026-01-01T00:00:02.000Z'),
+    assistant('a2', 't1', '2026-01-01T00:00:04.000Z', 'done', ['思考B']),
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'group', 'item'])
+  assert.equal(itemAt(entries, 0).kind, 'user')
+  assert.equal(itemAt(entries, 2).text, 'done', 'the final answer is 正文, outside the group')
+
+  const group = groupAt(entries, 1)
+  assert.equal(group.turnId, 't1')
+  assert.deepEqual(group.steps.map((step) => step.kind), ['thinking', 'tool', 'thinking'])
+  assert.equal(group.stepCount, 3)
+  assert.equal(group.failedCount, 0)
+  assert.equal(group.status, 'done')
+  assert.equal(group.durationMs, 4000, 'no turn-end to quote on replay: the records span the turn')
+})
+
+test('a failed call is counted, and a never-answered one keeps the group running', () => {
+  const failed = groupAt(groupsOf([
+    stamped(message('u1', 'user', 'go'), 't1', 'now'),
+    toolUse('tu1', 't1', 'now'),
+    toolResult('tu1', 't1', 'now', false),
+  ]), 1)
+  assert.equal(failed.failedCount, 1)
+  assert.equal(failed.status, 'done')
+
+  const running = groupAt(groupsOf([
+    stamped(message('u1', 'user', 'go'), 't1', 'now'),
+    toolUse('tu1', 't1', 'now'),
+  ]), 1)
+  assert.equal(running.status, 'running')
+})
+
+test('an interrupted turn reads as aborted, and a compaction stays inside as a system step', () => {
+  const group = groupAt(groupsOf([
+    stamped(message('u1', 'user', 'go'), 't1', 'now'),
+    toolUse('tu1', 't1', 'now'),
+    toolResult('tu1', 't1', 'now'),
+    stamped({ type: 'compact_boundary', id: 'cb1', summary: 's', preTokens: 10, createdAt: 'now' }, 't1', 'now'),
+    stamped(
+      { type: 'turn_interruption', id: 'ti1', userMessageId: 'u1', prompt: 'p', remainingTasks: [], recoverable: true, createdAt: 'now' },
+      't1',
+      'now',
+    ),
+  ]), 1)
+
+  assert.equal(group.status, 'aborted')
+  assert.deepEqual(group.steps.map((step) => step.kind), ['tool', 'system', 'system'])
+})
+
+test('staged prose between tools is a step; only the last assistant text leaves the group', () => {
+  const entries = groupsOf([
+    stamped(message('u1', 'user', 'go'), 't1', 'now'),
+    assistant('a1', 't1', 'now', '先看文件'),
+    toolUse('tu1', 't1', 'now'),
+    toolResult('tu1', 't1', 'now'),
+    assistant('a2', 't1', 'now', '看完了'),
+  ])
+
+  assert.deepEqual(
+    groupAt(entries, 1).steps.map((step) => [step.kind, step.text]),
+    [['text', '先看文件'], ['tool', 'Read → contents']],
+  )
+  assert.equal(itemAt(entries, 2).text, '看完了')
+})
+
+test('adjacent thinking with no tool between it is one segment', () => {
+  const steps = groupAt(groupsOf([
+    stamped(message('u1', 'user', 'go'), 't1', 'now'),
+    assistant('a1', 't1', 'now', '', ['第一段', '第二段']),
+    assistant('a2', 't1', 'now', '', ['第三段']),
+    toolUse('tu1', 't1', 'now'),
+    toolResult('tu1', 't1', 'now'),
+    assistant('a3', 't1', 'now', 'done', ['第四段']),
+  ]), 1).steps
+
+  assert.deepEqual(steps.map((step) => step.kind), ['thinking', 'tool', 'thinking'])
+  assert.equal(steps[0]?.text, '第一段\n\n第二段\n\n第三段')
+  assert.equal(steps[2]?.text, '第四段')
+})
+
+test('an old session without thinkingBlocks degrades to tool-only steps, unannotated', () => {
+  const group = groupAt(groupsOf([
+    stamped(message('u1', 'user', 'go'), 't1', 'now'),
+    assistant('a1', 't1', 'now', ''),
+    toolUse('tu1', 't1', 'now'),
+    toolResult('tu1', 't1', 'now'),
+    assistant('a2', 't1', 'now', 'done'),
+  ]), 1)
+
+  assert.deepEqual(group.steps.map((step) => step.kind), ['tool'])
+  assert.equal(group.steps.some((step) => step.text.includes('思考')), false)
+})
+
+test('a zero-step turn draws no empty group', () => {
+  const entries = groupsOf([
+    stamped(message('u1', 'user', 'hi'), 't1', 'now'),
+    assistant('a1', 't1', 'now', 'hello'),
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'item'])
+})
+
+test('turn-less items stay outside every group, in place', () => {
+  const entries = groupsOf([
+    message('u0', 'user', 'before'),
+    stamped(message('u1', 'user', 'go'), 't1', 'now'),
+    toolUse('tu1', 't1', 'now'),
+    toolResult('tu1', 't1', 'now'),
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'item', 'group'])
+  assert.equal(itemAt(entries, 0).text, 'before')
+})
+
+test('two turns are two groups, in order', () => {
+  const entries = groupsOf([
+    stamped(message('u1', 'user', 'one'), 't1', 'now'),
+    toolUse('tu1', 't1', 'now'),
+    toolResult('tu1', 't1', 'now'),
+    assistant('a1', 't1', 'now', 'first'),
+    stamped(message('u2', 'user', 'two'), 't2', 'now'),
+    toolUse('tu2', 't2', 'now'),
+    toolResult('tu2', 't2', 'now'),
+    assistant('a2', 't2', 'now', 'second'),
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'group', 'item', 'item', 'group', 'item'])
+  assert.equal(groupAt(entries, 1).turnId, 't1')
+  assert.equal(groupAt(entries, 4).turnId, 't2')
 })

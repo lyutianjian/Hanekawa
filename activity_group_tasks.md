@@ -108,7 +108,7 @@ hello 走同一投影」的回归。
 
 **验收**：`rendererTranscriptModel.test.ts` 覆盖合并、耗时、失败态、DTO 缺失回退、`TodoWrite` 单行。
 
-### [ ] T5 — 开合决策：`model/thinking.ts` 泛化（§5）
+### [x] T5 — 开合决策：`model/thinking.ts` 泛化（§5）
 
 **依赖**：T2–T4。
 

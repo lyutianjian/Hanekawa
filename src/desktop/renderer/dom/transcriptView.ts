@@ -24,8 +24,14 @@ import { icon } from './icons.js'
 import { markdownChildren } from './markdownView.js'
 
 /**
- * Paints the transcript — loose items interleaved with activity groups (§2) — and
- * the in-flight tool line.
+ * Paints the transcript: loose items interleaved with activity groups (§2).
+ *
+ * There is no in-flight tool line any more. It was a singleton strip under the
+ * scroller that named whatever tool was running, which since T4 is something the
+ * running step's own head says — with its bead, its arguments and its elapsed
+ * time — one line above where the strip used to sit. Two places saying the same
+ * thing is one place too many, and the strip was the one that could not say
+ * *which* of a batch's calls it meant.
  *
  * ## Two layers of disclosure
  *
@@ -62,12 +68,20 @@ export interface TranscriptView {
   render(state: TranscriptState, disclosure: DisclosureState): void
 }
 
+export interface TranscriptHandlers {
+  /** `expanded` is what the row shows now, so the first click always inverts it. */
+  onToggle(id: string, expanded: boolean): void
+  /**
+   * A `TodoWrite` row was clicked. It has no body — the checklist is drawn once,
+   * above the composer — so the row's whole job is to point at it (§7.3).
+   */
+  onTaskStep(): void
+}
+
 export function createTranscriptView(
   container: HTMLElement,
-  progressLine: HTMLElement,
   floatHost: HTMLElement,
-  /** `expanded` is what the row shows now, so the first click always inverts it. */
-  onToggle: (id: string, expanded: boolean) => void,
+  handlers: TranscriptHandlers,
 ): TranscriptView {
   const jump = button(
     'scroll-bottom',
@@ -105,7 +119,7 @@ export function createTranscriptView(
   return {
     render(state, disclosure) {
       const atBottom = isScrolledToBottom(container)
-      const painter = createPainter(cache, disclosure, onToggle)
+      const painter = createPainter(cache, disclosure, handlers)
       const nodes = groupTranscript(state.items).map((entry) => entryNode(painter, entry))
       painter.prune()
       column.replaceChildren(...nodes)
@@ -114,9 +128,6 @@ export function createTranscriptView(
       // through a long turn is not yanked away on every token.
       if (atBottom) container.scrollTop = container.scrollHeight
       syncJump()
-
-      show(progressLine, state.toolProgress !== undefined)
-      progressLine.textContent = state.toolProgress ?? ''
     },
   }
 }
@@ -129,9 +140,8 @@ interface CachedNode {
   signature: readonly unknown[]
 }
 
-interface Painter {
+interface Painter extends TranscriptHandlers {
   readonly disclosure: DisclosureState
-  readonly onToggle: (id: string, expanded: boolean) => void
   /**
    * The node for `key`, refilled only when `signature` changed.
    *
@@ -147,12 +157,13 @@ interface Painter {
 function createPainter(
   cache: Map<string, CachedNode>,
   disclosure: DisclosureState,
-  onToggle: (id: string, expanded: boolean) => void,
+  handlers: TranscriptHandlers,
 ): Painter {
   const live = new Set<string>()
   return {
     disclosure,
-    onToggle,
+    onToggle: handlers.onToggle,
+    onTaskStep: handlers.onTaskStep,
     node(key, className, signature, fill) {
       live.add(key)
       const cached = cache.get(key)
@@ -267,11 +278,7 @@ function stepNode(painter: Painter, group: ActivityGroup, step: ActivityStep, in
     case 'subagent':
       return toolStep(painter, step, expanded)
     case 'task':
-      // No body at all: the list lives in the task panel above the composer (§7).
-      return painter.node(`step:${step.id}`, `step task ${step.status}`, [step.text, step.status], () => [
-        bead(step, 'step-bead'),
-        el('span', 'step-label', step.text),
-      ])
+      return taskStep(painter, step)
     case 'text':
       // Staged prose: full markdown, shown whole, never folded (§4.4).
       return painter.node(`step:${step.id}`, 'step text md', [step.text], () => markdownChildren(step.text))
@@ -283,6 +290,23 @@ function stepNode(painter: Painter, group: ActivityGroup, step: ActivityStep, in
         () => [el('span', 'step-label', step.text), rule()],
       )
   }
+}
+
+/**
+ * A `TodoWrite` row: one line, no body, ever (§4.4). The checklist it wrote is
+ * drawn once — above the composer, where it stays useful after the group folds —
+ * so clicking the row flashes *that* panel rather than repeating the list here.
+ *
+ * A `<button>` with no `aria-expanded`, because nothing here opens: the row is a
+ * pointer, not a disclosure.
+ */
+function taskStep(painter: Painter, step: Extract<ActivityStep, { kind: 'task' }>): HTMLElement {
+  return painter.node(`step:${step.id}`, `step task ${step.status}`, [step.text, step.status], () => {
+    const label = `${step.text} · ${toolStatusLabel(step.status)}`
+    const head = button('step-head', '', label, () => painter.onTaskStep())
+    append(head, [bead(step, 'step-bead'), el('span', 'step-label', step.text)])
+    return [head]
+  })
 }
 
 /**

@@ -59,6 +59,38 @@ export function taskPanelStateFromSnapshot(snapshot: TaskDisplaySnapshot | undef
   return snapshot ? projectSnapshot(snapshot) : undefined
 }
 
+/**
+ * The panel after one more record — the live counterpart of `taskPanelState`.
+ *
+ * A pane sees records one at a time and never keeps the list, so the reverse
+ * scan above is only affordable on the two paths that hand over a whole list
+ * (`hello`, `transcript-reset`). This walks the same two rules forward instead:
+ * a snapshot replaces the panel outright, and the user's next message retires a
+ * finished one. Folding a session's records through this must land on what
+ * `taskPanelState` says about the same records — `test/rendererTasks.test.ts`
+ * asserts exactly that, because the two paths meet on every pane switch.
+ */
+export function advanceTaskPanel(
+  current: TaskPanelState | undefined,
+  record: SessionRecord,
+): TaskPanelState | undefined {
+  if (record.type === 'tool_result') {
+    const snapshot = record.display?.taskSnapshot
+    return snapshot ? taskPanelStateFromSnapshot(snapshot) : current
+  }
+  return current?.allDone && isRetiringUserMessage(record) ? undefined : current
+}
+
+/**
+ * The user starting something new, which is what a finished checklist waits for
+ * (§7.3). `turn-start` is the same moment seen a beat earlier — the user record
+ * only lands after the turn's first I/O — so the pane retires on both and this
+ * is what keeps the replay honest.
+ */
+export function retireCompletedTaskPanel(current: TaskPanelState | undefined): TaskPanelState | undefined {
+  return current?.allDone ? undefined : current
+}
+
 function projectSnapshot(snapshot: TaskDisplaySnapshot): TaskPanelState | undefined {
   // `deleted` tasks ride along in the snapshot and are counted in its `total`
   // but nowhere else, so the panel counts its own rows instead of trusting
@@ -94,13 +126,16 @@ function findLatestSnapshot(
 function hasUserMessageAfter(records: readonly SessionRecord[], index: number): boolean {
   for (let cursor = index + 1; cursor < records.length; cursor += 1) {
     const record = records[cursor]
-    if (record?.type !== 'message' || record.role !== 'user') continue
-    // A `<system-reminder>` user record is a model-facing nudge, not the user
-    // starting something new — the transcript hides it, and so does this.
-    if (isSystemReminderBlock(messageText(record))) continue
-    return true
+    if (record && isRetiringUserMessage(record)) return true
   }
   return false
+}
+
+function isRetiringUserMessage(record: SessionRecord): boolean {
+  if (record.type !== 'message' || record.role !== 'user') return false
+  // A `<system-reminder>` user record is a model-facing nudge, not the user
+  // starting something new — the transcript hides it, and so does this.
+  return !isSystemReminderBlock(messageText(record))
 }
 
 function isSystemReminderBlock(text: string): boolean {

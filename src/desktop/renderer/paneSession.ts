@@ -44,6 +44,7 @@ import type { PermissionRequestView } from './dom/permissionRequestView.js'
 import type { RewindPanel } from './dom/rewindView.js'
 import type { SurfacePanel } from './dom/surfaceView.js'
 import type { QueueDom } from './dom/queueView.js'
+import type { TaskPanelDom } from './dom/taskPanelView.js'
 import { append, el, show } from './dom/dom.js'
 import { createTranscriptView, type TranscriptView } from './dom/transcriptView.js'
 import { createWelcomeView } from './dom/welcomeView.js'
@@ -144,6 +145,12 @@ import {
   type RewindState,
 } from './model/rewindPanel.js'
 import { queuedMessagesView } from './model/queuedMessages.js'
+import {
+  advanceTaskPanel,
+  retireCompletedTaskPanel,
+  taskPanelState,
+  type TaskPanelState,
+} from './model/tasks.js'
 
 export interface PaneSessionDeps {
   /** The lane key. Stable across `/clear` and `/resume`; identifies this pane. */
@@ -162,6 +169,8 @@ export interface PaneSessionDeps {
   surface: SurfacePanel
   suggestions: SuggestionsView
   queueStrip: QueueDom
+  /** The resident strip above the composer; a singleton, like the composer itself. */
+  taskPanel: TaskPanelDom
   status: StatusView
   composer: ComposerView
   /** Shell chrome (the tab bar) re-renders from the active session. */
@@ -291,19 +300,19 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   const welcomeEl = el('div', 'welcome')
   const transcriptEl = el('div', 'transcript')
   transcriptEl.setAttribute('aria-live', 'polite')
-  const toolProgressEl = el('div', 'tool-progress')
-  toolProgressEl.hidden = true
-  append(paneEl, [welcomeEl, transcriptEl, toolProgressEl])
+  append(paneEl, [welcomeEl, transcriptEl])
   deps.mount.appendChild(paneEl)
   // `paneEl` is the float host: `.pane` is the positioned ancestor, and a button
   // placed inside the scroller would both be wiped by every repaint and anchor to
   // the bottom of the content instead of the viewport.
-  const transcriptView: TranscriptView = createTranscriptView(
-    transcriptEl,
-    toolProgressEl,
-    paneEl,
-    (id, expanded) => toggleDisclosureAt(id, expanded),
-  )
+  const transcriptView: TranscriptView = createTranscriptView(transcriptEl, paneEl, {
+    onToggle: (id, expanded) => toggleDisclosureAt(id, expanded),
+    // The panel is a singleton the active pane drives, so a background pane
+    // cannot reach it — and cannot be clicked either, since it does not paint.
+    onTaskStep: () => {
+      if (active) deps.taskPanel.flash()
+    },
+  })
   const welcome = createWelcomeView(welcomeEl, {
     onSwitchWorkspace: () => toggleWorkspacePicker(),
     onFocusComposer: () => deps.composer.focus(),
@@ -332,6 +341,15 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
    * would fold a step in a session the user never touched.
    */
   let disclosure: DisclosureState = NO_DISCLOSURE
+  /**
+   * The checklist above the composer, or `undefined` for no panel at all.
+   *
+   * Held here rather than derived from the transcript: the panel's source is the
+   * newest `taskSnapshot`, which `TranscriptState` does not keep, and the pane
+   * never keeps the record list either. `hello` and `transcript-reset` project it
+   * from a whole list; every other record advances it one step (§7.3).
+   */
+  let taskPanel: TaskPanelState | undefined
   let queue: UiQueueState = createUiQueue()
   let completions: CompletionState = NO_COMPLETIONS
   let commands: WireCommandInfo[] = []
@@ -493,6 +511,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   function toggleDisclosureAt(id: string, expanded: boolean): void {
     disclosure = toggleDisclosure(disclosure, id, expanded)
     renderTranscript()
+  }
+
+  function renderTaskPanel(): void {
+    if (!active) return
+    deps.taskPanel.render(taskPanel)
   }
 
   function renderQueue(): void {
@@ -833,6 +856,18 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     noteConversationState()
     renderTranscript()
 
+    // Not a `default`-free switch, and deliberately so: the task panel cares
+    // about three of a dozen event kinds, and `applySessionEvent` above is the
+    // one that must stay exhaustive over `SessionEvent`.
+    if (event.type === 'record') taskPanel = advanceTaskPanel(taskPanel, event.record)
+    // `/clear`, `/resume` and a rewind all arrive here: the new record list is
+    // the whole truth, and an empty one has no snapshot, so a cleared session
+    // drops the panel without a case of its own.
+    if (event.type === 'transcript-reset') taskPanel = taskPanelState(event.records)
+    // The user starting something new, a beat before their record lands.
+    if (event.type === 'turn-start') taskPanel = retireCompletedTaskPanel(taskPanel)
+    renderTaskPanel()
+
     // The controller rolled back an interrupted prompt; the record is already
     // gone from disk, so dropping this destroys the user's message.
     if (outcome.restoreInput !== undefined) {
@@ -1155,6 +1190,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     }
     renderSuggestions()
     renderQueue()
+    renderTaskPanel()
     renderStatus()
     deps.composer.focus()
   }
@@ -1176,6 +1212,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.rewindPanel.hide()
     deps.surface.hide()
     deps.queueStrip.hide()
+    // Emptied, not remembered: the strip is a singleton on the composer's axis,
+    // so a background pane's checklist would otherwise hang over the session the
+    // user just switched to. `activate()` repaints it from `taskPanel`.
+    deps.taskPanel.hide()
     deps.suggestions.render(NO_COMPLETIONS)
     // The composer is a singleton the active pane drives, so an open permission
     // menu would hang over the next pane and act on *its* runtime.
@@ -1210,7 +1250,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // Baseline, not an edge: a session opened *with* history already has its
     // content — only later transitions are "first content".
     hadConversation = !isTranscriptEmpty(transcript)
+    // The reverse scan, once per pane: a session resumed mid-checklist gets its
+    // panel back from the records alone (§7.3).
+    taskPanel = taskPanelState(hello.records)
     renderTranscript()
+    renderTaskPanel()
     renderStatus()
 
     boundSessionId = hello.session.id

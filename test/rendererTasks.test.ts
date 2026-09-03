@@ -1,6 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { taskPanelState, taskPanelStateFromSnapshot } from '../src/desktop/renderer/model/tasks.js'
+import {
+  advanceTaskPanel,
+  retireCompletedTaskPanel,
+  taskPanelState,
+  taskPanelStateFromSnapshot,
+  type TaskPanelState,
+} from '../src/desktop/renderer/model/tasks.js'
 import type { SessionRecord, TaskDisplayItem, TaskDisplaySnapshot } from '../src/harness/types.js'
 import { wrapInSystemReminder } from '../src/harness/systemReminder.js'
 
@@ -179,4 +185,48 @@ test('taskPanelStateFromSnapshot projects a live snapshot the same way', () => {
     taskPanelState([todoWrite('r1', THREE_OF_SIX)]),
   )
   assert.equal(taskPanelStateFromSnapshot(undefined), undefined)
+})
+
+// --- the live path (T10) -----------------------------------------------------
+
+/** What the pane does: fold the same records one at a time, in order. */
+function live(records: readonly SessionRecord[]): TaskPanelState | undefined {
+  return records.reduce<TaskPanelState | undefined>(
+    (state, record) => advanceTaskPanel(state, record),
+    undefined,
+  )
+}
+
+test('folding records forward lands where the reverse scan does', () => {
+  const done = snapshot([task('1', 'completed', 'Kept')])
+  const histories: SessionRecord[][] = [
+    [],
+    [todoWrite('r1', THREE_OF_SIX)],
+    [todoWrite('r1', THREE_OF_SIX), todoWrite('r2', done)],
+    [todoWrite('r1', done), message('u2', 'user', 'next thing')],
+    [todoWrite('r1', done), message('u2', 'user', wrapInSystemReminder('nudge'))],
+    [todoWrite('r1', THREE_OF_SIX), message('u2', 'user', 'keep going')],
+    [todoWrite('r1', done), message('u2', 'user', 'next'), todoWrite('r3', THREE_OF_SIX)],
+  ]
+  // The two paths meet on every pane switch — `hello` scans, everything after it
+  // folds — so an answer either of them can reach alone is a bug.
+  for (const records of histories) {
+    assert.deepEqual(live(records), taskPanelState(records), JSON.stringify(records.map((r) => r.id)))
+  }
+})
+
+test('a tool_result without a snapshot leaves the panel alone', () => {
+  const state = live([
+    todoWrite('r1', THREE_OF_SIX),
+    { type: 'tool_result', id: 'r2', toolUseId: 'u2', tool: 'Read', ok: true, content: 'x', createdAt: 'now' },
+  ])
+  assert.equal(state?.counts.completed, 3)
+})
+
+test('retireCompletedTaskPanel drops a finished list and keeps an unfinished one', () => {
+  const done = taskPanelStateFromSnapshot(snapshot([task('1', 'completed', 'Kept')]))
+  assert.equal(retireCompletedTaskPanel(done), undefined)
+  const running = taskPanelStateFromSnapshot(THREE_OF_SIX)
+  assert.equal(retireCompletedTaskPanel(running), running)
+  assert.equal(retireCompletedTaskPanel(undefined), undefined)
 })

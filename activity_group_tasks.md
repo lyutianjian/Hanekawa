@@ -189,7 +189,7 @@ reset 清空。
 
 **验收**：新增 `test/rendererTaskPanelView.test.ts`；`rendererStyleTokens.test.ts` 绿。
 
-### [ ] T10 — `paneSession.ts` 接线
+### [x] T10 — `paneSession.ts` 接线
 
 **依赖**：T5、T7、T9。
 

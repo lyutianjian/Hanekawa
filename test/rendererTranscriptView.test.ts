@@ -28,9 +28,10 @@ interface Rendered {
   readonly stub: DomStub
   readonly container: HTMLElement
   readonly host: HTMLElement
-  readonly progress: HTMLElement
   /** `[id, what the row showed when it was clicked]`, the absolute-answer pair. */
   readonly toggled: Array<readonly [string, boolean]>
+  /** How many times a `TodoWrite` row asked the task panel to flash. */
+  readonly taskClicks: () => number
   render(state: TranscriptState, disclosure?: DisclosureState): void
   jump(): StubView
   items(): readonly StubView[]
@@ -41,10 +42,13 @@ function mount(t: { after(fn: () => void): void }): Rendered {
   const stub = installDomStub()
   t.after(() => stub.uninstall())
   const container = stub.createContainer('transcript')
-  const progress = stub.createContainer('tool-progress')
   const host = stub.createContainer('pane')
   const toggled: Array<readonly [string, boolean]> = []
-  const view = createTranscriptView(container, progress, host, (id, expanded) => toggled.push([id, expanded]))
+  let taskClicks = 0
+  const view = createTranscriptView(container, host, {
+    onToggle: (id, expanded) => toggled.push([id, expanded]),
+    onTaskStep: () => { taskClicks += 1 },
+  })
   const jump = (): StubView => {
     const found = stub.inspect(host).children.find((child) => child.classes.includes('scroll-bottom'))
     assert.ok(found, 'no .scroll-bottom in the float host')
@@ -60,7 +64,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     stub,
     container,
     host,
-    progress,
+    taskClicks: () => taskClicks,
     toggled,
     render: (state, disclosure = NO_DISCLOSURE) => view.render(state, disclosure),
     jump,
@@ -176,17 +180,14 @@ test('the items paint inside one reading column, and the scroller stays bare', (
   assert.equal(stub.inspect(container).children.length, 1)
 })
 
-test('items and the tool line paint the way they always did', (t) => {
-  const { render, items, progress, stub } = mount(t)
+test('loose items paint the way they always did', (t) => {
+  const { render, items } = mount(t)
 
-  render(transcript(
-    [
-      { id: 'a', kind: 'user', text: 'hi' },
-      { id: 'b', kind: 'tool', text: 'Bash(ls)', pending: true },
-      { id: 'c', kind: 'tool', text: 'Bash failed', failed: true },
-    ],
-    { toolProgress: 'Bash ls' },
-  ))
+  render(transcript([
+    { id: 'a', kind: 'user', text: 'hi' },
+    { id: 'b', kind: 'tool', text: 'Bash(ls)', pending: true },
+    { id: 'c', kind: 'tool', text: 'Bash failed', failed: true },
+  ]))
 
   assert.deepEqual(items().map((item) => item.classes), [
     ['item', 'user'],
@@ -194,12 +195,6 @@ test('items and the tool line paint the way they always did', (t) => {
     ['item', 'tool', 'failed'],
   ])
   assert.deepEqual(items().map((item) => item.text), ['hi', 'Bash(ls)', 'Bash failed'])
-  assert.equal(stub.inspect(progress).hidden, false)
-  assert.equal(stub.inspect(progress).text, 'Bash ls')
-
-  render(transcript())
-  assert.equal(stub.inspect(progress).hidden, true)
-  assert.equal(stub.inspect(progress).text, '')
 })
 
 // --- the thinking disclosure (5d) -------------------------------------------
@@ -441,6 +436,41 @@ test('a bubble with no mention is still a single text node', (t) => {
   render(transcript([{ id: 'm1', kind: 'user', text: 'mail me at foo@bar.com' }]))
 
   assert.deepEqual(items()[0]?.nodes, ['mail me at foo@bar.com'])
+})
+
+/**
+ * The `TodoWrite` row (T10). It never opens — the checklist is drawn once, above
+ * the composer — so it is a control that points at that panel instead.
+ */
+test('a TodoWrite step is a bodyless button that flashes the task panel', (t) => {
+  const view = mount(t)
+  view.render(transcript(
+    [{
+      id: 'todo-1',
+      kind: 'tool',
+      text: 'TodoWrite 3/6',
+      toolName: 'TodoWrite',
+      turnId: 't1',
+      tool: { displayName: 'TodoWrite', useSummary: '3/6', detail: '- [x] one' },
+    }],
+    { toolProgress: undefined },
+  ), new Map([['t1', true]]))
+
+  const step = groupOf(view).children[1]?.children[0]
+  assert.deepEqual(step?.classes, ['step', 'task', 'done'])
+  const head = step?.children[0]
+  assert.equal(head?.tagName, 'BUTTON')
+  // No `aria-expanded`: nothing here opens, and a disclosure that never opens is
+  // a lie to a screen reader.
+  assert.equal(head?.attributes.get('aria-expanded'), undefined)
+  // And no body, even though the result carried a `detail` the tool family would
+  // have drawn.
+  assert.equal(step?.children.length, 1)
+
+  assert.equal(view.taskClicks(), 0)
+  view.stub.click(head?.node)
+  assert.equal(view.taskClicks(), 1)
+  assert.deepEqual(view.toggled, [], 'the row folds nothing')
 })
 
 test('only the user bubble grows pills', (t) => {

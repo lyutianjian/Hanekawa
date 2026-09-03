@@ -704,7 +704,6 @@ const MONOSPACED = [
   '#overlay-panel .feedback',
   '.transcript .item.tool',
   '.file-chip-label',
-  '.tool-progress',
 ]
 
 function blockFor(selector: string): Block {

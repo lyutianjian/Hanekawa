@@ -1355,7 +1355,9 @@ body.resizing #sidebar { transition: none; }
 .step.subagent:not(.collapsed),
 .step.thinking:not(.collapsed) { animation: unfold var(--motion-base) var(--ease-standard); }
 @keyframes unfold { from { grid-template-rows: auto 0fr; } }
-.step.task,
+/* `.step.task` is not here: since T10 its row *is* a `.step-head`, which lays
+   itself out and paints its own hover — the row points at the task panel above
+   the composer, so it had to become a control. */
 .step.system {
   display: flex;
   flex-direction: row;
@@ -1477,14 +1479,9 @@ body.resizing #sidebar { transition: none; }
 }
 .transcript .item.tool.failed { color: var(--text-danger); border-left-color: var(--text-danger); }
 .transcript .item.pending::after { content: " ▌"; color: var(--caret); }
-.tool-progress {
-  flex: 0 0 auto;
-  padding: var(--space-1) var(--space-4);
-  color: var(--text-tertiary);
-  font-size: var(--type-code);
-  font-family: var(--font-mono);
-  white-space: pre-wrap;
-}
+/* There is no `.tool-progress` strip any more (T10): the running tool names
+   itself on its own step's head, one line up, with its bead and its elapsed
+   time. */
 
 /* --- jump to bottom ---
    Floats over the tail of the transcript while the user is reading back, and is

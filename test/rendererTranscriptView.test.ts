@@ -453,6 +453,94 @@ test('nodes are kept by id across paints, so the scroll anchor survives', (t) =>
   assert.notEqual(groupOf(view).children[1]?.children[0]?.node, before.step)
 })
 
+/**
+ * Counts how many children `node` loses from here on.
+ *
+ * Keeping the *element* across paints is only half of the anchoring rule: it also
+ * has to stay attached. A node that leaves the document — even for the rest of one
+ * script turn — has its CSS animations cancelled and restarted, and stops being a
+ * node `overflow-anchor` can hold a scroll position by. Identity assertions cannot
+ * see that, because a node removed and re-appended in the same paint is still the
+ * same object; only the removal itself is observable.
+ */
+function countDetaches(node: unknown): () => number {
+  const element = node as { removeChild(child: unknown): void }
+  const original = element.removeChild.bind(element)
+  let count = 0
+  element.removeChild = (child: unknown): void => {
+    count += 1
+    original(child)
+  }
+  return () => count
+}
+
+test('a streaming paint detaches nothing, so the open step keeps its fold and its anchor', (t) => {
+  // The bug this is the regression for: the column was `replaceChildren`-ed and
+  // the group `replace()`-d on every paint, so the open thinking step was pulled
+  // out of the page and put back once per streamed token. `unfold` is 220ms and
+  // the tokens are faster than that, so the body pumped up from zero height for
+  // the whole turn and threw everything below it around.
+  const streaming = (thought: string, answer: string): TranscriptItem[] => [
+    { id: 'm1', kind: 'user', text: 'hi', turnId: 't1' },
+    { id: 'thinking-0', kind: 'thinking', text: thought, pending: true, turnId: 't1' },
+    ...(answer === ''
+      ? []
+      : [{ id: 'draft', kind: 'assistant', text: answer, turnId: 't1' } as TranscriptItem]),
+  ]
+
+  const view = mount(t)
+  view.render(transcript(streaming('先', '')))
+  const group = groupOf(view)
+  const steps = group.children[1]
+  const step = steps?.children[0]
+  assert.deepEqual(step?.classes, ['step', 'thinking', 'live'], 'the running turn opens its last step')
+
+  const detached = {
+    column: countDetaches(view.column().node),
+    group: countDetaches(group.node),
+    steps: countDetaches(steps?.node),
+  }
+
+  // The block streams on, and then the answer starts arriving under it.
+  view.render(transcript(streaming('先看看', '')))
+  view.render(transcript(streaming('先看看这个文件', '')))
+  view.render(transcript(streaming('先看看这个文件', '好')))
+  view.render(transcript(streaming('先看看这个文件', '好的，')))
+
+  assert.equal(detached.column(), 0, 'the column re-orders in place; nothing is taken out of the page')
+  assert.equal(detached.group(), 0, 'a refill of the group leaves the children it hands back where they are')
+  assert.equal(detached.steps(), 0, 'and the open step never leaves its box')
+  assert.equal(groupOf(view).children[1]?.children[0]?.node, step?.node, 'still the same step')
+  assert.deepEqual(
+    view.items().map((entry) => entry.classes[0]),
+    ['item', 'activity-group', 'item'],
+    'the answer joined the column at the end, outside the group',
+  )
+})
+
+test('the group head is kept across paints, and still reports what it showed', (t) => {
+  // It used to be rebuilt every paint because it closes over the disclosure it
+  // reports; it reads that through a ref instead, so a reader who tabbed to it
+  // does not lose focus once per token — and the ref, not the paint that built
+  // the node, is what the click reports.
+  const view = mount(t)
+  view.render(transcript(turnItems({ pending: true })))
+  const head = groupOf(view).children[0]?.node
+  assert.ok(head)
+
+  view.render(transcript(turnItems({ pending: true })))
+  assert.equal(groupOf(view).children[0]?.node, head, 'an unchanged head is not rebuilt')
+
+  // Sealed: the same node, renamed, and now reporting the collapse it performed.
+  view.render(transcript(turnItems()))
+  assert.equal(groupOf(view).children[0]?.node, head, 'the head survives the turn ending')
+  assert.equal(groupOf(view).children[0]?.attributes.get('aria-label'), '已完成 · 2 步')
+  assert.equal(groupOf(view).children[0]?.attributes.get('aria-expanded'), 'false')
+
+  view.stub.click(head)
+  assert.deepEqual(view.toggled, [['t1', false]], 'the kept head reports the paint that is on screen')
+})
+
 // --- the edit family's real diff (T13) ---------------------------------------
 
 /**

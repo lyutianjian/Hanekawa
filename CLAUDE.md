@@ -198,6 +198,12 @@ points or views.
   `dom/transcriptView.ts` reuses entry and step nodes **by id**: the automatic collapse at turn end
   shortens content above the reader, and scroll anchoring only absorbs that while the anchor node
   survives the paint. Nothing may set `overflow-anchor: none`.
+- Keeping a node is not enough — it must stay **attached**. Every insertion in the transcript goes through
+  `dom/dom.ts`'s `reconcile`, which moves only what changed position; `replaceChildren`/`replace()` there
+  pulls every row out of the page and back, which cancels and restarts its CSS animations (`unfold` on an
+  open step replayed once per streamed token) and destroys the scroll anchor. A group's own signature is
+  the identity of its kept head and steps box for the same reason, and the head reads its disclosure from
+  a mutable ref instead of closing over the paint that built it.
 - The group head carries a **stable accessible name** (`groupHeaderName`) while its visible, `aria-hidden`
   label counts steps; what is new is said by the current step's head. The bead is the tool step's only
   *visual* status vocabulary (`awaiting-approval`/`running`/`done`/`failed`) and is `aria-hidden` — the

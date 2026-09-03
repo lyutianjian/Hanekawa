@@ -3395,10 +3395,17 @@ body.resizing #sidebar { transition: none; }
      settings screen, and the menus, which are built at open.
 
    Two places deliberately have no entrance animation, and both would replay
-   themselves to death: transcript items (`dom/transcriptView.ts` rebuilds the
+   themselves to death: transcript items (`dom/transcriptView.ts` re-decides the
    whole scroller on every paint, which during a stream is every token) and the
    two dialog panels (`#overlay-panel`/`#rewind-panel` re-render as the
-   selection moves — the animation lives on the scrim behind them instead). */
+   selection moves — the animation lives on the scrim behind them instead).
+
+   The transcript's own animations — `unfold` on an open step, `bead-pop` on a
+   settled one — are the exception that the reuse pays for, and they only hold
+   still while the nodes stay *attached*. A `replaceChildren` of the scroller
+   removes and re-inserts every row, which cancels and restarts each of these; it
+   is why `dom/transcriptView.ts` inserts through `reconcile` and why nothing in
+   that file may go back to `replace()`. */
 .titlebar-rail,
 .titlebar-menu-trigger,
 .titlebar-menu-item,

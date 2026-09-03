@@ -17,8 +17,8 @@
  * The scan covers `document.<member>` only, so the **element** members faked
  * here are unguarded and the list keeps growing: `scrollTop`/`scrollHeight`/
  * `clientHeight`/`scrollTo`/`scrollIntoView`/`style.height`/`selectionStart`/
- * `setSelectionRange`/`dispatch`/`focus`/`contains()`/`dataset`. Add to that list rather than
- * starting a second one.
+ * `setSelectionRange`/`dispatch`/`focus`/`contains()`/`dataset`/`insertBefore()`.
+ * Add to that list rather than starting a second one.
  *
  * Installation writes `globalThis.document` and `uninstall()` deletes it again.
  * Contamination is bounded even so: `node --test` runs one process per file, and
@@ -194,6 +194,20 @@ class StubElement {
     child.parent?.removeChild(child)
     child.parent = this
     this.childNodes.push(child)
+    return child
+  }
+
+  /**
+   * As `Node.insertBefore`, including the move: a child already in this parent is
+   * taken out of its old slot first. `dom.ts`'s `reconcile` is the only caller,
+   * and a stub that appended instead would let a mis-ordered paint pass.
+   */
+  insertBefore<T extends StubChild>(child: T, before: StubChild | null): T {
+    child.parent?.removeChild(child)
+    child.parent = this
+    const at = before === null ? -1 : this.childNodes.indexOf(before)
+    if (at >= 0) this.childNodes.splice(at, 0, child)
+    else this.childNodes.push(child)
     return child
   }
 

@@ -25,7 +25,7 @@ import {
 import { splitFileMentions } from '../model/userMessage.js'
 import { button } from './controls.js'
 import { diffNode } from './diffView.js'
-import { append, el, replace, show, type Child } from './dom.js'
+import { append, el, reconcile, show, type Child } from './dom.js'
 import { icon } from './icons.js'
 import { markdownChildren } from './markdownView.js'
 
@@ -60,8 +60,16 @@ import { markdownChildren } from './markdownView.js'
  * So each entry and each step keeps its element across paints, keyed by id. An
  * unchanged item is left untouched (its markdown is not even re-parsed); a changed
  * one is refilled *in place*, so the node the anchor points at is still there.
- * `replaceChildren` on the column then re-orders the same nodes rather than
- * building new ones.
+ *
+ * Keeping the *element* is only half of it: it also has to stay **attached**. A
+ * `replaceChildren` of the column, or a `replace()` of a group's contents, removes
+ * every child and puts it back — and a node that leaves the document has its CSS
+ * animations cancelled and restarted, and stops being an anchor the browser can
+ * hold a scroll position by. That is what made `unfold` (220ms, on every open
+ * step) replay once per streamed token: the open thinking body pumped up from zero
+ * height on every delta and shoved the answer below it around. Every insertion
+ * here goes through `reconcile`, which touches only the children that moved, and
+ * the group's own children are keyed nodes for exactly that reason.
  *
  * The jump-to-bottom button is built here rather than in `paneSession.ts` because
  * every piece of scroll knowledge in the renderer already lives in this file, and
@@ -117,6 +125,7 @@ export function createTranscriptView(
   container.appendChild(column)
 
   const cache = new Map<string, CachedNode>()
+  const refs = new Map<string, DisclosureRef>()
 
   function syncJump(): void {
     show(jump, !isScrolledToBottom(container))
@@ -132,10 +141,10 @@ export function createTranscriptView(
   return {
     render(state, disclosure) {
       const atBottom = isScrolledToBottom(container)
-      const painter = createPainter(cache, disclosure, handlers)
+      const painter = createPainter(cache, refs, disclosure, handlers)
       const nodes = groupTranscript(state.items).map((entry) => entryNode(painter, entry))
       painter.prune()
-      column.replaceChildren(...nodes)
+      reconcile(column, nodes)
 
       // Follow the tail only if the user was already there, so reading back
       // through a long turn is not yanked away on every token.
@@ -153,6 +162,19 @@ interface CachedNode {
   signature: readonly unknown[]
 }
 
+/**
+ * What a kept head shows *now*, read at click time.
+ *
+ * A head built once outlives every disclosure it is painted under, so it cannot
+ * close over `expanded`: the answer it reported would be the one from the paint
+ * that happened to build it. `onToggle` takes 「what the row showed」 so the first
+ * click always inverts what the user sees, and this is where that value lives
+ * between paints.
+ */
+interface DisclosureRef {
+  expanded: boolean
+}
+
 interface Painter extends TranscriptHandlers {
   readonly disclosure: DisclosureState
   /**
@@ -161,14 +183,29 @@ interface Painter extends TranscriptHandlers {
    * Every member of a signature is compared with `===`, which is why it is made of
    * the model's own values: an unchanged item hands back the same `text` *string
    * reference*, so an untouched entry costs one identity check rather than a
-   * re-parse of its markdown.
+   * re-parse of its markdown. A signature member may equally be another kept
+   * *node*, which is how a container says 「my children are the same objects」.
+   *
+   * `fill` is handed the node so it can write the attributes that are not
+   * children — a head's accessible name, its `aria-expanded` — on a node it may
+   * not have built itself. `create` builds the element on the first paint only;
+   * without it the node is a `div`.
    */
-  node(key: string, className: string, signature: readonly unknown[], fill: () => Child[]): HTMLElement
+  node(
+    key: string,
+    className: string,
+    signature: readonly unknown[],
+    fill: (node: HTMLElement) => Child[],
+    create?: () => HTMLElement,
+  ): HTMLElement
+  /** The mutable disclosure a kept head reads at click time. */
+  ref(key: string, expanded: boolean): DisclosureRef
   prune(): void
 }
 
 function createPainter(
   cache: Map<string, CachedNode>,
+  refs: Map<string, DisclosureRef>,
   disclosure: DisclosureState,
   handlers: TranscriptHandlers,
 ): Painter {
@@ -178,24 +215,39 @@ function createPainter(
     onToggle: handlers.onToggle,
     onTaskStep: handlers.onTaskStep,
     onOpenPath: handlers.onOpenPath,
-    node(key, className, signature, fill) {
+    node(key, className, signature, fill, create) {
       live.add(key)
       const cached = cache.get(key)
       if (cached && cached.node.className === className && sameSignature(cached.signature, signature)) {
         return cached.node
       }
       // Reused even when the content changed: it is the node the scroll anchor
-      // points at, so it is refilled rather than replaced.
-      const node = cached?.node ?? el('div', className)
+      // points at, so it is refilled rather than replaced — and refilled through
+      // `reconcile`, so the children it hands back keep *their* place too.
+      const node = cached?.node ?? create?.() ?? el('div', className)
       node.className = className
-      replace(node)
-      append(node, fill())
+      reconcile(node, fill(node))
       cache.set(key, { node, signature })
       return node
+    },
+    ref(key, expanded) {
+      const existing = refs.get(key)
+      if (existing) {
+        existing.expanded = expanded
+        return existing
+      }
+      const created = { expanded }
+      refs.set(key, created)
+      return created
     },
     prune() {
       for (const key of [...cache.keys()]) {
         if (!live.has(key)) cache.delete(key)
+      }
+      // Keyed by the group's own node key, so a turn that left the transcript
+      // takes its head's state with it.
+      for (const key of [...refs.keys()]) {
+        if (!live.has(key)) refs.delete(key)
       }
     },
   }
@@ -214,58 +266,65 @@ function entryNode(painter: Painter, entry: TranscriptEntry): HTMLElement {
 /**
  * A turn as one group: a head that summarises it, and its steps.
  *
- * The head is rebuilt on every paint even when the group is unchanged — it holds
- * a click handler bound to the disclosure state it was painted under, and there is
- * no `removeEventListener` bookkeeping worth the alternative. Reuse lives one
- * level down instead, on the steps, which is where the scroll anchor and the cost
- * both are.
+ * Three kept nodes rather than one, and the split is what stops the fold from
+ * replaying: the group's signature is the *identity* of its own two children, so a
+ * paint that changed nothing inside touches nothing here, and a paint that
+ * rebuilt the head re-inserts the head alone — the steps box, and every animation
+ * and scroll anchor under it, is left where it stands.
+ *
+ * The head used to be rebuilt unconditionally, because it closes over the
+ * disclosure it reports. It keeps itself now and reads that through
+ * `painter.ref`, so a reader who has tabbed to it does not lose focus once per
+ * streamed token.
  */
 function groupNode(painter: Painter, group: ActivityGroup): HTMLElement {
   const expanded = isGroupExpanded(group, painter.disclosure)
   const classes = ['activity-group', group.status]
   if (!expanded) classes.push('collapsed')
-  return painter.node(`group:${group.turnId}`, classes.join(' '), rebuild(), () => [
-    groupHead(painter, group, expanded),
-    expanded
-      ? el('div', 'group-steps', ...group.steps.map((step, index) => stepNode(painter, group, step, index)))
-      : undefined,
-  ])
+  const head = groupHead(painter, group, expanded)
+  const steps = expanded ? stepsNode(painter, group) : undefined
+  return painter.node(`group:${group.turnId}`, classes.join(' '), [head, steps], () => [head, steps])
+}
+
+/** The steps box, kept so its children are not re-inserted with their group. */
+function stepsNode(painter: Painter, group: ActivityGroup): HTMLElement {
+  const steps = group.steps.map((step, index) => stepNode(painter, group, step, index))
+  return painter.node(`steps:${group.turnId}`, 'group-steps', steps, () => steps)
 }
 
 function groupHead(painter: Painter, group: ActivityGroup, expanded: boolean): HTMLElement {
-  // The label is built as a child rather than passed to `button()` so it can be
-  // `aria-hidden`: it counts steps as they arrive, and this subtree sits in an
-  // `aria-live` region (§8). The name is `groupHeaderName`'s stable one instead;
-  // what is new is announced by the current step's head, one level down.
-  const head = button('group-head', '', groupHeaderName(group), () =>
-    painter.onToggle(group.turnId, expanded))
-  const label = el('span', 'btn-label', groupHeaderLabel(group))
-  label.setAttribute('aria-hidden', 'true')
-  head.appendChild(label)
-  head.setAttribute('aria-expanded', expanded ? 'true' : 'false')
+  const ref = painter.ref(`group:${group.turnId}`, expanded)
+  const name = groupHeaderName(group)
+  const label = groupHeaderLabel(group)
   // 「12 步里有一个红的」 without opening anything (§3). Decoration only: the count
-  // and the failures are already in the label the button is named by.
-  if (!expanded) {
-    const beads = group.steps.filter(hasBead)
-    if (beads.length > 0) {
-      const strip = el('span', 'group-beads', ...beads.map((step) => bead(step, 'group-bead')))
-      strip.setAttribute('aria-hidden', 'true')
-      head.appendChild(strip)
-    }
-  }
-  return head
-}
-
-/**
- * A signature that can never match the last one, i.e. 「refill me every paint」.
- *
- * The group's own children are one head plus the step nodes, and the head holds a
- * handler bound to the disclosure it was painted under. Rebuilding it is cheap and
- * keeps the reuse where it matters — the step nodes it re-inserts are the cached
- * ones, so the scroll anchor still survives.
- */
-function rebuild(): readonly unknown[] {
-  return [{}]
+  // and the failures are already in the label the button is named by — and the
+  // strip's own content is in the signature, or a step settling under a folded
+  // group would leave a stale colour on it.
+  const beads = expanded ? [] : group.steps.filter(hasBead)
+  const strip = beads.map((step) => beadStatus(step)).join(',')
+  return painter.node(
+    `head:${group.turnId}`,
+    'group-head',
+    [name, label, expanded, strip],
+    (head) => {
+      // `button()` writes these at build time only, and this node outlives the
+      // turn's status: a sealed group's name is not the running one's.
+      head.title = name
+      head.setAttribute('aria-label', name)
+      head.setAttribute('aria-expanded', expanded ? 'true' : 'false')
+      // The label is a child rather than `button()`'s own so it can be
+      // `aria-hidden`: it counts steps as they arrive, and this subtree sits in
+      // an `aria-live` region (§8). The name is `groupHeaderName`'s stable one
+      // instead; what is new is announced by the current step's head.
+      const text = el('span', 'btn-label', label)
+      text.setAttribute('aria-hidden', 'true')
+      if (beads.length === 0) return [text]
+      const box = el('span', 'group-beads', ...beads.map((step) => bead(step, 'group-bead')))
+      box.setAttribute('aria-hidden', 'true')
+      return [text, box]
+    },
+    () => button('group-head', '', name, () => painter.onToggle(group.turnId, ref.expanded)),
+  )
 }
 
 function stepPending(step: ActivityStep): boolean {
@@ -282,10 +341,13 @@ function hasBead(step: ActivityStep): boolean {
  * in words, because colour may not be the only carrier.
  */
 function bead(step: ActivityStep, className: string): HTMLElement {
-  const status = 'status' in step ? step.status : stepPending(step) ? 'running' : 'done'
-  const node = el('span', `${className} ${status}`)
+  const node = el('span', `${className} ${beadStatus(step)}`)
   node.setAttribute('aria-hidden', 'true')
   return node
+}
+
+function beadStatus(step: ActivityStep): string {
+  return 'status' in step ? step.status : stepPending(step) ? 'running' : 'done'
 }
 
 // --- steps -------------------------------------------------------------------

@@ -1260,9 +1260,14 @@ test('the disclosure folds by height, and only when it opens', () => {
   assert.ok(from, 'no `unfold` keyframe; the disclosure has nothing to open with')
   assert.equal(from.decls.find((decl) => decl.prop === 'grid-template-rows')?.value, 'auto 0fr')
 
-  // Scoped by `:not(.collapsed)`, which is what stops it replaying: the animation
-  // is attached and detached by the one class that opens the row, so a step being
-  // refilled by its own streaming result stays still.
+  // Scoped by `:not(.collapsed)`, so the animation is attached and detached by the
+  // one class that opens the row. That is half of what keeps it from replaying;
+  // the other half is not in this sheet at all — a re-inserted element restarts
+  // its animations whatever its classes say, so `dom/transcriptView.ts` has to
+  // keep the step *attached* across paints, which is what its `reconcile` and the
+  // 「a streaming paint detaches nothing」 test in `rendererTranscriptView` are for.
+  // Both halves are load-bearing: this animation shipped once with only the class,
+  // and replayed on every streamed token.
   const opened = blocks.filter((block) => block.decls.some(
     (decl) => decl.prop === 'animation' && /\bunfold\b/.test(decl.value),
   ))

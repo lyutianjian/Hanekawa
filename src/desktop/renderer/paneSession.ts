@@ -72,7 +72,12 @@ import {
 } from './model/completion.js'
 import { completionAcceptMode, type ShellState } from './model/keymap.js'
 import { pruneThinkingToggles } from './model/thinking.js'
-import { applySessionEvent, createTranscriptState, type TranscriptState } from './model/transcript.js'
+import {
+  applySessionEvent,
+  createTranscriptState,
+  type ToolDisplayLookup,
+  type TranscriptState,
+} from './model/transcript.js'
 import {
   activeIndex,
   activeRequest,
@@ -312,7 +317,14 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 
   // --- state -----------------------------------------------------------------
 
-  let transcript: TranscriptState = createTranscriptState()
+  /**
+   * Tool captions, resolved host-side (T1) and asked for at the moment an item is
+   * built — the client has already absorbed the map by the time it hands over the
+   * event, and a caption outlives the payload that introduced it.
+   */
+  const toolDisplays: ToolDisplayLookup = (recordId) => client.getToolDisplay(recordId)
+
+  let transcript: TranscriptState = createTranscriptState([], toolDisplays)
   /**
    * Thinking blocks the user opened or closed against the default (streaming is
    * open, sealed is closed). Per pane, like every other `let` here — a window-level
@@ -531,7 +543,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   }
 
   function note(text: string, level: 'system' | 'error' = 'system'): void {
-    transcript = applySessionEvent(transcript, { type: 'notice', level, content: text }).state
+    transcript = applySessionEvent(transcript, { type: 'notice', level, content: text }, toolDisplays).state
     renderTranscript()
   }
 
@@ -816,7 +828,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   // --- host events -------------------------------------------------------------
 
   client.onEvent((event) => {
-    const outcome = applySessionEvent(transcript, event)
+    const outcome = applySessionEvent(transcript, event, toolDisplays)
     transcript = outcome.state
     noteConversationState()
     renderTranscript()
@@ -1187,13 +1199,13 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     projectGlobal = hello.projectIsGlobal
     gitBranch = hello.gitBranch
 
-    transcript = createTranscriptState(hello.records)
+    transcript = createTranscriptState(hello.records, toolDisplays)
     for (const notice of hello.notices) {
       transcript = applySessionEvent(transcript, {
         type: 'notice',
         level: 'system',
         content: notice.content,
-      }).state
+      }, toolDisplays).state
     }
     // Baseline, not an edge: a session opened *with* history already has its
     // content — only later transitions are "first content".

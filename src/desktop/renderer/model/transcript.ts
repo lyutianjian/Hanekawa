@@ -1,5 +1,6 @@
-import type { SessionRecord } from '../../../harness/types.js'
+import type { SessionRecord, ToolResultDisplay } from '../../../harness/types.js'
 import type { SessionEvent } from '../../../runtime/sessionController.js'
+import type { ToolDisplayDto } from '../../../runtime/protocol/wire.js'
 
 /**
  * The transcript as data: a list of items plus whatever is still in flight.
@@ -52,6 +53,20 @@ import type { SessionEvent } from '../../../runtime/sessionController.js'
  * tentative final answer then needs no code of its own: `groupTranscript` keeps
  * only the run's *last* assistant text outside the group, so a `tool_use` arriving
  * after it moves it inside by itself.
+ *
+ * ## A tool is one step, not two rows (§4.5, T4)
+ *
+ * `tool_use` and `tool_result` share one item, keyed by the call's id, and the
+ * result *merges into* the call rather than replacing it — the caption, the
+ * arguments and the start time all live on the call side and are still what the
+ * collapsed head reads after the result lands. The elapsed time falls out of the
+ * two `createdAt`s, so no record gained a field for it.
+ *
+ * The caption itself is not guessed here any more: `ToolDisplayDto` is projected
+ * host-side from `src/tools/display.ts` (T1), which is the same source the TUI
+ * reads, and a lookup is handed in by the caller. Without one — an older host —
+ * the previous key-guessing (`toolCallSummary` / `toolResultSummary`) still runs,
+ * so an old client degrades rather than showing raw JSON.
  */
 
 export type TranscriptItemKind =
@@ -63,6 +78,55 @@ export type TranscriptItemKind =
   | 'error'
   | 'subagent'
   | 'duration'
+
+/**
+ * How the host captions a `tool_use` record, by record id.
+ *
+ * A function rather than the map itself: `SessionClient` accumulates captions as
+ * payloads arrive and a `tool_result` ten seconds later is drawn under the same
+ * header, so the fold has to ask at the moment it builds the item.
+ */
+export type ToolDisplayLookup = (recordId: string) => ToolDisplayDto | undefined
+
+/** §3's four states. The colour is never the only carrier; see `toolStatusLabel`. */
+export type ToolStepStatus = 'awaiting-approval' | 'running' | 'done' | 'failed'
+
+/**
+ * Everything a tool step's head and body need, gathered from both records.
+ *
+ * The call side (`displayName`, `useSummary`, `startedAt`) survives the result
+ * merging in; the result side adds `headerSuffix`, the body, and the elapsed time.
+ */
+export interface ToolStepDetail {
+  /** `Tool.userFacingName(input)` via the DTO, else the raw tool name. */
+  readonly displayName: string
+  /** `Tool.getToolUseSummary(input)` via the DTO, else the guessed argument. */
+  readonly useSummary: string
+  /** `ToolResultDisplay.headerSuffix` — the result's own trailing note. */
+  readonly headerSuffix?: string
+  /** `ToolResultDisplay.summary` — the expanded body's own header (§6.2 兜底). */
+  readonly resultSummary?: string
+  /** `ToolResultDisplay.detail`; the body prefers it over `content`. */
+  readonly detail?: string
+  /** The raw `tool_result.content`, the body's fallback. */
+  readonly content?: string
+  /** `tool_use.createdAt`, kept so a late result can still measure the span. */
+  readonly startedAt?: string
+  /** `tool_result.createdAt − tool_use.createdAt`; absent if either is unparseable. */
+  readonly durationMs?: number
+  /** The call has a `tool_use` record but no approval yet (§3). */
+  readonly awaitingApproval?: boolean
+  /** `TodoWrite` only: the `3/6` the head shows (§4.4). */
+  readonly progress?: { readonly completed: number; readonly total: number }
+  /**
+   * The caption came from the host DTO rather than from guessing at `input`.
+   *
+   * It decides whether the result may rewrite the collapsed line: a captioned
+   * step keeps the call's head and puts the result in its body, while a DTO-less
+   * one falls back to the old `Read → contents` single line.
+   */
+  readonly captioned?: boolean
+}
 
 export interface TranscriptItem {
   /** Stable within a state: a record id, or a synthetic key for live items. */
@@ -86,16 +150,38 @@ export interface TranscriptItem {
   readonly durationMs?: number
   /** On the notice minted by a `turn_interruption`: this turn was aborted. */
   readonly interrupt?: boolean
+  /** On a `tool` item: both records' worth of head and body (§4.5). */
+  readonly tool?: ToolStepDetail
 }
 
 /** One step inside an activity group. `text` is the body; heads are the view's job. */
 export type ActivityStep =
   | { readonly kind: 'thinking'; readonly id: string; readonly text: string; readonly pending?: boolean; readonly summary?: string }
-  | { readonly kind: 'tool'; readonly id: string; readonly text: string; readonly toolName?: string; readonly pending?: boolean; readonly failed?: boolean }
+  | {
+      readonly kind: 'tool'
+      readonly id: string
+      readonly text: string
+      readonly toolName?: string
+      readonly pending?: boolean
+      readonly failed?: boolean
+      readonly status: ToolStepStatus
+      readonly tool: ToolStepDetail
+    }
   | { readonly kind: 'text'; readonly id: string; readonly text: string }
   | { readonly kind: 'subagent'; readonly id: string; readonly text: string; readonly pending?: boolean }
   | { readonly kind: 'system'; readonly id: string; readonly text: string; readonly failed?: boolean }
-  | { readonly kind: 'task'; readonly id: string; readonly text: string }
+  // `TodoWrite`: a single line that never expands — the list itself lives in the
+  // task panel above the composer (§4.4, §7).
+  | {
+      readonly kind: 'task'
+      readonly id: string
+      readonly text: string
+      readonly toolName?: string
+      readonly pending?: boolean
+      readonly failed?: boolean
+      readonly status: ToolStepStatus
+      readonly tool: ToolStepDetail
+    }
 
 export interface ActivityGroup {
   /** The grouping key, and the group's stable id. */
@@ -159,9 +245,17 @@ export interface TranscriptOutcome {
 
 const DRAFT_ID = '__draft__'
 
-export function createTranscriptState(records: readonly SessionRecord[] = []): TranscriptState {
+export function createTranscriptState(
+  records: readonly SessionRecord[] = [],
+  toolDisplays?: ToolDisplayLookup,
+): TranscriptState {
+  // Approvals are matched over the *records*, in order, not over the items: the
+  // approval record names no `tool_use`, so the only honest link is «the earliest
+  // unanswered call of that tool». Matching over collapsed items would let a
+  // finished call's approval clear a later, still-waiting one of the same name.
+  const context: ItemContext = { toolDisplays, approved: approvedToolUseIds(records) }
   return {
-    items: mergeAdjacentThinking(collapseById(records.flatMap(recordItems))),
+    items: mergeAdjacentThinking(collapseById(records.flatMap((record) => recordItems(record, context)))),
     generation: 0,
     toolProgress: undefined,
     isThinking: false,
@@ -169,7 +263,11 @@ export function createTranscriptState(records: readonly SessionRecord[] = []): T
   }
 }
 
-export function applySessionEvent(state: TranscriptState, event: SessionEvent): TranscriptOutcome {
+export function applySessionEvent(
+  state: TranscriptState,
+  event: SessionEvent,
+  toolDisplays?: ToolDisplayLookup,
+): TranscriptOutcome {
   switch (event.type) {
     case 'turn-start':
       // The user message arrives as a record too, but only after the turn has
@@ -183,7 +281,7 @@ export function applySessionEvent(state: TranscriptState, event: SessionEvent): 
       }
 
     case 'record':
-      return { state: applyRecord(state, event.record) }
+      return { state: applyRecord(state, event.record, toolDisplays) }
 
     case 'stream':
       return { state: applyStream(state, event.event) }
@@ -204,7 +302,7 @@ export function applySessionEvent(state: TranscriptState, event: SessionEvent): 
       }
 
     case 'transcript-reset': {
-      const base = createTranscriptState(event.records)
+      const base = createTranscriptState(event.records, toolDisplays)
       return {
         state: {
           ...base,
@@ -391,11 +489,24 @@ function appendThinking(state: TranscriptState, text: string): TranscriptState {
   return { ...state, isThinking: true, items }
 }
 
-function applyRecord(state: TranscriptState, record: SessionRecord): TranscriptState {
+function applyRecord(
+  state: TranscriptState,
+  record: SessionRecord,
+  toolDisplays: ToolDisplayLookup | undefined,
+): TranscriptState {
   // Live items inherit the turn from the records already seen, so a streaming
   // segment is inside its group before `turn-end` names the turn (§4.1).
   const turnId = recordStamp(record).turnId ?? state.turnId
-  const produced = recordItems(record)
+
+  // The approval is bookkeeping — it draws nothing — but it is what moves a call
+  // out of 「等待授权」. Live it needs no queue: the call it belongs to is simply
+  // the earliest one of that tool still waiting, because a second call of the
+  // same tool cannot be recorded while this one holds the gate.
+  if (record.type === 'tool_approval') {
+    return { ...state, turnId, items: clearAwaitingApproval(state.items, record) }
+  }
+
+  const produced = recordItems(record, { toolDisplays })
   if (produced.length === 0) return { ...state, turnId }
 
   // An assistant message *replaces* what streamed rather than following it.
@@ -421,11 +532,12 @@ function applyRecord(state: TranscriptState, record: SessionRecord): TranscriptS
     liveThinkingId = undefined
   }
 
-  // A tool_result supersedes the pending tool_use row it answers.
+  // A tool_result *merges into* the call row it answers — it does not replace it
+  // (§4.5). The caption and the start time only exist on the call side.
   if (record.type === 'tool_result') {
     const answered = next.findIndex((item) => item.id === record.toolUseId)
     if (answered !== -1) {
-      next[answered] = pending[0]!
+      next[answered] = mergeToolItems(next[answered]!, pending[0]!)
       return { ...state, turnId, liveThinkingId, items: next }
     }
   }
@@ -454,8 +566,14 @@ function isSystemReminderBlock(text: string): boolean {
   return trimmed.startsWith('<system-reminder>') && trimmed.endsWith('</system-reminder>')
 }
 
+interface ItemContext {
+  readonly toolDisplays?: ToolDisplayLookup
+  /** Replay only: `tool_use` ids an approval record has already answered. */
+  readonly approved?: ReadonlySet<string>
+}
+
 /** One record to zero or more items. Records with no visual meaning yield none. */
-function recordItems(record: SessionRecord): TranscriptItem[] {
+function recordItems(record: SessionRecord, context: ItemContext = {}): TranscriptItem[] {
   const stamp = recordStamp(record)
   switch (record.type) {
     case 'message': {
@@ -474,26 +592,43 @@ function recordItems(record: SessionRecord): TranscriptItem[] {
       return thinking ? [{ ...thinking, ...stamp }, text] : [text]
     }
 
-    case 'tool_use':
+    case 'tool_use': {
+      const dto = context.toolDisplays?.(record.id)
+      const tool: ToolStepDetail = {
+        displayName: dto?.displayName ?? record.tool,
+        useSummary: dto?.useSummary ?? toolCallDetail(record.input),
+        ...(record.createdAt === undefined ? {} : { startedAt: record.createdAt }),
+        // Recorded, not yet approved. The approval record clears it; a call the
+        // gate waved through clears it just as fast, so the state is only ever
+        // visible for as long as the user is actually being asked.
+        ...(context.approved?.has(record.id) === true ? {} : { awaitingApproval: true }),
+        ...(dto ? { captioned: true } : {}),
+      }
       return [{
         id: record.id,
         kind: 'tool',
-        text: toolCallSummary(record.tool, record.input),
+        // The DTO-less fallback keeps the shape older clients drew, `Read(a.txt)`.
+        text: dto ? toolHeaderText(tool) : toolCallSummary(record.tool, record.input),
         toolName: record.tool,
         pending: true,
+        tool,
         ...stamp,
       }]
+    }
 
-    case 'tool_result':
+    case 'tool_result': {
+      // Keyed by the call it answers, so it merges into that row in place.
+      const tool = resultDetail(record.tool, record.display, record.content)
       return [{
-        // Keyed by the call it answers, so it can replace that row in place.
         id: record.toolUseId,
         kind: 'tool',
         text: toolResultSummary(record.tool, record.ok, record.content),
         toolName: record.tool,
         ...(record.ok ? {} : { failed: true }),
+        tool,
         ...stamp,
       }]
+    }
 
     case 'subagent_task':
       return [{
@@ -527,6 +662,119 @@ function recordItems(record: SessionRecord): TranscriptItem[] {
   }
 }
 
+/** The head as one line: `Read src/a.ts`. Either half may be empty. */
+function toolHeaderText(tool: ToolStepDetail): string {
+  return [tool.displayName, tool.useSummary].filter((part) => part.length > 0).join(' ')
+}
+
+/**
+ * The result half of a step. Deliberately carries no `displayName` /
+ * `useSummary`: those belong to the call and `mergeToolItems` must not lose them
+ * to a spread. A result with no call to merge into (a truncated log) still needs
+ * *some* name, so it falls back to the raw tool name there.
+ */
+function resultDetail(toolName: string, display: ToolResultDisplay | undefined, content: string): ToolStepDetail {
+  return {
+    displayName: toolName,
+    useSummary: '',
+    content,
+    ...(display?.headerSuffix === undefined ? {} : { headerSuffix: display.headerSuffix }),
+    ...(display?.summary === undefined ? {} : { resultSummary: display.summary }),
+    ...(display?.detail === undefined ? {} : { detail: display.detail }),
+    ...(display?.taskSnapshot === undefined ? {} : {
+      progress: {
+        completed: display.taskSnapshot.counts.completed,
+        total: display.taskSnapshot.counts.total,
+      },
+    }),
+  }
+}
+
+/**
+ * Call + result as one item (§4.5).
+ *
+ * The result's fields win *except* the caption and the start time, which only
+ * the call has, and `awaitingApproval`, which a result settles by existing. The
+ * head line survives only for a captioned step; without a DTO the old
+ * `Read → contents` line is still the best single row available.
+ */
+function mergeToolItems(call: TranscriptItem, result: TranscriptItem): TranscriptItem {
+  const callTool = call.tool
+  const resultTool = result.tool
+  if (callTool === undefined || resultTool === undefined) return result
+  const { awaitingApproval: _awaiting, ...settled } = callTool
+  const tool: ToolStepDetail = {
+    ...settled,
+    ...resultTool,
+    displayName: callTool.displayName,
+    useSummary: callTool.useSummary,
+    ...spanBetween(callTool.startedAt, result.createdAt),
+  }
+  return {
+    ...result,
+    tool,
+    ...(callTool.captioned === true ? { text: call.text } : {}),
+  }
+}
+
+/** The tool's own elapsed time. Unparseable stamps (an old log, a test) yield none. */
+function spanBetween(startedAt: string | undefined, finishedAt: string | undefined): { durationMs?: number } {
+  const start = startedAt === undefined ? NaN : Date.parse(startedAt)
+  const end = finishedAt === undefined ? NaN : Date.parse(finishedAt)
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return {}
+  return { durationMs: Math.max(0, end - start) }
+}
+
+/**
+ * Which `tool_use` records an approval has already answered (replay).
+ *
+ * `ToolApprovalRecord` names no call, so calls of the same tool are matched in
+ * order — which is exact, because `ToolRunner` records the approval before the
+ * next call of that tool can reach the gate. A host that does name the call
+ * (`toolUseId`) is believed instead.
+ */
+function approvedToolUseIds(records: readonly SessionRecord[]): Set<string> {
+  const approved = new Set<string>()
+  const waiting = new Map<string, string[]>()
+  for (const record of records) {
+    if (record.type === 'tool_use') {
+      const queue = waiting.get(record.tool)
+      if (queue) queue.push(record.id)
+      else waiting.set(record.tool, [record.id])
+      continue
+    }
+    if (record.type !== 'tool_approval') continue
+    const named = (record as { toolUseId?: unknown }).toolUseId
+    if (typeof named === 'string') {
+      approved.add(named)
+      const queue = waiting.get(record.tool)
+      if (queue) waiting.set(record.tool, queue.filter((id) => id !== named))
+      continue
+    }
+    const next = waiting.get(record.tool)?.shift()
+    if (next !== undefined) approved.add(next)
+  }
+  return approved
+}
+
+/** The live counterpart of `approvedToolUseIds`, one record at a time. */
+function clearAwaitingApproval(
+  items: readonly TranscriptItem[],
+  record: Extract<SessionRecord, { type: 'tool_approval' }>,
+): readonly TranscriptItem[] {
+  const named = (record as { toolUseId?: unknown }).toolUseId
+  const index = items.findIndex((item) => (
+    item.kind === 'tool'
+    && item.tool?.awaitingApproval === true
+    && (typeof named === 'string' ? item.id === named : item.toolName === record.tool)
+  ))
+  if (index === -1) return items
+  const next = [...items]
+  const { awaitingApproval: _awaiting, ...tool } = next[index]!.tool!
+  next[index] = { ...next[index]!, tool }
+  return next
+}
+
 /** Not every record variant declares `turnId`, and a few carry no clock either. */
 function recordStamp(record: SessionRecord): { turnId?: string; createdAt?: string } {
   const fields = record as { turnId?: unknown; createdAt?: unknown }
@@ -554,8 +802,9 @@ function replayedThinking(record: Extract<SessionRecord, { type: 'message' }>): 
 
 /**
  * A `tool_result` keys itself by the call it answers, so replaying both records
- * yields two items under one id. The live fold replaces the row in place
- * (`applyRecord`); replay has to do the same, or the same call draws twice.
+ * yields two items under one id. The live fold merges the two in place
+ * (`applyRecord`); replay has to do the same, or the same call draws twice — and
+ * with the same *merge*, or replay would drop the caption the call carries.
  */
 function collapseById(items: readonly TranscriptItem[]): TranscriptItem[] {
   const collapsed: TranscriptItem[] = []
@@ -566,7 +815,10 @@ function collapseById(items: readonly TranscriptItem[]): TranscriptItem[] {
       seen.set(item.id, collapsed.length)
       collapsed.push(item)
     } else {
-      collapsed[index] = item
+      const previous = collapsed[index]!
+      collapsed[index] = previous.kind === 'tool' && item.kind === 'tool'
+        ? mergeToolItems(previous, item)
+        : item
     }
   }
   return collapsed
@@ -722,7 +974,9 @@ function turnEntries(turnId: string, run: readonly TranscriptItem[]): Transcript
       status: interrupted ? 'aborted' : running ? 'running' : 'done',
       ...durationOf(duration, run),
       stepCount: steps.length,
-      failedCount: steps.filter((step) => 'failed' in step && step.failed === true).length,
+      failedCount: steps.filter((step) => (
+        ('status' in step && step.status === 'failed') || ('failed' in step && step.failed === true)
+      )).length,
     },
   })
   return [...entries, ...after.map((item) => ({ kind: 'item' as const, item }))]
@@ -741,6 +995,34 @@ function durationOf(duration: TranscriptItem | undefined, run: readonly Transcri
   return { durationMs: Math.max(...stamps) - Math.min(...stamps) }
 }
 
+const TASK_TOOL = 'TodoWrite'
+
+/**
+ * §3's four states, in precedence order: a settled call is what it settled as,
+ * and only an unsettled one distinguishes waiting for the user from running.
+ */
+export function toolStepStatus(item: TranscriptItem): ToolStepStatus {
+  if (item.failed === true) return 'failed'
+  if (item.pending !== true) return 'done'
+  return item.tool?.awaitingApproval === true ? 'awaiting-approval' : 'running'
+}
+
+/**
+ * The state in words.
+ *
+ * §3 makes the bead the tool's only *visual* status vocabulary, which is exactly
+ * why the state also has to exist as text: the bead is `aria-hidden`, so this is
+ * what reaches a screen reader (T17), and it is not a colour anyone has to decode.
+ */
+export function toolStatusLabel(status: ToolStepStatus): string {
+  switch (status) {
+    case 'awaiting-approval': return '等待授权'
+    case 'running': return '执行中'
+    case 'done': return '完成'
+    case 'failed': return '失败'
+  }
+}
+
 function toStep(item: TranscriptItem): ActivityStep {
   switch (item.kind) {
     case 'thinking':
@@ -751,15 +1033,21 @@ function toStep(item: TranscriptItem): ActivityStep {
         ...(item.pending === true ? { pending: true } : {}),
         ...(item.summary === undefined ? {} : { summary: item.summary }),
       }
-    case 'tool':
+    case 'tool': {
+      const tool = item.tool ?? { displayName: item.toolName ?? '', useSummary: '' }
       return {
-        kind: 'tool',
+        // `TodoWrite` is the one tool whose body lives elsewhere: the task panel
+        // above the composer owns the list, so the step is a single line (§4.4).
+        kind: item.toolName === TASK_TOOL ? 'task' : 'tool',
         id: item.id,
         text: item.text,
+        status: toolStepStatus(item),
+        tool,
         ...(item.toolName === undefined ? {} : { toolName: item.toolName }),
         ...(item.pending === true ? { pending: true } : {}),
         ...(item.failed === true ? { failed: true } : {}),
       }
+    }
     case 'subagent':
       return {
         kind: 'subagent',

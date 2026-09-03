@@ -92,7 +92,7 @@ hello 走同一投影」的回归。
 **验收**：`rendererTranscriptModel.test.ts` 新增「直播序列与用同一批记录回放，产出的组结构逐字段
 相等」的对称性测试 —— 这是本设计的地基，必须有；外加降级、中断、零 step 三条。
 
-### [ ] T4 — tool_use / tool_result 合并成一个 step（§4.5）
+### [x] T4 — tool_use / tool_result 合并成一个 step（§4.5）
 
 **依赖**：T2、T3；消费 T1 的 DTO。
 

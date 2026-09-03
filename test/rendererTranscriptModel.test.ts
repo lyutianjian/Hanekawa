@@ -7,12 +7,16 @@ import {
   formatWorkedDuration,
   groupTranscript,
   toolCallSummary,
+  toolStatusLabel,
 } from '../src/desktop/renderer/model/transcript.js'
 import type {
   ActivityGroup,
+  ToolDisplayLookup,
+  ToolStepStatus,
   TranscriptItem,
   TranscriptState,
 } from '../src/desktop/renderer/model/transcript.js'
+import type { ToolDisplayDto } from '../src/runtime/protocol/wire.js'
 import type { SessionEvent } from '../src/runtime/sessionController.js'
 import type { SessionRecord } from '../src/harness/types.js'
 import { wrapInSystemReminder } from '../src/harness/systemReminder.js'
@@ -743,4 +747,149 @@ test('two turns are two groups, in order', () => {
   assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'group', 'item', 'item', 'group', 'item'])
   assert.equal(groupAt(entries, 1).turnId, 't1')
   assert.equal(groupAt(entries, 4).turnId, 't2')
+})
+
+/**
+ * §4.5 / T4: a tool is **one** step holding both records.
+ *
+ * The caption comes from the host's `ToolDisplayDto` (T1) rather than from
+ * guessing at `input`'s keys, and the body from `display.detail ?? content`. The
+ * fallback path is kept deliberately: an older host sends no captions at all, and
+ * degrading to the previous one-liner beats drawing raw JSON.
+ */
+
+function displays(map: Record<string, ToolDisplayDto>): ToolDisplayLookup {
+  return (recordId) => map[recordId]
+}
+
+function captionedRead(): ToolDisplayLookup {
+  return displays({ tu1: { displayName: 'Read', useSummary: 'src/a.ts' } })
+}
+
+function toolStep(entries: ReturnType<typeof groupTranscript>, index: number, step = 0) {
+  const found = groupAt(entries, index).steps[step]
+  assert.ok(found?.kind === 'tool' || found?.kind === 'task', `step ${step} is ${found?.kind}`)
+  return found
+}
+
+function stepStatuses(entries: ReturnType<typeof groupTranscript>, index: number) {
+  return groupAt(entries, index).steps.map((step) => ('status' in step ? step.status : undefined))
+}
+
+test('the call and its result are one step: head from the DTO, body from display.detail', () => {
+  const entries = groupTranscript(createTranscriptState([
+    stamped(message('u1', 'user', 'go'), 't1', '2026-01-01T00:00:00.000Z'),
+    toolUse('tu1', 't1', '2026-01-01T00:00:01.000Z'),
+    {
+      type: 'tool_result', id: 'tr1', toolUseId: 'tu1', tool: 'Read', ok: true,
+      content: 'raw contents', createdAt: '2026-01-01T00:00:03.500Z', turnId: 't1',
+      display: { summary: 'Read 240 lines', headerSuffix: '240 行', detail: '1 | export {}' },
+    },
+  ], captionedRead()).items)
+
+  assert.equal(groupAt(entries, 1).stepCount, 1, 'not one row for the call and another for the result')
+
+  const step = toolStep(entries, 1)
+  assert.equal(step.kind, 'tool')
+  assert.equal(step.text, 'Read src/a.ts', 'the head stays the call, captioned host-side')
+  assert.equal(step.tool.displayName, 'Read')
+  assert.equal(step.tool.useSummary, 'src/a.ts', 'not a guess at input.filePath')
+  assert.equal(step.tool.headerSuffix, '240 行')
+  assert.equal(step.tool.resultSummary, 'Read 240 lines')
+  assert.equal(step.tool.detail, '1 | export {}')
+  assert.equal(step.tool.content, 'raw contents', 'the body falls back to it when detail is absent')
+})
+
+test('a tool step measures itself from the two records, with no new record field', () => {
+  const entries = groupTranscript(createTranscriptState([
+    stamped(message('u1', 'user', 'go'), 't1', '2026-01-01T00:00:00.000Z'),
+    toolUse('tu1', 't1', '2026-01-01T00:00:01.000Z'),
+    toolResult('tu1', 't1', '2026-01-01T00:00:03.500Z'),
+  ], captionedRead()).items)
+
+  assert.equal(toolStep(entries, 1).tool.durationMs, 2500)
+})
+
+test('the four tool states are derived, and each one has words as well as a colour', () => {
+  const call = toolUse('tu1', 't1', '2026-01-01T00:00:01.000Z')
+  const approval: SessionRecord = {
+    type: 'tool_approval', id: 'ta1', tool: 'Read', input: {}, approved: true,
+    riskLevel: 'safe', createdAt: '2026-01-01T00:00:02.000Z', turnId: 't1',
+  }
+  const head = stamped(message('u1', 'user', 'go'), 't1', '2026-01-01T00:00:00.000Z')
+  const statusOf = (records: SessionRecord[]) =>
+    toolStep(groupTranscript(createTranscriptState([head, ...records], captionedRead()).items), 1).status
+
+  assert.equal(statusOf([call]), 'awaiting-approval', 'recorded, but the gate has not answered')
+  assert.equal(statusOf([call, approval]), 'running')
+  assert.equal(statusOf([call, approval, toolResult('tu1', 't1', 'now')]), 'done')
+  assert.equal(statusOf([call, approval, toolResult('tu1', 't1', 'now', false)]), 'failed')
+
+  // §3 makes the bead the only *visual* vocabulary, so the state must also exist
+  // as text — the bead is aria-hidden and a colour is not a label.
+  assert.deepEqual(
+    (['awaiting-approval', 'running', 'done', 'failed'] as ToolStepStatus[]).map(toolStatusLabel),
+    ['等待授权', '执行中', '完成', '失败'],
+  )
+})
+
+test('an approval answers the earliest waiting call of its tool, live and on replay', () => {
+  // The approval record names no call, so a finished Read's approval must not be
+  // what clears a second, still-waiting Read.
+  const records: SessionRecord[] = [
+    stamped(message('u1', 'user', 'go'), 't1', '2026-01-01T00:00:00.000Z'),
+    toolUse('tu1', 't1', '2026-01-01T00:00:01.000Z'),
+    {
+      type: 'tool_approval', id: 'ta1', tool: 'Read', input: {}, approved: true,
+      riskLevel: 'safe', createdAt: '2026-01-01T00:00:01.500Z', turnId: 't1',
+    },
+    toolResult('tu1', 't1', '2026-01-01T00:00:02.000Z'),
+    { ...(toolUse('tu2', 't1', '2026-01-01T00:00:03.000Z') as Extract<SessionRecord, { type: 'tool_use' }>) },
+  ]
+
+  const replayed = groupTranscript(createTranscriptState(records, captionedRead()).items)
+  assert.deepEqual(stepStatuses(replayed, 1), ['done', 'awaiting-approval'])
+
+  const live = fold(records.map((record): SessionEvent => ({ type: 'record', record }))).state
+  assert.deepEqual(
+    stepStatuses(groupTranscript(live.items), 1),
+    ['done', 'awaiting-approval'],
+    'live and replay agree, which is the property T3 established',
+  )
+})
+
+test('without a DTO the step falls back to the old key-guessing line', () => {
+  const entries = groupTranscript(createTranscriptState([
+    stamped(message('u1', 'user', 'go'), 't1', 'now'),
+    toolUse('tu1', 't1', 'now'),
+    toolResult('tu1', 't1', 'now'),
+  ]).items)
+
+  const step = toolStep(entries, 1)
+  assert.equal(step.text, 'Read → contents', 'an older host sends no captions; this beats raw JSON')
+  assert.equal(step.tool.useSummary, 'a.txt', 'guessed from input, exactly as before')
+  assert.equal(step.tool.content, 'contents', 'the body is still there to expand')
+})
+
+test('TodoWrite is a single task step, and its list lives in the panel instead', () => {
+  const entries = groupTranscript(createTranscriptState([
+    stamped(message('u1', 'user', 'go'), 't1', 'now'),
+    { type: 'tool_use', id: 'tw1', tool: 'TodoWrite', input: {}, riskLevel: 'safe', createdAt: 'now', turnId: 't1' },
+    {
+      type: 'tool_result', id: 'twr1', toolUseId: 'tw1', tool: 'TodoWrite', ok: true,
+      content: 'updated', createdAt: 'now', turnId: 't1',
+      display: {
+        summary: '更新任务清单',
+        taskSnapshot: {
+          tasks: [],
+          counts: { total: 6, remaining: 3, pending: 2, inProgress: 1, completed: 3 },
+        },
+      },
+    },
+  ], displays({ tw1: { displayName: 'TodoWrite', useSummary: '更新任务清单' } })).items)
+
+  const step = toolStep(entries, 1)
+  assert.equal(step.kind, 'task', 'not a foldable tool step — the panel above the composer owns the list')
+  assert.equal(step.text, 'TodoWrite 更新任务清单')
+  assert.deepEqual(step.tool.progress, { completed: 3, total: 6 }, 'the head reads 3/6')
 })

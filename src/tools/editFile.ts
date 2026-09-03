@@ -2,6 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
+import { patchDetail } from './editPatch.js'
 import { getReadFileContent, rememberReadFile, requireFreshRead } from './fileState.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
 
@@ -70,6 +71,7 @@ export const editFileTool: Tool = {
       metadata: {
         display: {
           summary: `Edited ${filePath}`,
+          ...patchDetail(filePath, original, nextContent),
         },
       },
     }

@@ -5,6 +5,7 @@ import type { Tool, ToolContext, ToolResult } from '../harness/types.js'
 import { requireFreshRead, readFileAndRemember } from './fileState.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
 import { assertInsideCwd } from '../utils/paths.js'
+import { patchDetail } from './editPatch.js'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -91,6 +92,20 @@ function serializeSource(source: string): string[] {
   if (source === '') return ['']
   const lines = source.split('\n')
   return lines.map((line, i) => (i < lines.length - 1 ? `${line}\n` : line))
+}
+
+/** The cell's text as one string, whichever of the two on-disk shapes it uses. */
+function cellSourceText(cell: NotebookCell): string {
+  return Array.isArray(cell.source) ? cell.source.join('') : cell.source
+}
+
+/**
+ * A notebook's patch is over the *cell's* source, not the .ipynb JSON: a
+ * JSON-level diff is mostly execution counts and output blobs, which is not
+ * what the edit was about.
+ */
+function cellPatchLabel(notebookPath: string, index: number): string {
+  return `${notebookPath}#cell-${index}`
 }
 
 // ── Tool implementation ────────────────────────────────────────────────────────
@@ -209,6 +224,7 @@ export const notebookEditTool: Tool = {
         }
       }
 
+      const deletedSource = cellSourceText(found.cell)
       notebook.cells.splice(found.index, 1)
       await writeNotebook(absolutePath, notebook, context)
 
@@ -218,6 +234,7 @@ export const notebookEditTool: Tool = {
         metadata: {
           display: {
             summary: `Deleted cell ${found.index} (${notebook.cells.length} cells remaining)`,
+            ...patchDetail(cellPatchLabel(options.notebook_path, found.index), deletedSource, ''),
           },
         },
       }
@@ -265,6 +282,7 @@ export const notebookEditTool: Tool = {
         metadata: {
           display: {
             summary: `Inserted ${cellType} cell at ${insertIndex} (${notebook.cells.length} cells)`,
+            ...patchDetail(cellPatchLabel(options.notebook_path, insertIndex), '', options.new_source),
           },
         },
       }
@@ -307,6 +325,11 @@ export const notebookEditTool: Tool = {
           metadata: {
             display: {
               summary: `Appended ${cellType} cell (${notebook.cells.length} cells)`,
+              ...patchDetail(
+                cellPatchLabel(options.notebook_path, notebook.cells.length - 1),
+                '',
+                options.new_source,
+              ),
             },
           },
         }
@@ -321,6 +344,7 @@ export const notebookEditTool: Tool = {
 
     // Update the cell
     const targetCell = found.cell
+    const previousSource = cellSourceText(targetCell)
     targetCell.source = serializeSource(options.new_source)
 
     // Reset execution state for code cells
@@ -350,6 +374,11 @@ export const notebookEditTool: Tool = {
       metadata: {
         display: {
           summary: `Updated cell ${found.index} (${targetCell.cell_type})`,
+          ...patchDetail(
+            cellPatchLabel(options.notebook_path, found.index),
+            previousSource,
+            options.new_source,
+          ),
         },
       },
     }

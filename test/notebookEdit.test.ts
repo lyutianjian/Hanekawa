@@ -92,6 +92,19 @@ test('NotebookEdit replace updates cell source', async () => {
     )
     assert.equal(result.ok, true)
     assert.match(result.metadata?.display?.summary ?? '', /Updated cell/)
+    // The patch is over the cell's source, not the .ipynb JSON.
+    assert.equal(
+      result.metadata?.display?.detail,
+      [
+        '--- a/test.ipynb#cell-0',
+        '+++ b/test.ipynb#cell-0',
+        '@@ -1,1 +1,1 @@',
+        '-print("hello")',
+        '\\ No newline at end of file',
+        '+print("world")',
+        '\\ No newline at end of file',
+      ].join('\n'),
+    )
 
     // Verify the file was updated
     const updated = JSON.parse(await readFile(nbPath, 'utf8'))
@@ -169,6 +182,16 @@ test('NotebookEdit insert creates new cell after referenced cell', async () => {
     )
     assert.equal(result.ok, true)
     assert.match(result.metadata?.display?.summary ?? '', /Inserted/)
+    assert.equal(
+      result.metadata?.display?.detail,
+      [
+        '--- a/test.ipynb#cell-1',
+        '+++ b/test.ipynb#cell-1',
+        '@@ -0,0 +1,1 @@',
+        '+# comment',
+        '\\ No newline at end of file',
+      ].join('\n'),
+    )
 
     const updated = JSON.parse(await readFile(nbPath, 'utf8'))
     assert.equal(updated.cells.length, 2)
@@ -270,6 +293,16 @@ test('NotebookEdit delete removes cell', async () => {
     )
     assert.equal(result.ok, true)
     assert.match(result.metadata?.display?.summary ?? '', /Deleted/)
+    assert.equal(
+      result.metadata?.display?.detail,
+      [
+        '--- a/test.ipynb#cell-0',
+        '+++ b/test.ipynb#cell-0',
+        '@@ -1,1 +0,0 @@',
+        '-a = 1',
+        '\\ No newline at end of file',
+      ].join('\n'),
+    )
 
     const updated = JSON.parse(await readFile(nbPath, 'utf8'))
     assert.equal(updated.cells.length, 1)

@@ -21,6 +21,7 @@ import { editFileTool } from '../src/tools/editFile.js'
 import { multiEditTool } from '../src/tools/multiEdit.js'
 import { writeFileTool } from '../src/tools/writeFile.js'
 import { deleteFileTool } from '../src/tools/deleteFile.js'
+import { buildUnifiedPatch } from '../src/tools/editPatch.js'
 import { toolSearchTool } from '../src/tools/ToolSearchTool/ToolSearchTool.js'
 import { getToolSearchMode, getAutoThreshold, resetToolSearchCache, resolveToolSearchState } from '../src/utils/toolSearch.js'
 import { BackgroundTaskRegistry, defaultBackgroundTaskRegistry } from '../src/services/backgroundTasks/registry.js'
@@ -342,6 +343,19 @@ test('multiEdit applies multiple replacements atomically', async () => {
 
     assert.equal(result.ok, true)
     assert.equal(result.metadata?.display?.summary, 'Applied 2 edits to a.txt')
+    assert.equal(
+      result.metadata?.display?.detail,
+      [
+        '--- a/a.txt',
+        '+++ b/a.txt',
+        '@@ -1,3 +1,3 @@',
+        '-alpha',
+        '+ALPHA',
+        ' beta',
+        '-gamma',
+        '+GAMMA',
+      ].join('\n'),
+    )
     assert.equal(await readFile(file, 'utf8'), 'ALPHA\nbeta\nGAMMA\n')
     assert.equal(ctx.readFileState.get(file)?.content, 'ALPHA\nbeta\nGAMMA\n')
   } finally {
@@ -515,6 +529,16 @@ test('editFile refuses stale files until they are read again', async () => {
     const result = await editFileTool.execute({ filePath: 'a.txt', oldString: 'world', newString: 'there' }, ctx)
     assert.equal(result.ok, true)
     assert.equal(result.metadata?.display?.summary, 'Edited a.txt')
+    assert.equal(
+      result.metadata?.display?.detail,
+      [
+        '--- a/a.txt',
+        '+++ b/a.txt',
+        '@@ -1,1 +1,1 @@',
+        '-hello world',
+        '+hello there',
+      ].join('\n'),
+    )
     assert.equal(await readFile(file, 'utf8'), 'hello there\n')
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -527,6 +551,16 @@ test('writeFile creates parent directories', async () => {
     const result = await writeFileTool.execute({ filePath: 'nested/a.txt', content: 'hello' }, context(dir))
     assert.equal(result.ok, true)
     assert.equal(result.metadata?.display?.summary, 'Created nested/a.txt')
+    assert.equal(
+      result.metadata?.display?.detail,
+      [
+        '--- a/nested/a.txt',
+        '+++ b/nested/a.txt',
+        '@@ -0,0 +1,1 @@',
+        '+hello',
+        '\\ No newline at end of file',
+      ].join('\n'),
+    )
     assert.equal(await readFile(path.join(dir, 'nested', 'a.txt'), 'utf8'), 'hello')
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -571,6 +605,18 @@ test('writeFile overwrites fresh reads and updates read state', async () => {
     const result = await writeFileTool.execute({ filePath: 'a.txt', content: 'updated' }, ctx)
     assert.equal(result.ok, true)
     assert.equal(result.metadata?.display?.summary, 'Overwrote a.txt')
+    assert.equal(
+      result.metadata?.display?.detail,
+      [
+        '--- a/a.txt',
+        '+++ b/a.txt',
+        '@@ -1,1 +1,1 @@',
+        '-hello',
+        '\\ No newline at end of file',
+        '+updated',
+        '\\ No newline at end of file',
+      ].join('\n'),
+    )
     assert.equal(await readFile(file, 'utf8'), 'updated')
     assert.equal(ctx.readFileState.get(file)?.content, 'updated')
     assert.equal(ctx.readFileState.get(file)?.size, 7)
@@ -1146,4 +1192,51 @@ test('Config tool is registered in builtin tools', () => {
   const config = tools.find(t => t.name === 'Config')
   assert.ok(config, 'Config tool should be registered')
   assert.equal(config.shouldDefer, true)
+})
+
+test('buildUnifiedPatch emits a standard unified diff and skips no-op edits', () => {
+  assert.equal(buildUnifiedPatch('a.txt', 'same\n', 'same\n'), undefined)
+
+  const patch = buildUnifiedPatch('src\\foo.ts', 'one\ntwo\nthree\n', 'one\nTWO\nthree\n')
+  assert.equal(patch, [
+    '--- a/src/foo.ts',
+    '+++ b/src/foo.ts',
+    '@@ -1,3 +1,3 @@',
+    ' one',
+    '-two',
+    '+TWO',
+    ' three',
+  ].join('\n'))
+})
+
+test('buildUnifiedPatch caps oversized patches on a hunk boundary', () => {
+  const oldText = Array.from({ length: 60 }, (_, i) => `line ${i}`).join('\n')
+  // Every tenth line changes, so the patch is a long run of small hunks.
+  const newText = oldText.split('\n').map((line, i) => (i % 10 === 0 ? `${line} changed` : line)).join('\n')
+
+  const patch = buildUnifiedPatch('a.txt', oldText, newText, { maxLines: 20, maxChars: 4000 })
+  assert.ok(patch)
+  const lines = patch.split('\n')
+  assert.equal(lines[0], '--- a/a.txt')
+  assert.equal(lines[1], '+++ b/a.txt')
+  assert.match(lines[lines.length - 1]!, /^… \d+ more lines not shown$/)
+  // The kept body ends where a hunk ends, never mid-hunk.
+  assert.ok(lines.length <= 21)
+  const hunkStarts = lines.filter(line => line.startsWith('@@')).length
+  assert.ok(hunkStarts >= 1)
+  for (const line of lines.slice(2, -1)) {
+    assert.match(line, /^[-+ @\\]/)
+  }
+})
+
+test('buildUnifiedPatch keeps a truncated first hunk rather than nothing', () => {
+  const oldText = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n')
+  const newText = oldText.replaceAll('line', 'row')
+
+  const patch = buildUnifiedPatch('a.txt', oldText, newText, { maxLines: 8, maxChars: 4000 })
+  assert.ok(patch)
+  const lines = patch.split('\n')
+  assert.equal(lines[2], '@@ -1,40 +1,40 @@')
+  assert.ok(lines.length > 3, 'a single oversized hunk still ships its first lines')
+  assert.match(lines[lines.length - 1]!, /more lines not shown$/)
 })

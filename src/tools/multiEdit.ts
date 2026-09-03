@@ -5,6 +5,7 @@ import { assertInsideCwd } from '../utils/paths.js'
 import { getReadFileContent, rememberReadFile, requireFreshRead } from './fileState.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
 import { findStringMatches, multipleMatchFailure, replaceLiteralMatch, preserveQuoteStyle } from './editFile.js'
+import { patchDetail } from './editPatch.js'
 
 interface MultiEditItem {
   oldString: string
@@ -117,6 +118,7 @@ export const multiEditTool: Tool = {
       metadata: {
         display: {
           summary: `Applied ${edits.length} edit${edits.length === 1 ? '' : 's'} to ${filePath}`,
+          ...patchDetail(filePath, originalContent, nextContent),
         },
       },
     }

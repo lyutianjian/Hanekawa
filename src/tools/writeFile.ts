@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
-import { rememberReadFile, requireFreshRead } from './fileState.js'
+import { getReadFileContent, rememberReadFile, requireFreshRead } from './fileState.js'
+import { patchDetail } from './editPatch.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
 
 export const writeFileTool: Tool = {
@@ -41,6 +42,10 @@ export const writeFileTool: Tool = {
         return stale
       }
     }
+    // The read-before-write rule means an overwrite already has the previous
+    // text in hand; a new file diffs against nothing. Either way the patch
+    // costs no extra filesystem read.
+    const previousContent = exists ? getReadFileContent(absolute, context) : ''
     const unsafeParentBeforeMkdir = await assertParentNotSymlink(absolute, filePath)
     if (unsafeParentBeforeMkdir) {
       return unsafeParentBeforeMkdir
@@ -67,6 +72,7 @@ export const writeFileTool: Tool = {
       metadata: {
         display: {
           summary: exists ? `Overwrote ${filePath}` : `Created ${filePath}`,
+          ...(previousContent !== undefined ? patchDetail(filePath, previousContent, content) : {}),
         },
       },
     }

@@ -1236,6 +1236,122 @@ body.resizing #sidebar { transition: none; }
 /* The streaming caret belongs to the block's body. A collapsed block has none, and
    a `▌` hanging off the header would read as a second cursor. */
 .transcript .item.thinking.collapsed.pending::after { content: none; }
+/* --- activity groups ---
+   Two layers of disclosure (§2): the group head carries the turn's boundary and
+   total, every step inside opens on its own. Depth stays at the sheet's two steps —
+   a step is **not** a card, so the layering here is indentation, whitespace and a
+   hairline, never a third shadow or radius rung. This is the resting state each
+   control needs; the bead's four states and the fold's motion are T8's. */
+.activity-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.group-head,
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) 0;
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: var(--type-meta);
+  /* The elapsed times land digit by digit as a turn runs. */
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+}
+.group-head:hover,
+.step-head:hover { color: var(--text-secondary); }
+.group-head:focus-visible,
+.step-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.group-beads {
+  display: inline-flex;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+/* The bead is an icon-sized block, not a surface, so it is painted through
+   `color` and filled with `currentColor`: the accent stays a paint role, and the
+   three named accent fills stay three. */
+.group-bead {
+  width: 4px;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  color: var(--text-tertiary);
+  background: currentColor;
+}
+.group-bead.done { color: var(--accent-review); }
+.group-bead.failed { color: var(--accent-danger); }
+.group-bead.awaiting-approval { color: var(--accent-warn); }
+.group-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  /* The steps hang off the group's left edge; the indentation is what separates
+     the two layers, since neither of them is allowed a box. */
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border-subtle);
+}
+.step { display: flex; flex-direction: column; }
+.step.task,
+.step.system {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--type-meta);
+}
+.step-bead {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  color: var(--text-tertiary);
+  background: currentColor;
+}
+.step-bead.done { color: var(--accent-review); }
+.step-bead.failed { color: var(--accent-danger); }
+.step-bead.awaiting-approval { color: var(--accent-warn); }
+/* A thinking row has no bead — it is not an execution and has no outcome (§3) —
+   so the hairline takes the bead's place at the end of the row. */
+.step-rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border-subtle);
+}
+.step-name { color: var(--text-secondary); font-family: var(--font-mono); }
+.step-summary {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.step-suffix,
+.step-duration { color: var(--text-tertiary); }
+.step-duration { margin-left: auto; }
+.step-body {
+  margin: var(--space-1) 0 var(--space-2) var(--space-4);
+  color: var(--text-tertiary);
+  font-size: var(--type-code);
+}
+.step.thinking .step-body { font-style: italic; }
+.step-body-head { margin-bottom: var(--space-1); }
+/* The output block scrolls **inside itself**: a long result must not turn the
+   group into a scroll window of its own (§6.2). */
+.step-body-text {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+.step.failed .step-body-text,
+.step.failed .step-name { color: var(--text-danger); }
 .transcript .item.notice { color: var(--text-secondary); font-style: italic; }
 .transcript .item.error { color: var(--text-danger); }
 .transcript .item.subagent { color: var(--accent-tool); }

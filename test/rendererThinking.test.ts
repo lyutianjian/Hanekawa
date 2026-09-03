@@ -5,12 +5,12 @@ import {
   NO_DISCLOSURE,
   THINKING_DONE_FALLBACK,
   THINKING_LIVE_LABEL,
+  groupHeaderLabel,
   isGroupExpanded,
+  isLooseThinkingExpanded,
   isStepCollapsible,
   isStepExpanded,
-  isThinkingCollapsed,
   pruneDisclosure,
-  pruneThinkingToggles,
   thinkingHeaderLabel,
   toggleDisclosure,
 } from '../src/desktop/renderer/model/thinking.js'
@@ -41,35 +41,16 @@ test('the header says what the block is doing', () => {
   assert.equal(thinkingHeaderLabel(sealed()), THINKING_DONE_FALLBACK)
 })
 
-test('the default is open while streaming and closed once sealed', () => {
-  const none: ReadonlySet<string> = new Set()
-  assert.equal(isThinkingCollapsed(live(), none), false)
-  assert.equal(isThinkingCollapsed(sealed('已处理 1s'), none), true)
-})
+test('a block outside every group is open while it streams and closed once sealed', () => {
+  // No group means no 「current step」 to be, so this one keeps the static default.
+  assert.equal(isLooseThinkingExpanded(live()), true)
+  assert.equal(isLooseThinkingExpanded(sealed('已处理 1s')), false)
 
-test('a toggle inverts that default rather than storing a state', () => {
-  // Which is what lets an expansion made mid-turn survive the moment `turn-end`
-  // seals the block: an absolute value would be overwritten exactly then.
-  const toggled: ReadonlySet<string> = new Set(['thinking-0'])
-  assert.equal(isThinkingCollapsed(live(), toggled), true, 'closed by hand while streaming')
-  assert.equal(isThinkingCollapsed(sealed('已处理 1s'), toggled), false, 'opened by hand, and it stays open')
-
-  // Nothing about another block's id may leak across.
-  assert.equal(isThinkingCollapsed(live('thinking-1'), toggled), false)
-})
-
-test('pruning drops toggles for blocks that are gone', () => {
-  const items: TranscriptItem[] = [
-    { id: 'm1', kind: 'user', text: 'hi' },
-    sealed('已处理 1s', 'thinking-3'),
-  ]
-
-  assert.deepEqual(
-    [...pruneThinkingToggles(items, new Set(['thinking-3', 'thinking-0', 'm1']))],
-    ['thinking-3'],
-    'a `transcript-reset` restarts the counter, so a stale id would be inherited by a different block',
-  )
-  assert.deepEqual([...pruneThinkingToggles([], new Set(['thinking-0']))], [])
+  // And the answer is absolute here too: closed by hand while streaming stays
+  // closed, and nothing about another block's id leaks across.
+  const state: DisclosureState = new Map([['thinking-0', false]])
+  assert.equal(isLooseThinkingExpanded(live(), state), false)
+  assert.equal(isLooseThinkingExpanded(live('thinking-1'), state), true)
 })
 
 /**
@@ -92,6 +73,19 @@ const group = (steps: readonly ActivityStep[], status: ActivityGroup['status']):
   status,
   stepCount: steps.length,
   failedCount: steps.filter((step) => 'status' in step && step.status === 'failed').length,
+})
+
+test('the group head summarises the turn without naming what is happening now', () => {
+  const steps = [toolStep('a', 'done'), toolStep('b', 'done')]
+  assert.equal(groupHeaderLabel({ ...group(steps, 'done'), durationMs: 458_000 }), '已处理 7m 38s · 2 步')
+  // A failure is stated, not opened — the failed *step* opens itself instead.
+  const failed = group([toolStep('a', 'done'), toolStep('b', 'failed')], 'done')
+  assert.equal(groupHeaderLabel({ ...failed, durationMs: 1200 }), '已处理 1s · 2 步 · 1 失败')
+  // Nothing here tracks the current step: the transcript is an `aria-live` region.
+  assert.equal(groupHeaderLabel(group(steps, 'running')), '工作中 · 2 步')
+  assert.equal(groupHeaderLabel(group(steps, 'aborted')), '已中断 · 2 步')
+  // A replayed turn whose records carry no usable span still has to name itself.
+  assert.equal(groupHeaderLabel(group(steps, 'done')), '已完成 · 2 步')
 })
 
 test('the group is open while the turn runs and closed once it is over', () => {

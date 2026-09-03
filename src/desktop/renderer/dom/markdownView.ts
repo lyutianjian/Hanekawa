@@ -12,7 +12,16 @@ import { el, append } from './dom.js'
  * to smuggle in here. A fenced block gets its language as a label instead.
  */
 export function markdownNode(content: string, className = 'md'): HTMLElement {
-  return el('div', className, ...parseMarkdownBlocks(content).map(blockNode))
+  return el('div', className, ...markdownChildren(content))
+}
+
+/**
+ * The same blocks without a wrapper, for a caller that already owns the node they
+ * go into — the transcript reuses its nodes by id (T7), so it refills an element
+ * it kept rather than building a new one around the blocks.
+ */
+export function markdownChildren(content: string): HTMLElement[] {
+  return parseMarkdownBlocks(content).map(blockNode)
 }
 
 function blockNode(block: MdBlock): HTMLElement {

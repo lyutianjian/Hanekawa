@@ -1,3 +1,4 @@
+import { formatWorkedDuration } from './transcript.js'
 import type { ActivityGroup, ActivityStep, TranscriptEntry, TranscriptItem } from './transcript.js'
 
 /**
@@ -11,15 +12,12 @@ import type { ActivityGroup, ActivityStep, TranscriptEntry, TranscriptItem } fro
  * - the user's **absolute** answer for anything they clicked (§5.2), which from
  *   then on outranks the default entirely.
  *
- * `isThinkingCollapsed` below stores the *other* thing — a deviation from the
+ * The retired pre-T5 pair stored the *other* thing — a deviation from the
  * default — and that is exactly what stops working here. A deviation is only
  * meaningful against a static default (streaming = open, sealed = closed); against
  * 「am I the last step」 it inverts under the reader: collapse the running step by
  * hand, let the next step arrive, and the deviation re-opens the step the user just
  * shut. So a click records `expanded: true | false` and nothing recomputes it.
- *
- * Both APIs live here while T7/T10 move the view over; the deviation pair goes
- * away with its last caller.
  *
  * DOM-free, like everything in `model/`.
  */
@@ -136,23 +134,36 @@ export function pruneDisclosure(entries: readonly TranscriptEntry[], state: Disc
 }
 
 /**
- * The pre-T5 disclosure: `toggled` records **disagreement with the default**.
+ * A thinking block that never joined a group — a record with no `turnId`.
  *
- * Sound for the one static default it was written against (「还在流就展开，封存了就
- * 折叠」), and kept only until `transcriptView.ts` and `paneSession.ts` move to
- * `isStepExpanded` (T7, T10). New callers must not use it — see this module's
- * header for why the deviation inverts under a dynamic default.
+ * There is no 「current step」 for it to be, so the default is the static one this
+ * file started with: open while it streams, closed once it is sealed. The answer
+ * is still absolute, and it is stored in the same map under the block's own id.
  */
-export function isThinkingCollapsed(item: TranscriptItem, toggled: ReadonlySet<string>): boolean {
-  const collapsedByDefault = item.pending !== true
-  return toggled.has(item.id) ? !collapsedByDefault : collapsedByDefault
+export function isLooseThinkingExpanded(item: TranscriptItem, state: DisclosureState = NO_DISCLOSURE): boolean {
+  return state.get(item.id) ?? item.pending === true
 }
 
-/** `pruneDisclosure`'s predecessor, over the flat item list. Retired with T10. */
-export function pruneThinkingToggles(
-  items: readonly TranscriptItem[],
-  toggled: ReadonlySet<string>,
-): Set<string> {
-  const live = new Set(items.filter((item) => item.kind === 'thinking').map((item) => item.id))
-  return new Set([...toggled].filter((id) => live.has(id)))
+/**
+ * The group head (§5.3).
+ *
+ * It is the *collapsed* summary of a whole turn, so it deliberately does not name
+ * what is happening right now — that belongs on the current step's head, because
+ * the transcript is an `aria-live` region and a head tracking the activity would
+ * be re-announced at every step (§8).
+ */
+export function groupHeaderLabel(group: ActivityGroup): string {
+  const parts = [groupStatusLabel(group), `${group.stepCount} 步`]
+  // Stated, not opened: a failure already opens its own step (§5.1), and forcing
+  // the whole group open would move everything under it.
+  if (group.failedCount > 0) parts.push(`${group.failedCount} 失败`)
+  return parts.join(' · ')
+}
+
+function groupStatusLabel(group: ActivityGroup): string {
+  if (group.status === 'running') return '工作中'
+  // An aborted turn has no measured time to quote — `turn-end` withholds the
+  // duration line for it, and a record span would be a number nobody measured.
+  if (group.status === 'aborted') return '已中断'
+  return group.durationMs === undefined ? '已完成' : `已处理 ${formatWorkedDuration(group.durationMs)}`
 }

@@ -71,10 +71,11 @@ import {
   type CompletionState,
 } from './model/completion.js'
 import { completionAcceptMode, type ShellState } from './model/keymap.js'
-import { pruneThinkingToggles } from './model/thinking.js'
+import { NO_DISCLOSURE, pruneDisclosure, toggleDisclosure, type DisclosureState } from './model/thinking.js'
 import {
   applySessionEvent,
   createTranscriptState,
+  groupTranscript,
   type ToolDisplayLookup,
   type TranscriptState,
 } from './model/transcript.js'
@@ -301,7 +302,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     transcriptEl,
     toolProgressEl,
     paneEl,
-    (id) => toggleThinking(id),
+    (id, expanded) => toggleDisclosureAt(id, expanded),
   )
   const welcome = createWelcomeView(welcomeEl, {
     onSwitchWorkspace: () => toggleWorkspacePicker(),
@@ -326,11 +327,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 
   let transcript: TranscriptState = createTranscriptState([], toolDisplays)
   /**
-   * Thinking blocks the user opened or closed against the default (streaming is
-   * open, sealed is closed). Per pane, like every other `let` here — a window-level
-   * set would fold a block in a session the user never touched.
+   * The activity groups and steps the user opened or closed by hand, as absolute
+   * answers (§5.2). Per pane, like every other `let` here — a window-level map
+   * would fold a step in a session the user never touched.
    */
-  let toggledThinking: ReadonlySet<string> = new Set()
+  let disclosure: DisclosureState = NO_DISCLOSURE
   let queue: UiQueueState = createUiQueue()
   let completions: CompletionState = NO_COMPLETIONS
   let commands: WireCommandInfo[] = []
@@ -453,10 +454,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   function renderTranscript(): void {
     if (!active) return
     // Pruned every paint, not on reset: `transcript-reset` restarts the block
-    // counter, so `thinking-0` can be minted again and would inherit the toggle a
-    // different block left behind.
-    toggledThinking = pruneThinkingToggles(transcript.items, toggledThinking)
-    transcriptView.render(transcript, toggledThinking)
+    // counter, so `thinking-0` can be minted again and would inherit the answer a
+    // different block left behind — and an absolute answer would not even be
+    // corrected by the default.
+    disclosure = pruneDisclosure(groupTranscript(transcript.items), disclosure)
+    transcriptView.render(transcript, disclosure)
     // The one place that decides whether this pane has a conversation, so the
     // transcript and the welcome screen cannot disagree about it.
     welcome.render(welcomeView({
@@ -487,11 +489,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     return !isTranscriptEmpty(transcript)
   }
 
-  function toggleThinking(id: string): void {
-    const next = new Set(toggledThinking)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
-    toggledThinking = next
+  /** `expanded` is what that row shows right now, so the click inverts what is seen. */
+  function toggleDisclosureAt(id: string, expanded: boolean): void {
+    disclosure = toggleDisclosure(disclosure, id, expanded)
     renderTranscript()
   }
 

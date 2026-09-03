@@ -142,7 +142,7 @@ reset 清空。
 
 ## 阶段 2：视图层
 
-### [ ] T7 — `dom/transcriptView.ts`：两层披露渲染 + 按 id 复用节点（§8）
+### [x] T7 — `dom/transcriptView.ts`：两层披露渲染 + 按 id 复用节点（§8）
 
 **依赖**：T2–T5。
 

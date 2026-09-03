@@ -5,6 +5,8 @@ import test from 'node:test'
 
 import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
 import { createTranscriptView } from '../src/desktop/renderer/dom/transcriptView.js'
+import { NO_DISCLOSURE } from '../src/desktop/renderer/model/thinking.js'
+import type { DisclosureState } from '../src/desktop/renderer/model/thinking.js'
 import type { TranscriptItem, TranscriptState } from '../src/desktop/renderer/model/transcript.js'
 
 /**
@@ -27,8 +29,9 @@ interface Rendered {
   readonly container: HTMLElement
   readonly host: HTMLElement
   readonly progress: HTMLElement
-  readonly toggled: string[]
-  render(state: TranscriptState, toggledThinking?: ReadonlySet<string>): void
+  /** `[id, what the row showed when it was clicked]`, the absolute-answer pair. */
+  readonly toggled: Array<readonly [string, boolean]>
+  render(state: TranscriptState, disclosure?: DisclosureState): void
   jump(): StubView
   items(): readonly StubView[]
   column(): StubView
@@ -40,8 +43,8 @@ function mount(t: { after(fn: () => void): void }): Rendered {
   const container = stub.createContainer('transcript')
   const progress = stub.createContainer('tool-progress')
   const host = stub.createContainer('pane')
-  const toggled: string[] = []
-  const view = createTranscriptView(container, progress, host, (id) => toggled.push(id))
+  const toggled: Array<readonly [string, boolean]> = []
+  const view = createTranscriptView(container, progress, host, (id, expanded) => toggled.push([id, expanded]))
   const jump = (): StubView => {
     const found = stub.inspect(host).children.find((child) => child.classes.includes('scroll-bottom'))
     assert.ok(found, 'no .scroll-bottom in the float host')
@@ -59,7 +62,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     host,
     progress,
     toggled,
-    render: (state, toggledThinking = new Set()) => view.render(state, toggledThinking),
+    render: (state, disclosure = NO_DISCLOSURE) => view.render(state, disclosure),
     jump,
     // Through `.transcript-column`, the one box the items live in: the scroller
     // stays full width (its scrollbar belongs at the panel's edge) while the text
@@ -246,24 +249,173 @@ test('a sealed block is collapsed, shows the elapsed time, and drops its body', 
   assert.equal(block.text.includes('推理'), false)
 })
 
-test('the pane is toggle set decides against the default, both ways', (t) => {
+test('the pane is absolute answer outranks the default, both ways', (t) => {
   const { render, items } = mount(t)
 
-  render(transcript([sealedThinking]), new Set(['thinking-0']))
+  render(transcript([sealedThinking]), new Map([['thinking-0', true]]))
   assert.equal(thinking(items()).classes.includes('collapsed'), false)
   assert.equal(thinking(items()).children[1]?.className, 'thinking-body')
 
-  render(transcript([liveThinking]), new Set(['thinking-0']))
+  render(transcript([liveThinking]), new Map([['thinking-0', false]]))
   assert.equal(thinking(items()).classes.includes('collapsed'), true)
   assert.equal(thinking(items()).children.length, 1)
 })
 
-test('clicking the header reports the block id and nothing else', (t) => {
+test('clicking the header reports the block id and what it showed', (t) => {
   const { render, items, stub, toggled } = mount(t)
   render(transcript([{ id: 'm1', kind: 'user', text: 'hi' }, sealedThinking]))
 
+  // The second half is what makes the answer absolute: the pane stores the
+  // opposite of what the row showed, so the first click always does the visible
+  // thing whether or not a default was in force.
   stub.click(thinking(items()).children[0]?.node)
-  assert.deepEqual(toggled, ['thinking-0'])
+  assert.deepEqual(toggled, [['thinking-0', false]])
+})
+
+// --- activity groups (T7) ----------------------------------------------------
+
+/**
+ * A turn's items, the way the model hands them over: everything stamped with the
+ * same `turnId` is one group, and the user's message stays outside it (§4.1, §4.4).
+ */
+function turnItems(overrides: { pending?: boolean } = {}): TranscriptItem[] {
+  const tool: TranscriptItem = {
+    id: 'call-1',
+    kind: 'tool',
+    text: 'Read a.ts',
+    toolName: 'Read',
+    turnId: 't1',
+    ...(overrides.pending === true ? { pending: true } : {}),
+    tool: {
+      displayName: 'Read',
+      useSummary: 'a.ts',
+      ...(overrides.pending === true
+        ? {}
+        : { headerSuffix: '240 行', resultSummary: 'Read 240 lines', detail: 'line one', durationMs: 400 }),
+    },
+  }
+  return [
+    { id: 'm1', kind: 'user', text: 'hi', turnId: 't1' },
+    { id: 'th1', kind: 'thinking', text: '先看看这个文件', summary: '思考 2s', turnId: 't1' },
+    tool,
+  ]
+}
+
+const groupOf = (rendered: Rendered): StubView => {
+  const found = rendered.items().find((item) => item.classes.includes('activity-group'))
+  assert.ok(found, 'no activity group was painted')
+  return found
+}
+
+test('a turn is one group: the user message outside it, its steps within', (t) => {
+  const view = mount(t)
+  view.render(transcript(turnItems({ pending: true })))
+
+  assert.deepEqual(view.items().map((entry) => entry.classes[0]), ['item', 'activity-group'])
+  const group = groupOf(view)
+  // Running, so the group is open and the steps are real nodes under it.
+  assert.deepEqual(group.classes, ['activity-group', 'running'])
+  const head = group.children[0]
+  assert.equal(head?.tagName, 'BUTTON')
+  assert.equal(head?.text, '工作中 · 2 步')
+  assert.equal(head?.attributes.get('aria-expanded'), 'true')
+  assert.equal(group.children[1]?.className, 'group-steps')
+  assert.deepEqual(
+    group.children[1]?.children.map((step) => step.classes),
+    [['step', 'thinking', 'collapsed'], ['step', 'tool', 'running']],
+    'only the current step is open by default',
+  )
+})
+
+test('a finished group collapses, and its steps are absent rather than hidden', (t) => {
+  const view = mount(t)
+  view.render(transcript(turnItems()))
+  const group = groupOf(view)
+
+  assert.equal(group.classes.includes('collapsed'), true)
+  assert.equal(group.children[0]?.attributes.get('aria-expanded'), 'false')
+  // The transcript is an `aria-live` region: a folded turn must not be readable.
+  assert.equal(group.children.length, 1, 'a collapsed group holds nothing but its head')
+  assert.equal(group.text.includes('line one'), false)
+  // 「12 步里有一个红的」 without opening anything: one micro bead per tool step.
+  const beads = group.children[0]?.children.find((child) => child.classes.includes('group-beads'))
+  assert.deepEqual(beads?.children.map((one) => one.className), ['group-bead done'])
+  assert.equal(beads?.attributes.get('aria-hidden'), 'true')
+})
+
+test('a step head is a button whose body exists only while it is open', (t) => {
+  const view = mount(t)
+  // Opened by hand: an absolute answer, so the sealed turn's default is overruled.
+  view.render(transcript(turnItems()), new Map([['t1', true], ['call-1', true]]))
+  const steps = groupOf(view).children[1]
+  const tool = steps?.children[1]
+
+  const head = tool?.children[0]
+  assert.equal(head?.tagName, 'BUTTON')
+  assert.equal(head?.attributes.get('aria-expanded'), 'true')
+  // The bead is decoration; the state reaches a screen reader as words instead.
+  assert.equal(head?.children[0]?.className, 'step-bead done')
+  assert.equal(head?.children[0]?.attributes.get('aria-hidden'), 'true')
+  assert.equal(head?.attributes.get('aria-label'), 'Read · a.ts · 240 行 · 完成')
+  assert.deepEqual(
+    head?.children.slice(1).map((part) => [part.className, part.text]),
+    [['step-name', 'Read'], ['step-summary', 'a.ts'], ['step-suffix', '240 行'], ['step-duration', '0.4s']],
+  )
+  // 兜底 body: the result's own summary over `detail ?? content` (§6.2).
+  assert.deepEqual(
+    tool?.children[1]?.children.map((part) => [part.className, part.text]),
+    [['step-body-head', 'Read 240 lines'], ['step-body-text', 'line one']],
+  )
+
+  view.render(transcript(turnItems()), new Map([['t1', true]]))
+  const collapsed = groupOf(view).children[1]?.children[1]
+  assert.equal(collapsed?.children.length, 1, 'folded: the head and nothing else')
+  assert.equal(collapsed?.children[0]?.attributes.get('aria-expanded'), 'false')
+})
+
+test('both disclosure levels report their own id and what they showed', (t) => {
+  const view = mount(t)
+  view.render(transcript(turnItems()))
+
+  const group = groupOf(view)
+  view.stub.click(group.children[0]?.node)
+  assert.deepEqual(view.toggled, [['t1', false]], 'the group answers under its turn id')
+
+  view.render(transcript(turnItems()), new Map([['t1', true]]))
+  const steps = groupOf(view).children[1]
+  view.stub.click(steps?.children[0]?.children[0]?.node)
+  view.stub.click(steps?.children[1]?.children[0]?.node)
+  assert.deepEqual(view.toggled.slice(1), [['th1', false], ['call-1', false]])
+})
+
+test('nodes are kept by id across paints, so the scroll anchor survives', (t) => {
+  // The reason this stopped being a performance question: steps collapse *by
+  // themselves* when the turn ends, and `overflow-anchor` can only absorb that
+  // while the node it points at outlives the paint. Verified by mutation:
+  // rebuilding the column every render reds every identity assertion below.
+  const view = mount(t)
+  view.render(transcript(turnItems({ pending: true })))
+  const before = {
+    column: view.column().node,
+    message: view.items()[0]?.node,
+    group: groupOf(view).node,
+    step: groupOf(view).children[1]?.children[0]?.node,
+  }
+
+  // A later paint of the same turn, with the tool now settled: fresh item objects
+  // throughout, as the model mints them.
+  view.render(transcript(turnItems()), new Map([['t1', true]]))
+  assert.equal(view.column().node, before.column)
+  assert.equal(view.items()[0]?.node, before.message, 'an untouched message is not rebuilt')
+  assert.equal(groupOf(view).node, before.group)
+  assert.equal(groupOf(view).children[1]?.children[0]?.node, before.step, 'the step is refilled in place')
+
+  // And a node whose entry is gone does not linger in the cache: `transcript-reset`
+  // restarts the id counter, so a kept node would come back holding another
+  // block's content.
+  view.render(transcript([{ id: 'reset-notice-0', kind: 'notice', text: '已清空' }]))
+  view.render(transcript(turnItems({ pending: true })))
+  assert.notEqual(groupOf(view).children[1]?.children[0]?.node, before.step)
 })
 
 // --- inline file pills (5d) --------------------------------------------------

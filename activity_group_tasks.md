@@ -203,7 +203,7 @@ reset 清空。
 **验收**：`npm run typecheck` + `test/rendererBoot.test.ts`、`test/desktopUiRoundTrip.test.ts`、
 `test/rendererImports.test.ts`。
 
-### [ ] T11 — 第一期收口：全量回归
+### [x] T11 — 第一期收口：全量回归
 
 **依赖**：T1–T10。
 

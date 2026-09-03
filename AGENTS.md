@@ -191,6 +191,25 @@ points or views.
   modify the working tree.
 - Changes to `hasOverlay` or `isStreaming` must call `onShellChanged`, because sidebar badges derive from
   `shellState()`.
+- The transcript is **two layers of disclosure**: a turn is one activity group (keyed by `turnId`), and
+  every step inside opens on its own. `model/transcript.ts` stays DOM-free with an exhaustive
+  `applySessionEvent`, and the live path must produce the same groups a replay of those records does. A
+  folded body is **absent, not `hidden`** — `.transcript` is `aria-live="polite"` — and
+  `dom/transcriptView.ts` reuses entry and step nodes **by id**: the automatic collapse at turn end
+  shortens content above the reader, and scroll anchoring only absorbs that while the anchor node
+  survives the paint. Nothing may set `overflow-anchor: none`.
+- The group head carries a **stable accessible name** (`groupHeaderName`) while its visible, `aria-hidden`
+  label counts steps; what is new is said by the current step's head. The bead is the tool step's only
+  *visual* status vocabulary (`awaiting-approval`/`running`/`done`/`failed`) and is `aria-hidden` — the
+  state reaches the head's accessible name in words, because colour may not be the only carrier. Steps are
+  not cards: no third shadow or radius rung, and depth stays two steps.
+- Disclosure stores the user's **absolute** answer per group and step id (`model/thinking.ts`), never a
+  deviation from a default. The defaults are dynamic (a running turn is open with only its last step open;
+  failures open themselves; an awaiting-approval step does not) and are pruned on `transcript-reset`.
+- The task panel is a resident in-flow strip inside `.composer-column` above `#composer` — not a
+  `#composer-popovers` layer — read-only, drawn during permission requests too, and absent entirely when
+  no checklist exists. Tool display strings reach the renderer as the `toolDisplays` DTO projection of
+  `src/tools/display.ts`; the renderer must not guess tool input keys.
 - Session row CSS order is load-bearing and is the precedence: `:hover`, `.selected` (keyboard cursor),
   `.active` (the session on screen, filled with `--surface-active`), then `.confirming`. `.open` stays on
   the node as data (`aria-selected`, the smoke probes) and must gain no rule — a background lane is not a

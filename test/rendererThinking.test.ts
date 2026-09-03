@@ -6,6 +6,7 @@ import {
   THINKING_DONE_FALLBACK,
   THINKING_LIVE_LABEL,
   groupHeaderLabel,
+  groupHeaderName,
   isGroupExpanded,
   isLooseThinkingExpanded,
   isStepCollapsible,
@@ -86,6 +87,22 @@ test('the group head summarises the turn without naming what is happening now', 
   assert.equal(groupHeaderLabel(group(steps, 'aborted')), '已中断 · 2 步')
   // A replayed turn whose records carry no usable span still has to name itself.
   assert.equal(groupHeaderLabel(group(steps, 'done')), '已完成 · 2 步')
+})
+
+test('a running group is named by its status alone, so nothing is re-announced per step', () => {
+  // The label counts steps; the name may not, or the `aria-live` transcript
+  // replays the whole turn head every time a tool starts (§8).
+  const one = group([toolStep('a', 'running')], 'running')
+  const two = group([toolStep('a', 'done'), toolStep('b', 'running')], 'running')
+  assert.notEqual(groupHeaderLabel(one), groupHeaderLabel(two))
+  assert.equal(groupHeaderName(one), '工作中')
+  assert.equal(groupHeaderName(two), '工作中')
+  // A failure arriving mid-turn does not move it either — the failed step opens
+  // itself and its own head says so.
+  assert.equal(groupHeaderName(group([toolStep('a', 'failed')], 'running')), '工作中')
+  // Sealed, the head is written once: the totals are what a finished turn is for.
+  assert.equal(groupHeaderName({ ...group([toolStep('a', 'done')], 'done'), durationMs: 1200 }), '已处理 1s · 1 步')
+  assert.equal(groupHeaderName(group([toolStep('a', 'done')], 'aborted')), '已中断 · 1 步')
 })
 
 test('the group is open while the turn runs and closed once it is over', () => {

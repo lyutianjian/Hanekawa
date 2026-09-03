@@ -374,6 +374,40 @@ test('a step head is a button whose body exists only while it is open', (t) => {
   assert.equal(collapsed?.children[0]?.attributes.get('aria-expanded'), 'false')
 })
 
+test('the group head reads out a stable name while its visible label counts steps', (t) => {
+  const view = mount(t)
+  view.render(transcript(turnItems({ pending: true })))
+  const running = groupOf(view).children[0]
+
+  // Visible: the counter. Read out: the status alone — the label is out of the
+  // accessibility tree, because this subtree is an `aria-live` region and the
+  // count moves once per step (§8).
+  assert.equal(running?.text, '工作中 · 2 步')
+  assert.equal(running?.attributes.get('aria-label'), '工作中')
+  const label = running?.children.find((child) => child.classes.includes('btn-label'))
+  assert.equal(label?.text, '工作中 · 2 步')
+  assert.equal(label?.attributes.get('aria-hidden'), 'true')
+
+  // Sealed, the head is written once, so it names the totals it now carries.
+  view.render(transcript(turnItems()))
+  const done = groupOf(view).children[0]
+  assert.equal(done?.attributes.get('aria-label'), '已完成 · 2 步')
+})
+
+test('the group survives the automatic collapse it performs at turn end', (t) => {
+  // The other half of §8's anchoring rule: the steps folding away is content
+  // *disappearing* above the reader, and the browser can only hold their place
+  // while the node the anchor points at outlives the paint.
+  const view = mount(t)
+  view.render(transcript(turnItems({ pending: true })))
+  const before = groupOf(view).node
+  assert.equal(groupOf(view).children.length, 2)
+
+  view.render(transcript(turnItems()))
+  assert.equal(groupOf(view).node, before, 'the group is refilled in place, not replaced')
+  assert.equal(groupOf(view).children.length, 1, 'and it folded itself while doing so')
+})
+
 test('both disclosure levels report their own id and what they showed', (t) => {
   const view = mount(t)
   view.render(transcript(turnItems()))

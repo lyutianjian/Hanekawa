@@ -1595,3 +1595,21 @@ test('the controls built inside controls.ts are styled too', () => {
     assert.ok(restingRule(name), `controls.ts builds .${name} and styles.css has no resting rule for it`)
   }
 })
+
+test('nothing switches scroll anchoring off', () => {
+  // The transcript folds its own steps when a turn ends (§8), which shortens the
+  // content above a reader who asked for nothing. `overflow-anchor` is what holds
+  // their place, `dom/transcriptView.ts` reuses nodes by id so the anchor node
+  // survives the paint — and a single `overflow-anchor: none` anywhere above the
+  // steps would undo both halves silently. There is no visual symptom to review
+  // for, so the sheet is asserted instead.
+  // Verified by mutation: adding `overflow-anchor: none` to `.transcript` reds it.
+  const off = blocks.filter((block) =>
+    block.decls.some((decl) => decl.prop === 'overflow-anchor' && decl.value.trim() !== 'auto'))
+  assert.deepEqual(off.map((block) => block.selector), [])
+  const scroller = blocks.find((block) => block.selector === '.transcript')
+  assert.ok(
+    scroller?.decls.some((decl) => decl.prop === 'overflow-anchor'),
+    '.transcript no longer says which anchoring behaviour it depends on',
+  )
+})

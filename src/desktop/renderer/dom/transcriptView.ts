@@ -3,6 +3,7 @@ import { parseUnifiedPatch, type PatchRows } from '../model/diffRows.js'
 import { parseSearchResults, searchStats, type SearchResults } from '../model/searchResults.js'
 import {
   groupHeaderLabel,
+  groupHeaderName,
   isGroupExpanded,
   isLooseThinkingExpanded,
   isStepCollapsible,
@@ -232,8 +233,15 @@ function groupNode(painter: Painter, group: ActivityGroup): HTMLElement {
 }
 
 function groupHead(painter: Painter, group: ActivityGroup, expanded: boolean): HTMLElement {
-  const label = groupHeaderLabel(group)
-  const head = button('group-head', label, label, () => painter.onToggle(group.turnId, expanded))
+  // The label is built as a child rather than passed to `button()` so it can be
+  // `aria-hidden`: it counts steps as they arrive, and this subtree sits in an
+  // `aria-live` region (§8). The name is `groupHeaderName`'s stable one instead;
+  // what is new is announced by the current step's head, one level down.
+  const head = button('group-head', '', groupHeaderName(group), () =>
+    painter.onToggle(group.turnId, expanded))
+  const label = el('span', 'btn-label', groupHeaderLabel(group))
+  label.setAttribute('aria-hidden', 'true')
+  head.appendChild(label)
   head.setAttribute('aria-expanded', expanded ? 'true' : 'false')
   // 「12 步里有一个红的」 without opening anything (§3). Decoration only: the count
   // and the failures are already in the label the button is named by.

@@ -1133,6 +1133,13 @@ body.resizing #sidebar { transition: none; }
      taller than the box — so a long session scrolls exactly as it did. */
   display: flex;
   flex-direction: column;
+  /* The browser default, written down because it is load-bearing (§8): when a
+     turn ends its steps fold *by themselves*, which shortens the content above a
+     reader who did not ask for anything. Scroll anchoring is what keeps them
+     where they were — `dom/transcriptView.ts` reuses nodes by id so the anchor
+     survives the paint, and nothing in this sheet may set `overflow-anchor: none`
+     on the scroller or on anything inside it. */
+  overflow-anchor: auto;
 }
 /* The reading column, bounded by `--reading-measure`. A full-bleed paragraph is
    a readability problem rather than a taste one, but the old 760px cap left

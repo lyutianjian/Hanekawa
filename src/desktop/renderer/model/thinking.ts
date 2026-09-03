@@ -160,6 +160,26 @@ export function groupHeaderLabel(group: ActivityGroup): string {
   return parts.join(' · ')
 }
 
+/**
+ * The group head's **accessible name** (§8), which is not its visible label.
+ *
+ * The label above is a live counter: `工作中 · 2 步` becomes `工作中 · 3 步` the
+ * moment the next tool starts, and the transcript is an `aria-live="polite"`
+ * region — so a name built from it would have a screen reader re-announce the
+ * whole turn once per step, over the top of the step that actually is new.
+ *
+ * So a running group is named by its status alone, which does not change until
+ * the turn ends. What changed belongs to the current step's own head, and the
+ * counts stay in the visible label, which `dom/transcriptView.ts` hides from the
+ * accessibility tree for the same reason the bead strip is hidden.
+ *
+ * A sealed group keeps the full label: it is written once, and the totals are
+ * exactly what someone reading a finished turn wants read out.
+ */
+export function groupHeaderName(group: ActivityGroup): string {
+  return group.status === 'running' ? groupStatusLabel(group) : groupHeaderLabel(group)
+}
+
 function groupStatusLabel(group: ActivityGroup): string {
   if (group.status === 'running') return '工作中'
   // An aborted turn has no measured time to quote — `turn-end` withholds the

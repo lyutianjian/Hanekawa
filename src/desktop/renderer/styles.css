@@ -1240,21 +1240,31 @@ body.resizing #sidebar { transition: none; }
    Two layers of disclosure (§2): the group head carries the turn's boundary and
    total, every step inside opens on its own. Depth stays at the sheet's two steps —
    a step is **not** a card, so the layering here is indentation, whitespace and a
-   hairline, never a third shadow or radius rung. This is the resting state each
-   control needs; the bead's four states and the fold's motion are T8's. */
+   hairline, never a third shadow or radius rung.
+
+   There is **no disclosure chevron** on either head (§9). A glyph pointing at a
+   fold is a second thing to read on a row whose whole job is to be skimmed, and
+   the row is the switch: the hover tint below is the only affordance, and it is
+   the reason both heads carry a radius and a negative margin — the tint has to
+   reach past the text to read as a row rather than as a highlighted label.
+
+   The two heads are written out rather than grouped: `rendererStyleTokens` asks
+   a control's resting state to be a selector of its own, and a shared
+   `.group-head, .step-head { … }` is a rule neither of them owns. */
 .activity-group {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
 }
-.group-head,
-.step-head {
+.group-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  padding: var(--space-1) 0;
+  padding: var(--space-1) var(--space-2);
+  margin-left: calc(-1 * var(--space-2));
   border: none;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--text-tertiary);
   font: inherit;
@@ -1264,8 +1274,25 @@ body.resizing #sidebar { transition: none; }
   text-align: left;
   cursor: pointer;
 }
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  margin-left: calc(-1 * var(--space-2));
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: var(--type-meta);
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+}
 .group-head:hover,
-.step-head:hover { color: var(--text-secondary); }
+.step-head:hover { background: var(--surface-hover); color: var(--text-secondary); }
 .group-head:focus-visible,
 .step-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .group-beads {
@@ -1286,6 +1313,10 @@ body.resizing #sidebar { transition: none; }
 .group-bead.done { color: var(--accent-review); }
 .group-bead.failed { color: var(--accent-danger); }
 .group-bead.awaiting-approval { color: var(--accent-warn); }
+/* The strip is colour only — no `pop`, no breath. `dom/transcriptView.ts`
+   rebuilds the group head on every paint, so an animation here would restart
+   itself once per streamed token; the four states animate one level down, on the
+   step beads, whose nodes survive a paint. */
 .group-steps {
   display: flex;
   flex-direction: column;
@@ -1296,6 +1327,28 @@ body.resizing #sidebar { transition: none; }
   border-left: 1px solid var(--border-subtle);
 }
 .step { display: flex; flex-direction: column; }
+/* --- the fold ---
+   A two-track grid — head, then body — folded with `0fr → 1fr`, which is how a
+   disclosure opens by its content's own height instead of by a magic pixel
+   number. Only the three collapsible kinds become grids: a task or a system row
+   is a single line with no body to fold.
+
+   An **animation**, not a transition, and that follows from §8: a folded body is
+   *absent* rather than hidden, so the node is created at the moment the row
+   opens and a transition never runs on insertion. `:not(.collapsed)` is what
+   keeps it from replaying — the animation is attached and detached by that one
+   class, so it plays when the row opens and stays quiet while the same row is
+   refilled by its own streaming result. */
+.step.tool,
+.step.subagent,
+.step.thinking {
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+.step.tool:not(.collapsed),
+.step.subagent:not(.collapsed),
+.step.thinking:not(.collapsed) { animation: unfold var(--motion-base) var(--ease-standard); }
+@keyframes unfold { from { grid-template-rows: auto 0fr; } }
 .step.task,
 .step.system {
   display: flex;
@@ -1313,9 +1366,32 @@ body.resizing #sidebar { transition: none; }
   color: var(--text-tertiary);
   background: currentColor;
 }
-.step-bead.done { color: var(--accent-review); }
-.step-bead.failed { color: var(--accent-danger); }
-.step-bead.awaiting-approval { color: var(--accent-warn); }
+/* The four states, and the bead is the *whole* visual vocabulary for them (§3):
+   no glyph, no word, no badge. Each is a colour plus a motion, because colour
+   alone would be one channel and this row may be read at a glance — and each is
+   `aria-hidden`, with the state repeated in words in the head's accessible name.
+
+   Waiting on the user blinks, because it is the one state that wants an answer.
+   Running breathes, the same 「alive, not urgent」 the thinking header uses.
+   The two settled states do not loop at all: they pop once, on arrival, and then
+   hold still — a finished step must not keep moving under a reader. */
+.step-bead.awaiting-approval {
+  color: var(--accent-warn);
+  animation: blink 1.2s steps(1, end) infinite;
+}
+.step-bead.running { animation: breathe 1.8s ease-in-out infinite; }
+.step-bead.done {
+  color: var(--accent-review);
+  animation: bead-pop var(--motion-base) var(--ease-standard);
+}
+.step-bead.failed {
+  color: var(--accent-danger);
+  animation: bead-pop var(--motion-base) var(--ease-standard);
+}
+@keyframes blink { 50% { opacity: 0; } }
+/* Overshoot and settle, never `from`: a `from { transform }` in this sheet is by
+   definition one of the three 8px entrances, and the token test enforces that. */
+@keyframes bead-pop { 50% { transform: scale(1.6); } }
 /* A thinking row has no bead — it is not an execution and has no outcome (§3) —
    so the hairline takes the bead's place at the end of the row. */
 .step-rule {
@@ -1323,6 +1399,17 @@ body.resizing #sidebar { transition: none; }
   height: 1px;
   background: var(--border-subtle);
 }
+/* While the model is still thinking, the hairline is the row's status: a sheen
+   travelling along it in `--accent-tool`. It is still a hairline and not a fill —
+   the accent reaches it through `color`, and the gradient is drawn in
+   `currentColor` — so the three named accent fills stay three. */
+.step.thinking.live .step-rule {
+  color: var(--accent-tool);
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
+  background-size: 220% 100%;
+  animation: sheen 1.8s linear infinite;
+}
+@keyframes sheen { from { background-position: 200% 0; } to { background-position: -20% 0; } }
 .step-name { color: var(--text-secondary); font-family: var(--font-mono); }
 .step-summary {
   color: var(--text-tertiary);
@@ -1334,8 +1421,16 @@ body.resizing #sidebar { transition: none; }
 .step-suffix,
 .step-duration { color: var(--text-tertiary); }
 .step-duration { margin-left: auto; }
+/* Padding rather than a vertical margin, and `overflow: hidden`: the body is the
+   grid item the fold above collapses, and a margin lives outside the track it
+   would be collapsing — the row would fold to a gap instead of to nothing.
+   `min-height: 0` is the other half, or the item refuses to shrink under its
+   content. */
 .step-body {
-  margin: var(--space-1) 0 var(--space-2) var(--space-4);
+  overflow: hidden;
+  min-height: 0;
+  padding: var(--space-1) 0 var(--space-2);
+  margin-left: var(--space-4);
   color: var(--text-tertiary);
   font-size: var(--type-code);
 }
@@ -1363,7 +1458,10 @@ body.resizing #sidebar { transition: none; }
   font-variant-numeric: tabular-nums;
 }
 /* Tool lines are command text and tool output: they have to stay monospaced or
-   a `git status` loses its columns under the proportional chrome font. */
+   a `git status` loses its columns under the proportional chrome font.
+   Since T7 this is the *loose* shape only — a tool record whose session predates
+   `turnId` joins no group and is still drawn as one flat line. Everything with a
+   turn goes through `.step` above. */
 .transcript .item.tool {
   color: var(--text-secondary);
   border-left: 2px solid var(--border-strong);
@@ -3019,6 +3117,8 @@ body.resizing #sidebar { transition: none; }
 .welcome-card,
 .welcome-project,
 .scroll-bottom,
+.group-head,
+.step-head,
 #composer,
 #composer-attach,
 #chip-permission,
@@ -3087,8 +3187,9 @@ body.resizing #sidebar { transition: none; }
 /* The one nested at-rule this sheet is allowed (`rendererStyleTokens` names it
    explicitly). Not zero: a `0s` transition never fires `transitionend`, and
    `1ms` keeps every listener's contract while being imperceptible. The universal
-   selector is deliberate — it has to reach the two `infinite` animations
-   (`spin`, `breathe`) as well as everything declared above. */
+   selector is deliberate — it has to reach the `infinite` animations (`spin`,
+   `breathe`, and T8's `blink` and `sheen`) as well as everything declared
+   above. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 1ms !important;

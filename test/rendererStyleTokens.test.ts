@@ -1128,6 +1128,73 @@ test('the composer raises its three panels, and they no longer span the canvas',
   }
 })
 
+test('the bead is the tool step\'s whole status vocabulary, and it stays flat', () => {
+  // §3: four states, one 7px dot, and the *only* place the transcript says how a
+  // tool call went. Each state has to be a rule of its own — a state the sheet
+  // never names is one the view can emit and nobody sees — and the two settled
+  // ones have to differ by more than a hue, because colour alone is one channel
+  // and a red/green pair is the one pair that fails first.
+  const bead = blockFor('.step-bead')
+  assert.ok(declares(bead, 'width', '7px'), 'the step bead is the 7px dot §3 specifies')
+  const named = (state: string): Block => blockFor(`.step-bead.${state}`)
+  assert.equal(named('awaiting-approval').decls.find((d) => d.prop === 'color')?.value, 'var(--accent-warn)')
+  assert.equal(named('done').decls.find((d) => d.prop === 'color')?.value, 'var(--accent-review)')
+  assert.equal(named('failed').decls.find((d) => d.prop === 'color')?.value, 'var(--accent-danger)')
+  for (const state of ['awaiting-approval', 'running', 'done', 'failed']) {
+    assert.ok(
+      named(state).decls.some((decl) => decl.prop === 'animation'),
+      `.step-bead.${state} carries no motion; colour alone is one channel`,
+    )
+  }
+  // The two that are over do not loop: a settled step must not keep moving under
+  // a reader who has gone back to it.
+  for (const state of ['done', 'failed']) {
+    assert.ok(
+      !named(state).decls.some((decl) => decl.prop === 'animation' && /infinite/.test(decl.value)),
+      `.step-bead.${state} loops forever; only the two live states may`,
+    )
+  }
+
+  // A step is not a card (§9). Depth is the sheet's two steps and a step is
+  // neither of them, so the layering inside a group is indentation, whitespace
+  // and the group's own hairline — never a third shadow or radius rung.
+  for (const block of blocks) {
+    if (!/^\.step\b|^\.activity-group\b|^\.group-steps\b/.test(block.selector.trim())) continue
+    for (const decl of block.decls) {
+      assert.notEqual(decl.prop, 'box-shadow', `${block.selector} gives a step a card's depth`)
+    }
+  }
+})
+
+test('the disclosure folds by height, and only when it opens', () => {
+  // `0fr → 1fr` rather than a pixel height: the row opens to whatever its body
+  // measures. It is an animation and not a transition because §8 keeps a folded
+  // body *absent* — the node is built at open time, and a transition on an
+  // element being inserted never runs.
+  const from = blocks.find((block) => block.selector === 'from'
+    && block.decls.some((decl) => decl.prop === 'grid-template-rows'))
+  assert.ok(from, 'no `unfold` keyframe; the disclosure has nothing to open with')
+  assert.equal(from.decls.find((decl) => decl.prop === 'grid-template-rows')?.value, 'auto 0fr')
+
+  // Scoped by `:not(.collapsed)`, which is what stops it replaying: the animation
+  // is attached and detached by the one class that opens the row, so a step being
+  // refilled by its own streaming result stays still.
+  const opened = blocks.filter((block) => block.decls.some(
+    (decl) => decl.prop === 'animation' && /\bunfold\b/.test(decl.value),
+  ))
+  assert.ok(opened.length > 0, 'nothing plays `unfold`')
+  for (const block of opened) {
+    for (const one of block.selector.split(',')) {
+      assert.match(one.trim(), /:not\(\.collapsed\)$/, `${one.trim()} would replay the fold on every paint`)
+    }
+  }
+  // The grid item has to be able to reach zero, or `0fr` collapses to the
+  // content's height and the fold is a no-op.
+  const body = blockFor('.step-body')
+  assert.ok(declares(body, 'overflow', 'hidden'), '.step-body must clip while the row folds')
+  assert.ok(declares(body, 'min-height', '0'), '.step-body must be allowed under its content')
+})
+
 test('every floating menu is lifted off the page it covers', () => {
   // The dropdowns are the same object at several sizes, and a menu without the
   // float shadow does not look wrong so much as *flat*: in light mode
@@ -1291,7 +1358,7 @@ test('motion comes from the tokens, and the things that rebuild themselves have 
   assert.ok(declares(reduced, 'animation-duration', '1ms !important'), 'animations must collapse')
   assert.ok(
     declares(reduced, 'animation-iteration-count', '1 !important'),
-    'the two infinite animations (spin, breathe) must stop as well',
+    'the infinite animations (spin, breathe, blink, sheen) must stop as well',
   )
 })
 
@@ -1361,8 +1428,13 @@ test('the transcript controls carry a rule of their own, not only a contextual o
   // guard exists to catch. Closing that hole in general needs a notion of "state
   // qualifier" the parser does not have (`todo.md` records it), so the two controls
   // 5d adds are named here and required to own a selector outright.
-  // Verified by mutation: deleting either rule reds this test and nothing else.
-  for (const selector of ['.thinking-header', '.scroll-bottom']) {
+  // Verified by mutation: deleting any one rule reds this test and nothing else.
+  // The two activity-group heads join the list for the same reason and one of
+  // their own: the row *is* the switch (§9 draws no disclosure chevron), so the
+  // hover tint is the only affordance either control has, and a contextual rule
+  // like `.activity-group.collapsed .group-head` would leave it a bare user-agent
+  // button at rest — which on a row with no glyph reads as plain text.
+  for (const selector of ['.thinking-header', '.scroll-bottom', '.group-head', '.step-head']) {
     const block = blocks.find((candidate) => candidate.selector === selector)
     assert.ok(block, `no rule whose whole selector is ${selector}; a descendant rule is not a resting state`)
     assert.ok(block.decls.length >= 3, `${selector} has ${block.decls.length} declarations; that cannot be a control`)

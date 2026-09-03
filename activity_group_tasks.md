@@ -157,7 +157,7 @@ reset 清空。
 **验收**：`test/rendererTranscriptView.test.ts`（`test/helpers/domStub.ts`）覆盖两层结构、
 `aria-expanded`、折叠时 body 缺席、同 id 节点在重绘间被复用。
 
-### [ ] T8 — 灯珠与 step 行样式（§3、§9）
+### [x] T8 — 灯珠与 step 行样式（§3、§9）
 
 **依赖**：T7。
 

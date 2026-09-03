@@ -28,6 +28,7 @@ import type { PlanModeManager } from './planModeManager.js'
 import type { AgentRunResult, ChatMessage, ModelProvider, ModelStreamEvent, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
 import type { ThinkingConfig } from '../config/service.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
+import { describeShell } from '../tools/bash.js'
 import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
 import { buildAtMentionContextRecord } from './atMentions.js'
 import { wrapInSystemReminder } from './systemReminder.js'
@@ -440,7 +441,10 @@ export class AgentLoop {
       const env: EnvironmentInfo = {
         cwd: this.options.toolContext.cwd,
         platform: process.platform,
-        shell: process.env.SHELL ?? (process.platform === 'win32' ? 'powershell' : 'bash'),
+        // Asked of the Bash tool rather than guessed: on Windows it resolves Git
+        // Bash before PowerShell, and this line is what the model writes syntax
+        // for.
+        shell: describeShell(),
         osVersion: `${os.type()} ${os.release()}`,
         isGitRepo: this.options.isGitRepo ?? false,
         model: this.activeModel.model,

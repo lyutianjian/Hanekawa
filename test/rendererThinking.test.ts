@@ -87,6 +87,9 @@ test('the group head summarises the turn without naming what is happening now', 
   assert.equal(groupHeaderLabel(group(steps, 'aborted')), '已中断 · 2 步')
   // A replayed turn whose records carry no usable span still has to name itself.
   assert.equal(groupHeaderLabel(group(steps, 'done')), '已完成 · 2 步')
+  // `stepCount` counts actions, so a turn that only thought and answered has
+  // none — and 「0 步」 is not a fact worth a slot.
+  assert.equal(groupHeaderLabel({ ...group(steps, 'done'), stepCount: 0 }), '已完成')
 })
 
 test('a running group is named by its status alone, so nothing is re-announced per step', () => {

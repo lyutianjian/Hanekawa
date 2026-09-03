@@ -119,6 +119,35 @@ export function _resetCachedShellForTests(): void {
 }
 
 /**
+ * The shell the `Bash` tool will actually use, named for the prompt's
+ * `# Environment` block.
+ *
+ * The environment block used to derive its own answer (`process.env.SHELL ??
+ * (win32 ? 'powershell' : 'bash')`) and on Windows that was simply false: the
+ * tool prefers Git for Windows' `bash.exe` and only falls back to PowerShell
+ * when no bash exists, so the model was told `powershell` and wrote `NUL`,
+ * `%VAR%` and backslash paths into a POSIX shell. One detection, one answer.
+ *
+ * It runs `getShell()`, so the first prompt build pays the same lazy probe the
+ * first tool call would have — never at module load.
+ */
+export function describeShell(platform: NodeJS.Platform = process.platform): string {
+  const lower = getShell().shell.toLowerCase().replace(/\\/g, '/')
+  if (lower.includes('powershell')) return 'powershell'
+  if (lower.endsWith('cmd') || lower.endsWith('cmd.exe')) return 'cmd'
+  const base = lower.split('/').pop() ?? lower
+  const name = base.endsWith('.exe') ? base.slice(0, -4) : base
+  // A POSIX shell on a Windows filesystem is the one combination worth spelling
+  // out: the platform line right above this one says `win32`, and on its own
+  // that reads as "use Windows syntax" — `NUL`, `%VAR%`, backslash paths. The
+  // path is no help in saying so (Git Bash exports `SHELL=/bin/bash.exe`), so
+  // the pairing is what names it.
+  // Anything reaching here is spawned with `-c`, so it *is* a POSIX shell.
+  if (platform === 'win32') return `${name} (POSIX shell on Windows)`
+  return name
+}
+
+/**
  * Minimum sleep duration (seconds) that triggers the blocked-sleep pattern.
  * Sleep commands below this threshold are allowed without run_in_background.
  */

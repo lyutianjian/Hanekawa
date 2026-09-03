@@ -1049,11 +1049,21 @@ body.resizing #sidebar { transition: none; }
 }
 .session-badge { flex: 0 0 auto; display: inline-flex; align-items: center; }
 .session-badge .icon { width: 8px; height: 8px; }
-.session-badge.running { color: var(--accent-info); }
+.session-badge.running { color: var(--accent-info); gap: 4px; }
 /* The running badge is a spinning ring rather than a static dot; awaiting-input
    stays a still dot. The spinner path is stroked, so `.running`'s colour reaches
-   it through `currentColor`. */
-.session-badge.running .icon { animation: spin 0.9s linear infinite; }
+   it through `currentColor`.
+
+   It is drawn at label size rather than dot size — 14px with a heavier stroke —
+   because on a background lane it is the *only* thing on screen saying the
+   session is still working, and an 8px hairline ring reads as a speck. The
+   awaiting-input dot keeps its 8px: that one is carried by its word. */
+.session-badge.running .icon {
+  width: 14px;
+  height: 14px;
+  animation: spin 0.9s linear infinite;
+}
+.session-badge.running .icon path { stroke-width: 2; }
 .session-badge.awaiting-input { color: var(--accent-warn); gap: 4px; }
 /* "Waiting for you", in words. The permission request is drawn in one lane's
    composer now, so a request parked on a background session has nothing on
@@ -1188,6 +1198,48 @@ body.resizing #sidebar { transition: none; }
   color: var(--text-primary);
 }
 .transcript .item.assistant { color: var(--text-primary); }
+/* --- a message's meta row ---
+   复制 · 模型 · 时间, under the message it belongs to. Worth having, not worth a
+   permanent line of chrome under every message — so the row is always in flow
+   (its height is reserved, and revealing it pushes nothing) and only its ink
+   fades in on hover. A streaming draft has no record, so it has no model and no
+   stamp and the row does not exist at all while text is arriving.
+
+   `:focus-within` is the other half of the reveal: the copy button is a real
+   control, and one that only exists for a mouse is one a keyboard cannot find.
+   `user-select: none` keeps the invisible copy of the labels out of a selection
+   dragged over the answer. */
+.transcript .item .item-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+  /* The times line up under one another down the column. */
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-standard);
+}
+.transcript .item:hover .item-meta,
+.transcript .item .item-meta:focus-within { opacity: 1; }
+/* The user's bubble is right-aligned, so its meta row ends where the bubble
+   does; the assistant's starts at the text's left edge. Order is the same on
+   both sides — the DOM order is the order. */
+.transcript .item.user .item-meta { justify-content: flex-end; }
+.item-copy {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.item-copy:hover { color: var(--text-secondary); }
+.item-copy:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.item-copy .icon { width: 13px; height: 13px; }
 /* --- inline file pills ---
    A referenced file inside the user's bubble. `--surface-canvas` under a card-backed
    bubble is the inset label of design_guidance 六.3 —「--surface-canvas 底 +
@@ -1246,9 +1298,6 @@ body.resizing #sidebar { transition: none; }
    parser rejects every at-rule but `@keyframes` — recorded in `todo.md`. */
 .transcript .item.thinking.live .thinking-header { animation: breathe 2.4s ease-in-out infinite; }
 @keyframes breathe { 50% { opacity: 0.45; } }
-/* The streaming caret belongs to the block's body. A collapsed block has none, and
-   a `▌` hanging off the header would read as a second cursor. */
-.transcript .item.thinking.collapsed.pending::after { content: none; }
 /* --- activity groups ---
    Two layers of disclosure (§2): the group head carries the turn's boundary and
    total, every step inside opens on its own. Depth stays at the sheet's two steps —
@@ -1650,7 +1699,11 @@ body.resizing #sidebar { transition: none; }
   font-size: var(--type-code);
 }
 .transcript .item.tool.failed { color: var(--text-danger); border-left-color: var(--text-danger); }
-.transcript .item.pending::after { content: " ▌"; color: var(--caret); }
+/* A streaming item carries no caret. A `▌` chasing the last token is a cursor
+   nobody can put anything at — the composer below already owns the only caret on
+   this screen — and it sat on the answer's final line for the whole of a turn's
+   tool work, which is the one place the reader's eye keeps returning to. The
+   thinking header's `breathe` and the group head's status say what is live. */
 /* There is no `.tool-progress` strip any more (T10): the running tool names
    itself on its own step's head, one line up, with its bead and its elapsed
    time. */

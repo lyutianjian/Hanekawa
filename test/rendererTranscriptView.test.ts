@@ -35,6 +35,8 @@ interface Rendered {
   readonly taskClicks: () => number
   /** `[path, line]` per clicked search row, the `open-in-editor` payload. */
   readonly opened: ReadonlyArray<readonly [string, number | undefined]>
+  /** What each 复制 click handed the pane for the clipboard. */
+  readonly copied: readonly string[]
   render(state: TranscriptState, disclosure?: DisclosureState): void
   jump(): StubView
   items(): readonly StubView[]
@@ -48,11 +50,13 @@ function mount(t: { after(fn: () => void): void }): Rendered {
   const host = stub.createContainer('pane')
   const toggled: Array<readonly [string, boolean]> = []
   const opened: Array<readonly [string, number | undefined]> = []
+  const copied: string[] = []
   let taskClicks = 0
   const view = createTranscriptView(container, host, {
     onToggle: (id, expanded) => toggled.push([id, expanded]),
     onTaskStep: () => { taskClicks += 1 },
     onOpenPath: (path, line) => opened.push([path, line]),
+    onCopy: (text) => copied.push(text),
   })
   const jump = (): StubView => {
     const found = stub.inspect(host).children.find((child) => child.classes.includes('scroll-bottom'))
@@ -72,6 +76,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     taskClicks: () => taskClicks,
     toggled,
     opened,
+    copied,
     render: (state, disclosure = NO_DISCLOSURE) => view.render(state, disclosure),
     jump,
     // Through `.transcript-column`, the one box the items live in: the scroller
@@ -318,7 +323,9 @@ test('a turn is one group: the user message outside it, its steps within', (t) =
   assert.deepEqual(group.classes, ['activity-group', 'running'])
   const head = group.children[0]
   assert.equal(head?.tagName, 'BUTTON')
-  assert.equal(head?.text, '工作中 · 2 步')
+  // One *action* — the tool call. The thinking step above it is a row in the
+  // group but not work the turn did, and it is not counted.
+  assert.equal(head?.text, '工作中 · 1 步')
   assert.equal(head?.attributes.get('aria-expanded'), 'true')
   assert.equal(group.children[1]?.className, 'group-steps')
   assert.deepEqual(
@@ -382,16 +389,16 @@ test('the group head reads out a stable name while its visible label counts step
   // Visible: the counter. Read out: the status alone — the label is out of the
   // accessibility tree, because this subtree is an `aria-live` region and the
   // count moves once per step (§8).
-  assert.equal(running?.text, '工作中 · 2 步')
+  assert.equal(running?.text, '工作中 · 1 步')
   assert.equal(running?.attributes.get('aria-label'), '工作中')
   const label = running?.children.find((child) => child.classes.includes('btn-label'))
-  assert.equal(label?.text, '工作中 · 2 步')
+  assert.equal(label?.text, '工作中 · 1 步')
   assert.equal(label?.attributes.get('aria-hidden'), 'true')
 
   // Sealed, the head is written once, so it names the totals it now carries.
   view.render(transcript(turnItems()))
   const done = groupOf(view).children[0]
-  assert.equal(done?.attributes.get('aria-label'), '已完成 · 2 步')
+  assert.equal(done?.attributes.get('aria-label'), '已完成 · 1 步')
 })
 
 test('the group survives the automatic collapse it performs at turn end', (t) => {
@@ -534,7 +541,7 @@ test('the group head is kept across paints, and still reports what it showed', (
   // Sealed: the same node, renamed, and now reporting the collapse it performed.
   view.render(transcript(turnItems()))
   assert.equal(groupOf(view).children[0]?.node, head, 'the head survives the turn ending')
-  assert.equal(groupOf(view).children[0]?.attributes.get('aria-label'), '已完成 · 2 步')
+  assert.equal(groupOf(view).children[0]?.attributes.get('aria-label'), '已完成 · 1 步')
   assert.equal(groupOf(view).children[0]?.attributes.get('aria-expanded'), 'false')
 
   view.stub.click(head)
@@ -1225,6 +1232,50 @@ test('only the user bubble grows pills', (t) => {
   for (const item of items()) {
     assert.equal(item.children.some((child) => child.classes.includes('file-chip')), false, item.className)
   }
+})
+
+test('a message carries a meta row: 复制, its model, its time — and a draft carries none', (t) => {
+  const { render, items, copied, stub } = mount(t)
+  const meta = (item: StubView): StubView | undefined =>
+    item.children.find((child) => child.classes.includes('item-meta'))
+  // Local time, so the expectation is derived the same way the view derives it.
+  const at = new Date(2026, 4, 7, 14, 32).toISOString()
+
+  // The streaming draft has neither a model nor a stamp, so there is no row at
+  // all — an empty one would reserve height under a message that is still
+  // growing.
+  render(transcript([{ id: 'draft', kind: 'assistant', text: 'part', pending: true }]))
+  assert.equal(meta(items()[0]!), undefined)
+
+  render(transcript([{ id: 'a1', kind: 'assistant', text: 'part done', model: 'glm-5.3', createdAt: at }]))
+  const row = meta(items()[0]!)
+  assert.ok(row, 'the committed answer draws its meta row')
+  assert.deepEqual(
+    row.children.map((child) => [child.classes.join(' '), child.text]),
+    [['item-copy', ''], ['item-model', 'glm-5.3'], ['item-time', '14:32']],
+    '复制 first, the model in the middle, the time last',
+  )
+  // The transcript is `aria-live="polite"`: the labels are not what a reader
+  // asked to have read out alongside the answer. The button is a real control
+  // and names itself.
+  assert.equal(row.children[1]!.attributes.get('aria-hidden'), 'true')
+  assert.equal(row.children[2]!.attributes.get('aria-hidden'), 'true')
+  assert.equal(row.children[0]!.attributes.get('aria-hidden'), undefined)
+  assert.equal(row.children[0]!.attributes.get('aria-label'), '复制')
+
+  stub.click(row.children[0]!.node)
+  assert.deepEqual(copied, ['part done'], 'the pane is handed the message, not the rendered markdown')
+
+  // The user's bubble has a time and a copy button, and no model to name.
+  render(transcript([{ id: 'u1', kind: 'user', text: 'go', createdAt: at }]))
+  const userRow = meta(items()[0]!)
+  assert.ok(userRow)
+  assert.deepEqual(
+    userRow.children.map((child) => [child.classes.join(' '), child.text]),
+    [['item-copy', ''], ['item-time', '14:32']],
+  )
+  stub.click(userRow.children[0]!.node)
+  assert.deepEqual(copied, ['part done', 'go'])
 })
 
 test('the stub carries every document member the dom helpers reach for', (t) => {

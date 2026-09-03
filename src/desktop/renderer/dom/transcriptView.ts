@@ -12,6 +12,7 @@ import {
   type DisclosureState,
 } from '../model/thinking.js'
 import {
+  formatMessageTime,
   formatWorkedDuration,
   groupTranscript,
   toolStatusLabel,
@@ -97,6 +98,12 @@ export interface TranscriptHandlers {
    * file header). The pane turns it into the `open-in-editor` command.
    */
   onOpenPath(path: string, line: number | undefined): void
+  /**
+   * A message's 复制 button. The pane owns the clipboard call: `navigator` is a
+   * host object, and this file is the one under test against a hand-written DOM
+   * stub.
+   */
+  onCopy(text: string): void
 }
 
 export function createTranscriptView(
@@ -215,6 +222,7 @@ function createPainter(
     onToggle: handlers.onToggle,
     onTaskStep: handlers.onTaskStep,
     onOpenPath: handlers.onOpenPath,
+    onCopy: handlers.onCopy,
     node(key, className, signature, fill, create) {
       live.add(key)
       const cached = cache.get(key)
@@ -830,11 +838,62 @@ function itemNode(painter: Painter, item: TranscriptItem): HTMLElement {
   // just a code block whose end has not arrived, and the parse cache means the
   // cost is one parse of the draft rather than one of every settled message.
   if (item.kind === 'assistant') {
-    return painter.node(key, `${classes.join(' ')} md`, [item.text], () => markdownChildren(item.text))
+    return painter.node(key, `${classes.join(' ')} md`, [item.text, item.model, item.createdAt], () => [
+      ...markdownChildren(item.text),
+      metaRow(painter, item),
+    ])
   }
   if (item.kind === 'thinking') return looseThinkingNode(painter, item, classes, key)
-  if (item.kind === 'user') return painter.node(key, classes.join(' '), [item.text], () => userParts(item))
+  if (item.kind === 'user') {
+    return painter.node(key, classes.join(' '), [item.text, item.createdAt], () => [
+      ...userParts(item),
+      metaRow(painter, item),
+    ])
+  }
   return painter.node(key, classes.join(' '), [item.text], () => [item.text])
+}
+
+/**
+ * A message's meta row: 复制 · which model wrote it · when it settled.
+ *
+ * One row rather than three affordances, and one order on both sides of the
+ * conversation — copy first because it is the only *control* here, then the two
+ * facts, with the time at the end where a reader scanning down the column finds
+ * a column of times rather than a ragged one.
+ *
+ * The model name used to be a line of its own in the stream: a `Switched to …`
+ * notice the controller emitted at the end of *every* turn, whether or not
+ * anything had switched. It rides on the message now.
+ *
+ * Absent, not empty, when there is nothing to say — a streaming draft has no
+ * record yet, so it has neither model nor stamp, and an empty row would still
+ * reserve its height under a message that is still growing.
+ *
+ * The two labels are `aria-hidden` (like the group head's visible label and the
+ * beads): the transcript is `aria-live="polite"`, and neither is what a reader
+ * asked to have read out alongside the answer. The button is not hidden — it is
+ * the row's only real control, and it names itself.
+ */
+function metaRow(painter: Painter, item: TranscriptItem): HTMLElement | undefined {
+  const time = formatMessageTime(item.createdAt)
+  const model = item.kind === 'assistant' ? item.model : undefined
+  // A draft has no stamp of its own; copying half a sentence is not the offer.
+  if (time === undefined && model === undefined) return undefined
+  const copy = button('item-copy', '', '复制', () => painter.onCopy(item.text), { icon: 'copy' })
+  return el(
+    'div',
+    'item-meta',
+    copy,
+    model === undefined ? undefined : quiet('item-model', model),
+    time === undefined ? undefined : quiet('item-time', time),
+  )
+}
+
+/** A meta label: visible, and out of the live region's announcements. */
+function quiet(className: string, text: string): HTMLElement {
+  const node = el('span', className, text)
+  node.setAttribute('aria-hidden', 'true')
+  return node
 }
 
 /**

@@ -53,6 +53,8 @@ export type IconName =
   // --- the inline permission request ---
   | 'terminal'
   | 'shield'
+  // --- a message's meta row ---
+  | 'copy'
 
 interface IconSpec {
   /** Path data on a 16×16 grid. */
@@ -186,6 +188,15 @@ const ICONS = {
   shield: {
     paths: [
       'M8 2.2 12.8 4v3.4c0 3-2 5.2-4.8 6.4C5.2 12.6 3.2 10.4 3.2 7.4V4z',
+    ],
+  },
+  // Two offset sheets — the copy affordance every text surface draws. Its front
+  // sheet is the `file` glyph's box without the folded corner, so the two read as
+  // the same family at 14px.
+  copy: {
+    paths: [
+      'M5.6 5.6a1 1 0 0 1 1-1h5.2a1 1 0 0 1 1 1v5.2a1 1 0 0 1-1 1H6.6a1 1 0 0 1-1-1z',
+      'M10.4 4.6V4.2a1 1 0 0 0-1-1H4.2a1 1 0 0 0-1 1v5.2a1 1 0 0 0 1 1h.4',
     ],
   },
 } as const satisfies Record<IconName, IconSpec>

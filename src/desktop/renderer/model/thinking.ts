@@ -153,7 +153,9 @@ export function isLooseThinkingExpanded(item: TranscriptItem, state: DisclosureS
  * be re-announced at every step (§8).
  */
 export function groupHeaderLabel(group: ActivityGroup): string {
-  const parts = [groupStatusLabel(group), `${group.stepCount} 步`]
+  // `stepCount` counts actions, so zero is a turn that only thought and answered.
+  // 「0 步」 is not a fact worth a slot; the status alone carries that turn.
+  const parts = [groupStatusLabel(group), ...(group.stepCount > 0 ? [`${group.stepCount} 步`] : [])]
   // Stated, not opened: a failure already opens its own step (§5.1), and forcing
   // the whole group open would move everything under it.
   if (group.failedCount > 0) parts.push(`${group.failedCount} 失败`)

@@ -108,6 +108,9 @@ points or views.
 - Compaction must retain the latest user message. Automatic failures are fail-open behind the per-session
   circuit breaker. Cache sources and module state must not cross sessions, streams, or projects.
 - Provider-supported micro-compaction uses cache editing; never mutate local session records as a stand-in.
+- The prompt's `# Environment` shell line is `describeShell()` from `src/tools/bash.ts` — the shell the
+  `Bash` tool will actually spawn, not a second guess at it. On Windows that is Git Bash before
+  PowerShell, so the line names it as a POSIX shell and the model stops writing `NUL` and `%VAR%`.
 - Thinking is the `thinking` setting, read in `createRuntime` and handed to the loop and the Agent
   tool: unset means `{ type: 'adaptive' }`, `false` means `{ type: 'disabled' }`, which is the only way
   the payload omits the parameter. `/thinking` writes the local layer, reloads settings, and updates the
@@ -209,6 +212,13 @@ points or views.
   *visual* status vocabulary (`awaiting-approval`/`running`/`done`/`failed`) and is `aria-hidden` — the
   state reaches the head's accessible name in words, because colour may not be the only carrier. Steps are
   not cards: no third shadow or radius rung, and depth stays two steps.
+- `stepCount` counts a turn's **actions** (`isActionStep`: tool, task, subagent), not `steps.length` —
+  thinking, staged prose and system notices are rows in the group but not work it did. Zero is a real
+  answer, and `groupHeaderLabel` drops the counter rather than saying 「0 步」.
+- A message carries one meta row under it (`.item-meta`: 复制 · model · time, in that order), revealed on
+  `:hover`/`:focus-within` and absent entirely on a streaming draft, which has neither model nor stamp.
+  The two labels are `aria-hidden` (the transcript is `aria-live`); the copy button is not. The clipboard
+  call belongs to `paneSession.ts` via `onCopy` — `dom/transcriptView.ts` runs against a DOM stub.
 - Disclosure stores the user's **absolute** answer per group and step id (`model/thinking.ts`), never a
   deviation from a default. The defaults are dynamic (a running turn is open with only its last step open;
   failures open themselves; an awaiting-approval step does not) and are pruned on `transcript-reset`.

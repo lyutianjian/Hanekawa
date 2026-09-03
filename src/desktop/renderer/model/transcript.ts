@@ -178,6 +178,13 @@ export interface TranscriptItem {
   readonly interrupt?: boolean
   /** On a `tool` item: both records' worth of head and body (§4.5). */
   readonly tool?: ToolStepDetail
+  /**
+   * The model that wrote this message — `ChatMessage.model`, assistant records
+   * only. A streaming draft has none: the field arrives with the record that
+   * supersedes it, which is also why the view may not treat its absence as a
+   * fault.
+   */
+  readonly model?: string
 }
 
 /** One step inside an activity group. `text` is the body; heads are the view's job. */
@@ -215,6 +222,17 @@ export interface ActivityGroup {
   readonly steps: readonly ActivityStep[]
   readonly status: 'running' | 'done' | 'aborted'
   readonly durationMs?: number
+  /**
+   * How many **actions** the turn took — tool calls, the task-list write, a
+   * sub-agent run — and not `steps.length`.
+   *
+   * A step is any row inside the group, which includes the turn's reasoning and
+   * the prose staged between two tools. Counting those made 「7 步」 out of a turn
+   * that ran one command: what a reader counts a turn's work in is the things it
+   * *did*, and thinking and text are the narration around them. Zero is a real
+   * answer (a turn that only thought aloud), and the head drops the counter
+   * rather than claiming 「0 步」.
+   */
   readonly stepCount: number
   readonly failedCount: number
 }
@@ -412,6 +430,23 @@ export function formatWorkedDuration(ms: number): string {
   const seconds = Math.floor(total)
   const minutes = Math.floor(seconds / 60)
   return minutes > 0 ? `${minutes}m ${seconds % 60}s` : `${seconds}s`
+}
+
+/**
+ * The wall-clock time a message settled at, as `14:32` — the right-hand end of a
+ * message's meta row.
+ *
+ * Local time, and formatted by hand rather than through `toLocaleTimeString`: the
+ * shell is a fixed 24-hour layout, and a locale that decides to render `下午2:32`
+ * changes the row's width once per message. `undefined` for anything unparseable
+ * (an old record with no stamp, a live draft), which is the view's cue to draw no
+ * time at all rather than a placeholder.
+ */
+export function formatMessageTime(createdAt: string | undefined): string | undefined {
+  if (createdAt === undefined) return undefined
+  const at = new Date(createdAt)
+  if (Number.isNaN(at.getTime())) return undefined
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
 }
 
 /**
@@ -617,6 +652,11 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
         id: record.id,
         kind: record.role === 'user' ? 'user' : 'assistant',
         text: messageText(record),
+        // Who wrote it. Only the assistant side: the user's own message has no
+        // model, and an old record that predates the field simply has none.
+        ...(record.role !== 'user' && typeof record.model === 'string' && record.model.length > 0
+          ? { model: record.model }
+          : {}),
         ...stamp,
       }
       // One model request = one thinking segment ahead of its text (§4.2). Old
@@ -994,7 +1034,8 @@ function truncate(value: string, maxLength: number): string {
  * A turn with no steps draws no empty group; its duration falls back to the
  * single line it is today (§5.3).
  */
-export function groupTranscript(items: readonly TranscriptItem[]): TranscriptEntry[] {
+export function groupTranscript(input: readonly TranscriptItem[]): TranscriptEntry[] {
+  const items = hoistDurations(input)
   const entries: TranscriptEntry[] = []
   for (let index = 0; index < items.length;) {
     const turnId = items[index]!.turnId
@@ -1009,6 +1050,43 @@ export function groupTranscript(items: readonly TranscriptItem[]): TranscriptEnt
     index = end
   }
   return entries
+}
+
+/**
+ * Moves each `duration` item back beside the run it measures.
+ *
+ * A notice minted between a turn's last record and its `turn-end` — an
+ * interruption, a turn-level error — carries no `turnId`, so it splits the
+ * turn's contiguous run in two and the duration lands in a run of its own.
+ * `turnEntries` then reads that as 「a turn with no steps」 and draws a standalone
+ * 「已处理」 line under the answer, while the activity group above has already
+ * fallen back to the record span for the same total. The total belongs in one
+ * place, and this is the cheapest place to say so: everything downstream keeps
+ * reading one contiguous run per turn.
+ *
+ * Order-preserving otherwise — the item only ever moves *earlier*, to just after
+ * the last item of its own turn, so nothing the reader has read changes place.
+ */
+function hoistDurations(items: readonly TranscriptItem[]): readonly TranscriptItem[] {
+  // The *input* is handed back when nothing moved, which is the common case —
+  // callers compare item identity, not list identity, but there is no reason to
+  // mint a second list per paint either.
+  let moved = false
+  const list = [...items]
+  for (let index = 0; index < list.length; index += 1) {
+    const item = list[index]!
+    if (item.kind !== 'duration' || item.turnId === undefined) continue
+    let home = -1
+    for (let back = index - 1; back >= 0; back -= 1) {
+      if (list[back]!.turnId === item.turnId) { home = back; break }
+    }
+    // Already contiguous (or a turn with nothing else left to attach to).
+    if (home === -1 || home === index - 1) continue
+    list.splice(index, 1)
+    list.splice(home + 1, 0, item)
+    moved = true
+  }
+  return moved ? list : items
 }
 
 function turnEntries(turnId: string, run: readonly TranscriptItem[]): TranscriptEntry[] {
@@ -1050,13 +1128,25 @@ function turnEntries(turnId: string, run: readonly TranscriptItem[]): Transcript
       steps,
       status: interrupted ? 'aborted' : running ? 'running' : 'done',
       ...durationOf(duration, run),
-      stepCount: steps.length,
+      stepCount: steps.filter(isActionStep).length,
       failedCount: steps.filter((step) => (
         ('status' in step && step.status === 'failed') || ('failed' in step && step.failed === true)
       )).length,
     },
   })
   return [...entries, ...after.map((item) => ({ kind: 'item' as const, item }))]
+}
+
+/**
+ * A step that counts towards 「N 步」: something the turn *did*.
+ *
+ * `system` is out with `thinking` and `text` — a compaction notice or an
+ * interruption is a thing that happened *to* the turn, not work it performed —
+ * but a failed one still reaches `failedCount`, which counts trouble rather than
+ * actions.
+ */
+export function isActionStep(step: ActivityStep): boolean {
+  return step.kind === 'tool' || step.kind === 'task' || step.kind === 'subagent'
 }
 
 /**

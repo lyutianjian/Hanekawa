@@ -322,6 +322,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // printed (a cwd-relative path, and the hit's line) — resolving it to a
     // project and bounding it there is the shell's half of the bargain.
     onOpenPath: (path, line) => deps.onOpenFile?.(path, line),
+    // The clipboard lives here rather than in the view: `navigator` is a host
+    // object, and `dom/transcriptView.ts` is the half of this that runs against a
+    // hand-written DOM stub in tests. A rejected write is swallowed — the button
+    // is a convenience beside text the user can still select.
+    onCopy: (text) => { void navigator.clipboard?.writeText(text).catch(() => {}) },
   })
   const welcome = createWelcomeView(welcomeEl, {
     onSwitchWorkspace: () => toggleWorkspacePicker(),
@@ -888,9 +893,12 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
         draftText = outcome.restoreInput
       }
     }
-    if (outcome.activeModel !== undefined) {
-      note(`Switched to ${outcome.activeModel}.`)
-    }
+    // `outcome.activeModel` is deliberately not drawn: the controller emits
+    // `active-model` at the end of *every* turn, so the notice it used to mint
+    // said "Switched to X." after a turn that switched nothing — a row under
+    // each answer, and one without a `turnId`, which split the turn's run and
+    // left its elapsed time drawn twice. Each assistant message names its own
+    // model on hover instead (`dom/transcriptView.ts`'s `modelLabel`).
   })
 
   client.onCommandEffect((effect) => {

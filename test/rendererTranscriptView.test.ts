@@ -808,6 +808,230 @@ test('an unparseable search payload falls back to the plain body, without errori
   assert.equal(step?.children[0]?.children.some((part) => part.classes.includes('step-suffix')), false)
 })
 
+// --- the read, agent and web families' bodies (T16) --------------------------
+
+function readStep(overrides: { content?: string; failed?: boolean } = {}): TranscriptItem {
+  return {
+    id: 'read-1',
+    kind: 'tool',
+    text: 'Read a.ts',
+    toolName: 'Read',
+    turnId: 't1',
+    ...(overrides.failed === true ? { failed: true } : {}),
+    tool: {
+      displayName: 'Read',
+      useSummary: 'src/a.ts',
+      resultSummary: 'Read 2 lines',
+      content: overrides.content ?? 'one\ntwo\n',
+      durationMs: 400,
+    },
+  }
+}
+
+test('a Read step opens into the file as a line-numbered code block', (t) => {
+  const view = mount(t)
+  view.render(transcript([readStep()]), new Map([['t1', true], ['read-1', true]]))
+
+  const step = groupOf(view).children[1]?.children[0]
+  // `Read src/foo.ts · 240 行` (§6.2): the count is the block's own, so the head
+  // and the body can never disagree about how long the file is.
+  const head = step?.children[0]
+  assert.deepEqual(
+    head?.children.slice(1).map((part) => [part.className, part.text]),
+    [['step-name', 'Read'], ['step-summary', 'src/a.ts'], ['step-suffix', '2 行'], ['step-duration', '0.4s']],
+  )
+  assert.equal(head?.attributes.get('aria-label'), 'Read · src/a.ts · 2 行 · 完成')
+
+  // The body is the file's own lines, one row each with its own number — and
+  // no highlighting of any kind: the row is exactly the text the tool read.
+  const body = step?.children[1]
+  assert.equal(body?.className, 'step-body')
+  const block = body?.children[0]
+  assert.equal(block?.className, 'step-code')
+  // A trailing newline is the last line's terminator, not an extra empty row:
+  // the tool counts `one\ntwo\n` as 2 lines, and so does the block.
+  assert.deepEqual(
+    block?.children.map((row) => [
+      row.children[0]?.text,
+      row.children[1]?.text,
+      row.children[1]?.className,
+    ]),
+    [['1', 'one', 'step-code-text'], ['2', 'two', 'step-code-text']],
+  )
+})
+
+function agentStep(): TranscriptItem {
+  return {
+    id: 'agent-1',
+    kind: 'tool',
+    text: 'explore agent 扫一遍 tools/',
+    toolName: 'Agent',
+    turnId: 't1',
+    tool: {
+      displayName: 'explore agent',
+      useSummary: '扫一遍 tools/',
+      task: '找到 display 的**所有**用法',
+      content: '22 个工具返回了 **display.summary**，其中 6 个带 detail。',
+      resultSummary: 'Done (12 tool uses · 34k tokens · 5s)',
+      headerSuffix: 'opus',
+      durationMs: 41_000,
+      subagent: {
+        subagentType: 'explore',
+        model: 'opus',
+        toolUseCount: 12,
+        // The run's own 8k-capped record of the same answer: the fuller
+        // result content is what the body owes the reader.
+        summary: '22 个工具返回了 display.summary。',
+      },
+    },
+  }
+}
+
+test('an Agent step opens into its task and the sub-agent answer, with the run in the head', (t) => {
+  const view = mount(t)
+  view.render(transcript([agentStep()]), new Map([['t1', true], ['agent-1', true]]))
+
+  const step = groupOf(view).children[1]?.children[0]
+  // `Agent explore · opus · 12 工具` (§6.2): the run's model and tool count are
+  // one suffix unit — and the result's own `headerSuffix` carries that same
+  // model, so it stands down rather than saying `opus` twice on the row.
+  const head = step?.children[0]
+  assert.deepEqual(
+    head?.children.slice(1).map((part) => [part.className, part.text]),
+    [
+      ['step-name', 'explore agent'],
+      ['step-summary', '扫一遍 tools/'],
+      ['step-suffix', 'opus · 12 工具'],
+      ['step-duration', '41s'],
+    ],
+  )
+  assert.equal(head?.attributes.get('aria-label'), 'explore agent · 扫一遍 tools/ · opus · 12 工具 · 完成')
+  assert.equal(
+    head?.children.filter((part) => part.classes.includes('step-suffix')).length,
+    1,
+    'the model is not drawn twice',
+  )
+
+  // The body is the conversation the call stands for: the task, then the
+  // answer — prose, so markdown, with the `**` already a strong node rather
+  // than markers a plain body would print.
+  const body = step?.children[1]
+  assert.equal(body?.className, 'step-body')
+  const prompt = body?.children[0]
+  assert.equal(prompt?.className, 'step-agent-prompt')
+  assert.equal(prompt?.children[0]?.className, 'step-agent-label')
+  assert.equal(prompt?.children[0]?.text, '任务')
+  assert.equal(prompt?.children[1]?.className, 'step-agent-text md')
+  assert.equal(prompt?.children[1]?.text, '找到 display 的所有用法')
+  const response = body?.children[1]
+  assert.equal(response?.className, 'step-agent-response')
+  assert.equal(response?.children[0]?.text, '回复')
+  assert.equal(response?.children[1]?.text, '22 个工具返回了 display.summary，其中 6 个带 detail。')
+  // Markdown, and the fuller of the two renderings of the answer: the result
+  // content, not the run's capped summary.
+  assert.equal(response?.children[1]?.children[0]?.tagName, 'P')
+  assert.equal(response?.children[1]?.children[0]?.children[0]?.tagName, 'STRONG')
+})
+
+function webStep(overrides: { failed?: boolean; errorCode?: ToolErrorCode } = {}): TranscriptItem {
+  return {
+    id: 'web-1',
+    kind: 'tool',
+    text: 'Fetch example.com',
+    toolName: 'WebFetch',
+    turnId: 't1',
+    ...(overrides.failed === true ? { failed: true } : {}),
+    tool: {
+      displayName: 'Fetch',
+      useSummary: 'example.com',
+      resultSummary: 'Fetched example.com (24.3KB)',
+      content: '# Title\n\nsome prose',
+      ...(overrides.errorCode === undefined ? {} : { errorCode: overrides.errorCode }),
+      durationMs: 1200,
+    },
+  }
+}
+
+test('a WebFetch step opens into the page as the markdown the tool made of it', (t) => {
+  const view = mount(t)
+  view.render(transcript([webStep()]), new Map([['t1', true], ['web-1', true]]))
+
+  const step = groupOf(view).children[1]?.children[0]
+  // The web family has no counts of its own — the fetch's own note stays where
+  // the fallback put it, above the body.
+  const head = step?.children[0]
+  assert.deepEqual(
+    head?.children.slice(1).map((part) => [part.className, part.text]),
+    [['step-name', 'Fetch'], ['step-summary', 'example.com'], ['step-duration', '1s']],
+  )
+
+  // The body is the article: the tool already converted the page to markdown,
+  // and rendering it as the `pre` the fallback uses would print `#` and `**`
+  // as markers instead of the heading and emphasis they are.
+  const body = step?.children[1]
+  assert.deepEqual(
+    body?.children.map((part) => part.className),
+    ['step-body-head', 'step-web md'],
+  )
+  const article = body?.children[1]
+  assert.equal(article?.children[0]?.tagName, 'H1')
+  assert.equal(article?.children[0]?.text, 'Title')
+  assert.equal(article?.children[1]?.tagName, 'P')
+  assert.equal(article?.children[1]?.text, 'some prose')
+})
+
+test('the fallback body still serves the new families when their data is absent', (t) => {
+  const view = mount(t)
+
+  // An Agent step with nothing of its own — no task, no run, not even a
+  // content the family could answer with (the shape an old or foreign record
+  // leaves) — is the fallback family's to draw, not an error.
+  view.render(transcript([{
+    id: 'agent-old',
+    kind: 'tool',
+    text: 'Agent(找出问题)',
+    toolName: 'Agent',
+    turnId: 't1',
+    tool: {
+      displayName: 'Agent',
+      useSummary: '找出问题',
+      resultSummary: 'Done',
+      detail: '报告',
+    },
+  }]), new Map([['t1', true], ['agent-old', true]]))
+  const agentBody = groupOf(view).children[1]?.children[0]?.children[1]
+  assert.equal(agentBody?.children.some((child) => child.classes.includes('step-agent-prompt')), false)
+  assert.deepEqual(
+    agentBody?.children.map((part) => [part.className, part.text]),
+    [['step-body-head', 'Done'], ['step-body-text', '报告']],
+  )
+
+  // A failed fetch is a failure first: its own text drawn by the fallback —
+  // under the step's `failed` class and its danger colour — not an article.
+  view.render(
+    transcript([webStep({ failed: true, errorCode: 'execution_failed' })]),
+    new Map([['t1', true], ['web-1', true]]),
+  )
+  const failedBody = groupOf(view).children[1]?.children[0]?.children[1]
+  assert.equal(failedBody?.children.some((child) => child.classes.includes('step-web')), false)
+  assert.deepEqual(
+    failedBody?.children.map((part) => [part.className, part.text]),
+    [['step-body-head', 'Fetched example.com (24.3KB)'], ['step-body-text', '# Title\n\nsome prose']],
+  )
+
+  // A Read that read nothing has no lines to number: no code block, and no
+  // invented `0 行` — the count is the block's own, and there is no block.
+  view.render(transcript([readStep({ content: '' })]), new Map([['t1', true], ['read-1', true]]))
+  const emptyRead = groupOf(view).children[1]?.children[0]
+  assert.equal(emptyRead?.children[0]?.children.some((part) => part.classes.includes('step-suffix')), false)
+  const emptyBody = emptyRead?.children[1]
+  assert.equal(emptyBody?.children.some((child) => child.classes.includes('step-code')), false)
+  assert.deepEqual(
+    emptyBody?.children.map((part) => [part.className, part.text]),
+    [['step-body-head', 'Read 2 lines']],
+  )
+})
+
 // --- inline file pills (5d) --------------------------------------------------
 
 test('a mention in the user bubble is a pill, interleaved with the text as typed', (t) => {

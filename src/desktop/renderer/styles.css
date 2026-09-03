@@ -1565,6 +1565,61 @@ body.resizing #sidebar { transition: none; }
   color: var(--text-tertiary);
   font-family: var(--font-mono);
 }
+
+/* The read family's body (T16): the file the tool read, one numbered row per
+   line — the same card-and-hairline content shell the terminal block and the
+   search list get, capped and scrolling inside itself (§6.2 块内滚动). No
+   syntax highlighting (§6.4 暂不做): colour here would have to be a
+   highlighter's, and that is a dependency this sheet does not take. */
+.step-code {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+}
+.step-code-row { display: flex; gap: var(--space-2); white-space: pre; }
+/* The line column is chrome, not content: right-aligned, tabular, and never
+   selected — a copy of the block owes the file's own lines, not its gutters.
+   `ch` is the width of a `0`, so the column is only stable while the rule is
+   monospaced, which is why the family is re-declared here. */
+.step-code-line {
+  flex: 0 0 auto;
+  min-width: 4ch;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+.step-code-text { flex: 1 1 auto; color: var(--text-secondary); }
+
+/* The Agent family's body (T16): the task over the sub-agent's answer — prose,
+   so markdown, on the step's own surface rather than a card: it is the
+   conversation the call stands for, not an output block. The label names each
+   half, because two unlabelled text blocks are ambiguous; the answer sits one
+   rung up from the task because it is the payload the reader opened for. */
+.step-agent-prompt { margin-bottom: var(--space-2); }
+.step-agent-label {
+  margin-bottom: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+}
+.step-agent-text { max-height: 320px; overflow: auto; }
+.step-agent-response { color: var(--text-secondary); }
+
+/* The web family's body (T16): the fetched page, which the tool already turned
+   into markdown — an article, clipped inside itself like every other body. */
+.step-web {
+  max-height: 320px;
+  overflow: auto;
+  color: var(--text-secondary);
+}
 .transcript .item.notice { color: var(--text-secondary); font-style: italic; }
 .transcript .item.error { color: var(--text-danger); }
 .transcript .item.subagent { color: var(--accent-tool); }

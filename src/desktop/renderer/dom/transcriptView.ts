@@ -16,6 +16,7 @@ import {
   toolStatusLabel,
   type ActivityGroup,
   type ActivityStep,
+  type SubagentRun,
   type TranscriptEntry,
   type TranscriptItem,
   type TranscriptState,
@@ -394,6 +395,30 @@ function shellOutput(step: Extract<ToolLike, { kind: 'tool' }>): string | undefi
 /** The search family (§6.2): the two tools whose result is a list of files. */
 const SEARCH_TOOLS = new Set(['Grep', 'Glob'])
 
+/** The read family (§6.2 读取): `Read`, whose body is the file it read. */
+const READ_TOOL = 'Read'
+
+/** The web family (§6.2 Web): the two tools whose result is fetched prose. */
+const WEB_TOOLS = new Set(['WebFetch', 'WebSearch'])
+
+/** The Agent family (§6.2 Agent): the one tool that runs a sub-agent. */
+const AGENT_TOOL = 'Agent'
+
+/** One numbered line of the read family's code block. */
+interface CodeRow {
+  /** 1-based, the line's own place in the file. */
+  readonly line: number
+  readonly text: string
+}
+
+/** What the families of this step parsed its records into, computed once per fill. */
+interface FamilyData {
+  readonly patch: PatchRows | undefined
+  readonly found: SearchResults | undefined
+  readonly rows: readonly CodeRow[] | undefined
+  readonly agent: SubagentRun | undefined
+}
+
 /**
  * The search family's own body data, or `undefined` when this step is not one
  * of its lists. Parsed once per fill — the painter's signature already holds
@@ -410,6 +435,75 @@ function searchResults(step: ToolLike): SearchResults | undefined {
   return parseSearchResults(step.toolName, step.tool.content)
 }
 
+/**
+ * The read family's own body data (§6.2 读取): the file the tool read, as
+ * numbered rows. A failed read is excluded before parsing, exactly as the
+ * search family is — the failure's own text is the fallback body's to draw,
+ * under the step's `failed` class.
+ *
+ * The trailing newline's empty row is dropped, mirroring the tool's own line
+ * count, or the head's `N 行` would disagree with the block by one. A trailing
+ * `\r` goes with it: it is half of a CRLF the split already broke on, not a
+ * character of the line.
+ */
+function readRows(step: ToolLike): readonly CodeRow[] | undefined {
+  if (step.kind !== 'tool' || step.failed === true) return undefined
+  if (step.toolName !== READ_TOOL) return undefined
+  const content = step.tool.content
+  if (content === undefined || content.length === 0) return undefined
+  const lines = (content.endsWith('\n') ? content.slice(0, -1) : content).split('\n')
+  return lines.map((text, index) => ({ line: index + 1, text: text.endsWith('\r') ? text.slice(0, -1) : text }))
+}
+
+/** The Agent family's run facts, when this step is one of its calls. */
+function agentRun(step: ToolLike): SubagentRun | undefined {
+  if (step.kind !== 'tool' || step.toolName !== AGENT_TOOL) return undefined
+  return step.tool.subagent
+}
+
+/**
+ * The read family's own note (§6.2): `240 行` — the parsed block's own count,
+ * so the head and the body can never disagree.
+ */
+function readStats(rows: readonly CodeRow[]): string {
+  return `${rows.length} 行`
+}
+
+/**
+ * The Agent family's own note (§6.2): `opus · 12 工具` — the model the run used
+ * and the calls it made, composed from the run's own record. The model is the
+ * same string the result's `headerSuffix` carries, so while this unit stands
+ * the generic suffix stands down (see `headParts`) rather than saying it twice.
+ */
+function agentStats(run: SubagentRun | undefined): string | undefined {
+  if (run === undefined) return undefined
+  const parts = [run.model, run.toolUseCount === undefined ? undefined : `${run.toolUseCount} 工具`]
+    .filter((part) => part !== undefined && part.length > 0)
+  return parts.length > 0 ? parts.join(' · ') : undefined
+}
+
+/** Every family's parsed data for one step, in the order the bodies draw them. */
+function familyData(step: ToolLike): FamilyData {
+  return {
+    patch: editPatch(step),
+    found: searchResults(step),
+    rows: readRows(step),
+    agent: agentRun(step),
+  }
+}
+
+/** The family's own counts, sitting where a suffix would (§6.2). */
+function familyStats(family: FamilyData): string | undefined {
+  // A capped patch's counts are partial — `+0 −17` on a whole-file rewrite
+  // whose adds were cut — so the suffix stays off rather than lying. A search
+  // list is never capped by the parser (only by the tool itself, which says so
+  // in the notice), so its counts are the list's own and always honest.
+  if (family.patch !== undefined && !family.patch.capped) return patchStats(family.patch)
+  if (family.found !== undefined) return searchStats(family.found)
+  if (family.rows !== undefined) return readStats(family.rows)
+  return agentStats(family.agent)
+}
+
 function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElement {
   const status = step.kind === 'tool' ? step.status : step.pending === true ? 'running' : 'done'
   const classes = ['step', step.kind, status]
@@ -418,39 +512,35 @@ function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElem
   // when the result merges in — see `thinkingStep` for why not the step itself.
   const detail = step.kind === 'tool' ? step.tool : undefined
   return painter.node(`step:${step.id}`, classes.join(' '), [step.text, detail, status, expanded], () => {
-    const patch = editPatch(step)
-    const found = searchResults(step)
-    // A capped patch's counts are partial — `+0 −17` on a whole-file rewrite
-    // whose adds were cut — so the suffix stays off rather than lying. A search
-    // list is never capped by the parser (only by the tool itself, which says
-    // so in the notice), so its counts are the list's own and always honest.
-    const stats = patch !== undefined && !patch.capped
-      ? patchStats(patch)
-      : found !== undefined
-        ? searchStats(found)
-        : undefined
+    const family = familyData(step)
+    const stats = familyStats(family)
     const head = button('step-head', '', stepAccessibleName(step, status, stats), () =>
       painter.onToggle(step.id, expanded))
     head.setAttribute('aria-expanded', expanded ? 'true' : 'false')
     append(head, [bead(step, 'step-bead'), ...headParts(step, stats)])
-    return [head, expanded ? stepBody(step, patch, found, painter) : undefined]
+    return [head, expanded ? stepBody(step, family, painter) : undefined]
   })
 }
 
 /**
  * `Read` + `src/a.ts` + the result's own suffix + the call's elapsed time — the
  * head reads left to right as 「什么工具、对什么、结果如何、花了多久」 (§4.5).
- * The edit family inserts its patch counts where a suffix would sit, because for
+ * The families insert their own counts where a suffix would sit, because for
  * those tools the counts *are* the result's note.
  */
 function headParts(step: ToolLike, stats: string | undefined): Child[] {
   if (step.kind === 'subagent') return [el('span', 'step-name', step.text)]
   const { displayName, useSummary, headerSuffix, durationMs } = step.tool
+  // The Agent family's suffix is one unit — `opus · 12 工具` — built from the
+  // run's own record, which names the same model the result's `headerSuffix`
+  // carries. While the unit stands, the generic suffix stands down; keeping
+  // both would say `opus` twice on one row.
+  const agentUnit = step.kind === 'tool' && step.toolName === AGENT_TOOL && stats !== undefined
   return [
     el('span', 'step-name', displayName),
     useSummary ? el('span', 'step-summary', useSummary) : undefined,
     stats === undefined ? undefined : el('span', 'step-suffix', stats),
-    headerSuffix === undefined ? undefined : el('span', 'step-suffix', headerSuffix),
+    headerSuffix === undefined || agentUnit ? undefined : el('span', 'step-suffix', headerSuffix),
     durationMs === undefined ? undefined : el('span', 'step-duration', formatWorkedDuration(durationMs)),
   ]
 }
@@ -460,7 +550,10 @@ function stepAccessibleName(step: ToolLike, status: string, stats: string | unde
   const label = toolStatusLabel(status as Parameters<typeof toolStatusLabel>[0])
   if (step.kind === 'subagent') return `${step.text} · ${label}`
   const { displayName, useSummary, headerSuffix } = step.tool
-  return [displayName, useSummary, stats, headerSuffix, label]
+  // The same stand-down as `headParts`: the Agent family's suffix unit already
+  // names the model the `headerSuffix` would repeat.
+  const agentUnit = step.toolName === AGENT_TOOL && stats !== undefined
+  return [displayName, useSummary, stats, agentUnit ? undefined : headerSuffix, label]
     .filter((part) => part && part.length > 0)
     .join(' · ')
 }
@@ -485,6 +578,18 @@ function stepAccessibleName(step: ToolLike, status: string, stats: string | unde
  * head — hover is the whole affordance, and the accessible name says what a
  * click opens.
  *
+ * The read family (T16) is the file itself, as a code block with its own line
+ * numbers — no syntax highlighting (§6.4 暂不做); the structure a code body
+ * owes is lines and numbers, and colour would have to be a highlighter's.
+ *
+ * The Agent family (T16) is the conversation the call stands for: the task the
+ * parent handed the sub-agent and the sub-agent's answer — prose, so markdown,
+ * not a terminal — with the run's own model and tool count already in the head.
+ *
+ * The web family (T16) is the fetched page, which arrives *as* markdown — the
+ * tool converts before it returns — rendered as the article it is rather than
+ * the marker soup a plain body would print.
+ *
  * Everything else is still the fallback family (§6.2 兜底): the result's own
  * summary over `detail ?? content` — which is also what an edit step without a
  * parseable patch gets, an old record's `Edited x` among them (§10), without
@@ -493,15 +598,10 @@ function stepAccessibleName(step: ToolLike, status: string, stats: string | unde
  * Nothing to show yields no body at all rather than an empty box: a call with no
  * result yet is the common case, and an empty disclosure is noise.
  */
-function stepBody(
-  step: ToolLike,
-  patch: PatchRows | undefined,
-  results: SearchResults | undefined,
-  painter: Painter,
-): HTMLElement | undefined {
+function stepBody(step: ToolLike, family: FamilyData, painter: Painter): HTMLElement | undefined {
   if (step.kind === 'subagent') return el('div', 'step-body', step.text)
-  if (patch !== undefined) return el('div', 'step-body', diffNode(patch.rows))
-  if (results !== undefined) return el('div', 'step-body', searchBody(results, painter))
+  if (family.patch !== undefined) return el('div', 'step-body', diffNode(family.patch.rows))
+  if (family.found !== undefined) return el('div', 'step-body', searchBody(family.found, painter))
   const terminal = shellOutput(step)
   if (terminal !== undefined) {
     const { errorCode } = step.tool
@@ -512,6 +612,18 @@ function stepBody(
       el('pre', 'step-terminal', terminal),
     )
   }
+  if (family.rows !== undefined) {
+    return el('div', 'step-body', el('div', 'step-code', ...family.rows.map((row) => el(
+      'div',
+      'step-code-row',
+      el('span', 'step-code-line', String(row.line)),
+      el('span', 'step-code-text', row.text),
+    ))))
+  }
+  const agent = agentBody(step)
+  if (agent !== undefined) return agent
+  const web = webBody(step)
+  if (web !== undefined) return web
   const { resultSummary, detail, content } = step.tool
   const text = detail ?? content
   if (resultSummary === undefined && (text === undefined || text.length === 0)) return undefined
@@ -522,6 +634,66 @@ function stepBody(
     // Clipping is the stylesheet's (T8): `max-height` plus scrolling *inside* the
     // block, so a long output never turns the group itself into a scroll window.
     text === undefined || text.length === 0 ? undefined : el('pre', 'step-body-text', text),
+  )
+}
+
+/**
+ * The Agent family's body: the task (the prompt the parent wrote) over the
+ * sub-agent's answer. Two labelled sections, because two unlabelled text blocks
+ * are ambiguous — and the labels are the one place the body needs words of its
+ * own, the head having taken everything the records can count.
+ *
+ * The answer is the fuller of the result's `content` and the run's own
+ * transcript: they are the same report budgeted differently (the result adds
+ * the worktree and continuation notices; the run's record is what a background
+ * agent leaves when the result was only a start notice), and the fuller text is
+ * the truer reply.
+ */
+function agentBody(step: ToolLike): HTMLElement | undefined {
+  if (step.kind !== 'tool' || step.toolName !== AGENT_TOOL) return undefined
+  const task = step.tool.task
+  const response = agentResponse(step.tool.content, step.tool.subagent?.summary)
+  if (task === undefined && response === undefined) return undefined
+  return el(
+    'div',
+    'step-body',
+    task === undefined ? undefined : el(
+      'div',
+      'step-agent-prompt',
+      el('div', 'step-agent-label', '任务'),
+      el('div', 'step-agent-text md', ...markdownChildren(task)),
+    ),
+    response === undefined ? undefined : el(
+      'div',
+      'step-agent-response',
+      el('div', 'step-agent-label', '回复'),
+      el('div', 'step-agent-text md', ...markdownChildren(response)),
+    ),
+  )
+}
+
+/** The fuller of the two renderings of the sub-agent's answer (§6.2 Agent). */
+function agentResponse(content: string | undefined, summary: string | undefined): string | undefined {
+  if (content === undefined || content.length === 0) return summary
+  if (summary === undefined || summary.length === 0) return content
+  return content.length >= summary.length ? content : summary
+}
+
+/**
+ * The web family's body: the fetched page as the markdown the tool already
+ * made of it. A failed fetch is the fallback body's to draw, under the step's
+ * `failed` class — the family only claims results that are prose.
+ */
+function webBody(step: ToolLike): HTMLElement | undefined {
+  if (step.kind !== 'tool' || step.failed === true) return undefined
+  if (step.toolName === undefined || !WEB_TOOLS.has(step.toolName)) return undefined
+  const { resultSummary, content } = step.tool
+  if (content === undefined || content.length === 0) return undefined
+  return el(
+    'div',
+    'step-body',
+    resultSummary === undefined ? undefined : el('div', 'step-body-head', resultSummary),
+    el('div', 'step-web md', ...markdownChildren(content)),
   )
 }
 

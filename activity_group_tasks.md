@@ -256,7 +256,7 @@ DOM 侧 ANSI→span 纯函数时再上。失败时错误码单独一行。
 
 **验收**：`test/openInEditor.test.ts` + 视图用例（点击路径发出正确的命令负载）。
 
-### [ ] T16 — Read / Agent / Web 三族展开体
+### [x] T16 — Read / Agent / Web 三族展开体
 
 **依赖**：T7。
 

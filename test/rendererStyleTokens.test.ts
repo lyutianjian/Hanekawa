@@ -701,6 +701,7 @@ const MONOSPACED = [
   '.diff-row .gutter',
   '.step-terminal',
   '.step-search',
+  '.step-code',
   '#overlay-panel .block',
   '#overlay-panel .plan',
   '#overlay-panel .feedback',

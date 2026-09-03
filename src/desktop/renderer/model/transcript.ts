@@ -92,6 +92,22 @@ export type ToolDisplayLookup = (recordId: string) => ToolDisplayDto | undefined
 export type ToolStepStatus = 'awaiting-approval' | 'running' | 'done' | 'failed'
 
 /**
+ * The sub-agent run behind an `Agent` call (§6.2 Agent): the facts its own
+ * `subagent_transcript` record carries. The record is appended to the parent
+ * session beside the call's `tool_result`, so these land on the step rather
+ * than painting a second row for the same run.
+ */
+export interface SubagentRun {
+  readonly subagentType: string
+  /** The model the run used — the same string the result's `headerSuffix` carries. */
+  readonly model?: string
+  /** How many tool calls the sub-agent made. */
+  readonly toolUseCount?: number
+  /** The run's persisted transcript: its final report. */
+  readonly summary?: string
+}
+
+/**
  * Everything a tool step's head and body need, gathered from both records.
  *
  * The call side (`displayName`, `useSummary`, `startedAt`) survives the result
@@ -122,6 +138,10 @@ export interface ToolStepDetail {
   readonly durationMs?: number
   /** The call has a `tool_use` record but no approval yet (§3). */
   readonly awaitingApproval?: boolean
+  /** The Agent family: the task the parent handed the sub-agent (`input.task`). */
+  readonly task?: string
+  /** The Agent family: the sub-agent run's own facts (§6.2 Agent). */
+  readonly subagent?: SubagentRun
   /** `TodoWrite` only: the `3/6` the head shows (§4.4). */
   readonly progress?: { readonly completed: number; readonly total: number }
   /**
@@ -539,9 +559,16 @@ function applyRecord(
   }
 
   // A tool_result *merges into* the call row it answers — it does not replace it
-  // (§4.5). The caption and the start time only exist on the call side.
-  if (record.type === 'tool_result') {
-    const answered = next.findIndex((item) => item.id === record.toolUseId)
+  // (§4.5). The caption and the start time only exist on the call side. The
+  // sub-agent run's transcript takes the same in-place merge, keyed by the
+  // record's own pointer at its parent call (§6.2 Agent).
+  const mergeKey = record.type === 'tool_result'
+    ? record.toolUseId
+    : record.type === 'subagent_transcript'
+      ? record.parentToolUseId
+      : undefined
+  if (mergeKey !== undefined) {
+    const answered = next.findIndex((item) => item.id === mergeKey)
     if (answered !== -1) {
       next[answered] = mergeToolItems(next[answered]!, pending[0]!)
       return { ...state, turnId, liveThinkingId, items: next }
@@ -609,6 +636,7 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
         // visible for as long as the user is actually being asked.
         ...(context.approved?.has(record.id) === true ? {} : { awaitingApproval: true }),
         ...(dto ? { captioned: true } : {}),
+        ...(record.tool === AGENT_TOOL ? agentTask(record.input) : {}),
       }
       return [{
         id: record.id,
@@ -651,13 +679,36 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
         ...stamp,
       }]
 
-    case 'subagent_transcript':
+    case 'subagent_transcript': {
+      // The run's own transcript belongs to the call that started it (§6.2
+      // Agent): keyed by `parentToolUseId` it merges into that step exactly as
+      // a `tool_result` merges by `toolUseId`, so the head gains the run's
+      // model and tool count, the body its report, and the duplicate row the
+      // record used to paint never exists. A record with no parent to merge
+      // into (a truncated log) keeps a row of its own.
+      const run: SubagentRun = {
+        subagentType: record.subagentType,
+        ...(record.model === undefined ? {} : { model: record.model }),
+        ...(record.toolUseCount === undefined ? {} : { toolUseCount: record.toolUseCount }),
+        ...(record.summary === undefined ? {} : { summary: record.summary }),
+      }
+      if (record.parentToolUseId !== undefined) {
+        return [{
+          id: record.parentToolUseId,
+          kind: 'tool',
+          text: record.subagentType,
+          toolName: AGENT_TOOL,
+          tool: { displayName: record.subagentType, useSummary: '', subagent: run },
+          ...stamp,
+        }]
+      }
       return [{
         id: record.id,
         kind: 'subagent',
         text: `${record.subagentType} finished${record.summary ? `: ${record.summary}` : ''}`,
         ...stamp,
       }]
+    }
 
     case 'turn_interruption':
       return [{ id: record.id, kind: 'notice', text: 'Interrupted.', interrupt: true, ...stamp }]
@@ -721,6 +772,13 @@ function mergeToolItems(call: TranscriptItem, result: TranscriptItem): Transcrip
   const callTool = call.tool
   const resultTool = result.tool
   if (callTool === undefined || resultTool === undefined) return result
+  // The sub-agent run's record is the third partner a step can take (§6.2
+  // Agent): it settles nothing about the *call*, so it must not displace the
+  // caption, the span or the outcome the way a result does — it only hands
+  // over the run's own facts.
+  if (resultTool.subagent !== undefined) {
+    return { ...call, tool: { ...callTool, subagent: resultTool.subagent } }
+  }
   const { awaitingApproval: _awaiting, ...settled } = callTool
   const tool: ToolStepDetail = {
     ...settled,
@@ -1015,6 +1073,17 @@ function durationOf(duration: TranscriptItem | undefined, run: readonly Transcri
 }
 
 const TASK_TOOL = 'TodoWrite'
+const AGENT_TOOL = 'Agent'
+
+/**
+ * `input.task` — the prompt the parent handed the sub-agent (§6.2 Agent).
+ * Agent calls only: another tool whose input happens to carry a `task` key
+ * must not pose as one.
+ */
+function agentTask(input: unknown): { task?: string } {
+  const task = typeof input === 'object' && input !== null ? (input as { task?: unknown }).task : undefined
+  return typeof task === 'string' && task.length > 0 ? { task } : {}
+}
 
 /**
  * §3's four states, in precedence order: a settled call is what it settled as,

@@ -920,3 +920,101 @@ test('TodoWrite is a single task step, and its list lives in the panel instead',
   assert.equal(step.text, 'TodoWrite 更新任务清单')
   assert.deepEqual(step.tool.progress, { completed: 3, total: 6 }, 'the head reads 3/6')
 })
+
+// --- the Agent family's run record (T16) -------------------------------------
+
+/**
+ * §6.2 Agent: the sub-agent's own `subagent_transcript` record is appended to
+ * the parent session *beside* the call's `tool_result`, pointing back at the
+ * call through `parentToolUseId`. It merges into that step — the head gains the
+ * run's model and tool count, the body its report — so the run paints once,
+ * not once as a tool row and again as a transcript row.
+ */
+function agentCall(id: string, turnId: string, createdAt: string): SessionRecord {
+  return {
+    type: 'tool_use', id, tool: 'Agent',
+    input: { task: '找到 display 的所有用法', subagent_type: 'explore', description: '扫一遍 tools/' },
+    riskLevel: 'safe', createdAt, turnId,
+  }
+}
+
+function agentResult(toolUseId: string, turnId: string, createdAt: string): SessionRecord {
+  return {
+    type: 'tool_result', id: `${toolUseId}-r`, toolUseId, tool: 'Agent', ok: true,
+    content: '22 个工具返回了 display.summary，其中 6 个带 detail。', createdAt, turnId,
+    display: { summary: 'Done (12 tool uses · 34k tokens · 5s)', headerSuffix: 'opus' },
+  }
+}
+
+function agentTranscript(parentToolUseId: string, id: string, createdAt: string): SessionRecord {
+  return {
+    type: 'subagent_transcript', id, agentId: 'ag-1', subagentType: 'explore', model: 'opus',
+    parentToolUseId, status: 'completed', summary: '22 个工具返回了 display.summary。',
+    toolUseCount: 12, usage: { inputTokens: 34_000, cacheReadInputTokens: 0, outputTokens: 200 },
+    records: [], createdAt, turnId: 't1',
+  }
+}
+
+test('a sub-agent run merges into the call it belongs to, live and on replay', () => {
+  const records: SessionRecord[] = [
+    stamped(message('u1', 'user', 'go'), 't1', '2026-01-01T00:00:00.000Z'),
+    agentCall('ag1', 't1', '2026-01-01T00:00:01.000Z'),
+    agentTranscript('ag1', 'st1', '2026-01-01T00:00:41.000Z'),
+    agentResult('ag1', 't1', '2026-01-01T00:00:42.000Z'),
+  ]
+  const captions = displays({ ag1: { displayName: 'explore agent', useSummary: '扫一遍 tools/' } })
+
+  const replayed = groupTranscript(createTranscriptState(records, captions).items)
+  const group = groupAt(replayed, 1)
+  assert.equal(group.stepCount, 1, 'the run is the call it belongs to, not a second row beside it')
+
+  const step = toolStep(replayed, 1)
+  assert.equal(step.kind, 'tool')
+  assert.equal(step.toolName, 'Agent')
+  assert.equal(step.tool.task, '找到 display 的所有用法', 'the prompt rides the call it came in on')
+  assert.deepEqual(step.tool.subagent, {
+    subagentType: 'explore', model: 'opus', toolUseCount: 12, summary: '22 个工具返回了 display.summary。',
+  })
+  assert.equal(step.tool.headerSuffix, 'opus')
+  assert.equal(step.tool.content, '22 个工具返回了 display.summary，其中 6 个带 detail。')
+  assert.equal(step.tool.durationMs, 41_000, 'the span is the call’s own — the run record does not stretch it')
+
+  // The property every merge has to keep (T3): folding the same records live
+  // produces the same tree, field for field — captions included, which is why
+  // the fold here carries the same lookup the replay above did.
+  let live = createTranscriptState()
+  for (const record of records) {
+    live = applySessionEvent(live, { type: 'record', record }, captions).state
+  }
+  assert.deepEqual(
+    groupTranscript(live.items).map((entry) => entry.kind === 'group' ? entry.group : entry.item),
+    replayed.map((entry) => entry.kind === 'group' ? entry.group : entry.item),
+  )
+})
+
+test('a run record no call claims keeps a row of its own, without erroring', () => {
+  // Two orphans: an old record with no parent pointer at all, and one whose
+  // pointer names a call a truncated log no longer holds. Neither may throw,
+  // and neither may vanish.
+  const entries = groupsOf([
+    stamped(message('u1', 'user', 'go'), 't1', '2026-01-01T00:00:00.000Z'),
+    {
+      type: 'subagent_transcript', id: 'st-old', agentId: 'ag-1', subagentType: 'explore',
+      summary: '旧报告', usage: { inputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0 },
+      records: [], createdAt: '2026-01-01T00:00:01.000Z', turnId: 't1',
+    },
+    agentTranscript('gone', 'st-orphan', '2026-01-01T00:00:02.000Z'),
+  ])
+
+  const group = groupAt(entries, 1)
+  assert.equal(group.stepCount, 2)
+  // The parent-less record is the standalone row it has always been.
+  assert.equal(group.steps[0]!.kind, 'subagent')
+  assert.equal(group.steps[0]!.text, 'explore finished: 旧报告')
+  // The unanswerable pointer paints as the family's own step: the run's facts,
+  // with no call around them — its body is the report the record carries.
+  const orphan = group.steps[1]!
+  assert.equal(orphan.kind, 'tool')
+  assert.equal(orphan.tool.subagent?.model, 'opus')
+  assert.equal(orphan.tool.subagent?.summary, '22 个工具返回了 display.summary。')
+})

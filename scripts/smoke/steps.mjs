@@ -792,7 +792,11 @@ async function step8(ctx) {
     open.bodyOpen === true && open.sidebarBoxes === 0,
     `bodyOpen=${open.bodyOpen} sidebarBoxes=${open.sidebarBoxes}`,
   )
-  ctx.eq('all five categories are live', open.nav.length, 5)
+  // `ALL_CATEGORIES` in `renderer/model/settings.ts`: provider, extensions,
+  // permissions, agent, general, appearance. A number rather than a derivation —
+  // the smoke reads the built renderer, and a category silently disappearing from
+  // the nav is exactly what this is here to catch.
+  ctx.eq('all six categories are live', open.nav.length, 6)
   ctx.eq('the screen loaded without an error', open.error, '')
   ctx.note(`focus after opening: ${open.focus} (inside the screen: ${open.focusInside})`)
 

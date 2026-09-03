@@ -1449,6 +1449,27 @@ body.resizing #sidebar { transition: none; }
    matches the fallback body's, and the block's own margin belongs to the
    dialog's padding. */
 .step-body .diff { max-height: 320px; margin: 0; }
+
+/* The shell family's body (T14) is a terminal block: the command's own output
+   on the same card-and-hairline content shell a fenced block or a diff gets,
+   scrolling inside itself so a long log never turns the group into a scroll
+   window (§6.2). The output is ANSI-stripped by the view before it gets here;
+   this rule owns the look — monospace, card surface, capped height. */
+.step-terminal {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+/* 失败时错误码单独一行 (§6.2): the failure's own code, in words, above the
+   output it failed on. It only exists on a failed step, so it carries the
+   danger colour itself rather than borrowing the block's. */
+.step-error { color: var(--text-danger); margin-bottom: var(--space-1); }
 /* The output block scrolls **inside itself**: a long result must not turn the
    group into a scroll window of its own (§6.2). */
 .step-body-text {
@@ -1460,6 +1481,7 @@ body.resizing #sidebar { transition: none; }
 }
 .step.failed .step-body-text,
 .step.failed .step-name { color: var(--text-danger); }
+.step.failed .step-terminal { color: var(--text-danger); }
 .transcript .item.notice { color: var(--text-secondary); font-style: italic; }
 .transcript .item.error { color: var(--text-danger); }
 .transcript .item.subagent { color: var(--accent-tool); }

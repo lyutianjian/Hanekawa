@@ -1,3 +1,4 @@
+import { stripAnsi } from '../model/ansi.js'
 import { parseUnifiedPatch, type PatchRows } from '../model/diffRows.js'
 import {
   groupHeaderLabel,
@@ -358,6 +359,29 @@ function patchStats(patch: PatchRows): string {
   return `+${patch.added} −${patch.deleted}`
 }
 
+/**
+ * The shell family (§6.2): `Bash`, whose body is a terminal block — the
+ * command's own output, monospaced on the card surface, scrolling inside
+ * itself. The family is an assignment by tool name, exactly as the edit family
+ * is: a foreign tool named `Bash` degrades to a terminal block, never to a diff.
+ *
+ * The text is **`content` first**, unlike the fallback's `detail ?? content`: a
+ * terminal shows what the command printed, and a shell result's `detail` is a
+ * one-line extract for the collapsed row (a backgrounded shell's `PID`) — the
+ * full start message in `content` is the richer and truer transcript.
+ *
+ * The escapes are stripped here (§6.4): they would print as `[32m` garbage, and
+ * colour rendering waits for a DOM-side ANSI→span pure function. Stripping at
+ * paint time leaves the raw output on the item, so a future coloured body reads
+ * the same field this one does.
+ */
+function shellOutput(step: Extract<ToolLike, { kind: 'tool' }>): string | undefined {
+  if (step.toolName !== 'Bash') return undefined
+  const raw = step.tool.content ?? step.tool.detail
+  if (raw === undefined || raw.length === 0) return undefined
+  return stripAnsi(raw)
+}
+
 function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElement {
   const status = step.kind === 'tool' ? step.status : step.pending === true ? 'running' : 'done'
   const classes = ['step', step.kind, status]
@@ -414,10 +438,16 @@ function stepAccessibleName(step: ToolLike, status: string, stats: string | unde
  * paints — line gutters included. Its result summary is not repeated above the
  * rows; the head already says what file and how much.
  *
+ * The shell family is a terminal block (T14): the command's own output with its
+ * ANSI escapes stripped, on the card surface. Its head already says what ran and
+ * how long, so the body is the output alone — except a failure's error code,
+ * which §6.2 gives a line of its own above the block. The whole block reddens
+ * with the step's `failed` class, the stylesheet's half of that rule.
+ *
  * Everything else is still the fallback family (§6.2 兜底): the result's own
  * summary over `detail ?? content` — which is also what an edit step without a
  * parseable patch gets, an old record's `Edited x` among them (§10), without
- * erroring. The terminal block and the grouped search list are T14–T15.
+ * erroring. The grouped search list is T15.
  *
  * Nothing to show yields no body at all rather than an empty box: a call with no
  * result yet is the common case, and an empty disclosure is noise.
@@ -425,6 +455,16 @@ function stepAccessibleName(step: ToolLike, status: string, stats: string | unde
 function stepBody(step: ToolLike, patch: PatchRows | undefined): HTMLElement | undefined {
   if (step.kind === 'subagent') return el('div', 'step-body', step.text)
   if (patch !== undefined) return el('div', 'step-body', diffNode(patch.rows))
+  const terminal = shellOutput(step)
+  if (terminal !== undefined) {
+    const { errorCode } = step.tool
+    return el(
+      'div',
+      'step-body',
+      errorCode === undefined ? undefined : el('div', 'step-error', `错误码 ${errorCode}`),
+      el('pre', 'step-terminal', terminal),
+    )
+  }
   const { resultSummary, detail, content } = step.tool
   const text = detail ?? content
   if (resultSummary === undefined && (text === undefined || text.length === 0)) return undefined

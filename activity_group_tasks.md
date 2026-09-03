@@ -237,7 +237,7 @@ diff；头显示 `Edit src/foo.ts · +12 −3`。旧记录没有 `display.detail
 
 **验收**：`test/rendererDiffRows.test.ts` + 转录视图新增用例。
 
-### [ ] T14 — Shell 族展开体 + ANSI 剥离
+### [x] T14 — Shell 族展开体 + ANSI 剥离
 
 **依赖**：T7。
 

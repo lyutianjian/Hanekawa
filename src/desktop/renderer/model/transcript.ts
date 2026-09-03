@@ -1,4 +1,4 @@
-import type { SessionRecord, ToolResultDisplay } from '../../../harness/types.js'
+import type { SessionRecord, ToolErrorCode, ToolResultDisplay } from '../../../harness/types.js'
 import type { SessionEvent } from '../../../runtime/sessionController.js'
 import type { ToolDisplayDto } from '../../../runtime/protocol/wire.js'
 
@@ -110,6 +110,12 @@ export interface ToolStepDetail {
   readonly detail?: string
   /** The raw `tool_result.content`, the body's fallback. */
   readonly content?: string
+  /**
+   * `ToolResultRecord.errorCode`, carried only by a failed result. §6.2's
+   * common body rule — the failure's code on a line of its own — is drawn by
+   * each family from this.
+   */
+  readonly errorCode?: ToolErrorCode
   /** `tool_use.createdAt`, kept so a late result can still measure the span. */
   readonly startedAt?: string
   /** `tool_result.createdAt − tool_use.createdAt`; absent if either is unparseable. */
@@ -618,7 +624,14 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
 
     case 'tool_result': {
       // Keyed by the call it answers, so it merges into that row in place.
-      const tool = resultDetail(record.tool, record.display, record.content)
+      const tool = resultDetail(
+        record.tool,
+        record.display,
+        record.content,
+        // A code the result *succeeded* with is not a failure's code; the field
+        // means 「why this call went wrong」, and the body only draws it then.
+        record.ok ? undefined : record.errorCode,
+      )
       return [{
         id: record.toolUseId,
         kind: 'tool',
@@ -673,11 +686,17 @@ function toolHeaderText(tool: ToolStepDetail): string {
  * to a spread. A result with no call to merge into (a truncated log) still needs
  * *some* name, so it falls back to the raw tool name there.
  */
-function resultDetail(toolName: string, display: ToolResultDisplay | undefined, content: string): ToolStepDetail {
+function resultDetail(
+  toolName: string,
+  display: ToolResultDisplay | undefined,
+  content: string,
+  errorCode: ToolErrorCode | undefined,
+): ToolStepDetail {
   return {
     displayName: toolName,
     useSummary: '',
     content,
+    ...(errorCode === undefined ? {} : { errorCode }),
     ...(display?.headerSuffix === undefined ? {} : { headerSuffix: display.headerSuffix }),
     ...(display?.summary === undefined ? {} : { resultSummary: display.summary }),
     ...(display?.detail === undefined ? {} : { detail: display.detail }),

@@ -17,8 +17,8 @@ import type {
   TranscriptState,
 } from '../src/desktop/renderer/model/transcript.js'
 import type { ToolDisplayDto } from '../src/runtime/protocol/wire.js'
+import type { SessionRecord, ToolErrorCode } from '../src/harness/types.js'
 import type { SessionEvent } from '../src/runtime/sessionController.js'
-import type { SessionRecord } from '../src/harness/types.js'
 import { wrapInSystemReminder } from '../src/harness/systemReminder.js'
 
 /**
@@ -367,6 +367,33 @@ test('a failed tool result is marked failed', () => {
 
   assert.equal(state.items[0]?.failed, true)
   assert.match(state.items[0]?.text ?? '', /Bash failed: command not found/)
+})
+
+test('a failed result carries its error code; a successful one carries none', () => {
+  const toolUse: SessionRecord = {
+    type: 'tool_use', id: 'tu1', tool: 'Bash', input: { command: 'npm test' },
+    riskLevel: 'dangerous', createdAt: 'now',
+  }
+  const result = (ok: boolean, errorCode?: ToolErrorCode): SessionRecord => ({
+    type: 'tool_result', id: 'tr1', toolUseId: 'tu1', tool: 'Bash', ok,
+    content: 'output', createdAt: 'later',
+    ...(errorCode === undefined ? {} : { errorCode }),
+  })
+
+  const { state } = fold([
+    { type: 'record', record: toolUse },
+    { type: 'record', record: result(false, 'command_failed') },
+  ])
+  // §6.2's common body rule — 失败时错误码单独一行 — draws from this field.
+  assert.equal(state.items[0]?.tool?.errorCode, 'command_failed')
+
+  // A code the result succeeded with is not a failure's code; the body only
+  // draws it on a failed step, so the field itself is only ever a failure's.
+  const { state: oked } = fold([
+    { type: 'record', record: toolUse },
+    { type: 'record', record: result(true, 'command_failed') },
+  ])
+  assert.equal(oked.items[0]?.tool?.errorCode, undefined)
 })
 
 test('notices map to system and error rows', () => {

@@ -8,6 +8,7 @@ import { createTranscriptView } from '../src/desktop/renderer/dom/transcriptView
 import { NO_DISCLOSURE } from '../src/desktop/renderer/model/thinking.js'
 import type { DisclosureState } from '../src/desktop/renderer/model/thinking.js'
 import type { TranscriptItem, TranscriptState } from '../src/desktop/renderer/model/transcript.js'
+import type { ToolErrorCode } from '../src/harness/types.js'
 
 /**
  * The third `dom/` unit test, and the one that covers the renderer's only scroll
@@ -524,17 +525,20 @@ test('an edit record without a patch falls back to the plain body, without error
   ])
 })
 
-test("a patch in another family's detail does not turn it into a diff", (t) => {
+test("a Bash output that happens to be a patch stays a terminal block, not a diff", (t) => {
   const view = mount(t)
+  // `git diff` genuinely prints a unified patch — with colours, even. The family
+  // is the design's own assignment by tool name (§6.2), so the output is the
+  // terminal block's text, rows and all, and never a parsed `.diff`.
   view.render(
-    transcript([editStep({ detail: EDIT_PATCH, toolName: 'Bash' })]),
-    new Map([['t1', true], ['edit-1', true]]),
+    transcript([bashStep({ content: EDIT_PATCH })]),
+    new Map([['t1', true], ['bash-1', true]]),
   )
 
   const body = groupOf(view).children[1]?.children[0]?.children[1]
   assert.equal(body?.children.some((child) => child.classes.includes('diff')), false)
-  // The detail itself is still what the fallback family always showed: text.
-  assert.equal(body?.children[1]?.text, EDIT_PATCH)
+  assert.equal(body?.children[0]?.className, 'step-terminal')
+  assert.equal(body?.children[0]?.text, EDIT_PATCH)
 })
 
 test('skipped lines draw as dashed rules with the count, never as glyphs', (t) => {
@@ -553,6 +557,90 @@ test('skipped lines draw as dashed rules with the count, never as glyphs', (t) =
   // §3: the elision glyph is gone from the block entirely, in any form.
   assert.equal(diff?.text.includes('…'), false)
   assert.equal(diff?.text.includes('⋯'), false)
+})
+
+// --- the shell family's terminal block (T14) --------------------------------
+
+/**
+ * The output of a command that used its terminal — colours, a progress line's
+ * erase-and-jump, the lot. Exactly what prints as `[32m` garbage unstripped.
+ */
+const ANSI_OUTPUT = '\x1b[32mok\x1b[0m 42 passed\n\x1b[2K\x1b[1G\x1b[31m3 failed\x1b[0m'
+
+function bashStep(overrides: {
+  failed?: boolean
+  errorCode?: ToolErrorCode
+  content?: string
+  detail?: string
+} = {}): TranscriptItem {
+  return {
+    id: 'bash-1',
+    kind: 'tool',
+    text: 'Bash npm test',
+    toolName: 'Bash',
+    turnId: 't1',
+    ...(overrides.failed === true ? { failed: true } : {}),
+    tool: {
+      displayName: 'Bash',
+      useSummary: 'npm test',
+      content: overrides.content ?? ANSI_OUTPUT,
+      ...(overrides.detail === undefined ? {} : { detail: overrides.detail }),
+      ...(overrides.errorCode === undefined ? {} : { errorCode: overrides.errorCode }),
+      durationMs: 3200,
+    },
+  }
+}
+
+test('a Bash step opens into a terminal block with its output ANSI-stripped', (t) => {
+  const view = mount(t)
+  view.render(transcript([bashStep()]), new Map([['t1', true], ['bash-1', true]]))
+
+  const step = groupOf(view).children[1]?.children[0]
+  assert.deepEqual(step?.classes, ['step', 'tool', 'done'])
+  // The block is the command's own output and nothing else — the head already
+  // said what ran and how long, so there is no summary line above it (§6.2).
+  const body = step?.children[1]
+  assert.equal(body?.className, 'step-body')
+  assert.deepEqual(body?.children.map((child) => child.className), ['step-terminal'])
+  assert.equal(body?.children[0]?.tagName, 'PRE')
+  // §6.4: the sequences are stripped, not printed — a real `npm test` line, not
+  // the `[32m` garbage the raw string would show.
+  assert.equal(body?.children[0]?.text, 'ok 42 passed\n3 failed')
+  assert.equal(body?.text.includes('\x1b'), false)
+})
+
+test('a failed Bash step names its error code on its own line and reddens the whole block', (t) => {
+  const view = mount(t)
+  view.render(
+    transcript([bashStep({ failed: true, errorCode: 'command_failed' })]),
+    new Map([['t1', true], ['bash-1', true]]),
+  )
+
+  const step = groupOf(view).children[1]?.children[0]
+  // `failed` is the class the stylesheet keys the whole terminal block's danger
+  // colour on (`.step.failed .step-terminal`): the colour is never the only
+  // carrier — the code is right there in words, above the output it failed on.
+  assert.deepEqual(step?.classes, ['step', 'tool', 'failed'])
+  const body = step?.children[1]
+  assert.deepEqual(
+    body?.children.map((child) => [child.className, child.text]),
+    [['step-error', '错误码 command_failed'], ['step-terminal', 'ok 42 passed\n3 failed']],
+  )
+})
+
+test('the terminal shows what the command printed, not the collapsed line’s extract', (t) => {
+  const view = mount(t)
+  // A backgrounded shell's `detail` is the one-line extract the collapsed row
+  // reads; the full start message in `content` is the transcript the block owes
+  // the reader — the task id is what they need to call BashOutput with.
+  view.render(
+    transcript([bashStep({ content: 'Task ID: bg-1\nPID: 123', detail: 'PID: 123' })]),
+    new Map([['t1', true], ['bash-1', true]]),
+  )
+
+  const body = groupOf(view).children[1]?.children[0]?.children[1]
+  assert.equal(body?.children[0]?.className, 'step-terminal')
+  assert.equal(body?.children[0]?.text, 'Task ID: bg-1\nPID: 123')
 })
 
 // --- inline file pills (5d) --------------------------------------------------

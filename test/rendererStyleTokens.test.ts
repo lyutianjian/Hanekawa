@@ -699,6 +699,7 @@ const MONOSPACED = [
   '.md .md-inline-code',
   '.diff',
   '.diff-row .gutter',
+  '.step-terminal',
   '#overlay-panel .block',
   '#overlay-panel .plan',
   '#overlay-panel .feedback',
@@ -1169,6 +1170,44 @@ test('the bead is the tool step\'s whole status vocabulary, and it stays flat', 
       assert.notEqual(decl.prop, 'box-shadow', `${block.selector} gives a step a card's depth`)
     }
   }
+})
+
+test("the shell family's terminal block is a card-shelled output block that reddens whole on failure", () => {
+  // §6.2/T14: a Bash step opens into the command's own output, on the same
+  // card-and-hairline content shell a fenced block or a diff gets, scrolling
+  // inside itself so a long log never turns the group into a scroll window.
+  // Failure turns the whole block's text to the danger colour — the output of a
+  // failed command reads as the error it is — and the error code above it is
+  // danger on its own, because the only step that shows one is a failed step.
+  const terminal = blockFor('.step-terminal')
+  assert.ok(
+    declares(terminal, 'background', 'var(--surface-card)'),
+    'the terminal block sits on the card surface (§6.2)',
+  )
+  assert.ok(
+    declares(terminal, 'border', '1px solid var(--border-subtle)'),
+    'the terminal block carries the content hairline',
+  )
+  assert.ok(
+    declares(terminal, 'border-radius', 'var(--radius-md)'),
+    'the terminal block joins the fenced block and the diff on their radius rung, not a third one',
+  )
+  assert.ok(
+    declares(terminal, 'overflow', 'auto'),
+    'a long output scrolls inside the block, never the group (§6.2 块内滚动)',
+  )
+  assert.ok(
+    terminal.decls.some((decl) => decl.prop === 'max-height'),
+    'the terminal block must be capped, or it never scrolls',
+  )
+  assert.ok(
+    declares(blockFor('.step.failed .step-terminal'), 'color', 'var(--text-danger)'),
+    'a failed command reddens the whole block',
+  )
+  assert.ok(
+    declares(blockFor('.step-error'), 'color', 'var(--text-danger)'),
+    "the error code's own line is the failure it names",
+  )
 })
 
 test('the disclosure folds by height, and only when it opens', () => {

@@ -1,7 +1,8 @@
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process'
 
 /**
- * `code <cwd>` — the canvas header's "open location".
+ * `code <cwd>` — the canvas header's "open location" — and, since T15, one
+ * search hit's file at its own line (`code -g <file>:<line>`).
  *
  * Its own module rather than a closure in `main.ts`, because `main.ts` has no
  * unit test (`app.requestSingleInstanceLock()` runs at import time) and the
@@ -18,6 +19,19 @@ import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process'
  * double quote, so the closing quote cannot be forged and `&` inside it stays
  * data. On POSIX there is no shell and the path is one `argv` entry.
  */
+
+/**
+ * Where in the project to point the editor: one file, and the line to go to.
+ *
+ * `path` is absolute and already bounded to the project by the caller — the
+ * host resolved a renderer-relative path against the project's real cwd before
+ * handing it here. `line` is a Grep hit's own line; without it the file itself
+ * opens, and `-g` is deliberately not used for that (see below).
+ */
+export interface EditorTarget {
+  readonly path: string
+  readonly line?: number
+}
 
 export interface SpawnOptions {
   detached: boolean
@@ -56,18 +70,32 @@ const DEFAULT_GRACE_MS = 5000
  * editor started in the foreground) has plainly worked, and the renderer's
  * request must not hang waiting for it to exit.
  */
-export function openInEditor(cwd: string, options: OpenInEditorOptions = {}): Promise<void> {
+export function openInEditor(
+  cwd: string,
+  target?: EditorTarget,
+  options: OpenInEditorOptions = {},
+): Promise<void> {
   const spawn = options.spawn ?? (nodeSpawn as unknown as SpawnLike)
   const windows = (options.platform ?? process.platform) === 'win32'
 
+  // `-g` is `--goto`: `code -g <file>:<line>` lands the cursor on the line a
+  // search hit named. It is used only when there is a line to go to — a goto
+  // argument that never says where to go is the plain open, spelled oddly.
+  const goto = target?.line
+  const file = target?.path ?? cwd
+  const location = goto === undefined ? file : `${file}:${goto}`
+
   return new Promise<void>((resolve, reject) => {
     const child = windows
-      ? spawn('cmd.exe', ['/c', 'code', `"${cwd}"`], {
+      ? spawn('cmd.exe', ['/c', 'code', ...(goto === undefined ? [] : ['-g']), `"${location}"`], {
           detached: true,
           stdio: 'ignore',
           windowsVerbatimArguments: true,
         })
-      : spawn('code', [cwd], { detached: true, stdio: 'ignore' })
+      : spawn('code', goto === undefined ? [file] : ['-g', location], {
+          detached: true,
+          stdio: 'ignore',
+        })
 
     let settled = false
     const settle = (outcome: () => void): void => {

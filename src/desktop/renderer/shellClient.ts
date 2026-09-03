@@ -16,6 +16,7 @@ import type {
   WireShellOpenSessionResult,
   WireShellPanesResult,
   WireShellSessionsResult,
+  WireEditorTarget,
 } from '../shellProtocol.js'
 
 /**
@@ -164,15 +165,22 @@ export class ShellClient {
   }
 
   /**
-   * The canvas header's "open location". Rejects when the editor cannot start,
-   * which is the common case (no `code` on PATH) — the caller writes it into the
-   * transcript rather than losing it.
+   * The canvas header's "open location" — or, with `target`, one file inside
+   * the project at one line (a search result's path, clicked). `projectRoot` is
+   * the lane list's key; the host resolves it and bounds `target.path` to the
+   * project's real cwd. Rejects when the editor cannot start, which is the
+   * common case (no `code` on PATH) — the caller writes it into the transcript
+   * rather than losing it.
    */
-  async openInEditor(projectRoot: string): Promise<WireShellOpenInEditorResult> {
+  async openInEditor(
+    projectRoot: string,
+    target?: WireEditorTarget,
+  ): Promise<WireShellOpenInEditorResult> {
     return this.send({
       type: 'open-in-editor',
       id: crypto.randomUUID(),
       projectRoot,
+      ...(target === undefined ? {} : { target }),
     }) as Promise<WireShellOpenInEditorResult>
   }
 

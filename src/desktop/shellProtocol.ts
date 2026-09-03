@@ -39,6 +39,23 @@ export interface WireLaneInfo extends WirePaneInfo {
   lane: string
 }
 
+/**
+ * A file the editor is asked to show, inside the named project — the click a
+ * search result's path answers with (§6.2 检索).
+ *
+ * `path` is **relative to the project's cwd**, because the renderer cannot do
+ * better: it holds only the normalized `projectRoot` key, which is case-folded
+ * on Windows into a path that may not exist, so an absolute path built on it
+ * would be a guess. The host resolves `path` against the project's real `cwd`
+ * and bounds it there — a renderer that cannot name a directory the shell has
+ * not opened cannot name a file outside one either.
+ */
+export interface WireEditorTarget {
+  path: string
+  /** The line to go to — a Grep hit's own line. Absent opens the file itself. */
+  line?: number
+}
+
 // --- renderer → main ---------------------------------------------------------
 
 export type ShellCommand =
@@ -101,17 +118,19 @@ export type ShellCommand =
   | { type: 'rename-session'; id: string; projectRoot: string; sessionId: string; title: string }
   /**
    * Opens the project's directory in VS Code (`code <cwd>`), the canvas
-   * header's "open location".
+   * header's "open location" — or, with `target`, one file inside it at one
+   * line.
    *
    * Carries `projectRoot` — the normalized key the lane list uses — rather than
    * a path, because a renderer must not be able to name a directory the shell
-   * has not opened. The host resolves it to that project's real `cwd`.
+   * has not opened. The host resolves it to that project's real `cwd`, and
+   * resolves `target.path` against that cwd.
    *
    * The reply waits for the editor to actually start: "not installed" is the
    * likely answer and it has to reach the user as a `fail`, not as a native
    * error box the renderer never hears about.
    */
-  | { type: 'open-in-editor'; id: string; projectRoot: string }
+  | { type: 'open-in-editor'; id: string; projectRoot: string; target?: WireEditorTarget }
   /**
    * Repaints the window's native title-bar overlay for the resolved theme.
    *

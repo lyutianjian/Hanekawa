@@ -33,6 +33,8 @@ interface Rendered {
   readonly toggled: Array<readonly [string, boolean]>
   /** How many times a `TodoWrite` row asked the task panel to flash. */
   readonly taskClicks: () => number
+  /** `[path, line]` per clicked search row, the `open-in-editor` payload. */
+  readonly opened: ReadonlyArray<readonly [string, number | undefined]>
   render(state: TranscriptState, disclosure?: DisclosureState): void
   jump(): StubView
   items(): readonly StubView[]
@@ -45,10 +47,12 @@ function mount(t: { after(fn: () => void): void }): Rendered {
   const container = stub.createContainer('transcript')
   const host = stub.createContainer('pane')
   const toggled: Array<readonly [string, boolean]> = []
+  const opened: Array<readonly [string, number | undefined]> = []
   let taskClicks = 0
   const view = createTranscriptView(container, host, {
     onToggle: (id, expanded) => toggled.push([id, expanded]),
     onTaskStep: () => { taskClicks += 1 },
+    onOpenPath: (path, line) => opened.push([path, line]),
   })
   const jump = (): StubView => {
     const found = stub.inspect(host).children.find((child) => child.classes.includes('scroll-bottom'))
@@ -67,6 +71,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     host,
     taskClicks: () => taskClicks,
     toggled,
+    opened,
     render: (state, disclosure = NO_DISCLOSURE) => view.render(state, disclosure),
     jump,
     // Through `.transcript-column`, the one box the items live in: the scroller
@@ -641,6 +646,166 @@ test('the terminal shows what the command printed, not the collapsed line’s ex
   const body = groupOf(view).children[1]?.children[0]?.children[1]
   assert.equal(body?.children[0]?.className, 'step-terminal')
   assert.equal(body?.children[0]?.text, 'Task ID: bg-1\nPID: 123')
+})
+
+// --- the search family's grouped list (T15) ---------------------------------
+
+/**
+ * The `Grep` payload the tool actually prints: ripgrep rows (`path:line:text`,
+ * no space), the Node fallback's `path:line: text` (one space), and — when the
+ * result was paginated — the tool's own notice after a blank line.
+ */
+const GREP_CONTENT = [
+  'src/harness/types.ts:39:  readonly turnId?: string',
+  'src/harness/types.ts:52:  turnId: string',
+  'src/desktop/renderer/model/transcript.ts:52:  turnId?: string',
+  '',
+  '[Showing results 1..3 of 812 total matches]',
+].join('\n')
+
+const GLOB_CONTENT = ['test/a.test.ts', 'test/b.test.ts', 'src/c.ts'].join('\n')
+
+function searchStep(overrides: {
+  toolName?: string
+  content?: string
+  failed?: boolean
+} = {}): TranscriptItem {
+  const toolName = overrides.toolName ?? 'Grep'
+  return {
+    id: 'search-1',
+    kind: 'tool',
+    text: `Search "turnId"`,
+    toolName,
+    turnId: 't1',
+    ...(overrides.failed === true ? { failed: true } : {}),
+    tool: {
+      displayName: 'Search',
+      useSummary: 'pattern: "turnId"',
+      resultSummary: 'Found 3 matches across 2 files',
+      content: overrides.content ?? GREP_CONTENT,
+      durationMs: 900,
+    },
+  }
+}
+
+test('a Grep step carries its counts in the head and its hits grouped by file below', (t) => {
+  const view = mount(t)
+  view.render(transcript([searchStep()]), new Map([['t1', true], ['search-1', true]]))
+
+  const step = groupOf(view).children[1]?.children[0]
+  assert.deepEqual(step?.classes, ['step', 'tool', 'done'])
+  // `Grep "turnId" · 3 处 / 2 文件` (§6.2): the counts are the parsed list's
+  // own, sitting where a suffix would — the same place the edit family puts
+  // its `+12 −3`.
+  const head = step?.children[0]
+  assert.deepEqual(
+    head?.children.slice(1).map((part) => [part.className, part.text]),
+    [
+      ['step-name', 'Search'],
+      ['step-summary', 'pattern: "turnId"'],
+      ['step-suffix', '3 处 / 2 文件'],
+      ['step-duration', '0.9s'],
+    ],
+  )
+  assert.equal(head?.attributes.get('aria-label'), 'Search · pattern: "turnId" · 3 处 / 2 文件 · 完成')
+
+  // The body: two file groups in first-seen order, the hits under their own
+  // file, and the tool's truncation notice as the footnote — a truncated list
+  // that looks complete is a lie about coverage.
+  const list = step?.children[1]?.children[0]
+  assert.equal(list?.className, 'step-search')
+  const groups = list?.children.filter((child) => child.classes.includes('search-file')) ?? []
+  assert.equal(groups.length, 2)
+  assert.equal(groups[0]?.children[0]?.text, 'src/harness/types.ts')
+  assert.equal(groups[0]?.children.length, 3, 'the head and two hits')
+  assert.equal(groups[1]?.children[0]?.text, 'src/desktop/renderer/model/transcript.ts')
+  assert.equal(list?.children.at(-1)?.className, 'step-search-note')
+  assert.equal(list?.children.at(-1)?.text, '[Showing results 1..3 of 812 total matches]')
+})
+
+test('a hit row shows its line and its text, and names the file:line a click means', (t) => {
+  const view = mount(t)
+  view.render(transcript([searchStep()]), new Map([['t1', true], ['search-1', true]]))
+
+  const groups = groupOf(view).children[1]?.children[0]?.children[1]?.children[0]?.children ?? []
+  const hit = groups[0]?.children[1]
+  assert.equal(hit?.tagName, 'BUTTON')
+  assert.equal(hit?.className, 'search-hit')
+  // The accessible name is the goto argument itself — the one string that
+  // cannot be misread about what a click opens.
+  assert.equal(hit?.attributes.get('aria-label'), 'src/harness/types.ts:39')
+  assert.deepEqual(hit?.children.map((part) => [part.className, part.text]), [
+    ['search-hit-line', '39'],
+    ['search-hit-text', '  readonly turnId?: string'],
+  ])
+})
+
+test('clicking a path and a hit emits the open-in-editor payload', (t) => {
+  // The acceptance case for T15: the click leaves the view as exactly what the
+  // tool printed — a cwd-relative path, plus the hit's own line — and the pane
+  // turns that into the shell command. A file header has no line; a hit does.
+  const view = mount(t)
+  view.render(transcript([searchStep()]), new Map([['t1', true], ['search-1', true]]))
+
+  const list = groupOf(view).children[1]?.children[0]?.children[1]?.children[0]
+  view.stub.click(list?.children[0]?.children[0]?.node)
+  view.stub.click(list?.children[0]?.children[1]?.node)
+
+  assert.deepEqual(view.opened, [
+    ['src/harness/types.ts', undefined],
+    ['src/harness/types.ts', 39],
+  ])
+})
+
+test('a Glob step is a flat list of clickable paths, counted in files', (t) => {
+  const view = mount(t)
+  view.render(
+    transcript([searchStep({ toolName: 'Glob', content: GLOB_CONTENT })]),
+    new Map([['t1', true], ['search-1', true]]),
+  )
+
+  const step = groupOf(view).children[1]?.children[0]
+  // `N 个文件`, not `N 处 / M 文件` — a Glob's file *is* its hit.
+  assert.equal(
+    step?.children[0]?.children.find((part) => part.classes.includes('step-suffix'))?.text,
+    '3 个文件',
+  )
+  const list = step?.children[1]?.children[0]
+  assert.equal(list?.children.length, 3)
+  assert.deepEqual(
+    list?.children.map((row) => [row.className, row.children[0]?.text]),
+    [
+      ['search-file', 'test/a.test.ts'],
+      ['search-file', 'test/b.test.ts'],
+      ['search-file', 'src/c.ts'],
+    ],
+  )
+
+  view.stub.click(list?.children[1]?.children[0]?.node)
+  assert.deepEqual(view.opened, [['test/b.test.ts', undefined]])
+})
+
+test('an unparseable search payload falls back to the plain body, without erroring', (t) => {
+  const view = mount(t)
+  // A failed Grep's error string, or a multiline `-U` match with its `--`
+  // separators: not a search list, and the family must not half-parse it into
+  // groups nobody clicked. §6.2 兜底 draws it instead.
+  view.render(
+    transcript([searchStep({ content: 'Error: Invalid regular expression pattern.', failed: true })]),
+    new Map([['t1', true], ['search-1', true]]),
+  )
+
+  const step = groupOf(view).children[1]?.children[0]
+  assert.equal(step?.children[1]?.children.some((child) => child.classes.includes('step-search')), false)
+  assert.deepEqual(
+    step?.children[1]?.children.map((part) => [part.className, part.text]),
+    [
+      ['step-body-head', 'Found 3 matches across 2 files'],
+      ['step-body-text', 'Error: Invalid regular expression pattern.'],
+    ],
+  )
+  // And no counts were invented for a head that has no list behind it.
+  assert.equal(step?.children[0]?.children.some((part) => part.classes.includes('step-suffix')), false)
 })
 
 // --- inline file pills (5d) --------------------------------------------------

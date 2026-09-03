@@ -1,5 +1,6 @@
 import { stripAnsi } from '../model/ansi.js'
 import { parseUnifiedPatch, type PatchRows } from '../model/diffRows.js'
+import { parseSearchResults, searchStats, type SearchResults } from '../model/searchResults.js'
 import {
   groupHeaderLabel,
   isGroupExpanded,
@@ -79,6 +80,13 @@ export interface TranscriptHandlers {
    * above the composer — so the row's whole job is to point at it (§7.3).
    */
   onTaskStep(): void
+  /**
+   * A path in a search result was clicked (§6.2 检索). `path` is relative to the
+   * session's cwd — exactly what the tool printed — and `line` is the hit's own
+   * line, `undefined` when the row is the file itself (a `Glob` row, or a Grep
+   * file header). The pane turns it into the `open-in-editor` command.
+   */
+  onOpenPath(path: string, line: number | undefined): void
 }
 
 export function createTranscriptView(
@@ -167,6 +175,7 @@ function createPainter(
     disclosure,
     onToggle: handlers.onToggle,
     onTaskStep: handlers.onTaskStep,
+    onOpenPath: handlers.onOpenPath,
     node(key, className, signature, fill) {
       live.add(key)
       const cached = cache.get(key)
@@ -382,6 +391,25 @@ function shellOutput(step: Extract<ToolLike, { kind: 'tool' }>): string | undefi
   return stripAnsi(raw)
 }
 
+/** The search family (§6.2): the two tools whose result is a list of files. */
+const SEARCH_TOOLS = new Set(['Grep', 'Glob'])
+
+/**
+ * The search family's own body data, or `undefined` when this step is not one
+ * of its lists. Parsed once per fill — the painter's signature already holds
+ * the tool detail, so a repaint that changes nothing costs nothing.
+ *
+ * A failed call is excluded before parsing: a Grep's error string fails the row
+ * pattern on its own, but any short text is a plausible `Glob` path, so the
+ * gate has to live where the status is known (§6.2 共通 draws the failure
+ * instead, through the fallback body).
+ */
+function searchResults(step: ToolLike): SearchResults | undefined {
+  if (step.kind !== 'tool' || step.failed === true) return undefined
+  if (step.toolName === undefined || !SEARCH_TOOLS.has(step.toolName)) return undefined
+  return parseSearchResults(step.toolName, step.tool.content)
+}
+
 function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElement {
   const status = step.kind === 'tool' ? step.status : step.pending === true ? 'running' : 'done'
   const classes = ['step', step.kind, status]
@@ -391,14 +419,21 @@ function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElem
   const detail = step.kind === 'tool' ? step.tool : undefined
   return painter.node(`step:${step.id}`, classes.join(' '), [step.text, detail, status, expanded], () => {
     const patch = editPatch(step)
+    const found = searchResults(step)
     // A capped patch's counts are partial — `+0 −17` on a whole-file rewrite
-    // whose adds were cut — so the suffix stays off rather than lying.
-    const stats = patch !== undefined && !patch.capped ? patchStats(patch) : undefined
+    // whose adds were cut — so the suffix stays off rather than lying. A search
+    // list is never capped by the parser (only by the tool itself, which says
+    // so in the notice), so its counts are the list's own and always honest.
+    const stats = patch !== undefined && !patch.capped
+      ? patchStats(patch)
+      : found !== undefined
+        ? searchStats(found)
+        : undefined
     const head = button('step-head', '', stepAccessibleName(step, status, stats), () =>
       painter.onToggle(step.id, expanded))
     head.setAttribute('aria-expanded', expanded ? 'true' : 'false')
     append(head, [bead(step, 'step-bead'), ...headParts(step, stats)])
-    return [head, expanded ? stepBody(step, patch) : undefined]
+    return [head, expanded ? stepBody(step, patch, found, painter) : undefined]
   })
 }
 
@@ -444,17 +479,29 @@ function stepAccessibleName(step: ToolLike, status: string, stats: string | unde
  * which §6.2 gives a line of its own above the block. The whole block reddens
  * with the step's `failed` class, the stylesheet's half of that rule.
  *
+ * The search family (T15) is the grouped list: a `Grep`'s hits under their own
+ * file, a `Glob`'s paths one row each, every path a jump into the editor
+ * (`open-in-editor`, via the pane). The rows are controls, like every step
+ * head — hover is the whole affordance, and the accessible name says what a
+ * click opens.
+ *
  * Everything else is still the fallback family (§6.2 兜底): the result's own
  * summary over `detail ?? content` — which is also what an edit step without a
  * parseable patch gets, an old record's `Edited x` among them (§10), without
- * erroring. The grouped search list is T15.
+ * erroring.
  *
  * Nothing to show yields no body at all rather than an empty box: a call with no
  * result yet is the common case, and an empty disclosure is noise.
  */
-function stepBody(step: ToolLike, patch: PatchRows | undefined): HTMLElement | undefined {
+function stepBody(
+  step: ToolLike,
+  patch: PatchRows | undefined,
+  results: SearchResults | undefined,
+  painter: Painter,
+): HTMLElement | undefined {
   if (step.kind === 'subagent') return el('div', 'step-body', step.text)
   if (patch !== undefined) return el('div', 'step-body', diffNode(patch.rows))
+  if (results !== undefined) return el('div', 'step-body', searchBody(results, painter))
   const terminal = shellOutput(step)
   if (terminal !== undefined) {
     const { errorCode } = step.tool
@@ -475,6 +522,47 @@ function stepBody(step: ToolLike, patch: PatchRows | undefined): HTMLElement | u
     // Clipping is the stylesheet's (T8): `max-height` plus scrolling *inside* the
     // block, so a long output never turns the group itself into a scroll window.
     text === undefined || text.length === 0 ? undefined : el('pre', 'step-body-text', text),
+  )
+}
+
+/**
+ * The search family's list: one group per file, its hits under it — a `Glob`
+ * row is the group with no hits, which is why the two members share one shape.
+ *
+ * Both rows are `<button>`s: the file header opens the file, a hit opens it at
+ * the hit's own line, and the accessible name is the `file:line` a click means
+ * (the goto argument itself, the one string that cannot be misread).
+ */
+function searchBody(results: SearchResults, painter: Painter): HTMLElement {
+  return el(
+    'div',
+    'step-search',
+    ...results.files.map((file) => el(
+      'div',
+      'search-file',
+      button(
+        'search-file-head',
+        file.path,
+        `打开 ${file.path}`,
+        () => painter.onOpenPath(file.path, undefined),
+      ),
+      ...file.matches.map((match) => {
+        const hit = button(
+          'search-hit',
+          '',
+          `${file.path}:${match.line}`,
+          () => painter.onOpenPath(file.path, match.line),
+        )
+        append(hit, [
+          el('span', 'search-hit-line', String(match.line)),
+          el('span', 'search-hit-text', match.text),
+        ])
+        return hit
+      }),
+    )),
+    results.truncatedNote === undefined
+      ? undefined
+      : el('div', 'step-search-note', results.truncatedNote),
   )
 }
 

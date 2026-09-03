@@ -1482,6 +1482,89 @@ body.resizing #sidebar { transition: none; }
 .step.failed .step-body-text,
 .step.failed .step-name { color: var(--text-danger); }
 .step.failed .step-terminal { color: var(--text-danger); }
+
+/* The search family's body (T15): Grep/Glob results grouped by file, every
+   path a jump into the editor. The same card-and-hairline content shell the
+   terminal block and the diff get — capped, scrolling inside itself so a long
+   result never turns the group into a scroll window — and the rows are
+   controls: hover is the whole affordance, exactly as on a step head, because
+   the design draws no pointer glyphs anywhere in a group (§9). */
+.step-search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+}
+.search-file { display: flex; flex-direction: column; }
+/* A file's own row — the path, and nothing else. Ellipsized rather than
+   wrapped: the group's layering is indentation and rows, and a wrapping path
+   would read as two hits. */
+.search-file-head {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-family: var(--font-mono);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-file-head:hover { background: var(--surface-hover); }
+.search-file-head:focus-visible,
+.search-hit:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* A hit: its own line number, right-aligned in a fixed column so the texts
+   line up, then the matched line. Indented one step under the file it belongs
+   to — indentation is the group's layering device (§9), not a second card. */
+.search-hit {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: calc(100% - var(--space-3));
+  margin-left: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-family: var(--font-mono);
+  text-align: left;
+  cursor: pointer;
+}
+.search-hit:hover { background: var(--surface-hover); color: var(--text-secondary); }
+.search-hit-line {
+  flex: 0 0 auto;
+  min-width: 4ch;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.search-hit-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The tool's own truncation notice, as the list's footnote — a truncated list
+   that looks complete is a lie about coverage. */
+.step-search-note {
+  padding: 0 var(--space-2);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
 .transcript .item.notice { color: var(--text-secondary); font-style: italic; }
 .transcript .item.error { color: var(--text-danger); }
 .transcript .item.subagent { color: var(--accent-tool); }

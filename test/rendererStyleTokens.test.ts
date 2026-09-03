@@ -700,6 +700,7 @@ const MONOSPACED = [
   '.diff',
   '.diff-row .gutter',
   '.step-terminal',
+  '.step-search',
   '#overlay-panel .block',
   '#overlay-panel .plan',
   '#overlay-panel .feedback',
@@ -1210,6 +1211,44 @@ test("the shell family's terminal block is a card-shelled output block that redd
   )
 })
 
+test("the search family's grouped list shares the content shell and its rows are controls", () => {
+  // §6.2/T15: a Grep/Glob step opens into its results grouped by file, on the
+  // same card-and-hairline content shell the terminal block and the diff get —
+  // capped and scrolling inside itself, never a third depth rung. The rows are
+  // the transcript's one control shape: a hover tint and nothing else, because
+  // the design draws no pointer glyph anywhere in a group (§9).
+  const list = blockFor('.step-search')
+  assert.ok(
+    declares(list, 'background', 'var(--surface-card)'),
+    'the search list sits on the card surface (§6.2)',
+  )
+  assert.ok(
+    declares(list, 'border', '1px solid var(--border-subtle)'),
+    'the search list carries the content hairline',
+  )
+  assert.ok(
+    declares(list, 'border-radius', 'var(--radius-md)'),
+    'the search list joins the fenced block, the diff and the terminal on their radius rung',
+  )
+  assert.ok(
+    declares(list, 'overflow', 'auto'),
+    'a long result scrolls inside the list, never the group (§6.2 块内滚动)',
+  )
+  assert.ok(
+    list.decls.some((decl) => decl.prop === 'max-height'),
+    'the search list must be capped, or it never scrolls',
+  )
+
+  // The hover is the whole affordance, on both row kinds, and the focus ring is
+  // the same one every transcript control raises.
+  for (const selector of ['.search-file-head:hover', '.search-hit:hover']) {
+    assert.ok(
+      declares(blockFor(selector), 'background', 'var(--surface-hover)'),
+      `${selector} must raise the hover tint — it is the only affordance the row has`,
+    )
+  }
+})
+
 test('the disclosure folds by height, and only when it opens', () => {
   // `0fr → 1fr` rather than a pixel height: the row opens to whatever its body
   // measures. It is an animation and not a transition because §8 keeps a folded
@@ -1477,8 +1516,11 @@ test('the transcript controls carry a rule of their own, not only a contextual o
   // their own: the row *is* the switch (§9 draws no disclosure chevron), so the
   // hover tint is the only affordance either control has, and a contextual rule
   // like `.activity-group.collapsed .group-head` would leave it a bare user-agent
-  // button at rest — which on a row with no glyph reads as plain text.
-  for (const selector of ['.thinking-header', '.scroll-bottom', '.group-head', '.step-head']) {
+  // button at rest — which on a row with no glyph reads as plain text. The two
+  // search-list rows (T15) join for the same reason: their hover is the whole
+  // clickable affordance, so they cannot live on a rule that is only ever
+  // contextual either.
+  for (const selector of ['.thinking-header', '.scroll-bottom', '.group-head', '.step-head', '.search-file-head', '.search-hit']) {
     const block = blocks.find((candidate) => candidate.selector === selector)
     assert.ok(block, `no rule whose whole selector is ${selector}; a descendant rule is not a resting state`)
     assert.ok(block.decls.length >= 3, `${selector} has ${block.decls.length} declarations; that cannot be a control`)

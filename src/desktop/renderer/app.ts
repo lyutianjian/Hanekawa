@@ -275,6 +275,18 @@ function attachPaneSession(lane: string): void {
       const root = shellClient.getLanes().find((info) => info.lane === lane)?.projectRoot
       if (root !== undefined) revealWorkspace(root)
     },
+    // A search result's path, clicked (§6.2 检索). The same read-at-click-time
+    // rule as `onSwitchWorkspace`, and the same awaited reply as the canvas
+    // header's "open location": "code is not installed" has to reach the
+    // transcript, not vanish. The path stays cwd-relative — the shell bounds it
+    // to the project's real cwd, which only the host knows.
+    onOpenFile: (path, line) => {
+      const root = shellClient.getLanes().find((info) => info.lane === lane)?.projectRoot
+      if (root === undefined) return
+      void shellClient
+        .openInEditor(root, { path, ...(line === undefined ? {} : { line }) })
+        .catch((error) => activePane()?.note(describe(error), 'error'))
+    },
     // Read at paint time, never captured: the list moves whenever a project is
     // added or removed, and the pane must not hold a snapshot of it.
     workspaces: () => ({

@@ -457,8 +457,9 @@ async function ensureShell(): Promise<Shell> {
     },
     // Returned rather than fired-and-forgotten: the shell awaits it so "code is
     // not installed" comes back as a `fail` the renderer writes into the
-    // transcript, instead of a native box no test can see.
-    onOpenInEditor: (cwd) => openInEditor(cwd),
+    // transcript, instead of a native box no test can see. A `target` (T15) is
+    // one search hit's file and line, already resolved and bounded host-side.
+    onOpenInEditor: (cwd, target) => openInEditor(cwd, target),
     // The overlay is drawn by the OS, so the renderer — where the theme
     // preference lives — cannot repaint it itself. `setTitleBarOverlay` only
     // exists on Windows; elsewhere the command still answers `ok`, because the

@@ -189,6 +189,12 @@ export interface PaneSessionDeps {
    */
   onSwitchWorkspace?: () => void
   /**
+   * A path in a search result was clicked (§6.2 检索): open it in the user's
+   * editor, at the line the hit named. Window-level like `onSwitchWorkspace` —
+   * `open-in-editor` is a shell command, and this pane owns only the click.
+   */
+  onOpenFile?: (path: string, line: number | undefined) => void
+  /**
    * Every workspace the shell knows, read at paint time rather than captured:
    * the list is `app.ts`'s (it owns the `list-sessions` pull) and it moves under
    * this pane whenever a project is added or removed.
@@ -312,6 +318,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     onTaskStep: () => {
       if (active) deps.taskPanel.flash()
     },
+    // A search hit's path, clicked: the pane hands over exactly what the tool
+    // printed (a cwd-relative path, and the hit's line) — resolving it to a
+    // project and bounding it there is the shell's half of the bargain.
+    onOpenPath: (path, line) => deps.onOpenFile?.(path, line),
   })
   const welcome = createWelcomeView(welcomeEl, {
     onSwitchWorkspace: () => toggleWorkspacePicker(),

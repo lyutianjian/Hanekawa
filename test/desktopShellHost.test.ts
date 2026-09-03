@@ -399,8 +399,8 @@ interface Harness {
   laneEvents: WireLaneInfo[][]
   allLanesClosed: string[]
   openProjectRequests: Array<string | undefined>
-  /** The cwds `open-in-editor` handed over, in order. */
-  editorRequests: string[]
+  /** What `open-in-editor` handed over, in order: the cwd, and a target when one was named. */
+  editorRequests: Array<{ cwd: string; target?: { path: string; line?: number } }>
   /** Makes the next `open-in-editor` reject, the way an uninstalled `code` does. */
   failEditor(message: string | undefined): void
   /** The themes `set-window-theme` handed to the window overlay, in order. */
@@ -458,7 +458,7 @@ function createHarness(
   const laneEvents: WireLaneInfo[][] = []
   const allLanesClosed: string[] = []
   const openProjectRequests: Array<string | undefined> = []
-  const editorRequests: string[] = []
+  const editorRequests: Array<{ cwd: string; target?: { path: string; line?: number } }> = []
   const windowThemes: Array<'dark' | 'light'> = []
   const forgottenProjects: string[] = []
   let editorFailure: string | undefined
@@ -489,8 +489,8 @@ function createHarness(
     ...(options.withOpenInEditor === false
       ? {}
       : {
-          onOpenInEditor: async (cwd: string) => {
-            editorRequests.push(cwd)
+          onOpenInEditor: async (cwd: string, target?: { path: string; line?: number }) => {
+            editorRequests.push(target === undefined ? { cwd } : { cwd, target })
             // Rejecting *after* recording: the host must have handed the path
             // over before it can report the launch failing.
             if (editorFailure !== undefined) throw new Error(editorFailure)
@@ -2208,7 +2208,7 @@ test('open-in-editor hands over the project cwd, not the normalized root', async
   const result = await h.client.openInEditor(h.entry.root)
 
   assert.deepEqual(result, { ok: true })
-  assert.deepEqual(h.editorRequests, ['C:\\Repo\\Alpha'])
+  assert.deepEqual(h.editorRequests, [{ cwd: 'C:\\Repo\\Alpha' }])
   assert.notEqual(h.entry.root, 'C:\\Repo\\Alpha', 'the key differs from the cwd, or this proves nothing')
 })
 
@@ -2230,6 +2230,40 @@ test('open-in-editor rejects when the shell has no editor and for an unknown pro
   const h = createHarness()
   await assert.rejects(h.client.openInEditor('C:\\repo\\never-opened'), /No project is open/)
   assert.deepEqual(h.editorRequests, [], 'an unknown project must not reach the editor at all')
+})
+
+test('open-in-editor resolves a search hit against the real cwd, line and all', async () => {
+  // T15: a clicked path arrives cwd-relative — the renderer only holds the
+  // normalized root key, which on Windows is a case-folded path that may not
+  // exist — so the host is the one place that can join it to the project's
+  // real cwd. `entry.cwd`, not `entry.root`, same rule as the folder open.
+  const h = createHarness({ cwd: 'C:\\Repo\\Alpha' })
+
+  await h.client.openInEditor(h.entry.root, { path: 'src\\a b.ts', line: 12 })
+  await h.client.openInEditor(h.entry.root, { path: 'src\\c.ts' })
+
+  assert.deepEqual(h.editorRequests, [
+    { cwd: 'C:\\Repo\\Alpha', target: { path: 'C:\\Repo\\Alpha\\src\\a b.ts', line: 12 } },
+    { cwd: 'C:\\Repo\\Alpha', target: { path: 'C:\\Repo\\Alpha\\src\\c.ts' } },
+  ])
+})
+
+test('a target outside the project is refused before it reaches the editor', async () => {
+  // The renderer cannot be trusted to name files any more than directories:
+  // the search tool that printed the path already kept it inside the cwd, so
+  // this is a backstop — and it must fire *before* the hand-off, or the refusal
+  // would answer `ok` for an editor that never opened what was asked.
+  const h = createHarness()
+
+  await assert.rejects(
+    h.client.openInEditor(h.entry.root, { path: '..\\outside.txt' }),
+    /outside the project/,
+  )
+  await assert.rejects(
+    h.client.openInEditor(h.entry.root, { path: 'C:\\other\\root\\a.ts' }),
+    /outside the project/,
+  )
+  assert.deepEqual(h.editorRequests, [], 'a refused path must not reach the editor at all')
 })
 
 // --- set-window-theme (5g) ---------------------------------------------------

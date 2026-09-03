@@ -1,4 +1,5 @@
 import { z } from 'zod/v3'
+import path from 'node:path'
 import { homedir } from 'node:os'
 import { maskKey } from '../config/maskKey.js'
 import { SUPPORTED_PROVIDER_NAMES } from '../config/providers/registry.js'
@@ -66,6 +67,7 @@ import {
   type WireModelInfo,
   type WirePermissionGroup,
   type WirePermissionsInfo,
+  type WireEditorTarget,
   type SettingsChange,
 } from './shellProtocol.js'
 
@@ -240,13 +242,15 @@ export interface ShellHostDeps<
   /** `open-project` hand-off. A shell that cannot open projects rejects the command. */
   onOpenProject?: (path?: string) => void
   /**
-   * `open-in-editor` hand-off, given the project's real `cwd`.
+   * `open-in-editor` hand-off, given the project's real `cwd` — and, since T15,
+   * one file inside it at one line (`target.path` already resolved to an
+   * absolute path bounded by the cwd; absent means the directory itself).
    *
    * Awaited, unlike `onOpenProject`: launching an editor usually fails by not
    * being installed, and that has to come back as a `fail` the renderer can put
    * in the transcript. A shell without one rejects the command.
    */
-  onOpenInEditor?: (cwd: string) => Promise<void>
+  onOpenInEditor?: (cwd: string, target?: { path: string; line?: number }) => Promise<void>
   /**
    * Repaints the native title-bar overlay for the resolved theme (5g).
    *
@@ -492,7 +496,18 @@ const SHELL_COMMAND_SCHEMAS = {
     })
     .strict(),
   'open-in-editor': z
-    .object({ type: z.literal('open-in-editor'), id: commandId, projectRoot: z.string() })
+    .object({
+      type: z.literal('open-in-editor'),
+      id: commandId,
+      projectRoot: z.string(),
+      target: z
+        .object({
+          path: z.string().min(1),
+          line: z.number().int().positive().optional(),
+        })
+        .strict()
+        .optional(),
+    })
     .strict(),
   'set-window-theme': z
     .object({
@@ -550,6 +565,25 @@ function describe(error: z.ZodError): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+/**
+ * Bounds a renderer-named file to the project it was named under.
+ *
+ * Lexical, not `realpath`: the search tool that printed the path already kept
+ * it inside the cwd, so this is a backstop against a renderer that names
+ * something else — and a lexical check works in a test harness whose cwds do
+ * not exist on disk. The prefix comparison needs no case folding because both
+ * sides are built from the *same* `cwd` string; only the relative tail is the
+ * renderer's.
+ */
+function resolveProjectFile(cwd: string, target: WireEditorTarget): { path: string; line?: number } {
+  const root = path.resolve(cwd)
+  const absolute = path.resolve(root, target.path)
+  if (absolute !== root && !absolute.startsWith(root + path.sep)) {
+    throw new Error(`Refusing to open "${target.path}": it is outside the project`)
+  }
+  return { path: absolute, ...(target.line === undefined ? {} : { line: target.line }) }
 }
 
 // --- the host ----------------------------------------------------------------
@@ -803,7 +837,7 @@ export class ShellHost<
       case 'rename-session':
         return this.renameSession(command.projectRoot, command.sessionId, command.title)
       case 'open-in-editor':
-        return this.openInEditor(command.projectRoot)
+        return this.openInEditor(command.projectRoot, command.target)
       case 'set-window-theme': {
         // Unlike `open-project` / `open-in-editor`, a missing callback answers
         // `ok` rather than rejecting: the overlay is chrome, a shell without one
@@ -1129,20 +1163,24 @@ export class ShellHost<
   }
 
   /**
-   * Hands the project's directory to an editor.
+   * Hands the project's directory to an editor — or, with `target`, one file
+   * inside it at one line (T15: a search result's path, clicked).
    *
    * `entry.cwd`, not `entry.root`: the root is the normalized comparison key
    * (`projectRootKey` lower-cases on Windows), and handing a case-folded path to
    * a process is a path that may not exist. The root is what the *renderer*
    * names, because it is the only project handle the lane list carries.
    */
-  private async openInEditor(projectRoot: string): Promise<WireShellOpenInEditorResult> {
+  private async openInEditor(
+    projectRoot: string,
+    target?: WireEditorTarget,
+  ): Promise<WireShellOpenInEditorResult> {
     const entry = this.deps.directory.get(projectRoot)
     if (!entry) throw new Error(`No project is open at ${projectRoot}`)
     // Missing callback rejects rather than answering `ok`, the same rule
     // `open-project` follows: silence is indistinguishable from success.
     if (!this.deps.onOpenInEditor) throw new Error('The shell cannot open an editor.')
-    await this.deps.onOpenInEditor(entry.cwd)
+    await this.deps.onOpenInEditor(entry.cwd, target === undefined ? undefined : resolveProjectFile(entry.cwd, target))
     return { ok: true } satisfies WireShellOpenInEditorResult
   }
 

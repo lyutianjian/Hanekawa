@@ -32,6 +32,8 @@ export type {
   HostEvent,
   InterruptReason,
   PermissionRequestDto,
+  ToolDisplayDto,
+  ToolDisplays,
   UiRequest,
   UiResponse,
   WireBackgroundTasksResult,

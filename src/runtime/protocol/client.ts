@@ -38,6 +38,7 @@ import {
   type WireOpenPaneResult,
   type WirePaneInfo,
   type WireReloadCountResult,
+  type WireReloadResult,
   type WireReloadSettingsResult,
   type WireResolveModelResult,
   type WireRewindResult,
@@ -49,6 +50,8 @@ import {
   type WireTaskOutputResult,
   type WireTaskResult,
   type WireUsageCost,
+  type ToolDisplayDto,
+  type ToolDisplays,
 } from './wire.js'
 
 const EMPTY_TASKS: readonly BackgroundTaskSnapshot[] = Object.freeze([])
@@ -110,6 +113,18 @@ export class SessionClient {
   private panes: readonly WirePaneInfo[] = Object.freeze([])
   /** Queued messages, identity-stable the same way and for the same reason. */
   private queuedMessages: readonly PersistedQueuedMessage[] = EMPTY_QUEUE
+  /**
+   * Tool captions, accumulated from every record-carrying payload the host
+   * sends.
+   *
+   * Kept here rather than handed to each `onEvent` listener, because a caption
+   * outlives the event that introduced it: a `tool_result` arriving ten seconds
+   * later is drawn under the same header, and a re-render has no event in hand
+   * at all. Keys are `tool_use` record ids, so merging is safe; a
+   * `transcript-reset` replaces the map instead, since the records it names are
+   * the whole session.
+   */
+  private toolDisplays: ToolDisplays = {}
   private readonly teardown: Array<() => void> = []
   private disposed = false
 
@@ -153,6 +168,17 @@ export class SessionClient {
    * first `session-changed` to.
    */
   getSession = (): SessionMeta | undefined => this.session
+
+  /**
+   * How a `tool_use` record should be captioned, or `undefined` for a record the
+   * host never projected (an old host, or a record that is not a tool call).
+   *
+   * A renderer reads this instead of guessing at `input`'s keys; the resolution
+   * itself needs the tool registry and stays host-side.
+   */
+  getToolDisplay(recordId: string): ToolDisplayDto | undefined {
+    return this.toolDisplays[recordId]
+  }
 
   onEvent(listener: (event: SessionEvent) => void): () => void {
     this.eventListeners.add(listener)
@@ -232,6 +258,11 @@ export class SessionClient {
     // the tab bar's active row, for one — is wrong until a `/clear` or `/resume`
     // happens to fix it.
     this.session = result.session
+    // The one reply that has to seed the map itself: everything else that
+    // replaces the record list (`reload`, `/clear`, `/resume`, both rewinds)
+    // emits a `transcript-reset` on the way, and the channel delivers that
+    // before the reply.
+    this.absorbToolDisplays(result.toolDisplays, true)
     return result
   }
 
@@ -245,7 +276,7 @@ export class SessionClient {
 
   /** Reloads *records*. The `reload*` methods below reload host state. */
   async reload(): Promise<SessionRecord[]> {
-    const result = await this.send({ type: 'reload', id: randomUUID() }) as { records: SessionRecord[] }
+    const result = await this.send({ type: 'reload', id: randomUUID() }) as WireReloadResult
     return result.records
   }
 
@@ -570,6 +601,9 @@ export class SessionClient {
 
     switch (event.type) {
       case 'session-event':
+        // Before the listeners, not after: the first thing a listener does with a
+        // `tool_use` record is ask for its caption.
+        this.absorbToolDisplays(event.toolDisplays, event.event.type === 'transcript-reset')
         for (const listener of [...this.eventListeners]) listener(event.event)
         return
       case 'snapshot':
@@ -605,6 +639,19 @@ export class SessionClient {
         this.replies.settle(event.id, { ok: false, message: event.message })
         return
     }
+  }
+
+  /**
+   * `replace` for payloads that carry the session's whole record list, merge for
+   * a single record. An absent map still replaces on a reset — that is a session
+   * with no tool calls in it, not a host that said nothing.
+   */
+  private absorbToolDisplays(displays: ToolDisplays | undefined, replace: boolean): void {
+    if (replace) {
+      this.toolDisplays = { ...displays }
+      return
+    }
+    if (displays) this.toolDisplays = { ...this.toolDisplays, ...displays }
   }
 
   /**

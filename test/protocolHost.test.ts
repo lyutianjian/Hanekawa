@@ -430,6 +430,65 @@ test('session events are forwarded to the client in order', async () => {
   harness.dispose()
 })
 
+/**
+ * `Grep` is the case that makes the projection worth having: its display name is
+ * "Search", and its summary is assembled from `pattern`/`path`/`glob` by a
+ * function on the live `Tool`. A renderer guessing at `input`'s keys gets
+ * neither.
+ */
+const grepUse: SessionRecord = {
+  type: 'tool_use',
+  id: 'tu-grep',
+  tool: 'Grep',
+  input: { pattern: 'foo' },
+  riskLevel: 'safe',
+  createdAt: 'now',
+}
+
+const grepDisplay = {
+  displayName: 'Search',
+  useSummary: 'pattern: "foo"',
+  activityDescription: 'Searching for "foo"',
+}
+
+test('a tool_use record crosses with its display projection', async () => {
+  const harness = await createHarness()
+  harness.emit({ type: 'record', record: grepUse })
+  harness.emit({ type: 'record', record: { type: 'message', id: 'm1', role: 'assistant', content: 'hi', createdAt: 'now' } })
+  await settle()
+
+  const events = harness.received.filter((event) => event.type === 'session-event')
+  assert.deepEqual(events[0]?.toolDisplays, { 'tu-grep': grepDisplay })
+  // Only tool calls earn an entry; a message record leaves the key off entirely
+  // rather than shipping an empty object.
+  assert.equal(events[1]?.toolDisplays, undefined)
+  harness.dispose()
+})
+
+test('transcript-reset and hello go through the same projection', async () => {
+  const harness = await createHarness()
+  // The reset rebases the ledger, which is what `hello` replays from — so this
+  // one emit exercises both exits with the same record.
+  harness.emit({ type: 'transcript-reset', records: [grepUse], systemMessages: [], bumpGeneration: true })
+  harness.send({ type: 'hello', id: 'td1' })
+
+  const reply = await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'td1'),
+    'a hello reply',
+  )
+  const reset = harness.received.find(
+    (event) => event.type === 'session-event' && event.event.type === 'transcript-reset',
+  )
+  assert.ok(reset && reset.type === 'session-event')
+  assert.deepEqual(reset.toolDisplays, { 'tu-grep': grepDisplay })
+
+  assert.ok(reply.type === 'reply')
+  const result = reply.result as { records: SessionRecord[]; toolDisplays?: Record<string, unknown> }
+  assert.deepEqual(result.records, [grepUse])
+  assert.deepEqual(result.toolDisplays, reset.toolDisplays)
+  harness.dispose()
+})
+
 test('snapshots carry subagent progress, which cannot cross as a Map', async () => {
   const harness = await createHarness()
   harness.publishSnapshot()

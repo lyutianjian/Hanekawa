@@ -18,6 +18,7 @@ import { isGlobalWorkspaceRoot } from '../../utils/paths.js'
 import { SessionRecordLedger } from '../recordLedger.js'
 import { buildRewindSummaryRewrite } from '../rewindSummary.js'
 import { generateFileSuggestions } from '../suggestions/fileSuggestions.js'
+import { getToolActivityDescription, getToolDisplay } from '../../tools/display.js'
 import type { RuntimeSlot } from '../runtimeSlot.js'
 import type { SessionController, SessionEvent } from '../sessionController.js'
 import {
@@ -57,6 +58,7 @@ import {
   type WireOpenProjectResult,
   type WirePaneInfo,
   type WireReloadCountResult,
+  type WireReloadResult,
   type WireReloadSettingsResult,
   type WireResolveModelResult,
   type WireRewindResult,
@@ -68,6 +70,7 @@ import {
   type WireTaskOutputResult,
   type WireTaskResult,
   type WireUsageCost,
+  type ToolDisplays,
 } from './wire.js'
 
 function isEffortLevel(value: string): value is EffortLevel {
@@ -87,6 +90,39 @@ function toWireCommandInfo(command: CommandDefinition): WireCommandInfo {
   if (command.aliases !== undefined) info.aliases = [...command.aliases]
   if (command.argumentHint !== undefined) info.argumentHint = command.argumentHint
   return info
+}
+
+/**
+ * Captions for whichever of `records` are `tool_use`, or `undefined` when none
+ * are.
+ *
+ * Exported so every record-carrying exit can call the same function: an
+ * inconsistency here shows up as a transcript whose captions appear on a live
+ * turn and vanish on `/resume`. `undefined` rather than `{}` keeps the key off
+ * the wire entirely for the common case, and gives a consumer one shape to test.
+ */
+export function projectToolDisplays(records: Iterable<SessionRecord>): ToolDisplays | undefined {
+  let displays: ToolDisplays | undefined
+  for (const record of records) {
+    if (record.type !== 'tool_use') continue
+    const { name, summary } = getToolDisplay(record.tool, record.input)
+    const activity = getToolActivityDescription(record.tool, record.input)
+    displays ??= {}
+    displays[record.id] = {
+      displayName: name,
+      useSummary: summary,
+      ...(activity ? { activityDescription: activity } : {}),
+    }
+  }
+  return displays
+}
+
+/** The reply-side shorthand: same payload, plus the projection when it is non-empty. */
+function withToolDisplays<T extends { records: readonly SessionRecord[] }>(
+  payload: T,
+): T & { toolDisplays?: ToolDisplays } {
+  const toolDisplays = projectToolDisplays(payload.records)
+  return toolDisplays ? { ...payload, toolDisplays } : payload
 }
 
 export interface SessionHostDeps {
@@ -298,7 +334,21 @@ export class SessionHost {
     } else if (event.type === 'transcript-reset') {
       this.ledger.rebase(event.records)
     }
-    this.post({ type: 'session-event', event })
+    this.postSessionEvent(event)
+  }
+
+  /**
+   * The one exit for `session-event`, so the tool-display projection cannot be
+   * forgotten on the path `applySessionSwitch` takes — it posts its own
+   * `transcript-reset` rather than going through the controller.
+   */
+  private postSessionEvent(event: SessionEvent): void {
+    const displays = event.type === 'record'
+      ? projectToolDisplays([event.record])
+      : event.type === 'transcript-reset'
+        ? projectToolDisplays(event.records)
+        : undefined
+    this.post({ type: 'session-event', event, ...(displays ? { toolDisplays: displays } : {}) })
   }
 
   private postSnapshot = (): void => {
@@ -602,6 +652,8 @@ export class SessionHost {
   private async execute(command: Exclude<HostCommand, { type: 'ui-response' }>): Promise<unknown> {
     switch (command.type) {
       case 'hello': {
+        const records = [...this.ledger.list()]
+        const toolDisplays = projectToolDisplays(records)
         this.postSnapshot()
         this.postRuntimeSnapshot()
         this.postBackgroundTasks()
@@ -616,7 +668,8 @@ export class SessionHost {
           projectName: projectDisplayName(this.project.cwd),
           projectIsGlobal: isGlobalWorkspaceRoot(this.project.cwd),
           ...(gitBranch ? { gitBranch } : {}),
-          records: [...this.ledger.list()],
+          records,
+          ...(toolDisplays ? { toolDisplays } : {}),
           notices: this.startupNotices(this.scope.diagnostics),
           hasRecoverableInterruption: this.scope.hasRecoverableInterruption,
           ...(queued ? { initialQueuedPrompt: queued } : {}),
@@ -636,7 +689,7 @@ export class SessionHost {
       case 'reload': {
         const records = await this.controller.reload()
         this.ledger.rebase(records)
-        return { records }
+        return withToolDisplays({ records }) satisfies WireReloadResult
       }
 
       case 'retarget':
@@ -716,7 +769,7 @@ export class SessionHost {
         // Thrown rather than reported: a rewind that silently did nothing would
         // leave the caller showing a transcript the file no longer matches.
         if (!result.success) throw new Error(result.error ?? 'Failed to truncate session')
-        return { records: await this.afterRewind() } satisfies WireRewindResult
+        return withToolDisplays({ records: await this.afterRewind() }) satisfies WireRewindResult
       }
 
       case 'summarize-rewind': {
@@ -731,7 +784,7 @@ export class SessionHost {
           summarize: (records) => this.runtimeSlot.current.loop.summarizeRecordsForRewind(records),
         })
         await this.project.store.replaceRecords(this.session.id, rewrite.nextRecords)
-        return { records: await this.afterRewind() } satisfies WireRewindResult
+        return withToolDisplays({ records: await this.afterRewind() }) satisfies WireRewindResult
       }
 
       case 'set-model': {
@@ -980,14 +1033,11 @@ export class SessionHost {
     this.post({ type: 'session-changed', session: result.session })
     // The event stream stays the single source of transcript truth; the reply
     // carries the same records only for convenience.
-    this.post({
-      type: 'session-event',
-      event: {
-        type: 'transcript-reset',
-        records: result.records,
-        systemMessages: notices.map((notice) => notice.content),
-        bumpGeneration: true,
-      },
+    this.postSessionEvent({
+      type: 'transcript-reset',
+      records: result.records,
+      systemMessages: notices.map((notice) => notice.content),
+      bumpGeneration: true,
     })
     this.postBackgroundTasks()
     this.postRuntimeSnapshot()
@@ -1001,7 +1051,11 @@ export class SessionHost {
     // tab bar keeps the pre-switch id: the row still draws, but closing it fails
     // with "Pane not found" and focusing it has to self-heal through a re-list.
     this.broadcastPaneList()
-    return { session: result.session, records: result.records, notices }
+    return withToolDisplays({
+      session: result.session,
+      records: result.records,
+      notices,
+    }) satisfies WireSessionSwitchResult
   }
 
   /**
@@ -1096,12 +1150,12 @@ export class SessionHost {
     this.onPaneOpened(pane, command.sessionId)
     this.broadcastPaneList()
 
-    return {
+    return withToolDisplays({
       paneId: session.id,
       session,
       records: records.records,
       notices: this.startupNotices(records.diagnostics),
-    }
+    }) satisfies WireOpenPaneResult
   }
 
   /**

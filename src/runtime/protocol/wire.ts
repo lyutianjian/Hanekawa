@@ -42,8 +42,16 @@ import type { StartupNotice } from '../startupNotices.js'
 // --- host → client ----------------------------------------------------------
 
 export type HostEvent =
-  /** The controller's ordered stream, forwarded untouched. */
-  | { type: 'session-event'; event: SessionEvent }
+  /**
+   * The controller's ordered stream, forwarded untouched.
+   *
+   * `toolDisplays` rides beside the event rather than inside it, because
+   * `SessionEvent` is the controller's own type and this is a host-side
+   * projection; see `ToolDisplayDto`. Present only on the two variants that
+   * carry records (`record`, `transcript-reset`) and only when at least one of
+   * them is a `tool_use`.
+   */
+  | { type: 'session-event'; event: SessionEvent; toolDisplays?: ToolDisplays }
   /**
    * Pull state. `subagentProgress` rides along because the controller exposes
    * it as a live `Map` that a `Map` cannot cross the boundary as.
@@ -271,6 +279,33 @@ export interface PermissionRequestDto {
   destructiveWarnings: DestructiveCommandWarning[]
 }
 
+// --- tool display projection ------------------------------------------------
+
+/**
+ * How a `tool_use` record should be labelled, resolved host-side.
+ *
+ * `src/tools/display.ts` stays the single source of truth: it reaches the tool
+ * registry for `userFacingName` / `getToolUseSummary` / `getActivityDescription`,
+ * which are functions on live `Tool` objects and can never cross the boundary.
+ * Without this a renderer is left guessing which key of `input` to show, which is
+ * how the transcript ended up captioning half the tools with raw JSON.
+ *
+ * Three strings, so the whole thing is `structuredClone`-safe by construction.
+ * Nothing here is persisted — the projection runs over records on their way out,
+ * so an old JSONL gets the same captions a new one does.
+ */
+export interface ToolDisplayDto {
+  /** `Tool.userFacingName(input)`, falling back to the raw tool name. */
+  displayName: string
+  /** `Tool.getToolUseSummary(input)`; `''` when the tool offers none. */
+  useSummary: string
+  /** Present-tense spinner text, absent when the tool defines none. */
+  activityDescription?: string
+}
+
+/** Keyed by `ToolUseRecord.id` — not `toolUseId`, which is the *result*'s pointer. */
+export type ToolDisplays = Record<string, ToolDisplayDto>
+
 // --- slash command effects --------------------------------------------------
 
 /**
@@ -357,6 +392,7 @@ export interface WireCheckpointsResult {
 
 export interface WireReloadResult {
   records: SessionRecord[]
+  toolDisplays?: ToolDisplays
 }
 
 export interface WireRestoreCodeResult {
@@ -374,6 +410,7 @@ export interface WireRestoreCodeResult {
  */
 export interface WireRewindResult {
   records: SessionRecord[]
+  toolDisplays?: ToolDisplays
 }
 
 export interface WireRunToolResult {
@@ -428,6 +465,8 @@ export interface WireHelloResult {
    */
   gitBranch?: string
   records: SessionRecord[]
+  /** Captions for the `tool_use` records above; see `ToolDisplayDto`. */
+  toolDisplays?: ToolDisplays
   notices: StartupNotice[]
   hasRecoverableInterruption: boolean
   initialQueuedPrompt?: string
@@ -534,6 +573,7 @@ export interface WireSessionsResult {
 export interface WireSessionSwitchResult {
   session: SessionMeta
   records: SessionRecord[]
+  toolDisplays?: ToolDisplays
   notices: StartupNotice[]
 }
 
@@ -597,6 +637,7 @@ export interface WireOpenPaneResult {
   paneId: string
   session: SessionMeta
   records: SessionRecord[]
+  toolDisplays?: ToolDisplays
   notices: StartupNotice[]
 }
 

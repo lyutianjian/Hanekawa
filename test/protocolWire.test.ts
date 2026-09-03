@@ -4,6 +4,7 @@ import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.j
 import { PendingRequests } from '../src/runtime/protocol/pendingRequests.js'
 import { UI_REQUEST_FALLBACKS } from '../src/runtime/protocol/wire.js'
 import type {
+  HostEvent,
   PermissionRequestDto,
   UiRequest,
   UiResponse,
@@ -65,6 +66,20 @@ test('the event union covers every variant the controller can emit', () => {
     'turn-end',
     'turn-start',
   ])
+})
+
+test('the tool display projection is three strings, so it clones by construction', () => {
+  const event: HostEvent = {
+    type: 'session-event',
+    event: { type: 'record', record: message },
+    toolDisplays: {
+      tu1: { displayName: 'Search', useSummary: 'pattern: "foo"', activityDescription: 'Searching' },
+      // The optional third field stays absent rather than becoming `undefined`,
+      // which `structuredClone` would keep and `deepEqual` would not forgive.
+      tu2: { displayName: 'Bash', useSummary: 'ls' },
+    },
+  }
+  assert.deepEqual(structuredClone(event), event)
 })
 
 const permissionDto: PermissionRequestDto = {

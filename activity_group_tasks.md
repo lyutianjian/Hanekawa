@@ -74,7 +74,7 @@ hello 走同一投影」的回归。
 **验收**：`test/rendererTranscriptModel.test.ts` 新增分组、切段、合并、旧会话降级、零 step turn 的
 用例；`test/transcriptOrdering.test.ts` 保持绿。
 
-### [ ] T3 — 直播切段与最终回答降级（§4.2、§4.6）
+### [x] T3 — 直播切段与最终回答降级（§4.2、§4.6）
 
 **依赖**：T2。
 

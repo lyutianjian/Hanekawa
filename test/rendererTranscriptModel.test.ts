@@ -173,18 +173,48 @@ test('a turn keeps one thinking block, and its text is retained in full', () => 
   assert.equal(state.thinkingCount, 1)
 })
 
-test('a second block after a tool round trip joins the turn is first one', () => {
-  // `message_start` and the assistant record are both mid-turn boundaries that used
-  // to delete the block. They must not, or the header loses the reasoning it
-  // promises to expand.
+test('message_start closes the segment and opens a new one, one per model request', () => {
+  // T3 (§4.2): a second request within the turn is a *second* segment, not more
+  // text appended to the first — that is the shape replaying `thinkingBlocks`
+  // produces, and the reason the two paths can be compared at all. Neither
+  // boundary may delete reasoning: the block is what the header expands.
   const { state } = fold([
     thinkingDelta('before'),
     { type: 'record', record: message('a1', 'assistant', 'calling a tool') },
     { type: 'stream', event: { type: 'message_start' } },
-    thinkingDelta(' after'),
+    thinkingDelta('after'),
   ])
 
-  assert.deepEqual(thinkingItems(state).map((item) => item.text), ['before after'])
+  assert.deepEqual(thinkingItems(state).map((item) => [item.id, item.text, item.pending]), [
+    ['thinking-0', 'before', undefined],
+    ['thinking-1', 'after', true],
+  ])
+})
+
+test('the assistant record supersedes the streamed segment in place, under its own id', () => {
+  // Replay mints `a1-thinking` from `thinkingBlocks`; the live path has to land on
+  // the same id at the same position, or the symmetry below compares two trees
+  // that differ only in bookkeeping.
+  const record: SessionRecord = {
+    type: 'message', id: 'a1', role: 'assistant', content: 'done', createdAt: 'now',
+    thinkingBlocks: [{ type: 'thinking', thinking: 'reasoned' }],
+  }
+
+  const { state } = fold([thinkingDelta('reas'), thinkingDelta('oned'), { type: 'record', record }])
+
+  assert.deepEqual(state.items.map((item) => [item.id, item.kind]), [['a1-thinking', 'thinking'], ['a1', 'assistant']])
+  assert.equal(state.liveThinkingId, undefined, 'the segment is committed; a later delta opens a new one')
+})
+
+test('a record without thinkingBlocks keeps what streamed instead of deleting it', () => {
+  const { state } = fold([
+    thinkingDelta('reasoned'),
+    { type: 'record', record: message('a1', 'assistant', 'done') },
+  ])
+
+  assert.deepEqual(thinkingItems(state).map((item) => [item.id, item.text, item.pending]), [
+    ['thinking-0', 'reasoned', undefined],
+  ])
 })
 
 test('thinking_stop does not close the block, so the live face survives it', () => {
@@ -201,28 +231,43 @@ test('thinking_stop does not close the block, so the live face survives it', () 
   ])
 })
 
-test('turn-end seals the block and hands it the turn is elapsed time', () => {
+test('turn-end closes the segment and the elapsed time rides on a duration item', () => {
+  // T3 (§5.3): the turn's total belongs to the group head, not to whichever
+  // request happened to reason last — under §4.2 that is one segment among many.
   const { state } = fold([thinkingDelta('why'), turnEnd(458_000)])
 
-  assert.deepEqual(thinkingItems(state).map((item) => [item.pending, item.summary]), [
-    [undefined, '已处理 7m 38s'],
-  ])
+  assert.deepEqual(thinkingItems(state).map((item) => [item.pending, item.summary]), [[undefined, undefined]])
+  assert.deepEqual(
+    state.items.filter((item) => item.kind === 'duration').map((item) => [item.text, item.durationMs]),
+    [['已处理 7m 38s', 458_000]],
+  )
   assert.equal(state.isThinking, false)
 })
 
-test('a turn that thought has no separate duration line; one that did not still does', () => {
-  const { state: thought } = fold([thinkingDelta('why'), turnEnd(1200)])
-  assert.equal(thought.items.some((item) => item.kind === 'duration'), false, 'the header already says it')
-
-  const { state: quiet } = fold([
-    { type: 'stream', event: { type: 'text_delta', text: 'hi' } },
-    { type: 'record', record: message('a1', 'assistant', 'hi') },
+test('the duration item is stamped with the turn, so the group head owns it', () => {
+  const { state } = fold([
+    { type: 'record', record: stamped(message('u1', 'user', 'go'), 't1', 'now') },
+    { type: 'record', record: toolUse('tu1', 't1', 'now') },
+    { type: 'record', record: toolResult('tu1', 't1', 'now') },
     turnEnd(1200),
   ])
-  assert.deepEqual(
-    quiet.items.filter((item) => item.kind === 'duration').map((item) => item.text),
-    ['已处理 1s'],
-  )
+
+  const entries = groupTranscript(state.items)
+  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'group'], 'no separate elapsed row')
+  assert.equal(groupAt(entries, 1).durationMs, 1200)
+})
+
+test('a zero-step turn still draws the single elapsed line, under the answer', () => {
+  const { state } = fold([
+    { type: 'record', record: stamped(message('u1', 'user', 'hi'), 't1', 'now') },
+    { type: 'stream', event: { type: 'text_delta', text: 'hi' } },
+    { type: 'record', record: assistant('a1', 't1', 'now', 'hi') },
+    turnEnd(1200),
+  ])
+
+  const entries = groupTranscript(state.items)
+  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'item', 'item'])
+  assert.deepEqual([itemAt(entries, 1).text, itemAt(entries, 2).text], ['hi', '已处理 1s'])
 })
 
 test('an aborted turn seals the block without a summary', () => {
@@ -240,10 +285,14 @@ test('a later turn-end leaves an earlier turn is block alone', () => {
     turnEnd(2000),
   ])
 
-  assert.deepEqual(thinkingItems(state).map((item) => [item.id, item.text, item.summary]), [
-    ['thinking-0', 'first', '已处理 7m 38s'],
-    ['thinking-1', 'second', '已处理 2s'],
+  assert.deepEqual(thinkingItems(state).map((item) => [item.id, item.text, item.pending]), [
+    ['thinking-0', 'first', undefined],
+    ['thinking-1', 'second', undefined],
   ])
+  assert.deepEqual(
+    state.items.filter((item) => item.kind === 'duration').map((item) => item.text),
+    ['已处理 7m 38s', '已处理 2s'],
+  )
 })
 
 test('block ids come from a counter, not from the list length', () => {
@@ -581,6 +630,102 @@ test('turn-less items stay outside every group, in place', () => {
 
   assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'item', 'group'])
   assert.equal(itemAt(entries, 0).text, 'before')
+})
+
+/**
+ * §4.2 的地基：直播与回放走同一套切分。
+ *
+ * The live fold and `createTranscriptState` over the very same records must land
+ * on the same group tree — same steps, same ids, same order, same status. Anything
+ * less and the picture deforms the moment a turn ends, and a `transcript-reset`
+ * (`/resume`, a rollback) reshuffles content the reader has already read.
+ */
+
+const TURN = 't1'
+const AT = (ms: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, 0, ms)).toISOString()
+
+/** One realistic turn: reason, call a tool, reason again, answer. */
+const REPLAYED: SessionRecord[] = [
+  stamped(message('u1', 'user', 'go'), TURN, AT(0)),
+  assistant('a1', TURN, AT(500), '先看文件', ['思考A']),
+  toolUse('tu1', TURN, AT(600)),
+  toolResult('tu1', TURN, AT(900)),
+  assistant('a2', TURN, AT(2000), 'done', ['思考B']),
+]
+
+/** The same turn as it actually arrives: streamed, then committed by records. */
+const LIVE: SessionEvent[] = [
+  { type: 'turn-start', messageId: 'u1', displayInput: 'go', createdAt: AT(0) },
+  { type: 'record', record: REPLAYED[0]! },
+  { type: 'stream', event: { type: 'message_start' } },
+  thinkingDelta('思考'),
+  thinkingDelta('A'),
+  { type: 'stream', event: { type: 'thinking_stop' } },
+  { type: 'stream', event: { type: 'text_delta', text: '先看文件' } },
+  { type: 'record', record: REPLAYED[1]! },
+  { type: 'record', record: REPLAYED[2]! },
+  { type: 'record', record: REPLAYED[3]! },
+  { type: 'stream', event: { type: 'message_start' } },
+  thinkingDelta('思考B'),
+  { type: 'stream', event: { type: 'text_delta', text: 'done' } },
+  { type: 'record', record: REPLAYED[4]! },
+  turnEnd(2000),
+]
+
+test('a live turn and a replay of its records produce the same group tree, field for field', () => {
+  const live = groupTranscript(fold(LIVE).state.items)
+  const replayed = groupTranscript(createTranscriptState(REPLAYED).items)
+
+  assert.deepEqual(live, replayed)
+  // Not vacuous: the tree is the real one, with both segments and the tool between.
+  assert.deepEqual(groupAt(live, 1).steps.map((step) => [step.kind, step.id]), [
+    ['thinking', 'a1-thinking'],
+    ['text', 'a1'],
+    ['tool', 'tu1'],
+    ['thinking', 'a2-thinking'],
+  ])
+  assert.equal(itemAt(live, 2).text, 'done')
+})
+
+test('a tentative final answer is demoted to a step the moment a tool follows it (§4.6)', () => {
+  const upTo = (count: number) => groupTranscript(fold(LIVE.slice(0, count)).state.items)
+
+  // Streamed and committed, nothing after it yet: the answer sits outside the group.
+  const tentative = upTo(8)
+  assert.equal(itemAt(tentative, 2).text, '先看文件', 'below the group, as 正文')
+
+  // The tool call arrives: it moves inside, in place, as staged prose.
+  const demoted = upTo(9)
+  assert.deepEqual(groupAt(demoted, 1).steps.map((step) => [step.kind, step.text]), [
+    ['thinking', '思考A'],
+    ['text', '先看文件'],
+    ['tool', 'Read(a.txt)'],
+  ])
+  assert.equal(demoted.length, 2, 'and nothing is left below the group')
+})
+
+test('an interrupted turn reads aborted live and on replay, tool still unanswered', () => {
+  const interruption: SessionRecord = stamped(
+    { type: 'turn_interruption', id: 'ti1', userMessageId: 'u1', prompt: 'p', remainingTasks: [], recoverable: true, createdAt: AT(900) },
+    TURN,
+    AT(900),
+  )
+  const records = [REPLAYED[0]!, REPLAYED[2]!, interruption]
+
+  const live = fold([
+    { type: 'record', record: records[0]! },
+    { type: 'record', record: records[1]! },
+    { type: 'stream', event: { type: 'text_delta', text: 'half' } },
+    { type: 'record', record: records[2]! },
+    turnEnd(900, true),
+  ]).state
+
+  assert.equal(live.items.some((item) => item.text === 'half'), false, 'the orphan draft is dropped')
+  assert.equal(live.items.some((item) => item.kind === 'duration'), false, 'an aborted turn has no elapsed line')
+
+  const group = groupAt(groupTranscript(live.items), 1)
+  assert.equal(group.status, 'aborted', 'a call the abort cut off must not read as still running')
+  assert.equal(groupAt(groupTranscript(createTranscriptState(records).items), 1).status, 'aborted')
 })
 
 test('two turns are two groups, in order', () => {

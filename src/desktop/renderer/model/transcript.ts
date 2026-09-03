@@ -32,6 +32,26 @@ import type { SessionEvent } from '../../../runtime/sessionController.js'
  * needs therefore rides on an item — `turnId` (the grouping key, §4.1),
  * `createdAt` (the fallback span), `durationMs` on the turn's `duration` item (the
  * authoritative elapsed time), `interrupt` (an aborted turn).
+ *
+ * ## Live and replay produce the *same* items (§4.2, T3)
+ *
+ * Two rules buy that equality, and both are load-bearing:
+ *
+ * 1. **A thinking segment is one model request.** `message_start` closes the open
+ *    segment and the next `thinking_delta` opens a new one, which is the shape
+ *    `thinkingBlocks` replays into. (Before T3 a whole turn appended into one
+ *    block, so the segment count itself differed between the two paths.)
+ * 2. **The assistant record supersedes what streamed, in place.** The draft text
+ *    and the open thinking segment are the same reasoning the record persists, so
+ *    the record's items overwrite them at their existing positions — same order,
+ *    and the same *ids*, which is what lets an open/closed toggle survive the
+ *    commit and what makes the two trees compare field-for-field.
+ *
+ * Live items are stamped with `turnId` from the records already seen this turn, so
+ * a streaming segment joins its group before the turn ends. §4.6's demotion of a
+ * tentative final answer then needs no code of its own: `groupTranscript` keeps
+ * only the run's *last* assistant text outside the group, so a `tool_use` arriving
+ * after it moves it inside by itself.
  */
 
 export type TranscriptItemKind =
@@ -109,6 +129,19 @@ export interface TranscriptState {
    * fold both.
    */
   readonly thinkingCount: number
+  /**
+   * The turn whose records are arriving — the stamp live items inherit so they
+   * join their activity group before `turn-end` (§4.1). Learned from the records
+   * themselves; cleared when the turn ends.
+   */
+  readonly turnId?: string
+  /**
+   * The thinking segment `thinking_delta` extends. `message_start` closes it and
+   * the assistant record replaces it, so «which segment is open» is explicit
+   * rather than inferred from `pending` — the last *sealed* block would otherwise
+   * be reopened by the next request's first delta (§4.2).
+   */
+  readonly liveThinkingId?: string
 }
 
 /** What the caller must act on outside the transcript itself. */
@@ -197,19 +230,32 @@ export function applySessionEvent(state: TranscriptState, event: SessionEvent): 
     case 'turn-end': {
       // Drop a draft that never became a record (an aborted or failed turn), or
       // it would sit there looking like it was still arriving. Thinking is *not*
-      // dropped any more: it becomes this turn's collapsible header, and the
-      // summary it carries is why no separate duration line follows.
-      const kept = state.items.filter((item) => item.id !== DRAFT_ID)
+      // dropped: it is this turn's reasoning, and it stays as steps.
+      //
+      // The measured elapsed time rides on a `duration` item stamped with the
+      // turn, which `groupTranscript` folds into the group head rather than
+      // drawing as a row (§5.3). It is minted unconditionally now — before T3 a
+      // turn that thought suppressed it and handed the total to the last thinking
+      // block instead, which under §4.2's segmentation would pin a whole turn's
+      // time to whichever request happened to reason last.
+      const items = closeThinkingSegments(state.items.filter((item) => item.id !== DRAFT_ID))
       const summary = formatTurnSummary(event)
-      const { items, sealed } = sealThinking(kept, summary)
       return {
         state: {
           ...state,
-          items: summary && !sealed
-            ? [...items, { id: `duration-${items.length}`, kind: 'duration', text: summary }]
+          items: summary
+            ? [...items, {
+                id: `duration-${items.length}`,
+                kind: 'duration',
+                text: summary,
+                durationMs: event.durationMs,
+                ...(state.turnId === undefined ? {} : { turnId: state.turnId }),
+              }]
             : items,
           toolProgress: undefined,
           isThinking: false,
+          turnId: undefined,
+          liveThinkingId: undefined,
         },
       }
     }
@@ -245,36 +291,20 @@ export function formatWorkedDuration(ms: number): string {
 }
 
 /**
- * Closes the turn's thinking block: clears `pending` (which is what the view reads
- * as "collapse me now") and hands the last one the turn's elapsed time.
+ * Closes every open thinking segment: clears `pending`, which is what the view
+ * reads as "stop breathing, collapse me".
  *
- * Only one block can be pending at a time — `appendThinking` appends to it rather
- * than minting a second — but the sweep is written over all of them so a block that
- * somehow missed its `turn-end` is closed by the next one instead of breathing
- * forever.
+ * Written as a sweep rather than a lookup of the open one, so a segment that
+ * somehow missed its `message_start` is closed by the next `turn-end` instead of
+ * breathing forever.
  */
-function sealThinking(
-  items: readonly TranscriptItem[],
-  summary: string | undefined,
-): { items: TranscriptItem[]; sealed: boolean } {
-  const last = lastPendingThinking(items)
-  if (last === -1) return { items: [...items], sealed: false }
-  return {
-    items: items.map((item, index) => {
-      if (item.kind !== 'thinking' || item.pending !== true) return item
-      const closed: TranscriptItem = { id: item.id, kind: item.kind, text: item.text }
-      return index === last && summary ? { ...closed, summary } : closed
-    }),
-    sealed: true,
-  }
+function closeThinkingSegments(items: readonly TranscriptItem[]): TranscriptItem[] {
+  return items.map((item) => (item.kind === 'thinking' && item.pending === true ? closeSegment(item) : item))
 }
 
-function lastPendingThinking(items: readonly TranscriptItem[]): number {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index]!
-    if (item.kind === 'thinking' && item.pending === true) return index
-  }
-  return -1
+function closeSegment(item: TranscriptItem): TranscriptItem {
+  const { pending: _pending, ...closed } = item
+  return closed
 }
 
 function applyStream(state: TranscriptState, event: Extract<SessionEvent, { type: 'stream' }>['event']): TranscriptState {
@@ -283,16 +313,23 @@ function applyStream(state: TranscriptState, event: Extract<SessionEvent, { type
       return {
         ...state,
         isThinking: false,
-        items: appendToLive(state.items, DRAFT_ID, 'assistant', event.text),
+        items: appendToLive(state.items, DRAFT_ID, 'assistant', event.text, state.turnId),
       }
     case 'thinking_delta':
       return appendThinking(state, event.thinking)
     case 'thinking_stop':
       return { ...state, isThinking: false }
     case 'message_start':
-      // A second request within one turn (a tool round trip) starts a new
-      // block; the previous draft has already been replaced by its record.
-      return { ...state, items: state.items.filter((item) => item.id !== DRAFT_ID) }
+      // One model request is one thinking segment (§4.2): a second request within
+      // the turn — a tool round trip — closes the open segment and the next delta
+      // opens a fresh one, which is exactly what replaying `thinkingBlocks` per
+      // record produces. The previous draft has already been replaced by its
+      // record; the filter only catches a request that produced no message at all.
+      return {
+        ...state,
+        items: closeThinkingSegments(state.items.filter((item) => item.id !== DRAFT_ID)),
+        liveThinkingId: undefined,
+      }
     default:
       return state
   }
@@ -306,10 +343,11 @@ function appendToLive(
   id: string,
   kind: TranscriptItemKind,
   text: string,
+  turnId: string | undefined,
 ): TranscriptItem[] {
   const index = items.findIndex((item) => item.id === id)
   if (index === -1) {
-    return [...items, { id, kind, text, pending: true }]
+    return [...items, { id, kind, text, pending: true, ...(turnId === undefined ? {} : { turnId }) }]
   }
   const next = [...items]
   const existing = next[index]!
@@ -318,29 +356,32 @@ function appendToLive(
 }
 
 /**
- * Thinking is grouped by **the open block**, not by turn identity: a delta extends
- * the last still-pending thinking item, and only mints a new one when there is
- * none. `turn-end` is what closes one, so the next turn's first delta necessarily
- * starts a fresh block — no turn id has to be carried in the state, and a
- * `transcript-reset` mid-turn cannot leave the grouping keyed to a turn that is
- * gone.
+ * A delta extends the segment `liveThinkingId` names, and mints a new one when
+ * there is none open — which is the state `message_start`, the committing record
+ * and `turn-end` all leave behind. Keying on an explicit id rather than on "the
+ * last pending block" is what makes a *closed* segment stay closed: a delta after
+ * a tool round trip has to start a second segment, not reopen the first (§4.2).
  *
- * The consequence, accepted: a second block after a tool round trip joins the one
- * above those tool rows instead of reading where it happened. One block per turn is
- * what lets a single collapsed header own the turn's elapsed time.
+ * A `transcript-reset` rebuilds the state, so the id cannot outlive the items it
+ * points at.
  */
 function appendThinking(state: TranscriptState, text: string): TranscriptState {
-  const index = lastPendingThinking(state.items)
+  const index = state.liveThinkingId === undefined
+    ? -1
+    : state.items.findIndex((item) => item.id === state.liveThinkingId)
   if (index === -1) {
+    const id = `thinking-${state.thinkingCount}`
     return {
       ...state,
       isThinking: true,
       thinkingCount: state.thinkingCount + 1,
+      liveThinkingId: id,
       items: [...state.items, {
-        id: `thinking-${state.thinkingCount}`,
+        id,
         kind: 'thinking',
         text,
         pending: true,
+        ...(state.turnId === undefined ? {} : { turnId: state.turnId }),
       }],
     }
   }
@@ -351,24 +392,41 @@ function appendThinking(state: TranscriptState, text: string): TranscriptState {
 }
 
 function applyRecord(state: TranscriptState, record: SessionRecord): TranscriptState {
-  const items = recordItems(record)
-  if (items.length === 0) return state
+  // Live items inherit the turn from the records already seen, so a streaming
+  // segment is inside its group before `turn-end` names the turn (§4.1).
+  const turnId = recordStamp(record).turnId ?? state.turnId
+  const produced = recordItems(record)
+  if (produced.length === 0) return { ...state, turnId }
 
-  // An assistant message *replaces* the streamed draft rather than following it.
+  // An assistant message *replaces* what streamed rather than following it.
   // Appending both is the duplicate-bubble bug the terminal avoids by never
-  // committing a live message twice. The turn's thinking block stays: it is closed
-  // by `turn-end`, not by the message it was reasoning towards.
-  const withoutDraft = record.type === 'message' && record.role !== 'user'
-    ? state.items.filter((item) => item.id !== DRAFT_ID)
-    : state.items
+  // committing a live message twice.
+  const commits = record.type === 'message' && record.role !== 'user'
+  const next = commits ? state.items.filter((item) => item.id !== DRAFT_ID) : [...state.items]
+  const pending = [...produced]
+  let liveThinkingId = state.liveThinkingId
+
+  if (commits) {
+    // The open segment and this record's `thinkingBlocks` are the same reasoning.
+    // Overwriting in place keeps the position *and* the id it replays under, which
+    // is what makes the live tree and the replayed tree comparable field by field
+    // — and what keeps a toggle the user set mid-stream pointing at the same step.
+    const open = liveThinkingId === undefined ? -1 : next.findIndex((item) => item.id === liveThinkingId)
+    if (open !== -1) {
+      const replayed = pending.findIndex((item) => item.kind === 'thinking')
+      // No persisted blocks (thinking off, or an older provider): keep what
+      // streamed and merely close it, rather than deleting reasoning that is real.
+      next[open] = replayed === -1 ? closeSegment(next[open]!) : pending.splice(replayed, 1)[0]!
+    }
+    liveThinkingId = undefined
+  }
 
   // A tool_result supersedes the pending tool_use row it answers.
   if (record.type === 'tool_result') {
-    const pendingIndex = withoutDraft.findIndex((item) => item.id === record.toolUseId)
-    if (pendingIndex !== -1) {
-      const next = [...withoutDraft]
-      next[pendingIndex] = items[0]!
-      return { ...state, items: next }
+    const answered = next.findIndex((item) => item.id === record.toolUseId)
+    if (answered !== -1) {
+      next[answered] = pending[0]!
+      return { ...state, turnId, liveThinkingId, items: next }
     }
   }
 
@@ -379,13 +437,14 @@ function applyRecord(state: TranscriptState, record: SessionRecord): TranscriptS
   // duplicate the desktop smoke test found. Replacing rather than dropping,
   // because the record carries `displayContent`, which is the authoritative
   // text (a skill command's `displayInput` arrives only this way).
-  const next = [...withoutDraft]
-  for (const item of items) {
+  for (const item of pending) {
     const index = next.findIndex((existing) => existing.id === item.id)
     if (index === -1) next.push(item)
     else next[index] = item
   }
-  return { ...state, items: next }
+  // §4.3 again, on the live path: two requests in a row that called nothing are
+  // one segment, and replay merges them, so this path has to as well.
+  return { ...state, turnId, liveThinkingId, items: mergeAdjacentThinking(next) }
 }
 
 /** Mirror of `wrapInSystemReminder`'s output (`src/harness/systemReminder.ts`).
@@ -521,13 +580,17 @@ function collapseById(items: readonly TranscriptItem[]): TranscriptItem[] {
  * An empty assistant text is the shape of a tool-only request and is not a
  * separator — nothing is drawn for it (§4.6), so thinking on either side of one
  * is still adjacent.
+ *
+ * A segment still streaming is left out of it: `liveThinkingId` names that one
+ * item, and absorbing it into a neighbour would strand the id mid-stream. Replay
+ * has nothing pending, so the rule costs it nothing.
  */
 function mergeAdjacentThinking(items: readonly TranscriptItem[]): TranscriptItem[] {
   const merged: TranscriptItem[] = []
   for (const item of items) {
-    const previous = item.kind === 'thinking' ? lastVisible(merged) : -1
+    const previous = item.kind === 'thinking' && item.pending !== true ? lastVisible(merged) : -1
     const target = previous === -1 ? undefined : merged[previous]!
-    if (target && target.kind === 'thinking' && target.turnId === item.turnId) {
+    if (target && target.kind === 'thinking' && target.pending !== true && target.turnId === item.turnId) {
       merged[previous] = { ...target, text: `${target.text}\n\n${item.text}` }
     } else {
       merged.push(item)
@@ -639,10 +702,16 @@ function turnEntries(turnId: string, run: readonly TranscriptItem[]): Transcript
   const steps = body.map(toStep)
   const entries: TranscriptEntry[] = before.map((item) => ({ kind: 'item' as const, item }))
   if (steps.length === 0) {
+    // The single elapsed line goes where it has always gone: under the answer.
+    entries.push(...after.map((item) => ({ kind: 'item' as const, item })))
     if (duration) entries.push({ kind: 'item', item: duration })
-    return [...entries, ...after.map((item) => ({ kind: 'item' as const, item }))]
+    return entries
   }
 
+  // An interruption outranks a step still marked pending: the tool call the abort
+  // cut off never gets a result, so "running" would be permanent. Both paths read
+  // the same `turn_interruption` record, which is why live and replay agree —
+  // `turn-end`'s own `aborted` flag is deliberately not consulted, replay has none.
   const interrupted = run.some((item) => item.interrupt === true)
   const running = steps.some((step) => 'pending' in step && step.pending === true)
   entries.push({
@@ -650,7 +719,7 @@ function turnEntries(turnId: string, run: readonly TranscriptItem[]): Transcript
     group: {
       turnId,
       steps,
-      status: running ? 'running' : interrupted ? 'aborted' : 'done',
+      status: interrupted ? 'aborted' : running ? 'running' : 'done',
       ...durationOf(duration, run),
       stepCount: steps.length,
       failedCount: steps.filter((step) => 'failed' in step && step.failed === true).length,

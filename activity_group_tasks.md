@@ -174,7 +174,7 @@ reset 清空。
 **验收**：`node --import tsx --test test/rendererStyleTokens.test.ts`，同步更新其无法推断覆盖的
 显式控件清单；`ACCENT_FILL_EXCEPTIONS` 保持三条不变。
 
-### [ ] T9 — 任务面板：DOM + 宿主（§7.2）
+### [x] T9 — 任务面板：DOM + 宿主（§7.2）
 
 **依赖**：T6。
 

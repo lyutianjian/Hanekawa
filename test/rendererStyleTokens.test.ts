@@ -320,6 +320,9 @@ test('the palette is the one that was agreed, value for value', () => {
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
       '--sidebar-width': '280px',
+      // The task panel's progress, same shape of exception: a number the view
+      // writes and the sheet's own rule reads.
+      '--task-progress': '0',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
@@ -399,6 +402,9 @@ test('the palette is the one that was agreed, value for value', () => {
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
       '--sidebar-width': '280px',
+      // The task panel's progress, same shape of exception: a number the view
+      // writes and the sheet's own rule reads.
+      '--task-progress': '0',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':

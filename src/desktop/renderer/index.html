@@ -82,6 +82,15 @@
               <div id="suggestions" hidden role="listbox" aria-label="斜杠命令"></div>
               <div id="queue" hidden aria-live="polite" aria-label="排队消息"></div>
             </div>
+            <!--
+              The task panel's host (§7.2). In the flow, above the composer and
+              on its axis — deliberately *not* one of the three panels above:
+              those are transient overlays, this is resident, and a resident
+              strip inside an absolutely positioned, `pointer-events: none`
+              shell would fight both. Empty when the model has no checklist,
+              which is how the panel stops existing rather than sitting blank.
+            -->
+            <div id="task-panel"></div>
             <div id="composer">
               <!--
                 The permission request, drawn inside the capsule instead of over

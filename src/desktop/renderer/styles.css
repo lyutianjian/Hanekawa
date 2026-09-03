@@ -186,6 +186,12 @@
      that never touches localStorage — resolves to the resting width.
      `#sidebar` and `.sidebar-shell` both read it; they are one axis. */
   --sidebar-width: 280px;
+  /* The task panel's completed share, 0..1. The second layout number the
+     renderer writes and, like the rail's width, the *rule* that reads it stays
+     here: `dom/taskPanelView.ts` sets the number on the panel and the fill
+     resolves its own width from it. Declared so the bar is empty rather than
+     invalid before the first snapshot arrives. */
+  --task-progress: 0;
 
   /* --- type ---
      The chrome is proportional; anything the user has to read character by
@@ -1849,6 +1855,120 @@ body.resizing #sidebar { transition: none; }
   gap: var(--space-2);
   margin-bottom: var(--space-2);
   pointer-events: none;
+}
+/* The task panel (§7.2): resident, in flow, on the composer's own axis — the
+   opposite of the three transient panels above, which is why it is a sibling of
+   `#composer` rather than a fourth child of that shell.
+
+   A card groove, `--radius-md`, and **no shadow**: depth in this sheet is two
+   steps (menus float, modals sit deeper) and a strip that is part of the
+   composer is neither. It appears once, with the sheet's shared `rise-in` —
+   `dom/taskPanelView.ts` reuses the panel node across repaints, so the entrance
+   plays when the checklist appears and not once per streamed token. */
+#task-panel:empty { display: none; }
+.task-panel {
+  position: relative;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+  overflow: hidden;
+  animation: rise-in var(--motion-base) var(--ease-standard);
+}
+/* The one-shot outline pulse the transcript's `TodoWrite` step points at,
+   instead of drawing the checklist a second time inside the group (§7.3).
+   It is a pseudo-element and not the panel's own `animation` on purpose: the
+   two would be one property, and taking the flash off again would restart the
+   entrance underneath it. */
+.task-panel.flash::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid;
+  border-color: var(--accent-brand);
+  border-radius: inherit;
+  pointer-events: none;
+  animation: task-flash var(--motion-slow) var(--ease-standard);
+}
+@keyframes task-flash { from { opacity: 1; } to { opacity: 0; } }
+/* The 2px bar across the top. The fill is a *rule*, not a surface: the accent
+   reaches it through `border-top-color`, so the sheet's three named accent fills
+   stay three. Its width is the completed share, handed in as `--task-progress`
+   — the fallback below is what a panel painted before the first snapshot uses. */
+.task-progress {
+  height: 2px;
+  background: var(--border-subtle);
+}
+.task-progress-fill {
+  width: calc(var(--task-progress) * 100%);
+  height: 0;
+  border-top: 2px solid;
+  border-top-color: var(--accent-brand);
+  transition: width var(--motion-slow) var(--ease-standard);
+}
+/* The head is the whole switch, as in the transcript (§9): no chevron, the
+   hover tint is the affordance. A resting rule of its own, because a bare
+   `<button>` under Chromium is a grey box. */
+.task-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  text-align: left;
+  cursor: pointer;
+}
+.task-panel-head:hover { background: var(--surface-hover); }
+.task-count { flex: 0 0 auto; font-family: var(--font-mono); }
+.task-current {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+}
+/* Read-only rows: the list belongs to the model, so nothing in here is a
+   control and nothing takes a hover state. */
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 0 var(--space-3) var(--space-3);
+  font-size: var(--type-meta);
+}
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+.task-row.completed { color: var(--text-tertiary); text-decoration: line-through; }
+/* The same 7px dot as a step's, and the same contract: `aria-hidden`, with the
+   state carried in words by the head's accessible name. Pending is the hollow
+   one — an inset ring rather than a fill, so 「还没开始」 reads without a colour. */
+.task-bead {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  color: var(--text-tertiary);
+  background: currentColor;
+}
+.task-bead.pending {
+  background: none;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+.task-bead.in_progress { animation: breathe 1.8s ease-in-out infinite; }
+.task-bead.completed { color: var(--accent-review); }
+.task-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* The horizontal padding is `--composer-overhang`'s other half; the two are one
    number and move together (see that token). */

@@ -1,3 +1,4 @@
+import { parseUnifiedPatch, type PatchRows } from '../model/diffRows.js'
 import {
   groupHeaderLabel,
   isGroupExpanded,
@@ -19,6 +20,7 @@ import {
 } from '../model/transcript.js'
 import { splitFileMentions } from '../model/userMessage.js'
 import { button } from './controls.js'
+import { diffNode } from './diffView.js'
 import { append, el, replace, show, type Child } from './dom.js'
 import { icon } from './icons.js'
 import { markdownChildren } from './markdownView.js'
@@ -332,6 +334,30 @@ function thinkingStep(painter: Painter, step: Extract<ActivityStep, { kind: 'thi
 
 type ToolLike = Extract<ActivityStep, { kind: 'tool' | 'subagent' }>
 
+/**
+ * The edit family (§6.2): tools whose result ships a unified patch in
+ * `display.detail`. The family is the design's own assignment — a `Bash` output
+ * that happens to parse as a diff stays a terminal block, not a diff — and a
+ * member whose `detail` does not parse (an old record, a foreign tool with the
+ * same name) simply falls back to the plain body.
+ */
+const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+
+/**
+ * The family's own body data, or `undefined` when this step is not one of its
+ * patches. Parsed once per fill — the painter's signature already holds the tool
+ * detail, so a repaint that changes nothing costs nothing.
+ */
+function editPatch(step: ToolLike): PatchRows | undefined {
+  if (step.kind !== 'tool' || step.toolName === undefined || !EDIT_TOOLS.has(step.toolName)) return undefined
+  return step.tool.detail === undefined ? undefined : parseUnifiedPatch(step.tool.detail)
+}
+
+/** `+12 −3` — the patch's own two counts, the head's suffix (§6.2). */
+function patchStats(patch: PatchRows): string {
+  return `+${patch.added} −${patch.deleted}`
+}
+
 function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElement {
   const status = step.kind === 'tool' ? step.status : step.pending === true ? 'running' : 'done'
   const classes = ['step', step.kind, status]
@@ -340,47 +366,65 @@ function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElem
   // when the result merges in — see `thinkingStep` for why not the step itself.
   const detail = step.kind === 'tool' ? step.tool : undefined
   return painter.node(`step:${step.id}`, classes.join(' '), [step.text, detail, status, expanded], () => {
-    const head = button('step-head', '', stepAccessibleName(step, status), () =>
+    const patch = editPatch(step)
+    // A capped patch's counts are partial — `+0 −17` on a whole-file rewrite
+    // whose adds were cut — so the suffix stays off rather than lying.
+    const stats = patch !== undefined && !patch.capped ? patchStats(patch) : undefined
+    const head = button('step-head', '', stepAccessibleName(step, status, stats), () =>
       painter.onToggle(step.id, expanded))
     head.setAttribute('aria-expanded', expanded ? 'true' : 'false')
-    append(head, [bead(step, 'step-bead'), ...headParts(step)])
-    return [head, expanded ? stepBody(step) : undefined]
+    append(head, [bead(step, 'step-bead'), ...headParts(step, stats)])
+    return [head, expanded ? stepBody(step, patch) : undefined]
   })
 }
 
 /**
  * `Read` + `src/a.ts` + the result's own suffix + the call's elapsed time — the
  * head reads left to right as 「什么工具、对什么、结果如何、花了多久」 (§4.5).
+ * The edit family inserts its patch counts where a suffix would sit, because for
+ * those tools the counts *are* the result's note.
  */
-function headParts(step: ToolLike): Child[] {
+function headParts(step: ToolLike, stats: string | undefined): Child[] {
   if (step.kind === 'subagent') return [el('span', 'step-name', step.text)]
   const { displayName, useSummary, headerSuffix, durationMs } = step.tool
   return [
     el('span', 'step-name', displayName),
     useSummary ? el('span', 'step-summary', useSummary) : undefined,
+    stats === undefined ? undefined : el('span', 'step-suffix', stats),
     headerSuffix === undefined ? undefined : el('span', 'step-suffix', headerSuffix),
     durationMs === undefined ? undefined : el('span', 'step-duration', formatWorkedDuration(durationMs)),
   ]
 }
 
 /** The state in words, because the bead is `aria-hidden` and colour is not a name. */
-function stepAccessibleName(step: ToolLike, status: string): string {
+function stepAccessibleName(step: ToolLike, status: string, stats: string | undefined): string {
   const label = toolStatusLabel(status as Parameters<typeof toolStatusLabel>[0])
   if (step.kind === 'subagent') return `${step.text} · ${label}`
   const { displayName, useSummary, headerSuffix } = step.tool
-  return [displayName, useSummary, headerSuffix, label].filter((part) => part && part.length > 0).join(' · ')
+  return [displayName, useSummary, stats, headerSuffix, label]
+    .filter((part) => part && part.length > 0)
+    .join(' · ')
 }
 
 /**
- * The fallback family's body (§6.2 兜底): the result's own summary over
- * `detail ?? content`. The per-family bodies — a real diff, a terminal block, a
- * grouped search result — are T13–T16; everything lands here until then.
+ * A step's expanded body, by family (§6.2).
+ *
+ * The edit family is a real diff: the unified patch the tools ship in
+ * `display.detail` (T12), parsed back into the same rows the permission dialog
+ * paints — line gutters included. Its result summary is not repeated above the
+ * rows; the head already says what file and how much.
+ *
+ * Everything else is still the fallback family (§6.2 兜底): the result's own
+ * summary over `detail ?? content` — which is also what an edit step without a
+ * parseable patch gets, an old record's `Edited x` among them (§10), without
+ * erroring. The terminal block and the grouped search list are T14–T15.
  *
  * Nothing to show yields no body at all rather than an empty box: a call with no
  * result yet is the common case, and an empty disclosure is noise.
  */
-function stepBody(step: ToolLike): HTMLElement | undefined {
+function stepBody(step: ToolLike, patch: PatchRows | undefined): HTMLElement | undefined {
   if (step.kind === 'subagent') return el('div', 'step-body', step.text)
+  if (patch !== undefined) return el('div', 'step-body', diffNode(patch.rows))
   const { resultSummary, detail, content } = step.tool
   const text = detail ?? content
   if (resultSummary === undefined && (text === undefined || text.length === 0)) return undefined

@@ -4,15 +4,19 @@ import {
   DIFF_CONTEXT_LINES,
   diffRowsFor,
   droppedLines,
+  parseUnifiedPatch,
   previewView,
 } from '../src/desktop/renderer/model/diffRows.js'
 import { buildFileToolPreview, capFileToolPreview } from '../src/services/fileToolPreview.js'
+import { buildUnifiedPatch } from '../src/tools/editPatch.js'
 import type { FileToolPreview } from '../src/services/fileToolPreview.js'
 
 /**
- * The desktop permission dialog's diff, over the previews the host actually
- * sends. Built against `buildFileToolPreview` rather than hand-written fixtures
- * so a change to the host-side shape shows up here instead of drifting.
+ * The desktop's diff rows, over the two shapes they arrive in: the previews the
+ * host sends the permission dialog, and — since T13 — the unified patches the
+ * editing tools ship in `display.detail`. The patch half is built against
+ * `buildUnifiedPatch` rather than hand-written fixtures so a change to the
+ * tool-side shape shows up here instead of drifting.
  */
 
 // `assertInsideCwd` resolves against a real path, so this has to be the real
@@ -107,7 +111,7 @@ test('the host\'s elided count is reported as the larger side, not the sum', () 
   assert.ok(view.kind === 'diff')
   const last = view.rows.at(-1)
   assert.equal(last?.kind, 'elided')
-  assert.match(last?.text ?? '', /more lines?$/)
+  assert.match(last?.text ?? '', /more lines? not shown$/)
   // Summary tells the same truth, so a user reading either number is not misled.
   assert.match(view.summary, /more lines not shown/)
 })
@@ -137,10 +141,133 @@ test('rows are capped for display, with the overflow named', () => {
   assert.ok(view.kind === 'diff')
   assert.equal(view.rows.length, 11)
   assert.equal(view.rows.at(-1)?.kind, 'elided')
-  assert.equal(view.rows.at(-1)?.text, '… 40 more lines')
+  assert.equal(view.rows.at(-1)?.text, '40 more lines not shown')
 })
 
 test('text ending in a newline does not produce a phantom trailing row', () => {
   assert.deepEqual(diffRowsFor('', 'a\n').map((row) => row.text), ['a'])
   assert.deepEqual(diffRowsFor('', 'a\n\n').map((row) => row.text), ['a', ''])
+})
+
+// --- the editing tools' unified patches (T13) -------------------------------
+
+test("a tool's own patch parses back into rows with line numbers on both sides", () => {
+  const patch = buildUnifiedPatch('src\\foo.ts', 'one\ntwo\nthree\n', 'one\nTWO\nthree\n')
+  assert.ok(patch)
+
+  const parsed = parseUnifiedPatch(patch)
+  assert.ok(parsed)
+  assert.deepEqual(parsed.rows.map((row) => [row.kind, row.text]), [
+    ['ctx', 'one'],
+    ['del', 'two'],
+    ['add', 'TWO'],
+    ['ctx', 'three'],
+  ])
+  // Each side numbers only its own rows — the gutter the permission dialog's
+  // diff already paints, and now the tool step's too.
+  assert.deepEqual(parsed.rows.map((row) => [row.oldLine, row.newLine]), [
+    [1, 1],
+    [2, undefined],
+    [undefined, 2],
+    [3, 3],
+  ])
+  assert.equal(parsed.added, 1)
+  assert.equal(parsed.deleted, 1)
+  assert.equal(parsed.capped, false)
+})
+
+test('a patch that skips the file head names what it skipped', () => {
+  const lines = Array.from({ length: 44 }, (_, i) => `line ${i + 1}`)
+  const patch = buildUnifiedPatch(
+    'a.txt',
+    lines.join('\n'),
+    lines.map((line, index) => (index === 37 ? 'CHANGED' : line)).join('\n'),
+  )
+  assert.ok(patch)
+
+  const parsed = parseUnifiedPatch(patch)
+  assert.ok(parsed)
+  // Context keeps 35–41 around the change at 38, so the patch opens at `-35`
+  // and the 34 lines above it are the first hunk's own elision.
+  assert.deepEqual(parsed.rows[0], { kind: 'elided', text: '34 more lines not shown' })
+  assert.equal(parsed.rows[1]?.oldLine, 35)
+})
+
+test('the gap between two hunks is one elided row, counted from the headers', () => {
+  const lines = Array.from({ length: 60 }, (_, i) => `l ${i}`)
+  const patch = buildUnifiedPatch(
+    'a.txt',
+    lines.join('\n'),
+    lines.map((line, index) => (index === 7 || index === 39 ? 'X' : line)).join('\n'),
+  )
+  assert.ok(patch)
+
+  const parsed = parseUnifiedPatch(patch)
+  assert.ok(parsed)
+  const gaps = parsed.rows.filter((row) => row.kind === 'elided')
+  assert.deepEqual(gaps.map((row) => row.text), ['4 more lines not shown', '25 more lines not shown'])
+  assert.equal(parsed.added, 2)
+  assert.equal(parsed.deleted, 2)
+})
+
+test("a capped patch keeps its rows and says it was capped, because the counts are partial", () => {
+  const oldText = Array.from({ length: 120 }, (_, i) => `old ${i}`).join('\n')
+  const patch = buildUnifiedPatch(
+    'big.txt',
+    oldText,
+    Array.from({ length: 120 }, (_, i) => `new ${i}`).join('\n'),
+    { maxLines: 20, maxChars: 100_000 },
+  )
+  assert.ok(patch)
+
+  const parsed = parseUnifiedPatch(patch)
+  assert.ok(parsed)
+  assert.equal(parsed.capped, true)
+  // The cap line is terminal: what it kept is rows, what it dropped is named.
+  assert.deepEqual(parsed.rows.at(-1), { kind: 'elided', text: '225 more lines not shown' })
+  // The whole-file rewrite emits its removals first, so a head that trusted
+  // these counts would read `+0 −17` for a 120-line rewrite.
+  assert.equal(parsed.added, 0)
+})
+
+test('a new file numbers its additions from one, with no head elision', () => {
+  const patch = buildUnifiedPatch('new.txt', '', 'a\nb\n')
+  assert.ok(patch)
+
+  const parsed = parseUnifiedPatch(patch)
+  assert.ok(parsed)
+  assert.deepEqual(parsed.rows.map((row) => [row.kind, row.text, row.newLine]), [
+    ['add', 'a', 1],
+    ['add', 'b', 2],
+  ])
+  assert.equal(parsed.deleted, 0)
+})
+
+test('a no-newline marker is kept as a row of neither side', () => {
+  const patch = buildUnifiedPatch('f.txt', 'no newline', 'no newline2')
+  assert.ok(patch)
+
+  const parsed = parseUnifiedPatch(patch)
+  assert.ok(parsed)
+  const markers = parsed.rows.filter((row) => row.text.startsWith('\\ No newline'))
+  assert.equal(markers.length, 2)
+  assert.ok(markers.every((row) => row.kind === 'ctx' && row.oldLine === undefined && row.newLine === undefined))
+  // And it does not disturb the numbering on either side.
+  assert.deepEqual(
+    parsed.rows.filter((row) => row.kind !== 'ctx').map((row) => [row.kind, row.oldLine, row.newLine]),
+    [['del', 1, undefined], ['add', undefined, 1]],
+  )
+})
+
+test('anything that is not one of those patches parses to undefined, not to rows', () => {
+  // The old record's plain content (§10), the empty string, and a header with
+  // garbage after it — the caller falls back to the plain body for all three.
+  assert.equal(parseUnifiedPatch('Edited a.txt'), undefined)
+  assert.equal(parseUnifiedPatch(''), undefined)
+  assert.equal(parseUnifiedPatch(['--- a/x', '+++ b/x', 'random text'].join('\n')), undefined)
+  // A cap line with no hunk before it is not a shape the tool emits either.
+  assert.equal(
+    parseUnifiedPatch(['--- a/x', '+++ b/x', '… 5 more lines not shown'].join('\n')),
+    undefined,
+  )
 })

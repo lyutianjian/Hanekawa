@@ -227,7 +227,7 @@ reset 清空。
 **验收**：`node --import tsx --test test/tools.test.ts test/fileToolPreview.test.ts
 test/notebookEdit.test.ts`，新增 patch 文本格式的断言。
 
-### [ ] T13 — 编辑族展开体：真 diff
+### [x] T13 — 编辑族展开体：真 diff
 
 **依赖**：T12、T7。
 

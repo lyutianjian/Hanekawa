@@ -1444,6 +1444,11 @@ body.resizing #sidebar { transition: none; }
 }
 .step.thinking .step-body { font-style: italic; }
 .step-body-head { margin-bottom: var(--space-1); }
+/* The edit family's body (T13) is the same diff block the permission dialog
+   paints — one diff look everywhere — but a group is not a dialog: the cap
+   matches the fallback body's, and the block's own margin belongs to the
+   dialog's padding. */
+.step-body .diff { max-height: 320px; margin: 0; }
 /* The output block scrolls **inside itself**: a long result must not turn the
    group into a scroll window of its own (§6.2). */
 .step-body-text {
@@ -2668,7 +2673,22 @@ body.resizing #sidebar { transition: none; }
 .diff-row.add { background: var(--diff-add-bg); color: var(--diff-add-fg); }
 .diff-row.del { background: var(--diff-del-bg); color: var(--diff-del-fg); }
 .diff-row.ctx { color: var(--text-primary); opacity: 0.75; }
-.diff-row.elided { color: var(--text-secondary); font-style: italic; }
+/* An elided row is not a line of the file: no gutter, and the elision itself is
+   a dashed rule drawn by the sheet — §3 replaces the `⋯` glyph this used to
+   print, and the count stays as words beside it. */
+.diff-row.elided {
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+.diff-row.elided .rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: repeating-linear-gradient(90deg, var(--border-strong) 0 4px, transparent 4px 9px);
+}
+.diff-row.elided .text { flex: 0 0 auto; padding-right: 0; }
 
 /* --- settings ---------------------------------------------------------------
    A screen, not a dialog: it takes the whole window below the title bar — the

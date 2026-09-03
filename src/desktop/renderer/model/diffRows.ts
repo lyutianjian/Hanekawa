@@ -10,6 +10,11 @@ import type { FileToolPreview } from '../../../services/fileToolPreview.js'
  * the DOM half of that decision, kept pure and line-oriented because a browser
  * can afford real line numbers and a gutter.
  *
+ * The same rows also carry the *editing tools'* own unified patches
+ * (`parseUnifiedPatch`): the tool ships the patch in `display.detail` (T12), the
+ * transcript parses it back (T13), and the permission dialog and a tool step
+ * share one diff look.
+ *
  * DOM-free on purpose: `test/` imports this module, and a test import drags a
  * file into the base tsconfig program, which has no DOM lib. See
  * `renderer/bridgeChannel.ts` for the same reason.
@@ -44,6 +49,117 @@ export type PreviewView = DiffPreviewView | MessagePreviewView
 
 /** Rows beyond this are collapsed into one `elided` row. Display-only. */
 export const DEFAULT_MAX_DIFF_ROWS = 240
+
+/**
+ * The stats a unified patch's own rows carry, for a head that reads
+ * `Edit src/foo.ts · +12 −3` (§6.2).
+ */
+export interface PatchRows {
+  readonly rows: readonly DiffRow[]
+  /** Rows with a `+` prefix. */
+  readonly added: number
+  /** Rows with a `-` prefix. */
+  readonly deleted: number
+  /** The tool ran out of budget and dropped lines — the counts above are partial. */
+  readonly capped: boolean
+}
+
+/**
+ * The cap line `src/tools/editPatch.ts` appends when it runs out of budget,
+ * verbatim. A format contract, duplicated for the same reason
+ * `isSystemReminderBlock` is: the renderer may not import `tools/`.
+ */
+const PATCH_ELISION = /^… (\d+) more lines? not shown$/
+
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
+
+/**
+ * The unified patch the editing tools ship in `ToolResultDisplay.detail` (T12),
+ * turned into the same rows the permission preview paints — line gutters
+ * included, because the hunk headers carry real line numbers.
+ *
+ * Returns `undefined` for anything that is not one of those patches — an older
+ * session's record, a tool from another family, a truncated string — and the
+ * caller falls back to the plain body rather than erroring (§10).
+ *
+ * Two kinds of line become `elided` rows, and both are drawn as the dashed rule
+ * rather than as content: a hunk header names the unchanged lines it skipped
+ * over (the count falls out of the header's own numbers), and the patch's own
+ * cap line names what the tool dropped before shipping it.
+ */
+export function parseUnifiedPatch(patch: string): PatchRows | undefined {
+  const lines = patch.split('\n')
+  // `createTwoFilesPatch` opens with an `===` separator the tool strips; kept
+  // here so a hand-written or host-raw patch parses too.
+  while (lines.length > 0 && lines[0]!.startsWith('===')) lines.shift()
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  if (lines.length < 3) return undefined
+  if (!lines[0]!.startsWith('--- ') || !lines[1]!.startsWith('+++ ')) return undefined
+
+  const rows: DiffRow[] = []
+  let oldLine = 0
+  let newLine = 0
+  let added = 0
+  let deleted = 0
+  let opened = false
+
+  for (let index = 2; index < lines.length; index += 1) {
+    const line = lines[index]!
+
+    const hunk = HUNK_HEADER.exec(line)
+    if (hunk !== null) {
+      const hunkOld = Number(hunk[1])
+      const hunkNew = Number(hunk[3])
+      // What this hunk skipped before it starts. The first hunk skips the file's
+      // head; a later one skips the unchanged run since the last — the same lines
+      // on both sides in a well-formed patch, and the larger count is the honest
+      // single number if they are not.
+      const skipped = Math.max(hunkOld - oldLine, hunkNew - newLine) - (opened ? 0 : 1)
+      if (skipped > 0) rows.push(elidedRow(skipped))
+      oldLine = hunkOld
+      newLine = hunkNew
+      opened = true
+      continue
+    }
+
+    const cap = PATCH_ELISION.exec(line)
+    if (cap !== null) {
+      // Terminal by construction — `capPatchLines` appends it last — so nothing
+      // after it is expected or parsed. A cap with no hunk before it is not a
+      // shape the tool emits, and reading it as an empty diff would draw a body
+      // that says nothing.
+      if (!opened) return undefined
+      rows.push(elidedRow(Number(cap[1])))
+      return { rows, added, deleted, capped: true }
+    }
+
+    if (!opened) return undefined
+    const marker = line.charAt(0)
+    const text = line.slice(1)
+    if (marker === '+') {
+      rows.push({ kind: 'add', text, newLine })
+      newLine += 1
+      added += 1
+    } else if (marker === '-') {
+      rows.push({ kind: 'del', text, oldLine })
+      oldLine += 1
+      deleted += 1
+    } else if (marker === ' ' || line === '') {
+      // A fully empty line is a context line some emitters ship without its
+      // leading space; both mean one unchanged blank.
+      rows.push({ kind: 'ctx', text, oldLine, newLine })
+      oldLine += 1
+      newLine += 1
+    } else if (marker === '\\') {
+      // `\ No newline at end of file` — file metadata, not a line of either side.
+      rows.push({ kind: 'ctx', text: line })
+    } else {
+      return undefined
+    }
+  }
+
+  return opened ? { rows, added, deleted, capped: false } : undefined
+}
 
 /**
  * How many lines of unchanged text to keep either side of a change.
@@ -100,7 +216,9 @@ function summaryFor(preview: Extract<FileToolPreview, { kind: 'diff' }>): string
 }
 
 function elidedRow(count: number): DiffRow {
-  return { kind: 'elided', text: `… ${count} more line${count === 1 ? '' : 's'}` }
+  // Words, not glyphs: §3 replaces the `…` this used to start with — the rule is
+  // the indicator now, and the count is what it is worth saying out loud.
+  return { kind: 'elided', text: `${count} more line${count === 1 ? '' : 's'} not shown` }
 }
 
 /**

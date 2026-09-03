@@ -413,6 +413,148 @@ test('nodes are kept by id across paints, so the scroll anchor survives', (t) =>
   assert.notEqual(groupOf(view).children[1]?.children[0]?.node, before.step)
 })
 
+// --- the edit family's real diff (T13) ---------------------------------------
+
+/**
+ * The unified patch an editing tool ships in `display.detail` (T12): one hunk,
+ * one change — `+1 −1` on the head, five rows in the body.
+ */
+const EDIT_PATCH = [
+  '--- a/a.ts',
+  '+++ b/a.ts',
+  '@@ -1,4 +1,4 @@',
+  ' one',
+  ' two',
+  '-three',
+  '+THREE',
+  ' four',
+].join('\n')
+
+/** Two hunks, so both the skipped head and the gap between them are elided. */
+const GAP_PATCH = [
+  '--- a/b.ts',
+  '+++ b/b.ts',
+  '@@ -10,3 +10,3 @@',
+  ' x',
+  '-y',
+  '+Y',
+  ' z',
+  '@@ -40,3 +40,3 @@',
+  ' p',
+  '-q',
+  '+Q',
+  ' r',
+].join('\n')
+
+function editStep(overrides: { detail?: string; toolName?: string } = {}): TranscriptItem {
+  return {
+    id: 'edit-1',
+    kind: 'tool',
+    text: 'Edit a.ts',
+    toolName: overrides.toolName ?? 'Edit',
+    turnId: 't1',
+    tool: {
+      displayName: 'Edit',
+      useSummary: 'a.ts',
+      resultSummary: 'Edited a.ts',
+      ...(overrides.detail === undefined ? {} : { detail: overrides.detail }),
+      content: 'Edited a.ts',
+      durationMs: 200,
+    },
+  }
+}
+
+test('an edit step carries its patch counts in the head and a real diff below', (t) => {
+  const view = mount(t)
+  view.render(transcript([editStep({ detail: EDIT_PATCH })]), new Map([['t1', true], ['edit-1', true]]))
+
+  const step = groupOf(view).children[1]?.children[0]
+  assert.deepEqual(step?.classes, ['step', 'tool', 'done'])
+  const head = step?.children[0]
+  // `Edit src/foo.ts · +12 −3` (§6.2): the counts sit where a suffix would,
+  // because for this family they *are* the result's note.
+  assert.deepEqual(
+    head?.children.slice(1).map((part) => [part.className, part.text]),
+    [['step-name', 'Edit'], ['step-summary', 'a.ts'], ['step-suffix', '+1 −1'], ['step-duration', '0.2s']],
+  )
+  assert.equal(head?.attributes.get('aria-label'), 'Edit · a.ts · +1 −1 · 完成')
+
+  // The body is the same diff the permission dialog paints: gutters with both
+  // line numbers, and nothing else — the result summary is not repeated over it.
+  const body = step?.children[1]
+  assert.equal(body?.className, 'step-body')
+  assert.equal(body?.children.length, 1)
+  const diff = body?.children[0]
+  assert.equal(diff?.className, 'diff')
+  assert.deepEqual(diff?.children.map((row) => row.classes), [
+    ['diff-row', 'ctx'],
+    ['diff-row', 'ctx'],
+    ['diff-row', 'del'],
+    ['diff-row', 'add'],
+    ['diff-row', 'ctx'],
+  ])
+  assert.deepEqual(diff?.children[2]?.children.map((part) => [part.className, part.text]), [
+    ['gutter', '  3     -'],
+    ['text', 'three'],
+  ])
+})
+
+test('a folded edit head keeps the counts, and the diff is absent rather than hidden', (t) => {
+  const view = mount(t)
+  view.render(transcript([editStep({ detail: EDIT_PATCH })]), new Map([['t1', true]]))
+
+  const step = groupOf(view).children[1]?.children[0]
+  assert.equal(step?.children.length, 1, 'folded: the head and nothing else')
+  assert.equal(step?.children[0]?.children.some((part) => part.classes.includes('step-suffix')), true)
+  assert.equal(step?.text.includes('one'), false, 'an `aria-live` region must not read the folded rows')
+})
+
+test('an edit record without a patch falls back to the plain body, without erroring', (t) => {
+  const view = mount(t)
+  view.render(transcript([editStep()]), new Map([['t1', true], ['edit-1', true]]))
+
+  const step = groupOf(view).children[1]?.children[0]
+  // No patch to count, so no suffix — the head is what it was before T13.
+  assert.equal(step?.children[0]?.children.some((part) => part.classes.includes('step-suffix')), false)
+  // And the body is the fallback family (§6.2 兜底): the summary over `content`.
+  const body = step?.children[1]
+  assert.deepEqual(body?.children.map((part) => [part.className, part.text]), [
+    ['step-body-head', 'Edited a.ts'],
+    ['step-body-text', 'Edited a.ts'],
+  ])
+})
+
+test("a patch in another family's detail does not turn it into a diff", (t) => {
+  const view = mount(t)
+  view.render(
+    transcript([editStep({ detail: EDIT_PATCH, toolName: 'Bash' })]),
+    new Map([['t1', true], ['edit-1', true]]),
+  )
+
+  const body = groupOf(view).children[1]?.children[0]?.children[1]
+  assert.equal(body?.children.some((child) => child.classes.includes('diff')), false)
+  // The detail itself is still what the fallback family always showed: text.
+  assert.equal(body?.children[1]?.text, EDIT_PATCH)
+})
+
+test('skipped lines draw as dashed rules with the count, never as glyphs', (t) => {
+  const view = mount(t)
+  view.render(transcript([editStep({ detail: GAP_PATCH })]), new Map([['t1', true], ['edit-1', true]]))
+
+  const diff = groupOf(view).children[1]?.children[0]?.children[1]?.children[0]
+  const elided = diff?.children.filter((row) => row.classes.includes('elided'))
+  // Both the file head the first hunk skipped and the gap between the hunks.
+  assert.deepEqual(elided?.map((row) => row.text), ['9 more lines not shown', '27 more lines not shown'])
+  for (const row of elided ?? []) {
+    // The rule is a span the sheet paints, and no gutter — an elided row is not
+    // a line of the file.
+    assert.deepEqual(row.children.map((part) => part.className), ['rule', 'text'])
+  }
+  // §3: the elision glyph is gone from the block entirely, in any form.
+  assert.equal(diff?.text.includes('…'), false)
+  assert.equal(diff?.text.includes('⋯'), false)
+})
+
 // --- inline file pills (5d) --------------------------------------------------
 
 test('a mention in the user bubble is a pill, interleaved with the text as typed', (t) => {

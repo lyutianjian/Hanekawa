@@ -190,6 +190,19 @@ class StubElement {
     return this.attributes.get(name) ?? null
   }
 
+  /**
+   * Attribute states that come and go on a *kept* node need this: a view that
+   * only ever sets `aria-busy` leaves it on the row forever once the change it
+   * announced has landed.
+   */
+  removeAttribute(name: string): void {
+    const previous = this.attributes.get(name)
+    this.attributes.delete(name)
+    // Mirrors `setAttribute`'s registration, so an id that is taken off a node
+    // does not keep answering `getElementById`.
+    if (name === 'id' && previous !== undefined) ID_REGISTRY.delete(previous)
+  }
+
   appendChild<T extends StubChild>(child: T): T {
     child.parent?.removeChild(child)
     child.parent = this
@@ -215,6 +228,15 @@ class StubElement {
     const at = this.childNodes.indexOf(child)
     if (at >= 0) this.childNodes.splice(at, 1)
     child.parent = undefined
+    // A node that leaves the tree takes the focus with it, exactly as the browser
+    // does — and `appendChild`/`insertBefore` detach first, so *re-parenting* a
+    // focused input blurs it here too. Without this the stub reported focus a real
+    // window had already dropped: `settingsView` kept its `<input>` by id but
+    // rebuilt the `.settings-row-control` around it, so every keystroke moved the
+    // caret to `<body>` while this test double stayed green.
+    if (child instanceof StubElement && child.contains(activeElement)) {
+      activeElement = undefined
+    }
   }
 
   remove(): void {
@@ -281,6 +303,8 @@ export interface StubView {
   /** `textContent` of the whole subtree. */
   readonly text: string
   readonly attributes: ReadonlyMap<string, string>
+  /** Custom properties written through `style.setProperty`; see `StubElement.style`. */
+  readonly styleProperties: ReadonlyMap<string, string>
   /** Element children only. */
   readonly children: readonly StubView[]
   /** Element and text children interleaved, in document order. */
@@ -340,6 +364,7 @@ function viewOf(element: StubElement): StubView {
     disabled: element.disabled,
     text: element.textContent,
     attributes: element.attributes,
+    styleProperties: element.style.properties,
     children: element.childNodes.filter((c): c is StubElement => c instanceof StubElement).map(viewOf),
     nodes: element.childNodes.map((child) => (child instanceof StubText ? child.data : viewOf(child))),
     scrollTop: element.scrollTop,

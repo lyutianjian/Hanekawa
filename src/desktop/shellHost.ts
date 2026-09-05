@@ -26,6 +26,7 @@ import { SessionStore } from '../sessions/service.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
 import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../tools/agentTool.js'
 import { SkillsService, type SkillDefinition } from '../services/skills/skillsService.js'
+import { importSkill } from '../services/skills/importSkill.js'
 import { peekSessions } from './recentProjects.js'
 import { getSkillsDir, isGlobalWorkspaceRoot } from '../utils/paths.js'
 import type {
@@ -132,6 +133,8 @@ export interface ShellLaneProject extends DirectoryProject {
     setRouting(routing: Routing): void
     setEndpoint(name: string, endpoint: Endpoint): void
     removeEndpoint(name: string): void
+    /** The models that resolve through one endpoint — what removing it takes with it. */
+    modelsForEndpoint(name: string): string[]
     setModelConfig(name: string, model: ModelConfig): void
     removeModel(name: string): void
     renameModel(oldKey: string, newKey: string): void
@@ -200,6 +203,15 @@ export interface LaneOccupant {
    */
   refreshAfterConfigChange(options: { rebuild: boolean; scope: ProviderConfigChangeScope }): void
   /**
+   * The model key this lane is mid-turn on, or `undefined` when it is idle.
+   *
+   * Asked before a `remove-model` / `remove-endpoint` and nowhere else. Config
+   * references repair themselves now, so this is the only remaining reason a
+   * removal is refused — and it has to be asked of the lane, because the config
+   * cannot know which of its models is currently streaming.
+   */
+  activeModelKey(): string | undefined
+  /**
    * The session's meta moved without the session moving — a rename. The host
    * refreshes its controller's copy and pushes `session-changed`; anything
    * heavier (`retarget`) would interrupt the turn and reset usage for a title.
@@ -251,6 +263,14 @@ export interface ShellHostDeps<
    * in the transcript. A shell without one rejects the command.
    */
   onOpenInEditor?: (cwd: string, target?: { path: string; line?: number }) => Promise<void>
+  /**
+   * A native directory picker, for `import-skill` without a `sourceDir`.
+   *
+   * Awaited and allowed to answer `undefined` (cancelled) — the same shape
+   * `promptForProjectDirectory` already has in `main.ts`. A shell without one
+   * rejects the pathless variant rather than silently importing nothing.
+   */
+  onPickDirectory?: (options: { title: string; buttonLabel: string }) => Promise<string | undefined>
   /**
    * Repaints the native title-bar overlay for the resolved theme (5g).
    *
@@ -348,6 +368,7 @@ const SETTINGS_CHANGE_SCHEMAS = {
       provider: z.string().optional(),
       endpoint: z.string().optional(),
       contextWindow: z.number().optional(),
+      longContext1m: z.boolean().optional(),
       maxOutputTokens: z.number().optional(),
     })
     .strict(),
@@ -421,6 +442,13 @@ const SETTINGS_CHANGE_SCHEMAS = {
       kind: z.literal('set-skill-enabled'),
       name: z.string(),
       enabled: z.boolean(),
+    })
+    .strict(),
+  'import-skill': z
+    .object({
+      scope: z.literal('extensions'),
+      kind: z.literal('import-skill'),
+      sourceDir: z.string().optional(),
     })
     .strict(),
   'reload-skills': z
@@ -1094,11 +1122,17 @@ export class ShellHost<
     const entry = this.deps.directory.get(projectRoot)
     if (!entry) throw new Error(`No project is open at ${projectRoot}`)
 
-    // `ConfigService` owns the reference checks (a routed model, an endpoint a
-    // model still points at, a rename onto an existing key, a context number
-    // that cannot mean anything). Letting it throw keeps them in one place — and
-    // nothing has been saved yet, so a rejection leaves the config as it was.
-    const effect = await applySettingsEffect(entry, change)
+    // Before anything is mutated: a model a turn is *running on* cannot be
+    // deleted. Every other reference — the default model, a routing role, an
+    // endpoint's models — now repairs itself inside `ConfigService`, so this is
+    // the last refusal left, and it is one only the shell can make.
+    this.refuseIfModelIsInFlight(entry, change)
+
+    // `ConfigService` still owns the checks it can make on its own (a rename
+    // onto an existing key, a context number that cannot mean anything).
+    // Letting it throw keeps them in one place — and nothing has been saved
+    // yet, so a rejection leaves the config as it was.
+    const effect = await applySettingsEffect(entry, change, this.deps.onPickDirectory)
     if (effect.saveConfig) await entry.project.config.save()
     await entry.project.reloadSettings()
     if (effect.afterReload) await effect.afterReload()
@@ -1115,6 +1149,33 @@ export class ShellHost<
       settings: await this.describeSettings(entry),
       rebuiltLanes,
     } satisfies WireShellSettingsChangeResult
+  }
+
+  /**
+   * Refuses a removal that would pull the model out from under a running turn.
+   *
+   * Deleting a model is otherwise always allowed now: `ConfigService` re-points
+   * whatever named it and `removeEndpoint` takes that endpoint's models with it.
+   * A turn already streaming is the exception — it holds a provider built from
+   * that model, and taking it away mid-flight fails the turn rather than the
+   * click. Refusing *here*, before `applySettingsEffect`, is what keeps the
+   * config untouched when it happens.
+   */
+  private refuseIfModelIsInFlight(entry: ProjectEntry<P, W>, change: SettingsChange): void {
+    const doomed =
+      change.kind === 'remove-model'
+        ? [change.key]
+        : change.kind === 'remove-endpoint'
+          ? entry.project.config.modelsForEndpoint(change.name)
+          : []
+    if (doomed.length === 0) return
+    for (const held of this.lanes.values()) {
+      if (held.project !== entry) continue
+      const running = held.occupant.activeModelKey()
+      if (running === undefined || !doomed.includes(running)) continue
+      const title = held.pane.getSession().title ?? held.pane.getSession().id
+      throw new Error(`模型 ${running} 上还有会话「${title}」在跑，先中断它再删。`)
+    }
   }
 
   /**
@@ -1219,6 +1280,7 @@ export class ShellHost<
       if (model.provider !== undefined) info.provider = model.provider
       if (model.endpoint !== undefined) info.endpoint = model.endpoint
       if (model.contextWindow !== undefined) info.contextWindow = model.contextWindow
+      if (model.longContext1m !== undefined) info.longContext1m = model.longContext1m
       if (model.maxOutputTokens !== undefined) info.maxOutputTokens = model.maxOutputTokens
       if (model.maxEffort !== undefined) info.maxEffort = model.maxEffort
       if (model.baseUrl !== undefined) info.baseUrl = model.baseUrl
@@ -1524,6 +1586,9 @@ interface SettingsChangeEffect {
 async function applySettingsEffect<P extends ShellLaneProject, W extends ShellLaneWorkspace<PaneLike>>(
   entry: ProjectEntry<P, W>,
   change: SettingsChange,
+  // Only `import-skill` needs it, and only when the command arrived without a
+  // path. Passed in rather than reached for so this stays Electron-free.
+  pickDirectory?: ShellHostDeps<P, PaneLike, W>['onPickDirectory'],
 ): Promise<SettingsChangeEffect> {
   if (change.scope === 'provider') {
     return {
@@ -1589,6 +1654,31 @@ async function applySettingsEffect<P extends ShellLaneProject, W extends ShellLa
           await entry.project.reloadSkills()
         },
       }
+    case 'import-skill': {
+      // The copy happens *before* the reload, not in `afterReload`: a failed
+      // import (no SKILL.md, a name already taken) has to reject the command
+      // rather than come back as a successful-looking snapshot with nothing new
+      // in it. Nothing has been written to config or settings at this point.
+      let sourceDir = change.sourceDir
+      if (sourceDir === undefined) {
+        if (!pickDirectory) throw new Error('The shell cannot open a folder picker.')
+        sourceDir = await pickDirectory({ title: '导入技能', buttonLabel: '导入' })
+        // Cancelling is a no-op, not an error — the same rule the project picker
+        // follows. The reload still runs and answers with an unchanged snapshot.
+        if (!sourceDir) return { saveConfig: false, rebuild: false, scope: 'models' }
+      }
+      await importSkill(entry.cwd, sourceDir)
+      // Rebuild for the reason `set-skill-enabled` needs one: a runtime is handed
+      // the skill list it was built with.
+      return {
+        saveConfig: false,
+        rebuild: true,
+        scope: 'models',
+        afterReload: async () => {
+          await entry.project.reloadSkills()
+        },
+      }
+    }
     case 'set-mcp-trust':
       await setMcpServerTrustLocally(entry.cwd, change.name, change.trusted)
       return {
@@ -1656,6 +1746,10 @@ function applyProviderChange(
       if (change.provider !== undefined && change.provider !== '') model.provider = change.provider
       if (change.endpoint !== undefined && change.endpoint !== '') model.endpoint = change.endpoint
       if (change.contextWindow !== undefined) model.contextWindow = change.contextWindow
+      // The whole `ModelConfig` is rebuilt here, so an absent field is a
+      // removal — which is why the form seeds every one of these from the
+      // snapshot rather than sending only what was typed.
+      if (change.longContext1m !== undefined) model.longContext1m = change.longContext1m
       if (change.maxOutputTokens !== undefined) model.maxOutputTokens = change.maxOutputTokens
       config.setModelConfig(change.key, model)
       return 'models'

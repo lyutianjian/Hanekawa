@@ -22,6 +22,11 @@ export interface MyAgentSettings {
     allow?: string[]
     deny?: string[]
     ask?: string[]
+    /**
+     * Extra roots accept-edits treats as workspace, alongside `cwd`.
+     * Concatenated across layers like `allow`/`deny`/`ask`.
+     */
+    additionalDirectories?: string[]
   }
   hooks?: {
     userPromptSubmit?: HookCommandSetting[]
@@ -151,7 +156,15 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
 
     if (source.permissions) {
       const mode = source.permissions.mode ?? result.permissions?.mode
+      // Concatenated like allow/deny/ask, but only written when a layer
+      // actually declared one: an empty array in every merged snapshot would
+      // be noise for a setting almost nobody sets.
+      const additionalDirectories = [
+        ...(result.permissions?.additionalDirectories ?? []),
+        ...(source.permissions.additionalDirectories ?? []),
+      ]
       result.permissions = {
+        ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
         ...(mode !== undefined ? { mode } : {}),
         allow: [...(result.permissions?.allow ?? []), ...(source.permissions.allow ?? [])],
         deny: [...(result.permissions?.deny ?? []), ...(source.permissions.deny ?? [])],
@@ -494,6 +507,9 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
       if (model.contextWindow !== undefined && (!Number.isInteger(model.contextWindow) || model.contextWindow < 1)) {
         errors.push(`models.${name}.contextWindow must be a positive integer`)
       }
+      if (model.longContext1m !== undefined && typeof model.longContext1m !== 'boolean') {
+        errors.push(`models.${name}.longContext1m must be a boolean`)
+      }
     }
   }
 
@@ -575,10 +591,10 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
   }
 
   if (settings.permissions?.mode !== undefined && !STARTUP_PERMISSION_MODES.includes(settings.permissions.mode as StartupPermissionMode)) {
-    errors.push('permissions.mode must be one of: default, acceptEdits, auto, bypass')
+    errors.push(`permissions.mode must be one of: ${STARTUP_PERMISSION_MODES.join(', ')}`)
   }
 
-  for (const name of ['allow', 'deny', 'ask'] as const) {
+  for (const name of ['allow', 'deny', 'ask', 'additionalDirectories'] as const) {
     const rules = settings.permissions?.[name]
     if (rules !== undefined && !Array.isArray(rules)) {
       errors.push(`permissions.${name} must be an array`)

@@ -106,6 +106,8 @@ export class SessionClient {
    * nothing else changed.
    */
   private cost: WireUsageCost | undefined
+  /** Context occupancy, folded into the snapshot diff for the same reason `cost` is. */
+  private contextUsedTokens: number | undefined
   private runtimeSnapshot: WireRuntimeSnapshot | undefined
   private session: SessionMeta | undefined
   private backgroundTasks: readonly BackgroundTaskSnapshot[] = EMPTY_TASKS
@@ -246,6 +248,15 @@ export class SessionClient {
    */
   getCost(): WireUsageCost | undefined {
     return this.cost
+  }
+
+  /**
+   * How many tokens the conversation currently occupies, or `undefined` before
+   * the host has anything to report. Measured host-side; see the `snapshot`
+   * event in `wire.ts`.
+   */
+  getContextUsedTokens(): number | undefined {
+    return this.contextUsedTokens
   }
 
   // --- commands ---------------------------------------------------------
@@ -608,7 +619,7 @@ export class SessionClient {
         return
       case 'snapshot':
         this.subagentProgress = new Map(event.subagentProgress)
-        this.applySnapshot(event.snapshot, event.cost)
+        this.applySnapshot(event.snapshot, event.cost, event.contextUsedTokens)
         return
       case 'runtime-snapshot':
         this.runtimeSnapshot = event.snapshot
@@ -658,20 +669,26 @@ export class SessionClient {
    * Swaps the snapshot only when a field actually differs, so `getSnapshot()`
    * keeps returning the same object while nothing has changed.
    *
-   * `cost` participates in the same decision even though it lives outside the
-   * snapshot object: it rides on this event, so treating it separately would
-   * mean either a second `notify()` per tick or a stale readout.
+   * `cost` and `contextUsedTokens` participate in the same decision even though
+   * they live outside the snapshot object: both ride on this event, so treating
+   * either separately would mean a second `notify()` per tick or a stale readout.
    */
-  private applySnapshot(next: SessionControllerSnapshot, cost?: WireUsageCost): void {
+  private applySnapshot(
+    next: SessionControllerSnapshot,
+    cost?: WireUsageCost,
+    contextUsedTokens?: number,
+  ): void {
     const previous = this.snapshot
     const usage = sameUsage(previous.usage, next.usage) ? previous.usage : next.usage
     const taskSnapshot = sameTaskSnapshot(previous.taskSnapshot, next.taskSnapshot)
       ? previous.taskSnapshot
       : next.taskSnapshot
     const costChanged = !sameCost(this.cost, cost)
+    const contextChanged = this.contextUsedTokens !== contextUsedTokens
 
     if (
       !costChanged
+      && !contextChanged
       && previous.isStreaming === next.isStreaming
       && previous.spinnerSubText === next.spinnerSubText
       && usage === previous.usage
@@ -679,6 +696,7 @@ export class SessionClient {
     ) return
 
     this.cost = cost
+    this.contextUsedTokens = contextUsedTokens
     this.snapshot = Object.freeze({
       isStreaming: next.isStreaming,
       usage,

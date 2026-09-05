@@ -134,6 +134,7 @@ import {
   type SurfaceView,
 } from './model/surfaces.js'
 import { runtimeMenuView } from './model/runtimeMenu.js'
+import { contextGaugeView } from './model/usage.js'
 import {
   applyRewindIntent,
   beginRewindRun,
@@ -365,6 +366,12 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
    * from a whole list; every other record advances it one step (§7.3).
    */
   let taskPanel: TaskPanelState | undefined
+  /**
+   * When the running turn started, epoch ms — the live status's clock, and
+   * nothing else reads it. Per pane, and cleared at `turn-end`: a background
+   * pane's turn is still its own turn.
+   */
+  let turnStartedAt: number | undefined
   let queue: UiQueueState = createUiQueue()
   let completions: CompletionState = NO_COMPLETIONS
   let commands: WireCommandInfo[] = []
@@ -491,7 +498,17 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // different block left behind — and an absolute answer would not even be
     // corrected by the default.
     disclosure = pruneDisclosure(groupTranscript(transcript.items), disclosure)
-    transcriptView.render(transcript, disclosure)
+    const isStreaming = client.getSnapshot().isStreaming
+    // A pane can find itself mid-turn without having seen `turn-start` — it was
+    // resumed, or the turn began while this pane was in the background — and a
+    // row counting from `undefined` would have no clock at all. Noticing the
+    // turn is the honest floor for 「how long have I been waiting」.
+    if (isStreaming && turnStartedAt === undefined) turnStartedAt = Date.now()
+    transcriptView.render(transcript, disclosure, {
+      isStreaming,
+      startedAt: turnStartedAt,
+      turnId: transcript.turnId,
+    })
     // The one place that decides whether this pane has a conversation, so the
     // transcript and the welcome screen cannot disagree about it.
     welcome.render(welcomeView({
@@ -570,7 +587,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // The chip is repainted even when the snapshot is missing, so a pane that
     // has not finished starting shows the placeholder rather than the previous
     // pane's model.
-    deps.composer.renderRuntime(runtime)
+    deps.composer.renderRuntime(
+      runtime,
+      contextGaugeView(client.getContextUsedTokens(), runtime),
+    )
     const session = client.getSession()
     if (session) deps.status.renderSession(session)
   }
@@ -866,6 +886,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   // --- host events -------------------------------------------------------------
 
   client.onEvent((event) => {
+    // The waiting row's clock, set before the paint that may draw it. The turn's
+    // own boundaries rather than `isStreaming`'s edges: the snapshot flag is
+    // polled, and 「已等待」 must start at the moment the user pressed Enter.
+    if (event.type === 'turn-start') turnStartedAt = Date.now()
+    if (event.type === 'turn-end') turnStartedAt = undefined
     const outcome = applySessionEvent(transcript, event, toolDisplays)
     transcript = outcome.state
     noteConversationState()
@@ -1238,9 +1263,14 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // The composer is a singleton the active pane drives, so an open permission
     // menu would hang over the next pane and act on *its* runtime.
     deps.composer.closeMenus()
+    // Nothing repaints a hidden pane, so the waiting row's clock would tick on
+    // against a node nobody can see. `activate()`'s `renderTranscript()` starts
+    // it again from the same `turnStartedAt`, so no time is lost.
+    transcriptView.stopClock()
   }
 
   function dispose(): void {
+    transcriptView.stopClock()
     client.dispose()
     paneEl.remove()
   }

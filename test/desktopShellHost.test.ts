@@ -162,9 +162,16 @@ class FakeConfig {
     this.config.endpoints = { ...this.config.endpoints, [name]: endpoint }
   }
 
+  modelsForEndpoint(name: string): string[] {
+    return Object.entries(this.config.models)
+      .filter(([, model]) => model.endpoint === name)
+      .map(([key]) => key)
+  }
+
+  // Mirrors the real service: the endpoint's models go with it rather than
+  // making it undeletable.
   removeEndpoint(name: string): void {
-    const referencing = Object.entries(this.config.models).find(([, model]) => model.endpoint === name)
-    if (referencing) throw new Error(`Endpoint ${name} is used by model ${referencing[0]}`)
+    for (const model of this.modelsForEndpoint(name)) this.removeModel(model)
     const next = { ...this.config.endpoints }
     delete next[name]
     this.config.endpoints = next
@@ -174,13 +181,21 @@ class FakeConfig {
     this.config.models = { ...this.config.models, [name]: model }
   }
 
+  // Mirrors the real service: references are repaired, not defended.
   removeModel(name: string): void {
-    const routing = this.getRouting()
-    const routed = [routing.main, routing.plan, routing.compact].includes(name)
-    if (routed) throw new Error(`Model ${name} is still referenced by routing`)
     const next = { ...this.config.models }
     delete next[name]
     this.config.models = next
+    const successor = Object.keys(next)[0]
+    if (this.config.defaultModel === name) {
+      if (successor === undefined) delete this.config.defaultModel
+      else this.config.defaultModel = successor
+    }
+    const routing = this.getRouting()
+    for (const role of ['main', 'plan', 'compact'] as const) {
+      if (routing[role] === name) routing[role] = 'inherit'
+    }
+    this.config.routing = routing
   }
 
   renameModel(oldKey: string, newKey: string): void {
@@ -417,6 +432,11 @@ interface Harness {
   /** The renderer-side mux: `lane(key)` observes a lane's death from that side. */
   rendererMux: ReturnType<typeof createLaneMux>
   setQuitting(value: boolean): void
+  /**
+   * Puts one lane mid-turn on a model key — `undefined` puts it back to idle.
+   * The only state that can still refuse a model or endpoint removal.
+   */
+  runOn(lane: string, modelKey: string | undefined): void
   /** Registers another project in the same directory, with its own fakes. */
   addProject(cwd: string): { project: FakeProject; workspace: FakeWorkspace; entry: ProjectEntry<FakeProject, FakeWorkspace> }
 }
@@ -464,6 +484,8 @@ function createHarness(
   let editorFailure: string | undefined
   let quitting = false
   let nextKey = 0
+  /** Lane -> the model key a turn is streaming on. Empty means every lane is idle. */
+  const laneActiveModels = new Map<string, string>()
 
   const host = new ShellHost<FakeProject, FakePane, FakeWorkspace>({
     mux: mainMux,
@@ -481,6 +503,8 @@ function createHarness(
           // makes the following `broadcastLanes()` carry the new title.
           attach.pane.session = session
         },
+        // Idle unless a test says otherwise; `runOn` is what arms it.
+        activeModelKey: () => laneActiveModels.get(attach.lane),
       }
     },
     ...(options.withOpenProject === false
@@ -543,6 +567,11 @@ function createHarness(
     setQuitting: (value: boolean) => {
       quitting = value
     },
+    /** Puts one lane mid-turn on a model key, the state that blocks a removal. */
+    runOn: (lane: string, modelKey: string | undefined) => {
+      if (modelKey === undefined) laneActiveModels.delete(lane)
+      else laneActiveModels.set(lane, modelKey)
+    },
     addProject: (cwd: string) => createProject(directory, cwd, log),
   }
 }
@@ -600,7 +629,7 @@ const SETTINGS_CHANGE_SAMPLES = {
   'set-endpoint': { scope: 'provider', kind: 'set-endpoint', name: 'e1', provider: 'anthropic' },
   'clear-endpoint-key': { scope: 'provider', kind: 'clear-endpoint-key', name: 'e1' },
   'remove-endpoint': { scope: 'provider', kind: 'remove-endpoint', name: 'e1' },
-  'set-model': { scope: 'provider', kind: 'set-model', key: 'm1', model: 'claude-x' },
+  'set-model': { scope: 'provider', kind: 'set-model', key: 'm1', model: 'claude-x', longContext1m: true },
   'rename-model': { scope: 'provider', kind: 'rename-model', from: 'm1', to: 'm2' },
   'remove-model': { scope: 'provider', kind: 'remove-model', key: 'm1' },
   'set-default-model': { scope: 'provider', kind: 'set-default-model', key: 'm1' },
@@ -633,6 +662,7 @@ const SETTINGS_CHANGE_SAMPLES = {
     enabled: false,
   },
   'reload-skills': { scope: 'extensions', kind: 'reload-skills' },
+  'import-skill': { scope: 'extensions', kind: 'import-skill', sourceDir: '/tmp/demo-skill' },
   'set-mcp-trust': { scope: 'extensions', kind: 'set-mcp-trust', name: 'github', trusted: true },
   'reconnect-mcp': { scope: 'extensions', kind: 'reconnect-mcp' },
 } as const satisfies Record<SettingsChange['kind'], SettingsChange>
@@ -738,6 +768,7 @@ test('open-session with no project open fails', async () => {
       dispose: () => {},
       refreshAfterConfigChange: () => {},
       refreshSessionMeta: () => {},
+      activeModelKey: () => undefined,
     }),
   })
   void host
@@ -1250,6 +1281,7 @@ test('open-session with nothing open falls back to the global workspace', async 
       dispose: () => {},
       refreshAfterConfigChange: () => {},
       refreshSessionMeta: () => {},
+      activeModelKey: () => undefined,
     }),
     knownProjects: () => Promise.resolve([]),
     ensureProject: (cwd) => {
@@ -1625,6 +1657,38 @@ test('settings-change saves before reloading, or the reload would discard the ed
   assert.equal(h.project.config.config.routing?.plan, 'small', 'and the edit survived')
 })
 
+test('the 1M header switch persists on the model and comes back in the snapshot', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+
+  await h.client.changeSettings(h.entry.root, {
+    scope: 'provider',
+    kind: 'set-model',
+    key: 'big',
+    model: 'claude-big',
+    endpoint: 'main',
+    contextWindow: 1_000_000,
+    longContext1m: true,
+  })
+
+  assert.equal(h.project.config.config.models.big?.longContext1m, true)
+  // Orthogonal by design: the header does not imply the window, or vice versa.
+  assert.equal(h.project.config.config.models.big?.contextWindow, 1_000_000)
+
+  const { settings } = await h.client.getSettings(h.entry.root)
+  assert.equal(settings.models.find((model) => model.key === 'big')?.longContext1m, true)
+
+  // Switching it off omits the field, and the rebuild is how it disappears.
+  await h.client.changeSettings(h.entry.root, {
+    scope: 'provider',
+    kind: 'set-model',
+    key: 'big',
+    model: 'claude-big',
+    endpoint: 'main',
+  })
+  assert.equal(h.project.config.config.models.big?.longContext1m, undefined)
+})
+
 test('one edit reloads the project once and refreshes every lane of it', async () => {
   const h = createHarness()
   seedConfig(h.project)
@@ -1676,20 +1740,49 @@ test('an edit in one project leaves another projects lanes alone', async () => {
   assert.equal(other.project.reloads, 0, 'the other project never reloaded')
 })
 
-test('a rejected reference check saves nothing', async () => {
+test('a model a routing role names is deleted anyway, and the role degrades', async () => {
   const h = createHarness()
   seedConfig(h.project)
 
+  await h.client.changeSettings(h.entry.root, { scope: 'provider', kind: 'remove-model', key: 'big' })
+
+  assert.equal(h.project.config.config.models.big, undefined, 'a routed model is still deletable')
+  assert.equal(h.project.config.getRouting().main, 'inherit')
+})
+
+test('a model a turn is running on cannot be removed, and nothing is written', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+  const lane = await h.host.openLane(h.entry, {})
+  h.runOn(lane.lane, 'big')
+
   await assert.rejects(
-    h.client.changeSettings(h.entry.root, {
-      scope: 'provider',
-      kind: 'remove-model',
-      key: 'big',
-    }),
-    /still referenced by routing/,
+    h.client.changeSettings(h.entry.root, { scope: 'provider', kind: 'remove-model', key: 'big' }),
+    /在跑/,
   )
-  assert.equal(h.project.config.saves, 0, 'the mutation threw before anything was written')
+  assert.equal(h.project.config.saves, 0, 'the refusal came before anything was written')
   assert.ok(h.project.config.config.models.big, 'and the model is untouched')
+
+  // The lane going idle is all it takes; nothing else had to change.
+  h.runOn(lane.lane, undefined)
+  await h.client.changeSettings(h.entry.root, { scope: 'provider', kind: 'remove-model', key: 'big' })
+  assert.equal(h.project.config.config.models.big, undefined)
+})
+
+test('an endpoint whose model is mid-turn is refused as a whole', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+  const lane = await h.host.openLane(h.entry, {})
+  h.runOn(lane.lane, 'big')
+
+  await assert.rejects(
+    h.client.changeSettings(h.entry.root, { scope: 'provider', kind: 'remove-endpoint', name: 'main' }),
+    /在跑/,
+  )
+  // The cascade is what makes this reachable: `big` resolves through `main`, so
+  // removing the endpoint would have taken the running model with it.
+  assert.ok(h.project.config.config.endpoints?.main, 'the endpoint survived the refusal')
+  assert.ok(h.project.config.config.models.big)
 })
 
 test('set-endpoint without an apiKey leaves the stored key alone', async () => {

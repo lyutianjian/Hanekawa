@@ -274,6 +274,18 @@ export interface SidebarState {
   readonly projectMenu: string | undefined
   /** The project whose heading is asking "remove from the sidebar?", if any. */
   readonly pendingRemoveProject: string | undefined
+  /**
+   * Deletes and removals the user has confirmed, drawn as done before the host
+   * says so.
+   *
+   * Both acts take a round trip — a delete detaches the lane, releases a runtime
+   * and re-lists the store — and a row that stays put for it reads as a click
+   * that missed, which is how a second delete gets pressed. Renderer-local, never
+   * persisted, and cleared by the refresh that follows either outcome: on success
+   * the row is genuinely gone, on failure it comes back on its own.
+   */
+  readonly deletingSessions: ReadonlySet<string>
+  readonly removingProjects: ReadonlySet<string>
   /** Milliseconds, injected so a draft's synthesized timestamp is testable. */
   readonly now: number
   /** False while a blocking dialog is up: both buttons open something. */
@@ -312,6 +324,8 @@ export function createSidebarState(overrides: Partial<SidebarState> = {}): Sideb
     pendingDelete: undefined,
     projectMenu: undefined,
     pendingRemoveProject: undefined,
+    deletingSessions: new Set(),
+    removingProjects: new Set(),
     now: Date.UTC(2026, 7, 20, 12, 0, 0),
     canCreate: true,
     searchQuery: '',
@@ -401,7 +415,10 @@ export function sidebarView(state: SidebarState): SidebarView {
       // whole rule for new sessions, and history with nothing in it (a
       // not-yet-cleaned empty session) gets the same answer.
       if (session.messageCount === 0) continue
+      // Confirmed and on its way out: seen, so the lane pass below cannot draw
+      // it back as a draft, but never turned into a row.
       seen.add(session.id)
+      if (state.deletingSessions.has(session.id)) continue
       const lane = laneBySession.get(session.id)
       const row = rowFor(session, project.projectRoot, lane?.lane, active?.paneId, state)
       if (matches(row)) bucket.rows.push(row)
@@ -420,6 +437,7 @@ export function sidebarView(state: SidebarState): SidebarView {
   // constructors is two places for them to drift.
   for (const lane of state.lanes) {
     if (seen.has(lane.paneId)) continue
+    if (state.deletingSessions.has(lane.paneId)) continue
     if (!laneHasConversation(lane.lane)) continue
     const draft: WireSessionSummary = {
       id: lane.paneId,
@@ -445,6 +463,7 @@ export function sidebarView(state: SidebarState): SidebarView {
     // The「最近」filter, applied before the search's own: it selects *which
     // workspaces* are on screen, so a project group emptied by it is not an
     // empty project — it is not being listed at all.
+    .filter(([projectRoot]) => !state.removingProjects.has(projectRoot))
     .filter(([, bucket]) => !state.recentOnly || bucket.isGlobal)
     .filter(([, bucket]) => !searching || bucket.rows.length > 0)
     .map(([projectRoot, bucket]) =>

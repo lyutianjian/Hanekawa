@@ -33,7 +33,17 @@ function previewContent(value: unknown): string {
   return typeof value
 }
 
-export function debugProviderSummary(label: string, request: ModelRequest, payload: unknown) {
+/**
+ * `betas` is passed in rather than read off the payload: `anthropic-beta` is an
+ * HTTP header, so it is nowhere in the request body and this is the only place
+ * a running session can be seen to carry it.
+ */
+export function debugProviderSummary(
+  label: string,
+  request: ModelRequest,
+  payload: unknown,
+  betas?: string[],
+) {
   if (!shouldDebugProviderPayloads()) return
   const toolNames = (request.tools ?? []).map((tool) => tool.name)
   const contextKinds = (request.contextItems ?? []).map((item) => item.kind)
@@ -53,6 +63,7 @@ export function debugProviderSummary(label: string, request: ModelRequest, paylo
 
   console.error(`[myagent][provider:${label}] request summary ${JSON.stringify({
     model: request.model,
+    ...(betas ? { betas } : {}),
     systemPresent: Boolean(request.system),
     toolNames,
     messageCount: request.messages.length,

@@ -75,6 +75,7 @@ import {
   settingsChordToIntent,
   settingsKeyToIntent,
   settingsView,
+  type PendingMutation,
   type SettingsIntent,
 } from './model/settings.js'
 import type { SettingsChange } from '../shellProtocol.js'
@@ -450,6 +451,15 @@ let pendingDelete: string | undefined
 let projectMenu: string | undefined
 /** The project heading asking "remove from the sidebar?", if any. */
 let pendingRemoveProject: string | undefined
+/**
+ * Deletes and removals already on screen, waiting for the host to catch up.
+ *
+ * Renderer-local and never persisted: they exist only for the length of one
+ * round trip. `deleteSession` / `removeProject` add and then always drop them,
+ * so a failure needs no rollback — the next `refreshSessions()` is the truth.
+ */
+const deletingSessions = new Set<string>()
+const removingProjects = new Set<string>()
 let searchQuery = ''
 /** The workspaces folded shut in the sidebar. View state; nothing persists it. */
 let collapsedProjects: ReadonlySet<string> = new Set()
@@ -473,6 +483,8 @@ function currentSidebarState(): SidebarState {
     pendingDelete,
     projectMenu,
     pendingRemoveProject,
+    deletingSessions,
+    removingProjects,
     now: Date.now(),
     // Both buttons open something, which is wrong while a blocking dialog is up.
     canCreate: !(activePane()?.shellState().hasOverlay ?? false),
@@ -753,11 +765,20 @@ function assertNeverIntent(value: never): void {
  */
 async function deleteSession(projectRoot: string, sessionId: string): Promise<void> {
   pendingDelete = undefined
+  // The row goes *now*, not when the host answers. Deleting a session detaches
+  // its lane, releases a runtime and re-lists the store, and leaving the row on
+  // screen for that round trip reads as "the click did nothing" — which is
+  // exactly how a second, unwanted delete gets pressed.
+  deletingSessions.add(sessionId)
   renderSidebar()
   try {
     await shellClient.deleteSession(projectRoot, sessionId)
   } catch (error) {
     activePane()?.note(`Failed to delete session: ${describe(error)}`, 'error')
+  } finally {
+    // The list below is the truth either way: on success the session is gone
+    // from it, and on failure the row comes back on its own.
+    deletingSessions.delete(sessionId)
   }
   // Always, even on failure: the host may have closed the lane before throwing.
   await refreshSessions()
@@ -775,11 +796,16 @@ async function deleteSession(projectRoot: string, sessionId: string): Promise<vo
 async function removeProject(projectRoot: string): Promise<void> {
   pendingRemoveProject = undefined
   projectMenu = undefined
+  // Same rule as `deleteSession`: the group leaves on the click, not on the
+  // reply. Removing a project detaches every one of its lanes first.
+  removingProjects.add(projectRoot)
   renderSidebar()
   try {
     await shellClient.removeProject(projectRoot)
   } catch (error) {
     activePane()?.note(`Failed to remove project: ${describe(error)}`, 'error')
+  } finally {
+    removingProjects.delete(projectRoot)
   }
   // Always: a failure may still have closed lanes, and the list is the truth.
   await refreshSessions()
@@ -944,7 +970,9 @@ function runSettingsIntent(intent: SettingsIntent): void {
     applyResolvedTheme(themePreference)
   }
   if (outcome.load) void loadSettingsNow()
-  if (outcome.changes) void runSettingsChangesNow(outcome.changes)
+  // The pending batch, not the raw changes: the rows are already drawn as though
+  // they landed, and `runSettingsChanges` retires them by id as the replies come.
+  if (outcome.pending) void runSettingsChangesNow(outcome.pending)
 }
 
 async function loadSettingsNow(): Promise<void> {
@@ -955,13 +983,17 @@ async function loadSettingsNow(): Promise<void> {
 /** Changes that add or remove skill slash commands, so the panes' cached completion list is stale. */
 function changesCommandSet(changes: readonly SettingsChange[]): boolean {
   return changes.some(
-    (change) => change.kind === 'set-skill-enabled' || change.kind === 'reload-skills',
+    (change) =>
+      change.kind === 'set-skill-enabled'
+      || change.kind === 'reload-skills'
+      || change.kind === 'import-skill',
   )
 }
 
-async function runSettingsChangesNow(changes: readonly SettingsChange[]): Promise<void> {
+async function runSettingsChangesNow(batch: readonly PendingMutation[]): Promise<void> {
   const projectRoot = settingsState.projectRoot
-  settingsState = await runSettingsChanges(shellClient, settingsState, changes)
+  const changes = batch.map((entry) => entry.change)
+  settingsState = await runSettingsChanges(shellClient, settingsState, batch)
   renderSettings()
   // The host rebuilt the runtimes, but the composer's completion list is the
   // renderer's own cache, refreshed only after a slash command runs.

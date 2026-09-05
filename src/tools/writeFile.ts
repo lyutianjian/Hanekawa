@@ -1,20 +1,24 @@
-import { mkdir, readdir, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
-import { getReadFileContent, rememberReadFile, requireFreshRead } from './fileState.js'
+import { getReadFileContent, rememberReadFile, requireFreshRead, resolveTextFileMeta } from './fileState.js'
 import { patchDetail } from './editPatch.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
+import { writeTextFile } from './textFile.js'
 
 export const writeFileTool: Tool = {
   name: 'Write',
-  description: 'Write a UTF-8 text file. Existing-file overwrites require confirmation from the harness.',
+  description: [
+    'Write a text file, creating it or overwriting it whole. Overwriting a file requires reading it first.',
+    'An existing file keeps its line endings and encoding; a new file is written as UTF-8 with LF.',
+    'Prefer Edit for partial changes — Write replaces the entire file.',
+  ].join(' '),
   searchHint: 'create write new file',
   inputSchema: z.object({
-    filePath: z.string().min(1),
-    content: z.string(),
+    filePath: z.string().min(1).describe('Path to the file. Relative paths resolve against the working directory. Parent directories are created as needed.'),
+    content: z.string().describe('Full contents of the file. Use \\n for line breaks.'),
   }).strict(),
   riskLevel: 'confirm',
   userFacingName: () => 'Write',
@@ -59,13 +63,17 @@ export const writeFileTool: Tool = {
     if (unsafeFile) {
       return unsafeFile
     }
+    // An existing file keeps its on-disk encoding and line endings; a new one
+    // is LF/UTF-8. Either way the remembered content stays LF so a later Edit
+    // matches a model-supplied string.
+    const { encoding, lineEndings } = exists
+      ? await resolveTextFileMeta(absolute, context)
+      : { encoding: 'utf8' as BufferEncoding, lineEndings: 'LF' as const }
     // Atomic write: write to a temp file in the same directory, then rename.
     // This prevents symlink following because writeFile follows symlinks,
     // but rename does not. It also prevents data loss on crash.
-    const tmpPath = `${absolute}.tmp.${randomUUID()}`
-    await writeFile(tmpPath, content, 'utf8')
-    await rename(tmpPath, absolute)
-    await rememberReadFile(absolute, content, context)
+    await writeTextFile(absolute, content, encoding, lineEndings, { atomic: true })
+    await rememberReadFile(absolute, content, context, { encoding, lineEndings })
     return {
       ok: true,
       content: `Wrote ${filePath}`,

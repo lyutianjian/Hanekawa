@@ -1,5 +1,6 @@
 import type { SessionControllerSnapshot } from '../../../runtime/sessionController.js'
 import type { WireUsageCost } from '../../../runtime/protocol/wire.js'
+import { statusUsageView } from '../model/usage.js'
 
 /**
  * The status bar: usage, cost, and whether a turn is running.
@@ -36,10 +37,11 @@ export function createStatusView(els: {
       els.streaming.textContent = snapshot.isStreaming
         ? `生成中${snapshot.spinnerSubText ? `：${snapshot.spinnerSubText}` : ''}`
         : ''
-      const total = snapshot.usage.total ?? { inputTokens: 0, outputTokens: 0 }
-      els.usage.textContent = total.inputTokens === 0 && total.outputTokens === 0
-        ? ''
-        : `输入 ${format(total.inputTokens)} / 输出 ${format(total.outputTokens)}`
+      // Four numbers, not two: `model/usage.ts` owns which ones and how they
+      // read. The hover carries the same counts unabbreviated.
+      const usage = statusUsageView(snapshot.usage.total)
+      els.usage.textContent = usage.text
+      els.usage.title = usage.title
       // Absent rather than zero when the model has no complete pricing: "not
       // priced" and "free" are different answers, and the host already decided
       // which one this is (`resolveUsageWithCost`).
@@ -54,10 +56,6 @@ export function createStatusView(els: {
       document.title = `Hanekawa — ${name}`
     },
   }
-}
-
-function format(n: number): string {
-  return n.toLocaleString('en-US')
 }
 
 /**

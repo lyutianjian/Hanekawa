@@ -9,6 +9,22 @@ import {
   type BackgroundTaskSnapshot,
 } from '../services/backgroundTasks/registry.js'
 import { terminateProcessTree } from '../services/backgroundTasks/processTree.js'
+import {
+  DEFAULT_BASH_TIMEOUT_MS,
+  MAX_BASH_TIMEOUT_MS,
+  SLEEP_BLOCK_THRESHOLD_SECONDS,
+  resolveBashTimeoutMs,
+} from './bashConstants.js'
+import { buildBashDescription } from './bashPrompt.js'
+
+// Re-exported so existing importers of these names keep working; the values
+// live in bashConstants.ts because bashPrompt.ts quotes them.
+export {
+  DEFAULT_BASH_TIMEOUT_MS,
+  MAX_BASH_TIMEOUT_MS,
+  SLEEP_BLOCK_THRESHOLD_SECONDS,
+  resolveBashTimeoutMs,
+} from './bashConstants.js'
 
 interface BashInput {
   command: string
@@ -19,40 +35,6 @@ interface BashInput {
 interface ShellInfo {
   shell: string
   args: (cmd: string) => string[]
-}
-
-/** Align with Claude Code defaults (2 min / 10 min). */
-export const DEFAULT_BASH_TIMEOUT_MS = 120_000
-export const MAX_BASH_TIMEOUT_MS = 600_000
-
-function parsePositiveInt(value: string | undefined): number | undefined {
-  if (!value) return undefined
-  const parsed = Number.parseInt(value, 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
-}
-
-/**
- * Resolve the effective foreground timeout.
- * - explicit tool input wins (clamped to max)
- * - else MYAGENT_BASH_DEFAULT_TIMEOUT_MS / BASH_DEFAULT_TIMEOUT_MS
- * - else 120s
- * Max from MYAGENT_BASH_MAX_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS (at least default), capped schema max 600s.
- */
-export function resolveBashTimeoutMs(requested?: number, env: NodeJS.ProcessEnv = process.env): number {
-  const envDefault =
-    parsePositiveInt(env.MYAGENT_BASH_DEFAULT_TIMEOUT_MS)
-    ?? parsePositiveInt(env.BASH_DEFAULT_TIMEOUT_MS)
-  const envMax =
-    parsePositiveInt(env.MYAGENT_BASH_MAX_TIMEOUT_MS)
-    ?? parsePositiveInt(env.BASH_MAX_TIMEOUT_MS)
-
-  const defaultMs = envDefault ?? DEFAULT_BASH_TIMEOUT_MS
-  const maxMs = Math.min(
-    MAX_BASH_TIMEOUT_MS,
-    Math.max(defaultMs, envMax ?? MAX_BASH_TIMEOUT_MS),
-  )
-  const raw = requested ?? defaultMs
-  return Math.min(Math.max(1, raw), maxMs)
 }
 
 function detectShell(): ShellInfo {
@@ -146,12 +128,6 @@ export function describeShell(platform: NodeJS.Platform = process.platform): str
   if (platform === 'win32') return `${name} (POSIX shell on Windows)`
   return name
 }
-
-/**
- * Minimum sleep duration (seconds) that triggers the blocked-sleep pattern.
- * Sleep commands below this threshold are allowed without run_in_background.
- */
-const SLEEP_BLOCK_THRESHOLD_SECONDS = 2
 
 /**
  * Detect a standalone blocking sleep pattern at the start of a command.
@@ -252,8 +228,7 @@ function attachBackgroundLifecycle(options: {
 export function createBashTool(backgroundTasks: BackgroundTaskRegistry = defaultBackgroundTaskRegistry): Tool {
   return {
   name: 'Bash',
-  description:
-    'Execute a shell command and return its output. Default timeout 120s; on timeout the command is moved to the background (except sleep) so you can read it with BashOutput. Set run_in_background: true for servers/long jobs. Optional timeout in ms (max 600000).',
+  description: buildBashDescription(),
   searchHint: 'run shell commands terminal',
   inputSchema: z.object({
     command: z.string().min(1),

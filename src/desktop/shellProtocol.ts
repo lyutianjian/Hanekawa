@@ -179,6 +179,11 @@ export interface WireModelInfo {
   provider?: string
   endpoint?: string
   contextWindow?: number
+  /**
+   * `anthropic-beta: context-1m-2025-08-07`. Orthogonal to `contextWindow`:
+   * that is the local token budget, this is only the request header.
+   */
+  longContext1m?: boolean
   maxOutputTokens?: number
   maxEffort?: string
   /** Only when set inline on the model rather than inherited from an endpoint. */
@@ -379,6 +384,7 @@ export type SettingsChange =
       provider?: string
       endpoint?: string
       contextWindow?: number
+      longContext1m?: boolean
       maxOutputTokens?: number
     }
   | { scope: 'provider'; kind: 'rename-model'; from: string; to: string }
@@ -407,6 +413,14 @@ export type SettingsChange =
   | { scope: 'extensions'; kind: 'set-skill-enabled'; name: string; enabled: boolean }
   /** An action: re-reads `.myagent/skills/` and re-registers their commands. */
   | { scope: 'extensions'; kind: 'reload-skills' }
+  /**
+   * Copies a skill folder into `.myagent/skills/` and reloads.
+   *
+   * `sourceDir` is optional for the reason `open-project`'s `path` is: without
+   * it the main process puts up a native directory picker, and with it the same
+   * command can be driven from the smoke, which cannot click a native modal.
+   */
+  | { scope: 'extensions'; kind: 'import-skill'; sourceDir?: string }
   | { scope: 'extensions'; kind: 'set-mcp-trust'; name: string; trusted: boolean }
   /** Also an action. Never prompts for trust — see `ProjectRuntime.reloadMcpServers`. */
   | { scope: 'extensions'; kind: 'reconnect-mcp' }

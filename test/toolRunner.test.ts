@@ -398,3 +398,91 @@ test('tool runner finishes progress when execution fails', async () => {
   assert.equal(result.ok, false)
   assert.deepEqual(progress, ['started', 'finished'])
 })
+
+test('tool runner rewrites the model parameter names before permissions, hooks and records see them', async () => {
+  let seenInput: unknown
+  const tool: Tool = {
+    name: 'Edit',
+    description: 'edit',
+    inputSchema: z.object({
+      filePath: z.string(),
+      oldString: z.string(),
+      newString: z.string(),
+      replaceAll: z.boolean().optional(),
+    }).strict(),
+    riskLevel: 'confirm',
+    execute: async (input) => {
+      seenInput = input
+      return { ok: true, content: 'edited' }
+    },
+  }
+  const permissionInputs: unknown[] = []
+  const records: SessionRecord[] = []
+  const runner = new ToolRunner([tool], new PermissionGate(async (request) => {
+    permissionInputs.push(request.input)
+    return true
+  }), {
+    onRecord: async (record) => { records.push(record) },
+  })
+
+  const result = await runner.run(
+    { id: 'call1', name: 'Edit', input: { file_path: 'a.ts', old_string: 'a', new_string: 'b', replace_all: 'true' } },
+    { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+  )
+
+  assert.equal(result.ok, true, result.content)
+  assert.deepEqual(seenInput, { filePath: 'a.ts', oldString: 'a', newString: 'b', replaceAll: true })
+  assert.deepEqual(permissionInputs[0], { filePath: 'a.ts', oldString: 'a', newString: 'b', replaceAll: true })
+  const toolUse = records.find((record) => record.type === 'tool_use')
+  assert.deepEqual((toolUse as { input?: unknown }).input, { filePath: 'a.ts', oldString: 'a', newString: 'b', replaceAll: true })
+})
+
+test('a validation failure lists every issue and the accepted parameter names', async () => {
+  const tool: Tool = {
+    name: 'pickyTool',
+    description: 'picky',
+    inputSchema: z.object({
+      filePath: z.string(),
+      count: z.number(),
+    }).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({ ok: true, content: 'ran' }),
+  }
+  const runner = new ToolRunner([tool], new PermissionGate(async () => true), { onRecord: async () => {} })
+
+  const result = await runner.run(
+    { id: 'call1', name: 'pickyTool', input: { nope: 1 } },
+    { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+  )
+
+  assert.equal(result.ok, false)
+  assert.equal(result.errorCode, 'invalid_input')
+  assert.match(result.content, /\$\.filePath is required/)
+  assert.match(result.content, /\$\.count is required/)
+  assert.match(result.content, /Accepted parameters: filePath, count\./)
+})
+
+test('a filesystem errno reaches the model with the tool name and what to do next', async () => {
+  const tool: Tool = {
+    name: 'explodingTool',
+    description: 'explodes',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    execute: async () => {
+      const error = new Error("ENOTDIR: not a directory, scandir '/tmp/a.yaml'") as Error & { code: string }
+      error.code = 'ENOTDIR'
+      throw error
+    },
+  }
+  const runner = new ToolRunner([tool], new PermissionGate(async () => true), { onRecord: async () => {} })
+
+  const result = await runner.run(
+    { id: 'call1', name: 'explodingTool', input: {} },
+    { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+  )
+
+  assert.equal(result.ok, false)
+  assert.equal(result.errorCode, 'execution_failed')
+  assert.match(result.content, /^explodingTool failed:/)
+  assert.match(result.content, /is a file, not a directory/)
+})

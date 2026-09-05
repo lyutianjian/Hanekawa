@@ -1,6 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { _resetCachedShellForTests, describeShell } from '../src/tools/bash.js'
+import {
+  _resetCachedShellForTests,
+  describeShell,
+  detectSleepPattern,
+  MAX_BASH_TIMEOUT_MS,
+  SLEEP_BLOCK_THRESHOLD_SECONDS,
+  resolveBashTimeoutMs,
+} from '../src/tools/bash.js'
+import { buildBashDescription } from '../src/tools/bashPrompt.js'
 
 /**
  * The name the prompt's `# Environment` block gives the shell.
@@ -59,4 +67,71 @@ test('the answer is cached, so the prompt pays one detection per process', () =>
     process.env.SHELL = '/usr/bin/zsh'
     assert.equal(describeShell('linux'), 'bash', 'the tool would spawn the shell it already resolved')
   })
+})
+
+// --- Bash tool description -------------------------------------------------
+//
+// The description is the only place the model learns three rules the tool
+// enforces unconditionally: the working directory does not survive a call,
+// stdin is closed, and a leading `sleep` past the threshold is refused. Each
+// of those used to be discoverable only by failing.
+
+function withEnv(name: string, value: string | undefined, run: () => void): void {
+  const before = process.env[name]
+  if (value === undefined) delete process.env[name]
+  else process.env[name] = value
+  try {
+    run()
+  } finally {
+    if (before === undefined) delete process.env[name]
+    else process.env[name] = before
+  }
+}
+
+test('the description quotes the timeouts the tool actually enforces', () => {
+  withEnv('MYAGENT_BASH_DEFAULT_TIMEOUT_MS', undefined, () => {
+    withEnv('BASH_DEFAULT_TIMEOUT_MS', undefined, () => {
+      const description = buildBashDescription()
+      assert.match(description, new RegExp(`default ${resolveBashTimeoutMs()}`))
+      assert.match(description, new RegExp(`max ${MAX_BASH_TIMEOUT_MS}`))
+    })
+  })
+})
+
+test('an env override moves the quoted default with it', () => {
+  withEnv('MYAGENT_BASH_DEFAULT_TIMEOUT_MS', '45000', () => {
+    assert.match(buildBashDescription(), /default 45000/)
+  })
+})
+
+test('the sleep rule quotes the threshold that rejects the command', () => {
+  assert.match(
+    buildBashDescription(),
+    new RegExp(`sleep N\` with N >= ${SLEEP_BLOCK_THRESHOLD_SECONDS}`),
+  )
+  // The number in the prose has to be the one detectSleepPattern rules on.
+  assert.equal(detectSleepPattern(`sleep ${SLEEP_BLOCK_THRESHOLD_SECONDS}`), SLEEP_BLOCK_THRESHOLD_SECONDS)
+  assert.equal(detectSleepPattern(`sleep ${SLEEP_BLOCK_THRESHOLD_SECONDS - 1}`), null)
+})
+
+test('the description states the constraints the tool enforces silently', () => {
+  const description = buildBashDescription()
+  // cwd is re-read from ToolContext on every spawn, so `cd` cannot carry over.
+  assert.match(description, /does NOT carry over to the next Bash call/)
+  // stdio is ['ignore', 'pipe', 'pipe'].
+  assert.match(description, /stdin is closed/)
+  assert.match(description, /--no-verify/)
+  assert.match(description, /git add -A/)
+})
+
+test('the description is ASCII, like every other prompt string that reached the wire', () => {
+  assert.doesNotMatch(buildBashDescription(), /[^\x00-\x7F]/)
+})
+
+test('building the description does not probe for a shell', () => {
+  // buildBashDescription runs from getBuiltinTools(), which is called once per
+  // runtime; describeShell()'s existsSync chain and spawnSync belong to the
+  // first prompt build, not to that. Naming a shell here is how it creeps back.
+  const description = buildBashDescription()
+  assert.doesNotMatch(description, /powershell|bash\.exe|POSIX shell on Windows/i)
 })

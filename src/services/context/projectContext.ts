@@ -2,16 +2,29 @@ import { readFile, access } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import fg from 'fast-glob'
 
+/**
+ * The instruction file names, in preference order. Both lists are **first match
+ * wins per directory**: a repo that keeps `AGENTS.md` and `CLAUDE.md` in sync
+ * (this one does) would otherwise send the same guide twice in every request.
+ */
 const CONTEXT_FILES = [
-  'MYAGENT.md',
   'CLAUDE.md',
   'AGENTS.md',
 ]
 
 const LOCAL_FILES = [
-  'MYAGENT.local.md',
   'CLAUDE.local.md',
+  'AGENTS.local.md',
 ]
+
+/** The first of `names` that exists in `dir`, or undefined. */
+async function firstExisting(dir: string, names: readonly string[]): Promise<string | undefined> {
+  for (const name of names) {
+    const filePath = join(dir, name)
+    if (await exists(filePath)) return filePath
+  }
+  return undefined
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -23,42 +36,41 @@ async function exists(path: string): Promise<boolean> {
 }
 
 export async function discoverContextFiles(cwd: string): Promise<string[]> {
-  const found: string[] = []
+  // One entry per directory walked, cwd first. Emitted root-first below: the
+  // walk goes upwards, but the prompt reads downwards, and the nearest file is
+  // the most specific one, so it has to come last to override its ancestors.
+  const byDirectory: string[][] = []
   let dir = cwd
   const visited = new Set<string>()
 
   while (dir !== resolve(dir, '..') && !visited.has(dir)) {
     visited.add(dir)
+    const level: string[] = []
 
     // Check for context files
-    for (const name of CONTEXT_FILES) {
-      const filePath = join(dir, name)
-      if (await exists(filePath)) {
-        found.push(filePath)
-      }
-    }
+    const contextFile = await firstExisting(dir, CONTEXT_FILES)
+    if (contextFile) level.push(contextFile)
 
     // Check for rules directory
     const rulesDir = join(dir, '.myagent', 'rules')
     if (await exists(rulesDir)) {
       try {
         const ruleFiles = await fg('*.md', { cwd: rulesDir, absolute: true })
-        found.push(...ruleFiles)
+        level.push(...ruleFiles)
       } catch {
         // Ignore glob errors
       }
     }
 
+    byDirectory.push(level)
     dir = resolve(dir, '..')
   }
 
+  const found = byDirectory.reverse().flat()
+
   // Local files (highest priority, loaded last)
-  for (const name of LOCAL_FILES) {
-    const filePath = join(cwd, name)
-    if (await exists(filePath)) {
-      found.push(filePath)
-    }
-  }
+  const localFile = await firstExisting(cwd, LOCAL_FILES)
+  if (localFile) found.push(localFile)
 
   return found
 }

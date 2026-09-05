@@ -1,6 +1,7 @@
-import { el, replace, show } from './dom.js'
+import { el, reconcile, replace, show } from './dom.js'
 import { button, pillSelect, selectField, textField, toggleField } from './controls.js'
 import type {
+  SettingsAnchor,
   SettingsButton,
   SettingsCard,
   SettingsChord,
@@ -21,6 +22,22 @@ import type {
  * lane's agent loop until it is answered. Settings never parks anything, so it
  * hides its siblings from the stylesheet instead of scrimming them, and the
  * sidebar stays usable beside all three.
+ *
+ * **Nodes are kept by id and reconciled**, the rule `dom/transcriptView.ts`
+ * already follows. A `replace()` of the whole column pulls every card out of
+ * the page and puts it back, which cost this screen two things: the scroll
+ * anchor (so a row disappearing scrolled the page under the reader) and, worse,
+ * the node under the pointer. A form field commits on blur, so `mousedown` on
+ * 保存 rebuilt that very button before `mouseup` reached it — the click was
+ * never delivered, and the user had to press it twice. Kept nodes plus
+ * `textField`'s `live` commit are what make one click enough.
+ *
+ * **And a kept leaf is only half of it: its wrappers have to be kept too.**
+ * `appendChild` moves a node by detaching it first, so a focused `<input>` put
+ * into a newly built `.settings-row-control` leaves the document for that instant
+ * — which is all it takes for the browser to blur it. Every field commits `live`,
+ * so that happened once per character: the 模型/服务商 form could not be typed in
+ * at all without clicking back into the box between letters.
  *
  * No colours and no `.style.*` here; `styles.css` owns all of it.
  */
@@ -66,7 +83,7 @@ export function createSettingsView(
   })
 
   // Focus leaving the screen closes an open dropdown. `relatedTarget === null` is
-  // this view's own `replace()` — every render fires one — and a target still
+  // this view's own repaint — every render can fire one — and a target still
   // inside the container is a move between the trigger and its items.
   container.addEventListener('focusout', (event) => {
     const next = event.relatedTarget
@@ -108,6 +125,79 @@ export function createSettingsView(
   container.tabIndex = -1
   let wasOpen = false
 
+  // The kept nodes, and what a kept node's handler reads *now*. Both are pruned
+  // to the keys this paint claimed, which is the rule that keeps a stale ref from
+  // outliving the node it belonged to.
+  const kept = new Map<string, HTMLElement>()
+  const commits = new Map<string, (value: string) => SettingsIntent>()
+  let claimed = new Set<string>()
+  // Which pill is open, as of the *previous* paint, so a menu that just opened can
+  // be told from one that has been open all along and may hold the user's arrow key.
+  let lastOpenMenu: string | undefined
+  // The node to focus once this paint is in the page. A list rather than a
+  // variable: it is written from a callback the paint hands down, and narrowing
+  // cannot see that — a `let` reset to `undefined` reads back as `never`.
+  const pendingFocus: HTMLElement[] = []
+
+  /** A kept element, created once per key and reused thereafter. */
+  function node<K extends keyof HTMLElementTagNameMap>(
+    key: string,
+    tag: K,
+    className: string,
+    create?: (element: HTMLElementTagNameMap[K]) => void,
+  ): HTMLElementTagNameMap[K] {
+    claimed.add(key)
+    const existing = kept.get(key)
+    if (existing) {
+      existing.className = className
+      return existing as HTMLElementTagNameMap[K]
+    }
+    const made = el(tag, className)
+    create?.(made)
+    kept.set(key, made)
+    return made
+  }
+
+  /** The form's fields keep their nodes, so typing never rebuilds the caret away. */
+  function keptInput(
+    key: string,
+    options: {
+      value: string
+      ariaLabel: string
+      placeholder?: string
+      mono?: boolean
+      live?: boolean
+      intentOnCommit: (value: string) => SettingsIntent
+    },
+  ): HTMLInputElement {
+    commits.set(key, options.intentOnCommit)
+    claimed.add(key)
+    const existing = kept.get(key) as HTMLInputElement | undefined
+    if (existing) {
+      // The one write-back rule the search box already follows: never type over
+      // the user. A focused field is theirs until they leave it.
+      if (document.activeElement !== existing && existing.value !== options.value) {
+        existing.value = options.value
+      }
+      return existing
+    }
+    const made = textField({
+      value: options.value,
+      ariaLabel: options.ariaLabel,
+      ...(options.placeholder !== undefined ? { placeholder: options.placeholder } : {}),
+      ...(options.mono ? { mono: true } : {}),
+      ...(options.live ? { live: true } : {}),
+      // Through the map, not the closure: the node outlives this paint, and a
+      // captured `intentOnCommit` would keep answering with the old row's value.
+      onCommit: (value) => {
+        const commit = commits.get(key)
+        if (commit) onIntent(commit(value))
+      },
+    })
+    kept.set(key, made)
+    return made
+  }
+
   return {
     render(view: SettingsViewModel): void {
       show(container, view.open)
@@ -127,6 +217,17 @@ export function createSettingsView(
       // typing emptied the query — Escape, or reopening the screen.
       if (view.query === '' && search.value !== '') search.value = ''
 
+      claimed = new Set<string>()
+      pendingFocus.length = 0
+      const justOpened = view.openMenu !== lastOpenMenu ? view.openMenu : undefined
+      lastOpenMenu = view.openMenu
+      // Was the user in this screen before the paint? A pill's shell is rebuilt on
+      // every render, so the trigger they were standing on is about to be replaced;
+      // without the rescue below, focus lands on `<body>` and this screen's own
+      // keydown — Esc included — stops firing until something is clicked.
+      const focusWasInside =
+        document.activeElement instanceof Node && container.contains(document.activeElement)
+
       replace(
         navList,
         ...view.navGroups.map((group) =>
@@ -139,19 +240,84 @@ export function createSettingsView(
         ),
       )
 
-      replace(
-        column,
+      // The form and the confirmation are drawn *inside* the card that owns them
+      // rather than stacked above every card, so the answer to a click appears
+      // where the click was. Anything unanchored (a card filtered away by the
+      // search) falls back to the column, which is better than not drawing it.
+      const anchoredCards = new Set(view.cards.map((card) => card.id))
+      const formHomeless = view.form !== undefined && !anchoredCards.has(view.form.anchor.cardId)
+      const confirmHomeless =
+        view.confirming !== undefined && !anchoredCards.has(view.confirming.anchor.cardId)
+
+      reconcile(column, [
         headerNode(view, onIntent),
         view.error ? el('div', 'settings-error', view.error) : null,
-        view.confirming ? confirmNode(view.confirming.message, onIntent) : null,
-        view.form ? formNode(view.form, onIntent) : null,
+        confirmHomeless && view.confirming ? confirmNode(view.confirming.message, onIntent) : null,
+        formHomeless && view.form ? formNode(view.form, node, keptInput, onIntent) : null,
         view.searchEmpty ? el('div', 'settings-empty', view.searchEmpty) : null,
-        ...view.cards.map((card) => cardNode(card, onIntent, view.openMenu)),
-      )
+        ...view.cards.map((card) =>
+          cardNode(card, {
+            openMenu: view.openMenu,
+            justOpened,
+            focusAfterPaint: (element) => {
+              pendingFocus.push(element)
+            },
+            form: !formHomeless && view.form?.anchor.cardId === card.id ? view.form : undefined,
+            confirm:
+              !confirmHomeless && view.confirming?.anchor.cardId === card.id
+                ? view.confirming
+                : undefined,
+            node,
+            keptInput,
+            onIntent,
+          }),
+        ),
+      ])
+
+      // Everything this paint did not ask for is gone for good, refs included —
+      // otherwise a kept node keeps answering with the state that built it.
+      for (const key of [...kept.keys()]) {
+        if (claimed.has(key)) continue
+        kept.delete(key)
+        commits.delete(key)
+      }
+
+      // Only now: everything above is built before it is inserted, and `focus()`
+      // on a node outside the document does nothing at all.
+      if (pendingFocus[0]) pendingFocus[0].focus()
+      else if (
+        focusWasInside
+        && !(document.activeElement instanceof Node && container.contains(document.activeElement))
+      ) {
+        // The paint took the focused node out from under the user. The screen is
+        // the fallback rather than a guess at a replacement: it is what `Ctrl+,`
+        // focuses too, and it is the node whose keydown answers Esc.
+        container.focus()
+      }
       container.classList.toggle('busy', view.busy)
     },
   }
 }
+
+/** The two kept-node factories, as the row and card builders below see them. */
+type NodeFactory = <K extends keyof HTMLElementTagNameMap>(
+  key: string,
+  tag: K,
+  className: string,
+  create?: (element: HTMLElementTagNameMap[K]) => void,
+) => HTMLElementTagNameMap[K]
+
+type InputFactory = (
+  key: string,
+  options: {
+    value: string
+    ariaLabel: string
+    placeholder?: string
+    mono?: boolean
+    live?: boolean
+    intentOnCommit: (value: string) => SettingsIntent
+  },
+) => HTMLInputElement
 
 function navItemNode(
   item: SettingsNavItem,
@@ -200,36 +366,79 @@ function confirmNode(message: string, onIntent: (intent: SettingsIntent) => void
 
 function cardNode(
   card: SettingsCard,
-  onIntent: (intent: SettingsIntent) => void,
-  openMenu: string | undefined,
+  context: {
+    openMenu: string | undefined
+    justOpened: string | undefined
+    focusAfterPaint: (element: HTMLElement) => void
+    form?: SettingsForm
+    confirm?: { message: string; anchor: SettingsAnchor }
+    node: NodeFactory
+    keptInput: InputFactory
+    onIntent: (intent: SettingsIntent) => void
+  },
 ): HTMLElement {
-  const node = el('section', 'settings-card', el('div', 'settings-card-title', card.title))
-  if (card.note) node.appendChild(el('div', 'settings-card-note', card.note))
+  const { node, onIntent } = context
+  const section = node(`card:${card.id}`, 'section', 'settings-card')
+  const children: Array<Node | null> = [el('div', 'settings-card-title', card.title)]
+  if (card.note) children.push(el('div', 'settings-card-note', card.note))
   if (card.rows.length === 0 && card.empty) {
-    node.appendChild(el('div', 'settings-empty', card.empty))
+    children.push(el('div', 'settings-empty', card.empty))
   }
-  for (const row of card.rows) node.appendChild(rowNode(row, onIntent, openMenu))
+  for (const row of card.rows) {
+    children.push(rowNode(card.id, row, context))
+    // Directly under the row it is about: an edit form or a delete confirmation
+    // has a subject, and putting it anywhere else makes the reader hunt for it.
+    if (context.confirm?.anchor.rowId === row.id) {
+      children.push(confirmNode(context.confirm.message, onIntent))
+    }
+    if (context.form?.anchor.rowId === row.id) {
+      children.push(formNode(context.form, node, context.keptInput, onIntent))
+    }
+  }
+  // Anchored to the card rather than a row: 新增… has no subject yet, so it goes
+  // at the end of the list it is about to grow, above the button that opened it.
+  if (context.confirm && context.confirm.anchor.rowId === undefined) {
+    children.push(confirmNode(context.confirm.message, onIntent))
+  }
+  if (context.form && context.form.anchor.rowId === undefined) {
+    children.push(formNode(context.form, node, context.keptInput, onIntent))
+  }
   if (card.footerButtons?.length) {
     const footer = el('div', 'settings-card-footer')
     for (const spec of card.footerButtons) footer.appendChild(buttonNode(spec, onIntent))
-    node.appendChild(footer)
+    children.push(footer)
   }
-  return node
+  reconcile(section, children)
+  return section
 }
 
 function rowNode(
+  cardId: string,
   row: SettingsRow,
-  onIntent: (intent: SettingsIntent) => void,
-  openMenu: string | undefined,
+  context: {
+    openMenu: string | undefined
+    justOpened: string | undefined
+    focusAfterPaint: (element: HTMLElement) => void
+    node: NodeFactory
+    keptInput: InputFactory
+    onIntent: (intent: SettingsIntent) => void
+  },
 ): HTMLElement {
+  const { onIntent } = context
   const label = el('div', 'settings-row-label', el('div', 'settings-row-name', row.label))
   if (row.detail) label.appendChild(el('div', 'settings-row-desc', row.detail))
   if (row.warning) label.appendChild(el('div', 'settings-row-warning', row.warning))
 
-  const control = el('div', 'settings-row-control')
+  // Kept, like the row around it, and for a reason the row alone does not cover:
+  // a kept `<input>` appended into a *freshly built* control cell is taken out of
+  // the document to get there, and a node that leaves the document is blurred on
+  // the spot. Keeping the leaf is only half of it — the cell it sits in has to be
+  // the same cell too, or the caret is dropped once per keystroke.
+  const control = context.node(`control:${cardId}:${row.id}`, 'div', 'settings-row-control')
+  const controls: Node[] = []
   switch (row.control.kind) {
     case 'text':
-      control.appendChild(
+      controls.push(
         el('span', row.control.muted ? 'settings-row-value muted' : 'settings-row-value', row.control.value),
       )
       break
@@ -238,12 +447,19 @@ function rowNode(
       // Keyed by row id, which is already unique per page. The key stays in the
       // DOM so `SettingsControl` — and every model test of it — is untouched.
       const menu = `row:${row.id}`
-      control.appendChild(
+      controls.push(
         pillSelect({
           value: row.control.value,
           ariaLabel: row.label,
           choices: row.control.choices,
-          open: openMenu === menu,
+          open: context.openMenu === menu,
+          ...(row.pending ? { enabled: false } : {}),
+          // Only on the paint that opened it: a menu that was already open may
+          // hold a reader who has arrowed down it, and re-focusing the first
+          // option would drag them back to the top once per repaint.
+          ...(context.justOpened === menu
+            ? { onFirstItem: (item: HTMLElement) => context.focusAfterPaint(item) }
+            : {}),
           onToggle: () => onIntent({ kind: 'toggle-menu', menu }),
           onChange: (value) => onIntent(intentOnChange(value)),
         }),
@@ -252,11 +468,12 @@ function rowNode(
     }
     case 'toggle': {
       const { intentOnChange } = row.control
-      control.appendChild(
+      controls.push(
         toggleField({
           value: row.control.value,
           ariaLabel: row.label,
-          ...(row.control.disabled ? { enabled: false } : {}),
+          // A row waiting on its own change is not a second switch to flip.
+          ...(row.control.disabled || row.pending ? { enabled: false } : {}),
           onChange: (value) => onIntent(intentOnChange(value)),
         }),
       )
@@ -264,19 +481,21 @@ function rowNode(
     }
     case 'input': {
       const { intentOnCommit } = row.control
-      control.appendChild(
-        textField({
+      controls.push(
+        context.keptInput(`input:${row.id}`, {
           value: row.control.value,
           ariaLabel: row.label,
           ...(row.control.placeholder !== undefined ? { placeholder: row.control.placeholder } : {}),
           ...(row.control.mono ? { mono: true } : {}),
-          onCommit: (value) => onIntent(intentOnCommit(value)),
+          intentOnCommit,
         }),
       )
       break
     }
     case 'buttons':
-      for (const spec of row.control.buttons) control.appendChild(buttonNode(spec, onIntent))
+      for (const spec of row.control.buttons) {
+        controls.push(buttonNode(row.pending ? { ...spec, pending: true } : spec, onIntent))
+      }
       break
     default:
       // A control kind with no case here would draw an *empty* cell — a row whose
@@ -284,7 +503,18 @@ function rowNode(
       // same omission, which is why this is a compile error instead.
       assertNeverControl(row.control)
   }
-  return el('div', 'settings-row', label, control)
+  reconcile(control, controls)
+  const element = context.node(
+    `row:${cardId}:${row.id}`,
+    'div',
+    row.pending ? 'settings-row pending' : 'settings-row',
+  )
+  // Says "this row is waiting" to a screen reader, which the dimming alone does
+  // not: colour may not be the only carrier.
+  if (row.pending) element.setAttribute('aria-busy', 'true')
+  else element.removeAttribute('aria-busy')
+  reconcile(element, [label, control])
+  return element
 }
 
 function assertNeverControl(value: never): never {
@@ -297,16 +527,36 @@ function buttonNode(spec: SettingsButton, onIntent: (intent: SettingsIntent) => 
     spec.label,
     spec.title,
     () => onIntent(spec.intent),
-    spec.icon ? { icon: spec.icon } : {},
+    {
+      ...(spec.icon ? { icon: spec.icon } : {}),
+      ...(spec.pending ? { enabled: false } : {}),
+    },
   )
 }
 
-function formNode(form: SettingsForm, onIntent: (intent: SettingsIntent) => void): HTMLElement {
-  const node = el('section', 'settings-card settings-form', el('div', 'settings-card-title', form.title))
+function formNode(
+  form: SettingsForm,
+  node: NodeFactory,
+  keptInput: InputFactory,
+  onIntent: (intent: SettingsIntent) => void,
+): HTMLElement {
+  // Keyed by the anchor, not by a counter: opening a *different* form drops this
+  // one's nodes, while re-rendering the same form keeps every field's caret.
+  const key = `form:${form.anchor.cardId}:${form.anchor.rowId ?? ''}`
+  const section = node(key, 'section', 'settings-card settings-form')
+  const children: Node[] = [el('div', 'settings-card-title', form.title)]
   for (const field of form.fields) {
-    const control = el('div', 'settings-row-control')
+    // Both wrappers are kept, not just the input inside them. `appendChild` moves
+    // a node, and moving means *detaching first*: a focused `<input>` appended
+    // into a newly built cell is out of the document for that instant, which is
+    // all the browser needs to blur it. Since a form field commits `live`, every
+    // character typed re-rendered this form — so every character threw the caret
+    // out of the field and the user had to click back in to type the next one.
+    const row = node(`${key}:row:${field.id}`, 'div', 'settings-row')
+    const control = node(`${key}:control:${field.id}`, 'div', 'settings-row-control')
+    const controls: Node[] = []
     if (field.choices) {
-      control.appendChild(
+      controls.push(
         selectField({
           value: field.value,
           ariaLabel: field.label,
@@ -315,21 +565,29 @@ function formNode(form: SettingsForm, onIntent: (intent: SettingsIntent) => void
         }),
       )
     } else {
-      control.appendChild(
-        textField({
+      controls.push(
+        // `live`, unlike a settings row: a form field writes the draft in the
+        // renderer, not the config, so there is no cost per keystroke — and a
+        // blur-commit is exactly what used to swallow the click on 保存.
+        keptInput(`${key}:${field.id}`, {
           value: field.value,
           ariaLabel: field.label,
           ...(field.placeholder !== undefined ? { placeholder: field.placeholder } : {}),
           ...(field.mono ? { mono: true } : {}),
-          onCommit: (value) => onIntent({ kind: 'draft-field', field: field.id, value }),
+          live: true,
+          intentOnCommit: (value) => ({ kind: 'draft-field', field: field.id, value }),
         }),
       )
     }
-    node.appendChild(
-      el('div', 'settings-row', el('div', 'settings-row-label', el('div', 'settings-row-name', field.label)), control),
-    )
+    reconcile(control, controls)
+    // The label may be rebuilt: it holds no caret and no animation.
+    reconcile(row, [
+      el('div', 'settings-row-label', el('div', 'settings-row-name', field.label)),
+      control,
+    ])
+    children.push(row)
   }
-  node.appendChild(
+  children.push(
     el(
       'div',
       'settings-card-footer',
@@ -339,5 +597,6 @@ function formNode(form: SettingsForm, onIntent: (intent: SettingsIntent) => void
       button('settings-btn', '取消', '取消（Esc）', () => onIntent({ kind: 'cancel-draft' })),
     ),
   )
-  return node
+  reconcile(section, children)
+  return section
 }

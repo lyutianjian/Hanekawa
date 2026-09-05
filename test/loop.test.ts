@@ -15,6 +15,7 @@ import { exitPlanModeTool } from '../src/tools/exitPlanMode.js'
 import { toolSearchTool } from '../src/tools/ToolSearchTool/ToolSearchTool.js'
 import { SessionStore } from '../src/sessions/service.js'
 import { clearAllPlanSlugs, writePlan } from '../src/utils/plans.js'
+import { getAutoCompactThreshold } from '../src/prompts/budget.js'
 import type { SessionMetricInput } from '../src/harness/metrics.js'
 import type { RecordStream } from '../src/harness/recordStream.js'
 import type { ModelProvider, ModelRequest, SessionRecord, Tool } from '../src/harness/types.js'
@@ -2530,6 +2531,65 @@ test('agent loop switches to fallback model after overload fallback trigger', as
   assert.equal(response.content, 'fallback response')
   assert.equal(loop.getActiveModel().modelKey, 'fallback')
   assert.ok(records.some((record) => record.type === 'message' && record.role === 'assistant' && record.model === 'fallback-model'))
+})
+
+test('the context budget follows the active model, and reserves what autocompact needs', async () => {
+  resetCacheBreakDetection()
+  const records: SessionRecord[] = []
+  const primaryProvider: ModelProvider = {
+    name: 'primary',
+    async createMessage() {
+      throw new FallbackTriggeredError(new Error('529 overloaded'), 3)
+    },
+  }
+  const fallbackProvider: ModelProvider = {
+    name: 'fallback',
+    async createMessage() {
+      return {
+        content: 'fallback response',
+        toolCalls: [],
+        usage: { cacheReadInputTokens: 0, inputTokens: 10, outputTokens: 5 },
+      }
+    },
+  }
+  const tools: Tool[] = []
+  const loop = new AgentLoop({
+    provider: primaryProvider,
+    model: 'primary-model',
+    modelKey: 'primary',
+    contextWindow: 200_000,
+    fallbackModel: {
+      provider: fallbackProvider,
+      model: 'fallback-model',
+      modelKey: 'fallback',
+      contextWindow: 1_000_000,
+      providerName: 'fallback',
+    },
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: new ToolRunner(tools, new PermissionGate(async () => true), {
+      onRecord: async (record) => { records.push(record) },
+    }),
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  // The usable half is `getAutoCompactThreshold`, which is what the loop itself
+  // thresholds on — a display dividing by the raw window would promise room no
+  // turn is ever allowed to use.
+  assert.deepEqual(loop.getContextBudget(), {
+    contextWindow: 200_000,
+    usableContextWindow: getAutoCompactThreshold({ contextWindow: 200_000 }),
+  })
+
+  await loop.run('hello')
+  assert.equal(loop.getActiveModel().modelKey, 'fallback')
+  // Read off the *active* model: after a fallback the runtime snapshot must not
+  // still be reporting the window the loop was built with.
+  assert.deepEqual(loop.getContextBudget(), {
+    contextWindow: 1_000_000,
+    usableContextWindow: getAutoCompactThreshold({ contextWindow: 1_000_000 }),
+  })
 })
 
 test('agent loop retries primary model after fallback cooldown', async () => {

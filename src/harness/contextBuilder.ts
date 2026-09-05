@@ -420,7 +420,7 @@ export class ContextBuilder {
       return PLAN_MODE_SYSTEM_REMINDER
     }
     if (permissionMode === 'acceptEdits') {
-      return wrapInSystemReminder('You are in accept-edits mode. File edits are auto-approved, but shell commands and other tools still use the normal permission gate.')
+      return wrapInSystemReminder('You are in accept-edits mode. File edits inside the working directory are auto-approved, as are simple workspace file operations run through Bash (mkdir, touch, rm, rmdir, mv, cp, sed -i). Everything else — other shell commands, paths outside the working directory, and protected paths — still uses the normal permission gate.')
     }
     return undefined
   }

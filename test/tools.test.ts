@@ -64,8 +64,11 @@ test('grep headLimit caps total matches across files', async () => {
     const result = await grepTool.execute({ pattern: 'hit', glob: '**/*.txt', headLimit: 4 }, context(dir))
 
     assert.equal(result.ok, true)
-    assert.equal(result.content.split('\n').length, 4)
+    const matchLines = result.content.split('\n').filter((line) => /^[ab]\.txt:\d+:/.test(line))
+    assert.equal(matchLines.length, 4)
     assert.equal(result.metadata?.display?.summary, 'Found 4 matches across 2 files')
+    // 6 matches exist; the model must be told the list was cut short.
+    assert.match(result.content, /\[Showing results 1\.\.4 of 6 total matches\]/)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -298,7 +301,7 @@ test('editFile reports nearby context when oldString matches multiple times', as
 
     assert.equal(result.ok, false)
     assert.equal(result.errorCode, 'precondition_failed')
-    assert.match(result.content, /Expected exactly one match for oldString, found 2\./)
+    assert.match(result.content, /Found 2 matches for oldString, but replaceAll is false\./)
     assert.match(result.content, /Match 1 at line 2, column 1:/)
     assert.match(result.content, /> 2 \| target/)
     assert.match(result.content, /Match 2 at line 5, column 1:/)
@@ -403,7 +406,7 @@ test('multiEdit does not write when any replacement is ambiguous', async () => {
     }, ctx)
 
     assert.equal(result.ok, false)
-    assert.match(result.content, /Expected exactly one match for edits\[1\]\.oldString, found 2\./)
+    assert.match(result.content, /Found 2 matches for edits\[1\]\.oldString, but replaceAll is false\./)
     assert.equal(await readFile(file, 'utf8'), 'alpha\nbeta\nbeta\n')
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -878,7 +881,8 @@ test('WebFetch tool is registered and has correct properties', () => {
   assert.equal(webFetch.isReadOnly, true)
   assert.equal(webFetch.isConcurrencySafe, true)
   assert.equal(webFetch.shouldDefer, true)
-  assert.equal(webFetch.riskLevel, 'safe')
+  // Not `safe`: only the preapproved documentation hosts skip the prompt.
+  assert.equal(webFetch.riskLevel, 'confirm')
 })
 
 test('WebSearch tool is registered and has correct properties', () => {

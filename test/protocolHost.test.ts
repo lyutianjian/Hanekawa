@@ -15,7 +15,7 @@ import type { SessionController, SessionEvent } from '../src/runtime/sessionCont
 import type { RuntimeSlot } from '../src/runtime/runtimeSlot.js'
 import type { ProjectRuntime, SessionScope } from '../src/runtime/types.js'
 import type { PermissionRequest } from '../src/harness/permissions.js'
-import type { SessionRecord, Tool } from '../src/harness/types.js'
+import type { SessionRecord, TokenUsage, Tool } from '../src/harness/types.js'
 import type { SessionMeta } from '../src/sessions/service.js'
 import { SessionStore } from '../src/sessions/service.js'
 import { projectRootKey } from '../src/runtime/projectDirectory.js'
@@ -39,6 +39,9 @@ interface Harness {
   /** Sets the turn state rather than toggling it; the queue pump reads the edge. */
   setStreaming: (value: boolean) => void
   setUsageTotal: (total: { inputTokens: number; cacheReadInputTokens: number; outputTokens: number }) => void
+  setLastRequestUsage: (
+    lastRequest: { inputTokens: number; cacheReadInputTokens: number; outputTokens: number } | null,
+  ) => void
   /** Gives the active model a price list, which is what makes a cost derivable. */
   setPricing: (pricing: Record<string, unknown> | undefined) => void
   /** Makes the next `controller.submit` reject, for the pump's failure path. */
@@ -137,7 +140,12 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const snapshotListeners = new Set<() => void>()
   /** Set by `failNextSubmit`; consumed by the next `controller.submit`. */
   let submitFailure: string | undefined
-  let snapshot = {
+  let snapshot: {
+    isStreaming: boolean
+    usage: { lastRequest: TokenUsage | null; total: TokenUsage }
+    taskSnapshot: undefined
+    spinnerSubText: undefined
+  } = {
     isStreaming: false,
     usage: { lastRequest: null, total: { inputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0 } },
     taskSnapshot: undefined,
@@ -182,6 +190,9 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
 
   const loop = {
     runTool: async () => ({ ok: true, content: 'ran' }),
+    // The runtime snapshot reads the window off the loop, not off `modelConfig`:
+    // only the loop knows which model is *active* after a fallback.
+    getContextBudget: () => ({ contextWindow: 200_000, usableContextWindow: 167_000 }),
     clearCachedSections: () => { calls.clearedSections += 1 },
     invalidateRecordsCache: () => { calls.cacheInvalidations += 1 },
     summarizeRecordsForRewind: async (records: SessionRecord[]) => {
@@ -367,6 +378,13 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     },
     setUsageTotal: (total: { inputTokens: number; cacheReadInputTokens: number; outputTokens: number }) => {
       snapshot = { ...snapshot, usage: { ...snapshot.usage, total } }
+      for (const listener of [...snapshotListeners]) listener()
+    },
+    /** The last response's own counts — what the context occupancy is measured from. */
+    setLastRequestUsage: (
+      lastRequest: { inputTokens: number; cacheReadInputTokens: number; outputTokens: number } | null,
+    ) => {
+      snapshot = { ...snapshot, usage: { ...snapshot.usage, lastRequest } }
       for (const listener of [...snapshotListeners]) listener()
     },
     /** Gives the active model a price list, which is what makes a cost derivable. */
@@ -1691,6 +1709,90 @@ test('the snapshot omits the cost when the model has no complete pricing', async
   // Absent rather than zero: "not priced" and "free" are different answers, so the
   // status bar shows nothing instead of a misleading 0.
   assert.equal(latestCost(harness.received), undefined)
+  harness.dispose()
+})
+
+// --- context occupancy ------------------------------------------------------
+
+/** The `contextUsedTokens` on the most recent snapshot event. */
+function latestContextUsed(received: HostEvent[]): number | undefined {
+  const last = received.filter((event) => event.type === 'snapshot').at(-1)
+  return last && last.type === 'snapshot' ? last.contextUsedTokens : undefined
+}
+
+test('the runtime snapshot carries the usable window, not just the raw one', async () => {
+  const harness = await createHarness()
+  harness.send({ type: 'hello', id: 'c1' })
+  await settle()
+
+  const runtime = harness.received.find((event) => event.type === 'runtime-snapshot')
+  assert.ok(runtime && runtime.type === 'runtime-snapshot')
+  // Both come off the loop rather than off `modelConfig`: only the loop knows
+  // which model is active after a fallback, and only it knows what autocompact
+  // reserves. `usableContextWindow` is what an occupancy display divides by.
+  assert.equal(runtime.snapshot.contextWindow, 200_000)
+  assert.equal(runtime.snapshot.usableContextWindow, 167_000)
+  harness.dispose()
+})
+
+test('context occupancy is the provider’s own count once a turn has run', async () => {
+  const harness = await createHarness()
+  harness.setLastRequestUsage({
+    inputTokens: 4_000,
+    cacheReadInputTokens: 96_000,
+    outputTokens: 500,
+  })
+  await settle()
+
+  // Input plus cache-read *is* what the model was sent; output is what came
+  // back, and counting it would inflate the occupancy by a turn's answer.
+  assert.equal(latestContextUsed(harness.received), 100_000)
+  harness.dispose()
+})
+
+test('before the first turn the occupancy is estimated, and the estimate is cached', async () => {
+  const harness = await createHarness()
+  harness.emit({
+    type: 'record',
+    record: {
+      id: 'm-est',
+      type: 'message',
+      role: 'user',
+      content: 'x'.repeat(3_000),
+      createdAt: new Date().toISOString(),
+    },
+  })
+  harness.publishSnapshot()
+  await settle()
+
+  const estimated = latestContextUsed(harness.received)
+  assert.ok(estimated !== undefined && estimated > 0, 'a resumed session reports something')
+
+  // The estimate walks every record's text and `postSnapshot` fires per output
+  // chunk of a streaming turn, so it may only be recomputed when the ledger
+  // grows. Re-publishing with nothing appended must return the same number.
+  const before = harness.received.length
+  harness.publishSnapshot()
+  await settle()
+  assert.ok(harness.received.length > before, 'a snapshot was posted')
+  assert.equal(latestContextUsed(harness.received), estimated)
+
+  // The other half: the key is the ledger's length, so a record appended must
+  // invalidate it. A cache that never expired would still pass the assertion
+  // above.
+  harness.emit({
+    type: 'record',
+    record: {
+      id: 'm-est-2',
+      type: 'message',
+      role: 'assistant',
+      content: 'y'.repeat(3_000),
+      createdAt: new Date().toISOString(),
+    },
+  })
+  harness.publishSnapshot()
+  await settle()
+  assert.ok((latestContextUsed(harness.received) ?? 0) > estimated, 'the estimate grew with the session')
   harness.dispose()
 })
 

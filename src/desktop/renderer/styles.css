@@ -192,6 +192,23 @@
      resolves its own width from it. Declared so the bar is empty rather than
      invalid before the first snapshot arrives. */
   --task-progress: 0;
+  /* The hover marquee's two numbers, written per row by `dom/sidebarView.ts`
+     from `model/marquee.ts`. They depend on the measured overhang, which depends
+     on the rail's width, so neither can be a token — but both are declared here
+     for the same reason `--task-progress` is: a row that has not been hovered yet
+     must resolve to a still, valid animation rather than an invalid one. */
+  --marquee-shift: 0px;
+  --marquee-duration: 0s;
+  /* The blank between the two copies of a scrolling name. Not written by the
+     view — it is a constant both sides need, and `MARQUEE_GAP` is the other
+     half of it. */
+  --marquee-gap: 48px;
+  /* The composer chip's context ring, written per paint by `dom/composerView.ts`
+     from `model/usage.ts`. A fraction of the *usable* window (the autocompact
+     threshold), so no token can hold it; declared here for the same reason as
+     the two above — an empty ring before the first snapshot beats an invalid
+     gradient. */
+  --context-ratio: 0;
 
   /* --- type ---
      The chrome is proportional; anything the user has to read character by
@@ -954,15 +971,27 @@ body.resizing #sidebar { transition: none; }
    final style rather than transitioning to it. An entrance `@keyframes` is not
    the alternative: the render signature covers the badges, so a streaming answer
    repaints this list continuously and the animation would replay on every flush.
-   The rows are unmounted when the fold *settles*, not when it starts. */
+   The rows are unmounted when the fold *settles*, not when it starts.
+
+   The *column* has to be declared too, and it is the reason this is a grid at
+   all rather than a block: an implicit `auto` track is sized to its item's
+   max-content, and `.project-rows`'s max-content is the widest un-wrapped
+   session title. A long enough name grew this track to ~650px inside a 280px
+   rail, `overflow: hidden` cropped everything past the edge, and the crop lands
+   exactly on `.session-actions` — the delete button was not pushed out of the
+   row, the row was pushed out of the sidebar, and the name never truncated
+   because it never had to. `minmax(0, 1fr)` caps the track at the rail; the
+   item's own `min-width: 0` is the same statement from the other side, and both
+   are kept because either one alone silently carries the fix. */
 .project-body {
   display: grid;
   grid-template-rows: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
   transition: grid-template-rows var(--motion-base) var(--ease-standard);
 }
 .project-group.collapsed > .project-body { grid-template-rows: 0fr; }
-.project-rows { min-height: 0; }
+.project-rows { min-height: 0; min-width: 0; }
 /* A project kept for its own sake says so, rather than reading as a list that
    has not finished loading. */
 .project-empty {
@@ -1041,11 +1070,62 @@ body.resizing #sidebar { transition: none; }
   text-align: left;
   cursor: pointer;
 }
+/* The one thing in a row that gives way. It can only do so while the row itself
+   is capped at the rail's width — see `.project-body`, which is what a long
+   session name used to defeat. */
 .session-title {
   flex: 1 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* At rest the track is a plain inline: it contributes nothing to the layout and
+   the ellipsis above works exactly as it would on a bare text node. It becomes an
+   atomic box only while it is moving, because `transform` does not apply to a
+   non-replaced inline box — and at that moment the ellipsis is turned off, so the
+   two are never asked to describe the same frame. */
+.session-title-text { display: inline; }
+/* The second copy of the name, which the loop wraps onto. Absent from the layout
+   until the marquee runs: at rest it must cost nothing and, above all, must not
+   be part of what `sidebarView` measures — that measurement is the width of *one*
+   copy. */
+.session-title-echo { display: none; }
+/* The hover marquee. `.marquee` is put on by `dom/sidebarView.ts` only after it
+   has measured a real overhang, so a name that fits keeps a completely still row
+   — the animation must not be a thing that happens to every row the pointer
+   crosses. `sidebarView` also writes the two custom properties this reads;
+   `model/marquee.ts` owns their arithmetic. */
+.session-row:hover .session-title.marquee,
+.session-row:focus-within .session-title.marquee {
+  text-overflow: clip;
+}
+.session-row:hover .session-title.marquee > .session-title-text,
+.session-row:focus-within .session-title.marquee > .session-title-text {
+  display: inline-flex;
+  gap: var(--marquee-gap);
+  /* `linear`, and one of only two animations in this sheet that may be: an
+     eased marquee accelerates and brakes on every pass, which reads as the text
+     hesitating rather than as one steady band of motion. The curve tokens are
+     for things that start and stop; this does neither.
+
+     The delay is the whole affordance's manners. A pointer crossing the rail to
+     reach something else passes over several rows, and a name that lunges the
+     instant it is touched turns an ambient effect into a flicker. */
+  animation: session-marquee var(--marquee-duration) linear 0.5s infinite;
+}
+.session-row:hover .session-title.marquee .session-title-echo,
+.session-row:focus-within .session-title.marquee .session-title-echo {
+  display: block;
+}
+/* One direction, forever. The track travels exactly one copy plus one gap, which
+   is the offset at which the echo has arrived where the original started — so
+   the restart is a frame identical to the one before it and there is no seam to
+   see. `marqueeMotion` derives that distance and the time it takes at a constant
+   px/s; nothing here knows how long the name is. */
+@keyframes session-marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(var(--marquee-shift)); }
 }
 .session-badge { flex: 0 0 auto; display: inline-flex; align-items: center; }
 .session-badge .icon { width: 8px; height: 8px; }
@@ -1150,6 +1230,14 @@ body.resizing #sidebar { transition: none; }
      survives the paint, and nothing in this sheet may set `overflow-anchor: none`
      on the scroller or on anything inside it. */
   overflow-anchor: auto;
+  /* The backstop, and only that: `overflow-y: auto` computes `overflow-x` to
+     `auto`, so one row wider than the reading column turns the whole
+     conversation into a window that has to be dragged left and right. `clip` is
+     compatible with a scrolling `overflow-y` — it creates no scrollport of its
+     own and leaves scroll anchoring alone — so the axis simply stops existing.
+     Everything below still has to fit on its own: a clip that has work to do is
+     text nobody can read. */
+  overflow-x: clip;
 }
 /* The reading column, bounded by `--reading-measure`. A full-bleed paragraph is
    a readability problem rather than a taste one, but the old 760px cap left
@@ -1173,7 +1261,11 @@ body.resizing #sidebar { transition: none; }
    line and a short conversation renders as a narrow strip pushed to the right
    edge. Block layout (what this was before todo V2 made `.transcript` a flex
    column) sized it to the container for free; flex layout does not. */
-.transcript-column { width: 100%; max-width: var(--reading-measure); margin: auto auto 0; flex-shrink: 0; }
+/* `min-width: 0` runs the length of the group chain below (`.activity-group`,
+   `.group-steps`, `.step`, `.step-head`, `.step-body`): a flex or grid item
+   refuses to shrink under its own content unless it is told to, and one link
+   without it hands the whole column its widest unbroken token as a floor. */
+.transcript-column { width: 100%; min-width: 0; max-width: var(--reading-measure); margin: auto auto 0; flex-shrink: 0; }
 /* 24px between turns, and the line-height a wall of prose needs. Both are the
    rhythm half of design_guidance 四.3 — the old 10px/1.5 ran the assistant's
    answer and the next question together, and 16px still read as one block once
@@ -1187,11 +1279,19 @@ body.resizing #sidebar { transition: none; }
 .transcript .item.md { white-space: normal; }
 /* The user's turn reads as a compact bubble on the right, per
    `design_guidance.md`'s conversation-stream layout — a surface rather than a
-   colour, which is what freed `--user` (a blue) from the palette entirely. */
+   colour, which is what freed `--user` (a blue) from the palette entirely.
+   The item is the column the bubble sits in: it shrinks to the bubble's width
+   and hugs the right edge, so the meta row under it can align to the bubble's
+   own left edge rather than to the reading measure's. */
 .transcript .item.user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
   width: fit-content;
   max-width: 80%;
   margin-left: auto;
+}
+.transcript .item.user .user-bubble {
   padding: var(--space-3) var(--space-4);
   background: var(--surface-card);
   border-radius: var(--radius-lg);
@@ -1224,10 +1324,11 @@ body.resizing #sidebar { transition: none; }
 }
 .transcript .item:hover .item-meta,
 .transcript .item .item-meta:focus-within { opacity: 1; }
-/* The user's bubble is right-aligned, so its meta row ends where the bubble
-   does; the assistant's starts at the text's left edge. Order is the same on
-   both sides — the DOM order is the order. */
-.transcript .item.user .item-meta { justify-content: flex-end; }
+/* Under the bubble, not inside it, and at its bottom-left corner: the row is
+   chrome, and hanging it off the bubble's outer edge keeps the bubble itself the
+   plain surface it was. Order is the same on both sides — the DOM order is the
+   order. */
+.transcript .item.user .item-meta { align-self: flex-start; }
 .item-copy {
   display: inline-flex;
   align-items: center;
@@ -1298,11 +1399,105 @@ body.resizing #sidebar { transition: none; }
    parser rejects every at-rule but `@keyframes` — recorded in `todo.md`. */
 .transcript .item.thinking.live .thinking-header { animation: breathe 2.4s ease-in-out infinite; }
 @keyframes breathe { 50% { opacity: 0.45; } }
+/* --- the waiting row ---
+   The gap between Enter and the first record, made visible: a breathing bead, a
+   label with a sheen travelling through it, the elapsed time and the key that
+   stops the turn. `model/waiting.ts` decides when it exists — only until the turn
+   opens its activity group, whose head takes these same four pieces over for the
+   rest of the turn — so it needs no fade of its own; a row that appears when the
+   page is still and disappears when the group opens is already a change the eye
+   catches.
+
+   Four rungs of loudness on one line, which is the whole design: the bead is the
+   only accent, the label is primary-ish text under the sheen, and the counter and
+   the hint are `--text-tertiary` metadata. Nothing here is a control — the hint
+   names a key, it is not a button — so the row carries no hover and no radius.
+
+   The bead breathes with the step bead's own `breathe`, at the same duration: a
+   turn waiting on the model and a tool still running are the same 「alive, not
+   urgent」, and two rates would read as two vocabularies. */
+.waiting {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+  font-size: var(--type-ui);
+  color: var(--text-secondary);
+  user-select: none;
+}
+/* Painted through `color` and filled with `currentColor`, like every other bead
+   in this sheet: the accent stays a paint role and the three named accent fills
+   stay three. The strong rung, because the weak one may not be spelled on
+   `color` at all (`rendererStyleTokens.test.ts`). */
+.waiting-bead {
+  position: relative;
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  color: var(--accent-brand-strong);
+  background: currentColor;
+  animation: breathe 1.8s ease-in-out infinite;
+}
+/* The halo: one expanding ring per breath, out of flow so it cannot move the
+   line it sits on. It fades out well before the edge, so at rest the row is a
+   dot — the motion is the message, not the size. */
+.waiting-bead::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  animation: halo 1.8s ease-out infinite;
+}
+/* Percentage steps, never `from`: a `from { transform }` in this sheet is by
+   definition one of the three 8px entrances, and the token test says so. */
+@keyframes halo {
+  0% { transform: scale(1); opacity: 0.28; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+/* The sheen is the label's own ink: a gradient clipped to the glyphs, sweeping
+   from the tertiary rung through the primary one and back. It is what tells a
+   slow first token from a hung window without adding a second moving object —
+   and under `prefers-reduced-motion` it settles on the tertiary rung, so the
+   words stay readable when the sweep stops. */
+.waiting-label {
+  background-image: linear-gradient(
+    100deg,
+    var(--text-tertiary) 0%,
+    var(--text-tertiary) 38%,
+    var(--text-primary) 50%,
+    var(--text-tertiary) 62%,
+    var(--text-tertiary) 100%
+  );
+  background-size: 280% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: sweep 2.4s linear infinite;
+}
+@keyframes sweep {
+  from { background-position: 140% 0; }
+  to { background-position: -140% 0; }
+}
+/* The counter, in the digits that do not jitter as they climb. Monospaced for
+   the same reason the meta row's time is: it changes ten times a second. */
+.waiting-elapsed {
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+/* Below the model's threshold the counter has no text, and a flex gap on either
+   side of an empty span is a hole in the row. */
+.waiting-elapsed:empty { display: none; }
+.waiting-hint { font-size: var(--type-micro); color: var(--text-tertiary); }
 /* --- activity groups ---
    Two layers of disclosure (§2): the group head carries the turn's boundary and
    total, every step inside opens on its own. Depth stays at the sheet's two steps —
-   a step is **not** a card, so the layering here is indentation, whitespace and a
-   hairline, never a third shadow or radius rung.
+   a step is **not** a card, so the layering here is whitespace, the head's own
+   status line and the beads — never a third shadow or radius rung, and not an
+   indent either: the steps sit on the group head's own left margin.
 
    There is **no disclosure chevron** on either head (§9). A glyph pointing at a
    fold is a second thing to read on a row whose whole job is to be skimmed, and
@@ -1316,13 +1511,16 @@ body.resizing #sidebar { transition: none; }
 .activity-group {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: var(--space-1);
 }
 .group-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  min-width: 0;
   padding: var(--space-1) var(--space-2);
   margin-left: calc(-1 * var(--space-2));
   border: none;
@@ -1336,11 +1534,18 @@ body.resizing #sidebar { transition: none; }
   text-align: left;
   cursor: pointer;
 }
+/* `flex-wrap` is the row's answer to a head that does not fit: it breaks onto a
+   second line rather than pushing the transcript sideways. The scroller's
+   `overflow-y: auto` computes `overflow-x` to `auto` as well, so *anything* wider
+   than the reading column turns the whole conversation into a horizontal
+   scroller — a row that has to be dragged left and right to be read. */
 .step-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  min-width: 0;
   padding: var(--space-1) var(--space-2);
   margin-left: calc(-1 * var(--space-2));
   border: none;
@@ -1357,38 +1562,52 @@ body.resizing #sidebar { transition: none; }
 .step-head:hover { background: var(--surface-hover); color: var(--text-secondary); }
 .group-head:focus-visible,
 .step-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.group-beads {
-  display: inline-flex;
-  gap: var(--space-1);
-  margin-left: auto;
+/* `button()` wraps its label in a `.btn-label`, and that class is `nowrap` for
+   the chrome it was written for. Nothing in a group truncates: the label folds
+   with the rest of the row, and a flex item that refuses to shrink would be a
+   floor under the whole reading column besides. */
+.step-head .btn-label {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
-/* The bead is an icon-sized block, not a surface, so it is painted through
-   `color` and filled with `currentColor`: the accent stays a paint role, and the
-   three named accent fills stay three. */
-.group-bead {
-  width: 4px;
-  height: 4px;
-  border-radius: var(--radius-pill);
-  color: var(--text-tertiary);
-  background: currentColor;
+/* The turn's own label — 「已处理 3 步 · 12s」, a string this renderer builds, so
+   it is short by construction. It still folds rather than truncates: one
+   vocabulary for the whole group, and no head is allowed to be the column's
+   floor. */
+.group-head .btn-label {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
-.group-bead.done { color: var(--accent-review); }
-.group-bead.failed { color: var(--accent-danger); }
-.group-bead.awaiting-approval { color: var(--accent-warn); }
-/* The strip is colour only — no `pop`, no breath. `dom/transcriptView.ts`
-   rebuilds the group head on every paint, so an animation here would restart
-   itself once per streamed token; the four states animate one level down, on the
-   step beads, whose nodes survive a paint. */
+/* --- the live head ---
+   While the turn runs, the head *is* the waiting row: the same breathing bead,
+   the same sheen on the same words, the same counter and the same `Esc` hint —
+   pinned to the top of the turn, where a status is looked for, instead of
+   walking down the page behind the steps. It says the running tool's name while
+   one is running and 「正在思考」 in between, and it seals to 「已处理 …」 only
+   when the turn is over.
+
+   The pieces carry their own colours (`.waiting-*` above), so all this rule owns
+   is where the hint sits: out at the row's right edge, because it is the one
+   part that is an offer rather than a report.
+
+   There is no bead strip. One dot per step along the head's right edge was a
+   second, wordless report of what the steps below already say, and next to
+   「已处理」 it read as a verdict on the whole turn. */
+.group-head.live .waiting-hint { margin-left: auto; }
 .group-steps {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: var(--space-1);
-  /* The steps hang off the group's left edge; the indentation is what separates
-     the two layers, since neither of them is allowed a box. */
-  padding-left: var(--space-3);
-  border-left: 1px solid var(--border-subtle);
+  /* No indent and no rule down the edge. Once the hairline went, the padding was
+     holding the column off an edge that no longer existed: the steps share the
+     group head's left margin, so a thinking row's label lines up with the head's
+     and every bead lines up with every other bead. The two layers are told apart
+     by the head's own status line and the beads, not by a step of whitespace. */
 }
-.step { display: flex; flex-direction: column; }
+.step { display: flex; flex-direction: column; min-width: 0; }
 /* --- the fold ---
    A two-track grid — head, then body — folded with `0fr → 1fr`, which is how a
    disclosure opens by its content's own height instead of by a magic pixel
@@ -1456,8 +1675,10 @@ body.resizing #sidebar { transition: none; }
 /* Overshoot and settle, never `from`: a `from { transform }` in this sheet is by
    definition one of the three 8px entrances, and the token test enforces that. */
 @keyframes bead-pop { 50% { transform: scale(1.6); } }
-/* A thinking row has no bead — it is not an execution and has no outcome (§3) —
-   so the hairline takes the bead's place at the end of the row. */
+/* The hairline that stands in for a bead on a row with no outcome (§3): a system
+   row, which reports rather than runs, and a thinking row *while it is still
+   thinking*. A sealed thought drops it — the line was the waiting, and there is
+   nothing left to wait for. */
 .step-rule {
   flex: 1 1 auto;
   height: 1px;
@@ -1466,7 +1687,8 @@ body.resizing #sidebar { transition: none; }
 /* While the model is still thinking, the hairline is the row's status: a sheen
    travelling along it in `--accent-tool`. It is still a hairline and not a fill —
    the accent reaches it through `color`, and the gradient is drawn in
-   `currentColor` — so the three named accent fills stay three. */
+   `currentColor` — so the three named accent fills stay three. It is watchable
+   only because the head that holds it is a kept node: see `thinkingStep`. */
 .step.thinking.live .step-rule {
   color: var(--accent-tool);
   background: linear-gradient(90deg, transparent, currentColor, transparent);
@@ -1474,16 +1696,79 @@ body.resizing #sidebar { transition: none; }
   animation: sheen 1.8s linear infinite;
 }
 @keyframes sheen { from { background-position: 200% 0; } to { background-position: -20% 0; } }
-.step-name { color: var(--text-secondary); font-family: var(--font-mono); }
+/* --- the thinking row's head ---
+   Not the turn's head and not a tool's: nothing ran, so the row is set apart by
+   size and shape rather than by dimming — the micro rung, italic like the thought
+   it opens, and read at `--text-secondary`. 「已处理 Xm Xs」 is a finished result
+   and reads as one; the live state is carried by the sheen on the hairline, not
+   by a colour the sealed row then has to climb back out of.
+
+   It is also the one head that does not light a whole row on hover. A fill that
+   wide, on a row nobody has to act on, was the loudest thing on a quiet turn; the
+   hover lights the *text* instead — all the way to the primary rung — and brings
+   the chevron out beside it. The glyph points right while the thought is folded
+   and down once it is open, which is the disclosure said in a shape rather than
+   in a bar of colour.
+
+   The chevron's reveal is a transition and its rotation is not: the head is
+   refilled when `expanded` changes (its signature carries it), so a transition on
+   the rotation would never run, while hover leaves the children untouched. */
+.thinking-step-head {
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--type-micro);
+  font-style: italic;
+}
+/* All the way up, not one rung: the row is quiet at rest, and under the pointer
+   it is the thing being read. A half-lit hover is the worst of both. */
+.thinking-step-head:hover { background: none; color: var(--text-primary); }
+/* Beside the label, not out at the panel's edge: the glyph belongs to the words
+   it opens. While the thought is live the hairline runs between them and carries
+   it right; the moment the line goes, the chevron comes back to the text. */
+.thinking-step-head .icon {
+  width: 12px;
+  height: 12px;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-standard);
+}
+.thinking-step-head:hover .icon,
+.thinking-step-head:focus-visible .icon,
+.step.thinking:not(.collapsed) .thinking-step-head .icon { opacity: 1; }
+.step.thinking:not(.collapsed) .thinking-step-head .icon { transform: rotate(90deg); }
+/* The tool's own name, and the task/system row's text. Both are flex items on a
+   wrapping head, so both may fold under themselves rather than set a floor: a
+   `TodoWrite` line is a sentence and a subagent's name is free text. */
+.step-name {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.step-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* The call's arguments — a command, a path, a pattern — **shown whole**. It was
+   one ellipsized line, on the reasoning that the head is a skim row and the body
+   below has the full string; but for a `Grep` or a `Bash` the arguments *are* the
+   step, the ellipsis fell on the end of the path (the file name, the part being
+   read for), and the body is a different question — the results, not the call. So
+   the row folds instead, on `.step-head`'s own `flex-wrap`.
+   `min-width: 0` is still load-bearing, and now for the wrap rather than the
+   ellipsis: a flex item refuses to shrink under its own content unless it is told
+   to, so without it a long argument widened the row and took the transcript's
+   horizontal scrollbar with it. `anywhere` because a path has no spaces to break
+   at. `flex: 1 1 auto` gives it the leftover width, so it folds last. */
 .step-summary {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--text-tertiary);
   font-family: var(--font-mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .step-suffix,
 .step-duration { color: var(--text-tertiary); }
+.step-suffix { min-width: 0; overflow-wrap: anywhere; }
 .step-duration { margin-left: auto; }
 /* Padding rather than a vertical margin, and `overflow: hidden`: the body is the
    grid item the fold above collapses, and a margin lives outside the track it
@@ -1493,13 +1778,14 @@ body.resizing #sidebar { transition: none; }
 .step-body {
   overflow: hidden;
   min-height: 0;
+  min-width: 0;
   padding: var(--space-1) 0 var(--space-2);
   margin-left: var(--space-4);
   color: var(--text-tertiary);
   font-size: var(--type-code);
 }
 .step.thinking .step-body { font-style: italic; }
-.step-body-head { margin-bottom: var(--space-1); }
+.step-body-head { margin-bottom: var(--space-1); overflow-wrap: anywhere; }
 /* The edit family's body (T13) is the same diff block the permission dialog
    paints — one diff look everywhere — but a group is not a dialog: the cap
    matches the fallback body's, and the block's own margin belongs to the
@@ -1514,26 +1800,37 @@ body.resizing #sidebar { transition: none; }
 .step-terminal {
   max-height: 320px;
   margin: 0;
-  overflow: auto;
+  /* Vertically, never horizontally: the wrapping below leaves nothing to scroll
+     sideways to, and `overflow: auto` on both axes would still reserve the bar
+     the moment one glyph disagreed. The one block in a group allowed a
+     horizontal scrollbar is `.diff`, whose columns have to line up. */
+  overflow-y: auto;
+  overflow-x: clip;
   padding: var(--space-2) var(--space-3);
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
   white-space: pre-wrap;
+  /* A single unbroken token — a long path, a base64 blob — is the one thing
+     `pre-wrap` will not fold, and it is enough to give the block a horizontal
+     scrollbar of its own. */
+  overflow-wrap: anywhere;
 }
 /* 失败时错误码单独一行 (§6.2): the failure's own code, in words, above the
    output it failed on. It only exists on a failed step, so it carries the
    danger colour itself rather than borrowing the block's. */
-.step-error { color: var(--text-danger); margin-bottom: var(--space-1); }
+.step-error { color: var(--text-danger); margin-bottom: var(--space-1); overflow-wrap: anywhere; }
 /* The output block scrolls **inside itself**: a long result must not turn the
    group into a scroll window of its own (§6.2). */
 .step-body-text {
   max-height: 320px;
   margin: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: clip;
   font-family: var(--font-mono);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .step.failed .step-body-text,
 .step.failed .step-name { color: var(--text-danger); }
@@ -1551,21 +1848,26 @@ body.resizing #sidebar { transition: none; }
   gap: var(--space-2);
   max-height: 320px;
   margin: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: clip;
   padding: var(--space-2) var(--space-3);
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
 }
-.search-file { display: flex; flex-direction: column; }
-/* A file's own row — the path, and nothing else. Ellipsized rather than
-   wrapped: the group's layering is indentation and rows, and a wrapping path
-   would read as two hits. */
+.search-file { display: flex; flex-direction: column; min-width: 0; }
+/* A file's own row — the path, and nothing else. **Wrapped, never truncated**:
+   opening a step is the request to see the whole thing, so a body may not hide
+   any of it behind an ellipsis. The row keeps its `align-items: center` for the
+   one-line common case and folds under itself when the path is longer than the
+   column; the file name — the end of the path, and the part being looked for —
+   is what an ellipsis would have taken. */
 .search-file-head {
   display: flex;
   align-items: center;
   width: 100%;
+  min-width: 0;
   padding: var(--space-1) var(--space-2);
   border: none;
   border-radius: var(--radius-sm);
@@ -1575,9 +1877,16 @@ body.resizing #sidebar { transition: none; }
   font-family: var(--font-mono);
   text-align: left;
   cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+/* Where the path is actually laid out. `button()` puts the text in a
+   `.btn-label`, and that class is `nowrap` for the chrome it was written for —
+   on this row it has to fold instead, or it is the block's own floor and the
+   long path grows a horizontal scrollbar. `anywhere` rather than `break-word`:
+   a path has no spaces to break at. */
+.search-file-head .btn-label {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .search-file-head:hover { background: var(--surface-hover); }
 .search-file-head:focus-visible,
@@ -1590,6 +1899,7 @@ body.resizing #sidebar { transition: none; }
   align-items: baseline;
   gap: var(--space-2);
   width: calc(100% - var(--space-3));
+  min-width: 0;
   margin-left: var(--space-3);
   padding: var(--space-1) var(--space-2);
   border: none;
@@ -1609,10 +1919,16 @@ body.resizing #sidebar { transition: none; }
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+/* The matched line, **whole**: a body shows all of what it has, so a long hit
+   folds under itself rather than ending in an ellipsis. `pre-wrap` keeps the
+   indentation the source line was found with — the hit is code — and
+   `overflow-wrap: anywhere` folds the one thing `pre-wrap` will not, an unbroken
+   token. The wrapped lines land under the text, not under the line number,
+   because `.search-hit` is a flex row with the gutter beside them. */
 .search-hit-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 /* The tool's own truncation notice, as the list's footnote — a truncated list
    that looks complete is a lie about coverage. */
@@ -1620,6 +1936,7 @@ body.resizing #sidebar { transition: none; }
   padding: 0 var(--space-2);
   color: var(--text-tertiary);
   font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 /* The read family's body (T16): the file the tool read, one numbered row per
@@ -1632,14 +1949,19 @@ body.resizing #sidebar { transition: none; }
   flex-direction: column;
   max-height: 320px;
   margin: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: clip;
   padding: var(--space-2) var(--space-3);
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
 }
-.step-code-row { display: flex; gap: var(--space-2); white-space: pre; }
+/* Wrapped, not scrolled sideways: a long line folds under itself and keeps its
+   number in the gutter, which is how a reader gets the whole line without
+   dragging the block left and right. The block still scrolls *vertically* inside
+   itself, which is the cap §6.2 asks for. */
+.step-code-row { display: flex; gap: var(--space-2); min-width: 0; }
 /* The line column is chrome, not content: right-aligned, tabular, and never
    selected — a copy of the block owes the file's own lines, not its gutters.
    `ch` is the width of a `0`, so the column is only stable while the rule is
@@ -1653,27 +1975,35 @@ body.resizing #sidebar { transition: none; }
   color: var(--text-tertiary);
   user-select: none;
 }
-.step-code-text { flex: 1 1 auto; color: var(--text-secondary); }
+.step-code-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* The Agent family's body (T16): the task over the sub-agent's answer — prose,
    so markdown, on the step's own surface rather than a card: it is the
    conversation the call stands for, not an output block. The label names each
    half, because two unlabelled text blocks are ambiguous; the answer sits one
    rung up from the task because it is the payload the reader opened for. */
-.step-agent-prompt { margin-bottom: var(--space-2); }
+.step-agent-prompt { margin-bottom: var(--space-2); min-width: 0; }
 .step-agent-label {
   margin-bottom: var(--space-1);
   color: var(--text-tertiary);
   font-size: var(--type-micro);
 }
-.step-agent-text { max-height: 320px; overflow: auto; }
+.step-agent-text { max-height: 320px; overflow-y: auto; overflow-x: clip; overflow-wrap: anywhere; }
 .step-agent-response { color: var(--text-secondary); }
 
 /* The web family's body (T16): the fetched page, which the tool already turned
    into markdown — an article, clipped inside itself like every other body. */
 .step-web {
   max-height: 320px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: clip;
+  overflow-wrap: anywhere;
   color: var(--text-secondary);
 }
 .transcript .item.notice { color: var(--text-secondary); font-style: italic; }
@@ -2403,6 +2733,25 @@ body.resizing #sidebar { transition: none; }
   cursor: pointer;
 }
 .chip-effort-label { color: var(--text-tertiary); }
+/* The context-occupancy ring, ahead of the model name. A `conic-gradient` swept
+   by `--context-ratio`, which `dom/composerView.ts` writes per paint — the one
+   number no stylesheet can hold. `currentColor` for the filled arc so the three
+   levels are a single `color` swap; the remainder is a neutral track, never an
+   accent (accents do not fill — see `rendererStyleTokens.test.ts`). It is
+   `aria-hidden`: the same figures are in the button's `aria-label`. */
+.chip-context-gauge {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-pill);
+  color: var(--text-tertiary);
+  background: conic-gradient(
+    currentColor calc(var(--context-ratio) * 360deg),
+    var(--border-strong) 0
+  );
+}
+.chip-context-gauge.warn { color: var(--text-warn); }
+.chip-context-gauge.critical { color: var(--text-danger); }
 #chip-runtime:hover:enabled {
   color: var(--text-primary);
   background: var(--surface-hover);
@@ -2849,25 +3198,42 @@ body.resizing #sidebar { transition: none; }
   padding: 2px 8px;
   border-bottom: 1px solid var(--border-subtle);
 }
+/* Wrapped, not scrolled sideways. A fence used to be `white-space: pre` over
+   `overflow-x: auto`, which put a scrollbar under every long line — and inside a
+   step body, where the fence is one row among many, that is a second axis the
+   reader has to work in to read one line. `pre-wrap` keeps the indentation the
+   code depends on and folds only what does not fit; `overflow-wrap: anywhere`
+   covers the one thing `pre-wrap` will not fold, a single unbroken token. */
 .md .md-code pre {
   margin: 0;
   padding: 6px 8px;
-  overflow-x: auto;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   font: inherit;
 }
 .md .md-code code { font: inherit; }
-.md .md-table { border-collapse: collapse; margin: 0 0 8px; }
+/* `table-layout: fixed` over a full-width table: an auto table is sized by its
+   own cells' max-content, so one wide row widened the reading column and took
+   the transcript's horizontal scrollbar with it. Fixed divides the measure it
+   has and the cells wrap inside it. */
+.md .md-table { border-collapse: collapse; margin: 0 0 8px; width: 100%; table-layout: fixed; }
 .md .md-table th, .md .md-table td {
   border: 1px solid var(--border-subtle);
   padding: 2px 8px;
   text-align: left;
+  overflow-wrap: anywhere;
 }
 .md .md-table th { color: var(--text-primary); font-weight: 600; }
 /* The plan body keeps its own panel chrome; markdown only replaces the text. */
 #overlay-panel .plan.md { white-space: normal; }
 
-/* --- diff --- */
+/* --- diff ---
+   The **one** block allowed a horizontal scrollbar of its own. Everywhere else
+   in a turn (the terminal block, the read block, the search list, a fenced code
+   block) long content wraps, because a second axis to read one line in is worse
+   than a folded line. A diff is the exception: its gutter and its columns line
+   up down the block, and a wrapped `+`/`-` line loses the alignment that is what
+   makes a diff readable at all. Kept honest by `rendererStyleTokens.test.ts`. */
 .diff {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -3409,6 +3775,33 @@ body.resizing #sidebar { transition: none; }
   border-radius: var(--radius-md);
 }
 
+/* Drawn inside the card it is about now, not stacked at the top of the column:
+   the answer to a click belongs where the click was. The leading bar is what
+   separates it from the ordinary rows above and below it — no second shadow or
+   radius rung, which is the depth rule (`--shadow-float` is for popovers). */
+.settings-card > .settings-confirm,
+.settings-card > .settings-form {
+  margin: 0 var(--space-4) var(--space-3);
+  border-left-width: 2px;
+  border-left-style: solid;
+  border-left-color: var(--accent-brand);
+}
+
+.settings-card > .settings-form {
+  border: 1px solid var(--border-subtle);
+  border-left-width: 2px;
+  border-left-color: var(--accent-brand);
+  border-radius: var(--radius-md);
+  background: var(--surface-base);
+}
+
+/* A change about this row is in flight. Dimmed rather than removed — a toggle
+   or an edit still has something to show — and its controls are already
+   `disabled`, so this only has to say so visually. */
+.settings-row.pending {
+  opacity: 0.55;
+}
+
 .settings-confirm-text {
   flex: 1 1 auto;
   color: var(--text-primary);
@@ -3552,12 +3945,28 @@ body.resizing #sidebar { transition: none; }
    explicitly). Not zero: a `0s` transition never fires `transitionend`, and
    `1ms` keeps every listener's contract while being imperceptible. The universal
    selector is deliberate — it has to reach the `infinite` animations (`spin`,
-   `breathe`, and T8's `blink` and `sheen`) as well as everything declared
+   `breathe`, `blink`, `sheen`, `halo` and `sweep`) as well as everything declared
    above. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
+  }
+  /* The blanket rule above stops the marquee, and stopping it is not enough: the
+     hover state also turns the ellipsis off and makes the text an atomic box, so
+     a cancelled animation would leave the name hard-clipped mid-character. Here
+     a long name simply stays truncated, which is what it does at rest. */
+  .session-row:hover .session-title.marquee,
+  .session-row:focus-within .session-title.marquee {
+    text-overflow: ellipsis;
+  }
+  .session-row:hover .session-title.marquee > .session-title-text,
+  .session-row:focus-within .session-title.marquee > .session-title-text {
+    display: inline;
+  }
+  .session-row:hover .session-title.marquee .session-title-echo,
+  .session-row:focus-within .session-title.marquee .session-title-echo {
+    display: none;
   }
 }

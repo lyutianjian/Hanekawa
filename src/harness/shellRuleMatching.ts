@@ -1,5 +1,5 @@
 import { analyzeShellCommand, normalizedExecutable } from './commandAnalysis.js'
-import { shellWords } from './bashSafety.js'
+import { shellWords, splitShellSegments } from './bashSafety.js'
 
 /**
  * Permission rule matching for shell (Bash) commands, ported from Claude
@@ -195,6 +195,19 @@ export function matchBashRule(
 ): boolean {
   const parsed = parseShellRule(rulePattern)
   const { stripAllEnvVars = false, skipCompoundCheck = false } = options
+
+  // An allow rule may cover a compound as long as it covers *every* segment —
+  // that is the same guarantee `buildSessionAllowRule` demands before it offers
+  // one. Without this, `git log | head` could never be permanently allowed.
+  if (!skipCompoundCheck && parsed.type !== 'exact') {
+    for (const candidate of candidates) {
+      if (!isCompound(candidate)) continue
+      const segments = splitShellSegments(candidate)
+      if (segments.length > 1 && segments.every((segment) => matchBashRule(rulePattern, [segment], options))) {
+        return true
+      }
+    }
+  }
 
   for (const candidate of candidates) {
     const withoutRedirect = stripOutputRedirections(candidate)

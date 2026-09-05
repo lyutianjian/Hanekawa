@@ -78,7 +78,11 @@ const controller = {
 }
 
 const agentSession = {
-  loop: { runTool: async () => ({ ok: true, content: 'ran' }), clearCachedSections: () => {} },
+  loop: {
+    runTool: async () => ({ ok: true, content: 'ran' }),
+    clearCachedSections: () => {},
+    getContextBudget: () => ({ contextWindow: 200_000, usableContextWindow: 167_000 }),
+  },
   planModeManager: undefined,
   modelKey: 'main',
   modelConfig: { model: 'test-model', apiKey: 'SECRET' },

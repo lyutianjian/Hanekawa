@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { z } from 'zod/v3'
@@ -711,6 +711,62 @@ test('ContextBuilder keeps currentDate dynamic across midnight boundary', async 
   assert.doesNotMatch(afterMidnight.system ?? '', /Read: Read a file from disk/)
   assert.doesNotMatch(beforeMidnight.system ?? '', /2026\/05\/10/)
   assert.doesNotMatch(afterMidnight.system ?? '', /2026\/05\/11/)
+})
+
+test('project context reads AGENTS.md and CLAUDE.md, nearest last', async () => {
+  const { loadProjectContext, clearProjectContextCache } =
+    await import('../src/services/context/projectContext.js')
+
+  const parent = await mkdtemp(path.join(os.tmpdir(), 'myagent-ctx-parent-'))
+  const child = path.join(parent, 'child')
+  clearProjectContextCache()
+
+  try {
+    await mkdir(child, { recursive: true })
+    await writeFile(path.join(parent, 'CLAUDE.md'), 'from the parent', 'utf8')
+    await writeFile(path.join(child, 'AGENTS.md'), 'from the child', 'utf8')
+    // The name Hanekawa used to invent for itself; nothing writes it any more.
+    await writeFile(path.join(child, 'MYAGENT.md'), 'from a name we dropped', 'utf8')
+    await writeFile(path.join(child, 'AGENTS.local.md'), 'from the local layer', 'utf8')
+
+    const context = await loadProjectContext(child)
+
+    assert.doesNotMatch(context, /a name we dropped/)
+    // AGENTS.md is read because the child has no CLAUDE.md of its own.
+    assert.match(context, /from the child/)
+    // The nearest file overrides its ancestors, so it has to be read after them.
+    assert.ok(context.indexOf('from the parent') < context.indexOf('from the child'))
+    assert.ok(context.indexOf('from the child') < context.indexOf('from the local layer'))
+  } finally {
+    clearProjectContextCache()
+    await rm(parent, { recursive: true, force: true })
+  }
+})
+
+test('one directory contributes one instruction file, CLAUDE.md first', async () => {
+  const { loadProjectContext, clearProjectContextCache } =
+    await import('../src/services/context/projectContext.js')
+
+  const project = await mkdtemp(path.join(os.tmpdir(), 'myagent-ctx-pair-'))
+  clearProjectContextCache()
+
+  try {
+    // Repos that keep the two in sync would otherwise pay for the guide twice.
+    await writeFile(path.join(project, 'CLAUDE.md'), 'the claude copy', 'utf8')
+    await writeFile(path.join(project, 'AGENTS.md'), 'the agents copy', 'utf8')
+    await writeFile(path.join(project, 'CLAUDE.local.md'), 'the local claude copy', 'utf8')
+    await writeFile(path.join(project, 'AGENTS.local.md'), 'the local agents copy', 'utf8')
+
+    const context = await loadProjectContext(project)
+
+    assert.match(context, /the claude copy/)
+    assert.doesNotMatch(context, /the agents copy/)
+    assert.match(context, /the local claude copy/)
+    assert.doesNotMatch(context, /the local agents copy/)
+  } finally {
+    clearProjectContextCache()
+    await rm(project, { recursive: true, force: true })
+  }
 })
 
 test('project context is cached per cwd and invalidated per cwd', async () => {

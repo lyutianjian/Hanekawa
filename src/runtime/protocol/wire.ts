@@ -61,12 +61,18 @@ export type HostEvent =
    * plus `harness/usage.ts`, and a renderer may import neither. Absent when the
    * active model has no complete pricing — "not priced" and "free" are different
    * answers.
+   *
+   * `contextUsedTokens` rides here for the same reason and is measured the same
+   * way `/compact` measures: the provider's own count for the last request when
+   * there has been one, else `countSessionRecordsTokens` — both of which live
+   * behind the import wall.
    */
   | {
       type: 'snapshot'
       snapshot: SessionControllerSnapshot
       subagentProgress: Array<[string, string]>
       cost?: WireUsageCost
+      contextUsedTokens?: number
     }
   | { type: 'runtime-snapshot'; snapshot: WireRuntimeSnapshot }
   /**
@@ -248,6 +254,13 @@ export interface WireRuntimeSnapshot {
   model: string
   providerName?: string
   contextWindow?: number
+  /**
+   * The window minus what autocompact reserves — the loop's own
+   * `getContextBudget().usableContextWindow`, and the only honest denominator
+   * for an occupancy display: a turn that crosses it is compacted, so the raw
+   * `contextWindow` above is a number the conversation never reaches.
+   */
+  usableContextWindow?: number
   maxEffort?: EffortLevel
   effort: string
   permissionMode: PermissionMode

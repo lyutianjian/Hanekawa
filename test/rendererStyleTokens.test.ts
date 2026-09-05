@@ -6,6 +6,7 @@ import path from 'node:path'
 import { parseCss, rendererRoot, stylesheetPath, type Block } from './helpers/rendererCss.js'
 import { SIDEBAR_COLLAPSE_FALLBACK_MS } from '../src/desktop/renderer/model/sidebar.js'
 import { SIDEBAR_WIDTH_DEFAULT } from '../src/desktop/renderer/model/sidebarWidth.js'
+import { MARQUEE_GAP } from '../src/desktop/renderer/model/marquee.js'
 
 /**
  * The renderer's stylesheet, asserted at source level.
@@ -43,7 +44,17 @@ const ALLOWED_INLINE_STYLE_PROPS = ['height']
  * exception, which is the point: a `setProperty(SOME_CONST, …)` that is *not*
  * on this list fails, and adding it is a decision on the record.
  */
-const ALLOWED_STYLE_PROPERTY_CONSTANTS = ['SIDEBAR_WIDTH_VARIABLE']
+const ALLOWED_STYLE_PROPERTY_CONSTANTS = [
+  'SIDEBAR_WIDTH_VARIABLE',
+  // The hover marquee's distance and duration: measured per row, so no token can
+  // hold them. `model/marquee.ts` owns both names.
+  'MARQUEE_SHIFT_VARIABLE',
+  'MARQUEE_DURATION_VARIABLE',
+  // The chip's context ring sweep, a fraction recomputed per snapshot. Same
+  // exception for the same reason: no token can hold a measured value.
+  // `model/usage.ts` owns the name.
+  'CONTEXT_RATIO_VARIABLE',
+]
 
 function rendererFiles(dir = rendererRoot): string[] {
   return readdirSync(dir).flatMap((entry) => {
@@ -323,6 +334,15 @@ test('the palette is the one that was agreed, value for value', () => {
       // The task panel's progress, same shape of exception: a number the view
       // writes and the sheet's own rule reads.
       '--task-progress': '0',
+      // The sidebar marquee's distance and duration, third of the same kind:
+      // per-row numbers written by `dom/sidebarView.ts` from `model/marquee.ts`,
+      // declared here so an un-hovered row resolves to a still animation.
+      '--marquee-shift': '0px',
+      '--marquee-duration': '0s',
+      '--marquee-gap': '48px',
+      // The composer chip's context ring, fourth of the same kind: a fraction of
+      // the usable window written per paint by `dom/composerView.ts`.
+      '--context-ratio': '0',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
@@ -405,6 +425,15 @@ test('the palette is the one that was agreed, value for value', () => {
       // The task panel's progress, same shape of exception: a number the view
       // writes and the sheet's own rule reads.
       '--task-progress': '0',
+      // The sidebar marquee's distance and duration, third of the same kind:
+      // per-row numbers written by `dom/sidebarView.ts` from `model/marquee.ts`,
+      // declared here so an un-hovered row resolves to a still animation.
+      '--marquee-shift': '0px',
+      '--marquee-duration': '0s',
+      '--marquee-gap': '48px',
+      // The composer chip's context ring, fourth of the same kind: a fraction of
+      // the usable window written per paint by `dom/composerView.ts`.
+      '--context-ratio': '0',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
@@ -974,6 +1003,101 @@ test('the session on screen is painted, and the four row states stack in order',
   )
 })
 
+test('a long session name cannot widen its row out of the rail', () => {
+  // `.project-body` is a grid so the fold can animate to content height, and a
+  // grid's implicit column is an `auto` track — sized to its item's *max-content*,
+  // which here is the widest un-wrapped session title. Measured in Electron
+  // against this sheet, a 40-character name grew the track to 650px inside the
+  // 280px rail; `overflow: hidden` then cropped the row's right end, which is
+  // where `.session-actions` lives, so 🗑 sat at x=626 and could not be reached.
+  // The name did not truncate either — it had all the room it asked for.
+  const body = blockFor('.project-body')
+  assert.ok(
+    declares(body, 'grid-template-columns', 'minmax(0, 1fr)'),
+    'the fold’s column must be capped at the rail, or the widest title sizes it',
+  )
+  assert.ok(declares(body, 'overflow', 'hidden'), 'the crop this protects against is still here')
+  assert.ok(
+    declares(blockFor('.project-rows'), 'min-width', '0'),
+    'the grid item must be allowed to shrink below its own max-content',
+  )
+
+  // With the row capped, these are what spend the width: the actions slot keeps
+  // its size and the name is the half that gives way.
+  const title = blockFor('.session-title')
+  assert.ok(declares(title, 'min-width', '0'), 'the title must be allowed to shrink below its text')
+  assert.ok(declares(title, 'text-overflow', 'ellipsis'), 'the truncation is the ellipsis')
+  assert.ok(
+    declares(blockFor('.session-actions'), 'flex', '0 0 auto'),
+    'the actions slot never shrinks, so the delete button keeps its place',
+  )
+})
+
+test('the hover marquee loops in one direction, inside the clip', () => {
+  // Three halves that only work together: `.session-title` is the box with the
+  // ellipsis, `.session-title-text` is the track that travels inside it, and
+  // `.session-title-echo` is the second copy the loop wraps onto. Animating the
+  // box would slide the already-truncated result out of view instead of revealing
+  // anything, and without the echo the restart is a visible jump.
+  assert.ok(
+    declares(blockFor('.session-title'), 'overflow', 'hidden'),
+    'the title is the clipper the text moves behind',
+  )
+  assert.ok(
+    declares(blockFor('.session-title-text'), 'display', 'inline'),
+    'at rest the track is a plain inline, or it would change the resting layout',
+  )
+  assert.ok(
+    declares(blockFor('.session-title-echo'), 'display', 'none'),
+    'the echo must not be in the layout at rest; sidebarView measures one copy',
+  )
+
+  const moving = blockFor(
+    '.session-row:hover .session-title.marquee > .session-title-text, .session-row:focus-within .session-title.marquee > .session-title-text',
+  )
+  assert.ok(
+    declares(moving, 'display', 'inline-flex'),
+    'transform does not apply to a non-replaced inline box, and the gap needs a flex box',
+  )
+  assert.ok(declares(moving, 'gap', 'var(--marquee-gap)'), 'the two copies are spaced by the token')
+  assert.ok(
+    declares(moving, 'animation', 'session-marquee var(--marquee-duration) linear 0.5s infinite'),
+    'linear and infinite: an eased marquee hesitates once per pass',
+  )
+  assert.ok(
+    declares(
+      blockFor('.session-row:hover .session-title.marquee .session-title-echo, .session-row:focus-within .session-title.marquee .session-title-echo'),
+      'display',
+      'block',
+    ),
+    'the echo joins the track only while it is moving',
+  )
+  assert.ok(
+    declares(
+      blockFor('.session-row:hover .session-title.marquee, .session-row:focus-within .session-title.marquee'),
+      'text-overflow',
+      'clip',
+    ),
+    'the ellipsis and the scroll must never describe the same frame',
+  )
+
+  // One direction, and exactly two steps. A third would mean somebody
+  // reintroduced the shuttle — a marquee that scrolls back is reading backwards.
+  // Found by declaration rather than by step name: `from`/`to` are shared with
+  // the entrance and sweep keyframes, and percentages keep this one out of the
+  // entrance scan below.
+  const ends = blocks.filter((block) =>
+    block.decls.some((decl) => decl.value === 'translateX(var(--marquee-shift))'),
+  )
+  assert.equal(ends.length, 1, 'the marquee has one far end, not one per leg')
+  assert.equal(ends[0]?.selector, '100%', 'and it is where the pass ends')
+  assert.equal(
+    tokenValue('--marquee-gap'),
+    `${MARQUEE_GAP}px`,
+    'the sheet spaces the copies by exactly the gap the model adds to the distance',
+  )
+})
+
 test('the search box and the composer chips are grooves at rest, not outlined fields', () => {
   // design_guidance 六.2 / 六.4. Three bordered capsules — the search box on the
   // sidebar's paper, the two chips over the composer's own hairline — read as
@@ -1164,8 +1288,8 @@ test('the bead is the tool step\'s whole status vocabulary, and it stays flat', 
   }
 
   // A step is not a card (§9). Depth is the sheet's two steps and a step is
-  // neither of them, so the layering inside a group is indentation, whitespace
-  // and the group's own hairline — never a third shadow or radius rung.
+  // neither of them, so the layering inside a group is indentation and
+  // whitespace — never a third shadow or radius rung.
   for (const block of blocks) {
     if (!/^\.step\b|^\.activity-group\b|^\.group-steps\b/.test(block.selector.trim())) continue
     for (const decl of block.decls) {
@@ -1195,8 +1319,8 @@ test("the shell family's terminal block is a card-shelled output block that redd
     'the terminal block joins the fenced block and the diff on their radius rung, not a third one',
   )
   assert.ok(
-    declares(terminal, 'overflow', 'auto'),
-    'a long output scrolls inside the block, never the group (§6.2 块内滚动)',
+    declares(terminal, 'overflow-y', 'auto'),
+    'a long output scrolls inside the block, never the group (§6.2 块内滚动) — vertically only',
   )
   assert.ok(
     terminal.decls.some((decl) => decl.prop === 'max-height'),
@@ -1232,8 +1356,8 @@ test("the search family's grouped list shares the content shell and its rows are
     'the search list joins the fenced block, the diff and the terminal on their radius rung',
   )
   assert.ok(
-    declares(list, 'overflow', 'auto'),
-    'a long result scrolls inside the list, never the group (§6.2 块内滚动)',
+    declares(list, 'overflow-y', 'auto'),
+    'a long result scrolls inside the list, never the group (§6.2 块内滚动) — vertically only',
   )
   assert.ok(
     list.decls.some((decl) => decl.prop === 'max-height'),
@@ -1447,7 +1571,7 @@ test('motion comes from the tokens, and the things that rebuild themselves have 
   assert.ok(declares(reduced, 'animation-duration', '1ms !important'), 'animations must collapse')
   assert.ok(
     declares(reduced, 'animation-iteration-count', '1 !important'),
-    'the infinite animations (spin, breathe, blink, sheen) must stop as well',
+    'the infinite animations (spin, breathe, blink, sheen, sweep) must stop as well',
   )
 })
 
@@ -1617,4 +1741,109 @@ test('nothing switches scroll anchoring off', () => {
     scroller?.decls.some((decl) => decl.prop === 'overflow-anchor'),
     '.transcript no longer says which anchoring behaviour it depends on',
   )
+})
+
+test('nothing in a turn can widen the transcript', () => {
+  // `.transcript` scrolls vertically, and `overflow-y: auto` computes
+  // `overflow-x` to `auto` as well — so one row wider than the reading column
+  // turned the whole conversation into a window that had to be dragged left and
+  // right to be read. A long tool path did it: `.search-file-head` is a flex
+  // container, where `text-overflow: ellipsis` truncates nothing, and its
+  // `.btn-label` is `nowrap` with no `min-width: 0`, so the path was that block's
+  // own floor.
+  //
+  // Three assertions, in the order the width travels: the scroller refuses the
+  // axis, every link in the chain is allowed to shrink, and each row that
+  // truncates has the pair of declarations that truncation actually needs.
+  assert.ok(
+    declares(blockFor('.transcript'), 'overflow-x', 'clip'),
+    'the scroller must refuse the horizontal axis outright; it is the backstop for all of the below',
+  )
+
+  const CHAIN = [
+    '.transcript-column',
+    '.activity-group',
+    '.group-steps',
+    '.step',
+    '.step-head',
+    '.step-body',
+    '.search-file',
+    '.search-hit',
+    '.step-code-row',
+  ]
+  for (const selector of CHAIN) {
+    assert.ok(
+      declares(blockFor(selector), 'min-width', '0'),
+      `${selector} must declare min-width: 0 — one link without it hands the column its widest ` +
+        'unbroken token as a floor, and the clip above then eats the text instead',
+    )
+  }
+
+  // **Nothing in a group truncates.** A head's arguments used to be one
+  // ellipsized line, on the reasoning that the row is a skim line — but for a
+  // `Grep` or a `Bash` the arguments *are* the step, the ellipsis fell on the end
+  // of the path (the file name), and the body below answers a different question.
+  // Every row folds instead, on the heads' own `flex-wrap`; `min-width: 0` is
+  // what stops the fold from being optional, because a flex item that will not
+  // shrink is the column's floor whether or not its text may wrap.
+  for (const selector of [
+    '.step-summary',
+    '.step-head .btn-label',
+    '.group-head .btn-label',
+    '.search-file-head .btn-label',
+    '.search-hit-text',
+  ]) {
+    const row = blockFor(selector)
+    assert.ok(declares(row, 'min-width', '0'), `${selector} must be allowed to shrink under its own text`)
+    assert.ok(
+      !row.decls.some((decl) => decl.prop === 'text-overflow'),
+      `${selector} is inside a group and may not hide any of its text behind an ellipsis`,
+    )
+    assert.ok(
+      row.decls.some((decl) => decl.prop === 'overflow-wrap' && decl.value === 'anywhere'),
+      `${selector} must fold an unbroken path, which is the one thing wrapping alone will not do`,
+    )
+  }
+})
+
+test('a diff is the only block in a turn that scrolls sideways', () => {
+  // Everything else wraps: a second axis to read one line in is worse than a
+  // folded line. A diff keeps it because its gutter and columns line up down the
+  // block, and a wrapped `+`/`-` line loses the alignment that makes it readable.
+  //
+  // Both lists are exhaustive on purpose — a new body that reaches for
+  // `white-space: pre` or its own horizontal scrollbar reds this instead of
+  // shipping a scrollbar nobody reviewed for.
+  const preserving = blocks
+    .filter((block) => block.decls.some((decl) => decl.prop === 'white-space' && decl.value === 'pre'))
+    .map((block) => block.selector)
+  assert.deepEqual(preserving, ['.diff-row'], 'only the diff may refuse to wrap')
+
+  // `.request-block` is the composer's approval well, outside the transcript
+  // entirely, and it is `pre-wrap` + `word-break: break-all` — the `auto` there
+  // is the vertical cap, and no horizontal overflow can reach it.
+  const SCROLLS_BOTH_AXES = ['.request-block, #composer-request .block', '.diff']
+  const scrolling = blocks
+    .filter((block) =>
+      block.decls.some(
+        (decl) =>
+          (decl.prop === 'overflow' && decl.value === 'auto') ||
+          (decl.prop === 'overflow-x' && decl.value === 'auto'),
+      ))
+    .map((block) => block.selector)
+  assert.deepEqual(scrolling, SCROLLS_BOTH_AXES, 'a block in a turn scrolls vertically only')
+
+  // The capped bodies say so themselves rather than inheriting it.
+  for (const selector of [
+    '.step-terminal',
+    '.step-body-text',
+    '.step-search',
+    '.step-code',
+    '.step-agent-text',
+    '.step-web',
+  ]) {
+    const body = blockFor(selector)
+    assert.ok(declares(body, 'overflow-y', 'auto'), `${selector} keeps its vertical cap`)
+    assert.ok(declares(body, 'overflow-x', 'clip'), `${selector} must not grow a horizontal scrollbar`)
+  }
 })

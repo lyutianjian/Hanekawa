@@ -8,6 +8,7 @@ import { createTranscriptView } from '../src/desktop/renderer/dom/transcriptView
 import { NO_DISCLOSURE } from '../src/desktop/renderer/model/thinking.js'
 import type { DisclosureState } from '../src/desktop/renderer/model/thinking.js'
 import type { TranscriptItem, TranscriptState } from '../src/desktop/renderer/model/transcript.js'
+import type { WaitingInput } from '../src/desktop/renderer/model/waiting.js'
 import type { ToolErrorCode } from '../src/harness/types.js'
 
 /**
@@ -37,7 +38,8 @@ interface Rendered {
   readonly opened: ReadonlyArray<readonly [string, number | undefined]>
   /** What each 复制 click handed the pane for the clipboard. */
   readonly copied: readonly string[]
-  render(state: TranscriptState, disclosure?: DisclosureState): void
+  render(state: TranscriptState, disclosure?: DisclosureState, activity?: WaitingInput): void
+  stopClock(): void
   jump(): StubView
   items(): readonly StubView[]
   column(): StubView
@@ -77,7 +79,8 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     toggled,
     opened,
     copied,
-    render: (state, disclosure = NO_DISCLOSURE) => view.render(state, disclosure),
+    render: (state, disclosure = NO_DISCLOSURE, activity) => view.render(state, disclosure, activity),
+    stopClock: () => view.stopClock(),
     jump,
     // Through `.transcript-column`, the one box the items live in: the scroller
     // stays full width (its scrollbar belongs at the panel's edge) while the text
@@ -335,6 +338,44 @@ test('a turn is one group: the user message outside it, its steps within', (t) =
   )
 })
 
+test('the thinking step’s head keeps its hairline only while the thought is live', (t) => {
+  const view = mount(t)
+  const thinkingStepOf = (): StubView => {
+    const found = groupOf(view).children[1]?.children[0]
+    assert.ok(found)
+    return found
+  }
+  // The same turn twice — a pending tool below keeps the group open across both —
+  // with the thought still arriving in the first paint and sealed in the second.
+  const sealedTurn = turnItems({ pending: true })
+  const liveTurn = sealedTurn.map((item) =>
+    item.id === 'th1' ? { ...item, pending: true, summary: undefined } : item)
+
+  view.render(transcript(liveTurn))
+  const head = thinkingStepOf().children[0]
+  assert.deepEqual(head?.classes, ['step-head', 'thinking-step-head'])
+  // Its own head class is what the sheet hangs the quiet resting state, the
+  // text-only hover and the chevron's reveal on — a tool's head keeps the fill.
+  // The hairline runs between the label and the chevron, and carries the sheen.
+  assert.deepEqual(
+    head?.children.map((child) => child.className || child.tagName),
+    ['btn-label', 'step-rule', 'icon'],
+  )
+
+  // Sealed: the line was the waiting, so it goes. The head node itself stays —
+  // that is what lets the sheen run instead of restarting once per token.
+  view.render(transcript(sealedTurn))
+  const sealed = thinkingStepOf().children[0]
+  assert.equal(sealed?.node, head?.node, 'the head is kept across the seal')
+  assert.deepEqual(
+    sealed?.children.map((child) => child.className || child.tagName),
+    ['btn-label', 'icon'],
+  )
+
+  view.stub.click(sealed?.node)
+  assert.deepEqual(view.toggled, [['th1', false]])
+})
+
 test('a finished group collapses, and its steps are absent rather than hidden', (t) => {
   const view = mount(t)
   view.render(transcript(turnItems()))
@@ -345,10 +386,13 @@ test('a finished group collapses, and its steps are absent rather than hidden', 
   // The transcript is an `aria-live` region: a folded turn must not be readable.
   assert.equal(group.children.length, 1, 'a collapsed group holds nothing but its head')
   assert.equal(group.text.includes('line one'), false)
-  // 「12 步里有一个红的」 without opening anything: one micro bead per tool step.
-  const beads = group.children[0]?.children.find((child) => child.classes.includes('group-beads'))
-  assert.deepEqual(beads?.children.map((one) => one.className), ['group-bead done'])
-  assert.equal(beads?.attributes.get('aria-hidden'), 'true')
+  // No bead strip: a dot per step along a finished head's right edge was a
+  // second, wordless report of what the steps below already say — and beside
+  // 「已处理」 it read as a verdict on the turn.
+  const head = group.children[0]!
+  assert.deepEqual(head.children.map((child) => child.className), ['btn-label'])
+  assert.equal(head.children[0]!.attributes.get('aria-hidden'), 'true')
+  assert.match(head.children[0]!.text, /^已完成|^已处理/)
 })
 
 test('a step head is a button whose body exists only while it is open', (t) => {
@@ -1166,7 +1210,9 @@ test('the fallback body still serves the new families when their data is absent'
 test('a mention in the user bubble is a pill, interleaved with the text as typed', (t) => {
   const { render, items } = mount(t)
   render(transcript([{ id: 'm1', kind: 'user', text: '把 @a.ts 搬到 @"b c.ts"' }]))
-  const bubble = items()[0]
+  // The item is the column; the bubble is the node inside it that the meta row
+  // hangs off of.
+  const bubble = items()[0]?.children.find((child) => child.classes.includes('user-bubble'))
   assert.ok(bubble)
 
   const shapes = bubble.nodes.map((node) => (typeof node === 'string' ? node : node.className))
@@ -1183,7 +1229,8 @@ test('a bubble with no mention is still a single text node', (t) => {
   const { render, items } = mount(t)
   render(transcript([{ id: 'm1', kind: 'user', text: 'mail me at foo@bar.com' }]))
 
-  assert.deepEqual(items()[0]?.nodes, ['mail me at foo@bar.com'])
+  const bubble = items()[0]?.children.find((child) => child.classes.includes('user-bubble'))
+  assert.deepEqual(bubble?.nodes, ['mail me at foo@bar.com'])
 })
 
 /**
@@ -1270,6 +1317,12 @@ test('a message carries a meta row: 复制, its model, its time — and a draft 
   render(transcript([{ id: 'u1', kind: 'user', text: 'go', createdAt: at }]))
   const userRow = meta(items()[0]!)
   assert.ok(userRow)
+  // Outside the bubble, under it: the row is a sibling of the surface, not one
+  // of the things inside it.
+  assert.deepEqual(
+    items()[0]!.children.map((child) => child.className),
+    ['user-bubble', 'item-meta'],
+  )
   assert.deepEqual(
     userRow.children.map((child) => [child.classes.join(' '), child.text]),
     [['item-copy', ''], ['item-time', '14:32']],
@@ -1292,4 +1345,146 @@ test('the stub carries every document member the dom helpers reach for', (t) => 
   for (const member of members) {
     assert.equal(stub.hasDocumentMember(member), true, `the stub is missing document.${member}`)
   }
+})
+
+// --- the waiting row ---------------------------------------------------------
+
+/** What the pane hands the view about the turn in flight. */
+function waiting(state: TranscriptState, startedAt: number | undefined): WaitingInput {
+  return { isStreaming: true, startedAt, turnId: state.turnId }
+}
+
+test('the waiting row is the transcript’s tail while a turn is running and nothing is arriving', (t) => {
+  const { render, items } = mount(t)
+  const state = transcript([{ id: 'u1', kind: 'user', text: '改一下侧栏' }])
+
+  render(state, NO_DISCLOSURE, waiting(state, Date.now() - 5000))
+
+  const row = items()[items().length - 1]!
+  assert.deepEqual(row.classes, ['waiting'], 'the row is the last thing in the column')
+  assert.deepEqual(
+    row.children.map((child) => [child.classes.join(' '), child.text]),
+    [['waiting-bead', ''], ['waiting-label', '正在思考'], ['waiting-elapsed', '5s'], ['waiting-hint', 'Esc 中断']],
+    'bead, label, elapsed, hint — in that order, and the clock is painted on the first frame',
+  )
+  // `.transcript` is `aria-live="polite"`: the label is what may be announced,
+  // the counter must not be (it changes ten times a second) and neither the
+  // bead nor the key hint is what a reader asked to hear alongside the answer.
+  assert.equal(row.children[0]!.attributes.get('aria-hidden'), 'true')
+  assert.equal(row.children[1]!.attributes.get('aria-hidden'), undefined)
+  assert.equal(row.children[2]!.attributes.get('aria-hidden'), 'true')
+  assert.equal(row.children[3]!.attributes.get('aria-hidden'), 'true')
+})
+
+test('once the turn opens a group, the head carries the status and the row is gone', (t) => {
+  const view = mount(t)
+  const live = turnItems({ pending: true })
+  const startedAt = Date.now() - 6_000
+
+  view.render(transcript(live, { turnId: 't1' }), NO_DISCLOSURE, {
+    isStreaming: true,
+    startedAt,
+    turnId: 't1',
+  })
+
+  // Nothing at the tail: the status moved up to the head, where it stays for the
+  // rest of the turn instead of walking down the page behind every step.
+  assert.equal(view.items().some((item) => item.classes.includes('waiting')), false)
+  const head = groupOf(view).children[0]!
+  assert.ok(head.classes.includes('live'))
+  assert.deepEqual(
+    head.children.map((child) => [child.classes.join(' '), child.text]),
+    [['waiting-bead', ''], ['waiting-label', 'Read'], ['waiting-elapsed', '6s'], ['waiting-hint', 'Esc 中断']],
+    'the running tool’s own name, with the row’s bead, counter and hint',
+  )
+  // The head's accessible name is the stable one; the label tracks the turn and
+  // this subtree is `aria-live`.
+  assert.equal(head.children[1]!.attributes.get('aria-hidden'), 'true')
+  assert.equal(head.attributes.get('aria-label'), '工作中')
+
+  // The tool settles and the turn keeps running: the label falls back to
+  // 「正在思考」 on the *same node*, so the sheen is not restarted.
+  const between = turnItems()
+  view.render(transcript(between, { turnId: 't1' }), NO_DISCLOSURE, { isStreaming: true, startedAt, turnId: 't1' })
+  const still = groupOf(view).children[0]!
+  assert.equal(still.node, head.node, 'the head is kept across the step settling')
+  assert.equal(still.children[1]!.text, '正在思考')
+
+  // Only the end of the turn seals it.
+  view.render(transcript(between, { turnId: undefined }), NO_DISCLOSURE, {
+    isStreaming: false,
+    startedAt: undefined,
+    turnId: undefined,
+  })
+  const sealed = groupOf(view).children[0]!
+  assert.equal(sealed.classes.includes('live'), false)
+  assert.match(sealed.text, /^已完成|^已处理/)
+})
+
+test('the waiting row keeps its node while it waits, and leaves when the answer starts', (t) => {
+  const { render, items } = mount(t)
+  const state = transcript([{ id: 'u1', kind: 'user', text: 'go' }])
+  const startedAt = Date.now() - 1000
+
+  render(state, NO_DISCLOSURE, waiting(state, startedAt))
+  const first = items()[items().length - 1]!.node
+  render(state, NO_DISCLOSURE, waiting(state, startedAt))
+  assert.equal(items()[items().length - 1]!.node, first, 'a repaint must not rebuild the row under the reader')
+
+  // The first delta lands: `model/waiting.ts` withdraws the row, and the view
+  // has to take it off the page rather than leave a second indicator beside the
+  // text that is now arriving.
+  const arriving = transcript([
+    { id: 'u1', kind: 'user', text: 'go' },
+    { id: '__draft__', kind: 'assistant', text: '好', pending: true },
+  ])
+  render(arriving, NO_DISCLOSURE, waiting(arriving, startedAt))
+  assert.equal(items().some((item) => item.classes.includes('waiting')), false)
+})
+
+test('the waiting clock ticks by itself, and stopClock stops it', async (t) => {
+  const { render, items, stopClock } = mount(t)
+  const state = transcript([{ id: 'u1', kind: 'user', text: 'go' }])
+  const elapsed = (): string => {
+    const row = items()[items().length - 1]!
+    return row.children.find((child) => child.classes.includes('waiting-elapsed'))!.text
+  }
+
+  // Started just under the five-second threshold: the counter is empty on the
+  // first paint and fills itself as the clock crosses it — the string moves
+  // without a paint, which is the whole reason the row owns a timer.
+  render(state, NO_DISCLOSURE, waiting(state, Date.now() - 4_900))
+  assert.equal(elapsed(), '', 'a short wait is not worth a number')
+  await new Promise((resolve) => setTimeout(resolve, 260))
+  const ticked = elapsed()
+  assert.notEqual(ticked, '', 'past five seconds the counter appears on its own')
+
+  stopClock()
+  await new Promise((resolve) => setTimeout(resolve, 260))
+  assert.equal(elapsed(), ticked, 'a stopped clock keeps its last value')
+})
+
+test('the kept thinking head reports the disclosure it is showing, both ways', (t) => {
+  // The regression the kept head introduced: its click closure is built once, so
+  // it reads a mutable ref — and a ref whose key no `node()` claims is pruned and
+  // rebuilt every paint, which left the head reporting 「folded」 forever and a row
+  // that opened but would not close.
+  const view = mount(t)
+  const disclosure = new Map<string, boolean>()
+  const items = turnItems({ pending: true })
+  const paint = (): void => view.render(transcript(items), disclosure)
+  const head = (): StubView => {
+    const found = groupOf(view).children[1]?.children[0]?.children[0]
+    assert.ok(found)
+    return found
+  }
+
+  paint()
+  view.stub.click(head().node)
+  assert.deepEqual(view.toggled, [['th1', false]], 'folded, so the click asks to open')
+
+  disclosure.set('th1', true)
+  paint()
+  view.stub.click(head().node)
+  assert.deepEqual(view.toggled, [['th1', false], ['th1', true]], 'open, so the same node asks to close')
 })

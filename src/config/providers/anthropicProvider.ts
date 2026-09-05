@@ -37,6 +37,8 @@ export class AnthropicProvider implements ModelProvider {
   private client: Anthropic
   private maxOutputTokens: number | undefined
   private nativeAnthropic: boolean
+  /** Static per model, like `maxOutputTokens` — not a per-request decision. */
+  private longContext1m: boolean
 
   constructor(config: ModelConfig) {
     this.client = new Anthropic({
@@ -47,6 +49,19 @@ export class AnthropicProvider implements ModelProvider {
     this.maxOutputTokens = config.maxOutputTokens
     this.nativeAnthropic = isNativeAnthropicApi(config.baseUrl)
     this.supportsCacheEdits = this.nativeAnthropic
+    this.longContext1m = config.longContext1m === true
+  }
+
+  /**
+   * The `anthropic-beta` values for one request, in one place.
+   *
+   * Both the header actually sent and the copy `recordPromptState` hashes read
+   * this, so cache-break detection can never disagree with the wire.
+   */
+  private betaHeaders(request: ModelRequest): string[] {
+    return getAnthropicBetaHeaders(request, this.nativeAnthropic, {
+      longContext1m: this.longContext1m,
+    })
   }
 
   supportsDynamicToolSearch(model: string): boolean {
@@ -74,26 +89,25 @@ export class AnthropicProvider implements ModelProvider {
 
         const payload = buildAnthropicPayload(effectiveRequest, this.maxOutputTokens, this.nativeAnthropic)
         const cacheSource = requireCacheSource(effectiveRequest.cacheSource)
+        // Beta headers (advanced tool use, cache editing, the 1M context window)
+        // travel as an HTTP header rather than in the payload, so they are
+        // computed here — before the debug calls, which are the only place they
+        // become visible.
+        const betas = this.betaHeaders(effectiveRequest)
         if (this.nativeAnthropic) {
           recordPromptState({
             system: JSON.stringify(payload.system ?? ''),
             toolsJson: JSON.stringify(payload.tools ?? []),
             model: effectiveRequest.model,
-            betas: getAnthropicBetaHeaders(effectiveRequest, this.nativeAnthropic),
+            betas,
             cacheScope: getAnthropicCacheScope(effectiveRequest, this.nativeAnthropic),
           }, cacheSource)
         }
         if (attempt > 1) {
           debugProviderPayload('anthropic-retry', payload)
         }
-        debugProviderSummary('anthropic', request, payload)
+        debugProviderSummary('anthropic', request, payload, betas)
         debugProviderPayload('anthropic', payload)
-
-        // Pass beta headers (for example, advanced tool use) to the API so
-        // tool_reference blocks are expanded server-side.
-        const betas = this.nativeAnthropic
-          ? getAnthropicBetaHeaders(effectiveRequest, this.nativeAnthropic)
-          : []
 
         const stream = this.client.messages.stream(
           payload as unknown as Anthropic.Messages.MessageStreamParams,

@@ -20,6 +20,8 @@ const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 128_000
 const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11'
 const TOOL_SEARCH_BETA = 'advanced-tool-use-2025-11-20'
 const CACHE_EDITING_BETA = 'cache-editing-2025-04-11'
+/** The 1M context window. Opt-in per model — see `ModelConfig.longContext1m`. */
+export const CONTEXT_1M_BETA = 'context-1m-2025-08-07'
 
 export function getMaxOutputTokens(configValue?: number, model?: string): number {
   const envValue = process.env.MYAGENT_MAX_OUTPUT_TOKENS
@@ -60,7 +62,7 @@ function anthropicSystemWithCache(request: ModelRequest): Array<{ type: 'text'; 
   const { staticBlocks, dynamicBlocks } = splitSystemForCaching(
     request.systemBlocks ?? (request.system ? [request.system] : []),
   )
-  const enableCaching = getPromptCachingEnabled(request.model)
+  const enableCaching = getPromptCachingEnabled()
 
   const staticText = staticBlocks.join('\n\n')
   const blocks: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral'; ttl?: '1h' } }> = []
@@ -260,7 +262,7 @@ export function buildAnthropicTools(
 }
 
 export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: number, nativeAnthropic = false) {
-  const enableCaching = nativeAnthropic && getPromptCachingEnabled(request.model)
+  const enableCaching = nativeAnthropic && getPromptCachingEnabled()
   const dynamicToolSearch = nativeAnthropic && request.hasDeferredTools === true
   // Only tools discovered AFTER the last compaction should have defer_loading.
   // Pre-compact discovered tools have lost their tool_reference blocks in the
@@ -337,9 +339,22 @@ export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: n
   return nativeAnthropic ? finalizeAnthropicCacheControl(payload) : payload
 }
 
-export function getAnthropicBetaHeaders(request: ModelRequest, nativeAnthropic = false): string[] {
+export interface AnthropicBetaOptions {
+  /** `ModelConfig.longContext1m` for the model this request runs on. */
+  longContext1m?: boolean
+}
+
+export function getAnthropicBetaHeaders(
+  request: ModelRequest,
+  nativeAnthropic = false,
+  options: AnthropicBetaOptions = {},
+): string[] {
   const betas: string[] = []
-  if (nativeAnthropic && getPromptCachingEnabled(request.model)) {
+  // The one beta not gated on `nativeAnthropic`. The switch exists precisely for
+  // the compatible endpoints that only expose their 1M models when this header
+  // is present, and their `baseUrl` is by definition not anthropic.com.
+  if (options.longContext1m) betas.push(CONTEXT_1M_BETA)
+  if (nativeAnthropic && getPromptCachingEnabled()) {
     if (getCacheControl(request.cacheRuntime).ttl === '1h') {
       betas.push(EXTENDED_CACHE_TTL_BETA)
     }
@@ -354,7 +369,7 @@ export function getAnthropicBetaHeaders(request: ModelRequest, nativeAnthropic =
 }
 
 export function getAnthropicCacheScope(request: ModelRequest, nativeAnthropic = false): string {
-  if (!nativeAnthropic || !getPromptCachingEnabled(request.model)) return 'disabled'
+  if (!nativeAnthropic || !getPromptCachingEnabled()) return 'disabled'
   return getCacheControl(request.cacheRuntime).ttl === '1h' ? 'ephemeral:1h' : 'ephemeral:5m'
 }
 

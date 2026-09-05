@@ -93,7 +93,10 @@ export const webFetchTool: Tool = {
   inputSchema: z.object({
     url: z.string().describe('The URL to fetch content from'),
   }).strict(),
-  riskLevel: 'safe',
+  // Not `safe`: only the preapproved documentation hosts are auto-approved
+  // (`utils/permissions/webFetchDomains.ts`); every other host prompts, and
+  // "don't ask again" writes a `WebFetch(domain:...)` rule.
+  riskLevel: 'confirm',
   isReadOnly: true,
   isConcurrencySafe: true,
   maxResultSizeChars: 100_000,

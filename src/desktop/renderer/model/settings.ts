@@ -59,6 +59,15 @@ export type SettingsDraft =
        * the change omits `apiKey` entirely, which the host reads as "leave it".
        */
       readonly keyTouched: boolean
+      /**
+       * The first model, offered only when the endpoint is new.
+       *
+       * An endpoint on its own routes nothing — every model names one — so
+       * creating them separately made the useful act two forms long. Both empty
+       * means "just the endpoint"; both filled adds the model in the same submit.
+       */
+      readonly modelKey: string
+      readonly modelId: string
     }
   | {
       readonly kind: 'model'
@@ -70,6 +79,8 @@ export type SettingsDraft =
       readonly endpoint: string
       readonly provider: string
       readonly contextWindow: string
+      /** `'on'` or `''` — a form field is a string, like every other one here. */
+      readonly longContext1m: string
       readonly maxOutputTokens: string
     }
   | {
@@ -78,11 +89,29 @@ export type SettingsDraft =
       readonly entry: string
     }
 
+/**
+ * One change that has been sent and not yet answered.
+ *
+ * Held so the screen can draw the *outcome* immediately instead of the state
+ * the host still has. Deleting a model used to leave its row on screen for a
+ * whole round trip — a save, a settings reload and a runtime rebuild per open
+ * lane — which reads as "the click did nothing" and invites a second one.
+ */
+export interface PendingMutation {
+  /** Monotonic per screen; `runSettingsChanges` retires entries by it. */
+  readonly id: number
+  readonly change: SettingsChange
+}
+
 export interface SettingsState {
   readonly open: boolean
   readonly category: SettingsCategory
-  /** A command is in flight; the screen keeps drawing but takes no input. */
+  /** A command is in flight; the screen keeps drawing and still takes input. */
   readonly busy: boolean
+  /** Sent, unanswered, and already drawn. See {@link PendingMutation}. */
+  readonly pending: readonly PendingMutation[]
+  /** Mints `PendingMutation.id`, so the reducer stays a pure function. */
+  readonly pendingSeq: number
   readonly projectRoot?: string
   readonly snapshot?: WireSettingsSnapshot
   readonly projects: ReadonlyArray<{ projectRoot: string; projectName: string }>
@@ -105,6 +134,8 @@ export function createSettingsState(): SettingsState {
     open: false,
     category: 'provider',
     busy: false,
+    pending: [],
+    pendingSeq: 0,
     projects: [],
     themePref: DEFAULT_THEME_PREFERENCE,
     query: '',
@@ -211,7 +242,16 @@ export interface SettingsButton {
   readonly title: string
   readonly intent: SettingsIntent
   readonly danger?: boolean
-  readonly icon?: 'trash' | 'plus'
+  readonly icon?: 'trash' | 'plus' | 'folder'
+  /**
+   * The wire change this button starts, for the action buttons in a card footer.
+   *
+   * Only so `markPending` can tell that *this* button is the one waiting: an
+   * action leaves no row behind to dim, so the button is the whole feedback.
+   */
+  readonly changeKind?: SettingsChange['kind']
+  /** Set by `markPending`: the change this button sent has not answered yet. */
+  readonly pending?: boolean
 }
 
 export interface SettingsRow {
@@ -221,6 +261,8 @@ export interface SettingsRow {
   /** Drawn in the accent-warning colour: the row is configured but unusable. */
   readonly warning?: string
   readonly control: SettingsControl
+  /** A change about this row is in flight; the view dims it and stops its controls. */
+  readonly pending?: boolean
 }
 
 export interface SettingsCard {
@@ -242,10 +284,25 @@ export interface SettingsFormField {
   readonly choices?: ReadonlyArray<{ value: string; label: string }>
 }
 
+/**
+ * Where a form or a confirmation is drawn.
+ *
+ * Both used to be stacked at the top of the column, above every card. That put
+ * 「新增模型」's form off-screen for anyone who had scrolled down to the button
+ * that opened it — the screen answered a click somewhere the user was not
+ * looking. An anchor names the card that owns it, and a row when there is one:
+ * an edit belongs directly under the thing being edited.
+ */
+export interface SettingsAnchor {
+  readonly cardId: string
+  readonly rowId?: string
+}
+
 export interface SettingsForm {
   readonly title: string
   readonly fields: readonly SettingsFormField[]
   readonly submitLabel: string
+  readonly anchor: SettingsAnchor
 }
 
 export interface SettingsViewModel {
@@ -259,7 +316,7 @@ export interface SettingsViewModel {
   readonly busy: boolean
   readonly projectChoices: ReadonlyArray<{ value: string; label: string }>
   readonly projectValue: string
-  readonly confirming?: { readonly message: string }
+  readonly confirming?: { readonly message: string; readonly anchor: SettingsAnchor }
   /** Echoed back so the DOM can tell "the model cleared it" from "the user typed". */
   readonly query: string
   /** Set only when a non-empty query filtered the page down to nothing. */
@@ -357,6 +414,232 @@ function filterCards(
   return { cards: kept, searchEmpty: `没有匹配「${query.trim()}」的设置。` }
 }
 
+// --- the optimistic projection -----------------------------------------------
+
+/**
+ * The snapshot as it will be once the pending changes land.
+ *
+ * The screen draws *this*, never `state.snapshot`, so a click shows its own
+ * result on the next paint instead of after a round trip. Nothing here writes
+ * anything: a failure simply retires the mutation and the real snapshot — which
+ * was never modified — comes back, so the rollback costs nothing.
+ *
+ * Only the variants whose effect is visible on this screen are folded. The
+ * actions (`reload-skills`, `reconnect-mcp`, `import-skill`, …) change nothing
+ * that can be predicted, so they project to themselves and are drawn instead by
+ * {@link pendingKinds} disabling the button that started them.
+ */
+export function projectSnapshot(
+  snapshot: WireSettingsSnapshot,
+  pending: readonly PendingMutation[],
+): WireSettingsSnapshot {
+  let next = snapshot
+  for (const { change } of pending) next = projectOne(next, change)
+  return next
+}
+
+function projectOne(snapshot: WireSettingsSnapshot, change: SettingsChange): WireSettingsSnapshot {
+  switch (change.kind) {
+    case 'remove-endpoint':
+      // The cascade the config performs: an endpoint takes its models with it.
+      return withDefaultRepaired({
+        ...snapshot,
+        endpoints: snapshot.endpoints.filter((endpoint) => endpoint.name !== change.name),
+        models: snapshot.models.filter((model) => model.endpoint !== change.name),
+      })
+    case 'remove-model':
+      return withDefaultRepaired({
+        ...snapshot,
+        models: snapshot.models.filter((model) => model.key !== change.key),
+      })
+    case 'rename-model':
+      return {
+        ...snapshot,
+        models: snapshot.models.map((model) =>
+          model.key === change.from ? { ...model, key: change.to } : model,
+        ),
+        ...(snapshot.defaultModel === change.from ? { defaultModel: change.to } : {}),
+      }
+    case 'set-endpoint': {
+      const row: WireEndpointInfo = {
+        name: change.name,
+        provider: change.provider,
+        ...(change.baseUrl !== undefined ? { baseUrl: change.baseUrl } : {}),
+        // The mask is the host's to compute; until it answers, a row that is
+        // *being* created says nothing rather than guessing at a key.
+        ...(existingEndpoint(snapshot, change.name)?.apiKeyMasked !== undefined
+          ? { apiKeyMasked: existingEndpoint(snapshot, change.name)!.apiKeyMasked }
+          : {}),
+      }
+      return { ...snapshot, endpoints: upsert(snapshot.endpoints, row, (item) => item.name) }
+    }
+    case 'set-model': {
+      const row: WireModelInfo = {
+        key: change.key,
+        model: change.model,
+        ...(change.endpoint !== undefined ? { endpoint: change.endpoint } : {}),
+        ...(change.provider !== undefined ? { provider: change.provider } : {}),
+        ...(change.contextWindow !== undefined ? { contextWindow: change.contextWindow } : {}),
+        ...(change.longContext1m !== undefined ? { longContext1m: change.longContext1m } : {}),
+        ...(change.maxOutputTokens !== undefined ? { maxOutputTokens: change.maxOutputTokens } : {}),
+        // Optimistic on purpose: the host answers with the truth a moment later,
+        // and drawing 「无法解析」 on a model the user just typed would be a
+        // warning about nothing.
+        resolves: true,
+      }
+      return { ...snapshot, models: upsert(snapshot.models, row, (item) => item.key) }
+    }
+    case 'set-default-model':
+      return { ...snapshot, defaultModel: change.key }
+    case 'set-routing':
+      return { ...snapshot, routing: { ...snapshot.routing, [change.role]: change.value } }
+    case 'set-subagent-routing':
+      return {
+        ...snapshot,
+        routing: {
+          ...snapshot.routing,
+          subagent: snapshot.routing.subagent.map((entry) =>
+            entry.type === change.type ? { ...entry, value: change.value } : entry,
+          ),
+        },
+        agents: snapshot.agents.map((agent) =>
+          agent.type === change.type ? { ...agent, routing: change.value } : agent,
+        ),
+      }
+    case 'set-skill-enabled':
+      return {
+        ...snapshot,
+        skills: snapshot.skills.map((skill) =>
+          skill.name === change.name ? { ...skill, enabled: change.enabled } : skill,
+        ),
+      }
+    case 'set-mcp-trust':
+      return {
+        ...snapshot,
+        mcpServers: snapshot.mcpServers.map((server) =>
+          server.name === change.name ? { ...server, trusted: change.trusted } : server,
+        ),
+      }
+    case 'set-context-management':
+      return {
+        ...snapshot,
+        contextManagement: { ...snapshot.contextManagement, [change.field]: change.value },
+      }
+    case 'set-permission-entries':
+      return {
+        ...snapshot,
+        permissions: {
+          ...snapshot.permissions,
+          groups: snapshot.permissions.groups.map((group) =>
+            group.behavior === change.behavior ? { ...group, local: [...change.entries] } : group,
+          ),
+        },
+      }
+    case 'set-startup-permission-mode':
+      return { ...snapshot, permissions: { ...snapshot.permissions, mode: change.mode } }
+    case 'set-cache-ttl':
+      return { ...snapshot, general: { ...snapshot.general, cacheTtl1h: change.enabled } }
+    case 'set-thinking':
+      return { ...snapshot, general: { ...snapshot.general, thinking: change.enabled } }
+    // Actions and the key clear: nothing on screen can be predicted from them.
+    case 'clear-endpoint-key':
+    case 'reload-agent-definitions':
+    case 'reload-skills':
+    case 'import-skill':
+    case 'reconnect-mcp':
+      return snapshot
+  }
+}
+
+function existingEndpoint(
+  snapshot: WireSettingsSnapshot,
+  name: string,
+): WireEndpointInfo | undefined {
+  return snapshot.endpoints.find((endpoint) => endpoint.name === name)
+}
+
+/** Replaces the row with the same key, or appends it — the shape both cards need. */
+function upsert<T>(rows: readonly T[], row: T, keyOf: (row: T) => string): T[] {
+  const at = rows.findIndex((candidate) => keyOf(candidate) === keyOf(row))
+  if (at === -1) return [...rows, row]
+  const next = [...rows]
+  next[at] = row
+  return next
+}
+
+/**
+ * The promotion `ConfigService.removeModel` performs: a `defaultModel` naming a
+ * model that is gone moves to the first one still configured, or disappears.
+ */
+function withDefaultRepaired(snapshot: WireSettingsSnapshot): WireSettingsSnapshot {
+  if (snapshot.defaultModel === undefined) return snapshot
+  if (snapshot.models.some((model) => model.key === snapshot.defaultModel)) return snapshot
+  const successor = snapshot.models[0]?.key
+  if (successor === undefined) {
+    const { defaultModel: _gone, ...rest } = snapshot
+    return rest
+  }
+  return { ...snapshot, defaultModel: successor }
+}
+
+/**
+ * The rows a pending change is *about*, so the view can mark them in flight.
+ *
+ * Removals are absent on purpose: their row is already gone from the projection,
+ * and there is nothing left to mark.
+ */
+export function pendingRowIds(pending: readonly PendingMutation[]): Set<string> {
+  const ids = new Set<string>()
+  for (const { change } of pending) {
+    switch (change.kind) {
+      case 'set-endpoint':
+      case 'clear-endpoint-key':
+        ids.add(`endpoint:${change.name}`)
+        break
+      case 'set-model':
+      case 'set-default-model':
+        ids.add(`model:${change.key}`)
+        break
+      case 'rename-model':
+        ids.add(`model:${change.to}`)
+        break
+      case 'set-routing':
+        ids.add(`routing:${change.role}`)
+        break
+      case 'set-subagent-routing':
+        ids.add(`routing:subagent:${change.type}`)
+        ids.add(`agent:${change.type}`)
+        break
+      case 'set-skill-enabled':
+        ids.add(`skill:${change.name}`)
+        break
+      case 'set-mcp-trust':
+        ids.add(`mcp:${change.name}`)
+        break
+      case 'set-context-management':
+        ids.add(`context:${change.field}`)
+        break
+      case 'set-startup-permission-mode':
+        ids.add('permissions:mode')
+        break
+      case 'set-cache-ttl':
+        ids.add('general:cache-ttl')
+        break
+      case 'set-thinking':
+        ids.add('general:thinking')
+        break
+      default:
+        break
+    }
+  }
+  return ids
+}
+
+/** The change kinds in flight, so the footer button that started one can wait. */
+export function pendingKinds(pending: readonly PendingMutation[]): Set<SettingsChange['kind']> {
+  return new Set(pending.map((entry) => entry.change.kind))
+}
+
 export function settingsView(state: SettingsState): SettingsViewModel {
   const searching = state.query.trim() !== ''
   const base = {
@@ -376,8 +659,13 @@ export function settingsView(state: SettingsState): SettingsViewModel {
     projectValue: state.projectRoot ?? '',
     ...(state.openMenu !== undefined ? { openMenu: state.openMenu } : {}),
     ...(state.error !== undefined ? { error: state.error } : {}),
-    ...(state.confirmingRemove
-      ? { confirming: { message: removeConfirmMessage(state.confirmingRemove) } }
+    ...(state.confirmingRemove && state.snapshot
+      ? {
+          confirming: {
+            message: removeConfirmMessage(state.confirmingRemove, state.snapshot),
+            anchor: confirmAnchor(state.confirmingRemove),
+          },
+        }
       : {}),
   }
 
@@ -398,15 +686,52 @@ export function settingsView(state: SettingsState): SettingsViewModel {
     return { ...base, title: CATEGORY_LABELS[state.category], cards: [] }
   }
 
+  // The *projected* snapshot everywhere below, never `state.snapshot`: a click
+  // draws its own outcome now and the host confirms it a round trip later.
+  const projected = projectSnapshot(state.snapshot, state.pending)
+  const cards = markPending(
+    cardsFor(state.category, projected),
+    pendingRowIds(state.pending),
+    pendingKinds(state.pending),
+  )
+
   return {
     ...base,
     title: CATEGORY_LABELS[state.category],
     // Only the provider page has one file to name for the whole page; the other
     // three mix `config.json` with `settings.local.json`, so those say it per card.
-    ...(state.category === 'provider' ? { subtitle: `配置写入 ${state.snapshot.saveTarget}` } : {}),
-    ...filterCards(cardsFor(state.category, state.snapshot), state.query),
-    ...(state.draft ? { form: draftForm(state.draft, state.snapshot) } : {}),
+    ...(state.category === 'provider' ? { subtitle: `配置写入 ${projected.saveTarget}` } : {}),
+    ...filterCards(cards, state.query),
+    ...(state.draft ? { form: draftForm(state.draft, projected) } : {}),
   }
+}
+
+/**
+ * Marks the rows and buttons a pending change is about.
+ *
+ * A pending row is drawn and dimmed rather than removed: unlike a deletion, a
+ * toggle or an edit still has something to show, and taking the row away for the
+ * length of a round trip would be a worse flicker than the lag it replaces.
+ */
+function markPending(
+  cards: readonly SettingsCard[],
+  rowIds: ReadonlySet<string>,
+  kinds: ReadonlySet<SettingsChange['kind']>,
+): SettingsCard[] {
+  if (rowIds.size === 0 && kinds.size === 0) return [...cards]
+  return cards.map((card) => ({
+    ...card,
+    rows: card.rows.map((row) => (rowIds.has(row.id) ? { ...row, pending: true } : row)),
+    ...(card.footerButtons
+      ? {
+          footerButtons: card.footerButtons.map((button) =>
+            button.changeKind !== undefined && kinds.has(button.changeKind)
+              ? { ...button, pending: true }
+              : button,
+          ),
+        }
+      : {}),
+  }))
 }
 
 /** The host-backed categories: everything except renderer-local `appearance`. */
@@ -465,8 +790,30 @@ function appearanceCards(pref: ThemePreference): SettingsCard[] {
   ]
 }
 
-function removeConfirmMessage(target: { kind: 'endpoint' | 'model'; name: string }): string {
-  return target.kind === 'endpoint' ? `删除服务商 ${target.name}？` : `删除模型 ${target.name}？`
+/**
+ * The question, with the cascade spelled out.
+ *
+ * Removing an endpoint takes its models with it now, so the confirmation names
+ * them: a cascade the user is not told about is a data loss they find out about
+ * afterwards. Read off the snapshot, which already carries each model's endpoint
+ * — no wire field was added for this.
+ */
+function removeConfirmMessage(
+  target: { kind: 'endpoint' | 'model'; name: string },
+  snapshot: WireSettingsSnapshot,
+): string {
+  if (target.kind === 'model') return `删除模型 ${target.name}？`
+  const cascade = snapshot.models
+    .filter((model) => model.endpoint === target.name)
+    .map((model) => model.key)
+  if (cascade.length === 0) return `删除服务商 ${target.name}？`
+  return `删除服务商 ${target.name}？将同时删除模型 ${cascade.join('、')}。`
+}
+
+function confirmAnchor(target: { kind: 'endpoint' | 'model'; name: string }): SettingsAnchor {
+  return target.kind === 'endpoint'
+    ? { cardId: 'endpoints', rowId: `endpoint:${target.name}` }
+    : { cardId: 'models', rowId: `model:${target.name}` }
 }
 
 function providerCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
@@ -573,6 +920,7 @@ function modelDetail(model: WireModelInfo): string {
   if (model.endpoint) parts.push(`接入点 ${model.endpoint}`)
   else if (model.provider) parts.push(model.provider)
   if (model.contextWindow) parts.push(`${Math.round(model.contextWindow / 1000)}k 上下文`)
+  if (model.longContext1m) parts.push('1M 请求头')
   return parts.join(' · ')
 }
 
@@ -779,6 +1127,7 @@ function agentCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
           label: '重新加载定义',
           title: '重新读取 .myagent/agents/，并让已开的会话用上新定义',
           intent: { kind: 'reload-agent-definitions' },
+          changeKind: 'reload-agent-definitions',
         },
       ],
     },
@@ -881,7 +1230,7 @@ function skillsCard(snapshot: WireSettingsSnapshot): SettingsCard {
     id: 'skills',
     title: '技能',
     note: `定义来自 ${snapshot.skillsDir} 下的 SKILL.md，内容在这里只读；开关写入 settings.local.json`,
-    empty: '还没有技能。',
+    empty: '还没有技能。可以从别处导入一个技能文件夹。',
     rows: snapshot.skills.map((skill) => ({
       id: `skill:${skill.name}`,
       label: `/${skill.name}`,
@@ -898,9 +1247,17 @@ function skillsCard(snapshot: WireSettingsSnapshot): SettingsCard {
     })),
     footerButtons: [
       {
+        label: '导入技能',
+        title: '选择一个含 SKILL.md 的文件夹，复制进这个项目的 .myagent/skills/',
+        icon: 'folder',
+        intent: { kind: 'import-skill' },
+        changeKind: 'import-skill',
+      },
+      {
         label: '重新加载技能',
         title: '重新读取 .myagent/skills/，并让已开的会话用上新定义',
         intent: { kind: 'reload-skills' },
+        changeKind: 'reload-skills',
       },
     ],
   }
@@ -956,6 +1313,7 @@ function mcpCard(snapshot: WireSettingsSnapshot): SettingsCard {
         label: '重新连接',
         title: '关掉并重新连接所有 MCP 服务器',
         intent: { kind: 'reconnect-mcp' },
+        changeKind: 'reconnect-mcp',
       },
     ],
   }
@@ -1028,6 +1386,7 @@ function draftForm(draft: SettingsDraft, snapshot: WireSettingsSnapshot): Settin
     return {
       title: `新增${BEHAVIOR_LABELS[draft.behavior]}规则`,
       submitLabel: '添加',
+      anchor: { cardId: `permissions:${draft.behavior}` },
       fields: [
         {
           id: 'behavior',
@@ -1052,6 +1411,10 @@ function draftForm(draft: SettingsDraft, snapshot: WireSettingsSnapshot): Settin
     return {
       title: draft.isNew ? '新增接入点' : `编辑接入点 ${draft.name}`,
       submitLabel: '保存',
+      anchor: {
+        cardId: 'endpoints',
+        ...(draft.isNew ? {} : { rowId: `endpoint:${draft.name}` }),
+      },
       fields: [
         { id: 'name', label: '名称', value: draft.name, placeholder: '例如 main' },
         {
@@ -1068,12 +1431,36 @@ function draftForm(draft: SettingsDraft, snapshot: WireSettingsSnapshot): Settin
           mono: true,
           placeholder: draft.isNew ? '' : '留空表示不修改',
         },
+        // A new endpoint with no model is a row that cannot be used for anything,
+        // so the first model is offered here rather than in a second trip through
+        // 「新增模型」. Both fields or neither — see `draftToChanges`.
+        ...(draft.isNew
+          ? [
+              {
+                id: 'modelKey',
+                label: '模型键名',
+                value: draft.modelKey,
+                placeholder: '可留空；例如 big',
+              },
+              {
+                id: 'modelId',
+                label: '模型 id',
+                value: draft.modelId,
+                mono: true,
+                placeholder: '可留空；例如 claude-opus-5',
+              },
+            ]
+          : []),
       ],
     }
   }
   return {
     title: draft.isNew ? '新增模型' : `编辑模型 ${draft.originalKey ?? draft.key}`,
     submitLabel: '保存',
+    anchor: {
+      cardId: 'models',
+      ...(draft.originalKey === undefined ? {} : { rowId: `model:${draft.originalKey}` }),
+    },
     fields: [
       { id: 'key', label: '键名', value: draft.key, placeholder: '例如 big' },
       { id: 'model', label: '模型 id', value: draft.model, mono: true, placeholder: '例如 claude-opus-5' },
@@ -1096,6 +1483,15 @@ function draftForm(draft: SettingsDraft, snapshot: WireSettingsSnapshot): Settin
         ],
       },
       { id: 'contextWindow', label: '上下文窗口', value: draft.contextWindow, placeholder: '例如 200000' },
+      {
+        id: 'longContext1m',
+        label: '1M 上下文请求头',
+        value: draft.longContext1m,
+        choices: [
+          { value: '', label: '关闭' },
+          { value: 'on', label: '开启：发送 context-1m beta' },
+        ],
+      },
       { id: 'maxOutputTokens', label: '最大输出 token', value: draft.maxOutputTokens, placeholder: '可留空' },
     ],
   }
@@ -1162,6 +1558,9 @@ export function draftToChange(
   if (draft.endpoint) change.endpoint = draft.endpoint
   if (draft.provider) change.provider = draft.provider
   if (contextWindow !== undefined) change.contextWindow = contextWindow
+  // Only written when on, so switching it off removes the field rather than
+  // storing a `false` — the same shape an emptied `contextWindow` sends.
+  if (draft.longContext1m === 'on') change.longContext1m = true
   if (maxOutputTokens !== undefined) change.maxOutputTokens = maxOutputTokens
   return change
 }
@@ -1194,6 +1593,28 @@ export function draftToChanges(
     return [
       { scope: 'provider', kind: 'rename-model', from: draft.originalKey, to: draft.key.trim() },
       change,
+    ]
+  }
+  // A new endpoint may carry its first model. `runSettingsChanges` runs the
+  // batch in order and folds each reply, so the `set-model` sees the endpoint.
+  if (draft.kind === 'endpoint' && draft.isNew) {
+    const modelKey = draft.modelKey.trim()
+    const modelId = draft.modelId.trim()
+    if (modelKey === '' && modelId === '') return [change]
+    if (modelKey === '' || modelId === '') {
+      return { error: '模型键名和模型 id 要么都填，要么都留空。' }
+    }
+    if (snapshot.models.some((model) => model.key === modelKey)) {
+      return { error: `已经有一个叫 ${modelKey} 的模型。` }
+    }
+    return [
+      change,
+      { scope: 'provider', kind: 'set-model', key: modelKey, model: modelId, endpoint: draft.name.trim() },
+      // Only when there is nothing to start from: a config that already names a
+      // default must not have it moved by adding an endpoint.
+      ...(snapshot.defaultModel === undefined
+        ? [{ scope: 'provider', kind: 'set-default-model', key: modelKey } as SettingsChange]
+        : []),
     ]
   }
   return [change]
@@ -1273,6 +1694,8 @@ export type SettingsIntent =
   | { kind: 'set-context-value'; field: WireContextManagementField; value: string }
   | { kind: 'set-skill-enabled'; name: string; enabled: boolean }
   | { kind: 'reload-skills' }
+  /** No path: the main process puts up the folder picker. */
+  | { kind: 'import-skill' }
   | { kind: 'set-mcp-trust'; name: string; trusted: boolean }
   | { kind: 'reconnect-mcp' }
   | { kind: 'set-theme'; preference: ThemePreference }
@@ -1287,6 +1710,15 @@ export interface SettingsOutcome {
   readonly state: SettingsState
   /** Changes to send, in order. The caller runs them and folds the reply back. */
   readonly changes?: readonly SettingsChange[]
+  /**
+   * The same changes, already parked in `state.pending` and drawn.
+   *
+   * This is what the caller hands to {@link runSettingsChanges}, which retires
+   * them by id as each reply lands. Separate from `changes` only because the ids
+   * are minted here — the reducer stays pure, and nothing else has to know how
+   * an optimistic row is identified.
+   */
+  readonly pending?: readonly PendingMutation[]
   /** The caller should (re)load the snapshot for `state.projectRoot`. */
   readonly load?: boolean
   /**
@@ -1308,6 +1740,27 @@ export interface SettingsOutcome {
  * dismisses the menu" free: the intent a menu item emits is one of these.
  */
 export function applySettingsIntent(state: SettingsState, intent: SettingsIntent): SettingsOutcome {
+  const outcome = reduceSettingsIntent(state, intent)
+  if (!outcome.changes || outcome.changes.length === 0) return outcome
+  // One place, rather than a `pending` spread in each of the fifteen branches
+  // that send something: every change the reducer emits is drawn optimistically,
+  // with no exceptions to remember.
+  const pending = outcome.changes.map((change, offset) => ({
+    id: outcome.state.pendingSeq + offset,
+    change,
+  }))
+  return {
+    ...outcome,
+    pending,
+    state: {
+      ...outcome.state,
+      pending: [...outcome.state.pending, ...pending],
+      pendingSeq: outcome.state.pendingSeq + pending.length,
+    },
+  }
+}
+
+function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): SettingsOutcome {
   const cleared = { ...state, error: undefined, confirmingRemove: undefined, openMenu: undefined }
   switch (intent.kind) {
     case 'none':
@@ -1358,6 +1811,8 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
             baseUrl: '',
             apiKey: '',
             keyTouched: false,
+            modelKey: '',
+            modelId: '',
           },
         },
       }
@@ -1378,6 +1833,9 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
             // and `keyTouched` is what actually decides whether it is sent.
             apiKey: '',
             keyTouched: false,
+            // Not offered when editing: the form draws them only for `isNew`.
+            modelKey: '',
+            modelId: '',
           },
         },
       }
@@ -1394,6 +1852,7 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
             endpoint: state.snapshot?.endpoints[0]?.name ?? '',
             provider: '',
             contextWindow: '',
+            longContext1m: '',
             maxOutputTokens: '',
           },
         },
@@ -1413,6 +1872,7 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
             endpoint: model.endpoint ?? '',
             provider: model.provider ?? '',
             contextWindow: model.contextWindow === undefined ? '' : String(model.contextWindow),
+            longContext1m: model.longContext1m ? 'on' : '',
             maxOutputTokens: model.maxOutputTokens === undefined ? '' : String(model.maxOutputTokens),
           },
         },
@@ -1530,6 +1990,13 @@ export function applySettingsIntent(state: SettingsState, intent: SettingsIntent
         state: { ...cleared, busy: true },
         changes: [{ scope: 'extensions', kind: 'reload-skills' }],
       }
+    case 'import-skill':
+      // No `sourceDir`: the host owns the native picker, and a cancelled pick is
+      // a successful no-op rather than an error.
+      return {
+        state: { ...cleared, busy: true },
+        changes: [{ scope: 'extensions', kind: 'import-skill' }],
+      }
     case 'set-mcp-trust':
       return {
         state: { ...cleared, busy: true },
@@ -1569,6 +2036,10 @@ function withField(draft: SettingsDraft, field: string, value: string): Settings
       case 'apiKey':
         // Typing here is the *only* thing that arms the key for sending.
         return { ...draft, apiKey: value, keyTouched: true }
+      case 'modelKey':
+        return { ...draft, modelKey: value }
+      case 'modelId':
+        return { ...draft, modelId: value }
       default:
         return draft
     }
@@ -1584,6 +2055,8 @@ function withField(draft: SettingsDraft, field: string, value: string): Settings
       return { ...draft, provider: value }
     case 'contextWindow':
       return { ...draft, contextWindow: value }
+    case 'longContext1m':
+      return { ...draft, longContext1m: value }
     case 'maxOutputTokens':
       return { ...draft, maxOutputTokens: value }
     default:
@@ -1629,22 +2102,31 @@ export async function loadSettings(
 export async function runSettingsChanges(
   client: SettingsClient,
   state: SettingsState,
-  changes: readonly SettingsChange[],
+  batch: readonly PendingMutation[],
 ): Promise<SettingsState> {
+  const ids = new Set(batch.map((entry) => entry.id))
+  // Retires this batch's optimistic rows whatever happens. On success the real
+  // snapshot already says the same thing; on failure it says the old thing,
+  // which *is* the rollback — nothing was ever written locally to undo.
+  const retire = (from: SettingsState): SettingsState => ({
+    ...from,
+    pending: from.pending.filter((entry) => !ids.has(entry.id)),
+  })
+
   const projectRoot = state.projectRoot
   if (projectRoot === undefined) {
-    return { ...state, busy: false, error: '还没有选定项目。' }
+    return { ...retire(state), busy: false, error: '还没有选定项目。' }
   }
   let next = state
-  for (const change of changes) {
+  for (const { change } of batch) {
     try {
       const result = await client.changeSettings(projectRoot, change)
       next = { ...next, snapshot: result.settings, error: undefined }
     } catch (error) {
-      return { ...next, busy: false, error: messageOf(error) }
+      return { ...retire(next), busy: false, error: messageOf(error) }
     }
   }
-  return { ...next, busy: false }
+  return { ...retire(next), busy: false }
 }
 
 function messageOf(error: unknown): string {

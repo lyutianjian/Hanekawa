@@ -60,7 +60,7 @@ export interface CreateRuntimeDeps {
   config: ConfigService
   store: SessionStore
   /**
-   * All three are read at call time rather than captured, so a reload changes
+   * All four are read at call time rather than captured, so a reload changes
    * what the *next* runtime is built from. `/agents reload` only ever worked
    * because it was already a getter; settings and skills were captured by value
    * and silently stayed at their startup contents for the life of the process.
@@ -68,6 +68,12 @@ export interface CreateRuntimeDeps {
   getSettings: () => MyAgentSettings
   getSkills: () => SkillDefinition[]
   getAgentDefinitions: () => BaseAgentDefinition[]
+  /**
+   * `AGENTS.md` / `CLAUDE.md` and the rules files under them, already merged.
+   * Captured per runtime like the settings above, so an edit reaches a session
+   * on the next rebuild — see `reloadSettings`'s `needsRuntimeRebuild`.
+   */
+  getProjectContext: () => string
   toolRegistry: ToolRegistry
   promptSections: SystemPromptSectionCache
   permissionGate: PermissionGate
@@ -105,6 +111,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
     getSettings,
     getSkills,
     getAgentDefinitions,
+    getProjectContext,
     toolRegistry,
     promptSections,
     permissionGate,
@@ -196,9 +203,11 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       getConfigRules: () => permissionGate.getConfigRules(),
       getSessionRules: () => permissionGate.getSessionRules(),
       getSessionRuleStore: () => permissionGate.getSessionRuleStore(),
+      getAdditionalDirectories: () => permissionGate.getAdditionalDirectories(),
       denialStateStore,
       cwd,
       system: config.get().agent.system,
+      projectContext: getProjectContext(),
       skills: getSkills(),
       agentDefinitions: getAgentDefinitions(),
       loadParentRecords: async () => prepareForkPreloadRecords(await recordStream.load()),
@@ -257,6 +266,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
         askUserQuestionBridge: bridges.askUserQuestion,
       },
       system: config.get().agent.system,
+      projectContext: getProjectContext(),
       skills: getSkills(),
       promptCacheRetention: targetModelConfig.promptCacheRetention,
       contextManagement,

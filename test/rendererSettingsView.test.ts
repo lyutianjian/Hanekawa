@@ -381,6 +381,28 @@ test('a closed pill opens on ArrowDown rather than swallowing the key', (t) => {
   assert.deepEqual(intents, [{ kind: 'toggle-menu', menu: 'row:routing:main' }])
 })
 
+test('the menu that just opened takes the focus its trigger lost to the repaint', (t) => {
+  const { view, stub, apply, container } = mount(t)
+  const shell = mainRoutingPill(view())
+  stub.focus(child(shell, 'settings-pill').node)
+
+  apply({ kind: 'toggle-menu', menu: 'row:routing:main' })
+
+  const items = findAll(mainRoutingPill(view()), 'settings-menu-item')
+  assert.equal(
+    stub.activeElement(),
+    items[0]!.node,
+    'the trigger was replaced by this paint, so focus had nowhere to go but <body>',
+  )
+
+  // An unrelated repaint rebuilds the shell, so the item the reader walked to is
+  // gone. It must not drop them on `<body>`: the screen itself is the fallback,
+  // and it is the node whose keydown answers Esc.
+  stub.focus(items.at(-1)!.node)
+  apply({ kind: 'search', query: 'A' })
+  assert.equal(stub.activeElement(), container)
+})
+
 /** The chain from the screen's root down to the first node carrying `className`. */
 function pathTo(view: StubView, className: string): StubView[] {
   // `StubView` has no parent link, so the path is found on the way down.
@@ -489,4 +511,129 @@ test('every view model field this file relies on is really produced', (t) => {
   assert.ok(view.searchEmpty)
   assert.ok(view.navGroups.length > 0)
   void t
+})
+
+// --- kept nodes ---------------------------------------------------------------
+
+/** The `.settings-card` whose title node reads `title`. */
+function cardTitled(view: StubView, title: string): StubView {
+  const found = findAll(view, 'settings-card').find(
+    (card) => card.children.some((kid) => kid.classes.includes('settings-card-title') && kid.text === title),
+  )
+  assert.ok(found, `no card titled ${title}`)
+  return found
+}
+
+test('a repaint keeps the card and row nodes rather than rebuilding them', (t) => {
+  const { view, render } = mount(t)
+  const models = cardTitled(child(view(), 'settings-body'), '模型')
+  const row = findOne(models, 'settings-row')
+  const control = findAll(models, 'settings-row-control')[0]
+  assert.ok(control)
+
+  // Nothing about the model changed; only the query the nav column filters on.
+  render(stateOf({ query: '模' }))
+
+  const after = cardTitled(child(view(), 'settings-body'), '模型')
+  assert.equal(after.node, models.node, 'the card left the page and came back')
+  assert.equal(
+    findOne(after, 'settings-row').node,
+    row.node,
+    'a rebuilt row loses the scroll anchor and the node under the pointer',
+  )
+  assert.equal(
+    findAll(after, 'settings-row-control')[0]?.node,
+    control.node,
+    'a rebuilt control cell re-parents whatever it holds, which blurs it',
+  )
+})
+
+test('typing in a form field keeps that input node, so the caret survives', (t) => {
+  const { view, apply } = mount(t)
+  apply({ kind: 'new-model' })
+  const form = findOne(child(view(), 'settings-body'), 'settings-form')
+  const first = findAll(form, 'settings-input')[0]
+  assert.ok(first)
+
+  // Exactly what `live` commit does, once per keystroke.
+  apply({ kind: 'draft-field', field: 'key', value: 'b' })
+  apply({ kind: 'draft-field', field: 'key', value: 'bi' })
+
+  const after = findOne(child(view(), 'settings-body'), 'settings-form')
+  assert.equal(
+    findAll(after, 'settings-input')[0]?.node,
+    first.node,
+    'a rebuilt input drops the caret on every character typed',
+  )
+})
+
+test('typing in a form field keeps the caret, because the cell around it is kept too', (t) => {
+  const { view, apply, stub } = mount(t)
+  apply({ kind: 'new-model' })
+  const form = findOne(child(view(), 'settings-body'), 'settings-form')
+  const input = findAll(form, 'settings-input')[0]
+  const cell = findAll(form, 'settings-row-control')[0]
+  assert.ok(input && cell)
+  stub.focus(input.node)
+
+  apply({ kind: 'draft-field', field: 'key', value: 'b' })
+  apply({ kind: 'draft-field', field: 'key', value: 'bi' })
+
+  const after = findOne(child(view(), 'settings-body'), 'settings-form')
+  assert.equal(
+    findAll(after, 'settings-row-control')[0]?.node,
+    cell.node,
+    'a rebuilt cell re-parents the kept input, and re-parenting detaches it',
+  )
+  assert.equal(
+    stub.activeElement(),
+    input.node,
+    'the field was blurred mid-word: one character per click was all the user got',
+  )
+})
+
+test('a live field commits on input alone, so a blur cannot fire a second one', (t) => {
+  const { view, apply, intents, stub } = mount(t)
+  apply({ kind: 'new-model' })
+  const input = findAll(findOne(child(view(), 'settings-body'), 'settings-form'), 'settings-input')[0]
+  assert.ok(input)
+  ;(input.node as { value: string }).value = 'b'
+
+  stub.dispatch(input.node, 'input')
+  assert.deepEqual(intents, [{ kind: 'draft-field', field: 'key', value: 'b' }])
+
+  // The blur that a click on 保存 begins. A second commit here re-renders the
+  // form between `mousedown` and `mouseup` and the click never lands.
+  stub.dispatch(input.node, 'change')
+  assert.equal(intents.length, 1, 'the blur committed a second time')
+})
+
+test('a form is drawn inside the card it belongs to, not above every card', (t) => {
+  const { view, apply } = mount(t)
+  apply({ kind: 'new-model' })
+  const body = child(view(), 'settings-body')
+
+  assert.equal(findAll(body, 'settings-form').length, 1)
+  const models = cardTitled(body, '模型')
+  assert.equal(
+    findAll(models, 'settings-form').length,
+    1,
+    'the form belongs to the list it is about to grow',
+  )
+  // And the column itself no longer stacks one above the cards.
+  const column = child(body, 'settings-column')
+  assert.equal(column.children.some((kid) => kid.classes.includes('settings-form')), false)
+})
+
+test('a delete confirmation is drawn under the row it is about', (t) => {
+  const { view, apply } = mount(t)
+  apply({ kind: 'request-remove', target: { kind: 'model', name: 'big' } })
+  const models = cardTitled(child(view(), 'settings-body'), '模型')
+
+  const at = models.children.findIndex((kid) => kid.classes.includes('settings-confirm'))
+  assert.ok(at > 0, 'the confirmation is inside the card')
+  assert.ok(
+    models.children[at - 1]?.classes.includes('settings-row'),
+    'and directly under the row it is asking about',
+  )
 })

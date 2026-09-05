@@ -375,23 +375,31 @@ test('ConfigService write-back: setEndpoint + setModelConfig persist', async () 
   }
 })
 
-test('ConfigService write-back: removeEndpoint refuses while a model references it', async () => {
+test('ConfigService write-back: removeEndpoint takes its models with it', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
       endpoints: { e: { provider: 'anthropic', baseUrl: 'https://x' } },
-      models: { m: { endpoint: 'e', model: 'm' } },
+      models: {
+        m: { endpoint: 'e', model: 'm' },
+        keep: { provider: 'anthropic', model: 'keep' },
+      },
       defaultModel: 'm',
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
-    assert.throws(() => cfg.removeEndpoint('e'), /referenced by model "m"/)
+    assert.deepEqual(cfg.modelsForEndpoint('e'), ['m'])
+    cfg.removeEndpoint('e')
+    assert.equal(cfg.getEndpoint('e'), undefined)
+    assert.equal(cfg.getModel('m'), undefined)
+    // The model that outlived it is what `defaultModel` now names.
+    assert.equal(cfg.get().defaultModel, 'keep')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('ConfigService write-back: removeModel refuses while routing references it', async () => {
+test('ConfigService write-back: removeModel sends a routing role back to inherit', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
@@ -404,13 +412,17 @@ test('ConfigService write-back: removeModel refuses while routing references it'
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
-    assert.throws(() => cfg.removeModel('a'), /referenced by routing\.plan/)
+    cfg.removeModel('a')
+    assert.equal(cfg.getModel('a'), undefined)
+    assert.equal(cfg.getRouting().plan, 'inherit')
+    // Untouched: only the roles that named the removed model move.
+    assert.equal(cfg.get().defaultModel, 'b')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('ConfigService write-back: removeModel refuses while a subagent route references it', async () => {
+test('ConfigService write-back: removeModel sends a subagent route back to inherit', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
@@ -423,22 +435,45 @@ test('ConfigService write-back: removeModel refuses while a subagent route refer
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
-    assert.throws(() => cfg.removeModel('a'), /referenced by routing\.subagent\.explore/)
+    cfg.removeModel('a')
+    assert.equal(cfg.getRouting().subagent?.explore, 'inherit')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('ConfigService write-back: removeModel refuses removing the defaultModel', async () => {
+test('ConfigService write-back: removing the defaultModel promotes the next one', async () => {
   const dir = await tmpDir()
   try {
     await writeConfig(dir, {
-      models: { d: { provider: 'anthropic', model: 'd' } },
+      models: {
+        d: { provider: 'anthropic', model: 'd' },
+        next: { provider: 'anthropic', model: 'next' },
+      },
       defaultModel: 'd',
+      compactModel: 'd',
     })
     const cfg = new ConfigService(dir)
     await cfg.load()
-    assert.throws(() => cfg.removeModel('d'), /defaultModel/)
+    cfg.removeModel('d')
+    assert.equal(cfg.get().defaultModel, 'next')
+    assert.equal(cfg.get().compactModel, 'next')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ConfigService write-back: removing the last model drops defaultModel entirely', async () => {
+  const dir = await tmpDir()
+  try {
+    await writeConfig(dir, {
+      models: { only: { provider: 'anthropic', model: 'only' } },
+      defaultModel: 'only',
+    })
+    const cfg = new ConfigService(dir)
+    await cfg.load()
+    cfg.removeModel('only')
+    assert.equal('defaultModel' in cfg.get(), false)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

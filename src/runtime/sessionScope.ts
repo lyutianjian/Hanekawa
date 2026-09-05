@@ -21,7 +21,7 @@ import type { SessionScope } from './types.js'
  * The project-level collaborators a scope builds on. Every one of these is
  * shared across scopes on purpose — see `ProjectRuntime`.
  *
- * The three getters are read at scope-construction time *and* by the runtime
+ * The four getters are read at scope-construction time *and* by the runtime
  * factory at every `createRuntime` call, so a reload is visible to scopes that
  * already exist.
  */
@@ -32,6 +32,7 @@ export interface SessionScopeDeps {
   getSettings: () => MyAgentSettings
   getSkills: () => SkillDefinition[]
   getAgentDefinitions: () => BaseAgentDefinition[]
+  getProjectContext: () => string
   toolRegistry: ToolRegistry
   backgroundTasks: BackgroundTaskRegistry
   contextManagement: Partial<ContextManagementConfig> | undefined
@@ -71,6 +72,9 @@ export async function createSessionScope(
     {
       denialStateStore,
       cwd: deps.cwd,
+      ...(settings.permissions?.additionalDirectories
+        ? { additionalDirectories: settings.permissions.additionalDirectories }
+        : {}),
       mode: settings.permissions?.mode ?? 'default',
       persistRule: (rule) => persistPermissionRule(deps.cwd, rule),
     },
@@ -85,6 +89,7 @@ export async function createSessionScope(
     getSettings: deps.getSettings,
     getSkills: deps.getSkills,
     getAgentDefinitions: deps.getAgentDefinitions,
+    getProjectContext: deps.getProjectContext,
     toolRegistry: deps.toolRegistry,
     promptSections,
     permissionGate,

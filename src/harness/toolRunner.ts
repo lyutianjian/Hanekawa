@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { PermissionGate } from './permissions.js'
 import { mergeHooks, runLifecycleHooks, runPreToolUseHooks } from './hooks.js'
-import { validateToolInput } from './toolValidation.js'
+import { validateToolInput, type ToolValidationError } from './toolValidation.js'
+import { normalizeToolInput } from '../tools/inputAliases.js'
+import { describeToolError } from '../tools/fsErrors.js'
 import { countTextTokens } from '../prompts/budget.js'
 import { wrapInSystemReminder } from './systemReminder.js'
 import type { ToolHooks } from './hooks.js'
@@ -57,6 +59,12 @@ export class ToolRunner {
     if (!tool) throw new Error(`Unknown tool: ${call.name}`)
     const activeHooks = mergeHooks(this.hooks, options?.hooks)
 
+    // Rewrite the model's parameter names to this tool's before anything reads
+    // them, so permissions, hooks, display and the persisted record all see one
+    // canonical shape. Done here rather than in a schema preprocess because
+    // execute() below receives `call.input` itself, not zod's parsed output.
+    call.input = normalizeToolInput(tool.name, call.input)
+
     const toolUse: ToolUseRecord = {
       id: call.id,
       type: 'tool_use',
@@ -91,12 +99,11 @@ export class ToolRunner {
 
       const validation = validateToolInput(tool, call.input)
       if (!validation.ok) {
-        const firstError = validation.errors[0]
         const record = this.result(
           call,
           tool.name,
           false,
-          `Tool input validation failed for ${tool.name}: ${firstError?.message ?? 'invalid input'}`,
+          formatValidationFailure(tool, validation.errors),
           'invalid_input',
           validation.errors,
           turnId,
@@ -106,10 +113,14 @@ export class ToolRunner {
         return record
       }
 
-      const approved = await this.permissionGate.approve(tool, call.input)
+      const decision = await this.permissionGate.approveDetailed(tool, call.input)
+      const approved = decision.approved
       await this.emitRecord(this.permissionGate.createApprovalRecord(tool, call.input, approved, turnId))
       if (!approved) {
-        const denied = this.result(call, tool.name, false, `User denied permission for ${tool.name}.`, 'permission_denied', undefined, turnId, tool.maxResultSizeChars)
+        // A denial the user never saw must not claim they made it, or the model
+        // retries the same call believing a human rejected it.
+        const reason = decision.denialReason ?? `User denied permission for ${tool.name}.`
+        const denied = this.result(call, tool.name, false, reason, 'permission_denied', undefined, turnId, tool.maxResultSizeChars)
         await this.emitToolResultAndPostHooks(denied, tool, call.input, executionContext, signal, activeHooks)
         return denied
       }
@@ -164,7 +175,10 @@ export class ToolRunner {
       } catch (error) {
         syncMutableToolContext(context, executionContext)
         const errorCode = error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'execution_failed'
-        const record = this.result(call, tool.name, false, errorCode === 'aborted' ? abortedToolResultContent(signal, error) : error instanceof Error ? error.message : String(error), errorCode, undefined, turnId, tool.maxResultSizeChars)
+        const content = errorCode === 'aborted'
+          ? abortedToolResultContent(signal, error)
+          : describeToolError(tool.name, error, executionContext.cwd)
+        const record = this.result(call, tool.name, false, content, errorCode, undefined, turnId, tool.maxResultSizeChars)
         await this.emitToolResultAndPostHooks(record, tool, call.input, executionContext, signal, activeHooks)
         return record
       }
@@ -408,6 +422,26 @@ function trimDisplayString(value: unknown): string | undefined {
   const trimmed = value.trim()
   if (!trimmed) return undefined
   return trimmed.slice(0, MAX_TASK_DISPLAY_TEXT_CHARS)
+}
+
+/**
+ * Reporting only the first issue meant a call with two wrong keys took two
+ * turns to fix. Listing every issue plus the accepted parameter names lets the
+ * model correct the whole call at once.
+ */
+function formatValidationFailure(tool: Tool, errors: ToolValidationError[]): string {
+  const lines = errors.length > 0
+    ? errors.map((error) => `- ${error.message}`)
+    : ['- invalid input']
+  const accepted = acceptedParameterNames(tool)
+  const footer = accepted.length > 0 ? `\nAccepted parameters: ${accepted.join(', ')}.` : ''
+  return `Tool input validation failed for ${tool.name}:\n${lines.join('\n')}${footer}`
+}
+
+function acceptedParameterNames(tool: Tool): string[] {
+  const shape = (tool.inputSchema as { _def?: { shape?: unknown } })._def?.shape
+  const resolved = typeof shape === 'function' ? (shape as () => unknown)() : shape
+  return isRecord(resolved) ? Object.keys(resolved) : []
 }
 
 function normalizeCount(value: unknown, fallback: number): number {

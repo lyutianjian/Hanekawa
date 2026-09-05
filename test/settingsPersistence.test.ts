@@ -142,25 +142,34 @@ test('renameModel carries the routing reference with it, on disk', async () => {
   })
 })
 
-test('removeModel refuses a key routing still points at, and writes nothing', async () => {
+test('removeModel frees the routing role that pointed at it, on disk', async () => {
   await withProject(async (cwd, config) => {
     config.setEndpoint('main', { provider: 'anthropic' })
     config.setModelConfig('big', { model: 'claude-big', endpoint: 'main' })
     config.setRouting({ ...config.getRouting(), main: 'big' })
     await config.save()
 
-    assert.throws(() => config.removeModel('big'))
+    config.removeModel('big')
+    await config.save()
 
     const reloaded = await reload(cwd)
-    assert.ok(reloaded.getModel('big'), 'the rejected removal left the config alone')
+    assert.equal(reloaded.getModel('big'), undefined)
+    assert.equal(reloaded.getRouting().main, 'inherit')
   })
 })
 
-test('removeEndpoint refuses one a model still references', async () => {
-  await withProject(async (_cwd, config) => {
+test('removeEndpoint takes the models that resolve through it', async () => {
+  await withProject(async (cwd, config) => {
     config.setEndpoint('main', { provider: 'anthropic' })
     config.setModelConfig('big', { model: 'claude-big', endpoint: 'main' })
-    assert.throws(() => config.removeEndpoint('main'))
+    await config.save()
+
+    config.removeEndpoint('main')
+    await config.save()
+
+    const reloaded = await reload(cwd)
+    assert.equal(reloaded.getEndpoint('main'), undefined)
+    assert.equal(reloaded.getModel('big'), undefined)
   })
 })
 

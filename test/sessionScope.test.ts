@@ -150,7 +150,11 @@ test('reloading settings reaches every open scope, not just the newest', async (
 })
 
 test('denial counters are per scope and land in each scope\'s own session', async () => {
-  const { cwd, store, session } = await createProject()
+  // A configured deny rule is what still denies without asking, so it is what
+  // moves the counter; safety findings prompt instead.
+  const { cwd, store, session } = await createProject({
+    settings: { permissions: { deny: ['Bash(curl:*)'] } },
+  })
   const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
   const other = await store.create('second tab')
   const second = await host.openScope(other)
@@ -162,7 +166,7 @@ test('denial counters are per scope and land in each scope\'s own session', asyn
     riskLevel: 'confirm',
     execute: async () => ({ ok: true, content: 'done' }),
   }
-  const denied = { command: 'cat .git/config' }
+  const denied = { command: 'curl https://example.com' }
 
   assert.equal(await host.permissionGate.approve(bashTool, denied), false)
   assert.equal(await second.permissionGate.approve(bashTool, denied), false)

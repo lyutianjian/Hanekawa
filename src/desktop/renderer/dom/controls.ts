@@ -46,11 +46,16 @@ export function button(
 }
 
 /**
- * A text input that commits on `change` and on Enter — **never per keystroke**.
+ * A text input that commits on `change` and on Enter — **never per keystroke**,
+ * unless `live` says otherwise.
  *
- * Every commit here ends in a config write, so a keystroke-level handler would
- * rewrite `config.json` once per character typed and fan a runtime rebuild out
- * to every open lane while doing it.
+ * A settings *row* ends every commit in a config write, so a keystroke-level
+ * handler there would rewrite `config.json` once per character typed and fan a
+ * runtime rebuild out to every open lane while doing it. A *form* field is the
+ * opposite: it writes `SettingsState.draft`, which never leaves the renderer
+ * until 保存 is pressed. `live` is for those, and it is not a nicety — a
+ * blur-commit re-renders the screen on `mousedown`, which used to rebuild the
+ * 保存 button before `mouseup` reached it and swallow the click whole.
  *
  * Escape is not handled: it belongs to the container, which uses it to unwind
  * the form. The input stops propagation only for Enter, which it consumes.
@@ -61,6 +66,7 @@ export function textField(options: {
   placeholder?: string
   ariaLabel: string
   mono?: boolean
+  live?: boolean
   onCommit: (value: string) => void
 }): HTMLInputElement {
   const node = el('input', options.className ?? 'settings-input')
@@ -69,7 +75,13 @@ export function textField(options: {
   node.setAttribute('aria-label', options.ariaLabel)
   if (options.placeholder) node.placeholder = options.placeholder
   if (options.mono) node.classList.add('mono')
-  node.addEventListener('change', () => options.onCommit(node.value))
+  // One of the two, never both. A `live` field has already committed every
+  // character by the time it loses focus, so a `change` on top of that is a
+  // *second* commit fired by the blur — and that blur is the `mousedown` on 保存,
+  // whose re-render rebuilt the button before `mouseup` reached it. The click the
+  // user aimed at the footer was swallowed, once per edit.
+  if (options.live) node.addEventListener('input', () => options.onCommit(node.value))
+  else node.addEventListener('change', () => options.onCommit(node.value))
   node.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return
     event.preventDefault()
@@ -156,6 +168,14 @@ export function pillSelect(options: {
   ariaLabel: string
   choices: ReadonlyArray<{ value: string; label: string }>
   open: boolean
+  /** False while the row's own change is in flight — see `SettingsRow.pending`. */
+  enabled?: boolean
+  /**
+   * Handed the first option while the menu is open, so the caller can focus it
+   * *after* this shell is in the page — `focus()` on a detached node does nothing,
+   * and this one is built before it is inserted.
+   */
+  onFirstItem?: (item: HTMLButtonElement) => void
   onToggle: () => void
   onChange: (value: string) => void
 }): HTMLElement {
@@ -171,7 +191,7 @@ export function pillSelect(options: {
     selected?.label ?? options.value,
     options.ariaLabel,
     options.onToggle,
-    { trailingIcon: 'chevron-down' },
+    { trailingIcon: 'chevron-down', ...(options.enabled === false ? { enabled: false } : {}) },
   )
   trigger.setAttribute('aria-haspopup', 'listbox')
   trigger.setAttribute('aria-expanded', options.open ? 'true' : 'false')
@@ -196,6 +216,7 @@ export function pillSelect(options: {
       menu.appendChild(item)
     }
     shell.appendChild(menu)
+    if (items[0]) options.onFirstItem?.(items[0])
   }
 
   shell.addEventListener('keydown', (event) => {
@@ -203,7 +224,10 @@ export function pillSelect(options: {
     if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'Home' && key !== 'End') return
     if (!options.open) {
       // ArrowDown only opens: the menu does not exist yet, so focusing its first
-      // item waits for the render this toggle causes.
+      // item waits for the render this toggle causes — which is what `onFirstItem`
+      // is for. Nothing here can do it, and nothing did until that existed: the
+      // trigger this keydown came from is *replaced* by that render, so focus fell
+      // to `<body>` and every later arrow key missed this listener entirely.
       if (key !== 'ArrowDown') return
       event.preventDefault()
       event.stopPropagation()

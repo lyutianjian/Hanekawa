@@ -38,6 +38,18 @@ export interface ModelConfig {
   maxOutputTokens?: number
   thinking?: ThinkingConfig
   maxEffort?: EffortLevel
+  /**
+   * Sends `anthropic-beta: context-1m-2025-08-07` on every request for this
+   * model.
+   *
+   * An explicit switch rather than something inferred from the model name: some
+   * compatible endpoints only hand out their 1M models when the header is
+   * present, while vendors that are already 1M by default may reject an
+   * unrecognized beta outright. Orthogonal to {@link ModelConfig.contextWindow},
+   * which is the local token budget and nothing else. Only the `anthropic`
+   * provider reads it.
+   */
+  longContext1m?: boolean
 }
 
 export interface AgentConfig {
@@ -295,12 +307,28 @@ export class ConfigService {
     this.config.endpoints = { ...this.config.endpoints, [name]: endpoint }
   }
 
+  /** The models that resolve through one endpoint, in config order. */
+  modelsForEndpoint(name: string): string[] {
+    return Object.entries(this.config.models)
+      .filter(([, model]) => model.endpoint === name)
+      .map(([key]) => key)
+  }
+
+  /**
+   * Removes an endpoint **and every model that resolves through it**.
+   *
+   * It used to throw instead. That made an endpoint undeletable until the user
+   * had hunted down each of its models by hand, for a reference the config can
+   * repair itself: a model whose endpoint is gone cannot resolve, so keeping it
+   * only leaves a key that silently does nothing. Deleting is now one act, and
+   * `removeModel` below is what re-points whatever spoke for those models.
+   *
+   * The one thing that still blocks a removal is a turn *running* on the model,
+   * and that is not a fact the config knows — the desktop shell checks it before
+   * calling in (`ShellHost.applySettingsChange`).
+   */
   removeEndpoint(name: string): void {
-    for (const [modelName, model] of Object.entries(this.config.models)) {
-      if (model.endpoint === name) {
-        throw new Error(`Cannot remove endpoint "${name}": referenced by model "${modelName}".`)
-      }
-    }
+    for (const modelName of this.modelsForEndpoint(name)) this.removeModel(modelName)
     if (!this.config.endpoints?.[name]) return
     const { [name]: _removed, ...rest } = this.config.endpoints
     this.config.endpoints = Object.keys(rest).length > 0 ? rest : undefined
@@ -310,25 +338,38 @@ export class ConfigService {
     this.config.models = { ...this.config.models, [name]: model }
   }
 
+  /**
+   * Removes a model and repairs everything that pointed at it.
+   *
+   * This used to throw for each of the four references below — `defaultModel`,
+   * `fallbackModel`, `compactModel` and any `routing` role. That made the model
+   * you are most likely to want to replace the one you could not delete, and it
+   * was a check with nothing behind it: there are no model *tiers* any more, so
+   * "the default" is only "where a new session starts", not a rank.
+   *
+   * So each reference is repaired rather than defended. The three top-level
+   * fields move to the next model still configured — `config.models` is written
+   * in insertion order, so "the next one" is the one below it on the settings
+   * screen — and are dropped entirely when nothing is left. A routing role goes
+   * back to `'inherit'`, which `resolveModelKeyFor` already reads as "follow the
+   * main model" and is the same thing that role would have degraded to.
+   */
   removeModel(name: string): void {
-    if (this.config.defaultModel === name || this.resolveModelReference(this.config.defaultModel) === name) {
-      throw new Error(`Cannot remove model "${name}": it is the defaultModel.`)
-    }
-    if (this.config.fallbackModel === name) {
-      throw new Error(`Cannot remove model "${name}": it is the fallbackModel.`)
-    }
-    if (this.config.compactModel === name) {
-      throw new Error(`Cannot remove model "${name}": it is the compactModel.`)
-    }
-    // Routing holds model keys now, so it is the fourth place a model can be
-    // spoken for — the successor to the profile check this replaced. Without it
-    // a removal silently leaves a role pointing at nothing.
-    for (const [role, value] of routingReferences(this.config.routing)) {
-      if (value === name) {
-        throw new Error(`Cannot remove model "${name}": referenced by routing.${role}.`)
-      }
-    }
     delete this.config.models[name]
+    const successor = Object.keys(this.config.models)[0]
+
+    for (const field of ['defaultModel', 'fallbackModel', 'compactModel'] as const) {
+      if (this.config[field] !== name) continue
+      if (successor === undefined) delete this.config[field]
+      else this.config[field] = successor
+    }
+
+    const { routing } = this.config
+    if (!routing) return
+    for (const [role] of routingReferences(routing).filter(([, value]) => value === name)) {
+      if (role.startsWith('subagent.')) routing.subagent![role.slice('subagent.'.length)] = 'inherit'
+      else routing[role as 'main' | 'plan' | 'compact'] = 'inherit'
+    }
   }
 
   renameModel(oldKey: string, newKey: string): void {

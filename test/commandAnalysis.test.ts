@@ -72,6 +72,78 @@ test('read-only analysis validates git fd find node and sed arguments', () => {
   }
 })
 
+test('read-only analysis covers the widened command allowlist', () => {
+  for (const command of [
+    'ps aux',
+    'sha256sum package.json',
+    'base64 payload.txt',
+    'id -u',
+    'nproc',
+    'uptime',
+    'strings binary.bin',
+    'tac notes.txt',
+    'column -t data.tsv',
+    'pgrep node',
+    'python3 --version',
+    'python --version',
+    'claude --help',
+    'docker ps -a',
+    'docker inspect container',
+    'docker logs container',
+  ]) {
+    assert.equal(analyzeShellCommand(command).isReadOnly, true, command)
+  }
+
+  for (const command of [
+    'python script.py',
+    'python3 -c "import os"',
+    'node script.js',
+    'docker rm container',
+    'docker run image',
+    // Deliberately not on the allowlist: it runs an arbitrary command.
+    'xargs rm',
+  ]) {
+    assert.equal(analyzeShellCommand(command).isReadOnly, false, command)
+  }
+})
+
+test('read-only analysis distinguishes listing git subcommands from writing ones', () => {
+  for (const command of [
+    'git branch -l',
+    'git branch --show-current',
+    'git branch -v --merged main',
+    'git tag --list "v1.*"',
+    'git config --get user.name',
+    'git config --list',
+    'git remote',
+    'git remote -v',
+    'git remote show origin',
+    'git ls-remote origin',
+    'git merge-base main HEAD',
+    'git rev-list --count HEAD',
+    'git for-each-ref --format="%(refname)"',
+  ]) {
+    assert.equal(analyzeShellCommand(command).isReadOnly, true, command)
+  }
+
+  for (const command of [
+    'git branch feature/x',
+    'git branch -d feature/x',
+    'git branch -m old new',
+    'git tag v1.0.0',
+    'git tag -d v1.0.0',
+    'git config user.name me',
+    'git config --unset user.name',
+    'git config --add user.name me',
+    'git remote add origin url',
+    'git remote set-url origin url',
+    'git --exec-path=/tmp log',
+    'git --exec-path /tmp log',
+  ]) {
+    assert.equal(analyzeShellCommand(command).isReadOnly, false, command)
+  }
+})
+
 test('destructive command analysis returns structured warnings', () => {
   const cases: Array<[string, string]> = [
     ['rm -rf dist', 'recursive_force_delete'],

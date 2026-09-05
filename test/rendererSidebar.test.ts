@@ -888,3 +888,44 @@ test('the rail keeps its content until the collapse has finished', () => {
   assert.equal(sidebarContentMounted('expanded'), true)
   assert.equal(sidebarContentMounted('collapsed'), false)
 })
+
+// --- optimistic deletes -------------------------------------------------------
+
+test('a session being deleted leaves the list on the click, not on the reply', () => {
+  const state = stateWith({
+    projects: [project('/a', 'alpha', [session('s-1'), session('s-2')])],
+    deletingSessions: new Set(['s-1']),
+  })
+  const view = sidebarView(state)
+
+  assert.deepEqual(view.rows.map((row) => row.sessionId), ['s-2'])
+  // And the guard sees the difference, or the repaint is swallowed and the row
+  // stays on screen anyway.
+  assert.notEqual(
+    sidebarRenderSignature(view),
+    sidebarRenderSignature(sidebarView(stateWith({ ...state, deletingSessions: new Set() }))),
+  )
+})
+
+test('a session being deleted cannot come back as a live lane row', () => {
+  // The lane is still open — the host detaches it as part of the delete — so
+  // without the second check the row would reappear the moment history dropped it.
+  const view = sidebarView(
+    stateWith({
+      lanes: [lane('1', 's-1', '/a')],
+      laneStatus: new Map([['1', paneStatus()]]),
+      deletingSessions: new Set(['s-1']),
+    }),
+  )
+  assert.deepEqual(view.rows, [])
+})
+
+test('a project being removed takes its whole group with it', () => {
+  const view = sidebarView(
+    stateWith({
+      projects: [project('/a', 'alpha', [session('s-1')]), project('/b', 'beta', [session('s-2')])],
+      removingProjects: new Set(['/a']),
+    }),
+  )
+  assert.deepEqual(view.groups.map((group) => group.projectRoot), ['/b'])
+})

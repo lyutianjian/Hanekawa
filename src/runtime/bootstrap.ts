@@ -13,6 +13,7 @@ import { BUILT_IN_AGENT_DEFINITIONS } from '../tools/agentTool.js'
 import { SkillsService } from '../services/skills/skillsService.js'
 import { AgentDefinitionLoader } from '../services/agents/agentDefinitionLoader.js'
 import { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
+import { clearProjectContextCache, getProjectContext } from '../services/context/projectContext.js'
 import type { SessionMeta } from '../sessions/service.js'
 import { registerBuiltinCommands } from '../commands/index.js'
 import { CommandRegistry } from '../commands/registry.js'
@@ -66,6 +67,11 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
       `Invalid settings:\n${settingsValidation.errors.map((error) => `- ${error}`).join('\n')}`,
     )
   }
+
+  // `AGENTS.md` / `CLAUDE.md` and the rules files above them, merged once here.
+  // Mutable for the same reason `settings` is: `reloadSettings()` re-reads it
+  // and the next runtime built picks up the new contents.
+  let projectContext = await getProjectContext(cwd)
 
   const initialModelKey = config.resolveModelKeyFor(
     { kind: 'main' },
@@ -125,6 +131,11 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
    * runtime for those; `needsRuntimeRebuild` says so rather than leaving the
    * caller to guess.
    *
+   * The project context (`AGENTS.md` / `CLAUDE.md`) rides along: it is not a
+   * settings layer, but it is captured per runtime the same way, and this is
+   * the one reload every host already calls, so an edited instructions file
+   * reaches the next runtime instead of waiting for a restart.
+   *
    * Every open scope gets the new rules, not just the newest one: each holds
    * its own `PermissionGate`, so reaching only one would leave the other tabs
    * enforcing the rules the process started with.
@@ -142,9 +153,15 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     const hooksChanged = JSON.stringify(next.hooks) !== JSON.stringify(settings.hooks)
     settings = next
     await config.load(settings)
+
+    clearProjectContextCache(cwd)
+    const nextProjectContext = await getProjectContext(cwd)
+    const projectContextChanged = nextProjectContext !== projectContext
+    projectContext = nextProjectContext
+
     const rules = permissionRulesFromSettings(settings.permissions)
     for (const scope of scopes) scope.permissionGate.setConfigRules(rules)
-    return { needsRuntimeRebuild: hooksChanged }
+    return { needsRuntimeRebuild: hooksChanged || projectContextChanged }
   }
 
   // Fail-open: a server that fails to connect is reported but does not block
@@ -212,6 +229,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     getSettings: () => settings,
     getSkills: () => skills,
     getAgentDefinitions: () => agentDefinitions,
+    getProjectContext: () => projectContext,
     toolRegistry,
     backgroundTasks,
     contextManagement,
@@ -257,6 +275,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     createActiveModelRuntime,
     openScope,
     getSettings: () => settings,
+    getProjectContext: () => projectContext,
     listAgentDefinitions: () => agentDefinitions,
     reloadAgentDefinitions,
     reloadSkills,

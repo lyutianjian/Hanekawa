@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -7,6 +7,7 @@ import { toolToAPISchema } from '../src/harness/toolApiSchema.js'
 import { CommandRegistry } from '../src/commands/index.js'
 import { buildSkillCommandPrompt, buildSkillPrompt, registerSkillCommands } from '../src/commands/skills.js'
 import { SkillsService } from '../src/services/skills/skillsService.js'
+import { importSkill } from '../src/services/skills/importSkill.js'
 import { createSkillTool } from '../src/tools/skillTool.js'
 
 test('SkillsService.list() returns empty array when directory does not exist', async () => {
@@ -835,5 +836,77 @@ test('skill slash command reports missing query submission support', async () =>
     )
   } finally {
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// --- importSkill --------------------------------------------------------------
+
+/** A folder shaped like a skill, somewhere outside the project. */
+async function sourceSkill(name: string, body = 'Do the thing.'): Promise<string> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-import-'))
+  const source = path.join(dir, `${name}-folder`)
+  await mkdir(source, { recursive: true })
+  await writeFile(
+    path.join(source, 'SKILL.md'),
+    `---\nname: ${name}\ndescription: An imported skill\n---\n\n${body}`,
+    'utf8',
+  )
+  return source
+}
+
+test('importSkill copies the folder in, and the service picks it up', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-project-'))
+  const source = await sourceSkill('imported')
+  try {
+    // An attachment beside the markdown: a skill is a folder, so it comes too.
+    await writeFile(path.join(source, 'reference.md'), 'more', 'utf8')
+
+    const { name } = await importSkill(cwd, source)
+    assert.equal(name, 'imported')
+
+    const skills = await new SkillsService(cwd).listAll()
+    assert.deepEqual(skills.map((skill) => skill.name), ['imported'])
+    const copied = await readFile(path.join(cwd, '.myagent', 'skills', 'imported', 'reference.md'), 'utf8')
+    assert.equal(copied, 'more')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+    await rm(source, { recursive: true, force: true })
+  }
+})
+
+test('importSkill refuses a folder that is not a skill', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-project-'))
+  const source = await mkdtemp(path.join(os.tmpdir(), 'myagent-notaskill-'))
+  try {
+    await assert.rejects(() => importSkill(cwd, source), /SKILL\.md/)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+    await rm(source, { recursive: true, force: true })
+  }
+})
+
+test('importSkill refuses to overwrite a skill of the same name', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-project-'))
+  const source = await sourceSkill('twice')
+  try {
+    await importSkill(cwd, source)
+    await assert.rejects(() => importSkill(cwd, source), /已经有一个叫 twice 的技能/)
+    // The first copy is intact: a refused import must not half-replace it.
+    const raw = await readFile(path.join(cwd, '.myagent', 'skills', 'twice', 'SKILL.md'), 'utf8')
+    assert.ok(raw.includes('Do the thing.'))
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+    await rm(source, { recursive: true, force: true })
+  }
+})
+
+test('importSkill refuses a frontmatter name that escapes the skills directory', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-project-'))
+  const source = await sourceSkill('../escaped')
+  try {
+    await assert.rejects(() => importSkill(cwd, source), /不能作为文件夹名/)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+    await rm(source, { recursive: true, force: true })
   }
 })

@@ -19,7 +19,12 @@ import type { RecordStream } from './recordStream.js'
 import { MemoryRecordStream } from './recordStream.js'
 import { mergeHooks, runLifecycleHooks, type Hooks, type LifecycleHookName } from './hooks.js'
 import { FallbackTriggeredError } from '../config/retry.js'
-import { getContextWindowForModel, getEffectiveContextWindowSize, type ContextManagementConfig } from '../prompts/budget.js'
+import {
+  getAutoCompactThreshold,
+  getContextWindowForModel,
+  getEffectiveContextWindowSize,
+  type ContextManagementConfig,
+} from '../prompts/budget.js'
 import { ESCALATED_MAX_TOKENS, MODEL_CONTEXT_WINDOW_DEFAULT } from '../prompts/modelCapabilities.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
@@ -169,7 +174,7 @@ export class AgentLoop {
     }
     // Only create cache edit manager for providers that support cache_edits
     // (native Anthropic API) with prompt caching enabled.
-    this.cacheEditManager = options.provider.supportsCacheEdits && getPromptCachingEnabled(options.model)
+    this.cacheEditManager = options.provider.supportsCacheEdits && getPromptCachingEnabled()
       ? new CacheEditManager({ keepRecent: 10, triggerAfter: 15 })
       : undefined
     this.options.toolContext.appendMetric = (metric) => this.emitMetric(metric)
@@ -186,6 +191,26 @@ export class AgentLoop {
       contextWindow: visibleModel.contextWindow,
       providerName: visibleModel.providerName,
       promptCacheRetention: visibleModel.promptCacheRetention,
+    }
+  }
+
+  /**
+   * The two context-window numbers a status display needs, read off the *active*
+   * model rather than the configured one.
+   *
+   * `usable` is the autocompact threshold — the window minus the summary's
+   * reserved output and the safety buffer — which is the only honest denominator
+   * for "how full is the context": the turn that crosses it is compacted, so the
+   * raw window is a number the conversation never reaches. Both come from
+   * `activeContextManagement`, so a fallback or plan-model switch is reflected
+   * immediately; `modelConfig.contextWindow` read from outside would still name
+   * the model the runtime was built with.
+   */
+  getContextBudget(): { contextWindow: number; usableContextWindow: number } {
+    const contextManagement = this.activeContextManagement
+    return {
+      contextWindow: getContextWindowForModel(contextManagement),
+      usableContextWindow: getAutoCompactThreshold(contextManagement),
     }
   }
 

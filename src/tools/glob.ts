@@ -10,11 +10,11 @@ interface GlobInput {
 
 export const globTool: Tool = {
   name: 'Glob',
-  description: 'Find files matching a glob pattern.',
+  description: 'Find files by glob pattern, e.g. "**/*.ts" or "src/**/*.{ts,tsx}". Returns paths relative to the search root. Use Grep to search file contents.',
   searchHint: 'find files by name pattern glob',
   inputSchema: z.object({
-    pattern: z.string().min(1),
-    path: z.string().min(1).optional(),
+    pattern: z.string().min(1).describe('Glob pattern to match against file paths, e.g. "**/*.ts".'),
+    path: z.string().min(1).optional().describe('Directory to search in. Defaults to the working directory.'),
   }).strict(),
   riskLevel: 'safe',
   isReadOnly: true,

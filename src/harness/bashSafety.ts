@@ -2,6 +2,13 @@ import { containsProtectedPath } from '../utils/permissions/protectedPaths.js'
 
 export const MAX_SHELL_SEGMENTS = 50
 
+/**
+ * `prompt` means "never auto-approve, ask the user"; `deny` means "the command
+ * is malformed or unbounded enough that showing it to a user decides nothing".
+ * Shell *syntax* findings are all `prompt`: a user can read a redirection or a
+ * command substitution and rule on it, and silently failing them instead only
+ * teaches the model that the tool is broken.
+ */
 export type BashSafetySeverity = 'deny' | 'prompt'
 
 export interface BashSafetyIssue {
@@ -43,6 +50,68 @@ const ZSH_DANGEROUS_BUILTINS = new Set([
 ])
 
 type QuoteState = 'single' | 'double' | 'ansi' | undefined
+
+/**
+ * A redirection that neither reads a real file nor clobbers one: `2>&1`,
+ * `>/dev/null`, `&>/dev/null`, `< /dev/null` and the Windows `NUL` spelling.
+ * There is nothing here for a user to rule on, so these must not be reported
+ * as redirection issues and must not make a command look like a write.
+ */
+const DISCARD_REDIRECTION = /^(?:>>?|<)[ \t]*(?:&[ \t]*[0-9]+|\/dev\/null|nul)\b/i
+
+/** Length of the discard redirection starting at `index`, or 0 if there is none. */
+function discardRedirectionLength(command: string, index: number): number {
+  return DISCARD_REDIRECTION.exec(command.slice(index))?.[0].length ?? 0
+}
+
+/**
+ * Remove discard/merge redirections so a read-only command that silences its
+ * own stderr still reads as read-only. Quote-aware: only unquoted redirections
+ * are removed. Unlike `stripOutputRedirections` in shellRuleMatching.ts this
+ * keeps `> file`, which is a real write.
+ */
+export function stripDiscardRedirections(command: string): string {
+  let out = ''
+  let quote: QuoteState
+  let escaped = false
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!
+    if (escaped) {
+      out += ch
+      escaped = false
+      continue
+    }
+    if (ch === '\\' && quote !== 'single') {
+      out += ch
+      escaped = true
+      continue
+    }
+    if (quote) {
+      out += ch
+      if ((quote === 'single' || quote === 'ansi') && ch === '\'') quote = undefined
+      if (quote === 'double' && ch === '"') quote = undefined
+      continue
+    }
+    if (ch === '\'' || ch === '"') {
+      quote = ch === '\'' ? 'single' : 'double'
+      out += ch
+      continue
+    }
+    if (ch === '>' || ch === '<') {
+      const length = discardRedirectionLength(command, i)
+      if (length > 0) {
+        // `2>&1` and `&>/dev/null` put the fd or `&` before the operator.
+        out = out.replace(/[ \t]*&?[0-9]*$/, '')
+        i += length - 1
+        continue
+      }
+    }
+    out += ch
+  }
+
+  return out.replace(/[ \t]{2,}/g, ' ').trim()
+}
 
 export function splitShellSegments(command: string): string[] {
   const segments: string[] = []
@@ -123,7 +192,7 @@ export function analyzeBashSafety(command: string): BashSafetyAnalysis {
   }
 
   if (command.includes('\\\\')) {
-    issues.push({ code: 'unc_path', message: 'contains a UNC-style path', severity: 'deny' })
+    issues.push({ code: 'unc_path', message: 'contains a UNC-style path', severity: 'prompt' })
   }
 
   collectSyntaxIssues(command, issues)
@@ -206,19 +275,19 @@ function collectSyntaxIssues(command: string, issues: BashSafetyIssue[]): void {
         continue
       }
       if (ch === '\n') {
-        issues.push({ code: 'quoted_newline', message: 'contains a newline inside double quotes', severity: 'deny' })
+        issues.push({ code: 'quoted_newline', message: 'contains a newline inside double quotes', severity: 'prompt' })
       }
       if (ch === '$' && next === '(') {
-        issues.push({ code: 'command_substitution', message: 'contains command substitution', severity: 'deny' })
+        issues.push({ code: 'command_substitution', message: 'contains command substitution', severity: 'prompt' })
       }
       if (ch === '`') {
-        issues.push({ code: 'backticks', message: 'contains backtick command substitution', severity: 'deny' })
+        issues.push({ code: 'backticks', message: 'contains backtick command substitution', severity: 'prompt' })
       }
       continue
     }
 
     if (ch === '$' && next === '\'') {
-      issues.push({ code: 'ansi_c_quote', message: 'contains ANSI-C shell quoting', severity: 'deny' })
+      issues.push({ code: 'ansi_c_quote', message: 'contains ANSI-C shell quoting', severity: 'prompt' })
       quote = 'ansi'
       i++
       continue
@@ -228,7 +297,7 @@ function collectSyntaxIssues(command: string, issues: BashSafetyIssue[]): void {
       const previous = command[i - 1]
       const after = command[i + 2]
       if ((previous === undefined || /\s/.test(previous)) && (after === undefined || /\s/.test(after))) {
-        issues.push({ code: 'obfuscated_flags', message: 'contains a standalone empty quoted argument', severity: 'deny' })
+        issues.push({ code: 'obfuscated_flags', message: 'contains a standalone empty quoted argument', severity: 'prompt' })
       }
       i++
       continue
@@ -245,27 +314,32 @@ function collectSyntaxIssues(command: string, issues: BashSafetyIssue[]): void {
     }
 
     if (ch === '#' && hasQuoteAfterComment(command, i + 1)) {
-      issues.push({ code: 'comment_quote_desync', message: 'contains quote characters after a shell comment', severity: 'deny' })
+      issues.push({ code: 'comment_quote_desync', message: 'contains quote characters after a shell comment', severity: 'prompt' })
       continue
     }
 
     if (ch === '$' && next === '(') {
-      issues.push({ code: 'command_substitution', message: 'contains command substitution', severity: 'deny' })
+      issues.push({ code: 'command_substitution', message: 'contains command substitution', severity: 'prompt' })
       continue
     }
 
     if (ch === '`') {
-      issues.push({ code: 'backticks', message: 'contains backtick command substitution', severity: 'deny' })
+      issues.push({ code: 'backticks', message: 'contains backtick command substitution', severity: 'prompt' })
       continue
     }
 
     if (ch === '<' || ch === '>') {
-      issues.push({ code: 'redirection', message: 'contains shell redirection', severity: 'deny' })
+      const discard = discardRedirectionLength(command, i)
+      if (discard > 0) {
+        i += discard - 1
+        continue
+      }
+      issues.push({ code: 'redirection', message: 'contains shell redirection', severity: 'prompt' })
     }
   }
 
   if (quote) {
-    issues.push({ code: 'unclosed_quote', message: 'contains an unclosed shell quote', severity: 'deny' })
+    issues.push({ code: 'unclosed_quote', message: 'contains an unclosed shell quote', severity: 'prompt' })
   }
 }
 

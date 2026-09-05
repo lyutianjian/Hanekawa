@@ -1,19 +1,24 @@
-import { readFile, writeFile } from 'node:fs/promises'
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
 import { patchDetail } from './editPatch.js'
-import { getReadFileContent, rememberReadFile, requireFreshRead } from './fileState.js'
+import { getReadFileContent, rememberReadFile, requireFreshRead, resolveTextFileMeta } from './fileState.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
+import { readTextFile, writeTextFile } from './textFile.js'
 
 export const editFileTool: Tool = {
   name: 'Edit',
-  description: 'Replace an exact string in an existing UTF-8 text file.',
+  description: [
+    'Replace an exact string in an existing text file. The file must be read first.',
+    'File content is matched with LF line endings regardless of what is on disk, and the original line endings and encoding are restored on write.',
+    'oldString must match exactly once unless replaceAll is true; line numbers from Read are not part of the file.',
+  ].join(' '),
   searchHint: 'modify change file content',
   inputSchema: z.object({
-    filePath: z.string().min(1),
-    oldString: z.string().min(1),
-    newString: z.string(),
+    filePath: z.string().min(1).describe('Path to the file. Relative paths resolve against the working directory.'),
+    oldString: z.string().min(1).describe('Exact text to replace, including indentation. Use \\n for line breaks; never include Read\'s line-number prefixes.'),
+    newString: z.string().describe('Replacement text. Empty string deletes the matched text.'),
+    replaceAll: z.boolean().optional().describe('Replace every occurrence instead of requiring exactly one match. Defaults to false.'),
   }).strict(),
   riskLevel: 'confirm',
   userFacingName: () => 'Edit',
@@ -24,7 +29,12 @@ export const editFileTool: Tool = {
     return filePath ? `Editing ${filePath}` : 'Editing file'
   },
   async execute(input, context) {
-    const { filePath, oldString, newString } = input as { filePath: string; oldString: string; newString: string }
+    const { filePath, oldString, newString, replaceAll = false } = input as {
+      filePath: string
+      oldString: string
+      newString: string
+      replaceAll?: boolean
+    }
     const absolute = assertInsideCwd(context.cwd, filePath)
     if (absolute.toLowerCase().endsWith('.ipynb')) {
       return {
@@ -50,27 +60,38 @@ export const editFileTool: Tool = {
     if (unsafeFile) {
       return unsafeFile
     }
-    const original = getReadFileContent(absolute, context) ?? await readFile(absolute, 'utf8')
+    const original = getReadFileContent(absolute, context) ?? (await readTextFile(absolute)).content
     const matches = findStringMatches(original, oldString)
-    if (matches.length !== 1) {
+    if (matches.length === 0) {
+      return noMatchFailure(original, oldString)
+    }
+    if (matches.length > 1 && !replaceAll) {
       return multipleMatchFailure(oldString, matches)
     }
+
     // When matched via quote normalization, preserve the file's quote style in newString
-    const match = matches[0]
-    let effectiveNewString = newString
-    if (match.matchedViaNormalization) {
+    let nextContent = original
+    // Bottom-to-top so each earlier index stays valid after the splice.
+    for (const match of [...matches].reverse()) {
       const actualOld = original.substring(match.index, match.index + oldString.length)
-      effectiveNewString = preserveQuoteStyle(oldString, actualOld, newString)
+      const effectiveNewString = match.matchedViaNormalization
+        ? preserveQuoteStyle(oldString, actualOld, newString)
+        : newString
+      nextContent = replaceLiteralMatch(nextContent, oldString, effectiveNewString, match.index)
     }
-    const nextContent = replaceLiteralMatch(original, oldString, effectiveNewString, match.index)
-    await writeFile(absolute, nextContent, 'utf8')
-    await rememberReadFile(absolute, nextContent, context)
+
+    const { encoding, lineEndings } = await resolveTextFileMeta(absolute, context)
+    await writeTextFile(absolute, nextContent, encoding, lineEndings)
+    await rememberReadFile(absolute, nextContent, context, { encoding, lineEndings })
+    const label = matches.length > 1
+      ? `Edited ${filePath} (${matches.length} occurrences)`
+      : `Edited ${filePath}`
     return {
       ok: true,
-      content: `Edited ${filePath}`,
+      content: label,
       metadata: {
         display: {
-          summary: `Edited ${filePath}`,
+          summary: label,
           ...patchDetail(filePath, original, nextContent),
         },
       },
@@ -223,6 +244,9 @@ export function findStringMatches(content: string, search: string): StringMatchC
 }
 
 export function multipleMatchFailure(oldString: string, matches: StringMatchContext[], label = 'oldString'): ToolResult {
+  if (matches.length === 0) {
+    return noMatchFailure('', oldString, label)
+  }
   return {
     ok: false,
     content: formatMatchFailure(label, matches),
@@ -234,6 +258,44 @@ export function multipleMatchFailure(oldString: string, matches: StringMatchCont
       truncated: matches.length > 5,
     },
   }
+}
+
+/**
+ * A zero-match failure needs different advice than an ambiguous one, and the
+ * old shared message ("found 0") gave none. Whitespace is called out because it
+ * is the overwhelmingly common cause once line endings are normalized.
+ */
+export function noMatchFailure(content: string, oldString: string, label = 'oldString'): ToolResult {
+  const reason = diagnoseNearMiss(content, oldString)
+  const advice = reason
+    ? `${reason} Re-read the file and copy the text exactly as it appears.`
+    : 'Read the file again and copy the exact text, including indentation. If the text appears more than once, include surrounding lines to make it unique.'
+  return {
+    ok: false,
+    content: `String to replace not found in file (${label}).\n${advice}\n\n${label}:\n${oldString}`,
+    errorCode: 'precondition_failed',
+    errorDetails: {
+      oldStringLength: oldString.length,
+      occurrences: 0,
+      nearMiss: reason ?? null,
+    },
+  }
+}
+
+/** Explains why an exact match failed when a laxer comparison would have hit. */
+function diagnoseNearMiss(content: string, oldString: string): string | null {
+  if (!content) return null
+  const collapse = (value: string) => value.replace(/[ \t]+/g, ' ').replace(/[ \t]+$/gm, '')
+  if (collapse(content).includes(collapse(oldString))) {
+    return 'The text is present but the whitespace differs (indentation or trailing spaces).'
+  }
+  if (content.replace(/\s+/g, '').includes(oldString.replace(/\s+/g, ''))) {
+    return 'The text is present but the line breaks or spacing differ.'
+  }
+  if (/^\s*\d+\t/m.test(oldString)) {
+    return "oldString still carries Read's line-number prefixes; those are not part of the file."
+  }
+  return null
 }
 
 function matchContext(content: string, index: number): StringMatchContext {
@@ -259,10 +321,11 @@ function matchContext(content: string, index: number): StringMatchContext {
 }
 
 function formatMatchFailure(label: string, matches: StringMatchContext[]): string {
-  const header = `Expected exactly one match for ${label}, found ${matches.length}.`
-  if (matches.length === 0) {
-    return header
-  }
+  const header = [
+    `Found ${matches.length} matches for ${label}, but replaceAll is false.`,
+    'To change every occurrence set replaceAll: true; to change one, extend',
+    `${label} with surrounding lines until it is unique.`,
+  ].join(' ')
 
   const shown = matches.slice(0, 5)
   const sections = shown.map((match, offset) => [

@@ -14,6 +14,11 @@ import {
   type SidebarRow,
   type SidebarView,
 } from '../model/sidebar.js'
+import {
+  MARQUEE_DURATION_VARIABLE,
+  MARQUEE_SHIFT_VARIABLE,
+  marqueeMotion,
+} from '../model/marquee.js'
 import { el, replace, show } from './dom.js'
 import { button, textField } from './controls.js'
 import { icon } from './icons.js'
@@ -165,6 +170,18 @@ export function createSidebarView(
   const projectHeadings = new Map<string, HTMLButtonElement>()
 
   /**
+   * The row the pointer is on, and every row's marquee measurement.
+   *
+   * Both exist for the same reason: `render()` builds new nodes, and the pointer
+   * does not move when it does. `:hover` transfers to the replacement by itself,
+   * but `mouseenter` does not fire again — so the row under the cursor has to be
+   * re-measured by hand after a repaint or its name silently stops scrolling.
+   * The map is rebuilt every render and holds only the rows that render drew.
+   */
+  let hovered: string | undefined
+  let measures = new Map<string, () => void>()
+
+  /**
    * One workspace's nodes, kept across repaints.
    *
    * The reason this map exists at all: `render()` rebuilds the list wholesale,
@@ -295,7 +312,53 @@ export function createSidebarView(
     const open = el('button', 'session-open')
     open.type = 'button'
     open.title = `${row.title} · ${row.messageCount} 条消息`
-    open.appendChild(el('span', 'session-title', row.title))
+    // The name is a box — the clipper, with the ellipsis — around a track that
+    // travels inside it. Translating the clipper itself would slide the
+    // already-truncated box out of view rather than reveal anything.
+    //
+    // The track carries the name twice. The echo is `display: none` until the
+    // marquee runs, so at rest it costs the layout nothing and the measurement
+    // below is the width of one copy; while the marquee runs it is what the loop
+    // wraps onto, and it is `aria-hidden` because it is the same name again.
+    const title = el('span', 'session-title')
+    const track = el('span', 'session-title-text')
+    const echo = el('span', 'session-title-echo', row.title)
+    echo.setAttribute('aria-hidden', 'true')
+    // Two siblings rather than a text node plus a copy: the name the row *shows*
+    // is then a node of its own, which is what anything reading this row — a
+    // test, a screen reader following `aria-hidden` — should land on.
+    track.appendChild(el('span', 'session-title-run', row.title))
+    track.appendChild(echo)
+    title.appendChild(track)
+    open.appendChild(title)
+    // Measured on arrival, never during `render()`: this list repaints on every
+    // shell snapshot — once per streamed token — and `scrollWidth` on each of its
+    // rows would force a layout at that rate. One hovered row, once, is free, and
+    // it is also the only moment the answer can be right: the row's width depends
+    // on the rail's, which the user can drag.
+    const measure = (): void => {
+      // The clipper is what gets measured, not the track inside it: at rest that
+      // track is a plain inline box, and `scrollWidth` on one of those is 0.
+      const motion = marqueeMotion(title.scrollWidth, title.clientWidth)
+      title.classList.toggle('marquee', motion !== undefined)
+      if (!motion) return
+      title.style.setProperty(MARQUEE_SHIFT_VARIABLE, motion.shift)
+      title.style.setProperty(MARQUEE_DURATION_VARIABLE, motion.duration)
+    }
+    // Kept so a repaint can put the marquee back. `render()` rebuilds every row,
+    // and the pointer does not move when it does — `mouseenter` would never fire
+    // again, so a name would stop mid-scroll the first time a badge changed.
+    measures.set(row.sessionId, measure)
+    // Keyboard reaches the same affordance: the rule keys off `:hover` and
+    // `:focus-within`, so a row arrived at by Tab has to have been measured too.
+    node.addEventListener('mouseenter', () => {
+      hovered = row.sessionId
+      measure()
+    })
+    node.addEventListener('mouseleave', () => {
+      if (hovered === row.sessionId) hovered = undefined
+    })
+    node.addEventListener('focusin', measure)
     if (row.badge !== 'none') {
       const badge = el('span', `session-badge ${row.badge}`)
       badge.setAttribute('aria-label', BADGE_LABELS[row.badge])
@@ -564,6 +627,10 @@ export function createSidebarView(
       // Rebuilt from the groups actually drawn, so a heading that is gone cannot
       // be revealed and a stale node cannot be focused into a detached tree.
       projectHeadings.clear()
+      // Same contract for the marquee measurements: `rowNode` refills this while
+      // the groups below build, and a row that is no longer drawn takes its
+      // closure — and the detached node it holds — with it.
+      measures = new Map()
       replace(
         list,
         ...(view.isEmpty
@@ -593,6 +660,12 @@ export function createSidebarView(
         if (entry.timer !== undefined) clearTimeout(entry.timer)
         groupNodes.delete(projectRoot)
       }
+
+      // The row under the pointer is on a node that did not exist a moment ago,
+      // and no pointer event announces that. One measurement, only while a row is
+      // actually hovered — the cost this avoids paying per row is why the rest of
+      // them are measured on arrival instead.
+      if (hovered !== undefined) measures.get(hovered)?.()
 
       // A profile row and a `?`, side by side, with the chord list behind the `?`
       // rather than printed under them (design_guidance 三.2). "Open project…"

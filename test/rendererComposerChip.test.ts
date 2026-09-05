@@ -10,6 +10,7 @@ import {
   submitButtonView,
   submitLabel,
 } from '../src/desktop/renderer/model/composer.js'
+import { contextGaugeView } from '../src/desktop/renderer/model/usage.js'
 import type { WireRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
 
 /**
@@ -43,6 +44,23 @@ test('the chip shows the model and the effort level', () => {
   assert.equal(view.effort, EFFORT_LABELS.high)
   assert.equal(view.enabled, true)
   assert.match(view.modelTitle, /claude-sonnet-5/)
+})
+
+test('the context gauge rides on the chip and its numbers reach the tooltip', () => {
+  // The ring is `aria-hidden` in the view, so the tooltip — which is also the
+  // button's accessible name — is the only place the figures are said in words.
+  const gauge = contextGaugeView(50_000, runtime({ usableContextWindow: 100_000 }))
+  const view = composerChipView(runtime(), gauge)
+  assert.equal(view.gauge, gauge)
+  assert.match(view.title, /模型：claude-sonnet-5/)
+  assert.match(view.title, /思考强度/)
+  assert.match(view.title, /50% 已用/)
+})
+
+test('a chip with nothing to gauge says only the two things it opens', () => {
+  const view = composerChipView(runtime())
+  assert.equal(view.gauge.visible, false)
+  assert.equal(view.title, `${view.modelTitle}\n${view.effortTitle}`)
 })
 
 test('the provider is in the tooltip, not the chip', () => {

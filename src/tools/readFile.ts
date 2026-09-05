@@ -22,10 +22,17 @@ function isBlockedDevicePath(filePath: string): boolean {
 
 export const readFileTool: Tool = {
   name: 'Read',
-  description: 'Read a UTF-8 text file from the current project.',
+  description: [
+    'Read a text file from the current project.',
+    'Content is returned with `cat -n` style line numbers; the numbers are display only — never include them in an Edit oldString.',
+    'CRLF files are normalized to LF on read, so a multi-line oldString written with \\n matches.',
+    'Use offset/limit to page through a large file; a partial read still lets Edit match anywhere in the file.',
+  ].join(' '),
   searchHint: 'read file contents view',
   inputSchema: z.object({
-    filePath: z.string().min(1),
+    filePath: z.string().min(1).describe('Path to the file. Relative paths resolve against the working directory.'),
+    offset: z.number().int().min(1).optional().describe('1-based line number to start reading from. Defaults to 1.'),
+    limit: z.number().int().min(1).optional().describe('Maximum number of lines to return. Defaults to the whole file.'),
   }).strict(),
   riskLevel: 'safe',
   isReadOnly: true,
@@ -45,7 +52,7 @@ export const readFileTool: Tool = {
   },
   shouldDisplayResult: () => true,
   async execute(input, context) {
-    const { filePath } = input as { filePath: string }
+    const { filePath, offset = 1, limit } = input as { filePath: string; offset?: number; limit?: number }
     const absolute = assertInsideCwd(context.cwd, filePath)
 
     // Block dangerous device paths
@@ -57,14 +64,35 @@ export const readFileTool: Tool = {
       }
     }
 
+    // The full file is always remembered, even for a windowed read: Edit
+    // matches against the remembered content, so a partial view must not
+    // narrow what a later edit can address.
     const content = await readFileAndRemember(absolute, context)
-    const lineCount = countLines(content)
+    const totalLines = countLines(content)
+
+    const window = sliceLines(content, offset, limit)
+    if (window.lines.length === 0 && totalLines > 0) {
+      return {
+        ok: false,
+        content: `Cannot read '${filePath}' from line ${window.start}: the file has only ${totalLines} ${totalLines === 1 ? 'line' : 'lines'}.`,
+        errorCode: 'invalid_input',
+      }
+    }
+
+    const body = numberLines(window.lines, window.start)
+    const truncated = window.start > 1 || window.end < totalLines
+    const notice = truncated
+      ? `\n\n[Showing lines ${window.start}-${window.end} of ${totalLines}. Use offset/limit to read another range.]`
+      : ''
+
     return {
       ok: true,
-      content,
+      content: body + notice,
       metadata: {
         display: {
-          summary: `Read ${lineCount} ${lineCount === 1 ? 'line' : 'lines'}`,
+          summary: truncated
+            ? `Read lines ${window.start}-${window.end} of ${totalLines}`
+            : `Read ${totalLines} ${totalLines === 1 ? 'line' : 'lines'}`,
         },
       },
     }
@@ -76,4 +104,20 @@ function countLines(content: string): number {
   return content.endsWith('\n')
     ? content.slice(0, -1).split('\n').length
     : content.split('\n').length
+}
+
+function sliceLines(content: string, offset: number, limit: number | undefined): { lines: string[]; start: number; end: number } {
+  const all = content.endsWith('\n') ? content.slice(0, -1).split('\n') : content.split('\n')
+  if (content.length === 0) return { lines: [], start: 1, end: 0 }
+  const start = Math.max(1, offset)
+  const lines = all.slice(start - 1, limit === undefined ? undefined : start - 1 + limit)
+  return { lines, start, end: start + lines.length - 1 }
+}
+
+const LINE_NUMBER_WIDTH = 6
+
+function numberLines(lines: string[], start: number): string {
+  return lines
+    .map((line, index) => `${String(start + index).padStart(LINE_NUMBER_WIDTH, ' ')}\t${line}`)
+    .join('\n')
 }

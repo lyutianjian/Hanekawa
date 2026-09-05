@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { analyzeShellCommand } from './commandAnalysis.js'
+import { homedir } from 'node:os'
+import {
+  analyzeShellCommand,
+  isAcceptEditsSedSubstitution,
+  parseSedInvocation,
+  positionalArguments,
+} from './commandAnalysis.js'
 import { matchBashRule, bashCommandSegments, suggestBashPrefix } from './shellRuleMatching.js'
 import { shellWords } from './bashSafety.js'
 import type { RiskLevel, Tool, ToolApprovalRecord } from './types.js'
-import { isProtectedPath, checkWindowsPathSafety } from '../utils/permissions/protectedPaths.js'
+import { isProtectedPath, checkWindowsPathSafety, isDangerousRemovalPath } from '../utils/permissions/protectedPaths.js'
+import { isPreapprovedUrl, matchesDomainRule, urlHostname } from '../utils/permissions/webFetchDomains.js'
 import { getPlansDir } from '../utils/plans.js'
 
 const require = createRequire(import.meta.url)
@@ -41,6 +48,17 @@ export type PermissionDecisionSource =
   | 'protected path'
   | 'bash safety'
 
+/**
+ * The outcome of a permission check. `denialReason` is written for the model,
+ * not the user: a denial the user never saw must not claim they made it, or
+ * the model keeps retrying a call it thinks a human rejected.
+ */
+export interface PermissionDecision {
+  approved: boolean
+  source: PermissionDecisionSource | 'readonly mode'
+  denialReason?: string
+}
+
 export interface DenialState {
   streaks: Record<string, number>
   total: number
@@ -71,10 +89,49 @@ export interface PermissionSettings {
  */
 const DEFAULT_DENIAL_STREAK_THRESHOLD = 3
 const DEFAULT_GLOBAL_DENIAL_PROMPT_THRESHOLD = 20
-// `Delete` stays excluded so accept-edits mode cannot silently remove files.
-const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
-const FILE_PERMISSION_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'Delete'])
-const ACCEPT_EDITS_BASH_COMMANDS = new Set(['mkdir', 'touch'])
+/**
+ * `Delete` is included: `rm` is on the accept-edits shell allowlist below
+ * (aligned with Claude Code's ACCEPT_EDITS_ALLOWED_COMMANDS), so excluding the
+ * tool only pushed the model onto the shell for the same effect. Both paths
+ * stay bounded by `isSafeWorkspacePathOperand` and the protected-path check.
+ */
+const ACCEPT_EDITS_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'Delete', 'NotebookEdit'])
+const FILE_PERMISSION_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'Delete', 'NotebookEdit'])
+const ACCEPT_EDITS_BASH_COMMANDS = new Set(['mkdir', 'touch', 'rm', 'rmdir', 'mv', 'cp', 'sed'])
+/**
+ * The one command category an accept-edits shell write may carry: `rm -rf x/`
+ * and `sed -i` are destructive by definition, and refusing the category would
+ * make the allowlist unreachable. Every other category — a compound, an
+ * external side effect, unsafe syntax, a shell wrapper — still blocks.
+ */
+const ACCEPT_EDITS_ALLOWED_CATEGORY = 'destructive filesystem or git operation'
+const WEB_FETCH_TOOL_NAME = 'WebFetch'
+/** `WebFetch(domain:...)` rule content, aligned with Claude Code's syntax. */
+const DOMAIN_RULE_PREFIX = 'domain:'
+
+/**
+ * Rule tool names that stand for a whole family (Claude Code §4.4): an
+ * `Edit(...)` rule governs every write tool and a `Read(...)` rule every read
+ * tool. A rule naming one concrete tool still matches that tool alone.
+ */
+const RULE_TOOL_ALIASES: Record<string, ReadonlySet<string>> = {
+  Edit: new Set(['Edit', 'Write', 'MultiEdit', 'Delete', 'NotebookEdit']),
+  Read: new Set(['Read', 'Grep', 'Glob']),
+}
+
+function ruleAppliesToTool(ruleToolName: string, toolName: string): boolean {
+  if (ruleToolName === toolName) return true
+  return RULE_TOOL_ALIASES[ruleToolName]?.has(toolName) ?? false
+}
+
+/** The URL a `WebFetch` call names, or '' when it names none. */
+function extractUrl(input: unknown): string {
+  if (input && typeof input === 'object') {
+    const url = (input as { url?: unknown }).url
+    if (typeof url === 'string') return url
+  }
+  return ''
+}
 
 export { isProtectedPath, checkWindowsPathSafety } from '../utils/permissions/protectedPaths.js'
 
@@ -143,15 +200,52 @@ function dedupePermissionRules(rules: PermissionRule[]): PermissionRule[] {
   return deduped
 }
 
-function extractPath(input: unknown): string {
+/**
+ * The content a permission rule pattern is matched against. For Bash that is
+ * the command string, which is why this is *not* a path — see `extractFilePath`
+ * for the path-safety checks, which must never be handed a whole command.
+ */
+function extractRuleContent(input: unknown): string {
   if (typeof input === 'string') return input
   if (input && typeof input === 'object') {
     const obj = input as Record<string, unknown>
     if (typeof obj.path === 'string') return obj.path
     if (typeof obj.filePath === 'string') return obj.filePath
+    if (typeof obj.notebook_path === 'string') return obj.notebook_path
     if (typeof obj.command === 'string') return obj.command
+    if (typeof obj.url === 'string') return obj.url
   }
   return ''
+}
+
+/**
+ * The file path a tool call names, or '' when it names none. Bash is excluded
+ * deliberately: a command string run through path checks reports nonsense
+ * (`echo "done."` looks like a path component with a trailing dot). Bash paths
+ * come from the shell analysis instead.
+ */
+function extractFilePath(input: unknown): string {
+  if (typeof input === 'string') return input
+  if (input && typeof input === 'object') {
+    const obj = input as Record<string, unknown>
+    if (typeof obj.path === 'string') return obj.path
+    if (typeof obj.filePath === 'string') return obj.filePath
+    // `NotebookEdit` names its target `notebook_path` (see `inputAliases.ts`),
+    // and without it a notebook write skipped every path check below.
+    if (typeof obj.notebook_path === 'string') return obj.notebook_path
+  }
+  return ''
+}
+
+function approvedDecision(source: PermissionDecision['source']): PermissionDecision {
+  return { approved: true, source }
+}
+
+/** A decision the user actually made at a prompt, so the denial may say so. */
+function userDecision(approved: boolean, source: PermissionDecision['source'], tool: Tool): PermissionDecision {
+  return approved
+    ? { approved: true, source }
+    : { approved: false, source, denialReason: `User denied permission for ${tool.name}.` }
 }
 
 function buildSessionAllowRule(
@@ -161,7 +255,11 @@ function buildSessionAllowRule(
 ): PermissionRule | undefined {
   if (tool.name === 'Bash') {
     if (!commandAnalysis) return undefined
-    if (commandAnalysis.categories.length > 0) return undefined
+    // `complex shell command` fires on any pipe, so refusing every categorized
+    // command meant `git log | head` could never be allowed permanently. The
+    // shared-prefix check below is what makes a compound safe to write a rule
+    // for; the remaining categories are risks a rule must not paper over.
+    if (commandAnalysis.categories.some((category) => category !== 'complex shell command')) return undefined
     if (commandAnalysis.hasSafetyDenyIssue || commandAnalysis.requiresSafetyPrompt || commandAnalysis.hasProtectedPath) {
       return undefined
     }
@@ -178,8 +276,21 @@ function buildSessionAllowRule(
     return { toolName: tool.name, contentPattern: `${shared}:*`, behavior: 'allow', source: 'session' }
   }
 
+  if (tool.name === WEB_FETCH_TOOL_NAME) {
+    // A host, not the exact URL: the next fetch of the same docs site is a
+    // different page. Matches what the `WebFetch(domain:...)` rule expresses.
+    const host = urlHostname(extractUrl(input))
+    if (!host) return undefined
+    return {
+      toolName: tool.name,
+      contentPattern: `${DOMAIN_RULE_PREFIX}${host}`,
+      behavior: 'allow',
+      source: 'session',
+    }
+  }
+
   if (FILE_PERMISSION_TOOLS.has(tool.name)) {
-    const filePath = extractPath(input).trim()
+    const filePath = extractFilePath(input).trim()
     if (!filePath || isProtectedPath(filePath)) return undefined
     return { toolName: tool.name, contentPattern: filePath, behavior: 'allow', source: 'session' }
   }
@@ -235,6 +346,8 @@ export class PermissionGate {
   private readonly denialStateStore?: DenialStateStore
   private readonly persistRule?: (rule: PermissionRule) => Promise<void>
   private readonly cwd: string
+  /** Extra workspace roots for accept-edits, from `permissions.additionalDirectories`. */
+  private readonly additionalDirectories: string[]
   private denialStateLoaded = false
   private readonly modeListeners = new Set<PermissionModeListener>()
 
@@ -247,6 +360,7 @@ export class PermissionGate {
       mode?: PermissionMode
       denialStateStore?: DenialStateStore
       cwd?: string
+      additionalDirectories?: string[]
       persistRule?: (rule: PermissionRule) => Promise<void>
       sessionRuleStore?: SessionRuleStore
     },
@@ -260,23 +374,44 @@ export class PermissionGate {
     this.globalDenialPromptThreshold = Math.max(1, globalConfigured)
     this.denialStateStore = options?.denialStateStore
     this.cwd = options?.cwd ?? process.cwd()
+    this.additionalDirectories = (options?.additionalDirectories ?? [])
+      .map((dir) => dir.trim())
+      .filter((dir) => dir !== '')
+      .map((dir) => path.resolve(this.cwd, dir))
     this.persistRule = options?.persistRule
   }
 
   async approve(tool: Tool, input: unknown): Promise<boolean> {
+    return (await this.approveDetailed(tool, input)).approved
+  }
+
+  async approveDetailed(tool: Tool, input: unknown): Promise<PermissionDecision> {
     await this.hydrateDenialState()
 
     // 1. Safe tools are approved unless shell/path safety found a reason to
     //    deny or force a prompt first.
     const commandAnalysis = this.commandAnalysisFor(tool.name, input)
-    const path = extractPath(input)
-    const hasProtectedPath =
+    const path = extractFilePath(input)
+    // Protected paths guard *edits* (the list is Claude Code's
+    // isDangerousFilePathToAutoEdit). Reading .git/config or grepping
+    // .myagent/ is ordinary work and must not be gated.
+    const isWrite = this.isWriteOperation(tool, commandAnalysis)
+    const hasProtectedPath = isWrite && (
       (commandAnalysis?.hasProtectedPath ?? false)
       || (path !== '' && isProtectedPath(path))
-    const hasHardSafetyDenial =
+    )
+    // NTFS ADS, UNC paths, DOS device names, 8.3 short names and trailing
+    // dots. Checked in every mode: it used to run only under bypass, so the
+    // loosest mode was the only one enforcing it.
+    const windowsPathCheck = checkWindowsPathSafety(path)
+    // "Cannot be auto-approved, must ask" — never "deny without asking".
+    const blocksAutoApproval =
       (commandAnalysis?.hasSafetyDenyIssue ?? false)
+      || (commandAnalysis?.requiresSafetyPrompt ?? false)
       || hasProtectedPath
-    const requiresSafetyPrompt = commandAnalysis?.requiresSafetyPrompt ?? false
+      || windowsPathCheck.suspicious
+      || this.hasDangerousRemoval(commandAnalysis)
+    const requiresSafetyPrompt = blocksAutoApproval
 
     const deniedByRule = this.matchingRule('deny', tool.name, input, commandAnalysis)
     const askedByRule = this.matchingRule('ask', tool.name, input, commandAnalysis)
@@ -296,7 +431,7 @@ export class PermissionGate {
           denialStreak: 0,
         })
         this.recordPromptDecision(tool.name, approved, previousStreak)
-        return this.persistAndReturn(approved)
+        return this.persistAndReturn(userDecision(approved, 'deny rule', tool))
       }
 
       // Ask rules are bypass-immune, both tool-wide and content-specific
@@ -315,7 +450,8 @@ export class PermissionGate {
       // Windows path safety checks are bypass-immune (aligned with Claude Code's
       // classifierApprovable: false): NTFS ADS, UNC paths, DOS device names,
       // 8.3 short names, and trailing dots/spaces cannot be silently approved.
-      const windowsPathCheck = checkWindowsPathSafety(path)
+      // Windows path safety checks are bypass-immune (aligned with Claude Code's
+      // classifierApprovable: false).
       if (windowsPathCheck.suspicious) {
         const approved = await this.prompt({
           tool,
@@ -325,7 +461,7 @@ export class PermissionGate {
           denialStreak: 0,
         })
         this.denialStreaks.set(tool.name, 0)
-        return this.persistAndReturn(approved)
+        return this.persistAndReturn(userDecision(approved, 'protected path', tool))
       }
 
       // Protected-path safety checks are bypass-immune (aligned with Claude
@@ -339,7 +475,7 @@ export class PermissionGate {
           denialStreak: 0,
         })
         this.denialStreaks.set(tool.name, 0)
-        return this.persistAndReturn(approved)
+        return this.persistAndReturn(userDecision(approved, 'protected path', tool))
       }
 
       // Everything else is allowed silently: shell syntax findings and
@@ -347,7 +483,7 @@ export class PermissionGate {
       // where Bash syntax analysis only produces ask results that bypass
       // mode approves at step 2a).
       this.denialStreaks.set(tool.name, 0)
-      return this.persistAndReturn(true)
+      return this.persistAndReturn(approvedDecision('mode'))
     }
 
     if (this.mode === 'plan') {
@@ -361,50 +497,55 @@ export class PermissionGate {
           denialStreak: 0,
         })
         this.denialStreaks.set(tool.name, 0)
-        return this.persistAndReturn(approved)
+        return this.persistAndReturn(userDecision(approved, 'protected path', tool))
       }
-      if ((hasHardSafetyDenial || requiresSafetyPrompt) && !planFileWrite) {
+      if (blocksAutoApproval && !planFileWrite) {
+        const source = this.promptSourceForSafety(commandAnalysis, hasProtectedPath)
         const approved = await this.prompt({
           tool,
           input,
           reason: `Shell safety check: ${commandAnalysis?.categories?.join(', ') ?? 'dangerous pattern detected'}`,
-          source: this.promptSourceForSafety(commandAnalysis, hasProtectedPath),
+          source,
           denialStreak: 0,
         })
         this.denialStreaks.set(tool.name, 0)
-        return this.persistAndReturn(approved)
+        return this.persistAndReturn(userDecision(approved, source, tool))
       }
       this.denialStreaks.set(tool.name, 0)
-      return this.persistAndReturn(true)
+      return this.persistAndReturn(approvedDecision('mode'))
     }
 
     if (this.mode === 'readonly') {
-      if (tool.isReadOnly === true && !hasHardSafetyDenial && !requiresSafetyPrompt) {
+      if (tool.isReadOnly === true && !blocksAutoApproval) {
         this.denialStreaks.set(tool.name, 0)
-        return this.persistAndReturn(true)
+        return this.persistAndReturn(approvedDecision('mode'))
       }
-      if (tool.name === 'Bash' && commandAnalysis && !hasHardSafetyDenial && !requiresSafetyPrompt && commandAnalysis.isReadOnly) {
+      if (tool.name === 'Bash' && commandAnalysis && !blocksAutoApproval && commandAnalysis.isReadOnly) {
         this.denialStreaks.set(tool.name, 0)
-        return this.persistAndReturn(true)
+        return this.persistAndReturn(approvedDecision('mode'))
       }
       this.denialStreaks.set(tool.name, 0)
-      return this.persistAndReturn(false)
+      return this.persistAndReturn({
+        approved: false,
+        source: 'readonly mode',
+        denialReason: `Read-only permission mode blocks ${tool.name}. Ask the user to leave read-only mode if this call is needed.`,
+      })
     }
 
-    if (hasHardSafetyDenial) {
-      const escalated = await this.handleAutoDeny(
-        tool,
-        input,
-        commandAnalysis,
-        true,
-        this.promptSourceForSafety(commandAnalysis, hasProtectedPath),
-      )
-      if (escalated !== undefined) return this.persistAndReturn(escalated)
-    }
-
+    // A deny rule is the one thing the user configured to block outright, so it
+    // is the only silent denial left. Safety findings prompt instead: the user
+    // never saw them, and a silent failure only makes the model retry.
     if (deniedByRule) {
       const escalated = await this.handleAutoDeny(tool, input, commandAnalysis, true, 'deny rule', deniedByRule)
-      if (escalated !== undefined) return this.persistAndReturn(escalated)
+      if (escalated !== undefined) {
+        return this.persistAndReturn(escalated
+          ? approvedDecision('deny rule')
+          : {
+            approved: false,
+            source: 'deny rule',
+            denialReason: `Blocked by a permission deny rule: ${permissionRuleToEntry(deniedByRule)}. Do not retry this call; a different approach or an explicit user change to permissions is required.`,
+          })
+      }
     }
 
     if (askedByRule) {
@@ -430,43 +571,67 @@ export class PermissionGate {
       (this.mode === 'default' || this.mode === 'acceptEdits')
       && tool.name === 'Bash'
       && commandAnalysis?.isReadOnly
-      && !requiresSafetyPrompt
+      && !blocksAutoApproval
     ) {
       this.denialStreaks.set(tool.name, 0)
-      return this.persistAndReturn(true)
+      return this.persistAndReturn(approvedDecision('mode'))
     }
 
     if (
       this.mode === 'acceptEdits'
       && this.isAcceptEditsAllowed(tool, input, commandAnalysis)
-      && !requiresSafetyPrompt
+      && !blocksAutoApproval
     ) {
       this.denialStreaks.set(tool.name, 0)
-      return this.persistAndReturn(true)
+      return this.persistAndReturn(approvedDecision('mode'))
     }
 
-    if (tool.riskLevel === 'safe' && !hasHardSafetyDenial && !requiresSafetyPrompt) {
+    // Aligned with Claude Code §5.3: a fetch of a preapproved documentation
+    // host needs no prompt; every other host does, which is why WebFetch is
+    // not a `safe` tool.
+    if (tool.name === WEB_FETCH_TOOL_NAME && !blocksAutoApproval && isPreapprovedUrl(extractUrl(input))) {
       this.denialStreaks.set(tool.name, 0)
-      return this.persistAndReturn(true)
+      return this.persistAndReturn(approvedDecision('mode'))
     }
 
-    // 2. Hard shell/path safety denials cannot be bypassed by allow rules.
-    //    Prompt-only shell safety findings disable auto-allow but still let
-    //    the user make the decision in the normal permission prompt.
-    if (!requiresSafetyPrompt && allowedByRule) {
+    if (tool.riskLevel === 'safe' && !blocksAutoApproval) {
       this.denialStreaks.set(tool.name, 0)
-      return this.persistAndReturn(true)
+      return this.persistAndReturn(approvedDecision('mode'))
+    }
+
+    // 2. Safety findings disable auto-allow — an allow rule cannot blanket-approve
+    //    a command substitution or a protected-path write — but the user still
+    //    makes the decision in the normal permission prompt.
+    if (!blocksAutoApproval && allowedByRule) {
+      this.denialStreaks.set(tool.name, 0)
+      return this.persistAndReturn(approvedDecision('allow rule'))
     }
 
     // 4. Prompt user
     return this.promptForDecision(
       tool,
       input,
-      this.reasonFor(tool.riskLevel, commandAnalysis?.categories, false, this.denialStreaks.get(tool.name) ?? 0),
-      this.promptSourceForNormalPrompt(commandAnalysis, requiresSafetyPrompt, allowedByRule),
+      windowsPathCheck.suspicious
+        ? `Suspicious path: ${windowsPathCheck.reason}`
+        : this.reasonFor(tool.riskLevel, commandAnalysis?.categories, false, this.denialStreaks.get(tool.name) ?? 0),
+      windowsPathCheck.suspicious
+        ? 'protected path'
+        : this.promptSourceForNormalPrompt(commandAnalysis, blocksAutoApproval, allowedByRule, hasProtectedPath),
       false,
       { matchedRule: allowedByRule, commandAnalysis },
     )
+  }
+
+  /**
+   * Whether this call can change anything. Protected paths only gate writes;
+   * Bash answers through its shell analysis rather than its tool metadata.
+   */
+  private isWriteOperation(
+    tool: Tool,
+    commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
+  ): boolean {
+    if (tool.name === 'Bash') return !(commandAnalysis?.isReadOnly ?? false)
+    return tool.isReadOnly !== true
   }
 
   private async promptForDecision(
@@ -479,7 +644,7 @@ export class PermissionGate {
       matchedRule?: PermissionRule
       commandAnalysis?: ReturnType<typeof analyzeShellCommand>
     } = {},
-  ): Promise<boolean> {
+  ): Promise<PermissionDecision> {
     const previousStreak = this.denialStreaks.get(tool.name) ?? 0
     let alwaysAllow = false
     const alwaysAllowRule = this.shouldOfferAlwaysAllow(source)
@@ -514,7 +679,7 @@ export class PermissionGate {
       }
     }
 
-    return this.persistAndReturn(approved)
+    return this.persistAndReturn(userDecision(approved, source, tool))
   }
 
   addSessionRule(rule: PermissionRule): void {
@@ -565,6 +730,11 @@ export class PermissionGate {
 
   getSessionRuleStore(): SessionRuleStore {
     return this.sessionRuleStore
+  }
+
+  /** Resolved extra workspace roots, so a subagent gate can inherit them. */
+  getAdditionalDirectories(): string[] {
+    return [...this.additionalDirectories]
   }
 
   getMode(): PermissionMode {
@@ -666,11 +836,15 @@ export class PermissionGate {
     input: unknown,
     commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
   ): boolean {
-    if (rule.toolName !== toolName) return false
+    if (!ruleAppliesToTool(rule.toolName, toolName)) return false
     if (!rule.contentPattern) return true
 
+    if (toolName === WEB_FETCH_TOOL_NAME && rule.contentPattern.startsWith(DOMAIN_RULE_PREFIX)) {
+      return matchesDomainRule(rule.contentPattern.slice(DOMAIN_RULE_PREFIX.length), extractUrl(input))
+    }
+
     if (toolName === 'Bash') {
-      const command = extractPath(input)
+      const command = extractRuleContent(input)
       if (!command) return false
       // deny/ask rules strip ALL env var prefixes and match compound commands
       // (whole + each segment) so a denied subcommand stays denied regardless
@@ -685,7 +859,7 @@ export class PermissionGate {
       })
     }
 
-    const content = extractPath(input) || (typeof input === 'string' ? input : JSON.stringify(input))
+    const content = extractRuleContent(input) || (typeof input === 'string' ? input : JSON.stringify(input))
     if (content === rule.contentPattern) return true
     return matchGlob(content, rule.contentPattern)
   }
@@ -744,7 +918,7 @@ export class PermissionGate {
     if (tool.name !== 'Write' && tool.name !== 'Edit' && tool.name !== 'MultiEdit') return false
     const slug = this.planSlugProvider?.()
     if (!slug) return false
-    const filePath = extractPath(input)
+    const filePath = extractFilePath(input)
     if (!filePath) return false
     const absolute = path.resolve(filePath)
     const expectedPrefix = path.resolve(getPlansDir(this.cwd), slug)
@@ -759,7 +933,7 @@ export class PermissionGate {
     if (ACCEPT_EDITS_TOOLS.has(tool.name)) {
       // acceptEdits only auto-approves edits inside the working directory
       // (aligned with Claude Code); outside paths fall through to the prompt.
-      const filePath = extractPath(input)
+      const filePath = extractFilePath(input)
       return filePath !== '' && this.isSafeWorkspacePathOperand(filePath)
     }
     if (tool.name !== 'Bash' || !commandAnalysis) return false
@@ -767,15 +941,53 @@ export class PermissionGate {
   }
 
   private isLightWorkspaceShellWrite(commandAnalysis: ReturnType<typeof analyzeShellCommand>): boolean {
-    if (commandAnalysis.categories.length > 0) return false
+    if (commandAnalysis.categories.some((category) => category !== ACCEPT_EDITS_ALLOWED_CATEGORY)) return false
     if (commandAnalysis.hasSafetyDenyIssue || commandAnalysis.requiresSafetyPrompt || commandAnalysis.hasProtectedPath) return false
     const words = shellWords(commandAnalysis.command)
     if (words.length === 0) return false
     const executable = basename(words[0]!).toLowerCase()
     if (!ACCEPT_EDITS_BASH_COMMANDS.has(executable)) return false
-    const operands = words.slice(1).filter((word) => !word.startsWith('-'))
-    if (operands.length === 0) return false
+    const args = words.slice(1)
+    // `mv`/`cp` reject every flag rather than filtering them out: a flag can
+    // carry the destination (`cp --target-directory=/etc a.txt`), which the
+    // operand scan below would never see. Claude Code's COMMAND_VALIDATOR does
+    // the same, and for the same reason.
+    if ((executable === 'mv' || executable === 'cp') && args.some((arg) => arg.startsWith('-'))) return false
+    const operands = executable === 'sed' ? this.acceptEditsSedOperands(args) : positionalArguments(args)
+    if (operands === undefined || operands.length === 0) return false
     return operands.every((operand) => this.isSafeWorkspacePathOperand(operand))
+  }
+
+  /**
+   * The files an accept-edits `sed` may touch, or undefined when the invocation
+   * is outside the substitution allowlist accept-edits covers.
+   */
+  private acceptEditsSedOperands(args: string[]): string[] | undefined {
+    const sed = parseSedInvocation(args)
+    if (!sed || !isAcceptEditsSedSubstitution(sed)) return undefined
+    return sed.operands
+  }
+
+  /**
+   * Whether any `rm`/`rmdir` segment targets a path that must never be
+   * auto-approved. Folded into `blocksAutoApproval`, not just the accept-edits
+   * check, because Claude Code makes this unreachable by an allow rule too: an
+   * `Bash(rm:*)` rule must not silently cover `rm -rf /`.
+   */
+  private hasDangerousRemoval(commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined): boolean {
+    for (const segment of commandAnalysis?.segments ?? []) {
+      const words = shellWords(segment)
+      if (words.length === 0) continue
+      const executable = basename(words[0]!).toLowerCase()
+      if (executable !== 'rm' && executable !== 'rmdir') continue
+      for (const operand of positionalArguments(words.slice(1))) {
+        const expanded = operand === '~' || operand.startsWith('~/')
+          ? path.join(homedir(), operand.slice(1))
+          : operand
+        if (isDangerousRemovalPath(path.resolve(this.cwd, expanded), homedir())) return true
+      }
+    }
+    return false
   }
 
   private isSafeWorkspacePathOperand(operand: string): boolean {
@@ -783,8 +995,8 @@ export class PermissionGate {
     if (/[\0\r\n*?[\]{}$`~]/.test(operand)) return false
     if (isProtectedPath(operand)) return false
     const resolved = path.resolve(this.cwd, operand)
-    const root = path.resolve(this.cwd)
-    return resolved === root || resolved.startsWith(root + path.sep)
+    const roots = [path.resolve(this.cwd), ...this.additionalDirectories]
+    return roots.some((root) => resolved === root || resolved.startsWith(root + path.sep))
   }
 
   private promptSourceForSafety(
@@ -799,9 +1011,14 @@ export class PermissionGate {
     commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
     requiresSafetyPrompt: boolean,
     allowedByRule: PermissionRule | undefined,
+    hasProtectedPath: boolean,
   ): PermissionDecisionSource {
     if (allowedByRule) return 'allow rule'
-    if (requiresSafetyPrompt) return this.promptSourceForSafety(commandAnalysis, false)
+    // `hasProtectedPath` has to be passed through: a non-Bash tool has no
+    // command analysis, so hardcoding `false` here labelled every protected-path
+    // write `bash safety`, which is not what the dialog should say a `Delete`
+    // of `.git/config` was stopped by.
+    if (requiresSafetyPrompt) return this.promptSourceForSafety(commandAnalysis, hasProtectedPath)
     return 'mode'
   }
 
@@ -858,7 +1075,7 @@ export class PermissionGate {
     commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
   ): string[] {
     const matches = new Set<string>()
-    const path = extractPath(input)
+    const path = extractFilePath(input)
     if (path !== '' && isProtectedPath(path)) matches.add(path)
 
     for (const segment of commandAnalysis?.segments ?? []) {

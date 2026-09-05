@@ -324,14 +324,21 @@ async function openProjectInteractive(path?: string): Promise<void> {
 }
 
 /** Native directory picker. Cancelling is a no-op, not an error. */
-async function promptForProjectDirectory(): Promise<string | undefined> {
+async function promptForDirectory(options: {
+  title: string
+  buttonLabel: string
+}): Promise<string | undefined> {
   const result = await dialog.showOpenDialog({
-    title: 'Open project',
-    buttonLabel: 'Open',
+    title: options.title,
+    buttonLabel: options.buttonLabel,
     properties: ['openDirectory', 'createDirectory'],
   })
   if (result.canceled) return undefined
   return result.filePaths[0]
+}
+
+function promptForProjectDirectory(): Promise<string | undefined> {
+  return promptForDirectory({ title: 'Open project', buttonLabel: 'Open' })
 }
 
 /**
@@ -434,11 +441,13 @@ async function ensureShell(): Promise<Shell> {
         refreshSessionMeta: (session) => {
           sessionHost.refreshSessionMeta(session)
         },
+        activeModelKey: () => sessionHost.activeModelKey(),
       }
     },
     onOpenProject: (path) => {
       void openProjectInteractive(path)
     },
+    onPickDirectory: (options) => promptForDirectory(options),
     // The sidebar's history is every *added* project, most of them without an
     // open runtime — the registry is the source, read live so a project added
     // by another window (or a stale root) is never cached wrong.

@@ -1,27 +1,33 @@
-import { readFile, writeFile } from 'node:fs/promises'
 import { z } from 'zod/v3'
 import type { Tool } from '../harness/types.js'
 import { assertInsideCwd } from '../utils/paths.js'
-import { getReadFileContent, rememberReadFile, requireFreshRead } from './fileState.js'
+import { getReadFileContent, rememberReadFile, requireFreshRead, resolveTextFileMeta } from './fileState.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from './pathSafety.js'
-import { findStringMatches, multipleMatchFailure, replaceLiteralMatch, preserveQuoteStyle } from './editFile.js'
+import { findStringMatches, multipleMatchFailure, noMatchFailure, replaceLiteralMatch, preserveQuoteStyle } from './editFile.js'
 import { patchDetail } from './editPatch.js'
+import { readTextFile, writeTextFile } from './textFile.js'
 
 interface MultiEditItem {
   oldString: string
   newString: string
+  replaceAll?: boolean
 }
 
 export const multiEditTool: Tool = {
   name: 'MultiEdit',
-  description: 'Apply multiple exact string replacements to one existing UTF-8 text file atomically.',
+  description: [
+    'Apply multiple exact string replacements to one existing text file atomically. The file must be read first.',
+    'All edits are validated against the original content before any is applied; if one fails, none are written.',
+    'Matching runs on LF-normalized content and the file\'s original line endings and encoding are restored on write.',
+  ].join(' '),
   searchHint: 'multiple edits batch changes',
   inputSchema: z.object({
-    filePath: z.string().min(1),
+    filePath: z.string().min(1).describe('Path to the file. Relative paths resolve against the working directory.'),
     edits: z.array(z.object({
-      oldString: z.string().min(1),
-      newString: z.string(),
-    }).strict()).min(1),
+      oldString: z.string().min(1).describe('Exact text to replace. Use \\n for line breaks; never include Read\'s line-number prefixes.'),
+      newString: z.string().describe('Replacement text. Empty string deletes the matched text.'),
+      replaceAll: z.boolean().optional().describe('Replace every occurrence of this edit\'s oldString instead of requiring exactly one match.'),
+    }).strict()).min(1).describe('Edits applied to the original content. Ranges must not overlap.'),
   }).strict(),
   riskLevel: 'confirm',
   userFacingName: () => 'MultiEdit',
@@ -66,26 +72,30 @@ export const multiEditTool: Tool = {
       return unsafeFile
     }
 
-    const originalContent = getReadFileContent(absolute, context) ?? await readFile(absolute, 'utf8')
+    const originalContent = getReadFileContent(absolute, context) ?? (await readTextFile(absolute)).content
     // Validate all edits against the original content and find match positions
     const resolved: Array<{ oldString: string; newString: string; index: number; start: number; end: number }> = []
     for (const [index, edit] of edits.entries()) {
+      const label = `edits[${index}].oldString`
       if (edit.oldString.length === 0) {
-        return { ok: false, content: `Refusing to edit: edits[${index}].oldString must not be empty.`, errorCode: 'precondition_failed' }
+        return { ok: false, content: `Refusing to edit: ${label} must not be empty.`, errorCode: 'precondition_failed' }
       }
 
       const matches = findStringMatches(originalContent, edit.oldString)
-      if (matches.length !== 1) {
-        return multipleMatchFailure(edit.oldString, matches, `edits[${index}].oldString`)
+      if (matches.length === 0) {
+        return noMatchFailure(originalContent, edit.oldString, label)
       }
-      const match = matches[0]
-      // When matched via quote normalization, preserve the file's quote style in newString
-      let effectiveNewString = edit.newString
-      if (match.matchedViaNormalization) {
+      if (matches.length > 1 && !edit.replaceAll) {
+        return multipleMatchFailure(edit.oldString, matches, label)
+      }
+      for (const match of matches) {
+        // When matched via quote normalization, preserve the file's quote style in newString
         const actualOld = originalContent.substring(match.index, match.index + edit.oldString.length)
-        effectiveNewString = preserveQuoteStyle(edit.oldString, actualOld, edit.newString)
+        const effectiveNewString = match.matchedViaNormalization
+          ? preserveQuoteStyle(edit.oldString, actualOld, edit.newString)
+          : edit.newString
+        resolved.push({ oldString: edit.oldString, newString: effectiveNewString, index, start: match.index, end: match.index + edit.oldString.length })
       }
-      resolved.push({ oldString: edit.oldString, newString: effectiveNewString, index, start: match.index, end: match.index + edit.oldString.length })
     }
 
     // Check for overlapping edit ranges
@@ -110,8 +120,9 @@ export const multiEditTool: Tool = {
       nextContent = replaceLiteralMatch(nextContent, edit.oldString, edit.newString, edit.start)
     }
 
-    await writeFile(absolute, nextContent, 'utf8')
-    await rememberReadFile(absolute, nextContent, context)
+    const { encoding, lineEndings } = await resolveTextFileMeta(absolute, context)
+    await writeTextFile(absolute, nextContent, encoding, lineEndings)
+    await rememberReadFile(absolute, nextContent, context, { encoding, lineEndings })
     return {
       ok: true,
       content: `Applied ${edits.length} edits to ${filePath}`,

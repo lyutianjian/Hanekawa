@@ -144,6 +144,7 @@ function fakeRuntimeSlot(): RuntimeSlot {
         clearCachedSections: () => undefined,
         invalidateRecordsCache: () => undefined,
         summarizeRecordsForRewind: async () => ({ summary: '', index: 0 }),
+        getContextBudget: () => ({ contextWindow: 200_000, usableContextWindow: 167_000 }),
       },
       planModeManager: {} as never,
     },
@@ -772,6 +773,7 @@ test('single window: two lanes on one transport, opened, listed, closed through 
         refreshSessionMeta: (session) => {
           sessionHost.refreshSessionMeta(session)
         },
+        activeModelKey: () => sessionHost.activeModelKey(),
       }
     },
     isQuitting: () => false,

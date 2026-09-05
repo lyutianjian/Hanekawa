@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import fg from 'fast-glob'
 import { z } from 'zod/v3'
@@ -18,58 +18,94 @@ interface GrepInput {
 
 const RG_TIMEOUT_MS = 30_000
 const DEFAULT_HEAD_LIMIT = 250
+/** Version control metadata is noise in every search anyone actually runs. */
+const VCS_EXCLUSIONS = ['.git', '.svn', '.hg', '.bzr', '.jj', '.sl']
+/** Keeps a minified or base64 line from swallowing the whole result budget. */
+const MAX_COLUMNS = 500
 
 /**
- * Try ripgrep first (ReDoS-immune, fast). Falls back to Node RegExp if
- * `rg` is not installed. The fallback applies a per-file timeout to
- * mitigate catastrophic backtracking.
+ * Try ripgrep first (ReDoS-immune, fast). Resolves `null` — and only `null` —
+ * when `rg` could not be run at all, which is the signal to fall back.
+ *
+ * Ripgrep exits 1 when it simply found nothing. Treating that as "rg missing"
+ * sent every empty search through a full-tree fast-glob scan, which is both
+ * slow and how raw `fs` errors reached the model.
  */
 function tryRipgrep(
   pattern: string,
-  root: string,
+  target: string,
   glob: string | undefined,
   caseInsensitive: boolean,
-  limit: number,
   cwd: string,
   multiline: boolean = false,
 ): Promise<string[] | null> {
-  return new Promise((resolve) => {
-    const args = ['--no-heading', '--line-number', '--max-count', String(limit)]
+  return new Promise((resolve, reject) => {
+    // `-H` because ripgrep drops the filename when given exactly one file, and
+    // every consumer here parses `path:line:text`.
+    const args = ['--no-heading', '--line-number', '-H', '--hidden', '--max-columns', String(MAX_COLUMNS)]
+    for (const dir of VCS_EXCLUSIONS) args.push('--glob', `!${dir}`)
     if (caseInsensitive) args.push('--ignore-case')
     if (multiline) args.push('-U', '--multiline-dotall')
     if (glob) args.push('--glob', glob)
-    args.push('--', pattern, '.')
+    // A pattern starting with `-` would otherwise be read as a flag.
+    args.push('-e', pattern, '--', target)
 
-    const proc = execFile('rg', args, { cwd: root, timeout: RG_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
-      if (err && !stdout) {
-        // rg not found or other error — signal fallback
-        resolve(null)
+    let spawnFailed = false
+    const proc = execFile('rg', args, { cwd, timeout: RG_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (spawnFailed) return
+      const exitCode = typeof (err as { code?: unknown } | null)?.code === 'number'
+        ? (err as unknown as { code: number }).code
+        : undefined
+      if (err && exitCode === undefined) {
+        // Killed by signal or timed out — not something a fallback can fix.
+        reject(err)
         return
       }
-      const lines = stdout.trim().split('\n').filter(Boolean)
-      const matches = lines.map((line) => {
-        // rg outputs relative paths from cwd
-        const colonIdx = line.indexOf(':')
-        const colonIdx2 = line.indexOf(':', colonIdx + 1)
-        const relPath = line.substring(0, colonIdx)
-        const lineNum = line.substring(colonIdx + 1, colonIdx2)
-        const content = line.substring(colonIdx2 + 1)
-        return `${path.relative(cwd, path.join(root, relPath))}:${lineNum}:${content}`
-      }).slice(0, limit)
-      resolve(matches)
+      if (exitCode !== undefined && exitCode >= 2) {
+        reject(new Error(`ripgrep failed (exit ${exitCode}): ${String(stderr).trim() || 'unknown error'}`))
+        return
+      }
+      // exit 0 = matches, exit 1 = no matches. Both are answers.
+      resolve(toRelativeMatches(stdout, cwd))
     })
 
-    // Handle spawn errors (e.g., rg not found on Windows)
-    proc.on('error', () => resolve(null))
+    // Spawn errors (rg not installed) are the one fallback-worthy case.
+    proc.on('error', () => {
+      spawnFailed = true
+      resolve(null)
+    })
+  })
+}
+
+/**
+ * Ripgrep prints `path:line:text`. On Windows an absolute path starts with a
+ * drive letter, so the first colon belongs to `C:` and splitting on it turns
+ * every path into the single character "C".
+ */
+function splitRgLine(line: string): { filePath: string; rest: string } | null {
+  const driveOffset = /^[A-Za-z]:[\\/]/.test(line) ? 2 : 0
+  const colonIdx = line.indexOf(':', driveOffset)
+  if (colonIdx === -1) return null
+  return { filePath: line.substring(0, colonIdx), rest: line.substring(colonIdx) }
+}
+
+function toRelativeMatches(stdout: string, cwd: string): string[] {
+  const lines = stdout.split('\n').filter(Boolean)
+  return lines.map((line) => {
+    const parts = splitRgLine(line)
+    if (!parts) return line
+    return path.relative(cwd, path.resolve(cwd, parts.filePath)) + parts.rest
   })
 }
 
 /**
  * Fallback: Node RegExp with per-file timeout to limit ReDoS impact.
+ * `files` is the explicit file list; a single-file target skips globbing.
  */
 async function fallbackGrep(
   pattern: string,
-  root: string,
+  target: string,
+  targetIsFile: boolean,
   glob: string | undefined,
   caseInsensitive: boolean,
   limit: number,
@@ -84,12 +120,13 @@ async function fallbackGrep(
     return ['Error: Invalid regular expression pattern.']
   }
 
-  const entries = await fg(glob ?? '**/*', { cwd: root, onlyFiles: true, dot: false })
+  const files = targetIsFile
+    ? [target]
+    : (await fg(glob ?? '**/*', { cwd: target, onlyFiles: true, dot: false })).map((entry) => path.join(target, entry))
   const matches: string[] = []
 
-  for (const entry of entries) {
+  for (const filePath of files) {
     if (matches.length >= limit) break
-    const filePath = path.join(root, entry)
     let raw: string
     try {
       raw = await readFile(filePath, 'utf8')
@@ -113,16 +150,20 @@ async function fallbackGrep(
 
 export const grepTool: Tool = {
   name: 'Grep',
-  description: 'Search text files for a regular expression pattern. Uses ripgrep when available for ReDoS-immune, fast searching. Supports offset and head_limit for pagination, and multiline for cross-line patterns.',
+  description: [
+    'Search file contents for a regular expression. Uses ripgrep when available, with a Node RegExp fallback.',
+    'Results are `path:line:text`. Version control directories are excluded automatically.',
+    'Use headLimit/offset to paginate and multiline for patterns that span lines.',
+  ].join(' '),
   searchHint: 'search file contents with regex (ripgrep)',
   inputSchema: z.object({
-    pattern: z.string().min(1),
-    path: z.string().min(1).optional(),
-    glob: z.string().min(1).optional(),
-    caseInsensitive: z.boolean().optional(),
-    headLimit: z.number().int().min(0).max(10_000).optional(),
-    offset: z.number().int().min(0).optional(),
-    multiline: z.boolean().optional(),
+    pattern: z.string().min(1).describe('Regular expression to search for (ripgrep syntax).'),
+    path: z.string().min(1).optional().describe('File or directory to search in. Defaults to the working directory. A single file is searched directly.'),
+    glob: z.string().min(1).optional().describe('Glob filtering which files are searched, e.g. "*.ts". Ignored when path is a file.'),
+    caseInsensitive: z.boolean().optional().describe('Case-insensitive search. Defaults to false.'),
+    headLimit: z.number().int().min(0).max(10_000).optional().describe('Maximum matches to return. Defaults to 250; 0 means unlimited.'),
+    offset: z.number().int().min(0).optional().describe('Skip this many matches before applying headLimit. Defaults to 0.'),
+    multiline: z.boolean().optional().describe('Let the pattern span lines and let `.` match newlines. Defaults to false.'),
   }).strict(),
   riskLevel: 'safe',
   isReadOnly: true,
@@ -147,7 +188,7 @@ export const grepTool: Tool = {
   shouldDisplayResult: () => true,
   async execute(input, context) {
     const options = input as GrepInput
-    const root = assertInsideCwd(context.cwd, options.path ?? '.')
+    const target = assertInsideCwd(context.cwd, options.path ?? '.')
     const caseInsensitive = options.caseInsensitive ?? false
     const multiline = options.multiline ?? false
     const offset = options.offset ?? 0
@@ -156,14 +197,28 @@ export const grepTool: Tool = {
     // Fetch enough results to cover offset + limit
     const fetchLimit = effectiveLimit === Infinity ? 10_000 : offset + effectiveLimit
 
+    // `path` may name a file. Resolving that here keeps ripgrep from being
+    // handed a file as its working directory, and keeps fast-glob from calling
+    // scandir on one — both of which surfaced as a bare ENOTDIR.
+    let targetIsFile: boolean
+    try {
+      targetIsFile = (await stat(target)).isFile()
+    } catch {
+      return {
+        ok: false,
+        content: `Cannot search '${options.path ?? '.'}': the path does not exist. Relative paths resolve against ${context.cwd}. Use Glob to locate the file first.`,
+        errorCode: 'not_found',
+      }
+    }
+
     // Try ripgrep first (ReDoS-immune, faster)
-    const rgMatches = await tryRipgrep(options.pattern, root, options.glob, caseInsensitive, fetchLimit, context.cwd, multiline)
+    const rgMatches = await tryRipgrep(options.pattern, target, targetIsFile ? undefined : options.glob, caseInsensitive, context.cwd, multiline)
     if (rgMatches !== null) {
       return paginateResult(rgMatches, effectiveLimit, offset)
     }
 
     // Fallback to Node RegExp
-    const matches = await fallbackGrep(options.pattern, root, options.glob, caseInsensitive, fetchLimit, context.cwd, multiline)
+    const matches = await fallbackGrep(options.pattern, target, targetIsFile, options.glob, caseInsensitive, fetchLimit, context.cwd, multiline)
     return paginateResult(matches, effectiveLimit, offset)
   },
 }

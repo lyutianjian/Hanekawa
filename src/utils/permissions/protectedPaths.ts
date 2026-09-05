@@ -96,9 +96,45 @@ export function isProtectedPath(path: string): boolean {
   return false
 }
 
+const WINDOWS_DRIVE_ROOT = /^[A-Za-z]:\/?$/
+const WINDOWS_DRIVE_CHILD = /^[A-Za-z]:\/[^/]+$/
+
+/**
+ * Removal targets that must never be auto-approved, whatever rule or mode would
+ * otherwise cover them: the filesystem root, a Windows drive root, the home
+ * directory, a direct child of either root (`/usr`, `C:/Windows`), and a bare
+ * glob. Ported from Claude Code's `isDangerousRemovalPath`, which is likewise
+ * unreachable by an allowlist.
+ *
+ * Takes an already-resolved absolute path; symlinks are deliberately not
+ * resolved first, so `/tmp` is still caught where it is a symlink.
+ */
+export function isDangerousRemovalPath(resolvedPath: string, home: string): boolean {
+  const forwardSlashed = resolvedPath.replace(/[\\/]+/g, '/')
+  if (forwardSlashed === '*' || forwardSlashed.endsWith('/*')) return true
+
+  const normalized = forwardSlashed === '/' ? forwardSlashed : forwardSlashed.replace(/\/$/, '')
+  if (normalized === '/') return true
+  if (WINDOWS_DRIVE_ROOT.test(normalized)) return true
+  if (normalized.toLowerCase() === home.replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase()) return true
+  if (WINDOWS_DRIVE_CHILD.test(normalized)) return true
+
+  // A direct child of the POSIX root: `/usr`, `/etc`, but not `/usr/local`.
+  const slashes = normalized.split('/').filter(Boolean)
+  return normalized.startsWith('/') && slashes.length === 1
+}
+
 const DOS_DEVICE_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+/**
+ * A DOS device name reached through a *suffix* rather than a whole component:
+ * Windows resolves `settings.json.PRN` to the printer device, so a name that
+ * merely ends in one is as much a redirect as a name that is one.
+ */
+const DOS_DEVICE_SUFFIX = /\.(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
 const SHORT_NAME_PATTERN = /~[1-9](\.[^.]*)?$/
 const NTFS_ADS_PATTERN = /:[^/\\:*?"<>|]+(:\$DATA)?$/i
+/** Three or more dots used as a whole path component (`a/.../b`). */
+const TRIPLE_DOT_COMPONENT = /^\.{3,}$/
 
 export interface WindowsPathSafetyResult {
   suspicious: boolean
@@ -121,7 +157,16 @@ export function checkWindowsPathSafety(path: string): WindowsPathSafetyResult {
 
   const segments = path.split(/[/\\]/).filter(Boolean)
   for (const segment of segments) {
-    if (DOS_DEVICE_NAMES.test(segment)) {
+    // `.` and `..` are ordinary navigation, not a trailing-dot bypass. Claude
+    // Code never flags them because it tests the trailing dot on the whole
+    // path (`/[.\s]+$/`) rather than per component; checking per component
+    // catches `a/.git./b` as well, but only once these two are exempt —
+    // otherwise every `../file` read as a suspicious path.
+    if (segment === '.' || segment === '..') continue
+    if (TRIPLE_DOT_COMPONENT.test(segment)) {
+      return { suspicious: true, reason: `Path component "${segment}" is a run of dots that can confuse path resolution` }
+    }
+    if (DOS_DEVICE_NAMES.test(segment) || DOS_DEVICE_SUFFIX.test(segment)) {
       return { suspicious: true, reason: `DOS device name "${segment}" can cause unexpected I/O behavior` }
     }
     if (segment.endsWith('.') || segment.endsWith(' ')) {

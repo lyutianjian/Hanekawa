@@ -26,9 +26,9 @@ export function resetCacheTTLEvaluation(): void {
   // No-op kept for call-site compatibility.
 }
 
-export function getPromptCachingEnabled(model?: string): boolean {
+export function getPromptCachingEnabled(): boolean {
   if (process.env.MYAGENT_DISABLE_PROMPT_CACHING === '1') return false
-  if (model?.includes('haiku') && process.env.MYAGENT_DISABLE_PROMPT_CACHING_HAIKU === '1') return false
+
   return true
 }
 

@@ -271,6 +271,8 @@ export interface CreateAgentToolOptions {
   getConfigRules?(): PermissionRule[]
   getSessionRules?(): PermissionRule[]
   getSessionRuleStore?(): SessionRuleStore
+  /** `permissions.additionalDirectories`, inherited from the parent gate. */
+  getAdditionalDirectories?(): string[]
   denialStateStore?: DenialStateStore
   cwd: string
   system?: string
@@ -609,6 +611,7 @@ async function runSubagent({
       mode: resolveSubagentPermissionMode(options, agentDefinition, isBackground),
       denialStateStore: readonlyDenialStateStore(options.denialStateStore),
       cwd: effectiveCwd,
+      additionalDirectories: options.getAdditionalDirectories?.() ?? [],
       sessionRuleStore,
     })
     if (!sessionRuleStore) {

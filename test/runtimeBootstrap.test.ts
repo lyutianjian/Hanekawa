@@ -166,7 +166,11 @@ test('an MCP server the host refuses to trust is reported without blocking start
 })
 
 test('denial counters follow the session the newest runtime was built for', async () => {
-  const { cwd, store, session } = await createProject()
+  // A configured deny rule is what still denies without asking, so it is what
+  // moves the counter; safety findings prompt instead.
+  const { cwd, store, session } = await createProject({
+    settings: { permissions: { deny: ['Bash(curl:*)'] } },
+  })
   const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
 
   const bashTool: Tool = {
@@ -176,7 +180,7 @@ test('denial counters follow the session the newest runtime was built for', asyn
     riskLevel: 'confirm',
     execute: async () => ({ ok: true, content: 'done' }),
   }
-  const denied = { command: 'cat .git/config' }
+  const denied = { command: 'curl https://example.com' }
 
   const first = host.createRuntime(host.initialModelKey, session)
   assert.equal(await host.permissionGate.approve(bashTool, denied), false)
@@ -317,6 +321,23 @@ test('a hooks change reports that the runtime has to be rebuilt', async () => {
   // Hooks are captured when a runtime is constructed, so reloading settings
   // alone cannot apply them; the caller has to replace the runtime.
   assert.equal((await host.reloadSettings()).needsRuntimeRebuild, true)
+  await host.shutdown('test over')
+})
+
+test('project instructions are loaded and re-read on reload', async () => {
+  // The loader existed from the start; nothing called it, so AGENTS.md never
+  // reached a prompt.
+  const { cwd, store, session } = await createProject()
+  await writeFile(path.join(cwd, 'AGENTS.md'), 'always answer in haiku', 'utf8')
+
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+  assert.match(host.getProjectContext(), /always answer in haiku/)
+
+  await writeFile(path.join(cwd, 'AGENTS.md'), 'always answer in limericks', 'utf8')
+
+  // Captured per runtime, like hooks: the caller has to rebuild for it to land.
+  assert.equal((await host.reloadSettings()).needsRuntimeRebuild, true)
+  assert.match(host.getProjectContext(), /always answer in limericks/)
   await host.shutdown('test over')
 })
 

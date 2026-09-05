@@ -12,6 +12,7 @@ import {
 import { loadMcpConfig } from '../src/services/mcp/config.js'
 import {
   AnthropicProvider,
+  CONTEXT_1M_BETA,
   OpenAIProvider,
   ProviderRegistry,
   buildAnthropicMessages,
@@ -477,6 +478,7 @@ test('validateSettings accepts model, agent, and cache settings', () => {
         provider: 'openai',
         model: 'gpt-local',
         contextWindow: 1_000_000,
+        longContext1m: true,
       },
     },
     defaultModel: 'local',
@@ -493,6 +495,17 @@ test('validateSettings accepts model, agent, and cache settings', () => {
 
   assert.equal(result.valid, true)
   assert.deepEqual(result.errors, [])
+})
+
+test('validateSettings rejects a non-boolean longContext1m', () => {
+  const result = validateSettings({
+    models: {
+      local: { provider: 'anthropic', model: 'claude-sonnet-4-6', longContext1m: 'yes' as never },
+    },
+  })
+
+  assert.equal(result.valid, false)
+  assert.deepEqual(result.errors, ['models.local.longContext1m must be a boolean'])
 })
 
 test('validateSettings checks the disabled skill list', () => {
@@ -748,6 +761,24 @@ test('loadMergedSettings merges permission rules and overrides startup mode', as
       deny: ['Delete'],
       ask: ['Write:src/**'],
     })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('loadMergedSettings concatenates permissions.additionalDirectories across layers', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-settings-'))
+  try {
+    await mkdir(path.join(dir, '.myagent'), { recursive: true })
+    await writeFile(path.join(dir, '.myagent', 'settings.json'), JSON.stringify({
+      permissions: { additionalDirectories: ['../shared'] },
+    }), 'utf8')
+    await writeFile(path.join(dir, '.myagent', 'settings.local.json'), JSON.stringify({
+      permissions: { additionalDirectories: ['../scratch'] },
+    }), 'utf8')
+
+    const settings = await loadMergedSettings(dir)
+    assert.deepEqual(settings.permissions?.additionalDirectories, ['../shared', '../scratch'])
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -1038,6 +1069,35 @@ test('buildAnthropicPayload applies dynamic ToolSearch fields only for native An
   assert.equal(JSON.stringify(thirdPartyPayload.messages).includes('<available-deferred-tools>'), false)
   assert.equal(thirdPartyPayload.tools.some((tool) => 'defer_loading' in tool), false)
   assert.deepEqual(getAnthropicBetaHeaders(request, false), [])
+})
+
+test('longContext1m sends the 1M beta on proxy endpoints too', () => {
+  const request: ModelRequest = {
+    cacheSource: 'agent:test',
+    model: 'claude-sonnet-4-6',
+    messages: [{ id: 'u1', role: 'user', content: 'hello', createdAt: new Date().toISOString() }],
+    tools: [
+      { name: 'ToolSearch', description: 'search', inputSchema: z.object({ query: z.string() }).strict(), riskLevel: 'safe', execute: async () => ({ ok: true, content: '' }) },
+      { name: 'DeferredTool', description: 'deferred', inputSchema: z.object({}).strict(), riskLevel: 'safe', execute: async () => ({ ok: true, content: '' }) },
+    ],
+    hasDeferredTools: true,
+    allDeferredToolNames: new Set(['DeferredTool']),
+    postCompactDiscoveredNames: new Set(['DeferredTool']),
+  }
+
+  // The point of the switch: a custom `baseUrl` is where every other beta is
+  // withheld, and it is exactly where a proxy needs this one to hand out 1M.
+  assert.deepEqual(
+    getAnthropicBetaHeaders(request, false, { longContext1m: true }),
+    [CONTEXT_1M_BETA],
+  )
+  assert.deepEqual(
+    getAnthropicBetaHeaders(request, true, { longContext1m: true }),
+    [CONTEXT_1M_BETA, 'advanced-tool-use-2025-11-20'],
+  )
+  // Off, and absent, are the same as before the switch existed.
+  assert.deepEqual(getAnthropicBetaHeaders(request, false, { longContext1m: false }), [])
+  assert.deepEqual(getAnthropicBetaHeaders(request, false, {}), [])
 })
 
 test('enforceAnthropicCacheControlLimit removes tool schema markers first', () => {
@@ -1357,14 +1417,16 @@ test('buildOpenAITools includes concrete schemas for built-in tools', () => {
 
   const tools = buildOpenAITools([readFileTool])
   assert.equal(tools.length, 1)
-  assert.deepEqual(tools[0]?.function.parameters, {
-    type: 'object',
-    properties: {
-      filePath: { type: 'string', minLength: 1 },
-    },
-    required: ['filePath'],
-    additionalProperties: false,
-  })
+  const parameters = tools[0]?.function.parameters as { properties: Record<string, unknown>; required: string[]; additionalProperties: boolean; type: string }
+  assert.equal(parameters.type, 'object')
+  assert.deepEqual(parameters.required, ['filePath'])
+  assert.equal(parameters.additionalProperties, false)
+  assert.deepEqual(Object.keys(parameters.properties).sort(), ['filePath', 'limit', 'offset'])
+  // Parameter descriptions must survive into the API schema: they are the
+  // cheapest thing keeping the model from guessing a tool's input shape.
+  for (const property of Object.values(parameters.properties)) {
+    assert.equal(typeof (property as { description?: unknown }).description, 'string')
+  }
 })
 
 test('buildAnthropicTools includes concrete schemas for built-in tools', () => {
@@ -1373,14 +1435,14 @@ test('buildAnthropicTools includes concrete schemas for built-in tools', () => {
 
   const tools = buildAnthropicTools([readFileTool])
   assert.equal(tools.length, 1)
-  assert.deepEqual(tools[0]?.input_schema, {
-    type: 'object',
-    properties: {
-      filePath: { type: 'string', minLength: 1 },
-    },
-    required: ['filePath'],
-    additionalProperties: false,
-  })
+  const schema = tools[0]?.input_schema as { properties: Record<string, unknown>; required: string[]; additionalProperties: boolean; type: string }
+  assert.equal(schema.type, 'object')
+  assert.deepEqual(schema.required, ['filePath'])
+  assert.equal(schema.additionalProperties, false)
+  assert.deepEqual(Object.keys(schema.properties).sort(), ['filePath', 'limit', 'offset'])
+  for (const property of Object.values(schema.properties)) {
+    assert.equal(typeof (property as { description?: unknown }).description, 'string')
+  }
 })
 
 test('buildAnthropicMessages merges assistant text with following tool use', () => {

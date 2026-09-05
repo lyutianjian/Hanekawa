@@ -409,6 +409,7 @@ export type ToolErrorCode =
   | 'aborted'
 
 export interface ReadFileState {
+  /** Always LF-normalized, so `oldString` matching never sees a `\r`. */
   content: string
   timestamp: number
   mtimeMs: number
@@ -416,6 +417,9 @@ export interface ReadFileState {
   size: number
   dev?: number
   ino?: number
+  /** Original on-disk encoding and line endings, restored on write-back. */
+  encoding?: BufferEncoding
+  lineEndings?: 'CRLF' | 'LF'
 }
 
 export interface ToolResult {

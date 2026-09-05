@@ -177,13 +177,21 @@ export function groupHeaderLabel(group: ActivityGroup): string {
  *
  * A sealed group keeps the full label: it is written once, and the totals are
  * exactly what someone reading a finished turn wants read out.
+ *
+ * `live` is the session's own 「a turn is in flight」 (`model/waiting.ts` decides
+ * which head carries it) and outranks `status`, which reads `done` in every gap
+ * between two tool calls: a head whose name settled to 「已完成 · 2 步」 while the
+ * turn was still working would announce the turn as over, repeatedly.
  */
-export function groupHeaderName(group: ActivityGroup): string {
-  return group.status === 'running' ? groupStatusLabel(group) : groupHeaderLabel(group)
+export function groupHeaderName(group: ActivityGroup, live = false): string {
+  return live || group.status === 'running' ? RUNNING_LABEL : groupHeaderLabel(group)
 }
 
+/** 「the turn is working」 — the running head's whole, unchanging name. */
+const RUNNING_LABEL = '工作中'
+
 function groupStatusLabel(group: ActivityGroup): string {
-  if (group.status === 'running') return '工作中'
+  if (group.status === 'running') return RUNNING_LABEL
   // An aborted turn has no measured time to quote — `turn-end` withholds the
   // duration line for it, and a record span would be a number nobody measured.
   if (group.status === 'aborted') return '已中断'

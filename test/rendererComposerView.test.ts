@@ -14,6 +14,7 @@ import type { OverlayAction } from '../src/desktop/renderer/model/dialogActions.
 import type { PermissionViewModel } from '../src/desktop/renderer/model/permissionDialog.js'
 import { EFFORT_LABELS, PERMISSION_MODE_LABELS } from '../src/desktop/renderer/model/composer.js'
 import { runtimeMenuView, type RuntimeMenuView } from '../src/desktop/renderer/model/runtimeMenu.js'
+import { CONTEXT_RATIO_VARIABLE, contextGaugeView } from '../src/desktop/renderer/model/usage.js'
 import type { SurfaceAction } from '../src/desktop/renderer/model/surfaces.js'
 import type { PermissionMode } from '../src/harness/permissions.js'
 import type { WireModelsResult, WireRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
@@ -256,6 +257,28 @@ test('the chip is one label carrying both fields, inert until a snapshot arrives
     [['chip-model-label', 'claude-sonnet-5'], ['chip-effort-label', EFFORT_LABELS.high]],
   )
   assert.equal(r.view('chipRuntime').disabled, false)
+})
+
+test('the context ring leads the chip, and is absent when there is nothing to report', (t) => {
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+  assert.deepEqual(
+    r.view('chipRuntime').children.map((child) => child.className),
+    ['chip-model-label', 'chip-effort-label'],
+    'no gauge without a usable window',
+  )
+
+  r.composer.renderRuntime(
+    runtime({ contextWindow: 200_000, usableContextWindow: 100_000 }),
+    contextGaugeView(90_000, runtime({ usableContextWindow: 100_000 })),
+  )
+  const [gauge] = r.view('chipRuntime').children
+  assert.equal(gauge?.className, 'chip-context-gauge warn')
+  // The ring is decoration; the figures reach the reader through the button's
+  // own accessible name, which is why the level may be a colour at all.
+  assert.equal(gauge?.attributes.get('aria-hidden'), 'true')
+  assert.equal(gauge?.styleProperties.get(CONTEXT_RATIO_VARIABLE), '0.9')
+  assert.match(r.view('chipRuntime').attributes.get('aria-label') ?? '', /90% 已用/)
 })
 
 test('clicking the chip asks the pane for the rows rather than opening anything', (t) => {

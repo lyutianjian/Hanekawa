@@ -415,6 +415,24 @@ test('focusProject reaches the heading drawn by the last render', (t) => {
   )
 })
 
+test('the marquee’s second copy is hidden from the accessibility tree', (t) => {
+  // The loop needs the name twice — that is what it wraps onto — and saying a
+  // session's name twice to a screen reader is not a cosmetic problem. The echo
+  // carries `aria-hidden`, the visible run does not, and the stylesheet keeps the
+  // echo out of the layout until the marquee runs.
+  const { render, root } = mount(t)
+  render(viewOf(tieredState()))
+
+  const row = sessionRows(root())[0]
+  assert.ok(row, 'no rows drawn')
+  const run = find(row, 'session-title-run')
+  const echo = find(row, 'session-title-echo')
+  assert.equal(run?.text, '正在显示')
+  assert.equal(echo?.text, run?.text, 'the echo is the same name, or the loop shows two')
+  assert.equal(echo?.attributes.get('aria-hidden'), 'true', 'the second copy must not be announced')
+  assert.equal(run?.attributes.get('aria-hidden'), undefined, 'the first copy is the name')
+})
+
 test('a row carries its tier as data — and no tier paints anything', (t) => {
   // `active` is the one the window is showing, `open` is a lane that exists but
   // is not in front, and neither class is history. All three paint identically
@@ -426,7 +444,9 @@ test('a row carries its tier as data — and no tier paints anything', (t) => {
 
   assert.deepEqual(
     sessionRows(root()).map((row) => [
-      find(row, 'session-title')?.text,
+      // `session-title-run` rather than `session-title`: the title box also holds
+      // the marquee's `aria-hidden` echo of the same name.
+      find(row, 'session-title-run')?.text,
       row.classes.filter((name) => name !== 'session-row'),
     ]),
     [
@@ -447,7 +467,7 @@ test('the delete confirmation keeps the name and takes over the actions slot', (
   const row = sessionRows(root()).find((node) => node.classes.includes('confirming'))
   assert.ok(row, 'no row is asking for confirmation')
   assert.ok(row.classes.includes('confirming'))
-  assert.equal(find(row, 'session-title')?.text, '后台 lane', 'the name left the row')
+  assert.equal(find(row, 'session-title-run')?.text, '后台 lane', 'the name left the row')
 
   // Disabled, not merely unlistened: a name that still looks clickable invites an
   // answer the row will not give.

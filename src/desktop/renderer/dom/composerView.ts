@@ -4,6 +4,11 @@ import {
   permissionPillView,
   submitButtonView,
 } from '../model/composer.js'
+import {
+  CONTEXT_RATIO_VARIABLE,
+  hiddenContextGauge,
+  type ContextGaugeView,
+} from '../model/usage.js'
 import type { RuntimeMenuKey, RuntimeMenuView } from '../model/runtimeMenu.js'
 import type { SurfaceAction, SurfaceRow } from '../model/surfaces.js'
 import type { PermissionMode } from '../../../harness/permissions.js'
@@ -69,7 +74,7 @@ export interface ComposerView {
    * active pane's snapshot — including a missing one, so a pane that has not
    * finished starting shows placeholders rather than the previous pane's model.
    */
-  renderRuntime(runtime: WireRuntimeSnapshot | undefined): void
+  renderRuntime(runtime: WireRuntimeSnapshot | undefined, gauge?: ContextGaugeView): void
   /**
    * Opens the chip's popover with the rows the pane just built.
    *
@@ -136,6 +141,8 @@ export function createComposerView(els: {
   // The last snapshot this view painted, so opening the menu can redraw the pill
   // without waiting for the host to post another one.
   let runtimeSnapshot: WireRuntimeSnapshot | undefined
+  /** The context-occupancy ring's state, painted onto the chip beside the model. */
+  let contextGauge: ContextGaugeView = hiddenContextGauge()
   let permissionMenuOpen = false
   let streamingNow = false
   /** The chip's popover: its rows while open, `undefined` while shut. */
@@ -369,19 +376,35 @@ export function createComposerView(els: {
   }
 
   function renderChip(): void {
-    const chip = composerChipView(runtimeSnapshot)
-    // Two spans in one button: the model has to be replaceable without taking
-    // the effort level with it, and nesting buttons is invalid markup.
+    const chip = composerChipView(runtimeSnapshot, contextGauge)
+    // Spans in one button: the model has to be replaceable without taking the
+    // effort level with it, and nesting buttons is invalid markup. The gauge
+    // leads, because it qualifies the model name it sits against — and it is
+    // absent, not empty, when there is nothing to report.
     replace(
       els.chipRuntime,
+      chip.gauge.visible && contextGaugeNode(chip.gauge),
       el('span', 'chip-model-label', chip.model),
       el('span', 'chip-effort-label', chip.effort),
     )
-    const title = `${chip.modelTitle}\n${chip.effortTitle}`
+    const title = chip.title
     els.chipRuntime.title = title
     els.chipRuntime.setAttribute('aria-label', title)
     els.chipRuntime.setAttribute('aria-haspopup', 'menu')
     els.chipRuntime.disabled = !chip.enabled
+  }
+
+  /**
+   * The occupancy ring. `aria-hidden` deliberately: the same numbers are already
+   * in the button's `aria-label`, in words, so the colour is never the only
+   * carrier — and a decorative ring announced between the model and the effort
+   * would just interrupt the two labels that matter.
+   */
+  function contextGaugeNode(gauge: ContextGaugeView): HTMLElement {
+    const node = el('span', `chip-context-gauge ${gauge.level}`)
+    node.setAttribute('aria-hidden', 'true')
+    node.style.setProperty(CONTEXT_RATIO_VARIABLE, String(gauge.ratio))
+    return node
   }
 
   function applySubmitState(): void {
@@ -436,8 +459,9 @@ export function createComposerView(els: {
       applySubmitState()
       show(els.stop, streaming)
     },
-    renderRuntime(runtime) {
+    renderRuntime(runtime, gauge) {
       runtimeSnapshot = runtime
+      contextGauge = gauge ?? hiddenContextGauge()
       renderChip()
       renderPermission()
     },

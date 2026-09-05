@@ -7,6 +7,8 @@ import {
   draftToChanges,
   loadSettings,
   matchesQuery,
+  pendingRowIds,
+  projectSnapshot,
   routingOptions,
   runSettingsChanges,
   settingsChordToIntent,
@@ -14,6 +16,7 @@ import {
   settingsView,
   type SettingsClient,
   type SettingsDraft,
+  type PendingMutation,
   type SettingsIntent,
   type SettingsState,
 } from '../src/desktop/renderer/model/settings.js'
@@ -333,6 +336,28 @@ test('confirming with nothing pending deletes nothing', () => {
 
 // --- form validation ---------------------------------------------------------
 
+function endpointDraft(
+  overrides: Partial<Extract<SettingsDraft, { kind: 'endpoint' }>> = {},
+): SettingsDraft {
+  return {
+    kind: 'endpoint',
+    name: 'main',
+    isNew: true,
+    provider: 'anthropic',
+    baseUrl: '',
+    apiKey: '',
+    keyTouched: false,
+    modelKey: '',
+    modelId: '',
+    ...overrides,
+  }
+}
+
+/** Wraps changes the way `applySettingsIntent` does, so `runSettingsChanges` takes them. */
+function pendingOf(...changes: SettingsChange[]): PendingMutation[] {
+  return changes.map((change, id) => ({ id, change }))
+}
+
 function modelDraft(overrides: Partial<Extract<SettingsDraft, { kind: 'model' }>> = {}): SettingsDraft {
   return {
     kind: 'model',
@@ -342,6 +367,7 @@ function modelDraft(overrides: Partial<Extract<SettingsDraft, { kind: 'model' }>
     endpoint: 'main',
     provider: '',
     contextWindow: '',
+    longContext1m: '',
     maxOutputTokens: '',
     ...overrides,
   }
@@ -371,6 +397,41 @@ test('blank numeric fields are omitted, not sent as zero', () => {
   assert.ok(!('error' in change))
   assert.equal('contextWindow' in change, false)
   assert.equal('maxOutputTokens' in change, false)
+  // Off is absence, not `false`: `applyProviderChange` rebuilds the whole
+  // `ModelConfig`, so an omitted field is how the switch gets removed.
+  assert.equal('longContext1m' in change, false)
+})
+
+test('the 1M header switch round-trips through the model form', () => {
+  const snapshot = snapshotOf({
+    models: [
+      { key: 'big', model: 'claude-big', endpoint: 'main', contextWindow: 1_000_000, longContext1m: true, resolves: true },
+    ],
+    defaultModel: 'big',
+    routing: { main: 'big', plan: 'inherit', compact: 'inherit', subagent: [] },
+  })
+
+  // Seeded from the snapshot, or editing a model would silently switch it off.
+  const opened = applySettingsIntent(
+    openState({ category: 'provider', snapshot }),
+    { kind: 'edit-model', key: 'big' },
+  ).state
+  assert.ok(opened.draft?.kind === 'model')
+  assert.equal(opened.draft.longContext1m, 'on')
+
+  const change = draftToChange(opened.draft, snapshot)
+  assert.ok(!('error' in change) && change.kind === 'set-model')
+  assert.equal(change.longContext1m, true)
+
+  // Optimistic: the row must not blink back to off between save and refresh.
+  const projected = projectSnapshot(snapshot, pendingOf(change))
+  assert.equal(projected.models.find((model) => model.key === 'big')?.longContext1m, true)
+
+  // And the model list says which models carry it.
+  const card = settingsView(openState({ category: 'provider', snapshot })).cards
+    .find((card) => card.id === 'models')
+  const row = card?.rows.find((row) => row.id === 'model:big')
+  assert.match(row?.detail ?? '', /1M 请求头/)
 })
 
 test('renaming a model emits the rename before the write', () => {
@@ -395,12 +456,12 @@ test('editing a model without renaming it emits one change', () => {
 
 test('a duplicate endpoint name is rejected only when creating', () => {
   const dup = draftToChange(
-    { kind: 'endpoint', name: 'main', isNew: true, provider: 'anthropic', baseUrl: '', apiKey: '', keyTouched: false },
+    endpointDraft({ name: 'main', isNew: true }),
     snapshotOf(),
   )
   assert.ok('error' in dup)
   const edit = draftToChange(
-    { kind: 'endpoint', name: 'main', isNew: false, provider: 'anthropic', baseUrl: '', apiKey: '', keyTouched: false },
+    endpointDraft({ name: 'main', isNew: false }),
     snapshotOf(),
   )
   assert.ok(!('error' in edit))
@@ -991,7 +1052,12 @@ test('the skills card has an empty state and a reload button', () => {
   ).cards.find((card) => card.id === 'skills')
   assert.equal(card?.rows.length, 0)
   assert.match(card?.empty ?? '', /还没有技能/)
-  assert.deepEqual(card?.footerButtons?.map((button) => button.intent), [{ kind: 'reload-skills' }])
+  // Import first: with no skills on disk it is the only useful action, and the
+  // empty state points at it.
+  assert.deepEqual(card?.footerButtons?.map((button) => button.intent), [
+    { kind: 'import-skill' },
+    { kind: 'reload-skills' },
+  ])
 })
 
 test('a skill switch and a skill reload are each one change', () => {
@@ -1121,7 +1187,7 @@ test('a failed change keeps the snapshot on screen', async () => {
       },
     }),
     before,
-    [{ scope: 'provider', kind: 'remove-model', key: 'big' }],
+    pendingOf({ scope: 'provider', kind: 'remove-model', key: 'big' }),
   )
   assert.match(state.error ?? '', /still referenced/)
   assert.equal(state.snapshot, before.snapshot, 'an error must not blank the screen')
@@ -1138,10 +1204,10 @@ test('changes run in order and the last reply wins', async () => {
       },
     }),
     openState(),
-    [
+    pendingOf(
       { scope: 'provider', kind: 'rename-model', from: 'big', to: 'huge' },
       { scope: 'provider', kind: 'set-model', key: 'huge', model: 'claude-big' },
-    ],
+    ),
   )
   assert.deepEqual(
     sent.map((change) => change.kind),
@@ -1152,8 +1218,150 @@ test('changes run in order and the last reply wins', async () => {
 })
 
 test('a change with no project selected fails instead of guessing one', async () => {
-  const state = await runSettingsChanges(fakeClient(), { ...createSettingsState(), open: true }, [
-    { scope: 'provider', kind: 'set-default-model', key: 'big' },
-  ])
+  const state = await runSettingsChanges(
+    fakeClient(),
+    { ...createSettingsState(), open: true },
+    pendingOf({ scope: 'provider', kind: 'set-default-model', key: 'big' }),
+  )
   assert.ok(state.error)
+})
+
+// --- the optimistic projection ------------------------------------------------
+
+test('a pending removal takes the row off screen before the host answers', () => {
+  const armed = applySettingsIntent(openState(), {
+    kind: 'request-remove',
+    target: { kind: 'model', name: 'big' },
+  }).state
+  const outcome = applySettingsIntent(armed, { kind: 'confirm-remove' })
+
+  assert.deepEqual(outcome.changes, [{ scope: 'provider', kind: 'remove-model', key: 'big' }])
+  assert.equal(outcome.pending?.length, 1, 'the change is parked so the view can draw it')
+
+  const view = settingsView(outcome.state)
+  const models = view.cards.find((card) => card.id === 'models')
+  assert.deepEqual(models?.rows.map((row) => row.id), ['model:broken'], 'no second click needed')
+  // The snapshot itself is untouched, which is what makes the rollback free.
+  assert.equal(outcome.state.snapshot?.models.length, 2)
+})
+
+test('removing an endpoint projects its models away too', () => {
+  const state = openState()
+  const projected = projectSnapshot(state.snapshot!, [
+    { id: 0, change: { scope: 'provider', kind: 'remove-endpoint', name: 'main' } },
+  ])
+  assert.deepEqual(projected.endpoints, [])
+  assert.deepEqual(projected.models.map((model) => model.key), ['broken'])
+  // The promotion `ConfigService.removeModel` performs, mirrored.
+  assert.equal(projected.defaultModel, 'broken')
+})
+
+test('a pending toggle keeps its row and marks it in flight', () => {
+  const outcome = applySettingsIntent(openState({ category: 'extensions' }), {
+    kind: 'set-skill-enabled',
+    name: 'release',
+    enabled: false,
+  })
+  const skills = settingsView(outcome.state).cards.find((card) => card.id === 'skills')
+  const release = skills?.rows.find((row) => row.id === 'skill:release')
+  assert.equal(release?.pending, true)
+  assert.ok(release?.control.kind === 'toggle' && release.control.value === false)
+  assert.deepEqual([...pendingRowIds(outcome.state.pending)], ['skill:release'])
+})
+
+test('an import in flight is drawn on the button that started it', () => {
+  const outcome = applySettingsIntent(openState({ category: 'extensions' }), { kind: 'import-skill' })
+  assert.deepEqual(outcome.changes, [{ scope: 'extensions', kind: 'import-skill' }])
+  const skills = settingsView(outcome.state).cards.find((card) => card.id === 'skills')
+  const importing = skills?.footerButtons?.find((button) => button.changeKind === 'import-skill')
+  assert.equal(importing?.pending, true)
+  assert.equal(
+    skills?.footerButtons?.find((button) => button.changeKind === 'reload-skills')?.pending,
+    undefined,
+    'only the button whose change is in flight waits',
+  )
+})
+
+test('a failed change retires its pending row so the real snapshot comes back', async () => {
+  const armed = applySettingsIntent(openState(), {
+    kind: 'request-remove',
+    target: { kind: 'model', name: 'big' },
+  }).state
+  const outcome = applySettingsIntent(armed, { kind: 'confirm-remove' })
+
+  const after = await runSettingsChanges(
+    fakeClient({
+      changeSettings: async () => {
+        throw new Error('模型 big 上还有会话「x」在跑，先中断它再删。')
+      },
+    }),
+    outcome.state,
+    outcome.pending!,
+  )
+  assert.deepEqual(after.pending, [], 'the optimistic row is withdrawn')
+  const models = settingsView(after).cards.find((card) => card.id === 'models')
+  assert.ok(models?.rows.some((row) => row.id === 'model:big'), 'and the row is back')
+  assert.match(after.error ?? '', /在跑/)
+})
+
+// --- forms in their own card --------------------------------------------------
+
+test('a new-model form is anchored to the models card, an edit to its row', () => {
+  const created = settingsView(applySettingsIntent(openState(), { kind: 'new-model' }).state)
+  assert.deepEqual(created.form?.anchor, { cardId: 'models' })
+
+  const edited = settingsView(
+    applySettingsIntent(openState(), { kind: 'edit-model', key: 'big' }).state,
+  )
+  assert.deepEqual(edited.form?.anchor, { cardId: 'models', rowId: 'model:big' })
+})
+
+test('a delete confirmation is anchored to the row it is about, and names the cascade', () => {
+  const view = settingsView(
+    applySettingsIntent(openState(), {
+      kind: 'request-remove',
+      target: { kind: 'endpoint', name: 'main' },
+    }).state,
+  )
+  assert.deepEqual(view.confirming?.anchor, { cardId: 'endpoints', rowId: 'endpoint:main' })
+  assert.match(view.confirming?.message ?? '', /将同时删除模型 big/)
+})
+
+// --- an endpoint and its first model ------------------------------------------
+
+test('a new endpoint can carry its first model, and both fields are all-or-nothing', () => {
+  const snapshot = snapshotOf({ models: [], defaultModel: undefined })
+
+  const alone = draftToChanges(endpointDraft({ name: 'fresh' }), snapshot)
+  assert.ok(Array.isArray(alone))
+  assert.deepEqual(alone.map((change) => change.kind), ['set-endpoint'])
+
+  const half = draftToChanges(endpointDraft({ name: 'fresh', modelKey: 'big' }), snapshot)
+  assert.ok('error' in half)
+
+  const both = draftToChanges(
+    endpointDraft({ name: 'fresh', modelKey: 'big', modelId: 'claude-big' }),
+    snapshot,
+  )
+  assert.ok(Array.isArray(both))
+  assert.deepEqual(both.map((change) => change.kind), [
+    'set-endpoint',
+    'set-model',
+    // Nothing was the default, so the model just added becomes it.
+    'set-default-model',
+  ])
+  assert.equal(
+    (both[1] as Extract<SettingsChange, { kind: 'set-model' }>).endpoint,
+    'fresh',
+    'the model must point at the endpoint created one change earlier',
+  )
+})
+
+test('adding an endpoint does not move an existing default model', () => {
+  const changes = draftToChanges(
+    endpointDraft({ name: 'fresh', modelKey: 'other', modelId: 'claude-other' }),
+    snapshotOf(),
+  )
+  assert.ok(Array.isArray(changes))
+  assert.deepEqual(changes.map((change) => change.kind), ['set-endpoint', 'set-model'])
 })

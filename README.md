@@ -51,6 +51,26 @@ A project can override any of this by creating `.myagent/config.json` in its own
 merged key by key, with the project file winning. Model changes made from the TUI are written back to
 whichever of the two files applies — the project one if it exists, otherwise the global one.
 
+### Project instructions
+
+Hanekawa reads the project's own instructions into every prompt. Starting at the working directory and
+walking up to the filesystem root, it collects:
+
+- `CLAUDE.md`, or `AGENTS.md` if there is no `CLAUDE.md`
+- every `*.md` under `.myagent/rules/`
+
+then, from the working directory only, `CLAUDE.local.md` — or `AGENTS.local.md` if that one is absent.
+Keep the local file out of version control for personal notes.
+
+Each directory contributes **one** of the two instruction files, not both: repositories that keep
+`AGENTS.md` and `CLAUDE.md` in sync would otherwise send the same guide twice in every request. Files
+are read outermost first, so the nearest one wins, and the local file is read last of all.
+
+The set is read once when a project opens and captured when a session's runtime is built, the same way
+hooks are. Editing one of these files mid-session takes effect on the next settings reload — saving
+anything on the desktop settings screen does one, and it rebuilds the runtime when the instructions
+changed. In the TUI, restart to pick up an edit.
+
 ### Routing
 
 `routing` sends a particular role to a particular model. Every value is a key from `models`, or
@@ -374,3 +394,31 @@ window other than the default 200,000 tokens:
 When omitted, Hanekawa uses 200,000. The configured value controls context
 budgeting, history selection, compaction thresholds, ToolSearch thresholds, and
 status display; Hanekawa does not infer it from the model name.
+
+### The 1M context beta header
+
+Anthropic's 1M context window is a **request header**, not part of the model id:
+`anthropic-beta: context-1m-2025-08-07`. Some Anthropic-compatible endpoints only
+serve their 1M models when it is present, while vendors that are already 1M by
+default may reject an unrecognized beta. So it is an explicit per-model switch,
+off by default — `longContext1m` in config, or 「1M 上下文请求头」 in the desktop
+settings screen's model form:
+
+```json
+{
+  "models": {
+    "sonnet-1m": {
+      "endpoint": "proxy",
+      "model": "claude-sonnet-4-6",
+      "contextWindow": 1000000,
+      "longContext1m": true
+    }
+  }
+}
+```
+
+The two fields are **orthogonal and both usually wanted**: `longContext1m` only
+adds the header, `contextWindow` is the local token budget. Setting one does not
+change the other. The switch is read by the `anthropic` provider only, and —
+unlike every other beta Hanekawa sends — it applies to custom `baseUrl` endpoints
+too, since those are exactly the ones that need it.

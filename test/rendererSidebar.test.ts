@@ -124,8 +124,9 @@ test('an unparseable timestamp sorts oldest rather than throwing', () => {
 // --- grouping ---------------------------------------------------------------
 
 test('the wire order stands regardless of which pane is active', () => {
-  // Activation is imperceptible: no group is hoisted, no heading highlighted —
-  // switching sessions must not move anything on screen.
+  // Activation moves nothing: no group is hoisted, and while the active session
+  // has a row of its own the heading above it stays unmarked — switching
+  // sessions must not shift anything on screen.
   const state = stateWith({
     projects: [
       project('/a', 'alpha', [session('a1')]),
@@ -144,6 +145,49 @@ test('the wire order stands regardless of which pane is active', () => {
   assert.deepEqual(view.rows.map((row) => row.sessionId), ['a1', 'b1', 'c1'])
   // The active row still *knows* it is the shown one — data without styling.
   assert.deepEqual(view.rows.map((row) => row.active), [false, true, false])
+  assert.deepEqual(view.groups.map((group) => group.active), [false, false, false])
+})
+
+test('a session with no row yet marks its project heading instead', () => {
+  // A brand-new session is invisible in the list, so without this the rail says
+  // nothing at all about where the user is. The heading holds the mark until the
+  // first message gives the session a row, and never alongside it.
+  const base = {
+    projects: [
+      project('/a', 'alpha', [session('a1')]),
+      project('/b', 'beta', []),
+    ],
+    lanes: [lane('2', 'draft', '/b')],
+    activeLane: '2',
+  }
+
+  const fresh = sidebarView(
+    stateWith({ ...base, laneStatus: new Map([['2', paneStatus({ hasConversation: false })]]) }),
+  )
+  assert.deepEqual(fresh.rows.map((row) => row.sessionId), ['a1'], 'the draft has no row')
+  assert.deepEqual(fresh.groups.map((group) => group.active), [false, true])
+
+  // First message: the draft becomes a row, and the highlight moves down to it.
+  const spoken = sidebarView(
+    stateWith({ ...base, laneStatus: new Map([['2', paneStatus({ hasConversation: true })]]) }),
+  )
+  assert.deepEqual(spoken.rows.map((row) => row.active), [false, true])
+  assert.deepEqual(spoken.groups.map((group) => group.active), [false, false])
+})
+
+test('a search that hides the active session leaves its heading unmarked', () => {
+  // The query moved the user nowhere. Handing the highlight up to the heading
+  // would read as "you are in a new session here", which is not what happened.
+  const view = sidebarView(
+    stateWith({
+      projects: [project('/a', 'alpha', [session('a1', { title: 'alpha talk' })])],
+      lanes: [lane('1', 'a1', '/a')],
+      activeLane: '1',
+      searchQuery: 'zzz',
+    }),
+  )
+  assert.equal(view.rows.length, 0)
+  assert.deepEqual(view.groups.map((group) => group.active), [])
 })
 
 // --- folding ----------------------------------------------------------------

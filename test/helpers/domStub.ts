@@ -52,6 +52,13 @@ interface StubEvent {
   readonly key: string
   /** `transitionend`'s property. The sidebar's fold listens for `flex-basis`. */
   readonly propertyName: string
+  /**
+   * The pressed mouse button, as `MouseEvent.button`: 0 is the left one, 2 the
+   * right. Defaults to 0, so a test that does not care describes a plain click —
+   * the sidebar reads it to tell a left press on an open menu's trigger (a
+   * dismissal) from the right-click that toggles the menu.
+   */
+  readonly button: number
   defaultPrevented: boolean
   preventDefault(): void
   stopPropagation(): void
@@ -63,6 +70,7 @@ export interface StubEventInit {
   readonly relatedTarget?: unknown
   readonly key?: string
   readonly propertyName?: string
+  readonly button?: number
 }
 
 type Listener = (event: StubEvent) => void
@@ -331,6 +339,7 @@ class StubElement {
       relatedTarget: init.relatedTarget ?? null,
       key: init.key ?? '',
       propertyName: init.propertyName ?? '',
+      button: init.button ?? 0,
       defaultPrevented: false,
       preventDefault() {
         event.defaultPrevented = true

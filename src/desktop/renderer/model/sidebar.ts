@@ -154,6 +154,16 @@ export interface SidebarGroup {
    * because there is no registry entry to forget.
    */
   readonly isGlobal: boolean
+  /**
+   * The heading stands in for the session on screen, because that session has no
+   * row yet.
+   *
+   * A session with no conversation in it is invisible in the rail, so a fresh
+   * pane would otherwise leave nothing marked at all. The highlight belongs to
+   * the *place* until the first message gives the session a row of its own, at
+   * which point it moves down to `SidebarRow.active` — never both at once.
+   */
+  readonly active: boolean
   /** This group's context menu is open, so the view draws it under the heading. */
   readonly menuOpen: boolean
   /** This group is asking "remove?" and has replaced its `+` with the answer. */
@@ -408,6 +418,11 @@ export function sidebarView(state: SidebarState): SidebarView {
   // it on screen the moment its pane has content, without waiting for the next
   // pull.
   const seen = new Set<string>()
+  // Whether the pane on screen got a row at all. Set on the built row rather than
+  // on the search-filtered one: a query that hides the active session has not
+  // moved the user anywhere, so it must not hand the highlight back to the
+  // heading.
+  let activeHasRow = false
   for (const project of state.projects) {
     const bucket = bucketFor(project.projectRoot, project.projectName, project.isGlobal ?? false)
     for (const session of project.sessions) {
@@ -421,6 +436,7 @@ export function sidebarView(state: SidebarState): SidebarView {
       if (state.deletingSessions.has(session.id)) continue
       const lane = laneBySession.get(session.id)
       const row = rowFor(session, project.projectRoot, lane?.lane, active?.paneId, state)
+      if (row.active) activeHasRow = true
       if (matches(row)) bucket.rows.push(row)
     }
   }
@@ -448,6 +464,7 @@ export function sidebarView(state: SidebarState): SidebarView {
       messageCount: 0,
     }
     const row = rowFor(draft, lane.projectRoot, lane.lane, active?.paneId, state)
+    if (row.active) activeHasRow = true
     const bucket = bucketFor(lane.projectRoot, lane.projectName)
     if (matches(row)) bucket.rows.push(row)
   }
@@ -458,6 +475,14 @@ export function sidebarView(state: SidebarState): SidebarView {
   // clickable — until the user removes it from the sidebar on purpose. The host
   // decides which projects are listed at all (`listSessions`); this filter used
   // to quietly overrule it.
+  // The project the active pane belongs to, but only while that pane has no row
+  // of its own: a session with nothing in it is invisible here, so without this
+  // a brand-new session leaves the whole rail unmarked. It hands the highlight
+  // back the instant the first message turns the draft into a row.
+  const activeHeadingRoot = active !== undefined && !activeHasRow
+    ? active.projectRoot
+    : undefined
+
   const searching = needle !== ''
   const groups = [...byProject.entries()]
     // The「最近」filter, applied before the search's own: it selects *which
@@ -473,6 +498,7 @@ export function sidebarView(state: SidebarState): SidebarView {
         // such session".
         collapsed: !searching && state.collapsedProjects.has(projectRoot),
         isGlobal: bucket.isGlobal,
+        active: activeHeadingRoot === projectRoot,
         // A menu or a confirmation on a group that is being searched away would
         // be unanswerable, so both read on the same filtered set the view draws.
         menuOpen: state.projectMenu === projectRoot,
@@ -481,11 +507,11 @@ export function sidebarView(state: SidebarState): SidebarView {
     )
 
   // The wire order stands: registry order (the order projects were added, first
-  // added first, global workspace last). Activation is deliberately
-  // imperceptible — no hoisting, no highlight — so switching sessions never
-  // moves anything on screen; the canvas header, not the sidebar, says where you
-  // are. The registry itself is stable across opens, so creating a session in a
-  // project cannot move its group either.
+  // added first, global workspace last). Activation never *moves* a group — no
+  // hoisting — so switching sessions shifts nothing on screen; the only mark it
+  // leaves is the heading highlight above, and only while the active session has
+  // no row to carry it. The registry itself is stable across opens, so creating
+  // a session in a project cannot move its group either.
   const ordered = groups
   // Collapsed groups are drawn as a heading and nothing else, so they are absent
   // here: this list is the cursor's and the digit chords' index space, and both
@@ -546,12 +572,19 @@ function groupOf(
   projectRoot: string,
   projectName: string,
   rows: readonly SidebarRow[],
-  options: { collapsed: boolean; isGlobal: boolean; menuOpen: boolean; confirmingRemove: boolean },
+  options: {
+    collapsed: boolean
+    isGlobal: boolean
+    active: boolean
+    menuOpen: boolean
+    confirmingRemove: boolean
+  },
 ): SidebarGroup {
   return {
     projectRoot,
     projectName,
     isGlobal: options.isGlobal,
+    active: options.active,
     menuOpen: options.menuOpen,
     confirmingRemove: options.confirmingRemove,
     collapsed: options.collapsed,
@@ -810,10 +843,12 @@ export function sidebarRenderSignature(view: SidebarView): string {
   for (const group of view.groups) {
     // The menu and the confirmation are drawn on the heading, a collapsed
     // group's included, so they are signed even where the rows below are not —
-    // an unsigned `menuOpen` is a right-click the render guard swallows.
+    // an unsigned `menuOpen` is a right-click the render guard swallows. The
+    // heading's own highlight signs for the same reason: it is the only mark a
+    // brand-new session gets, and it arrives without any row changing.
     parts.push(
       `g:${group.projectRoot}${group.projectName}${group.collapsed ? '1' : '0'}${group.isGlobal ? 'g' : '-'}`
-        + `${group.menuOpen ? 'm' : '-'}${group.confirmingRemove ? 'r' : '-'}${group.rows.length}`,
+        + `${group.menuOpen ? 'm' : '-'}${group.confirmingRemove ? 'r' : '-'}${group.rows.length}${group.active ? 'a' : '-'}`,
     )
     if (group.collapsed) continue
     for (const row of group.rows) {

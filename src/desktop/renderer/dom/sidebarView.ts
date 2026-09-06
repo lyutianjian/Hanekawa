@@ -207,8 +207,22 @@ export function createSidebarView(
    */
   interface GroupNodes {
     readonly wrapper: HTMLElement
-    /** The heading row and its context menu; rebuilt every render. */
+    /** The heading row; rebuilt every render. */
     readonly head: HTMLElement
+    /**
+     * The heading's context menu, kept across repaints and hidden when shut.
+     *
+     * Rebuilt-per-render is what it used to be, and `.project-menu` carries the
+     * `drop-in` entrance: every repaint while the menu was open re-inserted the
+     * node and replayed the animation — a click on another project's row, or any
+     * badge change during a streaming turn, made the menu jump. A node that
+     * outlives its own open state animates once, when `hidden` comes off, which
+     * is the same rule the fold below follows and the one the workspace picker
+     * already relies on.
+     */
+    readonly menu: HTMLElement
+    /** The open state the menu was last drawn in, so its item is built once. */
+    menuShown: boolean
     /** The animated track. `rows` is its single, shrinkable child. */
     readonly body: HTMLElement
     readonly rows: HTMLElement
@@ -253,16 +267,24 @@ export function createSidebarView(
     if (existing) return existing
     const wrapper = el('div', 'project-group')
     const head = el('div', 'project-head')
+    const menu = el('div', 'project-menu')
+    menu.setAttribute('role', 'menu')
+    menu.hidden = true
     const body = el('div', 'project-body')
     const rows = el('div', 'project-rows')
     body.appendChild(rows)
     wrapper.appendChild(head)
+    // Between the heading and the rows, where it was when it was a child of
+    // `head`: the menu pushes the rows down rather than floating over them.
+    wrapper.appendChild(menu)
     wrapper.appendChild(body)
     // A group first drawn shut has nothing to animate out and no rows to keep:
     // it starts settled, so the first paint is a heading and nothing else.
     const entry: GroupNodes = {
       wrapper,
       head,
+      menu,
+      menuShown: false,
       body,
       rows,
       shut: group.collapsed,
@@ -292,10 +314,14 @@ export function createSidebarView(
   // answers an unchanged state without rendering.
   onPressOutside(['.session-actions'], () => onIntent({ kind: 'cancel-delete' }))
   onPressOutside(['.project-actions'], () => onIntent({ kind: 'cancel-remove-project' }))
-  // The heading row stays inside: the menu is opened by a `contextmenu` on it,
-  // and that event now reaches here first — closing on it would let the
-  // heading's own handler re-open what the user meant to toggle shut.
-  onPressOutside(['.project-menu', '.project-row'], () =>
+  // The menu's *own* heading row stays inside, and only it: the menu is opened
+  // by a `contextmenu` on that row and `open-project-menu` toggles, so answering
+  // the press here would close what the row's own handler is about to re-open
+  // and the right-click would stop toggling. Every *other* heading is outside —
+  // scoping this to a bare `.project-row` made all of them the trigger, so
+  // left-pressing a different project left the menu standing over a rail that
+  // had just repainted underneath it.
+  onPressOutside(['.project-menu', '.project-menu-open'], () =>
     onIntent({ kind: 'open-project-menu', projectRoot: undefined }),
   )
 
@@ -475,7 +501,17 @@ export function createSidebarView(
       entry.settled = false
       startGroupMove(entry)
     }
-    const headingRow = el('div', 'project-row')
+    // `active` marks the heading as standing in for a session with no row of its
+    // own — a pane the user just created. It is the same "you are here" the
+    // active session row wears, and the model guarantees only one of the two is
+    // ever set.
+    const headingClasses = ['project-row']
+    if (group.active) headingClasses.push('active')
+    // The open menu's trigger, which is what `dom/dismiss.ts` above keeps inside
+    // the popover. A marker rather than a compound selector on `.project-row`:
+    // it marks exactly one row, and one class token is all `closest` needs.
+    if (group.menuOpen) headingClasses.push('project-menu-open')
+    const headingRow = el('div', headingClasses.join(' '))
     const heading = button(
       'project-heading',
       group.projectName,
@@ -489,6 +525,7 @@ export function createSidebarView(
       { icon: group.isGlobal ? 'clock' : 'folder' },
     )
     heading.setAttribute('aria-expanded', String(!group.collapsed))
+    if (group.active) heading.setAttribute('aria-current', 'true')
     projectHeadings.set(group.projectRoot, heading)
     headingRow.appendChild(heading)
 
@@ -531,16 +568,45 @@ export function createSidebarView(
       })
     }
 
-    const menu = group.menuOpen ? el('div', 'project-menu') : undefined
-    if (menu) {
-      menu.setAttribute('role', 'menu')
-      menu.appendChild(
-        button('project-menu-item', '移除项目并删除历史', '从侧边栏移除此项目，并删除它的全部会话记录', () =>
-          onIntent({ kind: 'request-remove-project', projectRoot: group.projectRoot }),
-        ),
-      )
+    // A left press on the row the open menu belongs to closes it, exactly as a
+    // press anywhere else does — "点开的 popover 按哪里都要关" includes its own
+    // trigger. It cannot come from `dom/dismiss.ts`: that scope has to keep this
+    // row *inside*, or the close it sends on `pointerdown` would be undone by the
+    // `contextmenu` that follows in the same gesture and the right-click would
+    // stop toggling. Hence the button check — 2 is that right-click, and it is
+    // the one press this must not answer.
+    //
+    // The repaint this causes detaches the heading, so the `click` behind the
+    // press lands on nothing and the group does not also fold. That is the read
+    // a menu's own trigger should have: the press shuts the menu, and nothing else.
+    if (group.menuOpen) {
+      headingRow.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return
+        onIntent({ kind: 'open-project-menu', projectRoot: undefined })
+      })
     }
-    replace(entry.head, headingRow, menu)
+
+    replace(entry.head, headingRow)
+
+    // Only when the open state actually changes: this runs on every repaint, and
+    // rebuilding the item under a menu the user is aiming at would take the
+    // keyboard's focus off it mid-turn. The item's only variable is
+    // `group.projectRoot`, which is this entry's key and cannot drift.
+    if (group.menuOpen !== entry.menuShown) {
+      entry.menuShown = group.menuOpen
+      replace(
+        entry.menu,
+        group.menuOpen
+          ? button('project-menu-item', '移除项目并删除历史', '从侧边栏移除此项目，并删除它的全部会话记录', () =>
+              onIntent({ kind: 'request-remove-project', projectRoot: group.projectRoot }),
+            )
+          : undefined,
+      )
+      // Hidden rather than unmounted, so the node survives to animate once. An
+      // empty shut menu also has nothing Tab can reach, which is the reason the
+      // unmount existed.
+      show(entry.menu, group.menuOpen)
+    }
 
     // The class the fold transitions on, toggled on the surviving wrapper.
     entry.wrapper.classList.toggle('collapsed', group.collapsed)

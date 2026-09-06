@@ -905,16 +905,33 @@ body.resizing #sidebar { transition: none; }
    a `<button>`, which is exactly why the session count this replaced could live
    inside the heading and the action cannot. `position: relative` so the context
    menu is drawn under it, in flow. */
+/* The same box as `.session-row`, deliberately: the heading is now a row in the
+   same list, it wears the same highlight, and a heading drawn a size down from
+   the rows under it read as a caption over a list rather than as the first line
+   of one. Only the top margin differs — `--space-2` where a session row has 1px
+   — because the gap between one group and the last group's rows is the only
+   thing separating two workspaces. */
 .project-row {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding-right: var(--space-2);
+  gap: var(--space-1);
+  min-height: 34px;
+  margin: var(--space-2) var(--space-2) 2px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
 }
+/* Painted on the row rather than on the heading inside it, exactly as
+   `.session-row` paints under its own open/actions buttons: the `+` is part of
+   the row, and a fill that stopped where the button starts would be a pill with
+   a bite out of its right edge. */
+.project-row:hover { background: var(--surface-hover); }
 .project-heading {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  /* `.session-open`'s gap, so the label sits the same distance from the row's
+     left edge as a session title does from the indent above it. */
+  gap: var(--space-2);
   flex: 1 1 auto;
   min-width: 0;
   background: transparent;
@@ -925,11 +942,14 @@ body.resizing #sidebar { transition: none; }
      text on screen. */
   color: var(--text-primary);
   border: 0;
-  border-radius: var(--radius-md);
-  margin: var(--space-2) 0 2px;
-  padding: var(--space-1) var(--space-3);
+  /* The box, the fill and the padding all belong to `.project-row` now — this is
+     the label inside it, the way `.session-open` is the label inside a session
+     row. */
+  padding: 0;
   font: inherit;
-  font-size: var(--type-meta);
+  /* The rows' own size. A heading one rung smaller made the workspace name — the
+     sidebar's most-read label — the *smallest* text in the column. */
+  font-size: var(--type-ui);
   /* The one label in the column that is read as a *name* rather than as running
      text: a hair of tracking separates it from the session titles under it
      without reaching for a second colour or weight (design_guidance 六.2). */
@@ -946,12 +966,21 @@ body.resizing #sidebar { transition: none; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.project-heading .icon { flex: 0 0 auto; width: 12px; height: 12px; }
-.project-heading:hover { color: var(--text-primary); background: var(--surface-hover); }
+/* Sized off the label beside it rather than left at the old 12px, which was
+   scaled to a `--type-meta` heading. */
+.project-heading .icon { flex: 0 0 auto; width: 14px; height: 14px; }
+/* The heading standing in for a session that has no row yet: a pane created in
+   this project and not yet spoken to is invisible in the list, so the place
+   carries the mark until the first message gives the session its own row. The
+   same `--surface-active` fill `.session-row.active` uses — the app has one way
+   of saying "you are on this one" — and after `:hover`, so the pointer cannot
+   repaint it a step dimmer. */
+.project-row.active { background: var(--surface-active); }
 /* An explicit focus treatment, because the absence of one is not neutral: an
    unstyled `<button>` keeps Chromium's own ring, and a heading that holds it
-   until focus moves elsewhere reads as a *selected project* — a state this rail
-   does not have. Selection here is `.session-row.active` and nothing else.
+   until focus moves elsewhere reads as the *active project*, which this rail
+   does say — but only through `.project-row.active` above, and only for a
+   session too new to have a row. Focus is not selection.
    `:focus-visible`, the same rung `.sidebar-list` uses: a mouse press leaves no
    mark, a Tab still lands visibly. */
 .project-heading:focus,
@@ -988,7 +1017,8 @@ body.resizing #sidebar { transition: none; }
    group sat near the bottom — the one thing the dropdown rule forbids. A menu
    that pushes the rows down for as long as it is open cannot be cut off. */
 .project-menu {
-  margin: 0 var(--space-2) 2px 22px;
+  /* Hung under the project's *name*, the same left edge the session titles use. */
+  margin: 0 var(--space-2) 2px calc(var(--space-2) + var(--space-3) + 14px + var(--space-2));
   min-width: 10rem;
   display: flex;
   flex-direction: column;
@@ -1047,7 +1077,10 @@ body.resizing #sidebar { transition: none; }
 /* A project kept for its own sake says so, rather than reading as a list that
    has not finished loading. */
 .project-empty {
-  padding: var(--space-1) var(--space-3) var(--space-2) 22px;
+  /* Starts where a session title would — see `.session-row`'s left inset, plus
+     the row's own margin, which this node does not have. */
+  padding: var(--space-1) var(--space-3) var(--space-2)
+           calc(var(--space-2) + var(--space-3) + 14px + var(--space-2));
   color: var(--text-secondary);
   font-size: var(--type-meta);
 }
@@ -1061,7 +1094,12 @@ body.resizing #sidebar { transition: none; }
   gap: var(--space-1);
   min-height: 34px;
   margin: 1px var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  /* The left inset is the heading's icon plus its gap, so a session title starts
+     exactly under its project's name — the rail then has two left edges (the
+     pills' and the labels') instead of four. The pill itself keeps the row's
+     full width, which is why this is padding and not a margin. */
+  padding: var(--space-2) var(--space-3) var(--space-2)
+           calc(var(--space-3) + 14px + var(--space-2));
   border-radius: var(--radius-md);
   cursor: pointer;
 }
@@ -4132,8 +4170,12 @@ body.resizing #sidebar { transition: none; }
 #queue:not([hidden]) { animation: rise-in var(--motion-base) var(--ease-standard); }
 .titlebar-menu,
 .canvas-menu,
-.project-menu,
 .settings-menu { animation: drop-in var(--motion-base) var(--ease-standard); }
+/* Gated on `[hidden]` like the panels above rather than on the node existing:
+   `dom/sidebarView.ts` keeps one menu per workspace across repaints — the rail
+   repaints per streamed token, and a menu re-inserted on each of those replayed
+   this entrance until the user closed it. */
+.project-menu:not([hidden]) { animation: drop-in var(--motion-base) var(--ease-standard); }
 .composer-menu,
 .chip-menu { animation: rise-in var(--motion-base) var(--ease-standard); }
 /* The workspace picker opens *upward* out of the Hero's project name, so it

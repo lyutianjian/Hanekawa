@@ -341,12 +341,26 @@ test('right-clicking a heading opens its menu, and the menu item asks first', (t
   assert.equal(event.defaultPrevented, true, 'the OS menu must not also open')
   assert.deepEqual(intents, [{ kind: 'open-project-menu', projectRoot: '/w/app' }])
 
-  // The menu is state, so it only exists once the model says so.
-  assert.equal(find(root(), 'project-menu'), undefined)
+  // The menu is state, and the node it is drawn in outlives that state: it is
+  // kept across repaints so its entrance animation runs once, when it opens,
+  // rather than on every one of the repaints a streaming turn causes.
+  assert.equal(find(root(), 'project-menu')?.hidden, true, 'a shut menu is hidden, not drawn')
+  assert.equal(find(root(), 'project-menu-item'), undefined, 'a shut menu holds nothing tabbable')
   intents.length = 0
   render(viewOf({ ...tieredState(), projectMenu: '/w/app' }))
+  const opened = find(root(), 'project-menu')
+  assert.equal(opened?.hidden, false, 'the menu the model opened is not showing')
   const item = find(root(), 'project-menu-item')
   assert.ok(item, 'the menu drew nothing to click')
+
+  // A repaint that has nothing to do with the menu — the rail gets one per
+  // streamed token — must leave the menu's node and its item alone. Re-inserting
+  // either is what replayed `drop-in` on every flush and took the focus off an
+  // item the user was aiming at.
+  render(viewOf({ ...tieredState(), projectMenu: '/w/app', pendingDelete: 'history' }))
+  assert.equal(find(root(), 'project-menu')?.node, opened?.node, 'the menu was rebuilt')
+  assert.equal(find(root(), 'project-menu-item')?.node, item.node, 'the menu item was rebuilt')
+
   stub.click(item.node)
   assert.deepEqual(intents, [{ kind: 'request-remove-project', projectRoot: '/w/app' }])
 })
@@ -449,12 +463,8 @@ test('each question is scoped to itself, not to the rail', (t) => {
   stub.dispatchDocument('pointerdown', { target: find(root(), 'project-heading')?.node })
   assert.deepEqual(
     intents.map((intent) => intent.kind),
-    ['cancel-delete', 'cancel-remove-project'],
+    ['cancel-delete', 'cancel-remove-project', 'open-project-menu'],
     'a press on a heading withdraws the confirmation asked in a row',
-  )
-  assert.ok(
-    !intents.some((intent) => intent.kind === 'open-project-menu'),
-    'the heading is the menu’s own trigger — closing here would fight its contextmenu toggle',
   )
 
   // The confirmation's own two buttons are the one place that is *inside*: the
@@ -468,6 +478,59 @@ test('each question is scoped to itself, not to the rail', (t) => {
     !intents.some((intent) => intent.kind === 'cancel-delete'),
     'a press on the confirmation is not a press outside it',
   )
+})
+
+test('a press on another workspace’s heading closes the menu; its own does not', (t) => {
+  // The reported shape: right-click project A's heading, then left-press project
+  // B's. The scope was a bare `.project-row`, which made *every* heading the
+  // menu's trigger — the press read as "inside", nothing withdrew the menu, and
+  // the repaint B's own click caused drew it again over a rail that had moved.
+  // Only the row the menu belongs to is its trigger.
+  const { render, root, stub, intents } = mount(t)
+  render(
+    viewOf({
+      projects: [
+        { projectRoot: '/w/app', projectName: 'app', sessions: [] },
+        { projectRoot: '/w/lib', projectName: 'lib', sessions: [] },
+      ],
+      projectMenu: '/w/app',
+    }),
+  )
+
+  const rows = descendants(root()).filter((node) => node.classes.includes('project-row'))
+  assert.equal(rows.length, 2, 'expected a heading per workspace')
+  const [mine, other] = rows
+  assert.ok(mine?.classes.includes('project-menu-open'), 'the open menu’s trigger is unmarked')
+  assert.ok(!other?.classes.includes('project-menu-open'), 'a second heading claims the menu')
+
+  stub.dispatchDocument('pointerdown', { target: other?.node })
+  assert.deepEqual(
+    intents.filter((intent) => intent.kind === 'open-project-menu'),
+    [{ kind: 'open-project-menu', projectRoot: undefined }],
+    'pressing another workspace’s heading leaves the menu standing',
+  )
+
+  // Its own heading closes it too, but through the row rather than through
+  // `dom/dismiss.ts`: that scope has to keep the row inside, or the close it
+  // sends on the `pointerdown` of a *right*-click would be undone by the
+  // `contextmenu` behind it and the menu could never be toggled shut.
+  intents.length = 0
+  stub.dispatchDocument('pointerdown', { target: mine?.node })
+  assert.ok(
+    !intents.some((intent) => intent.kind === 'open-project-menu'),
+    'the dismissal scope must leave the menu’s own trigger to the row',
+  )
+
+  stub.dispatch(mine?.node, 'pointerdown', { button: 0 })
+  assert.deepEqual(
+    intents.filter((intent) => intent.kind === 'open-project-menu'),
+    [{ kind: 'open-project-menu', projectRoot: undefined }],
+    'a left press on the open menu’s own heading leaves it standing',
+  )
+
+  intents.length = 0
+  stub.dispatch(mine?.node, 'pointerdown', { button: 2 })
+  assert.deepEqual(intents, [], 'the right-click’s own press must not pre-empt its contextmenu')
 })
 
 test('the marquee’s second copy is hidden from the accessibility tree', (t) => {

@@ -46,6 +46,7 @@ import type { SurfacePanel } from './dom/surfaceView.js'
 import type { QueueDom } from './dom/queueView.js'
 import type { TaskPanelDom } from './dom/taskPanelView.js'
 import { append, el, show } from './dom/dom.js'
+import { createRepaint } from './frame.js'
 import { createTranscriptView, type TranscriptView } from './dom/transcriptView.js'
 import { createWelcomeView } from './dom/welcomeView.js'
 import { isTranscriptEmpty, welcomeView } from './model/welcome.js'
@@ -584,9 +585,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.status.render(client.getSnapshot(), client.getCost())
     deps.composer.setStreaming(client.getSnapshot().isStreaming)
     const runtime = client.getRuntimeSnapshot()
-    // The chip is repainted even when the snapshot is missing, so a pane that
-    // has not finished starting shows the placeholder rather than the previous
-    // pane's model.
+    // The runtime controls are repainted even when the snapshot is missing, so a
+    // pane that has not finished starting shows the placeholder rather than the
+    // previous pane's model.
     deps.composer.renderRuntime(
       runtime,
       contextGaugeView(client.getContextUsedTokens(), runtime),
@@ -599,6 +600,26 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     if (!active) return
     deps.suggestions.render(completions)
   }
+
+  /**
+   * The two repaints a streaming turn drives, coalesced to one per frame each.
+   *
+   * Only the two host-event paths go through these — every other call site
+   * (a click, `activate()`, the `hello` sequence) keeps calling the render
+   * functions directly, because those paint once and then hand focus to a node
+   * the paint had to have built. `createRepaint` is leading-edge, so a first
+   * request out of an idle beat is synchronous anyway; what is deferred is the
+   * second and later chunk of a burst.
+   */
+  const streamRepaint = createRepaint(() => {
+    renderTranscript()
+    renderTaskPanel()
+  })
+  /** `snapshot` arrives per chunk too, and the sidebar's badges hang off it. */
+  const statusRepaint = createRepaint(() => {
+    renderStatus()
+    deps.onShellChanged?.()
+  })
 
   function note(text: string, level: 'system' | 'error' = 'system'): void {
     transcript = applySessionEvent(transcript, { type: 'notice', level, content: text }, toolDisplays).state
@@ -894,7 +915,6 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     const outcome = applySessionEvent(transcript, event, toolDisplays)
     transcript = outcome.state
     noteConversationState()
-    renderTranscript()
 
     // Not a `default`-free switch, and deliberately so: the task panel cares
     // about three of a dozen event kinds, and `applySessionEvent` above is the
@@ -906,7 +926,15 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     if (event.type === 'transcript-reset') taskPanel = taskPanelState(event.records)
     // The user starting something new, a beat before their record lands.
     if (event.type === 'turn-start') taskPanel = retireCompletedTaskPanel(taskPanel)
-    renderTaskPanel()
+
+    // One paint for both, at most once a frame: `stream` deltas arrive per token
+    // and each paint is linear in the conversation.
+    streamRepaint.request()
+    // The boundaries are flushed rather than left to the frame: a turn's last
+    // state is what a reader is left looking at, and `transcript-reset` is a
+    // different session's records — neither may land a frame late behind
+    // whatever runs next.
+    if (event.type === 'turn-end' || event.type === 'transcript-reset') streamRepaint.flush()
 
     // The controller rolled back an interrupted prompt; the record is already
     // gone from disk, so dropping this destroys the user's message.
@@ -960,7 +988,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   })
 
   client.subscribe(() => {
-    renderStatus()
+    // Per streamed chunk, like the event above — the usage numbers, the context
+    // ring and every sidebar badge ride on this one snapshot.
+    statusRepaint.request()
     // A `/clear` or `/resume` rebinds the host to another session, and the
     // checkpoints on screen belong to the one it left: every option would
     // resolve to a message the new session has never heard of.
@@ -968,8 +998,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     if (session && session.id !== boundSessionId) {
       boundSessionId = session.id
       if (rewind) closeRewindPanel()
+      // A rebind is not a streaming tick: the header and the status line are
+      // about a different session from this point, so they are drawn now.
+      statusRepaint.flush()
     }
-    deps.onShellChanged?.()
   })
 
   channel.onClose(() => deps.onClosed?.())
@@ -1235,6 +1267,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     renderQueue()
     renderTaskPanel()
     renderStatus()
+    // Everything above is the whole surface, so a frame still owed from before
+    // the switch has nothing left to draw.
+    streamRepaint.cancel()
+    statusRepaint.cancel()
     deps.composer.focus()
   }
 
@@ -1267,10 +1303,17 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // against a node nobody can see. `activate()`'s `renderTranscript()` starts
     // it again from the same `turnStartedAt`, so no time is lost.
     transcriptView.stopClock()
+    // A frame owed to a pane nobody can see: the render functions would return
+    // at their `if (!active)` guard anyway, but the sidebar half of
+    // `statusRepaint` would not, and `activate()` repaints all of it.
+    streamRepaint.cancel()
+    statusRepaint.cancel()
   }
 
   function dispose(): void {
     transcriptView.stopClock()
+    streamRepaint.cancel()
+    statusRepaint.cancel()
     client.dispose()
     paneEl.remove()
   }

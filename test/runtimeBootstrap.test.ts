@@ -11,8 +11,8 @@ import type { SessionMeta } from '../src/sessions/service.js'
 import type { SessionRecord, Tool } from '../src/harness/types.js'
 import type { McpServerConfig } from '../src/services/mcp/index.js'
 
-// ConfigService and loadMergedSettings both layer a shared `~/.myagent`
-// beneath the project one, so every test needs its own home.
+// `config.json` lives in `~/.myagent` alone and `loadMergedSettings` layers a
+// shared `~/.myagent` beneath the project one, so every test needs its own home.
 beforeEach(() => {
   const testHome = mkdtempSync(path.join(tmpdir(), 'myagent-home-'))
   process.env.USERPROFILE = testHome
@@ -30,8 +30,12 @@ async function createProject(options: {
 } = {}): Promise<{ cwd: string; store: SessionStore; session: SessionMeta }> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-bootstrap-'))
   await mkdir(path.join(cwd, '.myagent'), { recursive: true })
+  // The config the project will read is the *home* one — there is no project
+  // layer, and writing one here would exercise the migration instead.
+  const home = process.env.USERPROFILE!
+  await mkdir(path.join(home, '.myagent'), { recursive: true })
   await writeFile(
-    path.join(cwd, '.myagent', 'config.json'),
+    path.join(home, '.myagent', 'config.json'),
     JSON.stringify(options.config ?? MODEL_CONFIG),
     'utf8',
   )

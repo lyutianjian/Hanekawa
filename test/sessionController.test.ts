@@ -26,6 +26,7 @@ type LoopRun = (
 interface Counters {
   invalidateCalls: number
   snapshots: number
+  checkpointDisposals: number
 }
 
 interface Harness {
@@ -49,6 +50,10 @@ function okResult(overrides: Partial<AgentRunResult> = {}): AgentRunResult {
 async function createHarness(options: {
   run?: LoopRun
   checkpointInitFails?: boolean
+  /** The service declines to snapshot this root; `init()` still resolves. */
+  checkpointDisabledAtInit?: boolean
+  /** The service trips its breaker on the first checkpoint. */
+  checkpointDisablesOnFirstCall?: boolean
 } = {}): Promise<Harness> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-controller-'))
   const store = new SessionStore(cwd)
@@ -57,7 +62,7 @@ async function createHarness(options: {
 
   const checkpointCalls: string[] = []
   const events: SessionEvent[] = []
-  const counters: Counters = { invalidateCalls: 0, snapshots: 0 }
+  const counters: Counters = { invalidateCalls: 0, snapshots: 0, checkpointDisposals: 0 }
 
   const loop = {
     run: options.run ?? (async () => okResult()),
@@ -65,12 +70,19 @@ async function createHarness(options: {
     invalidateRecordsCache: () => { counters.invalidateCalls += 1 },
   }
 
+  let checkpointEnabled = !options.checkpointDisabledAtInit
   const checkpointService = {
     init: async () => {
       if (options.checkpointInitFails) throw new Error('no git')
     },
+    isEnabled: () => checkpointEnabled,
+    dispose: () => { counters.checkpointDisposals += 1 },
     createCheckpoint: async (messageId: string) => {
       checkpointCalls.push(messageId)
+      if (options.checkpointDisablesOnFirstCall) {
+        checkpointEnabled = false
+        return { success: false, disabled: true, error: 'Checkpoints disabled for this session: too big.' }
+      }
       return { success: true, commitHash: `hash-${checkpointCalls.length}` }
     },
   } as unknown as CheckpointService
@@ -415,6 +427,41 @@ test('checkpoints are skipped when the shadow repo fails to initialize', async (
   await harness.controller.submit('hello')
 
   assert.deepEqual(harness.checkpointCalls, [])
+})
+
+test('checkpoints are skipped when the service declines the root', async () => {
+  // `init()` resolving is not consent: on an unsnapshottable root (the home
+  // directory, a drive root) the service builds nothing and reports it through
+  // `isEnabled()`. Arming on the resolve alone is what let every global-workspace
+  // session run `git add --all` over the whole user profile.
+  const harness = await createHarness({ checkpointDisabledAtInit: true })
+
+  await harness.controller.submit('hello')
+
+  assert.deepEqual(harness.checkpointCalls, [])
+})
+
+test('a tripped breaker stops later checkpoints and says so once', async () => {
+  const harness = await createHarness({ checkpointDisablesOnFirstCall: true })
+
+  await harness.controller.submit('first')
+  await harness.controller.submit('second')
+
+  assert.equal(harness.checkpointCalls.length, 1, 'the service is asked once, not once per turn')
+  const notices = harness.events.filter(
+    (event): event is Extract<SessionEvent, { type: 'notice' }> => event.type === 'notice',
+  )
+  assert.equal(notices.length, 1)
+  assert.equal(notices[0]?.level, 'system')
+  assert.match(notices[0]?.content ?? '', /Checkpoints disabled/)
+})
+
+test('dispose kills the checkpoint service so no git outlives the session', async () => {
+  const harness = await createHarness()
+
+  harness.controller.dispose()
+
+  assert.equal(harness.counters.checkpointDisposals, 1)
 })
 
 test('a second submit while a turn is in flight is rejected, not run', async () => {

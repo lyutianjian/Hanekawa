@@ -54,11 +54,14 @@ function runtime(overrides: Partial<WireRuntimeSnapshot> = {}): WireRuntimeSnaps
 interface Rendered {
   readonly stub: DomStub
   readonly composer: ComposerView
+  /** The HTML group that puts the gauge beside, not inside, the runtime chip. */
+  readonly runtimeShell: HTMLElement
   readonly els: Record<
     | 'input'
     | 'submit'
     | 'stop'
     | 'attach'
+    | 'contextIndicator'
     | 'chipRuntime'
     | 'chipShell'
     | 'chipPermission'
@@ -95,6 +98,7 @@ function render(t: { after(fn: () => void): void }): Rendered {
     submit: stub.createContainer(),
     stop: stub.createContainer(),
     attach: stub.createContainer(),
+    contextIndicator: stub.createContainer(),
     chipRuntime: stub.createContainer(),
     chipShell: stub.createContainer(),
     chipPermission: stub.createContainer(),
@@ -102,7 +106,10 @@ function render(t: { after(fn: () => void): void }): Rendered {
     progress: stub.createContainer(),
   }
   els.permissionShell.appendChild(els.chipPermission)
+  const runtimeShell = stub.createContainer()
+  runtimeShell.appendChild(els.contextIndicator)
   els.chipShell.appendChild(els.chipRuntime)
+  runtimeShell.appendChild(els.chipShell)
 
   const picked: PermissionMode[] = []
   const attaches: number[] = []
@@ -114,6 +121,7 @@ function render(t: { after(fn: () => void): void }): Rendered {
       submit: els.submit as HTMLButtonElement,
       stop: els.stop as HTMLButtonElement,
       attach: els.attach as HTMLButtonElement,
+      contextIndicator: els.contextIndicator,
       chipRuntime: els.chipRuntime as HTMLButtonElement,
       chipShell: els.chipShell,
       chipPermission: els.chipPermission as HTMLButtonElement,
@@ -140,6 +148,7 @@ function render(t: { after(fn: () => void): void }): Rendered {
   return {
     stub,
     composer,
+    runtimeShell,
     els,
     picked,
     attaches,
@@ -259,26 +268,58 @@ test('the chip is one label carrying both fields, inert until a snapshot arrives
   assert.equal(r.view('chipRuntime').disabled, false)
 })
 
-test('the context ring leads the chip, and is absent when there is nothing to report', (t) => {
+test('the context indicator is independent of the chip, and is absent when there is nothing to report', (t) => {
   const r = render(t)
   r.composer.renderRuntime(runtime())
+  assert.equal(r.view('contextIndicator').hidden, true)
+  assert.deepEqual(r.view('contextIndicator').children, [])
   assert.deepEqual(
     r.view('chipRuntime').children.map((child) => child.className),
     ['chip-model-label', 'chip-effort-label'],
-    'no gauge without a usable window',
+    'the chip carries the two fields it opens, and nothing else',
+  )
+  assert.deepEqual(
+    r.stub.inspect(r.runtimeShell).children.map((child) => child.node),
+    [r.els.contextIndicator, r.els.chipShell],
+    'the indicator is the chip shell’s sibling, not its child',
   )
 
   r.composer.renderRuntime(
     runtime({ contextWindow: 200_000, usableContextWindow: 100_000 }),
     contextGaugeView(90_000, runtime({ usableContextWindow: 100_000 })),
   )
-  const [gauge] = r.view('chipRuntime').children
-  assert.equal(gauge?.className, 'chip-context-gauge warn')
-  // The ring is decoration; the figures reach the reader through the button's
+  assert.equal(r.view('contextIndicator').hidden, false)
+  assert.deepEqual(
+    r.stub.inspect(r.runtimeShell).children.map((child) => child.node),
+    [r.els.contextIndicator, r.els.chipShell],
+    'the visible indicator stays outside the chip',
+  )
+  const [gauge, tooltip] = r.view('contextIndicator').children
+  assert.equal(gauge?.className, 'context-gauge warn')
+  // The ring is decoration; the figures reach the reader through the indicator's
   // own accessible name, which is why the level may be a colour at all.
   assert.equal(gauge?.attributes.get('aria-hidden'), 'true')
   assert.equal(gauge?.styleProperties.get(CONTEXT_RATIO_VARIABLE), '0.9')
-  assert.match(r.view('chipRuntime').attributes.get('aria-label') ?? '', /90% 已用/)
+  assert.equal(r.view('contextIndicator').attributes.get('role'), 'img')
+  assert.match(r.view('contextIndicator').attributes.get('aria-label') ?? '', /90% 已用/)
+  assert.equal((r.els.contextIndicator as { title: string }).title, '', 'the hover card is drawn by the renderer, not by the OS')
+
+  assert.equal(tooltip?.classes.includes('context-tooltip'), true)
+  assert.equal(tooltip?.attributes.get('role'), 'tooltip')
+  assert.equal(tooltip?.attributes.get('aria-hidden'), 'true')
+  assert.match(tooltip?.text ?? '', /上下文/)
+  assert.match(tooltip?.text ?? '', /90% 已用/)
+  assert.match(tooltip?.text ?? '', /90k/)
+  assert.match(tooltip?.text ?? '', /100k/)
+  assert.doesNotMatch(tooltip?.text ?? '', /模型窗口/, 'this gauge has no separate raw window')
+  assert.match(tooltip?.text ?? '', /自动压缩/)
+
+  r.composer.renderRuntime(
+    runtime({ contextWindow: 200_000, usableContextWindow: 100_000 }),
+    contextGaugeView(90_000, runtime({ contextWindow: 200_000, usableContextWindow: 100_000 })),
+  )
+  assert.match(r.view('contextIndicator').children[1]?.text ?? '', /模型窗口/)
+  assert.match(r.view('contextIndicator').children[1]?.text ?? '', /200k/)
 })
 
 test('clicking the chip asks the pane for the rows rather than opening anything', (t) => {
@@ -642,4 +683,59 @@ test('the capsule holds the card, and the page still has somewhere to put it', (
   // message being typed used to be.
   assert.ok(request < capsule.indexOf('id="input"'))
   assert.ok(request < capsule.indexOf('id="composer-bar"'))
+})
+
+test('an unchanged runtime snapshot rebuilds neither the chip nor the pill', (t) => {
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+  const chipBefore = r.view('chipRuntime').children.map((child) => child.node)
+  const pillBefore = r.view('chipPermission').children.map((child) => child.node)
+
+  // `renderRuntime` is reached from the snapshot tick, which during a turn fires
+  // once per streamed chunk. Identity, not equality: rebuilding a control under
+  // the pointer at that rate is what this guard exists to stop.
+  for (let tick = 0; tick < 5; tick += 1) r.composer.renderRuntime(runtime())
+  assert.deepEqual(r.view('chipRuntime').children.map((child) => child.node), chipBefore)
+  assert.deepEqual(r.view('chipPermission').children.map((child) => child.node), pillBefore)
+
+  // A snapshot that moved still repaints, or the guard would be a freeze.
+  r.composer.renderRuntime(runtime({ model: 'claude-opus-5', permissionMode: 'plan' }))
+  assert.notDeepEqual(r.view('chipRuntime').children.map((child) => child.node), chipBefore)
+  assert.equal(r.view('chipRuntime').children[0]!.text, 'claude-opus-5')
+  assert.equal(r.view('chipPermission').children[0]!.text, PERMISSION_MODE_LABELS.plan)
+})
+
+test('an unchanged context gauge does not rebuild the hover card', (t) => {
+  const r = render(t)
+  const runtimeSnapshot = runtime({ contextWindow: 200_000, usableContextWindow: 100_000 })
+  const gauge = contextGaugeView(90_000, runtimeSnapshot)
+  r.composer.renderRuntime(runtimeSnapshot, gauge)
+  const before = r.view('contextIndicator').children.map((child) => child.node)
+
+  for (let tick = 0; tick < 5; tick += 1) r.composer.renderRuntime(runtimeSnapshot, gauge)
+  assert.deepEqual(
+    r.view('contextIndicator').children.map((child) => child.node),
+    before,
+    'streaming snapshots must not replace a tooltip the pointer is over',
+  )
+
+  r.composer.renderRuntime(runtimeSnapshot, contextGaugeView(95_000, runtimeSnapshot))
+  assert.notDeepEqual(
+    r.view('contextIndicator').children.map((child) => child.node),
+    before,
+  )
+  assert.equal(r.view('contextIndicator').children[0]?.className, 'context-gauge critical')
+})
+
+test('the guard does not swallow the click that opens the permission menu', (t) => {
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+  assert.equal(r.menuItems().length, 0)
+
+  // The open flag is part of the pill's signature for the same reason
+  // `menuOpen` is part of `sidebarRenderSignature`.
+  r.stub.click(r.els.chipPermission)
+  assert.ok(r.menuItems().length > 0, 'the menu opened')
+  r.stub.click(r.els.chipPermission)
+  assert.equal(r.menuItems().length, 0, 'and closed again')
 })

@@ -28,14 +28,13 @@ import {
  * bug — `reloadSettings` ends in `config.load()`, which re-reads the layers off
  * disk and discards anything unsaved.
  *
- * `globalConfigPath: null` throughout: without it these would read the
- * developer's own `~/.myagent/config.json` and the assertions would depend on
- * whose machine ran them.
+ * A fresh temp home per test throughout: `config.json` is global-only now, so
+ * without it these would read *and write* the developer's own
+ * `~/.myagent/config.json` and the assertions would depend on whose machine ran
+ * them. `loadMergedSettings` layers `~/.myagent/settings.json` under the project
+ * one, so the local-layer cases below need the same isolation.
  */
 
-// `loadMergedSettings` layers `~/.myagent/settings.json` under the project one,
-// so the local-layer cases below would otherwise read the developer's own
-// settings. `ConfigService` is already isolated by `globalConfigPath: null`.
 test.beforeEach(() => {
   const testHome = mkdtempSync(path.join(os.tmpdir(), 'myagent-home-'))
   process.env.USERPROFILE = testHome
@@ -49,7 +48,7 @@ async function withProject(
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-settings-'))
   try {
     await mkdir(path.join(cwd, '.myagent'), { recursive: true })
-    const config = new ConfigService(cwd, { globalConfigPath: null })
+    const config = new ConfigService(cwd)
     await config.load()
     await run(cwd, config)
   } finally {
@@ -59,7 +58,7 @@ async function withProject(
 
 /** A second service over the same directory — what the next launch would see. */
 async function reload(cwd: string): Promise<ConfigService> {
-  const config = new ConfigService(cwd, { globalConfigPath: null })
+  const config = new ConfigService(cwd)
   await config.load()
   return config
 }
@@ -379,7 +378,7 @@ test('a skill switched off above can be switched back on locally', async () => {
 
 test('a permissions edit does not write config.json', async () => {
   await withLocalLayer({}, async (cwd) => {
-    const config = new ConfigService(cwd, { globalConfigPath: null })
+    const config = new ConfigService(cwd)
     await config.load(await loadMergedSettings(cwd))
 
     await setLocalPermissionEntries(cwd, 'ask', ['Bash(git push:*)'])
@@ -388,7 +387,7 @@ test('a permissions edit does not write config.json', async () => {
     // writes the *merged* `Config`, which would copy every settings-declared
     // model and endpoint into config.json as a side effect of adding one rule.
     assert.equal(
-      existsSync(path.join(cwd, '.myagent', 'config.json')),
+      existsSync(config.getSaveTarget()),
       false,
       'config.json was created by a change that has nothing to do with it',
     )

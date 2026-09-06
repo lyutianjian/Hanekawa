@@ -16,7 +16,8 @@
  *
  * The scan covers `document.<member>` only, so the **element** members faked
  * here are unguarded and the list keeps growing: `scrollTop`/`scrollHeight`/
- * `clientHeight`/`scrollTo`/`scrollIntoView`/`style.height`/`selectionStart`/
+ * `clientHeight`/`scrollTo`/`scrollIntoView`/`getBoundingClientRect()`/
+ * `style.height`/`selectionStart`/
  * `setSelectionRange`/`dispatch`/`focus`/`contains()`/`dataset`/`insertBefore()`.
  * Add to that list rather than starting a second one.
  *
@@ -30,6 +31,15 @@ const SVG_NS = 'http://www.w3.org/2000/svg'
 
 /** Populated by `setAttribute('id', …)`; cleared by `uninstall()`. */
 const ID_REGISTRY = new Map<string, StubElement>()
+
+/**
+ * The rule `getBoundingClientRect` answers from, installed by `onLayout`.
+ *
+ * Module-scoped because `StubElement` is, and cleared by `uninstall` for the
+ * same reason `ID_REGISTRY` is: a rule left standing would measure the next
+ * file's nodes.
+ */
+let LAYOUT: ((view: StubView) => { top: number; bottom: number } | undefined) | undefined
 
 interface StubEvent {
   readonly type: string
@@ -82,6 +92,16 @@ class StubElement {
   scrollTop = 0
   scrollHeight = 0
   clientHeight = 0
+  /**
+   * The box, for the views that measure one. There is no layout here, so it
+   * comes from the rule a test installed with `onLayout`; without one — which is
+   * every test that does not care — it is `NaN`, the same answer the browser
+   * gives inside a `display: none` subtree and the one a measuring view has to
+   * survive either way.
+   */
+  getBoundingClientRect(): { top: number; bottom: number } {
+    return LAYOUT?.(viewOf(this)) ?? { top: Number.NaN, bottom: Number.NaN }
+  }
   /**
    * The inline style, which the renderer may reach in exactly two ways
    * (`rendererStyleTokens.test.ts` enforces both): `height`, because `autosize`
@@ -339,6 +359,17 @@ export interface DomStub {
    * are written, so a test can move `scrollTop` alone without restating the size.
    */
   setMetrics(node: unknown, metrics: { scrollTop?: number; scrollHeight?: number; clientHeight?: number }): void
+  /**
+   * Stands in for layout the other way round: a rule consulted by
+   * `getBoundingClientRect`, rather than a value written onto one node.
+   *
+   * Which is what a view that measures the nodes it just built needs — those
+   * nodes do not exist until the paint that reads them, so there is no moment in
+   * which a test could have written a box onto one. A rule keyed off what the
+   * node *is* can answer for them. Returning `undefined` for a node leaves it
+   * unmeasurable, which is the browser's own answer inside `display: none`.
+   */
+  onLayout(measure: (view: StubView) => { top: number; bottom: number } | undefined): void
   /** The focused node, or `undefined`. */
   activeElement(): unknown
   /** `<html>`, whose `dataset.theme` the stylesheet reads. */
@@ -444,6 +475,9 @@ export function installDomStub(): DomStub {
       if (metrics.scrollHeight !== undefined) element.scrollHeight = metrics.scrollHeight
       if (metrics.clientHeight !== undefined) element.clientHeight = metrics.clientHeight
     },
+    onLayout(measure): void {
+      LAYOUT = measure
+    },
     activeElement(): unknown {
       return activeElement
     },
@@ -458,6 +492,7 @@ export function installDomStub(): DomStub {
     },
     uninstall(): void {
       ID_REGISTRY.clear()
+      LAYOUT = undefined
       activeElement = undefined
       Reflect.deleteProperty(globalThis, 'document')
       Reflect.deleteProperty(globalThis, 'Node')

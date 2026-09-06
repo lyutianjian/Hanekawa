@@ -55,8 +55,12 @@ async function writeSkill(cwd: string, name: string, description: string): Promi
 async function createProject(skillName: string): Promise<{ cwd: string; host: RuntimeHost }> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-multiproject-'))
   await mkdir(path.join(cwd, '.myagent'), { recursive: true })
+  // One config for every project: the model lives in the test's home, not in
+  // each project directory.
+  const home = process.env.USERPROFILE!
+  await mkdir(path.join(home, '.myagent'), { recursive: true })
   await writeFile(
-    path.join(cwd, '.myagent', 'config.json'),
+    path.join(home, '.myagent', 'config.json'),
     JSON.stringify(MODEL_CONFIG),
     'utf8',
   )

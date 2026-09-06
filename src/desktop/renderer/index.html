@@ -120,13 +120,21 @@
                 <span class="composer-spacer"></span>
                 <span id="composer-progress" hidden></span>
                 <!--
-                  One status label for both fields. Its menu is built into this
-                  shell by `dom/composerView.ts` — same construction as the
-                  permission pill, which is why the shell is positioned and the
-                  trigger is not.
+                  The context indicator and the runtime chip are neighbours, not
+                  one control: the gauge reports the live budget while the chip
+                  opens the model and effort decisions.
                 -->
-                <div id="composer-chip">
-                  <button id="chip-runtime" type="button">…</button>
+                <div id="composer-runtime">
+                  <div id="composer-context" hidden></div>
+                  <!--
+                    One status label for both fields. Its menu is built into this
+                    shell by `dom/composerView.ts` — same construction as the
+                    permission pill, which is why the shell is positioned and the
+                    trigger is not.
+                  -->
+                  <div id="composer-chip">
+                    <button id="chip-runtime" type="button">…</button>
+                  </div>
                 </div>
                 <button id="stop" type="button" hidden></button>
                 <button id="submit" type="submit"></button>

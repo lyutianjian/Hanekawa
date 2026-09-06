@@ -37,10 +37,9 @@ import type { ModelRequest } from '../src/harness/types.js'
 import { tmpdir } from 'node:os'
 import { mkdtempSync, existsSync } from 'node:fs'
 
-// ConfigService layers a shared `~/.myagent/config.json` under the project one.
-// A fresh home per test keeps these off the developer's config and stops a
-// save() in one test (which targets the shared layer when no project config
-// exists) from leaking models into the next.
+// `config.json` is global-only: one `~/.myagent/config.json` for every project.
+// A fresh home per test keeps these off the developer's own config and stops a
+// save() in one test from leaking models into the next.
 beforeEach(() => {
   const testHome = mkdtempSync(path.join(tmpdir(), 'myagent-home-'))
   process.env.USERPROFILE = testHome
@@ -88,6 +87,19 @@ test('ConfigService loads defaults and saves config', async () => {
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('ConfigService persists endpoint caching defaults and model overrides', async () => {
+  const service = new ConfigService(process.cwd())
+  service.setEndpoint('proxy', { provider: 'anthropic', baseUrl: 'https://proxy.example/v1', promptCaching: 'off' })
+  service.addModel('inherited', { model: 'claude-sonnet', endpoint: 'proxy' })
+  service.addModel('override', { model: 'claude-opus', endpoint: 'proxy', promptCaching: 'auto' })
+  await service.save()
+
+  const reloaded = new ConfigService(process.cwd())
+  await reloaded.load()
+  assert.equal(reloaded.resolveModel('inherited')?.promptCaching, 'off')
+  assert.equal(reloaded.resolveModel('override')?.promptCaching, 'auto')
 })
 
 test('ConfigService loads fallbackModel config', async () => {
@@ -194,8 +206,8 @@ test('ConfigService loads model and agent defaults from merged settings', async 
 test('ConfigService gives config.json priority over settings config fields', async () => {
   const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
   try {
-    await mkdir(path.join(dir, '.myagent'), { recursive: true })
-    await writeFile(path.join(dir, '.myagent', 'config.json'), JSON.stringify({
+    await mkdir(path.join(process.env.USERPROFILE!, '.myagent'), { recursive: true })
+    await writeFile(path.join(process.env.USERPROFILE!, '.myagent', 'config.json'), JSON.stringify({
       models: {
         configModel: {
           provider: 'anthropic',
@@ -269,7 +281,7 @@ test('ConfigService reads the global config layer from any working directory', a
   }
 })
 
-test('ConfigService gives project config.json priority over the global layer', async () => {
+test('ConfigService does not read a project config.json — there is no project layer', async () => {
   const home = process.env.USERPROFILE!
   const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
   try {
@@ -287,24 +299,25 @@ test('ConfigService gives project config.json priority over the global layer', a
     const service = new ConfigService(dir)
     await service.load()
 
+    // The file is still on disk; `bootstrap` migrates it once (see
+    // `configMigration.test.ts`). The service itself never looks at it.
     const config = service.get()
-    assert.equal(config.defaultModel, 'projectModel')
-    // Global models stay reachable; the project layer only overrides.
-    assert.deepEqual(Object.keys(config.models).sort(), ['globalModel', 'projectModel'])
+    assert.equal(config.defaultModel, 'globalModel')
+    assert.deepEqual(Object.keys(config.models), ['globalModel'])
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('ConfigService saves to the global layer unless a project config exists', async () => {
+test('ConfigService always saves to the global layer, project file or not', async () => {
   const home = process.env.USERPROFILE!
   const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
   try {
     const globalPath = path.join(home, '.myagent', 'config.json')
     const projectPath = path.join(dir, '.myagent', 'config.json')
 
-    // No project config: writes go to the shared layer rather than scattering
-    // API keys into every directory the agent is launched from.
+    // Writes go to the one shared file rather than scattering API keys into
+    // every directory the agent is launched from.
     const service = new ConfigService(dir)
     await service.load()
     service.addModel('added', { provider: 'anthropic', model: 'claude-added' })
@@ -313,12 +326,13 @@ test('ConfigService saves to the global layer unless a project config exists', a
     assert.equal(existsSync(projectPath), false)
     assert.equal(JSON.parse(await readFile(globalPath, 'utf8')).models.added.model, 'claude-added')
 
-    // Once a project opts in, it keeps owning its own config.
+    // A project file left over from the layered era does not take the write
+    // back: that is what made one repo's `config.json` own the user's keys.
     await mkdir(path.dirname(projectPath), { recursive: true })
     await writeFile(projectPath, JSON.stringify({ models: {} }), 'utf8')
     const scoped = new ConfigService(dir)
     await scoped.load()
-    assert.equal(scoped.getSaveTarget(), projectPath)
+    assert.equal(scoped.getSaveTarget(), globalPath)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -327,8 +341,8 @@ test('ConfigService saves to the global layer unless a project config exists', a
 test('ConfigService ignores legacy conversation snip context settings', async () => {
   const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
   try {
-    await mkdir(path.join(dir, '.myagent'), { recursive: true })
-    await writeFile(path.join(dir, '.myagent', 'config.json'), JSON.stringify({
+    await mkdir(path.join(process.env.USERPROFILE!, '.myagent'), { recursive: true })
+    await writeFile(path.join(process.env.USERPROFILE!, '.myagent', 'config.json'), JSON.stringify({
       models: {},
       agent: {
         contextManagement: {
@@ -364,8 +378,8 @@ test('ConfigService ignores legacy conversation snip context settings', async ()
 test('ConfigService does not inject built-in Anthropic model when models are configured', async () => {
   const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
   try {
-    await mkdir(path.join(dir, '.myagent'), { recursive: true })
-    const configPath = path.join(dir, '.myagent', 'config.json')
+    await mkdir(path.join(process.env.USERPROFILE!, '.myagent'), { recursive: true })
+    const configPath = path.join(process.env.USERPROFILE!, '.myagent', 'config.json')
     await writeFile(configPath, JSON.stringify({
       models: {
         local: {
@@ -856,6 +870,13 @@ test('providers report dynamic ToolSearch support conservatively', () => {
     assert.equal(proxiedAnthropic.supportsDynamicToolSearch?.('claude-sonnet-4'), false)
     assert.equal(openai.supportsDynamicToolSearch?.(), false)
 
+    // A schemeless baseUrl must not throw out of the constructor, and only the
+    // exact official hostname qualifies — not a lookalike that merely contains it.
+    const schemeless = new AnthropicProvider({ provider: 'anthropic', model: 'claude-sonnet-4', apiKey: 'test-key', baseUrl: 'proxy.example/v1' })
+    const lookalike = new AnthropicProvider({ provider: 'anthropic', model: 'claude-sonnet-4', apiKey: 'test-key', baseUrl: 'https://api.anthropic.com.evil.test' })
+    assert.equal(schemeless.supportsDynamicToolSearch?.('claude-sonnet-4'), false)
+    assert.equal(lookalike.supportsDynamicToolSearch?.('claude-sonnet-4'), false)
+
     process.env.HANEKAWA_DISABLE_EXPERIMENTAL_BETAS = '1'
     assert.equal(nativeAnthropic.supportsDynamicToolSearch?.('claude-sonnet-4'), false)
   } finally {
@@ -937,7 +958,7 @@ test('buildAnthropicMessages uses a readable placeholder when context is empty',
   }])
 })
 
-test('buildAnthropicPayload caches static system and final message text blocks (native Anthropic)', () => {
+test('buildAnthropicPayload caches static system and final message text blocks by default', () => {
   resetCacheTTLEvaluation()
   const request: ModelRequest = {
     cacheSource: 'agent:test',
@@ -960,7 +981,7 @@ test('buildAnthropicPayload caches static system and final message text blocks (
     ],
   }
 
-  const payload = buildAnthropicPayload(request, undefined, true) as Record<string, unknown>
+  const payload = buildAnthropicPayload(request) as Record<string, unknown>
 
   assert.deepEqual(payload.system, [
     {
@@ -1010,7 +1031,7 @@ test('buildAnthropicPayload can enable 1h cache ttl from runtime settings', () =
     },
   }
 
-  const payload = buildAnthropicPayload(request, undefined, true) as Record<string, unknown>
+  const payload = buildAnthropicPayload(request) as Record<string, unknown>
   const system = payload.system as Array<Record<string, unknown>>
   const messages = payload.messages as Array<{ content: Array<Record<string, unknown>> }>
 
@@ -1018,7 +1039,7 @@ test('buildAnthropicPayload can enable 1h cache ttl from runtime settings', () =
   assert.deepEqual(messages[0]?.content[0]?.cache_control, { type: 'ephemeral', ttl: '1h' })
 })
 
-test('buildAnthropicPayload caches only the final tool schema for native Anthropic', () => {
+test('buildAnthropicPayload caches only the final tool schema', () => {
   resetCacheTTLEvaluation()
   const request: ModelRequest = {
     cacheSource: 'agent:test',
@@ -1035,13 +1056,13 @@ test('buildAnthropicPayload caches only the final tool schema for native Anthrop
     ],
   }
 
-  const payload = buildAnthropicPayload(request, undefined, true) as { tools: Array<Record<string, unknown>> }
+  const payload = buildAnthropicPayload(request) as { tools: Array<Record<string, unknown>> }
 
   assert.equal(payload.tools[0]?.cache_control, undefined)
   assert.deepEqual(payload.tools[1]?.cache_control, { type: 'ephemeral' })
 })
 
-test('buildAnthropicPayload applies dynamic ToolSearch fields only for native Anthropic', () => {
+test('buildAnthropicPayload gates dynamic ToolSearch independently of caching', () => {
   const request: ModelRequest = {
     cacheSource: 'agent:test',
     model: 'claude-sonnet-4',
@@ -1060,15 +1081,16 @@ test('buildAnthropicPayload applies dynamic ToolSearch fields only for native An
     postCompactDiscoveredNames: new Set(['DeferredTool']),
   }
 
-  const nativePayload = buildAnthropicPayload(request, undefined, true) as unknown as { messages: Array<Record<string, unknown>>; tools: Array<Record<string, unknown>> }
+  const nativePayload = buildAnthropicPayload(request, undefined, { dynamicToolSearch: true }) as unknown as { messages: Array<Record<string, unknown>>; tools: Array<Record<string, unknown>> }
   assert.equal(JSON.stringify(nativePayload.messages).includes('<available-deferred-tools>'), true)
   assert.equal(nativePayload.tools.find((tool) => tool.name === 'DeferredTool')?.defer_loading, true)
-  assert.deepEqual(getAnthropicBetaHeaders(request, true), ['advanced-tool-use-2025-11-20'])
+  assert.deepEqual(getAnthropicBetaHeaders(request, { dynamicToolSearch: true }), ['advanced-tool-use-2025-11-20'])
 
-  const thirdPartyPayload = buildAnthropicPayload(request, undefined, false) as unknown as { messages: Array<Record<string, unknown>>; tools: Array<Record<string, unknown>> }
+  const thirdPartyPayload = buildAnthropicPayload(request) as unknown as { messages: Array<Record<string, unknown>>; tools: Array<Record<string, unknown>> }
   assert.equal(JSON.stringify(thirdPartyPayload.messages).includes('<available-deferred-tools>'), false)
   assert.equal(thirdPartyPayload.tools.some((tool) => 'defer_loading' in tool), false)
-  assert.deepEqual(getAnthropicBetaHeaders(request, false), [])
+  assert.deepEqual(getAnthropicBetaHeaders(request), [])
+  assert.equal(countCacheControlMarkers(thirdPartyPayload), countCacheControlMarkers(nativePayload))
 })
 
 test('longContext1m sends the 1M beta on proxy endpoints too', () => {
@@ -1085,19 +1107,18 @@ test('longContext1m sends the 1M beta on proxy endpoints too', () => {
     postCompactDiscoveredNames: new Set(['DeferredTool']),
   }
 
-  // The point of the switch: a custom `baseUrl` is where every other beta is
-  // withheld, and it is exactly where a proxy needs this one to hand out 1M.
+  // The 1M opt-in remains independent of dynamic tool search and caching.
   assert.deepEqual(
-    getAnthropicBetaHeaders(request, false, { longContext1m: true }),
+    getAnthropicBetaHeaders(request, { longContext1m: true }),
     [CONTEXT_1M_BETA],
   )
   assert.deepEqual(
-    getAnthropicBetaHeaders(request, true, { longContext1m: true }),
+    getAnthropicBetaHeaders(request, { dynamicToolSearch: true, longContext1m: true }),
     [CONTEXT_1M_BETA, 'advanced-tool-use-2025-11-20'],
   )
   // Off, and absent, are the same as before the switch existed.
-  assert.deepEqual(getAnthropicBetaHeaders(request, false, { longContext1m: false }), [])
-  assert.deepEqual(getAnthropicBetaHeaders(request, false, {}), [])
+  assert.deepEqual(getAnthropicBetaHeaders(request, { longContext1m: false }), [])
+  assert.deepEqual(getAnthropicBetaHeaders(request), [])
 })
 
 test('enforceAnthropicCacheControlLimit removes tool schema markers first', () => {
@@ -1167,7 +1188,7 @@ test('assertAnthropicCacheControlLimit rejects payloads over Anthropic marker li
   )
 })
 
-test('buildAnthropicPayload sends clean format for third-party providers', () => {
+test('buildAnthropicPayload omits all cache markers when caching is disabled', () => {
   const request: ModelRequest = {
     cacheSource: 'agent:test',
     model: 'fake-model',
@@ -1181,9 +1202,9 @@ test('buildAnthropicPayload sends clean format for third-party providers', () =>
     }],
   }
 
-  const payload = buildAnthropicPayload(request) as Record<string, unknown>
+  const payload = buildAnthropicPayload(request, undefined, { promptCaching: false }) as Record<string, unknown>
 
-  assert.equal(payload.system, 'identity text\n\ninstruction text\n\ncustom system text')
+  assert.deepEqual(payload.system, [{ type: 'text', text: 'identity text\n\ninstruction text\n\ncustom system text' }])
   assert.deepEqual(payload.messages, [{
     role: 'user',
     content: [{ type: 'text', text: 'hello' }],
@@ -1556,7 +1577,7 @@ test('buildAnthropicPayload includes thinking parameter when enabled', () => {
     thinking: { type: 'enabled', budgetTokens: 5000 },
   }
 
-  const payload = buildAnthropicPayload(request, undefined, true) as { thinking?: unknown; max_tokens: number }
+  const payload = buildAnthropicPayload(request) as { thinking?: unknown; max_tokens: number }
   assert.deepEqual(payload.thinking, { type: 'enabled', budget_tokens: 5000 })
   assert.ok(payload.max_tokens > 5000)
 })

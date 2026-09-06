@@ -1,7 +1,6 @@
 import { EFFORT_RANK, VALID_EFFORT_LEVELS, type EffortLevel } from '../../../config/effort.js'
 import type { PermissionMode } from '../../../harness/permissions.js'
 import type { WireRuntimeSnapshot } from '../../../runtime/protocol/wire.js'
-import { hiddenContextGauge, type ContextGaugeView } from './usage.js'
 
 /**
  * What the composer's chip says.
@@ -41,13 +40,7 @@ export interface ComposerChipView {
   readonly atCeiling: boolean
   /** False until a runtime snapshot has arrived; the chip is inert until then. */
   readonly enabled: boolean
-  /**
-   * The context-occupancy ring drawn ahead of the model name, when there is
-   * anything to draw. Its numbers are already folded into `title` — the ring is
-   * `aria-hidden`, so colour is never the only carrier.
-   */
-  readonly gauge: ContextGaugeView
-  /** The chip's whole tooltip: model, effort, and the gauge's lines. */
+  /** The chip's whole tooltip: model and effort only. The context gauge owns its own. */
   readonly title: string
 }
 
@@ -59,7 +52,6 @@ function isEffortLevel(value: string): value is EffortLevel {
 
 export function composerChipView(
   runtime: WireRuntimeSnapshot | undefined,
-  gauge: ContextGaugeView = hiddenContextGauge(),
 ): ComposerChipView {
   if (!runtime) {
     return {
@@ -69,7 +61,6 @@ export function composerChipView(
       effortTitle: '尚未收到运行时快照',
       atCeiling: false,
       enabled: false,
-      gauge: hiddenContextGauge(),
       title: '尚未收到运行时快照',
     }
   }
@@ -97,11 +88,7 @@ export function composerChipView(
     effortTitle,
     atCeiling,
     enabled: true,
-    gauge,
-    // The gauge's numbers go last, under the two decisions the chip opens: the
-    // ring is `aria-hidden`, so this is where a screen reader — and anyone
-    // hovering — actually gets them.
-    title: [modelTitle, effortTitle, ...(gauge.visible ? [gauge.title] : [])].join('\n'),
+    title: [modelTitle, effortTitle].join('\n'),
   }
 }
 

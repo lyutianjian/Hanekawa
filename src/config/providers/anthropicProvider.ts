@@ -1,18 +1,18 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { ModelConfig } from '../service.js'
+import type { PromptCachingMode } from '../routing.js'
 import type { ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, ThinkingBlock } from '../../harness/types.js'
 import {
   checkResponseForCacheBreak,
   recordPromptState,
   requireCacheSource,
-  type CacheBreakResult,
 } from '../../harness/cacheBreakDetection.js'
 import { withRetry } from '../retry.js'
 import { buildAnthropicPayload, getAnthropicBetaHeaders, getAnthropicCacheScope } from './anthropicPayload.js'
 import { debugProviderPayload, debugProviderResponse, debugProviderSummary } from './debug.js'
 import { normalizeAnthropicUsage } from './usage.js'
 import { isExperimentalToolSearchBetaDisabled, modelSupportsToolReference } from '../../utils/toolSearch.js'
-import { getAPIContextManagement } from './apiContextManagement.js'
+import { getPromptCachingEnabled } from '../../harness/cacheControl.js'
 import { USER_AGENT } from '../../utils/userAgent.js'
 
 const STREAM_IDLE_TIMEOUT_MS =
@@ -25,18 +25,49 @@ const STREAM_IDLE_WARNING_MS =
     10,
   ) || 90_000
 
-function isNativeAnthropicApi(baseUrl?: string): boolean {
-  if (!baseUrl) return true
-  return baseUrl.includes('anthropic.com')
+function isUnsupportedPromptCachingError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const status = (error as Error & { status?: number }).status
+  if (status !== 400 && status !== 422) return false
+
+  return /\bcache_control\b|\bprompt[ _-]cach(?:e|ing)\b/i.test(error.message)
+    && /not supported|unsupported|unrecognized|unknown (?:field|parameter|key)|unexpected (?:field|parameter|key|keyword)|extra inputs are not permitted|extra_forbidden|not permitted|not allowed/i.test(error.message)
+}
+
+/**
+ * Successful uncached fallbacks record endpoint/model rejections for this process.
+ * Later sessions, subagents, and routed runtimes reuse those results instead of
+ * probing again. Concurrent initial requests may still probe independently until
+ * a successful fallback records the rejection.
+ */
+const rejectedPromptCaching = new Set<string>()
+
+function rejectionKey(endpoint: string, model: string): string {
+  return `${endpoint}\u0000${model}`
+}
+
+/** Test seam, mirroring `resetCacheBreakDetection`. */
+export function resetRejectedPromptCaching(): void {
+  rejectedPromptCaching.clear()
+}
+
+/** A misconfigured `baseUrl` must not throw out of provider construction. */
+function isOfficialAnthropicEndpoint(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname === 'api.anthropic.com'
+  } catch {
+    return false
+  }
 }
 
 export class AnthropicProvider implements ModelProvider {
   name = 'anthropic'
-  /** Native Anthropic API supports cache_edits; proxy endpoints do not. */
-  supportsCacheEdits: boolean
   private client: Anthropic
+  /** Captured up front: tests replace `client` with a stub that has no `baseURL`. */
+  private readonly endpoint: string
   private maxOutputTokens: number | undefined
-  private nativeAnthropic: boolean
+  private readonly nativeToolSearch: boolean
+  private readonly promptCaching: PromptCachingMode
   /** Static per model, like `maxOutputTokens` — not a per-request decision. */
   private longContext1m: boolean
 
@@ -46,26 +77,15 @@ export class AnthropicProvider implements ModelProvider {
       baseURL: config.baseUrl,
       defaultHeaders: { 'User-Agent': USER_AGENT },
     })
+    this.endpoint = this.client.baseURL
     this.maxOutputTokens = config.maxOutputTokens
-    this.nativeAnthropic = isNativeAnthropicApi(config.baseUrl)
-    this.supportsCacheEdits = this.nativeAnthropic
+    this.nativeToolSearch = isOfficialAnthropicEndpoint(this.endpoint)
+    this.promptCaching = config.promptCaching ?? 'auto'
     this.longContext1m = config.longContext1m === true
   }
 
-  /**
-   * The `anthropic-beta` values for one request, in one place.
-   *
-   * Both the header actually sent and the copy `recordPromptState` hashes read
-   * this, so cache-break detection can never disagree with the wire.
-   */
-  private betaHeaders(request: ModelRequest): string[] {
-    return getAnthropicBetaHeaders(request, this.nativeAnthropic, {
-      longContext1m: this.longContext1m,
-    })
-  }
-
   supportsDynamicToolSearch(model: string): boolean {
-    return this.nativeAnthropic
+    return this.nativeToolSearch
       && !isExperimentalToolSearchBetaDisabled()
       && modelSupportsToolReference(model)
   }
@@ -73,70 +93,28 @@ export class AnthropicProvider implements ModelProvider {
   async createMessage(request: ModelRequest): Promise<ModelResponse> {
     return withRetry(
       async (attempt) => {
-        const effectiveRequest: ModelRequest = {
-          ...request,
-        }
+        const key = rejectionKey(this.endpoint, request.model)
+        const enableCaching = this.promptCaching !== 'off'
+          && getPromptCachingEnabled()
+          && (this.promptCaching === 'on' || !rejectedPromptCaching.has(key))
 
-        // Compute server-side context management strategies (native Anthropic only).
-        // When enabled, the API automatically clears old tool results / thinking
-        // blocks when input_tokens exceed a threshold — reducing client-side
-        // micro-compact frequency.
-        if (this.nativeAnthropic && !effectiveRequest.contextManagement) {
-          const hasThinking = effectiveRequest.thinking?.type !== 'disabled'
-          const cm = getAPIContextManagement({ hasThinking })
-          if (cm) effectiveRequest.contextManagement = cm
-        }
+        try {
+          return await this.sendMessage(request, attempt, enableCaching)
+        } catch (error) {
+          if (!enableCaching || this.promptCaching !== 'auto' || !isUnsupportedPromptCachingError(error)) {
+            throw error
+          }
+          if (request.retry?.signal?.aborted) throw error
 
-        const payload = buildAnthropicPayload(effectiveRequest, this.maxOutputTokens, this.nativeAnthropic)
-        const cacheSource = requireCacheSource(effectiveRequest.cacheSource)
-        // Beta headers (advanced tool use, cache editing, the 1M context window)
-        // travel as an HTTP header rather than in the payload, so they are
-        // computed here — before the debug calls, which are the only place they
-        // become visible.
-        const betas = this.betaHeaders(effectiveRequest)
-        if (this.nativeAnthropic) {
-          recordPromptState({
-            system: JSON.stringify(payload.system ?? ''),
-            toolsJson: JSON.stringify(payload.tools ?? []),
-            model: effectiveRequest.model,
-            betas,
-            cacheScope: getAnthropicCacheScope(effectiveRequest, this.nativeAnthropic),
-          }, cacheSource)
-        }
-        if (attempt > 1) {
-          debugProviderPayload('anthropic-retry', payload)
-        }
-        debugProviderSummary('anthropic', request, payload, betas)
-        debugProviderPayload('anthropic', payload)
-
-        const stream = this.client.messages.stream(
-          payload as unknown as Anthropic.Messages.MessageStreamParams,
-          betas.length > 0
-            ? { headers: { 'anthropic-beta': betas.join(',') } as Record<string, string> }
-            : undefined,
-        )
-        const response = await streamWithTimeout(
-          stream,
-          request.retry?.signal,
-          STREAM_IDLE_TIMEOUT_MS,
-          request.onTextDelta,
-          request.onStreamEvent,
-          STREAM_IDLE_WARNING_MS,
-        )
-
-        debugProviderResponse('anthropic', response)
-        const parsed = this.parseResponse(response)
-        let cacheBreak: CacheBreakResult | null = null
-        if (this.nativeAnthropic && parsed.usage) {
-          cacheBreak = checkResponseForCacheBreak(
-            parsed.usage.cacheReadInputTokens,
-            parsed.usage.inputTokens,
-            cacheSource,
-          )
-        }
-        return {
-          ...parsed,
-          ...(cacheBreak ? { cacheBreak } : {}),
+          // Only an uncached request that actually succeeds proves the rejection
+          // was about caching. Proxies echo the request body into error messages,
+          // so an unrelated 400 can mention `cache_control` by accident.
+          const response = await this.sendMessage(request, attempt, false)
+          rejectedPromptCaching.add(key)
+          if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
+            console.error(`[myagent][prompt-cache] ${request.model} rejected prompt caching; retrying without cache_control`)
+          }
+          return response
         }
       },
       {
@@ -146,6 +124,61 @@ export class AnthropicProvider implements ModelProvider {
         signal: request.retry?.signal,
       },
     )
+  }
+
+  private async sendMessage(request: ModelRequest, attempt: number, enableCaching: boolean): Promise<ModelResponse> {
+    const dynamicToolSearch = this.supportsDynamicToolSearch(request.model)
+    const payload = buildAnthropicPayload(request, this.maxOutputTokens, {
+      promptCaching: enableCaching,
+      dynamicToolSearch,
+    })
+    const cacheSource = requireCacheSource(request.cacheSource)
+    // Hash the exact beta headers and cache policy sent on every attempt,
+    // including the request rebuilt after a compatibility fallback.
+    const betas = getAnthropicBetaHeaders(request, {
+      dynamicToolSearch,
+      longContext1m: this.longContext1m,
+    })
+    recordPromptState({
+      system: JSON.stringify(payload.system ?? ''),
+      toolsJson: JSON.stringify(payload.tools ?? []),
+      model: request.model,
+      betas,
+      cacheScope: getAnthropicCacheScope(request, enableCaching),
+    }, cacheSource)
+    if (attempt > 1) {
+      debugProviderPayload('anthropic-retry', payload)
+    }
+    debugProviderSummary('anthropic', request, payload, betas)
+    debugProviderPayload('anthropic', payload)
+
+    const stream = this.client.messages.stream(
+      payload as unknown as Anthropic.Messages.MessageStreamParams,
+      betas.length > 0
+        ? { headers: { 'anthropic-beta': betas.join(',') } as Record<string, string> }
+        : undefined,
+    )
+    const response = await streamWithTimeout(
+      stream,
+      request.retry?.signal,
+      STREAM_IDLE_TIMEOUT_MS,
+      request.onTextDelta,
+      request.onStreamEvent,
+      STREAM_IDLE_WARNING_MS,
+    )
+
+    debugProviderResponse('anthropic', response)
+    const parsed = this.parseResponse(response)
+    const cacheReadTokens = response.usage?.cache_read_input_tokens
+    // Compatible endpoints may omit cache usage. Missing data must not be
+    // committed as a zero hit or classified as an eviction.
+    const cacheBreak = typeof cacheReadTokens === 'number' && Number.isFinite(cacheReadTokens)
+      ? checkResponseForCacheBreak(cacheReadTokens, parsed.usage?.inputTokens ?? 0, cacheSource)
+      : null
+    return {
+      ...parsed,
+      ...(cacheBreak ? { cacheBreak } : {}),
+    }
   }
 
   private parseResponse(response: Anthropic.Messages.Message): ModelResponse {

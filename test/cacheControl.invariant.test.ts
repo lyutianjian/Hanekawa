@@ -100,7 +100,7 @@ function assertCacheControlDistribution(
 ) {
   resetCacheTTLEvaluation()
 
-  const payload = buildAnthropicPayload(modelRequest, undefined, true)
+  const payload = buildAnthropicPayload(modelRequest)
   const telemetry = collectCacheControlTelemetry(payload)
 
   assert.ok(

@@ -103,7 +103,11 @@ export interface ContextGaugeView {
   readonly ratio: number
   readonly percent: string
   readonly level: ContextGaugeLevel
-  /** Multi-line; folded into the chip's `title`. Empty when not visible. */
+  /** Formatted for the indicator's structured tooltip. Empty when not visible. */
+  readonly used: string
+  readonly usable: string
+  readonly modelWindow: string | undefined
+  /** Multi-line, for the indicator's accessible name. Empty when not visible. */
   readonly title: string
 }
 
@@ -112,6 +116,9 @@ const HIDDEN: ContextGaugeView = Object.freeze({
   ratio: 0,
   percent: '',
   level: 'normal' as const,
+  used: '',
+  usable: '',
+  modelWindow: undefined,
   title: '',
 })
 
@@ -137,6 +144,12 @@ export function contextGaugeView(
   const usable = runtime?.usableContextWindow
   if (used === undefined || usable === undefined || usable <= 0) return HIDDEN
 
+  const usedText = formatTokens(used)
+  const usableText = formatTokens(usable)
+  const modelWindow = runtime?.contextWindow !== undefined && runtime.contextWindow > usable
+    ? formatTokens(runtime.contextWindow)
+    : undefined
+
   const ratio = Math.min(1, Math.max(0, used / usable))
   const percent = `${Math.round(ratio * 100)}%`
   const level: ContextGaugeLevel = ratio >= CONTEXT_CRITICAL_RATIO
@@ -147,11 +160,18 @@ export function contextGaugeView(
 
   const lines = [
     `上下文窗口：${percent} 已用（剩余 ${100 - Math.round(ratio * 100)}%）`,
-    `已用 ${formatTokens(used)} 标记，共 ${formatTokens(usable)}（已预留自动压缩空间）`,
+    `已用 ${usedText} 标记，共 ${usableText}（已预留自动压缩空间）`,
   ]
-  if (runtime?.contextWindow !== undefined && runtime.contextWindow > usable) {
-    lines.push(`模型窗口 ${formatTokens(runtime.contextWindow)}`)
-  }
+  if (modelWindow) lines.push(`模型窗口 ${modelWindow}`)
 
-  return { visible: true, ratio, percent, level, title: lines.join('\n') }
+  return {
+    visible: true,
+    ratio,
+    percent,
+    level,
+    used: usedText,
+    usable: usableText,
+    modelWindow,
+    title: lines.join('\n'),
+  }
 }

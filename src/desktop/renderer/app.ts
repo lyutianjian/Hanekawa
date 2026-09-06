@@ -196,6 +196,7 @@ const composer = createComposerView({
   submit: required<HTMLButtonElement>('submit'),
   stop: required<HTMLButtonElement>('stop'),
   attach: required<HTMLButtonElement>('composer-attach'),
+  contextIndicator: required('composer-context'),
   chipRuntime: required<HTMLButtonElement>('chip-runtime'),
   chipShell: required('composer-chip'),
   chipPermission: required<HTMLButtonElement>('chip-permission'),
@@ -785,13 +786,13 @@ async function deleteSession(projectRoot: string, sessionId: string): Promise<vo
 }
 
 /**
- * Takes a project off the sidebar.
+ * Takes a project off the sidebar and deletes its history.
  *
- * Nothing is deleted — the host unregisters the root and releases its lanes, so
- * re-opening the directory brings the group and its sessions back. The
- * confirmation is withdrawn before the request for the same reason
- * `deleteSession` withdraws its own: the heading is about to disappear, and one
- * still asking invites a second answer.
+ * The host unregisters the root, releases its lanes and then deletes every one
+ * of that project's sessions from disk — re-opening the directory brings back an
+ * empty project, not its conversations. The confirmation is withdrawn before the
+ * request for the same reason `deleteSession` withdraws its own: the heading is
+ * about to disappear, and one still asking invites a second answer.
  */
 async function removeProject(projectRoot: string): Promise<void> {
   pendingRemoveProject = undefined
@@ -1063,7 +1064,7 @@ const sidebar = createSidebarView(
  * Dragging the sidebar's right edge.
  *
  * Pointer events with capture rather than document-level mouse listeners: the
- * pointer leaves the 4px handle on the first frame of any real drag, and capture
+ * pointer leaves the 3px handle on the first frame of any real drag, and capture
  * is what keeps the moves coming without a listener the teardown has to
  * remember. `body.resizing` is not cosmetic — `#sidebar` transitions
  * `flex-basis` for the collapse, so without it every dragged frame would chase a

@@ -262,19 +262,39 @@ The loop keeps the current Promise-based architecture. Tool execution uses order
 - post-compact restore context
 - session history
 
-Anthropic prompt caching is managed by `src/harness/cacheControl.ts` and provider payload builders. Native Anthropic requests can have cache markers on:
+Anthropic prompt caching defaults to `auto` on every Anthropic-compatible endpoint,
+including proxies. Requests use the same cache markers regardless of the endpoint's hostname:
 
 - the static system prompt block
 - the final tool schema
 - the final eligible message block
 
+If an endpoint explicitly rejects prompt caching or `cache_control` with HTTP 400/422,
+Hanekawa retries that request once without cache markers. Only a successful uncached
+retry records the rejection, shared by all provider instances in the process for
+the same endpoint URL and model. New sessions, model switches, and subagents reuse
+that result; restarting the process clears it. Concurrent requests made before the
+result is recorded may each probe and fall back independently. Unrelated errors use
+the normal retry policy; zero cache hits do not disable caching.
+
+Set `promptCaching` to `"auto"`, `"on"` (no compatibility fallback), or `"off"` on an
+endpoint or model in `~/.myagent/config.json`. Model values override endpoint defaults.
+`"on"` sends cache markers even if a rejection was previously recorded.
+`MYAGENT_DISABLE_PROMPT_CACHING=1` disables Anthropic cache markers regardless of this
+setting.
+
+The existing 5-minute/1-hour TTL settings apply to compatible endpoints too; ordinary
+caching does not send beta headers. Cache usage and cache-break diagnostics also run
+on compatible endpoints. Missing cache usage is not treated as a zero hit; provider
+debug output reports uncached input, cache creation, and cache reads separately.
+
 OpenAI-compatible requests use a stable `prompt_cache_key` based on model, system prompt, and tools.
 
-Default context management reserves 20,000 tokens for compact summaries, starts
-ratio-based micro-compaction at 90% of the effective window only when
-`cache_edits` are available, starts auto-compaction near the effective-window
-limit, and no longer includes middle conversation snipping, so historical turns
-are not removed by position-only truncation.
+Context management stays client-side: Hanekawa does not send `context_management`
+or `cache_edits` requests. It reserves 20,000 tokens for compact summaries, preserves
+active conversation prefixes, clears old tool results after a long idle gap, and
+starts auto-compaction near the effective-window limit. Historical turns are not
+removed by position-only truncation.
 
 ### Providers
 

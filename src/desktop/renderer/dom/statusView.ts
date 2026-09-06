@@ -29,6 +29,8 @@ export function createStatusView(els: {
   cost: HTMLElement
   streaming: HTMLElement
 }): StatusView {
+  /** The last title written. `renderSession` runs on every snapshot tick. */
+  let lastTitle: string | undefined
   return {
     render(snapshot, cost) {
       // Empty while idle, not「空闲」: this line sits under the composer now, and
@@ -53,7 +55,12 @@ export function createStatusView(els: {
       // The window title is also the desktop shell's end-to-end proof: it is only
       // set after `hello()` returns, so reading it from outside the process shows
       // the whole chain worked.
-      document.title = `Hanekawa — ${name}`
+      const title = `Hanekawa — ${name}`
+      // Written only when it moved: this is reached from the snapshot tick, so
+      // an unguarded assignment is a document-title write per streamed chunk.
+      if (title === lastTitle) return
+      lastTitle = title
+      document.title = title
     },
   }
 }

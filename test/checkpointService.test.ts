@@ -6,7 +6,13 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
-import { CheckpointService, removeShadowRepo, shadowRepoPath } from '../src/services/checkpoint/checkpointService.js'
+import {
+  CheckpointService,
+  DEFAULT_CHECKPOINT_LIMITS,
+  isUnsnapshottableRoot,
+  removeShadowRepo,
+  shadowRepoPath,
+} from '../src/services/checkpoint/checkpointService.js'
 import { writeJsonFile } from '../src/utils/json.js'
 import { getSessionsDir } from '../src/utils/paths.js'
 
@@ -47,6 +53,24 @@ async function makeTempCwd(): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-checkpoint-'))
   await writeFile(path.join(dir, '.gitignore'), '.myagent/\n', 'utf8')
   return dir
+}
+
+/**
+ * A temp cwd with **no** `.gitignore` at all — the shape the home directory has,
+ * and the one that made the shadow repo stage its own objects.
+ */
+async function makeBareTempCwd(): Promise<string> {
+  return mkdtemp(path.join(os.tmpdir(), 'myagent-checkpoint-bare-'))
+}
+
+/** Lists the shadow repo's tracked paths, the way the service itself talks to git. */
+async function shadowLsFiles(cwd: string, sessionId: string): Promise<string[]> {
+  const { stdout } = await execFileAsync('git', ['ls-files'], {
+    cwd,
+    env: { ...process.env, GIT_DIR: shadowRepoPath(cwd, sessionId), GIT_WORK_TREE: cwd },
+    timeout: 30000,
+  })
+  return stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
 }
 
 async function cleanup(dir: string): Promise<void> {
@@ -509,6 +533,162 @@ describe('removeShadowRepo', () => {
         shadowRepoPath(cwd, SESSION_ID),
         path.join(cwd, '.myagent', 'shadow-git', SESSION_ID),
       )
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+})
+
+/**
+ * The three guards that keep a shadow repo from walking something that is not a
+ * project. All three exist because of one real incident: the global workspace's
+ * cwd is the home directory, so every 「最近」 session ran `git add --all` over
+ * the whole user profile once per turn — 9.5G of shadow repos and a git process
+ * pinning the disk at 80MB/s, which outlived the window that started it.
+ */
+describe('CheckpointService safety gates', () => {
+  let gitAvailable = false
+
+  before(async () => {
+    gitAvailable = await isGitAvailable()
+  })
+
+  it('isUnsnapshottableRoot names the roots that are not projects', () => {
+    assert.equal(isUnsnapshottableRoot(os.homedir()), true, 'the home directory is the global workspace')
+    assert.equal(isUnsnapshottableRoot(path.parse(process.cwd()).root), true, 'a filesystem/drive root')
+    assert.equal(isUnsnapshottableRoot(process.cwd()), false, 'an ordinary project')
+    // Deliberately narrower than `isDangerousRemovalPath`: a project may
+    // legitimately sit directly under a drive root.
+    if (process.platform === 'win32') {
+      assert.equal(isUnsnapshottableRoot('D:\myproject'), false)
+    }
+  })
+
+  it('init builds nothing on the home directory and reports itself disabled', async (t) => {
+    if (!gitAvailable) {
+      t.skip('git not available on this system')
+      return
+    }
+    const cwd = await makeTempCwd()
+    const home = { profile: process.env.USERPROFILE, home: process.env.HOME }
+    try {
+      // `homedir()` is read live, which is exactly how the global workspace is
+      // recognised in production.
+      process.env.USERPROFILE = cwd
+      process.env.HOME = cwd
+
+      const service = new CheckpointService(cwd, SESSION_ID)
+      await service.init()
+
+      assert.equal(service.isEnabled(), false)
+      assert.equal(existsSync(shadowRepoPath(cwd, SESSION_ID)), false, 'not even the directory')
+
+      const result = await service.createCheckpoint('msg-1')
+      assert.equal(result.success, false)
+      assert.equal(result.disabled, true)
+    } finally {
+      process.env.USERPROFILE = home.profile
+      process.env.HOME = home.home
+      if (home.profile === undefined) delete process.env.USERPROFILE
+      if (home.home === undefined) delete process.env.HOME
+      await cleanup(cwd)
+    }
+  })
+
+  it('excludes its own data and node_modules without a worktree .gitignore', async (t) => {
+    if (!gitAvailable) {
+      t.skip('git not available on this system')
+      return
+    }
+    const cwd = await makeBareTempCwd()
+    try {
+      await writeFile(path.join(cwd, 'app.ts'), 'export const a = 1\n', 'utf8')
+      await mkdir(path.join(cwd, 'node_modules', 'left-pad'), { recursive: true })
+      await writeFile(path.join(cwd, 'node_modules', 'left-pad', 'index.js'), 'module.exports = 1\n', 'utf8')
+
+      const service = new CheckpointService(cwd, SESSION_ID)
+      await service.init()
+
+      const first = await service.createCheckpoint('msg-1')
+      assert.equal(first.success, true)
+
+      const tracked = await shadowLsFiles(cwd, SESSION_ID)
+      assert.ok(tracked.includes('app.ts'), 'the project file is snapshotted')
+      assert.ok(
+        !tracked.some((file) => file.startsWith('.myagent/')),
+        `the shadow repo must not stage its own data: ${tracked.join(', ')}`,
+      )
+      assert.ok(
+        !tracked.some((file) => file.startsWith('node_modules/')),
+        `node_modules must not be staged: ${tracked.join(', ')}`,
+      )
+
+      // The real symptom of a self-staging repo: its own objects change on every
+      // commit, so a no-change turn never reuses the previous hash.
+      const second = await service.createCheckpoint('msg-2')
+      assert.equal(second.reusedPrevious, true)
+      assert.equal(second.commitHash, first.commitHash)
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('the breaker disables the session and removes the repo when the worktree is too large', async (t) => {
+    if (!gitAvailable) {
+      t.skip('git not available on this system')
+      return
+    }
+    const cwd = await makeTempCwd()
+    try {
+      for (let index = 0; index < 5; index++) {
+        await writeFile(path.join(cwd, `file-${index}.txt`), `${index}\n`, 'utf8')
+      }
+
+      const service = new CheckpointService(cwd, SESSION_ID, { ...DEFAULT_CHECKPOINT_LIMITS, maxFiles: 2 })
+      await service.init()
+      assert.equal(existsSync(shadowRepoPath(cwd, SESSION_ID)), true)
+
+      const result = await service.createCheckpoint('msg-1')
+      assert.equal(result.success, false)
+      assert.equal(result.disabled, true)
+      assert.match(result.error ?? '', /stages \d+ files/)
+      assert.equal(service.isEnabled(), false)
+      assert.equal(
+        existsSync(shadowRepoPath(cwd, SESSION_ID)),
+        false,
+        'the tripped repo is removed — its index is as oversized as the worktree',
+      )
+
+      // Asking again is answered, not retried.
+      const again = await service.createCheckpoint('msg-2')
+      assert.equal(again.disabled, true)
+    } finally {
+      await cleanup(cwd)
+    }
+  })
+
+  it('dispose kills the git transport so nothing outlives the session', async (t) => {
+    if (!gitAvailable) {
+      t.skip('git not available on this system')
+      return
+    }
+    const cwd = await makeTempCwd()
+    try {
+      await writeFile(path.join(cwd, 'a.txt'), 'first\n', 'utf8')
+      const service = new CheckpointService(cwd, SESSION_ID)
+      await service.init()
+      assert.equal(await service.isInitialized(), true)
+
+      service.dispose()
+
+      // One `AbortController` covers every child this service spawns, so the
+      // same abort that refuses the next call is what kills one already
+      // walking the worktree. `execFile`'s own `timeout` cannot do that job:
+      // it only fires while the parent is alive, and a closing Electron is
+      // exactly when it is not.
+      assert.equal(await service.isInitialized(), false)
+      const result = await service.createCheckpoint('msg-1')
+      assert.equal(result.success, false)
     } finally {
       await cleanup(cwd)
     }

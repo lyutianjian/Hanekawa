@@ -752,31 +752,61 @@ export class ShellHost<
   }
 
   /**
+   * The real directory a wire root names — open project, registry entry, or the
+   * global workspace — without opening anything.
+   *
+   * **The home branch is the load-bearing one.** The home directory is
+   * deliberately not a registry member (it is the implicit global workspace), so
+   * `knownCwdForRoot` can never answer for it, while `listSessions` lists 「最近」
+   * unconditionally. Every root-keyed command therefore has to resolve home
+   * *itself*: without this, deleting or renaming a 「最近」 session — or opening
+   * its settings — failed with "No project is open at …" the moment the global
+   * runtime's last lane closed, which nothing could reopen.
+   *
+   * Any new root-keyed command goes through here or {@link ensureEntryForRoot},
+   * never through `knownCwdForRoot` alone.
+   */
+  private async cwdForRoot(projectRoot: string): Promise<string | undefined> {
+    const open = this.deps.directory.get(projectRoot)
+    if (open) return open.cwd
+    return (await this.knownCwdForRoot(projectRoot))
+      ?? (projectRootKey(homedir()) === projectRoot ? homedir() : undefined)
+  }
+
+  /**
+   * The same resolution for the commands that need a *live* project (settings
+   * read the config, the skills service and the MCP clients off it), bootstrapping
+   * on demand when the root is known but closed.
+   */
+  private async ensureEntryForRoot(
+    projectRoot: string,
+    options: { sessionId?: string } = {},
+  ): Promise<ProjectEntry<P, W>> {
+    const open = this.deps.directory.get(projectRoot)
+    if (open) return open
+    const cwd = await this.cwdForRoot(projectRoot)
+    if (cwd !== undefined && this.deps.ensureProject) {
+      return this.deps.ensureProject(cwd, options)
+    }
+    throw new Error(`No project is open at ${projectRoot}`)
+  }
+
+  /**
    * Which project an `open-session` lands on.
    *
-   * Three cases, in order: a root that is already open; a root the registry
-   * knows (bootstrapped on demand, over the session the command named, so the
-   * bootstrap pane *is* the pane being asked for); and no root at all — the
-   * first open project, else the global workspace, because "new session"
-   * with nothing open is the global workspace's most ordinary entry.
+   * Three cases, in order: a root that is already open; a root that resolves
+   * through {@link cwdForRoot} (bootstrapped on demand, over the session the
+   * command named, so the bootstrap pane *is* the pane being asked for); and no
+   * root at all — the first open project, else the global workspace, because
+   * "new session" with nothing open is the global workspace's most ordinary
+   * entry.
    */
   private async resolveProjectEntry(
     projectRoot: string | undefined,
     sessionId: string | undefined,
   ): Promise<ProjectEntry<P, W>> {
     if (projectRoot !== undefined) {
-      const open = this.deps.directory.get(projectRoot)
-      if (open) return open
-      // The home directory is deliberately *not* a registry member (it is the
-      // implicit global workspace), so `knownCwdForRoot` can never answer for
-      // it — and without this branch「不在项目中工作」would fail with "no project
-      // is open" exactly when the workspace it names has never been opened.
-      const cwd = (await this.knownCwdForRoot(projectRoot))
-        ?? (projectRootKey(homedir()) === projectRoot ? homedir() : undefined)
-      if (cwd !== undefined && this.deps.ensureProject) {
-        return this.deps.ensureProject(cwd, sessionId !== undefined ? { sessionId } : {})
-      }
-      throw new Error(`No project is open at ${projectRoot}`)
+      return this.ensureEntryForRoot(projectRoot, sessionId !== undefined ? { sessionId } : {})
     }
     const first = this.deps.directory.entries()[0]
     if (first) return first
@@ -942,20 +972,31 @@ export class ShellHost<
   }
 
   /**
-   * Forgets a project: its lanes go, its runtime shuts down, and the registry
-   * entry is dropped. Nothing on disk is touched — the sessions are still there
-   * if the directory is opened again.
+   * Removes a project: its lanes go, its runtime shuts down, the registry entry
+   * is dropped, **and its whole session history is deleted from disk**.
+   *
+   * The deletion is what the menu item now promises, and it is the reason the
+   * shutdown is awaited rather than fired off: `settleAfterLastLane` starts the
+   * close with a bare `void`, and a runtime still draining is a runtime that can
+   * write `index.json` back after the sweep has been through it.
+   *
+   * The sessions go one at a time through `deleteSessionArtifacts`, the same
+   * path a single `delete-session` takes — that function owns *what* a session
+   * leaves behind (JSONL, shadow repo, session memory, subagent transcripts),
+   * and duplicating the list here is how the other three got leaked once before.
+   * Nothing else under `.myagent/` is touched: settings, skills and rules are
+   * not history.
    *
    * The lane teardown borrows `deleteSession`'s deferral (below): detaching the
    * window's *last* lane fires `onAllLanesClosed`, which quits the app off
-   * darwin. "Remove this project from my sidebar" is not "I am done with this
-   * window", so the last-lane case defers the exit and lands on a fresh global
-   * workspace draft instead — the same answer `deleteSession` gives, and the
-   * reason `deferExit` is a flag rather than a check on `reason`.
+   * darwin. "Remove this project" is not "I am done with this window", so the
+   * last-lane case defers the exit and lands on a fresh global workspace draft
+   * instead — the same answer `deleteSession` gives, and the reason `deferExit`
+   * is a flag rather than a check on `reason`.
    */
   private async removeProject(projectRoot: string): Promise<WireShellRemoveProjectResult> {
     const entry = this.deps.directory.get(projectRoot)
-    const cwd = entry?.cwd ?? (await this.knownCwdForRoot(projectRoot))
+    const cwd = await this.cwdForRoot(projectRoot)
     if (cwd === undefined) throw new Error(`No project is open at ${projectRoot}`)
     // The global workspace is not a registry member, so there is nothing to
     // forget and nowhere for its sessions to go. Rejecting is the honest answer.
@@ -968,12 +1009,14 @@ export class ShellHost<
     // deferred and a replacement lane opened, or the app quits under the user.
     const replacing = lanes.length > 0 && lanes.length === this.lanes.size
     for (const lane of lanes) this.detachLane(lane, 'project-removed', { deferExit: replacing })
-    // The project itself still has to come down when its exit was deferred —
-    // `deferExit` skips `settleAfterLastLane` entirely, and the replacement
-    // below belongs to a *different* project.
-    if (replacing && entry) void this.deps.directory.closeProject(entry, 'project-removed')
+    // Awaited whether the exit was deferred or not: `deferExit` skips
+    // `settleAfterLastLane` entirely, and the close that path *does* start is
+    // fire-and-forget. `closeProject` is idempotent and hands back the in-flight
+    // teardown, so this is "wait for whichever of us started it".
+    if (entry) await this.deps.directory.closeProject(entry, 'project-removed')
 
     await this.deps.onForgetProject?.(cwd)
+    const failures = await this.deleteProjectSessions(cwd)
 
     if (replacing) {
       try {
@@ -987,7 +1030,38 @@ export class ShellHost<
         throw error
       }
     }
+    // Reported last, and only after the window is whole again: the project is
+    // already off the sidebar, so this is "these files are still there", not a
+    // failed removal the renderer should put the row back for.
+    if (failures.length > 0) {
+      throw new Error(`项目已移除，但有 ${failures.length} 个会话没能删干净：${failures.join('；')}`)
+    }
     return { ok: true } satisfies WireShellRemoveProjectResult
+  }
+
+  /**
+   * Every session under one root, deleted through the single-session path.
+   *
+   * Per session `try`/`catch`: one locked file must not leave the rest of the
+   * history behind, and the registry entry is already gone by the time this
+   * runs — there is no "put it back" to fall back to.
+   */
+  private async deleteProjectSessions(cwd: string): Promise<string[]> {
+    const failures: string[] = []
+    try {
+      const store = new SessionStore(cwd)
+      await store.init()
+      for (const session of await store.list()) {
+        try {
+          await deleteSessionArtifacts(cwd, store, session.id)
+        } catch (error) {
+          failures.push(`${session.id}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error))
+    }
+    return failures
   }
 
   /**
@@ -1036,8 +1110,9 @@ export class ShellHost<
       // A closed project's history is still deletable — through a transient
       // store, without bootstrapping a runtime for a deletion. No lane can
       // exist for a project the directory does not hold, so this is purely a
-      // filesystem deletion.
-      const cwd = await this.knownCwdForRoot(projectRoot)
+      // filesystem deletion. `cwdForRoot`, not `knownCwdForRoot`: 「最近」's rows
+      // are on screen whether or not the global runtime is up.
+      const cwd = await this.cwdForRoot(projectRoot)
       if (cwd === undefined) throw new Error(`No project is open at ${projectRoot}`)
       const store = new SessionStore(cwd)
       const session = await store.resolve(sessionId)
@@ -1077,17 +1152,53 @@ export class ShellHost<
 
   // --- settings ------------------------------------------------------------
 
+  /**
+   * Runs `use` against a live project, bootstrapping the root on demand and
+   * shutting it down again if this call is the only reason it exists.
+   *
+   * The settings screen holds a `projectRoot` from whenever it last loaded and
+   * has no visible picker while one project is open, so the root it names is
+   * routinely a project whose last lane has since closed — most often 「最近」,
+   * which nothing else can reopen. Bootstrapping is the honest answer (the edit
+   * lands on the project the screen is showing), but a runtime with no lane is
+   * a leak: nothing would ever close its MCP clients or background tasks. So the
+   * transient case is closed here, and a project that was already open — or that
+   * a lane picked up while this ran — is left alone.
+   */
+  private async withProjectEntry<T>(
+    projectRoot: string,
+    use: (entry: ProjectEntry<P, W>) => Promise<T>,
+  ): Promise<T> {
+    const existed = this.deps.directory.get(projectRoot) !== undefined
+    const entry = await this.ensureEntryForRoot(projectRoot)
+    try {
+      return await use(entry)
+    } finally {
+      const held = [...this.lanes.values()].some((lane) => lane.project === entry)
+      if (!existed && !held) await this.deps.directory.closeProject(entry, 'settings-transient')
+    }
+  }
+
   /** The settings read model, plus the project list the screen's selector needs. */
   private async getSettings(projectRoot?: string): Promise<WireShellSettingsResult> {
-    const entry =
-      projectRoot !== undefined ? this.deps.directory.get(projectRoot) : this.deps.directory.entries()[0]
+    const projects = (): WireShellSettingsResult['projects'] =>
+      this.deps.directory.entries().map((open) => ({
+        projectRoot: open.root,
+        projectName: projectDisplayName(open.cwd),
+      }))
+    if (projectRoot !== undefined) {
+      return this.withProjectEntry(projectRoot, async (entry) => ({
+        settings: await this.describeSettings(entry),
+        // Read inside, while the transient project is still open: the screen's
+        // selector must be able to name the project it is showing.
+        projects: projects(),
+      } satisfies WireShellSettingsResult))
+    }
+    const entry = this.deps.directory.entries()[0]
     if (!entry) throw new Error('No project is open.')
     return {
       settings: await this.describeSettings(entry),
-      projects: this.deps.directory.entries().map((open) => ({
-        projectRoot: open.root,
-        projectName: projectDisplayName(open.cwd),
-      })),
+      projects: projects(),
     } satisfies WireShellSettingsResult
   }
 
@@ -1119,9 +1230,13 @@ export class ShellHost<
     projectRoot: string,
     change: SettingsChange,
   ): Promise<WireShellSettingsChangeResult> {
-    const entry = this.deps.directory.get(projectRoot)
-    if (!entry) throw new Error(`No project is open at ${projectRoot}`)
+    return this.withProjectEntry(projectRoot, (entry) => this.applySettingsChangeTo(entry, change))
+  }
 
+  private async applySettingsChangeTo(
+    entry: ProjectEntry<P, W>,
+    change: SettingsChange,
+  ): Promise<WireShellSettingsChangeResult> {
     // Before anything is mutated: a model a turn is *running on* cannot be
     // deleted. Every other reference — the default model, a routing role, an
     // endpoint's models — now repairs itself inside `ConfigService`, so this is
@@ -1196,10 +1311,10 @@ export class ShellHost<
   ): Promise<WireShellRenameSessionResult> {
     const entry = this.deps.directory.get(projectRoot)
     if (!entry) {
-      // Same rule as delete: a transient store, no runtime. There is no lane to
-      // refresh and no topology to broadcast — a closed session's title moves
-      // only its index row.
-      const cwd = await this.knownCwdForRoot(projectRoot)
+      // Same rule as delete: a transient store, no runtime, and the global
+      // workspace resolves here too. There is no lane to refresh and no topology
+      // to broadcast — a closed session's title moves only its index row.
+      const cwd = await this.cwdForRoot(projectRoot)
       if (cwd === undefined) throw new Error(`No project is open at ${projectRoot}`)
       const store = new SessionStore(cwd)
       const session = await store.resolve(sessionId)
@@ -1236,12 +1351,14 @@ export class ShellHost<
     projectRoot: string,
     target?: WireEditorTarget,
   ): Promise<WireShellOpenInEditorResult> {
-    const entry = this.deps.directory.get(projectRoot)
-    if (!entry) throw new Error(`No project is open at ${projectRoot}`)
+    // Only a path is needed, so a closed project (or the global workspace) opens
+    // an editor without bootstrapping a runtime for it.
+    const cwd = await this.cwdForRoot(projectRoot)
+    if (cwd === undefined) throw new Error(`No project is open at ${projectRoot}`)
     // Missing callback rejects rather than answering `ok`, the same rule
     // `open-project` follows: silence is indistinguishable from success.
     if (!this.deps.onOpenInEditor) throw new Error('The shell cannot open an editor.')
-    await this.deps.onOpenInEditor(entry.cwd, target === undefined ? undefined : resolveProjectFile(entry.cwd, target))
+    await this.deps.onOpenInEditor(cwd, target === undefined ? undefined : resolveProjectFile(cwd, target))
     return { ok: true } satisfies WireShellOpenInEditorResult
   }
 
@@ -1718,6 +1835,7 @@ function applyProviderChange(
     case 'set-endpoint': {
       const existing = config.get().endpoints?.[change.name]
       const endpoint: Endpoint = { provider: change.provider }
+      if (existing?.promptCaching !== undefined) endpoint.promptCaching = existing.promptCaching
       if (change.baseUrl !== undefined && change.baseUrl !== '') endpoint.baseUrl = change.baseUrl
       // An absent `apiKey` means "leave it alone", so the stored key is carried
       // forward. Clearing is `clear-endpoint-key`, precisely so this branch
@@ -1735,6 +1853,7 @@ function applyProviderChange(
       if (!existing) throw new Error(`No endpoint named ${change.name}`)
       const endpoint: Endpoint = { provider: existing.provider }
       if (existing.baseUrl !== undefined) endpoint.baseUrl = existing.baseUrl
+      if (existing.promptCaching !== undefined) endpoint.promptCaching = existing.promptCaching
       config.setEndpoint(change.name, endpoint)
       return 'endpoints'
     }
@@ -1743,12 +1862,13 @@ function applyProviderChange(
       return 'endpoints'
     case 'set-model': {
       const model: ModelConfig = { model: change.model }
+      const existing = config.get().models[change.key]
+      if (existing?.promptCaching !== undefined) model.promptCaching = existing.promptCaching
       if (change.provider !== undefined && change.provider !== '') model.provider = change.provider
       if (change.endpoint !== undefined && change.endpoint !== '') model.endpoint = change.endpoint
       if (change.contextWindow !== undefined) model.contextWindow = change.contextWindow
-      // The whole `ModelConfig` is rebuilt here, so an absent field is a
-      // removal — which is why the form seeds every one of these from the
-      // snapshot rather than sending only what was typed.
+      // Form-managed fields are replaced, so the form seeds them from the
+      // snapshot. Preserve the cache policy, which is configured in JSON.
       if (change.longContext1m !== undefined) model.longContext1m = change.longContext1m
       if (change.maxOutputTokens !== undefined) model.maxOutputTokens = change.maxOutputTokens
       config.setModelConfig(change.key, model)

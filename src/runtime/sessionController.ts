@@ -297,6 +297,8 @@ export class SessionController {
     this.taskSnapshot = findLatestTaskSnapshot(records)
     this.spinnerSubText = undefined
     this.checkpointReady = false
+    // The outgoing service may still have a `git add` walking the worktree.
+    this.checkpointService.dispose()
     this.checkpointService = this.newCheckpointService(this.cwd, session.id)
     this.initCheckpoints(this.checkpointService)
     this.publish()
@@ -343,6 +345,10 @@ export class SessionController {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.checkpointReady = false
+    // Kills any in-flight git, so a closing window does not leave one walking
+    // the worktree with nobody left to time it out.
+    this.checkpointService.dispose()
     this.recordProxy.setHandler(() => {})
     this.recordProxy.setProgressHandler(() => {})
     this.recordProxy.setStreamEventHandler(() => {})
@@ -450,6 +456,16 @@ export class SessionController {
       const result = await this.checkpointService.createCheckpoint(messageId)
       if (result.success && result.commitHash) {
         await this.store.addCheckpointMapping(this.session.id, messageId, result.commitHash)
+      } else if (result.disabled) {
+        // The service switched itself off (an unsnapshottable root, or a
+        // worktree too large to stage). Stop asking, and say so — otherwise
+        // `/rewind` is silently empty for the rest of the session.
+        this.checkpointReady = false
+        this.emit({
+          type: 'notice',
+          level: 'system',
+          content: result.error ?? 'Checkpoints are disabled for this session.',
+        })
       } else if (result.error) {
         debugCheckpoint(`Checkpoint creation failed: ${result.error}`)
       }
@@ -462,7 +478,9 @@ export class SessionController {
   private initCheckpoints(service: CheckpointService): void {
     void service.init().then(() => {
       // A later retarget may have already replaced it; only the live one counts.
-      if (this.checkpointService === service) this.checkpointReady = true
+      // `init()` resolving is not consent: it also succeeds by declining to
+      // build a repo on an unsnapshottable root.
+      if (this.checkpointService === service) this.checkpointReady = service.isEnabled()
     }).catch((err) => {
       if (this.checkpointService === service) this.checkpointReady = false
       debugCheckpoint(`Failed to initialize CheckpointService: ${err instanceof Error ? err.message : String(err)}`)

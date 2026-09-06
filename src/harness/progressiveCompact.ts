@@ -1,13 +1,10 @@
 import {
   countSessionRecordsTokens,
-  countSessionRecordTokens,
-  getMicroCompactThreshold,
   TIME_BASED_MC_GAP_THRESHOLD_MINUTES,
   TIME_BASED_MC_KEEP_RECENT,
   type ContextManagementConfig,
 } from '../prompts/budget.js'
-import type { CacheEditManager } from './cacheEditManager.js'
-import type { SessionRecord, ToolResultRecord } from './types.js'
+import type { SessionRecord } from './types.js'
 import { getRecordsAfterLastCompact } from './requestPrep.js'
 
 export interface ProgressiveCompactInput {
@@ -18,7 +15,6 @@ export interface ProgressiveCompactInput {
   lastResponseRecordId?: string
   lastResponseRecordCount?: number
   now?: Date
-  cacheEditManager?: CacheEditManager
 }
 
 export interface ProgressiveCompactResult {
@@ -26,24 +22,15 @@ export interface ProgressiveCompactResult {
   tokenCount: number
   microCompacted: boolean
   snipped: boolean
-  cacheEditsPending?: boolean
-}
-
-interface ToolResultCandidate {
-  record: ToolResultRecord
-  tokens: number
-  index: number
 }
 
 export function applyProgressiveCompaction(input: ProgressiveCompactInput): ProgressiveCompactResult {
   let records = input.records
   let tokenCount = estimateCurrentTokens(input)
   let microCompacted = false
-  let cacheEditsPending: boolean | undefined = undefined
 
-  // Stage 0: Time-based micro-compact. When the gap since the last assistant
-  // message exceeds the threshold, the server prompt cache has expired and the
-  // full prefix will be rewritten anyway; clearing old tool results is free.
+  // Keep active request prefixes stable. Only clear old tool results after
+  // a long idle gap; capacity-based compaction is handled by autoCompact.
   const timeBased = applyTimeBasedMicrocompact(records, input.now)
   if (timeBased.changed) {
     records = timeBased.records
@@ -51,29 +38,11 @@ export function applyProgressiveCompaction(input: ProgressiveCompactInput): Prog
     microCompacted = true
   }
 
-  if (tokenCount >= getMicroCompactThreshold(input.contextManagement) && input.cacheEditManager) {
-    // Cache-aware path: register tool results for API-level deletion.
-    // Do not mutate records locally; providers without cache_edits skip
-    // ratio-based microcompact to preserve prompt-cache prefix stability.
-    const candidates = getToolResultCandidates(records)
-    for (const candidate of candidates) {
-      input.cacheEditManager.registerToolResult(
-        candidate.index,
-        candidate.record.toolUseId,
-        candidate.record.tool,
-        candidate.tokens,
-      )
-    }
-    cacheEditsPending = Boolean(input.cacheEditManager.produceCacheEdits())
-    // Do not mutate records locally; the API handles deletion.
-  }
-
   return {
     records,
     tokenCount,
     microCompacted,
     snipped: false,
-    cacheEditsPending,
   }
 }
 
@@ -163,19 +132,6 @@ function applyTimeBasedMicrocompact(
   })
 
   return { records: updatedRecords, changed }
-}
-
-function getToolResultCandidates(records: SessionRecord[]): ToolResultCandidate[] {
-  return records
-    .map((record, index): ToolResultCandidate | undefined => {
-      if (record.type !== 'tool_result') return undefined
-      return {
-        record,
-        tokens: countSessionRecordTokens(record),
-        index,
-      }
-    })
-    .filter((candidate): candidate is ToolResultCandidate => candidate !== undefined)
 }
 
 function countPendingRecordTokens(

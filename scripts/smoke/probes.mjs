@@ -100,10 +100,11 @@ export const panes = () => `(() => {
 /**
  * The visible pane's conversation, as boxes.
  *
- * todo V2: a short history used to hang one bubble under the canvas header with
- * the rest of the canvas blank. The three facts fail separately — is this even
- * the short case (nothing to scroll), does the column meet the composer, and was
- * it actually pushed down rather than merely starting there.
+ * The turn in flight is what the reader is looking at, so the newest question is
+ * lifted to the top of the viewport and a pad below the conversation is what
+ * lets the scroller travel that far (`model/transcriptAnchor.ts`). The facts
+ * fail separately — is the question at the top, is there still room under the
+ * last line, and was the pad actually written.
  *
  * `null` when no pane is visible, so a step asserts on the shape rather than on
  * a zero that could mean either thing. No backticks in here: this is a template
@@ -124,14 +125,21 @@ export const conversation = () => `(() => {
     left: Math.round(box.left),
     right: Math.round(box.right),
   })
+  // The anchor: the newest user bubble, which is the thing the scroll is aimed
+  // at. \`:last-of-type\` would be the last \`.item\` of any kind, so the list is
+  // taken and read from the end.
+  const bubbles = column.querySelectorAll('.item.user')
+  const anchor = bubbles.length > 0 ? bubbles[bubbles.length - 1] : null
   return {
     items: column.children.length,
-    // Equal means the conversation does not fill the scroller, which is the
-    // only case this probe has anything to say about.
     scrollHeight: scroller.scrollHeight,
     clientHeight: scroller.clientHeight,
+    scrollTop: Math.round(scroller.scrollTop),
+    // What the view measured and wrote this paint, as the CSS length it wrote.
+    pad: column.style.getPropertyValue('--transcript-pad').trim(),
     scroller: round(scrollerBox),
     column: round(columnBox),
+    anchor: anchor ? round(anchor.getBoundingClientRect()) : null,
   }
 })()`
 
@@ -393,9 +401,15 @@ export const clickTitleBarMenu = (index = 0) =>
 
 export const chip = () => `(() => {
   const pick = (selector) => (document.querySelector(selector) || {}).textContent || ''
+  const context = document.getElementById('composer-context')
   return {
     model: pick('#chip-runtime .chip-model-label'),
     effort: pick('#chip-runtime .chip-effort-label'),
+    context: {
+      present: context !== null,
+      hidden: context ? context.hidden : true,
+      insideRuntimeChip: document.querySelector('#chip-runtime #composer-context') !== null,
+    },
     permission: (document.getElementById('chip-permission') || {}).textContent || '',
     submitState: (document.getElementById('submit') || { className: '' }).className,
     progress: (document.getElementById('composer-progress') || {}).hidden,

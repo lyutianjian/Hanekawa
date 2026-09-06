@@ -117,6 +117,8 @@ async function createHarness(): Promise<Harness> {
   const workspace = new SessionWorkspace(project, {
     createCheckpointService: () => ({
       init: async () => {},
+      isEnabled: () => true,
+      dispose: () => {},
       createCheckpoint: async () => ({ success: false }),
     }) as unknown as CheckpointService,
   })

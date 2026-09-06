@@ -1488,3 +1488,181 @@ test('the kept thinking head reports the disclosure it is showing, both ways', (
   view.stub.click(head().node)
   assert.deepEqual(view.toggled, [['th1', false], ['th1', true]], 'open, so the same node asks to close')
 })
+
+// --- the newest question's place on screen ------------------------------------
+
+/**
+ * A 600px scroller with an 8px inset, holding a conversation `content` px tall,
+ * with the newest bubble 72px into the column.
+ *
+ * Installed as a *rule* rather than written onto nodes: the bubble whose box
+ * decides everything here does not exist until the paint that measures it, so
+ * there is no earlier moment at which a test could have given it one. See
+ * `DomStub.onLayout`.
+ *
+ * The rule moves with `scrollTop` and grows the column's box by the pad the view
+ * last wrote — between them the stub answers the way a browser would, which is
+ * the only way the two quantities the view subtracts can be checked at all.
+ */
+function laidOut(view: Rendered, content = 184): void {
+  view.stub.setMetrics(view.container, { clientHeight: 600, scrollHeight: 600, scrollTop: 0 })
+  view.stub.onLayout((node) => {
+    if (node.classes.includes('transcript')) return { top: 100, bottom: 700 }
+    const scrolled = view.container.scrollTop
+    if (node.classes.includes('transcript-column')) {
+      const pad = Number.parseFloat(node.styleProperties.get('--transcript-pad') ?? '0')
+      return { top: 108 - scrolled, bottom: 108 + content + pad - scrolled }
+    }
+    if (node.classes.includes('user')) return { top: 180 - scrolled, bottom: 220 - scrolled }
+    return undefined
+  })
+}
+
+/** The pad the view wrote this paint, as the CSS length it wrote. */
+function pad(view: Rendered): string | undefined {
+  return view.column().styleProperties.get('--transcript-pad')
+}
+
+function currentPad(view: Rendered): number {
+  return Number.parseFloat(pad(view) ?? '0')
+}
+
+test('a new question is lifted to the top of the viewport, and the pad is what lets it', (t) => {
+  const view = mount(t)
+  laidOut(view)
+
+  view.render(transcript([{ id: 'a', kind: 'user', text: '你好' }]))
+
+  // The bubble starts 80px below the scroller's top edge, and it is the first
+  // thing in the session — so it goes up to the scroller's own 8px padding, a
+  // travel of 72px.
+  assert.equal(view.container.scrollTop, 72, 'the scroller was not moved to the anchor')
+  // 600 (the viewport) − 8 (the gap left above it) − 120 (the bubble's top to
+  // the end of the scrollable content). Without it the scroller could not move.
+  assert.equal(pad(view), '472px')
+  // And the pad is *exactly* enough: the anchor's new offset is the scroller's
+  // maximum, so a streaming turn's tail-follow lands on the same pixel rather
+  // than a few past it.
+  // 200 of conversation plus a 472 pad, less the 600 on screen.
+  assert.equal(200 + 472 - 600, view.container.scrollTop)
+})
+
+test('a question with a turn above it keeps 64px of that turn on screen', (t) => {
+  const view = mount(t)
+  laidOut(view)
+
+  view.render(
+    transcript([
+      { id: 'a', kind: 'user', text: '你好' },
+      { id: 'b', kind: 'assistant', text: '你好呀' },
+      { id: 'c', kind: 'user', text: '你是谁' },
+    ]),
+  )
+
+  // 80px to the top, less the 64px of the previous answer left visible above it.
+  assert.equal(view.container.scrollTop, 16)
+  assert.equal(pad(view), '416px', 'and the pad is 56px shorter for the same reason')
+})
+
+test('the lift runs once per question, not once per streamed token', (t) => {
+  const view = mount(t)
+  laidOut(view)
+  const items: TranscriptItem[] = [{ id: 'a', kind: 'user', text: '你好' }]
+
+  view.render(transcript(items))
+  assert.equal(view.container.scrollTop, 72)
+
+  // The answer arriving must not re-run the lift: the reader may have scrolled
+  // away, and a paint that hauls them back to the anchor on every chunk is the
+  // yank the tail-follow has always been careful not to be.
+  // 184 of conversation, 16 of scroller inset and the 472 pad the lift wrote —
+  // the scroller now has somewhere to be scrolled *from*, and the reader has
+  // gone back to the top of it.
+  view.stub.setMetrics(view.container, { scrollTop: 0, scrollHeight: 672 })
+  view.render(transcript([...items, { id: 'b', kind: 'assistant', text: '你好呀' }]))
+  assert.equal(view.container.scrollTop, 0, 'a repaint under the same question re-scrolled')
+  // The pad is still rewritten, and unchanged because nothing under the anchor
+  // grew. That is the regression this pins: `scrollHeight` carries the pad, so a
+  // measurement that forgot to subtract it would read this paint's own blank as
+  // content and drive the pad to its floor on the second frame of a turn.
+  assert.equal(pad(view), '472px')
+})
+
+test('the pad shrinks as the answer grows, so the bubble holds still while it streams', (t) => {
+  const view = mount(t)
+  // The same conversation 200px longer.
+  laidOut(view, 384)
+
+  view.render(transcript([{ id: 'a', kind: 'user', text: '你好' }]))
+
+  assert.equal(pad(view), '272px', '472 − 200: exactly what the answer took')
+})
+
+test('a transcript with no question in it carries no pad', (t) => {
+  const view = mount(t)
+  laidOut(view)
+
+  view.render(transcript([{ id: 'a', kind: 'user', text: '你好' }]))
+  assert.equal(pad(view), '472px')
+
+  // `transcript-reset` and a pane showing only startup notices land here. The
+  // pad has to go with the conversation, or the reset leaves a screenful of
+  // blank under a transcript that has nothing holding it up.
+  view.render(transcript([{ id: 'n', kind: 'notice', text: '会话已重置' }]))
+  assert.equal(pad(view), '0px')
+})
+
+test('a pane with no layout writes nothing rather than a pad measured from nothing', (t) => {
+  const view = mount(t)
+  // No `onLayout` and no metrics: a background pane, whose every reading is zero
+  // or `NaN`. Writing from that would leave a stale pad for the paint that
+  // brings the pane back.
+  view.render(transcript([{ id: 'a', kind: 'user', text: '你好' }]))
+
+  assert.equal(pad(view), undefined)
+  assert.equal(view.container.scrollTop, 0)
+})
+
+test('a question painted before the pane had layout is lifted on the paint that can', (t) => {
+  const view = mount(t)
+  const state = transcript([{ id: 'a', kind: 'user', text: '你好' }])
+
+  // A pane built in the background paints its first message with nothing to
+  // measure. If that paint spent the anchor, the question would be stranded
+  // wherever the flow left it for the whole of its turn.
+  view.render(state)
+  assert.equal(pad(view), undefined)
+
+  laidOut(view)
+  view.render(state)
+  assert.equal(view.container.scrollTop, 72, 'the question was never lifted')
+  assert.equal(pad(view), '472px')
+})
+
+test('the pad follows the viewport, which moves without the transcript repainting', (t) => {
+  // Two real ones: the canvas header is `hidden` until the lane has a name, so
+  // the first paint of a restored session measures a taller scroller than it
+  // ends up in; and the composer takes a line off the transcript every time the
+  // draft wraps. Neither repaints this view.
+  const resizes: Array<() => void> = []
+  const previous = (globalThis as { ResizeObserver?: unknown }).ResizeObserver
+  ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+    constructor(run: () => void) { resizes.push(run) }
+    observe(): void {}
+  }
+  t.after(() => { (globalThis as { ResizeObserver?: unknown }).ResizeObserver = previous })
+
+  const view = mount(t)
+  laidOut(view)
+  view.render(transcript([{ id: 'a', kind: 'user', text: '你好' }]))
+  assert.equal(pad(view), '472px')
+
+  // 36px of canvas header arrives. A pad still measured against the old height
+  // leaves the scroller 36px of travel it should not have, and the next
+  // tail-follow spends it by sliding the question off its gap.
+  view.stub.setMetrics(view.container, { clientHeight: 564 })
+  for (const resize of resizes) resize()
+
+  assert.equal(pad(view), '436px')
+  assert.equal(view.container.scrollTop, 72, 'a resize is not a new question and must not re-scroll')
+})

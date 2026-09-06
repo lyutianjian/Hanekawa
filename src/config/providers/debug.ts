@@ -92,6 +92,11 @@ export function debugProviderResponse(label: string, response: unknown) {
       textLength: textBlocks.reduce((sum, item) => sum + (item.type === 'text' ? item.text.length : 0), 0),
       toolCalls: toolBlocks.map((item) => item.type === 'tool_use' ? item.name : undefined).filter(Boolean),
       usage,
+      cacheUsage: {
+        uncachedInputTokens: typed.usage?.input_tokens ?? null,
+        cacheCreationInputTokens: typed.usage?.cache_creation_input_tokens ?? null,
+        cacheReadInputTokens: typed.usage?.cache_read_input_tokens ?? null,
+      },
     }, null, 2)}`)
     return
   }

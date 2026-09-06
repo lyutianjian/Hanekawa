@@ -402,6 +402,8 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         ...(form.baseUrl.trim() ? { baseUrl: form.baseUrl.trim() } : {}),
         ...(form.apiKey ? { apiKey: form.apiKey } : {}),
       }
+      const existing = cfg.endpoints?.[form.original ?? name]
+      if (existing?.promptCaching !== undefined) endpoint.promptCaching = existing.promptCaching
       void persist(() => {
         if (form.original && form.original !== name) {
           config.removeEndpoint(form.original)
@@ -458,6 +460,8 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         endpoint: form.endpointName.trim(),
         ...(parsedContextWindow ? { contextWindow: parsedContextWindow } : {}),
       }
+      const existing = cfg.models[form.original ?? name]
+      if (existing?.promptCaching !== undefined) model.promptCaching = existing.promptCaching
       void persist(() => {
         if (form.original && form.original !== name) {
           config.renameModel(form.original, name)

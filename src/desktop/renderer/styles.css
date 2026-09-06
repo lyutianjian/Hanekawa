@@ -184,8 +184,14 @@
      handle between the two columns is dragged, and `model/sidebarWidth.ts` owns
      the default and the range. Declared here so a first run — and every test
      that never touches localStorage — resolves to the resting width.
-     `#sidebar` and `.sidebar-shell` both read it; they are one axis. */
+     `#sidebar` and `.sidebar-shell` both resolve from it; they are one axis. */
   --sidebar-width: 280px;
+  /* The seam from the sidebar's content edge to the canvas, and the part of it
+     the sidebar's scrollbar is allowed to occupy. The overhang is the 10px seam
+     minus 2px of air and the 1px sash line, so the scrollbar owns 7px and the
+     canvas does not move. */
+  --sidebar-gutter: 10px;
+  --sidebar-scrollbar-overhang: calc(var(--sidebar-gutter) - 3px);
   /* The task panel's completed share, 0..1. The second layout number the
      renderer writes and, like the rail's width, the *rule* that reads it stays
      here: `dom/taskPanelView.ts` sets the number on the panel and the fill
@@ -203,12 +209,20 @@
      view — it is a constant both sides need, and `MARQUEE_GAP` is the other
      half of it. */
   --marquee-gap: 48px;
-  /* The composer chip's context ring, written per paint by `dom/composerView.ts`
+  /* The context indicator's ring, written per paint by `dom/composerView.ts`
      from `model/usage.ts`. A fraction of the *usable* window (the autocompact
      threshold), so no token can hold it; declared here for the same reason as
      the two above — an empty ring before the first snapshot beats an invalid
      gradient. */
   --context-ratio: 0;
+  /* The blank under the conversation, written per paint by
+     `dom/transcriptView.ts` from `model/transcriptAnchor.ts`: it is what lets
+     the newest question be scrolled to the top of the viewport, so it depends on
+     the measured height of everything below that question and on the viewport
+     itself. Declared here for the same reason as the four above — a transcript
+     painted before anything has been measured needs a valid length, and zero is
+     the layout the scroller had before any of this existed. */
+  --transcript-pad: 0px;
 
   /* --- type ---
      The chrome is proportional; anything the user has to read character by
@@ -359,6 +373,14 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover { background-color: var(--text-tertiary); }
 ::-webkit-scrollbar-corner { background: transparent; }
+/* The rail's thumb is the one exception to the inset above. It is read against
+   the canvas's edge rather than against a panel of its own, and 3px short of the
+   rail's boundary reads as a slider that failed to reach it. The 4px thickness
+   is unchanged — the whole inset moves to the left side. */
+.sidebar-list::-webkit-scrollbar-thumb {
+  border-right-width: 0;
+  border-left-width: 6px;
+}
 
 /* --- title bar ---
    The frameless window's own caption strip (5g). `-webkit-app-region: drag` is
@@ -618,12 +640,18 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  /* Even on all four sides, and unconditional. It used to be `8px 8px 8px 0`
-     with two sibling rules growing the left inset back whenever the sidebar
-     went away — an inset that appeared and disappeared, animated against a
-     column that was animating too, so the gap pumped mid-collapse. The canvas
-     now owns its own margin and the sidebar's width is the only thing moving. */
+  /* Unconditional on all four sides. It used to be `8px 8px 8px 0` with two
+     sibling rules growing the left inset back whenever the sidebar went away —
+     an inset that appeared and disappeared, animated against a column that was
+     animating too, so the gap pumped mid-collapse. The canvas now owns its own
+     margin and the sidebar's width is the only thing moving.
+
+     The left inset is the one that is not 8px, and unconditionally so — which is
+     what keeps the pumping above from coming back. Here it is the 3px remainder
+     of the sidebar seam; the sash reaches across it with its negative right
+     margin, so its hover line lands on the canvas edge. */
   margin: var(--space-2);
+  margin-left: calc(var(--sidebar-gutter) - var(--sidebar-scrollbar-overhang));
   background: var(--surface-canvas);
   border-radius: var(--radius-lg);
   overflow: hidden;
@@ -648,7 +676,7 @@ body {
 
 /* --- sidebar --- */
 #sidebar {
-  flex: 0 0 var(--sidebar-width);
+  flex: 0 0 calc(var(--sidebar-width) + var(--sidebar-scrollbar-overhang));
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -703,22 +731,31 @@ body {
    sidebar is no longer providing. `app.ts`'s `renderSettings()` owns the class. */
 body.settings-open #sidebar { display: none; }
 /* The drag handle between the two columns. It lives in the gap the canvas's
-   margin already leaves, so it costs the rail no width; the hit area is 6px and
-   the line it paints on hover is one pixel of `--border-strong`, drawn by a
-   child-less pseudo-element so the handle itself stays invisible at rest. */
+   margin already leaves, so it costs the rail no width; the line it paints on
+   hover is one pixel of `--border-strong`, drawn by a child-less pseudo-element
+   so the handle itself stays invisible at rest.
+
+   The scrollbar's scroller already overhangs 7px of the 10px seam. The handle
+   owns the other 3px, so no sliver of the gap looks grabbable and is not; its
+   negative right margin matches that remainder, putting the hover line on the
+   canvas edge without widening the gutter. */
 #sidebar-resizer {
   position: relative;
-  flex: 0 0 6px;
+  flex: 0 0 calc(var(--sidebar-gutter) - var(--sidebar-scrollbar-overhang));
+  margin-right: calc(-1 * (var(--sidebar-gutter) - var(--sidebar-scrollbar-overhang)));
   align-self: stretch;
   cursor: col-resize;
   background: transparent;
 }
+/* The sash stays on the canvas edge. The scrollbar, not the sash, is the thing
+   that moves: its scroller overhangs into the first 7px of the 10px seam below,
+   leaving 2px of air before this 1px line. */
 #sidebar-resizer::after {
   content: '';
   position: absolute;
   top: var(--space-5);
   bottom: var(--space-5);
-  left: 50%;
+  right: 0;
   width: 1px;
   background: var(--border-strong);
   opacity: 0;
@@ -809,7 +846,12 @@ body.resizing #sidebar { transition: none; }
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-1) 0;
+  /* The scroller alone overhangs the shell by 7px, moving its native rail
+     closer to the sash. The matching right padding keeps the rows themselves on
+     the shell's original 280px grid. */
+  width: calc(100% + var(--sidebar-scrollbar-overhang));
+  margin-right: calc(-1 * var(--sidebar-scrollbar-overhang));
+  padding: var(--space-1) var(--sidebar-scrollbar-overhang) var(--space-1) 0;
 }
 /* `:focus-visible`, not `:focus`: this list takes focus on a plain click (its
    `tabindex` is what makes the arrow keys work the moment it is entered), and a
@@ -1216,11 +1258,11 @@ body.resizing #sidebar { transition: none; }
   overflow-y: auto;
   padding: var(--space-2) var(--reading-gutter);
   font-size: var(--type-body);
-  /* A flex column purely so the reading column below can claim the leftover
-     height with an auto margin (todo V2). **Not** `justify-content: flex-end`:
-     in a scroll container that makes the top of overflowing content
-     unreachable, while an auto margin resolves to 0 the moment the content is
-     taller than the box — so a long session scrolls exactly as it did. */
+  /* A flex column, and **not** `justify-content: flex-end`: in a scroll
+     container that makes the top of overflowing content unreachable. Nothing
+     here may move the reading column vertically at all now — the pad below does
+     that, and it is measured against a layout this rule would be shifting under
+     it (see `.transcript-column`). */
   display: flex;
   flex-direction: column;
   /* The browser default, written down because it is load-bearing (§8): when a
@@ -1265,7 +1307,24 @@ body.resizing #sidebar { transition: none; }
    `.group-steps`, `.step`, `.step-head`, `.step-body`): a flex or grid item
    refuses to shrink under its own content unless it is told to, and one link
    without it hands the whole column its widest unbroken token as a floor. */
-.transcript-column { width: 100%; min-width: 0; max-width: var(--reading-measure); margin: auto auto 0; flex-shrink: 0; }
+/* `padding-bottom` is the room the newest question needs above it, written per
+   paint by `dom/transcriptView.ts` — see `model/transcriptAnchor.ts`.
+   It replaced a `margin-top: auto`, which parked a short conversation against
+   the composer and had to go rather than merely become redundant: an auto margin
+   resolves against the *free space*, so the very first paint of a turn — the one
+   the lift measures — found the column shoved to the bottom of the scroller, and
+   the pad computed from that overshot by exactly the space the margin had eaten.
+   The two cannot share this axis. What the margin used to buy, the pad buys
+   properly: a one-question session is not stranded under the canvas header, it
+   is at the top of the screen with the whole canvas underneath it. */
+.transcript-column {
+  width: 100%;
+  min-width: 0;
+  max-width: var(--reading-measure);
+  margin: 0 auto;
+  padding-bottom: var(--transcript-pad);
+  flex-shrink: 0;
+}
 /* 24px between turns, and the line-height a wall of prose needs. Both are the
    rhythm half of design_guidance 四.3 — the old 10px/1.5 ran the assistant's
    answer and the next question together, and 16px still read as one block once
@@ -2710,6 +2769,132 @@ body.resizing #sidebar { transition: none; }
    running badge uses — one animation, one duration. */
 #composer-progress { display: inline-flex; color: var(--text-secondary); }
 #composer-progress .icon { animation: spin 0.9s linear infinite; }
+/* The context indicator and the runtime chip are one visual group, but not one
+   control: four pixels keeps the gauge beside the model name without borrowing
+   the action bar's eight-pixel rhythm. */
+#composer-runtime { display: inline-flex; align-items: center; gap: var(--space-1); }
+/* A round groove rather than a bare glyph: the hover card needs a hit area, and
+   the composer's other bottom-row controls already speak this shape. */
+#composer-context {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: var(--surface-card);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+}
+#composer-context:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-subtle);
+}
+/* The context-occupancy ring. A `conic-gradient` swept by `--context-ratio`,
+   which `dom/composerView.ts` writes per paint — the one number no stylesheet
+   can hold. `currentColor` for the filled arc so the three levels are a single
+   `color` swap; the remainder is a neutral track, never an accent. */
+.context-gauge {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-pill);
+  color: var(--text-tertiary);
+  background: conic-gradient(
+    currentColor calc(var(--context-ratio) * 360deg),
+    var(--border-strong) 0
+  );
+  mask-image: radial-gradient(
+    closest-side,
+    transparent calc(100% - 2px),
+    currentColor calc(100% - 1px)
+  );
+}
+.context-gauge.warn { color: var(--text-warn); }
+.context-gauge.critical { color: var(--text-danger); }
+/* The indicator's own card. It is not focusable and owns no action, so hover is
+   its only trigger; the parent's accessible name carries the same figures for
+   assistive technology. `pointer-events: none` keeps the card from becoming a
+   second hover target that could flicker as it appears. */
+.context-tooltip {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + var(--space-2));
+  z-index: 5;
+  min-width: 15rem;
+  max-width: 18rem;
+  padding: var(--space-3);
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+  color: var(--text-primary);
+  font-size: var(--type-meta);
+  line-height: 1.5;
+  text-align: left;
+  white-space: nowrap;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(4px) scale(0.98);
+  transition: opacity var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard),
+    visibility var(--motion-fast) var(--ease-standard);
+}
+#composer-context:hover .context-tooltip {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.context-tooltip-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.context-tooltip-title {
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.context-tooltip-percent {
+  font-size: var(--type-ui);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.context-tooltip-rows {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+}
+.context-tooltip-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+.context-tooltip-label {
+  color: var(--text-secondary);
+  font-size: var(--type-micro);
+  line-height: 1.4;
+}
+.context-tooltip-value {
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--type-meta);
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+.context-tooltip-note {
+  margin: var(--space-2) 0 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+  line-height: 1.4;
+}
 /* One status label for both fields, and the shell its popover is drawn into —
    the same construction `#composer-permission` uses. This was two buttons split
    by a hairline, each opening a full-width `#surface` card; the model and the
@@ -2733,25 +2918,6 @@ body.resizing #sidebar { transition: none; }
   cursor: pointer;
 }
 .chip-effort-label { color: var(--text-tertiary); }
-/* The context-occupancy ring, ahead of the model name. A `conic-gradient` swept
-   by `--context-ratio`, which `dom/composerView.ts` writes per paint — the one
-   number no stylesheet can hold. `currentColor` for the filled arc so the three
-   levels are a single `color` swap; the remainder is a neutral track, never an
-   accent (accents do not fill — see `rendererStyleTokens.test.ts`). It is
-   `aria-hidden`: the same figures are in the button's `aria-label`. */
-.chip-context-gauge {
-  width: 12px;
-  height: 12px;
-  flex: 0 0 auto;
-  border-radius: var(--radius-pill);
-  color: var(--text-tertiary);
-  background: conic-gradient(
-    currentColor calc(var(--context-ratio) * 360deg),
-    var(--border-strong) 0
-  );
-}
-.chip-context-gauge.warn { color: var(--text-warn); }
-.chip-context-gauge.critical { color: var(--text-danger); }
 #chip-runtime:hover:enabled {
   color: var(--text-primary);
   background: var(--surface-hover);

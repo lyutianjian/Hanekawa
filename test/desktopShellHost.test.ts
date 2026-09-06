@@ -1125,8 +1125,14 @@ test('list-sessions keeps a registered project that has no sessions at all', asy
   }
 })
 
-test('remove-project unregisters a closed project without touching its files', async () => {
+test('remove-project unregisters a closed project and deletes its history', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-forget-'))
+  // Real files: the sweep runs through a transient `SessionStore`, exactly like
+  // deleting one session of a closed project does.
+  const store = new SessionStore(dir)
+  await store.init()
+  const first = await store.create('One')
+  await store.create('Two')
   try {
     const h = createHarness({ knownProjects: () => Promise.resolve([dir]) })
 
@@ -1134,7 +1140,8 @@ test('remove-project unregisters a closed project without touching its files', a
 
     assert.deepEqual(result, { ok: true })
     assert.deepEqual(h.forgottenProjects, [dir], 'the real cwd, not the wire key')
-    assert.deepEqual(h.project.store.deleted, [], 'nothing was deleted')
+    assert.deepEqual(await new SessionStore(dir).list(), [], 'every session is gone from disk')
+    assert.equal(existsSync(path.join(dir, '.myagent', 'sessions', `${first.id}.jsonl`)), false)
     assert.deepEqual(h.allLanesClosed, [], 'a closed project holds no lanes to lose')
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -1166,7 +1173,11 @@ test('remove-project releases the open project lanes before forgetting it', asyn
     assert.equal(h.directory.get(cwd), undefined)
     assert.deepEqual(h.forgottenProjects, [cwd])
     assert.deepEqual(h.allLanesClosed, [], 'the window still has a lane')
-    assert.deepEqual(project.project.store.deleted, [], 'no session was deleted')
+    assert.equal(
+      project.project.shutdowns.length,
+      1,
+      'the runtime is down before the files go — a draining project rewrites its index',
+    )
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
@@ -1209,7 +1220,12 @@ test('removing the window only project lands on the global workspace, not on qui
 
 test('remove-project refuses the global workspace and roots it never saw', async () => {
   const home = process.env.USERPROFILE!
-  const h = createHarness({ cwd: home })
+  // Not open, and not a registry member either: the refusal has to survive the
+  // root resolving through the home branch rather than through a live project.
+  const store = new SessionStore(home)
+  await store.init()
+  await store.create('A 最近 session')
+  const h = createHarness()
 
   await assert.rejects(
     h.client.removeProject(projectRootKey(home)),
@@ -1220,6 +1236,7 @@ test('remove-project refuses the global workspace and roots it never saw', async
     /No project is open at/,
   )
   assert.deepEqual(h.forgottenProjects, [])
+  assert.equal((await new SessionStore(home).list()).length, 1, 'and it deleted nothing')
 })
 
 test('open-session bootstraps a registered project on demand, over the named session', async () => {
@@ -1303,6 +1320,63 @@ test('open-session with nothing open falls back to the global workspace', async 
 
   assert.deepEqual(calls, [home])
   assert.equal(result.pane.projectRoot, projectRootKey(home))
+})
+
+test('delete-session and rename-session reach 最近 with the global runtime closed', async () => {
+  // The bug this covers: `knownProjects` filters the home root out by design
+  // (it is the implicit global workspace, never a registry member), so every
+  // root-keyed command answered "No project is open at <home>" the moment the
+  // global runtime's last lane closed — while the sidebar kept drawing its rows.
+  const home = process.env.USERPROFILE!
+  const store = new SessionStore(home)
+  await store.init()
+  const created = await store.create('A 最近 session')
+  const h = createHarness({ knownProjects: () => Promise.resolve([]) })
+  assert.equal(h.directory.get(home), undefined, 'the global workspace is not open')
+
+  await h.client.renameSession(projectRootKey(home), created.id, 'Renamed from the sidebar')
+  assert.equal((await store.list()).at(0)?.title, 'Renamed from the sidebar')
+
+  await h.client.deleteSession(projectRootKey(home), created.id)
+  assert.deepEqual(await store.list(), [], 'the row the sidebar showed is really gone')
+})
+
+test('settings on a closed root bootstrap it and put it back down', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-settings-closed-'))
+  try {
+    const opened: string[] = []
+    // A fresh project per call, like `main.ts`'s `ensureProject`: the previous
+    // one has been shut down and dropped from the directory by then.
+    const projects: Array<ReturnType<Harness['addProject']>> = []
+    const h = createHarness({
+      knownProjects: () => Promise.resolve([dir]),
+      ensureProject: (cwd) => {
+        opened.push(cwd)
+        const next = h.addProject(cwd)
+        projects.push(next)
+        return Promise.resolve(next.entry)
+      },
+    })
+
+    const settings = await h.client.getSettings(projectRootKey(dir))
+    assert.equal(settings.settings.projectRoot, projectRootKey(dir))
+    await h.client.changeSettings(projectRootKey(dir), {
+      scope: 'provider',
+      kind: 'set-model',
+      key: 'big',
+      model: 'claude-big',
+      provider: 'anthropic',
+    })
+
+    assert.deepEqual(opened, [dir, dir], 'bootstrapped on demand, once per command')
+    assert.ok(projects.at(-1)!.project.config.get().models.big, 'and the edit really landed')
+    // No lane holds it, so the transient runtime must not be left behind: it
+    // owns MCP clients and background tasks nothing on screen could reach.
+    assert.equal(h.directory.get(dir), undefined)
+    assert.deepEqual(projects.map((entry) => entry.project.shutdowns.length), [1, 1])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('delete-session and rename-session work on a registered project with no runtime', async () => {
@@ -1660,6 +1734,7 @@ test('settings-change saves before reloading, or the reload would discard the ed
 test('the 1M header switch persists on the model and comes back in the snapshot', async () => {
   const h = createHarness()
   seedConfig(h.project)
+  h.project.config.config.models.big!.promptCaching = 'on'
 
   await h.client.changeSettings(h.entry.root, {
     scope: 'provider',
@@ -1687,6 +1762,7 @@ test('the 1M header switch persists on the model and comes back in the snapshot'
     endpoint: 'main',
   })
   assert.equal(h.project.config.config.models.big?.longContext1m, undefined)
+  assert.equal(h.project.config.config.models.big?.promptCaching, 'on')
 })
 
 test('one edit reloads the project once and refreshes every lane of it', async () => {
@@ -1788,6 +1864,7 @@ test('an endpoint whose model is mid-turn is refused as a whole', async () => {
 test('set-endpoint without an apiKey leaves the stored key alone', async () => {
   const h = createHarness()
   seedConfig(h.project)
+  h.project.config.config.endpoints!.main!.promptCaching = 'off'
 
   // What the form sends when the user edited the base URL but never touched the
   // key field, which is showing a mask.
@@ -1801,11 +1878,13 @@ test('set-endpoint without an apiKey leaves the stored key alone', async () => {
 
   assert.equal(h.project.config.config.endpoints?.main?.apiKey, 'sk-abcdefghijkl')
   assert.equal(h.project.config.config.endpoints?.main?.baseUrl, 'https://api.changed')
+  assert.equal(h.project.config.config.endpoints?.main?.promptCaching, 'off')
 })
 
 test('clear-endpoint-key is the only way a key is removed', async () => {
   const h = createHarness()
   seedConfig(h.project)
+  h.project.config.config.endpoints!.main!.promptCaching = 'off'
 
   await h.client.changeSettings(h.entry.root, {
     scope: 'provider',
@@ -1815,6 +1894,7 @@ test('clear-endpoint-key is the only way a key is removed', async () => {
 
   assert.equal(h.project.config.config.endpoints?.main?.apiKey, undefined)
   assert.equal(h.project.config.config.endpoints?.main?.provider, 'anthropic', 'the rest survives')
+  assert.equal(h.project.config.config.endpoints?.main?.promptCaching, 'off')
 })
 
 test('set-default-model with an unresolvable key is a no-op, as the service defines it', async () => {

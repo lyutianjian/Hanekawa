@@ -78,10 +78,18 @@ test('a turn with no input side reports no rate at all', () => {
 })
 
 test('the gauge is absent, not empty, when either number is missing', () => {
-  assert.equal(contextGaugeView(undefined, runtime({ usableContextWindow: 167_000 })).visible, false)
-  assert.equal(contextGaugeView(1000, runtime()).visible, false)
-  assert.equal(contextGaugeView(1000, undefined).visible, false)
-  assert.equal(contextGaugeView(1000, runtime({ usableContextWindow: 0 })).visible, false)
+  const hiddenCases = [
+    contextGaugeView(undefined, runtime({ usableContextWindow: 167_000 })),
+    contextGaugeView(1000, runtime()),
+    contextGaugeView(1000, undefined),
+    contextGaugeView(1000, runtime({ usableContextWindow: 0 })),
+  ]
+  for (const view of hiddenCases) {
+    assert.equal(view.visible, false)
+    assert.equal(view.used, '')
+    assert.equal(view.usable, '')
+    assert.equal(view.modelWindow, undefined)
+  }
   assert.equal(hiddenContextGauge().visible, false)
 })
 
@@ -95,6 +103,9 @@ test('the gauge measures against the usable window, not the raw one', () => {
   }))
   assert.equal(view.visible, true)
   assert.equal(view.percent, '10%')
+  assert.equal(view.used, '17k')
+  assert.equal(view.usable, '167k')
+  assert.equal(view.modelWindow, '200k')
   assert.match(view.title, /10% 已用（剩余 90%）/)
   assert.match(view.title, /已用 17k 标记，共 167k/)
   assert.match(view.title, /模型窗口 200k/)
@@ -120,5 +131,6 @@ test('the gauge changes level as autocompact approaches', () => {
 
 test('a model whose whole window is usable does not claim a separate reserve', () => {
   const view = contextGaugeView(10, runtime({ contextWindow: 1000, usableContextWindow: 1000 }))
+  assert.equal(view.modelWindow, undefined)
   assert.doesNotMatch(view.title, /模型窗口/)
 })

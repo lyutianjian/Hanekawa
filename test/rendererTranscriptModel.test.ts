@@ -1104,3 +1104,29 @@ test('a run record no call claims keeps a row of its own, without erroring', () 
   assert.equal(orphan.tool.subagent?.model, 'opus')
   assert.equal(orphan.tool.subagent?.summary, '22 个工具返回了 display.summary。')
 })
+
+test('groupTranscript is memoised on the item list it was handed', () => {
+  // Two callers ask for this projection on every paint — `paneSession.ts` for
+  // `pruneDisclosure`, `dom/transcriptView.ts` for the paint — and a paint runs
+  // per streamed chunk, so building it twice is a walk of the whole
+  // conversation per token.
+  const { state } = fold([
+    { type: 'turn-start', messageId: 'm1', displayInput: 'go', createdAt: 'now' },
+    { type: 'stream', event: { type: 'text_delta', text: 'hi' } },
+  ])
+
+  const first = groupTranscript(state.items)
+  assert.equal(groupTranscript(state.items), first, 'the same list is the same answer')
+
+  // The cache is keyed by identity, and every event replaces the list whole, so
+  // a delta is a different list and must be rebuilt.
+  const { state: next } = fold([{ type: 'stream', event: { type: 'text_delta', text: '!' } }], state)
+  const second = groupTranscript(next.items)
+  assert.notEqual(second, first)
+  assert.equal(second.at(-1)?.kind, 'item')
+  // A copy with the same contents is still a different list: nothing here may
+  // depend on deep equality.
+  assert.notEqual(groupTranscript([...next.items]), second)
+  // And the previous answer is still reachable by handing back its own list.
+  assert.deepEqual(groupTranscript(state.items).length, first.length)
+})

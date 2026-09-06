@@ -50,10 +50,14 @@ const ALLOWED_STYLE_PROPERTY_CONSTANTS = [
   // hold them. `model/marquee.ts` owns both names.
   'MARQUEE_SHIFT_VARIABLE',
   'MARQUEE_DURATION_VARIABLE',
-  // The chip's context ring sweep, a fraction recomputed per snapshot. Same
+  // The context indicator's ring sweep, a fraction recomputed per snapshot. Same
   // exception for the same reason: no token can hold a measured value.
   // `model/usage.ts` owns the name.
   'CONTEXT_RATIO_VARIABLE',
+  // The blank under the conversation, measured per paint against the viewport so
+  // the newest question can be lifted to the top of it.
+  // `model/transcriptAnchor.ts` owns the name.
+  'TRANSCRIPT_PAD_VARIABLE',
 ]
 
 function rendererFiles(dir = rendererRoot): string[] {
@@ -331,6 +335,10 @@ test('the palette is the one that was agreed, value for value', () => {
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
       '--sidebar-width': '280px',
+      // The sidebar seam, and the 7px slice its scrollbar overhangs (2px of air
+      // plus the 1px sash line).
+      '--sidebar-gutter': '10px',
+      '--sidebar-scrollbar-overhang': 'calc(var(--sidebar-gutter) - 3px)',
       // The task panel's progress, same shape of exception: a number the view
       // writes and the sheet's own rule reads.
       '--task-progress': '0',
@@ -340,9 +348,13 @@ test('the palette is the one that was agreed, value for value', () => {
       '--marquee-shift': '0px',
       '--marquee-duration': '0s',
       '--marquee-gap': '48px',
-      // The composer chip's context ring, fourth of the same kind: a fraction of
+      // The context indicator's ring, fourth of the same kind: a fraction of
       // the usable window written per paint by `dom/composerView.ts`.
       '--context-ratio': '0',
+      // The transcript's bottom pad, fifth of the same kind: the room the newest
+      // question needs to be liftable to the top of the viewport, measured per
+      // paint by `dom/transcriptView.ts` from `model/transcriptAnchor.ts`.
+      '--transcript-pad': '0px',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
@@ -422,6 +434,10 @@ test('the palette is the one that was agreed, value for value', () => {
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
       '--sidebar-width': '280px',
+      // The sidebar seam, and the 7px slice its scrollbar overhangs (2px of air
+      // plus the 1px sash line).
+      '--sidebar-gutter': '10px',
+      '--sidebar-scrollbar-overhang': 'calc(var(--sidebar-gutter) - 3px)',
       // The task panel's progress, same shape of exception: a number the view
       // writes and the sheet's own rule reads.
       '--task-progress': '0',
@@ -431,9 +447,13 @@ test('the palette is the one that was agreed, value for value', () => {
       '--marquee-shift': '0px',
       '--marquee-duration': '0s',
       '--marquee-gap': '48px',
-      // The composer chip's context ring, fourth of the same kind: a fraction of
+      // The context indicator's ring, fourth of the same kind: a fraction of
       // the usable window written per paint by `dom/composerView.ts`.
       '--context-ratio': '0',
+      // The transcript's bottom pad, fifth of the same kind: the room the newest
+      // question needs to be liftable to the top of the viewport, measured per
+      // paint by `dom/transcriptView.ts` from `model/transcriptAnchor.ts`.
+      '--transcript-pad': '0px',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
@@ -878,18 +898,27 @@ test('the settings screen scrolls full width and reads in a column', () => {
   )
 })
 
-test('a short conversation sits against the composer, and a long one still scrolls from the top', () => {
-  // todo V2: a session with a short history used to hang one bubble under the
-  // canvas header with 900px of nothing below it. Only a brand-new draft had an
-  // empty state; a two-message session had neither that nor a conversation to
-  // fill the canvas.
-  //
-  // The fix is one auto margin, and both halves of this test are the reasons it
-  // is an auto margin rather than the obvious alternatives.
+test('the newest question owns the screen, and a long one still scrolls from the top', () => {
+  // A session with a short history used to hang one bubble under the canvas
+  // header with 900px of nothing below it. The first fix pushed the column down
+  // against the composer with an auto margin; what is here now lifts the newest
+  // *question* to the top instead, with the pad below it as the room to do so —
+  // the turn in flight is the thing the reader is looking at.
   const scroller = blockFor('.transcript')
-  assert.ok(declares(scroller, 'display', 'flex'), '.transcript must be a flex column for the column below to claim its free space')
+  assert.ok(declares(scroller, 'display', 'flex'), '.transcript must be a flex column holding one reading column')
   assert.ok(declares(scroller, 'flex-direction', 'column'), '.transcript stacks one reading column; the axis has to say so')
   assert.ok(declares(scroller, 'overflow-y', 'auto'), '.transcript stays the scroller')
+  // `dom/transcriptView.ts` measures the *leading* inset and spends it as the
+  // trailing one — a scroller whose vertical padding came in two values would
+  // put the lifted question a few pixels off its gap, in a direction nothing
+  // would name. Two-value shorthand: vertical first, horizontal second.
+  const inset = scroller.decls.find((decl) => decl.prop === 'padding')
+  assert.ok(inset, '.transcript must state its inset in one place')
+  assert.equal(
+    inset.value.trim().split(/\s+/).length,
+    2,
+    '.transcript needs one vertical inset for both edges; the lift measures the top and spends it at the bottom',
+  )
   // The alternative that looks equivalent and is not: in a scroll container,
   // `justify-content: flex-end` puts the *top* of overflowing content out of
   // reach, so a long session could never be scrolled back to its first message.
@@ -900,15 +929,28 @@ test('a short conversation sits against the composer, and a long one still scrol
 
   const column = blockFor('.transcript-column')
   const margin = column.decls.find((decl) => decl.prop === 'margin')
-  assert.ok(margin, '.transcript-column must set a margin: the top one is what pushes a short conversation down')
-  assert.match(
+  assert.ok(margin, '.transcript-column must set a margin: the side ones are what centre it')
+  // It used to be `auto auto 0`. Nothing on this axis may be `auto` now: the pad
+  // below places the column, and it is measured against a layout an auto margin
+  // would be moving underneath it — the first paint of a turn would measure a
+  // column the margin had shoved to the bottom of the scroller, and the pad
+  // computed from that overshoots by exactly the space the margin ate.
+  assert.doesNotMatch(
     margin.value,
     /^auto\b/,
-    '.transcript-column needs margin-top: auto — it eats the free space when short and resolves to 0 when long',
+    '.transcript-column must not claim free space with margin-top: auto; --transcript-pad owns this axis',
   )
   assert.ok(
     column.decls.some((decl) => decl.prop === 'max-width'),
     '.transcript-column is the reading measure and must bound its width',
+  )
+  // The other half of the vertical bargain, and the one that does the work now:
+  // the pad is what a new question is lifted *over*, so a scroller with no room
+  // under its last turn is one that cannot put that turn at the top of the view.
+  // Written per paint through the custom property; see `model/transcriptAnchor.ts`.
+  assert.ok(
+    declares(column, 'padding-bottom', 'var(--transcript-pad)'),
+    '.transcript-column must read --transcript-pad, or the newest question can never be lifted',
   )
   // The horizontal `auto` margins that centre it also cancel the flex item's
   // default cross-axis stretch, so the width has to be stated: otherwise a short
@@ -1127,6 +1169,70 @@ test('the search box and the composer chips are grooves at rest, not outlined fi
       `${chip} raises a strong hairline while its menu is open`,
     )
   }
+
+  const context = blockFor('#composer-context')
+  assert.ok(declares(context, 'background', 'var(--surface-card)'), 'the context indicator is the same card groove')
+  assert.ok(
+    declares(context, 'border', '1px solid transparent'),
+    'the context indicator reserves its border, so hover cannot reflow the composer row',
+  )
+  assert.ok(
+    declares(blockFor('#composer-context:hover'), 'border-color', 'var(--border-subtle)'),
+    'the context indicator raises the same hover hairline',
+  )
+})
+
+test('the independent context gauge sweeps a ring, not a filled disc', () => {
+  const gauge = blockFor('.context-gauge')
+  assert.ok(
+    gauge.decls.some((decl) =>
+      decl.prop === 'background' &&
+      decl.value.includes('conic-gradient') &&
+      decl.value.includes('var(--context-ratio)')
+    ),
+    'the sweep must stay the ratio-driven conic gradient',
+  )
+  assert.ok(
+    gauge.decls.some((decl) =>
+      decl.prop === 'mask-image' &&
+      decl.value.includes('radial-gradient') &&
+      decl.value.includes('closest-side')
+    ),
+    'the centre must be masked out so the gauge reads as a ring',
+  )
+})
+
+test('the context indicator draws its own rounded hover card with measured typography', () => {
+  const tooltip = blockFor('.context-tooltip')
+  for (const [prop, value] of [
+    ['background', 'var(--surface-card)'],
+    ['border', '1px solid var(--border-strong)'],
+    ['border-radius', 'var(--radius-md)'],
+    ['box-shadow', 'var(--shadow-float)'],
+    ['pointer-events', 'none'],
+    ['visibility', 'hidden'],
+    ['opacity', '0'],
+  ] as const) {
+    assert.ok(declares(tooltip, prop, value), `the hover card declares ${prop}: ${value}`)
+  }
+
+  const visible = blockFor('#composer-context:hover .context-tooltip')
+  assert.ok(declares(visible, 'visibility', 'visible'), 'hover reveals the card')
+  assert.ok(declares(visible, 'opacity', '1'), 'the reveal is animated, not an inaccessible pop')
+
+  const value = blockFor('.context-tooltip-value')
+  assert.ok(
+    declares(value, 'font-family', 'var(--font-mono)'),
+    'token counts are read character by character and use the mono stack',
+  )
+  assert.ok(
+    declares(value, 'font-variant-numeric', 'tabular-nums'),
+    'aligned figures keep the key-value rows readable',
+  )
+  assert.ok(
+    declares(blockFor('.context-tooltip-note'), 'font-size', 'var(--type-micro)'),
+    'the reserve note stays metadata-sized',
+  )
 })
 
 test('a collapsed sidebar is gone, and the column inside it does not resize with it', () => {
@@ -1143,14 +1249,19 @@ test('a collapsed sidebar is gone, and the column inside it does not resize with
   // as the list tearing itself up.
   // One axis, and it is the property the drag handle writes: the shell and the
   // rail must resolve their width from the *same* custom property, or a resized
-  // sidebar would crop its own column.
+  // sidebar would crop its own column. The rail is wider only by the scrollbar's
+  // 7px overhang, so the rows themselves keep the stored width.
   assert.ok(
     declares(blockFor('.sidebar-shell'), 'width', 'var(--sidebar-width)'),
     'the shell must hold the open width while `#sidebar` animates around it',
   )
   assert.ok(
-    declares(blockFor('#sidebar'), 'flex', '0 0 var(--sidebar-width)'),
-    'the rail and the shell must read one width',
+    declares(
+      blockFor('#sidebar'),
+      'flex',
+      '0 0 calc(var(--sidebar-width) + var(--sidebar-scrollbar-overhang))',
+    ),
+    'the rail and the shell must read one width; the rail adds only the scrollbar overhang',
   )
   // The default lives in the token block, where a first run (and every test that
   // never touches localStorage) resolves it. Pinned against the model's constant
@@ -1180,6 +1291,89 @@ test('a collapsed sidebar is gone, and the column inside it does not resize with
     blocks.find((block) => block.selector === '#sidebar.collapsed + #canvas'),
     undefined,
     '#canvas must not borrow its left inset back from the sidebar',
+  )
+
+  // --- the gutter between the two columns ---
+  // Four rules make one 10px seam, and each is meaningless without the others:
+  // the scrollbar overhang, the canvas's left inset, the handle's basis, and
+  // where the handle draws its line. Written together because the numbers only
+  // add up together.
+  assert.equal(tokens.get('--sidebar-gutter'), '10px')
+  assert.equal(
+    tokens.get('--sidebar-scrollbar-overhang'),
+    'calc(var(--sidebar-gutter) - 3px)',
+    'the overhang is the gutter minus the 2px gap and the 1px sash line',
+  )
+  const canvasPanel = blockFor('#canvas')
+  assert.ok(
+    declares(canvasPanel, 'margin', 'var(--space-2)'),
+    '#canvas keeps its uniform margin; the left one is an override, not a replacement',
+  )
+  assert.ok(
+    declares(
+      canvasPanel,
+      'margin-left',
+      'calc(var(--sidebar-gutter) - var(--sidebar-scrollbar-overhang))',
+    ),
+    "#canvas's left inset is the seam the sash crosses to reach the canvas edge",
+  )
+  const resizer = blockFor('#sidebar-resizer')
+  assert.ok(
+    declares(
+      resizer,
+      'flex',
+      '0 0 calc(var(--sidebar-gutter) - var(--sidebar-scrollbar-overhang))',
+    ),
+    'the handle owns the gutter the scrollbar has not overhung, or part of the seam looks grabbable and is not',
+  )
+  assert.ok(
+    declares(
+      resizer,
+      'margin-right',
+      'calc(-1 * (var(--sidebar-gutter) - var(--sidebar-scrollbar-overhang)))',
+    ),
+    'the handle reaches across the canvas inset without widening the gutter',
+  )
+  // The hover line belongs on the canvas edge; the scrollbar is the element that
+  // moves toward it.
+  const line = blockFor('#sidebar-resizer::after')
+  assert.ok(
+    declares(line, 'right', '0'),
+    "the sash's line stays on the canvas edge",
+  )
+  assert.ok(
+    !line.decls.some((decl) => decl.prop === 'left'),
+    'the sash must not also anchor on the left; two anchors and a width is one too many',
+  )
+  // The scroller overhang moves the native rail 7px into the gutter while the
+  // matching padding keeps its rows on the original column grid.
+  const list = blockFor('.sidebar-list')
+  assert.ok(
+    declares(list, 'width', 'calc(100% + var(--sidebar-scrollbar-overhang))'),
+    'the scroller, not the sidebar shell, extends toward the sash',
+  )
+  assert.ok(
+    declares(list, 'margin-right', 'calc(-1 * var(--sidebar-scrollbar-overhang))'),
+    'the overhang must not widen the shell',
+  )
+  assert.ok(
+    declares(
+      list,
+      'padding',
+      'var(--space-1) var(--sidebar-scrollbar-overhang) var(--space-1) 0',
+    ),
+    'the rows keep the shell width; only the scrollbar moves',
+  )
+  // The rail's own slider is read against the sash, so it hugs the scroller's
+  // right edge instead of stopping at the global thumb's 3px inset.
+  const thumb = blockFor('.sidebar-list::-webkit-scrollbar-thumb')
+  assert.ok(
+    declares(thumb, 'border-right-width', '0'),
+    "the rail's thumb must reach its column's edge",
+  )
+  assert.ok(
+    declares(thumb, 'border-left-width', '6px'),
+    'and keep its 4px thickness: the inset it dropped on the right moves to the left',
   )
 })
 
@@ -1475,6 +1669,7 @@ test('depth is two steps: menus float, modals sit deeper, and the composer joins
     ['#composer-popovers', '4'],
     ['.composer-menu', '5'],
     ['.chip-menu', '5'],
+    ['.context-tooltip', '5'],
     ['.settings-menu', '5'],
     ['.canvas-menu', '5'],
     ['.chip-flyout', '6'],

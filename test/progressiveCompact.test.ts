@@ -1,7 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { applyProgressiveCompaction, estimateCurrentTokens } from '../src/harness/progressiveCompact.js'
-import { CacheEditManager } from '../src/harness/cacheEditManager.js'
 import type { SessionRecord } from '../src/harness/types.js'
 
 function userTurn(index: number, content = `user ${index}`): SessionRecord {
@@ -46,7 +45,7 @@ function toolPair(index: number, content: string): SessionRecord[] {
   ]
 }
 
-test('applyProgressiveCompaction skips ratio-based microcompact without cache edits', () => {
+test('applyProgressiveCompaction preserves active tool result prefixes', () => {
   const records: SessionRecord[] = []
   for (let index = 0; index < 12; index++) {
     records.push(userTurn(index), ...toolPair(index, 'large output '.repeat(1_500)), assistantTurn(index))
@@ -73,7 +72,7 @@ test('applyProgressiveCompaction skips ratio-based microcompact without cache ed
   )
 })
 
-test('applyProgressiveCompaction does not ratio-microcompact without cache edits even above threshold', () => {
+test('applyProgressiveCompaction leaves capacity-based clearing to auto-compaction', () => {
   const records: SessionRecord[] = []
   for (let index = 0; index < 10; index++) {
     records.push(userTurn(index), ...toolPair(index, 'large output '.repeat(250)), assistantTurn(index))
@@ -255,48 +254,7 @@ test('applyProgressiveCompaction time-based microcompact preserves at least 1 to
   assert.doesNotMatch(toolResultContent(result.records, 'result-0'), /Old tool result/)
 })
 
-test('applyProgressiveCompaction cache-aware path registers tool results without mutating', () => {
-  const manager = new CacheEditManager({ keepRecent: 2, triggerAfter: 3 })
-
-  // Create enough tool results to trigger microcompact
-  // Default microCompactThresholdRatio is 0.9 of (contextWindow - summaryOutputTokens)
-  // With contextWindow: 10000, threshold = floor(10000 * 0.9) = 9000 tokens
-  // Each tool result with 'large output '.repeat(1500) ≈ 18000 chars ≈ 4500 tokens
-  // 5 tool results ≈ 22500 tokens, well above threshold
-  const records: SessionRecord[] = []
-  for (let i = 0; i < 20; i++) {
-    records.push({
-      type: 'tool_result',
-      id: `tr-${i}`,
-      toolUseId: `tu-${i}`,
-      tool: 'Read',
-      ok: true,
-      content: 'large output '.repeat(1500),
-      createdAt: `2026-06-16T00:${String(i).padStart(2, '0')}:00.000Z`,
-    })
-    records.push({
-      type: 'message',
-      id: `msg-${i}`,
-      role: 'user',
-      content: `question ${i}`,
-      createdAt: `2026-06-16T00:${String(i).padStart(2, '0')}:30.000Z`,
-    })
-  }
-
-  const result = applyProgressiveCompaction({
-    records,
-    contextManagement: { contextWindow: 10000, summaryOutputTokens: 0 },
-    cacheEditManager: manager,
-  })
-
-  // Records should NOT be mutated in cache-aware path
-  assert.equal(result.microCompacted, false)
-  assert.equal(result.cacheEditsPending, true)
-  // Manager should have registered tool results
-  assert.ok(manager.getRegisteredToolUseIds().size > 0)
-})
-
-test('applyProgressiveCompaction does not mutate records when cacheEditManager is absent', () => {
+test('applyProgressiveCompaction does not rewrite tool results during an active conversation', () => {
   const records: SessionRecord[] = []
   for (let i = 0; i < 20; i++) {
     records.push({
@@ -324,6 +282,6 @@ test('applyProgressiveCompaction does not mutate records when cacheEditManager i
 
   assert.equal(result.microCompacted, false)
   assert.equal(result.snipped, false)
-  assert.equal(result.cacheEditsPending, undefined)
+  assert.deepEqual(result.records, records)
   assert.doesNotMatch(toolResultContent(result.records, 'tr-0'), /^\[summarized:/)
 })

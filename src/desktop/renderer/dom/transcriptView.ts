@@ -23,6 +23,7 @@ import {
   type TranscriptItem,
   type TranscriptState,
 } from '../model/transcript.js'
+import { anchorPadding, anchorTopGap, TRANSCRIPT_PAD_VARIABLE } from '../model/transcriptAnchor.js'
 import { splitFileMentions } from '../model/userMessage.js'
 import {
   groupActivityLabel,
@@ -206,12 +207,59 @@ export function createTranscriptView(
     show(jump, !isScrolledToBottom(container))
   }
 
+  /**
+   * The user message the last paint anchored on. `undefined` until the first one
+   * arrives, and again after a `transcript-reset` clears the pane — a session
+   * switch back into a conversation therefore anchors once, which is the same
+   * thing the scroll-to-bottom below it used to do on its own.
+   */
+  let anchorId: string | undefined
+  /**
+   * The pad written last paint. Kept because the measurement it feeds is taken
+   * against `scrollHeight`, which *includes* the pad: without subtracting it
+   * every paint would count the blank it wrote last time as content, and the pad
+   * would collapse to its floor on the second frame of every turn. Remembering
+   * the number is exact and costs nothing; zeroing the pad to measure without it
+   * would cost a second layout and let the browser clamp `scrollTop` against the
+   * shorter scroller in between.
+   */
+  let pad = 0
+  /** The anchor's node and its gap, for a re-measurement between paints. */
+  let anchorNode: HTMLElement | undefined
+  let anchorFirst = false
+
   // Both halves are needed, and they share the one predicate so they cannot
   // disagree at its 24px boundary. `scroll` is the obvious trigger; the paint
   // below is the other one, because the *content* can move the verdict with no
   // scroll event at all — a `turn-end` dropping a draft or a `transcript-reset`
   // shortens the scroller under a reader who is then already at the tail.
   container.addEventListener('scroll', syncJump)
+
+  /**
+   * The pad again, without the scroll: the length it should be depends on the
+   * viewport, and the viewport moves without the transcript repainting.
+   *
+   * Twice, at least. The canvas header is `hidden` until the lane has an
+   * identity, so the first paint of a restored session measures a scroller some
+   * 36px taller than the one it ends up in — and nothing repaints the transcript
+   * when the header arrives. The composer is the other: it grows a line at a
+   * time as the user types, and every line of it comes off the transcript.
+   * Either way a stale pad is a scroller with travel left in it, which the tail
+   * follow then spends by sliding the question off its gap.
+   *
+   * `moved: false` — a resize is not a new question, and hauling the reader back
+   * to the anchor because they opened a panel is exactly the yank this file
+   * avoids everywhere else.
+   */
+  const observe = (globalThis as { ResizeObserver?: new (run: () => void) => { observe(node: HTMLElement): void } })
+    .ResizeObserver
+  if (typeof observe === 'function') {
+    new observe(() => {
+      if (anchorNode === undefined) return
+      pad = liftAnchor(container, column, anchorNode, { first: anchorFirst, moved: false, pad }).pad
+      syncJump()
+    }).observe(container)
+  }
 
   return {
     stopClock,
@@ -234,9 +282,41 @@ export function createTranscriptView(
       reconcile(column, nodes)
       runClock(live.row || live.liveGroupId !== undefined ? activity?.startedAt : undefined)
 
+      // The turn the reader is looking at: the newest user message. Read off the
+      // *entries* rather than off `state.items`, because what the lift needs is
+      // the node, and only this list is in node order.
+      const at = lastUserEntry(entries)
+      const anchor = at === undefined ? undefined : entries[at]
+      const next = anchor?.kind === 'item' ? anchor.item.id : undefined
+      const moved = next !== undefined && next !== anchorId
+      // A transcript with no user message — a reset pane, or one showing only
+      // startup notices — drops the pad rather than keeping the last one it was
+      // given; nothing in it is anchored, so there is nothing to hold up.
+      let lifted = false
+      if (at === undefined) {
+        pad = 0
+        anchorId = undefined
+        anchorNode = undefined
+        column.style.setProperty(TRANSCRIPT_PAD_VARIABLE, '0px')
+      } else {
+        anchorNode = nodes[at]!
+        anchorFirst = at === 0
+        const lift = liftAnchor(container, column, nodes[at]!, { first: at === 0, moved, pad })
+        pad = lift.pad
+        lifted = lift.lifted
+        // The anchor is only *spent* once it could actually be measured. A pane
+        // painted before it has any layout — still hidden, or built in the
+        // background — would otherwise use up the one paint that was allowed to
+        // lift the question and leave it wherever the flow had put it.
+        if (lift.measured) anchorId = next
+      }
+
       // Follow the tail only if the user was already there, so reading back
-      // through a long turn is not yanked away on every token.
-      if (atBottom) container.scrollTop = container.scrollHeight
+      // through a long turn is not yanked away on every token. Skipped when the
+      // lift already placed the scroller — it put the anchor at the top, which
+      // *is* the end of the padded content, and running both would be one
+      // assignment fighting the other.
+      if (!lifted && atBottom) container.scrollTop = container.scrollHeight
       syncJump()
     },
   }
@@ -1121,4 +1201,82 @@ function looseThinkingNode(
 function isScrolledToBottom(container: HTMLElement): boolean {
   // A few pixels of slack: fractional scroll heights never land exactly.
   return container.scrollHeight - container.scrollTop - container.clientHeight < 24
+}
+
+/** The newest user message's index in `entries`, which is also its node's. */
+function lastUserEntry(entries: readonly TranscriptEntry[]): number | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!
+    if (entry.kind === 'item' && entry.item.kind === 'user') return index
+  }
+  return undefined
+}
+
+/**
+ * Pads the column so the anchor *can* reach the top of the viewport, and scrolls
+ * it there when the anchor is new.
+ *
+ * The pad is written on every paint and the scroll only on the paint that
+ * introduced the message: while a turn streams the scroller is already at its
+ * end, so the tail-follow in `render` holds the bubble at its gap for free as
+ * this shrinks underneath it. See `model/transcriptAnchor.ts` for the
+ * arithmetic — everything here is measurement.
+ */
+function liftAnchor(
+  container: HTMLElement,
+  column: HTMLElement,
+  anchor: HTMLElement,
+  state: { readonly first: boolean; readonly moved: boolean; readonly pad: number },
+): { readonly pad: number; readonly lifted: boolean; readonly measured: boolean } {
+  const viewport = container.clientHeight
+  const view = box(container)
+  const content = box(column)
+  const top = box(anchor)
+  // A pane in the background has no layout at all and every reading is zero.
+  // Writing a pad from that would leave a stale one behind for the paint that
+  // brings it back, so nothing is written until there is a viewport to reason
+  // about — which is also what keeps this working under a DOM stub that was
+  // given no layout rule.
+  if (!(viewport > 0) || view === undefined || content === undefined || top === undefined) {
+    return { pad: state.pad, lifted: false, measured: false }
+  }
+  const topGap = anchorTopGap(state.first)
+  // The scroller's leading padding, which is also its trailing one: `.transcript`
+  // gives its two vertical insets in one value, and `rendererStyleTokens` keeps
+  // it that way. Measured rather than named, so a retuned inset needs no edit
+  // here — and measurable at any scroll position because the column no longer
+  // has an auto margin to sit anywhere but the top.
+  const inset = container.scrollTop + (content.top - view.top)
+  // Everything under the anchor's top edge, to the end of the scrollable area.
+  // Not `scrollHeight`: a conversation that does not fill its scroller reports a
+  // `scrollHeight` clamped up to `clientHeight`, which is exactly the case a
+  // short session is. The column's box has no such floor — but it *does* carry
+  // the pad already written, which is what comes off it here.
+  const below = content.bottom - state.pad - top.top + inset
+  const pad = anchorPadding({ viewport, below, topGap })
+  column.style.setProperty(TRANSCRIPT_PAD_VARIABLE, `${pad}px`)
+  if (!state.moved) return { pad, lifted: false, measured: true }
+  // Relative, not absolute: `top` is viewport-relative, and the difference is
+  // exactly how far this scroller has to travel to put the anchor at its gap.
+  container.scrollTop += top.top - view.top - topGap
+  return { pad, lifted: true, measured: true }
+}
+
+interface Box {
+  readonly top: number
+  readonly bottom: number
+}
+
+/**
+ * A node's box, or `undefined` when it has none to give. Both coordinates are
+ * checked rather than assumed: they are `NaN` inside a `display: none` subtree,
+ * and `test/helpers/domStub.ts` answers the same way for a test that installed
+ * no layout rule.
+ */
+function box(node: HTMLElement): Box | undefined {
+  const read: unknown = node.getBoundingClientRect
+  if (typeof read !== 'function') return undefined
+  const rect = node.getBoundingClientRect()
+  if (!Number.isFinite(rect.top) || !Number.isFinite(rect.bottom)) return undefined
+  return { top: rect.top, bottom: rect.bottom }
 }

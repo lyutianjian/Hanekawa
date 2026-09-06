@@ -19,10 +19,14 @@
  * anything that is not a resolvable key degrades to `'inherit'` at the service.
  */
 
+export type PromptCachingMode = 'auto' | 'on' | 'off'
+
 export interface Endpoint {
   provider: string
   baseUrl?: string
   apiKey?: string
+  /** Anthropic prompt caching. Defaults to auto with compatibility fallback. */
+  promptCaching?: PromptCachingMode
 }
 
 /** A model key, or the `'inherit'` sentinel. */

@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { ConfigService } from '../config/service.js'
+import { migrateProjectConfig } from '../config/migrateProjectConfig.js'
 import {
   loadMergedSettings,
   validateSettings,
@@ -58,6 +59,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   // through a getter, so the next runtime built picks up the new contents.
   let settings = await loadMergedSettings(cwd)
   const configuredEffortLevel = settings.effortLevel ?? 'high'
+  // Before the first load and never again: config.json is global-only now, so a
+  // project that still has its own file has to be folded into the global one or
+  // its endpoints and models would simply stop existing.
+  const migrationFindings = await migrateProjectConfig(cwd)
   const config = new ConfigService(cwd)
   await config.load(settings)
   const settingsValidation = validateSettings(settings)
@@ -91,6 +96,11 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   }
   const modelConfig = config.getModel(initialModelKey)!
   const modelDiagnostics = [
+    ...migrationFindings.map((message) => ({
+      code: 'project_config_migrated',
+      severity: 'warning' as const,
+      message,
+    })),
     ...checkLegacyModelTiers(config),
     ...checkOptionalModelReferences(config),
   ]

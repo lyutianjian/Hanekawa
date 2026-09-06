@@ -2,9 +2,11 @@
  * The sidebar's width: a preference, as data.
  *
  * The rail used to be a hard 280px in two places (`#sidebar`'s `flex-basis` and
- * `.sidebar-shell`'s `width`). Both now read one custom property, and this file
- * owns the three decisions that property needs: what it defaults to, what range
- * a drag may land in, and how a stored string becomes a number again.
+ * `.sidebar-shell`'s `width`). Both now resolve from one custom property — the
+ * shell reads it directly, while the rail adds the scrollbar's fixed overhang —
+ * and this file owns the three decisions that property needs: what it defaults
+ * to, what range a drag may land in, and how a stored string becomes a number
+ * again.
  *
  * Pure and DOM-free like the rest of `model/`, and stored the way
  * `model/theme.ts` stores the theme preference — the width is a local view

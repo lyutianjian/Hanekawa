@@ -24,6 +24,8 @@ import { icon } from './icons.js'
  * left, a "model · effort" chip and a round send button bottom right. The chip
  * is where stage-4 decision 4 lands: effort is adjustable next to the message
  * it will affect, and never appears in settings.
+ * The context-occupancy indicator sits to the chip's left: it reports the live
+ * turn's budget, but it is not part of the decision the chip opens.
  *
  * The chip is **one** button for both fields, and it opens a local popover
  * rather than the full-width `#surface` card: two rows naming model and effort
@@ -70,9 +72,10 @@ export interface ComposerView {
    */
   setStreaming(streaming: boolean): void
   /**
-   * Repaints the model · effort chip and the permission pill. Driven by the
-   * active pane's snapshot — including a missing one, so a pane that has not
-   * finished starting shows placeholders rather than the previous pane's model.
+   * Repaints the runtime controls — the context indicator, model · effort chip,
+   * and permission pill. Driven by the active pane's snapshot, including a
+   * missing one, so a pane that has not finished starting shows placeholders
+   * rather than the previous pane's model.
    */
   renderRuntime(runtime: WireRuntimeSnapshot | undefined, gauge?: ContextGaugeView): void
   /**
@@ -107,6 +110,8 @@ export function createComposerView(els: {
   submit: HTMLButtonElement
   stop: HTMLButtonElement
   attach: HTMLButtonElement
+  /** The context-occupancy indicator, immediately left of the runtime chip. */
+  contextIndicator: HTMLElement
   /** The model · effort status label, and the shell its popover is drawn into. */
   chipRuntime: HTMLButtonElement
   chipShell: HTMLElement
@@ -141,7 +146,7 @@ export function createComposerView(els: {
   // The last snapshot this view painted, so opening the menu can redraw the pill
   // without waiting for the host to post another one.
   let runtimeSnapshot: WireRuntimeSnapshot | undefined
-  /** The context-occupancy ring's state, painted onto the chip beside the model. */
+  /** The context-occupancy indicator's state, painted independently of the chip. */
   let contextGauge: ContextGaugeView = hiddenContextGauge()
   let permissionMenuOpen = false
   let streamingNow = false
@@ -213,6 +218,10 @@ export function createComposerView(els: {
   // untestable for the sake of a search it already knows the answer to.
   let permissionMenu: HTMLElement | undefined
   let permissionItems: HTMLButtonElement[] = []
+  /** What the pill and the chip were last drawn from; see `renderPermission`. */
+  let permissionSignature: string | undefined
+  let chipSignature: string | undefined
+  let contextSignature: string | undefined
 
   function firstMenuItem(): HTMLButtonElement | undefined {
     return permissionItems[0]
@@ -220,6 +229,23 @@ export function createComposerView(els: {
 
   function renderPermission(): void {
     const view = permissionPillView({ runtime: runtimeSnapshot, open: permissionMenuOpen })
+    // `renderRuntime` runs on every snapshot, which during a turn is once per
+    // streamed chunk, and the two `replace()` calls below rebuild this pill and
+    // its menu whole. Nothing under the pointer may be rebuilt for a repaint
+    // that changed nothing — the same rule `dom/settingsView.ts` keeps by id.
+    // The open flags are part of the signature, or the guard would swallow the
+    // click that opens the menu (`sidebarRenderSignature`'s `menuOpen`).
+    const signature = [
+      view.label,
+      view.title,
+      view.enabled ? '1' : '0',
+      view.open ? '1' : '0',
+      permissionMenuOpen ? '1' : '0',
+      view.open ? view.options.map((option) => `${option.mode}:${option.current ? '1' : '0'}`).join(',') : '',
+    ].join(' ')
+    if (signature === permissionSignature) return
+    permissionSignature = signature
+
     // The pill's own label lives in a span, so the chevron survives a repaint.
     replace(els.chipPermission, el('span', 'btn-label', view.label), icon('chevron-down'))
     els.chipPermission.title = view.title
@@ -376,14 +402,22 @@ export function createComposerView(els: {
   }
 
   function renderChip(): void {
-    const chip = composerChipView(runtimeSnapshot, contextGauge)
+    const chip = composerChipView(runtimeSnapshot)
+    // Signed for the reason the permission pill is: this runs per streamed
+    // chunk and the `replace()` below rebuilds the whole button.
+    const signature = [
+      chip.model,
+      chip.effort,
+      chip.title,
+      chip.enabled ? '1' : '0',
+    ].join(' ')
+    if (signature === chipSignature) return
+    chipSignature = signature
+
     // Spans in one button: the model has to be replaceable without taking the
-    // effort level with it, and nesting buttons is invalid markup. The gauge
-    // leads, because it qualifies the model name it sits against — and it is
-    // absent, not empty, when there is nothing to report.
+    // effort level with it, and nesting buttons is invalid markup.
     replace(
       els.chipRuntime,
-      chip.gauge.visible && contextGaugeNode(chip.gauge),
       el('span', 'chip-model-label', chip.model),
       el('span', 'chip-effort-label', chip.effort),
     )
@@ -395,16 +429,60 @@ export function createComposerView(els: {
   }
 
   /**
-   * The occupancy ring. `aria-hidden` deliberately: the same numbers are already
-   * in the button's `aria-label`, in words, so the colour is never the only
-   * carrier — and a decorative ring announced between the model and the effort
-   * would just interrupt the two labels that matter.
+   * The independent occupancy indicator. The parent carries the figures as an
+   * accessible name; the ring and tooltip are presentation, so colour is never
+   * the only carrier. The whole subtree is signed for the same reason the chip
+   * is: streaming repaints must not rebuild a tooltip the pointer is over.
    */
-  function contextGaugeNode(gauge: ContextGaugeView): HTMLElement {
-    const node = el('span', `chip-context-gauge ${gauge.level}`)
-    node.setAttribute('aria-hidden', 'true')
-    node.style.setProperty(CONTEXT_RATIO_VARIABLE, String(gauge.ratio))
-    return node
+  function renderContextGauge(): void {
+    const signature = [
+      contextGauge.visible ? `${contextGauge.level}:${contextGauge.ratio}:${contextGauge.title}` : '',
+    ].join(' ')
+    if (signature === contextSignature) return
+    contextSignature = signature
+
+    show(els.contextIndicator, contextGauge.visible)
+    if (!contextGauge.visible) {
+      replace(els.contextIndicator)
+      els.contextIndicator.removeAttribute('aria-label')
+      return
+    }
+
+    const ring = el('span', `context-gauge ${contextGauge.level}`)
+    ring.setAttribute('aria-hidden', 'true')
+    ring.style.setProperty(CONTEXT_RATIO_VARIABLE, String(contextGauge.ratio))
+    replace(els.contextIndicator, ring, contextTooltipNode(contextGauge))
+    els.contextIndicator.setAttribute('role', 'img')
+    els.contextIndicator.setAttribute('aria-label', contextGauge.title.replace(/\n/g, '；'))
+  }
+
+  function contextTooltipNode(gauge: ContextGaugeView): HTMLElement {
+    const tooltip = el('div', 'context-tooltip')
+    tooltip.setAttribute('role', 'tooltip')
+    tooltip.setAttribute('aria-hidden', 'true')
+
+    const rows = el('dl', 'context-tooltip-rows')
+    const values: Array<[string, string]> = [
+      ['已用', gauge.used],
+      ['可用上限', gauge.usable],
+    ]
+    if (gauge.modelWindow) values.push(['模型窗口', gauge.modelWindow])
+    for (const [label, value] of values) {
+      const row = el('div', 'context-tooltip-row')
+      row.appendChild(el('dt', 'context-tooltip-label', label))
+      row.appendChild(el('dd', 'context-tooltip-value', value))
+      rows.appendChild(row)
+    }
+
+    tooltip.appendChild(el(
+      'div',
+      'context-tooltip-header',
+      el('span', 'context-tooltip-title', '上下文'),
+      el('strong', 'context-tooltip-percent', `${gauge.percent} 已用`),
+    ))
+    tooltip.appendChild(rows)
+    tooltip.appendChild(el('p', 'context-tooltip-note', '可用上限已预留自动压缩空间'))
+    return tooltip
   }
 
   function applySubmitState(): void {
@@ -426,6 +504,7 @@ export function createComposerView(els: {
   // Painted before the first snapshot too, or the chip stays enabled with
   // `index.html`'s placeholder in it and opens a menu of nothing.
   renderChip()
+  renderContextGauge()
   renderPermission()
   applySubmitState()
 
@@ -463,6 +542,7 @@ export function createComposerView(els: {
       runtimeSnapshot = runtime
       contextGauge = gauge ?? hiddenContextGauge()
       renderChip()
+      renderContextGauge()
       renderPermission()
     },
     showRuntimeMenu(view) {

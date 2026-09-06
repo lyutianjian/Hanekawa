@@ -11,10 +11,9 @@ import {
 import { tmpdir } from 'node:os'
 import { mkdtempSync } from 'node:fs'
 
-// ConfigService layers a shared `~/.myagent/config.json` under the project one.
-// A fresh home per test keeps these off the developer's config and stops a
-// save() in one test (which targets the shared layer when no project config
-// exists) from leaking models into the next.
+// `config.json` is global-only: one `~/.myagent/config.json` for every project.
+// A fresh home per test keeps these off the developer's own config and stops a
+// save() in one test from leaking models into the next.
 beforeEach(() => {
   const testHome = mkdtempSync(path.join(tmpdir(), 'myagent-home-'))
   process.env.USERPROFILE = testHome
@@ -25,9 +24,15 @@ function tmpDir(): Promise<string> {
   return mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-routing-'))
 }
 
-async function writeConfig(dir: string, content: object): Promise<void> {
-  await mkdir(path.join(dir, '.myagent'), { recursive: true })
-  await writeFile(path.join(dir, '.myagent', 'config.json'), JSON.stringify(content))
+/**
+ * Seeds the config a service opened at `_dir` will read — which is the *home*
+ * file, whatever the project directory is. The parameter is kept so each case
+ * still reads as "this project's config".
+ */
+async function writeConfig(_dir: string, content: object): Promise<void> {
+  const home = process.env.USERPROFILE!
+  await mkdir(path.join(home, '.myagent'), { recursive: true })
+  await writeFile(path.join(home, '.myagent', 'config.json'), JSON.stringify(content))
 }
 
 test('mergeRouting: every role inherits by default', () => {

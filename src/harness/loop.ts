@@ -37,8 +37,6 @@ import { describeShell } from '../tools/bash.js'
 import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
 import { buildAtMentionContextRecord } from './atMentions.js'
 import { wrapInSystemReminder } from './systemReminder.js'
-import { CacheEditManager } from './cacheEditManager.js'
-import { getPromptCachingEnabled } from './cacheControl.js'
 import { maybeExtractSessionMemory } from '../services/sessionMemory/service.js'
 
 export interface ActiveModelRuntime {
@@ -155,7 +153,6 @@ export class AgentLoop {
   // signatures are model/provider-bound, and prior primary/fallback thinking
   // blocks should not be replayed across either side of a fallback boundary.
   private stripAllThinkingBlocksFromRequests = false
-  private readonly cacheEditManager: CacheEditManager | undefined
   private activeRunOverrides: ActiveRunOverrides | undefined
 
   constructor(private readonly options: AgentLoopOptions) {
@@ -172,11 +169,6 @@ export class AgentLoop {
       primary,
       fallback: options.fallbackModel,
     }
-    // Only create cache edit manager for providers that support cache_edits
-    // (native Anthropic API) with prompt caching enabled.
-    this.cacheEditManager = options.provider.supportsCacheEdits && getPromptCachingEnabled()
-      ? new CacheEditManager({ keepRecent: 10, triggerAfter: 15 })
-      : undefined
     this.options.toolContext.appendMetric = (metric) => this.emitMetric(metric)
     this.options.toolRunner.addRecordListener((record) => {
       this.noteRecordAppended(record)
@@ -409,7 +401,6 @@ export class AgentLoop {
           lastResponseRecordCount,
           lastResponseRecordId,
           now: new Date(),
-          cacheEditManager: this.currentCacheEditManager,
         })
         let recordsBeforeCompact = progressive.records
         const useCachedTokenEstimate = !progressive.microCompacted && !progressive.snipped
@@ -440,7 +431,6 @@ export class AgentLoop {
         if (compactResult.compacted) {
           notifyCompaction(cacheSource)
           this.options.contextBuilder.clearCachedSections()
-          this.currentCacheEditManager?.reset()
           if (compactResult.metrics) {
             await this.emitMetric({
               event: 'compact',
@@ -573,8 +563,6 @@ export class AgentLoop {
         onStreamEvent: (event: ModelStreamEvent) => {
           this.options.onStreamEvent?.(event)
         },
-        pendingCacheEdits: this.currentCacheEditManager?.consumePendingEdits() ?? undefined,
-        pinnedCacheEdits: this.currentCacheEditManager?.getPinnedEdits() ?? undefined,
       }
 
       let response
@@ -1348,10 +1336,6 @@ export class AgentLoop {
     return mergeHooks(this.options.hooks, this.activeRunOverrides?.hooks)
   }
 
-  private get currentCacheEditManager(): CacheEditManager | undefined {
-    return this.activeRunOverrides?.model ? undefined : this.cacheEditManager
-  }
-
   private syncRoleModel(cacheSource: ReturnType<typeof agentCacheSource>): boolean {
     if (this.activeRunOverrides?.model) return false
     if (this.modelState.fallback && this.isSameModel(this.activeModel, this.modelState.fallback)) {
@@ -1405,7 +1389,6 @@ export class AgentLoop {
     this.stripAllThinkingBlocksFromRequests = true
     resetCacheBreakDetection(cacheSource)
     this.options.contextBuilder.clearCachedSections()
-    this.cacheEditManager?.reset()
   }
 
   private isSameModel(a: ActiveModelRuntime, b: ActiveModelRuntime): boolean {

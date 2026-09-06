@@ -471,9 +471,11 @@ export function createSidebarView(
     if (group.confirmingRemove) {
       // The same two-button answer a session row gives, and for the same reason
       // the question is not spelled out: the project name is right there, and it
-      // is the half only the user can supply.
+      // is the half only the user can supply. The button's title carries what is
+      // irreversible about it — the rows under the heading are about to be gone
+      // from disk, not just off the sidebar.
       actions.appendChild(
-        button('session-confirm-yes', '移除', '从侧边栏移除此项目', () =>
+        button('session-confirm-yes', '删除', '删除此项目的全部会话记录并从侧边栏移除', () =>
           onIntent({ kind: 'confirm-remove-project', projectRoot: group.projectRoot }),
         ),
       )
@@ -508,7 +510,7 @@ export function createSidebarView(
     if (menu) {
       menu.setAttribute('role', 'menu')
       menu.appendChild(
-        button('project-menu-item', '从侧边栏移除', '从侧边栏移除此项目（会话文件保留）', () =>
+        button('project-menu-item', '移除项目并删除历史', '从侧边栏移除此项目，并删除它的全部会话记录', () =>
           onIntent({ kind: 'request-remove-project', projectRoot: group.projectRoot }),
         ),
       )

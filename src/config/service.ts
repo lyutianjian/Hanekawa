@@ -1,6 +1,5 @@
 import { readJsonFile, writeJsonFile } from '../utils/json.js'
-import { existsSync } from 'node:fs'
-import { getConfigPath, getGlobalConfigPath } from '../utils/paths.js'
+import { getGlobalConfigPath } from '../utils/paths.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { ModelPricing } from '../harness/types.js'
 import type { MyAgentSettings } from './settings.js'
@@ -9,6 +8,7 @@ import {
   mergeRouting,
   pickRoutedModel,
   type Endpoint,
+  type PromptCachingMode,
   type Routing,
   type RoutingRole,
 } from './routing.js'
@@ -33,6 +33,8 @@ export interface ModelConfig {
   endpoint?: string
   apiKey?: string
   baseUrl?: string
+  /** Overrides the endpoint's Anthropic prompt caching mode; defaults to auto. */
+  promptCaching?: PromptCachingMode
   promptCacheRetention?: 'in_memory' | '24h'
   pricing?: ModelPricing
   maxOutputTokens?: number
@@ -84,40 +86,54 @@ const DEFAULT_CONFIG: Config = {
 }
 
 export interface ConfigServiceOptions {
-  /** Absolute path to the shared config layer; `null` disables it (tests). */
-  globalConfigPath?: string | null
+  /**
+   * Absolute path to the one config layer. Defaults to
+   * {@link getGlobalConfigPath}, which resolves `homedir()` lazily — a test that
+   * redirects USERPROFILE/HOME before constructing is already isolated and does
+   * not need this.
+   */
+  configPath?: string
 }
 
+/**
+ * The config layer is **global only**: one `~/.myagent/config.json` for every
+ * project.
+ *
+ * Endpoints, models and routing are account-level facts — an API key and a model
+ * list do not belong to a directory — and a project layer on top of them was the
+ * source of two separate failures: the same model had to be re-declared per
+ * repo, and `getSaveTarget()` silently scattered API keys into whichever project
+ * happened to have a `config.json`. A project's own file is migrated into the
+ * global one and archived on first load; see `migrateProjectConfig.ts`.
+ *
+ * Settings (`permissions`, `hooks`, `skills.disabled`, …) are unaffected: they
+ * still layer global-then-project, and `configFromSettings` still stacks
+ * *under* this file.
+ */
 export class ConfigService {
   private config: Config
   private configPath: string
-  private globalConfigPath: string | null
   /** Human-readable notes about tier-era config found by the last `load()`. */
   private legacyModelFindings: string[] = []
 
-  constructor(cwd: string, options?: ConfigServiceOptions) {
-    this.configPath = getConfigPath(cwd)
-    const global = options?.globalConfigPath === undefined ? getGlobalConfigPath() : options.globalConfigPath
-    // Running directly inside the home directory would otherwise load the same
-    // file as both layers.
-    this.globalConfigPath = global === this.configPath ? null : global
+  /**
+   * `cwd` is kept in the signature although nothing here reads it: every caller
+   * constructs one service per project, and the parameter is what makes the
+   * "one config for all of them" rule visible at the call site.
+   */
+  constructor(_cwd: string, options?: ConfigServiceOptions) {
+    this.configPath = options?.configPath ?? getGlobalConfigPath()
     this.config = structuredClone(DEFAULT_CONFIG)
   }
 
   async load(settings?: MyAgentSettings): Promise<void> {
-    const globalLoaded = this.globalConfigPath
-      ? await readJsonFile<Partial<Config>>(this.globalConfigPath, {})
-      : {}
     const loaded = await readJsonFile<Partial<Config>>(this.configPath, {})
     const settingsConfig = configFromSettings(settings)
-    this.config = deepMergeConfig(
-      deepMergeConfig(deepMergeConfig(DEFAULT_CONFIG, settingsConfig), globalLoaded),
-      loaded,
-    )
+    this.config = deepMergeConfig(deepMergeConfig(DEFAULT_CONFIG, settingsConfig), loaded)
     // The raw layers, not the merged result: `Config` no longer has a `profiles`
     // field, so a tier-era file's profiles survive only as untyped extras on the
     // objects we just read.
-    this.legacyModelFindings = this.migrateLegacyTiers([settings, globalLoaded, loaded])
+    this.legacyModelFindings = this.migrateLegacyTiers([settings, loaded])
   }
 
   /**
@@ -198,13 +214,12 @@ export class ConfigService {
   }
 
   /**
-   * Project config wins when it exists, so a repo that opted into its own
-   * config keeps owning it. Otherwise writes go to the shared layer rather than
-   * scattering API keys into every directory the agent is launched from.
+   * The one file writes go to. There is no project layer to prefer any more, so
+   * an API key is written once instead of being copied into every directory the
+   * agent is launched from.
    */
   getSaveTarget(): string {
-    if (!this.globalConfigPath) return this.configPath
-    return existsSync(this.configPath) ? this.configPath : this.globalConfigPath
+    return this.configPath
   }
 
   async save(): Promise<void> {
@@ -258,6 +273,7 @@ export class ConfigService {
       provider: endpoint.provider,
       ...(endpoint.baseUrl !== undefined ? { baseUrl: endpoint.baseUrl } : {}),
       ...(endpoint.apiKey !== undefined ? { apiKey: endpoint.apiKey } : {}),
+      ...(endpoint.promptCaching !== undefined ? { promptCaching: endpoint.promptCaching } : {}),
       ...model,
     }
     return resolved.provider ? resolved : undefined

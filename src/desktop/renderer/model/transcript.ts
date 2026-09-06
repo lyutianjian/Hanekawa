@@ -495,6 +495,20 @@ function applyStream(state: TranscriptState, event: Extract<SessionEvent, { type
 }
 
 /**
+ * The item's slot, checking the tail first.
+ *
+ * Both callers are looking for the block a *delta* extends, which is the last
+ * item in all but the rare case where a record landed after it — and a delta
+ * arrives per streamed token, so a full scan here is a walk of the whole
+ * conversation per token.
+ */
+function indexOfItem(items: readonly TranscriptItem[], id: string): number {
+  const last = items.length - 1
+  if (last >= 0 && items[last]!.id === id) return last
+  return items.findIndex((item) => item.id === id)
+}
+
+/**
  * Appends to the live item of that id, creating it if absent.
  */
 function appendToLive(
@@ -504,7 +518,7 @@ function appendToLive(
   text: string,
   turnId: string | undefined,
 ): TranscriptItem[] {
-  const index = items.findIndex((item) => item.id === id)
+  const index = indexOfItem(items, id)
   if (index === -1) {
     return [...items, { id, kind, text, pending: true, ...(turnId === undefined ? {} : { turnId }) }]
   }
@@ -527,7 +541,7 @@ function appendToLive(
 function appendThinking(state: TranscriptState, text: string): TranscriptState {
   const index = state.liveThinkingId === undefined
     ? -1
-    : state.items.findIndex((item) => item.id === state.liveThinkingId)
+    : indexOfItem(state.items, state.liveThinkingId)
   if (index === -1) {
     const id = `thinking-${state.thinkingCount}`
     return {
@@ -1033,8 +1047,25 @@ function truncate(value: string, maxLength: number): string {
  * last assistant text of the run, which §4.6 keeps outside as the only 「正文」.
  * A turn with no steps draws no empty group; its duration falls back to the
  * single line it is today (§5.3).
+ *
+ * Memoised on the *identity* of the item list, one slot deep. Two callers ask
+ * for the same projection on every paint — `paneSession.ts` for
+ * `pruneDisclosure`, and `dom/transcriptView.ts` for the paint itself — and
+ * `TranscriptState.items` is replaced wholesale by every event, never mutated
+ * in place, so the reference is an exact answer to 「is this the same
+ * transcript」. The result is `readonly` because it is now shared: nothing may
+ * sort or splice what another caller is still reading.
  */
-export function groupTranscript(input: readonly TranscriptItem[]): TranscriptEntry[] {
+let lastGrouped: { items: readonly TranscriptItem[]; entries: readonly TranscriptEntry[] } | undefined
+
+export function groupTranscript(input: readonly TranscriptItem[]): readonly TranscriptEntry[] {
+  if (lastGrouped?.items === input) return lastGrouped.entries
+  const entries = buildTranscriptEntries(input)
+  lastGrouped = { items: input, entries }
+  return entries
+}
+
+function buildTranscriptEntries(input: readonly TranscriptItem[]): TranscriptEntry[] {
   const items = hoistDurations(input)
   const entries: TranscriptEntry[] = []
   for (let index = 0; index < items.length;) {

@@ -150,6 +150,8 @@ async function raisePrompt(ctx, lane, fileName) {
 
 /** `.transcript`'s padding in `styles.css`; the only gap under the reading column. */
 const TRANSCRIPT_PADDING = 8
+/** `ANCHOR_FLOOR_PX` in `model/transcriptAnchor.ts`: the pad's shortest length. */
+const TRANSCRIPT_ANCHOR_FLOOR = 96
 
 async function step7(ctx) {
   // Startup lands in a NEW empty session — never the newest fixture — so the
@@ -180,37 +182,37 @@ async function step7(ctx) {
   ctx.ok('the fixture sessions are listed', before.rowCount >= 8, `${before.rowCount} rows`)
   await ctx.shot('07a-sidebar-expanded', 'the expanded sidebar: workspace headings, folding, row density')
 
-  // todo V2, and this step is where it is observable: a fixture is exactly one
-  // user message (`fixtures.mjs:seedSession`) — a real short history, which used
-  // to hang one bubble under the canvas header above 900px of nothing. Asserted
-  // before Ctrl+B, while the canvas is at its full width.
+  // Where a turn sits, and this step is where it is observable: a fixture is
+  // exactly one user message (`fixtures.mjs:seedSession`), so the anchor is the
+  // session's first and the lift takes it all the way to the top of the
+  // viewport. Asserted before Ctrl+B, while the canvas is at its full width.
   const short = await read(ctx, probes.conversation())
   ctx.ok('a pane is showing a conversation', short !== null, 'no visible pane with a transcript')
   if (short) {
-    // Without this the two judgements below could pass vacuously on a
-    // conversation that simply fills the canvas.
+    // Without this the judgement below could pass vacuously. A pad *above* its
+    // floor is the case where the lift is what placed the conversation: the
+    // floor is what a canvas-filling answer gets, and that one anchors nothing.
     ctx.ok(
-      'the session is short enough to leave the canvas unfilled',
-      short.items >= 1 && short.scrollHeight === short.clientHeight,
-      `items=${short.items} scrollHeight=${short.scrollHeight} clientHeight=${short.clientHeight}`,
+      'the session is short enough that the lift, not the floor, placed it',
+      short.items >= 1 && short.anchor !== null && Number.parseFloat(short.pad) > TRANSCRIPT_ANCHOR_FLOOR,
+      `items=${short.items} anchor=${JSON.stringify(short.anchor)} pad=${short.pad}`,
     )
-    // Exact, not `<=`: the only thing between the last message and the composer
-    // is the scroller's own padding. D7 set the precedent that a layout judgement
-    // stays exact rather than being loosened into something that cannot fail.
+    // Exact, not `<=`: the bubble is the session's first, so it goes to the very
+    // top and the scroller's own padding is the only thing above it. D7 set the
+    // precedent that a layout judgement stays exact rather than being loosened
+    // into something that cannot fail.
     ctx.eq(
-      'a short conversation is pushed down against the composer',
-      short.scroller.bottom - short.column.bottom,
+      'the newest question sits at the top of the viewport',
+      short.anchor ? short.anchor.top - short.scroller.top : null,
       TRANSCRIPT_PADDING,
     )
-    // The other half: it was *moved* there. Sitting at the top with a short
-    // scroller would satisfy the line above just as well.
-    ctx.ok(
-      'and the blank space is above it, not below',
-      short.column.top - short.scroller.top > TRANSCRIPT_PADDING,
-      `column top=${short.column.top} scroller top=${short.scroller.top}`,
-    )
+    // And it is the pad that put it there, exactly: with the question at the top
+    // the scroller has run out of travel, which is the same statement as \"the pad
+    // is the length the lift asked for\" — one pixel either way and the bubble
+    // would either be short of the top or able to slide past it.
+    ctx.eq('the pad is exactly the travel the lift needed', short.scrollHeight, short.clientHeight)
   }
-  await ctx.shot('07c-short-session', 'a two-message session: does the conversation meet the composer, or float under the header')
+  await ctx.shot('07c-short-session', 'a two-message session: is the question at the top of the canvas with the answer under it')
 
   await key(ctx.cdp, 'Ctrl+b')
   // Collapsed for geometry purposes means the width has settled at zero, not
@@ -1001,6 +1003,11 @@ async function step9(ctx) {
     chipBefore.model.length > 0 && chipBefore.effort.length > 0,
     JSON.stringify(chipBefore),
   )
+  ctx.ok(
+    'the context indicator is beside the chip, not inside it',
+    chipBefore.context.present && chipBefore.context.insideRuntimeChip === false,
+    JSON.stringify(chipBefore.context),
+  )
 
   // Read while the popover is shut, so the transcript's height has a before.
   const shut = await read(ctx, probes.chipMenu())
@@ -1065,7 +1072,7 @@ async function step9(ctx) {
   )
   const menuAfter = await read(ctx, probes.chipMenu())
   ctx.ok('the popover closes', menuAfter.open === false, `open=${menuAfter.open}`)
-  await ctx.shot('09b-chip-low', 'the model · effort chip, shut: does it read as one status label')
+  await ctx.shot('09b-chip-low', 'the runtime group, shut: does the context indicator read independently beside the model · effort chip')
 
   // The chip is a second *route* to the choice, not a replacement for the slash
   // command: `/effort` still opens its own `#surface` card, and both end in the

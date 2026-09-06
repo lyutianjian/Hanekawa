@@ -394,10 +394,13 @@ test('a project with no sessions still draws its heading', (t) => {
   assert.equal(find(root(), 'sidebar-empty'), undefined, 'this is not the empty state')
 })
 
-test('focusProject reaches the heading drawn by the last render', (t) => {
-  // The reveal path for the welcome screen's Hero project name. The headings are
-  // rebuilt every pass, so this has to read the current one — focusing a node from
-  // a previous render would silently do nothing.
+test('focusProject scrolls to the heading but leaves the keyboard on the list', (t) => {
+  // The reveal path for the welcome screen's Hero project name. The heading is
+  // what gets scrolled to — it is rebuilt every pass, so this has to read the
+  // current one — but it is *not* what gets the focus: a `<button>` keeps its
+  // ring until something else takes it, and a ring sitting on a project whose
+  // session does not exist yet reads as a selection this rail does not have.
+  // The list owns the arrow keys, so the keyboard still lands somewhere useful.
   const { render, root, stub, focusProject } = mount(t)
   render(viewOf(tieredState()))
   // A second paint that rebuilds the list, so a heading cached from the first one
@@ -405,13 +408,65 @@ test('focusProject reaches the heading drawn by the last render', (t) => {
   render(viewOf({ ...tieredState(), pendingDelete: 'history' }))
 
   focusProject('/w/app')
-  assert.equal(stub.activeElement(), find(root(), 'project-heading')?.node)
+  assert.equal(stub.activeElement(), find(root(), 'sidebar-list')?.node)
+  assert.notEqual(stub.activeElement(), find(root(), 'project-heading')?.node)
 
+  stub.focus(find(root(), 'sidebar-search')?.node)
   focusProject('/w/nothing-here')
   assert.equal(
     stub.activeElement(),
-    find(root(), 'project-heading')?.node,
+    find(root(), 'sidebar-search')?.node,
     'an unknown project must not move focus',
+  )
+})
+
+test('a press outside the rail withdraws whatever it was asking', (t) => {
+  // The hole `focusout` alone leaves: a click on the transcript's background
+  // moves no focus at all, so a delete confirmation drawn in the sidebar used to
+  // sit there with nothing able to answer it.
+  const { render, stub, intents } = mount(t)
+  render(viewOf({ ...tieredState(), pendingDelete: 'history' }))
+
+  const elsewhere = stub.createContainer('canvas')
+  stub.dispatchDocument('pointerdown', { target: elsewhere })
+
+  assert.deepEqual(intents.map((intent) => intent.kind), [
+    'cancel-delete',
+    'cancel-remove-project',
+    'open-project-menu',
+  ])
+})
+
+test('each question is scoped to itself, not to the rail', (t) => {
+  // The rail is not one popover. A confirmation lives in one row's actions slot,
+  // and pressing *another* row — or a heading, or the blank space under the list
+  // — is the user saying "not that": scoping the withdrawal to the whole sidebar
+  // left the question standing for every press inside it, which is most of the
+  // blank space anyone reaches for.
+  const { render, root, stub, intents } = mount(t)
+  render(viewOf({ ...tieredState(), pendingDelete: 'history' }))
+
+  stub.dispatchDocument('pointerdown', { target: find(root(), 'project-heading')?.node })
+  assert.deepEqual(
+    intents.map((intent) => intent.kind),
+    ['cancel-delete', 'cancel-remove-project'],
+    'a press on a heading withdraws the confirmation asked in a row',
+  )
+  assert.ok(
+    !intents.some((intent) => intent.kind === 'open-project-menu'),
+    'the heading is the menu’s own trigger — closing here would fight its contextmenu toggle',
+  )
+
+  // The confirmation's own two buttons are the one place that is *inside*: the
+  // press that lands on 删除 must reach it, not be answered as a withdrawal.
+  // The other two withdrawals still fire and are no-ops in `app.ts`, which
+  // answers an unchanged state without repainting — that idempotence is what
+  // lets three scopes share one press.
+  intents.length = 0
+  stub.dispatchDocument('pointerdown', { target: find(root(), 'session-confirm-yes')?.node })
+  assert.ok(
+    !intents.some((intent) => intent.kind === 'cancel-delete'),
+    'a press on the confirmation is not a press outside it',
   )
 })
 

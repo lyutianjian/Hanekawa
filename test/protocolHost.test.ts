@@ -1966,6 +1966,39 @@ test('the pane-list event pushed on close carries the shell topology too', async
   harness.dispose()
 })
 
+test('a session naming itself is announced as metadata, not as a switch', async () => {
+  // The controller names a session from its first message. The pane list is the
+  // load-bearing half: `sessionTitle` is a `WirePaneInfo` field, so a shell that
+  // is only told through `session-changed` keeps drawing 「未命名会话」 on the
+  // lane until something else re-lists it.
+  const harness = await createHarness()
+  const before = harness.received.filter((event) => event.type === 'pane-list').length
+  const fanOuts = harness.calls.paneListFanOuts
+
+  const meta = (await harness.store.list()).find((one) => one.id === harness.sessionId)
+  assert.ok(meta, 'the fixture session is in the store')
+  harness.emit({ type: 'session-meta', session: { ...meta, title: '第一条消息' } })
+  await settle()
+
+  const changed = harness.received.find((event) => event.type === 'session-changed')
+  assert.ok(changed?.type === 'session-changed')
+  assert.equal(changed.session.title, '第一条消息')
+  assert.equal(changed.session.id, harness.sessionId, 'the id must not move; this is not /clear')
+
+  assert.ok(
+    harness.received.filter((event) => event.type === 'pane-list').length > before,
+    'the lane list carries the title, so it has to be pushed',
+  )
+  assert.ok(harness.calls.paneListFanOuts > fanOuts, 'and the shell reaches its other lanes')
+
+  // Still forwarded as a session event: the two shells dispatch exhaustively
+  // over `SessionEvent`, and a variant the host swallowed would be untestable.
+  assert.ok(harness.received.find(
+    (event) => event.type === 'session-event' && event.event.type === 'session-meta',
+  ))
+  harness.dispose()
+})
+
 test('a session switch announces the new topology to every window', async () => {
   // A pane *is* its session id, so `/clear` and `/resume` move it. Without an
   // announcement every tab bar keeps the old id: the row still draws, closing it

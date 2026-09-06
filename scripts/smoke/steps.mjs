@@ -54,7 +54,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { clearViewport, evaluate, key, mouseClick, setViewport, sleep, waitFor } from './cdp.mjs'
 import * as probes from './probes.mjs'
-import { assertArtifactsGone, existingArtifacts, readLocalSettings, readProjectConfig } from './fixtures.mjs'
+import { assertArtifactsGone, existingArtifacts, readGlobalConfig, readLocalSettings } from './fixtures.mjs'
 
 const read = (ctx, probe) => evaluate(ctx.cdp, probe)
 
@@ -266,6 +266,32 @@ async function step2(ctx) {
   ctx.ok('the canvas header is drawn for the active session', headerA2.hidden === false, JSON.stringify(headerA2))
   ctx.eq('and it names the same session the sidebar row does', headerA2.title, rowA2?.title ?? '')
   ctx.ok('and it offers 打开位置', headerA2.openLocation.includes('打开位置'), headerA2.openLocation)
+
+  // The `⋯` menu, opened and dismissed with **real mouse events**. The DOM tests
+  // cover the wiring; only this covers delivery, and the difference is the whole
+  // bug: `element.click()` fires no `pointerdown`, so a synthetic-click check
+  // passes over a menu that in the user's hands can only be closed by choosing
+  // from it. Which is what it did — the menu sat over the transcript through
+  // every click anywhere in the window.
+  const trigger = await read(ctx, probes.centreOf('#canvas-header .canvas-menu-trigger'))
+  ctx.ok('the header has a hittable ⋯', trigger !== null, JSON.stringify(trigger))
+  await mouseClick(ctx.cdp, trigger.x, trigger.y)
+  const opened2 = await waitFor('the header menu to open', async () => {
+    const view = await read(ctx, probes.canvasHeader())
+    return view.menuItems.length > 0 ? view : undefined
+  })
+  ctx.eq('the ⋯ menu offers rename and delete', opened2.menuItems.length, 2)
+
+  // Pressing the transcript is the gesture the user reported. It must also stay
+  // a *pass-through*: the press dismisses, and nothing about the session changes.
+  const elsewhere = await read(ctx, probes.centreOf('#transcript-area'))
+  ctx.ok('the transcript is hittable', elsewhere !== null, JSON.stringify(elsewhere))
+  await mouseClick(ctx.cdp, elsewhere.x, elsewhere.y)
+  const dismissed = await waitFor('the header menu to close on a press outside it', async () => {
+    const view = await read(ctx, probes.canvasHeader())
+    return view.menuItems.length === 0 ? view : undefined
+  })
+  ctx.eq('and the session it belongs to is untouched', dismissed.title, headerA2.title)
 
   const prompt = await raisePrompt(ctx, opened.lane, 'smoke-write-target.txt')
   const dialog = await waitFor('the permission request to be drawn', async () => {
@@ -925,9 +951,12 @@ async function step8(ctx) {
     refreshed.size >= Math.min(2, laneCount),
     `runtime snapshots on lanes ${[...refreshed].join(',') || 'none'}`,
   )
-  const config = readProjectConfig(ctx.projectA)
+  // The config layer is global-only (`src/config/service.ts:99-125`), so this is
+  // where the edits *must* land — and the reason the driver snapshots that file
+  // before the launch and puts it back in teardown.
+  const config = readGlobalConfig()
   ctx.ok(
-    'the edits landed in the project config, not the global one',
+    'the edits reached the config on disk, not just the reply',
     config.endpoints['smoke-endpoint'] !== undefined && config.routing.main === ctx.opts.model,
     JSON.stringify(config.routing),
   )

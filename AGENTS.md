@@ -40,7 +40,7 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 - `sessions/`: append-only JSONL records through `RecordStream`.
 - `prompts/`: prompt composition and budgets; never imports `harness/`.
 - `config/`: settings, models, routing, retries, providers.
-- `tools/`: built-ins, registered in `src/tools/index.ts`.
+- `tools/`: one directory per built-in (`GrepTool/`, `FileEditTool/`, ...) plus shared helpers at the root, all registered in `src/tools/index.ts`.
 - `services/`: project context, checkpoints, background tasks, skills, memory.
 - `tui/`: Ink shell; `desktop/`: Electron main, preload, shell host, renderer.
 
@@ -64,7 +64,8 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 - Repair unmatched `tool_use`/`tool_result` pairs before provider calls. A model switch invalidates model-dependent prompt/cache state; changed compaction context needs a fresh token count.
 - Compaction retains the latest user message. Automatic failures are fail-open behind the per-session circuit breaker. Cache sources and module state never cross sessions, streams, or projects.
 - File tools read through `src/tools/textFile.ts` and write through `writeTextFile`: normalize reads to LF, preserve encoding/line endings on write, and keep `Read`’s whole-file state available to `Edit`.
-- `src/tools/inputAliases.ts` normalizes input before permissions, hooks, display, records, or execution read it. The prompt’s shell line comes from `describeShell()` in `src/tools/bash.ts`.
+- Every built-in tool is a `src/tools/<Name>Tool/` directory: the implementation, and a `prompt.ts` holding its description plus any tool-name constants. Descriptions name every accepted parameter and every capability the model's Claude Code prior expects but this tool lacks.
+- `src/tools/inputAliases.ts` normalizes input before permissions, hooks, display, records, or execution read it. Renaming an alias onto a real parameter beats dropping it; dropping is for keys no parameter could honour. The prompt’s shell line comes from `describeShell()` in `src/tools/BashTool/BashTool.ts`.
 - Project instructions are `AGENTS.md`/`CLAUDE.md` and `.myagent/rules/*.md` walked upward from `cwd`, first match per directory, outermost first; local `AGENTS.local.md`/`CLAUDE.local.md` is read last.
 
 ## Permissions and configuration
@@ -84,14 +85,16 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 - One `BrowserWindow` multiplexes pane lanes over one transport; desktop `ShellHost` owns cross-project topology and all lane exits use the common detach/dispose path.
 - Settings changes follow `mutate -> save if config changed -> reload -> after-reload action -> optional refresh/rebuild`, with unique change kinds, optimistic pending state, and one wire scope per category (except renderer-local `appearance`).
 - Window views derive identity from `WireLaneInfo`. Context occupancy uses `AgentLoop.getContextBudget().usableContextWindow`, not the raw model window. `open-in-editor` resolves the real `entry.cwd`.
-- `scripts/smoke-desktop.mjs` exercises real Electron behavior with scratch projects and restores renderer preferences.
+- `scripts/smoke-desktop.mjs` exercises real Electron behavior with scratch projects, and restores renderer preferences, `~/.myagent/config.json` and `~/.myagent/projects.json` in a teardown that never throws.
 
 ## Renderer invariants
 
 - Project data lives under `<cwd>/.myagent/`; global settings/config under `~/.myagent/`. Sessions are append-only JSONL.
 - Checkpoints use per-session shadow Git and never modify the working tree. Refuse unsnapshottable roots, keep shadow-repo exclusions, abort git children through the service controller, and treat missing repos as “no changes”.
 - Changes to `hasOverlay` or `isStreaming` call `onShellChanged`. Streaming turns post `session-event` and `snapshot`; keep frame/render-signature work bounded.
+- Every popover closes three ways: a press outside it (`dom/dismiss.ts`'s `onPressOutside`, scoped to the popover **and its trigger**, never to the bar around them), `focusout`, and Escape. A `focusout` with `relatedTarget === null` is the view's own repaint and must be ignored, and a `focus()` inside a paint goes last — it fires `focusout` synchronously, and a handler that repaints in answer re-enters the paint.
 - Reuse the existing renderer model/view helpers, styling tokens, overlay behavior, and focus rules. Prefer pure model tests; DOM tests use `test/helpers/domStub.ts`.
+- Markdown math is split in two: `renderer/model/markdown.ts` only *finds* TeX (a `marked` extension on a private `Marked` instance, four delimiter pairs) and `dom/markdownView.ts` typesets it with `katex.render` — the DOM-tree form, never `renderToString`, which `dom/dom.ts`'s innerHTML ban rules out. `katex.css` and its woff2 are copied out of `node_modules` by `scripts/copy-desktop-assets.mjs`, woff/ttf sources stripped.
 
 ## Workflow and conventions
 

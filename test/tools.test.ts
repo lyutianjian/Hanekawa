@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
 import { getBuiltinTools } from '../src/tools/index.js'
 import type { ReadFileState, Tool } from '../src/harness/types.js'
-import { grepTool } from '../src/tools/grep.js'
+import { grepTool } from '../src/tools/GrepTool/GrepTool.js'
 import {
   bashTool,
   createBashTool,
@@ -15,17 +15,17 @@ import {
   resolveBashTimeoutMs,
   DEFAULT_BASH_TIMEOUT_MS,
   MAX_BASH_TIMEOUT_MS,
-} from '../src/tools/bash.js'
-import { readFileTool } from '../src/tools/readFile.js'
-import { editFileTool } from '../src/tools/editFile.js'
-import { multiEditTool } from '../src/tools/multiEdit.js'
-import { writeFileTool } from '../src/tools/writeFile.js'
-import { deleteFileTool } from '../src/tools/deleteFile.js'
+} from '../src/tools/BashTool/BashTool.js'
+import { readFileTool } from '../src/tools/FileReadTool/FileReadTool.js'
+import { editFileTool } from '../src/tools/FileEditTool/FileEditTool.js'
+import { multiEditTool } from '../src/tools/MultiEditTool/MultiEditTool.js'
+import { writeFileTool } from '../src/tools/FileWriteTool/FileWriteTool.js'
+import { deleteFileTool } from '../src/tools/FileDeleteTool/FileDeleteTool.js'
 import { buildUnifiedPatch } from '../src/tools/editPatch.js'
 import { toolSearchTool } from '../src/tools/ToolSearchTool/ToolSearchTool.js'
 import { getToolSearchMode, getAutoThreshold, resetToolSearchCache, resolveToolSearchState } from '../src/utils/toolSearch.js'
 import { BackgroundTaskRegistry, defaultBackgroundTaskRegistry } from '../src/services/backgroundTasks/registry.js'
-import { createBashOutputTool } from '../src/tools/bashOutput.js'
+import { createBashOutputTool } from '../src/tools/BashOutputTool/BashOutputTool.js'
 
 function context(cwd: string) {
   return { cwd, sessionId: 's1', readFiles: new Set<string>() }

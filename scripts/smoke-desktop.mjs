@@ -20,12 +20,15 @@
  * Safety, by construction rather than by care:
  *
  * - the app is always pointed at a **scratch project in the OS temp directory**
- *   (`--cwd=`), seeded from `~/.myagent/config.json`, so the repository's own
- *   `.myagent/` — real sessions, real API keys — is never the project the app can
- *   delete sessions from or rewrite config in;
- * - four **tripwires** assert afterwards that the repo's session index, the repo's
- *   session files, `~/.myagent/config.json` and `~/.myagent/settings.json` were
- *   never written;
+ *   (`--cwd=`), so the repository's own `.myagent/` — real sessions, real
+ *   checkpoints — is never the project the app can delete sessions from;
+ * - the two global files a run genuinely writes — `~/.myagent/config.json`, which
+ *   the settings step edits because the config layer is global-only, and
+ *   `~/.myagent/projects.json`, which every project entry registers a root in —
+ *   are **snapshotted before the launch and put back in teardown**, so a run
+ *   leaves no smoke endpoint, no smoke model and no temp project row behind;
+ * - three **tripwires** assert afterwards that the repo's session index, the
+ *   repo's session files and `~/.myagent/settings.json` were never written;
  * - **money is opt-in**: one model turn, only with `--paid-turn`, behind a
  *   one-shot latch, on the cheapest configured model, interrupted if it overruns.
  *
@@ -41,7 +44,7 @@
  * Usage:
  *   node scripts/smoke-desktop.mjs [--paid-turn] [--only=S3,S8] [--keep]
  *                                  [--model=<key>] [--port=9222] [--kill-stale]
- *                                  [--config=<path>] [--out=<dir>] [--verbose]
+ *                                  [--out=<dir>] [--verbose]
  */
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -50,10 +53,12 @@ import * as app from './smoke/app.mjs'
 import { shot, sleep } from './smoke/cdp.mjs'
 import {
   assertTripwires,
+  captureGlobalFiles,
   captureTripwires,
   makeProject,
   makeRunDir,
   removeRunDir,
+  restoreGlobalFiles,
   seedArtifacts,
   seedLocalSettings,
   seedSession,
@@ -78,7 +83,6 @@ function parseArgs(argv) {
     paidTurnTimeout: 45000,
     only: undefined,
     out: undefined,
-    config: undefined,
   }
   for (const arg of argv) {
     if (arg === '--paid-turn') flags.paidTurn = true
@@ -87,7 +91,6 @@ function parseArgs(argv) {
     else if (arg === '--verbose') flags.verbose = true
     else if (arg.startsWith('--only=')) flags.only = new Set(arg.slice('--only='.length).split(',').filter(Boolean))
     else if (arg.startsWith('--out=')) flags.out = arg.slice('--out='.length)
-    else if (arg.startsWith('--config=')) flags.config = arg.slice('--config='.length)
     else if (arg.startsWith('--model=')) flags.model = arg.slice('--model='.length)
     else if (arg.startsWith('--paid-prompt=')) flags.paidPrompt = arg.slice('--paid-prompt='.length)
     else if (arg.startsWith('--paid-turn-timeout=')) flags.paidTurnTimeout = Number(arg.slice('--paid-turn-timeout='.length))
@@ -162,7 +165,10 @@ async function main() {
   let runDir
   let handle
   let teardownNote = ''
+  let fatal
   const tripwires = captureTripwires(repoRoot)
+  // Before anything is launched: the launch itself registers a project root.
+  const globals = captureGlobalFiles()
 
   try {
     assertFreshBuild()
@@ -172,8 +178,8 @@ async function main() {
     // --- fixtures ------------------------------------------------------------
     runDir = makeRunDir()
     console.log(`scratch: ${runDir}`)
-    const projectA = makeProject(runDir, 'projA', opts.config ? { configFrom: opts.config } : {})
-    const projectB = makeProject(runDir, 'projB', opts.config ? { configFrom: opts.config } : {})
+    const projectA = makeProject(runDir, 'projA')
+    const projectB = makeProject(runDir, 'projB')
     // `ask: ['Write']` makes the permission prompt deterministic whatever the
     // gate's default for a `confirm` tool is, and it is a *local* entry, so the
     // "only local entries" assertion in the settings step still means something.
@@ -235,25 +241,50 @@ async function main() {
       shots: [],
       notes: finalTeardown === 'killed' ? ['had to kill the app: before-quit did not finish in time'] : [],
     })
-    assertTripwires(repoRoot, tripwires)
   } catch (error) {
     console.error(`\nFATAL: ${error instanceof Error ? error.stack : String(error)}`)
-    if (handle) {
-      try {
-        await app.quitGracefully(handle, { timeout: 4000 })
-      } catch {
-        // Nothing left to do; the cleanup handler kills the tree.
-      }
-    }
-    writeSummary({ out, results, started, fatal: error instanceof Error ? error.message : String(error), runDir })
-    if (runDir && !opts.keep) removeRunDir(runDir)
-    return 2
+    fatal = error instanceof Error ? error.message : String(error)
   }
 
+  // --- teardown, on every path ---------------------------------------------
+  // Ordered, and none of it may throw: the fatal path used to delete the scratch
+  // directory while a wedged app still held handles under it, and the EBUSY that
+  // came back escaped `main()` — losing the exit code, skipping the tripwires,
+  // and leaving a half-deleted run directory behind a summary that said
+  // "(removed)". Everything below reports instead.
+  const cleanup = []
+  if (handle) {
+    try {
+      if (!handle.exited) await app.quitGracefully(handle, { timeout: fatal ? 4000 : 12000 })
+    } catch {
+      // The kill below is the fallback.
+    }
+    const stopped = await app.ensureStopped(handle)
+    if (stopped) cleanup.push(stopped)
+  }
+  for (const label of restoreGlobalFiles(globals)) cleanup.push(`restored ${label}`)
+  let scratch = 'kept'
+  if (runDir && !opts.keep) {
+    const failure = removeRunDir(runDir)
+    scratch = failure ? `NOT REMOVED — ${failure}` : 'removed'
+    if (failure) cleanup.push(`the scratch directory is still on disk: ${runDir}`)
+  } else if (runDir) {
+    console.log(`kept scratch dir: ${runDir}`)
+  }
+  // Last, so a teardown that had to write files is not mistaken for the app
+  // having written them mid-run.
+  if (!fatal) {
+    try {
+      assertTripwires(repoRoot, tripwires)
+    } catch (error) {
+      fatal = error instanceof Error ? error.message : String(error)
+    }
+  }
+  for (const note of cleanup) console.log(`teardown: ${note}`)
+
   const rendererFailures = handle?.exceptions ?? []
-  const summary = writeSummary({ out, results, started, renderer: rendererFailures, runDir })
-  if (!opts.keep && runDir) removeRunDir(runDir)
-  else if (runDir) console.log(`kept scratch dir: ${runDir}`)
+  const summary = writeSummary({ out, results, started, renderer: rendererFailures, fatal, runDir, scratch, cleanup })
+  if (fatal) return 2
   return summary.failed > 0 || rendererFailures.length > 0 ? 1 : 0
 }
 
@@ -363,7 +394,7 @@ function withTimeout(promise, ms, label) {
   ])
 }
 
-function writeSummary({ out, results, started, renderer = [], fatal, runDir }) {
+function writeSummary({ out, results, started, renderer = [], fatal, runDir, scratch = 'kept', cleanup = [] }) {
   const passed = results.filter((step) => step.ok && !step.skipped).length
   const failed = results.filter((step) => step.ok === false && !step.skipped).length
   const skipped = results.filter((step) => step.skipped).length
@@ -391,12 +422,20 @@ function writeSummary({ out, results, started, renderer = [], fatal, runDir }) {
     lines.push('SCREENSHOTS — these are the judgements no assertion can make:')
     for (const entry of shots) lines.push(`   ${entry.name}.png (${entry.step}) — ${entry.look}`)
   }
+  if (cleanup.length > 0) {
+    lines.push('')
+    lines.push('TEARDOWN:')
+    for (const note of cleanup) lines.push(`   · ${note}`)
+  }
   lines.push('')
   lines.push(`output: ${out}`)
-  if (runDir) lines.push(`scratch: ${runDir}${opts.keep ? ' (kept)' : ' (removed)'}`)
+  // The observed outcome, never the intention — the old "(removed)" was a claim
+  // this file made without looking, and it was wrong on exactly the runs that
+  // mattered.
+  if (runDir) lines.push(`scratch: ${runDir} (${scratch})`)
   const text = `${lines.join('\n')}\n`
   writeFileSync(join(out, 'summary.txt'), text)
-  writeFileSync(join(out, 'summary.json'), `${JSON.stringify({ results, renderer, fatal }, null, 2)}\n`)
+  writeFileSync(join(out, 'summary.json'), `${JSON.stringify({ results, renderer, fatal, scratch, cleanup }, null, 2)}\n`)
   console.log(`\n${text}`)
   return { passed, failed, skipped }
 }

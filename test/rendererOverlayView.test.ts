@@ -15,7 +15,7 @@ import type { OverlayAction } from '../src/desktop/renderer/model/dialogActions.
 import type { PermissionViewModel } from '../src/desktop/renderer/model/permissionDialog.js'
 import { enterPlanViewModel } from '../src/desktop/renderer/model/planDialogs.js'
 import type { ExitPlanViewModel } from '../src/desktop/renderer/model/planDialogs.js'
-import { createRewindState, rewindViewModel } from '../src/desktop/renderer/model/rewindPanel.js'
+import { beginRewindRun, createRewindState, rewindViewModel } from '../src/desktop/renderer/model/rewindPanel.js'
 
 /**
  * The three modal views: the blocking dialog, the rewind panel and the completion
@@ -347,6 +347,54 @@ test('the rewind panel ends with the same bar, and its decisions are its buttons
     stub.inspect(panel).children.some((child) => child.classes.includes('options')),
     false,
   )
+})
+
+test('a press on the rewind scrim closes it, unless a decision is running', (t) => {
+  // Escape with a mouse. `#overlay` deliberately has no equivalent: those
+  // dialogs hold the agent loop, and a stray click must not answer one.
+  const stub = installDomStub()
+  t.after(() => stub.uninstall())
+  const container = stub.createContainer('rewind')
+  const panel = stub.createContainer('rewind-panel')
+  const intents: unknown[] = []
+  const view = createRewindView(container, panel, (intent) => intents.push(intent))
+
+  const state = createRewindState([])
+  view.render(rewindViewModel(state))
+
+  // Started inside the card and bubbled out: not a press on the backdrop.
+  stub.dispatch(container, 'pointerdown', { target: panel })
+  assert.deepEqual(intents, [])
+
+  stub.dispatch(container, 'pointerdown', { target: container })
+  assert.deepEqual(intents, [{ kind: 'close' }])
+
+  // Mid-restore the panel takes no input at all — the same guard
+  // `rewindKeyToIntent` applies, so the backdrop cannot abandon a running git.
+  // A checkpoint is needed for the confirm screen to exist at all: an empty list
+  // is answered by the "nothing to restore" branch, busy or not.
+  intents.length = 0
+  const restoring = beginRewindRun({
+    ...createRewindState([{
+      commitHash: 'abc123',
+      messageId: 'm1',
+      messageContent: 'add the parser',
+      timestamp: '2026-05-19T10:00:00.000Z',
+      turnDiff: { fileCount: 0, additions: 0, deletions: 0, hasChanges: false },
+      restoreDiff: { fileCount: 0, additions: 0, deletions: 0, hasChanges: false },
+      isCurrent: false,
+    }]),
+    screen: 'confirm' as const,
+  })
+  assert.ok(rewindViewModel(restoring).busyLabel, 'the fixture is actually mid-decision')
+  view.render(rewindViewModel(restoring))
+  stub.dispatch(container, 'pointerdown', { target: container })
+  assert.deepEqual(intents, [])
+
+  // And a closed panel answers nothing, however the press arrives.
+  view.hide()
+  stub.dispatch(container, 'pointerdown', { target: container })
+  assert.deepEqual(intents, [])
 })
 
 // --- the completion dropdown -------------------------------------------------

@@ -357,6 +357,25 @@ export async function quitGracefully(app, { timeout = 12000 } = {}) {
   return 'killed'
 }
 
+/**
+ * Waits until the app's process really is gone, killing the tree if it is not.
+ *
+ * The step before deleting the scratch directory, and the one that was missing:
+ * `quitGracefully` can answer `killed` while the renderer and GPU children are
+ * still exiting, and on Windows a child holding a session file under `.myagent/`
+ * makes `rmSync` fail half-way through. Returns a note when it had to intervene,
+ * `undefined` when the app was already down.
+ */
+export async function ensureStopped(app, { timeout = 8000 } = {}) {
+  if (!app || app.exited || !isAlive(app.pid)) return undefined
+  killTree(app.pid)
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline && isAlive(app.pid)) await sleep(200)
+  return isAlive(app.pid)
+    ? `pid ${app.pid} is STILL alive after the kill — the scratch directory may not delete`
+    : `killed pid ${app.pid} before cleaning up`
+}
+
 export { clearViewport, setViewport, SHELL_LANE }
 
 /**

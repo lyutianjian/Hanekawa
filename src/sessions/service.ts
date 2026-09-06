@@ -956,7 +956,7 @@ export class SessionStore {
       shortId: existing?.shortId ?? sessionId.slice(0, 12),
       createdAt: existing?.createdAt || records[0]?.createdAt || now,
       updatedAt: lastRecord?.createdAt ?? existing?.updatedAt ?? now,
-      title: existing?.title ?? getMessageDisplayContent(firstUserMessage)?.slice(0, 60),
+      title: existing?.title ?? (firstUserMessage ? deriveSessionTitle(firstUserMessage) : undefined),
       messageCount: messages.length,
       ...(existing?.checkpoints ? { checkpoints: existing.checkpoints } : {}),
       ...(existing?.compactFailureCount ? { compactFailureCount: existing.compactFailureCount } : {}),
@@ -966,11 +966,7 @@ export class SessionStore {
 
   private deriveMetaAfterAppend(current: SessionMeta, record: SessionRecord, updatedAt: string): SessionMeta {
     const isMessage = record.type === 'message'
-    const title = current.title ?? (
-      isMessage && record.role === 'user'
-        ? getRequiredMessageDisplayContent(record).slice(0, 60)
-        : undefined
-    )
+    const title = current.title ?? deriveSessionTitle(record)
     return {
       ...current,
       updatedAt,
@@ -1115,9 +1111,24 @@ function getMessageDisplayContent(record: (SessionRecord & { type: 'message' }) 
   return record?.displayContent ?? record?.content
 }
 
-function getRequiredMessageDisplayContent(record: SessionRecord & { type: 'message' }): string {
-  return record.displayContent ?? record.content
+/**
+ * A session's name, derived from the message that opened it.
+ *
+ * Exported because the index is no longer the only place that answers this:
+ * `SessionController` names a session the moment the record is appended, so the
+ * canvas header and the sidebar stop reading 「未命名会话」 while the first turn
+ * runs. Both must produce the *same* string — a title that differed by a
+ * character between the pane and the index would look like a rename nobody
+ * asked for — so the rule lives here once. Answers `undefined` for anything
+ * that is not a user message, which is what "leave the title alone" means.
+ */
+export function deriveSessionTitle(record: SessionRecord): string | undefined {
+  if (record.type !== 'message' || record.role !== 'user') return undefined
+  return getMessageDisplayContent(record)?.slice(0, SESSION_TITLE_LENGTH)
 }
+
+/** How much of the first message names the session. */
+const SESSION_TITLE_LENGTH = 60
 
 function inferTurnInputTokens(turn: Extract<SessionMetric, { event: 'turn' }>): number {
   if (typeof turn.input_tokens === 'number' && Number.isFinite(turn.input_tokens)) {

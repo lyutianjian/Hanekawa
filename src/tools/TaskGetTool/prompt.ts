@@ -1,6 +1,10 @@
 export const DESCRIPTION = 'Get a task by ID from the task list'
 
-export const PROMPT = `Get a task by ID from the task list. Use to see full description and context before starting work, understand dependencies, or get complete requirements.
+export const PROMPT = `Get one task by ID from the task list.
 
-Returns: subject, description, status, blocks, blockedBy. Verify blockedBy is empty before starting work.
+Usage:
+- The only parameter is \`taskId\`. Any other key is rejected.
+- Use it to see the full description before starting work, or to check what a task depends on.
+- Returns subject, description, status, blocks, and blockedBy. Verify blockedBy is empty before starting the work.
+- Use TaskList when you do not know the ID yet.
 `

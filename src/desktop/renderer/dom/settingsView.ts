@@ -1,5 +1,6 @@
 import { el, reconcile, replace, show } from './dom.js'
 import { button, pillSelect, selectField, textField, toggleField } from './controls.js'
+import { onPressOutside } from './dismiss.js'
 import type {
   SettingsAnchor,
   SettingsButton,
@@ -80,6 +81,19 @@ export function createSettingsView(
     // Escape aimed at a form would also close the whole screen.
     event.preventDefault()
     event.stopPropagation()
+  })
+
+  // A press outside the open pill closes it — the hole `focusout` alone leaves
+  // here as everywhere else: this screen is mostly cards and labels, none of
+  // which take focus, so pressing one moved no focus and fired no `focusout`,
+  // and the dropdown stayed up over the row the user was reading.
+  //
+  // Gated on `lastOpenMenu` rather than sent unconditionally: `runSettingsIntent`
+  // repaints the whole screen for every intent it is handed, and this listener
+  // sees every press in the window, including the ones while settings is shut.
+  onPressOutside(['.settings-menu-shell'], () => {
+    if (lastOpenMenu === undefined) return
+    onIntent({ kind: 'close-menu' })
   })
 
   // Focus leaving the screen closes an open dropdown. `relatedTarget === null` is

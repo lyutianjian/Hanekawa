@@ -1,12 +1,12 @@
 export const DESCRIPTION = 'Update a task in the task list'
 
-export const PROMPT = `Update a task in the task list. Read the task's latest state with TaskGet before updating.
+export const PROMPT = `Update one task in the task list.
 
-Use to: mark tasks resolved (only when fully done — not if tests fail, implementation is partial, or errors remain), delete irrelevant tasks, update details, or set dependencies.
-
-Updatable fields: status, subject, description, activeForm, owner, metadata, addBlocks, addBlockedBy.
-
-Status workflow: \`pending\` -> \`in_progress\` -> \`completed\`. Use \`deleted\` to remove.
-
-Example: \`{"taskId": "1", "status": "in_progress"}\`
+Usage:
+- Parameters are \`taskId\` (required) plus any of \`status\`, \`subject\`, \`description\`, \`activeForm\`, \`owner\`, \`addBlocks\`, \`addBlockedBy\`, \`metadata\`. Any other key is rejected.
+- Read the task's latest state with TaskGet before updating it.
+- \`status\` moves \`pending\` -> \`in_progress\` -> \`completed\`; use \`deleted\` to drop a task that turned out to be irrelevant.
+- Mark a task completed only when it is fully done — not while tests fail, the implementation is partial, or errors remain.
+- \`addBlocks\` and \`addBlockedBy\` take arrays of task IDs and are additive.
+- Example: \`{"taskId": "1", "status": "in_progress"}\`
 `

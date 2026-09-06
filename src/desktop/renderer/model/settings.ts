@@ -864,11 +864,37 @@ function endpointDetail(endpoint: WireEndpointInfo): string {
   return parts.join(' · ')
 }
 
+/**
+ * The model a *new session* actually starts on — `ConfigService.resolveModelKeyFor
+ * ({ kind: 'main' })` spelled in renderer terms.
+ *
+ * It is not simply `defaultModel`: a `routing.main` that names a model which
+ * resolves wins over it. The two settings live in different cards, so a screen
+ * that only printed `defaultModel` claimed a model the next session would not
+ * use — and there is no third place a user could look to find that out.
+ */
+export function effectiveMainModelKey(snapshot: WireSettingsSnapshot): string | undefined {
+  const resolves = (key: string | undefined): string | undefined =>
+    key !== undefined && snapshot.models.some((model) => model.key === key && model.resolves)
+      ? key
+      : undefined
+  const routed = snapshot.routing.main
+  if (routed !== INHERIT) {
+    const viaRouting = resolves(routed)
+    if (viaRouting) return viaRouting
+  }
+  return resolves(snapshot.defaultModel)
+}
+
 function modelsCard(snapshot: WireSettingsSnapshot): SettingsCard {
+  const effective = effectiveMainModelKey(snapshot)
+  const overridden = effective !== undefined && effective !== snapshot.defaultModel
   return {
     id: 'models',
     title: '模型',
-    note: `默认模型：${snapshot.defaultModel ?? '未设置'}`,
+    note: overridden
+      ? `默认模型：${snapshot.defaultModel ?? '未设置'} · 被「路由 · 主循环」覆盖，新会话实际从 ${effective} 开始`
+      : `默认模型：${snapshot.defaultModel ?? '未设置'}`,
     empty: '还没有配置模型。',
     rows: snapshot.models.map((model) => {
       const row: SettingsRow = {
@@ -932,9 +958,16 @@ const ROUTING_ROLE_LABELS: Record<'main' | 'plan' | 'compact', string> = {
 
 function routingCard(snapshot: WireSettingsSnapshot): SettingsCard {
   const choices = routingOptions(snapshot)
+  const effective = effectiveMainModelKey(snapshot)
   const roles = (['main', 'plan', 'compact'] as const).map((role) => ({
     id: `routing:${role}`,
     label: ROUTING_ROLE_LABELS[role],
+    // Only the main role, and only when it is actually winning: this row is the
+    // one that quietly outranks 「默认模型」, and saying so here is what makes the
+    // two cards agree instead of each stating a different startup model.
+    ...(role === 'main' && effective !== undefined && effective !== snapshot.defaultModel
+      ? { detail: `覆盖默认模型${snapshot.defaultModel ? ` ${snapshot.defaultModel}` : ''}：新会话从 ${effective} 开始` }
+      : {}),
     control: {
       kind: 'select' as const,
       value: snapshot.routing[role],
@@ -1908,11 +1941,26 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
       }
     }
 
-    case 'set-default-model':
+    case 'set-default-model': {
+      // A `routing.main` naming another model outranks `defaultModel`, so
+      // setting the default while one is in force would change nothing the user
+      // can see. Releasing the role back to `inherit` is what makes the button
+      // mean what it says; `inherit` then follows the default it just set.
+      const overridden =
+        state.snapshot !== undefined
+        && state.snapshot.routing.main !== INHERIT
+        && state.snapshot.routing.main !== intent.key
+        && effectiveMainModelKey(state.snapshot) !== intent.key
       return {
         state: { ...cleared, busy: true },
-        changes: [{ scope: 'provider', kind: 'set-default-model', key: intent.key }],
+        changes: [
+          { scope: 'provider', kind: 'set-default-model', key: intent.key },
+          ...(overridden
+            ? [{ scope: 'provider', kind: 'set-routing', role: 'main', value: INHERIT } as SettingsChange]
+            : []),
+        ],
       }
+    }
     case 'set-routing':
       return {
         state: { ...cleared, busy: true },

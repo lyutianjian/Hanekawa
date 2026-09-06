@@ -9,7 +9,7 @@ import {
   DEFAULT_AGENT_MAX_TURNS,
   infersReadOnlyAgentFromTools,
   type BaseAgentDefinition,
-} from '../../tools/agentTool.js'
+} from '../../tools/AgentTool/AgentTool.js'
 import type { PermissionMode } from '../../harness/permissions.js'
 import type { SubagentIsolation } from './subagentWorktree.js'
 import { getAgentsDir, getLocalAgentsDir } from '../../utils/paths.js'

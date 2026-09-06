@@ -2017,7 +2017,16 @@ test('a diff is the only block in a turn that scrolls sideways', () => {
   // `.request-block` is the composer's approval well, outside the transcript
   // entirely, and it is `pre-wrap` + `word-break: break-all` — the `auto` there
   // is the vertical cap, and no horizontal overflow can reach it.
-  const SCROLLS_BOTH_AXES = ['.request-block, #composer-request .block', '.diff']
+  //
+  // `.md-math-display` is the second real exception, admitted for a narrower
+  // reason than the diff's: a typeset equation has no wrapping points at all, so
+  // the choice is a scrollbar or a clipped formula. It is `overflow-x: auto`
+  // with `overflow-y: hidden`, so only the one axis is in play.
+  const SCROLLS_BOTH_AXES = [
+    '.request-block, #composer-request .block',
+    '.md .md-math-display',
+    '.diff',
+  ]
   const scrolling = blocks
     .filter((block) =>
       block.decls.some(

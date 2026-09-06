@@ -1,5 +1,5 @@
-import { marked } from 'marked'
-import type { Token, Tokens } from 'marked'
+import { Marked } from 'marked'
+import type { Token, TokenizerAndRendererExtension, Tokens } from 'marked'
 
 /**
  * Markdown as data: `marked`'s lexer folded into a small union the DOM layer can
@@ -20,6 +20,11 @@ import type { Token, Tokens } from 'marked'
  *    `img-src 'self' data:` would block a remote one anyway, and a remote fetch
  *    from a transcript is an exfiltration beacon.
  *
+ * TeX is the one construct the lexer does not know about, so it is added back as
+ * a pair of extensions (see `MATH_EXTENSIONS`). They only *find* the maths and
+ * hand the source string on untouched; typesetting is `dom/markdownView.ts`'s
+ * job, because it needs KaTeX and a `document`.
+ *
  * DOM-free on purpose: `test/` imports this, which compiles it in the base tsconfig
  * program, and that program has no DOM lib. `HTMLElement` lives in
  * `dom/markdownView.ts`.
@@ -33,6 +38,13 @@ export type MdInline =
   | { readonly kind: 'del'; readonly children: readonly MdInline[] }
   | { readonly kind: 'link'; readonly href: string; readonly children: readonly MdInline[] }
   | { readonly kind: 'break' }
+  /**
+   * TeX source, verbatim. `display` is KaTeX's `displayMode`: `$$…$$` and
+   * `\[…\]` set it even when they turn up mid-paragraph, which is the common
+   * case — a model writes a lead-in line and the equation under it without the
+   * blank line that would make it a block of its own.
+   */
+  | { readonly kind: 'math'; readonly tex: string; readonly display: boolean }
 
 export interface MdListItem {
   readonly blocks: readonly MdBlock[]
@@ -57,6 +69,93 @@ export type MdBlock =
       readonly rows: readonly (readonly (readonly MdInline[])[])[]
     }
   | { readonly kind: 'rule' }
+  /** A display equation standing alone between blank lines. */
+  | { readonly kind: 'math'; readonly tex: string }
+
+// ── TeX ──
+//
+// Four delimiter pairs, the set every model actually emits: `$$…$$` and `\[…\]`
+// for display, `$…$` and `\(…\)` for inline.
+//
+// `\(` and `\[` are the reason this cannot be left to a post-pass over the
+// rendered text. CommonMark says a backslash before ASCII punctuation is an
+// escape, so the lexer already eats those delimiters — `\(x_1\)` reaches the
+// screen as `(x_1)`, with no way left to tell it from parentheses somebody
+// typed. An extension tokenizer runs *before* the built-in `escape`, which is
+// the only place the distinction still exists.
+//
+// `$…$` is the delimiter that has to be defended against prose, because a
+// dollar sign is also a dollar sign. Three conditions, together enough for
+// "$5 and $10 buys $15 of it" to stay text:
+//
+//   - the opener is not followed by a space (`$ x$` is not maths),
+//   - the closer is not preceded by one (`$x $` is not either),
+//   - the closer is not followed by a digit, which is what rejects the price
+//     pair above — `$5 and $` would otherwise close on the second dollar.
+//
+// Content may not span a blank line, so an unclosed `$` costs at most the rest
+// of the paragraph rather than swallowing the document. Nothing matches without
+// its closing delimiter at all: mid-stream, half an equation shows as its own
+// source for one frame and settles once the rest arrives.
+
+const MATH_BLOCK_PATTERNS = [
+  /^ {0,3}\$\$([\s\S]+?)\$\$[ \t]*(?:\n+|$)/,
+  /^ {0,3}\\\[([\s\S]+?)\\\][ \t]*(?:\n+|$)/,
+] as const
+
+const MATH_INLINE_PATTERNS: readonly (readonly [RegExp, boolean])[] = [
+  [/^\$\$((?:[^$\n]|\n(?!\n))+?)\$\$/, true],
+  [/^\\\[((?:[^\n]|\n(?!\n))+?)\\\]/, true],
+  [/^\\\(((?:[^\n]|\n(?!\n))+?)\\\)/, false],
+  [/^\$(?![\s$])((?:[^$\n]|\n(?!\n))+?)(?<!\s)\$(?!\d)/, false],
+] as const
+
+/** Where a delimiter *could* start, so `marked` stops its text run there. */
+const MATH_START = /(?<!\\)\$|\\\(|\\\[/
+
+interface MathToken extends Tokens.Generic {
+  readonly tex: string
+  readonly display: boolean
+}
+
+const MATH_EXTENSIONS: TokenizerAndRendererExtension[] = [
+  {
+    name: 'mathBlock',
+    level: 'block',
+    tokenizer(src) {
+      for (const pattern of MATH_BLOCK_PATTERNS) {
+        const match = pattern.exec(src)
+        const tex = match?.[1]!.trim()
+        // `$$   $$` is a row of punctuation somebody typed, not an equation;
+        // KaTeX would render it as nothing at all and leave a gap in the answer.
+        if (match && tex) return { type: 'mathBlock', raw: match[0], tex, display: true }
+      }
+      return undefined
+    },
+  },
+  {
+    name: 'mathInline',
+    level: 'inline',
+    start: (src) => MATH_START.exec(src)?.index,
+    tokenizer(src) {
+      for (const [pattern, display] of MATH_INLINE_PATTERNS) {
+        const match = pattern.exec(src)
+        const tex = match?.[1]!.trim()
+        if (match && tex) return { type: 'mathInline', raw: match[0], tex, display }
+      }
+      return undefined
+    },
+  },
+]
+
+/**
+ * A private lexer rather than `marked.use()`.
+ *
+ * `use` mutates the shared singleton, and `src/tui/markdown.ts` lexes with it in
+ * the same process under `node --test`. Maths in a terminal is a separate
+ * decision; it should not arrive as a side effect of importing this file.
+ */
+const lexer = new Marked().use({ extensions: MATH_EXTENSIONS })
 
 /** Protocols a link may keep. Everything else degrades to its own text. */
 const SAFE_PROTOCOLS = ['http:', 'https:', 'mailto:']
@@ -101,7 +200,7 @@ export function parseMarkdownBlocks(content: string): MdBlock[] {
     return cached.blocks
   }
 
-  const blocks = marked.lexer(content).flatMap(blockFrom)
+  const blocks = lexer.lexer(content).flatMap(blockFrom)
   if (blockCache.size >= TOKEN_CACHE_MAX) blockCache.delete(blockCache.keys().next().value!)
   blockCache.set(key, { blocks, length: content.length })
   return blocks
@@ -161,6 +260,9 @@ function blockFrom(token: Token): MdBlock[] {
     case 'hr':
       return [{ kind: 'rule' }]
 
+    case 'mathBlock':
+      return [{ kind: 'math', tex: (token as MathToken).tex }]
+
     case 'html':
       // The whole point: a tag in model output is text, not markup.
       return [{ kind: 'paragraph', inline: [{ kind: 'text', text: (token as Tokens.HTML).raw }] }]
@@ -215,6 +317,13 @@ function inlineOne(token: Token): MdInline[] {
 
     case 'br':
       return [{ kind: 'break' }]
+
+    case 'mathInline': {
+      const math = token as MathToken
+      // TeX is not markdown and not HTML: it goes to KaTeX exactly as written,
+      // so it skips `decodeEntities` along with everything else here.
+      return [{ kind: 'math', tex: math.tex, display: math.display }]
+    }
 
     case 'link': {
       const link = token as Tokens.Link

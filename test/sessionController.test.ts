@@ -54,11 +54,13 @@ async function createHarness(options: {
   checkpointDisabledAtInit?: boolean
   /** The service trips its breaker on the first checkpoint. */
   checkpointDisablesOnFirstCall?: boolean
+  /** No title yet — the state a session is in until its first message. */
+  untitled?: boolean
 } = {}): Promise<Harness> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-controller-'))
   const store = new SessionStore(cwd)
   await store.init()
-  const session = await store.create('controller test')
+  const session = options.untitled ? await store.create() : await store.create('controller test')
 
   const checkpointCalls: string[] = []
   const events: SessionEvent[] = []
@@ -377,6 +379,56 @@ test('an approval record carries the id of the tool_use it answers', async () =>
   const approval = harness.events.at(-1)
   assert.equal(approval?.type, 'record')
   assert.equal(approval?.type === 'record' ? approval.approvalToolUseId : undefined, toolUseId)
+})
+
+test('the first user message names an untitled session, exactly as the store does', async () => {
+  // The window chrome reads a session's name off the *pane* — the header, the
+  // sidebar row — and nothing used to tell the pane what the store derived on
+  // append. The name arrived only when something re-listed the store from disk,
+  // which is a whole turn later.
+  const harness = await createHarness({ untitled: true })
+  const record: SessionRecord = {
+    id: randomUUID(),
+    type: 'message',
+    role: 'user',
+    content: 'x'.repeat(80),
+    createdAt: new Date().toISOString(),
+  }
+
+  await harness.store.appendRecord(harness.session.id, record)
+  harness.proxy.onRecord(record)
+
+  const stored = (await harness.store.list()).find((meta) => meta.id === harness.session.id)
+  assert.equal(harness.controller.getSessionMeta().title, stored?.title)
+  assert.equal(harness.controller.getSessionMeta().title, 'x'.repeat(60), 'the store\'s own 60 characters')
+
+  const announced = harness.events.filter((event) => event.type === 'session-meta')
+  assert.equal(announced.length, 1)
+  assert.equal(
+    announced[0]?.type === 'session-meta' ? announced[0].session.id : undefined,
+    harness.session.id,
+    'the id never moves here; this is not a session switch',
+  )
+
+  // The second message is not a rename: only an unnamed session takes a name.
+  harness.proxy.onRecord({ ...record, id: randomUUID(), content: '完全不同的第二条' })
+  assert.equal(harness.controller.getSessionMeta().title, 'x'.repeat(60))
+  assert.equal(harness.events.filter((event) => event.type === 'session-meta').length, 1)
+})
+
+test('a session that already has a title is never renamed by a message', async () => {
+  const harness = await createHarness()
+
+  harness.proxy.onRecord({
+    id: randomUUID(),
+    type: 'message',
+    role: 'user',
+    content: '第一条消息',
+    createdAt: new Date().toISOString(),
+  })
+
+  assert.equal(harness.controller.getSessionMeta().title, 'controller test')
+  assert.deepEqual(harness.events.filter((event) => event.type === 'session-meta'), [])
 })
 
 test('a task snapshot on a tool result becomes pull state', async () => {

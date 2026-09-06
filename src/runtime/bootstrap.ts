@@ -10,7 +10,7 @@ import { clampEffort } from '../config/effort.js'
 import { permissionRulesFromSettings } from '../harness/permissions.js'
 import type { RuntimeDiagnostic } from '../harness/diagnostics.js'
 import { getAllTools } from '../tools/index.js'
-import { BUILT_IN_AGENT_DEFINITIONS } from '../tools/agentTool.js'
+import { BUILT_IN_AGENT_DEFINITIONS } from '../tools/AgentTool/AgentTool.js'
 import { SkillsService } from '../services/skills/skillsService.js'
 import { AgentDefinitionLoader } from '../services/agents/agentDefinitionLoader.js'
 import { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
@@ -78,11 +78,14 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   // and the next runtime built picks up the new contents.
   let projectContext = await getProjectContext(cwd)
 
-  const initialModelKey = config.resolveModelKeyFor(
-    { kind: 'main' },
-    { currentModelKey: config.get().defaultModel },
-  )
-  if (!initialModelKey) {
+  // Read live rather than captured: the default model is editable from the
+  // settings screen, and a new session opened afterwards has to start on the
+  // model the user just chose, not the one that was default at launch.
+  const resolveDefaultModelKey = (): string | undefined =>
+    config.resolveModelKeyFor({ kind: 'main' }, { currentModelKey: config.get().defaultModel })
+
+  const startupModelKey = resolveDefaultModelKey()
+  if (!startupModelKey) {
     // `resolveModelKeyFor` returns undefined both when nothing is configured and
     // when what *is* configured names a model that does not exist. Saying "none
     // configured" for a typo sent people looking in the wrong place.
@@ -94,7 +97,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
         : 'No default model configured.',
     )
   }
-  const modelConfig = config.getModel(initialModelKey)!
+  const modelConfig = config.getModel(startupModelKey)!
   const modelDiagnostics = [
     ...migrationFindings.map((message) => ({
       code: 'project_config_migrated',
@@ -279,7 +282,13 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     backgroundTasks,
     commands,
     mcp: mcpStatus,
-    initialModelKey,
+    // A getter, so a `set-default-model` that has already been saved into the
+    // live `ConfigService` reaches the next session without a restart. The
+    // startup key is the floor: an edit that leaves nothing resolvable keeps
+    // the project on the model it booted with instead of failing to open a tab.
+    get initialModelKey(): string {
+      return resolveDefaultModelKey() ?? startupModelKey
+    },
     initialEffort: typeof clampedInitialEffort === 'string' ? clampedInitialEffort : undefined,
     configuredEffortLevel,
     createActiveModelRuntime,

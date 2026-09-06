@@ -2,8 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PermissionGate } from '../src/harness/permissions.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
-import { enterPlanModeTool } from '../src/tools/enterPlanMode.js'
-import { filterToolsForSubAgent, BUILT_IN_AGENT_DEFINITIONS } from '../src/tools/agentTool.js'
+import { enterPlanModeTool } from '../src/tools/EnterPlanModeTool/EnterPlanModeTool.js'
+import { filterToolsForSubAgent, BUILT_IN_AGENT_DEFINITIONS } from '../src/tools/AgentTool/AgentTool.js'
 import type { PlanModeBridge, SessionRecord, ToolContext } from '../src/harness/types.js'
 
 function makeBridge(parentSessionId: string, parentRecords: SessionRecord[]): PlanModeBridge {
@@ -14,9 +14,11 @@ function makeBridge(parentSessionId: string, parentRecords: SessionRecord[]): Pl
 }
 
 test('EnterPlanMode description includes plan workflow', () => {
-  assert.match(enterPlanModeTool.description, /In plan mode you explore the codebase/)
-  assert.match(enterPlanModeTool.description, /Use AskUserQuestion to clarify requirements/)
-  assert.match(enterPlanModeTool.description, /approval via ExitPlanMode/)
+  assert.match(enterPlanModeTool.description, /explore the codebase read-only/)
+  assert.match(enterPlanModeTool.description, /clarify with AskUserQuestion/)
+  assert.match(enterPlanModeTool.description, /present the result with ExitPlanMode/)
+  // The tool takes no input, and the model has to be told that outright.
+  assert.match(enterPlanModeTool.description, /Takes no parameters/)
 })
 
 test('EnterPlanMode in default mode emits plan_mode_request kind="enter"', async () => {
@@ -97,7 +99,7 @@ test('filterToolsForSubAgent excludes EnterPlanMode for all built-in agents', ()
 })
 
 test('filterToolsForSubAgent excludes ExitPlanMode even when explicitly listed', async () => {
-  const { exitPlanModeTool } = await import('../src/tools/exitPlanMode.js')
+  const { exitPlanModeTool } = await import('../src/tools/ExitPlanModeTool/ExitPlanModeTool.js')
   const fakeTools = [exitPlanModeTool]
   for (const definition of BUILT_IN_AGENT_DEFINITIONS) {
     const filtered = filterToolsForSubAgent([...fakeTools], definition)

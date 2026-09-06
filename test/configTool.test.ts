@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { configTool } from '../src/tools/configTool.js'
+import { configTool } from '../src/tools/ConfigTool/ConfigTool.js'
 
 function context(cwd: string) {
   return { cwd, sessionId: 's1', readFiles: new Set<string>() }

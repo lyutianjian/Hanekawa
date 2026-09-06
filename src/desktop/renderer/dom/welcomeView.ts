@@ -8,6 +8,7 @@ import type { WorkspacePickerIntent } from '../model/workspacePicker.js'
 import { createWorkspacePickerView, type WorkspacePickerDom } from './workspacePickerView.js'
 import { el, replace, show } from './dom.js'
 import { button } from './controls.js'
+import { onPressOutside } from './dismiss.js'
 import { icon } from './icons.js'
 
 /**
@@ -86,6 +87,17 @@ export function createWelcomeView(
     handlers.onPickerIntent,
     handlers.onPickerKey,
   )
+
+  // A press anywhere else closes the picker (`dom/dismiss.ts`), which until now
+  // had only Escape and picking a row: it hangs over the transcript, and the
+  // transcript is exactly the unfocusable scenery a `focusout` cannot see.
+  //
+  // The whole title row, not `pickerHost`: the Hero's project name — the button
+  // that opens this — is in `titleSlot` beside it, and closing on the press
+  // there would let its own `click` re-open the popover the user was shutting.
+  // Idempotent for the same reason every other dismissal here is: this fires on
+  // every click in the window, and `paneSession.ts` repaints on the intent.
+  onPressOutside([titleRow], () => handlers.onPickerIntent({ kind: 'close' }))
 
   /**
    * The last drawn signature. Load-bearing: this renders from the pane's single

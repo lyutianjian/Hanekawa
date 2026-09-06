@@ -16,6 +16,15 @@
     <link rel="preload" href="./fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="./fonts/source-serif-4-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="./fonts.css" />
+    <!--
+      KaTeX's own sheet, copied out of the package by
+      `scripts/copy-desktop-assets.mjs` with its `woff`/`ttf` fallbacks stripped
+      — only the woff2 are carried, and they land in `./fonts/` beside the
+      others, which is where the sheet's relative `url(fonts/…)` already looks.
+      Linked rather than folded into `styles.css`: that file is asserted rule by
+      rule and admits no `@font-face`.
+    -->
+    <link rel="stylesheet" href="./katex.css" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>

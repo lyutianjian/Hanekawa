@@ -8,7 +8,7 @@ import { CommandRegistry } from '../src/commands/index.js'
 import { buildSkillCommandPrompt, buildSkillPrompt, registerSkillCommands } from '../src/commands/skills.js'
 import { SkillsService } from '../src/services/skills/skillsService.js'
 import { importSkill } from '../src/services/skills/importSkill.js'
-import { createSkillTool } from '../src/tools/skillTool.js'
+import { createSkillTool } from '../src/tools/SkillTool/SkillTool.js'
 
 test('SkillsService.list() returns empty array when directory does not exist', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skills-'))
@@ -396,7 +396,7 @@ test('createSkillTool() generates Skill tool object', () => {
   const tool = createSkillTool()
 
   assert.equal(tool.name, 'Skill')
-  assert.match(tool.description, /Execute a skill/)
+  assert.match(tool.description, /Load a skill's instructions/)
   assert.equal(tool.riskLevel, 'safe')
   assert.deepEqual(toolToAPISchema(tool), {
     type: 'object',

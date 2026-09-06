@@ -9,7 +9,7 @@ import type {
   TokenUsage,
   ToolProgressEvent,
 } from '../harness/types.js'
-import type { SessionMeta, SessionStore } from '../sessions/service.js'
+import { deriveSessionTitle, type SessionMeta, type SessionStore } from '../sessions/service.js'
 import { CheckpointService } from '../services/checkpoint/checkpointService.js'
 import type { RecordProxy } from './bridges.js'
 import { rollbackInterruptedPromptIfSynthetic } from './interruptRollback.js'
@@ -49,6 +49,16 @@ export type SessionEvent =
   | { type: 'stream'; event: ModelStreamEvent }
   /** A one-off message to surface in the transcript. */
   | { type: 'notice'; level: 'system' | 'error'; content: string }
+  /**
+   * The session's own metadata moved without the session moving — today, the
+   * title it takes from its first message.
+   *
+   * Separate from `record` because the consumers are different: a shell draws
+   * this in its window chrome (a tab, a sidebar row, a header), not in the
+   * transcript. The id never changes here; a shell that reacts by *switching*
+   * sessions has misread it.
+   */
+  | { type: 'session-meta'; session: SessionMeta }
   /** The session's records were replaced wholesale; rebuild from `records`. */
   | { type: 'transcript-reset'; records: readonly SessionRecord[]; systemMessages: readonly string[]; bumpGeneration: boolean }
   /** An interrupted prompt was rolled back; put the text back in the composer. */
@@ -362,6 +372,8 @@ export class SessionController {
     let approvalToolUseId: string | undefined
     let subagentProgress: string | undefined
 
+    this.noteDerivedTitle(record)
+
     if (record.type === 'tool_use') {
       this.lastToolUseIdByTool.set(record.tool, record.id)
     } else if (record.type === 'tool_approval') {
@@ -414,6 +426,30 @@ export class SessionController {
 
   private handleStreamEvent = (event: ModelStreamEvent): void => {
     this.emit({ type: 'stream', event })
+  }
+
+  /**
+   * Picks up the title the store just derived, for a session that had none.
+   *
+   * The store names a session from its first user message, inside
+   * `appendRecord` — but nothing used to tell the *pane* about it. A pane's
+   * session meta is the source every window projection reads
+   * (`ProjectDirectory.describe` → `WireLaneInfo.sessionTitle`), so the canvas
+   * header showed 「未命名会话」 for the whole first turn and the sidebar only
+   * caught up when something else re-listed the store from disk.
+   *
+   * Derived rather than re-read: `AgentLoop.appendRecord` awaits the append
+   * before it announces the record, so the index already holds this exact
+   * string — `deriveSessionTitle` is the store's own rule — and a disk read here
+   * would buy a race and a round trip for a value we have.
+   */
+  private noteDerivedTitle(record: SessionRecord): void {
+    if (this.session.title !== undefined) return
+    const title = deriveSessionTitle(record)
+    if (title === undefined) return
+    this.session = { ...this.session, title }
+    this.publish()
+    this.emit({ type: 'session-meta', session: this.session })
   }
 
   // --- internals ------------------------------------------------------------

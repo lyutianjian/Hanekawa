@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { PermissionGate } from '../src/harness/permissions.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
-import { exitPlanModeTool } from '../src/tools/exitPlanMode.js'
+import { exitPlanModeTool } from '../src/tools/ExitPlanModeTool/ExitPlanModeTool.js'
 import type { PlanModeBridge, SessionRecord, ToolContext } from '../src/harness/types.js'
 
 function makeBridge(sessionId: string, records: SessionRecord[], planFilePath?: string): PlanModeBridge {
@@ -17,9 +17,9 @@ function makeBridge(sessionId: string, records: SessionRecord[], planFilePath?: 
 }
 
 test('ExitPlanMode description includes approval contract', () => {
-  assert.match(exitPlanModeTool.description, /Use this tool when you are in plan mode and have finished writing your plan/)
+  assert.match(exitPlanModeTool.description, /Use this tool when you are in plan mode, have finished writing your plan/)
   assert.match(exitPlanModeTool.description, /ready for user approval/)
-  assert.match(exitPlanModeTool.description, /reads the plan from the file you wrote/)
+  assert.match(exitPlanModeTool.description, /reads the plan from the plan file/)
   assert.match(exitPlanModeTool.description, /ExitPlanMode inherently requests user approval/)
 })
 

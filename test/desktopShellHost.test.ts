@@ -30,7 +30,7 @@ import type { Config, ModelConfig } from '../src/config/service.js'
 import { mergeRouting, type Endpoint, type Routing } from '../src/config/routing.js'
 import { loadMergedSettings, type MyAgentSettings } from '../src/config/settings.js'
 import type { ContextManagementConfig } from '../src/prompts/budget.js'
-import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../src/tools/agentTool.js'
+import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../src/tools/AgentTool/AgentTool.js'
 import type { McpConnectionStatus } from '../src/runtime/types.js'
 
 /**

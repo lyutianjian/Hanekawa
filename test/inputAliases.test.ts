@@ -43,6 +43,9 @@ test('a Claude Code shaped Grep call normalizes and then validates', () => {
     path: 'src',
     caseInsensitive: true,
     headLimit: 30,
+    outputMode: 'content',
+    contextLines: 3,
+    type: 'ts',
   })
   assert.equal(validateToolInput(tool('Grep'), normalized).ok, true)
 })

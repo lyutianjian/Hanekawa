@@ -336,6 +336,15 @@ export class SessionHost {
       this.ledger.track(event.record)
     } else if (event.type === 'transcript-reset') {
       this.ledger.rebase(event.records)
+    } else if (event.type === 'session-meta') {
+      // The controller named a session from its first message. Both halves of
+      // `refreshSessionMeta`'s announcement, minus the write back into the
+      // controller — this came *from* it. `pane-list` is the load-bearing one:
+      // `sessionTitle` is a `WirePaneInfo` field, so without it the shell's
+      // lanes keep the title they were opened with, which is none.
+      this.session = event.session
+      this.post({ type: 'session-changed', session: event.session })
+      this.broadcastPaneList()
     }
     this.postSessionEvent(event)
   }

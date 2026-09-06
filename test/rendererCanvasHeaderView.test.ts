@@ -192,6 +192,67 @@ test('blurring an untouched field cancels instead of writing the index', (t) => 
   assert.deepEqual(r.events, ['cancel-rename'])
 })
 
+test('opening the menu puts the keyboard on its first item, once', (t) => {
+  // The click that opens the menu lands on a trigger this very repaint destroys,
+  // and Chromium fires no blur for a removed node — so without this the menu is
+  // on screen with focus back on `<body>`, and Escape has nothing to reach it
+  // from. Only on the edge: the header repaints per streamed token, and
+  // re-focusing every tick would take the caret out of wherever the user went.
+  const r = render(t)
+  r.paint({})
+  r.paint({ menuOpen: true })
+
+  assert.equal(r.stub.activeElement(), r.menuItems()[0]!.node)
+
+  // Somewhere this header does not rebuild, which is the point: the repaint has
+  // to leave the caret where the user put it.
+  const composer = r.stub.createContainer('input')
+  r.stub.focus(composer)
+  r.paint({ menuOpen: true })
+  assert.equal(r.stub.activeElement(), composer, 'a repaint is not a re-open')
+})
+
+test('a press outside the header closes the menu', (t) => {
+  // The gap `focusout` alone leaves. The trigger is rebuilt by the paint that
+  // opens the menu, so by the user's next click there is nothing focused inside
+  // the header to fire a `focusout` at all — the menu could only be closed by
+  // choosing from it.
+  const r = render(t)
+  r.paint({ menuOpen: true })
+
+  r.stub.dispatchDocument('pointerdown', { target: r.stub.createContainer('transcript-area') })
+  assert.deepEqual(r.events, ['close-menu'])
+
+  // Inside, including the trigger itself: that press is a toggle, and closing it
+  // here would let the `click` that follows re-open what the user just shut.
+  r.events.length = 0
+  r.stub.dispatchDocument('pointerdown', { target: r.menuItems()[0]!.node })
+  assert.deepEqual(r.events, [])
+})
+
+test('the rest of the header is outside the menu, not inside it', (t) => {
+  // The scope is the menu and its trigger, not the bar they sit in. Pressing the
+  // session title or 打开位置 beside an open menu is "somewhere else" to the
+  // person doing it, and a header-wide scope answered it by leaving the menu up.
+  const r = render(t)
+  r.paint({ menuOpen: true })
+
+  r.stub.dispatchDocument('pointerdown', { target: r.openLocation()?.node })
+  assert.deepEqual(r.events, ['close-menu'], 'a press on 打开位置 leaves the menu standing')
+})
+
+test('a press the pointer events never reach still closes the menu', (t) => {
+  // `pointerdown` is the one this is really about, but it is not the only way a
+  // press arrives: `click` is the last-resort exit, so a popover cannot be left
+  // hanging by whatever ate the press before it — which is the failure this
+  // primitive grew a second event type for.
+  const r = render(t)
+  r.paint({ menuOpen: true })
+
+  r.stub.dispatchDocument('click', { target: r.stub.createContainer('transcript-area') })
+  assert.deepEqual(r.events, ['close-menu'])
+})
+
 test('focus leaving the header closes the menu; moving inside it does not', (t) => {
   const r = render(t)
   r.paint({ menuOpen: true })
@@ -199,6 +260,37 @@ test('focus leaving the header closes the menu; moving inside it does not', (t) 
   r.stub.dispatch(r.container, 'focusout', { relatedTarget: r.menuItems()[0]!.node })
   assert.deepEqual(r.events, [], 'focus moving between the trigger and an item is not leaving')
 
-  r.stub.dispatch(r.container, 'focusout', { relatedTarget: null })
+  r.stub.dispatch(r.container, 'focusout', { relatedTarget: r.stub.createContainer('composer') })
   assert.deepEqual(r.events, ['close-menu'])
+})
+
+test('focus going nowhere is this view’s own repaint, not the user leaving', (t) => {
+  // The bug the whole dismissal pass was chasing, and it was never the press.
+  // Opening the menu repaints the header, which destroys the trigger the mouse
+  // is on; `firstMenuItem.focus()` then fires a `focusout` with `relatedTarget:
+  // null` *from inside `render()`*. Reading that as a departure re-entered
+  // `render()` with the menu closed, and the outer paint — still running — wrote
+  // its menu-bearing subtree over the closed one. The menu stayed on screen with
+  // `headerMenuOpen` already false, so every press outside hit `app.ts`'s early
+  // return and only choosing an item could dismiss it.
+  //
+  // `sidebarView.ts` and `titleBarView.ts` have carried this guard all along;
+  // this header is the one that did not.
+  const r = render(t)
+  r.paint({ menuOpen: true })
+
+  r.stub.dispatch(r.container, 'focusout', { relatedTarget: null })
+  assert.deepEqual(r.events, [], 'a repaint must not be mistaken for the user leaving')
+})
+
+test('the paint that opens the menu moves focus last of all', (t) => {
+  // The other half of the same fix: `focus()` runs other people's code, so it
+  // goes after every node this paint owns is in the page. A handler that
+  // repaints in answer then wins, instead of being overwritten by the rest of
+  // the paint that provoked it — the DOM cannot end up ahead of the state.
+  const r = render(t)
+  r.paint({ menuOpen: true })
+
+  assert.equal(r.stub.activeElement(), r.menuItems()[0]?.node, 'the keyboard lands in the menu')
+  assert.ok(r.openLocation(), '打开位置 is in the page by the time focus moves')
 })

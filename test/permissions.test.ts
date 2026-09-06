@@ -16,7 +16,7 @@ import {
 } from '../src/harness/permissions.js'
 import { persistPermissionRule } from '../src/config/settings.js'
 import { analyzeShellCommand } from '../src/harness/commandAnalysis.js'
-import { bashTool } from '../src/tools/bash.js'
+import { bashTool } from '../src/tools/BashTool/BashTool.js'
 import type { Tool } from '../src/harness/types.js'
 
 const fsWriteTool: Tool = {

@@ -3,9 +3,9 @@ import type { ChildProcess } from 'node:child_process'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { BackgroundTaskRegistry, MAX_BACKGROUND_OUTPUT_BYTES } from '../src/services/backgroundTasks/registry.js'
-import { createBashTool } from '../src/tools/bash.js'
-import { createBashOutputTool } from '../src/tools/bashOutput.js'
-import { createKillShellTool } from '../src/tools/killShell.js'
+import { createBashTool } from '../src/tools/BashTool/BashTool.js'
+import { createBashOutputTool } from '../src/tools/BashOutputTool/BashOutputTool.js'
+import { createKillShellTool } from '../src/tools/KillShellTool/KillShellTool.js'
 import type { SessionRecord } from '../src/harness/types.js'
 
 function context() {

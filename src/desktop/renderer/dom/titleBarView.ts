@@ -9,6 +9,7 @@ import {
   type TitleBarView,
 } from '../model/titleBar.js'
 import { button } from './controls.js'
+import { onPressOutside } from './dismiss.js'
 import { el, replace } from './dom.js'
 
 /**
@@ -24,10 +25,11 @@ import { el, replace } from './dom.js'
  * `styles.css` (`#titlebar` / `#titlebar button`), not here: painting is not this
  * file's job.
  *
- * Menus close on `focusout` from the bar, the same mechanism the sidebar's
- * workspace dropdown and the composer's permission pill use — and with the same
- * known hole (clicking a non-focusable decoration inside the bar does not close
- * them, `todo.md` records it three times over).
+ * Menus close on a press outside the menu shells (`dom/dismiss.ts`), on
+ * `focusout` from the bar, and on Escape — the same three the canvas header and
+ * the composer's popovers use. The press is what covers the hole the other two
+ * leave: a click on an unfocusable decoration moves no focus and fires no
+ * `focusout`.
  */
 
 export interface TitleBarDom {
@@ -42,6 +44,15 @@ export function createTitleBarView(
 ): TitleBarDom {
   let openMenu: string | undefined
   let drawn: string | undefined
+
+  // Every menu shell, not the bar: a press on 视图 while 文件 is open has to reach
+  // `toggleMenu` and swap them rather than be answered here as a close, and a
+  // press on the bar's own blank strip has to shut whatever is open — which a
+  // bar-wide scope treated as "inside" and left standing.
+  onPressOutside(['.titlebar-menu-shell'], () => {
+    if (openMenu === undefined) return
+    onOpenMenu(undefined)
+  })
 
   container.addEventListener('focusout', (event) => {
     const next = event.relatedTarget

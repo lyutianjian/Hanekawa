@@ -36,7 +36,12 @@ export const sidebar = () => `(() => {
   const rows = [...container.querySelectorAll('.session-row')].map((row) => ({
     sessionId: row.dataset.sessionId,
     index: Number(row.dataset.index),
-    title: (row.querySelector('.session-title') || {}).textContent || '',
+    // The visible run, not the whole .session-title: the marquee needs the name
+    // twice — that is what it wraps onto — and the second copy is aria-hidden
+    // scenery. Reading the wrapper concatenated the two, so every assertion about
+    // "what this row is called" compared against the name doubled. No backticks
+    // in here: this comment lives inside the template literal being evaluated.
+    title: (row.querySelector('.session-title-run') || row.querySelector('.session-title') || {}).textContent || '',
     badge: (row.querySelector('.session-badge[aria-label]') || {}).ariaLabel || 'none',
     active: row.classList.contains('active'),
     selected: row.classList.contains('selected'),
@@ -374,6 +379,24 @@ export const canvasHeader = () => `(() => {
 
 export const clickHeaderMenu = () =>
   clickOr('#canvas-header .canvas-menu-trigger', 'the canvas header menu')
+
+/**
+ * The viewport centre of one node, for `mouseClick`.
+ *
+ * The dismissal steps need this and cannot use `clickOr`: `element.click()`
+ * dispatches a lone `click` straight at the node and produces **no
+ * `pointerdown`** at all, which is the event every popover in this renderer
+ * closes on (`dom/dismiss.ts`). A menu that only a real press dismisses would
+ * pass a synthetic-click smoke and fail in the user's hands — which is exactly
+ * the bug this probe was added for.
+ */
+export const centreOf = (selector) => `(() => {
+  const node = document.querySelector(${json(selector)})
+  if (!node) return null
+  const rect = node.getBoundingClientRect()
+  if (rect.width === 0 || rect.height === 0) return null
+  return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
+})()`
 
 /**
  * The frameless window's title bar (6a).

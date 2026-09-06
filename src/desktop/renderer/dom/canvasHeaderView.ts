@@ -2,6 +2,7 @@ import type { CanvasHeaderMenuItem, CanvasHeaderView } from '../model/canvasHead
 import { renameCommit } from '../model/canvasHeader.js'
 import { append, el, replace, show } from './dom.js'
 import { button } from './controls.js'
+import { onPressOutside } from './dismiss.js'
 import { icon } from './icons.js'
 
 /**
@@ -16,9 +17,12 @@ import { icon } from './icons.js'
  *    mid-word. Same shape as the sidebar's search box (5b) and the settings
  *    screen's (5f): built once, moved in and out of the flow, and written back
  *    exactly once — on the idle→renaming transition.
- * 2. **The `⋯` menu closes on the container's `focusout`**, like the sidebar's
- *    workspace menu. That inherits the same known gap: clicking an unfocusable
- *    decoration does not close it (`todo.md` records it under 5f).
+ * 2. **The `⋯` menu closes three ways**: a press outside the menu itself
+ *    (`dom/dismiss.ts`), focus leaving the header, and Escape. The first is what
+ *    makes the other two enough — this header repaints the trigger out from
+ *    under the click that opened the menu, so by the user's next click there is
+ *    nothing focused inside to fire a `focusout` at all. Opening the menu also
+ *    moves focus onto its first item, which is what puts the keyboard back in it.
  */
 
 export interface CanvasHeaderDom {
@@ -52,6 +56,10 @@ export function createCanvasHeaderView(
 
   /** The title the input was seeded from, so a no-op commit sends nothing. */
   let seededTitle: string | undefined
+  /** Whether the last paint drew the menu, so focus moves on the edge only. */
+  let menuWasOpen = false
+  /** The menu's first item, rebuilt with the menu; where the keyboard lands. */
+  let firstMenuItem: HTMLElement | undefined
 
   titleInput.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
@@ -70,10 +78,29 @@ export function createCanvasHeaderView(
   // unchanged or empty title resolves to "nothing to send".
   titleInput.addEventListener('blur', () => commit())
 
-  // The menu's two exits, on the container rather than on the menu: the menu is
-  // rebuilt by every render, and a listener on it would die with it.
+  // The menu's three exits. The press is scoped to the menu and its trigger,
+  // *not* to the header: pressing the session title or 打开位置 beside an open
+  // menu is "somewhere else" as far as the user is concerned, and a header-wide
+  // scope left it standing there. The trigger stays inside so a press on the `⋯`
+  // of an open menu reaches `onToggleMenu` as a close, instead of being closed
+  // here and re-opened by the click that follows.
+  //
+  // By selector rather than by node: both are rebuilt by every render, including
+  // every snapshot of a streaming turn, so a captured reference would be stale.
+  onPressOutside(['.canvas-menu', '.canvas-menu-trigger'], () => actions.onCloseMenu())
   container.addEventListener('focusout', (event) => {
     const next = (event as FocusEvent).relatedTarget
+    // `null` is focus going *nowhere*, which is this view's own repaint and not
+    // the user leaving — the guard `sidebarView.ts` and `titleBarView.ts` each
+    // spell out, and the one this header was missing. Without it the menu shut
+    // itself in the act of opening: the paint that draws it destroys the trigger
+    // the mouse is on, and the `firstMenuItem.focus()` below then fires a
+    // `focusout` with no destination, *from inside `render()`*. That re-entered
+    // `render()` with `menuOpen: false` — and the outer paint, still running,
+    // then wrote its own menu-bearing subtree over the closed one. The menu
+    // stayed on screen with the flag already false, so every later dismissal hit
+    // `closeHeaderMenu`'s early return and only choosing an item could close it.
+    if (next === null) return
     if (next instanceof Node && container.contains(next)) return
     actions.onCloseMenu()
   })
@@ -103,6 +130,8 @@ export function createCanvasHeaderView(
         replace(identity)
         replace(rightControls)
         seededTitle = undefined
+        menuWasOpen = false
+        firstMenuItem = undefined
         return
       }
 
@@ -146,6 +175,23 @@ export function createCanvasHeaderView(
           { icon: 'code' },
         ),
       )
+
+      // Last, after every node this paint owns is in the page — `focus()` is the
+      // one call here that runs other people's code. It fires `focusout` on
+      // whatever held the caret, synchronously, and a handler that repaints in
+      // answer re-enters this function; anything written after that point would
+      // land on top of the newer paint and leave the DOM ahead of the state.
+      // Being last makes the re-entrant paint the one that survives, which is
+      // the only ordering that cannot lie.
+      //
+      // On the closed→open transition only, the way the seed above is written
+      // once: this header repaints on every snapshot of a streaming turn, and
+      // re-focusing per tick would take the caret out of whatever the user moved
+      // to. Without it the menu is opened by a click that destroys the button it
+      // landed on, and the keyboard is left on `<body>` with a menu on screen.
+      const opening = view.menuOpen && !menuWasOpen
+      menuWasOpen = view.menuOpen
+      if (opening) firstMenuItem?.focus()
     },
   }
 
@@ -153,6 +199,7 @@ export function createCanvasHeaderView(
     const menu = el('div', 'canvas-menu')
     menu.setAttribute('role', 'menu')
     menu.setAttribute('aria-label', '会话操作')
+    firstMenuItem = undefined
     for (const item of items) {
       const node = button(
         item.danger ? 'canvas-menu-item danger' : 'canvas-menu-item',
@@ -161,6 +208,7 @@ export function createCanvasHeaderView(
         () => actions.onMenuItem(item.id),
       )
       node.setAttribute('role', 'menuitem')
+      firstMenuItem ??= node
       menu.appendChild(node)
     }
     return menu

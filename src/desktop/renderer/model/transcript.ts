@@ -363,6 +363,12 @@ export function applySessionEvent(
       }
     }
 
+    case 'session-meta':
+      // The window's chrome names the session, not the transcript: the header
+      // and the sidebar read it off `WireLaneInfo`, which the host rebroadcasts
+      // for this event. Nothing to add to the conversation.
+      return { state }
+
     case 'restore-input':
       return { state, restoreInput: event.text }
 

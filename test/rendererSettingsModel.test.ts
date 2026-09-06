@@ -771,6 +771,58 @@ test('a routing row has a select seeded with the current value', () => {
   })
 })
 
+test('a routing.main that outranks the default model says so in both cards', () => {
+  // `resolveModelKeyFor({ kind: 'main' })` reads routing first, so this config
+  // starts new sessions on `broken`… except `broken` does not resolve, so the
+  // one that actually wins here is the default. Both halves are the point.
+  const overriding = snapshotOf({
+    defaultModel: 'big',
+    models: [
+      { key: 'big', model: 'claude-big', endpoint: 'main', resolves: true },
+      { key: 'small', model: 'claude-small', endpoint: 'main', resolves: true },
+    ],
+    routing: { main: 'small', plan: 'inherit', compact: 'inherit', subagent: [] },
+  })
+  const view = settingsView(openState({ snapshot: overriding }))
+  assert.match(view.cards.find((card) => card.id === 'models')?.note ?? '', /实际从 small 开始/)
+  const main = view.cards.find((card) => card.id === 'routing')?.rows.find((row) => row.id === 'routing:main')
+  assert.match(main?.detail ?? '', /覆盖默认模型 big/)
+
+  // An unresolvable routing target degrades to the default, so nothing is
+  // claimed to be overridden.
+  const degraded = settingsView(openState({
+    snapshot: snapshotOf({ routing: { main: 'broken', plan: 'inherit', compact: 'inherit', subagent: [] } }),
+  }))
+  assert.equal(degraded.cards.find((card) => card.id === 'models')?.note, '默认模型：big')
+})
+
+test('"设为默认" releases a routing.main that would outrank it', () => {
+  const overriding = snapshotOf({
+    defaultModel: 'big',
+    models: [
+      { key: 'big', model: 'claude-big', endpoint: 'main', resolves: true },
+      { key: 'small', model: 'claude-small', endpoint: 'main', resolves: true },
+    ],
+    routing: { main: 'small', plan: 'inherit', compact: 'inherit', subagent: [] },
+  })
+  const outcome = applySettingsIntent(openState({ snapshot: overriding }), {
+    kind: 'set-default-model',
+    key: 'big',
+  })
+  assert.deepEqual(outcome.changes, [
+    { scope: 'provider', kind: 'set-default-model', key: 'big' },
+    { scope: 'provider', kind: 'set-routing', role: 'main', value: 'inherit' },
+  ])
+
+  // Nothing to release when routing already follows the main model: the extra
+  // change would rewrite a role the user never touched.
+  const plain = applySettingsIntent(
+    openState({ snapshot: snapshotOf({ routing: { main: 'inherit', plan: 'inherit', compact: 'inherit', subagent: [] } }) }),
+    { kind: 'set-default-model', key: 'broken' },
+  )
+  assert.deepEqual(plain.changes, [{ scope: 'provider', kind: 'set-default-model', key: 'broken' }])
+})
+
 test('every configured subagent type gets its own routing row', () => {
   const view = settingsView(openState())
   const routing = view.cards.find((card) => card.id === 'routing')

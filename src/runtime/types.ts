@@ -11,7 +11,7 @@ import type { SessionMeta, SessionStore } from '../sessions/service.js'
 import type { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
 import type { CommandRegistry } from '../commands/registry.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
-import type { BaseAgentDefinition } from '../tools/agentTool.js'
+import type { BaseAgentDefinition } from '../tools/AgentTool/AgentTool.js'
 import type { UiBridges } from './bridges.js'
 
 /**

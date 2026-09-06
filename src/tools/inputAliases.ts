@@ -11,7 +11,11 @@
  * This layer is deliberately NOT advertised: `toolApiSchema.ts` still publishes
  * the camelCase schema, so the model is told one shape and quietly forgiven for
  * the other. Known-but-unsupported keys are dropped rather than rejected — a
- * `Grep` that ignores `output_mode` still answers the question.
+ * `Grep` that ignores `-n` still answers the question.
+ *
+ * Dropping is a last resort, not the default: a key the model keeps sending is
+ * usually a capability worth having. `Grep`'s `output_mode` and context flags
+ * used to be dropped here and are now renamed onto real parameters.
  */
 
 interface AliasSpec {
@@ -79,11 +83,16 @@ const SPECS: Record<string, AliasSpec> = {
       head_limit: 'headLimit',
       file_pattern: 'glob',
       include: 'glob',
+      output_mode: 'outputMode',
+      '-C': 'contextLines',
+      context: 'contextLines',
+      context_lines: 'contextLines',
+      '-B': 'contextBefore',
+      '-A': 'contextAfter',
     },
-    // Ripgrep flags this tool does not model. Dropping beats rejecting: the
-    // search still runs, just without the output-mode/context refinement.
-    drop: ['output_mode', 'type', '-n', '-A', '-B', '-C', 'context'],
-    numbers: ['headLimit', 'offset'],
+    // `-n` asks for line numbers, which the content mode always emits anyway.
+    drop: ['-n'],
+    numbers: ['headLimit', 'offset', 'contextLines', 'contextBefore', 'contextAfter'],
     booleans: ['caseInsensitive', 'multiline'],
   },
   Glob: {

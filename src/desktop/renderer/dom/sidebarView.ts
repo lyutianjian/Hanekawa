@@ -21,6 +21,7 @@ import {
 } from '../model/marquee.js'
 import { el, replace, show } from './dom.js'
 import { button, textField } from './controls.js'
+import { onPressOutside } from './dismiss.js'
 import { icon } from './icons.js'
 
 /**
@@ -46,8 +47,12 @@ import { icon } from './icons.js'
  * means, whether a row is asking for confirmation — belongs to
  * `model/sidebar.ts`. This file turns those into nodes and events, and owns
  * exactly two things the model cannot: the `keydown` that feeds
- * `sidebarKeyToIntent` only while focus is inside the sidebar, and the
- * `focusout` that withdraws a pending delete when the user's attention leaves.
+ * `sidebarKeyToIntent` only while focus is inside the sidebar, and the two
+ * exits that withdraw a pending delete when the user's attention leaves — a
+ * `focusout`, and a press landing outside the rail (`dom/dismiss.ts`). The
+ * second exists because the first cannot see a click on unfocusable scenery:
+ * the transcript's background moves no focus, so `focusout` never fires and a
+ * confirmation asked in the sidebar used to sit there unanswerable.
  *
  * That second one is why no rank had to be added to `resolveKey`: a delete
  * confirmation scoped to sidebar focus cannot become a dialog that is drawn but
@@ -273,6 +278,26 @@ export function createSidebarView(
     groupNodes.set(group.projectRoot, entry)
     return entry
   }
+
+  // The same three withdrawals the `focusout` below makes, on the press that
+  // lands outside them. Three registrations rather than one on the rail, because
+  // the three ask three different questions and each is answered by pressing
+  // anywhere that is not *it*: a confirmation in one row is withdrawn by
+  // pressing another row, and a heading's menu by pressing a session. A single
+  // sidebar-wide scope left all three standing for any press inside the rail,
+  // which is most of the blank space a user reaches for.
+  //
+  // All three are no-ops when nothing is asking, which is what keeps this off
+  // the repaint path: every press in the window arrives here, and `app.ts`
+  // answers an unchanged state without rendering.
+  onPressOutside(['.session-actions'], () => onIntent({ kind: 'cancel-delete' }))
+  onPressOutside(['.project-actions'], () => onIntent({ kind: 'cancel-remove-project' }))
+  // The heading row stays inside: the menu is opened by a `contextmenu` on it,
+  // and that event now reaches here first — closing on it would let the
+  // heading's own handler re-open what the user meant to toggle shut.
+  onPressOutside(['.project-menu', '.project-row'], () =>
+    onIntent({ kind: 'open-project-menu', projectRoot: undefined }),
+  )
 
   container.addEventListener('focusout', (event) => {
     const next = event.relatedTarget
@@ -556,7 +581,13 @@ export function createSidebarView(
       const heading = projectHeadings.get(projectRoot)
       if (!heading) return
       heading.scrollIntoView({ block: 'nearest' })
-      heading.focus()
+      // The list takes the focus, not the heading. A heading is a `<button>` and
+      // keeps its focus ring until something else takes it — which, sitting on a
+      // group whose session has not been created yet, reads as "this project is
+      // the active one" and competes with `.session-row.active`, the rail's one
+      // real selection mark. The list is `tabIndex = 0` and owns the arrow keys,
+      // so revealing a workspace still leaves the keyboard somewhere useful.
+      list.focus()
     },
     render(view) {
       const signature = sidebarRenderSignature(view)

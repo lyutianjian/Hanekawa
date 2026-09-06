@@ -948,6 +948,16 @@ body.resizing #sidebar { transition: none; }
 }
 .project-heading .icon { flex: 0 0 auto; width: 12px; height: 12px; }
 .project-heading:hover { color: var(--text-primary); background: var(--surface-hover); }
+/* An explicit focus treatment, because the absence of one is not neutral: an
+   unstyled `<button>` keeps Chromium's own ring, and a heading that holds it
+   until focus moves elsewhere reads as a *selected project* — a state this rail
+   does not have. Selection here is `.session-row.active` and nothing else.
+   `:focus-visible`, the same rung `.sidebar-list` uses: a mouse press leaves no
+   mark, a Tab still lands visibly. */
+.project-heading:focus,
+.project-new:focus { outline: none; }
+.project-heading:focus-visible,
+.project-new:focus-visible { outline: 1px solid var(--focus-ring); outline-offset: -1px; }
 /* Where the session count used to be. A number told the user what they could
    already see; this is the action they came to the heading for, so unlike
    `.session-actions` it does not hide until hover — a project with no sessions
@@ -3390,6 +3400,32 @@ body.resizing #sidebar { transition: none; }
   overflow-wrap: anywhere;
 }
 .md .md-table th { color: var(--text-primary); font-weight: 600; }
+/* --- maths ---
+   Position and colour only; the glyph metrics belong to `katex.css`, which is
+   linked separately for the same reason `fonts.css` is — this sheet is parsed
+   by `test/rendererStyleTokens.test.ts` through a deliberately flat parser, and
+   KaTeX's `@font-face` rules would fail it.
+
+   The inline form is the second exception to the no-horizontal-scroll rule the
+   diff block explains below, and for a narrower reason: an equation has no
+   wrapping points, so a long one either scrolls or is clipped. `contain` stops
+   KaTeX's absolutely positioned struts from being measured by the transcript's
+   own overflow. */
+.md .md-math { color: var(--text-primary); }
+.md .md-math-display {
+  display: block;
+  margin: 10px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  contain: paint;
+}
+/* An expression KaTeX refused. Shown as the source that produced it, in the
+   code face, so a typo in one formula does not blank the answer around it. */
+.md .md-math-raw {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--text-secondary);
+}
 /* The plan body keeps its own panel chrome; markdown only replaces the text. */
 #overlay-panel .plan.md { white-space: normal; }
 

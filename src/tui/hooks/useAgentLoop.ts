@@ -265,6 +265,11 @@ export function useAgentLoop({
         else setTranscript(createTranscriptState(items))
         return
       }
+      case 'session-meta':
+        // The terminal reads the title off the controller when it draws it, so
+        // the `publish()` that came with this event is the whole update. Nothing
+        // belongs in the transcript.
+        return
       case 'restore-input':
         onRestoreInput?.(event.text)
         return

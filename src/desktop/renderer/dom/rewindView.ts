@@ -12,7 +12,8 @@ import { actionBar } from './overlayView.js'
  *
  * Every decision is already made in the view model. Rows and options are
  * clickable and hand back a `RewindIntent`, the same shape the key map produces,
- * so `app.ts` has one code path for both (`sidebarView.ts` does this too).
+ * so `app.ts` has one code path for both (`sidebarView.ts` does this too) — the
+ * backdrop press below included, which is Escape with a mouse.
  *
  * No `innerHTML`, and **no markdown**: a checkpoint label is the user's own
  * message, and this dialog is asking them to confirm destroying work. It shows
@@ -32,9 +33,26 @@ export function createRewindView(
   onIntent: RewindActivate,
 ): RewindPanel {
   let open = false
+  /** Mid-decision: files are being reverted or a summary generated. */
+  let busy = false
+
+  // The scrim, and only the scrim: `event.target === container` is what tells a
+  // press on the backdrop from one that started inside the card and bubbled.
+  // Same verdict as Escape, including its guard — `rewindKeyToIntent` refuses
+  // everything while a decision is in flight, and a backdrop that closed anyway
+  // would abandon a running restore.
+  //
+  // `#overlay` deliberately does *not* get this: those dialogs hold the agent
+  // loop, and a stray click must not answer a permission request.
+  container.addEventListener('pointerdown', (event) => {
+    if (event.target !== container) return
+    if (!open || busy) return
+    onIntent({ kind: 'close' })
+  })
 
   return {
     render(view) {
+      busy = view.busyLabel !== undefined
       replace(
         panel,
         el('div', 'title', view.title),
@@ -61,6 +79,7 @@ export function createRewindView(
       show(container, false)
       replace(panel)
       open = false
+      busy = false
     },
 
     isOpen() {

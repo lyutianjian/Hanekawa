@@ -7,8 +7,8 @@ import {
   MAX_BASH_TIMEOUT_MS,
   SLEEP_BLOCK_THRESHOLD_SECONDS,
   resolveBashTimeoutMs,
-} from '../src/tools/bash.js'
-import { buildBashDescription } from '../src/tools/bashPrompt.js'
+} from '../src/tools/BashTool/BashTool.js'
+import { buildBashDescription } from '../src/tools/BashTool/prompt.js'
 
 /**
  * The name the prompt's `# Environment` block gives the shell.

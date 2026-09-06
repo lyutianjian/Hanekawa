@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { z } from 'zod/v3'
-import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, filterToolsForSubAgent, prepareForkPreloadRecords } from '../src/tools/agentTool.js'
+import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, filterToolsForSubAgent, prepareForkPreloadRecords } from '../src/tools/AgentTool/AgentTool.js'
 import { AgentDefinitionLoader } from '../src/services/agents/agentDefinitionLoader.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { PermissionGate, type DenialStateStore } from '../src/harness/permissions.js'
@@ -1652,9 +1652,9 @@ test('Agent tool description teaches effective sub-agent prompting', async () =>
 
   assert.match(agentTool.description, /complex, multi-step/)
   assert.match(agentTool.description, /Do NOT use when/)
-  assert.match(agentTool.description, /colleague who has not seen this conversation/)
+  assert.match(agentTool.description, /agent starts cold/)
   assert.match(agentTool.description, /Never delegate understanding/)
-  assert.match(agentTool.description, /Always pass an explicit subagent_type/)
+  assert.match(agentTool.description, /Always pass it explicitly/)
 })
 
 test('Agent tool snapshots agent definitions at creation time', async () => {
@@ -2321,7 +2321,7 @@ test('explicit maxTurns in input overrides per-type default', async () => {
 // ============================================================================
 
 test('ALL_AGENT_DISALLOWED_TOOLS contains expected tools', async () => {
-  const { ALL_AGENT_DISALLOWED_TOOLS } = await import('../src/tools/agentTool.js')
+  const { ALL_AGENT_DISALLOWED_TOOLS } = await import('../src/tools/AgentTool/AgentTool.js')
   assert.ok(ALL_AGENT_DISALLOWED_TOOLS.includes('Agent'))
   assert.ok(ALL_AGENT_DISALLOWED_TOOLS.includes('EnterPlanMode'))
   assert.ok(ALL_AGENT_DISALLOWED_TOOLS.includes('ExitPlanMode'))
@@ -2383,7 +2383,7 @@ test('built-in explore keeps Bash read-only even when the parent is in bypass mo
 })
 
 test('ASYNC_AGENT_ALLOWED_TOOLS contains expected tools', async () => {
-  const { ASYNC_AGENT_ALLOWED_TOOLS } = await import('../src/tools/agentTool.js')
+  const { ASYNC_AGENT_ALLOWED_TOOLS } = await import('../src/tools/AgentTool/AgentTool.js')
   const allowed = ASYNC_AGENT_ALLOWED_TOOLS as readonly string[]
   assert.ok(allowed.includes('Read'))
   assert.ok(allowed.includes('Glob'))

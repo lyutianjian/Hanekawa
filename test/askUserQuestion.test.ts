@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { askUserQuestionTool } from '../src/tools/askUserQuestion.js'
+import { askUserQuestionTool } from '../src/tools/AskUserQuestionTool/AskUserQuestionTool.js'
 import type { ToolContext } from '../src/harness/types.js'
 
 function context(): ToolContext {

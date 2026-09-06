@@ -68,8 +68,13 @@ const ALLOWED_SHARED_IMPORTS = [
  * `marked` earns its place by being dependency-free ESM whose `exports` map has a
  * single entry — and the renderer uses only its *lexer*: the parser's output is an
  * HTML string, which `dom/dom.ts` has nowhere to put.
+ *
+ * `katex` is here on the same condition, met the same way: dependency-free, an
+ * `exports` map with an ESM branch, and the renderer uses only `render()`, which
+ * builds a DOM tree. Its string form, `renderToString`, is the one this codebase
+ * could not accept — `dom/markdownView.ts` says so at the call site.
  */
-const ALLOWED_PACKAGES = ['diff', 'fuse.js', 'marked']
+const ALLOWED_PACKAGES = ['diff', 'fuse.js', 'katex', 'marked']
 
 const FORBIDDEN_LAYERS = /(^|\/)(harness|services|sessions|commands|tui)\//
 

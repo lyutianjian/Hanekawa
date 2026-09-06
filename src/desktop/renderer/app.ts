@@ -88,6 +88,7 @@ import {
 } from './model/theme.js'
 import { canvasHeaderView, type CanvasHeaderMenuItem } from './model/canvasHeader.js'
 import { required } from './dom/dom.js'
+import { onPressOutside } from './dom/dismiss.js'
 import { createCanvasHeaderView } from './dom/canvasHeaderView.js'
 import { createSettingsView } from './dom/settingsView.js'
 import { createOverlayView } from './dom/overlayView.js'
@@ -1106,6 +1107,35 @@ sidebarResizer.addEventListener('pointercancel', endSidebarDrag)
 sidebarResizer.addEventListener('dblclick', () => {
   applySidebarWidth(SIDEBAR_WIDTH_DEFAULT)
   localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth))
+})
+
+// --- the window's own dismissals ---------------------------------------------------
+
+/**
+ * The two popovers anchored to the composer — the `/model` and `/effort` cards
+ * in `#surface`, and the slash-command completions — close on a press outside
+ * the input row.
+ *
+ * Window-level rather than inside `composerView.ts` because both belong to a
+ * *pane*: `#surface` and `#suggestions` are singletons the active pane fills, and
+ * only `PaneSession` knows what closing one means. Their only exit used to be
+ * Escape, which is the same gap every menu had — a card hanging over the
+ * transcript that a click on the transcript does not dismiss.
+ *
+ * `#input-row` is the whole form, so the textarea, the chip and the send button
+ * are all "inside": typing on with a completion list open is what the list is
+ * for.
+ *
+ * Both calls are gated on the shell state rather than made unconditionally: this
+ * runs on every click anywhere in the window, and `closeCompletions()` repaints
+ * the suggestion list whether or not there was one.
+ */
+onPressOutside([form], () => {
+  const pane = activePane()
+  if (!pane) return
+  const state = pane.shellState()
+  if (state.completions !== 'none') pane.closeCompletions()
+  if (state.hasSurface) pane.hideSurface()
 })
 
 // --- the global key handler -------------------------------------------------------

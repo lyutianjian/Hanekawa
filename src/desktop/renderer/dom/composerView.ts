@@ -15,6 +15,7 @@ import type { PermissionMode } from '../../../harness/permissions.js'
 import type { WireRuntimeSnapshot } from '../../../runtime/protocol/wire.js'
 import { el, replace, show } from './dom.js'
 import { button } from './controls.js'
+import { onPressOutside } from './dismiss.js'
 import { icon } from './icons.js'
 
 /**
@@ -192,9 +193,15 @@ export function createComposerView(els: {
     if (permissionMenuOpen) firstMenuItem()?.focus()
   })
 
-  // Closed the way the sidebar's workspace menu is: by focus leaving the shell,
-  // and by Escape. `relatedTarget` is where focus *went*, so a click on a menu
-  // item — which happens before the item's own `click` — must not close it.
+  // Closed three ways: a press outside the shell, focus leaving it, and Escape.
+  // `relatedTarget` is where focus *went*, so a click on a menu item — which
+  // happens before the item's own `click` — must not close it. The shell, not
+  // the menu, so the pill can still toggle its own popover shut.
+  onPressOutside([els.permissionShell], () => {
+    if (!permissionMenuOpen) return
+    permissionMenuOpen = false
+    renderPermission()
+  })
   els.permissionShell.addEventListener('focusout', (event) => {
     const next = (event as FocusEvent).relatedTarget
     if (next instanceof Node && els.permissionShell.contains(next)) return
@@ -293,9 +300,14 @@ export function createComposerView(els: {
 
   // --- the chip's popover ------------------------------------------------------
 
-  // Closed the same two ways the permission menu is. Escape unwinds one level at
-  // a time — an open flyout first — because a flyout opened by hover would
-  // otherwise take the whole popover with it.
+  // Closed the same three ways the permission menu is. Escape unwinds one level
+  // at a time — an open flyout first — because a flyout opened by hover would
+  // otherwise take the whole popover with it; a press *outside* the chip is not
+  // that kind of unwinding and takes the popover whole.
+  onPressOutside([els.chipShell], () => {
+    if (!runtimeMenu) return
+    closeRuntimeMenu()
+  })
   els.chipShell.addEventListener('focusout', (event) => {
     const next = (event as FocusEvent).relatedTarget
     if (next instanceof Node && els.chipShell.contains(next)) return

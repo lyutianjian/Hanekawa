@@ -98,6 +98,33 @@ test('bootstrap assembles a runtime bound to the configured model', async () => 
   await host.shutdown('test over')
 })
 
+test('initialModelKey follows a default model changed after startup', async () => {
+  const { cwd, store, session } = await createProject({
+    config: {
+      models: {
+        main: { provider: 'anthropic', model: 'claude-test', apiKey: 'test-key' },
+        other: { provider: 'anthropic', model: 'claude-other', apiKey: 'test-key' },
+      },
+      defaultModel: 'main',
+    },
+  })
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+  assert.equal(host.initialModelKey, 'main')
+
+  // What the settings screen does: mutate the live `ConfigService`. A new pane
+  // opened after this has to start on `other`, not on the launch-time default.
+  host.config.setDefaultModel('other')
+  assert.equal(host.initialModelKey, 'other')
+
+  // A config left with no resolvable default keeps the startup key rather than
+  // handing a new pane an empty model name.
+  host.config.removeModel('other')
+  host.config.removeModel('main')
+  assert.equal(host.initialModelKey, 'main')
+
+  await host.shutdown('test over')
+})
+
 test('startup effort is clamped to the model maximum, keeping the configured level', async () => {
   const { cwd, store, session } = await createProject({
     config: {

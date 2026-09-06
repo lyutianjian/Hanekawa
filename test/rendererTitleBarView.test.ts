@@ -142,6 +142,33 @@ test('focus leaving the bar closes an open menu; focus moving inside does not', 
   assert.deepEqual(menuRequests, [undefined])
 })
 
+test('a press outside the bar closes an open menu, and only then', (t) => {
+  const { render, root, stub, menuRequests } = mount(t)
+  render(viewOf())
+
+  const elsewhere = stub.createContainer('canvas')
+  stub.dispatchDocument('pointerdown', { target: elsewhere })
+  assert.deepEqual(menuRequests, [], 'a press with nothing open must not cost a repaint')
+
+  render(viewOf({ openMenu: 'view' }))
+  stub.dispatchDocument('pointerdown', { target: openList(root())?.children[0]?.node })
+  assert.deepEqual(menuRequests, [], 'a press on the menu itself is the user using it')
+
+  stub.dispatchDocument('pointerdown', { target: elsewhere })
+  assert.deepEqual(menuRequests, [undefined])
+})
+
+test('the bar’s own blank strip is outside the menu', (t) => {
+  // The scope is each menu shell, not the strip they sit on: pressing the empty
+  // space beside 帮助 while a menu hangs under 文件 is a dismissal, and a
+  // bar-wide scope used to read it as a press inside the thing being dismissed.
+  const { render, root, stub, menuRequests } = mount(t)
+  render(viewOf({ openMenu: 'view' }))
+
+  stub.dispatchDocument('pointerdown', { target: root().node })
+  assert.deepEqual(menuRequests, [undefined])
+})
+
 test('Escape closes an open menu and only then', (t) => {
   const { render, container, stub, menuRequests } = mount(t)
   render(viewOf())

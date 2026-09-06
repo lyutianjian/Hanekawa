@@ -490,6 +490,28 @@ test('moving focus from a trigger to its own item is not a departure', (t) => {
   assert.deepEqual(intents, [], 'the menu must survive being operated')
 })
 
+test('a press on the page closes an open pill; nothing open costs nothing', (t) => {
+  // The hole `focusout` alone leaves here: this screen is mostly cards and
+  // labels, none of which take focus, so pressing one moved no focus, fired no
+  // `focusout`, and left the dropdown hanging over the row being read.
+  const { view, stub, intents, apply } = mount(t)
+  const elsewhere = stub.createContainer('settings-card')
+
+  stub.dispatchDocument('pointerdown', { target: elsewhere })
+  assert.deepEqual(intents, [], 'a press with no pill open must not cost a repaint')
+
+  apply({ kind: 'toggle-menu', menu: 'row:routing:main' })
+  intents.length = 0
+
+  // The pill's own menu is inside it: the press that picks a choice must reach it.
+  const item = findAll(mainRoutingPill(view()), 'settings-menu-item')[0]!
+  stub.dispatchDocument('pointerdown', { target: item.node })
+  assert.deepEqual(intents, [], 'a press on the menu is the user using it')
+
+  stub.dispatchDocument('pointerdown', { target: elsewhere })
+  assert.deepEqual(intents, [{ kind: 'close-menu' }])
+})
+
 test('a closed screen is hidden and draws nothing', (t) => {
   const { view, render } = mount(t)
   render(stateOf({ open: false }))

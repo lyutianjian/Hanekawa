@@ -244,6 +244,31 @@ test('Escape and focus leaving both close the menu; focus moving inside does not
   assert.deepEqual(r.menuItems(), [])
 })
 
+test('a press outside the pill closes the permission menu; inside it does not', (t) => {
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+  r.stub.click(r.els.chipPermission)
+
+  r.stub.dispatchDocument('pointerdown', { target: r.menuItems()[0]!.node })
+  assert.equal(r.menuItems().length, 4, 'choosing a mode is not leaving')
+
+  r.stub.dispatchDocument('pointerdown', { target: r.els.input })
+  assert.deepEqual(r.menuItems(), [])
+})
+
+test('a press outside the chip shell closes the runtime popover', (t) => {
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+  r.stub.click(r.els.chipRuntime)
+  r.composer.showRuntimeMenu(menuView())
+
+  r.stub.dispatchDocument('pointerdown', { target: r.chipRows()[0]!.node })
+  assert.equal(r.chipRows().length, 2)
+
+  r.stub.dispatchDocument('pointerdown', { target: r.els.input })
+  assert.deepEqual(r.chipRows(), [])
+})
+
 test('a background pane cannot leave its menu hanging over the next one', (t) => {
   const r = render(t)
   r.composer.renderRuntime(runtime())

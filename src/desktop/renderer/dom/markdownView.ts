@@ -1,3 +1,5 @@
+import katex from 'katex'
+
 import type { MdBlock, MdInline, MdListItem } from '../model/markdown.js'
 import { parseMarkdownBlocks } from '../model/markdown.js'
 import { el, append } from './dom.js'
@@ -10,6 +12,12 @@ import { el, append } from './dom.js'
  * No syntax highlighting: the TUI's highlighter (`cli-highlight`) emits ANSI and
  * is Node-only, so a browser-side one is its own decision rather than something
  * to smuggle in here. A fenced block gets its language as a label instead.
+ *
+ * Maths is the one exception to "nothing but element building", and it is not a
+ * hole in the rule above: `katex.render()` clears its target with `textContent`
+ * and appends a tree it built through `createElement`, so the string form
+ * (`renderToString`) — the one this file could not use — is never produced. See
+ * `mathNode` for the options that keep it that way.
  */
 export function markdownNode(content: string, className = 'md'): HTMLElement {
   return el('div', className, ...markdownChildren(content))
@@ -56,7 +64,49 @@ function blockNode(block: MdBlock): HTMLElement {
 
     case 'rule':
       return el('hr')
+
+    case 'math':
+      return mathNode(block.tex, true)
   }
+}
+
+/**
+ * One equation, typeset.
+ *
+ * The options are the load-bearing part:
+ *
+ *  - `trust` stays at its default `false`, which is what turns `\href`, `\url`
+ *    and `\includegraphics` into errors rather than into a link or a remote
+ *    fetch the transcript never asked for. Everything else here is model-authored
+ *    text; this is the same call `safeHref` makes in the parser.
+ *  - `maxSize` caps the lengths TeX can name, so `\rule{99999em}{99999em}` is
+ *    clamped instead of pushing the transcript sideways. `maxExpand` is KaTeX's
+ *    own macro-expansion limit and its default (1000) already covers the
+ *    `\def`-recursion bomb.
+ *  - `throwOnError` is on so the failure is *ours*: a bad expression shows as
+ *    the source that produced it, in the code face, rather than through KaTeX's
+ *    own red-source fallback.
+ *  - `errorColor` covers the case that fallback cannot: a command that is
+ *    *refused* rather than unparseable — `\href` under `trust: false` — is
+ *    rendered by KaTeX as its own name and never reaches the `catch`. Its
+ *    default paints that in a hard-coded red, which is exactly the thing
+ *    `test/rendererStyleTokens.test.ts` exists to keep out of this renderer;
+ *    `currentColor` hands the decision back to the stylesheet.
+ */
+function mathNode(tex: string, display: boolean): HTMLElement {
+  const node = el('span', display ? 'md-math md-math-display' : 'md-math')
+  try {
+    katex.render(tex, node, {
+      displayMode: display,
+      throwOnError: true,
+      maxSize: 24,
+      errorColor: 'currentColor',
+    })
+  } catch {
+    node.className = 'md-math md-math-raw'
+    node.textContent = display ? `$$${tex}$$` : `$${tex}$`
+  }
+  return node
 }
 
 function listItemNode(item: MdListItem): HTMLElement {
@@ -129,5 +179,8 @@ function inlineNode(inline: MdInline): Node {
 
     case 'break':
       return el('br')
+
+    case 'math':
+      return mathNode(inline.tex, inline.display)
   }
 }

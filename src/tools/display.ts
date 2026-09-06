@@ -1,5 +1,5 @@
 import type { Tool } from '../harness/types.js'
-import { createSkillTool } from './skillTool.js'
+import { createSkillTool } from './SkillTool/SkillTool.js'
 import { getBuiltinTools } from './index.js'
 
 const TOOL_SUMMARY_MAX_LENGTH = 120

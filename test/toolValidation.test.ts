@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { validateToolInput } from '../src/harness/toolValidation.js'
-import { bashTool } from '../src/tools/bash.js'
+import { bashTool } from '../src/tools/BashTool/BashTool.js'
 
 const schema = {
   type: 'object',

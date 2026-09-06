@@ -312,6 +312,27 @@ test('picking another project asks to open a session there; the current one only
   ])
 })
 
+test('a press outside the Hero row closes the picker; inside it does not', (t) => {
+  // The popover hangs over the transcript, and the transcript is unfocusable
+  // scenery: before this it could only be closed with Escape or by picking.
+  const { view, stub, intents } = render(
+    t,
+    welcomeViewFixture({ picker: pickerFixture({ open: true }) }),
+  )
+
+  stub.dispatchDocument('pointerdown', { target: child(view(), 'workspace-picker-row').node })
+  assert.deepEqual(intents, [], 'a press on a row is the user choosing from it')
+
+  // The Hero's project name is what opens this, and it sits *beside* the picker
+  // in the same row: a press there must reach its own toggle, or the click that
+  // follows would re-open what the user just shut.
+  stub.dispatchDocument('pointerdown', { target: child(view(), 'welcome-project').node })
+  assert.deepEqual(intents, [])
+
+  stub.dispatchDocument('pointerdown', { target: stub.createContainer('transcript-area') })
+  assert.deepEqual(intents, [{ kind: 'close' }])
+})
+
 test('the picker keeps its search box across an open and a close', (t) => {
   const { view, rerender } = render(t)
   const before = child(view(), 'workspace-picker-search').node

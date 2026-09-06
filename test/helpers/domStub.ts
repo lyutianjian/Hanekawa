@@ -18,7 +18,8 @@
  * here are unguarded and the list keeps growing: `scrollTop`/`scrollHeight`/
  * `clientHeight`/`scrollTo`/`scrollIntoView`/`getBoundingClientRect()`/
  * `style.height`/`selectionStart`/
- * `setSelectionRange`/`dispatch`/`focus`/`contains()`/`dataset`/`insertBefore()`.
+ * `setSelectionRange`/`dispatch`/`focus`/`contains()`/`closest()`/`dataset`/
+ * `insertBefore()`.
  * Add to that list rather than starting a second one.
  *
  * Installation writes `globalThis.document` and `uninstall()` deletes it again.
@@ -274,6 +275,38 @@ class StubElement {
     else this.listeners.set(type, [listener])
   }
 
+  removeEventListener(type: string, listener: Listener): void {
+    const list = this.listeners.get(type)
+    if (!list) return
+    const at = list.indexOf(listener)
+    if (at >= 0) list.splice(at, 1)
+  }
+
+  /**
+   * As `Element.closest`, for the class selectors `dom/dismiss.ts` scopes a
+   * popover with. Only `.class` and `#id` lists are understood — that is the
+   * whole of what the renderer passes, and a selector engine here would be the
+   * kind of fake this file's header warns about. An unsupported selector throws
+   * rather than quietly missing, so a view that grows a real one is told.
+   */
+  closest(selector: string): StubElement | null {
+    const parts = selector.split(',').map((part) => part.trim()).filter(Boolean)
+    for (const part of parts) {
+      if (!/^[.#][A-Za-z0-9_-]+$/.test(part)) {
+        throw new Error(`domStub.closest understands '.class' and '#id' only, not '${part}'`)
+      }
+    }
+    for (let at: StubElement | undefined = this; at !== undefined; at = at.parent) {
+      for (const part of parts) {
+        const matched = part.startsWith('.')
+          ? at.classes.includes(part.slice(1))
+          : at.getAttribute('id') === part.slice(1)
+        if (matched) return at
+      }
+    }
+    return null
+  }
+
   /** As `Node.contains`: true for itself and any descendant. */
   contains(other: unknown): boolean {
     for (let at = other; at instanceof StubElement; at = at.parent) {
@@ -352,6 +385,15 @@ export interface DomStub {
    * behaviour and one that did not.
    */
   dispatch(node: unknown, type: string, init?: StubEventInit): { readonly defaultPrevented: boolean }
+  /**
+   * Fires an event on `document` itself, where the window's global listeners
+   * live: the keydown that carries the chords, and the `pointerdown` every
+   * popover closes on (`dom/dismiss.ts`).
+   *
+   * There is no bubbling here, so `init.target` is the whole of what a
+   * dismissal handler reads — it is the node the user pressed, not this one.
+   */
+  dispatchDocument(type: string, init?: StubEventInit): { readonly defaultPrevented: boolean }
   /** Moves focus, so `activeElement` can be asserted after a keyboard intent. */
   focus(node: unknown): void
   /**
@@ -419,8 +461,21 @@ export function installDomStub(): DomStub {
     body,
     /** Written by `statusView.renderSession` — the window's own title. */
     title: '',
+    /**
+     * What `index.html`'s `<!doctype html>` gets the real page. KaTeX reads it
+     * and refuses to typeset anything in quirks mode — its own metrics assume
+     * standards box sizing — so without this every equation in a DOM test
+     * takes the raw-source fallback and the assertions pass vacuously.
+     */
+    compatMode: 'CSS1Compat',
     addEventListener(type: string, listener: Listener): void {
       documentNode.addEventListener(type, listener)
+    },
+    // The other half of `addEventListener`, and not decoration: `dom/dismiss.ts`
+    // hands its caller an unsubscribe, and a stub that only ever adds would let a
+    // view leak a listener past its own teardown without a test noticing.
+    removeEventListener(type: string, listener: Listener): void {
+      documentNode.removeEventListener(type, listener)
     },
     createElement(tag: string): StubElement {
       return new StubElement(tag.toUpperCase(), undefined)
@@ -447,6 +502,10 @@ export function installDomStub(): DomStub {
   // calling `contains`. Without a `Node` binding that line is a ReferenceError, so
   // the stub answers for it: every node it builds is a `StubElement`.
   Reflect.set(globalThis, 'Node', StubElement)
+  // And `Element`, which `dom/dismiss.ts` narrows to before calling `closest`.
+  // The same binding: every node this stub builds is a `StubElement`, and the
+  // distinction the browser draws between the two is not one any view reads.
+  Reflect.set(globalThis, 'Element', StubElement)
 
   return {
     createContainer(className?: string): HTMLElement {
@@ -465,6 +524,9 @@ export function installDomStub(): DomStub {
     },
     dispatch(node: unknown, type: string, init: StubEventInit = {}): { readonly defaultPrevented: boolean } {
       return asElement(node).dispatch(type, init)
+    },
+    dispatchDocument(type: string, init: StubEventInit = {}): { readonly defaultPrevented: boolean } {
+      return documentNode.dispatch(type, init)
     },
     focus(node: unknown): void {
       asElement(node).focus()
@@ -496,6 +558,7 @@ export function installDomStub(): DomStub {
       activeElement = undefined
       Reflect.deleteProperty(globalThis, 'document')
       Reflect.deleteProperty(globalThis, 'Node')
+      Reflect.deleteProperty(globalThis, 'Element')
     },
   }
 }

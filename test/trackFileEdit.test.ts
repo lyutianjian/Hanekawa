@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -10,6 +11,7 @@ import { multiEditTool } from '../src/tools/MultiEditTool/MultiEditTool.js'
 import { writeFileTool } from '../src/tools/FileWriteTool/FileWriteTool.js'
 import { deleteFileTool } from '../src/tools/FileDeleteTool/FileDeleteTool.js'
 import { notebookEditTool } from '../src/tools/NotebookEditTool/NotebookEditTool.js'
+import { bashTool } from '../src/tools/BashTool/BashTool.js'
 
 function context(cwd: string, tracked: string[], onTrack?: () => void): ToolContext {
   return {
@@ -61,6 +63,22 @@ test('write tools report the edited path before touching it', async () => {
     assert.equal(notebook.ok, true, notebook.content)
 
     assert.deepEqual(tracked, ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'n.ipynb'].map((name) => path.join(dir, name)))
+  })
+})
+
+test('Bash reports its redirection target before the command runs', async () => {
+  await withTempDir(async (dir) => {
+    const tracked: string[] = []
+    const ctx = context(dir, tracked, () => {
+      // The backup has to happen while the old content is still on disk.
+      assert.equal(existsSync(path.join(dir, 'a.txt')), true)
+    })
+    await writeFile(path.join(dir, 'a.txt'), 'alpha\n', 'utf8')
+
+    const result = await bashTool.execute({ command: 'echo beta > a.txt' }, ctx)
+    assert.equal(result.ok, true, result.content)
+    assert.deepEqual(tracked, [path.join(dir, 'a.txt')])
+    assert.equal((await readFile(path.join(dir, 'a.txt'), 'utf8')).trim(), 'beta')
   })
 })
 

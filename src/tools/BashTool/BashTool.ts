@@ -16,6 +16,8 @@ import {
   resolveBashTimeoutMs,
 } from './constants.js'
 import { buildBashDescription } from './prompt.js'
+import { extractBashWritePaths } from './writeTargets.js'
+import { trackFileEdit } from '../trackFileEdit.js'
 
 // Re-exported so existing importers of these names keep working; the values
 // live in bashConstants.ts because bashPrompt.ts quotes them.
@@ -270,6 +272,13 @@ export function createBashTool(backgroundTasks: BackgroundTaskRegistry = default
     }
 
     const { shell, args: shellArgs } = getShell()
+
+    // Back up the files this command is about to overwrite, before it runs.
+    // Parsing is best effort and never gates execution: an unrecognised
+    // command runs exactly as before, only without file-history coverage.
+    for (const target of extractBashWritePaths(options.command, context.cwd)) {
+      await trackFileEdit(context, target)
+    }
 
     if (options.run_in_background) {
       const proc = spawn(shell, shellArgs(options.command), {

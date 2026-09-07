@@ -381,10 +381,14 @@ the previous contents are copied to `~/.myagent/file-history/<session-id>/`, and
 a rewind puts those copies back — deleting files the agent created after the
 chosen point.
 
+`Bash` is covered only where the target is unambiguous from the command text:
+output redirections (`> f`, `>> f`, `2> f`, `&> f`), `tee`, and non-recursive
+`cp`/`mv`. A command that builds its target with a variable, a glob, or a
+command substitution, and anything a script writes indirectly, is not captured.
+
 Everything else is left exactly as it is: your own edits in an editor, build
-output, `git` operations, and files written by `Bash` commands are never
-captured and never rolled back. A rewind undoes the agent's edits, not the state
-of your worktree.
+output, and `git` operations are never captured and never rolled back. A rewind
+undoes the agent's edits, not the state of your worktree.
 
 ## Useful Environment Variables
 

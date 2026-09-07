@@ -1,6 +1,6 @@
 # Checkpoint 重构实施文档：shadow-git → file-history
 
-状态：实施中（2026-09-07 核验：T0–T9 已完成，只剩可选的 T10）
+状态：已完成（2026-09-07 核验：T0–T10 全部完成）
 影响面：`/rewind` 的「恢复代码」能力，以及它背后的整套快照机制。其余功能不受影响。
 
 ---
@@ -326,13 +326,19 @@ commit：`checkpoint: remove shadow git implementation`
 
 ---
 
-### [ ] T10 —（可选）BashTool 写入追踪
+### [x] T10 —（可选）BashTool 写入追踪
 
-- [ ] 从 bash 命令中提取将被写入的路径（可参考 CC 的 `utils/bash/parser.ts` 与 `BashTool.tsx:393`），在执行前 `trackEdit`
-- [ ] 保守策略：只识别高置信度的重定向与常见写命令，识别不到就不追踪，**绝不因为解析失败而阻断命令执行**
-- [ ] 测试：常见形态（`>`、`>>`、`tee`、`mv`、`cp`）被识别；管道与复合命令不误判
+- [x] 从 bash 命令中提取将被写入的路径（新建 `src/tools/BashTool/writeTargets.ts` 的 `extractBashWritePaths`），在 spawn 之前逐个 `trackFileEdit`
+- [x] 保守策略：只识别高置信度的重定向与常见写命令，识别不到就不追踪，**绝不因为解析失败而阻断命令执行**
+- [x] 测试：常见形态（`>`、`>>`、`tee`、`mv`、`cp`）被识别；管道与复合命令不误判
 
-验收：`node --import tsx --test test/bashTool*.test.ts`。
+核验（2026-09-07）：复用 `harness/bashSafety.ts` 的 `splitShellSegments` / `shellWords`（已是引号感知的），不引入第二套解析。识别范围：`>` / `>>` 及其 fd 限定（`2>`）与 `&>` 拼写、`tee` 的全部操作数、`cp`/`mv` 的目的地（同时给出 `dest` 与 `dest/basename(src)` 两种拼法，因为无法在解析期区分文件与目录），外加 `mv` 的源文件——它会被移走，需要备份。
+
+刻意不识别：`>|`（`splitShellSegments` 先在管道处切开，redirect 永远见不到它）、递归 `cp -r`（无法枚举内容）、含 `$`/反引号/glob 的目标（展开需要 shell 本身，猜错等于备份一个没人碰过的文件）、`/dev/*` 与 `2>&1` 这类描述符复制。引号内的 `'> not-a-file'` 经 `shellWords` 去引号后成了带空格的单词，因此 redirect 的内联目标必须是 `\S*`。
+
+过度包含是便宜的方向：没被写的路径备份不变、diff 里自然消失；漏掉才会让文件静默失去保护。整个提取包在 try/catch 里，`trackFileEdit` 本身已吞异常，命令执行路径不受影响。
+
+验收：`node --import tsx --test test/bashToolWriteTargets.test.ts test/trackFileEdit.test.ts test/bashShell.test.ts` 20 条全绿；`npm run typecheck` 通过。原计划的 `test/bashTool*.test.ts` glob 对应新建的 `test/bashToolWriteTargets.test.ts`。
 commit：`checkpoint: track bash writes in file history`
 
 ---

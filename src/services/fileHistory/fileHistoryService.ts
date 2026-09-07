@@ -97,6 +97,12 @@ export class FileHistoryService {
   private disposed = false
   /** Serialises appends so two concurrent writes cannot interleave a line. */
   private writes: Promise<void> = Promise.resolve()
+  /**
+   * Backups being copied right now, keyed by tracking path. Reserved before the
+   * first `await`, so a second `trackEdit` for the same path joins the first
+   * instead of racing it onto the same `@v1`.
+   */
+  private readonly inflightBackups = new Map<string, Promise<void>>()
 
   constructor(cwd: string, sessionId: string, limits: FileHistoryLimits = DEFAULT_FILE_HISTORY_LIMITS) {
     this.cwd = cwd
@@ -196,7 +202,10 @@ export class FileHistoryService {
    * the version attached to the in-flight snapshot is the pre-edit one.
    *
    * Split into read / backup / commit so a second call for the same path (two
-   * edits in one turn) cannot overwrite `@v1` with post-edit content.
+   * edits in one turn) cannot overwrite `@v1` with post-edit content. The copy
+   * itself is de-duplicated through `inflightBackups`, because checking the
+   * committed state again after the copy is too late: by then the overwrite
+   * already happened on disk.
    */
   async trackEdit(filePath: string): Promise<void> {
     if (this.disposed) return
@@ -206,10 +215,27 @@ export class FileHistoryService {
     if (!current) return
     if (current.trackedFileBackups[trackingPath]) return
 
+    const inflight = this.inflightBackups.get(trackingPath)
+    if (inflight) {
+      await inflight
+      return
+    }
+    const pending = this.captureFirstVersion(trackingPath)
+    this.inflightBackups.set(trackingPath, pending)
+    try {
+      await pending
+    } finally {
+      this.inflightBackups.delete(trackingPath)
+    }
+  }
+
+  /** The copy-and-commit half of `trackEdit`, run at most once per path. */
+  private async captureFirstVersion(trackingPath: string): Promise<void> {
     let backup: FileBackup
     try {
       backup = await this.createBackup(this.expandPath(trackingPath), 1)
-    } catch {
+    } catch (error) {
+      console.warn(`Failed to back up ${trackingPath}:`, (error as Error).message)
       return
     }
 
@@ -311,8 +337,10 @@ export class FileHistoryService {
         if (await this.hasFileChanged(filePath, backupFileName)) {
           await this.restoreBackup(filePath, backupFileName)
         }
-      } catch {
-        // Best effort per file: a locked or vanished file must not abort the rewind.
+      } catch (error) {
+        // Best effort per file: a locked or vanished file must not abort the
+        // rewind, but it silently not coming back is worth a line.
+        console.warn(`Failed to restore ${trackingPath}:`, (error as Error).message)
       }
     }
 

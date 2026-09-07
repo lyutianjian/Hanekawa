@@ -1,6 +1,6 @@
 # Checkpoint 重构实施文档：shadow-git → file-history
 
-状态：待实施（2026-09-07 制定）
+状态：实施中（2026-09-07 核验：T0–T4 已完成，下一个任务是 T5）
 影响面：`/rewind` 的「恢复代码」能力，以及它背后的整套快照机制。其余功能不受影响。
 
 ---
@@ -172,54 +172,62 @@ protocol host 'checkpoints' / 'restore-code'
 
 任务顺序是有依赖的：T1→T2→T3→T4→T5 必须按序，T6 起可调整。
 
+2026-09-07 核验：当前 HEAD 为 `4b96389`。T1、T2、T3 的实现提交分别是 `911571f`、`d3020f9`、`3e2e94c`。现有文件历史、写工具/钩子、会话删除、SessionController/Workspace 等 10 个相关测试文件合计 **255 通过、1 跳过**（Windows 跳过权限保留测试），`npm run typecheck` 通过。T1 的并发备份问题已另外在隔离目录中复现，见下方未勾选项。
+
 ---
 
-### [ ] T0 — 清理与文档基线
+### [x] T0 — 清理与文档基线
 
 - [x] 删除 `C:\Users\Miyano\Documents\code\.myagent\shadow-git`（52 GB，已完成）
-- [ ] 提交本文档
+- [x] 提交本文档
+
+核验：旧 shadow-git 目录不存在，本文档已随 `e3be3c2`（`gui`）提交；本次核验开始时工作树干净。原计划的独立文档提交标题未使用。
 
 验收：`git status` 干净，文档在仓库根。
 commit：`checkpoint: plan file-history migration`
 
 ---
 
-### [ ] T1 — FileHistoryService 核心（纯新增，不接线）
+### [x] T1 — FileHistoryService 核心（纯新增，不接线）
 
-- [ ] 新建 `src/services/fileHistory/fileHistoryService.ts`，实现 4.2 的数据结构与 4.4 的接口，**先只做内存态 + 备份文件读写**，持久化留到 T2（`init()` 暂时返回空 state）
-- [ ] 备份写入：`copyFile` + `chmod` 保留权限；lazy mkdir（先试 copy，ENOENT 才 mkdir 后重试）；源文件 ENOENT ⇒ 记 `backupFileName: null`
-- [ ] 变更检测 `hasFileChanged()`：mode/size → mtime 短路 → 内容比对，三级
-- [ ] `trackEdit` 的三阶段结构（读状态 → 异步备份 → 提交，提交时重查是否已被并发 track），防止重复调用覆写 `@v1`
-- [ ] `rewindTo`：逐文件恢复，`backupFileName === null` 则 `unlink`；未变的文件不碰；单文件失败只记日志不中断
-- [ ] 新建 `test/fileHistoryService.test.ts`：备份/恢复往返、未变文件不产生新版本、文件被删除后回退能重建、权限保留、路径 key 相对化
+- [x] 新建 `src/services/fileHistory/fileHistoryService.ts`，实现 4.2 的数据结构与 4.4 的接口，**先只做内存态 + 备份文件读写**，持久化留到 T2（`init()` 暂时返回空 state）
+- [x] 备份写入：`copyFile` + `chmod` 保留权限；lazy mkdir（先试 copy，ENOENT 才 mkdir 后重试）；源文件 ENOENT ⇒ 记 `backupFileName: null`
+- [x] 变更检测 `hasFileChanged()`：mode/size → mtime 短路 → 内容比对，三级
+- [x] `trackEdit` 的三阶段结构（读状态 → 异步备份 → 提交，提交时重查是否已被并发 track），防止重复调用覆写 `@v1`
+- [x] `rewindTo`：逐文件恢复，`backupFileName === null` 则 `unlink`；未变的文件不碰；单文件失败只记日志不中断
+- [x] 新建 `test/fileHistoryService.test.ts`：备份/恢复往返、未变文件不产生新版本、文件被删除后回退能重建、权限保留、路径 key 相对化
+
+核验（2026-09-07 补完）：并发覆写问题已修复——`trackEdit` 现在用 `inflightBackups`（路径 → 进行中的 Promise，在第一个 `await` 之前同步登记）去重，后到的调用 join 前一个而不再发起第二次 `copyFile`；复制之后的状态重查保留，但不再是唯一防线。`captureFirstVersion` 与 `rewindTo` 的失败分支改为 `console.warn` 记日志后继续。新增测试「并发 track 同一文件只产生一个 `@v1` 且回退得到原始内容」。
 
 验收：`node --import tsx --test test/fileHistoryService.test.ts` 全绿；`npm run typecheck` 通过。
 commit：`checkpoint: add FileHistoryService core`
 
 ---
 
-### [ ] T2 — 持久化与会话生命周期
+### [x] T2 — 持久化与会话生命周期
 
-- [ ] `snapshots.jsonl` 的写入（`snapshot` / `update` 两种记录）与 `init()` 重放重建
-- [ ] `removeFileHistory(sessionId)` 替代 `removeShadowRepo`，沿用同样的 `assertSafeSessionId` 守卫（**这条是防注入的，不是防御性代码**：sessionId 来自 wire 的 `delete-session`，直接落进 `rm -r`）
-- [ ] 接入会话删除路径：原先调用 `removeShadowRepo` 的地方改为同时清理 file-history
-- [ ] 测试：重启后 state 可重建、`update` 记录正确回填、删除会话后目录消失、非法 sessionId 被拒
+- [x] `snapshots.jsonl` 的写入（`snapshot` / `update` 两种记录）与 `init()` 重放重建
+- [x] `removeFileHistory(sessionId)` 替代 `removeShadowRepo`，沿用同样的 `assertSafeSessionId` 守卫（**这条是防注入的，不是防御性代码**：sessionId 来自 wire 的 `delete-session`，直接落进 `rm -r`）
+- [x] 接入会话删除路径：原先调用 `removeShadowRepo` 的地方改为同时清理 file-history
+- [x] 测试：重启后 state 可重建、`update` 记录正确回填、删除会话后目录消失、非法 sessionId 被拒
+
+核验：持久化相关用例通过；额外通过 `deleteSessionArtifacts` 验证全局 file-history 目录被删除、其他会话目录保留。当前同时保留旧 shadow-git 清理，旧实现待 T9 删除。
 
 验收：`node --import tsx --test test/fileHistoryService.test.ts` 全绿。
 commit：`checkpoint: persist file history snapshots`
 
 ---
 
-### [ ] T3 — ToolContext 钩子与写工具接入
+### [x] T3 — ToolContext 钩子与写工具接入
 
-- [ ] `src/harness/types.ts` 的 `ToolContext` 新增 `trackFileEdit?(filePath: string): Promise<void>`
-- [ ] `src/harness/toolRunner.ts` 透传
-- [ ] `src/tools/AgentTool/AgentTool.ts` 的子 agent 上下文继承该钩子
-- [ ] 写工具在**写之前**调用：`FileEditTool.ts:81`、`FileWriteTool.ts:72`、`MultiEditTool.ts:121`、`NotebookEditTool.ts:402`、`FileDeleteTool.ts:36`
-- [ ] 钩子缺失（未接线的 context）时全部路径必须照常工作
-- [ ] 测试：每个写工具在执行后使对应路径进入 tracked 集合；钩子抛错不影响写入结果
+- [x] `src/harness/types.ts` 的 `ToolContext` 新增 `trackFileEdit?(filePath: string): Promise<void>`
+- [x] `src/harness/toolRunner.ts` 透传（现有 `...context` 已覆盖）
+- [x] `src/tools/AgentTool/AgentTool.ts` 的子 agent 上下文继承该钩子
+- [x] 写工具在**写之前**调用：`FileEditTool.ts:82`、`FileWriteTool.ts:70`、`MultiEditTool.ts:122`、`NotebookEditTool.ts:395`、`FileDeleteTool.ts:37`
+- [x] 钩子缺失（未接线的 context）时全部路径必须照常工作
+- [x] 测试：每个写工具在执行后使对应路径进入 tracked 集合；钩子抛错不影响写入结果
 
-验收：`node --import tsx --test test/fileEditTool.test.ts`（及其余写工具测试）全绿。
+验收：`node --import tsx --test test/trackFileEdit.test.ts test/tools.test.ts test/fileToolLineEndings.test.ts test/notebookEdit.test.ts test/toolRunner.test.ts test/agentTool.test.ts` 全绿。写工具测试实际位于这些文件中，原计划中的 `test/fileEditTool.test.ts` 不存在。
 commit：`checkpoint: track file edits from write tools`
 
 ---
@@ -258,7 +266,7 @@ commit：`checkpoint: address restores by message id`
 
 ### [ ] T6 — diff 统计接入 rewind 面板
 
-- [ ] `getDiffStats()` 用 `diffLines` 式的行级比对产出 `CheckpointDiffSummary`（沿用现有 DTO，UI 不动）
+- [x] `getDiffStats()` 用 `diffLines` 式的行级比对产出 `CheckpointDiffSummary`（沿用现有 DTO，UI 不动）
 - [ ] `hasAnyChanges()` 早退版接到 `rewindPresentation.ts:147` 的 `hasCodeChanges`
 - [ ] `turnDiff` / `restoreDiff` 的语义映射到新模型：`restoreDiff` = 当前 vs 目标 snapshot；`turnDiff` = 相邻两个 snapshot 之间
 - [ ] 测试：`test/rewindSummary.test.ts`、`test/rewindPresentation.test.ts` 更新
@@ -270,7 +278,7 @@ commit：`checkpoint: compute rewind diffs from file history`
 
 ### [ ] T7 — 快照上限与备份回收
 
-- [ ] `MAX_SNAPSHOTS = 100` 淘汰最旧快照；`snapshotSequence` 单调递增（不要用 `snapshots.length` 当活动信号）
+- [x] `MAX_SNAPSHOTS = 100` 淘汰最旧快照；`snapshotSequence` 单调递增（实际由 `DEFAULT_FILE_HISTORY_LIMITS.maxSnapshots = 100` 与 `evictOldSnapshots()` 实现，不使用 `snapshots.length` 当活动信号）
 - [ ] **备份文件 GC**：淘汰快照后删除不再被任何存活快照引用的 backup 文件（CC 这里是泄漏的，我们补上）
 - [ ] GC 必须先算引用集合再删，且失败只记日志
 - [ ] 测试：淘汰后引用仍在的 backup 不被删、无引用的被删、`snapshotSequence` 不回退

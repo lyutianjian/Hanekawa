@@ -1,6 +1,6 @@
 import { describe, it, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFile, mkdtemp, mkdir, readFile, writeFile, rm, stat, chmod } from 'node:fs/promises'
+import { appendFile, mkdtemp, mkdir, readdir, readFile, writeFile, rm, stat, chmod } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import {
@@ -159,6 +159,24 @@ describe('FileHistoryService', () => {
     await service.trackEdit(file)
     await writeFile(file, 'edited once\n', 'utf8')
     await service.trackEdit(file)
+
+    await service.rewindTo('m1')
+    assert.equal(await readFile(file, 'utf8'), 'original\n')
+  })
+
+  it('keeps the v1 backup when two edits track the same file concurrently', async () => {
+    const file = path.join(cwd, 'a.txt')
+    await writeFile(file, 'original\n', 'utf8')
+
+    const service = await makeService('s8b')
+    await service.makeSnapshot('m1')
+    // Parallel tool calls: the later tracks start before the first one's backup
+    // is committed, so only the in-flight guard keeps them off the same `@v1`.
+    await Promise.all([service.trackEdit(file), service.trackEdit(file), service.trackEdit(file)])
+    await writeFile(file, 'edited once\n', 'utf8')
+
+    const backups = (await readdir(fileHistoryDir('s8b'))).filter((name) => name.includes('@v'))
+    assert.equal(backups.length, 1)
 
     await service.rewindTo('m1')
     assert.equal(await readFile(file, 'utf8'), 'original\n')

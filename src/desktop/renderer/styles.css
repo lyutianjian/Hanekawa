@@ -1373,6 +1373,20 @@ body.resizing #sidebar { transition: none; }
   padding-bottom: var(--transcript-pad);
   flex-shrink: 0;
 }
+/* The end of a turn hands the pad back: it drops from whatever held the question
+   at the top to `ANCHOR_REST_PX`, so a settled conversation scrolls to a margin
+   rather than to a screenful of blank above the composer.
+
+   The transition is on a class rather than on the rule above because the pad
+   shortens on *every streamed token* — an animated `padding-bottom` there would
+   lag the tail follow by a frame each time and shiver for the length of the
+   answer. `dom/transcriptView.ts` attaches the class exactly while no turn is in
+   flight. What the reader sees is a sink, not a jump: the scroller is pinned to
+   its end, so each frame of the shrinking content pulls the last line down with
+   it. */
+.transcript-column.settling {
+  transition: padding-bottom var(--motion-base) var(--ease-standard);
+}
 /* 24px between turns, and the line-height a wall of prose needs. Both are the
    rhythm half of design_guidance 四.3 — the old 10px/1.5 ran the assistant's
    answer and the next question together, and 16px still read as one block once

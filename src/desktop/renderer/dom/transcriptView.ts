@@ -227,6 +227,13 @@ export function createTranscriptView(
   /** The anchor's node and its gap, for a re-measurement between paints. */
   let anchorNode: HTMLElement | undefined
   let anchorFirst = false
+  /**
+   * Whether the last paint found no turn in flight. Kept for the same reason
+   * `anchorFirst` is: the resize path re-runs the pad without a paint to tell
+   * it what the session is doing, and a resize that recomputed a settled
+   * transcript as a streaming one would put the screenful of blank back.
+   */
+  let anchorSettled = true
 
   // Both halves are needed, and they share the one predicate so they cannot
   // disagree at its 24px boundary. `scroll` is the obvious trigger; the paint
@@ -256,7 +263,12 @@ export function createTranscriptView(
   if (typeof observe === 'function') {
     new observe(() => {
       if (anchorNode === undefined) return
-      pad = liftAnchor(container, column, anchorNode, { first: anchorFirst, moved: false, pad }).pad
+      pad = liftAnchor(container, column, anchorNode, {
+        first: anchorFirst,
+        moved: false,
+        settled: anchorSettled,
+        pad,
+      }).pad
       syncJump()
     }).observe(container)
   }
@@ -289,6 +301,17 @@ export function createTranscriptView(
       const anchor = at === undefined ? undefined : entries[at]
       const next = anchor?.kind === 'item' ? anchor.item.id : undefined
       const moved = next !== undefined && next !== anchorId
+      // The pane's own flag rather than anything `turnActivity` decided:
+      // `model/waiting.ts` reports `IDLE` while a draft is arriving — it means
+      // 「no waiting row to draw」 there — and a pad released mid-answer would
+      // drop the question the reader is watching being answered.
+      const settled = activity?.isStreaming !== true
+      anchorSettled = settled
+      // The transition is attached only while the pad is resting. During a turn
+      // it shortens on every token, and an animated `padding-bottom` would lag
+      // the tail follow by a frame each time — a transcript that shivers for as
+      // long as the answer runs.
+      column.classList.toggle('settling', settled)
       // A transcript with no user message — a reset pane, or one showing only
       // startup notices — drops the pad rather than keeping the last one it was
       // given; nothing in it is anchored, so there is nothing to hold up.
@@ -301,7 +324,7 @@ export function createTranscriptView(
       } else {
         anchorNode = nodes[at]!
         anchorFirst = at === 0
-        const lift = liftAnchor(container, column, nodes[at]!, { first: at === 0, moved, pad })
+        const lift = liftAnchor(container, column, nodes[at]!, { first: at === 0, moved, settled, pad })
         pad = lift.pad
         lifted = lift.lifted
         // The anchor is only *spent* once it could actually be measured. A pane
@@ -1221,12 +1244,24 @@ function lastUserEntry(entries: readonly TranscriptEntry[]): number | undefined 
  * end, so the tail-follow in `render` holds the bubble at its gap for free as
  * this shrinks underneath it. See `model/transcriptAnchor.ts` for the
  * arithmetic — everything here is measurement.
+ *
+ * A **settled** transcript is not lifted at all: it rests on the floor, and a
+ * new anchor under it goes to the tail instead of to the top. That second half
+ * is what a restored session is — `/resume`, a session switch, a pane painted
+ * for the first time all arrive with `moved` true and no turn running — and
+ * lifting there would open the conversation on its last question with a
+ * screenful of nothing beneath it, which is the very blank this rest removes.
  */
 function liftAnchor(
   container: HTMLElement,
   column: HTMLElement,
   anchor: HTMLElement,
-  state: { readonly first: boolean; readonly moved: boolean; readonly pad: number },
+  state: {
+    readonly first: boolean
+    readonly moved: boolean
+    readonly settled: boolean
+    readonly pad: number
+  },
 ): { readonly pad: number; readonly lifted: boolean; readonly measured: boolean } {
   const viewport = container.clientHeight
   const view = box(container)
@@ -1253,9 +1288,15 @@ function liftAnchor(
   // short session is. The column's box has no such floor — but it *does* carry
   // the pad already written, which is what comes off it here.
   const below = content.bottom - state.pad - top.top + inset
-  const pad = anchorPadding({ viewport, below, topGap })
+  const pad = anchorPadding({ viewport, below, topGap, settled: state.settled })
   column.style.setProperty(TRANSCRIPT_PAD_VARIABLE, `${pad}px`)
   if (!state.moved) return { pad, lifted: false, measured: true }
+  // A new anchor with nothing running is a conversation being opened, not a
+  // question being asked: the tail is where the reader left off.
+  if (state.settled) {
+    container.scrollTop = container.scrollHeight
+    return { pad, lifted: true, measured: true }
+  }
   // Relative, not absolute: `top` is viewport-relative, and the difference is
   // exactly how far this scroller has to travel to put the anchor at its gap.
   container.scrollTop += top.top - view.top - topGap

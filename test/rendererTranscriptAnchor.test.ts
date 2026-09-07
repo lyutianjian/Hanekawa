@@ -5,6 +5,7 @@ import {
   anchorPadding,
   anchorTopGap,
   ANCHOR_FLOOR_PX,
+  ANCHOR_REST_PX,
   ANCHOR_TOP_FIRST_PX,
   ANCHOR_TOP_PX,
   TRANSCRIPT_PAD_VARIABLE,
@@ -54,6 +55,18 @@ test('a full-screen answer floors the pad instead of letting the last line touch
   // lift still has room for.
   assert.equal(anchorPadding({ viewport: 900, below: 740, topGap: ANCHOR_TOP_PX }), ANCHOR_FLOOR_PX)
   assert.equal(anchorPadding({ viewport: 900, below: 739, topGap: ANCHOR_TOP_PX }), 97)
+})
+
+test('a settled transcript rests on a margin, whatever the measurements say', () => {
+  // The room above the question is for an answer that is still arriving. Once
+  // the turn is over it is a screenful of blank between the last line and the
+  // composer, so the pad goes back to a bottom margin — below the streaming
+  // floor, which is clearance under a moving tail rather than an end.
+  assert.equal(anchorPadding({ viewport: 900, below: 120, topGap: ANCHOR_TOP_PX, settled: true }), ANCHOR_REST_PX)
+  assert.ok(ANCHOR_REST_PX < ANCHOR_FLOOR_PX, 'a conversation that has stopped needs less room than one that has not')
+  // Not merely a cap: the same conversation streaming wants 716, and the two
+  // numbers differing by a screenful is the whole point of the drop.
+  assert.equal(anchorPadding({ viewport: 900, below: 120, topGap: ANCHOR_TOP_PX, settled: false }), 716)
 })
 
 test('an unmeasurable layout falls back to the floor rather than to a bad number', () => {

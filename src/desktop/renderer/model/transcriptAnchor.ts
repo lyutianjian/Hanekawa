@@ -37,13 +37,27 @@ export const ANCHOR_TOP_FIRST_PX = 8
  */
 export const ANCHOR_TOP_PX = 64
 /**
- * The pad never falls below this, however long the answer runs. Two things come
- * out of the floor: the last line of a full-screen answer keeps its distance
- * from the composer, and the pad does not snap to zero when the turn ends —
- * there is no frame in which the transcript jumps because the model stopped
- * talking.
+ * The pad never falls below this *while a turn runs*, however long the answer
+ * gets. It is breathing room under a moving tail: the last line of a
+ * full-screen answer keeps its distance from the composer while more of it is
+ * still arriving.
  */
 export const ANCHOR_FLOOR_PX = 96
+/**
+ * …and where the pad rests once the turn is over.
+ *
+ * A quarter of the streaming floor, because the two are not the same gap. The
+ * floor is clearance under text that is still moving; this is the margin at the
+ * end of a conversation that has stopped, and there it reads as the transcript's
+ * own bottom inset rather than as room for anything. Anything larger is blank
+ * the reader has to scroll through to reach nothing.
+ *
+ * The pad therefore *does* shorten at the end of a turn, which it used not to.
+ * That shortening is a sink rather than a jump: `.transcript-column.settling`
+ * transitions `padding-bottom`, and a scroller pinned to its end follows the
+ * shrinking content down one frame at a time.
+ */
+export const ANCHOR_REST_PX = 24
 
 /** The custom property `.transcript-column`'s `padding-bottom` reads. */
 export const TRANSCRIPT_PAD_VARIABLE = '--transcript-pad'
@@ -59,6 +73,12 @@ export interface AnchorMetrics {
   readonly below: number
   /** `ANCHOR_TOP_FIRST_PX` or `ANCHOR_TOP_PX`. */
   readonly topGap: number
+  /**
+   * Whether no turn is in flight. A settled transcript is not holding a
+   * question up for an answer that is still coming, so it rests on
+   * `ANCHOR_REST_PX` and the measurements above go unread.
+   */
+  readonly settled?: boolean
 }
 
 /**
@@ -76,9 +96,15 @@ export interface AnchorMetrics {
  * anchored scroll, so every later frame follows the tail into a pad that is
  * getting shorter at the same rate. The floor is where the two part company, and
  * from there the answer scrolls the bubble off the top like any other content.
+ *
+ * `settled` short-circuits all of it, down to `ANCHOR_REST_PX`. The room above
+ * only has to exist while something is being waited for; once the turn is over
+ * the arithmetic is describing a question nobody is watching arrive, and what it
+ * leaves behind is a screenful of blank between the last line and the composer.
  */
 export function anchorPadding(metrics: AnchorMetrics): number {
   const { viewport, below, topGap } = metrics
+  if (metrics.settled === true) return ANCHOR_REST_PX
   // A measurement that is not a number means the caller has no layout to reason
   // about — mid-animation, or a pane that has never been on screen. The floor is
   // the honest answer there: it is the one part of the pad that does not depend

@@ -8,6 +8,7 @@ import { createTranscriptView } from '../src/desktop/renderer/dom/transcriptView
 import { NO_DISCLOSURE } from '../src/desktop/renderer/model/thinking.js'
 import type { DisclosureState } from '../src/desktop/renderer/model/thinking.js'
 import type { TranscriptItem, TranscriptState } from '../src/desktop/renderer/model/transcript.js'
+import { ANCHOR_REST_PX } from '../src/desktop/renderer/model/transcriptAnchor.js'
 import type { WaitingInput } from '../src/desktop/renderer/model/waiting.js'
 import type { ToolErrorCode } from '../src/harness/types.js'
 
@@ -185,7 +186,9 @@ test('the items paint inside one reading column, and the scroller stays bare', (
   // would split that space and a short conversation would stop meeting the
   // composer.
   assert.equal(children.length, 1, 'the scroller holds the column and nothing else')
-  assert.equal(children[0]?.className, 'transcript-column')
+  // By class, not by the whole `className`: an idle paint also carries
+  // `settling`, the class that lets the pad sink when a turn ends.
+  assert.ok(children[0]?.classes.includes('transcript-column'))
   assert.deepEqual(column().children.map((item) => item.classes[0]), ['item', 'item'])
 
   // And it is rebuilt, not accumulated: `replace()` empties the scroller, so a
@@ -1518,6 +1521,19 @@ function laidOut(view: Rendered, content = 184): void {
   })
 }
 
+/**
+ * A paint with a turn in flight.
+ *
+ * The lift is a *streaming* behaviour: the pad exists so the question being
+ * answered can own the screen while the answer arrives, and a paint with no
+ * turn running rests the pad on its floor instead (see the settling tests
+ * below). So every test about where a new question lands has to say that a turn
+ * is running, exactly as the pane does.
+ */
+function live(state: TranscriptState): WaitingInput {
+  return waiting(state, undefined)
+}
+
 /** The pad the view wrote this paint, as the CSS length it wrote. */
 function pad(view: Rendered): string | undefined {
   return view.column().styleProperties.get('--transcript-pad')
@@ -1531,7 +1547,8 @@ test('a new question is lifted to the top of the viewport, and the pad is what l
   const view = mount(t)
   laidOut(view)
 
-  view.render(transcript([{ id: 'a', kind: 'user', text: '你好' }]))
+  const asked = transcript([{ id: 'a', kind: 'user', text: '你好' }])
+  view.render(asked, undefined, live(asked))
 
   // The bubble starts 80px below the scroller's top edge, and it is the first
   // thing in the session — so it goes up to the scroller's own 8px padding, a
@@ -1551,13 +1568,12 @@ test('a question with a turn above it keeps 64px of that turn on screen', (t) =>
   const view = mount(t)
   laidOut(view)
 
-  view.render(
-    transcript([
-      { id: 'a', kind: 'user', text: '你好' },
-      { id: 'b', kind: 'assistant', text: '你好呀' },
-      { id: 'c', kind: 'user', text: '你是谁' },
-    ]),
-  )
+  const asked = transcript([
+    { id: 'a', kind: 'user', text: '你好' },
+    { id: 'b', kind: 'assistant', text: '你好呀' },
+    { id: 'c', kind: 'user', text: '你是谁' },
+  ])
+  view.render(asked, undefined, live(asked))
 
   // 80px to the top, less the 64px of the previous answer left visible above it.
   assert.equal(view.container.scrollTop, 16)
@@ -1569,7 +1585,8 @@ test('the lift runs once per question, not once per streamed token', (t) => {
   laidOut(view)
   const items: TranscriptItem[] = [{ id: 'a', kind: 'user', text: '你好' }]
 
-  view.render(transcript(items))
+  const asked = transcript(items)
+  view.render(asked, undefined, live(asked))
   assert.equal(view.container.scrollTop, 72)
 
   // The answer arriving must not re-run the lift: the reader may have scrolled
@@ -1579,7 +1596,8 @@ test('the lift runs once per question, not once per streamed token', (t) => {
   // the scroller now has somewhere to be scrolled *from*, and the reader has
   // gone back to the top of it.
   view.stub.setMetrics(view.container, { scrollTop: 0, scrollHeight: 672 })
-  view.render(transcript([...items, { id: 'b', kind: 'assistant', text: '你好呀' }]))
+  const answering = transcript([...items, { id: 'b', kind: 'assistant', text: '你好呀', pending: true }])
+  view.render(answering, undefined, live(answering))
   assert.equal(view.container.scrollTop, 0, 'a repaint under the same question re-scrolled')
   // The pad is still rewritten, and unchanged because nothing under the anchor
   // grew. That is the regression this pins: `scrollHeight` carries the pad, so a
@@ -1593,7 +1611,8 @@ test('the pad shrinks as the answer grows, so the bubble holds still while it st
   // The same conversation 200px longer.
   laidOut(view, 384)
 
-  view.render(transcript([{ id: 'a', kind: 'user', text: '你好' }]))
+  const asked = transcript([{ id: 'a', kind: 'user', text: '你好' }])
+  view.render(asked, undefined, live(asked))
 
   assert.equal(pad(view), '272px', '472 − 200: exactly what the answer took')
 })
@@ -1602,7 +1621,8 @@ test('a transcript with no question in it carries no pad', (t) => {
   const view = mount(t)
   laidOut(view)
 
-  view.render(transcript([{ id: 'a', kind: 'user', text: '你好' }]))
+  const asked = transcript([{ id: 'a', kind: 'user', text: '你好' }])
+  view.render(asked, undefined, live(asked))
   assert.equal(pad(view), '472px')
 
   // `transcript-reset` and a pane showing only startup notices land here. The
@@ -1617,7 +1637,8 @@ test('a pane with no layout writes nothing rather than a pad measured from nothi
   // No `onLayout` and no metrics: a background pane, whose every reading is zero
   // or `NaN`. Writing from that would leave a stale pad for the paint that
   // brings the pane back.
-  view.render(transcript([{ id: 'a', kind: 'user', text: '你好' }]))
+  const asked = transcript([{ id: 'a', kind: 'user', text: '你好' }])
+  view.render(asked, undefined, live(asked))
 
   assert.equal(pad(view), undefined)
   assert.equal(view.container.scrollTop, 0)
@@ -1630,11 +1651,11 @@ test('a question painted before the pane had layout is lifted on the paint that 
   // A pane built in the background paints its first message with nothing to
   // measure. If that paint spent the anchor, the question would be stranded
   // wherever the flow left it for the whole of its turn.
-  view.render(state)
+  view.render(state, undefined, live(state))
   assert.equal(pad(view), undefined)
 
   laidOut(view)
-  view.render(state)
+  view.render(state, undefined, live(state))
   assert.equal(view.container.scrollTop, 72, 'the question was never lifted')
   assert.equal(pad(view), '472px')
 })
@@ -1654,7 +1675,8 @@ test('the pad follows the viewport, which moves without the transcript repaintin
 
   const view = mount(t)
   laidOut(view)
-  view.render(transcript([{ id: 'a', kind: 'user', text: '你好' }]))
+  const asked = transcript([{ id: 'a', kind: 'user', text: '你好' }])
+  view.render(asked, undefined, live(asked))
   assert.equal(pad(view), '472px')
 
   // 36px of canvas header arrives. A pad still measured against the old height
@@ -1665,4 +1687,45 @@ test('the pad follows the viewport, which moves without the transcript repaintin
 
   assert.equal(pad(view), '436px')
   assert.equal(view.container.scrollTop, 72, 'a resize is not a new question and must not re-scroll')
+})
+
+test('the turn ending hands the pad back, so the tail is not a screenful of blank', (t) => {
+  const view = mount(t)
+  laidOut(view)
+  const asked = transcript([{ id: 'a', kind: 'user', text: '你好' }])
+
+  view.render(asked, undefined, live(asked))
+  assert.equal(pad(view), '472px', 'while the turn runs the question owns the screen')
+  assert.equal(view.column().classes.includes('settling'), false, 'a pad that moves every token must not animate')
+
+  // `turn-end`: the pane paints once more with `isStreaming` false. The room
+  // above the question was for an answer that has now arrived, and keeping it
+  // is what put a screenful of nothing between the last line and the composer.
+  view.render(asked)
+  assert.equal(pad(view), `${ANCHOR_REST_PX}px`)
+  assert.ok(view.column().classes.includes('settling'), 'the drop is a sink, and the sheet needs the class to make it one')
+
+  // And the next turn takes it straight back, with the transition off again.
+  const again = transcript([...asked.items, { id: 'b', kind: 'user', text: '再问一句' }])
+  view.render(again, undefined, live(again))
+  assert.equal(view.column().classes.includes('settling'), false)
+  assert.notEqual(pad(view), `${ANCHOR_REST_PX}px`)
+})
+
+test('a session opened with no turn running lands on its tail, not on its last question', (t) => {
+  const view = mount(t)
+  laidOut(view)
+  view.stub.setMetrics(view.container, { scrollHeight: 2000 })
+
+  // `/resume`, a session switch, a pane painted for the first time: the anchor
+  // is new (nothing has been painted yet) but nothing is running. Lifting here
+  // would open the conversation on its last question with the whole canvas
+  // empty underneath it.
+  view.render(transcript([
+    { id: 'a', kind: 'user', text: '你好' },
+    { id: 'b', kind: 'assistant', text: '你好呀' },
+  ]))
+
+  assert.equal(view.container.scrollTop, 2000, 'a restored session opens where the reader left off')
+  assert.equal(pad(view), `${ANCHOR_REST_PX}px`)
 })

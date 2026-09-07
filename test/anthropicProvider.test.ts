@@ -4,6 +4,7 @@ import { z } from 'zod/v3'
 import { AnthropicProvider, resetRejectedPromptCaching, streamWithTimeout } from '../src/config/providers/anthropicProvider.js'
 import { collectCacheControlTelemetry } from '../src/config/providers/cacheControlTelemetry.js'
 import { resetCacheBreakDetection } from '../src/harness/cacheBreakDetection.js'
+import { resetCacheTTLEvaluation } from '../src/harness/cacheControl.js'
 import type { ModelRequest } from '../src/harness/types.js'
 
 const cacheEnvironment = new Map(
@@ -13,6 +14,8 @@ const cacheEnvironment = new Map(
 beforeEach(() => {
   resetCacheBreakDetection()
   resetRejectedPromptCaching()
+  // The 1h TTL is latched per process; clear it so each test evaluates its own runtime.
+  resetCacheTTLEvaluation()
   for (const key of cacheEnvironment.keys()) delete process.env[key]
 })
 

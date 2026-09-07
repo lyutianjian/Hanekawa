@@ -1103,6 +1103,39 @@ test('hello carries the git branch when the project root is a repository', async
   harness.dispose()
 })
 
+test('list-branches answers with a list even where there is no repository', async () => {
+  // The empty state's branch popover asks on every open, and a scratch project
+  // is not a checkout: the host has to answer with an empty list rather than
+  // `fail`, or the popover would show an error for the ordinary case.
+  const harness = await createHarness()
+  harness.send({ type: 'list-branches', id: 'b1' })
+
+  const reply = await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'b1'),
+    'a list-branches reply',
+  )
+  assert.ok(reply.type === 'reply')
+  const result = reply.result as { branches: string[]; current?: string }
+  assert.deepEqual(result.branches, [])
+  assert.equal(result.current, undefined)
+  harness.dispose()
+})
+
+test('switch-branch refuses a name git must never see, without reaching git', async () => {
+  const harness = await createHarness()
+  harness.send({ type: 'switch-branch', id: 'b2', branch: '--force' })
+
+  const reply = await waitFor(
+    () => harness.received.find((event) => event.type === 'reply' && event.id === 'b2'),
+    'a switch-branch reply',
+  )
+  assert.ok(reply.type === 'reply')
+  const result = reply.result as { ok: boolean; message?: string }
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? '', /--force/)
+  harness.dispose()
+})
+
 test('hello reports the global workspace when cwd is the home directory', async () => {
   const harness = await createHarness()
   // `os.homedir()` answers from USERPROFILE/HOME on the platforms this suite

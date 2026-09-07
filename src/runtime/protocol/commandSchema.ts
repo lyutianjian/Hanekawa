@@ -112,6 +112,13 @@ const COMMAND_SCHEMAS = {
       cursorPos: z.number(),
     })
     .strict(),
+  'list-branches': z.object({ type: z.literal('list-branches'), id: commandId }).strict(),
+  // A plain string, like every other name on this wire: `isSafeBranchName` in
+  // `runtime/gitBranches.ts` is what decides whether git may see it, and that
+  // check belongs next to the `execFile` it protects rather than here.
+  'switch-branch': z
+    .object({ type: z.literal('switch-branch'), id: commandId, branch: z.string() })
+    .strict(),
   checkpoints: z.object({ type: z.literal('checkpoints'), id: commandId }).strict(),
   'restore-code': z
     .object({ type: z.literal('restore-code'), id: commandId, commitHash: z.string() })

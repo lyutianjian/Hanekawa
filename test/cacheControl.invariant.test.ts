@@ -5,6 +5,7 @@ import {
   ANTHROPIC_CACHE_CONTROL_LIMIT,
   buildAnthropicMessages,
   buildAnthropicPayload,
+  buildAnthropicTools,
   collectCacheControlTelemetry,
 } from '../src/config/providers.js'
 import { resetCacheTTLEvaluation, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from '../src/harness/cacheControl.js'
@@ -146,6 +147,40 @@ test('buildAnthropicPayload cache_control distribution follows available request
     tools: 0,
     messages: 1,
   })
+})
+
+test('buildAnthropicTools anchors the marker to the last stable tool and trails volatile ones', () => {
+  resetCacheTTLEvaluation()
+
+  const mcpTool: Tool = {
+    name: 'mcp__server__query',
+    description: 'Query an MCP server',
+    inputSchema: z.object({ q: z.string() }).strict(),
+    riskLevel: 'safe',
+    isMcp: true,
+    execute: async () => ({ ok: true, content: '' }),
+  }
+
+  const built = buildAnthropicTools([tools[0]!, mcpTool, tools[1]!], true, { env: {} })
+
+  assert.deepEqual(built.map((tool) => (tool as { name: string }).name), [
+    'Read',
+    'Grep',
+    'mcp__server__query',
+  ])
+  assert.equal((built[0] as { cache_control?: unknown }).cache_control, undefined)
+  assert.deepEqual((built[1] as { cache_control?: unknown }).cache_control, { type: 'ephemeral' })
+  assert.equal((built[2] as { cache_control?: unknown }).cache_control, undefined)
+})
+
+test('buildAnthropicTools falls back to the last tool when every tool is volatile', () => {
+  resetCacheTTLEvaluation()
+
+  const deferred = new Set(['Read', 'Grep'])
+  const built = buildAnthropicTools(tools, true, { env: {} }, deferred)
+
+  assert.equal((built[0] as { cache_control?: unknown }).cache_control, undefined)
+  assert.deepEqual((built[1] as { cache_control?: unknown }).cache_control, { type: 'ephemeral' })
 })
 
 test('buildAnthropicMessages keeps injected subagent summary after Agent tool_result valid', () => {

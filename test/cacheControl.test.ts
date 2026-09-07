@@ -71,13 +71,94 @@ test('cache ttl1h settings override environment', () => {
   }), false)
 })
 
-test('cache ttl1h falls back to environment and re-evaluates each call', () => {
+test('cache ttl1h falls back to environment and stays latched until reset', () => {
   resetCacheTTLEvaluation()
 
   assert.equal(should1hCacheTTL({ env: { MYAGENT_PROMPT_CACHE_1H: '1' } }), true)
-  // Subsequent calls re-evaluate with the new runtime (no permanent caching).
+  // A settings reload must not flip the marker shape mid-session: that flip is
+  // itself a cache break.
+  assert.equal(should1hCacheTTL({
+    settings: { cache: { ttl1h: false } },
+    env: { MYAGENT_PROMPT_CACHE_1H: '0' },
+  }), true)
+
+  resetCacheTTLEvaluation()
   assert.equal(should1hCacheTTL({
     settings: { cache: { ttl1h: false } },
     env: { MYAGENT_PROMPT_CACHE_1H: '0' },
   }), false)
+})
+
+test('addCacheBreakpoints marks the final tool_result block', () => {
+  resetCacheTTLEvaluation()
+  const messages = [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Read', input: {} }] },
+    {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'a', content: 'first' },
+        { type: 'tool_result', tool_use_id: 'b', content: 'second' },
+      ],
+    },
+  ]
+
+  const result = addCacheBreakpoints(messages, true, { env: {} })
+  const content = result[1]?.content as Array<Record<string, unknown>>
+  assert.equal(content[0]?.cache_control, undefined)
+  assert.deepEqual(content[1]?.cache_control, { type: 'ephemeral' })
+})
+
+test('addCacheBreakpoints marks a trailing tool_use rather than an earlier text block', () => {
+  resetCacheTTLEvaluation()
+  const messages = [
+    {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'let me look' },
+        { type: 'tool_use', id: 'a', name: 'Read', input: {} },
+      ],
+    },
+  ]
+
+  const result = addCacheBreakpoints(messages, true, { env: {} })
+  const content = result[0]?.content as Array<Record<string, unknown>>
+  assert.equal(content[0]?.cache_control, undefined)
+  assert.deepEqual(content[1]?.cache_control, { type: 'ephemeral' })
+})
+
+test('addCacheBreakpoints walks back past thinking blocks', () => {
+  resetCacheTTLEvaluation()
+  const messages = [
+    {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'answer' },
+        { type: 'thinking', thinking: 'hmm', signature: 'sig' },
+      ],
+    },
+  ]
+
+  const result = addCacheBreakpoints(messages, true, { env: {} })
+  const content = result[0]?.content as Array<Record<string, unknown>>
+  assert.deepEqual(content[0]?.cache_control, { type: 'ephemeral' })
+  assert.equal(content[1]?.cache_control, undefined)
+})
+
+test('addCacheBreakpoints leaves an all-thinking message unmarked', () => {
+  resetCacheTTLEvaluation()
+  const messages = [
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'hmm', signature: 'sig' },
+        { type: 'redacted_thinking', data: 'xx' },
+      ],
+    },
+  ]
+
+  const result = addCacheBreakpoints(messages, true, { env: {} })
+  const content = result[0]?.content as Array<Record<string, unknown>>
+  for (const block of content) {
+    assert.equal(block?.cache_control, undefined)
+  }
 })

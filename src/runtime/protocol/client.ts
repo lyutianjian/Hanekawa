@@ -25,6 +25,7 @@ import {
   type PermissionRequestDto,
   type UiResponse,
   type WireBackgroundTasksResult,
+  type WireBranchesResult,
   type WireClosePaneResult,
   type WireCommandInfo,
   type WireCommandsResult,
@@ -47,6 +48,7 @@ import {
   type WireRuntimeSnapshot,
   type WireSessionSwitchResult,
   type WireSessionsResult,
+  type WireSwitchBranchResult,
   type WireTaskOutputResult,
   type WireTaskResult,
   type WireUsageCost,
@@ -414,6 +416,24 @@ export class SessionClient {
       cursorPos,
     }) as WireFileSuggestionsResult
     return result.suggestions
+  }
+
+  /** The empty state's branch popover, asked once per open — never cached here. */
+  async listBranches(): Promise<WireBranchesResult> {
+    return this.send({ type: 'list-branches', id: randomUUID() }) as Promise<WireBranchesResult>
+  }
+
+  /**
+   * A refused switch resolves rather than rejects: the host reports `ok: false`
+   * with git's own sentence, and a dirty worktree is an answer the user has to
+   * read, not a transport failure.
+   */
+  async switchBranch(branch: string): Promise<WireSwitchBranchResult> {
+    return this.send({
+      type: 'switch-branch',
+      id: randomUUID(),
+      branch,
+    }) as Promise<WireSwitchBranchResult>
   }
 
   async getCheckpoints(): Promise<CheckpointWithDiff[]> {

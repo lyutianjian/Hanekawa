@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import OpenAI from 'openai'
 import type { ModelContextItem, ModelRequest, Tool } from '../../harness/types.js'
 import { toolToAPISchema } from '../../harness/toolApiSchema.js'
+import { splitSystemForCaching } from '../../harness/cacheControl.js'
 
 export function buildOpenAIMessages(request: ModelRequest): OpenAI.Chat.ChatCompletionMessageParam[] {
   const contextItems = request.contextItems ?? request.messages.map((message) => ({ kind: 'message', message }) satisfies ModelContextItem)
@@ -80,10 +81,17 @@ export function buildOpenAIPromptCacheKey(request: ModelRequest): string {
     description: tool.function.description,
     parameters: tool.function.parameters,
   }))
+  // Only the static half of the system prompt keys the cache. The dynamic blocks
+  // (plan-mode reminder, critical system reminder) toggle within a session; letting
+  // them into the key reroutes the request to a different cache shard and throws
+  // away the prefix that was already warm.
+  const { staticBlocks } = splitSystemForCaching(
+    request.systemBlocks ?? (request.system ? [request.system] : []),
+  )
   const hash = createHash('sha256')
     .update(JSON.stringify({
       model: request.model,
-      system: request.system ?? '',
+      system: staticBlocks.join('\n\n'),
       tools,
     }))
     .digest('hex')

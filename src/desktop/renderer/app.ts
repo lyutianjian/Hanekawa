@@ -58,7 +58,6 @@ import {
   type SidebarState,
 } from './model/sidebar.js'
 import { rewindKeyToIntent } from './model/rewindPanel.js'
-import type { WorkspacePickerIntent } from './model/workspacePicker.js'
 import {
   SIDEBAR_WIDTH_STORAGE_KEY,
   clampSidebarWidth,
@@ -272,17 +271,12 @@ function attachPaneSession(lane: string): void {
     // pull it triggers is what swaps「未命名会话」for the real first-message
     // title — the same trigger `turn-end` uses, one interaction earlier.
     onFirstContent: () => void refreshSessions(),
-    // The lane's project is read at click time, not captured: a lane outlives any
-    // one `lanes` snapshot, and the sidebar is where the answer lives.
-    onSwitchWorkspace: () => {
-      const root = shellClient.getLanes().find((info) => info.lane === lane)?.projectRoot
-      if (root !== undefined) revealWorkspace(root)
-    },
-    // A search result's path, clicked (§6.2 检索). The same read-at-click-time
-    // rule as `onSwitchWorkspace`, and the same awaited reply as the canvas
-    // header's "open location": "code is not installed" has to reach the
-    // transcript, not vanish. The path stays cwd-relative — the shell bounds it
-    // to the project's real cwd, which only the host knows.
+    // A search result's path, clicked (§6.2 检索). The lane's project is read at
+    // click time, not captured — a lane outlives any one `lanes` snapshot — and
+    // the reply is awaited like the canvas header's "open location": "code is
+    // not installed" has to reach the transcript, not vanish. The path stays
+    // cwd-relative — the shell bounds it to the project's real cwd, which only
+    // the host knows.
     onOpenFile: (path, line) => {
       const root = shellClient.getLanes().find((info) => info.lane === lane)?.projectRoot
       if (root === undefined) return
@@ -290,17 +284,6 @@ function attachPaneSession(lane: string): void {
         .openInEditor(root, { path, ...(line === undefined ? {} : { line }) })
         .catch((error) => activePane()?.note(describe(error), 'error'))
     },
-    // Read at paint time, never captured: the list moves whenever a project is
-    // added or removed, and the pane must not hold a snapshot of it.
-    workspaces: () => ({
-      options: projects.map((project) => ({
-        projectRoot: project.projectRoot,
-        projectName: project.projectName,
-        isGlobal: project.isGlobal ?? false,
-      })),
-      globalRoot,
-    }),
-    onWorkspaceIntent: (intent) => runWorkspaceIntent(intent),
     onExit: () => {
       // `/exit` closes this pane, not the window: the single window holds every
       // other lane, and `window.close()` would take them all down.
@@ -556,61 +539,6 @@ function closeLane(lane: string): void {
   const paneId = session?.client.getSession()?.id
   if (!session || paneId === undefined) return
   void session.client.closePane(paneId).catch((error) => session.note(describe(error), 'error'))
-}
-
-/**
- * The welcome screen's Hero project name, resolved to that workspace's group.
- *
- * There is no workspace dropdown to open any more: every workspace has a heading
- * in the sidebar, so the useful answer to "this session is in *app*" is to put
- * *app*'s group on screen. Expands the rail first — a heading inside a collapsed
- * sidebar cannot be scrolled to — then unfolds the group, and takes focus last,
- * after the render that built the heading being focused.
- */
-function revealWorkspace(projectRoot: string): void {
-  if (collapsed) runSidebarIntent({ kind: 'toggle-collapse' })
-  collapsedProjects = toggleProject(collapsedProjects, projectRoot, false)
-  renderSidebar()
-  sidebar.focusProject(projectRoot)
-}
-
-/**
- * The welcome screen's workspace picker, resolved to things the shell already
- * does.
- *
- * Every branch re-enters through `runSidebarIntent`, which is the rule the title
- * bar's menus follow: a second path to "open a session" is a second place for
- * the settings screen, the empty-session check and the error note to drift.
- * `reveal` never arrives here — the pane answers it through `onSwitchWorkspace`.
- */
-function runWorkspaceIntent(intent: WorkspacePickerIntent): void {
-  switch (intent.kind) {
-    case 'pick':
-      // A new session *in* that project: a live session cannot change its own
-      // cwd, so this is the same act the group heading's `+` performs.
-      runSidebarIntent(newSessionIntent(intent.projectRoot))
-      return
-    case 'new-project':
-      runSidebarIntent({ kind: 'open-project' })
-      return
-    case 'no-project':
-      // The global workspace. Without a root key there is nothing to name, and
-      // an untargeted "new session" would land in the first open project.
-      if (globalRoot === undefined) return
-      runSidebarIntent(newSessionIntent(globalRoot))
-      return
-    // The popover's own state — opening, typing, moving, closing — is the pane's
-    // and never reaches the window.
-    case 'open':
-    case 'close':
-    case 'search':
-    case 'move':
-    case 'reveal':
-    case 'none':
-      return
-    default:
-      assertNeverIntent(intent)
-  }
 }
 
 function runSidebarIntent(intent: SidebarIntent): void {

@@ -32,18 +32,16 @@ export type IconName =
   | 'arrow-left'
   | 'dot'
   | 'check'
-  | 'close'
   | 'clock'
   | 'spinner'
   | 'send'
   | 'stop'
   | 'gear'
   // --- the empty-state screen (5c) ---
-  | 'thought-bubble'
-  | 'megaphone'
-  | 'hammer'
-  | 'refresh'
-  | 'monitor'
+  // The mark and the three guidance cards it sat over are gone: the screen's
+  // identity is typographic now (see `model/welcome.ts`), so `thought-bubble`,
+  // `megaphone`, `hammer` and `refresh` went with them. `monitor` followed when
+  // the「本地」pill did. The branch pill draws this one, and so do its rows.
   | 'branch'
   // --- the canvas header (5e) ---
   | 'code'
@@ -100,9 +98,6 @@ const ICONS = {
   // `dot` the `#surface` rows use: there the mark sits in a fixed column before
   // the label, here it trails a flyout row the way a menu check does.
   check: { paths: ['M3.5 8.6 6.6 11.7 12.5 4.8'] },
-  // Two crossed strokes, not a ringed ✕: this marks the workspace picker's
-  // "work outside a project" row, which is a choice rather than a dismissal.
-  close: { paths: ['M4.2 4.2 11.8 11.8', 'M11.8 4.2 4.2 11.8'] },
   // A dial with two hands — the「最近」filter. A folder would say "project",
   // which is the one thing the global workspace is not.
   clock: { paths: ['M8 2.4a5.6 5.6 0 1 1 0 11.2A5.6 5.6 0 0 1 8 2.4z', 'M8 5.1V8l2.1 1.6'] },
@@ -118,31 +113,9 @@ const ICONS = {
     ],
   },
   // --- the empty-state screen ---
-  // A cloud with a terminal prompt inside it, per design_guidance 三.2①. Drawn at
-  // 48px there, which is why the shapes are outlines and not detail.
-  'thought-bubble': {
-    paths: [
-      'M5 12a2.6 2.6 0 0 1-.5-5.1 3.4 3.4 0 0 1 6.4-1.3A2.7 2.7 0 0 1 11.4 12z',
-      'M6.2 9.6h3.6',
-    ],
-  },
-  megaphone: { paths: ['M4.4 6.3 11.2 3.3v9.4L4.4 9.7z', 'M4.4 6.3H2.7v3.4h1.7', 'M6.7 10.1v2.6'] },
-  hammer: { paths: ['M8.9 2.8l4.3 4.3-2 2-4.3-4.3z', 'M6.9 6.8 3 10.7l2.3 2.3 3.9-3.9'] },
-  refresh: {
-    paths: [
-      'M3.2 8a4.8 4.8 0 0 1 8.2-3.4',
-      'M12.8 8a4.8 4.8 0 0 1-8.2 3.4',
-      'M11.4 2v2.7H8.7',
-      'M4.6 14v-2.7h2.7',
-    ],
-  },
-  monitor: {
-    paths: [
-      'M2.5 4.2a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v5.4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z',
-      'M8 10.6v2.2',
-      'M6 12.8h4',
-    ],
-  },
+  // One glyph now, on the branch pill and on every row of the switcher it opens.
+  // The screen's mark and its three card icons were dropped with the cards
+  // themselves — see `model/welcome.ts`.
   branch: {
     paths: [
       'M4.5 2.6a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z',

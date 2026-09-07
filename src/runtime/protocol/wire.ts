@@ -156,6 +156,23 @@ export type HostCommand =
    * responsible for discarding answers that arrive out of order.
    */
   | { type: 'file-suggestions'; id: string; input: string; cursorPos: number }
+  // --- git branches ---------------------------------------------------------
+  /**
+   * The local branches of this pane's project, for the empty state's branch
+   * popover.
+   *
+   * A command rather than a field on `hello` — which is what `gitBranch` is —
+   * because listing costs a `git` subprocess and the popover is the only thing
+   * that ever wants it. Re-read on every open: a branch created in a terminal
+   * beside the app must show up without restarting the pane.
+   */
+  | { type: 'list-branches'; id: string }
+  /**
+   * `git switch`. Refusals (a dirty worktree, a vanished branch) come back as
+   * `ok: false` with git's own words rather than as a `fail` — the client draws
+   * them as a notice, and a rejected checkout is an answer, not a protocol error.
+   */
+  | { type: 'switch-branch'; id: string; branch: string }
   | { type: 'checkpoints'; id: string }
   | { type: 'restore-code'; id: string; commitHash: string }
   /**
@@ -401,6 +418,26 @@ export const UI_REQUEST_FALLBACKS = {
 
 export interface WireCheckpointsResult {
   checkpoints: CheckpointWithDiff[]
+}
+
+/** Local branches, most recent first, plus wherever HEAD is now. */
+export interface WireBranchesResult {
+  branches: string[]
+  current?: string
+}
+
+/**
+ * The outcome of a `switch-branch`.
+ *
+ * `current` is read back off HEAD in both directions, so a refused switch still
+ * tells the client where it is — and a client that assumed the branch it asked
+ * for would draw a badge for a branch it is not on.
+ */
+export interface WireSwitchBranchResult {
+  ok: boolean
+  current?: string
+  /** git's own stderr, for the note the client posts. Absent when `ok`. */
+  message?: string
 }
 
 export interface WireReloadResult {

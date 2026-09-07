@@ -1,30 +1,45 @@
 import { type TranscriptItemKind, type TranscriptState } from './transcript.js'
 import {
-  createWorkspacePickerState,
-  workspacePickerSignature,
-  workspacePickerView,
-  type WorkspacePickerState,
-  type WorkspacePickerView,
-} from './workspacePicker.js'
+  branchPickerSignature,
+  branchPickerView,
+  createBranchPickerState,
+  type BranchPickerState,
+  type BranchPickerView,
+} from './branchPicker.js'
 
 /**
  * The empty-state welcome screen, as data.
  *
- * Drawn in place of a conversation when there is nothing to read yet: a mark, a
- * Hero line naming the project, three cards saying what this thing is for, and a
- * strip of read-only context pills. `dom/welcomeView.ts` builds the nodes; every
- * decision — above all *whether it shows at all* — is here, where it can be
- * tested without a DOM.
+ * Drawn in place of a conversation when there is nothing to read yet: a
+ * masthead (a wordmark and the Hero line naming the project) hung off a single
+ * brand-coloured rule, a strip of context pills, and one line of key hints.
+ * `dom/welcomeView.ts` builds the nodes; every decision — above all *whether it
+ * shows at all* — is here, where it can be tested without a DOM.
  *
- * The three cards are guidance, not templates: clicking one only focuses the
- * composer. Filling a prompt in for the user was considered and dropped — a
- * seeded prompt is a sentence the user then has to delete.
+ * The pills used to be three, all read-only, and the Hero's project name used to
+ * be a button opening a workspace switcher. Both are gone: switching projects is
+ * what the sidebar is for and its popover was clipped by the canvas anyway, and
+ * a「本地」pill naming the one runtime that has ever existed carried no
+ * information. What is left is the project it runs in and the branch it is on —
+ * and the branch is the one fact on this screen worth changing from it, so that
+ * pill is the only control here (see `model/branchPicker.ts`).
+ *
+ * There is no graphic mark. The screen used to open with an icon above three
+ * guidance cards, which is the shape every agent shell ships and therefore the
+ * shape none of them is recognised by; the identity is carried by type instead —
+ * the wordmark's tracking, the Hero's serif at display size, and the 2px rule
+ * the whole block hangs on. The rule is the only "graphic", and it is a token
+ * (`--accent-brand`), not a drawing.
+ *
+ * The cards went with it. They were guidance, not templates — clicking one only
+ * focused the composer — and the hint line does that job in one row: it names
+ * the three affordances a new user cannot guess (`/`, `@`, the permission
+ * chord) instead of restating what a coding agent is for.
  */
 
-export type WelcomeCardKind = 'explore' | 'build' | 'review'
-export type WelcomePillKind = 'project' | 'local' | 'branch'
+export type WelcomePillKind = 'project' | 'branch'
 
-/** The Hero line, split so the project name can be its own clickable node. */
+/** The Hero line, split so the project name can be its own node. */
 export const WELCOME_TITLE_BEFORE = '你想让我们在 '
 export const WELCOME_TITLE_AFTER = ' 中构建什么？'
 /** The global workspace's Hero: no project segment, nothing to name. */
@@ -33,34 +48,45 @@ export const WELCOME_GLOBAL_TITLE = '你想让我们构建什么？'
 export const WELCOME_GLOBAL_LOCATION = '~/.myagent'
 /** Shown until `hello` answers; the name is unknown for a frame or two. */
 export const WELCOME_PROJECT_FALLBACK = '当前项目'
-/** The runtime pill. A constant, not a lookup: every session runs locally. */
-export const WELCOME_LOCAL_LABEL = '本地'
 
-export const WELCOME_CARD_TITLES: Record<WelcomeCardKind, string> = {
-  explore: '探索并理解代码',
-  build: '构建新功能、应用或工具',
-  review: '审查代码并提出修改建议',
+/**
+ * The wordmark above the Hero.
+ *
+ * Lower case, and set in the mono stack by the sheet: upper case in a CJK
+ * interface reads as a system banner, lower case reads as a signature — which
+ * is what this is. It is the product's name, so it is not translated.
+ */
+export const WELCOME_WORDMARK = 'hanekawa'
+
+/**
+ * The one row that replaced the three guidance cards.
+ *
+ * Only affordances a first-time user cannot guess, and only ones that are true
+ * of every session: the two composer prefixes and the permission chord. Keys
+ * are separate from the label so the view can set them in the mono stack
+ * without parsing a sentence.
+ */
+export interface WelcomeHint {
+  readonly keys: readonly string[]
+  readonly label: string
 }
 
-/** Pinned here rather than in the view so the order is testable. */
-export const WELCOME_CARD_ORDER: readonly WelcomeCardKind[] = ['explore', 'build', 'review']
-
-const CARD_ICONS = {
-  explore: 'megaphone',
-  build: 'hammer',
-  review: 'refresh',
-} as const satisfies Record<WelcomeCardKind, string>
-
-export interface WelcomeCard {
-  readonly kind: WelcomeCardKind
-  readonly title: string
-  readonly icon: (typeof CARD_ICONS)[WelcomeCardKind]
-}
+export const WELCOME_HINTS: readonly WelcomeHint[] = [
+  { keys: ['/'], label: '命令' },
+  { keys: ['@'], label: '引用文件' },
+  { keys: ['Shift', 'Tab'], label: '切换权限模式' },
+]
 
 export interface WelcomePill {
   readonly kind: WelcomePillKind
   readonly label: string
-  readonly icon: 'folder' | 'monitor' | 'branch'
+  readonly icon: 'folder' | 'branch'
+  /**
+   * Whether this pill is a control. Only the branch pill ever is — it opens the
+   * switcher — and the rest stay `<span>`s, because a button that does nothing
+   * when clicked is a worse lie than plain text.
+   */
+  readonly interactive: boolean
 }
 
 export interface WelcomeState {
@@ -69,16 +95,19 @@ export interface WelcomeState {
   readonly projectName: string | undefined
   /** From `hello.projectIsGlobal`: the home-rooted workspace, not a project. */
   readonly global: boolean
-  /** From `hello.gitBranch`; undefined outside a repository or when detached. */
-  readonly branch: string | undefined
-  /** Whether this pane was given a way to open the workspace switcher. */
-  readonly canSwitchWorkspace: boolean
   /**
-   * The switcher itself. Held here rather than beside the welcome screen
-   * because it *is* part of the empty state: it hangs off the Hero's project
-   * name, and closing it is one of the things drawing a conversation does.
+   * From `hello.gitBranch` and then from every switch this pane performs;
+   * undefined outside a repository or when detached.
    */
-  readonly picker: WorkspacePickerState
+  readonly branch: string | undefined
+  /** Whether this pane was given a way to switch branches. */
+  readonly canSwitchBranch: boolean
+  /**
+   * The branch switcher. Held here rather than beside the welcome screen
+   * because it *is* part of the empty state: it hangs off the branch pill, and
+   * closing it is one of the things drawing a conversation does.
+   */
+  readonly branchPicker: BranchPickerState
 }
 
 export interface WelcomeView {
@@ -87,10 +116,10 @@ export interface WelcomeView {
   readonly titleBefore: string
   readonly projectLabel: string
   readonly titleAfter: string
-  readonly projectSwitchable: boolean
-  readonly cards: readonly WelcomeCard[]
+  readonly wordmark: string
+  readonly hints: readonly WelcomeHint[]
   readonly pills: readonly WelcomePill[]
-  readonly picker: WorkspacePickerView
+  readonly branchPicker: BranchPickerView
 }
 
 /**
@@ -131,8 +160,8 @@ export function createWelcomeState(overrides: Partial<WelcomeState> = {}): Welco
     projectName: undefined,
     global: false,
     branch: undefined,
-    canSwitchWorkspace: false,
-    picker: createWorkspacePickerState(),
+    canSwitchBranch: false,
+    branchPicker: createBranchPickerState(),
     ...overrides,
   }
 }
@@ -142,14 +171,23 @@ export function welcomeView(state: WelcomeState): WelcomeView {
     state.global
       ? // The global workspace has no name worth drawing — where its records
         // land is the useful fact.
-        { kind: 'project', label: WELCOME_GLOBAL_LOCATION, icon: 'folder' }
-      : { kind: 'project', label: state.projectName ?? WELCOME_PROJECT_FALLBACK, icon: 'folder' },
-    { kind: 'local', label: WELCOME_LOCAL_LABEL, icon: 'monitor' },
+        { kind: 'project', label: WELCOME_GLOBAL_LOCATION, icon: 'folder', interactive: false }
+      : {
+          kind: 'project',
+          label: state.projectName ?? WELCOME_PROJECT_FALLBACK,
+          icon: 'folder',
+          interactive: false,
+        },
   ]
   // Absent rather than hidden: a pill with nothing to say is not drawn, so the
   // view has no `hidden` state for `dom/` to interpret.
   if (state.branch !== undefined) {
-    pills.push({ kind: 'branch', label: state.branch, icon: 'branch' })
+    pills.push({
+      kind: 'branch',
+      label: state.branch,
+      icon: 'branch',
+      interactive: state.canSwitchBranch,
+    })
   }
 
   const visible = isTranscriptEmpty(state.transcript)
@@ -160,20 +198,17 @@ export function welcomeView(state: WelcomeState): WelcomeView {
     titleBefore: state.global ? WELCOME_GLOBAL_TITLE : WELCOME_TITLE_BEFORE,
     projectLabel: state.global ? '' : state.projectName ?? WELCOME_PROJECT_FALLBACK,
     titleAfter: state.global ? '' : WELCOME_TITLE_AFTER,
-    // There is nothing to switch *to* in the global workspace, and before the
-    // name is known the dashed underline would promise a click it cannot keep.
-    projectSwitchable: !state.global && state.canSwitchWorkspace && state.projectName !== undefined,
-    cards: WELCOME_CARD_ORDER.map((kind) => ({
-      kind,
-      title: WELCOME_CARD_TITLES[kind],
-      icon: CARD_ICONS[kind],
-    })),
+    // Constants, carried on the view rather than reached for by `dom/`: the
+    // renderer's rule is that the view layer decides nothing, and "which three
+    // hints" is a decision even when it never changes.
+    wordmark: WELCOME_WORDMARK,
+    hints: WELCOME_HINTS,
     pills,
-    // The popover hangs off the Hero, so it cannot outlive it: a turn starting
-    // takes the whole empty state off screen, and a picker left `open` in the
-    // state would be drawn again the moment the conversation was cleared.
-    picker: workspacePickerView(
-      visible ? state.picker : { ...state.picker, open: false },
+    // The popover hangs off the pills, so it cannot outlive them: a turn
+    // starting takes the whole empty state off screen, and a picker left `open`
+    // in the state would be drawn again the moment the conversation was cleared.
+    branchPicker: branchPickerView(
+      visible ? state.branchPicker : { ...state.branchPicker, open: false },
     ),
   }
 }
@@ -183,8 +218,8 @@ export function welcomeView(state: WelcomeState): WelcomeView {
  *
  * Load-bearing rather than an optimisation: the view is rendered from
  * `paneSession`'s single transcript paint, which runs once per streamed token.
- * Without this guard every token would rebuild four buttons, a heading and three
- * pills. The cards are omitted because they are constant.
+ * Without this guard every token would rebuild a heading and three pills. The
+ * wordmark and the hint row are omitted because they are constant.
  */
 export function welcomeRenderSignature(view: WelcomeView): string {
   return [
@@ -192,11 +227,10 @@ export function welcomeRenderSignature(view: WelcomeView): string {
     // Signed: the global Hero is different text, and an unsigned field here is
     // exactly the stale-paint bug this signature exists to prevent.
     view.global ? 'g' : 'p',
-    view.projectSwitchable ? '1' : '0',
     view.projectLabel,
-    ...view.pills.map((pill) => `${pill.kind}:${pill.label}`),
+    ...view.pills.map((pill) => `${pill.kind}:${pill.interactive ? '1' : '0'}:${pill.label}`),
     // Signed, or the render guard swallows the click that opens the switcher —
     // the same failure an unsigned `menuOpen` is in `sidebarRenderSignature`.
-    workspacePickerSignature(view.picker),
+    branchPickerSignature(view.branchPicker),
   ].join(' ')
 }

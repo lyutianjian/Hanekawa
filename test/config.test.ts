@@ -1432,6 +1432,27 @@ test('buildOpenAIPromptCacheKey is stable for model, system, and tools', async (
   )
 })
 
+test('buildOpenAIPromptCacheKey ignores dynamic system blocks', async () => {
+  const tools = await getAllTools()
+  const base: ModelRequest = {
+    cacheSource: 'agent:test',
+    model: 'gpt-test',
+    messages: [],
+    tools,
+    systemBlocks: ['static identity', SYSTEM_PROMPT_DYNAMIC_BOUNDARY, 'plan mode reminder'],
+  }
+
+  // Toggling plan mode must not reroute the request to a different cache shard.
+  assert.equal(
+    buildOpenAIPromptCacheKey(base),
+    buildOpenAIPromptCacheKey({ ...base, systemBlocks: ['static identity'] }),
+  )
+  assert.notEqual(
+    buildOpenAIPromptCacheKey(base),
+    buildOpenAIPromptCacheKey({ ...base, systemBlocks: ['other identity', SYSTEM_PROMPT_DYNAMIC_BOUNDARY, 'plan mode reminder'] }),
+  )
+})
+
 test('buildOpenAITools includes concrete schemas for built-in tools', () => {
   const readFileTool = getBuiltinTools().find((tool) => tool.name === 'Read')
   assert.ok(readFileTool)

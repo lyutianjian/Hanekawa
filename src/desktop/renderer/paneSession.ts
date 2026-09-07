@@ -51,14 +51,13 @@ import { createTranscriptView, type TranscriptView } from './dom/transcriptView.
 import { createWelcomeView } from './dom/welcomeView.js'
 import { isTranscriptEmpty, welcomeView } from './model/welcome.js'
 import {
-  createWorkspacePickerState,
-  moveWorkspaceSelection,
-  workspacePickerKeyToIntent,
-  workspacePickerView,
-  type WorkspaceOption,
-  type WorkspacePickerIntent,
-  type WorkspacePickerState,
-} from './model/workspacePicker.js'
+  branchPickerKeyToIntent,
+  branchPickerView,
+  createBranchPickerState,
+  moveBranchSelection,
+  type BranchPickerIntent,
+  type BranchPickerState,
+} from './model/branchPicker.js'
 import { classifyInput, commandEffectToIntent } from './model/commandRouting.js'
 import {
   acceptCompletion as applyCompletion,
@@ -185,40 +184,15 @@ export interface PaneSessionDeps {
    */
   onFirstContent?: () => void
   /**
-   * Window-level: put this pane's own workspace on screen in the sidebar. The
-   * switcher's row for the project the pane is already in resolves to this —
-   * nothing to open, so the useful answer is "here it is".
-   */
-  onSwitchWorkspace?: () => void
-  /**
    * A path in a search result was clicked (§6.2 检索): open it in the user's
-   * editor, at the line the hit named. Window-level like `onSwitchWorkspace` —
-   * `open-in-editor` is a shell command, and this pane owns only the click.
+   * editor, at the line the hit named. Window-level — `open-in-editor` is a
+   * shell command, and this pane owns only the click.
    */
   onOpenFile?: (path: string, line: number | undefined) => void
-  /**
-   * Every workspace the shell knows, read at paint time rather than captured:
-   * the list is `app.ts`'s (it owns the `list-sessions` pull) and it moves under
-   * this pane whenever a project is added or removed.
-   */
-  workspaces?: () => WorkspaceListing
-  /**
-   * A row or action in the workspace picker was chosen. The pane reports it;
-   * *acting* on it — opening a session, raising the directory picker — is
-   * window-level and belongs to `app.ts`, exactly like `onSwitchWorkspace`.
-   */
-  onWorkspaceIntent?: (intent: WorkspacePickerIntent) => void
   /** `/exit` was accepted by the host — close whatever this shell calls "this pane". */
   onExit: () => void
   /** The lane died from the host side (pane closed, window closing). */
   onClosed?: () => void
-}
-
-/** What `app.ts` hands the picker: the workspaces, plus the global one's key. */
-export interface WorkspaceListing {
-  readonly options: readonly WorkspaceOption[]
-  /** From `list-sessions`; `undefined` until the first pull answers. */
-  readonly globalRoot: string | undefined
 }
 
 export interface PaneSession {
@@ -240,8 +214,9 @@ export interface PaneSession {
   /** Whether this pane's session has had any input or output yet. */
   hasConversation(): boolean
   /**
-   * Repaint the empty state. `app.ts` calls it when the workspace list moves —
-   * the picker reads that list, and nothing else would repaint an idle pane.
+   * Repaint the empty state. `app.ts` calls it when the project list moves — an
+   * idle pane's Hero names a project the sidebar just renamed or removed, and
+   * nothing else would repaint it.
    */
   refreshWelcome(): void
   /**
@@ -331,13 +306,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     onCopy: (text) => { void navigator.clipboard?.writeText(text).catch(() => {}) },
   })
   const welcome = createWelcomeView(welcomeEl, {
-    onSwitchWorkspace: () => toggleWorkspacePicker(),
-    onFocusComposer: () => deps.composer.focus(),
-    onPickerIntent: (intent) => runWorkspacePickerIntent(intent),
-    onPickerKey: (chord) => {
-      const intent = workspacePickerKeyToIntent(chord, currentPickerView())
+    onBranchIntent: (intent) => runBranchPickerIntent(intent),
+    onBranchKey: (chord) => {
+      const intent = branchPickerKeyToIntent(chord, branchPickerView(branchPicker))
       if (intent.kind === 'none') return false
-      runWorkspacePickerIntent(intent)
+      runBranchPickerIntent(intent)
       return true
     },
   })
@@ -384,11 +357,17 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   let projectGlobal = false
   let gitBranch: string | undefined
   /**
-   * The welcome screen's workspace switcher. Per pane like every other `let`
-   * here: the popover belongs to the Hero it hangs off, and a window-level one
-   * would still be open over the session the user just opened from it.
+   * The welcome screen's branch switcher. Per pane like every other `let` here:
+   * the popover belongs to the pill it hangs off, and the branch it lists is
+   * this pane's project's.
    */
-  let picker: WorkspacePickerState = createWorkspacePickerState()
+  let branchPicker: BranchPickerState = createBranchPickerState()
+  /**
+   * Discards the answer of a `list-branches` the user has already moved past —
+   * closing and reopening the popover starts a second pull, and the first one
+   * arriving late would repaint a list nobody asked for.
+   */
+  let branchListToken = 0
   /**
    * Messages the host is holding until the running turn ends — a mirror of
    * `client.getQueuedMessages()`, drawn from the last `queued-messages` event.
@@ -411,84 +390,100 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 
   // --- rendering (state always updates; paint only when active) --------------
 
-  /**
-   * The workspace picker's state, as the model wants it.
-   *
-   * Assembled per read rather than held: the options and the global root are
-   * `app.ts`'s (they move when a project is added or removed), and the only
-   * thing this pane owns is whether the popover is open and what is typed in it.
-   */
-  function currentPickerState(): WorkspacePickerState {
-    const listing = deps.workspaces?.()
-    return {
-      ...picker,
-      options: listing?.options ?? [],
-      globalRoot: listing?.globalRoot,
-      currentRoot: ownProjectRoot,
-    }
-  }
-
-  function currentPickerView() {
-    return workspacePickerView(currentPickerState())
-  }
-
-  /** The Hero's project name. Opens the switcher, or closes the open one. */
-  function toggleWorkspacePicker(): void {
-    if (deps.onWorkspaceIntent === undefined) return
-    runWorkspacePickerIntent({ kind: picker.open ? 'close' : 'open' })
-  }
-
-  function runWorkspacePickerIntent(intent: WorkspacePickerIntent): void {
+  function runBranchPickerIntent(intent: BranchPickerIntent): void {
     switch (intent.kind) {
       case 'open':
-        // A fresh cursor and an empty query every time: the popover is short
-        // enough that resuming last time's filter reads as a broken list.
-        picker = { ...picker, open: true, query: '', selectedIndex: -1 }
+        if (branchPicker.open) return
+        // Opened empty and loading, then filled: branches are created and
+        // deleted in a terminal beside this window, so a list cached from the
+        // last open would be a lie by the second one.
+        branchPicker = {
+          ...createBranchPickerState(),
+          open: true,
+          loading: true,
+          current: gitBranch,
+        }
         renderTranscript()
-        welcome.focusPicker()
+        welcome.focusBranchPicker()
+        void loadBranches()
         return
       case 'close':
-        if (!picker.open) return
-        picker = { ...createWorkspacePickerState(), open: false }
+        if (!branchPicker.open) return
+        branchPicker = createBranchPickerState()
         renderTranscript()
         // Focus has to land somewhere the user expects, and the composer is
         // where they were going anyway.
         deps.composer.focus()
         return
-      case 'search':
-        // The cursor is dropped rather than clamped: the row it pointed at may
-        // not be in the filtered list at all.
-        picker = { ...picker, query: intent.query, selectedIndex: -1 }
-        renderTranscript()
-        return
       case 'move':
-        picker = {
-          ...picker,
-          selectedIndex: moveWorkspaceSelection(currentPickerView(), intent.direction),
+        branchPicker = {
+          ...branchPicker,
+          selectedIndex: moveBranchSelection(branchPickerView(branchPicker), intent.direction),
         }
         renderTranscript()
         return
-      case 'reveal':
-        // Nothing opens: the pane is already there. Close, then let the shell
-        // put that project's group on screen.
-        picker = createWorkspacePickerState()
-        renderTranscript()
-        deps.onSwitchWorkspace?.()
-        return
       case 'pick':
-      case 'new-project':
-      case 'no-project':
-        // Every one of these puts a different session on screen, so the popover
-        // is withdrawn *before* the request rather than after — a picker left
-        // open over an arriving conversation is a dialog nobody asked for.
-        picker = createWorkspacePickerState()
-        renderTranscript()
-        deps.onWorkspaceIntent?.(intent)
+        void switchBranch(intent.branch)
         return
       case 'none':
         return
       default:
         assertNever(intent)
+    }
+  }
+
+  /** The list behind an open popover. Never throws: a failure is an empty list. */
+  async function loadBranches(): Promise<void> {
+    branchListToken += 1
+    const token = branchListToken
+    try {
+      const result = await client.listBranches()
+      if (token !== branchListToken || !branchPicker.open) return
+      branchPicker = {
+        ...branchPicker,
+        loading: false,
+        branches: result.branches,
+        current: result.current,
+      }
+      // The pill draws from `gitBranch`, and this is a fresher read of HEAD than
+      // `hello` left behind — a branch switched in a terminal lands here.
+      gitBranch = result.current
+    } catch (error) {
+      if (token !== branchListToken || !branchPicker.open) return
+      branchPicker = { ...branchPicker, loading: false, error: describe(error) }
+    }
+    renderTranscript()
+  }
+
+  /**
+   * `git switch`, host-side. A refusal — a dirty worktree, most often — comes
+   * back as a result rather than a throw, and it is drawn *in* the popover: the
+   * user is looking at the list they just clicked, and a notice behind it is a
+   * notice nobody reads. It is also posted to the transcript, which survives the
+   * popover closing.
+   */
+  async function switchBranch(branch: string): Promise<void> {
+    if (branchPicker.switching) return
+    branchPicker = { ...branchPicker, switching: true, error: undefined }
+    renderTranscript()
+    try {
+      const result = await client.switchBranch(branch)
+      gitBranch = result.current
+      if (result.ok) {
+        branchPicker = createBranchPickerState()
+        renderTranscript()
+        deps.composer.focus()
+        return
+      }
+      const message = result.message ?? `无法切换到 ${branch}`
+      branchPicker = { ...branchPicker, switching: false, current: result.current, error: message }
+      renderTranscript()
+      note(message, 'error')
+    } catch (error) {
+      const message = describe(error)
+      branchPicker = { ...branchPicker, switching: false, error: message }
+      renderTranscript()
+      note(message, 'error')
     }
   }
 
@@ -517,8 +512,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       projectName,
       global: projectGlobal,
       branch: gitBranch,
-      canSwitchWorkspace: deps.onWorkspaceIntent !== undefined,
-      picker: currentPickerState(),
+      // The global workspace is the home directory, which is not a checkout
+      // anyone should be switching from a Hero screen; everywhere else the pill
+      // is a control as soon as there is a branch to name.
+      canSwitchBranch: !projectGlobal,
+      branchPicker,
     }))
     paneEl.classList.toggle('empty', isTranscriptEmpty(transcript))
   }

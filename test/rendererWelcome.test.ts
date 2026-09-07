@@ -2,14 +2,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  WELCOME_CARD_ORDER,
-  WELCOME_CARD_TITLES,
   WELCOME_GLOBAL_LOCATION,
   WELCOME_GLOBAL_TITLE,
-  WELCOME_LOCAL_LABEL,
   WELCOME_PROJECT_FALLBACK,
+  WELCOME_HINTS,
   WELCOME_TITLE_AFTER,
   WELCOME_TITLE_BEFORE,
+  WELCOME_WORDMARK,
   createWelcomeState,
   isTranscriptEmpty,
   welcomeRenderSignature,
@@ -35,7 +34,7 @@ function transcript(overrides: Partial<TranscriptState> = {}): TranscriptState {
 }
 
 function stateWith(overrides: Partial<WelcomeState> = {}): WelcomeState {
-  return createWelcomeState({ projectName: 'Hanekawa-main', canSwitchWorkspace: true, ...overrides })
+  return createWelcomeState({ projectName: 'Hanekawa-main', canSwitchBranch: true, ...overrides })
 }
 
 // --- constants ---------------------------------------------------------------
@@ -46,12 +45,21 @@ test('the constants are the agreed values', () => {
   assert.equal(WELCOME_GLOBAL_TITLE, '你想让我们构建什么？')
   assert.equal(WELCOME_GLOBAL_LOCATION, '~/.myagent')
   assert.equal(WELCOME_PROJECT_FALLBACK, '当前项目')
-  assert.equal(WELCOME_LOCAL_LABEL, '本地')
-  assert.deepEqual(WELCOME_CARD_TITLES, {
-    explore: '探索并理解代码',
-    build: '构建新功能、应用或工具',
-    review: '审查代码并提出修改建议',
-  })
+  // Lower case is the decision, not a typo: upper case in a CJK interface reads
+  // as a system banner rather than as the signature this is.
+  assert.equal(WELCOME_WORDMARK, 'hanekawa')
+})
+
+test('the hint row names the three affordances a first run cannot guess', () => {
+  // The row that replaced the three guidance cards. Restating what a coding
+  // agent is for taught nothing; these are the keys that are not discoverable.
+  assert.deepEqual(WELCOME_HINTS, [
+    { keys: ['/'], label: '命令' },
+    { keys: ['@'], label: '引用文件' },
+    { keys: ['Shift', 'Tab'], label: '切换权限模式' },
+  ])
+  assert.deepEqual(welcomeView(stateWith()).hints, WELCOME_HINTS)
+  assert.equal(welcomeView(stateWith()).wordmark, WELCOME_WORDMARK)
 })
 
 // --- emptiness ---------------------------------------------------------------
@@ -112,38 +120,41 @@ test('the global workspace drops the project segment from the hero', () => {
   assert.equal(view.titleBefore, WELCOME_GLOBAL_TITLE)
   assert.equal(view.titleAfter, '')
   assert.equal(view.projectLabel, '')
-  assert.equal(view.projectSwitchable, false, 'even with a switcher and a name, there is nothing to reveal')
   assert.equal(view.pills[0]?.label, WELCOME_GLOBAL_LOCATION)
   assert.equal(view.pills[0]?.kind, 'project')
 })
 
-test('the project name is only a control when both halves are there', () => {
-  assert.equal(welcomeView(stateWith()).projectSwitchable, true)
-  assert.equal(welcomeView(stateWith({ canSwitchWorkspace: false })).projectSwitchable, false)
-  assert.equal(welcomeView(stateWith({ projectName: undefined })).projectSwitchable, false)
-})
-
-// --- cards and pills ---------------------------------------------------------
-
-test('the three cards are in the agreed order with an icon each', () => {
-  const cards = welcomeView(stateWith()).cards
-  assert.deepEqual(cards.map((card) => card.kind), [...WELCOME_CARD_ORDER])
-  assert.deepEqual(cards.map((card) => card.kind), ['explore', 'build', 'review'])
-  assert.deepEqual(cards.map((card) => card.title), WELCOME_CARD_ORDER.map((k) => WELCOME_CARD_TITLES[k]))
-  assert.equal(new Set(cards.map((card) => card.icon)).size, 3)
-})
+// --- pills -------------------------------------------------------------------
 
 test('the branch pill is absent, not blank, outside a repository', () => {
   const view = welcomeView(stateWith({ branch: undefined }))
-  assert.deepEqual(view.pills.map((pill) => pill.kind), ['project', 'local'])
+  assert.deepEqual(view.pills.map((pill) => pill.kind), ['project'])
 })
 
-test('a known branch adds a third pill carrying its name', () => {
+test('a known branch adds a second pill carrying its name', () => {
   const view = welcomeView(stateWith({ branch: 'master' }))
-  assert.deepEqual(view.pills.map((pill) => pill.kind), ['project', 'local', 'branch'])
-  assert.equal(view.pills[2]?.label, 'master')
+  assert.deepEqual(view.pills.map((pill) => pill.kind), ['project', 'branch'])
   assert.equal(view.pills[0]?.label, 'Hanekawa-main')
-  assert.equal(view.pills[1]?.label, WELCOME_LOCAL_LABEL)
+  assert.equal(view.pills[1]?.label, 'master')
+})
+
+test('only the branch pill is ever a control', () => {
+  const view = welcomeView(stateWith({ branch: 'master' }))
+  assert.deepEqual(view.pills.map((pill) => pill.interactive), [false, true])
+  // Nothing to switch in the home workspace, and a pane may not have been given
+  // the popover at all — either way the pill goes back to being plain text.
+  const fixed = welcomeView(stateWith({ branch: 'master', canSwitchBranch: false }))
+  assert.deepEqual(fixed.pills.map((pill) => pill.interactive), [false, false])
+})
+
+test('the branch popover cannot outlive the screen it hangs off', () => {
+  // A turn starting takes the empty state away; a popover left `open` in the
+  // state would be drawn again the moment the conversation was cleared.
+  const open = { ...createWelcomeState().branchPicker, open: true, branches: ['master'] }
+  const started = stateWith({ branch: 'master', branchPicker: open, transcript: transcript({ items: [item('user')] }) })
+  assert.equal(welcomeView(started).visible, false)
+  assert.equal(welcomeView(started).branchPicker.open, false)
+  assert.equal(welcomeView(stateWith({ branch: 'master', branchPicker: open })).branchPicker.open, true)
 })
 
 // --- the render signature ----------------------------------------------------
@@ -164,9 +175,17 @@ test('everything the DOM draws moves the signature', () => {
   const mutations: ReadonlyArray<[string, WelcomeState]> = [
     ['visible', stateWith({ branch: 'master', transcript: transcript({ items: [item('user')] }) })],
     ['project label', stateWith({ branch: 'master', projectName: 'other' })],
-    ['switchable', stateWith({ branch: 'master', canSwitchWorkspace: false })],
+    ['switchable', stateWith({ branch: 'master', canSwitchBranch: false })],
     ['branch', stateWith({ branch: 'topic' })],
     ['branch absent', stateWith({ branch: undefined })],
+    // Or the render guard swallows the click that opens the popover.
+    [
+      'popover open',
+      stateWith({
+        branch: 'master',
+        branchPicker: { ...createWelcomeState().branchPicker, open: true, loading: true },
+      }),
+    ],
   ]
   for (const [what, state] of mutations) {
     assert.notEqual(of(state), reference, what)

@@ -1,0 +1,123 @@
+import {
+  BRANCH_PICKER_EMPTY,
+  BRANCH_PICKER_LABEL,
+  BRANCH_PICKER_LOADING,
+  branchPickerSignature,
+  type BranchPickerIntent,
+  type BranchPickerRow,
+  type BranchPickerView,
+} from '../model/branchPicker.js'
+import { el, replace, show } from './dom.js'
+import { button } from './controls.js'
+import { icon } from './icons.js'
+
+/**
+ * The branch switcher as DOM: a popover over the welcome screen's branch pill.
+ *
+ * Mounted inside the pill's own anchor and positioned by the stylesheet, not by
+ * measured coordinates — the renderer may not write inline geometry, and an
+ * anchor that is already the element the popover belongs to needs no maths.
+ *
+ * Unlike the workspace picker it replaced there is no persistent search input,
+ * so the whole subtree is rebuilt on every signature change and nothing here
+ * holds a caret. The keydown is still scoped to this subtree: Escape must unwind
+ * the popover rather than interrupt the turn, and Enter must pick a row rather
+ * than send the composer's text.
+ *
+ * Every decision is `model/branchPicker.ts`'s, including which rows exist and
+ * whether the list is still loading.
+ */
+
+export interface BranchPickerDom {
+  render(view: BranchPickerView): void
+  /** Puts focus on the popover, for the click that opened it. */
+  focusPanel(): void
+}
+
+export function createBranchPickerView(
+  container: HTMLElement,
+  onIntent: (intent: BranchPickerIntent) => void,
+  /**
+   * Fed the raw chord; the caller maps it through `branchPickerKeyToIntent` and
+   * answers whether it consumed the key. A consumed key is also stopped from
+   * bubbling — the global handler is on `document`.
+   */
+  onKey: (chord: { key: string; ctrlKey: boolean; metaKey: boolean }) => boolean,
+): BranchPickerDom {
+  const body = el('div', 'branch-picker-body')
+  const panel = el('div', 'branch-picker')
+  panel.setAttribute('role', 'dialog')
+  panel.setAttribute('aria-label', BRANCH_PICKER_LABEL)
+  // Focusable but not a Tab stop: the popover has to take focus when it opens
+  // (that is what makes `focusout` a dismissal at all), and it must not become a
+  // stop on the way from the pills to the composer once it is closed.
+  panel.tabIndex = -1
+  panel.appendChild(body)
+  container.appendChild(panel)
+
+  container.addEventListener('keydown', (event) => {
+    const consumed = onKey({
+      key: event.key,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+    })
+    if (!consumed) return
+    event.preventDefault()
+    event.stopPropagation()
+  })
+
+  const rowNode = (row: BranchPickerRow, switching: boolean): HTMLElement => {
+    const classes = ['branch-picker-row']
+    if (row.selected) classes.push('selected')
+    if (row.current) classes.push('current')
+    const node = button(
+      classes.join(' '),
+      row.name,
+      // The branch HEAD is already on is not a destination — choosing it closes.
+      row.current ? '当前分支' : `切换到 ${row.name}`,
+      () => onIntent(row.current ? { kind: 'close' } : { kind: 'pick', branch: row.name }),
+      { icon: 'branch', ...(switching ? { enabled: false } : {}) },
+    )
+    node.setAttribute('aria-current', String(row.current))
+    // The tick trails the label, the way a menu check does — the same mark the
+    // runtime chip's flyout uses for "this is the one in force".
+    if (row.current) node.appendChild(icon('check', 'icon branch-picker-check'))
+    return node
+  }
+
+  let drawn: string | undefined
+
+  return {
+    focusPanel() {
+      panel.focus()
+    },
+    render(view) {
+      const signature = branchPickerSignature(view)
+      if (signature === drawn) return
+      drawn = signature
+      show(panel, view.open)
+      if (!view.open) {
+        // Rows are dropped rather than hidden: a closed popover that keeps its
+        // buttons is a Tab stop the user cannot see.
+        replace(body)
+        return
+      }
+
+      const children: HTMLElement[] = []
+      if (view.loading) {
+        children.push(el('div', 'branch-picker-empty', BRANCH_PICKER_LOADING))
+      } else if (view.empty) {
+        children.push(el('div', 'branch-picker-empty', BRANCH_PICKER_EMPTY))
+      } else {
+        children.push(...view.rows.map((row) => rowNode(row, view.switching)))
+      }
+      // Under the rows rather than in place of them: git's refusal names the
+      // files in the way, and the list the user was choosing from is still the
+      // thing they are looking at.
+      if (view.error !== undefined) {
+        children.push(el('div', 'branch-picker-error', view.error))
+      }
+      replace(body, ...children)
+    },
+  }
+}

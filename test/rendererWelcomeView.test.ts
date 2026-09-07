@@ -7,10 +7,11 @@ import { installDomStub, type DomStub, type StubView } from './helpers/domStub.j
 import { createWelcomeView } from '../src/desktop/renderer/dom/welcomeView.js'
 import type { WelcomeView } from '../src/desktop/renderer/model/welcome.js'
 import {
-  workspacePickerView,
-  type WorkspacePickerIntent,
-  type WorkspacePickerState,
-} from '../src/desktop/renderer/model/workspacePicker.js'
+  branchPickerView,
+  createBranchPickerState,
+  type BranchPickerIntent,
+  type BranchPickerState,
+} from '../src/desktop/renderer/model/branchPicker.js'
 
 /**
  * The renderer's first `dom/` unit test.
@@ -36,41 +37,32 @@ const RENDERER = path.join(import.meta.dirname, '..', 'src', 'desktop', 'rendere
 // A static import is safe — and is itself part of the claim in the header: none of
 // the three helpers reads `document` at module scope, so importing the view before
 // the stub is installed cannot capture a missing global.
-const PICKER_STATE: WorkspacePickerState = {
-  open: false,
-  query: '',
-  options: [
-    { projectRoot: '/w/hanekawa', projectName: 'Hanekawa-main', isGlobal: false },
-    { projectRoot: '/w/win6', projectName: 'win6', isGlobal: false },
-    { projectRoot: '/home/miyano', projectName: '最近', isGlobal: true },
-  ],
-  currentRoot: '/w/hanekawa',
-  globalRoot: '/home/miyano',
-  selectedIndex: -1,
-}
+const PICKER_STATE: BranchPickerState = createBranchPickerState({
+  branches: ['master', 'topic', 'release'],
+  current: 'master',
+})
 
-function pickerFixture(overrides: Partial<WorkspacePickerState> = {}) {
-  return workspacePickerView({ ...PICKER_STATE, ...overrides })
+function pickerFixture(overrides: Partial<BranchPickerState> = {}) {
+  return branchPickerView({ ...PICKER_STATE, ...overrides })
 }
 
 function welcomeViewFixture(overrides: Partial<WelcomeView> = {}): WelcomeView {
   return {
-    picker: pickerFixture(),
+    branchPicker: pickerFixture(),
     visible: true,
     global: false,
     titleBefore: '你想让我们在 ',
     projectLabel: 'Hanekawa-main',
     titleAfter: ' 中构建什么？',
-    projectSwitchable: true,
-    cards: [
-      { kind: 'explore', title: '探索并理解代码', icon: 'megaphone' },
-      { kind: 'build', title: '构建新功能、应用或工具', icon: 'hammer' },
-      { kind: 'review', title: '审查代码并提出修改建议', icon: 'refresh' },
+    wordmark: 'hanekawa',
+    hints: [
+      { keys: ['/'], label: '命令' },
+      { keys: ['@'], label: '引用文件' },
+      { keys: ['Shift', 'Tab'], label: '切换权限模式' },
     ],
     pills: [
-      { kind: 'project', label: 'Hanekawa-main', icon: 'folder' },
-      { kind: 'local', label: '本地', icon: 'monitor' },
-      { kind: 'branch', label: 'master', icon: 'branch' },
+      { kind: 'project', label: 'Hanekawa-main', icon: 'folder', interactive: false },
+      { kind: 'branch', label: 'master', icon: 'branch', interactive: true },
     ],
     ...overrides,
   }
@@ -79,9 +71,7 @@ function welcomeViewFixture(overrides: Partial<WelcomeView> = {}): WelcomeView {
 interface Rendered {
   readonly stub: DomStub
   readonly container: HTMLElement
-  readonly switched: string[]
-  readonly focused: string[]
-  readonly intents: WorkspacePickerIntent[]
+  readonly intents: BranchPickerIntent[]
   view(): StubView
   rerender(next?: WelcomeView): void
 }
@@ -93,21 +83,15 @@ function render(
   const stub = installDomStub()
   t.after(() => stub.uninstall())
   const container = stub.createContainer('welcome')
-  const switched: string[] = []
-  const focused: string[] = []
-  const intents: WorkspacePickerIntent[] = []
+  const intents: BranchPickerIntent[] = []
   const dom = createWelcomeView(container, {
-    onSwitchWorkspace: () => switched.push('x'),
-    onFocusComposer: () => focused.push('x'),
-    onPickerIntent: (intent) => intents.push(intent),
-    onPickerKey: () => false,
+    onBranchIntent: (intent) => intents.push(intent),
+    onBranchKey: () => false,
   })
   dom.render(initial)
   return {
     stub,
     container,
-    switched,
-    focused,
     intents,
     view: () => stub.inspect(container),
     rerender: (next = initial) => dom.render(next),
@@ -117,10 +101,9 @@ function render(
 /**
  * The first descendant carrying a class, in document order.
  *
- * Descendants rather than direct children since the Hero gained its own row: the
- * title is nested a level down so the picker has something to be positioned
- * against, and a test that asserts the *nesting* rather than the content would
- * fail every time that scaffolding moves.
+ * Descendants rather than direct children since the Hero gained its own row and
+ * the branch pill its own anchor: a test that asserts the *nesting* rather than
+ * the content would fail every time that scaffolding moves.
  */
 const find = (view: StubView, className: string): StubView | undefined => {
   for (const node of view.children) {
@@ -141,44 +124,45 @@ const child = (view: StubView, className: string): StubView => {
 const buttons = (view: StubView): StubView[] =>
   view.children.flatMap((node) => (node.tagName === 'BUTTON' ? [node] : buttons(node)))
 
-test('the empty state draws a mark, a hero, three cards and the pills', (t) => {
+test('the empty state draws a wordmark, a hero, the pills and the hint row', (t) => {
   const { view } = render(t)
   const root = view()
 
   assert.equal(root.hidden, false)
-  assert.equal(child(root, 'welcome-mark').children.length, 1)
-  assert.equal(child(root, 'welcome-mark').children[0]?.tagName, 'svg')
+  // No graphic mark — that is the design. An icon over three centred cards is
+  // the shape every agent shell ships, so it identifies none of them.
+  assert.equal(find(root, 'welcome-mark'), undefined)
+  assert.equal(find(root, 'welcome-cards'), undefined)
+  assert.equal(child(root, 'welcome-wordmark').text, 'hanekawa')
 
   const title = child(root, 'welcome-title')
   assert.equal(title.tagName, 'H1')
-  // Text, the project control, text — the reason the model splits the sentence
-  // into three fields instead of interpolating one string.
+  // Text, the project name, text — the reason the model splits the sentence into
+  // three fields instead of interpolating one string.
   assert.equal(title.nodes.length, 3)
   assert.equal(title.nodes[0], '你想让我们在 ')
   assert.equal(title.nodes[2], ' 中构建什么？')
   const project = title.nodes[1]
   assert.ok(typeof project !== 'string')
-  assert.equal(project.tagName, 'BUTTON')
-  assert.ok(project.classes.includes('welcome-project'))
+  // A span, not a button: the workspace switcher it used to open is gone, and a
+  // control that does nothing is a worse lie than plain text.
+  assert.equal(project.tagName, 'SPAN')
+  assert.ok(project.classes.includes('welcome-project-name'))
   assert.equal(project.text, 'Hanekawa-main')
 
-  const cards = child(root, 'welcome-cards').children
-  assert.equal(cards.length, 3)
-  assert.deepEqual(cards.map((card) => card.tagName), ['BUTTON', 'BUTTON', 'BUTTON'])
+  const hints = child(root, 'welcome-hints').children
+  assert.equal(hints.length, 3)
+  assert.deepEqual(hints.map((hint) => hint.tagName), ['SPAN', 'SPAN', 'SPAN'])
+  assert.deepEqual(hints.map((hint) => hint.text), ['/命令', '@引用文件', 'ShiftTab切换权限模式'])
+  // The keys are their own nodes so the sheet can set them in the mono stack
+  // without the view parsing a sentence apart.
   assert.deepEqual(
-    cards.map((card) => card.classes.filter((name) => name !== 'welcome-card')),
-    [['explore'], ['build'], ['review']],
+    hints.map((hint) => hint.children.filter((n) => n.tagName === 'KBD').map((n) => n.text)),
+    [['/'], ['@'], ['Shift', 'Tab']],
   )
-  assert.deepEqual(cards.map((card) => card.text), [
-    '探索并理解代码',
-    '构建新功能、应用或工具',
-    '审查代码并提出修改建议',
-  ])
 })
 
-test('the global workspace hero is one text node with no project control', (t) => {
-  // Nothing is loaded: no project to name, so no button in the middle of the
-  // sentence — and nothing left for Tab to walk into.
+test('the global workspace hero is one text node with no project segment', (t) => {
   const { view } = render(
     t,
     welcomeViewFixture({
@@ -186,53 +170,52 @@ test('the global workspace hero is one text node with no project control', (t) =
       titleBefore: '你想让我们构建什么？',
       titleAfter: '',
       projectLabel: '',
-      projectSwitchable: false,
-      pills: [
-        { kind: 'project', label: '~/.myagent', icon: 'folder' },
-        { kind: 'local', label: '本地', icon: 'monitor' },
-      ],
+      pills: [{ kind: 'project', label: '~/.myagent', icon: 'folder', interactive: false }],
     }),
   )
 
   const title = child(view(), 'welcome-title')
   assert.equal(title.nodes.length, 1)
   assert.equal(title.nodes[0], '你想让我们构建什么？')
-  assert.equal(find(view(), 'welcome-project'), undefined, 'the global hero has no project button')
+  assert.equal(find(view(), 'welcome-project-name'), undefined)
 })
 
-test('the context pills are spans, because they are read-only', (t) => {
-  const { view } = render(t)
+test('the branch pill is the only control on the screen', (t) => {
+  const { view, stub, intents } = render(t)
   const pills = child(view(), 'welcome-pills').children
 
-  assert.equal(pills.length, 3)
-  // The decision「均只读」, made executable: a button that does nothing when
-  // clicked is a worse lie than plain text.
-  assert.deepEqual(pills.map((pill) => pill.tagName), ['SPAN', 'SPAN', 'SPAN'])
-  assert.deepEqual(pills.map((pill) => pill.text), ['Hanekawa-main', '本地', 'master'])
+  // Two pills, and the project one is a read-only span. The 「本地」pill that
+  // used to sit between them named the one runtime that has ever existed.
+  assert.equal(pills.length, 2)
+  assert.equal(pills[0]?.tagName, 'SPAN')
+  assert.equal(pills[0]?.text, 'Hanekawa-main')
+
+  const branch = child(view(), 'welcome-branch-slot')
+  const trigger = branch.children[0]
+  assert.ok(trigger)
+  assert.equal(trigger.tagName, 'BUTTON')
+  assert.equal(trigger.text, 'master')
+
+  // The popover's own panel is not a Tab stop, so it is not a button either.
+  assert.deepEqual(buttons(view()).map((node) => node.text), ['master'])
+
+  stub.click(trigger.node)
+  assert.deepEqual(intents, [{ kind: 'open' }])
 })
 
-test('a card click only focuses the composer', (t) => {
-  const { view, stub, switched, focused } = render(t)
-  for (const card of child(view(), 'welcome-cards').children) stub.click(card.node)
-
-  assert.equal(focused.length, 3)
-  assert.equal(switched.length, 0, 'the cards are guidance, not navigation')
-})
-
-test('the hero project name asks the shell to switch workspaces', (t) => {
-  const { view, stub, switched, focused } = render(t)
-  const project = child(view(), 'welcome-title').nodes[1]
-  assert.ok(typeof project !== 'string')
-  stub.click(project.node)
-
-  assert.deepEqual([switched.length, focused.length], [1, 0])
-})
-
-test('an unswitchable project name is a disabled control', (t) => {
-  const { view } = render(t, welcomeViewFixture({ projectSwitchable: false }))
-  const project = child(view(), 'welcome-title').nodes[1]
-  assert.ok(typeof project !== 'string')
-  assert.equal(project.disabled, true)
+test('a branch that cannot be switched is a plain span again', (t) => {
+  const { view } = render(
+    t,
+    welcomeViewFixture({
+      pills: [
+        { kind: 'project', label: 'Hanekawa-main', icon: 'folder', interactive: false },
+        { kind: 'branch', label: 'master', icon: 'branch', interactive: false },
+      ],
+    }),
+  )
+  const trigger = child(view(), 'welcome-branch-slot').children[0]
+  assert.ok(trigger)
+  assert.equal(trigger.tagName, 'SPAN')
 })
 
 test('an invisible screen is hidden and holds no focusable node', (t) => {
@@ -253,106 +236,142 @@ test('a screen that goes invisible keeps its scaffolding and drops every button'
   const root = view()
 
   assert.equal(root.hidden, true)
-  // The shells stay — the picker's search input is the one node here that holds
-  // a caret, and rebuilding it is what would drop focus mid-keystroke — but
-  // nothing focusable may be left behind.
   assert.ok(root.children.length > 0, 'the scaffolding survives')
   assert.deepEqual(buttons(root), [])
 })
 
-test('a closed picker is hidden and lists nothing', (t) => {
+test('a closed popover is hidden and lists nothing', (t) => {
   const { view } = render(t)
-  const picker = child(view(), 'workspace-picker')
+  const picker = child(view(), 'branch-picker')
 
   assert.equal(picker.hidden, true)
-  assert.equal(find(picker, 'workspace-picker-row'), undefined)
+  assert.equal(find(picker, 'branch-picker-row'), undefined)
 })
 
-test('an open picker lists the projects, ticks the current one and offers both actions', (t) => {
-  const { view } = render(t, welcomeViewFixture({ picker: pickerFixture({ open: true }) }))
-  const picker = child(view(), 'workspace-picker')
+test('an open popover lists the branches and ticks the current one', (t) => {
+  const { view } = render(t, welcomeViewFixture({ branchPicker: pickerFixture({ open: true }) }))
+  const picker = child(view(), 'branch-picker')
 
   assert.equal(picker.hidden, false)
-  const rows = child(picker, 'workspace-picker-body').children.filter((node) =>
-    node.classes.includes('workspace-picker-row'),
+  const rows = child(picker, 'branch-picker-body').children.filter((node) =>
+    node.classes.includes('branch-picker-row'),
   )
-  // The global workspace is not a row — it is the「不在项目中工作」action below.
-  assert.deepEqual(rows.map((row) => row.text), ['Hanekawa-main', 'win6'])
-  assert.deepEqual(rows.map((row) => row.classes.includes('current')), [true, false])
-
-  const actions = child(picker, 'workspace-picker-actions').children
-  assert.deepEqual(actions.map((action) => action.text), ['新建项目', '不在项目中工作'])
+  assert.deepEqual(rows.map((row) => row.text), ['master', 'topic', 'release'])
+  assert.deepEqual(rows.map((row) => row.classes.includes('current')), [true, false, false])
 })
 
-test('the picker in the global workspace offers no way to leave it', (t) => {
+test('a loading popover says so instead of drawing an empty list', (t) => {
+  const { view } = render(
+    t,
+    welcomeViewFixture({ branchPicker: pickerFixture({ open: true, loading: true, branches: [] }) }),
+  )
+  const picker = child(view(), 'branch-picker')
+
+  assert.equal(child(picker, 'branch-picker-empty').text, '正在读取分支…')
+  assert.equal(find(picker, 'branch-picker-row'), undefined)
+})
+
+test("git's refusal is drawn under the rows the user was choosing from", (t) => {
   const { view } = render(
     t,
     welcomeViewFixture({
-      picker: pickerFixture({ open: true, currentRoot: '/home/miyano' }),
+      branchPicker: pickerFixture({ open: true, error: 'error: Your local changes…' }),
     }),
   )
-  const actions = child(child(view(), 'workspace-picker'), 'workspace-picker-actions').children
+  const picker = child(view(), 'branch-picker')
 
-  assert.deepEqual(actions.map((action) => action.text), ['新建项目'])
+  assert.equal(child(picker, 'branch-picker-error').text, 'error: Your local changes…')
+  // The list stays: a popover that replaced its rows with the error would leave
+  // the user nothing to retry with.
+  assert.ok(find(picker, 'branch-picker-row'))
 })
 
-test('picking another project asks to open a session there; the current one only reveals', (t) => {
+test('choosing a branch asks to switch; choosing the current one only closes', (t) => {
   const { view, stub, intents } = render(
     t,
-    welcomeViewFixture({ picker: pickerFixture({ open: true }) }),
+    welcomeViewFixture({ branchPicker: pickerFixture({ open: true }) }),
   )
-  const rows = child(child(view(), 'workspace-picker'), 'workspace-picker-body').children
+  const rows = child(view(), 'branch-picker-body').children
 
   stub.click(rows[1]!.node)
   stub.click(rows[0]!.node)
 
-  assert.deepEqual(intents, [
-    { kind: 'pick', projectRoot: '/w/win6' },
-    { kind: 'reveal', projectRoot: '/w/hanekawa' },
-  ])
+  assert.deepEqual(intents, [{ kind: 'pick', branch: 'topic' }, { kind: 'close' }])
 })
 
-test('a press outside the Hero row closes the picker; inside it does not', (t) => {
+test('rows stop responding while a switch is in flight', (t) => {
+  // `git switch` moves the working tree; a second one queued behind the first
+  // would run against a tree the user never saw.
+  const { view } = render(
+    t,
+    welcomeViewFixture({ branchPicker: pickerFixture({ open: true, switching: true }) }),
+  )
+  const rows = child(view(), 'branch-picker-body').children
+  assert.deepEqual(rows.map((row) => row.disabled), [true, true, true])
+})
+
+test('a press outside the branch anchor closes the popover; inside it does not', (t) => {
   // The popover hangs over the transcript, and the transcript is unfocusable
-  // scenery: before this it could only be closed with Escape or by picking.
+  // scenery: without this it could only be closed with Escape or by picking.
   const { view, stub, intents } = render(
     t,
-    welcomeViewFixture({ picker: pickerFixture({ open: true }) }),
+    welcomeViewFixture({ branchPicker: pickerFixture({ open: true }) }),
   )
 
-  stub.dispatchDocument('pointerdown', { target: child(view(), 'workspace-picker-row').node })
+  stub.dispatchDocument('pointerdown', { target: child(view(), 'branch-picker-row').node })
   assert.deepEqual(intents, [], 'a press on a row is the user choosing from it')
 
-  // The Hero's project name is what opens this, and it sits *beside* the picker
-  // in the same row: a press there must reach its own toggle, or the click that
-  // follows would re-open what the user just shut.
-  stub.dispatchDocument('pointerdown', { target: child(view(), 'welcome-project').node })
+  // The pill is what opens this and sits *inside* the anchor beside the popover:
+  // a press there must reach its own toggle, or the click that follows would
+  // re-open what the user just shut.
+  stub.dispatchDocument('pointerdown', { target: child(view(), 'welcome-branch-slot').children[0]!.node })
   assert.deepEqual(intents, [])
 
   stub.dispatchDocument('pointerdown', { target: stub.createContainer('transcript-area') })
   assert.deepEqual(intents, [{ kind: 'close' }])
 })
 
-test('the picker keeps its search box across an open and a close', (t) => {
+test('focus leaving the popover closes it, but a repaint does not', (t) => {
+  const { view, stub, intents } = render(
+    t,
+    welcomeViewFixture({ branchPicker: pickerFixture({ open: true }) }),
+  )
+  const anchor = child(view(), 'welcome-branch-anchor')
+
+  // `relatedTarget === null` is this view's own repaint, not the user leaving —
+  // answering it with a close would shut the popover on the paint that drew it.
+  stub.dispatch(anchor.node, 'focusout', { relatedTarget: null })
+  assert.deepEqual(intents, [])
+
+  // Inside the anchor is still inside the popover: moving from a row to the pill
+  // is not leaving.
+  stub.dispatch(anchor.node, 'focusout', { relatedTarget: child(view(), 'branch-picker-row').node })
+  assert.deepEqual(intents, [])
+
+  stub.dispatch(anchor.node, 'focusout', { relatedTarget: stub.createContainer('composer') })
+  assert.deepEqual(intents, [{ kind: 'close' }])
+})
+
+test('the branch pill keeps its popover across an open and a close', (t) => {
   const { view, rerender } = render(t)
-  const before = child(view(), 'workspace-picker-search').node
+  const before = child(view(), 'branch-picker').node
 
-  rerender(welcomeViewFixture({ picker: pickerFixture({ open: true, query: 'w' }) }))
-  const during = child(view(), 'workspace-picker-search').node
+  rerender(welcomeViewFixture({ branchPicker: pickerFixture({ open: true }) }))
+  const during = child(view(), 'branch-picker').node
   rerender()
-  const after = child(view(), 'workspace-picker-search').node
+  const after = child(view(), 'branch-picker').node
 
-  // Identity: the input is the one node here that holds a caret, so rebuilding
-  // it would drop focus on every keystroke.
+  // Identity: the panel is the node that takes focus when the popover opens, so
+  // rebuilding it would blur itself and fire the `focusout` that closes it.
   assert.equal(during, before)
   assert.equal(after, before)
 })
 
 test('rendering the same view twice rebuilds nothing', (t) => {
   const { view, rerender } = render(t)
-  const before = child(view(), 'welcome-cards').children.map((card) => card.node)
+  const before = child(view(), 'welcome-hints').children.map((hint) => hint.node)
   rerender()
-  const after = child(view(), 'welcome-cards').children.map((card) => card.node)
+  const after = child(view(), 'welcome-hints').children.map((hint) => hint.node)
 
   // Identity, not equality: this view repaints once per streamed token, so the
   // signature guard is load-bearing rather than tidiness.
@@ -361,7 +380,7 @@ test('rendering the same view twice rebuilds nothing', (t) => {
 
 test('the stub carries every document member the dom helpers reach for', (t) => {
   const { stub } = render(t)
-  const sources = ['dom.ts', 'controls.ts', 'icons.ts', 'workspacePickerView.ts'].map((name) =>
+  const sources = ['dom.ts', 'controls.ts', 'icons.ts', 'branchPickerView.ts'].map((name) =>
     readFileSync(path.join(RENDERER, 'dom', name), 'utf8'),
   )
   const members = new Set<string>()

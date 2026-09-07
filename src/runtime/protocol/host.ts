@@ -10,6 +10,7 @@ import { countSessionRecordsTokens } from '../../prompts/budget.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import { MessageQueue } from '../messageQueue.js'
 import { readGitBranch } from '../gitBranch.js'
+import { listGitBranches, switchGitBranch } from '../gitBranches.js'
 import { applyPermissionModeTransition } from '../permissionMode.js'
 import { buildModelPickerOptions } from '../modelPicker.js'
 import { resolveRuntimeModelKeyAfterConfigChange, type ProviderConfigChangeScope } from '../providerRuntime.js'
@@ -44,6 +45,7 @@ import {
   type UiRequest,
   type UiResponse,
   type WireBackgroundTasksResult,
+  type WireBranchesResult,
   type WireCommandInfo,
   type WireCommandsResult,
   type WireClosePaneResult,
@@ -68,6 +70,7 @@ import {
   type WireRuntimeSnapshot,
   type WireSessionSwitchResult,
   type WireSessionsResult,
+  type WireSwitchBranchResult,
   type WireTaskOutputResult,
   type WireTaskResult,
   type WireUsageCost,
@@ -798,6 +801,23 @@ export class SessionHost {
             },
           })),
         } satisfies WireFileSuggestionsResult
+      }
+
+      case 'list-branches': {
+        const listing = await listGitBranches(this.project.cwd)
+        return {
+          branches: [...listing.branches],
+          ...(listing.current ? { current: listing.current } : {}),
+        } satisfies WireBranchesResult
+      }
+
+      case 'switch-branch': {
+        const result = await switchGitBranch(this.project.cwd, command.branch)
+        return {
+          ok: result.ok,
+          ...(result.current ? { current: result.current } : {}),
+          ...(result.message ? { message: result.message } : {}),
+        } satisfies WireSwitchBranchResult
       }
 
       case 'checkpoints':

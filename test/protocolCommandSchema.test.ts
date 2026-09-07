@@ -25,6 +25,8 @@ const SAMPLES = {
   'run-command': { type: 'run-command', id: '1', input: '/help' },
   'list-commands': { type: 'list-commands', id: '1' },
   'file-suggestions': { type: 'file-suggestions', id: '1', input: 'read @src/a', cursorPos: 11 },
+  'list-branches': { type: 'list-branches', id: '1' },
+  'switch-branch': { type: 'switch-branch', id: '1', branch: 'topic' },
   checkpoints: { type: 'checkpoints', id: '1' },
   'restore-code': { type: 'restore-code', id: '1', commitHash: 'abc' },
   'truncate-session': { type: 'truncate-session', id: '1', messageId: 'm1' },

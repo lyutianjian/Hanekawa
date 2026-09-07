@@ -182,14 +182,25 @@ export function buildAnthropicTools(
   runtime?: CacheRuntime,
   deferredToolNames?: Set<string>,
 ) {
-  return tools.map((tool, index) => {
+  // MCP servers reconnect and ToolSearch discovers tools mid-session, so those
+  // schemas churn between requests. Keep them behind the marker: a volatile tool
+  // appearing or vanishing then only changes the suffix, leaving the cached
+  // built-in prefix (and the system + messages downstream of it) intact.
+  const isVolatile = (tool: Tool) => tool.isMcp === true || deferredToolNames?.has(tool.name) === true
+  const stable = tools.filter((tool) => !isVolatile(tool))
+  const volatile = tools.filter(isVolatile)
+  const ordered = [...stable, ...volatile]
+  // With no stable tool to anchor to, fall back to the last tool overall.
+  const markerIndex = stable.length > 0 ? stable.length - 1 : ordered.length - 1
+
+  return ordered.map((tool, index) => {
     // Get cached base schema (name + description + input_schema)
     const base = getCachedToolSchema(tool)
     // Apply per-request overlays (not cached; vary per call)
     return {
       ...base,
       ...(deferredToolNames?.has(tool.name) ? { defer_loading: true } : {}),
-      ...(enablePromptCaching && index === tools.length - 1
+      ...(enablePromptCaching && index === markerIndex
         ? { cache_control: getCacheControl(runtime) }
         : {}),
     }

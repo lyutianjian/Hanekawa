@@ -982,7 +982,7 @@ export class ShellHost<
    *
    * The sessions go one at a time through `deleteSessionArtifacts`, the same
    * path a single `delete-session` takes — that function owns *what* a session
-   * leaves behind (JSONL, shadow repo, session memory, subagent transcripts),
+   * leaves behind (JSONL, file history, session memory, subagent transcripts),
    * and duplicating the list here is how the other three got leaked once before.
    * Nothing else under `.myagent/` is touched: settings, skills and rules are
    * not history.
@@ -1073,15 +1073,15 @@ export class ShellHost<
    *     after which `directory.get()` no longer finds it — reading them later
    *     would work until the day someone deletes their only open session.
    *  2. The id is **resolved** first. `SessionStore.delete` accepts a prefix but
-   *     `removeShadowRepo` does not, so passing the raw wire string through
-   *     would delete the right session and the wrong shadow repo (or throw on
-   *     the guard). An id that resolves to nothing fails rather than silently
-   *     answering `ok`.
+   *     `deleteSessionArtifacts` does not, so passing the raw wire string
+   *     through would delete the right session and the wrong file history (or
+   *     throw on the guard). An id that resolves to nothing fails rather than
+   *     silently answering `ok`.
    *  3. The lane goes before the files. `detachLane` is the single exit path,
    *     and a pane still holding a session whose JSONL just vanished is a ghost
    *     row whose next append recreates the file.
-   *  4. `deleteSessionArtifacts` owns *what* gets deleted — store files, shadow
-   *     repo, session memory, subagent transcripts. This method deliberately
+   *  4. `deleteSessionArtifacts` owns *what* gets deleted — store files, file
+   *     history, session memory, subagent transcripts. This method deliberately
    *     does not enumerate them: it did once, with two of the four, and the
    *     other two leaked.
    *

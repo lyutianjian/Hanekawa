@@ -5,7 +5,7 @@ import {
   sortCheckpointsReverseChronological,
   truncateMessage,
 } from '../src/tui/components/RestoreMode.js'
-import type { CheckpointWithDiff } from '../src/services/checkpoint/checkpointService.js'
+import type { CheckpointWithDiff } from '../src/services/fileHistory/types.js'
 
 const emptyDiff = {
   fileCount: 0,

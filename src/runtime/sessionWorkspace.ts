@@ -206,7 +206,7 @@ export class SessionWorkspace {
    *
    * Returning the existing pane rather than opening a second one is the whole
    * point: two panes on one session id means two `AgentLoop`s appending to one
-   * JSONL and two `CheckpointService`s snapshotting one worktree. The pane
+   * JSONL and two `FileHistoryService`s snapshotting one worktree. The pane
    * asked for *is* that pane.
    */
   async open(session: SessionMeta): Promise<SessionPane> {

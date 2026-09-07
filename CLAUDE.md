@@ -41,7 +41,7 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 - `prompts/`: prompt composition and budgets; never imports `harness/`.
 - `config/`: settings, models, routing, retries, providers.
 - `tools/`: one directory per built-in (`GrepTool/`, `FileEditTool/`, ...) plus shared helpers at the root, all registered in `src/tools/index.ts`.
-- `services/`: project context, checkpoints, background tasks, skills, memory.
+- `services/`: project context, file history, background tasks, skills, memory.
 - `tui/`: Ink shell; `desktop/`: Electron main, preload, shell host, renderer.
 
 `services/` may depend on `tools/`, not the reverse. The harness uses `RecordStream`, never `SessionStore` directly. Keep decisions in the owning runtime/model layer, not Electron entry points or views.
@@ -90,7 +90,7 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 ## Renderer invariants
 
 - Project data lives under `<cwd>/.myagent/`; global settings/config under `~/.myagent/`. Sessions are append-only JSONL.
-- Checkpoints use per-session shadow Git and never modify the working tree. Refuse unsnapshottable roots, keep shadow-repo exclusions, abort git children through the service controller, and treat missing repos as “no changes”.
+- `/rewind` restores from per-session file history in `~/.myagent/file-history/`, never from the worktree: write tools call `trackFileEdit` *before* writing, `makeSnapshot` opens a snapshot per turn, and restores are addressed by `messageId`. Only files the agent's tools touched are captured. Keep backups deduplicated by version, collect a backup only once no surviving snapshot names it, and keep every per-file failure local — there is no session-wide disable.
 - Changes to `hasOverlay` or `isStreaming` call `onShellChanged`. Streaming turns post `session-event` and `snapshot`; keep frame/render-signature work bounded.
 - Every popover closes three ways: a press outside it (`dom/dismiss.ts`'s `onPressOutside`, scoped to the popover **and its trigger**, never to the bar around them), `focusout`, and Escape. A `focusout` with `relatedTarget === null` is the view's own repaint and must be ignored, and a `focus()` inside a paint goes last — it fires `focusout` synchronously, and a handler that repaints in answer re-enters the paint.
 - Reuse the existing renderer model/view helpers, styling tokens, overlay behavior, and focus rules. Prefer pure model tests; DOM tests use `test/helpers/domStub.ts`.

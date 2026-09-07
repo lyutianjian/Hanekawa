@@ -8,7 +8,6 @@ import {
   deleteSessionArtifacts,
   removeSubagentTranscripts,
 } from '../src/runtime/deleteSession.js'
-import { shadowRepoPath } from '../src/services/checkpoint/checkpointService.js'
 import { getSubagentTranscriptDir } from '../src/harness/sidechainRecordStream.js'
 import { getMyAgentDir } from '../src/utils/paths.js'
 
@@ -34,20 +33,21 @@ function memoryPath(cwd: string, sessionId: string): string {
   return path.join(getMyAgentDir(cwd), 'session-memory', `${sessionId}.json`)
 }
 
-/** Every artifact for one session, so a removal can be checked to be complete. */
+/**
+ * Every project-local artifact for one session, so a removal can be checked to
+ * be complete. The file history is deliberately absent: it lives under the
+ * global `~/.myagent`, and `test/fileHistoryService.test.ts` covers it there.
+ */
 async function seed(cwd: string, sessionId: string): Promise<string[]> {
-  const shadow = shadowRepoPath(cwd, sessionId)
   const subagents = getSubagentTranscriptDir(cwd, sessionId)
   const memory = memoryPath(cwd, sessionId)
 
-  await mkdir(path.join(shadow, 'objects'), { recursive: true })
-  await writeFile(path.join(shadow, 'HEAD'), 'ref: refs/heads/main\n', 'utf8')
   await mkdir(subagents, { recursive: true })
   await writeFile(path.join(subagents, 'agent-1.jsonl'), '{}\n', 'utf8')
   await mkdir(path.dirname(memory), { recursive: true })
   await writeFile(memory, '{}', 'utf8')
 
-  return [shadow, subagents, memory]
+  return [subagents, memory]
 }
 
 class RecordingStore {
@@ -115,7 +115,6 @@ test('a malformed id is refused before anything is deleted', async () => {
     await seed(cwd, SESSION)
     const store = new RecordingStore()
     const roots = [
-      path.join(getMyAgentDir(cwd), 'shadow-git'),
       path.join(getMyAgentDir(cwd), 'sessions', 'subagents'),
       path.join(getMyAgentDir(cwd), 'session-memory'),
     ]
@@ -131,7 +130,6 @@ test('a malformed id is refused before anything is deleted', async () => {
 
     assert.deepEqual(store.deleted, [], 'and the store was never asked')
     for (const root of roots) assert.equal(existsSync(root), true, `${root} survived`)
-    assert.equal(existsSync(shadowRepoPath(cwd, SESSION)), true)
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }

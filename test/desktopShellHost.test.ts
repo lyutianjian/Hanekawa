@@ -17,7 +17,7 @@ import { ShellClient } from '../src/desktop/renderer/shellClient.js'
 import { SHELL_LANE, type ShellCommand, type SettingsChange, type WireLaneInfo } from '../src/desktop/shellProtocol.js'
 import { createLaneMux } from '../src/runtime/protocol/laneChannel.js'
 import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.js'
-import { shadowRepoPath } from '../src/services/checkpoint/checkpointService.js'
+import { getSubagentTranscriptDir } from '../src/harness/sidechainRecordStream.js'
 import {
   ProjectDirectory,
   projectRootKey,
@@ -1400,20 +1400,20 @@ test('delete-session and rename-session work on a registered project with no run
 
 // --- deleting sessions -----------------------------------------------------------
 
-test('delete-session removes the files and the shadow repo of a closed session', async () => {
+test('delete-session removes the files and the on-disk artifacts of a closed session', async () => {
   const h = createHarness()
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-delete-'))
   try {
     const project = h.addProject(cwd)
     project.project.store.sessions.set('s1', sessionOf('s1', 'Closed'))
-    const repo = shadowRepoPath(cwd, 's1')
-    await mkdir(repo, { recursive: true })
+    const artifacts = getSubagentTranscriptDir(cwd, 's1')
+    await mkdir(artifacts, { recursive: true })
 
     const result = await h.client.deleteSession(project.entry.root, 's1')
 
     assert.deepEqual(result, { ok: true })
     assert.deepEqual(project.project.store.deleted, ['s1'])
-    assert.equal(existsSync(repo), false, 'the shadow repo went with the session')
+    assert.equal(existsSync(artifacts), false, "the session's artifacts went with it")
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
@@ -1453,23 +1453,23 @@ test('delete-session closes the open lane first, then deletes — no ghost row',
 })
 
 test('delete-session deletes by the resolved id, not the prefix it was given', async () => {
-  // `SessionStore.delete` accepts a prefix; `removeShadowRepo` does not. Passing
-  // the raw wire string through would delete the right session and leave (or
-  // worse, mis-target) the shadow repo.
+  // `SessionStore.delete` accepts a prefix; `deleteSessionArtifacts` does not.
+  // Passing the raw wire string through would delete the right session and
+  // leave (or worse, mis-target) everything else it wrote.
   const h = createHarness()
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-shell-delete-'))
   try {
     const project = h.addProject(cwd)
     project.project.store.resolvePrefixes = true
     project.project.store.sessions.set('abcdef12-full-id', sessionOf('abcdef12-full-id', 'Prefixed'))
-    const repo = shadowRepoPath(cwd, 'abcdef12-full-id')
-    await mkdir(repo, { recursive: true })
+    const artifacts = getSubagentTranscriptDir(cwd, 'abcdef12-full-id')
+    await mkdir(artifacts, { recursive: true })
 
     await h.client.deleteSession(project.entry.root, 'abcdef12')
 
     assert.deepEqual(project.project.store.deleted, ['abcdef12-full-id'])
-    assert.equal(existsSync(repo), false)
-    assert.equal(existsSync(shadowRepoPath(cwd, 'abcdef12')), false)
+    assert.equal(existsSync(artifacts), false)
+    assert.equal(existsSync(getSubagentTranscriptDir(cwd, 'abcdef12')), false)
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
@@ -1498,8 +1498,8 @@ test('deleting a project last lane still reaches the store, and shuts that proje
     await h.client.openSession({ projectRoot: h.entry.root })
     const project = h.addProject(cwd)
     project.project.store.sessions.set('s1', sessionOf('s1', 'Only one'))
-    const repo = shadowRepoPath(cwd, 's1')
-    await mkdir(repo, { recursive: true })
+    const artifacts = getSubagentTranscriptDir(cwd, 's1')
+    await mkdir(artifacts, { recursive: true })
     await h.client.openSession({ sessionId: 's1', projectRoot: project.entry.root })
     await settle()
 
@@ -1509,7 +1509,7 @@ test('deleting a project last lane still reaches the store, and shuts that proje
     assert.deepEqual(project.project.shutdowns, ['session-deleted'], 'the project went down')
     assert.equal(h.directory.get(cwd), undefined, 'and left the directory')
     assert.deepEqual(project.project.store.deleted, ['s1'])
-    assert.equal(existsSync(repo), false)
+    assert.equal(existsSync(artifacts), false)
     assert.deepEqual(h.allLanesClosed, [], 'the other project still holds a lane')
     assert.deepEqual(project.project.store.drafts, [], 'a closing project gets no replacement draft')
   } finally {

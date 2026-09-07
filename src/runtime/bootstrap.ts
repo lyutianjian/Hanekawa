@@ -14,6 +14,7 @@ import { BUILT_IN_AGENT_DEFINITIONS } from '../tools/AgentTool/AgentTool.js'
 import { SkillsService } from '../services/skills/skillsService.js'
 import { AgentDefinitionLoader } from '../services/agents/agentDefinitionLoader.js'
 import { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
+import { removeLegacyShadowGit } from '../services/fileHistory/legacyShadowGit.js'
 import { clearProjectContextCache, getProjectContext } from '../services/context/projectContext.js'
 import type { SessionMeta } from '../sessions/service.js'
 import { registerBuiltinCommands } from '../commands/index.js'
@@ -49,6 +50,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   const backgroundTasks = new BackgroundTaskRegistry(
     (sessionId, record) => store.appendRecord(sessionId, record),
   )
+
+  // Not awaited: this is disk the old checkpoint implementation left behind and
+  // nothing below reads it, so startup must not wait on deleting gigabytes.
+  void removeLegacyShadowGit(cwd)
 
   // One per project, like `toolRegistry` below: `registerSkillCommands` reads
   // `<cwd>/.myagent/skills/`, so a process-wide registry would let a second

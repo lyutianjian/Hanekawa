@@ -1,6 +1,6 @@
 # Checkpoint 重构实施文档：shadow-git → file-history
 
-状态：实施中（2026-09-07 核验：T0–T8 已完成，下一个任务是 T9）
+状态：实施中（2026-09-07 核验：T0–T9 已完成，只剩可选的 T10）
 影响面：`/rewind` 的「恢复代码」能力，以及它背后的整套快照机制。其余功能不受影响。
 
 ---
@@ -311,15 +311,17 @@ commit：`checkpoint: carry file history across resume`
 
 ---
 
-### [ ] T9 — 删除 shadow-git 实现与文档同步
+### [x] T9 — 删除 shadow-git 实现与文档同步
 
-- [ ] 删除 `src/services/checkpoint/checkpointService.ts`、`test/checkpointService.test.ts`、`test/checkpointService.property.test.ts`
-- [ ] 启动时清理遗留的 `<cwd>/.myagent/shadow-git/`（一次性，静默失败）
-- [ ] 决定 `meta.checkpoints` 字段去留（建议：保留读路径以兼容旧 JSONL，停止写入，并在 `SessionStore` 注释说明）
-- [ ] 更新 `AGENTS.md` 与 `CLAUDE.md` 的「Renderer invariants」段落——现有那条 "Checkpoints use per-session shadow Git and never modify the working tree. Refuse unsnapshottable roots, keep shadow-repo exclusions..." 整条作废，改写为 file-history 的不变量。**两个文件除标题与首句外必须保持同步。**
-- [ ] `README.md` 说明 `/rewind` 的新语义边界（只回退 agent 改过的文件）
+- [x] 删除 `src/services/checkpoint/`（含 `index.ts`）、`test/checkpointService.test.ts`、`test/checkpointService.property.test.ts`
+- [x] 启动时清理遗留的 `<cwd>/.myagent/shadow-git/`（一次性，静默失败）
+- [x] 决定 `meta.checkpoints` 字段去留（保留读路径以兼容旧索引，停止写入，并在 `SessionStore` 注释说明）
+- [x] 更新 `AGENTS.md` 与 `CLAUDE.md` 的「Renderer invariants」段落
+- [x] `README.md` 说明 `/rewind` 的新语义边界（只回退 agent 改过的文件）
 
-验收：`npm run typecheck` + `npm run test` 全量绿；仓库内不再有 `shadow` 相关引用。
+核验（2026-09-07）：`Checkpoint` / `CheckpointDiffSummary` / `CheckpointWithDiff` 是 wire、TUI、renderer 共用的类型，原先住在被删的实现文件里，因此新建 `src/services/fileHistory/types.ts`（零依赖，纯类型）承接，所有 `import type` 改指向它，`fileHistoryService.ts` 再从中转出。遗留清理是 `services/fileHistory/legacyShadowGit.ts` 的 `removeLegacyShadowGit(cwd)`，在 `bootstrap()` 里 `void` 调用而不 await——那是几十 GB 的 `rm`，不能挡启动路径；目录不存在时 `force: true` 即无操作，所以不需要 marker 文件。`meta.checkpoints` 与 `getCheckpointMappings` 保留（旧索引仍要能解析、截断仍在过滤该字段），`addCheckpointMapping` 无生产调用方，标注为 deprecated 后留给相关测试。以 shadow repo 当「产物已删除」证据的测试（`deleteSession`、`desktopShellHost`、smoke `fixtures.mjs`）改用项目内的 subagent transcripts / session-memory；`restoreFlow.integration.test.ts` 的三条 git 用例改写为 `FileHistoryService`（假 HOME + `trackEdit`/`rewindTo`），它们不再需要 git。
+
+验收：`npm run typecheck` 通过；`npm run test` 全量 2923 通过 / 1 跳过。仓库内除 CSS 阴影与「shadow 一个同名命令」这类无关词外，不再有 shadow-git 引用。
 commit：`checkpoint: remove shadow git implementation`
 
 ---

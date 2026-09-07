@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Box, Text, useInput, useStdout } from 'ink'
 import { theme } from '../theme.js'
-import type { CheckpointDiffSummary, CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
+import type { CheckpointDiffSummary, CheckpointWithDiff } from '../../services/fileHistory/types.js'
 import {
   buildRestoreOptions,
   formatDiffSummary,

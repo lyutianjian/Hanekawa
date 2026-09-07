@@ -1,7 +1,7 @@
 import type {
   CheckpointDiffSummary,
   CheckpointWithDiff,
-} from '../services/checkpoint/checkpointService.js'
+} from '../services/fileHistory/types.js'
 import { DEFAULT_LOCALE, type Locale } from './locale.js'
 import type { RewindSummaryDecision } from './rewindSummary.js'
 

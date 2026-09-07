@@ -8,7 +8,7 @@ import type {
 } from '../../harness/types.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeManager.js'
 import type { BackgroundTaskSnapshot } from '../../services/backgroundTasks/registry.js'
-import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
+import type { CheckpointWithDiff } from '../../services/fileHistory/types.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import type { FileSuggestion } from '../suggestions/atToken.js'
 import { createEmptySessionUsage, type SessionUsage } from '../sessionUsage.js'

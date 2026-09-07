@@ -1,6 +1,5 @@
 import { rm } from 'node:fs/promises'
 import { getSubagentTranscriptDir } from '../harness/sidechainRecordStream.js'
-import { removeShadowRepo } from '../services/checkpoint/checkpointService.js'
 import { removeFileHistory } from '../services/fileHistory/fileHistoryService.js'
 import { clearSessionMemory } from '../services/sessionMemory/service.js'
 import { assertSafeSessionId, type SessionMeta } from '../sessions/service.js'
@@ -13,9 +12,9 @@ import { assertSafeSessionId, type SessionMeta } from '../sessions/service.js'
  * artifacts belong to modules that sit *above* `sessions/` in the layering and
  * calling back down would be a cycle. So the composition has to live somewhere,
  * and until this module it lived in the Electron shell: `ShellHost.deleteSession`
- * called the store and then `removeShadowRepo`, which left two more directories
- * behind, and any second deletion path (a `/delete` command, a TUI list, a
- * cleanup job) would have started from zero and leaked all three.
+ * called the store and then removed the session's snapshots, which left two more
+ * directories behind, and any second deletion path (a `/delete` command, a TUI
+ * list, a cleanup job) would have started from zero and leaked all three.
  *
  * `runtime/` is the layer that already depends on both `harness/` and
  * `services/`, so it is the only place the full list can be named.
@@ -50,7 +49,6 @@ export async function deleteSessionArtifacts(
 ): Promise<void> {
   assertSafeSessionId(sessionId)
   await store.delete(sessionId)
-  await removeShadowRepo(cwd, sessionId)
   // Unlike every other artifact here, the file history lives under the global
   // `~/.myagent`, not the project — deleting the project would not take it.
   await removeFileHistory(sessionId)

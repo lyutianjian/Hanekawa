@@ -5,7 +5,9 @@ import path from 'node:path'
 import { diffLines } from 'diff'
 import { SessionStore, assertSafeSessionId } from '../../sessions/service.js'
 import { getGlobalMyAgentDir } from '../../utils/paths.js'
-import type { CheckpointDiffSummary, CheckpointWithDiff } from '../checkpoint/checkpointService.js'
+import type { CheckpointDiffSummary, CheckpointWithDiff } from './types.js'
+
+export type { Checkpoint, CheckpointDiffSummary, CheckpointWithDiff } from './types.js'
 
 /** `null` means the file did not exist in that version. */
 export type BackupFileName = string | null

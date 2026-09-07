@@ -5,8 +5,8 @@
  * that is the whole point of the single-window design: a background pane keeps
  * streaming and its prompts keep parking until the user comes back. Which means
  * a long afternoon of browsing history would otherwise accumulate one
- * `SessionHost`, one `AgentLoop`, one `CheckpointService` and one shadow-git
- * worktree per session clicked. This module is the cap.
+ * `SessionHost`, one `AgentLoop` and one `FileHistoryService` per session
+ * clicked. This module is the cap.
  *
  * Pure and free of both DOM and Electron, for the same reason `model/` is: the
  * decision is what has to be tested, and the application of it (`closePane` on

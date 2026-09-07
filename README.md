@@ -370,6 +370,22 @@ the TUI. Image/PDF multimodal attachments are not supported in this stage.
 
 Sessions are stored in `.myagent/sessions/` as metadata plus JSONL records. Records include messages, tool uses, tool results, approvals, and compact boundaries.
 
+### Rewind
+
+`/rewind` steps back to an earlier prompt. It can restore the conversation, the
+code, or both.
+
+Restoring code restores **only the files the agent's write tools changed**
+(`Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Delete`). Before each such write
+the previous contents are copied to `~/.myagent/file-history/<session-id>/`, and
+a rewind puts those copies back — deleting files the agent created after the
+chosen point.
+
+Everything else is left exactly as it is: your own edits in an editor, build
+output, `git` operations, and files written by `Bash` commands are never
+captured and never rolled back. A rewind undoes the agent's edits, not the state
+of your worktree.
+
 ## Useful Environment Variables
 
 - `MYAGENT_DEBUG_PROVIDER=1`: log provider request and response payloads

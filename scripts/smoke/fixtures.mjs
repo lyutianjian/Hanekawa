@@ -78,16 +78,16 @@ export function seedSession(project, { marker, ageMinutes = 0 }) {
 }
 
 /**
- * The three artifacts a *ran* session leaves outside its own log.
+ * The project-local artifacts a *ran* session leaves outside its own log.
  *
  * Seeded by hand because a fixture session never ran: without them, "delete
- * removes the shadow repo" would pass against a session that never had one,
+ * removes the session memory" would pass against a session that never had any,
  * which is exactly the vacuous assertion stage 4b's leak hid behind.
+ *
+ * The file history is not among them: it lives under the global
+ * `~/.myagent/file-history/`, not in the project.
  */
 export function seedArtifacts(project, sessionId) {
-  const shadow = join(project.myagent, 'shadow-git', sessionId)
-  mkdirSync(shadow, { recursive: true })
-  writeFileSync(join(shadow, 'HEAD'), 'ref: refs/heads/smoke\n')
   mkdirSync(join(project.myagent, 'session-memory'), { recursive: true })
   writeFileSync(join(project.myagent, 'session-memory', `${sessionId}.json`), '{"entries":[]}\n')
   const subagents = join(project.myagent, 'sessions', 'subagents', sessionId)
@@ -111,7 +111,6 @@ export function seededArtifactPaths(project, sessionId) {
   return [
     join(project.myagent, 'sessions', `${sessionId}.jsonl`),
     join(project.myagent, 'sessions', `${sessionId}.metrics.jsonl`),
-    join(project.myagent, 'shadow-git', sessionId),
     join(project.myagent, 'session-memory', `${sessionId}.json`),
     join(project.myagent, 'sessions', 'subagents', sessionId),
   ]

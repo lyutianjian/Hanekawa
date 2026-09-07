@@ -16,7 +16,7 @@ import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeMa
 import type { BackgroundTaskSnapshot } from '../../services/backgroundTasks/registry.js'
 import type { ModelPickerOption } from '../modelPicker.js'
 import type { RewindSummaryDecision } from '../rewindSummary.js'
-import type { CheckpointWithDiff } from '../../services/checkpoint/checkpointService.js'
+import type { CheckpointWithDiff } from '../../services/fileHistory/types.js'
 import type { FileToolPreview } from '../../services/fileToolPreview.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import type { FileSuggestion } from '../suggestions/atToken.js'

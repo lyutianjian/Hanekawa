@@ -12,7 +12,7 @@ import {
   type RestoreDecision,
   type RestoreOption,
 } from '../../../runtime/rewindPresentation.js'
-import type { CheckpointWithDiff } from '../../../services/checkpoint/checkpointService.js'
+import type { CheckpointWithDiff } from '../../../services/fileHistory/types.js'
 import type { RewindSummaryDecision } from '../../../runtime/rewindSummary.js'
 import type { DialogAction, OverlayAction } from './dialogActions.js'
 import { UI_LOCALE } from './locale.js'

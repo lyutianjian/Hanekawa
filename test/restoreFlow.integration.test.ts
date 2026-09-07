@@ -1,11 +1,11 @@
-import { describe, it, before } from 'node:test'
+import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
-import { CheckpointService } from '../src/services/checkpoint/checkpointService.js'
+import { FileHistoryService } from '../src/services/fileHistory/fileHistoryService.js'
 import { SessionStore } from '../src/sessions/service.js'
 import { getSessionsDir } from '../src/utils/paths.js'
 import { parseJsonLines } from '../src/utils/json.js'
@@ -20,8 +20,8 @@ const execFileAsync = promisify(execFile)
  * Task 8.4: Integration tests for full restore flow.
  *
  * Tests the end-to-end restore flow:
- *   1. select checkpoint → truncate JSONL → git checkout → UI update
- *   2. partial failure (truncation succeeds, git fails) shows correct error
+ *   1. select checkpoint → truncate JSONL → restore tracked files → UI update
+ *   2. partial failure (truncation succeeds, the restore fails) shows correct error
  *   3. full failure (truncation fails) remains in restore mode
  *   4. abort timeout force-terminates after 2 seconds
  *
@@ -49,6 +49,21 @@ async function cleanup(dir: string): Promise<void> {
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111'
 
+/**
+ * File history lands under the *global* `.myagent`, resolved through `homedir()`
+ * on every call, so a fake home keeps this suite off the real one.
+ */
+let home = ''
+const originalHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
+
+/** A service that has already taken the snapshot `messageId` names. */
+async function startTurn(cwd: string, sessionId: string, messageId: string): Promise<FileHistoryService> {
+  const service = new FileHistoryService(cwd, sessionId)
+  await service.init()
+  await service.makeSnapshot(messageId)
+  return service
+}
+
 function makeUserRecord(id: string, content: string): SessionRecord {
   return {
     type: 'message',
@@ -74,13 +89,18 @@ describe('Integration: full restore flow', () => {
 
   before(async () => {
     gitAvailable = await isGitAvailable()
+    home = await mkdtemp(path.join(os.tmpdir(), 'myagent-restore-flow-home-'))
+    process.env.HOME = home
+    process.env.USERPROFILE = home
   })
 
-  it('select checkpoint → truncate JSONL → git checkout → verify file state restored', async (t) => {
-    if (!gitAvailable) {
-      t.skip('git not available')
-      return
-    }
+  after(async () => {
+    process.env.HOME = originalHome.HOME
+    process.env.USERPROFILE = originalHome.USERPROFILE
+    await rm(home, { recursive: true, force: true })
+  })
+
+  it('select checkpoint → truncate JSONL → restore files → verify file state restored', async () => {
     const cwd = await makeTempCwd()
     try {
       // Setup: create session with records
@@ -88,30 +108,24 @@ describe('Integration: full restore flow', () => {
       await store.init()
       const session = await store.create('restore test')
 
-      // Create a file and first checkpoint
+      // Create a file and open the first turn's snapshot
       const filePath = path.join(cwd, 'data.txt')
       await writeFile(filePath, 'version 1\n', 'utf8')
 
-      const cpService = new CheckpointService(cwd, session.id)
-      await cpService.init()
-
-      // Append user message and create checkpoint
+      // Append user message and snapshot the turn it starts
       const userMsg1 = makeUserRecord('msg-1', 'first question')
       await store.appendRecord(session.id, userMsg1)
-      const cp1 = await cpService.createCheckpoint('msg-1')
-      assert.equal(cp1.success, true)
-      await store.addCheckpointMapping(session.id, 'msg-1', cp1.commitHash!)
+      const history = await startTurn(cwd, session.id, 'msg-1')
 
       // Append assistant response
       await store.appendRecord(session.id, makeAssistantRecord('resp-1', 'first answer'))
 
-      // Modify file and add second exchange
+      // The agent edits the file, which is what puts it under history
+      await history.trackEdit(filePath)
       await writeFile(filePath, 'version 2\n', 'utf8')
       const userMsg2 = makeUserRecord('msg-2', 'second question')
       await store.appendRecord(session.id, userMsg2)
-      const cp2 = await cpService.createCheckpoint('msg-2')
-      assert.equal(cp2.success, true)
-      await store.addCheckpointMapping(session.id, 'msg-2', cp2.commitHash!)
+      await history.makeSnapshot('msg-2')
 
       await store.appendRecord(session.id, makeAssistantRecord('resp-2', 'second answer'))
 
@@ -128,8 +142,8 @@ describe('Integration: full restore flow', () => {
       const afterRecords = await store.loadRecords(session.id)
       assert.equal(afterRecords.length, 0)
 
-      // Step 3: Git checkout to restore file state
-      const restoreResult = await cpService.restoreToCommit(cp1.commitHash!)
+      // Step 3: restore the tracked files to the first turn's snapshot
+      const restoreResult = await history.rewindTo('msg-1')
       assert.equal(restoreResult.success, true)
 
       // Step 4: Verify file content reverted
@@ -140,11 +154,7 @@ describe('Integration: full restore flow', () => {
     }
   })
 
-  it('restore code only leaves session records unchanged', async (t) => {
-    if (!gitAvailable) {
-      t.skip('git not available')
-      return
-    }
+  it('restore code only leaves session records unchanged', async () => {
     const cwd = await makeTempCwd()
     try {
       const store = new SessionStore(cwd)
@@ -154,19 +164,16 @@ describe('Integration: full restore flow', () => {
       const filePath = path.join(cwd, 'data.txt')
       await writeFile(filePath, 'version 1\n', 'utf8')
 
-      const cpService = new CheckpointService(cwd, session.id)
-      await cpService.init()
       await store.appendRecord(session.id, makeUserRecord('msg-1', 'first question'))
-      const cp1 = await cpService.createCheckpoint('msg-1')
-      assert.equal(cp1.success, true)
-      await store.addCheckpointMapping(session.id, 'msg-1', cp1.commitHash!)
+      const history = await startTurn(cwd, session.id, 'msg-1')
       await store.appendRecord(session.id, makeAssistantRecord('resp-1', 'first answer'))
 
+      await history.trackEdit(filePath)
       await writeFile(filePath, 'version 2\n', 'utf8')
       const beforeRecords = await store.loadRecords(session.id)
       assert.equal(beforeRecords.length, 2)
 
-      const restoreResult = await cpService.restoreToCommit(cp1.commitHash!)
+      const restoreResult = await history.rewindTo('msg-1')
       assert.equal(restoreResult.success, true)
 
       const afterRecords = await store.loadRecords(session.id)
@@ -177,11 +184,7 @@ describe('Integration: full restore flow', () => {
     }
   })
 
-  it('partial failure: truncation succeeds but git checkout fails', async (t) => {
-    if (!gitAvailable) {
-      t.skip('git not available')
-      return
-    }
+  it('partial failure: truncation succeeds but the restore fails', async () => {
     const cwd = await makeTempCwd()
     try {
       const store = new SessionStore(cwd)
@@ -190,13 +193,9 @@ describe('Integration: full restore flow', () => {
 
       await writeFile(path.join(cwd, 'file.txt'), 'content\n', 'utf8')
 
-      const cpService = new CheckpointService(cwd, session.id)
-      await cpService.init()
-
       const userMsg = makeUserRecord('msg-1', 'hello')
       await store.appendRecord(session.id, userMsg)
-      const cp = await cpService.createCheckpoint('msg-1')
-      assert.equal(cp.success, true)
+      const history = await startTurn(cwd, session.id, 'msg-1')
 
       await store.appendRecord(session.id, makeAssistantRecord('resp-1', 'world'))
 
@@ -204,8 +203,8 @@ describe('Integration: full restore flow', () => {
       const truncResult = await store.truncateBeforeMessage(session.id, 'msg-1')
       assert.equal(truncResult.success, true)
 
-      // Git checkout with invalid hash should fail gracefully
-      const restoreResult = await cpService.restoreToCommit('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef')
+      // A message with no snapshot should fail gracefully
+      const restoreResult = await history.rewindTo('msg-does-not-exist')
       assert.equal(restoreResult.success, false)
       assert.ok(restoreResult.error)
 

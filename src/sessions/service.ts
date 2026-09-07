@@ -28,6 +28,16 @@ class MessageNotFoundError extends Error {
   }
 }
 
+/**
+ * **Legacy.** A `messageId` → shadow-git commit pair, written by the checkpoint
+ * implementation `/rewind` used before file history replaced it.
+ *
+ * Nothing writes these any more: a restore is addressed by `messageId` through
+ * `services/fileHistory/`, whose snapshots live in their own append-only log
+ * under `~/.myagent/file-history/`. The field and its reader stay so an index
+ * written by an older build still parses (and so truncation keeps pruning it),
+ * and the commits they name are gone — the shadow repos are deleted on startup.
+ */
 export interface CheckpointMapping {
   messageId: string
   commitHash: string
@@ -67,15 +77,15 @@ const EMPTY_SESSION_CLEANUP_GRACE_MS = 10 * 60 * 1000
  * Rejects a session id that must not become a path component.
  *
  * The one rule, shared: `SessionStore`'s own file paths go through it, and so
- * does `removeShadowRepo` (`services/checkpoint/checkpointService.ts`), whose id
- * arrives over the desktop shell's `delete-session` and lands in an `rm` with
+ * does `removeFileHistory` (`services/fileHistory/fileHistoryService.ts`), whose
+ * id arrives over the desktop shell's `delete-session` and lands in an `rm` with
  * `recursive: true`. Two validators with slightly different rules on the same
  * value is how one of them ends up being the lenient one.
  *
  * `''`, `'.'` and `'..'` are rejected as whole ids, not merely as substrings,
  * because the two callers use the id at *different shapes*: `sessionPath` makes
  * it `${id}.json`, where `'.'` is the harmless `..json`, while
- * `removeShadowRepo` makes it a whole directory component, where `path.join`
+ * `removeFileHistory` makes it a whole directory component, where `path.join`
  * collapses it and `rm -r` then lands on the directory holding every session's
  * snapshots. Calibrating this for the filename shape alone is exactly the bug
  * that reached a red test.
@@ -543,10 +553,10 @@ export class SessionStore {
   /**
    * Removes a session's three files and its index entry.
    *
-   * **Not** its shadow repo — `.myagent/shadow-git/<id>` belongs to
-   * `services/checkpoint/`, which sits above `sessions/` in the layering, so
-   * "delete a session" is two calls the caller composes (see
-   * `ShellHost.deleteSession`). Calling this one alone leaks the snapshots.
+   * **Not** its file history — `~/.myagent/file-history/<id>` belongs to
+   * `services/fileHistory/`, which sits above `sessions/` in the layering, so
+   * "delete a session" is a composition the caller performs (see
+   * `deleteSessionArtifacts`). Calling this one alone leaks the snapshots.
    */
   async delete(sessionIdOrPrefix: string): Promise<void> {
     const draft = this.resolveDraft(sessionIdOrPrefix)
@@ -683,8 +693,11 @@ export class SessionStore {
   }
 
   /**
-   * Get checkpoint mappings from session metadata.
-   * Returns a Map of messageId -> commitHash.
+   * Reads the legacy checkpoint mappings out of session metadata.
+   *
+   * See {@link CheckpointMapping}: `/rewind` no longer consults these, so this
+   * is a compatibility reader for indexes older builds wrote — kept because the
+   * field is still carried through truncation and re-index.
    */
   async getCheckpointMappings(sessionId: string): Promise<CheckpointMapping[]> {
     try {
@@ -709,7 +722,11 @@ export class SessionStore {
   }
 
   /**
-   * Add a checkpoint mapping to the session metadata.
+   * Appends a legacy checkpoint mapping. **Deprecated**: no runtime path calls
+   * it since file history replaced shadow-git, and new sessions never gain a
+   * `checkpoints` array. It survives as the counterpart of the reader, so the
+   * cases covering how truncation and re-index carry that field can still write
+   * one.
    */
   async addCheckpointMapping(sessionId: string, messageId: string, commitHash: string): Promise<void> {
     const session = await this.resolve(sessionId)

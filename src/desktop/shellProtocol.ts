@@ -77,8 +77,8 @@ export type ShellCommand =
    */
   | { type: 'list-sessions'; id: string }
   /**
-   * Deletes a session: its lane if one is open, its three files, and its shadow
-   * repo. `projectRoot` is required — sessions live per project, and guessing
+   * Deletes a session: its lane if one is open, its three files, and its file
+   * history. `projectRoot` is required — sessions live per project, and guessing
    * would delete out of the wrong one.
    */
   | { type: 'delete-session'; id: string; projectRoot: string; sessionId: string }

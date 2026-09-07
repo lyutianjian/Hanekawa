@@ -16,7 +16,7 @@ import {
 import type {
   CheckpointDiffSummary,
   CheckpointWithDiff,
-} from '../src/services/checkpoint/checkpointService.js'
+} from '../src/services/fileHistory/types.js'
 import type { RewindSummaryDecision } from '../src/runtime/rewindSummary.js'
 
 /**
@@ -159,8 +159,8 @@ test('a running decision withdraws the buttons along with the options', () => {
 
 test('a failed checkpoint read still shows the reason', () => {
   // `app.ts` opens the panel empty rather than swallowing the failure.
-  const view = rewindViewModel(failRewindRun(createRewindState([]), 'shadow git is missing'))
-  assert.equal(view.error, 'shadow git is missing')
+  const view = rewindViewModel(failRewindRun(createRewindState([]), 'the snapshot was not found'))
+  assert.equal(view.error, 'the snapshot was not found')
   assert.equal(view.emptyMessage, '没有可用的检查点')
 })
 

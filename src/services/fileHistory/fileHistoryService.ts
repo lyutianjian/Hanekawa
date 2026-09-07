@@ -373,25 +373,59 @@ export class FileHistoryService {
   async getDiffStats(messageId: string): Promise<CheckpointDiffSummary> {
     const target = this.findSnapshot(messageId)
     if (!target) return emptyDiffSummary()
+    // Restoring rewrites the worktree into the snapshot, so the worktree is the
+    // "before" side: additions are lines the restore would bring back.
+    return this.summarizeDiff(
+      (trackingPath) => this.worktreeContent(trackingPath),
+      (trackingPath) => this.snapshotContent(trackingPath, target),
+    )
+  }
 
+  /**
+   * What the turn that *started* at `messageId` changed: its snapshot against
+   * the next one, or against the worktree for the newest snapshot, whose turn
+   * has no successor to bound it.
+   */
+  async getTurnDiffStats(messageId: string): Promise<CheckpointDiffSummary> {
+    const index = this.findSnapshotIndex(messageId)
+    if (index < 0) return emptyDiffSummary()
+    const from = this.state.snapshots[index]
+    if (!from) return emptyDiffSummary()
+    const to = this.state.snapshots[index + 1]
+
+    return this.summarizeDiff(
+      (trackingPath) => this.snapshotContent(trackingPath, from),
+      (trackingPath) =>
+        to ? this.snapshotContent(trackingPath, to) : this.worktreeContent(trackingPath),
+    )
+  }
+
+  /**
+   * Line counts across every tracked file between two content views. A view
+   * returns `undefined` for a path it has no opinion on — a file first tracked
+   * after the snapshot in question — which drops the file from the summary
+   * rather than diffing it against nothing.
+   */
+  private async summarizeDiff(
+    before: (trackingPath: string) => Promise<string | null | undefined>,
+    after: (trackingPath: string) => Promise<string | null | undefined>,
+  ): Promise<CheckpointDiffSummary> {
     const changed: string[] = []
     let additions = 0
     let deletions = 0
 
     for (const trackingPath of this.state.trackedFiles) {
       try {
-        const filePath = this.expandPath(trackingPath)
-        const backupFileName = this.resolveBackupFileName(trackingPath, target)
-        if (backupFileName === undefined) continue
-
-        const currentContent = await readFileOrNull(filePath)
-        const backupContent =
-          backupFileName === null ? null : await readFileOrNull(path.join(this.backupDir, backupFileName))
-        if (currentContent === null && backupContent === null) continue
+        const [beforeContent, afterContent] = await Promise.all([
+          before(trackingPath),
+          after(trackingPath),
+        ])
+        if (beforeContent === undefined || afterContent === undefined) continue
+        if (beforeContent === null && afterContent === null) continue
 
         let fileAdditions = 0
         let fileDeletions = 0
-        for (const part of diffLines(currentContent ?? '', backupContent ?? '')) {
+        for (const part of diffLines(beforeContent ?? '', afterContent ?? '')) {
           if (part.added) fileAdditions += part.count ?? 0
           if (part.removed) fileDeletions += part.count ?? 0
         }
@@ -415,24 +449,45 @@ export class FileHistoryService {
     }
   }
 
+  /** `null` = absent in that snapshot, `undefined` = not covered by it. */
+  private async snapshotContent(
+    trackingPath: string,
+    snapshot: FileHistorySnapshot,
+  ): Promise<string | null | undefined> {
+    const backupFileName = this.resolveBackupFileName(trackingPath, snapshot)
+    if (backupFileName === undefined) return undefined
+    if (backupFileName === null) return null
+    return readFileOrNull(path.join(this.backupDir, backupFileName))
+  }
+
+  private async worktreeContent(trackingPath: string): Promise<string | null> {
+    return readFileOrNull(this.expandPath(trackingPath))
+  }
+
   /**
    * The snapshots the rewind panel lists, oldest first, each carrying the user
    * message it belongs to.
    *
    * A restore is addressed by `messageId` all the way to the panel — there is
-   * no commit to name. `turnDiff` is still empty: the panel shows
-   * `restoreDiff`, which is the summary a restore actually applies.
+   * no commit to name.
+   *
+   * `restoreDiff` drives whether the panel even offers the code options, so it
+   * goes through `hasAnyChanges` first: that check settles on stats and exits
+   * on the first difference, where the full summary reads every tracked file.
    */
   async getCheckpointsWithDiffs(): Promise<CheckpointWithDiff[]> {
     const messageContents = await this.loadUserMessages()
     const checkpoints: CheckpointWithDiff[] = []
     for (const [index, snapshot] of this.state.snapshots.entries()) {
+      const restoreDiff = (await this.hasAnyChanges(snapshot.messageId))
+        ? await this.getDiffStats(snapshot.messageId)
+        : emptyDiffSummary()
       checkpoints.push({
         messageId: snapshot.messageId,
         messageContent: messageContents.get(snapshot.messageId) ?? '',
         timestamp: snapshot.timestamp,
-        turnDiff: emptyDiffSummary(),
-        restoreDiff: await this.getDiffStats(snapshot.messageId),
+        turnDiff: await this.getTurnDiffStats(snapshot.messageId),
+        restoreDiff,
         isCurrent: index === this.state.snapshots.length - 1,
       })
     }
@@ -459,11 +514,16 @@ export class FileHistoryService {
 
   /** Latest snapshot for a message id. */
   private findSnapshot(messageId: string): FileHistorySnapshot | undefined {
+    const index = this.findSnapshotIndex(messageId)
+    return index < 0 ? undefined : this.state.snapshots[index]
+  }
+
+  /** Position of that same snapshot, for the neighbours a turn diff needs. */
+  private findSnapshotIndex(messageId: string): number {
     for (let index = this.state.snapshots.length - 1; index >= 0; index--) {
-      const snapshot = this.state.snapshots[index]
-      if (snapshot?.messageId === messageId) return snapshot
+      if (this.state.snapshots[index]?.messageId === messageId) return index
     }
-    return undefined
+    return -1
   }
 
   /**

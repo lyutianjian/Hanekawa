@@ -150,6 +150,47 @@ describe('FileHistoryService', () => {
     assert.equal(stats.additions, 1)
   })
 
+  it('scopes a turn diff to the two snapshots that bound it', async () => {
+    const file = path.join(cwd, 'a.txt')
+    await writeFile(file, 'one\n', 'utf8')
+
+    const service = await makeService('s7b')
+    await service.makeSnapshot('m1')
+    await service.trackEdit(file)
+    await writeFile(file, 'one\ntwo\n', 'utf8')
+    await service.makeSnapshot('m2')
+    await writeFile(file, 'one\ntwo\nthree\n', 'utf8')
+
+    const firstTurn = await service.getTurnDiffStats('m1')
+    assert.equal(firstTurn.additions, 1)
+    assert.equal(firstTurn.deletions, 0)
+
+    // The newest snapshot has no successor, so its turn runs up to the worktree.
+    const latestTurn = await service.getTurnDiffStats('m2')
+    assert.equal(latestTurn.additions, 1)
+
+    // A restore, by contrast, undoes both turns.
+    const restore = await service.getDiffStats('m1')
+    assert.equal(restore.deletions, 2)
+  })
+
+  it('reports no code changes for a snapshot nothing has moved since', async () => {
+    const file = path.join(cwd, 'a.txt')
+    await writeFile(file, 'one\n', 'utf8')
+
+    const service = await makeService('s7c')
+    await service.makeSnapshot('m1')
+    await service.trackEdit(file)
+    await service.makeSnapshot('m2')
+
+    const checkpoints = await service.getCheckpointsWithDiffs()
+    assert.deepEqual(
+      checkpoints.map((entry) => entry.restoreDiff.hasChanges),
+      [false, false],
+    )
+    assert.equal(checkpoints.at(-1)?.isCurrent, true)
+  })
+
   it('does not overwrite the v1 backup when a file is tracked twice', async () => {
     const file = path.join(cwd, 'a.txt')
     await writeFile(file, 'original\n', 'utf8')

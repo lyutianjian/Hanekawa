@@ -267,14 +267,16 @@ commit：`checkpoint: address restores by message id`
 
 ---
 
-### [ ] T6 — diff 统计接入 rewind 面板
+### [x] T6 — diff 统计接入 rewind 面板
 
 - [x] `getDiffStats()` 用 `diffLines` 式的行级比对产出 `CheckpointDiffSummary`（沿用现有 DTO，UI 不动）
-- [ ] `hasAnyChanges()` 早退版接到 `rewindPresentation.ts:147` 的 `hasCodeChanges`
-- [ ] `turnDiff` / `restoreDiff` 的语义映射到新模型：`restoreDiff` = 当前 vs 目标 snapshot；`turnDiff` = 相邻两个 snapshot 之间
-- [ ] 测试：`test/rewindSummary.test.ts`、`test/rewindPresentation.test.ts` 更新
+- [x] `hasAnyChanges()` 早退版接到 `rewindPresentation.ts:147` 的 `hasCodeChanges`
+- [x] `turnDiff` / `restoreDiff` 的语义映射到新模型：`restoreDiff` = 当前 vs 目标 snapshot；`turnDiff` = 相邻两个 snapshot 之间
+- [x] 测试：`test/rewindSummary.test.ts`、`test/rewindPresentation.test.ts` 更新
 
-验收：`node --import tsx --test test/rewindPresentation.test.ts test/rewindSummary.test.ts`。
+核验（2026-09-07）：`hasCodeChanges` 在两个 shell 里都读 `restoreDiff.hasChanges`，所以早退接入点在服务侧——`getCheckpointsWithDiffs()` 先跑 `hasAnyChanges()`，为 false 的快照直接给空 summary，不再逐文件读内容。新增 `getTurnDiffStats()`：与 `getDiffStats()` 共用 `summarizeDiff(before, after)`，两侧都是「内容视图」，`snapshotContent` 返回 `undefined` 表示该快照不覆盖此文件（快照之后才被 track），跳过而非与空串比。最新快照没有后继，其 turn 的终点是工作树。`rewindPresentation.test.ts` / `rewindSummary.test.ts` 是纯展示层测试，与本次改动无关，未改；新增覆盖落在 `test/fileHistoryService.test.ts` 两条用例。
+
+验收：`node --import tsx --test test/fileHistoryService.test.ts test/rewindPresentation.test.ts test/rewindSummary.test.ts test/rendererRewindPanel.test.ts test/sessionController.test.ts` 全绿；`npm run typecheck` 通过。
 commit：`checkpoint: compute rewind diffs from file history`
 
 ---

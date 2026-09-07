@@ -28,7 +28,7 @@ const SAMPLES = {
   'list-branches': { type: 'list-branches', id: '1' },
   'switch-branch': { type: 'switch-branch', id: '1', branch: 'topic' },
   checkpoints: { type: 'checkpoints', id: '1' },
-  'restore-code': { type: 'restore-code', id: '1', commitHash: 'abc' },
+  'restore-code': { type: 'restore-code', id: '1', messageId: 'm1' },
   'truncate-session': { type: 'truncate-session', id: '1', messageId: 'm1' },
   'summarize-rewind': { type: 'summarize-rewind', id: '1', messageId: 'm1', decision: 'summarize-from-here' },
   'set-model': { type: 'set-model', id: '1', modelKey: 'main' },
@@ -100,7 +100,7 @@ test('an unknown key is rejected and named', () => {
 })
 
 test('a wrong field type is rejected', () => {
-  const parsed = parseHostCommand({ type: 'restore-code', id: 'x', commitHash: 42 })
+  const parsed = parseHostCommand({ type: 'restore-code', id: 'x', messageId: 42 })
   assert.equal(parsed.ok, false)
   assert.equal(parsed.id, 'x')
 })

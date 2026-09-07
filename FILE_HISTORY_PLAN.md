@@ -1,6 +1,6 @@
 # Checkpoint 重构实施文档：shadow-git → file-history
 
-状态：实施中（2026-09-07 核验：T0–T4 已完成，下一个任务是 T5）
+状态：实施中（2026-09-07 核验：T0–T5 已完成，下一个任务是 T6）
 影响面：`/rewind` 的「恢复代码」能力，以及它背后的整套快照机制。其余功能不受影响。
 
 ---
@@ -171,6 +171,7 @@ protocol host 'checkpoints' / 'restore-code'
 **约定：每完成一个任务就 commit 一次。** 每个 commit 必须自身通过 `npm run typecheck`，不留半截状态。commit message 用 `checkpoint: <任务简述>`（如 `checkpoint: add FileHistoryService core`），正文写清该任务做了什么、留了什么未做。跨层字段迁移（T5）不可拆分成多个 commit，否则中间态编译不过。
 
 任务顺序是有依赖的：T1→T2→T3→T4→T5 必须按序，T6 起可调整。
+完成后将[]标注为[x]
 
 2026-09-07 核验：当前 HEAD 为 `4b96389`。T1、T2、T3 的实现提交分别是 `911571f`、`d3020f9`、`3e2e94c`。现有文件历史、写工具/钩子、会话删除、SessionController/Workspace 等 10 个相关测试文件合计 **255 通过、1 跳过**（Windows 跳过权限保留测试），`npm run typecheck` 通过。T1 的并发备份问题已另外在隔离目录中复现，见下方未勾选项。
 
@@ -248,16 +249,18 @@ commit：`checkpoint: wire file history into session controller`
 
 ---
 
-### [ ] T5 — 协议与渲染层字段迁移（单次原子 commit）
+### [x] T5 — 协议与渲染层字段迁移（单次原子 commit）
 
 `commitHash` 这个字段名贯穿 wire、host、client、TUI、renderer，必须一次改完。
 
-- [ ] `CheckpointWithDiff.commitHash` → `messageId` 寻址（`Checkpoint` 类型本就带 `messageId`，可直接复用并删除 `commitHash`）
-- [ ] `src/runtime/protocol/wire.ts`、`commandSchema.ts`（`restore-code` 的参数）、`client.ts:439`、`host.ts:823-827`
-- [ ] `src/desktop/renderer/model/rewindPanel.ts:397,442` 的 `restoreCode(commitHash)` 签名
-- [ ] `src/tui/components/App.tsx:815`
-- [ ] wire 值必须能过 `structuredClone`；schema 保持 strict
-- [ ] 测试：`test/protocolCommandSchema.test.ts`、`test/protocolHost.test.ts`、`test/rendererRewindPanel.test.ts` 同步更新
+- [x] `CheckpointWithDiff.commitHash` → `messageId` 寻址（`Checkpoint` 类型本就带 `messageId`，可直接复用并删除 `commitHash`）
+- [x] `src/runtime/protocol/wire.ts`、`commandSchema.ts`（`restore-code` 的参数）、`client.ts:439`、`host.ts:823-827`
+- [x] `src/desktop/renderer/model/rewindPanel.ts:397,442` 的 `restoreCode(commitHash)` 签名
+- [x] `src/tui/components/App.tsx:815`
+- [x] wire 值必须能过 `structuredClone`；schema 保持 strict
+- [x] 测试：`test/protocolCommandSchema.test.ts`、`test/protocolHost.test.ts`、`test/rendererRewindPanel.test.ts` 同步更新（另有 `restoreMode(.property).test.ts`、`rendererOverlayView.test.ts`、`tuiRender.test.ts` 的 fixture）
+
+核验：`Checkpoint` 不再有 `commitHash`；仍在的 shadow-git 实现改用本地的 `GitCheckpoint` / `GitCheckpointWithDiff`（`Checkpoint` 的扩展），commit hash 从此只是该服务的内部细节，T9 随实现一并删除。全量测试 2942 通过 / 1 跳过，`npm run typecheck` 通过。
 
 验收：`npm run typecheck` + `npm run test`（全量，这是跨层改动）。
 commit：`checkpoint: address restores by message id`

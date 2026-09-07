@@ -419,18 +419,15 @@ export class FileHistoryService {
    * The snapshots the rewind panel lists, oldest first, each carrying the user
    * message it belongs to.
    *
-   * `commitHash` carries the message id: the field is what every layer between
-   * here and the panel still addresses a restore by, and collapsing the two
-   * names is the next task's job, not this one's. `turnDiff` is likewise still
-   * empty — the panel shows `restoreDiff`, which is the summary a restore
-   * actually applies.
+   * A restore is addressed by `messageId` all the way to the panel — there is
+   * no commit to name. `turnDiff` is still empty: the panel shows
+   * `restoreDiff`, which is the summary a restore actually applies.
    */
   async getCheckpointsWithDiffs(): Promise<CheckpointWithDiff[]> {
     const messageContents = await this.loadUserMessages()
     const checkpoints: CheckpointWithDiff[] = []
     for (const [index, snapshot] of this.state.snapshots.entries()) {
       checkpoints.push({
-        commitHash: snapshot.messageId,
         messageId: snapshot.messageId,
         messageContent: messageContents.get(snapshot.messageId) ?? '',
         timestamp: snapshot.timestamp,

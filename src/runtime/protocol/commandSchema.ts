@@ -121,7 +121,7 @@ const COMMAND_SCHEMAS = {
     .strict(),
   checkpoints: z.object({ type: z.literal('checkpoints'), id: commandId }).strict(),
   'restore-code': z
-    .object({ type: z.literal('restore-code'), id: commandId, commitHash: z.string() })
+    .object({ type: z.literal('restore-code'), id: commandId, messageId: z.string() })
     .strict(),
   'truncate-session': z
     .object({ type: z.literal('truncate-session'), id: commandId, messageId: z.string() })

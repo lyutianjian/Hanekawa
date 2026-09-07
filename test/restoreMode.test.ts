@@ -19,7 +19,6 @@ const emptyDiff = {
 
 function checkpoint(overrides: Partial<CheckpointWithDiff>): CheckpointWithDiff {
   return {
-    commitHash: 'abc',
     messageId: 'msg',
     messageContent: 'message',
     timestamp: '2026-05-19T10:00:00.000Z',
@@ -51,10 +50,10 @@ describe('RestoreMode component logic', () => {
     assert.deepEqual(sorted.map((item) => item.messageId), ['old', 'middle', 'new'])
   })
 
-  it('uses message ids for render keys because commit hashes can be reused', () => {
+  it('uses message ids for render keys', () => {
     const keys = [
-      checkpoint({ messageId: 'msg-1', commitHash: 'same' }),
-      checkpoint({ messageId: 'msg-2', commitHash: 'same' }),
+      checkpoint({ messageId: 'msg-1' }),
+      checkpoint({ messageId: 'msg-2' }),
     ].map(getCheckpointRenderKey)
 
     assert.deepEqual(keys, ['msg-1', 'msg-2'])

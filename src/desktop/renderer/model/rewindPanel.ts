@@ -394,7 +394,7 @@ export function failRewindRun(state: RewindState, message: string): RewindState 
  */
 export interface RewindClient {
   truncateSession(messageId: string): Promise<unknown>
-  restoreCode(commitHash: string): Promise<{ success: boolean; error?: string }>
+  restoreCode(messageId: string): Promise<{ success: boolean; error?: string }>
   summarizeRewind(messageId: string, decision: RewindSummaryDecision): Promise<unknown>
 }
 
@@ -439,7 +439,7 @@ export async function runRewind(
       continue
     }
 
-    const restored = await client.restoreCode(checkpoint.commitHash)
+    const restored = await client.restoreCode(checkpoint.messageId)
     if (restored.success) continue
     const reason = restored.error ?? '文件状态恢复失败'
     // Only half-done if the conversation was already cut; on its own this is a

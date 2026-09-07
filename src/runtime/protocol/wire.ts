@@ -174,7 +174,7 @@ export type HostCommand =
    */
   | { type: 'switch-branch'; id: string; branch: string }
   | { type: 'checkpoints'; id: string }
-  | { type: 'restore-code'; id: string; commitHash: string }
+  | { type: 'restore-code'; id: string; messageId: string }
   /**
    * The write half of `/rewind`. `restore-code-and-conversation` deliberately
    * has no command of its own: it is `restore-code` followed by

@@ -19,7 +19,6 @@ const isoTimestampArb = fc
   .map((d) => d.toISOString())
 
 const checkpointArb: fc.Arbitrary<CheckpointWithDiff> = fc.record({
-  commitHash: fc.hexaString({ minLength: 40, maxLength: 40 }),
   messageId: fc.uuid(),
   messageContent: fc.string({ maxLength: 200 }),
   timestamp: isoTimestampArb,

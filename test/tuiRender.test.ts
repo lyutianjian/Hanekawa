@@ -1338,7 +1338,6 @@ function rewindDiff(overrides: Partial<CheckpointDiffSummary> = {}): CheckpointD
 
 function rewindCheckpoint(overrides: Partial<CheckpointWithDiff> = {}): CheckpointWithDiff {
   return {
-    commitHash: 'abc123',
     messageId: 'msg-1',
     messageContent: 'rewind this prompt',
     timestamp: '2026-06-02T00:00:00.000Z',

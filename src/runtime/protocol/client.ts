@@ -441,8 +441,8 @@ export class SessionClient {
     return result.checkpoints
   }
 
-  async restoreCode(commitHash: string): Promise<{ success: boolean; error?: string }> {
-    return this.send({ type: 'restore-code', id: randomUUID(), commitHash }) as Promise<{
+  async restoreCode(messageId: string): Promise<{ success: boolean; error?: string }> {
+    return this.send({ type: 'restore-code', id: randomUUID(), messageId }) as Promise<{
       success: boolean
       error?: string
     }>

@@ -376,7 +376,6 @@ test('a press on the rewind scrim closes it, unless a decision is running', (t) 
   intents.length = 0
   const restoring = beginRewindRun({
     ...createRewindState([{
-      commitHash: 'abc123',
       messageId: 'm1',
       messageContent: 'add the parser',
       timestamp: '2026-05-19T10:00:00.000Z',

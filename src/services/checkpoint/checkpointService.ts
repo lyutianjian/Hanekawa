@@ -8,7 +8,6 @@ import { getMyAgentDir, isGlobalWorkspaceRoot } from '../../utils/paths.js'
 const execFileAsync = promisify(execFile)
 
 export interface Checkpoint {
-  commitHash: string
   messageId: string
   messageContent: string
   timestamp: string
@@ -26,6 +25,19 @@ export interface CheckpointWithDiff extends Checkpoint {
   turnDiff: CheckpointDiffSummary
   restoreDiff: CheckpointDiffSummary
   isCurrent: boolean
+}
+
+/**
+ * The shadow-git flavour of a checkpoint. A restore is addressed by `messageId`
+ * everywhere above this service; the commit hash is an implementation detail of
+ * this (soon to be deleted) service and stays local to it.
+ */
+export interface GitCheckpoint extends Checkpoint {
+  commitHash: string
+}
+
+export interface GitCheckpointWithDiff extends CheckpointWithDiff {
+  commitHash: string
 }
 
 export interface CheckpointCreateResult {
@@ -276,7 +288,7 @@ export class CheckpointService {
    * Get all checkpoints for the current session from session metadata.
    * Loads session records to populate messageContent for each checkpoint.
    */
-  async getCheckpoints(): Promise<Checkpoint[]> {
+  async getCheckpoints(): Promise<GitCheckpoint[]> {
     try {
       const store = new SessionStore(this.cwd)
       await store.init()
@@ -309,13 +321,13 @@ export class CheckpointService {
    * or the current worktree for the latest prompt. `restoreDiff` describes
    * everything that would change if code were restored to this checkpoint.
    */
-  async getCheckpointsWithDiffs(): Promise<CheckpointWithDiff[]> {
+  async getCheckpointsWithDiffs(): Promise<GitCheckpointWithDiff[]> {
     const checkpoints = await this.getCheckpoints()
     const chronological = [...checkpoints].sort(
       (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
     )
 
-    const byMessageId = new Map<string, CheckpointWithDiff>()
+    const byMessageId = new Map<string, GitCheckpointWithDiff>()
     for (let index = 0; index < chronological.length; index++) {
       const checkpoint = chronological[index]
       if (!checkpoint) continue
@@ -332,7 +344,7 @@ export class CheckpointService {
       })
     }
 
-    return checkpoints.map((checkpoint) => byMessageId.get(checkpoint.messageId)).filter((entry): entry is CheckpointWithDiff => Boolean(entry))
+    return checkpoints.map((checkpoint) => byMessageId.get(checkpoint.messageId)).filter((entry): entry is GitCheckpointWithDiff => Boolean(entry))
   }
 
   /**

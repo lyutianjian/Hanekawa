@@ -183,7 +183,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     },
     retarget: () => {},
     getFileHistoryService: () => ({
-      getCheckpointsWithDiffs: async () => [{ messageId: 'm1', commitHash: 'abc' }],
+      getCheckpointsWithDiffs: async () => [{ messageId: 'm1' }],
       rewindTo: async () => ({ success: true }),
     }),
   }

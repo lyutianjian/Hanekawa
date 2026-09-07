@@ -812,7 +812,7 @@ export function App({
 
   const restoreCodeToCheckpoint = useCallback(async (checkpoint: CheckpointWithDiff) => {
     const cpService = sessionController.getFileHistoryService()
-    const restoreResult = await cpService.rewindTo(checkpoint.commitHash)
+    const restoreResult = await cpService.rewindTo(checkpoint.messageId)
     invalidateResolvedCwdCache(process.cwd())
     if (!restoreResult.success) {
       throw new Error(restoreResult.error ?? 'Failed to restore file state')

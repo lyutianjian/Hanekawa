@@ -46,7 +46,6 @@ const withChanges: CheckpointDiffSummary = {
 
 function checkpoint(overrides: Partial<CheckpointWithDiff> = {}): CheckpointWithDiff {
   return {
-    commitHash: 'abc123',
     messageId: 'm1',
     messageContent: 'add the parser',
     timestamp: '2026-05-19T10:00:00.000Z',
@@ -63,7 +62,6 @@ function twoCheckpoints(): CheckpointWithDiff[] {
     checkpoint({ messageId: 'm1', timestamp: '2026-05-19T10:00:00.000Z', messageContent: 'first' }),
     checkpoint({
       messageId: 'm2',
-      commitHash: 'def456',
       timestamp: '2026-05-19T11:00:00.000Z',
       messageContent: 'second',
       turnDiff: withChanges,
@@ -82,8 +80,8 @@ function stubClient(overrides: Partial<RewindClient> = {}): {
       calls.push(`truncate:${messageId}`)
       return []
     },
-    restoreCode: async (commitHash) => {
-      calls.push(`restore-code:${commitHash}`)
+    restoreCode: async (messageId) => {
+      calls.push(`restore-code:${messageId}`)
       return { success: true }
     },
     summarizeRewind: async (messageId, decision) => {
@@ -349,14 +347,14 @@ test('restore-conversation truncates and nothing else', async () => {
 test('restore-code reverts files and leaves the conversation alone', async () => {
   const { client, calls } = stubClient()
   const result = await runRewind(client, 'restore-code', checkpoint())
-  assert.deepEqual(calls, ['restore-code:abc123'])
+  assert.deepEqual(calls, ['restore-code:m1'])
   assert.equal(result.partial, false)
 })
 
 test('restore-code-and-conversation truncates before it reverts', async () => {
   const { client, calls } = stubClient()
   await runRewind(client, 'restore-code-and-conversation', checkpoint())
-  assert.deepEqual(calls, ['truncate:m1', 'restore-code:abc123'])
+  assert.deepEqual(calls, ['truncate:m1', 'restore-code:m1'])
 })
 
 test('summarizing passes the direction through to the wire command', async () => {
@@ -422,7 +420,7 @@ test('the executor accepts a SessionClient-shaped object', () => {
   // `app.ts` passes: the real client's three methods, with their real signatures.
   const shaped: RewindClient = {
     truncateSession: async (messageId: string) => [messageId],
-    restoreCode: async (_commitHash: string) => ({ success: true }),
+    restoreCode: async (_messageId: string) => ({ success: true }),
     summarizeRewind: async (_messageId: string, _decision: RewindSummaryDecision) => [],
   }
   assert.equal(typeof shaped.truncateSession, 'function')

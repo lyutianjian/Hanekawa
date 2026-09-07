@@ -1,9 +1,13 @@
 import { describe, it, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, writeFile, rm, stat, chmod } from 'node:fs/promises'
+import { appendFile, mkdtemp, mkdir, readFile, writeFile, rm, stat, chmod } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { FileHistoryService, fileHistoryDir } from '../src/services/fileHistory/fileHistoryService.js'
+import {
+  FileHistoryService,
+  fileHistoryDir,
+  removeFileHistory,
+} from '../src/services/fileHistory/fileHistoryService.js'
 
 /**
  * Backups land under the *global* `.myagent`, which resolves through
@@ -182,5 +186,64 @@ describe('FileHistoryService', () => {
     assert.equal(await service.hasAnyChanges('missing'), false)
     const result = await service.rewindTo('missing')
     assert.equal(result.success, false)
+  })
+
+  describe('persistence', () => {
+    it('rebuilds snapshots and mid-turn backups after a restart', async () => {
+      const file = path.join(cwd, 'a.txt')
+      await writeFile(file, 'original\n', 'utf8')
+
+      const first = await makeService('p1')
+      await first.makeSnapshot('m1')
+      await first.trackEdit(file)
+      await writeFile(file, 'edited\n', 'utf8')
+      await first.makeSnapshot('m2')
+      await first.flush()
+      first.dispose()
+
+      // A fresh service sees only what reached snapshots.jsonl.
+      const reopened = await makeService('p1')
+      assert.deepEqual(
+        reopened.listSnapshots().map((snapshot) => snapshot.messageId),
+        ['m1', 'm2'],
+      )
+      await reopened.rewindTo('m1')
+      assert.equal(await readFile(file, 'utf8'), 'original\n')
+    })
+
+    it('starts empty when the session has no log yet', async () => {
+      const service = await makeService('p2')
+      assert.deepEqual(service.listSnapshots(), [])
+    })
+
+    it('skips a truncated trailing line', async () => {
+      const service = await makeService('p3')
+      await service.makeSnapshot('m1')
+      await service.flush()
+      await appendFile(path.join(fileHistoryDir('p3'), 'snapshots.jsonl'), '{"kind":"snap', 'utf8')
+
+      const reopened = await makeService('p3')
+      assert.equal(reopened.listSnapshots().length, 1)
+    })
+
+    it('removes a session’s history directory', async () => {
+      const file = path.join(cwd, 'a.txt')
+      await writeFile(file, 'x\n', 'utf8')
+
+      const service = await makeService('p4')
+      await service.makeSnapshot('m1')
+      await service.trackEdit(file)
+      await service.flush()
+      assert.equal(await exists(fileHistoryDir('p4')), true)
+
+      await removeFileHistory('p4')
+      assert.equal(await exists(fileHistoryDir('p4')), false)
+    })
+
+    it('rejects a session id that would escape the history directory', async () => {
+      for (const bad of ['', '.', '..', 'a/b', '../evil']) {
+        await assert.rejects(() => removeFileHistory(bad), /Invalid session ID/)
+      }
+    })
   })
 })

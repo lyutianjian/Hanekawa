@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
-import { chmod, copyFile, mkdir, readFile, stat, unlink } from 'node:fs/promises'
+import { appendFile, chmod, copyFile, mkdir, readFile, rm, stat, unlink } from 'node:fs/promises'
 import type { Stats } from 'node:fs'
 import path from 'node:path'
 import { diffLines } from 'diff'
+import { assertSafeSessionId } from '../../sessions/service.js'
 import { getGlobalMyAgentDir } from '../../utils/paths.js'
 import type { CheckpointDiffSummary } from '../checkpoint/checkpointService.js'
 
@@ -51,6 +52,32 @@ export function fileHistoryDir(sessionId: string): string {
   return path.join(getGlobalMyAgentDir(), 'file-history', sessionId)
 }
 
+/** The name of the append-only log inside a session's history directory. */
+const SNAPSHOTS_LOG = 'snapshots.jsonl'
+
+/**
+ * Deletes a session's backups. Called when the session itself is deleted; the
+ * history lives outside the project tree, so nothing else would ever collect it.
+ *
+ * The guard is load-bearing, not defensive: `sessionId` comes off the wire
+ * (`delete-session`) and becomes a whole directory component of an `rm` with
+ * `recursive: true` — one bad argument away from `~/.myagent/file-history`
+ * itself. It is `SessionStore`'s own validator so the two cannot drift.
+ */
+export async function removeFileHistory(sessionId: string): Promise<void> {
+  assertSafeSessionId(sessionId)
+  await rm(fileHistoryDir(sessionId), { recursive: true, force: true })
+}
+
+/**
+ * One line of `snapshots.jsonl`. `snapshot` opens a new version of the tracked
+ * set; `update` back-fills one file's backup onto the snapshot already open,
+ * which is what a `trackEdit` mid-turn produces.
+ */
+type FileHistoryRecord =
+  | { kind: 'snapshot'; messageId: string; timestamp: string; trackedFileBackups: Record<string, FileBackup> }
+  | { kind: 'update'; messageId: string; trackingPath: string; backup: FileBackup }
+
 /**
  * Per-session, per-file backups of everything the agent's write tools touch.
  *
@@ -65,23 +92,99 @@ export class FileHistoryService {
   private readonly sessionId: string
   private readonly limits: FileHistoryLimits
   private readonly backupDir: string
+  private readonly logPath: string
   private state: FileHistoryState = { snapshots: [], trackedFiles: new Set(), snapshotSequence: 0 }
   private disposed = false
+  /** Serialises appends so two concurrent writes cannot interleave a line. */
+  private writes: Promise<void> = Promise.resolve()
 
   constructor(cwd: string, sessionId: string, limits: FileHistoryLimits = DEFAULT_FILE_HISTORY_LIMITS) {
     this.cwd = cwd
     this.sessionId = sessionId
     this.limits = limits
     this.backupDir = fileHistoryDir(sessionId)
+    this.logPath = path.join(this.backupDir, SNAPSHOTS_LOG)
   }
 
-  /** Rebuilds in-memory state. Persistence lands in a later task; empty for now. */
+  /**
+   * Rebuilds state by replaying `snapshots.jsonl`. A missing log is a fresh
+   * session; a truncated or unparsable line is skipped rather than failing the
+   * session, since a half-written tail costs at most one snapshot.
+   */
   async init(): Promise<void> {
     this.state = { snapshots: [], trackedFiles: new Set(), snapshotSequence: 0 }
+    const raw = await readFileOrNull(this.logPath)
+    if (raw === null) return
+
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue
+      let record: FileHistoryRecord
+      try {
+        record = JSON.parse(line) as FileHistoryRecord
+      } catch {
+        continue
+      }
+      this.applyRecord(record)
+    }
   }
 
   dispose(): void {
     this.disposed = true
+  }
+
+  /** Resolves once every append issued so far has hit disk. */
+  async flush(): Promise<void> {
+    await this.writes
+  }
+
+  private applyRecord(record: FileHistoryRecord): void {
+    if (record.kind === 'snapshot') {
+      this.state.snapshots.push({
+        messageId: record.messageId,
+        timestamp: record.timestamp,
+        trackedFileBackups: record.trackedFileBackups,
+      })
+      for (const trackingPath of Object.keys(record.trackedFileBackups)) {
+        this.state.trackedFiles.add(trackingPath)
+      }
+      this.evictOldSnapshots()
+      this.state.snapshotSequence += 1
+      return
+    }
+    // An update always targets the snapshot that was open when it was written,
+    // which replay has just pushed — unless eviction already dropped it.
+    const target = this.state.snapshots.at(-1)
+    if (!target || target.messageId !== record.messageId) return
+    target.trackedFileBackups[record.trackingPath] = record.backup
+    this.state.trackedFiles.add(record.trackingPath)
+  }
+
+  /**
+   * Appends one record. Best-effort: losing a line degrades what a later resume
+   * can restore, but must never fail the turn that produced it.
+   */
+  private append(record: FileHistoryRecord): void {
+    if (this.disposed) return
+    const line = `${JSON.stringify(record)}\n`
+    this.writes = this.writes.then(async () => {
+      try {
+        await appendFile(this.logPath, line, 'utf8')
+      } catch (error) {
+        if (!isENOENT(error)) return
+        try {
+          await mkdir(this.backupDir, { recursive: true })
+          await appendFile(this.logPath, line, 'utf8')
+        } catch {
+          // Nothing further to try; the in-memory history still works this run.
+        }
+      }
+    })
+  }
+
+  private evictOldSnapshots(): void {
+    if (this.state.snapshots.length > this.limits.maxSnapshots) {
+      this.state.snapshots = this.state.snapshots.slice(-this.limits.maxSnapshots)
+    }
   }
 
   listSnapshots(): FileHistorySnapshot[] {
@@ -115,6 +218,7 @@ export class FileHistoryService {
     if (!latest || latest.trackedFileBackups[trackingPath]) return
     latest.trackedFileBackups[trackingPath] = backup
     this.state.trackedFiles.add(trackingPath)
+    this.append({ kind: 'update', messageId: latest.messageId, trackingPath, backup })
   }
 
   /**
@@ -173,15 +277,11 @@ export class FileHistoryService {
       }
     }
 
-    this.state.snapshots.push({
-      messageId,
-      trackedFileBackups,
-      timestamp: new Date().toISOString(),
-    })
-    if (this.state.snapshots.length > this.limits.maxSnapshots) {
-      this.state.snapshots = this.state.snapshots.slice(-this.limits.maxSnapshots)
-    }
+    const timestamp = new Date().toISOString()
+    this.state.snapshots.push({ messageId, trackedFileBackups, timestamp })
+    this.evictOldSnapshots()
     this.state.snapshotSequence += 1
+    this.append({ kind: 'snapshot', messageId, timestamp, trackedFileBackups })
   }
 
   /**

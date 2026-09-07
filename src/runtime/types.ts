@@ -159,6 +159,16 @@ export interface SessionScope {
     session: SessionMeta,
     records?: readonly SessionRecord[],
   ): AgentSession
+  /**
+   * Installs the hook every write tool in this scope calls before it writes, so
+   * the file history can back the file up first.
+   *
+   * A setter rather than a constructor argument because the controller that
+   * owns the history is built *on* the scope, and `retarget` replaces the
+   * service underneath it — the runtimes this scope already created keep
+   * calling through the same hook.
+   */
+  setFileEditTracker(track: ((filePath: string) => Promise<void>) | undefined): void
   /** Includes any synthetic records written while reconciling orphaned agents. */
   existingRecords: SessionRecord[]
   /** True when the last turn was interrupted and can be resumed with "continue". */

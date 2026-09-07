@@ -14,7 +14,7 @@ import type {
   ToolProgressEvent,
 } from '../src/harness/types.js'
 import type { AgentSession } from '../src/runtime/types.js'
-import type { CheckpointService } from '../src/services/checkpoint/checkpointService.js'
+import type { FileHistoryService } from '../src/services/fileHistory/fileHistoryService.js'
 
 type LoopRun = (
   input: string,
@@ -26,7 +26,7 @@ type LoopRun = (
 interface Counters {
   invalidateCalls: number
   snapshots: number
-  checkpointDisposals: number
+  fileHistoryDisposals: number
 }
 
 interface Harness {
@@ -35,7 +35,8 @@ interface Harness {
   store: SessionStore
   session: SessionMeta
   proxy: ReturnType<typeof createRecordProxy>
-  checkpointCalls: string[]
+  snapshotCalls: string[]
+  trackedFiles: string[]
   counters: Counters
 }
 
@@ -49,11 +50,8 @@ function okResult(overrides: Partial<AgentRunResult> = {}): AgentRunResult {
 
 async function createHarness(options: {
   run?: LoopRun
-  checkpointInitFails?: boolean
-  /** The service declines to snapshot this root; `init()` still resolves. */
-  checkpointDisabledAtInit?: boolean
-  /** The service trips its breaker on the first checkpoint. */
-  checkpointDisablesOnFirstCall?: boolean
+  /** The history cannot be read back, so the session runs without one. */
+  fileHistoryInitFails?: boolean
   /** No title yet — the state a session is in until its first message. */
   untitled?: boolean
 } = {}): Promise<Harness> {
@@ -62,9 +60,10 @@ async function createHarness(options: {
   await store.init()
   const session = options.untitled ? await store.create() : await store.create('controller test')
 
-  const checkpointCalls: string[] = []
+  const snapshotCalls: string[] = []
+  const trackedFiles: string[] = []
   const events: SessionEvent[] = []
-  const counters: Counters = { invalidateCalls: 0, snapshots: 0, checkpointDisposals: 0 }
+  const counters: Counters = { invalidateCalls: 0, snapshots: 0, fileHistoryDisposals: 0 }
 
   const loop = {
     run: options.run ?? (async () => okResult()),
@@ -72,22 +71,14 @@ async function createHarness(options: {
     invalidateRecordsCache: () => { counters.invalidateCalls += 1 },
   }
 
-  let checkpointEnabled = !options.checkpointDisabledAtInit
-  const checkpointService = {
+  const fileHistoryService = {
     init: async () => {
-      if (options.checkpointInitFails) throw new Error('no git')
+      if (options.fileHistoryInitFails) throw new Error('unreadable history')
     },
-    isEnabled: () => checkpointEnabled,
-    dispose: () => { counters.checkpointDisposals += 1 },
-    createCheckpoint: async (messageId: string) => {
-      checkpointCalls.push(messageId)
-      if (options.checkpointDisablesOnFirstCall) {
-        checkpointEnabled = false
-        return { success: false, disabled: true, error: 'Checkpoints disabled for this session: too big.' }
-      }
-      return { success: true, commitHash: `hash-${checkpointCalls.length}` }
-    },
-  } as unknown as CheckpointService
+    dispose: () => { counters.fileHistoryDisposals += 1 },
+    makeSnapshot: async (messageId: string) => { snapshotCalls.push(messageId) },
+    trackEdit: async (filePath: string) => { trackedFiles.push(filePath) },
+  } as unknown as FileHistoryService
 
   const proxy = createRecordProxy()
   const controller = new SessionController({
@@ -97,17 +88,17 @@ async function createHarness(options: {
     existingRecords: [],
     recordProxy: proxy,
     getSession: () => ({ loop } as unknown as AgentSession),
-    createCheckpointService: () => checkpointService,
+    createFileHistoryService: () => fileHistoryService,
   })
 
   controller.onEvent((event) => events.push(event))
   controller.subscribe(() => { counters.snapshots += 1 })
 
-  // init() is async; let it settle so checkpoints are armed like in production.
+  // init() is async; let it settle so the history is armed like in production.
   await Promise.resolve()
   await Promise.resolve()
 
-  return { controller, store, session, proxy, events, checkpointCalls, counters }
+  return { controller, store, session, proxy, events, snapshotCalls, trackedFiles, counters }
 }
 
 function abortError(): Error {
@@ -139,9 +130,9 @@ test('a successful turn emits turn-start before the loop runs and turn-end after
   const start = harness.events[0]
   assert.equal(start?.type, 'turn-start')
   assert.equal(start.type === 'turn-start' ? start.displayInput : undefined, 'hello')
-  // The same id threads through the checkpoint, the loop run and any rollback.
+  // The same id threads through the snapshot, the loop run and any rollback.
   assert.equal(seenMessageId, start.type === 'turn-start' ? start.messageId : 'mismatch')
-  assert.deepEqual(harness.checkpointCalls, [seenMessageId])
+  assert.deepEqual(harness.snapshotCalls, [seenMessageId])
 
   const end = harness.events.at(-1)
   assert.equal(end?.type, 'turn-end')
@@ -473,47 +464,49 @@ test('dispose unhooks the record proxy so nothing reaches a torn-down UI', async
   assert.equal(harness.events.length, before)
 })
 
-test('checkpoints are skipped when the shadow repo fails to initialize', async () => {
-  const harness = await createHarness({ checkpointInitFails: true })
+test('a turn opens a snapshot before the loop runs', async () => {
+  const order: string[] = []
+  const harness = await createHarness({
+    run: async () => {
+      order.push('loop.run')
+      return okResult()
+    },
+  })
 
   await harness.controller.submit('hello')
 
-  assert.deepEqual(harness.checkpointCalls, [])
+  assert.equal(harness.snapshotCalls.length, 1)
+  assert.deepEqual(order, ['loop.run'], 'the snapshot is awaited before the loop starts')
 })
 
-test('checkpoints are skipped when the service declines the root', async () => {
-  // `init()` resolving is not consent: on an unsnapshottable root (the home
-  // directory, a drive root) the service builds nothing and reports it through
-  // `isEnabled()`. Arming on the resolve alone is what let every global-workspace
-  // session run `git add --all` over the whole user profile.
-  const harness = await createHarness({ checkpointDisabledAtInit: true })
+test('a turn runs normally when the file history never came up', async () => {
+  const harness = await createHarness({ fileHistoryInitFails: true })
 
   await harness.controller.submit('hello')
 
-  assert.deepEqual(harness.checkpointCalls, [])
-})
-
-test('a tripped breaker stops later checkpoints and says so once', async () => {
-  const harness = await createHarness({ checkpointDisablesOnFirstCall: true })
-
-  await harness.controller.submit('first')
-  await harness.controller.submit('second')
-
-  assert.equal(harness.checkpointCalls.length, 1, 'the service is asked once, not once per turn')
-  const notices = harness.events.filter(
-    (event): event is Extract<SessionEvent, { type: 'notice' }> => event.type === 'notice',
+  assert.deepEqual(harness.snapshotCalls, [], 'nothing is snapshotted onto state init would replace')
+  assert.deepEqual(
+    harness.events.filter((event) => event.type === 'notice'),
+    [],
+    'a session without history is a degraded session, not one worth interrupting',
   )
-  assert.equal(notices.length, 1)
-  assert.equal(notices[0]?.level, 'system')
-  assert.match(notices[0]?.content ?? '', /Checkpoints disabled/)
+  assert.deepEqual(types(harness.events).slice(-1), ['turn-end'])
 })
 
-test('dispose kills the checkpoint service so no git outlives the session', async () => {
+test('write tools reach the history of the session that is live now', async () => {
+  const harness = await createHarness()
+
+  await harness.controller.trackFileEdit('/tmp/a.ts')
+
+  assert.deepEqual(harness.trackedFiles, ['/tmp/a.ts'])
+})
+
+test('dispose stops the file history so no backup outlives the session', async () => {
   const harness = await createHarness()
 
   harness.controller.dispose()
 
-  assert.equal(harness.counters.checkpointDisposals, 1)
+  assert.equal(harness.counters.fileHistoryDisposals, 1)
 })
 
 test('a second submit while a turn is in flight is rejected, not run', async () => {

@@ -557,7 +557,7 @@ export function App({
   // `openResumePicker` above.
   const handleEnterRestoreMode = useCallback(async () => {
     try {
-      const cpService = sessionController.getCheckpointService()
+      const cpService = sessionController.getFileHistoryService()
       const cpList = await cpService.getCheckpointsWithDiffs()
       setCheckpoints(cpList)
       setMode('restore')
@@ -811,8 +811,8 @@ export function App({
   }, [store, activeSession.id, runtime.loop, reloadMessages, rebaseSessionRecords, messageQueue])
 
   const restoreCodeToCheckpoint = useCallback(async (checkpoint: CheckpointWithDiff) => {
-    const cpService = sessionController.getCheckpointService()
-    const restoreResult = await cpService.restoreToCommit(checkpoint.commitHash)
+    const cpService = sessionController.getFileHistoryService()
+    const restoreResult = await cpService.rewindTo(checkpoint.commitHash)
     invalidateResolvedCwdCache(process.cwd())
     if (!restoreResult.success) {
       throw new Error(restoreResult.error ?? 'Failed to restore file state')

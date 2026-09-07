@@ -10,7 +10,7 @@ import type {
   ToolProgressEvent,
 } from '../harness/types.js'
 import { deriveSessionTitle, type SessionMeta, type SessionStore } from '../sessions/service.js'
-import { CheckpointService } from '../services/checkpoint/checkpointService.js'
+import { FileHistoryService } from '../services/fileHistory/fileHistoryService.js'
 import type { RecordProxy } from './bridges.js'
 import { rollbackInterruptedPromptIfSynthetic } from './interruptRollback.js'
 import {
@@ -88,13 +88,13 @@ export interface SessionControllerDeps {
   recordProxy: RecordProxy
   /** Read once per turn, so a mid-turn runtime swap cannot retarget the in-flight run. */
   getSession: () => AgentSession
-  /** Seam for tests; production uses the real shadow-git service. */
-  createCheckpointService?: (cwd: string, sessionId: string) => CheckpointService
+  /** Seam for tests; production backs up real files under `~/.myagent`. */
+  createFileHistoryService?: (cwd: string, sessionId: string) => FileHistoryService
 }
 
 /**
  * The headless half of a chat session: turn lifecycle, token accounting,
- * checkpointing, tool-progress correlation and interrupt rollback.
+ * file history, tool-progress correlation and interrupt rollback.
  *
  * Owns no framework state. The TUI subscribes to {@link onEvent} for the
  * ordered stream and to {@link subscribe}/{@link getSnapshot} for the pull
@@ -105,7 +105,7 @@ export class SessionController {
   private readonly store: SessionStore
   private readonly recordProxy: RecordProxy
   private readonly getSession: () => AgentSession
-  private readonly newCheckpointService: (cwd: string, sessionId: string) => CheckpointService
+  private readonly newFileHistoryService: (cwd: string, sessionId: string) => FileHistoryService
 
   private session: SessionMeta
   private abortController: AbortController | null = null
@@ -113,8 +113,13 @@ export class SessionController {
   private readonly lastToolUseIdByTool = new Map<string, string>()
   private readonly activeToolProgress = new Map<string, ToolProgressEvent>()
   private readonly subagentProgress = new Map<string, string>()
-  private checkpointService: CheckpointService
-  private checkpointReady = false
+  private fileHistory: FileHistoryService
+  /**
+   * False until `init()` has replayed the log. Snapshots taken before that
+   * would be wiped by the replay, and an edit tracked before the turn's
+   * snapshot exists has nothing to attach itself to.
+   */
+  private fileHistoryReady = false
   private didRollback = false
   private loopStartMs = 0
 
@@ -133,14 +138,14 @@ export class SessionController {
     this.store = deps.store
     this.recordProxy = deps.recordProxy
     this.getSession = deps.getSession
-    this.newCheckpointService = deps.createCheckpointService
-      ?? ((cwd, sessionId) => new CheckpointService(cwd, sessionId))
+    this.newFileHistoryService = deps.createFileHistoryService
+      ?? ((cwd, sessionId) => new FileHistoryService(cwd, sessionId))
     this.session = deps.session
     this.taskSnapshot = findLatestTaskSnapshot(deps.existingRecords)
     this.snapshot = this.buildSnapshot()
 
-    this.checkpointService = this.newCheckpointService(this.cwd, this.session.id)
-    this.initCheckpoints(this.checkpointService)
+    this.fileHistory = this.newFileHistoryService(this.cwd, this.session.id)
+    this.initFileHistory(this.fileHistory)
 
     this.recordProxy.setHandler(this.handleRecord)
     this.recordProxy.setProgressHandler(this.handleProgress)
@@ -217,11 +222,11 @@ export class SessionController {
     // channel post, so a dead renderer used to be able to throw out of this
     // method with the flag still set — which merely wedged the spinner before
     // the guard above existed, and would now reject every later turn as well.
-    // Ordering inside is unchanged: publish, then checkpoint, then run.
+    // Ordering inside is unchanged: publish, then snapshot, then run.
     try {
       this.publish()
 
-      await this.createCheckpoint(messageId)
+      await this.snapshotFileHistory(messageId)
 
       this.abortController = ac
       this.didRollback = false
@@ -306,11 +311,11 @@ export class SessionController {
     this.usage = createEmptySessionUsage()
     this.taskSnapshot = findLatestTaskSnapshot(records)
     this.spinnerSubText = undefined
-    this.checkpointReady = false
-    // The outgoing service may still have a `git add` walking the worktree.
-    this.checkpointService.dispose()
-    this.checkpointService = this.newCheckpointService(this.cwd, session.id)
-    this.initCheckpoints(this.checkpointService)
+    this.fileHistoryReady = false
+    // The outgoing service may still have backups in flight.
+    this.fileHistory.dispose()
+    this.fileHistory = this.newFileHistoryService(this.cwd, session.id)
+    this.initFileHistory(this.fileHistory)
     this.publish()
   }
 
@@ -319,7 +324,7 @@ export class SessionController {
    * metadata did (a rename).
    *
    * `retarget` is the wrong tool for that: it is the session-switch path and
-   * clears usage, tool progress and the checkpoint service. The id guard is the
+   * clears usage, tool progress and the file history. The id guard is the
    * invariant that keeps the distinction real — this must never become a back
    * door around `sessionSwitch.ts`.
    */
@@ -331,9 +336,24 @@ export class SessionController {
     this.publish()
   }
 
-  /** The one checkpoint service for the active session; also drives `/rewind`. */
-  getCheckpointService(): CheckpointService {
-    return this.checkpointService
+  /** The one file history for the active session; also drives `/rewind`. */
+  getFileHistoryService(): FileHistoryService {
+    return this.fileHistory
+  }
+
+  /**
+   * Backs a file up before a write tool changes it. Handed to the scope's tool
+   * context, so it must follow `retarget` to whichever session is live now —
+   * hence the method rather than a bound reference to the service.
+   */
+  trackFileEdit = async (filePath: string): Promise<void> => {
+    if (!this.fileHistoryReady) return
+    try {
+      await this.fileHistory.trackEdit(filePath)
+    } catch (err) {
+      // The edit itself matters more than being able to undo it.
+      debugFileHistory(`Failed to track ${filePath}: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   getSessionId(): string {
@@ -355,10 +375,9 @@ export class SessionController {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    this.checkpointReady = false
-    // Kills any in-flight git, so a closing window does not leave one walking
-    // the worktree with nobody left to time it out.
-    this.checkpointService.dispose()
+    this.fileHistoryReady = false
+    // Stops any further backup or log write from a session that is going away.
+    this.fileHistory.dispose()
     this.recordProxy.setHandler(() => {})
     this.recordProxy.setProgressHandler(() => {})
     this.recordProxy.setStreamEventHandler(() => {})
@@ -486,40 +505,32 @@ export class SessionController {
     }
   }
 
-  private async createCheckpoint(messageId: string): Promise<void> {
-    if (!this.checkpointReady) return
+  /**
+   * Opens the turn's snapshot. Every tracked file is carried forward at its
+   * current version, so the edits this turn is about to make have something to
+   * be undone back to.
+   *
+   * There is no "checkpoints are off for this session" state to report any
+   * more: the cost is proportional to what the agent edited, not to the size of
+   * the worktree, so no root is too large to snapshot.
+   */
+  private async snapshotFileHistory(messageId: string): Promise<void> {
+    if (!this.fileHistoryReady) return
     try {
-      const result = await this.checkpointService.createCheckpoint(messageId)
-      if (result.success && result.commitHash) {
-        await this.store.addCheckpointMapping(this.session.id, messageId, result.commitHash)
-      } else if (result.disabled) {
-        // The service switched itself off (an unsnapshottable root, or a
-        // worktree too large to stage). Stop asking, and say so — otherwise
-        // `/rewind` is silently empty for the rest of the session.
-        this.checkpointReady = false
-        this.emit({
-          type: 'notice',
-          level: 'system',
-          content: result.error ?? 'Checkpoints are disabled for this session.',
-        })
-      } else if (result.error) {
-        debugCheckpoint(`Checkpoint creation failed: ${result.error}`)
-      }
+      await this.fileHistory.makeSnapshot(messageId)
     } catch (err) {
-      // Graceful degradation: log and continue without a checkpoint.
-      debugCheckpoint(`Error creating checkpoint: ${err instanceof Error ? err.message : String(err)}`)
+      // Graceful degradation: log and run the turn without a snapshot.
+      debugFileHistory(`Error creating snapshot: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
-  private initCheckpoints(service: CheckpointService): void {
+  private initFileHistory(service: FileHistoryService): void {
     void service.init().then(() => {
       // A later retarget may have already replaced it; only the live one counts.
-      // `init()` resolving is not consent: it also succeeds by declining to
-      // build a repo on an unsnapshottable root.
-      if (this.checkpointService === service) this.checkpointReady = service.isEnabled()
+      if (this.fileHistory === service && !this.disposed) this.fileHistoryReady = true
     }).catch((err) => {
-      if (this.checkpointService === service) this.checkpointReady = false
-      debugCheckpoint(`Failed to initialize CheckpointService: ${err instanceof Error ? err.message : String(err)}`)
+      if (this.fileHistory === service) this.fileHistoryReady = false
+      debugFileHistory(`Failed to initialize FileHistoryService: ${err instanceof Error ? err.message : String(err)}`)
     })
   }
 
@@ -552,8 +563,8 @@ export class SessionController {
   }
 }
 
-function debugCheckpoint(message: string): void {
+function debugFileHistory(message: string): void {
   if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
-    console.error(`[hanekawa][checkpoint] ${message}`)
+    console.error(`[hanekawa][file-history] ${message}`)
   }
 }

@@ -85,6 +85,11 @@ export interface CreateRuntimeDeps {
   initialEffort: EffortValue
   createActiveModelRuntime: (modelKey: string) => ActiveModelRuntime
   /**
+   * Called by every write tool before it writes, so the session's file history
+   * can back the file up. Subagents inherit it through their forked context.
+   */
+  trackFileEdit?: (filePath: string) => Promise<void>
+  /**
    * Notified whenever a runtime is built for a different session than the last
    * one. `bootstrap` uses it to retarget session-scoped state (denial counters)
    * that the gate holds across runtimes.
@@ -122,6 +127,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
     isGitRepo,
     initialEffort,
     createActiveModelRuntime,
+    trackFileEdit,
     onActiveSessionChange,
   } = deps
 
@@ -264,6 +270,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
         exitPlanMode: () => permissionGate.exitPlanMode(),
         planModeBridge: planModeManager.buildBridge(),
         askUserQuestionBridge: bridges.askUserQuestion,
+        ...(trackFileEdit ? { trackFileEdit } : {}),
       },
       system: config.get().agent.system,
       projectContext: getProjectContext(),

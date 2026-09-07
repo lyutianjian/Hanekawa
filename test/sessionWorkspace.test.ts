@@ -9,7 +9,7 @@ import { SessionWorkspace, createSessionPane } from '../src/runtime/sessionWorks
 import type { SessionPane } from '../src/runtime/sessionWorkspace.js'
 import type { ProjectRuntime, SessionScope } from '../src/runtime/types.js'
 import type { SessionEvent } from '../src/runtime/sessionController.js'
-import type { CheckpointService } from '../src/services/checkpoint/checkpointService.js'
+import type { FileHistoryService } from '../src/services/fileHistory/fileHistoryService.js'
 import type { SessionRecord } from '../src/harness/types.js'
 import { SessionStore } from '../src/sessions/service.js'
 
@@ -19,7 +19,7 @@ import { SessionStore } from '../src/sessions/service.js'
  * What matters here is lifecycle, not the loop: which objects a pane owns, the
  * order it releases them in, and the one rule that makes two tabs safe — a
  * session belongs to at most one pane, because two `AgentLoop`s appending to one
- * JSONL and two `CheckpointService`s snapshotting one worktree is corruption,
+ * JSONL and two `FileHistoryService`s backing up one worktree is corruption,
  * not concurrency.
  */
 
@@ -72,6 +72,7 @@ async function createHarness(): Promise<Harness> {
           dispose: () => order.push(`disposeRuntime:${runtimeSession.id}`),
         }
       },
+      setFileEditTracker: () => {},
       existingRecords: [],
       hasRecoverableInterruption: false,
       diagnostics: [],
@@ -112,15 +113,15 @@ async function createHarness(): Promise<Harness> {
     shutdown: async () => { order.push('shutdown') },
   } as unknown as ProjectRuntime
 
-  // Shadow git is slow and needs a real repo; the controller exposes this seam
+  // Real backups write outside the project; the controller exposes this seam
   // for exactly that reason.
   const workspace = new SessionWorkspace(project, {
-    createCheckpointService: () => ({
+    createFileHistoryService: () => ({
       init: async () => {},
-      isEnabled: () => true,
       dispose: () => {},
-      createCheckpoint: async () => ({ success: false }),
-    }) as unknown as CheckpointService,
+      makeSnapshot: async () => {},
+      trackEdit: async () => {},
+    }) as unknown as FileHistoryService,
   })
 
   return { project, workspace, store, order, openedScopes, restoredSessions, scopes }

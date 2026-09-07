@@ -3,9 +3,9 @@ import { appendFile, chmod, copyFile, mkdir, readFile, rm, stat, unlink } from '
 import type { Stats } from 'node:fs'
 import path from 'node:path'
 import { diffLines } from 'diff'
-import { assertSafeSessionId } from '../../sessions/service.js'
+import { SessionStore, assertSafeSessionId } from '../../sessions/service.js'
 import { getGlobalMyAgentDir } from '../../utils/paths.js'
-import type { CheckpointDiffSummary } from '../checkpoint/checkpointService.js'
+import type { CheckpointDiffSummary, CheckpointWithDiff } from '../checkpoint/checkpointService.js'
 
 /** `null` means the file did not exist in that version. */
 export type BackupFileName = string | null
@@ -387,7 +387,52 @@ export class FileHistoryService {
     }
   }
 
-  /** Latest snapshot for a message id. ( is past this target's lib.) */
+  /**
+   * The snapshots the rewind panel lists, oldest first, each carrying the user
+   * message it belongs to.
+   *
+   * `commitHash` carries the message id: the field is what every layer between
+   * here and the panel still addresses a restore by, and collapsing the two
+   * names is the next task's job, not this one's. `turnDiff` is likewise still
+   * empty — the panel shows `restoreDiff`, which is the summary a restore
+   * actually applies.
+   */
+  async getCheckpointsWithDiffs(): Promise<CheckpointWithDiff[]> {
+    const messageContents = await this.loadUserMessages()
+    const checkpoints: CheckpointWithDiff[] = []
+    for (const [index, snapshot] of this.state.snapshots.entries()) {
+      checkpoints.push({
+        commitHash: snapshot.messageId,
+        messageId: snapshot.messageId,
+        messageContent: messageContents.get(snapshot.messageId) ?? '',
+        timestamp: snapshot.timestamp,
+        turnDiff: emptyDiffSummary(),
+        restoreDiff: await this.getDiffStats(snapshot.messageId),
+        isCurrent: index === this.state.snapshots.length - 1,
+      })
+    }
+    return checkpoints
+  }
+
+  /** The prompt text behind each snapshot, for the panel's rows. */
+  private async loadUserMessages(): Promise<Map<string, string>> {
+    const contents = new Map<string, string>()
+    try {
+      const store = new SessionStore(this.cwd)
+      await store.init()
+      for (const record of await store.loadRecords(this.sessionId)) {
+        if (record.type === 'message' && record.role === 'user') {
+          contents.set(record.id, record.content)
+        }
+      }
+    } catch {
+      // Rows without their prompt text still restore; an unreadable session
+      // must not empty the panel.
+    }
+    return contents
+  }
+
+  /** Latest snapshot for a message id. */
   private findSnapshot(messageId: string): FileHistorySnapshot | undefined {
     for (let index = this.state.snapshots.length - 1; index >= 0; index--) {
       const snapshot = this.state.snapshots[index]

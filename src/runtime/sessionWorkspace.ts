@@ -9,13 +9,13 @@ import {
 } from './sessionSwitch.js'
 import type { ProjectRuntime, SessionScope } from './types.js'
 
-/** The one seam a test needs: shadow git is slow and needs a real repo. */
-type CreateCheckpointService = NonNullable<SessionControllerDeps['createCheckpointService']>
+/** The one seam a test needs: real backups write outside the project. */
+type CreateFileHistoryService = NonNullable<SessionControllerDeps['createFileHistoryService']>
 
 export interface CreateSessionPaneOptions {
   /** Defaults to the project's startup model. */
   modelKey?: string
-  createCheckpointService?: CreateCheckpointService
+  createFileHistoryService?: CreateFileHistoryService
   /**
    * Runs at the end of `close()`, however it was reached.
    *
@@ -133,10 +133,15 @@ export function createSessionPane(
     // Read per turn, so a model switch mid-session cannot retarget a run
     // already in flight.
     getSession: () => runtimeSlot.current,
-    ...(options.createCheckpointService
-      ? { createCheckpointService: options.createCheckpointService }
+    ...(options.createFileHistoryService
+      ? { createFileHistoryService: options.createFileHistoryService }
       : {}),
   })
+
+  // Only now does the scope have somewhere to send the paths its write tools
+  // are about to change; the controller owns the history and moves it on
+  // `retarget`, so the hook goes through the controller rather than the service.
+  scope.setFileEditTracker(controller.trackFileEdit)
 
   return new SessionPane({
     scope,
@@ -147,7 +152,7 @@ export function createSessionPane(
 }
 
 export interface SessionWorkspaceOptions {
-  createCheckpointService?: CreateCheckpointService
+  createFileHistoryService?: CreateFileHistoryService
 }
 
 /**
@@ -166,12 +171,12 @@ export interface SessionWorkspaceOptions {
  */
 export class SessionWorkspace {
   private readonly project: ProjectRuntime
-  private readonly createCheckpointService: CreateCheckpointService | undefined
+  private readonly createFileHistoryService: CreateFileHistoryService | undefined
   private readonly panes = new Set<SessionPane>()
 
   constructor(project: ProjectRuntime, options: SessionWorkspaceOptions = {}) {
     this.project = project
-    this.createCheckpointService = options.createCheckpointService
+    this.createFileHistoryService = options.createFileHistoryService
   }
 
   list(): readonly SessionPane[] {
@@ -263,8 +268,8 @@ export class SessionWorkspace {
     let pane: SessionPane
     pane = createSessionPane(this.project, scope, {
       ...(options.modelKey ? { modelKey: options.modelKey } : {}),
-      ...(this.createCheckpointService
-        ? { createCheckpointService: this.createCheckpointService }
+      ...(this.createFileHistoryService
+        ? { createFileHistoryService: this.createFileHistoryService }
         : {}),
       onClose: () => {
         this.panes.delete(pane)

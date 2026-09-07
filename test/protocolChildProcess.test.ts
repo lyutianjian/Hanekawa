@@ -69,11 +69,11 @@ const controller = {
   interrupt: () => {},
   reload: async () => [],
   retarget: () => {},
-  getCheckpointService: () => ({
+  getFileHistoryService: () => ({
     // The parent can park this one on request, so "a command was in flight when
     // the host died" is a fact rather than a race with the reply.
     getCheckpointsWithDiffs: async () => hangCheckpoints ? new Promise(() => {}) : [],
-    restoreToCommit: async () => ({ success: true }),
+    rewindTo: async () => ({ success: true }),
   }),
 }
 

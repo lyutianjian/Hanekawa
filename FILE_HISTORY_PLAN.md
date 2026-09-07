@@ -224,14 +224,16 @@ commit：`checkpoint: track file edits from write tools`
 
 ---
 
-### [ ] T4 — SessionController 接线
+### [x] T4 — SessionController 接线
 
-- [ ] `sessionController.ts` 用 `FileHistoryService` 替换 `CheckpointService`：`createCheckpoint()` → `makeSnapshot()`，去掉 `checkpointReady` 的熔断语义（保留「服务不可用则跳过」的降级）
-- [ ] 删除 `disabled` 通知路径与那条中文/英文提示
-- [ ] `sessionWorkspace.ts` 的注入点 `createCheckpointService` 同步改名
-- [ ] `retarget` / `dispose` 的生命周期顺序保持不变
-- [ ] 把 `trackFileEdit` 接到该会话 scope 的 ToolContext 上
-- [ ] 测试：`test/sessionController*.test.ts` 更新；新增「turn 开始产生 snapshot」「服务未就绪时 turn 照常跑」两条
+- [x] `sessionController.ts` 用 `FileHistoryService` 替换 `CheckpointService`：`createCheckpoint()` → `makeSnapshot()`，去掉 `checkpointReady` 的熔断语义（保留「服务不可用则跳过」的降级）
+- [x] 删除 `disabled` 通知路径与那条中文/英文提示
+- [x] `sessionWorkspace.ts` 的注入点 `createCheckpointService` 同步改名
+- [x] `retarget` / `dispose` 的生命周期顺序保持不变
+- [x] 把 `trackFileEdit` 接到该会话 scope 的 ToolContext 上（`SessionScope.setFileEditTracker` → `CreateRuntimeDeps.trackFileEdit` → `toolContext`，由 `createSessionPane` 装配）
+- [x] 测试：`test/sessionController*.test.ts` 更新；新增「turn 开始产生 snapshot」「服务未就绪时 turn 照常跑」两条
+
+顺带（为了让本次 commit 自身编译且 `/rewind` 不出现空档）：`FileHistoryService.getCheckpointsWithDiffs()` 已实现，`commitHash` 暂时携带 messageId 等 T5 收口；`turnDiff` 仍为空，留给 T6；`restoreDiff` 直接用 `getDiffStats()`。host/App 的 `restoreToCommit` 调用改为 `rewindTo`，`store.addCheckpointMapping` 不再写入。
 
 验收：`npm run typecheck` + `node --import tsx --test test/sessionController.test.ts`。
 commit：`checkpoint: wire file history into session controller`

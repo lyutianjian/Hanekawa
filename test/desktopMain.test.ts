@@ -119,9 +119,9 @@ function fakeController(): SessionController {
     reload: async () => [],
     submit: async () => undefined,
     interrupt: () => undefined,
-    getCheckpointService: () => ({
+    getFileHistoryService: () => ({
       getCheckpointsWithDiffs: async () => [],
-      restoreToCommit: async () => ({ success: true }),
+      rewindTo: async () => ({ success: true }),
     }),
     getSessionMeta: () => ({
       id: 'ses',

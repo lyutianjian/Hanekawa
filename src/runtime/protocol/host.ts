@@ -821,10 +821,10 @@ export class SessionHost {
       }
 
       case 'checkpoints':
-        return { checkpoints: await this.controller.getCheckpointService().getCheckpointsWithDiffs() }
+        return { checkpoints: await this.controller.getFileHistoryService().getCheckpointsWithDiffs() }
 
       case 'restore-code':
-        return this.controller.getCheckpointService().restoreToCommit(command.commitHash)
+        return this.controller.getFileHistoryService().rewindTo(command.commitHash)
 
       case 'truncate-session': {
         const result = await this.project.store.truncateBeforeMessage(this.session.id, command.messageId)

@@ -82,6 +82,11 @@ export async function createSessionScope(
 
   const promptSections = new SystemPromptSectionCache()
 
+  // Installed by whoever builds the controller on this scope; until then the
+  // write tools run with nothing tracking them, which is what a scope without a
+  // UI wants anyway.
+  let trackFileEdit: ((filePath: string) => Promise<void>) | undefined
+
   const createRuntime = createRuntimeFactory({
     cwd: deps.cwd,
     config: deps.config,
@@ -100,6 +105,9 @@ export async function createSessionScope(
     isGitRepo: deps.isGitRepo,
     initialEffort: deps.initialEffort,
     createActiveModelRuntime: deps.createActiveModelRuntime,
+    // Read at call time, so a tracker installed after the first runtime was
+    // built still reaches it.
+    trackFileEdit: (filePath) => trackFileEdit?.(filePath) ?? Promise.resolve(),
     onActiveSessionChange: (nextSessionId) => {
       if (nextSessionId === activeSessionId) return
       activeSessionId = nextSessionId
@@ -128,6 +136,9 @@ export async function createSessionScope(
     permissionGate,
     promptSections,
     createRuntime,
+    setFileEditTracker: (track) => {
+      trackFileEdit = track
+    },
     existingRecords: records,
     hasRecoverableInterruption: hasRecoverableInterruption(records),
     diagnostics: load.diagnostics,
@@ -151,6 +162,7 @@ export async function createSessionScope(
       bridges.record.setHandler(() => {})
       bridges.record.setProgressHandler(() => {})
       bridges.record.setStreamEventHandler(() => {})
+      trackFileEdit = undefined
     },
   }
 }

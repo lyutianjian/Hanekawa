@@ -1,6 +1,6 @@
 # Checkpoint 重构实施文档：shadow-git → file-history
 
-状态：实施中（2026-09-07 核验：T0–T7 已完成，下一个任务是 T8）
+状态：实施中（2026-09-07 核验：T0–T8 已完成，下一个任务是 T9）
 影响面：`/rewind` 的「恢复代码」能力，以及它背后的整套快照机制。其余功能不受影响。
 
 ---
@@ -295,12 +295,18 @@ commit：`checkpoint: cap snapshots and collect unused backups`
 
 ---
 
-### [ ] T8 —（可选）resume 跨会话继承
+### [x] T8 —（可选）resume 跨会话继承
 
-- [ ] `/resume` 恢复旧会话时，用 `link()` 硬链接旧会话的 backup 到新会话目录，EEXIST 跳过，其他错误 fallback 到 `copyFile`
-- [ ] 失败的 snapshot 不记录，避免出现引用不存在备份的快照
+- [x] `/resume` 恢复旧会话时，用 `link()` 硬链接旧会话的 backup 到新会话目录，EEXIST 跳过，其他错误 fallback 到 `copyFile` —— **本项目不需要，见下方核验**
+- [x] 失败的 snapshot 不记录，避免出现引用不存在备份的快照
 
-验收：resume 后对旧 turn 执行 `restore-code` 成功。
+核验（2026-09-07）：CC 的 resume 会 fork 出**新的 session id**，所以必须把旧会话的 backup 链过去；本项目不会——`switchToExistingSession`（`src/runtime/sessionSwitch.ts:63`）直接用 `store.resolve(sessionId)` 拿到的 `meta.id`，`SessionController.retarget` 用同一个 id 新建 `FileHistoryService`，于是 `fileHistoryDir(sessionId)` 指向同一个目录，`init()` 重放同一份 `snapshots.jsonl`。没有第二个目录，`link()` 无事可做，加了反而是凭空造出一份需要 GC 的副本。
+
+第二条已成立而非新增：`makeSnapshot` 里 `createBackup` 失败的文件不会写进新快照，随后的补齐块只会继承上一份**已经存在**的 backup，因此快照不可能引用不存在的备份文件。作为 7 节风险表的兜底，`restoreBackup` 在备份确实缺失时现在会 `console.warn` 并跳过（此前是静默 return），绝不写空文件。
+
+新增覆盖：`test/fileHistoryService.test.ts` 的「restores a pre-resume turn from a later process」——第一个进程建两个 turn（改一个已有文件、新建一个文件），dispose 后重开服务（模拟 resume）再开一个 turn，回退到 resume 之前的 `m1` 仍能还原原始内容并删掉 agent 新建的文件。
+
+验收：resume 后对旧 turn 执行 `restore-code` 成功。`node --import tsx --test test/fileHistoryService.test.ts` 20 条中 19 通过 / 1 跳过（Windows 权限用例）。
 commit：`checkpoint: carry file history across resume`
 
 ---

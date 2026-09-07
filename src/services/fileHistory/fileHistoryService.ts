@@ -629,7 +629,10 @@ export class FileHistoryService {
     // A missing backup means restoring would write nothing useful; leaving the
     // file alone beats truncating it.
     const backupStats = await statOrNull(backupPath)
-    if (!backupStats) return
+    if (!backupStats) {
+      console.warn(`Missing backup ${backupFileName}; leaving ${filePath} as it is`)
+      return
+    }
 
     try {
       await copyFile(backupPath, filePath)

@@ -271,6 +271,34 @@ describe('FileHistoryService', () => {
       assert.equal(await readFile(file, 'utf8'), 'original\n')
     })
 
+    it('restores a pre-resume turn from a later process', async () => {
+      const kept = path.join(cwd, 'kept.txt')
+      const created = path.join(cwd, 'created.txt')
+      await writeFile(kept, 'original\n', 'utf8')
+
+      const before = await makeService('r1')
+      await before.makeSnapshot('m1')
+      await before.trackEdit(kept)
+      await writeFile(kept, 'edited\n', 'utf8')
+      await before.trackEdit(created)
+      await writeFile(created, 'agent made this\n', 'utf8')
+      await before.makeSnapshot('m2')
+      await before.flush()
+      before.dispose()
+
+      // `/resume` keeps the session id, so the resumed service reopens the same
+      // history directory; the turn it starts must not shadow the older ones.
+      const resumed = await makeService('r1')
+      await resumed.makeSnapshot('m3')
+      await resumed.trackEdit(kept)
+      await writeFile(kept, 'edited again\n', 'utf8')
+
+      assert.equal(await resumed.hasAnyChanges('m1'), true)
+      assert.equal((await resumed.rewindTo('m1')).success, true)
+      assert.equal(await readFile(kept, 'utf8'), 'original\n')
+      assert.equal(await exists(created), false)
+    })
+
     it('starts empty when the session has no log yet', async () => {
       const service = await makeService('p2')
       assert.deepEqual(service.listSnapshots(), [])

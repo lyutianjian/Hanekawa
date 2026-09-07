@@ -3969,6 +3969,27 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   color: var(--text-primary);
 }
 
+/* A multi-select item reserves the check's column whether or not it is checked,
+   so every label starts at the same x and the list reads as one row of names
+   rather than two ragged ones. The icon is positioned into that gutter instead
+   of laid out in the flex flow, which is what keeps the two states identical. */
+.settings-menu-item.checkable {
+  position: relative;
+  padding-left: 26px;
+}
+
+.settings-menu-item.checkable.checked {
+  color: var(--text-primary);
+}
+
+.settings-menu-check {
+  position: absolute;
+  left: 7px;
+  width: 13px;
+  height: 13px;
+  color: var(--text-secondary);
+}
+
 /* The switch, and the one place in the sheet where an accent *is* a fill
    (design_guidance 六.5 / 七.3). A switch has no label of its own: the coloured
    track is the state, which is why both reference builds draw it and why the
@@ -4093,6 +4114,171 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   background: var(--surface-base);
 }
 
+.mcp-form-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.mcp-form-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.mcp-form-header > .settings-card-title {
+  padding: 0;
+}
+
+.mcp-form-doc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--type-meta);
+  text-decoration: none;
+  cursor: pointer;
+  width: fit-content;
+}
+
+.mcp-form-doc-link:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.mcp-form-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+}
+
+.mcp-form-card > .settings-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.mcp-form-label {
+  color: var(--text-primary);
+  font-size: var(--type-meta);
+  font-weight: 500;
+}
+
+.mcp-type-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.mcp-segmented-control {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--surface-base);
+  gap: 2px;
+}
+
+.mcp-segmented-btn {
+  padding: 3px 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+
+.mcp-segmented-btn:hover:enabled {
+  color: var(--text-primary);
+}
+
+.mcp-segmented-btn.active {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.mcp-form-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.mcp-form-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.mcp-form-row > .settings-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.mcp-env-row > .settings-input {
+  flex: 1 1 50%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.mcp-btn-trash {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.mcp-btn-trash:hover:enabled {
+  background: var(--surface-hover);
+  color: var(--text-danger);
+}
+
+.mcp-form-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-base);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+
+.mcp-form-add-btn:hover:enabled {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.mcp-form-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) 0 0;
+  border-top: 0;
+}
+
 /* A change about this row is in flight. Dimmed rather than removed — a toggle
    or an edit still has something to show — and its controls are already
    `disabled`, so this only has to say so visually. */
@@ -4190,6 +4376,9 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 .settings-btn,
 .settings-toggle,
 .settings-row,
+.mcp-segmented-btn,
+.mcp-btn-trash,
+.mcp-form-add-btn,
 #surface .row,
 #suggestions .suggestion,
 #overlay-panel .option,

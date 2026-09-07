@@ -95,13 +95,16 @@ test('a model that cannot be loaded keeps its reason and stays unpickable', () =
   assert.equal(row.action, undefined)
 })
 
-test('a level over the model’s ceiling is disabled with its reason', () => {
-  const view = runtimeMenuView({ runtime: runtime({ maxEffort: 'high' }), models: MODELS })
+test('a level the model does not support is disabled with its reason', () => {
+  const view = runtimeMenuView({
+    runtime: runtime({ supportedEfforts: ['low', 'medium', 'high'] }),
+    models: MODELS,
+  })
   const effort = view.entries[1]!
 
   const blocked = effort.rows.filter((row) => row.disabled)
   assert.deepEqual(blocked.map((row) => row.id), ['xhigh', 'max'])
-  assert.match(blocked[0]!.disabledReason ?? '', /高/)
+  assert.match(blocked[0]!.disabledReason ?? '', /不支持/)
   assert.equal(blocked[0]!.action, undefined)
 })
 

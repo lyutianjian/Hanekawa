@@ -473,8 +473,8 @@ export class SessionHost {
       providerName: session.providerName,
       contextWindow: budget.contextWindow,
       usableContextWindow: budget.usableContextWindow,
-      ...(session.modelConfig.maxEffort !== undefined
-        ? { maxEffort: session.modelConfig.maxEffort }
+      ...(session.modelConfig.supportedEfforts !== undefined
+        ? { supportedEfforts: [...session.modelConfig.supportedEfforts] }
         : {}),
       effort: this.runtimeSlot.getEffort(),
       permissionMode: this.scope.permissionGate.getMode(),
@@ -1140,7 +1140,7 @@ export class SessionHost {
       if (resolved?.model !== undefined) info.model = resolved.model
       if (resolved?.provider !== undefined) info.provider = resolved.provider
       if (resolved?.contextWindow !== undefined) info.contextWindow = resolved.contextWindow
-      if (resolved?.maxEffort !== undefined) info.maxEffort = resolved.maxEffort
+      if (resolved?.supportedEfforts !== undefined) info.supportedEfforts = [...resolved.supportedEfforts]
       return info
     })
     const defaultModelKey = this.project.config.resolveModelReference(this.project.config.get().defaultModel)

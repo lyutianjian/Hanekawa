@@ -3,6 +3,11 @@ export interface McpServerConfig {
   command?: string
   args?: string[]
   url?: string
+  /** Remote transports only: sent with every request. */
+  headers?: Record<string, string>
+  env?: Record<string, string>
+  envPassthrough?: string[]
+  cwd?: string
   timeoutMs?: number
 }
 

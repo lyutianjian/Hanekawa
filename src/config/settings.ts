@@ -292,19 +292,37 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
   return result
 }
 
-export async function loadMergedSettings(cwd: string): Promise<MyAgentSettings> {
-  const userSettings = await loadSettingsFile(join(homedir(), '.myagent', 'settings.json'))
+/**
+ * The layers behind {@link loadMergedSettings}, in merge order.
+ *
+ * Exposed so a UI can ask what the local layer *inherits* — "this server is also
+ * defined above me" is not a question the merged view can answer, and neither is
+ * it one a caller should re-derive by guessing the layer order.
+ */
+export interface SettingsLayers {
+  user: MyAgentSettings
+  project: MyAgentSettings
+  legacyMcp: MyAgentSettings
+  local: MyAgentSettings
+}
+
+export async function loadSettingsLayers(cwd: string): Promise<SettingsLayers> {
+  const user = await loadSettingsFile(join(homedir(), '.myagent', 'settings.json'))
   // The home directory *is* the global workspace, and its "project" layer is
   // the user layer. Loading both would apply every permission entry and hook
   // twice — the same double-load `ConfigService` already guards against for
   // `config.json`.
-  const projectSettings = isGlobalWorkspaceRoot(cwd)
+  const project = isGlobalWorkspaceRoot(cwd)
     ? {}
     : await loadSettingsFile(join(cwd, '.myagent', 'settings.json'))
-  const legacyMcpSettings = await loadLegacyMcpSettings(cwd)
-  const localSettings = await loadSettingsFile(join(cwd, '.myagent', 'settings.local.json'))
+  const legacyMcp = await loadLegacyMcpSettings(cwd)
+  const local = await loadSettingsFile(join(cwd, '.myagent', 'settings.local.json'))
+  return { user, project, legacyMcp, local }
+}
 
-  return mergeSettings(userSettings, projectSettings, legacyMcpSettings, localSettings)
+export async function loadMergedSettings(cwd: string): Promise<MyAgentSettings> {
+  const { user, project, legacyMcp, local } = await loadSettingsLayers(cwd)
+  return mergeSettings(user, project, legacyMcp, local)
 }
 
 async function writeSettingsAtomic(filePath: string, settings: MyAgentSettings): Promise<void> {
@@ -336,10 +354,10 @@ export async function loadLocalSettings(cwd: string): Promise<MyAgentSettings> {
 
 /** The keys {@link updateLocalSettings} is allowed to rewrite. */
 export type LocalSettingsPatch = {
-  [K in 'permissions' | 'mcp' | 'skills' | 'cache' | 'thinking']?: MyAgentSettings[K]
+  [K in 'permissions' | 'mcp' | 'skills' | 'cache' | 'thinking' | 'mcpServers']?: MyAgentSettings[K]
 }
 
-const LOCAL_PATCH_KEYS = ['permissions', 'mcp', 'skills', 'cache', 'thinking'] as const
+const LOCAL_PATCH_KEYS = ['permissions', 'mcp', 'skills', 'cache', 'thinking', 'mcpServers'] as const
 
 /**
  * Rewrites the named keys in the local layer and leaves the rest of that file
@@ -422,6 +440,70 @@ export async function setMcpServerTrustLocally(
   await updateLocalSettings(cwd, {
     mcp: { ...local.mcp, trustedServers: [...trustedServers].sort() },
   })
+}
+
+export interface SetMcpServerOptions {
+  /** The name being renamed away from: its config and trust entry are moved. */
+  previousName?: string
+  /** The trust the server should end up with. Left alone when omitted. */
+  trusted?: boolean
+}
+
+/**
+ * Adds, edits or renames one MCP server in the local layer.
+ *
+ * The config and the trust entry are written in one patch because they are keyed
+ * by the same name: a rename that moved only the config would leave the old
+ * name's trust behind, pre-trusting whatever server takes that name next.
+ */
+export async function setMcpServerLocally(
+  cwd: string,
+  serverName: string,
+  config: McpServerConfig,
+  options: SetMcpServerOptions = {},
+): Promise<void> {
+  const local = await loadLocalSettings(cwd)
+  const { previousName, trusted } = options
+  const servers = { ...local.mcpServers }
+  if (previousName !== undefined && previousName !== serverName) delete servers[previousName]
+  servers[serverName] = config
+
+  const patch: LocalSettingsPatch = { mcpServers: servers }
+  if (trusted !== undefined || (previousName !== undefined && previousName !== serverName)) {
+    const trustedServers = new Set(local.mcp?.trustedServers ?? [])
+    if (previousName !== undefined && previousName !== serverName) trustedServers.delete(previousName)
+    if (trusted === true) trustedServers.add(serverName)
+    else if (trusted === false) trustedServers.delete(serverName)
+    patch.mcp = { ...local.mcp, trustedServers: [...trustedServers].sort() }
+  }
+  await updateLocalSettings(cwd, patch)
+}
+
+/**
+ * Removes one MCP server from the local layer, trust entry and all.
+ *
+ * Trust is keyed by name only, so a left-behind entry would silently pre-trust
+ * the *next* server to take this name — one arriving through a pulled
+ * `.myagent/settings.json`, say, which would then register its tools without the
+ * prompt in `runtime/mcp.ts` ever firing.
+ */
+export async function removeMcpServerLocally(
+  cwd: string,
+  serverName: string,
+): Promise<void> {
+  const local = await loadLocalSettings(cwd)
+  const hasServer = !!local.mcpServers && serverName in local.mcpServers
+  const trustedServers = new Set(local.mcp?.trustedServers ?? [])
+  const hasTrust = trustedServers.delete(serverName)
+  if (!hasServer && !hasTrust) return
+
+  const patch: LocalSettingsPatch = {}
+  if (hasServer) {
+    const { [serverName]: _, ...rest } = local.mcpServers!
+    patch.mcpServers = rest
+  }
+  if (hasTrust) patch.mcp = { ...local.mcp, trustedServers: [...trustedServers].sort() }
+  await updateLocalSettings(cwd, patch)
 }
 
 /**
@@ -558,6 +640,21 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
       }
       if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1)) {
         errors.push(`MCP server "${name}" timeoutMs must be a positive integer`)
+      }
+      if (config.env !== undefined) {
+        if (typeof config.env !== 'object' || config.env === null || Array.isArray(config.env)) {
+          errors.push(`MCP server "${name}" env must be an object`)
+        } else if (Object.values(config.env).some((v) => typeof v !== 'string')) {
+          errors.push(`MCP server "${name}" env values must be strings`)
+        }
+      }
+      if (config.envPassthrough !== undefined) {
+        if (!Array.isArray(config.envPassthrough) || config.envPassthrough.some((arg) => typeof arg !== 'string')) {
+          errors.push(`MCP server "${name}" envPassthrough must be an array of strings`)
+        }
+      }
+      if (config.cwd !== undefined && typeof config.cwd !== 'string') {
+        errors.push(`MCP server "${name}" cwd must be a string`)
       }
     }
   }

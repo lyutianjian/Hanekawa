@@ -125,7 +125,25 @@ test('initialModelKey follows a default model changed after startup', async () =
   await host.shutdown('test over')
 })
 
-test('startup effort is clamped to the model maximum, keeping the configured level', async () => {
+test('startup effort is clamped to what the model supports, keeping the configured level', async () => {
+  const { cwd, store, session } = await createProject({
+    config: {
+      models: {
+        main: { provider: 'anthropic', model: 'claude-test', supportedEfforts: ['low', 'medium'] },
+      },
+      defaultModel: 'main',
+    },
+    settings: { effortLevel: 'max' },
+  })
+
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+
+  assert.equal(host.initialEffort, 'medium')
+  assert.equal(host.configuredEffortLevel, 'max')
+  await host.shutdown('test over')
+})
+
+test('a config still holding the retired maxEffort ceiling is read as the same set', async () => {
   const { cwd, store, session } = await createProject({
     config: {
       models: { main: { provider: 'anthropic', model: 'claude-test', maxEffort: 'medium' } },
@@ -136,8 +154,7 @@ test('startup effort is clamped to the model maximum, keeping the configured lev
 
   const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
 
-  assert.equal(host.initialEffort, 'medium')
-  assert.equal(host.configuredEffortLevel, 'max')
+  assert.equal(host.initialEffort, 'medium', 'the ceiling still clamps after being expanded')
   await host.shutdown('test over')
 })
 

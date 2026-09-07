@@ -5,6 +5,7 @@ import {
   type WireAgentDefinitionInfo,
   type WireContextManagementField,
   type WireEndpointInfo,
+  type McpServerConfig,
   type WireMcpServerInfo,
   type WireSkillInfo,
   type WireModelInfo,
@@ -14,6 +15,12 @@ import {
   type WireShellSettingsResult,
 } from '../../shellProtocol.js'
 import { DEFAULT_THEME_PREFERENCE, THEME_PREFERENCES, type ThemePreference } from './theme.js'
+import { EFFORT_LABELS } from './composer.js'
+import {
+  VALID_EFFORT_LEVELS,
+  normalizeSupportedEfforts,
+  type EffortLevel,
+} from '../../../config/effort.js'
 
 /**
  * The settings screen: pick a category, edit one thing at a time, save.
@@ -82,11 +89,31 @@ export type SettingsDraft =
       /** `'on'` or `''` — a form field is a string, like every other one here. */
       readonly longContext1m: string
       readonly maxOutputTokens: string
+      /**
+       * The effort levels the model accepts. Empty means "no restriction", the
+       * same thing a full selection means — the config stores neither.
+       */
+      readonly supportedEfforts: readonly EffortLevel[]
     }
   | {
       readonly kind: 'permission-rule'
       readonly behavior: PermissionBehavior
       readonly entry: string
+    }
+  | {
+      readonly kind: 'mcp-server'
+      readonly isNew: boolean
+      readonly originalName?: string
+      readonly name: string
+      readonly transport: 'stdio' | 'sse'
+      readonly command: string
+      readonly args: readonly string[]
+      readonly env: readonly { readonly key: string; readonly value: string }[]
+      readonly envPassthrough: readonly string[]
+      readonly cwd: string
+      readonly url: string
+      /** Remote transports only; `env` never reaches an HTTP endpoint. */
+      readonly headers: readonly { readonly key: string; readonly value: string }[]
     }
 
 /**
@@ -116,7 +143,7 @@ export interface SettingsState {
   readonly snapshot?: WireSettingsSnapshot
   readonly projects: ReadonlyArray<{ projectRoot: string; projectName: string }>
   readonly draft?: SettingsDraft
-  readonly confirmingRemove?: { readonly kind: 'endpoint' | 'model'; readonly name: string }
+  readonly confirmingRemove?: { readonly kind: 'endpoint' | 'model' | 'mcp-server'; readonly name: string }
   readonly error?: string
   /** Renderer-local theme preference; `app.ts` seeds it from `localStorage`. */
   readonly themePref: ThemePreference
@@ -236,6 +263,15 @@ export type SettingsControl =
       readonly intentOnCommit: (value: string) => SettingsIntent
     }
   | { readonly kind: 'buttons'; readonly buttons: readonly SettingsButton[] }
+  | {
+      readonly kind: 'toggle-and-buttons'
+      readonly toggle: {
+        readonly value: boolean
+        readonly disabled?: boolean
+        readonly intentOnChange: (value: boolean) => SettingsIntent
+      }
+      readonly buttons: readonly SettingsButton[]
+    }
 
 export interface SettingsButton {
   readonly label: string
@@ -282,6 +318,27 @@ export interface SettingsFormField {
   readonly placeholder?: string
   readonly mono?: boolean
   readonly choices?: ReadonlyArray<{ value: string; label: string }>
+  /**
+   * A checkable list behind one trigger, for a field whose value is a *set*.
+   *
+   * Its own branch rather than a second meaning for `choices`: a native
+   * `<select multiple>` is a scrolling box the size of its options, and the
+   * screen has no room for one per model. When present, `value` is ignored —
+   * `summary` is what the trigger shows.
+   */
+  readonly multi?: SettingsFormMultiField
+}
+
+export interface SettingsFormMultiField {
+  readonly options: ReadonlyArray<{ value: string; label: string }>
+  readonly selected: readonly string[]
+  /** The trigger's text: the picked labels, or what "picked nothing" means. */
+  readonly summary: string
+  /** Keys this menu in `SettingsState.openMenu`, which holds at most one. */
+  readonly menuId: string
+  readonly open: boolean
+  readonly intentOnToggleMenu: SettingsIntent
+  readonly intentOnToggle: (value: string) => SettingsIntent
 }
 
 /**
@@ -298,12 +355,22 @@ export interface SettingsAnchor {
   readonly rowId?: string
 }
 
-export interface SettingsForm {
-  readonly title: string
-  readonly fields: readonly SettingsFormField[]
-  readonly submitLabel: string
-  readonly anchor: SettingsAnchor
-}
+export type SettingsForm =
+  | {
+      readonly kind?: 'fields'
+      readonly title: string
+      readonly fields: readonly SettingsFormField[]
+      readonly submitLabel: string
+      readonly anchor: SettingsAnchor
+    }
+  | {
+      readonly kind: 'mcp-server'
+      readonly title: string
+      readonly fields: readonly SettingsFormField[]
+      readonly submitLabel: string
+      readonly anchor: SettingsAnchor
+      readonly draft: Extract<SettingsDraft, { kind: 'mcp-server' }>
+    }
 
 export interface SettingsViewModel {
   readonly open: boolean
@@ -482,6 +549,7 @@ function projectOne(snapshot: WireSettingsSnapshot, change: SettingsChange): Wir
         ...(change.contextWindow !== undefined ? { contextWindow: change.contextWindow } : {}),
         ...(change.longContext1m !== undefined ? { longContext1m: change.longContext1m } : {}),
         ...(change.maxOutputTokens !== undefined ? { maxOutputTokens: change.maxOutputTokens } : {}),
+        ...(change.supportedEfforts !== undefined ? { supportedEfforts: change.supportedEfforts } : {}),
         // Optimistic on purpose: the host answers with the truth a moment later,
         // and drawing 「无法解析」 on a model the user just typed would be a
         // warning about nothing.
@@ -518,6 +586,45 @@ function projectOne(snapshot: WireSettingsSnapshot, change: SettingsChange): Wir
         ...snapshot,
         mcpServers: snapshot.mcpServers.map((server) =>
           server.name === change.name ? { ...server, trusted: change.trusted } : server,
+        ),
+      }
+    case 'set-mcp-server': {
+      const previous = snapshot.mcpServers.find(
+        (server) => server.name === (change.previousName ?? change.name),
+      )
+      const row: WireMcpServerInfo = {
+        name: change.name,
+        transport: change.server.transport,
+        target:
+          change.server.transport === 'stdio'
+            ? [change.server.command ?? '', ...(change.server.args ?? [])].join(' ').trim()
+            : change.server.url ?? '',
+        // An edit keeps the trust it had — the host only grants trust to a
+        // server that did not exist yet — so predicting `true` here would show a
+        // revoked server as trusted until the reload took it back.
+        trusted: previous?.trusted ?? true,
+        trustEditable: true,
+        status: 'unknown',
+        isLocal: true,
+        ...(previous?.shadowsInherited && change.previousName === undefined
+          ? { shadowsInherited: true }
+          : {}),
+        config: change.server,
+      }
+      const rows =
+        change.previousName === undefined || change.previousName === change.name
+          ? snapshot.mcpServers
+          : snapshot.mcpServers.filter((server) => server.name !== change.previousName)
+      return { ...snapshot, mcpServers: upsert(rows, row, (item) => item.name) }
+    }
+    case 'remove-mcp-server':
+      return {
+        ...snapshot,
+        // A row that only *overrides* an inherited server does not disappear:
+        // dropping the local entry uncovers the one above it, and predicting a
+        // removal would make the row vanish and come straight back.
+        mcpServers: snapshot.mcpServers.filter(
+          (server) => server.name !== change.name || !!server.shadowsInherited,
         ),
       }
     case 'set-context-management':
@@ -614,6 +721,7 @@ export function pendingRowIds(pending: readonly PendingMutation[]): Set<string> 
         ids.add(`skill:${change.name}`)
         break
       case 'set-mcp-trust':
+      case 'set-mcp-server':
         ids.add(`mcp:${change.name}`)
         break
       case 'set-context-management':
@@ -702,7 +810,7 @@ export function settingsView(state: SettingsState): SettingsViewModel {
     // three mix `config.json` with `settings.local.json`, so those say it per card.
     ...(state.category === 'provider' ? { subtitle: `配置写入 ${projected.saveTarget}` } : {}),
     ...filterCards(cards, state.query),
-    ...(state.draft ? { form: draftForm(state.draft, projected) } : {}),
+    ...(state.draft ? { form: draftForm(state.draft, projected, state.openMenu) } : {}),
   }
 }
 
@@ -799,9 +907,10 @@ function appearanceCards(pref: ThemePreference): SettingsCard[] {
  * — no wire field was added for this.
  */
 function removeConfirmMessage(
-  target: { kind: 'endpoint' | 'model'; name: string },
+  target: { kind: 'endpoint' | 'model' | 'mcp-server'; name: string },
   snapshot: WireSettingsSnapshot,
 ): string {
+  if (target.kind === 'mcp-server') return `删除 MCP 服务器 ${target.name}？`
   if (target.kind === 'model') return `删除模型 ${target.name}？`
   const cascade = snapshot.models
     .filter((model) => model.endpoint === target.name)
@@ -810,7 +919,8 @@ function removeConfirmMessage(
   return `删除服务商 ${target.name}？将同时删除模型 ${cascade.join('、')}。`
 }
 
-function confirmAnchor(target: { kind: 'endpoint' | 'model'; name: string }): SettingsAnchor {
+function confirmAnchor(target: { kind: 'endpoint' | 'model' | 'mcp-server'; name: string }): SettingsAnchor {
+  if (target.kind === 'mcp-server') return { cardId: 'mcp', rowId: `mcp:${target.name}` }
   return target.kind === 'endpoint'
     ? { cardId: 'endpoints', rowId: `endpoint:${target.name}` }
     : { cardId: 'models', rowId: `model:${target.name}` }
@@ -947,6 +1057,9 @@ function modelDetail(model: WireModelInfo): string {
   else if (model.provider) parts.push(model.provider)
   if (model.contextWindow) parts.push(`${Math.round(model.contextWindow / 1000)}k 上下文`)
   if (model.longContext1m) parts.push('1M 请求头')
+  if (model.supportedEfforts?.length) {
+    parts.push(`思考等级 ${model.supportedEfforts.map((level) => EFFORT_LABELS[level]).join('、')}`)
+  }
   return parts.join(' · ')
 }
 
@@ -1321,17 +1434,8 @@ function mcpCard(snapshot: WireSettingsSnapshot): SettingsCard {
     title: 'MCP 服务器',
     note: '信任写入 settings.local.json。上层设置授予的信任在这里撤销不了——信任列表是跨层求并集的。',
     empty: '没有配置 MCP 服务器。',
-    rows: snapshot.mcpServers.map((server) => ({
-      id: `mcp:${server.name}`,
-      label: server.name,
-      detail: mcpDetail(server),
-      // Only when trust is not the reason: an untrusted server "fails" with
-      // `not trusted`, which the detail already explains as the next step.
-      ...(server.trusted && server.status === 'failed' && server.error
-        ? { warning: `连接失败：${server.error}` }
-        : {}),
-      control: {
-        kind: 'toggle' as const,
+    rows: snapshot.mcpServers.map((server) => {
+      const toggle = {
         value: server.trusted,
         disabled: !server.trustEditable,
         intentOnChange: (trusted: boolean): SettingsIntent => ({
@@ -1339,9 +1443,52 @@ function mcpCard(snapshot: WireSettingsSnapshot): SettingsCard {
           name: server.name,
           trusted,
         }),
-      },
-    })),
+      }
+      const buttons: SettingsButton[] = [
+        {
+          label: '编辑',
+          title: `编辑 ${server.name}`,
+          intent: { kind: 'edit-mcp-server', name: server.name },
+        },
+        {
+          label: '',
+          title: `删除 ${server.name}`,
+          icon: 'trash',
+          danger: true,
+          intent: {
+            kind: 'request-remove',
+            target: { kind: 'mcp-server', name: server.name },
+          },
+        },
+      ]
+      return {
+        id: `mcp:${server.name}`,
+        label: server.name,
+        detail: mcpDetail(server),
+        // Only when trust is not the reason: an untrusted server "fails" with
+        // `not trusted`, which the detail already explains as the next step.
+        ...(server.trusted && server.status === 'failed' && server.error
+          ? { warning: `连接失败：${server.error}` }
+          : {}),
+        control: server.isLocal
+          ? {
+              kind: 'toggle-and-buttons' as const,
+              toggle,
+              buttons,
+            }
+          : {
+              kind: 'toggle' as const,
+              ...toggle,
+            },
+      }
+    }),
     footerButtons: [
+      {
+        label: '添加 MCP 服务器',
+        title: '添加自定义 MCP 服务器',
+        icon: 'plus',
+        intent: { kind: 'new-mcp-server' },
+      },
       {
         label: '重新连接',
         title: '关掉并重新连接所有 MCP 服务器',
@@ -1355,6 +1502,9 @@ function mcpCard(snapshot: WireSettingsSnapshot): SettingsCard {
 function mcpDetail(server: WireMcpServerInfo): string {
   const parts: string[] = [server.transport]
   if (server.target) parts.push(server.target)
+  // Says what "删除" means on this row: it drops the override, and the inherited
+  // server takes over rather than the row going away.
+  if (server.shadowsInherited) parts.push('覆盖了上层配置')
   if (!server.trusted) parts.push('未信任：打开开关后会尝试连接')
   else if (server.status === 'connected') parts.push(`已连接 · ${server.toolCount ?? 0} 个工具`)
   else parts.push('未连接')
@@ -1414,7 +1564,27 @@ function parseContextValue(
 
 // --- forms -------------------------------------------------------------------
 
-function draftForm(draft: SettingsDraft, snapshot: WireSettingsSnapshot): SettingsForm {
+/** The model form's effort menu, keyed in `SettingsState.openMenu`. */
+export const EFFORT_MENU_ID = 'model-supported-efforts'
+
+function draftForm(
+  draft: SettingsDraft,
+  snapshot: WireSettingsSnapshot,
+  openMenu: string | undefined,
+): SettingsForm {
+  if (draft.kind === 'mcp-server') {
+    return {
+      kind: 'mcp-server',
+      title: '连接至自定义 MCP',
+      fields: [],
+      submitLabel: '保存',
+      anchor: {
+        cardId: 'mcp',
+        ...(draft.isNew || !draft.originalName ? {} : { rowId: `mcp:${draft.originalName}` }),
+      },
+      draft,
+    }
+  }
   if (draft.kind === 'permission-rule') {
     return {
       title: `新增${BEHAVIOR_LABELS[draft.behavior]}规则`,
@@ -1517,6 +1687,22 @@ function draftForm(draft: SettingsDraft, snapshot: WireSettingsSnapshot): Settin
       },
       { id: 'contextWindow', label: '上下文窗口', value: draft.contextWindow, placeholder: '例如 200000' },
       {
+        id: 'supportedEfforts',
+        label: '思考等级',
+        value: '',
+        multi: {
+          options: VALID_EFFORT_LEVELS.map((level) => ({ value: level, label: EFFORT_LABELS[level] })),
+          selected: draft.supportedEfforts,
+          summary: draft.supportedEfforts.length === 0
+            ? '全部'
+            : draft.supportedEfforts.map((level) => EFFORT_LABELS[level]).join('、'),
+          menuId: EFFORT_MENU_ID,
+          open: openMenu === EFFORT_MENU_ID,
+          intentOnToggleMenu: { kind: 'toggle-menu', menu: EFFORT_MENU_ID },
+          intentOnToggle: (value) => ({ kind: 'model-toggle-effort', level: value as EffortLevel }),
+        },
+      },
+      {
         id: 'longContext1m',
         label: '1M 上下文请求头',
         value: draft.longContext1m,
@@ -1558,6 +1744,62 @@ export function draftToChange(
       entries: [...local, entry],
     }
   }
+  if (draft.kind === 'mcp-server') {
+    const name = draft.name.trim()
+    if (!name) return { error: '名称不能为空。' }
+    // Checked on a rename too, not just on a new server: the save is a delete of
+    // the old name plus a write of the new one, so landing on a name that is
+    // already taken would replace *that* server's config with this one's.
+    // `snapshot.mcpServers` spans every layer, which also stops a rename from
+    // silently shadowing an inherited server.
+    if (name !== draft.originalName && snapshot.mcpServers.some((candidate) => candidate.name === name)) {
+      return { error: `已经有一个叫 ${name} 的 MCP 服务器。` }
+    }
+    // A rename travels *with* the write so the host can move the trust entry
+    // rather than see a delete and an unrelated new server.
+    const renamed: { previousName?: string } =
+      !draft.isNew && draft.originalName && draft.originalName !== name
+        ? { previousName: draft.originalName }
+        : {}
+    if (draft.transport === 'stdio') {
+      const command = draft.command.trim()
+      if (!command) return { error: '启动命令不能为空。' }
+      const args = draft.args.map((a) => a.trim()).filter((a) => a !== '')
+      const envObj: Record<string, string> = {}
+      for (const pair of draft.env) {
+        const k = pair.key.trim()
+        if (k) envObj[k] = pair.value
+      }
+      const envPassthrough = draft.envPassthrough.map((v) => v.trim()).filter((v) => v !== '')
+      const cwd = draft.cwd.trim()
+      const server: McpServerConfig = {
+        transport: 'stdio',
+        command,
+        ...(args.length > 0 ? { args } : {}),
+        ...(Object.keys(envObj).length > 0 ? { env: envObj } : {}),
+        ...(envPassthrough.length > 0 ? { envPassthrough } : {}),
+        ...(cwd ? { cwd } : {}),
+      }
+      return { scope: 'extensions', kind: 'set-mcp-server', name, server, ...renamed }
+    } else {
+      const url = draft.url.trim()
+      if (!url) return { error: 'URL 不能为空。' }
+      if (!/^https?:\/\//i.test(url)) return { error: '请输入有效的 HTTP 或 HTTPS URL。' }
+      // Headers, not `env`: a remote server is reached over HTTP, and nothing
+      // this process could put in an environment would follow the request.
+      const headersObj: Record<string, string> = {}
+      for (const pair of draft.headers) {
+        const k = pair.key.trim()
+        if (k) headersObj[k] = pair.value
+      }
+      const server: McpServerConfig = {
+        transport: 'sse',
+        url,
+        ...(Object.keys(headersObj).length > 0 ? { headers: headersObj } : {}),
+      }
+      return { scope: 'extensions', kind: 'set-mcp-server', name, server, ...renamed }
+    }
+  }
   if (draft.kind === 'endpoint') {
     const name = draft.name.trim()
     if (!name) return { error: '名称不能为空。' }
@@ -1595,6 +1837,10 @@ export function draftToChange(
   // storing a `false` — the same shape an emptied `contextWindow` sends.
   if (draft.longContext1m === 'on') change.longContext1m = true
   if (maxOutputTokens !== undefined) change.maxOutputTokens = maxOutputTokens
+  // Nothing picked and everything picked both mean "no restriction", so both
+  // omit the field — the same shape an emptied `contextWindow` sends.
+  const supportedEfforts = normalizeSupportedEfforts(draft.supportedEfforts)
+  if (supportedEfforts !== undefined) change.supportedEfforts = supportedEfforts
   return change
 }
 
@@ -1709,10 +1955,24 @@ export type SettingsIntent =
   | { kind: 'edit-endpoint'; name: string }
   | { kind: 'new-model' }
   | { kind: 'edit-model'; key: string }
+  | { kind: 'new-mcp-server' }
+  | { kind: 'edit-mcp-server'; name: string }
+  | { kind: 'mcp-add-arg' }
+  | { kind: 'mcp-update-arg'; index: number; value: string }
+  | { kind: 'mcp-remove-arg'; index: number }
+  | { kind: 'mcp-add-env' }
+  | { kind: 'mcp-update-env'; index: number; key?: string; value?: string }
+  | { kind: 'mcp-remove-env'; index: number }
+  | { kind: 'mcp-add-header' }
+  | { kind: 'mcp-update-header'; index: number; key?: string; value?: string }
+  | { kind: 'mcp-remove-header'; index: number }
+  | { kind: 'mcp-add-env-passthrough' }
+  | { kind: 'mcp-update-env-passthrough'; index: number; value: string }
+  | { kind: 'mcp-remove-env-passthrough'; index: number }
   | { kind: 'draft-field'; field: string; value: string }
   | { kind: 'submit-draft' }
   | { kind: 'cancel-draft' }
-  | { kind: 'request-remove'; target: { kind: 'endpoint' | 'model'; name: string } }
+  | { kind: 'request-remove'; target: { kind: 'endpoint' | 'model' | 'mcp-server'; name: string } }
   | { kind: 'confirm-remove' }
   | { kind: 'cancel-remove' }
   | { kind: 'set-default-model'; key: string }
@@ -1737,6 +1997,8 @@ export type SettingsIntent =
   | { kind: 'toggle-menu'; menu: string }
   /** Idempotent on purpose: focus loss and Escape both mean "closed", not "flipped". */
   | { kind: 'close-menu' }
+  /** Adds or removes one level in the model form's `supportedEfforts` set. */
+  | { kind: 'model-toggle-effort'; level: EffortLevel }
   | { kind: 'none' }
 
 export interface SettingsOutcome {
@@ -1887,6 +2149,7 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
             contextWindow: '',
             longContext1m: '',
             maxOutputTokens: '',
+            supportedEfforts: [],
           },
         },
       }
@@ -1907,7 +2170,196 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
             contextWindow: model.contextWindow === undefined ? '' : String(model.contextWindow),
             longContext1m: model.longContext1m ? 'on' : '',
             maxOutputTokens: model.maxOutputTokens === undefined ? '' : String(model.maxOutputTokens),
+            supportedEfforts: model.supportedEfforts ?? [],
           },
+        },
+      }
+    }
+    case 'new-mcp-server':
+      return {
+        state: {
+          ...cleared,
+          draft: {
+            kind: 'mcp-server',
+            isNew: true,
+            name: '',
+            transport: 'stdio',
+            command: '',
+            args: [],
+            env: [],
+            envPassthrough: [],
+            cwd: '',
+            url: '',
+            headers: [],
+          },
+        },
+      }
+    case 'edit-mcp-server': {
+      const server = state.snapshot?.mcpServers.find((candidate) => candidate.name === intent.name)
+      if (!server) return { state }
+      const cfg = server.config
+      return {
+        state: {
+          ...cleared,
+          draft: {
+            kind: 'mcp-server',
+            isNew: false,
+            originalName: server.name,
+            name: server.name,
+            transport: server.transport,
+            command: cfg?.command ?? (server.transport === 'stdio' ? server.target : ''),
+            args: cfg?.args ? [...cfg.args] : [],
+            env: cfg?.env ? Object.entries(cfg.env).map(([key, value]) => ({ key, value })) : [],
+            envPassthrough: cfg?.envPassthrough ? [...cfg.envPassthrough] : [],
+            cwd: cfg?.cwd ?? '',
+            url: cfg?.url ?? (server.transport === 'sse' ? server.target : ''),
+            headers: cfg?.headers ? Object.entries(cfg.headers).map(([key, value]) => ({ key, value })) : [],
+          },
+        },
+      }
+    }
+    case 'model-toggle-effort': {
+      if (state.draft?.kind !== 'model') return { state }
+      const picked = new Set(state.draft.supportedEfforts)
+      if (!picked.delete(intent.level)) picked.add(intent.level)
+      // Kept in ladder order rather than click order, so the summary and the
+      // saved list read the way the picker does.
+      const supportedEfforts = VALID_EFFORT_LEVELS.filter((level) => picked.has(level))
+      return { state: { ...state, draft: { ...state.draft, supportedEfforts } } }
+    }
+    case 'mcp-add-arg': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, args: [...state.draft.args, ''] },
+        },
+      }
+    }
+    case 'mcp-update-arg': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      const args = [...state.draft.args]
+      if (intent.index >= 0 && intent.index < args.length) {
+        args[intent.index] = intent.value
+      }
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, args },
+        },
+      }
+    }
+    case 'mcp-remove-arg': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      const args = state.draft.args.filter((_, idx) => idx !== intent.index)
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, args },
+        },
+      }
+    }
+    case 'mcp-add-env': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, env: [...state.draft.env, { key: '', value: '' }] },
+        },
+      }
+    }
+    case 'mcp-update-env': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      const env = [...state.draft.env]
+      if (intent.index >= 0 && intent.index < env.length) {
+        const curr = env[intent.index]!
+        env[intent.index] = {
+          key: intent.key !== undefined ? intent.key : curr.key,
+          value: intent.value !== undefined ? intent.value : curr.value,
+        }
+      }
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, env },
+        },
+      }
+    }
+    case 'mcp-remove-env': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      const env = state.draft.env.filter((_, idx) => idx !== intent.index)
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, env },
+        },
+      }
+    }
+    case 'mcp-add-header': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, headers: [...state.draft.headers, { key: '', value: '' }] },
+        },
+      }
+    }
+    case 'mcp-update-header': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      const headers = [...state.draft.headers]
+      if (intent.index >= 0 && intent.index < headers.length) {
+        const curr = headers[intent.index]!
+        headers[intent.index] = {
+          key: intent.key !== undefined ? intent.key : curr.key,
+          value: intent.value !== undefined ? intent.value : curr.value,
+        }
+      }
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, headers },
+        },
+      }
+    }
+    case 'mcp-remove-header': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      const headers = state.draft.headers.filter((_, idx) => idx !== intent.index)
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, headers },
+        },
+      }
+    }
+    case 'mcp-add-env-passthrough': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, envPassthrough: [...state.draft.envPassthrough, ''] },
+        },
+      }
+    }
+    case 'mcp-update-env-passthrough': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      const envPassthrough = [...state.draft.envPassthrough]
+      if (intent.index >= 0 && intent.index < envPassthrough.length) {
+        envPassthrough[intent.index] = intent.value
+      }
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, envPassthrough },
+        },
+      }
+    }
+    case 'mcp-remove-env-passthrough': {
+      if (state.draft?.kind !== 'mcp-server') return { state }
+      const envPassthrough = state.draft.envPassthrough.filter((_, idx) => idx !== intent.index)
+      return {
+        state: {
+          ...state,
+          draft: { ...state.draft, envPassthrough },
         },
       }
     }
@@ -1936,7 +2388,9 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
         changes: [
           target.kind === 'endpoint'
             ? { scope: 'provider', kind: 'remove-endpoint', name: target.name }
-            : { scope: 'provider', kind: 'remove-model', key: target.name },
+            : target.kind === 'model'
+              ? { scope: 'provider', kind: 'remove-model', key: target.name }
+              : { scope: 'extensions', kind: 'remove-mcp-server', name: target.name },
         ],
       }
     }
@@ -2061,6 +2515,22 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
 }
 
 function withField(draft: SettingsDraft, field: string, value: string): SettingsDraft {
+  if (draft.kind === 'mcp-server') {
+    switch (field) {
+      case 'name':
+        return { ...draft, name: value }
+      case 'transport':
+        return value === 'sse' || value === 'stdio' ? { ...draft, transport: value } : draft
+      case 'command':
+        return { ...draft, command: value }
+      case 'cwd':
+        return { ...draft, cwd: value }
+      case 'url':
+        return { ...draft, url: value }
+      default:
+        return draft
+    }
+  }
   if (draft.kind === 'permission-rule') {
     switch (field) {
       case 'behavior':

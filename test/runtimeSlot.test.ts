@@ -74,7 +74,7 @@ test('replace notifies subscribers exactly once and is a no-op for the same runt
 
 test('the snapshot identity only changes when the runtime or effort changes', () => {
   const trace = createTrace()
-  const slot = new RuntimeSlot(session('a', trace, model({ maxEffort: 'max' })), 'high')
+  const slot = new RuntimeSlot(session('a', trace, model({ supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] })), 'high')
   const before = slot.getSnapshot()
 
   slot.setEffort('high')
@@ -106,19 +106,19 @@ test('patchModel swaps metadata without disposing or rebuilding the loop', () =>
 
 test('effort is clamped to the active model and re-clamped after a runtime swap', () => {
   const trace = createTrace()
-  const slot = new RuntimeSlot(session('a', trace, model({ maxEffort: 'max' })), 'high')
+  const slot = new RuntimeSlot(session('a', trace, model({ supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] })), 'high')
 
   assert.equal(slot.setEffort('max'), 'max')
   assert.deepEqual(trace.efforts, ['max'])
 
-  slot.replace(session('b', trace, model({ maxEffort: 'medium' })))
+  slot.replace(session('b', trace, model({ supportedEfforts: ['low', 'medium'] })))
   assert.equal(slot.reapplyEffort(), 'medium')
   assert.equal(slot.getEffort(), 'medium')
   // The clamp is applied to the *new* loop, not the disposed one.
   assert.deepEqual(trace.efforts, ['max', 'medium'])
 })
 
-test('a model without a maxEffort ceiling leaves effort untouched', () => {
+test('a model without a supportedEfforts restriction leaves effort untouched', () => {
   const trace = createTrace()
   const slot = new RuntimeSlot(session('a', trace, model()), 'high')
 

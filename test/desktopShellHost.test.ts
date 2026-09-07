@@ -664,6 +664,20 @@ const SETTINGS_CHANGE_SAMPLES = {
   'reload-skills': { scope: 'extensions', kind: 'reload-skills' },
   'import-skill': { scope: 'extensions', kind: 'import-skill', sourceDir: '/tmp/demo-skill' },
   'set-mcp-trust': { scope: 'extensions', kind: 'set-mcp-trust', name: 'github', trusted: true },
+  'set-mcp-server': {
+    scope: 'extensions',
+    kind: 'set-mcp-server',
+    name: 'sqlite',
+    server: {
+      transport: 'stdio',
+      command: 'sqlite-mcp',
+      args: ['--db', 'test.db'],
+      env: { FOO: 'bar' },
+      envPassthrough: ['PATH'],
+      cwd: '/tmp',
+    },
+  },
+  'remove-mcp-server': { scope: 'extensions', kind: 'remove-mcp-server', name: 'sqlite' },
   'reconnect-mcp': { scope: 'extensions', kind: 'reconnect-mcp' },
 } as const satisfies Record<SettingsChange['kind'], SettingsChange>
 
@@ -2159,6 +2173,103 @@ test('a trust that came from above is reported as not editable here', async () =
           error: 'connect ECONNREFUSED',
         },
       ])
+    },
+  )
+})
+
+test('adding a server trusts it, but editing one never re-grants a revoked trust', async () => {
+  await withSettingsDir({}, async (h, cwd) => {
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'extensions',
+      kind: 'set-mcp-server',
+      name: 'sqlite',
+      server: { transport: 'stdio', command: 'sqlite-mcp' },
+    })
+    // Adding a server by hand *is* the grant, so the prompt never has to fire.
+    assert.deepEqual((await readLocalLayer(cwd)).mcp, { trustedServers: ['sqlite'] })
+
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'extensions',
+      kind: 'set-mcp-trust',
+      name: 'sqlite',
+      trusted: false,
+    })
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'extensions',
+      kind: 'set-mcp-server',
+      name: 'sqlite',
+      server: { transport: 'stdio', command: 'sqlite-mcp', args: ['--wal'] },
+    })
+
+    const local = await readLocalLayer(cwd)
+    assert.deepEqual(local.mcp, { trustedServers: [] }, 'fixing an arg must not undo a revocation')
+    assert.deepEqual(local.mcpServers, {
+      sqlite: { transport: 'stdio', command: 'sqlite-mcp', args: ['--wal'] },
+    })
+  })
+})
+
+test('renaming a server moves its config and its trust, leaving nothing behind', async () => {
+  await withSettingsDir({}, async (h, cwd) => {
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'extensions',
+      kind: 'set-mcp-server',
+      name: 'sqlite',
+      server: { transport: 'stdio', command: 'sqlite-mcp' },
+    })
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'extensions',
+      kind: 'set-mcp-server',
+      name: 'db',
+      server: { transport: 'stdio', command: 'sqlite-mcp' },
+      previousName: 'sqlite',
+    })
+
+    const local = await readLocalLayer(cwd)
+    assert.deepEqual(local.mcpServers, { db: { transport: 'stdio', command: 'sqlite-mcp' } })
+    // Trust is keyed by name alone: a left-behind `sqlite` would pre-trust the
+    // next server to take that name.
+    assert.deepEqual(local.mcp, { trustedServers: ['db'] })
+  })
+})
+
+test('deleting a server takes its trust entry with it', async () => {
+  await withSettingsDir({}, async (h, cwd) => {
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'extensions',
+      kind: 'set-mcp-server',
+      name: 'sqlite',
+      server: { transport: 'stdio', command: 'sqlite-mcp' },
+    })
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'extensions',
+      kind: 'remove-mcp-server',
+      name: 'sqlite',
+    })
+
+    const local = await readLocalLayer(cwd)
+    assert.deepEqual(local.mcpServers, {})
+    assert.deepEqual(local.mcp, { trustedServers: [] })
+  })
+})
+
+test('a local server that overrides an inherited one says so', async () => {
+  await withSettingsDir(
+    { mcpServers: { github: { transport: 'stdio', command: 'npx', args: ['github-mcp'] } } },
+    async (h) => {
+      await h.client.changeSettings(h.entry.root, {
+        scope: 'extensions',
+        kind: 'set-mcp-server',
+        name: 'github',
+        server: { transport: 'stdio', command: 'npx', args: ['github-mcp', '--beta'] },
+      })
+
+      const { settings } = await h.client.getSettings(h.entry.root)
+      const github = settings.mcpServers.find((server) => server.name === 'github')
+      assert.equal(github?.isLocal, true)
+      // Deleting this row uncovers the project layer's server rather than
+      // removing it, and the screen has to be able to say so.
+      assert.equal(github?.shadowsInherited, true)
     },
   )
 })

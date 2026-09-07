@@ -163,6 +163,67 @@ export function selectField(options: {
  * Open/closed is not held here: it lives in `SettingsState.openMenu`, so a
  * re-render (which rebuilds this whole subtree) reproduces it rather than losing it.
  */
+/**
+ * `pillSelect` for a *set*: every option is checkable and a click does not close.
+ *
+ * Shares the `.settings-menu-shell` class rather than inventing one, so
+ * `settingsView.ts`'s single `onPressOutside(['.settings-menu-shell'])` closes
+ * this too — with `openMenu` and the screen's Escape handler that is all three
+ * dismissal routes, none of them written twice.
+ */
+export function multiSelectField(options: {
+  /** The trigger's text: already-formatted, since "none picked" is caller copy. */
+  summary: string
+  ariaLabel: string
+  choices: ReadonlyArray<{ value: string; label: string }>
+  selected: readonly string[]
+  open: boolean
+  onFirstItem?: (item: HTMLButtonElement) => void
+  onToggle: () => void
+  onToggleValue: (value: string) => void
+}): HTMLElement {
+  const shell = el('div', 'settings-menu-shell')
+  const trigger = button(
+    options.open ? 'settings-pill open' : 'settings-pill',
+    options.summary,
+    options.ariaLabel,
+    options.onToggle,
+    { trailingIcon: 'chevron-down' },
+  )
+  trigger.setAttribute('aria-haspopup', 'listbox')
+  trigger.setAttribute('aria-expanded', options.open ? 'true' : 'false')
+  shell.appendChild(trigger)
+
+  const items: HTMLButtonElement[] = []
+  if (options.open) {
+    const menu = el('div', 'settings-menu')
+    menu.setAttribute('role', 'listbox')
+    menu.setAttribute('aria-multiselectable', 'true')
+    menu.setAttribute('aria-label', options.ariaLabel)
+    for (const choice of options.choices) {
+      const checked = options.selected.includes(choice.value)
+      // The check lives in its own leading slot in the stylesheet, so a checked
+      // and an unchecked label start at the same x.
+      const item = button(
+        checked ? 'settings-menu-item checkable checked' : 'settings-menu-item checkable',
+        choice.label,
+        choice.label,
+        () => options.onToggleValue(choice.value),
+      )
+      item.setAttribute('role', 'option')
+      item.setAttribute('aria-selected', checked ? 'true' : 'false')
+      if (checked) item.insertBefore(icon('check', 'icon settings-menu-check'), item.firstChild)
+      items.push(item)
+      menu.appendChild(item)
+    }
+    shell.appendChild(menu)
+    if (items[0]) options.onFirstItem?.(items[0])
+  }
+
+  shell.addEventListener('keydown', (event) => rovingFocus(event, items, options.open, options.onToggle))
+  return shell
+}
+
 export function pillSelect(options: {
   value: string
   ariaLabel: string
@@ -219,39 +280,50 @@ export function pillSelect(options: {
     if (items[0]) options.onFirstItem?.(items[0])
   }
 
-  shell.addEventListener('keydown', (event) => {
-    const { key } = event
-    if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'Home' && key !== 'End') return
-    if (!options.open) {
-      // ArrowDown only opens: the menu does not exist yet, so focusing its first
-      // item waits for the render this toggle causes — which is what `onFirstItem`
-      // is for. Nothing here can do it, and nothing did until that existed: the
-      // trigger this keydown came from is *replaced* by that render, so focus fell
-      // to `<body>` and every later arrow key missed this listener entirely.
-      if (key !== 'ArrowDown') return
-      event.preventDefault()
-      event.stopPropagation()
-      options.onToggle()
-      return
-    }
-    if (items.length === 0) return
-    // `event.target` rather than `document.activeElement`: the keydown fires on
-    // the focused item and bubbles here, so the target *is* the position.
-    const at = items.indexOf(event.target as HTMLButtonElement)
-    const next =
-      key === 'Home'
-        ? 0
-        : key === 'End'
-          ? items.length - 1
-          : at < 0
-            ? key === 'ArrowDown'
-              ? 0
-              : items.length - 1
-            : (at + (key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
-    event.preventDefault()
-    event.stopPropagation()
-    items[next]?.focus()
-  })
+  shell.addEventListener('keydown', (event) => rovingFocus(event, items, options.open, options.onToggle))
 
   return shell
+}
+
+/**
+ * Arrow/Home/End movement across an open menu's items. Shared by the two
+ * dropdowns above, which differ only in what a click does.
+ */
+function rovingFocus(
+  event: KeyboardEvent,
+  items: readonly HTMLButtonElement[],
+  open: boolean,
+  onOpen: () => void,
+): void {
+  const { key } = event
+  if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'Home' && key !== 'End') return
+  if (!open) {
+    // ArrowDown only opens: the menu does not exist yet, so focusing its first
+    // item waits for the render this toggle causes — which is what `onFirstItem`
+    // is for. Nothing here can do it, and nothing did until that existed: the
+    // trigger this keydown came from is *replaced* by that render, so focus fell
+    // to `<body>` and every later arrow key missed this listener entirely.
+    if (key !== 'ArrowDown') return
+    event.preventDefault()
+    event.stopPropagation()
+    onOpen()
+    return
+  }
+  if (items.length === 0) return
+  // `event.target` rather than `document.activeElement`: the keydown fires on
+  // the focused item and bubbles here, so the target *is* the position.
+  const at = items.indexOf(event.target as HTMLButtonElement)
+  const next =
+    key === 'Home'
+      ? 0
+      : key === 'End'
+        ? items.length - 1
+        : at < 0
+          ? key === 'ArrowDown'
+            ? 0
+            : items.length - 1
+          : (at + (key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+  event.preventDefault()
+  event.stopPropagation()
+  items[next]?.focus()
 }

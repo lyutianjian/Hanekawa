@@ -1,5 +1,9 @@
 import type { SessionMeta } from '../sessions/service.js'
 import type { WirePaneInfo } from '../runtime/protocol/wire.js'
+import type { McpServerConfig } from '../services/mcp/types.js'
+import type { EffortLevel } from '../config/effort.js'
+
+export type { McpServerConfig }
 
 /**
  * The shell protocol: what the single desktop window's `__shell` lane carries.
@@ -185,7 +189,8 @@ export interface WireModelInfo {
    */
   longContext1m?: boolean
   maxOutputTokens?: number
-  maxEffort?: string
+  /** The effort levels this model accepts; absent means every level. */
+  supportedEfforts?: EffortLevel[]
   /** Only when set inline on the model rather than inherited from an endpoint. */
   baseUrl?: string
   apiKeyMasked?: string
@@ -292,6 +297,14 @@ export interface WireMcpServerInfo {
   status: 'connected' | 'failed' | 'unknown'
   toolCount?: number
   error?: string
+  isLocal?: boolean
+  /**
+   * The local layer *overrides* a server of the same name from above, so
+   * deleting the local entry uncovers the inherited one instead of removing the
+   * row. The screen has to say so, and must not predict a disappearance.
+   */
+  shadowsInherited?: boolean
+  config?: McpServerConfig
 }
 
 /**
@@ -386,6 +399,8 @@ export type SettingsChange =
       contextWindow?: number
       longContext1m?: boolean
       maxOutputTokens?: number
+      /** Absent means "no restriction" — the form never sends an empty list. */
+      supportedEfforts?: EffortLevel[]
     }
   | { scope: 'provider'; kind: 'rename-model'; from: string; to: string }
   | { scope: 'provider'; kind: 'remove-model'; key: string }
@@ -422,6 +437,19 @@ export type SettingsChange =
    */
   | { scope: 'extensions'; kind: 'import-skill'; sourceDir?: string }
   | { scope: 'extensions'; kind: 'set-mcp-trust'; name: string; trusted: boolean }
+  /**
+   * `previousName` is a rename: one command rather than a remove plus a set, so
+   * the host can move the trust entry with the config instead of leaving the old
+   * name trusted and treating the new one as a brand-new server.
+   */
+  | {
+      scope: 'extensions'
+      kind: 'set-mcp-server'
+      name: string
+      server: McpServerConfig
+      previousName?: string
+    }
+  | { scope: 'extensions'; kind: 'remove-mcp-server'; name: string }
   /** Also an action. Never prompts for trust — see `ProjectRuntime.reloadMcpServers`. */
   | { scope: 'extensions'; kind: 'reconnect-mcp' }
 

@@ -278,7 +278,8 @@ export interface WireRuntimeSnapshot {
    * `contextWindow` above is a number the conversation never reaches.
    */
   usableContextWindow?: number
-  maxEffort?: EffortLevel
+  /** The levels this model accepts; absent means every level. */
+  supportedEfforts?: EffortLevel[]
   effort: string
   permissionMode: PermissionMode
 }
@@ -557,7 +558,7 @@ export interface WireModelInfo {
   model?: string
   provider?: string
   contextWindow?: number
-  maxEffort?: EffortLevel
+  supportedEfforts?: EffortLevel[]
 }
 
 export interface WireModelsResult {

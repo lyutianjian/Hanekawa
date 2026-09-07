@@ -262,13 +262,17 @@ test('the model picker marks the current model and explains a disabled one', () 
   assert.equal(serialized.includes('baseUrl'), false)
 })
 
-test('the effort picker shows levels above the model ceiling as unavailable', () => {
-  const view = effortPickerView({ current: 'high', maxEffort: 'high', configured: 'max' })
+test('the effort picker shows levels the model does not support as unavailable', () => {
+  const view = effortPickerView({
+    current: 'high',
+    supportedEfforts: ['low', 'medium', 'high'],
+    configured: 'max',
+  })
 
   assert.deepEqual(view.rows.map((row) => row.id), ['low', 'medium', 'high', 'xhigh', 'max'])
   assert.equal(view.rows.find((row) => row.id === 'high')?.current, true)
   assert.equal(view.rows.find((row) => row.id === 'xhigh')?.disabled, true)
-  assert.match(view.rows.find((row) => row.id === 'max')?.disabledReason ?? '', /超过该模型上限/)
+  assert.match(view.rows.find((row) => row.id === 'max')?.disabledReason ?? '', /不支持/)
   // A configured level the active model cannot honour is still visible.
   assert.equal(view.rows.find((row) => row.id === 'max')?.detail, '已配置')
 
@@ -366,8 +370,8 @@ test('resuming opens the pane that owns the session; a task row peeks its output
 })
 
 test('moving through a picker skips the rows that cannot be picked', () => {
-  const view = effortPickerView({ current: 'low', maxEffort: 'medium' })
-  // low, medium are selectable; high, xhigh, max are above the ceiling.
+  const view = effortPickerView({ current: 'low', supportedEfforts: ['low', 'medium'] })
+  // low, medium are selectable; high, xhigh, max are not supported.
   assert.deepEqual(view.rows.map((row) => row.action !== undefined), [true, true, false, false, false])
 
   assert.equal(moveSurfaceSelection(view, 0, 'down'), 1)
@@ -377,7 +381,7 @@ test('moving through a picker skips the rows that cannot be picked', () => {
 })
 
 test('a picker with nothing selectable is inert rather than looping', () => {
-  const view = effortPickerView({ current: 'low', maxEffort: undefined })
+  const view = effortPickerView({ current: 'low', supportedEfforts: undefined })
   const allDisabled = { ...view, rows: view.rows.map((row) => ({ ...row, action: undefined })) }
   assert.equal(moveSurfaceSelection(allDisabled, 2, 'down'), 2)
   assert.equal(activateSurfaceRow(allDisabled, 2), undefined)

@@ -367,6 +367,7 @@ function modelDraft(overrides: Partial<Extract<SettingsDraft, { kind: 'model' }>
     endpoint: 'main',
     provider: '',
     contextWindow: '',
+    supportedEfforts: [],
     longContext1m: '',
     maxOutputTokens: '',
     ...overrides,
@@ -432,6 +433,77 @@ test('the 1M header switch round-trips through the model form', () => {
     .find((card) => card.id === 'models')
   const row = card?.rows.find((row) => row.id === 'model:big')
   assert.match(row?.detail ?? '', /1M 请求头/)
+})
+
+test('the supported effort levels round-trip through the model form', () => {
+  const snapshot = snapshotOf({
+    models: [
+      { key: 'big', model: 'claude-big', endpoint: 'main', supportedEfforts: ['low', 'high'], resolves: true },
+    ],
+    defaultModel: 'big',
+    routing: { main: 'big', plan: 'inherit', compact: 'inherit', subagent: [] },
+  })
+
+  const opened = applySettingsIntent(
+    openState({ category: 'provider', snapshot }),
+    { kind: 'edit-model', key: 'big' },
+  ).state
+  assert.ok(opened.draft?.kind === 'model')
+  assert.deepEqual(opened.draft.supportedEfforts, ['low', 'high'])
+
+  // Checking `medium` fills the gap; the set stays in ladder order, not click order.
+  const toggled = applySettingsIntent(opened, { kind: 'model-toggle-effort', level: 'medium' }).state
+  assert.ok(toggled.draft?.kind === 'model')
+  assert.deepEqual(toggled.draft.supportedEfforts, ['low', 'medium', 'high'])
+
+  const change = draftToChange(toggled.draft, snapshot)
+  assert.ok(!('error' in change) && change.kind === 'set-model')
+  assert.deepEqual(change.supportedEfforts, ['low', 'medium', 'high'])
+
+  const projected = projectSnapshot(snapshot, pendingOf(change))
+  assert.deepEqual(
+    projected.models.find((model) => model.key === 'big')?.supportedEfforts,
+    ['low', 'medium', 'high'],
+  )
+
+  const card = settingsView(openState({ category: 'provider', snapshot })).cards
+    .find((card) => card.id === 'models')
+  assert.match(card?.rows.find((row) => row.id === 'model:big')?.detail ?? '', /思考等级 低、高/)
+})
+
+test('picking nothing and picking everything both mean "no restriction"', () => {
+  assert.equal('supportedEfforts' in draftToChange(modelDraft(), snapshotOf()), false)
+  const all = draftToChange(
+    modelDraft({ supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
+    snapshotOf(),
+  )
+  assert.ok(!('error' in all))
+  // Writing the full ladder out would freeze today's five levels into the config
+  // file, so it is omitted exactly like an empty selection.
+  assert.equal('supportedEfforts' in all, false)
+})
+
+test('the effort field offers every level with the picked ones marked', () => {
+  const state = applySettingsIntent(
+    openState({ category: 'provider', snapshot: snapshotOf() }),
+    { kind: 'new-model' },
+  ).state
+  const withPick = applySettingsIntent(state, { kind: 'model-toggle-effort', level: 'high' }).state
+  const form = settingsView(withPick).form
+  assert.ok(form && form.kind !== 'mcp-server')
+  const field = form.fields.find((field) => field.id === 'supportedEfforts')
+  assert.ok(field?.multi)
+  assert.deepEqual(field.multi.options.map((option) => option.value), [
+    'low', 'medium', 'high', 'xhigh', 'max',
+  ])
+  assert.deepEqual(field.multi.selected, ['high'])
+  assert.equal(field.multi.summary, '高')
+  assert.equal(field.multi.open, false, 'the menu is closed until its trigger is pressed')
+
+  // Nothing picked reads as 全部 rather than an empty pill.
+  const empty = settingsView(state).form
+  assert.ok(empty && empty.kind !== 'mcp-server')
+  assert.equal(empty.fields.find((field) => field.id === 'supportedEfforts')?.multi?.summary, '全部')
 })
 
 test('renaming a model emits the rename before the write', () => {
@@ -1417,3 +1489,321 @@ test('adding an endpoint does not move an existing default model', () => {
   assert.ok(Array.isArray(changes))
   assert.deepEqual(changes.map((change) => change.kind), ['set-endpoint', 'set-model'])
 })
+
+// --- MCP server drafts and operations -----------------------------------------
+
+function mcpDraft(
+  overrides: Partial<Extract<SettingsDraft, { kind: 'mcp-server' }>> = {},
+): SettingsDraft {
+  return {
+    kind: 'mcp-server',
+    isNew: true,
+    name: 'test-mcp',
+    transport: 'stdio',
+    command: 'npx test-mcp',
+    args: [],
+    env: [],
+    envPassthrough: [],
+    cwd: '',
+    url: '',
+    headers: [],
+    ...overrides,
+  }
+}
+
+test('a new-mcp-server form initializes an empty stdio draft anchored to mcp card', () => {
+  const state = applySettingsIntent(openState(), { kind: 'new-mcp-server' }).state
+  assert.equal(state.draft?.kind, 'mcp-server')
+  if (state.draft?.kind === 'mcp-server') {
+    assert.equal(state.draft.isNew, true)
+    assert.equal(state.draft.name, '')
+    assert.equal(state.draft.transport, 'stdio')
+    assert.equal(state.draft.command, '')
+    assert.deepEqual(state.draft.args, [])
+    assert.deepEqual(state.draft.env, [])
+    assert.deepEqual(state.draft.envPassthrough, [])
+    assert.equal(state.draft.cwd, '')
+  }
+  const view = settingsView(state)
+  assert.deepEqual(view.form?.anchor, { cardId: 'mcp' })
+  assert.equal(view.form?.title, '连接至自定义 MCP')
+})
+
+test('an edit-mcp-server form populates existing config anchored to its row', () => {
+  const snapshot = snapshotOf({
+    mcpServers: [
+      {
+        name: 'sqlite',
+        transport: 'stdio',
+        target: 'sqlite-mcp',
+        trusted: true,
+        trustEditable: true,
+        status: 'connected',
+        isLocal: true,
+        config: {
+          transport: 'stdio',
+          command: 'sqlite-mcp',
+          args: ['--db', 'my.db'],
+          env: { KEY: 'val' },
+          envPassthrough: ['PATH'],
+          cwd: '/workspace',
+        },
+      },
+    ],
+  })
+  const base = openState({ snapshot })
+  const state = applySettingsIntent(base, { kind: 'edit-mcp-server', name: 'sqlite' }).state
+  assert.equal(state.draft?.kind, 'mcp-server')
+  if (state.draft?.kind === 'mcp-server') {
+    assert.equal(state.draft.isNew, false)
+    assert.equal(state.draft.name, 'sqlite')
+    assert.equal(state.draft.originalName, 'sqlite')
+    assert.equal(state.draft.transport, 'stdio')
+    assert.equal(state.draft.command, 'sqlite-mcp')
+    assert.deepEqual(state.draft.args, ['--db', 'my.db'])
+    assert.deepEqual(state.draft.env, [{ key: 'KEY', value: 'val' }])
+    assert.deepEqual(state.draft.envPassthrough, ['PATH'])
+    assert.equal(state.draft.cwd, '/workspace')
+  }
+  const view = settingsView(state)
+  assert.deepEqual(view.form?.anchor, { cardId: 'mcp', rowId: 'mcp:sqlite' })
+})
+
+test('mcp draft-field updates string properties and switches transport', () => {
+  let state = applySettingsIntent(openState(), { kind: 'new-mcp-server' }).state
+  state = applySettingsIntent(state, { kind: 'draft-field', field: 'name', value: 'my-srv' }).state
+  state = applySettingsIntent(state, { kind: 'draft-field', field: 'command', value: 'run-srv' }).state
+  state = applySettingsIntent(state, { kind: 'draft-field', field: 'cwd', value: '~/code' }).state
+  state = applySettingsIntent(state, { kind: 'draft-field', field: 'transport', value: 'sse' }).state
+  state = applySettingsIntent(state, { kind: 'draft-field', field: 'url', value: 'http://localhost:8000/sse' }).state
+
+  assert.equal(state.draft?.kind, 'mcp-server')
+  if (state.draft?.kind === 'mcp-server') {
+    assert.equal(state.draft.name, 'my-srv')
+    assert.equal(state.draft.command, 'run-srv')
+    assert.equal(state.draft.cwd, '~/code')
+    assert.equal(state.draft.transport, 'sse')
+    assert.equal(state.draft.url, 'http://localhost:8000/sse')
+  }
+})
+
+test('mcp args can be added, updated, and removed', () => {
+  let state = applySettingsIntent(openState(), { kind: 'new-mcp-server' }).state
+  state = applySettingsIntent(state, { kind: 'mcp-add-arg' }).state
+  state = applySettingsIntent(state, { kind: 'mcp-add-arg' }).state
+  state = applySettingsIntent(state, { kind: 'mcp-update-arg', index: 0, value: '--port' }).state
+  state = applySettingsIntent(state, { kind: 'mcp-update-arg', index: 1, value: '8080' }).state
+
+  assert.equal(state.draft?.kind, 'mcp-server')
+  if (state.draft?.kind === 'mcp-server') {
+    assert.deepEqual(state.draft.args, ['--port', '8080'])
+  }
+
+  state = applySettingsIntent(state, { kind: 'mcp-remove-arg', index: 0 }).state
+  if (state.draft?.kind === 'mcp-server') {
+    assert.deepEqual(state.draft.args, ['8080'])
+  }
+})
+
+test('mcp env can be added, updated, and removed', () => {
+  let state = applySettingsIntent(openState(), { kind: 'new-mcp-server' }).state
+  state = applySettingsIntent(state, { kind: 'mcp-add-env' }).state
+  state = applySettingsIntent(state, { kind: 'mcp-update-env', index: 0, key: 'API_KEY', value: 'secret' }).state
+
+  assert.equal(state.draft?.kind, 'mcp-server')
+  if (state.draft?.kind === 'mcp-server') {
+    assert.deepEqual(state.draft.env, [{ key: 'API_KEY', value: 'secret' }])
+  }
+
+  state = applySettingsIntent(state, { kind: 'mcp-remove-env', index: 0 }).state
+  if (state.draft?.kind === 'mcp-server') {
+    assert.deepEqual(state.draft.env, [])
+  }
+})
+
+test('mcp envPassthrough can be added, updated, and removed', () => {
+  let state = applySettingsIntent(openState(), { kind: 'new-mcp-server' }).state
+  state = applySettingsIntent(state, { kind: 'mcp-add-env-passthrough' }).state
+  state = applySettingsIntent(state, { kind: 'mcp-update-env-passthrough', index: 0, value: 'TOKEN' }).state
+
+  assert.equal(state.draft?.kind, 'mcp-server')
+  if (state.draft?.kind === 'mcp-server') {
+    assert.deepEqual(state.draft.envPassthrough, ['TOKEN'])
+  }
+
+  state = applySettingsIntent(state, { kind: 'mcp-remove-env-passthrough', index: 0 }).state
+  if (state.draft?.kind === 'mcp-server') {
+    assert.deepEqual(state.draft.envPassthrough, [])
+  }
+})
+
+test('mcp draft validation enforces required fields and valid urls', () => {
+  const snapshot = snapshotOf({
+    mcpServers: [{ name: 'existing', transport: 'stdio', target: 'cmd', trusted: true, trustEditable: true, status: 'connected' }],
+  })
+
+  // Empty name
+  const emptyName = draftToChanges(mcpDraft({ name: '  ' }), snapshot)
+  assert.ok('error' in emptyName)
+  assert.equal(emptyName.error, '名称不能为空。')
+
+  // Duplicate name on new
+  const duplicate = draftToChanges(mcpDraft({ name: 'existing', isNew: true }), snapshot)
+  assert.ok('error' in duplicate)
+  assert.equal(duplicate.error, '已经有一个叫 existing 的 MCP 服务器。')
+
+  // Stdio without command
+  const noCmd = draftToChanges(mcpDraft({ name: 'new', command: '' }), snapshot)
+  assert.ok('error' in noCmd)
+  assert.equal(noCmd.error, '启动命令不能为空。')
+
+  // SSE without URL
+  const noUrl = draftToChanges(mcpDraft({ name: 'new', transport: 'sse', url: '' }), snapshot)
+  assert.ok('error' in noUrl)
+  assert.equal(noUrl.error, 'URL 不能为空。')
+
+  // SSE with invalid URL
+  const badUrl = draftToChanges(mcpDraft({ name: 'new', transport: 'sse', url: 'invalid-url' }), snapshot)
+  assert.ok('error' in badUrl)
+  assert.equal(badUrl.error, '请输入有效的 HTTP 或 HTTPS URL。')
+})
+
+test('submitting a valid mcp draft creates set-mcp-server change', () => {
+  const snapshot = snapshotOf()
+  const valid = draftToChanges(
+    mcpDraft({
+      name: 'srv',
+      command: 'run',
+      args: ['a', 'b'],
+      env: [{ key: 'K', value: 'V' }],
+      envPassthrough: ['HOME'],
+      cwd: '/home',
+    }),
+    snapshot,
+  )
+  assert.ok(Array.isArray(valid))
+  assert.equal(valid.length, 1)
+  assert.deepEqual(valid[0], {
+    scope: 'extensions',
+    kind: 'set-mcp-server',
+    name: 'srv',
+    server: {
+      transport: 'stdio',
+      command: 'run',
+      args: ['a', 'b'],
+      env: { K: 'V' },
+      envPassthrough: ['HOME'],
+      cwd: '/home',
+    },
+  })
+})
+
+test('renaming an mcp server onto a name already in use is refused', () => {
+  const snapshot = snapshotOf()
+  const collision = draftToChanges(
+    mcpDraft({ isNew: false, originalName: 'github', name: 'shared' }),
+    snapshot,
+  )
+  assert.ok('error' in collision, 'the rename would have overwritten the other server')
+  assert.equal(collision.error, '已经有一个叫 shared 的 MCP 服务器。')
+
+  // Saving an edit under the same name is not a collision with itself.
+  const kept = draftToChanges(mcpDraft({ isNew: false, originalName: 'github', name: 'github' }), snapshot)
+  assert.ok(Array.isArray(kept))
+})
+
+test('a rename travels as one set-mcp-server carrying previousName', () => {
+  const changes = draftToChanges(
+    mcpDraft({ isNew: false, originalName: 'github', name: 'gh', command: 'run' }),
+    snapshotOf(),
+  )
+  assert.ok(Array.isArray(changes))
+  assert.equal(changes.length, 1, 'no separate remove: the host moves the trust entry with the config')
+  assert.deepEqual(changes[0], {
+    scope: 'extensions',
+    kind: 'set-mcp-server',
+    name: 'gh',
+    server: { transport: 'stdio', command: 'run' },
+    previousName: 'github',
+  })
+})
+
+test('a remote mcp draft saves request headers and no env', () => {
+  const changes = draftToChanges(
+    mcpDraft({
+      name: 'remote',
+      transport: 'sse',
+      url: 'https://mcp.example/mcp',
+      headers: [{ key: 'Authorization', value: 'Bearer t' }],
+      env: [{ key: 'API_KEY', value: 'secret' }],
+    }),
+    snapshotOf(),
+  )
+  assert.ok(Array.isArray(changes))
+  assert.deepEqual(changes[0], {
+    scope: 'extensions',
+    kind: 'set-mcp-server',
+    name: 'remote',
+    server: {
+      transport: 'sse',
+      url: 'https://mcp.example/mcp',
+      headers: { Authorization: 'Bearer t' },
+    },
+  })
+})
+
+test('a pending edit keeps the trust the row already had', () => {
+  const projected = projectSnapshot(snapshotOf(), [
+    {
+      id: 0,
+      change: {
+        scope: 'extensions',
+        kind: 'set-mcp-server',
+        name: 'cold',
+        server: { transport: 'stdio', command: 'cold-server' },
+      },
+    },
+  ])
+  assert.equal(
+    projected.mcpServers.find((server) => server.name === 'cold')?.trusted,
+    false,
+    'editing an untrusted server must not draw it as trusted',
+  )
+})
+
+test('deleting a server that only overrides an inherited one keeps its row', () => {
+  const snapshot = snapshotOf({
+    mcpServers: [
+      {
+        name: 'github',
+        transport: 'stdio',
+        target: 'npx github-mcp',
+        trusted: true,
+        trustEditable: true,
+        status: 'connected',
+        isLocal: true,
+        shadowsInherited: true,
+      },
+    ],
+  })
+  const projected = projectSnapshot(snapshot, [
+    { id: 0, change: { scope: 'extensions', kind: 'remove-mcp-server', name: 'github' } },
+  ])
+  assert.deepEqual(
+    projected.mcpServers.map((server) => server.name),
+    ['github'],
+    'the inherited server takes over, so the row must not flicker away',
+  )
+})
+
+test('deleting an mcp server emits remove-mcp-server change', () => {
+  const state = applySettingsIntent(openState(), {
+    kind: 'request-remove',
+    target: { kind: 'mcp-server', name: 'sqlite' },
+  }).state
+  const outcome = applySettingsIntent(state, { kind: 'confirm-remove' })
+  assert.deepEqual(outcome.changes, [
+    { scope: 'extensions', kind: 'remove-mcp-server', name: 'sqlite' },
+  ])
+})
+

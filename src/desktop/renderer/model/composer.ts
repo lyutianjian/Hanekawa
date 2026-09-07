@@ -70,12 +70,17 @@ export function composerChipView(
   // raw token budget as a decimal string (`set-effort.level` is `z.string()`).
   // A budget has no position on the ladder, so it is shown verbatim.
   const level = isEffortLevel(runtime.effort) ? runtime.effort : undefined
+  // The top of what this model accepts, which is not necessarily `max`: a model
+  // restricted to low/high is already at its highest on `high`.
+  const highest = runtime.supportedEfforts === undefined
+    ? undefined
+    : [...runtime.supportedEfforts].sort((a, b) => EFFORT_RANK[a] - EFFORT_RANK[b]).at(-1)
   const atCeiling = level !== undefined
-    && runtime.maxEffort !== undefined
-    && EFFORT_RANK[level] >= EFFORT_RANK[runtime.maxEffort]
+    && highest !== undefined
+    && EFFORT_RANK[level] >= EFFORT_RANK[highest]
 
-  const ceilingNote = atCeiling && runtime.maxEffort
-    ? `（已是该模型上限 ${EFFORT_LABELS[runtime.maxEffort]}）`
+  const ceilingNote = atCeiling && highest
+    ? `（已是该模型最高档 ${EFFORT_LABELS[highest]}）`
     : ''
 
   const modelTitle = `模型：${runtime.model}${provider} · 点击切换`

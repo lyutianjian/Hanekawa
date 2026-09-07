@@ -1025,7 +1025,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
         const runtime = client.getRuntimeSnapshot()
         return effortPickerView({
           current: runtime?.effort ?? '',
-          ...(runtime?.maxEffort ? { maxEffort: runtime.maxEffort } : {}),
+          ...(runtime?.supportedEfforts ? { supportedEfforts: runtime.supportedEfforts } : {}),
         })
       }
       case 'background-tasks':

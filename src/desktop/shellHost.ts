@@ -2,17 +2,21 @@ import { z } from 'zod/v3'
 import path from 'node:path'
 import { homedir } from 'node:os'
 import { maskKey } from '../config/maskKey.js'
+import { VALID_EFFORT_LEVELS, normalizeSupportedEfforts } from '../config/effort.js'
 import { SUPPORTED_PROVIDER_NAMES } from '../config/providers/registry.js'
 import type { Config, ModelConfig } from '../config/service.js'
 import type { Endpoint, Routing } from '../config/routing.js'
 import {
   loadLocalSettings,
+  loadSettingsLayers,
   localSettingsPath,
   setLocalCacheTtl1h,
   setLocalThinking,
   setLocalPermissionEntries,
   setLocalStartupPermissionMode,
   setMcpServerTrustLocally,
+  setMcpServerLocally,
+  removeMcpServerLocally,
   setSkillEnabledLocally,
   disabledSkillNames,
   type MyAgentSettings,
@@ -336,6 +340,20 @@ const sessionWorkspaceSatisfiesShellLaneWorkspace: Satisfied<
 
 const commandId = z.string()
 
+const mcpServerConfigSchema: z.ZodType<McpServerConfig> = z
+  .object({
+    transport: z.union([z.literal('stdio'), z.literal('sse')]),
+    command: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    url: z.string().optional(),
+    headers: z.record(z.string()).optional(),
+    env: z.record(z.string()).optional(),
+    envPassthrough: z.array(z.string()).optional(),
+    cwd: z.string().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  })
+  .strict()
+
 /**
  * The settings edits, keyed by `kind` for the same reason the commands are
  * keyed by `type`: a variant added to `SettingsChange` without a schema here
@@ -370,6 +388,7 @@ const SETTINGS_CHANGE_SCHEMAS = {
       contextWindow: z.number().optional(),
       longContext1m: z.boolean().optional(),
       maxOutputTokens: z.number().optional(),
+      supportedEfforts: z.array(z.enum(VALID_EFFORT_LEVELS)).optional(),
     })
     .strict(),
   'rename-model': z
@@ -460,6 +479,22 @@ const SETTINGS_CHANGE_SCHEMAS = {
       kind: z.literal('set-mcp-trust'),
       name: z.string(),
       trusted: z.boolean(),
+    })
+    .strict(),
+  'set-mcp-server': z
+    .object({
+      scope: z.literal('extensions'),
+      kind: z.literal('set-mcp-server'),
+      name: z.string().min(1),
+      server: mcpServerConfigSchema,
+      previousName: z.string().min(1).optional(),
+    })
+    .strict(),
+  'remove-mcp-server': z
+    .object({
+      scope: z.literal('extensions'),
+      kind: z.literal('remove-mcp-server'),
+      name: z.string().min(1),
     })
     .strict(),
   'reconnect-mcp': z
@@ -1379,7 +1414,11 @@ export class ShellHost<
     const raw = config.get()
     const routing = config.getRouting()
     const merged = entry.project.getSettings()
-    const local = await loadLocalSettings(entry.cwd)
+    // The layers beside the merge: the merge concatenates and unions, so only
+    // these can say which entries this screen may rewrite, and which names the
+    // local layer merely *overrides*.
+    const layers = await loadSettingsLayers(entry.cwd)
+    const local = layers.local
 
     const endpoints = Object.entries(raw.endpoints ?? {}).map(([name, endpoint]) => {
       const info: WireEndpointInfo = { name, provider: endpoint.provider }
@@ -1399,7 +1438,7 @@ export class ShellHost<
       if (model.contextWindow !== undefined) info.contextWindow = model.contextWindow
       if (model.longContext1m !== undefined) info.longContext1m = model.longContext1m
       if (model.maxOutputTokens !== undefined) info.maxOutputTokens = model.maxOutputTokens
-      if (model.maxEffort !== undefined) info.maxEffort = model.maxEffort
+      if (model.supportedEfforts !== undefined) info.supportedEfforts = [...model.supportedEfforts]
       if (model.baseUrl !== undefined) info.baseUrl = model.baseUrl
       if (model.apiKey) info.apiKeyMasked = maskKey(model.apiKey)
       return info
@@ -1443,8 +1482,14 @@ export class ShellHost<
 
     const locallyTrusted = new Set(local.mcp?.trustedServers ?? [])
     const trusted = new Set(merged.mcp?.trustedServers ?? [])
+    const inherited = new Set(
+      [layers.user, layers.project, layers.legacyMcp].flatMap((layer) => Object.keys(layer.mcpServers ?? {})),
+    )
     const mcpServers = Object.entries(merged.mcpServers ?? {}).map(([name, server]) =>
-      describeMcpServer(name, server, entry.project.mcp, trusted, locallyTrusted),
+      describeMcpServer(name, server, entry.project.mcp, trusted, locallyTrusted, {
+        isLocal: !!local.mcpServers?.[name],
+        shadowsInherited: !!local.mcpServers?.[name] && inherited.has(name),
+      }),
     )
 
     // Merged over the defaults rather than reported as written: `config.json` may
@@ -1649,6 +1694,7 @@ function describeMcpServer(
   status: McpConnectionStatus,
   trusted: ReadonlySet<string>,
   locallyTrusted: ReadonlySet<string>,
+  layer: { isLocal: boolean; shadowsInherited: boolean },
 ): WireMcpServerInfo {
   const connected = status.connected.find((entry) => entry.name === name)
   const failed = status.failed.find((entry) => entry.name === name)
@@ -1664,6 +1710,8 @@ function describeMcpServer(
     // here. Granting is always possible; taking away is not.
     trustEditable: !trusted.has(name) || locallyTrusted.has(name),
     status: connected ? 'connected' : failed ? 'failed' : 'unknown',
+    ...(layer.isLocal ? { isLocal: true, config: server } : {}),
+    ...(layer.shadowsInherited ? { shadowsInherited: true } : {}),
   }
   if (connected) info.toolCount = connected.toolCount
   if (failed) info.error = failed.error
@@ -1804,6 +1852,34 @@ async function applySettingsEffect<P extends ShellLaneProject, W extends ShellLa
         scope: 'models',
         afterReload: () => entry.project.reloadMcpServers(),
       }
+    case 'set-mcp-server': {
+      // Trust follows the *user*, not the edit: a new server is trusted because
+      // adding it by hand is the grant, but an edit — including a rename —
+      // carries the trust it already had. Re-granting here would quietly undo a
+      // revocation the next time someone fixed a typo in an arg.
+      const local = await loadLocalSettings(entry.cwd)
+      const priorName = change.previousName ?? change.name
+      const isNew = !local.mcpServers || !(priorName in local.mcpServers)
+      const trusted = isNew || (local.mcp?.trustedServers ?? []).includes(priorName)
+      await setMcpServerLocally(entry.cwd, change.name, change.server, {
+        ...(change.previousName !== undefined ? { previousName: change.previousName } : {}),
+        trusted,
+      })
+      return {
+        saveConfig: false,
+        rebuild: false,
+        scope: 'models',
+        afterReload: () => entry.project.reloadMcpServers(),
+      }
+    }
+    case 'remove-mcp-server':
+      await removeMcpServerLocally(entry.cwd, change.name)
+      return {
+        saveConfig: false,
+        rebuild: false,
+        scope: 'models',
+        afterReload: () => entry.project.reloadMcpServers(),
+      }
     case 'reconnect-mcp':
       return {
         saveConfig: false,
@@ -1871,6 +1947,11 @@ function applyProviderChange(
       // snapshot. Preserve the cache policy, which is configured in JSON.
       if (change.longContext1m !== undefined) model.longContext1m = change.longContext1m
       if (change.maxOutputTokens !== undefined) model.maxOutputTokens = change.maxOutputTokens
+      // Normalized here as well as in the form: a full selection is "no
+      // restriction", and writing it out would freeze today's five levels into
+      // the config file.
+      const supportedEfforts = normalizeSupportedEfforts(change.supportedEfforts)
+      if (supportedEfforts !== undefined) model.supportedEfforts = supportedEfforts
       config.setModelConfig(change.key, model)
       return 'models'
     }

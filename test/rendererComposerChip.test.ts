@@ -74,20 +74,26 @@ test('a raw token budget is shown verbatim', () => {
   assert.equal(view.atCeiling, false, 'a budget cannot be compared against a level ceiling')
 })
 
+const CAPPED = ['low', 'medium', 'high'] as const
+
 test('atCeiling is true at the model maximum and false below it', () => {
-  assert.equal(composerChipView(runtime({ effort: 'high', maxEffort: 'high' })).atCeiling, true)
-  assert.equal(composerChipView(runtime({ effort: 'medium', maxEffort: 'high' })).atCeiling, false)
+  assert.equal(composerChipView(runtime({ effort: 'high', supportedEfforts: [...CAPPED] })).atCeiling, true)
+  assert.equal(composerChipView(runtime({ effort: 'medium', supportedEfforts: [...CAPPED] })).atCeiling, false)
   // At or above, not merely equal: a stale config can leave effort past the
   // ceiling, and the chip should still say "this is as far as it goes".
-  assert.equal(composerChipView(runtime({ effort: 'max', maxEffort: 'high' })).atCeiling, true)
+  assert.equal(composerChipView(runtime({ effort: 'max', supportedEfforts: [...CAPPED] })).atCeiling, true)
   assert.equal(composerChipView(runtime({ effort: 'max' })).atCeiling, false, 'no ceiling declared')
+  // The highest *supported* level, not the highest rung: a gapped set tops out
+  // wherever its own last entry is.
+  assert.equal(composerChipView(runtime({ effort: 'high', supportedEfforts: ['low', 'high'] })).atCeiling, true)
+  assert.equal(composerChipView(runtime({ effort: 'low', supportedEfforts: ['low', 'high'] })).atCeiling, false)
 })
 
 test('the ceiling is explained in the tooltip when it has been reached', () => {
-  const capped = composerChipView(runtime({ effort: 'high', maxEffort: 'high' }))
-  assert.match(capped.effortTitle, /上限/)
-  const room = composerChipView(runtime({ effort: 'low', maxEffort: 'high' }))
-  assert.doesNotMatch(room.effortTitle, /上限/)
+  const capped = composerChipView(runtime({ effort: 'high', supportedEfforts: [...CAPPED] }))
+  assert.match(capped.effortTitle, /最高档/)
+  const room = composerChipView(runtime({ effort: 'low', supportedEfforts: [...CAPPED] }))
+  assert.doesNotMatch(room.effortTitle, /最高档/)
 })
 
 test('every effort level has a label', () => {

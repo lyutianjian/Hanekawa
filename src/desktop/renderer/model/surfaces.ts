@@ -1,4 +1,4 @@
-import { EFFORT_RANK, VALID_EFFORT_LEVELS, type EffortLevel } from '../../../config/effort.js'
+import { VALID_EFFORT_LEVELS, isEffortSupported, type EffortLevel } from '../../../config/effort.js'
 import { EFFORT_LABELS } from './composer.js'
 import type { ModelPickerOption } from '../../../runtime/modelPicker.js'
 import type { CommandSurface, WireModelsResult } from '../../../runtime/protocol/wire.js'
@@ -119,23 +119,20 @@ function modelRow(option: ModelPickerOption): SurfaceRow {
 }
 
 /**
- * Effort levels, with anything above the model's ceiling shown as unavailable
+ * Effort levels, with anything the model does not accept shown as unavailable
  * rather than hidden — a user who set `max` in config should see why it is not
  * in force.
  */
 export function effortPickerView(input: {
   current: string
-  maxEffort?: EffortLevel
+  supportedEfforts?: readonly EffortLevel[]
   configured?: string
 }): SurfaceView {
   return {
     surface: 'effort-picker',
     title: '选择思考强度',
     rows: VALID_EFFORT_LEVELS.map((level) => {
-      // Bound to a local so the "beyond the ceiling" branch can name the ceiling
-      // without an assertion the compiler cannot check.
-      const ceiling = input.maxEffort
-      const beyondCeiling = ceiling !== undefined && EFFORT_RANK[level] > EFFORT_RANK[ceiling]
+      const unsupported = !isEffortSupported(level, input.supportedEfforts)
       return {
         id: level,
         // The same label the composer's chip shows. One concept, one spelling:
@@ -145,8 +142,8 @@ export function effortPickerView(input: {
         label: EFFORT_LABELS[level],
         detail: input.configured === level && input.configured !== input.current ? '已配置' : '',
         ...(level === input.current ? { current: true } : {}),
-        ...(beyondCeiling
-          ? { disabled: true, disabledReason: `超过该模型上限（${ceiling ? EFFORT_LABELS[ceiling] : ''}）` }
+        ...(unsupported
+          ? { disabled: true, disabledReason: '该模型不支持这一档' }
           : { action: { kind: 'run-command', line: `/effort ${level}` } as const }),
       }
     }),

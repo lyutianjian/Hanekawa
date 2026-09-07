@@ -2,45 +2,52 @@ import { useState } from 'react'
 import { Box, Text, useInput, useStdout } from '../ink.js'
 import { theme } from '../theme.js'
 import {
-  EFFORT_RANK,
   VALID_EFFORT_LEVELS,
   effortDescription,
+  isEffortSupported,
   type EffortLevel,
 } from '../../config/effort.js'
 import { CommandListItem, CommandPane } from './CommandUI.js'
 
 export interface EffortPickerBarProps {
   currentLevel: EffortLevel
-  maxEffort: EffortLevel | undefined
+  /** The levels the model accepts; undefined means all of them. */
+  supportedEfforts: readonly EffortLevel[] | undefined
   onResolve: (result: { action: 'set'; level: EffortLevel } | { action: 'cancel' }) => void
 }
 
 const PILL_GAP = 4
 const PILL_PAD = 1
 
-function isLevelDisabled(level: EffortLevel, maxEffort: EffortLevel | undefined): boolean {
-  if (!maxEffort) return false
-  return EFFORT_RANK[level] > EFFORT_RANK[maxEffort]
+function isLevelDisabled(level: EffortLevel, supportedEfforts: readonly EffortLevel[] | undefined): boolean {
+  return !isEffortSupported(level, supportedEfforts)
 }
 
-function nextEnabledIndex(maxEffort: EffortLevel | undefined, current: number, direction: 1 | -1): number {
+function nextEnabledIndex(
+  supportedEfforts: readonly EffortLevel[] | undefined,
+  current: number,
+  direction: 1 | -1,
+): number {
   const len = VALID_EFFORT_LEVELS.length
   let index = current
   for (let step = 0; step < len; step++) {
     const candidate = index + direction
     if (candidate < 0 || candidate >= len) return current
     const level = VALID_EFFORT_LEVELS[candidate]
-    if (!isLevelDisabled(level, maxEffort)) return candidate
+    if (!isLevelDisabled(level, supportedEfforts)) return candidate
     index = candidate
   }
   return current
 }
 
-function initialIndex(currentLevel: EffortLevel, maxEffort: EffortLevel | undefined): number {
+function initialIndex(
+  currentLevel: EffortLevel,
+  supportedEfforts: readonly EffortLevel[] | undefined,
+): number {
   const idx = VALID_EFFORT_LEVELS.indexOf(currentLevel)
-  if (idx >= 0 && !isLevelDisabled(currentLevel, maxEffort)) return idx
+  if (idx >= 0 && !isLevelDisabled(currentLevel, supportedEfforts)) return idx
   for (let i = VALID_EFFORT_LEVELS.length - 1; i >= 0; i--) {
-    if (!isLevelDisabled(VALID_EFFORT_LEVELS[i]!, maxEffort)) return i
+    if (!isLevelDisabled(VALID_EFFORT_LEVELS[i]!, supportedEfforts)) return i
   }
   return 0
 }
@@ -67,10 +74,10 @@ function indicatorColumn(selectedIndex: number): number {
   return column
 }
 
-export function EffortPickerBar({ currentLevel, maxEffort, onResolve }: EffortPickerBarProps) {
+export function EffortPickerBar({ currentLevel, supportedEfforts, onResolve }: EffortPickerBarProps) {
   const { stdout } = useStdout()
   const terminalWidth = stdout?.columns || 80
-  const [selectedIndex, setSelectedIndex] = useState<number>(() => initialIndex(currentLevel, maxEffort))
+  const [selectedIndex, setSelectedIndex] = useState<number>(() => initialIndex(currentLevel, supportedEfforts))
 
   useInput((input, key) => {
     if (key.escape) {
@@ -79,19 +86,19 @@ export function EffortPickerBar({ currentLevel, maxEffort, onResolve }: EffortPi
     }
 
     if (key.leftArrow || key.upArrow) {
-      setSelectedIndex((i) => nextEnabledIndex(maxEffort, i, -1))
+      setSelectedIndex((i) => nextEnabledIndex(supportedEfforts, i, -1))
       return
     }
 
     if (key.rightArrow || key.downArrow) {
-      setSelectedIndex((i) => nextEnabledIndex(maxEffort, i, 1))
+      setSelectedIndex((i) => nextEnabledIndex(supportedEfforts, i, 1))
       return
     }
 
     if (input >= '1' && input <= '5') {
       const target = Number(input) - 1
       const level = VALID_EFFORT_LEVELS[target]
-      if (level && !isLevelDisabled(level, maxEffort)) {
+      if (level && !isLevelDisabled(level, supportedEfforts)) {
         setSelectedIndex(target)
       }
       return
@@ -99,7 +106,7 @@ export function EffortPickerBar({ currentLevel, maxEffort, onResolve }: EffortPi
 
     if (key.return) {
       const level = VALID_EFFORT_LEVELS[selectedIndex]
-      if (!level || isLevelDisabled(level, maxEffort)) return
+      if (!level || isLevelDisabled(level, supportedEfforts)) return
       onResolve({ action: 'set', level })
     }
   })
@@ -128,7 +135,7 @@ export function EffortPickerBar({ currentLevel, maxEffort, onResolve }: EffortPi
               key={level}
               focused={index === selectedIndex}
               selected={level === currentLevel}
-              disabled={isLevelDisabled(level, maxEffort)}
+              disabled={isLevelDisabled(level, supportedEfforts)}
               description={index === selectedIndex ? effortDescription(level) : undefined}
             >
               {index + 1}. {level.toUpperCase()}
@@ -140,7 +147,7 @@ export function EffortPickerBar({ currentLevel, maxEffort, onResolve }: EffortPi
           <Box flexDirection="row" marginLeft={centerOffset}>
             {VALID_EFFORT_LEVELS.map((level, index) => {
               const selected = index === selectedIndex
-              const disabled = isLevelDisabled(level, maxEffort)
+              const disabled = isLevelDisabled(level, supportedEfforts)
               const color = disabled ? theme.dimText : selected ? theme.brand : theme.assistantText
               const pad = ' '.repeat(PILL_PAD)
               const gap = index < VALID_EFFORT_LEVELS.length - 1 ? ' '.repeat(PILL_GAP) : ''

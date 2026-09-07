@@ -5,6 +5,7 @@ import { installDomStub, type DomStub, type StubView } from './helpers/domStub.j
 import { cssBlocks, type Block } from './helpers/rendererCss.js'
 import { createSettingsView } from '../src/desktop/renderer/dom/settingsView.js'
 import {
+  EFFORT_MENU_ID,
   applySettingsIntent,
   createSettingsState,
   settingsView,
@@ -294,7 +295,7 @@ test('a row-level select is a closed pill, not a native control', (t) => {
   assert.equal(trigger.children.at(-1)?.tagName, 'svg')
 })
 
-test('the header project picker and the form fields stay native selects', (t) => {
+test('the header project picker and the single-choice form fields stay native selects', (t) => {
   // The deliberate scope limit of stage 5f: a native `<select>` is keyboard- and
   // screen-reader-complete for free, and a form is a keyboard flow.
   const { view, apply } = mount(t)
@@ -306,7 +307,45 @@ test('the header project picker and the form fields stay native selects', (t) =>
   const selects = findAll(form, 'settings-select')
   assert.ok(selects.length > 0, 'the model form has choice fields')
   assert.deepEqual(new Set(selects.map((node) => node.tagName)), new Set(['SELECT']))
-  assert.equal(findAll(form, 'settings-pill').length, 0)
+  // Exactly one pill: 思考等级 picks a *set*, and `<select multiple>` is a
+  // scrolling box the size of its options. Everything else stays native.
+  assert.equal(findAll(form, 'settings-pill').length, 1)
+})
+
+test('the effort field is a checkable listbox that stays open while picking', (t) => {
+  const { view, apply, stub, intents } = mount(t)
+  apply({ kind: 'new-model' })
+  const closed = findOne(child(view(), 'settings-body'), 'settings-form')
+  const trigger = findOne(closed, 'settings-pill')
+  assert.equal(trigger.attributes.get('aria-expanded'), 'false')
+  assert.match(trigger.text, /全部/)
+
+  stub.click(trigger.node)
+  assert.deepEqual(intents, [{ kind: 'toggle-menu', menu: EFFORT_MENU_ID }])
+
+  apply({ kind: 'toggle-menu', menu: EFFORT_MENU_ID })
+  apply({ kind: 'model-toggle-effort', level: 'high' })
+  const form = findOne(child(view(), 'settings-body'), 'settings-form')
+  const menu = findOne(form, 'settings-menu')
+  assert.equal(menu.attributes.get('role'), 'listbox')
+  // The whole point of the control: more than one option may be marked, and the
+  // menu is still up after the pick that marked it.
+  assert.equal(menu.attributes.get('aria-multiselectable'), 'true')
+  assert.equal(findOne(form, 'settings-pill').attributes.get('aria-expanded'), 'true')
+
+  const items = findAll(menu, 'settings-menu-item')
+  assert.deepEqual(items.map((item) => item.text), ['低', '中', '高', '极高', '最高'])
+  assert.deepEqual(
+    items.map((item) => item.attributes.get('aria-selected')),
+    ['false', 'false', 'true', 'false', 'false'],
+  )
+  // The check is drawn, and only on the checked row.
+  assert.equal(findAll(menu, 'settings-menu-check').length, 1)
+  assert.ok(items[2]!.classes.includes('checked'))
+
+  intents.length = 0
+  stub.click(items[0]!.node)
+  assert.deepEqual(intents, [{ kind: 'model-toggle-effort', level: 'low' }])
 })
 
 test('clicking the trigger asks to toggle that row, keyed by its row id', (t) => {
@@ -659,3 +698,88 @@ test('a delete confirmation is drawn under the row it is about', (t) => {
     'and directly under the row it is asking about',
   )
 })
+
+test('an mcp-server form renders in the MCP card with custom cards, doc link and inputs', (t) => {
+  const { view, apply } = mount(t)
+  apply({ kind: 'select-category', category: 'extensions' })
+  apply({ kind: 'new-mcp-server' })
+  const body = child(view(), 'settings-body')
+  const mcp = cardTitled(body, 'MCP 服务器')
+  const form = findOne(mcp, 'mcp-form-container')
+  assert.ok(form, 'the mcp form container rendered inside the MCP card')
+
+  // Header doc link
+  const docLink = findOne(form, 'mcp-form-doc-link')
+  assert.equal(docLink.text, '文档 🌐')
+  assert.equal(docLink.attributes.get('href'), 'https://modelcontextprotocol.io')
+
+  // Segmented control
+  const segBtns = findAll(form, 'mcp-segmented-btn')
+  assert.equal(segBtns.length, 2)
+  assert.equal(segBtns[0]?.text, 'STDIO')
+  assert.ok(segBtns[0]?.classes.includes('active'))
+  assert.equal(segBtns[1]?.text, '流式 HTTP')
+  assert.ok(!segBtns[1]?.classes.includes('active'))
+
+  // Inputs and buttons
+  const inputs = findAll(form, 'settings-input')
+  const placeholders = inputs.map((inp) => (inp.node as any).placeholder ?? inp.attributes.get('placeholder'))
+  assert.ok(placeholders.includes('MCP server name'))
+  assert.ok(placeholders.includes('openai-dev-mcp serve-sqlite'))
+  assert.ok(placeholders.includes('~/code'))
+
+  const addBtns = findAll(form, 'mcp-form-add-btn')
+  const addBtnLabels = addBtns.map((b) => b.text)
+  assert.ok(addBtnLabels.includes('+ 添加参数'))
+  assert.ok(addBtnLabels.includes('+ 添加环境变量'))
+  assert.ok(addBtnLabels.includes('+ 添加变量'))
+})
+
+test('switching transport in mcp form toggles between command and url cards', (t) => {
+  const { view, apply, stub, intents } = mount(t)
+  apply({ kind: 'select-category', category: 'extensions' })
+  apply({ kind: 'new-mcp-server' })
+
+  let form = findOne(child(view(), 'settings-body'), 'mcp-form-container')
+  const sseBtn = findAll(form, 'mcp-segmented-btn')[1]
+  assert.ok(sseBtn)
+  stub.dispatch(sseBtn.node, 'click')
+  assert.deepEqual(intents, [{ kind: 'draft-field', field: 'transport', value: 'sse' }])
+  apply(intents.pop()!)
+
+  form = findOne(child(view(), 'settings-body'), 'mcp-form-container')
+  const segBtns = findAll(form, 'mcp-segmented-btn')
+  assert.ok(segBtns[1]?.classes.includes('active'), 'SSE button is now active')
+  assert.ok(!segBtns[0]?.classes.includes('active'), 'STDIO button is now inactive')
+
+  const inputs = findAll(form, 'settings-input')
+  const placeholders = inputs.map((inp) => (inp.node as any).placeholder ?? inp.attributes.get('placeholder'))
+  assert.ok(placeholders.includes('http://localhost:3000/sse'), 'URL input is rendered')
+  assert.ok(!placeholders.includes('openai-dev-mcp serve-sqlite'), 'Command input is gone')
+  assert.ok(!placeholders.includes('~/code'), 'CWD input is gone')
+
+  // Headers replace the environment: nothing this process puts in an environment
+  // can follow an HTTP request, so offering `env` here would collect dead values.
+  const addBtnLabels = findAll(form, 'mcp-form-add-btn').map((btn) => btn.text)
+  assert.ok(addBtnLabels.includes('+ 添加请求头'))
+  assert.ok(!addBtnLabels.includes('+ 添加环境变量'))
+  assert.ok(!addBtnLabels.includes('+ 添加变量'), 'passthrough is stdio-only too')
+})
+
+test('typing in mcp form fields keeps input nodes, preserving carets', (t) => {
+  const { view, apply } = mount(t)
+  apply({ kind: 'select-category', category: 'extensions' })
+  apply({ kind: 'new-mcp-server' })
+
+  const form = findOne(child(view(), 'settings-body'), 'mcp-form-container')
+  const nameInput = findAll(form, 'settings-input')[0]
+  assert.ok(nameInput)
+
+  apply({ kind: 'draft-field', field: 'name', value: 's' })
+  apply({ kind: 'draft-field', field: 'name', value: 'sq' })
+
+  const after = findOne(child(view(), 'settings-body'), 'mcp-form-container')
+  const afterName = findAll(after, 'settings-input')[0]
+  assert.equal(afterName?.node, nameInput.node, 'the name input element was kept across typing')
+})
+

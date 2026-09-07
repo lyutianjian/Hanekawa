@@ -1082,7 +1082,7 @@ export function App({
           {effortPickerOpen && (
             <EffortPickerBar
               currentLevel={effortLevel as EffortLevel}
-              maxEffort={runtime.modelConfig.maxEffort}
+              supportedEfforts={runtime.modelConfig.supportedEfforts}
               onResolve={(result) => {
                 setEffortPickerOpen(false)
                 if (result.action === 'set') handleSetEffort(result.level)

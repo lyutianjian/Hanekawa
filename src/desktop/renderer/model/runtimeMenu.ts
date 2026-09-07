@@ -75,7 +75,7 @@ export function runtimeMenuView(input: {
   const models = input.models ? modelPickerView(input.models) : undefined
   const effort = effortPickerView({
     current: input.runtime?.effort ?? '',
-    ...(input.runtime?.maxEffort ? { maxEffort: input.runtime.maxEffort } : {}),
+    ...(input.runtime?.supportedEfforts ? { supportedEfforts: input.runtime.supportedEfforts } : {}),
   })
 
   return {

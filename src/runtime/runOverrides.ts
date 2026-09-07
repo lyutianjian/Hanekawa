@@ -42,11 +42,11 @@ export function buildRunOverrides(
     }
     modelOverride = deps.createActiveModelRuntime(modelKey)
     if (effortOverride) {
-      const clamped = clampEffort(effortOverride, modelConfig.maxEffort)
+      const clamped = clampEffort(effortOverride, modelConfig.supportedEfforts)
       effortOverride = typeof clamped === 'string' ? clamped : undefined
     }
   } else if (effortOverride) {
-    const clamped = clampEffort(effortOverride, deps.runtimeSlot.current.modelConfig.maxEffort)
+    const clamped = clampEffort(effortOverride, deps.runtimeSlot.current.modelConfig.supportedEfforts)
     effortOverride = typeof clamped === 'string' ? clamped : undefined
   }
 

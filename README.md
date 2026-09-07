@@ -109,6 +109,17 @@ stay per-project: only `config.json` and `settings.json` have a `~/.myagent/` co
 Extended thinking is on by default: requests carry the provider's adaptive thinking config, and
 `/effort <low|medium|high|xhigh|max>` tunes how much of it the model spends.
 
+Not every model takes every level, and some endpoints reject an unsupported one outright rather than
+rounding it down. `supportedEfforts` names the levels a model accepts — 思考等级 in the desktop
+settings screen's model form, where it is a checklist. Absent means all five. A level outside the set
+is shown as unavailable in the picker and moves to the nearest supported one below it:
+
+```json
+"models": {
+  "big": { "provider": "anthropic", "model": "claude-opus-5", "supportedEfforts": ["low", "high"] }
+}
+```
+
 `/thinking off` turns it off — requests then carry no `thinking` parameter at all — and `/thinking on`
 turns it back on. Either form writes `thinking` to `<project>/.myagent/settings.local.json` and applies
 to the session you are in; the desktop settings screen has the same switch under 通用 › 扩展思考. The

@@ -451,9 +451,9 @@ test('choosing a level runs its command once and shuts the popover', (t) => {
   assert.equal(r.view('chipRuntime').attributes.get('aria-expanded'), 'false')
 })
 
-test('a level over the model’s ceiling explains itself instead of being pickable', (t) => {
+test('a level the model does not support explains itself instead of being pickable', (t) => {
   const r = render(t)
-  const snapshot = runtime({ effort: 'medium', maxEffort: 'high' })
+  const snapshot = runtime({ effort: 'medium', supportedEfforts: ['low', 'medium', 'high'] })
   r.composer.renderRuntime(snapshot)
   r.stub.click(r.els.chipRuntime)
   r.composer.showRuntimeMenu(menuView(snapshot))

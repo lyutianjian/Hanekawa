@@ -3,7 +3,12 @@ import { getGlobalConfigPath } from '../utils/paths.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { ModelPricing } from '../harness/types.js'
 import type { MyAgentSettings } from './settings.js'
-import type { EffortLevel } from './effort.js'
+import {
+  EFFORT_RANK,
+  VALID_EFFORT_LEVELS,
+  normalizeSupportedEfforts,
+  type EffortLevel,
+} from './effort.js'
 import {
   mergeRouting,
   pickRoutedModel,
@@ -39,7 +44,15 @@ export interface ModelConfig {
   pricing?: ModelPricing
   maxOutputTokens?: number
   thinking?: ThinkingConfig
-  maxEffort?: EffortLevel
+  /**
+   * The effort levels this model accepts, or absent for "all of them".
+   *
+   * A set rather than a ceiling: a model can refuse a level in the middle of the
+   * ladder, and some endpoints reject an unsupported `effort` outright instead
+   * of rounding it. A config still holding the older `maxEffort` ceiling is
+   * expanded into the equivalent set on load.
+   */
+  supportedEfforts?: EffortLevel[]
   /**
    * Sends `anthropic-beta: context-1m-2025-08-07` on every request for this
    * model.
@@ -133,7 +146,32 @@ export class ConfigService {
     // The raw layers, not the merged result: `Config` no longer has a `profiles`
     // field, so a tier-era file's profiles survive only as untyped extras on the
     // objects we just read.
+    this.migrateMaxEffort()
     this.legacyModelFindings = this.migrateLegacyTiers([settings, loaded])
+  }
+
+  /**
+   * Expand the retired `maxEffort` ceiling into `supportedEfforts`.
+   *
+   * In memory only, and silently: unlike the tier migration this changes no
+   * behaviour — a prefix of the ladder clamps identically either way — so it is
+   * not worth a startup warning. The field is rewritten to disk the next time
+   * the model is saved.
+   */
+  private migrateMaxEffort(): void {
+    for (const model of Object.values(this.config.models)) {
+      const legacy = (model as { maxEffort?: unknown }).maxEffort
+      delete (model as { maxEffort?: unknown }).maxEffort
+      model.supportedEfforts = normalizeSupportedEfforts(model.supportedEfforts)
+        ?? (typeof legacy === 'string' && legacy in EFFORT_RANK
+          ? normalizeSupportedEfforts(
+              VALID_EFFORT_LEVELS.filter(
+                (level) => EFFORT_RANK[level] <= EFFORT_RANK[legacy as EffortLevel],
+              ),
+            )
+          : undefined)
+      if (model.supportedEfforts === undefined) delete model.supportedEfforts
+    }
   }
 
   /**

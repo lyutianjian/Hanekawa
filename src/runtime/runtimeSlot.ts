@@ -91,7 +91,7 @@ export class RuntimeSlot {
   }
 
   private applyEffort(level: string): string {
-    const clamped = clampEffort(level as EffortValue, this.session.modelConfig.maxEffort)
+    const clamped = clampEffort(level as EffortValue, this.session.modelConfig.supportedEfforts)
     // A numeric effort is a raw token budget, not a level, so it is never clamped
     // down to a named level — keep what the caller asked for.
     const clampedLevel = typeof clamped === 'number' ? level : clamped

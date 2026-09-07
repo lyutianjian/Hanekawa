@@ -52,7 +52,7 @@ export function activateModelKey(deps: ModelSwitchDeps, modelKey: string): SetMo
     const nextRuntime = deps.createRuntime(modelKey, deps.getSession(), deps.getRecords())
     deps.runtimeSlot.current.loop.clearCachedSections()
     deps.runtimeSlot.replace(nextRuntime)
-    // Re-apply current effort clamped to the new model's maxEffort.
+    // Re-apply current effort, moved onto a level the new model supports.
     deps.runtimeSlot.reapplyEffort()
     return {
       ok: true,

@@ -47,7 +47,7 @@ function createDeps(overrides: {
   const runtimeSlot = {
     current: {
       modelKey: 'current',
-      modelConfig: { model: 'current-model', maxEffort: 'high' },
+      modelConfig: { model: 'current-model', supportedEfforts: ['low', 'medium', 'high'] },
       providerName: 'anthropic',
       loop: { clearCachedSections: () => { calls.clearedCachedSections += 1 } },
     },
@@ -95,7 +95,7 @@ test('activateModelKey replaces the runtime and reports the new model', () => {
   assert.equal(calls.clearedCachedSections, 1,
     'the cached Environment section embeds the model name, so a stale prefix would survive')
   assert.deepEqual(calls.replaced, ['other'])
-  assert.equal(calls.reappliedEffort, 1, 'effort has to be re-clamped to the new model maxEffort')
+  assert.equal(calls.reappliedEffort, 1, 'effort has to be re-clamped to the new model supportedEfforts')
 })
 
 test('activateModelKey leaves the runtime alone for a key that is not configured', () => {

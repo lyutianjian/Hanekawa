@@ -112,7 +112,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     ...checkLegacyModelTiers(config),
     ...checkOptionalModelReferences(config),
   ]
-  const clampedInitialEffort = clampEffort(configuredEffortLevel, modelConfig.maxEffort)
+  const clampedInitialEffort = clampEffort(configuredEffortLevel, modelConfig.supportedEfforts)
 
   const toolRegistry = new ToolRegistry(await getAllTools(backgroundTasks))
   // Constructed fresh on every read: the service caches, and a reload exists

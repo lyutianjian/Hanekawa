@@ -204,7 +204,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     loop,
     planModeManager: undefined,
     modelKey: 'main',
-    modelConfig: { model: 'test-model', contextWindow: 200_000, maxEffort: 'high', apiKey: 'SECRET' },
+    modelConfig: { model: 'test-model', contextWindow: 200_000, supportedEfforts: ['low', 'medium', 'high'], apiKey: 'SECRET' },
     providerName: 'anthropic',
   }
   const runtimeSlot = {
@@ -266,7 +266,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
           model: `${key}-model`,
           provider: 'anthropic',
           contextWindow: 200_000,
-          maxEffort: 'high',
+          supportedEfforts: ['low', 'medium', 'high'],
           // Present exactly as resolveModel would fold them in.
           apiKey: 'SECRET',
           baseUrl: 'https://secret.example.com',

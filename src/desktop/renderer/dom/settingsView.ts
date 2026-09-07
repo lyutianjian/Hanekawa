@@ -1,5 +1,5 @@
 import { el, reconcile, replace, show } from './dom.js'
-import { button, pillSelect, selectField, textField, toggleField } from './controls.js'
+import { button, multiSelectField, pillSelect, selectField, textField, toggleField } from './controls.js'
 import { onPressOutside } from './dismiss.js'
 import type {
   SettingsAnchor,
@@ -267,7 +267,16 @@ export function createSettingsView(
         headerNode(view, onIntent),
         view.error ? el('div', 'settings-error', view.error) : null,
         confirmHomeless && view.confirming ? confirmNode(view.confirming.message, onIntent) : null,
-        formHomeless && view.form ? formNode(view.form, node, keptInput, onIntent) : null,
+        formHomeless && view.form
+          ? (view.form.kind === 'mcp-server'
+              ? mcpServerFormNode(view.form, node, keptInput, onIntent)
+              : formNode(view.form, node, keptInput, onIntent, {
+                  justOpened,
+                  focusAfterPaint: (element) => {
+                    pendingFocus.push(element)
+                  },
+                }))
+          : null,
         view.searchEmpty ? el('div', 'settings-empty', view.searchEmpty) : null,
         ...view.cards.map((card) =>
           cardNode(card, {
@@ -406,7 +415,11 @@ function cardNode(
       children.push(confirmNode(context.confirm.message, onIntent))
     }
     if (context.form?.anchor.rowId === row.id) {
-      children.push(formNode(context.form, node, context.keptInput, onIntent))
+      children.push(
+        context.form.kind === 'mcp-server'
+          ? mcpServerFormNode(context.form, node, context.keptInput, onIntent)
+          : formNode(context.form, node, context.keptInput, onIntent, context),
+      )
     }
   }
   // Anchored to the card rather than a row: 新增… has no subject yet, so it goes
@@ -415,7 +428,11 @@ function cardNode(
     children.push(confirmNode(context.confirm.message, onIntent))
   }
   if (context.form && context.form.anchor.rowId === undefined) {
-    children.push(formNode(context.form, node, context.keptInput, onIntent))
+    children.push(
+      context.form.kind === 'mcp-server'
+        ? mcpServerFormNode(context.form, node, context.keptInput, onIntent)
+        : formNode(context.form, node, context.keptInput, onIntent, context),
+    )
   }
   if (card.footerButtons?.length) {
     const footer = el('div', 'settings-card-footer')
@@ -511,6 +528,21 @@ function rowNode(
         controls.push(buttonNode(row.pending ? { ...spec, pending: true } : spec, onIntent))
       }
       break
+    case 'toggle-and-buttons': {
+      const { intentOnChange } = row.control.toggle
+      controls.push(
+        toggleField({
+          value: row.control.toggle.value,
+          ariaLabel: row.label,
+          ...(row.control.toggle.disabled || row.pending ? { enabled: false } : {}),
+          onChange: (value) => onIntent(intentOnChange(value)),
+        }),
+      )
+      for (const spec of row.control.buttons) {
+        controls.push(buttonNode(row.pending ? { ...spec, pending: true } : spec, onIntent))
+      }
+      break
+    }
     default:
       // A control kind with no case here would draw an *empty* cell — a row whose
       // setting silently cannot be changed. `runSidebarIntent` was caught by the
@@ -548,11 +580,18 @@ function buttonNode(spec: SettingsButton, onIntent: (intent: SettingsIntent) => 
   )
 }
 
+/** What a form's menu fields need from the paint, mirroring `cardNode`'s. */
+export interface FormMenuContext {
+  justOpened: string | undefined
+  focusAfterPaint: (element: HTMLElement) => void
+}
+
 function formNode(
   form: SettingsForm,
   node: NodeFactory,
   keptInput: InputFactory,
   onIntent: (intent: SettingsIntent) => void,
+  menus: FormMenuContext,
 ): HTMLElement {
   // Keyed by the anchor, not by a counter: opening a *different* form drops this
   // one's nodes, while re-rendering the same form keeps every field's caret.
@@ -569,7 +608,25 @@ function formNode(
     const row = node(`${key}:row:${field.id}`, 'div', 'settings-row')
     const control = node(`${key}:control:${field.id}`, 'div', 'settings-row-control')
     const controls: Node[] = []
-    if (field.choices) {
+    if (field.multi) {
+      const multi = field.multi
+      controls.push(
+        multiSelectField({
+          summary: multi.summary,
+          ariaLabel: field.label,
+          choices: multi.options,
+          selected: multi.selected,
+          open: multi.open,
+          // Focus moves into the menu only on the paint that opened it; a click
+          // that merely checks an item must leave the caret where it was.
+          ...(menus.justOpened === multi.menuId
+            ? { onFirstItem: (item: HTMLElement) => menus.focusAfterPaint(item) }
+            : {}),
+          onToggle: () => onIntent(multi.intentOnToggleMenu),
+          onToggleValue: (value) => onIntent(multi.intentOnToggle(value)),
+        }),
+      )
+    } else if (field.choices) {
       controls.push(
         selectField({
           value: field.value,
@@ -611,6 +668,245 @@ function formNode(
       button('settings-btn', '取消', '取消（Esc）', () => onIntent({ kind: 'cancel-draft' })),
     ),
   )
+  reconcile(section, children)
+  return section
+}
+
+function mcpServerFormNode(
+  form: Extract<SettingsForm, { kind: 'mcp-server' }>,
+  node: NodeFactory,
+  keptInput: InputFactory,
+  onIntent: (intent: SettingsIntent) => void,
+): HTMLElement {
+  const { draft } = form
+  const key = `form:${form.anchor.cardId}:${form.anchor.rowId ?? ''}:mcp`
+  const section = node(key, 'section', 'settings-card settings-form mcp-form-container')
+
+  // Header: Title + Doc link
+  const header = node(`${key}:header`, 'div', 'mcp-form-header')
+  const title = node(`${key}:header:title`, 'div', 'settings-card-title')
+  title.textContent = form.title
+  const docLink = node(`${key}:header:link`, 'a', 'mcp-form-doc-link')
+  docLink.textContent = '文档 🌐'
+  docLink.setAttribute('href', 'https://modelcontextprotocol.io')
+  docLink.setAttribute('target', '_blank')
+  docLink.setAttribute('rel', 'noreferrer noopener')
+  reconcile(header, [title, docLink])
+
+  const children: Node[] = [header]
+
+  // Card 1: Name and Type
+  const identityCard = node(`${key}:card:identity`, 'div', 'mcp-form-card')
+  const nameLabel = el('div', 'mcp-form-label', '名称')
+  const nameInput = keptInput(`${key}:name`, {
+    value: draft.name,
+    ariaLabel: '名称',
+    placeholder: 'MCP server name',
+    live: true,
+    intentOnCommit: (value) => ({ kind: 'draft-field', field: 'name', value }),
+  })
+
+  const typeRow = node(`${key}:type:row`, 'div', 'mcp-type-row')
+  const typeLabel = el('div', 'mcp-form-label', '类型')
+  const segmented = node(`${key}:segmented:transport`, 'div', 'mcp-segmented-control')
+  const stdioBtn = button(
+    draft.transport === 'stdio' ? 'mcp-segmented-btn active' : 'mcp-segmented-btn',
+    'STDIO',
+    'STDIO',
+    () => onIntent({ kind: 'draft-field', field: 'transport', value: 'stdio' }),
+  )
+  const sseBtn = button(
+    draft.transport === 'sse' ? 'mcp-segmented-btn active' : 'mcp-segmented-btn',
+    '流式 HTTP',
+    '流式 HTTP',
+    () => onIntent({ kind: 'draft-field', field: 'transport', value: 'sse' }),
+  )
+  reconcile(segmented, [stdioBtn, sseBtn])
+  reconcile(typeRow, [typeLabel, segmented])
+  reconcile(identityCard, [nameLabel, nameInput, typeRow])
+  children.push(identityCard)
+
+  if (draft.transport === 'stdio') {
+    // Card 2: Command
+    const cmdCard = node(`${key}:card:command`, 'div', 'mcp-form-card')
+    const cmdLabel = el('div', 'mcp-form-label', '启动命令')
+    const cmdInput = keptInput(`${key}:command`, {
+      value: draft.command,
+      ariaLabel: '启动命令',
+      placeholder: 'openai-dev-mcp serve-sqlite',
+      mono: true,
+      live: true,
+      intentOnCommit: (value) => ({ kind: 'draft-field', field: 'command', value }),
+    })
+    reconcile(cmdCard, [cmdLabel, cmdInput])
+    children.push(cmdCard)
+
+    // Card 3: Args
+    const argsCard = node(`${key}:card:args`, 'div', 'mcp-form-card')
+    const argsLabel = el('div', 'mcp-form-label', '参数')
+    const argsList = node(`${key}:list:args`, 'div', 'mcp-form-list')
+    const argRows: Node[] = []
+    for (let idx = 0; idx < draft.args.length; idx++) {
+      const argRow = node(`${key}:arg:row:${idx}`, 'div', 'mcp-form-row')
+      const argInput = keptInput(`${key}:arg:${idx}`, {
+        value: draft.args[idx] ?? '',
+        ariaLabel: `参数 ${idx + 1}`,
+        mono: true,
+        live: true,
+        intentOnCommit: (value) => ({ kind: 'mcp-update-arg', index: idx, value }),
+      })
+      const trash = button('mcp-btn-trash', '', `删除参数 ${idx + 1}`, () =>
+        onIntent({ kind: 'mcp-remove-arg', index: idx }),
+        { icon: 'trash' },
+      )
+      reconcile(argRow, [argInput, trash])
+      argRows.push(argRow)
+    }
+    reconcile(argsList, argRows)
+    const addArgBtn = button('mcp-form-add-btn', '+ 添加参数', '添加参数', () =>
+      onIntent({ kind: 'mcp-add-arg' }),
+    )
+    reconcile(argsCard, [argsLabel, argsList, addArgBtn])
+    children.push(argsCard)
+  } else {
+    // SSE: Card 2: URL
+    const urlCard = node(`${key}:card:url`, 'div', 'mcp-form-card')
+    const urlLabel = el('div', 'mcp-form-label', 'URL')
+    const urlInput = keptInput(`${key}:url`, {
+      value: draft.url,
+      ariaLabel: 'URL',
+      placeholder: 'http://localhost:3000/sse',
+      mono: true,
+      live: true,
+      intentOnCommit: (value) => ({ kind: 'draft-field', field: 'url', value }),
+    })
+    reconcile(urlCard, [urlLabel, urlInput])
+    children.push(urlCard)
+  }
+
+  /** One card of key/value rows — the env card and the header card differ only in wording. */
+  const pairCard = (
+    slot: string,
+    label: string,
+    noun: string,
+    pairs: readonly { readonly key: string; readonly value: string }[],
+    intents: {
+      update: (index: number, part: { key?: string; value?: string }) => SettingsIntent
+      remove: (index: number) => SettingsIntent
+      add: () => SettingsIntent
+    },
+  ): HTMLElement => {
+    const card = node(`${key}:card:${slot}`, 'div', 'mcp-form-card')
+    const cardLabel = el('div', 'mcp-form-label', label)
+    const list = node(`${key}:list:${slot}`, 'div', 'mcp-form-list')
+    const rows: Node[] = []
+    for (let idx = 0; idx < pairs.length; idx++) {
+      const item = pairs[idx]!
+      const row = node(`${key}:${slot}:row:${idx}`, 'div', 'mcp-form-row mcp-env-row')
+      const keyInput = keptInput(`${key}:${slot}:key:${idx}`, {
+        value: item.key,
+        ariaLabel: `${noun}键 ${idx + 1}`,
+        placeholder: '键',
+        mono: true,
+        live: true,
+        intentOnCommit: (value) => intents.update(idx, { key: value }),
+      })
+      const valInput = keptInput(`${key}:${slot}:val:${idx}`, {
+        value: item.value,
+        ariaLabel: `${noun}值 ${idx + 1}`,
+        placeholder: '值',
+        mono: true,
+        live: true,
+        intentOnCommit: (value) => intents.update(idx, { value }),
+      })
+      const trash = button('mcp-btn-trash', '', `删除${noun} ${idx + 1}`, () =>
+        onIntent(intents.remove(idx)),
+        { icon: 'trash' },
+      )
+      reconcile(row, [keyInput, valInput, trash])
+      rows.push(row)
+    }
+    reconcile(list, rows)
+    const addBtn = button('mcp-form-add-btn', `+ 添加${noun}`, `添加${noun}`, () =>
+      onIntent(intents.add()),
+    )
+    reconcile(card, [cardLabel, list, addBtn])
+    return card
+  }
+
+  if (draft.transport === 'stdio') {
+    // Card 4: Env. Only for stdio — an environment cannot follow an HTTP request.
+    children.push(
+      pairCard(`env`, '环境变量', '环境变量', draft.env, {
+        update: (index, part) => ({ kind: 'mcp-update-env', index, ...part }),
+        remove: (index) => ({ kind: 'mcp-remove-env', index }),
+        add: () => ({ kind: 'mcp-add-env' }),
+      }),
+    )
+
+    // Card 5: Env Passthrough
+    const ptCard = node(`${key}:card:pt`, 'div', 'mcp-form-card')
+    const ptLabel = el('div', 'mcp-form-label', '环境变量传递')
+    const ptList = node(`${key}:list:pt`, 'div', 'mcp-form-list')
+    const ptRows: Node[] = []
+    for (let idx = 0; idx < draft.envPassthrough.length; idx++) {
+      const ptRow = node(`${key}:pt:row:${idx}`, 'div', 'mcp-form-row')
+      const ptInput = keptInput(`${key}:pt:${idx}`, {
+        value: draft.envPassthrough[idx] ?? '',
+        ariaLabel: `环境变量传递 ${idx + 1}`,
+        placeholder: '例如 PATH 或 API_KEY',
+        mono: true,
+        live: true,
+        intentOnCommit: (value) => ({ kind: 'mcp-update-env-passthrough', index: idx, value }),
+      })
+      const trash = button('mcp-btn-trash', '', `删除环境变量传递 ${idx + 1}`, () =>
+        onIntent({ kind: 'mcp-remove-env-passthrough', index: idx }),
+        { icon: 'trash' },
+      )
+      reconcile(ptRow, [ptInput, trash])
+      ptRows.push(ptRow)
+    }
+    reconcile(ptList, ptRows)
+    const addPtBtn = button('mcp-form-add-btn', '+ 添加变量', '添加变量', () =>
+      onIntent({ kind: 'mcp-add-env-passthrough' }),
+    )
+    reconcile(ptCard, [ptLabel, ptList, addPtBtn])
+    children.push(ptCard)
+
+    // Card 6: Cwd
+    const cwdCard = node(`${key}:card:cwd`, 'div', 'mcp-form-card')
+    const cwdLabel = el('div', 'mcp-form-label', '工作目录')
+    const cwdInput = keptInput(`${key}:cwd`, {
+      value: draft.cwd,
+      ariaLabel: '工作目录',
+      placeholder: '~/code',
+      mono: true,
+      live: true,
+      intentOnCommit: (value) => ({ kind: 'draft-field', field: 'cwd', value }),
+    })
+    reconcile(cwdCard, [cwdLabel, cwdInput])
+    children.push(cwdCard)
+  } else {
+    // Card 3: Request headers — where a hosted endpoint's bearer token goes.
+    children.push(
+      pairCard(`headers`, '请求头', '请求头', draft.headers, {
+        update: (index, part) => ({ kind: 'mcp-update-header', index, ...part }),
+        remove: (index) => ({ kind: 'mcp-remove-header', index }),
+        add: () => ({ kind: 'mcp-add-header' }),
+      }),
+    )
+  }
+
+  // Footer
+  const footer = node(`${key}:footer`, 'div', 'settings-card-footer mcp-form-footer')
+  reconcile(footer, [
+    button('settings-btn primary', form.submitLabel, form.submitLabel, () =>
+      onIntent({ kind: 'submit-draft' }),
+    ),
+    button('settings-btn', '取消', '取消（Esc）', () => onIntent({ kind: 'cancel-draft' })),
+  ])
+  children.push(footer)
+
   reconcile(section, children)
   return section
 }

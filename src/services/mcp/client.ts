@@ -1,5 +1,10 @@
+import { homedir } from 'node:os'
+import path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
+import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { CallToolRequest, ListToolsRequest } from '@modelcontextprotocol/sdk/types.js'
 import type { McpServerConfig } from './types.js'
 
@@ -31,7 +36,34 @@ export function getMcpTimeoutMs(config: McpServerConfig): number {
   return config.timeoutMs
 }
 
+/**
+ * Connects one server, trying each transport the config allows in order.
+ *
+ * Remote servers get two attempts: Streamable HTTP first, then the older SSE
+ * transport, which is the only way to tell the two apart — a server that speaks
+ * just SSE rejects the initial POST. Every attempt needs its own `Client`; the
+ * SDK's is single-use once `connect` has failed.
+ */
 export async function connectMcpServer(config: McpServerConfig, options: ManagedMcpClientOptions = {}): Promise<Client> {
+  const timeoutMs = getMcpTimeoutMs(config)
+  const factories = transportFactories(config)
+  let lastError: unknown
+  for (const makeTransport of factories) {
+    const client = newClient(options)
+    try {
+      await client.connect(makeTransport(), { timeout: timeoutMs })
+      return client
+    } catch (error) {
+      client.onclose = undefined
+      await client.close().catch(() => {})
+      lastError = error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
+
+/** The transports to try, in order. Throws when the config cannot make one. */
+function transportFactories(config: McpServerConfig): (() => Transport)[] {
   if (config.transport === 'stdio') {
     if (!config.command) {
       throw new Error('stdio transport requires "command"')
@@ -39,44 +71,96 @@ export async function connectMcpServer(config: McpServerConfig, options: Managed
     if (config.args !== undefined && (!Array.isArray(config.args) || config.args.some((arg) => typeof arg !== 'string'))) {
       throw new Error('stdio transport "args" must be an array of strings')
     }
-    const timeoutMs = getMcpTimeoutMs(config)
 
-    const transport = new StdioClientTransport({
-      command: config.command,
-      args: config.args,
-    })
-
-    const client = new Client({ name: 'myagent', version: '0.1.0' }, {
-      listChanged: options.onToolsChanged
-        ? {
-            tools: {
-              autoRefresh: true,
-              debounceMs: 100,
-              onChanged: (error, tools) => {
-                if (error) {
-                  void options.onReconnectFailed?.(error)
-                  return
-                }
-                if (tools) void options.onToolsChanged?.(client, tools)
-              },
-            },
+    let env: Record<string, string> | undefined
+    if (config.env || config.envPassthrough?.length) {
+      env = { ...getDefaultEnvironment() }
+      if (config.envPassthrough) {
+        for (const key of config.envPassthrough) {
+          const trimmed = key.trim()
+          if (trimmed && process.env[trimmed] !== undefined) {
+            env[trimmed] = process.env[trimmed]!
           }
-        : undefined,
-    })
-    client.onclose = () => {
-      options.onClose?.()
+        }
+      }
+      if (config.env) {
+        for (const [k, v] of Object.entries(config.env)) {
+          if (k.trim()) env[k.trim()] = v
+        }
+      }
     }
+
+    let cwd: string | undefined = config.cwd?.trim()
+    if (cwd) {
+      if (cwd === '~') {
+        cwd = homedir()
+      } else if (cwd.startsWith('~/') || cwd.startsWith('~\\')) {
+        cwd = path.join(homedir(), cwd.slice(2))
+      }
+    }
+
+    const command = config.command
+    const args = config.args
+    return [
+      () =>
+        new StdioClientTransport({
+          command,
+          args,
+          ...(env ? { env } : {}),
+          ...(cwd ? { cwd } : {}),
+        }),
+    ]
+  }
+
+  if (config.transport === 'sse') {
+    if (!config.url) {
+      throw new Error('sse transport requires "url"')
+    }
+    let url: URL
     try {
-      await client.connect(transport, { timeout: timeoutMs })
-    } catch (error) {
-      client.onclose = undefined
-      await client.close().catch(() => {})
-      throw error
+      url = new URL(config.url)
+    } catch {
+      throw new Error(`sse transport "url" is not a valid URL: ${config.url}`)
     }
-    return client
+    // `new URL` accepts anything with a scheme — `localhost:3000` parses, and the
+    // transport then fails deep inside `fetch` with "unknown scheme".
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error(`sse transport "url" must be http or https: ${config.url}`)
+    }
+    const headers = config.headers && Object.keys(config.headers).length > 0 ? { ...config.headers } : undefined
+    const init = headers ? { requestInit: { headers } } : {}
+    return [
+      () => new StreamableHTTPClientTransport(url, init),
+      () => new SSEClientTransport(url, init),
+    ]
   }
 
   throw new Error(`Unsupported transport: ${config.transport}`)
+}
+
+/** One client, wired to the caller's callbacks. */
+function newClient(options: ManagedMcpClientOptions): Client {
+  const client: Client = new Client({ name: 'myagent', version: '0.1.0' }, {
+    listChanged: options.onToolsChanged
+      ? {
+          tools: {
+            autoRefresh: true,
+            debounceMs: 100,
+            onChanged: (error, tools) => {
+              if (error) {
+                void options.onReconnectFailed?.(error)
+                return
+              }
+              if (tools) void options.onToolsChanged?.(client, tools)
+            },
+          },
+        }
+      : undefined,
+  })
+  client.onclose = () => {
+    options.onClose?.()
+  }
+  return client
 }
 
 export async function disconnectMcpServer(client: Client): Promise<void> {

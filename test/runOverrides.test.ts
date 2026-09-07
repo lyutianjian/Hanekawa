@@ -15,9 +15,9 @@ import type { RuntimeSlot } from '../src/runtime/runtimeSlot.js'
  * passed on, because `AgentRunOverrides.effort` is the level enum.
  */
 
-const MODELS: Record<string, { maxEffort?: string } | undefined> = {
-  current: { maxEffort: 'medium' },
-  capped: { maxEffort: 'low' },
+const MODELS: Record<string, { supportedEfforts?: string[] } | undefined> = {
+  current: { supportedEfforts: ['low', 'medium'] },
+  capped: { supportedEfforts: ['low'] },
   uncapped: {},
 }
 

@@ -7,6 +7,7 @@ import { getReadFileContent, rememberReadFile, requireFreshRead, resolveTextFile
 import { patchDetail } from '../editPatch.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from '../pathSafety.js'
 import { writeTextFile } from '../textFile.js'
+import { trackFileEdit } from '../trackFileEdit.js'
 import { DESCRIPTION } from './prompt.js'
 
 export const writeFileTool: Tool = {
@@ -66,6 +67,7 @@ export const writeFileTool: Tool = {
     const { encoding, lineEndings } = exists
       ? await resolveTextFileMeta(absolute, context)
       : { encoding: 'utf8' as BufferEncoding, lineEndings: 'LF' as const }
+    await trackFileEdit(context, absolute)
     // Atomic write: write to a temp file in the same directory, then rename.
     // This prevents symlink following because writeFile follows symlinks,
     // but rename does not. It also prevents data loss on crash.

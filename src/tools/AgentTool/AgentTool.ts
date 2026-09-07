@@ -1493,6 +1493,9 @@ function createSubAgentToolContext(parent: ToolContext, subAgentId: string, abor
     invokedSkills: new Map(),
     taskState: new Map(),
     abortSignal,
+    // Inherited, not reset: a subagent's edits hit the same worktree, so they
+    // belong in the parent session's file history.
+    trackFileEdit: parent.trackFileEdit,
   }
 }
 

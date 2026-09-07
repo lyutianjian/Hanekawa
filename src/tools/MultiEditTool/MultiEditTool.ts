@@ -6,6 +6,7 @@ import { assertParentNotSymlink, assertFileNotSymlink } from '../pathSafety.js'
 import { findStringMatches, multipleMatchFailure, noMatchFailure, replaceLiteralMatch, preserveQuoteStyle } from '../FileEditTool/FileEditTool.js'
 import { patchDetail } from '../editPatch.js'
 import { readTextFile, writeTextFile } from '../textFile.js'
+import { trackFileEdit } from '../trackFileEdit.js'
 import { DESCRIPTION } from './prompt.js'
 
 interface MultiEditItem {
@@ -118,6 +119,7 @@ export const multiEditTool: Tool = {
     }
 
     const { encoding, lineEndings } = await resolveTextFileMeta(absolute, context)
+    await trackFileEdit(context, absolute)
     await writeTextFile(absolute, nextContent, encoding, lineEndings)
     await rememberReadFile(absolute, nextContent, context, { encoding, lineEndings })
     return {

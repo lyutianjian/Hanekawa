@@ -4,6 +4,7 @@ import type { Tool } from '../../harness/types.js'
 import { assertInsideCwd } from '../../utils/paths.js'
 import { requireFreshRead } from '../fileState.js'
 import { assertParentNotSymlink } from '../pathSafety.js'
+import { trackFileEdit } from '../trackFileEdit.js'
 import { DESCRIPTION } from './prompt.js'
 
 export const deleteFileTool: Tool = {
@@ -33,6 +34,7 @@ export const deleteFileTool: Tool = {
     if (unsafeParent) {
       return unsafeParent
     }
+    await trackFileEdit(context, absolute)
     await rm(absolute, { force: false })
     context.readFiles.delete(absolute)
     context.readFileState?.delete(absolute)

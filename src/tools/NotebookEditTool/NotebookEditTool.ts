@@ -6,6 +6,7 @@ import { requireFreshRead, readFileAndRemember } from '../fileState.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from '../pathSafety.js'
 import { assertInsideCwd } from '../../utils/paths.js'
 import { patchDetail } from '../editPatch.js'
+import { trackFileEdit } from '../trackFileEdit.js'
 import { DESCRIPTION } from './prompt.js'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -391,6 +392,8 @@ export const notebookEditTool: Tool = {
  * Uses atomic write (tmp + rename) for safety.
  */
 async function writeNotebook(absolutePath: string, notebook: NotebookContent, context: ToolContext): Promise<void> {
+  await trackFileEdit(context, absolutePath)
+
   // Jupyter standard: 1-space indent
   const content = JSON.stringify(notebook, null, 1)
 

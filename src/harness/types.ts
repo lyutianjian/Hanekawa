@@ -370,6 +370,12 @@ export interface ToolContext {
   abortSignal?: AbortSignal
   appendRecord?(record: SessionRecord): Promise<void>
   appendMetric?(metric: SessionMetricInput): Promise<void>
+  /**
+   * Called by write tools with an absolute path *before* they touch the file,
+   * so file history can back up the pre-edit contents. Absent when no file
+   * history service is wired; every write path must still work without it.
+   */
+  trackFileEdit?(filePath: string): Promise<void>
   currentToolUseId?: string
   currentTurnId?: string
   getPermissionMode?(): PermissionMode

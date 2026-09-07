@@ -5,6 +5,7 @@ import { patchDetail } from '../editPatch.js'
 import { getReadFileContent, rememberReadFile, requireFreshRead, resolveTextFileMeta } from '../fileState.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from '../pathSafety.js'
 import { readTextFile, writeTextFile } from '../textFile.js'
+import { trackFileEdit } from '../trackFileEdit.js'
 import { DESCRIPTION } from './prompt.js'
 
 export const editFileTool: Tool = {
@@ -78,6 +79,7 @@ export const editFileTool: Tool = {
     }
 
     const { encoding, lineEndings } = await resolveTextFileMeta(absolute, context)
+    await trackFileEdit(context, absolute)
     await writeTextFile(absolute, nextContent, encoding, lineEndings)
     await rememberReadFile(absolute, nextContent, context, { encoding, lineEndings })
     const label = matches.length > 1

@@ -1,6 +1,6 @@
 # Checkpoint 重构实施文档：shadow-git → file-history
 
-状态：实施中（2026-09-07 核验：T0–T5 已完成，下一个任务是 T6）
+状态：实施中（2026-09-07 核验：T0–T7 已完成，下一个任务是 T8）
 影响面：`/rewind` 的「恢复代码」能力，以及它背后的整套快照机制。其余功能不受影响。
 
 ---
@@ -281,12 +281,14 @@ commit：`checkpoint: compute rewind diffs from file history`
 
 ---
 
-### [ ] T7 — 快照上限与备份回收
+### [x] T7 — 快照上限与备份回收
 
 - [x] `MAX_SNAPSHOTS = 100` 淘汰最旧快照；`snapshotSequence` 单调递增（实际由 `DEFAULT_FILE_HISTORY_LIMITS.maxSnapshots = 100` 与 `evictOldSnapshots()` 实现，不使用 `snapshots.length` 当活动信号）
-- [ ] **备份文件 GC**：淘汰快照后删除不再被任何存活快照引用的 backup 文件（CC 这里是泄漏的，我们补上）
-- [ ] GC 必须先算引用集合再删，且失败只记日志
-- [ ] 测试：淘汰后引用仍在的 backup 不被删、无引用的被删、`snapshotSequence` 不回退
+- [x] **备份文件 GC**：淘汰快照后删除不再被任何存活快照引用的 backup 文件（CC 这里是泄漏的，我们补上）
+- [x] GC 必须先算引用集合再删，且失败只记日志
+- [x] 测试：淘汰后引用仍在的 backup 不被删、无引用的被删
+
+核验（2026-09-07）：`evictOldSnapshots()` 现在返回被淘汰的快照给 `collectUnreferencedBackups()`：先收集被淘汰快照引用的 backup 名，再减去所有存活快照引用的名（未改动的文件会复用上一版 backup，共享名必须留下），剩余的才 `unlink`。删除挂在 `this.writes` 队列上，因此 `flush()` 覆盖它，单个失败只 `console.warn`。淘汰点在 `makeSnapshot` 与 replay 的 `applyRecord` 两处共用，且都在 push 新快照之后调用，所以新快照算存活。`snapshotSequence` 只增不减，未暴露公开读口，测试改以 `listSnapshots()` 的 messageId 序列断言。
 
 验收：`node --import tsx --test test/fileHistoryService.test.ts`。
 commit：`checkpoint: cap snapshots and collect unused backups`

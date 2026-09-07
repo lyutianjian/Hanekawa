@@ -1,5 +1,6 @@
 import { describe, it, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { appendFile, mkdtemp, mkdir, readdir, readFile, writeFile, rm, stat, chmod } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -303,6 +304,46 @@ describe('FileHistoryService', () => {
       for (const bad of ['', '.', '..', 'a/b', '../evil']) {
         await assert.rejects(() => removeFileHistory(bad), /Invalid session ID/)
       }
+    })
+  })
+
+  describe('snapshot cap', () => {
+    /** The backup file a given version of `filePath` is stored under. */
+    function backupName(filePath: string, version: number): string {
+      return `${createHash('sha256').update(filePath).digest('hex').slice(0, 16)}@v${version}`
+    }
+
+    it('evicts old snapshots and deletes only the backups they alone held', async () => {
+      const churned = path.join(cwd, 'churned.txt')
+      const stable = path.join(cwd, 'stable.txt')
+      await writeFile(churned, 'v0\n', 'utf8')
+      await writeFile(stable, 'stable\n', 'utf8')
+
+      const service = new FileHistoryService(cwd, 'gc1', { maxSnapshots: 2 })
+      await service.init()
+
+      await service.makeSnapshot('m1')
+      await service.trackEdit(churned)
+      await service.trackEdit(stable)
+      await writeFile(churned, 'v1\n', 'utf8')
+
+      await service.makeSnapshot('m2')
+      await writeFile(churned, 'v2\n', 'utf8')
+
+      // m3 pushes m1 out; churned@v1 was only ever m1's, stable@v1 is reused
+      // by every later snapshot because the file never changed.
+      await service.makeSnapshot('m3')
+      await service.flush()
+
+      const dir = fileHistoryDir('gc1')
+      assert.equal(service.listSnapshots().map((s) => s.messageId).join(','), 'm2,m3')
+      assert.equal(await exists(path.join(dir, backupName(churned, 1))), false)
+      assert.equal(await exists(path.join(dir, backupName(churned, 2))), true)
+      assert.equal(await exists(path.join(dir, backupName(stable, 1))), true)
+
+      // The surviving backups still restore.
+      await service.rewindTo('m2')
+      assert.equal(await readFile(churned, 'utf8'), 'v1\n')
     })
   })
 })

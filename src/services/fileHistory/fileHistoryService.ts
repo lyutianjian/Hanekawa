@@ -187,10 +187,40 @@ export class FileHistoryService {
     })
   }
 
+  /**
+   * Drops the oldest snapshots past `maxSnapshots`, then collects the backups
+   * they were the last holders of. Callers push the new snapshot *before*
+   * calling, so it counts as a survivor.
+   */
   private evictOldSnapshots(): void {
-    if (this.state.snapshots.length > this.limits.maxSnapshots) {
-      this.state.snapshots = this.state.snapshots.slice(-this.limits.maxSnapshots)
-    }
+    const overflow = this.state.snapshots.length - this.limits.maxSnapshots
+    if (overflow <= 0) return
+    const evicted = this.state.snapshots.slice(0, overflow)
+    this.state.snapshots = this.state.snapshots.slice(overflow)
+    this.collectUnreferencedBackups(evicted)
+  }
+
+  /**
+   * Deletes backup files no surviving snapshot names. The reference set is
+   * built from the survivors first and subtracted, never the other way round:
+   * a version shared with a live snapshot (an unchanged file reuses its
+   * backup) must stay, or the rewind that needs it would find nothing.
+   */
+  private collectUnreferencedBackups(evicted: FileHistorySnapshot[]): void {
+    const unreferenced = new Set(backupNamesIn(evicted))
+    if (unreferenced.size === 0) return
+    for (const name of backupNamesIn(this.state.snapshots)) unreferenced.delete(name)
+    if (unreferenced.size === 0) return
+
+    this.writes = this.writes.then(async () => {
+      for (const name of unreferenced) {
+        try {
+          await unlink(path.join(this.backupDir, name))
+        } catch (error) {
+          if (!isENOENT(error)) console.warn(`Failed to collect backup ${name}:`, (error as Error).message)
+        }
+      }
+    })
   }
 
   listSnapshots(): FileHistorySnapshot[] {
@@ -631,6 +661,15 @@ export class FileHistoryService {
 function backupNameFor(absolutePath: string, version: number): string {
   const hash = createHash('sha256').update(absolutePath).digest('hex').slice(0, 16)
   return `${hash}@v${version}`
+}
+
+/** Every backup file named by these snapshots; absent versions carry no file. */
+function* backupNamesIn(snapshots: readonly FileHistorySnapshot[]): Generator<string> {
+  for (const snapshot of snapshots) {
+    for (const backup of Object.values(snapshot.trackedFileBackups)) {
+      if (backup.backupFileName !== null) yield backup.backupFileName
+    }
+  }
 }
 
 function isENOENT(error: unknown): boolean {

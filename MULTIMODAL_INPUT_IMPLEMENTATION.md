@@ -87,7 +87,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S06 | 记录与上下文类型接入 `images`，持久化兼容 | S02, S05 | 中 | `[x]` |
 | S07 | `UserInput` 贯穿提交路径与中断恢复 | S06 | 长 | `[x]` |
 | S08 | 协议命令与 wire schema | S07 | 中 | `[x]` |
-| S09 | `@` 图片引用 | S08 | 中 | `[ ]` |
+| S09 | `@` 图片引用 | S08 | 中 | `[x]` |
 | S10 | `Read` 工具图片分流 | S06 | 中 | `[ ]` |
 | S11 | Desktop 采集与草稿状态机 | S08, S19 | 长 | `[ ]` |
 | S12 | Desktop 预览、缩略图与打开原图 | S11 | 短 | `[ ]` |
@@ -380,7 +380,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S09 `[ ]` `@` 图片引用
+## S09 `[x]` `@` 图片引用
 
 **前置**：S08 · **规模**：中 · **设计稿**：§7.1
 **涉及**：`src/harness/atMentions.ts`、`test/atMentions.test.ts`
@@ -397,6 +397,17 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：测试覆盖额度分离、去重、`#L` 报错、目录不递归、失败不降级为文本。
 **验证**：`node --import tsx --test test/atMentions.test.ts`
 **提交**：`checkpoint: S09 support image references in @ mentions`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- 额度分离（工作项 2）：新增 `classifyAtMentions` —— 先经共享的 `collectRawMentions`（沿用 atToken 的 quoted/regular 两种模式与既有「路径#行范围」去重键）识别**全部**引用，再分别限制：代码文本维持 `MAX_AT_MENTION_FILES = 5`，图片走 `MAX_AT_MENTION_IMAGES = 10`（收集时按 `existingImageCount` 扣减显式附件）。`extractAtMentionedFiles` 相应改为无额度的语法层视图（原 `slice(0, 5)` 移除，额度只存在于 classify 一处），与 renderer 的一致性测试不受影响。图片候选按扩展名提名（`IMAGE_MENTION_EXTENSIONS`，含 BMP/HEIC/TIFF/AVIF 这类已知不支持的格式——让它们经管线大声失败而非像非代码文本一样被静默跳过），真实格式仍由 S04 管线内容嗅探确认。
+- 去重与顺序（工作项 1、6）：图片 mention 按**路径**去重（`#L` 后缀不产生第二份），附件顺序按文本位置（quoted pass 先于 regular 的既有解析顺序不再影响附件顺序）；引号路径、项目内绝对路径沿用既有解析。
+- 收集函数 `collectAtMentionImages`：输入准备阶段读取项目内文件字节，经 `AtMentionImageImporter`（结构上即 S05 的 `ImageAttachmentService`，无第二导入路径）导入。错误全部结构化返回：`#L` 报「不适用」（`line-range-not-applicable`）、项目外报 `outside-project` 并提示改走显式导入（粘贴/拖入/选择，不扩大模型自主读取项目外文件的权限）、缺失报 `file-missing`、超额报 `too-many-images`（单次输入上限含显式附件）、导入失败原样透传（`unsupported-format` / `decode-failed` / `image-too-large` / `store-write-failed`）。静默跳过的只剩与代码文本路径一致的 protected / gitignored 路径与目录。
+- loop 接线（工作项 4、5）：`AgentLoopOptions.imageAttachments?` 接收 importer；`runInternal` 在**追加用户记录之前**收集 @ 图片——任一失败即 `formatAtMentionImageErrors` 抛错（无用户记录、无 at-mention 记录、轮次未开始；SessionController 既有 catch 以 error notice 反馈，草稿留在 shell，不悄悄退回普通文本），全部成功则引用并入用户消息的 `images`（显式附件在前、mention 图在后），中断恢复随 `appendTurnInterruption` 自然带回完整草稿。`/` 开头的命令输入沿用 at-mention 门控不收集。提交后重放经 S06 的 ref 路径解析缓存副本，不重读源文件。
+- 附件服务自 `bootstrap → SessionScopeDeps → CreateRuntimeDeps → AgentLoop` 逐层可选传入（service 本就是 S08 挂在 `ProjectRuntime.attachments` 的每项目单例）。子代理 loop 首版不接线（附件归属规则属 S23）：无 importer 时图片 mention 行为与之前完全一致（纯文本）。
+- `@目录` 不递归（工作项 3）：目录在分类层就走代码文本分支，目录展开只收代码扩展名；`@目录` 即便内含图片也不产生图片附件或错误（分类、收集、record 三层各有断言）。`buildAtMentionContextRecord` 只消费 classify 的 codeFiles——图片引用不进 `at_mention_context` 记录，归属用户消息，同一张图不会出现两次。
+- 测试：`atMentions.test.ts` 17 项（新增 10：额度分离不吞图、图片按路径去重+文本顺序、导入成功（字节/会话 ID/文件名过线）、`#L` 报错、缺失+项目外双失败、超额含显式附件计数、导入失败透传+错误文案格式、gitignored 跳过、目录三层不递归、code record 不含图片）；`loop.test.ts` 新增 2（@ 图导入并绑定用户消息、at-mention 记录缺席；失败 mention 阻止轮次且零记录落盘）。
+- 验证：窄测 `atMentions`（17）/`loop`（50）/`loopAbort`+`messageQueue`+`sessionController`+`sessionWorkspace`（55）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3047 项 3046 过、1 跳过（既有）、0 失败。
 
 ---
 

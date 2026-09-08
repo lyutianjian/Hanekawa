@@ -1,17 +1,22 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile as execFileCallback } from 'node:child_process'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import {
   buildAtMentionContextRecord,
+  classifyAtMentions,
+  collectAtMentionImages,
   extractAtMentionedFiles,
+  formatAtMentionImageErrors,
   parseAtMentionedFileLines,
+  type AtMentionImageImporter,
 } from '../src/harness/atMentions.js'
 import { extractAtMentions } from '../src/runtime/suggestions/atToken.js'
 import type { ToolContext } from '../src/harness/types.js'
+import { fixtureImagePath, loadFixtureBytes, makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 const execFile = promisify(execFileCallback)
 
@@ -192,6 +197,248 @@ test('buildAtMentionContextRecord truncates large attached content', async () =>
     assert.equal(record.files[0]?.lineEnd, 2000)
     assert.equal(record.files[0]?.truncated, true)
     assert.match(record.content, /\[... @-mentioned file content truncated ...\]/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// S09: @-mentioned images
+
+/** Records what the store was asked to import; answers from a script. */
+function recordingImporter(
+  answer: (name: string) =>
+    | { ok: true; value: { ref: ReturnType<typeof makeImageAttachmentRef> } }
+    | { ok: false; reason: 'unsupported-format' | 'decode-failed' | 'image-too-large' | 'store-write-failed'; message: string },
+): { importer: AtMentionImageImporter; calls: Array<{ sessionId: string; name: string; bytes: Buffer }> } {
+  const calls: Array<{ sessionId: string; name: string; bytes: Buffer }> = []
+  return {
+    calls,
+    importer: {
+      importImage: async (sessionId, bytes, name) => {
+        calls.push({ sessionId, name, bytes })
+        return answer(name)
+      },
+    },
+  }
+}
+
+function okRef(name: string): { ok: true; value: { ref: ReturnType<typeof makeImageAttachmentRef> } } {
+  return {
+    ok: true,
+    value: { ref: makeImageAttachmentRef({ id: `img-${name}`, ownerSessionId: 's1', name }) },
+  }
+}
+
+test('classifyAtMentions applies the code-text cap without swallowing image mentions', () => {
+  const input = '@a.py @shot1.png @b.py @c.py @d.py @e.py @f.py @shot2.png'
+
+  const { codeFiles, images } = classifyAtMentions(input)
+  assert.deepEqual(codeFiles.map((mention) => mention.filePath), ['a.py', 'b.py', 'c.py', 'd.py', 'e.py'])
+  assert.deepEqual(images.map((mention) => mention.filePath), ['shot1.png', 'shot2.png'])
+
+  // The syntax layer stays quota-free: identification happens before any cap.
+  assert.equal(extractAtMentionedFiles(input).length, 8)
+})
+
+test('classifyAtMentions dedupes image mentions by path and keeps text order', () => {
+  const { images } = classifyAtMentions('see @b.png and @"a space.png" plus @b.png#L1 and @b.png')
+  assert.deepEqual(images.map((mention) => mention.filePath), ['b.png', 'a space.png'])
+})
+
+test('collectAtMentionImages imports project images in text order through the store', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-at-'))
+  try {
+    await copyFile(fixtureImagePath('transparent.png'), path.join(dir, 'shot.png'))
+    await copyFile(fixtureImagePath('static.webp'), path.join(dir, 'other.webp'))
+    const { importer, calls } = recordingImporter(okRef)
+
+    const result = await collectAtMentionImages({
+      userInput: 'look at @shot.png and @other.webp please',
+      toolContext: context(dir),
+      importer,
+    })
+
+    assert.deepEqual(result.errors, [])
+    assert.deepEqual(result.images.map((ref) => ref.name), ['shot.png', 'other.webp'])
+    assert.deepEqual(calls.map((call) => call.name), ['shot.png', 'other.webp'])
+    assert.equal(calls[0]?.sessionId, 's1')
+    assert.deepEqual(calls[0]?.bytes, await loadFixtureBytes('transparent.png'))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('collectAtMentionImages reports #L ranges on images as not applicable', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-at-'))
+  try {
+    await copyFile(fixtureImagePath('transparent.png'), path.join(dir, 'shot.png'))
+    const { importer, calls } = recordingImporter(okRef)
+
+    const result = await collectAtMentionImages({
+      userInput: 'annotate @shot.png#L3-4',
+      toolContext: context(dir),
+      importer,
+    })
+
+    assert.deepEqual(result.images, [])
+    assert.equal(calls.length, 0)
+    assert.equal(result.errors.length, 1)
+    assert.equal(result.errors[0]?.reason, 'line-range-not-applicable')
+    assert.match(result.errors[0]?.message ?? '', /do not apply to images/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('collectAtMentionImages fails loudly for missing and outside-project images', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-at-'))
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-out-'))
+  try {
+    await copyFile(fixtureImagePath('transparent.png'), path.join(outside, 'external.png'))
+    const { importer, calls } = recordingImporter(okRef)
+
+    const result = await collectAtMentionImages({
+      userInput: `@missing.png and @${path.relative(dir, path.join(outside, 'external.png'))}`,
+      toolContext: context(dir),
+      importer,
+    })
+
+    assert.deepEqual(result.images, [])
+    assert.equal(calls.length, 0)
+    assert.deepEqual(result.errors.map((error) => error.reason), ['file-missing', 'outside-project'])
+    assert.match(result.errors[1]?.message ?? '', /attach it explicitly/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+    await rm(outside, { recursive: true, force: true })
+  }
+})
+
+test('collectAtMentionImages enforces the per-input quota counting explicit attachments', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-at-'))
+  try {
+    for (const name of ['one.png', 'two.png', 'three.png']) {
+      await copyFile(fixtureImagePath('transparent.png'), path.join(dir, name))
+    }
+    const { importer } = recordingImporter(okRef)
+
+    const result = await collectAtMentionImages({
+      userInput: '@one.png @two.png @three.png',
+      toolContext: context(dir),
+      importer,
+      existingImageCount: 1,
+      maxImages: 2,
+    })
+
+    assert.deepEqual(result.images.map((ref) => ref.name), ['one.png'])
+    assert.deepEqual(result.errors.map((error) => error.reason), ['too-many-images', 'too-many-images'])
+    assert.match(result.errors[0]?.message ?? '', /maximum of 2/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('collectAtMentionImages surfaces importer failures instead of degrading to text', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-at-'))
+  try {
+    await writeFile(path.join(dir, 'photo.bmp'), 'not really a bitmap', 'utf8')
+    const { importer } = recordingImporter(() => ({
+      ok: false,
+      reason: 'unsupported-format',
+      message: 'BMP is not supported; convert it to PNG or JPEG first.',
+    }))
+
+    const result = await collectAtMentionImages({
+      userInput: 'use @photo.bmp',
+      toolContext: context(dir),
+      importer,
+    })
+
+    assert.deepEqual(result.images, [])
+    assert.deepEqual(result.errors, [{
+      mention: 'photo.bmp',
+      reason: 'unsupported-format',
+      message: 'BMP is not supported; convert it to PNG or JPEG first.',
+    }])
+    assert.match(formatAtMentionImageErrors(result.errors), /- @photo\.bmp: BMP is not supported/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('collectAtMentionImages skips gitignored images like code mentions do', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-at-'))
+  try {
+    await execFile('git', ['init'], { cwd: dir })
+    await writeFile(path.join(dir, '.gitignore'), 'ignored.png\n', 'utf8')
+    await copyFile(fixtureImagePath('transparent.png'), path.join(dir, 'ignored.png'))
+    await copyFile(fixtureImagePath('transparent.png'), path.join(dir, 'visible.png'))
+    const { importer } = recordingImporter(okRef)
+
+    const result = await collectAtMentionImages({
+      userInput: '@ignored.png @visible.png',
+      toolContext: context(dir),
+      importer,
+    })
+
+    assert.deepEqual(result.errors, [])
+    assert.deepEqual(result.images.map((ref) => ref.name), ['visible.png'])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a mentioned directory contributes code files but never images', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-at-'))
+  try {
+    await mkdir(path.join(dir, 'assets'))
+    await writeFile(path.join(dir, 'assets', 'a.py'), 'print(1)\n', 'utf8')
+    await copyFile(fixtureImagePath('transparent.png'), path.join(dir, 'assets', 'pic.png'))
+    const { importer, calls } = recordingImporter(okRef)
+
+    const classified = classifyAtMentions('@assets/')
+    assert.deepEqual(classified.images, [])
+    assert.deepEqual(classified.codeFiles.map((mention) => mention.filePath), ['assets/'])
+
+    const collected = await collectAtMentionImages({
+      userInput: '@assets/',
+      toolContext: context(dir),
+      importer,
+    })
+    assert.deepEqual(collected.images, [])
+    assert.deepEqual(collected.errors, [])
+    assert.equal(calls.length, 0)
+
+    const record = await buildAtMentionContextRecord({
+      userInput: '@assets/',
+      userMessageId: 'u1',
+      turnId: 't1',
+      toolContext: context(dir),
+    })
+    assert.ok(record)
+    assert.deepEqual(record.files.map((file) => file.displayPath), ['assets/a.py'])
+    assert.doesNotMatch(record.content, /pic\.png/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('buildAtMentionContextRecord keeps image mentions out of the code-text record', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-at-'))
+  try {
+    await writeFile(path.join(dir, 'a.py'), 'print(1)\n', 'utf8')
+    await copyFile(fixtureImagePath('transparent.png'), path.join(dir, 'shot.png'))
+
+    const record = await buildAtMentionContextRecord({
+      userInput: 'explain @a.py and @shot.png',
+      userMessageId: 'u1',
+      turnId: 't1',
+      toolContext: context(dir),
+    })
+
+    assert.ok(record)
+    assert.deepEqual(record.files.map((file) => file.displayPath), ['a.py'])
+    assert.doesNotMatch(record.content, /shot\.png/)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

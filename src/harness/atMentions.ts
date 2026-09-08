@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import fg from 'fast-glob'
@@ -9,6 +9,7 @@ import { atMentionPatterns } from '../runtime/suggestions/atToken.js'
 import { filterGitIgnoredPaths } from '../utils/gitIgnore.js'
 import { assertInsideCwd } from '../utils/paths.js'
 import { isProtectedPath } from '../utils/permissions/protectedPaths.js'
+import type { ImageAttachmentRef, ImageInputErrorReason } from '../media/types.js'
 
 export const CODE_TEXT_EXTENSIONS = new Set([
   '.py',
@@ -59,6 +60,30 @@ const MAX_ATTACHMENT_LINES = 2_000
 const MAX_ATTACHMENT_BYTES = 80 * 1024
 const IGNORED_DIR_NAMES = ['.git', '.myagent', 'node_modules', 'build', 'coverage']
 
+/**
+ * Raster extensions that make a mention an *image* candidate. The extension
+ * only nominates the file: the pipeline sniffs the bytes, so a PNG named
+ * `.jpg` imports fine. Known-but-unsupported formats (BMP, HEIC, TIFF, AVIF)
+ * are candidates too — they must fail loudly through the import pipeline
+ * instead of being dropped as silently as non-code text used to be.
+ */
+export const IMAGE_MENTION_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.bmp',
+  '.heic',
+  '.heif',
+  '.tif',
+  '.tiff',
+  '.avif',
+])
+
+/** Per-input image quota: @-mentioned images plus explicit attachments. */
+export const MAX_AT_MENTION_IMAGES = 10
+
 export interface ParsedAtMention {
   raw: string
   filePath: string
@@ -66,16 +91,21 @@ export interface ParsedAtMention {
   lineEnd?: number
 }
 
-export function extractAtMentionedFiles(input: string): ParsedAtMention[] {
-  const results: ParsedAtMention[] = []
+/** A raw mention plus where it sat in the text, so image order can follow it. */
+interface PositionedMention extends ParsedAtMention {
+  start: number
+}
+
+function collectRawMentions(input: string): PositionedMention[] {
+  const results: PositionedMention[] = []
   const seen = new Set<string>()
 
-  const add = (raw: string) => {
+  const add = (raw: string, start: number) => {
     const parsed = parseAtMentionedFileLines(raw)
     const key = `${parsed.filePath}#${parsed.lineStart ?? ''}-${parsed.lineEnd ?? ''}`
     if (seen.has(key)) return
     seen.add(key)
-    results.push({ raw, ...parsed })
+    results.push({ raw, start, ...parsed })
   }
 
   let match: RegExpExecArray | null
@@ -88,15 +118,62 @@ export function extractAtMentionedFiles(input: string): ParsedAtMention[] {
   // order observable.
   const { quoted, regular } = atMentionPatterns()
   while ((match = quoted.exec(input)) !== null) {
-    if (match[2]) add(`${match[2]}${match[3] ?? ''}`)
+    if (match[2]) add(`${match[2]}${match[3] ?? ''}`, (match.index ?? 0) + (match[1] ?? '').length)
   }
 
   while ((match = regular.exec(input)) !== null) {
     const raw = match[2]
-    if (raw) add(raw)
+    if (raw) add(raw, (match.index ?? 0) + (match[1] ?? '').length)
   }
 
-  return results.slice(0, MAX_AT_MENTION_FILES)
+  return results
+}
+
+/**
+ * Every mention in the input, deduplicated per path-and-range — the
+ * syntax-level view with no category or quota applied. Quotas live in
+ * `classifyAtMentions`, which is the only place allowed to drop a mention
+ * for being over a cap.
+ */
+export function extractAtMentionedFiles(input: string): ParsedAtMention[] {
+  return collectRawMentions(input).map(({ raw, filePath, lineStart, lineEnd }) => ({
+    raw,
+    filePath,
+    ...(lineStart !== undefined ? { lineStart } : {}),
+    ...(lineEnd !== undefined ? { lineEnd } : {}),
+  }))
+}
+
+/**
+ * Mentions split by what they attach, each side under its own quota: code text
+ * keeps `MAX_AT_MENTION_FILES`, images get the per-input image quota (applied
+ * later, when the explicit-attachment count is known). Identifying every
+ * mention *before* limiting is what keeps the code-text cap from silently
+ * swallowing images that happened to sit past the fifth mention.
+ */
+export function classifyAtMentions(input: string): {
+  codeFiles: ParsedAtMention[]
+  images: ParsedAtMention[]
+} {
+  const codeFiles: ParsedAtMention[] = []
+  const images: PositionedMention[] = []
+  const seenImagePaths = new Set<string>()
+
+  for (const mention of collectRawMentions(input)) {
+    if (IMAGE_MENTION_EXTENSIONS.has(path.extname(mention.filePath).toLowerCase())) {
+      // Images dedupe by path alone: a `#L` suffix names the same picture, not
+      // a second copy. Order is the text's order, so the attachment list reads
+      // the way the user wrote it.
+      if (seenImagePaths.has(mention.filePath)) continue
+      seenImagePaths.add(mention.filePath)
+      images.push(mention)
+    } else if (codeFiles.length < MAX_AT_MENTION_FILES) {
+      codeFiles.push(mention)
+    }
+  }
+
+  images.sort((left, right) => left.start - right.start)
+  return { codeFiles, images }
 }
 
 export function parseAtMentionedFileLines(mention: string): {
@@ -125,7 +202,10 @@ export async function buildAtMentionContextRecord(input: {
 }): Promise<AtMentionContextRecord | undefined> {
   const attachments: Array<{ file: AtMentionFileContext; content: string }> = []
 
-  for (const mention of extractAtMentionedFiles(input.userInput)) {
+  // Images never reach this record (design §5.1/§7.1): their refs belong to
+  // the user message itself, so the same picture is not attached twice. The
+  // code-text cap below therefore counts code mentions only.
+  for (const mention of classifyAtMentions(input.userInput).codeFiles) {
     const remaining = MAX_AT_MENTION_FILES - attachments.length
     if (remaining <= 0) break
 
@@ -337,4 +417,164 @@ function normalizeDisplayPath(filePath: string): string {
 
 function escapeAttribute(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+}
+
+// ---------------------------------------------------------------------------
+// @-mentioned images (design §7.1)
+// ---------------------------------------------------------------------------
+
+/** Why an @-mentioned image could not be attached. Distinguishable by design
+ * (§13): the caller reports the reason instead of degrading to plain text. */
+export type AtMentionImageErrorReason =
+  | ImageInputErrorReason
+  | 'store-write-failed'
+  /** The image lives outside the project; `@` must not widen model file access. */
+  | 'outside-project'
+  /** `#L` line ranges are meaningless on a picture. */
+  | 'line-range-not-applicable'
+
+export interface AtMentionImageError {
+  /** The mention as written, without the leading `@` or quotes. */
+  mention: string
+  reason: AtMentionImageErrorReason
+  message: string
+}
+
+/**
+ * What the submission path needs to turn image mentions into attachments.
+ * Structurally satisfied by `ImageAttachmentService`, so the runtime hands the
+ * real store over and tests hand a fake — no second import path.
+ */
+export interface AtMentionImageImporter {
+  importImage(
+    ownerSessionId: string,
+    bytes: Buffer,
+    name: string,
+  ): Promise<
+    | { ok: true; value: { ref: ImageAttachmentRef } }
+    | { ok: false; reason: ImageInputErrorReason | 'store-write-failed'; message: string }
+  >
+}
+
+export interface AtMentionImageCollection {
+  /** Imported refs, in the order the mentions appear in the text. */
+  images: ImageAttachmentRef[]
+  errors: AtMentionImageError[]
+}
+
+/**
+ * Reads the input's @-mentioned images and imports each through the session's
+ * attachment store, so the turn binds cached copies instead of re-reading the
+ * source file later.
+ *
+ * Every explicit image reference fails loudly (missing file, undecodable
+ * bytes, over quota, outside the project, `#L` suffix): the errors come back
+ * structured and the caller must block the turn and keep the draft — never
+ * quietly fall back to plain text. Silently skipped mentions are only those
+ * the code-text path also skips (protected and git-ignored paths), plus
+ * directories, which never contribute images (design §7.1: no recursion).
+ */
+export async function collectAtMentionImages(input: {
+  userInput: string
+  toolContext: ToolContext
+  importer: AtMentionImageImporter
+  /** Images the draft already carries; the per-input quota counts them. */
+  existingImageCount?: number
+  /** Quota override for tests; defaults to {@link MAX_AT_MENTION_IMAGES}. */
+  maxImages?: number
+}): Promise<AtMentionImageCollection> {
+  const maxImages = input.maxImages ?? MAX_AT_MENTION_IMAGES
+  const budget = maxImages - (input.existingImageCount ?? 0)
+  const images: ImageAttachmentRef[] = []
+  const errors: AtMentionImageError[] = []
+
+  for (const mention of classifyAtMentions(input.userInput).images) {
+    if (mention.lineStart !== undefined) {
+      errors.push({
+        mention: mention.raw,
+        reason: 'line-range-not-applicable',
+        message: 'line ranges (#L…) do not apply to images; send the image without the range.',
+      })
+      continue
+    }
+
+    const displayCandidate = mention.filePath
+    if (isProtectedPath(displayCandidate)) continue
+
+    let absolute: string
+    try {
+      absolute = assertInsideCwd(input.toolContext.cwd, displayCandidate)
+    } catch {
+      errors.push({
+        mention: mention.raw,
+        reason: 'outside-project',
+        message:
+          'this image is outside the project. @ only reaches project files — attach it explicitly (paste, drop, or the attachment picker) instead.',
+      })
+      continue
+    }
+
+    const displayPath = normalizeDisplayPath(path.relative(input.toolContext.cwd, absolute))
+    if (isProtectedPath(displayPath) || isProtectedPath(absolute)) continue
+
+    let fileStat
+    try {
+      fileStat = await stat(absolute)
+    } catch {
+      errors.push({
+        mention: mention.raw,
+        reason: 'file-missing',
+        message: 'no such file in this project.',
+      })
+      continue
+    }
+    if (!fileStat.isFile()) continue
+
+    const visiblePaths = await filterGitIgnoredPaths(input.toolContext.cwd, [displayPath])
+    if (visiblePaths.length === 0) continue
+
+    if (images.length >= budget) {
+      errors.push({
+        mention: mention.raw,
+        reason: 'too-many-images',
+        message: `this input already has the maximum of ${maxImages} images (explicit attachments count too); remove some before sending.`,
+      })
+      continue
+    }
+
+    let bytes: Buffer
+    try {
+      bytes = await readFile(absolute)
+    } catch {
+      errors.push({
+        mention: mention.raw,
+        reason: 'file-missing',
+        message: 'the file could not be read.',
+      })
+      continue
+    }
+
+    const imported = await input.importer.importImage(
+      input.toolContext.sessionId,
+      bytes,
+      path.basename(absolute),
+    )
+    if (imported.ok) {
+      images.push(imported.value.ref)
+    } else {
+      errors.push({ mention: mention.raw, reason: imported.reason, message: imported.message })
+    }
+  }
+
+  return { images, errors }
+}
+
+/** The user-facing turn failure for failed image mentions: the message was
+ * not sent, the draft is intact, and each reason says what to do. */
+export function formatAtMentionImageErrors(errors: readonly AtMentionImageError[]): string {
+  return [
+    'The message was not sent because @-mentioned images could not be attached:',
+    ...errors.map((error) => `- @${error.mention}: ${error.message}`),
+    'Fix or remove these mentions, then send again.',
+  ].join('\n')
 }

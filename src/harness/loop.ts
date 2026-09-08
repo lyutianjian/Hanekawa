@@ -36,7 +36,12 @@ import type { ThinkingConfig } from '../config/service.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { describeShell } from '../tools/BashTool/BashTool.js'
 import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
-import { buildAtMentionContextRecord } from './atMentions.js'
+import {
+  buildAtMentionContextRecord,
+  collectAtMentionImages,
+  formatAtMentionImageErrors,
+  type AtMentionImageImporter,
+} from './atMentions.js'
 import { wrapInSystemReminder } from './systemReminder.js'
 import { maybeExtractSessionMemory } from '../services/sessionMemory/service.js'
 
@@ -114,6 +119,13 @@ export interface AgentLoopOptions {
   promptCacheRetention?: 'in_memory' | '24h'
   /** Effective image-input capability of the primary model; see `ActiveModelRuntime`. */
   supportsImageInput?: boolean
+  /**
+   * The session's attachment store, used to import @-mentioned project images
+   * at input-preparation time. Absent where no store exists (test loops;
+   * subagents until their ownership rules land) — image mentions then stay
+   * plain text, exactly as before this option existed.
+   */
+  imageAttachments?: AtMentionImageImporter
   contextManagement?: Partial<ContextManagementConfig>
   isGitRepo?: boolean
   maxTurns?: number
@@ -349,12 +361,30 @@ export class AgentLoop {
     let pendingAssistantStreamContent = ''
     this.pendingSubagentTranscriptUsage = { ...EMPTY_TOKEN_USAGE }
     const turnId = randomUUID()
+    // Input preparation for @-mentioned images (design §7.1): import and bind
+    // them to the user message *before* it is recorded. A failed explicit
+    // image reference throws here — no user record, no at-mention record, the
+    // draft survives in the shell — instead of degrading to plain text.
+    const mentionImages = this.options.imageAttachments && !userInput.text.trimStart().startsWith('/')
+      ? await collectAtMentionImages({
+          userInput: userInput.text,
+          toolContext: this.options.toolContext,
+          importer: this.options.imageAttachments,
+          existingImageCount: userInput.images?.length ?? 0,
+        })
+      : undefined
+    if (mentionImages && mentionImages.errors.length > 0) {
+      throw new Error(formatAtMentionImageErrors(mentionImages.errors))
+    }
+    const turnImages = mentionImages && mentionImages.images.length > 0
+      ? [...(userInput.images ?? []), ...mentionImages.images]
+      : userInput.images
     const userMessage: ChatMessage & { type: 'message' } = {
       type: 'message',
       id: messageId ?? randomUUID(),
       role: 'user',
       content: userInput.text,
-      ...(userInput.images && userInput.images.length > 0 ? { images: userInput.images } : {}),
+      ...(turnImages && turnImages.length > 0 ? { images: turnImages } : {}),
       ...(this.activeRunOverrides?.displayInput ? { displayContent: this.activeRunOverrides.displayInput } : {}),
       turnId,
       createdAt: new Date().toISOString(),

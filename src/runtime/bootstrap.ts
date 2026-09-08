@@ -261,6 +261,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     isGitRepo,
     initialEffort: clampedInitialEffort,
     createActiveModelRuntime,
+    imageAttachments: attachments,
   }
 
   // Every scope currently open. `reloadSettings` has to reach all of them, and

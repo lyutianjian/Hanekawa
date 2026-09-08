@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { copyFile, mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { z } from 'zod/v3'
@@ -21,7 +21,7 @@ import type { RecordStream } from '../src/harness/recordStream.js'
 import type { ModelProvider, ModelRequest, SessionRecord, Tool } from '../src/harness/types.js'
 import { FallbackTriggeredError } from '../src/config/retry.js'
 import { resetAutoCompactFailureState } from '../src/harness/compact.js'
-import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
+import { fixtureImagePath, loadFixtureBytes, makeImageAttachmentRef } from './helpers/imageFixtures.js'
 import {
   checkResponseForCacheBreak,
   recordPromptState,
@@ -170,6 +170,107 @@ test('a UserInput with images persists the refs on the user message record', asy
   if (nextUser?.type !== 'message') return
   assert.equal(nextUser.content, 'no images')
   assert.equal('images' in nextUser, false)
+})
+
+test('@-mentioned project images import at input preparation and bind to the user message', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-atloop-'))
+  try {
+    await copyFile(fixtureImagePath('transparent.png'), path.join(dir, 'shot.png'))
+    const records: SessionRecord[] = []
+    const provider: ModelProvider = {
+      name: 'fake',
+      async createMessage() {
+        return {
+          content: 'seen',
+          toolCalls: [],
+          usage: { inputTokens: 1, cacheReadInputTokens: 0, outputTokens: 1 },
+        }
+      },
+    }
+    const runner = new ToolRunner([], new PermissionGate(async () => true), {
+      onRecord: async (record) => { records.push(record) },
+    })
+    const ref = makeImageAttachmentRef({ id: 'img-1', ownerSessionId: 's1', name: 'shot.png' })
+    const loop = new AgentLoop({
+      provider,
+      model: 'fake-model',
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner: runner,
+      toolContext: { cwd: dir, sessionId: 's1', readFiles: new Set() },
+      recordStream: recordStreamFor(records),
+      imageAttachments: {
+        importImage: async (sessionId, bytes, name) => {
+          assert.equal(sessionId, 's1')
+          assert.equal(name, 'shot.png')
+          assert.deepEqual(bytes, await loadFixtureBytes('transparent.png'))
+          return { ok: true, value: { ref } }
+        },
+      },
+    })
+
+    await loop.run({ text: 'what is in @shot.png' })
+
+    const user = records[0]
+    assert.equal(user?.type, 'message')
+    if (user?.type !== 'message') return
+    assert.equal(user.role, 'user')
+    assert.equal(user.content, 'what is in @shot.png')
+    assert.deepEqual(user.images, [ref])
+    // The image mention never becomes code-text context; that record stays absent.
+    assert.equal(records.some((record) => record.type === 'at_mention_context'), false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a failed @-mentioned image blocks the turn before any record is written', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-atloop-'))
+  try {
+    const records: SessionRecord[] = []
+    const provider: ModelProvider = {
+      name: 'fake',
+      async createMessage() {
+        return {
+          content: 'seen',
+          toolCalls: [],
+          usage: { inputTokens: 1, cacheReadInputTokens: 0, outputTokens: 1 },
+        }
+      },
+    }
+    const runner = new ToolRunner([], new PermissionGate(async () => true), {
+      onRecord: async (record) => { records.push(record) },
+    })
+    const loop = new AgentLoop({
+      provider,
+      model: 'fake-model',
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner: runner,
+      // Empty dir: the mention names a file that does not exist.
+      toolContext: { cwd: dir, sessionId: 's1', readFiles: new Set() },
+      recordStream: recordStreamFor(records),
+      imageAttachments: {
+        importImage: async () => {
+          assert.fail('a failed mention must never reach the store')
+        },
+      },
+    })
+
+    await assert.rejects(
+      loop.run({ text: 'see @gone.png' }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.match(error.message, /was not sent because @-mentioned images/)
+        assert.match(error.message, /- @gone\.png: no such file in this project\./)
+        return true
+      },
+    )
+    // No user message, no at-mention record, nothing to rewind.
+    assert.deepEqual(records, [])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('agent loop applies per-run allowed tools to model requests', async () => {

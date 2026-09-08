@@ -4,6 +4,7 @@ import type { EffortLevel, EffortValue } from '../config/effort.js'
 import type { RoutingRole } from '../config/routing.js'
 import type { MyAgentSettings } from '../config/settings.js'
 import { AgentLoop, type ActiveModelRuntime } from '../harness/loop.js'
+import type { AtMentionImageImporter } from '../harness/atMentions.js'
 import { ContextBuilder } from '../harness/contextBuilder.js'
 import { PlanModeManager } from '../harness/planModeManager.js'
 import { ToolRunner } from '../harness/toolRunner.js'
@@ -86,10 +87,17 @@ export interface CreateRuntimeDeps {
   initialEffort: EffortValue
   createActiveModelRuntime: (modelKey: string) => ActiveModelRuntime
   /**
-   * Called by every write tool before it writes, so the session's file history
+   * Called by every write tool before they write, so the session's file history
    * can back the file up. Subagents inherit it through their forked context.
    */
   trackFileEdit?: (filePath: string) => Promise<void>
+  /**
+   * The project's attachment store, so `@`-mentioned project images import at
+   * input-preparation time. One service per project (see `bootstrap`); the
+   * loop keeps its own reference so subagent loops can later decide their own
+   * ownership rules.
+   */
+  imageAttachments?: AtMentionImageImporter
   /**
    * Notified whenever a runtime is built for a different session than the last
    * one. `bootstrap` uses it to retarget session-scoped state (denial counters)
@@ -129,6 +137,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
     initialEffort,
     createActiveModelRuntime,
     trackFileEdit,
+    imageAttachments,
     onActiveSessionChange,
   } = deps
 
@@ -295,6 +304,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       recordStream,
       onRecord: (record) => bridges.record.onRecord(record),
       onStreamEvent: (event) => bridges.record.onStreamEvent(event),
+      ...(imageAttachments ? { imageAttachments } : {}),
     })
 
     const activeLoop = loop

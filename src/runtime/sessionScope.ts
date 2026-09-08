@@ -3,6 +3,7 @@ import type { ConfigService } from '../config/service.js'
 import type { MyAgentSettings } from '../config/settings.js'
 import { persistPermissionRule } from '../config/settings.js'
 import type { ActiveModelRuntime } from '../harness/loop.js'
+import type { AtMentionImageImporter } from '../harness/atMentions.js'
 import { PermissionGate, permissionRulesFromSettings, type DenialStateStore } from '../harness/permissions.js'
 import { SystemPromptSectionCache } from '../harness/sections.js'
 import type { SessionRecord } from '../harness/types.js'
@@ -40,6 +41,8 @@ export interface SessionScopeDeps {
   /** Already clamped to the default model; `RuntimeSlot` re-clamps per runtime. */
   initialEffort: EffortValue
   createActiveModelRuntime: (modelKey: string) => ActiveModelRuntime
+  /** The project's attachment store — one per project, shared by its scopes. */
+  imageAttachments?: AtMentionImageImporter
 }
 
 /**
@@ -108,6 +111,7 @@ export async function createSessionScope(
     // Read at call time, so a tracker installed after the first runtime was
     // built still reaches it.
     trackFileEdit: (filePath) => trackFileEdit?.(filePath) ?? Promise.resolve(),
+    ...(deps.imageAttachments ? { imageAttachments: deps.imageAttachments } : {}),
     onActiveSessionChange: (nextSessionId) => {
       if (nextSessionId === activeSessionId) return
       activeSessionId = nextSessionId

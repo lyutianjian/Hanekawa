@@ -61,7 +61,10 @@ export interface HostCommandContextDeps {
  * Keyed rather than a list, so adding a member to `CommandContext` without
  * deciding where it runs fails the build *by name* — the same guard
  * `COMMAND_SCHEMAS` uses against `HostCommand`. `'host'` means this factory
- * implements it; anything else names the effect it turns into.
+ * implements it; anything else names the effect it turns into; `'shell'`
+ * means the member is view-owned state this factory deliberately leaves
+ * absent (the TUI composer's draft images, S14 — a shell without a draft
+ * composer sees `undefined` and its commands say so).
  */
 export const COMMAND_CONTEXT_COVERAGE = {
   cwd: 'host',
@@ -90,6 +93,13 @@ export const COMMAND_CONTEXT_COVERAGE = {
   readPlanFile: 'host',
   openPlanFile: 'host',
   submitQuery: 'host',
+  // Draft-image composer state lives in the shell that owns the composer
+  // (the TUI App, S14; the desktop renderer with S11). The host factory
+  // leaves these absent, so the commands report the shell cannot do it.
+  pasteImageFromClipboard: 'shell',
+  listDraftAttachments: 'shell',
+  removeDraftAttachment: 'shell',
+  clearDraftAttachments: 'shell',
   runShellCommand: 'host',
   openProviderPanel: 'open-surface',
   openBackgroundTasks: 'open-surface',
@@ -98,7 +108,7 @@ export const COMMAND_CONTEXT_COVERAGE = {
   listSubagentTasks: 'host',
   getSubagentDetails: 'host',
   cleanupSubagentWorktrees: 'host',
-} as const satisfies Record<keyof CommandContext, 'host' | CommandEffect['kind']>
+} as const satisfies Record<keyof CommandContext, 'host' | 'shell' | CommandEffect['kind']>
 
 export function createHostCommandContext(deps: HostCommandContextDeps): CommandContext {
   const { project, scope, runtimeSlot, controller } = deps

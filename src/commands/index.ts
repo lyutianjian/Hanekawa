@@ -18,6 +18,8 @@ import { thinkingCommand } from './thinking.js'
 import { tasksCommand } from './tasks.js'
 import { resumeCommand } from './resume.js'
 import { rewindCommand } from './rewind.js'
+import { pasteImageCommand } from './pasteImage.js'
+import { attachmentsCommand } from './attachments.js'
 
 // Register all built-in commands
 export function registerBuiltinCommands(registry: CommandRegistry): void {
@@ -39,4 +41,6 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
   registry.register(tasksCommand)
   registry.register(resumeCommand)
   registry.register(rewindCommand)
+  registry.register(pasteImageCommand)
+  registry.register(attachmentsCommand)
 }

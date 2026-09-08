@@ -45,12 +45,22 @@ export function MessageList({
       {queuedMessages.map((message) => (
         <Box key={message.id} paddingLeft={2}>
           <Text color={theme.dimText} dimColor>
-            {`❯ ${message.content} (queued)`}
+            {formatQueuedMessagePreview(message)}
           </Text>
         </Box>
       ))}
     </Box>
   )
+}
+
+/** The queued line: text (or the pure-image fallback title) plus the image count. */
+function formatQueuedMessagePreview(message: QueuedMessage): string {
+  const imageCount = message.images?.length ?? 0
+  const text = message.content.trim() === '' && imageCount > 0
+    ? `图片：${message.images![0]!.name}`
+    : message.content
+  const imageSuffix = imageCount > 0 ? ` (+${imageCount} ${imageCount === 1 ? 'image' : 'images'})` : ''
+  return `❯ ${text}${imageSuffix} (queued)`
 }
 
 export function DisplayItem({
@@ -69,7 +79,7 @@ export function DisplayItem({
   const isExpanded = expanded || isTranscriptMode
   switch (item.kind) {
     case 'user':
-      return <UserMessage content={item.content} />
+      return <UserMessage content={item.content} images={item.images} />
     case 'assistant':
       return <AssistantMessage content={item.content} thinkingBlocks={item.thinkingBlocks} thinkingDurationMs={item.thinkingDurationMs} thinkingExpanded={isExpanded} thinkingPreview={item.thinkingPreview} isTranscriptMode={isTranscriptMode} />
     case 'tool_call':

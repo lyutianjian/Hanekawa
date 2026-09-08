@@ -94,6 +94,16 @@ export function sessionAttachmentsDir(cwd: string, sessionId: string): string {
   return path.join(attachmentsDirFor(cwd), sessionId)
 }
 
+/**
+ * The on-disk path of a ref's send version — the one attachment file whose
+ * name is fully determined by the ref itself. UIs that render a link from a
+ * bare ref (the TUI transcript, S14) use it; anything needing the original's
+ * facts goes through `resolveRef` and its metadata instead.
+ */
+export function attachmentSendVersionPath(cwd: string, ref: ImageAttachmentRef): string {
+  return path.join(sessionAttachmentsDir(cwd, ref.ownerSessionId), ref.id, `image.${extForMime(ref.mimeType)}`)
+}
+
 const METADATA_FILE = 'metadata.json'
 const THUMBNAIL_FILE = 'thumbnail.png'
 

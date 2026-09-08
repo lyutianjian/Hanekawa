@@ -65,6 +65,12 @@ const COVERAGE: Array<{ prop: string; via: 'client' | 'shell'; members: string[]
     members: ['getBackgroundTasks', 'listBackgroundTasks', 'peekTaskOutput', 'killTask'],
   },
   {
+    prop: 'attachments',
+    via: 'client',
+    members: ['importAttachment', 'removeAttachment', 'getAttachmentPreview', 'openAttachment'],
+    note: 'the TUI holds the in-process service for its composer drafts; a renderer drives the same store through the four attachment commands',
+  },
+  {
     prop: 'onPermissionModeChange',
     via: 'client',
     members: ['getRuntimeSnapshot'],

@@ -219,6 +219,7 @@ export function useAgentLoop({
           kind: 'user',
           id: event.messageId,
           content: event.displayInput,
+          ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
           createdAt: event.createdAt,
         }
         setTranscript((prev) => ({ ...prev, liveItems: [...prev.liveItems, userMsg] }))
@@ -320,9 +321,9 @@ export function useAgentLoop({
   useEffect(() => controller.onEvent(handleEvent), [controller, handleEvent])
 
   const submit = useCallback(
-    // The composer still hands over plain text; this hook is where it joins
-    // the UserInput shape every submission path below the UI speaks.
-    (input: string, options?: AgentRunOverrides) => controller.submit({ text: input }, options),
+    // The composer hands over the full input shape; images ride from the
+    // draft list the App keeps (S14), commands and skills included.
+    (input: UserInput, options?: AgentRunOverrides) => controller.submit(input, options),
     [controller],
   )
 

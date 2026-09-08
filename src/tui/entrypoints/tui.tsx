@@ -125,6 +125,7 @@ async function main() {
       initialQueuedPrompt={initialQueuedPrompt}
       onBeforeExit={() => host.shutdown('TUI exited')}
       backgroundTasks={host.backgroundTasks}
+      attachments={host.attachments}
       reloadAgentDefinitions={host.reloadAgentDefinitions}
       reloadSkills={host.reloadSkills}
       onEffortLevelChange={async (level) => {

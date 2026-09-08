@@ -518,6 +518,9 @@ function messageRecordToDisplayItem(
     kind: record.role === 'user' ? 'user' : record.role === 'assistant' ? 'assistant' : 'system',
     id: record.id,
     content: record.displayContent ?? record.content,
+    ...(record.role === 'user' && record.images && record.images.length > 0
+      ? { images: record.images }
+      : {}),
     ...(record.role === 'assistant' && record.thinkingBlocks && record.thinkingBlocks.length > 0
       ? { thinkingBlocks: record.thinkingBlocks, thinkingDurationMs }
       : {}),

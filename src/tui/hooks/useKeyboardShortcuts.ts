@@ -23,6 +23,19 @@ export interface KeyboardShortcutOptions {
   onEnterRestoreMode: () => void
   onCyclePermissionMode: (direction: 1 | -1) => void
   onToggleTranscript: () => void
+  /**
+   * Ctrl+V: paste the clipboard's image. Only terminals that pass the chord
+   * through deliver it here — the ones that paste text themselves never do,
+   * which is exactly why `/paste-image` exists as the fallback for the same
+   * action.
+   */
+  onPasteImage?: () => void
+  /**
+   * Multi-character input (a terminal paste). Return `true` to claim the paste
+   * as an image-path attachment — the text is then not inserted into the
+   * composer; the claimant restores it itself if the import fails.
+   */
+  onPastedText?: (pasted: string, currentText: string, cursorPos: number) => boolean
   /** This project's slash commands, for the `/` dropdown. */
   commands: CommandRegistry
   isStreaming: boolean
@@ -79,6 +92,8 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
     onEnterRestoreMode,
     onCyclePermissionMode,
     onToggleTranscript,
+    onPasteImage,
+    onPastedText,
     commands,
     isStreaming,
     hasQueuedMessages = false,
@@ -239,6 +254,12 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
       // --- Ctrl+O: toggle transcript mode ---
       if (key.ctrl && input === 'o') {
         onToggleTranscript()
+        return
+      }
+
+      // --- Ctrl+V: paste the clipboard's image ---
+      if (key.ctrl && input === 'v') {
+        onPasteImage?.()
         return
       }
 
@@ -502,12 +523,18 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions): Keyboard
 
       // --- Regular character input ---
       if (input && !key.ctrl && !key.meta) {
+        // Multi-character input is a terminal paste. When the paste is a
+        // standalone image path, the paste handler claims it (adding the
+        // attachment) and the text never enters the composer.
+        if (input.length > 1 && onPastedText?.(input, text, cursorPos) === true) {
+          return
+        }
         leaveHistory()
         setText(text.slice(0, cursorPos) + input + text.slice(cursorPos))
         setCursorPos(cursorPos + input.length)
       }
     },
-    [text, cursorPos, history, historyIndex, isStreaming, hasQueuedMessages, isRestoreMode, isPermissionVisible, hintMessage, onInterrupt, onClearQueue, onExit, onEnterRestoreMode, onCyclePermissionMode, onToggleTranscript, clearHint, showHint, submitInput, suggestionType, suggestions, selectedSuggestion, clearSuggestions, leaveHistory],
+    [text, cursorPos, history, historyIndex, isStreaming, hasQueuedMessages, isRestoreMode, isPermissionVisible, hintMessage, onInterrupt, onClearQueue, onExit, onEnterRestoreMode, onCyclePermissionMode, onToggleTranscript, onPasteImage, onPastedText, clearHint, showHint, submitInput, suggestionType, suggestions, selectedSuggestion, clearSuggestions, leaveHistory],
   )
 
   useInkInput(handleInput, { isActive: !shouldIgnoreShortcutInput({ isPermissionVisible, isRestoreMode }) })

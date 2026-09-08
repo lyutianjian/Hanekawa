@@ -43,6 +43,10 @@ interface UseCommandsOptions {
   readPlanFile?: () => Promise<{ path: string; content: string | null }>
   openPlanFile?: () => Promise<{ message: string }>
   submitQuery?: (input: string, options?: CommandSubmitQueryOptions) => Promise<void>
+  pasteImageFromClipboard?: () => Promise<void>
+  listDraftAttachments?: () => string[]
+  removeDraftAttachment?: (index: number) => { ok: boolean; message?: string }
+  clearDraftAttachments?: () => void
   runShellCommand?: (command: string) => Promise<CommandShellResult>
   openModelPicker?: () => void
   openEffortPicker?: () => void
@@ -77,6 +81,10 @@ export function useCommands({
   readPlanFile,
   openPlanFile,
   submitQuery,
+  pasteImageFromClipboard,
+  listDraftAttachments,
+  removeDraftAttachment,
+  clearDraftAttachments,
   openModelPicker,
   openEffortPicker,
   openProviderPanel,
@@ -135,6 +143,14 @@ export function useCommands({
   openPlanFileRef.current = openPlanFile
   const submitQueryRef = useRef(submitQuery)
   submitQueryRef.current = submitQuery
+  const pasteImageFromClipboardRef = useRef(pasteImageFromClipboard)
+  pasteImageFromClipboardRef.current = pasteImageFromClipboard
+  const listDraftAttachmentsRef = useRef(listDraftAttachments)
+  listDraftAttachmentsRef.current = listDraftAttachments
+  const removeDraftAttachmentRef = useRef(removeDraftAttachment)
+  removeDraftAttachmentRef.current = removeDraftAttachment
+  const clearDraftAttachmentsRef = useRef(clearDraftAttachments)
+  clearDraftAttachmentsRef.current = clearDraftAttachments
   const runShellCommandRef = useRef(runShellCommand)
   runShellCommandRef.current = runShellCommand
   const openModelPickerRef = useRef(openModelPicker)
@@ -212,6 +228,10 @@ export function useCommands({
         readPlanFile: readPlanFileRef.current,
         openPlanFile: openPlanFileRef.current,
         submitQuery: submitQueryRef.current,
+        pasteImageFromClipboard: pasteImageFromClipboardRef.current,
+        listDraftAttachments: listDraftAttachmentsRef.current,
+        removeDraftAttachment: removeDraftAttachmentRef.current,
+        clearDraftAttachments: clearDraftAttachmentsRef.current,
         runShellCommand: runShellCommandRef.current,
         openModelPicker: openModelPickerRef.current,
         openEffortPicker: openEffortPickerRef.current,

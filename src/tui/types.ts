@@ -1,5 +1,6 @@
 import type { PermissionRequestDto } from '../runtime/protocol/wire.js'
 import type { SessionUsage } from '../runtime/sessionUsage.js'
+import type { ImageAttachmentRef } from '../media/types.js'
 import type {
   CompactAttemptFailedRecord,
   SessionRecord,
@@ -21,6 +22,8 @@ export type TUIDisplayItem =
       kind: 'user'
       id: string
       content: string
+      /** Image refs the message carried; rendered as the transcript's attachment lines. */
+      images?: ImageAttachmentRef[]
       createdAt: string
     }
   | {

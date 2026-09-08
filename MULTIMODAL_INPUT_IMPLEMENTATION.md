@@ -92,7 +92,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S11 | Desktop 采集与草稿状态机 | S08, S19 | 长 | `[ ]` |
 | S12 | Desktop 预览、缩略图与打开原图 | S11 | 短 | `[ ]` |
 | S13 | TUI 图片剪贴板采集（三平台） | S08 | 中 | `[x]` |
-| S14 | TUI 路径粘贴、附件列表与 `/paste-image` | S13 | 中 | `[ ]` |
+| S14 | TUI 路径粘贴、附件列表与 `/paste-image` | S13 | 中 | `[x]` |
 | S15 | 当前轮/历史轮判定与历史降级投影 | S06 | 长 | `[ ]` |
 | S16 | `mediaStrip` 数量限制与图像 token 预算 | S15 | 中 | `[ ]` |
 | S17 | Anthropic payload 图像映射 | S16, S05 | 中 | `[ ]` |
@@ -524,7 +524,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S14 `[ ]` TUI 路径粘贴、附件列表与 `/paste-image`
+## S14 `[x]` TUI 路径粘贴、附件列表与 `/paste-image`
 
 **前置**：S13 · **规模**：中 · **设计稿**：§6.2、§13
 **涉及**：`src/tui/components/InputBox.tsx`、`src/tui/components/UserMessage.tsx`、`src/tui/hyperlink.ts`、`src/commands/`
@@ -540,6 +540,18 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：纯解析测试覆盖带引号路径、含空格路径、Windows 反斜杠、明显不是路径的文本；执行控制命令后草稿附件仍在。
 **验证**：`node --import tsx --test test/commands.test.ts test/commandUi.test.ts` + 新增路径解析与 transcript 渲染测试
 **提交**：`checkpoint: S14 add TUI path paste, attachment list and paste-image`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- **前置说明**：本文件中第一个 `[ ]` 是 S11，但其前置 S19 未完成且 §1.1 建议 S15–S19 先于 S11；故按「前置全部满足」顺序执行 S14（前置 S13 已完成）。
+- 路径识别（工作项 1）：新增 `src/tui/utils/pastedImagePath.ts` 纯解析器 `parseStandaloneImagePath(pasted, {platform})`。只认「整体就是一条可完整解析的图片路径」的粘贴：外层成对引号剥离（引号内允许空格，引号内再出现引号即拒绝）；win32 下反斜杠恒为分隔符、不做转义处理（UNC `\\server\share` 的双反斜杠原样保留），非 win32 先合并 `\ `/`\"`/`\'`/`\\` 转义再判空白——**未转义的空白在 raw 上判定**（转义合并前），故 `my\ screenshot.png` 通过、`my shot.png` 拒绝；候选必须含路径分隔符（裸文件名 `foo.png` 保持文本）、扩展名在 `IMAGE_FILE_EXTENSIONS`（含 BMP/HEIC 等已知不支持格式——让管线大声失败，与 S09/S10 同一原则）。普通句子、代码块、含路径长文本、多行粘贴、超长粘贴全部返回 `null` 保持文本语义。**全程不执行 shell 字符串**（无 child_process，源码扫描测试钉住）；`expandHomePath`/`resolvePastedPath` 负责 `~` 展开与按 cwd 锚定，之后由调用方直接 `node:fs` 读取。入口在 `useKeyboardShortcuts` 的普通字符分支：多字符输入（= 终端粘贴）先问 `onPastedText`，被认领则不进 composer；导入失败时仅当 composer 与认领时逐字节一致才把粘贴文本插回光标处，**不覆盖用户随后输入的新草稿**。
+- 附件列表（工作项 2）：草稿状态在 App（`draftImages: DraftImage[]`，`{ref, animated?}` + 导入在途计数），展示组件 `DraftAttachments`（`[图片 1：screenshot.png，1920×1080]`，动画首帧追加「，动画首帧」，导入中显示 Importing image…，空闲时不渲染任何行）；编号即列表位置，删除后自动重编号。删除/清空走新命令 `/attachments [list | remove <n> | clear]`（`src/commands/attachments.ts`，`removeDraftImageAt` 纯函数）。`/attachments` 与 `/paste-image` 一并进 `registerBuiltinCommands`。
+- `/paste-image` 与 Ctrl+V（工作项 4）：`src/commands/pasteImage.ts` 调 `CommandContext.pasteImageFromClipboard`（App 提供：S13 `captureClipboardImage` → S05 `importImage`，剪贴板图命名 `clipboard.png/jpg/webp/gif`）；`useKeyboardShortcuts` 新增 `onPasteImage`——`key.ctrl && input === 'v'` 触发**同一动作**（多数终端自行粘贴文本、该分支根本不会到达；透传 Ctrl+V 的终端由此走剪贴板采集）。capture 的结构化失败原因 + 后备提示文案原样经 system message 呈现。
+- transcript 渲染（工作项 3）：`SessionEvent turn-start` 增可选 `images`（`sessionController.submit` 从 `input.images` 透传，空数组不落键）；`useAgentLoop` 把它带上用户显示项，`recordsToDisplayItems` 从用户记录透传 `images`（旧记录无该键保持 absent，测试钉住）。`UserMessage` 在消息体下逐张渲染 `[图片 1：name，W×H]`：OSC 8 终端整行链接到发送版本文件（`attachmentSendVersionPath(cwd, ref)`——ref 自身完全决定文件名 `image.<ext>` 的唯一路径，新导出于服务模块；经 `AnsiText` 走既有 OSC 8 通道，与 Markdown 链接同一机制），其余终端后缀可复制路径；纯图片消息显示后备标题 `图片：first.png（共 N 张）`（与 `deriveSessionTitle` 同规则）。排队消息预览显示 `(+N images)` 与同款纯图片后备标题。
+- 草稿归属与提交（工作项 5）：`keepsDraftAttachments` = 输入以 `/` 开头即保留草稿——控制命令（/model /provider /effort /paste-image /attachments 及别名）只执行动作、查看类命令（/cost /help…）同样不动草稿，唯一把草稿带出 composer 的是**真实用户输入**：普通消息经 `handleSubmit` → `enqueue({text, images})`（S06 队列已支持）成功后清空；技能与 `/plan` 生成的输入经 `submitQuery`（`submitPlainInput`）携带草稿引用提交并消费（「技能生成的真实用户输入保留图像引用」），`useAgentLoop.submit` 签名随之从 `string` 改为 `UserInput`。`/clear`、`/resume`（切换会话时）清空草稿列表但**不删文件**——旧附件留在旧会话（完整归属规则属 S23）。跨会话导入竞态：导入完成时会话已切则不落入新会话草稿，提示图片留在原会话。中断恢复：`restore-input` 现在同时回填文字与引用（引用恢复为草稿，animated 标注是导入时知识、bare ref 不携带故省略）。
+- 协议边界：`CommandContext` 新增四个可选成员（pasteImageFromClipboard / listDraftAttachments / removeDraftAttachment / clearDraftAttachments）；`COMMAND_CONTEXT_COVERAGE` 增加 `'shell'` 类别声明它们为视图侧状态——desktop host 工厂刻意不实现（desktop 草稿属 S11/S12），两端 `/paste-image`、`/attachments` 在无草稿 composer 的 shell 打印「not available in this shell」。`protocolClientParity` 的 COVERAGE 表为 App 新 prop `attachments` 补 client 侧对应（四个附件命令，S08 已有）。
+- 测试：新增 `test/pastedImagePath.test.ts` 20 项（引号/转义空格/UNC/裸文件名/句子/代码块/多行/超长/大小写扩展名/已知不支持格式候选/shell 扫描/`~` 与 resolve）；`test/imageDrafts.test.ts` 5 项（控制命令保留 vs 普通消息消费、行格式含动画标注、按编号删除重编号、越界与空列表）；`test/userMessageImages.test.ts` 7 项（OSC 8 行构造纯函数两种模式、渲染带路径行、纯图片后备标题、recordsToDisplayItems 新旧记录、排队预览）；`test/commands.test.ts` +4（注册、/paste-image 双态、/attachments list/remove/clear/usage/不可用）。
+- 验证：窄测 62 项全绿；邻接套件（commandUi/tuiTranscript/transcriptOrdering/tuiRender/sessionController/messageQueue/protocolHost/protocolClientParity/protocolCommandSchema/desktopShellHost/desktopUiRoundTrip/useKeyboardShortcuts×2/commandSuggestions×2/commandAnalysis/tuiAutocomplete/skills）505 项全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3130 项 3129 过、1 跳过（既有）、0 失败。Ctrl+V 真机行为依赖终端透传，与三平台采集真机验证一并在 S26 收口。
 
 ---
 

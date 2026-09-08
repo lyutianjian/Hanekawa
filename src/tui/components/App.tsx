@@ -1,5 +1,8 @@
 import { useState, useCallback, useRef, useEffect, useMemo, useSyncExternalStore } from 'react'
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import path from 'node:path'
 import { Box, Static, snapshotInkFrameForStdout, useStdout } from '../ink.js'
 import type { InkFrameSnapshot } from '../ink.js'
 import type { ActiveModelRuntime } from '../../harness/loop.js'
@@ -68,6 +71,17 @@ import { shouldRenderStatusLine } from '../statusLineVisibility.js'
 import { MessageQueue, queuedMessageToInput } from '../../runtime/messageQueue.js'
 import type { UserInput } from '../../media/types.js'
 import type { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
+import type { ImageAttachmentService } from '../../services/imageAttachments/imageAttachmentService.js'
+import { captureClipboardImage } from '../utils/imageClipboard.js'
+import { parseStandaloneImagePath, resolvePastedPath } from '../utils/pastedImagePath.js'
+import {
+  draftImageRefs,
+  formatDraftAttachmentLine,
+  keepsDraftAttachments,
+  removeDraftImageAt,
+  type DraftImage,
+} from '../utils/imageDrafts.js'
+import { DraftAttachments } from './DraftAttachments.js'
 import { appendPromptHistory, loadPromptHistory, promptHistoryTexts } from '../../runtime/promptHistory.js'
 import { summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
 import {
@@ -114,6 +128,8 @@ interface AppProps {
   /** Persists the thinking switch and reloads settings; the loop is updated here. */
   onThinkingChange?: (enabled: boolean) => Promise<void> | void
   backgroundTasks: BackgroundTaskRegistry
+  /** This project's image attachment store; draft imports and reads go through it. */
+  attachments: ImageAttachmentService
 }
 
 export function App({
@@ -141,6 +157,7 @@ export function App({
   onEffortLevelChange,
   onThinkingChange,
   backgroundTasks,
+  attachments,
 }: AppProps) {
   const [mode, setMode] = useState<AppMode>('idle')
   const [activeSession, setActiveSession] = useState<SessionMeta>(initialSession)
@@ -190,6 +207,22 @@ export function App({
   )
   const [screen, setScreen] = useState<'prompt' | 'transcript'>('prompt')
   const [transcriptScrollOffsetRows, setTranscriptScrollOffsetRows] = useState(0)
+  // Draft image attachments (S14): imported files waiting for the next real
+  // message. The refs mirror the state so submit, restore, and import
+  // callbacks read the live list without listing it in every dependency
+  // array — same assignment-during-render pattern `useCommands` documents.
+  const [draftImages, setDraftImages] = useState<DraftImage[]>([])
+  const [importingImages, setImportingImages] = useState(0)
+  const draftImagesRef = useRef<DraftImage[]>([])
+  draftImagesRef.current = draftImages
+  const activeSessionIdRef = useRef(activeSession.id)
+  activeSessionIdRef.current = activeSession.id
+  /** The composer API the paste-failure restore path needs; filled once the keyboard hook returns it. */
+  const composerApiRef = useRef<{
+    getText: () => string
+    setText: (text: string) => void
+    setCursorPos: (pos: number) => void
+  } | null>(null)
   const { stdout } = useStdout()
   const subscribeBackgroundTasks = useCallback(
     (listener: () => void) => backgroundTasks.subscribe(listener),
@@ -341,6 +374,99 @@ export function App({
   }, [appendStaticItem])
 
   /**
+   * Imports bytes as a draft attachment owned by the session that was active
+   * when the import started. `onImportFailed` runs only on failure — the
+   * caller uses it to put a claimed paste back into the composer.
+   */
+  const importDraftImage = useCallback(async (
+    bytes: Buffer,
+    name: string,
+    onImportFailed?: () => void,
+  ): Promise<boolean> => {
+    const ownerSessionId = activeSessionIdRef.current
+    setImportingImages((count) => count + 1)
+    try {
+      const result = await attachments.importImage(ownerSessionId, bytes, name)
+      if (!result.ok) {
+        addSystemMessage(`Image not attached: ${result.message}`)
+        onImportFailed?.()
+        return false
+      }
+      // An import that outlived a session switch must not land in the new
+      // session's draft; the stored file stays with the session that owns it.
+      if (activeSessionIdRef.current !== ownerSessionId) {
+        addSystemMessage(`Session changed while importing ${name}; the image stayed with its session.`)
+        return true
+      }
+      setDraftImages((current) => [
+        ...current,
+        { ref: result.value.ref, ...(result.value.animated ? { animated: true } : {}) },
+      ])
+      addSystemMessage(
+        `Attached ${result.value.ref.name} (${result.value.ref.width}x${result.value.ref.height}); it will be sent with your next message.`,
+      )
+      return true
+    } finally {
+      setImportingImages((count) => count - 1)
+    }
+  }, [attachments, addSystemMessage])
+
+  /** `/paste-image` and Ctrl+V run the same action: capture once, import once. */
+  const pasteImageFromClipboard = useCallback(async () => {
+    const captured = await captureClipboardImage()
+    if (!captured.ok) {
+      addSystemMessage(captured.message)
+      return
+    }
+    const extension = captured.format === 'jpeg' ? 'jpg' : captured.format
+    await importDraftImage(captured.bytes, `clipboard.${extension}`)
+  }, [addSystemMessage, importDraftImage])
+
+  const importPastedImagePath = useCallback(async (
+    cleanedPath: string,
+    previousText: string,
+    previousCursorPos: number,
+  ) => {
+    // Re-insert the paste only when the composer is exactly what it was when
+    // the paste was claimed, so a failed import never overwrites a newer draft.
+    const restorePastedText = () => {
+      const composer = composerApiRef.current
+      if (!composer || composer.getText() !== previousText) return
+      composer.setText(
+        previousText.slice(0, previousCursorPos) + cleanedPath + previousText.slice(previousCursorPos),
+      )
+      composer.setCursorPos(previousCursorPos + cleanedPath.length)
+    }
+    const absolutePath = resolvePastedPath(cleanedPath, { cwd: process.cwd(), homedir: homedir() })
+    let bytes: Buffer
+    try {
+      bytes = await readFile(absolutePath)
+    } catch {
+      addSystemMessage(
+        `Image not attached: ${cleanedPath} does not exist or cannot be read. Paste the full path of an image file, or reference a project image with @path.`,
+      )
+      restorePastedText()
+      return
+    }
+    await importDraftImage(bytes, path.basename(absolutePath), restorePastedText)
+  }, [addSystemMessage, importDraftImage])
+
+  /**
+   * Claims multi-character pastes that are nothing but one standalone image
+   * path; every other paste keeps its text semantics and reaches the composer.
+   */
+  const handlePastedText = useCallback((
+    pasted: string,
+    currentText: string,
+    cursorPosition: number,
+  ): boolean => {
+    const candidate = parseStandaloneImagePath(pasted)
+    if (candidate === null) return false
+    void importPastedImagePath(candidate.path, currentText, cursorPosition)
+    return true
+  }, [importPastedImagePath])
+
+  /**
    * The host-agnostic half of a session switch, shared with `SessionHost`.
    *
    * `host` is only the two members the switch needs; the TUI has them as props
@@ -365,6 +491,9 @@ export function App({
     resetSessionRecords([])
     setCheckpoints([])
     resetTranscript([])
+    // The drafts belong to the old session's attachments; the files stay with
+    // it, the composer starts the new session clean (ownership rules: S23).
+    setDraftImages([])
   }, [sessionSwitchDeps, messageQueue, activeSession.id, resetSessionRecords, resetTranscript])
 
   const buildRunOverridesForOptions = useCallback((options?: CommandSubmitQueryOptions) => (
@@ -374,8 +503,12 @@ export function App({
   const submitPlainInput = useCallback(async (text: string, options?: CommandSubmitQueryOptions) => {
     setSpinnerColors(sampleSpinnerColors())
     setMode('running')
+    // Command-generated user input (skills, `/plan`) carries the draft images
+    // with it, so the generated message keeps its image refs (S14).
+    const images = draftImageRefs(draftImagesRef.current)
     try {
-      await submit(text, buildRunOverridesForOptions(options))
+      await submit({ text, ...(images ? { images } : {}) }, buildRunOverridesForOptions(options))
+      if (images) setDraftImages([])
     } finally {
       setMode('idle')
     }
@@ -620,6 +753,9 @@ export function App({
     setCheckpoints([])
     resetTranscript(transcriptItems)
     setMode('idle')
+    // Same ownership rule as `/clear`: the drafts stay with the session they
+    // were imported into.
+    setDraftImages([])
   }, [activeSession.id, closeResumePicker, sessionSwitchDeps, messageQueue, resetTranscript, resetSessionRecords])
 
   const { dispatch } = useCommands({
@@ -656,6 +792,16 @@ export function App({
     readPlanFile: readCurrentPlanFile,
     openPlanFile: openCurrentPlanFile,
     submitQuery: submitPlainInput,
+    pasteImageFromClipboard,
+    listDraftAttachments: () => draftImagesRef.current.map(
+      (image, index) => formatDraftAttachmentLine(index + 1, image),
+    ),
+    removeDraftAttachment: (index: number) => {
+      const result = removeDraftImageAt(draftImagesRef.current, index)
+      if (result.ok) setDraftImages(result.next)
+      return { ok: result.ok, ...(result.message ? { message: result.message } : {}) }
+    },
+    clearDraftAttachments: () => setDraftImages([]),
     runShellCommand,
     openModelPicker: () => {
       closePickerSurfaces()
@@ -694,8 +840,13 @@ export function App({
   }, [dispatch, sessionController, buildRunOverridesForOptions])
 
   const handleSubmit = useCallback(async (text: string): Promise<boolean> => {
+    // Slash commands never take the drafts with them: control commands only
+    // act, and skill/plan queries consume the drafts at `submitQuery` time.
+    // Only a plain message carries the draft images out of the composer.
+    const isCommandInput = keepsDraftAttachments(text)
+    const images = isCommandInput ? undefined : draftImageRefs(draftImagesRef.current)
     try {
-      await messageQueue.enqueue({ text })
+      await messageQueue.enqueue({ text, ...(images ? { images } : {}) })
       void appendPromptHistory(text, process.cwd()).then((entry) => {
         if (!entry) return
         setPromptHistory((current) => [...current, entry.text].slice(-1000))
@@ -704,6 +855,7 @@ export function App({
         historyWarningShownRef.current = true
         addSystemMessage(`Input history could not be saved: ${error instanceof Error ? error.message : String(error)}`)
       })
+      if (!isCommandInput) setDraftImages([])
       return true
     } catch (error) {
       addSystemMessage(`Failed to queue message: ${error instanceof Error ? error.message : String(error)}`)
@@ -908,6 +1060,8 @@ export function App({
     onEnterRestoreMode: handleEnterRestoreMode,
     onCyclePermissionMode: cyclePermissionMode,
     onToggleTranscript: handleToggleTranscript,
+    onPasteImage: () => { void pasteImageFromClipboard() },
+    onPastedText: handlePastedText,
     commands,
     history: promptHistory,
     isStreaming,
@@ -932,10 +1086,23 @@ export function App({
   })
 
   restoreInputRef.current = (restored: UserInput) => {
-    // The attachment list arrives with S14; until then the restored refs ride
-    // the input object and the text is what the composer can show.
+    // The rollback restored the input as it was submitted: the text returns
+    // to the composer and the image refs return to the draft list. The
+    // animated-first-frame annotation is import-time knowledge a bare ref
+    // does not carry, so a restored draft lists without it.
     setText(restored.text)
     setCursorPos(restored.text.length)
+    if (restored.images && restored.images.length > 0) {
+      setDraftImages(restored.images.map((ref) => ({ ref })))
+    }
+  }
+
+  // Assigned during render so the paste-failure restore always sees the
+  // composer state of the latest committed frame, never a stale one.
+  composerApiRef.current = {
+    getText: () => text,
+    setText,
+    setCursorPos,
   }
 
   const staticItems: TUIStaticItem[] = [
@@ -1102,6 +1269,11 @@ export function App({
 
           {activeCommandView && (
             <CommandViewPanel view={activeCommandView} onClose={() => setActiveCommandView(null)} />
+          )}
+
+          {/* Draft image attachments (S14): numbered list above the input */}
+          {mode !== 'restore' && mode !== 'tasks' && mode !== 'resume' && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && !activeCommandView && (
+            <DraftAttachments images={draftImages} importingCount={importingImages} />
           )}
 
           {/* Input box (with horizontal lines) */}

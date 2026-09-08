@@ -119,6 +119,14 @@ export interface CommandContext {
   readPlanFile?: () => Promise<{ path: string; content: string | null }>
   openPlanFile?: () => Promise<{ message: string }>
   submitQuery?: (input: string, options?: CommandSubmitQueryOptions) => Promise<void>
+  /** `/paste-image`: capture the system clipboard's image into the composer's draft. */
+  pasteImageFromClipboard?: () => Promise<void>
+  /** Draft image attachment lines as the strip shows them, numbered. */
+  listDraftAttachments?: () => string[]
+  /** Removes the 1-based numbered draft image; renumbering follows the list. */
+  removeDraftAttachment?: (index: number) => { ok: boolean; message?: string }
+  /** Drops every draft image attachment (files stay with their session). */
+  clearDraftAttachments?: () => void
   runShellCommand?: (command: string) => Promise<CommandShellResult>
   openProviderPanel?: () => void
   openBackgroundTasks?: () => void

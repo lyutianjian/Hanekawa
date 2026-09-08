@@ -41,7 +41,7 @@ import type { AgentSession } from './types.js'
  */
 export type SessionEvent =
   /** A turn is beginning. Emitted synchronously before any I/O. */
-  | { type: 'turn-start'; messageId: string; displayInput: string; createdAt: string }
+  | { type: 'turn-start'; messageId: string; displayInput: string; createdAt: string; images?: ImageAttachmentRef[] }
   /** A record reached the UI. `approvalToolUseId`/`subagentProgress` are the correlations the controller tracks. */
   | { type: 'record'; record: SessionRecord; approvalToolUseId?: string; subagentProgress?: string }
   /** The set of in-flight tool calls changed. Spinner text itself lives on the snapshot. */
@@ -214,6 +214,7 @@ export class SessionController {
       messageId,
       displayInput: options?.displayInput ?? input.text,
       createdAt: new Date().toISOString(),
+      ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
     })
 
     this.streaming = true

@@ -11,6 +11,8 @@ import { providerCommand } from '../src/commands/provider.js'
 import { tasksCommand } from '../src/commands/tasks.js'
 import { resumeCommand } from '../src/commands/resume.js'
 import { sessionCommand } from '../src/commands/session.js'
+import { pasteImageCommand } from '../src/commands/pasteImage.js'
+import { attachmentsCommand } from '../src/commands/attachments.js'
 import { CommandRegistry, registerBuiltinCommands } from '../src/commands/index.js'
 import type { CommandContext, CommandView } from '../src/commands/types.js'
 
@@ -605,4 +607,68 @@ test('/tasks opens the background task panel', async () => {
   let opened = false
   await tasksCommand.run('', createContext({ openBackgroundTasks: () => { opened = true } }))
   assert.equal(opened, true)
+})
+
+test('registry includes the image attachment commands', () => {
+  const registry = new CommandRegistry()
+  registerBuiltinCommands(registry)
+
+  assert.equal(registry.get('paste-image')?.name, 'paste-image')
+  assert.equal(registry.get('attachments')?.name, 'attachments')
+})
+
+test('/paste-image runs the shell capture only when the shell provides it', async () => {
+  const unavailable: string[] = []
+  await pasteImageCommand.run('', createContext({
+    writeLine: (message) => { unavailable.push(message) },
+  }))
+  assert.deepEqual(unavailable, ['Clipboard image paste is not available in this shell.'])
+
+  let captured = 0
+  await pasteImageCommand.run('', createContext({
+    pasteImageFromClipboard: async () => { captured += 1 },
+  }))
+  assert.equal(captured, 1)
+})
+
+test('/attachments lists, removes by number, and clears the draft', async () => {
+  const output: string[] = []
+  const draft = ['[图片 1：screenshot.png，1920×1080]', '[图片 2：anim.gif，800×600，动画首帧]']
+  let current = draft
+  const context = createContext({
+    writeLine: (message) => { output.push(message) },
+    listDraftAttachments: () => current,
+    removeDraftAttachment: (index: number) => {
+      if (index !== 1) return { ok: false, message: `No image ${index}; the draft has ${current.length}.` }
+      current = current.slice(1)
+      return { ok: true }
+    },
+    clearDraftAttachments: () => { current = [] },
+  })
+
+  await attachmentsCommand.run('', context)
+  await attachmentsCommand.run('list', context)
+  await attachmentsCommand.run('remove 1', context)
+  await attachmentsCommand.run('remove 5', context)
+  await attachmentsCommand.run('clear', context)
+  await attachmentsCommand.run('', context)
+  await attachmentsCommand.run('explode', context)
+
+  assert.deepEqual(output, [
+    `Draft images (attached to your next message):\n${draft.join('\n')}`,
+    `Draft images (attached to your next message):\n${draft.join('\n')}`,
+    'Removed image 1.',
+    'No image 5; the draft has 1.',
+    'Draft images cleared.',
+    'No draft images. Paste an image path, or use /paste-image.',
+    'Usage: /attachments [list | remove <n> | clear]',
+  ])
+})
+
+test('/attachments reports shells without a draft composer', async () => {
+  const output: string[] = []
+  await attachmentsCommand.run('list', createContext({
+    writeLine: (message) => { output.push(message) },
+  }))
+  assert.deepEqual(output, ['Draft image attachments are not available in this shell.'])
 })

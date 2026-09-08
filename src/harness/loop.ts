@@ -17,6 +17,7 @@ import { logDiagnostics, type RuntimeDiagnostic } from './diagnostics.js'
 import { cacheHitRate, type SessionMetricInput } from './metrics.js'
 import type { RecordStream } from './recordStream.js'
 import { MemoryRecordStream } from './recordStream.js'
+import type { UserInput } from '../media/types.js'
 import { mergeHooks, runLifecycleHooks, type Hooks, type LifecycleHookName } from './hooks.js'
 import { FallbackTriggeredError } from '../config/retry.js'
 import {
@@ -270,7 +271,7 @@ export class AgentLoop {
     }
   }
 
-  async run(userInput: string, signal?: AbortSignal, messageId?: string, overrides?: AgentRunOverrides): Promise<AgentRunResult> {
+  async run(userInput: UserInput, signal?: AbortSignal, messageId?: string, overrides?: AgentRunOverrides): Promise<AgentRunResult> {
     return this.enqueue(() => this.runWithOverrides(userInput, signal, messageId, overrides))
   }
 
@@ -293,7 +294,7 @@ export class AgentLoop {
   }
 
   private async runWithOverrides(
-    userInput: string,
+    userInput: UserInput,
     signal?: AbortSignal,
     messageId?: string,
     overrides?: AgentRunOverrides,
@@ -313,7 +314,7 @@ export class AgentLoop {
     }
   }
 
-  private normalizeRunOverrides(userInput: string, overrides: AgentRunOverrides | undefined): ActiveRunOverrides | undefined {
+  private normalizeRunOverrides(userInput: UserInput, overrides: AgentRunOverrides | undefined): ActiveRunOverrides | undefined {
     if (!overrides) return undefined
     const normalized: ActiveRunOverrides = {}
     if (overrides.allowedTools) {
@@ -329,20 +330,20 @@ export class AgentLoop {
     if (overrides.model) normalized.model = overrides.model
     if (overrides.effort) normalized.effort = overrides.effort
     if (overrides.hooks) normalized.hooks = overrides.hooks
-    if (overrides.displayInput !== undefined && overrides.displayInput !== userInput) {
+    if (overrides.displayInput !== undefined && overrides.displayInput !== userInput.text) {
       normalized.displayInput = overrides.displayInput
     }
     if (overrides.skillName) {
       normalized.skillInvocation = {
         skillName: overrides.skillName,
         skillArgs: overrides.skillArgs ?? '',
-        prompt: userInput,
+        prompt: userInput.text,
       }
     }
     return Object.keys(normalized).length > 0 ? normalized : undefined
   }
 
-  private async runInternal(userInput: string, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
+  private async runInternal(userInput: UserInput, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
     let usage = { ...EMPTY_TOKEN_USAGE }
     let lastForegroundResponseUsage: TokenUsage | undefined
     let pendingAssistantStreamContent = ''
@@ -352,15 +353,16 @@ export class AgentLoop {
       type: 'message',
       id: messageId ?? randomUUID(),
       role: 'user',
-      content: userInput,
+      content: userInput.text,
+      ...(userInput.images && userInput.images.length > 0 ? { images: userInput.images } : {}),
       ...(this.activeRunOverrides?.displayInput ? { displayContent: this.activeRunOverrides.displayInput } : {}),
       turnId,
       createdAt: new Date().toISOString(),
     }
     await this.appendRecord(userMessage)
-    if (!userInput.trimStart().startsWith('/')) {
+    if (!userInput.text.trimStart().startsWith('/')) {
       const atMentionRecord = await buildAtMentionContextRecord({
-        userInput,
+        userInput: userInput.text,
         userMessageId: userMessage.id,
         turnId,
         toolContext: this.options.toolContext,
@@ -371,7 +373,7 @@ export class AgentLoop {
       }
     }
     try {
-      await this.runUserPromptSubmitHooks(userInput, turnId, signal)
+      await this.runUserPromptSubmitHooks(userInput.text, turnId, signal)
       let lastResponseTokenCount: number | undefined
       let lastResponseRecordCount: number | undefined
       let lastResponseRecordId: string | undefined
@@ -415,7 +417,7 @@ export class AgentLoop {
         }
         await this.flushReadyToolUseSummaries(turnId)
         const preparedRecords = await this.loadPreparedRecords()
-        const interruptionContext = await this.consumeTurnInterruptionContext(preparedRecords, userInput)
+        const interruptionContext = await this.consumeTurnInterruptionContext(preparedRecords, userInput.text)
         const progressive = applyProgressiveCompaction({
           records: preparedRecords,
           system: this.options.system,
@@ -871,6 +873,7 @@ export class AgentLoop {
       turnId,
       userMessageId: userMessage.id,
       prompt: userMessage.content,
+      ...(userMessage.images && userMessage.images.length > 0 ? { images: userMessage.images } : {}),
       remainingTasks: remainingTasksFromState(this.options.toolContext.taskState),
       recoverable: true,
       createdAt: new Date().toISOString(),

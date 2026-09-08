@@ -15,9 +15,11 @@ import type {
 } from '../src/harness/types.js'
 import type { AgentSession } from '../src/runtime/types.js'
 import type { FileHistoryService } from '../src/services/fileHistory/fileHistoryService.js'
+import type { UserInput } from '../src/media/types.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 type LoopRun = (
-  input: string,
+  input: UserInput,
   signal?: AbortSignal,
   messageId?: string,
   overrides?: unknown,
@@ -123,7 +125,7 @@ test('a successful turn emits turn-start before the loop runs and turn-end after
   })
   harness.controller.onEvent((event) => order.push(event.type))
 
-  await harness.controller.submit('hello')
+  await harness.controller.submit({ text: 'hello' })
 
   assert.deepEqual(order, ['turn-start', 'loop.run', 'active-model', 'turn-end'])
 
@@ -151,7 +153,7 @@ test('a failed turn reports the error but is not aborted, so the duration summar
     run: async () => { throw new Error('provider exploded') },
   })
 
-  await harness.controller.submit('hello')
+  await harness.controller.submit({ text: 'hello' })
 
   const notice = harness.events.find((event) => event.type === 'notice')
   assert.equal(notice?.type, 'notice')
@@ -168,7 +170,25 @@ test('a failed turn reports the error but is not aborted, so the duration summar
   assert.equal(end.usage, undefined)
 })
 
-test('a user cancel whose turn left only synthetic records rolls the prompt back', async () => {
+test('submit hands the loop the full UserInput — text and image refs intact', async () => {
+  const seen: UserInput[] = []
+  const harness = await createHarness({
+    run: async (input) => {
+      seen.push(input)
+      return okResult()
+    },
+  })
+
+  const images = [
+    makeImageAttachmentRef({ id: 'img-a', ownerSessionId: 's', name: 'first.png' }),
+    makeImageAttachmentRef({ id: 'img-b', ownerSessionId: 's', name: 'second.png' }),
+  ]
+  await harness.controller.submit({ text: 'hello', images })
+
+  assert.deepEqual(seen, [{ text: 'hello', images }])
+})
+
+test('a rolled-back turn restores the input images with the text, in order', async () => {
   let controller!: SessionController
   const harness = await createHarness({
     run: async (input, _signal, messageId) => {
@@ -176,14 +196,16 @@ test('a user cancel whose turn left only synthetic records rolls the prompt back
         id: messageId!,
         type: 'message',
         role: 'user',
-        content: input,
+        content: input.text,
+        ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
         createdAt: new Date().toISOString(),
       })
       await harness.store.appendRecord(harness.session.id, {
         id: randomUUID(),
         type: 'turn_interruption',
         userMessageId: messageId!,
-        prompt: input,
+        prompt: input.text,
+        ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
         remainingTasks: [],
         recoverable: true,
         createdAt: new Date().toISOString(),
@@ -194,7 +216,50 @@ test('a user cancel whose turn left only synthetic records rolls the prompt back
   })
   controller = harness.controller
 
-  await controller.submit('rollback me')
+  const images = [
+    makeImageAttachmentRef({ id: 'img-r1', ownerSessionId: 's', name: 'first.png' }),
+    makeImageAttachmentRef({ id: 'img-r2', ownerSessionId: 's', name: 'second.png' }),
+  ]
+  await controller.submit({ text: 'rollback me', images })
+
+  const restore = harness.events.find((event) => event.type === 'restore-input')
+  assert.equal(restore?.type === 'restore-input' ? restore.text : undefined, 'rollback me')
+  if (restore?.type !== 'restore-input') return
+  assert.deepEqual(restore.images, images)
+
+  // The rollback really removed the user message, so the refs exist only in
+  // the restored draft — not as a leftover record.
+  const remaining = await harness.store.loadRecords(harness.session.id)
+  assert.equal(remaining.some((record) => record.type === 'message' && record.id !== undefined && record.role === 'user'), false)
+})
+
+test('a user cancel whose turn left only synthetic records rolls the prompt back', async () => {
+  let controller!: SessionController
+  const harness = await createHarness({
+    run: async (input, _signal, messageId) => {
+      await harness.store.appendRecord(harness.session.id, {
+        id: messageId!,
+        type: 'message',
+        role: 'user',
+        content: input.text,
+        createdAt: new Date().toISOString(),
+      })
+      await harness.store.appendRecord(harness.session.id, {
+        id: randomUUID(),
+        type: 'turn_interruption',
+        userMessageId: messageId!,
+        prompt: input.text,
+        remainingTasks: [],
+        recoverable: true,
+        createdAt: new Date().toISOString(),
+      })
+      controller.interrupt()
+      throw abortError()
+    },
+  })
+  controller = harness.controller
+
+  await controller.submit({ text: 'rollback me' })
 
   assert.deepEqual(
     types(harness.events),
@@ -225,7 +290,7 @@ test('a user cancel that produced real work reports the interruption instead of 
         id: messageId!,
         type: 'message',
         role: 'user',
-        content: input,
+        content: input.text,
         createdAt: new Date().toISOString(),
       })
       await harness.store.appendRecord(harness.session.id, {
@@ -241,7 +306,7 @@ test('a user cancel that produced real work reports the interruption instead of 
         id: randomUUID(),
         type: 'turn_interruption',
         userMessageId: messageId!,
-        prompt: input,
+        prompt: input.text,
         remainingTasks: [
           { id: '1', status: 'pending', subject: 'a', description: 'a' },
           { id: '2', status: 'pending', subject: 'b', description: 'b' },
@@ -255,7 +320,7 @@ test('a user cancel that produced real work reports the interruption instead of 
   })
   controller = harness.controller
 
-  await controller.submit('keep me')
+  await controller.submit({ text: 'keep me' })
 
   assert.deepEqual(types(harness.events), ['turn-start', 'notice', 'active-model', 'turn-end'])
   const notice = harness.events.find((event) => event.type === 'notice')
@@ -277,8 +342,8 @@ test('token usage accumulates across turns and resets when the session is retarg
     },
   })
 
-  await harness.controller.submit('one')
-  await harness.controller.submit('two')
+  await harness.controller.submit({ text: 'one' })
+  await harness.controller.submit({ text: 'two' })
 
   assert.deepEqual(harness.controller.getSnapshot().usage.total, usage(300, 3))
   assert.deepEqual(harness.controller.getSnapshot().usage.lastRequest, usage(200, 2))
@@ -473,7 +538,7 @@ test('a turn opens a snapshot before the loop runs', async () => {
     },
   })
 
-  await harness.controller.submit('hello')
+  await harness.controller.submit({ text: 'hello' })
 
   assert.equal(harness.snapshotCalls.length, 1)
   assert.deepEqual(order, ['loop.run'], 'the snapshot is awaited before the loop starts')
@@ -482,7 +547,7 @@ test('a turn opens a snapshot before the loop runs', async () => {
 test('a turn runs normally when the file history never came up', async () => {
   const harness = await createHarness({ fileHistoryInitFails: true })
 
-  await harness.controller.submit('hello')
+  await harness.controller.submit({ text: 'hello' })
 
   assert.deepEqual(harness.snapshotCalls, [], 'nothing is snapshotted onto state init would replace')
   assert.deepEqual(
@@ -517,7 +582,7 @@ test('a second submit while a turn is in flight is rejected, not run', async () 
   // nothing — a shell is supposed to catch this and queue the input instead
   // (`SessionHost.pumpQueue`, `App.tsx`'s `handleSubmit`).
   let release: (() => void) | undefined
-  const runs: string[] = []
+  const runs: UserInput[] = []
   const harness = await createHarness({
     run: async (input) => {
       runs.push(input)
@@ -528,23 +593,23 @@ test('a second submit while a turn is in flight is rejected, not run', async () 
     },
   })
 
-  const first = harness.controller.submit('first')
+  const first = harness.controller.submit({ text: 'first' })
   await waitUntil(() => runs.length === 1, 'the first turn to start')
 
   await assert.rejects(
-    () => harness.controller.submit('second'),
+    () => harness.controller.submit({ text: 'second' }),
     /already running/,
     'the second submit must reject',
   )
-  assert.deepEqual(runs, ['first'], 'and must not reach the loop')
+  assert.deepEqual(runs, [{ text: 'first' }], 'and must not reach the loop')
 
   release?.()
   await first
   // The guard clears with the turn rather than latching: the same controller has
   // to accept the next message.
   assert.equal(harness.controller.getSnapshot().isStreaming, false)
-  await harness.controller.submit('third')
-  assert.deepEqual(runs, ['first', 'third'])
+  await harness.controller.submit({ text: 'third' })
+  assert.deepEqual(runs, [{ text: 'first' }, { text: 'third' }])
 })
 
 test('the first turn is still interruptible after a second submit was refused', async () => {
@@ -565,9 +630,9 @@ test('the first turn is still interruptible after a second submit was refused', 
     },
   })
 
-  const first = harness.controller.submit('first')
+  const first = harness.controller.submit({ text: 'first' })
   await waitUntil(() => seen.length === 1, 'the first turn to start')
-  await assert.rejects(() => harness.controller.submit('second'), /already running/)
+  await assert.rejects(() => harness.controller.submit({ text: 'second' }), /already running/)
 
   harness.controller.interrupt('user-cancel')
   await first

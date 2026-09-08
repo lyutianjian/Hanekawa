@@ -65,7 +65,8 @@ import type { EffortLevel } from '../../config/effort.js'
 import { getContextWindowForModel } from '../../prompts/budget.js'
 import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/budget.js'
 import { shouldRenderStatusLine } from '../statusLineVisibility.js'
-import { MessageQueue } from '../../runtime/messageQueue.js'
+import { MessageQueue, queuedMessageToInput } from '../../runtime/messageQueue.js'
+import type { UserInput } from '../../media/types.js'
 import type { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
 import { appendPromptHistory, loadPromptHistory, promptHistoryTexts } from '../../runtime/promptHistory.js'
 import { summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
@@ -169,7 +170,7 @@ export function App({
   const [effortPickerOpen, setEffortPickerOpen] = useState(false)
   const [activeCommandView, setActiveCommandView] = useState<CommandView | null>(null)
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const restoreInputRef = useRef<(text: string) => void>(() => {})
+  const restoreInputRef = useRef<(input: UserInput) => void>(() => {})
   const latestStaticItemCountRef = useRef(0)
   const transcriptStaticItemCountRef = useRef<number | null>(null)
   const promptFrameSnapshotRef = useRef<InkFrameSnapshot | undefined>(undefined)
@@ -251,8 +252,8 @@ export function App({
     runtimeSlot.patchModel(nextModelKey, nextModelConfig, nextModelConfig.provider)
   }, [providerConfig, runtimeSlot])
 
-  const restoreInput = useCallback((text: string) => {
-    restoreInputRef.current(text)
+  const restoreInput = useCallback((input: UserInput) => {
+    restoreInputRef.current(input)
   }, [])
 
   /** Appends to the live record list. Records reach the UI over several paths, so dedupe by id. */
@@ -397,7 +398,7 @@ export function App({
     const prompt = initialQueuedPromptRef.current
     if (!prompt) return
     initialQueuedPromptRef.current = undefined
-    void messageQueue.enqueue(prompt).catch((error) => {
+    void messageQueue.enqueue({ text: prompt }).catch((error) => {
       addSystemMessage(`Failed to queue prompt: ${error instanceof Error ? error.message : String(error)}`)
     })
   }, [messageQueue, addSystemMessage])
@@ -677,17 +678,24 @@ export function App({
     setThinking: handleSetThinking,
   })
 
-  const executeQueuedInput = useCallback(async (text: string) => {
-    if (text.startsWith('/')) {
-      await dispatch(text)
+  /** The queue's hand-off: a dequeued message becomes a full UserInput again. */
+  const executeQueuedInput = useCallback(async (input: UserInput) => {
+    if (input.text.startsWith('/')) {
+      await dispatch(input.text)
       return
     }
-    await submitPlainInput(text)
-  }, [dispatch, submitPlainInput])
+    setSpinnerColors(sampleSpinnerColors())
+    setMode('running')
+    try {
+      await sessionController.submit(input, buildRunOverridesForOptions(undefined))
+    } finally {
+      setMode('idle')
+    }
+  }, [dispatch, sessionController, buildRunOverridesForOptions])
 
   const handleSubmit = useCallback(async (text: string): Promise<boolean> => {
     try {
-      await messageQueue.enqueue(text)
+      await messageQueue.enqueue({ text })
       void appendPromptHistory(text, process.cwd()).then((entry) => {
         if (!entry) return
         setPromptHistory((current) => [...current, entry.text].slice(-1000))
@@ -719,7 +727,7 @@ export function App({
     void (async () => {
       try {
         const next = await messageQueue.dequeue()
-        if (next) await executeQueuedInput(next.content)
+        if (next) await executeQueuedInput(queuedMessageToInput(next))
       } catch (error) {
         addSystemMessage(`Failed to process queued message: ${error instanceof Error ? error.message : String(error)}`)
       } finally {
@@ -923,9 +931,11 @@ export function App({
       || screen === 'transcript',
   })
 
-  restoreInputRef.current = (restoredText: string) => {
-    setText(restoredText)
-    setCursorPos(restoredText.length)
+  restoreInputRef.current = (restored: UserInput) => {
+    // The attachment list arrives with S14; until then the restored refs ride
+    // the input object and the text is what the composer can show.
+    setText(restored.text)
+    setCursorPos(restored.text.length)
   }
 
   const staticItems: TUIStaticItem[] = [

@@ -7,6 +7,7 @@ import { ToolRunner } from '../src/harness/toolRunner.js'
 import { PermissionGate } from '../src/harness/permissions.js'
 import type { RecordStream } from '../src/harness/recordStream.js'
 import type { ModelProvider, ModelRequest, ModelResponse, Tool, SessionRecord } from '../src/harness/types.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 function abortError(): Error {
   const err = new Error('The operation was aborted')
@@ -76,7 +77,7 @@ describe('AgentLoop abort', () => {
 
   it('passes AbortSignal to provider.createMessage', async () => {
     const controller = new AbortController()
-    const runPromise = loop.run('test input', controller.signal)
+    const runPromise = loop.run({ text: 'test input' }, controller.signal)
 
     // Small delay then check
     await new Promise((r) => setTimeout(r, 5))
@@ -99,7 +100,7 @@ describe('AgentLoop abort', () => {
     controller.abort()
 
     try {
-      await loop.run('test input', controller.signal)
+      await loop.run({ text: 'test input' }, controller.signal)
       assert.fail('Expected AbortError')
     } catch (err: unknown) {
       const e = err as { name?: string }
@@ -108,7 +109,7 @@ describe('AgentLoop abort', () => {
   })
 
   it('works without signal (backward compatible)', async () => {
-    const result = await loop.run('test input')
+    const result = await loop.run({ text: 'test input' })
     assert.equal(result.content, 'response')
     assert.equal(provider.requests.length, 1)
     assert.equal(provider.requests[0].retry?.signal, undefined)
@@ -167,7 +168,7 @@ describe('AgentLoop abort', () => {
       recordStream: recordStreamFor(records),
     })
 
-    await assert.rejects(testLoop.run('test input'), (error: Error) => error.name === 'AbortError')
+    await assert.rejects(testLoop.run({ text: 'test input' }), (error: Error) => error.name === 'AbortError')
 
     const toolResults = records.filter((record) => record.type === 'tool_result')
     assert.equal(toolResults.length, 2)
@@ -203,7 +204,7 @@ describe('AgentLoop abort', () => {
       recordStream: recordStreamFor(records),
     })
 
-    const runPromise = testLoop.run('please do the work', controller.signal, 'user-1')
+    const runPromise = testLoop.run({ text: 'please do the work' }, controller.signal, 'user-1')
     await new Promise((resolve) => setTimeout(resolve, 5))
     controller.abort('user-cancel')
     await assert.rejects(runPromise, (error: Error) => error.name === 'AbortError')
@@ -214,6 +215,38 @@ describe('AgentLoop abort', () => {
     assert.equal(interruption.userMessageId, 'user-1')
     assert.equal(interruption.recoverable, true)
     assert.equal(interruption.remainingTasks[0]?.subject, 'Finish interrupted work')
+  })
+
+  it('records the input image refs on the interruption so a resume can restore them', async () => {
+    const records: SessionRecord[] = []
+    const controller = new AbortController()
+    const provider = createMockProvider()
+    const permissionGate = new PermissionGate(noopPermission)
+    const toolRunner = new ToolRunner([], permissionGate, {
+      onRecord: async (record) => { records.push(record) },
+    })
+    const testLoop = new AgentLoop({
+      provider,
+      model: 'mock-model',
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner,
+      toolContext: { cwd: process.cwd(), sessionId: 'test', readFiles: new Set() },
+      recordStream: recordStreamFor(records),
+    })
+
+    const image = makeImageAttachmentRef({ id: 'img-abort', ownerSessionId: 'test', name: 'shot.png' })
+    const runPromise = testLoop.run({ text: 'look at this', images: [image] }, controller.signal, 'user-img')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    controller.abort('user-cancel')
+    await assert.rejects(runPromise, (error: Error) => error.name === 'AbortError')
+
+    const user = records.find((record) => record.type === 'message' && record.role === 'user')
+    assert.equal(user?.type === 'message' ? user.content : undefined, 'look at this')
+    const interruption = records.find((record) => record.type === 'turn_interruption')
+    assert.ok(interruption)
+    assert.equal(interruption.type === 'turn_interruption' ? interruption.prompt : undefined, 'look at this')
+    assert.deepEqual(interruption.type === 'turn_interruption' ? interruption.images : undefined, [image])
   })
 
   it('does not record recoverable turn interruption for non-user aborts', async () => {
@@ -234,7 +267,7 @@ describe('AgentLoop abort', () => {
       recordStream: recordStreamFor(records),
     })
 
-    const runPromise = testLoop.run('please do the work', controller.signal, 'user-1')
+    const runPromise = testLoop.run({ text: 'please do the work' }, controller.signal, 'user-1')
     await new Promise((resolve) => setTimeout(resolve, 5))
     controller.abort('exit')
     await assert.rejects(runPromise, (error: Error) => error.name === 'AbortError')
@@ -272,7 +305,7 @@ describe('AgentLoop abort', () => {
       recordStream: recordStreamFor(records),
     })
 
-    const runPromise = testLoop.run('please do the work', controller.signal, 'user-1')
+    const runPromise = testLoop.run({ text: 'please do the work' }, controller.signal, 'user-1')
     await new Promise((resolve) => setTimeout(resolve, 5))
     controller.abort('user-cancel')
     await assert.rejects(runPromise, (error: Error) => error.name === 'AbortError')
@@ -325,7 +358,7 @@ describe('AgentLoop abort', () => {
       recordStream: stream,
     })
 
-    await testLoop.run('continue')
+    await testLoop.run({ text: 'continue' })
 
     assert.match(JSON.stringify(provider.requests[0].contextItems), /previous turn was interrupted/)
     const interruption = records.find((record) => record.type === 'turn_interruption')
@@ -370,7 +403,7 @@ describe('AgentLoop abort', () => {
       recordStream: stream,
     })
 
-    await testLoop.run('继续')
+    await testLoop.run({ text: '继续' })
 
     assert.match(JSON.stringify(provider.requests[0].contextItems), /previous turn was interrupted/)
   })
@@ -411,7 +444,7 @@ describe('AgentLoop abort', () => {
       recordStream: stream,
     })
 
-    await testLoop.run('算了')
+    await testLoop.run({ text: '算了' })
 
     assert.match(JSON.stringify(provider.requests[0].contextItems), /has been abandoned/)
   })

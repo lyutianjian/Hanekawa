@@ -333,7 +333,7 @@ test('one pane\'s token totals do not accumulate into another\'s', async () => {
   const first = await harness.workspace.open(await harness.store.create('first'))
   const second = await harness.workspace.open(await harness.store.create('second'))
 
-  await first.controller.submit('hello')
+  await first.controller.submit({ text: 'hello' })
 
   assert.deepEqual(first.controller.getSnapshot().usage.total, {
     inputTokens: 10,

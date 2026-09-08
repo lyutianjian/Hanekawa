@@ -11,6 +11,7 @@ import type {
 } from '../harness/types.js'
 import { deriveSessionTitle, type SessionMeta, type SessionStore } from '../sessions/service.js'
 import { FileHistoryService } from '../services/fileHistory/fileHistoryService.js'
+import type { ImageAttachmentRef, UserInput } from '../media/types.js'
 import type { RecordProxy } from './bridges.js'
 import { rollbackInterruptedPromptIfSynthetic } from './interruptRollback.js'
 import {
@@ -61,8 +62,8 @@ export type SessionEvent =
   | { type: 'session-meta'; session: SessionMeta }
   /** The session's records were replaced wholesale; rebuild from `records`. */
   | { type: 'transcript-reset'; records: readonly SessionRecord[]; systemMessages: readonly string[]; bumpGeneration: boolean }
-  /** An interrupted prompt was rolled back; put the text back in the composer. */
-  | { type: 'restore-input'; text: string }
+  /** An interrupted prompt was rolled back; put the input back in the composer. */
+  | { type: 'restore-input'; text: string; images?: ImageAttachmentRef[] }
   /** The loop switched models on its own (fallback activation). */
   | { type: 'active-model'; model: Omit<ActiveModelRuntime, 'provider'> }
   /**
@@ -185,6 +186,11 @@ export class SessionController {
   /**
    * Runs one turn. Resolves when the turn is over, however it ended.
    *
+   * The input is a {@link UserInput} — text always, image refs when the turn
+   * has any — so the submission path has a single shape from either shell down
+   * to the loop. Callers that only have text wrap it as `{ text }`; there is no
+   * parallel string channel on this method.
+   *
    * Rejects rather than queueing when a turn is already in flight: everything
    * below assigns to `this.abortController`, so a second concurrent run would
    * overwrite the live one and leave the first turn impossible to interrupt.
@@ -195,7 +201,7 @@ export class SessionController {
    * It throws rather than silently returning because a dropped message is
    * indistinguishable from a message that was sent and answered with nothing.
    */
-  async submit(input: string, options?: AgentRunOverrides): Promise<void> {
+  async submit(input: UserInput, options?: AgentRunOverrides): Promise<void> {
     if (this.streaming) {
       throw new Error('A turn is already running; queue the message instead of submitting it.')
     }
@@ -206,7 +212,7 @@ export class SessionController {
     this.emit({
       type: 'turn-start',
       messageId,
-      displayInput: options?.displayInput ?? input,
+      displayInput: options?.displayInput ?? input.text,
       createdAt: new Date().toISOString(),
     })
 
@@ -476,11 +482,17 @@ export class SessionController {
   /**
    * A user-cancelled turn that produced nothing but synthetic interruption
    * records is rolled back entirely, so the prompt returns to the composer.
+   *
+   * The restore carries the input's images with its text, in their original
+   * order: the rollback removed the user message that held them, and a
+   * text-only restore would silently drop attachments the user still means to
+   * send. The receiving shell owns what a restored draft looks like; this
+   * method only guarantees the refs survive the round trip.
    */
   private async tryRestoreInterruptedPrompt(
     signal: AbortSignal,
     userMessageId: string,
-    input: string,
+    input: UserInput,
   ): Promise<boolean> {
     if (signal.reason !== 'user-cancel') return false
 
@@ -498,7 +510,11 @@ export class SessionController {
       // Rebuilt from scratch, but without bumping the generation: this is a
       // rollback of the current turn, not a new conversation view.
       this.emit({ type: 'transcript-reset', records, systemMessages: [], bumpGeneration: false })
-      this.emit({ type: 'restore-input', text: input })
+      this.emit({
+        type: 'restore-input',
+        text: input.text,
+        ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
+      })
       return true
     } catch {
       return false

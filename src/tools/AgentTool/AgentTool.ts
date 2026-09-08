@@ -715,7 +715,7 @@ async function runSubagent({
         ?.consumePendingAgentMessages(context.sessionId, subAgentId) ?? [],
     })
     const loop = createLoop()
-    const result = await loop.run(parsed.task, abortController.signal)
+    const result = await loop.run({ text: parsed.task }, abortController.signal)
     const transcriptRecords = await recordStream.load()
     const transcriptStats = summarizeTranscriptRecords(transcriptRecords)
     const verdict = extractVerdict(result.content)
@@ -771,7 +771,7 @@ async function runSubagent({
             ),
             'subagentStart',
           )
-          const resumed = await createLoop().run(message, continuationAbort.signal)
+          const resumed = await createLoop().run({ text: message }, continuationAbort.signal)
           const turnRecords = (await recordStream.load()).slice(beforeRecords.length)
           const turnStats = summarizeTranscriptRecords(turnRecords)
           const turnVerdict = extractVerdict(resumed.content)

@@ -9,6 +9,7 @@ import type {
 } from '../../harness/types.js'
 import type { TUIDisplayItem } from '../types.js'
 import type { SessionController, SessionEvent } from '../../runtime/sessionController.js'
+import type { UserInput } from '../../media/types.js'
 import {
   appendLiveSystemItem,
   appendStaticTranscriptItem,
@@ -44,7 +45,7 @@ interface UseAgentLoopOptions {
   onRecordExternal?: (record: SessionRecord) => void
   onActiveModelChange?: (model: Omit<ActiveModelRuntime, 'provider'>) => void
   onInterrupt?: () => void
-  onRestoreInput?: (text: string) => void
+  onRestoreInput?: (input: UserInput) => void
 }
 
 /**
@@ -271,7 +272,10 @@ export function useAgentLoop({
         // belongs in the transcript.
         return
       case 'restore-input':
-        onRestoreInput?.(event.text)
+        onRestoreInput?.({
+          text: event.text,
+          ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
+        })
         return
       case 'active-model':
         onActiveModelChange?.(event.model)
@@ -316,7 +320,9 @@ export function useAgentLoop({
   useEffect(() => controller.onEvent(handleEvent), [controller, handleEvent])
 
   const submit = useCallback(
-    (input: string, options?: AgentRunOverrides) => controller.submit(input, options),
+    // The composer still hands over plain text; this hook is where it joins
+    // the UserInput shape every submission path below the UI speaks.
+    (input: string, options?: AgentRunOverrides) => controller.submit({ text: input }, options),
     [controller],
   )
 

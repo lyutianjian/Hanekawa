@@ -5,10 +5,22 @@ import type {
   PersistedQueuedMessage,
   SessionRecord,
 } from '../harness/types.js'
-import type { ImageAttachmentRef } from '../media/types.js'
+import type { ImageAttachmentRef, UserInput } from '../media/types.js'
 
 export type QueuedMessage = PersistedQueuedMessage
 export type PersistQueueRecord = (sessionId: string, record: MessageQueueRecord) => Promise<void>
+
+/**
+ * The inverse of `enqueue`: a persisted queue message back into the UserInput
+ * every submission path speaks. Both shells' pumps hand off through this, so
+ * the mapping from `content`/`images` to `text`/`images` cannot fork.
+ */
+export function queuedMessageToInput(message: QueuedMessage): UserInput {
+  return {
+    text: message.content,
+    ...(message.images && message.images.length > 0 ? { images: message.images } : {}),
+  }
+}
 
 const EMPTY_SNAPSHOT: readonly QueuedMessage[] = Object.freeze([])
 
@@ -46,14 +58,15 @@ export class MessageQueue {
   }
 
   async enqueue(
-    content: string,
+    input: UserInput,
     priority: MessageQueuePriority = 'next',
   ): Promise<QueuedMessage> {
     const message: QueuedMessage = Object.freeze({
       id: randomUUID(),
-      content,
+      content: input.text,
       priority,
       createdAt: new Date().toISOString(),
+      ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
     })
 
     return this.serialize(async () => {

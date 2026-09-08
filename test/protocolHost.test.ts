@@ -18,6 +18,7 @@ import type { PermissionRequest } from '../src/harness/permissions.js'
 import type { SessionRecord, TokenUsage, Tool } from '../src/harness/types.js'
 import type { SessionMeta } from '../src/sessions/service.js'
 import { SessionStore } from '../src/sessions/service.js'
+import type { UserInput } from '../src/media/types.js'
 import { projectRootKey } from '../src/runtime/projectDirectory.js'
 
 /**
@@ -163,13 +164,13 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     },
     getSnapshot: () => snapshot,
     getSubagentProgress: () => new Map([['agent-1', 'Reading file']]),
-    submit: async (input: string) => {
+    submit: async (input: UserInput) => {
       if (submitFailure !== undefined) {
         const message = submitFailure
         submitFailure = undefined
         throw new Error(message)
       }
-      calls.submits.push(input)
+      calls.submits.push(input.text)
     },
     interrupt: (reason: unknown) => { calls.interrupts.push(reason) },
     // Reads the real store and emits the reset the real controller emits, so a

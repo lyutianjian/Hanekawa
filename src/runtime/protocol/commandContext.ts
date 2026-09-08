@@ -185,7 +185,9 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     openPlanFile: () => openPlanFileInEditor(planFileDeps),
 
     submitQuery: async (input, options) => {
-      await controller.submit(input, buildRunOverrides({
+      // Commands and skills compose text only; the host wraps their string
+      // into the UserInput the submission path speaks.
+      await controller.submit({ text: input }, buildRunOverrides({
         config: project.config,
         runtimeSlot,
         createActiveModelRuntime: project.createActiveModelRuntime,

@@ -205,7 +205,7 @@ test('runTool serializes against a concurrent run() via the in-flight gate', asy
   const { loop } = makeLoop({ tools: [tool], toolContext, mainRecords, provider })
 
   // Kick run() but do NOT await.
-  const runPromise = loop.run('hello').then((r) => {
+  const runPromise = loop.run({ text: 'hello' }).then((r) => {
     events.push('run:resolved')
     return r
   })

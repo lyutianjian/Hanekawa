@@ -110,7 +110,7 @@ async function createHarness(): Promise<Harness> {
       spinnerSubText: undefined,
     }),
     getSubagentProgress: () => new Map<string, string>(),
-    submit: async (input: string) => { submits.push(input) },
+    submit: async (input: UserInput) => { submits.push(input.text) },
   } as unknown as SessionController
 
   const runtimeSlot = {

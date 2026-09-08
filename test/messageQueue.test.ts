@@ -1,7 +1,7 @@
 import { beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import type { MessageQueueRecord, SessionRecord } from '../src/harness/types.js'
-import { MessageQueue, replayMessageQueue } from '../src/runtime/messageQueue.js'
+import { MessageQueue, queuedMessageToInput, replayMessageQueue } from '../src/runtime/messageQueue.js'
 import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 describe('messageQueue', () => {
@@ -16,8 +16,8 @@ describe('messageQueue', () => {
   })
 
   it('persists and consumes messages in FIFO order regardless of priority', async () => {
-    const first = await queue.enqueue('first', 'later')
-    const second = await queue.enqueue('second', 'now')
+    const first = await queue.enqueue({ text: 'first' }, 'later')
+    const second = await queue.enqueue({ text: 'second' }, 'now')
     assert.deepEqual(queue.getSnapshot().map((item) => item.content), ['first', 'second'])
     assert.equal((await queue.dequeue())?.id, first.id)
     assert.equal((await queue.dequeue())?.id, second.id)
@@ -32,7 +32,7 @@ describe('messageQueue', () => {
     await queue.hydrate([])
     assert.equal(queue.getSnapshot(), initial)
     assert.equal(notifications, 0)
-    await queue.enqueue('hello')
+    await queue.enqueue({ text: 'hello' })
     assert.equal(notifications, 1)
     unsubscribe()
   })
@@ -41,7 +41,7 @@ describe('messageQueue', () => {
     const failing = new MessageQueue('session-a', [], async () => {
       throw new Error('disk full')
     })
-    await assert.rejects(() => failing.enqueue('hello'), /disk full/)
+    await assert.rejects(() => failing.enqueue({ text: 'hello' }), /disk full/)
     assert.equal(failing.getSnapshot().length, 0)
   })
 
@@ -60,8 +60,8 @@ describe('messageQueue', () => {
   })
 
   it('clears and migrates pending messages between sessions', async () => {
-    await queue.enqueue('one')
-    await queue.enqueue('two')
+    await queue.enqueue({ text: 'one' })
+    await queue.enqueue({ text: 'two' })
     await queue.migrateTo('session-b', [])
     assert.deepEqual(queue.getSnapshot().map((item) => item.content), ['one', 'two'])
     assert.deepEqual(persisted.slice(-3).map((entry) => [entry.sessionId, entry.record.operation]), [
@@ -75,11 +75,11 @@ describe('messageQueue', () => {
   })
 
   it('retargets a session without carrying the previous one\'s pending messages', async () => {
-    await queue.enqueue('stale')
+    await queue.enqueue({ text: 'stale' })
     await queue.reset('session-b', [])
 
     assert.equal(queue.getSnapshot().length, 0)
-    await queue.enqueue('fresh')
+    await queue.enqueue({ text: 'fresh' })
     assert.equal(persisted.at(-1)?.sessionId, 'session-b')
   })
 
@@ -90,14 +90,14 @@ describe('messageQueue', () => {
     let notifications = 0
     const unsubscribe = queue.subscribe(() => notifications++)
 
-    await other.enqueue('theirs')
+    await other.enqueue({ text: 'theirs' })
 
     assert.deepEqual(other.getSnapshot().map((item) => item.content), ['theirs'])
     assert.equal(queue.getSnapshot().length, 0)
     assert.equal(notifications, 0)
     assert.deepEqual(persisted.map((entry) => entry.sessionId), ['session-b'])
 
-    await queue.enqueue('mine')
+    await queue.enqueue({ text: 'mine' })
     assert.deepEqual(queue.getSnapshot().map((item) => item.content), ['mine'])
     assert.deepEqual(other.getSnapshot().map((item) => item.content), ['theirs'])
     unsubscribe()
@@ -139,5 +139,25 @@ describe('messageQueue', () => {
     assert.deepEqual(hydrated.getSnapshot()[0]?.images, [image])
     assert.equal(notifications, 0)
     unsubscribe()
+  })
+
+  it('enqueues a UserInput as content plus image refs and hands it back as one', async () => {
+    const image = makeImageAttachmentRef({ id: 'img-e1', ownerSessionId: 'session-a', name: 'shot.png' })
+    const withImages = await queue.enqueue({ text: 'look at this', images: [image] })
+    assert.equal(withImages.content, 'look at this')
+    assert.deepEqual(withImages.images, [image])
+    assert.deepEqual(queuedMessageToInput(withImages), { text: 'look at this', images: [image] })
+    // The persisted record is what a restart replays: text and refs, nothing else.
+    const firstRecord = persisted[0]?.record
+    const persistedMessage = firstRecord?.type === 'message_queue' && firstRecord.operation === 'enqueue'
+      ? firstRecord.message
+      : undefined
+    assert.equal(persistedMessage?.content, 'look at this')
+    assert.deepEqual(persistedMessage?.images, [image])
+
+    // A text-only input leaves the key absent, so old logs and new ones agree.
+    const plain = await queue.enqueue({ text: 'no images' })
+    assert.equal('images' in plain, false)
+    assert.deepEqual(queuedMessageToInput(plain), { text: 'no images' })
   })
 })

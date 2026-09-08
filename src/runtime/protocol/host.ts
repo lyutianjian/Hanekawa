@@ -9,7 +9,7 @@ import type { SessionRecord } from '../../harness/types.js'
 import { resolveUsageWithCost } from '../../harness/usage.js'
 import { countSessionRecordsTokens } from '../../prompts/budget.js'
 import type { SessionMeta } from '../../sessions/service.js'
-import { MessageQueue } from '../messageQueue.js'
+import { MessageQueue, queuedMessageToInput } from '../messageQueue.js'
 import { readGitBranch } from '../gitBranch.js'
 import { listGitBranches, switchGitBranch } from '../gitBranches.js'
 import { applyPermissionModeTransition } from '../permissionMode.js'
@@ -606,7 +606,7 @@ export class SessionHost {
     void (async () => {
       try {
         const next = await this.messages.dequeue()
-        if (next && !this.disposed) await this.controller.submit(next.content)
+        if (next && !this.disposed) await this.controller.submit(queuedMessageToInput(next))
       } catch (error) {
         // Synthesized rather than routed through the controller: the message
         // never became a turn, so there is no turn to attach a notice to. Same
@@ -730,7 +730,10 @@ export class SessionHost {
       }
 
       case 'submit':
-        await this.controller.submit(command.input, this.resolveOverrides(command.overrides))
+        // The wire command still carries a bare string (attachment IDs join it
+        // in the protocol session); the host wraps it into the UserInput every
+        // other submission path speaks.
+        await this.controller.submit({ text: command.input }, this.resolveOverrides(command.overrides))
         return null
 
       case 'interrupt':
@@ -968,7 +971,7 @@ export class SessionHost {
         // `MessageQueue` notifies its subscribers, and `postQueuedMessages` both
         // announces the new list and asks the pump — so an idle host has already
         // started sending this by the time the reply goes out.
-        const message = await this.messages.enqueue(command.content, command.priority)
+        const message = await this.messages.enqueue({ text: command.content }, command.priority)
         return { message } satisfies WireEnqueueResult
       }
 

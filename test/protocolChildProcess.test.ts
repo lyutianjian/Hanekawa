@@ -56,11 +56,15 @@ const controller = {
   getSnapshot: () => snapshot,
   getSubagentProgress: () => new Map([['agent-1', 'Reading']]),
   submit: async (input) => {
+    // The host wraps the wire string into a UserInput before this point; the
+    // fake unwraps it again so the events and records carry text like the real
+    // controller's would.
+    const text = typeof input === 'string' ? input : input.text
     snapshot = { ...snapshot, isStreaming: true }
     for (const fn of snapshotListeners) fn()
     for (const fn of eventListeners) {
-      fn({ type: 'turn-start', messageId: 'm1', displayInput: input, createdAt: 'now' })
-      fn({ type: 'record', record: { type: 'message', id: 'm1', role: 'user', content: input, createdAt: 'now' } })
+      fn({ type: 'turn-start', messageId: 'm1', displayInput: text, createdAt: 'now' })
+      fn({ type: 'record', record: { type: 'message', id: 'm1', role: 'user', content: text, createdAt: 'now' } })
       fn({ type: 'turn-end', aborted: false, rolledBack: false, durationMs: 1 })
     }
     snapshot = { ...snapshot, isStreaming: false }

@@ -13,6 +13,7 @@ import type { CommandRegistry } from '../commands/registry.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
 import type { BaseAgentDefinition } from '../tools/AgentTool/AgentTool.js'
 import type { UiBridges } from './bridges.js'
+import type { UserInput } from '../media/types.js'
 
 /**
  * One assembled agent runtime: a loop, its plan-mode manager, and the model it
@@ -29,7 +30,7 @@ export interface AgentSession {
   readonly modelConfig: ModelConfig
   readonly providerName: string
   run(
-    input: string,
+    input: UserInput,
     signal?: AbortSignal,
     messageId?: string,
     overrides?: AgentRunOverrides,

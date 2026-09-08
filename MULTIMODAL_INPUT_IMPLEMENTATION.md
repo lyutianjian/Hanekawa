@@ -85,7 +85,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S04 | 图像解码归一化与压缩阶梯 | S01 | 长 | `[x]` |
 | S05 | 附件存储、解析、缩略图与回收 | S04 | 中 | `[x]` |
 | S06 | 记录与上下文类型接入 `images`，持久化兼容 | S02, S05 | 中 | `[x]` |
-| S07 | `UserInput` 贯穿提交路径与中断恢复 | S06 | 长 | `[ ]` |
+| S07 | `UserInput` 贯穿提交路径与中断恢复 | S06 | 长 | `[x]` |
 | S08 | 协议命令与 wire schema | S07 | 中 | `[ ]` |
 | S09 | `@` 图片引用 | S08 | 中 | `[ ]` |
 | S10 | `Read` 工具图片分流 | S06 | 中 | `[ ]` |
@@ -316,7 +316,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S07 `[ ]` `UserInput` 贯穿提交路径与中断恢复
+## S07 `[x]` `UserInput` 贯穿提交路径与中断恢复
 
 **前置**：S06 · **规模**：长 · **设计稿**：§5.1、§12.3
 **涉及**：`src/runtime/sessionController.ts`、`src/runtime/messageQueue.ts`、`src/harness/loop.ts`、`src/runtime/interruptRollback.ts`
@@ -334,6 +334,17 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：纯文本行为无回归；带图输入能到达 loop；中断→恢复往返后草稿完整（文字 + 附件顺序）。
 **验证**：`node --import tsx --test test/loop.test.ts test/loopAbort.test.ts test/messageQueue.test.ts` + sessionController / interruptRollback 相关测试；跨层改动追加 `npm run typecheck`
 **提交**：`checkpoint: S07 thread UserInput through submission path`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- 提交路径统一为 `UserInput`，无双通道：`SessionController.submit(input: UserInput)`、`AgentLoop.run(userInput: UserInput)`、`AgentSession.run`（`src/runtime/types.ts` 签名同步）、`MessageQueue.enqueue(input: UserInput)` 一次改完——四个 API 只收 `{ text, images? }`，不再接受裸字符串。`run()`/`runTool()` 的共享 enqueue 与单一在途守卫未动，不为图像另开执行链。
+- 只传字符串的调用点全部包装 `{ text }`：host 的 `submit` 命令与 `enqueue-message`（wire 仍是字符串，附件 ID 属 S08）、`commandContext.submitQuery`（命令/技能只产生文本）、TUI `useAgentLoop.submit`（composer 文本在 hook 边界入列）、TUI `App.tsx` 两个排队入口（`handleSubmit`、`initialQueuedPrompt`）、AgentTool 子代理 loop 的两处 `run`（task 与 continuation）。
+- 队列交接共用同一映射：新增 `queuedMessageToInput(message)`（`messageQueue.ts` 导出，`enqueue` 的逆运算），Desktop host pump 与 TUI App pump 的交接都经它把 `content`/`images` 还原成 `text`/`images`，两个 shell 不会各自维护一份字段搬运。TUI 的 `executeQueuedInput` 改收 `UserInput` 并直接提交 controller，排队消息不再退化成纯文本。
+- loop 内部：用户消息记录携带 `images`（空数组不落字段，与 S06 工具结果同款）；`appendTurnInterruption` 把 `images` 从用户消息带到中断记录——S06 加在 `TurnInterruptionRecord` 上的字段首次有了写入方；@-mention 门控、`userPromptSubmit` hooks、中断意图分类、skillInvocation prompt、`displayInput` 比较全部改用 `userInput.text`。纯文本行为逐分支不变。
+- 中断恢复（工作项 5）：`restore-input` 事件增加可选 `images`，`tryRestoreInterruptedPrompt` 原样带回文字与引用及顺序；TUI `onRestoreInput` 改收完整 `UserInput`（App 目前只回填文本，引用对象留在入参上供 S14 附件列表消费）；已产生工作的中断沿用既有记录语义，图片随已存在的用户消息保留。恢复不覆盖用户新草稿的既有语义不变（事件只发一次，由 shell 决定写入时机）。
+- 测试改造：6 个测试文件 90 处 `run`/`submit`/`enqueue` 调用点机械包装 `{ text }`；修正三处松散类型的 fake controller（`protocolHost` / `desktopUiRoundTrip` / `protocolChildProcess`，均改为解包 `.text`）——其中 `protocolChildProcess` 的崩溃顺带验证了包装的必要性：子进程 fake 把 UserInput 对象当 `content` 写进记录后，host 快照的 `countSessionRecordsTokens` 对 message 记录调 `countTextTokens(record.content)` 会真实炸掉，说明真实路径确实收到对象而非字符串。`sessionController` 测试的 `LoopRun` 桩类型同步为 `UserInput`。
+- 新增回归 5 项：loop 用户消息携带 images（含空数组不落键）、user-cancel 中断记录携带 images、`enqueue`/`queuedMessageToInput` 往返（content+images 落盘、纯文本不落 images 键）、controller 把完整 UserInput 透传到 loop、带图回滚后 `restore-input` 按序带回文字与引用（并断言用户记录确已从 JSONL 删除）。
+- 验证：窄测 `loop`（48）/`loopAbort`（11）/`messageQueue`（10）/`sessionController`（20）/`sessionWorkspace`+`runToolIsolation`（23）/`protocolHost`（75）/`protocolChildProcess`+`desktopUiRoundTrip`+`desktopMain`（18）/`commands`+`skills`+`agentTool`+`toolcall-integration`（152）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3020 项 3017 过、1 跳过（既有）、2 失败——`configTool` 的 `EPERM rename ~/.myagent/settings.json`（Windows 文件锁）与 `backgroundTasks` 的后台 Bash 时序，两文件单独重跑均全绿，判定为全量并发下的环境抖动，与 S07 无关（本次改动不触碰 ConfigTool 与后台任务）。S02 记录的 7 个 TUI Ink 渲染失败本次未复现，与 S04–S06 观察一致。
 
 ---
 

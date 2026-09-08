@@ -21,6 +21,7 @@ import type { RecordStream } from '../src/harness/recordStream.js'
 import type { ModelProvider, ModelRequest, SessionRecord, Tool } from '../src/harness/types.js'
 import { FallbackTriggeredError } from '../src/config/retry.js'
 import { resetAutoCompactFailureState } from '../src/harness/compact.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 import {
   checkResponseForCacheBreak,
   recordPromptState,
@@ -104,7 +105,7 @@ test('agent loop appends user and assistant messages', async () => {
     toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
     recordStream: recordStreamFor(records, metrics),
   })
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
   assert.equal(response.content, 'hello back')
   assert.deepEqual(response.usage, {
     cacheReadInputTokens: 10,
@@ -123,6 +124,52 @@ test('agent loop appends user and assistant messages', async () => {
   assert.equal(metrics[0]?.response_tokens, 30)
   assert.equal(metrics[0]?.cache_read_tokens, 10)
   assert.equal(metrics[0]?.tool_calls, 0)
+})
+
+test('a UserInput with images persists the refs on the user message record', async () => {
+  const records: SessionRecord[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      return {
+        content: 'seen',
+        toolCalls: [],
+        usage: { inputTokens: 1, cacheReadInputTokens: 0, outputTokens: 1 },
+      }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  const first = makeImageAttachmentRef({ id: 'img-a', ownerSessionId: 's1', name: 'first.png' })
+  const second = makeImageAttachmentRef({ id: 'img-b', ownerSessionId: 's1', name: 'second.png' })
+  await loop.run({ text: 'look at these', images: [first, second] })
+
+  const user = records[0]
+  assert.equal(user?.type, 'message')
+  if (user?.type !== 'message') return
+  assert.equal(user.role, 'user')
+  assert.equal(user.content, 'look at these')
+  assert.deepEqual(user.images, [first, second])
+
+  // An empty images array is "no images" — old logs never carried the key.
+  const recordsBefore = records.length
+  await loop.run({ text: 'no images', images: [] })
+  const nextUser = records[recordsBefore]
+  assert.equal(nextUser?.type, 'message')
+  if (nextUser?.type !== 'message') return
+  assert.equal(nextUser.content, 'no images')
+  assert.equal('images' in nextUser, false)
 })
 
 test('agent loop applies per-run allowed tools to model requests', async () => {
@@ -149,7 +196,7 @@ test('agent loop applies per-run allowed tools to model requests', async () => {
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('hello', undefined, undefined, { allowedTools: ['AllowedTool'] })
+  await loop.run({ text: 'hello' }, undefined, undefined, { allowedTools: ['AllowedTool'] })
 
   assert.deepEqual(seenRequest?.tools?.map((tool) => tool.name), ['AllowedTool'])
 })
@@ -177,7 +224,7 @@ test('agent loop stores display input while sending real prompt to the model', a
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('Expanded skill prompt', undefined, undefined, {
+  await loop.run({ text: 'Expanded skill prompt' }, undefined, undefined, {
     displayInput: '/debug hello',
   })
 
@@ -213,7 +260,7 @@ test('agent loop rejects unknown per-run allowed tools before appending records'
   })
 
   await assert.rejects(
-    () => loop.run('hello', undefined, undefined, { allowedTools: ['MissingTool'] }),
+    () => loop.run({ text: 'hello' }, undefined, undefined, { allowedTools: ['MissingTool'] }),
     /Unknown allowed tool/,
   )
   assert.equal(records.length, 0)
@@ -252,11 +299,11 @@ test('agent loop applies per-run model and effort without changing later turns',
     effort: 'low',
   })
 
-  await loop.run('skill turn', undefined, undefined, {
+  await loop.run({ text: 'skill turn' }, undefined, undefined, {
     model: { provider: overrideProvider, model: 'override-model', modelKey: 'override', providerName: 'override' },
     effort: 'xhigh',
   })
-  await loop.run('normal turn')
+  await loop.run({ text: 'normal turn' })
 
   assert.deepEqual(seen, [
     { provider: 'override', model: 'override-model', effort: 'xhigh' },
@@ -290,7 +337,7 @@ test('agent loop merges per-run hooks only for the active turn', async () => {
     },
   })
 
-  await loop.run('skill turn', undefined, undefined, {
+  await loop.run({ text: 'skill turn' }, undefined, undefined, {
     skillName: 'debugging',
     skillArgs: 'args',
     displayInput: '/debugging args',
@@ -300,7 +347,7 @@ test('agent loop merges per-run hooks only for the active turn', async () => {
       }],
     },
   })
-  await loop.run('normal turn')
+  await loop.run({ text: 'normal turn' })
 
   const hookMessages = records
     .filter((record) => record.type === 'message' && record.role === 'user' && record.content.includes('userPromptSubmit hook output'))
@@ -365,7 +412,7 @@ test('agent loop filters deferred tools only when provider supports dynamic Tool
       recordStream: recordStreamFor(records),
     })
 
-    await loop.run('next')
+    await loop.run({ text: 'next' })
 
     assert.deepEqual(seenRequest?.tools?.map((tool) => tool.name).sort(), [
       'ActiveTool',
@@ -409,7 +456,7 @@ test('agent loop fully inlines tools and removes ToolSearch when provider lacks 
       recordStream: recordStreamFor(records),
     })
 
-    await loop.run('next')
+    await loop.run({ text: 'next' })
 
     assert.deepEqual(seenRequest?.tools?.map((tool) => tool.name).sort(), [
       'ActiveTool',
@@ -484,7 +531,7 @@ test('plan mode text-only response ends turn normally as assistant message', asy
       recordStream: recordStreamFor(records),
     })
 
-    const response = await loop.run('plan this change')
+    const response = await loop.run({ text: 'plan this change' })
 
     // Text-only response in plan mode should end the turn normally
     assert.equal(response.content, 'I need more information about the requirements.')
@@ -573,7 +620,7 @@ test('plan mode reports the plan model image capability, not the primary label i
       recordStream: recordStreamFor(records),
     })
 
-    await loop.run('plan this change')
+    await loop.run({ text: 'plan this change' })
 
     assert.equal(seenModels[0], 'plan-model')
     const active = loop.getActiveModel()
@@ -698,7 +745,7 @@ test('plan mode approval reminder is last context and ExitPlanMode is not summar
       recordStream: recordStreamFor(records),
     })
 
-    const response = await loop.run('plan this change')
+    const response = await loop.run({ text: 'plan this change' })
 
     assert.equal(response.content, 'implementation can now start')
     assert.equal(summaryCalls, 0)
@@ -754,7 +801,7 @@ test('agent loop persists max_tokens partial response before continuation remind
     maxOutputTokens: 10,
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(response.content, 'partial answer\n\ncontinued answer')
   assert.deepEqual(response.segments, ['partial answer', 'continued answer'])
@@ -793,7 +840,7 @@ test('agent loop aggregates multiple max_tokens continuations into the final res
     maxOutputTokens: 10,
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(response.content, 'part one\n\npart two\n\ndone')
   assert.deepEqual(response.segments, ['part one', 'part two', 'done'])
@@ -825,7 +872,7 @@ test('agent loop returns explicit truncation metadata when max_tokens recovery i
     maxOutputTokens: 10,
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(calls, 4)
   assert.equal(response.content, 'part 1\n\npart 2\n\npart 3\n\npart 4')
@@ -872,7 +919,7 @@ test('agent loop default maxTurns behavior still throws', async () => {
     maxTurns: 1,
   })
 
-  await assert.rejects(() => loop.run('hello'), /Agent loop exceeded maximum tool iterations/)
+  await assert.rejects(() => loop.run({ text: 'hello' }), /Agent loop exceeded maximum tool iterations/)
   assert.equal(calls, 1)
 })
 
@@ -915,7 +962,7 @@ test('agent loop partial maxTurns behavior returns the latest assistant content'
     maxTurnsExceededBehavior: 'partial',
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(calls, 1)
   assert.match(response.content, /latest partial answer/)
@@ -953,7 +1000,7 @@ test('agent loop escalates default max output tokens before persisting a max_tok
     recordStream: recordStreamFor(records),
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(response.content, 'complete after escalation')
   assert.equal(calls, 2)
@@ -1015,9 +1062,9 @@ test('agent loop updates records cache only after record stream append succeeds'
     recordStream,
   })
 
-  await assert.rejects(loop.run('first'), /disk full/)
+  await assert.rejects(loop.run({ text: 'first' }), /disk full/)
   failAssistantAppend = false
-  const response = await loop.run('second')
+  const response = await loop.run({ text: 'second' })
 
   assert.equal(response.content, 'persisted assistant')
   assert.equal(records.some((record) => record.type === 'message' && record.role === 'assistant' && record.content === 'lost assistant'), false)
@@ -1070,9 +1117,9 @@ test('agent loop marks cached tool protocol dirty after tool record append', asy
     recordStream: recordStreamFor(records),
   })
 
-  await assert.rejects(loop.run('first'), /tool result append failed/)
+  await assert.rejects(loop.run({ text: 'first' }), /tool result append failed/)
   failToolResultAppend = false
-  const response = await loop.run('second')
+  const response = await loop.run({ text: 'second' })
 
   assert.equal(response.content, 'recovered')
 })
@@ -1109,7 +1156,7 @@ test('agent loop appends userPromptSubmit hook stdout before first model request
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('hello')
+  await loop.run({ text: 'hello' })
 
   assert.ok(records.some((record) => record.type === 'message' && /userPromptSubmit hook output/.test(record.content)))
 })
@@ -1140,7 +1187,7 @@ test('agent loop appends stop hook stdout before returning', async () => {
     recordStream: recordStreamFor(records),
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(response.content, 'done')
   const messages = records.filter((record) => record.type === 'message')
@@ -1204,7 +1251,7 @@ test('agent loop continues when stop hook reports a blocking error', async () =>
     recordStream: recordStreamFor(records, metrics),
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(response.content, 'second')
   assert.equal(callCount, 2)
@@ -1241,7 +1288,7 @@ test('agent loop respects stop hook preventContinuation before blocking errors',
     recordStream: recordStreamFor(records),
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(response.content, 'done')
   assert.equal(callCount, 1)
@@ -1284,7 +1331,7 @@ test('agent loop annotates records from one user turn with the same turnId', asy
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('hello')
+  await loop.run({ text: 'hello' })
 
   const turnIds = new Set(
     records
@@ -1332,7 +1379,7 @@ test('agent loop emits cache break metrics from provider responses', async () =>
     recordStream: recordStreamFor(records, metrics),
   })
 
-  await loop.run('hello')
+  await loop.run({ text: 'hello' })
 
   const cacheBreakMetric = metrics.find((metric) => metric.event === 'cache_break')
   assert.deepEqual(cacheBreakMetric?.reasons, ['tool_schemas_changed'])
@@ -1400,7 +1447,7 @@ test('agent loop sends tool result into the next model request', async () => {
     toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
     recordStream: recordStreamFor(records, undefined, () => { loadRecordsCount += 1 }),
   })
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
   assert.equal(response.content, 'done')
   assert.deepEqual(response.usage, {
     cacheReadInputTokens: 5,
@@ -1478,7 +1525,7 @@ test('agent loop generates tool-use summary with compact model for the next requ
     recordStream: recordStreamFor(records),
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(response.content, 'done')
   assert.equal(summaryModelSeen, 'cheap-model')
@@ -1534,7 +1581,7 @@ test('agent loop includes sub-agent transcript usage in returned turn usage', as
     recordStream: recordStreamFor(records),
   })
 
-  const result = await loop.run('start')
+  const result = await loop.run({ text: 'start' })
 
   assert.deepEqual(result.usage, {
     inputTokens: 15,
@@ -1605,7 +1652,7 @@ test('agent loop excludes compact summarizer usage from status usage', async () 
     recordStream: recordStreamFor(records),
   })
 
-  const result = await loop.run('continue')
+  const result = await loop.run({ text: 'continue' })
 
   assert.deepEqual(result.usage, {
     inputTokens: 101,
@@ -1659,7 +1706,7 @@ test('agent loop consumes pending post-compact restore after a successful build'
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('hello')
+  await loop.run({ text: 'hello' })
 
   const boundary = records.find((record) => record.id === 'compact-1')
   assert.equal(boundary?.type, 'compact_boundary')
@@ -1720,7 +1767,7 @@ test('agent loop preserves tool result association for mixed safe and unsafe ord
     recordStream: recordStreamFor(records),
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(response.content, 'done')
   assert.equal(records.filter((record) => record.type === 'tool_use' && record.id === 'unsafe-call').length, 1)
@@ -1802,7 +1849,7 @@ test('agent loop runs consecutive safe calls concurrently and unsafe calls as ba
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('hello')
+  await loop.run({ text: 'hello' })
 
   assert.ok(events.indexOf('safeB:start') > events.indexOf('safeA:start'))
   assert.ok(events.indexOf('safeB:start') < events.indexOf('safeA:end'))
@@ -1865,7 +1912,7 @@ test('agent loop runs read-only Agent calls concurrently by subagent_type', asyn
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('hello')
+  await loop.run({ text: 'hello' })
 
   assert.ok(events.indexOf('map b:start') > events.indexOf('map a:start'))
   assert.ok(events.indexOf('map b:start') < events.indexOf('map a:end'))
@@ -1930,7 +1977,7 @@ test('agent loop keeps non-concurrency-safe Agent calls as barriers around read-
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('hello')
+  await loop.run({ text: 'hello' })
 
   assert.ok(events.indexOf('explore:start') > events.indexOf('write-files:end'))
 })
@@ -1995,7 +2042,7 @@ test('agent loop keeps mislabeled write-like tools as barriers', async () => {
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('hello')
+  await loop.run({ text: 'hello' })
 
   assert.ok(events.indexOf('writeB:start') > events.indexOf('writeA:end'))
 })
@@ -2036,7 +2083,7 @@ test('agent loop appends reminder when all tool calls fail', async () => {
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('hello')
+  await loop.run({ text: 'hello' })
 
   assert.ok(records.some((record) => record.type === 'message' && /All tool calls in the previous turn failed/.test(record.content)))
 })
@@ -2117,7 +2164,7 @@ test('agent loop auto-compacts without preparing records twice in the same itera
     recordStream: recordStreamFor(records, undefined, () => { loadRecordsCount += 1 }),
   })
 
-  const response = await loop.run('latest request')
+  const response = await loop.run({ text: 'latest request' })
 
   assert.equal(response.content, 'done')
   assert.deepEqual(response.usage, {
@@ -2198,8 +2245,8 @@ test('agent loop includes compact summary on the next user turn after compaction
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('latest request')
-  await loop.run('follow up')
+  await loop.run({ text: 'latest request' })
+  await loop.run({ text: 'follow up' })
 
   assert.equal(mainCallCount, 2)
   assert.equal(records.filter((record) => record.type === 'compact_boundary').length, 1)
@@ -2258,7 +2305,7 @@ test('agent loop runs preCompact and postCompact hooks around successful compact
     recordStream: recordStreamFor(records),
   })
 
-  await loop.run('latest request')
+  await loop.run({ text: 'latest request' })
 
   const preHookIndex = records.findIndex((record) => record.type === 'message' && /preCompact hook output/.test(record.content))
   const boundaryIndex = records.findIndex((record) => record.type === 'compact_boundary')
@@ -2351,7 +2398,7 @@ test('agent loop checks auto-compact before later model requests in a tool loop'
     recordStream: recordStreamFor(records, undefined, () => { loadRecordsCount += 1 }),
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(response.content, 'done')
   assert.deepEqual(response.usage, {
@@ -2465,7 +2512,7 @@ test('agent loop counts pending records against the prepared request baseline af
     recordStream: recordStreamFor(records),
   })
 
-  const response = await loop.run('latest request')
+  const response = await loop.run({ text: 'latest request' })
 
   assert.equal(response.content, 'done')
   assert.deepEqual(providerCalls, ['model-1', 'compact', 'model-2'])
@@ -2532,7 +2579,7 @@ test('agent loop continues the turn when auto-compact summary fails', async () =
     recordStream: recordStreamFor(records),
   })
 
-  const response = await loop.run('latest request')
+  const response = await loop.run({ text: 'latest request' })
 
   assert.equal(response.content, 'main response')
   assert.deepEqual(providerCalls, ['compact', 'main'])
@@ -2605,7 +2652,7 @@ test('agent loop switches to fallback model after overload fallback trigger', as
     recordStream: recordStreamFor(records),
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
   assert.equal(response.content, 'fallback response')
   assert.equal(loop.getActiveModel().modelKey, 'fallback')
   assert.ok(records.some((record) => record.type === 'message' && record.role === 'assistant' && record.model === 'fallback-model'))
@@ -2660,7 +2707,7 @@ test('the context budget follows the active model, and reserves what autocompact
     usableContextWindow: getAutoCompactThreshold({ contextWindow: 200_000 }),
   })
 
-  await loop.run('hello')
+  await loop.run({ text: 'hello' })
   assert.equal(loop.getActiveModel().modelKey, 'fallback')
   // Read off the *active* model: after a fallback the runtime snapshot must not
   // still be reporting the window the loop was built with.
@@ -2746,17 +2793,17 @@ test('agent loop retries primary model after fallback cooldown', async () => {
       recordStream: recordStreamFor(records),
     })
 
-    const first = await loop.run('hello')
+    const first = await loop.run({ text: 'hello' })
     assert.equal(first.content, 'fallback response')
     assert.equal(loop.getActiveModel().modelKey, 'fallback')
 
     now += (5 * 60 * 1000) - 1
-    const second = await loop.run('still there?')
+    const second = await loop.run({ text: 'still there?' })
     assert.equal(second.content, 'fallback response')
     assert.equal(loop.getActiveModel().modelKey, 'fallback')
 
     now += 1
-    const third = await loop.run('try again')
+    const third = await loop.run({ text: 'try again' })
     assert.equal(third.content, 'primary response')
     assert.equal(loop.getActiveModel().modelKey, 'primary')
     assert.equal(primaryCalls, 2)
@@ -2817,9 +2864,9 @@ test('agent loop returns to fallback when primary cooldown retry is still overlo
       recordStream: recordStreamFor(records),
     })
 
-    await loop.run('hello')
+    await loop.run({ text: 'hello' })
     now += 5 * 60 * 1000
-    const response = await loop.run('try primary')
+    const response = await loop.run({ text: 'try primary' })
 
     assert.equal(response.content, 'fallback response')
     assert.deepEqual(calls, ['primary', 'fallback', 'primary', 'fallback'])
@@ -2897,7 +2944,7 @@ test('agent loop uses last response usage, not cumulative usage, for auto-compac
     recordStream: recordStreamFor(records),
   })
 
-  const response = await loop.run('hello')
+  const response = await loop.run({ text: 'hello' })
 
   assert.equal(response.content, 'done')
   assert.deepEqual(providerCalls, ['model-1', 'model-2'])

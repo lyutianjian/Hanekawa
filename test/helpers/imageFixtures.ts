@@ -98,6 +98,34 @@ export async function createTempAttachmentArea(
   }
 }
 
+/**
+ * Build a minimal uncompressed 24-bit BMP in memory. There is no committed BMP
+ * fixture (the format is deliberately unsupported), but the clipboard-capture
+ * work (S13) needs real BMP bytes to prove they are *reported* as unsupported
+ * rather than mangled or misread.
+ */
+export function makeBmpBytes(width = 2, height = 2): Buffer {
+  const rowSize = Math.ceil((width * 3) / 4) * 4
+  const buf = Buffer.alloc(14 + 40 + rowSize * height)
+  buf.write('BM', 0, 'latin1')
+  buf.writeUInt32LE(buf.length, 2)
+  buf.writeUInt32LE(54, 10) // pixel-data offset
+  buf.writeUInt32LE(40, 14) // BITMAPINFOHEADER size
+  buf.writeInt32LE(width, 18)
+  buf.writeInt32LE(height, 22)
+  buf.writeUInt16LE(1, 26) // planes
+  buf.writeUInt16LE(24, 28) // bits per pixel
+  for (let row = 0; row < height; row++) {
+    for (let col = 0; col < width; col++) {
+      const offset = 54 + row * rowSize + col * 3
+      buf[offset] = 40 // B
+      buf[offset + 1] = 80 // G
+      buf[offset + 2] = 120 // R
+    }
+  }
+  return buf
+}
+
 /** Strings that begin like an image data URL, e.g. `data:image/png;base64,…`. */
 const DATA_URL_IMAGE = /^data:image\/[a-z0-9.+-]+;base64,/i
 /** A run of ≥256 base64-alphabet characters — not proof, but nothing legit in

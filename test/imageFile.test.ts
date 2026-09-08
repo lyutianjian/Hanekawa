@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import sharp from 'sharp'
 import {
   IMAGE_PROCESS_DEFAULTS,
+  convertImageBytesToPng,
   formatImageCaption,
   orientedDimensions,
   orientedPointFromStored,
@@ -10,7 +11,7 @@ import {
   sniffImage,
   storedPointFromOriented,
 } from '../src/tools/imageFile.js'
-import { loadFixtureBytes } from './helpers/imageFixtures.js'
+import { loadFixtureBytes, makeBmpBytes } from './helpers/imageFixtures.js'
 
 // ---------------------------------------------------------------------------
 // Deterministic noise. Random-per-run bytes would make ladder sizes (and thus
@@ -506,4 +507,53 @@ test('orientation mapping agrees with sharp’s actual auto-rotation', async () 
     .raw()
     .toBuffer()
   assert.deepEqual([...actualOriented.subarray(0, 3)], [...predictedStored.subarray(0, 3)])
+})
+
+// ---------------------------------------------------------------------------
+// Clipboard bitmap conversion (S13): the format bridge between what system
+// clipboards offer and what the pipeline accepts.
+// ---------------------------------------------------------------------------
+
+test('convertImageBytesToPng re-encodes a TIFF with pixels intact', async () => {
+  const tiff = await sharp({
+    create: { width: 5, height: 4, channels: 3, background: { r: 210, g: 110, b: 60 } },
+  }).tiff().toBuffer()
+  const result = await convertImageBytesToPng(tiff, 'clipboard image')
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.ok(result.ok)
+  assert.equal(sniffImage(result.bytes)?.format, 'png')
+  const { data, info } = await sharp(result.bytes).raw().toBuffer({ resolveWithObject: true })
+  assert.equal(info.width, 5)
+  assert.equal(info.height, 4)
+  assert.deepEqual([...data.subarray(0, 3)], [210, 110, 60])
+})
+
+test('convertImageBytesToPng re-encodes an AVIF clipboard bitmap', async () => {
+  const avif = await sharp({
+    create: { width: 3, height: 2, channels: 3, background: { r: 20, g: 200, b: 90 } },
+  }).avif().toBuffer()
+  const result = await convertImageBytesToPng(avif, 'clipboard image')
+  assert.ok(result.ok, JSON.stringify(result))
+  assert.equal(sniffImage(result.bytes)?.format, 'png')
+})
+
+test('convertImageBytesToPng refuses formats it cannot decode', async () => {
+  // BMP is sniffable but the prebuilt libvips has no BMP loader; a clipboard
+  // offering only BMP must be reported, not mangled through a decode attempt.
+  const bmp = makeBmpBytes(3, 2)
+  const bmpResult = await convertImageBytesToPng(bmp, 'clipboard image')
+  assert.equal(bmpResult.ok, false)
+  assert.ok(!bmpResult.ok)
+  assert.equal(bmpResult.reason, 'unsupported-format')
+  assert.match(bmpResult.message, /BMP/)
+
+  const png = await loadFixtureBytes('transparent.png')
+  const pngResult = await convertImageBytesToPng(png, 'clipboard image')
+  assert.ok(!pngResult.ok)
+  assert.equal(pngResult.reason, 'unsupported-format')
+
+  const garbage = await convertImageBytesToPng(Buffer.from('not an image'), 'clipboard image')
+  assert.ok(!garbage.ok)
+  assert.equal(garbage.reason, 'unsupported-format')
+  assert.match(garbage.message, /not a recognizable image/)
 })

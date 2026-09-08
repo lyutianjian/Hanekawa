@@ -91,7 +91,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S10 | `Read` 工具图片分流 | S06 | 中 | `[x]` |
 | S11 | Desktop 采集与草稿状态机 | S08, S19 | 长 | `[ ]` |
 | S12 | Desktop 预览、缩略图与打开原图 | S11 | 短 | `[ ]` |
-| S13 | TUI 图片剪贴板采集（三平台） | S08 | 中 | `[ ]` |
+| S13 | TUI 图片剪贴板采集（三平台） | S08 | 中 | `[x]` |
 | S14 | TUI 路径粘贴、附件列表与 `/paste-image` | S13 | 中 | `[ ]` |
 | S15 | 当前轮/历史轮判定与历史降级投影 | S06 | 长 | `[ ]` |
 | S16 | `mediaStrip` 数量限制与图像 token 预算 | S15 | 中 | `[ ]` |
@@ -488,7 +488,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S13 `[ ]` TUI 图片剪贴板采集（三平台）
+## S13 `[x]` TUI 图片剪贴板采集（三平台）
 
 **前置**：S08 · **规模**：中 · **设计稿**：§6.2
 **涉及**：新增 `src/tui/utils/imageClipboard.ts`、`src/tui/components/InputBox.tsx`
@@ -507,6 +507,20 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：三平台成功路径与无依赖路径都有明确行为；命令拼装不经 shell 字符串执行。
 **验证**：新增 `test/imageClipboard.test.ts`（对命令构造与输出解析做纯测试）；真机验证留到 S26
 **提交**：`checkpoint: S13 add TUI image clipboard capture`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- 新增 `src/tui/utils/imageClipboard.ts`：纯采集层。`captureClipboardImage()` 是唯一入口，只被用户显式动作调用（Ctrl+V 与 `/paste-image` 的接线按计划属 S14 工作项 4），模块自身不轮询、不采样、不在任何后台时机读剪贴板——「只在用户触发时读取」由 API 形状保证。**InputBox.tsx 经评估未改动**：触发动作与附件列表都在 S14 的工作项里，本会话接线会与之重复；采集结果（结构化原因 + 统一后备提示文案）已可供 S14 直接渲染。
+- 三平台采集（设计稿 §6.2 表）：
+  - **Windows**：系统 `powershell.exe`（非 pwsh），`-NoProfile -NonInteractive -STA -Command` + 固定脚本；**不使用 `Get-Clipboard`**（避开版本差异），走 .NET `[System.Windows.Forms.Clipboard]::GetImage()`。剪贴板里的 DIB/BMP 由 System.Drawing 落成 PNG 后经 `[Console]::OpenStandardOutput()` 原样写字节——**位图→PNG 的转换发生在采集端**，Node 侧永远收到 PNG。`exit 3` 保留为「可读但无图」。
+  - **macOS**：`osascript -e <固定 AppleScript> <临时路径>`。PNGf 优先、TIFFf 回退，写到 `mkdtemp` 临时文件（osascript 无法在 stdout 输出二进制）；临时路径是独立的 `on run argv` 参数，**不插值进脚本**；无图时脚本 `error "HANEKAWA_NO_CLIPBOARD_IMAGE"`，Node 按 stderr marker 区分 no-image 与 read-failed；TIFF 字节走转换桥。pngpaste 首版未接（设计稿「可按环境使用」，osascript 即系统路径，不为此维护依赖）。
+  - **Linux**：`WAYLAND_DISPLAY` 优先 → `wl-paste --list-types` / `--type <mime>`；否则 `DISPLAY` → `xclip -selection clipboard -output -target TARGETS` / `-target <mime>`。先列类型再择优读取：PNG > JPEG > WebP > GIF 直通管线，TIFF/AVIF/HEIC 由转换桥转 PNG；两者都无显示服务器（SSH/WSL 无 X）→ `dependency-missing`，文案明说「不做跨机器同步」并指向路径入口。
+- **命令拼装不经 shell 字符串**：全部 `spawn(file, args)` 参数向量，无任何 `shell:`；源码扫描测试钉住（不得出现 `shell:` / `execSync` / `spawnSync` / `exec(`）。进程 15s 超时杀掉，报 read-failed。
+- 转换桥 `convertImageBytesToPng` 加在 `src/tools/imageFile.ts`（sharp 用法继续集中该模块）：TIFF/AVIF/HEIC → `.rotate().toColourspace('srgb').png()`，与管线第一档同款归一化但不做尺寸/压缩（那是管线的职责，避免第二条处理路径）。**BMP 实测不可转**：预编译 libvips（vips 8.18.6）无 BMP loader——Windows 的 BMP 已在 PowerShell 侧转掉，Linux 上 BMP-only 剪贴板如实报 `unsupported-clipboard-format` 并列出剪贴板实际提供的 image/* 类型（实测验证：sharp 解 BMP 报 unsupported image format，TIFF/AVIF 解码正常）。
+- 结构化原因 5 类：`no-image` / `dependency-missing` / `read-failed` / `unsupported-clipboard-format` / `image-too-large`，全部可区分、不塌缩成一种报错；每条失败文案统一以后备提示结尾（「粘贴完整图片路径，或用项目内 @图片 引用」）。尺寸上限直接复用管线的原始输入上限 `IMAGE_PROCESS_DEFAULTS.maxInputBytes`（20 MB），转换出的 PNG 也复查——注定进不了管线的字节在采集层就给出明确原因。
+- 真机验证：按计划 macOS/Linux 留待 S26，但本机（Windows x64）顺带做了**真实往返**（非 mock）：PowerShell `SetImage` 放入剪贴板 → `captureClipboardImage()` 返回 PNG 字节（sniff 通过）；纯文本剪贴板 → exit 3 → `no-image` + 后备提示。Linux 列表工具的「空剪贴板」stderr（`not available` / `nothing to paste`）归类为 no-image 而非 read-failed，由 `isClipboardEmptyError` 纯函数测试钉住。
+- 测试：新增 `test/imageClipboard.test.ts` 36 项（平台判定含 Wayland 优先、五组命令构造逐项断言、类型解析/选择/空剪贴板分类、Windows 9 项、macOS 5 项含临时文件清理断言、Linux 11 项含 wayland/x11 双路径与 SSH/WSL 提示、其他平台不 spawn、shell 源码扫描）；`test/imageFile.test.ts` +3（TIFF 像素级往返、AVIF、拒 BMP/已支持格式/垃圾字节）；helper 增 `makeBmpBytes`（内存构造 24-bit BMP，无 BMP fixture 入库——该格式本就不被支持）。
+- 验证：窄测 `imageClipboard`（36）/`imageFile`（23）/`imageFixtures`（9）67 项全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3099 项 3098 过、1 跳过（既有）、0 失败。
 
 ---
 

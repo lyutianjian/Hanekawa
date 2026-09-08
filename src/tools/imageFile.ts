@@ -539,6 +539,58 @@ async function runCompressionLadder(
 }
 
 /**
+ * Bitmap formats the import pipeline rejects but sharp can decode: the types
+ * system clipboards hand out, which the capture side re-encodes as PNG before
+ * the pipeline ever sees them (design doc §6.2). BMP is deliberately absent —
+ * the prebuilt libvips has no BMP loader, so a BMP clipboard image must be
+ * converted by the platform capture tool itself (the Windows PowerShell
+ * capture does exactly that) or reported as unsupported.
+ */
+const CONVERTIBLE_TO_PNG_FORMATS = new Set<SniffedImageFormat>(['tiff', 'avif', 'heic'])
+
+export type ImageConvertErrorReason = Extract<
+  ImageProcessErrorReason,
+  'unsupported-format' | 'decode-failed'
+>
+
+export type ImageConvertResult =
+  | { ok: true; bytes: Buffer }
+  | { ok: false; reason: ImageConvertErrorReason; message: string }
+
+/**
+ * Re-encode a decodable-but-rejected bitmap (TIFF, AVIF, HEIC) as PNG.
+ *
+ * EXIF orientation is applied and colour normalized the same way the pipeline's
+ * first ladder rung would, so the converted bytes are indistinguishable from a
+ * PNG that arrived as one; sizing and compression stay the pipeline's job —
+ * this is a format bridge, not a second processing path.
+ */
+export async function convertImageBytesToPng(bytes: Buffer, name: string): Promise<ImageConvertResult> {
+  const sniffed = sniffImage(bytes)
+  if (sniffed === null || !CONVERTIBLE_TO_PNG_FORMATS.has(sniffed.format)) {
+    return {
+      ok: false,
+      reason: 'unsupported-format',
+      message: `${name} is ${sniffed === null ? 'not a recognizable image' : `a ${sniffed.format.toUpperCase()} image`}, which cannot be converted to PNG here; copy it as PNG or JPEG instead.`,
+    }
+  }
+  try {
+    const png = await sharp(bytes)
+      .rotate()
+      .toColourspace('srgb')
+      .png({ compressionLevel: 9 })
+      .toBuffer()
+    return { ok: true, bytes: png }
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'decode-failed',
+      message: `${name} could not be decoded into PNG: ${errorMessage(error)}`,
+    }
+  }
+}
+
+/**
  * Thumbnails are the only image bytes that ever become a data URL (S05's
  * preview), so they carry their own small byte cap.
  */

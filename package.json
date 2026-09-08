@@ -16,6 +16,8 @@
     "build:desktop": "tsc -p tsconfig.build.json && esbuild src/desktop/preload.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/desktop/preload.js --external:electron && esbuild src/desktop/renderer/app.ts --bundle --platform=neutral --format=esm --target=chrome120 --main-fields= --alias:node:crypto=./src/desktop/renderer/runtime/nodeCryptoShim.ts --outfile=dist/desktop/renderer/app.js && node scripts/copy-desktop-assets.mjs",
     "start:desktop": "electron .",
     "smoke:desktop": "node scripts/smoke-desktop.mjs",
+    "verify:sharp": "node scripts/verify-sharp.mjs",
+    "verify:sharp:electron": "electron scripts/verify-sharp-electron.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.renderer.json && tsc --noEmit -p tsconfig.domtest.json",
     "test": "node --import tsx --test test/**/*.test.ts",
     "postinstall": "patch-package"
@@ -34,6 +36,7 @@
     "openai": "latest",
     "picomatch": "^2.3.2",
     "react": "^19.2.6",
+    "sharp": "^0.35.4",
     "turndown": "^7.2.0",
     "wrap-ansi": "^10.0.0",
     "yaml": "latest",

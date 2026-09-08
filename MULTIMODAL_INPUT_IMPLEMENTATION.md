@@ -79,7 +79,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 | # | 会话目标 | 前置 | 规模 | 状态 |
 | --- | --- | --- | --- | --- |
-| S01 | `sharp` 依赖验证与图像测试夹具 | — | 短 | `[ ]` |
+| S01 | `sharp` 依赖验证与图像测试夹具 | — | 短 | `[x]` |
 | S02 | 模型图像能力：配置字段、判定函数、运行时快照 | S01 | 中 | `[ ]` |
 | S03 | 两端模型设置开关与选择器能力标记 | S02 | 中 | `[ ]` |
 | S04 | 图像解码归一化与压缩阶梯 | S01 | 长 | `[ ]` |
@@ -111,7 +111,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S01 `[ ]` `sharp` 依赖验证与图像测试夹具
+## S01 `[x]` `sharp` 依赖验证与图像测试夹具
 
 **前置**：无 · **规模**：短 · **设计稿**：§8、§14.2
 **涉及**：`package.json`、`scripts/copy-desktop-assets.mjs`、`tsconfig.build.json`、新增 `test/fixtures/images/`、`test/helpers/`
@@ -129,6 +129,15 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **若某平台安装失败**：在本块下如实记录，并给出降级路径（该平台禁用图片采集入口而非静默出错），不要用 mock 掩盖。
 **验证**：`npm run typecheck`、`npm run build:desktop`
 **提交**：`checkpoint: S01 add sharp dependency and image fixtures`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- `sharp@0.35.4`（vips 8.18.6）经 npm 安装，走 `@img/sharp-win32-x64` N-API 预编译包，Node 与 Electron 共用同一份二进制，无需 electron-rebuild。本机 Node 为 v24.18.1（满足 engines >= 22）。
+- 两侧验证脚本：`npm run verify:sharp`（Node）与 `npm run verify:sharp:electron`（Electron 43.4.0 主进程），均成功解码 `test/fixtures/images/transparent.png`（64x64）并打印尺寸，退出码 0。
+- `npm run build:desktop` 通过。主进程经 tsc 输出、不做 bundle，运行时从仓库根 `node_modules` 解析 `sharp`，`dist` 无需复制原生二进制——因此 `scripts/copy-desktop-assets.mjs` 与 `tsconfig.build.json` 本会话无需改动。
+- 夹具 7 个（每个 ≤ 5 KB）：`transparent.png`、`exif-orientation.jpg`（EXIF orientation=6）、`static.webp`、`single-frame.gif`、`animated.gif`（3 帧）、`png-named-jpg.jpg`（PNG 内容、`.jpg` 文件名）、`corrupt.png`；由 `scripts/make-image-fixtures.mjs` 生成并可复现，动画 GIF 由脚本内嵌的极简 LZW 编码器打包（sharp 无法从 raw 输入直接构造多帧）。
+- helper 位于 `test/helpers/imageFixtures.ts`：`fixtureImagePath` / `loadFixtureBytes` / `makeImageAttachmentRef` / `createTempAttachmentArea`（S05 布局）/ `assertNoImageBytes`（遮蔽断言）；`test/imageFixtures.test.ts` 覆盖夹具解码矩阵、helper 行为，以及「renderer 与 preload 不得引用 sharp」的源码扫描。
+- macOS / Linux 的真实安装与运行验证留待 S26 平台矩阵；本会话仅 Windows x64 实测。
 
 ---
 

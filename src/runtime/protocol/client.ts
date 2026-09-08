@@ -31,11 +31,15 @@ import {
   type WireCommandsResult,
   type WireEffortResult,
   type WireEnqueueResult,
+  type WireAttachmentPreviewResult,
+  type WireAttachmentSource,
   type WireFileSuggestionsResult,
   type WireFocusPaneResult,
   type WireHelloResult,
+  type WireImportAttachmentResult,
   type WireListPanesResult,
   type WireModelsResult,
+  type WireOpenAttachmentResult,
   type WireOpenPaneResult,
   type WirePaneInfo,
   type WireReloadCountResult,
@@ -279,8 +283,22 @@ export class SessionClient {
     return result
   }
 
-  async submit(input: string, overrides?: WireRunOverrides): Promise<void> {
-    await this.send({ type: 'submit', id: randomUUID(), input, ...(overrides ? { overrides } : {}) })
+  /**
+   * Submits a turn. `imageIds` name attachments imported through
+   * `importAttachment`; the host resolves them against the current session and
+   * rejects the whole submit when one does not belong to it.
+   */
+  async submit(
+    text: string,
+    options: { imageIds?: string[]; overrides?: WireRunOverrides } = {},
+  ): Promise<void> {
+    await this.send({
+      type: 'submit',
+      id: randomUUID(),
+      input: text,
+      ...(options.imageIds !== undefined ? { imageIds: [...options.imageIds] } : {}),
+      ...(options.overrides ? { overrides: options.overrides } : {}),
+    })
   }
 
   async interrupt(reason: InterruptReason = 'user-cancel'): Promise<void> {
@@ -598,6 +616,49 @@ export class SessionClient {
   /** Drops every waiting message. Does not touch the turn already running. */
   async clearQueue(): Promise<void> {
     await this.send({ type: 'clear-queue', id: randomUUID() })
+  }
+
+  // --- image attachments ---------------------------------------------------
+
+  /**
+   * Imports one image into the current session's attachment store.
+   *
+   * Bytes (a paste) are size-capped at the schema — an oversized payload
+   * rejects here with the cap in the message. A path source is read by the
+   * host, so this never ships a `File`/`Blob` across the wire.
+   */
+  async importAttachment(source: WireAttachmentSource): Promise<WireImportAttachmentResult> {
+    return this.send({ type: 'import-attachment', id: randomUUID(), source }) as Promise<WireImportAttachmentResult>
+  }
+
+  /**
+   * Drops a draft's hold on an attachment. Idempotent; the files stay on disk
+   * under the retention window, and a message or queue entry still referencing
+   * them is untouched.
+   */
+  async removeAttachment(imageId: string): Promise<void> {
+    await this.send({ type: 'remove-attachment', id: randomUUID(), imageId })
+  }
+
+  /**
+   * A size-capped thumbnail data URL for one attachment. Fetched on demand and
+   * never part of a snapshot, so streaming turns do not re-send it per frame.
+   */
+  async getAttachmentPreview(imageId: string): Promise<WireAttachmentPreviewResult> {
+    return this.send({
+      type: 'get-attachment-preview',
+      id: randomUUID(),
+      imageId,
+    }) as Promise<WireAttachmentPreviewResult>
+  }
+
+  /**
+   * Asks the shell to open the attachment's cached original. `ok: false`
+   * carries a reason (`file-missing` for an id this session never registered);
+   * a rejection means this shell cannot open files at all.
+   */
+  async openAttachment(imageId: string): Promise<WireOpenAttachmentResult> {
+    return this.send({ type: 'open-attachment', id: randomUUID(), imageId }) as Promise<WireOpenAttachmentResult>
   }
 
   dispose(): void {

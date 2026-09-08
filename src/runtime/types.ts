@@ -9,6 +9,7 @@ import type { EffortLevel } from '../config/effort.js'
 import type { MyAgentSettings } from '../config/settings.js'
 import type { SessionMeta, SessionStore } from '../sessions/service.js'
 import type { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
+import type { ImageAttachmentService } from '../services/imageAttachments/imageAttachmentService.js'
 import type { CommandRegistry } from '../commands/registry.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
 import type { BaseAgentDefinition } from '../tools/AgentTool/AgentTool.js'
@@ -68,6 +69,13 @@ export interface ProjectRuntime {
   config: ConfigService
   store: SessionStore
   backgroundTasks: BackgroundTaskRegistry
+  /**
+   * Image attachment storage for this project — one service per `cwd`, with
+   * sessions addressed by id inside it. Protocol hosts reach it through here
+   * (`import-attachment` and friends), and the tool context injection the
+   * `Read` image path needs is built on the same instance.
+   */
+  attachments: ImageAttachmentService
   /**
    * The slash commands for this project. Per-project rather than module-level
    * because skill commands are read from `<cwd>/.myagent/skills/`, so a shared

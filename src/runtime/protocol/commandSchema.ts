@@ -24,6 +24,32 @@ import type { HostCommand, UiRequest } from './wire.js'
 
 const commandId = z.string()
 
+/**
+ * The wire-level cap on pasted image bytes — the design's single-image raw
+ * input budget (20,000,000 B). The processing pipeline enforces its own caps
+ * host-side; this one exists so an oversized payload is refused *at the
+ * boundary* rather than crossing a lane and IPC buffers first.
+ */
+export const MAX_ATTACHMENT_WIRE_BYTES = 20_000_000
+
+// `z.custom` rather than `z.instanceof(Uint8Array)`: the latter infers
+// `Uint8Array<ArrayBuffer>`, which is a *narrower* type than the wire's
+// `Uint8Array` and would fail the drift guard below over a type argument no
+// sender can even express. The runtime check is the same `instanceof`.
+const attachmentBytes = z
+  .custom<Uint8Array>((value) => value instanceof Uint8Array, {
+    message: 'expected image bytes as a Uint8Array',
+  })
+  .refine((bytes) => bytes.byteLength <= MAX_ATTACHMENT_WIRE_BYTES, {
+    message: `bytes exceed the ${MAX_ATTACHMENT_WIRE_BYTES}-byte attachment limit`,
+  })
+
+/** `WireAttachmentSource`: pasted bytes, or a path the host reads itself. */
+const attachmentSourceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('bytes'), name: z.string(), bytes: attachmentBytes }).strict(),
+  z.object({ kind: z.literal('path'), path: z.string(), name: z.string().optional() }).strict(),
+])
+
 const runOverridesSchema = z
   .object({
     allowedTools: z.array(z.string()).optional(),
@@ -84,6 +110,9 @@ const COMMAND_SCHEMAS = {
       type: z.literal('submit'),
       id: commandId,
       input: z.string(),
+      // Ids only — never paths, MIME types, or dimensions. The host resolves
+      // them against the current session's store; see `HostCommand['submit']`.
+      imageIds: z.array(z.string()).optional(),
       overrides: runOverridesSchema.optional(),
     })
     .strict(),
@@ -219,6 +248,19 @@ const COMMAND_SCHEMAS = {
     })
     .strict(),
   'clear-queue': z.object({ type: z.literal('clear-queue'), id: commandId }).strict(),
+  // --- image attachments ---------------------------------------------------
+  'import-attachment': z
+    .object({ type: z.literal('import-attachment'), id: commandId, source: attachmentSourceSchema })
+    .strict(),
+  'remove-attachment': z
+    .object({ type: z.literal('remove-attachment'), id: commandId, imageId: z.string() })
+    .strict(),
+  'get-attachment-preview': z
+    .object({ type: z.literal('get-attachment-preview'), id: commandId, imageId: z.string() })
+    .strict(),
+  'open-attachment': z
+    .object({ type: z.literal('open-attachment'), id: commandId, imageId: z.string() })
+    .strict(),
   shutdown: z.object({ type: z.literal('shutdown'), id: commandId, reason: z.string() }).strict(),
   // Drift guard #1, and the one that names the culprit: on a fresh object
   // literal this fails by key in both directions -- a variant added to

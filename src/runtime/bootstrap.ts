@@ -14,6 +14,7 @@ import { BUILT_IN_AGENT_DEFINITIONS } from '../tools/AgentTool/AgentTool.js'
 import { SkillsService } from '../services/skills/skillsService.js'
 import { AgentDefinitionLoader } from '../services/agents/agentDefinitionLoader.js'
 import { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
+import { ImageAttachmentService } from '../services/imageAttachments/imageAttachmentService.js'
 import { removeLegacyShadowGit } from '../services/fileHistory/legacyShadowGit.js'
 import { clearProjectContextCache, getProjectContext } from '../services/context/projectContext.js'
 import type { SessionMeta } from '../sessions/service.js'
@@ -50,6 +51,12 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   const backgroundTasks = new BackgroundTaskRegistry(
     (sessionId, record) => store.appendRecord(sessionId, record),
   )
+
+  // One per project, like `backgroundTasks` above: attachments are addressed
+  // by `(sessionId, imageId)` inside `<cwd>/.myagent/attachments/`, so every
+  // host and tool context over this project must share one service for the
+  // same-session dedup and in-flight guards to mean anything.
+  const attachments = new ImageAttachmentService(cwd)
 
   // Not awaited: this is disk the old checkpoint implementation left behind and
   // nothing below reads it, so startup must not wait on deleting gigabytes.
@@ -285,6 +292,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     config,
     store,
     backgroundTasks,
+    attachments,
     commands,
     mcp: mcpStatus,
     // A getter, so a `set-default-model` that has already been saved into the

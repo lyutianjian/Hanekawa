@@ -86,7 +86,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S05 | 附件存储、解析、缩略图与回收 | S04 | 中 | `[x]` |
 | S06 | 记录与上下文类型接入 `images`，持久化兼容 | S02, S05 | 中 | `[x]` |
 | S07 | `UserInput` 贯穿提交路径与中断恢复 | S06 | 长 | `[x]` |
-| S08 | 协议命令与 wire schema | S07 | 中 | `[ ]` |
+| S08 | 协议命令与 wire schema | S07 | 中 | `[x]` |
 | S09 | `@` 图片引用 | S08 | 中 | `[ ]` |
 | S10 | `Read` 工具图片分流 | S06 | 中 | `[ ]` |
 | S11 | Desktop 采集与草稿状态机 | S08, S19 | 长 | `[ ]` |
@@ -348,7 +348,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S08 `[ ]` 协议命令与 wire schema
+## S08 `[x]` 协议命令与 wire schema
 
 **前置**：S07 · **规模**：中 · **设计稿**：§6.3
 **涉及**：`src/runtime/protocol/commandSchema.ts`、`wire.ts`、`host.ts`、`client.ts`、`src/desktop/preload.ts`
@@ -363,6 +363,20 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：wire 往返测试覆盖新命令；超大字节被拒；跨会话 ID 被拒。
 **验证**：`node --import tsx --test test/desktopUiRoundTrip.test.ts test/laneChannel.test.ts test/electronChannel.test.ts`
 **提交**：`checkpoint: S08 add attachment protocol commands`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- `submit` 只带附件 ID：`HostCommand['submit']` 增加可选 `imageIds?: string[]`（strict schema 同步，`_NoDrift` 守卫覆盖），host 在 `execute` 里按「当前会话 id + imageId」逐个 `resolveRef` 后组装 `UserInput` 交给 controller——ref 的 MIME、尺寸、字节全部来自存储层登记值，renderer 给的路径或尺寸没有任何入口可写。跨会话或未登记 ID 让整个 submit 以 `fail` 拒绝（轮次未开始，client promise reject 是 S11 做「移除该图/切模型」出口的挂点）；同 ID 重复按首次出现去重、顺序稳定；`imageIds: []` 等价缺省。`enqueue-message` 未动（队列带图属 S20）。
+- 四个新命令，全部 strict schema、走既有 lane transport、返回值可 `structuredClone`、dispatch 经 `assertNever` 保持穷尽：
+  - `import-attachment`：`source` 为 `{ kind: 'bytes', name, bytes: Uint8Array }`（粘贴字节，无任何 DOM 对象）或 `{ kind: 'path', path, name? }`（host 自己读文件，`name` 缺省取 basename）。字节在 schema 层以 `MAX_ATTACHMENT_WIRE_BYTES = 20_000_000`（设计稿单张原始输入同值）封顶，超限在边界即拒并带回 id，不挂起发送方。实现细节：`z.custom<Uint8Array>` 而非 `z.instanceof(Uint8Array)`——后者在本仓库 TS lib 下推断为 `Uint8Array<ArrayBuffer>`，比 wire 的 `Uint8Array`（ArrayBufferLike）窄，drift 守卫会误报。导入失败返回结构化 `{ ok: false, reason, message }`（reason 为 S05 的 `ImageStoreErrorReason`），是答案不是协议错误；本地文件选择的实际 UI 入口（原生 picker / 拖放路径解析）属 S11，协议侧两种 source 均已就绪。
+  - `remove-attachment`：幂等释放草稿持有（`release`）；文件留给保留窗口（可能仍被消息或队列引用），GC 触发点属 S23。
+  - `get-attachment-preview`：S05 的 `previewDataUrl`，按需取受限 data URL，不进快照。
+  - `open-attachment`：host 按 `(当前会话, imageId)` 解析出 `metadata.localPath` 后交给 shell 回调 `onOpenAttachment`；协议模块保持 Electron-free，`main.ts` 接 `shell.openPath`（与 `open-project` 同款 fire-and-forget 契约：`{ ok: true }` 表示 shell 接手）。未登记/越权 ID 返回 `file-missing` 结构化失败，不开放任何 `file://` 读取。
+- 「显式继承集合」核验暂为「当前会话」单一归属：继承集合（子代理 fork、`/clear` 队列迁移）到 S23 才有构造方，届时 host 的 `attachmentLookup` 是唯一改点。
+- 附件服务归属：`ProjectRuntime.attachments`（`bootstrap()` 每 cwd 构造一个，与 `backgroundTasks` 同款注释同款理由），桌面 lane 的 host 经 `attach.project.project` 自动拿到；`SessionHost.requireAttachments()` 做存在性守卫——测试里大量 `as unknown as ProjectRuntime` 假件没有该成员，缺件时附件命令报可读的 `fail` 而非 TypeError。TUI 不经协议（进程内直连 runtime），S13/S14 直接使用。
+- client：`submit(text, { imageIds?, overrides? })`（第二参可选，既有调用点零改动）；新增 `importAttachment` / `removeAttachment` / `getAttachmentPreview` / `openAttachment`。`protocolClientParity` 的 `NON_PROP_COVERAGE` 加 image attachments 条目，钉住「renderer 只持 client 即可完成附件全流程」。`preload.ts` 无需改动：桥面本就是泛化 post/listen，`Uint8Array` 经 `ipcRenderer.send` 的 structured clone 原样过线（`electronChannel` 测试补了过线断言）。
+- 测试：`protocolCommandSchema` +3（samples 表覆盖四变体；submit 只收 ID、两种 source、超限边界含 ArrayBuffer 视图与非字节对象拒绝、三个 ID 命令的 strict）；`desktopUiRoundTrip` +6（harness 换真 `ImageAttachmentService` + 真夹具：粘贴字节导入→submit 带引用到 controller（去重 + ref 字段断言）、path 导入含文件名推导与非图片/缺文件的 `decode-failed`/`file-missing` 答案、跨会话 ID 与未登记 ID 拒绝且轮次未开始、超限字节在 schema 拒绝、预览 data URL 与结构化失败、remove 幂等 + open 把 host 解析的 localPath 交给 shell；`assertNoImageBytes` 钉住 import 回复无图片字节）；`laneChannel` / `electronChannel` 各 +1（Uint8Array 过线）。顺带修复 S07 遗留：`desktopUiRoundTrip.test.ts` 使用 `UserInput` 却未 import，干净树上 typecheck 即红。
+- 验证：窄测 `desktopUiRoundTrip`/`laneChannel`/`electronChannel`/`protocolCommandSchema`/`protocolClientParity`/`protocolHost`/`protocolClient`/`protocolWire`/`desktopMain` 223 项 + `protocolChildProcess` 5 项全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3035 项 3034 过、1 跳过（既有）、0 失败——S02 记录的 7 个 TUI Ink 渲染失败本次未复现（与 S04–S07 观察一致），S07 记录的 `configTool`/`backgroundTasks` 环境抖动本次也未出现。
 
 ---
 

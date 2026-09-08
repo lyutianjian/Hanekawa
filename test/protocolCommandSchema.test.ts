@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { hostCommandSchema, parseHostCommand } from '../src/runtime/protocol/commandSchema.js'
+import { hostCommandSchema, MAX_ATTACHMENT_WIRE_BYTES, parseHostCommand } from '../src/runtime/protocol/commandSchema.js'
 import type { HostCommand } from '../src/runtime/protocol/wire.js'
 
 /**
@@ -53,6 +53,10 @@ const SAMPLES = {
   'open-project': { type: 'open-project', id: '1' },
   'enqueue-message': { type: 'enqueue-message', id: '1', content: 'later, please' },
   'clear-queue': { type: 'clear-queue', id: '1' },
+  'import-attachment': { type: 'import-attachment', id: '1', source: { kind: 'path', path: 'C:/pics/a.png' } },
+  'remove-attachment': { type: 'remove-attachment', id: '1', imageId: 'img-1' },
+  'get-attachment-preview': { type: 'get-attachment-preview', id: '1', imageId: 'img-1' },
+  'open-attachment': { type: 'open-attachment', id: '1', imageId: 'img-1' },
   shutdown: { type: 'shutdown', id: '1', reason: 'bye' },
 } as const satisfies Record<HostCommand['type'], HostCommand>
 
@@ -208,4 +212,68 @@ test('the two shell hand-off commands are strict about their own fields', () => 
   assert.equal(parseHostCommand({ type: 'open-project', id: '1', path: 'C:/repo' }).ok, true)
   assert.equal(parseHostCommand({ type: 'open-project', id: '1', path: 42 }).ok, false)
   assert.equal(parseHostCommand({ type: 'open-project', id: '1', cwd: 'C:/repo' }).ok, false)
+})
+
+test('submit carries attachment ids, and only ids', () => {
+  const parsed = parseHostCommand({ type: 'submit', id: '1', input: 'hi', imageIds: ['img-a', 'img-b'] })
+  assert.ok(parsed.ok)
+  assert.deepEqual(parsed.command.type === 'submit' ? parsed.command.imageIds : undefined, ['img-a', 'img-b'])
+
+  // A renderer that tries to smuggle a path, a MIME type, or a dimension in
+  // place of an id never reaches the host's store lookup.
+  assert.equal(parseHostCommand({ type: 'submit', id: '1', input: 'hi', imageIds: 'img-a' }).ok, false)
+  assert.equal(parseHostCommand({ type: 'submit', id: '1', input: 'hi', images: [{ id: 'img-a' }] }).ok, false)
+})
+
+test('import-attachment accepts both sources and rejects oversized bytes at the boundary', () => {
+  const small = new Uint8Array([1, 2, 3])
+  assert.equal(
+    parseHostCommand({ type: 'import-attachment', id: '1', source: { kind: 'bytes', name: 'p.png', bytes: small } }).ok,
+    true,
+  )
+  assert.equal(
+    parseHostCommand({ type: 'import-attachment', id: '1', source: { kind: 'path', path: 'C:/pics/a.png', name: 'a.png' } }).ok,
+    true,
+  )
+
+  // One byte over the cap, so the boundary itself is exact.
+  const oversized = new Uint8Array(MAX_ATTACHMENT_WIRE_BYTES + 1)
+  const parsed = parseHostCommand({
+    type: 'import-attachment',
+    id: '1',
+    source: { kind: 'bytes', name: 'huge.png', bytes: oversized },
+  })
+  assert.equal(parsed.ok, false)
+  assert.equal(parsed.id, '1', 'the id is recovered so the sender rejects rather than hangs')
+  assert.match(parsed.message, /attachment limit/)
+
+  // The cap applies to the buffer's bytes, not to a view into a larger one.
+  const view = new Uint8Array(new ArrayBuffer(MAX_ATTACHMENT_WIRE_BYTES + 1024), 0, 4)
+  assert.equal(
+    parseHostCommand({ type: 'import-attachment', id: '1', source: { kind: 'bytes', name: 'v.png', bytes: view } }).ok,
+    true,
+  )
+
+  // Anything but a real Uint8Array is refused — no DOM objects, no base64.
+  assert.equal(
+    parseHostCommand({ type: 'import-attachment', id: '1', source: { kind: 'bytes', name: 'x', bytes: 'aGVsbG8=' } }).ok,
+    false,
+  )
+  assert.equal(
+    parseHostCommand({ type: 'import-attachment', id: '1', source: { kind: 'bytes', name: 'x', bytes: {} } }).ok,
+    false,
+  )
+  assert.equal(parseHostCommand({ type: 'import-attachment', id: '1', source: { kind: 'nope' } }).ok, false)
+  assert.equal(
+    parseHostCommand({ type: 'import-attachment', id: '1', source: { kind: 'bytes', name: 'x', bytes: small, path: 'C:/x' } }).ok,
+    false,
+  )
+})
+
+test('the three id-addressed attachment commands take an imageId and nothing else', () => {
+  for (const type of ['remove-attachment', 'get-attachment-preview', 'open-attachment'] as const) {
+    assert.equal(parseHostCommand({ type, id: '1', imageId: 'img-1' }).ok, true)
+    assert.equal(parseHostCommand({ type, id: '1' }).ok, false)
+    assert.equal(parseHostCommand({ type, id: '1', imageId: 'img-1', path: 'C:/x.png' }).ok, false)
+  }
 })

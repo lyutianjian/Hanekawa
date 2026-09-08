@@ -367,3 +367,23 @@ test('three panes share one ipcMain; each only sees its own traffic', () => {
 test('the runtime channel name is the one literal both sides import', () => {
   assert.equal(ELECTRON_RUNTIME_CHANNEL, 'hanekawa:runtime')
 })
+
+test('image bytes survive the main channel as a Uint8Array', () => {
+  // `import-attachment` is the one command whose payload is binary; real
+  // `ipcRenderer.send` would structured-clone it, and the mock must carry the
+  // same shape so the typed contract stays honest.
+  const mock = createMockMain()
+  const target = mock.createTarget()
+  const channel = createElectronMainChannel(mock.ipc, target)
+
+  const seen: unknown[] = []
+  channel.onMessage((message) => seen.push(message))
+
+  const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+  mock.pumpFromRenderer(target, { type: 'import-attachment', id: '1', source: { kind: 'bytes', name: 'p.png', bytes } })
+
+  assert.equal(seen.length, 1)
+  const body = seen[0] as { source: { bytes: unknown } }
+  assert.ok(body.source.bytes instanceof Uint8Array)
+  assert.deepEqual([...(body.source.bytes as Uint8Array)], [...bytes])
+})

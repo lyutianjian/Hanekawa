@@ -17,6 +17,10 @@ import {
 import type { SessionController } from '../src/runtime/sessionController.js'
 import type { RuntimeSlot } from '../src/runtime/runtimeSlot.js'
 import type { ProjectRuntime, SessionScope } from '../src/runtime/types.js'
+import type { UserInput } from '../src/media/types.js'
+import { ImageAttachmentService } from '../src/services/imageAttachments/imageAttachmentService.js'
+import { MAX_ATTACHMENT_WIRE_BYTES } from '../src/runtime/protocol/commandSchema.js'
+import { assertNoImageBytes, fixtureImagePath, loadFixtureBytes } from './helpers/imageFixtures.js'
 import type { PermissionRequest } from '../src/harness/permissions.js'
 import type { Tool } from '../src/harness/types.js'
 
@@ -41,6 +45,12 @@ interface Harness {
   cwd: string
   /** Inputs the controller was actually asked to run, in order. */
   submits: string[]
+  /** The same submissions with their image refs intact. */
+  inputs: UserInput[]
+  /** The project's real attachment store, shared with the fake project below. */
+  attachments: ImageAttachmentService
+  /** Paths the shell was asked to open, host-resolved from registered ids. */
+  openedAttachmentPaths: string[]
   /** Flips the turn state and notifies, the way the real controller does. */
   setStreaming: (value: boolean) => void
   dispose: () => void
@@ -78,6 +88,9 @@ async function createHarness(): Promise<Harness> {
     // host-side rather than in the renderer.
     store: { appendRecord: async () => undefined },
     backgroundTasks: { subscribe: () => () => undefined, getSnapshot: () => [] },
+    // Real: the attachment commands run the actual S05 service over this temp
+    // project, so imports land on disk and ids resolve through registration.
+    attachments: new ImageAttachmentService(cwd),
     // Real: `ProjectRuntime.commands` is what the host resolves slash commands
     // through, and the cast below is exactly what would hide its absence.
     commands: new CommandRegistry(),
@@ -89,6 +102,8 @@ async function createHarness(): Promise<Harness> {
   } as unknown as ProjectRuntime
 
   const submits: string[] = []
+  const inputs: UserInput[] = []
+  const openedAttachmentPaths: string[] = []
   const snapshotListeners = new Set<() => void>()
   let streaming = false
 
@@ -110,7 +125,10 @@ async function createHarness(): Promise<Harness> {
       spinnerSubText: undefined,
     }),
     getSubagentProgress: () => new Map<string, string>(),
-    submit: async (input: UserInput) => { submits.push(input.text) },
+    submit: async (input: UserInput) => {
+      submits.push(input.text)
+      inputs.push(input)
+    },
   } as unknown as SessionController
 
   const runtimeSlot = {
@@ -139,6 +157,11 @@ async function createHarness(): Promise<Harness> {
     workspace,
     onPaneOpened: () => undefined,
     onPaneClosed: () => undefined,
+    // What `main.ts` wires to `shell.openPath`; recording it lets a test assert
+    // the path arrived host-resolved rather than renderer-supplied.
+    onOpenAttachment: (filePath) => {
+      openedAttachmentPaths.push(filePath)
+    },
   })
   const client = new SessionClient(clientChannel)
 
@@ -148,6 +171,9 @@ async function createHarness(): Promise<Harness> {
     client,
     cwd,
     submits,
+    inputs,
+    attachments: project.attachments,
+    openedAttachmentPaths,
     setStreaming: (value: boolean) => {
       streaming = value
       for (const listener of [...snapshotListeners]) listener()
@@ -380,5 +406,153 @@ test('clearing the queue reaches the host and empties the strip', async () => {
   harness.setStreaming(false)
   await settle()
   assert.deepEqual(harness.submits, [], 'a cleared message must not surface later')
+  harness.dispose()
+})
+
+/**
+ * The image-attachment command surface, end to end over the same cloned wire.
+ *
+ * What has to survive here is the whole S08 bargain: bytes cross as a plain
+ * `Uint8Array` (never a DOM object), ids are the only thing a submit carries,
+ * the host builds the refs from its own store, and no reply — including the
+ * preview's — ever carries more than its designed payload.
+ */
+test('pasted bytes import, and a submit carries the host-resolved ref', async () => {
+  const harness = await createHarness()
+  const bytes = await loadFixtureBytes('transparent.png')
+
+  const imported = await harness.client.importAttachment({
+    kind: 'bytes',
+    name: 'transparent.png',
+    bytes: new Uint8Array(bytes),
+  })
+  assert.ok(imported.ok, `import failed: ${imported.ok ? '' : imported.message}`)
+  if (!imported.ok) return
+  const { ref, animated } = imported.attachment
+  assert.equal(ref.ownerSessionId, 'ses', 'the current session owns the import')
+  assert.equal(ref.name, 'transparent.png')
+  assert.equal(animated, false)
+  assert.ok(ref.byteLength > 0)
+  // Clone-safe and byte-free: a ref is metadata, not an image.
+  assert.doesNotThrow(() => structuredClone(imported))
+  assertNoImageBytes(imported, 'import reply')
+
+  // The same id twice is one attachment, in order, and an id the store
+  // vouches for reaches the controller as a full ref.
+  await harness.client.submit('describe this', { imageIds: [ref.id, ref.id] })
+  await settle()
+  assert.deepEqual(harness.submits, ['describe this'])
+  const input = harness.inputs[0]!
+  assert.deepEqual(input.images?.map((image) => image.id), [ref.id])
+  assert.equal(input.images?.[0]?.mimeType, ref.mimeType)
+  assert.equal(input.images?.[0]?.width, ref.width)
+  harness.dispose()
+})
+
+test('a local file imports through a path the host reads itself', async () => {
+  const harness = await createHarness()
+  const imported = await harness.client.importAttachment({
+    kind: 'path',
+    path: fixtureImagePath('exif-orientation.jpg'),
+  })
+  assert.ok(imported.ok, `import failed: ${imported.ok ? '' : imported.message}`)
+  if (!imported.ok) return
+  // No name on the wire: the host derived it from the path.
+  assert.equal(imported.attachment.ref.name, 'exif-orientation.jpg')
+
+  // A path that is not an image is an answer, not a protocol error.
+  const notAnImage = await harness.client.importAttachment({ kind: 'path', path: `${harness.cwd}/notes.txt` })
+  assert.equal(notAnImage.ok, false)
+  assert.equal(notAnImage.reason, 'decode-failed')
+
+  const missing = await harness.client.importAttachment({ kind: 'path', path: `${harness.cwd}/gone.png` })
+  assert.equal(missing.ok, false)
+  assert.equal(missing.reason, 'file-missing')
+  harness.dispose()
+})
+
+test('an attachment id from another session rejects the submit before a turn starts', async () => {
+  const harness = await createHarness()
+  const bytes = await loadFixtureBytes('transparent.png')
+  // Registered under a *different* owner session, straight through the service:
+  // the renderer never gets to say which session an id belongs to.
+  const other = await harness.attachments.importImage('other-session', Buffer.from(bytes), 'transparent.png')
+  assert.ok(other.ok)
+  const imageId = other.ok ? other.value.ref.id : ''
+
+  await assert.rejects(harness.client.submit('try this one', { imageIds: [imageId] }), /not available/)
+  await settle()
+  assert.deepEqual(harness.submits, [], 'the turn never started')
+
+  // An unregistered id in the current session is the same refusal.
+  await assert.rejects(harness.client.submit('no such image', { imageIds: ['img-nope'] }), /not available/)
+  await settle()
+  assert.deepEqual(harness.submits, [])
+  harness.dispose()
+})
+
+test('oversized paste bytes are refused at the schema, before the store sees them', async () => {
+  const harness = await createHarness()
+  await assert.rejects(
+    harness.client.importAttachment({
+      kind: 'bytes',
+      name: 'huge.png',
+      bytes: new Uint8Array(MAX_ATTACHMENT_WIRE_BYTES + 1),
+    }),
+    /attachment limit/,
+  )
+  harness.dispose()
+})
+
+test('previews are bounded data URLs fetched on demand, with structured failures', async () => {
+  const harness = await createHarness()
+  const bytes = await loadFixtureBytes('transparent.png')
+  const imported = await harness.client.importAttachment({
+    kind: 'bytes',
+    name: 'transparent.png',
+    bytes: new Uint8Array(bytes),
+  })
+  assert.ok(imported.ok)
+  if (!imported.ok) return
+
+  const preview = await harness.client.getAttachmentPreview(imported.attachment.ref.id)
+  assert.ok(preview.ok, `preview failed: ${preview.ok ? '' : preview.message}`)
+  if (!preview.ok) return
+  assert.match(preview.dataUrl, /^data:image\/png;base64,/)
+
+  const missing = await harness.client.getAttachmentPreview('img-nope')
+  assert.equal(missing.ok, false)
+  assert.equal(missing.reason, 'file-missing')
+  harness.dispose()
+})
+
+test('remove is idempotent and open hands the host-resolved path to the shell', async () => {
+  const harness = await createHarness()
+  const bytes = await loadFixtureBytes('transparent.png')
+  const imported = await harness.client.importAttachment({
+    kind: 'bytes',
+    name: 'transparent.png',
+    bytes: new Uint8Array(bytes),
+  })
+  assert.ok(imported.ok)
+  if (!imported.ok) return
+  const ref = imported.attachment.ref
+
+  // Dropping a draft hold twice, and dropping one nobody held, are both answers.
+  await harness.client.removeAttachment(ref.id)
+  await harness.client.removeAttachment(ref.id)
+  await harness.client.removeAttachment('img-never-held')
+
+  const opened = await harness.client.openAttachment(ref.id)
+  assert.equal(opened.ok, true)
+  // The path the shell received is the one the *service* computed, not a value
+  // the renderer ever named.
+  const stored = await harness.attachments.resolveRef({ ownerSessionId: 'ses', id: ref.id })
+  assert.ok(stored.ok)
+  assert.deepEqual(harness.openedAttachmentPaths, [stored.ok ? stored.value.metadata.localPath : ''])
+
+  const missing = await harness.client.openAttachment('img-nope')
+  assert.equal(missing.ok, false)
+  assert.equal(missing.reason, 'file-missing')
   harness.dispose()
 })

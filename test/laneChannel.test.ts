@@ -233,3 +233,21 @@ test('a body that cannot be cloned fails loudly rather than vanishing', () => {
   const pair = createMuxPair()
   assert.throws(() => pair.main.lane('1').post({ fn: () => {} }))
 })
+
+test('image bytes cross a lane as a Uint8Array, intact', async () => {
+  const pair = createMuxPair()
+  const rendererLane = pair.renderer.lane('7')
+  const seen: unknown[] = []
+  pair.main.lane('7').onMessage((body) => seen.push(body))
+
+  // An `import-attachment`-shaped body: every post runs structuredClone, so a
+  // byte buffer that could not survive real IPC fails here, in this room.
+  const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+  rendererLane.post({ type: 'import-attachment', id: '1', source: { kind: 'bytes', name: 'p.png', bytes } })
+  await settle()
+
+  assert.equal(seen.length, 1)
+  const body = seen[0] as { source: { bytes: Uint8Array } }
+  assert.ok(body.source.bytes instanceof Uint8Array, 'the clone kept it a Uint8Array')
+  assert.deepEqual([...body.source.bytes], [...bytes])
+})

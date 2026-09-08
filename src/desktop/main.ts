@@ -420,6 +420,13 @@ async function ensureShell(): Promise<Shell> {
         onOpenProject: (path) => {
           void openProjectInteractive(path)
         },
+        // `open-attachment` resolved to its on-disk path: the host stays
+        // Electron-free, so `shell.openPath` lives here. The path is
+        // host-derived from a registered `(session, imageId)` pair — never a
+        // renderer-supplied `file://` value.
+        onOpenAttachment: (filePath) => {
+          void electronShell.openPath(filePath)
+        },
         // The shell answers from its lane map so every row the renderer draws
         // is a row it can switch to.
         describePanes: () => shellHost?.describeLanes() ?? [],

@@ -82,6 +82,13 @@ const NON_PROP_COVERAGE: Array<{ capability: string; members: string[] }> = [
   // come back out.
   { capability: 'slash commands', members: ['runCommand', 'onCommandEffect'] },
   { capability: '/rewind write path', members: ['truncateSession', 'summarizeRewind', 'restoreCode'] },
+  // Image attachments have no App prop yet (the composer wiring is S11), but
+  // the acceptance criterion already applies: a renderer holding only a client
+  // imports, previews, removes and opens them without touching `services/`.
+  {
+    capability: 'image attachments',
+    members: ['importAttachment', 'removeAttachment', 'getAttachmentPreview', 'openAttachment', 'submit'],
+  },
 ]
 
 test('every App prop has a SessionClient counterpart', () => {

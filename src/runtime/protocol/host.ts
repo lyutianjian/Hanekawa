@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import type { CommandContext, CommandDefinition } from '../../commands/types.js'
 import { VALID_EFFORT_LEVELS, type EffortLevel } from '../../config/effort.js'
 import { saveEffortLevel } from '../../config/settings.js'
@@ -9,6 +11,12 @@ import type { SessionRecord } from '../../harness/types.js'
 import { resolveUsageWithCost } from '../../harness/usage.js'
 import { countSessionRecordsTokens } from '../../prompts/budget.js'
 import type { SessionMeta } from '../../sessions/service.js'
+import type { ImageAttachmentRef } from '../../media/types.js'
+import type {
+  ImageAttachmentService,
+  ImageStoreResult,
+  StoredAttachment,
+} from '../../services/imageAttachments/imageAttachmentService.js'
 import { MessageQueue, queuedMessageToInput } from '../messageQueue.js'
 import { readGitBranch } from '../gitBranch.js'
 import { listGitBranches, switchGitBranch } from '../gitBranches.js'
@@ -55,6 +63,9 @@ import {
   type WireFileSuggestionsResult,
   type WireFocusPaneResult,
   type WireHelloResult,
+  type WireImportAttachmentResult,
+  type WireAttachmentPreviewResult,
+  type WireOpenAttachmentResult,
   type WireListPanesResult,
   type WireModelInfo,
   type WireModelsResult,
@@ -188,6 +199,13 @@ export interface SessionHostDeps {
    */
   onOpenProject?: (path?: string) => void
   /**
+   * Opens a registered attachment's cached original (an `open-attachment`
+   * resolved to its on-disk path). The shell owns the OS surface —
+   * `shell.openPath` on Electron — because this module is Electron-free by
+   * rule. The path arrives host-resolved; the renderer never sees it.
+   */
+  onOpenAttachment?: (filePath: string) => void
+  /**
    * The whole pane topology, when the shell knows more panes than this host's
    * project does.
    *
@@ -250,6 +268,7 @@ export class SessionHost {
   private readonly onPaneClosed: (paneId: string) => void
   private readonly onFocusPane: ((paneId: string) => boolean) | undefined
   private readonly onOpenProject: ((path?: string) => void) | undefined
+  private readonly onOpenAttachment: ((filePath: string) => void) | undefined
   private readonly describePanes: (() => WirePaneInfo[]) | undefined
   private readonly onPaneListChanged: (() => void) | undefined
 
@@ -290,6 +309,7 @@ export class SessionHost {
     this.onPaneClosed = deps.onPaneClosed
     this.onFocusPane = deps.onFocusPane
     this.onOpenProject = deps.onOpenProject
+    this.onOpenAttachment = deps.onOpenAttachment
     this.describePanes = deps.describePanes
     this.onPaneListChanged = deps.onPaneListChanged
     this.session = deps.scope.session
@@ -729,12 +749,21 @@ export class SessionHost {
         } satisfies WireHelloResult
       }
 
-      case 'submit':
-        // The wire command still carries a bare string (attachment IDs join it
-        // in the protocol session); the host wraps it into the UserInput every
-        // other submission path speaks.
-        await this.controller.submit({ text: command.input }, this.resolveOverrides(command.overrides))
+      case 'submit': {
+        // Attachment ids resolve *here*: the host reads them out of the
+        // current session's store, so what reaches the controller is a ref the
+        // storage layer vouches for — never a path or a dimension the renderer
+        // typed. An id that does not belong to this session rejects the submit
+        // before any turn starts.
+        const images = command.imageIds === undefined
+          ? []
+          : await this.resolveAttachmentRefs(command.imageIds)
+        await this.controller.submit(
+          images.length > 0 ? { text: command.input, images } : { text: command.input },
+          this.resolveOverrides(command.overrides),
+        )
         return null
+      }
 
       case 'interrupt':
         this.controller.interrupt(command.reason)
@@ -978,6 +1007,60 @@ export class SessionHost {
       case 'clear-queue':
         await this.messages.clear()
         return { ok: true }
+
+      case 'import-attachment': {
+        const attachments = this.requireAttachments()
+        let bytes: Buffer
+        let name: string
+        if (command.source.kind === 'bytes') {
+          // A copy, so the stored original owns its bytes outright; the wire
+          // buffer was already structured-cloned at the boundary.
+          bytes = Buffer.from(command.source.bytes)
+          name = command.source.name
+        } else {
+          // The host reads the file itself — a picker's answer or a drag that
+          // resolved to a path. Nothing but the processed result crosses back.
+          try {
+            bytes = await readFile(command.source.path)
+          } catch (error) {
+            return {
+              ok: false,
+              reason: 'file-missing',
+              message: `Reading ${command.source.path} failed: ${error instanceof Error ? error.message : String(error)}`,
+            }
+          }
+          name = command.source.name ?? path.basename(command.source.path)
+        }
+        const stored = await attachments.importImage(this.session.id, bytes, name)
+        return this.toAttachmentResult(stored)
+      }
+
+      case 'remove-attachment':
+        // Idempotent by design: the draft list lives renderer-side, so a remove
+        // arriving for an id nobody holds any more is still an answer. The
+        // files themselves stay for the retention window — a message or queue
+        // entry may still reference them.
+        this.requireAttachments().release({ ownerSessionId: this.session.id, id: command.imageId })
+        return { ok: true }
+
+      case 'get-attachment-preview': {
+        const preview = await this.requireAttachments().previewDataUrl(
+          this.attachmentLookup(command.imageId),
+        )
+        if (!preview.ok) return { ok: false, reason: preview.reason, message: preview.message }
+        return { ok: true, dataUrl: preview.value } satisfies WireAttachmentPreviewResult
+      }
+
+      case 'open-attachment': {
+        const stored = await this.requireAttachments().resolveRef(this.attachmentLookup(command.imageId))
+        if (!stored.ok) return { ok: false, reason: stored.reason, message: stored.message }
+        // Same pattern as `open-project`: this module is Electron-free, so the
+        // shell owns `shell.openPath`, and the open itself is fire-and-forget —
+        // the reply says the shell took it, not that an image viewer appeared.
+        if (!this.onOpenAttachment) throw new Error('This shell cannot open attachments')
+        this.onOpenAttachment(stored.value.metadata.localPath)
+        return { ok: true } satisfies WireOpenAttachmentResult
+      }
     }
 
     // Not a `default` branch, and it must not become one. The switch above has
@@ -1170,6 +1253,56 @@ export class SessionHost {
       ...rest,
       ...(modelKey ? { model: this.project.createActiveModelRuntime(modelKey) } : {}),
     }
+  }
+
+  // --- image attachments ---------------------------------------------------
+
+  /**
+   * The project's attachment store. Guarded rather than assumed: the suite's
+   * cast fixtures build `ProjectRuntime` fakes that predate this member, and a
+   * host without a store answers attachment commands with a `fail` rather than
+   * a TypeError the client cannot read.
+   */
+  private requireAttachments(): ImageAttachmentService {
+    const attachments = this.project.attachments
+    if (!attachments) throw new Error('This host has no image attachment store.')
+    return attachments
+  }
+
+  /**
+   * Every attachment command addresses the store through the *current*
+   * session's id, which is the whole of the ownership check: an id registered
+   * under any other session simply does not resolve, and no renderer-supplied
+   * path is ever consulted.
+   */
+  private attachmentLookup(imageId: string): { ownerSessionId: string; id: string } {
+    return { ownerSessionId: this.session.id, id: imageId }
+  }
+
+  /**
+   * Turns submit's attachment ids into the refs the controller speaks. Thrown
+   * rather than returned: a submit that cannot reference its images must not
+   * become a turn, and the client's promise rejecting is the shape S11 builds
+   * its "remove this image / switch model" affordances on.
+   */
+  private async resolveAttachmentRefs(imageIds: readonly string[]): Promise<ImageAttachmentRef[]> {
+    const attachments = this.requireAttachments()
+    const seen = new Set<string>()
+    const refs: ImageAttachmentRef[] = []
+    for (const imageId of imageIds) {
+      if (seen.has(imageId)) continue
+      seen.add(imageId)
+      const stored = await attachments.resolveRef(this.attachmentLookup(imageId))
+      if (!stored.ok) throw new Error(`Attachment ${imageId} is not available: ${stored.message}`)
+      refs.push(stored.value.ref)
+    }
+    return refs
+  }
+
+  /** The reply half an `import-attachment` shares with nothing else (yet). */
+  private toAttachmentResult(stored: ImageStoreResult<StoredAttachment>): WireImportAttachmentResult {
+    if (!stored.ok) return { ok: false, reason: stored.reason, message: stored.message }
+    return { ok: true, attachment: { ref: stored.value.ref, animated: stored.value.animated } }
   }
 
   /** Exposed for hosts that need the ledger (model switches fold it into task state). */

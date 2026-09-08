@@ -13,6 +13,8 @@ import type {
   AskUserQuestionResult,
 } from '../../harness/types.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../../harness/planModeManager.js'
+import type { ImageAttachmentRef } from '../../media/types.js'
+import type { ImageStoreErrorReason } from '../../services/imageAttachments/imageAttachmentService.js'
 import type { BackgroundTaskSnapshot } from '../../services/backgroundTasks/registry.js'
 import type { ModelPickerOption } from '../modelPicker.js'
 import type { RewindSummaryDecision } from '../rewindSummary.js'
@@ -119,7 +121,15 @@ export type HostEvent =
 export type HostCommand =
   /** Client attached. The host replays both snapshots so the UI can paint. */
   | { type: 'hello'; id: string }
-  | { type: 'submit'; id: string; input: string; overrides?: WireRunOverrides }
+  /**
+   * Image attachments join the submission as *ids only*. The host resolves
+   * every id against the current session's attachment store and builds the
+   * `ImageAttachmentRef`s itself — a renderer-supplied path, MIME type, or
+   * dimension is never trusted, so the wire cannot smuggle a `file://` read or
+   * a mismatched ref into a turn. Ids that do not resolve to this session
+   * reject the whole submit.
+   */
+  | { type: 'submit'; id: string; input: string; imageIds?: string[]; overrides?: WireRunOverrides }
   /**
    * No signal crosses the boundary — the host owns the `AbortController`. The
    * reason is a sentinel the loop reads: `'user-cancel'` writes a
@@ -243,6 +253,36 @@ export type HostCommand =
    */
   | { type: 'enqueue-message'; id: string; content: string; priority?: MessageQueuePriority }
   | { type: 'clear-queue'; id: string }
+  // --- image attachments ----------------------------------------------------
+  /**
+   * Imports one image into the current session's attachment store.
+   *
+   * Two sources, for the two ways an image arrives: pasted bytes (the
+   * renderer's `ClipboardEvent`/`DataTransferItem`, reduced to bytes before it
+   * crosses), or a local file path (the host reads the file itself — a native
+   * picker's answer, or a drag that resolved to a path). Neither accepts a DOM
+   * object; `bytes` is a plain `Uint8Array`, size-capped at the schema.
+   */
+  | { type: 'import-attachment'; id: string; source: WireAttachmentSource }
+  /**
+   * Drops a draft's hold on an attachment. The files stay on disk under the
+   * retention window (they may still be referenced by a message or the queue);
+   * nothing here can touch an attachment another holder still names.
+   */
+  | { type: 'remove-attachment'; id: string; imageId: string }
+  /**
+   * A size-capped `data:image/png;base64,…` thumbnail for one attachment.
+   * Fetched on demand — previews never ride the snapshot, so a streaming turn
+   * does not re-send them per frame.
+   */
+  | { type: 'get-attachment-preview'; id: string; imageId: string }
+  /**
+   * Opens an attachment's cached original. The host resolves the file from the
+   * registered `(session, imageId)` pair and hands the path to the shell — no
+   * arbitrary `file://` path crosses this wire, and an unregistered or
+   * cross-session id is rejected rather than guessed at.
+   */
+  | { type: 'open-attachment'; id: string; imageId: string }
   | { type: 'shutdown'; id: string; reason: string }
 
 export type InterruptReason = 'user-cancel' | 'exit'
@@ -550,6 +590,53 @@ export interface WireUsageCost {
 export interface WireEnqueueResult {
   message: PersistedQueuedMessage
 }
+
+// --- image attachment payloads ----------------------------------------------
+
+/** What an `import-attachment` imports: bytes the renderer pasted, or a path the host reads. */
+export type WireAttachmentSource =
+  | { kind: 'bytes'; name: string; bytes: Uint8Array }
+  | { kind: 'path'; path: string; name?: string }
+
+/**
+ * One imported attachment, as the composer's draft list wants it.
+ *
+ * The `ref` crosses as itself — it is already the pure, clone-safe shape
+ * records carry — while `animated` rides along so both UIs can flag a
+ * first-frame send version without a second round trip.
+ */
+export interface WireAttachmentInfo {
+  ref: ImageAttachmentRef
+  /** True when the source was animated and the send version is its first frame. */
+  animated: boolean
+}
+
+/**
+ * The failure half every attachment command shares: a distinguishable reason
+ * (never a bare HTTP 400) plus the sentence the UI shows next to it.
+ */
+export interface WireAttachmentFailure {
+  ok: false
+  reason: ImageStoreErrorReason
+  message: string
+}
+
+export type WireImportAttachmentResult = WireAttachmentFailure | {
+  ok: true
+  attachment: WireAttachmentInfo
+}
+
+export type WireAttachmentPreviewResult = WireAttachmentFailure | {
+  ok: true
+  dataUrl: string
+}
+
+/**
+ * `ok: false` is an unregistered or cross-session id, with its reason. The
+ * success half says the shell *took* the open request — `shell.openPath` is
+ * fire-and-forget host-side, like `open-project` before it.
+ */
+export type WireOpenAttachmentResult = WireAttachmentFailure | { ok: true }
 
 /**
  * One entry of `config.models`, built field by field.

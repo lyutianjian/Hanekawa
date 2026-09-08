@@ -17,7 +17,6 @@
 import { app } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import sharp from 'sharp'
 
 const fixture = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -30,6 +29,13 @@ const fixture = path.join(
 
 await (async () => {
   try {
+    // Deliberately a dynamic import: the failure this probe exists to detect is
+    // the native binding not loading on some platform, and a static `import`
+    // would be hoisted above this `try`. Electron answers a module-load throw by
+    // printing "App threw an error during load" and then *hanging* — no
+    // `app.exit()`, no message below, a CI job that dies on a timeout instead of
+    // reporting which platform failed.
+    const { default: sharp } = await import('sharp')
     const meta = await sharp(fixture).metadata()
     if (meta.format !== 'png' || !meta.width || !meta.height) {
       throw new Error(`unexpected metadata: ${meta.format} ${meta.width}x${meta.height}`)

@@ -11,7 +11,6 @@
  */
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import sharp from 'sharp'
 
 const fixture = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -23,6 +22,10 @@ const fixture = path.join(
 )
 
 try {
+  // Dynamic so a binding that fails to load is reported by the `catch` below
+  // rather than by a bare module-load stack; the Electron twin depends on this
+  // shape for its exit code, so the two stay spelled the same way.
+  const { default: sharp } = await import('sharp')
   const meta = await sharp(fixture).metadata()
   if (meta.format !== 'png' || !meta.width || !meta.height) {
     throw new Error(`unexpected metadata: ${meta.format} ${meta.width}x${meta.height}`)

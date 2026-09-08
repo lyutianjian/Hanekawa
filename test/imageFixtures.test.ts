@@ -35,7 +35,8 @@ test('committed image fixtures decode to their documented shape', async () => {
     hasAlpha?: boolean
   }> = [
     { name: 'transparent.png', format: 'png', width: 64, height: 64, hasAlpha: true },
-    { name: 'exif-orientation.jpg', format: 'jpeg', width: 64, height: 64, orientation: 6 },
+    // Non-square by design: orientation has to be observable from dimensions.
+    { name: 'exif-orientation.jpg', format: 'jpeg', width: 64, height: 48, orientation: 6 },
     { name: 'static.webp', format: 'webp', width: 64, height: 64 },
     { name: 'single-frame.gif', format: 'gif', width: 64, height: 64 },
     { name: 'animated.gif', format: 'gif', width: 16, height: 16, pages: 3 },
@@ -46,7 +47,7 @@ test('committed image fixtures decode to their documented shape', async () => {
     // vertically-concatenated page buffer (width × pages) rather than one
     // frame, which is not what the fixture documents.
     const meta = await sharp(fixtureImagePath(expected.name)).metadata()
-    assert.equal(meta.format, expected.name === 'png-named-jpg.jpg' ? 'png' : expected.format)
+    assert.equal(meta.format, expected.format, expected.name)
     assert.equal(meta.width, expected.width, expected.name)
     assert.equal(meta.height, expected.height, expected.name)
     if (expected.orientation !== undefined) {
@@ -74,6 +75,18 @@ test('the fake-extension fixture is sniffed by content, not by file name', async
   )
 })
 
+test('the EXIF fixture makes a missing auto-rotate visible in its dimensions', async () => {
+  // The whole point of the fixture. Were it square, both of these would report
+  // 64x64 and an S04 test that forgot `.rotate()` would pass anyway.
+  const stored = await sharp(fixtureImagePath('exif-orientation.jpg')).metadata()
+  const rotated = await sharp(
+    await sharp(fixtureImagePath('exif-orientation.jpg')).rotate().toBuffer(),
+  ).metadata()
+  assert.notEqual(stored.width, stored.height)
+  assert.equal(rotated.width, stored.height)
+  assert.equal(rotated.height, stored.width)
+})
+
 test('the corrupt fixture fails to decode instead of yielding garbage', async () => {
   await assert.rejects(() => sharp(fixtureImagePath('corrupt.png')).metadata())
 })
@@ -85,11 +98,15 @@ test('committed fixtures stay a few KB each', async () => {
   }
 })
 
-test('makeImageAttachmentRef fills documented defaults and applies overrides', () => {
+test('makeImageAttachmentRef fills documented defaults and applies overrides', async () => {
   const defaults = makeImageAttachmentRef()
   assert.equal(defaults.id, 'img-test-1')
   assert.equal(defaults.mimeType, 'image/png')
   assert.equal(defaults.width, 64)
+  // The default ref describes `transparent.png`; if the two ever disagree, the
+  // failure belongs here rather than in an S05 store round-trip test.
+  const { size } = await stat(fixtureImagePath(defaults.name))
+  assert.equal(defaults.byteLength, size)
 
   const customized = makeImageAttachmentRef({
     id: 'img-2',
@@ -171,20 +188,62 @@ test('assertNoImageBytes accepts redacted payloads and rejects raw image bytes',
     () => assertNoImageBytes({ note: base64 }),
     /base64 run survived redaction/,
   )
+  // Raw bytes still in binary form — the shape a regression takes *before*
+  // anything serializes it, and the one a string-only walk waves through.
+  assert.throws(
+    () => assertNoImageBytes({ source: { type: 'base64', media_type: 'image/png', data: bytes } }),
+    /raw bytes survived redaction/,
+  )
+  assert.throws(
+    () => assertNoImageBytes({ blob: new Uint8Array(bytes) }),
+    /raw bytes survived redaction/,
+  )
+  assert.throws(
+    () => assertNoImageBytes({ blob: bytes.buffer.slice(0) }),
+    /raw bytes survived redaction/,
+  )
+  // A short binary field is not an image and must not trip the check.
+  assertNoImageBytes({ nonce: new Uint8Array(16) })
+
   // Cycles must not hang the walk.
   const cyclic: Record<string, unknown> = { text: 'ok' }
   cyclic['self'] = cyclic
   assertNoImageBytes(cyclic)
 })
 
+/**
+ * Every `.ts` file `build:desktop` pulls into the preload bundle: the entry plus
+ * its relative imports, transitively. Checking `preload.ts` alone would go green
+ * on a `sharp` import added to `ipc/electronChannel.ts`, which esbuild bundles
+ * in just the same (`tsconfig.preload.json` names all three).
+ */
+async function preloadBundleSources(entry: string): Promise<string[]> {
+  const seen = new Set<string>()
+  const queue = [entry]
+  while (queue.length > 0) {
+    const file = queue.pop()!
+    if (seen.has(file)) continue
+    seen.add(file)
+    const source = await readFile(file, 'utf8')
+    for (const match of source.matchAll(/from\s*['"](\.[^'"]+)['"]/g)) {
+      queue.push(path.resolve(path.dirname(file), match[1]!).replace(/\.js$/, '.ts'))
+    }
+  }
+  return [...seen]
+}
+
 test('renderer and preload sources never reference sharp', async () => {
   const rendererRoot = path.join(here, '..', 'src', 'desktop', 'renderer')
   const entries = await readdir(rendererRoot, { recursive: true })
+  const preload = await preloadBundleSources(
+    path.join(here, '..', 'src', 'desktop', 'preload.ts'),
+  )
+  assert.ok(preload.length > 1, 'expected preload to pull in its own imports')
   const files = [
     ...entries
       .filter((entry) => typeof entry === 'string' && entry.endsWith('.ts'))
       .map((entry) => path.join(rendererRoot, entry)),
-    path.join(here, '..', 'src', 'desktop', 'preload.ts'),
+    ...preload,
   ]
   assert.ok(files.length > 5, 'expected to find the renderer sources')
   for (const file of files) {

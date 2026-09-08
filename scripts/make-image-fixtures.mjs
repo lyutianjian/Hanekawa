@@ -30,14 +30,22 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const outDir = path.join(here, '..', 'test', 'fixtures', 'images')
 
 const SIZE = 64
+/**
+ * The EXIF fixture's height, deliberately not `SIZE`. A square image makes
+ * orientation unobservable: the usual "did we auto-rotate" assertion compares
+ * width against height, and on a 64×64 image it reads the same whether the
+ * decode path applied the tag or ignored it. At 64×48 a missing `.rotate()`
+ * shows up immediately as 64×48 where 48×64 was expected.
+ */
+const EXIF_HEIGHT = 48
 
 /** Paint an RGBA canvas through a per-pixel callback into a raw buffer. */
-function rawRgba(size, paint) {
-  const data = Buffer.alloc(size * size * 4)
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
+function rawRgba(width, height, paint) {
+  const data = Buffer.alloc(width * height * 4)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
       const [r, g, b, a] = paint(x, y)
-      const offset = (y * size + x) * 4
+      const offset = (y * width + x) * 4
       data[offset] = r
       data[offset + 1] = g
       data[offset + 2] = b
@@ -124,7 +132,7 @@ async function writeFixture(name, buffer) {
 
 // Transparent PNG: opaque blue on the left, fully transparent on the right.
 const transparentPng = await sharp(
-  rawRgba(SIZE, (x, y) => [40 + x, 90, 200, x < SIZE / 2 ? 255 : 0]),
+  rawRgba(SIZE, SIZE, (x, y) => [40 + x, 90, 200, x < SIZE / 2 ? 255 : 0]),
   { raw: { width: SIZE, height: SIZE, channels: 4 } },
 )
   .png({ compressionLevel: 9 })
@@ -132,9 +140,10 @@ const transparentPng = await sharp(
 await writeFixture('transparent.png', transparentPng)
 
 // JPEG carrying an EXIF orientation tag (rotate 90 CW) that decoders must apply.
+// Non-square on purpose — see EXIF_HEIGHT.
 const exifJpeg = await sharp(
-  rawRgba(SIZE, (x, y) => [230 - x * 3, 140 + y, 60, 255]),
-  { raw: { width: SIZE, height: SIZE, channels: 4 } },
+  rawRgba(SIZE, EXIF_HEIGHT, (x, y) => [230 - x * 3, 140 + y, 60, 255]),
+  { raw: { width: SIZE, height: EXIF_HEIGHT, channels: 4 } },
 )
   .jpeg({ quality: 90 })
   .withMetadata({ orientation: 6 })
@@ -143,7 +152,7 @@ await writeFixture('exif-orientation.jpg', exifJpeg)
 
 // Static WebP.
 const staticWebp = await sharp(
-  rawRgba(SIZE, (x, y) => [30, 160, 30 + x * 3, 255]),
+  rawRgba(SIZE, SIZE, (x, y) => [30, 160, 30 + x * 3, 255]),
   { raw: { width: SIZE, height: SIZE, channels: 4 } },
 )
   .webp({ quality: 90 })
@@ -152,7 +161,7 @@ await writeFixture('static.webp', staticWebp)
 
 // Single-frame GIF.
 const singleFrameGif = await sharp(
-  rawRgba(SIZE, (x, y) => [200, 60, 60 + x, 255]),
+  rawRgba(SIZE, SIZE, (x, y) => [200, 60, 60 + x, 255]),
   { raw: { width: SIZE, height: SIZE, channels: 4 } },
 )
   .gif()
@@ -176,7 +185,7 @@ await writeFixture('animated.gif', animatedGifBytes)
 // Fake extension: real PNG bytes, lying `.jpg` file name. Different color from
 // transparent.png so tests can tell them apart after content-sniffing.
 const fakeExtPng = await sharp(
-  rawRgba(SIZE, (x, y) => [x * 3, 220 - y * 2, 40, 255]),
+  rawRgba(SIZE, SIZE, (x, y) => [x * 3, 220 - y * 2, 40, 255]),
   { raw: { width: SIZE, height: SIZE, channels: 4 } },
 )
   .png({ compressionLevel: 9 })
@@ -196,7 +205,7 @@ for (const line of written) console.log(`  ${line}`)
 // Self-check: every fixture must decode to the shape this file intended.
 const checks = [
   ['transparent.png', { format: 'png', width: SIZE, height: SIZE, hasAlpha: true }],
-  ['exif-orientation.jpg', { format: 'jpeg', width: SIZE, height: SIZE, orientation: 6 }],
+  ['exif-orientation.jpg', { format: 'jpeg', width: SIZE, height: EXIF_HEIGHT, orientation: 6 }],
   ['static.webp', { format: 'webp', width: SIZE, height: SIZE }],
   ['single-frame.gif', { format: 'gif', width: SIZE, height: SIZE }],
   ['animated.gif', { format: 'gif', width: 16, height: 16, pages: 3 }],
@@ -215,5 +224,16 @@ try {
   throw new Error('corrupt.png unexpectedly decoded')
 } catch (error) {
   if (error.message === 'corrupt.png unexpectedly decoded') throw error
+}
+// The EXIF fixture is only useful if applying the tag changes the dimensions.
+{
+  const rotated = await sharp(path.join(outDir, 'exif-orientation.jpg')).rotate().toBuffer()
+  const meta = await sharp(rotated).metadata()
+  if (meta.width !== EXIF_HEIGHT || meta.height !== SIZE) {
+    throw new Error(
+      `exif-orientation.jpg: rotate() gave ${meta.width}x${meta.height}, ` +
+        `expected ${EXIF_HEIGHT}x${SIZE} — orientation is not observable`,
+    )
+  }
 }
 console.log('self-check passed: all fixtures decode to their intended shape')

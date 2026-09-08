@@ -19,6 +19,7 @@
  *     different field".
  */
 import assert from 'node:assert/strict'
+import { statSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -55,6 +56,14 @@ export function loadFixtureBytes(name: string): Promise<Buffer> {
   return readFile(fixtureImagePath(name))
 }
 
+/**
+ * Read off disk rather than written down: the default ref describes
+ * `transparent.png`, so a hardcoded size would drift the first time a
+ * libvips/sharp upgrade re-encodes the fixture, and the failure would land in
+ * whichever store round-trip test compares written bytes against `byteLength`.
+ */
+const transparentPngByteLength = statSync(fixtureImagePath('transparent.png')).size
+
 /** Build an `ImageAttachmentRef`; unknown fields stay at the documented defaults. */
 export function makeImageAttachmentRef(
   overrides: Partial<ImageAttachmentRef> = {},
@@ -66,7 +75,7 @@ export function makeImageAttachmentRef(
     mimeType: 'image/png',
     width: 64,
     height: 64,
-    byteLength: 287,
+    byteLength: transparentPngByteLength,
     ...overrides,
   }
 }
@@ -111,17 +120,31 @@ const DATA_URL_IMAGE = /^data:image\/[a-z0-9.+-]+;base64,/i
  *  a text payload looks like this, and redacted payloads never contain it. */
 const BASE64_RUN = /^[A-Za-z0-9+/=\r\n]{256,}$/
 
+/** A binary blob this size or larger is image bytes, not an incidental field. */
+const MAX_INCIDENTAL_BINARY_BYTES = 64
+
 /**
  * Assert that no raw image bytes survive anywhere inside `value`.
  *
  * Fails on: image data URLs, `{ type: 'base64', data: <raw> }` blocks (the
- * Anthropic wire shape — `data` must be absent or a `[redacted…]` marker), and
- * any standalone base64-sized string. JSON-serializable values only; cycles
- * are tolerated (each object is visited once).
+ * Anthropic wire shape — `data` must be absent or a `[redacted…]` marker), any
+ * standalone base64-sized string, and any `Buffer`/typed array/`ArrayBuffer` of
+ * real length — that last one being the *pre-serialization* shape a redaction
+ * regression takes, before anything has had a chance to base64 it. Cycles are
+ * tolerated (each object is visited once).
  */
 export function assertNoImageBytes(value: unknown, label = 'payload'): void {
   const seen = new Set<unknown>()
   const walk = (node: unknown, pathLabel: string): void => {
+    if (ArrayBuffer.isView(node) || node instanceof ArrayBuffer) {
+      // Checked before the recursion below, which would otherwise enumerate a
+      // typed array's integer indices — one `walk` frame per byte.
+      assert.ok(
+        node.byteLength < MAX_INCIDENTAL_BINARY_BYTES,
+        `${pathLabel}: ${node.byteLength} raw bytes survived redaction as ${node.constructor.name}`,
+      )
+      return
+    }
     if (node === null || typeof node !== 'object') {
       if (typeof node === 'string') {
         assert.ok(

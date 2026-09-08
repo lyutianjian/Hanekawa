@@ -135,7 +135,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 - `sharp@0.35.4`（vips 8.18.6）经 npm 安装，走 `@img/sharp-win32-x64` N-API 预编译包，Node 与 Electron 共用同一份二进制，无需 electron-rebuild。本机 Node 为 v24.18.1（满足 engines >= 22）。
 - 两侧验证脚本：`npm run verify:sharp`（Node）与 `npm run verify:sharp:electron`（Electron 43.4.0 主进程），均成功解码 `test/fixtures/images/transparent.png`（64x64）并打印尺寸，退出码 0。
 - `npm run build:desktop` 通过。主进程经 tsc 输出、不做 bundle，运行时从仓库根 `node_modules` 解析 `sharp`，`dist` 无需复制原生二进制——因此 `scripts/copy-desktop-assets.mjs` 与 `tsconfig.build.json` 本会话无需改动。
-- 夹具 7 个（每个 ≤ 5 KB）：`transparent.png`、`exif-orientation.jpg`（EXIF orientation=6）、`static.webp`、`single-frame.gif`、`animated.gif`（3 帧）、`png-named-jpg.jpg`（PNG 内容、`.jpg` 文件名）、`corrupt.png`；由 `scripts/make-image-fixtures.mjs` 生成并可复现，动画 GIF 由脚本内嵌的极简 LZW 编码器打包（sharp 无法从 raw 输入直接构造多帧）。
+- 夹具 7 个（每个 ≤ 5 KB）：`transparent.png`、`exif-orientation.jpg`（EXIF orientation=6，刻意 64x48 非正方形，否则「是否已按 EXIF 旋转」无法从尺寸观测）、`static.webp`、`single-frame.gif`、`animated.gif`（3 帧）、`png-named-jpg.jpg`（PNG 内容、`.jpg` 文件名）、`corrupt.png`；由 `scripts/make-image-fixtures.mjs` 生成并可复现，动画 GIF 由脚本内嵌的极简 LZW 编码器打包（sharp 无法从 raw 输入直接构造多帧）。
 - helper 位于 `test/helpers/imageFixtures.ts`：`fixtureImagePath` / `loadFixtureBytes` / `makeImageAttachmentRef` / `createTempAttachmentArea`（S05 布局）/ `assertNoImageBytes`（遮蔽断言）；`test/imageFixtures.test.ts` 覆盖夹具解码矩阵、helper 行为，以及「renderer 与 preload 不得引用 sharp」的源码扫描。
 - macOS / Linux 的真实安装与运行验证留待 S26 平台矩阵；本会话仅 Windows x64 实测。
 

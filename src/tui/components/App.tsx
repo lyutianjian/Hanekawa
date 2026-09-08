@@ -63,7 +63,7 @@ import {
 } from '../../runtime/planFile.js'
 import type { EffortLevel } from '../../config/effort.js'
 import { getContextWindowForModel } from '../../prompts/budget.js'
-import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/modelCapabilities.js'
+import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/budget.js'
 import { shouldRenderStatusLine } from '../statusLineVisibility.js'
 import { MessageQueue } from '../../runtime/messageQueue.js'
 import type { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'

@@ -865,20 +865,19 @@ test('providers report dynamic ToolSearch support conservatively', () => {
     const proxiedAnthropic = new AnthropicProvider({ provider: 'anthropic', model: 'claude-sonnet-4', apiKey: 'test-key', baseUrl: 'https://example.test' })
     const openai = new OpenAIProvider({ provider: 'openai', model: 'gpt-test', apiKey: 'test-key' })
 
-    assert.equal(nativeAnthropic.supportsDynamicToolSearch?.('claude-sonnet-4'), true)
-    assert.equal(nativeAnthropic.supportsDynamicToolSearch?.('claude-3-haiku'), false)
-    assert.equal(proxiedAnthropic.supportsDynamicToolSearch?.('claude-sonnet-4'), false)
+    assert.equal(nativeAnthropic.supportsDynamicToolSearch?.(), true)
+    assert.equal(proxiedAnthropic.supportsDynamicToolSearch?.(), false)
     assert.equal(openai.supportsDynamicToolSearch?.(), false)
 
     // A schemeless baseUrl must not throw out of the constructor, and only the
     // exact official hostname qualifies — not a lookalike that merely contains it.
     const schemeless = new AnthropicProvider({ provider: 'anthropic', model: 'claude-sonnet-4', apiKey: 'test-key', baseUrl: 'proxy.example/v1' })
     const lookalike = new AnthropicProvider({ provider: 'anthropic', model: 'claude-sonnet-4', apiKey: 'test-key', baseUrl: 'https://api.anthropic.com.evil.test' })
-    assert.equal(schemeless.supportsDynamicToolSearch?.('claude-sonnet-4'), false)
-    assert.equal(lookalike.supportsDynamicToolSearch?.('claude-sonnet-4'), false)
+    assert.equal(schemeless.supportsDynamicToolSearch?.(), false)
+    assert.equal(lookalike.supportsDynamicToolSearch?.(), false)
 
     process.env.HANEKAWA_DISABLE_EXPERIMENTAL_BETAS = '1'
-    assert.equal(nativeAnthropic.supportsDynamicToolSearch?.('claude-sonnet-4'), false)
+    assert.equal(nativeAnthropic.supportsDynamicToolSearch?.(), false)
   } finally {
     setEnv('HANEKAWA_DISABLE_EXPERIMENTAL_BETAS', original)
   }
@@ -1582,6 +1581,27 @@ test('buildOpenAIMessages merges assistant text with following tool call', () =>
       arguments: JSON.stringify({ pattern: 'hello' }),
     },
   }])
+})
+
+test('buildAnthropicPayload uses the flat max_tokens default regardless of model name', () => {
+  const build = (model: string) => {
+    const request: ModelRequest = {
+      cacheSource: 'agent:test',
+      model,
+      messages: [],
+      contextItems: [
+        {
+          kind: 'message',
+          message: { id: 'u1', role: 'user', content: 'hi', createdAt: new Date().toISOString() },
+        },
+      ],
+    }
+    return (buildAnthropicPayload(request) as { max_tokens: number }).max_tokens
+  }
+
+  assert.equal(build('claude-3-haiku-20240307'), 64_000)
+  assert.equal(build('claude-sonnet-4'), 64_000)
+  assert.equal(build('glm-5.3'), 64_000)
 })
 
 test('buildAnthropicPayload includes thinking parameter when enabled', () => {

@@ -11,7 +11,7 @@ import { withRetry } from '../retry.js'
 import { buildAnthropicPayload, getAnthropicBetaHeaders, getAnthropicCacheScope } from './anthropicPayload.js'
 import { debugProviderPayload, debugProviderResponse, debugProviderSummary } from './debug.js'
 import { normalizeAnthropicUsage } from './usage.js'
-import { isExperimentalToolSearchBetaDisabled, modelSupportsToolReference } from '../../utils/toolSearch.js'
+import { isExperimentalToolSearchBetaDisabled } from '../../utils/toolSearch.js'
 import { getPromptCachingEnabled } from '../../harness/cacheControl.js'
 import { USER_AGENT } from '../../utils/userAgent.js'
 
@@ -84,10 +84,8 @@ export class AnthropicProvider implements ModelProvider {
     this.longContext1m = config.longContext1m === true
   }
 
-  supportsDynamicToolSearch(model: string): boolean {
-    return this.nativeToolSearch
-      && !isExperimentalToolSearchBetaDisabled()
-      && modelSupportsToolReference(model)
+  supportsDynamicToolSearch(): boolean {
+    return this.nativeToolSearch && !isExperimentalToolSearchBetaDisabled()
   }
 
   async createMessage(request: ModelRequest): Promise<ModelResponse> {
@@ -127,7 +125,7 @@ export class AnthropicProvider implements ModelProvider {
   }
 
   private async sendMessage(request: ModelRequest, attempt: number, enableCaching: boolean): Promise<ModelResponse> {
-    const dynamicToolSearch = this.supportsDynamicToolSearch(request.model)
+    const dynamicToolSearch = this.supportsDynamicToolSearch()
     const payload = buildAnthropicPayload(request, this.maxOutputTokens, {
       promptCaching: enableCaching,
       dynamicToolSearch,

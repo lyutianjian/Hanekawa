@@ -37,8 +37,6 @@ const DEFAULT_AUTO_PERCENTAGE = 10
 /** Approximate chars per token for tool definitions. Used as fallback heuristic. */
 const CHARS_PER_TOKEN = 2.5
 
-const DEFAULT_UNSUPPORTED_MODEL_PATTERNS = ['haiku']
-
 /**
  * Parsed N value from HANEKAWA_TOOL_SEARCH=auto:N.
  * Cached on first parse; undefined if not in auto:N form or N is invalid.
@@ -132,11 +130,6 @@ export function isToolSearchEnabled(): boolean {
 export function isExperimentalToolSearchBetaDisabled(): boolean {
   return process.env.HANEKAWA_DISABLE_EXPERIMENTAL_BETAS === '1'
     || process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS === '1'
-}
-
-export function modelSupportsToolReference(model: string): boolean {
-  const normalized = model.toLowerCase()
-  return !DEFAULT_UNSUPPORTED_MODEL_PATTERNS.some((pattern) => normalized.includes(pattern))
 }
 
 /**

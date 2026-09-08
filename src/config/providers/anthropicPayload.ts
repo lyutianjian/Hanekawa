@@ -13,15 +13,19 @@ import {
   assertAnthropicCacheControlLimit,
   collectCacheControlTelemetry,
 } from './cacheControlTelemetry.js'
-import { getModelCapabilityOrDefault, CAPPED_DEFAULT_MAX_TOKENS, isSlotCapDisabled } from '../../prompts/modelCapabilities.js'
 
-const MAX_OUTPUT_TOKENS_DEFAULT = 32_000
+const MAX_OUTPUT_TOKENS_DEFAULT = 64_000
 const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 128_000
 const TOOL_SEARCH_BETA = 'advanced-tool-use-2025-11-20'
 /** The 1M context window. Opt-in per model — see `ModelConfig.longContext1m`. */
 export const CONTEXT_1M_BETA = 'context-1m-2025-08-07'
 
-export function getMaxOutputTokens(configValue?: number, model?: string): number {
+/**
+ * Output limits come from configuration only — `MYAGENT_MAX_OUTPUT_TOKENS`,
+ * then `ModelConfig.maxOutputTokens`, then a flat default. Requests truncated
+ * at this default get one retry at `ESCALATED_MAX_TOKENS`.
+ */
+export function getMaxOutputTokens(configValue?: number): number {
   const envValue = process.env.MYAGENT_MAX_OUTPUT_TOKENS
   if (envValue) {
     const parsed = parseInt(envValue, 10)
@@ -33,16 +37,7 @@ export function getMaxOutputTokens(configValue?: number, model?: string): number
   if (Number.isFinite(num) && num > 0) {
     return Math.min(num, MAX_OUTPUT_TOKENS_UPPER_LIMIT)
   }
-  // Model-aware default with slot cap: reduce over-reservation.
-  // p99 output is ~4,911 tokens; 32k/64k defaults over-reserve 8-16x.
-  // Requests hitting this cap get one retry at ESCALATED_MAX_TOKENS (64k).
-  if (model) {
-    const cap = getModelCapabilityOrDefault(model)
-    if (isSlotCapDisabled()) return cap.defaultMaxOutputTokens
-    return Math.min(cap.defaultMaxOutputTokens, CAPPED_DEFAULT_MAX_TOKENS)
-  }
-  if (isSlotCapDisabled()) return MAX_OUTPUT_TOKENS_DEFAULT
-  return Math.min(MAX_OUTPUT_TOKENS_DEFAULT, CAPPED_DEFAULT_MAX_TOKENS)
+  return MAX_OUTPUT_TOKENS_DEFAULT
 }
 
 function anthropicContent(content: string): Array<{ type: 'text'; text: string }> {
@@ -249,7 +244,7 @@ export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: n
     thinking = { type: 'adaptive' }
   }
 
-  const maxOutput = getMaxOutputTokens(maxOutputTokens ?? request.maxOutputTokens, request.model)
+  const maxOutput = getMaxOutputTokens(maxOutputTokens ?? request.maxOutputTokens)
   const thinkingBudget = thinking?.type === 'enabled' ? thinking.budget_tokens : 0
   const finalMaxOutput = thinkingBudget > 0 && maxOutput <= thinkingBudget
     ? thinkingBudget + 1024

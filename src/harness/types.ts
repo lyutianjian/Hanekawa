@@ -666,6 +666,6 @@ export interface ModelResponse {
 
 export interface ModelProvider {
   name: string
-  supportsDynamicToolSearch?(model: string): boolean
+  supportsDynamicToolSearch?(): boolean
   createMessage(request: ModelRequest): Promise<ModelResponse>
 }

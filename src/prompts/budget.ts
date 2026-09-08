@@ -1,12 +1,13 @@
 import type { ChatMessage, ModelContextItem, SessionRecord } from '../harness/types.js'
-import { MODEL_CONTEXT_WINDOW_DEFAULT } from './modelCapabilities.js'
 
 export interface TokenCount {
   total: number
   messages: number[]
 }
 
-export { MODEL_CONTEXT_WINDOW_DEFAULT } from './modelCapabilities.js'
+export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
+/** One-shot escalation when a response is truncated by `max_tokens`. */
+export const ESCALATED_MAX_TOKENS = 128_000
 export const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
 export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000

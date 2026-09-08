@@ -25,7 +25,7 @@ import {
   getEffectiveContextWindowSize,
   type ContextManagementConfig,
 } from '../prompts/budget.js'
-import { ESCALATED_MAX_TOKENS, MODEL_CONTEXT_WINDOW_DEFAULT } from '../prompts/modelCapabilities.js'
+import { ESCALATED_MAX_TOKENS, MODEL_CONTEXT_WINDOW_DEFAULT } from '../prompts/budget.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
@@ -466,7 +466,7 @@ export class AgentLoop {
       }
 
       const providerSupportsDynamicToolSearch =
-        this.activeModel.provider.supportsDynamicToolSearch?.(this.activeModel.model) ?? false
+        this.activeModel.provider.supportsDynamicToolSearch?.() ?? false
       const toolSearchState = resolveToolSearchState({
         tools: this.currentTools,
         contextWindowSize: getContextWindowForModel(this.activeContextManagement),

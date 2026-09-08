@@ -497,6 +497,29 @@ async function runCompressionLadder(
   return null
 }
 
+/**
+ * Thumbnails are the only image bytes that ever become a data URL (S05's
+ * preview), so they carry their own small byte cap.
+ */
+export const MAX_THUMBNAIL_BYTES = 200_000
+
+/**
+ * Render the attachment store's `thumbnail.png`: a small PNG of the send
+ * version, shrunk further until it fits the cap. Never enlarges.
+ */
+export async function renderThumbnailBytes(bytes: Buffer): Promise<Buffer> {
+  let last = bytes
+  for (const edge of [256, 128, 64]) {
+    const out = await sharp(bytes)
+      .resize({ width: edge, height: edge, fit: 'inside', withoutEnlargement: true })
+      .png({ compressionLevel: 9 })
+      .toBuffer()
+    last = out
+    if (out.byteLength <= MAX_THUMBNAIL_BYTES) break
+  }
+  return last
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }

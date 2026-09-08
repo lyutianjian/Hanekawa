@@ -83,7 +83,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S02 | 模型图像能力：配置字段、判定函数、运行时快照 | S01 | 中 | `[x]` |
 | S03 | 两端模型设置开关与选择器能力标记 | S02 | 中 | `[x]` |
 | S04 | 图像解码归一化与压缩阶梯 | S01 | 长 | `[x]` |
-| S05 | 附件存储、解析、缩略图与回收 | S04 | 中 | `[ ]` |
+| S05 | 附件存储、解析、缩略图与回收 | S04 | 中 | `[x]` |
 | S06 | 记录与上下文类型接入 `images`，持久化兼容 | S02, S05 | 中 | `[ ]` |
 | S07 | `UserInput` 贯穿提交路径与中断恢复 | S06 | 长 | `[ ]` |
 | S08 | 协议命令与 wire schema | S07 | 中 | `[ ]` |
@@ -244,7 +244,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S05 `[ ]` 附件存储、解析、缩略图与回收
+## S05 `[x]` 附件存储、解析、缩略图与回收
 
 **前置**：S04 · **规模**：中 · **设计稿**：§12.1、§12.2、§13
 **涉及**：新增 `src/services/imageAttachments/`、新增 `test/imageAttachments.test.ts`
@@ -271,6 +271,18 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：导入→落盘→读回元数据往返通过；删源文件后仍能解析预览；删 `image.*` 后能重建；孤儿文件在窗口后被清理而在途文件不被清理。
 **验证**：`node --import tsx --test test/imageAttachments.test.ts`
 **提交**：`checkpoint: S05 add session image attachment storage service`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- 新增 `src/services/imageAttachments/imageAttachmentService.ts`（`ImageAttachmentService`，按项目 cwd 构造），存储布局逐字落实设计稿 §12.1：`<cwd>/.myagent/attachments/<ownerSessionId>/<imageId>/{original.<ext>, image.<ext>, thumbnail.png, metadata.json}`，全局 workspace 因 cwd 是 home 自然落在 `~/.myagent/attachments/`。`attachmentsDirFor` / `sessionAttachmentsDir` 复用 `utils/paths.ts` 的 `getMyAgentDir`，与 `sessions/`、`fileHistory/` 同一套根路径。
+- 落盘顺序即安全边界：`original` → `image` → `thumbnail` → `metadata.json` **最后写**（注册标记）；任何一步失败 `rm` 整个 image 目录并返回新错误原因 `store-write-failed`（在 7 个共享原因之外唯一新增的存储层原因），不会产生看似可用的引用。导入经 per-service 串行队列，同内容去重不会和自己竞态。
+- 解析只按 `(ownerSessionId, imageId)`，无任何接受路径的 API；两个 ID 都用 `SessionStore` 的 `assertSafeSessionId` 作单一校验器（读路径把 throw 折叠成 `file-missing` 结果，不炸会话）。跨会话 ID、未注册 ID、损坏的 `metadata.json`、`image.*`+原图全缺失，一律返回**该图的局部错误**（`file-missing`），`resolveRef` / `readSendBytes` / `previewDataUrl` 三者一致。
+- 发送版本读取带完整性检查（存在 + 字节数与 ref 一致 + 内容嗅探匹配格式），不满足且原图在则用**导入时存的 limits** 重跑 S04 管线重建（原图先验 sha256 校验和）；重建后尺寸/字节若与 ref 漂移，更新 `metadata.json` 让 ref 始终描述真实发送字节。`animated` 标志持久化在 `StoredMetadata` 并随 `StoredAttachment` 返回（S12/S14 列表标注用）。
+- 预览：`previewDataUrl` 返回缩略图的 `data:image/png;base64,…`，缩略图缺失/损坏时从发送版本再生成并回写；上限 300,000 字符，超限报 `image-too-large`。这是全模块唯一产生 Base64 的出口，快照/记录不经过它。
+- 回收：`collectGarbage(sessionId, keepRefs, { now })` 只由调用方显式触发（会话加载/关闭时），`keepRefs` 由调用方按消息/队列/活跃草稿供给；服务侧负责保留窗口（默认 24h，可配）、`retain`/`release` 在途守卫（导入内部自动持有）、以及无 metadata 的崩溃残留目录（以目录 mtime 为锚）。`removeSessionAttachments` 供删除会话路径整目录清理（S23 接线），绝不触碰 `attachments/<sessionId>` 之外。
+- `src/tools/imageFile.ts` 增补 `renderThumbnailBytes` + `MAX_THUMBNAIL_BYTES`（256→128→64 阶梯、不放大），sharp 用法继续集中在该模块；服务本身不 import sharp。
+- 新增 `test/imageAttachments.test.ts` 20 项：布局/元数据往返、EXIF（orientation=6，定向后 48x64）、动画首帧、伪扩展名、同会话去重/跨会话不去重、处理失败原因透传（corrupt→decode-failed、BMP→unsupported-format）、`.myagent` 为文件时 `store-write-failed`、删源文件后可解析、删 `image.*` 后按 ref 尺寸重建、双缺失/坏 metadata 只报该图、危险 ID 不触盘、跨会话 ID 拒绝、预览 data URL 格式+上限+缩略图再生、回收（窗口内保留/过窗清理/keep 与在途保护/孤儿目录/清理后再导入）。
+- 验证：`test/imageAttachments.test.ts`（20）+ `test/imageFile.test.ts`/`imageFixtures.test.ts`（29）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3009 项 3008 过、1 跳过、0 失败（S02 记录的 7 个 TUI Ink 渲染失败本次未复现，与 S04 观察一致）。
 
 ---
 

@@ -55,11 +55,17 @@ export interface RuntimeMenuView {
  * Matched by id rather than by position: `SurfaceRow.id` *is* the model key.
  */
 function modelRows(rows: readonly SurfaceRow[], options: readonly ModelPickerOption[]): SurfaceRow[] {
-  return rows.map((row) => ({
-    ...row,
-    label: options.find((option) => option.key === row.id)?.label ?? row.label,
-    detail: '',
-  }))
+  return rows.map((row) => {
+    const option = options.find((candidate) => candidate.key === row.id)
+    return {
+      ...row,
+      label: option?.label ?? row.label,
+      // The picker's three-column detail is noise at flyout width, but the
+      // image marker is kept: it is the one attribute worth the width when the
+      // chip is open because the current model just refused an image.
+      detail: option?.supportsImageInput ? '支持图像' : '',
+    }
+  })
 }
 
 export function runtimeMenuView(input: {

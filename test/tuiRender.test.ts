@@ -791,6 +791,11 @@ test('ModelPickerDialog renders one row per model key, with hints', () => {
   assert.match(frame, /balanced-key · anthropic: balanced-id/)
   assert.match(frame, /default/)
   assert.match(frame, /current/)
+  // Only the capable row is marked — the marker comes from
+  // `resolveImageCapability` on the host, never a model-name guess.
+  assert.match(frame, /2\. balanced-key\s+支持图像/)
+  assert.doesNotMatch(frame, /1\. fast-key\s+支持图像/)
+  assert.doesNotMatch(frame, /3\. powerful-key\s+支持图像/)
   assert.match(frame, /3\. powerful-key/)
   assert.match(frame, /Enter to set default/)
   assert.match(frame, /S to use for this session/)
@@ -1301,6 +1306,7 @@ function modelPickerOptions(): ModelPickerOption[] {
       modelKey: 'balanced-key',
       providerName: 'anthropic',
       modelId: 'balanced-id',
+      supportsImageInput: true,
       isCurrent: true,
       isDefault: true,
     },

@@ -950,23 +950,42 @@ test('ConfigService persists image capability across save, reload, and endpoint 
   }
 })
 
-test('editing another model field keeps supportsImageInput', async () => {
+test('the image-input switch is form-owned and survives saves and reference repair', async () => {
   const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
   try {
     const service = new ConfigService(dir)
     await service.load()
     service.addModel('vision', { provider: 'anthropic', model: 'claude-v', supportsImageInput: true })
 
-    // Both model forms save by *rebuilding* the config from their own fields —
-    // that is how "off is absence" works for the switches they own — so the
-    // capability survives only because `carryJsonOnlyModelFields` puts it back.
+    // Both model forms own the switch now (S03): they rebuild the config from
+    // their fields and send the switch with it, seeded from what they loaded.
+    // The carry no longer owns it — otherwise a deliberate switch-off would be
+    // overridden by the stale on-disk value on every save.
+    const carried = carryJsonOnlyModelFields(
+      { provider: 'anthropic', model: 'claude-v' },
+      { provider: 'anthropic', model: 'claude-v', supportsImageInput: true },
+    )
+    assert.equal(carried.supportsImageInput, undefined)
+
+    // The form-shaped save — rebuilt with its own switch, JSON-only fields
+    // carried — keeps the declaration and the unrelated edit together.
     const existing = service.getModel('vision')
-    const rebuilt: ModelConfig = { provider: 'anthropic', model: 'claude-v', contextWindow: 123_000 }
+    const rebuilt: ModelConfig = {
+      provider: 'anthropic',
+      model: 'claude-v',
+      contextWindow: 123_000,
+      supportsImageInput: true,
+    }
     service.setModelConfig('vision', carryJsonOnlyModelFields(rebuilt, existing))
     assert.equal(service.getModel('vision')?.supportsImageInput, true)
     assert.equal(service.getModel('vision')?.contextWindow, 123_000)
 
+    // An omitted switch is how the form writes "off" — absence, never `false`.
+    service.setModelConfig('vision', { provider: 'anthropic', model: 'claude-v' })
+    assert.equal(service.getModel('vision')?.supportsImageInput, undefined)
+
     // Removing an unrelated model repairs references without touching this one.
+    service.addModel('vision', { provider: 'anthropic', model: 'claude-v', supportsImageInput: true })
     service.addModel('other', { provider: 'anthropic', model: 'claude-o' })
     service.get().defaultModel = 'other'
     service.removeModel('other')

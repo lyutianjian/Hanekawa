@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import stringWidth from 'string-width'
 import { Box, Text, useInput, useStdout } from '../ink.js'
 import { theme } from '../theme.js'
 import { commandVisibleRows, CommandListItem, CommandPane, CommandTabs, getVisibleWindow, type CommandHint } from './CommandUI.js'
@@ -16,6 +17,7 @@ import { pingEndpoint, type EndpointPingResult } from '../../config/endpointPing
 import { maskKey } from '../../config/maskKey.js'
 import {
   isSupportedProviderName,
+  resolveImageCapability,
   SUPPORTED_PROVIDER_NAMES,
 } from '../../config/providers/registry.js'
 import type { ProviderConfigChangeScope } from '../../runtime/providerRuntime.js'
@@ -23,6 +25,10 @@ import type { ProviderConfigChangeScope } from '../../runtime/providerRuntime.js
 type Tab = 'endpoints' | 'models' | 'routing'
 const TABS: readonly Tab[] = ['endpoints', 'models', 'routing']
 const CONTEXT_WINDOW_OPTIONS: readonly string[] = ['(default)', '200K', '400K', '1M']
+/** The image-input switch's two states, shown verbatim — the form's value *is* its label. */
+const IMAGE_INPUT_OPTIONS: readonly string[] = ['关闭', '开启']
+/** The caveat under the switch, verbatim from the design doc (§4.2) in both frontends. */
+const IMAGE_INPUT_NOTE = '开启后，此模型可接收图片。请确认该模型及接入点支持当前协议的图像输入。'
 
 /**
  * What a routing role can be set to: inherit the main model, or any configured
@@ -53,7 +59,7 @@ function contextWindowFromLabel(label: string): number | undefined {
 type FormState =
   | { kind: 'list' }
   | { kind: 'endpoint-edit'; nameInput: string; provider: string; baseUrl: string; apiKey: string; field: 'nameInput' | 'provider' | 'baseUrl' | 'apiKey'; cursor: number; original: string | null }
-  | { kind: 'model-edit'; nameInput: string; modelId: string; endpointName: string; contextWindow: string; field: 'nameInput' | 'modelId' | 'endpointName' | 'contextWindow'; cursor: number; original: string | null }
+  | { kind: 'model-edit'; nameInput: string; modelId: string; endpointName: string; contextWindow: string; supportsImageInput: string; field: 'nameInput' | 'modelId' | 'endpointName' | 'contextWindow' | 'supportsImageInput'; cursor: number; original: string | null }
   | { kind: 'routing-edit'; role: RoutingRoleKey; valueIndex: number }
   | { kind: 'confirm-delete'; what: string; targetId: string }
   | { kind: 'busy'; message: string }
@@ -275,6 +281,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         modelId: '',
         endpointName: firstEndpoint,
         contextWindow: '(default)',
+        supportsImageInput: IMAGE_INPUT_OPTIONS[0] ?? '关闭',
         field: 'nameInput',
         cursor: 0,
         original: null,
@@ -310,6 +317,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         modelId: m.model,
         endpointName: m.endpoint ?? '',
         contextWindow: contextWindowToLabel(m.contextWindow),
+        supportsImageInput: m.supportsImageInput === true ? '开启' : '关闭',
         field: 'modelId',
         cursor: m.model.length,
         original: item.id,
@@ -426,7 +434,7 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
 
   function handleModelFormInput(input: string, key: InkKey) {
     if (form.kind !== 'model-edit') return
-    const fields: Array<typeof form.field> = ['nameInput', 'modelId', 'endpointName', 'contextWindow']
+    const fields: Array<typeof form.field> = ['nameInput', 'modelId', 'endpointName', 'contextWindow', 'supportsImageInput']
     if (key.tab) {
       const next = fields[moveCyclicIndex(fields.indexOf(form.field), fields.length, key.shift ? -1 : 1)]!
       setForm({ ...form, field: next, cursor: form[next].length })
@@ -460,10 +468,13 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         model: form.modelId.trim(),
         endpoint: form.endpointName.trim(),
         ...(parsedContextWindow ? { contextWindow: parsedContextWindow } : {}),
+        ...(form.supportsImageInput === '开启' ? { supportsImageInput: true } : {}),
       }
-      // The form rebuilds the config from its own three fields, so anything it
-      // has no widget for — the cache policy, the image-input capability — has
-      // to be carried over or this save would delete it from `config.json`.
+      // The form rebuilds the config from its own fields, so anything it
+      // has no widget for — the cache policy — has to be carried over or
+      // this save would delete it from `config.json`. The image-input
+      // switch is a form field (seeded above), so it survives an unrelated
+      // edit through the seeding, not the carry.
       const existing = cfg.models[form.original ?? name]
       carryJsonOnlyModelFields(model, existing)
       void persist(() => {
@@ -488,6 +499,14 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
       if (direction !== 0) {
         const contextWindow = cycleChoiceValue(form.contextWindow, CONTEXT_WINDOW_OPTIONS, direction)
         setForm({ ...form, contextWindow, cursor: contextWindow.length })
+      }
+      return
+    }
+    if (form.field === 'supportsImageInput') {
+      const direction = choiceDirection(key)
+      if (direction !== 0) {
+        const supportsImageInput = cycleChoiceValue(form.supportsImageInput, IMAGE_INPUT_OPTIONS, direction)
+        setForm({ ...form, supportsImageInput })
       }
       return
     }
@@ -581,7 +600,7 @@ function collectListItems(cfg: Config, tab: Tab): ListItem[] {
     return Object.entries(cfg.models).map(([name, m]) => ({
       id: name,
       primary: `${name}  ${m.endpoint ? `-> endpoint:${m.endpoint}` : `[${m.provider}]`}`,
-      secondary: m.model,
+      secondary: modelSecondary(cfg, m),
     }))
   }
   // routing
@@ -590,6 +609,17 @@ function collectListItems(cfg: Config, tab: Tab): ListItem[] {
     primary: role.padEnd(22),
     secondary: String(currentRoutingValue(cfg, role)),
   }))
+}
+
+/**
+ * The model row's second line: the vendor model id, plus the image marker when
+ * `resolveImageCapability` says yes — the judgment function itself, never a
+ * model-name guess, so this list and the runtime can never disagree.
+ */
+function modelSecondary(cfg: Config, m: ModelConfig): string {
+  const endpoint = m.endpoint ? cfg.endpoints?.[m.endpoint] : undefined
+  if (resolveImageCapability(m, endpoint)) return `${m.model} · 支持图像`
+  return m.model
 }
 
 /**
@@ -704,7 +734,9 @@ function renderModelForm(form: Extract<FormState, { kind: 'model-edit' }>, cfg: 
       <FieldRow label="Model ID"    value={form.modelId}      active={form.field === 'modelId'}      cursor={form.field === 'modelId'      ? form.cursor : undefined} />
       <ChoiceFieldRow label="Endpoint" value={endpointDisplay} active={form.field === 'endpointName'} />
       <ChoiceFieldRow label="Context" value={form.contextWindow} active={form.field === 'contextWindow'} />
+      <ChoiceFieldRow label="支持图像输入" value={form.supportsImageInput} active={form.field === 'supportsImageInput'} />
       <FieldRow label="Provider" value={inheritedProviderDisplay} active={false} hint="inherited from endpoint" />
+      <Text color={theme.dimText}>{IMAGE_INPUT_NOTE}</Text>
     </Box>
   )
 }
@@ -737,13 +769,22 @@ interface FieldRowProps {
   hint?: string
 }
 
+/**
+ * Pads a field label to a *display* width, not a code-unit count: the
+ * image-input label 「支持图像输入」 is 6 code units but 12 columns, and a
+ * plain `padEnd` would leave its value column ragged against the ASCII labels.
+ */
+function padFieldLabel(label: string, width = 12): string {
+  return label + ' '.repeat(Math.max(0, width - stringWidth(label)))
+}
+
 function FieldRow({ label, value, active, cursor, maskedValue, hint }: FieldRowProps) {
   const display = maskedValue ?? value
   const safeCursor = cursor === undefined ? display.length : Math.min(Math.max(0, cursor), display.length)
   const before = display.slice(0, safeCursor)
   const at = display.slice(safeCursor, safeCursor + 1)
   const after = display.slice(safeCursor + 1)
-  const fieldLabel = `${active ? '> ' : '  '}${label.padEnd(10)}: `
+  const fieldLabel = `${active ? '> ' : '  '}${padFieldLabel(label)}: `
   return (
     <Box>
       <Text color={active ? theme.brand : theme.dimText}>{fieldLabel}</Text>
@@ -768,7 +809,7 @@ interface ChoiceFieldRowProps {
 }
 
 function ChoiceFieldRow({ label, value, active }: ChoiceFieldRowProps) {
-  const fieldLabel = `${active ? '> ' : '  '}${label.padEnd(10)}: `
+  const fieldLabel = `${active ? '> ' : '  '}${padFieldLabel(label)}: `
   return (
     <Box>
       <Text color={active ? theme.brand : theme.dimText}>{fieldLabel}</Text>
@@ -811,7 +852,7 @@ function footerHints(tab: Tab, form: FormState): CommandHint[] {
 
 function isChoiceField(form: Extract<FormState, { kind: 'endpoint-edit' | 'model-edit' }>): boolean {
   if (form.kind === 'endpoint-edit') return form.field === 'provider'
-  return form.field === 'endpointName' || form.field === 'contextWindow'
+  return form.field === 'endpointName' || form.field === 'contextWindow' || form.field === 'supportsImageInput'
 }
 
 function capitalize(s: string): string {

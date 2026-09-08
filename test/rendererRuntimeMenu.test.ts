@@ -26,6 +26,7 @@ const MODELS: WireModelsResult = {
       modelKey: 'sonnet',
       modelId: 'claude-sonnet-5',
       providerName: 'anthropic',
+      supportsImageInput: true,
       isCurrent: true,
       isDefault: true,
     },
@@ -67,9 +68,12 @@ test('each row carries the picker rows, actions and marks included', () => {
   const [model, effort] = view.entries
 
   assert.deepEqual(model!.rows.map((row) => row.id), ['sonnet', 'opus'])
-  // A name and nothing else: the picker card's label carries the model key and
-  // its detail the id, the provider and 「默认」, which read as noise in a flyout.
-  assert.deepEqual(model!.rows.map((row) => [row.label, row.detail]), [['Sonnet', ''], ['Opus', '']])
+  // A name and nothing else — except the image marker, the one attribute worth
+  // the flyout's width when the current model has just refused an image.
+  assert.deepEqual(model!.rows.map((row) => [row.label, row.detail]), [
+    ['Sonnet', '支持图像'],
+    ['Opus', ''],
+  ])
   assert.equal(model!.rows[0]!.current, true)
   // A slash command, not `set-model`: that is what persists the choice.
   assert.deepEqual(model!.rows[1]!.action, { kind: 'run-command', line: '/model opus' })

@@ -89,6 +89,10 @@ export interface ModelConfig {
  * is what makes "off is absence" work for the switches they do own. That same
  * rebuild silently drops everything they don't own, so a JSON-configured field
  * would survive exactly until the first unrelated edit.
+ *
+ * `supportsImageInput` is *not* here: both forms own a widget for it (S03), so
+ * the forms seed and send it, and carrying it here would override a deliberate
+ * switch-off with the stale on-disk value on every save.
  */
 const JSON_ONLY_MODEL_FIELDS = [
   'apiKey',
@@ -97,7 +101,6 @@ const JSON_ONLY_MODEL_FIELDS = [
   'promptCacheRetention',
   'pricing',
   'thinking',
-  'supportsImageInput',
 ] as const satisfies readonly (keyof ModelConfig)[]
 
 /**

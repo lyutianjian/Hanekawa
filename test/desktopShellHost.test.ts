@@ -629,7 +629,7 @@ const SETTINGS_CHANGE_SAMPLES = {
   'set-endpoint': { scope: 'provider', kind: 'set-endpoint', name: 'e1', provider: 'anthropic' },
   'clear-endpoint-key': { scope: 'provider', kind: 'clear-endpoint-key', name: 'e1' },
   'remove-endpoint': { scope: 'provider', kind: 'remove-endpoint', name: 'e1' },
-  'set-model': { scope: 'provider', kind: 'set-model', key: 'm1', model: 'claude-x', longContext1m: true },
+  'set-model': { scope: 'provider', kind: 'set-model', key: 'm1', model: 'claude-x', longContext1m: true, supportsImageInput: true },
   'rename-model': { scope: 'provider', kind: 'rename-model', from: 'm1', to: 'm2' },
   'remove-model': { scope: 'provider', kind: 'remove-model', key: 'm1' },
   'set-default-model': { scope: 'provider', kind: 'set-default-model', key: 'm1' },
@@ -1777,6 +1777,50 @@ test('the 1M header switch persists on the model and comes back in the snapshot'
   })
   assert.equal(h.project.config.config.models.big?.longContext1m, undefined)
   assert.equal(h.project.config.config.models.big?.promptCaching, 'on')
+})
+
+test('the image-input switch persists, and the snapshot carries the effective marker', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+  // A second endpoint on a provider whose adapter carries no images: the raw
+  // switch and the effective capability must be able to disagree.
+  h.project.config.config.endpoints!.custom = { provider: 'custom-proxy' }
+  h.project.config.config.models.pickya = {
+    model: 'custom-vision',
+    endpoint: 'custom',
+    supportsImageInput: true,
+  }
+
+  await h.client.changeSettings(h.entry.root, {
+    scope: 'provider',
+    kind: 'set-model',
+    key: 'big',
+    model: 'claude-big',
+    endpoint: 'main',
+    supportsImageInput: true,
+  })
+  assert.equal(h.project.config.config.models.big?.supportsImageInput, true)
+
+  const { settings } = await h.client.getSettings(h.entry.root)
+  const big = settings.models.find((model) => model.key === 'big')
+  assert.equal(big?.supportsImageInput, true, 'the raw switch seeds the edit form')
+  assert.equal(big?.imageCapable, true, 'anthropic resolves capable')
+  // The declaration survives on a provider that cannot honour it: the marker
+  // says no, the switch still says yes, and neither silently rewrites the other.
+  const pickya = settings.models.find((model) => model.key === 'pickya')
+  assert.equal(pickya?.supportsImageInput, true)
+  assert.equal(pickya?.imageCapable, undefined)
+
+  // Switching it off omits the field, and the rebuild removes it — the same
+  // off-is-absence rule the 1M header switch follows.
+  await h.client.changeSettings(h.entry.root, {
+    scope: 'provider',
+    kind: 'set-model',
+    key: 'big',
+    model: 'claude-big',
+    endpoint: 'main',
+  })
+  assert.equal(h.project.config.config.models.big?.supportsImageInput, undefined)
 })
 
 test('one edit reloads the project once and refreshes every lane of it', async () => {

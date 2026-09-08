@@ -75,6 +75,8 @@ export type SettingsDraft =
        */
       readonly modelKey: string
       readonly modelId: string
+      /** `'on'` or `''` — the first model's image-input switch, same as the model form's. */
+      readonly modelSupportsImageInput: string
     }
   | {
       readonly kind: 'model'
@@ -88,6 +90,8 @@ export type SettingsDraft =
       readonly contextWindow: string
       /** `'on'` or `''` — a form field is a string, like every other one here. */
       readonly longContext1m: string
+      /** `'on'` or `''` — the image-input switch, same off-is-absence rule. */
+      readonly supportsImageInput: string
       readonly maxOutputTokens: string
       /**
        * The effort levels the model accepts. Empty means "no restriction", the
@@ -318,6 +322,8 @@ export interface SettingsFormField {
   readonly placeholder?: string
   readonly mono?: boolean
   readonly choices?: ReadonlyArray<{ value: string; label: string }>
+  /** A second line under the label, for the caveat a switch's copy needs. */
+  readonly note?: string
   /**
    * A checkable list behind one trigger, for a field whose value is a *set*.
    *
@@ -541,6 +547,7 @@ function projectOne(snapshot: WireSettingsSnapshot, change: SettingsChange): Wir
       return { ...snapshot, endpoints: upsert(snapshot.endpoints, row, (item) => item.name) }
     }
     case 'set-model': {
+      const previous = snapshot.models.find((model) => model.key === change.key)
       const row: WireModelInfo = {
         key: change.key,
         model: change.model,
@@ -548,8 +555,17 @@ function projectOne(snapshot: WireSettingsSnapshot, change: SettingsChange): Wir
         ...(change.provider !== undefined ? { provider: change.provider } : {}),
         ...(change.contextWindow !== undefined ? { contextWindow: change.contextWindow } : {}),
         ...(change.longContext1m !== undefined ? { longContext1m: change.longContext1m } : {}),
+        ...(change.supportsImageInput !== undefined ? { supportsImageInput: change.supportsImageInput } : {}),
         ...(change.maxOutputTokens !== undefined ? { maxOutputTokens: change.maxOutputTokens } : {}),
         ...(change.supportedEfforts !== undefined ? { supportedEfforts: change.supportedEfforts } : {}),
+        // The raw switch projects, but the effective marker cannot: it is the
+        // host's registry call, so it is kept from the previous row only while
+        // the switch stays on and re-arrives with the next snapshot. Turning
+        // the switch off drops it immediately, which is the direction that
+        // must never lag.
+        ...(change.supportsImageInput === true && previous?.imageCapable === true
+          ? { imageCapable: true }
+          : {}),
         // Optimistic on purpose: the host answers with the truth a moment later,
         // and drawing 「无法解析」 on a model the user just typed would be a
         // warning about nothing.
@@ -1057,6 +1073,9 @@ function modelDetail(model: WireModelInfo): string {
   else if (model.provider) parts.push(model.provider)
   if (model.contextWindow) parts.push(`${Math.round(model.contextWindow / 1000)}k 上下文`)
   if (model.longContext1m) parts.push('1M 请求头')
+  // The host-resolved capability (`resolveImageCapability`), never the raw
+  // switch: the list answers "which model can I send this image to".
+  if (model.imageCapable) parts.push('支持图像')
   if (model.supportedEfforts?.length) {
     parts.push(`思考等级 ${model.supportedEfforts.map((level) => EFFORT_LABELS[level]).join('、')}`)
   }
@@ -1567,6 +1586,12 @@ function parseContextValue(
 /** The model form's effort menu, keyed in `SettingsState.openMenu`. */
 export const EFFORT_MENU_ID = 'model-supported-efforts'
 
+/**
+ * The caveat under the image-input switch, verbatim from the design doc — the
+ * switch is the user's declaration, not a probe, and the copy says so.
+ */
+const IMAGE_INPUT_NOTE = '开启后，此模型可接收图片。请确认该模型及接入点支持当前协议的图像输入。'
+
 function draftForm(
   draft: SettingsDraft,
   snapshot: WireSettingsSnapshot,
@@ -1636,7 +1661,9 @@ function draftForm(
         },
         // A new endpoint with no model is a row that cannot be used for anything,
         // so the first model is offered here rather than in a second trip through
-        // 「新增模型」. Both fields or neither — see `draftToChanges`.
+        // 「新增模型」. Both fields or neither — see `draftToChanges`. The image
+        // switch is here too, not only in the model form, so the declaration is
+        // reachable on the path that creates most models.
         ...(draft.isNew
           ? [
               {
@@ -1651,6 +1678,16 @@ function draftForm(
                 value: draft.modelId,
                 mono: true,
                 placeholder: '可留空；例如 claude-opus-5',
+              },
+              {
+                id: 'modelSupportsImageInput',
+                label: '支持图像输入',
+                value: draft.modelSupportsImageInput,
+                choices: [
+                  { value: '', label: '关闭' },
+                  { value: 'on', label: '开启' },
+                ],
+                note: IMAGE_INPUT_NOTE,
               },
             ]
           : []),
@@ -1710,6 +1747,16 @@ function draftForm(
           { value: '', label: '关闭' },
           { value: 'on', label: '开启：发送 context-1m beta' },
         ],
+      },
+      {
+        id: 'supportsImageInput',
+        label: '支持图像输入',
+        value: draft.supportsImageInput,
+        choices: [
+          { value: '', label: '关闭' },
+          { value: 'on', label: '开启' },
+        ],
+        note: IMAGE_INPUT_NOTE,
       },
       { id: 'maxOutputTokens', label: '最大输出 token', value: draft.maxOutputTokens, placeholder: '可留空' },
     ],
@@ -1836,6 +1883,7 @@ export function draftToChange(
   // Only written when on, so switching it off removes the field rather than
   // storing a `false` — the same shape an emptied `contextWindow` sends.
   if (draft.longContext1m === 'on') change.longContext1m = true
+  if (draft.supportsImageInput === 'on') change.supportsImageInput = true
   if (maxOutputTokens !== undefined) change.maxOutputTokens = maxOutputTokens
   // Nothing picked and everything picked both mean "no restriction", so both
   // omit the field — the same shape an emptied `contextWindow` sends.
@@ -1888,7 +1936,14 @@ export function draftToChanges(
     }
     return [
       change,
-      { scope: 'provider', kind: 'set-model', key: modelKey, model: modelId, endpoint: draft.name.trim() },
+      {
+        scope: 'provider',
+        kind: 'set-model',
+        key: modelKey,
+        model: modelId,
+        endpoint: draft.name.trim(),
+        ...(draft.modelSupportsImageInput === 'on' ? { supportsImageInput: true } : {}),
+      },
       // Only when there is nothing to start from: a config that already names a
       // default must not have it moved by adding an endpoint.
       ...(snapshot.defaultModel === undefined
@@ -2108,6 +2163,7 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
             keyTouched: false,
             modelKey: '',
             modelId: '',
+            modelSupportsImageInput: '',
           },
         },
       }
@@ -2131,6 +2187,7 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
             // Not offered when editing: the form draws them only for `isNew`.
             modelKey: '',
             modelId: '',
+            modelSupportsImageInput: '',
           },
         },
       }
@@ -2148,6 +2205,7 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
             provider: '',
             contextWindow: '',
             longContext1m: '',
+            supportsImageInput: '',
             maxOutputTokens: '',
             supportedEfforts: [],
           },
@@ -2169,6 +2227,7 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
             provider: model.provider ?? '',
             contextWindow: model.contextWindow === undefined ? '' : String(model.contextWindow),
             longContext1m: model.longContext1m ? 'on' : '',
+            supportsImageInput: model.supportsImageInput ? 'on' : '',
             maxOutputTokens: model.maxOutputTokens === undefined ? '' : String(model.maxOutputTokens),
             supportedEfforts: model.supportedEfforts ?? [],
           },
@@ -2558,6 +2617,8 @@ function withField(draft: SettingsDraft, field: string, value: string): Settings
         return { ...draft, modelKey: value }
       case 'modelId':
         return { ...draft, modelId: value }
+      case 'modelSupportsImageInput':
+        return { ...draft, modelSupportsImageInput: value }
       default:
         return draft
     }
@@ -2575,6 +2636,8 @@ function withField(draft: SettingsDraft, field: string, value: string): Settings
       return { ...draft, contextWindow: value }
     case 'longContext1m':
       return { ...draft, longContext1m: value }
+    case 'supportsImageInput':
+      return { ...draft, supportsImageInput: value }
     case 'maxOutputTokens':
       return { ...draft, maxOutputTokens: value }
     default:

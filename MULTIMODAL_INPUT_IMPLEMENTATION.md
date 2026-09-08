@@ -81,7 +81,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | --- | --- | --- | --- | --- |
 | S01 | `sharp` 依赖验证与图像测试夹具 | — | 短 | `[x]` |
 | S02 | 模型图像能力：配置字段、判定函数、运行时快照 | S01 | 中 | `[x]` |
-| S03 | 两端模型设置开关与选择器能力标记 | S02 | 中 | `[ ]` |
+| S03 | 两端模型设置开关与选择器能力标记 | S02 | 中 | `[x]` |
 | S04 | 图像解码归一化与压缩阶梯 | S01 | 长 | `[ ]` |
 | S05 | 附件存储、解析、缩略图与回收 | S04 | 中 | `[ ]` |
 | S06 | 记录与上下文类型接入 `images`，持久化兼容 | S02, S05 | 中 | `[ ]` |
@@ -172,7 +172,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S03 `[ ]` 两端模型设置开关与选择器能力标记
+## S03 `[x]` 两端模型设置开关与选择器能力标记
 
 **前置**：S02 · **规模**：中 · **设计稿**：§4.2
 **涉及**：`src/desktop/renderer/model/settings.ts`、`src/desktop/renderer/dom/settingsView.ts`、`src/desktop/shellHost.ts`、`src/desktop/shellProtocol.ts`、`src/tui/components/ProviderPanel.tsx`、`src/tui/components/ModelPickerDialog.tsx`、`src/runtime/modelPicker.ts`
@@ -189,6 +189,16 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：开关保存后 reload 一致；保存失败回到原值；两端设置互相可见且语义一致。
 **验证**：`node --import tsx --test test/desktopShellHost.test.ts test/desktopUiRoundTrip.test.ts test/modelPicker.test.ts` + 手工 `npm run dev:tui`
 **提交**：`checkpoint: S03 add image capability toggles to both frontends`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- Desktop 模型表单新增「支持图像输入」开关（`关闭 / 开启`，`SettingsDraft.supportsImageInput`），说明文案逐字采用设计稿 §4.2；`SettingsFormField` 增加可选 `note`，由 `settingsView.ts` 以既有 `.settings-row-desc` 类渲染在标签下，未新增 CSS。新建接入点附带首模型的路径同样有该字段（`modelSupportsImageInput`），随 `draftToChanges` 的 `set-model` 批次一起提交。
+- 开关语义与 `longContext1m` 完全同款：表单自持有、种子自快照、仅 `on` 时发 `supportsImageInput: true`，关闭即缺省；host 侧 `applyProviderChange` 重建 `ModelConfig` 时按缺省即移除。`supportsImageInput` 因此从 `JSON_ONLY_MODEL_FIELDS` 移出（carry 若继续接管，会把用户刚关掉的开关用旧值改回来）；「编辑其他字段不丢能力」改由表单种子保证，`test/config.test.ts` 原测试已改写为新契约并钉住「carry 不再搬该字段」。
+- wire：`SettingsChange.set-model` 增加 `supportsImageInput?: boolean`（strict schema 同步，`_NoSettingsDrift` 守卫覆盖）；设置快照 `WireModelInfo` 增加两个互不相同的布尔——`supportsImageInput`（原始开关，仅 true 出现，编辑表单种子）与 `imageCapable`（host 在 `describeSettings` 里调 S02 的 `resolveImageCapability(model, endpoint)` 算出的有效能力，仅 true 出现，列表标记）。renderer 不 import registry（registry 传递依赖 harness/SDK，被渲染层禁令挡住），标记一律 host 算好走 wire。
+- 乐观投影：`projectOne` 的 `set-model` 行携带原始开关；`imageCapable` 无法在 renderer 侧重算，仅在「开关保持开启且旧行已标记」时保留，关闭方向立即消失（宁可正向晚一拍到快照，不可负向滞后）。保存失败回退沿用既有「快照未变即回滚」语义，未另建路径。
+- 两端标记（均来自判定函数结果，无模型名匹配）：Desktop 设置模型列表 detail 追加「支持图像」（`modelDetail`，读 `imageCapable`）；`/model` 选择器行 detail（`surfaces.ts`，读 `ModelPickerOption.supportsImageInput`）；composer 芯片 flyout（`runtimeMenu.ts` 保留标记为唯一 detail）。TUI：`ModelPickerDialog` 行内「支持图像」徽标；`/provider` 模型列表 secondary 追加「支持图像」（`ProviderPanel` 直接调 `resolveImageCapability`，TUI 侧无禁令）。
+- TUI `/provider` 模型表单同字段（`FormState` 增 `supportsImageInput`，取值即文案 `关闭/开启`）、同说明文案（表单下方 dim 行）、同一 `persist → config.save() → onChange` 保存链，未引入独立配置写入路径。字段标签首次引入 CJK，`FieldRow`/`ChoiceFieldRow` 的 `padEnd(10)`（按码元）改为 `padFieldLabel`（按 `string-width` 显示宽度补到 12），ASCII 标签与 CJK 标签的值列对齐；既有测试的 `\\s+:` 断言不受影响。
+- 验证：`desktopShellHost`（91）+ `desktopUiRoundTrip`/`modelPicker`/`tuiRender`（68）+ `rendererSettingsModel`/`rendererShellModel`/`rendererRuntimeMenu`（139）+ `providerPanel`/`providerPanelInput`/`config`（108）全绿；`npm run typecheck` 四配置通过；全量 `npm run test` 除本机既有 7 个 TUI Ink 渲染失败（S02 记录的基线）外全绿。新增覆盖：开关往返（种子→change→乐观投影→关闭即缺省）、新接入点首模型携带开关、开关开但 provider 适配器不支持时 raw/capable 分离、TUI 键盘走位（Tab/箭头切换、Enter 保存、编辑不重置）、选择器仅有效行有标记。`npm run dev:tui` 手工项留待 S26 一并验收。
 
 ---
 

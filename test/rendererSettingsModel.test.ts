@@ -349,6 +349,7 @@ function endpointDraft(
     keyTouched: false,
     modelKey: '',
     modelId: '',
+    modelSupportsImageInput: '',
     ...overrides,
   }
 }
@@ -369,6 +370,7 @@ function modelDraft(overrides: Partial<Extract<SettingsDraft, { kind: 'model' }>
     contextWindow: '',
     supportedEfforts: [],
     longContext1m: '',
+    supportsImageInput: '',
     maxOutputTokens: '',
     ...overrides,
   }
@@ -401,6 +403,7 @@ test('blank numeric fields are omitted, not sent as zero', () => {
   // Off is absence, not `false`: `applyProviderChange` rebuilds the whole
   // `ModelConfig`, so an omitted field is how the switch gets removed.
   assert.equal('longContext1m' in change, false)
+  assert.equal('supportsImageInput' in change, false)
 })
 
 test('the 1M header switch round-trips through the model form', () => {
@@ -433,6 +436,114 @@ test('the 1M header switch round-trips through the model form', () => {
     .find((card) => card.id === 'models')
   const row = card?.rows.find((row) => row.id === 'model:big')
   assert.match(row?.detail ?? '', /1M 请求头/)
+})
+
+test('the image-input switch round-trips through the model form', () => {
+  const snapshot = snapshotOf({
+    models: [
+      {
+        key: 'big',
+        model: 'claude-big',
+        endpoint: 'main',
+        supportsImageInput: true,
+        imageCapable: true,
+        resolves: true,
+      },
+    ],
+    defaultModel: 'big',
+    routing: { main: 'big', plan: 'inherit', compact: 'inherit', subagent: [] },
+  })
+
+  // Seeded from the snapshot, or editing another field would silently reset the
+  // user's declaration — the carry used to do this job; the form owns it now.
+  const opened = applySettingsIntent(
+    openState({ category: 'provider', snapshot }),
+    { kind: 'edit-model', key: 'big' },
+  ).state
+  assert.ok(opened.draft?.kind === 'model')
+  assert.equal(opened.draft.supportsImageInput, 'on')
+
+  const change = draftToChange(opened.draft, snapshot)
+  assert.ok(!('error' in change) && change.kind === 'set-model')
+  assert.equal(change.supportsImageInput, true)
+
+  // Optimistic: the raw switch and a kept-alive marker must not blink off
+  // between save and refresh. The marker cannot be recomputed renderer-side
+  // (that is the host's registry call), so it survives only while the switch
+  // the change sends stays on.
+  const projected = projectSnapshot(snapshot, pendingOf(change))
+  const row = projected.models.find((model) => model.key === 'big')
+  assert.equal(row?.supportsImageInput, true)
+  assert.equal(row?.imageCapable, true)
+
+  // Switching it off omits the field, and the dropped marker is immediate —
+  // the one direction that must never lag behind the host.
+  const off = draftToChange({ ...opened.draft, supportsImageInput: '' }, snapshot)
+  assert.ok(!('error' in off) && off.kind === 'set-model')
+  assert.equal('supportsImageInput' in off, false)
+  const projectedOff = projectSnapshot(snapshot, pendingOf(off))
+  const offRow = projectedOff.models.find((model) => model.key === 'big')
+  assert.equal(offRow?.supportsImageInput, undefined)
+  assert.equal(offRow?.imageCapable, undefined)
+
+  // The form offers the switch with its caveat, and the list marks capability
+  // from the host-resolved field, never the raw switch.
+  const form = settingsView(opened).form
+  assert.ok(form && form.kind !== 'mcp-server')
+  const field = form.fields.find((field) => field.id === 'supportsImageInput')
+  assert.deepEqual(field?.choices, [
+    { value: '', label: '关闭' },
+    { value: 'on', label: '开启' },
+  ])
+  assert.equal(field?.note, '开启后，此模型可接收图片。请确认该模型及接入点支持当前协议的图像输入。')
+
+  const card = settingsView(openState({ category: 'provider', snapshot })).cards
+    .find((card) => card.id === 'models')
+  assert.match(card?.rows.find((row) => row.id === 'model:big')?.detail ?? '', /支持图像/)
+})
+
+test("a new endpoint's first model carries the image switch", () => {
+  const snapshot = snapshotOf({ defaultModel: undefined })
+  const draft = endpointDraft({
+    name: 'fresh',
+    modelKey: 'first',
+    modelId: 'claude-first',
+    modelSupportsImageInput: 'on',
+  })
+
+  const changes = draftToChanges(draft, snapshot)
+  assert.ok(!('error' in changes))
+  const setModel = changes.find(
+    (change) => change.kind === 'set-model',
+  ) as Extract<SettingsChange, { kind: 'set-model' }>
+  assert.equal(setModel.supportsImageInput, true)
+  assert.equal(setModel.endpoint, 'fresh')
+
+  // The field is on the new-endpoint form itself, so the declaration is
+  // reachable on the path that creates most models — not only in a later edit.
+  const opened = applySettingsIntent(
+    openState({ category: 'provider', snapshot }),
+    { kind: 'new-endpoint' },
+  ).state
+  assert.ok(opened.draft?.kind === 'endpoint')
+  const form = settingsView(opened).form
+  assert.ok(form && form.kind !== 'mcp-server')
+  const field = form.fields.find((field) => field.id === 'modelSupportsImageInput')
+  assert.deepEqual(field?.choices, [
+    { value: '', label: '关闭' },
+    { value: 'on', label: '开启' },
+  ])
+
+  // Off is absence here too.
+  const off = draftToChanges(
+    endpointDraft({ name: 'fresh', modelKey: 'first', modelId: 'claude-first' }),
+    snapshot,
+  )
+  assert.ok(!('error' in off))
+  const offSetModel = off.find(
+    (change) => change.kind === 'set-model',
+  ) as Extract<SettingsChange, { kind: 'set-model' }>
+  assert.equal('supportsImageInput' in offSetModel, false)
 })
 
 test('the supported effort levels round-trip through the model form', () => {

@@ -188,6 +188,20 @@ export interface WireModelInfo {
    * that is the local token budget, this is only the request header.
    */
   longContext1m?: boolean
+  /**
+   * The raw `supportsImageInput` switch off the config entry — the user's
+   * declaration, not the effective capability. Present only when on; this is
+   * what the edit form seeds from, so editing another field cannot reset it.
+   */
+  supportsImageInput?: boolean
+  /**
+   * Effective image-input capability — `resolveImageCapability` of the model
+   * against its endpoint, computed host-side because the renderer cannot reach
+   * the provider registry. Present only when true; this is the list marker.
+   * Can differ from `supportsImageInput`: a switch on a provider whose adapter
+   * carries no images reads as on-but-not-capable.
+   */
+  imageCapable?: boolean
   maxOutputTokens?: number
   /** The effort levels this model accepts; absent means every level. */
   supportedEfforts?: EffortLevel[]
@@ -398,6 +412,13 @@ export type SettingsChange =
       endpoint?: string
       contextWindow?: number
       longContext1m?: boolean
+      /**
+       * The image-input switch, form-owned like `longContext1m`: absent means
+       * off, and the host's rebuild is how a switch-off gets removed from
+       * `config.json`. `true` is the only on value — the same strict rule
+       * `ModelConfig` applies.
+       */
+      supportsImageInput?: boolean
       maxOutputTokens?: number
       /** Absent means "no restriction" — the form never sends an empty list. */
       supportedEfforts?: EffortLevel[]

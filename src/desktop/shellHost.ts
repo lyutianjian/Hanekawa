@@ -3,7 +3,7 @@ import path from 'node:path'
 import { homedir } from 'node:os'
 import { maskKey } from '../config/maskKey.js'
 import { VALID_EFFORT_LEVELS, normalizeSupportedEfforts } from '../config/effort.js'
-import { SUPPORTED_PROVIDER_NAMES } from '../config/providers/registry.js'
+import { resolveImageCapability, SUPPORTED_PROVIDER_NAMES } from '../config/providers/registry.js'
 import { carryJsonOnlyModelFields } from '../config/service.js'
 import type { Config, ModelConfig } from '../config/service.js'
 import type { Endpoint, Routing } from '../config/routing.js'
@@ -388,6 +388,7 @@ const SETTINGS_CHANGE_SCHEMAS = {
       endpoint: z.string().optional(),
       contextWindow: z.number().optional(),
       longContext1m: z.boolean().optional(),
+      supportsImageInput: z.boolean().optional(),
       maxOutputTokens: z.number().optional(),
       supportedEfforts: z.array(z.enum(VALID_EFFORT_LEVELS)).optional(),
     })
@@ -1438,6 +1439,13 @@ export class ShellHost<
       if (model.endpoint !== undefined) info.endpoint = model.endpoint
       if (model.contextWindow !== undefined) info.contextWindow = model.contextWindow
       if (model.longContext1m !== undefined) info.longContext1m = model.longContext1m
+      // The raw switch is what the edit form seeds from; the effective marker is
+      // `resolveImageCapability` against the endpoint the model references, so
+      // the renderer never needs the provider registry to draw the list.
+      if (model.supportsImageInput === true) info.supportsImageInput = true
+      if (resolveImageCapability(model, model.endpoint ? raw.endpoints?.[model.endpoint] : undefined)) {
+        info.imageCapable = true
+      }
       if (model.maxOutputTokens !== undefined) info.maxOutputTokens = model.maxOutputTokens
       if (model.supportedEfforts !== undefined) info.supportedEfforts = [...model.supportedEfforts]
       if (model.baseUrl !== undefined) info.baseUrl = model.baseUrl
@@ -1944,10 +1952,15 @@ function applyProviderChange(
       if (change.endpoint !== undefined && change.endpoint !== '') model.endpoint = change.endpoint
       if (change.contextWindow !== undefined) model.contextWindow = change.contextWindow
       // Form-managed fields are replaced, so the form seeds them from the
-      // snapshot. Everything the form has no widget for — the cache policy, the
-      // image-input capability — is carried over instead, or a context-window
-      // edit here would quietly delete it from `config.json`.
+      // snapshot. Everything the form has no widget for — the cache policy —
+      // is carried over instead, or a context-window edit here would quietly
+      // delete it from `config.json`.
       if (change.longContext1m !== undefined) model.longContext1m = change.longContext1m
+      // Form-owned like `longContext1m`: the form seeds it from the snapshot, so
+      // an untouched switch round-trips and an omitted one means off. The carry
+      // below must not own this field, or a deliberate switch-off would be
+      // overridden by the stale on-disk value.
+      if (change.supportsImageInput !== undefined) model.supportsImageInput = change.supportsImageInput
       if (change.maxOutputTokens !== undefined) model.maxOutputTokens = change.maxOutputTokens
       // Normalized here as well as in the form: a full selection is "no
       // restriction", and writing it out would freeze today's five levels into

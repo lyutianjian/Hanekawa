@@ -242,7 +242,7 @@ const MODELS: WireModelsResult = {
   defaultModelKey: 'sonnet',
   pickerOptions: [
     { key: 'haiku', label: 'haiku', modelKey: 'haiku', modelId: 'claude-haiku', providerName: 'anthropic', isCurrent: false, isDefault: false },
-    { key: 'sonnet', label: 'sonnet', modelKey: 'sonnet', modelId: 'claude-sonnet', providerName: 'anthropic', isCurrent: true, isDefault: true },
+    { key: 'sonnet', label: 'sonnet', modelKey: 'sonnet', modelId: 'claude-sonnet', providerName: 'anthropic', supportsImageInput: true, isCurrent: true, isDefault: true },
     { key: 'broken', label: 'broken', disabledReason: 'no model configured', isCurrent: false, isDefault: false },
   ],
 }
@@ -253,6 +253,10 @@ test('the model picker marks the current model and explains a disabled one', () 
   assert.deepEqual(view.rows.map((row) => row.id), ['haiku', 'sonnet', 'broken'])
   assert.equal(view.rows[1]?.current, true)
   assert.match(view.rows[1]?.detail ?? '', /默认/)
+  // The capability marker rides in the detail, host-resolved — the row answers
+  // "can I send images to this one", which is why a user opens this picker.
+  assert.match(view.rows[1]?.detail ?? '', /支持图像/)
+  assert.doesNotMatch(view.rows[0]?.detail ?? '', /支持图像/)
   assert.equal(view.rows[2]?.disabled, true)
   assert.equal(view.rows[2]?.disabledReason, 'no model configured')
 

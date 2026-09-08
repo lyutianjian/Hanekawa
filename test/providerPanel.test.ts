@@ -275,6 +275,51 @@ test('ProviderPanel edits models with arrow-first navigation', async () => {
   }
 })
 
+test('ProviderPanel edits the model image-input switch', async () => {
+  const { config, cwd } = await createConfig()
+  try {
+    config.setEndpoint('shared', { provider: 'anthropic' })
+    const panel = render(h(ProviderPanel, {
+      config,
+      onChange: () => {},
+      onClose: () => {},
+    }))
+
+    // Models tab -> new model; walk down to the switch (past endpoint and
+    // context window) and check the field and its caveat are both drawn.
+    await writeKey(panel, '\x1B[C')
+    await writeInput(panel, 'n')
+    await writeInput(panel, 'image-model')
+    await writeKey(panel, '\x1B[B')
+    await writeInput(panel, 'vision-id')
+    await writeKey(panel, '\x1B[B')
+    await writeKey(panel, '\x1B[B')
+    await writeKey(panel, '\x1B[B')
+    assert.match(panel.lastFrame() ?? '', /支持图像输入: ‹ 关闭 ›/)
+    assert.match(panel.lastFrame() ?? '', /开启后，此模型可接收图片/)
+
+    // Switch it on, save, and the model carries the declaration.
+    await writeKey(panel, '\x1B[C')
+    assert.match(panel.lastFrame() ?? '', /支持图像输入: ‹ 开启 ›/)
+    await writeInput(panel, '\r')
+    await waitForFrame(panel, /Saved model "image-model"/)
+    assert.equal(config.get().models['image-model']?.supportsImageInput, true)
+    // The models list marks the effective capability, resolved through
+    // `resolveImageCapability` against the endpoint's provider.
+    assert.match(panel.lastFrame() ?? '', /vision-id · 支持图像/)
+
+    // Reopening the form seeds the switch from the config, so saving an
+    // unrelated edit without touching it cannot reset the declaration.
+    await writeInput(panel, 'e')
+    assert.match(panel.lastFrame() ?? '', /支持图像输入: 开启/)
+    await writeInput(panel, '\r')
+    await waitForFrame(panel, /Saved model "image-model"/)
+    assert.equal(config.get().models['image-model']?.supportsImageInput, true)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
 test('ProviderPanel supports Home/End list jumps and both Routing axes', async () => {
   const { config, cwd } = await createConfig()
   try {

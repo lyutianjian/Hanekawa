@@ -104,6 +104,10 @@ function modelRow(option: ModelPickerOption): SurfaceRow {
     option.modelId,
     option.providerName,
     option.isDefault ? '默认' : undefined,
+    // Host-resolved (`resolveImageCapability` via `buildModelPickerOptions`):
+    // the row answers "can I send images to this one", which is exactly the
+    // moment a user opens this picker — right after a model refused an image.
+    option.supportsImageInput ? '支持图像' : undefined,
   ].filter((part): part is string => typeof part === 'string' && part.length > 0).join(' · ')
 
   return {

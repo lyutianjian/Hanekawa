@@ -651,9 +651,16 @@ function formNode(
       )
     }
     reconcile(control, controls)
-    // The label may be rebuilt: it holds no caret and no animation.
+    // The label may be rebuilt: it holds no caret and no animation. A note is a
+    // second line under the name — `.settings-row-desc`, the class the card
+    // rows' detail text already uses, so the two cannot drift apart visually.
     reconcile(row, [
-      el('div', 'settings-row-label', el('div', 'settings-row-name', field.label)),
+      el(
+        'div',
+        'settings-row-label',
+        el('div', 'settings-row-name', field.label),
+        ...(field.note ? [el('div', 'settings-row-desc', field.note)] : []),
+      ),
       control,
     ])
     children.push(row)

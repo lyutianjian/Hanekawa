@@ -97,6 +97,7 @@ export function ModelPickerDialog({ options, onResolve }: ModelPickerDialogProps
               description={disabled ? option.disabledReason : `${option.modelKey} · ${option.providerName}: ${option.modelId}`}
             >
               {index + 1}. {option.label}
+              {option.supportsImageInput ? <Text color={theme.success}>  支持图像</Text> : null}
               {option.isDefault ? <Text color={theme.success}>  default</Text> : null}
               {option.isCurrent ? <Text color={theme.toolName}>  current</Text> : null}
             </CommandListItem>

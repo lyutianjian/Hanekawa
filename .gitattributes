@@ -1,0 +1,7 @@
+# Committed image fixtures are binary evidence for the decode tests
+# (MULTIMODAL_INPUT_IMPLEMENTATION.md S01). Without this rule `corrupt.png`
+# — a PNG signature followed by 0xFF bytes, no NULs — is guessed to be text
+# and autocrlf rewrites its CRLF pair, changing the bytes under test.
+# The real image formats are detected as binary on their own; the rule
+# keeps them that way regardless of content.
+test/fixtures/images/* binary

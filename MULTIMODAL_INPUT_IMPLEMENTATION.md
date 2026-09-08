@@ -82,7 +82,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S01 | `sharp` 依赖验证与图像测试夹具 | — | 短 | `[x]` |
 | S02 | 模型图像能力：配置字段、判定函数、运行时快照 | S01 | 中 | `[x]` |
 | S03 | 两端模型设置开关与选择器能力标记 | S02 | 中 | `[x]` |
-| S04 | 图像解码归一化与压缩阶梯 | S01 | 长 | `[ ]` |
+| S04 | 图像解码归一化与压缩阶梯 | S01 | 长 | `[x]` |
 | S05 | 附件存储、解析、缩略图与回收 | S04 | 中 | `[ ]` |
 | S06 | 记录与上下文类型接入 `images`，持久化兼容 | S02, S05 | 中 | `[ ]` |
 | S07 | `UserInput` 贯穿提交路径与中断恢复 | S06 | 长 | `[ ]` |
@@ -202,7 +202,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S04 `[ ]` 图像解码归一化与压缩阶梯
+## S04 `[x]` 图像解码归一化与压缩阶梯
 
 **前置**：S01 · **规模**：长 · **设计稿**：§2.2、§8
 **涉及**：新增 `src/tools/imageFile.ts`、新增 `test/imageFile.test.ts`
@@ -228,6 +228,19 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：fixture 全覆盖——透明 PNG、EXIF JPEG、静态/动画 WebP、GIF 首帧、伪扩展名、损坏文件、超字节、超像素；大截图落到限额内且文字仍可读（人工抽查）；小图不被放大。
 **验证**：`node --import tsx --test test/imageFile.test.ts`
 **提交**：`checkpoint: S04 add image decode, normalization and compression ladder`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- 新增 `src/tools/imageFile.ts`（零依赖 `services/`，符合架构约束），三个入口：
+  - `sniffImage(bytes)` 内容嗅探——PNG/JPEG/GIF/WebP 为 supported；BMP/TIFF/HEIC（含 mif1 等 brand）/AVIF 识别但明确拒绝；SVG 显式分类为非栅格格式（返回 `{ format: 'svg', supported: false }`，由调用方保持文本语义）；完全不是图的字节返回 `null`。扩展名不在本模块职责内，由调用方筛候选。
+  - `processImageBytes(bytes, { name, ...limits })`：输入字节 20,000,000 B、解码像素 40,000,000（动画按单帧计——本管线只解码首页）、发送长边 2,000 px、单张发送 ≤ 3,750,000 B，全部可通过 options 覆写（测试用小阈值触达各分支，不提交大文件）。失败按 `src/media/types.ts` 的原因枚举区分：`unsupported-format`（消息含「convert it to PNG or JPEG first」，SVG 单独说明保持文本语义）、`decode-failed`（损坏文件/非图字节/解码中途失败）、`image-too-large`（输入字节/像素/阶梯触底三种，触底时提示裁剪）。
+  - `formatImageCaption(image, { index, localPath })`：逐字符复刻设计稿 §8 的 `[Image 1: …; cached original: …; oriented original …; supplied image …; scale to oriented original: x=…, y=….]` 模板，动画首帧有标注，localPath 由 S05 落盘后传入。
+- 归一化：`.rotate()` 应用 EXIF 方向、`.toColourspace('srgb')` 颜色归一化、输出不带 `withMetadata`（元数据剥离）、GIF/动画 WebP 取第一帧（sharp 默认 `pages: 1`），结果带 `animated` 标注。方向变换存进结果（`exifOrientation` + 纯函数 `orientedPointFromStored`/`storedPointFromOriented`/`orientedDimensions`，8 个 tag 的坐标往返与 sharp 实际旋转互验），坐标还原不靠比例乘法。
+- 压缩阶梯（有限且有下限）：无损 PNG → 调色板 PNG（「PNG 优化」档）→ JPEG q85 → q70 → q55 → q55@1500 → q55@1000（下限，仍超即拒绝并提示裁剪，不无限降质）。透明图落 JPEG 前显式 `flatten({ background: 白 })`，测试断言透明区像素为白而非黑底。不放大小图（`withoutEnlargement`）。实现上原图只解码一次：归一化中间产物即无损 PNG（第 1 档输出），后续档位从它再编码，避免最坏情况 7 次全量解码。
+- 返回结构 `ProcessedImage`：发送字节与尺寸、原始格式/MIME/存储尺寸、定向后原始尺寸、`exifOrientation`、`animated`、x/y 独立缩放比（定向原始/实际发送，rounding 可能造成两轴不同）——S05 可直接映射到 `ImageAttachmentMetadata`。
+- 新增 `test/imageFile.test.ts` 20 项：7 个 fixture 全覆盖（含伪扩展名、损坏文件）、BMP/HEIC/AVIF/SVG 拒绝、超字节/超像素/阶梯触底三 类超限、四档阶梯各自命中（种子噪声生成器保证档位尺寸逐次运行稳定，预算取在相邻档位尺寸中间留余量）、GIF/动画 WebP 首帧像素级断言（(40,100,200)）、EXIF 应用+剥离、caption 模板逐字符比对、8 tag 坐标往返 + 与 sharp 实测旋转一致。
+- 人工抽查（大截图文字可读）：3840x2160 文字截图经默认阈值处理得 2000x1125 PNG（100,857 B），与按发送尺寸原生渲染的参考图平均像素差 0.19，标题行 ASCII 点阵可直接读出原文「Hanekawa commit 5757e70」。本会话模型环境无法直接目检图像，故以参考图对比 + 点阵识读代替；S26 真机人工验收时再复核。
+- 验证：`test/imageFile.test.ts`（20）+ `test/imageFixtures.test.ts`（9）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：2988 项 2986 过、1 跳过、1 失败——失败是 `toolcall-integration.test.ts` 的 node:test IPC「deserialize cloned data」崩溃（非断言失败），单独重跑该文件 3 项全绿，判定为运行器偶发问题，与本会话无关（本次改动仅新增文件，无既有模块引用）。本次运行未复现 S02 记录的 7 个 TUI Ink 渲染失败。
 
 ---
 

@@ -3,10 +3,9 @@ import type { ConfigService } from '../config/service.js'
 import type { MyAgentSettings } from '../config/settings.js'
 import { persistPermissionRule } from '../config/settings.js'
 import type { ActiveModelRuntime } from '../harness/loop.js'
-import type { AtMentionImageImporter } from '../harness/atMentions.js'
 import { PermissionGate, permissionRulesFromSettings, type DenialStateStore } from '../harness/permissions.js'
 import { SystemPromptSectionCache } from '../harness/sections.js'
-import type { SessionRecord } from '../harness/types.js'
+import type { ImageAttachmentImporter, SessionRecord } from '../harness/types.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { SessionMeta, SessionStore } from '../sessions/service.js'
 import type { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
@@ -42,7 +41,7 @@ export interface SessionScopeDeps {
   initialEffort: EffortValue
   createActiveModelRuntime: (modelKey: string) => ActiveModelRuntime
   /** The project's attachment store — one per project, shared by its scopes. */
-  imageAttachments?: AtMentionImageImporter
+  imageAttachments?: ImageAttachmentImporter
 }
 
 /**

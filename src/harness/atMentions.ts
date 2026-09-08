@@ -10,6 +10,7 @@ import { filterGitIgnoredPaths } from '../utils/gitIgnore.js'
 import { assertInsideCwd } from '../utils/paths.js'
 import { isProtectedPath } from '../utils/permissions/protectedPaths.js'
 import type { ImageAttachmentRef, ImageInputErrorReason } from '../media/types.js'
+import { IMAGE_FILE_EXTENSIONS } from '../tools/imageFile.js'
 
 export const CODE_TEXT_EXTENSIONS = new Set([
   '.py',
@@ -61,25 +62,14 @@ const MAX_ATTACHMENT_BYTES = 80 * 1024
 const IGNORED_DIR_NAMES = ['.git', '.myagent', 'node_modules', 'build', 'coverage']
 
 /**
- * Raster extensions that make a mention an *image* candidate. The extension
- * only nominates the file: the pipeline sniffs the bytes, so a PNG named
- * `.jpg` imports fine. Known-but-unsupported formats (BMP, HEIC, TIFF, AVIF)
- * are candidates too — they must fail loudly through the import pipeline
+ * Raster extensions that make a mention an *image* candidate. Single-sourced
+ * from the shared image module (Read nominates the same candidates); the
+ * extension only nominates the file — the pipeline sniffs the bytes, so a PNG
+ * named `.jpg` imports fine. Known-but-unsupported formats (BMP, HEIC, TIFF,
+ * AVIF) are candidates too — they must fail loudly through the import pipeline
  * instead of being dropped as silently as non-code text used to be.
  */
-export const IMAGE_MENTION_EXTENSIONS = new Set([
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.gif',
-  '.webp',
-  '.bmp',
-  '.heic',
-  '.heif',
-  '.tif',
-  '.tiff',
-  '.avif',
-])
+export const IMAGE_MENTION_EXTENSIONS = IMAGE_FILE_EXTENSIONS
 
 /** Per-input image quota: @-mentioned images plus explicit attachments. */
 export const MAX_AT_MENTION_IMAGES = 10

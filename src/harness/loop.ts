@@ -194,6 +194,10 @@ export class AgentLoop {
       fallback: options.fallbackModel,
     }
     this.options.toolContext.appendMetric = (metric) => this.emitMetric(metric)
+    // Live image-input capability for the Read tool's image branch: reads the
+    // model actually serving the loop (fallback/plan/override switches
+    // included), never a session-startup snapshot (design §9.1).
+    this.options.toolContext.getSupportsImageInput = () => this.activeModel.supportsImageInput === true
     this.options.toolRunner.addRecordListener((record) => {
       this.noteRecordAppended(record)
     })
@@ -985,6 +989,8 @@ export class AgentLoop {
     if (source.taskState) fork.taskState = new Map(source.taskState)
     if (source.planModeBridge) fork.planModeBridge = source.planModeBridge
     if (source.askUserQuestionBridge) fork.askUserQuestionBridge = source.askUserQuestionBridge
+    if (source.imageAttachments) fork.imageAttachments = source.imageAttachments
+    if (source.getSupportsImageInput) fork.getSupportsImageInput = source.getSupportsImageInput
     return fork
   }
 

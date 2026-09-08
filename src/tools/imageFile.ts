@@ -57,6 +57,30 @@ export interface SniffedImage {
   supported: boolean
 }
 
+/**
+ * Raster extensions that nominate a file as an image *candidate* (Read tool,
+ * `@` mentions). The extension only nominates — the content sniff plus a
+ * successful decode decide whether the image branch actually runs, so a PNG
+ * named `.jpg` is a PNG and a text file named `.png` stays a text read.
+ * Known-but-unsupported formats (BMP, HEIC, TIFF, AVIF) are candidates too:
+ * they must fail loudly through the pipeline ("convert it to PNG or JPEG
+ * first") instead of coming back as binary garbage. SVG is deliberately
+ * absent — it keeps its text semantics wherever it appears.
+ */
+export const IMAGE_FILE_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.bmp',
+  '.heic',
+  '.heif',
+  '.tif',
+  '.tiff',
+  '.avif',
+])
+
 const HEIC_BRANDS = new Set(['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'mif1', 'msf1'])
 const AVIF_BRANDS = new Set(['avif', 'avis'])
 const SVG_HEAD = /^[\s\uFEFF]*(?:<\?xml[^>]*\?>\s*)?(?:<!DOCTYPE[^>]*>\s*)?<svg[>\s]/i
@@ -278,6 +302,23 @@ export async function processImageBytes(
 }
 
 /**
+ * The facts the context caption needs. {@link ProcessedImage} satisfies this,
+ * and the `Read` tool builds one from a stored attachment's metadata — two
+ * sources, one caption shape.
+ */
+export interface ImageCaptionFacts {
+  name: string
+  animated: boolean
+  orientedOriginalWidth: number
+  orientedOriginalHeight: number
+  /** Supplied (send-version) dimensions. */
+  width: number
+  height: number
+  scaleX: number
+  scaleY: number
+}
+
+/**
  * The caption the context builder places beside an image (design doc §8). All
  * numbers come from the actual send version; the ratios are formatted
  * independently because rounding can make x and y differ.
@@ -287,7 +328,7 @@ export async function processImageBytes(
  * y=2.00.]`
  */
 export function formatImageCaption(
-  image: ProcessedImage,
+  image: ImageCaptionFacts,
   options: { index: number; localPath?: string },
 ): string {
   const segments = [

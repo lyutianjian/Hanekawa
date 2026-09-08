@@ -1,8 +1,15 @@
-import { stat } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import { z } from 'zod/v3'
-import type { Tool } from '../../harness/types.js'
+import type { Tool, ToolContext, ToolResult } from '../../harness/types.js'
 import { assertInsideCwd } from '../../utils/paths.js'
 import { readFileAndRemember } from '../fileState.js'
+import {
+  formatImageCaption,
+  IMAGE_FILE_EXTENSIONS,
+  orientedDimensions,
+  sniffImage,
+} from '../imageFile.js'
 import { DESCRIPTION } from './prompt.js'
 
 // Block reads of device files that would hang or produce infinite output.
@@ -60,6 +67,13 @@ export const readFileTool: Tool = {
       }
     }
 
+    // Images branch off before the text machinery (design §7.2): they never
+    // enter readFileState, so a later Edit cannot treat binary pixels as read
+    // text. Returns undefined when the file is not an image after all — the
+    // extension only nominated it — and the text path below runs unchanged.
+    const imageResult = await tryReadImage(absolute, filePath, offset, limit, context)
+    if (imageResult !== undefined) return imageResult
+
     // The full file is always remembered, even for a windowed read: Edit
     // matches against the remembered content, so a partial view must not
     // narrow what a later edit can address.
@@ -93,6 +107,102 @@ export const readFileTool: Tool = {
       },
     }
   },
+}
+
+/**
+ * The image branch of Read (design §7.2). Returns a ToolResult when the file
+ * is a raster image (supported or known-but-unsupported), and `undefined` when
+ * it is not — a lying extension, an SVG (text semantics), or any non-image
+ * bytes fall through to the unchanged text path. A missing file throws ENOENT
+ * from the bytes read, exactly like the text path, so the ToolRunner settles
+ * the same paired failure.
+ *
+ * Image content never reaches readFiles/readFileState: an image read is not a
+ * "read before edit", and Edit must never match against binary pixels.
+ */
+async function tryReadImage(
+  absolute: string,
+  filePath: string,
+  offset: number,
+  limit: number | undefined,
+  context: ToolContext,
+): Promise<ToolResult | undefined> {
+  if (!IMAGE_FILE_EXTENSIONS.has(path.extname(absolute).toLowerCase())) return undefined
+
+  const bytes = await readFile(absolute)
+  const sniffed = sniffImage(bytes)
+  if (!sniffed || sniffed.format === 'svg') return undefined
+
+  // Capability first: the most useful error for the model is the one that
+  // changes its strategy. Never binary garbage, never Base64.
+  if (context.getSupportsImageInput?.() !== true) {
+    return {
+      ok: false,
+      content: `Cannot read '${filePath}' as an image: the current model does not accept image input, and image bytes are not returned as text. Switch to an image-capable model first.`,
+      errorCode: 'precondition_failed',
+      errorDetails: { reason: 'model-not-capable' },
+    }
+  }
+
+  const store = context.imageAttachments
+  if (!store) {
+    return {
+      ok: false,
+      content: `Cannot read '${filePath}' as an image: no attachment store is available in this context, and image bytes are not returned as text.`,
+      errorCode: 'precondition_failed',
+      errorDetails: { reason: 'attachment-store-unavailable' },
+    }
+  }
+
+  if (offset > 1 || limit !== undefined) {
+    return {
+      ok: false,
+      content: `Cannot read '${filePath}' with offset/limit: those parameters address text lines and do not apply to images.`,
+      errorCode: 'invalid_input',
+      errorDetails: { reason: 'line-range-not-applicable' },
+    }
+  }
+
+  const imported = await store.importImage(context.sessionId, bytes, path.basename(absolute))
+  if (!imported.ok) {
+    return {
+      ok: false,
+      content: `Cannot read '${filePath}': ${imported.message}`,
+      errorCode: imported.reason === 'store-write-failed' ? 'execution_failed' : 'invalid_input',
+      errorDetails: { reason: imported.reason },
+    }
+  }
+
+  const { ref, metadata, animated } = imported.value
+  const oriented = orientedDimensions(metadata.exifOrientation, metadata.originalWidth, metadata.originalHeight)
+  const caption = formatImageCaption(
+    {
+      name: ref.name,
+      animated,
+      orientedOriginalWidth: oriented.width,
+      orientedOriginalHeight: oriented.height,
+      width: ref.width,
+      height: ref.height,
+      scaleX: oriented.width / ref.width,
+      scaleY: oriented.height / ref.height,
+    },
+    { index: 1, localPath: metadata.localPath },
+  )
+
+  return {
+    ok: true,
+    content: [
+      `Read '${filePath}' as an image (${sniffed.format.toUpperCase()}).`,
+      caption,
+      'The image is attached to this tool result as pixels; no text was extracted from it.',
+    ].join('\n'),
+    images: [ref],
+    metadata: {
+      display: {
+        summary: `Read image ${ref.name}`,
+      },
+    },
+  }
 }
 
 function countLines(content: string): number {

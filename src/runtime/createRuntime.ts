@@ -4,13 +4,12 @@ import type { EffortLevel, EffortValue } from '../config/effort.js'
 import type { RoutingRole } from '../config/routing.js'
 import type { MyAgentSettings } from '../config/settings.js'
 import { AgentLoop, type ActiveModelRuntime } from '../harness/loop.js'
-import type { AtMentionImageImporter } from '../harness/atMentions.js'
 import { ContextBuilder } from '../harness/contextBuilder.js'
 import { PlanModeManager } from '../harness/planModeManager.js'
 import { ToolRunner } from '../harness/toolRunner.js'
 import type { SystemPromptSectionCache } from '../harness/sections.js'
 import type { DenialStateStore, PermissionGate } from '../harness/permissions.js'
-import type { SessionRecord } from '../harness/types.js'
+import type { ImageAttachmentImporter, SessionRecord } from '../harness/types.js'
 import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../prompts/budget.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import { JsonlRecordStream } from '../sessions/recordStream.js'
@@ -92,12 +91,12 @@ export interface CreateRuntimeDeps {
    */
   trackFileEdit?: (filePath: string) => Promise<void>
   /**
-   * The project's attachment store, so `@`-mentioned project images import at
-   * input-preparation time. One service per project (see `bootstrap`); the
-   * loop keeps its own reference so subagent loops can later decide their own
-   * ownership rules.
+   * The project's attachment store, shared by `@`-mentioned project images
+   * (input preparation) and the Read tool's image branch (toolContext). One
+   * service per project (see `bootstrap`); the loop keeps its own reference so
+   * subagent loops can later decide their own ownership rules.
    */
-  imageAttachments?: AtMentionImageImporter
+  imageAttachments?: ImageAttachmentImporter
   /**
    * Notified whenever a runtime is built for a different session than the last
    * one. `bootstrap` uses it to retarget session-scoped state (denial counters)
@@ -282,6 +281,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
         planModeBridge: planModeManager.buildBridge(),
         askUserQuestionBridge: bridges.askUserQuestion,
         ...(trackFileEdit ? { trackFileEdit } : {}),
+        ...(imageAttachments ? { imageAttachments } : {}),
       },
       system: config.get().agent.system,
       projectContext: getProjectContext(),

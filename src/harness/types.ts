@@ -4,7 +4,7 @@ import type { CacheRuntime } from './cacheControl.js'
 import type { JsonSchema, ToolValidationResult } from './toolValidation.js'
 import type { PermissionMode } from './permissions.js'
 import type { SessionMetricInput } from './metrics.js'
-import type { ImageAttachmentRef } from '../media/types.js'
+import type { ImageAttachmentMetadata, ImageAttachmentRef, ImageInputErrorReason } from '../media/types.js'
 
 export type RiskLevel = 'safe' | 'confirm' | 'dangerous'
 
@@ -373,6 +373,33 @@ export type AskUserQuestionResult =
   | { kind: 'answers'; answers: AskUserQuestionAnswers; annotations?: AskUserQuestionAnnotations }
   | { kind: 'rejected'; feedback?: string }
 
+/**
+ * What image-reading tools need from the session's attachment store: import
+ * bytes, get back the ref records carry plus the original's facts for the
+ * caption. Structurally satisfied by `ImageAttachmentService`; the narrower
+ * `AtMentionImageImporter` (at-mentions) accepts it too.
+ */
+export interface ImageAttachmentImporter {
+  importImage(
+    ownerSessionId: string,
+    bytes: Buffer,
+    name: string,
+  ): Promise<
+    | {
+      ok: true
+      value: {
+        ref: ImageAttachmentRef
+        metadata: Pick<
+          ImageAttachmentMetadata,
+          'originalWidth' | 'originalHeight' | 'exifOrientation' | 'sentWidth' | 'sentHeight' | 'localPath'
+        >
+        animated: boolean
+      }
+    }
+    | { ok: false; reason: ImageInputErrorReason | 'store-write-failed'; message: string }
+  >
+}
+
 export interface ToolContext {
   cwd: string
   sessionId: string
@@ -380,6 +407,19 @@ export interface ToolContext {
   readFileState?: Map<string, ReadFileState>
   invokedSkills?: Map<string, { content: string; timestamp: number }>
   taskState?: Map<string, TaskItem>
+  /**
+   * The session's attachment store, used by the Read tool's image branch.
+   * Absent where no store is wired (test loops; subagents until their
+   * ownership rules land) — image reads then fail with a precondition instead
+   * of degrading to binary text.
+   */
+  imageAttachments?: ImageAttachmentImporter
+  /**
+   * Live image-input capability of the model currently serving the loop —
+   * including fallback, plan, and override switches — installed by the loop.
+   * Absent means "not capable".
+   */
+  getSupportsImageInput?(): boolean
   abortSignal?: AbortSignal
   appendRecord?(record: SessionRecord): Promise<void>
   appendMetric?(metric: SessionMetricInput): Promise<void>

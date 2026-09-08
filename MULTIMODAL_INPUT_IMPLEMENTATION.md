@@ -88,7 +88,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S07 | `UserInput` 贯穿提交路径与中断恢复 | S06 | 长 | `[x]` |
 | S08 | 协议命令与 wire schema | S07 | 中 | `[x]` |
 | S09 | `@` 图片引用 | S08 | 中 | `[x]` |
-| S10 | `Read` 工具图片分流 | S06 | 中 | `[ ]` |
+| S10 | `Read` 工具图片分流 | S06 | 中 | `[x]` |
 | S11 | Desktop 采集与草稿状态机 | S08, S19 | 长 | `[ ]` |
 | S12 | Desktop 预览、缩略图与打开原图 | S11 | 短 | `[ ]` |
 | S13 | TUI 图片剪贴板采集（三平台） | S08 | 中 | `[ ]` |
@@ -411,7 +411,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S10 `[ ]` `Read` 工具图片分流
+## S10 `[x]` `Read` 工具图片分流
 
 **前置**：S06 · **规模**：中 · **设计稿**：§7.2
 **涉及**：`src/tools/FileReadTool/FileReadTool.ts`、`src/tools/FileReadTool/prompt.ts`、`src/tools/inputAliases.ts`
@@ -429,6 +429,19 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：文本读取测试全绿；图片成功/失败都有配对 tool_result；不支持的参数与格式有明确错误。
 **验证**：`node --import tsx --test test/fileToolLineEndings.test.ts test/fileToolPreview.test.ts` + toolRunner 相关测试
 **提交**：`checkpoint: S10 read images through the Read tool`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- 分流位置（工作项 1、2）：`execute` 在 blocked-device 检查之后、`readFileAndRemember` 之前调用 `tryReadImage`；返回 `undefined` 即落回文本路径。扩展名只提名候选——候选集 `IMAGE_FILE_EXTENSIONS` 新增于 `src/tools/imageFile.ts` 单一来源导出，`atMentions.IMAGE_MENTION_EXTENSIONS` 改为同源别名（消除两份相同列表）；真实格式由 `sniffImage` 内容嗅探 + 导入管线解码确认：非图字节与 SVG（即使顶着图片扩展名）都保持文本语义，文本路径的编码、换行与 `readFileState` 行为逐字不变（文本回归测试全绿）。
+- 成功路径（工作项 3）：经 `context.imageAttachments.importImage` 导入（结构上就是 S05 的 `ImageAttachmentService`，无第二导入路径），返回 S04 的 caption 模板 + `images: [ref]`——`formatImageCaption` 参数泛化为 `ImageCaptionFacts`，`ProcessedImage` 与存储元数据两个来源共用同一模板；文字含定向后原始尺寸、发送尺寸、本地缓存路径，并明确告知「图像以像素附在本工具结果上，未提取文字」。图片路径不进 `readFiles`/`readFileState`（测试钉住）——图片读取不构成「已读可编辑」，`Edit` 不会把二进制当已读文本匹配；原始缓存沿用 S05 不可变语义，不原地修改。
+- 能力检查（工作项 4）：`ToolContext` 新增 `getSupportsImageInput?()`，由 `AgentLoop` 构造时安装、闭包读 `activeModel`——fallback / plan / 临时覆盖跟随**实际服务模型**，不是会话快照；probe 缺失即视为不支持。不支持时返回 `ok: false` + `errorCode: 'precondition_failed'` + `errorDetails.reason: 'model-not-capable'`，内容绝不携带乱码或 Base64（`assertNoImageBytes` 钉住）。无附件存储（子代理 S23 接线前的首版、测试 loop）同为 `precondition_failed`，reason `attachment-store-unavailable`。
+- 参数与格式边界（工作项 5）：`offset > 1` 或 `limit` → `invalid_input` + `line-range-not-applicable`；BMP/HEIC/TIFF/AVIF → `invalid_input` + `unsupported-format`（透传 S04 的转换提示）；损坏文件 → `decode-failed`；存储写失败 → `execution_failed`。错误码全部复用既有集合，可区分原因放 `errorDetails`（S24 约定的形状）。首版无 `pages`/裁剪参数。
+- 权限（工作项 6）：分支在 `execute` 内部，`ToolRunner.approveDetailed` 在其之前运行——显式 deny 不可能被图片分支绕过（测试：deny 规则下导入零调用），也没有把写入保护错误扩展成新的通用读取禁令（未触碰该层）。
+- ToolRunner 配对：成功与拒绝路径都完整结算 `tool_use`/`tool_approval`/`tool_result`，成功结果经 S06 的透传把 `images` 落到 `tool_result` 记录——该入口首次有了真实写入方。
+- 接线：`harness/types.ts` 新增 `ImageAttachmentImporter`（`importImage` 返回 ref + 元数据 + animated，`ImageAttachmentService` 结构性满足；`AtMentionImageImporter` 是它的窄化消费方，at-mention 路径未动）；`createRuntime` 把同一份 store 同时挂到 loop option（S09 路径）与 `toolContext.imageAttachments`（Read 路径），`SessionScopeDeps`/`CreateRuntimeDeps` 类型随之放宽；`forkToolContext` 保留两个新字段，`runTool` 隔离调度不会把图片读降级成 precondition。子代理 toolContext 为全新构造（`createSubAgentToolContext`），首版不带 store——子代理读图得到明确的 `attachment-store-unavailable` 而非二进制文本，归属规则属 S23。
+- `inputAliases.ts` 无需改动：`pages` 既有 drop、`offset`/`limit` 数字 coercion 维持，提示词已声明无 `pages` 参数。`prompt.ts` 重写描述：逐项说明支持格式（PNG/JPEG/GIF/WebP、内容嗅探纠正错误扩展名、动画首帧、EXIF）、纯文本模型 `precondition_failed`、`offset`/`limit` 不适用、BMP/HEIC/TIFF/AVIF 需转换、SVG 按文本读、PDF 不支持、图片读取不算「已读可编辑」（对齐 CLAUDE.md 对工具描述的硬性要求）。
+- 测试：新增 `test/fileReadImage.test.ts` 14 项（真 `ImageAttachmentService` + 真夹具，scratch 项目）：成功 caption/引用/零 read state、EXIF 定向后 48x64、动画首帧标注、伪扩展名双向（PNG 命名 `.jpg` 走图片、文本命名 `.png` 走文本）、SVG 保持文本语义、纯文本模型 `precondition_failed`（显式 false 与 probe 缺失两态）、无存储 `precondition_failed`、`offset`/`limit` 拒绝、BMP/损坏文件双原因、ToolRunner 配对结算（成功带 `images`、拒绝带结构化原因且无字节）、deny 规则零导入、loop 安装 live probe、`runTool` fork 保留 store 与 probe、无能力 loop 的 probe 返回 false。
+- 验证：窄测 `fileReadImage`（14）+ `fileToolLineEndings`/`fileToolPreview`/`toolRunner`/`atMentions`/`imageFile`/`imageAttachments`（106）+ `loop`/`permissions`/`tools`/`sessionWorkspace`（248）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3061 项 3060 过、1 跳过（既有）、0 失败——首次全量运行时 `toolcall-integration` 出现 S04 已记录的 node:test IPC「deserialize cloned data」偶发崩溃，单独重跑 3 项全绿，再次全量未复现。
 
 ---
 

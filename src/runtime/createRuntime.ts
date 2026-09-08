@@ -1,4 +1,4 @@
-import { createProvider } from '../config/providers.js'
+import { createProvider, resolveImageCapability } from '../config/providers.js'
 import type { ConfigService, ThinkingConfig } from '../config/service.js'
 import type { EffortLevel, EffortValue } from '../config/effort.js'
 import type { RoutingRole } from '../config/routing.js'
@@ -51,6 +51,7 @@ export function createActiveModelRuntimeFactory(
       contextWindow: targetModelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
       providerName: targetProvider.name,
       promptCacheRetention: targetModelConfig.promptCacheRetention,
+      supportsImageInput: resolveImageCapability(targetModelConfig),
     }
   }
 }
@@ -202,6 +203,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       contextWindow: targetModelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
       providerName: targetProvider.name,
       promptCacheRetention: targetModelConfig.promptCacheRetention,
+      supportsImageInput: resolveImageCapability(targetModelConfig),
       fallbackModel,
       tools: () => runtimeTools,
       permissionPrompt: bridges.prompt.prompt,
@@ -276,6 +278,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       projectContext: getProjectContext(),
       skills: getSkills(),
       promptCacheRetention: targetModelConfig.promptCacheRetention,
+      supportsImageInput: resolveImageCapability(targetModelConfig),
       contextManagement,
       isGitRepo,
       hooks: getSettings().hooks,

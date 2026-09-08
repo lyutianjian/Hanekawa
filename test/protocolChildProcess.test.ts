@@ -82,6 +82,8 @@ const agentSession = {
     runTool: async () => ({ ok: true, content: 'ran' }),
     clearCachedSections: () => {},
     getContextBudget: () => ({ contextWindow: 200_000, usableContextWindow: 167_000 }),
+    // The runtime snapshot reads the active model off the loop — capability included.
+    getActiveModel: () => ({ model: 'test-model', modelKey: 'main', contextWindow: 200_000 }),
   },
   planModeManager: undefined,
   modelKey: 'main',

@@ -62,6 +62,13 @@ function isOfficialAnthropicEndpoint(baseUrl: string): boolean {
 
 export class AnthropicProvider implements ModelProvider {
   name = 'anthropic'
+  /**
+   * Adapter image-input capability: the Messages API accepts base64 image
+   * blocks. Static so `resolveImageCapability` can read it off the class
+   * without building a client; the instance method is what a live request
+   * path consults.
+   */
+  static readonly supportsImageInput = true
   private client: Anthropic
   /** Captured up front: tests replace `client` with a stub that has no `baseURL`. */
   private readonly endpoint: string
@@ -86,6 +93,10 @@ export class AnthropicProvider implements ModelProvider {
 
   supportsDynamicToolSearch(): boolean {
     return this.nativeToolSearch && !isExperimentalToolSearchBetaDisabled()
+  }
+
+  supportsImageInput(): boolean {
+    return AnthropicProvider.supportsImageInput
   }
 
   async createMessage(request: ModelRequest): Promise<ModelResponse> {

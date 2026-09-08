@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { CommandContext, CommandDefinition } from '../../commands/types.js'
 import { VALID_EFFORT_LEVELS, type EffortLevel } from '../../config/effort.js'
 import { saveEffortLevel } from '../../config/settings.js'
+import { resolveImageCapability } from '../../config/providers.js'
 import type { PermissionRequest } from '../../harness/permissions.js'
 import type { RuntimeDiagnostic } from '../../harness/diagnostics.js'
 import type { SessionRecord } from '../../harness/types.js'
@@ -467,6 +468,10 @@ export class SessionHost {
     // loop folds in whichever model is *active*, so a fallback activation or a
     // plan-model switch is reflected here without a runtime rebuild.
     const budget = session.loop.getContextBudget()
+    // Capability likewise: `getActiveModel` reports the model actually serving
+    // requests (with the loop's own plan-model display policy), not whatever
+    // the session happened to start on.
+    const activeModel = session.loop.getActiveModel()
     return {
       modelKey: session.modelKey,
       model: session.modelConfig.model,
@@ -476,6 +481,7 @@ export class SessionHost {
       ...(session.modelConfig.supportedEfforts !== undefined
         ? { supportedEfforts: [...session.modelConfig.supportedEfforts] }
         : {}),
+      ...(activeModel.supportsImageInput ? { supportsImageInput: true } : {}),
       effort: this.runtimeSlot.getEffort(),
       permissionMode: this.scope.permissionGate.getMode(),
     }
@@ -1141,6 +1147,7 @@ export class SessionHost {
       if (resolved?.provider !== undefined) info.provider = resolved.provider
       if (resolved?.contextWindow !== undefined) info.contextWindow = resolved.contextWindow
       if (resolved?.supportedEfforts !== undefined) info.supportedEfforts = [...resolved.supportedEfforts]
+      if (resolveImageCapability(resolved)) info.supportsImageInput = true
       return info
     })
     const defaultModelKey = this.project.config.resolveModelReference(this.project.config.get().defaultModel)

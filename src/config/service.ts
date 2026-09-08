@@ -65,6 +65,20 @@ export interface ModelConfig {
    * provider reads it.
    */
   longContext1m?: boolean
+  /**
+   * Whether this model accepts image input — the user's declaration about the
+   * endpoint behind it, not something probed or inferred from the model name,
+   * the endpoint, or `contextWindow`. Absent means off, and only a strict
+   * `true` means on; a config written with `"true"` or `1` is off.
+   *
+   * Half of the effective capability: `resolveImageCapability` ANDs it with the
+   * provider adapter's own implementation. Two models on one endpoint may
+   * differ, which is why this lives on the model and not the endpoint. Not a
+   * session-scope field — it is re-read whenever a runtime is built, so a
+   * settings change reaches the next request rather than being pinned to the
+   * session that was open when it was made.
+   */
+  supportsImageInput?: boolean
 }
 
 export interface AgentConfig {

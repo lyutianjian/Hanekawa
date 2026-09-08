@@ -667,5 +667,12 @@ export interface ModelResponse {
 export interface ModelProvider {
   name: string
   supportsDynamicToolSearch?(): boolean
+  /**
+   * Whether this adapter implements image input. Mirrors the class's static
+   * capability flag so a live request path can ask the provider it is actually
+   * holding; `resolveImageCapability` is the shared entry point that combines
+   * this with the model config's switch.
+   */
+  supportsImageInput?(): boolean
   createMessage(request: ModelRequest): Promise<ModelResponse>
 }

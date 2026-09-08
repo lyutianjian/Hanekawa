@@ -1,6 +1,11 @@
 export { AnthropicProvider } from './anthropicProvider.js'
 export { OpenAIProvider } from './openaiProvider.js'
-export { ProviderRegistry, createProvider } from './registry.js'
+export {
+  ProviderRegistry,
+  createProvider,
+  providerSupportsImageInput,
+  resolveImageCapability,
+} from './registry.js'
 export {
   CONTEXT_1M_BETA,
   buildAnthropicMessages,

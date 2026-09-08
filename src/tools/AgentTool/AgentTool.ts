@@ -263,6 +263,8 @@ export interface CreateAgentToolOptions {
   contextWindow?: number
   providerName?: string
   promptCacheRetention?: 'in_memory' | '24h'
+  /** Parent model's effective image-input capability; the inherit default. */
+  supportsImageInput?: boolean
   fallbackModel?: ActiveModelRuntime
   compactModel?: ActiveModelRuntime
   fallbackRetryDelayMs?: number
@@ -688,6 +690,7 @@ async function runSubagent({
       projectContext: agentDefinition.omitProjectContext ? undefined : options.projectContext,
       skills: skillsForSubAgent(options.skills, agentDefinition),
       promptCacheRetention: subagentRuntime.promptCacheRetention,
+      supportsImageInput: subagentRuntime.supportsImageInput,
       contextManagement: options.contextManagement,
       isGitRepo: options.isGitRepo,
       maxTurns: parsed.maxTurns ?? agentDefinition.maxTurns,
@@ -1149,6 +1152,7 @@ function resolveSubagentRuntime(
     contextWindow: options.contextWindow,
     providerName: options.providerName,
     promptCacheRetention: options.promptCacheRetention,
+    supportsImageInput: options.supportsImageInput,
   }
 
   // Environment variable override: check per-type first, then generic

@@ -15,6 +15,13 @@ import { normalizeOpenAIUsage } from './usage.js'
 
 export class OpenAIProvider implements ModelProvider {
   name = 'openai'
+  /**
+   * Adapter image-input capability: Chat Completions accepts `image_url` data
+   * URLs in user content. Static so `resolveImageCapability` can read it off
+   * the class without building a client; the instance method is what a live
+   * request path consults.
+   */
+  static readonly supportsImageInput = true
   private client: OpenAI
 
   constructor(config: ModelConfig) {
@@ -26,6 +33,10 @@ export class OpenAIProvider implements ModelProvider {
 
   supportsDynamicToolSearch(): boolean {
     return false
+  }
+
+  supportsImageInput(): boolean {
+    return OpenAIProvider.supportsImageInput
   }
 
   async createMessage(request: ModelRequest): Promise<ModelResponse> {

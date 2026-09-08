@@ -280,6 +280,12 @@ export interface WireRuntimeSnapshot {
   usableContextWindow?: number
   /** The levels this model accepts; absent means every level. */
   supportedEfforts?: EffortLevel[]
+  /**
+   * Whether the model this snapshot names accepts image input — the resolved
+   * capability (`resolveImageCapability`), not the raw config switch, so a
+   * renderer never needs the provider registry to answer it. Absent means no.
+   */
+  supportsImageInput?: boolean
   effort: string
   permissionMode: PermissionMode
 }
@@ -559,6 +565,8 @@ export interface WireModelInfo {
   provider?: string
   contextWindow?: number
   supportedEfforts?: EffortLevel[]
+  /** Effective image-input capability (`resolveImageCapability`); absent means no. */
+  supportsImageInput?: boolean
 }
 
 export interface WireModelsResult {

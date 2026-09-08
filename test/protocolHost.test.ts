@@ -193,6 +193,9 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     // The runtime snapshot reads the window off the loop, not off `modelConfig`:
     // only the loop knows which model is *active* after a fallback.
     getContextBudget: () => ({ contextWindow: 200_000, usableContextWindow: 167_000 }),
+    // Same reason: the snapshot reports the active model, image capability
+    // included. This stub never reports a capable model.
+    getActiveModel: () => ({ model: 'test-model', modelKey: 'main', contextWindow: 200_000 }),
     clearCachedSections: () => { calls.clearedSections += 1 },
     invalidateRecordsCache: () => { calls.cacheInvalidations += 1 },
     summarizeRecordsForRewind: async (records: SessionRecord[]) => {

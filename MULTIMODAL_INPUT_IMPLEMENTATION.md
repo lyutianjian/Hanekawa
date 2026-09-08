@@ -80,7 +80,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | # | 会话目标 | 前置 | 规模 | 状态 |
 | --- | --- | --- | --- | --- |
 | S01 | `sharp` 依赖验证与图像测试夹具 | — | 短 | `[x]` |
-| S02 | 模型图像能力：配置字段、判定函数、运行时快照 | S01 | 中 | `[ ]` |
+| S02 | 模型图像能力：配置字段、判定函数、运行时快照 | S01 | 中 | `[x]` |
 | S03 | 两端模型设置开关与选择器能力标记 | S02 | 中 | `[ ]` |
 | S04 | 图像解码归一化与压缩阶梯 | S01 | 长 | `[ ]` |
 | S05 | 附件存储、解析、缩略图与回收 | S04 | 中 | `[ ]` |
@@ -141,7 +141,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S02 `[ ]` 模型图像能力：配置字段、判定函数、运行时快照
+## S02 `[x]` 模型图像能力：配置字段、判定函数、运行时快照
 
 **前置**：S01 · **规模**：中 · **设计稿**：§4.1、§5.1
 **涉及**：新增 `src/media/types.ts`、`src/config/service.ts`、`src/config/providers/registry.ts`、`src/runtime/providerRuntime.ts`、`src/runtime/modelPicker.ts`、`src/runtime/types.ts`、`src/runtime/protocol/wire.ts`
@@ -159,6 +159,16 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：单测覆盖缺省关闭、显式开启、编辑其他字段后保留、非布尔值不算开启，以及“开关开但适配器不支持”“开关关但适配器支持”两种组合。
 **验证**：`node --import tsx --test test/config.test.ts test/configMigration.test.ts test/modelPicker.test.ts`
 **提交**：`checkpoint: S02 add model image capability config and resolution`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- 新增 `src/media/types.ts`：`ImageAttachmentRef` / `UserInput` / `ImageBearingContent` / `ImageAttachmentMetadata`（原始 MIME、原始文件名、原始尺寸、EXIF 方向、校验摘要、处理版本、发送版本尺寸、本地路径）与 `IMAGE_INPUT_ERROR_REASONS`（7 个错误原因常量）。模块零 import，renderer / `prompts/` / `config/` 均可安全引用；`test/helpers/imageFixtures.ts` 的本地类型副本已改为从该模块导入（S01 留下的迁移点）。
+- `ModelConfig.supportsImageInput`：可选布尔；`validateSettings` 对非布尔报错（与 `longContext1m` 同款）。缺省关闭、只有严格 `=== true` 开启；`resolveModel` 折叠 endpoint 时保留该字段；编辑其他字段按既有「spread 原配置再改」模式不丢；删除模型/endpoint 的引用修复不受影响（均有回归测试，含同 endpoint 两模型能力不同）。
+- 判定函数 `resolveImageCapability(model, endpoint?)` 于 `src/config/providers/registry.ts` 单点导出（`providers/index.ts` 转发）：模型开关严格 `=== true` **且** Provider 适配器实现图像输入。适配器能力以类静态 `supportsImageInput` 暴露（Anthropic Messages、OpenAI Chat Completions 首版 true，其余 provider 名一律 false 不抛错），`ModelProvider` 接口同步增加可选实例方法供请求路径直查。函数不读文件、不发网络、不做探测。
+- 能力进入 `ActiveModelRuntime.supportsImageInput?`：`createActiveModelRuntime` 工厂、主 loop（`AgentLoopOptions` → constructor → primary）、AgentTool 的 parentRuntime 与子代理 loop 均在构造时解析填充；fallback / compact / plan / 临时覆盖走同一工厂自动携带各自能力。`getActiveModel()` 带出该字段，经既有 `active-model` 事件到达两端。
+- 运行时快照：`WireRuntimeSnapshot` 取 `loop.getActiveModel()` 的能力（与 `contextWindow` 同源、跟随实际服务模型）；`WireModelInfo` 与 `ModelPickerOption` 携带解析后的能力（仅 true 时出现在 wire 上，absent 即不支持），均为可 `structuredClone` 的纯布尔。设置变更沿用既有 `models` change kind，未新增 kind。三个伪造 loop 的测试桩（`protocolHost` / `protocolChildProcess` / `desktopMain`）按既有 `getContextBudget` 桩的同款理由补上 `getActiveModel`。
+- 关键约束落实：能力不属于会话 scope 快照类字段（`SessionScope` / `PermissionGate` 不持有），每次构造 runtime 时按当时配置重新解析。`src/runtime/providerRuntime.ts` 与 `src/runtime/types.ts` 经核对无需改动：前者只负责配置变更后的模型 key 复位，后者无能力相关字段。
+- 验证：三份窄测 90 项全绿；`npm run typecheck`（base / preload / renderer / domtest 四配置）通过；全量 `npm run test` 与改动前基线一致——本机（Windows x64）有 7 个 TUI Ink 渲染类测试在干净树上同样失败（InputBox 光标 / WelcomeBanner / 终端 resize），与 S02 无关，除此之外 2956 项全绿（含本会话新增 6 项）。「开关开但适配器不支持」组合用未注册 provider 名覆盖——两个现存适配器首版均为 true，该分支为未来适配器预留，测试已钉住。
 
 ---
 

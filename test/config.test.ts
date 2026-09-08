@@ -29,6 +29,8 @@ import {
   createProvider,
   normalizeAnthropicUsage,
   normalizeOpenAIUsage,
+  providerSupportsImageInput,
+  resolveImageCapability,
 } from '../src/config/providers.js'
 import { getAllTools, getBuiltinTools } from '../src/tools/index.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
@@ -522,6 +524,24 @@ test('validateSettings rejects a non-boolean longContext1m', () => {
   assert.deepEqual(result.errors, ['models.local.longContext1m must be a boolean'])
 })
 
+test('validateSettings checks supportsImageInput like other model booleans', () => {
+  assert.deepEqual(validateSettings({
+    models: {
+      vision: { provider: 'anthropic', model: 'claude-vision', supportsImageInput: true },
+      off: { provider: 'openai', model: 'gpt-text', supportsImageInput: false },
+    },
+  }), { valid: true, errors: [] })
+
+  const result = validateSettings({
+    models: {
+      broken: { provider: 'anthropic', model: 'claude-broken', supportsImageInput: 'true' as never },
+    },
+  })
+
+  assert.equal(result.valid, false)
+  assert.deepEqual(result.errors, ['models.broken.supportsImageInput must be a boolean'])
+})
+
 test('validateSettings checks the disabled skill list', () => {
   assert.deepEqual(validateSettings({ skills: { disabled: ['demo'] } }).errors, [])
   // Rejected here rather than at the write, because `updateLocalSettings`
@@ -855,6 +875,104 @@ test('createProvider selects adapter from provider field', () => {
 
   assert.ok(anthropic instanceof AnthropicProvider)
   assert.ok(openai instanceof OpenAIProvider)
+})
+
+test('both adapters expose their image-input capability statically and per instance', () => {
+  const anthropic = new AnthropicProvider({ provider: 'anthropic', model: 'claude-3', apiKey: 'test-key' })
+  const openai = new OpenAIProvider({ provider: 'openai', model: 'gpt-4o-mini', apiKey: 'test-key' })
+
+  assert.equal(AnthropicProvider.supportsImageInput, true)
+  assert.equal(OpenAIProvider.supportsImageInput, true)
+  assert.equal(anthropic.supportsImageInput?.(), true)
+  assert.equal(openai.supportsImageInput?.(), true)
+
+  assert.equal(providerSupportsImageInput('anthropic'), true)
+  assert.equal(providerSupportsImageInput('openai'), true)
+  // An unknown or future provider name is incapable, not an error.
+  assert.equal(providerSupportsImageInput('made-up'), false)
+  assert.equal(providerSupportsImageInput(''), false)
+  assert.equal(providerSupportsImageInput(undefined), false)
+})
+
+test('resolveImageCapability requires a strict true switch on an implementing adapter', () => {
+  // Explicit on.
+  assert.equal(resolveImageCapability({ provider: 'anthropic', supportsImageInput: true }), true)
+  assert.equal(resolveImageCapability({ provider: 'openai', supportsImageInput: true }), true)
+
+  // Default off: absent and explicit false, on an adapter that implements it —
+  // the "switch off but adapter supports" combination.
+  assert.equal(resolveImageCapability({ provider: 'anthropic' }), false)
+  assert.equal(resolveImageCapability({ provider: 'anthropic', supportsImageInput: false }), false)
+
+  // Only strict `=== true` counts; "true", 1, and any other truthy value are off.
+  assert.equal(resolveImageCapability({ provider: 'anthropic', supportsImageInput: 'true' as never }), false)
+  assert.equal(resolveImageCapability({ provider: 'anthropic', supportsImageInput: 1 as never }), false)
+
+  // The "switch on but adapter does not implement" combination: a name outside
+  // the supported adapters reports false even with the switch on.
+  assert.equal(resolveImageCapability({ provider: 'made-up', supportsImageInput: true }), false)
+  assert.equal(resolveImageCapability({ supportsImageInput: true }), false)
+
+  // No model at all.
+  assert.equal(resolveImageCapability(undefined), false)
+
+  // The endpoint can carry the provider for a model that resolves through one.
+  assert.equal(resolveImageCapability({ supportsImageInput: true }, { provider: 'openai' }), true)
+  assert.equal(resolveImageCapability({ supportsImageInput: true }, { provider: 'made-up' }), false)
+  assert.equal(resolveImageCapability({ supportsImageInput: true }, undefined), false)
+  // The model's own provider wins over the endpoint's, like resolveModel's spread.
+  assert.equal(
+    resolveImageCapability({ provider: 'anthropic', supportsImageInput: true }, { provider: 'made-up' }),
+    true,
+  )
+})
+
+test('ConfigService persists image capability across save, reload, and endpoint resolution', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    const service = new ConfigService(dir)
+    await service.load()
+    service.setEndpoint('proxy', { provider: 'openai', baseUrl: 'https://proxy.example/v1' })
+    service.addModel('vision', { model: 'gpt-vision', endpoint: 'proxy', supportsImageInput: true })
+    service.addModel('text', { model: 'gpt-text', endpoint: 'proxy' })
+    await service.save()
+
+    const reloaded = new ConfigService(dir)
+    await reloaded.load()
+    // Resolving through the endpoint folds provider in without dropping the switch.
+    assert.equal(reloaded.resolveModel('vision')?.supportsImageInput, true)
+    assert.equal(reloaded.resolveModel('text')?.supportsImageInput, undefined)
+    // Effective capability: same endpoint, two models, different answers.
+    assert.equal(resolveImageCapability(reloaded.resolveModel('vision')), true)
+    assert.equal(resolveImageCapability(reloaded.resolveModel('text')), false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('editing another model field keeps supportsImageInput', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    const service = new ConfigService(dir)
+    await service.load()
+    service.addModel('vision', { provider: 'anthropic', model: 'claude-v', supportsImageInput: true })
+
+    // The edit pattern every caller uses — spread the existing config, change
+    // one field — must not reset the capability.
+    const existing = service.getModel('vision')!
+    service.setModelConfig('vision', { ...existing, contextWindow: 123_000 })
+    assert.equal(service.getModel('vision')?.supportsImageInput, true)
+    assert.equal(service.getModel('vision')?.contextWindow, 123_000)
+
+    // Removing an unrelated model repairs references without touching this one.
+    service.addModel('other', { provider: 'anthropic', model: 'claude-o' })
+    service.get().defaultModel = 'other'
+    service.removeModel('other')
+    assert.equal(service.getModel('vision')?.supportsImageInput, true)
+    assert.equal(service.get().defaultModel, 'vision')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('providers report dynamic ToolSearch support conservatively', () => {

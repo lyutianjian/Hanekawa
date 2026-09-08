@@ -145,6 +145,8 @@ function fakeRuntimeSlot(): RuntimeSlot {
         invalidateRecordsCache: () => undefined,
         summarizeRecordsForRewind: async () => ({ summary: '', index: 0 }),
         getContextBudget: () => ({ contextWindow: 200_000, usableContextWindow: 167_000 }),
+        // The runtime snapshot reads the active model off the loop — capability included.
+        getActiveModel: () => ({ model: 'fake', modelKey: 'main', contextWindow: 200_000 }),
       },
       planModeManager: {} as never,
     },

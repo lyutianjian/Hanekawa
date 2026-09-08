@@ -46,6 +46,14 @@ export interface ActiveModelRuntime {
   contextWindow?: number
   providerName?: string
   promptCacheRetention?: 'in_memory' | '24h'
+  /**
+   * Effective image-input capability (`resolveImageCapability` of the config
+   * this runtime was built from), carried per model so a fallback, plan, or
+   * override model answers with its own capability rather than the session's
+   * startup model's. Resolved at construction — never a session-scope
+   * snapshot — so a settings toggle reaches the next runtime built.
+   */
+  supportsImageInput?: boolean
 }
 
 /**
@@ -103,6 +111,8 @@ export interface AgentLoopOptions {
   criticalSystemReminder?: string
   skills?: SkillDefinition[]
   promptCacheRetention?: 'in_memory' | '24h'
+  /** Effective image-input capability of the primary model; see `ActiveModelRuntime`. */
+  supportsImageInput?: boolean
   contextManagement?: Partial<ContextManagementConfig>
   isGitRepo?: boolean
   maxTurns?: number
@@ -163,6 +173,7 @@ export class AgentLoop {
       contextWindow: options.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
       providerName: options.provider.name,
       promptCacheRetention: options.promptCacheRetention,
+      supportsImageInput: options.supportsImageInput,
     }
     this.modelState = {
       current: primary,
@@ -183,6 +194,7 @@ export class AgentLoop {
       contextWindow: visibleModel.contextWindow,
       providerName: visibleModel.providerName,
       promptCacheRetention: visibleModel.promptCacheRetention,
+      supportsImageInput: visibleModel.supportsImageInput,
     }
   }
 

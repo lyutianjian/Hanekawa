@@ -14,13 +14,17 @@ import { buildModelPickerOptions, type ModelPickerConfig } from '../src/runtime/
  */
 
 interface StubOptions {
-  models?: Record<string, unknown>
+  models?: Record<string, { provider?: string; supportsImageInput?: boolean }>
   defaultModel?: string
   /** Keys `getModel` refuses to resolve, as a broken endpoint reference would. */
   unresolvable?: string[]
 }
 
-const DEFAULT_MODELS = { small: {}, main: {}, big: {} }
+const DEFAULT_MODELS: Record<string, { provider?: string; supportsImageInput?: boolean }> = {
+  small: {},
+  main: {},
+  big: {},
+}
 
 function stubConfig(options: StubOptions = {}): ModelPickerConfig {
   const models = options.models ?? DEFAULT_MODELS
@@ -36,6 +40,7 @@ function stubConfig(options: StubOptions = {}): ModelPickerConfig {
           contextWindow: 200_000,
           apiKey: 'SECRET',
           baseUrl: 'https://secret.example.com',
+          ...models[key],
         },
     resolveModelReference: (reference: string | undefined) => reference,
   }
@@ -104,4 +109,32 @@ test('the result crosses the wire and carries no credentials', () => {
   const serialized = JSON.stringify(structuredClone(options))
   assert.ok(!serialized.includes('SECRET'), 'apiKey must not reach a renderer')
   assert.ok(!serialized.includes('secret.example.com'), 'baseUrl must not reach a renderer')
+})
+
+test('rows carry the effective image capability, not the raw switch', () => {
+  const options = buildModelPickerOptions(
+    stubConfig({
+      models: {
+        vision: { supportsImageInput: true },
+        off: { supportsImageInput: false },
+        // A non-boolean switch is off, same as resolveImageCapability.
+        stringy: { supportsImageInput: 'true' as never },
+        unlisted: {},
+        // Switch on, but the provider's adapter does not implement image input.
+        future: { provider: 'made-up', supportsImageInput: true },
+      },
+    }),
+    'vision',
+    ['vision', 'off', 'stringy', 'unlisted', 'future'],
+  )
+
+  // Absent rather than `false`: the field only crosses the wire when true, so
+  // `option.supportsImageInput === true` is the whole marker contract.
+  assert.deepEqual(
+    options.map((option) => option.supportsImageInput),
+    [true, undefined, undefined, undefined, undefined],
+  )
+  // The raw switch never reaches the wire on its own: a non-boolean value does
+  // not ride along under the same name.
+  assert.equal('supportsImageInput' in (options[2] ?? {}), false)
 })

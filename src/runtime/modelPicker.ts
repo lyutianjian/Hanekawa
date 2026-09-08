@@ -1,3 +1,4 @@
+import { resolveImageCapability } from '../config/providers/registry.js'
 import type { ConfigService } from '../config/service.js'
 
 /**
@@ -10,7 +11,7 @@ import type { ConfigService } from '../config/service.js'
  */
 export interface ModelPickerConfig {
   get(): { defaultModel?: string }
-  getModel(name: string): { provider?: string; model: string } | undefined
+  getModel(name: string): { provider?: string; model: string; supportsImageInput?: boolean } | undefined
   resolveModelReference(reference: string | undefined): string | undefined
 }
 
@@ -39,6 +40,13 @@ export interface ModelPickerOption {
   modelKey?: string
   providerName?: string
   modelId?: string
+  /**
+   * Effective image-input capability — `resolveImageCapability` of the model,
+   * not the raw config switch, so "the adapter cannot carry images" and "the
+   * user left it off" read the same here. Absent means no. The marker a picker
+   * draws comes from this; no frontend keeps its own model whitelist.
+   */
+  supportsImageInput?: boolean
   disabledReason?: string
   isCurrent: boolean
   isDefault: boolean
@@ -68,6 +76,7 @@ export function buildModelPickerOptions(
       modelKey: key,
       providerName: model.provider ?? 'unknown',
       modelId: model.model,
+      ...(resolveImageCapability(model) ? { supportsImageInput: true } : {}),
       isCurrent: key === currentModelKey,
       isDefault: key === defaultModelKey,
     }

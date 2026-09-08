@@ -28,6 +28,13 @@ export type ModelStreamEvent =
   | { type: 'tool_input_delta'; index?: number; partialJson: string }
   | { type: 'message_stop' }
   | { type: 'idle_warning'; idleMs: number }
+  /**
+   * The loop degraded a request's historical images to text placeholders
+   * because the serving model cannot accept images (design §9.1). Emitted
+   * once per distinct (capability, image set) state — not per tool step —
+   * and carries text only, never image bytes.
+   */
+  | { type: 'image_capability_notice'; message: string; omittedImageCount: number; missingImageCount?: number }
 
 export interface ChatMessage {
   id: string

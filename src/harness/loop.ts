@@ -42,6 +42,14 @@ import {
   formatAtMentionImageErrors,
   type AtMentionImageImporter,
 } from './atMentions.js'
+import {
+  assertCurrentImagesAvailable,
+  assertNewImagesAllowed,
+  formatHistoricalProjectionNotice,
+  projectTurnImagesForRequest,
+  type AttachmentFactsResolver,
+  type RequestImageProjection,
+} from './turnImages.js'
 import { wrapInSystemReminder } from './systemReminder.js'
 import { maybeExtractSessionMemory } from '../services/sessionMemory/service.js'
 
@@ -126,6 +134,15 @@ export interface AgentLoopOptions {
    * plain text, exactly as before this option existed.
    */
   imageAttachments?: AtMentionImageImporter
+  /**
+   * Resolves stored attachment facts (original dimensions, cache path,
+   * existence) for the request path's image rules: the current-input
+   * availability check and the historical-image text projection. Absent where
+   * no store exists — current-input files are then not re-checked at
+   * submission, and historical placeholders fall back to the file-missing
+   * wording only when they cannot be resolved at all.
+   */
+  attachmentFacts?: AttachmentFactsResolver
   contextManagement?: Partial<ContextManagementConfig>
   isGitRepo?: boolean
   maxTurns?: number
@@ -177,6 +194,8 @@ export class AgentLoop {
   // blocks should not be replayed across either side of a fallback boundary.
   private stripAllThinkingBlocksFromRequests = false
   private activeRunOverrides: ActiveRunOverrides | undefined
+  /** Last (capability x image set) state the loop notified about, for notice dedup. */
+  private lastImageProjectionSignature: string | undefined
 
   constructor(private readonly options: AgentLoopOptions) {
     const primary = {
@@ -291,6 +310,20 @@ export class AgentLoop {
     return this.enqueue(() => this.runWithOverrides(userInput, signal, messageId, overrides))
   }
 
+  /**
+   * Layer-2 submission preparation (design §9.2): the same new-image rule the
+   * loop enforces, exposed for the session controller to call *before* it
+   * emits turn-start, so a blocked submission never surfaces as a turn that
+   * started and failed. Covers the input's explicit images only — @-mentioned
+   * images are imported inside run(), where the same rule runs again before
+   * any record exists. Reads live model state (an override model included),
+   * so it cannot act on stale capability information.
+   */
+  assertImagesAllowedForSubmission(input: UserInput, overrides?: AgentRunOverrides): void {
+    const model = overrides?.model ?? this.modelState.current
+    assertNewImagesAllowed(input.images, model.supportsImageInput, model.model)
+  }
+
   async summarizeRecordsForRewind(records: SessionRecord[]): Promise<{ summary: string; usage?: TokenUsage; preTokens: number }> {
     return this.enqueue(async () => {
       const result = await summarizeRecordsForContinuation({
@@ -383,6 +416,14 @@ export class AgentLoop {
     const turnImages = mentionImages && mentionImages.images.length > 0
       ? [...(userInput.images ?? []), ...mentionImages.images]
       : userInput.images
+    // New-image gate (design §9.2): runs before the user record exists, so a
+    // blocked submission leaves the session untouched and the draft survives
+    // in the shell. Queued inputs reach this gate only when their dequeued run
+    // actually starts — waiting never turns new images into degradable
+    // history. Reads the live active model (overrides included), which the
+    // single in-flight slot keeps stable across this synchronous stretch.
+    assertNewImagesAllowed(turnImages, this.activeModel.supportsImageInput, this.activeModel.model)
+    await assertCurrentImagesAvailable(turnImages, this.options.attachmentFacts)
     const userMessage: ChatMessage & { type: 'message' } = {
       type: 'message',
       id: messageId ?? randomUUID(),
@@ -450,7 +491,7 @@ export class AgentLoop {
           resetModelRequestState()
         }
         await this.flushReadyToolUseSummaries(turnId)
-        const preparedRecords = await this.loadPreparedRecords()
+        const preparedRecords = await this.loadPreparedRecords(turnId, userMessage.id)
         const interruptionContext = await this.consumeTurnInterruptionContext(preparedRecords, userInput.text)
         const progressive = applyProgressiveCompaction({
           records: preparedRecords,
@@ -506,7 +547,7 @@ export class AgentLoop {
         if (this.syncRoleModel(cacheSource)) {
           resetModelRequestState()
         }
-        recordsBeforeCompact = await this.loadPreparedRecords()
+        recordsBeforeCompact = await this.loadPreparedRecords(turnId, userMessage.id)
       }
 
       const records = recordsBeforeCompact
@@ -1021,7 +1062,7 @@ export class AgentLoop {
     }
   }
 
-  private async loadPreparedRecords(): Promise<SessionRecord[]> {
+  private async loadPreparedRecords(turnId?: string, userMessageId?: string): Promise<SessionRecord[]> {
     const loaded = await this.loadRecordsOnce()
     const prepared = prepareRecordsForRequestWithDiagnostics(
       loaded.records,
@@ -1036,7 +1077,40 @@ export class AgentLoop {
       this.recordsCacheHasCleanToolProtocol = true
     }
     logDiagnostics([...loaded.diagnostics, ...prepared.diagnostics])
-    return prepared.records
+    if (!turnId) return prepared.records
+    // Per-request image rules (design §9.1, §11.1): history degrades to text
+    // placeholders for a text-only model, new images never do. Runs after
+    // pairing repair and before compaction, on the model actually serving this
+    // iteration — a fallback, plan, or retry-primary switch re-derives it —
+    // and is a pure projection: the records cache and JSONL keep their images.
+    const projection = await projectTurnImagesForRequest({
+      records: prepared.records,
+      currentTurnId: turnId,
+      currentUserMessageId: userMessageId,
+      supportsImageInput: this.activeModel.supportsImageInput,
+      modelLabel: this.activeModel.model,
+      ...(this.options.attachmentFacts ? { resolveAttachmentFacts: this.options.attachmentFacts } : {}),
+    })
+    this.noteImageProjection(projection)
+    return projection.records
+  }
+
+  /**
+   * Notifies once per distinct (capability, image set) degradation — not per
+   * tool step or per turn — and stays quiet when a capable model takes over
+   * again, while still remembering that state so re-degrading the same set
+   * later notifies again.
+   */
+  private noteImageProjection(projection: RequestImageProjection): void {
+    if (projection.signature === this.lastImageProjectionSignature) return
+    this.lastImageProjectionSignature = projection.signature
+    if (projection.projectedImageCount === 0) return
+    this.options.onStreamEvent?.({
+      type: 'image_capability_notice',
+      message: formatHistoricalProjectionNotice(projection.projectedImageCount, projection.missingImageCount),
+      omittedImageCount: projection.projectedImageCount,
+      ...(projection.missingImageCount > 0 ? { missingImageCount: projection.missingImageCount } : {}),
+    })
   }
 
   private async loadRecordsOnce(): Promise<{ records: SessionRecord[]; diagnostics: RuntimeDiagnostic[] }> {

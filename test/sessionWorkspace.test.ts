@@ -63,6 +63,7 @@ async function createHarness(): Promise<Harness> {
             clearCachedSections: () => order.push('clearCachedSections'),
             invalidateRecordsCache: () => {},
             getActiveModel: () => ({ model: 'claude-test', modelKey }),
+            assertImagesAllowedForSubmission: () => {},
             run: async () => ({
               content: 'ok',
               usage: { inputTokens: 10, cacheReadInputTokens: 0, outputTokens: 5 },

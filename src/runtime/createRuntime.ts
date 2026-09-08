@@ -10,6 +10,7 @@ import { ToolRunner } from '../harness/toolRunner.js'
 import type { SystemPromptSectionCache } from '../harness/sections.js'
 import type { DenialStateStore, PermissionGate } from '../harness/permissions.js'
 import type { ImageAttachmentImporter, SessionRecord } from '../harness/types.js'
+import type { AttachmentFactsResolver } from '../harness/turnImages.js'
 import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../prompts/budget.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import { JsonlRecordStream } from '../sessions/recordStream.js'
@@ -98,6 +99,11 @@ export interface CreateRuntimeDeps {
    */
   imageAttachments?: ImageAttachmentImporter
   /**
+   * The project's attachment store as the request path's facts resolver —
+   * current-input availability checks and historical-image placeholders (S15).
+   */
+  attachmentFacts?: AttachmentFactsResolver
+  /**
    * Notified whenever a runtime is built for a different session than the last
    * one. `bootstrap` uses it to retarget session-scoped state (denial counters)
    * that the gate holds across runtimes.
@@ -137,6 +143,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
     createActiveModelRuntime,
     trackFileEdit,
     imageAttachments,
+    attachmentFacts,
     onActiveSessionChange,
   } = deps
 
@@ -305,6 +312,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       onRecord: (record) => bridges.record.onRecord(record),
       onStreamEvent: (event) => bridges.record.onStreamEvent(event),
       ...(imageAttachments ? { imageAttachments } : {}),
+      ...(attachmentFacts ? { attachmentFacts } : {}),
     })
 
     const activeLoop = loop

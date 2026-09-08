@@ -209,6 +209,13 @@ export class SessionController {
     const loop = agentSession.loop
     const messageId = randomUUID()
 
+    // Submission preparation (design §9.2): the new-image gate runs before
+    // turn-start is emitted and before any record exists, so a blocked input
+    // stays a rejected submit — the caller's draft is untouched — instead of a
+    // turn that started and immediately failed. Shares the rule the loop
+    // re-checks per request; @-mentioned images are gated inside run().
+    loop.assertImagesAllowedForSubmission(input, options)
+
     this.emit({
       type: 'turn-start',
       messageId,

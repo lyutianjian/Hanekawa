@@ -18,7 +18,8 @@ import { clearAllPlanSlugs, writePlan } from '../src/utils/plans.js'
 import { getAutoCompactThreshold } from '../src/prompts/budget.js'
 import type { SessionMetricInput } from '../src/harness/metrics.js'
 import type { RecordStream } from '../src/harness/recordStream.js'
-import type { ModelProvider, ModelRequest, SessionRecord, Tool } from '../src/harness/types.js'
+import type { ModelProvider, ModelRequest, ModelStreamEvent, SessionRecord, Tool } from '../src/harness/types.js'
+import { TurnImageBlockError } from '../src/harness/turnImages.js'
 import { FallbackTriggeredError } from '../src/config/retry.js'
 import { resetAutoCompactFailureState } from '../src/harness/compact.js'
 import { fixtureImagePath, loadFixtureBytes, makeImageAttachmentRef } from './helpers/imageFixtures.js'
@@ -149,6 +150,7 @@ test('a UserInput with images persists the refs on the user message record', asy
     toolRunner: runner,
     toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
     recordStream: recordStreamFor(records),
+    supportsImageInput: true,
   })
 
   const first = makeImageAttachmentRef({ id: 'img-a', ownerSessionId: 's1', name: 'first.png' })
@@ -199,6 +201,7 @@ test('@-mentioned project images import at input preparation and bind to the use
       toolRunner: runner,
       toolContext: { cwd: dir, sessionId: 's1', readFiles: new Set() },
       recordStream: recordStreamFor(records),
+      supportsImageInput: true,
       imageAttachments: {
         importImage: async (sessionId, bytes, name) => {
           assert.equal(sessionId, 's1')
@@ -3052,3 +3055,259 @@ test('agent loop uses last response usage, not cumulative usage, for auto-compac
   assert.equal(records.filter((record) => record.type === 'compact_boundary').length, 0)
 })
 
+
+// --- turn image rules (S15, design §9) --------------------------------------
+
+test('a text-only model blocks new images before any record is written', async () => {
+  const records: SessionRecord[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      throw new Error('provider must not be called')
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'text-only-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  const ref = makeImageAttachmentRef({ id: 'img-gate', ownerSessionId: 's1', name: 'queued.png' })
+  // A queued message is the current input the moment its dequeued run starts
+  // — waiting never turns its images into degradable history.
+  await assert.rejects(
+    loop.run({ text: 'queued earlier, executing now', images: [ref] }),
+    (error: unknown) =>
+      error instanceof TurnImageBlockError
+      && error.imageInputBlock === 'model-not-capable'
+      && error.images.length === 1,
+  )
+  assert.equal(records.length, 0)
+})
+
+test('a current input whose cached files are gone is blocked before any record', async () => {
+  const records: SessionRecord[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      throw new Error('provider must not be called')
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'capable-model',
+    supportsImageInput: true,
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    attachmentFacts: {
+      resolveAttachmentFacts: async () => ({ ok: false }),
+    },
+  })
+
+  const ref = makeImageAttachmentRef({ id: 'img-gone', ownerSessionId: 's1', name: 'gone.png' })
+  await assert.rejects(
+    loop.run({ text: 'look at this', images: [ref] }),
+    (error: unknown) =>
+      error instanceof TurnImageBlockError
+      && error.imageInputBlock === 'file-missing'
+      && error.images.length === 1,
+  )
+  assert.equal(records.length, 0)
+})
+
+test('a text-only model projects historical images as text and notifies once per state', async () => {
+  const historyImage = makeImageAttachmentRef({ id: 'img-old', ownerSessionId: 's1', name: 'shot.png' })
+  const historyToolImage = makeImageAttachmentRef({ id: 'img-old-tool', ownerSessionId: 's1', name: 'read.png' })
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'what is this',
+      images: [historyImage],
+      turnId: 'turn-old',
+      createdAt: '2026-09-08T00:00:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'old-assistant',
+      role: 'assistant',
+      content: 'an earlier answer',
+      turnId: 'turn-old',
+      createdAt: '2026-09-08T00:00:01.000Z',
+    },
+    {
+      type: 'tool_use',
+      id: 'old-call',
+      tool: 'Probe',
+      input: {},
+      riskLevel: 'safe',
+      turnId: 'turn-old',
+      createdAt: '2026-09-08T00:00:02.000Z',
+    },
+    {
+      type: 'tool_result',
+      id: 'old-result',
+      toolUseId: 'old-call',
+      tool: 'Probe',
+      ok: true,
+      content: 'probed',
+      images: [historyToolImage],
+      turnId: 'turn-old',
+      createdAt: '2026-09-08T00:00:03.000Z',
+    },
+  ]
+  const requests: ModelRequest[] = []
+  let providerCalls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      providerCalls += 1
+      requests.push(request)
+      if (providerCalls === 1) {
+        return {
+          content: '',
+          toolCalls: [{ id: 'call-1', name: 'Probe', input: {} }],
+          usage: { inputTokens: 1, cacheReadInputTokens: 0, outputTokens: 1 },
+        }
+      }
+      return {
+        content: 'summarized',
+        toolCalls: [],
+        usage: { inputTokens: 1, cacheReadInputTokens: 0, outputTokens: 1 },
+      }
+    },
+  }
+  const tools: Tool[] = [testTool('Probe')]
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const streamEvents: ModelStreamEvent[] = []
+  const loop = new AgentLoop({
+    provider,
+    model: 'text-only-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    attachmentFacts: {
+      resolveAttachmentFacts: async (ref) => ({
+        ok: true,
+        facts: {
+          originalWidth: 3840,
+          originalHeight: 2160,
+          localPath: `C:/cache/${ref.id}/original.png`,
+        },
+      }),
+    },
+    onStreamEvent: (event) => { streamEvents.push(event) },
+  })
+
+  const response = await loop.run({ text: 'summarize the screenshot' })
+  assert.equal(response.content, 'summarized')
+  assert.equal(providerCalls, 2)
+
+  // Every request the provider saw is image-free and carries the honest
+  // placeholders instead — across the tool round-trip too (request rebuild).
+  assert.equal(requests.length, 2)
+  for (const request of requests) {
+    for (const message of request.messages) {
+      assert.equal(message.images, undefined)
+    }
+    for (const item of request.contextItems ?? []) {
+      if (item.kind === 'message') assert.equal(item.message.images, undefined)
+      if (item.kind === 'tool_result') assert.equal(item.images, undefined)
+    }
+    const oldUser = request.messages.find((message) => message.content.includes('what is this'))
+    assert.equal(
+      oldUser?.content,
+      'what is this\n\n[Historical image omitted for this text-only model:\n'
+        + 'shot.png, original 3840x2160, cached at C:/cache/img-old/original.png.\n'
+        + 'The pixels are not present in this request.]',
+    )
+  }
+
+  // The projection is request-only: the persisted records keep their images
+  // and their original text, so switching back restores the pixels.
+  const persistedOldUser = records.find((record) => record.id === 'old-user')
+  assert.equal(persistedOldUser?.type, 'message')
+  assert.equal(persistedOldUser?.type === 'message' ? persistedOldUser.content : undefined, 'what is this')
+  assert.deepEqual(persistedOldUser?.type === 'message' ? persistedOldUser.images : undefined, [historyImage])
+  const persistedOldResult = records.find((record) => record.id === 'old-result')
+  assert.equal(persistedOldResult?.type, 'tool_result')
+  assert.deepEqual(persistedOldResult?.type === 'tool_result' ? persistedOldResult.images : undefined, [historyToolImage])
+
+  // The degradation notice fires once for this (model, image set) state — not
+  // again on the second request after the tool step.
+  const notices = streamEvents.filter((event) => event.type === 'image_capability_notice')
+  assert.equal(notices.length, 1)
+  if (notices[0]?.type === 'image_capability_notice') {
+    assert.equal(notices[0].omittedImageCount, 2)
+    assert.match(notices[0].message, /2 historical images/)
+    assert.match(notices[0].message, /replaced with file paths/)
+  }
+})
+
+test('a mid-run fallback to a text-only model still blocks the new images', async () => {
+  const records: SessionRecord[] = []
+  let providerCalls = 0
+  const primaryProvider: ModelProvider = {
+    name: 'primary',
+    async createMessage() {
+      providerCalls += 1
+      throw new FallbackTriggeredError(new Error('529 overloaded'), 3)
+    },
+  }
+  const fallbackProvider: ModelProvider = {
+    name: 'fallback',
+    async createMessage() {
+      throw new Error('fallback request must be blocked before it is sent')
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider: primaryProvider,
+    model: 'capable-model',
+    modelKey: 'primary',
+    supportsImageInput: true,
+    fallbackModel: {
+      provider: fallbackProvider,
+      model: 'text-only-fallback',
+      modelKey: 'fallback',
+      providerName: 'fallback',
+    },
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  const ref = makeImageAttachmentRef({ id: 'img-fb', ownerSessionId: 's1', name: 'shot.png' })
+  // The turn started under a capable model, so the user message exists; the
+  // fallback switch must not buy a degradation by making the images look old.
+  await assert.rejects(
+    loop.run({ text: 'look at this', images: [ref] }),
+    (error: unknown) =>
+      error instanceof TurnImageBlockError && error.imageInputBlock === 'model-not-capable',
+  )
+  assert.equal(providerCalls, 1)
+  const user = records.find((record) => record.type === 'message' && record.role === 'user')
+  assert.deepEqual(user?.type === 'message' ? user.images : undefined, [ref])
+})

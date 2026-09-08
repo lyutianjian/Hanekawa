@@ -6,6 +6,7 @@ import type { ActiveModelRuntime } from '../harness/loop.js'
 import { PermissionGate, permissionRulesFromSettings, type DenialStateStore } from '../harness/permissions.js'
 import { SystemPromptSectionCache } from '../harness/sections.js'
 import type { ImageAttachmentImporter, SessionRecord } from '../harness/types.js'
+import type { AttachmentFactsResolver } from '../harness/turnImages.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { SessionMeta, SessionStore } from '../sessions/service.js'
 import type { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
@@ -42,6 +43,8 @@ export interface SessionScopeDeps {
   createActiveModelRuntime: (modelKey: string) => ActiveModelRuntime
   /** The project's attachment store — one per project, shared by its scopes. */
   imageAttachments?: ImageAttachmentImporter
+  /** The same store seen as the request path's facts resolver (S15). */
+  attachmentFacts?: AttachmentFactsResolver
 }
 
 /**
@@ -111,6 +114,7 @@ export async function createSessionScope(
     // built still reaches it.
     trackFileEdit: (filePath) => trackFileEdit?.(filePath) ?? Promise.resolve(),
     ...(deps.imageAttachments ? { imageAttachments: deps.imageAttachments } : {}),
+    ...(deps.attachmentFacts ? { attachmentFacts: deps.attachmentFacts } : {}),
     onActiveSessionChange: (nextSessionId) => {
       if (nextSessionId === activeSessionId) return
       activeSessionId = nextSessionId

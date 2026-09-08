@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ConfigService } from '../config/service.js'
 import { migrateProjectConfig } from '../config/migrateProjectConfig.js'
@@ -14,7 +15,8 @@ import { BUILT_IN_AGENT_DEFINITIONS } from '../tools/AgentTool/AgentTool.js'
 import { SkillsService } from '../services/skills/skillsService.js'
 import { AgentDefinitionLoader } from '../services/agents/agentDefinitionLoader.js'
 import { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
-import { ImageAttachmentService } from '../services/imageAttachments/imageAttachmentService.js'
+import { ImageAttachmentService, attachmentSendVersionPath } from '../services/imageAttachments/imageAttachmentService.js'
+import type { AttachmentFactsResolver } from '../harness/turnImages.js'
 import { removeLegacyShadowGit } from '../services/fileHistory/legacyShadowGit.js'
 import { clearProjectContextCache, getProjectContext } from '../services/context/projectContext.js'
 import type { SessionMeta } from '../sessions/service.js'
@@ -34,6 +36,44 @@ function mergeAgentDefinitions<T extends { type: string }>(base: readonly T[], o
   for (const definition of base) merged.set(definition.type, definition)
   for (const definition of overrides) merged.set(definition.type, definition)
   return [...merged.values()]
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The attachment store as the request path's facts resolver: metadata without
+ * image bytes, plus an existence check. An attachment counts as gone only when
+ * both the immutable original and the send version are missing — a surviving
+ * original can rebuild the send version, and a lone surviving send version is
+ * still a cacheable file the historical placeholder can name honestly.
+ */
+function createAttachmentFactsResolver(service: ImageAttachmentService, cwd: string): AttachmentFactsResolver {
+  return {
+    resolveAttachmentFacts: async (ref) => {
+      const resolved = await service.resolveRef(ref)
+      if (!resolved.ok) return { ok: false }
+      const { metadata } = resolved.value
+      const originalExists = await fileExists(metadata.localPath)
+      const sendPath = attachmentSendVersionPath(cwd, ref)
+      if (!originalExists && !(await fileExists(sendPath))) return { ok: false }
+      return {
+        ok: true,
+        facts: {
+          originalWidth: metadata.originalWidth,
+          originalHeight: metadata.originalHeight,
+          ...(metadata.exifOrientation !== undefined ? { exifOrientation: metadata.exifOrientation } : {}),
+          localPath: originalExists ? metadata.localPath : sendPath,
+        },
+      }
+    },
+  }
 }
 
 /**
@@ -262,6 +302,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     initialEffort: clampedInitialEffort,
     createActiveModelRuntime,
     imageAttachments: attachments,
+    attachmentFacts: createAttachmentFactsResolver(attachments, cwd),
   }
 
   // Every scope currently open. `reloadSettings` has to reach all of them, and

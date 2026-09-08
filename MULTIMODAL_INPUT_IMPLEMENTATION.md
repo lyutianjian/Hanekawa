@@ -93,7 +93,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S12 | Desktop 预览、缩略图与打开原图 | S11 | 短 | `[ ]` |
 | S13 | TUI 图片剪贴板采集（三平台） | S08 | 中 | `[x]` |
 | S14 | TUI 路径粘贴、附件列表与 `/paste-image` | S13 | 中 | `[x]` |
-| S15 | 当前轮/历史轮判定与历史降级投影 | S06 | 长 | `[ ]` |
+| S15 | 当前轮/历史轮判定与历史降级投影 | S06 | 长 | `[x]` |
 | S16 | `mediaStrip` 数量限制与图像 token 预算 | S15 | 中 | `[ ]` |
 | S17 | Anthropic payload 图像映射 | S16, S05 | 中 | `[ ]` |
 | S18 | OpenAI payload 图像映射与工具图片合成消息 | S16, S05 | 中 | `[ ]` |
@@ -555,7 +555,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S15 `[ ]` 当前轮/历史轮判定与历史降级投影
+## S15 `[x]` 当前轮/历史轮判定与历史降级投影
 
 **前置**：S06 · **规模**：长 · **设计稿**：§9.1、§9.2、§11.1
 **涉及**：`src/harness/requestPrep.ts`、`src/harness/loop.ts`
@@ -583,6 +583,25 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：测试覆盖排队消息出队后算新图、重试保持轮次身份、并行工具结果归属；payload 中无历史图字节而 JSONL 与文件不变。
 **验证**：`node --import tsx --test test/loop.test.ts` + 新增 requestPrep 测试
 **提交**：`checkpoint: S15 classify turn images and project history as text`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- **前置说明**：本文件中第一个 `[ ]` 仍是 S11（前置 S19 未完成、§1.1 建议 S15–S19 先行），按 S14 确立的「前置全部满足」顺序执行 S15（前置 S06 已完成）。规模为「长」但一次会话内完成全部 8 个工作项，无需启用建议断点。
+- 新增 `src/harness/turnImages.ts`（「涉及文件」之外的新模块——「四处复用同一份规则」需要单一归属，requestPrep 的职责是既有记录整形，规则另立门户更清晰）：`assertNewImagesAllowed`（新图 gate，UI 预检 / 提交准备 / loop 再检查 / S19 Provider 终检共用）、`assertCurrentImagesAvailable`（当前输入文件缺失阻止）、`projectTurnImagesForRequest`（分类 + 历史降级投影）、`TurnImageBlockError`（`imageInputBlock: 'model-not-capable' | 'file-missing'` + 完整 ref 列表）、占位符与通知文案格式化、以及 `(能力 × 图片集合)` signature 去重键。
+- 工作项 1（判定）：新图 = `turnId === 当前轮` 的 message（用户附件 + @ 图片）与成功的 `tool_result`（本轮 Read 图片）；判定只看记录身份（turn ID + 消息 ID 双保险——恢复场景下记录可能丢了 turnId 但保住了消息 ID），**不看数组位置**（测试把当前轮消息放在历史消息之前钉住）。无 turnId 的旧记录一律历史；`turn_interruption`/队列记录不经上下文，天然不参与。
+- 工作项 2（排队与重试）：排队输入在出队执行时才经 `submit → run` 创建带**新 turnId** 的用户记录——等待本身不产生记录，排队图在新轮开始瞬间即新图（loop 测试以「queued earlier, executing now」钉住）；轮内重试（max_tokens 续写、fallback `continue`、retry-primary）共享同一 turnId，新图身份不因请求重建改变——fallback 测试证明**模型中途切换不能把新图变历史绕过阻止**（见工作项 3）。
+- 工作项 3（分层）：
+  - **提交准备**（turn-start 之前、用户记录之前）：`SessionController.submit` 在 emit `turn-start` 前调用新方法 `loop.assertImagesAllowedForSubmission(input, overrides)`（显式附件 + overrides 模型能力，同步读取、无异步窗口）——阻止时 submit 直接 reject，两端既有错误通道呈现（TUI system message / desktop host fail 响应，即 S11「移除该图/切模型」出口的挂点），轮次从未开始（测试断言零 turn-start/turn-end/快照/记录）。@ 图片在 `run()` 内收集，紧随其后由 loop 权威 gate 覆盖。
+  - **loop 权威 gate**：`runInternal` 在 mention 收集后、`appendRecord(userMessage)` 前执行同一 `assertNewImagesAllowed`（显式 + mention 合并后的 turnImages）+ `assertCurrentImagesAvailable`——阻止时零记录落盘，草稿留在 shell。
+  - **loop 再检查**：`loadPreparedRecords(turnId, userMessage.id)` 每次请求重建都跑 `projectTurnImagesForRequest`，用**当次迭代实际服务模型**（fallback / plan / retry-primary 切换后重算）；中途切到纯文本模型且本轮有新图 → 抛 `TurnImageBlockError`（fallback 测试：primary 可用 + fallback 纯文本 + 带图输入 → fallback 请求被阻止、provider 只收到 primary 的一次调用）。Provider 终检属 S19、UI 预检属 S11，均直接复用本模块。
+  - 单轮互斥：controller `streaming` 标志 + loop `enqueue` 在飞槽；所有检查同步读 `activeModel`，不依赖过期模型信息。
+- 工作项 5（投影）：`projectTurnImagesForRequest` 对纯文本模型 + 仅历史图的记录做**纯投影副本**——`images` 键移除、占位符追加到 `content`，输入数组与 recordsCache/JSONL 完全不动（deepEqual 快照钉住）；capable 或无历史图时恒等返回（同一数组引用，零开销）。占位符逐字复刻设计稿模板：`[Historical image omitted for this text-only model:\n<name>, original <WxH>, cached at <path>.\nThe pixels are not present in this request.]`——定向后原始尺寸复用 S04 的 `orientedDimensions`（EXIF 6 的 64x48 → 48x64），localPath 来自存储层登记值。纯图片历史消息 content 恰为占位符（非空前缀零 `\n\n`）。投影在配对修复之后、compact 之前运行——压缩摘要因此看到的是占位符文字（§11.3 的先声，S22 复用同一投影）。
+- 工作项 6（诚实性）：占位符只陈述「无视觉内容」，不描述图片内容；不调用任何视觉模型生成 OCR/描述；既有分析只存在于它本来所在的 assistant 消息里，投影不搬运。
+- 工作项 7（缺失分层）：历史图解析失败（未登记 / 原图与发送版皆失）→ `[Historical image missing: …]` 占位符保位；**当前输入**缺失 → `assertCurrentImagesAvailable` 在任何记录之前以 `file-missing` 阻止（测试钉住零记录）。事实解析经新接口 `AttachmentFactsResolver`：bootstrap 用 `ImageAttachmentService.resolveRef`（metadata，不读图像字节）+ `fs.stat` 存在性构造（原图或发送版任一存活即可用，两者皆失才算缺失；原图已失时占位符路径改用发送版路径），经 `SessionScopeDeps → CreateRuntimeDeps → AgentLoopOptions.attachmentFacts` 逐层可选传入；无 resolver 时当前输入不做提交期复查、历史图一律按缺失占位（测试两种态都覆盖）。子代理 loop 不接线（归属规则属 S23）。
+- 工作项 8（通知）：`ModelStreamEvent` 新增 `{ type: 'image_capability_notice', message, omittedImageCount, missingImageCount? }`（纯文本，可 structuredClone，经既有 onStreamEvent → wire `session-event` 通道到达两端）。loop 按 signature（`capable|new|hist|miss` 各自的排序 ID 串）去重：同一能力状态与图片集合跨工具步骤、跨轮次不重复提示；切回 capable 静默更新状态、再降级同集合会再次通知；新增图片（含中途新 Read 图）改变集合即重新通知。TUI `useAgentLoop` 增加渲染 case（system 行）；desktop renderer 对未知流事件安全忽略，其文案与出口留待 S24。
+- 既有测试适配（gate 缺省关闭的必然结果）：`loop.test.ts` 两处图像测试（S06/S09）与 `loopAbort.test.ts` 中断恢复测试补 `supportsImageInput: true`；三个 fake loop 桩（`sessionController` / `sessionWorkspace`）补 `assertImagesAllowedForSubmission`——controller 桩实现真规则并新增 `imageCapable` 选项（缺省 capable，其他测试零改动）。
+- 测试：新增 `test/turnImages.test.ts` 16 项（gate 三态、file-missing 阻止、无 resolver 直通、capable 恒等、按身份不按位置分类、新图阻止不降级、当前轮工具结果归新图/历史工具结果降级、legacy 无 turnId + 消息 ID 命中、占位符逐字模板、缺失占位、无 resolver 缺失路径、多图逐块投影、输入零突变、signature 稳定/变化/切回再降级、占位符不宣称视觉内容）；`loop.test.ts` +4（纯文本模型阻止新图零记录（排队语义）、当前输入缺失零记录、历史投影端到端——占位符逐字断言 + 两个 provider 迭代（含工具往返）的 messages/contextItems 全部无 images + 落盘记录原样保留 + 通知恰一次、fallback 中途切换阻止且 provider 未收到 fallback 请求）；`sessionController.test.ts` +1（text-only 提交在 turn-start 之前拒绝：零事件、零快照、零记录）。
+- 验证：窄测 `turnImages`（16）/`loop`（54）/`loopAbort`/`sessionController`（21）/`sessionWorkspace`/`messageQueue`/`atMentions`/`requestPrep`/`contextBuilder`/`sessions`/`protocolHost`/`desktopMain`/`protocolChildProcess`/`desktopShellHost`/`desktopUiRoundTrip` 385 项全绿 + TUI 套件（tuiRender/tuiTranscript/tuiAutocomplete/commandUi）85 项全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3151 项 3150 过、1 跳过（既有）、0 失败——首次运行曾在输出中闪现 S07 已记录的 `backgroundTasks` 后台 Bash 时序抖动（退出码仍为 0），复跑全量与单文件重跑（8/8）均全绿，与本会话改动无关（不触碰后台任务）。
 
 ---
 

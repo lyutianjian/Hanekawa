@@ -233,6 +233,7 @@ describe('AgentLoop abort', () => {
       toolRunner,
       toolContext: { cwd: process.cwd(), sessionId: 'test', readFiles: new Set() },
       recordStream: recordStreamFor(records),
+      supportsImageInput: true,
     })
 
     const image = makeImageAttachmentRef({ id: 'img-abort', ownerSessionId: 'test', name: 'shot.png' })

@@ -164,6 +164,17 @@ export function useAgentLoop({
         // Model yielded control; tools execute (if any) until the next stream.
         setStreamMode('tool-use')
         return
+      case 'image_capability_notice':
+        // The loop degraded this request's historical images to text
+        // placeholders (design §9.1). Surfaced as a system line, once per
+        // distinct state — the loop already dedupes, so this just renders it.
+        appendStaticItem({
+          kind: 'system',
+          id: randomUUID(),
+          content: event.message,
+          createdAt: new Date().toISOString(),
+        })
+        return
       default:
         setStreamMode('responding')
         return

@@ -16,6 +16,7 @@ import type {
 import type { AgentSession } from '../src/runtime/types.js'
 import type { FileHistoryService } from '../src/services/fileHistory/fileHistoryService.js'
 import type { UserInput } from '../src/media/types.js'
+import { assertNewImagesAllowed } from '../src/harness/turnImages.js'
 import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 type LoopRun = (
@@ -56,6 +57,8 @@ async function createHarness(options: {
   fileHistoryInitFails?: boolean
   /** No title yet — the state a session is in until its first message. */
   untitled?: boolean
+  /** The stub loop's image capability; defaults to capable. */
+  imageCapable?: boolean
 } = {}): Promise<Harness> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-controller-'))
   const store = new SessionStore(cwd)
@@ -69,7 +72,15 @@ async function createHarness(options: {
 
   const loop = {
     run: options.run ?? (async () => okResult()),
-    getActiveModel: () => ({ model: 'test-model', modelKey: 'main' }),
+    getActiveModel: () => ({
+      model: 'test-model',
+      modelKey: 'main',
+      ...(options.imageCapable === false ? {} : { supportsImageInput: true }),
+    }),
+    // The real submission rule, so the pre-turn-start gate is exercised the
+    // way production wires it — the loop owns the rule, the stub only mirrors.
+    assertImagesAllowedForSubmission: (input: UserInput) =>
+      assertNewImagesAllowed(input.images, options.imageCapable !== false, 'test-model'),
     invalidateRecordsCache: () => { counters.invalidateCalls += 1 },
   }
 
@@ -186,6 +197,24 @@ test('submit hands the loop the full UserInput — text and image refs intact', 
   await harness.controller.submit({ text: 'hello', images })
 
   assert.deepEqual(seen, [{ text: 'hello', images }])
+})
+
+test('a text-only model rejects an image-bearing submit before turn-start', async () => {
+  const harness = await createHarness({ imageCapable: false })
+
+  const images = [makeImageAttachmentRef({ id: 'img-x', ownerSessionId: 's', name: 'shot.png' })]
+  await assert.rejects(
+    harness.controller.submit({ text: 'look at this', images }),
+    (error: unknown) =>
+      error instanceof Error && /does not accept image input/.test(error.message),
+  )
+
+  // The turn never started: no turn-start, no snapshot, no records on disk.
+  assert.equal(harness.events.filter((event) => event.type === 'turn-start').length, 0)
+  assert.equal(harness.events.filter((event) => event.type === 'turn-end').length, 0)
+  assert.equal(harness.snapshotCalls.length, 0)
+  const stored = await harness.store.loadRecords(harness.session.id)
+  assert.equal(stored.length, 0)
 })
 
 test('a rolled-back turn restores the input images with the text, in order', async () => {

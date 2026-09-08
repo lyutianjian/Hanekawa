@@ -1138,10 +1138,19 @@ function getMessageDisplayContent(record: (SessionRecord & { type: 'message' }) 
  * character between the pane and the index would look like a rename nobody
  * asked for — so the rule lives here once. Answers `undefined` for anything
  * that is not a user message, which is what "leave the title alone" means.
+ *
+ * A pure-image user message has no text to name the session with, so the first
+ * attachment's file name stands in (「图片：文件名」); `content` stays untouched —
+ * the fallback is display-only and never written back into the message.
  */
 export function deriveSessionTitle(record: SessionRecord): string | undefined {
   if (record.type !== 'message' || record.role !== 'user') return undefined
-  return getMessageDisplayContent(record)?.slice(0, SESSION_TITLE_LENGTH)
+  const text = getMessageDisplayContent(record)
+  if (text !== undefined && (text.trim().length > 0 || (record.images?.length ?? 0) === 0)) {
+    return text.slice(0, SESSION_TITLE_LENGTH)
+  }
+  const image = record.images?.find((candidate) => candidate.name.length > 0)
+  return image ? `图片：${image.name}`.slice(0, SESSION_TITLE_LENGTH) : undefined
 }
 
 /** How much of the first message names the session. */

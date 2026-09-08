@@ -6,6 +6,7 @@ import { normalizeToolInput } from '../tools/inputAliases.js'
 import { describeToolError } from '../tools/fsErrors.js'
 import { countTextTokens } from '../prompts/budget.js'
 import { wrapInSystemReminder } from './systemReminder.js'
+import type { ImageAttachmentRef } from '../media/types.js'
 import type { ToolHooks } from './hooks.js'
 import type { SessionRecord, TaskDisplayCounts, TaskDisplayItem, TaskDisplaySnapshot, TaskItem, Tool, ToolCall, ToolContext, ToolErrorCode, ToolProgressEvent, ToolResultDisplay, ToolResultMetadata, ToolResultRecord, ToolUseRecord } from './types.js'
 
@@ -160,7 +161,7 @@ export class ToolRunner {
       try {
         const result = await tool.execute(call.input, executionContext)
         syncMutableToolContext(context, executionContext)
-        const record = this.result(call, tool.name, result.ok, result.content, result.errorCode, result.errorDetails, turnId, tool.maxResultSizeChars, result.metadata?.display)
+        const record = this.result(call, tool.name, result.ok, result.content, result.errorCode, result.errorDetails, turnId, tool.maxResultSizeChars, result.metadata?.display, result.images)
         // Map tool result to API format (e.g. tool_reference blocks for ToolSearch)
         if (tool.mapToolResultToToolResultBlockParam) {
           try {
@@ -277,6 +278,7 @@ export class ToolRunner {
     turnId?: string,
     maxResultSizeChars?: number,
     display?: ToolResultDisplay,
+    images?: ImageAttachmentRef[],
   ): ToolResultRecord {
     const boundedContent = applyToolResultBudget(content, maxResultSizeChars)
     const boundedDisplay = normalizeToolResultDisplay(display)
@@ -292,6 +294,7 @@ export class ToolRunner {
       ...(errorCode ? { errorCode } : {}),
       ...(errorDetails !== undefined ? { errorDetails } : {}),
       ...(turnId ? { turnId } : {}),
+      ...(images !== undefined && images.length > 0 ? { images } : {}),
       createdAt: new Date().toISOString(),
     }
   }

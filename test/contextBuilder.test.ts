@@ -6,6 +6,7 @@ import path from 'node:path'
 import { z } from 'zod/v3'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
 import type { ReadFileState, SessionRecord, Tool } from '../src/harness/types.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 const contextWindow = (contextWindow: number) => ({ contextWindow, summaryOutputTokens: 0 })
 
@@ -96,6 +97,74 @@ test('ContextBuilder can build a reduced system prompt from enabled sections', a
     'You are Hanekawa, an interactive CLI age',
     '# Doing tasks\n - The user will request s',
   ])
+})
+
+test('ContextBuilder carries image refs onto message and tool_result context items', async () => {
+  const builder = new ContextBuilder(undefined, contextWindow(50_000))
+  const userImage = makeImageAttachmentRef({ id: 'img-u1', name: 'prompt.png' })
+  const resultImage = makeImageAttachmentRef({ id: 'img-t1', name: 'screenshot.png' })
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'u1',
+      role: 'user',
+      content: 'look at this',
+      createdAt: '2026-09-08T00:00:00.000Z',
+      images: [userImage],
+    },
+    {
+      type: 'at_mention_context',
+      id: 'at1',
+      userMessageId: 'u1',
+      turnId: 't1',
+      createdAt: '2026-09-08T00:00:01.000Z',
+      files: [],
+      content: '<system-reminder>code text only</system-reminder>',
+    },
+    {
+      id: 't1',
+      type: 'tool_use',
+      tool: 'Read',
+      input: { filePath: 'screenshot.png' },
+      riskLevel: 'safe',
+      createdAt: '2026-09-08T00:00:02.000Z',
+      turnId: 't1',
+    },
+    {
+      id: 'r1',
+      type: 'tool_result',
+      toolUseId: 't1',
+      tool: 'Read',
+      ok: true,
+      content: '[Image 1: screenshot.png; …]',
+      createdAt: '2026-09-08T00:00:03.000Z',
+      turnId: 't1',
+      images: [resultImage],
+    },
+  ]
+
+  const built = await builder.build({
+    records,
+    tools: [],
+    includeUserContext: false,
+  })
+
+  const userItem = built.contextItems.find((item) => item.kind === 'message' && item.message.id === 'u1')
+  assert.ok(userItem?.kind === 'message')
+  assert.deepEqual(userItem.message.images, [userImage])
+
+  const resultItem = built.contextItems.find((item) => item.kind === 'tool_result' && item.toolUseId === 't1')
+  assert.ok(resultItem?.kind === 'tool_result')
+  assert.deepEqual(resultItem.images, [resultImage])
+
+  // The at-mention record stays code-text-only: images belong to the user
+  // message, never to the mention expansion (design doc §5.1).
+  const mentionItem = built.contextItems.find((item) => item.kind === 'message' && item.message.id === 'at1')
+  assert.ok(mentionItem?.kind === 'message')
+  assert.equal('images' in mentionItem.message, false)
+
+  // The message projection preserves the refs too — providers read both shapes.
+  assert.deepEqual(built.messages.find((message) => message.id === 'u1')?.images, [userImage])
 })
 
 test('ContextBuilder injects at-mention context records as hidden user context', async () => {

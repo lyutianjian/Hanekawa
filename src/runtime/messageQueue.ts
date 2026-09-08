@@ -5,6 +5,7 @@ import type {
   PersistedQueuedMessage,
   SessionRecord,
 } from '../harness/types.js'
+import type { ImageAttachmentRef } from '../media/types.js'
 
 export type QueuedMessage = PersistedQueuedMessage
 export type PersistQueueRecord = (sessionId: string, record: MessageQueueRecord) => Promise<void>
@@ -193,6 +194,28 @@ function sameMessages(left: readonly QueuedMessage[], right: readonly QueuedMess
       && message.content === other.content
       && message.priority === other.priority
       && message.createdAt === other.createdAt
+      && sameImages(message.images, other.images)
+  })
+}
+
+/**
+ * Refs compare by value: hydrate rebuilds the arrays from records, so identity
+ * comparison would fire listeners on every replay, while skipping the field
+ * entirely would miss a message whose images changed between snapshots.
+ */
+function sameImages(left: readonly ImageAttachmentRef[] | undefined, right: readonly ImageAttachmentRef[] | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right
+  if (left.length !== right.length) return false
+  return left.every((ref, index) => {
+    const other = right[index]
+    return other !== undefined
+      && ref.id === other.id
+      && ref.ownerSessionId === other.ownerSessionId
+      && ref.name === other.name
+      && ref.mimeType === other.mimeType
+      && ref.width === other.width
+      && ref.height === other.height
+      && ref.byteLength === other.byteLength
   })
 }
 
@@ -201,4 +224,15 @@ function isValidQueuedMessage(value: PersistedQueuedMessage): boolean {
     && typeof value.content === 'string'
     && typeof value.createdAt === 'string'
     && (value.priority === 'now' || value.priority === 'next' || value.priority === 'later')
+    && (value.images === undefined || (Array.isArray(value.images) && value.images.every(isValidImageRef)))
+}
+
+function isValidImageRef(ref: ImageAttachmentRef): boolean {
+  return typeof ref?.id === 'string'
+    && typeof ref.ownerSessionId === 'string'
+    && typeof ref.name === 'string'
+    && typeof ref.mimeType === 'string'
+    && typeof ref.width === 'number'
+    && typeof ref.height === 'number'
+    && typeof ref.byteLength === 'number'
 }

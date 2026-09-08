@@ -2,6 +2,7 @@ import { beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import type { MessageQueueRecord, SessionRecord } from '../src/harness/types.js'
 import { MessageQueue, replayMessageQueue } from '../src/runtime/messageQueue.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 describe('messageQueue', () => {
   let persisted: Array<{ sessionId: string; record: MessageQueueRecord }>
@@ -99,6 +100,44 @@ describe('messageQueue', () => {
     await queue.enqueue('mine')
     assert.deepEqual(queue.getSnapshot().map((item) => item.content), ['mine'])
     assert.deepEqual(other.getSnapshot().map((item) => item.content), ['theirs'])
+    unsubscribe()
+  })
+
+  it('replays queued image refs intact and rejects malformed ones', () => {
+    const base = new Date().toISOString()
+    const image = makeImageAttachmentRef({ id: 'img-q1', ownerSessionId: 'session-a', name: 'queued.png' })
+    const good = { id: 'm1', content: 'with image', priority: 'next' as const, createdAt: base, images: [image] }
+    const records: SessionRecord[] = [
+      { id: 'e1', type: 'message_queue', operation: 'enqueue', message: good, createdAt: base },
+      // The malformed entries are deliberately mis-typed: replay parses
+      // whatever an old or corrupted log line contains, not what the types promise.
+      { id: 'e2', type: 'message_queue', operation: 'enqueue', message: { ...good, id: 'm2', images: 'not-an-array' } as unknown as typeof good, createdAt: base },
+      { id: 'e3', type: 'message_queue', operation: 'enqueue', message: { ...good, id: 'm3', images: [{ ...image, id: 42 }] } as unknown as typeof good, createdAt: base },
+      { id: 'e4', type: 'message_queue', operation: 'enqueue', message: { id: 'm4', content: 'with image', priority: 'next', createdAt: base }, createdAt: base },
+    ]
+
+    const replayed = replayMessageQueue(records)
+    assert.deepEqual(replayed.map((message) => message.id), ['m1', 'm4'])
+    assert.deepEqual(replayed[0]?.images, [image])
+    assert.equal('images' in (replayed[1] ?? {}), false)
+  })
+
+  it('keeps a hydrate with identical image refs from notifying listeners', async () => {
+    const image = makeImageAttachmentRef({ id: 'img-q2', ownerSessionId: 'session-a' })
+    const persistedRecords: SessionRecord[] = [{
+      id: 'e1',
+      type: 'message_queue',
+      operation: 'enqueue',
+      message: { id: 'm1', content: 'with image', priority: 'next', createdAt: new Date().toISOString(), images: [image] },
+      createdAt: new Date().toISOString(),
+    }]
+    const hydrated = new MessageQueue('session-a', persistedRecords, async () => {})
+
+    let notifications = 0
+    const unsubscribe = hydrated.subscribe(() => notifications++)
+    await hydrated.hydrate(persistedRecords)
+    assert.deepEqual(hydrated.getSnapshot()[0]?.images, [image])
+    assert.equal(notifications, 0)
     unsubscribe()
   })
 })

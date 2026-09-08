@@ -84,7 +84,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S03 | 两端模型设置开关与选择器能力标记 | S02 | 中 | `[x]` |
 | S04 | 图像解码归一化与压缩阶梯 | S01 | 长 | `[x]` |
 | S05 | 附件存储、解析、缩略图与回收 | S04 | 中 | `[x]` |
-| S06 | 记录与上下文类型接入 `images`，持久化兼容 | S02, S05 | 中 | `[ ]` |
+| S06 | 记录与上下文类型接入 `images`，持久化兼容 | S02, S05 | 中 | `[x]` |
 | S07 | `UserInput` 贯穿提交路径与中断恢复 | S06 | 长 | `[ ]` |
 | S08 | 协议命令与 wire schema | S07 | 中 | `[ ]` |
 | S09 | `@` 图片引用 | S08 | 中 | `[ ]` |
@@ -286,7 +286,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S06 `[ ]` 记录与上下文类型接入 `images`，持久化兼容
+## S06 `[x]` 记录与上下文类型接入 `images`，持久化兼容
 
 **前置**：S02、S05 · **规模**：中 · **设计稿**：§5.1
 **涉及**：`src/harness/types.ts`、`src/harness/contextBuilder.ts`、`src/harness/recordStream.ts`、`src/sessions/`
@@ -302,6 +302,17 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：既有测试无回归；新旧记录混合的会话可正常加载；重启后图片引用仍可解析。
 **验证**：`node --import tsx --test test/contextBuilder.test.ts test/loop.test.ts` + 会话持久化相关测试
 **提交**：`checkpoint: S06 add optional image refs to records and context`
+
+**执行记录（2026-09-08，Windows x64）**
+
+- `src/harness/types.ts`（引用 `src/media/types.ts` 的 `ImageAttachmentRef`，`content: string` 全部保留、不做联合类型）：`ChatMessage`、`ToolResultRecord`、`ToolResult`（工具执行返回值）、`ContextToolResult`（对应 `ModelContextItem`）、`PersistedQueuedMessage`（持久化队列消息）、`TurnInterruptionRecord`（输入恢复事件）各加可选 `images?: ImageAttachmentRef[]`。`ContextChatMessage` 经 `ChatMessage` 自动携带；`AtMentionContextRecord` 按设计稿保持纯代码文本职责，不加字段（图片引用只归属用户消息，测试钉住 mention 上下文项无 `images`）。
+- `ToolRunner`：成功执行路径把 `result.images` 透传到 `tool_result` 记录（空数组不落字段）；拒绝 / 中止 / hook 拦截等 ToolRunner 自行构造的失败路径不产生 `images`，配对结算语义不变。这是 S10 `Read` 图片分流落库的唯一入口。
+- `contextBuilder.recordsToContextItems`：`message` 与 `tool_result` 分支显式带上 `images`；`prompts/composer.ts` 与 `budget.ts` 的选择函数按引用透传上下文项与消息，无需改动。token 计数保持纯文本（图像 token 属 S16）。
+- 队列兼容（`src/runtime/messageQueue.ts`）：`isValidQueuedMessage` 对 `images` 做「缺省或数组且逐项字段形状正确」的宽松校验（replay 解析的是磁盘上的任意 JSONL，不可信）；`sameMessages` 增加按值比较的 `sameImages`——hydrate 重建数组不触发监听器、仅 images 变化也能被检测到。`enqueue` 签名未动（统一传 `UserInput` 属 S07/S20）。
+- 纯图片消息标题后备：`deriveSessionTitle`（`src/sessions/service.ts`，SessionController 与索引共用同一规则）在展示文本为空 / 纯空白且带图时返回「图片：文件名」；无图旧行为逐分支不变（空文本仍为空标题）。后备仅用于标题，不写回 `content`。
+- JSONL 持久化：`SessionStore.appendRecord` 按既有 `JSON.stringify` 序列化，`images` 作为可选字段自然落盘；旧记录无该字段按纯文本读取，不做迁移、无版本标记。harness 仍只经 `RecordStream`。wire 侧记录整体过线（可 `structuredClone` 的纯 JSON），协议命令属 S08 未动。
+- 新增测试 5 项 + 扩展：`contextBuilder`（消息/工具结果上下文项与消息投影均携带 images、mention 无）、`sessions`（新旧记录混合落盘→新实例重载往返：消息/工具结果/队列/中断记录的引用逐字段还原、旧记录无 `images` 键、纯图片首消息标题 `图片：prompt.png`；`deriveSessionTitle` 四分支）、`messageQueue`（replay 保留 images、非数组与字段坏形状被拒、相同 images 的 hydrate 不通知）、`toolRunner`（成功携带 / 空数组不落 / 拒绝路径无）。
+- 验证：窄测 `contextBuilder`/`loop`/`sessions`/`messageQueue`/`toolRunner` 121 项全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3015 项 3014 过、1 跳过（既有）、0 失败（S02 记录的 7 个 TUI Ink 渲染失败本次未复现，与 S04/S05 观察一致）。
 
 ---
 

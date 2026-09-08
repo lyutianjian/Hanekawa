@@ -5,10 +5,11 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { SessionStore, type SessionMeta } from '../src/sessions/service.js'
+import { SessionStore, deriveSessionTitle, type SessionMeta } from '../src/sessions/service.js'
 import { rollbackInterruptedPromptIfSynthetic } from '../src/runtime/interruptRollback.js'
 import type { SessionRecord } from '../src/harness/types.js'
 import { getSessionsDir } from '../src/utils/paths.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 test('SessionStore creates, lists, resolves, renames, and deletes sessions', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
@@ -716,4 +717,160 @@ test('SessionStore repairs orphan tool protocol records in JSONL sessions', asyn
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('SessionStore round-trips image refs beside text records without migrating old ones', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+    const session = await store.create()
+
+    const promptImage = makeImageAttachmentRef({ id: 'img-prompt', ownerSessionId: session.id, name: 'prompt.png' })
+    const resultImage = makeImageAttachmentRef({ id: 'img-result', ownerSessionId: session.id, name: 'screenshot.png' })
+    const queuedImage = makeImageAttachmentRef({ id: 'img-queued', ownerSessionId: session.id, name: 'queued.png' })
+    const interruptedImage = makeImageAttachmentRef({ id: 'img-interrupted', ownerSessionId: session.id, name: 'interrupted.png' })
+
+    // First user message is pure image: no text, title falls back to the name.
+    await store.appendRecord(session.id, {
+      type: 'message',
+      id: 'u1',
+      role: 'user',
+      content: '',
+      createdAt: '2026-09-08T00:00:00.000Z',
+      turnId: 'turn-1',
+      images: [promptImage],
+    })
+    // Second is written exactly like an old build would: no images field at all.
+    await store.appendRecord(session.id, {
+      type: 'message',
+      id: 'u2',
+      role: 'user',
+      content: 'legacy text-only record',
+      createdAt: '2026-09-08T00:00:01.000Z',
+      turnId: 'turn-2',
+    })
+    await store.appendRecord(session.id, {
+      id: 'call-1',
+      type: 'tool_use',
+      tool: 'Read',
+      input: { filePath: 'screenshot.png' },
+      riskLevel: 'safe',
+      createdAt: '2026-09-08T00:00:02.000Z',
+      turnId: 'turn-2',
+    })
+    await store.appendRecord(session.id, {
+      id: 'result-1',
+      type: 'tool_result',
+      toolUseId: 'call-1',
+      tool: 'Read',
+      ok: true,
+      content: '[Image 1: screenshot.png; …]',
+      createdAt: '2026-09-08T00:00:03.000Z',
+      turnId: 'turn-2',
+      images: [resultImage],
+    })
+    await store.appendRecord(session.id, {
+      id: 'q1',
+      type: 'message_queue',
+      operation: 'enqueue',
+      message: {
+        id: 'queued-1',
+        content: 'queued with an image',
+        priority: 'next',
+        createdAt: '2026-09-08T00:00:04.000Z',
+        images: [queuedImage],
+      },
+      createdAt: '2026-09-08T00:00:04.000Z',
+    })
+    await store.appendRecord(session.id, {
+      id: 'int-1',
+      type: 'turn_interruption',
+      userMessageId: 'u2',
+      prompt: 'legacy text-only record',
+      images: [interruptedImage],
+      remainingTasks: [],
+      recoverable: true,
+      createdAt: '2026-09-08T00:00:05.000Z',
+      turnId: 'turn-2',
+    })
+
+    // A fresh store stands in for a restart: the refs must come back from the
+    // JSONL exactly as written, and the old record must stay text-only.
+    const reloaded = new SessionStore(dir)
+    const records = await reloaded.loadRecords(session.id)
+
+    const userWithImage = records.find((record) => record.type === 'message' && record.id === 'u1')
+    assert.ok(userWithImage?.type === 'message')
+    assert.deepEqual(userWithImage.images, [promptImage])
+
+    const legacy = records.find((record) => record.type === 'message' && record.id === 'u2')
+    assert.ok(legacy?.type === 'message')
+    assert.equal('images' in legacy, false)
+
+    const toolResult = records.find((record) => record.type === 'tool_result' && record.id === 'result-1')
+    assert.ok(toolResult?.type === 'tool_result')
+    assert.deepEqual(toolResult.images, [resultImage])
+
+    const queueRecord = records.find((record) => record.type === 'message_queue' && record.operation === 'enqueue')
+    assert.ok(queueRecord?.type === 'message_queue' && queueRecord.operation === 'enqueue')
+    assert.deepEqual(queueRecord.message.images, [queuedImage])
+
+    const interruption = records.find((record) => record.type === 'turn_interruption')
+    assert.ok(interruption?.type === 'turn_interruption')
+    assert.deepEqual(interruption.images, [interruptedImage])
+
+    const meta = await reloaded.load(session.id)
+    assert.equal(meta?.title, '图片：prompt.png')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('deriveSessionTitle keeps text titles and falls back only for pure-image messages', () => {
+  const image = makeImageAttachmentRef({ name: 'photo.png' })
+
+  assert.equal(deriveSessionTitle({
+    type: 'message',
+    id: 'u1',
+    role: 'user',
+    content: 'hello',
+    createdAt: '2026-09-08T00:00:00.000Z',
+    images: [image],
+  }), 'hello')
+
+  assert.equal(deriveSessionTitle({
+    type: 'message',
+    id: 'u2',
+    role: 'user',
+    content: '',
+    createdAt: '2026-09-08T00:00:00.000Z',
+    images: [image],
+  }), '图片：photo.png')
+
+  assert.equal(deriveSessionTitle({
+    type: 'message',
+    id: 'u3',
+    role: 'user',
+    content: '   ',
+    createdAt: '2026-09-08T00:00:00.000Z',
+    images: [image],
+  }), '图片：photo.png')
+
+  // Old behavior untouched: empty text without images stays an empty title.
+  assert.equal(deriveSessionTitle({
+    type: 'message',
+    id: 'u4',
+    role: 'user',
+    content: '',
+    createdAt: '2026-09-08T00:00:00.000Z',
+  }), '')
+
+  assert.equal(deriveSessionTitle({
+    type: 'message',
+    id: 'a1',
+    role: 'assistant',
+    content: 'response',
+    createdAt: '2026-09-08T00:00:00.000Z',
+  }), undefined)
 })

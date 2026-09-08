@@ -271,6 +271,7 @@ export class ContextBuilder {
             model: record.model,
             ...(record.reasoningContent ? { reasoningContent: record.reasoningContent } : {}),
             ...(record.thinkingBlocks ? { thinkingBlocks: record.thinkingBlocks } : {}),
+            ...(record.images ? { images: record.images } : {}),
           },
         })
         continue
@@ -308,6 +309,7 @@ export class ContextBuilder {
           ok: record.ok,
           content: record.content,
           ...(record.apiResultBlock ? { apiResultBlock: record.apiResultBlock } : {}),
+          ...(record.images ? { images: record.images } : {}),
         })
         continue
       }

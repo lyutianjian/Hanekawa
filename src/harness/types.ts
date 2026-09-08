@@ -4,6 +4,7 @@ import type { CacheRuntime } from './cacheControl.js'
 import type { JsonSchema, ToolValidationResult } from './toolValidation.js'
 import type { PermissionMode } from './permissions.js'
 import type { SessionMetricInput } from './metrics.js'
+import type { ImageAttachmentRef } from '../media/types.js'
 
 export type RiskLevel = 'safe' | 'confirm' | 'dangerous'
 
@@ -38,6 +39,12 @@ export interface ChatMessage {
   model?: string
   reasoningContent?: string
   thinkingBlocks?: ThinkingBlock[]
+  /**
+   * Image refs submitted with this message. `content` stays the text of record
+   * for display, search, and the existing commands; images ride beside it and
+   * resolve through the owning session's attachment service, never inlined.
+   */
+  images?: ImageAttachmentRef[]
 }
 
 export interface ToolUseRecord {
@@ -70,6 +77,8 @@ export interface ToolResultRecord {
    * when present, enabling tool_reference blocks for ToolSearch.
    */
   apiResultBlock?: ToolResultBlockParam
+  /** Images the tool produced (e.g. a `Read` of an image file), persisted as refs. */
+  images?: ImageAttachmentRef[]
 }
 
 export type ToolProgressPhase = 'started' | 'finished'
@@ -253,6 +262,8 @@ export interface TurnInterruptionRecord {
   type: 'turn_interruption'
   userMessageId: string
   prompt: string
+  /** Image refs the interrupted input carried, restored with the text. */
+  images?: ImageAttachmentRef[]
   remainingTasks: TaskItem[]
   recoverable: boolean
   consumedAt?: string
@@ -267,6 +278,8 @@ export interface PersistedQueuedMessage {
   content: string
   priority: MessageQueuePriority
   createdAt: string
+  /** Image refs queued with the text; restored intact across a restart. */
+  images?: ImageAttachmentRef[]
 }
 
 export type MessageQueueRecord =
@@ -432,6 +445,8 @@ export interface ToolResult {
   errorCode?: ToolErrorCode
   errorDetails?: unknown
   metadata?: ToolResultMetadata
+  /** Images the tool produced; the ToolRunner persists them on the record. */
+  images?: ImageAttachmentRef[]
 }
 
 /**
@@ -624,6 +639,8 @@ export interface ContextToolResult {
   content: string
   /** Pre-mapped API block (e.g. tool_reference for ToolSearch). */
   apiResultBlock?: ToolResultBlockParam
+  /** Images carried from the persisted tool_result record. */
+  images?: ImageAttachmentRef[]
 }
 
 export type ModelContextItem = ContextChatMessage | ContextToolUse | ContextToolResult

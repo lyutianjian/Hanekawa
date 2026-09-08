@@ -6,6 +6,7 @@ import { prepareRecordsForRequest } from '../src/harness/requestPrep.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { countTextTokens } from '../src/prompts/budget.js'
 import type { SessionRecord, Tool, ToolProgressEvent } from '../src/harness/types.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 test('tool runner executes safe tool without prompting', async () => {
   let prompted = false
@@ -485,4 +486,45 @@ test('a filesystem errno reaches the model with the tool name and what to do nex
   assert.equal(result.errorCode, 'execution_failed')
   assert.match(result.content, /^explodingTool failed:/)
   assert.match(result.content, /is a file, not a directory/)
+})
+
+test('a tool result carrying image refs persists them on the tool_result record', async () => {
+  const image = makeImageAttachmentRef({ id: 'img-read-1', name: 'screenshot.png' })
+  const withImages: Tool = {
+    name: 'readImage',
+    description: 'reads an image',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({ ok: true, content: '[Image 1: screenshot.png; …]', images: [image] }),
+  }
+  const withoutImages: Tool = {
+    name: 'plainTool',
+    description: 'plain',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({ ok: true, content: 'done', images: [] }),
+  }
+  const dangerous: Tool = {
+    name: 'dangerousTool',
+    description: 'dangerous',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'dangerous',
+    execute: async () => ({ ok: true, content: 'deleted', images: [image] }),
+  }
+  const runner = new ToolRunner([withImages, withoutImages], new PermissionGate(async () => true), { onRecord: async () => {} })
+  const context = { cwd: process.cwd(), sessionId: 's1', readFiles: new Set<string>() }
+
+  const carried = await runner.run({ id: 'call1', name: 'readImage', input: {} }, context)
+  assert.deepEqual(carried.images, [image])
+
+  // An empty array stays absent: "no images" is the default, not a value to store.
+  const plain = await runner.run({ id: 'call2', name: 'plainTool', input: {} }, context)
+  assert.equal('images' in plain, false)
+
+  // ToolRunner-constructed failure paths (denial, abort, hook block) settle a
+  // full record without ever inventing image refs of their own.
+  const deniedRunner = new ToolRunner([dangerous], new PermissionGate(async () => false), { onRecord: async () => {} })
+  const denied = await deniedRunner.run({ id: 'call3', name: 'dangerousTool', input: {} }, context)
+  assert.equal(denied.ok, false)
+  assert.equal('images' in denied, false)
 })

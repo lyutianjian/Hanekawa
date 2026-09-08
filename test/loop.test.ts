@@ -510,6 +510,84 @@ test('plan mode text-only response ends turn normally as assistant message', asy
   }
 })
 
+test('plan mode reports the plan model image capability, not the primary label it shows', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-loop-plan-image-'))
+  clearAllPlanSlugs()
+  try {
+    const store = new SessionStore(cwd)
+    await store.init()
+    const session = await store.create()
+    const records: SessionRecord[] = []
+    const gate = new PermissionGate(async () => true, undefined, { cwd })
+    gate.prepareContextForPlanMode()
+
+    let loop: AgentLoop | undefined
+    const manager = new PlanModeManager({
+      cwd,
+      sessionMeta: session,
+      store,
+      gate,
+      appendRecord: async (record) => {
+        records.push(record)
+        loop?.noteRecordAppended(record)
+      },
+      loadRecords: async () => [...records],
+    })
+    gate.setPlanSlugProvider(() => manager.getSlug())
+    manager.onEnterPlanMode()
+
+    const seenModels: string[] = []
+    const provider: ModelProvider = {
+      name: 'fake',
+      async createMessage(request) {
+        seenModels.push(request.model)
+        return { content: 'thinking about it', toolCalls: [] }
+      },
+    }
+    loop = new AgentLoop({
+      provider,
+      model: 'fake-model',
+      modelKey: 'main',
+      // An image-capable primary paired with a text-only plan model.
+      supportsImageInput: true,
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner: new ToolRunner([], gate, {
+        onRecord: async (record) => { records.push(record) },
+      }),
+      toolContext: {
+        cwd,
+        sessionId: session.id,
+        readFiles: new Set(),
+        getPermissionMode: () => gate.getMode(),
+        planModeBridge: manager.buildBridge(),
+      },
+      permissionMode: () => gate.getMode(),
+      planModeManager: manager,
+      planModel: {
+        provider,
+        model: 'plan-model',
+        modelKey: 'plan-key',
+        providerName: 'fake',
+      },
+      recordStream: recordStreamFor(records),
+    })
+
+    await loop.run('plan this change')
+
+    assert.equal(seenModels[0], 'plan-model')
+    const active = loop.getActiveModel()
+    // The *label* still names the primary — that display policy is unchanged.
+    assert.equal(active.model, 'fake-model')
+    // The *capability* follows the model serving the request, or the UI would
+    // offer an attachment the plan model rejects.
+    assert.equal(active.supportsImageInput, undefined)
+  } finally {
+    clearAllPlanSlugs()
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
 test('plan mode approval reminder is last context and ExitPlanMode is not summarized', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-loop-plan-exit-tool-'))
   clearAllPlanSlugs()

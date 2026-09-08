@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { maskKey } from '../config/maskKey.js'
 import { VALID_EFFORT_LEVELS, normalizeSupportedEfforts } from '../config/effort.js'
 import { SUPPORTED_PROVIDER_NAMES } from '../config/providers/registry.js'
+import { carryJsonOnlyModelFields } from '../config/service.js'
 import type { Config, ModelConfig } from '../config/service.js'
 import type { Endpoint, Routing } from '../config/routing.js'
 import {
@@ -1939,12 +1940,13 @@ function applyProviderChange(
     case 'set-model': {
       const model: ModelConfig = { model: change.model }
       const existing = config.get().models[change.key]
-      if (existing?.promptCaching !== undefined) model.promptCaching = existing.promptCaching
       if (change.provider !== undefined && change.provider !== '') model.provider = change.provider
       if (change.endpoint !== undefined && change.endpoint !== '') model.endpoint = change.endpoint
       if (change.contextWindow !== undefined) model.contextWindow = change.contextWindow
       // Form-managed fields are replaced, so the form seeds them from the
-      // snapshot. Preserve the cache policy, which is configured in JSON.
+      // snapshot. Everything the form has no widget for — the cache policy, the
+      // image-input capability — is carried over instead, or a context-window
+      // edit here would quietly delete it from `config.json`.
       if (change.longContext1m !== undefined) model.longContext1m = change.longContext1m
       if (change.maxOutputTokens !== undefined) model.maxOutputTokens = change.maxOutputTokens
       // Normalized here as well as in the form: a full selection is "no
@@ -1952,7 +1954,7 @@ function applyProviderChange(
       // the config file.
       const supportedEfforts = normalizeSupportedEfforts(change.supportedEfforts)
       if (supportedEfforts !== undefined) model.supportedEfforts = supportedEfforts
-      config.setModelConfig(change.key, model)
+      config.setModelConfig(change.key, carryJsonOnlyModelFields(model, existing))
       return 'models'
     }
     case 'rename-model':

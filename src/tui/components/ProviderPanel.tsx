@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Box, Text, useInput, useStdout } from '../ink.js'
 import { theme } from '../theme.js'
 import { commandVisibleRows, CommandListItem, CommandPane, CommandTabs, getVisibleWindow, type CommandHint } from './CommandUI.js'
+import { carryJsonOnlyModelFields } from '../../config/service.js'
 import type {
   Config,
   ModelConfig,
@@ -460,8 +461,11 @@ export function ProviderPanel({ config, onChange, onClose }: ProviderPanelProps)
         endpoint: form.endpointName.trim(),
         ...(parsedContextWindow ? { contextWindow: parsedContextWindow } : {}),
       }
+      // The form rebuilds the config from its own three fields, so anything it
+      // has no widget for — the cache policy, the image-input capability — has
+      // to be carried over or this save would delete it from `config.json`.
       const existing = cfg.models[form.original ?? name]
-      if (existing?.promptCaching !== undefined) model.promptCaching = existing.promptCaching
+      carryJsonOnlyModelFields(model, existing)
       void persist(() => {
         if (form.original && form.original !== name) {
           config.renameModel(form.original, name)

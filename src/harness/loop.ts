@@ -186,6 +186,17 @@ export class AgentLoop {
     })
   }
 
+  /**
+   * The active model as a status display should name it, with one exception.
+   *
+   * Plan mode shows the *primary* model rather than the plan model: the switch
+   * is transient and role-driven, and naming the plan model would read as the
+   * session having changed models. `supportsImageInput` does not follow that
+   * policy — it is a capability, not a label, and the UI gates whether images
+   * can be attached at all on it. Reporting the primary model's capability while
+   * a text-only plan model serves the request would offer an attachment the
+   * provider then rejects, so the flag comes off the model actually running.
+   */
   getActiveModel(): Omit<ActiveModelRuntime, 'provider'> {
     const visibleModel = this.isPlanModelActive() ? this.modelState.primary : this.activeModel
     return {
@@ -194,7 +205,7 @@ export class AgentLoop {
       contextWindow: visibleModel.contextWindow,
       providerName: visibleModel.providerName,
       promptCacheRetention: visibleModel.promptCacheRetention,
-      supportsImageInput: visibleModel.supportsImageInput,
+      supportsImageInput: this.activeModel.supportsImageInput,
     }
   }
 

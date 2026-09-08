@@ -468,9 +468,9 @@ export class SessionHost {
     // loop folds in whichever model is *active*, so a fallback activation or a
     // plan-model switch is reflected here without a runtime rebuild.
     const budget = session.loop.getContextBudget()
-    // Capability likewise: `getActiveModel` reports the model actually serving
-    // requests (with the loop's own plan-model display policy), not whatever
-    // the session happened to start on.
+    // Capability likewise: `getActiveModel().supportsImageInput` is read off the
+    // model actually serving requests — it deliberately opts out of the loop's
+    // plan-model *display* policy — not off whatever the session started on.
     const activeModel = session.loop.getActiveModel()
     return {
       modelKey: session.modelKey,

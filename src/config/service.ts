@@ -81,6 +81,42 @@ export interface ModelConfig {
   supportsImageInput?: boolean
 }
 
+/**
+ * The `ModelConfig` fields no editing form owns — they are written in
+ * `config.json` by hand and have no widget in `/provider` or desktop Settings.
+ *
+ * Both model forms save by *rebuilding* a `ModelConfig` from their fields, which
+ * is what makes "off is absence" work for the switches they do own. That same
+ * rebuild silently drops everything they don't own, so a JSON-configured field
+ * would survive exactly until the first unrelated edit.
+ */
+const JSON_ONLY_MODEL_FIELDS = [
+  'apiKey',
+  'baseUrl',
+  'promptCaching',
+  'promptCacheRetention',
+  'pricing',
+  'thinking',
+  'supportsImageInput',
+] as const satisfies readonly (keyof ModelConfig)[]
+
+/**
+ * Copies the JSON-only fields of `existing` onto a freshly built `next`.
+ *
+ * Called by every model-form save path so editing a context window in either
+ * frontend cannot reset a capability the user declared in `config.json`. Fields
+ * the form does own are already on `next` and are left alone; `next` is mutated
+ * and returned for use as an expression.
+ */
+export function carryJsonOnlyModelFields(next: ModelConfig, existing: ModelConfig | undefined): ModelConfig {
+  if (!existing) return next
+  for (const field of JSON_ONLY_MODEL_FIELDS) {
+    const value = existing[field]
+    if (value !== undefined) Object.assign(next, { [field]: value })
+  }
+  return next
+}
+
 export interface AgentConfig {
   system?: string
   contextManagement?: Partial<ContextManagementConfig>

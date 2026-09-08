@@ -3,7 +3,7 @@ import path from 'node:path'
 import test, { beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
-import { ConfigService } from '../src/config/service.js'
+import { ConfigService, carryJsonOnlyModelFields, type ModelConfig } from '../src/config/service.js'
 import {
   loadMergedSettings,
   trustMcpServerLocally,
@@ -957,10 +957,12 @@ test('editing another model field keeps supportsImageInput', async () => {
     await service.load()
     service.addModel('vision', { provider: 'anthropic', model: 'claude-v', supportsImageInput: true })
 
-    // The edit pattern every caller uses — spread the existing config, change
-    // one field — must not reset the capability.
-    const existing = service.getModel('vision')!
-    service.setModelConfig('vision', { ...existing, contextWindow: 123_000 })
+    // Both model forms save by *rebuilding* the config from their own fields —
+    // that is how "off is absence" works for the switches they own — so the
+    // capability survives only because `carryJsonOnlyModelFields` puts it back.
+    const existing = service.getModel('vision')
+    const rebuilt: ModelConfig = { provider: 'anthropic', model: 'claude-v', contextWindow: 123_000 }
+    service.setModelConfig('vision', carryJsonOnlyModelFields(rebuilt, existing))
     assert.equal(service.getModel('vision')?.supportsImageInput, true)
     assert.equal(service.getModel('vision')?.contextWindow, 123_000)
 

@@ -672,6 +672,147 @@ export const clickConfirmYes = (sessionId) =>
 
 export const clickSurfaceRow = (rowId) => clickOr(`#surface .row[data-row-id="${rowId}"]`, 'surface row')
 
+// --- the attachment strip (S26) -------------------------------------------------
+
+/**
+ * The composer's draft attachment strip, plus the send button's note.
+ *
+ * The strip is a singleton the active pane repaints, so what this reads is
+ * *that pane's* drafts — which is exactly what the pane-isolation assertions
+ * need. `sendNote` is the note the send button carries as its tooltip while
+ * images block the send (S11): the host's submission gate is the authority,
+ * this is the why a user sees before the round trip that would fail.
+ */
+export const attachmentStrip = () => `(() => {
+  const strip = document.getElementById('composer-attachments')
+  const submit = document.getElementById('submit')
+  const rows = [...strip.children].map((row) => ({
+    state: row.classList.contains('ready') ? 'ready' : row.classList.contains('failed') ? 'failed' : 'importing',
+    label: (row.querySelector('.attachment-label') || {}).textContent || '',
+    hasThumb: row.querySelector('.attachment-thumb') !== null,
+    thumbLoaded: [...row.querySelectorAll('.attachment-thumb')].some(
+      (img) => (img.getAttribute('src') || '').startsWith('data:image/'),
+    ),
+    hasRetry: row.querySelector('.attachment-retry') !== null,
+    hasRemove: row.querySelector('.attachment-remove') !== null,
+  }))
+  return {
+    role: strip.getAttribute('role'),
+    ariaLabel: strip.getAttribute('aria-label') || '',
+    rows,
+    // Thumbs carrying the marker a step planted: a repaint that rebuilt a row
+    // would drop it, which is the observable half of "the strip does not
+    // rebuild rows per snapshot tick".
+    markedThumbs: strip.querySelectorAll('.attachment-thumb[data-smoke-mark]').length,
+    sendNote: submit ? (submit.title || '') : '',
+  }
+})()`
+
+/** Plants a marker on the first ready row's thumbnail, for the repaint assertions. */
+export const markAttachmentThumb = () => `(() => {
+  const thumb = document.querySelector('#composer-attachments .attachment-thumb')
+  if (!thumb) return false
+  thumb.setAttribute('data-smoke-mark', '1')
+  return true
+})()`
+
+/**
+ * Dispatches a real paste carrying one image file at the composer input.
+ *
+ * The event is synthetic but the handler chain is not: this is the same
+ * `paste` listener `composerView` wires, reading the same `clipboardData.files`
+ * shape an OS paste produces, so the bytes travel renderer → wire → host store
+ * exactly as a user's paste does. The OS-level half — a real screenshot on the
+ * real clipboard — is the manual check S26 records outside this driver.
+ */
+export const pasteImageFile = (name, base64, mime) => imageFileEvent('paste', 'input', name, base64, mime)
+
+/**
+ * Dispatches a real drop carrying one image file at the composer capsule.
+ *
+ * Same construction as the paste, aimed at the form element `app.ts` wires the
+ * drop listener to. Navigation suppression and the image-only filter are that
+ * handler's own code, not this probe's.
+ */
+export const dropImageFile = (name, base64, mime) => imageFileEvent('drop', 'input-row', name, base64, mime)
+
+function imageFileEvent(type, targetId, name, base64, mime) {
+  return `(() => {
+    const target = document.getElementById(${json(targetId)})
+    if (!target) throw new Error('no ' + ${json(targetId)} + ' to receive the ' + ${json(type)})
+    const bytes = Uint8Array.from(atob(${json(base64)}), (ch) => ch.charCodeAt(0))
+    const file = new File([bytes], ${json(name)}, { type: ${json(mime)} })
+    const data = new DataTransfer()
+    data.items.add(file)
+    const init = { bubbles: true, cancelable: true }
+    const event = ${type === 'paste'
+      ? 'new ClipboardEvent("paste", { ...init, clipboardData: data })'
+      : 'new DragEvent("drop", { ...init, dataTransfer: data })'}
+    target.dispatchEvent(event)
+    return true
+  })()`
+}
+
+/** Clicks one strip row's ✕, by row index — the remove path the strip itself wires. */
+export const clickAttachmentRemove = (index) => `(() => {
+  const row = document.querySelectorAll('#composer-attachments .attachment-row')[${index}]
+  if (!row) throw new Error('no attachment row ' + ${index})
+  const remove = row.querySelector('.attachment-remove')
+  if (!remove) throw new Error('no remove button on attachment row ' + ${index})
+  remove.click()
+  return true
+})()`
+
+/** Clicks the first ready row's thumbnail — the preview popover's own trigger. */
+export const clickAttachmentThumb = () =>
+  clickOr('#composer-attachments .attachment-row.ready .attachment-thumb', 'a ready thumbnail')
+
+/**
+ * The preview popover (S12), and what it would answer a second preview ask with.
+ *
+ * The popover is built once per open and never rebuilt by a snapshot tick, so a
+ * step can count the wire asks for a *new* URL separately: the pane's explicit
+ * path re-requests only when the cache has no entry, and the cached hit opens
+ * immediately. Both halves of "the preview does not re-transmit per stream
+ * chunk" are observable from here.
+ */
+export const attachmentPreview = () => `(() => {
+  const panel = document.querySelector('.attachment-preview')
+  if (!panel) return { open: false }
+  const image = panel.querySelector('.attachment-preview-image')
+  return {
+    open: true,
+    role: panel.getAttribute('role'),
+    name: (panel.querySelector('.attachment-preview-name') || {}).textContent || '',
+    caption: (panel.querySelector('.attachment-preview-caption') || {}).textContent || '',
+    hasOpen: panel.querySelector('.attachment-preview-open') !== null,
+    srcIsDataUrl: (image ? image.getAttribute('src') || '' : '').startsWith('data:image/'),
+  }
+})()`
+
+/** Closes the preview through its own ✕ — the popover's first documented exit. */
+export const clickAttachmentPreviewClose = () =>
+  clickOr('.attachment-preview-close', 'the preview close button')
+
+/** The user-image lines the visible pane's transcript paints (S12). */
+export const transcriptImageLines = () => `(() => {
+  const area = document.getElementById('transcript-area')
+  const pane = [...area.children].find((node) => !node.hidden)
+  if (!pane) return []
+  return [...pane.querySelectorAll('.user-image-line')].map((line) => ({
+    text: line.textContent || '',
+    labelled: (line.getAttribute('role') || '') === 'button',
+  }))
+})()`
+
+/** Clicks one transcript image line, by index — `open-attachment` by id. */
+export const clickTranscriptImageLine = (index) => `(() => {
+  const line = document.querySelectorAll('.user-image-line')[${index}]
+  if (!line) throw new Error('no transcript image line ' + ${index})
+  line.click()
+  return true
+})()`
+
 /**
  * Types a line into the composer and sends it, the way a user does.
  *

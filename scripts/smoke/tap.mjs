@@ -73,12 +73,21 @@ export const TAP_SOURCE = `(() => {
     if (type === 'background-tasks' || type === 'queued-messages' || type === 'command-effect') return
     if (type === 'session-event') {
       var kind = body.event && body.event.type
-      if (kind === 'turn-start' || kind === 'turn-end') push({ lane: lane, type: 'turn', turn: kind })
+      if (kind === 'turn-start') {
+        push({ lane: lane, type: 'turn', turn: 'turn-start', images: body.event.images })
+      } else if (kind === 'turn-end') {
+        push({ lane: lane, type: 'turn', turn: 'turn-end' })
+      }
       return
     }
     if (type === 'runtime-snapshot') {
       var r = body.snapshot || {}
-      s.runtime[lane] = { modelKey: r.modelKey, effort: r.effort, permissionMode: r.permissionMode }
+      s.runtime[lane] = {
+        modelKey: r.modelKey,
+        effort: r.effort,
+        permissionMode: r.permissionMode,
+        supportsImageInput: r.supportsImageInput === true,
+      }
       push({ lane: lane, type: 'runtime-snapshot', modelKey: r.modelKey, effort: r.effort })
       return
     }

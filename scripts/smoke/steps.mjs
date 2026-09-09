@@ -49,12 +49,20 @@
  *    window" is really "does `#settings-body` scroll inside itself".
  */
 import * as app from './app.mjs'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { clearViewport, evaluate, key, mouseClick, setViewport, sleep, waitFor } from './cdp.mjs'
 import * as probes from './probes.mjs'
-import { assertArtifactsGone, existingArtifacts, readGlobalConfig, readLocalSettings } from './fixtures.mjs'
+import {
+  assertArtifactsGone,
+  existingArtifacts,
+  indexEntries,
+  readGlobalConfig,
+  readLocalSettings,
+  seededArtifactPaths,
+} from './fixtures.mjs'
 
 const read = (ctx, probe) => evaluate(ctx.cdp, probe)
 
@@ -150,8 +158,14 @@ async function raisePrompt(ctx, lane, fileName) {
 
 /** `.transcript`'s padding in `styles.css`; the only gap under the reading column. */
 const TRANSCRIPT_PADDING = 8
-/** `ANCHOR_FLOOR_PX` in `model/transcriptAnchor.ts`: the pad's shortest length. */
-const TRANSCRIPT_ANCHOR_FLOOR = 96
+/**
+ * `ANCHOR_REST_PX` in `model/transcriptAnchor.ts`: where the pad rests once a
+ * turn is over. A fixture conversation is settled by definition — no turn is in
+ * flight — so the lift arithmetic is short-circuited and this is the number the
+ * step reads. (The pad used to stay at its streaming height forever; the
+ * shortening at turn end is documented in that module.)
+ */
+const TRANSCRIPT_ANCHOR_REST = 24
 
 async function step7(ctx) {
   // Startup lands in a NEW empty session — never the newest fixture — so the
@@ -189,14 +203,16 @@ async function step7(ctx) {
   const short = await read(ctx, probes.conversation())
   ctx.ok('a pane is showing a conversation', short !== null, 'no visible pane with a transcript')
   if (short) {
-    // Without this the judgement below could pass vacuously. A pad *above* its
-    // floor is the case where the lift is what placed the conversation: the
-    // floor is what a canvas-filling answer gets, and that one anchors nothing.
+    // A settled conversation rests at `ANCHOR_REST_PX`, not at the lift's
+    // streaming height — that arithmetic only runs while a turn is in flight,
+    // and no free step can keep one running. What is still assertable is the
+    // rest contract itself, exactly rather than `<=`.
     ctx.ok(
-      'the session is short enough that the lift, not the floor, placed it',
-      short.items >= 1 && short.anchor !== null && Number.parseFloat(short.pad) > TRANSCRIPT_ANCHOR_FLOOR,
-      `items=${short.items} anchor=${JSON.stringify(short.anchor)} pad=${short.pad}`,
+      'the conversation is settled with a question to anchor',
+      short.items >= 1 && short.anchor !== null,
+      `items=${short.items} anchor=${JSON.stringify(short.anchor)}`,
     )
+    ctx.eq('the pad rests at the turn-over value', short.pad, `${TRANSCRIPT_ANCHOR_REST}px`)
     // Exact, not `<=`: the bubble is the session's first, so it goes to the very
     // top and the scroller's own padding is the only thing above it. D7 set the
     // precedent that a layout judgement stays exact rather than being loosened
@@ -206,11 +222,11 @@ async function step7(ctx) {
       short.anchor ? short.anchor.top - short.scroller.top : null,
       TRANSCRIPT_PADDING,
     )
-    // And it is the pad that put it there, exactly: with the question at the top
-    // the scroller has run out of travel, which is the same statement as \"the pad
-    // is the length the lift asked for\" — one pixel either way and the bubble
-    // would either be short of the top or able to slide past it.
-    ctx.eq('the pad is exactly the travel the lift needed', short.scrollHeight, short.clientHeight)
+    // And the scroller has run out of travel: with the question at the top there
+    // is nowhere left for it to go, which is the settled state's own claim —
+    // one pixel of scrollHeight either way and the bubble would be able to
+    // slide past the top or fall short of it.
+    ctx.eq('the scroller has no travel left under the question', short.scrollHeight, short.clientHeight)
   }
   await ctx.shot('07c-short-session', 'a two-message session: is the question at the top of the canvas with the answer under it')
 
@@ -522,9 +538,16 @@ async function step3(ctx) {
   if (!target) return
 
   // A delete test that starts from nothing proves nothing: the artifacts a *ran*
-  // session leaves are seeded, so this asserts they existed first.
+  // session leaves are seeded, so this asserts they existed first. The expected
+  // count is derived from the seeder itself — a literal here went stale the day
+  // the shadow-git artifacts were removed, and the step failed on every machine
+  // for three commits before anyone ran the smoke again.
   const seeded = existingArtifacts(ctx.projectA, target.id)
-  ctx.eq('the session has every seeded artifact on disk before the delete', seeded.length, 5)
+  ctx.eq(
+    'the session has every seeded artifact on disk before the delete',
+    seeded.length,
+    seededArtifactPaths(ctx.projectA, target.id).length,
+  )
 
   const named = rowFor(await read(ctx, probes.sidebar()), target.id)
   ctx.ok('the row to be deleted has a name to keep', (named?.title ?? '') !== '', named?.title ?? 'none')
@@ -543,6 +566,16 @@ async function step3(ctx) {
   await ctx.shot('03a-delete-confirm', 'the inline delete confirmation: an answerable question, not a broken row')
 
   await read(ctx, probes.clickConfirmYes(target.id))
+  // The row is withdrawn *optimistically*, before the host has deleted anything
+  // (app.ts hides it the moment the confirm is clicked so a slow round trip
+  // cannot invite a second delete) — so the row going away is not the delete.
+  // The artifacts have to be waited for, or the sweep below races a delete that
+  // is still moving files and reads a half-deleted session as a leak.
+  await waitFor('the delete to finish removing the artifacts', async () => {
+    const still = existingArtifacts(ctx.projectA, target.id)
+    const indexed = indexEntries(ctx.projectA).some((session) => session.id === target.id)
+    return still.length === 0 && !indexed
+  }, { timeout: 20000 })
   await waitFor('the row to disappear', async () => {
     const view = await read(ctx, probes.sidebar())
     return rowFor(view, target.id) === undefined
@@ -884,9 +917,14 @@ async function step8(ctx) {
       ? [view.column.left - view.bodyContent.left, view.bodyContent.right - view.column.right]
       : []
     ctx.eq(`the settings body reads in an 880px column at ${label}`, view.column?.width, Math.min(880, available))
+    // 2px, not 1: both edges of both boxes are `Math.round`ed by the probe, and
+    // on a scaled display (a 200%-DPI screen is a normal Windows laptop) the
+    // layout points land on fractional CSS pixels, so each edge can round a
+    // pixel its own way. Two pixels on a column this wide is still centred;
+    // what the check must catch is a column stuck to one side.
     ctx.ok(
       `the column is centred inside the full-width scroller at ${label}`,
-      gaps.length === 2 && Math.abs(gaps[0] - gaps[1]) <= 1,
+      gaps.length === 2 && Math.abs(gaps[0] - gaps[1]) <= 2,
       `gaps ${gaps.join(' / ')} inside ${available}px`,
     )
   }
@@ -1126,7 +1164,423 @@ async function step9(ctx) {
   ctx.eq('changing effort from the chip does not touch ~/.myagent/settings.json', after, before)
 }
 
-// --- S11: the light theme, on a real screen -------------------------------------
+// --- S26: image attachments, end to end -----------------------------------------
+
+/**
+ * The S26 image-attachment pass, against real image bytes on the real wire.
+ *
+ * The model never needs to accept an image for this step to be honest about
+ * delivery: a fixture image is *stored* by the host's import command, referenced
+ * by the submit that follows it, and turned down by the host's own pre-flight
+ * gate — the same code path (S15/S19) that would carry it into a request, minus
+ * the provider. What that proves is the whole renderer → wire → store →
+ * submission chain; the payload half is covered by S17/S18's tests and the paid
+ * turn is a different step's business.
+ *
+ * Capability comes from a scratch endpoint and model the step itself creates:
+ * the developer's own config is captured and restored byte for byte by the
+ * harness, so writing an image-capable `smoke-img-model` into it for the length
+ * of this step is the same deal S8's `smoke-endpoint` already has. The provider
+ * behind it is `anthropic` but nothing is ever sent to it — every submit below
+ * is either gated or aimed at a *second*, non-capable model.
+ *
+ * Ordering: after S9 (the composer is proven), before S11 (it leaves the run in
+ * the dark theme the screenshots prefer).
+ */
+async function step26(ctx) {
+  const rootA = ctx.state.projectRootA ?? (await lanes(ctx))[0].projectRoot
+
+  // A fixture session as the working pane, so every switch this step makes has
+  // a sidebar row to click back through. With `--only=S26` the startup draft is
+  // an empty session that no row represents, and the isolation half needs to
+  // leave and come back.
+  const initialOpen = new Set((await lanes(ctx)).map((info) => info.paneId))
+  const working = ctx.sessionsA.find(
+    (entry) => !ctx.state.deleted.has(entry.id) && !initialOpen.has(entry.id),
+  )
+  let lane = (await lanes(ctx))[0].lane
+  // The model the lane started on, for the restore at the end: `opts.model` is
+  // a default key this machine's config may not have, and the point of the
+  // restore is leaving the pane as it was found, not re-routing it.
+  const laneState0 = await app.laneState(ctx.app)
+  const modelBefore = laneState0?.runtime?.[lane]?.modelKey
+  if (working) {
+    const opened = await openSession(ctx, working, rootA)
+    lane = opened.lane
+  }
+
+  // --- the capability setup ---------------------------------------------------
+  // A model that cannot take images — the *default* state of every model until
+  // the switch is turned on. The strip's note and the gate's rejection both key
+  // off this, and the run restores the config file in teardown whatever happens.
+  await app.shell(ctx.app, {
+    type: 'settings-change',
+    projectRoot: rootA,
+    change: {
+      scope: 'provider', kind: 'set-endpoint',
+      name: 'smoke-img-endpoint', provider: 'anthropic', baseUrl: 'https://smoke.invalid',
+    },
+  })
+  await app.shell(ctx.app, {
+    type: 'settings-change',
+    projectRoot: rootA,
+    change: {
+      scope: 'provider', kind: 'set-model',
+      key: 'smoke-img-model', model: 'smoke-img-model-id', endpoint: 'smoke-img-endpoint',
+    },
+  })
+  const withImages = await app.shell(ctx.app, {
+    type: 'settings-change',
+    projectRoot: rootA,
+    change: {
+      scope: 'provider', kind: 'set-model',
+      key: 'smoke-img-model', model: 'smoke-img-model-id', endpoint: 'smoke-img-endpoint',
+      supportsImageInput: true,
+    },
+  })
+  const modelRow = withImages.settings.models.find((entry) => entry.key === 'smoke-img-model')
+  ctx.ok('an image-capable model is configured', modelRow?.imageCapable === true, JSON.stringify(modelRow))
+
+  // Point the lane at the capable model for the whole step: the strip's note is
+  // snapshot-driven, and the *incapable* half is asserted later on the same
+  // lane re-routed to a second scratch model, so the developer's own routing is
+  // never what a submit is aimed at.
+  await read(ctx, probes.submitLine('/model smoke-img-model'))
+  await waitFor('the lane to report the capable model', async () => {
+    const state = await app.laneState(ctx.app)
+    const info = state?.runtime?.[lane]
+    return info?.supportsImageInput === true ? info : undefined
+  }, { timeout: 20000 })
+
+  // --- import: paste, then drop (work items 1 and 2) ----------------------------
+  const fixtures = fixtureImages()
+  // One real clipboard-shaped paste: a ClipboardEvent carrying a File, through
+  // the composer's own paste listener. The bytes are the committed transparent
+  // PNG — the S04 ladder has already decided what the store does with it; here
+  // the question is only whether it arrives and settles into a ready row.
+  await read(ctx, probes.pasteImageFile(fixtures.png.name, fixtures.png.base64, 'image/png'))
+  const pasted = await waitFor('the pasted image to become a ready row', async () => {
+    const view = await read(ctx, probes.attachmentStrip())
+    return view.rows.length === 1 && view.rows[0].state === 'ready' ? view : undefined
+  })
+  ctx.eq('the paste became one ready row', pasted.rows[0].state, 'ready')
+  ctx.ok(
+    'the row names the file and its send-size facts',
+    pasted.rows[0].label.includes(fixtures.png.name) && pasted.rows[0].label.includes('64×64'),
+    pasted.rows[0].label,
+  )
+  ctx.ok('the strip is a labelled list', pasted.role === 'list' && pasted.ariaLabel.length > 0, `${pasted.role} ${pasted.ariaLabel}`)
+
+  // A drop at the composer capsule: the DragEvent path `app.ts` wires, aimed at
+  // the same form element a real file drop lands on.
+  await read(ctx, probes.dropImageFile(fixtures.exif.name, fixtures.exif.base64, 'image/jpeg'))
+  const dropped = await waitFor('the dropped image to settle next to the first', async () => {
+    const view = await read(ctx, probes.attachmentStrip())
+    return view.rows.length === 2 && view.rows.every((row) => row.state === 'ready') ? view : undefined
+  })
+  // EXIF orientation 6 on a 64x48 file reads as 48x64 after the pipeline
+  // applies the rotation — the number the strip reports is the *sent* shape.
+  ctx.ok(
+    'the EXIF file reports its oriented shape',
+    dropped.rows[1].label.includes('48×64'),
+    dropped.rows[1].label,
+  )
+  // Import order is arrival order, which the strip's numbering states.
+  ctx.ok(
+    'rows are numbered in arrival order',
+    dropped.rows[0].label.startsWith('图片 1：') && dropped.rows[1].label.startsWith('图片 2：'),
+    `${dropped.rows[0].label} / ${dropped.rows[1].label}`,
+  )
+  await ctx.shot('26a-two-attachments', 'the strip with two ready rows: thumbnails, labels with dimensions, the ✕ affordances')
+
+  // A multi-frame GIF keeps its first frame and says so in the row (S04/S05).
+  await read(ctx, probes.pasteImageFile(fixtures.gif.name, fixtures.gif.base64, 'image/gif'))
+  const animated = await waitFor('the animated GIF to settle with its first frame', async () => {
+    const view = await read(ctx, probes.attachmentStrip())
+    return view.rows.length === 3 && view.rows[2].state === 'ready' ? view : undefined
+  })
+  ctx.ok('an animated import is labelled with its first frame', animated.rows[2].label.includes('动画首帧'), animated.rows[2].label)
+
+  // A corrupt file is a *failed row with a retry*, not a broken composer: the
+  // strip is the only place the failure lands, and one failure must not take
+  // the three successes with it.
+  await read(ctx, probes.pasteImageFile(fixtures.corrupt.name, fixtures.corrupt.base64, 'image/png'))
+  const withFailed = await waitFor('the corrupt paste to land as a failed row', async () => {
+    const view = await read(ctx, probes.attachmentStrip())
+    return view.rows.length === 4 && view.rows[3].state === 'failed' ? view : undefined
+  })
+  ctx.ok('a failed row offers 重试', withFailed.rows[3].hasRetry === true, JSON.stringify(withFailed.rows[3]))
+  ctx.ok(
+    'one failure did not touch the successful rows',
+    withFailed.rows.slice(0, 3).every((row) => row.state === 'ready'),
+    withFailed.rows.map((row) => row.state).join(','),
+  )
+  ctx.ok(
+    'the send gate explains itself while a failed row is present',
+    withFailed.sendNote.length > 0,
+    withFailed.sendNote,
+  )
+
+  // --- remove: the ✕ path (work item 2) ----------------------------------------
+  // Remove the failed row first: its ✕ must not ask the host anything (a failed
+  // draft owns no store id), and the successes stay.
+  await read(ctx, probes.clickAttachmentRemove(3))
+  const afterFailedRemove = await waitFor('the failed row to leave', async () => {
+    const view = await read(ctx, probes.attachmentStrip())
+    return view.rows.length === 3 ? view : undefined
+  })
+  ctx.ok('removing the failed row kept the three successes', afterFailedRemove.rows.every((row) => row.state === 'ready'))
+
+  // Then a ready row: its ✕ also releases the host-side hold.
+  await read(ctx, probes.clickAttachmentRemove(2))
+  const afterRemove = await waitFor('the removed ready row to leave', async () => {
+    const view = await read(ctx, probes.attachmentStrip())
+    return view.rows.length === 2 ? view : undefined
+  })
+  ctx.ok('the strip renumbers after a removal', afterRemove.rows[1].label.startsWith('图片 2：'), afterRemove.rows[1].label)
+
+  // --- thumbnails: on demand, and not re-requested (work item 2, S12) -----------
+  // Thumbnails arrive after the row paints — one ask per id. The probe's
+  // thumbLoaded is the arrival; what follows plants a marker on the node and
+  // forces the snapshot-driven repaint the gate would do anyway, then checks
+  // the *same node* is still there: a rebuilt row would drop the marker.
+  const loaded = await waitFor('the thumbnails to arrive', async () => {
+    const view = await read(ctx, probes.attachmentStrip())
+    return view.rows.length === 2 && view.rows.every((row) => row.thumbLoaded) ? view : undefined
+  }, { timeout: 20000 })
+  ctx.ok('every ready row paints its thumbnail data URL', loaded.rows.every((row) => row.thumbLoaded))
+  // The button's tooltip is its label when nothing blocks the send — a plain
+  // 发送, not a note. A *note* here would mean the strip still thinks the model
+  // cannot take the images.
+  ctx.eq('no send gate note remains for the capable model', loaded.sendNote, '发送')
+  await read(ctx, probes.markAttachmentThumb())
+  // A snapshot repaint is what a streaming turn drives once per chunk; the
+  // runtime snapshot path is the free way to trigger the strip's own gate
+  // repaint (paneSession.ts calls it whenever the snapshot moves).
+  await app.shell(ctx.app, { type: 'list-sessions' })
+  await sleep(600)
+  const markerHeld = await read(ctx, probes.attachmentStrip())
+  ctx.ok('a snapshot repaint did not rebuild the strip rows', markerHeld.markedThumbs === 1, `marked=${markerHeld.markedThumbs}`)
+
+  // --- the preview popover (work item 2) ---------------------------------------
+  await read(ctx, probes.clickAttachmentThumb())
+  const preview = await waitFor('the preview popover to open', async () => {
+    const view = await read(ctx, probes.attachmentPreview())
+    return view.open ? view : undefined
+  })
+  ctx.ok('the preview is a labelled dialog', preview.role === 'dialog', preview.role ?? '')
+  ctx.ok('the preview shows the thumbnail data URL enlarged', preview.srcIsDataUrl === true)
+  ctx.ok('the preview names the file and its dimensions', preview.name === fixtures.png.name && preview.caption.includes('64×64'), `${preview.name} ${preview.caption}`)
+  ctx.ok('the preview offers 打开原图', preview.hasOpen === true)
+  await ctx.shot('26b-preview-popover', 'the preview popover: the enlarged thumbnail, the dimensions caption, 打开原图 — floating over the composer, not pushing it away')
+
+  // Closed three ways, but the driver proves the cheapest one here: the panel's
+  // own ✕. Escape and press-outside are the DOM tests' assertions.
+  await read(ctx, probes.clickAttachmentPreviewClose())
+  await waitFor('the preview to close', async () => {
+    const view = await read(ctx, probes.attachmentPreview())
+    return view.open === false ? view : undefined
+  })
+  ctx.ok('the preview closes through its own button', true, 'closed via ✕')
+
+  // --- submission: capable model, text plus images (work item 2) ---------------
+  // The composer's real send path assembles the imageIds itself from the strip
+  // (paneSession.send), so driving it is one `submitLine` with the drafts in
+  // place. The gate at the capable model accepts the input and the turn starts;
+  // the scratch endpoint has no credentials, so the provider fails fast and the
+  // turn ends on its own — no interrupt, because an interrupt that lands before
+  // the user record is written *rolls the turn back*: the message and its
+  // images return to the composer, and the transcript half below would race
+  // which of the two won.
+  const since = (await app.events(ctx.app, 0)).seq
+  await read(ctx, probes.submitLine('describe these images'))
+  // The turn-start event carries the images: the host resolved the ids, ran the
+  // pre-flight gate, and emitted the record the transcript will paint.
+  let turnCarriedImages = false
+  try {
+    await waitFor('the turn to start with the images', async () => {
+      const { entries } = await app.events(ctx.app, since)
+      return entries.some(
+        (entry) => entry.type === 'turn' && entry.turn === 'turn-start' && entry.lane === lane && entry.images?.length > 0,
+      )
+    }, { timeout: 30000 })
+    turnCarriedImages = true
+  } catch {
+    turnCarriedImages = false
+  }
+  // The turn ends by itself (credential-less endpoint): the record is on disk,
+  // the message is not coming back, and nothing needs interrupting.
+  await waitFor('the turn to end on its own', async () => {
+    const { entries } = await app.events(ctx.app, since)
+    return entries.some((entry) => entry.type === 'turn' && entry.turn === 'turn-end' && entry.lane === lane)
+  }, { timeout: 30000 }).catch(() => app.post(ctx.app, lane, { type: 'interrupt', reason: 'user-cancel' }))
+  ctx.ok(
+    'the capable model accepted an image-bearing submit',
+    turnCarriedImages,
+    turnCarriedImages
+      ? 'turn-start observed with images; the turn ended at the credential-less endpoint'
+      : 'no turn-start carrying images; the gate or the command path refused the submit',
+  )
+
+  // The sent message paints its image line in the transcript — pure facts, no
+  // pixels, clickable to open the original through the host.
+  const lines = await waitFor('the transcript image line to appear', async () => {
+    const view = await read(ctx, probes.transcriptImageLines())
+    return view.some((line) => line.text.includes(fixtures.png.name)) ? view : undefined
+  }, { timeout: 15000 })
+  ctx.ok(
+    'a sent image paints a clickable facts line',
+    lines.some((line) => line.text.includes('图片 1：') && line.text.includes('64×64') && line.labelled),
+    lines.map((line) => line.text).join(' | '),
+  )
+
+  // --- submission: incapable model, nothing sent (work item 2, S15/S19) --------
+  // A second scratch model, same endpoint, switch off: the only difference from
+  // `smoke-img-model` is the capability. The capable-model submit above took
+  // the strip's images with it (they belong to that sent message now), so a
+  // fresh paste puts real ids in front of the gate for this half.
+  await app.shell(ctx.app, {
+    type: 'settings-change',
+    projectRoot: rootA,
+    change: {
+      scope: 'provider', kind: 'set-model',
+      key: 'smoke-img-none', model: 'smoke-img-none-id', endpoint: 'smoke-img-endpoint',
+    },
+  })
+  await read(ctx, probes.submitLine('/model smoke-img-none'))
+  await waitFor('the lane to report the incapable model', async () => {
+    const state = await app.laneState(ctx.app)
+    const info = state?.runtime?.[lane]
+    return info && info.supportsImageInput !== true ? info : undefined
+  }, { timeout: 20000 })
+  await read(ctx, probes.pasteImageFile(fixtures.png.name, fixtures.png.base64, 'image/png'))
+  await waitFor('the fresh image to settle against the incapable model', async () => {
+    const view = await read(ctx, probes.attachmentStrip())
+    return view.rows.length === 1 && view.rows[0].state === 'ready' ? view : undefined
+  })
+  // One frame's grace: the strip's send-gate note follows the runtime snapshot
+  // through a rAF-scheduled repaint (frame.ts), so a submit dispatched on the
+  // frame the snapshot arrived can still read the *old* gate. The wait above
+  // saw the wire frame; this waits for the paint that consumed it.
+  await sleep(400)
+  // The current high-water mark, not 0: the tap's ring buffer still holds this
+  // step's own capable-model turn-start, and reading "everything since the
+  // beginning" would count that as the refusal having failed.
+  const gateSince = (await app.events(ctx.app, 0)).seq
+  await read(ctx, probes.submitLine('should not send'))
+  // The gate at the incapable model refuses the submit before any turn starts,
+  // and nothing is recorded. The strip's note explains the refusal at the same
+  // time — both halves of "the user is told, not left guessing".
+  let blocked = false
+  let blockedMessage = ''
+  let gateEvents = { entries: [] }
+  for (let attempt = 0; attempt < 3 && !blocked; attempt += 1) {
+    gateEvents = await app.events(ctx.app, gateSince)
+    blocked = gateEvents.entries.some(
+      (entry) => entry.type === 'turn' && entry.turn === 'turn-start' && entry.lane === lane,
+    )
+    if (blocked) break
+    await sleep(500)
+  }
+  if (blocked) {
+    await app.post(ctx.app, lane, { type: 'interrupt', reason: 'user-cancel' })
+    blockedMessage = 'turn-start appeared — the gate did not refuse the images'
+    ctx.note(`events since the incapable submit: ${JSON.stringify(gateEvents.entries.map((e) => ({ t: e.type, turn: e.turn, images: e.images?.length, text: (e.text || '').slice(0, 40) })))}`)
+  } else {
+    blockedMessage = 'no turn-start: the gate refused the submit before anything was recorded'
+  }
+  ctx.ok('the incapable model refuses a new-image submit outright', !blocked, blockedMessage)
+  // And the draft survived: the composer's failure path restored text and
+  // attachments both, so the strip still holds its rows.
+  const survivors = await read(ctx, probes.attachmentStrip())
+  ctx.ok(
+    'the refused submit left the draft intact',
+    survivors.rows.some((row) => row.label.includes(fixtures.png.name)),
+    survivors.rows.map((row) => row.label).join(' | '),
+  )
+  ctx.ok('the send gate explains the refusal', survivors.sendNote.length > 0, survivors.sendNote)
+
+  // --- pane isolation (work item 2) ---------------------------------------------
+  // A second lane, its own drafts, none of the first lane's: the strip is a
+  // singleton painted from the *active* pane's state, so switching lanes must
+  // show the other pane's list and switching back must restore the first's.
+  const openNow = new Set((await lanes(ctx)).map((info) => info.paneId))
+  const session = ctx.sessionsA.find(
+    (entry) => !ctx.state.deleted.has(entry.id) && !openNow.has(entry.id),
+  )
+  if (session) {
+    await openSession(ctx, session, rootA)
+    const otherLane = (await lanes(ctx)).find((info) => info.paneId === session.id)?.lane
+    const otherStrip = await read(ctx, probes.attachmentStrip())
+    ctx.eq('a fresh pane starts with no draft rows', otherStrip.rows.length, 0)
+    // Import on the *other* pane, then switch back: neither list may bleed.
+    await read(ctx, probes.pasteImageFile(fixtures.gif.name, fixtures.gif.base64, 'image/gif'))
+    const otherReady = await waitFor('the other pane to hold its own draft', async () => {
+      const view = await read(ctx, probes.attachmentStrip())
+      return view.rows.length === 1 && view.rows[0].state === 'ready' ? view : undefined
+    })
+    ctx.ok('the other pane imported its own image', otherReady.rows[0].label.includes(fixtures.gif.name), otherReady.rows[0].label)
+    // Back to the *first* pane, through its own sidebar row — the switch the
+    // isolation rule is about. The singleton strip must repaint from the
+    // first pane's drafts, and neither list may bleed into the other.
+    if (working) await activate(ctx, working)
+    const backStrip = await waitFor('the first pane to restore its drafts', async () => {
+      const view = await read(ctx, probes.attachmentStrip())
+      return view.rows.some((row) => row.label.includes(fixtures.png.name)) ? view : undefined
+    })
+    ctx.ok('switching back restored the first pane drafts', backStrip.rows.length > 0, `${backStrip.rows.length} rows`)
+    ctx.ok(
+      'the panes kept separate draft lists',
+      backStrip.rows.some((row) => row.label.includes(fixtures.png.name))
+        && !backStrip.rows.some((row) => row.label.includes(fixtures.gif.name)),
+      backStrip.rows.map((row) => row.label).join(' | '),
+    )
+    // Close the helper lane the way a user would, so the step leaves the
+    // topology it found.
+    if (otherLane !== undefined) {
+      await app.post(ctx.app, otherLane, { type: 'close-pane', paneId: session.id })
+      await waitFor('the helper lane to close', async () => {
+        const now = await lanes(ctx)
+        return now.every((info) => info.lane !== otherLane)
+      })
+    }
+  } else {
+    ctx.skip('pane isolation', 'no fixture session left to open a second lane on')
+  }
+
+  // Restore the lane's model to what it started on: the smoke-img models live
+  // only in the captured config, and the pane must not be left routed at one.
+  if (modelBefore !== undefined) {
+    await read(ctx, probes.submitLine(`/model ${modelBefore}`))
+    await waitFor('the lane to be back on the model it started on', async () => {
+      const state = await app.laneState(ctx.app)
+      const info = state?.runtime?.[lane]
+      return info?.modelKey === modelBefore ? info : undefined
+    }, { timeout: 20000 })
+  }
+}
+
+/**
+ * The committed image fixtures as paste payloads. Read once per run, base64
+ * here rather than in the probe: the probe string is evaluated in the page, and
+ * a megabyte of base64 inside it would make every `evaluate` pay for it.
+ */
+function fixtureImages() {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const root = join(here, '..', '..', 'test', 'fixtures', 'images')
+  const read = (name) => {
+    const bytes = readFileSync(join(root, name))
+    return { name, bytes, base64: bytes.toString('base64') }
+  }
+  return {
+    png: read('transparent.png'),
+    exif: read('exif-orientation.jpg'),
+    gif: read('animated.gif'),
+    corrupt: read('corrupt.png'),
+  }
+}
+
+
 
 /** `THEME_LABELS` in `src/desktop/renderer/model/settings.ts`. */
 const THEME_LABELS = { system: '跟随系统', dark: '深色', light: '浅色' }
@@ -1492,6 +1946,7 @@ export const STEPS = [
   { id: 'S5', item: 5, name: 'a second project opens, shuts down, and re-bootstraps', timeout: 150000, run: step5 },
   { id: 'S8', item: 8, name: 'settings edit, fan out, and lay out inside the window', timeout: 180000, run: step8 },
   { id: 'S9', item: 9, name: 'the composer chip changes effort without persisting it', timeout: 45000, run: step9 },
+  { id: 'S26', item: 2, name: 'image attachments import, strip, preview, gate, and isolate end to end', timeout: 240000, run: step26 },
   { id: 'S11', item: 8, name: 'the light theme paints, floats, and is given back', timeout: 90000, run: step11 },
   { id: 'S1', item: 1, name: 'a live turn keeps running in the background', timeout: 180000, run: step1, paid: true },
   { id: 'S4b', item: 4, name: 'deleting the last session leaves a draft, not a closed window', timeout: 60000, run: step4b },

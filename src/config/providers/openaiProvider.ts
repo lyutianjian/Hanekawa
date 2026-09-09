@@ -58,10 +58,15 @@ export class OpenAIProvider implements ModelProvider {
         }
         debugProviderSummary('openai', effectiveRequest, payload)
         debugProviderPayload('openai', payload)
-        const response = await this.client.chat.completions.create(payload, {
-          signal: request.retry?.signal,
-          ...(request.retry?.signal ? {} : { timeout: 120_000 }),
-        })
+        let response: OpenAI.Chat.ChatCompletion
+        try {
+          response = await this.client.chat.completions.create(payload, {
+            signal: request.retry?.signal,
+            ...(request.retry?.signal ? {} : { timeout: 120_000 }),
+          })
+        } catch (error) {
+          throw augmentImageEndpointRejection(error, effectiveRequest, this.client.baseURL)
+        }
         debugProviderResponse('openai', response)
 
         if (!response.choices || response.choices.length === 0) {
@@ -124,6 +129,36 @@ export class OpenAIProvider implements ModelProvider {
 function getOpenAISystemFromPayload(payload: ReturnType<typeof buildOpenAIPayload>): unknown {
   const systemMessage = payload.messages.find((message) => message.role === 'system')
   return systemMessage?.content ?? ''
+}
+
+/**
+ * A request-shape rejection (4xx other than auth/429) of an image-bearing
+ * request is how a custom endpoint that declares vision support but rejects
+ * standard data URL parts shows up (design §10.2). Wrap it with the endpoint,
+ * model, and the incompatibility explanation — and state explicitly what was
+ * NOT done: no protocol switch, no dropped image, no capability toggle
+ * change. Everything else (auth, rate limits, 5xx, network) passes through
+ * untouched so retry classification and existing error paths stay as they
+ * were; `status` is preserved on the wrapper for the same reason.
+ */
+function augmentImageEndpointRejection(error: unknown, request: ModelRequest, endpoint: string): unknown {
+  if (!request.imageBytes || request.imageBytes.size === 0) return error
+  if (!(error instanceof Error)) return error
+  const status = (error as Error & { status?: number }).status
+  if (status === undefined || status === 401 || status === 403 || status === 429) return error
+  if (status < 400 || status >= 500) return error
+
+  const wrapped = new Error(
+    `Endpoint ${endpoint} (model ${request.model}) rejected a request carrying `
+    + `${request.imageBytes.size} image(s): ${error.message}. A custom endpoint that declares `
+    + 'vision support may not accept standard data URL image parts; if so, turn off this '
+    + "model's image capability switch. No protocol was switched, no image was dropped, and "
+    + 'the capability setting was not changed automatically.',
+  )
+  const wrappedWithError = wrapped as Error & { status?: number; cause?: unknown }
+  wrappedWithError.status = status
+  wrappedWithError.cause = error
+  return wrapped
 }
 
 function getOpenAIToolsFromPayload(payload: ReturnType<typeof buildOpenAIPayload>): unknown {

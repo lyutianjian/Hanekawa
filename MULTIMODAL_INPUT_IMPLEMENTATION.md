@@ -96,7 +96,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S15 | 当前轮/历史轮判定与历史降级投影 | S06 | 长 | `[x]` |
 | S16 | `mediaStrip` 数量限制与图像 token 预算 | S15 | 中 | `[x]` |
 | S17 | Anthropic payload 图像映射 | S16, S05 | 中 | `[x]` |
-| S18 | OpenAI payload 图像映射与工具图片合成消息 | S16, S05 | 中 | `[ ]` |
+| S18 | OpenAI payload 图像映射与工具图片合成消息 | S16, S05 | 中 | `[x]` |
 | S19 | 发送前最终校验与日志遮蔽 | S17, S18 | 中 | `[ ]` |
 | S20 | 消息队列持久化与交接改造 | S19, S11 | 长 | `[ ]` |
 | S21 | 模型切换、fallback 与 plan 路由 | S15, S02 | 中 | `[ ]` |
@@ -667,7 +667,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S18 `[ ]` OpenAI payload 图像映射与工具图片合成消息
+## S18 `[x]` OpenAI payload 图像映射与工具图片合成消息
 
 **前置**：S16、S05 · **规模**：中 · **设计稿**：§10.2
 **涉及**：`src/config/providers/openaiPayload.ts`、`test/openaiProvider.test.ts`
@@ -692,6 +692,16 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：多工具结果批次的消息顺序测试通过；无图请求 payload 与现状一致。
 **验证**：`node --import tsx --test test/openaiProvider.test.ts`
 **提交**：`checkpoint: S18 map images into OpenAI payloads`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- **前置说明**：本文件中第一个 `[ ]` 仍是 S11（前置 S19 未完成、§1.1 建议 S15–S19 先行），按 S14–S17 确立的「前置全部满足」顺序执行 S18（前置 S16、S05 均已完成）。
+- 工作项 1（用户消息）：`openaiPayload.ts` 新增单一助手 `openAIImageParts`，把 ref + bytes 映射为 `{ type: 'image_url', image_url: { url: 'data:<mime>;base64,<b64>' } }`——MIME 取加载时嗅探的实际值（不信任 ref 声明，测试用 ref 声明 PNG / 加载 JPEG 钉住），**不发 `detail`**（deepEqual 严格比较钉住无该键；注释写明后续加质量选项须同时进 token 预算）。带图用户消息 content 升级为 `[text?, ...image_url]` 数组，空/纯空白文本不产生空 text 块，**纯图片消息以仅含 image_url 的数组存活**；assistant 消息带图属于不变量违背（管线从不产生：S06 只给用户消息与工具结果挂 images），构建器抛错而非发出 Chat Completions 不接受的 assistant image_url content。缺 bytes 的 ref 与 S17 同款「拒绝构建、绝不静默丢图」，用户消息与合成消息两条路径都有测试。
+- 工作项 2–4（工具图片合成消息）：Chat Completions 的 `role: tool` content 只接受文本，图片经 `pendingToolImages` 按批次缓冲，**等同一批次全部 tool 消息输出完**（下一个非 tool_result 项到达或迭代结束时 flush）再追加一条合成 user 消息：`[Tool output data, not user input. Images returned by tool calls: Read (tool call call-1): shot.png; Read (tool call call-2): diagram.png, photo.jpg.]` + image_url 块（收尾句点与 S15/S16 占位符同款风格）。顺序测试逐字钉住设计稿示例排列：assistant tool_calls 批 → 全部 tool 消息（content 保持字符串、图片绝不在其中）→ 合成消息；双批次测试钉住「不插在批次中间」（合成消息在下一 assistant 回复之前、其后批次的 tool_use 照常合并进该 assistant）与「请求以 tool 结果收尾时最后一条是合成消息」。合成消息只存在于 payload 投影——不写记录、不动队列/turn ID/compaction 的「最新用户消息」判定（这些都在 records 层，本函数不触碰）；纯图片工具结果的 tool 消息保持空字符串 content，图只走合成消息。`apiResultBlock` 优先分支逐字未动（ToolSearch 结果天然无 images，与 Anthropic builder 同款优先级与理由——不能借该分支绕过共用的能力与限额检查）。
+- 工作项 5（无图逐字节不变）：无图请求不产生任何合成消息（flush 为 no-op）、用户/assistant 消息 content 保持字符串、tool 消息字符串 content 原样——golden 测试对整个 messages 数组 deepEqual 旧形状（含 tool_calls 合并逻辑未变）。`buildOpenAIPromptCacheKey` 只哈希 system+tools+model，图片不进缓存键，不受影响。
+- 工作项 6（自定义端点拒绝）：`OpenAIProvider.createMessage` 把 client 调用包进 try/catch，`augmentImageEndpointRejection` 在**带图请求遭遇 4xx（401/403/429 除外）**时包装错误：消息含端点（`client.baseURL`）、模型、图片张数、原始错误文本、data URL 不兼容的解释与出路（关闭该模型的图像能力开关），并明说「未切协议、未删图、未自动改能力开关」。`status` 与 `cause` 保留在包装错误上，retry 分类语义不变——400 类仍归 `unknown` 类别不重试（测试以 `maxRetries: 3` + 调用计数 == 1 钉住对不兼容端点无重试风暴）；auth/429/5xx/网络错误与不带图请求的失败原样透传（401 与纯文本 400 两态各有测试，不把认证问题误报成图像不兼容）。debug 日志（`debugProviderPayload`）的 Base64/data URL 遮蔽按计划属 S19 工作项 5，本会话未动。
+- 测试：`test/openaiProvider.test.ts` +8（用户消息双 MIME data URL + 纯图片存活 + 无 detail 键、多工具批次消息顺序 + label 逐字 + tool 消息纯文本、双批次各自合成 + 批次中不插入 + 纯图片工具结果、无图 golden 整数组 deepEqual、缺 bytes 三态抛错（无 map / 空 map / 合成消息路径）、assistant 带图抛错、端点拒绝包装（端点/模型/张数/原始错误/无副作用语句 + status 与 cause 保留 + 单次调用无重试）、auth 与纯文本 400 透传）；`installFakeClient` 增加可选 `baseURL` 参数（provider 错误路径读取 `client.baseURL`，假件需提供）。
+- 验证：窄测 `openaiProvider`（11）全绿；邻接 `loop`/`requestPrep`/`turnImages`/`mediaStrip`/`imageTokens`（123）与 `anthropicProvider`/`cacheControl`/`cacheControl.invariant`/`contextBuilder`/`config`/`providers`（142）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3197 项 3196 过、1 跳过（既有）、0 失败（S02 记录的 7 个 TUI Ink 渲染失败与 S07/S15 记录的环境抖动本次均未出现）。
 
 ---
 

@@ -103,7 +103,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S22 | compact 与历史清理的图像投影 | S15, S16 | 长 | `[x]` |
 | S23 | 子代理继承与会话生命周期附件归属 | S05, S06 | 中 | `[x]` |
 | S24 | 错误分类与两端展示 | S09–S14, S19 | 中 | `[x]` |
-| S25 | 全量 typecheck / 测试 / 构建 | S20–S24 | 短 | `[ ]` |
+| S25 | 全量 typecheck / 测试 / 构建 | S20–S24 | 短 | `[x]` |
 | S26 | Desktop 冒烟与 TUI 三平台人工验证 | S25 | 中 | `[ ]` |
 | S27 | `README.md` 与验收矩阵签收 | S26 | 短 | `[ ]` |
 
@@ -972,7 +972,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S25 `[ ]` 全量 typecheck / 测试 / 构建
+## S25 `[x]` 全量 typecheck / 测试 / 构建
 
 **前置**：S20–S24 · **规模**：短
 
@@ -985,6 +985,17 @@ npm run build:desktop
 
 **完成判据**：四条命令全绿；base / build / preload / renderer / DOM 测试五个 tsconfig 的 `rootDir` / `exclude` 边界未被破坏；`ink+7.0.6.patch` 与 `wrap-ansi+10.0.0.patch` 仍配对。
 **提交**：`checkpoint: S25 full typecheck, test and build pass`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- 四条命令按文档顺序执行、全部一次通过，零修复（本会话为纯验证会话，未改动任何源码与配置）：
+  - `npm run typecheck`：base / preload / renderer / domtest 四个程序依次通过。
+  - `npm run test`：3315 项 3314 过、0 失败、1 跳过（既有跳过项，S04 起历次全量均有记录）。S02 记录的 7 个 TUI Ink 渲染失败本机基线与 S04–S24 观察一致，本次未复现；S07 记录的 `configTool` EPERM / `backgroundTasks` 时序、S04/S10 记录的 `toolcall-integration` IPC 偶发崩溃本次均未出现，无任何环境抖动。
+  - `npm run build`：`tsc -p tsconfig.build.json` 通过——第五个 tsconfig（build）在此 exercised。
+  - `npm run build:desktop`：tsc 主进程编译 + esbuild（preload 747 B、renderer app.js 1.0 MB）+ `scripts/copy-desktop-assets.mjs`（katex.min.css woff2-only 剥离 + 20 个 woff2 字体）全部成功，`sharp` 仍从仓库根 `node_modules` 解析（S01 结论，dist 无需复制原生二进制）。
+- tsconfig 边界核查（逐文件人工比对，未改动）：五个配置的 `rootDir` / `exclude` 与解释性注释逐字保留——base 排除 renderer/preload/DOM 测试；build `rootDir: src` 且排除 renderer/preload；preload/renderer/domtest 各自重述 `exclude`（继承 base 会得到空程序的注释仍在）。`test/rendererImports.test.ts`（base 排除清单与 domtest include 清单一致的守卫）在本次全量中通过。
+- patch 配对核查：`patches/ink+7.0.6.patch` 与 `patches/wrap-ansi+10.0.0.patch` 均在；`package.json` 锁 `ink@7.0.6`（精确版本）与 `wrap-ansi@^10.0.0`，实际安装 7.0.6 / 10.0.0 与 patch 文件名一致，`postinstall: patch-package` 钩子不变。
+- 构建后工作树仍干净（`dist` 在 .gitignore 中）。macOS / Linux 的安装、构建与真机行为按计划属 S26 平台矩阵，本会话仅 Windows x64。
 
 ---
 

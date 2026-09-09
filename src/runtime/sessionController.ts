@@ -72,6 +72,22 @@ export type SessionEvent =
    */
   | { type: 'turn-end'; aborted: boolean; rolledBack: boolean; durationMs: number; usage?: TokenUsage }
 
+/**
+ * A submission that came from the message queue (design §12.2).
+ *
+ * `onAccepted` is the hand-off's consume signal, and it deliberately does not
+ * ride on `submit`'s returned promise: that resolves when the *turn* is over,
+ * which is far too late to be an acceptance confirmation — a queue that waited
+ * for it would keep a message that is already in the conversation. It fires
+ * once, when the user record reaches disk, and never for a submission the
+ * runtime refused before that point.
+ */
+export interface QueuedSubmissionHandoff {
+  /** Stamped on the user record, so a replay can tell the message was sent. */
+  queuedMessageId: string
+  onAccepted: () => void
+}
+
 /** The pull-based half of the controller, shaped for `useSyncExternalStore`. */
 export interface SessionControllerSnapshot {
   readonly isStreaming: boolean
@@ -123,6 +139,8 @@ export class SessionController {
   private fileHistoryReady = false
   private didRollback = false
   private loopStartMs = 0
+  /** The queued submission waiting for its user record; see {@link QueuedSubmissionHandoff}. */
+  private pendingAcceptance: { messageId: string; notify: () => void } | undefined
 
   private streaming = false
   private usage: SessionUsage = createEmptySessionUsage()
@@ -215,20 +233,23 @@ export class SessionController {
     this.getSession().loop.assertImagesAllowedForSubmission(input)
   }
 
-  async submit(input: UserInput, options?: AgentRunOverrides): Promise<void> {
+  async submit(input: UserInput, options?: AgentRunOverrides, handoff?: QueuedSubmissionHandoff): Promise<void> {
     if (this.streaming) {
       throw new Error('A turn is already running; queue the message instead of submitting it.')
     }
     const agentSession = this.getSession()
     const loop = agentSession.loop
     const messageId = randomUUID()
+    const runOverrides: AgentRunOverrides | undefined = handoff
+      ? { ...options, sourceQueuedMessageId: handoff.queuedMessageId }
+      : options
 
     // Submission preparation (design §9.2): the new-image gate runs before
     // turn-start is emitted and before any record exists, so a blocked input
     // stays a rejected submit — the caller's draft is untouched — instead of a
     // turn that started and immediately failed. Shares the rule the loop
     // re-checks per request; @-mentioned images are gated inside run().
-    loop.assertImagesAllowedForSubmission(input, options)
+    loop.assertImagesAllowedForSubmission(input, runOverrides)
 
     this.emit({
       type: 'turn-start',
@@ -259,8 +280,11 @@ export class SessionController {
       this.abortController = ac
       this.didRollback = false
       this.loopStartMs = Date.now()
+      // Armed for the whole run, not just the first record: the user record is
+      // the *only* thing that resolves it, and nothing else may.
+      if (handoff) this.pendingAcceptance = { messageId, notify: handoff.onAccepted }
 
-      const result = await loop.run(input, ac.signal, messageId, options)
+      const result = await loop.run(input, ac.signal, messageId, runOverrides)
       completedResult = result
       this.usage = {
         lastRequest: result.statusUsage ?? null,
@@ -289,6 +313,7 @@ export class SessionController {
     } finally {
       this.emit({ type: 'active-model', model: loop.getActiveModel() })
 
+      this.pendingAcceptance = undefined
       this.abortController = null
       this.lastToolUseIdByTool.clear()
       this.activeToolProgress.clear()
@@ -420,6 +445,7 @@ export class SessionController {
     let subagentProgress: string | undefined
 
     this.noteDerivedTitle(record)
+    this.noteQueuedSubmissionAccepted(record)
 
     if (record.type === 'tool_use') {
       this.lastToolUseIdByTool.set(record.tool, record.id)
@@ -497,6 +523,25 @@ export class SessionController {
     this.session = { ...this.session, title }
     this.publish()
     this.emit({ type: 'session-meta', session: this.session })
+  }
+
+  /**
+   * Tells the queue its message has been accepted, the moment the user record
+   * exists.
+   *
+   * Read off the record stream rather than announced by the loop because that
+   * is precisely the event the queue's guarantee is written against: the record
+   * has been appended — `AgentLoop.appendRecord` awaits the append before it
+   * publishes — so from here on the message is in the conversation and must not
+   * be sent a second time. Fires once; the turn's own records that follow (and
+   * the synthetic user messages a turn appends) do not match the id.
+   */
+  private noteQueuedSubmissionAccepted(record: SessionRecord): void {
+    const pending = this.pendingAcceptance
+    if (!pending) return
+    if (record.type !== 'message' || record.id !== pending.messageId) return
+    this.pendingAcceptance = undefined
+    pending.notify()
   }
 
   // --- internals ------------------------------------------------------------

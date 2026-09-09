@@ -98,7 +98,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S17 | Anthropic payload 图像映射 | S16, S05 | 中 | `[x]` |
 | S18 | OpenAI payload 图像映射与工具图片合成消息 | S16, S05 | 中 | `[x]` |
 | S19 | 发送前最终校验与日志遮蔽 | S17, S18 | 中 | `[x]` |
-| S20 | 消息队列持久化与交接改造 | S19, S11 | 长 | `[~]` |
+| S20 | 消息队列持久化与交接改造 | S19, S11 | 长 | `[x]` |
 | S21 | 模型切换、fallback 与 plan 路由 | S15, S02 | 中 | `[ ]` |
 | S22 | compact 与历史清理的图像投影 | S15, S16 | 长 | `[ ]` |
 | S23 | 子代理继承与会话生命周期附件归属 | S05, S06 | 中 | `[ ]` |
@@ -761,7 +761,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S20 `[~]` 消息队列持久化与交接改造
+## S20 `[x]` 消息队列持久化与交接改造
 
 **前置**：S19、S11 · **规模**：长 · **设计稿**：§12.2
 **涉及**：`src/runtime/messageQueue.ts`、`src/runtime/queuePump.ts`、`test/messageQueue.test.ts`
@@ -783,7 +783,18 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **验证**：`node --import tsx --test test/messageQueue.test.ts` + queuePump 相关测试
 **提交**：`checkpoint: S20 persist and hand off queued image messages`
 
-**本次进展（2026-09-09，Windows x64）—— 工作项 1–2 完成，停在工作项 3 的建议断点**
+**执行记录（2026-09-09，Windows x64）—— 工作项 4–8（承接上一次会话的 1–2）**
+
+- 工作项 4（先验证后消费）：`MessageQueue.dequeue()` 拆成 `peek()`（同步、不改状态）+ `consume(messageId)`（按 id 删，不在队列里就零写入，双重消费不会为不存在的消息补一条 dequeue 记录）。交接编排提到 `queuePump.ts` 的 `handOffQueuedMessage({ peek, consume, deliver })`——两个 shell 共用同一份，`host.ts pumpQueue` 与 `App.tsx` 的 pump effect 只剩「取结果、画提示、记住阻塞项」。顺带修掉旧注释里承认的那个「lesser evil」：dequeue 先行时 `dispose()` 落在磁盘写里会丢消息，改成 peek 先行后，host 的 `deliver` 在 disposed 时直接抛错，消息留在队列里。
+- 工作项 5（「已接受」= 用户消息落盘）：`SessionController.submit` 增加第三参 `QueuedSubmissionHandoff { queuedMessageId, onAccepted }`。`onAccepted` 由 `handleRecord` 里新增的 `noteQueuedSubmissionAccepted` 触发——匹配本轮 `messageId` 的那条 `message` 记录，即 `AgentLoop.appendRecord` 已 await 完追加之后，一轮只触发一次（轮内合成的 user 记录 id 不同，不会误触）。`submit()` 返回值仍是整轮结束，**不**作为接受确认；`handOffQueuedMessage` 的 `consume` 只挂在 `onAccepted` 上，两者的时序差有测试逐帧钉住。
+- 工作项 6（`sourceQueuedMessageId`）：`ChatMessage` 新增可选字段，经 `AgentRunOverrides` → `ActiveRunOverrides` → 用户消息记录写入（controller 在有 handoff 时注入，其余调用点不受影响）。`replayMessageQueue` 先扫一遍所有 `message` 记录收集已发送的队列 id，再回放队列事件——覆盖「用户记录已落盘、dequeue 记录未落盘」的崩溃窗口。回滚会连同用户记录一起删掉该标记，队列项因此正常复活，与设计稿「随正常会话回滚规则处理」一致。
+- 工作项 7（不兼容时暂停而非重试风暴）：`QueuePumpState` 增加 `headMessageId` / `blockedMessageId`，`canPumpQueue` 在两者相等时返回 false。被拒的队首记进 shell 侧的 `queueBlock`，**与当时的 `AgentSession` 对象绑定**——`RuntimeSlot.replace`/`patchModel` 都会换对象，所以切模型、改 provider 配置（同一 model key 打开图像开关）都会自动释放；移除该项或它不再是队首同样自动释放，无需显式清理。`finally` 里的 `pumpQueue()` 保持原样，重试由这道 gate 挡住，不是靠去掉自我触发。后面排一条新消息**不**释放（队首没变），否则会把用户消息的顺序打乱。
+- 工作项 8（接受前/接受后的失败分开）：`QueueHandoffOutcome` 三态——`blocked`（未接受，留在队列，暂停并显示原因）、`failed`（已接受，用户消息已在会话里，按既有已提交轮次语义处理，绝不重新入队）、`sent`。第三种边界单独处理：已接受但 `consume` 落盘失败时归入 `blocked` 并说明原因——继续推进会重发，停下来更安全，且重启后有工作项 6 的重放规则兜底。斜杠命令没有用户记录，`deliver` 正常返回即视为已处理并消费一次。
+- 测试：`queuePump` +8（阻塞 gate 的头部比较；交接的六种结局：空队列、接受即消费且发生在轮次结束之前、接受前拒绝零消费、接受后失败仍消费、斜杠命令恰好消费一次、consume 落盘失败转为暂停）；`messageQueue` +3（peek 不消费 / 按 id 消费 / 重复消费零写入、崩溃窗口按 `sourceQueuedMessageId` 去重、回滚后队列项复活）；`sessionController` +2（接受时序与 `sourceQueuedMessageId` 落到记录上、接受前被拒绝时 `onAccepted` 不触发且 loop 未运行）；`protocolHost` 把原「失败即消失」的用例拆成两条（接受前拒绝→留在队列+暂停+新消息不释放+切模型后按序排空；接受后失败→不重新入队）。`protocolHost` 的伪 runtimeSlot 现在真的会换 `current`（`replace` 生效、`createRuntime` 返回新对象），否则切模型释放这条无法验证。
+- 验证：窄测 `queuePump`/`messageQueue`/`sessionController`/`protocolHost`/`desktopUiRoundTrip`/`loop` 全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3276 项 3275 过、1 跳过（既有）、0 失败。
+- 仍未做（不属本会话）：设计稿 §12.3 的 `/clear` 迁移时复制附件并重绑定引用，归 S23；TUI 侧 pump 无直接自动化测试（App.tsx 无测试宿主），逻辑已尽量下沉到 `queuePump.ts`，人工验收留待 S26。
+
+**上一次进展（2026-09-09，Windows x64）—— 工作项 1–2 完成，停在工作项 3 的建议断点**
 
 剩余工作项 4–8（交接改造、`sourceQueuedMessageId` 关联、不兼容时暂停推进）前提未变：pump 仍是「先 `dequeue()` 再 `submit()`」，两端各一处（`host.ts pumpQueue`、`App.tsx` 的 pump effect），下次会话从这两处接着改。
 

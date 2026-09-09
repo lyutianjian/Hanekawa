@@ -670,6 +670,64 @@ test('the first turn is still interruptible after a second submit was refused', 
   assert.equal(seen[0]?.aborted, true, 'and interrupting reached that turn')
 })
 
+test('a queued submission is accepted when its user record lands, not when the turn ends', async () => {
+  const accepted: string[] = []
+  const order: string[] = []
+  const harness = await createHarness({
+    run: async (_input, _signal, messageId, overrides) => {
+      // What the real loop does: stamp the queued id on the user record and
+      // append it, then keep working for the rest of the turn.
+      const source = (overrides as { sourceQueuedMessageId?: string } | undefined)?.sourceQueuedMessageId
+      order.push('user-record-appended')
+      harness.proxy.onRecord({
+        type: 'message',
+        id: messageId ?? 'm1',
+        role: 'user',
+        content: 'queued',
+        createdAt: new Date().toISOString(),
+        ...(source ? { sourceQueuedMessageId: source } : {}),
+      })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      order.push('turn-finished')
+      return okResult()
+    },
+  })
+
+  await harness.controller.submit({ text: 'queued' }, undefined, {
+    queuedMessageId: 'q1',
+    onAccepted: () => {
+      accepted.push('q1')
+      order.push('accepted')
+    },
+  })
+
+  assert.deepEqual(accepted, ['q1'], 'exactly once')
+  assert.deepEqual(order, ['user-record-appended', 'accepted', 'turn-finished'],
+    'acceptance is the user record, not the end of the turn')
+
+  const stamped = harness.events.find((event) =>
+    event.type === 'record' && event.record.type === 'message' && event.record.sourceQueuedMessageId === 'q1')
+  assert.ok(stamped, 'the user record carries the queued id a replay reads')
+})
+
+test('a submission refused before its user record is never accepted', async () => {
+  let ran = false
+  const harness = await createHarness({
+    imageCapable: false,
+    run: async () => { ran = true; return okResult() },
+  })
+  const accepted: string[] = []
+
+  await assert.rejects(() => harness.controller.submit(
+    { text: 'look', images: [makeImageAttachmentRef({ id: 'img-q', ownerSessionId: harness.session.id })] },
+    undefined,
+    { queuedMessageId: 'q1', onAccepted: () => accepted.push('q1') },
+  ))
+
+  assert.equal(ran, false, 'the gate runs before the loop')
+  assert.deepEqual(accepted, [], 'so the queue keeps the message and its images')
+})
+
 /** Polls rather than sleeping, so the wait is as short as the work allows. */
 async function waitUntil(ready: () => boolean, what: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {

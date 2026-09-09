@@ -117,6 +117,12 @@ export interface AgentRunOverrides {
   skillName?: string
   skillArgs?: string
   displayInput?: string
+  /**
+   * Stamped onto the user record when this run came from the message queue, so
+   * a replay can tell that the queued message was already sent. See
+   * `ChatMessage.sourceQueuedMessageId`.
+   */
+  sourceQueuedMessageId?: string
 }
 
 interface ActiveRunOverrides {
@@ -126,6 +132,7 @@ interface ActiveRunOverrides {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   hooks?: Hooks
   displayInput?: string
+  sourceQueuedMessageId?: string
   skillInvocation?: {
     skillName: string
     skillArgs: string
@@ -444,6 +451,7 @@ export class AgentLoop {
     if (overrides.displayInput !== undefined && overrides.displayInput !== userInput.text) {
       normalized.displayInput = overrides.displayInput
     }
+    if (overrides.sourceQueuedMessageId) normalized.sourceQueuedMessageId = overrides.sourceQueuedMessageId
     if (overrides.skillName) {
       normalized.skillInvocation = {
         skillName: overrides.skillName,
@@ -499,6 +507,9 @@ export class AgentLoop {
       content: userInput.text,
       ...(turnImages && turnImages.length > 0 ? { images: turnImages } : {}),
       ...(this.activeRunOverrides?.displayInput ? { displayContent: this.activeRunOverrides.displayInput } : {}),
+      ...(this.activeRunOverrides?.sourceQueuedMessageId
+        ? { sourceQueuedMessageId: this.activeRunOverrides.sourceQueuedMessageId }
+        : {}),
       turnId,
       createdAt: new Date().toISOString(),
     }

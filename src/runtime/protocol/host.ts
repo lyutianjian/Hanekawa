@@ -17,13 +17,13 @@ import type {
   ImageStoreResult,
   StoredAttachment,
 } from '../../services/imageAttachments/imageAttachmentService.js'
-import { MessageQueue, queuedMessageToInput } from '../messageQueue.js'
+import { MessageQueue } from '../messageQueue.js'
 import { readGitBranch } from '../gitBranch.js'
 import { listGitBranches, switchGitBranch } from '../gitBranches.js'
 import { applyPermissionModeTransition } from '../permissionMode.js'
 import { buildModelPickerOptions } from '../modelPicker.js'
 import { resolveRuntimeModelKeyAfterConfigChange, type ProviderConfigChangeScope } from '../providerRuntime.js'
-import { canPumpQueue } from '../queuePump.js'
+import { canPumpQueue, handOffQueuedMessage } from '../queuePump.js'
 import { projectDisplayName, projectRootKey } from '../projectDirectory.js'
 import { isGlobalWorkspaceRoot } from '../../utils/paths.js'
 import { SessionRecordLedger } from '../recordLedger.js'
@@ -39,7 +39,7 @@ import {
   type SessionSwitchResult,
 } from '../sessionSwitch.js'
 import { buildStartupNotices, resolveInitialQueuedPrompt, type StartupNotice } from '../startupNotices.js'
-import type { ProjectRuntime, SessionScope } from '../types.js'
+import type { AgentSession, ProjectRuntime, SessionScope } from '../types.js'
 import type { SessionPane } from '../sessionWorkspace.js'
 import type { RuntimeChannel } from './channel.js'
 import { createHostCommandContext } from './commandContext.js'
@@ -289,8 +289,17 @@ export class SessionHost {
    * less-trusted end of this protocol the whole `SessionRecord` union.
    */
   private readonly messages: MessageQueue
-  /** A pump run has dequeued but not finished handing off. See `canPumpQueue`. */
+  /** A pump run has taken a message but not finished handing it off. See `canPumpQueue`. */
   private pumping = false
+  /**
+   * The queued message the runtime refused, and the runtime that refused it.
+   *
+   * Paired with the `AgentSession` rather than the model key so *any* runtime
+   * swap releases the block — a model switch, but equally a settings edit that
+   * turned image input on for the same model. `RuntimeSlot` mints a new session
+   * object for both.
+   */
+  private queueBlock: { messageId: string; session: AgentSession } | undefined
   private readonly teardown: Array<() => void> = []
   private session: SessionMeta
   private disposed = false
@@ -460,6 +469,10 @@ export class SessionHost {
 
   private postRuntimeSnapshot = (): void => {
     this.post({ type: 'runtime-snapshot', snapshot: this.buildRuntimeSnapshot() })
+    // The single edge for "the runtime changed", subscribed to the slot as well
+    // as called directly: a message held because the old model could not take
+    // its images gets its retry here, and nowhere else notices.
+    this.pumpQueue()
   }
 
   /**
@@ -622,25 +635,43 @@ export class SessionHost {
       running: this.pumping,
       turnActive: this.controller.getSnapshot().isStreaming,
       uiBlocked: this.pendingKinds.size > 0,
+      headMessageId: this.messages.peek()?.id,
+      ...(this.queueBlock?.session === this.runtimeSlot.current
+        ? { blockedMessageId: this.queueBlock.messageId }
+        : {}),
     })) return
 
     this.pumping = true
     void (async () => {
       try {
-        const next = await this.messages.dequeue()
-        if (next && !this.disposed) await this.controller.submit(queuedMessageToInput(next))
+        const outcome = await handOffQueuedMessage({
+          peek: () => this.messages.peek(),
+          consume: (messageId) => this.messages.consume(messageId),
+          deliver: (input, context) => {
+            // The race the old comment called the lesser evil: `dispose()` can
+            // land inside the disk write above. Peeking first means the message
+            // is still queued here, so it survives the window closing instead
+            // of being lost.
+            if (this.disposed) throw new Error('the window closed before the message was sent')
+            return this.controller.submit(input, undefined, context)
+          },
+        })
+        if (outcome.kind === 'blocked') {
+          // Held rather than retried (design §12.2, work item 7): the runtime
+          // refused this message *before* taking it, so trying again with the
+          // same model and the same attachments would only refuse again. The
+          // block is keyed to the runtime, so switching models releases it, and
+          // `canPumpQueue` releases it on its own once the head changes.
+          this.queueBlock = { messageId: outcome.message.id, session: this.runtimeSlot.current }
+          this.postQueueNotice(`Queued message paused: ${outcome.reason}`)
+        } else if (outcome.kind === 'failed') {
+          this.postQueueNotice(`Failed to send queued message: ${outcome.reason}`)
+        }
       } catch (error) {
         // Synthesized rather than routed through the controller: the message
         // never became a turn, so there is no turn to attach a notice to. Same
         // shape `applySessionSwitch` posts for its startup notices.
-        this.post({
-          type: 'session-event',
-          event: {
-            type: 'notice',
-            level: 'error',
-            content: `Failed to send queued message: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        })
+        this.postQueueNotice(`Failed to send queued message: ${error instanceof Error ? error.message : String(error)}`)
       } finally {
         this.pumping = false
         // More may be waiting, and the turn that just ended already fired its
@@ -648,6 +679,10 @@ export class SessionHost {
         this.pumpQueue()
       }
     })()
+  }
+
+  private postQueueNotice(content: string): void {
+    this.post({ type: 'session-event', event: { type: 'notice', level: 'error', content } })
   }
 
   /**

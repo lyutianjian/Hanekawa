@@ -46,7 +46,7 @@ interface Harness {
   /** Gives the active model a price list, which is what makes a cost derivable. */
   setPricing: (pricing: Record<string, unknown> | undefined) => void
   /** Makes the next `controller.submit` reject, for the pump's failure path. */
-  failNextSubmit: (message: string) => void
+  failNextSubmit: (message: string, options?: { afterAcceptance?: boolean }) => void
   bridges: ReturnType<typeof createUiBridges>
   /** The real store behind the stub controller, for the commands that write. */
   store: SessionStore
@@ -141,6 +141,8 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const snapshotListeners = new Set<() => void>()
   /** Set by `failNextSubmit`; consumed by the next `controller.submit`. */
   let submitFailure: string | undefined
+  /** Whether that failure lands after the user record exists. */
+  let submitFailsAfterAcceptance = false
   let snapshot: {
     isStreaming: boolean
     usage: { lastRequest: TokenUsage | null; total: TokenUsage }
@@ -164,12 +166,18 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     },
     getSnapshot: () => snapshot,
     getSubagentProgress: () => new Map([['agent-1', 'Reading file']]),
-    submit: async (input: UserInput) => {
+    // The third parameter is the queue's hand-off. The real controller fires
+    // `onAccepted` when the user record lands; this stub writes no records, so
+    // it stands in for that moment explicitly — and, like the real one, only
+    // after the point where a refused submission would already have thrown.
+    submit: async (input: UserInput, _options?: unknown, handoff?: { onAccepted: () => void }) => {
       if (submitFailure !== undefined) {
         const message = submitFailure
         submitFailure = undefined
+        if (submitFailsAfterAcceptance) handoff?.onAccepted()
         throw new Error(message)
       }
+      handoff?.onAccepted()
       calls.submits.push(input.text)
     },
     // The queue's accept-time gate. Nothing in this file queues images, so the
@@ -220,7 +228,9 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     getEffort: () => 'high',
     setEffort: (level: string) => level,
     reapplyEffort: () => 'high',
-    replace: () => {},
+    // The real slot installs the new session; the identity of `current` is what
+    // the pump reads to tell that the runtime changed under a held message.
+    replace: (next: typeof agentSession) => { runtimeSlot.current = next },
   }
 
   const modeListeners = new Set<(mode: string) => void>()
@@ -297,7 +307,8 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     shutdown: async (reason: string) => { calls.shutdowns.push(reason) },
     createRuntime: (modelKey: string, _session: unknown, records?: readonly SessionRecord[]) => {
       calls.createdRuntimes.push({ modelKey, recordCount: records?.length ?? 0 })
-      return agentSession
+      // A distinct object, like the real factory: same loop, new session.
+      return { ...agentSession, modelKey }
     },
     createActiveModelRuntime: (modelKey: string) => ({ model: modelKey, provider: {} }),
   }
@@ -401,7 +412,10 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
       else config.pricing = pricing
     },
     /** Makes the next `controller.submit` reject, for the pump's failure path. */
-    failNextSubmit: (message: string) => { submitFailure = message },
+    failNextSubmit: (message: string, options?: { afterAcceptance?: boolean }) => {
+      submitFailure = message
+      submitFailsAfterAcceptance = options?.afterAcceptance === true
+    },
     bridges,
     store,
     cwd,
@@ -1477,7 +1491,13 @@ test('a message queued mid-turn is held, then sent when the turn ends', async ()
   )
 
   assert.deepEqual(harness.calls.submits, ['second thought'])
-  assert.deepEqual(latestQueue(harness.received), [], 'the queue empties as it drains')
+  // The removal now follows the send rather than preceding it — the message is
+  // consumed when the runtime accepts it — so the empty queue arrives a write
+  // later than the submit does.
+  await waitFor(
+    () => (latestQueue(harness.received).length === 0 ? true : undefined),
+    'the queue to empty as it drains',
+  )
   harness.dispose()
 })
 
@@ -1702,11 +1722,50 @@ test('a /resume swaps in the target session\'s own queue instead of carrying one
   harness.dispose()
 })
 
-test('a queued message that cannot be sent reports itself instead of vanishing', async () => {
+test('a submission refused before acceptance stays queued and pauses the pump', async () => {
   const harness = await createHarness()
-  harness.failNextSubmit('provider exploded')
+  harness.failNextSubmit('the active model cannot accept images')
 
   harness.send({ type: 'enqueue-message', id: 'q1', content: 'doomed' })
+  const notice = await waitFor(
+    () => harness.received.find((event) => event.type === 'session-event'
+      && event.event.type === 'notice'
+      && event.event.content.includes('cannot accept images')),
+    'the pause notice',
+  )
+  assert.ok(notice.type === 'session-event' && notice.event.type === 'notice')
+  assert.equal(notice.event.level, 'error')
+
+  // The refusal happened before the runtime took the message, so it is still
+  // there to be fixed — and the pump holds instead of retrying it forever. The
+  // stub only fails *once*, so a retry would send it and empty the queue.
+  await givePumpAChance()
+  assert.deepEqual(latestQueue(harness.received), ['doomed'], 'the message survives the refusal')
+  assert.deepEqual(harness.calls.submits, [], 'and nothing retried it')
+
+  // A second message does *not* release it — the head is still the message the
+  // runtime refused, and running the queue past it would reorder the user's
+  // messages.
+  harness.send({ type: 'enqueue-message', id: 'q2', content: 'next' })
+  await givePumpAChance()
+  assert.deepEqual(harness.calls.submits, [], 'the pause holds the whole queue behind it')
+
+  // Switching models does: a different runtime may well accept what this one
+  // refused, which is the retry the user is being asked to make.
+  harness.send({ type: 'set-model', id: 'sm1', modelKey: 'other' })
+  await waitFor(
+    () => (harness.calls.submits.length === 2 ? true : undefined),
+    'the queue to drain once the model changed',
+  )
+  assert.deepEqual(harness.calls.submits, ['doomed', 'next'])
+  harness.dispose()
+})
+
+test('a turn that fails after acceptance is not queued again', async () => {
+  const harness = await createHarness()
+  harness.failNextSubmit('provider exploded', { afterAcceptance: true })
+
+  harness.send({ type: 'enqueue-message', id: 'q1', content: 'committed' })
   const notice = await waitFor(
     () => harness.received.find((event) => event.type === 'session-event'
       && event.event.type === 'notice'
@@ -1715,8 +1774,10 @@ test('a queued message that cannot be sent reports itself instead of vanishing',
   )
   assert.ok(notice.type === 'session-event' && notice.event.type === 'notice')
   assert.equal(notice.event.level, 'error')
-  // Dequeued before the send, so a message that reliably throws cannot wedge the
-  // pump in a retry loop.
+
+  // The user record exists, so the message is part of the conversation:
+  // re-queueing it would duplicate a message the transcript already shows.
+  await givePumpAChance()
   assert.deepEqual(latestQueue(harness.received), [])
   harness.dispose()
 })

@@ -53,8 +53,8 @@ import { useEnterPlanPermission, type EnterPlanPromptProxy } from '../hooks/useE
 import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
 import type { AgentSession } from '../../runtime/index.js'
 import type { RuntimeSlot } from '../../runtime/runtimeSlot.js'
-import type { SessionController } from '../../runtime/sessionController.js'
-import { canPumpQueue } from '../../runtime/queuePump.js'
+import type { QueuedSubmissionHandoff, SessionController } from '../../runtime/sessionController.js'
+import { canPumpQueue, handOffQueuedMessage } from '../../runtime/queuePump.js'
 import { buildModelPickerOptions } from '../../runtime/modelPicker.js'
 import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../../runtime/rewindSummary.js'
 import { activateModelKey, switchModel } from '../../runtime/modelSwitch.js'
@@ -68,7 +68,7 @@ import type { EffortLevel } from '../../config/effort.js'
 import { getContextWindowForModel } from '../../prompts/budget.js'
 import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/budget.js'
 import { shouldRenderStatusLine } from '../statusLineVisibility.js'
-import { MessageQueue, queuedMessageToInput } from '../../runtime/messageQueue.js'
+import { MessageQueue } from '../../runtime/messageQueue.js'
 import type { UserInput } from '../../media/types.js'
 import type { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
 import type { ImageAttachmentService } from '../../services/imageAttachments/imageAttachmentService.js'
@@ -194,6 +194,13 @@ export function App({
   const [spinnerColors, setSpinnerColors] = useState(() => sampleSpinnerColors())
   const [queuePumpGeneration, setQueuePumpGeneration] = useState(0)
   const queuePumpRunningRef = useRef(false)
+  /**
+   * The queued message the runtime refused, with the runtime that refused it.
+   *
+   * Keyed to the `AgentSession` so any runtime swap — `/model`, a provider edit
+   * that turns image input on — releases the hold, the desktop host's rule.
+   */
+  const queueBlockRef = useRef<{ messageId: string; session: AgentSession } | null>(null)
   const initialQueuedPromptRef = useRef(initialQueuedPrompt)
   const [messageQueue] = useState(() => new MessageQueue(
     initialSession.id,
@@ -828,8 +835,19 @@ export function App({
     setThinking: handleSetThinking,
   })
 
-  /** The queue's hand-off: a dequeued message becomes a full UserInput again. */
-  const executeQueuedInput = useCallback(async (input: UserInput) => {
+  /**
+   * The queue's hand-off: a queued message becomes a full UserInput again.
+   *
+   * `handoff` carries the consume signal down to the controller, which fires it
+   * when the user record lands — the message is only removed from the queue
+   * then, so a submission the runtime refuses stays queued with its images.
+   * A slash command has no user record; `handOffQueuedMessage` consumes it on a
+   * clean return instead.
+   */
+  const executeQueuedInput = useCallback(async (
+    input: UserInput,
+    handoff: QueuedSubmissionHandoff,
+  ) => {
     if (input.text.startsWith('/')) {
       await dispatch(input.text)
       return
@@ -837,7 +855,7 @@ export function App({
     setSpinnerColors(sampleSpinnerColors())
     setMode('running')
     try {
-      await sessionController.submit(input, buildRunOverridesForOptions(undefined))
+      await sessionController.submit(input, buildRunOverridesForOptions(undefined), handoff)
     } finally {
       setMode('idle')
     }
@@ -872,18 +890,33 @@ export function App({
     // flight, everything else non-idle means a surface is holding the screen.
     // The headless policy keeps them apart so a desktop shell can substitute
     // "a permission request is pending" for the second one.
+    const block = queueBlockRef.current
     if (!canPumpQueue({
       pending: queuedMessages.length,
       running: queuePumpRunningRef.current,
       turnActive: isStreaming || mode === 'running',
       uiBlocked: isOverlayActive || mode !== 'idle',
+      headMessageId: messageQueue.peek()?.id,
+      ...(block && block.session === runtime ? { blockedMessageId: block.messageId } : {}),
     })) return
 
     queuePumpRunningRef.current = true
     void (async () => {
       try {
-        const next = await messageQueue.dequeue()
-        if (next) await executeQueuedInput(queuedMessageToInput(next))
+        const outcome = await handOffQueuedMessage({
+          peek: () => messageQueue.peek(),
+          consume: (messageId) => messageQueue.consume(messageId),
+          deliver: executeQueuedInput,
+        })
+        if (outcome.kind === 'blocked') {
+          // Paused, not retried: the runtime refused this message before taking
+          // it, so the same model and the same attachments would refuse again.
+          // Switching models replaces `runtime`, which releases the hold.
+          queueBlockRef.current = { messageId: outcome.message.id, session: runtime }
+          addSystemMessage(`Queued message paused: ${outcome.reason}`)
+        } else if (outcome.kind === 'failed') {
+          addSystemMessage(`Failed to send queued message: ${outcome.reason}`)
+        }
       } catch (error) {
         addSystemMessage(`Failed to process queued message: ${error instanceof Error ? error.message : String(error)}`)
       } finally {
@@ -891,7 +924,7 @@ export function App({
         setQueuePumpGeneration((value) => value + 1)
       }
     })()
-  }, [queuedMessages, isStreaming, mode, isOverlayActive, executeQueuedInput, addSystemMessage, messageQueue, queuePumpGeneration])
+  }, [queuedMessages, isStreaming, mode, isOverlayActive, executeQueuedInput, addSystemMessage, messageQueue, queuePumpGeneration, runtime])
 
   const handleToggleTranscript = useCallback(() => {
     if (screen === 'transcript') {

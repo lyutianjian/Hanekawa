@@ -19,8 +19,10 @@ describe('messageQueue', () => {
     const first = await queue.enqueue({ text: 'first' }, 'later')
     const second = await queue.enqueue({ text: 'second' }, 'now')
     assert.deepEqual(queue.getSnapshot().map((item) => item.content), ['first', 'second'])
-    assert.equal((await queue.dequeue())?.id, first.id)
-    assert.equal((await queue.dequeue())?.id, second.id)
+    assert.equal(queue.peek()?.id, first.id)
+    await queue.consume(first.id)
+    assert.equal(queue.peek()?.id, second.id)
+    await queue.consume(second.id)
     assert.equal(queue.getSnapshot().length, 0)
     assert.deepEqual(persisted.map(({ record }) => record.operation), ['enqueue', 'enqueue', 'dequeue', 'dequeue'])
   })
@@ -182,6 +184,67 @@ describe('messageQueue', () => {
     await gated.enqueue({ text: 'plain' })
     assert.deepEqual(seen, ['look', 'plain'])
     assert.deepEqual(gated.getSnapshot().map((message) => message.content), ['plain'])
+  })
+
+  it('peeks without consuming, and consumes the message it was given', async () => {
+    const first = await queue.enqueue({ text: 'first' })
+    const second = await queue.enqueue({ text: 'second' })
+
+    assert.equal(queue.peek()?.id, first.id)
+    assert.equal(queue.getSnapshot().length, 2, 'a peek must not remove anything')
+
+    // Addressed by id, not by position: the hand-off consumes the message it
+    // sent, and a whole turn separates the two moments.
+    await queue.consume(second.id)
+    assert.deepEqual(queue.getSnapshot().map((message) => message.id), [first.id])
+
+    // A message that is no longer queued writes nothing, so a double consume
+    // cannot log a dequeue for a message the queue does not have.
+    const before = persisted.length
+    await queue.consume(second.id)
+    assert.equal(persisted.length, before)
+  })
+
+  it('drops a queued message whose user record says it was already sent', () => {
+    const base = new Date().toISOString()
+    const records: SessionRecord[] = [
+      {
+        id: 'e1',
+        type: 'message_queue',
+        operation: 'enqueue',
+        message: { id: 'm1', content: 'sent', priority: 'next', createdAt: base },
+        createdAt: base,
+      },
+      {
+        id: 'e2',
+        type: 'message_queue',
+        operation: 'enqueue',
+        message: { id: 'm2', content: 'still waiting', priority: 'next', createdAt: base },
+        createdAt: base,
+      },
+      // The crash window: the user record landed, the `dequeue` record did not.
+      { id: 'u1', type: 'message', role: 'user', content: 'sent', sourceQueuedMessageId: 'm1', createdAt: base },
+    ]
+
+    assert.deepEqual(replayMessageQueue(records).map((message) => message.id), ['m2'])
+  })
+
+  it('brings a queued message back when its turn was rolled back', () => {
+    const base = new Date().toISOString()
+    const records: SessionRecord[] = [
+      {
+        id: 'e1',
+        type: 'message_queue',
+        operation: 'enqueue',
+        message: { id: 'm1', content: 'interrupted', priority: 'next', createdAt: base },
+        createdAt: base,
+      },
+    ]
+
+    // The rollback removed the user record from the log, which is the only
+    // thing that marked the message as sent — so it is pending again, exactly
+    // as the ordinary rollback rules say it should be.
+    assert.deepEqual(replayMessageQueue(records).map((message) => message.id), ['m1'])
   })
 
   it('never re-runs the accept gate on replay or migration', async () => {

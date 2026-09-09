@@ -107,19 +107,37 @@ export class MessageQueue {
     })
   }
 
-  async dequeue(): Promise<QueuedMessage | undefined> {
+  /**
+   * The message the pump would hand off next, without consuming it.
+   *
+   * Synchronous and non-mutating on purpose (design §12.2): the hand-off
+   * validates the head *before* it is removed, so an input the runtime refuses
+   * stays queued instead of being dequeued into a failure.
+   */
+  peek(): QueuedMessage | undefined {
+    return this.snapshot[0]
+  }
+
+  /**
+   * Removes a message the runtime has accepted — for a queued submission, once
+   * its user record is on disk.
+   *
+   * Addressed by id rather than "the head" because the two are no longer the
+   * same moment: a whole turn's worth of time passes between the peek and the
+   * acceptance, and removing whatever happens to be first afterwards could drop
+   * a message that was never sent.
+   */
+  async consume(messageId: string): Promise<void> {
     return this.serialize(async () => {
-      const message = this.snapshot[0]
-      if (!message) return undefined
+      if (!this.snapshot.some((message) => message.id === messageId)) return
       await this.persist(this.sessionId, {
         id: randomUUID(),
         type: 'message_queue',
         operation: 'dequeue',
-        messageId: message.id,
+        messageId,
         createdAt: new Date().toISOString(),
       })
-      this.replaceSnapshot(this.snapshot.slice(1))
-      return message
+      this.replaceSnapshot(this.snapshot.filter((message) => message.id !== messageId))
     })
   }
 
@@ -198,9 +216,26 @@ export class MessageQueue {
   }
 }
 
+/**
+ * Rebuilds the pending queue from a session log.
+ *
+ * Two things remove a message: its own `dequeue` record, and a user message
+ * record that names it as its source. The second covers the crash window in the
+ * hand-off — the user record is written first, the `dequeue` after — so a
+ * message that was already sent is not sent again on the next start. Collected
+ * up front because the user record is written after the `enqueue` it answers,
+ * and a rolled-back turn takes its user record with it, which is exactly when
+ * the queued message should come back.
+ */
 export function replayMessageQueue(records: readonly SessionRecord[]): QueuedMessage[] {
   const pending: QueuedMessage[] = []
   const ids = new Set<string>()
+  const alreadySent = new Set<string>()
+  for (const record of records) {
+    if (record.type === 'message' && record.sourceQueuedMessageId) {
+      alreadySent.add(record.sourceQueuedMessageId)
+    }
+  }
 
   for (const record of records) {
     if (record.type !== 'message_queue') continue
@@ -211,6 +246,7 @@ export function replayMessageQueue(records: readonly SessionRecord[]): QueuedMes
     }
     if (record.operation === 'enqueue') {
       if (!isValidQueuedMessage(record.message) || ids.has(record.message.id)) continue
+      if (alreadySent.has(record.message.id)) continue
       pending.push(Object.freeze({ ...record.message }))
       ids.add(record.message.id)
       continue

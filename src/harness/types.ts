@@ -66,6 +66,17 @@ export interface ChatMessage {
    * resolve through the owning session's attachment service, never inlined.
    */
   images?: ImageAttachmentRef[]
+  /**
+   * The queued message this user record was submitted from (design §12.2).
+   *
+   * The hand-off consumes a queued message only once its user record is on
+   * disk, which leaves one window: a crash between the two writes. Replay
+   * closes it — a queued message whose id appears here has already been sent,
+   * so `replayMessageQueue` drops it instead of sending it twice. It follows
+   * the ordinary rollback rules: a turn rolled back takes its user record with
+   * it, and the queued message legitimately comes back.
+   */
+  sourceQueuedMessageId?: string
 }
 
 export interface ToolUseRecord {

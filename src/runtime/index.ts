@@ -73,9 +73,9 @@ export type {
   ProjectEntry,
 } from './projectDirectory.js'
 export { SessionRecordLedger } from './recordLedger.js'
-export { canPumpQueue } from './queuePump.js'
+export { canPumpQueue, handOffQueuedMessage } from './queuePump.js'
 export { buildModelPickerOptions } from './modelPicker.js'
-export type { QueuePumpState } from './queuePump.js'
+export type { QueueHandoffDeps, QueueHandoffOutcome, QueuePumpState } from './queuePump.js'
 export { MessageQueue, replayMessageQueue } from './messageQueue.js'
 export type { PersistQueueRecord, QueuedMessage } from './messageQueue.js'
 export {

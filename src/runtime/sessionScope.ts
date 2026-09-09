@@ -5,7 +5,7 @@ import { persistPermissionRule } from '../config/settings.js'
 import type { ActiveModelRuntime } from '../harness/loop.js'
 import { PermissionGate, permissionRulesFromSettings, type DenialStateStore } from '../harness/permissions.js'
 import { SystemPromptSectionCache } from '../harness/sections.js'
-import type { ImageAttachmentImporter, SessionRecord } from '../harness/types.js'
+import type { AttachmentBytesLoader, ImageAttachmentImporter, SessionRecord } from '../harness/types.js'
 import type { AttachmentFactsResolver } from '../harness/turnImages.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
 import type { SessionMeta, SessionStore } from '../sessions/service.js'
@@ -45,6 +45,8 @@ export interface SessionScopeDeps {
   imageAttachments?: ImageAttachmentImporter
   /** The same store seen as the request path's facts resolver (S15). */
   attachmentFacts?: AttachmentFactsResolver
+  /** The same store seen as the request path's send-byte loader (S17). */
+  attachmentBytes?: AttachmentBytesLoader
 }
 
 /**
@@ -115,6 +117,7 @@ export async function createSessionScope(
     trackFileEdit: (filePath) => trackFileEdit?.(filePath) ?? Promise.resolve(),
     ...(deps.imageAttachments ? { imageAttachments: deps.imageAttachments } : {}),
     ...(deps.attachmentFacts ? { attachmentFacts: deps.attachmentFacts } : {}),
+    ...(deps.attachmentBytes ? { attachmentBytes: deps.attachmentBytes } : {}),
     onActiveSessionChange: (nextSessionId) => {
       if (nextSessionId === activeSessionId) return
       activeSessionId = nextSessionId

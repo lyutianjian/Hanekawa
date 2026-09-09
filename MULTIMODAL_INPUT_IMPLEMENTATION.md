@@ -95,7 +95,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S14 | TUI 路径粘贴、附件列表与 `/paste-image` | S13 | 中 | `[x]` |
 | S15 | 当前轮/历史轮判定与历史降级投影 | S06 | 长 | `[x]` |
 | S16 | `mediaStrip` 数量限制与图像 token 预算 | S15 | 中 | `[x]` |
-| S17 | Anthropic payload 图像映射 | S16, S05 | 中 | `[ ]` |
+| S17 | Anthropic payload 图像映射 | S16, S05 | 中 | `[x]` |
 | S18 | OpenAI payload 图像映射与工具图片合成消息 | S16, S05 | 中 | `[ ]` |
 | S19 | 发送前最终校验与日志遮蔽 | S17, S18 | 中 | `[ ]` |
 | S20 | 消息队列持久化与交接改造 | S19, S11 | 长 | `[ ]` |
@@ -635,7 +635,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S17 `[ ]` Anthropic payload 图像映射
+## S17 `[x]` Anthropic payload 图像映射
 
 **前置**：S16、S05 · **规模**：中 · **设计稿**：§10.1
 **涉及**：`src/config/providers/anthropicPayload.ts`、`test/anthropicProvider.test.ts`
@@ -652,6 +652,18 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：测试覆盖纯图片消息、文字+多图、工具结果图片、缓存标记数量不变、未匹配 tool_use/tool_result 修复仍生效。
 **验证**：`node --import tsx --test test/anthropicProvider.test.ts test/cacheControl.test.ts test/cacheControl.invariant.test.ts`
 **提交**：`checkpoint: S17 map images into Anthropic payloads`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- **前置说明**：本文件中第一个 `[ ]` 仍是 S11（前置 S19 未完成、§1.1 建议 S15–S19 先行），按 S14–S16 确立的「前置全部满足」顺序执行 S17（前置 S16、S05 均已完成）。
+- 字节加载边界（工作项 6）：`ModelRequest` 新增可选 `imageBytes: Map<imageId, RequestImageBytes>`，值是 `{ bytes, mimeType }` 的**原始字节**——Base64 编码是各协议 payload 的职责（S18 的 data URL、S19 的请求体计量都要原始字节），不在加载层提前烧死。加载器接口 `AttachmentBytesLoader`（`readSendBytes`）定义于 `src/harness/types.ts`，结构性满足者就是 S05 的 `ImageAttachmentService`，bootstrap 把同一服务实例直接挂为第三个视图（`imageAttachments` 导入 / `attachmentFacts` 事实 / `attachmentBytes` 字节），经 `SessionScopeDeps → CreateRuntimeDeps → AgentLoopOptions` 逐层可选传入。loop 新增 `prepareRequestImages`，调用点严格落在 §11.1 五步的最后一步——配对修复、能力投影、数量上限、compact 全部决策之后、`contextBuilder.build` 之前：对最终保留的 ref 按 id 去重并行加载，每次请求构建各加载一次（fallback / retry-primary 重建请求时随新 map 重载，不跨请求共享实例）。投影选在 records 层而非 contextItems 层：`ContextToolResult` 不携带记录身份，而缺失分层需要 turn ID；records 级投影同时让 `built.messages` 与 `built.contextItems` 两个视图从同一份投影记录派生、天然一致。辅助请求（compact 摘要、toolUseSummary、sessionMemory）全部是纯文本构造，不经此路径、不受影响。
+- 缺失分层（补齐 §11.1 在 capable 模型上的分支）：加载失败沿用 S15 的分层——**当前轮** ref（含本轮工具图）抛 `TurnImageBlockError('file-missing')` 阻止该次请求（此时用户记录已存在，错误经既有轮次错误通道呈现，provider 零调用）；**历史** ref 降级为 S15 的 `formatMissingHistoricalImagePlaceholder` 占位符（该措辞原本只服务 text-only 投影，现在 capable 模型遇上文件双失也走同一占位——设计稿「缺失的历史文件用明确的文件缺失占位符」由此完整），同一 ref 在多条记录出现时逐出现投影，纯投影不动 JSONL 与 records 缓存（测试钉住）。无 loader（测试 loop、S23 前的子代理）时 map 缺省、ref 原样随请求——真 payload 构建器会拒绝（见下），假 provider 不受影响。
+- payload 映射（工作项 1、2、5）：`anthropicPayload.ts` 新增单一助手 `anthropicImageBlocks`，把 ref + bytes 映射为 `{ type: 'image', source: { type: 'base64', media_type, data } }`；`media_type` 取加载时嗅探的实际 MIME（S05 读路径已做完整性校验），不信任 ref 的声明值。用户消息 = 既有空文本过滤后的 text 块 + image 块（**纯图片消息因 image 块非空而在「空字符串过滤」中存活**，工作项 5）；`tool_result` 无图时 `content` 保持字符串逐字不变，带图时升级为 `[text?, ...images]` 块数组（空文本不产生空 text 块），`tool_use_id` 与 `is_error` 原样保留（ok / error 两态均有断言）；连续工具结果合并、thinking 合并、`(context truncated)` 兜底逻辑零改动，只是 content 数组可能多出 image 块。
+- 缺字节即拒绝（不变量兜底）：payload 构建器遇到无 bytes 的 ref 直接抛错（消息含文件名与附件 ID），**不静默丢图**。loop 在上游保证「存活 ref 要么有 bytes 要么已被投影」，此分支只在未来接线遗漏（例如 S23 子代理继承历史）时大声失败而非悄悄发出缺图请求。
+- apiResultBlock 分支（工作项 3）：优先分支逐字未动（ToolSearch 的 `tool_reference` 块照旧 spread + `is_error`），分支内注释钉住「图片只走普通 tool_result 分支，不能借优先分支绕过共用能力与限额检查」——该分支的输入是 ToolSearch 结果，天然不产生 `images`。
+- 缓存标记与配对修复（工作项 4）：`addCacheBreakpoints` / `enforceAnthropicCacheControlLimit` / `finalizeAnthropicCacheControl` 逻辑零改动；image 块是普通 content 块，最后消息的最后块若是 image，标记落在其上（API 接受，`collectCacheControlTelemetry` 计数不变）。测试断言带图与无图请求的 marker 分布逐位相同（system 1 / tools 1 / messages 1）。配对修复未触碰——`repairToolResultPairing` 在 requestPrep 上游运行，payload 侧的合并 / 分组对图片透明（带图工具结果照常合并进同一 user 消息）。
+- 测试：`test/anthropicProvider.test.ts` +7（文字+多图 base64 逐值含 MIME 区分、纯图片消息存活且无空 text 块、工具结果图三态（图+文 / 图+错误 / 纯文本保持字符串）+ 连续合并、纯图片工具结果、缺字节双态抛错（无 map 与 map 缺项）、apiResultBlock 优先分支逐字、缓存标记分布相同 + 标记落在 image 块、provider 端到端——captureRequests 证明字节经 `createMessage` 到达最终 payload）；`test/loop.test.ts` +3（字节按请求构建逐 ref 加载一次并随 modelRequest 下发、第二轮请求是新 map 实例、历史缺失 → 占位符投影 + 当前图照发 + JSONL 原样、当前轮缺失 → `TurnImageBlockError('file-missing')` 阻止且 provider 零调用）。形状断言的测试用 `MYAGENT_DISABLE_PROMPT_CACHING` 隔离最后消息的 cache breakpoint 标记（既有 afterEach 恢复环境）。
+- 验证：窄测 `anthropicProvider`（27）+ `cacheControl`/`cacheControl.invariant`（42）全绿；邻接 `requestPrep`/`turnImages`/`mediaStrip`/`imageTokens`/`contextBuilder`/`loopAbort`/`sessionController`/`messageQueue`（129）、`desktopShellHost`/`desktopUiRoundTrip`/`protocolHost`/`agentTool`/`sessionWorkspace`/`sessionMemory`/`sessions`（312）、`loop`（61）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3189 项 3188 过、1 跳过（既有）、0 失败。后台首次全量曾出现 `backgroundTasks` 的后台 Bash 时序断言失败（S07/S15 已记录的本机环境抖动，exit code 仍为 0），前台复跑未复现，与本会话改动无关（不触碰后台任务）。
 
 ---
 

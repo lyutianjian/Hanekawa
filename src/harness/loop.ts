@@ -17,7 +17,7 @@ import { logDiagnostics, type RuntimeDiagnostic } from './diagnostics.js'
 import { cacheHitRate, type SessionMetricInput } from './metrics.js'
 import type { RecordStream } from './recordStream.js'
 import { MemoryRecordStream } from './recordStream.js'
-import type { UserInput } from '../media/types.js'
+import type { ImageAttachmentRef, UserInput } from '../media/types.js'
 import { mergeHooks, runLifecycleHooks, type Hooks, type LifecycleHookName } from './hooks.js'
 import { FallbackTriggeredError } from '../config/retry.js'
 import {
@@ -31,7 +31,7 @@ import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
 import type { PlanModeManager } from './planModeManager.js'
-import type { AgentRunResult, ChatMessage, ModelProvider, ModelStreamEvent, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
+import type { AgentRunResult, AttachmentBytesLoader, ChatMessage, ModelProvider, ModelStreamEvent, RequestImageBytes, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
 import type { ThinkingConfig } from '../config/service.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { describeShell } from '../tools/BashTool/BashTool.js'
@@ -43,10 +43,13 @@ import {
   type AtMentionImageImporter,
 } from './atMentions.js'
 import {
+  appendPlaceholderBlocks,
   assertCurrentImagesAvailable,
   assertNewImagesAllowed,
   formatHistoricalProjectionNotice,
+  formatMissingHistoricalImagePlaceholder,
   projectTurnImagesForRequest,
+  recordIsCurrentTurn,
   TurnImageBlockError,
   type AttachmentFactsResolver,
   type RequestImageProjection,
@@ -156,6 +159,15 @@ export interface AgentLoopOptions {
    * wording only when they cannot be resolved at all.
    */
   attachmentFacts?: AttachmentFactsResolver
+  /**
+   * Loads send-version image bytes for the request path. Consulted only after
+   * the final send decision (design §11.1 step 5) — compaction and the count
+   * cap have already settled what the request carries, so no earlier phase
+   * ever touches image bytes. Absent where no store exists (test loops;
+   * subagents until their ownership rules land) — requests then carry image
+   * refs without bytes, which a real payload builder refuses to send.
+   */
+  attachmentBytes?: AttachmentBytesLoader
   contextManagement?: Partial<ContextManagementConfig>
   isGitRepo?: boolean
   maxTurns?: number
@@ -602,6 +614,11 @@ export class AgentLoop {
       }
 
       const records = recordsBeforeCompact
+      // Final image-byte loading (design §11.1 step 5): after every projection,
+      // cap, and compaction decision above, load the send-version bytes the
+      // request will actually carry. Current-turn files that cannot be loaded
+      // stop the request; unloadable history degrades to placeholders here.
+      const imageSend = await this.prepareRequestImages(records, turnId, userMessage.id)
       const pendingRestoreRecordIds = this.pendingPostCompactRestoreRecordIds(records)
       const planAttachment = this.options.planModeManager?.getActivePlanAttachment()
       const env: EnvironmentInfo = {
@@ -629,7 +646,7 @@ export class AgentLoop {
 
       const built = await this.options.contextBuilder.build({
         preloadRecords: this.options.preloadRecords,
-        records,
+        records: imageSend.records,
         tools: toolsForContext,
         system: this.options.system,
         projectContext: this.options.projectContext,
@@ -708,6 +725,7 @@ export class AgentLoop {
         hasDeferredTools: hasDeferred,
         allDeferredToolNames,
         postCompactDiscoveredNames: this.options.toolContext._postCompactDiscoveredNames,
+        ...(imageSend.imageBytes ? { imageBytes: imageSend.imageBytes } : {}),
         onTextDelta: (delta: string) => {
           pendingAssistantStreamContent += delta
         },
@@ -1111,6 +1129,104 @@ export class AgentLoop {
         this.inFlight = null
       }
     }
+  }
+
+  /**
+   * Loads the send-version bytes for the images the final request still
+   * carries (design §11.1 step 5): runs after the capability projection, the
+   * count cap, and compaction have all settled what stays, so bytes load
+   * exactly once per request build and no earlier phase ever touches them.
+   *
+   * A ref whose files cannot be loaded follows the same layering as the
+   * capability projection: one on the current turn blocks the request —
+   * current pixels are never dropped silently — while history degrades to the
+   * file-missing placeholder. That substitution is a pure projection over
+   * this request's record copies; JSONL and the records cache keep their refs.
+   */
+  private async prepareRequestImages(
+    records: SessionRecord[],
+    currentTurnId: string,
+    currentUserMessageId: string,
+  ): Promise<{ records: SessionRecord[]; imageBytes?: Map<string, RequestImageBytes> }> {
+    const bearing: Array<SessionRecord & { images: ImageAttachmentRef[] }> = []
+    const refs = new Map<string, { ref: ImageAttachmentRef; currentTurn: boolean }>()
+    for (const record of records) {
+      if (record.type !== 'message' && record.type !== 'tool_result') continue
+      if (!record.images || record.images.length === 0) continue
+      const currentTurn = recordIsCurrentTurn(record, currentTurnId, currentUserMessageId)
+      bearing.push(record as SessionRecord & { images: ImageAttachmentRef[] })
+      for (const ref of record.images) {
+        const prior = refs.get(ref.id)
+        refs.set(ref.id, { ref, currentTurn: (prior?.currentTurn ?? false) || currentTurn })
+      }
+    }
+    if (refs.size === 0) return { records }
+    const loader = this.options.attachmentBytes
+    if (!loader) return { records }
+
+    const loaded = await Promise.all([...refs.values()].map(async ({ ref }) => {
+      const result = await loader.readSendBytes(ref)
+      return { ref, result }
+    }))
+    const imageBytes = new Map<string, RequestImageBytes>()
+    const missingIds = new Set<string>()
+    for (const { ref, result } of loaded) {
+      if (result.ok) imageBytes.set(ref.id, result.value)
+      else missingIds.add(ref.id)
+    }
+    if (missingIds.size === 0) return { records, imageBytes }
+
+    const missingCurrent = [...refs.values()]
+      .filter((entry) => entry.currentTurn && missingIds.has(entry.ref.id))
+      .map((entry) => entry.ref)
+    if (missingCurrent.length > 0) {
+      const plural = missingCurrent.length === 1 ? '' : 's'
+      throw new TurnImageBlockError(
+        'file-missing',
+        missingCurrent,
+        `${missingCurrent.length} image${plural} referenced by this turn ${missingCurrent.length === 1 ? 'is' : 'are'} no longer available `
+          + `in the session's attachment store (${missingCurrent.map((ref) => ref.name).join(', ')}). `
+          + `The turn was stopped before this request was sent; re-attach the image${plural} and resend.`,
+      )
+    }
+
+    if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
+      console.error(
+        `[hanekawa][image-send] ${missingIds.size} historical image${missingIds.size === 1 ? '' : 's'} `
+          + `could not be loaded and will be sent as file-missing placeholders`,
+      )
+    }
+
+    // Pure projection, the same shape mediaStrip's omissions take: every
+    // occurrence of an unloadable historical ref keeps its slot as text.
+    const projectionsByRecordId = new Map<
+      string,
+      { rest: SessionRecord; keptImages: ImageAttachmentRef[]; blocks: string[] }
+    >()
+    for (const record of bearing) {
+      const missingRefs = record.images.filter((ref) => missingIds.has(ref.id))
+      if (missingRefs.length === 0) continue
+      const keptImages = record.images.filter((ref) => !missingIds.has(ref.id))
+      const { images: _images, ...rest } = record
+      projectionsByRecordId.set(record.id, {
+        rest,
+        keptImages,
+        blocks: missingRefs.map((ref) => formatMissingHistoricalImagePlaceholder(ref)),
+      })
+    }
+    const projected = records.map((record) => {
+      const projection = projectionsByRecordId.get(record.id)
+      if (!projection) return record
+      // Only message/tool_result records reach this map entry; the cast keeps
+      // the destructure honest for the union TS cannot narrow here.
+      const rest = projection.rest as SessionRecord & { content: string }
+      return {
+        ...rest,
+        ...(projection.keptImages.length > 0 ? { images: projection.keptImages } : {}),
+        content: appendPlaceholderBlocks(rest.content, projection.blocks),
+      } as SessionRecord
+    })
+    return { records: projected, imageBytes }
   }
 
   private async loadPreparedRecords(turnId?: string, userMessageId?: string): Promise<SessionRecord[]> {

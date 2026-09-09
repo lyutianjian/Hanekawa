@@ -303,6 +303,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     createActiveModelRuntime,
     imageAttachments: attachments,
     attachmentFacts: createAttachmentFactsResolver(attachments, cwd),
+    attachmentBytes: attachments,
   }
 
   // Every scope currently open. `reloadSettings` has to reach all of them, and

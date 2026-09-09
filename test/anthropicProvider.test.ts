@@ -2,10 +2,12 @@ import test, { afterEach, beforeEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
 import { AnthropicProvider, resetRejectedPromptCaching, streamWithTimeout } from '../src/config/providers/anthropicProvider.js'
+import { buildAnthropicPayload } from '../src/config/providers.js'
 import { collectCacheControlTelemetry } from '../src/config/providers/cacheControlTelemetry.js'
 import { resetCacheBreakDetection } from '../src/harness/cacheBreakDetection.js'
 import { resetCacheTTLEvaluation } from '../src/harness/cacheControl.js'
-import type { ModelRequest } from '../src/harness/types.js'
+import type { ModelContextItem, ModelRequest, RequestImageBytes, ToolResultBlockParam } from '../src/harness/types.js'
+import type { ImageAttachmentRef, ImageMimeType } from '../src/media/types.js'
 
 const cacheEnvironment = new Map(
   ['MYAGENT_DISABLE_PROMPT_CACHING', 'MYAGENT_DEBUG_PROVIDER'].map((key) => [key, process.env[key]]),
@@ -671,3 +673,281 @@ async function waitFor(assertion: () => boolean, timeoutMs = 500): Promise<void>
   }
   assert.equal(assertion(), true)
 }
+
+// --- Image payload mapping (S17, design §10.1) ---
+
+const imageCreatedAt = '2026-09-08T00:00:00.000Z'
+
+function imageRef(id: string, overrides: Partial<ImageAttachmentRef> = {}): ImageAttachmentRef {
+  return {
+    id,
+    ownerSessionId: 'session-image',
+    name: `${id}.png`,
+    mimeType: 'image/png',
+    width: 64,
+    height: 48,
+    byteLength: 96,
+    ...overrides,
+  }
+}
+
+function imageBytesFor(bytes: Uint8Array, mimeType: ImageMimeType = 'image/png'): RequestImageBytes {
+  return { bytes, mimeType }
+}
+
+function payloadMessagesOf(request: ModelRequest): Array<{ role: string; content: unknown }> {
+  return buildAnthropicPayload(request).messages as unknown as Array<{ role: string; content: unknown }>
+}
+
+test('user messages map to text and base64 image blocks; pure-image messages survive the empty-text filter', () => {
+  // Isolate block shape from the last-message cache breakpoint marker.
+  process.env.MYAGENT_DISABLE_PROMPT_CACHING = '1'
+  const shot = imageRef('img-shot', { name: 'shot.png' })
+  const diagram = imageRef('img-diagram', { name: 'diagram.jpg', mimeType: 'image/jpeg' })
+  const silent = imageRef('img-silent', { name: 'silent.png' })
+  const shotBytes = new Uint8Array([1, 2, 3, 4])
+  const diagramBytes = new Uint8Array([5, 6])
+
+  const messages = payloadMessagesOf({
+    model: 'claude-sonnet',
+    messages: [],
+    cacheSource: 'agent:image-test',
+    contextItems: [
+      {
+        kind: 'message',
+        message: { id: 'u1', role: 'user', content: '请分析这张截图', images: [shot, diagram], createdAt: imageCreatedAt },
+      },
+      {
+        kind: 'message',
+        message: { id: 'u2', role: 'user', content: '', images: [silent], createdAt: imageCreatedAt },
+      },
+    ],
+    imageBytes: new Map([
+      [shot.id, imageBytesFor(shotBytes)],
+      [diagram.id, imageBytesFor(diagramBytes, 'image/jpeg')],
+      [silent.id, imageBytesFor(new Uint8Array([9]))],
+    ]),
+  })
+
+  assert.equal(messages.length, 2)
+  assert.deepEqual(messages[0], {
+    role: 'user',
+    content: [
+      { type: 'text', text: '请分析这张截图' },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: Buffer.from(shotBytes).toString('base64') },
+      },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/jpeg', data: Buffer.from(diagramBytes).toString('base64') },
+      },
+    ],
+  })
+  // A pure-image message must not be dropped as an "empty" message.
+  assert.deepEqual(messages[1], {
+    role: 'user',
+    content: [
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: Buffer.from([9]).toString('base64') },
+      },
+    ],
+  })
+})
+
+test('tool results carry image blocks with their tool_use_id and is_error; text-only results stay strings', () => {
+  // Isolate block shape from the last-message cache breakpoint marker.
+  process.env.MYAGENT_DISABLE_PROMPT_CACHING = '1'
+  const saw = imageRef('img-saw')
+  const failed = imageRef('img-failed', { name: 'failed.png' })
+
+  const messages = payloadMessagesOf({
+    model: 'claude-sonnet',
+    messages: [],
+    cacheSource: 'agent:image-test',
+    contextItems: [
+      { kind: 'message', message: { id: 'a1', role: 'assistant', content: 'checking', createdAt: imageCreatedAt } },
+      { kind: 'tool_use', id: 'call-1', tool: 'Read', input: { filePath: 'shot.png' } },
+      { kind: 'tool_use', id: 'call-2', tool: 'Read', input: { filePath: 'broken.png' } },
+      { kind: 'tool_use', id: 'call-3', tool: 'Grep', input: { pattern: 'x' } },
+      { kind: 'tool_result', toolUseId: 'call-1', tool: 'Read', ok: true, content: 'saw it', images: [saw] },
+      { kind: 'tool_result', toolUseId: 'call-2', tool: 'Read', ok: false, content: 'boom', images: [failed] },
+      { kind: 'tool_result', toolUseId: 'call-3', tool: 'Grep', ok: true, content: '2 matches' },
+    ],
+    imageBytes: new Map([
+      [saw.id, imageBytesFor(new Uint8Array([1]))],
+      [failed.id, imageBytesFor(new Uint8Array([2]))],
+    ]),
+  })
+
+  // Consecutive tool results merge into one user message, images included.
+  assert.equal(messages.length, 2)
+  const toolMessage = messages[1] as { role: string; content: Array<Record<string, unknown>> }
+  assert.equal(toolMessage.role, 'user')
+  assert.equal(toolMessage.content.length, 3)
+  assert.deepEqual(toolMessage.content[0], {
+    type: 'tool_result',
+    tool_use_id: 'call-1',
+    content: [
+      { type: 'text', text: 'saw it' },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: Buffer.from([1]).toString('base64') },
+      },
+    ],
+    is_error: false,
+  })
+  assert.equal((toolMessage.content[1] as { is_error: unknown }).is_error, true)
+  assert.equal((toolMessage.content[1] as { tool_use_id: unknown }).tool_use_id, 'call-2')
+  // A tool result without images keeps its string content exactly as before.
+  assert.deepEqual(toolMessage.content[2], {
+    type: 'tool_result',
+    tool_use_id: 'call-3',
+    content: '2 matches',
+    is_error: false,
+  })
+})
+
+test('a pure-image tool result sends an image-only content array', () => {
+  // Isolate block shape from the last-message cache breakpoint marker.
+  process.env.MYAGENT_DISABLE_PROMPT_CACHING = '1'
+  const ref = imageRef('img-only')
+  const bytes = new Uint8Array([7, 7, 7])
+
+  const messages = payloadMessagesOf({
+    model: 'claude-sonnet',
+    messages: [],
+    cacheSource: 'agent:image-test',
+    contextItems: [
+      { kind: 'tool_use', id: 'call-1', tool: 'Read', input: { filePath: 'shot.png' } },
+      { kind: 'tool_result', toolUseId: 'call-1', tool: 'Read', ok: true, content: '', images: [ref] },
+    ],
+    imageBytes: new Map([[ref.id, imageBytesFor(bytes)]]),
+  })
+
+  const blocks = (messages[1]?.content as Array<Record<string, unknown>>)
+  assert.deepEqual(blocks, [{
+    type: 'tool_result',
+    tool_use_id: 'call-1',
+    content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.from(bytes).toString('base64') } },
+    ],
+    is_error: false,
+  }])
+})
+
+test('an image ref without loaded bytes fails the payload build instead of silently dropping it', () => {
+  const ref = imageRef('img-missing-bytes', { name: 'missing.png' })
+  const request: ModelRequest = {
+    model: 'claude-sonnet',
+    messages: [],
+    cacheSource: 'agent:image-test',
+    contextItems: [
+      {
+        kind: 'message',
+        message: { id: 'u1', role: 'user', content: 'look', images: [ref], createdAt: imageCreatedAt },
+      },
+    ],
+  }
+
+  assert.throws(() => buildAnthropicPayload(request), /missing\.png .*no send bytes loaded/)
+  assert.throws(() => buildAnthropicPayload({ ...request, imageBytes: new Map() }), /img-missing-bytes/)
+})
+
+test('pre-mapped apiResultBlock tool results keep their priority shape untouched', () => {
+  // Isolate the branch's shape from the last-message cache breakpoint, which
+  // decorates whichever block happens to be last.
+  process.env.MYAGENT_DISABLE_PROMPT_CACHING = '1'
+  const messages = payloadMessagesOf({
+    model: 'claude-sonnet',
+    messages: [],
+    cacheSource: 'agent:image-test',
+    contextItems: [
+      { kind: 'tool_use', id: 'call-ts', tool: 'ToolSearch', input: { query: 'read' } },
+      {
+        kind: 'tool_result',
+        toolUseId: 'call-ts',
+        tool: 'ToolSearch',
+        ok: true,
+        content: 'fallback text',
+        apiResultBlock: {
+          type: 'tool_result',
+          tool_use_id: 'call-ts',
+          content: [{ type: 'tool_reference', tool_name: 'Read' }],
+        } as ToolResultBlockParam,
+      },
+    ],
+  })
+
+  const blocks = messages[1]?.content as Array<Record<string, unknown>>
+  assert.deepEqual(blocks, [{
+    type: 'tool_result',
+    tool_use_id: 'call-ts',
+    content: [{ type: 'tool_reference', tool_name: 'Read' }],
+    is_error: false,
+  }])
+})
+
+test('image blocks leave the cache_control marker count and distribution unchanged', () => {
+  const ref = imageRef('img-cache', { name: 'cache.png' })
+  const bytes = new Uint8Array([1, 2, 3])
+
+  const withImages = cacheRequest({
+    messages: [{
+      id: 'user-1',
+      role: 'user',
+      content: 'Read the file',
+      images: [ref],
+      createdAt: '2026-09-06T00:00:00Z',
+    }],
+    imageBytes: new Map([[ref.id, imageBytesFor(bytes)]]),
+  })
+  const withoutImages = cacheRequest()
+
+  const withPayload = buildAnthropicPayload(withImages)
+  const withoutPayload = buildAnthropicPayload(withoutImages)
+
+  assert.deepEqual(
+    collectCacheControlTelemetry(withPayload).byLocation,
+    collectCacheControlTelemetry(withoutPayload).byLocation,
+  )
+  assert.deepEqual(collectCacheControlTelemetry(withPayload).byLocation, {
+    system: 1, tools: 1, messages: 1, other: 0,
+  })
+  assert.ok(collectCacheControlTelemetry(withPayload).total <= 4)
+  // The message marker still lands on the last message's last block — now an
+  // image block, which the API accepts and the limit accounting still counts.
+  const lastMessage = (withPayload.messages as unknown as Array<{ content: Array<Record<string, unknown>> }>).at(-1)
+  const lastBlock = lastMessage?.content.at(-1)
+  assert.equal(lastBlock?.type, 'image')
+  assert.deepEqual(lastBlock?.cache_control, { type: 'ephemeral' })
+})
+
+test('the provider sends base64 image blocks built from the request byte map', async () => {
+  process.env.MYAGENT_DISABLE_PROMPT_CACHING = '1'
+  const provider = new AnthropicProvider({ model: 'claude-sonnet', apiKey: 'test-key' })
+  const requests = captureRequests(provider, () => ({ input_tokens: 10, output_tokens: 1 }))
+  const ref = imageRef('img-e2e', { name: 'e2e.png' })
+  const bytes = new Uint8Array([137, 80, 78, 71])
+
+  await provider.createMessage(cacheRequest({
+    messages: [{
+      id: 'user-1',
+      role: 'user',
+      content: '请分析这张截图',
+      images: [ref],
+      createdAt: '2026-09-06T00:00:00Z',
+    }],
+    imageBytes: new Map([[ref.id, imageBytesFor(bytes)]]),
+  }))
+
+  const messages = requests[0]!.payload.messages as unknown as Array<{ role: string; content: Array<Record<string, unknown>> }>
+  assert.deepEqual(messages.at(-1)?.content, [
+    { type: 'text', text: '请分析这张截图' },
+    {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: Buffer.from(bytes).toString('base64') },
+    },
+  ])
+})

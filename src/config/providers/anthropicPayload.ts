@@ -1,5 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk'
-import type { ModelContextItem, ModelRequest, Tool } from '../../harness/types.js'
+import type { ImageAttachmentRef } from '../../media/types.js'
+import type { ModelContextItem, ModelRequest, RequestImageBytes, Tool } from '../../harness/types.js'
 import { getCachedToolSchema } from '../../harness/toolApiSchema.js'
 import {
   addCacheBreakpoints,
@@ -44,6 +45,42 @@ function anthropicContent(content: string): Array<{ type: 'text'; text: string }
   return [{ type: 'text', text: content }]
 }
 
+/**
+ * Base64 image blocks for the refs a user message or tool result carries
+ * (design §10.1). The bytes arrive through `ModelRequest.imageBytes`, loaded
+ * by the loop only after the final send decision — so by the time they reach
+ * this builder, every capability and cap check has already run and these
+ * blocks cannot bypass them. A ref without loaded bytes is an invariant
+ * violation (the loop blocks or placeholders unloadable refs before the
+ * request is built): refusing to build beats silently sending a request that
+ * dropped images.
+ */
+function anthropicImageBlocks(
+  images: readonly ImageAttachmentRef[] | undefined,
+  imageBytes: Map<string, RequestImageBytes> | undefined,
+): Array<Record<string, unknown>> {
+  if (!images || images.length === 0) return []
+  const blocks: Array<Record<string, unknown>> = []
+  for (const ref of images) {
+    const loaded = imageBytes?.get(ref.id)
+    if (!loaded) {
+      throw new Error(
+        `Image ${ref.name} (attachment ${ref.id}) has no send bytes loaded for this request; `
+        + 'refusing to build a payload that would silently drop it.',
+      )
+    }
+    blocks.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: loaded.mimeType,
+        data: Buffer.from(loaded.bytes).toString('base64'),
+      },
+    })
+  }
+  return blocks
+}
+
 function anthropicSystemWithCache(request: ModelRequest, enableCaching: boolean): Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral'; ttl?: '1h' } }> {
   const { staticBlocks, dynamicBlocks } = splitSystemForCaching(
     request.systemBlocks ?? (request.system ? [request.system] : []),
@@ -77,10 +114,13 @@ export function buildAnthropicMessages(request: ModelRequest) {
         pendingToolResults = []
       }
       if (item.message.role !== 'user' && item.message.role !== 'assistant') continue
-      const content = anthropicContent(item.message.content).filter((block) => {
-        if (block.type === 'text') return block.text.trim() !== ''
-        return true
-      })
+      // Text blocks keep their empty-string filter; image blocks ride after
+      // the text, so a pure-image message survives it instead of being
+      // dropped as "empty" (design §10.1).
+      const content = [
+        ...anthropicContent(item.message.content).filter((block) => block.text.trim() !== ''),
+        ...anthropicImageBlocks(item.message.images, request.imageBytes),
+      ]
 
       if (item.message.role === 'assistant' && item.message.thinkingBlocks && item.message.thinkingBlocks.length > 0) {
         const thinkingBlocks = item.message.thinkingBlocks.map((block) => {
@@ -144,17 +184,28 @@ export function buildAnthropicMessages(request: ModelRequest) {
     }
 
     // Use pre-mapped API block when available (e.g. tool_reference for ToolSearch),
-    // otherwise fall back to plain-text content.
+    // otherwise fall back to plain-text content. Images ride only the plain
+    // branch: pre-mapped blocks are ToolSearch schemas and never carry images,
+    // so they cannot serve as a path around the shared capability and cap
+    // checks the bytes already passed.
     if (item.apiResultBlock) {
       pendingToolResults.push({
         ...(item.apiResultBlock as unknown as Record<string, unknown>),
         is_error: !item.ok,
       })
     } else {
+      const imageBlocks = anthropicImageBlocks(item.images, request.imageBytes)
       pendingToolResults.push({
         type: 'tool_result',
         tool_use_id: item.toolUseId,
-        content: item.content,
+        // A text-only result stays the string it always was; images upgrade
+        // content to a block array, keeping the text (when any) in front.
+        content: imageBlocks.length > 0
+          ? [
+              ...(item.content.trim() === '' ? [] : [{ type: 'text', text: item.content }]),
+              ...imageBlocks,
+            ]
+          : item.content,
         is_error: !item.ok,
       })
     }

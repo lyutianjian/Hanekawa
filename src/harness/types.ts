@@ -4,7 +4,7 @@ import type { CacheRuntime } from './cacheControl.js'
 import type { JsonSchema, ToolValidationResult } from './toolValidation.js'
 import type { PermissionMode } from './permissions.js'
 import type { SessionMetricInput } from './metrics.js'
-import type { ImageAttachmentMetadata, ImageAttachmentRef, ImageInputErrorReason } from '../media/types.js'
+import type { ImageAttachmentMetadata, ImageAttachmentRef, ImageInputErrorReason, ImageMimeType } from '../media/types.js'
 
 export type RiskLevel = 'safe' | 'confirm' | 'dangerous'
 
@@ -414,6 +414,27 @@ export interface ImageAttachmentImporter {
   >
 }
 
+/** A loaded image's send-version bytes, in the form the request path needs. */
+export interface RequestImageBytes {
+  bytes: Uint8Array
+  mimeType: ImageMimeType
+}
+
+/**
+ * Loads a ref's send-version bytes — the only way pixels reach a request.
+ * Structurally satisfied by `ImageAttachmentService.readSendBytes`; the loop
+ * consults it only after the final send decision (design §11.1 step 5), so
+ * preparation, projection, and budget work never touch image bytes.
+ */
+export interface AttachmentBytesLoader {
+  readSendBytes(
+    ref: ImageAttachmentRef,
+  ): Promise<
+    | { ok: true; value: RequestImageBytes }
+    | { ok: false; reason: ImageInputErrorReason | 'store-write-failed'; message: string }
+  >
+}
+
 export interface ToolContext {
   cwd: string
   sessionId: string
@@ -720,6 +741,16 @@ export interface ModelRequest {
   allDeferredToolNames?: Set<string>
   /** Tool names discovered after the last compaction — only these should have defer_loading. */
   postCompactDiscoveredNames?: Set<string>
+  /**
+   * Send-version bytes for the image refs this request still carries, keyed
+   * by attachment id. Loaded once, after the final send decision (design
+   * §11.1 step 5) — compaction and the count cap have already decided what
+   * stays. Payload builders turn entries into provider image blocks; a ref
+   * still riding `messages`/`contextItems` without an entry here is an
+   * invariant violation and must fail the build, never silently drop the
+   * image.
+   */
+  imageBytes?: Map<string, RequestImageBytes>
   onTextDelta?: (delta: string) => void
   onStreamEvent?: (event: ModelStreamEvent) => void
 }

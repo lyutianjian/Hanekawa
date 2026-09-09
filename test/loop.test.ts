@@ -3641,3 +3641,192 @@ test('a mid-run model switch drops the usage baseline and re-estimates with imag
   resetAutoCompactFailureState()
 })
 
+
+// --- Final-send byte loading (S17, design §11.1 step 5) ---
+
+test('final-send image bytes load once per request build and ride the ModelRequest', async () => {
+  const historyImage = makeImageAttachmentRef({ id: 'img-hist-load', ownerSessionId: 's17-load', name: 'hist.png' })
+  const currentImage = makeImageAttachmentRef({ id: 'img-cur-load', ownerSessionId: 's17-load', name: 'cur.png' })
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'what is this',
+      images: [historyImage],
+      turnId: 'turn-old',
+      createdAt: '2026-09-08T00:00:00.000Z',
+    },
+  ]
+  const requests: ModelRequest[] = []
+  let loadCalls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'capable-model',
+    supportsImageInput: true,
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's17-load', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    attachmentBytes: {
+      readSendBytes: async (ref) => {
+        loadCalls += 1
+        return { ok: true, value: { bytes: new TextEncoder().encode(ref.id), mimeType: 'image/png' } }
+      },
+    },
+  })
+
+  await loop.run({ text: 'look at this', images: [currentImage] })
+
+  // One load per unique ref for the one request built — history and current.
+  assert.equal(loadCalls, 2)
+  const imageBytes = requests[0]?.imageBytes
+  assert.ok(imageBytes, 'the request carries the loaded byte map')
+  assert.equal(imageBytes.size, 2)
+  assert.deepEqual(imageBytes.get('img-hist-load'), {
+    bytes: new TextEncoder().encode('img-hist-load'),
+    mimeType: 'image/png',
+  })
+  assert.deepEqual(imageBytes.get('img-cur-load'), {
+    bytes: new TextEncoder().encode('img-cur-load'),
+    mimeType: 'image/png',
+  })
+
+  // A later request builds a fresh map of its own — the earlier turn's images
+  // are history now, still loaded, but never a map carried over by identity.
+  await loop.run({ text: 'plain text now' })
+  assert.notEqual(requests[1]?.imageBytes, requests[0]?.imageBytes)
+  assert.equal(requests[1]?.imageBytes?.size, 2)
+  assert.equal(loadCalls, 4, 'each request build loads its own bytes')
+
+  // Nothing was rewritten into the records the projections read from.
+  const persistedOld = records.find((record) => record.id === 'old-user')
+  assert.equal(persistedOld?.type === 'message' ? persistedOld.content : undefined, 'what is this')
+  assert.deepEqual(persistedOld?.type === 'message' ? persistedOld.images : undefined, [historyImage])
+})
+
+test('an unloadable historical image degrades to a file-missing placeholder while current images still send', async () => {
+  const historyImage = makeImageAttachmentRef({ id: 'img-hist-gone', ownerSessionId: 's17-gone', name: 'hist.png' })
+  const currentImage = makeImageAttachmentRef({ id: 'img-cur-ok', ownerSessionId: 's17-gone', name: 'cur.png' })
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'what is this',
+      images: [historyImage],
+      turnId: 'turn-old',
+      createdAt: '2026-09-08T00:00:00.000Z',
+    },
+  ]
+  const requests: ModelRequest[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'capable-model',
+    supportsImageInput: true,
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's17-gone', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    attachmentBytes: {
+      readSendBytes: async (ref) => ref.id === 'img-hist-gone'
+        ? { ok: false, reason: 'file-missing', message: 'cached files are gone' }
+        : { ok: true, value: { bytes: new TextEncoder().encode(ref.id), mimeType: 'image/png' } },
+    },
+  })
+
+  await loop.run({ text: 'look at this', images: [currentImage] })
+
+  const request = requests[0]
+  assert.ok(request)
+  // The historical occurrence kept its slot as an honest placeholder and no
+  // longer rides the request as an image ref.
+  const historyItem = request.contextItems?.find(
+    (item) => item.kind === 'message' && item.message.id === 'old-user',
+  )
+  assert.ok(historyItem && historyItem.kind === 'message')
+  assert.match(historyItem.message.content, /\[Historical image missing: hist\.png/)
+  assert.equal(historyItem.message.images, undefined)
+  // The current turn's image still sends, with its bytes.
+  const currentItem = request.contextItems?.find(
+    (item) => item.kind === 'message' && item.message.content === 'look at this',
+  )
+  assert.ok(currentItem && currentItem.kind === 'message')
+  assert.deepEqual(currentItem.message.images, [currentImage])
+  assert.deepEqual(request.imageBytes?.get('img-cur-ok'), {
+    bytes: new TextEncoder().encode('img-cur-ok'),
+    mimeType: 'image/png',
+  })
+  assert.equal(request.imageBytes?.has('img-hist-gone'), false)
+
+  // The projection never touched the persisted record.
+  const persistedOld = records.find((record) => record.id === 'old-user')
+  assert.equal(persistedOld?.type === 'message' ? persistedOld.content : undefined, 'what is this')
+  assert.deepEqual(persistedOld?.type === 'message' ? persistedOld.images : undefined, [historyImage])
+})
+
+test('an unloadable current-turn image stops the request instead of dropping it silently', async () => {
+  const currentImage = makeImageAttachmentRef({ id: 'img-cur-block', ownerSessionId: 's17-block', name: 'cur.png' })
+  const records: SessionRecord[] = []
+  let providerCalls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      providerCalls += 1
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'capable-model',
+    supportsImageInput: true,
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    // No attachmentFacts: the submission-time availability check passes, so
+    // the load-time failure is what stops the request.
+    toolContext: { cwd: process.cwd(), sessionId: 's17-block', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    attachmentBytes: {
+      readSendBytes: async () => ({ ok: false, reason: 'file-missing', message: 'cached files are gone' }),
+    },
+  })
+
+  await assert.rejects(
+    loop.run({ text: 'look at this', images: [currentImage] }),
+    (error: unknown) =>
+      error instanceof TurnImageBlockError
+      && error.imageInputBlock === 'file-missing'
+      && error.images.length === 1
+      && error.images[0]?.id === 'img-cur-block',
+  )
+  assert.equal(providerCalls, 0, 'no request was sent')
+  // The user message was recorded (the submission itself was accepted); the
+  // failure belongs to the request build, after the record exists.
+  assert.ok(records.some((record) => record.type === 'message' && record.role === 'user'))
+})

@@ -71,6 +71,7 @@ import { shouldRenderStatusLine } from '../statusLineVisibility.js'
 import { createQueueImageRebinder } from '../../runtime/attachmentHandoff.js'
 import { MessageQueue } from '../../runtime/messageQueue.js'
 import type { UserInput } from '../../media/types.js'
+import { describeImageBlockError, formatImageFailure } from '../../media/imageErrors.js'
 import type { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
 import type { ImageAttachmentService } from '../../services/imageAttachments/imageAttachmentService.js'
 import { captureClipboardImage } from '../utils/imageClipboard.js'
@@ -400,7 +401,7 @@ export function App({
     try {
       const result = await attachments.importImage(ownerSessionId, bytes, name)
       if (!result.ok) {
-        addSystemMessage(`Image not attached: ${result.message}`)
+        addSystemMessage(`Image not attached: ${formatImageFailure(result.reason, result.message)}`)
         onImportFailed?.()
         return false
       }
@@ -884,7 +885,9 @@ export function App({
       if (!isCommandInput) setDraftImages([])
       return true
     } catch (error) {
-      addSystemMessage(`Failed to queue message: ${error instanceof Error ? error.message : String(error)}`)
+      // The accept-time gate refuses images the active model cannot take; the
+      // refusal is the only thing the user sees, so it carries its exit (S24).
+      addSystemMessage(`Failed to queue message: ${describeImageBlockError(error)}`)
       return false
     }
   }, [addSystemMessage, messageQueue])

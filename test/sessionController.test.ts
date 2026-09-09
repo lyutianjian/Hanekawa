@@ -16,7 +16,8 @@ import type {
 import type { AgentSession } from '../src/runtime/types.js'
 import type { FileHistoryService } from '../src/services/fileHistory/fileHistoryService.js'
 import type { UserInput } from '../src/media/types.js'
-import { assertNewImagesAllowed } from '../src/harness/turnImages.js'
+import { assertNewImagesAllowed, TurnImageBlockError } from '../src/harness/turnImages.js'
+import { imageErrorCopy } from '../src/media/imageErrors.js'
 import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 type LoopRun = (
@@ -179,6 +180,26 @@ test('a failed turn reports the error but is not aborted, so the duration summar
   // "Worked for Xs" line on failed turns.
   assert.equal(end.aborted, false)
   assert.equal(end.usage, undefined)
+})
+
+test('a mid-turn image block reaches the notice with its exit; other failures keep their words', async () => {
+  // S24: a fallback or plan route onto a text-only model fails inside the run,
+  // where the notice is the only trace the user gets.
+  const blocked = await createHarness({
+    run: async () => {
+      throw new TurnImageBlockError('model-not-capable', [], 'Model text-only does not accept image input.')
+    },
+  })
+  await blocked.controller.submit({ text: 'look' })
+  const notice = blocked.events.find((event) => event.type === 'notice')
+  assert.equal(notice?.type === 'notice' ? notice.level : undefined, 'error')
+  const content = notice?.type === 'notice' ? notice.content : ''
+  assert.ok(content.startsWith('Model text-only does not accept image input.'), content)
+  assert.ok(content.endsWith(imageErrorCopy('model-not-capable')!.action), content)
+
+  // The previous test pins the other half: an ordinary provider failure — an
+  // HTTP status, a bad endpoint — is reported word for word, never relabelled
+  // as an image problem (design §13: 不谎称已避免).
 })
 
 test('submit hands the loop the full UserInput — text and image refs intact', async () => {

@@ -159,6 +159,7 @@ import {
   type AttachmentDrafts,
   type AttachmentImportSource,
 } from './model/composerAttachments.js'
+import { formatImageFailure } from '../../media/imageErrors.js'
 import {
   beginPreviewLoad,
   failPreviewLoad,
@@ -805,7 +806,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     if (entry?.kind !== 'ready') return
     try {
       const result = await client.openAttachment(entry.ref.id)
-      if (!result.ok) note(result.message, 'error')
+      if (!result.ok) note(formatImageFailure(result.reason, result.message), 'error')
     } catch (error) {
       note(describe(error), 'error')
     }
@@ -820,7 +821,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   async function openImageById(imageId: string, name: string): Promise<void> {
     try {
       const result = await client.openAttachment(imageId)
-      if (!result.ok) note(result.message, 'error')
+      if (!result.ok) note(formatImageFailure(result.reason, result.message), 'error')
     } catch (error) {
       note(`${name}：${describe(error)}`, 'error')
     }
@@ -850,8 +851,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     try {
       const result = await client.getAttachmentPreview(entry.ref.id)
       if (!result.ok) {
-        previewCache = failPreviewLoad(previewCache, entry.ref.id, result.message)
-        note(result.message, 'error')
+        const explained = formatImageFailure(result.reason, result.message)
+        previewCache = failPreviewLoad(previewCache, entry.ref.id, explained)
+        note(explained, 'error')
         return
       }
       dataUrl = result.dataUrl

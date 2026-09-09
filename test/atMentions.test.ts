@@ -360,7 +360,11 @@ test('collectAtMentionImages surfaces importer failures instead of degrading to 
       reason: 'unsupported-format',
       message: 'BMP is not supported; convert it to PNG or JPEG first.',
     }])
-    assert.match(formatAtMentionImageErrors(result.errors), /- @photo\.bmp: BMP is not supported/)
+    // The line names the reason class, keeps the importer's facts, and ends
+    // with the exit for that reason (S24).
+    const formatted = formatAtMentionImageErrors(result.errors)
+    assert.match(formatted, /- @photo\.bmp: 图片格式不支持：BMP is not supported/)
+    assert.match(formatted, /转换成 PNG 或 JPEG/)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

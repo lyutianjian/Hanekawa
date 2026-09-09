@@ -60,6 +60,12 @@ const ALLOWED_SHARED_IMPORTS = [
   // because that is what makes each entry a decision about one importer.
   '../../shellProtocol.js',
   '../paneBudget.js',
+  // The image-failure copy both shells share (S24). Pure by the same rule
+  // `media/types.ts` follows — its only import is that type module — and it is
+  // *why* it is shared: the desktop strip and the TUI must not each invent
+  // their own words for "this model cannot see images".
+  '../../../media/imageErrors.js',
+  '../../media/imageErrors.js',
 ]
 
 /**

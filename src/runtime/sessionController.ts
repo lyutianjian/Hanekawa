@@ -12,6 +12,7 @@ import type {
 import { deriveSessionTitle, type SessionMeta, type SessionStore } from '../sessions/service.js'
 import { FileHistoryService } from '../services/fileHistory/fileHistoryService.js'
 import type { ImageAttachmentRef, UserInput } from '../media/types.js'
+import { describeImageBlockError } from '../media/imageErrors.js'
 import type { RecordProxy } from './bridges.js'
 import { rollbackInterruptedPromptIfSynthetic } from './interruptRollback.js'
 import {
@@ -304,10 +305,15 @@ export class SessionController {
           })
         }
       } else {
+        // A mid-turn image block (a fallback or plan route onto a text-only
+        // model, the provider's final check) leaves the notice as its only
+        // trace, so it arrives with its exit attached (design §13, S24). A
+        // provider HTTP error, a bad endpoint, or an outage passes through
+        // word for word: labelling those as an image problem would be a lie.
         this.emit({
           type: 'notice',
           level: 'error',
-          content: err instanceof Error ? err.message : String(err),
+          content: describeImageBlockError(err),
         })
       }
     } finally {

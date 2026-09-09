@@ -12,6 +12,7 @@ import { resolveUsageWithCost } from '../../harness/usage.js'
 import { countSessionRecordsTokens } from '../../prompts/budget.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import type { ImageAttachmentRef } from '../../media/types.js'
+import { describeImageBlockError } from '../../media/imageErrors.js'
 import type {
   ImageAttachmentService,
   ImageStoreResult,
@@ -750,10 +751,15 @@ export class SessionHost {
       const result = await this.execute(command)
       this.post({ type: 'reply', id: command.id, result })
     } catch (error) {
+      // An image block crosses as a string and nothing else, so the exit is
+      // appended here (design §13, S24): the renderer shows a `fail`'s message
+      // verbatim, and "this model cannot see images" without "switch model or
+      // remove the image" leaves the user with a dead end. Every other failure
+      // — HTTP, config, provider outage — keeps its own words untouched.
       this.post({
         type: 'fail',
         id: command.id,
-        message: error instanceof Error ? error.message : String(error),
+        message: describeImageBlockError(error),
       })
     }
   }

@@ -18,6 +18,8 @@ import type { SessionController } from '../src/runtime/sessionController.js'
 import type { RuntimeSlot } from '../src/runtime/runtimeSlot.js'
 import type { ProjectRuntime, SessionScope } from '../src/runtime/types.js'
 import type { UserInput } from '../src/media/types.js'
+import { imageErrorCopy } from '../src/media/imageErrors.js'
+import { TurnImageBlockError } from '../src/harness/turnImages.js'
 import { ImageAttachmentService } from '../src/services/imageAttachments/imageAttachmentService.js'
 import { MAX_ATTACHMENT_WIRE_BYTES } from '../src/runtime/protocol/commandSchema.js'
 import { assertNoImageBytes, fixtureImagePath, loadFixtureBytes } from './helpers/imageFixtures.js'
@@ -136,7 +138,13 @@ async function createHarness(): Promise<Harness> {
     // model cannot take, and the queue runs it before it accepts anything.
     assertInputAcceptable: (input: UserInput) => {
       if (!imageCapable && input.images && input.images.length > 0) {
-        throw new Error('Model fake does not accept image input')
+        // The real gate's error class, so the round trip covers what the host
+        // does with a reason-carrying block (S24).
+        throw new TurnImageBlockError(
+          'model-not-capable',
+          [...input.images],
+          'Model fake does not accept image input',
+        )
       }
     },
   } as unknown as SessionController
@@ -455,7 +463,15 @@ test('an unknown attachment id and a text-only model both refuse the enqueue out
   harness.setImageCapable(false)
   await assert.rejects(
     () => harness.client.enqueueMessage('describe this', { imageIds: [imported.attachment.ref.id] }),
-    /does not accept image input/,
+    (error: unknown) => {
+      // Only the message survives the wire, so the exit rides along in it
+      // (S24): the renderer shows a `fail` verbatim, and "this model cannot
+      // see images" without a way out is a dead end.
+      const message = (error as Error).message
+      assert.match(message, /does not accept image input/)
+      assert.ok(message.endsWith(imageErrorCopy('model-not-capable')!.action), message)
+      return true
+    },
   )
   await settle()
   assert.deepEqual(harness.client.getQueuedMessages(), [])

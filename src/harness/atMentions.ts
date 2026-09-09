@@ -10,6 +10,7 @@ import { filterGitIgnoredPaths } from '../utils/gitIgnore.js'
 import { assertInsideCwd } from '../utils/paths.js'
 import { isProtectedPath } from '../utils/permissions/protectedPaths.js'
 import type { ImageAttachmentRef, ImageInputErrorReason } from '../media/types.js'
+import { formatImageFailure } from '../media/imageErrors.js'
 import { IMAGE_FILE_EXTENSIONS } from '../tools/imageFile.js'
 
 export const CODE_TEXT_EXTENSIONS = new Set([
@@ -564,7 +565,10 @@ export async function collectAtMentionImages(input: {
 export function formatAtMentionImageErrors(errors: readonly AtMentionImageError[]): string {
   return [
     'The message was not sent because @-mentioned images could not be attached:',
-    ...errors.map((error) => `- @${error.mention}: ${error.message}`),
+    // Each line carries its reason's exit (S24); the two mention-only reasons
+    // (outside-project, line-range-not-applicable) already say theirs and are
+    // left as they are rather than labelled with a class they do not belong to.
+    ...errors.map((error) => `- @${error.mention}: ${formatImageFailure(error.reason, error.message)}`),
     'Fix or remove these mentions, then send again.',
   ].join('\n')
 }

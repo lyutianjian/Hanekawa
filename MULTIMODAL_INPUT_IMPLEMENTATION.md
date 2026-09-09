@@ -102,7 +102,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S21 | 模型切换、fallback 与 plan 路由 | S15, S02 | 中 | `[x]` |
 | S22 | compact 与历史清理的图像投影 | S15, S16 | 长 | `[x]` |
 | S23 | 子代理继承与会话生命周期附件归属 | S05, S06 | 中 | `[x]` |
-| S24 | 错误分类与两端展示 | S09–S14, S19 | 中 | `[ ]` |
+| S24 | 错误分类与两端展示 | S09–S14, S19 | 中 | `[x]` |
 | S25 | 全量 typecheck / 测试 / 构建 | S20–S24 | 短 | `[ ]` |
 | S26 | Desktop 冒烟与 TUI 三平台人工验证 | S25 | 中 | `[ ]` |
 | S27 | `README.md` 与验收矩阵签收 | S26 | 短 | `[ ]` |
@@ -934,7 +934,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S24 `[ ]` 错误分类与两端展示
+## S24 `[x]` 错误分类与两端展示
 
 **前置**：S09–S14、S19 · **规模**：中 · **设计稿**：§13
 **涉及**：`src/runtime/errors.ts`、两端展示层
@@ -949,6 +949,26 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：六类原因逐一在 Desktop 与 TUI 走通，且都有可操作出口。
 **验证**：新增错误分类测试 + 两端手工
 **提交**：`checkpoint: S24 add distinct image error reasons`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- 前置盘点：S01–S23 已经把「可区分的原因」铺到了检测层——`imageFile` / `imageAttachmentService` / `atMentions` / `turnImages` / `imageRequestGuard` 全都返回或抛出带 reason 的结果，`WireAttachmentFailure` 也已经把 reason 送过协议。**缺的是另一半**：两端只显示检测层给的事实（`失败：not decodable`、`Image not attached: …`），没有「接下来能做什么」；而回合内抛出的 `TurnImageBlockError.imageInputBlock` 更是在转成 notice / `fail` 字符串时被整个丢掉。本会话补的就是这一半，没有新建第二套原因体系。
+- 新增 `src/media/imageErrors.ts`（纯模块，唯一 import 是 `./types.js`，因此 renderer / TUI / harness / 协议宿主都能引用）：
+  - `ImagePresentableErrorReason` = 7 个输入原因 + `store-write-failed`，`imageAttachmentService.ts` 的 `ImageStoreErrorReason` 改为它的别名，单点定义。
+  - `imageErrorCopy(reason)` → `{ label, action }`：八个原因各有互不相同的中文标题与**可操作出口**（切模型 `/model`、转成 PNG/JPEG、确认文件完整、确认原路径或重新附加、裁剪、移除部分图片或 `/compact`、确认 `.myagent` 可写）。
+  - `formatImageFailure(reason, message)` = `标题：检测层事实 出口`；**不认识的 reason 原样返回 message**，不给它安一个不属于它的类别（`@` 专属的 `outside-project` / `line-range-not-applicable` 走这条路，它们本来就自带出口）。
+  - `imageBlockReasonOf` / `describeImageBlockError`：按结构读 `imageInputBlock`（不是 `instanceof`——renderer 不得 value-import `harness/`，且该失败会以纯对象跨进程），认得就在原消息后追加出口，认不出就**逐字返回**。
+- 五个展示站点接线：
+  1. **协议 `fail`**（`protocol/host.ts runCommand` 的 catch）：图像阻止跨线时只剩一个字符串，出口在这里追加，Desktop 的 `Failed: …` 因此带上出路。
+  2. **回合内失败**（`sessionController.ts` 的 error notice）：中途 fallback / plan 路由到纯文本模型、provider 最终校验失败，notice 是用户唯一的痕迹，同样带出口。
+  3. **Desktop 附件条**（`composerAttachments.ts`）：失败行 detail 改用 `formatImageFailure`；`NOT_CAPABLE_NOTE` 改由共享 copy 拼出（只额外加「模型芯片」这一 Desktop 专属入口），预检提示与宿主拒绝从此说同一句话。
+  4. **Desktop 打开原图 / 预览失败**（`paneSession.ts` 三处）：`WireAttachmentFailure.reason` 本来就在手上，现在真的用上了。
+  5. **TUI**：导入失败用 `formatImageFailure`，入队被拒用 `describeImageBlockError`；`@` 失败清单 `formatAtMentionImageErrors` 每行也带出口。
+- 工作项 2（工具结果复用既有错误码）核对后**无需改动**：`FileReadTool` 的图像分支已经是 `precondition_failed` / `invalid_input` / `execution_failed` + `errorDetails.reason`，文件缺失沿用文本路径的 ENOENT 抛出由 ToolRunner 配对结算。工具结果是模型面向的，出口文案（中文、面向用户）不往里塞。
+- 工作项 4（不谎称已避免）：分类只看抛出的 reason，**从不嗅探消息文本**——测试专门钉了一条「消息里写着 image parts are not supported 的 400」必须逐字保留。`openaiProvider.augmentImageEndpointRejection` 既有的「没有切协议、没有丢图、没有自动改开关」措辞未动，Anthropic 侧 HTTP 错误本来就原样透出。
+- 测试：新增 `test/imageErrors.test.ts` 6 项（八个原因的 copy 齐全且两两不同、关键出口措辞、事实+出口的拼接、未知 reason 原样返回、结构化分类含跨进程纯对象与非法值、HTTP 错误逐字保留）；`sessionController` +1（回合内阻止的 notice 带出口，并说明相邻用例已钉住普通失败逐字保留）；`desktopUiRoundTrip` 的假 controller 改抛真实的 `TurnImageBlockError`，断言跨线后的拒绝消息以出口结尾；`rendererComposerAttachments` / `atMentions` / `loop` 三处既有断言按新文案改写（顺带把 `file-missing` 的措辞从「重新附加」放宽到「确认原路径或重新附加」——`@` 引用的文件不是用户附加的）；`rendererImports` 允许清单新增 `media/imageErrors.js` 两个 specifier，并写明它凭什么是纯的。
+- 验证：`imageErrors`/`imageAttachments`/`imageFile`/`atMentions`/`fileReadImage`/`loop`/`mediaStrip`/`imageRequestGuard`/`turnImages`/`sessionController`/`desktopUiRoundTrip`/`rendererComposerAttachments`/`rendererImports` 窄测全绿；`npm run typecheck` 四配置通过；全量 `npm run test` 3315 项 3314 过、1 跳过（既有）、0 失败。
+- 待验收：完成判据里的「六类原因逐一在两端手工走通」属于真机项，随 S26 的 Desktop 冒烟与 TUI 三平台验证一并做。
 
 ---
 

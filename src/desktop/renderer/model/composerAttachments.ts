@@ -1,4 +1,5 @@
 import type { ImageAttachmentRef } from '../../../media/types.js'
+import { formatImageFailure, imageErrorCopy } from '../../../media/imageErrors.js'
 
 /**
  * The composer's draft image attachments (design §6.1, session S11).
@@ -196,7 +197,13 @@ export interface AttachmentStripView {
   readonly sendBlockNote?: string
 }
 
-const NOT_CAPABLE_NOTE = '当前模型不支持图像输入。可点击输入栏的模型芯片（或 /model）切换到支持图像的模型，或移除图片。'
+/**
+ * The send gate's own words, built from the shared reason copy (S24) so the
+ * pre-flight note and the host's rejection name the same exit. Only the
+ * composer-specific affordance (the model chip) is added on top.
+ */
+const NOT_CAPABLE_COPY = imageErrorCopy('model-not-capable')!
+const NOT_CAPABLE_NOTE = `${NOT_CAPABLE_COPY.label}。可点击输入栏的模型芯片切换模型。${NOT_CAPABLE_COPY.action}`
 const INCOMPLETE_NOTE = '还有附件在导入中或未成功；处理后才能发送。'
 
 /**
@@ -220,7 +227,14 @@ export function attachmentStripView(
       return { draftId: draft.draftId, state: 'importing', label: `图片 ${number}：${draft.name}`, detail: '导入中…' }
     }
     if (draft.kind === 'failed') {
-      return { draftId: draft.draftId, state: 'failed', label: `图片 ${number}：${draft.name}`, detail: `失败：${draft.message}` }
+      return {
+        draftId: draft.draftId,
+        state: 'failed',
+        label: `图片 ${number}：${draft.name}`,
+        // The reason's name and its exit, not just the facts (S24): a row that
+        // only says "…is a BMP image" leaves the user nothing to do next.
+        detail: `失败：${formatImageFailure(draft.reason, draft.message)}`,
+      }
     }
     const animated = draft.animated ? '，动画首帧' : ''
     const thumbUrl = previews(draft.ref.id)

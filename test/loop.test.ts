@@ -265,7 +265,9 @@ test('a failed @-mentioned image blocks the turn before any record is written', 
       (error: unknown) => {
         assert.ok(error instanceof Error)
         assert.match(error.message, /was not sent because @-mentioned images/)
-        assert.match(error.message, /- @gone\.png: no such file in this project\./)
+        // The reason's class, the collector's facts, and the exit (S24).
+        assert.match(error.message, /- @gone\.png: 图片文件已丢失：no such file in this project\./)
+        assert.match(error.message, /重新附加这张图片后再发送。/)
         return true
       },
     )

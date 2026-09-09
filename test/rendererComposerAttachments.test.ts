@@ -142,7 +142,10 @@ test('the strip labels every state, animates nothing, and renumbers on removal',
   assert.equal(view.rows[1]?.label, '图片 2：waiting.png')
   assert.equal(view.rows[1]?.detail, '导入中…')
   assert.equal(view.rows[2]?.label, '图片 3：bad.png')
-  assert.match(view.rows[2]?.detail ?? '', /^失败：not decodable$/)
+  // The failed row names the reason class, keeps the store's facts, and ends
+  // with that reason's exit (S24) — never just the bare facts.
+  assert.match(view.rows[2]?.detail ?? '', /^失败：图片无法解码：not decodable /)
+  assert.match(view.rows[2]?.detail ?? '', /换一张图片。$/)
   assert.equal(view.readyCount, 1)
   assert.match(view.sendBlockNote ?? '', /导入中或未成功/, 'pending or failed drafts block sending')
 

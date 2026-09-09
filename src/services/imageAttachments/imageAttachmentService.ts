@@ -13,9 +13,9 @@ import type { ImageProcessLimits } from '../../tools/imageFile.js'
 import type {
   ImageAttachmentMetadata,
   ImageAttachmentRef,
-  ImageInputErrorReason,
   ImageMimeType,
 } from '../../media/types.js'
+import type { ImagePresentableErrorReason } from '../../media/imageErrors.js'
 
 /**
  * Session image attachment storage (design doc §12.1, §12.2, §13).
@@ -58,8 +58,9 @@ export const IMAGE_PROCESSING_VERSION = 1
 export const DEFAULT_ATTACHMENT_RETENTION_MS = 24 * 60 * 60 * 1000
 
 /** Storage-layer failure mode beside the shared input reasons: the bytes were
- *  fine, the disk was not. */
-export type ImageStoreErrorReason = ImageInputErrorReason | 'store-write-failed'
+ *  fine, the disk was not. Defined in `media/imageErrors.ts` so the reason and
+ *  the copy both UIs show for it cannot drift apart. */
+export type ImageStoreErrorReason = ImagePresentableErrorReason
 
 export type ImageStoreResult<T> =
   | { ok: true; value: T }

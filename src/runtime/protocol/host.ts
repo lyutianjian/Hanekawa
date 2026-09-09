@@ -17,7 +17,8 @@ import type {
   ImageStoreResult,
   StoredAttachment,
 } from '../../services/imageAttachments/imageAttachmentService.js'
-import { MessageQueue } from '../messageQueue.js'
+import { createQueueImageRebinder } from '../attachmentHandoff.js'
+import { MessageQueue, type RebindQueuedImages } from '../messageQueue.js'
 import { readGitBranch } from '../gitBranch.js'
 import { listGitBranches, switchGitBranch } from '../gitBranches.js'
 import { applyPermissionModeTransition } from '../permissionMode.js'
@@ -827,8 +828,10 @@ export class SessionHost {
           // `migrateTo`, because `/clear` is the same conversation continuing in a
           // fresh log: anything queued but unsent still means what it meant, and
           // the compensating `clear` goes to the *old* session's log so a later
-          // replay cannot resurrect it.
-          this.switchDeps((next) => this.messages.migrateTo(next.id, [])),
+          // replay cannot resurrect it. Attached images are copied into the new
+          // session first (design §12.3), so nothing carried over depends on a
+          // session the user may delete next.
+          this.switchDeps((next) => this.messages.migrateTo(next.id, [], this.queueImageRebinder())),
           {
             previousSessionId: this.session.id,
             ...(command.title ? { title: command.title } : {}),
@@ -1182,7 +1185,7 @@ export class SessionHost {
         // through here, and a queue left keyed to the old session would pump into
         // the new one.
         this.applySessionSwitch(await switchToNewSession(
-          this.switchDeps((next) => this.messages.migrateTo(next.id, [])),
+          this.switchDeps((next) => this.messages.migrateTo(next.id, [], this.queueImageRebinder())),
           { previousSessionId: this.session.id },
         ))
       },
@@ -1326,6 +1329,16 @@ export class SessionHost {
    */
   private attachmentLookup(imageId: string): { ownerSessionId: string; id: string } {
     return { ownerSessionId: this.session.id, id: imageId }
+  }
+
+  /**
+   * The `/clear` attachment hand-off, or nothing when this host has no store
+   * (the same fixtures `requireAttachments` guards against). A queue with no
+   * images migrates identically either way.
+   */
+  private queueImageRebinder(): RebindQueuedImages | undefined {
+    const attachments = this.project.attachments
+    return attachments ? createQueueImageRebinder(attachments) : undefined
   }
 
   /**

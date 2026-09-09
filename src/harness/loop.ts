@@ -673,11 +673,15 @@ export class AgentLoop {
       }
 
       const records = recordsBeforeCompact
+      // The inherited half of the request, re-derived per iteration for the
+      // same reason the session records are: the model serving this attempt
+      // decides what its images become.
+      const preloadRecords = await this.projectPreloadImages(turnId)
       // Final image-byte loading (design §11.1 step 5): after every projection,
       // cap, and compaction decision above, load the send-version bytes the
       // request will actually carry. Current-turn files that cannot be loaded
       // stop the request; unloadable history degrades to placeholders here.
-      const imageSend = await this.prepareRequestImages(records, turnId, userMessage.id)
+      const imageSend = await this.prepareRequestImages(records, turnId, userMessage.id, preloadRecords)
       const pendingRestoreRecordIds = this.pendingPostCompactRestoreRecordIds(records)
       const planAttachment = this.options.planModeManager?.getActivePlanAttachment()
       const env: EnvironmentInfo = {
@@ -704,7 +708,7 @@ export class AgentLoop {
         : this.currentTools.filter((tool) => tool.name !== TOOL_SEARCH_TOOL_NAME)
 
       const built = await this.options.contextBuilder.build({
-        preloadRecords: this.options.preloadRecords,
+        preloadRecords: imageSend.preloadRecords,
         records: imageSend.records,
         tools: toolsForContext,
         system: this.options.system,
@@ -1216,10 +1220,20 @@ export class AgentLoop {
     records: SessionRecord[],
     currentTurnId: string,
     currentUserMessageId: string,
-  ): Promise<{ records: SessionRecord[]; imageBytes?: Map<string, RequestImageBytes> }> {
+    preloadRecords?: SessionRecord[],
+  ): Promise<{
+    records: SessionRecord[]
+    preloadRecords?: SessionRecord[]
+    imageBytes?: Map<string, RequestImageBytes>
+  }> {
+    const unchanged = { records, ...(preloadRecords ? { preloadRecords } : {}) }
     const bearing: Array<SessionRecord & { images: ImageAttachmentRef[] }> = []
     const refs = new Map<string, { ref: ImageAttachmentRef; currentTurn: boolean }>()
-    for (const record of records) {
+    // Preloaded records are scanned with the session's own, so an inherited
+    // image that survived the capability projection gets real bytes loaded for
+    // it — and one whose files are gone degrades to the same placeholder
+    // instead of being sent as a ref with nothing behind it.
+    for (const record of [...(preloadRecords ?? []), ...records]) {
       if (record.type !== 'message' && record.type !== 'tool_result') continue
       if (!record.images || record.images.length === 0) continue
       const currentTurn = recordIsCurrentTurn(record, currentTurnId, currentUserMessageId)
@@ -1229,9 +1243,9 @@ export class AgentLoop {
         refs.set(ref.id, { ref, currentTurn: (prior?.currentTurn ?? false) || currentTurn })
       }
     }
-    if (refs.size === 0) return { records }
+    if (refs.size === 0) return unchanged
     const loader = this.options.attachmentBytes
-    if (!loader) return { records }
+    if (!loader) return unchanged
 
     const loaded = await Promise.all([...refs.values()].map(async ({ ref }) => {
       const result = await loader.readSendBytes(ref)
@@ -1243,7 +1257,7 @@ export class AgentLoop {
       if (result.ok) imageBytes.set(ref.id, result.value)
       else missingIds.add(ref.id)
     }
-    if (missingIds.size === 0) return { records, imageBytes }
+    if (missingIds.size === 0) return { ...unchanged, imageBytes }
 
     const missingCurrent = [...refs.values()]
       .filter((entry) => entry.currentTurn && missingIds.has(entry.ref.id))
@@ -1283,7 +1297,7 @@ export class AgentLoop {
         blocks: missingRefs.map((ref) => formatMissingHistoricalImagePlaceholder(ref)),
       })
     }
-    const projected = records.map((record) => {
+    const applyProjection = (source: SessionRecord[]): SessionRecord[] => source.map((record) => {
       const projection = projectionsByRecordId.get(record.id)
       if (!projection) return record
       // Only message/tool_result records reach this map entry; the cast keeps
@@ -1295,7 +1309,40 @@ export class AgentLoop {
         content: appendPlaceholderBlocks(rest.content, projection.blocks),
       } as SessionRecord
     })
-    return { records: projected, imageBytes }
+    return {
+      records: applyProjection(records),
+      ...(preloadRecords ? { preloadRecords: applyProjection(preloadRecords) } : {}),
+      imageBytes,
+    }
+  }
+
+  /**
+   * The per-request image rules applied to the fork preload — the parent
+   * transcript a fork subagent inherits (design §12.3).
+   *
+   * The preload never passes through `loadPreparedRecords`: it is not this
+   * session's log, and it must not be compacted, repaired, or written back. So
+   * the capability projection has to be applied here, or an inherited image
+   * would reach a model that may not accept images at all.
+   *
+   * Every preloaded record is history by construction — nothing in it carries
+   * this loop's turn id — so there is no current-turn exemption to grant: a
+   * text-only child degrades all of them to placeholders on *its own*
+   * capability, never on the parent's conclusion. The count and byte caps stay
+   * on the session's own records; the preload is already bounded by the fork's
+   * token budget before it gets here.
+   */
+  private async projectPreloadImages(currentTurnId: string): Promise<SessionRecord[] | undefined> {
+    const preload = this.options.preloadRecords
+    if (!preload || preload.length === 0) return preload
+    const projection = await projectTurnImagesForRequest({
+      records: preload,
+      currentTurnId,
+      supportsImageInput: this.activeModel.supportsImageInput,
+      modelLabel: this.activeModel.model,
+      ...(this.options.attachmentFacts ? { resolveAttachmentFacts: this.options.attachmentFacts } : {}),
+    })
+    return projection.records
   }
 
   private async loadPreparedRecords(turnId?: string, userMessageId?: string): Promise<SessionRecord[]> {

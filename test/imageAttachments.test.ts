@@ -322,6 +322,61 @@ describe('ImageAttachmentService', () => {
     })
   })
 
+  describe('copyToSession (S23)', () => {
+    it('re-owns an attachment under the target session, leaving the source intact', async () => {
+      const service = makeService()
+      const original = await importOk(service, 'session-a', 'transparent.png')
+
+      const copied = await service.copyToSession(original.ref, 'session-b')
+      assert.equal(copied.ok, true, JSON.stringify(copied))
+      if (!copied.ok) return
+
+      assert.equal(copied.value.ref.ownerSessionId, 'session-b')
+      assert.notEqual(copied.value.ref.id, original.ref.id)
+      assert.equal(copied.value.ref.byteLength, original.ref.byteLength)
+      assert.equal((await service.readSendBytes(copied.value.ref)).ok, true)
+      // A copy, never a move: the old session's own history still points here.
+      assert.equal((await service.readSendBytes(original.ref)).ok, true)
+      assert.equal(await exists(imageDir('session-a', original.ref.id)), true)
+    })
+
+    it('copies from the send version when the original is gone', async () => {
+      const service = makeService()
+      const original = await importOk(service, 'session-a', 'transparent.png')
+      await unlink(path.join(imageDir('session-a', original.ref.id), 'original.png'))
+
+      const copied = await service.copyToSession(original.ref, 'session-b')
+      assert.equal(copied.ok, true, JSON.stringify(copied))
+      assert.equal(copied.ok && (await service.readSendBytes(copied.value.ref)).ok, true)
+    })
+
+    it('reports a per-image error for an unregistered or foreign ref', async () => {
+      const service = makeService()
+      const original = await importOk(service, 'session-a', 'transparent.png')
+
+      const foreign = await service.copyToSession(
+        { ownerSessionId: 'session-c', id: original.ref.id },
+        'session-b',
+      )
+      assert.equal(foreign.ok, false)
+      assert.equal(!foreign.ok && foreign.reason, 'file-missing')
+
+      const unknown = await service.copyToSession(
+        { ownerSessionId: 'session-a', id: 'img-nope' },
+        'session-b',
+      )
+      assert.equal(unknown.ok, false)
+      assert.equal(!unknown.ok && unknown.reason, 'file-missing')
+    })
+
+    it('is a no-op when the owner already is the target session', async () => {
+      const service = makeService()
+      const original = await importOk(service, 'session-a', 'transparent.png')
+      const copied = await service.copyToSession(original.ref, 'session-a')
+      assert.equal(copied.ok && copied.value.ref.id, original.ref.id)
+    })
+  })
+
   it('removes only the named session\'s attachments', async () => {
     const service = makeService()
     await importOk(service, 'session-a', 'transparent.png')

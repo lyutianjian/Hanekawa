@@ -25,7 +25,8 @@ import {
 import type { CacheRuntime } from '../../harness/cacheControl.js'
 import type { ThinkingConfig } from '../../config/service.js'
 import { runLifecycleHooks, type Hooks } from '../../harness/hooks.js'
-import type { AgentRunResult, ModelProvider, SessionRecord, SubagentTaskStatus, TokenUsage, Tool, ToolContext, ToolProgressEvent } from '../../harness/types.js'
+import type { AttachmentBytesLoader, AgentRunResult, ImageAttachmentImporter, ModelProvider, SessionRecord, SubagentTaskStatus, TokenUsage, Tool, ToolContext, ToolProgressEvent } from '../../harness/types.js'
+import type { AttachmentFactsResolver } from '../../harness/turnImages.js'
 import { countSessionRecordTokens } from '../../prompts/budget.js'
 import { formatTokenCount } from '../display.js'
 import type { AgentContinuation, BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
@@ -296,6 +297,41 @@ export interface CreateAgentToolOptions {
   agentTimeoutMs?: number
   worktreeManager?: SubagentWorktreeManager
   backgroundTasks?: BackgroundTaskRegistry
+  /**
+   * The project's attachment store (design §12.3). Each run gets its own
+   * handle over it — see `pinAttachmentOwner` — rather than the raw service,
+   * so a subagent cannot name an owner session of its own choosing.
+   */
+  imageAttachments?: ImageAttachmentImporter
+  /**
+   * Read-only resolution for images a subagent *inherits* — the fork
+   * preload's history placeholders. Passed straight through: resolution is
+   * already keyed by registered `(ownerSessionId, imageId)` pairs, so an
+   * inherited ref outside the subagent's worktree resolves and nothing else
+   * does.
+   */
+  attachmentFacts?: AttachmentFactsResolver
+  /** The same read-only right for the send bytes of an inherited image. */
+  attachmentBytes?: AttachmentBytesLoader
+}
+
+/**
+ * A per-run attachment handle whose owner session is fixed to the parent.
+ *
+ * Subagent tool contexts carry the *agent* id as their `sessionId` (that is
+ * what keeps their read state isolated), and an unpinned store would file the
+ * images a subagent imports under that id — a directory no session owns, that
+ * `deleteSessionArtifacts` never reaches and `/resume` never rebuilds. Design
+ * §12.3 puts them in the parent's artifact tree instead, so the owner is bound
+ * here and the `ownerSessionId` the caller passes is deliberately ignored.
+ */
+function pinAttachmentOwner(
+  store: ImageAttachmentImporter,
+  ownerSessionId: string,
+): ImageAttachmentImporter {
+  return {
+    importImage: (_requestedOwner, bytes, name) => store.importImage(ownerSessionId, bytes, name),
+  }
 }
 
 export function filterToolsForSubAgent(
@@ -637,7 +673,18 @@ async function runSubagent({
     }, {
       preToolUse: options.hooks?.preToolUse,
     })
-    const toolContext = createSubAgentToolContext(context, subAgentId, abortController.signal, effectiveCwd)
+    // Built here, once per run: an independent handle over the shared project
+    // store, filed under the parent session (design §12.3).
+    const attachments = options.imageAttachments
+      ? pinAttachmentOwner(options.imageAttachments, context.sessionId)
+      : undefined
+    const toolContext = createSubAgentToolContext(
+      context,
+      subAgentId,
+      abortController.signal,
+      effectiveCwd,
+      attachments,
+    )
     if (isForkAgent) {
       const forkUserPrefix = buildForkAgentUserPrefix(parsed.systemPrompt, parsed.maxOutputTokens)
       if (forkUserPrefix) {
@@ -711,6 +758,13 @@ async function runSubagent({
       getCompactFailureCount: options.getCompactFailureCount,
       setCompactFailureCount: options.setCompactFailureCount,
       recordStream,
+      // Read-only resolution for inherited history images, and the same pinned
+      // handle for anything this run imports. `supportsImageInput` above is the
+      // *subagent's* — a text-only child degrades the fork's preloaded images to
+      // placeholders on its own capability, never on the parent's conclusion.
+      ...(attachments ? { imageAttachments: attachments } : {}),
+      ...(options.attachmentFacts ? { attachmentFacts: options.attachmentFacts } : {}),
+      ...(options.attachmentBytes ? { attachmentBytes: options.attachmentBytes } : {}),
       consumePendingUserMessages: () => options.backgroundTasks
         ?.consumePendingAgentMessages(context.sessionId, subAgentId) ?? [],
     })
@@ -1488,7 +1542,13 @@ function maxOutputWords(maxOutputTokens: number): number {
   return Math.max(1, Math.floor(maxOutputTokens * 0.75))
 }
 
-function createSubAgentToolContext(parent: ToolContext, subAgentId: string, abortSignal: AbortSignal, cwd = parent.cwd): ToolContext {
+function createSubAgentToolContext(
+  parent: ToolContext,
+  subAgentId: string,
+  abortSignal: AbortSignal,
+  cwd = parent.cwd,
+  imageAttachments?: ImageAttachmentImporter,
+): ToolContext {
   return {
     cwd,
     sessionId: subAgentId,
@@ -1500,6 +1560,11 @@ function createSubAgentToolContext(parent: ToolContext, subAgentId: string, abor
     // Inherited, not reset: a subagent's edits hit the same worktree, so they
     // belong in the parent session's file history.
     trackFileEdit: parent.trackFileEdit,
+    // Its own handle rather than the parent's, for the same reason the read
+    // state above is fresh — but the *files* land in the parent's tree, which
+    // is what `pinAttachmentOwner` fixes. Absent here means the Read tool's
+    // image branch answers with a precondition instead of binary text.
+    ...(imageAttachments ? { imageAttachments } : {}),
   }
 }
 

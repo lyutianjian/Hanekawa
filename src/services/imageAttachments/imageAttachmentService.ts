@@ -100,6 +100,22 @@ export function sessionAttachmentsDir(cwd: string, sessionId: string): string {
  * bare ref (the TUI transcript, S14) use it; anything needing the original's
  * facts goes through `resolveRef` and its metadata instead.
  */
+/**
+ * Removes one session's attachment directory, without a live service.
+ *
+ * `deleteSessionArtifacts` runs from a path that has a project cwd and a
+ * session id and nothing else, and the removal must not depend on whether that
+ * project happens to have a service instance around. The class method delegates
+ * here so "what a session owns on disk" has exactly one definition; it adds
+ * only the in-memory dedup index the instance also holds. A stale index entry
+ * left by this free function is harmless — `importImage` already re-stores an
+ * id its index names but disk no longer has.
+ */
+export async function removeSessionAttachmentsAt(cwd: string, ownerSessionId: string): Promise<void> {
+  assertSafeSessionId(ownerSessionId)
+  await rm(sessionAttachmentsDir(cwd, ownerSessionId), { recursive: true, force: true })
+}
+
 export function attachmentSendVersionPath(cwd: string, ref: ImageAttachmentRef): string {
   return path.join(sessionAttachmentsDir(cwd, ref.ownerSessionId), ref.id, `image.${extForMime(ref.mimeType)}`)
 }
@@ -467,14 +483,52 @@ export class ImageAttachmentService {
   }
 
   /**
+   * Re-register an attachment under another session, returning the new ref.
+   *
+   * `/clear` carries the pending queue into a fresh session log (design
+   * §12.3). A migrated message that kept its old ref would still resolve
+   * today — the old session's files stay put — but deleting that session
+   * later would leave the queue holding a dangling reference, which §12.3's
+   * last paragraph rules out. Copy, never move: the old session's own history
+   * still references the original files.
+   *
+   * Goes back through `importImage`, so the copy is dedup-checked against the
+   * target session and gets its own thumbnail and metadata rather than a
+   * hand-rewritten `metadata.json`. The immutable original is the preferred
+   * source; when it is gone but the send version survives, that is copied
+   * instead — the same degradation `readSendBytes` already accepts.
+   */
+  async copyToSession(
+    ref: AttachmentRefLookup,
+    nextOwnerSessionId: string,
+  ): Promise<ImageStoreResult<StoredAttachment>> {
+    assertSafeSessionId(nextOwnerSessionId)
+    const stored = await this.readStored(ref.ownerSessionId, ref.id)
+    if (stored === null) return notRegistered(ref)
+    if (ref.ownerSessionId === nextOwnerSessionId) {
+      return { ok: true, value: storedAttachmentFor(this.cwd, ref.ownerSessionId, stored) }
+    }
+
+    const original = await readFileOrNull(
+      path.join(this.dirFor(ref.ownerSessionId, stored.ref.id), `original.${extForMime(stored.originalMimeType)}`),
+    )
+    if (original !== null && createHash('sha256').update(original).digest('hex') === stored.checksum) {
+      const limits = isImageProcessLimits(stored.limits) ? stored.limits : IMAGE_PROCESS_DEFAULTS
+      return this.importImage(nextOwnerSessionId, original, stored.originalName, limits)
+    }
+    const send = await this.ensureSendVersion(ref.ownerSessionId, stored)
+    if (!send.ok) return send
+    return this.importImage(nextOwnerSessionId, send.value.bytes, stored.ref.name)
+  }
+
+  /**
    * Delete every attachment a session owns. Called from the session/project
    * deletion paths (never for drafts, whose files the retention window
    * guards); never touches files outside `attachments/<sessionId>`.
    */
   async removeSessionAttachments(ownerSessionId: string): Promise<void> {
-    assertSafeSessionId(ownerSessionId)
     this.checksumIndex.delete(ownerSessionId)
-    await rm(sessionAttachmentsDir(this.cwd, ownerSessionId), { recursive: true, force: true })
+    await removeSessionAttachmentsAt(this.cwd, ownerSessionId)
   }
 
   // ---------------------------------------------------------------------------

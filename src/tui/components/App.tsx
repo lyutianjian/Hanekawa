@@ -68,6 +68,7 @@ import type { EffortLevel } from '../../config/effort.js'
 import { getContextWindowForModel } from '../../prompts/budget.js'
 import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/budget.js'
 import { shouldRenderStatusLine } from '../statusLineVisibility.js'
+import { createQueueImageRebinder } from '../../runtime/attachmentHandoff.js'
 import { MessageQueue } from '../../runtime/messageQueue.js'
 import type { UserInput } from '../../media/types.js'
 import type { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
@@ -496,7 +497,9 @@ export function App({
     const result = await switchToNewSession({
       ...sessionSwitchDeps,
       // Before the new runtime goes live, never after: see `beforeApply`.
-      beforeApply: (next) => messageQueue.migrateTo(next.id, []),
+      // The images ride along by being copied into the new session first, so
+      // nothing that survives `/clear` still depends on the old one (S23).
+      beforeApply: (next) => messageQueue.migrateTo(next.id, [], createQueueImageRebinder(attachments)),
     }, { previousSessionId: activeSession.id })
     setActiveSession(result.session)
     resetSessionRecords([])
@@ -505,7 +508,7 @@ export function App({
     // The drafts belong to the old session's attachments; the files stay with
     // it, the composer starts the new session clean (ownership rules: S23).
     setDraftImages([])
-  }, [sessionSwitchDeps, messageQueue, activeSession.id, resetSessionRecords, resetTranscript])
+  }, [sessionSwitchDeps, messageQueue, attachments, activeSession.id, resetSessionRecords, resetTranscript])
 
   const buildRunOverridesForOptions = useCallback((options?: CommandSubmitQueryOptions) => (
     buildRunOverrides({ config: providerConfig, runtimeSlot, createActiveModelRuntime }, options)

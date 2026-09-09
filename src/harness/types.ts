@@ -462,9 +462,10 @@ export interface ToolContext {
   taskState?: Map<string, TaskItem>
   /**
    * The session's attachment store, used by the Read tool's image branch.
-   * Absent where no store is wired (test loops; subagents until their
-   * ownership rules land) — image reads then fail with a precondition instead
-   * of degrading to binary text.
+   * Absent where no store is wired (test loops) — image reads then fail with a
+   * precondition instead of degrading to binary text. A subagent's context
+   * holds its own handle over the project store, pinned to the parent session
+   * so its images join the parent's artifact tree (design §12.3).
    */
   imageAttachments?: ImageAttachmentImporter
   /**

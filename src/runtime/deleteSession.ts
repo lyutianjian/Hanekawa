@@ -1,6 +1,7 @@
 import { rm } from 'node:fs/promises'
 import { getSubagentTranscriptDir } from '../harness/sidechainRecordStream.js'
 import { removeFileHistory } from '../services/fileHistory/fileHistoryService.js'
+import { removeSessionAttachmentsAt } from '../services/imageAttachments/imageAttachmentService.js'
 import { clearSessionMemory } from '../services/sessionMemory/service.js'
 import { assertSafeSessionId, type SessionMeta } from '../sessions/service.js'
 
@@ -54,6 +55,12 @@ export async function deleteSessionArtifacts(
   await removeFileHistory(sessionId)
   await clearSessionMemory(sessionId, cwd)
   await removeSubagentTranscripts(cwd, sessionId)
+  // The session's imported images, including the ones its subagents imported —
+  // those are stored under the parent session on purpose (design §12.3), so
+  // this one removal covers the whole transcript's images. Only the copies in
+  // `.myagent/attachments/`: the files the user imported *from* are theirs and
+  // are never touched.
+  await removeSessionAttachmentsAt(cwd, sessionId)
 }
 
 /**

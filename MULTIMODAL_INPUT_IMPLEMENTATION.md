@@ -101,7 +101,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S20 | 消息队列持久化与交接改造 | S19, S11 | 长 | `[x]` |
 | S21 | 模型切换、fallback 与 plan 路由 | S15, S02 | 中 | `[x]` |
 | S22 | compact 与历史清理的图像投影 | S15, S16 | 长 | `[x]` |
-| S23 | 子代理继承与会话生命周期附件归属 | S05, S06 | 中 | `[ ]` |
+| S23 | 子代理继承与会话生命周期附件归属 | S05, S06 | 中 | `[x]` |
 | S24 | 错误分类与两端展示 | S09–S14, S19 | 中 | `[ ]` |
 | S25 | 全量 typecheck / 测试 / 构建 | S20–S24 | 短 | `[ ]` |
 | S26 | Desktop 冒烟与 TUI 三平台人工验证 | S25 | 中 | `[ ]` |
@@ -892,7 +892,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S23 `[ ]` 子代理继承与会话生命周期附件归属
+## S23 `[x]` 子代理继承与会话生命周期附件归属
 
 **前置**：S05、S06 · **规模**：中 · **设计稿**：§12.3
 **涉及**：`src/tools/AgentTool/`、`src/harness/sidechainRecordStream.ts`、`src/runtime/deleteSession.ts`、`src/runtime/sessionSwitch.ts`、`src/runtime/sessionScope.ts`
@@ -917,6 +917,20 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：测试覆盖「子代理用纯文本模型时历史图降级」「继承引用可解析、非继承引用被拒」「删除会话后附件目录清空」「关闭 pane 后附件仍在」「`/clear` 队列迁移无悬空引用」。
 **验证**：`node --import tsx --test test/agentTool.test.ts test/deleteSession.test.ts test/fileHistoryService.test.ts` + sessionSwitch 相关测试
 **提交**：`checkpoint: S23 manage attachment ownership across subagents and sessions`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- 工作项 1、3（独立句柄 + 归属父会话）：`CreateAgentToolOptions` 新增 `imageAttachments` / `attachmentFacts` / `attachmentBytes`，由 `createRuntime.ts` 与主 loop 同源传入。`runSubagent` 每次运行构造一个**新的** `pinAttachmentOwner(store, context.sessionId)` 句柄——子代理 toolContext 的 `sessionId` 是 agent id（读状态隔离靠它），不 pin 的话 `FileReadTool` 传进来的正是这个 agent id，图片会落在 `attachments/<agentId>/`：没有会话拥有它、`deleteSessionArtifacts` 到不了、`/resume` 也重建不出。句柄**忽略调用方传入的 owner**，一律写父会话，因此子代理产出的附件随父 transcript 管理，清理子工作树不丢历史图片。无 store 时子上下文干脆不带该字段（Read 走 `attachment-store-unavailable`，不是绑到别的会话的 store）。嵌套 Agent 被 `ALL_AGENT_DISALLOWED_TOOLS` 禁掉，所以 `context.sessionId` 恒为真实父会话。
+- 工作项 2（继承图片的只读解析权 + 按自己的能力降级）：`attachmentFacts` / `attachmentBytes` 原样透传——它们只按已登记的 `(ownerSessionId, imageId)` 解析，天然满足「工作树外的继承附件只能通过已登记的精确引用解析」，未新增任何按路径读取的入口。**同时补上了 fork preload 的漏洞**：`preloadRecords` 此前直接进 `contextBuilder.build`，绕过了 S15 的能力投影和 S17 的字节加载，继承图会以「有 ref 无 bytes」的形式发给可能不支持图像的子模型。现在 loop 新增 `projectPreloadImages(turnId)`（每次迭代按**当时服务的模型**重算；preload 全部是历史，无当前轮豁免），`prepareRequestImages` 也把 preload 一并纳入引用集合与 file-missing 占位符投影，两侧共用同一份 `imageBytes`。子代理的 `supportsImageInput` 来自 `subagentRuntime`，不继承主模型结论。
+  - 已知边界：数量上限 `stripExcessMediaItems` 与字节预算 `stripExcessImageBytes` 仍只作用于会话自身记录，preload 不参与——preload 已被 `FORK_PRELOAD_TOKEN_BUDGET`（50k）限住，代码注释里写明了这个取舍。
+- 工作项 4（生命周期表）：
+  - **删除会话**：`deleteSessionArtifacts` 增加第五项产物，调用新的自由函数 `removeSessionAttachmentsAt(cwd, sessionId)`（`ImageAttachmentService.removeSessionAttachments` 改为委托它，单一定义）。只删 `.myagent/attachments/<sessionId>`，用户导入的源文件一个不碰。
+  - **`/clear`**：`MessageQueue.migrateTo` 新增可选 `RebindQueuedImages` 回调，在**持久化第一条 enqueue 之前**完成重绑（设计稿指定的顺序）；服务侧新增 `copyToSession(ref, next)`（优先用不可变原图重走 `importImage`，原图没了退到发送版本；同会话即恒等；未登记/跨会话返回 `file-missing`）。共用工厂 `src/runtime/attachmentHandoff.ts` 的 `createQueueImageRebinder` 接到两端（`protocol/host.ts` 的 `create-session` 与 `startNewSession` 两处、TUI `App.tsx` 的 `clearConversation`）。逐图降级：某张复制失败就保留旧 ref（旧会话文件仍在，仍可解析），绝不因此吞掉用户排队的消息。
+  - **关闭 pane / 释放 runtime**：核对 `SessionScope.dispose` / `RuntimeSlot` / `host.shutdown` 全链路不触碰附件存储，加了回归测试钉住。
+  - **`/resume`、`/rewind`**：无需改动——`/resume` 走 `reset` 从各自 JSONL 与队列引用重建（S20 已接通），`/rewind` 的 file history 只覆盖工具写过的工作区文件，附件目录从不进快照。
+- 工作项 5：首版不产生悬空引用即可，`copyToSession` 是复制不是移动，旧会话历史仍指向自己的文件；未新增任何跨项目附件转发入口。
+- 测试：`agentTool` +4（子代理导入归属父会话且上下文 sessionId 仍隔离、无 store 时不带句柄、fork 继承 ref 可解析而外来 ref 被拒且只有前者拿到 bytes、纯文本子模型降级继承图且**一次字节都不加载**）、`imageAttachments` +4（`copyToSession` 复制/源保留、原图缺失退发送版本、未登记与跨会话报 `file-missing`、同会话恒等）、`messageQueue` +2（重绑发生在持久化之前、重绑失败保留消息与旧 ref）、`deleteSession` +1 并把附件目录加进 `seed`（另一会话的附件不受影响由既有用例覆盖）、`sessionScope` +1（关闭 scope + shutdown 后附件仍在且新建服务仍能读出）。
+- 验证：`agentTool`/`loop`/`mediaStrip`/`imageRequestGuard`/`turnImages`/`contextBuilder`/`sessionSwitch`/`queuePump`/`protocolHost`（326）全绿；`deleteSession`/`messageQueue`/`imageAttachments`/`sessionScope` 窄测全绿；`npm run typecheck` 四配置通过；全量 `npm run test` 3307 项 3305 过、1 跳过（既有）、1 失败——失败仍是 `toolcall-integration.test.ts` 的 node:test IPC「deserialize cloned data」崩溃（非断言失败，单独重跑 3 项全绿），与 S04 记录的偶发问题同一现象。
 
 ---
 

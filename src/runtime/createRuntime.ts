@@ -94,8 +94,9 @@ export interface CreateRuntimeDeps {
   /**
    * The project's attachment store, shared by `@`-mentioned project images
    * (input preparation) and the Read tool's image branch (toolContext). One
-   * service per project (see `bootstrap`); the loop keeps its own reference so
-   * subagent loops can later decide their own ownership rules.
+   * service per project (see `bootstrap`); the loop keeps its own reference,
+   * and the Agent tool wraps it per subagent run so the child's images are
+   * owned by this session rather than by the agent id (S23).
    */
   imageAttachments?: ImageAttachmentImporter
   /**
@@ -258,6 +259,13 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
       agentTimeoutMs: config.get().agent.agentTimeoutMs,
       backgroundTasks,
+      // The same three handles the main loop gets. The Agent tool re-owns the
+      // importer per run so a subagent's images land in *this* session's tree
+      // (S23); the two read-only ones pass straight through, since they only
+      // resolve refs that are already registered.
+      ...(imageAttachments ? { imageAttachments } : {}),
+      ...(attachmentFacts ? { attachmentFacts } : {}),
+      ...(attachmentBytes ? { attachmentBytes } : {}),
     }))
 
     toolRegistry.register(runtimeTools)

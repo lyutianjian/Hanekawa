@@ -76,6 +76,53 @@ describe('messageQueue', () => {
     assert.equal(persisted.at(-1)?.sessionId, 'session-b')
   })
 
+  it('rebinds migrated attachments to the new session before persisting the queue', async () => {
+    // Design §12.3, `/clear` row: copy the attachments and rebind the
+    // references *first*, then migrate the queue records. A message that kept
+    // `session-a` refs would dangle the moment `session-a` is deleted.
+    const copied: Array<{ from: string; to: string }> = []
+    const old = makeImageAttachmentRef({ id: 'img-1', ownerSessionId: 'session-a' })
+    await queue.enqueue({ text: 'look', images: [old] })
+    await queue.enqueue({ text: 'no images' })
+
+    await queue.migrateTo('session-b', [], async (images, nextSessionId) => {
+      // Everything the migration persists must already carry the new refs.
+      assert.equal(persisted.filter((entry) => entry.sessionId === 'session-b').length, 0)
+      return images.map((ref) => {
+        copied.push({ from: ref.ownerSessionId, to: nextSessionId })
+        return { ...ref, id: 'img-1-copy', ownerSessionId: nextSessionId }
+      })
+    })
+
+    assert.deepEqual(copied, [{ from: 'session-a', to: 'session-b' }])
+    assert.deepEqual(queue.getSnapshot()[0]?.images, [
+      { ...old, id: 'img-1-copy', ownerSessionId: 'session-b' },
+    ])
+    assert.equal(queue.getSnapshot()[1]?.images, undefined)
+    const migrated = persisted.filter((entry) => entry.sessionId === 'session-b')
+    assert.equal(migrated.length, 2)
+    const first = migrated[0]?.record
+    assert.equal(first?.operation === 'enqueue' && first.message.images?.[0]?.ownerSessionId, 'session-b')
+  })
+
+  it('keeps the queued message when rebinding its attachments fails', async () => {
+    // The old session's files are still on disk, so the old refs still
+    // resolve; dropping the user's message would be the worse failure.
+    const old = makeImageAttachmentRef({ id: 'img-1', ownerSessionId: 'session-a' })
+    await queue.enqueue({ text: 'look', images: [old] })
+
+    await queue.migrateTo('session-b', [], async () => {
+      throw new Error('disk full')
+    })
+
+    assert.deepEqual(queue.getSnapshot().map((item) => item.content), ['look'])
+    assert.deepEqual(queue.getSnapshot()[0]?.images, [old])
+    assert.deepEqual(
+      persisted.slice(-2).map((entry) => [entry.sessionId, entry.record.operation]),
+      [['session-b', 'enqueue'], ['session-a', 'clear']],
+    )
+  })
+
   it('retargets a session without carrying the previous one\'s pending messages', async () => {
     await queue.enqueue({ text: 'stale' })
     await queue.reset('session-b', [])

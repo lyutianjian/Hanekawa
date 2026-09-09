@@ -9,7 +9,8 @@ import { AgentDefinitionLoader } from '../src/services/agents/agentDefinitionLoa
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { PermissionGate, type DenialStateStore } from '../src/harness/permissions.js'
 import { displayCacheSource } from '../src/harness/cacheBreakDetection.js'
-import type { ModelProvider, ModelRequest, SessionRecord, Tool, ToolContext } from '../src/harness/types.js'
+import type { ImageAttachmentImporter, ModelProvider, ModelRequest, SessionRecord, Tool, ToolContext } from '../src/harness/types.js'
+import type { ImageAttachmentRef } from '../src/media/types.js'
 
 async function waitFor(assertion: () => boolean, timeoutMs = 500): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -2881,3 +2882,261 @@ function agentFile(options: {
     '',
   ].filter((line) => line !== '').join('\n')
 }
+
+/**
+ * S23 — attachment ownership across the subagent boundary (design §12.3).
+ *
+ * A subagent's tool context carries the *agent* id as its `sessionId`, which is
+ * what keeps its read state isolated. Left unpinned, every image it imported
+ * would be filed under that id: a directory no session owns, that
+ * `deleteSessionArtifacts` never reaches and `/resume` never rebuilds.
+ */
+
+function attachmentRef(overrides: Partial<ImageAttachmentRef> = {}): ImageAttachmentRef {
+  return {
+    id: 'img-parent-1',
+    ownerSessionId: 'parent-session',
+    name: 'screenshot.png',
+    mimeType: 'image/png',
+    width: 20,
+    height: 10,
+    byteLength: 64,
+    ...overrides,
+  }
+}
+
+/** A store that only records who it was asked to file images under. */
+function recordingImageStore(imports: Array<{ owner: string; name: string }>): ImageAttachmentImporter {
+  return {
+    async importImage(owner, _bytes, name) {
+      imports.push({ owner, name })
+      const ref = attachmentRef({ id: `img-${imports.length}`, ownerSessionId: owner, name })
+      return {
+        ok: true,
+        value: {
+          ref,
+          metadata: {
+            originalWidth: ref.width,
+            originalHeight: ref.height,
+            sentWidth: ref.width,
+            sentHeight: ref.height,
+            localPath: `/tmp/${name}`,
+          },
+          animated: false,
+        },
+      }
+    },
+  }
+}
+
+test('sub-agent imported images are owned by the parent session, not by the agent id', async () => {
+  const imports: Array<{ owner: string; name: string }> = []
+  const seenSessionIds: string[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      if (request.contextItems?.some((item) => item.kind === 'tool_result')) {
+        return { content: 'done', toolCalls: [] }
+      }
+      return { content: 'reading', toolCalls: [{ id: 'call-1', name: 'importImage', input: {} }] }
+    },
+  }
+  const importTool: Tool = {
+    name: 'importImage',
+    description: 'stands in for the Read tool image branch',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    isReadOnly: true,
+    async execute(_input, context) {
+      seenSessionIds.push(context.sessionId)
+      assert.ok(context.imageAttachments, 'sub-agent context should carry an attachment handle')
+      // The Read tool passes its own `context.sessionId`; the pin must win.
+      const stored = await context.imageAttachments.importImage(
+        context.sessionId,
+        Buffer.from('png'),
+        'shot.png',
+      )
+      assert.equal(stored.ok, true)
+      return { ok: true, content: 'imported' }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [importTool],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    imageAttachments: recordingImageStore(imports),
+    agentDefinitions: [...BUILT_IN_AGENT_DEFINITIONS, {
+      type: 'reader',
+      description: 'Imports one image.',
+      tools: ['importImage'],
+      disallowedTools: ['Agent'],
+      maxTurns: 3,
+      isReadOnlyAgent: true,
+      getSystemPrompt: () => 'reader',
+    }],
+  })
+
+  const result = await agentTool.execute({ task: 'read it', subagent_type: 'reader' }, toolContext('parent-session'))
+
+  assert.equal(result.ok, true)
+  // Isolated context, parent-owned files: both halves of design §12.3.
+  assert.deepEqual(seenSessionIds.map((id) => id === 'parent-session'), [false])
+  assert.deepEqual(imports, [{ owner: 'parent-session', name: 'shot.png' }])
+})
+
+test('a sub-agent without an attachment store keeps no handle at all', async () => {
+  let handle: unknown = 'unset'
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      if (request.contextItems?.some((item) => item.kind === 'tool_result')) {
+        return { content: 'done', toolCalls: [] }
+      }
+      return { content: 'peeking', toolCalls: [{ id: 'call-1', name: 'peek', input: {} }] }
+    },
+  }
+  const peekTool: Tool = {
+    name: 'peek',
+    description: 'reports whether an attachment handle exists',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    isReadOnly: true,
+    async execute(_input, context) {
+      handle = context.imageAttachments
+      return { ok: true, content: 'peeked' }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [peekTool],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    agentDefinitions: [...BUILT_IN_AGENT_DEFINITIONS, {
+      type: 'peeker',
+      description: 'Peeks at its context.',
+      tools: ['peek'],
+      disallowedTools: ['Agent'],
+      maxTurns: 3,
+      isReadOnlyAgent: true,
+      getSystemPrompt: () => 'peeker',
+    }],
+  })
+
+  await agentTool.execute({ task: 'peek', subagent_type: 'peeker' }, toolContext('parent-session'))
+
+  // Not a store bound to some other session: nothing, so the Read tool answers
+  // with `attachment-store-unavailable` rather than reaching for pixels.
+  assert.equal(handle, undefined)
+})
+
+test('a fork sub-agent resolves inherited image refs and only those', async () => {
+  const requests: ModelRequest[] = []
+  const asked: string[] = []
+  const inherited = attachmentRef()
+  const foreign = attachmentRef({ id: 'img-elsewhere', ownerSessionId: 'other-session', name: 'other.png' })
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const parentRecords: SessionRecord[] = [{
+    type: 'message',
+    id: 'parent-1',
+    role: 'user',
+    content: 'here is a screenshot',
+    images: [inherited, foreign],
+    createdAt: '2026-09-09T00:00:00.000Z',
+  }]
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    supportsImageInput: true,
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    loadParentRecords: async () => parentRecords,
+    // Registered refs resolve; anything else is a per-image miss, which is the
+    // whole of the "only through registered exact references" rule.
+    attachmentBytes: {
+      async readSendBytes(ref) {
+        asked.push(`${ref.ownerSessionId}/${ref.id}`)
+        if (ref.ownerSessionId === 'parent-session' && ref.id === inherited.id) {
+          return { ok: true, value: { bytes: Uint8Array.from([1, 2, 3]), mimeType: 'image/png' } }
+        }
+        return { ok: false, reason: 'file-missing', message: 'not registered here' }
+      },
+    },
+  })
+
+  const result = await agentTool.execute({ task: 'continue', subagent_type: 'fork' }, toolContext('parent-session'))
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(asked.sort(), ['other-session/img-elsewhere', 'parent-session/img-parent-1'])
+  assert.deepEqual([...(requests[0]?.imageBytes?.keys() ?? [])], [inherited.id])
+})
+
+test('a text-only fork sub-agent degrades inherited images without asking the parent', async () => {
+  const requests: ModelRequest[] = []
+  let bytesRequested = 0
+  const inherited = attachmentRef()
+  const childProvider: ModelProvider = {
+    name: 'child',
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider: {
+      name: 'parent',
+      async createMessage() {
+        throw new Error('the parent provider must not serve the sub-agent')
+      },
+    },
+    model: 'parent-model',
+    // The parent sees images; the child's own model does not. The child has to
+    // decide on its own capability, never on this conclusion.
+    supportsImageInput: true,
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: process.cwd(),
+    loadParentRecords: async () => [{
+      type: 'message',
+      id: 'parent-1',
+      role: 'user',
+      content: 'here is a screenshot',
+      images: [inherited],
+      createdAt: '2026-09-09T00:00:00.000Z',
+    }],
+    resolveSubagentModel: () => ({
+      provider: childProvider,
+      model: 'text-only-model',
+      modelKey: 'text-only',
+      providerName: 'child',
+      supportsImageInput: false,
+    }),
+    attachmentBytes: {
+      async readSendBytes() {
+        bytesRequested += 1
+        return { ok: true, value: { bytes: Uint8Array.from([1, 2, 3]), mimeType: 'image/png' } }
+      },
+    },
+  })
+
+  const result = await agentTool.execute({ task: 'continue', subagent_type: 'fork' }, toolContext('parent-session'))
+
+  assert.equal(result.ok, true)
+  assert.equal(bytesRequested, 0, 'a text-only child must not load image bytes')
+  assert.equal(requests[0]?.imageBytes, undefined)
+  const preloaded = requests[0]?.contextItems?.find(
+    (item) => item.kind === 'message' && item.message.id === 'parent-1',
+  )
+  assert.ok(preloaded && preloaded.kind === 'message')
+  assert.equal(preloaded.message.images, undefined)
+  assert.match(preloaded.message.content, /screenshot\.png/)
+})

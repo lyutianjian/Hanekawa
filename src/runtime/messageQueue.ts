@@ -25,6 +25,22 @@ export type PersistQueueRecord = (sessionId: string, record: MessageQueueRecord)
 export type ValidateQueuedInput = (input: UserInput) => void | Promise<void>
 
 /**
+ * Re-owns a migrating message's attachments (design §12.3, the `/clear` row:
+ * "copy its attachments and rebind the references first, then migrate the queue
+ * records").
+ *
+ * Injected for the same reason {@link ValidateQueuedInput} is — this module
+ * stays free of `services/` — and returns refs rather than mutating, so
+ * {@link MessageQueue.migrateTo} keeps its "nothing persisted until the whole
+ * message is ready" shape. Implementations degrade per image rather than
+ * throwing; see `createQueueImageRebinder`.
+ */
+export type RebindQueuedImages = (
+  images: readonly ImageAttachmentRef[],
+  nextSessionId: string,
+) => Promise<readonly ImageAttachmentRef[]>
+
+/**
  * The inverse of `enqueue`: a persisted queue message back into the UserInput
  * every submission path speaks. Both shells' pumps hand off through this, so
  * the mapping from `content`/`images` to `text`/`images` cannot fork.
@@ -33,6 +49,29 @@ export function queuedMessageToInput(message: QueuedMessage): UserInput {
   return {
     text: message.content,
     ...(message.images && message.images.length > 0 ? { images: message.images } : {}),
+  }
+}
+
+/**
+ * One message's images re-owned by the target session, or the message
+ * unchanged when it carries none, no rebinder was supplied, or the rebinder
+ * failed. Never partially applied: a rebinder that returns the wrong number of
+ * refs is treated as a failure rather than silently dropping an image.
+ */
+async function rebindMessageImages(
+  message: QueuedMessage,
+  nextSessionId: string,
+  rebind: RebindQueuedImages | undefined,
+): Promise<QueuedMessage> {
+  if (!rebind || !message.images || message.images.length === 0) return message
+  try {
+    const rebound = await rebind(message.images, nextSessionId)
+    if (rebound.length !== message.images.length) return message
+    return Object.freeze({ ...message, images: [...rebound] })
+  } catch {
+    // The old session's files are still on disk, so the old refs still
+    // resolve. Losing the queued message would be the worse outcome.
+    return message
   }
 }
 
@@ -173,11 +212,25 @@ export class MessageQueue {
    * Move pending messages to a newly-created session without changing their
    * order. The compensating `clear` is written to the *old* session's log so
    * replaying it later cannot resurrect messages that now live elsewhere.
+   *
+   * `rebindImages` runs *before* the first `enqueue` is persisted, in the
+   * order design §12.3 spells out: a message whose images still named the old
+   * session would survive that session's deletion as a dangling reference.
+   * A rebinder that throws is treated as "keep the old refs" — the old
+   * session's files are still on disk, so a copy failure must not cost the
+   * user their queued message.
    */
-  async migrateTo(nextSessionId: string, records: readonly SessionRecord[]): Promise<void> {
+  async migrateTo(
+    nextSessionId: string,
+    records: readonly SessionRecord[],
+    rebindImages?: RebindQueuedImages,
+  ): Promise<void> {
     return this.serialize(async () => {
       const previousSessionId = this.sessionId
-      const pending = [...this.snapshot]
+      const pending: QueuedMessage[] = []
+      for (const message of this.snapshot) {
+        pending.push(await rebindMessageImages(message, nextSessionId, rebindImages))
+      }
 
       for (const message of pending) {
         await this.persist(nextSessionId, {

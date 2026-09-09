@@ -9,6 +9,7 @@ import {
   removeSubagentTranscripts,
 } from '../src/runtime/deleteSession.js'
 import { getSubagentTranscriptDir } from '../src/harness/sidechainRecordStream.js'
+import { sessionAttachmentsDir } from '../src/services/imageAttachments/imageAttachmentService.js'
 import { getMyAgentDir } from '../src/utils/paths.js'
 
 /**
@@ -41,13 +42,16 @@ function memoryPath(cwd: string, sessionId: string): string {
 async function seed(cwd: string, sessionId: string): Promise<string[]> {
   const subagents = getSubagentTranscriptDir(cwd, sessionId)
   const memory = memoryPath(cwd, sessionId)
+  const attachments = sessionAttachmentsDir(cwd, sessionId)
 
   await mkdir(subagents, { recursive: true })
   await writeFile(path.join(subagents, 'agent-1.jsonl'), '{}\n', 'utf8')
   await mkdir(path.dirname(memory), { recursive: true })
   await writeFile(memory, '{}', 'utf8')
+  await mkdir(path.join(attachments, 'img-1'), { recursive: true })
+  await writeFile(path.join(attachments, 'img-1', 'metadata.json'), '{}', 'utf8')
 
-  return [subagents, memory]
+  return [subagents, memory, attachments]
 }
 
 class RecordingStore {
@@ -73,6 +77,24 @@ test('every artifact of a session is removed, not just the store files', async (
     for (const target of theirs) {
       assert.equal(existsSync(target), true, `expected another session's ${path.basename(target)} to survive`)
     }
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('deleting a session removes its cached attachments but never the imported source file', async () => {
+  // Design §12.3, last row: the cached copies under `.myagent/attachments/`
+  // are the session's; the file the user pointed at is theirs.
+  const cwd = await makeCwd()
+  try {
+    await seed(cwd, SESSION)
+    const source = path.join(cwd, 'screenshot.png')
+    await writeFile(source, 'not really a png', 'utf8')
+
+    await deleteSessionArtifacts(cwd, new RecordingStore(), SESSION)
+
+    assert.equal(existsSync(sessionAttachmentsDir(cwd, SESSION)), false)
+    assert.equal(existsSync(source), true)
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }

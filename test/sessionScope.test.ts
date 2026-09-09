@@ -1,7 +1,7 @@
 import test, { beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync } from 'node:fs'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { z } from 'zod/v3'
@@ -11,6 +11,11 @@ import { SessionStore } from '../src/sessions/service.js'
 import type { SessionMeta } from '../src/sessions/service.js'
 import type { PermissionRequest } from '../src/harness/permissions.js'
 import type { SessionRecord, Tool } from '../src/harness/types.js'
+import {
+  ImageAttachmentService,
+  sessionAttachmentsDir,
+} from '../src/services/imageAttachments/imageAttachmentService.js'
+import { loadFixtureBytes } from './helpers/imageFixtures.js'
 
 /**
  * What one process may hold twice.
@@ -229,6 +234,31 @@ test('shutdown releases every open scope, not only the one bootstrap opened', as
 
   assert.equal(await parkedFirst, false)
   assert.equal(await parkedSecond, false)
+})
+
+test('closing a scope and shutting the project down leaves committed attachments on disk', async () => {
+  // Design §12.3, "close pane / release runtime": memory and previews go, the
+  // files stay. Deleting them here would silently empty the transcript of a
+  // session the user only closed a tab on.
+  const { cwd, store, session } = await createProject()
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+  const second = await host.openScope(await store.create('second tab'))
+
+  const stored = await host.attachments.importImage(
+    session.id,
+    await loadFixtureBytes('transparent.png'),
+    'transparent.png',
+  )
+  assert.equal(stored.ok, true, JSON.stringify(stored))
+  if (!stored.ok) return
+
+  second.dispose()
+  await host.shutdown('test over')
+
+  assert.equal(existsSync(sessionAttachmentsDir(cwd, session.id)), true)
+  // Still resolvable through a freshly built service, not just the live one.
+  const reopened = await new ImageAttachmentService(cwd).readSendBytes(stored.value.ref)
+  assert.equal(reopened.ok, true)
 })
 
 test('a scope opened onto a live session does not restore its tasks twice', async () => {

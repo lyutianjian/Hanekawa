@@ -146,6 +146,14 @@ export type ShellCommand =
    * token test cannot see.
    */
   | { type: 'set-window-theme'; id: string; theme: 'dark' | 'light' }
+  /**
+   * 「选择图片」 (S11): puts up the shell's image picker and answers the chosen
+   * paths. `projectRoot`, when present, only anchors where the dialog opens —
+   * the *host-side* import (per-pane lane, `import-attachment`) re-resolves
+   * against the project that lane belongs to. A cancelled dialog answers
+   * `paths: []` rather than rejecting; this command never reads a file.
+   */
+  | { type: 'pick-images'; id: string; projectRoot?: string }
 
 // --- settings ----------------------------------------------------------------
 
@@ -588,6 +596,12 @@ export interface WireShellRenameSessionResult {
 /** `ok` means the overlay was repainted, or that this shell has no overlay. */
 export interface WireShellSetWindowThemeResult {
   ok: true
+}
+
+/** The picker's answer; empty means cancelled, never an error. */
+export interface WireShellPickImagesResult {
+  ok: true
+  paths: string[]
 }
 
 /** `ok` means the editor process started, not that it drew a window. */

@@ -202,6 +202,7 @@ const composer = createComposerView({
   chipPermission: required<HTMLButtonElement>('chip-permission'),
   permissionShell: required('composer-permission'),
   progress: required('composer-progress'),
+  attachStrip: required('composer-attachments'),
 }, {
   // The chip's popover is built from the same picker rows `/model` and `/effort`
   // open, and picking from it runs the same slash command — so the choice
@@ -213,6 +214,14 @@ const composer = createComposerView({
   // back.
   onSelectPermissionMode: (mode) => void activePane()?.setPermissionMode(mode),
   onAttach: () => activePane()?.onComposerInput(),
+  // The S11 attachment entrances. Every one routes to the *active* pane, the
+  // same routing the popovers above use — the strip and its imports belong to
+  // whichever conversation the composer is currently speaking for.
+  onPickImages: () => void activePane()?.pickImages(),
+  onRemoveAttachment: (draftId) => void activePane()?.removeDraftImage(draftId),
+  onRetryAttachment: (draftId) => activePane()?.retryDraftImage(draftId),
+  onOpenAttachment: (draftId) => void activePane()?.openDraftImage(draftId),
+  onPasteImages: (files) => void activePane()?.importImagesFromFiles(files),
 })
 const form = required<HTMLFormElement>('input-row')
 const sidebarContainer = required('sidebar')
@@ -291,6 +300,16 @@ function attachPaneSession(lane: string): void {
       if (paneId !== undefined) {
         void session.client.closePane(paneId).catch((error) => session.note(describe(error), 'error'))
       }
+    },
+    // 「选择图片」 (S11): the OS picker over the Electron boundary. The paths
+    // are handed back to this pane, which imports them through the host — the
+    // renderer never reads the files itself.
+    onPickImages: async () => {
+      // Anchored to the lane's project so the dialog opens somewhere the
+      // conversation can actually see, the same anchoring `onOpenFile` uses.
+      const root = shellClient.getLanes().find((info) => info.lane === lane)?.projectRoot
+      const result = await shellClient.pickImages(root)
+      return result.paths
     },
     onClosed: () => removePaneSession(lane),
   })
@@ -1190,6 +1209,27 @@ form.addEventListener('submit', (event) => {
 
 required<HTMLButtonElement>('stop').addEventListener('click', () => {
   void activePane()?.interrupt()
+})
+
+// Drag-and-drop: a file dragged onto the composer's capsule becomes an image
+// attachment of the active pane (design §6.1). Navigation is suppressed for
+// every drop — Electron would otherwise turn a dropped file into a page
+// navigation and blank the shell — and only *image* files are imported; other
+// drops land nowhere rather than being pasted as paths, which is not a thing
+// this composer does.
+//
+// The listeners sit on the form rather than the window: the sidebar and the
+// settings screen are not drop targets, and a file dropped there should stay
+// the OS's business.
+for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
+  form.addEventListener(type, (event) => {
+    event.preventDefault()
+  })
+}
+form.addEventListener('drop', (event) => {
+  const files = Array.from(event.dataTransfer?.files ?? [])
+  if (files.length === 0 || !files.some((file) => file.type.startsWith('image/'))) return
+  activePane()?.importImagesFromFiles(files)
 })
 
 // --- startup --------------------------------------------------------------------

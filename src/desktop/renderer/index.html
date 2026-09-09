@@ -110,6 +110,16 @@
               -->
               <div id="composer-request" hidden></div>
               <!--
+                This pane's draft image attachments (S11). In the flow above
+                the textarea, like the request card, but it is composer
+                content rather than a modal: it rides beside the text draft,
+                pane by pane, and `#composer.request-open` hides it together
+                with the textarea while a permission request owns the capsule.
+                Empty means no rows, not a hidden host — `dom/composerView.ts`
+                empties it whenever there is nothing to show.
+              -->
+              <div id="composer-attachments"></div>
+              <!--
                 A short placeholder, deliberately: the keys it used to spell out
                 (Shift+Enter, `/`) live in the sidebar's `?` panel, and a
                 sentence-long placeholder is the first thing that reads as a

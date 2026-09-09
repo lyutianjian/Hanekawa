@@ -2721,7 +2721,28 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
    textarea and a question, and a hidden-but-present textarea is still a Tab stop
    that would swallow the keys the bar wants. */
 #composer.request-open > #input,
-#composer.request-open > #composer-bar { display: none; }
+#composer.request-open > #composer-bar,
+#composer.request-open > #composer-attachments { display: none; }
+
+/* --- the composer's draft attachments (S11) ----------------------------------
+   Composer content, not a popover: the strip rides between the request card
+   and the textarea, so the images waiting beside the text draft read as part
+   of what will be sent. One line per image, numbered the way the TUI's list
+   is, with the state's own words beside the name. */
+#composer-attachments { display: flex; flex-direction: column; gap: 2px; }
+.attachment-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.attachment-row .attachment-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.attachment-row.ready .attachment-label { color: var(--text-primary); cursor: pointer; }
+.attachment-row.importing .attachment-label { font-style: italic; }
+.attachment-row.failed .attachment-label { color: var(--text-danger); }
+.attachment-row .attachment-retry,
+.attachment-row .attachment-remove { flex-shrink: 0; }
 /* The tone lives on the card, never on the capsule: `#composer`'s border is the
    focus affordance, and recolouring it would read as "this field is wrong".
    A 2px rule down the leading edge — the same weak-brand indicator-bar idiom

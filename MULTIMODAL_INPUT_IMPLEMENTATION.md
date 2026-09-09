@@ -89,7 +89,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S08 | 协议命令与 wire schema | S07 | 中 | `[x]` |
 | S09 | `@` 图片引用 | S08 | 中 | `[x]` |
 | S10 | `Read` 工具图片分流 | S06 | 中 | `[x]` |
-| S11 | Desktop 采集与草稿状态机 | S08, S19 | 长 | `[ ]` |
+| S11 | Desktop 采集与草稿状态机 | S08, S19 | 长 | `[x]` |
 | S12 | Desktop 预览、缩略图与打开原图 | S11 | 短 | `[ ]` |
 | S13 | TUI 图片剪贴板采集（三平台） | S08 | 中 | `[x]` |
 | S14 | TUI 路径粘贴、附件列表与 `/paste-image` | S13 | 中 | `[x]` |
@@ -445,7 +445,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S11 `[ ]` Desktop 采集与草稿状态机
+## S11 `[x]` Desktop 采集与草稿状态机
 
 **前置**：S08、S19 · **规模**：长 · **设计稿**：§6.1
 **涉及**：`src/desktop/renderer/model/composer.ts`、`src/desktop/renderer/dom/composerView.ts`、`src/desktop/renderer/paneSession.ts`、`src/desktop/shellHost.ts`
@@ -467,6 +467,19 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：纯模型测试覆盖状态机与 pane 隔离；导入完成不串会话；失败恢复不覆盖新输入。
 **验证**：`node --import tsx --test test/desktopShellHost.test.ts` + 新增 composer 模型测试
 **提交**：`checkpoint: S11 add desktop image attachment composer`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- **前置说明**：S15–S19 已按建议顺序全部完成，S11 的前置（S08、S19）满足，本会话回到文档顺序的第一个 `[ ]`。规模为「长」，但一次会话内完成全部 7 个工作项，未启用建议断点。
+- 新增 `src/desktop/renderer/model/composerAttachments.ts`（纯模块，只引用 `media/types`）：草稿状态机 `importing → ready | failed`（`beginAttachmentImport` / `settleAttachmentImport` / `retryAttachmentImport` / `removeAttachmentImport`）、`readyAttachmentRefs`（出序 = 到达序）、`attachmentDraftsIncomplete`（pending/失败即不完整）、`restoredAttachmentDrafts`（中断恢复重建，无 source 故不可重试）、`attachmentStripView`（行标签 + 发送门原因）、`imagePasteSources`（纯函数读结构化 `File` 形状）。配额 `MAX_DRAFT_IMAGES = 10` 与 `MAX_AT_MENTION_IMAGES` 同数同义（显式附件计入单次输入上限，两端入口不会 disagree）；行文案 `图片 N：name，W×H（，动画首帧）` 与 TUI `imageDrafts.ts` 逐字一致——双胞而非 import（renderer 不得 value-import `tui/`）。
+- 采集入口（工作项 1、2）：`+` 变为双入口本地菜单——「选择图片」与「引用项目文件（@）」，后者原样保留 caret 插入与 `onAttach` 补全回调；菜单按弹层三规则关闭（press outside / focusout / Escape），`closeMenus` 一并收它。**「选择图片」走新命令 `pick-images`**（`ShellCommand` 联合新增，strict schema + `_NoDrift` 钉住）：renderer 只传可选 `projectRoot`（lane 拓扑的 normalized key），`shellHost` 把它解析成真实 cwd 作为 dialog 的 `defaultPath`（锚定失败不打断——锚点不改变答案含义，逐 pane 的 host 导入自会重新落项目），`main.ts` 的 `dialog.showOpenDialog`（multiSelection、图片过滤器来自 `IMAGE_FILE_EXTENSIONS`——已知不支持格式也让管线大声拒绝）承接 Electron 边界；**路径由 host 读**（`import-attachment` 的 `path` source），renderer 全程不触文件。粘贴：`composerView` 监听 `input` 的 `paste`，事件携带 image 文件即 `preventDefault` 并交给 pane（文本粘贴原样透传，路径粘贴是 TUI 的规则、不在 Desktop 复刻）；拖放：`app.ts` 在 `form` 上拦 `dragenter/over/leave/drop` 全部 `preventDefault`（Electron 会把 drop 变页面导航），仅 image 文件交给导入，非图片 drop 落空而非变成路径文本。
+- 草稿状态机（工作项 3）：每个 draft 有稳定 `draftId`（pane 单调序列）；失败项保留 `source` 以支持重试（粘贴字节离开事件即不可再得，列表是唯一来源）；一项失败不影响其他项；`sendBlockNote` 在存在 pending/失败草稿时阻止「其余内容当完整输入静默发送」——`send()` 在分类为 prompt 且有 note 时直接 note 错误返回，composer 不清空。strip 渲染带 signature 防抖（快照 tick 每流式 chunk 一次，行在指针下不可重建）；行内 ✕ 删除（ready 项同时调 `remove-attachment` 释放 host 侧持有）、失败项「重试」、ready 项标签点击 `open-attachment` 打开原图（host 解析路径，fire-and-forget）。
+- pane 隔离（工作项 5）：`draftImages` 是 paneSession 的 per-pane 状态（与 `draftText` 同层）；`deactivate` 用空视图清掉单例 strip 的**画**（如同 overlay/rewind/surface 的既有规则），`activate` 从本 pane 状态重画；`renderAttachments` 全部走 `if (!active) return`。**导入绑定发起时的 lane + session**：`importOneSource` 在 await 前记录 `client.getSession()?.id`，settle 时 session 已变（`/clear`/`/resume` rebind）即丢弃结果——id 属于旧会话的 store，落进新草稿会挂出不可解析引用；rebind 本身清空草稿列表（旧附件留在旧会话，完整归属规则属 S23）。
+- 提交与恢复（工作项 6）：prompt 类输入提交时带 `imageIds`（S08 host 侧按当前会话核验并组装 ref）；命令输入**保留草稿**（与 TUI `keepsDraftAttachments` 同规则——`/model` 中途切模型不吃图片）；提交前把完整输入（text + drafts）存入局部变量，失败时**仅在 composer 仍为空**时恢复文本并把草稿原样放回（用户在 submit 往返期间继续输入即拥有新草稿，恢复不覆盖）；纯图片输入（文本空但有草稿）是合法输入——`shellState().inputEmpty` 纳入 `readyAttachmentRefs` 非空，但发送被 note 阻止，与「pending/失败不发送」同一出口。`restore-input` 的 images 经 `transcript.ts` 的 `TranscriptOutcome.restoreImages` 透出（空数组不落键），pane 侧只把**尚未在草稿里的 id** 追加回去（同一 once-only、不覆盖规则）。`queueMessage` 暂拒带图排队（`enqueue-message` wire 尚不带 imageIds，S20 接通），note 说明等本轮结束或先移除图片。
+- 能力原因（工作项 7）：添加/查看/删除从不看能力（S08 命令 host 侧只认会话归属）；`attachmentStripView` 在 ready 数 > 0 且快照 `supportsImageInput !== true` 时给 `sendBlockNote`「当前模型不支持图像输入。可点击输入栏的模型芯片（或 /model）切换到支持图像的模型，或移除图片。」——措辞与 S15/S19 的统一规则同源（成因：模型开关，出路：切模型/移除图）。按钮**不禁用**（`requestSubmit()` 会吞掉 disabled 按钮的点击），note 走 `title`/`aria-label`，点击仍到达 pane 由 transcript 错误解释。无快照不拦（host 提交门是权威）；`renderStatus` 每快照 tick 重算门（模型切换/能力变化即更新）。
+- domStub 增补：`StubElement.parentElement` getter 与 `StubEvent.clipboardData`（`dispatch` 可注入）——均进文件头的成员清单。
+- 测试：新增 `test/rendererComposerAttachments.test.ts` 11 项（状态机三态、失败保源、重试、mid-flight 移除后 settle 无害、ready 删除回报 imageId、配额 10、恢复草稿不可重试、行文案/renumber、text-only note 含出路、纯文本无 note、粘贴源过滤与字节拷贝）；`test/rendererComposerView.test.ts` +6（+ 菜单双入口与 @ 路径保真、菜单三关法、strip 三态行与逐行动作、signature 防重绘 + note 上按钮、空 strip 清空、图片粘贴 preventDefault/文本粘贴透传）；`test/desktopShellHost.test.ts` +3（pick-images 路径往返与锚定、取消答空 + 未知 root 不锚定不打断、无 picker 拒绝）+ samples 表与命令清单各补 `pick-images`；`test/rendererTranscriptModel.test.ts` 既有用例零改动（restoreImages 只在非空时落键）。
+- 验证：窄测 `rendererComposerAttachments`（11）/`rendererComposerView`（35）/`rendererComposerChip`/`rendererTranscriptModel`/`rendererShellModel`（149 项）+ `desktopShellHost`（94 项）+ `desktopUiRoundTrip`/`rendererImports`/`rendererBoot`/`protocolClientParity`/`rendererRepaint`（33 项）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3247 项 3246 过、1 跳过（既有）、0 失败。缩略图预览、流式期间有界传输与点击打开原图的 UI 层按计划属 S12；真实粘贴/拖放/选择的手工项属 S26。
 
 ---
 

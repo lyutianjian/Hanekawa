@@ -55,6 +55,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SessionStore, type SessionMeta } from '../sessions/service.js'
 import { logDiagnostics } from '../harness/diagnostics.js'
+import { IMAGE_FILE_EXTENSIONS } from '../tools/imageFile.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
 import { bootstrap, RuntimeStartupError } from '../runtime/index.js'
 import {
@@ -337,9 +338,17 @@ async function promptForDirectory(options: {
   return result.filePaths[0]
 }
 
-function promptForProjectDirectory(): Promise<string | undefined> {
+async function promptForProjectDirectory(): Promise<string | undefined> {
   return promptForDirectory({ title: 'Open project', buttonLabel: 'Open' })
 }
+
+/**
+ * The image picker's filter list, from the pipeline's own candidate set: the
+ * extension only nominates, the pipeline's content sniff decides — and a
+ * known-but-unsupported format (BMP, HEIC…) is *offered* so its rejection is
+ * the pipeline's explainable one rather than the picker's silence.
+ */
+const IMAGE_PICKER_EXTENSIONS = [...IMAGE_FILE_EXTENSIONS].map((extension) => extension.slice(1))
 
 /**
  * Builds the single window: transport, lane mux, `ShellHost`, page — in that
@@ -455,6 +464,22 @@ async function ensureShell(): Promise<Shell> {
       void openProjectInteractive(path)
     },
     onPickDirectory: (options) => promptForDirectory(options),
+    // 「选择图片」 (S11): the Electron boundary's half of the composer's
+    // attachment entrance. Multi-select, images only — every format the import
+    // pipeline can classify, so an unsupported one (BMP, say) is *rejected by
+    // the pipeline with a reason* rather than never offered at all. The
+    // `defaultPath` anchor arrives shell-resolved.
+    onPickImages: async (options) => {
+      const result = await dialog.showOpenDialog({
+        title: '选择图片',
+        buttonLabel: '添加',
+        properties: ['openFile', 'multiSelections'],
+        ...(options.defaultPath !== undefined ? { defaultPath: options.defaultPath } : {}),
+        filters: [{ name: '图片', extensions: IMAGE_PICKER_EXTENSIONS }],
+      })
+      if (result.canceled) return undefined
+      return result.filePaths
+    },
     // The sidebar's history is every *added* project, most of them without an
     // open runtime — the registry is the source, read live so a project added
     // by another window (or a stale root) is never cached wrong.

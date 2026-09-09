@@ -420,6 +420,10 @@ interface Harness {
   failEditor(message: string | undefined): void
   /** The themes `set-window-theme` handed to the window overlay, in order. */
   windowThemes: Array<'dark' | 'light'>
+  /** What `pick-images` handed the picker: the anchor, when one was resolvable. */
+  pickedImageAnchors: Array<{ defaultPath?: string }>
+  /** The paths the next `pick-images` round trip answers with. */
+  setPickedImages(paths: string[] | undefined): void
   /** The cwds `remove-project` handed to the registry, in order. */
   forgottenProjects: string[]
   /**
@@ -455,6 +459,8 @@ function createHarness(
       cwd: string,
       options?: { sessionId?: string },
     ) => Promise<ProjectEntry<FakeProject, FakeWorkspace>>
+    /** A shell without an image picker — `pick-images` must reject, not answer empty. */
+    withPickImages?: boolean
     /** A shell that cannot write the registry — `remove-project` still detaches. */
     withForgetProject?: boolean
   } = {},
@@ -480,6 +486,11 @@ function createHarness(
   const openProjectRequests: Array<string | undefined> = []
   const editorRequests: Array<{ cwd: string; target?: { path: string; line?: number } }> = []
   const windowThemes: Array<'dark' | 'light'> = []
+  const pickedImageAnchors: Array<{ defaultPath?: string }> = []
+  let pickedImages: string[] | undefined = []
+  const setPickedImages = (paths: string[] | undefined): void => {
+    pickedImages = paths
+  }
   const forgottenProjects: string[] = []
   let editorFailure: string | undefined
   let quitting = false
@@ -523,6 +534,14 @@ function createHarness(
     ...(options.withWindowTheme === false
       ? {}
       : { onWindowTheme: (theme: 'dark' | 'light') => windowThemes.push(theme) }),
+    ...(options.withPickImages === false
+      ? {}
+      : {
+          onPickImages: async (pickOptions: { defaultPath?: string }) => {
+            pickedImageAnchors.push(pickOptions)
+            return pickedImages
+          },
+        }),
     ...(options.knownProjects ? { knownProjects: options.knownProjects } : {}),
     ...(options.ensureProject ? { ensureProject: options.ensureProject } : {}),
     ...(options.withForgetProject === false
@@ -558,6 +577,8 @@ function createHarness(
     openProjectRequests,
     editorRequests,
     windowThemes,
+    pickedImageAnchors,
+    setPickedImages,
     forgottenProjects,
     failEditor: (message: string | undefined) => {
       editorFailure = message
@@ -617,6 +638,7 @@ const COMMAND_SAMPLES = {
   'rename-session': { type: 'rename-session', id: 'h', projectRoot: 'r', sessionId: 's1', title: 'T' },
   'open-in-editor': { type: 'open-in-editor', id: 'i', projectRoot: 'r' },
   'set-window-theme': { type: 'set-window-theme', id: 'j', theme: 'light' },
+  'pick-images': { type: 'pick-images', id: 'l', projectRoot: 'r' },
   'remove-project': { type: 'remove-project', id: 'k', projectRoot: 'r' },
 } as const satisfies Record<ShellCommand['type'], ShellCommand>
 
@@ -717,6 +739,7 @@ test('every shell command variant round-trips through its schema', () => {
       'open-project',
       'open-session',
       'panes',
+      'pick-images',
       'remove-project',
       'rename-session',
       'set-window-theme',
@@ -2613,6 +2636,40 @@ test('set-window-theme answers ok on a shell with no overlay', async () => {
 
   assert.deepEqual(await h.client.setWindowTheme('dark'), { ok: true })
   assert.deepEqual(h.windowThemes, [])
+})
+
+// --- pick-images (S11) --------------------------------------------------------
+
+test('pick-images answers the chosen paths and anchors to the open project', async () => {
+  const h = createHarness()
+  h.setPickedImages(['C:\\repo\\alpha\\shot.png', 'C:\\repo\\alpha\\diagram.png'])
+
+  // `projectRoot` is the normalized key the lane list carries; the shell
+  // resolves it to the real cwd and the dialog opens there.
+  assert.deepEqual(
+    await h.client.pickImages(h.entry.root),
+    { ok: true, paths: ['C:\\repo\\alpha\\shot.png', 'C:\\repo\\alpha\\diagram.png'] },
+  )
+  assert.deepEqual(h.pickedImageAnchors, [{ defaultPath: 'C:\\repo\\alpha' }])
+})
+
+test('a cancelled picker answers empty paths, and an unanchored pick omits the anchor', async () => {
+  const h = createHarness()
+  h.setPickedImages(undefined)
+
+  assert.deepEqual(await h.client.pickImages(), { ok: true, paths: [] })
+  assert.deepEqual(h.pickedImageAnchors, [{}], 'no projectRoot means the dialog opens unanchored')
+
+  // An unknown root is an unanchored dialog, not a failure: the anchor never
+  // changes what the answer means (the per-pane import re-resolves the project).
+  assert.deepEqual(await h.client.pickImages('C:\\nope'), { ok: true, paths: [] })
+  assert.deepEqual(h.pickedImageAnchors, [{}, {}])
+})
+
+test('pick-images rejects on a shell with no picker, rather than reading as cancelled', async () => {
+  const h = createHarness({ withPickImages: false })
+
+  await assert.rejects(h.client.pickImages(), /image picker/)
 })
 
 test('settings commands fail cleanly for a project that is not open', async () => {

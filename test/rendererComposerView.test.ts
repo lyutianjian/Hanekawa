@@ -56,6 +56,8 @@ interface Rendered {
   readonly composer: ComposerView
   /** The HTML group that puts the gauge beside, not inside, the runtime chip. */
   readonly runtimeShell: HTMLElement
+  /** The bar the `+` lives in; its menu is drawn into it. */
+  readonly attachShell: HTMLElement
   readonly els: Record<
     | 'input'
     | 'submit'
@@ -66,7 +68,8 @@ interface Rendered {
     | 'chipShell'
     | 'chipPermission'
     | 'permissionShell'
-    | 'progress',
+    | 'progress'
+    | 'attachStrip',
     HTMLElement
   >
   readonly picked: PermissionMode[]
@@ -75,9 +78,18 @@ interface Rendered {
   readonly menuRequests: number[]
   /** The `SurfaceAction`s a flyout row handed back. */
   readonly ran: SurfaceAction[]
+  readonly pickedImages: number[]
+  readonly removedDrafts: string[]
+  readonly retriedDrafts: string[]
+  readonly openedDrafts: string[]
+  readonly pastedFiles: File[][]
   view(name: keyof Rendered['els']): StubView
   /** The permission menu's items, or an empty list when it is closed. */
   menuItems(): StubView[]
+  /** The `+` menu's two items, or an empty list when it is closed. */
+  attachMenuItems(): StubView[]
+  /** The strip's rows, as views. */
+  attachmentRows(): StubView[]
   /** The chip popover's two rows, or an empty list when it is shut. */
   chipRows(): StubView[]
   /** The open flyout's option items, or an empty list when none is open. */
@@ -104,8 +116,11 @@ function render(t: { after(fn: () => void): void }): Rendered {
     chipPermission: stub.createContainer(),
     permissionShell: stub.createContainer(),
     progress: stub.createContainer(),
+    attachStrip: stub.createContainer(),
   }
   els.permissionShell.appendChild(els.chipPermission)
+  const attachShell = stub.createContainer()
+  attachShell.appendChild(els.attach)
   const runtimeShell = stub.createContainer()
   runtimeShell.appendChild(els.contextIndicator)
   els.chipShell.appendChild(els.chipRuntime)
@@ -115,6 +130,11 @@ function render(t: { after(fn: () => void): void }): Rendered {
   const attaches: number[] = []
   const menuRequests: number[] = []
   const ran: SurfaceAction[] = []
+  const pickedImages: number[] = []
+  const removedDrafts: string[] = []
+  const retriedDrafts: string[] = []
+  const openedDrafts: string[] = []
+  const pastedFiles: File[][] = []
   const composer = createComposerView(
     {
       input: els.input as HTMLTextAreaElement,
@@ -127,17 +147,25 @@ function render(t: { after(fn: () => void): void }): Rendered {
       chipPermission: els.chipPermission as HTMLButtonElement,
       permissionShell: els.permissionShell,
       progress: els.progress,
+      attachStrip: els.attachStrip,
     },
     {
       onOpenRuntimeMenu: () => menuRequests.push(1),
       onRuntimeAction: (action) => ran.push(action),
       onSelectPermissionMode: (mode) => picked.push(mode),
       onAttach: () => attaches.push(1),
+      onPickImages: () => pickedImages.push(1),
+      onRemoveAttachment: (draftId) => removedDrafts.push(draftId),
+      onRetryAttachment: (draftId) => retriedDrafts.push(draftId),
+      onOpenAttachment: (draftId) => openedDrafts.push(draftId),
+      onPasteImages: (files) => pastedFiles.push([...files]),
     },
   )
 
   const menu = (): StubView | undefined =>
     stub.inspect(els.permissionShell).children.find((child) => child.classes.includes('composer-menu'))
+  const attachMenu = (): StubView | undefined =>
+    stub.inspect(attachShell).children.find((child) => child.classes.includes('composer-menu'))
   const chipMenu = (): StubView | undefined =>
     stub.inspect(els.chipShell).children.find((child) => child.classes.includes('chip-menu'))
   const flyout = (): StubView | undefined =>
@@ -149,13 +177,21 @@ function render(t: { after(fn: () => void): void }): Rendered {
     stub,
     composer,
     runtimeShell,
+    attachShell,
     els,
     picked,
     attaches,
     menuRequests,
     ran,
+    pickedImages,
+    removedDrafts,
+    retriedDrafts,
+    openedDrafts,
+    pastedFiles,
     view: (name) => stub.inspect(els[name]),
     menuItems: () => [...(menu()?.children ?? [])],
+    attachMenuItems: () => [...(attachMenu()?.children ?? [])],
+    attachmentRows: () => [...stub.inspect(els.attachStrip).children],
     // The row is the shell's first child; the flyout, when open, is its second.
     chipRows: () => (chipMenu()?.children ?? []).map((shell) => shell.children[0]!),
     flyoutItems: () =>
@@ -763,4 +799,134 @@ test('the guard does not swallow the click that opens the permission menu', (t) 
   assert.ok(r.menuItems().length > 0, 'the menu opened')
   r.stub.click(r.els.chipPermission)
   assert.equal(r.menuItems().length, 0, 'and closed again')
+})
+
+// --- the attachment control (S11) -------------------------------------------------
+
+import type { AttachmentStripView } from '../src/desktop/renderer/model/composerAttachments.js'
+
+/** A strip the pane would paint: one ready, one importing, one failed. */
+function stripView(overrides: Partial<AttachmentStripView> = {}): AttachmentStripView {
+  return {
+    rows: [
+      { draftId: 'd1', state: 'ready', label: '图片 1：shot.png，1920×1080，动画首帧' },
+      { draftId: 'd2', state: 'importing', label: '图片 2：waiting.png', detail: '导入中…' },
+      { draftId: 'd3', state: 'failed', label: '图片 3：bad.png', detail: '失败：not decodable' },
+    ],
+    readyCount: 1,
+    ...overrides,
+  }
+}
+
+test('the + menu offers both entrances and keeps the @ path intact', (t) => {
+  const r = render(t)
+  r.stub.click(r.els.attach)
+  assert.deepEqual(r.attachMenuItems().map((item) => item.text), ['选择图片', '引用项目文件（@）'])
+
+  r.stub.click(r.attachMenuItems()[1]!.node)
+  assert.deepEqual(r.attaches, [1], 'the mention path still asks the pane to recompute completions')
+  assert.equal(input(r).value, '@')
+  assert.deepEqual(r.attachMenuItems(), [])
+
+  r.stub.click(r.els.attach)
+  r.stub.click(r.attachMenuItems()[0]!.node)
+  assert.deepEqual(r.pickedImages, [1])
+})
+
+test('the + menu closes three ways and never while clicking inside it', (t) => {
+  const r = render(t)
+  r.stub.click(r.els.attach)
+
+  r.stub.dispatch(r.attachShell, 'keydown', { key: 'Escape' })
+  assert.deepEqual(r.attachMenuItems(), [])
+
+  r.stub.click(r.els.attach)
+  r.stub.dispatchDocument('pointerdown', { target: r.attachMenuItems()[0]!.node })
+  assert.equal(r.attachMenuItems().length, 2, 'a press on an item is not leaving')
+
+  r.stub.dispatchDocument('pointerdown', { target: r.els.input })
+  assert.deepEqual(r.attachMenuItems(), [])
+
+  r.stub.click(r.els.attach)
+  r.stub.dispatch(r.attachShell, 'focusout', { relatedTarget: r.els.input })
+  assert.deepEqual(r.attachMenuItems(), [])
+
+  r.stub.click(r.els.attach)
+  r.composer.closeMenus()
+  assert.deepEqual(r.attachMenuItems(), [], 'a background pane cannot leave it hanging over the next one')
+})
+
+test('the strip draws every state, with remove, retry and open wired per row', (t) => {
+  const r = render(t)
+  r.composer.renderAttachments(stripView())
+  const rows = r.attachmentRows()
+  assert.deepEqual(rows.map((row) => row.classes.includes('attachment-row')), [true, true, true])
+
+  const ready = rows[0]!
+  // Ready: label opens the original; no retry affordance.
+  assert.equal(ready.children[0]?.text, '图片 1：shot.png，1920×1080，动画首帧')
+  assert.equal(ready.children[1]?.classes.includes('attachment-remove'), true)
+  r.stub.click(ready.children[0]!.node)
+  assert.deepEqual(r.openedDrafts, ['d1'])
+
+  const failed = rows[2]!
+  assert.equal(failed.children[0]?.text, '图片 3：bad.png（失败：not decodable）')
+  r.stub.click(failed.children[0]!.node)
+  assert.deepEqual(r.openedDrafts, ['d1'], 'a failed row is not a link')
+  const retry = failed.children.find((child) => child.classes.includes('attachment-retry'))
+  assert.ok(retry, 'a failed row offers 重试')
+  r.stub.click(failed.children.find((child) => child.classes.includes('attachment-remove'))!.node)
+  assert.deepEqual(r.removedDrafts, ['d3'])
+
+  const importing = rows[1]!
+  assert.equal(importing.children.find((child) => child.classes.includes('attachment-retry')), undefined)
+  r.stub.click(importing.children.find((child) => child.classes.includes('attachment-remove'))!.node)
+  assert.deepEqual(r.removedDrafts, ['d3', 'd2'])
+})
+
+test('an unchanged strip is not rebuilt; the send note rides the submit button', (t) => {
+  const r = render(t)
+  const view = stripView({ sendBlockNote: '当前模型不支持图像输入。' })
+  r.composer.renderAttachments(view)
+  const before = r.attachmentRows().map((row) => row.node)
+
+  for (let tick = 0; tick < 5; tick += 1) r.composer.renderAttachments(view)
+  assert.deepEqual(r.attachmentRows().map((row) => row.node), before, 'streaming-rate repaints must not rebuild a row under the pointer')
+  assert.match((r.els.submit as { title: string }).title, /当前模型不支持图像输入/)
+
+  // The note leaves with the state that caused it.
+  r.composer.renderAttachments(stripView())
+  assert.equal((r.els.submit as { title: string }).title, '发送')
+
+  // A changed strip still repaints, or the signature guard would be a freeze.
+  const changed = stripView({ rows: stripView().rows.slice(0, 1) })
+  r.composer.renderAttachments(changed)
+  assert.equal(r.attachmentRows().length, 1)
+
+  // Empty repaints clear the host, and do not paint an empty list.
+  r.composer.renderAttachments({ rows: [], readyCount: 0 })
+  assert.deepEqual(r.attachmentRows(), [])
+})
+
+test('an image paste becomes attachments; a text paste stays the textarea\'s', (t) => {
+  const r = render(t)
+  const image = { name: 'shot.png', type: 'image/png', arrayBuffer: async () => new ArrayBuffer(0) }
+  const text = { name: 'notes.txt', type: 'text/plain', arrayBuffer: async () => new ArrayBuffer(0) }
+
+  const imagePaste = r.stub.dispatch(r.els.input, 'paste', {
+    clipboardData: { files: [image] },
+  })
+  assert.equal(imagePaste.defaultPrevented, true, 'an image paste must not also insert text')
+  assert.equal(r.pastedFiles.length, 1)
+  assert.deepEqual(r.pastedFiles[0]!.map((file) => file.name), ['shot.png'])
+
+  const textPaste = r.stub.dispatch(r.els.input, 'paste', {
+    clipboardData: { files: [text] },
+  })
+  assert.equal(textPaste.defaultPrevented, false)
+  assert.equal(r.pastedFiles.length, 1, 'a text paste is none of this view\'s business')
+
+  const emptyPaste = r.stub.dispatch(r.els.input, 'paste', {})
+  assert.equal(emptyPaste.defaultPrevented, false)
+  assert.equal(r.pastedFiles.length, 1)
 })

@@ -10,6 +10,7 @@ import type {
   WireShellRenameSessionResult,
   WireShellOpenInEditorResult,
   WireShellSetWindowThemeResult,
+  WireShellPickImagesResult,
   SettingsChange,
   WireShellOpenProjectResult,
   WireShellRemoveProjectResult,
@@ -196,6 +197,19 @@ export class ShellClient {
       id: crypto.randomUUID(),
       theme,
     }) as Promise<WireShellSetWindowThemeResult>
+  }
+
+  /**
+   * 「选择图片」 (S11): the OS picker. `projectRoot` anchors where the dialog
+   * opens; the answer is paths, which the pane imports host-side. An empty
+   * list means the dialog was cancelled.
+   */
+  async pickImages(projectRoot?: string): Promise<WireShellPickImagesResult> {
+    return this.send({
+      type: 'pick-images',
+      id: crypto.randomUUID(),
+      ...(projectRoot !== undefined ? { projectRoot } : {}),
+    }) as Promise<WireShellPickImagesResult>
   }
 
   dispose(): void {

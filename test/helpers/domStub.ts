@@ -19,7 +19,7 @@
  * `clientHeight`/`scrollTo`/`scrollIntoView`/`getBoundingClientRect()`/
  * `style.height`/`selectionStart`/
  * `setSelectionRange`/`dispatch`/`focus`/`contains()`/`closest()`/`dataset`/
- * `insertBefore()`.
+ * `insertBefore()`/`parentElement`.
  * Add to that list rather than starting a second one.
  *
  * Installation writes `globalThis.document` and `uninstall()` deletes it again.
@@ -59,6 +59,8 @@ interface StubEvent {
    * dismissal) from the right-click that toggles the menu.
    */
   readonly button: number
+  /** `paste`'s payload, when the test supplies one through `dispatch`. */
+  readonly clipboardData: { readonly files: readonly unknown[] } | undefined
   defaultPrevented: boolean
   preventDefault(): void
   stopPropagation(): void
@@ -71,6 +73,8 @@ export interface StubEventInit {
   readonly key?: string
   readonly propertyName?: string
   readonly button?: number
+  /** A `paste` event's clipboard; `files` are fake `File`-shaped objects. */
+  readonly clipboardData?: { readonly files: readonly unknown[] }
 }
 
 type Listener = (event: StubEvent) => void
@@ -162,6 +166,11 @@ class StubElement {
   /** Backed by the `class` attribute, as in the real DOM — `icons.ts` sets it that way. */
   get className(): string {
     return this.attributes.get('class') ?? ''
+  }
+
+  /** As `Element.parentElement`; views use it to find the bar a control lives in. */
+  get parentElement(): StubElement | null {
+    return this.parent ?? null
   }
 
   set className(value: string) {
@@ -340,6 +349,7 @@ class StubElement {
       key: init.key ?? '',
       propertyName: init.propertyName ?? '',
       button: init.button ?? 0,
+      clipboardData: init.clipboardData,
       defaultPrevented: false,
       preventDefault() {
         event.defaultPrevented = true

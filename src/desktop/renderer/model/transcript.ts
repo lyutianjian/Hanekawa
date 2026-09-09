@@ -1,5 +1,6 @@
 import type { SessionRecord, ToolErrorCode, ToolResultDisplay } from '../../../harness/types.js'
 import type { SessionEvent } from '../../../runtime/sessionController.js'
+import type { ImageAttachmentRef } from '../../../media/types.js'
 import type { ToolDisplayDto } from '../../../runtime/protocol/wire.js'
 
 /**
@@ -283,6 +284,11 @@ export interface TranscriptOutcome {
    * from disk by the time this arrives.
    */
   readonly restoreInput?: string
+  /**
+   * The images the same rollback returned: the drafts to rebuild beside the
+   * restored text (S11). Same `applySessionEvent` edge, same once-only rule.
+   */
+  readonly restoreImages?: readonly ImageAttachmentRef[]
   /** A model switch the loop performed by itself (fallback activation). */
   readonly activeModel?: string
 }
@@ -370,7 +376,11 @@ export function applySessionEvent(
       return { state }
 
     case 'restore-input':
-      return { state, restoreInput: event.text }
+      return {
+        state,
+        restoreInput: event.text,
+        ...(event.images && event.images.length > 0 ? { restoreImages: event.images } : {}),
+      }
 
     case 'active-model':
       return { state, activeModel: event.model.model }

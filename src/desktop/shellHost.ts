@@ -55,6 +55,7 @@ import {
   type WireShellDeleteSessionResult,
   type WireShellOpenInEditorResult,
   type WireShellSetWindowThemeResult,
+  type WireShellPickImagesResult,
   type WireShellOpenProjectResult,
   type WireShellRemoveProjectResult,
   type WireShellOpenSessionResult,
@@ -276,6 +277,15 @@ export interface ShellHostDeps<
    * rejects the pathless variant rather than silently importing nothing.
    */
   onPickDirectory?: (options: { title: string; buttonLabel: string }) => Promise<string | undefined>
+  /**
+   * 「选择图片」 (S11): a native multi-select image picker, answered with
+   * absolute paths. `defaultPath` is the directory the dialog opens in, when
+   * the caller knows one worth anchoring to. Awaited and allowed to answer
+   * `undefined` (cancelled) — the same shape `onPickDirectory` has. A shell
+   * without one rejects, because a picker that silently answered "no images"
+   * would read as the user having cancelled.
+   */
+  onPickImages?: (options: { defaultPath?: string }) => Promise<string[] | undefined>
   /**
    * Repaints the native title-bar overlay for the resolved theme (5g).
    *
@@ -579,6 +589,13 @@ const SHELL_COMMAND_SCHEMAS = {
       type: z.literal('set-window-theme'),
       id: commandId,
       theme: z.enum(['dark', 'light']),
+    })
+    .strict(),
+  'pick-images': z
+    .object({
+      type: z.literal('pick-images'),
+      id: commandId,
+      projectRoot: z.string().min(1).optional(),
     })
     .strict(),
 } as const satisfies Record<ShellCommand['type'], z.ZodTypeAny>
@@ -940,6 +957,15 @@ export class ShellHost<
         // rejection here would put a native-chrome detail in the transcript.
         this.deps.onWindowTheme?.(command.theme)
         return { ok: true } satisfies WireShellSetWindowThemeResult
+      }
+      case 'pick-images': {
+        if (!this.deps.onPickImages) throw new Error('The shell cannot open an image picker.')
+        // Anchor only; an unknown or closed root opens the dialog unanchored
+        // rather than failing — the choice of directory never changes what the
+        // answer means (the per-pane host import re-resolves the project).
+        const cwd = command.projectRoot === undefined ? undefined : await this.cwdForRoot(command.projectRoot)
+        const paths = await this.deps.onPickImages({ ...(cwd !== undefined ? { defaultPath: cwd } : {}) })
+        return { ok: true, paths: paths ?? [] } satisfies WireShellPickImagesResult
       }
       default:
         return assertNever(command)

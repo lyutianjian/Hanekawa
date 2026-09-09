@@ -147,6 +147,19 @@ import {
 } from './model/rewindPanel.js'
 import { queuedMessagesView } from './model/queuedMessages.js'
 import {
+  attachmentDraftsFull,
+  attachmentStripView,
+  beginAttachmentImport,
+  readyAttachmentRefs,
+  removeAttachmentDraft,
+  restoredAttachmentDrafts,
+  retryAttachmentImport,
+  settleAttachmentImport,
+  type AttachmentDraft,
+  type AttachmentDrafts,
+  type AttachmentImportSource,
+} from './model/composerAttachments.js'
+import {
   advanceTaskPanel,
   retireCompletedTaskPanel,
   taskPanelState,
@@ -193,6 +206,12 @@ export interface PaneSessionDeps {
   onExit: () => void
   /** The lane died from the host side (pane closed, window closing). */
   onClosed?: () => void
+  /**
+   * 「选择图片」: puts up the OS picker and returns its paths. The Electron
+   * boundary owns the native dialog; this pane only turns each answer into an
+   * import. `undefined` is a cancelled dialog, not an error.
+   */
+  onPickImages?: () => Promise<readonly string[] | undefined>
 }
 
 export interface PaneSession {
@@ -247,6 +266,18 @@ export interface PaneSession {
   /** The form/button path: the same send-or-queue verdict as the keymap. */
   submitFromForm(): Promise<void>
   onComposerInput(): void
+  // --- image attachments (S11) ---
+  /** 「选择图片」: the OS picker, then one import per chosen path. */
+  pickImages(): Promise<void>
+  /** Paste and drop funnel into the same import state machine. */
+  importImagesFromFiles(files: readonly File[]): Promise<void>
+  importImagesFromPaths(paths: readonly string[]): Promise<void>
+  /** Removes one draft; a ready draft also releases its host-side hold. */
+  removeDraftImage(draftId: string): Promise<void>
+  /** Re-runs a failed import. A draft without a source (restored) cannot retry. */
+  retryDraftImage(draftId: string): void
+  /** Opens a ready draft's original (fire-and-forget, host-resolved). */
+  openDraftImage(draftId: string): Promise<void>
   // --- panel entry points ---
   openRewindPanel(): Promise<void>
   /**
@@ -386,6 +417,16 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   let preparedId: string | undefined
   /** The composer text while this pane is not active; the composer owns it while it is. */
   let draftText = ''
+  /**
+   * This pane's draft image attachments (S11). Per pane like the text draft:
+   * the strip and the send gate below read the same list, so a background
+   * pane's import can settle into its own state without touching the composer
+   * the *active* pane is painting. Adding while text-only still works —
+   * viewing and deleting are never gated on the model's capability.
+   */
+  let draftImages: AttachmentDrafts = Object.freeze([])
+  /** Monotonic draft ids, so an import settling late can never collide with a newer draft. */
+  let draftSeq = 0
   let active = false
 
   // --- rendering (state always updates; paint only when active) --------------
@@ -590,6 +631,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       runtime,
       contextGaugeView(client.getContextUsedTokens(), runtime),
     )
+    // The strip's send-gate half follows the same snapshot: a model switch to
+    // or away from image capability changes what the button should explain.
+    renderAttachmentGate()
     const session = client.getSession()
     if (session) deps.status.renderSession(session)
   }
@@ -597,6 +641,114 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   function renderSuggestions(): void {
     if (!active) return
     deps.suggestions.render(completions)
+  }
+
+  // --- image attachments (S11) ----------------------------------------------------
+
+  /** The strip's one view model, shared by the paint and the send gate. */
+  function attachmentsView() {
+    return attachmentStripView(draftImages, client.getRuntimeSnapshot())
+  }
+
+  function renderAttachments(): void {
+    if (!active) return
+    deps.composer.renderAttachments(attachmentsView())
+  }
+
+  /** Retargets the strip after the runtime snapshot moved. */
+  function renderAttachmentGate(): void {
+    renderAttachments()
+  }
+
+  async function importSources(sources: readonly AttachmentImportSource[]): Promise<void> {
+    if (sources.length === 0) return
+    // Never skipped: an over-quota paste is turned into the reason the user
+    // can act on, not a silent partial import.
+    for (const source of sources) {
+      if (attachmentDraftsFull(draftImages)) {
+        note('已达到单次输入最多 10 张图片的上限；请先移除一些再继续。', 'error')
+        return
+      }
+      await importOneSource(source)
+    }
+  }
+
+  async function importOneSource(source: AttachmentImportSource): Promise<void> {
+    const draftId = `draft-${lane}-${++draftSeq}`
+    draftImages = beginAttachmentImport(draftImages, source, draftId)
+    renderAttachments()
+    // Bound to the session that owned the moment the import started: an id
+    // settled after a `/clear`/`/resume` rebind belongs to the old session's
+    // store, and landing it in the new draft list would hang a ref the new
+    // session's submits cannot resolve.
+    const sessionId = client.getSession()?.id
+    const settled = await client.importAttachment(source)
+    if (sessionId === undefined || sessionId !== client.getSession()?.id) return
+    const outcome = settled.ok
+      ? { ok: true as const, ref: settled.attachment.ref, ...(settled.attachment.animated ? { animated: true } : {}) }
+      : { ok: false as const, reason: settled.reason, message: settled.message }
+    const next = settleAttachmentImport(draftImages, draftId, outcome)
+    if (next) {
+      draftImages = next
+      renderAttachments()
+    }
+  }
+
+  async function importImagesFromFiles(files: readonly File[]): Promise<void> {
+    const sources: AttachmentImportSource[] = []
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) continue
+      sources.push({ kind: 'bytes', name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) })
+    }
+    await importSources(sources)
+  }
+
+  async function importImagesFromPaths(paths: readonly string[]): Promise<void> {
+    await importSources(paths.map((path) => ({ kind: 'path' as const, path })))
+  }
+
+  async function pickImages(): Promise<void> {
+    if (!deps.onPickImages) return
+    try {
+      const paths = await deps.onPickImages()
+      if (paths !== undefined) await importImagesFromPaths(paths)
+    } catch (error) {
+      note(describe(error), 'error')
+    }
+  }
+
+  async function removeDraftImage(draftId: string): Promise<void> {
+    const { drafts, releasedImageId } = removeAttachmentDraft(draftImages, draftId)
+    draftImages = drafts
+    renderAttachments()
+    if (releasedImageId === undefined) return
+    try {
+      await client.removeAttachment(releasedImageId)
+    } catch (error) {
+      // A released-but-unheld id is idempotent host-side; only a dead lane
+      // reaches here, and the files still fall to the retention window.
+      note(describe(error), 'error')
+    }
+  }
+
+  function retryDraftImage(draftId: string): void {
+    const retrying = retryAttachmentImport(draftImages, draftId)
+    if (!retrying) return
+    const entry = retrying.find((draft) => draft.draftId === draftId)
+    draftImages = retrying
+    renderAttachments()
+    if (entry?.kind === 'importing') void importOneSource(entry.source)
+  }
+
+  async function openDraftImage(draftId: string): Promise<void> {
+    const entry = draftImages.find((draft) => draft.draftId === draftId)
+    if (entry?.kind !== 'ready') return
+    try {
+      const result = await client.openAttachment(entry.ref.id)
+      if (!result.ok) note(result.message, 'error')
+    } catch (error) {
+      note(describe(error), 'error')
+    }
   }
 
   /**
@@ -943,6 +1095,18 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       } else {
         draftText = outcome.restoreInput
       }
+      // The images the interrupt rolled back come back as drafts. Restoring
+      // never *overwrites* — the strip is appended to only when the restored
+      // ids are not already in it, so a draft the user rebuilt while the turn
+      // was failing is left alone (the same rule the text restore follows:
+      // the event fires once, and the shell decides when to write).
+      const restored = restoredAttachmentDrafts(outcome.restoreImages ?? [])
+      const existing = new Set(readyAttachmentRefs(draftImages).map((ref) => ref.id))
+      const missing = restored.filter((draft) => draft.kind === 'ready' && !existing.has(draft.ref.id))
+      if (missing.length > 0) {
+        draftImages = [...draftImages, ...missing]
+        renderAttachments()
+      }
     }
     // `outcome.activeModel` is deliberately not drawn: the controller emits
     // `active-model` at the end of *every* turn, so the notice it used to mint
@@ -995,10 +1159,15 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     const session = client.getSession()
     if (session && session.id !== boundSessionId) {
       boundSessionId = session.id
+      // A rebind (`/clear`, `/resume`) moves the conversation: the old
+      // session's drafts stay with the old session's files (S23 owns the
+      // ownership rules; S11 only makes sure no ref dangles here).
+      draftImages = Object.freeze([])
       if (rewind) closeRewindPanel()
       // A rebind is not a streaming tick: the header and the status line are
       // about a different session from this point, so they are drawn now.
       statusRepaint.flush()
+      renderAttachments()
     }
   })
 
@@ -1177,8 +1346,30 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   // --- input --------------------------------------------------------------------
 
   async function send(): Promise<void> {
-    const classified = classifyInput(deps.composer.value())
-    if (classified.kind === 'empty') return
+    const text = deps.composer.value()
+    const classified = classifyInput(text)
+    if (classified.kind === 'empty') {
+      // An image-only input is a real message: the draft list is part of the
+      // composer's content the way the textarea is, and `classifyInput`'s
+      // emptiness is only about text.
+      if (draftImages.length > 0) {
+        note(attachmentsView().sendBlockNote ?? '', 'error')
+      }
+      return
+    }
+    if (classified.kind !== 'command' && attachmentsView().sendBlockNote !== undefined) {
+      // Pending or failed attachments, or images against a text-only model:
+      // the rest of the input is not sent as though it were complete, and
+      // nothing is cleared.
+      note(attachmentsView().sendBlockNote!, 'error')
+      return
+    }
+    const imageIds = readyAttachmentRefs(draftImages).map((ref) => ref.id)
+    // The whole input, held for the failure path: the composer was optimistically
+    // cleared below, and a rejected submit must hand the user back exactly what
+    // was in it — text and attachments both.
+    const sentText = text
+    const sentDrafts = draftImages
     deps.composer.clear()
     closeCompletions()
 
@@ -1186,15 +1377,24 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       if (classified.kind === 'command') {
         // A slash command runs host-side; an unknown one still comes back
         // handled, with the explanation arriving as a `write-line` beforehand.
+        // Commands keep the draft attachments, exactly as the TUI does:
+        // `/model` mid-compose must not eat the images waiting beside it.
         const result = await client.runCommand(classified.line)
         if (result.exit) deps.onExit()
         // The command set can change under us (`/skills reload`), so re-read it.
         void refreshCommands()
         return
       }
-      await client.submit(classified.text)
+      await client.submit(classified.text, imageIds.length > 0 ? { imageIds } : {})
     } catch (error) {
+      // The failure restores the whole input — text and attachments. Only
+      // when the composer is still exactly what was sent: a user who kept
+      // typing while the submit round-tripped owns the newer draft, and the
+      // attachment restore follows the same rule for the same reason.
+      if (deps.composer.value() === '') deps.composer.setValue(sentText, sentText.length)
       note(`Failed: ${describe(error)}`, 'error')
+      draftImages = restoreDraftImages(sentDrafts)
+      renderAttachments()
     } finally {
       deps.composer.focus()
     }
@@ -1203,7 +1403,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   /**
    * Hands the composer's text to the host's queue instead of starting a turn.
    * A slash command is *not* queued — commands are not prompts. The composer
-   * is cleared optimistically, then restored on failure.
+   * is cleared optimistically, then restored on failure. Draft attachments
+   * ride the queue host-side once S20 wires them; until then a queued send
+   * carrying drafts is refused rather than silently text-only.
    */
   async function queueMessage(): Promise<void> {
     const classified = classifyInput(deps.composer.value())
@@ -1213,13 +1415,18 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       return
     }
 
+    if (draftImages.length > 0) {
+      note('图片暂不支持排队等待（队列带图将在后续版本接通）；请等本轮结束后再发送，或先移除图片。', 'error')
+      return
+    }
+
     const text = classified.text
     deps.composer.clear()
     closeCompletions()
     try {
       await client.enqueueMessage(text)
     } catch (error) {
-      deps.composer.setValue(text, text.length)
+      if (deps.composer.value() === '') deps.composer.setValue(text, text.length)
       note(`Failed to queue: ${describe(error)}`, 'error')
     } finally {
       deps.composer.focus()
@@ -1254,6 +1461,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.composer.setValue(draftText, draftText.length)
     deps.composer.autosize()
     renderTranscript()
+    renderAttachments()
     renderOverlay()
     renderRewind()
     if (surfaceView) {
@@ -1297,6 +1505,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // The composer is a singleton the active pane drives, so an open permission
     // menu would hang over the next pane and act on *its* runtime.
     deps.composer.closeMenus()
+    // Ditto the attachment strip: this pane's drafts must not ride the next
+    // pane's send. `activate()` repaints from this pane's own state.
+    deps.composer.renderAttachments(attachmentStripView(Object.freeze([]), client.getRuntimeSnapshot()))
     // Nothing repaints a hidden pane, so the waiting row's clock would tick on
     // against a node nobody can see. `activate()`'s `renderTranscript()` starts
     // it again from the same `turnStartedAt`, so no time is lost.
@@ -1384,7 +1595,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       hasSurface: surfaceView !== undefined,
       completions: completions.kind,
       isStreaming: client.getSnapshot().isStreaming,
-      inputEmpty: deps.composer.value().trim().length === 0,
+      // The drafts count as composer content: an image-only draft must make
+      // Enter mean "submit" rather than fall through to `newline`'s guard —
+      // `keymap.ts`'s `inputEmpty` already carries exactly this meaning.
+      inputEmpty: deps.composer.value().trim().length === 0 && readyAttachmentRefs(draftImages).length === 0,
     }
   }
 
@@ -1521,6 +1735,12 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       deps.composer.autosize()
       refreshCompletions()
     },
+    pickImages,
+    importImagesFromFiles,
+    importImagesFromPaths,
+    removeDraftImage,
+    retryDraftImage,
+    openDraftImage,
     openRewindPanel,
     openModelPicker: () => openSurface('model-picker'),
     openEffortPicker: () => openSurface('effort-picker'),
@@ -1537,4 +1757,14 @@ function assertNever(value: never): never {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * The drafts a failed submit hands back: `ready` and `failed` entries return
+ * as they were; an entry that was mid-import stays importing, because its
+ * import is still running and will settle on its own — an id written here
+ * would race the settlement for the same draftId.
+ */
+function restoreDraftImages(drafts: AttachmentDrafts): AttachmentDrafts {
+  return drafts
 }

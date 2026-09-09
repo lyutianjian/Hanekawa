@@ -4,6 +4,7 @@ import {
   permissionPillView,
   submitButtonView,
 } from '../model/composer.js'
+import type { AttachmentStripView } from '../model/composerAttachments.js'
 import {
   CONTEXT_RATIO_VARIABLE,
   hiddenContextGauge,
@@ -97,10 +98,26 @@ export interface ComposerView {
    * Shuts any transient popup the composer owns.
    *
    * Called when a pane goes to the background: the composer is a singleton the
-   * *active* pane drives, so a menu left open would hang over the next pane's
+   * *active* pane drives, so a menu left open would hang over the *next* pane's
    * runtime and act on it.
    */
   closeMenus(): void
+  /**
+   * Paints this pane's draft attachment strip (S11). The strip lives in the
+   * capsule above the textarea — it is composer content the way the text is,
+   * not a popover. Only the active pane may call this; a background pane
+   * passes an empty view to clear the paint.
+   */
+  renderAttachments(view: AttachmentStripView): void
+  /**
+   * Why the send button cannot send right now, when it has a say: pending or
+   * failed attachments, or drafts against a model with no image capability.
+   * Carried on the button's `title`/`aria-label` rather than disabling it —
+   * the click still reaches the pane, which explains itself in the transcript.
+   */
+  setSendBlockNote(note: string | undefined): void
+  /** The send gate's title, off the strip the pane just painted. */
+  attachStripEl(): HTMLElement
   autosize(): void
 }
 
@@ -121,6 +138,8 @@ export function createComposerView(els: {
   permissionShell: HTMLElement
   /** The spinning ring beside the chip while a turn is in flight. */
   progress: HTMLElement
+  /** The draft attachments' strip host, above the textarea in the capsule. */
+  attachStrip: HTMLElement
 }, actions: {
   /** Asks the pane for the menu's rows; answered by `showRuntimeMenu`. */
   onOpenRuntimeMenu: () => void
@@ -135,6 +154,20 @@ export function createComposerView(els: {
    * recompute completions, since a programmatic edit fires no `input` event.
    */
   onAttach: () => void
+  /** 「选择图片」: the pane puts up the host-side picker (S11). */
+  onPickImages: () => void
+  /** A draft's ✕. The pane releases the host-side hold for ready drafts. */
+  onRemoveAttachment: (draftId: string) => void
+  /** A failed draft's 重试. A draft with no source cannot retry. */
+  onRetryAttachment: (draftId: string) => void
+  /** A ready draft's label, clicked: open the original, host-resolved. */
+  onOpenAttachment: (draftId: string) => void
+  /**
+   * The image files a paste carried. Handed as DOM `File`s on purpose: the
+   * pane's import owns reading them (`arrayBuffer`) — the view only routes
+   * the event, and `model/composerAttachments.ts` stays DOM-free.
+   */
+  onPasteImages: (files: readonly File[]) => void
 }): ComposerView {
   const autosize = () => {
     // Kept in step with `#composer` / `#input`'s `max-height` in `styles.css`;
@@ -164,19 +197,192 @@ export function createComposerView(els: {
   replace(els.stop, icon('stop'))
   replace(els.attach, icon('plus'))
   replace(els.progress, icon('spinner'))
-  els.attach.setAttribute('aria-label', '插入文件引用')
-  els.attach.title = '插入文件引用（@）'
+  els.attach.setAttribute('aria-label', '附件')
+  els.attach.title = '添加附件（图片 / @ 引用项目文件）'
   els.progress.setAttribute('aria-hidden', 'true')
   show(els.progress, false)
 
+  // --- the attachment control (S11) ------------------------------------------------
+  //
+  // One button, two entrances: 选择图片 (a host-side picker over the Electron
+  // boundary) and 引用项目文件 (the `@` seed that always lived here, handed to
+  // the mention completion). A local menu rather than two buttons, so the bar
+  // stays one affordance wide and the `@` path keeps its caret-inserting
+  // behaviour untouched.
+  let attachMenuOpen = false
+  let attachMenu: HTMLElement | undefined
+  let attachItems: HTMLButtonElement[] = []
+  /** What the strip was last drawn from; repaints are signed, like the pill's. */
+  let attachSignature: string | undefined
+  /** The send button's explanatory note, applied to title/aria-label. */
+  let sendBlockNote: string | undefined
+
+  function closeAttachMenu(): void {
+    attachMenuOpen = false
+    attachMenu?.remove()
+    attachMenu = undefined
+    attachItems = []
+    els.attach.setAttribute('aria-expanded', 'false')
+    els.attach.classList.remove('open')
+  }
+
+  function renderAttachMenu(): void {
+    if (!attachMenuOpen) {
+      closeAttachMenu()
+      return
+    }
+    attachMenu?.remove()
+    attachMenu = undefined
+    attachItems = []
+
+    const menu = el('div', 'composer-menu')
+    menu.setAttribute('role', 'listbox')
+    menu.setAttribute('aria-label', '附件')
+    const pickItem = button('composer-menu-item', '选择图片', '选择图片', () => {
+      closeAttachMenu()
+      actions.onPickImages()
+    })
+    pickItem.setAttribute('role', 'option')
+    pickItem.setAttribute('aria-selected', 'false')
+    const mentionItem = button('composer-menu-item', '引用项目文件（@）', '在光标处插入 @，引用项目文件', () => {
+      closeAttachMenu()
+      const next = insertMentionToken(els.input.value, els.input.selectionStart ?? els.input.value.length)
+      els.input.value = next.text
+      els.input.setSelectionRange(next.cursorPos, next.cursorPos)
+      autosize()
+      els.input.focus()
+      actions.onAttach()
+    })
+    mentionItem.setAttribute('role', 'option')
+    mentionItem.setAttribute('aria-selected', 'false')
+    attachItems.push(pickItem, mentionItem)
+    menu.appendChild(pickItem)
+    menu.appendChild(mentionItem)
+    els.attach.parentElement?.appendChild(menu)
+    attachMenu = menu
+    els.attach.setAttribute('aria-expanded', 'true')
+    els.attach.classList.add('open')
+  }
+
   els.attach.addEventListener('click', () => {
-    const next = insertMentionToken(els.input.value, els.input.selectionStart ?? els.input.value.length)
-    els.input.value = next.text
-    els.input.setSelectionRange(next.cursorPos, next.cursorPos)
-    autosize()
-    els.input.focus()
-    actions.onAttach()
+    attachMenuOpen = !attachMenuOpen
+    renderAttachMenu()
+    if (attachMenuOpen) attachItems[0]?.focus()
   })
+  // Closed the same three ways every popover here is. The shell is the bar the
+  // button lives in, so the trigger can reopen its own menu without the
+  // press-outside handler closing it first.
+  const attachShell = els.attach.parentElement ?? els.attach
+  onPressOutside([attachShell], () => {
+    if (!attachMenuOpen) return
+    closeAttachMenu()
+  })
+  attachShell.addEventListener('focusout', (event) => {
+    const next = (event as FocusEvent).relatedTarget
+    if (next instanceof Node && attachShell.contains(next)) return
+    if (!attachMenuOpen) return
+    closeAttachMenu()
+  })
+  attachShell.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !attachMenuOpen) return
+    event.preventDefault()
+    event.stopPropagation()
+    closeAttachMenu()
+    els.attach.focus()
+  })
+
+  /**
+   * The draft strip. Signed for the reason the pill is: `renderAttachments`
+   * follows the runtime snapshot tick, which during a turn is once per chunk,
+   * and rebuilding a row the pointer is on at that rate is what the signature
+   * guards exist to stop.
+   */
+  function renderAttachments(view: AttachmentStripView): void {
+    const signature = view.rows
+      .map((row) => `${row.draftId}:${row.state}:${row.label}:${row.detail ?? ''}`)
+      .join('|')
+    if (signature === attachSignature) {
+      setSendBlockNote(view.sendBlockNote)
+      return
+    }
+    attachSignature = signature
+
+    replace(els.attachStrip)
+    if (view.rows.length === 0) {
+      els.attachStrip.removeAttribute('aria-label')
+      setSendBlockNote(view.sendBlockNote)
+      return
+    }
+    els.attachStrip.setAttribute('role', 'list')
+    els.attachStrip.setAttribute('aria-label', '待发送图片')
+    for (const row of view.rows) {
+      els.attachStrip.appendChild(attachmentRowNode(row))
+    }
+    setSendBlockNote(view.sendBlockNote)
+  }
+
+  function attachmentRowNode(row: AttachmentStripView['rows'][number]): HTMLElement {
+    const item = el('div', `attachment-row ${row.state}`)
+    item.setAttribute('role', 'listitem')
+
+    // A ready draft's label opens the original (host-resolved, fire-and-
+    // forget). Importing and failed rows are not links.
+    const label = el(
+      'span',
+      'attachment-label',
+      row.state === 'ready' ? row.label : `${row.label}${row.detail ? `（${row.detail}）` : ''}`,
+    )
+    if (row.state === 'ready') {
+      label.setAttribute('role', 'button')
+      label.setAttribute('tabindex', '0')
+      label.title = '点击打开原图'
+      label.addEventListener('click', () => actions.onOpenAttachment(row.draftId))
+      label.addEventListener('keydown', (event) => {
+        if ((event as KeyboardEvent).key !== 'Enter') return
+        actions.onOpenAttachment(row.draftId)
+      })
+    } else if (row.state === 'failed') {
+      label.title = row.detail ?? row.label
+    }
+    item.appendChild(label)
+
+    if (row.state === 'failed') {
+      const retry = button('attachment-retry', '重试', `重新导入 ${row.label}`, () => {
+        actions.onRetryAttachment(row.draftId)
+      })
+      item.appendChild(retry)
+    }
+    const remove = button('attachment-remove', '✕', `移除 ${row.label}`, () => {
+      actions.onRemoveAttachment(row.draftId)
+    })
+    item.appendChild(remove)
+    return item
+  }
+
+  function setSendBlockNote(note: string | undefined): void {
+    if (note === sendBlockNote) return
+    sendBlockNote = note
+    applySubmitState()
+  }
+
+  function applySubmitState(): void {
+    const view = submitButtonView({
+      streaming: streamingNow,
+      empty: els.input.value.trim().length === 0 && (attachSignature ?? '') === '',
+    })
+    // Enabled in every state: `requestSubmit()` ignores a disabled button, so a
+    // grey-but-meaningful button would swallow the click with no error anywhere.
+    els.submit.disabled = false
+    els.submit.classList.remove('idle', 'ready', 'streaming')
+    els.submit.classList.add(view.state)
+    // The note rides the button's own tooltip: the click still reaches the
+    // pane (which explains itself in the transcript); this is the *why* shown
+    // before the click, not a gate the renderer enforces on its own.
+    const label = view.state === 'streaming' ? view.label : (sendBlockNote ?? view.label)
+    els.submit.setAttribute('aria-label', label)
+    els.submit.title = label
+    show(els.progress, view.progress)
+  }
   els.chipRuntime.addEventListener('click', () => {
     if (runtimeMenu) {
       closeRuntimeMenu()
@@ -497,22 +703,19 @@ export function createComposerView(els: {
     return tooltip
   }
 
-  function applySubmitState(): void {
-    const view = submitButtonView({
-      streaming: streamingNow,
-      empty: els.input.value.trim().length === 0,
-    })
-    // Enabled in every state: `requestSubmit()` ignores a disabled button, so a
-    // grey-but-meaningful button would swallow the click with no error anywhere.
-    els.submit.disabled = false
-    els.submit.classList.remove('idle', 'ready', 'streaming')
-    els.submit.classList.add(view.state)
-    els.submit.setAttribute('aria-label', view.label)
-    els.submit.title = view.label
-    show(els.progress, view.progress)
-  }
-
   els.input.addEventListener('input', () => applySubmitState())
+  // Paste: an image in the clipboard becomes an attachment rather than text.
+  // Only files make that call — a plain-text paste, even of a path, stays the
+  // textarea's business (path pastes are the TUI's rule; here the picker, drag
+  // and paste cover the image entrances). The event is left alone otherwise,
+  // so the browser's own text insert still runs.
+  const onPasteImages = actions.onPasteImages
+  els.input.addEventListener('paste', (event) => {
+    const files = Array.from(event.clipboardData?.files ?? [])
+    if (files.length === 0 || !files.some((file) => file.type.startsWith('image/'))) return
+    event.preventDefault()
+    onPasteImages(files)
+  })
   // Painted before the first snapshot too, or the chip stays enabled with
   // `index.html`'s placeholder in it and opens a menu of nothing.
   renderChip()
@@ -610,8 +813,12 @@ export function createComposerView(els: {
       entryRows.get(view.entries[0]?.key ?? 'model')?.focus()
     },
     refreshSubmit: applySubmitState,
+    renderAttachments,
+    setSendBlockNote,
+    attachStripEl: () => els.attachStrip,
     closeMenus() {
       closeRuntimeMenu()
+      closeAttachMenu()
       if (!permissionMenuOpen) return
       permissionMenuOpen = false
       renderPermission()

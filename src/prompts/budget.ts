@@ -1,4 +1,9 @@
 import type { ChatMessage, ModelContextItem, SessionRecord } from '../harness/types.js'
+import {
+  countImageTokens,
+  DEFAULT_IMAGE_TOKEN_STRATEGY,
+  type ImageTokenStrategy,
+} from '../media/imageTokens.js'
 
 export interface TokenCount {
   total: number
@@ -93,12 +98,26 @@ export function countTextTokens(text: string): number {
   return Math.ceil(asciiChars / 3.0 + nonAsciiChars / 1.2)
 }
 
-export function countMessageTokens(message: ChatMessage): number {
+/**
+ * Message cost: its text plus its images. Image cost comes from the sent
+ * dimensions the refs describe, under the serving model's estimation strategy
+ * — never from path length or Base64 length (design §11.2). Without a
+ * strategy the conservative estimate applies, so an unnamed model never reads
+ * as cheaper than a real provider might charge.
+ */
+export function countMessageTokens(
+  message: ChatMessage,
+  imageTokenStrategy: ImageTokenStrategy = DEFAULT_IMAGE_TOKEN_STRATEGY,
+): number {
   return countTextTokens(message.content)
+    + countImageTokens(message.images, imageTokenStrategy)
 }
 
-export function countMessagesTokens(messages: ChatMessage[]): TokenCount {
-  const counts = messages.map(countMessageTokens)
+export function countMessagesTokens(
+  messages: ChatMessage[],
+  imageTokenStrategy: ImageTokenStrategy = DEFAULT_IMAGE_TOKEN_STRATEGY,
+): TokenCount {
+  const counts = messages.map((message) => countMessageTokens(message, imageTokenStrategy))
   return {
     total: counts.reduce((a, b) => a + b, 0),
     messages: counts,
@@ -169,9 +188,12 @@ export function selectContextItemsForContext(
   return repairToolPairing(result.reverse())
 }
 
-export function countContextItemTokens(item: ModelContextItem): number {
+export function countContextItemTokens(
+  item: ModelContextItem,
+  imageTokenStrategy: ImageTokenStrategy = DEFAULT_IMAGE_TOKEN_STRATEGY,
+): number {
   if (item.kind === 'message') {
-    return countMessageTokens(item.message)
+    return countMessageTokens(item.message, imageTokenStrategy)
   }
 
   if (item.kind === 'tool_use') {
@@ -179,11 +201,15 @@ export function countContextItemTokens(item: ModelContextItem): number {
   }
 
   return countTextTokens(`${item.tool}\n${item.content}`)
+    + countImageTokens(item.images, imageTokenStrategy)
 }
 
-export function countSessionRecordTokens(record: SessionRecord): number {
+export function countSessionRecordTokens(
+  record: SessionRecord,
+  imageTokenStrategy: ImageTokenStrategy = DEFAULT_IMAGE_TOKEN_STRATEGY,
+): number {
   if (record.type === 'message') {
-    return countMessageTokens(record)
+    return countMessageTokens(record, imageTokenStrategy)
   }
 
   if (record.type === 'at_mention_context') {
@@ -195,8 +221,14 @@ export function countSessionRecordTokens(record: SessionRecord): number {
   }
 
   if (record.type === 'tool_result') {
-    if (typeof record._tokens === 'number') return record._tokens
-    return countTextTokens(`${record.tool}\n${record.content}`)
+    // `_tokens` caches the *text* cost only. Image cost is cheap arithmetic on
+    // the refs and strategy-dependent, so it is always computed live on top of
+    // the cache — a cache written before images existed, or under a different
+    // model, never reads as the whole count (design §11.2).
+    const textTokens = typeof record._tokens === 'number'
+      ? record._tokens
+      : countTextTokens(`${record.tool}\n${record.content}`)
+    return textTokens + countImageTokens(record.images, imageTokenStrategy)
   }
 
   if (record.type === 'compact_boundary') {
@@ -218,8 +250,15 @@ export function countSessionRecordTokens(record: SessionRecord): number {
   return 0
 }
 
-export function countSessionRecordsTokens(records: SessionRecord[], system?: string): number {
-  return records.reduce((sum, record) => sum + countSessionRecordTokens(record), system ? countTextTokens(system) : 0)
+export function countSessionRecordsTokens(
+  records: SessionRecord[],
+  system?: string,
+  imageTokenStrategy: ImageTokenStrategy = DEFAULT_IMAGE_TOKEN_STRATEGY,
+): number {
+  return records.reduce(
+    (sum, record) => sum + countSessionRecordTokens(record, imageTokenStrategy),
+    system ? countTextTokens(system) : 0,
+  )
 }
 
 function repairToolPairing(items: ModelContextItem[]): ModelContextItem[] {

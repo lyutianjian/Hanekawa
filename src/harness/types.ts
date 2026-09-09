@@ -35,6 +35,13 @@ export type ModelStreamEvent =
    * and carries text only, never image bytes.
    */
   | { type: 'image_capability_notice'; message: string; omittedImageCount: number; missingImageCount?: number }
+  /**
+   * The loop omitted images to keep a request within its image-count cap
+   * (design §11.1 step 3): oldest history first, the current turn's images
+   * protected. Emitted once per distinct (cap, kept set) state — like the
+   * capability notice, not per tool step — and carries text only.
+   */
+  | { type: 'media_limit_notice'; message: string; omittedImageCount: number; maxImages: number }
 
 export interface ChatMessage {
   id: string
@@ -738,5 +745,11 @@ export interface ModelProvider {
    * this with the model config's switch.
    */
   supportsImageInput?(): boolean
+  /**
+   * This adapter's own per-request image-count limit, when it declares one
+   * below the local default (design §8). `undefined` means "no adapter limit
+   * known" — the local cap applies on its own.
+   */
+  maxImagesPerRequest?(): number | undefined
   createMessage(request: ModelRequest): Promise<ModelResponse>
 }

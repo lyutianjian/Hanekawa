@@ -4,11 +4,13 @@ import type { ActiveModelRuntime } from './loop.js'
 import { EMPTY_TOKEN_USAGE, addTokenUsage } from './usage.js'
 import {
   countTextTokens,
+  countSessionRecordTokens,
   countSessionRecordsTokens,
   getAutoCompactThreshold,
   type ContextManagementConfig,
 } from '../prompts/budget.js'
 import { getRecordsAfterLastCompact } from './requestPrep.js'
+import type { ImageTokenStrategy } from '../media/imageTokens.js'
 import { compactCacheSource } from './cacheBreakDetection.js'
 import { wrapInSystemReminder } from './systemReminder.js'
 import { getCompactPrompt, formatCompactSummary } from '../prompts/compactPrompt.js'
@@ -29,6 +31,8 @@ export interface CompactCheckInput {
   lastResponseTokenCount?: number
   lastResponseRecordId?: string
   lastResponseRecordCount?: number
+  /** Image-token strategy of the model serving the request being sized. */
+  imageTokenStrategy?: ImageTokenStrategy
   promptCacheRetention?: 'in_memory' | '24h'
   turnId?: string
   circuitKey?: string
@@ -257,12 +261,12 @@ export function resetAutoCompactFailureState(circuitKey?: string): void {
 
 function countCurrentTokens(input: CompactCheckInput, compactableRecords: SessionRecord[]): number {
   if (input.lastResponseTokenCount === undefined) {
-    return countSessionRecordsTokens(compactableRecords, input.system)
+    return countSessionRecordsTokens(compactableRecords, input.system, input.imageTokenStrategy)
   }
 
   const pendingTokens = countPendingRecordTokens(input)
   if (pendingTokens === undefined) {
-    return countSessionRecordsTokens(compactableRecords, input.system)
+    return countSessionRecordsTokens(compactableRecords, input.system, input.imageTokenStrategy)
   }
   return input.lastResponseTokenCount + pendingTokens
 }
@@ -281,7 +285,7 @@ function countPendingRecordTokens(input: CompactCheckInput): number | undefined 
       skippedResponseMessage = true
       return sum
     }
-    return sum + countSessionRecordsTokens([record])
+    return sum + countSessionRecordTokens(record, input.imageTokenStrategy)
   }, 0)
 }
 

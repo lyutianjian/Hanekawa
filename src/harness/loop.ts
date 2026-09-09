@@ -47,9 +47,22 @@ import {
   assertNewImagesAllowed,
   formatHistoricalProjectionNotice,
   projectTurnImagesForRequest,
+  TurnImageBlockError,
   type AttachmentFactsResolver,
   type RequestImageProjection,
 } from './turnImages.js'
+import {
+  formatMediaStripNotice,
+  formatTooManyImagesBlockedMessage,
+  resolveMaxMediaItems,
+  stripExcessMediaItems,
+  type MediaStripResult,
+} from './mediaStrip.js'
+import {
+  describeImageTokenStrategy,
+  resolveImageTokenStrategy,
+  type ImageTokenStrategy,
+} from '../media/imageTokens.js'
 import { wrapInSystemReminder } from './systemReminder.js'
 import { maybeExtractSessionMemory } from '../services/sessionMemory/service.js'
 
@@ -196,6 +209,16 @@ export class AgentLoop {
   private activeRunOverrides: ActiveRunOverrides | undefined
   /** Last (capability x image set) state the loop notified about, for notice dedup. */
   private lastImageProjectionSignature: string | undefined
+  /** Last (cap x kept set) media-strip state the loop notified about, same rule. */
+  private lastMediaStripSignature: string | undefined
+  /**
+   * Last combined image state the loop built a request from. When it moves —
+   * capability flip, omitted-set change, cap change — the usage baseline
+   * describes a request whose image content no longer matches, so the run
+   * loop must re-estimate instead of reusing it (design §11.2).
+   */
+  private lastImageRequestSignature: string | undefined
+  private imageRequestStateChanged = false
 
   constructor(private readonly options: AgentLoopOptions) {
     const primary = {
@@ -322,6 +345,17 @@ export class AgentLoop {
   assertImagesAllowedForSubmission(input: UserInput, overrides?: AgentRunOverrides): void {
     const model = overrides?.model ?? this.modelState.current
     assertNewImagesAllowed(input.images, model.supportsImageInput, model.model)
+    // The per-request count cap also gates submission, so an input that alone
+    // exceeds it fails before anything is recorded — the request-path strip
+    // re-checks with the model actually serving each iteration.
+    const maxImages = resolveMaxMediaItems(model.provider.maxImagesPerRequest?.())
+    if (input.images && input.images.length > maxImages) {
+      throw new TurnImageBlockError(
+        'too-many-images',
+        [...input.images],
+        formatTooManyImagesBlockedMessage(input.images.length, maxImages),
+      )
+    }
   }
 
   async summarizeRecordsForRewind(records: SessionRecord[]): Promise<{ summary: string; usage?: TokenUsage; preTokens: number }> {
@@ -466,6 +500,13 @@ export class AgentLoop {
       let lastAssistantContent = ''
       const resetModelRequestState = () => {
         lastRequestId = undefined
+        // A model switch also invalidates the usage baseline: the previous
+        // response's cost described a request shaped for the previous model
+        // — its image-token strategy included (design §11.2) — so the next
+        // estimate must be recomputed from the records.
+        lastResponseTokenCount = undefined
+        lastResponseRecordCount = undefined
+        lastResponseRecordId = undefined
         maxOutputTokensOverride = this.options.maxOutputTokens
         maxOutputTokensRecoveryCount = 0
       }
@@ -492,6 +533,13 @@ export class AgentLoop {
         }
         await this.flushReadyToolUseSummaries(turnId)
         const preparedRecords = await this.loadPreparedRecords(turnId, userMessage.id)
+        // The image state of the prepared records moved since the response the
+        // baseline was taken from — drop it and estimate from the records.
+        if (this.consumeImageRequestStateChanged()) resetModelRequestState()
+        const imageTokenStrategy = resolveImageTokenStrategy(
+          this.activeModel.providerName,
+          this.activeModel.supportsImageInput,
+        )
         const interruptionContext = await this.consumeTurnInterruptionContext(preparedRecords, userInput.text)
         const progressive = applyProgressiveCompaction({
           records: preparedRecords,
@@ -500,6 +548,7 @@ export class AgentLoop {
           lastResponseTokenCount,
           lastResponseRecordCount,
           lastResponseRecordId,
+          imageTokenStrategy,
           now: new Date(),
         })
         let recordsBeforeCompact = progressive.records
@@ -515,6 +564,7 @@ export class AgentLoop {
           lastResponseTokenCount: useCachedTokenEstimate ? lastResponseTokenCount : undefined,
           lastResponseRecordCount: useCachedTokenEstimate ? lastResponseRecordCount : undefined,
           lastResponseRecordId: useCachedTokenEstimate ? lastResponseRecordId : undefined,
+          imageTokenStrategy,
           discoveredToolNames: this.options.toolContext.discoveredToolNames,
           promptCacheRetention: this.activeModel.promptCacheRetention,
           turnId,
@@ -548,6 +598,7 @@ export class AgentLoop {
           resetModelRequestState()
         }
         recordsBeforeCompact = await this.loadPreparedRecords(turnId, userMessage.id)
+        if (this.consumeImageRequestStateChanged()) resetModelRequestState()
       }
 
       const records = recordsBeforeCompact
@@ -1064,12 +1115,17 @@ export class AgentLoop {
 
   private async loadPreparedRecords(turnId?: string, userMessageId?: string): Promise<SessionRecord[]> {
     const loaded = await this.loadRecordsOnce()
+    const imageTokenStrategy = resolveImageTokenStrategy(
+      this.activeModel.providerName,
+      this.activeModel.supportsImageInput,
+    )
     const prepared = prepareRecordsForRequestWithDiagnostics(
       loaded.records,
       this.activeContextManagement,
       new Date(),
       {
         repairToolPairing: !this.recordsCacheHasCleanToolProtocol,
+        imageTokenStrategy,
         ...(this.stripAllThinkingBlocksFromRequests ? { recentAssistantThinkingTurnsToKeep: 0 } : {}),
       },
     )
@@ -1091,8 +1147,28 @@ export class AgentLoop {
       modelLabel: this.activeModel.model,
       ...(this.options.attachmentFacts ? { resolveAttachmentFacts: this.options.attachmentFacts } : {}),
     })
+    // The image-count cap runs on what the projection left in the request
+    // (design §11.1: projection before budget): history, current input, and
+    // tool images all count; a lower adapter limit tightens the local cap;
+    // the oldest history leaves first and this turn's images are protected.
+    const stripped = stripExcessMediaItems(projection.records, {
+      currentTurnId: turnId,
+      ...(userMessageId ? { currentUserMessageId: userMessageId } : {}),
+      maxMediaItems: resolveMaxMediaItems(this.activeModel.provider.maxImagesPerRequest?.()),
+    })
+    if (
+      process.env.MYAGENT_DEBUG_PROVIDER === '1'
+      && stripped.keptImageCount + stripped.omittedImages.length > 0
+    ) {
+      console.error(
+        `[hanekawa][image-tokens] strategy=${describeImageTokenStrategy(imageTokenStrategy)}, `
+        + `kept=${stripped.keptImageCount}, omitted=${stripped.omittedImages.length}, cap=${stripped.maxMediaItems}`,
+      )
+    }
     this.noteImageProjection(projection)
-    return projection.records
+    this.noteMediaStrip(stripped)
+    this.noteImageRequestState(projection, stripped)
+    return stripped.records
   }
 
   /**
@@ -1111,6 +1187,41 @@ export class AgentLoop {
       omittedImageCount: projection.projectedImageCount,
       ...(projection.missingImageCount > 0 ? { missingImageCount: projection.missingImageCount } : {}),
     })
+  }
+
+  /** Same once-per-state rule for count-cap omissions (design §11.1 step 3). */
+  private noteMediaStrip(strip: MediaStripResult): void {
+    if (strip.signature === this.lastMediaStripSignature) return
+    this.lastMediaStripSignature = strip.signature
+    if (strip.omittedImages.length === 0) return
+    this.options.onStreamEvent?.({
+      type: 'media_limit_notice',
+      message: formatMediaStripNotice(strip.omittedImages.length, strip.maxMediaItems),
+      omittedImageCount: strip.omittedImages.length,
+      maxImages: strip.maxMediaItems,
+    })
+  }
+
+  /**
+   * Remembers the image state the request was built from. Any move —
+   * capability flip, a different omitted set, a different cap — means the
+   * usage baseline from the previous response describes a request whose image
+   * content no longer matches, so it must be re-estimated rather than reused
+   * (design §11.2). Model switches cover this too (via the model-request
+   * reset), so this catches the image-only changes between them.
+   */
+  private noteImageRequestState(projection: RequestImageProjection, strip: MediaStripResult): void {
+    const signature = `${projection.signature}|${strip.signature}`
+    if (this.lastImageRequestSignature !== undefined && signature !== this.lastImageRequestSignature) {
+      this.imageRequestStateChanged = true
+    }
+    this.lastImageRequestSignature = signature
+  }
+
+  private consumeImageRequestStateChanged(): boolean {
+    if (!this.imageRequestStateChanged) return false
+    this.imageRequestStateChanged = false
+    return true
   }
 
   private async loadRecordsOnce(): Promise<{ records: SessionRecord[]; diagnostics: RuntimeDiagnostic[] }> {

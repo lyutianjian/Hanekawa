@@ -3311,3 +3311,333 @@ test('a mid-run fallback to a text-only model still blocks the new images', asyn
   const user = records.find((record) => record.type === 'message' && record.role === 'user')
   assert.deepEqual(user?.type === 'message' ? user.images : undefined, [ref])
 })
+
+
+// --- media-count cap and image-token budgets (S16, design §8, §11) -----------
+
+test('an adapter limit below the local cap omits the oldest history and notifies once', async () => {
+  const oldImage = makeImageAttachmentRef({ id: 'img-old', ownerSessionId: 's1', name: 'old.png' })
+  const midImage = makeImageAttachmentRef({ id: 'img-mid', ownerSessionId: 's1', name: 'mid.png' })
+  const currentImage = makeImageAttachmentRef({ id: 'img-cur', ownerSessionId: 's1', name: 'cur.png' })
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'first shot',
+      images: [oldImage],
+      turnId: 'turn-old',
+      createdAt: '2026-09-08T00:00:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'mid-user',
+      role: 'user',
+      content: 'second shot',
+      images: [midImage],
+      turnId: 'turn-mid',
+      createdAt: '2026-09-08T00:01:00.000Z',
+    },
+  ]
+  const requests: ModelRequest[] = []
+  let providerCalls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    // A lower adapter limit wins over the local default of 100.
+    maxImagesPerRequest: () => 2,
+    async createMessage(request) {
+      providerCalls += 1
+      requests.push(request)
+      if (providerCalls === 1) {
+        return {
+          content: '',
+          toolCalls: [{ id: 'call-1', name: 'Probe', input: {} }],
+          usage: { inputTokens: 1, cacheReadInputTokens: 0, outputTokens: 1 },
+        }
+      }
+      return {
+        content: 'done',
+        toolCalls: [],
+        usage: { inputTokens: 1, cacheReadInputTokens: 0, outputTokens: 1 },
+      }
+    },
+  }
+  const tools: Tool[] = [testTool('Probe')]
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const streamEvents: ModelStreamEvent[] = []
+  const loop = new AgentLoop({
+    provider,
+    model: 'capable-model',
+    supportsImageInput: true,
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's16-adapter-cap', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    onStreamEvent: (event) => { streamEvents.push(event) },
+  })
+
+  const response = await loop.run({ text: 'look at these', images: [currentImage] })
+  assert.equal(response.content, 'done')
+  assert.equal(requests.length, 2)
+
+  // 3 images, adapter cap 2: the oldest history leaves the request; the
+  // current input's image never does — across the tool round-trip too.
+  // (Messages and context items both carry the records, so ids dedupe them.)
+  for (const request of requests) {
+    const seen = new Set<string>()
+    for (const message of request.messages) {
+      for (const image of message.images ?? []) seen.add(`${message.id}:${image.id}`)
+    }
+    for (const item of request.contextItems ?? []) {
+      if (item.kind === 'message') {
+        for (const image of item.message.images ?? []) seen.add(`${item.message.id}:${image.id}`)
+      }
+      if (item.kind === 'tool_result') {
+        for (const image of item.images ?? []) seen.add(`${item.toolUseId}:${image.id}`)
+      }
+    }
+    assert.deepEqual(
+      [...seen].map((entry) => entry.split(':').at(-1)).sort(),
+      ['img-cur', 'img-mid'],
+    )
+    const firstShot = request.messages.find((message) => message.content.includes('first shot'))
+    assert.match(
+      firstShot?.content ?? '',
+      /\[Historical image omitted to stay within the 2-image request limit: old\.png/,
+    )
+  }
+
+  // The strip is a request projection: JSONL keeps every image and its text.
+  const persistedOld = records.find((record) => record.id === 'old-user')
+  assert.equal(persistedOld?.type === 'message' ? persistedOld.content : undefined, 'first shot')
+  assert.deepEqual(persistedOld?.type === 'message' ? persistedOld.images : undefined, [oldImage])
+
+  // The notice fires once for this (cap, kept set) state, not per tool step.
+  const notices = streamEvents.filter((event) => event.type === 'media_limit_notice')
+  assert.equal(notices.length, 1)
+  if (notices[0]?.type === 'media_limit_notice') {
+    assert.equal(notices[0].omittedImageCount, 1)
+    assert.equal(notices[0].maxImages, 2)
+    assert.match(notices[0].message, /limit of 2 images/)
+  }
+  // The capability notice stays silent: the model is image-capable.
+  assert.equal(streamEvents.some((event) => event.type === 'image_capability_notice'), false)
+})
+
+test('the local 100-image cap applies when no adapter limit is declared', async () => {
+  const records: SessionRecord[] = []
+  for (let index = 0; index < 101; index++) {
+    records.push({
+      type: 'message',
+      id: `hist-user-${index}`,
+      role: 'user',
+      content: `history ${index}`,
+      images: [makeImageAttachmentRef({ id: `img-${index}`, ownerSessionId: 's1' })],
+      turnId: `turn-${index}`,
+      createdAt: '2026-09-08T00:00:00.000Z',
+    })
+  }
+  const requests: ModelRequest[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const streamEvents: ModelStreamEvent[] = []
+  const loop = new AgentLoop({
+    provider,
+    model: 'capable-model',
+    supportsImageInput: true,
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's16-local-cap', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    onStreamEvent: (event) => { streamEvents.push(event) },
+  })
+
+  // 101 history images + 1 current = 102, cap 100: the two oldest go.
+  await loop.run({
+    text: 'one more',
+    images: [makeImageAttachmentRef({ id: 'img-current', ownerSessionId: 's1' })],
+  })
+  assert.equal(requests.length, 1)
+  const seen = new Set<string>()
+  for (const message of requests[0]!.messages) {
+    for (const image of message.images ?? []) seen.add(image.id)
+  }
+  for (const item of requests[0]!.contextItems ?? []) {
+    if (item.kind === 'message') for (const image of item.message.images ?? []) seen.add(image.id)
+    if (item.kind === 'tool_result') for (const image of item.images ?? []) seen.add(image.id)
+  }
+  assert.equal(seen.size, 100)
+  assert.equal(seen.has('img-0'), false)
+  assert.equal(seen.has('img-1'), false)
+  assert.equal(seen.has('img-100'), true)
+  assert.equal(seen.has('img-current'), true)
+  const notices = streamEvents.filter((event) => event.type === 'media_limit_notice')
+  assert.equal(notices.length, 1)
+})
+
+test('submission is blocked when the input alone exceeds the model request cap', async () => {
+  const provider: ModelProvider = {
+    name: 'fake',
+    maxImagesPerRequest: () => 2,
+    async createMessage() {
+      throw new Error('provider must not be called')
+    },
+  }
+  const records: SessionRecord[] = []
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'capable-model',
+    supportsImageInput: true,
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's16-submit-cap', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  // Within the cap: allowed.
+  loop.assertImagesAllowedForSubmission({
+    text: 'fine',
+    images: [
+      makeImageAttachmentRef({ id: 'img-1', ownerSessionId: 's1' }),
+      makeImageAttachmentRef({ id: 'img-2', ownerSessionId: 's1' }),
+    ],
+  })
+  // Over the cap: blocked before any record is written, with the count and
+  // the way out in the message.
+  assert.throws(
+    () => loop.assertImagesAllowedForSubmission({
+      text: 'too many',
+      images: [
+        makeImageAttachmentRef({ id: 'img-1', ownerSessionId: 's1' }),
+        makeImageAttachmentRef({ id: 'img-2', ownerSessionId: 's1' }),
+        makeImageAttachmentRef({ id: 'img-3', ownerSessionId: 's1' }),
+      ],
+    }),
+    (error: unknown) =>
+      error instanceof TurnImageBlockError
+        && error.imageInputBlock === 'too-many-images'
+        && /3 images/.test(error.message)
+        && /at most 2 per request/.test(error.message),
+  )
+  assert.equal(records.length, 0)
+})
+
+test('a mid-run model switch drops the usage baseline and re-estimates with image tokens', async () => {
+  resetAutoCompactFailureState()
+  const historyImage = makeImageAttachmentRef({
+    id: 'img-big',
+    ownerSessionId: 's1',
+    width: 2000,
+    height: 2000,
+  })
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'what is this',
+      images: [historyImage],
+      turnId: 'turn-old',
+      createdAt: '2026-09-08T00:00:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'old-assistant',
+      role: 'assistant',
+      content: 'an earlier answer',
+      turnId: 'turn-old',
+      createdAt: '2026-09-08T00:00:01.000Z',
+    },
+  ]
+  let primaryCalls = 0
+  const primaryProvider: ModelProvider = {
+    name: 'primary',
+    // Text-only: the historical image leaves this request as a placeholder.
+    async createMessage() {
+      primaryCalls += 1
+      if (primaryCalls === 1) {
+        return {
+          content: '',
+          toolCalls: [{ id: 'call-1', name: 'Probe', input: {} }],
+          // Tiny reported usage: the baseline reuse path would keep the next
+          // estimate far below the compact threshold.
+          usage: { inputTokens: 50, cacheReadInputTokens: 0, outputTokens: 1 },
+        }
+      }
+      throw new FallbackTriggeredError(new Error('529 overloaded'), 3)
+    },
+  }
+  let fallbackCalls = 0
+  const fallbackProvider: ModelProvider = {
+    name: 'fallback',
+    async createMessage(request) {
+      fallbackCalls += 1
+      const isCompactRequest = (request.contextItems ?? []).some(
+        (item) => item.kind === 'message' && item.message.id === 'compact-request',
+      )
+      if (isCompactRequest) return { content: 'compact summary', toolCalls: [] }
+      return { content: 'done after fallback', toolCalls: [] }
+    },
+  }
+  const tools: Tool[] = [testTool('Probe')]
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider: primaryProvider,
+    model: 'text-only-model',
+    modelKey: 'primary',
+    contextWindow: 35_000,
+    fallbackModel: {
+      provider: fallbackProvider,
+      model: 'capable-fallback',
+      modelKey: 'fallback',
+      providerName: 'fallback',
+      supportsImageInput: true,
+      contextWindow: 35_000,
+    },
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's16-baseline', readFiles: new Set() },
+    // Threshold 2000: the projected text-only request stays below it, but the
+    // capable fallback's request (with the image's ~5.3k estimated tokens)
+    // crosses it — but only when the baseline is dropped and the records are
+    // re-counted.
+    contextManagement: { contextWindow: 35_000 },
+    recordStream: recordStreamFor(records),
+  })
+
+  const response = await loop.run({ text: 'look again' })
+  assert.equal(response.content, 'done after fallback')
+  assert.equal(primaryCalls, 2)
+  assert.equal(fallbackCalls, 2, 'compact summary plus the final request')
+
+  // The re-estimate crossed the threshold, so the turn compacted — with the
+  // stale baseline the estimate would have stayed near 51 tokens.
+  assert.ok(
+    records.some((record) => record.type === 'compact_boundary'),
+    'the model switch forced a full re-count that crossed the compact threshold',
+  )
+  // The projection never touches what was persisted.
+  const persistedOld = records.find((record) => record.id === 'old-user')
+  assert.deepEqual(persistedOld?.type === 'message' ? persistedOld.images : undefined, [historyImage])
+  resetAutoCompactFailureState()
+})
+

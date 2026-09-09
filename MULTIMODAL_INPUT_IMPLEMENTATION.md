@@ -94,7 +94,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S13 | TUI 图片剪贴板采集（三平台） | S08 | 中 | `[x]` |
 | S14 | TUI 路径粘贴、附件列表与 `/paste-image` | S13 | 中 | `[x]` |
 | S15 | 当前轮/历史轮判定与历史降级投影 | S06 | 长 | `[x]` |
-| S16 | `mediaStrip` 数量限制与图像 token 预算 | S15 | 中 | `[ ]` |
+| S16 | `mediaStrip` 数量限制与图像 token 预算 | S15 | 中 | `[x]` |
 | S17 | Anthropic payload 图像映射 | S16, S05 | 中 | `[ ]` |
 | S18 | OpenAI payload 图像映射与工具图片合成消息 | S16, S05 | 中 | `[ ]` |
 | S19 | 发送前最终校验与日志遮蔽 | S17, S18 | 中 | `[ ]` |
@@ -605,7 +605,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S16 `[ ]` `mediaStrip` 数量限制与图像 token 预算
+## S16 `[x]` `mediaStrip` 数量限制与图像 token 预算
 
 **前置**：S15 · **规模**：中 · **设计稿**：§8、§11.2
 **涉及**：`src/harness/mediaStrip.ts`、`src/prompts/budget.ts`、`src/harness/usage.ts`
@@ -622,6 +622,16 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：测试覆盖「最旧优先省略」「当前图不被丢弃」「适配器更低限额生效」；带图消息 token 明显区别于纯文本；缓存在上述五种变化后失效重算。
 **验证**：`node --import tsx --test test/paneBudget.test.ts` + 新增 `test/mediaStrip.test.ts`
 **提交**：`checkpoint: S16 enforce media cap and account for image tokens`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- **前置说明**：本文件中第一个 `[ ]` 仍是 S11（前置 S19 未完成、§1.1 建议 S15–S19 先行），按 S14/S15 确立的「前置全部满足」顺序执行 S16（前置 S15 已完成）。
+- 工作项 1–2（mediaStrip 落实）：`stripExcessMediaItems` 由 no-op 变为真正的数量限制，仍是唯一入口。调用点按设计稿 §11.1 的顺序（投影在预算之前）从 `requestPrep` 挪到 `loadPreparedRecords` 中 `projectTurnImagesForRequest` **之后**——纯文本模型的全部历史图已被投影成占位符，计数预算只花在真正会发送的图上；requestPrep 中原 no-op 调用移除（该层不知轮次身份与适配器限额，留在原位要么成为第二入口要么漏判）。超额省略次序：最早的历史图 → 本轮工具图（历史全部耗尽后才轮到）→ 本轮用户输入图**永不省略**，输入自身超额直接 `TurnImageBlockError('too-many-images')` 阻止（`TurnImageBlockReason` 相应扩展，对应设计稿 §11.1「仅当前输入就超限时拒绝发送，不静默丢当前图片」）。轮次身份复用 S15 的规则：`recordIsCurrentTurn` 自 turnImages 导出，mediaStrip 与能力投影共用同一判定，「新图」不会两处含义不同。适配器限额经新增可选方法 `ModelProvider.maxImagesPerRequest?()` 声明（两个现存适配器首版均不声明——机制按 S02 先例预留，测试用假 provider 钉住），`resolveMaxMediaItems` 单点取 `min(本地 100, 适配器值)`，垃圾值降级不反转规则。诊断信息（省略几张、每张的 recordId/refId/name、是否历史）与 `(cap × 保留集合)` signature 一并返回；新流事件 `media_limit_notice`（纯文本、可 structuredClone、经既有 stream 通道原样过线）按 signature 去重——同一 (cap, kept set) 状态跨工具步骤只提示一次，TUI 渲染为 system 行（desktop 对未知流事件安全忽略）。占位符沿用 S15 的诚实措辞（`[Historical image omitted to stay within the N-image request limit: … The pixels are not present in this request.]`，本轮工具图省略去掉 Historical 限定词），纯投影不动 JSONL 与缓存文件，同一上限内的后续请求自动恢复像素。同一附件在多条记录出现按**出现**计数与省略（旧出现先走），同记录多图可部分省略、全省略时 `images` 键整体移除。
+- 工作项 3–4（图像 token 估算）：新增纯模块 `src/media/imageTokens.ts`（「涉及文件」之外的新文件；只引用 media/types，renderer/prompts/config 均可安全引用）。四种策略：`anthropic`（文档公式 `(w×h)/750`）、`openai`（高细节分块公式 `85 + 170×tiles`，含 2048/768 两步缩放；首版不发 `detail`、auto 对大图取高细节，故按高细节估算）、`conservative`（两公式取大，刻意上界，经 `imageTokenEstimateIsApproximate` / `describeImageTokenStrategy` 标注「approximate」并在 debug 日志 `[hanekawa][image-tokens]` 中现形——不把某厂商像素公式宣称为通用精确成本）、`none`（纯文本模型：像素被投影为占位符，图像 token 为 0）。`resolveImageTokenStrategy(providerName, supportsImageInput)` 单点解析：能力优先（不 capable 即 none），已知 provider 用自家公式，未知自定义模型保守估算。估算只读 ref 的发送尺寸——测试钉住「成本与文件名/路径长度无关」，全链路无任何对 Base64 调 `countTextTokens` 的路径。
+- 工作项 5（覆盖点与缓存失效）：`countMessageTokens` / `countMessagesTokens` / `countContextItemTokens` / `countSessionRecordTokens` / `countSessionRecordsTokens` 全部带可选策略参数（缺省 conservative，任何不知模型的调用点也不会低估），message 与 tool_result 分支计入图像 token。`_tokens` 缓存语义明确为**文本缓存**：读取时在其上现算图像 token（纯算术、随当次策略变化），旧会话/旧模型下写入的纯文本缓存永远不会被当成完整计数直接沿用——这一结构性修复覆盖五种变化情形，无需逐情形失效；requestPrep 的 `getToolResultTokens` 同步收敛为直接委托 budget 计数器（自带的缓存读取分支删除，单一来源）。usage 基线（`lastResponseTokenCount`）失效：**模型切换/能力变化**——`resetModelRequestState` 扩展为同时清基线（syncRoleModel、retryPrimary、fallback 激活三处既有调用自动覆盖，能力随模型解析）；**历史省略/能力翻转/限额变化**——`loadPreparedRecords` 每次把 `(投影 signature × strip signature)` 与上次比较，变化即置 `imageRequestStateChanged`，runInternal 在压缩检查前消费并丢弃基线强制全量重算（两处调用点：迭代内与 retry-primary 重载后）；**compact** 沿用既有 `!compactResult.compacted`。服务端真实 usage 仍是消费统计依据（基线是它的投影，只在上下文仍匹配时复用）。
+- 工作项 6（budget 纯度）：`prompts/budget.ts` 只新增对纯模块 `media/imageTokens` 的引用（元数据进、数字出，不读文件、不加载图像库、不依赖 harness 实现层）；策略的精确透传只发生在 loop 知道模型的三处（requestPrep options、progressiveCompact、autoCompactIfNeeded 输入各新增可选 `imageTokenStrategy` 字段），无模型知识的调用点（protocol host 占用估计、sessionMemory、AgentTool fork 预载）缺省 conservative——宁可高估早压缩，绝不低估。上下文占用分母 `getContextBudget().usableContextWindow` 未动。`src/harness/usage.ts` 经核对无需改动：usage/成本投影走 response.usage，图像 token 的真实成本自然包含其中。
+- 测试：新增 `test/imageTokens.test.ts` 13 项（两厂商公式逐值钉住含缩放步骤、conservative=max、none=0、垃圾尺寸不为 NaN、策略解析矩阵、approximate 标注、带图消息 token 显著高于纯文本、成本与路径长度无关、contextItem 双分支、`_tokens` 文本缓存+现算图像（旧缓存与策略切换两态）、聚合一致性）；`test/mediaStrip.test.ts` 11 项（cap 解析六态、cap 内恒等引用、最旧历史优先+占位符逐字+键移除、纯投影零突变、同记录多图部分省略、同 ref 双出现按出现省略、本轮工具图仅在历史耗尽后省略+措辞区分、输入自身超额阻止、无轮次即全历史、诊断与通知文案、cap 0 空请求）；`test/loop.test.ts` +4（适配器更低限额端到端——provider 请求恰带 cap 张、最旧省略、JSONL 原样、`media_limit_notice` 恰一次且 capability 通知不误发；本地 100 上限端到端（102 张 → 省 2 保 100）；提交门槛——限额内放行、超额零记录阻止、文案含数量与出路；基线失效可观测——text-only primary 小 usage 基线 + fallback 切到 capable 后全量重算跨过阈值触发 compact_boundary，旧基线复用则不会压缩）。
+- 验证：窄测 `mediaStrip`+`imageTokens`（24）/`loop`（58）全绿；邻接套件 `paneBudget`/`requestPrep`/`compact`/`progressiveCompact`/`loopAbort`/`sessionController`/`turnImages`/`messageQueue`/`toolRunner`/`contextBuilder`（173）、`protocolHost`/`desktopMain`/`desktopUiRoundTrip`/`desktopShellHost`/`sessions`/`agentTool`/`sessionMemory`（303）、`protocolWire`/`protocolClientParity`/`protocolCommandSchema`/`protocolClient`/`rendererImports`（108）、TUI+prompts（80）、图像特性八件套（128）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3178 项 3176 过、1 跳过（既有）、1 失败——`toolcall-integration` 的 node:test IPC「deserialize cloned data」崩溃，S04/S10 已记录的运行器偶发问题，单独重跑 3 项全绿，与本会话改动无关（不触碰工具调用集成）。
 
 ---
 

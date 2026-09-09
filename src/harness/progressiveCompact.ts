@@ -1,10 +1,12 @@
 import {
+  countSessionRecordTokens,
   countSessionRecordsTokens,
   TIME_BASED_MC_GAP_THRESHOLD_MINUTES,
   TIME_BASED_MC_KEEP_RECENT,
   type ContextManagementConfig,
 } from '../prompts/budget.js'
 import type { SessionRecord } from './types.js'
+import type { ImageTokenStrategy } from '../media/imageTokens.js'
 import { getRecordsAfterLastCompact } from './requestPrep.js'
 
 export interface ProgressiveCompactInput {
@@ -14,6 +16,8 @@ export interface ProgressiveCompactInput {
   lastResponseTokenCount?: number
   lastResponseRecordId?: string
   lastResponseRecordCount?: number
+  /** Image-token strategy of the model serving the request being sized. */
+  imageTokenStrategy?: ImageTokenStrategy
   now?: Date
 }
 
@@ -48,16 +52,25 @@ export function applyProgressiveCompaction(input: ProgressiveCompactInput): Prog
 
 export function estimateCurrentTokens(input: ProgressiveCompactInput): number {
   if (input.lastResponseTokenCount === undefined) {
-    return countSessionRecordsTokens(getRecordsAfterLastCompact(input.records), input.system)
+    return countSessionRecordsTokens(
+      getRecordsAfterLastCompact(input.records),
+      input.system,
+      input.imageTokenStrategy,
+    )
   }
 
   const pendingTokens = countPendingRecordTokens(
     input.records,
     input.lastResponseRecordId,
     input.lastResponseRecordCount,
+    input.imageTokenStrategy,
   )
   if (pendingTokens === undefined) {
-    return countSessionRecordsTokens(getRecordsAfterLastCompact(input.records), input.system)
+    return countSessionRecordsTokens(
+      getRecordsAfterLastCompact(input.records),
+      input.system,
+      input.imageTokenStrategy,
+    )
   }
   return input.lastResponseTokenCount + pendingTokens
 }
@@ -138,6 +151,7 @@ function countPendingRecordTokens(
   records: SessionRecord[],
   lastResponseRecordId?: string,
   lastResponseRecordCount?: number,
+  imageTokenStrategy?: ImageTokenStrategy,
 ): number | undefined {
   if (lastResponseRecordId === undefined && lastResponseRecordCount === undefined) return 0
 
@@ -151,7 +165,7 @@ function countPendingRecordTokens(
       skippedResponseMessage = true
       return sum
     }
-    return sum + countSessionRecordsTokens([record])
+    return sum + countSessionRecordTokens(record, imageTokenStrategy)
   }, 0)
 }
 

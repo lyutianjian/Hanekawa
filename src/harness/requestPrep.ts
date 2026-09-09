@@ -3,8 +3,8 @@ import {
   getEffectiveContextWindowSize,
   type ContextManagementConfig,
 } from '../prompts/budget.js'
+import type { ImageTokenStrategy } from '../media/imageTokens.js'
 import type { SessionRecord, ToolResultRecord, TokenUsage } from './types.js'
-import { stripExcessMediaItems } from './mediaStrip.js'
 import { repairToolResultPairing } from '../sessions/invariants.js'
 import { snipLargeToolResults } from './compact.js'
 
@@ -30,6 +30,8 @@ export interface PreparedRecordsResult {
 export interface RequestPrepOptions {
   repairToolPairing?: boolean
   recentAssistantThinkingTurnsToKeep?: number
+  /** Image-token strategy of the model serving this request (design §11.2). */
+  imageTokenStrategy?: ImageTokenStrategy
 }
 
 export function requestTokenCountFromUsage(usage?: TokenUsage): number | undefined {
@@ -55,18 +57,25 @@ export function prepareRecordsForRequestWithDiagnostics(
 ): PreparedRecordsResult {
   const requestVisibleRecords = records.filter((record) => record.type !== 'subagent_transcript')
   const recordsAfterCompact = getRecordsAfterLastCompact(requestVisibleRecords)
-  const stripped = stripExcessMediaItems(recordsAfterCompact)
+  // The media-count cap runs after the capability projection in the loop
+  // (design §11.1: projection before budget), on the model actually serving
+  // the request — see `loadPreparedRecords` and `mediaStrip.ts`.
   const thinkingStripped = stripThinkingBlocksFromAssistantMessages(
-    stripped,
+    recordsAfterCompact,
     options.recentAssistantThinkingTurnsToKeep,
   )
   const toolResultLimit = getToolResultTokenLimit(contextManagement)
-  const compactedToolResultIds = selectToolResultsToCompact(thinkingStripped, toolResultLimit, now)
+  const compactedToolResultIds = selectToolResultsToCompact(
+    thinkingStripped,
+    toolResultLimit,
+    now,
+    options.imageTokenStrategy,
+  )
 
   const budgetCompacted = thinkingStripped.map((record) => {
     if (record.type !== 'tool_result') return record
     if (!compactedToolResultIds.has(record.id)) return record
-    const tokens = getToolResultTokens(record)
+    const tokens = getToolResultTokens(record, options.imageTokenStrategy)
     return compactToolResult(record, tokens)
   })
 
@@ -135,7 +144,12 @@ function getToolResultTokenLimit(
   )
 }
 
-function selectToolResultsToCompact(records: SessionRecord[], toolResultLimit: number, now: Date): Set<string> {
+function selectToolResultsToCompact(
+  records: SessionRecord[],
+  toolResultLimit: number,
+  now: Date,
+  imageTokenStrategy?: ImageTokenStrategy,
+): Set<string> {
   void now
   const candidates: ToolResultCandidate[] = []
   for (let index = records.length - 1; index >= 0; index--) {
@@ -143,7 +157,7 @@ function selectToolResultsToCompact(records: SessionRecord[], toolResultLimit: n
     if (record?.type === 'tool_result') {
       candidates.push({
         record,
-        tokens: getToolResultTokens(record),
+        tokens: getToolResultTokens(record, imageTokenStrategy),
       })
     }
   }
@@ -163,14 +177,14 @@ function selectToolResultsToCompact(records: SessionRecord[], toolResultLimit: n
     .reverse()
 
   for (const candidate of unprotectedCandidates) {
-    totalTokens = compactCandidate(candidate, compactedIds, totalTokens)
+    totalTokens = compactCandidate(candidate, compactedIds, totalTokens, imageTokenStrategy)
     if (totalTokens <= toolResultLimit) return compactedIds
   }
 
   if (totalTokens > toolResultLimit) {
     for (const candidate of [...candidates].reverse()) {
       if (compactedIds.has(candidate.record.id)) continue
-      totalTokens = compactCandidate(candidate, compactedIds, totalTokens)
+      totalTokens = compactCandidate(candidate, compactedIds, totalTokens, imageTokenStrategy)
       if (totalTokens <= toolResultLimit) break
     }
   }
@@ -178,16 +192,25 @@ function selectToolResultsToCompact(records: SessionRecord[], toolResultLimit: n
   return compactedIds
 }
 
-function compactCandidate(candidate: ToolResultCandidate, compactedIds: Set<string>, totalTokens: number): number {
+function compactCandidate(
+  candidate: ToolResultCandidate,
+  compactedIds: Set<string>,
+  totalTokens: number,
+  imageTokenStrategy?: ImageTokenStrategy,
+): number {
   compactedIds.add(candidate.record.id)
   return totalTokens
     - candidate.tokens
-    + getToolResultTokens(compactToolResult(candidate.record, candidate.tokens))
+    + getToolResultTokens(compactToolResult(candidate.record, candidate.tokens), imageTokenStrategy)
 }
 
-function getToolResultTokens(record: ToolResultRecord): number {
-  if (typeof record._tokens === 'number') return record._tokens
-  return countSessionRecordTokens(record)
+/**
+ * One source for a tool result's cost: the budget counter, which folds the
+ * text `_tokens` cache together with live image-token arithmetic so a stale
+ * cache can never read as the whole count.
+ */
+function getToolResultTokens(record: ToolResultRecord, imageTokenStrategy?: ImageTokenStrategy): number {
+  return countSessionRecordTokens(record, imageTokenStrategy)
 }
 
 export function compactToolResult(record: ToolResultRecord, tokens: number): ToolResultRecord {

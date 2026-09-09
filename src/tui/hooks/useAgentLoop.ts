@@ -175,6 +175,17 @@ export function useAgentLoop({
           createdAt: new Date().toISOString(),
         })
         return
+      case 'media_limit_notice':
+        // The loop omitted the oldest images to keep the request within its
+        // image-count cap (design §11.1). Same system-line treatment as the
+        // capability notice; the loop dedupes per (cap, kept set) state.
+        appendStaticItem({
+          kind: 'system',
+          id: randomUUID(),
+          content: event.message,
+          createdAt: new Date().toISOString(),
+        })
+        return
       default:
         setStreamMode('responding')
         return

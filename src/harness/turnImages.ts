@@ -34,7 +34,10 @@ export interface AttachmentFactsResolver {
   ): Promise<{ ok: true; facts: AttachmentFacts } | { ok: false }>
 }
 
-export type TurnImageBlockReason = Extract<ImageInputErrorReason, 'model-not-capable' | 'file-missing'>
+export type TurnImageBlockReason = Extract<
+  ImageInputErrorReason,
+  'model-not-capable' | 'file-missing' | 'too-many-images'
+>
 
 /** A submission or request was stopped because its new images cannot be sent. */
 export class TurnImageBlockError extends Error {
@@ -96,7 +99,13 @@ export async function assertCurrentImagesAvailable(
   )
 }
 
-function recordIsCurrentTurn(
+/**
+ * Whether a record belongs to the run in flight — by message ID or turn ID,
+ * never by array position. The identity rule behind every current/historical
+ * image decision; the media-count cap (`mediaStrip.ts`) shares it so "new" and
+ * "protected" cannot mean different things in the two checks.
+ */
+export function recordIsCurrentTurn(
   record: Pick<SessionRecord, 'id'> & { turnId?: string },
   currentTurnId: string,
   currentUserMessageId?: string,
@@ -261,7 +270,8 @@ function projectionSignature(
   ].join('|')
 }
 
-function appendPlaceholderBlocks(content: string, blocks: readonly string[]): string {
+/** Appends placeholder blocks after existing text; empty text keeps just them. */
+export function appendPlaceholderBlocks(content: string, blocks: readonly string[]): string {
   const addition = blocks.join('\n\n')
   return content.trim().length === 0 ? addition : `${content}\n\n${addition}`
 }

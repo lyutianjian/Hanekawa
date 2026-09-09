@@ -7,7 +7,7 @@ import { z } from 'zod/v3'
 import { AgentLoop } from '../src/harness/loop.js'
 import { displayCacheSource } from '../src/harness/cacheBreakDetection.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
-import { PermissionGate } from '../src/harness/permissions.js'
+import { PermissionGate, type PermissionMode } from '../src/harness/permissions.js'
 import { PlanModeManager } from '../src/harness/planModeManager.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
 import { createAgentTool } from '../src/tools/AgentTool/AgentTool.js'
@@ -19,7 +19,7 @@ import { getAutoCompactThreshold } from '../src/prompts/budget.js'
 import type { SessionMetricInput } from '../src/harness/metrics.js'
 import type { RecordStream } from '../src/harness/recordStream.js'
 import type { ModelProvider, ModelRequest, ModelStreamEvent, SessionRecord, Tool } from '../src/harness/types.js'
-import { TurnImageBlockError } from '../src/harness/turnImages.js'
+import { FallbackNotApplicableForImagesError, TurnImageBlockError } from '../src/harness/turnImages.js'
 import { FallbackTriggeredError } from '../src/config/retry.js'
 import { resetAutoCompactFailureState } from '../src/harness/compact.js'
 import { fixtureImagePath, loadFixtureBytes, makeImageAttachmentRef } from './helpers/imageFixtures.js'
@@ -737,6 +737,126 @@ test('plan mode reports the plan model image capability, not the primary label i
     clearAllPlanSlugs()
     await rm(cwd, { recursive: true, force: true })
   }
+})
+
+test('plan routing gates new images on the plan model, before any record exists', async () => {
+  const records: SessionRecord[] = []
+  let primaryCalls = 0
+  let planCalls = 0
+  const primaryProvider: ModelProvider = {
+    name: 'primary',
+    async createMessage() {
+      primaryCalls += 1
+      return { content: 'primary answered', toolCalls: [] }
+    },
+  }
+  const planProvider: ModelProvider = {
+    name: 'plan',
+    async createMessage() {
+      planCalls += 1
+      return { content: 'plan answered', toolCalls: [] }
+    },
+  }
+  let mode: PermissionMode = 'plan'
+  const loop = new AgentLoop({
+    provider: primaryProvider,
+    model: 'capable-primary',
+    modelKey: 'primary',
+    // The input bar names this image-capable primary even in plan mode.
+    supportsImageInput: true,
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: new ToolRunner([], new PermissionGate(async () => true), {
+      onRecord: async (record) => { records.push(record) },
+    }),
+    toolContext: { cwd: process.cwd(), sessionId: 's21-plan', readFiles: new Set() },
+    permissionMode: () => mode,
+    planModel: {
+      provider: planProvider,
+      model: 'text-only-plan',
+      modelKey: 'plan',
+      providerName: 'plan',
+    },
+    recordStream: recordStreamFor(records),
+  })
+
+  const ref = makeImageAttachmentRef({ id: 'img-plan', ownerSessionId: 's21-plan', name: 'shot.png' })
+
+  // Layer 1: the capability the UI reads follows the model that will serve the
+  // request, so the composer refuses the attachment instead of offering it.
+  assert.equal(loop.getActiveModel().supportsImageInput, undefined)
+  // Layer 2: the submission gate names the plan model, not the primary.
+  assert.throws(
+    () => loop.assertImagesAllowedForSubmission({ text: 'look', images: [ref] }),
+    (error: unknown) => {
+      assert.ok(error instanceof TurnImageBlockError)
+      assert.equal(error.imageInputBlock, 'model-not-capable')
+      assert.match(error.message, /text-only-plan/)
+      return true
+    },
+  )
+  await assert.rejects(
+    loop.run({ text: 'look', images: [ref] }),
+    (error: unknown) => error instanceof TurnImageBlockError,
+  )
+  assert.equal(records.length, 0, 'nothing is recorded for a submission blocked by plan routing')
+  assert.equal(primaryCalls + planCalls, 0)
+
+  // Leaving plan mode re-resolves against the primary, with no new runtime.
+  mode = 'default'
+  assert.equal(loop.getActiveModel().supportsImageInput, true)
+  loop.assertImagesAllowedForSubmission({ text: 'look', images: [ref] })
+})
+
+test('a temporary model override decides image capability for the run it covers', async () => {
+  const records: SessionRecord[] = []
+  const capableProvider: ModelProvider = {
+    name: 'capable',
+    async createMessage() {
+      return { content: 'ok', toolCalls: [] }
+    },
+  }
+  const overrideProvider: ModelProvider = {
+    name: 'override',
+    async createMessage() {
+      throw new Error('the override request must be blocked before it is sent')
+    },
+  }
+  const loop = new AgentLoop({
+    provider: capableProvider,
+    model: 'capable-primary',
+    modelKey: 'primary',
+    supportsImageInput: true,
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: new ToolRunner([], new PermissionGate(async () => true), {
+      onRecord: async (record) => { records.push(record) },
+    }),
+    toolContext: { cwd: process.cwd(), sessionId: 's21-override', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  const ref = makeImageAttachmentRef({ id: 'img-ovr', ownerSessionId: 's21-override', name: 'shot.png' })
+  const overrides = {
+    model: {
+      provider: overrideProvider,
+      model: 'text-only-override',
+      modelKey: 'override',
+      providerName: 'override',
+    },
+  }
+
+  await assert.rejects(
+    loop.run({ text: 'look', images: [ref] }, undefined, undefined, overrides),
+    (error: unknown) => {
+      assert.ok(error instanceof TurnImageBlockError)
+      assert.match(error.message, /text-only-override/)
+      return true
+    },
+  )
+  assert.equal(records.length, 0)
+  // Without the override the same input goes through on the primary.
+  assert.equal((await loop.run({ text: 'look', images: [ref] })).content, 'ok')
 })
 
 test('plan mode approval reminder is last context and ExitPlanMode is not summarized', async () => {
@@ -3262,7 +3382,7 @@ test('a text-only model projects historical images as text and notifies once per
   }
 })
 
-test('a mid-run fallback to a text-only model still blocks the new images', async () => {
+test('an automatic fallback to a text-only model does not apply to a turn with new images', async () => {
   const records: SessionRecord[] = []
   let providerCalls = 0
   const primaryProvider: ModelProvider = {
@@ -3304,12 +3424,95 @@ test('a mid-run fallback to a text-only model still blocks the new images', asyn
   // fallback switch must not buy a degradation by making the images look old.
   await assert.rejects(
     loop.run({ text: 'look at this', images: [ref] }),
-    (error: unknown) =>
-      error instanceof TurnImageBlockError && error.imageInputBlock === 'model-not-capable',
+    (error: unknown) => {
+      assert.ok(error instanceof FallbackNotApplicableForImagesError)
+      assert.equal(error.imageInputBlock, 'model-not-capable')
+      // The outage that asked for the fallback survives — replacing it with
+      // only the image reason would misreport why the turn failed.
+      assert.match(error.message, /529 overloaded/)
+      assert.equal((error.cause as Error).message, '529 overloaded')
+      assert.match(error.message, /text-only-fallback/)
+      assert.deepEqual(error.images, [ref])
+      return true
+    },
   )
+  // One primary attempt and no fallback attempt: refusing to switch is also
+  // what stops the same incompatible target being retried in a loop.
   assert.equal(providerCalls, 1)
   const user = records.find((record) => record.type === 'message' && record.role === 'user')
   assert.deepEqual(user?.type === 'message' ? user.images : undefined, [ref])
+})
+
+test('an automatic fallback to a text-only model still applies when only history carries images', async () => {
+  const oldImage = makeImageAttachmentRef({ id: 'img-hist', ownerSessionId: 's1', name: 'old.png' })
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'first shot',
+      images: [oldImage],
+      turnId: 'turn-old',
+      createdAt: '2026-09-09T00:00:00.000Z',
+    },
+  ]
+  let primaryCalls = 0
+  const primaryProvider: ModelProvider = {
+    name: 'primary',
+    async createMessage() {
+      primaryCalls += 1
+      throw new FallbackTriggeredError(new Error('529 overloaded'), 3)
+    },
+  }
+  const fallbackRequests: ModelRequest[] = []
+  const fallbackProvider: ModelProvider = {
+    name: 'fallback',
+    async createMessage(request) {
+      fallbackRequests.push(request)
+      return { content: 'answered without pixels', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const streamEvents: ModelStreamEvent[] = []
+  const loop = new AgentLoop({
+    provider: primaryProvider,
+    model: 'capable-model',
+    modelKey: 'primary',
+    supportsImageInput: true,
+    fallbackModel: {
+      provider: fallbackProvider,
+      model: 'text-only-fallback',
+      modelKey: 'fallback',
+      providerName: 'fallback',
+    },
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    attachmentFacts: {
+      resolveAttachmentFacts: async (ref) => ({
+        ok: true,
+        facts: { originalWidth: 800, originalHeight: 600, localPath: `C:/cache/${ref.id}/original.png` },
+      }),
+    },
+    onStreamEvent: (event) => { streamEvents.push(event) },
+  })
+
+  const result = await loop.run({ text: 'and now in words' })
+
+  assert.equal(result.content, 'answered without pixels')
+  assert.equal(primaryCalls, 1)
+  assert.equal(fallbackRequests.length, 1, 'history-only images do not stop the fallback')
+  assert.equal(fallbackRequests[0].imageBytes, undefined)
+  const degraded = fallbackRequests[0].messages.find((message) =>
+    message.content.includes('Historical image omitted for this text-only model'))
+  assert.ok(degraded, 'the history degrades to a placeholder rather than blocking the turn')
+  assert.equal(degraded.images, undefined)
+  const notice = streamEvents.find((event) => event.type === 'image_capability_notice')
+  assert.ok(notice, 'the user is told why the history is not visible to the fallback model')
 })
 
 

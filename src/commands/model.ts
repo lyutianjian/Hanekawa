@@ -45,6 +45,10 @@ export const modelCommand: CommandDefinition = {
 
     context.clearCachedSections?.()
     const model = result?.ok ? result.model : { key: newModel, model: newModel, providerName: 'unknown' }
-    context.writeLine(`Model set to: ${model.key} (${model.providerName}: ${model.model})`)
+    const lines = [`Model set to: ${model.key} (${model.providerName}: ${model.model})`]
+    // Reported, not asked: the switch already happened, and images in the
+    // conversation only change how the next request is built (design §9.1).
+    if (result?.ok && result.notice) lines.push(result.notice)
+    context.writeLine(lines.join('\n'))
   },
 }

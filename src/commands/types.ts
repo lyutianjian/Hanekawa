@@ -35,7 +35,13 @@ export interface CommandModelInfo {
 }
 
 export type SetModelResult =
-  | { ok: true; model: CommandModelInfo }
+  /**
+   * `notice` is informational only — a manual switch is never refused because
+   * of images already in the conversation (design §9.1). It describes what the
+   * new model will do with them, and callers render it next to the success
+   * line rather than as a confirmation prompt.
+   */
+  | { ok: true; model: CommandModelInfo; notice?: string }
   | { ok: false; message: string; availableModels?: string[] }
 
 export interface CommandSubagentDetails {

@@ -99,7 +99,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S18 | OpenAI payload 图像映射与工具图片合成消息 | S16, S05 | 中 | `[x]` |
 | S19 | 发送前最终校验与日志遮蔽 | S17, S18 | 中 | `[x]` |
 | S20 | 消息队列持久化与交接改造 | S19, S11 | 长 | `[x]` |
-| S21 | 模型切换、fallback 与 plan 路由 | S15, S02 | 中 | `[ ]` |
+| S21 | 模型切换、fallback 与 plan 路由 | S15, S02 | 中 | `[x]` |
 | S22 | compact 与历史清理的图像投影 | S15, S16 | 长 | `[ ]` |
 | S23 | 子代理继承与会话生命周期附件归属 | S05, S06 | 中 | `[ ]` |
 | S24 | 错误分类与两端展示 | S09–S14, S19 | 中 | `[ ]` |
@@ -808,7 +808,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S21 `[ ]` 模型切换、fallback 与 plan 路由
+## S21 `[x]` 模型切换、fallback 与 plan 路由
 
 **前置**：S15、S02 · **规模**：中 · **设计稿**：§9.1
 **涉及**：`src/runtime/modelSwitch.ts`、`src/config/`（重试与 fallback）、`src/harness/planModeManager.ts`
@@ -830,6 +830,23 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：上表七种场景均有测试；fallback 不产生重试循环。
 **验证**：`node --import tsx --test test/modelSwitch.test.ts test/modelRouting.test.ts test/planMode.integration.test.ts test/planCacheIsolation.test.ts`
 **提交**：`checkpoint: S21 handle image capability across model switches`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- 表格七行按「已由 S15 覆盖 / 本会话新增」分两类。**已覆盖**：第 1 行（支持+新图正常发送，S17/S18 payload 测试）、第 2 行（不支持+新图提交前阻止，`assertNewImagesAllowed` 三道 gate）、第 3 行（不支持+仅历史图降级为占位符，`projectTurnImagesForRequest`）、第 4 行（切回支持图像的模型恢复发送——投影是纯请求投影，JSONL 与缓存文件未改；「已被摘要替代的旧轮次不重新展开」是 compact 的既有语义，本会话只在切换提示里明说）。**本会话新增**：第 5、6、7 行与「手动切换告知影响」。
+- 第 5 行（fallback 不适用）：`activateFallback` 的返回值从 `boolean` 改为 `'activated' | 'unavailable' | 'blocked-by-images'`——fallback 模型不支持图像且本轮有新图时返回第三态，**不切模型**。loop 的 catch 据此抛 `FallbackNotApplicableForImagesError`（`extends TurnImageBlockError`，reason 仍是 `model-not-capable`，所以既有的错误分类与 S24 的展示路径不受影响），message 里**同时**保留原始失败文本与图像不兼容原因，`cause` 指向 `FallbackTriggeredError.originalError`。「不对同一不兼容目标循环重试」由「压根不切」保证，不是靠计数器：primary 只被调一次，fallback provider 一次都不会被调。
+  - 改动前的行为是「先切到 fallback，再由下一次请求构建的投影抛 `TurnImageBlockError`」——阻止是对的，但原始 529 失败被丢掉了，用户只看到图像原因。原测试（`a mid-run fallback to a text-only model still blocks the new images`）改名为 `an automatic fallback to a text-only model does not apply to a turn with new images` 并补上「原失败被保留」的断言。
+  - 判定用的「本轮新图」直接取 `RequestImageProjection.newImages`（本会话给该结构新增的字段，就是投影里已经算好的 `current` 数组），存进 `AgentLoop.currentRequestNewImages`，每轮开头清空。这样「新图」在 fallback 判定与投影判定里不可能是两套规则；工具轮里 `Read` 产生的图片也自然算进来。
+- 第 6 行（fallback + 仅历史图）：不受新 gate 影响，照常切换并按历史策略降级 + 发 `image_capability_notice`，新增回归测试钉住。
+- 第 7 行（plan 路由 / 临时覆盖按实际请求模型判断）：新增 `AgentLoop.nextRoleModel()`——「下一次请求真正会用的模型」，与 `syncRoleModel` 共用同一份解析（fallback 生效中保持 fallback，否则 plan 模式取 `planModel`，其余取 primary），`requestModel` 再叠加临时覆盖。三处改为读它：
+  - `getActiveModel().supportsImageInput`：此前读 `activeModel`，而 `syncRoleModel` 只在 loop 迭代内跑，所以**轮次之间**处于 plan 模式时报的是 primary 的能力——两端 UI 会放行一张纯文本 plan 模型收不下的图。这正是设计稿第 7 行点名的「看输入栏原先显示的模型」。展示用的 `model` 标签仍按既有策略显示 primary，未改。
+  - `assertImagesAllowedForSubmission`（controller 在 turn-start 之前的预检）与 `runInternal` 里创建用户记录前的那道 gate：都改成按 `requestModel` 判断，因此 plan 路由下的阻止发生在**任何记录落盘之前**，草稿完整保留；错误文案里出现的是 plan 模型名。
+  - 代价是一个已知的保守边界：若 `planModeManager.beforeTurn()` 恰好在本轮排空一个 approve 请求而退出 plan 模式，这道预检会按 plan 模型多拦一次。宁可保守拦下并给出可操作提示，也不要放行到「用户记录已落盘再失败」。
+- 手动切换告知影响：`turnImages.ts` 新增 `collectImageRefsInRecords` 与 `describeModelSwitchImageImpact`（两个方向各一句话：切到纯文本模型说「N 张图改用文件路径、原图保留」，切回支持图像的模型说「重新发送、已被摘要替代的旧轮次不重新展开」；无图返回 `undefined`）。`activateModelKey` 成功后调它，能力取自**新 runtime 的 `loop.getActiveModel().supportsImageInput`**（即 S02 判定函数的结果），绝不按模型名猜。
+  - `SetModelResult` 的 ok 分支新增可选 `notice`。**历史图永远不阻止手动切换**——只是通知，不新增确认弹窗；发送前的再次校验仍由既有三道 gate 负责。
+  - 两端都覆盖：Desktop 的模型选择器走 `run-command /model <key>`（见 `surfaces.ts` 的注释），所以 `src/commands/model.ts` 把 notice 附在成功行下面即可同时覆盖 Desktop 与 TUI 的 `/model`；TUI 的 `ModelPickerDialog` 走 `App.tsx` 的 `activateModel`，那里单独把 notice 追加进系统消息。
+- 测试：`modelSwitch` +3（切纯文本模型不被拒且给出提示、切回支持图像的模型的提示、无图不提示；伪 `AgentSession` 补了 `loop.getActiveModel`）、`loop` +4（fallback 不适用并保留原失败、fallback 仅历史图仍生效、plan 路由三层 gate 且零记录 + 退出 plan 后自动恢复、临时覆盖决定本次运行的能力）、`commands` +1（`/model` 把 notice 打在成功行下一行）。
+- 验证：窄测 `modelSwitch`/`modelRouting`/`planMode.integration`/`planCacheIsolation`/`commands`/`loop`/`turnImages`（172）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3283 项 3282 过、1 跳过（既有）、0 失败。
 
 ---
 

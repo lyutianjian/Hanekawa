@@ -1,5 +1,6 @@
 import type { ConfigService } from '../config/service.js'
 import type { SessionRecord } from '../harness/types.js'
+import { describeModelSwitchImageImpact } from '../harness/turnImages.js'
 import type { SetModelResult } from '../commands/types.js'
 import type { SessionMeta } from '../sessions/service.js'
 import type { AgentSession } from './types.js'
@@ -54,6 +55,15 @@ export function activateModelKey(deps: ModelSwitchDeps, modelKey: string): SetMo
     deps.runtimeSlot.replace(nextRuntime)
     // Re-apply current effort, moved onto a level the new model supports.
     deps.runtimeSlot.reapplyEffort()
+    // History images never block a switch; they only change what the next
+    // request looks like, so the impact is reported and the switch stands
+    // (design §9.1). The capability comes off the new runtime's loop — the
+    // same resolution the request path uses — never a model-name guess.
+    const notice = describeModelSwitchImageImpact(
+      deps.getRecords(),
+      nextRuntime.loop.getActiveModel().supportsImageInput,
+      nextRuntime.modelConfig.model,
+    )
     return {
       ok: true,
       model: {
@@ -61,6 +71,7 @@ export function activateModelKey(deps: ModelSwitchDeps, modelKey: string): SetMo
         model: nextRuntime.modelConfig.model,
         providerName: nextRuntime.providerName,
       },
+      ...(notice ? { notice } : {}),
     }
   } catch (err) {
     return {

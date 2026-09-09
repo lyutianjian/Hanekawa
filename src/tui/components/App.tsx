@@ -626,10 +626,11 @@ export function App({
       return
     }
 
-    const message = `Model set to: ${result.model.key} (${result.model.providerName}: ${result.model.model})`
-    addSystemMessage(decision.action === 'set-default'
-      ? `${message}\nDefault model updated.`
-      : message)
+    const lines = [`Model set to: ${result.model.key} (${result.model.providerName}: ${result.model.model})`]
+    if (decision.action === 'set-default') lines.push('Default model updated.')
+    // Same image-impact notice `/model` prints; the picker is the other way in.
+    if (result.notice) lines.push(result.notice)
+    addSystemMessage(lines.join('\n'))
   }, [providerConfig, activateModel, addSystemMessage])
 
   const reloadAgentDefinitions = useCallback(async (): Promise<number> => {

@@ -6,6 +6,7 @@ import type { SessionRecord } from '../src/harness/types.js'
 import type { SessionMeta } from '../src/sessions/service.js'
 import type { RuntimeSlot } from '../src/runtime/runtimeSlot.js'
 import type { AgentSession } from '../src/runtime/types.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 /**
  * `/model` is a superset of the `set-model` host command: it also writes the
@@ -28,6 +29,9 @@ function createDeps(overrides: {
   availableModelKeys?: string[]
   resolveModelInput?: (input: string) => string | undefined
   createRuntimeThrows?: string
+  /** Capability of the runtime `createRuntime` hands back, per model key. */
+  supportsImageInput?: (modelKey: string) => boolean
+  records?: SessionRecord[]
 } = {}): { deps: ModelSwitchDeps; calls: Calls } {
   const calls: Calls = {
     created: [],
@@ -39,7 +43,7 @@ function createDeps(overrides: {
   }
 
   const session = { id: 'session-1' } as SessionMeta
-  const records: SessionRecord[] = [
+  const records: SessionRecord[] = overrides.records ?? [
     { type: 'message', id: 'm1', role: 'user', content: 'a', createdAt: 'now' },
     { type: 'message', id: 'm2', role: 'assistant', content: 'b', createdAt: 'now' },
   ]
@@ -76,7 +80,15 @@ function createDeps(overrides: {
           modelKey,
           modelConfig: { model: `${modelKey}-model` },
           providerName: 'anthropic',
-        } as AgentSession
+          // The switch reads image capability off the new runtime's loop --
+          // the same resolution the request path uses, never the model name.
+          loop: {
+            getActiveModel: () => ({
+              model: `${modelKey}-model`,
+              supportsImageInput: overrides.supportsImageInput?.(modelKey) ?? false,
+            }),
+          },
+        } as unknown as AgentSession
       },
       getSession: () => session,
       getRecords: () => records,
@@ -161,6 +173,62 @@ test('switchModel explains inherit rather than calling it unknown', () => {
 
   const other = switchModel(deps, 'sonnet-9')
   assert.ok(!other.ok && other.message.includes('Unknown model: sonnet-9'))
+})
+
+// --- image impact of a manual switch (S21, design §9.1) ----------------------
+
+/** A conversation carrying one image, as the switch sees it. */
+function recordsWithImage(): SessionRecord[] {
+  return [
+    {
+      type: 'message',
+      id: 'm1',
+      role: 'user',
+      content: 'what is this',
+      images: [makeImageAttachmentRef({ id: 'img-1', ownerSessionId: 'session-1', name: 'shot.png' })],
+      createdAt: 'now',
+    },
+    { type: 'message', id: 'm2', role: 'assistant', content: 'a screenshot', createdAt: 'now' },
+  ]
+}
+
+test('switching to a text-only model is allowed and reports what happens to the history', () => {
+  const { deps, calls } = createDeps({ records: recordsWithImage() })
+
+  const result = activateModelKey(deps, 'other')
+
+  // History never refuses a manual switch -- it only changes the next request.
+  assert.ok(result.ok)
+  assert.deepEqual(calls.replaced, ['other'])
+  assert.ok(result.notice)
+  assert.match(result.notice, /other-model does not accept images/)
+  assert.match(result.notice, /1 image in this conversation/)
+  assert.match(result.notice, /sent as file paths/)
+  assert.match(result.notice, /originals are kept/)
+})
+
+test('switching back to an image-capable model says the history is sent again', () => {
+  const { deps } = createDeps({
+    records: recordsWithImage(),
+    supportsImageInput: (modelKey) => modelKey === 'other',
+  })
+
+  const result = activateModelKey(deps, 'other')
+
+  assert.ok(result.ok && result.notice)
+  assert.match(result.notice, /will be sent again/)
+  // Old turns a summary already replaced are not re-expanded, and saying so
+  // is the difference between "restored" and "restored where it still exists".
+  assert.match(result.notice, /not re-expanded/)
+})
+
+test('a conversation with no images gets no image notice', () => {
+  const { deps } = createDeps()
+
+  const result = switchModel(deps, 'other')
+
+  assert.ok(result.ok)
+  assert.equal(result.notice, undefined)
 })
 
 test('a failed config save does not turn a live switch into a failure', async () => {

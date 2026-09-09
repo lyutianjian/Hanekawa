@@ -192,6 +192,24 @@ test('/model with args delegates model switching', async () => {
   assert.match(output, /Model set to: openai-compatible \(openai: deepseek-chat\)/)
 })
 
+test('/model prints the image-impact notice under the success line', async () => {
+  let output = ''
+  await modelCommand.run('text-only', createContext({
+    writeLine: (message) => {
+      output = message
+    },
+    setModel: (model) => ({
+      ok: true,
+      model: { key: model, providerName: 'openai', model: 'text-only-model' },
+      notice: 'text-only-model does not accept images: the 2 images in this conversation will be sent as file paths instead.',
+    }),
+  }))
+
+  // Reported, never a second confirmation: the switch already happened.
+  assert.match(output, /^Model set to: text-only \(openai: text-only-model\)\n/)
+  assert.match(output, /2 images in this conversation/)
+})
+
 test('/model reports available models when switch target is unknown', async () => {
   let output = ''
   let cleared = false

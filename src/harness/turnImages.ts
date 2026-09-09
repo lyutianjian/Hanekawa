@@ -52,6 +52,46 @@ export class TurnImageBlockError extends Error {
   }
 }
 
+/**
+ * A fallback activation that did not happen because the fallback model cannot
+ * accept this turn's new images (design §9.1). It carries the failure that
+ * asked for the fallback in `cause`, because dropping it would leave the user
+ * with only the image reason for an outage that started somewhere else.
+ *
+ * Refusing to activate is also what keeps the retry from looping: the loop
+ * rethrows instead of switching, so the same incompatible target is never
+ * tried again for this turn.
+ */
+export class FallbackNotApplicableForImagesError extends TurnImageBlockError {
+  constructor(
+    cause: unknown,
+    fallbackModelLabel: string,
+    images: readonly ImageAttachmentRef[],
+  ) {
+    super(
+      'model-not-capable',
+      [...images],
+      formatFallbackNotApplicableMessage(cause, fallbackModelLabel, images.length),
+    )
+    this.name = 'FallbackNotApplicableForImagesError'
+    this.cause = cause
+  }
+}
+
+export function formatFallbackNotApplicableMessage(
+  cause: unknown,
+  fallbackModelLabel: string,
+  imageCount: number,
+): string {
+  const plural = imageCount === 1 ? '' : 's'
+  const original = cause instanceof Error ? cause.message : String(cause)
+  return `${original}\n`
+    + `The fallback model ${fallbackModelLabel} does not accept image input, and this turn carries `
+    + `${imageCount} new image${plural}, so the fallback does not apply and was not used. `
+    + `The new image${plural} ${imageCount === 1 ? 'was' : 'were'} not degraded. `
+    + `Switch to another image-capable model or remove the image${plural}, then resend.`
+}
+
 export function formatNewImagesBlockedMessage(imageCount: number, model: string): string {
   const plural = imageCount === 1 ? '' : 's'
   return `Model ${model} does not accept image input, but this input carries ${imageCount} image${plural}. `
@@ -137,6 +177,12 @@ export interface RequestImageProjection {
   /** New (current-turn) images found in the records — protected, never projected. */
   newImageCount: number
   /**
+   * The same new images as refs. The loop keeps these so a mid-turn fallback
+   * can tell whether switching to a text-only model would strand them, without
+   * re-deriving "new" from a different rule.
+   */
+  newImages: ImageAttachmentRef[]
+  /**
    * Stable identity of (capability x image set) so a notice fires once per
    * distinct degradation instead of once per tool step; a switch back to a
    * capable model changes it silently, and re-degrading the same set notifies
@@ -195,6 +241,7 @@ export async function projectTurnImagesForRequest(input: {
       historicalImageCount: historical.length,
       missingImageCount: 0,
       newImageCount: current.length,
+      newImages: current,
       signature: projectionSignature(input.supportsImageInput, current, historical.map((entry) => entry.ref), []),
     }
   }
@@ -241,8 +288,47 @@ export async function projectTurnImagesForRequest(input: {
     historicalImageCount: historical.length,
     missingImageCount: missingIds.length,
     newImageCount: 0,
+    newImages: [],
     signature: projectionSignature(input.supportsImageInput, current, historical.map((entry) => entry.ref), missingIds),
   }
+}
+
+/** Distinct image refs a record list carries, oldest first (design §9.1). */
+export function collectImageRefsInRecords(records: readonly SessionRecord[]): ImageAttachmentRef[] {
+  const seen = new Set<string>()
+  const refs: ImageAttachmentRef[] = []
+  for (const record of imageBearingRecords(records)) {
+    for (const ref of record.images) {
+      if (seen.has(ref.id)) continue
+      seen.add(ref.id)
+      refs.push(ref)
+    }
+  }
+  return refs
+}
+
+/**
+ * What a *manual* model switch does to the images already in the conversation
+ * (design §9.1). History never blocks a switch — this only tells the user what
+ * the next request will look like, and returns `undefined` when there is
+ * nothing to say. The request path still re-validates before sending; this is
+ * a notice, not a gate, and never a second confirmation dialog.
+ */
+export function describeModelSwitchImageImpact(
+  records: readonly SessionRecord[],
+  supportsImageInput: boolean | undefined,
+  modelLabel: string,
+): string | undefined {
+  const imageCount = collectImageRefsInRecords(records).length
+  if (imageCount === 0) return undefined
+  const plural = imageCount === 1 ? '' : 's'
+  if (supportsImageInput === true) {
+    return `${modelLabel} accepts images: the ${imageCount} image${plural} still in the effective context `
+      + `will be sent again. Older turns already replaced by a summary are not re-expanded.`
+  }
+  return `${modelLabel} does not accept images: the ${imageCount} image${plural} in this conversation `
+    + `will be sent as file paths instead. The originals are kept and are sent again after switching back `
+    + `to an image-capable model.`
 }
 
 /** The degradation notice a user sees once per distinct (model, image set) state. */

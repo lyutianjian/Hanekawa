@@ -46,6 +46,7 @@ import {
   appendPlaceholderBlocks,
   assertCurrentImagesAvailable,
   assertNewImagesAllowed,
+  FallbackNotApplicableForImagesError,
   formatHistoricalProjectionNotice,
   formatMissingHistoricalImagePlaceholder,
   projectTurnImagesForRequest,
@@ -246,6 +247,12 @@ export class AgentLoop {
    */
   private lastImageRequestSignature: string | undefined
   private imageRequestStateChanged = false
+  /**
+   * New (current-turn) images the last request build carried, straight from
+   * the turn-image projection so "new" cannot mean two different things here
+   * and there. Read when an automatic fallback asks whether it applies.
+   */
+  private currentRequestNewImages: ImageAttachmentRef[] = []
 
   constructor(private readonly options: AgentLoopOptions) {
     const primary = {
@@ -281,7 +288,9 @@ export class AgentLoop {
    * policy — it is a capability, not a label, and the UI gates whether images
    * can be attached at all on it. Reporting the primary model's capability while
    * a text-only plan model serves the request would offer an attachment the
-   * provider then rejects, so the flag comes off the model actually running.
+   * provider then rejects, so the flag comes off the model that will actually
+   * run — `requestModel`, which resolves plan routing before the turn starts
+   * too, not just once a request is in flight.
    */
   getActiveModel(): Omit<ActiveModelRuntime, 'provider'> {
     const visibleModel = this.isPlanModelActive() ? this.modelState.primary : this.activeModel
@@ -291,7 +300,7 @@ export class AgentLoop {
       contextWindow: visibleModel.contextWindow,
       providerName: visibleModel.providerName,
       promptCacheRetention: visibleModel.promptCacheRetention,
-      supportsImageInput: this.activeModel.supportsImageInput,
+      supportsImageInput: this.requestModel.supportsImageInput,
     }
   }
 
@@ -370,7 +379,11 @@ export class AgentLoop {
    * so it cannot act on stale capability information.
    */
   assertImagesAllowedForSubmission(input: UserInput, overrides?: AgentRunOverrides): void {
-    const model = overrides?.model ?? this.modelState.current
+    // The model that will actually serve the request, not the one the status
+    // bar names: in plan mode with a text-only plan model, gating on the
+    // primary would accept an attachment the request then has to reject
+    // (design §9.1, last row).
+    const model = overrides?.model ?? this.nextRoleModel()
     assertNewImagesAllowed(input.images, model.supportsImageInput, model.model)
     // The per-request count cap also gates submission, so an input that alone
     // exceeds it fails before anything is recorded — the request-path strip
@@ -467,6 +480,7 @@ export class AgentLoop {
     let lastForegroundResponseUsage: TokenUsage | undefined
     let pendingAssistantStreamContent = ''
     this.pendingSubagentTranscriptUsage = { ...EMPTY_TOKEN_USAGE }
+    this.currentRequestNewImages = []
     const turnId = randomUUID()
     // Input preparation for @-mentioned images (design §7.1): import and bind
     // them to the user message *before* it is recorded. A failed explicit
@@ -492,13 +506,17 @@ export class AgentLoop {
     // actually starts — waiting never turns new images into degradable
     // history. Reads the live active model (overrides included), which the
     // single in-flight slot keeps stable across this synchronous stretch.
-    assertNewImagesAllowed(turnImages, this.activeModel.supportsImageInput, this.activeModel.model)
+    // Read off the model that will serve the first request — plan routing and
+    // a temporary override included — so a text-only plan model blocks here
+    // rather than after the user record exists (design §9.1, last row).
+    const submissionModel = this.requestModel
+    assertNewImagesAllowed(turnImages, submissionModel.supportsImageInput, submissionModel.model)
     await assertCurrentImagesAvailable(turnImages, this.options.attachmentFacts)
     // Request-size gate, same position (design §11.1): an input whose images
     // alone exceed the body limit never becomes a record.
     assertInputImagesWithinRequestBody(
       turnImages,
-      resolveMaxRequestBodyBytes(this.activeModel.provider.maxRequestBodyBytes?.()),
+      resolveMaxRequestBodyBytes(submissionModel.provider.maxRequestBodyBytes?.()),
     )
     const userMessage: ChatMessage & { type: 'message' } = {
       type: 'message',
@@ -777,10 +795,20 @@ export class AgentLoop {
         response = await this.activeModel.provider.createMessage(modelRequest)
         pendingAssistantStreamContent = ''
       } catch (error) {
-        if (error instanceof FallbackTriggeredError && this.activateFallback(cacheSource)) {
-          pendingAssistantStreamContent = ''
-          resetModelRequestState()
-          continue
+        if (error instanceof FallbackTriggeredError) {
+          const outcome = this.activateFallback(cacheSource)
+          if (outcome === 'activated') {
+            pendingAssistantStreamContent = ''
+            resetModelRequestState()
+            continue
+          }
+          if (outcome === 'blocked-by-images') {
+            throw new FallbackNotApplicableForImagesError(
+              error.originalError ?? error,
+              this.modelState.fallback?.model ?? 'the fallback model',
+              this.currentRequestNewImages,
+            )
+          }
         }
         throw error
       }
@@ -1329,6 +1357,7 @@ export class AgentLoop {
           : ''),
       )
     }
+    this.currentRequestNewImages = projection.newImages
     this.noteImageProjection(projection)
     this.noteMediaStrip(stripped)
     this.noteImageByteStrip(byteStripped)
@@ -1810,15 +1839,34 @@ export class AgentLoop {
     return mergeHooks(this.options.hooks, this.activeRunOverrides?.hooks)
   }
 
+  /**
+   * The model the *next* request will actually be built on — plan routing and
+   * an active fallback included. `syncRoleModel` applies it at the top of each
+   * loop iteration; capability reporting and the submission gate read it so
+   * they judge the model that will serve the request rather than the one the
+   * input bar happens to name (design §9.1, last row).
+   */
+  private nextRoleModel(): ActiveModelRuntime {
+    if (this.modelState.fallback && this.isSameModel(this.modelState.current, this.modelState.fallback)) {
+      return this.modelState.current
+    }
+    return this.options.permissionMode?.() === 'plan' && this.options.planModel
+      ? this.options.planModel
+      : this.modelState.primary
+  }
+
+  /** {@link nextRoleModel} with a temporary run override taking precedence. */
+  private get requestModel(): ActiveModelRuntime {
+    return this.activeRunOverrides?.model ?? this.nextRoleModel()
+  }
+
   private syncRoleModel(cacheSource: ReturnType<typeof agentCacheSource>): boolean {
     if (this.activeRunOverrides?.model) return false
     if (this.modelState.fallback && this.isSameModel(this.activeModel, this.modelState.fallback)) {
       return false
     }
 
-    const next = this.options.permissionMode?.() === 'plan' && this.options.planModel
-      ? this.options.planModel
-      : this.modelState.primary
+    const next = this.nextRoleModel()
 
     if (this.isSameModel(this.activeModel, next)) return false
     this.switchActiveModel(next, cacheSource)
@@ -1830,15 +1878,27 @@ export class AgentLoop {
     return Boolean(this.options.planModel && this.isSameModel(this.activeModel, this.options.planModel))
   }
 
-  private activateFallback(cacheSource: ReturnType<typeof agentCacheSource>): boolean {
-    if (this.activeRunOverrides?.model) return false
+  /**
+   * Automatic fallback (design §9.1): a text-only fallback does not apply to a
+   * turn that carries new images. Reporting that as its own outcome — rather
+   * than switching and letting the next request build throw — is what lets the
+   * caller keep the failure that asked for the fallback, and is why the same
+   * incompatible target is never retried in a loop.
+   */
+  private activateFallback(
+    cacheSource: ReturnType<typeof agentCacheSource>,
+  ): 'activated' | 'unavailable' | 'blocked-by-images' {
+    if (this.activeRunOverrides?.model) return 'unavailable'
     const fallback = this.modelState.fallback
-    if (!fallback) return false
-    if (this.isSameModel(fallback, this.activeModel)) return false
+    if (!fallback) return 'unavailable'
+    if (this.isSameModel(fallback, this.activeModel)) return 'unavailable'
+    if (fallback.supportsImageInput !== true && this.currentRequestNewImages.length > 0) {
+      return 'blocked-by-images'
+    }
 
     this.switchActiveModel(fallback, cacheSource)
     this.modelState.fallbackActivatedAt = Date.now()
-    return true
+    return 'activated'
   }
 
   private retryPrimaryIfReady(cacheSource: ReturnType<typeof agentCacheSource>): boolean {

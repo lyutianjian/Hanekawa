@@ -2,7 +2,7 @@
 
 日期：2026-09-08
 配套设计稿：[MULTIMODAL_INPUT_DESIGN.md](./MULTIMODAL_INPUT_DESIGN.md)
-状态：任务分解与实施计划；本文件不代表任何任务已经完成。
+状态：任务分解与实施计划；S01–S27 已全部完成并签收（2026-09-09，Windows x64 实测；macOS/Linux 真机项见 S26 平台表与 S27 脚注 ¹）。
 
 本文件把设计稿拆成 **27 个会话目标**（S01–S27），每个会话目标的规模按“一次会话内可以做完、跑绿窄测、提交一次”设计。设计决策以设计稿为准，本文件只负责“按什么顺序做、一次做多少、做到什么程度算完成”。
 
@@ -105,7 +105,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S24 | 错误分类与两端展示 | S09–S14, S19 | 中 | `[x]` |
 | S25 | 全量 typecheck / 测试 / 构建 | S20–S24 | 短 | `[x]` |
 | S26 | Desktop 冒烟与 TUI 三平台人工验证 | S25 | 中 | `[x]` |
-| S27 | `README.md` 与验收矩阵签收 | S26 | 短 | `[ ]` |
+| S27 | `README.md` 与验收矩阵签收 | S26 | 短 | `[x]` |
 
 规模含义：短 = 半场会话即可；中 = 一次会话舒适完成；长 = 需要盯紧上下文，块内给了建议断点。
 
@@ -1046,7 +1046,7 @@ npm run build:desktop
 
 ---
 
-## S27 `[ ]` `README.md` 与验收矩阵签收
+## S27 `[x]` `README.md` 与验收矩阵签收
 
 **前置**：S26 · **规模**：短
 **涉及**：`README.md`
@@ -1058,20 +1058,29 @@ npm run build:desktop
 
 | 类别 | 必须验证的行为 | 会话 | 状态 |
 | --- | --- | --- | --- |
-| 配置 | 缺省关闭；两端开关保存/reload 一致；改其他字段不丢能力；同端点模型能力可不同 | S02, S03 | `[ ]` |
-| 新图阻止 | UI、直接协议调用、队列、临时模型覆盖都不能向纯文本模型发新图；失败后输入完整 | S15, S20, S21 | `[ ]` |
-| 历史降级 | 明确通知；payload 无历史图字节；JSONL 与文件不变；切回视觉模型恢复有效图片 | S15, S21 | `[ ]` |
-| Provider | 两条接口都有真实 image 块；纯图片消息有效；OpenAI 多工具结果全部结算后再插图片上下文 | S17, S18 | `[ ]` |
-| 工具 | `Read` 文本编辑状态不回归；图片成功/失败均有配对结果；不支持的参数与格式明确报错 | S10 | `[ ]` |
-| 处理 | EXIF、透明 PNG、大截图、动画首帧、伪扩展名、损坏文件、字节与像素超限 | S04 | `[ ]` |
-| 预算 | 用户附件 + mention + 工具图片合计；最旧历史优先省略；当前图不静默丢弃；不计 Base64 文本 token | S16 | `[ ]` |
-| 持久化 | 删源文件后可恢复；队列重启后仍有图；队列交接中断不重复发送；`/clear` 迁移无悬空引用；中断恢复完整草稿 | S05, S07, S20, S23 | `[ ]` |
-| 模型与压缩 | fallback/plan/子代理按实际能力处理；纯文本 compact 可用；最新用户图保留；被清理工具图不继续上传 | S21, S22, S23 | `[ ]` |
-| 界面 | 两 pane 草稿隔离；导入完成不串会话；失败恢复不覆盖新输入；缩略图不随流式输出反复传输 | S11, S12 | `[ ]` |
-| 清理 | 关闭 pane 保留会话附件；删除会话清理全部所属附件；不删源图片及其他会话资源 | S05, S23 | `[ ]` |
-| 平台 | Windows/macOS/Linux 成功路径与无依赖路径；Electron 与 Node 处理结果一致 | S13, S26 | `[ ]` |
+| 配置 | 缺省关闭；两端开关保存/reload 一致；改其他字段不丢能力；同端点模型能力可不同 | S02, S03 | `[x]` |
+| 新图阻止 | UI、直接协议调用、队列、临时模型覆盖都不能向纯文本模型发新图；失败后输入完整 | S15, S20, S21 | `[x]` |
+| 历史降级 | 明确通知；payload 无历史图字节；JSONL 与文件不变；切回视觉模型恢复有效图片 | S15, S21 | `[x]` |
+| Provider | 两条接口都有真实 image 块；纯图片消息有效；OpenAI 多工具结果全部结算后再插图片上下文 | S17, S18 | `[x]` |
+| 工具 | `Read` 文本编辑状态不回归；图片成功/失败均有配对结果；不支持的参数与格式明确报错 | S10 | `[x]` |
+| 处理 | EXIF、透明 PNG、大截图、动画首帧、伪扩展名、损坏文件、字节与像素超限 | S04 | `[x]` |
+| 预算 | 用户附件 + mention + 工具图片合计；最旧历史优先省略；当前图不静默丢弃；不计 Base64 文本 token | S16 | `[x]` |
+| 持久化 | 删源文件后可恢复；队列重启后仍有图；队列交接中断不重复发送；`/clear` 迁移无悬空引用；中断恢复完整草稿 | S05, S07, S20, S23 | `[x]` |
+| 模型与压缩 | fallback/plan/子代理按实际能力处理；纯文本 compact 可用；最新用户图保留；被清理工具图不继续上传 | S21, S22, S23 | `[x]` |
+| 界面 | 两 pane 草稿隔离；导入完成不串会话；失败恢复不覆盖新输入；缩略图不随流式输出反复传输 | S11, S12 | `[x]` |
+| 清理 | 关闭 pane 保留会话附件；删除会话清理全部所属附件；不删源图片及其他会话资源 | S05, S23 | `[x]` |
+| 平台 | Windows/macOS/Linux 成功路径与无依赖路径；Electron 与 Node 处理结果一致 | S13, S26 | `[x]` ¹ |
+
+> ¹ 平台行按 S26 的平台 × 结论表签收：Windows 全部实测通过（含 Electron 与 Node 一致性，sha256 相同）；macOS / Linux 真机项本机无环境，依 S26 工作项 4 的既定出口如实记为「待验收」——三平台成功路径与依赖缺失路径的**行为**由 S13 的纯测试覆盖（`test/imageClipboard.test.ts` 36 项，命令构造与输出解析均不经 shell 字符串），不以未实测平台冒充已验收。
 
 **提交**：`checkpoint: S27 document image input and sign off acceptance`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- README（工作项 1）：`### Image input` 新增于 Configure 段末（desktop settings screen 小节之后），只写用户可见行为，工作项列出的六项逐条落地——**模型能力配置位置**（`supportsImageInput`，两端模型表单的「支持图像输入」，创建与编辑都有；缺省关闭、不从模型名或端点推断、同端点两模型可不同；仅 `anthropic` / `openai` 两个 provider 承载，其余 provider 开关无效；开关是声明不是探测，端点拒绝时如实回显并给出路）；**支持与不支持的格式**（PNG/JPEG/GIF/WebP、字节嗅探纠正扩展名、EXIF 方向、动画首帧、SVG 保持文本语义、BMP/HEIC/TIFF/AVIF 拒绝并提示转 PNG/JPEG、`Read` 工具同规则）；**两端快捷入口与 `/paste-image`**（Desktop 粘贴/拖放/`+` 菜单「选择图片」/缩略图预览/「打开原图」；TUI `/paste-image` 与 Ctrl+V、独立路径粘贴、项目内 `@`、`/attachments [list | remove <n> | clear]`、Linux 需 `wl-paste`/`xclip`、WSL/SSH 指向路径入口；单次 10 张、纯图片消息合法）；**自动缩放策略**（先落盘再发送、EXIF/色彩/元数据归一、2,000 px 长边不放大、PNG 优先 JPEG 兜底、单张 ≤ 3.75 MB、20 MB / 40 MP 输入上限、阶梯触底提示裁剪）；**历史图降级行为**（新图提交前阻止且草稿保留、历史图转路径占位符、每次变更一次通知、原图保留切回恢复、compact 摘要纯文字且保留最新用户消息的图、单请求 100 张最旧历史先省、当前图不静默丢弃）；**附件存储位置与删除语义**（`<project>/.myagent/attachments/<session-id>/`、全局会话在 `~/.myagent/attachments/`、源文件永不改删、删会话删其附件、关 pane / 重启保留、24h 保留窗口回收）。压缩阶梯档位、wire 命令、投影模块归属等实现细节留在本文件与设计稿，未搬进 README。写进 README 的数字与文案均对照源码复核过（`IMAGE_PROCESS_DEFAULTS`、`MAX_IMAGE_SEND_BYTES`、`MAX_AT_MENTION_IMAGES`/`MAX_DRAFT_IMAGES`、`DEFAULT_MAX_MEDIA_ITEMS`、`DEFAULT_ATTACHMENT_RETENTION_MS`、`+` 菜单与 `/attachments` 的实际文案、provider 静态能力旗标）。
+- 顺带修两句会误导的旧文案：简介的能力清单补上 image input；Skills 段末的「Image/PDF multimodal attachments are not supported in this stage」收窄为「frontmatter `attachments` 仍是 UTF-8 文本文件，图片与 PDF 不在其中」——产品级图像输入已交付，那句全局否决不再成立，而 frontmatter 附件确实仍纯文本（技能生成的用户输入携带草稿图片是 S14 的另一条路径，README 不展开）。
+- 验收矩阵（工作项 2）：12 行全部签收为 `[x]`，依据是 S01–S26 执行记录里逐条可溯的测试证据——配置行（S02 缺省/严格 `=== true`/编辑保留/同端点差异 + S03 两端开关往返与乐观投影）；新图阻止行（S15 三道 gate、S19 provider 发送前终检、S20 排队接受前 + 出队双检、S21 临时覆盖按 `requestModel` 判定，阻止零记录、草稿完整）；历史降级行（loop 端到端：占位符逐字断言、provider 迭代零 images 字节、JSONL 与文件不动、通知恰一次、切回 capable 恢复）；Provider 行（S17 base64 image 块、S18 data URL 与多工具批次合成消息后置、纯图片消息两侧存活）；工具行（`fileReadImage` 14 项 + 文本路径 `fileToolLineEndings`/`fileToolPreview` 回归 + ToolRunner 成败配对）；处理行（`imageFile` 20 项，七类夹具与三类超限全覆盖）；预算行（`mediaStrip` 18 项 + `imageTokens` 13 项：三类图合计计数、最旧历史先省、当前图永不静默丢、全链路无对 Base64 调 `countTextTokens`）；持久化行（S05 删源文件后解析与重建、S20 `queuePump` 六结局与 `sourceQueuedMessageId` 崩溃窗口去重、S23 `/clear` 先复制重绑再迁移、S07 中断恢复按序带回文字与引用）；模型与压缩行（S21 七场景含 fallback 不适用、S22 纯文本 compact 可用 + 最新用户图保留 + 被清理工具结果 `images` 一并移除、S23 子代理按自身能力降级继承图）；界面行（S11 per-pane 草稿与导入绑定发起时会话、S12 预览按需 + 渲染签名防抖、S26 冒烟 29 断言实测两 pane 隔离与缩略图不重传）；清理行（S05 回收窗口与在途守卫、S23 `deleteSessionArtifacts` 第五产物 + 关闭 scope 后附件仍在）。平台行带脚注 ¹，按 S26 平台表签收，macOS / Linux 真机项如实保持「待验收」。
+- 签收前在当前树复跑：`npm run typecheck` 四配置通过；`npm run test` 3315 项 3314 过、1 跳过（既有，S04 起历次全量均有记录）、0 失败，与 S25/S26 基线一致。本会话只改 `README.md` 与本文件，零源码改动。
 
 ---
 

@@ -1,6 +1,6 @@
 # Hanekawa / MyAgent
 
-Hanekawa, also called MyAgent, is a lightweight self-hosted programming agent for the terminal. It supports Anthropic and OpenAI-compatible APIs, session persistence, automatic context compaction, skills, permission-gated tools, and an Ink-based TUI.
+Hanekawa, also called MyAgent, is a lightweight self-hosted programming agent for the terminal. It supports Anthropic and OpenAI-compatible APIs, session persistence, automatic context compaction, skills, permission-gated tools, image input, and an Ink-based TUI.
 
 ## Requirements
 
@@ -148,6 +148,58 @@ Two consequences worth knowing:
   revoked from the screen — remove it there.
 - The six context-management numbers are read once when a project starts, so changing them takes effect
   after a restart. Everything else on the screen applies to open sessions immediately.
+
+### Image input
+
+A model receives images only when you turn that on for it: `supportsImageInput: true` on the model in
+`config.json`, or the 「支持图像输入」 switch in a model form — the desktop settings screen and the TUI
+`/provider` dialog both have it, when creating a model and when editing one. It is off by default and
+never inferred from the model name or endpoint; two models behind one endpoint can differ. Only the
+`anthropic` and `openai` providers carry images in this version — with any other provider the switch
+has no effect, and image sends are blocked with the same reason as a text-only model. The switch is a
+claim, not a probe: an endpoint that rejects image parts answers with its own error, which Hanekawa
+shows together with what to do next.
+
+PNG, JPEG, GIF, and WebP are accepted. The real format is sniffed from the bytes, so a wrong extension
+does not matter; EXIF orientation is applied; animated GIF and WebP contribute their first frame; SVG
+keeps its text semantics. BMP, HEIC, TIFF, and AVIF are refused with a prompt to convert them to PNG
+or JPEG first. The `Read` tool sends image files to the model under the same rules, captioned with the
+original and sent dimensions.
+
+Ways to attach, with at most 10 images per input (explicit attachments and `@` images together); a
+message can be images alone:
+
+- **Desktop** — paste an image into the composer, drag and drop files, or pick 「选择图片」 from the `+`
+  menu. A thumbnail appears per image; clicking it opens a preview, and 「打开原图」 opens the stored
+  copy in your viewer.
+- **TUI** — `/paste-image` captures the system clipboard, as does `Ctrl+V` where the terminal passes
+  that key through. Pasting a standalone image path attaches that file. `@` mentions work for images
+  inside the project — files outside the project come in only through an explicit paste, drop, or
+  pick. `/attachments` lists the draft; `/attachments remove <n>` and `/attachments clear` manage it.
+  On Linux, clipboard capture needs `wl-paste` (Wayland) or `xclip` (X11); when a dependency is
+  missing — or under WSL/SSH, where the host clipboard is out of reach — the failure names the reason
+  and points at the path and `@` entries.
+
+Every image is stored first and sent as a normalized copy: EXIF-rotated, colors normalized, metadata
+stripped, scaled down to a 2,000 px long edge (never enlarged), then compressed — PNG first to keep
+text and transparency readable, JPEG for large screenshots — to at most 3.75 MB per image. Raw input
+over 20 MB or 40 megapixels is rejected, as is an image that still exceeds the budget at the lowest
+quality; the error says which and suggests cropping.
+
+While the active model cannot see images, sending **new** images is blocked before the turn starts —
+the draft is kept, and the reason points at `/model`. Images already in the conversation become text
+placeholders carrying the file path, with one notice per change rather than one per step. The
+originals stay in the session, and switching back to an image-capable model sends them again.
+Compaction always summarizes images as text — the compact model needs no image support — and keeps
+the latest user message's images; compacted images can be re-read from the cached path. A request
+carries at most 100 images, dropping the oldest historical ones first; the current input's images are
+never dropped silently.
+
+Attachments live under `<project>/.myagent/attachments/<session-id>/`; the global workspace's sessions
+use `~/.myagent/attachments/`. Importing copies the image — your source file is never modified or
+deleted, not by sending, by removing a draft attachment, nor by deleting the session. Deleting a
+session deletes its stored attachments; closing a pane or restarting keeps them; files nothing
+references any more are cleaned up once a 24-hour retention window has passed.
 
 ## Start
 
@@ -375,7 +427,8 @@ and `effort` are temporary overrides, and hooks are merged with the session
 hooks for that turn. Attachment paths are UTF-8 text files resolved inside the
 skill directory and appended to the prompt. Built-in slash commands take
 precedence when names conflict. New or changed skill commands require restarting
-the TUI. Image/PDF multimodal attachments are not supported in this stage.
+the TUI. Frontmatter `attachments` remain UTF-8 text files; image and PDF
+attachments are not supported there.
 
 ### Sessions
 

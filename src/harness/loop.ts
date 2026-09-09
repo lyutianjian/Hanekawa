@@ -414,6 +414,9 @@ export class AgentLoop {
         model: this.activeModel.model,
         compactRuntime: this.options.compactModel,
         promptCacheRetention: this.activeModel.promptCacheRetention,
+        // Rewind summaries share the compaction image projection (design
+        // §11.3): images in the summarized range become text placeholders.
+        ...(this.options.attachmentFacts ? { attachmentFacts: this.options.attachmentFacts } : {}),
         cwd: this.options.toolContext.cwd,
       })
       return {
@@ -638,6 +641,7 @@ export class AgentLoop {
           circuitKey: this.options.toolContext.sessionId,
           sessionId: this.options.toolContext.sessionId,
           cwd: this.options.toolContext.cwd,
+          ...(this.options.attachmentFacts ? { attachmentFacts: this.options.attachmentFacts } : {}),
           getCompactFailureCount: this.options.getCompactFailureCount,
           setCompactFailureCount: this.options.setCompactFailureCount,
           appendRecord: (record) => this.appendRecord(record),

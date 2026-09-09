@@ -10,6 +10,7 @@ import {
   calculateRecordsToKeepIndex,
 } from '../src/services/sessionMemory/compact.js'
 import type { SessionRecord } from '../src/harness/types.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 import type { SessionMemoryConfig } from '../src/services/sessionMemory/types.js'
 import { DEFAULT_SESSION_MEMORY_CONFIG } from '../src/services/sessionMemory/types.js'
 
@@ -46,6 +47,35 @@ test('formatRecordsForExtraction handles tool_use and tool_result records', () =
   const result = formatRecordsForExtraction(records)
   assert.match(result, /\[Tool Call: Bash\]/)
   assert.match(result, /\[Tool Result: Bash \(ok\)\]/)
+})
+
+test('formatRecordsForExtraction projects images with the shared compaction placeholder', () => {
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: '1',
+      role: 'user',
+      content: 'look at this',
+      images: [makeImageAttachmentRef({ id: 'img-a', name: 'a.png', width: 800, height: 600 })],
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      type: 'tool_result',
+      id: 'r1',
+      toolUseId: 't1',
+      tool: 'Read',
+      ok: true,
+      content: 'read an image',
+      images: [makeImageAttachmentRef({ id: 'img-b', name: 'b.png' })],
+      createdAt: '2026-01-01T00:01:00.000Z',
+    },
+  ]
+  const result = formatRecordsForExtraction(records)
+  // Extraction is a text summary too, so it uses the same placeholder wording
+  // as compaction — the store is not read here, so refs name their attachment.
+  assert.match(result, /\[User\]: look at this\n\[Image attachment omitted[\s\S]*a\.png, sent 800x600, cached in this session's attachment store \(attachment img-a\)/)
+  assert.match(result, /\[Tool Result: Read \(ok\)\] read an image\n\[Image attachment omitted[\s\S]*b\.png/)
+  assert.match(result, /do not describe or infer what the image shows/)
 })
 
 test('formatRecordsForExtraction skips subagent_transcript records', () => {

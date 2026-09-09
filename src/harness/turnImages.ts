@@ -293,6 +293,87 @@ export async function projectTurnImagesForRequest(input: {
   }
 }
 
+/**
+ * The text stand-in an image gets when a *text-only projection* replaces it:
+ * compaction summaries, session-memory extraction, and history cleanup
+ * (design §11.3). Facts are optional — the summary path resolves them so the
+ * placeholder can name the cache location, the synchronous cleanup sites have
+ * only the ref. It states what the image was and refuses to stand in for what
+ * it showed: a summarizer must not invent contents it never saw.
+ */
+export function formatSummaryImagePlaceholder(ref: ImageAttachmentRef, facts?: AttachmentFacts): string {
+  const original = facts
+    ? (() => {
+        const oriented = orientedDimensions(facts.exifOrientation, facts.originalWidth, facts.originalHeight)
+        return `, original ${oriented.width}x${oriented.height}`
+      })()
+    : ''
+  const where = facts
+    ? `cached at ${facts.localPath}`
+    : `cached in this session's attachment store (attachment ${ref.id})`
+  return `[Image attachment omitted from this text-only projection:\n`
+    + `${ref.name}, sent ${ref.width}x${ref.height}${original}, ${where}.\n`
+    + `The pixels are not present here; do not describe or infer what the image shows.]`
+}
+
+/**
+ * Replaces a record's images with the shared text placeholder and *removes*
+ * the `images` field, optionally swapping in new text at the same time.
+ *
+ * Every summarization and history-cleanup site goes through this one function
+ * (design §11.3): clearing or truncating `content` while leaving `images` in
+ * place would keep uploading the pixels the cleanup was meant to reclaim.
+ * Records without images are returned untouched (same reference) unless the
+ * caller passes replacement text.
+ */
+export function projectRecordImagesToText<T extends SessionRecord>(
+  record: T,
+  options: { content?: string; facts?: ReadonlyMap<string, AttachmentFacts> } = {},
+): T {
+  const images = (record as { images?: ImageAttachmentRef[] }).images
+  const hasImages = images !== undefined && images.length > 0
+  if (!hasImages) {
+    return options.content === undefined ? record : { ...record, content: options.content }
+  }
+  const { images: _dropped, ...rest } = record as T & { images?: ImageAttachmentRef[]; content: string }
+  const baseContent = options.content ?? rest.content
+  const blocks = images.map((ref) => formatSummaryImagePlaceholder(ref, options.facts?.get(ref.id)))
+  return { ...rest, content: appendPlaceholderBlocks(baseContent, blocks) } as unknown as T
+}
+
+/** {@link projectRecordImagesToText} over a record list; image-free lists pass through. */
+export function projectRecordsImagesToText(
+  records: readonly SessionRecord[],
+  facts?: ReadonlyMap<string, AttachmentFacts>,
+): SessionRecord[] {
+  return records.map((record) => projectRecordImagesToText(record, facts ? { facts } : {}))
+}
+
+/**
+ * Resolves the facts behind every image in `records`, so a text-only
+ * projection can name each cache location. Unresolvable refs are simply absent
+ * from the map — the placeholder falls back to naming the attachment ID rather
+ * than failing a summary over a missing file.
+ */
+export async function resolveAttachmentFactsForRecords(
+  records: readonly SessionRecord[],
+  resolver: AttachmentFactsResolver | undefined,
+): Promise<Map<string, AttachmentFacts> | undefined> {
+  if (!resolver) return undefined
+  const refs = collectImageRefsInRecords(records)
+  if (refs.length === 0) return undefined
+  const facts = new Map<string, AttachmentFacts>()
+  for (const ref of refs) {
+    try {
+      const resolved = await resolver.resolveAttachmentFacts(ref)
+      if (resolved.ok) facts.set(ref.id, resolved.facts)
+    } catch {
+      // A store read that fails degrades this one placeholder, never the summary.
+    }
+  }
+  return facts
+}
+
 /** Distinct image refs a record list carries, oldest first (design §9.1). */
 export function collectImageRefsInRecords(records: readonly SessionRecord[]): ImageAttachmentRef[] {
   const seen = new Set<string>()

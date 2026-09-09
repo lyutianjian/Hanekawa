@@ -7,7 +7,10 @@ import {
   formatHistoricalProjectionNotice,
   formatMissingHistoricalImagePlaceholder,
   formatNewImagesBlockedMessage,
+  formatSummaryImagePlaceholder,
+  projectRecordImagesToText,
   projectTurnImagesForRequest,
+  resolveAttachmentFactsForRecords,
   TurnImageBlockError,
   type AttachmentFactsResolver,
 } from '../src/harness/turnImages.js'
@@ -450,4 +453,78 @@ test('the placeholder never claims visual content', () => {
   assert.match(text, /The pixels are not present in this request\./)
   assert.doesNotMatch(text, /shows|depicts|contains a|OCR/i)
   assert.match(formatHistoricalProjectionNotice(3, 0), /3 historical images/)
+})
+
+test('the summary placeholder names the attachment, its size and its cache location', () => {
+  const ref = makeImageAttachmentRef({ id: 'img-x', name: 'screenshot.png', width: 800, height: 600 })
+  const withFacts = formatSummaryImagePlaceholder(ref, {
+    originalWidth: 3840,
+    originalHeight: 2160,
+    localPath: '/cache/img-x/original.png',
+  })
+  assert.match(withFacts, /screenshot\.png, sent 800x600, original 3840x2160, cached at \/cache\/img-x\/original\.png\./)
+  // No resolver: the attachment ID stands in for the path, never a guess at one.
+  const withoutFacts = formatSummaryImagePlaceholder(ref)
+  assert.match(withoutFacts, /screenshot\.png, sent 800x600, cached in this session's attachment store \(attachment img-x\)\./)
+  assert.doesNotMatch(withoutFacts, /cached at/)
+  for (const text of [withFacts, withoutFacts]) {
+    assert.match(text, /do not describe or infer what the image shows/)
+  }
+})
+
+test('the summary placeholder applies EXIF orientation to the original dimensions', () => {
+  const text = formatSummaryImagePlaceholder(makeImageAttachmentRef(), {
+    originalWidth: 64,
+    originalHeight: 48,
+    exifOrientation: 6,
+    localPath: '/cache/o.png',
+  })
+  assert.match(text, /original 48x64/)
+})
+
+test('projectRecordImagesToText drops the images and appends one placeholder per ref', () => {
+  const record = toolResultWithImages('res-1', 'turn-1', [
+    makeImageAttachmentRef({ id: 'img-a', name: 'a.png' }),
+    makeImageAttachmentRef({ id: 'img-b', name: 'b.png' }),
+  ])
+  const projected = projectRecordImagesToText(record)
+  assert.equal((projected as { images?: unknown }).images, undefined)
+  assert.equal('images' in projected, false)
+  assert.ok(projected.type === 'tool_result')
+  assert.match(projected.content, /^image read\n\n\[Image attachment omitted[\s\S]*a\.png[\s\S]*\n\n\[Image attachment omitted[\s\S]*b\.png/)
+  // A pure projection: the input record keeps its refs for the next request.
+  assert.equal((record as { images?: unknown[] }).images?.length, 2)
+})
+
+test('projectRecordImagesToText replaces content and still drops images', () => {
+  const record = toolResultWithImages('res-1', 'turn-1', [makeImageAttachmentRef({ name: 'a.png' })])
+  const projected = projectRecordImagesToText(record, { content: '[cleared]' })
+  assert.ok(projected.type === 'tool_result')
+  assert.match(projected.content, /^\[cleared\]\n\n\[Image attachment omitted/)
+  assert.doesNotMatch(projected.content, /image read/)
+  assert.equal('images' in projected, false)
+})
+
+test('projectRecordImagesToText leaves image-free records alone unless text is replaced', () => {
+  const record = userMessageWithImages('u1', 'turn-1', 'hello', [])
+  assert.equal(projectRecordImagesToText(record), record)
+  const replaced = projectRecordImagesToText(record, { content: 'cleared' })
+  assert.ok(replaced.type === 'message')
+  assert.equal(replaced.content, 'cleared')
+})
+
+test('resolveAttachmentFactsForRecords maps resolvable refs and skips the rest', async () => {
+  const records = [
+    userMessageWithImages('u1', 'turn-1', 'look', [makeImageAttachmentRef({ id: 'img-a' })]),
+    toolResultWithImages('res-1', 'turn-1', [makeImageAttachmentRef({ id: 'img-gone' })]),
+  ]
+  assert.equal(await resolveAttachmentFactsForRecords(records, undefined), undefined)
+  const facts = await resolveAttachmentFactsForRecords(records, factsResolver(['img-gone']))
+  assert.equal(facts?.size, 1)
+  assert.equal(facts?.get('img-a')?.localPath, '/cache/img-a/original.png')
+  // A store that throws degrades the placeholder, never the summary.
+  const throwing = await resolveAttachmentFactsForRecords(records, {
+    resolveAttachmentFacts: async () => { throw new Error('store offline') },
+  })
+  assert.equal(throwing?.size, 0)
 })

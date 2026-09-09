@@ -5,6 +5,7 @@ import { countTextTokens } from '../src/prompts/budget.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
 import { recordsAfterAreOnlyInterruptSynthetic } from '../src/runtime/interruptRollback.js'
 import type { SessionRecord } from '../src/harness/types.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 function toolPair(id: string, tool: string, content: string, minute: number): SessionRecord[] {
   const timestamp = `2026-05-10T00:${String(minute).padStart(2, '0')}:00.000Z`
@@ -596,4 +597,65 @@ test('prepareRecordsForRequest does not double-snip already budget-compacted res
   // because [summarized: ...] is well under 50K tokens.
   assert.match(oldContent, /summarized/)
   assert.doesNotMatch(oldContent, /Result truncated/)
+})
+
+test('budget compaction of an old tool result drops its images with its output', () => {
+  const image = makeImageAttachmentRef({ name: 'shot.png' })
+  const records: SessionRecord[] = []
+  const [oldUse, oldResult] = toolPair('old', 'Read', 'large output '.repeat(7_000), 0)
+  assert.ok(oldUse && oldResult?.type === 'tool_result')
+  records.push(oldUse, { ...oldResult, images: [image] })
+  for (let i = 0; i < 10; i++) {
+    const [use, result] = toolPair(`new-${i}`, 'Read', 'new output '.repeat(10), i + 1)
+    assert.ok(use && result?.type === 'tool_result')
+    records.push(use, { ...result, images: [image] })
+  }
+
+  const prepared = prepareRecordsForRequest(records, { contextWindow: 50_000, summaryOutputTokens: 0 })
+
+  const compacted = prepared.find((record) => record.id === 'old-result')
+  assert.ok(compacted?.type === 'tool_result')
+  assert.equal('images' in compacted, false, 'a summarized result must not keep uploading its pixels')
+  assert.match(compacted.content, /^\[summarized: Read[\s\S]*\[Image attachment omitted[\s\S]*shot\.png/)
+  // Recent results keep their images — only what the budget removed is projected.
+  const kept = prepared.find((record) => record.id === 'new-9-result')
+  assert.ok(kept?.type === 'tool_result')
+  assert.deepEqual('images' in kept ? kept.images : undefined, [image])
+})
+
+test('images summarized into a compact boundary stop occupying later requests', () => {
+  const image = makeImageAttachmentRef({ name: 'shot.png' })
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'look at this',
+      images: [image],
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      type: 'compact_boundary',
+      id: 'boundary',
+      summary: 'the user shared shot.png, cached at /cache/img/original.png',
+      preTokens: 100,
+      postCompactRestore: 'pending',
+      createdAt: '2026-05-10T00:01:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'new-user',
+      role: 'user',
+      content: 'continue',
+      createdAt: '2026-05-10T00:02:00.000Z',
+    },
+  ]
+
+  const prepared = prepareRecordsForRequest(records)
+
+  // The pre-boundary turn is gone from the request, images and all; the record
+  // itself — and the cached original behind it — are untouched, so an
+  // image-capable model can Read the path the summary names.
+  assert.deepEqual(prepared.map((record) => record.id), ['boundary', 'new-user'])
+  assert.deepEqual('images' in records[0]! ? records[0].images : undefined, [image])
 })

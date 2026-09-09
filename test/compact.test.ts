@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { autoCompactIfNeeded, resetAutoCompactFailureState, summarizeRecordsForContinuation } from '../src/harness/compact.js'
+import { autoCompactIfNeeded, resetAutoCompactFailureState, snipLargeToolResults, summarizeRecordsForContinuation } from '../src/harness/compact.js'
 import type { ModelProvider, SessionRecord } from '../src/harness/types.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 test('autoCompactIfNeeded writes compact boundary when threshold is exceeded', async () => {
   resetAutoCompactFailureState()
@@ -1019,4 +1020,141 @@ test('trySessionMemoryCompaction omits preCompactDiscoveredTools when empty', as
   } finally {
     resetSessionMemoryState(sessionId)
   }
+})
+
+test('the summary request is text only: images become placeholders naming name, size and cache path', async () => {
+  resetAutoCompactFailureState()
+  const shot = makeImageAttachmentRef({ id: 'img-shot', name: 'shot.png', width: 800, height: 600 })
+  const diagram = makeImageAttachmentRef({ id: 'img-diagram', name: 'diagram.png', width: 400, height: 300 })
+  const latest = makeImageAttachmentRef({ id: 'img-latest', name: 'latest.png' })
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: `look at this ${'old context '.repeat(200)}`,
+      images: [shot],
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      type: 'tool_result',
+      id: 'old-result',
+      toolUseId: 'call-1',
+      tool: 'Read',
+      ok: true,
+      content: 'read an image',
+      images: [diagram],
+      createdAt: '2026-05-10T00:01:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'latest-user',
+      role: 'user',
+      content: 'latest request',
+      images: [latest],
+      createdAt: '2026-05-10T00:02:00.000Z',
+    },
+  ]
+
+  let seenPrompt = ''
+  const provider: ModelProvider = {
+    name: 'text-only-compact-model',
+    async createMessage(request) {
+      seenPrompt = request.messages[0]?.content ?? ''
+      // A compact model does not have to see images (design §11.3).
+      assert.equal(request.messages.every((message) => (message as { images?: unknown }).images === undefined), true)
+      assert.equal(
+        request.contextItems?.every((item) => item.kind !== 'message' || (item.message as { images?: unknown }).images === undefined),
+        true,
+      )
+      return { content: 'compact summary', toolCalls: [] }
+    },
+  }
+
+  const result = await autoCompactIfNeeded({
+    records,
+    provider,
+    model: 'text-only-compact-model',
+    tools: [],
+    contextManagement: { contextWindow: 600, summaryOutputTokens: 100, autoCompactBufferTokens: 50 },
+    attachmentFacts: {
+      resolveAttachmentFacts: async (ref) => ({
+        ok: true,
+        facts: { originalWidth: 1600, originalHeight: 1200, localPath: `/cache/${ref.id}/original.png` },
+      }),
+    },
+    appendRecord: async () => {},
+  })
+
+  assert.equal(result.compacted, true)
+  assert.match(seenPrompt, /shot\.png, sent 800x600, original 1600x1200, cached at \/cache\/img-shot\/original\.png/)
+  assert.match(seenPrompt, /diagram\.png, sent 400x300, original 1600x1200, cached at \/cache\/img-diagram\/original\.png/)
+  assert.match(seenPrompt, /do not describe or infer what the image shows/)
+  // The latest user message — text *and* image — is never summarized away.
+  assert.doesNotMatch(seenPrompt, /latest request/)
+  assert.doesNotMatch(seenPrompt, /latest\.png/)
+  // A pure projection: the records keep their refs for the request itself.
+  assert.deepEqual(records[2] && 'images' in records[2] ? records[2].images : undefined, [latest])
+  assert.deepEqual(records[0] && 'images' in records[0] ? records[0].images : undefined, [shot])
+})
+
+test('without an attachment resolver the summary placeholder still names the attachment', async () => {
+  resetAutoCompactFailureState()
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'see attached',
+      images: [makeImageAttachmentRef({ id: 'img-a', name: 'a.png' })],
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+  ]
+  let seenPrompt = ''
+  const summary = await summarizeRecordsForContinuation({
+    records,
+    provider: {
+      name: 'fake',
+      async createMessage(request) {
+        seenPrompt = request.messages[0]?.content ?? ''
+        return { content: 'summary', toolCalls: [] }
+      },
+    },
+    model: 'fake-model',
+  })
+  assert.equal(summary.content.length > 0, true)
+  assert.match(seenPrompt, /a\.png, sent 64x64, cached in this session's attachment store \(attachment img-a\)/)
+})
+
+test('snipLargeToolResults drops the images of a truncated result', () => {
+  const image = makeImageAttachmentRef({ name: 'huge.png' })
+  const records: SessionRecord[] = [
+    {
+      type: 'tool_result',
+      id: 'res-1',
+      toolUseId: 'call-1',
+      tool: 'Read',
+      ok: true,
+      content: 'x '.repeat(50_000),
+      images: [image],
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      type: 'tool_result',
+      id: 'res-2',
+      toolUseId: 'call-2',
+      tool: 'Read',
+      ok: true,
+      content: 'small',
+      images: [image],
+      createdAt: '2026-05-10T00:00:01.000Z',
+    },
+  ]
+  const snipped = snipLargeToolResults(records, 100)
+  const first = snipped[0]
+  assert.ok(first?.type === 'tool_result')
+  assert.equal('images' in first, false, 'a truncated result must not keep uploading its pixels')
+  assert.match(first.content, /Result truncated[\s\S]*\[Image attachment omitted[\s\S]*huge\.png/)
+  // Results that stay are untouched, images included.
+  assert.equal(snipped[1], records[1])
 })

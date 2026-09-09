@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { applyProgressiveCompaction, estimateCurrentTokens } from '../src/harness/progressiveCompact.js'
 import type { SessionRecord } from '../src/harness/types.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 function userTurn(index: number, content = `user ${index}`): SessionRecord {
   return {
@@ -284,4 +285,33 @@ test('applyProgressiveCompaction does not rewrite tool results during an active 
   assert.equal(result.snipped, false)
   assert.deepEqual(result.records, records)
   assert.doesNotMatch(toolResultContent(result.records, 'tr-0'), /^\[summarized:/)
+})
+
+test('the time-based microcompact clears images with the text of old tool results', () => {
+  const image = makeImageAttachmentRef({ name: 'old.png' })
+  const records: SessionRecord[] = []
+  for (let index = 0; index < 8; index++) {
+    const [use, result] = toolPair(index, 'large output '.repeat(500))
+    assert.ok(use && result?.type === 'tool_result')
+    records.push(userTurn(index), use, { ...result, images: [image] }, assistantTurn(index))
+  }
+
+  const result = applyProgressiveCompaction({
+    records,
+    now: new Date('2026-05-10T02:00:00.000Z'),
+  })
+
+  assert.equal(result.microCompacted, true)
+  const cleared = result.records.find((record) => record.id === 'result-0')
+  assert.ok(cleared?.type === 'tool_result')
+  assert.equal('images' in cleared, false, 'a cleared result must not keep uploading its pixels')
+  assert.match(cleared.content, /^\[Old tool result content cleared\]\n\n\[Image attachment omitted[\s\S]*old\.png/)
+  // Recent results keep both their text and their images.
+  const kept = result.records.find((record) => record.id === 'result-7')
+  assert.ok(kept?.type === 'tool_result')
+  assert.deepEqual('images' in kept ? kept.images : undefined, [image])
+  // Idempotent: a second pass over already-cleared, image-free results is a no-op.
+  const again = applyProgressiveCompaction({ records: result.records, now: new Date('2026-05-10T02:00:00.000Z') })
+  assert.equal(again.microCompacted, false)
+  assert.deepEqual(again.records, result.records)
 })

@@ -100,7 +100,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S19 | 发送前最终校验与日志遮蔽 | S17, S18 | 中 | `[x]` |
 | S20 | 消息队列持久化与交接改造 | S19, S11 | 长 | `[x]` |
 | S21 | 模型切换、fallback 与 plan 路由 | S15, S02 | 中 | `[x]` |
-| S22 | compact 与历史清理的图像投影 | S15, S16 | 长 | `[ ]` |
+| S22 | compact 与历史清理的图像投影 | S15, S16 | 长 | `[x]` |
 | S23 | 子代理继承与会话生命周期附件归属 | S05, S06 | 中 | `[ ]` |
 | S24 | 错误分类与两端展示 | S09–S14, S19 | 中 | `[ ]` |
 | S25 | 全量 typecheck / 测试 / 构建 | S20–S24 | 短 | `[ ]` |
@@ -850,7 +850,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S22 `[ ]` compact 与历史清理的图像投影
+## S22 `[x]` compact 与历史清理的图像投影
 
 **前置**：S15、S16 · **规模**：长 · **设计稿**：§11.3
 **涉及**：`src/harness/compact.ts`、`src/harness/progressiveCompact.ts`、`src/services/sessionMemory/`、`src/runtime/rewindSummary.ts`
@@ -871,6 +871,24 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：测试断言被清理的工具结果上 `images` 一并移除；纯文本 compact 模型可用；最新用户图保留。
 **验证**：`node --import tsx --test test/compact.test.ts test/progressiveCompact.test.ts`
 **提交**：`checkpoint: S22 project images as text during compaction`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- 五处共用同一份投影，归属放在 `src/harness/turnImages.ts`（S15 起就是占位符措辞的单一归属）：
+  - `formatSummaryImagePlaceholder(ref, facts?)` —— 文字投影的占位符：`[Image attachment omitted from this text-only projection:\n<name>, sent WxH[, original WxH], cached at <path> | cached in this session's attachment store (attachment <id>).\nThe pixels are not present here; do not describe or infer what the image shows.]`。`facts` 可选：摘要路径解析得到缓存位置与（按 EXIF 定向后的）原始尺寸，同步的清理路径只有 ref，就退到 attachment ID 而**不猜路径**。末句即工作项 2 的落点——占位符本身禁止摘要模型虚构未观察到的内容。
+  - `projectRecordImagesToText(record, { content?, facts? })` —— **删掉 `images` 字段**并把占位符追加到文本（可同时换掉文本）。这就是工作项 7 的单点保证：清理文本却留下 `images` 的写法在四个站点里都不再存在。无图记录原样返回（同一引用），除非调用方要换文本。
+  - `projectRecordsImagesToText` / `resolveAttachmentFactsForRecords`（解析失败或抛错只降级该图的占位符，绝不让一次摘要失败）。
+- 五个站点接线：
+  1. **compact 摘要**（工作项 1、`summarizeRecordsForContinuation`）：先 `resolveAttachmentFactsForRecords`，再把投影后的记录交给 `formatRecordsForSummary`。请求消息与 `contextItems` 都不带 `images`，**compact 模型可以不支持图像**（测试直接断言这两处为 undefined）。`CompactCheckInput` / `ContinuationSummaryInput` 新增可选 `attachmentFacts`，loop 的 `autoCompactIfNeeded` 与 `summarizeRecordsForRewind` 两处都从 `options.attachmentFacts` 传入——**rewind 摘要因此自动共用同一份投影**（`rewindSummary.ts` 只做记录切分，摘要落在 loop→compact，本身无需改动）。
+  2. **单结果截断** `snipLargeToolResults`。
+  3. **旧工具结果清理** `requestPrep.compactToolResult`（预算触发的 `[summarized: …]`）。
+  4. **时间触发的 microcompact** `progressiveCompact.applyTimeBasedMicrocompact`：`[Old tool result content cleared]` 提为常量，幂等判断从「文本相等」改成「文本已是清理文本**且**没有 images」，否则带图的已清理记录会被跳过而永远留着图。
+  5. **session memory 抽取** `services/sessionMemory/prompts.ts formatRecordsForExtraction`：message 与 tool_result 追加同一句占位符（该目录已有 value-import `harness/usage.js`、`harness/cacheBreakDetection.js` 的先例，方向与 `services/` 的依赖约束一致）。
+- 工作项 3（最新用户消息文字与图片共同保留）：`selectRecordsToCompact` 本就切到最后一条用户消息之前，投影是纯投影不改记录，因此最新用户消息的文字与 `images` 都不进摘要、也不被删——测试断言摘要 prompt 里既没有 `latest request` 也没有 `latest.png`，且原记录的 `images` 原样还在。
+- 工作项 5（进摘要的旧图不再占用后续上下文，原文件保留）：compact boundary 之后 `getRecordsAfterLastCompact` 直接切掉边界前的整段，图随之离开请求；附件存储在整条链路上一个字节都没动，占位符里的缓存路径就是视觉模型用 `Read` 重新加载的入口。
+- 工作项 8（fail-open 与熔断）：本会话未触碰失败路径，`autoCompactIfNeededOnce` 的 try/catch、`compact_attempt_failed` 记录与每会话熔断逐字未动。
+- 测试：`turnImages` +5（占位符两态含 EXIF 定向、投影删字段/多图顺序/输入不被改、换文本、无图恒等、facts 解析的缺失与抛错降级）、`compact` +3（带 facts 的摘要 prompt 逐条匹配 + 消息与 contextItems 无 images + 最新用户消息文字与图都不进摘要 + 记录未被改、无 resolver 时退到 attachment ID、snip 丢图并保留未截断结果的图）、`requestPrep` +2（预算清理丢图而近期结果保图、边界前的图不再进入后续请求且记录未动）、`progressiveCompact` +1（清理丢图、近期结果保图、二次运行幂等）、`sessionMemory` +1（抽取用同一份占位符措辞）。
+- 验证：窄测 `compact`/`progressiveCompact`（42）与 `requestPrep`/`turnImages`/`sessionMemory`/`loop`/`mediaStrip`/`contextBuilder`（216）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3296 项 3295 过、1 跳过（既有）、0 失败。
 
 ---
 

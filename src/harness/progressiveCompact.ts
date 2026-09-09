@@ -8,6 +8,10 @@ import {
 import type { SessionRecord } from './types.js'
 import type { ImageTokenStrategy } from '../media/imageTokens.js'
 import { getRecordsAfterLastCompact } from './requestPrep.js'
+import { projectRecordImagesToText } from './turnImages.js'
+
+/** Text a cleared tool result carries; image placeholders may follow it. */
+const CLEARED_TOOL_RESULT_CONTENT = '[Old tool result content cleared]'
 
 export interface ProgressiveCompactInput {
   records: SessionRecord[]
@@ -133,15 +137,14 @@ function applyTimeBasedMicrocompact(
 
   let changed = false
   const updatedRecords = records.map((record) => {
-    if (
-      record.type === 'tool_result'
-      && clearIds.has(record.id)
-      && record.content !== '[Old tool result content cleared]'
-    ) {
-      changed = true
-      return { ...record, content: '[Old tool result content cleared]' }
-    }
-    return record
+    if (record.type !== 'tool_result' || !clearIds.has(record.id)) return record
+    const hasImages = record.images !== undefined && record.images.length > 0
+    if (record.content.startsWith(CLEARED_TOOL_RESULT_CONTENT) && !hasImages) return record
+    changed = true
+    // Clearing the text but keeping `images` would go on uploading the pixels
+    // this pass exists to reclaim (design §11.3) — the shared projection drops
+    // them and leaves a placeholder naming what was there.
+    return projectRecordImagesToText(record, { content: CLEARED_TOOL_RESULT_CONTENT })
   })
 
   return { records: updatedRecords, changed }

@@ -4,6 +4,7 @@
 
 import type { SessionRecord } from '../../harness/types.js'
 import { countTextTokens } from '../../prompts/budget.js'
+import { formatSummaryImagePlaceholder } from '../../harness/turnImages.js'
 
 /** System prompt for the extraction LLM call. */
 export const EXTRACTION_SYSTEM_PROMPT =
@@ -68,6 +69,18 @@ export function buildExtractionPrompt(
  * Format session records into readable text for the extraction prompt.
  * Skips subagent_transcript records (too verbose) and compact_boundary records.
  */
+/**
+ * Extraction is a text-only summary too (design §11.3), and it shares the
+ * compaction placeholder so an image that reaches memory is described the same
+ * way everywhere. The store is not read here, so the placeholder names the
+ * attachment rather than its cache path.
+ */
+function imagePlaceholderSuffix(record: SessionRecord): string {
+  const images = (record as { images?: Array<Parameters<typeof formatSummaryImagePlaceholder>[0]> }).images
+  if (!images || images.length === 0) return ''
+  return `\n${images.map((ref) => formatSummaryImagePlaceholder(ref)).join('\n')}`
+}
+
 export function formatRecordsForExtraction(records: SessionRecord[]): string {
   const lines: string[] = []
 
@@ -78,7 +91,7 @@ export function formatRecordsForExtraction(records: SessionRecord[]): string {
         const content = typeof record.content === 'string'
           ? record.content.slice(0, 2000)
           : '(empty)'
-        lines.push(`[${role}]: ${content}`)
+        lines.push(`[${role}]: ${content}${imagePlaceholderSuffix(record)}`)
         break
       }
       case 'tool_use': {
@@ -91,7 +104,7 @@ export function formatRecordsForExtraction(records: SessionRecord[]): string {
       case 'tool_result': {
         const status = record.ok ? 'ok' : 'error'
         const content = record.content.slice(0, 1000)
-        lines.push(`[Tool Result: ${record.tool} (${status})] ${content}`)
+        lines.push(`[Tool Result: ${record.tool} (${status})] ${content}${imagePlaceholderSuffix(record)}`)
         break
       }
       case 'tool_use_summary': {

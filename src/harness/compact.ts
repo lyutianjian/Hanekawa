@@ -14,6 +14,12 @@ import type { ImageTokenStrategy } from '../media/imageTokens.js'
 import { compactCacheSource } from './cacheBreakDetection.js'
 import { wrapInSystemReminder } from './systemReminder.js'
 import { getCompactPrompt, formatCompactSummary } from '../prompts/compactPrompt.js'
+import {
+  projectRecordImagesToText,
+  projectRecordsImagesToText,
+  resolveAttachmentFactsForRecords,
+  type AttachmentFactsResolver,
+} from './turnImages.js'
 import { trySessionMemoryCompaction } from '../services/sessionMemory/compact.js'
 
 const COMPACT_FAILURE_LIMIT = 3
@@ -44,6 +50,12 @@ export interface CompactCheckInput {
   discoveredToolNames?: Set<string>
   /** Custom instructions to append to the compact prompt (from CLI args or hook output). */
   compactInstructions?: string
+  /**
+   * Resolves attachment facts so summarized images name their cache location
+   * (design §11.3). Optional: without it the placeholder names the attachment
+   * ID instead, and the summary request is text-only either way.
+   */
+  attachmentFacts?: AttachmentFactsResolver
   getCompactFailureCount?(): Promise<number>
   setCompactFailureCount?(count: number): Promise<void>
   appendRecord(record: SessionRecord): Promise<void>
@@ -76,6 +88,8 @@ export interface ContinuationSummaryInput {
   preTokens?: number
   /** Custom instructions to append to the compact prompt. */
   compactInstructions?: string
+  /** See {@link CompactCheckInput.attachmentFacts}; also used by rewind summaries. */
+  attachmentFacts?: AttachmentFactsResolver
   /**
    * Project root, so the `compact` cache source is bound to it. Two projects
    * compacting in one process would otherwise share a cache-read baseline.
@@ -178,6 +192,7 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
       promptCacheRetention: input.promptCacheRetention,
       preTokens: tokenCount,
       compactInstructions: input.compactInstructions,
+      ...(input.attachmentFacts ? { attachmentFacts: input.attachmentFacts } : {}),
       cwd: input.cwd,
     })
     const postTokens = countTextTokens(summary.content)
@@ -364,12 +379,16 @@ function findLastRecordIndex(records: SessionRecord[], predicate: (record: Sessi
 
 export async function summarizeRecordsForContinuation(input: ContinuationSummaryInput): Promise<ContinuationSummaryResult> {
   const tokenCount = input.preTokens ?? countSessionRecordsTokens(input.records)
+  // The summary request is text only (design §11.3): images become placeholders
+  // naming the attachment, its size and its cache location, so a compact model
+  // that cannot see images is still a valid compact model.
+  const facts = await resolveAttachmentFactsForRecords(input.records, input.attachmentFacts)
   const content = [
     getCompactPrompt(input.compactInstructions),
     '',
     `<pre_compact_tokens>${tokenCount}</pre_compact_tokens>`,
     '<conversation>',
-    formatRecordsForSummary(input.records),
+    formatRecordsForSummary(projectRecordsImagesToText(input.records, facts)),
     '</conversation>',
   ].join('\n')
 
@@ -459,10 +478,12 @@ export function snipLargeToolResults(
     if (record.type === 'tool_result') {
       const estimatedTokens = countTextTokens(record.content)
       if (estimatedTokens > maxTokens) {
-        return {
-          ...record,
+        // Truncating the text while keeping `images` would leave the pixels
+        // uploading on every request (design §11.3); the shared projection
+        // drops them and says what was there.
+        return projectRecordImagesToText(record, {
           content: `[Result truncated: ${record.tool} output exceeded ${maxTokens} tokens (${estimatedTokens} estimated)]`,
-        }
+        })
       }
     }
     return record

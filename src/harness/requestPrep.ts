@@ -7,6 +7,7 @@ import type { ImageTokenStrategy } from '../media/imageTokens.js'
 import type { SessionRecord, ToolResultRecord, TokenUsage } from './types.js'
 import { repairToolResultPairing } from '../sessions/invariants.js'
 import { snipLargeToolResults } from './compact.js'
+import { projectRecordImagesToText } from './turnImages.js'
 
 const TOOL_RESULTS_CONTEXT_RATIO = 0.5
 const TOOL_RESULTS_TOKEN_BUDGET_CAP = 200_000
@@ -214,15 +215,16 @@ function getToolResultTokens(record: ToolResultRecord, imageTokenStrategy?: Imag
 }
 
 export function compactToolResult(record: ToolResultRecord, tokens: number): ToolResultRecord {
-  return {
-    ...record,
+  // Images go with the text (design §11.3): a result whose output was removed
+  // for the budget must not keep uploading the pixels that made it expensive.
+  const projected = projectRecordImagesToText(record, {
     content: [
       `[summarized: ${record.tool} ${tokens} tokens]`,
       `status: ${record.ok ? 'ok' : 'error'}`,
       'The original output was removed from this request to stay within the context budget.',
     ].join('\n'),
-    _tokens: undefined,
-  }
+  })
+  return { ...projected, _tokens: undefined }
 }
 
 function repairToolPairingForRequest(records: SessionRecord[]): PreparedRecordsResult {

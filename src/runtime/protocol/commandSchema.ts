@@ -242,6 +242,7 @@ const COMMAND_SCHEMAS = {
       type: z.literal('enqueue-message'),
       id: commandId,
       content: z.string(),
+      imageIds: z.array(z.string()).optional(),
       priority: z
         .enum(['now', 'next', 'later'] as const satisfies readonly MessageQueuePriority[])
         .optional(),

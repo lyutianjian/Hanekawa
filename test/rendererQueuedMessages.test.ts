@@ -5,6 +5,7 @@ import {
   queuedMessagesView,
 } from '../src/desktop/renderer/model/queuedMessages.js'
 import type { PersistedQueuedMessage } from '../src/harness/types.js'
+import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
 /**
  * The queued-message strip's decisions, with the DOM left out.
@@ -49,6 +50,39 @@ test('rows are numbered from one, in queue order', () => {
 
 test('the count in the title tracks the rows', () => {
   assert.match(queuedMessagesView([message()]).title ?? '', /已排队 1 条/)
+})
+
+test('a queued message says how many images ride with it', () => {
+  const view = queuedMessagesView([message({
+    content: 'compare these',
+    images: [
+      makeImageAttachmentRef({ id: 'i1', ownerSessionId: 's', name: 'a.png' }),
+      makeImageAttachmentRef({ id: 'i2', ownerSessionId: 's', name: 'b.png' }),
+    ],
+  })])
+  assert.equal(view.rows[0]?.label, 'compare these · 2 张图片')
+})
+
+test('an image-only queued message is named by its files, not left blank', () => {
+  // Text-less image messages are legal input (S06); a blank row would make one
+  // look like an empty message the user could not identify or clear on purpose.
+  const view = queuedMessagesView([message({
+    content: '',
+    images: [makeImageAttachmentRef({ id: 'i1', ownerSessionId: 's', name: 'shot.png' })],
+  })])
+  assert.equal(view.rows[0]?.label, '图片：shot.png')
+})
+
+test('an image-only label is bounded like any other', () => {
+  const view = queuedMessagesView([message({
+    content: '   ',
+    images: Array.from({ length: 20 }, (_, index) => makeImageAttachmentRef({
+      id: `i${index}`,
+      ownerSessionId: 's',
+      name: `attachment-with-a-long-name-${index}.png`,
+    })),
+  })])
+  assert.ok((view.rows[0]?.label.length ?? 0) <= QUEUED_LABEL_MAX_CHARS + 1)
 })
 
 test('a multi-line message collapses to one line', () => {

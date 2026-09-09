@@ -98,7 +98,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S17 | Anthropic payload 图像映射 | S16, S05 | 中 | `[x]` |
 | S18 | OpenAI payload 图像映射与工具图片合成消息 | S16, S05 | 中 | `[x]` |
 | S19 | 发送前最终校验与日志遮蔽 | S17, S18 | 中 | `[x]` |
-| S20 | 消息队列持久化与交接改造 | S19, S11 | 长 | `[ ]` |
+| S20 | 消息队列持久化与交接改造 | S19, S11 | 长 | `[~]` |
 | S21 | 模型切换、fallback 与 plan 路由 | S15, S02 | 中 | `[ ]` |
 | S22 | compact 与历史清理的图像投影 | S15, S16 | 长 | `[ ]` |
 | S23 | 子代理继承与会话生命周期附件归属 | S05, S06 | 中 | `[ ]` |
@@ -761,7 +761,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S20 `[ ]` 消息队列持久化与交接改造
+## S20 `[~]` 消息队列持久化与交接改造
 
 **前置**：S19、S11 · **规模**：长 · **设计稿**：§12.2
 **涉及**：`src/runtime/messageQueue.ts`、`src/runtime/queuePump.ts`、`test/messageQueue.test.ts`
@@ -782,6 +782,18 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：测试覆盖「交接中断不重复发送」「重启后队列仍有图」「不兼容时暂停而非重试风暴」。
 **验证**：`node --import tsx --test test/messageQueue.test.ts` + queuePump 相关测试
 **提交**：`checkpoint: S20 persist and hand off queued image messages`
+
+**本次进展（2026-09-09，Windows x64）—— 工作项 1–2 完成，停在工作项 3 的建议断点**
+
+剩余工作项 4–8（交接改造、`sourceQueuedMessageId` 关联、不兼容时暂停推进）前提未变：pump 仍是「先 `dequeue()` 再 `submit()`」，两端各一处（`host.ts pumpQueue`、`App.tsx` 的 pump effect），下次会话从这两处接着改。
+
+- 工作项 1（持久化文字 + 附件引用）：`MessageQueue.enqueue` 自 S06/S07 起已接受 `UserInput` 并把 `images` 落进 `message_queue` 记录，**TUI 侧本就完整**；缺口在 Desktop——`enqueue-message` 命令只带 `content`，S11 因此在 `queueMessage()` 里显式拒绝带图排队。本次把 `imageIds?: string[]` 加进 wire 命令、strict schema 与 `SessionClient.enqueueMessage(content, options)`（第二参数由 `priority` 改为 `{ imageIds?, priority? }`，既有调用点均未传 priority）；host 用 **`submit` 同一个** `resolveAttachmentRefs` 解析——落进队列的是存储层背书的 ref，绝不是 renderer 给的路径，跨会话/未登记 id 直接 reject 该次 enqueue。
+- 工作项 2（排队接受前的能力检查 + 执行时再检查）：`MessageQueue` 构造函数新增可选第 4 参 `validateInput`（`ValidateQueuedInput`），在 `enqueue` 内**先于 persist** 调用——单一归属，两个 shell 不会各写一份规则；抛错即「未落盘、快照未变」，正是两端把草稿还给用户所需的语义。`hydrate`/`replayMessageQueue`/`migrateTo` **不跑**该门（在 capable 模型下接受的队列必须能在纯文本模型下重启存活，怎么处置属工作项 7），有测试钉住。规则本身复用既有 gate：新增 `SessionController.assertInputAcceptable(input)` → `loop.assertImagesAllowedForSubmission(input)`（能力 + 数量上限 + 输入自身体积，S15/S19 同一份），两端构造 `MessageQueue` 时注入。**「轮到执行时按当时实际模型再次检查」已由既有链路覆盖**：pump 的 `controller.submit` 会再跑一次同一 gate（读当次 `modelState.current`），loop 每次请求重建再投影一次，provider 发送前还有终检——本次未新增第四道；缺的是「被拒时队首怎么办」，那是工作项 4/7。
+- Desktop 采集端接线：`paneSession.queueMessage()` 删掉 S11 的拒绝文案，改为与 `send()` 同一道 gate（`attachmentsView().sendBlockNote`：导入未完成 / 纯文本模型），带上 `readyAttachmentRefs` 的 id，失败时 `restoreDraftImages` 把文字与附件一起还回。顺带修 S11 遗留：`send()` 成功后从不清空 `draftImages`（`restoreDraftImages` 的注释已假定「上面乐观清空过」，实际没有），会导致同一批图随下一条消息重发；现由共用的 `clearDraftImages()` 在非命令分支清空，命令分支照旧保留草稿。
+- 队列条目展示：`queuedMessagesView` 的行标签补上图片——有文字时追加 `· N 张图片`，纯图片消息按 `deriveSessionTitle` 同款 `图片：文件名` 兜底（否则一条合法的纯图片排队消息画成空行），兜底同样过 `summarize` 受 `QUEUED_LABEL_MAX_CHARS` 约束。
+- 未做（不属本次两个工作项）：设计稿 §12.3 的「`/clear` 迁移队列前先复制附件并重绑定引用」。当前 `migrateTo` 后 ref 仍指向旧 session，而发送路径（`bootstrap.ts` 的 `resolveAttachmentFacts`、loop 的 `readSendBytes`）按 **ref 自带的 `ownerSessionId`** 解析，因此迁移后的队列图仍可正常发送；真正的归属复制与回收保护属 S23。
+- 测试：`messageQueue` +2（accept gate 拒绝时零落盘零快照变化、文本仍可入队；replay 与 `migrateTo` 不跑 gate 且 ref 原样保留）；`rendererQueuedMessages` +3（图片计数、纯图片文件名兜底、兜底长度受限）；`desktopUiRoundTrip` +2（带图排队往返：ref 过线、去重、`structuredClone` 安全、无字节泄漏、轮次结束后交接仍带 ref；未登记 id 与纯文本模型两种拒绝均不入队，同一模型下纯文本照常排队）。两个假 controller 桩（`desktopUiRoundTrip` 真规则 + `setImageCapable`、`protocolHost` 空实现）按既有桩惯例补 `assertInputAcceptable`。
+- 验证：窄测 `messageQueue`/`rendererQueuedMessages`/`desktopUiRoundTrip`/`protocolHost`/`sessionController` 全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3263 项 3262 过、1 跳过（既有）、0 失败。
 
 ---
 

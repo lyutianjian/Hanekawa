@@ -250,8 +250,19 @@ export type HostCommand =
    * host has — whether a turn is in flight, and whether a blocking UI request is
    * outstanding. There is deliberately no `dequeue`: a client asking for the
    * next message would race the host's own pump.
+   *
+   * `imageIds` name attachments imported through `import-attachment`, exactly
+   * as `submit` does: the queue persists text *and* attachment references, so a
+   * message queued with images is still the same message after a restart. The
+   * ids resolve host-side against the current session's store.
    */
-  | { type: 'enqueue-message'; id: string; content: string; priority?: MessageQueuePriority }
+  | {
+    type: 'enqueue-message'
+    id: string
+    content: string
+    imageIds?: string[]
+    priority?: MessageQueuePriority
+  }
   | { type: 'clear-queue'; id: string }
   // --- image attachments ----------------------------------------------------
   /**

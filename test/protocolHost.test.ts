@@ -172,6 +172,9 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
       }
       calls.submits.push(input.text)
     },
+    // The queue's accept-time gate. Nothing in this file queues images, so the
+    // stub accepts; `desktopUiRoundTrip.test.ts` covers the refusing side.
+    assertInputAcceptable: () => {},
     interrupt: (reason: unknown) => { calls.interrupts.push(reason) },
     // Reads the real store and emits the reset the real controller emits, so a
     // command that rewrote the file on disk is observable through the boundary.

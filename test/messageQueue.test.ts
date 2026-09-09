@@ -160,4 +160,53 @@ describe('messageQueue', () => {
     assert.equal('images' in plain, false)
     assert.deepEqual(queuedMessageToInput(plain), { text: 'no images' })
   })
+
+  it('refuses an input the accept-time gate rejects, leaving nothing on disk', async () => {
+    const seen: string[] = []
+    const gated = new MessageQueue(
+      'session-a',
+      [],
+      async (sessionId, record) => { persisted.push({ sessionId, record }) },
+      (input) => {
+        seen.push(input.text)
+        if (input.images && input.images.length > 0) throw new Error('model cannot take images')
+      },
+    )
+
+    const image = makeImageAttachmentRef({ id: 'img-g1', ownerSessionId: 'session-a' })
+    await assert.rejects(() => gated.enqueue({ text: 'look', images: [image] }), /cannot take images/)
+    assert.equal(gated.getSnapshot().length, 0)
+    assert.equal(persisted.length, 0)
+
+    // The gate is the only thing that refused; text still queues normally.
+    await gated.enqueue({ text: 'plain' })
+    assert.deepEqual(seen, ['look', 'plain'])
+    assert.deepEqual(gated.getSnapshot().map((message) => message.content), ['plain'])
+  })
+
+  it('never re-runs the accept gate on replay or migration', async () => {
+    const base = new Date().toISOString()
+    const image = makeImageAttachmentRef({ id: 'img-g2', ownerSessionId: 'session-a' })
+    const records: SessionRecord[] = [{
+      id: 'e1',
+      type: 'message_queue',
+      operation: 'enqueue',
+      message: { id: 'm1', content: 'queued earlier', priority: 'next', createdAt: base, images: [image] },
+      createdAt: base,
+    }]
+    let gateCalls = 0
+    // A queue accepted under an image-capable model must survive a restart
+    // under a text-only one: the pump decides what to do with it, not replay.
+    const gated = new MessageQueue(
+      'session-a',
+      records,
+      async (sessionId, record) => { persisted.push({ sessionId, record }) },
+      () => { gateCalls++; throw new Error('would refuse') },
+    )
+    assert.deepEqual(gated.getSnapshot().map((message) => message.id), ['m1'])
+
+    await gated.migrateTo('session-b', [])
+    assert.deepEqual(gated.getSnapshot()[0]?.images, [image])
+    assert.equal(gateCalls, 0)
+  })
 })

@@ -44,7 +44,7 @@ export function queuedMessagesView(
 ): QueuedMessagesView {
   const rows = messages.map((message, index) => ({
     id: message.id,
-    label: summarize(message.content),
+    label: label(message),
     position: index + 1,
   }))
 
@@ -55,6 +55,24 @@ export function queuedMessagesView(
       : `已排队 ${rows.length} 条 — 当前轮次结束后发送`,
     clearLabel: '清空',
   }
+}
+
+/**
+ * What a waiting message reads as.
+ *
+ * A queued message can carry attachment refs, and an image-only one has no text
+ * at all — summarizing it alone would draw a blank row for a message that is
+ * about to be sent. The image count is appended rather than replacing the text
+ * so a row still says which message it is; the same 「图片：文件名」 fallback the
+ * session title uses (`deriveSessionTitle`) covers the text-less case.
+ */
+function label(message: PersistedQueuedMessage): string {
+  const images = message.images ?? []
+  if (images.length === 0) return summarize(message.content)
+  const text = summarize(message.content)
+  // Bounded like any other label: a dozen attached files must not out-run the row.
+  if (text.length === 0) return summarize(`图片：${images.map((ref) => ref.name).join('、')}`)
+  return `${text} · ${images.length} 张图片`
 }
 
 /**

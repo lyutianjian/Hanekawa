@@ -314,12 +314,14 @@ export class SessionHost {
     this.onPaneListChanged = deps.onPaneListChanged
     this.session = deps.scope.session
     this.ledger = new SessionRecordLedger(deps.scope.existingRecords)
-    // Same three arguments the terminal passes (`App.tsx`), so a session's queue
-    // replays identically whichever shell reopens it.
+    // Same four arguments the terminal passes (`App.tsx`), so a session's queue
+    // replays identically whichever shell reopens it — and refuses the same
+    // inputs at the same point.
     this.messages = new MessageQueue(
       deps.scope.session.id,
       deps.scope.existingRecords,
       (sessionId, record) => this.project.store.appendRecord(sessionId, record),
+      (input) => this.controller.assertInputAcceptable(input),
     )
 
     this.teardown.push(this.controller.onEvent(this.forwardSessionEvent))
@@ -1000,7 +1002,19 @@ export class SessionHost {
         // `MessageQueue` notifies its subscribers, and `postQueuedMessages` both
         // announces the new list and asks the pump — so an idle host has already
         // started sending this by the time the reply goes out.
-        const message = await this.messages.enqueue({ text: command.content }, command.priority)
+        // Ids resolve through the same trusted lookup `submit` uses: what is
+        // persisted on the queued message is a ref the store vouches for, never
+        // a renderer-supplied path. An id this session does not own, or an
+        // input the model cannot take, rejects the enqueue — the composer still
+        // holds the draft at that point, which is the whole reason the check
+        // happens on the accept path.
+        const images = command.imageIds === undefined
+          ? []
+          : await this.resolveAttachmentRefs(command.imageIds)
+        const message = await this.messages.enqueue(
+          images.length > 0 ? { text: command.content, images } : { text: command.content },
+          command.priority,
+        )
         return { message } satisfies WireEnqueueResult
       }
 

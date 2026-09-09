@@ -11,6 +11,20 @@ export type QueuedMessage = PersistedQueuedMessage
 export type PersistQueueRecord = (sessionId: string, record: MessageQueueRecord) => Promise<void>
 
 /**
+ * The accept-time gate (design §12.2): "the import and the new-image capability
+ * check happen before the message is accepted into the queue".
+ *
+ * Injected rather than imported so this module keeps its runtime-only
+ * dependencies, and owned here rather than at the two call sites so the rule
+ * cannot fork between the shells: a throw leaves nothing persisted and the
+ * snapshot untouched, which is exactly what both composers need to hand the
+ * draft back. It is *not* re-run by `hydrate`/`replayMessageQueue` — a queue
+ * persisted under an image-capable model must survive a restart under a
+ * text-only one; the second check happens when the pump hands the message off.
+ */
+export type ValidateQueuedInput = (input: UserInput) => void | Promise<void>
+
+/**
  * The inverse of `enqueue`: a persisted queue message back into the UserInput
  * every submission path speaks. Both shells' pumps hand off through this, so
  * the mapping from `content`/`images` to `text`/`images` cannot fork.
@@ -41,10 +55,17 @@ export class MessageQueue {
   private snapshot: readonly QueuedMessage[] = EMPTY_SNAPSHOT
   private operationChain: Promise<void> = Promise.resolve()
   private readonly listeners = new Set<() => void>()
+  private readonly validateInput: ValidateQueuedInput | undefined
 
-  constructor(sessionId: string, records: readonly SessionRecord[], persist: PersistQueueRecord) {
+  constructor(
+    sessionId: string,
+    records: readonly SessionRecord[],
+    persist: PersistQueueRecord,
+    validateInput?: ValidateQueuedInput,
+  ) {
     this.sessionId = sessionId
     this.persist = persist
+    this.validateInput = validateInput
     this.replaceSnapshot(replayMessageQueue(records))
   }
 
@@ -70,6 +91,10 @@ export class MessageQueue {
     })
 
     return this.serialize(async () => {
+      // Before the write, not after: a message the runtime would refuse to send
+      // must never reach disk, or a restart would replay it into the same
+      // refusal with no draft left to fix.
+      await this.validateInput?.(input)
       await this.persist(this.sessionId, {
         id: randomUUID(),
         type: 'message_queue',

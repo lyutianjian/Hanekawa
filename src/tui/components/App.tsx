@@ -199,6 +199,10 @@ export function App({
     initialSession.id,
     existingRecords,
     (sessionId, record) => store.appendRecord(sessionId, record),
+    // The accept-time gate, same as the desktop host's: an input the active
+    // model cannot take is refused while `handleSubmit` still holds the text
+    // and the draft images, rather than being persisted and refused later.
+    (input) => sessionController.assertInputAcceptable(input),
   ))
   const queuedMessages = useSyncExternalStore(
     messageQueue.subscribe,

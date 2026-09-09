@@ -602,13 +602,21 @@ export class SessionClient {
    * that also popped from it would race that pump. The reply echoes the stored
    * message, but the authoritative list still arrives as a `queued-messages`
    * event — including the one that removes this message again when it is sent.
+   *
+   * `imageIds` behaves as it does on {@link submit}: the ids are resolved
+   * host-side and stored on the queued message as refs, so a rejection here
+   * means the message was *not* queued and the composer still owns the draft.
    */
-  async enqueueMessage(content: string, priority?: MessageQueuePriority): Promise<PersistedQueuedMessage> {
+  async enqueueMessage(
+    content: string,
+    options: { imageIds?: string[]; priority?: MessageQueuePriority } = {},
+  ): Promise<PersistedQueuedMessage> {
     const result = await this.send({
       type: 'enqueue-message',
       id: randomUUID(),
       content,
-      ...(priority ? { priority } : {}),
+      ...(options.imageIds !== undefined ? { imageIds: [...options.imageIds] } : {}),
+      ...(options.priority ? { priority: options.priority } : {}),
     }) as WireEnqueueResult
     return result.message
   }

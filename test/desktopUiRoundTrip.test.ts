@@ -53,6 +53,8 @@ interface Harness {
   openedAttachmentPaths: string[]
   /** Flips the turn state and notifies, the way the real controller does. */
   setStreaming: (value: boolean) => void
+  /** Stands in for a model switch: what the queue's accept gate answers. */
+  setImageCapable: (value: boolean) => void
   dispose: () => void
 }
 
@@ -106,6 +108,7 @@ async function createHarness(): Promise<Harness> {
   const openedAttachmentPaths: string[] = []
   const snapshotListeners = new Set<() => void>()
   let streaming = false
+  let imageCapable = true
 
   const controller = {
     onEvent: () => () => undefined,
@@ -128,6 +131,13 @@ async function createHarness(): Promise<Harness> {
     submit: async (input: UserInput) => {
       submits.push(input.text)
       inputs.push(input)
+    },
+    // The real rule, in miniature: the loop's gate refuses images the active
+    // model cannot take, and the queue runs it before it accepts anything.
+    assertInputAcceptable: (input: UserInput) => {
+      if (!imageCapable && input.images && input.images.length > 0) {
+        throw new Error('Model fake does not accept image input')
+      }
     },
   } as unknown as SessionController
 
@@ -177,6 +187,9 @@ async function createHarness(): Promise<Harness> {
     setStreaming: (value: boolean) => {
       streaming = value
       for (const listener of [...snapshotListeners]) listener()
+    },
+    setImageCapable: (value: boolean) => {
+      imageCapable = value
     },
     dispose: () => {
       host.dispose()
@@ -388,6 +401,72 @@ test('a message queued mid-turn crosses the boundary, shows up, and is sent when
   assert.deepEqual(harness.submits, ['the next thing'], 'the turn ending is what releases it')
   assert.deepEqual(harness.client.getQueuedMessages(), [], 'and the strip empties')
   assert.deepEqual(announced.at(-1), [])
+  harness.dispose()
+})
+
+test('a message queued mid-turn carries its attachments as refs, not paths', async () => {
+  const harness = await createHarness()
+  const imported = await harness.client.importAttachment({
+    kind: 'path',
+    path: fixtureImagePath('transparent.png'),
+  })
+  assert.ok(imported.ok, 'import failed')
+  if (!imported.ok) return
+  const { ref } = imported.attachment
+
+  harness.setStreaming(true)
+  const stored = await harness.client.enqueueMessage('look at this later', { imageIds: [ref.id, ref.id] })
+
+  // The queue persists text *and* refs — never the source path — and the ref is
+  // the host's, resolved out of its own store.
+  assert.deepEqual(stored.images?.map((image) => image.id), [ref.id])
+  assert.equal(stored.images?.[0]?.name, 'transparent.png')
+  assert.doesNotThrow(() => structuredClone(stored))
+  assertNoImageBytes(stored, 'queued message')
+
+  await settle()
+  assert.deepEqual(harness.client.getQueuedMessages()[0]?.images?.map((image) => image.id), [ref.id])
+
+  harness.setStreaming(false)
+  await settle()
+  assert.deepEqual(harness.submits, ['look at this later'])
+  assert.deepEqual(harness.inputs[0]?.images?.map((image) => image.id), [ref.id], 'the hand-off keeps them')
+  harness.dispose()
+})
+
+test('an unknown attachment id and a text-only model both refuse the enqueue outright', async () => {
+  const harness = await createHarness()
+  const imported = await harness.client.importAttachment({
+    kind: 'path',
+    path: fixtureImagePath('transparent.png'),
+  })
+  assert.ok(imported.ok, 'import failed')
+  if (!imported.ok) return
+
+  harness.setStreaming(true)
+  await assert.rejects(
+    () => harness.client.enqueueMessage('with a ghost', { imageIds: ['not-registered'] }),
+    /not available/,
+  )
+  assert.deepEqual(harness.client.getQueuedMessages(), [], 'nothing was queued')
+
+  // The accept-time capability check (design §12.2): refused while the composer
+  // still holds the draft, rather than persisted into a refusal later.
+  harness.setImageCapable(false)
+  await assert.rejects(
+    () => harness.client.enqueueMessage('describe this', { imageIds: [imported.attachment.ref.id] }),
+    /does not accept image input/,
+  )
+  await settle()
+  assert.deepEqual(harness.client.getQueuedMessages(), [])
+
+  // Text still queues on the same model, and nothing was lost on the way.
+  await harness.client.enqueueMessage('plain text')
+  await settle()
+  assert.deepEqual(harness.client.getQueuedMessages().map((message) => message.content), ['plain text'])
+  harness.setStreaming(false)
+  await settle()
+  assert.deepEqual(harness.submits, ['plain text'])
   harness.dispose()
 })
 

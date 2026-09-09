@@ -1491,6 +1491,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     const sentText = text
     const sentDrafts = draftImages
     deps.composer.clear()
+    // Commands keep their drafts (see below); a prompt takes them with it, so
+    // the strip empties with the textarea and the failure path below is what
+    // puts both back.
+    if (classified.kind !== 'command') clearDraftImages()
     closeCompletions()
 
     try {
@@ -1521,36 +1525,53 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   }
 
   /**
-   * Hands the composer's text to the host's queue instead of starting a turn.
-   * A slash command is *not* queued — commands are not prompts. The composer
-   * is cleared optimistically, then restored on failure. Draft attachments
-   * ride the queue host-side once S20 wires them; until then a queued send
-   * carrying drafts is refused rather than silently text-only.
+   * Hands the composer's text and draft attachments to the host's queue
+   * instead of starting a turn. A slash command is *not* queued — commands are
+   * not prompts. The composer is cleared optimistically, then restored on
+   * failure, text and attachments together.
+   *
+   * The gate is `send()`'s: a queued message is a message, so pending or failed
+   * imports and images in front of a text-only model stop it here rather than
+   * being queued into a refusal the user cannot fix later.
    */
   async function queueMessage(): Promise<void> {
     const classified = classifyInput(deps.composer.value())
-    if (classified.kind === 'empty') return
+    if (classified.kind === 'empty') {
+      if (draftImages.length > 0) note(attachmentsView().sendBlockNote ?? '', 'error')
+      return
+    }
     if (classified.kind === 'command') {
       await send()
       return
     }
-
-    if (draftImages.length > 0) {
-      note('图片暂不支持排队等待（队列带图将在后续版本接通）；请等本轮结束后再发送，或先移除图片。', 'error')
+    if (attachmentsView().sendBlockNote !== undefined) {
+      note(attachmentsView().sendBlockNote!, 'error')
       return
     }
 
     const text = classified.text
+    const imageIds = readyAttachmentRefs(draftImages).map((ref) => ref.id)
+    const queuedDrafts = draftImages
     deps.composer.clear()
+    clearDraftImages()
     closeCompletions()
     try {
-      await client.enqueueMessage(text)
+      await client.enqueueMessage(text, imageIds.length > 0 ? { imageIds } : {})
     } catch (error) {
       if (deps.composer.value() === '') deps.composer.setValue(text, text.length)
       note(`Failed to queue: ${describe(error)}`, 'error')
+      draftImages = restoreDraftImages(queuedDrafts)
+      renderAttachments()
     } finally {
       deps.composer.focus()
     }
+  }
+
+  /** Empties the strip in the one step a send or a queue hand-off shares. */
+  function clearDraftImages(): void {
+    if (draftImages.length === 0) return
+    draftImages = Object.freeze([])
+    renderAttachments()
   }
 
   async function refreshCommands(): Promise<void> {

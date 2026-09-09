@@ -201,6 +201,20 @@ export class SessionController {
    * It throws rather than silently returning because a dropped message is
    * indistinguishable from a message that was sent and answered with nothing.
    */
+  /**
+   * The submission gate without the submission (design §12.2).
+   *
+   * The queue's accept path runs this so an input the active model cannot take
+   * is refused while the composer still holds it, instead of being persisted
+   * and refused later with nothing left to hand back. It reads the model in
+   * effect *now*; the pump re-checks against whatever is actually serving the
+   * request when the message's turn comes, because either can change while the
+   * message waits.
+   */
+  assertInputAcceptable(input: UserInput): void {
+    this.getSession().loop.assertImagesAllowedForSubmission(input)
+  }
+
   async submit(input: UserInput, options?: AgentRunOverrides): Promise<void> {
     if (this.streaming) {
       throw new Error('A turn is already running; queue the message instead of submitting it.')

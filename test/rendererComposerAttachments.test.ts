@@ -15,6 +15,7 @@ import {
   restoredAttachmentDrafts,
   retryAttachmentImport,
   settleAttachmentImport,
+  type AttachmentDrafts,
   type AttachmentImportSource,
 } from '../src/desktop/renderer/model/composerAttachments.js'
 
@@ -183,4 +184,27 @@ test('only image files become paste sources; their bytes are copied out of the p
 
   const sources = await imagePasteSources(files)
   assert.deepEqual(sources, [{ kind: 'bytes', name: 'shot.png', bytes: png }])
+})
+
+// --- the thumbnail wiring on the strip view (S12) ---------------------------------
+
+test('a ready row carries its image id and the cached thumbnail URL, or neither', () => {
+  const drafts: AttachmentDrafts = [{ kind: 'ready', draftId: 'd1', ref: ref('img-1') }]
+
+  const cold = attachmentStripView(drafts, { supportsImageInput: true })
+  assert.equal(cold.rows[0]!.imageId, 'img-1')
+  assert.equal(cold.rows[0]!.thumbUrl, undefined, 'no URL until the on-demand load settles')
+
+  const warm = attachmentStripView(drafts, { supportsImageInput: true }, (id) =>
+    id === 'img-1' ? 'data:image/png;base64,AA' : undefined)
+  assert.equal(warm.rows[0]!.thumbUrl, 'data:image/png;base64,AA')
+
+  // Importing and failed rows never claim an id: there is no attachment to preview.
+  const mixed: AttachmentDrafts = [
+    drafts[0]!,
+    { kind: 'importing', draftId: 'd2', name: 'w.png', source: { kind: 'path', path: 'w.png' } },
+    { kind: 'failed', draftId: 'd3', name: 'bad.png', source: { kind: 'path', path: 'bad.png' }, reason: 'decode-failed', message: 'nope' },
+  ]
+  const rows = attachmentStripView(mixed, { supportsImageInput: true }).rows
+  assert.deepEqual(rows.map((row) => row.imageId), ['img-1', undefined, undefined])
 })

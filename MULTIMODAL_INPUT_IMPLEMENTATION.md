@@ -90,7 +90,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S09 | `@` 图片引用 | S08 | 中 | `[x]` |
 | S10 | `Read` 工具图片分流 | S06 | 中 | `[x]` |
 | S11 | Desktop 采集与草稿状态机 | S08, S19 | 长 | `[x]` |
-| S12 | Desktop 预览、缩略图与打开原图 | S11 | 短 | `[ ]` |
+| S12 | Desktop 预览、缩略图与打开原图 | S11 | 短 | `[x]` |
 | S13 | TUI 图片剪贴板采集（三平台） | S08 | 中 | `[x]` |
 | S14 | TUI 路径粘贴、附件列表与 `/paste-image` | S13 | 中 | `[x]` |
 | S15 | 当前轮/历史轮判定与历史降级投影 | S06 | 长 | `[x]` |
@@ -483,7 +483,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S12 `[ ]` Desktop 预览、缩略图与打开原图
+## S12 `[x]` Desktop 预览、缩略图与打开原图
 
 **前置**：S11 · **规模**：短 · **设计稿**：§6.3、§14.2
 **涉及**：`src/desktop/renderer/dom/composerView.ts`、`transcriptView.ts`、`src/desktop/shellHost.ts`
@@ -491,13 +491,24 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **工作项**
 
 1. 缩略图按需取得受限 data URL；**不要**把原始 Base64 混进每次快照。
-2. 打开原图由 host 依据已登记附件定位文件；越权 ID 拒绝。
+2. 打开原图由 host 依据已登记附件定位文件；越权 ID 被拒。
 3. **流式输出期间缩略图不得反复重传**，保持帧/渲染签名工作有界。
 4. 预览弹层遵守三种关闭方式与 focus 规则；paint 内的 `focus()` 放最后（它会同步触发 `focusout`）。
 
 **完成判据**：流式过程中缩略图请求次数有界；点击可打开原图；越权 ID 被拒。
 **验证**：`node --import tsx --test test/desktopShellHost.test.ts` + 手工
 **提交**：`checkpoint: S12 add desktop attachment previews`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- **前置说明**：本文件中第一个 `[ ]` 是 S12（前置 S11 已完成）。`src/desktop/shellHost.ts` 经核对无需改动：S08 的 `get-attachment-preview`（S05 `previewDataUrl`，300,000 字符上限的受限 data URL）与 `open-attachment`（host 按已登记 ID 解析 `metadata.localPath`，越权/未登记 ID 结构化 `file-missing` 拒绝）就是本会话要消费的全部 host 半边——S12 是把 renderer 侧真正画出来并保持请求有界。
+- **按需取得（工作项 1）**：新增纯模块 `src/desktop/renderer/model/attachmentPreviews.ts`（「涉及文件」之外的新文件——请求状态机与 LRU 需要单一归属，且要能进 base 程序被纯测试）：`beginPreviewLoad`（自动路径：缓存有 id 即 `started: false`，无论 loading/ready/failed）、`retryPreviewLoad`（显式路径：仅 failed 可重跑）、`settlePreviewLoad`（settle 即移到 LRU 最近端）+ `failPreviewLoad` + `previewDataUrl`；`MAX_ATTACHMENT_PREVIEWS = 16` 上限（10 张草稿条满额 + 余量，是安全网不是正常路径）。`get-attachment-preview` 从此有了 renderer 侧消费者；快照仍只携带 ref（S06/S08 结构保证），Base64 从不进任何快照。
+- **流式期间不重传（工作项 3）**：三重防线。协议侧本就不重发（预览是命令不是快照字段）；paneSession `loadMissingThumbnails` 在 strip paint 后对无缓存的 ready 行逐 id `beginPreviewLoad`，缓存有记录即不再发请求，与 `previewLoads` 在途集合共同保证「每 id 一次」；视图侧 `renderAttachments` 的 signature 纳入 `thumbUrl`——无 URL 的重绘不重建行（节点复用断言钉住），URL 到达是真实内容变化恰重绘一次，之后的流式重绘又因 signature 相同而零成本。transcript 侧刻意**不画缩略图**：transcript 是 `aria-live` 区域且每流式 chunk 重绘，是唯一会让按需 data URL 反复请求的地方——用户消息的图片画成纯文字行 `[图片 1：name，W×H]`（与 TUI `UserMessage` 同款措辞），painter signature 含 `images` 引用（未变即同一数组，`===` 命中零重绘）。
+- **预览弹层（工作项 4）**：`composerView` 新增 `showAttachmentPreview` / `closeAttachmentPreview`：弹层挂在 `+` 所在的 composer bar（`.composer-menu` 同款宿主与锚定），`role="dialog"`，内容 = 文件名 + 关闭 ✕ + **缩略图自己的 data URL 放大**（设计稿的预览就是受限 data URL，不是原图字节、不按另一尺寸重取）+ 尺寸行（含「，动画首帧」）+「打开原图」。三关法：press outside 经 `onPressOutside([panel])`（scope 只有弹层自身——点开它的缩略图在 scope 外，先关弹层，随后的 click 再开，正好是切换语义）；`focusout` 的 `relatedTarget === null` 判定为自身重绘忽略（`closeButton.focus()` 放在 paint 最后，它同步触发 focusout）；Escape 在弹层上 `preventDefault + stopPropagation` 后关闭并把焦点还给 composer。`closeMenus` 一并收它——背景 pane 不留下悬空弹层。缩略图点击走 pane 的 `previewDraftImage`：缓存命中立即打开，未命中在显式路径请求一次；draft 在 settle 前被移除则不点亮弹层；预览失败是 strip 边的 note，不是空弹层。
+- **打开原图（工作项 2）**：草稿条缩略图 → 预览弹层「打开原图」与标签点击 → S11 `openDraftImage`；transcript 用户消息图片行点击 → paneSession 新入口 `openImageById`（`client.openAttachment` 按 ID，host 解析路径；失败为该图局部 note）——发送后的消息不再依赖草稿行也存在。「越权 ID 被拒」由 S08 既有 host 侧核验 + 测试承担（本会话全部经 client 命令，无任何 `file://` 或路径入口）。
+- **接线**：`attachmentStripView` 增可选 `previews` 查询函数（默认恒 undefined，既有调用点零改动；两处调用点——`attachmentsView` 与 deactivate 清空——传入 `previewDataUrl(previewCache, …)`）；`AttachmentRowView` 增 `imageId` / `thumbUrl`（仅 ready 行携带）；`TranscriptHandlers` 增 `onOpenImage`；`TranscriptItem` 增可选 `images`（`applySessionEvent` turn-start 与 `recordItems` 用户 message 分支分别从事件与记录透传，空数组不落键，旧记录无该键保持 absent）；`app.ts` 增 `onPreviewAttachment` 路由到活动 pane。CSS：`.attachment-thumb`（28×28、object-fit cover、alt 文本承担加载前事实）、`.attachment-preview*`（z-index 5 与菜单同层、宽 `min(24rem, …)`、`--shadow-float`）、`.user-image-line`（quiet 行、hover 提亮）。domStub 无需增补：`el('img')` 走 `createElement` 通用路径，`alt`/`src` 用 `setAttribute`（stub 的 `attributes` Map 即可断言）。
+- **测试**：新增 `test/rendererAttachmentPreviews.test.ts` 3 项（自动路径单次请求 + settle 终止、失败显式可重试而自动路径不重试、LRU 上限与 refresh 存活/最旧驱逐）；`rendererComposerAttachments` +1（ready 行带 id/URL 或都不带、importing/failed 不 claim id）；`rendererComposerView` +3（缩略图 src/alt/点击预览不打开原图 + 无 URL 行不重建而有 URL 恰重绘一次 + 预览弹层三关法/`relatedTarget === null` 忽略/Escape 消费/closeMenus 收走/打开原图路由/focus 回 composer）；`rendererTranscriptView` +2（图片行逐字文案 + 点击与 Enter 路由 `onOpenImage`、无图消息零图片行 + 未变重绘节点复用）；既有「strip draws every state」适配 ready 行子节点序（[thumbnail, label, remove]）。
+- **验证**：窄测 `rendererAttachmentPreviews`（3）/`rendererComposerAttachments`（12）/`rendererComposerView`（38）/`rendererTranscriptView`（62）/`rendererTranscriptModel`/`rendererShellModel`/`rendererImports`/`desktopShellHost` 297 项全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3256 项 3255 过、1 跳过（既有）、0 失败。真实粘贴/拖放/选择/预览弹层的手工项按计划属 S26。
 
 ---
 

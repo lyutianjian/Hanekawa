@@ -173,6 +173,15 @@ export interface AttachmentRowView {
   readonly label: string
   /** The state's own words: 导入中… / 失败：…. */
   readonly detail?: string
+  /** A ready row's attachment id, for the thumbnail lookup and the preview ask. */
+  readonly imageId?: string
+  /**
+   * The thumbnail's data URL when the pane already has it (S12). Absent until
+   * the on-demand load settles; a row gains it exactly once — the arrival is a
+   * real content change, so it repaints the row, and an unchanged view still
+   * rebuilds nothing.
+   */
+  readonly thumbUrl?: string
 }
 
 export interface AttachmentStripView {
@@ -195,10 +204,15 @@ const INCOMPLETE_NOTE = '还有附件在导入中或未成功；处理后才能�
  * capability subset: `undefined` means no snapshot yet, in which case nothing
  * is blocked — the host's submission gate (S15/S19) is the authority and the
  * renderer's copy is the *why*, shown before the round trip that would fail.
+ *
+ * `previews` answers a ready row's attachment id with the thumbnail data URL
+ * the pane already holds, or `undefined` when it does not. The lookup (not the
+ * map) keeps this pure and lets the pane own the LRU.
  */
 export function attachmentStripView(
   drafts: AttachmentDrafts,
   runtime: { supportsImageInput?: boolean } | undefined,
+  previews: (imageId: string) => string | undefined = () => undefined,
 ): AttachmentStripView {
   const rows: AttachmentRowView[] = drafts.map((draft, index) => {
     const number = index + 1
@@ -209,10 +223,13 @@ export function attachmentStripView(
       return { draftId: draft.draftId, state: 'failed', label: `图片 ${number}：${draft.name}`, detail: `失败：${draft.message}` }
     }
     const animated = draft.animated ? '，动画首帧' : ''
+    const thumbUrl = previews(draft.ref.id)
     return {
       draftId: draft.draftId,
       state: 'ready',
       label: `图片 ${number}：${draft.ref.name}，${draft.ref.width}×${draft.ref.height}${animated}`,
+      imageId: draft.ref.id,
+      ...(thumbUrl !== undefined ? { thumbUrl } : {}),
     }
   })
 
@@ -224,4 +241,22 @@ export function attachmentStripView(
   }
 
   return { rows, readyCount, ...(sendBlockNote ? { sendBlockNote } : {}) }
+}
+
+// --- the preview popover (S12) ---------------------------------------------------
+
+/**
+ * What the pane hands the composer to open the preview popover. The data URL
+ * is the same size-capped thumbnail the strip paints — the design's preview
+ * *is* the受限 data URL, never the original bytes — enlarged in a popover
+ * rather than re-fetched at another size.
+ */
+export interface AttachmentPreviewView {
+  /** The ready draft this preview came from; 打开原图 acts on it. */
+  readonly draftId: string
+  readonly imageId: string
+  readonly name: string
+  /** `W×H`, with ，动画首帧 appended when the import took the first frame. */
+  readonly dimensions: string
+  readonly dataUrl: string
 }

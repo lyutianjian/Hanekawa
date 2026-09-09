@@ -25,6 +25,7 @@ import {
 } from '../model/transcript.js'
 import { anchorPadding, anchorTopGap, TRANSCRIPT_PAD_VARIABLE } from '../model/transcriptAnchor.js'
 import { splitFileMentions } from '../model/userMessage.js'
+import type { ImageAttachmentRef } from '../../../media/types.js'
 import {
   groupActivityLabel,
   turnActivity,
@@ -122,6 +123,12 @@ export interface TranscriptHandlers {
    * file header). The pane turns it into the `open-in-editor` command.
    */
   onOpenPath(path: string, line: number | undefined): void
+  /**
+   * An image line under a user bubble was clicked (S12). The pane turns it
+   * into `open-attachment`: the host resolves the registered id to the cached
+   * original, and no `file://` read is opened to the renderer.
+   */
+  onOpenImage(imageId: string, name: string): void
   /**
    * A message's 复制 button. The pane owns the clipboard call: `navigator` is a
    * host object, and this file is the one under test against a hand-written DOM
@@ -464,6 +471,7 @@ function createPainter(
     onToggle: handlers.onToggle,
     onTaskStep: handlers.onTaskStep,
     onOpenPath: handlers.onOpenPath,
+    onOpenImage: handlers.onOpenImage,
     onCopy: handlers.onCopy,
     node(key, className, signature, fill, create) {
       live.add(key)
@@ -1125,8 +1133,16 @@ function itemNode(painter: Painter, item: TranscriptItem): HTMLElement {
     // The item is the *column* here, not the bubble: the bubble is its own node,
     // so the meta row sits under it rather than inside it — a control tucked in
     // with the user's own words reads as part of the message.
-    return painter.node(key, classes.join(' '), [item.text, item.createdAt], () => [
+    //
+    // The images a user message was submitted with (S12) draw as line facts
+    // under the bubble — the TUI's own wording, no thumbnails here: the
+    // transcript is `aria-live` and repaints at the stream rate, which is the
+    // one place an on-demand data URL would keep being re-requested. The row
+    // names itself; a click opens the original through the host, exactly the
+    // way a ready draft's label does.
+    return painter.node(key, classes.join(' '), [item.text, item.createdAt, item.images], () => [
       el('div', 'user-bubble', ...userParts(item)),
+      ...(item.images?.map((image, index) => imageLineNode(painter, item, image, index)) ?? []),
       metaRow(painter, item),
     ])
   }
@@ -1191,6 +1207,33 @@ function userParts(item: TranscriptItem): Child[] {
       ? segment.text
       : el('span', 'file-chip', icon('file'), el('span', 'file-chip-label', segment.label)),
   )
+}
+
+/**
+ * One image line under a user bubble (S12): `[图片 1：name，W×H]` in the TUI's
+ * wording — pure facts, no pixels, no data URL. Clicking it opens the cached
+ * original through the host (`open-attachment`, fire-and-forget); the row is
+ * a `span` button rather than a `controls.ts` button because the sheet styles
+ * it as a quiet line, and the copy in the live region is the facts a reader
+ * needs, not a hidden label.
+ */
+function imageLineNode(
+  painter: Painter,
+  item: TranscriptItem,
+  image: ImageAttachmentRef,
+  index: number,
+): HTMLElement {
+  const line = el('span', 'user-image-line', `图片 ${index + 1}：${image.name}，${image.width}×${image.height}`)
+  line.setAttribute('role', 'button')
+  line.setAttribute('tabindex', '0')
+  line.title = '点击打开原图'
+  const open = () => painter.onOpenImage(image.id, image.name)
+  line.addEventListener('click', open)
+  line.addEventListener('keydown', (event) => {
+    if ((event as KeyboardEvent).key !== 'Enter') return
+    open()
+  })
+  return line
 }
 
 /**

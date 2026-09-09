@@ -1419,6 +1419,19 @@ body.resizing #sidebar { transition: none; }
   color: var(--text-primary);
 }
 .transcript .item.assistant { color: var(--text-primary); }
+/* The images a user message was submitted with (S12): a quiet line of facts
+   under the bubble, the TUI's own wording. No thumbnails here — the transcript
+   is `aria-live` and repaints at the stream rate, the one place an on-demand
+   data URL would keep being re-requested. The click opens the cached original
+   through the host, like a ready draft's label. */
+.user-image-line {
+  margin-top: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+  cursor: pointer;
+  align-self: flex-start;
+}
+.user-image-line:hover { color: var(--text-secondary); }
 /* --- a message's meta row ---
    复制 · 模型 · 时间, under the message it belongs to. Worth having, not worth a
    permanent line of chrome under every message — so the row is always in flow
@@ -2743,6 +2756,68 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 .attachment-row.failed .attachment-label { color: var(--text-danger); }
 .attachment-row .attachment-retry,
 .attachment-row .attachment-remove { flex-shrink: 0; }
+/* The ready row's thumbnail (S12): a size-capped data URL fetched on demand —
+   never part of a snapshot, so a streaming turn does not re-send it per frame.
+   The alt text carries the facts until the load settles; the object's own box
+   keeps the row's height stable rather than jumping when the pixels arrive.
+   Click opens the preview popover; the label beside it still opens the
+   original, which is what its tooltip says. */
+.attachment-thumb {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-hover);
+  cursor: pointer;
+  padding: 0;
+  object-fit: cover;
+}
+.attachment-thumb:hover { border-color: var(--border-strong); }
+/* The preview popover (S12): the thumbnail's own data URL enlarged — the
+   design's preview is the受限 data URL, never the original bytes — raised
+   from the composer bar the menus already anchor through. Depth one step over
+   the menus (`--shadow-float`, z-index 5): a preview sits above the capsule,
+   under the two modal layers (9/10) that ask for decisions. */
+.attachment-preview {
+  position: absolute;
+  bottom: var(--space-6);
+  left: 0;
+  z-index: 5;
+  width: min(24rem, calc(100vw - 2 * var(--reading-gutter)));
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+}
+.attachment-preview-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.attachment-preview-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.attachment-preview-image {
+  width: 100%;
+  max-height: 16rem;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+}
+.attachment-preview-caption { color: var(--text-secondary); font-size: 12px; }
+.attachment-preview-actions { display: flex; justify-content: flex-end; }
+.attachment-preview-close,
+.attachment-preview-open { flex: 0 0 auto; }
 /* The tone lives on the card, never on the capsule: `#composer`'s border is the
    focus affordance, and recolouring it would read as "this field is wrong".
    A 2px rule down the leading edge — the same weak-brand indicator-bar idiom

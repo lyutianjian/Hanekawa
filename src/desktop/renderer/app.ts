@@ -221,6 +221,7 @@ const composer = createComposerView({
   onRemoveAttachment: (draftId) => void activePane()?.removeDraftImage(draftId),
   onRetryAttachment: (draftId) => activePane()?.retryDraftImage(draftId),
   onOpenAttachment: (draftId) => void activePane()?.openDraftImage(draftId),
+  onPreviewAttachment: (draftId) => void activePane()?.previewDraftImage(draftId),
   onPasteImages: (files) => void activePane()?.importImagesFromFiles(files),
 })
 const form = required<HTMLFormElement>('input-row')

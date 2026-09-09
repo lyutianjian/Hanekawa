@@ -160,6 +160,14 @@ import {
   type AttachmentImportSource,
 } from './model/composerAttachments.js'
 import {
+  beginPreviewLoad,
+  failPreviewLoad,
+  previewDataUrl,
+  retryPreviewLoad,
+  settlePreviewLoad,
+  type AttachmentPreviewCache,
+} from './model/attachmentPreviews.js'
+import {
   advanceTaskPanel,
   retireCompletedTaskPanel,
   taskPanelState,
@@ -278,7 +286,14 @@ export interface PaneSession {
   retryDraftImage(draftId: string): void
   /** Opens a ready draft's original (fire-and-forget, host-resolved). */
   openDraftImage(draftId: string): Promise<void>
-  // --- panel entry points ---
+  /** Opens a ready draft's preview popover — the thumbnail's own data URL, enlarged (S12). */
+  previewDraftImage(draftId: string): Promise<void>
+  /**
+   * An image line under a transcript user bubble, clicked (S12): `open-attachment`
+   * by the registered id — the host resolves the cached original, and a failure
+   * (a file past its retention, an unregistered id) is a note, not a dead click.
+   */
+  openImageById(imageId: string, name: string): Promise<void>  // --- panel entry points ---
   openRewindPanel(): Promise<void>
   /**
    * `/model` and `/effort`'s own `#surface` cards. Still reached by the slash
@@ -330,6 +345,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // printed (a cwd-relative path, and the hit's line) — resolving it to a
     // project and bounding it there is the shell's half of the bargain.
     onOpenPath: (path, line) => deps.onOpenFile?.(path, line),
+    // An image line under a user bubble, clicked (S12): the registered id goes
+    // to `open-attachment` and the host resolves the cached original. A missing
+    // file answers as a note under the row, not a dead click.
+    onOpenImage: (imageId, name) => { void openImageById(imageId, name) },
     // The clipboard lives here rather than in the view: `navigator` is a host
     // object, and `dom/transcriptView.ts` is the half of this that runs against a
     // hand-written DOM stub in tests. A rejected write is swallowed — the button
@@ -427,6 +446,16 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   let draftImages: AttachmentDrafts = Object.freeze([])
   /** Monotonic draft ids, so an import settling late can never collide with a newer draft. */
   let draftSeq = 0
+  /**
+   * This pane's thumbnail data URLs (S12): one on-demand
+   * `get-attachment-preview` per image id, LRU-bounded in the model. The
+   * snapshots a streaming turn posts carry refs only, so the host never
+   * re-sends pixels with them; this map is the renderer's half of that —
+   * a cached URL is painted straight from it, no request, per frame.
+   */
+  let previewCache: AttachmentPreviewCache = new Map()
+  /** In-flight preview loads, so a repaint before the settle does not fire a second request. */
+  const previewLoads = new Set<string>()
   let active = false
 
   // --- rendering (state always updates; paint only when active) --------------
@@ -647,12 +676,43 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 
   /** The strip's one view model, shared by the paint and the send gate. */
   function attachmentsView() {
-    return attachmentStripView(draftImages, client.getRuntimeSnapshot())
+    return attachmentStripView(draftImages, client.getRuntimeSnapshot(), (imageId) =>
+      previewDataUrl(previewCache, imageId))
   }
 
   function renderAttachments(): void {
     if (!active) return
     deps.composer.renderAttachments(attachmentsView())
+    // Thumbnails arrive on demand: after the paint shows the row, each ready
+    // row without a cached URL asks once. A turn streaming in the meantime
+    // repaints the strip per snapshot tick, and `beginPreviewLoad` keeps the
+    // answer one request per id — the bounded half of S12's promise is here,
+    // not in the paint.
+    void loadMissingThumbnails()
+  }
+
+  /** One `get-attachment-preview` per image id per cache generation, settled into the LRU. */
+  async function loadMissingThumbnails(): Promise<void> {
+    const ready = readyAttachmentRefs(draftImages)
+    for (const ref of ready) {
+      const begun = beginPreviewLoad(previewCache, ref.id)
+      if (!begun.started || previewLoads.has(ref.id)) continue
+      previewCache = begun.cache
+      previewLoads.add(ref.id)
+      try {
+        const result = await client.getAttachmentPreview(ref.id)
+        previewCache = result.ok
+          ? settlePreviewLoad(previewCache, ref.id, result.dataUrl)
+          : failPreviewLoad(previewCache, ref.id, result.message)
+      } catch (error) {
+        previewCache = failPreviewLoad(previewCache, ref.id, describe(error))
+      } finally {
+        previewLoads.delete(ref.id)
+      }
+      // Only the strip's own repaint; the row gained a thumbUrl, which is a
+      // signature change even though the drafts did not move.
+      if (active) deps.composer.renderAttachments(attachmentsView())
+    }
   }
 
   /** Retargets the strip after the runtime snapshot moved. */
@@ -748,6 +808,66 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       if (!result.ok) note(result.message, 'error')
     } catch (error) {
       note(describe(error), 'error')
+    }
+  }
+
+  /**
+   * An image a *sent* message carried (S12): `open-attachment` by id, host-
+   * resolved. Not the draft path — there is no draft row to consult, the ref
+   * came off the record — so the id is used as given and the failure wording
+   * names the file.
+   */
+  async function openImageById(imageId: string, name: string): Promise<void> {
+    try {
+      const result = await client.openAttachment(imageId)
+      if (!result.ok) note(result.message, 'error')
+    } catch (error) {
+      note(`${name}：${describe(error)}`, 'error')
+    }
+  }
+
+  /**
+   * The thumbnail's click: the preview popover (S12). The data URL the strip
+   * already paints is the preview — the design's preview *is* the受限 data URL,
+   * never a re-fetched size — so a cached hit opens immediately and a miss
+   * loads once on this explicit path. `file-missing` for a preview is a note
+   * beside the row, not a popover of nothing.
+   */
+  async function previewDraftImage(draftId: string): Promise<void> {
+    const entry = draftImages.find((draft) => draft.draftId === draftId)
+    if (entry?.kind !== 'ready' || !active) return
+    const dimensions = `${entry.ref.width}×${entry.ref.height}${entry.animated ? '，动画首帧' : ''}`
+    const cached = previewDataUrl(previewCache, entry.ref.id)
+    if (cached !== undefined) {
+      deps.composer.showAttachmentPreview({
+        draftId, imageId: entry.ref.id, name: entry.ref.name, dimensions, dataUrl: cached,
+      })
+      return
+    }
+    const begun = retryPreviewLoad(previewCache, entry.ref.id)
+    if (begun.started) previewCache = begun.cache
+    let dataUrl: string
+    try {
+      const result = await client.getAttachmentPreview(entry.ref.id)
+      if (!result.ok) {
+        previewCache = failPreviewLoad(previewCache, entry.ref.id, result.message)
+        note(result.message, 'error')
+        return
+      }
+      dataUrl = result.dataUrl
+      previewCache = settlePreviewLoad(previewCache, entry.ref.id, dataUrl)
+    } catch (error) {
+      previewCache = failPreviewLoad(previewCache, entry.ref.id, describe(error))
+      note(describe(error), 'error')
+      return
+    }
+    // The draft can be gone by the settle, or the strip rebuilt without it;
+    // only a still-present, still-ready draft may light the popover.
+    const still = draftImages.find((draft) => draft.draftId === draftId)
+    if (still?.kind === 'ready' && active) {
+      deps.composer.showAttachmentPreview({
+        draftId, imageId: still.ref.id, name: still.ref.name, dimensions, dataUrl,
+      })
     }
   }
 
@@ -1507,7 +1627,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.composer.closeMenus()
     // Ditto the attachment strip: this pane's drafts must not ride the next
     // pane's send. `activate()` repaints from this pane's own state.
-    deps.composer.renderAttachments(attachmentStripView(Object.freeze([]), client.getRuntimeSnapshot()))
+    deps.composer.renderAttachments(
+      attachmentStripView(Object.freeze([]), client.getRuntimeSnapshot(), (imageId) => previewDataUrl(previewCache, imageId)))
     // Nothing repaints a hidden pane, so the waiting row's clock would tick on
     // against a node nobody can see. `activate()`'s `renderTranscript()` starts
     // it again from the same `turnStartedAt`, so no time is lost.
@@ -1741,6 +1862,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     removeDraftImage,
     retryDraftImage,
     openDraftImage,
+    previewDraftImage,
+    openImageById: (imageId, name) => openImageById(imageId, name),
     openRewindPanel,
     openModelPicker: () => openSurface('model-picker'),
     openEffortPicker: () => openSurface('effort-picker'),

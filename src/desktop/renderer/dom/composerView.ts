@@ -4,7 +4,7 @@ import {
   permissionPillView,
   submitButtonView,
 } from '../model/composer.js'
-import type { AttachmentStripView } from '../model/composerAttachments.js'
+import type { AttachmentPreviewView, AttachmentStripView } from '../model/composerAttachments.js'
 import {
   CONTEXT_RATIO_VARIABLE,
   hiddenContextGauge,
@@ -118,6 +118,14 @@ export interface ComposerView {
   setSendBlockNote(note: string | undefined): void
   /** The send gate's title, off the strip the pane just painted. */
   attachStripEl(): HTMLElement
+  /**
+   * Opens the attachment preview popover (S12): the thumbnail's own data URL,
+   * enlarged, with 打开原图 beside it. The pane supplies the URL, so the view
+   * never fetches and never re-requests one mid-stream.
+   */
+  showAttachmentPreview(view: AttachmentPreviewView): void
+  /** Shuts the preview popover. Same three exits it closes itself by. */
+  closeAttachmentPreview(): void
   autosize(): void
 }
 
@@ -162,6 +170,8 @@ export function createComposerView(els: {
   onRetryAttachment: (draftId: string) => void
   /** A ready draft's label, clicked: open the original, host-resolved. */
   onOpenAttachment: (draftId: string) => void
+  /** A ready draft's thumbnail, clicked: the pane resolves the preview and answers through `showAttachmentPreview`. */
+  onPreviewAttachment: (draftId: string) => void
   /**
    * The image files a paste carried. Handed as DOM `File`s on purpose: the
    * pane's import owns reading them (`arrayBuffer`) — the view only routes
@@ -299,7 +309,7 @@ export function createComposerView(els: {
    */
   function renderAttachments(view: AttachmentStripView): void {
     const signature = view.rows
-      .map((row) => `${row.draftId}:${row.state}:${row.label}:${row.detail ?? ''}`)
+      .map((row) => `${row.draftId}:${row.state}:${row.label}:${row.detail ?? ''}:${row.thumbUrl ?? ''}`)
       .join('|')
     if (signature === attachSignature) {
       setSendBlockNote(view.sendBlockNote)
@@ -324,6 +334,26 @@ export function createComposerView(els: {
   function attachmentRowNode(row: AttachmentStripView['rows'][number]): HTMLElement {
     const item = el('div', `attachment-row ${row.state}`)
     item.setAttribute('role', 'listitem')
+
+    if (row.state === 'ready') {
+      // The thumbnail (S12): the pane's on-demand data URL, painted in place.
+      // Absent until that load settles — the alt text carries the facts until
+      // then, and the arrival is a signature change so the row repaints once.
+      // Clicking it opens the preview popover; the label beside it still opens
+      // the original directly, which is what its 「点击打开原图」 tooltip says.
+      const thumb = el('img', 'attachment-thumb')
+      thumb.setAttribute('alt', row.label)
+      thumb.title = '查看预览'
+      if (row.thumbUrl !== undefined) thumb.setAttribute('src', row.thumbUrl)
+      thumb.setAttribute('role', 'button')
+      thumb.setAttribute('tabindex', '0')
+      thumb.addEventListener('click', () => actions.onPreviewAttachment(row.draftId))
+      thumb.addEventListener('keydown', (event) => {
+        if ((event as KeyboardEvent).key !== 'Enter') return
+        actions.onPreviewAttachment(row.draftId)
+      })
+      item.appendChild(thumb)
+    }
 
     // A ready draft's label opens the original (host-resolved, fire-and-
     // forget). Importing and failed rows are not links.
@@ -363,6 +393,77 @@ export function createComposerView(els: {
     if (note === sendBlockNote) return
     sendBlockNote = note
     applySubmitState()
+  }
+
+  // --- the preview popover (S12) ---------------------------------------------------
+  //
+  // The thumbnail's own data URL, enlarged, with 打开原图 beside it. Same shell
+  // as the attach menu (the bar the + lives in): the capsule is the popover's
+  // neighbourhood, and the bar's `position` ancestry is the one the menus
+  // already anchor through. Built once per open and kept, never rebuilt by a
+  // snapshot tick — the pane does not re-request the URL mid-stream, and this
+  // side does not repaint what it already has.
+  let previewNode: HTMLElement | undefined
+  let detachPreviewDismiss: (() => void) | undefined
+
+  function closeAttachmentPreview(): void {
+    detachPreviewDismiss?.()
+    detachPreviewDismiss = undefined
+    previewNode?.remove()
+    previewNode = undefined
+  }
+
+  function showAttachmentPreview(view: AttachmentPreviewView): void {
+    closeAttachmentPreview()
+    const host = els.attach.parentElement ?? els.attach
+    const panel = el('div', 'attachment-preview')
+    panel.setAttribute('role', 'dialog')
+    panel.setAttribute('aria-label', `图片预览：${view.name}`)
+    const closeButton = button('attachment-preview-close', '✕', '关闭预览', () => {
+      closeAttachmentPreview()
+      els.input.focus()
+    })
+    const image = el('img', 'attachment-preview-image')
+    image.setAttribute('alt', view.name)
+    image.setAttribute('src', view.dataUrl)
+    // 打开原图 keeps the S11 path: host-resolved, fire-and-forget. Closing the
+    // popover is this view's half; the external viewer is the shell's.
+    const open = button('attachment-preview-open', '打开原图', `在系统查看器中打开 ${view.name}`, () => {
+      closeAttachmentPreview()
+      els.input.focus()
+      actions.onOpenAttachment(view.draftId)
+    })
+    panel.appendChild(el('div', 'attachment-preview-head', el('span', 'attachment-preview-name', view.name), closeButton))
+    panel.appendChild(image)
+    panel.appendChild(el('div', 'attachment-preview-caption', view.dimensions))
+    panel.appendChild(el('div', 'attachment-preview-actions', open))
+    host.appendChild(panel)
+    previewNode = panel
+
+    // The same three exits every popover here takes. The press-outside scope is
+    // the panel alone: a press on the thumbnail that opened it falls outside,
+    // closes the preview, and the click that follows re-opens it — which is the
+    // toggle the thumb click should read as.
+    detachPreviewDismiss = onPressOutside([panel], () => closeAttachmentPreview())
+    panel.addEventListener('focusout', (event) => {
+      const next = (event as FocusEvent).relatedTarget
+      // `null` is this view's own repaint — the focus() at the end of this
+      // paint — and must not close what it belongs to.
+      if (next === null || (next instanceof Node && panel.contains(next))) return
+      closeAttachmentPreview()
+    })
+    panel.addEventListener('keydown', (event) => {
+      if ((event as KeyboardEvent).key !== 'Escape') return
+      // Consumed here, so Escape over the preview does not also reach the
+      // global key map and close a surface behind it.
+      event.preventDefault()
+      event.stopPropagation()
+      closeAttachmentPreview()
+      els.input.focus()
+    })
+    // Last thing in the paint: it fires focusout synchronously, and a handler
+    // answering that with a repaint would re-enter this paint.
+    closeButton.focus()
   }
 
   function applySubmitState(): void {
@@ -815,10 +916,13 @@ export function createComposerView(els: {
     refreshSubmit: applySubmitState,
     renderAttachments,
     setSendBlockNote,
+    showAttachmentPreview,
+    closeAttachmentPreview,
     attachStripEl: () => els.attachStrip,
     closeMenus() {
       closeRuntimeMenu()
       closeAttachMenu()
+      closeAttachmentPreview()
       if (!permissionMenuOpen) return
       permissionMenuOpen = false
       renderPermission()

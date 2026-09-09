@@ -82,6 +82,7 @@ interface Rendered {
   readonly removedDrafts: string[]
   readonly retriedDrafts: string[]
   readonly openedDrafts: string[]
+  readonly previewedDrafts: string[]
   readonly pastedFiles: File[][]
   view(name: keyof Rendered['els']): StubView
   /** The permission menu's items, or an empty list when it is closed. */
@@ -134,6 +135,7 @@ function render(t: { after(fn: () => void): void }): Rendered {
   const removedDrafts: string[] = []
   const retriedDrafts: string[] = []
   const openedDrafts: string[] = []
+  const previewedDrafts: string[] = []
   const pastedFiles: File[][] = []
   const composer = createComposerView(
     {
@@ -158,6 +160,7 @@ function render(t: { after(fn: () => void): void }): Rendered {
       onRemoveAttachment: (draftId) => removedDrafts.push(draftId),
       onRetryAttachment: (draftId) => retriedDrafts.push(draftId),
       onOpenAttachment: (draftId) => openedDrafts.push(draftId),
+      onPreviewAttachment: (draftId) => previewedDrafts.push(draftId),
       onPasteImages: (files) => pastedFiles.push([...files]),
     },
   )
@@ -187,6 +190,7 @@ function render(t: { after(fn: () => void): void }): Rendered {
     removedDrafts,
     retriedDrafts,
     openedDrafts,
+    previewedDrafts,
     pastedFiles,
     view: (name) => stub.inspect(els[name]),
     menuItems: () => [...(menu()?.children ?? [])],
@@ -863,10 +867,12 @@ test('the strip draws every state, with remove, retry and open wired per row', (
   assert.deepEqual(rows.map((row) => row.classes.includes('attachment-row')), [true, true, true])
 
   const ready = rows[0]!
-  // Ready: label opens the original; no retry affordance.
-  assert.equal(ready.children[0]?.text, '图片 1：shot.png，1920×1080，动画首帧')
-  assert.equal(ready.children[1]?.classes.includes('attachment-remove'), true)
-  r.stub.click(ready.children[0]!.node)
+  // Ready: [thumbnail, label, remove] — the thumbnail (S12) previews, the label
+  // opens the original; no retry affordance.
+  assert.equal(ready.children[0]?.classes.includes('attachment-thumb'), true)
+  assert.equal(ready.children[1]?.text, '图片 1：shot.png，1920×1080，动画首帧')
+  assert.equal(ready.children[2]?.classes.includes('attachment-remove'), true)
+  r.stub.click(ready.children[1]!.node)
   assert.deepEqual(r.openedDrafts, ['d1'])
 
   const failed = rows[2]!
@@ -929,4 +935,115 @@ test('an image paste becomes attachments; a text paste stays the textarea\'s', (
   const emptyPaste = r.stub.dispatch(r.els.input, 'paste', {})
   assert.equal(emptyPaste.defaultPrevented, false)
   assert.equal(r.pastedFiles.length, 1)
+})
+
+// --- thumbnails and the preview popover (S12) ------------------------------------
+
+test('a ready row paints a thumbnail whose click previews; the label still opens', (t) => {
+  const r = render(t)
+  r.composer.renderAttachments(stripView({ rows: [
+    { draftId: 'd1', state: 'ready', label: '图片 1：shot.png，1920×1080', imageId: 'img-1', thumbUrl: 'data:image/png;base64,AA' },
+  ] }))
+  const row = r.attachmentRows()[0]!
+  const thumb = row.children.find((child) => child.classes.includes('attachment-thumb'))
+  assert.ok(thumb, 'a ready row paints a thumbnail')
+  assert.equal(thumb.attributes.get('src'), 'data:image/png;base64,AA')
+  assert.equal(thumb.attributes.get('alt'), '图片 1：shot.png，1920×1080')
+
+  r.stub.click(thumb.node)
+  assert.deepEqual(r.previewedDrafts, ['d1'], 'the thumbnail previews; it does not open the original')
+  assert.deepEqual(r.openedDrafts, [])
+
+  r.stub.click(row.children.find((child) => child.classes.includes('attachment-label'))!.node)
+  assert.deepEqual(r.openedDrafts, ['d1'], 'the label keeps the S11 open-original behaviour')
+
+  // A ready row without a URL yet paints the thumbnail without a src — the
+  // alt text carries the facts until the on-demand load settles.
+  r.composer.renderAttachments(stripView())
+  const pending = r.attachmentRows()[0]!.children.find((child) => child.classes.includes('attachment-thumb'))
+  assert.ok(pending)
+  assert.equal(pending.attributes.has('src'), false)
+  assert.equal(pending.attributes.get('alt'), '图片 1：shot.png，1920×1080，动画首帧')
+})
+
+test('a thumbnail arriving later repaints the row once; an unchanged strip does not', (t) => {
+  const r = render(t)
+  r.composer.renderAttachments(stripView())
+  const before = r.attachmentRows()[0]!.node
+  for (let tick = 0; tick < 5; tick += 1) r.composer.renderAttachments(stripView())
+  assert.equal(r.attachmentRows()[0]!.node, before, 'no URL, no rebuild — the frame budget holds')
+
+  r.composer.renderAttachments(stripView({ rows: [
+    { draftId: 'd1', state: 'ready', label: '图片 1：shot.png，1920×1080', imageId: 'img-1', thumbUrl: 'data:image/png;base64,BB' },
+  ] }))
+  const after = r.attachmentRows()[0]!.node
+  assert.notEqual(after, before, 'a gained URL is real content change')
+  assert.equal(
+    r.attachmentRows()[0]!.children.find((child) => child.classes.includes('attachment-thumb'))?.attributes.get('src'),
+    'data:image/png;base64,BB',
+  )
+})
+
+test('the preview popover closes three ways and keeps its focus rule', (t) => {
+  const r = render(t)
+  r.composer.showAttachmentPreview({
+    draftId: 'd1',
+    imageId: 'img-1',
+    name: 'shot.png',
+    dimensions: '1920×1080，动画首帧',
+    dataUrl: 'data:image/png;base64,AA',
+  })
+
+  const preview = (): StubView | undefined =>
+    r.stub.inspect(r.attachShell).children.find((child) => child.classes.includes('attachment-preview'))
+  const panel = preview()
+  assert.ok(panel)
+  assert.equal(panel.attributes.get('role'), 'dialog')
+  assert.equal(panel.attributes.get('aria-label'), '图片预览：shot.png')
+  assert.equal(
+    panel.children.find((child) => child.classes.includes('attachment-preview-image'))?.attributes.get('src'),
+    'data:image/png;base64,AA',
+  )
+  assert.match(panel.children.find((child) => child.classes.includes('attachment-preview-caption'))?.text ?? '', /1920×1080/)
+  // The head's own children carry the name and the close button.
+  const head = panel.children.find((child) => child.classes.includes('attachment-preview-head'))
+  assert.equal(head?.children.find((child) => child.classes.includes('attachment-preview-name'))?.text, 'shot.png')
+
+  // 打开原图 inside the popover: the S11 action, routed back through the pane.
+  const open = panel.children
+    .flatMap((child) => [...child.children])
+    .find((child) => child.classes.includes('attachment-preview-open'))
+  assert.ok(open)
+  r.stub.click(open.node)
+  assert.deepEqual(r.openedDrafts, ['d1'])
+  assert.equal(preview(), undefined, 'choosing the original closes the popover')
+  assert.equal(r.stub.activeElement(), r.els.input, 'focus lands back in the composer')
+
+  // A press outside the panel — but inside it is not outside.
+  r.composer.showAttachmentPreview({ draftId: 'd1', imageId: 'img-1', name: 'shot.png', dimensions: '1920×1080', dataUrl: 'x' })
+  const close = preview()!.children
+    .flatMap((child) => [...child.children])
+    .find((child) => child.classes.includes('attachment-preview-close'))!
+  r.stub.dispatchDocument('pointerdown', { target: close.node })
+  assert.ok(preview(), 'a press on the popover\'s own control is not leaving')
+  r.stub.dispatchDocument('pointerdown', { target: r.els.input })
+  assert.equal(preview(), undefined)
+
+  // focusout with a relatedTarget outside closes; null is this view's repaint.
+  r.composer.showAttachmentPreview({ draftId: 'd1', imageId: 'img-1', name: 'shot.png', dimensions: '1920×1080', dataUrl: 'x' })
+  const node = r.els.input.parentElement // any node is fine: dispatch goes on the panel host below
+  void node
+  r.stub.dispatch(r.attachShell, 'focusout', { relatedTarget: null })
+  assert.ok(preview(), 'a null relatedTarget is the view\'s own repaint, not the user leaving')
+
+  // Escape: consumed on the panel, and closes it.
+  r.stub.dispatchDocument('pointerdown', { target: r.els.input })
+  r.composer.showAttachmentPreview({ draftId: 'd1', imageId: 'img-1', name: 'shot.png', dimensions: '1920×1080', dataUrl: 'x' })
+  r.stub.dispatch(preview()!.node, 'keydown', { key: 'Escape' })
+  assert.equal(preview(), undefined)
+
+  // closeMenus takes it too — a background pane cannot leave it hanging.
+  r.composer.showAttachmentPreview({ draftId: 'd1', imageId: 'img-1', name: 'shot.png', dimensions: '1920×1080', dataUrl: 'x' })
+  r.composer.closeMenus()
+  assert.equal(preview(), undefined)
 })

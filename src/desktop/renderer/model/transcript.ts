@@ -160,6 +160,12 @@ export interface TranscriptItem {
   readonly id: string
   readonly kind: TranscriptItemKind
   readonly text: string
+  /**
+   * The image refs a user message was submitted with (S12): line facts for the
+   * row under the bubble — `[图片 1：name，W×H]`, the TUI's own wording. Absent
+   * on every other kind, and on records from before images existed.
+   */
+  readonly images?: readonly ImageAttachmentRef[]
   /** Still arriving: a streaming draft, or a tool with no result yet. */
   readonly pending?: boolean
   readonly failed?: boolean
@@ -325,7 +331,12 @@ export function applySessionEvent(
       return {
         state: {
           ...state,
-          items: [...state.items, { id: event.messageId, kind: 'user', text: event.displayInput }],
+          items: [...state.items, {
+            id: event.messageId,
+            kind: 'user',
+            text: event.displayInput,
+            ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
+          }],
           isThinking: false,
         },
       }
@@ -682,6 +693,12 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
         id: record.id,
         kind: record.role === 'user' ? 'user' : 'assistant',
         text: messageText(record),
+        // The images a user message was submitted with (S12): line facts for
+        // the row under the bubble. `displayContent ?? content`-shaped text is
+        // kept for copy/search; the refs ride beside it.
+        ...(record.role === 'user' && record.images && record.images.length > 0
+          ? { images: record.images }
+          : {}),
         // Who wrote it. Only the assistant side: the user's own message has no
         // model, and an old record that predates the field simply has none.
         ...(record.role !== 'user' && typeof record.model === 'string' && record.model.length > 0

@@ -8,6 +8,7 @@ import { createTranscriptView } from '../src/desktop/renderer/dom/transcriptView
 import { NO_DISCLOSURE } from '../src/desktop/renderer/model/thinking.js'
 import type { DisclosureState } from '../src/desktop/renderer/model/thinking.js'
 import type { TranscriptItem, TranscriptState } from '../src/desktop/renderer/model/transcript.js'
+import type { ImageAttachmentRef } from '../src/media/types.js'
 import { ANCHOR_REST_PX } from '../src/desktop/renderer/model/transcriptAnchor.js'
 import type { WaitingInput } from '../src/desktop/renderer/model/waiting.js'
 import type { ToolErrorCode } from '../src/harness/types.js'
@@ -37,6 +38,8 @@ interface Rendered {
   readonly taskClicks: () => number
   /** `[path, line]` per clicked search row, the `open-in-editor` payload. */
   readonly opened: ReadonlyArray<readonly [string, number | undefined]>
+  /** `[imageId, name]` per clicked image line under a user bubble (S12). */
+  readonly openedImages: ReadonlyArray<readonly [string, string]>
   /** What each 复制 click handed the pane for the clipboard. */
   readonly copied: readonly string[]
   render(state: TranscriptState, disclosure?: DisclosureState, activity?: WaitingInput): void
@@ -54,11 +57,13 @@ function mount(t: { after(fn: () => void): void }): Rendered {
   const toggled: Array<readonly [string, boolean]> = []
   const opened: Array<readonly [string, number | undefined]> = []
   const copied: string[] = []
+  const openedImages: Array<readonly [string, string]> = []
   let taskClicks = 0
   const view = createTranscriptView(container, host, {
     onToggle: (id, expanded) => toggled.push([id, expanded]),
     onTaskStep: () => { taskClicks += 1 },
     onOpenPath: (path, line) => opened.push([path, line]),
+    onOpenImage: (imageId, name) => openedImages.push([imageId, name]),
     onCopy: (text) => copied.push(text),
   })
   const jump = (): StubView => {
@@ -79,6 +84,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     taskClicks: () => taskClicks,
     toggled,
     opened,
+    openedImages,
     copied,
     render: (state, disclosure = NO_DISCLOSURE, activity) => view.render(state, disclosure, activity),
     stopClock: () => view.stopClock(),
@@ -1728,4 +1734,46 @@ test('a session opened with no turn running lands on its tail, not on its last q
 
   assert.equal(view.container.scrollTop, 2000, 'a restored session opens where the reader left off')
   assert.equal(pad(view), `${ANCHOR_REST_PX}px`)
+})
+
+// --- a user message's image lines (S12) ----------------------------------------
+
+test('the images a user message carried draw as clickable fact lines under the bubble', (t) => {
+  const { render, items, stub, openedImages } = mount(t)
+  const image = (id: string, name: string, width: number, height: number): ImageAttachmentRef => ({
+    id, ownerSessionId: 'session-1', name, mimeType: 'image/png', width, height, byteLength: 1024,
+  })
+  const images = [
+    image('img-1', 'shot.png', 1920, 1080),
+    image('img-2', 'loop.gif', 640, 480),
+  ]
+  render(transcript([{ id: 'm1', kind: 'user', text: '看这两张', images }]))
+
+  const item = items()[0]!
+  const lines = item.children.filter((child) => child.classes.includes('user-image-line'))
+  assert.deepEqual(lines.map((line) => line.text), [
+    '图片 1：shot.png，1920×1080',
+    '图片 2：loop.gif，640×480',
+  ])
+  assert.deepEqual(lines.map((line) => line.attributes.get('role')), ['button', 'button'])
+
+  stub.click(lines[0]!.node)
+  stub.click(lines[1]!.node)
+  assert.deepEqual(openedImages, [['img-1', 'shot.png'], ['img-2', 'loop.gif']])
+
+  // Enter works too — the row is a real control, not a mouse-only affordance.
+  stub.dispatch(lines[0]!.node, 'keydown', { key: 'Enter' })
+  assert.deepEqual(openedImages.length, 3)
+})
+
+test('a user item without images paints no image line, and a repaint keeps the node', (t) => {
+  const { render, items } = mount(t)
+  render(transcript([{ id: 'm1', kind: 'user', text: '纯文字' }]))
+  assert.deepEqual(items()[0]!.children.filter((child) => child.classes.includes('user-image-line')), [])
+
+  // Unchanged repaint: the item's node is reused, the painter's own rule — so
+  // a streaming turn cannot rebuild a row the pointer is on.
+  const before = items()[0]!.node
+  render(transcript([{ id: 'm1', kind: 'user', text: '纯文字' }]))
+  assert.equal(items()[0]!.node, before)
 })

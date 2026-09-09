@@ -11,6 +11,12 @@ import { withRetry } from '../retry.js'
 import { safeJsonParse } from '../../utils/json.js'
 import { debugProviderPayload, debugProviderResponse, debugProviderSummary } from './debug.js'
 import { buildOpenAIPayload, getOpenAICacheScope } from './openaiPayload.js'
+import {
+  assertFinalImageRequestLimits,
+  assertRequestImageCapability,
+  redactImageBytesFromText,
+  resolveImageRequestGuardLimits,
+} from './imageRequestGuard.js'
 import { normalizeOpenAIUsage } from './usage.js'
 
 export class OpenAIProvider implements ModelProvider {
@@ -23,12 +29,20 @@ export class OpenAIProvider implements ModelProvider {
    */
   static readonly supportsImageInput = true
   private client: OpenAI
+  /**
+   * The model-config half of image capability, snapshotted at construction.
+   * Combined with the adapter's own flag this reproduces
+   * `resolveImageCapability` exactly (see AnthropicProvider's note on why the
+   * registry function itself cannot be imported here).
+   */
+  private readonly imageInputEnabled: boolean
 
   constructor(config: ModelConfig) {
     this.client = new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
     })
+    this.imageInputEnabled = config.supportsImageInput === true
   }
 
   supportsDynamicToolSearch(): boolean {
@@ -40,12 +54,19 @@ export class OpenAIProvider implements ModelProvider {
   }
 
   async createMessage(request: ModelRequest): Promise<ModelResponse> {
+    // Final capability re-check (design §11.1): runs before any attempt is
+    // made, so a bypassed call path fails once, loudly, without retries.
+    assertRequestImageCapability(request, this.imageInputEnabled && this.supportsImageInput())
     return withRetry(
       async (attempt) => {
         const effectiveRequest: ModelRequest = {
           ...request,
         }
         const payload = buildOpenAIPayload(effectiveRequest)
+        // The final pre-send check (design §11.1 step 5): per-image bytes,
+        // image count, and the whole serialized body. Throws before any debug
+        // log or network call; retry classification treats it as non-retryable.
+        assertFinalImageRequestLimits(payload, effectiveRequest, resolveImageRequestGuardLimits(this))
         const cacheSource = requireCacheSource(effectiveRequest.cacheSource)
         recordPromptState({
           system: JSON.stringify(getOpenAISystemFromPayload(payload)),
@@ -54,10 +75,10 @@ export class OpenAIProvider implements ModelProvider {
           cacheScope: getOpenAICacheScope(effectiveRequest),
         }, cacheSource)
         if (attempt > 1) {
-          debugProviderPayload('openai-retry', payload)
+          debugProviderPayload('openai-retry', payload, effectiveRequest)
         }
         debugProviderSummary('openai', effectiveRequest, payload)
-        debugProviderPayload('openai', payload)
+        debugProviderPayload('openai', payload, effectiveRequest)
         let response: OpenAI.Chat.ChatCompletion
         try {
           response = await this.client.chat.completions.create(payload, {
@@ -150,7 +171,7 @@ function augmentImageEndpointRejection(error: unknown, request: ModelRequest, en
 
   const wrapped = new Error(
     `Endpoint ${endpoint} (model ${request.model}) rejected a request carrying `
-    + `${request.imageBytes.size} image(s): ${error.message}. A custom endpoint that declares `
+    + `${request.imageBytes.size} image(s): ${redactImageBytesFromText(error.message)}. A custom endpoint that declares `
     + 'vision support may not accept standard data URL image parts; if so, turn off this '
     + "model's image capability switch. No protocol was switched, no image was dropped, and "
     + 'the capability setting was not changed automatically.',

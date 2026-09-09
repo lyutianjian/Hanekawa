@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
 import type { ModelRequest } from '../../harness/types.js'
+import { collectRequestImageRefs } from './imageRequestGuard.js'
 import { collectCacheControlTelemetry } from './cacheControlTelemetry.js'
 import { normalizeAnthropicUsage, normalizeOpenAIUsage } from './usage.js'
 
@@ -8,9 +9,107 @@ function shouldDebugProviderPayloads() {
   return process.env.MYAGENT_DEBUG_PROVIDER === '1'
 }
 
-export function debugProviderPayload(label: string, payload: unknown) {
+/**
+ * Redacts image bodies out of a debug payload (design §13): base64 `data`
+ * fields and data URLs are replaced with their lengths, and the attachment
+ * facts (id, name, MIME, dimensions, byte count) ride a separate summary line
+ * instead. The payload the wire would carry is never logged as-is once it can
+ * contain pixels. Copy-on-write: the original payload object is not mutated.
+ */
+export function debugProviderPayload(label: string, payload: unknown, request?: ModelRequest) {
   if (!shouldDebugProviderPayloads()) return
-  console.error(`[myagent][provider:${label}] payload\n${JSON.stringify(payload, null, 2)}`)
+  console.error(`[myagent][provider:${label}] payload\n${JSON.stringify(redactPayloadImageBytes(payload), null, 2)}`)
+  if (!request) return
+  const refs = collectRequestImageRefs(request)
+  if (refs.length === 0) return
+  const facts = refs.map((ref) => {
+    const loaded = request.imageBytes?.get(ref.id)
+    return {
+      attachmentId: ref.id,
+      name: ref.name,
+      mimeType: ref.mimeType,
+      width: ref.width,
+      height: ref.height,
+      byteLength: ref.byteLength,
+      ...(loaded ? { loadedByteLength: loaded.bytes.byteLength } : {}),
+    }
+  })
+  console.error(`[myagent][provider:${label}] payload images\n${JSON.stringify(facts, null, 2)}`)
+}
+
+function approxBase64Bytes(base64: string): number {
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding)
+}
+
+function redactPayloadImageBytes<T>(value: T): T {
+  return redactValue(value) as T
+}
+
+function redactValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    let changed = false
+    const next = value.map((item) => {
+      const redacted = redactValue(item)
+      if (redacted !== item) changed = true
+      return redacted
+    })
+    return changed ? next : value
+  }
+  if (!isRecord(value)) return value
+
+  // Anthropic image block: keep the source shape and MIME, drop the data.
+  if (
+    value.type === 'image'
+    && isRecord(value.source)
+    && value.source.type === 'base64'
+    && typeof value.source.data === 'string'
+  ) {
+    const data = value.source.data
+    return {
+      ...value,
+      source: {
+        ...value.source,
+        data: `<redacted base64: ${data.length} chars, ~${approxBase64Bytes(data).toLocaleString('en-US')} bytes>`,
+      },
+    }
+  }
+
+  // OpenAI image_url part: keep the data URL prefix (it names the MIME), drop
+  // the encoded body.
+  if (
+    value.type === 'image_url'
+    && isRecord(value.image_url)
+    && typeof value.image_url.url === 'string'
+    && value.image_url.url.startsWith('data:')
+  ) {
+    const url = value.image_url.url
+    const marker = url.indexOf('base64,')
+    if (marker >= 0) {
+      const prefix = url.slice(0, marker + 'base64,'.length)
+      const encoded = url.slice(prefix.length)
+      return {
+        ...value,
+        image_url: {
+          ...value.image_url,
+          url: `${prefix}<redacted ${encoded.length} chars, ~${approxBase64Bytes(encoded).toLocaleString('en-US')} bytes>`,
+        },
+      }
+    }
+  }
+
+  let changed = false
+  const next: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(value)) {
+    const redacted = redactValue(child)
+    if (redacted !== child) changed = true
+    next[key] = redacted
+  }
+  return changed ? next : value
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 function previewContent(value: unknown): string {
@@ -23,6 +122,17 @@ function previewContent(value: unknown): string {
           if (typed.type === 'tool_use') return `tool_use:${String(typed.name ?? '')}`
           if (typed.type === 'tool_result') return `tool_result:${String(typed.tool_use_id ?? '')}`
           if (typed.type === 'text') return `text:${String(typed.text ?? '').slice(0, 80)}`
+          if (typed.type === 'image') {
+            const source = typed.source as { media_type?: unknown } | undefined
+            return `image:${typeof source?.media_type === 'string' ? source.media_type : 'unknown'}`
+          }
+          if (typed.type === 'image_url') {
+            const image = typed.image_url as { url?: unknown } | undefined
+            const mime = typeof image?.url === 'string' && image.url.startsWith('data:')
+              ? image.url.slice(5, image.url.indexOf(';'))
+              : 'unknown'
+            return `image_url:${mime}`
+          }
           return String(typed.type)
         }
         return typeof item

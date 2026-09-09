@@ -36,7 +36,7 @@ export interface AttachmentFactsResolver {
 
 export type TurnImageBlockReason = Extract<
   ImageInputErrorReason,
-  'model-not-capable' | 'file-missing' | 'too-many-images'
+  'model-not-capable' | 'file-missing' | 'too-many-images' | 'image-too-large' | 'request-too-large'
 >
 
 /** A submission or request was stopped because its new images cannot be sent. */

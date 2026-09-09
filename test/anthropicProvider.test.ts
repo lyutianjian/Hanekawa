@@ -6,6 +6,7 @@ import { buildAnthropicPayload } from '../src/config/providers.js'
 import { collectCacheControlTelemetry } from '../src/config/providers/cacheControlTelemetry.js'
 import { resetCacheBreakDetection } from '../src/harness/cacheBreakDetection.js'
 import { resetCacheTTLEvaluation } from '../src/harness/cacheControl.js'
+import { TurnImageBlockError } from '../src/harness/turnImages.js'
 import type { ModelContextItem, ModelRequest, RequestImageBytes, ToolResultBlockParam } from '../src/harness/types.js'
 import type { ImageAttachmentRef, ImageMimeType } from '../src/media/types.js'
 
@@ -926,7 +927,7 @@ test('image blocks leave the cache_control marker count and distribution unchang
 
 test('the provider sends base64 image blocks built from the request byte map', async () => {
   process.env.MYAGENT_DISABLE_PROMPT_CACHING = '1'
-  const provider = new AnthropicProvider({ model: 'claude-sonnet', apiKey: 'test-key' })
+  const provider = new AnthropicProvider({ model: 'claude-sonnet', apiKey: 'test-key', supportsImageInput: true })
   const requests = captureRequests(provider, () => ({ input_tokens: 10, output_tokens: 1 }))
   const ref = imageRef('img-e2e', { name: 'e2e.png' })
   const bytes = new Uint8Array([137, 80, 78, 71])
@@ -950,4 +951,106 @@ test('the provider sends base64 image blocks built from the request byte map', a
       source: { type: 'base64', media_type: 'image/png', data: Buffer.from(bytes).toString('base64') },
     },
   ])
+})
+
+// --- Final pre-send checks (S19, design §11.1 step 5) -------------------------
+
+function imageRequest(refs: ImageAttachmentRef[], bytesFor: (ref: ImageAttachmentRef) => Uint8Array): ModelRequest {
+  return cacheRequest({
+    messages: [{
+      id: 'user-1',
+      role: 'user',
+      content: 'look at this',
+      images: refs,
+      createdAt: '2026-09-06T00:00:00Z',
+    }],
+    imageBytes: new Map(refs.map((ref) => [ref.id, imageBytesFor(bytesFor(ref))])),
+  })
+}
+
+test('the provider refuses image-bearing requests when the model is not enabled for image input', async () => {
+  // Model switch off: the resolved capability is false even though the
+  // adapter supports images.
+  const provider = new AnthropicProvider({ model: 'claude-sonnet', apiKey: 'test-key' })
+  const requests = captureRequests(provider, () => ({ input_tokens: 10, output_tokens: 1 }))
+  const ref = imageRef('img-switched-off', { name: 'off.png' })
+
+  await assert.rejects(provider.createMessage(imageRequest([ref], () => new Uint8Array([1]))), (error: unknown) =>
+    error instanceof TurnImageBlockError
+      && error.imageInputBlock === 'model-not-capable'
+      && /not enabled for image input/.test(error.message)
+      && /off\.png/.test(error.message),
+  )
+  assert.equal(requests.length, 0, 'the request never reaches the endpoint')
+
+  // Adapter-side refusal: a stubbed adapter flag blocks the same way.
+  const adapterOff = new AnthropicProvider({ model: 'claude-sonnet', apiKey: 'test-key', supportsImageInput: true })
+  ;(adapterOff as unknown as { supportsImageInput: () => boolean }).supportsImageInput = () => false
+  const adapterRequests = captureRequests(adapterOff, () => ({ input_tokens: 10, output_tokens: 1 }))
+  await assert.rejects(adapterOff.createMessage(imageRequest([ref], () => new Uint8Array([1]))), (error: unknown) =>
+    error instanceof TurnImageBlockError && error.imageInputBlock === 'model-not-capable',
+  )
+  assert.equal(adapterRequests.length, 0)
+
+  // Without images the same provider works untouched.
+  await provider.createMessage(cacheRequest())
+  assert.equal(requests.length, 1)
+})
+
+test('the final check rejects an oversized image before the endpoint is called, without retrying', async () => {
+  const provider = new AnthropicProvider({ model: 'claude-sonnet', apiKey: 'test-key', supportsImageInput: true })
+  const requests = captureRequests(provider, () => ({ input_tokens: 10, output_tokens: 1 }))
+  const ref = imageRef('img-huge', { name: 'huge.png' })
+
+  await assert.rejects(provider.createMessage({
+    ...imageRequest([ref], () => new Uint8Array(3_750_001)),
+    retry: { maxRetries: 3 },
+  }), (error: unknown) =>
+    error instanceof TurnImageBlockError
+      && error.imageInputBlock === 'image-too-large'
+      && /huge\.png/.test(error.message)
+      && /3,750,001 bytes/.test(error.message)
+      && /3,750,000-byte per-image limit/.test(error.message)
+      && /Crop the image or attach a smaller version/.test(error.message),
+  )
+  assert.equal(requests.length, 0, 'rejected before any network call')
+})
+
+test('the final check rejects a request over an adapter-declared image-count limit', async () => {
+  class TightCountProvider extends AnthropicProvider {
+    maxImagesPerRequest(): number {
+      return 1
+    }
+  }
+  const provider = new TightCountProvider({ model: 'claude-sonnet', apiKey: 'test-key', supportsImageInput: true })
+  const requests = captureRequests(provider, () => ({ input_tokens: 10, output_tokens: 1 }))
+  const refs = [imageRef('img-a', { name: 'a.png' }), imageRef('img-b', { name: 'b.png' })]
+
+  await assert.rejects(provider.createMessage(imageRequest(refs, () => new Uint8Array([1, 2]))), (error: unknown) =>
+    error instanceof TurnImageBlockError
+      && error.imageInputBlock === 'too-many-images'
+      && /2 image blocks/.test(error.message)
+      && /at most 1 are allowed/.test(error.message),
+  )
+  assert.equal(requests.length, 0)
+})
+
+test('the final check rejects a request whose serialized body exceeds the adapter-declared limit', async () => {
+  class TightBodyProvider extends AnthropicProvider {
+    maxRequestBodyBytes(): number {
+      return 200
+    }
+  }
+  const provider = new TightBodyProvider({ model: 'claude-sonnet', apiKey: 'test-key', supportsImageInput: true })
+  const requests = captureRequests(provider, () => ({ input_tokens: 10, output_tokens: 1 }))
+  const ref = imageRef('img-body', { name: 'body.png' })
+
+  await assert.rejects(provider.createMessage(imageRequest([ref], () => new Uint8Array(300))), (error: unknown) =>
+    error instanceof TurnImageBlockError
+      && error.imageInputBlock === 'request-too-large'
+      && /serialized request body is/.test(error.message)
+      && /200-byte request limit/.test(error.message)
+      && /image data/.test(error.message),
+  )
+  assert.equal(requests.length, 0)
 })

@@ -1,12 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import type { SessionRecord } from '../src/harness/types.js'
+import { z } from 'zod/v3'
+import type { SessionRecord, Tool } from '../src/harness/types.js'
 import type { ImageAttachmentRef } from '../src/media/types.js'
 import {
+  assertInputImagesWithinRequestBody,
   DEFAULT_MAX_MEDIA_ITEMS,
+  estimateRequestTextBytes,
+  formatImageByteStripNotice,
   formatMediaStripNotice,
   formatTooManyImagesBlockedMessage,
   resolveMaxMediaItems,
+  stripExcessImageBytes,
   stripExcessMediaItems,
 } from '../src/harness/mediaStrip.js'
 import { TurnImageBlockError } from '../src/harness/turnImages.js'
@@ -309,4 +314,191 @@ test('a cap of zero with no images at all is a valid empty request', () => {
   const result = stripExcessMediaItems(records, { maxMediaItems: 0 })
   assert.equal(result.records, records)
   assert.equal(result.keptImageCount, 0)
+})
+
+// --- request-size budget (S19, design §11.1 step 3, volume half) --------------
+
+// byteLength 3000 → 4 * ceil(3000/3) + 128 = 4,128 estimated serialized bytes.
+function sizedImage(id: string, byteLength: number): ImageAttachmentRef {
+  return image(id, { byteLength })
+}
+
+test('within the byte budget nothing is stripped and the input array is returned as-is', () => {
+  const records = [
+    historyMessage('h1', [sizedImage('img-1', 3000)]),
+    ...currentTurnRecords([sizedImage('img-cur', 3000)], [sizedImage('img-tool', 3000)]),
+  ]
+  const result = stripExcessImageBytes(records, {
+    currentTurnId: 'turn-now',
+    currentUserMessageId: 'current-user',
+    maxImageRequestBytes: 4128 * 3,
+  })
+  assert.equal(result.records, records, 'identity: the same array reference, zero copying')
+  assert.deepEqual(result.omittedImages, [])
+  assert.equal(result.keptImageBytes, 4128 * 3)
+  assert.equal(result.maxImageRequestBytes, 4128 * 3)
+  assert.equal(
+    result.signature,
+    stripExcessImageBytes(records, {
+      currentTurnId: 'turn-now',
+      currentUserMessageId: 'current-user',
+      maxImageRequestBytes: 4128 * 3,
+    }).signature,
+    'the signature is stable for the same state',
+  )
+})
+
+test('over the byte budget the oldest historical images are omitted first', () => {
+  const records = [
+    historyMessage('h1', [sizedImage('img-1', 3000)]),
+    historyMessage('h2', [sizedImage('img-2', 3000)]),
+    historyMessage('h3', [sizedImage('img-3', 3000)]),
+    ...currentTurnRecords([sizedImage('img-cur', 3000)], [sizedImage('img-tool', 3000)]),
+  ]
+  // 5 * 4128 = 20,640 total; the budget fits three images.
+  const result = stripExcessImageBytes(records, {
+    currentTurnId: 'turn-now',
+    currentUserMessageId: 'current-user',
+    maxImageRequestBytes: 4128 * 3,
+  })
+  assert.deepEqual(
+    result.omittedImages.map((omitted) => omitted.refId),
+    ['img-1', 'img-2'],
+  )
+  assert.ok(result.omittedImages.every((omitted) => omitted.historical))
+  assert.equal(result.keptImageBytes, 4128 * 3)
+
+  const omittedFirst = result.records.find((record) => record.id === 'h1')
+  assert.equal(omittedFirst?.type, 'message')
+  assert.equal(
+    omittedFirst?.type === 'message' ? omittedFirst.content : undefined,
+    'message h1\n\n[Historical image omitted to keep this request within its 12,384-byte size limit: '
+      + 'img-1.png (attachment img-1). The pixels are not present in this request.]',
+  )
+  assert.equal(omittedFirst?.type === 'message' ? omittedFirst.images : 'kept', undefined)
+  const currentInput = result.records.find((record) => record.id === 'current-user')
+  assert.deepEqual(
+    currentInput?.type === 'message' ? currentInput.images : undefined,
+    [sizedImage('img-cur', 3000)],
+  )
+  // Pure projection: the input records are never mutated.
+  const snapshot = JSON.parse(JSON.stringify(records))
+  JSON.parse(JSON.stringify(records))
+  stripExcessImageBytes(records, {
+    currentTurnId: 'turn-now',
+    currentUserMessageId: 'current-user',
+    maxImageRequestBytes: 4128,
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(records)), snapshot)
+})
+
+test('current-turn tool images are byte-omitted only once every historical image has been', () => {
+  const records = [
+    historyMessage('h1', [sizedImage('img-hist', 3000)]),
+    ...currentTurnRecords(
+      [sizedImage('img-cur-input', 3000)],
+      [sizedImage('img-tool-1', 3000), sizedImage('img-tool-2', 3000)],
+    ),
+  ]
+  // 4 * 4128 = 16,512 total; budget fits two.
+  const result = stripExcessImageBytes(records, {
+    currentTurnId: 'turn-now',
+    currentUserMessageId: 'current-user',
+    maxImageRequestBytes: 4128 * 2,
+  })
+  assert.deepEqual(
+    result.omittedImages.map((omitted) => omitted.refId),
+    ['img-hist', 'img-tool-1'],
+  )
+  assert.deepEqual(result.omittedImages.map((omitted) => omitted.historical), [true, false])
+  const toolResult = result.records.find((record) => record.id === 'current-result')
+  assert.match(
+    toolResult?.type === 'tool_result' ? toolResult.content : '',
+    /\[Image omitted to keep this request within its 8,256-byte size limit: img-tool-1\.png/,
+    'current-turn omissions say so, without the historical qualifier',
+  )
+  const currentInput = result.records.find((record) => record.id === 'current-user')
+  assert.deepEqual(
+    currentInput?.type === 'message' ? currentInput.images : undefined,
+    [sizedImage('img-cur-input', 3000)],
+  )
+})
+
+test('an input whose images alone exceed the byte budget is blocked, not silently trimmed', () => {
+  const records = [
+    historyMessage('h1', [sizedImage('img-hist', 3000)]),
+    ...currentTurnRecords([sizedImage('in-1', 30_000), sizedImage('in-2', 30_000)], []),
+  ]
+  assert.throws(
+    () => stripExcessImageBytes(records, {
+      currentTurnId: 'turn-now',
+      currentUserMessageId: 'current-user',
+      maxImageRequestBytes: 4128,
+    }),
+    (error: unknown) =>
+      error instanceof TurnImageBlockError
+        && error.imageInputBlock === 'request-too-large'
+        && error.images.length === 2
+        && /serialize to about/.test(error.message)
+        && /in-1\.png, in-2\.png/.test(error.message)
+        && /Nothing was sent or recorded/.test(error.message)
+        && /crop\/downscale/.test(error.message),
+  )
+})
+
+test('the submission-level byte gate compares the input alone against the body limit', () => {
+  assert.doesNotThrow(() => assertInputImagesWithinRequestBody(undefined, 100))
+  assert.doesNotThrow(() => assertInputImagesWithinRequestBody([sizedImage('img-ok', 3000)], 4128))
+  assert.throws(
+    () => assertInputImagesWithinRequestBody([sizedImage('img-big', 30_000)], 4128),
+    (error: unknown) =>
+      error instanceof TurnImageBlockError
+        && error.imageInputBlock === 'request-too-large'
+        && /on their own/.test(error.message)
+        && /Nothing was sent or recorded/.test(error.message),
+  )
+})
+
+test('the omission notice names the budget and the way out', () => {
+  const notice = formatImageByteStripNotice(2, 20_000_000)
+  assert.match(notice, /20,000,000-byte size budget/)
+  assert.match(notice, /2 of the oldest images/)
+  assert.match(notice, /originals are kept/)
+})
+
+test('estimateRequestTextBytes counts system, record contents, structure, and tool schemas', () => {
+  const records: SessionRecord[] = [
+    historyMessage('h1', [], 'four'),
+    {
+      type: 'compact_boundary',
+      id: 'cb1',
+      summary: 'summary text',
+      preTokens: 10,
+      createdAt: '2026-09-09T00:00:00.000Z',
+    },
+    {
+      type: 'tool_use',
+      id: 'tu1',
+      tool: 'Read',
+      input: {},
+      riskLevel: 'safe',
+      createdAt: '2026-09-09T00:00:00.000Z',
+    },
+  ]
+  const tools = [{
+    name: 'Read',
+    description: 'Read a file',
+    inputSchema: z.object({ path: z.string() }).strict(),
+    riskLevel: 'safe' as const,
+    execute: async () => ({ ok: true, content: '' }),
+  }] satisfies Tool[]
+  const withTools = estimateRequestTextBytes(records, { system: 'sys', tools })
+  const withoutTools = estimateRequestTextBytes(records, { system: 'sys' })
+  // Structure overhead is 256 per record; contents contribute their UTF-8 size.
+  assert.ok(withTools > withoutTools, 'tool schemas are part of the estimate')
+  assert.equal(
+    withoutTools,
+    Buffer.byteLength('sys', 'utf8') + Buffer.byteLength('four', 'utf8') + Buffer.byteLength('summary text', 'utf8') + 256 * 3,
+  )
+  assert.equal(estimateRequestTextBytes([]), 0)
 })

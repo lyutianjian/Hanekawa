@@ -186,6 +186,17 @@ export function useAgentLoop({
           createdAt: new Date().toISOString(),
         })
         return
+      case 'request_size_notice':
+        // The loop omitted the oldest images to keep the request's image
+        // bytes within its request-size budget (design §11.1). Same
+        // system-line treatment; the loop dedupes per (budget, kept set).
+        appendStaticItem({
+          kind: 'system',
+          id: randomUUID(),
+          content: event.message,
+          createdAt: new Date().toISOString(),
+        })
+        return
       default:
         setStreamMode('responding')
         return

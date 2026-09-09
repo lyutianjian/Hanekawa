@@ -3830,3 +3830,240 @@ test('an unloadable current-turn image stops the request instead of dropping it 
   // failure belongs to the request build, after the record exists.
   assert.ok(records.some((record) => record.type === 'message' && record.role === 'user'))
 })
+
+
+// --- Request-size budget and final validation (S19, design §11.1) -------------
+
+test('the request-size budget omits the oldest historical images before bytes load', async () => {
+  const historyImage = makeImageAttachmentRef({
+    id: 'img-hist-bytes', ownerSessionId: 's19-budget', name: 'hist.png', byteLength: 3000,
+  })
+  const currentImage = makeImageAttachmentRef({
+    id: 'img-cur-bytes', ownerSessionId: 's19-budget', name: 'cur.png', byteLength: 3000,
+  })
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'old-user',
+      role: 'user',
+      content: 'what is this',
+      images: [historyImage],
+      turnId: 'turn-old',
+      createdAt: '2026-09-08T00:00:00.000Z',
+    },
+  ]
+  const requests: ModelRequest[] = []
+  const events: ModelStreamEvent[] = []
+  const loadedIds: string[] = []
+  // Budget after the text estimate (~540 bytes for two short messages): fits
+  // exactly one 4,128-byte image occurrence, so the oldest history leaves.
+  const provider: ModelProvider = {
+    name: 'fake',
+    maxRequestBodyBytes: () => 5000,
+    async createMessage(request) {
+      requests.push(request)
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'capable-model',
+    supportsImageInput: true,
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's19-budget', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    onStreamEvent: (event) => { events.push(event) },
+    attachmentBytes: {
+      readSendBytes: async (ref) => {
+        loadedIds.push(ref.id)
+        return { ok: true, value: { bytes: new TextEncoder().encode(ref.id), mimeType: 'image/png' } }
+      },
+    },
+  })
+
+  await loop.run({ text: 'look at this', images: [currentImage] })
+
+  const request = requests[0]
+  assert.ok(request)
+  const historyItem = request.contextItems?.find(
+    (item) => item.kind === 'message' && item.message.id === 'old-user',
+  )
+  assert.ok(historyItem && historyItem.kind === 'message')
+  assert.match(
+    historyItem.message.content,
+    /\[Historical image omitted to keep this request within its [\d,]+-byte size limit: hist\.png \(attachment img-hist-bytes\)\. The pixels are not present in this request\.\]/,
+  )
+  assert.equal(historyItem.message.images, undefined)
+  const currentItem = request.contextItems?.find(
+    (item) => item.kind === 'message' && item.message.content === 'look at this',
+  )
+  assert.ok(currentItem && currentItem.kind === 'message')
+  assert.deepEqual(currentItem.message.images, [currentImage])
+
+  // Only what survived the budget was loaded — omission runs before loading.
+  assert.deepEqual(loadedIds, ['img-cur-bytes'])
+  assert.equal(request.imageBytes?.has('img-hist-bytes'), false)
+  assert.deepEqual(request.imageBytes?.get('img-cur-bytes'), {
+    bytes: new TextEncoder().encode('img-cur-bytes'),
+    mimeType: 'image/png',
+  })
+
+  const notices = events.filter((event) => event.type === 'request_size_notice')
+  assert.equal(notices.length, 1)
+  assert.equal(notices[0]?.type === 'request_size_notice' ? notices[0].omittedImageCount : undefined, 1)
+  assert.match(
+    notices[0]?.type === 'request_size_notice' ? notices[0].message : '',
+    /replaced with file placeholders/,
+  )
+
+  // The projection never touched the persisted record.
+  const persistedOld = records.find((record) => record.id === 'old-user')
+  assert.equal(persistedOld?.type === 'message' ? persistedOld.content : undefined, 'what is this')
+  assert.deepEqual(persistedOld?.type === 'message' ? persistedOld.images : undefined, [historyImage])
+})
+
+test('an input whose images alone exceed the request-body limit is rejected before any record', async () => {
+  const first = makeImageAttachmentRef({
+    id: 'img-in-1', ownerSessionId: 's19-input', name: 'first.png', byteLength: 3000,
+  })
+  const second = makeImageAttachmentRef({
+    id: 'img-in-2', ownerSessionId: 's19-input', name: 'second.png', byteLength: 3000,
+  })
+  const records: SessionRecord[] = []
+  let providerCalls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    maxRequestBodyBytes: () => 4000,
+    async createMessage() {
+      providerCalls += 1
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'capable-model',
+    supportsImageInput: true,
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's19-input', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  await assert.rejects(
+    loop.run({ text: 'look at this', images: [first, second] }),
+    (error: unknown) =>
+      error instanceof TurnImageBlockError
+        && error.imageInputBlock === 'request-too-large'
+        && error.images.length === 2
+        && /first\.png, second\.png/.test(error.message)
+        && /crop\/downscale/.test(error.message),
+  )
+  assert.equal(providerCalls, 0, 'no request was sent')
+  assert.equal(records.length, 0, 'the blocked input never became a record')
+})
+
+test('a request-size rejection after tool results leaves every tool call settled', async () => {
+  const records: SessionRecord[] = []
+  let providerCalls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      providerCalls += 1
+      if (providerCalls === 1) {
+        return {
+          content: '',
+          toolCalls: [{ id: 'call-1', name: 'Echo', input: { value: 'x' } }],
+        }
+      }
+      throw new TurnImageBlockError(
+        'request-too-large',
+        [],
+        'The serialized request body is 30,000,000 bytes, over the 25,000,000-byte request limit.',
+      )
+    },
+  }
+  const runner = new ToolRunner(
+    [testTool('Echo')],
+    new PermissionGate(async () => true),
+    { onRecord: async (record) => { records.push(record) } },
+  )
+  const loop = new AgentLoop({
+    provider,
+    model: 'capable-model',
+    tools: [testTool('Echo')],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's19-settled', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+  })
+
+  await assert.rejects(
+    loop.run({ text: 'run the tool' }),
+    (error: unknown) =>
+      error instanceof TurnImageBlockError && error.imageInputBlock === 'request-too-large',
+  )
+  assert.equal(providerCalls, 2, 'the second request build failed the final check')
+
+  // Every tool_use the assistant emitted has its settled tool_result — the
+  // failure left no dangling calls behind (design §11.1).
+  const toolUseIds = records.filter((record) => record.type === 'tool_use').map((record) => record.id)
+  const resultIds = new Set(
+    records.filter((record) => record.type === 'tool_result').map((record) => record.toolUseId),
+  )
+  assert.deepEqual(toolUseIds, ['call-1'])
+  for (const id of toolUseIds) {
+    assert.ok(resultIds.has(id), `tool_use ${id} is settled`)
+  }
+})
+
+test('userPromptSubmit hooks receive attachment metadata beside the verbatim prompt', async () => {
+  const records: SessionRecord[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const runner = new ToolRunner([], new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  // Reads the hook's stdin JSON and echoes the prompt and the image metadata
+  // it received, so the test can pin both halves of the contract.
+  const hookScript = 'let d="";process.stdin.on("data",c=>{d+=c});process.stdin.on("end",()=>{'
+    + 'const j=JSON.parse(d);console.log("hook-prompt:"+j.prompt);'
+    + 'console.log("hook-images:"+(j.images||[]).map(i=>i.id+":"+i.width+"x"+i.height).join(","));})'
+  const loop = new AgentLoop({
+    provider,
+    model: 'capable-model',
+    supportsImageInput: true,
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's19-hooks', readFiles: new Set() },
+    hooks: {
+      userPromptSubmit: [{ command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(hookScript)}` }],
+    },
+    recordStream: recordStreamFor(records),
+  })
+
+  const image = makeImageAttachmentRef({
+    id: 'img-meta-1', ownerSessionId: 's19-hooks', name: 'meta.png', width: 64, height: 48,
+  })
+  await loop.run({ text: 'analyze this', images: [image] })
+
+  const hookOutput = records.find(
+    (record) => record.type === 'message' && /userPromptSubmit hook output/.test(record.content),
+  )
+  assert.ok(hookOutput && hookOutput.type === 'message')
+  assert.match(hookOutput.content, /hook-prompt:analyze this/, 'the prompt arrived verbatim, no placeholder written back')
+  assert.match(hookOutput.content, /hook-images:img-meta-1:64x48/, 'attachment metadata rode along')
+})

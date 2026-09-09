@@ -42,6 +42,13 @@ export type ModelStreamEvent =
    * capability notice, not per tool step — and carries text only.
    */
   | { type: 'media_limit_notice'; message: string; omittedImageCount: number; maxImages: number }
+  /**
+   * The loop omitted images to keep a request's image bytes within the
+   * request-size budget (design §11.1 step 3): oldest history first, the
+   * current turn's images protected. Same once-per-state rule and text-only
+   * payload as the count-cap notice above.
+   */
+  | { type: 'request_size_notice'; message: string; omittedImageCount: number; maxImageRequestBytes: number }
 
 export interface ChatMessage {
   id: string
@@ -782,5 +789,17 @@ export interface ModelProvider {
    * known" — the local cap applies on its own.
    */
   maxImagesPerRequest?(): number | undefined
+  /**
+   * This adapter's own per-image send-byte limit, when it declares one below
+   * the local default (design §8/§11.1). `undefined` means "no adapter limit
+   * known". Effective limits always take the stricter of local and adapter.
+   */
+  maxImageBytes?(): number | undefined
+  /**
+   * This adapter's own limit for the whole serialized request body, when it
+   * declares one below the local default (design §11.1). `undefined` means
+   * "no adapter limit known".
+   */
+  maxRequestBodyBytes?(): number | undefined
   createMessage(request: ModelRequest): Promise<ModelResponse>
 }

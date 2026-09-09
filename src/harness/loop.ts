@@ -55,12 +55,18 @@ import {
   type RequestImageProjection,
 } from './turnImages.js'
 import {
+  assertInputImagesWithinRequestBody,
+  estimateRequestTextBytes,
+  formatImageByteStripNotice,
   formatMediaStripNotice,
   formatTooManyImagesBlockedMessage,
   resolveMaxMediaItems,
+  stripExcessImageBytes,
   stripExcessMediaItems,
+  type ImageByteStripResult,
   type MediaStripResult,
 } from './mediaStrip.js'
+import { resolveMaxRequestBodyBytes } from '../media/imageRequestLimits.js'
 import {
   describeImageTokenStrategy,
   resolveImageTokenStrategy,
@@ -223,6 +229,8 @@ export class AgentLoop {
   private lastImageProjectionSignature: string | undefined
   /** Last (cap x kept set) media-strip state the loop notified about, same rule. */
   private lastMediaStripSignature: string | undefined
+  /** Last (byte budget x kept set) request-size state, same once-per-state rule. */
+  private lastImageByteStripSignature: string | undefined
   /**
    * Last combined image state the loop built a request from. When it moves —
    * capability flip, omitted-set change, cap change — the usage baseline
@@ -368,6 +376,14 @@ export class AgentLoop {
         formatTooManyImagesBlockedMessage(input.images.length, maxImages),
       )
     }
+    // The request-size budget also gates submission, the same way (design
+    // §11.1): an input whose images alone would serialize over the body limit
+    // fails before anything is recorded. History and text only the request
+    // build can know refine this at send time.
+    assertInputImagesWithinRequestBody(
+      input.images,
+      resolveMaxRequestBodyBytes(model.provider.maxRequestBodyBytes?.()),
+    )
   }
 
   async summarizeRecordsForRewind(records: SessionRecord[]): Promise<{ summary: string; usage?: TokenUsage; preTokens: number }> {
@@ -470,6 +486,12 @@ export class AgentLoop {
     // single in-flight slot keeps stable across this synchronous stretch.
     assertNewImagesAllowed(turnImages, this.activeModel.supportsImageInput, this.activeModel.model)
     await assertCurrentImagesAvailable(turnImages, this.options.attachmentFacts)
+    // Request-size gate, same position (design §11.1): an input whose images
+    // alone exceed the body limit never becomes a record.
+    assertInputImagesWithinRequestBody(
+      turnImages,
+      resolveMaxRequestBodyBytes(this.activeModel.provider.maxRequestBodyBytes?.()),
+    )
     const userMessage: ChatMessage & { type: 'message' } = {
       type: 'message',
       id: messageId ?? randomUUID(),
@@ -494,7 +516,11 @@ export class AgentLoop {
       }
     }
     try {
-      await this.runUserPromptSubmitHooks(userInput.text, turnId, signal)
+      await this.runUserPromptSubmitHooks(
+        { text: userInput.text, ...(turnImages && turnImages.length > 0 ? { images: turnImages } : {}) },
+        turnId,
+        signal,
+      )
       let lastResponseTokenCount: number | undefined
       let lastResponseRecordCount: number | undefined
       let lastResponseRecordId: string | undefined
@@ -1272,19 +1298,60 @@ export class AgentLoop {
       ...(userMessageId ? { currentUserMessageId: userMessageId } : {}),
       maxMediaItems: resolveMaxMediaItems(this.activeModel.provider.maxImagesPerRequest?.()),
     })
+    // The request-size budget (design §11.1 step 3, the volume half the count
+    // cap above does not see): the body limit minus the estimated text bytes
+    // is what the images may serialize into, and the oldest history leaves the
+    // request first when they would not fit. Metadata-only estimate — the
+    // bytes of whatever survives load in step 5, and the provider's final
+    // check measures the real serialized body.
+    const byteStripped = this.stripExcessImageBytesForRequest(stripped.records, turnId, userMessageId)
     if (
       process.env.MYAGENT_DEBUG_PROVIDER === '1'
-      && stripped.keptImageCount + stripped.omittedImages.length > 0
+      && (stripped.keptImageCount + stripped.omittedImages.length > 0
+        || byteStripped.omittedImages.length > 0)
     ) {
       console.error(
         `[hanekawa][image-tokens] strategy=${describeImageTokenStrategy(imageTokenStrategy)}, `
-        + `kept=${stripped.keptImageCount}, omitted=${stripped.omittedImages.length}, cap=${stripped.maxMediaItems}`,
+        + `kept=${stripped.keptImageCount}, omitted=${stripped.omittedImages.length}, cap=${stripped.maxMediaItems}`
+        + (byteStripped.omittedImages.length > 0
+          ? `, bytesOmitted=${byteStripped.omittedImages.length}, byteBudget=${byteStripped.maxImageRequestBytes}`
+          : ''),
       )
     }
     this.noteImageProjection(projection)
     this.noteMediaStrip(stripped)
-    this.noteImageRequestState(projection, stripped)
-    return stripped.records
+    this.noteImageByteStrip(byteStripped)
+    this.noteImageRequestState(projection, stripped, byteStripped)
+    return byteStripped.records
+  }
+
+  /**
+   * The byte-budget pass for one request build. Image-free records return
+   * untouched without paying for the text estimate — the common case pays
+   * nothing.
+   */
+  private stripExcessImageBytesForRequest(
+    records: SessionRecord[],
+    turnId?: string,
+    userMessageId?: string,
+  ): ImageByteStripResult {
+    const carriesImages = records.some(
+      (record) => (record.type === 'message' || record.type === 'tool_result')
+        && record.images !== undefined && record.images.length > 0,
+    )
+    if (!carriesImages) {
+      return { records, omittedImages: [], keptImageBytes: 0, maxImageRequestBytes: 0, signature: 'no-images' }
+    }
+    const maxRequestBodyBytes = resolveMaxRequestBodyBytes(this.activeModel.provider.maxRequestBodyBytes?.())
+    const textBytes = estimateRequestTextBytes(records, {
+      system: this.options.system,
+      tools: this.currentTools,
+    })
+    return stripExcessImageBytes(records, {
+      ...(turnId ? { currentTurnId: turnId } : {}),
+      ...(userMessageId ? { currentUserMessageId: userMessageId } : {}),
+      maxImageRequestBytes: Math.max(0, maxRequestBodyBytes - textBytes),
+    })
   }
 
   /**
@@ -1318,16 +1385,33 @@ export class AgentLoop {
     })
   }
 
+  /** Same once-per-state rule for request-size omissions (design §11.1 step 3). */
+  private noteImageByteStrip(strip: ImageByteStripResult): void {
+    if (strip.signature === this.lastImageByteStripSignature) return
+    this.lastImageByteStripSignature = strip.signature
+    if (strip.omittedImages.length === 0) return
+    this.options.onStreamEvent?.({
+      type: 'request_size_notice',
+      message: formatImageByteStripNotice(strip.omittedImages.length, strip.maxImageRequestBytes),
+      omittedImageCount: strip.omittedImages.length,
+      maxImageRequestBytes: strip.maxImageRequestBytes,
+    })
+  }
+
   /**
    * Remembers the image state the request was built from. Any move —
-   * capability flip, a different omitted set, a different cap — means the
-   * usage baseline from the previous response describes a request whose image
-   * content no longer matches, so it must be re-estimated rather than reused
-   * (design §11.2). Model switches cover this too (via the model-request
-   * reset), so this catches the image-only changes between them.
+   * capability flip, a different omitted set, a different cap or byte budget —
+   * means the usage baseline from the previous response describes a request
+   * whose image content no longer matches, so it must be re-estimated rather
+   * than reused (design §11.2). Model switches cover this too (via the
+   * model-request reset), so this catches the image-only changes between them.
    */
-  private noteImageRequestState(projection: RequestImageProjection, strip: MediaStripResult): void {
-    const signature = `${projection.signature}|${strip.signature}`
+  private noteImageRequestState(
+    projection: RequestImageProjection,
+    strip: MediaStripResult,
+    byteStrip: ImageByteStripResult,
+  ): void {
+    const signature = `${projection.signature}|${strip.signature}|${byteStrip.signature}`
     if (this.lastImageRequestSignature !== undefined && signature !== this.lastImageRequestSignature) {
       this.imageRequestStateChanged = true
     }
@@ -1565,11 +1649,27 @@ export class AgentLoop {
     })
   }
 
-  private async runUserPromptSubmitHooks(userInput: string, turnId: string, signal?: AbortSignal): Promise<void> {
+  /**
+   * Text hooks keep receiving the user's text verbatim; the images ride along
+   * as metadata only (design §13) — never bytes, never a placeholder written
+   * back into the prompt. Covers the input's explicit images plus the @-mention
+   * images already imported for this turn, so the hook sees the attachment set
+   * the submission actually carries.
+   */
+  private async runUserPromptSubmitHooks(userInput: UserInput, turnId: string, signal?: AbortSignal): Promise<void> {
     const result = await runLifecycleHooks(
       this.currentHooks?.userPromptSubmit,
       'userPromptSubmit',
-      { prompt: userInput },
+      {
+        prompt: userInput.text,
+        ...(userInput.images && userInput.images.length > 0
+          ? {
+              images: userInput.images.map(({ id, name, mimeType, width, height, byteLength }) => ({
+                id, name, mimeType, width, height, byteLength,
+              })),
+            }
+          : {}),
+      },
       this.options.toolContext,
       signal,
     )

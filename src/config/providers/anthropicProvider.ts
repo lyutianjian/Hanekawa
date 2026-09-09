@@ -9,6 +9,11 @@ import {
 } from '../../harness/cacheBreakDetection.js'
 import { withRetry } from '../retry.js'
 import { buildAnthropicPayload, getAnthropicBetaHeaders, getAnthropicCacheScope } from './anthropicPayload.js'
+import {
+  assertFinalImageRequestLimits,
+  assertRequestImageCapability,
+  resolveImageRequestGuardLimits,
+} from './imageRequestGuard.js'
 import { debugProviderPayload, debugProviderResponse, debugProviderSummary } from './debug.js'
 import { normalizeAnthropicUsage } from './usage.js'
 import { isExperimentalToolSearchBetaDisabled } from '../../utils/toolSearch.js'
@@ -77,6 +82,14 @@ export class AnthropicProvider implements ModelProvider {
   private readonly promptCaching: PromptCachingMode
   /** Static per model, like `maxOutputTokens` — not a per-request decision. */
   private longContext1m: boolean
+  /**
+   * The model-config half of image capability, snapshotted at construction
+   * (providers are rebuilt per model switch). Combined with the adapter's own
+   * flag this reproduces `resolveImageCapability` exactly — the registry's
+   * function cannot be imported here without an import cycle, and the two
+   * facts it reads are this class's own static and this switch.
+   */
+  private readonly imageInputEnabled: boolean
 
   constructor(config: ModelConfig) {
     this.client = new Anthropic({
@@ -89,6 +102,7 @@ export class AnthropicProvider implements ModelProvider {
     this.nativeToolSearch = isOfficialAnthropicEndpoint(this.endpoint)
     this.promptCaching = config.promptCaching ?? 'auto'
     this.longContext1m = config.longContext1m === true
+    this.imageInputEnabled = config.supportsImageInput === true
   }
 
   supportsDynamicToolSearch(): boolean {
@@ -100,6 +114,9 @@ export class AnthropicProvider implements ModelProvider {
   }
 
   async createMessage(request: ModelRequest): Promise<ModelResponse> {
+    // Final capability re-check (design §11.1): runs before any attempt is
+    // made, so a bypassed call path fails once, loudly, without retries.
+    assertRequestImageCapability(request, this.imageInputEnabled && this.supportsImageInput())
     return withRetry(
       async (attempt) => {
         const key = rejectionKey(this.endpoint, request.model)
@@ -141,6 +158,11 @@ export class AnthropicProvider implements ModelProvider {
       promptCaching: enableCaching,
       dynamicToolSearch,
     })
+    // The final pre-send check (design §11.1 step 5): per-image bytes, image
+    // count, and the whole serialized body, against the stricter of the local
+    // policy and this adapter's declared limits. Throws before any debug log
+    // or network call; retry classification treats it as non-retryable.
+    assertFinalImageRequestLimits(payload, request, resolveImageRequestGuardLimits(this))
     const cacheSource = requireCacheSource(request.cacheSource)
     // Hash the exact beta headers and cache policy sent on every attempt,
     // including the request rebuilt after a compatibility fallback.
@@ -156,10 +178,10 @@ export class AnthropicProvider implements ModelProvider {
       cacheScope: getAnthropicCacheScope(request, enableCaching),
     }, cacheSource)
     if (attempt > 1) {
-      debugProviderPayload('anthropic-retry', payload)
+      debugProviderPayload('anthropic-retry', payload, request)
     }
     debugProviderSummary('anthropic', request, payload, betas)
-    debugProviderPayload('anthropic', payload)
+    debugProviderPayload('anthropic', payload, request)
 
     const stream = this.client.messages.stream(
       payload as unknown as Anthropic.Messages.MessageStreamParams,

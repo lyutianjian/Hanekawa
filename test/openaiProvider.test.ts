@@ -5,6 +5,7 @@ import { OpenAIProvider } from '../src/config/providers/openaiProvider.js'
 import { buildOpenAIMessages } from '../src/config/providers/openaiPayload.js'
 import { resetCacheBreakDetection, type CacheBreakSource } from '../src/harness/cacheBreakDetection.js'
 import { clearToolSchemaCache } from '../src/utils/toolSchemaCache.js'
+import { TurnImageBlockError } from '../src/harness/turnImages.js'
 import type { ModelRequest, RequestImageBytes, Tool } from '../src/harness/types.js'
 import type { ImageAttachmentRef, ImageMimeType } from '../src/media/types.js'
 
@@ -475,6 +476,7 @@ test('endpoint rejections of image-bearing requests surface endpoint, model and 
       provider: 'openai',
       model: 'gpt-test',
       apiKey: 'test-key',
+      supportsImageInput: true,
     })
     const ref = imageRef('img-reject', { name: 'reject.png' })
     const thrown = Object.assign(new Error('Invalid request: image_url content type not supported'), { status: 400 })
@@ -526,6 +528,7 @@ test('auth failures and text-only rejections keep their original error', async (
       provider: 'openai',
       model: 'gpt-test',
       apiKey: 'test-key',
+      supportsImageInput: true,
     })
     const authRef = imageRef('img-auth', { name: 'auth.png' })
     installFakeClient(authProvider, async () => {
@@ -564,5 +567,204 @@ test('auth failures and text-only rejections keep their original error', async (
   } finally {
     resetCacheBreakDetection(authSource)
     resetCacheBreakDetection(textSource)
+  }
+})
+
+// --- Final pre-send checks (S19, design §11.1 step 5) -------------------------
+
+test('the provider refuses image-bearing requests when the model is not enabled for image input', async () => {
+  const source = 'agent:openai-image-capability-test'
+  resetCacheBreakDetection(source)
+  try {
+    const provider = new OpenAIProvider({
+      provider: 'openai',
+      model: 'gpt-test',
+      apiKey: 'test-key',
+      // Model switch off: the resolved capability is false even though the
+      // adapter supports images.
+    })
+    const ref = imageRef('img-switched-off', { name: 'off.png' })
+    let calls = 0
+    installFakeClient(provider, async () => {
+      calls += 1
+      return openAIResponse('r', 0)
+    })
+    await assert.rejects(provider.createMessage({
+      ...baseRequest(source),
+      messages: [{
+        id: 'u1',
+        role: 'user',
+        content: 'look',
+        images: [ref],
+        createdAt: imageCreatedAt,
+      }],
+      imageBytes: new Map([[ref.id, imageBytesFor(new Uint8Array([1]))]]),
+    }), (error: unknown) =>
+      error instanceof TurnImageBlockError
+        && error.imageInputBlock === 'model-not-capable'
+        && /not enabled for image input/.test(error.message)
+        && /off\.png/.test(error.message),
+    )
+    assert.equal(calls, 0, 'the request never reaches the endpoint')
+
+    // Adapter-side refusal: a stubbed adapter flag blocks the same way.
+    const adapterOff = new OpenAIProvider({
+      provider: 'openai',
+      model: 'gpt-test',
+      apiKey: 'test-key',
+      supportsImageInput: true,
+    })
+    ;(adapterOff as unknown as { supportsImageInput: () => boolean }).supportsImageInput = () => false
+    let adapterCalls = 0
+    installFakeClient(adapterOff, async () => {
+      adapterCalls += 1
+      return openAIResponse('r', 0)
+    })
+    await assert.rejects(adapterOff.createMessage({
+      ...baseRequest(source),
+      messages: [{
+        id: 'u1',
+        role: 'user',
+        content: 'look',
+        images: [ref],
+        createdAt: imageCreatedAt,
+      }],
+      imageBytes: new Map([[ref.id, imageBytesFor(new Uint8Array([1]))]]),
+    }), (error: unknown) =>
+      error instanceof TurnImageBlockError && error.imageInputBlock === 'model-not-capable',
+    )
+    assert.equal(adapterCalls, 0)
+
+    // Without images the same provider works untouched.
+    await provider.createMessage(baseRequest(source))
+    assert.equal(calls, 1)
+  } finally {
+    resetCacheBreakDetection(source)
+  }
+})
+
+test('the final check rejects an oversized image before the endpoint is called, without retrying', async () => {
+  const source = 'agent:openai-image-toolarge-test'
+  resetCacheBreakDetection(source)
+  try {
+    const provider = new OpenAIProvider({
+      provider: 'openai',
+      model: 'gpt-test',
+      apiKey: 'test-key',
+      supportsImageInput: true,
+    })
+    const ref = imageRef('img-huge', { name: 'huge.png' })
+    let calls = 0
+    installFakeClient(provider, async () => {
+      calls += 1
+      return openAIResponse('r', 0)
+    })
+    await assert.rejects(provider.createMessage({
+      ...baseRequest(source),
+      retry: { maxRetries: 3 },
+      messages: [{
+        id: 'u1',
+        role: 'user',
+        content: 'look',
+        images: [ref],
+        createdAt: imageCreatedAt,
+      }],
+      imageBytes: new Map([[ref.id, imageBytesFor(new Uint8Array(3_750_001))]]),
+    }), (error: unknown) =>
+      error instanceof TurnImageBlockError
+        && error.imageInputBlock === 'image-too-large'
+        && /huge\.png/.test(error.message)
+        && /3,750,001 bytes/.test(error.message)
+        && /3,750,000-byte per-image limit/.test(error.message)
+        && /Crop the image/.test(error.message),
+    )
+    assert.equal(calls, 0, 'rejected before any network call')
+  } finally {
+    resetCacheBreakDetection(source)
+  }
+})
+
+test('the final check rejects a request whose serialized body exceeds the adapter-declared limit', async () => {
+  const source = 'agent:openai-image-bodylimit-test'
+  resetCacheBreakDetection(source)
+  try {
+    // A lower adapter-declared body limit wins over the local default.
+    class TightBodyProvider extends OpenAIProvider {
+      maxRequestBodyBytes(): number {
+        return 200
+      }
+    }
+    const provider = new TightBodyProvider({
+      provider: 'openai',
+      model: 'gpt-test',
+      apiKey: 'test-key',
+      supportsImageInput: true,
+    })
+    const ref = imageRef('img-body', { name: 'body.png' })
+    let calls = 0
+    installFakeClient(provider, async () => {
+      calls += 1
+      return openAIResponse('r', 0)
+    })
+    await assert.rejects(provider.createMessage({
+      ...baseRequest(source),
+      messages: [{
+        id: 'u1',
+        role: 'user',
+        content: 'look',
+        images: [ref],
+        createdAt: imageCreatedAt,
+      }],
+      imageBytes: new Map([[ref.id, imageBytesFor(new Uint8Array(300))]]),
+    }), (error: unknown) =>
+      error instanceof TurnImageBlockError
+        && error.imageInputBlock === 'request-too-large'
+        && /serialized request body is/.test(error.message)
+        && /200-byte request limit/.test(error.message)
+        && /image data/.test(error.message),
+    )
+    assert.equal(calls, 0)
+  } finally {
+    resetCacheBreakDetection(source)
+  }
+})
+
+test('an endpoint rejection that echoes a data URL is redacted in the surfaced error', async () => {
+  const source = 'agent:openai-image-redact-test'
+  resetCacheBreakDetection(source)
+  try {
+    const provider = new OpenAIProvider({
+      provider: 'openai',
+      model: 'gpt-test',
+      apiKey: 'test-key',
+      supportsImageInput: true,
+    })
+    const ref = imageRef('img-echo', { name: 'echo.png' })
+    const echoed = Buffer.from(new Uint8Array(64)).toString('base64')
+    installFakeClient(provider, async () => {
+      throw Object.assign(
+        new Error(`Invalid request: got data:image/png;base64,${echoed} which is not allowed here`),
+        { status: 400 },
+      )
+    })
+    await assert.rejects(provider.createMessage({
+      ...baseRequest(source),
+      messages: [{
+        id: 'u1',
+        role: 'user',
+        content: 'look',
+        images: [ref],
+        createdAt: imageCreatedAt,
+      }],
+      imageBytes: new Map([[ref.id, imageBytesFor(new Uint8Array(64))]]),
+    }), (error: unknown) => {
+      assert.ok(error instanceof Error)
+      assert.doesNotMatch(error.message, new RegExp(echoed), 'no base64 body in the surfaced message')
+      assert.match(error.message, /\[redacted image data\]/)
+      assert.match(error.message, /rejected a request carrying 1 image\(s\)/)
+      return true
+    })
+  } finally {
+    resetCacheBreakDetection(source)
   }
 })

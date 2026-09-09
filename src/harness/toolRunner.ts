@@ -237,6 +237,14 @@ export class ToolRunner {
           content: record.content,
           errorCode: record.errorCode,
           errorDetails: record.errorDetails,
+          // Attachment metadata only (design §13): refs' facts, never bytes.
+          ...(record.images && record.images.length > 0
+            ? {
+                images: record.images.map(({ id, name, mimeType, width, height, byteLength }) => ({
+                  id, name, mimeType, width, height, byteLength,
+                })),
+              }
+            : {}),
         },
         toolUseId: record.toolUseId,
       },

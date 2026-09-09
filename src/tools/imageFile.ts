@@ -1,6 +1,7 @@
 import sharp from 'sharp'
 import type { Metadata } from 'sharp'
 import type { ImageMimeType, ImageInputErrorReason } from '../media/types.js'
+import { MAX_IMAGE_SEND_BYTES } from '../media/imageRequestLimits.js'
 
 /**
  * Image decoding, normalization, and the send-version compression ladder
@@ -27,8 +28,10 @@ export const IMAGE_PROCESS_DEFAULTS = {
   /** Send versions are scaled down to this long edge; small images are never
    *  enlarged. */
   sendLongEdge: 2_000,
-  /** Max size of one send-version file (Base64 of this is ≈ 5,000,000 chars). */
-  maxSendBytes: 3_750_000,
+  /** Max size of one send-version file (Base64 of this is ≈ 5,000,000 chars).
+   *  Same policy number the request path's final check enforces — see
+   *  `media/imageRequestLimits.ts`. */
+  maxSendBytes: MAX_IMAGE_SEND_BYTES,
 } as const
 
 export interface ImageProcessLimits {

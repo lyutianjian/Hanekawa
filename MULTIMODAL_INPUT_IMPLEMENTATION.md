@@ -97,7 +97,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 | S16 | `mediaStrip` 数量限制与图像 token 预算 | S15 | 中 | `[x]` |
 | S17 | Anthropic payload 图像映射 | S16, S05 | 中 | `[x]` |
 | S18 | OpenAI payload 图像映射与工具图片合成消息 | S16, S05 | 中 | `[x]` |
-| S19 | 发送前最终校验与日志遮蔽 | S17, S18 | 中 | `[ ]` |
+| S19 | 发送前最终校验与日志遮蔽 | S17, S18 | 中 | `[x]` |
 | S20 | 消息队列持久化与交接改造 | S19, S11 | 长 | `[ ]` |
 | S21 | 模型切换、fallback 与 plan 路由 | S15, S02 | 中 | `[ ]` |
 | S22 | compact 与历史清理的图像投影 | S15, S16 | 长 | `[ ]` |
@@ -705,7 +705,7 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 
 ---
 
-## S19 `[ ]` 发送前最终校验与日志遮蔽
+## S19 `[x]` 发送前最终校验与日志遮蔽
 
 **前置**：S17、S18 · **规模**：中 · **设计稿**：§11.1、§13
 **涉及**：`src/config/providers/registry.ts`、两个 payload 模块、`src/harness/requestPrep.ts`、`src/config/providers/debug.ts`、`src/harness/hooks.ts`
@@ -722,6 +722,18 @@ S02 与 S04 在 S01 之后可并行（互不 import）。S09/S10/S11/S13 四条�
 **完成判据**：超限用例走拒绝路径且原因明确；tool_use/tool_result 仍配对；测试断言调试输出中不出现 Base64 片段。
 **验证**：`node --import tsx --test test/anthropicProvider.test.ts test/openaiProvider.test.ts test/loop.test.ts` + 新增 debug 遮蔽测试
 **提交**：`checkpoint: S19 enforce request limits and redact image bytes`
+
+**执行记录（2026-09-09，Windows x64）**
+
+- **前置说明**：本文件中第一个 `[ ]` 仍是 S11（前置 S19 未完成、§1.1 建议 S15–S19 先行），按 S14–S18 确立的「前置全部满足」顺序执行 S19（前置 S17、S18 均已完成）。
+- 工作项 1（五步顺序）：经核对 S15–S18 已把顺序落定在 loop 的 `loadPreparedRecords`/`prepareRequestImages`（配对修复 → 能力投影 → 数量上限 → compact → 只加载最终保留字节），本会话在数量上限之后补上**体积预算**的省略 pass（见工作项 4），不新增第二入口。`src/harness/requestPrep.ts` 经核对无需改动——其职责是记录整形（配对修复、thinking 清理、预算压缩），五步编排在 loop；`src/harness/hooks.ts` 模块本身也无需改动（hooks 输入的组装方在 loop/ToolRunner，见工作项 6）。
+- 工作项 2（三层最终检查）：新增 `src/config/providers/imageRequestGuard.ts` 单一归属——`assertFinalImageRequestLimits(payload, request, limits)` 在 payload 映射完成后逐层检查：**单图字节**（`request.imageBytes` 的实际字节数 vs 限额）、**请求图片总数**（遍历 payload 数 image 块，Anthropic base64 块与 OpenAI `image_url` data URL 同一 walker 计数）、**完整请求体序列化后的 UTF-8 字节**（`JSON.stringify(payload)` 实测，不只查每张图）。失败抛 `TurnImageBlockError`（`TurnImageBlockReason` 扩展 `image-too-large` / `request-too-large`），消息带文件名、字节数、限额与出路（裁剪 / 减图 / 清旧轮次）；整包超限时消息区分「其中约 N 字节是图像数据」与「无图像即纯文本超限」。retry 分类读作 `unknown`（无 status）→ 预算 0，超限请求只拒绝一次、绝不重试（测试以 `maxRetries: 3` 钉住客户端零调用）。**限额策略单一来源**：新增纯模块 `src/media/imageRequestLimits.ts`（`MAX_IMAGE_SEND_BYTES = 3,750,000`——`IMAGE_PROCESS_DEFAULTS.maxSendBytes` 改为引用同一常量，导入管线与请求终检是同一个数；`MAX_REQUEST_BODY_BYTES = 25,000,000` 本地初值；`estimateImageBlockBytes` = base64(4/3) + 128 B 块开销），`resolveMaxImageBytes` / `resolveMaxRequestBodyBytes` 与 S16 的 `resolveMaxMediaItems` 同款：**适配器已知限制与本地策略取较严格者**，垃圾值降级不反转。适配器声明经 `ModelProvider` 两个新可选方法 `maxImageBytes?()` / `maxRequestBodyBytes?()`（与 S16 的 `maxImagesPerRequest?()` 同款机制；两个现存适配器首版均不声明，测试用子类钉住）。
+- 工作项 3（Provider 发送前能力复查）：两个 provider 的 `createMessage` 在任何 attempt 之前调 `assertRequestImageCapability(request, capable)`——`capable` = 构造时快照的模型开关（`config.supportsImageInput === true`，provider 每次模型切换重建）**且**适配器自身旗标（实例方法，测试可打桩）；带图请求 + 不可用 → `TurnImageBlockError('model-not-capable')`，端点零调用。这是绕过 UI / 提交门 / loop 投影之后最后一道（S23 子代理继承接线时同样受它保护）。`resolveImageCapability` 不能直接 import（registry ↔ provider 环依赖），provider 内联的正是它读的同两个事实（类静态 + 严格 `=== true`），注释互相指向。
+- 工作项 4（超限拒绝，不静默丢当前图）：设计稿 §11.1 第 3 步的**体积预算**由 `mediaStrip.ts` 新增 `stripExcessImageBytes` 落实——预算 = `resolveMaxRequestBodyBytes` − `estimateRequestTextBytes`（system + 各记录 content + 每记录 256 B 结构开销 + 工具 schema JSON，纯估算、不加载任何东西），**只用 ref.byteLength 元数据**估算每出现 ≈ base64+块开销。省略次序与数量上限完全同款：最早历史图 → 本轮工具图，输入自身受保护；**仅当前输入就超预算**时抛 `request-too-large`（消息含「减少图片或 crop/downscale」），不静默丢当前图。loop 在 `loadPreparedRecords` 数量上限之后调用（无图请求零开销直返，文本估算只在有图时才发生），省略后 `prepareRequestImages` 只加载存活 ref——「先决定后加载」由测试钉住（被省略图零加载调用）。提交门双保险：`assertImagesAllowedForSubmission` 与 `runInternal` 的记录前 gate 均调 `assertInputImagesWithinRequestBody`（输入自身估算 vs 完整 body 限额，不含历史/文本——那只有请求构建才知道）。「可预见预算不足的工具错误」为既有行为：S04 阶梯触底拒绝（`image-too-large` + 裁剪提示）、S10 纯文本模型 `precondition_failed`；本会话补齐的是并行工具合并后的最终预检与「失败不留未结算工具调用」——loop 测试证明终检在工具结果落盘后抛错时，每个 tool_use 都有配对 tool_result。新流事件 `request_size_notice`（纯文本、经既有 stream 通道过线）按 (预算 × 保留集合) signature 去重，TUI 渲染为 system 行（desktop 对未知流事件安全忽略）；`noteImageRequestState` 签名并入 byte strip——省略集合变化同样使 usage 基线失效重算。
+- 工作项 5（debug 遮蔽）：`debugProviderPayload(label, payload, request?)` 现在写时遮蔽——copy-on-write 深走 payload，Anthropic `source.data` → `<redacted base64: N chars, ~M bytes>`、OpenAI data URL 保留 `data:<mime>;base64,` 前缀后遮蔽本体，原 payload 对象零突变；附件事实（**附件 ID、文件名、MIME、尺寸、字节数**、加载字节数）走独立的 `payload images` 摘要行，不进 payload 结构。`debugProviderSummary` 的 `previewContent` 对 image / image_url 块输出 `image:<mime>` / `image_url:<mime>` 标签。四个调用点（两 provider × 正常/retry）全部带上 request。
+- 工作项 6（事件/hooks/快照/错误不带图片正文）：会话事件、运行时快照、记录本就只携带 ref（S06 起的结构保证），本会话核对无新增泄漏路径。**文本 hooks 继续收到纯文本**：`runUserPromptSubmitHooks` 改收完整 `UserInput`，hook stdin 里 `prompt` 逐字是用户原话（不自动把路径占位符写回），`images` 以元数据数组（id/name/mime/宽高/字节数，无 bytes）附加——覆盖显式附件 + 本轮 @ 图（mention 收集在 hook 之前完成）；postToolUse hook 的 `result` 同样附加工具结果图片的元数据。**错误信息遮蔽**：`redactImageBytesFromText`（imageRequestGuard 导出）把 `data:image/...;base64,<run>` 与 400+ 字符 base64 长跑替换为 `[redacted image data]`（短内容——校验和、id、普通词——不受影响；正则刻意不用 `\b`，`+`/`/`/`=` 是非词字符会让尾部逃逸）；S18 的 `augmentImageEndpointRejection` 在嵌入端点回显的原始错误文本前先行遮蔽——代理会把请求体回显进 HTTP 错误。
+- 测试：新增 `test/imageRequestGuard.test.ts` 10 项（限额解析矩阵含适配器收紧/放宽/垃圾值、单图出现估算、ref 收集去重、能力检查三态、终检三层各自命中与通过边界、tool schema 不误计数、整包消息的图像份额/纯文本两态、文本遮蔽四态含校验和存活）；`test/providerDebugRedaction.test.ts` 4 项（遮蔽 + 事实行 + 原 payload 零突变、无图直出、env 门、summary 标签）；`test/mediaStrip.test.ts` +7（预算内恒等引用、最旧历史优先 + 占位符逐字 + 键移除 + 纯投影、本轮工具图仅在历史耗尽后、输入自身超额阻止、提交门双态、通知文案、文本估算逐项）；`test/anthropicProvider.test.ts` +4 与 `test/openaiProvider.test.ts` +4（能力复查双态——开关关/适配器桩关——端点零调用且纯文本不受影响、单图超限在客户端调用前拒绝且无重试、适配器声明计数/整包限额收紧生效、端点回显 data URL 被遮蔽且保留 status/cause）；`test/loop.test.ts` +4（字节预算端到端——历史省略成占位符、被省略图零加载、通知恰一次、JSONL 原样；输入自身超 body 限额在记录前拒绝零记录；终检拒绝后 tool_use/tool_result 全配对；userPromptSubmit 收到逐字 prompt + 图片元数据——真实 hook 子进程读 stdin 回显两半）。既有测试适配：S17/S18 的三个带图 provider 端到端测试补 `supportsImageInput: true`（provider 现在强制能力复查，这正是该检查存在的意义）。
+- 验证：窄测 `imageRequestGuard`+`mediaStrip`+`providerDebugRedaction`（30）/`anthropicProvider`+`openaiProvider`（46）/`loop`（65）全绿；邻接 `turnImages`/`requestPrep`/`sessionController`/`messageQueue`/`toolRunner`/`contextBuilder`/`imageFile`/`imageAttachments`/`imageTokens`（169）、`compact`/`progressiveCompact`/`cacheControl`×2/`protocolHost`/`desktopShellHost`/`desktopUiRoundTrip`/`skills`/`loopAbort`/`sessionWorkspace`（295）、`tuiRender`/`tuiTranscript`/`agentTool`/`rendererImports`/`protocolClientParity`/`protocolWire`/`protocolCommandSchema`（232）全绿；`npm run typecheck` 四配置通过；全量 `npm run test`：3228 项 3227 过、1 跳过（既有）、0 失败——S02 记录的 TUI Ink 渲染失败与 S07/S15 记录的环境抖动本次均未出现。
 
 ---
 

@@ -1778,6 +1778,53 @@ test('the lift runs once per question, not once per streamed token', (t) => {
   assert.equal(pad(view), '472px')
 })
 
+test('M15 reading history defers end padding recovery in the same paint as disclosure', (t) => {
+  const view = mount(t)
+  laidOut(view)
+  const items: TranscriptItem[] = [{ id: 'a', kind: 'user', text: 'question', turnId: 't1' },
+    { id: 's', kind: 'thinking', text: 'body', turnId: 't1', pending: true }]
+  view.render(transcript(items), NO_DISCLOSURE, RUNNING_T1)
+  const before = pad(view)
+  view.stub.setMetrics(view.container, { scrollTop: 0, scrollHeight: 672 })
+  view.render(transcript(items.map((item) => ({ ...item, pending: false }))))
+  assert.equal(pad(view), before, 'reading content and its space remain together')
+  assert.equal(view.column().classes.includes('settling'), false)
+  assert.equal(groupOf(view).classes.includes('collapsed'), false)
+  assert.equal(view.container.scrollTop, 0)
+})
+
+test('M15 a disclosure keeps its triggering head at the same viewport offset and yields to a wheel', (t) => {
+  const previousRaf = globalThis.requestAnimationFrame
+  const previousCancel = globalThis.cancelAnimationFrame
+  const frames = new Map<number, FrameRequestCallback>()
+  let sequence = 0
+  globalThis.requestAnimationFrame = (run) => { frames.set(++sequence, run); return sequence }
+  globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
+  t.after(() => { globalThis.requestAnimationFrame = previousRaf; globalThis.cancelAnimationFrame = previousCancel })
+  const view = mount(t)
+  let shift = 0
+  view.stub.setMetrics(view.container, { scrollTop: 100, scrollHeight: 2000, clientHeight: 400 })
+  view.stub.onLayout((node) => {
+    if (node.node === view.container) return { top: 0, bottom: 400 }
+    if (node.classes.includes('step-head')) return { top: 200 + shift - view.container.scrollTop, bottom: 220 + shift - view.container.scrollTop }
+    return undefined
+  })
+  const items: TranscriptItem[] = [{ id: 's', kind: 'thinking', text: 'body', turnId: 't1' }]
+  view.render(transcript(items), new Map([['t1', true], ['s', true]]))
+  const head = groupOf(view).children[1]!.children[0]!.children[0]!.node
+  view.stub.click(head)
+  view.render(transcript(items), new Map([['t1', true], ['s', false]]))
+  shift = -35
+  const [id, frame] = [...frames][0]!
+  frames.delete(id)
+  frame(16)
+  assert.equal(view.container.scrollTop, 65)
+  assert.equal(200 + shift - view.container.scrollTop, 100, 'the title stays under the pointer')
+  view.stub.dispatch(view.container, 'wheel')
+  assert.equal(frames.size, 0, 'user input cancels every owed anchor frame')
+  view.stopClock()
+})
+
 test('the pad shrinks as the answer grows, so the bubble holds still while it streams', (t) => {
   const view = mount(t)
   // The same conversation 200px longer.

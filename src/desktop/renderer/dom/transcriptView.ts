@@ -26,7 +26,8 @@ import {
   type TranscriptItem,
   type TranscriptState,
 } from '../model/transcript.js'
-import { anchorPadding, anchorTopGap, TRANSCRIPT_PAD_VARIABLE } from '../model/transcriptAnchor.js'
+import { anchorPadding, anchorTopGap, TRANSCRIPT_PAD_VARIABLE, viewportPolicy } from '../model/transcriptAnchor.js'
+import { PRESENCE_FALLBACK_MS } from '../model/presence.js'
 import { splitFileMentions } from '../model/userMessage.js'
 import type { ImageAttachmentRef } from '../../../media/types.js'
 import {
@@ -110,6 +111,8 @@ export interface TranscriptView {
    * The next `render` starts it again from the same `startedAt`.
    */
   stopClock(): void
+  /** Capture the reading position before the composer or another region resizes. */
+  beginLayoutChange(): void
 }
 
 export interface TranscriptHandlers {
@@ -150,7 +153,13 @@ export function createTranscriptView(
     'scroll-bottom',
     '',
     '回到最新',
-    () => container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' }),
+    () => {
+      stopViewportMotion()
+      if (viewportPolicy({ event: 'return-latest', atBottom: false, streaming: false, measurable: true }) === 'follow-tail') {
+        container.scrollTo({ top: container.scrollHeight, behavior: 'auto' })
+      }
+      syncJump()
+    },
     { icon: 'arrow-down' },
   )
   jump.hidden = true
@@ -173,6 +182,70 @@ export function createTranscriptView(
   const seenDisclosures = new Set<string>()
   let previousDisclosure: DisclosureState = NO_DISCLOSURE
   let generation: number | undefined
+  type ReadingPosition = { node: HTMLElement; offset: number }
+  let readingPosition: ReadingPosition | undefined
+  let guardedPosition: ReadingPosition | undefined
+  let viewportFrame: number | undefined
+  let viewportTimer: ReturnType<typeof setTimeout> | undefined
+
+  function positionOf(node: HTMLElement | undefined): ReadingPosition | undefined {
+    const viewport = box(container)
+    const rect = node && box(node)
+    return node && viewport && rect ? { node, offset: rect.top - viewport.top } : undefined
+  }
+
+  function readingReference(): ReadingPosition | undefined {
+    const viewport = box(container)
+    if (!viewport) return undefined
+    const candidates = [...column.querySelectorAll<HTMLElement>('.step-head, .group-head, p, .md-code, .item')]
+    const node = candidates.find((candidate) => {
+      const rect = box(candidate)
+      return rect && rect.top >= viewport.top && rect.top < viewport.bottom
+    }) ?? candidates.find((candidate) => {
+      const rect = box(candidate)
+      return rect && rect.bottom > viewport.top && rect.top < viewport.bottom
+    })
+    return positionOf(node)
+  }
+
+  function keepReadingPosition(position: ReadingPosition | undefined): void {
+    if (!position || !column.contains(position.node)) return
+    const current = positionOf(position.node)
+    if (current && Math.abs(current.offset - position.offset) > 0.5) {
+      // Correct only the residual after native scroll anchoring, never twice.
+      container.scrollTop += current.offset - position.offset
+    }
+  }
+
+  function stopViewportMotion(): void {
+    if (viewportFrame !== undefined) cancelAnimationFrame(viewportFrame)
+    viewportFrame = undefined
+    clearTimeout(viewportTimer)
+    viewportTimer = undefined
+    guardedPosition = undefined
+  }
+
+  function beginLayoutChange(node?: HTMLElement): void {
+    stopViewportMotion()
+    const policy = viewportPolicy({ event: node ? 'disclosure' : 'layout', atBottom: isScrolledToBottom(container), streaming: !anchorSettled, measurable: box(container) !== undefined })
+    if (policy !== 'preserve-anchor') return
+    guardedPosition = positionOf(node) ?? readingReference()
+    if (!guardedPosition) return
+    const frame = (): void => {
+      keepReadingPosition(guardedPosition)
+      viewportFrame = requestAnimationFrame(frame)
+    }
+    if (typeof requestAnimationFrame === 'function') viewportFrame = requestAnimationFrame(frame)
+    viewportTimer = setTimeout(stopViewportMotion, PRESENCE_FALLBACK_MS.layout)
+    ;(viewportTimer as unknown as { unref?: () => void }).unref?.()
+  }
+
+  // A wheel, scrollbar press or keyboard navigation immediately owns the view.
+  container.addEventListener('wheel', stopViewportMotion, { passive: true })
+  container.addEventListener('pointerdown', stopViewportMotion)
+  container.addEventListener('keydown', (event) => {
+    if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) stopViewportMotion()
+  })
 
   // The live status's clock. The span is kept rather than looked up: its carrier
   // — the running group's head, or the standalone row — is a node reused by key
@@ -250,13 +323,17 @@ export function createTranscriptView(
    * transcript as a streaming one would put the screenful of blank back.
    */
   let anchorSettled = true
+  let anchorHoldPadding = false
 
   // Both halves are needed, and they share the one predicate so they cannot
   // disagree at its 24px boundary. `scroll` is the obvious trigger; the paint
   // below is the other one, because the *content* can move the verdict with no
   // scroll event at all — a `turn-end` dropping a draft or a `transcript-reset`
   // shortens the scroller under a reader who is then already at the tail.
-  container.addEventListener('scroll', syncJump)
+  container.addEventListener('scroll', () => {
+    syncJump()
+    if (!guardedPosition) readingPosition = isScrolledToBottom(container) ? undefined : readingReference()
+  })
 
   /**
    * The pad again, without the scroll: the length it should be depends on the
@@ -279,24 +356,31 @@ export function createTranscriptView(
   if (typeof observe === 'function') {
     new observe(() => {
       if (anchorNode === undefined) return
+      const policy = viewportPolicy({ event: 'resize', atBottom: isScrolledToBottom(container), streaming: !anchorSettled, measurable: true })
       pad = liftAnchor(container, column, anchorNode, {
         first: anchorFirst,
         moved: false,
         settled: anchorSettled,
         pad,
+        holdPadding: anchorHoldPadding,
       }).pad
+      if (policy === 'preserve-anchor') keepReadingPosition(guardedPosition ?? readingPosition)
       syncJump()
     }).observe(container)
   }
 
   return {
+    beginLayoutChange: () => beginLayoutChange(),
     stopClock() {
       stopClock()
+      stopViewportMotion()
       for (const entry of feedback.values()) settleFeedback(entry)
       finishPresenceWithin(container)
     },
     render(state, disclosure, activity) {
       if (generation !== state.generation) {
+        stopViewportMotion()
+        readingPosition = undefined
         for (const entry of disclosures.values()) entry.presence.dispose()
         disclosures.clear()
         seenDisclosures.clear()
@@ -310,6 +394,8 @@ export function createTranscriptView(
         generation = state.generation
       }
       const atBottom = isScrolledToBottom(container)
+      const before = guardedPosition ?? (!atBottom ? readingReference() : undefined)
+      const wasSettled = anchorSettled
       const entries = groupTranscript(state.items)
       const live = turnActivity(entries, activity ?? IDLE)
       const focused = new Set<string>()
@@ -325,11 +411,19 @@ export function createTranscriptView(
           && (node.contains(selection.anchorNode) || node.contains(selection.focusNode))) selected.add(id)
       }
       const resolvedDisclosure = resolveDisclosure(entries, disclosure, previousDisclosure, live.liveGroupId, {
-        focused, selected, readingHistory: !atBottom,
+        focused, selected, readingHistory: !atBottom || guardedPosition !== undefined,
       })
       previousDisclosure = resolvedDisclosure
       const afterPaint: Array<() => void> = []
-      const painter = createPainter(cache, refs, feedback, disclosures, seenDisclosures, resolvedDisclosure, handlers, {
+      const painter = createPainter(cache, refs, feedback, disclosures, seenDisclosures, resolvedDisclosure, {
+        ...handlers,
+        onToggle(id, expanded) {
+          const head = cache.get(`head:${id}`)?.node ?? cache.get(`thinking-head:${id}`)?.node
+            ?? cache.get(`tool-head:${id}`)?.node ?? cache.get(`loose-thinking-head:${id}`)?.node
+          beginLayoutChange(head)
+          handlers.onToggle(id, expanded)
+        },
+      }, {
         liveGroupId: live.liveGroupId,
         startedAt: activity?.startedAt,
         keepClock: (span) => { clockNode = span },
@@ -353,17 +447,19 @@ export function createTranscriptView(
       const anchor = at === undefined ? undefined : entries[at]
       const next = anchor?.kind === 'item' ? anchor.item.id : undefined
       const moved = next !== undefined && next !== anchorId
+      if (moved) stopViewportMotion()
       // The pane's own flag rather than anything `turnActivity` decided:
       // `model/waiting.ts` reports `IDLE` while a draft is arriving — it means
       // 「no waiting row to draw」 there — and a pad released mid-answer would
       // drop the question the reader is watching being answered.
       const settled = activity?.isStreaming !== true
       anchorSettled = settled
+      anchorHoldPadding = settled && !moved && (!atBottom || focused.size > 0 || selected.size > 0)
       // The transition is attached only while the pad is resting. During a turn
       // it shortens on every token, and an animated `padding-bottom` would lag
       // the tail follow by a frame each time — a transcript that shivers for as
       // long as the answer runs.
-      column.classList.toggle('settling', settled)
+      column.classList.toggle('settling', settled && !anchorHoldPadding)
       // A transcript with no user message — a reset pane, or one showing only
       // startup notices — drops the pad rather than keeping the last one it was
       // given; nothing in it is anchored, so there is nothing to hold up.
@@ -376,7 +472,7 @@ export function createTranscriptView(
       } else {
         anchorNode = nodes[at]!
         anchorFirst = at === 0
-        const lift = liftAnchor(container, column, nodes[at]!, { first: at === 0, moved, settled, pad })
+        const lift = liftAnchor(container, column, nodes[at]!, { first: at === 0, moved, settled, pad, holdPadding: anchorHoldPadding })
         pad = lift.pad
         lifted = lift.lifted
         // The anchor is only *spent* once it could actually be measured. A pane
@@ -391,7 +487,13 @@ export function createTranscriptView(
       // lift already placed the scroller — it put the anchor at the top, which
       // *is* the end of the padded content, and running both would be one
       // assignment fighting the other.
-      if (!lifted && atBottom) container.scrollTop = container.scrollHeight
+      const policy = viewportPolicy({
+        event: guardedPosition ? 'disclosure' : settled && !wasSettled ? 'turn-end' : 'stream',
+        atBottom, streaming: !settled, measurable: box(container) !== undefined,
+      })
+      if (!lifted && policy === 'follow-tail') container.scrollTop = container.scrollHeight
+      else if (!lifted && policy === 'preserve-anchor') keepReadingPosition(before)
+      readingPosition = policy === 'preserve-anchor' ? readingReference() : undefined
       syncJump()
     },
   }
@@ -1478,6 +1580,7 @@ function liftAnchor(
     readonly moved: boolean
     readonly settled: boolean
     readonly pad: number
+    readonly holdPadding?: boolean
   },
 ): { readonly pad: number; readonly lifted: boolean; readonly measured: boolean } {
   const viewport = container.clientHeight
@@ -1505,12 +1608,13 @@ function liftAnchor(
   // short session is. The column's box has no such floor — but it *does* carry
   // the pad already written, which is what comes off it here.
   const below = content.bottom - state.pad - top.top + inset
-  const pad = anchorPadding({ viewport, below, topGap, settled: state.settled })
+  const pad = state.holdPadding ? state.pad : anchorPadding({ viewport, below, topGap, settled: state.settled })
   column.style.setProperty(TRANSCRIPT_PAD_VARIABLE, `${pad}px`)
-  if (!state.moved) return { pad, lifted: false, measured: true }
+  const policy = viewportPolicy({ event: state.moved ? 'new-question' : 'resize', atBottom: false, streaming: !state.settled, measurable: true })
+  if (policy === 'preserve-anchor' || policy === 'none') return { pad, lifted: false, measured: true }
   // A new anchor with nothing running is a conversation being opened, not a
   // question being asked: the tail is where the reader left off.
-  if (state.settled) {
+  if (policy === 'follow-tail') {
     container.scrollTop = container.scrollHeight
     return { pad, lifted: true, measured: true }
   }

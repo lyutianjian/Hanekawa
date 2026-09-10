@@ -9,6 +9,8 @@ import {
   ANCHOR_TOP_FIRST_PX,
   ANCHOR_TOP_PX,
   TRANSCRIPT_PAD_VARIABLE,
+  viewportPolicy,
+  type ViewportEvent,
 } from '../src/desktop/renderer/model/transcriptAnchor.js'
 
 /**
@@ -18,6 +20,21 @@ import {
  * `dom/transcriptView.ts` is three `getBoundingClientRect` reads and one
  * `setProperty`, while every judgement about *where a turn sits* is here.
  */
+
+test('one viewport policy covers new questions, streaming, reading, disclosure and layout', () => {
+  const input = { atBottom: true, streaming: true, measurable: true }
+  assert.equal(viewportPolicy({ ...input, event: 'new-question' }), 'locate-anchor')
+  assert.equal(viewportPolicy({ ...input, event: 'new-question', measurable: false }), 'none', 'defer the single placement until measurable')
+  assert.equal(viewportPolicy({ ...input, event: 'new-question', streaming: false }), 'follow-tail', 'restored history opens without a streaming pad')
+  for (const event of ['stream', 'tool-gap', 'turn-end'] satisfies ViewportEvent[]) {
+    assert.equal(viewportPolicy({ ...input, event }), 'follow-tail', event)
+    assert.equal(viewportPolicy({ ...input, event, atBottom: false }), 'preserve-anchor', event)
+  }
+  for (const event of ['reading', 'disclosure', 'resize', 'activate', 'layout'] satisfies ViewportEvent[]) {
+    assert.equal(viewportPolicy({ ...input, event }), 'preserve-anchor', event)
+  }
+  assert.equal(viewportPolicy({ ...input, event: 'return-latest', atBottom: false }), 'follow-tail')
+})
 
 test('the first question in a session is lifted to the very top', () => {
   // A fresh session: nothing above the bubble to reveal, so the gap is the

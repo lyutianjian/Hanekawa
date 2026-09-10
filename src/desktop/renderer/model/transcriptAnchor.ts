@@ -123,3 +123,34 @@ export function anchorPadding(metrics: AnchorMetrics): number {
 export function anchorTopGap(first: boolean): number {
   return first ? ANCHOR_TOP_FIRST_PX : ANCHOR_TOP_PX
 }
+
+export type ViewportEvent = 'new-question' | 'stream' | 'tool-gap' | 'reading'
+  | 'disclosure' | 'resize' | 'turn-end' | 'return-latest' | 'activate' | 'layout'
+export type ViewportAction = 'none' | 'follow-tail' | 'locate-anchor' | 'preserve-anchor'
+
+/** One policy for all viewport changes. Content growth never queues smooth
+ * scrolling; explicit return-to-latest is immediate and has no tail animation
+ * left to fight a wheel, drag, or second navigation. */
+export function viewportPolicy(input: {
+  event: ViewportEvent
+  atBottom: boolean
+  streaming: boolean
+  measurable: boolean
+}): ViewportAction {
+  switch (input.event) {
+    case 'new-question':
+      return !input.measurable ? 'none' : input.streaming ? 'locate-anchor' : 'follow-tail'
+    case 'return-latest':
+      return 'follow-tail'
+    case 'stream':
+    case 'tool-gap':
+    case 'turn-end':
+      return input.atBottom ? 'follow-tail' : 'preserve-anchor'
+    case 'reading':
+    case 'disclosure':
+    case 'resize':
+    case 'activate':
+    case 'layout':
+      return 'preserve-anchor'
+  }
+}

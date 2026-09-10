@@ -28,7 +28,10 @@
  * it at import time.
  */
 
+import type { MotionMutation } from './motion.js'
+
 const SVG_NS = 'http://www.w3.org/2000/svg'
+const MOTION_OBSERVERS = new Set<(event: MotionMutation) => void>()
 
 /** Populated by `setAttribute('id', …)`; cleared by `uninstall()`. */
 const ID_REGISTRY = new Map<string, StubElement>()
@@ -52,6 +55,7 @@ interface StubEvent {
   readonly key: string
   /** `transitionend`'s property. The sidebar's fold listens for `flex-basis`. */
   readonly propertyName: string
+  readonly animationName: string
   /**
    * The pressed mouse button, as `MouseEvent.button`: 0 is the left one, 2 the
    * right. Defaults to 0, so a test that does not care describes a plain click —
@@ -72,6 +76,7 @@ export interface StubEventInit {
   readonly relatedTarget?: unknown
   readonly key?: string
   readonly propertyName?: string
+  readonly animationName?: string
   readonly button?: number
   /** A `paste` event's clipboard; `files` are fake `File`-shaped objects. */
   readonly clipboardData?: { readonly files: readonly unknown[] }
@@ -174,7 +179,11 @@ class StubElement {
   }
 
   set className(value: string) {
+    const before = this.className
     this.attributes.set('class', value)
+    if (before !== value) {
+      for (const observer of MOTION_OBSERVERS) observer({ type: 'class', node: this, before, after: value })
+    }
   }
 
   readonly classList = {
@@ -264,6 +273,12 @@ class StubElement {
 
   removeChild(child: StubChild): void {
     const at = this.childNodes.indexOf(child)
+    if (at >= 0 && child instanceof StubElement) {
+      const descendants = (node: StubElement): StubElement[] => [node,
+        ...node.childNodes.flatMap((nested) => nested instanceof StubElement ? descendants(nested) : [])]
+      const nodes = descendants(child)
+      for (const observer of MOTION_OBSERVERS) observer({ type: 'detach', nodes })
+    }
     if (at >= 0) this.childNodes.splice(at, 1)
     child.parent = undefined
     // A node that leaves the tree takes the focus with it, exactly as the browser
@@ -348,6 +363,7 @@ class StubElement {
       relatedTarget: init.relatedTarget ?? null,
       key: init.key ?? '',
       propertyName: init.propertyName ?? '',
+      animationName: init.animationName ?? '',
       button: init.button ?? 0,
       clipboardData: init.clipboardData,
       defaultPrevented: false,
@@ -439,6 +455,8 @@ export interface DomStub {
   body(): unknown
   /** Whether the stub's `document` carries a member, for the source-scan guard. */
   hasDocumentMember(name: string): boolean
+  observeMotion(listener: (event: MotionMutation) => void): () => void
+  setMedia(query: string, matches: boolean): void
   uninstall(): void
 }
 
@@ -465,6 +483,28 @@ function viewOf(element: StubElement): StubView {
 }
 
 export function installDomStub(): DomStub {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const media = new Map<string, {
+    media: string
+    matches: boolean
+    addEventListener(type: string, listener: (event: { matches: boolean }) => void): void
+    removeEventListener(type: string, listener: (event: { matches: boolean }) => void): void
+    listeners: Set<(event: { matches: boolean }) => void>
+  }>()
+  const matchMedia = (query: string) => {
+    let entry = media.get(query)
+    if (!entry) {
+      const listeners = new Set<(event: { matches: boolean }) => void>()
+      entry = {
+        media: query, matches: false, listeners,
+        addEventListener: (_type, listener) => { listeners.add(listener) },
+        removeEventListener: (_type, listener) => { listeners.delete(listener) },
+      }
+      media.set(query, entry)
+    }
+    return entry
+  }
+  Reflect.set(globalThis, 'window', { matchMedia })
   // The page's two fixed nodes. `<html>` carries `dataset.theme` (the whole
   // stylesheet hangs off it) and `<body>` is where `app.ts` writes the message
   // it shows when startup fails — a test that never looks at it lets a thrown
@@ -527,6 +567,16 @@ export function installDomStub(): DomStub {
   Reflect.set(globalThis, 'Element', StubElement)
 
   return {
+    observeMotion(listener) {
+      MOTION_OBSERVERS.add(listener)
+      return () => { MOTION_OBSERVERS.delete(listener) }
+    },
+    setMedia(query, matches) {
+      const entry = matchMedia(query)
+      if (entry.matches === matches) return
+      entry.matches = matches
+      for (const listener of entry.listeners) listener({ matches })
+    },
     createContainer(className?: string): HTMLElement {
       const element = new StubElement('DIV', undefined)
       if (className) element.className = className
@@ -572,6 +622,9 @@ export function installDomStub(): DomStub {
       return Object.hasOwn(document, name)
     },
     uninstall(): void {
+      MOTION_OBSERVERS.clear()
+      if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+      else Reflect.deleteProperty(globalThis, 'window')
       ID_REGISTRY.clear()
       LAYOUT = undefined
       activeElement = undefined

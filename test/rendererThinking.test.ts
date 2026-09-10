@@ -76,6 +76,13 @@ const group = (steps: readonly ActivityStep[], status: ActivityGroup['status']):
   failedCount: steps.filter((step) => 'status' in step && step.status === 'failed').length,
 })
 
+// M02 will supply the real turn liveness separately from step completion.
+test('M02 keeps disclosure open in a live turn with no pending steps', { skip: true }, () => {
+  const between = group([toolStep('a', 'done')], 'done')
+  assert.equal(isGroupExpanded(between), true)
+  assert.equal(isStepExpanded(between, 0), true)
+})
+
 test('the group head summarises the turn without naming what is happening now', () => {
   const steps = [toolStep('a', 'done'), toolStep('b', 'done')]
   assert.equal(groupHeaderLabel({ ...group(steps, 'done'), durationMs: 458_000 }), '已处理 7m 38s · 2 步')

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
+import { trackAnimationStarts, trackIdentity } from './helpers/motion.js'
 import { createCanvasHeaderView, type CanvasHeaderDom } from '../src/desktop/renderer/dom/canvasHeaderView.js'
 import { canvasHeaderView, type CanvasHeaderMenuItem } from '../src/desktop/renderer/model/canvasHeader.js'
 import type { WireLaneInfo } from '../src/desktop/shellProtocol.js'
@@ -30,6 +31,26 @@ function lane(overrides: Partial<WireLaneInfo> = {}): WireLaneInfo {
     ...overrides,
   }
 }
+
+// M06: streaming shell snapshots must not replay menu entry or move focus.
+test('M06 keeps an open menu and its focused item through ten snapshots', { skip: true }, (t) => {
+  const r = render(t)
+  r.paint({ menuOpen: true })
+  const root = () => r.stub.inspect(r.container)
+  const identity = trackIdentity(root, '.canvas-menu')
+  const starts = trackAnimationStarts(root, '.canvas-menu', r.stub.observeMotion)
+  t.after(starts.dispose)
+  const menu = identity.sample()
+  const second = r.menuItems()[1]!.node
+  r.stub.focus(second)
+  for (let i = 0; i < 10; i += 1) {
+    r.paint({ menuOpen: true })
+    assert.equal(identity.sample(), menu)
+    assert.equal(r.stub.activeElement(), second)
+  }
+  assert.equal(identity.replacements, 0)
+  assert.equal(starts.starts, 0)
+})
 
 interface Rendered {
   readonly stub: DomStub

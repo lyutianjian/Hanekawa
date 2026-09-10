@@ -4,6 +4,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
+import { trackAnimationStarts, trackIdentity } from './helpers/motion.js'
 import { createTranscriptView } from '../src/desktop/renderer/dom/transcriptView.js'
 import { NO_DISCLOSURE } from '../src/desktop/renderer/model/thinking.js'
 import type { DisclosureState } from '../src/desktop/renderer/model/thinking.js'
@@ -23,6 +24,39 @@ import type { ToolErrorCode } from '../src/harness/types.js'
  */
 
 const RENDERER = path.join(import.meta.dirname, '..', 'src', 'desktop', 'renderer')
+
+// M03: a tool result is not the end of its live turn.
+test('M03 keeps the activity group mounted between short tools', { skip: true }, (t) => {
+  const view = mount(t)
+  const identity = trackIdentity(view.column, '.group-steps')
+  const activity = { isStreaming: true, turnId: 't1', startedAt: Date.now() }
+  const tool: TranscriptItem = { id: 'a', kind: 'tool', text: 'read', turnId: 't1', pending: true,
+    toolName: 'Read', tool: { displayName: 'Read', useSummary: 'a.ts' } }
+  view.render(transcript([tool]), NO_DISCLOSURE, activity)
+  const steps = identity.sample()
+  assert.ok(steps)
+  view.render(transcript([{ ...tool, pending: undefined }]), NO_DISCLOSURE, activity)
+  assert.equal(identity.sample(), steps)
+  view.render(transcript([{ ...tool, pending: undefined }, { ...tool, id: 'b' }]), NO_DISCLOSURE, activity)
+  assert.equal(identity.sample(), steps)
+  assert.equal(identity.replacements, 0)
+})
+
+// M04: an unchanged parent paint must keep its nested head cache alive.
+test('M04 keeps the thinking head through an unchanged streaming snapshot', { skip: true }, (t) => {
+  const view = mount(t)
+  const identity = trackIdentity(view.column, '.thinking-step-head')
+  const starts = trackAnimationStarts(view.column, '.step-rule', view.stub.observeMotion)
+  t.after(starts.dispose)
+  let head: unknown
+  for (const text of ['A', 'AB', 'AB', 'ABC']) {
+    view.render(transcript([{ id: 'th', kind: 'thinking', text, turnId: 't1', pending: true }]))
+    head ??= identity.sample()
+    assert.ok(head)
+    assert.equal(identity.sample(), head)
+  }
+  assert.equal(starts.starts, 0)
+})
 
 function transcript(items: readonly TranscriptItem[] = [], overrides: Partial<TranscriptState> = {}): TranscriptState {
   return { items, generation: 0, toolProgress: undefined, isThinking: false, thinkingCount: 0, ...overrides }

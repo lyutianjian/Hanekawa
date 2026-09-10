@@ -1466,11 +1466,14 @@ test('the bead is the tool step\'s whole status vocabulary, and it stays flat', 
   assert.equal(named('awaiting-approval').decls.find((d) => d.prop === 'color')?.value, 'var(--accent-warn)')
   assert.equal(named('done').decls.find((d) => d.prop === 'color')?.value, 'var(--accent-review)')
   assert.equal(named('failed').decls.find((d) => d.prop === 'color')?.value, 'var(--accent-danger)')
-  for (const state of ['awaiting-approval', 'running', 'done', 'failed']) {
+  for (const state of ['awaiting-approval', 'running', 'completing']) {
     assert.ok(
       named(state).decls.some((decl) => decl.prop === 'animation'),
       `.step-bead.${state} carries no motion; colour alone is one channel`,
     )
+  }
+  for (const state of ['done', 'failed']) {
+    assert.ok(!named(state).decls.some((decl) => decl.prop === 'animation'), 'historical state never replays completion')
   }
   // The two that are over do not loop: a settled step must not keep moving under
   // a reader who has gone back to it.

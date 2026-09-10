@@ -95,6 +95,38 @@ test('M05 keeps the thinking body and settled assistant blocks across deltas', (
   }
 })
 
+test('M09 completion plays once on the live edge and never on historical disclosure', (t) => {
+  const view = mount(t)
+  const starts = trackAnimationStarts(view.column, '.step-bead', view.stub.observeMotion, 'completing')
+  t.after(starts.dispose)
+  const tool: TranscriptItem = { id: 'tool', kind: 'tool', turnId: 't1', text: 'read',
+    toolName: 'Read', tool: { displayName: 'Read', useSummary: 'a.ts', content: 'a' } }
+  const paint = (pending: boolean, open: boolean): void => view.render(
+    transcript([{ ...tool, pending }]), new Map([['t1', true], ['tool', open]]), RUNNING_T1,
+  )
+  paint(false, false)
+  const identity = trackIdentity(view.column, '.step-bead')
+  const statusBead = identity.sample()
+  for (const open of [true, false, true]) paint(false, open)
+  assert.equal(identity.sample(), statusBead)
+  assert.equal(starts.starts, 0, 'history and reopening do not complete anything')
+  paint(true, true)
+  paint(false, true)
+  assert.equal(starts.classStarts, 1)
+  paint(false, false)
+  paint(false, true)
+  assert.equal(identity.sample(), statusBead)
+  assert.equal(starts.classStarts, 1)
+  view.stub.dispatch(statusBead as HTMLElement, 'animationend', { animationName: 'breathe' })
+  assert.ok(view.stub.inspect(statusBead as HTMLElement).classes.includes('completing'))
+  view.stub.dispatch(statusBead as HTMLElement, 'animationend', { animationName: 'bead-pop' })
+  assert.equal(view.stub.inspect(statusBead as HTMLElement).classes.includes('completing'), false)
+  paint(true, true)
+  paint(false, true)
+  view.stopClock()
+  assert.equal(view.stub.inspect(statusBead as HTMLElement).classes.includes('completing'), false, 'hidden panes cancel feedback')
+})
+
 function transcript(items: readonly TranscriptItem[] = [], overrides: Partial<TranscriptState> = {}): TranscriptState {
   return { items, generation: 0, toolProgress: undefined, isThinking: false, thinkingCount: 0, ...overrides }
 }

@@ -9,6 +9,7 @@ import {
   isStepCollapsible,
   isStepExpanded,
   thinkingHeaderLabel,
+  STEP_COMPLETION_FALLBACK_MS,
   type DisclosureState,
 } from '../model/thinking.js'
 import {
@@ -164,6 +165,7 @@ export function createTranscriptView(
 
   const cache = new Map<string, CachedNode>()
   const refs = new Map<string, DisclosureRef>()
+  const feedback = new Map<string, StepFeedback>()
   let generation: number | undefined
 
   // The live status's clock. The span is kept rather than looked up: its carrier
@@ -282,11 +284,16 @@ export function createTranscriptView(
   }
 
   return {
-    stopClock,
+    stopClock() {
+      stopClock()
+      for (const entry of feedback.values()) settleFeedback(entry)
+    },
     render(state, disclosure, activity) {
       if (generation !== state.generation) {
         cache.clear()
         refs.clear()
+        for (const entry of feedback.values()) settleFeedback(entry)
+        feedback.clear()
         clockNode = undefined
         anchorId = undefined
         generation = state.generation
@@ -294,7 +301,7 @@ export function createTranscriptView(
       const atBottom = isScrolledToBottom(container)
       const entries = groupTranscript(state.items)
       const live = turnActivity(entries, activity ?? IDLE)
-      const painter = createPainter(cache, refs, disclosure, handlers, {
+      const painter = createPainter(cache, refs, feedback, disclosure, handlers, {
         liveGroupId: live.liveGroupId,
         startedAt: activity?.startedAt,
         keepClock: (span) => { clockNode = span },
@@ -410,6 +417,7 @@ function liveParts(painter: Painter, label: string, hint: string, announce = tru
 
 interface CachedNode {
   readonly node: HTMLElement
+  readonly className: string
   /** What the node was last painted from; compared by identity, member by member. */
   signature: readonly unknown[]
   /** Keys registered inside this fill; a cache hit keeps the entire subtree alive. */
@@ -427,6 +435,18 @@ interface CachedNode {
  */
 interface DisclosureRef {
   expanded: boolean
+}
+
+interface StepFeedback {
+  status: string
+  readonly node: HTMLElement
+  timer?: ReturnType<typeof setTimeout>
+}
+
+function settleFeedback(entry: StepFeedback): void {
+  clearTimeout(entry.timer)
+  entry.timer = undefined
+  entry.node.classList.remove('completing')
 }
 
 /** What this paint knows about the turn in flight, for the head that shows it. */
@@ -462,12 +482,14 @@ interface Painter extends TranscriptHandlers, LivePaint {
   ): HTMLElement
   /** The mutable disclosure a kept head reads at click time. */
   ref(key: string, expanded: boolean): DisclosureRef
+  feedback(key: string, node: HTMLElement, status: string): void
   prune(): void
 }
 
 function createPainter(
   cache: Map<string, CachedNode>,
   refs: Map<string, DisclosureRef>,
+  feedback: Map<string, StepFeedback>,
   disclosure: DisclosureState,
   handlers: TranscriptHandlers,
   paint: LivePaint,
@@ -492,7 +514,7 @@ function createPainter(
     node(key, className, signature, fill, create) {
       filling.at(-1)?.push(key)
       const cached = cache.get(key)
-      if (cached && cached.node.className === className && sameSignature(cached.signature, signature)) {
+      if (cached && cached.className === className && sameSignature(cached.signature, signature)) {
         keep(key)
         return cached.node
       }
@@ -501,7 +523,9 @@ function createPainter(
       // points at, so it is refilled rather than replaced — and refilled through
       // `reconcile`, so the children it hands back keep *their* place too.
       const node = cached?.node ?? create?.() ?? el('div', className)
-      node.className = className
+      // Transient presentation classes belong to their lifecycle, not the data
+      // signature. A content-only refill must not cancel completion feedback.
+      if (cached?.className !== className) node.className = className
       const children: string[] = []
       filling.push(children)
       try {
@@ -509,7 +533,7 @@ function createPainter(
       } finally {
         filling.pop()
       }
-      cache.set(key, { node, signature, children })
+      cache.set(key, { node, className, signature, children })
       return node
     },
     ref(key, expanded) {
@@ -522,6 +546,24 @@ function createPainter(
       refs.set(key, created)
       return created
     },
+    feedback(key, node, status) {
+      const previous = feedback.get(key)
+      if (!previous) {
+        const entry: StepFeedback = { node, status }
+        feedback.set(key, entry)
+        node.addEventListener('animationend', (event) => {
+          if (event.target === node && event.animationName === 'bead-pop') settleFeedback(entry)
+        })
+        return // History and first paint initialise; they are never completions.
+      }
+      const completing = previous.status === 'running' && (status === 'done' || status === 'failed')
+      previous.status = status
+      if (!completing) return
+      settleFeedback(previous)
+      node.classList.add('completing')
+      previous.timer = setTimeout(() => settleFeedback(previous), STEP_COMPLETION_FALLBACK_MS)
+      ;(previous.timer as unknown as { unref?: () => void }).unref?.()
+    },
     prune() {
       for (const key of [...cache.keys()]) {
         if (!live.has(key)) cache.delete(key)
@@ -530,6 +572,11 @@ function createPainter(
       // takes its head's state with it.
       for (const key of [...refs.keys()]) {
         if (!live.has(key)) refs.delete(key)
+      }
+      for (const [key, entry] of feedback) {
+        if (live.has(key)) continue
+        settleFeedback(entry)
+        feedback.delete(key)
       }
     },
   }
@@ -905,10 +952,21 @@ function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElem
   return painter.node(`step:${step.id}`, classes.join(' '), [step.text, detail, status, expanded], () => {
     const family = familyData(step)
     const stats = familyStats(family)
-    const head = button('step-head', '', stepAccessibleName(step, status, stats), () =>
-      painter.onToggle(step.id, expanded))
-    head.setAttribute('aria-expanded', expanded ? 'true' : 'false')
-    append(head, [bead(step, 'step-bead'), ...headParts(step, stats)])
+    const beadKey = `tool-bead:${step.id}`
+    const statusBead = painter.node(beadKey, `step-bead ${status}`, [status], (node) => {
+      node.setAttribute('aria-hidden', 'true')
+      return []
+    }, () => el('span'))
+    painter.feedback(beadKey, statusBead, status)
+    const headKey = `tool-head:${step.id}`
+    const ref = painter.ref(headKey, expanded)
+    const name = stepAccessibleName(step, status, stats)
+    const head = painter.node(headKey, 'step-head', [name, detail, step.text, expanded], (node) => {
+      node.title = name
+      node.setAttribute('aria-label', name)
+      node.setAttribute('aria-expanded', expanded ? 'true' : 'false')
+      return [statusBead, ...headParts(step, stats)]
+    }, () => button('step-head', '', name, () => painter.onToggle(step.id, ref.expanded)))
     return [head, expanded ? stepBody(step, family, painter) : undefined]
   })
 }

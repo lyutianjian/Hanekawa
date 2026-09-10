@@ -1801,12 +1801,12 @@ body.resizing #sidebar { transition: none; }
 .step-bead.running { animation: breathe 1.8s ease-in-out infinite; }
 .step-bead.done {
   color: var(--accent-review);
-  animation: bead-pop var(--motion-base) var(--ease-standard);
 }
 .step-bead.failed {
   color: var(--accent-danger);
-  animation: bead-pop var(--motion-base) var(--ease-standard);
 }
+/* Historical state is static; only an observed running-to-settled edge adds this. */
+.step-bead.completing { animation: bead-pop var(--motion-base) var(--ease-standard); }
 @keyframes blink { 50% { opacity: 0; } }
 /* Overshoot and settle, never `from`: a `from { transform }` in this sheet is by
    definition one of the three 8px entrances, and the token test enforces that. */

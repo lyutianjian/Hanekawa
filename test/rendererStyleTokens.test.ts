@@ -7,6 +7,7 @@ import { parseCss, rendererRoot, stylesheetPath, type Block } from './helpers/re
 import { SIDEBAR_COLLAPSE_FALLBACK_MS } from '../src/desktop/renderer/model/sidebar.js'
 import { SIDEBAR_WIDTH_DEFAULT } from '../src/desktop/renderer/model/sidebarWidth.js'
 import { MARQUEE_GAP } from '../src/desktop/renderer/model/marquee.js'
+import { PRESENCE_FALLBACK_MS, type PresenceKind } from '../src/desktop/renderer/model/presence.js'
 
 /**
  * The renderer's stylesheet, asserted at source level.
@@ -1388,6 +1389,17 @@ test('the fold falls back on a timer just past the slow token', () => {
     SIDEBAR_COLLAPSE_FALLBACK_MS > slow && SIDEBAR_COLLAPSE_FALLBACK_MS <= slow + 100,
     `the fallback (${SIDEBAR_COLLAPSE_FALLBACK_MS}ms) must sit just past --motion-slow (${slow}ms)`,
   )
+})
+
+test('presence fallbacks outlast their CSS motion tokens', () => {
+  const sources: Record<PresenceKind, string> = {
+    popover: '--motion-base', panel: '--motion-base', disclosure: '--motion-base',
+    layout: '--motion-slow', backdrop: '--motion-fast',
+  }
+  for (const [kind, token] of Object.entries(sources)) {
+    const duration = Number.parseInt(tokens.get(token) ?? '', 10)
+    assert.equal(PRESENCE_FALLBACK_MS[kind as PresenceKind], duration + 60)
+  }
 })
 
 test('the composer raises its three panels, and they no longer span the canvas', () => {

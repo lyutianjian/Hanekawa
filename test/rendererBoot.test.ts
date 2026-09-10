@@ -143,7 +143,7 @@ function fakeHost(): FakeHost {
     hanekawa: bridge,
     // No preference either way: `resolveTheme` then decides from the stored
     // preference, which is `null` here, i.e. "follow system".
-    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    matchMedia: window.matchMedia.bind(window),
     addEventListener() {},
     removeEventListener() {},
   }
@@ -199,6 +199,18 @@ test('the shipped renderer boots and paints its window chrome', async (t) => {
   // The theme is resolved in JS and read back by the stylesheet off `<html>`.
   const { theme } = (dom.documentElement() as { dataset: Record<string, string | undefined> }).dataset
   assert.ok(theme === 'dark' || theme === 'light', `expected a resolved theme, got ${String(theme)}`)
+
+  // The real app subscription, using M01's controllable media-query stub.
+  const root = dom.documentElement() as HTMLElement
+  assert.equal(root.dataset.reducedMotion, 'false')
+  dom.setMedia('(prefers-reduced-motion: reduce)', true)
+  assert.equal(root.dataset.reducedMotion, 'true')
+  dom.setMedia('(prefers-reduced-motion: reduce)', false)
+  assert.equal(root.dataset.reducedMotion, 'false')
+  dom.setHidden(true)
+  assert.equal(root.dataset.windowHidden, 'true')
+  dom.setHidden(false)
+  assert.equal(root.dataset.windowHidden, 'false')
 })
 
 /** The first descendant carrying `className`, depth-first, or `undefined`. */
@@ -243,7 +255,9 @@ test('a new session leaves the settings screen instead of opening behind it', as
   const create = findByClass(sidebar(), 'sidebar-nav-item')
   assert.ok(create, 'the sidebar must offer 新建会话')
   dom.click(create.node)
-  assert.equal(settingsOpen(), false, 'creating a session must leave the settings screen')
+  assert.equal(dom.inspect(page.get('settings')).attributes.get('inert'), '', 'creating a session immediately leaves settings noninteractive')
+  dom.dispatch(page.get('settings'), 'transitionend', { propertyName: 'opacity' })
+  assert.equal(settingsOpen(), false, 'the settings pixels leave after the exit settles')
   assert.ok(!bodyClasses().includes('settings-open'), 'the sidebar must come back with it')
 })
 

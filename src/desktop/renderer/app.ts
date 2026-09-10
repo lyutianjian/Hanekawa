@@ -102,6 +102,8 @@ import { createSuggestionsView } from './dom/suggestionsView.js'
 import { createSidebarView } from './dom/sidebarView.js'
 import { createTitleBarView } from './dom/titleBarView.js'
 import { TITLE_BAR_MENUS, type TitleBarAction } from './model/titleBar.js'
+import { REDUCED_MOTION_QUERY } from './model/reducedMotion.js'
+import { finishPresenceWithin } from './dom/presence.js'
 
 const bridge = window.hanekawa
 if (!bridge) {
@@ -140,6 +142,9 @@ applyResolvedTheme(themePreference)
 darkQuery.addEventListener('change', () => {
   if (themePreference === 'system') applyResolvedTheme(themePreference)
 })
+
+const motionQuery = window.matchMedia(REDUCED_MOTION_QUERY)
+document.documentElement.dataset.reducedMotion = String(motionQuery.matches)
 
 // The rail's width. A local preference like the theme above, and written the
 // same way: a custom property on the document element, which both `#sidebar` and
@@ -1013,6 +1018,27 @@ const sidebar = createSidebarView(
   },
 )
 
+// Settle existing work when the OS preference changes or the window hides.
+// Views read the current preference for every new intent; business state and
+// pending requests remain owned by each pane throughout this visual cleanup.
+function syncMotion(): void {
+  document.documentElement.dataset.reducedMotion = String(motionQuery.matches)
+  document.documentElement.dataset.windowHidden = String(document.hidden)
+  finishPresenceWithin(document)
+  sidebar.finishMotion()
+  permissionRequest.finishMotion()
+  taskPanel.finishMotion()
+  for (const pane of paneSessions.values()) pane.syncMotion()
+}
+motionQuery.addEventListener('change', syncMotion)
+document.addEventListener('visibilitychange', syncMotion)
+window.addEventListener('pagehide', () => {
+  motionQuery.removeEventListener('change', syncMotion)
+  document.removeEventListener('visibilitychange', syncMotion)
+  syncMotion()
+  for (const pane of paneSessions.values()) pane.dispose()
+})
+
 // --- the rail's drag handle ---------------------------------------------------
 
 /**
@@ -1023,7 +1049,7 @@ const sidebar = createSidebarView(
  * is what keeps the moves coming without a listener the teardown has to
  * remember. `body.resizing` is not cosmetic — `#sidebar` transitions
  * `flex-basis` for the collapse, so without it every dragged frame would chase a
- * 320ms curve.
+ * layout curve.
  */
 const sidebarResizer = required('sidebar-resizer')
 let dragStartX = 0

@@ -1,4 +1,5 @@
 import { isMounted, nextPhase, phaseClass, PRESENCE_FALLBACK_MS, type Phase, type PresenceKind } from '../model/presence.js'
+import { motionDelay, motionPolicy } from './motion.js'
 
 export interface Presence {
   readonly phase: Phase
@@ -60,7 +61,7 @@ export function createPresence(node: HTMLElement, options: {
       want = open
       const version = ++epoch
       clearTimeout(timer)
-      if (open && phase === 'closed' && !immediate) {
+      if (open && phase === 'closed' && !immediate && motionPolicy().animate) {
         // Commit the start geometry once. Subsequent intents keep the node in
         // place and let CSS reverse from the currently interpolated value.
         node.hidden = false
@@ -71,7 +72,7 @@ export function createPresence(node: HTMLElement, options: {
       if (phase !== 'entering' && phase !== 'closing') return
       timer = setTimeout(() => {
         if (version === epoch) finish()
-      }, PRESENCE_FALLBACK_MS[kind])
+      }, motionDelay(PRESENCE_FALLBACK_MS[kind]))
       ;(timer as unknown as { unref?: () => void }).unref?.()
     },
     finish,

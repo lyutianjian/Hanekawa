@@ -207,6 +207,7 @@ interface Rendered {
   readonly copied: readonly string[]
   render(state: TranscriptState, disclosure?: DisclosureState, activity?: WaitingInput): void
   stopClock(): void
+  dispose(): void
   jump(): StubView
   items(): readonly StubView[]
   column(): StubView
@@ -251,6 +252,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     copied,
     render: (state, disclosure = NO_DISCLOSURE, activity) => view.render(state, disclosure, activity),
     stopClock: () => view.stopClock(),
+    dispose: () => view.dispose(),
     jump,
     // Through `.transcript-column`, the one box the items live in: the scroller
     // stays full width (its scrollbar belongs at the panel's edge) while the text
@@ -1910,6 +1912,7 @@ test('the pad follows the viewport, which moves without the transcript repaintin
   ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
     constructor(run: () => void) { resizes.push(run) }
     observe(): void {}
+    disconnect(): void {}
   }
   t.after(() => { (globalThis as { ResizeObserver?: unknown }).ResizeObserver = previous })
 
@@ -1927,6 +1930,33 @@ test('the pad follows the viewport, which moves without the transcript repaintin
 
   assert.equal(pad(view), '436px')
   assert.equal(view.container.scrollTop, 72, 'a resize is not a new question and must not re-scroll')
+})
+
+test('M19 transcript resize observation pauses on hiding, resumes on paint and ends on disposal', (t) => {
+  const previous = globalThis.ResizeObserver
+  let observed = 0
+  let disconnected = 0
+  globalThis.ResizeObserver = class {
+    observe() { observed += 1 }
+    disconnect() { disconnected += 1 }
+    unobserve() {}
+  }
+  t.after(() => { globalThis.ResizeObserver = previous })
+  const view = mount(t)
+  const state = transcript([{ id: 'a', kind: 'user', text: 'hello' }])
+  view.render(state)
+  view.render(state)
+  assert.equal(observed, 1)
+  view.stopClock()
+  assert.equal(disconnected, 1)
+  view.stub.setHidden(true)
+  view.render(state)
+  assert.equal(observed, 1, 'hidden windows do not start observing again')
+  view.stub.setHidden(false)
+  view.render(state)
+  assert.equal(observed, 2)
+  view.dispose()
+  assert.equal(disconnected, 2)
 })
 
 test('the turn ending hands the pad back, so the tail is not a screenful of blank', (t) => {

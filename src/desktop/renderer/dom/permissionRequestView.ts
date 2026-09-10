@@ -6,6 +6,7 @@ import { icon, type IconName } from './icons.js'
 import { actionBar } from './overlayView.js'
 import { createPresence } from './presence.js'
 import { PRESENCE_FALLBACK_MS } from '../model/presence.js'
+import { motionPolicy } from './motion.js'
 
 /**
  * The permission request, drawn **into the composer** rather than over the lane.
@@ -33,6 +34,7 @@ import { PRESENCE_FALLBACK_MS } from '../model/presence.js'
 export interface PermissionRequestView {
   show(view: PermissionViewModel): void
   hide(immediate?: boolean): void
+  finishMotion(): void
 }
 
 /** What the card reports when a button is pressed; the modal's shape. */
@@ -77,6 +79,7 @@ export function createPermissionRequestView(
   const beginHeight = (): void => {
     actions.onLayoutChange?.()
     clearTimeout(heightTimer)
+    if (!motionPolicy().animate) { finishHeight(); return }
     const height = composer.getBoundingClientRect().height
     if (!Number.isFinite(height) || height <= 0) return
     composer.style.height = `${height}px`
@@ -84,12 +87,14 @@ export function createPermissionRequestView(
     composer.getBoundingClientRect()
   }
   const endHeight = (): void => {
+    if (!motionPolicy().animate) { finishHeight(); return }
     composer.style.height = 'auto'
     heightTimer = setTimeout(finishHeight, PRESENCE_FALLBACK_MS.layout)
     ;(heightTimer as unknown as { unref?: () => void }).unref?.()
   }
 
   return {
+    finishMotion() { presence.finish(); finishHeight() },
     show(view) {
       const focusAction = !open || container.contains(document.activeElement)
       beginHeight()

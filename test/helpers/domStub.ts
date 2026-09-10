@@ -488,6 +488,7 @@ export interface DomStub {
   hasDocumentMember(name: string): boolean
   observeMotion(listener: (event: MotionMutation) => void): () => void
   setMedia(query: string, matches: boolean): void
+  setHidden(hidden: boolean): void
   setSelection(anchor: unknown, focus?: unknown): void
   uninstall(): void
 }
@@ -554,6 +555,7 @@ export function installDomStub(): DomStub {
     body,
     /** Written by `statusView.renderSession` — the window's own title. */
     title: '',
+    hidden: false,
     /**
      * What `index.html`'s `<!doctype html>` gets the real page. KaTeX reads it
      * and refuses to typeset anything in quirks mode — its own metrics assume
@@ -614,6 +616,10 @@ export function installDomStub(): DomStub {
       if (entry.matches === matches) return
       entry.matches = matches
       for (const listener of entry.listeners) listener({ matches })
+    },
+    setHidden(hidden) {
+      document.hidden = hidden
+      documentNode.dispatch('visibilitychange')
     },
     setSelection(anchor, focus = anchor) {
       selection = { anchorNode: anchor, focusNode: focus, isCollapsed: anchor == null }

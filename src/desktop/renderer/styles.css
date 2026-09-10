@@ -771,7 +771,7 @@ body.resizing #sidebar-resizer::after { opacity: 1; }
 #sidebar.collapsed + #sidebar-resizer,
 body.settings-open #sidebar-resizer { display: none; }
 /* The collapse animates `flex-basis`; a drag writes it once per frame. Left on,
-   every dragged frame would chase a 320ms curve and the rail would lag the
+   every dragged frame would chase the layout curve and the rail would lag the
    pointer by a third of a second. `app.ts` owns the class for the drag's
    duration only. */
 body.resizing #sidebar { transition: none; }
@@ -1681,7 +1681,7 @@ body.resizing #sidebar { transition: none; }
 }
 /* --- the live head ---
    While the turn runs, the head *is* the waiting row: the same breathing bead,
-   the same sheen on the same words, the same counter and the same `Esc` hint —
+   the same breathing bead, static words, counter and `Esc` hint —
    pinned to the top of the turn, where a status is looked for, instead of
    walking down the page behind the steps. It says the running tool's name while
    one is running and 「正在思考」 in between, and it seals to 「已处理 …」 only
@@ -2111,7 +2111,7 @@ body.resizing #sidebar { transition: none; }
    nobody can put anything at — the composer below already owns the only caret on
    this screen — and it sat on the answer's final line for the whole of a turn's
    tool work, which is the one place the reader's eye keeps returning to. The
-   thinking header's `breathe` and the group head's status say what is live. */
+   thinking hairline and the group head's status say what is live. */
 /* There is no `.tool-progress` strip any more (T10): the running tool names
    itself on its own step's head, one line up, with its bead and its elapsed
    time. */
@@ -4360,24 +4360,13 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
      pressed. They need the node to survive the change, which every control
      below does: the views rebuild rows only when their render signature moves,
      and hovering does not move it.
-   - **Entrance animations** for a node (or a `hidden` box) that appears. These
-     replay whenever the element is re-inserted, so they are attached *only* to
-     containers whose existence tracks an open/closed state and whose contents
-     can change underneath them: the scrims, the three composer popovers, the
-     settings screen, and the menus, which are built at open.
+   - **Presence transitions** on stable containers for menus, dialogs, settings
+     and disclosures. Intent changes retarget the current visual value in both
+     directions; content updates do not restart entrance.
 
-   Two places deliberately have no entrance animation, and both would replay
-   themselves to death: transcript items (`dom/transcriptView.ts` re-decides the
-   whole scroller on every paint, which during a stream is every token) and the
-   two dialog panels (`#overlay-panel`/`#rewind-panel` re-render as the
-   selection moves — the animation lives on the scrim behind them instead).
-
-   The transcript's own animations — `unfold` on an open step, `bead-pop` on a
-   settled one — are the exception that the reuse pays for, and they only hold
-   still while the nodes stay *attached*. A `replaceChildren` of the scroller
-   removes and re-inserts every row, which cancels and restarts each of these; it
-   is why `dom/transcriptView.ts` inserts through `reconcile` and why nothing in
-   that file may go back to `replace()`. */
+   Transcript text has no entrance animation. Actual completion edges own the
+   one-shot bead feedback. Both transitions and running signals depend on nodes
+   staying attached: `reconcile` preserves that identity through streaming. */
 .titlebar-rail,
 .titlebar-menu-trigger,
 .titlebar-menu-item,
@@ -4443,20 +4432,14 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 @keyframes fade-in { from { opacity: 0; } }
 /* A menu that hangs *below* its trigger arrives from above it, and one that
    opens upward from below — the panel appears to come out of the control rather
-   than to land on top of it. 8px rather than the 4–6px these started at: on the
-   new 220ms base the shorter travel read as a flicker, not as a move. The
+   than to land on top of it. The 8px travel stays within the design's spatial
+   range and uses the semantic entrance timing. The
    `scale(0.985)` is the other half of "comes out of the control" — a panel that
    only slides looks like it was already the right size somewhere off screen. */
 @keyframes drop-in { from { opacity: 0; transform: translateY(-8px) scale(0.985); } }
 @keyframes rise-in { from { opacity: 0; transform: translateY(8px); } }
 @keyframes slide-in { from { opacity: 0; transform: translateX(8px) scale(0.985); } }
 
-/* The one nested at-rule this sheet is allowed (`rendererStyleTokens` names it
-   explicitly). Not zero: a `0s` transition never fires `transitionend`, and
-   `1ms` keeps every listener's contract while being imperceptible. The universal
-   selector is deliberate — it has to reach the `infinite` animations (`spin`,
-   `breathe`, `blink`, `sheen`, `halo` and `sweep`) as well as everything declared
-   above. */
 /* Presence owns the original drop/rise/slide paths. Transitions, rather than
    restarting keyframes, let a reversing intent continue from the current pixels. */
 .presence[data-presence] {
@@ -4532,11 +4515,40 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   transform: none;
 }
 
+/* Hidden windows settle transition state in JS and pause decorative loops. */
+:root[data-window-hidden="true"] *,
+:root[data-window-hidden="true"] *::before,
+:root[data-window-hidden="true"] *::after {
+  animation-play-state: paused !important;
+  transition: none !important;
+}
+
+/* The only nested media rule allowed by the token parser. Keep 1ms rather than
+   0s: zero-length transitions do not fire `transitionend`. JS also settles in
+   1ms, so cancelled animations or hidden ancestors cannot strand a phase. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+    animation-delay: 0ms !important;
+  }
+  .presence[data-presence], #submit:active, #stop:active {
+    transform: none !important;
+  }
+  .waiting-bead,
+  .step-bead,
+  .step.thinking.live .step-rule,
+  .task-bead,
+  .task-panel,
+  .session-badge.running .icon,
+  .session-title-text,
+  #composer-progress .icon {
+    animation: none !important;
+  }
+  .step.thinking.live .step-rule {
+    background: currentColor;
   }
   /* The blanket rule above stops the marquee, and stopping it is not enough: the
      hover state also turns the ellipsis off and makes the text an atomic box, so

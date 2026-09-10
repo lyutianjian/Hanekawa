@@ -725,6 +725,26 @@ test('M16 permission replies precede exit and typing during the handoff stays in
   assert.equal(request.hidden, true, 'a pane switch leaves no outgoing request')
 })
 
+test('M19 a preference change releases the composer height and new reduced requests settle in 1ms', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const c = card(t)
+  c.stub.onLayout((node) => node.node === c.composer ? { top: 0, bottom: 140 } : undefined)
+  c.view.show(permissionFixture())
+  assert.equal(c.composer.classList.contains('request-changing'), true)
+  ;(c.stub.documentElement() as HTMLElement).dataset.reducedMotion = 'true'
+  c.view.finishMotion()
+  assert.equal(c.composer.style.height, '')
+  assert.equal(c.composer.classList.contains('request-changing'), false)
+  c.view.hide()
+  t.mock.timers.tick(1)
+  assert.equal(c.container.hidden, true)
+  c.view.show(permissionFixture())
+  assert.equal(c.composer.classList.contains('request-changing'), false)
+  c.view.hide()
+  t.mock.timers.tick(1)
+  assert.equal(c.stub.inspect(c.container).children.length, 0)
+})
+
 test('the card answers by slot, exactly as the modal did', (t) => {
   const c = card(t)
   c.view.show(permissionFixture({ selectedIndex: 1 }))

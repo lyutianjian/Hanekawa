@@ -1731,7 +1731,7 @@ test('completion and location fallbacks track their semantic durations', () => {
   assert.equal(TASK_LOCATE_FALLBACK_MS, Number.parseInt(MOTION_TOKENS['--motion-locate']) + 60)
   for (const block of blocks) {
     for (const decl of block.decls) {
-      if (decl.prop !== 'animation' || decl.value === 'none') continue
+      if (decl.prop !== 'animation' || /^none(?: !important)?$/.test(decl.value)) continue
       assert.match(decl.value, /var\(--(?:motion-[a-z-]+|marquee-duration)\)/, `${block.selector} must use a semantic duration`)
       assert.doesNotMatch(decl.value, /(?:^|\s)[\d.]+m?s(?:\s|$)/, `${block.selector} has a literal animation duration`)
     }
@@ -1749,7 +1749,7 @@ test('motion comes from the tokens, and the things that rebuild themselves have 
       // `none` is the one value that is not a timing: it *suspends* a transition
       // declared elsewhere (the sidebar's collapse, while its edge is being
       // dragged), and there is no duration or curve for it to name.
-      if (decl.value.trim() === 'none') continue
+      if (/^none(?: !important)?$/.test(decl.value.trim())) continue
       transitions += 1
       assert.match(
         decl.value,
@@ -1765,13 +1765,8 @@ test('motion comes from the tokens, and the things that rebuild themselves have 
   }
   assert.ok(transitions >= 3, `expected the motion rules, found ${transitions} transitions`)
 
-  // The two places an entrance animation would replay itself to death:
-  // `dom/transcriptView.ts` rebuilds the whole scroller on every paint (during a
-  // stream, every token), and the two dialog panels re-render as the selection
-  // moves — their animation belongs on the scrim behind them, which is why
-  // `#overlay`/`#rewind` are the ones that carry it.
-  // Only the *entrance* animations: `breathe` on the thinking header is a
-  // looping state, and re-running it on a rebuild is what it means anyway.
+  // Text updates do not replay entrances. Dialogs use reversible presence
+  // transitions on stable panels, independently of the scrim.
   const ENTRANCES = /\b(fade-in|drop-in|rise-in|slide-in)\b/
   for (const block of blocks) {
     const animated = block.decls.some(
@@ -1810,7 +1805,7 @@ test('motion comes from the tokens, and the things that rebuild themselves have 
   assert.ok(declares(reduced, 'animation-duration', '1ms !important'), 'animations must collapse')
   assert.ok(
     declares(reduced, 'animation-iteration-count', '1 !important'),
-    'the infinite animations (spin, breathe, blink, sheen, sweep) must stop as well',
+    'the infinite animations (spin, breathe, blink, sheen) must stop as well',
   )
 })
 

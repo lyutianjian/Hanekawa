@@ -3,6 +3,7 @@ import { TASK_LOCATE_FALLBACK_MS } from '../model/tasks.js'
 import { button } from './controls.js'
 import { el, reconcile } from './dom.js'
 import { createPresence } from './presence.js'
+import { motionDelay } from './motion.js'
 
 /**
  * The task panel: the model's checklist, drawn in flow directly above the
@@ -34,6 +35,7 @@ export interface TaskPanelDom {
    */
   flash(): void
   hide(): void
+  finishMotion(): void
 }
 
 export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
@@ -134,11 +136,12 @@ export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
       finishFlash()
       panel?.node.getBoundingClientRect()
       panel?.node.classList.add('flash')
-      flashTimer = setTimeout(finishFlash, TASK_LOCATE_FALLBACK_MS)
+      flashTimer = setTimeout(finishFlash, motionDelay(TASK_LOCATE_FALLBACK_MS))
       ;(flashTimer as unknown as { unref?: () => void }).unref?.()
     },
 
     hide,
+    finishMotion() { finishFlash(); panel?.presence.finish() },
   }
 }
 

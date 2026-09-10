@@ -113,7 +113,7 @@ M02–M09 在 M01 之后互不依赖，顺序可调；建议先做 M02/M03（F1�
 | M16 | 权限请求形态交接与 transcript 可用高度 | M15 | 中 | §4 | `[x]` |
 | M17 | 语义时长 token 与更均匀的曲线 | M10–M13 | 中 | F5 | `[x]` |
 | M18 | 单一运行信号：去掉叠加的呼吸／光晕／扫光 | M17 | 中 | F6 | `[x]` |
-| M19 | 减少动态效果覆盖 CSS、JS 滚动与动画结算 | M15, M17 | 中 | F7 | `[ ]` |
+| M19 | 减少动态效果覆盖 CSS、JS 滚动与动画结算 | M15, M17 | 中 | F7 | `[x]` |
 | M20 | 全量 typecheck／测试／构建 | M16–M19 | 短 | — | `[ ]` |
 | M21 | 三个代表场景的实机逐帧比较 | M20 | 中 | §9 | `[ ]` |
 | M22 | 剩余验收矩阵、`README.md` 与签收 | M21 | 中 | §9 | `[ ]` |
@@ -564,7 +564,9 @@ transcript 同时叠着六件事：新问题置顶（`liftAnchor` + `--transcrip
 
 ---
 
-## M19 `[ ]` 减少动态效果覆盖 CSS、JS 滚动与动画结算
+## M19 `[x]` 减少动态效果覆盖 CSS、JS 滚动与动画结算
+
+**验收记录（2026-09-10）**：新增纯 reduced-motion 策略与 app 的实时媒体订阅。回到最新沿用 M15 的即时定位；所有 presence／侧栏兜底缩至 1ms，仍经过 settled。偏好变化、窗口隐藏会结算现有相位及输入区高度、清理视口帧和反馈计时器；隐藏时暂停 CSS 循环，transcript 的 ResizeObserver 停止并在再次显示时恢复，销毁时释放。减少动态效果关闭位移、缩放和循环，保留状态文字、颜色及 marquee 截断规则。已修正 renderer 的过时动效说明；当前仓库无 `todo.md` 可更新。215 项相关测试（含真实 bundle 的媒体订阅）及 typecheck 通过。
 
 **前置**：M15、M17 · **规模**：中 · **设计稿**：F7、§8
 **涉及**：新增 `src/desktop/renderer/model/reducedMotion.ts`、`src/desktop/renderer/app.ts`、`dom/transcriptView.ts`、`sidebarView.ts`、`styles.css`

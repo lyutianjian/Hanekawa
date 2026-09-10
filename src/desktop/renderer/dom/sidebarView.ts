@@ -20,7 +20,8 @@ import {
   marqueeMotion,
 } from '../model/marquee.js'
 import { el, reconcile, replace, show } from './dom.js'
-import { createPresence, type Presence } from './presence.js'
+import { createPresence, finishPresenceWithin, type Presence } from './presence.js'
+import { motionDelay } from './motion.js'
 import { button, textField } from './controls.js'
 import { onPressOutside } from './dismiss.js'
 import { icon } from './icons.js'
@@ -67,6 +68,7 @@ export type SidebarAction = (intent: SidebarIntent) => void
 
 export interface SidebarDom {
   render(view: SidebarView): void
+  finishMotion(): void
   /**
    * Moves focus to one workspace's heading and scrolls it into view.
    *
@@ -255,13 +257,13 @@ export function createSidebarView(
   const startGroupMove = (entry: GroupNodes): void => {
     if (entry.timer !== undefined) clearTimeout(entry.timer)
     // The rail's constant, reused deliberately: it is an upper bound (the group
-    // folds at `--motion-base`, the rail at `--motion-slow`) and it is the one
+    // folds at `--motion-disclosure`, the rail at `--motion-layout`) and it is the one
     // already pinned against the tokens. A `transitionend` that does arrive
     // disarms it long before it fires.
     entry.timer = setTimeout(() => {
       entry.timer = undefined
       settleGroup(entry)
-    }, SIDEBAR_COLLAPSE_FALLBACK_MS)
+    }, motionDelay(SIDEBAR_COLLAPSE_FALLBACK_MS))
   }
 
   const ensureGroupNodes = (group: SidebarGroup): GroupNodes => {
@@ -639,6 +641,13 @@ export function createSidebarView(
   let drawn: string | undefined
 
   return {
+    finishMotion() {
+      const moving = settleTimer !== undefined
+      clearSettleTimer()
+      for (const entry of groupNodes.values()) settleGroup(entry)
+      finishPresenceWithin(container)
+      if (moving) onIntent({ kind: 'collapse-settled' })
+    },
     focusProject(projectRoot) {
       const heading = projectHeadings.get(projectRoot)
       if (!heading) return
@@ -705,7 +714,7 @@ export function createSidebarView(
         settleTimer = setTimeout(() => {
           settleTimer = undefined
           onIntent({ kind: 'collapse-settled' })
-        }, SIDEBAR_COLLAPSE_FALLBACK_MS)
+        }, motionDelay(SIDEBAR_COLLAPSE_FALLBACK_MS))
       }
 
       // The rail that used to survive a collapse existed only so this view's own

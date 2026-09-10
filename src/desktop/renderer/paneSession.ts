@@ -236,6 +236,7 @@ export interface PaneSession {
   activate(): void
   deactivate(): void
   beginLayoutChange(): void
+  syncMotion(): void
   dispose(): void
   /** The `hello()` startup sequence: records, notices, queue, commands, panes. */
   start(): Promise<void>
@@ -1670,7 +1671,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   }
 
   function dispose(): void {
-    transcriptView.stopClock()
+    transcriptView.dispose()
     streamRepaint.cancel()
     statusRepaint.cancel()
     client.dispose()
@@ -1858,6 +1859,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     activate,
     deactivate,
     beginLayoutChange: () => transcriptView.beginLayoutChange(),
+    syncMotion() {
+      transcriptView.stopClock()
+      if (!document.hidden) renderTranscript()
+    },
     dispose,
     start,
     shellState,

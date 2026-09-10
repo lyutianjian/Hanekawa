@@ -44,6 +44,7 @@ import { append, el, reconcile, show, type Child } from './dom.js'
 import { icon } from './icons.js'
 import { markdownChildren } from './markdownView.js'
 import { createPresence, finishPresenceWithin, type Presence } from './presence.js'
+import { motionDelay, motionPolicy } from './motion.js'
 
 /**
  * Paints the transcript: loose items interleaved with activity groups (§2).
@@ -111,6 +112,7 @@ export interface TranscriptView {
    * The next `render` starts it again from the same `startedAt`.
    */
   stopClock(): void
+  dispose(): void
   /** Capture the reading position before the composer or another region resizes. */
   beginLayoutChange(): void
 }
@@ -156,7 +158,7 @@ export function createTranscriptView(
     () => {
       stopViewportMotion()
       if (viewportPolicy({ event: 'return-latest', atBottom: false, streaming: false, measurable: true }) === 'follow-tail') {
-        container.scrollTo({ top: container.scrollHeight, behavior: 'auto' })
+        container.scrollTo({ top: container.scrollHeight, behavior: motionPolicy().scrollBehavior })
       }
       syncJump()
     },
@@ -227,6 +229,7 @@ export function createTranscriptView(
 
   function beginLayoutChange(node?: HTMLElement): void {
     stopViewportMotion()
+    if (document.hidden) return
     const policy = viewportPolicy({ event: node ? 'disclosure' : 'layout', atBottom: isScrolledToBottom(container), streaming: !anchorSettled, measurable: box(container) !== undefined })
     if (policy !== 'preserve-anchor') return
     guardedPosition = positionOf(node) ?? readingReference()
@@ -235,8 +238,11 @@ export function createTranscriptView(
       keepReadingPosition(guardedPosition)
       viewportFrame = requestAnimationFrame(frame)
     }
-    if (typeof requestAnimationFrame === 'function') viewportFrame = requestAnimationFrame(frame)
-    viewportTimer = setTimeout(stopViewportMotion, PRESENCE_FALLBACK_MS.layout)
+    if (motionPolicy().animate && typeof requestAnimationFrame === 'function') viewportFrame = requestAnimationFrame(frame)
+    viewportTimer = setTimeout(() => {
+      keepReadingPosition(guardedPosition)
+      stopViewportMotion()
+    }, motionDelay(PRESENCE_FALLBACK_MS.layout))
     ;(viewportTimer as unknown as { unref?: () => void }).unref?.()
   }
 
@@ -280,7 +286,7 @@ export function createTranscriptView(
    * browser, where the call simply is not there).
    */
   function runClock(startedAt: number | undefined): void {
-    if (startedAt === undefined) {
+    if (startedAt === undefined || document.hidden) {
       stopClock()
       return
     }
@@ -351,10 +357,7 @@ export function createTranscriptView(
    * to the anchor because they opened a panel is exactly the yank this file
    * avoids everywhere else.
    */
-  const observe = (globalThis as { ResizeObserver?: new (run: () => void) => { observe(node: HTMLElement): void } })
-    .ResizeObserver
-  if (typeof observe === 'function') {
-    new observe(() => {
+  const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => {
       if (anchorNode === undefined) return
       const policy = viewportPolicy({ event: 'resize', atBottom: isScrolledToBottom(container), streaming: !anchorSettled, measurable: true })
       pad = liftAnchor(container, column, anchorNode, {
@@ -366,18 +369,35 @@ export function createTranscriptView(
       }).pad
       if (policy === 'preserve-anchor') keepReadingPosition(guardedPosition ?? readingPosition)
       syncJump()
-    }).observe(container)
+    }) : undefined
+  let observing = false
+
+  function stopMotion(): void {
+    stopClock()
+    stopViewportMotion()
+    for (const entry of feedback.values()) settleFeedback(entry)
+    finishPresenceWithin(container)
+    resizeObserver?.disconnect()
+    observing = false
   }
 
   return {
     beginLayoutChange: () => beginLayoutChange(),
-    stopClock() {
-      stopClock()
-      stopViewportMotion()
-      for (const entry of feedback.values()) settleFeedback(entry)
-      finishPresenceWithin(container)
+    stopClock: stopMotion,
+    dispose() {
+      stopMotion()
+      for (const entry of disclosures.values()) entry.presence.dispose()
+      disclosures.clear()
+      cache.clear()
+      feedback.clear()
+      refs.clear()
+      seenDisclosures.clear()
     },
     render(state, disclosure, activity) {
+      if (!document.hidden && !observing) {
+        resizeObserver?.observe(container)
+        observing = true
+      }
       if (generation !== state.generation) {
         stopViewportMotion()
         readingPosition = undefined
@@ -701,7 +721,7 @@ function createPainter(
       if (!completing) return
       settleFeedback(previous)
       node.classList.add('completing')
-      previous.timer = setTimeout(() => settleFeedback(previous), STEP_COMPLETION_FALLBACK_MS)
+      previous.timer = setTimeout(() => settleFeedback(previous), motionDelay(STEP_COMPLETION_FALLBACK_MS))
       ;(previous.timer as unknown as { unref?: () => void }).unref?.()
     },
     disclose(key, expanded, head, build) {
@@ -808,7 +828,7 @@ function stepsNode(painter: Painter, group: ActivityGroup): HTMLElement {
  * is written.
  *
  * It reads 「正在思考」 in the gaps and the running tool's own name while one is
- * running (`groupActivityLabel`), with the same bead, sheen and counter the
+ * running (`groupActivityLabel`), with the same bead, static label and counter the
  * standalone row has, and it seals to `groupHeaderLabel`'s 「已处理 …」 when the
  * turn ends. That is the whole point of the head being the carrier: the status
  * sits at the top of the turn where it was first read, instead of walking down
@@ -917,7 +937,7 @@ function taskStep(painter: Painter, step: Extract<ActivityStep, { kind: 'task' }
  * signature is the label, the disclosure and the live flag — none of which move
  * while tokens arrive — so the row's growing text refills the body underneath a
  * head that stays put. Rebuilding it per delta, as it did before, would take the
- * hairline out of the document and restart its 1.8s travel ten times a second,
+ * hairline out of the document and restart its running cycle ten times a second,
  * which is the same reason the group's head is kept (§8).
  */
 function thinkingStep(painter: Painter, step: Extract<ActivityStep, { kind: 'thinking' }>, expanded: boolean): HTMLElement {

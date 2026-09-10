@@ -32,6 +32,7 @@ interface Rendered {
   readonly intents: SidebarIntent[]
   render(view: SidebarView): void
   focusProject(projectRoot: string): void
+  finishMotion(): void
   root(): StubView
 }
 
@@ -51,6 +52,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     intents,
     render: (view) => dom.render(view),
     focusProject: (projectRoot) => dom.focusProject(projectRoot),
+    finishMotion: () => dom.finishMotion(),
     root: () => stub.inspect(container),
   }
 }
@@ -170,6 +172,21 @@ test('the fold reports it settled, from the transition or from the timer', (t) =
   render(viewOf({ collapsed: false, collapsePhase: 'expanding' }))
   t.mock.timers.tick(SIDEBAR_COLLAPSE_FALLBACK_MS + 1)
   assert.deepEqual(intents, [{ kind: 'collapse-settled' }])
+})
+
+test('reduced sidebar folds settle promptly and hiding cancels remaining timers', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const view = mount(t)
+  ;(view.stub.documentElement() as HTMLElement).dataset.reducedMotion = 'true'
+  view.render(viewOf({ ...tieredState(), collapsed: true, collapsePhase: 'collapsing' }))
+  t.mock.timers.tick(1)
+  assert.deepEqual(view.intents, [{ kind: 'collapse-settled' }])
+  view.intents.length = 0
+  ;(view.stub.documentElement() as HTMLElement).dataset.reducedMotion = 'false'
+  view.render(viewOf({ ...tieredState(), collapsePhase: 'expanding' }))
+  view.finishMotion()
+  t.mock.timers.tick(SIDEBAR_COLLAPSE_FALLBACK_MS)
+  assert.deepEqual(view.intents, [{ kind: 'collapse-settled' }])
 })
 
 test('a superseded fold leaves no timer behind', (t) => {

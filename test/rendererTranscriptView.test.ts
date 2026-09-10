@@ -49,6 +49,8 @@ test('M03 keeps the activity group mounted between short tools', (t) => {
   assert.equal(view.items()[0]!.classes.includes('collapsed'), false)
   view.render(transcript([tool]), new Map([['t1', false]]), activity)
   view.render(transcript([tool, { ...tool, id: 'b' }]), new Map([['t1', false]]), activity)
+  assert.equal(view.stub.inspect(steps).attributes.has('inert'), true)
+  view.stub.dispatch(steps, 'transitionend', { propertyName: 'height' })
   assert.equal(identity.sample(), undefined, 'a manual fold survives the next step')
 })
 
@@ -126,6 +128,36 @@ test('M09 completion plays once on the live edge and never on historical disclos
   view.stopClock()
   assert.equal(view.stub.inspect(statusBead as HTMLElement).classes.includes('completing'), false, 'hidden panes cancel feedback')
 })
+
+for (const kind of ['thinking', 'tool', 'subagent'] as const) {
+  test(`M13 ${kind} collapse returns focus immediately and reverses with the same body`, (t) => {
+    const view = mount(t)
+    const item: TranscriptItem = { id: 's', kind, text: 'body', turnId: 't1',
+      ...(kind === 'tool' ? { tool: { displayName: 'Read', useSummary: '', content: 'body' } } : {}) }
+    const paint = (open: boolean) => view.render(transcript([item]), new Map([['t1', true], ['s', open]]))
+    paint(true)
+    const head = groupOf(view).children[1]!.children[0]!.children[0]!.node as HTMLElement
+    const body = groupOf(view).children[1]!.children[0]!.children[1]!.node as HTMLElement
+    const focusable = view.stub.createContainer()
+    body.appendChild(focusable)
+    focusable.focus()
+    paint(false)
+    assert.equal(view.stub.activeElement(), head)
+    assert.equal(head.getAttribute('aria-expanded'), 'false')
+    assert.equal(body.getAttribute('inert'), '')
+    assert.equal(body.classList.contains('presence-closing'), true)
+    view.stub.dispatch(body, 'transitionend', { propertyName: 'opacity' })
+    assert.ok(body.parentElement, 'unrelated transitions do not remove the body')
+    paint(true)
+    assert.equal(groupOf(view).children[1]!.children[0]!.children[1]!.node, body)
+    assert.equal(body.classList.contains('presence-entering'), true)
+    paint(false)
+    view.stopClock()
+    assert.equal(body.parentElement, null, 'pane hiding finishes and removes the closing body')
+    paint(true)
+    assert.equal(groupOf(view).children[1]!.children[0]!.children[0]!.node, head)
+  })
+}
 
 function transcript(items: readonly TranscriptItem[] = [], overrides: Partial<TranscriptState> = {}): TranscriptState {
   return { items, generation: 0, toolProgress: undefined, isThinking: false, thinkingCount: 0, ...overrides }
@@ -346,7 +378,7 @@ test('a streaming block is open, breathing, and shows the live label', (t) => {
   assert.equal(header?.tagName, 'BUTTON')
   assert.equal(header?.text, '正在思考')
   assert.equal(header?.attributes.get('aria-expanded'), 'true')
-  assert.equal(block.children[1]?.className, 'thinking-body')
+  assert.equal(block.children[1]?.classes.includes('thinking-body'), true)
   assert.equal(block.children[1]?.text, '推理')
 })
 
@@ -371,14 +403,15 @@ test('a sealed block is collapsed, shows the elapsed time, and drops its body', 
 })
 
 test('the pane is absolute answer outranks the default, both ways', (t) => {
-  const { render, items } = mount(t)
+  const { render, items, stub } = mount(t)
 
   render(transcript([sealedThinking]), new Map([['thinking-0', true]]))
   assert.equal(thinking(items()).classes.includes('collapsed'), false)
-  assert.equal(thinking(items()).children[1]?.className, 'thinking-body')
+  assert.equal(thinking(items()).children[1]?.classes.includes('thinking-body'), true)
 
   render(transcript([liveThinking]), new Map([['thinking-0', false]]))
   assert.equal(thinking(items()).classes.includes('collapsed'), true)
+  stub.dispatch(thinking(items()).children[1]!.node, 'transitionend', { propertyName: 'height' })
   assert.equal(thinking(items()).children.length, 1)
 })
 
@@ -442,7 +475,7 @@ test('a turn is one group: the user message outside it, its steps within', (t) =
   // group but not work the turn did, and it is not counted.
   assert.equal(head?.children.find((node) => node.className === 'waiting-label')?.text, 'Read')
   assert.equal(head?.attributes.get('aria-expanded'), 'true')
-  assert.equal(group.children[1]?.className, 'group-steps')
+  assert.equal(group.children[1]?.classes.includes('group-steps'), true)
   assert.deepEqual(
     group.children[1]?.children.map((step) => step.classes),
     [['step', 'thinking', 'collapsed'], ['step', 'tool', 'running']],
@@ -532,6 +565,7 @@ test('a step head is a button whose body exists only while it is open', (t) => {
   )
 
   view.render(transcript(turnItems()), new Map([['t1', true]]))
+  view.stub.dispatch(groupOf(view).children[1]?.children[1]?.children[1]?.node, 'transitionend', { propertyName: 'height' })
   const collapsed = groupOf(view).children[1]?.children[1]
   assert.equal(collapsed?.children.length, 1, 'folded: the head and nothing else')
   assert.equal(collapsed?.children[0]?.attributes.get('aria-expanded'), 'false')
@@ -567,6 +601,8 @@ test('the group survives the automatic collapse it performs at turn end', (t) =>
 
   view.render(transcript(turnItems()))
   assert.equal(groupOf(view).node, before, 'the group is refilled in place, not replaced')
+  assert.equal(groupOf(view).children[1]?.classes.includes('presence-closing'), true)
+  view.stub.dispatch(groupOf(view).children[1]?.node, 'transitionend', { propertyName: 'height' })
   assert.equal(groupOf(view).children.length, 1, 'and it folded itself while doing so')
 })
 
@@ -772,7 +808,7 @@ test('an edit step carries its patch counts in the head and a real diff below', 
   // The body is the same diff the permission dialog paints: gutters with both
   // line numbers, and nothing else — the result summary is not repeated over it.
   const body = step?.children[1]
-  assert.equal(body?.className, 'step-body')
+  assert.equal(body?.classes.includes('step-body'), true)
   assert.equal(body?.children.length, 1)
   const diff = body?.children[0]
   assert.equal(diff?.className, 'diff')
@@ -889,7 +925,7 @@ test('a Bash step opens into a terminal block with its output ANSI-stripped', (t
   // The block is the command's own output and nothing else — the head already
   // said what ran and how long, so there is no summary line above it (§6.2).
   const body = step?.children[1]
-  assert.equal(body?.className, 'step-body')
+  assert.equal(body?.classes.includes('step-body'), true)
   assert.deepEqual(body?.children.map((child) => child.className), ['step-terminal'])
   assert.equal(body?.children[0]?.tagName, 'PRE')
   // §6.4: the sequences are stripped, not printed — a real `npm test` line, not
@@ -1129,7 +1165,7 @@ test('a Read step opens into the file as a line-numbered code block', (t) => {
   // The body is the file's own lines, one row each with its own number — and
   // no highlighting of any kind: the row is exactly the text the tool read.
   const body = step?.children[1]
-  assert.equal(body?.className, 'step-body')
+  assert.equal(body?.classes.includes('step-body'), true)
   const block = body?.children[0]
   assert.equal(block?.className, 'step-code')
   // A trailing newline is the last line's terminator, not an extra empty row:
@@ -1200,7 +1236,7 @@ test('an Agent step opens into its task and the sub-agent answer, with the run i
   // answer — prose, so markdown, with the `**` already a strong node rather
   // than markers a plain body would print.
   const body = step?.children[1]
-  assert.equal(body?.className, 'step-body')
+  assert.equal(body?.classes.includes('step-body'), true)
   const prompt = body?.children[0]
   assert.equal(prompt?.className, 'step-agent-prompt')
   assert.equal(prompt?.children[0]?.className, 'step-agent-label')

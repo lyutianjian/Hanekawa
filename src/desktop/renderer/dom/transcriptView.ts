@@ -40,6 +40,7 @@ import { diffNode } from './diffView.js'
 import { append, el, reconcile, show, type Child } from './dom.js'
 import { icon } from './icons.js'
 import { markdownChildren } from './markdownView.js'
+import { createPresence, finishPresenceWithin, type Presence } from './presence.js'
 
 /**
  * Paints the transcript: loose items interleaved with activity groups (§2).
@@ -166,6 +167,8 @@ export function createTranscriptView(
   const cache = new Map<string, CachedNode>()
   const refs = new Map<string, DisclosureRef>()
   const feedback = new Map<string, StepFeedback>()
+  const disclosures = new Map<string, { node: HTMLElement; presence: Presence }>()
+  const seenDisclosures = new Set<string>()
   let generation: number | undefined
 
   // The live status's clock. The span is kept rather than looked up: its carrier
@@ -287,9 +290,13 @@ export function createTranscriptView(
     stopClock() {
       stopClock()
       for (const entry of feedback.values()) settleFeedback(entry)
+      finishPresenceWithin(container)
     },
     render(state, disclosure, activity) {
       if (generation !== state.generation) {
+        for (const entry of disclosures.values()) entry.presence.dispose()
+        disclosures.clear()
+        seenDisclosures.clear()
         cache.clear()
         refs.clear()
         for (const entry of feedback.values()) settleFeedback(entry)
@@ -301,10 +308,12 @@ export function createTranscriptView(
       const atBottom = isScrolledToBottom(container)
       const entries = groupTranscript(state.items)
       const live = turnActivity(entries, activity ?? IDLE)
-      const painter = createPainter(cache, refs, feedback, disclosure, handlers, {
+      const afterPaint: Array<() => void> = []
+      const painter = createPainter(cache, refs, feedback, disclosures, seenDisclosures, disclosure, handlers, {
         liveGroupId: live.liveGroupId,
         startedAt: activity?.startedAt,
         keepClock: (span) => { clockNode = span },
+        afterPaint: (run) => afterPaint.push(run),
       })
       const nodes = entries.map((entry) => entryNode(painter, entry))
       // Built before `prune`, or its key would count as dead on the very paint
@@ -314,6 +323,7 @@ export function createTranscriptView(
       else if (live.liveGroupId === undefined) clockNode = undefined
       painter.prune()
       reconcile(column, nodes)
+      for (const run of afterPaint) run()
       runClock(live.row || live.liveGroupId !== undefined ? activity?.startedAt : undefined)
 
       // The turn the reader is looking at: the newest user message. Read off the
@@ -455,6 +465,7 @@ interface LivePaint {
   readonly startedAt: number | undefined
   /** Handed the elapsed span whichever carrier built it, so the clock can fill it. */
   keepClock(span: HTMLElement): void
+  afterPaint(run: () => void): void
 }
 
 interface Painter extends TranscriptHandlers, LivePaint {
@@ -483,6 +494,7 @@ interface Painter extends TranscriptHandlers, LivePaint {
   /** The mutable disclosure a kept head reads at click time. */
   ref(key: string, expanded: boolean): DisclosureRef
   feedback(key: string, node: HTMLElement, status: string): void
+  disclose(key: string, expanded: boolean, head: HTMLElement, body: () => HTMLElement | undefined): HTMLElement | undefined
   prune(): void
 }
 
@@ -490,6 +502,8 @@ function createPainter(
   cache: Map<string, CachedNode>,
   refs: Map<string, DisclosureRef>,
   feedback: Map<string, StepFeedback>,
+  disclosures: Map<string, { node: HTMLElement; presence: Presence }>,
+  seenDisclosures: Set<string>,
   disclosure: DisclosureState,
   handlers: TranscriptHandlers,
   paint: LivePaint,
@@ -506,6 +520,7 @@ function createPainter(
     liveGroupId: paint.liveGroupId,
     startedAt: paint.startedAt,
     keepClock: paint.keepClock,
+    afterPaint: paint.afterPaint,
     onToggle: handlers.onToggle,
     onTaskStep: handlers.onTaskStep,
     onOpenPath: handlers.onOpenPath,
@@ -564,6 +579,40 @@ function createPainter(
       previous.timer = setTimeout(() => settleFeedback(previous), STEP_COMPLETION_FALLBACK_MS)
       ;(previous.timer as unknown as { unref?: () => void }).unref?.()
     },
+    disclose(key, expanded, head, build) {
+      const seen = seenDisclosures.has(key)
+      seenDisclosures.add(key)
+      filling.at(-1)?.push(key)
+      keep(key)
+      let entry = disclosures.get(key)
+      if (expanded) {
+        const node = build()
+        if (!node) return undefined
+        if (!entry) {
+          const presence = createPresence(node, {
+            kind: 'disclosure', direction: 'none', property: 'height',
+            onClosed() {
+              finishPresenceWithin(node)
+              node.remove()
+              cache.delete(key)
+              disclosures.delete(key)
+            },
+          })
+          entry = { node, presence }
+          disclosures.set(key, entry)
+          // History appears in its final state. A user opening a previously
+          // closed body starts only after reconciliation has attached it.
+          if (seen) paint.afterPaint(() => presence.set(true))
+          else presence.set(true, true)
+        } else entry.presence.set(true)
+      } else if (entry) {
+        // Keep the exiting subtree in the same cache graph until settlement.
+        const returnFocus = entry.node.contains(document.activeElement)
+        entry.presence.set(false)
+        if (returnFocus) head.focus()
+      }
+      return entry?.node
+    },
     prune() {
       for (const key of [...cache.keys()]) {
         if (!live.has(key)) cache.delete(key)
@@ -578,6 +627,12 @@ function createPainter(
         settleFeedback(entry)
         feedback.delete(key)
       }
+      for (const [key, entry] of disclosures) {
+        if (live.has(key)) continue
+        entry.presence.dispose()
+        disclosures.delete(key)
+      }
+      for (const key of seenDisclosures) if (!live.has(key)) seenDisclosures.delete(key)
     },
   }
 }
@@ -613,7 +668,7 @@ function groupNode(painter: Painter, group: ActivityGroup): HTMLElement {
   if (live) classes.push('live')
   if (!expanded) classes.push('collapsed')
   const head = groupHead(painter, group, expanded, live)
-  const steps = expanded ? stepsNode(painter, group) : undefined
+  const steps = painter.disclose(`steps:${group.turnId}`, expanded, head, () => stepsNode(painter, group))
   return painter.node(`group:${group.turnId}`, classes.join(' '), [head, steps], () => [head, steps])
 }
 
@@ -773,10 +828,10 @@ function thinkingStep(painter: Painter, step: Extract<ActivityStep, { kind: 'thi
       },
       () => button('step-head thinking-step-head', '', label, () => painter.onToggle(step.id, ref.expanded)),
     )
-    const body = expanded ? painter.node(`thinking-body:${step.id}`, 'step-body', [step.text], (node) => {
+    const body = painter.disclose(`thinking-body:${step.id}`, expanded, head, () => painter.node(`thinking-body:${step.id}`, 'step-body', [step.text], (node) => {
       node.textContent = step.text
       return [...node.childNodes]
-    }) : undefined
+    }))
     return [head, body]
   })
 }
@@ -967,7 +1022,12 @@ function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElem
       node.setAttribute('aria-expanded', expanded ? 'true' : 'false')
       return [statusBead, ...headParts(step, stats)]
     }, () => button('step-head', '', name, () => painter.onToggle(step.id, ref.expanded)))
-    return [head, expanded ? stepBody(step, family, painter) : undefined]
+    const bodyKey = `tool-body:${step.id}`
+    const body = painter.disclose(bodyKey, expanded, head, () => {
+      const content = stepBody(step, family, painter)
+      return content ? painter.node(bodyKey, 'step-body', [step.text, detail], () => [...content.childNodes]) : undefined
+    })
+    return [head, body]
   })
 }
 
@@ -1342,14 +1402,18 @@ function looseThinkingNode(
     // 「已处理 Xm Xs `⌵`」 (design_guidance 四.3): the glyph follows the label and
     // still flips to point up while the block is open — that rule matches on the
     // class, not on the position.
-    const header = button('thinking-header', label, label, () => painter.onToggle(item.id, expanded), {
-      trailingIcon: 'chevron-down',
-    })
-    header.setAttribute('aria-expanded', expanded ? 'true' : 'false')
-    const body = expanded ? painter.node(`loose-thinking-body:${item.id}`, 'thinking-body', [item.text], (node) => {
+    const headKey = `loose-thinking-head:${item.id}`
+    const ref = painter.ref(headKey, expanded)
+    const header = painter.node(headKey, 'thinking-header', [label, expanded], (node) => {
+      node.setAttribute('aria-expanded', String(expanded))
+      node.setAttribute('aria-label', label)
+      node.title = label
+      return [el('span', 'btn-label', label), icon('chevron-down')]
+    }, () => button('thinking-header', '', label, () => painter.onToggle(item.id, ref.expanded)))
+    const body = painter.disclose(`loose-thinking-body:${item.id}`, expanded, header, () => painter.node(`loose-thinking-body:${item.id}`, 'thinking-body', [item.text], (node) => {
       node.textContent = item.text
       return [...node.childNodes]
-    }) : undefined
+    }))
     return [header, body]
   })
 }

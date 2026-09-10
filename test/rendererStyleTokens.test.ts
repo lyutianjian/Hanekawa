@@ -1586,38 +1586,16 @@ test("the search family's grouped list shares the content shell and its rows are
   }
 })
 
-test('the disclosure folds by height, and only when it opens', () => {
-  // `0fr → 1fr` rather than a pixel height: the row opens to whatever its body
-  // measures. It is an animation and not a transition because §8 keeps a folded
-  // body *absent* — the node is built at open time, and a transition on an
-  // element being inserted never runs.
-  const from = blocks.find((block) => block.selector === 'from'
-    && block.decls.some((decl) => decl.prop === 'grid-template-rows'))
-  assert.ok(from, 'no `unfold` keyframe; the disclosure has nothing to open with')
-  assert.equal(from.decls.find((decl) => decl.prop === 'grid-template-rows')?.value, 'auto 0fr')
-
-  // Scoped by `:not(.collapsed)`, so the animation is attached and detached by the
-  // one class that opens the row. That is half of what keeps it from replaying;
-  // the other half is not in this sheet at all — a re-inserted element restarts
-  // its animations whatever its classes say, so `dom/transcriptView.ts` has to
-  // keep the step *attached* across paints, which is what its `reconcile` and the
-  // 「a streaming paint detaches nothing」 test in `rendererTranscriptView` are for.
-  // Both halves are load-bearing: this animation shipped once with only the class,
-  // and replayed on every streamed token.
-  const opened = blocks.filter((block) => block.decls.some(
-    (decl) => decl.prop === 'animation' && /\bunfold\b/.test(decl.value),
-  ))
-  assert.ok(opened.length > 0, 'nothing plays `unfold`')
-  for (const block of opened) {
-    for (const one of block.selector.split(',')) {
-      assert.match(one.trim(), /:not\(\.collapsed\)$/, `${one.trim()} would replay the fold on every paint`)
-    }
-  }
-  // The grid item has to be able to reach zero, or `0fr` collapses to the
-  // content's height and the fold is a no-op.
-  const body = blockFor('.step-body')
-  assert.ok(declares(body, 'overflow', 'hidden'), '.step-body must clip while the row folds')
-  assert.ok(declares(body, 'min-height', '0'), '.step-body must be allowed under its content')
+test('disclosure transitions intrinsic height both ways without fading text', () => {
+  const body = blockFor('.presence[data-presence="disclosure"]')
+  assert.ok(declares(body, 'interpolate-size', 'allow-keywords'))
+  assert.ok(declares(body, 'height', 'auto'))
+  assert.ok(declares(body, 'opacity', '1'))
+  assert.ok(body.decls.some((decl) => decl.prop === 'transition' && decl.value.includes('height var(')))
+  const closed = blockFor('.presence[data-presence="disclosure"].presence-closed, .presence[data-presence="disclosure"].presence-closing')
+  assert.ok(declares(closed, 'height', '0'))
+  assert.ok(declares(closed, 'padding-block', '0'), 'spacing must not jump on removal')
+  assert.ok(declares(closed, 'opacity', '1'), 'text is not faded to conceal a rebuild')
 })
 
 test('every floating menu is lifted off the page it covers', () => {

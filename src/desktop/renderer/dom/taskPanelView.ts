@@ -1,6 +1,7 @@
 import type { TaskPanelState } from '../model/tasks.js'
 import { button } from './controls.js'
 import { el, reconcile } from './dom.js'
+import { createPresence } from './presence.js'
 
 /**
  * The task panel: the model's checklist, drawn in flow directly above the
@@ -55,9 +56,10 @@ export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
     })
     reconcile(head, [count, current])
     const list = el('div', 'task-list')
+    const presence = createPresence(list, { kind: 'disclosure', direction: 'none', property: 'height', onClosed: () => list.remove() })
     const rows = new Map<string, { node: HTMLElement; bead: HTMLElement; label: HTMLElement }>()
     reconcile(container, [node])
-    return { node, track, head, count, current, list, rows, ratio: undefined as number | undefined }
+    return { node, track, head, count, current, list, presence, rows, ratio: undefined as number | undefined }
   }
 
   const paint = (state: TaskPanelState): void => {
@@ -102,10 +104,12 @@ export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
     })
     reconcile(list, children)
     for (const id of rows.keys()) if (!live.has(id)) rows.delete(id)
-    reconcile(node, [track, head, expanded ? list : undefined])
+    reconcile(node, [track, head, expanded || parts.presence.phase !== 'closed' ? list : undefined])
+    parts.presence.set(expanded)
   }
 
   const hide = (): void => {
+    panel?.presence.dispose()
     panel = undefined
     latest = undefined
     expanded = false

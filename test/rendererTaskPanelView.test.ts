@@ -145,6 +145,21 @@ test('the head folds the list open, and the rows are read-only with a bead each'
   assert.ok(view.panel()?.classes.includes('collapsed'), 'the head folds it back')
 })
 
+test('task detail exit keeps rows until settlement and a rapid reopen reverses it', (t) => {
+  const view = mount(t)
+  view.render(state(THREE))
+  view.stub.click(view.head().node)
+  const list = view.panel()!.children.find((node) => node.classes.includes('task-list'))!.node
+  view.stub.click(view.head().node)
+  assert.equal(view.stub.inspect(list).classes.includes('presence-closing'), true)
+  assert.equal(view.stub.inspect(list).attributes.has('inert'), true)
+  view.stub.click(view.head().node)
+  assert.equal(view.panel()!.children.find((node) => node.classes.includes('task-list'))!.node, list)
+  view.stub.click(view.head().node)
+  view.stub.dispatch(list, 'transitionend', { propertyName: 'height' })
+  assert.equal(view.panel()!.children.some((node) => node.classes.includes('task-list')), false)
+})
+
 test('a repaint reuses the panel node and keeps the fold the user chose', (t) => {
   const view = mount(t)
   view.render(state(THREE))

@@ -1651,7 +1651,7 @@ body.resizing #sidebar { transition: none; }
   display: flex;
   flex-direction: column;
   min-width: 0;
-  gap: var(--space-1);
+  gap: 0;
 }
 .group-head {
   display: flex;
@@ -1739,6 +1739,8 @@ body.resizing #sidebar { transition: none; }
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  margin-top: var(--space-1);
   gap: var(--space-1);
   /* No indent and no rule down the edge. Once the hairline went, the padding was
      holding the column off an edge that no longer existed: the steps share the
@@ -1747,28 +1749,7 @@ body.resizing #sidebar { transition: none; }
      by the head's own status line and the beads, not by a step of whitespace. */
 }
 .step { display: flex; flex-direction: column; min-width: 0; }
-/* --- the fold ---
-   A two-track grid — head, then body — folded with `0fr → 1fr`, which is how a
-   disclosure opens by its content's own height instead of by a magic pixel
-   number. Only the three collapsible kinds become grids: a task or a system row
-   is a single line with no body to fold.
-
-   An **animation**, not a transition, and that follows from §8: a folded body is
-   *absent* rather than hidden, so the node is created at the moment the row
-   opens and a transition never runs on insertion. `:not(.collapsed)` is what
-   keeps it from replaying — the animation is attached and detached by that one
-   class, so it plays when the row opens and stays quiet while the same row is
-   refilled by its own streaming result. */
-.step.tool,
-.step.subagent,
-.step.thinking {
-  display: grid;
-  grid-template-rows: auto 1fr;
-}
-.step.tool:not(.collapsed),
-.step.subagent:not(.collapsed),
-.step.thinking:not(.collapsed) { animation: unfold var(--motion-base) var(--ease-standard); }
-@keyframes unfold { from { grid-template-rows: auto 0fr; } }
+/* The body itself carries disclosure presence; heads never shrink or fade. */
 /* `.step.task` is not here: since T10 its row *is* a `.step-head`, which lays
    itself out and paints its own hover — the row points at the task panel above
    the composer, so it had to become a control. */
@@ -4553,6 +4534,30 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 .presence[data-presence].presence-closing {
   transition-duration: var(--motion-fast);
   transition-timing-function: var(--ease-exit);
+}
+
+/* Electron's Chromium supports intrinsic-size interpolation. Keeping `auto`
+   lets streaming content grow naturally; reversed intent retargets the current
+   height. Spacing contracts with it, so removal has no final padding jump. */
+.presence[data-presence="disclosure"] {
+  interpolate-size: allow-keywords;
+  height: auto;
+  min-height: 0;
+  flex-shrink: 0;
+  overflow: clip;
+  opacity: 1;
+  transform: none;
+  transition: height var(--motion-base) var(--ease-standard),
+    padding-top var(--motion-base) var(--ease-standard), padding-bottom var(--motion-base) var(--ease-standard),
+    margin-top var(--motion-base) var(--ease-standard), margin-bottom var(--motion-base) var(--ease-standard);
+}
+.presence[data-presence="disclosure"].presence-closed,
+.presence[data-presence="disclosure"].presence-closing {
+  height: 0;
+  padding-block: 0;
+  margin-block: 0;
+  opacity: 1;
+  transform: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

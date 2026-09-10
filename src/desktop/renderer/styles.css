@@ -1642,6 +1642,8 @@ body.resizing #sidebar { transition: none; }
    The two heads are written out rather than grouped: `rendererStyleTokens` asks
    a control's resting state to be a selector of its own, and a shared
    `.group-head, .step-head { … }` is a rule neither of them owns. */
+/* The session's live turn is authoritative: its group stays running between
+   tool results. Step status belongs to individual step beads, not this shell. */
 .activity-group {
   display: flex;
   flex-direction: column;

@@ -24,9 +24,10 @@ import type { ToolErrorCode } from '../src/harness/types.js'
  */
 
 const RENDERER = path.join(import.meta.dirname, '..', 'src', 'desktop', 'renderer')
+const RUNNING_T1: WaitingInput = { isStreaming: true, turnId: 't1', startedAt: undefined }
 
 // M03: a tool result is not the end of its live turn.
-test('M03 keeps the activity group mounted between short tools', { skip: true }, (t) => {
+test('M03 keeps the activity group mounted between short tools', (t) => {
   const view = mount(t)
   const identity = trackIdentity(view.column, '.group-steps')
   const activity = { isStreaming: true, turnId: 't1', startedAt: Date.now() }
@@ -34,12 +35,21 @@ test('M03 keeps the activity group mounted between short tools', { skip: true },
     toolName: 'Read', tool: { displayName: 'Read', useSummary: 'a.ts' } }
   view.render(transcript([tool]), NO_DISCLOSURE, activity)
   const steps = identity.sample()
+  const group = view.items()[0]!.node
+  const first = view.items()[0]!.children[1]!.children[0]!.node
   assert.ok(steps)
   view.render(transcript([{ ...tool, pending: undefined }]), NO_DISCLOSURE, activity)
   assert.equal(identity.sample(), steps)
   view.render(transcript([{ ...tool, pending: undefined }, { ...tool, id: 'b' }]), NO_DISCLOSURE, activity)
   assert.equal(identity.sample(), steps)
   assert.equal(identity.replacements, 0)
+  assert.equal(view.items()[0]!.node, group)
+  assert.equal(view.items()[0]!.children[1]!.children[0]!.node, first)
+  assert.equal(view.items()[0]!.classes.includes('done'), false)
+  assert.equal(view.items()[0]!.classes.includes('collapsed'), false)
+  view.render(transcript([tool]), new Map([['t1', false]]), activity)
+  view.render(transcript([tool, { ...tool, id: 'b' }]), new Map([['t1', false]]), activity)
+  assert.equal(identity.sample(), undefined, 'a manual fold survives the next step')
 })
 
 // M04: an unchanged parent paint must keep its nested head cache alive.
@@ -50,7 +60,8 @@ test('M04 keeps the thinking head through an unchanged streaming snapshot', { sk
   t.after(starts.dispose)
   let head: unknown
   for (const text of ['A', 'AB', 'AB', 'ABC']) {
-    view.render(transcript([{ id: 'th', kind: 'thinking', text, turnId: 't1', pending: true }]))
+    view.render(transcript([{ id: 'th', kind: 'thinking', text, turnId: 't1', pending: true }]),
+      NO_DISCLOSURE, { isStreaming: true, turnId: 't1', startedAt: undefined })
     head ??= identity.sample()
     assert.ok(head)
     assert.equal(identity.sample(), head)
@@ -361,17 +372,17 @@ const groupOf = (rendered: Rendered): StubView => {
 
 test('a turn is one group: the user message outside it, its steps within', (t) => {
   const view = mount(t)
-  view.render(transcript(turnItems({ pending: true })))
+  view.render(transcript(turnItems({ pending: true })), NO_DISCLOSURE, RUNNING_T1)
 
   assert.deepEqual(view.items().map((entry) => entry.classes[0]), ['item', 'activity-group'])
   const group = groupOf(view)
   // Running, so the group is open and the steps are real nodes under it.
-  assert.deepEqual(group.classes, ['activity-group', 'running'])
+  assert.deepEqual(group.classes, ['activity-group', 'running', 'live'])
   const head = group.children[0]
   assert.equal(head?.tagName, 'BUTTON')
   // One *action* — the tool call. The thinking step above it is a row in the
   // group but not work the turn did, and it is not counted.
-  assert.equal(head?.text, '工作中 · 1 步')
+  assert.equal(head?.children.find((node) => node.className === 'waiting-label')?.text, 'Read')
   assert.equal(head?.attributes.get('aria-expanded'), 'true')
   assert.equal(group.children[1]?.className, 'group-steps')
   assert.deepEqual(
@@ -394,7 +405,7 @@ test('the thinking step’s head keeps its hairline only while the thought is li
   const liveTurn = sealedTurn.map((item) =>
     item.id === 'th1' ? { ...item, pending: true, summary: undefined } : item)
 
-  view.render(transcript(liveTurn))
+  view.render(transcript(liveTurn), NO_DISCLOSURE, RUNNING_T1)
   const head = thinkingStepOf().children[0]
   assert.deepEqual(head?.classes, ['step-head', 'thinking-step-head'])
   // Its own head class is what the sheet hangs the quiet resting state, the
@@ -407,7 +418,7 @@ test('the thinking step’s head keeps its hairline only while the thought is li
 
   // Sealed: the line was the waiting, so it goes. The head node itself stays —
   // that is what lets the sheen run instead of restarting once per token.
-  view.render(transcript(sealedTurn))
+  view.render(transcript(sealedTurn), NO_DISCLOSURE, RUNNING_T1)
   const sealed = thinkingStepOf().children[0]
   assert.equal(sealed?.node, head?.node, 'the head is kept across the seal')
   assert.deepEqual(
@@ -468,18 +479,17 @@ test('a step head is a button whose body exists only while it is open', (t) => {
   assert.equal(collapsed?.children[0]?.attributes.get('aria-expanded'), 'false')
 })
 
-test('the group head reads out a stable name while its visible label counts steps', (t) => {
+test('the group head reads out a stable name while its visible label tracks activity', (t) => {
   const view = mount(t)
-  view.render(transcript(turnItems({ pending: true })))
+  view.render(transcript(turnItems({ pending: true })), NO_DISCLOSURE, RUNNING_T1)
   const running = groupOf(view).children[0]
 
   // Visible: the counter. Read out: the status alone — the label is out of the
   // accessibility tree, because this subtree is an `aria-live` region and the
   // count moves once per step (§8).
-  assert.equal(running?.text, '工作中 · 1 步')
   assert.equal(running?.attributes.get('aria-label'), '工作中')
-  const label = running?.children.find((child) => child.classes.includes('btn-label'))
-  assert.equal(label?.text, '工作中 · 1 步')
+  const label = running?.children.find((child) => child.classes.includes('waiting-label'))
+  assert.equal(label?.text, 'Read')
   assert.equal(label?.attributes.get('aria-hidden'), 'true')
 
   // Sealed, the head is written once, so it names the totals it now carries.
@@ -493,7 +503,7 @@ test('the group survives the automatic collapse it performs at turn end', (t) =>
   // *disappearing* above the reader, and the browser can only hold their place
   // while the node the anchor points at outlives the paint.
   const view = mount(t)
-  view.render(transcript(turnItems({ pending: true })))
+  view.render(transcript(turnItems({ pending: true })), NO_DISCLOSURE, RUNNING_T1)
   const before = groupOf(view).node
   assert.equal(groupOf(view).children.length, 2)
 
@@ -523,7 +533,7 @@ test('nodes are kept by id across paints, so the scroll anchor survives', (t) =>
   // while the node it points at outlives the paint. Verified by mutation:
   // rebuilding the column every render reds every identity assertion below.
   const view = mount(t)
-  view.render(transcript(turnItems({ pending: true })))
+  view.render(transcript(turnItems({ pending: true })), NO_DISCLOSURE, RUNNING_T1)
   const before = {
     column: view.column().node,
     message: view.items()[0]?.node,
@@ -543,7 +553,7 @@ test('nodes are kept by id across paints, so the scroll anchor survives', (t) =>
   // restarts the id counter, so a kept node would come back holding another
   // block's content.
   view.render(transcript([{ id: 'reset-notice-0', kind: 'notice', text: '已清空' }]))
-  view.render(transcript(turnItems({ pending: true })))
+  view.render(transcript(turnItems({ pending: true })), NO_DISCLOSURE, RUNNING_T1)
   assert.notEqual(groupOf(view).children[1]?.children[0]?.node, before.step)
 })
 
@@ -583,7 +593,7 @@ test('a streaming paint detaches nothing, so the open step keeps its fold and it
   ]
 
   const view = mount(t)
-  view.render(transcript(streaming('先', '')))
+  view.render(transcript(streaming('先', '')), NO_DISCLOSURE, RUNNING_T1)
   const group = groupOf(view)
   const steps = group.children[1]
   const step = steps?.children[0]
@@ -596,10 +606,10 @@ test('a streaming paint detaches nothing, so the open step keeps its fold and it
   }
 
   // The block streams on, and then the answer starts arriving under it.
-  view.render(transcript(streaming('先看看', '')))
-  view.render(transcript(streaming('先看看这个文件', '')))
-  view.render(transcript(streaming('先看看这个文件', '好')))
-  view.render(transcript(streaming('先看看这个文件', '好的，')))
+  view.render(transcript(streaming('先看看', '')), NO_DISCLOSURE, RUNNING_T1)
+  view.render(transcript(streaming('先看看这个文件', '')), NO_DISCLOSURE, RUNNING_T1)
+  view.render(transcript(streaming('先看看这个文件', '好')), NO_DISCLOSURE, RUNNING_T1)
+  view.render(transcript(streaming('先看看这个文件', '好的，')), NO_DISCLOSURE, RUNNING_T1)
 
   assert.equal(detached.column(), 0, 'the column re-orders in place; nothing is taken out of the page')
   assert.equal(detached.group(), 0, 'a refill of the group leaves the children it hands back where they are')
@@ -618,11 +628,11 @@ test('the group head is kept across paints, and still reports what it showed', (
   // does not lose focus once per token — and the ref, not the paint that built
   // the node, is what the click reports.
   const view = mount(t)
-  view.render(transcript(turnItems({ pending: true })))
+  view.render(transcript(turnItems({ pending: true })), NO_DISCLOSURE, RUNNING_T1)
   const head = groupOf(view).children[0]?.node
   assert.ok(head)
 
-  view.render(transcript(turnItems({ pending: true })))
+  view.render(transcript(turnItems({ pending: true })), NO_DISCLOSURE, RUNNING_T1)
   assert.equal(groupOf(view).children[0]?.node, head, 'an unchanged head is not rebuilt')
 
   // Sealed: the same node, renamed, and now reporting the collapse it performed.
@@ -1515,7 +1525,7 @@ test('the kept thinking head reports the disclosure it is showing, both ways', (
   const view = mount(t)
   const disclosure = new Map<string, boolean>()
   const items = turnItems({ pending: true })
-  const paint = (): void => view.render(transcript(items), disclosure)
+  const paint = (): void => view.render(transcript(items), disclosure, RUNNING_T1)
   const head = (): StubView => {
     const found = groupOf(view).children[1]?.children[0]?.children[0]
     assert.ok(found)

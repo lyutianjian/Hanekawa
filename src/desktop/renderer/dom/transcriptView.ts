@@ -536,9 +536,9 @@ function entryNode(painter: Painter, entry: TranscriptEntry): HTMLElement {
  * streamed token.
  */
 function groupNode(painter: Painter, group: ActivityGroup): HTMLElement {
-  const expanded = isGroupExpanded(group, painter.disclosure)
   const live = painter.liveGroupId === group.turnId
-  const classes = ['activity-group', group.status]
+  const expanded = isGroupExpanded(group, painter.disclosure, live)
+  const classes = ['activity-group', live ? 'running' : group.status]
   if (live) classes.push('live')
   if (!expanded) classes.push('collapsed')
   const head = groupHead(painter, group, expanded, live)
@@ -615,7 +615,7 @@ function beadStatus(step: ActivityStep): string {
 // --- steps -------------------------------------------------------------------
 
 function stepNode(painter: Painter, group: ActivityGroup, step: ActivityStep, index: number): HTMLElement {
-  const expanded = isStepExpanded(group, index, painter.disclosure)
+  const expanded = isStepExpanded(group, index, painter.disclosure, painter.liveGroupId === group.turnId)
   switch (step.kind) {
     case 'thinking':
       return thinkingStep(painter, step, expanded)

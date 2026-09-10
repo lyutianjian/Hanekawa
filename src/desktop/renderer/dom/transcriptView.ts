@@ -8,6 +8,8 @@ import {
   isLooseThinkingExpanded,
   isStepCollapsible,
   isStepExpanded,
+  resolveDisclosure,
+  NO_DISCLOSURE,
   thinkingHeaderLabel,
   STEP_COMPLETION_FALLBACK_MS,
   type DisclosureState,
@@ -169,6 +171,7 @@ export function createTranscriptView(
   const feedback = new Map<string, StepFeedback>()
   const disclosures = new Map<string, { node: HTMLElement; presence: Presence }>()
   const seenDisclosures = new Set<string>()
+  let previousDisclosure: DisclosureState = NO_DISCLOSURE
   let generation: number | undefined
 
   // The live status's clock. The span is kept rather than looked up: its carrier
@@ -297,6 +300,7 @@ export function createTranscriptView(
         for (const entry of disclosures.values()) entry.presence.dispose()
         disclosures.clear()
         seenDisclosures.clear()
+        previousDisclosure = NO_DISCLOSURE
         cache.clear()
         refs.clear()
         for (const entry of feedback.values()) settleFeedback(entry)
@@ -308,8 +312,24 @@ export function createTranscriptView(
       const atBottom = isScrolledToBottom(container)
       const entries = groupTranscript(state.items)
       const live = turnActivity(entries, activity ?? IDLE)
+      const focused = new Set<string>()
+      const selected = new Set<string>()
+      const selection = window.getSelection?.()
+      for (const entry of entries) {
+        const id = entry.kind === 'group' ? entry.group.turnId : entry.item.id
+        const key = entry.kind === 'group' ? `group:${id}` : `item:${id}`
+        const node = cache.get(key)?.node
+        if (!node) continue
+        if (node.contains(document.activeElement)) focused.add(id)
+        if (selection && !selection.isCollapsed
+          && (node.contains(selection.anchorNode) || node.contains(selection.focusNode))) selected.add(id)
+      }
+      const resolvedDisclosure = resolveDisclosure(entries, disclosure, previousDisclosure, live.liveGroupId, {
+        focused, selected, readingHistory: !atBottom,
+      })
+      previousDisclosure = resolvedDisclosure
       const afterPaint: Array<() => void> = []
-      const painter = createPainter(cache, refs, feedback, disclosures, seenDisclosures, disclosure, handlers, {
+      const painter = createPainter(cache, refs, feedback, disclosures, seenDisclosures, resolvedDisclosure, handlers, {
         liveGroupId: live.liveGroupId,
         startedAt: activity?.startedAt,
         keepClock: (span) => { clockNode = span },

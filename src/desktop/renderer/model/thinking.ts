@@ -7,8 +7,8 @@ import type { ActivityGroup, ActivityStep, TranscriptEntry, TranscriptItem } fro
  * Two halves, and the split is the whole point:
  *
  * - a **dynamic default** (§5.1), which is what the reader gets for free — the
- *   running turn's group is open, only its current step is open, and once the turn
- *   ends everything collapses except what failed;
+ *   running turn's group is open, already-open steps stay open until the turn
+ *   ends, and completion organises only content the reader is not using;
  * - the user's **absolute** answer for anything they clicked (§5.2), which from
  *   then on outranks the default entirely.
  *
@@ -81,22 +81,70 @@ export function isStepExpanded(
   index: number,
   state: DisclosureState = NO_DISCLOSURE,
   live = group.status === 'running',
+  retained = false,
 ): boolean {
   const step = group.steps[index]
   if (step === undefined) return false
   if (!isStepCollapsible(step)) return true
-  return state.get(step.id) ?? defaultStepExpanded(group, index, step, live)
+  return state.get(step.id) ?? defaultStepExpanded(group, index, step, live, retained)
 }
 
-function defaultStepExpanded(group: ActivityGroup, index: number, step: ActivityStep, live: boolean): boolean {
+function defaultStepExpanded(group: ActivityGroup, index: number, step: ActivityStep, live: boolean, retained: boolean): boolean {
   // A failure is the reason someone opens a finished group at all (§5.1), so it
   // opens itself — in a running turn just as much as in a sealed one, because a
   // failed step scrolling past unopened is the case this whole screen exists for.
   if (isStepFailed(step)) return true
+  if (live && group.status !== 'aborted' && retained) return true
   // The permission request is drawn in the composer and that is where the user is
   // looking; unfolding a diff up here would take the focus back (§5.1).
   if ('status' in step && step.status === 'awaiting-approval') return false
   return live && group.status !== 'aborted' && index === group.steps.length - 1
+}
+
+export interface DisclosureProtection {
+  readonly focused: ReadonlySet<string>
+  readonly selected: ReadonlySet<string>
+  readonly readingHistory: boolean
+}
+
+/** Direction A. Previous values are presentation memory, never manual answers.
+ * A completion may organise once, but cannot withdraw manually opened or
+ * actively read content. The owning view supplies DOM observations only. */
+export function resolveDisclosure(
+  entries: readonly TranscriptEntry[],
+  manual: DisclosureState,
+  previous: DisclosureState,
+  liveGroupId: string | undefined,
+  protection: DisclosureProtection,
+): DisclosureState {
+  const next = new Map<string, boolean>()
+  const protectedAt = (id: string): boolean => protection.readingHistory
+    || protection.focused.has(id) || protection.selected.has(id)
+  for (const entry of entries) {
+    if (entry.kind === 'item') {
+      if (entry.item.kind !== 'thinking') continue
+      const { id } = entry.item
+      next.set(id, manual.get(id) ?? (protectedAt(id) && previous.get(id) === true
+        || isLooseThinkingExpanded(entry.item)))
+      continue
+    }
+    const { group } = entry
+    const live = group.turnId === liveGroupId && group.status !== 'aborted'
+    const protectedGroup = protectedAt(group.turnId)
+      || group.steps.some((step) => protectedAt(step.id))
+    const hold = protectedGroup && previous.get(group.turnId) === true
+    const manuallyOpenedChild = group.steps.some((step) => manual.get(step.id) === true)
+    const open = manual.get(group.turnId) ?? (hold || manuallyOpenedChild || isGroupExpanded(group, NO_DISCLOSURE, live))
+    next.set(group.turnId, open)
+    for (let index = 0; index < group.steps.length; index += 1) {
+      const step = group.steps[index]!
+      const wasOpen = previous.get(step.id) === true
+      next.set(step.id, manual.get(step.id) ?? (open && (
+        hold && wasOpen || isStepExpanded(group, index, NO_DISCLOSURE, live, wasOpen)
+      )))
+    }
+  }
+  return next
 }
 
 /** The same predicate `groupTranscript` counts with, so head and body agree. */

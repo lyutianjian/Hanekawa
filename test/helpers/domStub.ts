@@ -483,6 +483,7 @@ export interface DomStub {
   hasDocumentMember(name: string): boolean
   observeMotion(listener: (event: MotionMutation) => void): () => void
   setMedia(query: string, matches: boolean): void
+  setSelection(anchor: unknown, focus?: unknown): void
   uninstall(): void
 }
 
@@ -531,7 +532,8 @@ export function installDomStub(): DomStub {
     }
     return entry
   }
-  Reflect.set(globalThis, 'window', { matchMedia })
+  let selection = { anchorNode: null as unknown, focusNode: null as unknown, isCollapsed: true }
+  Reflect.set(globalThis, 'window', { matchMedia, getSelection: () => selection })
   // The page's two fixed nodes. `<html>` carries `dataset.theme` (the whole
   // stylesheet hangs off it) and `<body>` is where `app.ts` writes the message
   // it shows when startup fails — a test that never looks at it lets a thrown
@@ -607,6 +609,9 @@ export function installDomStub(): DomStub {
       if (entry.matches === matches) return
       entry.matches = matches
       for (const listener of entry.listeners) listener({ matches })
+    },
+    setSelection(anchor, focus = anchor) {
+      selection = { anchorNode: anchor, focusNode: focus, isCollapsed: anchor == null }
     },
     createContainer(className?: string): HTMLElement {
       const element = new StubElement('DIV', undefined)

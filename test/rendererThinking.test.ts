@@ -12,6 +12,7 @@ import {
   isStepCollapsible,
   isStepExpanded,
   pruneDisclosure,
+  resolveDisclosure,
   thinkingHeaderLabel,
   toggleDisclosure,
 } from '../src/desktop/renderer/model/thinking.js'
@@ -83,6 +84,30 @@ test('M02 keeps disclosure open in a live turn with no pending steps', () => {
   const manual = new Map([['turn-1', false], ['a', false]])
   assert.equal(isGroupExpanded(between, manual, true), false)
   assert.equal(isStepExpanded(between, 0, manual, true), false)
+})
+
+test('direction A retains observed open steps through a live turn and organises at completion', () => {
+  const protection = { focused: new Set<string>(), selected: new Set<string>(), readingHistory: false }
+  const entries = (steps: ActivityStep[], status: ActivityGroup['status'] = 'running'): TranscriptEntry[] =>
+    [{ kind: 'group', group: group(steps, status) }]
+  let previous = resolveDisclosure(entries([toolStep('a', 'running')]), NO_DISCLOSURE, NO_DISCLOSURE, 'turn-1', protection)
+  previous = resolveDisclosure(entries([toolStep('a', 'done'), toolStep('b', 'running')]), NO_DISCLOSURE, previous, 'turn-1', protection)
+  assert.equal(previous.get('a'), true)
+  assert.equal(previous.get('b'), true)
+  const done = entries([toolStep('a', 'done'), toolStep('b', 'done')], 'done')
+  const ended = resolveDisclosure(done, NO_DISCLOSURE, previous, undefined, protection)
+  assert.equal(ended.get('turn-1'), false)
+  const manual = resolveDisclosure(done, new Map([['a', true], ['b', false]]), previous, undefined, protection)
+  assert.equal(manual.get('turn-1'), true, 'a manually opened child keeps its containing group available')
+  assert.equal(manual.get('a'), true)
+  assert.equal(manual.get('b'), false)
+  for (const reason of ['focused', 'selected', 'readingHistory'] as const) {
+    const protectedView = resolveDisclosure(done, NO_DISCLOSURE, previous, undefined, {
+      ...protection, [reason]: reason === 'readingHistory' ? true : new Set(['a']),
+    })
+    assert.equal(protectedView.get('turn-1'), true, reason)
+    assert.equal(protectedView.get('a'), true, reason)
+  }
 })
 
 test('turn liveness never revives an interruption or overrides a settled session', () => {

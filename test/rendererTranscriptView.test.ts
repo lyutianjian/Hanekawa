@@ -159,6 +159,34 @@ for (const kind of ['thinking', 'tool', 'subagent'] as const) {
   })
 }
 
+for (const reason of ['focus', 'selection', 'reading'] as const) {
+  test(`M14 completion preserves content under ${reason}`, (t) => {
+    const view = mount(t)
+    const item: TranscriptItem = { id: 's', kind: 'thinking', text: 'reading', turnId: 't1', pending: true }
+    view.render(transcript([item]), NO_DISCLOSURE, RUNNING_T1)
+    const body = groupOf(view).children[1]!.children[0]!.children[1]!.node
+    if (reason === 'focus') view.stub.focus(body)
+    if (reason === 'selection') view.stub.setSelection(body)
+    if (reason === 'reading') view.stub.setMetrics(view.container, { scrollTop: 100, scrollHeight: 2000, clientHeight: 400 })
+    view.render(transcript([{ ...item, pending: false }]))
+    assert.equal(groupOf(view).classes.includes('collapsed'), false)
+    assert.equal(groupOf(view).children[1]!.children[0]!.children[1]!.node, body)
+    assert.equal(view.stub.inspect(body).attributes.has('inert'), false)
+  })
+}
+
+test('M14 advancing the current step keeps earlier thinking open without replay', (t) => {
+  const view = mount(t)
+  const first: TranscriptItem = { id: 'a', kind: 'thinking', text: 'first', turnId: 't1', pending: true }
+  view.render(transcript([first]), NO_DISCLOSURE, RUNNING_T1)
+  const body = groupOf(view).children[1]!.children[0]!.children[1]!.node
+  view.render(transcript([{ ...first, pending: false }, { ...first, id: 'b', text: 'next' }]), NO_DISCLOSURE, RUNNING_T1)
+  const earlier = groupOf(view).children[1]!.children[0]!
+  assert.equal(earlier.classes.includes('collapsed'), false)
+  assert.equal(earlier.children[1]!.node, body)
+  assert.equal(view.stub.inspect(body).classes.includes('presence-open'), true)
+})
+
 function transcript(items: readonly TranscriptItem[] = [], overrides: Partial<TranscriptState> = {}): TranscriptState {
   return { items, generation: 0, toolProgress: undefined, isThinking: false, thinkingCount: 0, ...overrides }
 }

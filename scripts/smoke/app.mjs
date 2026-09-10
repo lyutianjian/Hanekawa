@@ -149,12 +149,12 @@ function installCleanup() {
  * this run's leftover and is allowed to kill it — as opposed to killing whatever
  * Electron app the developer happens to have open.
  */
-export function launch({ repoRoot, cwd, port, out, tag, pidFile }) {
+export function launch({ repoRoot, cwd, port, out, tag, pidFile, switches = [] }) {
   installCleanup()
   const log = createWriteStream(join(out, `electron-${tag}.log`), { flags: 'a' })
   const child = spawn(
     electronBinary(),
-    [repoRoot, `--remote-debugging-port=${port}`, `--cwd=${cwd}`],
+    [repoRoot, `--remote-debugging-port=${port}`, `--cwd=${cwd}`, ...switches],
     { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], shell: false },
   )
   // An undrained pipe stalls the child once the OS buffer fills.

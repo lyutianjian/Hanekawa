@@ -65,7 +65,24 @@ export function reconcile(parent: HTMLElement, children: Child[]): void {
   let index = 0
   for (const node of wanted) {
     const current: Node | undefined = parent.childNodes[index]
-    if (current !== node) parent.insertBefore(node, current ?? null)
+    if (current !== node) {
+      // A tentative answer can move into its activity group after a tool call.
+      // Chromium's atomic move preserves focus and animation state.
+      // Detached construction and older DOMs still use ordinary insertion.
+      if (parent.isConnected && node.isConnected && typeof parent.moveBefore === 'function') {
+        const selection = parent.ownerDocument.getSelection()
+        const selected = selection && !selection.isCollapsed
+          && (node.contains(selection.anchorNode) || node.contains(selection.focusNode))
+          ? { anchor: selection.anchorNode!, start: selection.anchorOffset, focus: selection.focusNode!, end: selection.focusOffset }
+          : undefined
+        parent.moveBefore(node, current ?? null)
+        // Atomic moves preserve focus/animations, but Chromium still adjusts
+        // live Range endpoints when their ancestor changes parent.
+        if (selection && selected && selected.anchor.isConnected && selected.focus.isConnected) {
+          selection.setBaseAndExtent(selected.anchor, selected.start, selected.focus, selected.end)
+        }
+      } else parent.insertBefore(node, current ?? null)
+    }
     index += 1
   }
 }

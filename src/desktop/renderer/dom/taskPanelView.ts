@@ -22,8 +22,8 @@ import { motionDelay } from './motion.js'
  * causes.
  *
  * With no checklist the panel does not *exist* rather than sitting empty: the
- * host is emptied, and the next appearance plays `rise-in` once. Which is also
- * why the panel node is reused across renders — an entrance animation on a node
+ * host is emptied, and the next appearance enters once through presence. Which is also
+ * why the panel node is reused across renders — an entrance on a node
  * rebuilt per streamed token would replay forever.
  */
 
@@ -51,6 +51,7 @@ export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
 
   function buildPanel() {
     const node = el('div', 'task-panel')
+    const entrance = createPresence(node, { kind: 'panel' })
     // Registered once, on the node that outlives every render: `flash()` adds
     // the class and this takes it off again, so a second pulse is possible.
     node.addEventListener('animationend', (event) => {
@@ -68,7 +69,7 @@ export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
     const presence = createPresence(list, { kind: 'disclosure', direction: 'none', property: 'height', onClosed: () => list.remove() })
     const rows = new Map<string, { node: HTMLElement; bead: HTMLElement; label: HTMLElement }>()
     reconcile(container, [node])
-    return { node, track, head, count, current, list, presence, rows, ratio: undefined as number | undefined }
+    return { node, entrance, track, head, count, current, list, presence, rows, ratio: undefined as number | undefined }
   }
 
   const paint = (state: TaskPanelState): void => {
@@ -114,12 +115,14 @@ export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
     reconcile(list, children)
     for (const id of rows.keys()) if (!live.has(id)) rows.delete(id)
     reconcile(node, [track, head, expanded || parts.presence.phase !== 'closed' ? list : undefined])
+    parts.entrance.set(true)
     parts.presence.set(expanded)
   }
 
   const hide = (): void => {
     finishFlash()
     panel?.presence.dispose()
+    panel?.entrance.dispose()
     panel = undefined
     latest = undefined
     expanded = false
@@ -141,7 +144,7 @@ export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
     },
 
     hide,
-    finishMotion() { finishFlash(); panel?.presence.finish() },
+    finishMotion() { finishFlash(); panel?.entrance.finish(); panel?.presence.finish() },
   }
 }
 

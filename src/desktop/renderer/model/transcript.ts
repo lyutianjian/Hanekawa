@@ -266,6 +266,10 @@ export interface TranscriptState {
    * fold both.
    */
   readonly thinkingCount: number
+  /** Per-session presentation identities survive a streamed item's commit.
+   * Canonical record ids stay in items for replay and protocol comparisons. */
+  readonly presentationIds?: ReadonlyMap<string, string>
+  readonly draftCount?: number
   /**
    * The turn whose records are arriving — the stamp live items inherit so they
    * join their activity group before `turn-end` (§4.1). Learned from the records
@@ -316,6 +320,19 @@ export function createTranscriptState(
     toolProgress: undefined,
     isThinking: false,
     thinkingCount: 0,
+  }
+}
+
+/** The DOM and disclosure state share these ids; records keep their own ids.
+ * Aliases belong to this session and disappear with transcript-reset. */
+export function presentationTranscript(state: TranscriptState): TranscriptState {
+  if (!state.presentationIds?.size) return state
+  return {
+    ...state,
+    items: state.items.map((item) => {
+      const id = state.presentationIds?.get(item.id)
+      return id === undefined ? item : { ...item, id }
+    }),
   }
 }
 
@@ -495,12 +512,22 @@ function closeSegment(item: TranscriptItem): TranscriptItem {
 
 function applyStream(state: TranscriptState, event: Extract<SessionEvent, { type: 'stream' }>['event']): TranscriptState {
   switch (event.type) {
-    case 'text_delta':
+    case 'text_delta': {
+      const fresh = indexOfItem(state.items, DRAFT_ID) === -1
+      let presentationIds = state.presentationIds
+      if (fresh) {
+        const next = new Map(presentationIds)
+        next.set(DRAFT_ID, `__streamed-text-${state.draftCount ?? 0}`)
+        presentationIds = next
+      }
       return {
         ...state,
         isThinking: false,
         items: appendToLive(state.items, DRAFT_ID, 'assistant', event.text, state.turnId),
+        presentationIds,
+        draftCount: (state.draftCount ?? 0) + (fresh ? 1 : 0),
       }
+    }
     case 'thinking_delta':
       return appendThinking(state, event.thinking)
     case 'thinking_stop':
@@ -618,8 +645,12 @@ function applyRecord(
   const next = commits ? state.items.filter((item) => item.id !== DRAFT_ID) : [...state.items]
   const pending = [...produced]
   let liveThinkingId = state.liveThinkingId
+  const presentationIds = commits ? new Map(state.presentationIds) : undefined
 
   if (commits) {
+    const draftId = presentationIds?.get(DRAFT_ID)
+    if (draftId !== undefined) presentationIds!.set(record.id, draftId)
+    presentationIds?.delete(DRAFT_ID)
     // The open segment and this record's `thinkingBlocks` are the same reasoning.
     // Overwriting in place keeps the position *and* the id it replays under, which
     // is what makes the live tree and the replayed tree comparable field by field
@@ -629,7 +660,12 @@ function applyRecord(
       const replayed = pending.findIndex((item) => item.kind === 'thinking')
       // No persisted blocks (thinking off, or an older provider): keep what
       // streamed and merely close it, rather than deleting reasoning that is real.
-      next[open] = replayed === -1 ? closeSegment(next[open]!) : pending.splice(replayed, 1)[0]!
+      if (replayed === -1) next[open] = closeSegment(next[open]!)
+      else {
+        const committed = pending.splice(replayed, 1)[0]!
+        presentationIds!.set(committed.id, state.presentationIds?.get(next[open]!.id) ?? next[open]!.id)
+        next[open] = committed
+      }
     }
     liveThinkingId = undefined
   }
@@ -665,7 +701,13 @@ function applyRecord(
   }
   // §4.3 again, on the live path: two requests in a row that called nothing are
   // one segment, and replay merges them, so this path has to as well.
-  return { ...state, turnId, liveThinkingId, items: mergeAdjacentThinking(next) }
+  const items = mergeAdjacentThinking(next)
+  if (presentationIds) {
+    const ids = new Set(items.map((item) => item.id))
+    for (const id of presentationIds.keys()) if (!ids.has(id)) presentationIds.delete(id)
+  }
+  return { ...state, turnId, liveThinkingId, items,
+    ...(presentationIds ? { presentationIds } : {}) }
 }
 
 /** Mirror of `wrapInSystemReminder`'s output (`src/harness/systemReminder.ts`).

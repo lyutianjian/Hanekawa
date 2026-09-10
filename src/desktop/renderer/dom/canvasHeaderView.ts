@@ -120,9 +120,12 @@ export function createCanvasHeaderView(
     actions.onCloseMenu()
   })
   container.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return
+    if (event.key !== 'Escape' || !menuWasOpen) return
     // The rename field has its own Escape and stops propagation, so reaching
-    // here means the menu (or nothing) is what Escape is about.
+    // here means this press belongs to the open menu. Consume it before the
+    // synchronous close: the shell must not also interrupt a streaming turn.
+    event.preventDefault()
+    event.stopPropagation()
     actions.onCloseMenu()
   })
 

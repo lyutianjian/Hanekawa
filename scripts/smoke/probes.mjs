@@ -229,7 +229,10 @@ export const permissionRequest = () => `(() => {
   const box = onScreen(card) ? card.getBoundingClientRect() : null
   const composerBox = composer ? composer.getBoundingClientRect() : null
   return {
-    open: !card.hidden && onScreen(card),
+    open: !card.hidden && !card.inert && onScreen(card),
+    // Coordinates are safe to click only after the capsule's layout handoff.
+    // A closing card can remain visible after it has stopped taking answers.
+    settled: card.classList.contains('presence-open') && !composer.classList.contains('request-changing'),
     transformed: Boolean(composer) && composer.classList.contains('request-open'),
     // The two halves the card stands in for. Both must be off screen while it is
     // up: a Tab stop left behind would swallow the keys the buttons want.

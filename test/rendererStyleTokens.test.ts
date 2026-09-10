@@ -1738,6 +1738,13 @@ test('completion and location fallbacks track their semantic durations', () => {
   }
 })
 
+test('composer height handoff survives the later interaction rules', () => {
+  // The first rule had height, but a later grouped shorthand silently removed it.
+  const transitions = blocks.filter((block) => block.selector.split(',').some((part) => part.trim() === '#composer'))
+    .flatMap((block) => block.decls.filter((decl) => decl.prop === 'transition'))
+  assert.match(transitions.at(-1)!.value, /height var\(--motion-layout\)/)
+})
+
 test('motion comes from the tokens, and the things that rebuild themselves have none', () => {
   // Same argument as the palette: a duration written beside the control that
   // happens to use it is a duration nobody can compare, and a sheet with a dozen

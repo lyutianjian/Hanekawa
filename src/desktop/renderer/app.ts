@@ -1029,6 +1029,14 @@ function syncMotion(): void {
   permissionRequest.finishMotion()
   taskPanel.finishMotion()
   for (const pane of paneSessions.values()) pane.syncMotion()
+  if (motionQuery.matches || document.hidden) {
+    // Changing transition-duration does not retime an already-running CSS
+    // transition when its target value is unchanged. Apply the settled style
+    // immediately; presence/fallback cleanup above already handled lifecycle.
+    for (const animation of document.getAnimations?.() ?? []) {
+      if ('transitionProperty' in animation) animation.cancel()
+    }
+  }
 }
 motionQuery.addEventListener('change', syncMotion)
 document.addEventListener('visibilitychange', syncMotion)

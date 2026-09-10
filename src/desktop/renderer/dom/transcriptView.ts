@@ -423,7 +423,7 @@ export function createTranscriptView(
       const selection = window.getSelection?.()
       for (const entry of entries) {
         const id = entry.kind === 'group' ? entry.group.turnId : entry.item.id
-        const key = entry.kind === 'group' ? `group:${id}` : `item:${id}`
+        const key = entry.kind === 'group' ? `group:${id}` : itemKey(entry.item)
         const node = cache.get(key)?.node
         if (!node) continue
         if (node.contains(document.activeElement)) focused.add(id)
@@ -897,7 +897,7 @@ function stepNode(painter: Painter, group: ActivityGroup, step: ActivityStep, in
       return taskStep(painter, step)
     case 'text':
       // Staged prose: full markdown, shown whole, never folded (§4.4).
-      return painter.node(`step:${step.id}`, 'step text md', [step.text], (node) => markdownChildren(step.text, node))
+      return painter.node(`text:${step.id}`, 'step text md', [step.text], (node) => markdownChildren(step.text, node))
     case 'system':
       return painter.node(
         `step:${step.id}`,
@@ -1401,11 +1401,16 @@ function rule(): HTMLElement {
 
 // --- loose items -------------------------------------------------------------
 
+/** Text can become a staged step after a tool call; its carrier stays the same. */
+function itemKey(item: TranscriptItem): string {
+  return `${item.kind === 'assistant' ? 'text' : 'item'}:${item.id}`
+}
+
 function itemNode(painter: Painter, item: TranscriptItem): HTMLElement {
   const classes = ['item', item.kind]
   if (item.pending) classes.push('pending')
   if (item.failed) classes.push('failed')
-  const key = `item:${item.id}`
+  const key = itemKey(item)
   // Only the assistant writes markdown. A tool line, a user message and a notice
   // are commands, paths and diagnostics — they have to read back character for
   // character, so `*` stays a `*` there.

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hanekawa Desktop 动效验收</title>
+<style>
+  * { box-sizing: border-box }
+  body { margin: 0; background: #f2efe9; color: #302d29; font: 15px/1.6 system-ui,sans-serif }
+  main { max-width: 1060px; margin: 40px auto; padding: 0 28px }
+  h1 { font-size: 27px; margin-bottom: 8px }
+  p { margin: 8px 0 18px; color: #625d56 }
+  a { color: #865030 }
+  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 24px 0 12px }
+  select,button { font: inherit; color: inherit; background: #faf8f4; border: 1px solid #cfc6ba; border-radius: 8px; padding: 7px 12px }
+  button { cursor: pointer }
+  figure { margin: 0; background: #faf8f4; border: 1px solid #d8d0c6; border-radius: 14px; overflow: hidden }
+  #preview { display: block; width: 100%; height: auto; aspect-ratio: 8 / 5 }
+  figcaption { padding: 12px 16px; color: #625d56 }
+  .profiles { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin-top: 26px }
+  .profiles article { border: 1px solid #d8d0c6; border-radius: 12px; padding: 15px 18px; background: #faf8f4 }
+  h2 { font-size: 17px; margin: 0 0 8px }
+  .profiles a { display: inline-block; margin-right: 14px }
+  @media (max-width: 620px) { main { margin-top: 20px; padding: 0 16px } .profiles { grid-template-columns: 1fr } }
+</style>
+<main>
+  <h1>Desktop 动效验收</h1>
+  <p>真实 Electron · Windows 原生 100% / 125% · 60Hz / 120Hz · 深浅主题。录像保持原速，预览采样上限 12.5fps，不补帧、不慢放。</p>
+  <a href="../DESKTOP_MOTION_ACCEPTANCE.md">验收报告</a> · <a href="measurements.json">完整测量摘要</a> · <a href="previews.json">预览时间信息</a>
+  <div class="controls">
+    <label for="scene">场景</label>
+    <select id="scene">
+      <option value="stream">思考 → 工具 → 后续正文</option>
+      <option value="disclosure">详情收起、反向、重新展开</option>
+      <option value="layout">侧栏与菜单反向操作</option>
+      <option value="permission">权限区批准与拒绝</option>
+      <option value="modal">模态答复与遮罩退出</option>
+      <option value="settings">设置开关保存</option>
+    </select>
+    <button id="replay" type="button">重新播放</button>
+  </div>
+  <figure>
+    <img id="preview" src="stream.webp" width="800" height="500" alt="思考、工具和后续正文的真实 Electron 连续录屏">
+    <figcaption id="caption">完整流式过程，22.03 秒。60Hz、浅色、Windows 原生 100%。</figcaption>
+  </figure>
+  <p>原始记录包含每次收到的 rAF 几何采样和 DevTools 性能轨道。预览用于检查节奏；字体清晰度请看下面保留原分辨率的 PNG。此页不把预览采样率当作屏幕刷新率。</p>
+  <div class="profiles" id="profiles"></div>
+</main>
+<script src="viewer-data.js"></script>
+<script>
+  const scene = document.getElementById('scene')
+  const preview = document.getElementById('preview')
+  const caption = document.getElementById('caption')
+  const data = window.motionEvidence
+  const seconds = Object.fromEntries(data.previews.map(p => [p.scene, (p.durationMs / 1000).toFixed(2)]))
+  const describe = p => p.hz + 'Hz · ' + (p.theme === 'light' ? '浅色' : '深色') + ' · ' + (p.dpi === 'native' ? 'Windows 原生 ' : 'Chromium ') + p.scale * 100 + '%'
+  for (const profile of data.profiles) {
+    const article = document.createElement('article')
+    const title = document.createElement('h2')
+    title.textContent = describe(profile)
+    article.append(title)
+    for (const [suffix, text] of [['-contact.jpg', '关键帧'], ['-reading.png', '阅读位置 PNG']]) {
+      const link = document.createElement('a')
+      link.href = profile.id + suffix
+      link.textContent = text
+      article.append(link)
+    }
+    document.getElementById('profiles').append(article)
+  }
+  function play() {
+    preview.src = scene.value + '.webp?replay=' + Date.now()
+    preview.alt = scene.selectedOptions[0].textContent + '，真实 Electron 原速录屏'
+    caption.textContent = scene.selectedOptions[0].textContent + '，' + seconds[scene.value] + ' 秒。' + describe(data.profiles[0]) + '。'
+  }
+  scene.addEventListener('change', play)
+  document.getElementById('replay').addEventListener('click', play)
+  play()
+</script>
+</html>

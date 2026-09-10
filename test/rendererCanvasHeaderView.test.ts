@@ -206,6 +206,19 @@ test('Enter commits a real change; Escape and a no-op change do not', (t) => {
   assert.equal(r.events.includes('cancel-rename'), true)
 })
 
+test('Escape belongs to an open menu, leaving the closed header to the shell keymap', (t) => {
+  const r = render(t)
+  r.paint({ menuOpen: true })
+  const open = r.stub.dispatch(r.container, 'keydown', { key: 'Escape' })
+  assert.equal(open.defaultPrevented, true, 'closing a menu must not also interrupt the turn')
+  assert.deepEqual(r.events, ['close-menu'])
+  r.paint({ menuOpen: false })
+  r.events.length = 0
+  const closed = r.stub.dispatch(r.container, 'keydown', { key: 'Escape' })
+  assert.equal(closed.defaultPrevented, false)
+  assert.deepEqual(r.events, [])
+})
+
 test('blurring an untouched field cancels instead of writing the index', (t) => {
   // `rename-session` writes the index and broadcasts to every lane; clicking
   // away from a field the user never typed into must not cost that.

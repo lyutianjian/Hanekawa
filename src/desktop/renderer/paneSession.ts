@@ -78,6 +78,7 @@ import {
   applySessionEvent,
   createTranscriptState,
   groupTranscript,
+  presentationTranscript,
   type ToolDisplayLookup,
   type TranscriptState,
 } from './model/transcript.js'
@@ -567,14 +568,15 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // counter, so `thinking-0` can be minted again and would inherit the answer a
     // different block left behind — and an absolute answer would not even be
     // corrected by the default.
-    disclosure = pruneDisclosure(groupTranscript(transcript.items), disclosure)
+    const presented = presentationTranscript(transcript)
+    disclosure = pruneDisclosure(groupTranscript(presented.items), disclosure)
     const isStreaming = client.getSnapshot().isStreaming
     // A pane can find itself mid-turn without having seen `turn-start` — it was
     // resumed, or the turn began while this pane was in the background — and a
     // row counting from `undefined` would have no clock at all. Noticing the
     // turn is the honest floor for 「how long have I been waiting」.
     if (isStreaming && turnStartedAt === undefined) turnStartedAt = Date.now()
-    transcriptView.render(transcript, disclosure, {
+    transcriptView.render(presented, disclosure, {
       isStreaming,
       startedAt: turnStartedAt,
       turnId: transcript.turnId,

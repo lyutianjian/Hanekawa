@@ -115,6 +115,7 @@ class Cdp {
   #next = 0
   #pending = new Map()
   #onEvent
+  #listeners = new Map()
   #closed
 
   constructor(socket, onEvent) {
@@ -140,7 +141,10 @@ class Cdp {
       else settle.resolve(frame.result)
       return
     }
-    if (typeof frame.method === 'string') this.#onEvent?.(frame)
+    if (typeof frame.method === 'string') {
+      this.#onEvent?.(frame)
+      for (const listener of this.#listeners.get(frame.method) ?? []) listener(frame.params)
+    }
   }
 
   #fail(error) {
@@ -164,6 +168,17 @@ class Cdp {
       this.#socket.close()
     } catch {
       // Already gone; the run is over either way.
+    }
+  }
+
+  /** Trace/screencast observers share the launch's one socket. */
+  on(method, listener) {
+    const listeners = this.#listeners.get(method) ?? new Set()
+    listeners.add(listener)
+    this.#listeners.set(method, listeners)
+    return () => {
+      listeners.delete(listener)
+      if (listeners.size === 0) this.#listeners.delete(method)
     }
   }
 }

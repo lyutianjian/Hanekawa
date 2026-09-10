@@ -9,6 +9,8 @@ import { createTranscriptView } from '../src/desktop/renderer/dom/transcriptView
 import { NO_DISCLOSURE } from '../src/desktop/renderer/model/thinking.js'
 import type { DisclosureState } from '../src/desktop/renderer/model/thinking.js'
 import type { TranscriptItem, TranscriptState } from '../src/desktop/renderer/model/transcript.js'
+import { applySessionEvent, createTranscriptState, presentationTranscript } from '../src/desktop/renderer/model/transcript.js'
+import type { SessionEvent } from '../src/runtime/sessionController.js'
 import type { ImageAttachmentRef } from '../src/media/types.js'
 import { ANCHOR_REST_PX } from '../src/desktop/renderer/model/transcriptAnchor.js'
 import type { WaitingInput } from '../src/desktop/renderer/model/waiting.js'
@@ -95,6 +97,41 @@ test('M05 keeps the thinking body and settled assistant blocks across deltas', (
     assert.equal(view.items()[1]!.children[0]!.node, firstParagraph)
     assert.equal(view.items()[1]!.children.some((node) => node.className === 'item-meta'), false)
   }
+})
+
+test('M21 real stream records retain thinking, Markdown and manual disclosure through commit and demotion', (t) => {
+  const view = mount(t)
+  let state = createTranscriptState()
+  let manual: DisclosureState = NO_DISCLOSURE
+  const apply = (event: SessionEvent): void => {
+    state = applySessionEvent(state, event).state
+    view.render(presentationTranscript(state), manual, RUNNING_T1)
+  }
+  const createdAt = '2026-09-10T00:00:00.000Z'
+  apply({ type: 'record', record: { type: 'message', id: 'u1', role: 'user', content: 'go', turnId: 't1', createdAt } })
+  apply({ type: 'stream', event: { type: 'message_start' } })
+  apply({ type: 'stream', event: { type: 'thinking_delta', thinking: 'Reasoning.' } })
+  const head = trackIdentity(view.column, '.thinking-step-head').sample()
+  const body = trackIdentity(view.column, '.step-body').sample()
+  assert.ok(head)
+  assert.ok(body)
+  const text = 'Stable paragraph.\n\n~~~ts\nconst value = 1\n~~~\n\n$E=mc^2$\n\nMore.'
+  apply({ type: 'stream', event: { type: 'text_delta', text } })
+  const owner = trackIdentity(view.column, '.md').sample()
+  const children = [...(owner as HTMLElement).childNodes]
+  view.stub.focus(head)
+  manual = new Map([['thinking-0', true]])
+  apply({ type: 'record', record: { type: 'message', id: 'a1', role: 'assistant', content: text,
+    thinkingBlocks: [{ type: 'thinking', thinking: 'Reasoning.' }], turnId: 't1', createdAt } })
+  assert.equal(trackIdentity(view.column, '.thinking-step-head').sample(), head)
+  assert.equal(trackIdentity(view.column, '.step-body').sample(), body)
+  assert.equal(view.stub.activeElement(), head)
+  assert.equal(trackIdentity(view.column, '.md').sample(), owner)
+  apply({ type: 'record', record: { type: 'tool_use', id: 'tool1', tool: 'Read', input: { filePath: 'a.ts' }, turnId: 't1', createdAt, riskLevel: 'safe' } })
+  assert.equal(trackIdentity(view.column, '.md').sample(), owner, 'prose demotion uses the same carrier')
+  assert.deepEqual([...(owner as HTMLElement).childNodes], children)
+  view.stub.click(head)
+  assert.deepEqual(view.toggled.at(-1), ['thinking-0', true], 'the retained head and manual map still use the same identity')
 })
 
 test('M09 completion plays once on the live edge and never on historical disclosure', (t) => {

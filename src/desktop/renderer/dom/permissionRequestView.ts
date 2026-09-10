@@ -71,7 +71,7 @@ export function createPermissionRequestView(
     clearTimeout(heightTimer)
     heightTimer = undefined
     composer.style.height = ''
-    composer.classList.remove('request-changing')
+    composer.classList.remove('request-changing', 'request-measuring')
   }
   composer.addEventListener('transitionend', (event) => {
     if (event.target === composer && event.propertyName === 'height') finishHeight()
@@ -82,9 +82,13 @@ export function createPermissionRequestView(
     if (!motionPolicy().animate) { finishHeight(); return }
     const height = composer.getBoundingClientRect().height
     if (!Number.isFinite(height) || height <= 0) return
+    // Freeze without starting auto → px: otherwise px → auto in this same
+    // paint is a zero-progress reversal and Chromium shortens it to nothing.
+    composer.classList.add('request-measuring')
     composer.style.height = `${height}px`
     composer.classList.add('request-changing')
     composer.getBoundingClientRect()
+    composer.classList.remove('request-measuring')
   }
   const endHeight = (): void => {
     if (!motionPolicy().animate) { finishHeight(); return }

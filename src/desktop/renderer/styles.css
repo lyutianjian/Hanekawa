@@ -2536,7 +2536,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 
    A card groove, `--radius-md`, and **no shadow**: depth in this sheet is two
    steps (menus float, modals sit deeper) and a strip that is part of the
-   composer is neither. It appears once, with the sheet's shared `rise-in` —
+   composer is neither. It appears once, with the sheet's shared panel presence —
    `dom/taskPanelView.ts` reuses the panel node across repaints, so the entrance
    plays when the checklist appears and not once per streamed token. */
 #task-panel:empty { display: none; }
@@ -2547,7 +2547,6 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   border-radius: var(--radius-md);
   margin-bottom: var(--space-2);
   overflow: hidden;
-  animation: rise-in var(--motion-panel-in) var(--ease-standard);
 }
 /* The one-shot outline pulse the transcript's `TodoWrite` step points at,
    instead of drawing the checklist a second time inside the group (§7.3).
@@ -2683,6 +2682,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 #composer.request-open > #composer-bar,
 #composer.request-open > #composer-attachments { display: none; }
 #composer.request-changing { overflow: clip; }
+#composer.request-measuring { transition: none; }
 #composer-request.presence-closing {
   position: absolute;
   top: var(--space-3);
@@ -4390,7 +4390,6 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 .scroll-bottom,
 .group-head,
 .step-head,
-#composer,
 #composer-attach,
 #chip-permission,
 #chip-runtime,

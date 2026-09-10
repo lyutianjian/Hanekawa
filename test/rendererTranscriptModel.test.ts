@@ -7,6 +7,7 @@ import {
   formatTurnSummary,
   formatWorkedDuration,
   groupTranscript,
+  presentationTranscript,
   toolCallSummary,
   toolStatusLabel,
 } from '../src/desktop/renderer/model/transcript.js'
@@ -766,6 +767,20 @@ test('a live turn and a replay of its records produce the same group tree, field
     ['thinking', 'a2-thinking'],
   ])
   assert.equal(itemAt(live, 2).text, 'done')
+})
+
+test('stream commits keep presentation ids while canonical items still match replay', () => {
+  const before = fold(LIVE.slice(0, 7)).state
+  const after = fold(LIVE.slice(0, 8)).state
+  const presented = (state: TranscriptState) => presentationTranscript(state).items.map((item) => item.id)
+  assert.deepEqual(presented(after), presented(before))
+  assert.notDeepEqual(after.items.map((item) => item.id), before.items.map((item) => item.id))
+  const complete = fold(LIVE).state
+  const ids = presented(complete)
+  assert.equal(new Set(ids).size, ids.length, 'a later draft must not take the previous answer’s identity')
+  assert.ok((complete.presentationIds?.size ?? 0) <= complete.items.length)
+  const reset = applySessionEvent(complete, { type: 'transcript-reset', records: REPLAYED, systemMessages: [], bumpGeneration: true }).state
+  assert.equal(presentationTranscript(reset), reset, 'replay has no live aliases from the previous pane')
 })
 
 test('a tentative final answer is demoted to a step the moment a tool follows it (§4.6)', () => {

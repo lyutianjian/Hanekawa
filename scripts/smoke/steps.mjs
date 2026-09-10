@@ -387,7 +387,7 @@ async function step2(ctx) {
   await activate(ctx, a2)
   const back = await waitFor('the request to come back with the pane', async () => {
     const view = await read(ctx, probes.permissionRequest())
-    return view.open ? view : undefined
+    return view.open && view.settled ? view : undefined
   })
   ctx.ok('coming back restores the same request', back.subtitle.includes('smoke-write-target.txt'), back.subtitle)
 

@@ -1400,6 +1400,29 @@ test('loading folds the snapshot and the project list in', async () => {
   assert.equal(state.busy, false)
 })
 
+test('late settings replies preserve navigation and closing while ignoring a superseded project', async () => {
+  let current = openState()
+  const loading = loadSettings(fakeClient(), current, () => current)
+  current = { ...current, category: 'general', open: false }
+  const loaded = await loading
+  assert.equal(loaded.category, 'general')
+  assert.equal(loaded.open, false, 'a load must not reopen a screen closed during entrance')
+  assert.equal(loaded.snapshot?.projectName, 'alpha')
+
+  current = openState()
+  const saving = runSettingsChanges(fakeClient(), current,
+    pendingOf({ scope: 'provider', kind: 'set-default-model', key: 'broken' }), () => current)
+  current = { ...current, category: 'appearance', open: false }
+  const saved = await saving
+  assert.equal(saved.category, 'appearance')
+  assert.equal(saved.open, false)
+  assert.equal(saved.snapshot?.defaultModel, 'broken')
+
+  const previousProject = loadSettings(fakeClient(), current, () => current)
+  current = { ...current, projectRoot: 'C:\\repo\\beta' }
+  assert.equal(await previousProject, current, 'an old project response cannot take over the new page')
+})
+
 test('a failed load surfaces the message rather than throwing', async () => {
   const state = await loadSettings(
     fakeClient({

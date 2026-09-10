@@ -937,7 +937,7 @@ function runSettingsIntent(intent: SettingsIntent): void {
 }
 
 async function loadSettingsNow(): Promise<void> {
-  settingsState = await loadSettings(shellClient, settingsState)
+  settingsState = await loadSettings(shellClient, settingsState, () => settingsState)
   renderSettings()
 }
 
@@ -954,7 +954,7 @@ function changesCommandSet(changes: readonly SettingsChange[]): boolean {
 async function runSettingsChangesNow(batch: readonly PendingMutation[]): Promise<void> {
   const projectRoot = settingsState.projectRoot
   const changes = batch.map((entry) => entry.change)
-  settingsState = await runSettingsChanges(shellClient, settingsState, batch)
+  settingsState = await runSettingsChanges(shellClient, settingsState, batch, () => settingsState)
   renderSettings()
   // The host rebuilt the runtimes, but the composer's completion list is the
   // renderer's own cache, refreshed only after a slash command runs.

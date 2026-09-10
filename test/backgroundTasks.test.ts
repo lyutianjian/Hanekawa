@@ -36,7 +36,9 @@ test('background Bash returns immediately and BashOutput consumes incremental ou
     assert.equal(first.ok, true)
     assert.match(first.content, /first/)
 
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    // Output can arrive before the shell's exit event, especially under the
+    // full suite's process load on Windows. Wait for the state being asserted.
+    await waitFor(() => registry.getTask('session-1', taskId)?.status === 'completed')
     const second = await output.execute({ task_id: taskId, wait_ms: 1_000 }, context())
     assert.equal(second.ok, true)
     assert.match(second.content, /second/)

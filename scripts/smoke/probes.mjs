@@ -74,7 +74,7 @@ export const sidebar = () => `(() => {
       collapsed: group.classList.contains('collapsed'),
       label: (group.querySelector('.project-heading .btn-label') || {}).textContent || '',
       hasNew: group.querySelector('.project-new') !== null,
-      menu: group.querySelector('.project-menu') !== null,
+      menu: group.querySelector('.project-menu:not([hidden]):not([inert])') !== null,
       empty: group.querySelector('.project-empty') !== null,
       rows: group.querySelectorAll('.session-row').length,
     })),
@@ -372,7 +372,7 @@ export const canvasHeader = () => `(() => {
     hidden: header.hidden,
     title: pick('.canvas-title'),
     renaming: header.querySelector('.canvas-title-input') !== null,
-    menuItems: [...header.querySelectorAll('.canvas-menu-item')].map((node) => node.textContent),
+    menuItems: [...header.querySelectorAll('.canvas-menu:not([hidden]):not([inert]) .canvas-menu-item')].map((node) => node.textContent),
     openLocation: pick('.canvas-open-location'),
   }
 })()`
@@ -451,8 +451,8 @@ export const chipMenu = () => `(() => {
   const transcript = document.getElementById('transcript-area')
   const composer = document.getElementById('composer')
   const height = transcript ? Math.round(transcript.getBoundingClientRect().height) : 0
-  if (!menu) return { open: false, transcriptHeight: height }
-  const flyout = menu.querySelector('.chip-flyout')
+  if (!menu || menu.hidden || menu.hasAttribute('inert')) return { open: false, transcriptHeight: height }
+  const flyout = menu.querySelector('.chip-flyout:not([hidden]):not([inert])')
   const rect = menu.getBoundingClientRect()
   return {
     open: true,
@@ -503,7 +503,7 @@ export const settings = () => `(() => {
   const columnBox = column ? column.getBoundingClientRect() : null
   const canvasStyle = canvas ? getComputedStyle(canvas) : null
   return {
-    open: !container.hidden,
+    open: !container.hidden && !container.hasAttribute('inert'),
     canvasOpen: document.getElementById('canvas').classList.contains('settings-open'),
     // The screen covers the whole window, sidebar included: \`body\` carries the
     // class that takes the column out, and the hit test is the honest question —
@@ -623,7 +623,7 @@ export const theme = () => `(() => {
  */
 export const settingsMenu = () => `(() => {
   const menu = document.querySelector('#settings .settings-menu')
-  if (!menu) return { open: false }
+  if (!menu || menu.hidden || menu.hasAttribute('inert')) return { open: false }
   const items = [...menu.querySelectorAll('.settings-menu-item')]
   const last = items[items.length - 1]
   const card = menu.closest('.settings-card')
@@ -778,7 +778,7 @@ export const clickAttachmentThumb = () =>
  */
 export const attachmentPreview = () => `(() => {
   const panel = document.querySelector('.attachment-preview')
-  if (!panel) return { open: false }
+  if (!panel || panel.hidden || panel.hasAttribute('inert')) return { open: false }
   const image = panel.querySelector('.attachment-preview-image')
   return {
     open: true,

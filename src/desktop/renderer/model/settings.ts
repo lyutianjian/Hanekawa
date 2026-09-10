@@ -2656,11 +2656,14 @@ export interface SettingsClient {
 export async function loadSettings(
   client: SettingsClient,
   state: SettingsState,
+  current: () => SettingsState = () => state,
 ): Promise<SettingsState> {
   try {
     const result = await client.getSettings(state.projectRoot)
+    const latest = current()
+    if (latest.projectRoot !== state.projectRoot) return latest
     return {
-      ...state,
+      ...latest,
       busy: false,
       error: undefined,
       snapshot: result.settings,
@@ -2668,7 +2671,9 @@ export async function loadSettings(
       projectRoot: result.settings.projectRoot,
     }
   } catch (error) {
-    return { ...state, busy: false, error: messageOf(error) }
+    const latest = current()
+    if (latest.projectRoot !== state.projectRoot) return latest
+    return { ...latest, busy: false, error: messageOf(error) }
   }
 }
 
@@ -2684,6 +2689,7 @@ export async function runSettingsChanges(
   client: SettingsClient,
   state: SettingsState,
   batch: readonly PendingMutation[],
+  current: () => SettingsState = () => state,
 ): Promise<SettingsState> {
   const ids = new Set(batch.map((entry) => entry.id))
   // Retires this batch's optimistic rows whatever happens. On success the real
@@ -2699,15 +2705,23 @@ export async function runSettingsChanges(
     return { ...retire(state), busy: false, error: '还没有选定项目。' }
   }
   let next = state
+  const finish = (error?: string): SettingsState => {
+    const latest = current()
+    if (latest.projectRoot !== projectRoot) return latest
+    // Only the snapshot and this batch's pending entries belong to the reply.
+    // Navigation, menus, focus intent and closing may have changed meanwhile.
+    const retired = retire(latest)
+    return { ...retired, snapshot: next.snapshot, busy: retired.pending.length > 0, error }
+  }
   for (const { change } of batch) {
     try {
       const result = await client.changeSettings(projectRoot, change)
       next = { ...next, snapshot: result.settings, error: undefined }
     } catch (error) {
-      return { ...retire(next), busy: false, error: messageOf(error) }
+      return finish(messageOf(error))
     }
   }
-  return { ...retire(next), busy: false }
+  return finish()
 }
 
 function messageOf(error: unknown): string {

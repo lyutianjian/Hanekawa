@@ -12,6 +12,7 @@ import { writeFileTool } from '../src/tools/FileWriteTool/FileWriteTool.js'
 import { deleteFileTool } from '../src/tools/FileDeleteTool/FileDeleteTool.js'
 import { notebookEditTool } from '../src/tools/NotebookEditTool/NotebookEditTool.js'
 import { bashTool } from '../src/tools/BashTool/BashTool.js'
+import { readTextFile } from '../src/tools/textFile.js'
 
 function context(cwd: string, tracked: string[], onTrack?: () => void): ToolContext {
   return {
@@ -78,7 +79,9 @@ test('Bash reports its redirection target before the command runs', async () => 
     const result = await bashTool.execute({ command: 'echo beta > a.txt' }, ctx)
     assert.equal(result.ok, true, result.content)
     assert.deepEqual(tracked, [path.join(dir, 'a.txt')])
-    assert.equal((await readFile(path.join(dir, 'a.txt'), 'utf8')).trim(), 'beta')
+    // Windows PowerShell redirection writes UTF-16LE; inspect the text with the
+    // same encoding-aware reader as the file tools, independent of shell choice.
+    assert.equal((await readTextFile(path.join(dir, 'a.txt'))).content.trim(), 'beta')
   })
 })
 

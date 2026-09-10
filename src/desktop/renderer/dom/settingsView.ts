@@ -1,7 +1,7 @@
 import { el, reconcile, replace, show } from './dom.js'
 import { button, multiSelectField, pillSelect, selectField, textField, toggleField, updateToggleField, type ToggleOptions } from './controls.js'
 import { onPressOutside } from './dismiss.js'
-import { finishPresenceWithin } from './presence.js'
+import { createPresence, finishPresenceWithin } from './presence.js'
 import type {
   SettingsAnchor,
   SettingsButton,
@@ -138,6 +138,7 @@ export function createSettingsView(
   // hides — which left focus on `<body>` and made the close button's own promise,
   // 关闭设置（Esc）, false until the user happened to click something.
   container.tabIndex = -1
+  const presence = createPresence(container, { kind: 'panel' })
   let wasOpen = false
 
   // The kept nodes, and what a kept node's handler reads *now*. Both are pruned
@@ -227,17 +228,15 @@ export function createSettingsView(
 
   return {
     render(view: SettingsViewModel): void {
-      show(container, view.open)
+      presence.set(view.open)
       if (!view.open) {
         wasOpen = false
         return
       }
       // Only on the transition: focusing on every render would pull the caret out
       // of a form field mid-edit.
-      if (!wasOpen) {
-        wasOpen = true
-        container.focus()
-      }
+      const opening = !wasOpen
+      wasOpen = true
 
       // The only write-back, and conditional on purpose: `input` is synchronous,
       // so the model can only disagree with the box when something *other* than
@@ -323,7 +322,9 @@ export function createSettingsView(
 
       // Only now: everything above is built before it is inserted, and `focus()`
       // on a node outside the document does nothing at all.
+      container.classList.toggle('busy', view.busy)
       if (pendingFocus[0]) pendingFocus[0].focus()
+      else if (opening) container.focus()
       else if (
         focusWasInside
         && !(document.activeElement instanceof Node && container.contains(document.activeElement))
@@ -333,7 +334,6 @@ export function createSettingsView(
         // focuses too, and it is the node whose keydown answers Esc.
         container.focus()
       }
-      container.classList.toggle('busy', view.busy)
     },
   }
 }

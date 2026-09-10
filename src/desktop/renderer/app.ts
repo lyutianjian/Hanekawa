@@ -911,9 +911,11 @@ function leaveSettings(): void {
 }
 
 function runSettingsIntent(intent: SettingsIntent): void {
+  const wasOpen = settingsState.open
   const outcome = applySettingsIntent(settingsState, intent)
   settingsState = outcome.state
   renderSettings()
+  if (wasOpen && !settingsState.open) composer.focus()
   if (outcome.themePreference) {
     themePreference = outcome.themePreference
     localStorage.setItem(THEME_STORAGE_KEY, themePreference)

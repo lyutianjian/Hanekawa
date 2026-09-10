@@ -304,12 +304,17 @@ test("the exit-plan feedback field is not part of the row above it", (t) => {
   assert.deepEqual(dialog.picked, [])
 })
 
-test('hiding empties the panel, so a stale row cannot be clicked', (t) => {
+test('hiding immediately disables actions and empties the panel only after exit', (t) => {
   const dialog = overlay(t)
   dialog.view.permission(permissionFixture())
   const stale = dialog.buttons()[0]!.node
 
   dialog.view.hide()
+  assert.equal(dialog.stub.inspect(dialog.container).hidden, false)
+  assert.equal(dialog.stub.inspect(dialog.container).attributes.has('inert'), true)
+  assert.equal(dialog.panelView().classes.includes('presence-closing'), true)
+  assert.ok(dialog.panelView().children.length > 0)
+  dialog.stub.dispatch(dialog.panel, 'transitionend', { propertyName: 'opacity' })
   assert.equal(dialog.stub.inspect(dialog.container).hidden, true)
   assert.equal(dialog.panelView().children.length, 0)
   // The detached node keeps its listener — what matters is that nothing on
@@ -318,6 +323,23 @@ test('hiding empties the panel, so a stale row cannot be clicked', (t) => {
 })
 
 // --- the rewind panel --------------------------------------------------------
+
+test('modal content updates and reversals keep one lifecycle and its scrim', (t) => {
+  const dialog = overlay(t)
+  dialog.view.permission(permissionFixture())
+  dialog.stub.dispatch(dialog.panel, 'transitionend', { propertyName: 'opacity' })
+  dialog.view.permission(permissionFixture({ selectedIndex: 1 }))
+  assert.equal(dialog.panelView().classes.includes('presence-open'), true)
+  dialog.view.hide()
+  dialog.stub.dispatch(dialog.container, 'transitionend', { propertyName: 'opacity' })
+  assert.equal(dialog.stub.inspect(dialog.container).hidden, false, 'a scrim event cannot finish the panel')
+  dialog.view.permission(permissionFixture())
+  assert.equal(dialog.panelView().classes.includes('presence-entering'), true)
+  assert.equal(dialog.stub.inspect(dialog.container).attributes.has('inert'), false)
+  dialog.view.hide()
+  dialog.stub.dispatch(dialog.panel, 'transitionend', { propertyName: 'opacity' })
+  assert.equal(dialog.panelView().children.length, 0)
+})
 
 test('the rewind panel ends with the same bar, and its decisions are its buttons', (t) => {
   const stub = installDomStub()
@@ -445,6 +467,8 @@ test('an empty completion state leaves nothing to click', (t) => {
 
   view.render(commandState())
   view.render({ kind: 'none', seq: 2 })
+  assert.equal(stub.inspect(container).attributes.has('inert'), true)
+  stub.dispatch(container, 'transitionend', { propertyName: 'opacity' })
   assert.equal(stub.inspect(container).hidden, true)
   assert.equal(stub.inspect(container).children.length, 0)
   assert.deepEqual(picked, [])
@@ -564,7 +588,7 @@ test('the scrims are positioned against the canvas and stack above every popover
     assert.equal(decl(id, 'inset'), '0', `${id} does not fill the canvas`)
   }
   const fixed = blocks.filter((block) => block.decls.some((d) => d.prop === 'position' && d.value === 'fixed'))
-  assert.deepEqual(fixed.map((block) => block.selector), [], 'nothing in the sheet is viewport-positioned')
+  assert.deepEqual(fixed.map((block) => block.selector), ['#settings'], 'only the window-wide settings page uses the viewport')
 
   // The ordering is these numbers now: before S6 the two scrims won by being
   // last in the body, and every popover in the app sits at 5–6.

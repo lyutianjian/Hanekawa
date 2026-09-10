@@ -3684,6 +3684,12 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 }
 
 #settings {
+  /* Fixed to the same work area on entry and exit, even when the sidebar
+     becomes available again. The title bar above is 40px. */
+  position: fixed;
+  inset: 40px 0 0;
+  z-index: 8;
+  background: var(--surface-canvas);
   display: flex;
   flex: 1 1 auto;
   /* Load-bearing, and nothing tests it: without it a flex child refuses to
@@ -4496,29 +4502,6 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 @keyframes rise-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
 @keyframes slide-in { from { opacity: 0; transform: translateX(8px) scale(0.98); } }
 
-#settings:not([hidden]) { animation: rise-in var(--motion-base) var(--ease-standard); }
-#overlay:not([hidden]),
-#rewind:not([hidden]) { animation: fade-in var(--motion-fast) var(--ease-standard); }
-#surface:not([hidden]),
-#suggestions:not([hidden]),
-#queue:not([hidden]) { animation: rise-in var(--motion-base) var(--ease-standard); }
-.titlebar-menu,
-.canvas-menu:not([hidden]),
-.settings-menu { animation: drop-in var(--motion-base) var(--ease-standard); }
-/* Gated on `[hidden]` like the panels above rather than on the node existing:
-   `dom/sidebarView.ts` keeps one menu per workspace across repaints — the rail
-   repaints per streamed token, and a menu re-inserted on each of those replayed
-   this entrance until the user closed it. */
-.project-menu:not([hidden]) { animation: drop-in var(--motion-base) var(--ease-standard); }
-.composer-menu,
-.chip-menu { animation: rise-in var(--motion-base) var(--ease-standard); }
-/* The branch switcher opens *upward* out of its pill, so it arrives from below
-   like the composer's menus do. Safe as an entrance because the panel is only
-   ever shown or hidden — `dom/welcomeView.ts` keeps the anchor and the panel
-   itself across repaints, so this plays on open rather than on every paint. */
-.branch-picker:not([hidden]) { animation: rise-in var(--motion-base) var(--ease-standard); }
-.chip-flyout { animation: slide-in var(--motion-base) var(--ease-standard); }
-
 /* The one nested at-rule this sheet is allowed (`rendererStyleTokens` names it
    explicitly). Not zero: a `0s` transition never fires `transitionend`, and
    `1ms` keeps every listener's contract while being imperceptible. The universal
@@ -4539,6 +4522,28 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 .presence.presence-drop { --presence-y: -8px; transform-origin: top; }
 .presence.presence-slide { --presence-x: -8px; --presence-y: 0px; transform-origin: left; }
 .presence.presence-none { --presence-y: 0px; --presence-scale: 1; }
+.presence[data-presence="panel"] { --presence-scale: 1; }
+
+/* The modal panel owns settlement; the scrim is a separate, shorter track. */
+#overlay.modal-layer,
+#rewind.modal-layer { animation: none; background: transparent; }
+.modal-layer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--surface-scrim);
+  opacity: 1;
+  pointer-events: none;
+  transition: opacity var(--motion-fast) var(--ease-standard);
+}
+.modal-layer > .presence { position: relative; }
+.modal-layer.presence-closed::before,
+.modal-layer.presence-closing::before { opacity: 0; }
+.modal-layer.presence-closing::before {
+  transition-timing-function: var(--ease-exit);
+  transition-delay: calc(var(--motion-base) - var(--motion-fast));
+}
+.modal-layer[inert] { pointer-events: none; }
 .presence.presence-closed,
 .presence.presence-closing {
   opacity: 0;

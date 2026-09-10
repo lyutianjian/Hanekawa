@@ -609,10 +609,16 @@ test('a press on the page closes an open pill; nothing open costs nothing', (t) 
   assert.deepEqual(intents, [{ kind: 'close-menu' }])
 })
 
-test('a closed screen is hidden and draws nothing', (t) => {
-  const { view, render } = mount(t)
+test('a closing settings page is inert and can reverse before it is hidden', (t) => {
+  const { view, render, stub, container } = mount(t)
   render(stateOf({ open: false }))
-
+  assert.equal(view().hidden, false)
+  assert.equal(view().attributes.has('inert'), true)
+  assert.equal(view().classes.includes('presence-closing'), true)
+  render(stateOf({ open: true }))
+  assert.equal(view().classes.includes('presence-entering'), true)
+  render(stateOf({ open: false }))
+  stub.dispatch(container, 'transitionend', { propertyName: 'opacity' })
   assert.equal(view().hidden, true)
 })
 

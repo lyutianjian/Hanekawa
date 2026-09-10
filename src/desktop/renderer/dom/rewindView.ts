@@ -1,6 +1,7 @@
 import { rewindActionToIntent } from '../model/rewindPanel.js'
 import type { RewindIntent, RewindViewModel } from '../model/rewindPanel.js'
-import { el, replace, show } from './dom.js'
+import { el, replace } from './dom.js'
+import { createModalPresence } from './presence.js'
 import { actionBar } from './overlayView.js'
 
 /**
@@ -32,6 +33,7 @@ export function createRewindView(
   panel: HTMLElement,
   onIntent: RewindActivate,
 ): RewindPanel {
+  const presence = createModalPresence(container, panel, () => replace(panel))
   let open = false
   /** Mid-decision: files are being reverted or a summary generated. */
   let busy = false
@@ -71,15 +73,15 @@ export function createRewindView(
           view.options.findIndex((option) => option.selected),
         ),
       )
-      show(container, true)
+      presence.set(true)
       open = true
     },
 
     hide() {
-      show(container, false)
-      replace(panel)
+      // Execution/close intent is already handled; the exit owns only pixels.
       open = false
       busy = false
+      presence.set(false)
     },
 
     isOpen() {

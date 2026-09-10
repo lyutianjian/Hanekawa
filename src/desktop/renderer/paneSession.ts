@@ -928,10 +928,12 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     const resolve = resolvers.get(requestId)
     resolvers.delete(requestId)
     queue = removeUiRequest(queue, requestId)
+    // Reply before visual exit work. hasOverlay reads this queue, never the
+    // closing panel, so the shell is unblocked even while pixels remain.
+    resolve?.(response)
     prepareActive()
     renderOverlay()
     deps.onShellChanged?.()
-    resolve?.(response)
   }
 
   /** Resets the focused dialog's cursor state whenever the active request changes. */

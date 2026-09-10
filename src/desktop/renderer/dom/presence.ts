@@ -92,3 +92,34 @@ export function finishPresenceWithin(root: ParentNode): void {
   if (root instanceof HTMLElement) controllers.get(root)?.finish()
   for (const node of root.querySelectorAll<HTMLElement>('[data-presence]')) controllers.get(node)?.finish()
 }
+
+/** One lifecycle, two visual tracks. The scrim stays mounted until the panel
+ * settles; its shorter fade ends with the panel's exit. Business settlement is
+ * the caller's immediate intent, never this controller's onClosed callback. */
+export function createModalPresence(container: HTMLElement, panel: HTMLElement, onClosed: () => void): Presence {
+  container.classList.add('modal-layer')
+  let previous: Phase = 'closed'
+  const presence = createPresence(panel, {
+    kind: 'panel',
+    onClosed,
+    onPhase(phase) {
+      container.classList.remove(phaseClass(previous))
+      container.classList.add(phaseClass(phase))
+      previous = phase
+      container.hidden = !isMounted(phase)
+      const interactive = phase === 'entering' || phase === 'open'
+      container.setAttribute('aria-hidden', String(!interactive))
+      if (interactive) container.removeAttribute('inert')
+      else container.setAttribute('inert', '')
+    },
+  })
+  return {
+    get phase() { return presence.phase },
+    set(open, immediate) {
+      if (open) container.hidden = false
+      presence.set(open, immediate)
+    },
+    finish: () => presence.finish(),
+    dispose: () => presence.dispose(),
+  }
+}

@@ -4,7 +4,8 @@ import type { EnterPlanViewModel, ExitPlanViewModel } from '../model/planDialogs
 import type { PermissionViewModel } from '../model/permissionDialog.js'
 import { button } from './controls.js'
 import { previewNode } from './diffView.js'
-import { el, replace, show } from './dom.js'
+import { el, replace } from './dom.js'
+import { createModalPresence } from './presence.js'
 import { markdownNode } from './markdownView.js'
 
 /**
@@ -40,13 +41,15 @@ export function createOverlayView(
   panel: HTMLElement,
   onSelect: OverlaySelect,
 ): OverlayView {
+  const presence = createModalPresence(container, panel, () => replace(panel))
   const optionList = (rows: OptionRow[]) => optionListNode(rows, onSelect)
   const actions = (list: readonly DialogAction[], selectedIndex?: number) =>
     actionBar(list, onSelect, selectedIndex)
   const open = (tone: 'danger' | 'caution' | 'normal', ...children: Array<Node | string | false>) => {
-    panel.className = `tone-${tone}`
+    panel.classList.remove('tone-danger', 'tone-caution', 'tone-normal')
+    panel.classList.add(`tone-${tone}`)
     replace(panel, ...children)
-    show(container, true)
+    presence.set(true)
   }
 
   return {
@@ -134,8 +137,9 @@ export function createOverlayView(
     },
 
     hide() {
-      show(container, false)
-      replace(panel)
+      // The request queue and bridge have already settled in the caller.
+      // Closing is a non-interactive visual, never a blocking request.
+      presence.set(false)
     },
   }
 }

@@ -164,6 +164,7 @@ export function createTranscriptView(
 
   const cache = new Map<string, CachedNode>()
   const refs = new Map<string, DisclosureRef>()
+  let generation: number | undefined
 
   // The live status's clock. The span is kept rather than looked up: its carrier
   // — the running group's head, or the standalone row — is a node reused by key
@@ -283,6 +284,13 @@ export function createTranscriptView(
   return {
     stopClock,
     render(state, disclosure, activity) {
+      if (generation !== state.generation) {
+        cache.clear()
+        refs.clear()
+        clockNode = undefined
+        anchorId = undefined
+        generation = state.generation
+      }
       const atBottom = isScrolledToBottom(container)
       const entries = groupTranscript(state.items)
       const live = turnActivity(entries, activity ?? IDLE)
@@ -404,6 +412,8 @@ interface CachedNode {
   readonly node: HTMLElement
   /** What the node was last painted from; compared by identity, member by member. */
   signature: readonly unknown[]
+  /** Keys registered inside this fill; a cache hit keeps the entire subtree alive. */
+  readonly children: readonly string[]
 }
 
 /**
@@ -463,6 +473,12 @@ function createPainter(
   paint: LivePaint,
 ): Painter {
   const live = new Set<string>()
+  const filling: string[][] = []
+  function keep(key: string): void {
+    if (live.has(key)) return
+    live.add(key)
+    for (const child of cache.get(key)?.children ?? []) keep(child)
+  }
   return {
     disclosure,
     liveGroupId: paint.liveGroupId,
@@ -474,18 +490,26 @@ function createPainter(
     onOpenImage: handlers.onOpenImage,
     onCopy: handlers.onCopy,
     node(key, className, signature, fill, create) {
-      live.add(key)
+      filling.at(-1)?.push(key)
       const cached = cache.get(key)
       if (cached && cached.node.className === className && sameSignature(cached.signature, signature)) {
+        keep(key)
         return cached.node
       }
+      live.add(key)
       // Reused even when the content changed: it is the node the scroll anchor
       // points at, so it is refilled rather than replaced — and refilled through
       // `reconcile`, so the children it hands back keep *their* place too.
       const node = cached?.node ?? create?.() ?? el('div', className)
       node.className = className
-      reconcile(node, fill(node))
-      cache.set(key, { node, signature })
+      const children: string[] = []
+      filling.push(children)
+      try {
+        reconcile(node, fill(node))
+      } finally {
+        filling.pop()
+      }
+      cache.set(key, { node, signature, children })
       return node
     },
     ref(key, expanded) {

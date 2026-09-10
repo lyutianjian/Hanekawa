@@ -53,7 +53,7 @@ test('M03 keeps the activity group mounted between short tools', (t) => {
 })
 
 // M04: an unchanged parent paint must keep its nested head cache alive.
-test('M04 keeps the thinking head through an unchanged streaming snapshot', { skip: true }, (t) => {
+test('M04 keeps the thinking head through an unchanged streaming snapshot', (t) => {
   const view = mount(t)
   const identity = trackIdentity(view.column, '.thinking-step-head')
   const starts = trackAnimationStarts(view.column, '.step-rule', view.stub.observeMotion)
@@ -67,6 +67,14 @@ test('M04 keeps the thinking head through an unchanged streaming snapshot', { sk
     assert.equal(identity.sample(), head)
   }
   assert.equal(starts.starts, 0)
+  const items: TranscriptItem[] = [{ id: 'th', kind: 'thinking', text: 'ABC', turnId: 't1', pending: true }]
+  view.render(transcript(items), new Map([['th', false]]), RUNNING_T1)
+  view.stub.click(identity.sample() as HTMLElement)
+  assert.deepEqual(view.toggled, [['th', false]], 'the surviving head reads the current ref')
+  view.render(transcript(items, { generation: 1 }), NO_DISCLOSURE, RUNNING_T1)
+  assert.notEqual(identity.sample(), head, 'a reset with reused ids clears the nested cache')
+  view.stub.click(identity.sample() as HTMLElement)
+  assert.deepEqual(view.toggled.at(-1), ['th', true], 'reset does not inherit the previous disclosure ref')
 })
 
 function transcript(items: readonly TranscriptItem[] = [], overrides: Partial<TranscriptState> = {}): TranscriptState {

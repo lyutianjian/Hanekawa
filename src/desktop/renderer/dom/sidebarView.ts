@@ -19,7 +19,8 @@ import {
   MARQUEE_SHIFT_VARIABLE,
   marqueeMotion,
 } from '../model/marquee.js'
-import { el, replace, show } from './dom.js'
+import { el, reconcile, replace, show } from './dom.js'
+import { createPresence, type Presence } from './presence.js'
 import { button, textField } from './controls.js'
 import { onPressOutside } from './dismiss.js'
 import { icon } from './icons.js'
@@ -221,6 +222,7 @@ export function createSidebarView(
      * already relies on.
      */
     readonly menu: HTMLElement
+    readonly menuPresence: Presence
     /** The open state the menu was last drawn in, so its item is built once. */
     menuShown: boolean
     /** The animated track. `rows` is its single, shrinkable child. */
@@ -284,6 +286,7 @@ export function createSidebarView(
       wrapper,
       head,
       menu,
+      menuPresence: createPresence(menu, { direction: 'drop', onClosed: () => replace(menu) }),
       menuShown: false,
       body,
       rows,
@@ -594,18 +597,11 @@ export function createSidebarView(
     // `group.projectRoot`, which is this entry's key and cannot drift.
     if (group.menuOpen !== entry.menuShown) {
       entry.menuShown = group.menuOpen
-      replace(
-        entry.menu,
-        group.menuOpen
-          ? button('project-menu-item', '移除项目并删除历史', '从侧边栏移除此项目，并删除它的全部会话记录', () =>
-              onIntent({ kind: 'request-remove-project', projectRoot: group.projectRoot }),
-            )
-          : undefined,
-      )
-      // Hidden rather than unmounted, so the node survives to animate once. An
-      // empty shut menu also has nothing Tab can reach, which is the reason the
-      // unmount existed.
-      show(entry.menu, group.menuOpen)
+      if (group.menuOpen && !entry.menu.firstElementChild) {
+        entry.menu.appendChild(button('project-menu-item', '移除项目并删除历史', '从侧边栏移除此项目，并删除它的全部会话记录', () =>
+          onIntent({ kind: 'request-remove-project', projectRoot: group.projectRoot })))
+      }
+      entry.menuPresence.set(group.menuOpen)
     }
 
     // The class the fold transitions on, toggled on the surviving wrapper.
@@ -730,9 +726,9 @@ export function createSidebarView(
       // the groups below build, and a row that is no longer drawn takes its
       // closure — and the detached node it holds — with it.
       measures = new Map()
-      replace(
+      reconcile(
         list,
-        ...(view.isEmpty
+        view.isEmpty
           ? [
               el(
                 'div',
@@ -746,7 +742,7 @@ export function createSidebarView(
             ? [el('div', 'sidebar-empty', SIDEBAR_NO_MATCHES_TEXT)]
             : view.groups.map((group) =>
                 groupNode(group, indexOf, view.selectedIndex, view.canCreate),
-              )),
+              ),
       )
 
       // Workspaces that are no longer listed. Their nodes are detached by the
@@ -757,6 +753,7 @@ export function createSidebarView(
       for (const [projectRoot, entry] of groupNodes) {
         if (listed.has(projectRoot)) continue
         if (entry.timer !== undefined) clearTimeout(entry.timer)
+        entry.menuPresence.dispose()
         groupNodes.delete(projectRoot)
       }
 

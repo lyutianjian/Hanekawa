@@ -10,7 +10,8 @@ import {
 } from '../model/titleBar.js'
 import { button } from './controls.js'
 import { onPressOutside } from './dismiss.js'
-import { el, replace } from './dom.js'
+import { el, reconcile } from './dom.js'
+import { createPresence } from './presence.js'
 
 /**
  * The frameless window's own title bar (5g).
@@ -86,42 +87,44 @@ export function createTitleBarView(
     return node
   }
 
-  const menuNode = (menu: TitleBarMenu, view: TitleBarView): HTMLElement => {
+  const menus = TITLE_BAR_MENUS.map((menu: TitleBarMenu) => {
     const shell = el('div', 'titlebar-menu-shell')
-    shell.appendChild(
-      button(
-        `titlebar-menu-trigger${view.openMenu === menu.id ? ' open' : ''}`,
-        menu.label,
-        menu.label,
-        () => onOpenMenu(toggleMenu(view.openMenu, menu.id)),
-      ),
-    )
-    if (view.openMenu !== menu.id) return shell
+    const trigger = button('titlebar-menu-trigger', menu.label, menu.label,
+      () => onOpenMenu(toggleMenu(openMenu, menu.id)))
+    trigger.setAttribute('aria-haspopup', 'menu')
     const list = el('div', 'titlebar-menu')
     list.setAttribute('role', 'menu')
-    for (const item of menu.items) list.appendChild(itemNode(item, view))
-    shell.appendChild(list)
-    return shell
-  }
+    const presence = createPresence(list, { direction: 'drop' })
+    reconcile(shell, [trigger, list])
+    return { menu, shell, trigger, list, presence, items: [] as HTMLElement[] }
+  })
+  const rail = button('titlebar-rail', '', '', () => onAction('toggle-sidebar'), { icon: 'sidebar' })
+  reconcile(container, [rail, ...menus.map((entry) => entry.shell)])
 
   return {
     render(view) {
       const signature = titleBarRenderSignature(view)
       if (signature === drawn) return
       drawn = signature
+      const previous = openMenu
       openMenu = view.openMenu
-
-      replace(
-        container,
-        button(
-          'titlebar-rail',
-          '',
-          view.sidebarCollapsed ? '展开侧栏（Ctrl+B）' : '收起侧栏（Ctrl+B）',
-          () => onAction('toggle-sidebar'),
-          { icon: 'sidebar' },
-        ),
-        ...TITLE_BAR_MENUS.map((menu) => menuNode(menu, view)),
-      )
+      rail.title = view.sidebarCollapsed ? '展开侧栏（Ctrl+B）' : '收起侧栏（Ctrl+B）'
+      rail.setAttribute('aria-label', rail.title)
+      let focus: HTMLElement | undefined
+      for (const entry of menus) {
+        const open = openMenu === entry.menu.id
+        if (open && entry.items.length === 0) {
+          entry.items = entry.menu.items.map((item) => itemNode(item, view))
+          reconcile(entry.list, entry.items)
+        }
+        entry.items.forEach((node, index) => { (node as HTMLButtonElement).disabled = !itemEnabled(entry.menu.items[index]!, view) })
+        entry.trigger.classList.toggle('open', open)
+        entry.trigger.setAttribute('aria-expanded', String(open))
+        if (!open && entry.list.contains(document.activeElement)) focus = entry.trigger
+        entry.presence.set(open)
+        if (open && previous !== openMenu) focus = entry.items.find((node) => !(node as HTMLButtonElement).disabled)
+      }
+      focus?.focus()
     },
   }
 }

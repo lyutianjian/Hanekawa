@@ -209,6 +209,28 @@ class StubElement {
     return this.className.split(/\s+/).filter(Boolean)
   }
 
+  get firstElementChild(): StubElement | null {
+    return this.childNodes.find((child): child is StubElement => child instanceof StubElement) ?? null
+  }
+
+  /** The small selector surface used by lifecycle cleanup and kept controls. */
+  querySelectorAll(selector: string): StubElement[] {
+    const parts = selector.split(',').map((part) => part.trim())
+    for (const part of parts) {
+      if (!/^(?:[.#][\w-]+|\[[\w-]+\]|[a-z][\w-]*)$/i.test(part)) throw new Error(`Unsupported stub selector: ${part}`)
+    }
+    const matches = (node: StubElement) => parts.some((part) => part.startsWith('.')
+      ? node.classes.includes(part.slice(1)) : part.startsWith('#')
+        ? node.getAttribute('id') === part.slice(1) : part.startsWith('[')
+          ? node.attributes.has(part.slice(1, -1)) : node.tagName.toLowerCase() === part.toLowerCase())
+    const descendants = this.childNodes.filter((child): child is StubElement => child instanceof StubElement)
+    return descendants.flatMap((child) => [...(matches(child) ? [child] : []), ...child.querySelectorAll(selector)])
+  }
+
+  querySelector(selector: string): StubElement | null {
+    return this.querySelectorAll(selector)[0] ?? null
+  }
+
   /**
    * A real accessor pair, not a property: `selectField` writes it (expecting the
    * children to be replaced by one text node) and the tests read it (expecting
@@ -483,6 +505,7 @@ function viewOf(element: StubElement): StubView {
 }
 
 export function installDomStub(): DomStub {
+  const roots: StubElement[] = []
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const media = new Map<string, {
     media: string
@@ -548,6 +571,9 @@ export function installDomStub(): DomStub {
     getElementById(id: string): StubElement | null {
       return ID_REGISTRY.get(id) ?? null
     },
+    querySelectorAll(selector: string): StubElement[] {
+      return roots.flatMap((root) => root.querySelectorAll(selector))
+    },
     // Present because the source scan counts a mention in a comment too, and
     // `controls.ts` explains there why it reads `event.target` *instead* of this.
     // Cheap to answer honestly, and it keeps the guard from needing an exception.
@@ -565,6 +591,7 @@ export function installDomStub(): DomStub {
   // The same binding: every node this stub builds is a `StubElement`, and the
   // distinction the browser draws between the two is not one any view reads.
   Reflect.set(globalThis, 'Element', StubElement)
+  Reflect.set(globalThis, 'HTMLElement', StubElement)
 
   return {
     observeMotion(listener) {
@@ -579,6 +606,7 @@ export function installDomStub(): DomStub {
     },
     createContainer(className?: string): HTMLElement {
       const element = new StubElement('DIV', undefined)
+      roots.push(element)
       if (className) element.className = className
       // The one cast in this file, and the reason the source-scan guard exists:
       // the stub deliberately does not claim to *be* an `HTMLElement`, so the
@@ -631,6 +659,7 @@ export function installDomStub(): DomStub {
       Reflect.deleteProperty(globalThis, 'document')
       Reflect.deleteProperty(globalThis, 'Node')
       Reflect.deleteProperty(globalThis, 'Element')
+      Reflect.deleteProperty(globalThis, 'HTMLElement')
     },
   }
 }

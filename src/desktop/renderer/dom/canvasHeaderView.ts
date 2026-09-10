@@ -4,6 +4,7 @@ import { append, el, reconcile, show } from './dom.js'
 import { button } from './controls.js'
 import { onPressOutside } from './dismiss.js'
 import { icon } from './icons.js'
+import { createPresence } from './presence.js'
 
 /**
  * The canvas header bar: session identity on the left, "open in editor" on the
@@ -61,6 +62,7 @@ export function createCanvasHeaderView(
   menu.setAttribute('role', 'menu')
   menu.setAttribute('aria-label', '会话操作')
   menu.hidden = true
+  const menuPresence = createPresence(menu, { direction: 'drop' })
   const menuShell = el('div', 'canvas-menu-shell', trigger, menu)
   const menuItems = new Map<CanvasHeaderMenuItem['id'], { node: HTMLButtonElement; label: HTMLElement }>()
   const locationLabel = el('span', 'btn-label')
@@ -144,7 +146,7 @@ export function createCanvasHeaderView(
         // session to name, and a stale title would be the last one it had.
         reconcile(identity, [])
         reconcile(rightControls, [])
-        show(menu, false)
+        menuPresence.set(false, true)
         seededTitle = undefined
         menuWasOpen = false
         firstMenuItem = undefined
@@ -153,7 +155,8 @@ export function createCanvasHeaderView(
 
       trigger.setAttribute('aria-expanded', view.menuOpen ? 'true' : 'false')
       if (view.menuOpen) updateMenu(view.menuItems)
-      show(menu, view.menuOpen)
+      const returnFocus = !view.menuOpen && menu.contains(document.activeElement)
+      menuPresence.set(view.menuOpen)
       if (title.textContent !== view.title) title.textContent = view.title
       reconcile(identity, [folder, view.renaming ? titleInput : title, menuShell])
 
@@ -191,6 +194,7 @@ export function createCanvasHeaderView(
       menuWasOpen = view.menuOpen
       if (opening) firstMenuItem?.focus()
       else if (startingRename) titleInput.focus()
+      else if (returnFocus) trigger.focus()
     },
   }
 

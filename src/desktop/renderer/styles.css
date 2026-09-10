@@ -154,6 +154,9 @@
   --motion-fast: 140ms;
   --motion-base: 220ms;
   --motion-slow: 320ms;
+  --presence-x: 0px;
+  --presence-y: 8px;
+  --presence-scale: 0.98;
   --ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
   /* The one curve that is allowed to leave slowly and land hard: it exists for
      the states that animate *out* under a state machine (the sidebar's collapse
@@ -4535,6 +4538,31 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
    selector is deliberate — it has to reach the `infinite` animations (`spin`,
    `breathe`, `blink`, `sheen`, `halo` and `sweep`) as well as everything declared
    above. */
+/* Presence owns the original drop/rise/slide paths. Transitions, rather than
+   restarting keyframes, let a reversing intent continue from the current pixels. */
+.presence[data-presence] {
+  --presence-x: 0px;
+  --presence-y: 8px;
+  --presence-scale: 0.98;
+  animation: none;
+  opacity: 1;
+  transform: none;
+  transition: opacity var(--motion-base) var(--ease-standard), transform var(--motion-base) var(--ease-standard);
+}
+.presence.presence-drop { --presence-y: -8px; transform-origin: top; }
+.presence.presence-slide { --presence-x: -8px; --presence-y: 0px; transform-origin: left; }
+.presence.presence-none { --presence-y: 0px; --presence-scale: 1; }
+.presence.presence-closed,
+.presence.presence-closing {
+  opacity: 0;
+  transform: translate(var(--presence-x), var(--presence-y)) scale(var(--presence-scale));
+  pointer-events: none;
+}
+.presence[data-presence].presence-closing {
+  transition-duration: var(--motion-fast);
+  transition-timing-function: var(--ease-exit);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 1ms !important;

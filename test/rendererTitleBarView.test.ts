@@ -69,7 +69,7 @@ const shells = (root: StubView): readonly StubView[] =>
 const openList = (root: StubView): StubView | undefined =>
   shells(root)
     .flatMap((shell) => shell.children)
-    .find((child) => child.classes.includes('titlebar-menu'))
+    .find((child) => child.classes.includes('titlebar-menu') && !child.hidden && !child.classes.includes('presence-closing'))
 
 test('the bar is the rail toggle and the three Chinese menus, in that order', (t) => {
   const { render, root, stub, actions } = mount(t)

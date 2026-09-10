@@ -46,6 +46,7 @@ import type { SurfacePanel } from './dom/surfaceView.js'
 import type { QueueDom } from './dom/queueView.js'
 import type { TaskPanelDom } from './dom/taskPanelView.js'
 import { append, el, show } from './dom/dom.js'
+import { finishPresenceWithin } from './dom/presence.js'
 import { createRepaint } from './frame.js'
 import { createTranscriptView, type TranscriptView } from './dom/transcriptView.js'
 import { createWelcomeView } from './dom/welcomeView.js'
@@ -1648,6 +1649,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // The composer is a singleton the active pane drives, so an open permission
     // menu would hang over the next pane and act on *its* runtime.
     deps.composer.closeMenus()
+    // Singleton surfaces must finish their exits before the next pane paints.
+    finishPresenceWithin(document)
     // Ditto the attachment strip: this pane's drafts must not ride the next
     // pane's send. `activate()` repaints from this pane's own state.
     deps.composer.renderAttachments(

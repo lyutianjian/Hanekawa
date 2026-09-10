@@ -10,6 +10,7 @@ import { el, reconcile, replace, show } from './dom.js'
 import { button } from './controls.js'
 import { onPressOutside } from './dismiss.js'
 import { icon } from './icons.js'
+import { finishPresenceWithin } from './presence.js'
 
 /**
  * The empty-state screen as DOM.
@@ -155,8 +156,9 @@ export function createWelcomeView(
         replace(eyebrow)
         replace(hints)
         constantsBuilt = false
-        replace(pills)
         branchPicker.render(view.branchPicker)
+        finishPresenceWithin(branchAnchor)
+        replace(pills)
         return
       }
       if (!mounted) {

@@ -3019,10 +3019,8 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 }
 .context-gauge.warn { color: var(--text-warn); }
 .context-gauge.critical { color: var(--text-danger); }
-/* The indicator's own card. It is not focusable and owns no action, so hover is
-   its only trigger; the parent's accessible name carries the same figures for
-   assistive technology. `pointer-events: none` keeps the card from becoming a
-   second hover target that could flicker as it appears. */
+/* Hover and keyboard focus share the presence lifecycle, including Escape.
+   The parent's accessible name carries the same figures. */
 .context-tooltip {
   position: absolute;
   right: 0;
@@ -3041,17 +3039,6 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   text-align: left;
   white-space: nowrap;
   pointer-events: none;
-  visibility: hidden;
-  opacity: 0;
-  transform: translateY(4px) scale(0.98);
-  transition: opacity var(--motion-fast) var(--ease-standard),
-    transform var(--motion-fast) var(--ease-standard),
-    visibility var(--motion-fast) var(--ease-standard);
-}
-#composer-context:hover .context-tooltip {
-  visibility: visible;
-  opacity: 1;
-  transform: translateY(0) scale(1);
 }
 .context-tooltip-header {
   display: flex;

@@ -1217,15 +1217,12 @@ test('the context indicator draws its own rounded hover card with measured typog
     ['border-radius', 'var(--radius-md)'],
     ['box-shadow', 'var(--shadow-float)'],
     ['pointer-events', 'none'],
-    ['visibility', 'hidden'],
-    ['opacity', '0'],
   ] as const) {
     assert.ok(declares(tooltip, prop, value), `the hover card declares ${prop}: ${value}`)
   }
 
-  const visible = blockFor('#composer-context:hover .context-tooltip')
-  assert.ok(declares(visible, 'visibility', 'visible'), 'hover reveals the card')
-  assert.ok(declares(visible, 'opacity', '1'), 'the reveal is animated, not an inaccessible pop')
+  assert.ok(declares(blockFor('.presence[data-presence]'), 'opacity', '1'), 'presence owns the reveal')
+  assert.equal(css.includes('#composer-context:hover .context-tooltip'), false, 'hover cannot override Escape dismissal')
 
   const value = blockFor('.context-tooltip-value')
   assert.ok(

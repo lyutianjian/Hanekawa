@@ -1,4 +1,5 @@
-import { el } from './dom.js'
+import { el, reconcile } from './dom.js'
+import { createPresence } from './presence.js'
 import { icon, type IconName } from './icons.js'
 
 /**
@@ -167,8 +168,8 @@ export function selectField(options: {
  * screen-reader-complete for free and a form is a keyboard flow. Everything this
  * one has to re-implement by hand is below.
  *
- * Open/closed is not held here: it lives in `SettingsState.openMenu`, so a
- * re-render (which rebuilds this whole subtree) reproduces it rather than losing it.
+ * Open intent lives in `SettingsState.openMenu`; each retained shell owns its
+ * visual phase and keeps the focused option across data refreshes.
  */
 /**
  * `pillSelect` for a *set*: every option is checkable and a click does not close.
@@ -178,57 +179,97 @@ export function selectField(options: {
  * this too — with `openMenu` and the screen's Escape handler that is all three
  * dismissal routes, none of them written twice.
  */
+interface MenuFieldOptions {
+  summary: string
+  ariaLabel: string
+  choices: ReadonlyArray<{ value: string; label: string }>
+  selected: readonly string[]
+  open: boolean
+  multiple: boolean
+  enabled?: boolean
+  onFirstItem?: (item: HTMLButtonElement) => void
+  onCloseFocus?: (item: HTMLButtonElement) => void
+  onToggle: () => void
+  onSelect: (value: string) => void
+}
+
+// The cache belongs to each kept shell, never to a setting name across screens.
+const menuFields = new WeakMap<HTMLElement, (options: MenuFieldOptions) => void>()
+
+function menuField(options: MenuFieldOptions, owner?: HTMLElement): HTMLElement {
+  const shell = owner ?? el('div', 'settings-menu-shell')
+  let update = menuFields.get(shell)
+  if (!update) {
+    let current = options
+    const label = el('span', 'btn-label')
+    const trigger = button('settings-pill', '', '', () => current.onToggle(), { trailingIcon: 'chevron-down' })
+    trigger.insertBefore(label, trigger.firstChild)
+    trigger.setAttribute('aria-haspopup', 'listbox')
+    const menu = el('div', 'settings-menu')
+    menu.setAttribute('role', 'listbox')
+    const presence = createPresence(menu, { direction: 'drop' })
+    const kept = new Map<string, { node: HTMLButtonElement; label: HTMLElement; check: SVGElement }>()
+    let items: HTMLButtonElement[] = []
+    shell.appendChild(trigger)
+    shell.addEventListener('keydown', (event) => rovingFocus(event, items, current.open, current.onToggle))
+    update = (next) => {
+      const returning = current.open && !next.open && menu.contains(document.activeElement)
+      current = next
+      if (label.textContent !== next.summary) label.textContent = next.summary
+      trigger.title = next.ariaLabel
+      trigger.setAttribute('aria-label', next.ariaLabel)
+      trigger.setAttribute('aria-expanded', String(next.open))
+      trigger.disabled = next.enabled === false
+      trigger.classList.toggle('open', next.open)
+      menu.setAttribute('aria-label', next.ariaLabel)
+      if (next.multiple) menu.setAttribute('aria-multiselectable', 'true')
+      if (next.open) {
+        if (menu.parentElement !== shell) shell.appendChild(menu)
+        items = next.choices.map((choice) => {
+          let row = kept.get(choice.value)
+          if (!row) {
+            const node = button('settings-menu-item', '', choice.label, () => current.onSelect(choice.value))
+            node.setAttribute('role', 'option')
+            row = { node, label: el('span', 'btn-label'), check: icon('check', 'icon settings-menu-check') }
+            kept.set(choice.value, row)
+          }
+          const selected = next.selected.includes(choice.value)
+          row.node.classList.toggle('checkable', next.multiple)
+          row.node.classList.toggle('checked', next.multiple && selected)
+          row.node.classList.toggle('active', !next.multiple && selected)
+          row.node.setAttribute('aria-selected', String(selected))
+          row.node.setAttribute('aria-label', choice.label)
+          row.node.title = choice.label
+          if (row.label.textContent !== choice.label) row.label.textContent = choice.label
+          reconcile(row.node, [next.multiple && selected ? row.check : undefined, row.label])
+          return row.node
+        })
+        reconcile(menu, items)
+        const live = new Set(next.choices.map((choice) => choice.value))
+        for (const key of kept.keys()) if (!live.has(key)) kept.delete(key)
+      }
+      presence.set(next.open)
+      if (next.open && items[0]) next.onFirstItem?.(items[0])
+      if (returning) next.onCloseFocus?.(trigger)
+    }
+    menuFields.set(shell, update)
+  }
+  update(options)
+  return shell
+}
+
 export function multiSelectField(options: {
-  /** The trigger's text: already-formatted, since "none picked" is caller copy. */
   summary: string
   ariaLabel: string
   choices: ReadonlyArray<{ value: string; label: string }>
   selected: readonly string[]
   open: boolean
   onFirstItem?: (item: HTMLButtonElement) => void
+  onCloseFocus?: (item: HTMLButtonElement) => void
   onToggle: () => void
   onToggleValue: (value: string) => void
-}): HTMLElement {
-  const shell = el('div', 'settings-menu-shell')
-  const trigger = button(
-    options.open ? 'settings-pill open' : 'settings-pill',
-    options.summary,
-    options.ariaLabel,
-    options.onToggle,
-    { trailingIcon: 'chevron-down' },
-  )
-  trigger.setAttribute('aria-haspopup', 'listbox')
-  trigger.setAttribute('aria-expanded', options.open ? 'true' : 'false')
-  shell.appendChild(trigger)
-
-  const items: HTMLButtonElement[] = []
-  if (options.open) {
-    const menu = el('div', 'settings-menu')
-    menu.setAttribute('role', 'listbox')
-    menu.setAttribute('aria-multiselectable', 'true')
-    menu.setAttribute('aria-label', options.ariaLabel)
-    for (const choice of options.choices) {
-      const checked = options.selected.includes(choice.value)
-      // The check lives in its own leading slot in the stylesheet, so a checked
-      // and an unchecked label start at the same x.
-      const item = button(
-        checked ? 'settings-menu-item checkable checked' : 'settings-menu-item checkable',
-        choice.label,
-        choice.label,
-        () => options.onToggleValue(choice.value),
-      )
-      item.setAttribute('role', 'option')
-      item.setAttribute('aria-selected', checked ? 'true' : 'false')
-      if (checked) item.insertBefore(icon('check', 'icon settings-menu-check'), item.firstChild)
-      items.push(item)
-      menu.appendChild(item)
-    }
-    shell.appendChild(menu)
-    if (items[0]) options.onFirstItem?.(items[0])
-  }
-
-  shell.addEventListener('keydown', (event) => rovingFocus(event, items, options.open, options.onToggle))
-  return shell
+}, owner?: HTMLElement): HTMLElement {
+  return menuField({ ...options, multiple: true, onSelect: options.onToggleValue }, owner)
 }
 
 export function pillSelect(options: {
@@ -236,60 +277,14 @@ export function pillSelect(options: {
   ariaLabel: string
   choices: ReadonlyArray<{ value: string; label: string }>
   open: boolean
-  /** False while the row's own change is in flight — see `SettingsRow.pending`. */
   enabled?: boolean
-  /**
-   * Handed the first option while the menu is open, so the caller can focus it
-   * *after* this shell is in the page — `focus()` on a detached node does nothing,
-   * and this one is built before it is inserted.
-   */
   onFirstItem?: (item: HTMLButtonElement) => void
+  onCloseFocus?: (item: HTMLButtonElement) => void
   onToggle: () => void
   onChange: (value: string) => void
-}): HTMLElement {
-  // The menu is absolutely positioned against this shell. It cannot be a
-  // body-level portal: that needs measured coordinates, and the stylesheet test
-  // allows exactly one inline style property (`height`).
-  const shell = el('div', 'settings-menu-shell')
-  const selected = options.choices.find((choice) => choice.value === options.value)
-  // Falls back to the raw value: a config that names something outside `choices`
-  // must be visible, not silently read as the first option.
-  const trigger = button(
-    options.open ? 'settings-pill open' : 'settings-pill',
-    selected?.label ?? options.value,
-    options.ariaLabel,
-    options.onToggle,
-    { trailingIcon: 'chevron-down', ...(options.enabled === false ? { enabled: false } : {}) },
-  )
-  trigger.setAttribute('aria-haspopup', 'listbox')
-  trigger.setAttribute('aria-expanded', options.open ? 'true' : 'false')
-  shell.appendChild(trigger)
-
-  const items: HTMLButtonElement[] = []
-  if (options.open) {
-    const menu = el('div', 'settings-menu')
-    menu.setAttribute('role', 'listbox')
-    menu.setAttribute('aria-label', options.ariaLabel)
-    for (const choice of options.choices) {
-      const current = choice.value === options.value
-      const item = button(
-        current ? 'settings-menu-item active' : 'settings-menu-item',
-        choice.label,
-        choice.label,
-        () => options.onChange(choice.value),
-      )
-      item.setAttribute('role', 'option')
-      item.setAttribute('aria-selected', current ? 'true' : 'false')
-      items.push(item)
-      menu.appendChild(item)
-    }
-    shell.appendChild(menu)
-    if (items[0]) options.onFirstItem?.(items[0])
-  }
-
-  shell.addEventListener('keydown', (event) => rovingFocus(event, items, options.open, options.onToggle))
-
-  return shell
+}, owner?: HTMLElement): HTMLElement {
+  const summary = options.choices.find((choice) => choice.value === options.value)?.label ?? options.value
+  return menuField({ ...options, summary, selected: [options.value], multiple: false, onSelect: options.onChange }, owner)
 }
 
 /**

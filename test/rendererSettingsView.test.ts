@@ -377,7 +377,11 @@ test('only one dropdown is open at a time', (t) => {
   apply({ kind: 'toggle-menu', menu: 'row:routing:main' })
   apply({ kind: 'toggle-menu', menu: 'row:routing:plan' })
 
-  assert.equal(findAll(child(view(), 'settings-body'), 'settings-menu').length, 1)
+  const menus = findAll(child(view(), 'settings-body'), 'settings-menu')
+  assert.equal(menus.filter((menu) => menu.attributes.get('aria-hidden') !== 'true').length, 1)
+  const outgoing = menus.find((menu) => menu.classes.includes('presence-closing'))
+  assert.ok(outgoing, 'the previous menu remains for its exit')
+  assert.equal(outgoing.attributes.has('inert'), true, 'its choices stop accepting input immediately')
 })
 
 test('picking an option emits that row’s own change intent', (t) => {
@@ -418,6 +422,24 @@ test('a closed pill opens on ArrowDown rather than swallowing the key', (t) => {
   })
 
   assert.deepEqual(intents, [{ kind: 'toggle-menu', menu: 'row:routing:main' }])
+})
+
+test('dropdown refresh keeps focus and closing can reverse without replacing the menu', (t) => {
+  const { view, apply, stub } = mount(t)
+  apply({ kind: 'toggle-menu', menu: 'row:routing:main' })
+  const shell = mainRoutingPill(view())
+  const menu = child(shell, 'settings-menu').node
+  const option = child(shell, 'settings-menu').children[0]!.node
+  ;(option as HTMLElement).focus()
+  apply({ kind: 'model-toggle-effort', level: 'high' })
+  assert.equal(child(mainRoutingPill(view()), 'settings-menu').node, menu)
+  assert.equal(stub.activeElement(), option)
+  apply({ kind: 'toggle-menu', menu: 'row:routing:main' })
+  assert.equal(stub.inspect(menu).classes.includes('presence-closing'), true)
+  assert.equal(stub.activeElement(), child(mainRoutingPill(view()), 'settings-pill').node)
+  apply({ kind: 'toggle-menu', menu: 'row:routing:main' })
+  assert.equal(child(mainRoutingPill(view()), 'settings-menu').node, menu)
+  assert.equal(stub.inspect(menu).attributes.has('inert'), false)
 })
 
 for (const composite of [false, true]) {

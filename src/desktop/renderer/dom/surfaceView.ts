@@ -1,6 +1,7 @@
 import type { CommandViewRow } from '../model/commandRouting.js'
 import type { SurfaceAction, SurfaceView } from '../model/surfaces.js'
-import { el, replace, show } from './dom.js'
+import { el, replace } from './dom.js'
+import { createPresence } from './presence.js'
 import { icon } from './icons.js'
 
 /**
@@ -30,10 +31,11 @@ export type SurfaceActivate = (action: SurfaceAction) => void
 
 export function createSurfacePanel(container: HTMLElement, onActivate: SurfaceActivate): SurfacePanel {
   let open = false
+  const presence = createPresence(container, { onClosed: () => replace(container) })
 
   const paint = (title: string, children: HTMLElement[]) => {
     replace(container, el('h2', undefined, title), ...children)
-    show(container, true)
+    presence.set(true)
     open = true
   }
 
@@ -81,9 +83,8 @@ export function createSurfacePanel(container: HTMLElement, onActivate: SurfaceAc
     },
 
     hide() {
-      show(container, false)
-      replace(container)
       open = false
+      presence.set(false)
     },
 
     isOpen() {

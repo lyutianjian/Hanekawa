@@ -7,7 +7,8 @@ import {
   type BranchPickerRow,
   type BranchPickerView,
 } from '../model/branchPicker.js'
-import { el, replace, show } from './dom.js'
+import { el, replace } from './dom.js'
+import { createPresence } from './presence.js'
 import { button } from './controls.js'
 import { icon } from './icons.js'
 
@@ -54,6 +55,7 @@ export function createBranchPickerView(
   panel.tabIndex = -1
   panel.appendChild(body)
   container.appendChild(panel)
+  const presence = createPresence(panel, { onClosed: () => replace(body) })
 
   container.addEventListener('keydown', (event) => {
     const consumed = onKey({
@@ -95,11 +97,9 @@ export function createBranchPickerView(
       const signature = branchPickerSignature(view)
       if (signature === drawn) return
       drawn = signature
-      show(panel, view.open)
+      presence.set(view.open)
       if (!view.open) {
-        // Rows are dropped rather than hidden: a closed popover that keeps its
-        // buttons is a Tab stop the user cannot see.
-        replace(body)
+        // Inert immediately; rows leave only when the visual exit settles.
         return
       }
 

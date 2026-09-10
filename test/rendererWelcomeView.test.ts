@@ -353,7 +353,7 @@ test('focus leaving the popover closes it, but a repaint does not', (t) => {
 })
 
 test('the branch pill keeps its popover across an open and a close', (t) => {
-  const { view, rerender } = render(t)
+  const { view, rerender, stub } = render(t)
   const before = child(view(), 'branch-picker').node
 
   rerender(welcomeViewFixture({ branchPicker: pickerFixture({ open: true }) }))
@@ -365,6 +365,12 @@ test('the branch pill keeps its popover across an open and a close', (t) => {
   // rebuilding it would blur itself and fire the `focusout` that closes it.
   assert.equal(during, before)
   assert.equal(after, before)
+  assert.equal(stub.inspect(after).classes.includes('presence-closing'), true)
+  assert.equal(stub.inspect(after).attributes.has('inert'), true)
+  assert.ok(find(stub.inspect(after), 'branch-picker-row'), 'rows remain through exit')
+  stub.dispatch(after, 'transitionend', { propertyName: 'opacity' })
+  assert.equal(stub.inspect(after).hidden, true)
+  assert.equal(find(stub.inspect(after), 'branch-picker-row'), undefined)
 })
 
 test('rendering the same view twice rebuilds nothing', (t) => {

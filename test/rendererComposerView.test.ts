@@ -166,15 +166,15 @@ function render(t: { after(fn: () => void): void }): Rendered {
   )
 
   const menu = (): StubView | undefined =>
-    stub.inspect(els.permissionShell).children.find((child) => child.classes.includes('composer-menu'))
+    stub.inspect(els.permissionShell).children.find((child) => child.classes.includes('composer-menu') && child.attributes.get('aria-hidden') !== 'true')
   const attachMenu = (): StubView | undefined =>
-    stub.inspect(attachShell).children.find((child) => child.classes.includes('composer-menu'))
+    stub.inspect(attachShell).children.find((child) => child.classes.includes('composer-menu') && child.attributes.get('aria-hidden') !== 'true')
   const chipMenu = (): StubView | undefined =>
-    stub.inspect(els.chipShell).children.find((child) => child.classes.includes('chip-menu'))
+    stub.inspect(els.chipShell).children.find((child) => child.classes.includes('chip-menu') && child.attributes.get('aria-hidden') !== 'true')
   const flyout = (): StubView | undefined =>
     chipMenu()
       ?.children.flatMap((shell) => [...shell.children])
-      .find((child) => child.classes.includes('chip-flyout'))
+      .find((child) => child.classes.includes('chip-flyout') && child.attributes.get('aria-hidden') !== 'true')
 
   return {
     stub,
@@ -785,10 +785,11 @@ test('an unchanged context gauge does not rebuild the hover card', (t) => {
   )
 
   r.composer.renderRuntime(runtimeSnapshot, contextGaugeView(95_000, runtimeSnapshot))
-  assert.notDeepEqual(
+  assert.deepEqual(
     r.view('contextIndicator').children.map((child) => child.node),
     before,
   )
+  assert.match(r.view('contextIndicator').text, /95%/)
   assert.equal(r.view('contextIndicator').children[0]?.className, 'context-gauge critical')
 })
 
@@ -803,6 +804,39 @@ test('the guard does not swallow the click that opens the permission menu', (t) 
   assert.ok(r.menuItems().length > 0, 'the menu opened')
   r.stub.click(r.els.chipPermission)
   assert.equal(r.menuItems().length, 0, 'and closed again')
+})
+
+test('permission menu exit is inert and reverses on the same node', (t) => {
+  const r = render(t)
+  r.composer.renderRuntime(runtime())
+  r.stub.click(r.els.chipPermission)
+  const menu = r.view('permissionShell').children.find((node) => node.classes.includes('permission-menu'))!.node
+  r.stub.dispatchDocument('pointerdown', { target: r.els.input })
+  assert.equal(r.stub.inspect(menu).classes.includes('presence-closing'), true)
+  assert.equal(r.stub.inspect(menu).attributes.has('inert'), true)
+  assert.equal(r.stub.activeElement(), r.els.chipPermission)
+  r.stub.click(r.els.chipPermission)
+  assert.equal(r.view('permissionShell').children.find((node) => node.classes.includes('permission-menu'))!.node, menu)
+  assert.equal(r.stub.inspect(menu).classes.includes('presence-entering'), true)
+  assert.equal(r.stub.inspect(menu).attributes.has('inert'), false)
+  r.composer.closeMenus()
+  assert.equal(r.stub.inspect(menu).hidden, true, 'pane deactivation settles visual exits')
+})
+
+test('tooltip Escape exits while the indicator stays hovered and values retain identity', (t) => {
+  const r = render(t)
+  const snapshot = runtime({ usableContextWindow: 100_000 })
+  r.composer.renderRuntime(snapshot, contextGaugeView(40_000, snapshot))
+  r.stub.dispatch(r.els.contextIndicator, 'mouseenter')
+  const tooltip = r.view('contextIndicator').children[1]!.node
+  r.stub.dispatch(tooltip, 'transitionend', { propertyName: 'opacity' })
+  r.composer.renderRuntime(snapshot, contextGaugeView(45_000, snapshot))
+  assert.equal(r.view('contextIndicator').children[1]!.node, tooltip)
+  assert.equal(r.stub.inspect(tooltip).classes.includes('presence-open'), true)
+  r.stub.dispatch(r.els.contextIndicator, 'keydown', { key: 'Escape' })
+  assert.equal(r.stub.inspect(tooltip).classes.includes('presence-closing'), true)
+  r.stub.dispatch(tooltip, 'transitionend', { propertyName: 'opacity' })
+  assert.equal(r.stub.inspect(tooltip).hidden, true)
 })
 
 // --- the attachment control (S11) -------------------------------------------------
@@ -995,7 +1029,7 @@ test('the preview popover closes three ways and keeps its focus rule', (t) => {
   })
 
   const preview = (): StubView | undefined =>
-    r.stub.inspect(r.attachShell).children.find((child) => child.classes.includes('attachment-preview'))
+    r.stub.inspect(r.attachShell).children.find((child) => child.classes.includes('attachment-preview') && child.attributes.get('aria-hidden') !== 'true')
   const panel = preview()
   assert.ok(panel)
   assert.equal(panel.attributes.get('role'), 'dialog')

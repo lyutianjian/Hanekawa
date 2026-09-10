@@ -1,6 +1,7 @@
 import { el, reconcile, replace, show } from './dom.js'
 import { button, multiSelectField, pillSelect, selectField, textField, toggleField, updateToggleField, type ToggleOptions } from './controls.js'
 import { onPressOutside } from './dismiss.js'
+import { finishPresenceWithin } from './presence.js'
 import type {
   SettingsAnchor,
   SettingsButton,
@@ -314,6 +315,7 @@ export function createSettingsView(
       // otherwise a kept node keeps answering with the state that built it.
       for (const key of [...kept.keys()]) {
         if (claimed.has(key)) continue
+        finishPresenceWithin(kept.get(key)!)
         kept.delete(key)
         commits.delete(key)
         toggles.delete(key)
@@ -510,8 +512,9 @@ function rowNode(
             ? { onFirstItem: (item: HTMLElement) => context.focusAfterPaint(item) }
             : {}),
           onToggle: () => onIntent({ kind: 'toggle-menu', menu }),
+          onCloseFocus: context.focusAfterPaint,
           onChange: (value) => onIntent(intentOnChange(value)),
-        }),
+        }, context.node(`menu:${row.id}`, 'div', 'settings-menu-shell')),
       )
       break
     }
@@ -641,8 +644,9 @@ function formNode(
             ? { onFirstItem: (item: HTMLElement) => menus.focusAfterPaint(item) }
             : {}),
           onToggle: () => onIntent(multi.intentOnToggleMenu),
+          onCloseFocus: menus.focusAfterPaint,
           onToggleValue: (value) => onIntent(multi.intentOnToggle(value)),
-        }),
+        }, node(`${key}:menu:${field.id}`, 'div', 'settings-menu-shell')),
       )
     } else if (field.choices) {
       controls.push(

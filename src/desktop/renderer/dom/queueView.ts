@@ -1,5 +1,6 @@
 import type { QueuedMessagesView } from '../model/queuedMessages.js'
-import { el, replace, show } from './dom.js'
+import { el, replace } from './dom.js'
+import { createPresence } from './presence.js'
 
 /**
  * The queued-message strip as DOM.
@@ -23,11 +24,15 @@ export interface QueueDom {
 }
 
 export function createQueueView(container: HTMLElement, onClear: () => void): QueueDom {
+  const presence = createPresence(container, { onClosed: () => replace(container) })
+  let signature: string | undefined
   return {
     render(view) {
+      const next = JSON.stringify(view)
+      if (signature === next) return
+      signature = next
       if (view.title === undefined) {
-        show(container, false)
-        replace(container)
+        presence.set(false)
         return
       }
 
@@ -50,12 +55,12 @@ export function createQueueView(container: HTMLElement, onClear: () => void): Qu
           return node
         }),
       )
-      show(container, true)
+      presence.set(true)
     },
 
     hide() {
-      show(container, false)
-      replace(container)
+      signature = undefined
+      presence.set(false)
     },
   }
 }

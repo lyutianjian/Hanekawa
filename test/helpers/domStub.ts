@@ -209,6 +209,10 @@ class StubElement {
     return this.className.split(/\s+/).filter(Boolean)
   }
 
+  get firstChild(): StubChild | null {
+    return this.childNodes[0] ?? null
+  }
+
   get firstElementChild(): StubElement | null {
     return this.childNodes.find((child): child is StubElement => child instanceof StubElement) ?? null
   }

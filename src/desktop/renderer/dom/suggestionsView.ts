@@ -1,5 +1,6 @@
 import { completionRows, type CompletionState } from '../model/completion.js'
-import { el, replace, show } from './dom.js'
+import { el, replace } from './dom.js'
+import { createPresence } from './presence.js'
 
 /**
  * The completion dropdown, for both slash commands and `@` file mentions.
@@ -20,12 +21,12 @@ export function createSuggestionsView(
   container: HTMLElement,
   onSelect: SuggestionSelect,
 ): SuggestionsView {
+  const presence = createPresence(container, { onClosed: () => replace(container) })
   return {
     render(state) {
       const rows = completionRows(state)
       if (rows.length === 0) {
-        show(container, false)
-        replace(container)
+        presence.set(false)
         return
       }
       const selectedIndex = state.kind === 'none' ? -1 : state.selectedIndex
@@ -45,7 +46,7 @@ export function createSuggestionsView(
         })
         return node
       }))
-      show(container, true)
+      presence.set(true)
     },
   }
 }

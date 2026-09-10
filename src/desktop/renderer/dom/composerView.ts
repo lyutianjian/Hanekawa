@@ -11,10 +11,12 @@ import {
   type ContextGaugeView,
 } from '../model/usage.js'
 import type { RuntimeMenuKey, RuntimeMenuView } from '../model/runtimeMenu.js'
+import { submenuIntentDelay, type PointerPoint } from '../model/menuIntent.js'
 import type { SurfaceAction, SurfaceRow } from '../model/surfaces.js'
 import type { PermissionMode } from '../../../harness/permissions.js'
 import type { WireRuntimeSnapshot } from '../../../runtime/protocol/wire.js'
-import { el, replace, show } from './dom.js'
+import { el, reconcile, replace, show } from './dom.js'
+import { createPresence, finishPresenceWithin, type Presence } from './presence.js'
 import { button } from './controls.js'
 import { onPressOutside } from './dismiss.js'
 import { icon } from './icons.js'
@@ -221,6 +223,7 @@ export function createComposerView(els: {
   // behaviour untouched.
   let attachMenuOpen = false
   let attachMenu: HTMLElement | undefined
+  let attachPresence: Presence | undefined
   let attachItems: HTMLButtonElement[] = []
   /** What the strip was last drawn from; repaints are signed, like the pill's. */
   let attachSignature: string | undefined
@@ -228,12 +231,12 @@ export function createComposerView(els: {
   let sendBlockNote: string | undefined
 
   function closeAttachMenu(): void {
+    const returnFocus = attachMenu?.contains(document.activeElement)
     attachMenuOpen = false
-    attachMenu?.remove()
-    attachMenu = undefined
-    attachItems = []
+    attachPresence?.set(false)
     els.attach.setAttribute('aria-expanded', 'false')
     els.attach.classList.remove('open')
+    if (returnFocus) els.attach.focus()
   }
 
   function renderAttachMenu(): void {
@@ -241,11 +244,14 @@ export function createComposerView(els: {
       closeAttachMenu()
       return
     }
-    attachMenu?.remove()
-    attachMenu = undefined
-    attachItems = []
+    if (attachMenu) {
+      attachPresence!.set(true)
+      els.attach.setAttribute('aria-expanded', 'true')
+      els.attach.classList.add('open')
+      return
+    }
 
-    const menu = el('div', 'composer-menu')
+    const menu = el('div', 'composer-menu attachment-menu')
     menu.setAttribute('role', 'listbox')
     menu.setAttribute('aria-label', '附件')
     const pickItem = button('composer-menu-item', '选择图片', '选择图片', () => {
@@ -270,6 +276,8 @@ export function createComposerView(els: {
     menu.appendChild(mentionItem)
     els.attach.parentElement?.appendChild(menu)
     attachMenu = menu
+    attachPresence = createPresence(menu)
+    attachPresence.set(true)
     els.attach.setAttribute('aria-expanded', 'true')
     els.attach.classList.add('open')
   }
@@ -279,17 +287,16 @@ export function createComposerView(els: {
     renderAttachMenu()
     if (attachMenuOpen) attachItems[0]?.focus()
   })
-  // Closed the same three ways every popover here is. The shell is the bar the
-  // button lives in, so the trigger can reopen its own menu without the
-  // press-outside handler closing it first.
+  // Scope dismissal to the menu and trigger, not the surrounding bar.
   const attachShell = els.attach.parentElement ?? els.attach
-  onPressOutside([attachShell], () => {
+  onPressOutside([els.attach, '.attachment-menu'], () => {
     if (!attachMenuOpen) return
     closeAttachMenu()
   })
   attachShell.addEventListener('focusout', (event) => {
     const next = (event as FocusEvent).relatedTarget
-    if (next instanceof Node && attachShell.contains(next)) return
+    if (next === null) return
+    if (next instanceof Node && (els.attach.contains(next) || attachMenu?.contains(next))) return
     if (!attachMenuOpen) return
     closeAttachMenu()
   })
@@ -404,19 +411,22 @@ export function createComposerView(els: {
   // snapshot tick — the pane does not re-request the URL mid-stream, and this
   // side does not repaint what it already has.
   let previewNode: HTMLElement | undefined
+  let previewPresence: Presence | undefined
   let detachPreviewDismiss: (() => void) | undefined
 
   function closeAttachmentPreview(): void {
+    const returnFocus = previewNode?.contains(document.activeElement)
     detachPreviewDismiss?.()
     detachPreviewDismiss = undefined
-    previewNode?.remove()
-    previewNode = undefined
+    previewPresence?.set(false)
+    if (returnFocus) els.input.focus()
   }
 
   function showAttachmentPreview(view: AttachmentPreviewView): void {
     closeAttachmentPreview()
     const host = els.attach.parentElement ?? els.attach
-    const panel = el('div', 'attachment-preview')
+    const fresh = previewNode === undefined
+    const panel = previewNode ?? el('div', 'attachment-preview')
     panel.setAttribute('role', 'dialog')
     panel.setAttribute('aria-label', `图片预览：${view.name}`)
     const closeButton = button('attachment-preview-close', '✕', '关闭预览', () => {
@@ -433,26 +443,29 @@ export function createComposerView(els: {
       els.input.focus()
       actions.onOpenAttachment(view.draftId)
     })
-    panel.appendChild(el('div', 'attachment-preview-head', el('span', 'attachment-preview-name', view.name), closeButton))
-    panel.appendChild(image)
-    panel.appendChild(el('div', 'attachment-preview-caption', view.dimensions))
-    panel.appendChild(el('div', 'attachment-preview-actions', open))
-    host.appendChild(panel)
+    replace(panel,
+      el('div', 'attachment-preview-head', el('span', 'attachment-preview-name', view.name), closeButton),
+      image,
+      el('div', 'attachment-preview-caption', view.dimensions),
+      el('div', 'attachment-preview-actions', open),
+    )
+    if (fresh) {
+      host.appendChild(panel)
+      previewPresence = createPresence(panel)
+    }
     previewNode = panel
+    previewPresence!.set(true)
 
-    // The same three exits every popover here takes. The press-outside scope is
-    // the panel alone: a press on the thumbnail that opened it falls outside,
-    // closes the preview, and the click that follows re-opens it — which is the
-    // toggle the thumb click should read as.
-    detachPreviewDismiss = onPressOutside([panel], () => closeAttachmentPreview())
-    panel.addEventListener('focusout', (event) => {
+    // The panel and its thumbnail form one dismissal scope.
+    detachPreviewDismiss = onPressOutside([panel, '.attachment-thumb'], () => closeAttachmentPreview())
+    if (fresh) panel.addEventListener('focusout', (event) => {
       const next = (event as FocusEvent).relatedTarget
       // `null` is this view's own repaint — the focus() at the end of this
       // paint — and must not close what it belongs to.
       if (next === null || (next instanceof Node && panel.contains(next))) return
       closeAttachmentPreview()
     })
-    panel.addEventListener('keydown', (event) => {
+    if (fresh) panel.addEventListener('keydown', (event) => {
       if ((event as KeyboardEvent).key !== 'Escape') return
       // Consumed here, so Escape over the preview does not also reach the
       // global key map and close a surface behind it.
@@ -504,13 +517,14 @@ export function createComposerView(els: {
   // `relatedTarget` is where focus *went*, so a click on a menu item — which
   // happens before the item's own `click` — must not close it. The shell, not
   // the menu, so the pill can still toggle its own popover shut.
-  onPressOutside([els.permissionShell], () => {
+  onPressOutside([els.chipPermission, '.permission-menu'], () => {
     if (!permissionMenuOpen) return
     permissionMenuOpen = false
     renderPermission()
   })
   els.permissionShell.addEventListener('focusout', (event) => {
     const next = (event as FocusEvent).relatedTarget
+    if (next === null) return
     if (next instanceof Node && els.permissionShell.contains(next)) return
     if (!permissionMenuOpen) return
     permissionMenuOpen = false
@@ -531,6 +545,7 @@ export function createComposerView(els: {
   // `test/helpers/domStub.ts` fakes, and a view that reaches for it would be
   // untestable for the sake of a search it already knows the answer to.
   let permissionMenu: HTMLElement | undefined
+  let permissionPresence: Presence | undefined
   let permissionItems: HTMLButtonElement[] = []
   /** What the pill and the chip were last drawn from; see `renderPermission`. */
   let permissionSignature: string | undefined
@@ -569,40 +584,40 @@ export function createComposerView(els: {
     els.chipPermission.disabled = !view.enabled
     els.chipPermission.classList.toggle('open', view.open)
 
-    // Rebuilt rather than hidden: the menu is a list of buttons, and a hidden
-    // button is still a Tab stop in some engines.
-    permissionMenu?.remove()
-    permissionMenu = undefined
-    permissionItems = []
     if (!view.open) {
       // The model can refuse to open (no snapshot yet); the flag has to follow,
       // or the next click would read as "close" and do nothing visible.
       permissionMenuOpen = false
+      const returnFocus = permissionMenu?.contains(document.activeElement)
+      permissionPresence?.set(false)
+      if (returnFocus) els.chipPermission.focus()
       return
     }
 
-    const menu = el('div', 'composer-menu')
-    menu.setAttribute('role', 'listbox')
-    menu.setAttribute('aria-label', '权限模式')
-    for (const option of view.options) {
-      const item = button(
-        option.current ? 'composer-menu-item active' : 'composer-menu-item',
-        option.label,
-        option.label,
-        () => {
+    if (!permissionMenu) {
+      permissionMenu = el('div', 'composer-menu permission-menu')
+      permissionMenu.setAttribute('role', 'listbox')
+      permissionMenu.setAttribute('aria-label', '权限模式')
+      permissionItems = view.options.map((option) => {
+        const item = button('composer-menu-item', option.label, option.label, () => {
           permissionMenuOpen = false
           renderPermission()
           actions.onSelectPermissionMode(option.mode)
           els.input.focus()
-        },
-      )
-      item.setAttribute('role', 'option')
-      item.setAttribute('aria-selected', option.current ? 'true' : 'false')
-      permissionItems.push(item)
-      menu.appendChild(item)
+        })
+        item.setAttribute('role', 'option')
+        return item
+      })
+      reconcile(permissionMenu, permissionItems)
+      els.permissionShell.appendChild(permissionMenu)
+      permissionPresence = createPresence(permissionMenu)
     }
-    els.permissionShell.appendChild(menu)
-    permissionMenu = menu
+    view.options.forEach((option, index) => {
+      const item = permissionItems[index]!
+      item.classList.toggle('active', option.current)
+      item.setAttribute('aria-selected', option.current ? 'true' : 'false')
+    })
+    permissionPresence!.set(true)
   }
 
   // --- the chip's popover ------------------------------------------------------
@@ -611,12 +626,13 @@ export function createComposerView(els: {
   // at a time — an open flyout first — because a flyout opened by hover would
   // otherwise take the whole popover with it; a press *outside* the chip is not
   // that kind of unwinding and takes the popover whole.
-  onPressOutside([els.chipShell], () => {
+  onPressOutside([els.chipRuntime, '.chip-menu'], () => {
     if (!runtimeMenu) return
     closeRuntimeMenu()
   })
   els.chipShell.addEventListener('focusout', (event) => {
     const next = (event as FocusEvent).relatedTarget
+    if (next === null) return
     if (next instanceof Node && els.chipShell.contains(next)) return
     if (!runtimeMenu) return
     closeRuntimeMenu()
@@ -644,26 +660,31 @@ export function createComposerView(els: {
   // driven by hover, and rebuilding the row under the pointer would fire
   // `mouseenter` again on the replacement — a render loop with no exit.
   let runtimeMenuNode: HTMLElement | undefined
+  let runtimePresence: Presence | undefined
   let flyoutNode: HTMLElement | undefined
+  const flyouts = new Map<RuntimeMenuKey, { node: HTMLElement; presence: Presence; signature: string }>()
   const entryShells = new Map<RuntimeMenuKey, HTMLElement>()
   const entryRows = new Map<RuntimeMenuKey, HTMLButtonElement>()
+  let pointer: PointerPoint | undefined
+  let flyoutIntent: ReturnType<typeof setTimeout> | undefined
 
   function closeRuntimeMenu(): void {
+    clearTimeout(flyoutIntent)
     runtimeMenuPending = false
     if (!runtimeMenu) return
+    const returnFocus = runtimeMenuNode?.contains(document.activeElement)
     runtimeMenu = undefined
     openEntry = undefined
-    flyoutNode?.remove()
+    for (const entry of flyouts.values()) entry.presence.set(false)
     flyoutNode = undefined
-    runtimeMenuNode?.remove()
-    runtimeMenuNode = undefined
-    entryShells.clear()
-    entryRows.clear()
+    runtimePresence?.set(false)
     els.chipRuntime.setAttribute('aria-expanded', 'false')
     els.chipRuntime.classList.remove('open')
+    if (returnFocus) els.chipRuntime.focus()
   }
 
   function openFlyout(key: RuntimeMenuKey): void {
+    clearTimeout(flyoutIntent)
     // The guard is what breaks the hover loop described above, and it also makes
     // a second `mouseenter` on the same row a no-op rather than a rebuild that
     // drops the keyboard position inside the flyout.
@@ -672,9 +693,17 @@ export function createComposerView(els: {
     renderFlyout()
   }
 
+  function hoverFlyout(key: RuntimeMenuKey, point: PointerPoint): void {
+    clearTimeout(flyoutIntent)
+    const delay = openEntry && openEntry !== key && flyoutNode
+      ? submenuIntentDelay(pointer, point, flyoutNode.getBoundingClientRect()) : 0
+    if (delay === 0) openFlyout(key)
+    else flyoutIntent = setTimeout(() => openFlyout(key), delay)
+  }
+
   function renderFlyout(): void {
-    flyoutNode?.remove()
     flyoutNode = undefined
+    for (const [key, entry] of flyouts) entry.presence.set(!!runtimeMenu && key === openEntry)
     for (const [key, row] of entryRows) {
       row.classList.toggle('open', key === openEntry)
       row.setAttribute('aria-expanded', key === openEntry ? 'true' : 'false')
@@ -684,13 +713,23 @@ export function createComposerView(els: {
     const shell = entryShells.get(openEntry)
     if (!entry || !shell) return
 
-    const flyout = el('div', 'chip-flyout')
-    flyout.setAttribute('role', 'listbox')
-    flyout.setAttribute('aria-label', entry.title)
-    flyout.appendChild(el('div', 'chip-flyout-title', entry.title))
-    for (const row of entry.rows) flyout.appendChild(flyoutItem(row))
-    shell.appendChild(flyout)
-    flyoutNode = flyout
+    let kept = flyouts.get(openEntry)
+    if (!kept) {
+      const node = el('div', 'chip-flyout')
+      node.setAttribute('role', 'listbox')
+      node.addEventListener('mouseenter', () => clearTimeout(flyoutIntent))
+      shell.appendChild(node)
+      kept = { node, presence: createPresence(node, { direction: 'slide' }), signature: '' }
+      flyouts.set(openEntry, kept)
+    }
+    const signature = JSON.stringify(entry)
+    if (signature !== kept.signature) {
+      kept.signature = signature
+      kept.node.setAttribute('aria-label', entry.title)
+      replace(kept.node, el('div', 'chip-flyout-title', entry.title), ...entry.rows.map(flyoutItem))
+    }
+    kept.presence.set(true)
+    flyoutNode = kept.node
   }
 
   function flyoutItem(row: SurfaceRow): HTMLButtonElement {
@@ -753,6 +792,40 @@ export function createComposerView(els: {
    * the only carrier. The whole subtree is signed for the same reason the chip
    * is: streaming repaints must not rebuild a tooltip the pointer is over.
    */
+  const contextRing = el('span', 'context-gauge')
+  contextRing.setAttribute('aria-hidden', 'true')
+  const contextTooltip = el('div', 'context-tooltip')
+  contextTooltip.setAttribute('role', 'tooltip')
+  contextTooltip.setAttribute('aria-hidden', 'true')
+  const contextPercent = el('strong', 'context-tooltip-percent')
+  const contextRows = el('dl', 'context-tooltip-rows')
+  const contextValues = new Map<string, { row: HTMLElement; value: HTMLElement }>()
+  reconcile(contextTooltip, [
+    el('div', 'context-tooltip-header', el('span', 'context-tooltip-title', '上下文'), contextPercent),
+    contextRows,
+    el('p', 'context-tooltip-note', '可用上限已预留自动压缩空间'),
+  ])
+  const contextPresence = createPresence(contextTooltip, { decorative: true })
+  let contextHovered = false
+  let contextFocused = false
+  const syncContext = (): void => contextPresence.set(contextGauge.visible && (contextHovered || contextFocused))
+  els.contextIndicator.tabIndex = 0
+  els.contextIndicator.addEventListener('mouseenter', () => { contextHovered = true; syncContext() })
+  els.contextIndicator.addEventListener('mouseleave', () => { contextHovered = false; syncContext() })
+  els.contextIndicator.addEventListener('focusin', () => { contextFocused = true; syncContext() })
+  els.contextIndicator.addEventListener('focusout', (event) => {
+    if (event.relatedTarget === null) return
+    contextFocused = false
+    syncContext()
+  })
+  const closeContext = (): void => { contextHovered = false; contextFocused = false; syncContext() }
+  onPressOutside([els.contextIndicator], closeContext)
+  els.contextIndicator.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return
+    event.stopPropagation()
+    closeContext()
+  })
+
   function renderContextGauge(): void {
     const signature = [
       contextGauge.visible ? `${contextGauge.level}:${contextGauge.ratio}:${contextGauge.title}` : '',
@@ -762,46 +835,39 @@ export function createComposerView(els: {
 
     show(els.contextIndicator, contextGauge.visible)
     if (!contextGauge.visible) {
+      closeContext()
+      contextPresence.finish()
       replace(els.contextIndicator)
       els.contextIndicator.removeAttribute('aria-label')
       return
     }
 
-    const ring = el('span', `context-gauge ${contextGauge.level}`)
-    ring.setAttribute('aria-hidden', 'true')
-    ring.style.setProperty(CONTEXT_RATIO_VARIABLE, String(contextGauge.ratio))
-    replace(els.contextIndicator, ring, contextTooltipNode(contextGauge))
+    contextRing.className = `context-gauge ${contextGauge.level}`
+    contextRing.style.setProperty(CONTEXT_RATIO_VARIABLE, String(contextGauge.ratio))
+    reconcile(els.contextIndicator, [contextRing, contextTooltipNode(contextGauge)])
     els.contextIndicator.setAttribute('role', 'img')
     els.contextIndicator.setAttribute('aria-label', contextGauge.title.replace(/\n/g, '；'))
   }
 
   function contextTooltipNode(gauge: ContextGaugeView): HTMLElement {
-    const tooltip = el('div', 'context-tooltip')
-    tooltip.setAttribute('role', 'tooltip')
-    tooltip.setAttribute('aria-hidden', 'true')
-
-    const rows = el('dl', 'context-tooltip-rows')
     const values: Array<[string, string]> = [
       ['已用', gauge.used],
       ['可用上限', gauge.usable],
     ]
     if (gauge.modelWindow) values.push(['模型窗口', gauge.modelWindow])
-    for (const [label, value] of values) {
-      const row = el('div', 'context-tooltip-row')
-      row.appendChild(el('dt', 'context-tooltip-label', label))
-      row.appendChild(el('dd', 'context-tooltip-value', value))
-      rows.appendChild(row)
-    }
-
-    tooltip.appendChild(el(
-      'div',
-      'context-tooltip-header',
-      el('span', 'context-tooltip-title', '上下文'),
-      el('strong', 'context-tooltip-percent', `${gauge.percent} 已用`),
-    ))
-    tooltip.appendChild(rows)
-    tooltip.appendChild(el('p', 'context-tooltip-note', '可用上限已预留自动压缩空间'))
-    return tooltip
+    const rows = values.map(([label, value]) => {
+      let kept = contextValues.get(label)
+      if (!kept) {
+        const field = el('dd', 'context-tooltip-value')
+        kept = { row: el('div', 'context-tooltip-row', el('dt', 'context-tooltip-label', label), field), value: field }
+        contextValues.set(label, kept)
+      }
+      if (kept.value.textContent !== value) kept.value.textContent = value
+      return kept.row
+    })
+    contextPercent.textContent = `${gauge.percent} 已用`
+    reconcile(contextRows, rows)
+    return contextTooltip
   }
 
   els.input.addEventListener('input', () => applySubmitState())
@@ -872,12 +938,26 @@ export function createComposerView(els: {
       closeRuntimeMenu()
       runtimeMenu = view
 
-      const menu = el('div', 'chip-menu')
-      menu.setAttribute('role', 'menu')
-      menu.setAttribute('aria-label', '模型与推理强度')
-      for (const entry of view.entries) {
-        const shell = el('div', 'chip-menu-shell')
-        const row = button(
+      if (!runtimeMenuNode) {
+        runtimeMenuNode = el('div', 'chip-menu')
+        runtimeMenuNode.setAttribute('role', 'menu')
+        runtimeMenuNode.setAttribute('aria-label', '模型与推理强度')
+        runtimeMenuNode.addEventListener('mousemove', (event) => { pointer = { x: event.clientX, y: event.clientY } })
+        els.chipShell.appendChild(runtimeMenuNode)
+        runtimePresence = createPresence(runtimeMenuNode)
+      }
+      const menu = runtimeMenuNode
+      const shells = view.entries.map((entry) => {
+        let shell = entryShells.get(entry.key)
+        let row = entryRows.get(entry.key)
+        if (shell && row) {
+          row.title = `${entry.label}：${entry.value}`
+          row.setAttribute('aria-label', row.title)
+          row.querySelector('.chip-menu-value')!.textContent = entry.value
+          return shell
+        }
+        shell = el('div', 'chip-menu-shell')
+        row = button(
           'chip-menu-row',
           entry.label,
           `${entry.label}：${entry.value}`,
@@ -893,7 +973,7 @@ export function createComposerView(els: {
         // it opens, and a flyout on focus would mean the popover never appears
         // as the two rows it is — the model list would be over it already.
         // `ArrowRight` and Enter are the keyboard's way in.
-        row.addEventListener('mouseenter', () => openFlyout(entry.key))
+        row.addEventListener('mouseenter', (event) => hoverFlyout(entry.key, { x: event.clientX, y: event.clientY }))
         row.addEventListener('keydown', (event) => {
           if ((event as KeyboardEvent).key !== 'ArrowRight') return
           event.preventDefault()
@@ -901,12 +981,12 @@ export function createComposerView(els: {
           openFlyout(entry.key)
         })
         shell.appendChild(row)
-        menu.appendChild(shell)
         entryShells.set(entry.key, shell)
         entryRows.set(entry.key, row)
-      }
-      els.chipShell.appendChild(menu)
-      runtimeMenuNode = menu
+        return shell
+      })
+      reconcile(menu, shells)
+      runtimePresence!.set(true)
       els.chipRuntime.setAttribute('aria-expanded', 'true')
       els.chipRuntime.classList.add('open')
       // Focused, not flown out: the popover opens as its two rows, and the
@@ -923,9 +1003,16 @@ export function createComposerView(els: {
       closeRuntimeMenu()
       closeAttachMenu()
       closeAttachmentPreview()
-      if (!permissionMenuOpen) return
-      permissionMenuOpen = false
-      renderPermission()
+      closeContext()
+      contextPresence.finish()
+      if (permissionMenuOpen) {
+        permissionMenuOpen = false
+        renderPermission()
+      }
+      // Called on pane switches: no outgoing visual may overlay the next pane.
+      finishPresenceWithin(els.chipShell)
+      finishPresenceWithin(els.permissionShell)
+      finishPresenceWithin(attachShell)
     },
     autosize,
   }

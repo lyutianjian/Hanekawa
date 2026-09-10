@@ -76,11 +76,24 @@ const group = (steps: readonly ActivityStep[], status: ActivityGroup['status']):
   failedCount: steps.filter((step) => 'status' in step && step.status === 'failed').length,
 })
 
-// M02 will supply the real turn liveness separately from step completion.
-test('M02 keeps disclosure open in a live turn with no pending steps', { skip: true }, () => {
+test('M02 keeps disclosure open in a live turn with no pending steps', () => {
   const between = group([toolStep('a', 'done')], 'done')
-  assert.equal(isGroupExpanded(between), true)
-  assert.equal(isStepExpanded(between, 0), true)
+  assert.equal(isGroupExpanded(between, NO_DISCLOSURE, true), true)
+  assert.equal(isStepExpanded(between, 0, NO_DISCLOSURE, true), true)
+  const manual = new Map([['turn-1', false], ['a', false]])
+  assert.equal(isGroupExpanded(between, manual, true), false)
+  assert.equal(isStepExpanded(between, 0, manual, true), false)
+})
+
+test('turn liveness never revives an interruption or overrides a settled session', () => {
+  for (const status of ['running', 'aborted'] as const) {
+    const current = group([toolStep('a', 'running')], status)
+    assert.equal(isGroupExpanded(current, NO_DISCLOSURE, false), false)
+    assert.equal(isStepExpanded(current, 0, NO_DISCLOSURE, false), false)
+  }
+  const aborted = group([toolStep('a', 'running')], 'aborted')
+  assert.equal(isGroupExpanded(aborted, NO_DISCLOSURE, true), false)
+  assert.equal(isStepExpanded(aborted, 0, NO_DISCLOSURE, true), false)
 })
 
 test('the group head summarises the turn without naming what is happening now', () => {

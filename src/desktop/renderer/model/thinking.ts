@@ -57,9 +57,17 @@ export function isStepCollapsible(step: ActivityStep): boolean {
   return step.kind === 'thinking' || step.kind === 'tool' || step.kind === 'subagent'
 }
 
-/** The group's own disclosure: open while the turn runs, closed once it is over. */
-export function isGroupExpanded(group: ActivityGroup, state: DisclosureState = NO_DISCLOSURE): boolean {
-  return state.get(group.turnId) ?? group.status === 'running'
+/**
+ * `status` describes steps; the session supplies `live` from turnActivity. Keep it
+ * separate, as for groupHeaderName, so a tool result cannot finish a live turn.
+ * The default is for callers without a session; an explicit false is authoritative.
+ */
+export function isGroupExpanded(
+  group: ActivityGroup,
+  state: DisclosureState = NO_DISCLOSURE,
+  live = group.status === 'running',
+): boolean {
+  return state.get(group.turnId) ?? (live && group.status !== 'aborted')
 }
 
 /**
@@ -70,14 +78,15 @@ export function isStepExpanded(
   group: ActivityGroup,
   index: number,
   state: DisclosureState = NO_DISCLOSURE,
+  live = group.status === 'running',
 ): boolean {
   const step = group.steps[index]
   if (step === undefined) return false
   if (!isStepCollapsible(step)) return true
-  return state.get(step.id) ?? defaultStepExpanded(group, index, step)
+  return state.get(step.id) ?? defaultStepExpanded(group, index, step, live)
 }
 
-function defaultStepExpanded(group: ActivityGroup, index: number, step: ActivityStep): boolean {
+function defaultStepExpanded(group: ActivityGroup, index: number, step: ActivityStep, live: boolean): boolean {
   // A failure is the reason someone opens a finished group at all (§5.1), so it
   // opens itself — in a running turn just as much as in a sealed one, because a
   // failed step scrolling past unopened is the case this whole screen exists for.
@@ -85,7 +94,7 @@ function defaultStepExpanded(group: ActivityGroup, index: number, step: Activity
   // The permission request is drawn in the composer and that is where the user is
   // looking; unfolding a diff up here would take the focus back (§5.1).
   if ('status' in step && step.status === 'awaiting-approval') return false
-  return group.status === 'running' && index === group.steps.length - 1
+  return live && group.status !== 'aborted' && index === group.steps.length - 1
 }
 
 /** The same predicate `groupTranscript` counts with, so head and body agree. */

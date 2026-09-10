@@ -25,7 +25,7 @@
 
 每次收到的 `requestAnimationFrame` 记录几何位置、节点身份、焦点、滚动位置、可见文本候选及呈现相位；另记 CSS start/end/cancel、DOM 移除观察和输入事件。**结构空白样本**指 transcript 内没有具有可见几何与文字的候选节点，不等于逐个物理显示刷新都做了像素检测。设置页打开时 transcript 按设计隐藏，其 `blankSamples` 不作为白屏失败。首次创建空会话也不纳入 live 工作组统计。
 
-Performance filmstrip 在此 Chromium 版本达到 450 张后停止截图；性能轨道及 rAF 记录仍持续。完整流式预览改用已确认帧回执的 CDP screencast，共 **662 张原始图像**，覆盖 `turn-end`；其余三个组合保留完整性能／几何记录、较短的 filmstrip 和回合结束 PNG。短交互的 filmstrip 没有触及该上限。提交的 WebP 按原始时间戳抽样，最多 12.5fps，保持原速，末帧保留 10ms；不是用于证明 60/120fps 的录屏。原始 `.gz` 和日志留在忽略目录，避免把体积很大的 trace 与本机临时路径日志提交进仓库。
+Performance filmstrip 在此 Chromium 版本达到 450 张后停止截图；性能轨道及 rAF 记录仍持续。完整流式预览改用已确认帧回执的 CDP screencast，共 **662 张原始图像**，覆盖 `turn-end`；其余三个组合保留完整性能／几何记录、较短的 filmstrip 和回合结束 PNG。短交互的 filmstrip 没有触及该上限。提交的 WebP 按原始时间戳抽样，最多 12.5fps，保持原速，末帧保留 100ms，时长已与编码文件核对；不是用于证明 60/120fps 的录屏。原始 `.gz` 和日志留在忽略目录，避免把体积很大的 trace 与本机临时路径日志提交进仓库。
 
 ## 2. 三个代表场景
 
@@ -44,7 +44,7 @@ Performance filmstrip 在此 Chromium 版本达到 450 张后停止截图；性�
 
 稳定段落、代码和 TeX 节点保持；文本从临时 assistant 项归入工作组后，实际文本选择仍在。DOM 移除观察会记录这次树内迁移，但节点对象、连接状态与选择均保持，不能把该观察等同于重建。历史恢复与再次展开不播放 `bead-pop`。
 
-结论：满足 F1–F4、方向 A 和上翻保护要求。[22.03 秒完整原速预览](./motion-evidence/stream.webp)。
+结论：满足 F1–F4、方向 A 和上翻保护要求。[22.12 秒完整原速预览](./motion-evidence/stream.webp)。
 
 ### 2.2 详情展开／收起
 
@@ -109,6 +109,8 @@ Performance filmstrip 在此 Chromium 版本达到 450 张后停止截图；性�
 | `npm run smoke:desktop -- --port=9237 --model=step-3.5-flash-2603 --out=.smoke/motion-validation/final-smoke-pass` | 13 通过、0 失败、1 项未启用的 paid-turn 跳过；正常退出并恢复配置／注册表／renderer 偏好 |
 
 带费用的 S1 未运行；这里的真实流式验收由本地 SSE fixture 完成。完整全量测试日志在 `.smoke/motion-validation/final-test.log`，普通桌面冒烟摘要在 `final-smoke-pass/summary.json`。
+
+M22 另核对了 65 份原始录制文件的 SHA-256；6 段 WebP 的帧数、编码时长与尺寸均和预览索引一致。
 
 不改变系统缩放的 Chromium 模式：
 

@@ -245,6 +245,25 @@ List sessions:
 bun run dev:tui list
 ```
 
+### Desktop motion and reading
+
+The desktop uses gentle, visible motion for menus, details, the sidebar and permission
+cards. Opening and closing are continuous, and reversing an action continues from its
+current position. Streaming text stays readable while new content arrives. Approving or
+rejecting a request takes effect immediately and returns focus to the composer while the
+card finishes closing.
+
+Thought and tool details that opened during a turn stay open across tool handoffs. When
+the whole turn finishes, automatically opened details can fold together. Manual choices,
+keyboard focus, text selections and reading further up the conversation are protected.
+When you read earlier messages, new output does not pull you back to the bottom.
+**Return to latest** moves there immediately.
+Restoring a conversation shows its saved content without replaying tool completion effects.
+
+The desktop follows the system's **Reduce motion** preference, including changes made while
+it is open. Movement, scaling and looping effects stop, pending visual transitions settle,
+and state labels and controls remain available. Navigation and request replies stay immediate.
+
 ## Test
 
 Run all tests:

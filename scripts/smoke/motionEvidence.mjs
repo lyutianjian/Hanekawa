@@ -102,7 +102,8 @@ for (const run of loaded) {
 }
 
 // Sample at most 12.5 fps, without interpolation or slowed playback. Retained
-// frames hold until the next retained trace timestamp; the final hold is 10ms.
+// frames hold until the next retained trace timestamp; the final hold is 100ms.
+// The encoder normalizes 10ms to 100ms, so request that hold explicitly.
 const preview = loaded[0]
 const previews = []
 for (const name of ['stream', 'disclosure', 'layout', 'permission', 'modal', 'settings']) {
@@ -120,13 +121,15 @@ for (const name of ['stream', 'disclosure', 'layout', 'permission', 'modal', 'se
   const width = 800, height = 500
   const buffers = []
   for (const picture of selected) buffers.push(await sharp(Buffer.from(picture.args.snapshot, 'base64')).resize(width, height).removeAlpha().raw().toBuffer())
-  const delays = selected.map((p, i) => i + 1 < selected.length ? Math.max(10, Math.round((selected[i + 1].ts - p.ts) / 1000)) : 10)
+  const delays = selected.map((p, i) => i + 1 < selected.length ? Math.round((selected[i + 1].ts - p.ts) / 1000) : 100)
   const file = name + '.webp'
   await sharp(Buffer.concat(buffers), { raw: { width, height: height * selected.length, channels: 3, pageHeight: height } })
     .webp({ quality: 76, effort: 3, loop: 0, delay: delays }).toFile(join(out, file))
-  previews.push({ scene: name, profile: preview.profile.id, file, frames: selected.length, durationMs: delays.reduce((a, b) => a + b, 0), width, height })
+  // WebP can merge identical sampled frames; index the file that was written.
+  const encoded = await sharp(join(out, file), { animated: true }).metadata()
+  previews.push({ scene: name, profile: preview.profile.id, file, frames: encoded.pages, durationMs: encoded.delay.reduce((a, b) => a + b, 0), width, height })
 }
-writeFileSync(join(out, 'previews.json'), JSON.stringify({ method: 'At most 12.5 fps, original trace timestamp delays, no slow motion or interpolated frames; final hold 10ms.', previews }, null, 2) + '\n')
+writeFileSync(join(out, 'previews.json'), JSON.stringify({ method: 'At most 12.5 fps, original trace timestamp delays, no slow motion or interpolated frames; final hold 100ms.', previews }, null, 2) + '\n')
 writeFileSync(join(out, 'viewer-data.js'), 'window.motionEvidence = ' + JSON.stringify({
   profiles: profiles.map((p) => ({ id: p.id, theme: p.theme, scale: p.scale, hz: p.display.measuredHz, dpi: p.dpi })),
   previews,

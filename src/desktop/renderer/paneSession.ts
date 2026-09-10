@@ -59,6 +59,15 @@ import {
   type BranchPickerIntent,
   type BranchPickerState,
 } from './model/branchPicker.js'
+import {
+  createProjectPickerState,
+  moveProjectSelection,
+  projectPickerKeyToIntent,
+  projectPickerView,
+  type ProjectPickerEntry,
+  type ProjectPickerIntent,
+  type ProjectPickerState,
+} from './model/projectPicker.js'
 import { classifyInput, commandEffectToIntent } from './model/commandRouting.js'
 import {
   acceptCompletion as applyCompletion,
@@ -223,6 +232,20 @@ export interface PaneSessionDeps {
    * import. `undefined` is a cancelled dialog, not an error.
    */
   onPickImages?: () => Promise<readonly string[] | undefined>
+  /**
+   * The added projects, for the empty state's project switcher.
+   *
+   * A getter rather than a value: the list is `app.ts`'s, it moves whenever a
+   * project is added or removed, and a pane that captured it once would offer a
+   * project the sidebar had already forgotten. Read at every paint — the same
+   * discipline `onOpenFile` follows for the lane's own root.
+   */
+  listProjects?: () => readonly ProjectPickerEntry[]
+  /**
+   * A project was chosen from the empty state: put the window in a session
+   * there. Window-level, like「新会话」— this pane owns only the click.
+   */
+  onSwitchProject?: (projectRoot: string) => void
 }
 
 export interface PaneSession {
@@ -368,6 +391,13 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       runBranchPickerIntent(intent)
       return true
     },
+    onProjectIntent: (intent) => runProjectPickerIntent(intent),
+    onProjectKey: (chord) => {
+      const intent = projectPickerKeyToIntent(chord, projectPickerView(projectPickerState()))
+      if (intent.kind === 'none') return false
+      runProjectPickerIntent(intent)
+      return true
+    },
   })
 
   // --- state -----------------------------------------------------------------
@@ -424,6 +454,14 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
    */
   let branchListToken = 0
   /**
+   * The empty state's project switcher, per pane like the branch one. Only
+   * `open` and the cursor live here — the rows and the ticked project are read
+   * fresh at every paint by {@link projectPickerState}, because both belong to
+   * `app.ts` and to `hello` rather than to this popover.
+   */
+  let projectPickerOpen = false
+  let projectSelectedIndex = -1
+  /**
    * Messages the host is holding until the running turn ends — a mirror of
    * `client.getQueuedMessages()`, drawn from the last `queued-messages` event.
    */
@@ -465,10 +503,68 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 
   // --- rendering (state always updates; paint only when active) --------------
 
+  /** The project switcher's whole state: the rows are read, not stored. */
+  function projectPickerState(): ProjectPickerState {
+    return createProjectPickerState({
+      open: projectPickerOpen,
+      projects: deps.listProjects?.() ?? [],
+      current: ownProjectRoot,
+      selectedIndex: projectSelectedIndex,
+    })
+  }
+
+  function runProjectPickerIntent(intent: ProjectPickerIntent): void {
+    switch (intent.kind) {
+      case 'open':
+        if (projectPickerOpen) return
+        // One popover at a time: the two pills sit side by side, and leaving the
+        // branch list open under a project list is two dialogs over one screen.
+        branchPicker = createBranchPickerState()
+        projectPickerOpen = true
+        projectSelectedIndex = -1
+        renderTranscript()
+        welcome.focusProjectPicker()
+        return
+      case 'close':
+        if (!projectPickerOpen) return
+        projectPickerOpen = false
+        projectSelectedIndex = -1
+        renderTranscript()
+        // Focus has to land somewhere the user expects, and the composer is
+        // where they were going anyway.
+        deps.composer.focus()
+        return
+      case 'move':
+        projectSelectedIndex = moveProjectSelection(
+          projectPickerView(projectPickerState()),
+          intent.direction,
+        )
+        renderTranscript()
+        return
+      case 'pick':
+        // Closed before the switch rather than after it: opening a session is a
+        // window-level act that ends with another pane on screen, and a popover
+        // left open would be drawn again the next time this one is looked at.
+        projectPickerOpen = false
+        projectSelectedIndex = -1
+        renderTranscript()
+        deps.onSwitchProject?.(intent.root)
+        return
+      case 'none':
+        return
+      default:
+        assertNever(intent)
+    }
+  }
+
   function runBranchPickerIntent(intent: BranchPickerIntent): void {
     switch (intent.kind) {
       case 'open':
         if (branchPicker.open) return
+        // See `runProjectPickerIntent`: only one of the two pills' popovers is
+        // ever on screen.
+        projectPickerOpen = false
+        projectSelectedIndex = -1
         // Opened empty and loading, then filled: branches are created and
         // deleted in a terminal beside this window, so a list cached from the
         // last open would be a lie by the second one.
@@ -593,6 +689,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       // is a control as soon as there is a branch to name.
       canSwitchBranch: !projectGlobal,
       branchPicker,
+      projectPicker: projectPickerState(),
     }))
     paneEl.classList.toggle('empty', isTranscriptEmpty(transcript))
   }

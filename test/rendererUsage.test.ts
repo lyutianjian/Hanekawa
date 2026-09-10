@@ -43,8 +43,12 @@ test('an untouched session leaves the status line empty', () => {
   // `#status` has no reserved height: three empty flex items generate no line
   // box, so a fresh session must produce an empty string rather than a row of
   // zeros holding a band of dead space under the composer.
-  assert.deepEqual(statusUsageView(usage()), { text: '', title: '' })
-  assert.deepEqual(statusUsageView(undefined), { text: '', title: '' })
+  for (const view of [statusUsageView(usage()), statusUsageView(undefined)]) {
+    assert.deepEqual(view.metrics, [])
+    assert.equal(view.rate, undefined)
+    assert.equal(view.text, '')
+    assert.equal(view.title, '')
+  }
 })
 
 test('the status line names all three counts and the rate between two of them', () => {
@@ -53,7 +57,15 @@ test('the status line names all three counts and the rate between two of them', 
     cacheReadInputTokens: 88_100,
     outputTokens: 3_200,
   }))
-  assert.equal(view.text, '入 12k · 命中 88k · 出 3.2k · 命中率 87.7%')
+  // Three chips on screen; the labels live in the accessible name beside them.
+  assert.deepEqual(view.metrics.map((metric) => [metric.kind, metric.value]), [
+    ['input', '12k'],
+    ['cache', '88k'],
+    ['output', '3.2k'],
+  ])
+  // The rate is the one field written out on screen — no glyph explains a ratio.
+  assert.deepEqual(view.rate, { label: '缓存命中率', percent: '87.7%' })
+  assert.equal(view.text, '输入 12k · 缓存命中 88k · 输出 3.2k · 缓存命中率 87.7%')
   // The hover carries the same numbers unabbreviated.
   assert.match(view.title, /12,400/)
   assert.match(view.title, /88,100/)
@@ -68,13 +80,13 @@ test('the hit rate ignores output tokens', () => {
     cacheReadInputTokens: 100,
     outputTokens: 1_000_000,
   }))
-  assert.match(view.text, /命中率 50\.0%/)
+  assert.equal(view.rate?.percent, '50.0%')
 })
 
 test('a turn with no input side reports no rate at all', () => {
   const view = statusUsageView(usage({ outputTokens: 500 }))
-  assert.equal(view.text, '入 0 · 命中 0 · 出 500')
-  assert.doesNotMatch(view.text, /命中率/)
+  assert.equal(view.rate, undefined)
+  assert.equal(view.text, '输入 0 · 缓存命中 0 · 输出 500')
 })
 
 test('the gauge is absent, not empty, when either number is missing', () => {

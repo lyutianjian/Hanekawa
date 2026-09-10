@@ -5,7 +5,9 @@ import {
   type WelcomeView,
 } from '../model/welcome.js'
 import { BRANCH_PICKER_LABEL, type BranchPickerIntent } from '../model/branchPicker.js'
+import { PROJECT_PICKER_LABEL, type ProjectPickerIntent } from '../model/projectPicker.js'
 import { createBranchPickerView, type BranchPickerDom } from './branchPickerView.js'
+import { createProjectPickerView, type ProjectPickerDom } from './projectPickerView.js'
 import { el, reconcile, replace, show } from './dom.js'
 import { button } from './controls.js'
 import { onPressOutside } from './dismiss.js'
@@ -24,28 +26,33 @@ import { finishPresenceWithin } from './presence.js'
  * wordmark over Hero — because the stylesheet hangs both off a single rule down
  * its left edge, and two blocks would need two rules; the Hero line is assembled
  * from three view fields so the project name can be its own node in the middle
- * of a sentence; the hint row and every pill but one are `<span>`s — they are
- * read-only, and a button that does nothing when clicked is a worse lie than
- * plain text; and the branch pill, which *is* a control, carries the branch
- * switcher in an anchor of its own.
+ * of a sentence; the hint row is `<span>`s, and so is any pill the model says is
+ * not a control — a button that does nothing when clicked is a worse lie than
+ * plain text; and each switchable pill carries its popover in an anchor of its
+ * own, built by `pillAnchor` below.
  *
  * The scaffolding — the masthead, the title row, the pill and hint shells, and
- * the branch anchor — is built **once** and only its contents are replaced. The
- * anchor in particular has to survive: the popover inside it is the node that
- * takes focus when it opens, and rebuilding it around that focus would blur it
- * and fire the `focusout` that closes the popover the click just opened.
+ * the two pill anchors — is built **once** and only its contents are replaced.
+ * The anchors in particular have to survive: the popover inside one is the node
+ * that takes focus when it opens, and rebuilding it around that focus would blur
+ * it and fire the `focusout` that closes the popover the click just opened.
  */
 
 export interface WelcomeDom {
   render(view: WelcomeView): void
   /** Puts focus in the branch popover, for the click that opened it. */
   focusBranchPicker(): void
+  /** The same, for the project popover. */
+  focusProjectPicker(): void
 }
 
 export interface WelcomeHandlers {
   onBranchIntent: (intent: BranchPickerIntent) => void
   /** Fed the raw chord; answers whether the branch popover consumed it. */
   onBranchKey: (chord: { key: string; ctrlKey: boolean; metaKey: boolean }) => boolean
+  onProjectIntent: (intent: ProjectPickerIntent) => void
+  /** Fed the raw chord; answers whether the project popover consumed it. */
+  onProjectKey: (chord: { key: string; ctrlKey: boolean; metaKey: boolean }) => boolean
 }
 
 export function createWelcomeView(
@@ -65,38 +72,59 @@ export function createWelcomeView(
   masthead.appendChild(titleRow)
   const pills = el('div', 'welcome-pills')
   const hints = el('div', 'welcome-hints')
-  // The branch pill's home. Persistent for the focus reason in the header, and
-  // the popover is absolutely positioned against it by the stylesheet, so
-  // nothing here measures or writes geometry.
-  const branchAnchor = el('div', 'welcome-branch-anchor')
-  // The pill itself is rebuilt whenever its label moves, so it gets a slot of
-  // its own: the popover is the anchor's other child, and swapping the pill
-  // around it must not touch it.
-  const branchSlot = el('div', 'welcome-branch-slot')
-  branchAnchor.appendChild(branchSlot)
+
+  /**
+   * One switchable pill's home: the anchor its popover is positioned against,
+   * and the slot the pill itself is swapped in and out of.
+   *
+   * Persistent for the focus reason in the header, and positioned by the
+   * stylesheet, so nothing here measures or writes geometry. The pill gets a
+   * slot of its own because the popover is the anchor's other child, and
+   * swapping the pill around it must not touch it.
+   */
+  const pillAnchor = (kind: WelcomePill['kind'], close: () => void) => {
+    const anchor = el('div', `welcome-${kind}-anchor welcome-pill-anchor`)
+    const slot = el('div', `welcome-${kind}-slot welcome-pill-slot`)
+    anchor.appendChild(slot)
+    // A press anywhere else closes the popover (`dom/dismiss.ts`), which
+    // otherwise has only Escape and picking a row: it hangs over the transcript,
+    // and the transcript is exactly the unfocusable scenery a `focusout` cannot
+    // see.
+    //
+    // Scoped to the anchor — the popover *and* the pill that opens it — rather
+    // than to the pill row around them: closing on a press on the trigger would
+    // let its own `click` re-open the popover the user was shutting.
+    onPressOutside([anchor], close)
+    // The second of the three ways every popover closes. `relatedTarget === null`
+    // is this view's own repaint rather than the user leaving, and answering it
+    // with a close would shut the popover on the paint that drew it.
+    anchor.addEventListener('focusout', (event) => {
+      const next = (event as FocusEvent).relatedTarget
+      if (next === null) return
+      if (next instanceof Node && anchor.contains(next)) return
+      close()
+    })
+    return { anchor, slot }
+  }
+
+  const branch = pillAnchor('branch', () => handlers.onBranchIntent({ kind: 'close' }))
   const branchPicker: BranchPickerDom = createBranchPickerView(
-    branchAnchor,
+    branch.anchor,
     handlers.onBranchIntent,
     handlers.onBranchKey,
   )
+  const project = pillAnchor('project', () => handlers.onProjectIntent({ kind: 'close' }))
+  const projectPicker: ProjectPickerDom = createProjectPickerView(
+    project.anchor,
+    handlers.onProjectIntent,
+    handlers.onProjectKey,
+  )
 
-  // A press anywhere else closes the popover (`dom/dismiss.ts`), which otherwise
-  // has only Escape and picking a row: it hangs over the transcript, and the
-  // transcript is exactly the unfocusable scenery a `focusout` cannot see.
-  //
-  // Scoped to the anchor — the popover *and* the pill that opens it — rather
-  // than to the pill row around them: closing on a press on the trigger would
-  // let its own `click` re-open the popover the user was shutting.
-  onPressOutside([branchAnchor], () => handlers.onBranchIntent({ kind: 'close' }))
-  // The second of the three ways every popover closes. `relatedTarget === null`
-  // is this view's own repaint rather than the user leaving, and answering it
-  // with a close would shut the popover on the paint that drew it.
-  branchAnchor.addEventListener('focusout', (event) => {
-    const next = (event as FocusEvent).relatedTarget
-    if (next === null) return
-    if (next instanceof Node && branchAnchor.contains(next)) return
-    handlers.onBranchIntent({ kind: 'close' })
-  })
+  /** Which switcher a pill opens, and what its control says it does. */
+  const opener = (kind: WelcomePill['kind']): { label: string; open: () => void } =>
+    kind === 'branch'
+      ? { label: BRANCH_PICKER_LABEL, open: () => handlers.onBranchIntent({ kind: 'open' }) }
+      : { label: PROJECT_PICKER_LABEL, open: () => handlers.onProjectIntent({ kind: 'open' }) }
 
   const pillNode = (pill: WelcomePill): HTMLElement => {
     if (!pill.interactive) {
@@ -105,13 +133,8 @@ export function createWelcomeView(
       node.appendChild(el('span', 'welcome-pill-label', pill.label))
       return node
     }
-    const node = button(
-      `welcome-pill ${pill.kind}`,
-      pill.label,
-      BRANCH_PICKER_LABEL,
-      () => handlers.onBranchIntent({ kind: 'open' }),
-      { icon: pill.icon },
-    )
+    const { label, open } = opener(pill.kind)
+    const node = button(`welcome-pill ${pill.kind}`, pill.label, label, open, { icon: pill.icon })
     node.setAttribute('aria-haspopup', 'dialog')
     return node
   }
@@ -141,6 +164,9 @@ export function createWelcomeView(
     focusBranchPicker() {
       branchPicker.focusPanel()
     },
+    focusProjectPicker() {
+      projectPicker.focusPanel()
+    },
     render(view) {
       const signature = welcomeRenderSignature(view)
       if (signature === drawn) return
@@ -148,16 +174,18 @@ export function createWelcomeView(
       show(container, view.visible)
       if (!view.visible) {
         // The contents go, the scaffolding stays: an invisible Hero must not
-        // keep a button Tab can walk into from the composer, but the branch
-        // anchor has to survive as a node — it is the one thing here that holds
-        // focus. `model/welcome.ts` forces the popover shut whenever the screen
-        // is invisible, and a shut popover draws nothing focusable.
+        // keep a button Tab can walk into from the composer, but the two pill
+        // anchors have to survive as nodes — they are the only things here that
+        // hold focus. `model/welcome.ts` forces both popovers shut whenever the
+        // screen is invisible, and a shut popover draws nothing focusable.
         replace(titleSlot)
         replace(eyebrow)
         replace(hints)
         constantsBuilt = false
         branchPicker.render(view.branchPicker)
-        finishPresenceWithin(branchAnchor)
+        finishPresenceWithin(branch.anchor)
+        projectPicker.render(view.projectPicker)
+        finishPresenceWithin(project.anchor)
         replace(pills)
         return
       }
@@ -190,22 +218,22 @@ export function createWelcomeView(
         for (const hint of view.hints) hints.appendChild(hintNode(hint))
         constantsBuilt = true
       }
-      // The branch pill goes *into* the persistent anchor, ahead of the popover
-      // the anchor already holds; every other pill is a fresh node in the row.
+      // Each pill goes *into* its persistent anchor, ahead of the popover the
+      // anchor already holds — a read-only pill included, so a project that
+      // becomes switchable later does not have to move between two homes.
       const rendered: HTMLElement[] = []
       for (const pill of view.pills) {
-        if (pill.kind !== 'branch') {
-          rendered.push(pillNode(pill))
-          continue
-        }
-        replace(branchSlot, pillNode(pill))
-        rendered.push(branchAnchor)
+        const home = pill.kind === 'branch' ? branch : project
+        replace(home.slot, pillNode(pill))
+        rendered.push(home.anchor)
       }
-      // `reconcile`, not `replace`: the anchor is in this list, and detaching it
-      // — even for the rest of one script turn — would blur the popover inside
-      // it, which is the `focusout` that closes the popover the click opened.
+      // `reconcile`, not `replace`: the anchors are in this list, and detaching
+      // one — even for the rest of one script turn — would blur the popover
+      // inside it, which is the `focusout` that closes the popover the click
+      // opened.
       reconcile(pills, rendered)
       branchPicker.render(view.branchPicker)
+      projectPicker.render(view.projectPicker)
     },
   }
 }

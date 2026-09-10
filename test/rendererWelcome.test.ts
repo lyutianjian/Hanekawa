@@ -15,6 +15,10 @@ import {
   welcomeView,
   type WelcomeState,
 } from '../src/desktop/renderer/model/welcome.js'
+import {
+  createProjectPickerState,
+  type ProjectPickerState,
+} from '../src/desktop/renderer/model/projectPicker.js'
 import type { TranscriptItem, TranscriptItemKind, TranscriptState } from '../src/desktop/renderer/model/transcript.js'
 
 /**
@@ -35,6 +39,18 @@ function transcript(overrides: Partial<TranscriptState> = {}): TranscriptState {
 
 function stateWith(overrides: Partial<WelcomeState> = {}): WelcomeState {
   return createWelcomeState({ projectName: 'Hanekawa-main', canSwitchBranch: true, ...overrides })
+}
+
+/** Two added projects, this pane sitting in the first — the switchable case. */
+function projects(overrides: Partial<ProjectPickerState> = {}): ProjectPickerState {
+  return createProjectPickerState({
+    projects: [
+      { root: '/repos/hanekawa', name: 'Hanekawa-main' },
+      { root: '/repos/side', name: 'side' },
+    ],
+    current: '/repos/hanekawa',
+    ...overrides,
+  })
 }
 
 // --- constants ---------------------------------------------------------------
@@ -138,13 +154,42 @@ test('a known branch adds a second pill carrying its name', () => {
   assert.equal(view.pills[1]?.label, 'master')
 })
 
-test('only the branch pill is ever a control', () => {
+test('a pill is a control exactly when its switcher has somewhere to go', () => {
+  // No other project known yet, so only the branch pill is a control.
   const view = welcomeView(stateWith({ branch: 'master' }))
   assert.deepEqual(view.pills.map((pill) => pill.interactive), [false, true])
   // Nothing to switch in the home workspace, and a pane may not have been given
   // the popover at all — either way the pill goes back to being plain text.
   const fixed = welcomeView(stateWith({ branch: 'master', canSwitchBranch: false }))
   assert.deepEqual(fixed.pills.map((pill) => pill.interactive), [false, false])
+  const switchable = welcomeView(stateWith({ branch: 'master', projectPicker: projects() }))
+  assert.deepEqual(switchable.pills.map((pill) => pill.interactive), [true, true])
+})
+
+test('a project list holding only the current project is not a switcher', () => {
+  // One row, ticked, and picking it would close the popover it opened. The pill
+  // stays a span rather than a button that cannot go anywhere.
+  const alone = projects({ projects: [{ root: '/repos/hanekawa', name: 'Hanekawa-main' }] })
+  assert.equal(welcomeView(stateWith({ projectPicker: alone })).pills[0]?.interactive, false)
+  // …and a popover left open in that state is forced shut, the way an invisible
+  // screen's is: there is no control on screen that could have opened it.
+  const open = { ...alone, open: true }
+  assert.equal(welcomeView(stateWith({ projectPicker: open })).projectPicker.open, false)
+})
+
+test('the project popover cannot outlive the screen it hangs off', () => {
+  const open = { ...projects(), open: true }
+  const started = stateWith({ projectPicker: open, transcript: transcript({ items: [item('user')] }) })
+  assert.equal(welcomeView(started).projectPicker.open, false)
+  assert.equal(welcomeView(stateWith({ projectPicker: open })).projectPicker.open, true)
+})
+
+test('the global workspace still leads into the added projects', () => {
+  // 最近 is not a project, but the projects are still where a session started
+  // from here would belong — so the pill naming `~/.myagent` is a control.
+  const view = welcomeView(stateWith({ global: true, projectPicker: projects({ current: undefined }) }))
+  assert.equal(view.pills[0]?.label, WELCOME_GLOBAL_LOCATION)
+  assert.equal(view.pills[0]?.interactive, true)
 })
 
 test('the branch popover cannot outlive the screen it hangs off', () => {
@@ -185,6 +230,13 @@ test('everything the DOM draws moves the signature', () => {
         branch: 'master',
         branchPicker: { ...createWelcomeState().branchPicker, open: true, loading: true },
       }),
+    ],
+    // The project switcher signs for the same reason, both as a list and as an
+    // open/closed state.
+    ['project list', stateWith({ branch: 'master', projectPicker: projects() })],
+    [
+      'project popover open',
+      stateWith({ branch: 'master', projectPicker: { ...projects(), open: true } }),
     ],
   ]
   for (const [what, state] of mutations) {

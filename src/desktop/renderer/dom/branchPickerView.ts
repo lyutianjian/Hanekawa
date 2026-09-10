@@ -7,8 +7,8 @@ import {
   type BranchPickerRow,
   type BranchPickerView,
 } from '../model/branchPicker.js'
-import { el, replace } from './dom.js'
-import { createPresence } from './presence.js'
+import { el } from './dom.js'
+import { createPickerPopover } from './pickerPopover.js'
 import { button } from './controls.js'
 import { icon } from './icons.js'
 
@@ -21,9 +21,10 @@ import { icon } from './icons.js'
  *
  * Unlike the workspace picker it replaced there is no persistent search input,
  * so the whole subtree is rebuilt on every signature change and nothing here
- * holds a caret. The keydown is still scoped to this subtree: Escape must unwind
- * the popover rather than interrupt the turn, and Enter must pick a row rather
- * than send the composer's text.
+ * holds a caret. The panel, its presence and the scoped keydown are
+ * `dom/pickerPopover.ts`'s — shared with the project switcher beside it — and
+ * what is left here is the part that is about branches: the rows, the tick, and
+ * the three mutually exclusive states the list can be in.
  *
  * Every decision is `model/branchPicker.ts`'s, including which rows exist and
  * whether the list is still loading.
@@ -45,27 +46,10 @@ export function createBranchPickerView(
    */
   onKey: (chord: { key: string; ctrlKey: boolean; metaKey: boolean }) => boolean,
 ): BranchPickerDom {
-  const body = el('div', 'branch-picker-body')
-  const panel = el('div', 'branch-picker')
-  panel.setAttribute('role', 'dialog')
-  panel.setAttribute('aria-label', BRANCH_PICKER_LABEL)
-  // Focusable but not a Tab stop: the popover has to take focus when it opens
-  // (that is what makes `focusout` a dismissal at all), and it must not become a
-  // stop on the way from the pills to the composer once it is closed.
-  panel.tabIndex = -1
-  panel.appendChild(body)
-  container.appendChild(panel)
-  const presence = createPresence(panel, { onClosed: () => replace(body) })
-
-  container.addEventListener('keydown', (event) => {
-    const consumed = onKey({
-      key: event.key,
-      ctrlKey: event.ctrlKey,
-      metaKey: event.metaKey,
-    })
-    if (!consumed) return
-    event.preventDefault()
-    event.stopPropagation()
+  const popover = createPickerPopover(container, {
+    className: 'branch-picker',
+    label: BRANCH_PICKER_LABEL,
+    onKey,
   })
 
   const rowNode = (row: BranchPickerRow, switching: boolean): HTMLElement => {
@@ -91,13 +75,13 @@ export function createBranchPickerView(
 
   return {
     focusPanel() {
-      panel.focus()
+      popover.focus()
     },
     render(view) {
       const signature = branchPickerSignature(view)
       if (signature === drawn) return
       drawn = signature
-      presence.set(view.open)
+      popover.setOpen(view.open)
       if (!view.open) {
         // Inert immediately; rows leave only when the visual exit settles.
         return
@@ -117,7 +101,7 @@ export function createBranchPickerView(
       if (view.error !== undefined) {
         children.push(el('div', 'branch-picker-error', view.error))
       }
-      replace(body, ...children)
+      popover.setBody(children)
     },
   }
 }

@@ -6,6 +6,15 @@ import {
   type BranchPickerState,
   type BranchPickerView,
 } from './branchPicker.js'
+import {
+  canSwitchProject,
+  createProjectPickerState,
+  projectPickerSignature,
+  projectPickerView,
+  type ProjectPickerEntry,
+  type ProjectPickerState,
+  type ProjectPickerView,
+} from './projectPicker.js'
 
 /**
  * The empty-state welcome screen, as data.
@@ -17,12 +26,15 @@ import {
  * shows at all* — is here, where it can be tested without a DOM.
  *
  * The pills used to be three, all read-only, and the Hero's project name used to
- * be a button opening a workspace switcher. Both are gone: switching projects is
- * what the sidebar is for and its popover was clipped by the canvas anyway, and
- * a「本地」pill naming the one runtime that has ever existed carried no
- * information. What is left is the project it runs in and the branch it is on —
- * and the branch is the one fact on this screen worth changing from it, so that
- * pill is the only control here (see `model/branchPicker.ts`).
+ * be a button opening a workspace switcher. Both of those are gone: a「本地」pill
+ * naming the one runtime that has ever existed carried no information, and the
+ * switcher hung off the Hero *sentence*, where its popover was clipped by the
+ * canvas. What is left is the project it runs in and the branch it is on — and
+ * both are things worth changing from here, so both pills are controls, with the
+ * same shape and the same popover shell (`model/projectPicker.ts`,
+ * `model/branchPicker.ts`). The Hero's project name stays a plain `<span>`: the
+ * switcher belongs on the pill, which is a pill-shaped control in a row of them,
+ * not in the middle of a sentence.
  *
  * There is no graphic mark. The screen used to open with an icon above three
  * guidance cards, which is the shape every agent shell ships and therefore the
@@ -82,9 +94,9 @@ export interface WelcomePill {
   readonly label: string
   readonly icon: 'folder' | 'branch'
   /**
-   * Whether this pill is a control. Only the branch pill ever is — it opens the
-   * switcher — and the rest stay `<span>`s, because a button that does nothing
-   * when clicked is a worse lie than plain text.
+   * Whether this pill is a control — it opens the switcher that hangs off it.
+   * A pill with nowhere to go stays a `<span>`, because a button that does
+   * nothing when clicked is a worse lie than plain text.
    */
   readonly interactive: boolean
 }
@@ -108,6 +120,15 @@ export interface WelcomeState {
    * closing it is one of the things drawing a conversation does.
    */
   readonly branchPicker: BranchPickerState
+  /**
+   * The project switcher, held here for the reason `branchPicker` is: it hangs
+   * off a pill of the empty state, so drawing a conversation closes it.
+   *
+   * Its rows come from `app.ts`'s session-history pull — the same list the
+   * sidebar groups by — handed down through the pane, and its `current` is this
+   * pane's own project root (`hello.projectRoot`), never a display name.
+   */
+  readonly projectPicker: ProjectPickerState
 }
 
 export interface WelcomeView {
@@ -120,6 +141,7 @@ export interface WelcomeView {
   readonly hints: readonly WelcomeHint[]
   readonly pills: readonly WelcomePill[]
   readonly branchPicker: BranchPickerView
+  readonly projectPicker: ProjectPickerView
 }
 
 /**
@@ -162,21 +184,31 @@ export function createWelcomeState(overrides: Partial<WelcomeState> = {}): Welco
     branch: undefined,
     canSwitchBranch: false,
     branchPicker: createBranchPickerState(),
+    projectPicker: createProjectPickerState(),
     ...overrides,
   }
 }
 
 export function welcomeView(state: WelcomeState): WelcomeView {
+  // A control exactly when the popover has somewhere to go. True in the global
+  // workspace too: 最近 is not a project, but the added projects are still where
+  // a session started from here would belong, so the pill leads into them.
+  const canSwitchProjects = canSwitchProject(state.projectPicker)
   const pills: WelcomePill[] = [
     state.global
       ? // The global workspace has no name worth drawing — where its records
         // land is the useful fact.
-        { kind: 'project', label: WELCOME_GLOBAL_LOCATION, icon: 'folder', interactive: false }
+        {
+          kind: 'project',
+          label: WELCOME_GLOBAL_LOCATION,
+          icon: 'folder',
+          interactive: canSwitchProjects,
+        }
       : {
           kind: 'project',
           label: state.projectName ?? WELCOME_PROJECT_FALLBACK,
           icon: 'folder',
-          interactive: false,
+          interactive: canSwitchProjects,
         },
   ]
   // Absent rather than hidden: a pill with nothing to say is not drawn, so the
@@ -210,6 +242,12 @@ export function welcomeView(state: WelcomeState): WelcomeView {
     branchPicker: branchPickerView(
       visible ? state.branchPicker : { ...state.branchPicker, open: false },
     ),
+    // Forced shut off screen for the same reason, and also when the pill it
+    // hangs off is not a control: a list with nothing but the current project in
+    // it has no row anyone could pick.
+    projectPicker: projectPickerView(
+      visible && canSwitchProjects ? state.projectPicker : { ...state.projectPicker, open: false },
+    ),
   }
 }
 
@@ -232,5 +270,6 @@ export function welcomeRenderSignature(view: WelcomeView): string {
     // Signed, or the render guard swallows the click that opens the switcher —
     // the same failure an unsigned `menuOpen` is in `sidebarRenderSignature`.
     branchPickerSignature(view.branchPicker),
+    projectPickerSignature(view.projectPicker),
   ].join(' ')
 }

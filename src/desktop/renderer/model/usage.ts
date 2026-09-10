@@ -49,12 +49,58 @@ function formatExact(n: number): string {
   return n.toLocaleString('en-US')
 }
 
+/**
+ * Which of the three counts a chip carries — the view turns this into a glyph.
+ *
+ * The two directions mirror the TUI's (`tui/statusUsage.ts`: `↑` in, `↓` out),
+ * so the shells name the same numbers the same way; the desktop draws them as
+ * SVG because 4e's proportional chrome font has no reliable arrow coverage, and
+ * it draws cache hits as a stack rather than the TUI's `⚡` — see `dom/icons.ts`
+ * for why.
+ */
+export type UsageMetricKind = 'input' | 'cache' | 'output'
+
+export interface UsageMetric {
+  readonly kind: UsageMetricKind
+  /** `16k`, already abbreviated. */
+  readonly value: string
+  /** What the glyph stands for, for the accessible name. */
+  readonly label: string
+}
+
+/**
+ * The cache hit rate: a written-out label and its percentage.
+ *
+ * The one field on this line that is *not* a glyph and a figure. It was a swept
+ * ring for a while, which put a second ratio dial on the same screen as the
+ * context indicator's — two rings, two meanings, one shape. A rate is also the
+ * one number here that no mark explains on its own, so it carries its name.
+ */
+export interface UsageRateView {
+  readonly label: string
+  readonly percent: string
+}
+
 export interface StatusUsageView {
-  /** Empty while nothing has been counted, so `#status` collapses to no height. */
+  /**
+   * Empty while nothing has been counted, so `#status` collapses to no height.
+   * The chips the view draws; the numbers are never a single string on screen.
+   */
+  readonly metrics: readonly UsageMetric[]
+  /** Absent when nothing has been read at all — no denominator, no rate. */
+  readonly rate: UsageRateView | undefined
+  /** The same line as one string, for the readout's accessible name. */
   readonly text: string
   /** The same numbers unabbreviated, for the hover. Empty when `text` is. */
   readonly title: string
 }
+
+const EMPTY: StatusUsageView = Object.freeze({
+  metrics: [],
+  rate: undefined,
+  text: '',
+  title: '',
+})
 
 /**
  * Session totals: input, cache hits, output, and the hit rate between the first
@@ -67,16 +113,14 @@ export interface StatusUsageView {
  * only ever drag the number down for a reason nobody can act on.
  */
 export function statusUsageView(total: TokenUsage | undefined): StatusUsageView {
-  if (!total) return { text: '', title: '' }
+  if (!total) return EMPTY
   const { inputTokens, cacheReadInputTokens, outputTokens } = total
-  if (inputTokens === 0 && cacheReadInputTokens === 0 && outputTokens === 0) {
-    return { text: '', title: '' }
-  }
+  if (inputTokens === 0 && cacheReadInputTokens === 0 && outputTokens === 0) return EMPTY
 
-  const parts = [
-    `入 ${formatTokens(inputTokens)}`,
-    `命中 ${formatTokens(cacheReadInputTokens)}`,
-    `出 ${formatTokens(outputTokens)}`,
+  const metrics: UsageMetric[] = [
+    { kind: 'input', value: formatTokens(inputTokens), label: '输入' },
+    { kind: 'cache', value: formatTokens(cacheReadInputTokens), label: '缓存命中' },
+    { kind: 'output', value: formatTokens(outputTokens), label: '输出' },
   ]
   const titleLines = [
     `输入 ${formatExact(inputTokens)}（含缓存写入）`,
@@ -84,14 +128,22 @@ export function statusUsageView(total: TokenUsage | undefined): StatusUsageView 
     `输出 ${formatExact(outputTokens)}`,
   ]
 
+  const parts = metrics.map((metric) => `${metric.label} ${metric.value}`)
   const readSide = inputTokens + cacheReadInputTokens
+  let rate: UsageRateView | undefined
   if (readSide > 0) {
-    const rate = (cacheReadInputTokens / readSide) * 100
-    parts.push(`命中率 ${rate.toFixed(1)}%`)
-    titleLines.push(`命中率 ${rate.toFixed(1)}%（命中 / (输入 + 命中)）`)
+    const percentage = (cacheReadInputTokens / readSide) * 100
+    rate = { label: '缓存命中率', percent: `${percentage.toFixed(1)}%` }
+    parts.push(`${rate.label} ${rate.percent}`)
+    titleLines.push(`${rate.label} ${rate.percent}（命中 / (输入 + 命中)）`)
   }
 
-  return { text: parts.join(' · '), title: `本会话累计\n${titleLines.join('\n')}` }
+  return {
+    metrics,
+    rate,
+    text: parts.join(' · '),
+    title: `本会话累计\n${titleLines.join('\n')}`,
+  }
 }
 
 export type ContextGaugeLevel = 'normal' | 'warn' | 'critical'

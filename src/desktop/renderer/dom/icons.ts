@@ -53,6 +53,10 @@ export type IconName =
   | 'shield'
   // --- a message's meta row ---
   | 'copy'
+  // --- the status line's token readout ---
+  | 'token-in'
+  | 'token-out'
+  | 'layers'
 
 interface IconSpec {
   /** Path data on a 16×16 grid. */
@@ -172,6 +176,19 @@ const ICONS = {
       'M10.4 4.6V4.2a1 1 0 0 0-1-1H4.2a1 1 0 0 0-1 1v5.2a1 1 0 0 0 1 1h.4',
     ],
   },
+  // The three token glyphs, drawn on one grid so the status line reads as a set:
+  // the two arrows share a shaft and a head, and `layers` is the one shape among
+  // them that is not an arrow, because the count it labels is not a direction.
+  //
+  // The arrows are the SVG spelling of the TUI's `↑ ↓` (`tui/statusUsage.ts`),
+  // which the chrome font cannot be trusted to draw. The TUI's third mark is a
+  // `⚡`, and that one is deliberately *not* carried over: a bolt says "fast",
+  // which is a consequence, where a stack says "served from what was already
+  // stored" — which is what a cache hit is. Two plates rather than three: a
+  // third one at 11px closes the gaps into a smudge.
+  'token-in': { paths: ['M8 12.8V4.4', 'M4.6 7.8 8 4.4l3.4 3.4'] },
+  'token-out': { paths: ['M8 3.2v8.4', 'M4.6 8.2 8 11.6l3.4-3.4'] },
+  layers: { paths: ['M8 2.6 13.2 5.7 8 8.8 2.8 5.7z', 'M2.8 9.5 8 12.6l5.2-3.1'] },
 } as const satisfies Record<IconName, IconSpec>
 
 export function icon(name: IconName, className = 'icon'): SVGSVGElement {

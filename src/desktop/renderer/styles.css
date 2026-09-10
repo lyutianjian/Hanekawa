@@ -597,8 +597,10 @@ body {
 #status {
   display: flex;
   justify-content: flex-end;
-  gap: 12px;
-  align-items: baseline;
+  gap: var(--space-2);
+  /* Centred, not baseline-aligned: the readout is glyphs and rings beside its
+     figures now, and a baseline hangs a 11px icon off the text's descender. */
+  align-items: center;
   padding: 2px 8px 0;
   /* No reserved height: `statusView` writes empty strings while nothing is
      happening, and three empty flex items generate no line box — so the strip
@@ -611,6 +613,44 @@ body {
      proportional figures make the line's tail jump horizontally on each one.
      Tabular figures hold the column still (design_guidance 三.3). */
   font-variant-numeric: tabular-nums;
+}
+/* The token readout. It used to be one string —「入 10k · 命中 1.1k · 出 35 ·
+   命中率 9.5%」— which asked the eye to parse four labels, three interpuncts and
+   four figures at 12.5px to learn three numbers. It is now three chips, each a
+   glyph and a figure — two arrows and a stack (`dom/icons.ts`), a set rather
+   than three unrelated marks — with their labels in the hover and the accessible
+   name. The hit rate keeps its name and takes no mark at all. */
+#status-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.usage-metric {
+  display: inline-flex;
+  align-items: center;
+  /* Tighter than the gap between chips — the glyph belongs to its figure, and
+     the grouping has to be visible without a separator drawing it. */
+  gap: 3px;
+}
+.usage-glyph { width: 11px; height: 11px; }
+/* Cache hits are the number worth catching the eye on a long session, so the
+   stack sits one rung up the text ladder. No accent colour: the status line is
+   metadata, and a hue here would outrank the message above it. */
+.usage-metric.cache .usage-glyph { color: var(--text-secondary); }
+/* The rate is the one field with no mark — a ring here would be the context
+   indicator's shape saying something else — so it is written out instead. The
+   name is a rung quieter and a size smaller than its figure: it is there to be
+   read once, not on every glance. */
+.usage-label {
+  font-size: var(--type-micro);
+  color: var(--text-tertiary);
+}
+.usage-metric.rate .usage-value { color: var(--text-secondary); }
+/* A hairline between the counts and the money, drawn only when both are there —
+   the strip is empty on a fresh session and a lone rule is not a divider. */
+#status-usage:not(:empty) + #status-cost:not(:empty) {
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--border-subtle);
 }
 
 /* --- the two-column shell ---
@@ -2290,18 +2330,21 @@ button.welcome-pill {
   cursor: pointer;
 }
 button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-primary); }
-/* The switcher's anchor: `position: relative` is the whole point, since the
+/* A switcher's anchor: `position: relative` is the whole point, since the
    popover is placed against this box by the stylesheet and nothing in the
-   renderer measures or writes geometry. */
-.welcome-branch-anchor,
-.welcome-branch-slot { display: inline-flex; }
-.welcome-branch-anchor { position: relative; }
-/* The branch switcher. A menu, so it takes the menu depth — `--radius-md` and
-   `--shadow-float` — rather than inventing a third step. It opens *upward*: the
+   renderer measures or writes geometry. Both pills carry one — the kind-specific
+   class beside it (`.welcome-branch-anchor`, `.welcome-project-anchor`) is there
+   for tests and for the DOM to read, not for this. */
+.welcome-pill-anchor,
+.welcome-pill-slot { display: inline-flex; }
+.welcome-pill-anchor { position: relative; }
+/* The two switchers. A menu, so they take the menu depth — `--radius-md` and
+   `--shadow-float` — rather than inventing a third step. They open *upward*: the
    pills sit just above the composer, and a popover hanging below them would
    unroll straight into it. Flush with the pill's left edge, which is the
    masthead's rule — the whole screen is left-aligned. */
-.branch-picker {
+.branch-picker,
+.project-picker {
   position: absolute;
   left: 0;
   bottom: calc(100% + var(--space-2));
@@ -2317,9 +2360,12 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   box-shadow: var(--shadow-float);
   text-align: left;
 }
-.branch-picker:focus { outline: none; }
-.branch-picker-body { overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
-.branch-picker-row {
+.branch-picker:focus,
+.project-picker:focus { outline: none; }
+.branch-picker-body,
+.project-picker-body { overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.branch-picker-row,
+.project-picker-row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -2333,25 +2379,31 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   text-align: left;
   cursor: pointer;
 }
-.branch-picker-row .icon { flex: 0 0 auto; color: var(--text-secondary); }
+.branch-picker-row .icon,
+.project-picker-row .icon { flex: 0 0 auto; color: var(--text-secondary); }
 /* The name takes the row so a long branch truncates instead of pushing the tick
    out — the same rule `.project-heading .btn-label` follows. */
-.branch-picker-row .btn-label {
+.branch-picker-row .btn-label,
+.project-picker-row .btn-label {
   flex: 1 1 auto;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.branch-picker-row:hover { background: var(--surface-hover); }
-.branch-picker-row:disabled { cursor: default; opacity: 0.5; }
+.branch-picker-row:hover,
+.project-picker-row:hover { background: var(--surface-hover); }
+.branch-picker-row:disabled,
+.project-picker-row:disabled { cursor: default; opacity: 0.5; }
 /* The keyboard cursor, which is not the same state as the pointer being over a
    row — the sidebar keeps the two apart for the same reason. */
-.branch-picker-row.selected { background: var(--surface-active); }
+.branch-picker-row.selected,
+.project-picker-row.selected { background: var(--surface-active); }
 /* The tick trails the label the way the runtime chip's flyout marks "the one in
    force". The strong rung, because it is drawn beside text at text size. */
 .branch-picker-check { color: var(--accent-brand-strong); margin-left: auto; }
-.branch-picker-empty {
+.branch-picker-empty,
+.project-picker-empty {
   padding: var(--space-2) var(--space-3);
   color: var(--text-secondary);
   font-size: var(--type-meta);

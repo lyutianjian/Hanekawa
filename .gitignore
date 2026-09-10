@@ -40,6 +40,16 @@ design_guidance.md
 INTERVIEW_PREP.md
 prototype/
 
+# Local plan / design / acceptance write-ups (not part of the published project)
+todo.md
+DESKTOP_MOTION_ACCEPTANCE.md
+DESKTOP_MOTION_DESIGN.md
+DESKTOP_MOTION_IMPLEMENTATION.md
+FILE_HISTORY_PLAN.md
+MULTIMODAL_INPUT_DESIGN.md
+MULTIMODAL_INPUT_IMPLEMENTATION.md
+motion-evidence/
+
 # Interview-prep measurement scripts (chapter 14) — local only, and
 # measure-api.ts spends real money against the configured provider.
 scripts/measure-perf.ts

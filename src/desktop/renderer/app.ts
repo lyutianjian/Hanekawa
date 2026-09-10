@@ -322,6 +322,21 @@ function attachPaneSession(lane: string): void {
       return result.paths
     },
     onClosed: () => removePaneSession(lane),
+    // The empty state's project pill lists what the sidebar lists, minus the
+    // global workspace: 最近 is a place for sessions that belong to no project,
+    // not a project to start one in. Read per paint rather than captured — a
+    // project can be added or removed while a Hero is on screen.
+    listProjects: () =>
+      projects
+        .filter((project) => project.isGlobal !== true)
+        .map((project) => ({ root: project.projectRoot, name: project.projectName })),
+    onSwitchProject: (root) => {
+      // The rail first: the group the new session lands in has to be visible, or
+      // the switch leaves the user looking at a sidebar that never moved.
+      revealProject(root)
+      // Then the same path「新会话」takes, so "open or reuse" is decided once.
+      runSidebarIntent(newSessionIntent(root))
+    },
   })
   paneSessions.set(lane, session)
   if (!lastActiveTick.has(lane)) lastActiveTick.set(lane, tick)
@@ -523,6 +538,22 @@ function renderSidebar(): void {
   })
 }
 
+/**
+ * Makes one workspace's group visible in the rail, without moving anything else.
+ *
+ * The two ways a group can be off screen are answered separately because they
+ * are different states: a folded group is unfolded, and the「最近」filter — which
+ * lists *only* the global workspace — is turned off when the project being
+ * revealed is not that workspace. The rail's own collapse is left alone: a user
+ * who collapsed the sidebar asked for the canvas, and a switch is not a reason
+ * to overrule that.
+ */
+function revealProject(projectRoot: string): void {
+  collapsedProjects = toggleProject(collapsedProjects, projectRoot, false)
+  if (recentOnly && projectRoot !== globalRoot) recentOnly = false
+  renderSidebar()
+}
+
 function renderTitleBar(): void {
   renderSidebar()
 }
@@ -549,7 +580,7 @@ async function refreshSessions(): Promise<void> {
       projects = result.projects
       globalRoot = result.globalRoot
       renderSidebar()
-      // The empty state's workspace picker reads this list, and nothing else
+      // The empty state's project switcher reads this list, and nothing else
       // repaints an idle pane — a project added while the Hero is up would
       // otherwise be missing from the popover until the next keystroke.
       activePane()?.refreshWelcome()

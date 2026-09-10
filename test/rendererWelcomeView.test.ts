@@ -12,6 +12,12 @@ import {
   type BranchPickerIntent,
   type BranchPickerState,
 } from '../src/desktop/renderer/model/branchPicker.js'
+import {
+  createProjectPickerState,
+  projectPickerView,
+  type ProjectPickerIntent,
+  type ProjectPickerState,
+} from '../src/desktop/renderer/model/projectPicker.js'
 
 /**
  * The renderer's first `dom/` unit test.
@@ -46,9 +52,22 @@ function pickerFixture(overrides: Partial<BranchPickerState> = {}) {
   return branchPickerView({ ...PICKER_STATE, ...overrides })
 }
 
+const PROJECT_STATE: ProjectPickerState = createProjectPickerState({
+  projects: [
+    { root: '/repos/hanekawa', name: 'Hanekawa-main' },
+    { root: '/repos/side', name: 'side' },
+  ],
+  current: '/repos/hanekawa',
+})
+
+function projectFixture(overrides: Partial<ProjectPickerState> = {}) {
+  return projectPickerView({ ...PROJECT_STATE, ...overrides })
+}
+
 function welcomeViewFixture(overrides: Partial<WelcomeView> = {}): WelcomeView {
   return {
     branchPicker: pickerFixture(),
+    projectPicker: projectFixture(),
     visible: true,
     global: false,
     titleBefore: '你想让我们在 ',
@@ -72,6 +91,8 @@ interface Rendered {
   readonly stub: DomStub
   readonly container: HTMLElement
   readonly intents: BranchPickerIntent[]
+  /** The project switcher's own intents, kept apart so neither list can hide the other. */
+  readonly projectIntents: ProjectPickerIntent[]
   view(): StubView
   rerender(next?: WelcomeView): void
 }
@@ -84,15 +105,19 @@ function render(
   t.after(() => stub.uninstall())
   const container = stub.createContainer('welcome')
   const intents: BranchPickerIntent[] = []
+  const projectIntents: ProjectPickerIntent[] = []
   const dom = createWelcomeView(container, {
     onBranchIntent: (intent) => intents.push(intent),
     onBranchKey: () => false,
+    onProjectIntent: (intent) => projectIntents.push(intent),
+    onProjectKey: () => false,
   })
   dom.render(initial)
   return {
     stub,
     container,
     intents,
+    projectIntents,
     view: () => stub.inspect(container),
     rerender: (next = initial) => dom.render(next),
   }
@@ -180,14 +205,15 @@ test('the global workspace hero is one text node with no project segment', (t) =
   assert.equal(find(view(), 'welcome-project-name'), undefined)
 })
 
-test('the branch pill is the only control on the screen', (t) => {
+test('a pill the model calls read-only is a span, and the branch pill is a control', (t) => {
   const { view, stub, intents } = render(t)
   const pills = child(view(), 'welcome-pills').children
 
-  // Two pills, and the project one is a read-only span. The 「本地」pill that
-  // used to sit between them named the one runtime that has ever existed.
+  // Two pills — the 「本地」one that used to sit between them named the one
+  // runtime that has ever existed. The project pill is read-only in this
+  // fixture, so it is a span; the switchable case is the test below.
   assert.equal(pills.length, 2)
-  assert.equal(pills[0]?.tagName, 'SPAN')
+  assert.equal(child(view(), 'welcome-project-slot').children[0]?.tagName, 'SPAN')
   assert.equal(pills[0]?.text, 'Hanekawa-main')
 
   const branch = child(view(), 'welcome-branch-slot')
@@ -216,6 +242,59 @@ test('a branch that cannot be switched is a plain span again', (t) => {
   const trigger = child(view(), 'welcome-branch-slot').children[0]
   assert.ok(trigger)
   assert.equal(trigger.tagName, 'SPAN')
+})
+
+test('a switchable project pill opens its own popover and lists the added projects', (t) => {
+  const { view, stub, intents, projectIntents } = render(
+    t,
+    welcomeViewFixture({
+      pills: [
+        { kind: 'project', label: 'Hanekawa-main', icon: 'folder', interactive: true },
+        { kind: 'branch', label: 'master', icon: 'branch', interactive: true },
+      ],
+      projectPicker: projectFixture({ open: true }),
+    }),
+  )
+
+  const trigger = child(view(), 'welcome-project-slot').children[0]
+  assert.ok(trigger)
+  assert.equal(trigger.tagName, 'BUTTON')
+  stub.click(trigger.node)
+  // Each pill opens *its* switcher: the two triggers sit side by side, so a
+  // shared handler would be a project click asking for the branch list.
+  assert.deepEqual(projectIntents, [{ kind: 'open' }])
+  assert.deepEqual(intents, [])
+
+  const rows = child(view(), 'project-picker-body').children
+  assert.deepEqual(rows.map((row) => row.text), ['Hanekawa-main', 'side'])
+  assert.deepEqual(rows.map((row) => row.classes.includes('current')), [true, false])
+
+  stub.click(rows[1]!.node)
+  stub.click(rows[0]!.node)
+  assert.deepEqual(projectIntents.slice(1), [
+    { kind: 'pick', root: '/repos/side' },
+    // The project this pane is already in is not a destination.
+    { kind: 'close' },
+  ])
+})
+
+test('the two popovers are separate anchors: a press in one does not close the other', (t) => {
+  const { view, stub, intents, projectIntents } = render(
+    t,
+    welcomeViewFixture({
+      pills: [
+        { kind: 'project', label: 'Hanekawa-main', icon: 'folder', interactive: true },
+        { kind: 'branch', label: 'master', icon: 'branch', interactive: true },
+      ],
+      projectPicker: projectFixture({ open: true }),
+    }),
+  )
+
+  // A press inside the project anchor is outside the branch one, so the branch
+  // picker hears a close and the project picker does not.
+  stub.dispatchDocument('pointerdown', { target: child(view(), 'project-picker-row').node })
+  assert.deepEqual(projectIntents, [])
+  assert.deepEqual(intents, [{ kind: 'close' }])
 })
 
 test('an invisible screen is hidden and holds no focusable node', (t) => {

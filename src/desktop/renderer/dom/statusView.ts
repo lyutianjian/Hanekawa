@@ -1,6 +1,8 @@
 import type { SessionControllerSnapshot } from '../../../runtime/sessionController.js'
 import type { WireUsageCost } from '../../../runtime/protocol/wire.js'
-import { statusUsageView } from '../model/usage.js'
+import { statusUsageView, type UsageMetric, type UsageRateView } from '../model/usage.js'
+import { el, replace } from './dom.js'
+import { icon, type IconName } from './icons.js'
 
 /**
  * The status bar: usage, cost, and whether a turn is running.
@@ -31,6 +33,12 @@ export function createStatusView(els: {
 }): StatusView {
   /** The last title written. `renderSession` runs on every snapshot tick. */
   let lastTitle: string | undefined
+  /**
+   * The last usage line painted. This one is chips rather than a string now, and
+   * `render` is reached from the snapshot tick — an unguarded repaint would
+   * rebuild four elements and three SVGs per streamed chunk.
+   */
+  let lastUsage: string | undefined
   return {
     render(snapshot, cost) {
       // Empty while idle, not「空闲」: this line sits under the composer now, and
@@ -40,10 +48,17 @@ export function createStatusView(els: {
         ? `生成中${snapshot.spinnerSubText ? `：${snapshot.spinnerSubText}` : ''}`
         : ''
       // Four numbers, not two: `model/usage.ts` owns which ones and how they
-      // read. The hover carries the same counts unabbreviated.
+      // read. The hover carries the same counts unabbreviated, and so does the
+      // accessible name — the chips on screen are glyphs plus figures, which is
+      // not a sentence a screen reader can make sense of.
       const usage = statusUsageView(snapshot.usage.total)
-      els.usage.textContent = usage.text
-      els.usage.title = usage.title
+      if (usage.text !== lastUsage) {
+        lastUsage = usage.text
+        replace(els.usage, ...usage.metrics.map(metricChip), usage.rate && rateChip(usage.rate))
+        els.usage.title = usage.title
+        if (usage.text) els.usage.setAttribute('aria-label', usage.text)
+        else els.usage.removeAttribute('aria-label')
+      }
       // Absent rather than zero when the model has no complete pricing: "not
       // priced" and "free" are different answers, and the host already decided
       // which one this is (`resolveUsageWithCost`).
@@ -63,6 +78,39 @@ export function createStatusView(els: {
       document.title = title
     },
   }
+}
+
+/** One glyph per count, keyed by kind so the model never names a drawing. */
+const METRIC_ICONS: Record<UsageMetric['kind'], IconName> = {
+  input: 'token-in',
+  cache: 'layers',
+  output: 'token-out',
+}
+
+/** A glyph and a figure. The label lives in the readout's accessible name. */
+function metricChip(metric: UsageMetric): HTMLElement {
+  return el(
+    'span',
+    `usage-metric ${metric.kind}`,
+    icon(METRIC_ICONS[metric.kind], 'icon usage-glyph'),
+    el('span', 'usage-value', metric.value),
+  )
+}
+
+/**
+ * The cache hit rate, written out.
+ *
+ * No mark: it was a swept ring, which is the context indicator's shape, and two
+ * ratio dials of the same shape on one screen read as one idea repeated rather
+ * than as two different numbers.
+ */
+function rateChip(rate: UsageRateView): HTMLElement {
+  return el(
+    'span',
+    'usage-metric rate',
+    el('span', 'usage-label', rate.label),
+    el('span', 'usage-value', rate.percent),
+  )
 }
 
 /**

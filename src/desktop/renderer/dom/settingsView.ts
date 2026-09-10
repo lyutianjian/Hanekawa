@@ -1,5 +1,5 @@
 import { el, reconcile, replace, show } from './dom.js'
-import { button, multiSelectField, pillSelect, selectField, textField, toggleField } from './controls.js'
+import { button, multiSelectField, pillSelect, selectField, textField, toggleField, updateToggleField, type ToggleOptions } from './controls.js'
 import { onPressOutside } from './dismiss.js'
 import type {
   SettingsAnchor,
@@ -144,6 +144,7 @@ export function createSettingsView(
   // outliving the node it belonged to.
   const kept = new Map<string, HTMLElement>()
   const commits = new Map<string, (value: string) => SettingsIntent>()
+  const toggles = new Map<string, ToggleOptions>()
   let claimed = new Set<string>()
   // Which pill is open, as of the *previous* paint, so a menu that just opened can
   // be told from one that has been open all along and may hold the user's arrow key.
@@ -210,6 +211,17 @@ export function createSettingsView(
     })
     kept.set(key, made)
     return made
+  }
+
+  function keptToggle(key: string, options: ToggleOptions): HTMLButtonElement {
+    claimed.add(key)
+    toggles.set(key, options)
+    let control = kept.get(key) as HTMLButtonElement | undefined
+    if (!control) {
+      control = toggleField({ ...options, onChange: (value) => toggles.get(key)?.onChange(value) })
+      kept.set(key, control)
+    } else updateToggleField(control, options)
+    return control
   }
 
   return {
@@ -292,6 +304,7 @@ export function createSettingsView(
                 : undefined,
             node,
             keptInput,
+            keptToggle,
             onIntent,
           }),
         ),
@@ -303,6 +316,7 @@ export function createSettingsView(
         if (claimed.has(key)) continue
         kept.delete(key)
         commits.delete(key)
+        toggles.delete(key)
       }
 
       // Only now: everything above is built before it is inserted, and `focus()`
@@ -341,6 +355,8 @@ type InputFactory = (
     intentOnCommit: (value: string) => SettingsIntent
   },
 ) => HTMLInputElement
+
+type ToggleFactory = (key: string, options: ToggleOptions) => HTMLButtonElement
 
 function navItemNode(
   item: SettingsNavItem,
@@ -397,6 +413,7 @@ function cardNode(
     confirm?: { message: string; anchor: SettingsAnchor }
     node: NodeFactory
     keptInput: InputFactory
+    keptToggle: ToggleFactory
     onIntent: (intent: SettingsIntent) => void
   },
 ): HTMLElement {
@@ -452,6 +469,7 @@ function rowNode(
     focusAfterPaint: (element: HTMLElement) => void
     node: NodeFactory
     keptInput: InputFactory
+    keptToggle: ToggleFactory
     onIntent: (intent: SettingsIntent) => void
   },
 ): HTMLElement {
@@ -500,7 +518,7 @@ function rowNode(
     case 'toggle': {
       const { intentOnChange } = row.control
       controls.push(
-        toggleField({
+        context.keptToggle(`toggle:${row.id}`, {
           value: row.control.value,
           ariaLabel: row.label,
           // A row waiting on its own change is not a second switch to flip.
@@ -531,7 +549,7 @@ function rowNode(
     case 'toggle-and-buttons': {
       const { intentOnChange } = row.control.toggle
       controls.push(
-        toggleField({
+        context.keptToggle(`toggle:${row.id}:with-buttons`, {
           value: row.control.toggle.value,
           ariaLabel: row.label,
           ...(row.control.toggle.disabled || row.pending ? { enabled: false } : {}),

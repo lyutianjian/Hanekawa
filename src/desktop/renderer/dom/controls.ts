@@ -102,28 +102,35 @@ export function textField(options: {
  * The knob is a child element rather than a pseudo-element so the stylesheet can
  * move it without either file knowing a colour.
  */
-export function toggleField(options: {
+export interface ToggleOptions {
   className?: string
   value: boolean
   ariaLabel: string
   enabled?: boolean
   onChange: (value: boolean) => void
-}): HTMLButtonElement {
+}
+
+export function toggleField(options: ToggleOptions): HTMLButtonElement {
   const node = el('button', options.className ?? 'settings-toggle')
   node.type = 'button'
   node.setAttribute('role', 'switch')
-  node.setAttribute('aria-checked', options.value ? 'true' : 'false')
-  node.setAttribute('aria-label', options.ariaLabel)
-  node.title = options.ariaLabel
-  node.disabled = options.enabled === false
-  if (options.value) node.classList.add('on')
+  updateToggleField(node, options)
   node.appendChild(el('span', 'settings-toggle-knob'))
   node.addEventListener('click', (event) => {
     // Same reason as `button()`: settings rows are clickable containers.
     event.stopPropagation()
-    options.onChange(!options.value)
+    if (!node.disabled) options.onChange(node.getAttribute('aria-checked') !== 'true')
   })
   return node
+}
+
+/** Update the switch in place, leaving its sliding knob and listener intact. */
+export function updateToggleField(node: HTMLButtonElement, options: ToggleOptions): void {
+  node.setAttribute('aria-checked', options.value ? 'true' : 'false')
+  node.setAttribute('aria-label', options.ariaLabel)
+  node.title = options.ariaLabel
+  node.disabled = options.enabled === false
+  node.classList.toggle('on', options.value)
 }
 
 /**

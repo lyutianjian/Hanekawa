@@ -420,6 +420,42 @@ test('a closed pill opens on ArrowDown rather than swallowing the key', (t) => {
   assert.deepEqual(intents, [{ kind: 'toggle-menu', menu: 'row:routing:main' }])
 })
 
+for (const composite of [false, true]) {
+  test(`M08 keeps the ${composite ? 'composite' : 'plain'} switch through pending, reload and rollback`, (t) => {
+    const stub = installDomStub()
+    t.after(() => stub.uninstall())
+    const host = stub.createContainer('settings')
+    const intents: SettingsIntent[] = []
+    const dom = createSettingsView(host, (intent) => intents.push(intent), () => false)
+    const base = settingsView(stateOf())
+    const paint = (value: boolean, pending = false): void => {
+      const toggle = { value, intentOnChange: (enabled: boolean): SettingsIntent => ({ kind: 'set-thinking', enabled }) }
+      dom.render({ ...base, cards: [{ id: 'general', title: '通用', rows: [{
+        id: 'thinking', label: '扩展思考', pending,
+        control: composite ? { kind: 'toggle-and-buttons', toggle, buttons: [] } : { kind: 'toggle', ...toggle },
+      }] }] })
+    }
+    paint(false)
+    const toggle = findOne(stub.inspect(host), 'settings-toggle')
+    const knob = toggle.children[0]!.node
+    stub.click(toggle.node)
+    assert.deepEqual(intents, [{ kind: 'set-thinking', enabled: true }])
+    paint(true, true)
+    assert.equal(findOne(stub.inspect(host), 'settings-toggle').disabled, true)
+    stub.click(toggle.node)
+    assert.equal(intents.length, 1, 'pending blocks another click')
+    paint(true)
+    assert.equal(findOne(stub.inspect(host), 'settings-toggle').node, toggle.node)
+    stub.click(toggle.node)
+    assert.deepEqual(intents.at(-1), { kind: 'set-thinking', enabled: false }, 'the listener reads the current value')
+    paint(false)
+    const reverted = findOne(stub.inspect(host), 'settings-toggle')
+    assert.equal(reverted.node, toggle.node)
+    assert.equal(reverted.children[0]!.node, knob)
+    assert.equal(reverted.attributes.get('aria-checked'), 'false')
+  })
+}
+
 test('the menu that just opened takes the focus its trigger lost to the repaint', (t) => {
   const { view, stub, apply, container } = mount(t)
   const shell = mainRoutingPill(view())

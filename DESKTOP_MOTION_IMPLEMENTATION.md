@@ -99,7 +99,7 @@ M02–M09 在 M01 之后互不依赖，顺序可调；建议先做 M02/M03（F1�
 | M02 | F1 回合存活状态：model 层分离「回合活着」与「步骤完成」 | M01 | 中 | F1 | `[x]` |
 | M03 | F1 DOM 接线：折叠与默认展开读同一套回合状态 | M02 | 中 | F1 | `[x]` |
 | M04 | F2 painter 存活登记与内容更新分离 | M01 | 中 | F2 | `[x]` |
-| M05 | F2 思考正文与 assistant Markdown 稳定块 | M04 | 长 | F2 | `[ ]` |
+| M05 | F2 思考正文与 assistant Markdown 稳定块 | M04 | 长 | F2 | `[x]` |
 | M06 | F3 会话标题栏：菜单容器不随快照重建 | M01 | 中 | F3 | `[ ]` |
 | M07 | F4 任务面板：内部节点身份与 `animationend` 过滤 | M01 | 中 | F4 | `[ ]` |
 | M08 | F4 设置开关：滑块保留身份、按字段更新 | M01 | 中 | F4 | `[ ]` |
@@ -220,7 +220,9 @@ M02–M09 在 M01 之后互不依赖，顺序可调；建议先做 M02/M03（F1�
 
 ---
 
-## M05 `[ ]` F2 思考正文与 assistant Markdown 稳定块
+## M05 `[x]` F2 思考正文与 assistant Markdown 稳定块
+
+**验收记录（2026-09-10）**：思考正文载体持久化；Markdown 以源位置分块并标明闭合状态，按解析语义复用节点，后到的链接定义仅更新受影响块。围栏、列表、表格、公式收口及流式 meta 缺省均覆盖。指定窄测 103 通过，typecheck 通过；仍使用 `katex.render`。
 
 **前置**：M04 · **规模**：长 · **设计稿**：F2、§5.3
 **涉及**：`src/desktop/renderer/dom/transcriptView.ts`、`src/desktop/renderer/dom/markdownView.ts`、`src/desktop/renderer/model/markdown.ts`

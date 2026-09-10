@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   parseMarkdownBlocks,
+  parseMarkdownSegments,
   resetMarkdownCache,
   safeHref,
 } from '../src/desktop/renderer/model/markdown.js'
@@ -264,4 +265,21 @@ test('a growing draft parses to the document it currently is', () => {
   }
   const final = parseMarkdownBlocks(full)
   assert.deepEqual(final.map((block) => block.kind), ['heading', 'paragraph', 'list'])
+})
+
+test('stream segments keep source keys and distinguish a growing tail from a closed block', () => {
+  const first = parseMarkdownSegments('First paragraph.\n\nSecond')
+  const next = parseMarkdownSegments('First paragraph.\n\nSecond paragraph.\n\n')
+  assert.equal(first[0]!.closed, true)
+  assert.equal(first[1]!.closed, false)
+  assert.equal(next[0]!.id, first[0]!.id)
+  assert.equal(next[0]!.signature, first[0]!.signature)
+  assert.equal(next[1]!.id, first[1]!.id)
+  assert.equal(next[1]!.closed, true)
+  for (const source of ['```ts\nlet a = 1', '- one\n- two', '| a |\n| - |\n| b |', '$$x^2']) {
+    assert.equal(parseMarkdownSegments(source).at(-1)!.closed, false, source)
+    assert.equal(parseMarkdownSegments(source, true).at(-1)!.closed, true, source)
+  }
+  assert.equal(parseMarkdownSegments('```ts\nlet a = 1\n```').at(-1)!.closed, true)
+  assert.equal(parseMarkdownSegments('$$x^2$$').at(-1)!.closed, true)
 })

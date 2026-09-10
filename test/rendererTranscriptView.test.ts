@@ -77,6 +77,24 @@ test('M04 keeps the thinking head through an unchanged streaming snapshot', (t) 
   assert.deepEqual(view.toggled.at(-1), ['th', true], 'reset does not inherit the previous disclosure ref')
 })
 
+test('M05 keeps the thinking body and settled assistant blocks across deltas', (t) => {
+  const view = mount(t)
+  const body = trackIdentity(view.column, '.step-body')
+  let firstBody: unknown
+  let firstParagraph: unknown
+  for (const text of ['A', 'AB', 'AB', 'ABC']) {
+    view.render(transcript([
+      { id: 'th', kind: 'thinking', text, turnId: 't1', pending: true },
+      { id: 'answer', kind: 'assistant', text: `Stable.\n\n${text}`, pending: true },
+    ]), NO_DISCLOSURE, RUNNING_T1)
+    firstBody ??= body.sample()
+    firstParagraph ??= view.items()[1]!.children[0]!.node
+    assert.equal(body.sample(), firstBody)
+    assert.equal(view.items()[1]!.children[0]!.node, firstParagraph)
+    assert.equal(view.items()[1]!.children.some((node) => node.className === 'item-meta'), false)
+  }
+})
+
 function transcript(items: readonly TranscriptItem[] = [], overrides: Partial<TranscriptState> = {}): TranscriptState {
   return { items, generation: 0, toolProgress: undefined, isThinking: false, thinkingCount: 0, ...overrides }
 }

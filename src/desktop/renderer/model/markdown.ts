@@ -179,7 +179,16 @@ export function safeHref(href: string): string | undefined {
 // draft (whose text actually changed) is parsed.
 
 const TOKEN_CACHE_MAX = 500
-const blockCache = new Map<string, { blocks: MdBlock[]; length: number }>()
+const blockCache = new Map<string, { blocks: MdBlock[]; segments: MdSegment[]; source: string }>()
+
+/** A source-position key survives append-only streaming, including block closure. */
+export interface MdSegment {
+  readonly id: string
+  readonly block: MdBlock
+  readonly closed: boolean
+  /** Includes resolved references: a later link definition may change an earlier block. */
+  readonly signature: string
+}
 
 /** FNV-1a 32-bit, with the length appended: a 32-bit hash alone collides. */
 function hashContent(value: string): string {
@@ -192,18 +201,55 @@ function hashContent(value: string): string {
 }
 
 export function parseMarkdownBlocks(content: string): MdBlock[] {
+  return parsedMarkdown(content).blocks
+}
+
+export function parseMarkdownSegments(content: string, settled = false): readonly MdSegment[] {
+  const segments = parsedMarkdown(content).segments
+  return settled ? segments.map((segment) => segment.closed ? segment : { ...segment, closed: true }) : segments
+}
+
+function parsedMarkdown(content: string) {
   const key = hashContent(content)
   const cached = blockCache.get(key)
-  if (cached && cached.length === content.length) {
+  if (cached && cached.source === content) {
     blockCache.delete(key)
     blockCache.set(key, cached)
-    return cached.blocks
+    return cached
   }
 
-  const blocks = lexer.lexer(content).flatMap(blockFrom)
+  const tokens = lexer.lexer(content)
+  const segments: MdSegment[] = []
+  let lastContent = -1
+  for (const [index, token] of tokens.entries()) {
+    if (token.type !== 'space' && token.type !== 'def') lastContent = index
+  }
+  let offset = 0
+  for (const [index, token] of tokens.entries()) {
+    const closed = index < lastContent || closesItself(token, tokens[index + 1])
+    for (const [part, block] of blockFrom(token).entries()) {
+      segments.push({ id: `${offset}:${part}`, block, closed, signature: JSON.stringify(block) })
+    }
+    offset += token.raw.length
+  }
+  const parsed = { blocks: segments.map((segment) => segment.block), segments, source: content }
   if (blockCache.size >= TOKEN_CACHE_MAX) blockCache.delete(blockCache.keys().next().value!)
-  blockCache.set(key, { blocks, length: content.length })
-  return blocks
+  blockCache.set(key, parsed)
+  return parsed
+}
+
+function closesItself(token: Token, next: Token | undefined): boolean {
+  if (token.type === 'mathBlock') return true // The extension requires a closing delimiter.
+  if (token.type === 'heading' || token.type === 'hr') return token.raw.endsWith('\n')
+  if (token.type === 'code') {
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(token.raw)?.[1]
+    if (!fence) return false
+    const closing = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}[ \\t]*$`)
+    return token.raw.trimEnd().split('\n').slice(1).some((line) => closing.test(line))
+  }
+  // Lists and tables can grow across blank lines. A following block (above), or
+  // the settled turn, closes them; a paragraph is bounded by its blank line.
+  return token.type === 'paragraph' && /\n[ \t]*\n$/.test(token.raw + (next?.type === 'space' ? next.raw : ''))
 }
 
 /** Test seam; also useful if a session ever grows past the LRU's usefulness. */

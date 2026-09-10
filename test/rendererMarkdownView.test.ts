@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
-import { markdownNode } from '../src/desktop/renderer/dom/markdownView.js'
+import { markdownChildren, markdownNode } from '../src/desktop/renderer/dom/markdownView.js'
+import { reconcile } from '../src/desktop/renderer/dom/dom.js'
 
 /**
  * The typesetting half of TeX support; `test/markdownMath.test.ts` is the other
@@ -34,6 +35,37 @@ function render(content: string): StubView {
 function find(view: StubView, className: string): StubView[] {
   return descendants(view).filter((node) => node.classes.includes(className))
 }
+
+for (const [name, growing, closed] of [
+  ['fence', '```ts\nlet a =', '```ts\nlet a = 1\n```'],
+  ['list', '- one\n- tw', '- one\n- two\n\nAfter'],
+  ['table', '| a |\n| - |\n| par', '| a |\n| - |\n| part |\n\nAfter'],
+  ['math', '$$x^', '$$x^2$$'],
+]) {
+  test(`streaming ${name} closure preserves its settled neighbours`, () => {
+    const owner = stub.createContainer()
+    const paint = (tail: string): void => reconcile(owner, markdownChildren(`Read me first.\n\n${tail}`, owner))
+    paint(growing!)
+    const before = stub.inspect(owner).children
+    paint(closed!)
+    const after = stub.inspect(owner).children
+    assert.equal(after[0]!.node, before[0]!.node)
+    assert.notEqual(after[1]!.node, before[1]!.node)
+    paint(closed!)
+    assert.equal(stub.inspect(owner).children[1]!.node, after[1]!.node)
+    paint(`${closed}\n\nMore text`)
+    assert.equal(stub.inspect(owner).children[0]!.node, before[0]!.node)
+  })
+}
+
+test('a late reference definition updates the affected block while keeping unrelated prose', () => {
+  const owner = stub.createContainer()
+  reconcile(owner, markdownChildren('Unchanged.\n\n[link][ref]', owner))
+  const first = stub.inspect(owner).children[0]!.node
+  reconcile(owner, markdownChildren('Unchanged.\n\n[link][ref]\n\n[ref]: https://example.com', owner))
+  assert.equal(stub.inspect(owner).children[0]!.node, first)
+  assert.equal(descendants(stub.inspect(owner)).find((node) => node.tagName === 'A')?.text, 'link')
+})
 
 test('an inline equation is typeset into a KaTeX tree, not a string of markup', () => {
   const view = render('the value $x^2$ here')

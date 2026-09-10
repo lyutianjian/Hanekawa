@@ -1,7 +1,7 @@
 import katex from 'katex'
 
 import type { MdBlock, MdInline, MdListItem } from '../model/markdown.js'
-import { parseMarkdownBlocks } from '../model/markdown.js'
+import { parseMarkdownBlocks, parseMarkdownSegments } from '../model/markdown.js'
 import { el, append } from './dom.js'
 
 /**
@@ -28,8 +28,24 @@ export function markdownNode(content: string, className = 'md'): HTMLElement {
  * go into — the transcript reuses its nodes by id (T7), so it refills an element
  * it kept rather than building a new one around the blocks.
  */
-export function markdownChildren(content: string): HTMLElement[] {
-  return parseMarkdownBlocks(content).map(blockNode)
+// Owned by the particular message element, never by a session id or shared
+// source key. Removing that element releases its block cache as well.
+const keptBlocks = new WeakMap<HTMLElement, Map<string, { signature: string; node: HTMLElement }>>()
+
+export function markdownChildren(content: string, owner?: HTMLElement): HTMLElement[] {
+  if (!owner) return parseMarkdownBlocks(content).map(blockNode)
+  const previous = keptBlocks.get(owner)
+  const next = new Map<string, { signature: string; node: HTMLElement }>()
+  const nodes = parseMarkdownSegments(content).map((segment) => {
+    const cached = previous?.get(segment.id)
+    const entry = cached?.signature === segment.signature
+      ? cached
+      : { signature: segment.signature, node: blockNode(segment.block) }
+    next.set(segment.id, entry)
+    return entry.node
+  })
+  keptBlocks.set(owner, next)
+  return nodes
 }
 
 function blockNode(block: MdBlock): HTMLElement {

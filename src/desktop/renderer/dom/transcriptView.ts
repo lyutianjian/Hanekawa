@@ -650,7 +650,7 @@ function stepNode(painter: Painter, group: ActivityGroup, step: ActivityStep, in
       return taskStep(painter, step)
     case 'text':
       // Staged prose: full markdown, shown whole, never folded (§4.4).
-      return painter.node(`step:${step.id}`, 'step text md', [step.text], () => markdownChildren(step.text))
+      return painter.node(`step:${step.id}`, 'step text md', [step.text], (node) => markdownChildren(step.text, node))
     case 'system':
       return painter.node(
         `step:${step.id}`,
@@ -726,7 +726,11 @@ function thinkingStep(painter: Painter, step: Extract<ActivityStep, { kind: 'thi
       },
       () => button('step-head thinking-step-head', '', label, () => painter.onToggle(step.id, ref.expanded)),
     )
-    return [head, expanded ? el('div', 'step-body', step.text) : undefined]
+    const body = expanded ? painter.node(`thinking-body:${step.id}`, 'step-body', [step.text], (node) => {
+      node.textContent = step.text
+      return [...node.childNodes]
+    }) : undefined
+    return [head, body]
   })
 }
 
@@ -1147,8 +1151,8 @@ function itemNode(painter: Painter, item: TranscriptItem): HTMLElement {
   // just a code block whose end has not arrived, and the parse cache means the
   // cost is one parse of the draft rather than one of every settled message.
   if (item.kind === 'assistant') {
-    return painter.node(key, `${classes.join(' ')} md`, [item.text, item.model, item.createdAt], () => [
-      ...markdownChildren(item.text),
+    return painter.node(key, `${classes.join(' ')} md`, [item.text, item.model, item.createdAt], (node) => [
+      ...markdownChildren(item.text, node),
       metaRow(painter, item),
     ])
   }
@@ -1275,7 +1279,7 @@ function looseThinkingNode(
   // Driven by the item, never by `TranscriptState.isThinking`: that flag goes false
   // on `thinking_stop` while the block is still arriving.
   if (item.pending === true) classes.push('live')
-  return painter.node(key, classes.join(' '), [item, expanded], () => {
+  return painter.node(key, classes.join(' '), [item.text, item.summary, expanded], () => {
     const label = thinkingHeaderLabel(item)
     // 「已处理 Xm Xs `⌵`」 (design_guidance 四.3): the glyph follows the label and
     // still flips to point up while the block is open — that rule matches on the
@@ -1284,7 +1288,11 @@ function looseThinkingNode(
       trailingIcon: 'chevron-down',
     })
     header.setAttribute('aria-expanded', expanded ? 'true' : 'false')
-    return [header, expanded ? el('div', 'thinking-body', item.text) : undefined]
+    const body = expanded ? painter.node(`loose-thinking-body:${item.id}`, 'thinking-body', [item.text], (node) => {
+      node.textContent = item.text
+      return [...node.childNodes]
+    }) : undefined
+    return [header, body]
   })
 }
 

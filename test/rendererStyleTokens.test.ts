@@ -1524,6 +1524,28 @@ test('the bead is the tool step\'s whole status vocabulary, and it stays flat', 
   }
 })
 
+test('running signals stay readable, singular per row, and completion never scales', () => {
+  const source = stripComments(css)
+  assert.match(blockFor('.waiting-bead').decls.find((decl) => decl.prop === 'animation')!.value, /^breathe /)
+  assert.ok(!blockFor('.waiting-label').decls.some((decl) => decl.prop === 'animation'))
+  assert.doesNotMatch(source, /\.waiting-bead::after|@keyframes (?:halo|sweep)\b/)
+  assert.doesNotMatch(source, /\.thinking-header\s*\{[^}]*animation:/)
+  for (const name of ['breathe', 'blink']) {
+    const frame = source.match(new RegExp(`@keyframes ${name} \\{ 50% \\{ ([^}]+)`))?.[1]
+    assert.ok(frame)
+    assert.match(frame, /opacity: 0\.65;/)
+  }
+  const completion = source.match(/@keyframes bead-pop \{ 50% \{ ([^}]+)/)?.[1]
+  assert.ok(completion)
+  assert.match(completion, /opacity:/)
+  assert.doesNotMatch(completion, /transform/)
+  for (const block of blocks) {
+    for (const decl of block.decls) {
+      if (decl.prop === 'animation' && /^spin /.test(decl.value)) assert.match(decl.value, /linear infinite$/)
+    }
+  }
+})
+
 test("the shell family's terminal block is a card-shelled output block that reddens whole on failure", () => {
   // §6.2/T14: a Bash step opens into the command's own output, on the same
   // card-and-hairline content shell a fenced block or a diff gets, scrolling

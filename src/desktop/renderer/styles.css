@@ -1531,14 +1531,13 @@ body.resizing #sidebar { transition: none; }
   color: var(--text-tertiary);
   font-style: italic;
 }
-/* A breath, not a blink: the label is next to streaming text and must not compete
-   with it. There is no `prefers-reduced-motion` here because the token test's
-   parser rejects every at-rule but `@keyframes` — recorded in `todo.md`. */
-.transcript .item.thinking.live .thinking-header { animation: breathe var(--motion-running) var(--ease-standard) infinite; }
-@keyframes breathe { 50% { opacity: 0.45; } }
+/* Text stays still; only status beads breathe. Reduced-motion lives at the end
+   of the sheet: the token parser allows no other nested rule here except
+   `@keyframes`. */
+@keyframes breathe { 50% { opacity: 0.65; } }
 /* --- the waiting row ---
    The gap between Enter and the first record, made visible: a breathing bead, a
-   label with a sheen travelling through it, the elapsed time and the key that
+   static label, the elapsed time and the key that
    stops the turn. `model/waiting.ts` decides when it exists — only until the turn
    opens its activity group, whose head takes these same four pieces over for the
    rest of the turn — so it needs no fade of its own; a row that appears when the
@@ -1546,7 +1545,7 @@ body.resizing #sidebar { transition: none; }
    catches.
 
    Four rungs of loudness on one line, which is the whole design: the bead is the
-   only accent, the label is primary-ish text under the sheen, and the counter and
+   only accent, the label is secondary text, and the counter and
    the hint are `--text-tertiary` metadata. Nothing here is a control — the hint
    names a key, it is not a button — so the row carries no hover and no radius.
 
@@ -1576,47 +1575,8 @@ body.resizing #sidebar { transition: none; }
   background: currentColor;
   animation: breathe var(--motion-running) var(--ease-standard) infinite;
 }
-/* The halo: one expanding ring per breath, out of flow so it cannot move the
-   line it sits on. It fades out well before the edge, so at rest the row is a
-   dot — the motion is the message, not the size. */
-.waiting-bead::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: var(--radius-pill);
-  background: currentColor;
-  animation: halo var(--motion-running) var(--ease-standard) infinite;
-}
-/* Percentage steps, never `from`: a `from { transform }` in this sheet is by
-   definition one of the three 8px entrances, and the token test says so. */
-@keyframes halo {
-  0% { transform: scale(1); opacity: 0.28; }
-  100% { transform: scale(2.6); opacity: 0; }
-}
-/* The sheen is the label's own ink: a gradient clipped to the glyphs, sweeping
-   from the tertiary rung through the primary one and back. It is what tells a
-   slow first token from a hung window without adding a second moving object —
-   and under `prefers-reduced-motion` it settles on the tertiary rung, so the
-   words stay readable when the sweep stops. */
-.waiting-label {
-  background-image: linear-gradient(
-    100deg,
-    var(--text-tertiary) 0%,
-    var(--text-tertiary) 38%,
-    var(--text-primary) 50%,
-    var(--text-tertiary) 62%,
-    var(--text-tertiary) 100%
-  );
-  background-size: 280% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: sweep var(--motion-running) var(--ease-standard) infinite;
-}
-@keyframes sweep {
-  from { background-position: 140% 0; }
-  to { background-position: -140% 0; }
-}
+/* One running signal on this line: the bead. The words remain readable. */
+.waiting-label { color: var(--text-secondary); }
 /* The counter, in the digits that do not jitter as they climb. Monospaced for
    the same reason the meta row's time is: it changes ten times a second. */
 .waiting-elapsed {
@@ -1774,10 +1734,9 @@ body.resizing #sidebar { transition: none; }
    alone would be one channel and this row may be read at a glance — and each is
    `aria-hidden`, with the state repeated in words in the head's accessible name.
 
-   Waiting on the user blinks, because it is the one state that wants an answer.
-   Running breathes, the same 「alive, not urgent」 the thinking header uses.
-   The two settled states do not loop at all: they pop once, on arrival, and then
-   hold still — a finished step must not keep moving under a reader. */
+   Waiting on the user pulses without disappearing. Running breathes, the same
+   「alive, not urgent」 as the group head. Settled states give one small opacity
+   feedback on a live completion edge, then hold still. */
 .step-bead.awaiting-approval {
   color: var(--accent-warn);
   animation: blink var(--motion-running) var(--ease-standard) infinite;
@@ -1791,10 +1750,9 @@ body.resizing #sidebar { transition: none; }
 }
 /* Historical state is static; only an observed running-to-settled edge adds this. */
 .step-bead.completing { animation: bead-pop var(--motion-complete) var(--ease-standard); }
-@keyframes blink { 50% { opacity: 0; } }
-/* Overshoot and settle, never `from`: a `from { transform }` in this sheet is by
-   definition one of the three 8px entrances, and the token test enforces that. */
-@keyframes bead-pop { 50% { transform: scale(1.6); } }
+@keyframes blink { 50% { opacity: 0.65; } }
+/* The completion listener retains this name; feedback never scales the dot. */
+@keyframes bead-pop { 50% { opacity: 0.7; } }
 /* The hairline that stands in for a bead on a row with no outcome (§3): a system
    row, which reports rather than runs, and a thinking row *while it is still
    thinking*. A sealed thought drops it — the line was the waiting, and there is

@@ -396,7 +396,7 @@ const thinking = (items: readonly StubView[]): StubView => {
   return found
 }
 
-test('a streaming block is open, breathing, and shows the live label', (t) => {
+test('a streaming block is open and shows the live label', (t) => {
   const { render, items } = mount(t)
   render(transcript([liveThinking]))
   const block = thinking(items())
@@ -1578,11 +1578,12 @@ test('once the turn opens a group, the head carries the status and the row is go
   assert.equal(head.attributes.get('aria-label'), '工作中')
 
   // The tool settles and the turn keeps running: the label falls back to
-  // 「正在思考」 on the *same node*, so the sheen is not restarted.
+  // 「正在思考」 while all four pieces stay mounted, preserving the breath.
   const between = turnItems()
   view.render(transcript(between, { turnId: 't1' }), NO_DISCLOSURE, { isStreaming: true, startedAt, turnId: 't1' })
   const still = groupOf(view).children[0]!
   assert.equal(still.node, head.node, 'the head is kept across the step settling')
+  for (let i = 0; i < head.children.length; i += 1) assert.equal(still.children[i]!.node, head.children[i]!.node)
   assert.equal(still.children[1]!.text, '正在思考')
 
   // Only the end of the turn seals it.
@@ -1594,6 +1595,26 @@ test('once the turn opens a group, the head carries the status and the row is go
   const sealed = groupOf(view).children[0]!
   assert.equal(sealed.classes.includes('live'), false)
   assert.match(sealed.text, /^已完成|^已处理/)
+})
+
+test('M18 keeps the breathing bead and clock mounted across tool handoffs and unchanged paints', (t) => {
+  const view = mount(t)
+  const activity = { ...RUNNING_T1, startedAt: Date.now() - 6000 }
+  const starts = trackAnimationStarts(view.column, '.waiting-bead', view.stub.observeMotion)
+  t.after(starts.dispose)
+  let pieces: readonly StubView[] | undefined
+  for (const toolName of ['Read', undefined, undefined, 'Grep', undefined, 'Edit']) {
+    const item: TranscriptItem = { id: 'tool', kind: 'tool', turnId: 't1', text: '',
+      toolName: toolName ?? 'Read', pending: toolName !== undefined,
+      tool: { displayName: toolName ?? 'Read', useSummary: 'a.ts' } }
+    view.render(transcript([item]), NO_DISCLOSURE, activity)
+    const head = groupOf(view).children[0]!
+    pieces ??= head.children
+    for (let i = 0; i < pieces.length; i += 1) assert.equal(head.children[i]!.node, pieces[i]!.node)
+    assert.equal(head.children[1]!.text, toolName ?? '正在思考')
+    assert.equal(head.children[2]!.text, '6s')
+  }
+  assert.equal(starts.starts, 0, 'label updates never detach or reactivate the bead')
 })
 
 test('the waiting row keeps its node while it waits, and leaves when the answer starts', (t) => {

@@ -518,7 +518,7 @@ const IDLE: WaitingInput = { isStreaming: false, startedAt: undefined, turnId: u
  */
 function waitingNode(painter: Painter, row: WaitingRow): HTMLElement {
   return painter.node('waiting', 'waiting', [row.label, row.hint, row.startedAt], () => [
-    ...liveParts(painter, row.label, row.hint),
+    ...liveParts(painter, 'waiting', row.label, row.hint),
   ])
 }
 
@@ -532,17 +532,20 @@ function waitingNode(painter: Painter, row: WaitingRow): HTMLElement {
  * empty until the wait passes `waitingElapsedLabel`'s threshold, which is why the
  * sheet hides an empty counter rather than leaving its gap behind.
  */
-function liveParts(painter: Painter, label: string, hint: string, announce = true): HTMLElement[] {
-  const bead = el('span', 'waiting-bead')
-  bead.setAttribute('aria-hidden', 'true')
-  const elapsed = el('span', 'waiting-elapsed')
-  elapsed.setAttribute('aria-hidden', 'true')
+function liveParts(painter: Painter, key: string, label: string, hint: string, announce = true): HTMLElement[] {
+  const part = (name: string, text: string, hidden = true): HTMLElement => painter.node(
+    `${key}:${name}`, `waiting-${name}`, [text, hidden], (node) => {
+      if (hidden) node.setAttribute('aria-hidden', 'true')
+      return [text]
+    }, () => el('span'),
+  )
+  const bead = part('bead', '')
+  const elapsed = part('elapsed', '')
   painter.keepClock(elapsed)
   // Spoken on the standalone row, which appears once and then holds still; muted
   // on the group's head, whose label follows the turn from tool to tool and
   // whose accessible name is `groupHeaderName`'s stable one instead (§8).
-  const text = announce ? el('span', 'waiting-label', label) : quiet('waiting-label', label)
-  return [bead, text, elapsed, quiet('waiting-hint', hint)]
+  return [bead, part('label', label, !announce), elapsed, part('hint', hint)]
 }
 
 // --- node reuse --------------------------------------------------------------
@@ -834,7 +837,7 @@ function groupHead(painter: Painter, group: ActivityGroup, expanded: boolean, li
       // `aria-hidden`: it tracks the turn as it works, and this subtree sits in
       // an `aria-live` region (§8). The name is `groupHeaderName`'s stable one
       // instead; what is new is announced by the current step's head.
-      if (live) return liveParts(painter, label, WAITING_HINT, false)
+      if (live) return liveParts(painter, `live:${group.turnId}`, label, WAITING_HINT, false)
       return [quiet('btn-label', label)]
     },
     () => button('group-head', '', name, () => painter.onToggle(group.turnId, ref.expanded)),

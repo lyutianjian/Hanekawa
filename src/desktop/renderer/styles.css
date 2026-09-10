@@ -4513,7 +4513,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 #suggestions:not([hidden]),
 #queue:not([hidden]) { animation: rise-in var(--motion-base) var(--ease-standard); }
 .titlebar-menu,
-.canvas-menu,
+.canvas-menu:not([hidden]),
 .settings-menu { animation: drop-in var(--motion-base) var(--ease-standard); }
 /* Gated on `[hidden]` like the panels above rather than on the node existing:
    `dom/sidebarView.ts` keeps one menu per workspace across repaints — the rail

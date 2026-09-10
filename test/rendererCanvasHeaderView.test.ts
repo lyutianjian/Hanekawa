@@ -33,7 +33,7 @@ function lane(overrides: Partial<WireLaneInfo> = {}): WireLaneInfo {
 }
 
 // M06: streaming shell snapshots must not replay menu entry or move focus.
-test('M06 keeps an open menu and its focused item through ten snapshots', { skip: true }, (t) => {
+test('M06 keeps an open menu and its focused item through ten snapshots', (t) => {
   const r = render(t)
   r.paint({ menuOpen: true })
   const root = () => r.stub.inspect(r.container)
@@ -50,6 +50,11 @@ test('M06 keeps an open menu and its focused item through ten snapshots', { skip
   }
   assert.equal(identity.replacements, 0)
   assert.equal(starts.starts, 0)
+  r.paint({ menuOpen: true, lane: lane({ sessionTitle: '新标题' }) })
+  assert.equal(identity.sample(), menu)
+  assert.equal(r.stub.activeElement(), second)
+  r.paint({ menuOpen: true, pendingDelete: 's1' })
+  assert.equal(identity.sample(), menu, 'confirmation updates the same menu container')
 })
 
 interface Rendered {

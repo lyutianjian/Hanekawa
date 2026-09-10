@@ -1,6 +1,6 @@
 import type { CanvasHeaderMenuItem, CanvasHeaderView } from '../model/canvasHeader.js'
 import { renameCommit } from '../model/canvasHeader.js'
-import { append, el, replace, show } from './dom.js'
+import { append, el, reconcile, show } from './dom.js'
 import { button } from './controls.js'
 import { onPressOutside } from './dismiss.js'
 import { icon } from './icons.js'
@@ -53,12 +53,26 @@ export function createCanvasHeaderView(
   const identity = el('div', 'canvas-identity')
   const rightControls = el('div', 'canvas-header-controls')
   append(container, [identity, rightControls])
+  const folder = icon('folder')
+  const title = el('span', 'canvas-title')
+  const trigger = button('canvas-menu-trigger', '⋯', '会话操作', actions.onToggleMenu)
+  trigger.setAttribute('aria-haspopup', 'menu')
+  const menu = el('div', 'canvas-menu')
+  menu.setAttribute('role', 'menu')
+  menu.setAttribute('aria-label', '会话操作')
+  menu.hidden = true
+  const menuShell = el('div', 'canvas-menu-shell', trigger, menu)
+  const menuItems = new Map<CanvasHeaderMenuItem['id'], { node: HTMLButtonElement; label: HTMLElement }>()
+  const locationLabel = el('span', 'btn-label')
+  const openLocation = button('canvas-open-location', '', '', actions.onOpenLocation, { icon: 'code' })
+  openLocation.appendChild(locationLabel)
+  let lastSignature: string | undefined
 
   /** The title the input was seeded from, so a no-op commit sends nothing. */
   let seededTitle: string | undefined
   /** Whether the last paint drew the menu, so focus moves on the edge only. */
   let menuWasOpen = false
-  /** The menu's first item, rebuilt with the menu; where the keyboard lands. */
+  /** The current menu's first item; where the keyboard lands on opening. */
   let firstMenuItem: HTMLElement | undefined
 
   titleInput.addEventListener('keydown', (event) => {
@@ -85,8 +99,7 @@ export function createCanvasHeaderView(
   // of an open menu reaches `onToggleMenu` as a close, instead of being closed
   // here and re-opened by the click that follows.
   //
-  // By selector rather than by node: both are rebuilt by every render, including
-  // every snapshot of a streaming turn, so a captured reference would be stale.
+  // Scoped to the persistent menu and its trigger, never the entire header.
   onPressOutside(['.canvas-menu', '.canvas-menu-trigger'], () => actions.onCloseMenu())
   container.addEventListener('focusout', (event) => {
     const next = (event as FocusEvent).relatedTarget
@@ -122,59 +135,44 @@ export function createCanvasHeaderView(
 
   return {
     render(view) {
+      const signature = JSON.stringify(view)
+      if (signature === lastSignature) return
+      lastSignature = signature
       show(container, view.visible)
       if (!view.visible) {
         // The subtree goes, not just the visibility: an empty window has no
         // session to name, and a stale title would be the last one it had.
-        titleInput.remove()
-        replace(identity)
-        replace(rightControls)
+        reconcile(identity, [])
+        reconcile(rightControls, [])
+        show(menu, false)
         seededTitle = undefined
         menuWasOpen = false
         firstMenuItem = undefined
         return
       }
 
-      // The input is pulled out of `identity` before it is emptied, so
-      // `replace()` never destroys it.
-      titleInput.remove()
-
-      const menuShell = el('div', 'canvas-menu-shell')
-      const trigger = button('canvas-menu-trigger', '⋯', '会话操作', actions.onToggleMenu)
-      trigger.setAttribute('aria-haspopup', 'menu')
       trigger.setAttribute('aria-expanded', view.menuOpen ? 'true' : 'false')
-      menuShell.appendChild(trigger)
-      if (view.menuOpen) menuShell.appendChild(buildMenu(view.menuItems))
+      if (view.menuOpen) updateMenu(view.menuItems)
+      show(menu, view.menuOpen)
+      if (title.textContent !== view.title) title.textContent = view.title
+      reconcile(identity, [folder, view.renaming ? titleInput : title, menuShell])
 
-      replace(
-        identity,
-        icon('folder'),
-        view.renaming ? titleInput : el('span', 'canvas-title', view.title),
-        menuShell,
-      )
-
+      const startingRename = view.renaming && seededTitle === undefined
       if (view.renaming) {
         // Written back exactly once, on the transition: a repaint mid-typing
         // would otherwise reset the field to the title on disk.
         if (seededTitle === undefined) {
           seededTitle = view.title
           titleInput.value = view.title
-          titleInput.focus()
         }
       } else {
         seededTitle = undefined
       }
 
-      replace(
-        rightControls,
-        button(
-          'canvas-open-location',
-          view.openLocationLabel,
-          view.openLocationTitle,
-          actions.onOpenLocation,
-          { icon: 'code' },
-        ),
-      )
+      locationLabel.textContent = view.openLocationLabel
+      openLocation.title = view.openLocationTitle
+      openLocation.setAttribute('aria-label', view.openLocationTitle)
+      reconcile(rightControls, [openLocation])
 
       // Last, after every node this paint owns is in the page — `focus()` is the
       // one call here that runs other people's code. It fires `focusout` on
@@ -192,25 +190,32 @@ export function createCanvasHeaderView(
       const opening = view.menuOpen && !menuWasOpen
       menuWasOpen = view.menuOpen
       if (opening) firstMenuItem?.focus()
+      else if (startingRename) titleInput.focus()
     },
   }
 
-  function buildMenu(items: readonly CanvasHeaderMenuItem[]): HTMLElement {
-    const menu = el('div', 'canvas-menu')
-    menu.setAttribute('role', 'menu')
-    menu.setAttribute('aria-label', '会话操作')
+  function updateMenu(items: readonly CanvasHeaderMenuItem[]): void {
     firstMenuItem = undefined
-    for (const item of items) {
-      const node = button(
-        item.danger ? 'canvas-menu-item danger' : 'canvas-menu-item',
-        item.label,
-        item.label,
-        () => actions.onMenuItem(item.id),
-      )
-      node.setAttribute('role', 'menuitem')
-      firstMenuItem ??= node
-      menu.appendChild(node)
+    const nodes = items.map((item) => {
+      let kept = menuItems.get(item.id)
+      if (!kept) {
+        const node = button('canvas-menu-item', '', item.label, () => actions.onMenuItem(item.id))
+        node.setAttribute('role', 'menuitem')
+        const label = el('span', 'btn-label')
+        node.appendChild(label)
+        kept = { node, label }
+        menuItems.set(item.id, kept)
+      }
+      kept.node.classList.toggle('danger', item.danger === true)
+      kept.node.title = item.label
+      kept.node.setAttribute('aria-label', item.label)
+      if (kept.label.textContent !== item.label) kept.label.textContent = item.label
+      firstMenuItem ??= kept.node
+      return kept.node
+    })
+    reconcile(menu, nodes)
+    for (const id of menuItems.keys()) {
+      if (!items.some((item) => item.id === id)) menuItems.delete(id)
     }
-    return menu
   }
 }

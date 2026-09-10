@@ -1,9 +1,11 @@
 import type { OverlayAction } from '../model/dialogActions.js'
 import type { PermissionViewModel } from '../model/permissionDialog.js'
 import { previewNode } from './diffView.js'
-import { el, replace, show } from './dom.js'
+import { el, replace } from './dom.js'
 import { icon, type IconName } from './icons.js'
 import { actionBar } from './overlayView.js'
+import { createPresence } from './presence.js'
+import { PRESENCE_FALLBACK_MS } from '../model/presence.js'
 
 /**
  * The permission request, drawn **into the composer** rather than over the lane.
@@ -16,11 +18,10 @@ import { actionBar } from './overlayView.js'
  * question itself.
  *
  * So the input transforms: the composer capsule the user's hand is already on
- * keeps its frame, its width and its place, and swaps the textarea and the
- * action bar for the request. Nothing moves; the thing you type into becomes the
- * thing you answer with. `#composer` carries `.request-open` for the duration,
- * which is what hides the two halves — a view that removed them would have to
- * put the caret back afterwards.
+ * keeps its frame and width while its height follows the request. The textarea
+ * and action bar remain mounted, with `.request-open` controlling availability.
+ * Replying restores them immediately; the inert request can finish its visual
+ * exit without consuming any text typed into the restored input.
  *
  * What it draws comes from the same {@link PermissionViewModel} the modal used,
  * so the two cannot disagree about which options exist or which one Enter is
@@ -31,7 +32,7 @@ import { actionBar } from './overlayView.js'
  */
 export interface PermissionRequestView {
   show(view: PermissionViewModel): void
-  hide(): void
+  hide(immediate?: boolean): void
 }
 
 /** What the card reports when a button is pressed; the modal's shape. */
@@ -57,16 +58,48 @@ export function createPermissionRequestView(
   /** `#composer-request`, the card's own container inside the capsule. */
   container: HTMLElement,
   onSelect: PermissionRequestSelect,
+  actions: { onLayoutChange?: () => void; onReturnFocus?: () => void } = {},
 ): PermissionRequestView {
   container.setAttribute('role', 'group')
-  show(container, false)
+  const presence = createPresence(container, { kind: 'panel', direction: 'none', onClosed: () => replace(container) })
+  let open = false
+  let heightTimer: ReturnType<typeof setTimeout> | undefined
+
+  const finishHeight = (): void => {
+    clearTimeout(heightTimer)
+    heightTimer = undefined
+    composer.style.height = ''
+    composer.classList.remove('request-changing')
+  }
+  composer.addEventListener('transitionend', (event) => {
+    if (event.target === composer && event.propertyName === 'height') finishHeight()
+  })
+  const beginHeight = (): void => {
+    actions.onLayoutChange?.()
+    clearTimeout(heightTimer)
+    const height = composer.getBoundingClientRect().height
+    if (!Number.isFinite(height) || height <= 0) return
+    composer.style.height = `${height}px`
+    composer.classList.add('request-changing')
+    composer.getBoundingClientRect()
+  }
+  const endHeight = (): void => {
+    composer.style.height = 'auto'
+    heightTimer = setTimeout(finishHeight, PRESENCE_FALLBACK_MS.layout)
+    ;(heightTimer as unknown as { unref?: () => void }).unref?.()
+  }
 
   return {
     show(view) {
+      const focusAction = !open || container.contains(document.activeElement)
+      beginHeight()
+      open = true
       // The tone lands on the card rather than on the capsule: the composer's
       // border is a focus affordance, and recolouring it would say "this field
       // is wrong" instead of "this request is dangerous".
-      container.className = `tone-${view.tone}`
+      container.classList.remove('tone-normal', 'tone-caution', 'tone-danger')
+      container.classList.add(`tone-${view.tone}`)
+      const bar = actionBar(view.actions, onSelect, view.selectedIndex)
       replace(
         container,
         el(
@@ -83,19 +116,31 @@ export function createPermissionRequestView(
         view.preview !== undefined && previewNode(view.preview),
         view.alsoWaiting.length > 0
           && el('div', 'request-waiting', `还在等待：${view.alsoWaiting.join('、')}`),
-        actionBar(view.actions, onSelect, view.selectedIndex),
+        bar,
       )
       container.setAttribute('aria-label', `${view.title}：${view.reason}`)
-      show(container, true)
       composer.classList.add('request-open')
+      presence.set(true)
+      endHeight()
+      if (focusAction) {
+        const index = Math.max(0, view.actions.findIndex((action) => action.slot === view.selectedIndex))
+        ;(bar.children[index] as HTMLButtonElement | undefined)?.focus()
+      }
     },
 
-    hide() {
+    hide(immediate = false) {
+      if (!open) {
+        if (immediate) { presence.set(false, true); finishHeight() }
+        return
+      }
+      if (!immediate) beginHeight()
+      open = false
       composer.classList.remove('request-open')
-      show(container, false)
-      // Emptied, not merely hidden: a hidden button is still a Tab stop in some
-      // engines, and a stale one answers a request that is already settled.
-      replace(container)
+      // The bridge reply has already happened. The old card is now absolute
+      // and inert; the textarea is immediately available even during exit.
+      presence.set(false, immediate)
+      if (immediate) finishHeight()
+      else { endHeight(); actions.onReturnFocus?.() }
     },
   }
 }

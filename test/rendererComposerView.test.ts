@@ -680,10 +680,49 @@ test('the request transforms the composer rather than covering the lane', (t) =>
 
   c.view.hide()
   assert.equal(c.stub.inspect(c.composer).classes.includes('request-open'), false)
+  assert.equal(c.stub.inspect(c.container).attributes.has('inert'), true)
+  assert.equal(c.stub.inspect(c.container).classes.includes('presence-closing'), true)
+  c.stub.dispatch(c.container, 'transitionend', { propertyName: 'opacity' })
   assert.equal(c.stub.inspect(c.container).hidden, true)
   // Emptied, not merely hidden: a stale button answers a settled request, and a
   // hidden one is still a Tab stop in some engines.
   assert.equal(c.stub.inspect(c.container).children.length, 0)
+})
+
+test('M16 permission replies precede exit and typing during the handoff stays in the original input', (t) => {
+  const r = render(t)
+  const capsule = r.stub.createContainer()
+  const request = r.stub.createContainer()
+  capsule.appendChild(request)
+  capsule.appendChild(r.els.input)
+  let layouts = 0
+  const replies: OverlayAction[] = []
+  const card = createPermissionRequestView(capsule, request, (action) => {
+    assert.equal(request.classList.contains('presence-closing'), false, 'business receives the intent before exit')
+    replies.push(action)
+    card.hide()
+  }, { onLayoutChange: () => { layouts += 1 }, onReturnFocus: () => r.composer.focus() })
+  r.stub.onLayout((node) => node.node === capsule
+    ? { top: 0, bottom: capsule.classList.contains('request-open') ? 220 : 90 } : undefined)
+  card.show(permissionFixture({ selectedIndex: 1 }))
+  const action = r.stub.inspect(request).children.find((node) => node.classes.includes('dialog-actions'))!.children[1]!
+  assert.equal(r.stub.activeElement(), action.node)
+  r.stub.click(action.node)
+  assert.deepEqual(replies, [{ kind: 'slot', index: 1 }])
+  assert.equal(r.stub.activeElement(), r.els.input)
+  assert.equal(request.classList.contains('presence-closing'), true)
+  assert.equal(capsule.classList.contains('request-changing'), true)
+  input(r).value = '在退出时继续输入'
+  r.stub.dispatch(r.els.input, 'input')
+  r.stub.dispatch(request, 'transitionend', { propertyName: 'opacity' })
+  r.stub.dispatch(capsule, 'transitionend', { propertyName: 'height' })
+  assert.equal(input(r).value, '在退出时继续输入')
+  assert.equal(r.els.input.parentElement, capsule)
+  assert.equal(layouts, 2, 'both directions notify the viewport before changing shape')
+  assert.equal(capsule.classList.contains('request-changing'), false)
+  card.show(permissionFixture())
+  card.hide(true)
+  assert.equal(request.hidden, true, 'a pane switch leaves no outgoing request')
 })
 
 test('the card answers by slot, exactly as the modal did', (t) => {

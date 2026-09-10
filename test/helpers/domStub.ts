@@ -117,8 +117,9 @@ class StubElement {
    * gives inside a `display: none` subtree and the one a measuring view has to
    * survive either way.
    */
-  getBoundingClientRect(): { top: number; bottom: number } {
-    return LAYOUT?.(viewOf(this)) ?? { top: Number.NaN, bottom: Number.NaN }
+  getBoundingClientRect(): { top: number; bottom: number; height: number } {
+    const rect = LAYOUT?.(viewOf(this)) ?? { top: Number.NaN, bottom: Number.NaN }
+    return { ...rect, height: rect.bottom - rect.top }
   }
   /**
    * The inline style, which the renderer may reach in exactly two ways
@@ -211,6 +212,10 @@ class StubElement {
 
   get firstChild(): StubChild | null {
     return this.childNodes[0] ?? null
+  }
+
+  get children(): StubElement[] {
+    return this.childNodes.filter((child): child is StubElement => child instanceof StubElement)
   }
 
   get firstElementChild(): StubElement | null {

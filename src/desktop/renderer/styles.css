@@ -2689,6 +2689,8 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 /* The horizontal padding is `--composer-overhang`'s other half; the two are one
    number and move together (see that token). */
 #composer {
+  interpolate-size: allow-keywords;
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -2697,7 +2699,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   border-radius: var(--radius-lg);
   padding: var(--space-3) var(--space-4);
   transition: border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
+    box-shadow var(--motion-fast) var(--ease-standard), height var(--motion-slow) var(--ease-standard);
 }
 /* Focus lifts the capsule off the page rather than recolouring it further: the
    composer is the one control the user returns to between every turn, and a
@@ -2716,12 +2718,19 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
    transcript behind it stays readable, which matters because the request is
    usually about the command printed two lines above.
 
-   `display: none` rather than a collapse: there is nothing to animate between a
-   textarea and a question, and a hidden-but-present textarea is still a Tab stop
-   that would swallow the keys the bar wants. */
+   The capsule interpolates its measured height into the new content's natural
+   height. Business intent switches controls immediately; a closing request is
+   an inert visual laid over the available textarea until its exit settles. */
 #composer.request-open > #input,
 #composer.request-open > #composer-bar,
 #composer.request-open > #composer-attachments { display: none; }
+#composer.request-changing { overflow: clip; }
+#composer-request.presence-closing {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-4);
+  right: var(--space-4);
+}
 
 /* --- the composer's draft attachments (S11) ----------------------------------
    Composer content, not a popover: the strip rides between the request card

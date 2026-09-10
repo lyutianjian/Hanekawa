@@ -235,6 +235,7 @@ export interface PaneSession {
   isActive(): boolean
   activate(): void
   deactivate(): void
+  beginLayoutChange(): void
   dispose(): void
   /** The `hello()` startup sequence: records, notices, queue, commands, panes. */
   start(): Promise<void>
@@ -1639,7 +1640,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.overlay.hide()
     // The composer is a singleton too, so a background pane's request would
     // otherwise sit in the next pane's capsule and answer *its* gate.
-    deps.permissionRequest.hide()
+    deps.permissionRequest.hide(true)
     deps.rewindPanel.hide()
     deps.surface.hide()
     deps.queueStrip.hide()
@@ -1856,6 +1857,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     isActive: () => active,
     activate,
     deactivate,
+    beginLayoutChange: () => transcriptView.beginLayoutChange(),
     dispose,
     start,
     shellState,

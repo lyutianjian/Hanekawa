@@ -173,6 +173,10 @@ const permissionRequest = createPermissionRequestView(
   (action) => {
     activePane()?.handleOverlayAction(action)
   },
+  {
+    onLayoutChange: () => activePane()?.beginLayoutChange(),
+    onReturnFocus: () => composer.focus(),
+  },
 )
 const surface = createSurfacePanel(required('surface'), (action) => {
   void activePane()?.runSurfaceAction(action)

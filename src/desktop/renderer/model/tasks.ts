@@ -1,6 +1,9 @@
 import type { SessionRecord, TaskDisplayCounts, TaskDisplayItem, TaskDisplaySnapshot } from '../../../harness/types.js'
 import { messageText } from './transcript.js'
 
+/** The location feedback token plus event-delivery slack. */
+export const TASK_LOCATE_FALLBACK_MS = 660
+
 /**
  * The task panel as data: the model's checklist, projected for the strip that
  * sits above the composer (`activity_group_design.md` §7).

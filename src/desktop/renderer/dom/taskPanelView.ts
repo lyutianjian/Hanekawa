@@ -1,4 +1,5 @@
 import type { TaskPanelState } from '../model/tasks.js'
+import { TASK_LOCATE_FALLBACK_MS } from '../model/tasks.js'
 import { button } from './controls.js'
 import { el, reconcile } from './dom.js'
 import { createPresence } from './presence.js'
@@ -39,13 +40,19 @@ export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
   let panel: ReturnType<typeof buildPanel> | undefined
   let expanded = false
   let latest: TaskPanelState | undefined
+  let flashTimer: ReturnType<typeof setTimeout> | undefined
+  function finishFlash(): void {
+    clearTimeout(flashTimer)
+    flashTimer = undefined
+    panel?.node.classList.remove('flash')
+  }
 
   function buildPanel() {
     const node = el('div', 'task-panel')
     // Registered once, on the node that outlives every render: `flash()` adds
     // the class and this takes it off again, so a second pulse is possible.
     node.addEventListener('animationend', (event) => {
-      if (event.target === node && event.animationName === 'task-flash') node.classList.remove('flash')
+      if (event.target === node && event.animationName === 'task-flash') finishFlash()
     })
     const track = progressBar()
     const count = el('span', 'task-count')
@@ -109,6 +116,7 @@ export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
   }
 
   const hide = (): void => {
+    finishFlash()
     panel?.presence.dispose()
     panel = undefined
     latest = undefined
@@ -123,7 +131,11 @@ export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
     },
 
     flash() {
+      finishFlash()
+      panel?.node.getBoundingClientRect()
       panel?.node.classList.add('flash')
+      flashTimer = setTimeout(finishFlash, TASK_LOCATE_FALLBACK_MS)
+      ;(flashTimer as unknown as { unref?: () => void }).unref?.()
     },
 
     hide,

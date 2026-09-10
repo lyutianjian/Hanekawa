@@ -27,7 +27,7 @@ export const THINKING_LIVE_LABEL = '正在思考'
 /** A sealed block with no elapsed time — an aborted turn never produced one. */
 export const THINKING_DONE_FALLBACK = '思考过程'
 /** Completion feedback's base duration plus event-delivery slack; retimed with motion tokens. */
-export const STEP_COMPLETION_FALLBACK_MS = 280
+export const STEP_COMPLETION_FALLBACK_MS = 240
 
 /**
  * The header of a thinking block, whether it arrived as a loose item or as a step.

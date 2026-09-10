@@ -123,13 +123,13 @@ export function nextCollapsePhase(
 /**
  * How long to wait for a `settled` that may never come, in milliseconds.
  *
- * `--motion-slow` plus a frame of slack. `transitionend` is not a guarantee: a
+ * `--motion-layout` plus delivery slack. `transitionend` is not a guarantee: a
  * hidden window runs no transitions, `prefers-reduced-motion` cuts them to 1ms,
  * and a `display: none` ancestor (the settings screen) cancels them outright.
  * Without the timer the fold would sit in `'collapsing'` forever and never
  * unmount its rows. `rendererStyleTokens` pins this against the token.
  */
-export const SIDEBAR_COLLAPSE_FALLBACK_MS = 380
+export const SIDEBAR_COLLAPSE_FALLBACK_MS = 440
 
 /**
  * Whether the rail's rows, search box, nav and footer belong in the DOM.

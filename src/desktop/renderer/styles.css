@@ -137,27 +137,27 @@
   --radius-sm: 8px;
   --radius-pill: 9999px;
 
-  /* --- motion ---
-     Three durations and one curve, because an interface with a dozen ad-hoc
-     timings reads as several interfaces. Fast is a state change under the
-     pointer (it must not lag the cursor), base is something appearing that was
-     not there (a menu, a screen), slow is a layout that moves other things with
-     it (the sidebar's width, and the canvas margin that follows it).
-
-     The standard curve leaves immediately and settles late — the "decelerate"
-     shape. `--ease-exit` is its opposite and is only for the few things that
-     animate *out*: most panels here are removed from the DOM (or `hidden`) the
-     instant they close, and an exit needs a state machine the view has to own.
-
-     `@media (prefers-reduced-motion: reduce)` at the foot of this sheet collapses
-     all of it; it is the one nested at-rule `rendererStyleTokens` allows. */
-  --motion-fast: 140ms;
-  --motion-base: 220ms;
-  --motion-slow: 320ms;
+  /* Semantic motion: one cadence per kind of interaction. CSS owns timing;
+     model fallback constants are pinned to these values by the token tests. */
+  --motion-press: 80ms;
+  --motion-release: 140ms;
+  --motion-micro: 160ms;
+  --motion-popover-in: 280ms;
+  --motion-popover-out: 200ms;
+  --motion-disclosure: 300ms;
+  --motion-layout: 380ms;
+  --motion-panel-in: 300ms;
+  --motion-panel-out: 200ms;
+  --motion-scrim-in: 200ms;
+  --motion-scrim-out: 180ms;
+  --motion-complete: 180ms;
+  --motion-running: 2800ms;
+  --motion-locate: 600ms;
+  --motion-hover-delay: 500ms;
   --presence-x: 0px;
   --presence-y: 8px;
-  --presence-scale: 0.98;
-  --ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
+  --presence-scale: 0.985;
+  --ease-standard: cubic-bezier(0.22, 0, 0.22, 1);
   /* The one curve that is allowed to leave slowly and land hard: it exists for
      the states that animate *out* under a state machine (the sidebar's collapse
      middle state), not for entrances. */
@@ -687,7 +687,7 @@ body {
      fill of its own and `body`'s material runs down through it. */
   background: transparent;
   overflow: hidden;
-  transition: flex-basis var(--motion-slow) var(--ease-standard);
+  transition: flex-basis var(--motion-layout) var(--ease-standard);
 }
 /* The column that holds the four regions, at the sidebar's *open* width and
    never narrower. `#sidebar` is the thing that animates, and a flex column that
@@ -708,8 +708,8 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  transition: opacity var(--motion-base) var(--ease-standard),
-              transform var(--motion-base) var(--ease-standard);
+  transition: opacity var(--motion-layout) var(--ease-standard),
+              transform var(--motion-layout) var(--ease-standard);
 }
 /* Collapsed is zero width, not a rail: the toggle it used to keep reachable now
    lives in the title bar (`.titlebar-rail`), which collapsing does not touch.
@@ -722,7 +722,7 @@ body {
    text being sliced by the crop. */
 #sidebar.collapsed {
   flex-basis: 0;
-  transition: flex-basis var(--motion-slow) var(--ease-exit);
+  transition: flex-basis var(--motion-layout) var(--ease-exit);
 }
 #sidebar.collapsed .sidebar-shell {
   opacity: 0;
@@ -762,7 +762,7 @@ body.settings-open #sidebar { display: none; }
   width: 1px;
   background: var(--border-strong);
   opacity: 0;
-  transition: opacity var(--motion-fast) var(--ease-standard);
+  transition: opacity var(--motion-micro) var(--ease-standard);
 }
 #sidebar-resizer:hover::after,
 body.resizing #sidebar-resizer::after { opacity: 1; }
@@ -1073,7 +1073,7 @@ body.resizing #sidebar { transition: none; }
   grid-template-rows: 1fr;
   grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
-  transition: grid-template-rows var(--motion-base) var(--ease-standard);
+  transition: grid-template-rows var(--motion-disclosure) var(--ease-standard);
 }
 .project-group.collapsed > .project-body { grid-template-rows: 0fr; }
 .project-rows { min-height: 0; min-width: 0; }
@@ -1125,7 +1125,7 @@ body.resizing #sidebar { transition: none; }
   background: var(--accent-brand);
   transform: scaleY(0);
   transform-origin: center;
-  transition: transform var(--motion-fast) var(--ease-standard);
+  transition: transform var(--motion-micro) var(--ease-standard);
 }
 /* Four row states, and the cascade order below is the whole design:
    hover (the pointer is here) → selected (the keyboard cursor, a hairline, so it
@@ -1205,7 +1205,7 @@ body.resizing #sidebar { transition: none; }
      The delay is the whole affordance's manners. A pointer crossing the rail to
      reach something else passes over several rows, and a name that lunges the
      instant it is touched turns an ambient effect into a flicker. */
-  animation: session-marquee var(--marquee-duration) linear 0.5s infinite;
+  animation: session-marquee var(--marquee-duration) linear var(--motion-hover-delay) infinite;
 }
 .session-row:hover .session-title.marquee .session-title-echo,
 .session-row:focus-within .session-title.marquee .session-title-echo {
@@ -1234,7 +1234,7 @@ body.resizing #sidebar { transition: none; }
 .session-badge.running .icon {
   width: 14px;
   height: 14px;
-  animation: spin 0.9s linear infinite;
+  animation: spin var(--motion-running) linear infinite;
 }
 .session-badge.running .icon path { stroke-width: 2; }
 .session-badge.awaiting-input { color: var(--accent-warn); gap: 4px; }
@@ -1388,7 +1388,7 @@ body.resizing #sidebar { transition: none; }
    its end, so each frame of the shrinking content pulls the last line down with
    it. */
 .transcript-column.settling {
-  transition: padding-bottom var(--motion-base) var(--ease-standard);
+  transition: padding-bottom var(--motion-layout) var(--ease-standard);
 }
 /* 24px between turns, and the line-height a wall of prose needs. Both are the
    rhythm half of design_guidance 四.3 — the old 10px/1.5 ran the assistant's
@@ -1457,7 +1457,7 @@ body.resizing #sidebar { transition: none; }
   font-variant-numeric: tabular-nums;
   user-select: none;
   opacity: 0;
-  transition: opacity var(--motion-fast) var(--ease-standard);
+  transition: opacity var(--motion-micro) var(--ease-standard);
 }
 .transcript .item:hover .item-meta,
 .transcript .item .item-meta:focus-within { opacity: 1; }
@@ -1534,7 +1534,7 @@ body.resizing #sidebar { transition: none; }
 /* A breath, not a blink: the label is next to streaming text and must not compete
    with it. There is no `prefers-reduced-motion` here because the token test's
    parser rejects every at-rule but `@keyframes` — recorded in `todo.md`. */
-.transcript .item.thinking.live .thinking-header { animation: breathe 2.4s ease-in-out infinite; }
+.transcript .item.thinking.live .thinking-header { animation: breathe var(--motion-running) var(--ease-standard) infinite; }
 @keyframes breathe { 50% { opacity: 0.45; } }
 /* --- the waiting row ---
    The gap between Enter and the first record, made visible: a breathing bead, a
@@ -1574,7 +1574,7 @@ body.resizing #sidebar { transition: none; }
   border-radius: var(--radius-pill);
   color: var(--accent-brand-strong);
   background: currentColor;
-  animation: breathe 1.8s ease-in-out infinite;
+  animation: breathe var(--motion-running) var(--ease-standard) infinite;
 }
 /* The halo: one expanding ring per breath, out of flow so it cannot move the
    line it sits on. It fades out well before the edge, so at rest the row is a
@@ -1585,7 +1585,7 @@ body.resizing #sidebar { transition: none; }
   inset: 0;
   border-radius: var(--radius-pill);
   background: currentColor;
-  animation: halo 1.8s ease-out infinite;
+  animation: halo var(--motion-running) var(--ease-standard) infinite;
 }
 /* Percentage steps, never `from`: a `from { transform }` in this sheet is by
    definition one of the three 8px entrances, and the token test says so. */
@@ -1611,7 +1611,7 @@ body.resizing #sidebar { transition: none; }
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: sweep 2.4s linear infinite;
+  animation: sweep var(--motion-running) var(--ease-standard) infinite;
 }
 @keyframes sweep {
   from { background-position: 140% 0; }
@@ -1780,9 +1780,9 @@ body.resizing #sidebar { transition: none; }
    hold still — a finished step must not keep moving under a reader. */
 .step-bead.awaiting-approval {
   color: var(--accent-warn);
-  animation: blink 1.2s steps(1, end) infinite;
+  animation: blink var(--motion-running) var(--ease-standard) infinite;
 }
-.step-bead.running { animation: breathe 1.8s ease-in-out infinite; }
+.step-bead.running { animation: breathe var(--motion-running) var(--ease-standard) infinite; }
 .step-bead.done {
   color: var(--accent-review);
 }
@@ -1790,7 +1790,7 @@ body.resizing #sidebar { transition: none; }
   color: var(--accent-danger);
 }
 /* Historical state is static; only an observed running-to-settled edge adds this. */
-.step-bead.completing { animation: bead-pop var(--motion-base) var(--ease-standard); }
+.step-bead.completing { animation: bead-pop var(--motion-complete) var(--ease-standard); }
 @keyframes blink { 50% { opacity: 0; } }
 /* Overshoot and settle, never `from`: a `from { transform }` in this sheet is by
    definition one of the three 8px entrances, and the token test enforces that. */
@@ -1813,7 +1813,7 @@ body.resizing #sidebar { transition: none; }
   color: var(--accent-tool);
   background: linear-gradient(90deg, transparent, currentColor, transparent);
   background-size: 220% 100%;
-  animation: sheen 1.8s linear infinite;
+  animation: sheen var(--motion-running) var(--ease-standard) infinite;
 }
 @keyframes sheen { from { background-position: 200% 0; } to { background-position: -20% 0; } }
 /* --- the thinking row's head ---
@@ -1849,7 +1849,7 @@ body.resizing #sidebar { transition: none; }
   width: 12px;
   height: 12px;
   opacity: 0;
-  transition: opacity var(--motion-fast) var(--ease-standard);
+  transition: opacity var(--motion-micro) var(--ease-standard);
 }
 .thinking-step-head:hover .icon,
 .thinking-step-head:focus-visible .icon,
@@ -2589,7 +2589,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   border-radius: var(--radius-md);
   margin-bottom: var(--space-2);
   overflow: hidden;
-  animation: rise-in var(--motion-base) var(--ease-standard);
+  animation: rise-in var(--motion-panel-in) var(--ease-standard);
 }
 /* The one-shot outline pulse the transcript's `TodoWrite` step points at,
    instead of drawing the checklist a second time inside the group (§7.3).
@@ -2604,7 +2604,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   border-color: var(--accent-brand);
   border-radius: inherit;
   pointer-events: none;
-  animation: task-flash var(--motion-slow) var(--ease-standard);
+  animation: task-flash var(--motion-locate) var(--ease-standard);
 }
 @keyframes task-flash { from { opacity: 1; } to { opacity: 0; } }
 /* The 2px bar across the top. The fill is a *rule*, not a surface: the accent
@@ -2620,7 +2620,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   height: 0;
   border-top: 2px solid;
   border-top-color: var(--accent-brand);
-  transition: width var(--motion-slow) var(--ease-standard);
+  transition: width var(--motion-layout) var(--ease-standard);
 }
 /* The head is the whole switch, as in the transcript (§9): no chevron, the
    hover tint is the affordance. A resting rule of its own, because a bare
@@ -2679,7 +2679,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   background: none;
   box-shadow: inset 0 0 0 1px currentColor;
 }
-.task-bead.in_progress { animation: breathe 1.8s ease-in-out infinite; }
+.task-bead.in_progress { animation: breathe var(--motion-running) var(--ease-standard) infinite; }
 .task-bead.completed { color: var(--accent-review); }
 .task-label {
   overflow: hidden;
@@ -2698,8 +2698,8 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   padding: var(--space-3) var(--space-4);
-  transition: border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard), height var(--motion-slow) var(--ease-standard);
+  transition: border-color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard), height var(--motion-layout) var(--ease-standard);
 }
 /* Focus lifts the capsule off the page rather than recolouring it further: the
    composer is the one control the user returns to between every turn, and a
@@ -2965,7 +2965,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 /* The in-flight ring, beside the model chip. Same rotation the sidebar's
    running badge uses — one animation, one duration. */
 #composer-progress { display: inline-flex; color: var(--text-secondary); }
-#composer-progress .icon { animation: spin 0.9s linear infinite; }
+#composer-progress .icon { animation: spin var(--motion-running) linear infinite; }
 /* The context indicator and the runtime chip are one visual group, but not one
    control: four pixels keeps the gauge beside the model name without borrowing
    the action bar's eight-pixel rhythm. */
@@ -4123,8 +4123,8 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   height: 14px;
   border-radius: var(--radius-pill);
   background: var(--text-tertiary);
-  transition: transform var(--motion-fast) var(--ease-standard),
-              background-color var(--motion-fast) var(--ease-standard);
+  transition: transform var(--motion-micro) var(--ease-standard),
+              background-color var(--motion-micro) var(--ease-standard);
 }
 
 .settings-toggle.on .settings-toggle-knob {
@@ -4469,28 +4469,29 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 #overlay-panel .dialog-btn,
 #rewind-panel .row,
 #rewind-panel .dialog-btn {
-  transition: background-color var(--motion-fast) var(--ease-standard),
-              color var(--motion-fast) var(--ease-standard),
-              border-color var(--motion-fast) var(--ease-standard),
-              box-shadow var(--motion-fast) var(--ease-standard),
-              opacity var(--motion-fast) var(--ease-standard),
-              transform var(--motion-fast) var(--ease-standard);
+  transition: background-color var(--motion-micro) var(--ease-standard),
+              color var(--motion-micro) var(--ease-standard),
+              border-color var(--motion-micro) var(--ease-standard),
+              box-shadow var(--motion-micro) var(--ease-standard),
+              opacity var(--motion-micro) var(--ease-standard),
+              transform var(--motion-micro) var(--ease-standard);
 }
 /* The one press affordance in the app, on the one button that commits
    something. Scale rather than a colour: the send button is already the sheet's
    single brand fill and has nowhere brighter to go. */
-#submit:active, #stop:active { transform: scale(0.94); }
+#submit, #stop { transition-duration: var(--motion-release); }
+#submit:active, #stop:active { transform: scale(0.94); transition-duration: var(--motion-press); }
 
 @keyframes fade-in { from { opacity: 0; } }
 /* A menu that hangs *below* its trigger arrives from above it, and one that
    opens upward from below — the panel appears to come out of the control rather
    than to land on top of it. 8px rather than the 4–6px these started at: on the
    new 220ms base the shorter travel read as a flicker, not as a move. The
-   `scale(0.98)` is the other half of "comes out of the control" — a panel that
+   `scale(0.985)` is the other half of "comes out of the control" — a panel that
    only slides looks like it was already the right size somewhere off screen. */
-@keyframes drop-in { from { opacity: 0; transform: translateY(-8px) scale(0.98); } }
-@keyframes rise-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
-@keyframes slide-in { from { opacity: 0; transform: translateX(8px) scale(0.98); } }
+@keyframes drop-in { from { opacity: 0; transform: translateY(-8px) scale(0.985); } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes slide-in { from { opacity: 0; transform: translateX(8px) scale(0.985); } }
 
 /* The one nested at-rule this sheet is allowed (`rendererStyleTokens` names it
    explicitly). Not zero: a `0s` transition never fires `transitionend`, and
@@ -4503,16 +4504,16 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 .presence[data-presence] {
   --presence-x: 0px;
   --presence-y: 8px;
-  --presence-scale: 0.98;
+  --presence-scale: 0.985;
   animation: none;
   opacity: 1;
   transform: none;
-  transition: opacity var(--motion-base) var(--ease-standard), transform var(--motion-base) var(--ease-standard);
+  transition: opacity var(--motion-popover-in) var(--ease-standard), transform var(--motion-popover-in) var(--ease-standard);
 }
 .presence.presence-drop { --presence-y: -8px; transform-origin: top; }
 .presence.presence-slide { --presence-x: -8px; --presence-y: 0px; transform-origin: left; }
 .presence.presence-none { --presence-y: 0px; --presence-scale: 1; }
-.presence[data-presence="panel"] { --presence-scale: 1; }
+.presence[data-presence="panel"] { --presence-scale: 1; transition-duration: var(--motion-panel-in); }
 
 /* The modal panel owns settlement; the scrim is a separate, shorter track. */
 #overlay.modal-layer,
@@ -4524,14 +4525,15 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   background: var(--surface-scrim);
   opacity: 1;
   pointer-events: none;
-  transition: opacity var(--motion-fast) var(--ease-standard);
+  transition: opacity var(--motion-scrim-in) var(--ease-standard);
 }
 .modal-layer > .presence { position: relative; }
 .modal-layer.presence-closed::before,
 .modal-layer.presence-closing::before { opacity: 0; }
 .modal-layer.presence-closing::before {
+  transition-duration: var(--motion-scrim-out);
   transition-timing-function: var(--ease-exit);
-  transition-delay: calc(var(--motion-base) - var(--motion-fast));
+  transition-delay: calc(var(--motion-panel-out) - var(--motion-scrim-out));
 }
 .modal-layer[inert] { pointer-events: none; }
 .presence.presence-closed,
@@ -4541,9 +4543,10 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   pointer-events: none;
 }
 .presence[data-presence].presence-closing {
-  transition-duration: var(--motion-fast);
+  transition-duration: var(--motion-popover-out);
   transition-timing-function: var(--ease-exit);
 }
+.presence[data-presence="panel"].presence-closing { transition-duration: var(--motion-panel-out); }
 
 /* Electron's Chromium supports intrinsic-size interpolation. Keeping `auto`
    lets streaming content grow naturally; reversed intent retargets the current
@@ -4556,12 +4559,14 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   overflow: clip;
   opacity: 1;
   transform: none;
-  transition: height var(--motion-base) var(--ease-standard),
-    padding-top var(--motion-base) var(--ease-standard), padding-bottom var(--motion-base) var(--ease-standard),
-    margin-top var(--motion-base) var(--ease-standard), margin-bottom var(--motion-base) var(--ease-standard);
+  transition: height var(--motion-disclosure) var(--ease-standard),
+    padding-top var(--motion-disclosure) var(--ease-standard), padding-bottom var(--motion-disclosure) var(--ease-standard),
+    margin-top var(--motion-disclosure) var(--ease-standard), margin-bottom var(--motion-disclosure) var(--ease-standard);
 }
 .presence[data-presence="disclosure"].presence-closed,
 .presence[data-presence="disclosure"].presence-closing {
+  transition-duration: var(--motion-disclosure);
+  transition-timing-function: var(--ease-standard);
   height: 0;
   padding-block: 0;
   margin-block: 0;

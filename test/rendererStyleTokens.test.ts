@@ -8,6 +8,8 @@ import { SIDEBAR_COLLAPSE_FALLBACK_MS } from '../src/desktop/renderer/model/side
 import { SIDEBAR_WIDTH_DEFAULT } from '../src/desktop/renderer/model/sidebarWidth.js'
 import { MARQUEE_GAP } from '../src/desktop/renderer/model/marquee.js'
 import { PRESENCE_FALLBACK_MS, type PresenceKind } from '../src/desktop/renderer/model/presence.js'
+import { STEP_COMPLETION_FALLBACK_MS } from '../src/desktop/renderer/model/thinking.js'
+import { TASK_LOCATE_FALLBACK_MS } from '../src/desktop/renderer/model/tasks.js'
 
 /**
  * The renderer's stylesheet, asserted at source level.
@@ -24,6 +26,24 @@ import { PRESENCE_FALLBACK_MS, type PresenceKind } from '../src/desktop/renderer
  * is looking at. Neither typecheck pass opens this file and no bundler validates
  * it.
  */
+
+const MOTION_TOKENS = {
+  "--motion-press": "80ms",
+  "--motion-release": "140ms",
+  "--motion-micro": "160ms",
+  "--motion-popover-in": "280ms",
+  "--motion-popover-out": "200ms",
+  "--motion-disclosure": "300ms",
+  "--motion-layout": "380ms",
+  "--motion-panel-in": "300ms",
+  "--motion-panel-out": "200ms",
+  "--motion-scrim-in": "200ms",
+  "--motion-scrim-out": "180ms",
+  "--motion-complete": "180ms",
+  "--motion-running": "2800ms",
+  "--motion-locate": "600ms",
+  "--motion-hover-delay": "500ms"
+}
 
 const htmlPath = path.join(rendererRoot, 'index.html')
 
@@ -324,13 +344,11 @@ test('the palette is the one that was agreed, value for value', () => {
       '--radius-md': '12px',
       '--radius-sm': '8px',
       '--radius-pill': '9999px',
-      '--motion-fast': '140ms',
-      '--motion-base': '220ms',
-    '--motion-slow': '320ms',
+      ...MOTION_TOKENS,
     '--presence-x': '0px',
     '--presence-y': '8px',
-    '--presence-scale': '0.98',
-      '--ease-standard': 'cubic-bezier(0.32, 0.72, 0, 1)',
+    '--presence-scale': '0.985',
+      '--ease-standard': 'cubic-bezier(0.22, 0, 0.22, 1)',
       '--ease-exit': 'cubic-bezier(0.4, 0, 1, 1)',
       '--reading-measure': '980px',
       '--reading-gutter': '40px',
@@ -426,13 +444,11 @@ test('the palette is the one that was agreed, value for value', () => {
       '--radius-md': '12px',
       '--radius-sm': '8px',
       '--radius-pill': '9999px',
-      '--motion-fast': '140ms',
-      '--motion-base': '220ms',
-    '--motion-slow': '320ms',
+      ...MOTION_TOKENS,
     '--presence-x': '0px',
     '--presence-y': '8px',
-    '--presence-scale': '0.98',
-      '--ease-standard': 'cubic-bezier(0.32, 0.72, 0, 1)',
+    '--presence-scale': '0.985',
+      '--ease-standard': 'cubic-bezier(0.22, 0, 0.22, 1)',
       '--ease-exit': 'cubic-bezier(0.4, 0, 1, 1)',
       '--reading-measure': '980px',
       '--reading-gutter': '40px',
@@ -507,9 +523,7 @@ test('the light block overrides only colours, and adds no token the dark palette
     '--radius-md',
     '--radius-sm',
     '--radius-pill',
-    '--motion-fast',
-    '--motion-base',
-    '--motion-slow',
+    ...Object.keys(MOTION_TOKENS),
     '--ease-standard',
     '--ease-exit',
     '--font-ui',
@@ -1110,7 +1124,7 @@ test('the hover marquee loops in one direction, inside the clip', () => {
   )
   assert.ok(declares(moving, 'gap', 'var(--marquee-gap)'), 'the two copies are spaced by the token')
   assert.ok(
-    declares(moving, 'animation', 'session-marquee var(--marquee-duration) linear 0.5s infinite'),
+    declares(moving, 'animation', 'session-marquee var(--marquee-duration) linear var(--motion-hover-delay) infinite'),
     'linear and infinite: an eased marquee hesitates once per pass',
   )
   assert.ok(
@@ -1386,18 +1400,18 @@ test('the fold falls back on a timer just past the slow token', () => {
   // reduced motion cuts them to 1ms — so the view arms a timer beside it. Pinned
   // here because the two live in different files: a token retimed without this
   // would leave the fold unmounting its rows before the animation had finished.
-  const slow = Number.parseInt(tokens.get('--motion-slow') ?? '', 10)
-  assert.ok(Number.isFinite(slow), '--motion-slow must be a ms duration')
+  const slow = Number.parseInt(tokens.get('--motion-layout') ?? '', 10)
+  assert.ok(Number.isFinite(slow), '--motion-layout must be a ms duration')
   assert.ok(
     SIDEBAR_COLLAPSE_FALLBACK_MS > slow && SIDEBAR_COLLAPSE_FALLBACK_MS <= slow + 100,
-    `the fallback (${SIDEBAR_COLLAPSE_FALLBACK_MS}ms) must sit just past --motion-slow (${slow}ms)`,
+    `the fallback (${SIDEBAR_COLLAPSE_FALLBACK_MS}ms) must sit just past --motion-layout (${slow}ms)`,
   )
 })
 
 test('presence fallbacks outlast their CSS motion tokens', () => {
   const sources: Record<PresenceKind, string> = {
-    popover: '--motion-base', panel: '--motion-base', disclosure: '--motion-base',
-    layout: '--motion-slow', backdrop: '--motion-fast',
+    popover: '--motion-popover-in', panel: '--motion-panel-in', disclosure: '--motion-disclosure',
+    layout: '--motion-layout', backdrop: '--motion-scrim-in',
   }
   for (const [kind, token] of Object.entries(sources)) {
     const duration = Number.parseInt(tokens.get(token) ?? '', 10)
@@ -1690,6 +1704,18 @@ test('depth is two steps: menus float, modals sit deeper, and the composer joins
   }
 })
 
+test('completion and location fallbacks track their semantic durations', () => {
+  assert.equal(STEP_COMPLETION_FALLBACK_MS, Number.parseInt(MOTION_TOKENS['--motion-complete']) + 60)
+  assert.equal(TASK_LOCATE_FALLBACK_MS, Number.parseInt(MOTION_TOKENS['--motion-locate']) + 60)
+  for (const block of blocks) {
+    for (const decl of block.decls) {
+      if (decl.prop !== 'animation' || decl.value === 'none') continue
+      assert.match(decl.value, /var\(--(?:motion-[a-z-]+|marquee-duration)\)/, `${block.selector} must use a semantic duration`)
+      assert.doesNotMatch(decl.value, /(?:^|\s)[\d.]+m?s(?:\s|$)/, `${block.selector} has a literal animation duration`)
+    }
+  }
+})
+
 test('motion comes from the tokens, and the things that rebuild themselves have none', () => {
   // Same argument as the palette: a duration written beside the control that
   // happens to use it is a duration nobody can compare, and a sheet with a dozen
@@ -1705,7 +1731,7 @@ test('motion comes from the tokens, and the things that rebuild themselves have 
       transitions += 1
       assert.match(
         decl.value,
-        /var\(--motion-(fast|base|slow)\)/,
+        /var\(--motion-[a-z-]+\)/,
         `${block.selector} { transition: ${decl.value} } spells its own duration`,
       )
       assert.match(
@@ -1747,7 +1773,7 @@ test('motion comes from the tokens, and the things that rebuild themselves have 
       entranceSteps += 1
       assert.match(
         decl.value,
-        /^translate[XY]\(-?8px\) scale\(0\.98\)$/,
+        /^translate[XY]\(-?8px\)(?: scale\(0\.985\))?$/,
         `from { transform: ${decl.value} } is not the 8px + 0.98 entrance`,
       )
     }

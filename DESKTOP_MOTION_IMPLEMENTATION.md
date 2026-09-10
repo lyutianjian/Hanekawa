@@ -101,7 +101,7 @@ M02–M09 在 M01 之后互不依赖，顺序可调；建议先做 M02/M03（F1�
 | M04 | F2 painter 存活登记与内容更新分离 | M01 | 中 | F2 | `[x]` |
 | M05 | F2 思考正文与 assistant Markdown 稳定块 | M04 | 长 | F2 | `[x]` |
 | M06 | F3 会话标题栏：菜单容器不随快照重建 | M01 | 中 | F3 | `[x]` |
-| M07 | F4 任务面板：内部节点身份与 `animationend` 过滤 | M01 | 中 | F4 | `[ ]` |
+| M07 | F4 任务面板：内部节点身份与 `animationend` 过滤 | M01 | 中 | F4 | `[x]` |
 | M08 | F4 设置开关：滑块保留身份、按字段更新 | M01 | 中 | F4 | `[ ]` |
 | M09 | F4 完成反馈绑定状态边沿，区分实时与历史 | M01 | 中 | F4 | `[ ]` |
 | M10 | 通用呈现相位状态机（model 层） | M02–M09 | 中 | F5 | `[ ]` |
@@ -269,7 +269,9 @@ M04 修的是标题；正文仍然每次重建：思考正文是 `el('div', 'ste
 
 ---
 
-## M07 `[ ]` F4 任务面板：内部节点身份与 `animationend` 过滤
+## M07 `[x]` F4 任务面板：内部节点身份与 `animationend` 过滤
+
+**验收记录（2026-09-10）**：进度、head、任务行与珠子持久化，ratio 变化才写进度，点击读取当前数据；flash 仅由自身 task-flash 结算，hide 清空生命周期。指定窄测 31 通过，typecheck 通过。
 
 **前置**：M01 · **规模**：中 · **设计稿**：F4
 **涉及**：`src/desktop/renderer/dom/taskPanelView.ts`、`src/desktop/renderer/styles.css`

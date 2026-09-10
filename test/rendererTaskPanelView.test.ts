@@ -159,6 +159,44 @@ test('a repaint reuses the panel node and keeps the fold the user chose', (t) =>
   assert.equal(view.progress(), String(2 / 3))
 })
 
+test('M07 keeps task progress, header, rows and beads through unchanged stream paints', (t) => {
+  const view = mount(t)
+  view.render(state(THREE))
+  view.stub.click(view.head().node)
+  const before = view.panel()!
+  const rows = before.children.find((node) => node.classes.includes('task-list'))!.children
+  for (let index = 0; index < 10; index += 1) view.render(state(THREE))
+  const after = view.panel()!
+  assert.equal(after.children[0]!.node, before.children[0]!.node)
+  assert.equal(after.children[0]!.children[0]!.node, before.children[0]!.children[0]!.node)
+  assert.equal(view.head().node, before.children[1]!.node)
+  const nextRows = after.children.find((node) => node.classes.includes('task-list'))!.children
+  for (const [index, row] of rows.entries()) {
+    assert.equal(nextRows[index]!.node, row.node)
+    assert.equal(nextRows[index]!.children[0]!.node, row.children[0]!.node)
+  }
+  view.render(state(THREE.map((task) => item({ ...task, status: 'completed' }))))
+  view.stub.click(view.head().node)
+  assert.equal(view.head().text, '3/3全部完成', 'the kept click handler reads the current state')
+})
+
+test('task flash settles only its own animation and never carries into a new panel', (t) => {
+  const view = mount(t)
+  view.render(state(THREE))
+  view.flash()
+  view.stub.dispatch(view.panel()!.node, 'animationend', { animationName: 'rise-in' })
+  view.stub.dispatch(view.panel()!.node, 'animationend', { animationName: 'task-flash', target: view.head().node })
+  assert.ok(view.panel()!.classes.includes('flash'))
+  view.stub.dispatch(view.panel()!.node, 'animationend', { animationName: 'task-flash' })
+  assert.equal(view.panel()!.classes.includes('flash'), false)
+  view.flash()
+  const before = view.panel()!.node
+  view.hide()
+  view.render(state(THREE))
+  assert.notEqual(view.panel()!.node, before)
+  assert.equal(view.panel()!.classes.includes('flash'), false)
+})
+
 test('a finished checklist says so, and losing the checklist takes the panel with it', (t) => {
   const view = mount(t)
   const done = THREE.map((task) => item({ ...task, status: 'completed' }))

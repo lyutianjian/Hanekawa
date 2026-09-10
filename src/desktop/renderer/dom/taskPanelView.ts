@@ -1,6 +1,6 @@
 import type { TaskPanelState } from '../model/tasks.js'
 import { button } from './controls.js'
-import { el, replace } from './dom.js'
+import { el, reconcile } from './dom.js'
 
 /**
  * The task panel: the model's checklist, drawn in flow directly above the
@@ -35,45 +35,81 @@ export interface TaskPanelDom {
 }
 
 export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
-  let panel: HTMLElement | undefined
+  let panel: ReturnType<typeof buildPanel> | undefined
   let expanded = false
+  let latest: TaskPanelState | undefined
 
-  const ensurePanel = (): HTMLElement => {
-    if (panel) return panel
+  function buildPanel() {
     const node = el('div', 'task-panel')
     // Registered once, on the node that outlives every render: `flash()` adds
     // the class and this takes it off again, so a second pulse is possible.
-    node.addEventListener('animationend', () => node.classList.remove('flash'))
-    panel = node
-    replace(container, node)
-    return node
+    node.addEventListener('animationend', (event) => {
+      if (event.target === node && event.animationName === 'task-flash') node.classList.remove('flash')
+    })
+    const track = progressBar()
+    const count = el('span', 'task-count')
+    const current = el('span', 'task-current')
+    const head = button('task-panel-head', '', '', () => {
+      expanded = !expanded
+      if (latest) paint(latest)
+    })
+    reconcile(head, [count, current])
+    const list = el('div', 'task-list')
+    const rows = new Map<string, { node: HTMLElement; bead: HTMLElement; label: HTMLElement }>()
+    reconcile(container, [node])
+    return { node, track, head, count, current, list, rows, ratio: undefined as number | undefined }
   }
 
   const paint = (state: TaskPanelState): void => {
-    const node = ensurePanel()
+    latest = state
+    const parts = panel ??= buildPanel()
+    const { node, track, head, count, current, list, rows } = parts
     // The completed share, handed to the sheet as a number: the fill resolves
     // its own width from it, so the only thing TypeScript writes is a custom
     // property — the one door into the style attribute the renderer may use,
     // and it is spelled inline because a constant would be a name the style
     // test cannot follow.
-    node.style.setProperty('--task-progress', String(state.ratio))
+    if (parts.ratio !== state.ratio) {
+      node.style.setProperty('--task-progress', String(state.ratio))
+      parts.ratio = state.ratio
+    }
     node.classList.toggle('collapsed', !expanded)
 
-    const head = button('task-panel-head', '', headName(state, expanded), () => {
-      expanded = !expanded
-      paint(state)
-    })
+    const name = headName(state, expanded)
+    head.title = name
+    head.setAttribute('aria-label', name)
     head.setAttribute('aria-expanded', expanded ? 'true' : 'false')
-    head.appendChild(el('span', 'task-count', `${state.counts.completed}/${state.counts.total}`))
-    head.appendChild(el('span', 'task-current', currentLabel(state)))
+    const countText = `${state.counts.completed}/${state.counts.total}`
+    if (count.textContent !== countText) count.textContent = countText
+    const currentText = currentLabel(state)
+    if (current.textContent !== currentText) current.textContent = currentText
 
-    replace(node, progressBar(), head, expanded ? taskList(state) : undefined)
+    const live = new Set<string>()
+    const children = state.tasks.map((task) => {
+      live.add(task.id)
+      let row = rows.get(task.id)
+      if (!row) {
+        const bead = el('span', 'task-bead')
+        bead.setAttribute('aria-hidden', 'true')
+        const label = el('span', 'task-label')
+        row = { node: el('div', 'task-row', bead, label), bead, label }
+        rows.set(task.id, row)
+      }
+      row.node.className = `task-row ${task.status}`
+      row.bead.className = `task-bead ${task.status}`
+      if (row.label.textContent !== task.label) row.label.textContent = task.label
+      return row.node
+    })
+    reconcile(list, children)
+    for (const id of rows.keys()) if (!live.has(id)) rows.delete(id)
+    reconcile(node, [track, head, expanded ? list : undefined])
   }
 
   const hide = (): void => {
     panel = undefined
+    latest = undefined
     expanded = false
-    replace(container)
+    reconcile(container, [])
   }
 
   return {
@@ -83,7 +119,7 @@ export function createTaskPanelView(container: HTMLElement): TaskPanelDom {
     },
 
     flash() {
-      panel?.classList.add('flash')
+      panel?.node.classList.add('flash')
     },
 
     hide,
@@ -101,21 +137,6 @@ function progressBar(): HTMLElement {
   track.setAttribute('aria-hidden', 'true')
   track.appendChild(el('div', 'task-progress-fill'))
   return track
-}
-
-function taskList(state: TaskPanelState): HTMLElement {
-  const list = el('div', 'task-list')
-  for (const task of state.tasks) {
-    const row = el('div', `task-row ${task.status}`)
-    const bead = el('span', `task-bead ${task.status}`)
-    // Same contract as the step bead (§3): the dot is the picture, the word is
-    // in the row's text, and colour is never the only carrier.
-    bead.setAttribute('aria-hidden', 'true')
-    row.appendChild(bead)
-    row.appendChild(el('span', 'task-label', task.label))
-    list.appendChild(row)
-  }
-  return list
 }
 
 /**

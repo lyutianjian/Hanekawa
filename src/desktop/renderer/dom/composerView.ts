@@ -4,7 +4,7 @@ import {
   permissionPillView,
   submitButtonView,
 } from '../model/composer.js'
-import type { AttachmentPreviewView, AttachmentStripView } from '../model/composerAttachments.js'
+import type { AttachmentStripView } from '../model/composerAttachments.js'
 import {
   CONTEXT_RATIO_VARIABLE,
   hiddenContextGauge,
@@ -105,7 +105,7 @@ export interface ComposerView {
    */
   closeMenus(): void
   /**
-   * Paints this pane's draft attachment strip (S11). The strip lives in the
+   * Paints this pane's draft attachment grid (S11). The grid lives in the
    * capsule above the textarea — it is composer content the way the text is,
    * not a popover. Only the active pane may call this; a background pane
    * passes an empty view to clear the paint.
@@ -120,14 +120,6 @@ export interface ComposerView {
   setSendBlockNote(note: string | undefined): void
   /** The send gate's title, off the strip the pane just painted. */
   attachStripEl(): HTMLElement
-  /**
-   * Opens the attachment preview popover (S12): the thumbnail's own data URL,
-   * enlarged, with 打开原图 beside it. The pane supplies the URL, so the view
-   * never fetches and never re-requests one mid-stream.
-   */
-  showAttachmentPreview(view: AttachmentPreviewView): void
-  /** Shuts the preview popover. Same three exits it closes itself by. */
-  closeAttachmentPreview(): void
   autosize(): void
 }
 
@@ -170,9 +162,9 @@ export function createComposerView(els: {
   onRemoveAttachment: (draftId: string) => void
   /** A failed draft's 重试. A draft with no source cannot retry. */
   onRetryAttachment: (draftId: string) => void
-  /** A ready draft's label, clicked: open the original, host-resolved. */
+  /** A ready draft's 打开原图, from the tile's context affordance: host-resolved. */
   onOpenAttachment: (draftId: string) => void
-  /** A ready draft's thumbnail, clicked: the pane resolves the preview and answers through `showAttachmentPreview`. */
+  /** A ready draft's tile, clicked: the pane opens the window's fullscreen viewer. */
   onPreviewAttachment: (draftId: string) => void
   /**
    * The image files a paste carried. Handed as DOM `File`s on purpose: the
@@ -309,9 +301,9 @@ export function createComposerView(els: {
   })
 
   /**
-   * The draft strip. Signed for the reason the pill is: `renderAttachments`
+   * The draft grid. Signed for the reason the pill is: `renderAttachments`
    * follows the runtime snapshot tick, which during a turn is once per chunk,
-   * and rebuilding a row the pointer is on at that rate is what the signature
+   * and rebuilding a tile the pointer is on at that rate is what the signature
    * guards exist to stop.
    */
   function renderAttachments(view: AttachmentStripView): void {
@@ -333,24 +325,38 @@ export function createComposerView(els: {
     els.attachStrip.setAttribute('role', 'list')
     els.attachStrip.setAttribute('aria-label', '待发送图片')
     for (const row of view.rows) {
-      els.attachStrip.appendChild(attachmentRowNode(row))
+      els.attachStrip.appendChild(attachmentTileNode(row))
     }
     setSendBlockNote(view.sendBlockNote)
   }
 
-  function attachmentRowNode(row: AttachmentStripView['rows'][number]): HTMLElement {
-    const item = el('div', `attachment-row ${row.state}`)
+  /**
+   * One square tile per draft.
+   *
+   * The name is not drawn: at 64px a file name is either truncated to nothing
+   * or wider than the picture it labels, so it lives in the `title` and the
+   * accessible name instead, where it is still one hover or one screen reader
+   * away. The two non-ready states keep the tile's box — an import that
+   * finishes must not shove the tiles beside it sideways — and carry their
+   * words in the same two places.
+   */
+  function attachmentTileNode(row: AttachmentStripView['rows'][number]): HTMLElement {
+    const item = el('div', `attachment-tile ${row.state}`)
     item.setAttribute('role', 'listitem')
+    // The name and the state's own words, in the two places a 64px square can
+    // carry them: the hover tooltip and the accessible name.
+    const described = row.detail === undefined ? row.label : `${row.label}（${row.detail}）`
+    item.setAttribute('title', described)
+    item.setAttribute('aria-label', described)
 
     if (row.state === 'ready') {
       // The thumbnail (S12): the pane's on-demand data URL, painted in place.
       // Absent until that load settles — the alt text carries the facts until
-      // then, and the arrival is a signature change so the row repaints once.
-      // Clicking it opens the preview popover; the label beside it still opens
-      // the original directly, which is what its 「点击打开原图」 tooltip says.
+      // then, and the arrival is a signature change so the tile repaints once.
+      // Clicking it opens the window's fullscreen viewer, which asks the host
+      // for a screen-sized copy of its own.
       const thumb = el('img', 'attachment-thumb')
       thumb.setAttribute('alt', row.label)
-      thumb.title = '查看预览'
       if (row.thumbUrl !== undefined) thumb.setAttribute('src', row.thumbUrl)
       thumb.setAttribute('role', 'button')
       thumb.setAttribute('tabindex', '0')
@@ -360,28 +366,14 @@ export function createComposerView(els: {
         actions.onPreviewAttachment(row.draftId)
       })
       item.appendChild(thumb)
+    } else {
+      // A placeholder of the same size: `importing` pulses, `failed` is a
+      // danger-bordered box. Neither is a control — the ✕ and 重试 are — so it
+      // is `aria-hidden` and the tile's own label does the talking.
+      const placeholder = el('div', 'attachment-placeholder')
+      placeholder.setAttribute('aria-hidden', 'true')
+      item.appendChild(placeholder)
     }
-
-    // A ready draft's label opens the original (host-resolved, fire-and-
-    // forget). Importing and failed rows are not links.
-    const label = el(
-      'span',
-      'attachment-label',
-      row.state === 'ready' ? row.label : `${row.label}${row.detail ? `（${row.detail}）` : ''}`,
-    )
-    if (row.state === 'ready') {
-      label.setAttribute('role', 'button')
-      label.setAttribute('tabindex', '0')
-      label.title = '点击打开原图'
-      label.addEventListener('click', () => actions.onOpenAttachment(row.draftId))
-      label.addEventListener('keydown', (event) => {
-        if ((event as KeyboardEvent).key !== 'Enter') return
-        actions.onOpenAttachment(row.draftId)
-      })
-    } else if (row.state === 'failed') {
-      label.title = row.detail ?? row.label
-    }
-    item.appendChild(label)
 
     if (row.state === 'failed') {
       const retry = button('attachment-retry', '重试', `重新导入 ${row.label}`, () => {
@@ -389,6 +381,8 @@ export function createComposerView(els: {
       })
       item.appendChild(retry)
     }
+    // The corner ✕, over the picture rather than after it: the tile is the
+    // whole row now, so the remove has nowhere else to sit.
     const remove = button('attachment-remove', '✕', `移除 ${row.label}`, () => {
       actions.onRemoveAttachment(row.draftId)
     })
@@ -400,83 +394,6 @@ export function createComposerView(els: {
     if (note === sendBlockNote) return
     sendBlockNote = note
     applySubmitState()
-  }
-
-  // --- the preview popover (S12) ---------------------------------------------------
-  //
-  // The thumbnail's own data URL, enlarged, with 打开原图 beside it. Same shell
-  // as the attach menu (the bar the + lives in): the capsule is the popover's
-  // neighbourhood, and the bar's `position` ancestry is the one the menus
-  // already anchor through. Built once per open and kept, never rebuilt by a
-  // snapshot tick — the pane does not re-request the URL mid-stream, and this
-  // side does not repaint what it already has.
-  let previewNode: HTMLElement | undefined
-  let previewPresence: Presence | undefined
-  let detachPreviewDismiss: (() => void) | undefined
-
-  function closeAttachmentPreview(): void {
-    const returnFocus = previewNode?.contains(document.activeElement)
-    detachPreviewDismiss?.()
-    detachPreviewDismiss = undefined
-    previewPresence?.set(false)
-    if (returnFocus) els.input.focus()
-  }
-
-  function showAttachmentPreview(view: AttachmentPreviewView): void {
-    closeAttachmentPreview()
-    const host = els.attach.parentElement ?? els.attach
-    const fresh = previewNode === undefined
-    const panel = previewNode ?? el('div', 'attachment-preview')
-    panel.setAttribute('role', 'dialog')
-    panel.setAttribute('aria-label', `图片预览：${view.name}`)
-    const closeButton = button('attachment-preview-close', '✕', '关闭预览', () => {
-      closeAttachmentPreview()
-      els.input.focus()
-    })
-    const image = el('img', 'attachment-preview-image')
-    image.setAttribute('alt', view.name)
-    image.setAttribute('src', view.dataUrl)
-    // 打开原图 keeps the S11 path: host-resolved, fire-and-forget. Closing the
-    // popover is this view's half; the external viewer is the shell's.
-    const open = button('attachment-preview-open', '打开原图', `在系统查看器中打开 ${view.name}`, () => {
-      closeAttachmentPreview()
-      els.input.focus()
-      actions.onOpenAttachment(view.draftId)
-    })
-    replace(panel,
-      el('div', 'attachment-preview-head', el('span', 'attachment-preview-name', view.name), closeButton),
-      image,
-      el('div', 'attachment-preview-caption', view.dimensions),
-      el('div', 'attachment-preview-actions', open),
-    )
-    if (fresh) {
-      host.appendChild(panel)
-      previewPresence = createPresence(panel)
-    }
-    previewNode = panel
-    previewPresence!.set(true)
-
-    // The panel and its thumbnail form one dismissal scope.
-    detachPreviewDismiss = onPressOutside([panel, '.attachment-thumb'], () => closeAttachmentPreview())
-    if (fresh) panel.addEventListener('focusout', (event) => {
-      const next = (event as FocusEvent).relatedTarget
-      // `null` is this view's own repaint — the focus() at the end of this
-      // paint — and must not close what it belongs to.
-      if (next === null || (next instanceof Node && panel.contains(next))) return
-      closeAttachmentPreview()
-    })
-    if (fresh) panel.addEventListener('keydown', (event) => {
-      if ((event as KeyboardEvent).key !== 'Escape') return
-      // Consumed here, so Escape over the preview does not also reach the
-      // global key map and close a surface behind it.
-      event.preventDefault()
-      event.stopPropagation()
-      closeAttachmentPreview()
-      els.input.focus()
-    })
-    // Last thing in the paint: it fires focusout synchronously, and a handler
-    // answering that with a repaint would re-enter this paint.
-    closeButton.focus()
   }
 
   function applySubmitState(): void {
@@ -996,13 +913,10 @@ export function createComposerView(els: {
     refreshSubmit: applySubmitState,
     renderAttachments,
     setSendBlockNote,
-    showAttachmentPreview,
-    closeAttachmentPreview,
     attachStripEl: () => els.attachStrip,
     closeMenus() {
       closeRuntimeMenu()
       closeAttachMenu()
-      closeAttachmentPreview()
       closeContext()
       contextPresence.finish()
       if (permissionMenuOpen) {

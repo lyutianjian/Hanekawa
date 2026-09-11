@@ -160,7 +160,11 @@
               </div>
             </div>
             <div id="status">
-              <span id="status-streaming"></span>
+              <!--
+                No 生成中 label: the transcript above already shows a turn
+                running, and the strip beside it is for what the turn *cost*.
+                It updates per completed request now, not once at the end.
+              -->
               <span id="status-usage"></span>
               <span id="status-cost"></span>
             </div>
@@ -193,6 +197,17 @@
         </div>
       </main>
     </div>
+    <!--
+      The image viewer, outside `#shell` on purpose — the one layer that is not a
+      blocking request and the one that *does* cover the window. An image opened
+      at full size has nothing to do with a single lane, and a picture cropped to
+      the canvas while the sidebar sits lit beside it is not a viewer.
+
+      `aria-modal="true"` is right here for the same reason it was wrong on the
+      two layers above: while this is open there is genuinely nothing else to
+      interact with, and its own contents are the whole story.
+    -->
+    <div id="lightbox" hidden role="dialog" aria-modal="true" aria-label="图片预览"></div>
     <script type="module" src="./app.js"></script>
   </body>
 </html>

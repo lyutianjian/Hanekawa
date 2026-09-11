@@ -133,11 +133,17 @@ export interface TranscriptHandlers {
    */
   onOpenPath(path: string, line: number | undefined): void
   /**
-   * An image line under a user bubble was clicked (S12). The pane turns it
-   * into `open-attachment`: the host resolves the registered id to the cached
-   * original, and no `file://` read is opened to the renderer.
+   * An image beside a user bubble was clicked (S12). The pane opens the
+   * window's fullscreen viewer, which asks the host for a screen-sized copy —
+   * no `file://` read is opened to the renderer either way.
    */
-  onOpenImage(imageId: string, name: string): void
+  onViewImage(image: ImageAttachmentRef): void
+  /**
+   * The thumbnail the pane already holds for one attachment id, or `undefined`
+   * while its on-demand load is still out. A *lookup*, not a map: the pane owns
+   * the LRU behind it, and this file stays free of the fetch.
+   */
+  imageThumbUrl(imageId: string): string | undefined
   /**
    * A message's 复制 button. The pane owns the clipboard call: `navigator` is a
    * host object, and this file is the one under test against a hand-written DOM
@@ -669,7 +675,8 @@ function createPainter(
     onToggle: handlers.onToggle,
     onTaskStep: handlers.onTaskStep,
     onOpenPath: handlers.onOpenPath,
-    onOpenImage: handlers.onOpenImage,
+    onViewImage: handlers.onViewImage,
+    imageThumbUrl: handlers.imageThumbUrl,
     onCopy: handlers.onCopy,
     node(key, className, signature, fill, create) {
       filling.at(-1)?.push(key)
@@ -1430,17 +1437,35 @@ function itemNode(painter: Painter, item: TranscriptItem): HTMLElement {
     // so the meta row sits under it rather than inside it — a control tucked in
     // with the user's own words reads as part of the message.
     //
-    // The images a user message was submitted with (S12) draw as line facts
-    // under the bubble — the TUI's own wording, no thumbnails here: the
-    // transcript is `aria-live` and repaints at the stream rate, which is the
-    // one place an on-demand data URL would keep being re-requested. The row
-    // names itself; a click opens the original through the host, exactly the
-    // way a ready draft's label does.
-    return painter.node(key, classes.join(' '), [item.text, item.createdAt, item.images], () => [
-      el('div', 'user-bubble', ...userParts(item)),
-      ...(item.images?.map((image, index) => imageLineNode(painter, item, image, index)) ?? []),
-      metaRow(painter, item),
-    ])
+    // The images a user message was submitted with (S12) draw as thumbnails
+    // *above* the bubble, right-aligned with it: what was sent was a picture,
+    // and a line of text naming it is a description of the message rather than
+    // the message.
+    //
+    // This used to be a facts-only line, on the grounds that the transcript is
+    // `aria-live` and repaints at the stream rate — the one place an on-demand
+    // data URL would keep being re-requested. That worry belongs to the pane,
+    // and `beginPreviewLoad` answers it: one request per id, whatever the
+    // repaint rate. The URLs join the signature so the arrival repaints the
+    // node once, and a repaint that changes nothing still rebuilds nothing.
+    //
+    // Joined into one string, not left as an array: signatures are compared
+    // element by element with `===`, and a fresh array per paint would never
+    // match itself — every streamed chunk would refill this node.
+    const thumbs = item.images?.map((image) => painter.imageThumbUrl(image.id) ?? '').join(' ')
+    return painter.node(
+      key,
+      classes.join(' '),
+      [item.text, item.createdAt, item.images, thumbs],
+      () => [
+        item.images !== undefined && item.images.length > 0
+          ? el('div', 'user-images', ...item.images.map((image, index) =>
+            imageTileNode(painter, image, index)))
+          : undefined,
+        el('div', 'user-bubble', ...userParts(item)),
+        metaRow(painter, item),
+      ],
+    )
   }
   return painter.node(key, classes.join(' '), [item.text], () => [item.text])
 }
@@ -1506,30 +1531,30 @@ function userParts(item: TranscriptItem): Child[] {
 }
 
 /**
- * One image line under a user bubble (S12): `[图片 1：name，W×H]` in the TUI's
- * wording — pure facts, no pixels, no data URL. Clicking it opens the cached
- * original through the host (`open-attachment`, fire-and-forget); the row is
- * a `span` button rather than a `controls.ts` button because the sheet styles
- * it as a quiet line, and the copy in the live region is the facts a reader
- * needs, not a hidden label.
+ * One image thumbnail above a user bubble (S12).
+ *
+ * The pixels are the pane's on-demand data URL; until it settles the box is
+ * empty and the `alt` carries the same facts the line here used to spell out —
+ * `图片 1：name，W×H`, the TUI's own wording — so what the live region reads is
+ * unchanged by the picture arriving. Clicking opens the window's fullscreen
+ * viewer, which asks the host for a screen-sized copy of its own.
  */
-function imageLineNode(
-  painter: Painter,
-  item: TranscriptItem,
-  image: ImageAttachmentRef,
-  index: number,
-): HTMLElement {
-  const line = el('span', 'user-image-line', `图片 ${index + 1}：${image.name}，${image.width}×${image.height}`)
-  line.setAttribute('role', 'button')
-  line.setAttribute('tabindex', '0')
-  line.title = '点击打开原图'
-  const open = () => painter.onOpenImage(image.id, image.name)
-  line.addEventListener('click', open)
-  line.addEventListener('keydown', (event) => {
+function imageTileNode(painter: Painter, image: ImageAttachmentRef, index: number): HTMLElement {
+  const facts = `图片 ${index + 1}：${image.name}，${image.width}×${image.height}`
+  const thumb = el('img', 'user-image-thumb')
+  const url = painter.imageThumbUrl(image.id)
+  if (url !== undefined) thumb.setAttribute('src', url)
+  thumb.setAttribute('alt', facts)
+  thumb.title = facts
+  thumb.setAttribute('role', 'button')
+  thumb.setAttribute('tabindex', '0')
+  const open = () => painter.onViewImage(image)
+  thumb.addEventListener('click', open)
+  thumb.addEventListener('keydown', (event) => {
     if ((event as KeyboardEvent).key !== 'Enter') return
     open()
   })
-  return line
+  return thumb
 }
 
 /**

@@ -1,19 +1,26 @@
 import type { SessionControllerSnapshot } from '../../../runtime/sessionController.js'
 import type { WireUsageCost } from '../../../runtime/protocol/wire.js'
-import { statusUsageView, type UsageMetric, type UsageRateView } from '../model/usage.js'
+import {
+  statusUsageView,
+  type StatusUsageView,
+  type UsageMetric,
+  type UsageRateView,
+} from '../model/usage.js'
 import { el, replace } from './dom.js'
 import { icon, type IconName } from './icons.js'
 
 /**
- * The status bar: usage, cost, and whether a turn is running.
+ * The status bar: what the session has spent, and what it cost.
  *
  * Split out of `composerView.ts` in 4e, when the composer grew its action bar
- * and the one file stopped being one thing. Two fields have since left it, both
- * for the same reason — one field, one place, or they drift:
+ * and the one file stopped being one thing. Three fields have since left it,
+ * all for the same reason — one field, one place, or they drift:
  *
  * - the model, to the composer's chip beside the effort level it is read with;
  * - the permission mode (5e), to the composer's pill, beside the message it
- *   governs; and the session name, to the canvas header, which owns identity.
+ *   governs; and the session name, to the canvas header, which owns identity;
+ * - the 生成中 label, to nowhere: the transcript and the stop button both say a
+ *   turn is running, and this strip is for the numbers.
  *
  * `document.title` still happens here rather than in the header, and that is
  * deliberate: it is the desktop shell's end-to-end proof (the smoke driver reads
@@ -29,7 +36,6 @@ export interface StatusView {
 export function createStatusView(els: {
   usage: HTMLElement
   cost: HTMLElement
-  streaming: HTMLElement
 }): StatusView {
   /** The last title written. `renderSession` runs on every snapshot tick. */
   let lastTitle: string | undefined
@@ -41,20 +47,20 @@ export function createStatusView(els: {
   let lastUsage: string | undefined
   return {
     render(snapshot, cost) {
-      // Empty while idle, not「空闲」: this line sits under the composer now, and
-      // a permanent label for "nothing is happening" is noise the reference
-      // builds do not carry (design_guidance 四.2).
-      els.streaming.textContent = snapshot.isStreaming
-        ? `生成中${snapshot.spinnerSubText ? `：${snapshot.spinnerSubText}` : ''}`
-        : ''
-      // Four numbers, not two: `model/usage.ts` owns which ones and how they
-      // read. The hover carries the same counts unabbreviated, and so does the
-      // accessible name — the chips on screen are glyphs plus figures, which is
+      // No 生成中 field: it said what the transcript above it was already
+      // saying, in the one place on screen reserved for what the turn cost —
+      // and the readout beside it moves per completed request now
+      // (`SessionController.handleRequestUsage`), so the strip is live during a
+      // turn without a label announcing that it is.
+      //
+      // One total and a rate: `model/usage.ts` owns which numbers and how they
+      // read. The hover carries the split unabbreviated, and so does the
+      // accessible name — the chip on screen is a glyph plus a figure, which is
       // not a sentence a screen reader can make sense of.
       const usage = statusUsageView(snapshot.usage.total)
       if (usage.text !== lastUsage) {
         lastUsage = usage.text
-        replace(els.usage, ...usage.metrics.map(metricChip), usage.rate && rateChip(usage.rate))
+        replace(els.usage, ...usageChips(usage))
         els.usage.title = usage.title
         if (usage.text) els.usage.setAttribute('aria-label', usage.text)
         else els.usage.removeAttribute('aria-label')
@@ -82,9 +88,27 @@ export function createStatusView(els: {
 
 /** One glyph per count, keyed by kind so the model never names a drawing. */
 const METRIC_ICONS: Record<UsageMetric['kind'], IconName> = {
-  input: 'token-in',
-  cache: 'layers',
-  output: 'token-out',
+  total: 'database',
+}
+
+/**
+ * The chips with `·` between them.
+ *
+ * The separator is a node rather than a flex gap because the two fields either
+ * side of it are different kinds of thing — an absolute count and a ratio — and
+ * whitespace alone reads as one run of figures. It is the same `·` the
+ * accessible `text` joins with, so the line sounds like it looks.
+ */
+function usageChips(usage: StatusUsageView): (HTMLElement | undefined)[] {
+  const chips: HTMLElement[] = usage.metrics.map(metricChip)
+  if (usage.rate) chips.push(rateChip(usage.rate))
+  return chips.flatMap((chip, index) => (index === 0 ? [chip] : [separator(), chip]))
+}
+
+function separator(): HTMLElement {
+  const dot = el('span', 'usage-separator', '·')
+  dot.setAttribute('aria-hidden', 'true')
+  return dot
 }
 
 /** A glyph and a figure. The label lives in the readout's accessible name. */

@@ -3,11 +3,15 @@ import assert from 'node:assert/strict'
 import sharp from 'sharp'
 import {
   IMAGE_PROCESS_DEFAULTS,
+  MAX_THUMBNAIL_BYTES,
+  MAX_VIEW_BYTES,
   convertImageBytesToPng,
   formatImageCaption,
   orientedDimensions,
   orientedPointFromStored,
   processImageBytes,
+  renderThumbnailBytes,
+  renderViewBytes,
   sniffImage,
   storedPointFromOriented,
 } from '../src/tools/imageFile.js'
@@ -556,4 +560,33 @@ test('convertImageBytesToPng refuses formats it cannot decode', async () => {
   assert.ok(!garbage.ok)
   assert.equal(garbage.reason, 'unsupported-format')
   assert.match(garbage.message, /not a recognizable image/)
+})
+
+test('the two data-URL tiers fit their own boxes and never enlarge', async () => {
+  // A picture larger than both boxes, and compressible enough to fit the first
+  // rung: each tier lands on its own edge with the aspect ratio intact.
+  const large = await gradientImage(3000, 1500)
+  const thumbnail = await sharp(await renderThumbnailBytes(large)).metadata()
+  assert.equal(thumbnail.width, 256)
+  assert.equal(thumbnail.height, 128)
+  const view = await sharp(await renderViewBytes(large)).metadata()
+  assert.equal(view.width, 2048)
+  assert.equal(view.height, 1024)
+
+  // Incompressible pixels at the same size overflow the cap, so the ladder
+  // steps down a rung rather than shipping a 5 MB data URL.
+  const noisy = await renderViewBytes(await noiseImage(3000, 1500))
+  const noisyMeta = await sharp(noisy).metadata()
+  assert.ok(noisyMeta.width! < 2048, 'an over-cap render must shrink, not pass through')
+  assert.ok(noisy.byteLength <= MAX_VIEW_BYTES)
+
+  // Smaller than the box: unchanged, in both tiers. The viewer's zoom is what
+  // magnifies a small original, not the encoder.
+  const small = await noiseImage(120, 90)
+  const smallView = await sharp(await renderViewBytes(small)).metadata()
+  assert.equal(smallView.width, 120)
+  assert.equal(smallView.height, 90)
+
+  assert.ok((await renderThumbnailBytes(large)).byteLength <= MAX_THUMBNAIL_BYTES)
+  assert.ok((await renderViewBytes(large)).byteLength <= MAX_VIEW_BYTES)
 })

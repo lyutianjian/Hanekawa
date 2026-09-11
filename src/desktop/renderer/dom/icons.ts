@@ -22,6 +22,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg'
 
 export type IconName =
   | 'plus'
+  | 'minus'
+  | 'close'
   | 'trash'
   | 'folder'
   | 'file'
@@ -54,9 +56,7 @@ export type IconName =
   // --- a message's meta row ---
   | 'copy'
   // --- the status line's token readout ---
-  | 'token-in'
-  | 'token-out'
-  | 'layers'
+  | 'database'
 
 interface IconSpec {
   /** Path data on a 16×16 grid. */
@@ -72,6 +72,12 @@ interface IconSpec {
  */
 const ICONS = {
   plus: { paths: ['M8 3.5v9', 'M3.5 8h9'] },
+  // The zoom control's other half, and the `plus` above with one stroke removed.
+  minus: { paths: ['M3.5 8h9'] },
+  // The image viewer's way out. A drawn ✕ rather than the glyph the composer's
+  // small controls use: it sits on a scrim at the window's corner, where a text
+  // character renders at the font's mercy instead of the icon grid's.
+  close: { paths: ['M4 4l8 8', 'M12 4l-8 8'] },
   trash: {
     paths: [
       'M3 4.5h10',
@@ -110,10 +116,16 @@ const ICONS = {
   spinner: { paths: ['M8 3.5a4.5 4.5 0 1 1-4.5 4.5'] },
   send: { paths: ['M8 13V3.6', 'M3.8 7.8 8 3.5l4.2 4.3'] },
   stop: { paths: ['M5.2 5.2h5.6v5.6H5.2z'], filled: true },
+  // The settings gear, as a computed polygon rather than a traced one. The path
+  // it replaced was a 24-grid Feather gear squeezed onto this 16-grid: its arc
+  // radii were wider than the space left between teeth, so the shape folded in
+  // on itself at 14px. This one is eight teeth on radii 6.35/4.55 about (8,8),
+  // each tooth tapering from an 36°-wide base to a 24°-wide top — a 1.8 tooth
+  // depth against the 1.5 stroke, the same ratio the reference sets keep.
   gear: {
     paths: [
-      'M8 10a2 2 0 1 1 0-4 2 2 0 0 1 0 4z',
-      'M12.9 9.5a1 1 0 0 0 .2 1.1l.1.1a1.2 1.2 0 1 1-1.7 1.7l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9v.2a1.2 1.2 0 0 1-2.4 0V13a1 1 0 0 0-.7-.9 1 1 0 0 0-1.1.2l-.1.1a1.2 1.2 0 1 1-1.7-1.7l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6h-.2a1.2 1.2 0 0 1 0-2.4H3a1 1 0 0 0 .9-.7 1 1 0 0 0-.2-1.1l-.1-.1a1.2 1.2 0 1 1 1.7-1.7l.1.1a1 1 0 0 0 1.1.2H6.6a1 1 0 0 0 .6-.9v-.2a1.2 1.2 0 0 1 2.4 0V3a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a1.2 1.2 0 1 1 1.7 1.7l-.1.1a1 1 0 0 0-.2 1.1v.1a1 1 0 0 0 .9.6h.2a1.2 1.2 0 0 1 0 2.4H13a1 1 0 0 0-.9.6z',
+      'M12.33 6.59 14.21 6.68 14.21 9.32 12.33 9.41 12.05 10.07 13.33 11.46 11.46 13.33 10.07 12.05 9.41 12.33 9.32 14.21 6.68 14.21 6.59 12.33 5.93 12.05 4.54 13.33 2.67 11.46 3.95 10.07 3.67 9.41 1.79 9.32 1.79 6.68 3.67 6.59 3.95 5.93 2.67 4.54 4.54 2.67 5.93 3.95 6.59 3.67 6.68 1.79 9.32 1.79 9.41 3.67 10.07 3.95 11.46 2.67 13.33 4.54 12.05 5.93Z',
+      'M8 5.85a2.15 2.15 0 1 1 0 4.3 2.15 2.15 0 0 1 0-4.3z',
     ],
   },
   // --- the empty-state screen ---
@@ -176,19 +188,20 @@ const ICONS = {
       'M10.4 4.6V4.2a1 1 0 0 0-1-1H4.2a1 1 0 0 0-1 1v5.2a1 1 0 0 0 1 1h.4',
     ],
   },
-  // The three token glyphs, drawn on one grid so the status line reads as a set:
-  // the two arrows share a shaft and a head, and `layers` is the one shape among
-  // them that is not an arrow, because the count it labels is not a direction.
+  // The token readout's one mark. It replaced a set of three — two arrows and a
+  // stack, one per direction — when the line stopped naming directions and
+  // started naming a total. A cylinder is the mark for "accumulated store",
+  // which is what a session total is; an arrow would still be claiming a
+  // direction the figure beside it no longer has.
   //
-  // The arrows are the SVG spelling of the TUI's `↑ ↓` (`tui/statusUsage.ts`),
-  // which the chrome font cannot be trusted to draw. The TUI's third mark is a
-  // `⚡`, and that one is deliberately *not* carried over: a bolt says "fast",
-  // which is a consequence, where a stack says "served from what was already
-  // stored" — which is what a cache hit is. Two plates rather than three: a
-  // third one at 11px closes the gaps into a smudge.
-  'token-in': { paths: ['M8 12.8V4.4', 'M4.6 7.8 8 4.4l3.4 3.4'] },
-  'token-out': { paths: ['M8 3.2v8.4', 'M4.6 8.2 8 11.6l3.4-3.4'] },
-  layers: { paths: ['M8 2.6 13.2 5.7 8 8.8 2.8 5.7z', 'M2.8 9.5 8 12.6l5.2-3.1'] },
+  // One band rather than two: at 11px a second one closes the gaps into a smudge.
+  database: {
+    paths: [
+      'M3.4 4c0-1 2-1.8 4.6-1.8s4.6.8 4.6 1.8-2 1.8-4.6 1.8S3.4 5 3.4 4z',
+      'M3.4 4v8c0 1 2 1.8 4.6 1.8s4.6-.8 4.6-1.8V4',
+      'M12.6 8c0 1-2 1.8-4.6 1.8S3.4 9 3.4 8',
+    ],
+  },
 } as const satisfies Record<IconName, IconSpec>
 
 export function icon(name: IconName, className = 'icon'): SVGSVGElement {

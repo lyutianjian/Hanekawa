@@ -359,7 +359,6 @@ export const status = () => `(() => {
     mode: text('chip-permission'),
     usage: text('status-usage'),
     cost: text('status-cost'),
-    streaming: text('status-streaming'),
     session: (el('#canvas-header .canvas-title') || {}).textContent || '',
     title: document.title,
   }
@@ -691,7 +690,9 @@ export const attachmentStrip = () => `(() => {
   const submit = document.getElementById('submit')
   const rows = [...strip.children].map((row) => ({
     state: row.classList.contains('ready') ? 'ready' : row.classList.contains('failed') ? 'failed' : 'importing',
-    label: (row.querySelector('.attachment-label') || {}).textContent || '',
+    // The tile draws no name — a 64px square cannot carry one — so the facts
+    // live in its accessible name, which is what a user hears and hovers.
+    label: row.getAttribute('aria-label') || '',
     hasThumb: row.querySelector('.attachment-thumb') !== null,
     thumbLoaded: [...row.querySelectorAll('.attachment-thumb')].some(
       (img) => (img.getAttribute('src') || '').startsWith('data:image/'),
@@ -756,63 +757,82 @@ function imageFileEvent(type, targetId, name, base64, mime) {
   })()`
 }
 
-/** Clicks one strip row's ✕, by row index — the remove path the strip itself wires. */
+/** Clicks one tile's ✕, by index — the remove path the grid itself wires. */
 export const clickAttachmentRemove = (index) => `(() => {
-  const row = document.querySelectorAll('#composer-attachments .attachment-row')[${index}]
-  if (!row) throw new Error('no attachment row ' + ${index})
+  const row = document.querySelectorAll('#composer-attachments .attachment-tile')[${index}]
+  if (!row) throw new Error('no attachment tile ' + ${index})
   const remove = row.querySelector('.attachment-remove')
   if (!remove) throw new Error('no remove button on attachment row ' + ${index})
   remove.click()
   return true
 })()`
 
-/** Clicks the first ready row's thumbnail — the preview popover's own trigger. */
+/** Clicks the first ready tile's thumbnail — the fullscreen viewer's own trigger. */
 export const clickAttachmentThumb = () =>
-  clickOr('#composer-attachments .attachment-row.ready .attachment-thumb', 'a ready thumbnail')
+  clickOr('#composer-attachments .attachment-tile.ready .attachment-thumb', 'a ready thumbnail')
 
 /**
- * The preview popover (S12), and what it would answer a second preview ask with.
+ * The fullscreen image viewer (S12), and what a second open would answer with.
  *
- * The popover is built once per open and never rebuilt by a snapshot tick, so a
- * step can count the wire asks for a *new* URL separately: the pane's explicit
- * path re-requests only when the cache has no entry, and the cached hit opens
- * immediately. Both halves of "the preview does not re-transmit per stream
- * chunk" are observable from here.
+ * The viewer opens on the thumbnail the tile already holds and settles onto the
+ * screen-sized copy the host renders, so a step can watch both tiers: it is
+ * open on the click's own frame, and `srcIsDataUrl` holds throughout. The zoom
+ * label is the control's whole readout, which makes "− and + are wired"
+ * observable without measuring pixels.
  */
-export const attachmentPreview = () => `(() => {
-  const panel = document.querySelector('.attachment-preview')
+export const imageViewer = () => `(() => {
+  const panel = document.getElementById('lightbox')
   if (!panel || panel.hidden || panel.hasAttribute('inert')) return { open: false }
-  const image = panel.querySelector('.attachment-preview-image')
+  const image = panel.querySelector('.lightbox-image')
+  const steps = [...panel.querySelectorAll('.lightbox-zoom-step')]
   return {
     open: true,
+    // The scrim fades in over its own transition, so a screenshot taken on the
+    // click's frame catches it at opacity 0. A step that wants the *look* waits
+    // for this to be 'open'; one that wants the wiring does not have to.
+    settled: panel.classList.contains('presence-open'),
     role: panel.getAttribute('role'),
-    name: (panel.querySelector('.attachment-preview-name') || {}).textContent || '',
-    caption: (panel.querySelector('.attachment-preview-caption') || {}).textContent || '',
-    hasOpen: panel.querySelector('.attachment-preview-open') !== null,
+    ariaLabel: panel.getAttribute('aria-label') || '',
+    caption: (panel.querySelector('.lightbox-caption') || {}).textContent || '',
+    zoom: (panel.querySelector('.lightbox-zoom-label') || {}).textContent || '',
+    hasClose: panel.querySelector('.lightbox-close') !== null,
+    zoomSteps: steps.length,
+    zoomDisabled: steps.map((step) => step.disabled === true),
     srcIsDataUrl: (image ? image.getAttribute('src') || '' : '').startsWith('data:image/'),
   }
 })()`
 
-/** Closes the preview through its own ✕ — the popover's first documented exit. */
-export const clickAttachmentPreviewClose = () =>
-  clickOr('.attachment-preview-close', 'the preview close button')
+/** Closes the viewer through its own ✕ — the first of its three documented exits. */
+export const clickImageViewerClose = () =>
+  clickOr('#lightbox .lightbox-close', 'the viewer close button')
 
-/** The user-image lines the visible pane's transcript paints (S12). */
-export const transcriptImageLines = () => `(() => {
+/** Clicks the viewer's − or + — index 0 is out, index 1 is in. */
+export const clickImageViewerZoom = (index) => `(() => {
+  const step = document.querySelectorAll('#lightbox .lightbox-zoom-step')[${index}]
+  if (!step) throw new Error('no viewer zoom step ' + ${index})
+  step.click()
+  return true
+})()`
+
+/** The image thumbnails the visible pane's transcript paints (S12). */
+export const transcriptImageTiles = () => `(() => {
   const area = document.getElementById('transcript-area')
   const pane = [...area.children].find((node) => !node.hidden)
   if (!pane) return []
-  return [...pane.querySelectorAll('.user-image-line')].map((line) => ({
-    text: line.textContent || '',
-    labelled: (line.getAttribute('role') || '') === 'button',
+  return [...pane.querySelectorAll('.user-image-thumb')].map((tile) => ({
+    // The facts live in the alt: the tile is pixels, and the alt is what the
+    // live region reads whether or not the data URL has settled.
+    text: tile.getAttribute('alt') || '',
+    labelled: (tile.getAttribute('role') || '') === 'button',
+    loaded: (tile.getAttribute('src') || '').startsWith('data:image/'),
   }))
 })()`
 
-/** Clicks one transcript image line, by index — `open-attachment` by id. */
-export const clickTranscriptImageLine = (index) => `(() => {
-  const line = document.querySelectorAll('.user-image-line')[${index}]
-  if (!line) throw new Error('no transcript image line ' + ${index})
-  line.click()
+/** Clicks one transcript image thumbnail, by index — the fullscreen viewer. */
+export const clickTranscriptImageTile = (index) => `(() => {
+  const tile = document.querySelectorAll('.user-image-thumb')[${index}]
+  if (!tile) throw new Error('no transcript image tile ' + ${index})
+  tile.click()
   return true
 })()`
 

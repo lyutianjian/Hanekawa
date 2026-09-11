@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import sharp from 'sharp'
@@ -251,6 +251,32 @@ describe('ImageAttachmentService', () => {
     const again = await service.previewDataUrl(stored.ref)
     assert.equal(again.ok, true)
     assert.equal(await exists(thumbnailPath), true, 'thumbnail should be regenerated')
+  })
+
+  it('serves a screen-sized view data URL without caching it on disk', async () => {
+    const service = makeService()
+    const stored = await importOk(service, 'session-a', 'transparent.png')
+
+    const view = await service.viewDataUrl(stored.ref)
+    assert.equal(view.ok, true)
+    if (!view.ok) return
+    assert.ok(view.value.startsWith('data:image/png;base64,'))
+    const bytes = Buffer.from(view.value.slice('data:image/png;base64,'.length), 'base64')
+    const meta = await sharp(bytes).metadata()
+    assert.equal(meta.format, 'png')
+    // Never enlarged: a small original comes back at its own size, and the
+    // viewer's zoom is what magnifies it.
+    assert.equal(meta.width, stored.ref.width)
+    assert.equal(meta.height, stored.ref.height)
+
+    // Rendered per call, so nothing new appears beside the two versions and the
+    // thumbnail the store does keep.
+    const entries = await readdir(imageDir('session-a', stored.ref.id))
+    assert.equal(entries.includes('view.png'), false)
+
+    // Unregistered and unsafe ids fail the way every other lookup here does.
+    assert.equal((await service.viewDataUrl({ ownerSessionId: 'session-b', id: stored.ref.id })).ok, false)
+    assert.equal((await service.viewDataUrl({ ownerSessionId: 'session-a', id: '..\\..\\config' })).ok, false)
   })
 
   describe('collection', () => {

@@ -6,7 +6,6 @@ import {
   failPreviewLoad,
   MAX_ATTACHMENT_PREVIEWS,
   previewDataUrl,
-  retryPreviewLoad,
   settlePreviewLoad,
   type AttachmentPreviewCache,
 } from '../src/desktop/renderer/model/attachmentPreviews.js'
@@ -37,21 +36,16 @@ test('the automatic path asks once per id; a settle ends the asking', () => {
   assert.equal(after.started, false, 'a settled id is never re-requested')
 })
 
-test('a failure is explicit, and only the explicit path may re-ask', () => {
-  let cache: AttachmentPreviewCache = failPreviewLoad(new Map(), 'img-1', 'file-missing')
+test('a failure is final for this pane, and never re-asked on its own', () => {
+  const cache: AttachmentPreviewCache = failPreviewLoad(new Map(), 'img-1', 'file-missing')
 
   assert.equal(previewDataUrl(cache, 'img-1'), undefined)
+  // Every paint runs this, and a failed id must not turn the paint rate into a
+  // request rate — a transcript full of expired attachments would do exactly
+  // that, once per streamed chunk.
   const auto = beginPreviewLoad(cache, 'img-1')
-  assert.equal(auto.started, false, 'the strip does not retry on its own')
+  assert.equal(auto.started, false, 'a paint does not retry on its own')
   assert.equal(auto.cache, cache)
-
-  const retry = retryPreviewLoad(cache, 'img-1')
-  assert.equal(retry.started, true, 'the thumbnail click re-runs a failed load')
-  cache = settlePreviewLoad(retry.cache, 'img-1', 'data:image/png;base64,BB')
-  assert.equal(previewDataUrl(cache, 'img-1'), 'data:image/png;base64,BB')
-
-  // A loading or ready id is not the explicit retry's to re-run either.
-  assert.equal(retryPreviewLoad(cache, 'img-1').started, false)
 })
 
 test('the cache is bounded, evicting the least recently settled', () => {

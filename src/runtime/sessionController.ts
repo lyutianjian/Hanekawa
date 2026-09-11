@@ -18,8 +18,10 @@ import { rollbackInterruptedPromptIfSynthetic } from './interruptRollback.js'
 import {
   addTokenUsage,
   createEmptySessionUsage,
+  createEmptyUsage,
   findLatestTaskSnapshot,
   formatInterruptMessage,
+  subtractTokenUsage,
   type SessionUsage,
 } from './sessionUsage.js'
 import {
@@ -145,6 +147,13 @@ export class SessionController {
 
   private streaming = false
   private usage: SessionUsage = createEmptySessionUsage()
+  /**
+   * What the current run has already folded into `usage.total` request by
+   * request. Reset at the top of every run and subtracted from the end-of-run
+   * figure at the settle, so the live readout and the authoritative accounting
+   * agree instead of double-counting each other.
+   */
+  private runReportedUsage = createEmptyUsage()
   private taskSnapshot: TaskDisplaySnapshot | undefined
   private spinnerSubText: string | undefined
 
@@ -283,6 +292,10 @@ export class SessionController {
       this.abortController = ac
       this.didRollback = false
       this.loopStartMs = Date.now()
+      // Zeroed before the first request of this run, not after the last one: an
+      // aborted or failed run never reaches the settle below, and a leftover
+      // accumulator would be subtracted from the *next* run's total.
+      this.runReportedUsage = createEmptyUsage()
       // Armed for the whole run, not just the first record: the user record is
       // the *only* thing that resolves it, and nothing else may.
       if (handoff) this.pendingAcceptance = { messageId, notify: handoff.onAccepted }
@@ -296,7 +309,14 @@ export class SessionController {
         // still describes the context, and dropping it would send the readout
         // back to the record-only estimate.
         lastRequest: result.statusUsage ?? this.usage.lastRequest,
-        total: addTokenUsage(this.usage.total, result.usage),
+        // Only the part `handleRequestUsage` could not have seen: compaction
+        // (`loop.ts` folds `compactResult.usage` in) and subagent transcripts,
+        // neither of which is a foreground response. Adding `result.usage`
+        // whole would count every foreground request twice.
+        total: addTokenUsage(
+          this.usage.total,
+          subtractTokenUsage(result.usage, this.runReportedUsage),
+        ),
       }
       this.publish()
     } catch (err: unknown) {
@@ -458,12 +478,18 @@ export class SessionController {
   /**
    * A provider request just settled: publish its size straight away.
    *
-   * Only `lastRequest` moves. The totals stay on the end-of-run accounting in
-   * `sendMessage` — adding here as well would count every request twice, since
-   * `AgentRunResult.usage` is the sum of exactly these responses.
+   * The total moves here too, so the readout under the composer counts up
+   * through a long turn instead of jumping once at the end. `runReportedUsage`
+   * remembers what this path contributed and `sendMessage`'s settle subtracts
+   * it, since `AgentRunResult.usage` is the sum of exactly these responses plus
+   * the compaction and subagent usage this path never sees.
+   *
+   * A run that aborts or throws keeps what was reported — those tokens were
+   * spent whether or not the turn finished.
    */
   private handleRequestUsage = (usage: TokenUsage): void => {
-    this.usage = { lastRequest: usage, total: this.usage.total }
+    this.runReportedUsage = addTokenUsage(this.runReportedUsage, usage)
+    this.usage = { lastRequest: usage, total: addTokenUsage(this.usage.total, usage) }
     this.publish()
   }
 

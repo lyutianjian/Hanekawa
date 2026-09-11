@@ -44,6 +44,9 @@ export const effortCommand: CommandDefinition = {
     if (result && typeof result === 'object' && 'then' in result) {
       await result
     }
-    context.writeLine(`Effort set to: ${level}`)
+    // Silent on success, for the reason `/model` is (see `model.ts`): the level
+    // in force is already on screen — the status line's effort symbol, the
+    // desktop chip — and this context cannot see the *clamped* level anyway, so
+    // the line it used to print could name a level the model never accepted.
   },
 }

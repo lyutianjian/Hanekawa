@@ -404,16 +404,19 @@ test('token usage accumulates across turns and resets when the session is retarg
   assert.equal(harness.controller.getSessionId(), 'other-session')
 })
 
-test('a request that lands mid-turn updates lastRequest before the turn ends', async () => {
+test('a request that lands mid-turn moves both lastRequest and the running total', async () => {
   let harness: Harness | undefined
   const seenMidTurn: Array<{ inputTokens: number; outputTokens: number } | null> = []
+  const totalsMidTurn: Array<{ inputTokens: number; outputTokens: number }> = []
   harness = await createHarness({
     run: async () => {
       // Two requests inside one turn, the way a tool step produces them.
       harness?.proxy.onRequestUsage(usage(1000, 1))
       seenMidTurn.push(harness?.controller.getSnapshot().usage.lastRequest ?? null)
+      totalsMidTurn.push(harness!.controller.getSnapshot().usage.total)
       harness?.proxy.onRequestUsage(usage(2000, 2))
       seenMidTurn.push(harness?.controller.getSnapshot().usage.lastRequest ?? null)
+      totalsMidTurn.push(harness!.controller.getSnapshot().usage.total)
       return okResult({ usage: usage(3000, 3), statusUsage: usage(2000, 2) })
     },
   })
@@ -421,10 +424,50 @@ test('a request that lands mid-turn updates lastRequest before the turn ends', a
   await harness.controller.submit({ text: 'hello' })
 
   assert.deepEqual(seenMidTurn, [usage(1000, 1), usage(2000, 2)])
-  // The totals are the run's business alone — a mid-turn report must not add to
-  // them, or every request would be counted twice.
+  // The readout counts up as the turn runs rather than jumping once at the end.
+  assert.deepEqual(totalsMidTurn, [usage(1000, 1), usage(3000, 3)])
+  // And the settle adds only what the mid-turn path could not have seen, so the
+  // run's own figure is still the total — not twice it.
   assert.deepEqual(harness.controller.getSnapshot().usage.total, usage(3000, 3))
   assert.deepEqual(harness.controller.getSnapshot().usage.lastRequest, usage(2000, 2))
+})
+
+test('compaction and subagent usage still land on top of the reported requests', async () => {
+  // `AgentRunResult.usage` is the foreground responses *plus* compaction and
+  // subagent transcripts, which never come through `onRequestUsage` — the
+  // difference is exactly what the settle has left to add.
+  let harness: Harness | undefined
+  harness = await createHarness({
+    run: async () => {
+      harness?.proxy.onRequestUsage(usage(1000, 1))
+      return okResult({ usage: usage(1700, 5), statusUsage: usage(1000, 1) })
+    },
+  })
+
+  await harness.controller.submit({ text: 'hello' })
+
+  assert.deepEqual(harness.controller.getSnapshot().usage.total, usage(1700, 5))
+})
+
+test('a failed run keeps the tokens its requests already spent', async () => {
+  let harness: Harness | undefined
+  let failing = true
+  harness = await createHarness({
+    run: async () => {
+      if (!failing) return okResult({ usage: usage(100, 1) })
+      harness?.proxy.onRequestUsage(usage(900, 7))
+      throw new Error('provider exploded')
+    },
+  })
+
+  await harness.controller.submit({ text: 'hello' })
+
+  // The run never reached its settle, but the request was billed all the same.
+  assert.deepEqual(harness.controller.getSnapshot().usage.total, usage(900, 7))
+  // And the abandoned accumulator must not be subtracted from the next run.
+  failing = false
+  await harness.controller.submit({ text: 'again' })
+  assert.deepEqual(harness.controller.getSnapshot().usage.total, usage(1000, 8))
 })
 
 test('a run that produced no response keeps the last request rather than falling back to an estimate', async () => {

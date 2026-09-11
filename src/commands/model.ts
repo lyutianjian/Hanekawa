@@ -44,11 +44,15 @@ export const modelCommand: CommandDefinition = {
     }
 
     context.clearCachedSections?.()
-    const model = result?.ok ? result.model : { key: newModel, model: newModel, providerName: 'unknown' }
-    const lines = [`Model set to: ${model.key} (${model.providerName}: ${model.model})`]
-    // Reported, not asked: the switch already happened, and images in the
-    // conversation only change how the next request is built (design §9.1).
-    if (result?.ok && result.notice) lines.push(result.notice)
-    context.writeLine(lines.join('\n'))
+    // No confirmation line. Both shells carry the live model in a persistent
+    // readout — the TUI's status line, the desktop composer's chip — so a
+    // `Model set to: …` row in the transcript restated what is already on screen
+    // and then stayed there, outliving the fact it reported.
+    //
+    // The image-impact notice still prints: it is a consequence of the switch
+    // that nothing else shows. Reported, not asked — the switch already
+    // happened, and images in the conversation only change how the next request
+    // is built (design §9.1).
+    if (result?.ok && result.notice) context.writeLine(result.notice)
   },
 }

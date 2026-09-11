@@ -588,7 +588,14 @@ test('the scrims are positioned against the canvas and stack above every popover
     assert.equal(decl(id, 'inset'), '0', `${id} does not fill the canvas`)
   }
   const fixed = blocks.filter((block) => block.decls.some((d) => d.prop === 'position' && d.value === 'fixed'))
-  assert.deepEqual(fixed.map((block) => block.selector), ['#settings'], 'only the window-wide settings page uses the viewport')
+  // The two that resolve against the viewport, and the reason each does: the
+  // settings page replaces the window's work area, and the image viewer covers
+  // the window because a picture at full size belongs to no single lane.
+  assert.deepEqual(
+    fixed.map((block) => block.selector).sort(),
+    ['#lightbox', '#settings'],
+    'only the window-wide screens use the viewport',
+  )
 
   // The ordering is these numbers now: before S6 the two scrims won by being
   // last in the body, and every popover in the app sits at 5–6.
@@ -605,8 +612,15 @@ test('the scrims are positioned against the canvas and stack above every popover
   // A permission prompt that arrives over an open rewind panel is holding the
   // loop and has to be answered first.
   assert.ok(overlay > rewind, `#overlay ${overlay} must outrank #rewind ${rewind}`)
+  // The image viewer is the one thing above both, and the exception is a
+  // decision: it holds nothing, it is opened by a deliberate act and closed by
+  // three of them, so it cannot trap anyone behind a question the way the two
+  // blocking layers can — and a prompt arriving underneath is still there when
+  // the picture is shut.
+  const lightbox = at('#lightbox')
+  assert.ok(lightbox !== undefined && lightbox > overlay, `#lightbox ${lightbox} must sit over #overlay ${overlay}`)
   for (const layer of layers) {
-    if (layer.selector === '#overlay' || layer.selector === '#rewind') continue
+    if (layer.selector === '#overlay' || layer.selector === '#rewind' || layer.selector === '#lightbox') continue
     assert.ok(layer.value < rewind, `${layer.selector} (${layer.value}) would draw over a modal`)
   }
   // `#canvas` deliberately declares no z-index: that would make it a stacking

@@ -171,7 +171,10 @@ export async function imagePasteSources(files: readonly ImageFileLike[]): Promis
 export interface AttachmentRowView {
   readonly draftId: string
   readonly state: 'importing' | 'ready' | 'failed'
+  /** The whole fact, for the tile's `title` and its accessible name. */
   readonly label: string
+  /** Just the file name — the tile is pixels, so this is the `alt` behind them. */
+  readonly name: string
   /** The state's own words: 导入中… / 失败：…. */
   readonly detail?: string
   /** A ready row's attachment id, for the thumbnail lookup and the preview ask. */
@@ -224,24 +227,31 @@ export function attachmentStripView(
   const rows: AttachmentRowView[] = drafts.map((draft, index) => {
     const number = index + 1
     if (draft.kind === 'importing') {
-      return { draftId: draft.draftId, state: 'importing', label: `图片 ${number}：${draft.name}`, detail: '导入中…' }
+      return {
+        draftId: draft.draftId,
+        state: 'importing',
+        label: `图片 ${number}：${draft.name}`,
+        name: draft.name,
+        detail: '导入中…',
+      }
     }
     if (draft.kind === 'failed') {
       return {
         draftId: draft.draftId,
         state: 'failed',
         label: `图片 ${number}：${draft.name}`,
+        name: draft.name,
         // The reason's name and its exit, not just the facts (S24): a row that
         // only says "…is a BMP image" leaves the user nothing to do next.
         detail: `失败：${formatImageFailure(draft.reason, draft.message)}`,
       }
     }
-    const animated = draft.animated ? '，动画首帧' : ''
     const thumbUrl = previews(draft.ref.id)
     return {
       draftId: draft.draftId,
       state: 'ready',
-      label: `图片 ${number}：${draft.ref.name}，${draft.ref.width}×${draft.ref.height}${animated}`,
+      label: `图片 ${number}：${draft.ref.name}，${imageDimensions(draft.ref, draft.animated)}`,
+      name: draft.ref.name,
       imageId: draft.ref.id,
       ...(thumbUrl !== undefined ? { thumbUrl } : {}),
     }
@@ -257,20 +267,25 @@ export function attachmentStripView(
   return { rows, readyCount, ...(sendBlockNote ? { sendBlockNote } : {}) }
 }
 
-// --- the preview popover (S12) ---------------------------------------------------
+// --- the fullscreen viewer ---------------------------------------------------
+//
+// A tile's click used to open a small popover anchored above the composer bar,
+// built from the same 256px thumbnail the tile paints. It opens the window's
+// fullscreen viewer now (`model/imageViewer.ts`), which asks the host for a
+// screen-sized copy — so there is no view model here any more: the pane hands
+// the viewer a `ref`, not a picture.
 
-/**
- * What the pane hands the composer to open the preview popover. The data URL
- * is the same size-capped thumbnail the strip paints — the design's preview
- * *is* the受限 data URL, never the original bytes — enlarged in a popover
- * rather than re-fetched at another size.
- */
-export interface AttachmentPreviewView {
-  /** The ready draft this preview came from; 打开原图 acts on it. */
-  readonly draftId: string
-  readonly imageId: string
-  readonly name: string
-  /** `W×H`, with ，动画首帧 appended when the import took the first frame. */
-  readonly dimensions: string
-  readonly dataUrl: string
+/** A ready draft's facts, for the viewer the pane opens from a tile's click. */
+export function readyDraftRef(
+  drafts: AttachmentDrafts,
+  draftId: string,
+): { ref: ImageAttachmentRef; animated: boolean } | undefined {
+  const entry = drafts.find((draft) => draft.draftId === draftId)
+  if (entry?.kind !== 'ready') return undefined
+  return { ref: entry.ref, animated: entry.animated === true }
+}
+
+/** `W×H`, with ，动画首帧 appended when the import took the first frame. */
+export function imageDimensions(ref: ImageAttachmentRef, animated = false): string {
+  return `${ref.width}×${ref.height}${animated ? '，动画首帧' : ''}`
 }

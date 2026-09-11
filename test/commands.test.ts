@@ -189,10 +189,12 @@ test('/model with args delegates model switching', async () => {
 
   assert.equal(requestedModel, 'openai-compatible')
   assert.equal(cleared, true)
-  assert.match(output, /Model set to: openai-compatible \(openai: deepseek-chat\)/)
+  // Nothing printed: the live model is already on screen in both shells, so the
+  // switch leaves no row behind to outlive it.
+  assert.equal(output, '')
 })
 
-test('/model prints the image-impact notice under the success line', async () => {
+test('/model prints the image-impact notice on its own', async () => {
   let output = ''
   await modelCommand.run('text-only', createContext({
     writeLine: (message) => {
@@ -205,9 +207,11 @@ test('/model prints the image-impact notice under the success line', async () =>
     }),
   }))
 
-  // Reported, never a second confirmation: the switch already happened.
-  assert.match(output, /^Model set to: text-only \(openai: text-only-model\)\n/)
+  // Reported, never a second confirmation: the switch already happened, and the
+  // notice is the only part of it nothing else on screen carries.
+  assert.match(output, /^text-only-model does not accept images/)
   assert.match(output, /2 images in this conversation/)
+  assert.doesNotMatch(output, /Model set to/)
 })
 
 test('/model reports available models when switch target is unknown', async () => {
@@ -295,7 +299,7 @@ test('/model delegates its raw argument to the runtime resolver', async () => {
   }))
 
   assert.equal(requestedModel, 'opus-like')
-  assert.match(output, /Model set to: opus-like \(openai: configured-power-model\)/)
+  assert.equal(output, '')
 })
 
 test('/model inherit reports runtime rejection', async () => {

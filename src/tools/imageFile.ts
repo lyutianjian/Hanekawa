@@ -616,6 +616,36 @@ export async function renderThumbnailBytes(bytes: Buffer): Promise<Buffer> {
   return last
 }
 
+/**
+ * The second — and last — tier of bytes that may become a data URL: the
+ * fullscreen viewer's copy. A 256px thumbnail is enough for a 64px tile and
+ * nothing more, so the desktop's lightbox asks for this instead; the cap is
+ * larger than the thumbnail's by the same ratio the sizes are, and it is still
+ * a cap, because the renderer receives Base64 over the wire either way.
+ */
+export const MAX_VIEW_BYTES = 3_000_000
+
+/**
+ * Render the fullscreen viewer's PNG: the send version fitted into a screen-
+ * sized box, shrunk further until it fits the cap. Never enlarges — a 400px
+ * original opens at 400px and the viewer's zoom is what magnifies it.
+ *
+ * Not cached on disk, unlike `thumbnail.png`: one of these is worth a dozen
+ * thumbnails on disk, and it is only ever wanted while a viewer is open.
+ */
+export async function renderViewBytes(bytes: Buffer): Promise<Buffer> {
+  let last = bytes
+  for (const edge of [2048, 1440, 1024]) {
+    const out = await sharp(bytes)
+      .resize({ width: edge, height: edge, fit: 'inside', withoutEnlargement: true })
+      .png({ compressionLevel: 9 })
+      .toBuffer()
+    last = out
+    if (out.byteLength <= MAX_VIEW_BYTES) break
+  }
+  return last
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }

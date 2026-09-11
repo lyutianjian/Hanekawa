@@ -32,6 +32,7 @@ import {
   type WireEffortResult,
   type WireEnqueueResult,
   type WireAttachmentPreviewResult,
+  type WireAttachmentViewResult,
   type WireAttachmentSource,
   type WireFileSuggestionsResult,
   type WireFocusPaneResult,
@@ -658,6 +659,19 @@ export class SessionClient {
       id: randomUUID(),
       imageId,
     }) as Promise<WireAttachmentPreviewResult>
+  }
+
+  /**
+   * A screen-sized data URL for one attachment — the fullscreen viewer's tier,
+   * where the thumbnail above would be a blur. Rendered per call rather than
+   * cached on disk, so ask for it only when a viewer is actually opening.
+   */
+  async getAttachmentView(imageId: string): Promise<WireAttachmentViewResult> {
+    return this.send({
+      type: 'get-attachment-view',
+      id: randomUUID(),
+      imageId,
+    }) as Promise<WireAttachmentViewResult>
   }
 
   /**

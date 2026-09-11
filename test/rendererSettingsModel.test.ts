@@ -291,6 +291,27 @@ test('opening asks for a load; closing does not', () => {
   assert.equal(closed.load, undefined)
 })
 
+test('opening can name its page, which is how `/provider` reaches the editor', () => {
+  // `/provider` used to be dropped on the floor by the renderer. It now opens
+  // this screen, and it has to land on the provider page rather than on
+  // whichever one the user last left open.
+  const elsewhere = applySettingsIntent(openState(), { kind: 'select-category', category: 'general' }).state
+  const closed = applySettingsIntent(elsewhere, { kind: 'close' }).state
+
+  const named = applySettingsIntent(closed, { kind: 'open', category: 'provider' })
+  assert.equal(named.state.open, true)
+  assert.equal(named.state.category, 'provider')
+  assert.equal(named.load, true)
+
+  // `Ctrl+,` names nothing and keeps the last page.
+  assert.equal(applySettingsIntent(closed, { kind: 'open' }).state.category, 'general')
+
+  // Already open: the page moves, without a second load for the same config.
+  const moved = applySettingsIntent(elsewhere, { kind: 'open', category: 'provider' })
+  assert.equal(moved.state.category, 'provider')
+  assert.equal(moved.load, undefined)
+})
+
 test('every category can be selected, and switching one drops an open form', () => {
   // Replaces "a disabled category cannot be selected": all four are built, and
   // `cardsFor` is now a `switch` with no `default`, so the compiler is what

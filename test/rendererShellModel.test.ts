@@ -43,6 +43,7 @@ function shell(overrides: Partial<ShellState> = {}): ShellState {
     hasOverlay: false,
     hasRewind: false,
     hasSurface: false,
+    hasCommandView: false,
     completions: 'none',
     isStreaming: false,
     inputEmpty: false,
@@ -146,6 +147,21 @@ test('an open picker takes the arrows and Enter, but only while the composer is 
 
   // Shift+Enter is still a newline, not an activation.
   assert.equal(resolveKey({ key: 'Enter', shiftKey: true }, browsing), 'newline')
+})
+
+test('a command view closes on Escape but never takes the arrows or Enter', () => {
+  // `/session` and friends paint a table of facts with no pickable row. They
+  // used to be tracked by nothing at all, which left Escape and the press-outside
+  // handler unable to see them — the panel could only be dismissed by switching
+  // panes.
+  const viewing = shell({ hasCommandView: true, inputEmpty: true })
+  assert.equal(resolveKey({ key: 'Escape' }, viewing), 'close-surface')
+  assert.equal(resolveKey({ key: 'ArrowDown' }, viewing), 'none')
+  assert.equal(resolveKey({ key: 'ArrowUp' }, viewing), 'none')
+  // Nothing to activate, so Enter stays the composer's — 'none' only because the
+  // composer is empty here.
+  assert.equal(resolveKey({ key: 'Enter' }, viewing), 'none')
+  assert.equal(resolveKey({ key: 'Enter' }, shell({ hasCommandView: true, inputEmpty: false })), 'submit')
 })
 
 test('a picker and the dropdown can never contend, and the dropdown wins if they do', () => {
@@ -309,9 +325,14 @@ test('background tasks and sessions render with their status and counts', () => 
   assert.match(sessions.rows[1]?.detail ?? '', /4 条消息/)
 })
 
-test('the provider panel is the one surface this shell does not draw', () => {
+test('the provider panel is outside SUPPORTED_SURFACES but is still reachable', () => {
   // Typed as `CommandSurface` because `isSupportedSurface` is a predicate that
   // narrows *away* from this value — passing the literal would not compile.
+  //
+  // `false` here means "not a row list", not "dropped": `paneSession.ts` routes
+  // it by name to the settings screen's provider page, the same way it routes
+  // `rewind-panel` below. It *was* dropped, and `/provider` did nothing at all
+  // in this shell as a result.
   const providerPanel: CommandSurface = 'provider-panel'
   assert.equal(isSupportedSurface(providerPanel), false)
   assert.equal((SUPPORTED_SURFACES as readonly CommandSurface[]).includes(providerPanel), false)
@@ -323,9 +344,9 @@ test('the provider panel is the one surface this shell does not draw', () => {
 test('the rewind panel is outside SUPPORTED_SURFACES but is still drawn', () => {
   // Not an oversight and not an ignored surface: `SUPPORTED_SURFACES` is the set
   // that becomes a `SurfaceView` row list, and rewind is a two-screen modal with
-  // its own state. `app.ts` resolves it by name *before* consulting this
+  // its own state. `paneSession.ts` resolves it by name *before* consulting this
   // predicate — so a reader must not conclude from `false` here that the desktop
-  // shell drops `/rewind` the way it drops `/provider`.
+  // shell drops `/rewind`.
   const rewindPanel: CommandSurface = 'rewind-panel'
   assert.equal(isSupportedSurface(rewindPanel), false)
   assert.equal((SUPPORTED_SURFACES as readonly CommandSurface[]).includes(rewindPanel), false)

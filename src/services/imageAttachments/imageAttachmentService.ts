@@ -7,6 +7,7 @@ import {
   IMAGE_PROCESS_DEFAULTS,
   processImageBytes,
   renderThumbnailBytes,
+  renderViewBytes,
   sniffImage,
 } from '../../tools/imageFile.js'
 import type { ImageProcessLimits } from '../../tools/imageFile.js'
@@ -147,6 +148,14 @@ interface StoredMetadata {
 
 /** The preview data URL must stay small enough to fit a snapshot-free wire. */
 const MAX_PREVIEW_DATA_URL_CHARS = 300_000
+
+/**
+ * The fullscreen viewer's data URL cap: the same bound as the thumbnail's, one
+ * tier up. Base64 costs a third on top of the bytes, so this is `MAX_VIEW_BYTES`
+ * plus that overhead with a little headroom — a viewer copy that cannot fit
+ * here is one `renderViewBytes` already failed to shrink.
+ */
+const MAX_VIEW_DATA_URL_CHARS = 4_200_000
 
 function extForMime(mime: string): string {
   switch (mime) {
@@ -415,6 +424,42 @@ export class ImageAttachmentService {
         ok: false,
         reason: 'image-too-large',
         message: `The preview thumbnail of ${stored.ref.name} (${stored.ref.id}) exceeds the preview size cap.`,
+      }
+    }
+    return { ok: true, value: dataUrl }
+  }
+
+  /**
+   * A screen-sized `data:image/png;base64,…` of the send version, for the
+   * desktop's fullscreen viewer. The second and last API that produces Base64.
+   *
+   * Rendered on demand and never written to disk: `thumbnail.png` earns its
+   * place because every tile in every strip needs it, and this one is wanted
+   * only while a viewer is open. Same failure vocabulary as `previewDataUrl`,
+   * so the renderer explains both with one `formatImageFailure`.
+   */
+  async viewDataUrl(ref: AttachmentRefLookup): Promise<ImageStoreResult<string>> {
+    const stored = await this.readStored(ref.ownerSessionId, ref.id)
+    if (stored === null) return notRegistered(ref)
+    const send = await this.ensureSendVersion(ref.ownerSessionId, stored)
+    if (!send.ok) return send
+
+    let view: Buffer
+    try {
+      view = await renderViewBytes(send.value.bytes)
+    } catch (error) {
+      return {
+        ok: false,
+        reason: 'decode-failed',
+        message: `Rendering the fullscreen view of ${stored.ref.name} (${stored.ref.id}) failed: ${errorMessage(error)}`,
+      }
+    }
+    const dataUrl = `data:image/png;base64,${view.toString('base64')}`
+    if (dataUrl.length > MAX_VIEW_DATA_URL_CHARS) {
+      return {
+        ok: false,
+        reason: 'image-too-large',
+        message: `The fullscreen view of ${stored.ref.name} (${stored.ref.id}) exceeds the preview size cap.`,
       }
     }
     return { ok: true, value: dataUrl }

@@ -2002,7 +2002,8 @@ export function settingsKeyToIntent(chord: SettingsChord, state: SettingsState):
 // --- intents and transitions -------------------------------------------------
 
 export type SettingsIntent =
-  | { kind: 'open' }
+  /** `category` is the page to land on; absent means "wherever we left off". */
+  | { kind: 'open'; category?: SettingsCategory }
   | { kind: 'close' }
   | { kind: 'select-category'; category: SettingsCategory }
   | { kind: 'select-project'; projectRoot: string }
@@ -2115,9 +2116,18 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
   switch (intent.kind) {
     case 'none':
       return { state }
-    case 'open':
-      if (state.open) return { state }
-      return { state: { ...cleared, open: true, draft: undefined, query: '' }, load: true }
+    case 'open': {
+      // `/provider` names the page it wants; `Ctrl+,` does not, and keeps
+      // whichever one the user was last on.
+      const category = intent.category ?? state.category
+      // Already open: only the page moves. Re-running `load` would throw away a
+      // pull that is already in flight for the same config.
+      if (state.open) {
+        if (category === state.category) return { state }
+        return { state: { ...cleared, category, draft: undefined } }
+      }
+      return { state: { ...cleared, open: true, category, draft: undefined, query: '' }, load: true }
+    }
     case 'close':
       return { state: { ...cleared, open: false, draft: undefined } }
     case 'select-category':

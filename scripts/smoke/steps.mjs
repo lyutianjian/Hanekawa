@@ -1291,7 +1291,7 @@ async function step26(ctx) {
     dropped.rows[0].label.startsWith('图片 1：') && dropped.rows[1].label.startsWith('图片 2：'),
     `${dropped.rows[0].label} / ${dropped.rows[1].label}`,
   )
-  await ctx.shot('26a-two-attachments', 'the strip with two ready rows: thumbnails, labels with dimensions, the ✕ affordances')
+  await ctx.shot('26a-two-attachments', 'the tile grid with two ready images: square rounded thumbnails, no drawn names, the ✕ appearing only on hover')
 
   // A multi-frame GIF keeps its first frame and says so in the row (S04/S05).
   await read(ctx, probes.pasteImageFile(fixtures.gif.name, fixtures.gif.base64, 'image/gif'))
@@ -1348,7 +1348,7 @@ async function step26(ctx) {
     const view = await read(ctx, probes.attachmentStrip())
     return view.rows.length === 2 && view.rows.every((row) => row.thumbLoaded) ? view : undefined
   }, { timeout: 20000 })
-  ctx.ok('every ready row paints its thumbnail data URL', loaded.rows.every((row) => row.thumbLoaded))
+  ctx.ok('every ready tile paints its thumbnail data URL', loaded.rows.every((row) => row.thumbLoaded))
   // The button's tooltip is its label when nothing blocks the send — a plain
   // 发送, not a note. A *note* here would mean the strip still thinks the model
   // cannot take the images.
@@ -1360,28 +1360,54 @@ async function step26(ctx) {
   await app.shell(ctx.app, { type: 'list-sessions' })
   await sleep(600)
   const markerHeld = await read(ctx, probes.attachmentStrip())
-  ctx.ok('a snapshot repaint did not rebuild the strip rows', markerHeld.markedThumbs === 1, `marked=${markerHeld.markedThumbs}`)
+  ctx.ok('a snapshot repaint did not rebuild the grid tiles', markerHeld.markedThumbs === 1, `marked=${markerHeld.markedThumbs}`)
 
-  // --- the preview popover (work item 2) ---------------------------------------
+  // --- the fullscreen viewer (work item 2) -------------------------------------
+  // A tile's click opens the window's viewer, which asks the host for a
+  // screen-sized copy of its own. Both tiers end up as a data URL, so what the
+  // probe watches is the settle: the picture is there on the click's own frame
+  // (the thumbnail), and it stays there once the larger copy lands.
   await read(ctx, probes.clickAttachmentThumb())
-  const preview = await waitFor('the preview popover to open', async () => {
-    const view = await read(ctx, probes.attachmentPreview())
-    return view.open ? view : undefined
+  const viewer = await waitFor('the image viewer to open', async () => {
+    const view = await read(ctx, probes.imageViewer())
+    return view.open && view.srcIsDataUrl ? view : undefined
+  }, { timeout: 20000 })
+  ctx.ok('the viewer is a labelled dialog', viewer.role === 'dialog', viewer.role ?? '')
+  ctx.ok('the viewer paints a data URL', viewer.srcIsDataUrl === true)
+  ctx.ok(
+    'the viewer names the file and its dimensions',
+    viewer.caption.includes(fixtures.png.name) && viewer.caption.includes('64×64'),
+    viewer.caption,
+  )
+  ctx.ok('the viewer offers − / % / + and a close', viewer.zoomSteps === 2 && viewer.hasClose === true, `steps=${viewer.zoomSteps}`)
+  // A 64×64 original is smaller than the stage, so it opens at 100% and cannot
+  // zoom out past the ladder's floor — but + must still be live.
+  ctx.eq('a small image opens at its own size', viewer.zoom, '100%')
+  // The shot is the one judgement no assertion makes, so it waits for the
+  // entry transition *and* the screen-sized copy: a frame grabbed on the click
+  // catches a transparent scrim over a half-faded picture, which is a picture
+  // of the animation rather than of the viewer.
+  await waitFor('the viewer to finish opening', async () => {
+    const view = await read(ctx, probes.imageViewer())
+    return view.open && view.settled ? view : undefined
   })
-  ctx.ok('the preview is a labelled dialog', preview.role === 'dialog', preview.role ?? '')
-  ctx.ok('the preview shows the thumbnail data URL enlarged', preview.srcIsDataUrl === true)
-  ctx.ok('the preview names the file and its dimensions', preview.name === fixtures.png.name && preview.caption.includes('64×64'), `${preview.name} ${preview.caption}`)
-  ctx.ok('the preview offers 打开原图', preview.hasOpen === true)
-  await ctx.shot('26b-preview-popover', 'the preview popover: the enlarged thumbnail, the dimensions caption, 打开原图 — floating over the composer, not pushing it away')
+  await ctx.shot('26b-image-viewer', 'the fullscreen viewer: the picture over a full-window scrim, the zoom capsule below it, the ✕ at the corner')
 
-  // Closed three ways, but the driver proves the cheapest one here: the panel's
-  // own ✕. Escape and press-outside are the DOM tests' assertions.
-  await read(ctx, probes.clickAttachmentPreviewClose())
-  await waitFor('the preview to close', async () => {
-    const view = await read(ctx, probes.attachmentPreview())
+  await read(ctx, probes.clickImageViewerZoom(1))
+  const zoomed = await waitFor('the zoom to step up', async () => {
+    const view = await read(ctx, probes.imageViewer())
+    return view.open && view.zoom !== '100%' ? view : undefined
+  })
+  ctx.ok('+ walks the zoom ladder', zoomed.zoom === '150%', zoomed.zoom)
+
+  // Closed three ways, but the driver proves the cheapest one here: the
+  // viewer's own ✕. Escape and the scrim press are the DOM tests' assertions.
+  await read(ctx, probes.clickImageViewerClose())
+  await waitFor('the viewer to close', async () => {
+    const view = await read(ctx, probes.imageViewer())
     return view.open === false ? view : undefined
   })
-  ctx.ok('the preview closes through its own button', true, 'closed via ✕')
+  ctx.ok('the viewer closes through its own button', true, 'closed via ✕')
 
   // --- submission: capable model, text plus images (work item 2) ---------------
   // The composer's real send path assembles the imageIds itself from the strip
@@ -1422,17 +1448,32 @@ async function step26(ctx) {
       : 'no turn-start carrying images; the gate or the command path refused the submit',
   )
 
-  // The sent message paints its image line in the transcript — pure facts, no
-  // pixels, clickable to open the original through the host.
-  const lines = await waitFor('the transcript image line to appear', async () => {
-    const view = await read(ctx, probes.transcriptImageLines())
-    return view.some((line) => line.text.includes(fixtures.png.name)) ? view : undefined
+  // The sent message paints its thumbnail in the transcript. The pixels come
+  // from the same cache the composer's tiles drew from — the submit moved the
+  // image from the draft list to a message, not from one cache to another — so
+  // the tile is loaded without a second round trip.
+  const tiles = await waitFor('the transcript image thumbnail to appear', async () => {
+    const view = await read(ctx, probes.transcriptImageTiles())
+    return view.some((tile) => tile.text.includes(fixtures.png.name) && tile.loaded) ? view : undefined
   }, { timeout: 15000 })
   ctx.ok(
-    'a sent image paints a clickable facts line',
-    lines.some((line) => line.text.includes('图片 1：') && line.text.includes('64×64') && line.labelled),
-    lines.map((line) => line.text).join(' | '),
+    'a sent image paints a clickable thumbnail whose alt carries the facts',
+    tiles.some((tile) => tile.text.includes('图片 1：') && tile.text.includes('64×64') && tile.labelled && tile.loaded),
+    tiles.map((tile) => tile.text).join(' | '),
   )
+
+  // And it opens the same viewer the composer's tiles do.
+  await read(ctx, probes.clickTranscriptImageTile(0))
+  const sentViewer = await waitFor('the viewer to open from the transcript', async () => {
+    const view = await read(ctx, probes.imageViewer())
+    return view.open && view.srcIsDataUrl ? view : undefined
+  }, { timeout: 20000 })
+  ctx.ok('a sent image opens the fullscreen viewer', sentViewer.caption.includes(fixtures.png.name), sentViewer.caption)
+  await read(ctx, probes.clickImageViewerClose())
+  await waitFor('the viewer to close again', async () => {
+    const view = await read(ctx, probes.imageViewer())
+    return view.open === false ? view : undefined
+  })
 
   // --- submission: incapable model, nothing sent (work item 2, S15/S19) --------
   // A second scratch model, same endpoint, switch off: the only difference from
@@ -1816,9 +1857,10 @@ async function step1(ctx) {
     'the turn to start',
     async () => {
       const { entries } = await app.events(ctx.app, since)
-      if (entries.some((entry) => entry.type === 'turn' && entry.turn === 'turn-start' && entry.lane === lane)) return true
-      const status = await read(ctx, probes.status())
-      return status.streaming.startsWith('生成中')
+      // The event is the whole test now: the status strip's 生成中 label used
+      // to back it up, and that field is gone — and the readout that replaced
+      // it is cumulative, so it is already non-empty from any earlier turn.
+      return entries.some((entry) => entry.type === 'turn' && entry.turn === 'turn-start' && entry.lane === lane)
     },
     { timeout: 30000 },
   )

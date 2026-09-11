@@ -48,6 +48,11 @@
      bug. Follows the theme: dark dims harder with plain black, light dims less
      and with the paper's own warm cast. */
   --surface-scrim: rgba(0, 0, 0, 0.55);
+  /* The image viewer's own, and the reason it is a second token: the two modal
+     layers dim *so the app stays readable behind the question they ask*, while
+     a viewer is asking nothing — everything behind it is a distraction from the
+     one picture, and a half-lit sidebar beside a photograph reads as a bug. */
+  --surface-scrim-strong: rgba(0, 0, 0, 0.88);
 
   /* --- text: three levels plus the one interactive colour --- */
   --text-primary: #ede9e3;
@@ -226,6 +231,14 @@
      painted before anything has been measured needs a valid length, and zero is
      the layout the scroller had before any of this existed. */
   --transcript-pad: 0px;
+  /* The fullscreen image viewer's geometry, written per paint by
+     `dom/imageViewerView.ts` from `model/imageViewer.ts`: zoom is measured
+     against the stage and pan against the pointer, so no token can hold either.
+     Declared here for the same reason as the five above — the identity
+     transform is what an unopened viewer should be sitting at. */
+  --viewer-zoom: 1;
+  --viewer-pan-x: 0px;
+  --viewer-pan-y: 0px;
 
   /* --- type ---
      The chrome is proportional; anything the user has to read character by
@@ -300,6 +313,9 @@
 
   /* The paper dims with its own warm cast, and less hard than dark's black. */
   --surface-scrim: rgba(28, 25, 21, 0.32);
+  /* The viewer still goes almost opaque in light: a picture needs its own
+     field whatever the paper behind it is. Warm, not black, like the one above. */
+  --surface-scrim-strong: rgba(28, 25, 21, 0.92);
 
   --text-primary: #1a1815;
   --text-secondary: #6b655c;
@@ -614,29 +630,31 @@ body {
      Tabular figures hold the column still (design_guidance 三.3). */
   font-variant-numeric: tabular-nums;
 }
-/* The token readout. It used to be one string —「入 10k · 命中 1.1k · 出 35 ·
-   命中率 9.5%」— which asked the eye to parse four labels, three interpuncts and
-   four figures at 12.5px to learn three numbers. It is now three chips, each a
-   glyph and a figure — two arrows and a stack (`dom/icons.ts`), a set rather
-   than three unrelated marks — with their labels in the hover and the accessible
-   name. The hit rate keeps its name and takes no mark at all. */
+/* The token readout: a cylinder, the session's total, and the hit rate —
+   「▤ 53.4M tok · 缓存命中 99.7%」. It was three chips for a while, one per
+   direction, which is three figures to add up before the line answers what it
+   is actually asked. The split moved to the hover. */
 #status-usage {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
 }
 .usage-metric {
   display: inline-flex;
   align-items: center;
-  /* Tighter than the gap between chips — the glyph belongs to its figure, and
-     the grouping has to be visible without a separator drawing it. */
+  /* Tighter than the gap around the separator — the glyph belongs to its
+     figure, and the grouping has to stay visible next to the interpunct. */
   gap: 3px;
 }
 .usage-glyph { width: 11px; height: 11px; }
-/* Cache hits are the number worth catching the eye on a long session, so the
-   stack sits one rung up the text ladder. No accent colour: the status line is
-   metadata, and a hue here would outrank the message above it. */
-.usage-metric.cache .usage-glyph { color: var(--text-secondary); }
+/* The total is what this line is for, so the cylinder and its figure both sit
+   one rung up the text ladder. No accent colour: the status line is metadata,
+   and a hue here would outrank the message above it. */
+.usage-metric.total .usage-glyph,
+.usage-metric.total .usage-value { color: var(--text-secondary); }
+/* The interpunct is a node, not a gap: an absolute count and a ratio side by
+   side read as one run of figures without it. Quieter than either. */
+.usage-separator { color: var(--text-tertiary); }
 /* The rate is the one field with no mark — a ring here would be the context
    indicator's shape saying something else — so it is written out instead. The
    name is a rung quieter and a size smaller than its figure: it is there to be
@@ -1462,19 +1480,31 @@ body.resizing #sidebar { transition: none; }
   color: var(--text-primary);
 }
 .transcript .item.assistant { color: var(--text-primary); }
-/* The images a user message was submitted with (S12): a quiet line of facts
-   under the bubble, the TUI's own wording. No thumbnails here — the transcript
-   is `aria-live` and repaints at the stream rate, the one place an on-demand
-   data URL would keep being re-requested. The click opens the cached original
-   through the host, like a ready draft's label. */
-.user-image-line {
-  margin-top: var(--space-1);
-  color: var(--text-tertiary);
-  font-size: var(--type-micro);
-  cursor: pointer;
-  align-self: flex-start;
+/* The images a user message was submitted with (S12): thumbnails *above* the
+   bubble and aligned with it, because what was sent was a picture — a line of
+   text naming it describes the message instead of being it. The box is capped
+   rather than fixed, so a wide image and a tall one both keep their shape; a
+   click opens the window's fullscreen viewer. */
+.user-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
+  margin-bottom: var(--space-2);
 }
-.user-image-line:hover { color: var(--text-secondary); }
+.user-image-thumb {
+  max-width: 120px;
+  max-height: 120px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  /* The empty box before the data URL settles: the same surface the bubble sits
+     on, so the arrival is a picture appearing rather than a hole filling in. */
+  background: var(--surface-card);
+  object-fit: cover;
+  cursor: pointer;
+  transition: border-color var(--motion-micro) var(--ease-standard);
+}
+.user-image-thumb:hover { border-color: var(--border-strong); }
 /* --- a message's meta row ---
    复制 · 模型 · 时间, under the message it belongs to. Worth having, not worth a
    permanent line of chrome under every message — so the row is always in flow
@@ -2743,86 +2773,89 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 }
 
 /* --- the composer's draft attachments (S11) ----------------------------------
-   Composer content, not a popover: the strip rides between the request card
-   and the textarea, so the images waiting beside the text draft read as part
-   of what will be sent. One line per image, numbered the way the TUI's list
-   is, with the state's own words beside the name. */
-#composer-attachments { display: flex; flex-direction: column; gap: 2px; }
-.attachment-row {
+   Composer content, not a popover: the grid rides between the request card and
+   the textarea, so the images waiting beside the text draft read as part of
+   what will be sent.
+
+   A grid of square tiles rather than a list of rows. At this size a file name
+   is either truncated to nothing or wider than the picture it labels, so the
+   name lives in the tile's `title` and its accessible name — one hover or one
+   screen reader away — and the tile itself is the picture. */
+#composer-attachments {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
-  font-size: 13px;
-  color: var(--text-secondary);
 }
-.attachment-row .attachment-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.attachment-row.ready .attachment-label { color: var(--text-primary); cursor: pointer; }
-.attachment-row.importing .attachment-label { font-style: italic; }
-.attachment-row.failed .attachment-label { color: var(--text-danger); }
-.attachment-row .attachment-retry,
-.attachment-row .attachment-remove { flex-shrink: 0; }
-/* The ready row's thumbnail (S12): a size-capped data URL fetched on demand —
-   never part of a snapshot, so a streaming turn does not re-send it per frame.
-   The alt text carries the facts until the load settles; the object's own box
-   keeps the row's height stable rather than jumping when the pixels arrive.
-   Click opens the preview popover; the label beside it still opens the
-   original, which is what its tooltip says. */
-.attachment-thumb {
+/* `overflow: visible` is load-bearing: the ✕ hangs off the corner. */
+.attachment-tile {
+  position: relative;
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
+  width: 64px;
+  height: 64px;
+}
+/* The thumbnail (S12): a size-capped data URL fetched on demand — never part
+   of a snapshot, so a streaming turn does not re-send it per frame. The alt
+   text carries the facts until the load settles, and the box is the tile's, so
+   the grid does not reflow when the pixels arrive. */
+.attachment-thumb,
+.attachment-placeholder {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--surface-hover);
-  cursor: pointer;
-  padding: 0;
   object-fit: cover;
+  padding: 0;
+  transition: border-color var(--motion-micro) var(--ease-standard);
+}
+.attachment-thumb {
+  cursor: pointer;
+  display: block;
 }
 .attachment-thumb:hover { border-color: var(--border-strong); }
-/* The preview popover (S12): the thumbnail's own data URL enlarged — the
-   design's preview is the受限 data URL, never the original bytes — raised
-   from the composer bar the menus already anchor through. Depth one step over
-   the menus (`--shadow-float`, z-index 5): a preview sits above the capsule,
-   under the two modal layers (9/10) that ask for decisions. */
-.attachment-preview {
+/* The two states with no picture. `importing` takes the same `breathe` the
+   running beads use, so a wait reads as work here exactly as it does there;
+   `failed` carries the danger edge, and its 重试 sits over the box because
+   there is no row left to put it in. */
+.attachment-tile.importing .attachment-placeholder {
+  animation: breathe var(--motion-running) var(--ease-standard) infinite;
+}
+.attachment-tile.failed .attachment-placeholder { border-color: var(--accent-danger); }
+.attachment-retry {
   position: absolute;
-  bottom: var(--space-6);
-  left: 0;
-  z-index: 5;
-  width: min(24rem, calc(100vw - 2 * var(--reading-gutter)));
-  max-width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2);
+  inset: auto var(--space-1) var(--space-1) var(--space-1);
+  font-size: var(--type-micro);
+  padding: 2px 0;
   background: var(--surface-card);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-float);
+  border-radius: var(--radius-sm);
+  color: var(--text-danger);
 }
-.attachment-preview-head {
+/* The corner ✕. Hidden until the tile is hovered or holds focus: ten tiles each
+   wearing a permanent badge is noise, and the affordance is one hover away —
+   `:focus-within` is what keeps it reachable from the keyboard. */
+.attachment-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  justify-content: center;
+  font-size: var(--type-micro);
+  line-height: 1;
+  border-radius: 50%;
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  opacity: 0;
+  transition: opacity var(--motion-micro) var(--ease-standard);
 }
-.attachment-preview-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--text-primary);
-  font-size: 13px;
-}
-.attachment-preview-image {
-  width: 100%;
-  max-height: 16rem;
-  object-fit: contain;
-  border-radius: var(--radius-sm);
-  background: var(--surface-hover);
-}
-.attachment-preview-caption { color: var(--text-secondary); font-size: 12px; }
-.attachment-preview-actions { display: flex; justify-content: flex-end; }
-.attachment-preview-close,
-.attachment-preview-open { flex: 0 0 auto; }
+.attachment-tile:hover .attachment-remove,
+.attachment-tile:focus-within .attachment-remove { opacity: 1; }
+.attachment-remove:hover { color: var(--text-danger); }
 /* The tone lives on the card, never on the capsule: `#composer`'s border is the
    focus affordance, and recolouring it would read as "this field is wrong".
    A 2px rule down the leading edge — the same weak-brand indicator-bar idiom
@@ -3227,6 +3260,151 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 #submit.idle { background: var(--surface-hover); color: var(--text-secondary); }
 #stop { background: var(--surface-hover); color: var(--text-warn); }
 #submit[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+/* --- the fullscreen image viewer ---
+   The one layer that is *fixed* over the whole window rather than absolute
+   inside `#canvas`. The two layers below are blocking requests: each belongs to
+   one lane, parks that lane's agent loop, and leaves the sidebar live so
+   switching away is still possible. This one is neither — it holds nothing, it
+   belongs to no lane, and an image cropped to the canvas with the sidebar lit
+   beside it is a large popover, not a viewer.
+
+   z-index 11, one step above `#overlay` (10). It is opened by a deliberate act
+   and closed by three of them, so it never *traps* anyone behind a decision the
+   way a permission prompt would — and a prompt arriving underneath is still
+   there when the picture is shut. */
+#lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  /* The stage is a flex column; the caption, the zoom capsule and the ✕ are
+     absolute against this box. */
+  flex-direction: column;
+  gap: var(--space-3);
+}
+/* `.modal-layer::before` is what actually paints a scrim, and it reads
+   `--surface-scrim` — which is the *modal* dim, tuned so the app stays readable
+   behind a question. A viewer asks nothing, so it overrides that pseudo-element
+   with its own near-opaque field: everything but the picture is a distraction. */
+#lightbox.modal-layer::before { background: var(--surface-scrim-strong); }
+.lightbox-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Bounded rather than sized: `fitZoom` measures this box, so it has to have a
+     size of its own before the picture is in it. The two reserves are the
+     chrome's room — the caption and ✕ above, the zoom capsule below — so a
+     picture fitted to this box never runs under either of them. */
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: var(--space-5);
+  margin-bottom: var(--space-7);
+  overflow: hidden;
+}
+.lightbox-image {
+  /* The natural size, scaled and panned from the three custom properties the
+     view writes. `max-*` would fight the zoom, so the fit is `fitZoom`'s job and
+     this rule only applies what it decided. */
+  transform:
+    translate(var(--viewer-pan-x, 0px), var(--viewer-pan-y, 0px))
+    scale(var(--viewer-zoom, 1));
+  transform-origin: center center;
+  cursor: grab;
+  /* The transform is the animated property; panning bypasses it by being a
+     pointer-driven stream of its own, which is why the duration is the micro
+     one rather than a panel's. */
+  transition: transform var(--motion-micro) var(--ease-standard);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.lightbox-image.dragging {
+  cursor: grabbing;
+  /* A transition here would lag the pointer by a frame on every move. */
+  transition: none;
+}
+.lightbox-image.pending { opacity: 0.7; }
+.lightbox-status {
+  position: absolute;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: center;
+  max-width: 32rem;
+}
+/* Top left, opposite the ✕ and on its row. It used to sit bottom left, where it
+   landed on top of the sidebar's own footer showing through the scrim — the
+   picture's name reading as a label for 设置. Up here it is unambiguously part
+   of the viewer, and the bottom edge belongs to the zoom capsule alone. */
+.lightbox-caption {
+  position: absolute;
+  top: var(--space-5);
+  left: var(--space-6);
+  color: var(--text-secondary);
+  font-size: 13px;
+  max-width: 50%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The zoom capsule: bottom centre, the way the reference reads it. Its own
+   surface rather than the scrim's, because it is the only control down there
+   and it has to survive a light picture behind it. */
+.lightbox-zoom {
+  position: absolute;
+  bottom: var(--space-4);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  box-shadow: var(--shadow-float);
+}
+.lightbox-zoom-step {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--text-secondary);
+}
+.lightbox-zoom-step:hover:not([disabled]) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+.lightbox-zoom-step[disabled] { opacity: 0.4; cursor: not-allowed; }
+.lightbox-zoom-label {
+  min-width: 3.5rem;
+  text-align: center;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.lightbox-close {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+.lightbox-close:hover { background: var(--surface-hover); color: var(--text-primary); }
 
 /* --- overlay: the four blocking requests ---
    Absolute, not fixed: the request belongs to one lane, so it covers that
@@ -4509,7 +4687,8 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 
 /* The modal panel owns settlement; the scrim is a separate, shorter track. */
 #overlay.modal-layer,
-#rewind.modal-layer { animation: none; background: transparent; }
+#rewind.modal-layer,
+#lightbox.modal-layer { animation: none; background: transparent; }
 .modal-layer::before {
   content: '';
   position: absolute;

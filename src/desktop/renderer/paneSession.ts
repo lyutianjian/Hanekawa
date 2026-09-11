@@ -68,7 +68,11 @@ import {
   type ProjectPickerIntent,
   type ProjectPickerState,
 } from './model/projectPicker.js'
-import { classifyInput, commandEffectToIntent } from './model/commandRouting.js'
+import {
+  classifyInput,
+  commandEffectToIntent,
+  type CommandViewRow,
+} from './model/commandRouting.js'
 import {
   acceptCompletion as applyCompletion,
   applyFileResponse,
@@ -161,7 +165,9 @@ import {
   attachmentDraftsFull,
   attachmentStripView,
   beginAttachmentImport,
+  imageDimensions,
   readyAttachmentRefs,
+  readyDraftRef,
   removeAttachmentDraft,
   restoredAttachmentDrafts,
   retryAttachmentImport,
@@ -175,10 +181,19 @@ import {
   beginPreviewLoad,
   failPreviewLoad,
   previewDataUrl,
-  retryPreviewLoad,
   settlePreviewLoad,
   type AttachmentPreviewCache,
 } from './model/attachmentPreviews.js'
+import {
+  failImageViewer,
+  fitZoom,
+  openImageViewer,
+  settleImageViewer,
+  withZoom,
+  type ImageViewerState,
+} from './model/imageViewer.js'
+import type { ImageViewerView } from './dom/imageViewerView.js'
+import type { ImageAttachmentRef } from '../../media/types.js'
 import {
   advanceTaskPanel,
   retireCompletedTaskPanel,
@@ -207,6 +222,12 @@ export interface PaneSessionDeps {
   taskPanel: TaskPanelDom
   status: StatusView
   composer: ComposerView
+  /**
+   * The window's fullscreen image viewer. A singleton like the composer, and
+   * driven only by the active pane — a viewer left open over the *next* pane's
+   * conversation would be showing a picture from a different one.
+   */
+  imageViewer: ImageViewerView
   /** Shell chrome (the tab bar) re-renders from the active session. */
   onShellChanged?: () => void
   /**
@@ -246,6 +267,12 @@ export interface PaneSessionDeps {
    * there. Window-level, like「新会话」— this pane owns only the click.
    */
   onSwitchProject?: (projectRoot: string) => void
+  /**
+   * `/provider`. The endpoints/models/routing editor is the settings screen's
+   * `provider` page, and that screen is window-level — one per window, pointable
+   * at a project no open lane belongs to — so the pane only forwards the request.
+   */
+  onOpenProviderSettings?: () => void
 }
 
 export interface PaneSession {
@@ -314,14 +341,13 @@ export interface PaneSession {
   retryDraftImage(draftId: string): void
   /** Opens a ready draft's original (fire-and-forget, host-resolved). */
   openDraftImage(draftId: string): Promise<void>
-  /** Opens a ready draft's preview popover — the thumbnail's own data URL, enlarged (S12). */
+  /** Opens a ready draft's tile in the window's fullscreen viewer (S12). */
   previewDraftImage(draftId: string): Promise<void>
-  /**
-   * An image line under a transcript user bubble, clicked (S12): `open-attachment`
-   * by the registered id — the host resolves the cached original, and a failure
-   * (a file past its retention, an unregistered id) is a note, not a dead click.
-   */
-  openImageById(imageId: string, name: string): Promise<void>  // --- panel entry points ---
+  /** The viewer's zoom capsule and its wheel, routed back from the singleton view. */
+  setViewerZoom(zoom: number): void
+  /** The viewer reporting one of its own three dismissals. */
+  onViewerClosed(): void
+  // --- panel entry points ---
   openRewindPanel(): Promise<void>
   /**
    * `/model` and `/effort`'s own `#surface` cards. Still reached by the slash
@@ -373,10 +399,12 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // printed (a cwd-relative path, and the hit's line) — resolving it to a
     // project and bounding it there is the shell's half of the bargain.
     onOpenPath: (path, line) => deps.onOpenFile?.(path, line),
-    // An image line under a user bubble, clicked (S12): the registered id goes
-    // to `open-attachment` and the host resolves the cached original. A missing
-    // file answers as a note under the row, not a dead click.
-    onOpenImage: (imageId, name) => { void openImageById(imageId, name) },
+    // An image above a user bubble, clicked (S12): the window's fullscreen
+    // viewer, seeded with the thumbnail already in hand.
+    onViewImage: (image) => { void viewImage(image) },
+    // The thumbnail the pane holds for that id, or nothing yet. The fetch is
+    // `loadTranscriptThumbnails` below; this is only the lookup.
+    imageThumbUrl: (imageId) => previewDataUrl(previewCache, imageId),
     // The clipboard lives here rather than in the view: `navigator` is a host
     // object, and `dom/transcriptView.ts` is the half of this that runs against a
     // hand-written DOM stub in tests. A rejected write is swallowed — the button
@@ -468,6 +496,15 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   let queued: readonly PersistedQueuedMessage[] = Object.freeze([])
   let surfaceView: SurfaceView | undefined
   let surfaceIndex = 0
+  /**
+   * A slash command's information table, which shares the `#surface` node with
+   * the pickers but is state of its own.
+   *
+   * Held rather than painted and forgotten: `hideSurface` and the Escape/press-
+   * outside paths that call it both read the pane's state, so a panel the pane
+   * does not remember is a panel nothing can close.
+   */
+  let commandView: { title: string; rows: readonly CommandViewRow[] } | undefined
   let rewind: RewindState | undefined
   let boundSessionId: string | undefined
   /** One resolver per outstanding request, keyed the way the queue is. */
@@ -499,6 +536,12 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   let previewCache: AttachmentPreviewCache = new Map()
   /** In-flight preview loads, so a repaint before the settle does not fire a second request. */
   const previewLoads = new Set<string>()
+  /**
+   * The fullscreen viewer's state, or `undefined` while it is shut. Per pane
+   * like everything else here: a viewer opened in this conversation must not
+   * survive a switch to another one, which `deactivate` enforces.
+   */
+  let viewerState: ImageViewerState | undefined
   let active = false
 
   // --- rendering (state always updates; paint only when active) --------------
@@ -692,6 +735,46 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       projectPicker: projectPickerState(),
     }))
     paneEl.classList.toggle('empty', isTranscriptEmpty(transcript))
+    // Thumbnails arrive on demand, exactly as the composer's tiles do: the
+    // paint draws the boxes, then each uncached id asks once. Streaming makes
+    // this run per chunk; `beginPreviewLoad` is what keeps that one request.
+    void loadTranscriptThumbnails()
+  }
+
+  /**
+   * One `get-attachment-preview` per image id the transcript shows.
+   *
+   * Shares `previewCache` with the composer's tiles, so an image sent from this
+   * pane keeps the thumbnail it already had — the submit moves it from the
+   * draft list to a message, not from one cache to another.
+   */
+  async function loadTranscriptThumbnails(): Promise<void> {
+    const ids: string[] = []
+    for (const item of transcript.items) {
+      if (item.kind !== 'user') continue
+      for (const image of item.images ?? []) ids.push(image.id)
+    }
+    let arrived = false
+    for (const id of ids) {
+      const begun = beginPreviewLoad(previewCache, id)
+      if (!begun.started || previewLoads.has(id)) continue
+      previewCache = begun.cache
+      previewLoads.add(id)
+      try {
+        const result = await client.getAttachmentPreview(id)
+        previewCache = result.ok
+          ? settlePreviewLoad(previewCache, id, result.dataUrl)
+          : failPreviewLoad(previewCache, id, result.message)
+        arrived = arrived || result.ok
+      } catch (error) {
+        previewCache = failPreviewLoad(previewCache, id, describe(error))
+      } finally {
+        previewLoads.delete(id)
+      }
+    }
+    // One repaint for the batch, and only when pixels actually arrived: the
+    // node signatures carry the URLs, so a failed load changes nothing to draw.
+    if (arrived && active) renderTranscript()
   }
 
   /**
@@ -727,14 +810,20 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.queueStrip.render(queuedMessagesView(queued))
   }
 
+  /**
+   * The one place `#surface` is painted. A picker wins over an information
+   * table because opening either clears the other, so at most one is set.
+   */
   function renderSurface(): void {
     if (!active) return
     if (surfaceView) deps.surface.showSurface(surfaceView, surfaceIndex)
+    else if (commandView) deps.surface.showCommandView(commandView.title, commandView.rows)
   }
 
   function hideSurface(): void {
     surfaceView = undefined
     surfaceIndex = 0
+    commandView = undefined
     if (active) deps.surface.hide()
   }
 
@@ -914,65 +1003,80 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     }
   }
 
-  /**
-   * An image a *sent* message carried (S12): `open-attachment` by id, host-
-   * resolved. Not the draft path — there is no draft row to consult, the ref
-   * came off the record — so the id is used as given and the failure wording
-   * names the file.
-   */
-  async function openImageById(imageId: string, name: string): Promise<void> {
-    try {
-      const result = await client.openAttachment(imageId)
-      if (!result.ok) note(formatImageFailure(result.reason, result.message), 'error')
-    } catch (error) {
-      note(`${name}：${describe(error)}`, 'error')
-    }
+  /** A draft tile's click: the same viewer a sent message's thumbnail opens. */
+  async function previewDraftImage(draftId: string): Promise<void> {
+    const entry = readyDraftRef(draftImages, draftId)
+    if (entry === undefined) return
+    await viewImage(entry.ref, entry.animated)
   }
 
   /**
-   * The thumbnail's click: the preview popover (S12). The data URL the strip
-   * already paints is the preview — the design's preview *is* the受限 data URL,
-   * never a re-fetched size — so a cached hit opens immediately and a miss
-   * loads once on this explicit path. `file-missing` for a preview is a note
-   * beside the row, not a popover of nothing.
+   * The fullscreen viewer (S12).
+   *
+   * Two tiers of pixels, in the order they can be had. The 256px thumbnail the
+   * tile is already painting opens the viewer on the same frame as the click,
+   * so a press never lands on an empty scrim; `get-attachment-view` then brings
+   * a screen-sized copy, because the thumbnail blown up to the window is a
+   * blur. The failure stays *in* the viewer rather than becoming a transcript
+   * note — the user is looking at the picture, not at the conversation.
    */
-  async function previewDraftImage(draftId: string): Promise<void> {
-    const entry = draftImages.find((draft) => draft.draftId === draftId)
-    if (entry?.kind !== 'ready' || !active) return
-    const dimensions = `${entry.ref.width}×${entry.ref.height}${entry.animated ? '，动画首帧' : ''}`
-    const cached = previewDataUrl(previewCache, entry.ref.id)
-    if (cached !== undefined) {
-      deps.composer.showAttachmentPreview({
-        draftId, imageId: entry.ref.id, name: entry.ref.name, dimensions, dataUrl: cached,
-      })
-      return
-    }
-    const begun = retryPreviewLoad(previewCache, entry.ref.id)
-    if (begun.started) previewCache = begun.cache
-    let dataUrl: string
+  async function viewImage(ref: ImageAttachmentRef, animated = false): Promise<void> {
+    if (!active) return
+    const dimensions = imageDimensions(ref, animated)
+    const thumbUrl = previewDataUrl(previewCache, ref.id)
+    viewerState = openImageViewer({
+      imageId: ref.id,
+      name: ref.name,
+      dimensions,
+      ...(thumbUrl !== undefined ? { thumbUrl } : {}),
+      zoom: openingZoom(ref),
+    })
+    deps.imageViewer.show(viewerState)
+
     try {
-      const result = await client.getAttachmentPreview(entry.ref.id)
-      if (!result.ok) {
-        const explained = formatImageFailure(result.reason, result.message)
-        previewCache = failPreviewLoad(previewCache, entry.ref.id, explained)
-        note(explained, 'error')
-        return
-      }
-      dataUrl = result.dataUrl
-      previewCache = settlePreviewLoad(previewCache, entry.ref.id, dataUrl)
+      const result = await client.getAttachmentView(ref.id)
+      const next = result.ok
+        ? settleImageViewer(viewerState, ref.id, result.dataUrl)
+        : failImageViewer(viewerState, ref.id, formatImageFailure(result.reason, result.message))
+      // `undefined` is the staleness guard: the viewer closed, or moved to
+      // another image, while this round trip was out.
+      if (next === undefined) return
+      viewerState = next
     } catch (error) {
-      previewCache = failPreviewLoad(previewCache, entry.ref.id, describe(error))
-      note(describe(error), 'error')
-      return
+      const next = failImageViewer(viewerState, ref.id, describe(error))
+      if (next === undefined) return
+      viewerState = next
     }
-    // The draft can be gone by the settle, or the strip rebuilt without it;
-    // only a still-present, still-ready draft may light the popover.
-    const still = draftImages.find((draft) => draft.draftId === draftId)
-    if (still?.kind === 'ready' && active) {
-      deps.composer.showAttachmentPreview({
-        draftId, imageId: still.ref.id, name: still.ref.name, dimensions, dataUrl,
-      })
-    }
+    if (active) deps.imageViewer.show(viewerState)
+  }
+
+  /**
+   * The zoom an image opens at: fitted to the stage, never enlarged. The stage
+   * has no size before the first open, in which case 1 is the honest answer —
+   * and the next paint measures it properly.
+   */
+  function openingZoom(ref: ImageAttachmentRef): number {
+    const stage = deps.imageViewer.stageSize()
+    return stage === undefined ? 1 : fitZoom({ width: ref.width, height: ref.height }, stage)
+  }
+
+  /** The zoom capsule and the wheel, which both hand back an already-clamped factor. */
+  function setViewerZoom(zoom: number): void {
+    if (viewerState === undefined) return
+    viewerState = withZoom(viewerState, zoom)
+    deps.imageViewer.show(viewerState)
+  }
+
+  /** The viewer reporting that it shut itself — ✕, Escape, or a press on the scrim. */
+  function onViewerClosed(): void {
+    viewerState = undefined
+  }
+
+  /** Shuts the viewer from this side: a pane switch, a session rebind, disposal. */
+  function closeImageViewer(): void {
+    if (viewerState === undefined) return
+    viewerState = undefined
+    deps.imageViewer.close()
   }
 
   /**
@@ -1351,13 +1455,21 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       case 'show-view':
         surfaceView = undefined
         surfaceIndex = 0
-        if (active) deps.surface.showCommandView(intent.view.title, intent.rows)
+        commandView = { title: intent.view.title, rows: intent.rows }
+        renderSurface()
+        deps.onShellChanged?.()
         return
       case 'open-surface':
-        // The rewind panel is a modal of its own rather than a row list, so it
-        // is resolved by name before the four that build a `SurfaceView`.
+        // Two surfaces are resolved by name before the four that build a
+        // `SurfaceView`: the rewind panel is a modal of its own, and the
+        // provider panel is the settings screen, which is window-level.
         if (intent.surface === 'rewind-panel') {
           void openRewindPanel()
+          return
+        }
+        if (intent.surface === 'provider-panel') {
+          if (deps.onOpenProviderSettings) deps.onOpenProviderSettings()
+          else note('此界面无法打开服务商设置。', 'error')
           return
         }
         if (isSupportedSurface(intent.surface)) void openSurface(intent.surface)
@@ -1711,11 +1823,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     renderAttachments()
     renderOverlay()
     renderRewind()
-    if (surfaceView) {
-      deps.surface.showSurface(surfaceView, surfaceIndex)
-    } else {
-      deps.surface.hide()
-    }
+    if (surfaceView || commandView) renderSurface()
+    else deps.surface.hide()
     renderSuggestions()
     renderQueue()
     renderTaskPanel()
@@ -1752,6 +1861,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // The composer is a singleton the active pane drives, so an open permission
     // menu would hang over the next pane and act on *its* runtime.
     deps.composer.closeMenus()
+    // The viewer is a singleton too, and the picture in it belongs to *this*
+    // conversation — a switch must not leave it hanging over another one. The
+    // state goes with the paint: there is nothing worth restoring about "which
+    // image was open" the way there is about a draft or a checklist.
+    closeImageViewer()
     // Singleton surfaces must finish their exits before the next pane paints.
     finishPresenceWithin(document)
     // Ditto the attachment strip: this pane's drafts must not ride the next
@@ -1770,6 +1884,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   }
 
   function dispose(): void {
+    if (active) closeImageViewer()
     transcriptView.dispose()
     streamRepaint.cancel()
     statusRepaint.cancel()
@@ -1843,6 +1958,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       hasOverlay: activeRequest(queue) !== undefined,
       hasRewind: rewind !== undefined,
       hasSurface: surfaceView !== undefined,
+      hasCommandView: commandView !== undefined,
       completions: completions.kind,
       isStreaming: client.getSnapshot().isStreaming,
       // The drafts count as composer content: an image-only draft must make
@@ -1997,7 +2113,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     retryDraftImage,
     openDraftImage,
     previewDraftImage,
-    openImageById: (imageId, name) => openImageById(imageId, name),
+    setViewerZoom,
+    onViewerClosed,
     openRewindPanel,
     openModelPicker: () => openSurface('model-picker'),
     openEffortPicker: () => openSurface('effort-picker'),

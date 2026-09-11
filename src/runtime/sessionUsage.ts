@@ -15,6 +15,24 @@ export function addTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   }
 }
 
+/**
+ * `a - b`, clamped at zero per field.
+ *
+ * Only one caller: `SessionController` adds each request's usage to the running
+ * total the moment it lands, then settles the run by adding whatever the
+ * end-of-run figure holds *beyond* what it already counted — compaction and
+ * subagent transcripts, which never come through `onRequestUsage`. The clamp is
+ * the safety net for a run whose total somehow trails its own requests; a
+ * negative token count on screen would be worse than a stale one.
+ */
+export function subtractTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  return {
+    inputTokens: Math.max(0, a.inputTokens - b.inputTokens),
+    cacheReadInputTokens: Math.max(0, a.cacheReadInputTokens - b.cacheReadInputTokens),
+    outputTokens: Math.max(0, a.outputTokens - b.outputTokens),
+  }
+}
+
 export function createEmptyUsage(): TokenUsage {
   return {
     inputTokens: 0,

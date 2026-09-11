@@ -10,13 +10,14 @@ import type { SessionMeta } from '../../../sessions/service.js'
  *
  * A `CommandEffect` of kind `open-surface` names one of six surfaces; a shell
  * that has no panel for one ignores it *by name*, which is why they collapse
- * into a single wire variant. This renderer draws five of them, but only four
- * are here: `rewind-panel` is a two-screen modal with its own state
- * (`model/rewindPanel.ts`) rather than a row list, so `app.ts` resolves it
- * before consulting `isSupportedSurface` — a `false` from that predicate means
- * "not a row list", not "not drawn". `provider-panel` is the one genuinely
- * ignored: everything it would show comes off `ConfigService`, which a renderer
- * cannot reach, and no wire message projects it.
+ * into a single wire variant. This renderer draws all six, but only four are
+ * here — a `false` from `isSupportedSurface` means "not a row list", not "not
+ * drawn", and `paneSession.ts` resolves the other two by name before consulting
+ * it. `rewind-panel` is a two-screen modal with its own state
+ * (`model/rewindPanel.ts`); `provider-panel` is not a panel in the conversation
+ * at all but the settings screen's `provider` page, which is window-level
+ * (`app.ts`'s `onOpenProviderSettings`) because its endpoints, models and
+ * routing come off a `ConfigService` a pane does not own.
  *
  * DOM-free on purpose; see `diffRows.ts`.
  */
@@ -67,8 +68,8 @@ export interface SurfaceView {
 /**
  * The surfaces this shell draws *as a row list*.
  *
- * `provider-panel` is absent because it is not drawn at all; `rewind-panel` is
- * absent because it is drawn by `model/rewindPanel.ts` instead. See the header.
+ * `provider-panel` and `rewind-panel` are absent because they are drawn
+ * elsewhere — the settings screen and `model/rewindPanel.ts`. See the header.
  */
 export type SupportedSurface = 'model-picker' | 'effort-picker' | 'background-tasks' | 'resume-picker'
 

@@ -97,6 +97,7 @@ import { createSurfacePanel } from './dom/surfaceView.js'
 import { createQueueView } from './dom/queueView.js'
 import { createTaskPanelView } from './dom/taskPanelView.js'
 import { createComposerView } from './dom/composerView.js'
+import { createImageViewerView } from './dom/imageViewerView.js'
 import { createStatusView } from './dom/statusView.js'
 import { createSuggestionsView } from './dom/suggestionsView.js'
 import { createSidebarView } from './dom/sidebarView.js'
@@ -198,7 +199,6 @@ const taskPanel = createTaskPanelView(required('task-panel'))
 const status = createStatusView({
   usage: required('status-usage'),
   cost: required('status-cost'),
-  streaming: required('status-streaming'),
 })
 const composer = createComposerView({
   input: required<HTMLTextAreaElement>('input'),
@@ -239,6 +239,13 @@ const canvas = required('canvas')
 const rewindPanel = createRewindView(required('rewind'), required('rewind-panel'), (intent) => {
   activePane()?.handleRewindIntent(intent)
 })
+// The fullscreen image viewer. Window-level like the two above and routed the
+// same way — but fixed over the whole window rather than inside `#canvas`,
+// because an image at full size has nothing to do with one lane.
+const imageViewer = createImageViewerView(required('lightbox'), {
+  onZoom: (zoom) => activePane()?.setViewerZoom(zoom),
+  onClose: () => activePane()?.onViewerClosed(),
+})
 
 // --- the pane sessions ----------------------------------------------------------
 
@@ -276,6 +283,7 @@ function attachPaneSession(lane: string): void {
     taskPanel,
     status,
     composer,
+    imageViewer,
     onShellChanged: () => {
       // Every pane repaints the sidebar, not just the active one: the badges are
       // per row, so a background pane starting a turn has to show up. Cached
@@ -337,6 +345,10 @@ function attachPaneSession(lane: string): void {
       // Then the same path「新会话」takes, so "open or reuse" is decided once.
       runSidebarIntent(newSessionIntent(root))
     },
+    // `/provider` is the settings screen's `provider` page — the same editor
+    // `Ctrl+,` reaches, named explicitly so the command lands on it rather than
+    // on whichever page the user last left open.
+    onOpenProviderSettings: () => runSettingsIntent({ kind: 'open', category: 'provider' }),
   })
   paneSessions.set(lane, session)
   if (!lastActiveTick.has(lane)) lastActiveTick.set(lane, tick)
@@ -1154,7 +1166,7 @@ onPressOutside([form], () => {
   if (!pane) return
   const state = pane.shellState()
   if (state.completions !== 'none') pane.closeCompletions()
-  if (state.hasSurface) pane.hideSurface()
+  if (state.hasSurface || state.hasCommandView) pane.hideSurface()
 })
 
 // --- the global key handler -------------------------------------------------------
@@ -1164,6 +1176,7 @@ const EMPTY_SHELL_STATE: ShellState = {
   hasOverlay: false,
   hasRewind: false,
   hasSurface: false,
+  hasCommandView: false,
   completions: 'none',
   isStreaming: false,
   inputEmpty: true,

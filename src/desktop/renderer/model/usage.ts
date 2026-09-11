@@ -7,17 +7,17 @@ import type { WireRuntimeSnapshot } from '../../../runtime/protocol/wire.js'
  * Pure, like `model/composer.ts`: `dom/statusView.ts` and `dom/composerView.ts`
  * only turn what these return into nodes.
  *
- * The status line used to print `输入 X / 输出 Y`, which named two of the three
- * counts the loop actually tracks and hid the one that matters most on a long
- * session — `cacheReadInputTokens`, the tokens the prompt cache served. The TUI
- * had the full set (`tui/components/StatusLine.tsx`) and the desktop was the
- * degraded side; this closes that.
+ * The status line prints one count, not three: `总计 X tok · 缓存命中 Y%`. It
+ * carried a chip per direction for a while (`输入` / `缓存命中` / `输出`), which
+ * is three figures to add up before the line answers the question it is actually
+ * asked — how much this session has spent. The split survives in the hover for
+ * anyone who wants it.
  *
- * `cache_creation` is deliberately *not* a fourth number:
+ * `cache_creation` is deliberately not broken out:
  * `normalizeAnthropicUsage` folds cache writes into `inputTokens`, and splitting
  * them out here would mean a new field on `TokenUsage` — which is persisted in
- * every session's JSONL. "in" therefore means "billed as input, cache writes
- * included", which is also what the cost beside it is computed from.
+ * every session's JSONL. The total therefore means "everything billed, cache
+ * writes included", which is also what the cost beside it is computed from.
  */
 
 /** `--context-ratio`, written by `dom/composerView.ts` through `setProperty`. */
@@ -50,19 +50,17 @@ function formatExact(n: number): string {
 }
 
 /**
- * Which of the three counts a chip carries — the view turns this into a glyph.
+ * Which count a chip carries — the view turns this into a glyph.
  *
- * The two directions mirror the TUI's (`tui/statusUsage.ts`: `↑` in, `↓` out),
- * so the shells name the same numbers the same way; the desktop draws them as
- * SVG because 4e's proportional chrome font has no reliable arrow coverage, and
- * it draws cache hits as a stack rather than the TUI's `⚡` — see `dom/icons.ts`
- * for why.
+ * One kind, kept as a union rather than collapsed away: the chip, its icon map
+ * and its CSS hook are all keyed by it, and a second count coming back later
+ * should be a new member here rather than a second shape of chip.
  */
-export type UsageMetricKind = 'input' | 'cache' | 'output'
+export type UsageMetricKind = 'total'
 
 export interface UsageMetric {
   readonly kind: UsageMetricKind
-  /** `16k`, already abbreviated. */
+  /** `53.4M tok`, already abbreviated and carrying its unit. */
   readonly value: string
   /** What the glyph stands for, for the accessible name. */
   readonly label: string
@@ -103,8 +101,7 @@ const EMPTY: StatusUsageView = Object.freeze({
 })
 
 /**
- * Session totals: input, cache hits, output, and the hit rate between the first
- * two.
+ * The session's total token spend, and the cache hit rate beside it.
  *
  * Cumulative rather than last-request, to match the cost sitting next to it —
  * two adjacent numbers on different denominators is how a status line stops
@@ -115,14 +112,14 @@ const EMPTY: StatusUsageView = Object.freeze({
 export function statusUsageView(total: TokenUsage | undefined): StatusUsageView {
   if (!total) return EMPTY
   const { inputTokens, cacheReadInputTokens, outputTokens } = total
-  if (inputTokens === 0 && cacheReadInputTokens === 0 && outputTokens === 0) return EMPTY
+  const allTokens = inputTokens + cacheReadInputTokens + outputTokens
+  if (allTokens === 0) return EMPTY
 
   const metrics: UsageMetric[] = [
-    { kind: 'input', value: formatTokens(inputTokens), label: '输入' },
-    { kind: 'cache', value: formatTokens(cacheReadInputTokens), label: '缓存命中' },
-    { kind: 'output', value: formatTokens(outputTokens), label: '输出' },
+    { kind: 'total', value: `${formatTokens(allTokens)} tok`, label: '总计' },
   ]
   const titleLines = [
+    `总计 ${formatExact(allTokens)} 标记`,
     `输入 ${formatExact(inputTokens)}（含缓存写入）`,
     `缓存命中 ${formatExact(cacheReadInputTokens)}`,
     `输出 ${formatExact(outputTokens)}`,
@@ -133,7 +130,7 @@ export function statusUsageView(total: TokenUsage | undefined): StatusUsageView 
   let rate: UsageRateView | undefined
   if (readSide > 0) {
     const percentage = (cacheReadInputTokens / readSide) * 100
-    rate = { label: '缓存命中率', percent: `${percentage.toFixed(1)}%` }
+    rate = { label: '缓存命中', percent: `${percentage.toFixed(1)}%` }
     parts.push(`${rate.label} ${rate.percent}`)
     titleLines.push(`${rate.label} ${rate.percent}（命中 / (输入 + 命中)）`)
   }

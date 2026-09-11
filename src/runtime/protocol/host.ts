@@ -67,6 +67,7 @@ import {
   type WireHelloResult,
   type WireImportAttachmentResult,
   type WireAttachmentPreviewResult,
+  type WireAttachmentViewResult,
   type WireOpenAttachmentResult,
   type WireListPanesResult,
   type WireModelInfo,
@@ -1107,6 +1108,14 @@ export class SessionHost {
         )
         if (!preview.ok) return { ok: false, reason: preview.reason, message: preview.message }
         return { ok: true, dataUrl: preview.value } satisfies WireAttachmentPreviewResult
+      }
+
+      case 'get-attachment-view': {
+        const view = await this.requireAttachments().viewDataUrl(
+          this.attachmentLookup(command.imageId),
+        )
+        if (!view.ok) return { ok: false, reason: view.reason, message: view.message }
+        return { ok: true, dataUrl: view.value } satisfies WireAttachmentViewResult
       }
 
       case 'open-attachment': {

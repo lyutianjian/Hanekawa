@@ -288,6 +288,13 @@ export type HostCommand =
    */
   | { type: 'get-attachment-preview'; id: string; imageId: string }
   /**
+   * The same thing one tier up: a screen-sized `data:image/png;base64,…` for a
+   * fullscreen viewer, where the 256px thumbnail above would be a blur. Also
+   * on demand, and rendered rather than cached — one of these is worth a dozen
+   * thumbnails, and it is only wanted while a viewer is open.
+   */
+  | { type: 'get-attachment-view'; id: string; imageId: string }
+  /**
    * Opens an attachment's cached original. The host resolves the file from the
    * registered `(session, imageId)` pair and hands the path to the shell — no
    * arbitrary `file://` path crosses this wire, and an unregistered or
@@ -638,6 +645,12 @@ export type WireImportAttachmentResult = WireAttachmentFailure | {
 }
 
 export type WireAttachmentPreviewResult = WireAttachmentFailure | {
+  ok: true
+  dataUrl: string
+}
+
+/** Same shape as the preview's; the difference is which tier of bytes it carries. */
+export type WireAttachmentViewResult = WireAttachmentFailure | {
   ok: true
   dataUrl: string
 }

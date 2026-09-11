@@ -1,10 +1,10 @@
 import type { CommandDefinition } from './types.js'
 
 /**
- * Open the /provider full-screen panel for editing endpoints / models /
- * routing. Falls back to a help message if the host runtime
- * does not provide an opener (e.g. when commands are dispatched outside
- * the TUI).
+ * Open the editor for endpoints / models / routing: the TUI's full-screen
+ * panel, or the desktop settings screen's「模型与服务商」page — each shell
+ * decides what the request means. Falls back to a help message if the host
+ * runtime provides no opener at all.
  */
 export const providerCommand: CommandDefinition = {
   name: 'provider',

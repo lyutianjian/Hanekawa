@@ -31,8 +31,17 @@ export interface ShellState {
    * because nothing in the agent loop is waiting on it.
    */
   readonly hasRewind: boolean
-  /** A picker or command view is open. Dismissible, and blocks nothing. */
+  /** A *picker* is open: dismissible, blocks nothing, and its rows are pickable. */
   readonly hasSurface: boolean
+  /**
+   * A slash command's information table is open (`/session`, `/cost`, `/help`).
+   *
+   * Separate from `hasSurface` because the two panels answer the arrows
+   * differently: a command view is a table of facts with no pickable row, so
+   * Enter must still mean "send my message". Only Escape and a press outside
+   * apply to both.
+   */
+  readonly hasCommandView: boolean
   /**
    * Which source is filling the dropdown, if any.
    *
@@ -108,8 +117,8 @@ export function resolveKey(chord: KeyChord, state: ShellState): KeyAction {
     }
   }
 
-  // 4. A dismissible panel.
-  if (state.hasSurface && chord.key === 'Escape') return 'close-surface'
+  // 4. A dismissible panel — either kind, since Escape means the same to both.
+  if ((state.hasSurface || state.hasCommandView) && chord.key === 'Escape') return 'close-surface'
 
   // 5. Picking a row out of that panel — but only while the composer is empty.
   //
@@ -118,6 +127,10 @@ export function resolveKey(chord: KeyChord, state: ShellState): KeyAction {
   // switch models instead. Note this can never contend with the dropdown above:
   // completions require a typed `/` or `@`, so the two are mutually exclusive by
   // construction.
+  //
+  // `hasCommandView` is deliberately absent: that panel has no pickable row, so
+  // taking Enter there would make it impossible to send a message with `/session`
+  // still on screen.
   if (state.hasSurface && state.inputEmpty) {
     if (chord.key === 'ArrowUp') return 'move-surface-up'
     if (chord.key === 'ArrowDown') return 'move-surface-down'

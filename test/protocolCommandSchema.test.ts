@@ -56,6 +56,7 @@ const SAMPLES = {
   'import-attachment': { type: 'import-attachment', id: '1', source: { kind: 'path', path: 'C:/pics/a.png' } },
   'remove-attachment': { type: 'remove-attachment', id: '1', imageId: 'img-1' },
   'get-attachment-preview': { type: 'get-attachment-preview', id: '1', imageId: 'img-1' },
+  'get-attachment-view': { type: 'get-attachment-view', id: '1', imageId: 'img-1' },
   'open-attachment': { type: 'open-attachment', id: '1', imageId: 'img-1' },
   shutdown: { type: 'shutdown', id: '1', reason: 'bye' },
 } as const satisfies Record<HostCommand['type'], HostCommand>
@@ -270,8 +271,14 @@ test('import-attachment accepts both sources and rejects oversized bytes at the 
   )
 })
 
-test('the three id-addressed attachment commands take an imageId and nothing else', () => {
-  for (const type of ['remove-attachment', 'get-attachment-preview', 'open-attachment'] as const) {
+test('the id-addressed attachment commands take an imageId and nothing else', () => {
+  const types = [
+    'remove-attachment',
+    'get-attachment-preview',
+    'get-attachment-view',
+    'open-attachment',
+  ] as const
+  for (const type of types) {
     assert.equal(parseHostCommand({ type, id: '1', imageId: 'img-1' }).ok, true)
     assert.equal(parseHostCommand({ type, id: '1' }).ok, false)
     assert.equal(parseHostCommand({ type, id: '1', imageId: 'img-1', path: 'C:/x.png' }).ok, false)

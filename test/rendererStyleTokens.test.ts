@@ -79,6 +79,12 @@ const ALLOWED_STYLE_PROPERTY_CONSTANTS = [
   // the newest question can be lifted to the top of it.
   // `model/transcriptAnchor.ts` owns the name.
   'TRANSCRIPT_PAD_VARIABLE',
+  // The fullscreen image viewer's geometry: zoom measured against the viewport,
+  // pan measured against the pointer. Same exception for the same reason — no
+  // token can hold a measured value. `model/imageViewer.ts` owns the names.
+  'VIEWER_ZOOM_VARIABLE',
+  'VIEWER_PAN_X_VARIABLE',
+  'VIEWER_PAN_Y_VARIABLE',
 ]
 
 function rendererFiles(dir = rendererRoot): string[] {
@@ -312,6 +318,9 @@ test('the palette is the one that was agreed, value for value', () => {
       '--surface-active': '#383530',
       '--surface-knob': '#ffffff',
       '--surface-scrim': 'rgba(0, 0, 0, 0.55)',
+      // The image viewer's own dim: a viewer asks nothing, so nothing behind it
+      // needs to stay readable. See `#lightbox.modal-layer::before`.
+      '--surface-scrim-strong': 'rgba(0, 0, 0, 0.88)',
       '--text-primary': '#ede9e3',
       '--text-secondary': '#a19a90',
       '--text-tertiary': '#857e74',
@@ -377,6 +386,12 @@ test('the palette is the one that was agreed, value for value', () => {
       // question needs to be liftable to the top of the viewport, measured per
       // paint by `dom/transcriptView.ts` from `model/transcriptAnchor.ts`.
       '--transcript-pad': '0px',
+      // The fullscreen image viewer's geometry, sixth of the same kind: zoom
+      // measured against the stage and pan against the pointer, written per
+      // paint by `dom/imageViewerView.ts` from `model/imageViewer.ts`.
+      '--viewer-zoom': '1',
+      '--viewer-pan-x': '0px',
+      '--viewer-pan-y': '0px',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':
@@ -412,6 +427,7 @@ test('the palette is the one that was agreed, value for value', () => {
       // accent track in both themes, so it is white in both.
       '--surface-knob': '#ffffff',
       '--surface-scrim': 'rgba(28, 25, 21, 0.32)',
+      '--surface-scrim-strong': 'rgba(28, 25, 21, 0.92)',
       '--text-primary': '#1a1815',
       '--text-secondary': '#6b655c',
       '--text-tertiary': '#8f887d',
@@ -477,6 +493,12 @@ test('the palette is the one that was agreed, value for value', () => {
       // question needs to be liftable to the top of the viewport, measured per
       // paint by `dom/transcriptView.ts` from `model/transcriptAnchor.ts`.
       '--transcript-pad': '0px',
+      // The fullscreen image viewer's geometry, sixth of the same kind: zoom
+      // measured against the stage and pan against the pointer, written per
+      // paint by `dom/imageViewerView.ts` from `model/imageViewer.ts`.
+      '--viewer-zoom': '1',
+      '--viewer-pan-x': '0px',
+      '--viewer-pan-y': '0px',
       '--font-ui':
         '"Inter Variable", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif',
       '--font-mono':

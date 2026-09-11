@@ -51,22 +51,21 @@ test('an untouched session leaves the status line empty', () => {
   }
 })
 
-test('the status line names all three counts and the rate between two of them', () => {
+test('the status line sums all three counts into one total', () => {
   const view = statusUsageView(usage({
     inputTokens: 12_400,
     cacheReadInputTokens: 88_100,
     outputTokens: 3_200,
   }))
-  // Three chips on screen; the labels live in the accessible name beside them.
+  // One chip on screen; its label lives in the accessible name beside it.
   assert.deepEqual(view.metrics.map((metric) => [metric.kind, metric.value]), [
-    ['input', '12k'],
-    ['cache', '88k'],
-    ['output', '3.2k'],
+    ['total', '104k tok'],
   ])
   // The rate is the one field written out on screen — no glyph explains a ratio.
-  assert.deepEqual(view.rate, { label: '缓存命中率', percent: '87.7%' })
-  assert.equal(view.text, '输入 12k · 缓存命中 88k · 输出 3.2k · 缓存命中率 87.7%')
-  // The hover carries the same numbers unabbreviated.
+  assert.deepEqual(view.rate, { label: '缓存命中', percent: '87.7%' })
+  assert.equal(view.text, '总计 104k tok · 缓存命中 87.7%')
+  // The hover still carries the split, unabbreviated.
+  assert.match(view.title, /103,700/)
   assert.match(view.title, /12,400/)
   assert.match(view.title, /88,100/)
   assert.match(view.title, /3,200/)
@@ -86,7 +85,7 @@ test('the hit rate ignores output tokens', () => {
 test('a turn with no input side reports no rate at all', () => {
   const view = statusUsageView(usage({ outputTokens: 500 }))
   assert.equal(view.rate, undefined)
-  assert.equal(view.text, '输入 0 · 缓存命中 0 · 输出 500')
+  assert.equal(view.text, '总计 500 tok')
 })
 
 test('the gauge is absent, not empty, when either number is missing', () => {

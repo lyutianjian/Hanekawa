@@ -259,6 +259,9 @@ const COMMAND_SCHEMAS = {
   'get-attachment-preview': z
     .object({ type: z.literal('get-attachment-preview'), id: commandId, imageId: z.string() })
     .strict(),
+  'get-attachment-view': z
+    .object({ type: z.literal('get-attachment-view'), id: commandId, imageId: z.string() })
+    .strict(),
   'open-attachment': z
     .object({ type: z.literal('open-attachment'), id: commandId, imageId: z.string() })
     .strict(),

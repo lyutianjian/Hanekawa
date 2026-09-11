@@ -239,7 +239,9 @@ interface Rendered {
   /** `[path, line]` per clicked search row, the `open-in-editor` payload. */
   readonly opened: ReadonlyArray<readonly [string, number | undefined]>
   /** `[imageId, name]` per clicked image line under a user bubble (S12). */
-  readonly openedImages: ReadonlyArray<readonly [string, string]>
+  readonly viewedImages: ReadonlyArray<readonly [string, string]>
+  /** The thumbnail the pane would hand back, per image id; the test fills it. */
+  readonly thumbs: Map<string, string>
   /** What each 复制 click handed the pane for the clipboard. */
   readonly copied: readonly string[]
   render(state: TranscriptState, disclosure?: DisclosureState, activity?: WaitingInput): void
@@ -258,13 +260,15 @@ function mount(t: { after(fn: () => void): void }): Rendered {
   const toggled: Array<readonly [string, boolean]> = []
   const opened: Array<readonly [string, number | undefined]> = []
   const copied: string[] = []
-  const openedImages: Array<readonly [string, string]> = []
+  const viewedImages: Array<readonly [string, string]> = []
+  const thumbs = new Map<string, string>()
   let taskClicks = 0
   const view = createTranscriptView(container, host, {
     onToggle: (id, expanded) => toggled.push([id, expanded]),
     onTaskStep: () => { taskClicks += 1 },
     onOpenPath: (path, line) => opened.push([path, line]),
-    onOpenImage: (imageId, name) => openedImages.push([imageId, name]),
+    onViewImage: (image) => viewedImages.push([image.id, image.name]),
+    imageThumbUrl: (imageId) => thumbs.get(imageId),
     onCopy: (text) => copied.push(text),
   })
   const jump = (): StubView => {
@@ -285,7 +289,8 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     taskClicks: () => taskClicks,
     toggled,
     opened,
-    openedImages,
+    viewedImages,
+    thumbs,
     copied,
     render: (state, disclosure = NO_DISCLOSURE, activity) => view.render(state, disclosure, activity),
     stopClock: () => view.stopClock(),
@@ -2037,10 +2042,10 @@ test('a session opened with no turn running lands on its tail, not on its last q
   assert.equal(pad(view), `${ANCHOR_REST_PX}px`)
 })
 
-// --- a user message's image lines (S12) ----------------------------------------
+// --- a user message's images (S12) ---------------------------------------------
 
-test('the images a user message carried draw as clickable fact lines under the bubble', (t) => {
-  const { render, items, stub, openedImages } = mount(t)
+test('the images a user message carried draw as clickable thumbnails above the bubble', (t) => {
+  const { render, items, stub, viewedImages, thumbs } = mount(t)
   const image = (id: string, name: string, width: number, height: number): ImageAttachmentRef => ({
     id, ownerSessionId: 'session-1', name, mimeType: 'image/png', width, height, byteLength: 1024,
   })
@@ -2051,26 +2056,58 @@ test('the images a user message carried draw as clickable fact lines under the b
   render(transcript([{ id: 'm1', kind: 'user', text: '看这两张', images }]))
 
   const item = items()[0]!
-  const lines = item.children.filter((child) => child.classes.includes('user-image-line'))
-  assert.deepEqual(lines.map((line) => line.text), [
+  const strip = item.children.find((child) => child.classes.includes('user-images'))
+  assert.ok(strip, 'the images ride their own row')
+  assert.equal(
+    item.children.indexOf(strip) < item.children.findIndex((child) => child.classes.includes('user-bubble')),
+    true,
+    'the pictures come before the words',
+  )
+  const tiles = strip.children.filter((child) => child.classes.includes('user-image-thumb'))
+  // No URL in hand yet: the box is empty and the alt carries the facts the
+  // line here used to spell out, so the live region reads the same either way.
+  assert.deepEqual(tiles.map((tile) => tile.attributes.has('src')), [false, false])
+  assert.deepEqual(tiles.map((tile) => tile.attributes.get('alt')), [
     '图片 1：shot.png，1920×1080',
     '图片 2：loop.gif，640×480',
   ])
-  assert.deepEqual(lines.map((line) => line.attributes.get('role')), ['button', 'button'])
+  assert.deepEqual(tiles.map((tile) => tile.attributes.get('role')), ['button', 'button'])
 
-  stub.click(lines[0]!.node)
-  stub.click(lines[1]!.node)
-  assert.deepEqual(openedImages, [['img-1', 'shot.png'], ['img-2', 'loop.gif']])
+  stub.click(tiles[0]!.node)
+  stub.click(tiles[1]!.node)
+  assert.deepEqual(viewedImages, [['img-1', 'shot.png'], ['img-2', 'loop.gif']])
 
-  // Enter works too — the row is a real control, not a mouse-only affordance.
-  stub.dispatch(lines[0]!.node, 'keydown', { key: 'Enter' })
-  assert.deepEqual(openedImages.length, 3)
+  // Enter works too — the tile is a real control, not a mouse-only affordance.
+  stub.dispatch(tiles[0]!.node, 'keydown', { key: 'Enter' })
+  assert.deepEqual(viewedImages.length, 3)
+
+  // The item's own node is refilled rather than replaced — it is what the
+  // scroll anchor points at — so the repaint discipline is asserted one level
+  // down, on the tiles. A paint that changed nothing touches none of them.
+  const tileNodes = () => items()[0]!.children
+    .find((child) => child.classes.includes('user-images'))!
+    .children.filter((child) => child.classes.includes('user-image-thumb'))
+  const before = tileNodes().map((tile) => tile.node)
+  render(transcript([{ id: 'm1', kind: 'user', text: '看这两张', images }]))
+  const after = tileNodes().map((tile) => tile.node)
+  assert.equal(after.length, before.length)
+  // Identity, one by one: a deep compare would walk the parent chain instead.
+  after.forEach((node, index) => assert.equal(node, before[index], 'nothing changed, nothing rebuilt'))
+
+  // The URL arriving is a signature change: the row repaints once, and the src
+  // lands on the tile that gained it.
+  thumbs.set('img-1', 'data:image/png;base64,AA')
+  render(transcript([{ id: 'm1', kind: 'user', text: '看这两张', images }]))
+  assert.deepEqual(
+    tileNodes().map((tile) => tile.attributes.get('src')),
+    ['data:image/png;base64,AA', undefined],
+  )
 })
 
-test('a user item without images paints no image line, and a repaint keeps the node', (t) => {
+test('a user item without images paints no image row, and a repaint keeps the node', (t) => {
   const { render, items } = mount(t)
   render(transcript([{ id: 'm1', kind: 'user', text: '纯文字' }]))
-  assert.deepEqual(items()[0]!.children.filter((child) => child.classes.includes('user-image-line')), [])
+  assert.deepEqual(items()[0]!.children.filter((child) => child.classes.includes('user-images')), [])
 
   // Unchanged repaint: the item's node is reused, the painter's own rule — so
   // a streaming turn cannot rebuild a row the pointer is on.

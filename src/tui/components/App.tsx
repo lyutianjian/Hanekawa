@@ -630,11 +630,14 @@ export function App({
       return
     }
 
-    const lines = [`Model set to: ${result.model.key} (${result.model.providerName}: ${result.model.model})`]
+    // No confirmation of the switch itself — the status line already names the
+    // live model, and `/model` stopped printing one for the same reason. What
+    // stays is what nothing else shows: the config write-back, and the
+    // image-impact notice `/model` also prints.
+    const lines: string[] = []
     if (decision.action === 'set-default') lines.push('Default model updated.')
-    // Same image-impact notice `/model` prints; the picker is the other way in.
     if (result.notice) lines.push(result.notice)
-    addSystemMessage(lines.join('\n'))
+    if (lines.length > 0) addSystemMessage(lines.join('\n'))
   }, [providerConfig, activateModel, addSystemMessage])
 
   const reloadAgentDefinitions = useCallback(async (): Promise<number> => {

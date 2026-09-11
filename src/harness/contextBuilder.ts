@@ -114,7 +114,6 @@ const USING_TOOLS_SECTION = `# Using your tools
 
 const TONE_AND_STYLE_SECTION = `# Tone and style
  - Only use emojis if the user explicitly requests it. Avoid using emojis in all communication unless asked.
- - Your responses should be short and concise.
  - When referencing specific functions or pieces of code include the pattern file_path:line_number to allow the user to easily navigate to the source code location.
  - Do not use a colon before tool calls. Your tool calls may not be shown directly in the output, so text like "Let me read the file:" followed by a read tool call should just be "Let me read the file." with a period.`.trim()
 
@@ -125,7 +124,7 @@ Don't narrate your internal deliberation. State results and decisions directly.
 
 Write so the reader can pick up cold: complete sentences, no unexplained jargon. But keep it tight.
 
-End-of-turn summary: one or two sentences. What changed and what's next.
+End your turn with a short summary: what changed and what's next.
 
 Match responses to the task: a simple question gets a direct answer, not headers and sections.
 

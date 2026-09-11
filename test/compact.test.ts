@@ -809,7 +809,7 @@ test('formatCompactSummary handles partial tags', async () => {
 test('getCompactPrompt returns structured prompt with 9 sections', async () => {
   const { getCompactPrompt } = await import('../src/prompts/compactPrompt.js')
   const prompt = getCompactPrompt()
-  assert.match(prompt, /CRITICAL: Respond with TEXT ONLY/)
+  assert.match(prompt, /create a detailed summary of the conversation/)
   assert.match(prompt, /Primary Request and Intent/)
   assert.match(prompt, /Key Technical Concepts/)
   assert.match(prompt, /Files and Code Sections/)
@@ -819,7 +819,10 @@ test('getCompactPrompt returns structured prompt with 9 sections', async () => {
   assert.match(prompt, /Pending Tasks/)
   assert.match(prompt, /Current Work/)
   assert.match(prompt, /Optional Next Step/)
-  assert.match(prompt, /REMINDER: Do NOT call any tools/)
+  // The summarization request is built with `tools: []`, so the prompt says
+  // nothing about tool use.
+  assert.doesNotMatch(prompt, /Do NOT call any tools/)
+  assert.doesNotMatch(prompt, /<analysis>/)
 })
 
 test('getCompactPrompt includes custom instructions when provided', async () => {
@@ -827,10 +830,10 @@ test('getCompactPrompt includes custom instructions when provided', async () => 
   const prompt = getCompactPrompt('Focus on TypeScript code changes and remember error patterns.')
   assert.match(prompt, /Additional Instructions:/)
   assert.match(prompt, /Focus on TypeScript code changes and remember error patterns\./)
-  // Custom instructions should appear before the trailer
-  const trailerIdx = prompt.indexOf('REMINDER: Do NOT call any tools')
+  // Custom instructions should appear after the base prompt
+  const baseIdx = prompt.indexOf('Please provide your summary based on the conversation so far')
   const instructionsIdx = prompt.indexOf('Additional Instructions:')
-  assert.ok(instructionsIdx < trailerIdx, 'instructions should come before trailer')
+  assert.ok(baseIdx < instructionsIdx, 'instructions should come after the base prompt')
 })
 
 test('getCompactPrompt omits instructions block when not provided', async () => {
@@ -913,7 +916,7 @@ test('summarizeRecordsForContinuation uses structured prompt and formats output'
 
   // Prompt should contain structured instructions
   assert.match(requestContent, /Primary Request and Intent/)
-  assert.match(requestContent, /CRITICAL: Respond with TEXT ONLY/)
+  assert.match(requestContent, /create a detailed summary of the conversation/)
   // Output should have analysis stripped and summary formatted
   assert.equal(result.content, 'Summary:\n1. Primary Request:\nBuild feature X')
   assert.doesNotMatch(result.content, /analyzing/)

@@ -10,6 +10,4 @@ IMPORTANT: only when the task requires planning the implementation steps of work
 ## Before Using This Tool
 Ensure your plan is complete and unambiguous:
 - If you have unresolved questions about requirements or approach, use AskUserQuestion first, in an earlier phase.
-- Once the plan is finalized, use THIS tool to request approval.
-
-**Important:** Do NOT use AskUserQuestion to ask "Is this plan okay?" or "Should I proceed?" — that is exactly what this tool does. ExitPlanMode inherently requests user approval of your plan.`
+- Once the plan is finalized, use THIS tool to request approval.`

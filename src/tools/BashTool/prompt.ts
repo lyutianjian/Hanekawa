@@ -32,7 +32,7 @@ export function buildBashDescription(): string {
 - Large output is truncated.
 
 # Preferring dedicated tools
-IMPORTANT: avoid running \`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` through this tool unless explicitly instructed, or after you have verified a dedicated tool cannot do the job. The dedicated tools let the user review and approve your work:
+Avoid running \`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` through this tool unless explicitly instructed, or after you have verified a dedicated tool cannot do the job. The dedicated tools let the user review and approve your work:
  - File search: Glob (NOT find or ls)
  - Content search: Grep (NOT grep or rg)
  - Read files: Read (NOT cat, head, or tail)

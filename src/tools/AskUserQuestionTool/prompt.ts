@@ -12,6 +12,5 @@ Usage:
 - Set \`multiSelect: true\` when the choices are not mutually exclusive.
 - Use \`preview\` only when concrete artifacts need side-by-side comparison (ASCII mockups, code snippets, diagrams, configuration examples). Previews are rejected on multi-select questions.
 - Reserve this for decisions that are genuinely the user's to make. If a sensible default exists, take it and say so instead of asking.
-
-Plan mode note: use this to clarify requirements or choose between approaches BEFORE finalizing your plan. Do NOT ask "Is my plan ready?", "Should I proceed?", "How does this look?" or anything similar — ${EXIT_PLAN_MODE_TOOL_NAME} is what requests plan approval. Do not even reference "the plan" in a question: the user cannot see it until you call ${EXIT_PLAN_MODE_TOOL_NAME}.`
+- In plan mode, use this to clarify requirements or choose between approaches; ${EXIT_PLAN_MODE_TOOL_NAME} is what requests plan approval.`
 }

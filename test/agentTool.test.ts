@@ -1744,10 +1744,11 @@ test('explore agent prompt enforces read-only fact finding', async () => {
 
   assert.ok(explore)
   const prompt = explore.getSystemPrompt()
-  assert.match(prompt ?? '', /CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS/)
-  assert.match(prompt ?? '', /Creating new files/)
-  assert.match(prompt ?? '', /Moving or copying files/)
-  assert.match(prompt ?? '', /Glob, Grep, and Read/)
+  // The read-only cage is enforced by permissionMode/tools/disallowedTools, not
+  // by a prohibition banner; the prompt states the non-obvious Bash contract.
+  assert.doesNotMatch(prompt ?? '', /READ-ONLY MODE/)
+  assert.match(prompt ?? '', /read-only, and every other shell command is denied/)
+  assert.match(prompt ?? '', /Glob, Grep, Read, and Bash/)
   assert.match(prompt ?? '', /Prefer parallel read-only searches/)
   assert.match(prompt ?? '', /file paths and line numbers/)
   assert.match(prompt ?? '', /high-signal findings/)
@@ -1758,24 +1759,23 @@ test('plan agent prompt defines read-only architecture planning process', async 
 
   assert.ok(plan)
   const prompt = plan.getSystemPrompt()
-  assert.match(prompt ?? '', /CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS/)
+  assert.doesNotMatch(prompt ?? '', /READ-ONLY MODE/)
+  assert.match(prompt ?? '', /no file-editing tools/)
   assert.match(prompt ?? '', /Glob, Grep, and Read/)
-  assert.match(prompt ?? '', /Understand Requirements/)
-  assert.match(prompt ?? '', /Explore Thoroughly/)
-  assert.match(prompt ?? '', /Design Solution/)
-  assert.match(prompt ?? '', /Detail the Plan/)
-  assert.match(prompt ?? '', /Follow existing patterns/)
+  assert.match(prompt ?? '', /sequencing, dependencies, and the trade-offs/)
   assert.match(prompt ?? '', /Critical Files for Implementation/)
   assert.match(prompt ?? '', /3-5 files/)
 })
 
-test('specialist agent prompts require concise final reports', async () => {
+test('specialist agent prompts frame report length by audience, not a word cap', async () => {
   const explore = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'explore')
   const plan = BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'plan')
 
   assert.ok(explore)
   assert.ok(plan)
-  assert.match(explore.getSystemPrompt() ?? '', /under ~500 words/)
+  const explorePrompt = explore.getSystemPrompt() ?? ''
+  assert.doesNotMatch(explorePrompt, /\d+ words/)
+  assert.match(explorePrompt, /Report only what the caller asked for/)
   assert.match(plan.getSystemPrompt() ?? '', /Required Output/)
 })
 

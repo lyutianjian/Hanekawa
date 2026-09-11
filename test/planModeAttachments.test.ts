@@ -118,10 +118,12 @@ test('reminders contain expected anchor text', () => {
   assert.match(full, /Phase 1: Initial Understanding/)
   assert.match(full, /Phase 4: Final Plan/)
   assert.match(full, /Phase 5: Call ExitPlanMode/)
-  assert.match(full, /Use ExitPlanMode to request plan approval/)
   assert.match(full, new RegExp(planPath))
-  // Allow/disallow tool sections
-  assert.match(full, /AskUserQuestion ONLY to clarify/)
+  // The plan-approval rule has a single home: PLAN_MODE_SYSTEM_REMINDER, which
+  // is in the dynamic system block on every plan-mode turn.
+  assert.doesNotMatch(full, /AskUserQuestion ONLY to clarify/)
+  // Fan-out width is the model's call, not a fixed count.
+  assert.doesNotMatch(full, /up to 3 (explore|plan) agent/)
   assert.doesNotMatch(full, /Ordinary assistant-text plans are invalid/)
   assert.match(full, /Call ExitPlanMode/)
   assert.doesNotMatch(full, /Tools you must NOT call in plan mode/)

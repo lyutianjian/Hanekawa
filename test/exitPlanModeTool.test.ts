@@ -20,7 +20,8 @@ test('ExitPlanMode description includes approval contract', () => {
   assert.match(exitPlanModeTool.description, /Use this tool when you are in plan mode, have finished writing your plan/)
   assert.match(exitPlanModeTool.description, /ready for user approval/)
   assert.match(exitPlanModeTool.description, /reads the plan from the plan file/)
-  assert.match(exitPlanModeTool.description, /ExitPlanMode inherently requests user approval/)
+  // The approval rule lives in the plan-mode system reminder, not restated here.
+  assert.doesNotMatch(exitPlanModeTool.description, /Is this plan okay/)
 })
 
 test('exitPlanMode emits a plan_mode_request record when plan file exists', async () => {

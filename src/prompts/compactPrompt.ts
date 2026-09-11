@@ -1,43 +1,10 @@
 /**
  * Structured compact prompt for LLM-based conversation summarization.
- * Adapted from Claude Code's compact prompt with 9-section structure
- * and <analysis> drafting scratchpad for higher quality summaries.
+ * Adapted from Claude Code's compact prompt with 9-section structure.
  */
-
-// Aggressive no-tools preamble. Putting this FIRST and making it explicit
-// about rejection consequences prevents wasted turns when the model
-// attempts a tool call despite the weaker trailer instruction.
-const NO_TOOLS_PREAMBLE = `CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
-
-- Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.
-- You already have all the context you need in the conversation above.
-- Tool calls will be REJECTED and will waste your only turn — you will fail the task.
-- Your entire response must be plain text: an <analysis> block followed by a <summary> block.
-
-`
-
-// The <analysis> block is a drafting scratchpad that formatCompactSummary()
-// strips before the summary reaches context. It improves summary quality
-// by giving the model a structured place to reason about completeness.
-const DETAILED_ANALYSIS_INSTRUCTION = `Before providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts and ensure you've covered all necessary points. In your analysis process:
-
-1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify:
-   - The user's explicit requests and intents
-   - Your approach to addressing the user's requests
-   - Key decisions, technical concepts and code patterns
-   - Specific details like:
-     - file names
-     - full code snippets
-     - function signatures
-     - file edits
-   - Errors that you ran into and how you fixed them
-   - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
-2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.`
 
 const BASE_COMPACT_PROMPT = `Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
 This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.
-
-${DETAILED_ANALYSIS_INSTRUCTION}
 
 Your summary should include the following sections:
 
@@ -55,10 +22,6 @@ Your summary should include the following sections:
 Here's an example of how your output should be structured:
 
 <example>
-<analysis>
-[Your thought process, ensuring all points are covered thoroughly and accurately]
-</analysis>
-
 <summary>
 1. Primary Request and Intent:
    [Detailed description]
@@ -118,24 +81,19 @@ When you are using compact - please focus on test output and code changes. Inclu
 </example>
 `
 
-const NO_TOOLS_TRAILER =
-  '\n\nREMINDER: Do NOT call any tools. Respond with plain text only — ' +
-  'an <analysis> block followed by a <summary> block. ' +
-  'Tool calls will be rejected and you will fail the task.'
-
 /**
  * Returns the full structured compact prompt for LLM-based summarization.
- * Includes no-tools preamble, 9-section instructions with example, and no-tools trailer.
+ * The summarization request is built with `tools: []`, so the prompt says
+ * nothing about tool use.
  *
  * @param customInstructions - Optional user-provided instructions appended after the
  *   base prompt (e.g. from CLI args `/compact [instructions]` or pre-compact hook output).
  */
 export function getCompactPrompt(customInstructions?: string): string {
-  let prompt = NO_TOOLS_PREAMBLE + BASE_COMPACT_PROMPT
+  let prompt = BASE_COMPACT_PROMPT
   if (customInstructions && customInstructions.trim() !== '') {
     prompt += `\n\nAdditional Instructions:\n${customInstructions}`
   }
-  prompt += NO_TOOLS_TRAILER
   return prompt
 }
 
@@ -154,15 +112,15 @@ export function mergeHookInstructions(
 }
 
 /**
- * Formats the compact summary by stripping the <analysis> drafting scratchpad
- * and replacing <summary> XML tags with readable section headers.
- * Gracefully handles raw text that doesn't contain the expected tags.
+ * Formats the compact summary by replacing <summary> XML tags with readable
+ * section headers. Gracefully handles raw text that doesn't contain the
+ * expected tags.
  */
 export function formatCompactSummary(summary: string): string {
   let formatted = summary
 
-  // Strip analysis section — it's a drafting scratchpad that improves summary
-  // quality but has no informational value once the summary is written.
+  // Defensive parse for sessions recorded while the prompt still asked for an
+  // <analysis> scratchpad. Nothing requests one now.
   formatted = formatted.replace(/<analysis>[\s\S]*?<\/analysis>/, '')
 
   // Extract and format summary section

@@ -53,7 +53,7 @@ export async function summarizeToolUse(params: SummarizeToolUseParams): Promise<
   }
 
   const response = await provider.createMessage(request)
-  const summary = response.content.trim().split('\n')[0]?.slice(0, 200) ?? 'tool use'
+  const summary = response.content.trim().split('\n')[0]?.slice(0, 120) ?? 'tool use'
 
   return {
     record: {

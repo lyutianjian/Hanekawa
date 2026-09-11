@@ -18,7 +18,7 @@ import { clearAllPlanSlugs, writePlan } from '../src/utils/plans.js'
 import { getAutoCompactThreshold } from '../src/prompts/budget.js'
 import type { SessionMetricInput } from '../src/harness/metrics.js'
 import type { RecordStream } from '../src/harness/recordStream.js'
-import type { ModelProvider, ModelRequest, ModelStreamEvent, SessionRecord, Tool } from '../src/harness/types.js'
+import type { ModelProvider, ModelRequest, ModelStreamEvent, SessionRecord, TokenUsage, Tool } from '../src/harness/types.js'
 import { FallbackNotApplicableForImagesError, TurnImageBlockError } from '../src/harness/turnImages.js'
 import { FallbackTriggeredError } from '../src/config/retry.js'
 import { resetAutoCompactFailureState } from '../src/harness/compact.js'
@@ -1105,6 +1105,59 @@ test('agent loop returns explicit truncation metadata when max_tokens recovery i
   assert.deepEqual(response.segments, ['part 1', 'part 2', 'part 3', 'part 4'])
   assert.equal(response.stopReason, 'max_tokens')
   assert.equal(response.truncated, true)
+})
+
+test('onRequestUsage reports every request of a turn, not just the last', async () => {
+  const records: SessionRecord[] = []
+  const reported: TokenUsage[] = []
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      const usage = { inputTokens: calls * 1000, cacheReadInputTokens: calls * 10, outputTokens: calls }
+      if (calls === 1) {
+        return { content: 'working', toolCalls: [{ id: 'noop-1', name: 'noop', input: {} }], usage }
+      }
+      return { content: 'done', toolCalls: [], usage }
+    },
+  }
+  const tools: Tool[] = [{
+    name: 'noop',
+    description: 'noop',
+    inputSchema: z.object({}).strict(),
+    riskLevel: 'safe',
+    isReadOnly: true,
+    isConcurrencySafe: true,
+    async execute() {
+      return { ok: true, content: 'ok' }
+    },
+  }]
+  const runner = new ToolRunner(tools, new PermissionGate(async () => true), {
+    onRecord: async (record) => { records.push(record) },
+  })
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: runner,
+    toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
+    recordStream: recordStreamFor(records),
+    onRequestUsage: (usage) => { reported.push(usage) },
+  })
+
+  const result = await loop.run({ text: 'hello' })
+
+  // Two requests, two reports — the tool step is visible while it happens
+  // rather than only once the whole turn has settled.
+  assert.equal(calls, 2)
+  assert.deepEqual(reported, [
+    { inputTokens: 1000, cacheReadInputTokens: 10, outputTokens: 1 },
+    { inputTokens: 2000, cacheReadInputTokens: 20, outputTokens: 2 },
+  ])
+  // And the last report is what the run settles on, so nothing contradicts.
+  assert.deepEqual(result.statusUsage, reported.at(-1))
 })
 
 test('agent loop default maxTurns behavior still throws', async () => {

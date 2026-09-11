@@ -170,6 +170,8 @@ export class SessionController {
     this.recordProxy.setHandler(this.handleRecord)
     this.recordProxy.setProgressHandler(this.handleProgress)
     this.recordProxy.setStreamEventHandler(this.handleStreamEvent)
+    this.recordProxy.setRequestUsageHandler(this.handleRequestUsage)
+    this.seedLastRequestUsage(this.session.id)
   }
 
   // --- pull state -----------------------------------------------------------
@@ -288,7 +290,12 @@ export class SessionController {
       const result = await loop.run(input, ac.signal, messageId, runOverrides)
       completedResult = result
       this.usage = {
-        lastRequest: result.statusUsage ?? null,
+        // Already live from `handleRequestUsage`; this is the settle, not the
+        // first sighting. Falling back to what is there rather than to null
+        // matters for a run that produced no response at all — the last request
+        // still describes the context, and dropping it would send the readout
+        // back to the record-only estimate.
+        lastRequest: result.statusUsage ?? this.usage.lastRequest,
         total: addTokenUsage(this.usage.total, result.usage),
       }
       this.publish()
@@ -368,6 +375,7 @@ export class SessionController {
     this.activeToolProgress.clear()
     this.subagentProgress.clear()
     this.usage = createEmptySessionUsage()
+    this.seedLastRequestUsage(session.id)
     this.taskSnapshot = findLatestTaskSnapshot(records)
     this.spinnerSubText = undefined
     this.fileHistoryReady = false
@@ -440,11 +448,49 @@ export class SessionController {
     this.recordProxy.setHandler(() => {})
     this.recordProxy.setProgressHandler(() => {})
     this.recordProxy.setStreamEventHandler(() => {})
+    this.recordProxy.setRequestUsageHandler(() => {})
     this.listeners.clear()
     this.eventListeners.clear()
   }
 
   // --- proxy handlers -------------------------------------------------------
+
+  /**
+   * A provider request just settled: publish its size straight away.
+   *
+   * Only `lastRequest` moves. The totals stay on the end-of-run accounting in
+   * `sendMessage` — adding here as well would count every request twice, since
+   * `AgentRunResult.usage` is the sum of exactly these responses.
+   */
+  private handleRequestUsage = (usage: TokenUsage): void => {
+    this.usage = { lastRequest: usage, total: this.usage.total }
+    this.publish()
+  }
+
+  /**
+   * Restores `lastRequest` from the metrics sidecar for a session that was not
+   * started in this process.
+   *
+   * Deliberately fire-and-forget: this is a readout, and neither the
+   * constructor nor `retarget` may become async for it. Both guards matter —
+   * the session can move again before the read lands, and a real request can
+   * beat it, and a stale disk number must never overwrite either.
+   */
+  private seedLastRequestUsage(sessionId: string): void {
+    try {
+      void this.store.loadLastRequestUsage(sessionId).then((usage) => {
+        if (!usage || this.disposed) return
+        if (this.session.id !== sessionId || this.usage.lastRequest) return
+        this.usage = { lastRequest: usage, total: this.usage.total }
+        this.publish()
+      }).catch(() => {
+        // Best-effort, exactly like the metrics that back it.
+      })
+    } catch {
+      // A store that cannot answer at all (a stub in a test) must not take the
+      // constructor down with it.
+    }
+  }
 
   private handleRecord = (record: SessionRecord): void => {
     let approvalToolUseId: string | undefined

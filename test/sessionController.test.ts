@@ -404,6 +404,76 @@ test('token usage accumulates across turns and resets when the session is retarg
   assert.equal(harness.controller.getSessionId(), 'other-session')
 })
 
+test('a request that lands mid-turn updates lastRequest before the turn ends', async () => {
+  let harness: Harness | undefined
+  const seenMidTurn: Array<{ inputTokens: number; outputTokens: number } | null> = []
+  harness = await createHarness({
+    run: async () => {
+      // Two requests inside one turn, the way a tool step produces them.
+      harness?.proxy.onRequestUsage(usage(1000, 1))
+      seenMidTurn.push(harness?.controller.getSnapshot().usage.lastRequest ?? null)
+      harness?.proxy.onRequestUsage(usage(2000, 2))
+      seenMidTurn.push(harness?.controller.getSnapshot().usage.lastRequest ?? null)
+      return okResult({ usage: usage(3000, 3), statusUsage: usage(2000, 2) })
+    },
+  })
+
+  await harness.controller.submit({ text: 'hello' })
+
+  assert.deepEqual(seenMidTurn, [usage(1000, 1), usage(2000, 2)])
+  // The totals are the run's business alone — a mid-turn report must not add to
+  // them, or every request would be counted twice.
+  assert.deepEqual(harness.controller.getSnapshot().usage.total, usage(3000, 3))
+  assert.deepEqual(harness.controller.getSnapshot().usage.lastRequest, usage(2000, 2))
+})
+
+test('a run that produced no response keeps the last request rather than falling back to an estimate', async () => {
+  let harness: Harness | undefined
+  harness = await createHarness({
+    run: async () => {
+      harness?.proxy.onRequestUsage(usage(1500, 4))
+      return okResult({ usage: usage(0, 0) })
+    },
+  })
+
+  await harness.controller.submit({ text: 'hello' })
+
+  assert.deepEqual(harness.controller.getSnapshot().usage.lastRequest, usage(1500, 4))
+})
+
+test('lastRequest is restored from the metrics sidecar for a session this process never ran', async () => {
+  const harness = await createHarness()
+  const resumed = await harness.store.create('resumed session')
+  await harness.store.appendRecord(resumed.id, {
+    id: randomUUID(),
+    type: 'message',
+    role: 'user',
+    content: 'earlier',
+    createdAt: new Date().toISOString(),
+  })
+  await harness.store.appendMetric(resumed.id, {
+    event: 'turn',
+    model: 'test-model',
+    input_tokens: 19_000,
+    response_tokens: 120,
+    cache_read_tokens: 5_000,
+    cache_hit_rate: null,
+    tool_calls: 0,
+    duration_ms: 10,
+  })
+
+  harness.controller.retarget(resumed, [])
+  // The read is fire-and-forget — the switch does not wait on the disk.
+  for (let attempt = 0; attempt < 50 && !harness.controller.getSnapshot().usage.lastRequest; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+
+  assert.deepEqual(
+    harness.controller.getSnapshot().usage.lastRequest,
+    { inputTokens: 19_000, cacheReadInputTokens: 5_000, outputTokens: 120 },
+  )
+})
+
 test('tool progress drives the spinner text and only lists calls when several are in flight', async () => {
   const harness = await createHarness()
 

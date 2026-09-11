@@ -206,6 +206,15 @@ export interface AgentLoopOptions {
   recordStream: RecordStream
   onRecord?(record: SessionRecord): void
   onStreamEvent?(event: ModelStreamEvent): void
+  /**
+   * One completed foreground request's usage, reported the moment the response
+   * lands. Same value `statusUsage` carries at the end of the run — this only
+   * makes every intermediate request visible too, so a status readout derived
+   * from it moves per step instead of per turn. Subagent loops are built
+   * without it (`AgentTool`), so their requests never retarget the parent's
+   * readout.
+   */
+  onRequestUsage?(usage: TokenUsage): void
   consumePendingUserMessages?(): string[]
 }
 
@@ -823,6 +832,10 @@ export class AgentLoop {
 
       usage = addTokenUsage(usage, response.usage)
       lastForegroundResponseUsage = response.usage
+      // Per request, not per turn: this is the only point where the provider's
+      // own count for the context just sent is known, and a multi-step turn
+      // passes through it once per step.
+      if (response.usage) this.options.onRequestUsage?.(response.usage)
       await this.emitTurnMetric(modelStartedAt, response.usage ?? EMPTY_TOKEN_USAGE, response.toolCalls.length)
       lastResponseTokenCount = canReuseResponseTokenEstimate
         ? requestTokenCountFromUsage(response.usage)

@@ -4,6 +4,7 @@ import type {
   AskUserQuestionResult,
   ModelStreamEvent,
   SessionRecord,
+  TokenUsage,
   ToolProgressEvent,
 } from '../harness/types.js'
 import type { ExitDialogInput, ExitPlanDecision } from '../harness/planModeManager.js'
@@ -40,12 +41,25 @@ export interface RecordProxy {
   setProgressHandler: (fn: (event: ToolProgressEvent) => void) => void
   onStreamEvent: (event: ModelStreamEvent) => void
   setStreamEventHandler: (fn: (event: ModelStreamEvent) => void) => void
+  /**
+   * The usage of one *completed provider request*, pushed as soon as the
+   * response lands rather than waiting for the turn to finish.
+   *
+   * This is what the context gauge is measured from, and a turn that runs ten
+   * tool iterations sends ten requests — reporting only the last one at
+   * `run()`'s return left the readout a whole turn behind. Carries the request's
+   * own numbers, never a running total: the session totals stay on the
+   * end-of-run accounting so nothing is counted twice.
+   */
+  onRequestUsage: (usage: TokenUsage) => void
+  setRequestUsageHandler: (fn: (usage: TokenUsage) => void) => void
 }
 
 export function createRecordProxy(): RecordProxy {
   let handler: (record: SessionRecord) => void = () => {}
   let progressHandler: (event: ToolProgressEvent) => void = () => {}
   let streamEventHandler: (event: ModelStreamEvent) => void = () => {}
+  let requestUsageHandler: (usage: TokenUsage) => void = () => {}
   return {
     onRecord: (record) => handler(record),
     setHandler: (fn) => { handler = fn },
@@ -53,6 +67,8 @@ export function createRecordProxy(): RecordProxy {
     setProgressHandler: (fn) => { progressHandler = fn },
     onStreamEvent: (event) => streamEventHandler(event),
     setStreamEventHandler: (fn) => { streamEventHandler = fn },
+    onRequestUsage: (usage) => requestUsageHandler(usage),
+    setRequestUsageHandler: (fn) => { requestUsageHandler = fn },
   }
 }
 

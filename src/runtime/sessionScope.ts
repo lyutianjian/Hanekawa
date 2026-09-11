@@ -172,6 +172,7 @@ export async function createSessionScope(
       bridges.record.setHandler(() => {})
       bridges.record.setProgressHandler(() => {})
       bridges.record.setStreamEventHandler(() => {})
+      bridges.record.setRequestUsageHandler(() => {})
       trackFileEdit = undefined
     },
   }

@@ -4,7 +4,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { getSessionsDir } from '../utils/paths.js'
 import { readJsonFile, writeJsonFile, parseJsonLines, parseJsonLinesWithDiagnostics } from '../utils/json.js'
-import type { SessionRecord } from '../harness/types.js'
+import type { SessionRecord, TokenUsage } from '../harness/types.js'
 import type { SessionMetricInput, SessionMetric } from '../harness/metrics.js'
 import { OtlpMetricExporter } from '../harness/otlp.js'
 import { checkSessionInvariants, ensureToolResultPairing } from './invariants.js'
@@ -480,6 +480,46 @@ export class SessionStore {
       }
     } catch {
       // Metrics are best-effort and must never affect the agent loop.
+    }
+  }
+
+  /**
+   * The usage of the last request this session ever sent, read back from the
+   * metrics sidecar.
+   *
+   * A resumed session has no in-memory usage — nothing has been sent yet in
+   * this process — and the context readout would otherwise have to estimate the
+   * occupancy from the records alone, which counts neither the system prompt
+   * nor the tool schemas. The `turn` metric is written per provider response
+   * (`AgentLoop.emitTurnMetric`) and carries the provider's own numbers, so the
+   * last one is the real size of the last request. It is one response stale —
+   * the tool results that followed it are not in it — and the next request
+   * replaces it with a live number anyway.
+   *
+   * Null when the session has never completed a request, or when the sidecar is
+   * missing or unreadable; metrics are best-effort and a readout must never
+   * depend on them being there.
+   */
+  async loadLastRequestUsage(sessionIdOrPrefix: string): Promise<TokenUsage | null> {
+    try {
+      if (this.resolveDraft(sessionIdOrPrefix)) return null
+      const session = await this.resolve(sessionIdOrPrefix)
+      const sessionId = session?.id ?? sessionIdOrPrefix
+      const metricsPath = this.sessionMetricsPath(sessionId)
+      if (!existsSync(metricsPath)) return null
+
+      let last: Extract<SessionMetric, { event: 'turn' }> | undefined
+      for (const metric of parseJsonLines<SessionMetric>(readFileSync(metricsPath, 'utf-8'))) {
+        if (metric.event === 'turn') last = metric
+      }
+      if (!last) return null
+      return {
+        inputTokens: inferTurnInputTokens(last),
+        cacheReadInputTokens: Math.max(0, last.cache_read_tokens),
+        outputTokens: Math.max(0, last.response_tokens),
+      }
+    } catch {
+      return null
     }
   }
 

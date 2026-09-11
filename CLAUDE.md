@@ -85,6 +85,7 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 - One `BrowserWindow` multiplexes pane lanes over one transport; desktop `ShellHost` owns cross-project topology and all lane exits use the common detach/dispose path.
 - Settings changes follow `mutate -> save if config changed -> reload -> after-reload action -> optional refresh/rebuild`, with unique change kinds, optimistic pending state, and one wire scope per category (except renderer-local `appearance`).
 - Window views derive identity from `WireLaneInfo`. Context occupancy uses `AgentLoop.getContextBudget().usableContextWindow`, not the raw model window. `open-in-editor` resolves the real `entry.cwd`.
+- Context occupancy is `usage.lastRequest` (input + cache read), pushed per provider response through `RecordProxy.onRequestUsage` and seeded from the metrics sidecar (`SessionStore.loadLastRequestUsage`) for a session this process never ran. A mid-turn report moves `lastRequest` only — the totals stay on the end-of-run accounting, or every request is counted twice. The record-only estimate in `currentContextUsed` counts neither the system prompt nor the tool schemas; it is the last resort, not a source.
 - `scripts/smoke-desktop.mjs` exercises real Electron behavior with scratch projects, and restores renderer preferences, `~/.myagent/config.json` and `~/.myagent/projects.json` in a teardown that never throws.
 
 ## Renderer invariants

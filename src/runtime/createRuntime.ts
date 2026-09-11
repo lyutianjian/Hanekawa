@@ -325,6 +325,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       recordStream,
       onRecord: (record) => bridges.record.onRecord(record),
       onStreamEvent: (event) => bridges.record.onStreamEvent(event),
+      onRequestUsage: (usage) => bridges.record.onRequestUsage(usage),
       ...(imageAttachments ? { imageAttachments } : {}),
       ...(attachmentFacts ? { attachmentFacts } : {}),
       ...(attachmentBytes ? { attachmentBytes } : {}),

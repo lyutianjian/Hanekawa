@@ -18,7 +18,7 @@
 
 **状态标注约定**：每个任务标题前的方框表示完成状态 —— `[ ]` 未完成，`[x]` 已完成并通过验证。落地一个任务后，先跑该任务的「验证」命令，通过再把 `[ ]` 改成 `[x]`，然后连同代码改动一起 commit。未通过验证的任务保持 `[ ]`，并在任务末尾补一行说明卡在哪。
 
-当前进度：**9/10 完成**，T7 待行为验证（见该任务下的阻塞说明）。
+当前进度：**10/10 完成**。
 
 ### [x] T1 · 删除 compact 提示的 no-tools 前后缀（F1，High）
 
@@ -77,7 +77,7 @@
 - **动作**：Phase 1/2 收敛为结果陈述：设计前先探索；范围不确定或涉及多个区域时把广度优先搜索交给 `explore` 子代理，各给一个明确焦点；Phase 2 交给 `plan` 子代理时附上 Phase 1 的文件名、代码路径追踪、需求与约束。删除所有数量规定。
 - **配套测试**：`test/planModeAttachments.test.ts` 中断言 full reminder 文案的用例按新文本调整。
 
-### [ ] T7 · 取消提醒的周期性重注入（F6，Medium，需行为验证后再保留）
+### [x] T7 · 取消提醒的周期性重注入（F6，Medium）
 
 - **文件**：`src/harness/planModeAttachments.ts:9-10, 30-34`；关联 `src/harness/planModeManager.ts:247-258`、`contextBuilder.ts:420-422`
 - **依据**：`TURNS_BETWEEN_ATTACHMENTS = 5` × `FULL_REMINDER_EVERY_N_ATTACHMENTS = 5` ⇒ 约 70 行的完整 plan 提醒每 25 个 tool-use 回合重注入一次，sparse 版每 5 回合一次。而 `buildPlanModeSystemReminder` 已把同一条规则放进**每一轮**的动态系统块 —— 这条指令从未离开过上下文。每次重复都落在 prompt-cache 边界之外；在保留 thinking 的历史一致性校验下，"先注入后移除"的提醒还算一次 history edit。
@@ -86,7 +86,7 @@
   - 随之成为死代码，一并删除：`TURNS_BETWEEN_ATTACHMENTS`、`FULL_REMINDER_EVERY_N_ATTACHMENTS`、`buildSparsePlanModeReminder`（`:110-115`）、`PlanAttachmentKind` 的 `'sparse'` 分支，以及 `planModeManager.ts:256-258` 的 `sparse` 分支。
   - 更新 `test/planModeAttachments.test.ts:10-11, 45, 55-68, 94-99, 129-133`。
 - **验证（本任务独有）**：这是唯一一条基于"模型保持力"的假设而非"代码已强制"的事实。合并前须做行为验证：跑一轮长 plan-mode 会话（≥30 个 tool-use 回合），确认只读约束与"回合必以 AskUserQuestion 或 ExitPlanMode 结束"在改动前后一致。不通过则只落地 T6，保留周期注入。
-- **未完成原因**：该行为验证需要一轮真实的长 plan-mode 会话，无法由测试套件替代，本轮未执行。代码保持原状（周期注入仍生效），待验证通过后再落地并勾选。
+- **实际落地**：用户在了解上述风险后指示直接改。代码已落地，`typecheck` 通过、全量测试 3376 pass / 0 fail。**长会话行为验证仍未执行** —— 测试只覆盖了"注入决策函数不再按轮数返回提醒"这一结构性事实，覆盖不了"模型在 30 轮后是否仍守住只读约束"。若后续在 plan 模式长会话里观察到模型越权编辑，或回合不以 AskUserQuestion / ExitPlanMode 结束，先回退本任务的 commit 再排查其他原因。
 
 ### [x] T8 · 修齐 tool-use 摘要的契约不一致（F8，Medium）
 
@@ -131,7 +131,10 @@
 
 ## 5. 落地记录
 
-T1–T6、T8–T10 已落地，`npm run typecheck` 通过，`npm run test` 3378 pass / 0 fail。T7 未落地（见上）。
+分两次提交：
+
+1. T1–T6、T8–T10 —— `npm run typecheck` 通过，`npm run test` 3378 pass / 0 fail。
+2. T7 —— 单独一次提交，便于出问题时整体回退。删除 `TURNS_BETWEEN_ATTACHMENTS`、`FULL_REMINDER_EVERY_N_ATTACHMENTS`、`buildSparsePlanModeReminder`、`PlanAttachmentKind` 的 `'sparse'` 成员及 `planModeManager` 的 `sparse` 分支后，`shouldInjectPlanAttachment` 只在 entry / re-entry / exit 三个转换点返回提醒。测试 3376 pass / 0 fail（净减 2 例：删掉的 sparse 用例合并为一条"注入后恒静默"的断言）。
 
 除任务清单预判的测试改动外，实际还需要同步以下断言 —— 它们锚定在被删除的文案上：
 

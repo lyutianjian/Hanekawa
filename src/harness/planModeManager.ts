@@ -32,7 +32,6 @@ import {
   buildPlanFileReferenceReminder,
   buildPlanModeExitReminder,
   buildPlanModeReentryReminder,
-  buildSparsePlanModeReminder,
   shouldInjectPlanAttachment,
 } from './planModeAttachments.js'
 import type { PermissionGate } from './permissions.js'
@@ -54,7 +53,7 @@ export interface PlanModeState {
   needsExitAttachment: boolean
   /** Tool-use turns completed since this entry into plan mode. */
   toolUseTurnsSinceEntry: number
-  /** Total attachment injections. Used for FULL_REMINDER_EVERY_N rotation. */
+  /** Total attachment injections. Guards the one-shot entry attachment. */
   attachmentInjections: number
   /** Plan content captured on the most recent approve dispatch — embedded
    *  by buildPlanModeExitReminder. */
@@ -245,7 +244,7 @@ export class PlanModeManager {
       return buildPlanModeExitReminder(planContent)
     }
 
-    // For full/sparse/reentry: bump counter so rotation tracks correctly.
+    // For full/reentry: bump counter so the entry attachment stays one-shot.
     this.state.attachmentInjections += 1
 
     if (decision === 'reentry') {
@@ -253,9 +252,6 @@ export class PlanModeManager {
       const path = this.resolvePlanFilePathLazy()
       const planExists = existsSync(path)
       return buildPlanModeReentryReminder(path, planExists)
-    }
-    if (decision === 'sparse') {
-      return buildSparsePlanModeReminder(this.resolvePlanFilePathLazy())
     }
     // Default: full reminder. Always carries the plan file path.
     const path = this.resolvePlanFilePathLazy()

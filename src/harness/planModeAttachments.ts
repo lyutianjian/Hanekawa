@@ -6,9 +6,6 @@
 
 import { wrapInSystemReminder } from './systemReminder.js'
 
-export const TURNS_BETWEEN_ATTACHMENTS = 5
-export const FULL_REMINDER_EVERY_N_ATTACHMENTS = 5
-
 export interface AttachmentDecisionState {
   active: boolean
   hasExitedThisSession: boolean
@@ -17,8 +14,14 @@ export interface AttachmentDecisionState {
   attachmentInjections: number
 }
 
-export type PlanAttachmentKind = 'full' | 'sparse' | 'reentry' | 'exit'
+export type PlanAttachmentKind = 'full' | 'reentry' | 'exit'
 
+/**
+ * The plan-mode rule is in the dynamic system block on every turn
+ * (ContextBuilder.buildPlanModeSystemReminder), so it never leaves context.
+ * Attachments mark transitions only — entry, re-entry, exit — and are not
+ * re-injected on a turn cadence.
+ */
 export function shouldInjectPlanAttachment(state: AttachmentDecisionState): PlanAttachmentKind | undefined {
   if (state.needsExitAttachment) return 'exit'
   if (!state.active) return undefined
@@ -27,11 +30,7 @@ export function shouldInjectPlanAttachment(state: AttachmentDecisionState): Plan
     return state.hasExitedThisSession ? 'reentry' : 'full'
   }
 
-  if (state.toolUseTurnsSinceEntry === 0) return undefined
-  if (state.toolUseTurnsSinceEntry % TURNS_BETWEEN_ATTACHMENTS !== 0) return undefined
-  return state.attachmentInjections % FULL_REMINDER_EVERY_N_ATTACHMENTS === 0
-    ? 'full'
-    : 'sparse'
+  return undefined
 }
 
 const PLAN_PHASE4_CONTROL = `### Phase 4: Final Plan
@@ -82,13 +81,6 @@ export function buildFullPlanModeReminder(planFilePath: string, planExists: bool
     '',
     'NOTE: At any point in time through this workflow you should feel free to ask the user questions or clarifications using the AskUserQuestion tool. Don\'t make large assumptions about user intent. The goal is to present a well researched plan to the user, and tie any loose ends before implementation begins.',
   ].join('\n'))
-}
-
-export function buildSparsePlanModeReminder(planFilePath?: string): string {
-  const planPathSuffix = planFilePath ? ` (${planFilePath})` : ''
-  return wrapInSystemReminder(
-    `Plan mode still active (see full instructions earlier in conversation). Read-only except plan file${planPathSuffix}. Follow 5-phase workflow. End turns with AskUserQuestion (for clarifications) or ExitPlanMode (for plan approval). Never ask about plan approval via text or AskUserQuestion.`,
-  )
 }
 
 export function buildPlanModeReentryReminder(planFilePath: string, planExists: boolean = true): string {

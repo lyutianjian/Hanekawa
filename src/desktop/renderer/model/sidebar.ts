@@ -1,4 +1,6 @@
 import type { WireLaneInfo, WireSessionSummary } from '../../shellProtocol.js'
+import type { DesktopPlatform } from '../../types.js'
+import { desktopShortcut } from './desktopShortcuts.js'
 
 /**
  * The sidebar as data: every session this process can reach, grouped by
@@ -45,8 +47,15 @@ export const SIDEBAR_EMPTY_TEXT = '还没有会话。'
 export const SIDEBAR_EMPTY_RECENT_TEXT = '还没有无项目会话。'
 export const SIDEBAR_NO_MATCHES_TEXT = '没有匹配的会话。'
 
-export const SIDEBAR_HINT =
-  '[Ctrl+1-9] 切换  [Ctrl+T] 新会话  [Ctrl+W] 关闭  [Ctrl+B] 收起侧栏  [Ctrl+Shift+O] 打开项目'
+export function sidebarHint(platform: DesktopPlatform): string {
+  return [
+    `[${desktopShortcut(platform, 'switch-session')}] 切换`,
+    `[${desktopShortcut(platform, 'new-session')}] 新会话`,
+    `[${desktopShortcut(platform, 'close-session')}] 关闭`,
+    `[${desktopShortcut(platform, 'toggle-sidebar')}] 收起侧栏`,
+    `[${desktopShortcut(platform, 'open-project')}] 打开项目`,
+  ].join('  ')
+}
 
 // --- the view ----------------------------------------------------------------
 
@@ -219,7 +228,7 @@ export interface SidebarView {
    */
   readonly recentOnly: boolean
   /**
-   * Whether the `?` panel is showing {@link SIDEBAR_HINT}.
+   * Whether the `?` panel is showing {@link sidebarHint}.
    *
    * The chord list used to be printed under the footer at all times, which put a
    * two-line wall of 10px text where the reference builds have a user row and a

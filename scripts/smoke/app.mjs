@@ -32,6 +32,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createWriteStream, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
+import { killTestProcess, onTestExit } from '../test-environment.mjs'
 import { SHELL_LANE, TAP_SOURCE } from './tap.mjs'
 import { clearViewport, connect, evaluate, findPageTarget, setViewport, sleep, waitFor } from './cdp.mjs'
 
@@ -86,22 +87,7 @@ export function isAlive(pid) {
  * only and orphans the GPU and renderer children, which then hold the
  * single-instance lock against the next run.
  */
-export function killTree(pid) {
-  if (!Number.isInteger(pid)) return
-  if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', shell: false })
-    return
-  }
-  try {
-    process.kill(-pid, 'SIGKILL')
-  } catch {
-    try {
-      process.kill(pid, 'SIGKILL')
-    } catch {
-      // Already gone.
-    }
-  }
-}
+export const killTree = killTestProcess
 
 /** Registered so every exit path kills the child, including a driver crash. */
 const liveApps = new Set()
@@ -123,23 +109,7 @@ function installCleanup() {
     }
     liveApps.clear()
   }
-  process.on('exit', cleanup)
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(signal, () => {
-      cleanup()
-      process.exit(130)
-    })
-  }
-  process.on('uncaughtException', (error) => {
-    cleanup()
-    console.error(error)
-    process.exit(2)
-  })
-  process.on('unhandledRejection', (error) => {
-    cleanup()
-    console.error(error)
-    process.exit(2)
-  })
+  onTestExit(cleanup)
 }
 
 /**
@@ -149,17 +119,23 @@ function installCleanup() {
  * this run's leftover and is allowed to kill it — as opposed to killing whatever
  * Electron app the developer happens to have open.
  */
-export function launch({ repoRoot, cwd, port, out, tag, pidFile, switches = [] }) {
+export function launch({ repoRoot, cwd, port, out, tag, pidFile, environment, switches = [] }) {
   installCleanup()
   const log = createWriteStream(join(out, `electron-${tag}.log`), { flags: 'a' })
   const child = spawn(
     electronBinary(),
-    [repoRoot, `--remote-debugging-port=${port}`, `--cwd=${cwd}`, ...switches],
-    { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], shell: false },
+    [join(repoRoot, 'scripts', 'smoke', 'electron.mjs'),
+      `--smoke-profile=${join(environment.root, 'profile')}`,
+      `--remote-debugging-port=${port}`, `--cwd=${cwd}`, ...switches],
+    { cwd: repoRoot, env: environment.env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], shell: false },
   )
   // An undrained pipe stalls the child once the OS buffer fills.
-  child.stdout.pipe(log)
-  child.stderr.pipe(log)
+  child.stdout.pipe(log, { end: false })
+  child.stderr.pipe(log, { end: false })
+  const closed = new Promise((resolve) => {
+    log.once('close', resolve)
+    child.once('close', () => log.end())
+  })
 
   const app = {
     child,
@@ -170,6 +146,7 @@ export function launch({ repoRoot, cwd, port, out, tag, pidFile, switches = [] }
     pidFile,
     cwd,
     log,
+    closed,
     cdp: undefined,
     /** Renderer exceptions. A non-empty list fails the run regardless of steps. */
     exceptions: [],
@@ -177,7 +154,6 @@ export function launch({ repoRoot, cwd, port, out, tag, pidFile, switches = [] }
     exited: undefined,
     nextId: 0,
   }
-  writeFileSync(pidFile, String(child.pid), 'utf8')
   liveApps.add(app)
   child.on('exit', (code, signal) => {
     app.exited = { code, signal }
@@ -188,6 +164,7 @@ export function launch({ repoRoot, cwd, port, out, tag, pidFile, switches = [] }
       // Fine — the next run's preflight tolerates a stale pidfile.
     }
   })
+  writeFileSync(pidFile, String(child.pid), 'utf8')
   return app
 }
 
@@ -336,16 +313,22 @@ export async function liveness(app, { timeout = 3000 } = {}) {
  * "we had to kill it" is reported rather than hidden.
  */
 export async function quitGracefully(app, { timeout = 12000 } = {}) {
-  if (app.exited) return 'already-exited'
+  if (app.exited) {
+    await app.closed
+    return 'already-exited'
+  }
   app.closing = true
-  const exit = new Promise((resolve) => {
-    if (app.exited) return resolve('graceful')
-    app.child.once('exit', () => resolve('graceful'))
-  })
+  // The process exit alone is too early on Windows: wait for the log handle too.
+  const exit = app.closed.then(() => 'graceful')
   try {
-    // Not awaited: closing the page tears down the transport this reply would
-    // have travelled on.
-    void app.cdp?.send('Page.close').catch(() => {})
+    if (process.platform === 'darwin') {
+      // The smoke entry point translates this into app.quit(). Page.close only
+      // closes a window on macOS and cannot exercise application teardown.
+      app.child.kill('SIGTERM')
+    } else {
+      // Not awaited: closing the page tears down the reply transport.
+      void app.cdp?.send('Page.close').catch(() => {})
+    }
   } catch {
     // Already detached; fall through to the timeout and the kill.
   }
@@ -372,7 +355,7 @@ export async function ensureStopped(app, { timeout = 8000 } = {}) {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline && isAlive(app.pid)) await sleep(200)
   return isAlive(app.pid)
-    ? `pid ${app.pid} is STILL alive after the kill — the scratch directory may not delete`
+    ? `ERROR pid ${app.pid} is STILL alive after the kill — the scratch directory may not delete`
     : `killed pid ${app.pid} before cleaning up`
 }
 
@@ -390,23 +373,14 @@ export function preflightProcesses({ port, pidFile, killStale }) {
   if (existsSync(pidFile)) {
     const pid = Number(readFileSync(pidFile, 'utf8').trim())
     if (isAlive(pid)) {
+      if (!killStale) throw new Error(`a previous smoke app is still running (pid ${pid}); use --kill-stale with the same --out directory`)
       // Ours by construction: only this driver writes that file.
       killTree(pid)
       notes.push(`killed a leftover app from a previous run (pid ${pid})`)
     }
     rmSync(pidFile, { force: true })
   }
-  const pids = electronPids()
-  if (pids.length > 0) {
-    if (!killStale) {
-      throw new Error(
-        `electron.exe is already running (pids ${pids.join(', ')}). ` +
-          'The single-instance lock would make this run measure that process instead. ' +
-          'Close it, or re-run with --kill-stale.',
-      )
-    }
-    for (const pid of pids) killTree(pid)
-    notes.push(`--kill-stale killed pids ${pids.join(', ')}`)
-  }
+  // The disposable profile has its own lock. Other Electron apps are a baseline,
+  // never candidates for --kill-stale; only this driver's pidfile authorizes it.
   return { baseline: electronPids(), notes, port }
 }

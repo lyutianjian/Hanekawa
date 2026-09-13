@@ -6,6 +6,7 @@ import { migrateProjectConfig } from '../config/migrateProjectConfig.js'
 import {
   loadMergedSettings,
   validateSettings,
+  type MyAgentSettings,
 } from '../config/settings.js'
 import { clampEffort } from '../config/effort.js'
 import { permissionRulesFromSettings } from '../harness/permissions.js'
@@ -36,6 +37,15 @@ function mergeAgentDefinitions<T extends { type: string }>(base: readonly T[], o
   for (const definition of base) merged.set(definition.type, definition)
   for (const definition of overrides) merged.set(definition.type, definition)
   return [...merged.values()]
+}
+
+/**
+ * Models are validated after ConfigService merges them, when a loop is built.
+ * Legacy settings declarations must not prevent opening the editor that can
+ * override them in global config.json. Other settings still fail validation.
+ */
+function validateShellSettings(settings: MyAgentSettings) {
+  return validateSettings({ ...settings, models: undefined })
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -81,8 +91,8 @@ function createAttachmentFactsResolver(service: ImageAttachmentService, cwd: str
  * React dependency: settings, config, tools, skills, agent definitions, MCP
  * servers, the permission gate, and the runtime factory.
  *
- * Configuration problems throw {@link RuntimeStartupError} instead of exiting,
- * so the host decides how to report them. MCP failures never throw — they are
+ * Invalid settings throw {@link RuntimeStartupError}. Missing model/provider
+ * configuration leaves the shell available for setup. MCP failures are
  * reported in `mcp.failed`.
  */
 export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost> {
@@ -117,7 +127,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   const migrationFindings = await migrateProjectConfig(cwd)
   const config = new ConfigService(cwd)
   await config.load(settings)
-  const settingsValidation = validateSettings(settings)
+  const settingsValidation = validateShellSettings(settings)
   if (!settingsValidation.valid) {
     throw new RuntimeStartupError(
       'invalid_settings',
@@ -137,19 +147,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     config.resolveModelKeyFor({ kind: 'main' }, { currentModelKey: config.get().defaultModel })
 
   const startupModelKey = resolveDefaultModelKey()
-  if (!startupModelKey) {
-    // `resolveModelKeyFor` returns undefined both when nothing is configured and
-    // when what *is* configured names a model that does not exist. Saying "none
-    // configured" for a typo sent people looking in the wrong place.
-    const configured = configuredModelName(config.get().defaultModel)
-    throw new RuntimeStartupError(
-      'no_default_model',
-      configured
-        ? `Default model could not be resolved: ${configured}. Check "models" in your config.`
-        : 'No default model configured.',
-    )
-  }
-  const modelConfig = config.getModel(startupModelKey)!
+  const modelConfig = startupModelKey ? config.getModel(startupModelKey) : undefined
   const modelDiagnostics = [
     ...migrationFindings.map((message) => ({
       code: 'project_config_migrated',
@@ -159,7 +157,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     ...checkLegacyModelTiers(config),
     ...checkOptionalModelReferences(config),
   ]
-  const clampedInitialEffort = clampEffort(configuredEffortLevel, modelConfig.supportedEfforts)
+  const clampedInitialEffort = clampEffort(configuredEffortLevel, modelConfig?.supportedEfforts)
 
   const toolRegistry = new ToolRegistry(await getAllTools(backgroundTasks))
   // Constructed fresh on every read: the service caches, and a reload exists
@@ -207,7 +205,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
    */
   const reloadSettings = async (): Promise<{ needsRuntimeRebuild: boolean }> => {
     const next = await loadMergedSettings(cwd)
-    const validation = validateSettings(next)
+    const validation = validateShellSettings(next)
     if (!validation.valid) {
       throw new RuntimeStartupError(
         'invalid_settings',
@@ -216,8 +214,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     }
 
     const hooksChanged = JSON.stringify(next.hooks) !== JSON.stringify(settings.hooks)
+    const previousConfig = JSON.stringify(config.get())
     settings = next
     await config.load(settings)
+    const configChanged = previousConfig !== JSON.stringify(config.get())
 
     clearProjectContextCache(cwd)
     const nextProjectContext = await getProjectContext(cwd)
@@ -226,7 +226,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
 
     const rules = permissionRulesFromSettings(settings.permissions)
     for (const scope of scopes) scope.permissionGate.setConfigRules(rules)
-    return { needsRuntimeRebuild: hooksChanged || projectContextChanged }
+    return { needsRuntimeRebuild: hooksChanged || projectContextChanged || configChanged }
   }
 
   // Fail-open: a server that fails to connect is reported but does not block
@@ -339,11 +339,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
     commands,
     mcp: mcpStatus,
     // A getter, so a `set-default-model` that has already been saved into the
-    // live `ConfigService` reaches the next session without a restart. The
-    // startup key is the floor: an edit that leaves nothing resolvable keeps
-    // the project on the model it booted with instead of failing to open a tab.
-    get initialModelKey(): string {
-      return resolveDefaultModelKey() ?? startupModelKey
+    // live `ConfigService` reaches the next session without a restart. Removing
+    // the last model returns new panes to setup instead of reusing a stale key.
+    get initialModelKey(): string | undefined {
+      return resolveDefaultModelKey()
     },
     initialEffort: typeof clampedInitialEffort === 'string' ? clampedInitialEffort : undefined,
     configuredEffortLevel,

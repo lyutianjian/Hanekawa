@@ -21,11 +21,13 @@ npm run smoke:desktop
 Focused tests:
 
 ```bash
-node --import tsx --test test/<file>.test.ts
-node --import tsx --test --test-name-pattern "pattern" test/<file>.test.ts
+npm test -- test/<file>.test.ts
+npm test -- --test-name-pattern="pattern" test/<file>.test.ts
 ```
 
 Tests use `node:test`/`node:assert`; there is no lint script. TypeScript configs are intentionally split across base, build, preload, renderer, and DOM tests—keep their `rootDir`/`exclude` boundaries intact.
+
+Use `npm test` for focused runs too: `scripts/test.mjs` gives child processes a disposable home/temp root and removes it on success, failure or interruption. Test fixtures must use scratch project paths for writes, never the repository's `process.cwd()`.
 
 ## Architecture
 
@@ -86,7 +88,7 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 - Settings changes follow `mutate -> save if config changed -> reload -> after-reload action -> optional refresh/rebuild`, with unique change kinds, optimistic pending state, and one wire scope per category (except renderer-local `appearance`).
 - Window views derive identity from `WireLaneInfo`. Context occupancy uses `AgentLoop.getContextBudget().usableContextWindow`, not the raw model window. `open-in-editor` resolves the real `entry.cwd`.
 - Context occupancy is `usage.lastRequest` (input + cache read), pushed per provider response through `RecordProxy.onRequestUsage` and seeded from the metrics sidecar (`SessionStore.loadLastRequestUsage`) for a session this process never ran. A mid-turn report moves `lastRequest` only — the totals stay on the end-of-run accounting, or every request is counted twice. The record-only estimate in `currentContextUsed` counts neither the system prompt nor the tool schemas; it is the last resort, not a source.
-- `scripts/smoke-desktop.mjs` exercises real Electron behavior with scratch projects, and restores renderer preferences, `~/.myagent/config.json` and `~/.myagent/projects.json` in a teardown that never throws.
+- `scripts/smoke-desktop.mjs` exercises real Electron behavior with scratch projects, a disposable home and a private profile. Teardown stops children before removing these and reports every cleanup failure. Real global config/settings/projects stay untouched; reports are retained only with explicit `--out` or `--keep`.
 
 ## Renderer invariants
 
@@ -108,3 +110,7 @@ Run the narrowest relevant tests first; run `npm run typecheck` and the full sui
 - Keep `ink+7.0.6.patch` and `wrap-ansi+10.0.0.patch` paired.
 - Keep `AGENTS.md` and `CLAUDE.md` synchronized except for the title and first guidance sentence.
 - `todo.md` tracks desktop-port work.
+
+## Instructions
+
+For simple or low-risk tasks, reduce writing unnecessary tests and avoid overly defensive programming.

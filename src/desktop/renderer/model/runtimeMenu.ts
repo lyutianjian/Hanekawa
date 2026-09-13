@@ -79,9 +79,10 @@ export function runtimeMenuView(input: {
 }): RuntimeMenuView {
   const chip = composerChipView(input.runtime)
   const models = input.models ? modelPickerView(input.models) : undefined
+  const runtime = input.runtime?.status === 'ready' ? input.runtime : undefined
   const effort = effortPickerView({
     current: input.runtime?.effort ?? '',
-    ...(input.runtime?.supportedEfforts ? { supportedEfforts: input.runtime.supportedEfforts } : {}),
+    ...(runtime?.supportedEfforts ? { supportedEfforts: runtime.supportedEfforts } : {}),
   })
 
   return {

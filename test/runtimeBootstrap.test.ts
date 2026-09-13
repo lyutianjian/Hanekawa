@@ -1,7 +1,7 @@
 import test, { beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync } from 'node:fs'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { z } from 'zod/v3'
@@ -10,6 +10,8 @@ import { SessionStore } from '../src/sessions/service.js'
 import type { SessionMeta } from '../src/sessions/service.js'
 import type { SessionRecord, Tool } from '../src/harness/types.js'
 import type { McpServerConfig } from '../src/services/mcp/index.js'
+import { createSessionPane } from '../src/runtime/sessionWorkspace.js'
+import { refreshRuntimeSlot } from '../src/runtime/providerRuntime.js'
 
 // `config.json` lives in `~/.myagent` alone and `loadMergedSettings` layers a
 // shared `~/.myagent` beneath the project one, so every test needs its own home.
@@ -17,6 +19,9 @@ beforeEach(() => {
   const testHome = mkdtempSync(path.join(tmpdir(), 'myagent-home-'))
   process.env.USERPROFILE = testHome
   process.env.HOME = testHome
+  delete process.env.OPENAI_API_KEY
+  delete process.env.ANTHROPIC_API_KEY
+  delete process.env.ANTHROPIC_AUTH_TOKEN
 })
 
 const MODEL_CONFIG = {
@@ -25,7 +30,7 @@ const MODEL_CONFIG = {
 }
 
 async function createProject(options: {
-  config?: Record<string, unknown>
+  config?: Record<string, unknown> | null
   settings?: Record<string, unknown>
 } = {}): Promise<{ cwd: string; store: SessionStore; session: SessionMeta }> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-bootstrap-'))
@@ -34,11 +39,13 @@ async function createProject(options: {
   // layer, and writing one here would exercise the migration instead.
   const home = process.env.USERPROFILE!
   await mkdir(path.join(home, '.myagent'), { recursive: true })
-  await writeFile(
-    path.join(home, '.myagent', 'config.json'),
-    JSON.stringify(options.config ?? MODEL_CONFIG),
-    'utf8',
-  )
+  if (options.config !== null) {
+    await writeFile(
+      path.join(home, '.myagent', 'config.json'),
+      JSON.stringify(options.config ?? MODEL_CONFIG),
+      'utf8',
+    )
+  }
   if (options.settings) {
     await writeFile(
       path.join(cwd, '.myagent', 'settings.json'),
@@ -67,17 +74,92 @@ test('invalid settings surface as a startup error instead of exiting', async () 
   )
 })
 
-test('a project without a usable default model fails to bootstrap', async () => {
-  const { cwd, store, session } = await createProject({ config: { models: {} } })
+const INCOMPLETE_CONFIGS: Array<[string, Record<string, unknown> | null]> = [
+  ['no config file', null],
+  ['empty config', {}],
+  ['no models', { models: {} }],
+  ['endpoint only', { endpoints: { main: { provider: 'anthropic' } } }],
+  ['missing endpoint', { models: { main: { model: 'm', endpoint: 'gone' } }, defaultModel: 'main' }],
+  ['missing provider', { models: { main: { model: 'm' } }, defaultModel: 'main' }],
+  ['unsupported provider', { models: { main: { model: 'm', provider: 'unknown' } }, defaultModel: 'main' }],
+  ['missing model ID', { models: { main: { model: '', provider: 'anthropic' } }, defaultModel: 'main' }],
+  ['missing SDK credentials', { models: { main: { model: 'm', provider: 'openai' } }, defaultModel: 'main' }],
+]
 
-  await assert.rejects(
-    () => bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust }),
-    (error: unknown) => {
-      assert.ok(error instanceof RuntimeStartupError)
-      assert.equal(error.code, 'no_default_model')
-      return true
-    },
-  )
+for (const [label, config] of INCOMPLETE_CONFIGS) {
+  test(`bootstrap keeps a usable shell with ${label}`, async () => {
+    const { cwd, store, session } = await createProject({ config })
+    const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+    const pane = createSessionPane(host, host)
+    try {
+      assert.equal(pane.runtimeSlot.getSnapshot().status, 'needs_configuration')
+      assert.equal(pane.runtimeSlot.current, undefined)
+      assert.ok(host.commands.get('provider'))
+      const events: string[] = []
+      pane.controller.onEvent((event) => events.push(event.type))
+      await assert.rejects(() => pane.controller.submit({ text: 'keep this draft' }), /\/provider/)
+      assert.equal(pane.controller.getSnapshot().isStreaming, false)
+      assert.deepEqual(events, [], 'a rejected input must not start a turn')
+      assert.deepEqual(await store.loadRecords(session.id), [])
+      if (config === null) assert.equal(existsSync(host.config.getSaveTarget()), false)
+    } finally {
+      await pane.close()
+      await host.shutdown('test over')
+    }
+  })
+}
+
+test('setup can save an endpoint first, activate its first model, and recover after deleting it', async () => {
+  const { cwd, store, session } = await createProject({ config: null })
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+  const pane = createSessionPane(host, host)
+  const refresh = async () => {
+    await host.config.save()
+    await host.reloadSettings()
+    refreshRuntimeSlot({ config: host.config, runtimeSlot: pane.runtimeSlot, createRuntime: host.createRuntime, modelKey: host.initialModelKey, session })
+  }
+  try {
+    host.config.setEndpoint('first', { provider: 'anthropic', apiKey: 'test-key' })
+    await refresh()
+    assert.equal(pane.runtimeSlot.current, undefined)
+
+    host.config.setModelConfig('first-model', { endpoint: 'first', model: 'test-model' })
+    await refresh()
+    assert.equal(host.config.get().defaultModel, 'first-model')
+    assert.equal(pane.runtimeSlot.requireCurrent().modelKey, 'first-model')
+
+    host.config.removeEndpoint('first')
+    await refresh()
+    assert.equal(pane.runtimeSlot.getSnapshot().status, 'needs_configuration')
+    assert.equal(host.initialModelKey, undefined)
+
+    host.config.setModelConfig('replacement', { provider: 'anthropic', apiKey: 'test-key', model: 'replacement' })
+    await refresh()
+    assert.equal(pane.runtimeSlot.requireCurrent().modelKey, 'replacement')
+  } finally {
+    await pane.close()
+    await host.shutdown('test over')
+  }
+})
+
+test('an incomplete model in legacy settings can be corrected through global config without restarting', async () => {
+  const { cwd, store, session } = await createProject({
+    config: null,
+    settings: { models: { legacy: { model: 'old-model' } }, defaultModel: 'legacy' },
+  })
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+  const pane = createSessionPane(host, host)
+  try {
+    assert.equal(pane.runtimeSlot.getSnapshot().status, 'needs_configuration')
+    host.config.setModelConfig('legacy', { provider: 'anthropic', model: 'fixed-model', apiKey: 'test-key' })
+    await host.config.save()
+    await host.reloadSettings()
+    refreshRuntimeSlot({ config: host.config, runtimeSlot: pane.runtimeSlot, createRuntime: host.createRuntime, modelKey: host.initialModelKey, session })
+    assert.equal(pane.runtimeSlot.requireCurrent().modelConfig.model, 'fixed-model')
+  } finally {
+    pane.close()
+    await host.shutdown('test over')
+  }
 })
 
 test('bootstrap assembles a runtime bound to the configured model', async () => {
@@ -116,11 +198,10 @@ test('initialModelKey follows a default model changed after startup', async () =
   host.config.setDefaultModel('other')
   assert.equal(host.initialModelKey, 'other')
 
-  // A config left with no resolvable default keeps the startup key rather than
-  // handing a new pane an empty model name.
+  // A new pane can enter setup when the previously selected model is gone.
   host.config.removeModel('other')
   host.config.removeModel('main')
-  assert.equal(host.initialModelKey, 'main')
+  assert.equal(host.initialModelKey, undefined)
 
   await host.shutdown('test over')
 })
@@ -208,6 +289,7 @@ test('an MCP server the host refuses to trust is reported without blocking start
   assert.deepEqual(host.mcp.failed, [{ name: 'untrusted', error: 'not trusted' }])
 
   // Fail-open: the runtime is still usable.
+  assert.ok(host.initialModelKey)
   const runtime = host.createRuntime(host.initialModelKey, session)
   runtime.dispose()
   await host.shutdown('test over')
@@ -230,12 +312,14 @@ test('denial counters follow the session the newest runtime was built for', asyn
   }
   const denied = { command: 'curl https://example.com' }
 
+  assert.ok(host.initialModelKey)
   const first = host.createRuntime(host.initialModelKey, session)
   assert.equal(await host.permissionGate.approve(bashTool, denied), false)
   assert.deepEqual(await store.getDenialState(session.id), { streaks: { Bash: 1 }, total: 1 })
 
   // `/clear` and `/resume` build a runtime for a different session.
   const next = await store.create('cleared session')
+  assert.ok(host.initialModelKey)
   const second = host.createRuntime(host.initialModelKey, next)
   first.dispose()
 
@@ -305,21 +389,18 @@ test('an unresolvable defaultModel says so, rather than "none configured"', asyn
     config: { models: { main: { provider: 'anthropic', model: 'm', apiKey: 'k' } }, defaultModel: 'nope' },
   })
 
-  await assert.rejects(
-    () => bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust }),
-    (error: unknown) => {
-      assert.ok(error instanceof RuntimeStartupError)
-      assert.equal(error.code, 'no_default_model')
-      assert.match(error.message, /could not be resolved: nope/)
-      return true
-    },
-  )
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+  const pane = createSessionPane(host, host)
+  assert.match(pane.runtimeSlot.getSnapshot().configurationIssue?.message ?? '', /could not be resolved: nope/)
+  await pane.close()
+  await host.shutdown('test over')
 })
 
 test('skills added after startup are picked up by a reload', async () => {
   const { cwd, store, session } = await createProject()
   const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
 
+  assert.ok(host.initialModelKey)
   const before = host.createRuntime(host.initialModelKey, session)
   before.dispose()
 

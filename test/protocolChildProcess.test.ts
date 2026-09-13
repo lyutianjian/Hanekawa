@@ -251,6 +251,7 @@ test('the runtime snapshot crosses without the model apiKey', async (t) => {
   await child.client.hello()
   const runtime = await waitFor(() => child.client.getRuntimeSnapshot(), 'a runtime snapshot')
 
+  assert.equal(runtime.status, 'ready')
   assert.equal(runtime.modelKey, 'main')
   assert.equal(runtime.model, 'test-model')
   assert.equal(JSON.stringify(runtime).includes('SECRET'), false)

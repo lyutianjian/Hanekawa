@@ -1,12 +1,12 @@
 import test, { before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { build } from 'esbuild'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setImmediate as tick } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { promisify } from 'node:util'
+import type { DesktopPlatform } from '../src/desktop/types.js'
 import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
 
 /**
@@ -40,9 +40,7 @@ import { installDomStub, type DomStub, type StubView } from './helpers/domStub.j
  * touching the stub belongs to the fourth program (`tsconfig.domtest.json`).
  */
 
-const run = promisify(execFile)
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
-const esbuildEntry = join(repoRoot, 'node_modules', 'esbuild', 'bin', 'esbuild')
 const buildRoot = mkdtempSync(join(tmpdir(), 'hanekawa-renderer-boot-'))
 const bundle = join(buildRoot, 'app.js')
 
@@ -50,21 +48,19 @@ before(async () => {
   writeFileSync(join(buildRoot, 'package.json'), JSON.stringify({ type: 'module' }))
   // The same invocation `package.json`'s `build:desktop` ships, so what boots
   // here is what boots in Electron rather than a tsx-transpiled approximation.
-  await run(
-    process.execPath,
-    [
-      esbuildEntry,
-      'src/desktop/renderer/app.ts',
-      '--bundle',
-      '--platform=neutral',
-      '--format=esm',
-      '--target=chrome120',
-      '--main-fields=',
-      '--alias:node:crypto=./src/desktop/renderer/runtime/nodeCryptoShim.ts',
-      `--outfile=${bundle}`,
-    ],
-    { cwd: repoRoot, maxBuffer: 32 * 1024 * 1024 },
-  )
+  // The installed bin/esbuild may be a native executable on macOS/Linux.
+  // The JS API selects the correct executable without treating it as JS.
+  await build({
+    absWorkingDir: repoRoot,
+    entryPoints: ['src/desktop/renderer/app.ts'],
+    bundle: true,
+    platform: 'neutral',
+    format: 'esm',
+    target: 'chrome120',
+    mainFields: [],
+    alias: { 'node:crypto': './src/desktop/renderer/runtime/nodeCryptoShim.ts' },
+    outfile: bundle,
+  })
 })
 
 after(() => {
@@ -112,11 +108,12 @@ interface FakeHost {
  * and an unanswered promise keeps nothing alive, so silence here is both honest
  * and inert.
  */
-function fakeHost(): FakeHost {
+function fakeHost(platform: DesktopPlatform = 'win32'): FakeHost {
   const shellCommands: Array<{ type: string }> = []
   let deliver: ((message: unknown) => void) | undefined
 
   const bridge = {
+    platform,
     send(message: unknown): void {
       const frame = message as { kind?: string; lane?: string; body?: { type?: string; id?: string } }
       if (frame.kind !== 'data' || frame.lane !== '__shell' || !frame.body) return
@@ -141,6 +138,8 @@ function fakeHost(): FakeHost {
 
   const fakeWindow = {
     hanekawa: bridge,
+    navigator: {},
+    innerWidth: 1080,
     // No preference either way: `resolveTheme` then decides from the stored
     // preference, which is `null` here, i.e. "follow system".
     matchMedia: window.matchMedia.bind(window),
@@ -211,6 +210,30 @@ test('the shipped renderer boots and paints its window chrome', async (t) => {
   assert.equal(root.dataset.windowHidden, 'true')
   dom.setHidden(false)
   assert.equal(root.dataset.windowHidden, 'false')
+})
+
+test('the macOS renderer starts with traffic-light space and Command tooltips', async (t) => {
+  const dom = installDomStub()
+  const host = fakeHost('darwin')
+  host.install()
+  const page = mountPage(dom)
+  t.after(() => {
+    host.uninstall()
+    dom.uninstall()
+  })
+  await import(`${pathToFileURL(bundle).href}?boot-mac`)
+  await tick()
+
+  const root = dom.documentElement() as HTMLElement
+  const properties = (root.style as unknown as { properties: Map<string, string> }).properties
+  assert.equal(root.dataset.platform, 'darwin')
+  assert.equal(properties.get('--titlebar-inset-left'), '80px')
+  assert.equal(properties.get('--titlebar-inset-right'), '0px')
+  const rail = findByClass(dom.inspect(page.get('titlebar')), 'titlebar-rail')
+  assert.equal((rail?.node as HTMLElement).title, '收起侧栏（⌘B）')
+  const settings = findByClass(dom.inspect(page.get('sidebar')), 'sidebar-settings')
+  assert.equal((settings?.node as HTMLElement).title, '打开设置（⌘,）')
+  assert.equal(dom.inspect(dom.body()).text, '', 'startup reported an error')
 })
 
 /** The first descendant carrying `className`, depth-first, or `undefined`. */

@@ -1,8 +1,8 @@
 import { createProvider, resolveImageCapability } from '../config/providers.js'
-import type { ConfigService, ThinkingConfig } from '../config/service.js'
+import type { ConfigService, ModelConfig, ThinkingConfig } from '../config/service.js'
 import type { EffortLevel, EffortValue } from '../config/effort.js'
 import type { RoutingRole } from '../config/routing.js'
-import type { MyAgentSettings } from '../config/settings.js'
+import { validateSettings, type MyAgentSettings } from '../config/settings.js'
 import { AgentLoop, type ActiveModelRuntime } from '../harness/loop.js'
 import { ContextBuilder } from '../harness/contextBuilder.js'
 import { PlanModeManager } from '../harness/planModeManager.js'
@@ -25,6 +25,26 @@ import { RuntimeStartupError } from './errors.js'
 import type { ToolRegistry } from './toolRegistry.js'
 import type { AgentSession } from './types.js'
 
+function createModelProvider(modelKey: string, modelConfig: ModelConfig) {
+  const validation = validateSettings({ models: { [modelKey]: modelConfig } })
+  if (!validation.valid) throw new RuntimeStartupError('unknown_model', validation.errors.join('\n'))
+  let provider
+  try {
+    provider = createProvider(modelConfig)
+  } catch (error) {
+    // SDKs can reject local configuration (for example a missing API key)
+    // during construction, before the user has had a chance to open settings.
+    throw new RuntimeStartupError(
+      'provider_creation_failed',
+      `Could not initialize provider "${modelConfig.provider}": ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+  if (!provider) {
+    throw new RuntimeStartupError('provider_creation_failed', `Unsupported or missing provider: ${modelConfig.provider ?? '(none)'}`)
+  }
+  return provider
+}
+
 /**
  * Resolves a model key into the provider/model pair the loop runs on.
  * Re-reads `config` on every call, so `/provider` edits take effect without
@@ -38,13 +58,7 @@ export function createActiveModelRuntimeFactory(
     if (!targetModelConfig) {
       throw new RuntimeStartupError('unknown_model', `Unknown model: ${modelKey}`)
     }
-    const targetProvider = createProvider(targetModelConfig)
-    if (!targetProvider) {
-      throw new RuntimeStartupError(
-        'provider_creation_failed',
-        `Failed to create provider for: ${targetModelConfig.provider}`,
-      )
-    }
+    const targetProvider = createModelProvider(modelKey, targetModelConfig)
     return {
       provider: targetProvider,
       model: targetModelConfig.model,
@@ -168,13 +182,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       throw new RuntimeStartupError('unknown_model', `Unknown model: ${modelKey}`)
     }
 
-    const targetProvider = createProvider(targetModelConfig)
-    if (!targetProvider) {
-      throw new RuntimeStartupError(
-        'provider_creation_failed',
-        `Failed to create provider for: ${targetModelConfig.provider}`,
-      )
-    }
+    const targetProvider = createModelProvider(modelKey, targetModelConfig)
 
     // Past the last throwing validation, so a rejected model key never
     // retargets session-scoped state.

@@ -124,13 +124,12 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     getRecords: deps.getRecords,
   })
 
-  const currentModel = (): CommandModelInfo => ({
-    key: runtimeSlot.current.modelKey,
-    model: runtimeSlot.current.modelConfig.model,
-    providerName: runtimeSlot.current.providerName,
-  })
+  const currentModel = (): CommandModelInfo | undefined => {
+    const current = runtimeSlot.current
+    return current ? { key: current.modelKey, model: current.modelConfig.model, providerName: current.providerName } : undefined
+  }
 
-  const planFileDeps = { getPlanModeManager: () => runtimeSlot.current.planModeManager }
+  const planFileDeps = { getPlanModeManager: () => runtimeSlot.requireCurrent().planModeManager }
 
   return {
     cwd: project.cwd,
@@ -148,8 +147,8 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     openRewindPanel: () => deps.emit({ kind: 'open-surface', surface: 'rewind-panel' }),
 
     clearMessages: () => deps.startNewSession(),
-    clearCachedSections: () => runtimeSlot.current.loop.clearCachedSections(),
-    invalidateRecordsCache: () => runtimeSlot.current.loop.invalidateRecordsCache(),
+    clearCachedSections: () => runtimeSlot.current?.loop.clearCachedSections(),
+    invalidateRecordsCache: () => runtimeSlot.current?.loop.invalidateRecordsCache(),
 
     repairRecords: async () => project.store.repairRecords(deps.getSession().id),
     resetCompactFailureCount: async () => {
@@ -164,7 +163,7 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     // readout cannot print different numbers for the same turn.
     getUsage: (): CommandUsage => resolveUsageWithCost(
       controller.getSnapshot().usage.total,
-      runtimeSlot.current.modelConfig.pricing,
+      runtimeSlot.current?.modelConfig.pricing,
     ),
 
     getModel: currentModel,
@@ -173,13 +172,15 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     setModel: (input): SetModelResult => switchModel(modelSwitchDeps(), input),
     getEffort: () => runtimeSlot.getEffort(),
     setEffort: (level) => { runtimeSlot.setEffort(level) },
-    getThinking: () => runtimeSlot.current.loop.getThinking()?.type !== 'disabled',
+    getThinking: () => runtimeSlot.current
+      ? runtimeSlot.current.loop.getThinking()?.type !== 'disabled'
+      : project.getSettings().thinking !== false,
     // Written to the local settings layer *and* reloaded, so the next runtime
     // this project builds agrees with the loop this just changed.
     setThinking: async (enabled) => {
       await setLocalThinking(project.cwd, enabled)
       await project.reloadSettings()
-      runtimeSlot.current.loop.setThinking(enabled ? { type: 'adaptive' } : { type: 'disabled' })
+      runtimeSlot.current?.loop.setThinking(enabled ? { type: 'adaptive' } : { type: 'disabled' })
     },
 
     reloadAgentDefinitions: () => project.reloadAgentDefinitions(),
@@ -189,7 +190,7 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
     // No snapshot push needed: `PermissionGate.setMode` notifies its own
     // listeners, and the host is subscribed to them.
     enterPlanMode: () => {
-      applyPermissionModeTransition(scope.permissionGate, runtimeSlot.current.planModeManager, 'plan')
+      applyPermissionModeTransition(scope.permissionGate, runtimeSlot.current?.planModeManager, 'plan')
     },
     readPlanFile: () => readCurrentPlanFile(planFileDeps),
     openPlanFile: () => openPlanFileInEditor(planFileDeps),
@@ -204,7 +205,7 @@ export function createHostCommandContext(deps: HostCommandContextDeps): CommandC
       }, options))
     },
     runShellCommand: async (command) => {
-      const result = await runtimeSlot.current.loop.runTool({
+      const result = await runtimeSlot.requireCurrent().loop.runTool({
         id: randomUUID(),
         name: 'Bash',
         input: { command },

@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
-import { Box, Static, snapshotInkFrameForStdout, useStdout } from '../ink.js'
+import { Box, Static, Text, snapshotInkFrameForStdout, useStdout } from '../ink.js'
+import { theme } from '../theme.js'
 import type { InkFrameSnapshot } from '../ink.js'
 import type { ActiveModelRuntime } from '../../harness/loop.js'
 import type { SessionStore, SessionMeta } from '../../sessions/service.js'
@@ -70,6 +71,7 @@ import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/budget.js'
 import { shouldRenderStatusLine } from '../statusLineVisibility.js'
 import { createQueueImageRebinder } from '../../runtime/attachmentHandoff.js'
 import { MessageQueue } from '../../runtime/messageQueue.js'
+import { MODEL_CONFIGURATION_REQUIRED } from '../../runtime/errors.js'
 import type { UserInput } from '../../media/types.js'
 import { describeImageBlockError, formatImageFailure } from '../../media/imageErrors.js'
 import type { BackgroundTaskRegistry } from '../../services/backgroundTasks/registry.js'
@@ -87,6 +89,7 @@ import { DraftAttachments } from './DraftAttachments.js'
 import { appendPromptHistory, loadPromptHistory, promptHistoryTexts } from '../../runtime/promptHistory.js'
 import { summarizeDiagnosticsForTui } from '../../harness/diagnostics.js'
 import {
+  refreshRuntimeSlot,
   resolveRuntimeModelKeyAfterConfigChange,
   type ProviderConfigChangeScope,
 } from '../../runtime/providerRuntime.js'
@@ -176,7 +179,7 @@ export function App({
   const [resumeSessions, setResumeSessions] = useState<SessionMeta[]>([])
   const [resumeLoading, setResumeLoading] = useState(false)
   const [resumeError, setResumeError] = useState<string | null>(null)
-  const { session: runtime, effort: effortLevel } = useSyncExternalStore(
+  const { session: runtime, effort: effortLevel, configurationIssue } = useSyncExternalStore(
     runtimeSlot.subscribe,
     runtimeSlot.getSnapshot,
     runtimeSlot.getSnapshot,
@@ -184,7 +187,7 @@ export function App({
   const [checkpoints, setCheckpoints] = useState<CheckpointWithDiff[]>([])
   const [permissionMode, setPermissionModeState] = useState<PermissionMode>(() => permissionGate.getMode())
   const [modelKeys, setModelKeys] = useState<string[]>(availableModelKeys)
-  const [providerPanelOpen, setProviderPanelOpen] = useState(false)
+  const [providerPanelOpen, setProviderPanelOpen] = useState(() => !runtimeSlot.current)
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [effortPickerOpen, setEffortPickerOpen] = useState(false)
   const [activeCommandView, setActiveCommandView] = useState<CommandView | null>(null)
@@ -202,7 +205,8 @@ export function App({
    * Keyed to the `AgentSession` so any runtime swap — `/model`, a provider edit
    * that turns image input on — releases the hold, the desktop host's rule.
    */
-  const queueBlockRef = useRef<{ messageId: string; session: AgentSession } | null>(null)
+  const queueBlockRef = useRef<{ messageId: string; session: AgentSession | undefined } | null>(null)
+  const pendingProviderScopeRef = useRef<ProviderConfigChangeScope | undefined>(undefined)
   const initialQueuedPromptRef = useRef(initialQueuedPrompt)
   const [messageQueue] = useState(() => new MessageQueue(
     initialSession.id,
@@ -211,7 +215,11 @@ export function App({
     // The accept-time gate, same as the desktop host's: an input the active
     // model cannot take is refused while `handleSubmit` still holds the text
     // and the draft images, rather than being persisted and refused later.
-    (input) => sessionController.assertInputAcceptable(input),
+    (input) => {
+      // Local commands must remain reachable during setup. Commands that submit
+      // a prompt pass through the controller's readiness check when they run.
+      if (!input.text.startsWith('/')) sessionController.assertInputAcceptable(input)
+    },
   ))
   const queuedMessages = useSyncExternalStore(
     messageQueue.subscribe,
@@ -346,7 +354,7 @@ export function App({
     controller: sessionController,
     existingRecords: sessionRecords,
     initialSystemMessages,
-    pricing: runtime.modelConfig.pricing,
+    pricing: runtime?.modelConfig.pricing,
     onActiveModelChange: syncActiveModel,
     onRecordExternal: trackSessionRecord,
     onInterrupt: denyPending,
@@ -530,7 +538,7 @@ export function App({
   }, [submit, buildRunOverridesForOptions])
 
   const runShellCommand = useCallback(async (command: string) => {
-    const result = await runtimeSlot.current.loop.runTool({
+    const result = await runtimeSlot.requireCurrent().loop.runTool({
       id: randomUUID(),
       name: 'Bash',
       input: { command },
@@ -544,12 +552,12 @@ export function App({
 
   useEffect(() => {
     const prompt = initialQueuedPromptRef.current
-    if (!prompt) return
+    if (!prompt || !runtime) return
     initialQueuedPromptRef.current = undefined
     void messageQueue.enqueue({ text: prompt }).catch((error) => {
       addSystemMessage(`Failed to queue prompt: ${error instanceof Error ? error.message : String(error)}`)
     })
-  }, [messageQueue, addSystemMessage])
+  }, [messageQueue, addSystemMessage, runtime])
 
   /** Shared with the host-side CommandContext; see `runtime/modelSwitch.ts`. */
   const modelSwitchDeps = useMemo(() => ({
@@ -571,22 +579,24 @@ export function App({
 
   const refreshRuntimeAfterProviderConfigChange = useCallback((scope: ProviderConfigChangeScope) => {
     setModelKeys(Object.keys(providerConfig.get().models))
-
-    const currentRuntime = runtimeSlot.current
+    if (sessionController.getSnapshot().isStreaming) {
+      if (pendingProviderScopeRef.current !== 'routing') pendingProviderScopeRef.current = scope
+      return
+    }
     const modelKey = resolveRuntimeModelKeyAfterConfigChange(
       providerConfig,
-      currentRuntime.modelKey,
+      runtimeSlot.current?.modelKey,
       scope,
     )
-    if (!modelKey) {
-      throw new Error('No model is available after the provider configuration change.')
-    }
+    refreshRuntimeSlot({ config: providerConfig, runtimeSlot, createRuntime, modelKey, session: activeSession, records: sessionRecordsRef.current })
+  }, [providerConfig, createRuntime, activeSession, runtimeSlot, sessionController])
 
-    const nextRuntime = createRuntime(modelKey, activeSession, sessionRecordsRef.current)
-    currentRuntime.loop.clearCachedSections()
-    runtimeSlot.replace(nextRuntime)
-    runtimeSlot.reapplyEffort()
-  }, [providerConfig, createRuntime, activeSession, runtimeSlot])
+  useEffect(() => {
+    if (isStreaming || !pendingProviderScopeRef.current) return
+    const scope = pendingProviderScopeRef.current
+    pendingProviderScopeRef.current = undefined
+    refreshRuntimeAfterProviderConfigChange(scope)
+  }, [isStreaming, refreshRuntimeAfterProviderConfigChange])
 
   const handleSetEffort = useCallback((level: string) => {
     const clampedLevel = runtimeSlot.setEffort(level)
@@ -594,13 +604,13 @@ export function App({
   }, [onEffortLevelChange, runtimeSlot])
 
   const handleSetThinking = useCallback(async (enabled: boolean) => {
-    runtimeSlot.current.loop.setThinking(enabled ? { type: 'adaptive' } : { type: 'disabled' })
+    runtimeSlot.current?.loop.setThinking(enabled ? { type: 'adaptive' } : { type: 'disabled' })
     await onThinkingChange?.(enabled)
   }, [onThinkingChange, runtimeSlot])
 
   const modelPickerOptions = useMemo(
-    () => buildModelPickerOptions(providerConfig, runtime.modelKey, modelKeys),
-    [providerConfig, runtime.modelKey, modelKeys],
+    () => buildModelPickerOptions(providerConfig, runtime?.modelKey, modelKeys),
+    [providerConfig, runtime?.modelKey, modelKeys],
   )
 
   const handleModelPickerResolve = useCallback(async (decision: ModelPickerDecision | { action: 'cancel' }) => {
@@ -645,11 +655,9 @@ export function App({
       throw new Error('Agent definition reload is not available in this runtime.')
     }
     const count = await reloadRuntimeAgentDefinitions()
-    runtime.loop.clearCachedSections()
-    const nextRuntime = createRuntime(runtime.modelKey, activeSession, sessionRecordsRef.current)
-    runtimeSlot.replace(nextRuntime)
+    refreshRuntimeAfterProviderConfigChange('models')
     return count
-  }, [reloadRuntimeAgentDefinitions, runtime.loop, runtime.modelKey, createRuntime, activeSession, runtimeSlot])
+  }, [reloadRuntimeAgentDefinitions, refreshRuntimeAfterProviderConfigChange])
 
   const reloadSkills = useCallback(async (): Promise<number> => {
     if (!reloadRuntimeSkills) {
@@ -658,28 +666,27 @@ export function App({
     const count = await reloadRuntimeSkills()
     // Same shape as the agent-definition reload: skills feed the system prompt
     // through `createRuntime`, so the live runtime has to be rebuilt to see them.
-    runtime.loop.clearCachedSections()
-    runtimeSlot.replace(createRuntime(runtime.modelKey, activeSession, sessionRecordsRef.current))
+    refreshRuntimeAfterProviderConfigChange('models')
     return count
-  }, [reloadRuntimeSkills, runtime.loop, runtime.modelKey, createRuntime, activeSession, runtimeSlot])
+  }, [reloadRuntimeSkills, refreshRuntimeAfterProviderConfigChange])
 
   const cyclePermissionMode = useCallback((direction: 1 | -1) => {
     setPermissionModeState((currentMode) => {
       const nextMode = nextPermissionMode(currentMode, direction)
-      return applyPermissionModeTransition(permissionGate, runtimeSlot.current.planModeManager, nextMode)
+      return applyPermissionModeTransition(permissionGate, runtimeSlot.current?.planModeManager, nextMode)
     })
   }, [permissionGate, runtimeSlot])
 
   useEffect(() => {
-    runtime.planModeManager.setUiDeps({
+    runtime?.planModeManager.setUiDeps({
       emitChatMessage: async (content) => addSystemMessage(content),
       openEnterPrompt: enterPlanProxy.open,
       openExitDialog: exitPlanProxy.open,
     })
-  }, [runtime.planModeManager, addSystemMessage, enterPlanProxy, exitPlanProxy])
+  }, [runtime?.planModeManager, addSystemMessage, enterPlanProxy, exitPlanProxy])
 
   const planFileDeps = useMemo(
-    () => ({ getPlanModeManager: () => runtimeSlot.current.planModeManager }),
+    () => ({ getPlanModeManager: () => runtimeSlot.requireCurrent().planModeManager }),
     [runtimeSlot],
   )
 
@@ -782,13 +789,13 @@ export function App({
     session: activeSession,
     commands,
     cwd: process.cwd(),
-    model: {
+    model: runtime ? {
       key: runtime.modelKey,
       model: runtime.modelConfig.model,
       providerName: runtime.providerName,
-    },
+    } : undefined,
     setModel: switchToModel,
-    pricing: runtime.modelConfig.pricing,
+    pricing: runtime?.modelConfig.pricing,
     usage,
     addSystemMessage,
     openCommandView: (view) => {
@@ -799,13 +806,13 @@ export function App({
       setActiveCommandView(view)
     },
     clearMessages: clearConversation,
-    clearCachedSections: () => runtime.loop.clearCachedSections(),
-    invalidateRecordsCache: () => runtime.loop.invalidateRecordsCache(),
+    clearCachedSections: () => runtime?.loop.clearCachedSections(),
+    invalidateRecordsCache: () => runtime?.loop.invalidateRecordsCache(),
     reloadAgentDefinitions,
     reloadSkills,
     getPermissionMode: () => permissionGate.getMode(),
     enterPlanMode: () => {
-      const mode = applyPermissionModeTransition(permissionGate, runtimeSlot.current.planModeManager, 'plan')
+      const mode = applyPermissionModeTransition(permissionGate, runtimeSlot.current?.planModeManager, 'plan')
       setPermissionModeState(mode)
     },
     readPlanFile: readCurrentPlanFile,
@@ -839,7 +846,7 @@ export function App({
     openRewindPanel: () => { void handleEnterRestoreMode() },
     getEffort: () => effortLevel,
     setEffort: handleSetEffort,
-    getThinking: () => runtimeSlot.current.loop.getThinking()?.type !== 'disabled',
+    getThinking: () => runtimeSlot.current?.loop.getThinking()?.type !== 'disabled',
     setThinking: handleSetThinking,
   })
 
@@ -870,6 +877,12 @@ export function App({
   }, [dispatch, sessionController, buildRunOverridesForOptions])
 
   const handleSubmit = useCallback(async (text: string): Promise<boolean> => {
+    if (!runtime && text.startsWith('/')) {
+      // Setup/help must also work when an older queued prompt is waiting for a
+      // model. Such a prompt cannot be allowed to park the configuration UI.
+      await dispatch(text)
+      return true
+    }
     // Slash commands never take the drafts with them: control commands only
     // act, and skill/plan queries consume the drafts at `submitQuery` time.
     // Only a plain message carries the draft images out of the composer.
@@ -893,7 +906,7 @@ export function App({
       addSystemMessage(`Failed to queue message: ${describeImageBlockError(error)}`)
       return false
     }
-  }, [addSystemMessage, messageQueue])
+  }, [addSystemMessage, messageQueue, runtime, dispatch])
 
   useEffect(() => {
     // `mode` folds two unrelated ideas together: 'running' means a turn is in
@@ -1011,11 +1024,11 @@ export function App({
     if (!truncateResult.success) {
       throw new Error(truncateResult.error ?? 'Failed to truncate session')
     }
-    runtime.loop.invalidateRecordsCache()
+    runtime?.loop.invalidateRecordsCache()
     const records = await reloadMessages()
     rebaseSessionRecords(records)
     await messageQueue.hydrate(records)
-  }, [store, activeSession.id, runtime.loop, reloadMessages, rebaseSessionRecords, messageQueue])
+  }, [store, activeSession.id, runtime?.loop, reloadMessages, rebaseSessionRecords, messageQueue])
 
   const restoreCodeToCheckpoint = useCallback(async (checkpoint: CheckpointWithDiff) => {
     const cpService = sessionController.getFileHistoryService()
@@ -1032,15 +1045,15 @@ export function App({
       records: loaded.records,
       targetMessageId: checkpoint.messageId,
       decision,
-      summarize: (records) => runtime.loop.summarizeRecordsForRewind(records),
+      summarize: (records) => runtimeSlot.requireCurrent().loop.summarizeRecordsForRewind(records),
     })
 
     await store.replaceRecords(activeSession.id, rewrite.nextRecords)
-    runtime.loop.invalidateRecordsCache()
+    runtime?.loop.invalidateRecordsCache()
     const records = await reloadMessages()
     rebaseSessionRecords(records)
     await messageQueue.hydrate(records)
-  }, [store, activeSession.id, runtime.loop, reloadMessages, rebaseSessionRecords, messageQueue])
+  }, [store, activeSession.id, runtime?.loop, runtimeSlot, reloadMessages, rebaseSessionRecords, messageQueue])
 
   /**
    * The decision → side effects mapping is `rewindStepsFor`, shared with the
@@ -1157,8 +1170,8 @@ export function App({
       kind: 'welcome_banner',
       id: `welcome-${activeSession.id}`,
       sessionShortId: activeSession.shortId,
-      model: runtime.modelConfig.model,
-      providerName: runtime.providerName,
+      model: runtime?.modelConfig.model ?? '待配置',
+      providerName: runtime?.providerName ?? '',
       cwd: process.cwd(),
     },
     ...staticTranscriptItems,
@@ -1181,6 +1194,8 @@ export function App({
       <Static key={`${transcriptGeneration}`} items={staticItemsForInk}>
         {(item) => <StaticDisplayItem key={item.id} item={item} />}
       </Static>
+
+      {!runtime && <Text color={theme.brand}>{configurationIssue?.message} {MODEL_CONFIGURATION_REQUIRED}</Text>}
 
       {screen === 'transcript' ? (
         <AlternateScreen promptFrameSnapshot={promptFrameSnapshotRef.current}>
@@ -1306,7 +1321,7 @@ export function App({
           {effortPickerOpen && (
             <EffortPickerBar
               currentLevel={effortLevel as EffortLevel}
-              supportedEfforts={runtime.modelConfig.supportedEfforts}
+              supportedEfforts={runtime?.modelConfig.supportedEfforts}
               onResolve={(result) => {
                 setEffortPickerOpen(false)
                 if (result.action === 'set') handleSetEffort(result.level)
@@ -1351,21 +1366,20 @@ export function App({
       {/* Status line (below input, no border) */}
       {shouldRenderStatusLine(screen, mode) && !providerPanelOpen && !modelPickerOpen && !effortPickerOpen && !activeCommandView && (
         <StatusLine
-          model={runtime.modelConfig.model}
+          model={runtime?.modelConfig.model ?? '待配置 · /provider'}
           usage={usage}
           permissionMode={permissionMode}
           hintMessage={hintMessage}
           effortLevel={effortLevel}
-          contextWindow={getContextWindowForModel(
+          contextWindow={runtime ? getContextWindowForModel(
             {
               ...providerConfig.get().agent.contextManagement,
               contextWindow: runtime.modelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
             },
-          )}
+          ) : undefined}
           backgroundTaskCount={backgroundTaskSnapshot.filter((task) => task.status === 'running').length}
         />
       )}
     </Box>
   )
 }
-

@@ -65,6 +65,19 @@ export function composerChipView(
     }
   }
 
+  if (runtime.status === 'needs_configuration') {
+    const title = `${runtime.configurationIssue.message} 点击配置模型与服务商。`
+    return {
+      model: '配置模型',
+      modelTitle: title,
+      effort: '—',
+      effortTitle: title,
+      atCeiling: false,
+      enabled: true,
+      title,
+    }
+  }
+
   const provider = runtime.providerName ? `（${runtime.providerName}）` : ''
   // `effort` is a string on the wire because it carries either a level name or a
   // raw token budget as a decimal string (`set-effort.level` is `z.string()`).

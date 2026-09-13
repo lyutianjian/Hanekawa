@@ -124,6 +124,7 @@ async function createSwitchHarness(): Promise<SwitchHarness> {
       loop: { clearCachedSections: () => order.push('clearCachedSections') },
     },
     replace: () => order.push('replace'),
+    getSnapshot: () => ({ status: 'ready', session: runtimeSlot.current, effort: 'high' }),
   }
 
   const deps: SessionSwitchDeps = {

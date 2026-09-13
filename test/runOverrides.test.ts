@@ -26,6 +26,7 @@ function createDeps(): { deps: RunOverridesDeps; activated: string[] } {
 
   const runtimeSlot = {
     current: { modelKey: 'current', modelConfig: MODELS.current },
+    requireCurrent: () => runtimeSlot.current!,
   } as unknown as RuntimeSlot
 
   const config = {

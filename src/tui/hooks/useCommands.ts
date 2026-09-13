@@ -27,7 +27,7 @@ interface UseCommandsOptions {
   /** This project's slash commands. See `ProjectRuntime.commands`. */
   commands: CommandRegistry
   cwd: string
-  model: CommandModelInfo
+  model: CommandModelInfo | undefined
   setModel: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
   pricing?: ModelPricing
   usage: { lastRequest: TokenUsage | null; total: TokenUsage }
@@ -266,7 +266,7 @@ export function useCommands({
     // Only the identity scalars participate in keying. Everything else is
     // read via refs above, so dispatch stays stable while still seeing fresh
     // data on each invocation.
-    [session.id, model.key, exit],
+    [session.id, model?.key, exit],
   )
 
   return { dispatch }

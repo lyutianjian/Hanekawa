@@ -14,65 +14,66 @@
  * in `npm test`, not that it is disposable.
  *
  * **It is not part of `npm test` and must not become part of it.** It needs a
- * display, a real endpoint and real credentials; `npm test` is hermetic and
- * offline, and that is worth more than the coverage this adds.
+ * display; the default run also uses configured credentials. `--first-run`
+ * instead starts with empty configuration and uses a local provider fixture.
  *
  * Safety, by construction rather than by care:
  *
  * - the app is always pointed at a **scratch project in the OS temp directory**
  *   (`--cwd=`), so the repository's own `.myagent/` — real sessions, real
  *   checkpoints — is never the project the app can delete sessions from;
- * - the two global files a run genuinely writes — `~/.myagent/config.json`, which
- *   the settings step edits because the config layer is global-only, and
- *   `~/.myagent/projects.json`, which every project entry registers a root in —
- *   are **snapshotted before the launch and put back in teardown**, so a run
- *   leaves no smoke endpoint, no smoke model and no temp project row behind;
- * - three **tripwires** assert afterwards that the repo's session index, the
- *   repo's session files and `~/.myagent/settings.json` were never written;
+ * - a disposable home holds a private config copy, test models, project
+ *   registrations and file history; the real global files are never written;
+ * - **tripwires** check the repo's sessions and the real global settings,
+ *   config and project registry after the run;
  * - **money is opt-in**: one model turn, only with `--paid-turn`, behind a
  *   one-shot latch, on the cheapest configured model, interrupted if it overruns.
  *
- * One thing `--cwd=` does **not** isolate: the renderer's `localStorage`, which
- * holds the theme preference (`main.ts` never sets `userData`, so it is the
- * developer's own). S11 switches the theme and therefore restores it in a
- * `finally`. No tripwire covers it — Chromium flushes its leveldb lazily, so a
- * file check there would be red for timing reasons rather than for real ones.
+ * `smoke/electron.mjs` assigns a profile under the run's scratch directory before
+ * loading the shipped entry point. Its Chromium preferences and single-instance
+ * lock are separate from an already-running desktop app; restarts share that
+ * profile. The home, profile, projects and default output are removed on success,
+ * failure or interruption. --out retains reports; --keep retains the whole run.
  *
  * Exit codes: 0 pass (skips allowed), 1 an assertion failed — the app is wrong,
  * 2 preflight or teardown failed — do not trust the run at all.
  *
  * Usage:
- *   node scripts/smoke-desktop.mjs [--paid-turn] [--only=S3,S8] [--keep]
+ *   node scripts/smoke-desktop.mjs [--first-run] [--paid-turn] [--only=S3,S8] [--keep]
  *                                  [--model=<key>] [--port=9222] [--kill-stale]
  *                                  [--out=<dir>] [--verbose]
  */
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as app from './smoke/app.mjs'
 import { shot, sleep } from './smoke/cdp.mjs'
 import {
   assertTripwires,
-  captureGlobalFiles,
   captureTripwires,
+  createSmokeEnvironment,
   makeProject,
-  makeRunDir,
-  removeRunDir,
-  restoreGlobalFiles,
   seedArtifacts,
   seedLocalSettings,
   seedSession,
 } from './smoke/fixtures.mjs'
 import { RESTART_STEPS, STEPS } from './smoke/steps.mjs'
+import { FIRST_RUN_RESTART_STEPS, FIRST_RUN_STEPS, startFirstRunFixture } from './smoke/firstRun.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(here, '..')
 
 const opts = parseArgs(process.argv.slice(2))
-process.exitCode = await main()
+try {
+  process.exitCode = await main()
+} catch (error) {
+  console.error(error)
+  process.exitCode = 2
+}
 
 function parseArgs(argv) {
   const flags = {
+    firstRun: false,
     paidTurn: false,
     keep: false,
     killStale: false,
@@ -85,7 +86,8 @@ function parseArgs(argv) {
     out: undefined,
   }
   for (const arg of argv) {
-    if (arg === '--paid-turn') flags.paidTurn = true
+    if (arg === '--first-run') flags.firstRun = true
+    else if (arg === '--paid-turn') flags.paidTurn = true
     else if (arg === '--keep') flags.keep = true
     else if (arg === '--kill-stale') flags.killStale = true
     else if (arg === '--verbose') flags.verbose = true
@@ -156,19 +158,19 @@ function assertFreshBuild() {
 
 async function main() {
   const started = Date.now()
-  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+$/, '').replace('T', '-')
-  const out = opts.out ? opts.out : join(repoRoot, '.smoke', stamp)
+  const tripwires = captureTripwires(repoRoot)
+  const environment = createSmokeEnvironment({ keep: opts.keep, copyConfig: !opts.firstRun })
+  const runDir = environment.root
+  const out = resolve(opts.out ?? join(runDir, 'output'))
+  const saveOutput = opts.keep || opts.out !== undefined
   mkdirSync(out, { recursive: true })
-  const pidFile = join(repoRoot, '.smoke', 'electron.pid')
+  const pidFile = join(out, 'electron.pid')
 
   const results = []
-  let runDir
   let handle
   let teardownNote = ''
   let fatal
-  const tripwires = captureTripwires(repoRoot)
-  // Before anything is launched: the launch itself registers a project root.
-  const globals = captureGlobalFiles()
+  let firstRunFixture
 
   try {
     assertFreshBuild()
@@ -176,46 +178,49 @@ async function main() {
     for (const note of preflight.notes) console.log(`preflight: ${note}`)
 
     // --- fixtures ------------------------------------------------------------
-    runDir = makeRunDir()
     console.log(`scratch: ${runDir}`)
     const projectA = makeProject(runDir, 'projA')
     const projectB = makeProject(runDir, 'projB')
+    if (opts.firstRun) firstRunFixture = await startFirstRunFixture()
     // `ask: ['Write']` makes the permission prompt deterministic whatever the
     // gate's default for a `confirm` tool is, and it is a *local* entry, so the
     // "only local entries" assertion in the settings step still means something.
-    seedLocalSettings(projectA, { permissions: { ask: ['Write'] } })
-    seedLocalSettings(projectB, { permissions: { ask: ['Write'] } })
+    if (!opts.firstRun) {
+      seedLocalSettings(projectA, { permissions: { ask: ['Write'] } })
+      seedLocalSettings(projectB, { permissions: { ask: ['Write'] } })
+    }
     // Seeded by hand: the app recovers these into project A's index when its
     // store initializes at launch. Startup no longer *opens* any of them — a
     // fresh launch lands in a new empty session — but step7 opens the youngest
     // (A1) as history, so its age ordering still matters.
-    const sessionsA = Array.from({ length: 8 }, (_, index) =>
+    const sessionsA = Array.from({ length: opts.firstRun ? 0 : 8 }, (_, index) =>
       seedSession(projectA, { marker: `SMOKE-A${index + 1} fixture session`, ageMinutes: index + 1 }),
     )
-    const sessionsB = Array.from({ length: 2 }, (_, index) =>
+    const sessionsB = Array.from({ length: opts.firstRun ? 0 : 2 }, (_, index) =>
       seedSession(projectB, { marker: `SMOKE-B${index + 1} fixture session`, ageMinutes: index + 1 }),
     )
     for (const session of [...sessionsA, ...sessionsB]) seedArtifacts(projectA, session.id)
     for (const session of sessionsB) seedArtifacts(projectB, session.id)
 
     // --- launch #1 -----------------------------------------------------------
-    handle = app.launch({ repoRoot, cwd: projectA.root, port: opts.port, out, tag: '1', pidFile })
+    handle = app.launch({ repoRoot, cwd: projectA.root, port: opts.port, out, tag: '1', pidFile, environment })
     console.log(`launched electron pid ${handle.pid} on port ${opts.port}`)
     await app.attach(handle)
     console.log('attached; the window is up')
 
-    const ctx = makeContext({ handle, out, projectA, projectB, sessionsA, sessionsB, runDir })
-    await runSteps(STEPS, ctx, results)
+    const ctx = makeContext({ handle, out, projectA, projectB, sessionsA, sessionsB, runDir, environment, firstRunFixture })
+    await runSteps(opts.firstRun ? FIRST_RUN_STEPS : STEPS, ctx, results)
 
     // --- restart -------------------------------------------------------------
-    if (shouldRun(RESTART_STEPS)) {
+    const restartSteps = opts.firstRun ? FIRST_RUN_RESTART_STEPS : RESTART_STEPS
+    if (shouldRun(restartSteps)) {
       teardownNote = await app.quitGracefully(handle)
       console.log(`launch 1 teardown: ${teardownNote}`)
       await sleep(1200)
-      handle = app.launch({ repoRoot, cwd: projectA.root, port: opts.port, out, tag: '2', pidFile })
+      handle = app.launch({ repoRoot, cwd: projectA.root, port: opts.port, out, tag: '2', pidFile, environment })
       await app.attach(handle)
-      const restartCtx = makeContext({ handle, out, projectA, projectB, sessionsA, sessionsB, runDir, ctx })
-      await runSteps(RESTART_STEPS, restartCtx, results)
+      const restartCtx = makeContext({ handle, out, projectA, projectB, sessionsA, sessionsB, runDir, environment, firstRunFixture, ctx })
+      await runSteps(restartSteps, restartCtx, results)
     }
 
     const finalTeardown = await app.quitGracefully(handle)
@@ -227,7 +232,7 @@ async function main() {
       id: 'S10',
       item: 10,
       name: 'no leftover electron processes',
-      ok: leftovers.length === 0 && !existsSync(pidFile),
+      ok: leftovers.length === 0 && !existsSync(pidFile) && finalTeardown !== 'killed',
       ms: 0,
       assertions: [
         { ok: leftovers.length === 0, label: 'no electron process outside the baseline', detail: leftovers.join(', ') },
@@ -259,31 +264,36 @@ async function main() {
     } catch {
       // The kill below is the fallback.
     }
-    const stopped = await app.ensureStopped(handle)
-    if (stopped) cleanup.push(stopped)
-  }
-  for (const label of restoreGlobalFiles(globals)) cleanup.push(`restored ${label}`)
-  let scratch = 'kept'
-  if (runDir && !opts.keep) {
-    const failure = removeRunDir(runDir)
-    scratch = failure ? `NOT REMOVED — ${failure}` : 'removed'
-    if (failure) cleanup.push(`the scratch directory is still on disk: ${runDir}`)
-  } else if (runDir) {
-    console.log(`kept scratch dir: ${runDir}`)
-  }
-  // Last, so a teardown that had to write files is not mistaken for the app
-  // having written them mid-run.
-  if (!fatal) {
     try {
-      assertTripwires(repoRoot, tripwires)
+      const stopped = await app.ensureStopped(handle)
+      if (stopped) cleanup.push(stopped)
+      if (stopped?.startsWith('ERROR')) fatal ??= stopped
     } catch (error) {
-      fatal = error instanceof Error ? error.message : String(error)
+      fatal ??= String(error)
+      cleanup.push(`ERROR stopping Electron: ${error}`)
     }
+  }
+  if (firstRunFixture) {
+    try { await firstRunFixture.close() } catch (error) {
+      cleanup.push(`ERROR closing the local provider fixture: ${error}`)
+      fatal ??= String(error)
+    }
+  }
+  try {
+    assertTripwires(repoRoot, tripwires)
+  } catch (error) {
+    fatal ??= error instanceof Error ? error.message : String(error)
+  }
+  const failure = environment.cleanup()
+  const scratch = opts.keep ? 'kept' : failure ? `NOT REMOVED — ${failure}` : 'removed'
+  if (failure) {
+    cleanup.push(`ERROR removing the scratch directory: ${failure}`)
+    fatal ??= failure
   }
   for (const note of cleanup) console.log(`teardown: ${note}`)
 
   const rendererFailures = handle?.exceptions ?? []
-  const summary = writeSummary({ out, results, started, renderer: rendererFailures, fatal, runDir, scratch, cleanup })
+  const summary = writeSummary({ out, saveOutput, results, started, renderer: rendererFailures, fatal, runDir, scratch, cleanup })
   if (fatal) return 2
   return summary.failed > 0 || rendererFailures.length > 0 ? 1 : 0
 }
@@ -300,7 +310,7 @@ function shouldRun(steps) {
  * throw for an *infrastructure* failure — a command that never answered — and
  * the harness records that as the step failing.
  */
-function makeContext({ handle, out, projectA, projectB, sessionsA, sessionsB, runDir, ctx }) {
+function makeContext({ handle, out, projectA, projectB, sessionsA, sessionsB, runDir, environment, firstRunFixture, ctx }) {
   const state = ctx?.state ?? { lanesSeen: new Set(), paidTurnSpent: false, deleted: new Set() }
   const context = {
     app: handle,
@@ -314,6 +324,8 @@ function makeContext({ handle, out, projectA, projectB, sessionsA, sessionsB, ru
     sessionsA,
     sessionsB,
     runDir,
+    home: environment.home,
+    firstRunFixture,
     state,
     current: undefined,
     ok(label, condition, detail = '') {
@@ -394,7 +406,7 @@ function withTimeout(promise, ms, label) {
   ])
 }
 
-function writeSummary({ out, results, started, renderer = [], fatal, runDir, scratch = 'kept', cleanup = [] }) {
+function writeSummary({ out, saveOutput, results, started, renderer = [], fatal, runDir, scratch = 'kept', cleanup = [] }) {
   const passed = results.filter((step) => step.ok && !step.skipped).length
   const failed = results.filter((step) => step.ok === false && !step.skipped).length
   const skipped = results.filter((step) => step.skipped).length
@@ -417,7 +429,7 @@ function writeSummary({ out, results, started, renderer = [], fatal, runDir, scr
     for (const text of renderer) lines.push(`   ! ${text}`)
   }
   const shots = results.flatMap((step) => step.shots.map((entry) => ({ ...entry, step: step.id })))
-  if (shots.length > 0) {
+  if (saveOutput && shots.length > 0) {
     lines.push('')
     lines.push('SCREENSHOTS — these are the judgements no assertion can make:')
     for (const entry of shots) lines.push(`   ${entry.name}.png (${entry.step}) — ${entry.look}`)
@@ -428,14 +440,16 @@ function writeSummary({ out, results, started, renderer = [], fatal, runDir, scr
     for (const note of cleanup) lines.push(`   · ${note}`)
   }
   lines.push('')
-  lines.push(`output: ${out}`)
+  lines.push(saveOutput || existsSync(out) ? `output: ${out}` : 'output removed (use --out=<dir> to retain reports and screenshots)')
   // The observed outcome, never the intention — the old "(removed)" was a claim
   // this file made without looking, and it was wrong on exactly the runs that
   // mattered.
   if (runDir) lines.push(`scratch: ${runDir} (${scratch})`)
   const text = `${lines.join('\n')}\n`
-  writeFileSync(join(out, 'summary.txt'), text)
-  writeFileSync(join(out, 'summary.json'), `${JSON.stringify({ results, renderer, fatal, scratch, cleanup }, null, 2)}\n`)
+  if (saveOutput) {
+    writeFileSync(join(out, 'summary.txt'), text)
+    writeFileSync(join(out, 'summary.json'), `${JSON.stringify({ results, renderer, fatal, scratch, cleanup }, null, 2)}\n`)
+  }
   console.log(`\n${text}`)
   return { passed, failed, skipped }
 }

@@ -1,5 +1,4 @@
 import {
-  TITLE_BAR_MENUS,
   itemEnabled,
   titleBarRenderSignature,
   toggleMenu,
@@ -17,9 +16,8 @@ import { createPresence } from './presence.js'
  * The frameless window's own title bar (5g).
  *
  * Left to right: the sidebar rail toggle, then 文件 / 视图 / 帮助. Everything
- * right of that is empty strip, and on Windows the last ~140px of it is where the
- * OS paints minimize/maximize/close into `titleBarOverlay` — which is why the
- * stylesheet reserves that space rather than centring anything.
+ * right of that is empty strip. `dom/windowChrome.ts` reserves the native
+ * controls' measured space: left on macOS, normally right on Windows/Linux.
  *
  * The strip is `-webkit-app-region: drag`; every control in it is `no-drag`, or
  * it would move the window instead of being clickable. That pair lives in
@@ -87,7 +85,7 @@ export function createTitleBarView(
     return node
   }
 
-  const menus = TITLE_BAR_MENUS.map((menu: TitleBarMenu) => {
+  const menuNode = (menu: TitleBarMenu) => {
     const shell = el('div', 'titlebar-menu-shell')
     const trigger = button('titlebar-menu-trigger', menu.label, menu.label,
       () => onOpenMenu(toggleMenu(openMenu, menu.id)))
@@ -97,18 +95,27 @@ export function createTitleBarView(
     const presence = createPresence(list, { direction: 'drop' })
     reconcile(shell, [trigger, list])
     return { menu, shell, trigger, list, presence, items: [] as HTMLElement[] }
-  })
+  }
+  let menuSource: readonly TitleBarMenu[] | undefined
+  let menus: ReturnType<typeof menuNode>[] = []
   const rail = button('titlebar-rail', '', '', () => onAction('toggle-sidebar'), { icon: 'sidebar' })
-  reconcile(container, [rail, ...menus.map((entry) => entry.shell)])
 
   return {
     render(view) {
       const signature = titleBarRenderSignature(view)
-      if (signature === drawn) return
+      const menusChanged = menuSource !== view.menus
+      if (signature === drawn && !menusChanged) return
       drawn = signature
       const previous = openMenu
       openMenu = view.openMenu
-      rail.title = view.sidebarCollapsed ? '展开侧栏（Ctrl+B）' : '收起侧栏（Ctrl+B）'
+      if (menusChanged) {
+        for (const entry of menus) entry.presence.dispose()
+        menuSource = view.menus
+        menus = view.menus.map(menuNode)
+        reconcile(container, [rail, ...menus.map((entry) => entry.shell)])
+      }
+      const chord = view.menus.flatMap((menu) => menu.items).find((item) => item.action === 'toggle-sidebar')?.chord
+      rail.title = `${view.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}${chord ? `（${chord}）` : ''}`
       rail.setAttribute('aria-label', rail.title)
       let focus: HTMLElement | undefined
       for (const entry of menus) {
@@ -122,7 +129,7 @@ export function createTitleBarView(
         entry.trigger.setAttribute('aria-expanded', String(open))
         if (!open && entry.list.contains(document.activeElement)) focus = entry.trigger
         entry.presence.set(open)
-        if (open && previous !== openMenu) focus = entry.items.find((node) => !(node as HTMLButtonElement).disabled)
+        if (open && (previous !== openMenu || menusChanged)) focus = entry.items.find((node) => !(node as HTMLButtonElement).disabled)
       }
       focus?.focus()
     },

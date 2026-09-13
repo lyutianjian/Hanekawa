@@ -107,7 +107,7 @@ export interface CommandContext {
   resetCompactFailureCount?: () => Promise<void>
   getUsage?: () => CommandUsage
   getSessionMetricsSummary?: () => Promise<CommandSessionMetricsSummary | null>
-  getModel?: () => CommandModelInfo
+  getModel?: () => CommandModelInfo | undefined
   setModel?: (model: string) => void | SetModelResult | Promise<void | SetModelResult>
   getEffort?: () => string
   setEffort?: (level: string) => void | Promise<void>

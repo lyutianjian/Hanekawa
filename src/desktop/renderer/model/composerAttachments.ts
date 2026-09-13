@@ -221,7 +221,7 @@ const INCOMPLETE_NOTE = '还有附件在导入中或未成功；处理后才能�
  */
 export function attachmentStripView(
   drafts: AttachmentDrafts,
-  runtime: { supportsImageInput?: boolean } | undefined,
+  runtime: { status?: 'ready' | 'needs_configuration'; supportsImageInput?: boolean } | undefined,
   previews: (imageId: string) => string | undefined = () => undefined,
 ): AttachmentStripView {
   const rows: AttachmentRowView[] = drafts.map((draft, index) => {
@@ -259,7 +259,8 @@ export function attachmentStripView(
 
   const readyCount = rows.filter((row) => row.state === 'ready').length
   let sendBlockNote: string | undefined
-  if (attachmentDraftsIncomplete(drafts)) sendBlockNote = INCOMPLETE_NOTE
+  if (runtime?.status === 'needs_configuration') sendBlockNote = '请先配置可用模型。点击“配置模型”打开设置，草稿会保留。'
+  else if (attachmentDraftsIncomplete(drafts)) sendBlockNote = INCOMPLETE_NOTE
   else if (readyCount > 0 && runtime !== undefined && runtime.supportsImageInput !== true) {
     sendBlockNote = NOT_CAPABLE_NOTE
   }

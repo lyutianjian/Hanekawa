@@ -88,7 +88,7 @@ export interface ProjectRuntime {
    * this object would otherwise keep reading a snapshot from startup.
    */
   mcp: McpConnectionStatus
-  initialModelKey: string
+  initialModelKey: string | undefined
   /** Startup effort after clamping to the model's max, when it is a level. */
   initialEffort: EffortLevel | undefined
   /** Effort as configured in settings, before clamping. */

@@ -424,6 +424,35 @@ export const titleBar = () => `(() => {
 export const clickTitleBarMenu = (index = 0) =>
   clickOr(`#titlebar .titlebar-menu-shell:nth-of-type(${index + 1}) .titlebar-menu-trigger`, 'a title bar menu')
 
+/** Native exclusion geometry plus real hit targets; page screenshots omit OS buttons. */
+export const windowChrome = () => `(() => {
+  const bar = document.getElementById('titlebar')
+  const overlay = navigator.windowControlsOverlay
+  const rect = overlay?.getTitlebarAreaRect()
+  const describe = (node) => {
+    const box = node.getBoundingClientRect()
+    return {
+      text: node.textContent, title: node.title,
+      x: box.x, y: box.y, width: box.width, height: box.height,
+      region: getComputedStyle(node).getPropertyValue('-webkit-app-region'),
+    }
+  }
+  const openMenu = bar.querySelector('.titlebar-menu-trigger.open')?.parentElement.querySelector('.titlebar-menu')
+  return {
+    platform: window.hanekawa.platform,
+    styledPlatform: document.documentElement.dataset.platform,
+    viewportWidth: innerWidth,
+    overlay: rect ? { visible: overlay.visible, x: rect.x, width: rect.width, height: rect.height } : null,
+    bar: describe(bar),
+    controls: [...bar.querySelectorAll('.titlebar-rail, .titlebar-menu-trigger')].map(describe),
+    items: openMenu ? [...openMenu.querySelectorAll('button')].map(describe) : [],
+    menuRegion: openMenu ? getComputedStyle(openMenu).getPropertyValue('-webkit-app-region') : null,
+    leftInset: getComputedStyle(bar).paddingLeft,
+    rightInset: getComputedStyle(bar).paddingRight,
+    collapsed: document.getElementById('sidebar').classList.contains('collapsed'),
+  }
+})()`
+
 export const chip = () => `(() => {
   const pick = (selector) => (document.querySelector(selector) || {}).textContent || ''
   const context = document.getElementById('composer-context')

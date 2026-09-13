@@ -79,6 +79,7 @@ import { createLaneMux } from '../runtime/protocol/laneChannel.js'
 import type { RuntimeHost } from '../runtime/types.js'
 import { ShellHost } from './shellHost.js'
 import { openInEditor } from './openInEditor.js'
+import { isMacSessionCloseShortcut } from './renderer/model/desktopShortcuts.js'
 import {
   createElectronMainChannel,
   type MainSideIpc,
@@ -376,7 +377,7 @@ async function ensureShell(): Promise<Shell> {
     // frame arrives; without it the app opens as a white flash.
     backgroundColor: WINDOW_CHROME.dark.color,
     titleBarStyle: 'hidden',
-    ...(process.platform === 'darwin' ? {} : { titleBarOverlay: WINDOW_CHROME.dark }),
+    titleBarOverlay: process.platform === 'darwin' ? { height: WINDOW_CHROME.dark.height } : WINDOW_CHROME.dark,
     webPreferences: {
       preload: join(bundleDir, 'preload.js'),
       contextIsolation: true,
@@ -386,6 +387,21 @@ async function ensureShell(): Promise<Shell> {
   })
 
   guardNavigation(window)
+
+  if (process.platform === 'darwin') {
+    // Electron's default Close Window menu owns Cmd+W. Let that chord reach
+    // the renderer's close-session intent; preserve native editing, quit and
+    // fullscreen accelerators by resetting the flag for every other input.
+    window.webContents.on('before-input-event', (_event, input) => {
+      window.webContents.setIgnoreMenuShortcuts(isMacSessionCloseShortcut({
+        key: input.key,
+        metaKey: input.meta,
+        ctrlKey: input.control,
+        shiftKey: input.shift,
+        altKey: input.alt,
+      }))
+    })
+  }
 
   // One transport for the whole window; panes are lanes on it, not senders of
   // their own — which is the whole reason the lane mux exists.

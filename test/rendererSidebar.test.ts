@@ -668,6 +668,21 @@ test('Ctrl+W closes the active lane, and does nothing without one', () => {
   )
 })
 
+test('Command chords retain session routing and blocking-dialog gates', () => {
+  const state = stateWith({
+    projects: [project('/a', 'alpha', [session('a1')]), project('/b', 'beta', [session('b1')])],
+    lanes: [lane('1', 'a1', '/a'), lane('2', 'b1', '/b')],
+    activeLane: '2',
+  })
+  assert.deepEqual(sidebarChordToIntent({ key: '1', metaKey: true }, state), { kind: 'switch', lane: '1' })
+  assert.deepEqual(sidebarChordToIntent({ key: 't', metaKey: true }, state), { kind: 'new', projectRoot: '/b' })
+  assert.deepEqual(sidebarChordToIntent({ key: 'w', metaKey: true }, state), { kind: 'close', lane: '2' })
+  assert.deepEqual(sidebarChordToIntent({ key: 'w', metaKey: true }, stateWith({})), { kind: 'none' })
+  assert.deepEqual(sidebarChordToIntent({ key: 'O', metaKey: true, shiftKey: true }, state), { kind: 'open-project' })
+  assert.deepEqual(sidebarChordToIntent({ key: 't', metaKey: true }, { ...state, canCreate: false }), { kind: 'none' })
+  assert.deepEqual(sidebarChordToIntent({ key: 'O', metaKey: true, shiftKey: true }, { ...state, canCreate: false }), { kind: 'none' })
+})
+
 // --- sidebar-focused keys ---------------------------------------------------
 
 const NAV_STATE = stateWith({

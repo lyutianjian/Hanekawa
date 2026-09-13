@@ -33,6 +33,7 @@ function createMockBridge(): MockBridge {
   let closes = 0
 
   return {
+    platform: 'win32',
     sent,
     send(message) {
       sent.push(message)

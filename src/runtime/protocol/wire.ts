@@ -24,6 +24,7 @@ import type { SessionMeta } from '../../sessions/service.js'
 import type { FileSuggestion } from '../suggestions/atToken.js'
 import type { SessionControllerSnapshot, SessionEvent } from '../sessionController.js'
 import type { StartupNotice } from '../startupNotices.js'
+import type { RuntimeConfigurationIssue } from '../errors.js'
 
 /**
  * The wire format between a runtime host and whatever renders it.
@@ -324,7 +325,8 @@ export interface WireRunOverrides {
 }
 
 /** `RuntimeSlotSnapshot` projected to metadata. Never carries `apiKey`. */
-export interface WireRuntimeSnapshot {
+export interface WireReadyRuntimeSnapshot {
+  status: 'ready'
   modelKey: string
   model: string
   providerName?: string
@@ -347,6 +349,15 @@ export interface WireRuntimeSnapshot {
   effort: string
   permissionMode: PermissionMode
 }
+
+export interface WireUnconfiguredRuntimeSnapshot {
+  status: 'needs_configuration'
+  configurationIssue: RuntimeConfigurationIssue
+  effort: string
+  permissionMode: PermissionMode
+}
+
+export type WireRuntimeSnapshot = WireReadyRuntimeSnapshot | WireUnconfiguredRuntimeSnapshot
 
 /**
  * `PermissionRequest` with the `Tool` reduced to the two fields a dialog reads
@@ -755,7 +766,7 @@ export interface WireReloadSettingsResult {
   needsRuntimeRebuild: boolean
   /** True when the host already swapped the runtime on your behalf. */
   rebuilt: boolean
-  modelKey: string
+  modelKey: string | undefined
 }
 
 export interface WireEffortResult {

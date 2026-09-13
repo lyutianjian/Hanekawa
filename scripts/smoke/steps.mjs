@@ -50,7 +50,6 @@
  */
 import * as app from './app.mjs'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { clearViewport, evaluate, key, mouseClick, setViewport, sleep, waitFor } from './cdp.mjs'
@@ -989,10 +988,8 @@ async function step8(ctx) {
     refreshed.size >= Math.min(2, laneCount),
     `runtime snapshots on lanes ${[...refreshed].join(',') || 'none'}`,
   )
-  // The config layer is global-only (`src/config/service.ts:99-125`), so this is
-  // where the edits *must* land — and the reason the driver snapshots that file
-  // before the launch and puts it back in teardown.
-  const config = readGlobalConfig()
+  // The global-only config lives in the Electron child's disposable home.
+  const config = readGlobalConfig(ctx.home)
   ctx.ok(
     'the edits reached the config on disk, not just the reply',
     config.endpoints['smoke-endpoint'] !== undefined && config.routing.main === ctx.opts.model,
@@ -1062,7 +1059,7 @@ async function step8(ctx) {
 // --- S9: the effort chip --------------------------------------------------------
 
 async function step9(ctx) {
-  const globalSettings = join(homedir(), '.myagent', 'settings.json')
+  const globalSettings = join(ctx.home, '.myagent', 'settings.json')
   const before = existsSync(globalSettings) ? statSync(globalSettings).mtimeMs : undefined
   const chipBefore = await read(ctx, probes.chip())
   ctx.ok(
@@ -1178,9 +1175,8 @@ async function step9(ctx) {
  * turn is a different step's business.
  *
  * Capability comes from a scratch endpoint and model the step itself creates:
- * the developer's own config is captured and restored byte for byte by the
- * harness, so writing an image-capable `smoke-img-model` into it for the length
- * of this step is the same deal S8's `smoke-endpoint` already has. The provider
+ * the harness supplies a disposable home, so the image-capable `smoke-img-model`
+ * and S8's `smoke-endpoint` stay in that home's private config. The provider
  * behind it is `anthropic` but nothing is ever sent to it — every submit below
  * is either gated or aimed at a *second*, non-capable model.
  *
@@ -1590,7 +1586,7 @@ async function step26(ctx) {
   }
 
   // Restore the lane's model to what it started on: the smoke-img models live
-  // only in the captured config, and the pane must not be left routed at one.
+  // only in the disposable config, and the pane must not be left routed at one.
   if (modelBefore !== undefined) {
     await read(ctx, probes.submitLine(`/model ${modelBefore}`))
     await waitFor('the lane to be back on the model it started on', async () => {
@@ -1968,19 +1964,92 @@ async function step8Restart(ctx) {
   ctx.ok('the deleted sessions did not come back', deleted.every((id) => rowFor(view, id) === undefined), `${deleted.length} deleted`)
   // The sidebar lists every added project now, so the row set is wider than
   // this run's fixtures — count only the fixture ids this run created. Project
-  // B's fixtures stay listed too: B remains in the registry after its runtime
-  // shut down, which is exactly the "history is not the topology" guarantee.
-  const fixtureIds = new Set([...ctx.sessionsA, ...ctx.sessionsB].map((session) => session.id))
+  // B's fixtures stay listed after S5 registered it, even after its runtime shut
+  // down. A focused run that skipped S5 never added B to the private registry.
+  const fixtures = [...ctx.sessionsA, ...(ctx.state.projectRootB ? ctx.sessionsB : [])]
+  const fixtureIds = new Set(fixtures.map((session) => session.id))
   ctx.eq(
     'the surviving fixtures are still listed',
     view.rows.filter((row) => fixtureIds.has(row.sessionId)).length,
-    ctx.sessionsA.length + ctx.sessionsB.length - deleted.length,
+    fixtures.length - deleted.filter((id) => fixtureIds.has(id)).length,
   )
   await ctx.shot('08R-after-restart', 'after the restart: persisted settings and an intact history')
 }
 
+/** Native safe areas and host-platform chords, with real pointer hit testing. */
+async function step27(ctx) {
+  const chrome = () => read(ctx, probes.windowChrome())
+  const initial = await waitFor('native title bar geometry', async () => {
+    const value = await chrome()
+    return value.overlay?.visible && value.overlay.width > 0 ? value : undefined
+  })
+  const modifier = initial.platform === 'darwin' ? 'Meta' : 'Ctrl'
+  ctx.eq('preload exposes the actual host platform', initial.platform, process.platform)
+  ctx.eq('the first window paint has its platform style', initial.styledPlatform, initial.platform)
+  ctx.eq('the caption strip remains 40 CSS pixels high', initial.bar.height, 40)
+  ctx.eq('the blank caption strip is draggable', initial.bar.region, 'drag')
+
+  const assertSafe = (label, view) => {
+    const area = view.overlay
+    ctx.ok(`${label}: controls stay inside the native usable area`,
+      area?.visible && view.controls.every((control) => control.x >= area.x - 1
+        && control.x + control.width <= area.x + area.width + 1), JSON.stringify(view))
+    ctx.ok(`${label}: caption buttons receive clicks`, view.controls.every((control) => control.region === 'no-drag'))
+  }
+  assertSafe('expanded/collapsed starting state', initial)
+
+  const clickControl = async (index) => {
+    const target = (await chrome()).controls[index]
+    await mouseClick(ctx.cdp, target.x + target.width / 2, target.y + target.height / 2)
+  }
+  try {
+    await clickControl(0)
+    await waitFor('the rail toggle click', async () => (await chrome()).collapsed !== initial.collapsed)
+    await settleAnimations(ctx)
+    assertSafe('after the rail toggle', await chrome())
+    await key(ctx.cdp, `${modifier}+b`)
+    await waitFor('the platform sidebar chord', async () => (await chrome()).collapsed === initial.collapsed)
+
+    await clickControl(1)
+    const menu = await waitFor('the title bar file menu', async () => {
+      const value = await chrome()
+      return value.items.length === 3 ? value : undefined
+    })
+    ctx.eq('the entire dropdown receives pointer events', menu.menuRegion, 'no-drag')
+    ctx.eq('menu hints match the host platform', menu.items.map((item) => item.text),
+      initial.platform === 'darwin'
+        ? ['新建会话⌘T', '打开项目…⇧⌘O', '设置⌘,']
+        : ['新建会话Ctrl+T', '打开项目…Ctrl+Shift+O', '设置Ctrl+,'])
+    await key(ctx.cdp, 'Escape')
+
+    const before = await lanes(ctx)
+    await key(ctx.cdp, `${modifier}+t`)
+    const opened = await waitFor('a new session from the platform chord', async () => {
+      const current = await lanes(ctx)
+      return current.length === before.length + 1 ? current : undefined
+    })
+    const added = opened.find((lane) => !before.some((old) => old.lane === lane.lane))
+    ctx.state.lanesSeen.add(Number(added.lane))
+    await key(ctx.cdp, `${modifier}+w`)
+    const remaining = await waitFor('closing the new session without closing the window', async () => {
+      const current = await lanes(ctx)
+      return current.length === before.length ? current : undefined
+    })
+    ctx.ok('the close chord removed only the new lane', !remaining.some((lane) => lane.lane === added.lane))
+    await app.liveness(ctx.app)
+    assertSafe('after opening and closing a session', await chrome())
+    await ctx.shot('27-titlebar', 'platform shortcut labels and native exclusion space; native traffic-light pixels require a whole-window capture')
+  } finally {
+    if (!ctx.app.exited) {
+      await key(ctx.cdp, 'Escape')
+      if ((await chrome()).collapsed !== initial.collapsed) await key(ctx.cdp, `${modifier}+b`)
+    }
+  }
+}
+
 export const STEPS = [
   { id: 'S7', item: 7, name: 'Ctrl+B collapses and restores the sidebar', timeout: 30000, run: step7 },
+  { id: 'S27', item: 8, name: 'native title bar space and platform shortcuts work together', timeout: 60000, run: step27 },
   { id: 'S2', item: 2, name: 'a parked permission prompt survives a switch', timeout: 60000, run: step2 },
   { id: 'S6', item: 6, name: 'the budget releases the coldest idle pane, never a pinned one', timeout: 150000, run: step6 },
   { id: 'S3', item: 3, name: 'deleting a closed session removes every artifact', timeout: 60000, run: step3 },

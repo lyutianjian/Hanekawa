@@ -24,7 +24,8 @@ import { readGitBranch } from '../gitBranch.js'
 import { listGitBranches, switchGitBranch } from '../gitBranches.js'
 import { applyPermissionModeTransition } from '../permissionMode.js'
 import { buildModelPickerOptions } from '../modelPicker.js'
-import { resolveRuntimeModelKeyAfterConfigChange, type ProviderConfigChangeScope } from '../providerRuntime.js'
+import { refreshRuntimeSlot, resolveRuntimeModelKeyAfterConfigChange, type ProviderConfigChangeScope } from '../providerRuntime.js'
+import { MISSING_MODEL_ISSUE } from '../errors.js'
 import { canPumpQueue, handOffQueuedMessage } from '../queuePump.js'
 import { projectDisplayName, projectRootKey } from '../projectDirectory.js'
 import { isGlobalWorkspaceRoot } from '../../utils/paths.js'
@@ -302,7 +303,8 @@ export class SessionHost {
    * turned image input on for the same model. `RuntimeSlot` mints a new session
    * object for both.
    */
-  private queueBlock: { messageId: string; session: AgentSession } | undefined
+  private queueBlock: { messageId: string; session: AgentSession | undefined } | undefined
+  private pendingConfigScope: ProviderConfigChangeScope | undefined
   private readonly teardown: Array<() => void> = []
   private session: SessionMeta
   private disposed = false
@@ -402,6 +404,11 @@ export class SessionHost {
   }
 
   private postSnapshot = (): void => {
+    if (this.pendingConfigScope && !this.controller.getSnapshot().isStreaming) {
+      const scope = this.pendingConfigScope
+      this.pendingConfigScope = undefined
+      this.refreshAfterConfigChange({ rebuild: true, scope })
+    }
     // Also the pump's main trigger: this fires when `streaming` flips back to
     // false, which is the moment a queued message becomes sendable.
     const cost = this.currentCost()
@@ -450,7 +457,7 @@ export class SessionHost {
   private currentCost(): WireUsageCost | undefined {
     const usage = resolveUsageWithCost(
       this.controller.getSnapshot().usage.total,
-      this.runtimeSlot.current.modelConfig.pricing,
+      this.runtimeSlot.current?.modelConfig.pricing,
     )
     if (usage.cost === undefined) return undefined
     return { amount: usage.cost, currency: usage.currency ?? 'USD' }
@@ -502,6 +509,14 @@ export class SessionHost {
   /** Metadata only — the live `AgentSession` and the endpoint's apiKey stay here. */
   private buildRuntimeSnapshot(): WireRuntimeSnapshot {
     const session = this.runtimeSlot.current
+    if (!session) {
+      return {
+        status: 'needs_configuration',
+        configurationIssue: this.runtimeSlot.getSnapshot().configurationIssue ?? MISSING_MODEL_ISSUE,
+        effort: this.runtimeSlot.getEffort(),
+        permissionMode: this.scope.permissionGate.getMode(),
+      }
+    }
     // Both window numbers come off the loop rather than off `modelConfig`: the
     // loop folds in whichever model is *active*, so a fallback activation or a
     // plan-model switch is reflected here without a runtime rebuild.
@@ -511,6 +526,7 @@ export class SessionHost {
     // plan-model *display* policy — not off whatever the session started on.
     const activeModel = session.loop.getActiveModel()
     return {
+      status: 'ready',
       modelKey: session.modelKey,
       model: session.modelConfig.model,
       providerName: session.providerName,
@@ -637,9 +653,9 @@ export class SessionHost {
       pending: this.messages.getSnapshot().length,
       running: this.pumping,
       turnActive: this.controller.getSnapshot().isStreaming,
-      uiBlocked: this.pendingKinds.size > 0,
+      uiBlocked: this.pendingKinds.size > 0 || !this.runtimeSlot.current,
       headMessageId: this.messages.peek()?.id,
-      ...(this.queueBlock?.session === this.runtimeSlot.current
+      ...(this.queueBlock && this.queueBlock.session === this.runtimeSlot.current
         ? { blockedMessageId: this.queueBlock.messageId }
         : {}),
     })) return
@@ -846,7 +862,7 @@ export class SessionHost {
         ))
 
       case 'run-tool': {
-        const result = await this.runtimeSlot.current.loop.runTool({
+        const result = await this.runtimeSlot.requireCurrent().loop.runTool({
           id: randomUUID(),
           name: command.name,
           input: command.input,
@@ -928,7 +944,7 @@ export class SessionHost {
           // Goes through `AgentLoop.enqueue`, the same single in-flight slot as
           // `run()`. Sent mid-turn it waits for that turn to finish, so this
           // reply can be arbitrarily slow; nothing about it is a fast path.
-          summarize: (records) => this.runtimeSlot.current.loop.summarizeRecordsForRewind(records),
+          summarize: (records) => this.runtimeSlot.requireCurrent().loop.summarizeRecordsForRewind(records),
         })
         await this.project.store.replaceRecords(this.session.id, rewrite.nextRecords)
         return withToolDisplays({ records: await this.afterRewind() }) satisfies WireRewindResult
@@ -938,7 +954,7 @@ export class SessionHost {
         const next = this.scope.createRuntime(command.modelKey, this.session, this.ledger.list())
         // Clearing before the swap: the cached Environment section embeds the
         // model name, so a stale prefix would survive into the next request.
-        this.runtimeSlot.current.loop.clearCachedSections()
+        this.runtimeSlot.current?.loop.clearCachedSections()
         this.runtimeSlot.replace(next)
         const effort = this.runtimeSlot.reapplyEffort()
         this.postRuntimeSnapshot()
@@ -963,7 +979,7 @@ export class SessionHost {
       case 'set-permission-mode': {
         const applied = applyPermissionModeTransition(
           this.scope.permissionGate,
-          this.runtimeSlot.current.planModeManager,
+          this.runtimeSlot.current?.planModeManager,
           command.mode,
         )
         this.postRuntimeSnapshot()
@@ -997,7 +1013,7 @@ export class SessionHost {
         const { needsRuntimeRebuild } = await this.project.reloadSettings()
         return {
           needsRuntimeRebuild,
-          ...this.refreshAfterConfigChange({ rebuild: needsRuntimeRebuild, scope: 'models' }),
+          ...this.refreshAfterConfigChange({ rebuild: needsRuntimeRebuild || !this.runtimeSlot.current, scope: 'models' }),
         } satisfies WireReloadSettingsResult
       }
 
@@ -1218,7 +1234,7 @@ export class SessionHost {
    * into the next runtime `set-model` or `reload-settings` builds.
    */
   private async afterRewind(): Promise<SessionRecord[]> {
-    this.runtimeSlot.current.loop.invalidateRecordsCache()
+    this.runtimeSlot.current?.loop.invalidateRecordsCache()
     const records = await this.controller.reload()
     this.ledger.rebase(records)
     // The rewind may have cut away the `message_queue` records the live queue was
@@ -1306,7 +1322,7 @@ export class SessionHost {
     const defaultModelKey = this.project.config.resolveModelReference(this.project.config.get().defaultModel)
     const pickerOptions = buildModelPickerOptions(
       this.project.config,
-      this.runtimeSlot.current.modelKey,
+      this.runtimeSlot.current?.modelKey,
       Object.keys(configured),
     )
     return { models, pickerOptions, ...(defaultModelKey ? { defaultModelKey } : {}) }
@@ -1515,19 +1531,28 @@ export class SessionHost {
   refreshAfterConfigChange(options: {
     rebuild: boolean
     scope: ProviderConfigChangeScope
-  }): { rebuilt: boolean; modelKey: string } {
-    const currentKey = this.runtimeSlot.current.modelKey
+  }): { rebuilt: boolean; modelKey: string | undefined } {
+    const currentKey = this.runtimeSlot.current?.modelKey
     if (!options.rebuild) return { rebuilt: false, modelKey: currentKey }
+    if (this.controller.getSnapshot().isStreaming) {
+      // A routing change must still take precedence if another edit follows it
+      // during the same turn. Other edits retain the lane's selected model.
+      if (this.pendingConfigScope !== 'routing') this.pendingConfigScope = options.scope
+      return { rebuilt: false, modelKey: currentKey }
+    }
     // Rebuilt here rather than asked of the client: that hooks are captured
     // at runtime-construction time is host trivia a renderer should not know.
-    const nextKey =
-      resolveRuntimeModelKeyAfterConfigChange(this.project.config, currentKey, options.scope) ?? currentKey
-    const next = this.scope.createRuntime(nextKey, this.session, this.ledger.list())
-    this.runtimeSlot.current.loop.clearCachedSections()
-    this.runtimeSlot.replace(next)
-    this.runtimeSlot.reapplyEffort()
+    const nextKey = resolveRuntimeModelKeyAfterConfigChange(this.project.config, currentKey, options.scope)
+    refreshRuntimeSlot({
+      config: this.project.config,
+      runtimeSlot: this.runtimeSlot,
+      createRuntime: this.scope.createRuntime,
+      modelKey: nextKey,
+      session: this.session,
+      records: this.ledger.list(),
+    })
     this.postRuntimeSnapshot()
-    return { rebuilt: true, modelKey: nextKey }
+    return { rebuilt: true, modelKey: this.runtimeSlot.current?.modelKey }
   }
 
   /**
@@ -1541,7 +1566,7 @@ export class SessionHost {
    * snapshot — rather than tracking a third copy that can drift.
    */
   activeModelKey(): string | undefined {
-    return this.controller.getSnapshot().isStreaming ? this.runtimeSlot.current.modelKey : undefined
+    return this.controller.getSnapshot().isStreaming ? this.runtimeSlot.current?.modelKey : undefined
   }
 
   /**

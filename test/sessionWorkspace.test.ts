@@ -357,7 +357,7 @@ test('a pane built without a workspace is the same three objects', async () => {
 
   // What `tui.tsx` gets: the slot already holds a runtime for this session, and
   // the effort is the project's startup level.
-  assert.equal(pane.runtimeSlot.current.modelKey, 'sonnet')
+  assert.equal(pane.runtimeSlot.requireCurrent().modelKey, 'sonnet')
   assert.equal(pane.runtimeSlot.getEffort(), 'high')
   assert.equal(pane.controller.getSessionId(), session.id)
   assert.equal(pane.getSession().id, session.id)

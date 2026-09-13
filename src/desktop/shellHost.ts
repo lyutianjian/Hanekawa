@@ -1312,13 +1312,16 @@ export class ShellHost<
     // yet, so a rejection leaves the config as it was.
     const effect = await applySettingsEffect(entry, change, this.deps.onPickDirectory)
     if (effect.saveConfig) await entry.project.config.save()
-    await entry.project.reloadSettings()
+    // Provider configuration is global. A project opened before first-time
+    // setup must see the same saved models as the project editing settings.
+    const affected = change.scope === 'provider' ? this.deps.directory.entries() : [entry]
+    for (const target of affected) await target.project.reloadSettings()
     if (effect.afterReload) await effect.afterReload()
 
     let rebuiltLanes = 0
     if (effect.rebuild) {
       for (const held of this.lanes.values()) {
-        if (held.project !== entry) continue
+        if (!affected.includes(held.project)) continue
         held.occupant.refreshAfterConfigChange({ rebuild: true, scope: effect.scope })
         rebuiltLanes += 1
       }
@@ -1348,7 +1351,6 @@ export class ShellHost<
           : []
     if (doomed.length === 0) return
     for (const held of this.lanes.values()) {
-      if (held.project !== entry) continue
       const running = held.occupant.activeModelKey()
       if (running === undefined || !doomed.includes(running)) continue
       const title = held.pane.getSession().title ?? held.pane.getSession().id

@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
+import { build } from 'esbuild'
 
 /**
  * Smoke for the desktop shell build pipeline. Seven artifacts must land at the
@@ -43,7 +44,6 @@ import { promisify } from 'node:util'
 const run = promisify(execFile)
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 
-const esbuildEntry = join(repoRoot, 'node_modules', 'esbuild', 'bin', 'esbuild')
 // A unique directory per run: the previous fixed name meant two concurrent runs
 // shared an output root, and `rmSync(recursive)` on Windows is exactly where
 // that surfaces as EPERM/EBUSY.
@@ -62,49 +62,37 @@ before(async () => {
   // Main process bundle: Node-targeted, with `electron` external so the
   // running binary supplies it. The bundled imports are the runtime,
   // sessions, harness, etc. — full app graph minus the renderer side.
-  await run(
-    process.execPath,
-    [
-      esbuildEntry,
-      'src/desktop/main.ts',
-      '--bundle',
-      '--platform=node',
-      '--format=cjs',
-      '--target=node20',
-      `--outfile=${join(buildRoot, 'desktop', 'main.js')}`,
-      '--external:electron',
-    ],
-    { cwd: repoRoot, maxBuffer: 32 * 1024 * 1024 },
-  )
-  await run(
-    process.execPath,
-    [
-      esbuildEntry,
-      'src/desktop/preload.ts',
-      '--bundle',
-      '--platform=node',
-      '--format=cjs',
-      '--target=node20',
-      `--outfile=${join(buildRoot, 'desktop', 'preload.js')}`,
-      '--external:electron',
-    ],
-    { cwd: repoRoot, maxBuffer: 32 * 1024 * 1024 },
-  )
-  await run(
-    process.execPath,
-    [
-      esbuildEntry,
-      'src/desktop/renderer/app.ts',
-      '--bundle',
-      '--platform=neutral',
-      '--format=esm',
-      '--target=chrome120',
-      '--main-fields=',
-      '--alias:node:crypto=./src/desktop/renderer/runtime/nodeCryptoShim.ts',
-      `--outfile=${join(buildRoot, 'desktop', 'renderer', 'app.js')}`,
-    ],
-    { cwd: repoRoot, maxBuffer: 32 * 1024 * 1024 },
-  )
+  await build({
+    absWorkingDir: repoRoot,
+    entryPoints: ['src/desktop/main.ts'],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node20',
+    outfile: join(buildRoot, 'desktop', 'main.js'),
+    external: ['electron'],
+  })
+  await build({
+    absWorkingDir: repoRoot,
+    entryPoints: ['src/desktop/preload.ts'],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node20',
+    outfile: join(buildRoot, 'desktop', 'preload.js'),
+    external: ['electron'],
+  })
+  await build({
+    absWorkingDir: repoRoot,
+    entryPoints: ['src/desktop/renderer/app.ts'],
+    bundle: true,
+    platform: 'neutral',
+    format: 'esm',
+    target: 'chrome120',
+    mainFields: [],
+    alias: { 'node:crypto': './src/desktop/renderer/runtime/nodeCryptoShim.ts' },
+    outfile: join(buildRoot, 'desktop', 'renderer', 'app.js'),
+  })
 })
 
 test('main process bundle exists and is non-empty', () => {

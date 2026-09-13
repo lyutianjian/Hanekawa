@@ -347,7 +347,7 @@ export class ConfigService {
   }
 
   addModel(name: string, model: ModelConfig): void {
-    this.config.models[name] = model
+    this.setModelConfig(name, model)
   }
 
   resolveModel(name: string): ModelConfig | undefined {
@@ -443,6 +443,9 @@ export class ConfigService {
 
   setModelConfig(name: string, model: ModelConfig): void {
     this.config.models = { ...this.config.models, [name]: model }
+    if (!this.config.defaultModel?.trim() && this.resolveModel(name)) {
+      this.config.defaultModel = name
+    }
   }
 
   /**

@@ -1,5 +1,6 @@
 import type { SessionMeta } from '../sessions/service.js'
 import { RuntimeSlot } from './runtimeSlot.js'
+import { refreshRuntimeSlot } from './providerRuntime.js'
 import { SessionController, type SessionControllerDeps } from './sessionController.js'
 import {
   switchToExistingSession,
@@ -115,15 +116,18 @@ export function createSessionPane(
   scope: SessionScope,
   options: CreateSessionPaneOptions = {},
 ): SessionPane {
-  const runtime = scope.createRuntime(
-    options.modelKey ?? project.initialModelKey,
-    scope.session,
-    scope.existingRecords,
-  )
   const runtimeSlot = new RuntimeSlot(
-    runtime,
+    undefined,
     project.initialEffort ?? project.configuredEffortLevel,
   )
+  refreshRuntimeSlot({
+    config: project.config,
+    runtimeSlot,
+    createRuntime: scope.createRuntime,
+    modelKey: options.modelKey ?? project.initialModelKey,
+    session: scope.session,
+    records: scope.existingRecords,
+  })
   const controller = new SessionController({
     cwd: project.cwd,
     store: project.store,
@@ -132,7 +136,7 @@ export function createSessionPane(
     recordProxy: scope.bridges.record,
     // Read per turn, so a model switch mid-session cannot retarget a run
     // already in flight.
-    getSession: () => runtimeSlot.current,
+    getSession: () => runtimeSlot.requireCurrent(),
     ...(options.createFileHistoryService
       ? { createFileHistoryService: options.createFileHistoryService }
       : {}),

@@ -1,4 +1,4 @@
-import test from 'node:test'
+import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -12,6 +12,9 @@ import { displayCacheSource } from '../src/harness/cacheBreakDetection.js'
 import type { ImageAttachmentImporter, ModelProvider, ModelRequest, SessionRecord, Tool, ToolContext } from '../src/harness/types.js'
 import type { ImageAttachmentRef } from '../src/media/types.js'
 
+const testCwd = await mkdtemp(path.join(tmpdir(), 'hanekawa-agent-tool-'))
+after(() => rm(testCwd, { recursive: true, force: true }))
+
 async function waitFor(assertion: () => boolean, timeoutMs = 500): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -23,7 +26,7 @@ async function waitFor(assertion: () => boolean, timeoutMs = 500): Promise<void>
 
 function toolContext(sessionId = 'parent'): ToolContext {
   return {
-    cwd: process.cwd(),
+    cwd: testCwd,
     sessionId,
     readFiles: new Set(),
     readFileState: new Map(),
@@ -119,7 +122,7 @@ test('Agent tool marks only read-only agent types as concurrency-safe inputs', (
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   assert.equal(BUILT_IN_AGENT_DEFINITIONS.find((definition) => definition.type === 'general')?.isReadOnlyAgent, true)
@@ -149,7 +152,7 @@ test('Agent tool bridges sub-agent transcripts without leaking child tool record
     model: 'fake-model',
     tools: () => runtimeTools,
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
   runtimeTools = [agentTool]
   const runner = new ToolRunner(runtimeTools, new PermissionGate(async () => true), {
@@ -199,7 +202,7 @@ test('Agent tool returns aggregated sub-agent output after max_tokens continuati
     model: 'fake-model',
     tools: () => runtimeTools,
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
   runtimeTools = [agentTool]
   const runner = new ToolRunner(runtimeTools, new PermissionGate(async () => true), {
@@ -236,7 +239,7 @@ test('Agent tool marks sub-agent output incomplete when max_tokens recovery is e
     model: 'fake-model',
     tools: () => runtimeTools,
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
   runtimeTools = [agentTool]
   const runner = new ToolRunner(runtimeTools, new PermissionGate(async () => true), {
@@ -375,7 +378,7 @@ test('explicit run_in_background false overrides custom agent background default
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [{
       type: 'backgrounder',
       description: 'Runs in background by default.',
@@ -418,7 +421,7 @@ test('Agent tool uses routed sub-agent runtime without exposing model input', as
     modelKey: 'parent-key',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     resolveSubagentModel: (subagentType) => {
       assert.equal(subagentType, 'explore')
       return {
@@ -459,7 +462,7 @@ test('custom agent model frontmatter requests a concrete model key', async () =>
     model: 'parent-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [{
       type: 'modelled',
       description: 'Uses a configured model.',
@@ -505,7 +508,7 @@ test('custom agent model inherit skips sub-agent routing', async () => {
     modelKey: 'parent-key',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [{
       type: 'inheriting',
       description: 'Inherits parent runtime.',
@@ -538,7 +541,7 @@ test('custom agent unknown model key returns a clear tool error', async () => {
     model: 'parent-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [{
       type: 'missing-model',
       description: 'References a missing model.',
@@ -574,7 +577,7 @@ test('Agent tool aborts sub-agent runs after agentTimeoutMs', async () => {
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentTimeoutMs: 5,
   })
 
@@ -617,7 +620,7 @@ test('Agent tool does not persist sub-agent denial state into the parent store',
     tools: () => [confirmReadTool],
     permissionPrompt: async () => false,
     denialStateStore,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   const result = await agentTool.execute({ task: 'needs approval', subagent_type: 'general' }, toolContext())
@@ -658,7 +661,7 @@ test('custom agent permissionMode bypass auto approves confirm tools inside the 
       return false
     },
     permissionMode: () => 'default',
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [{
       type: 'auto-review',
       description: 'Auto approves confirm tools.',
@@ -707,7 +710,7 @@ test('parent bypass permission mode is preserved over custom agent permissionMod
     tools: () => [confirmReadTool],
     permissionPrompt: async () => false,
     permissionMode: () => 'bypass',
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [{
       type: 'planish',
       description: 'Would otherwise use plan mode.',
@@ -747,7 +750,7 @@ test('custom agent skills are activated for the child context and missing skills
       model: 'fake-model',
       tools: () => [],
       permissionPrompt: async () => true,
-      cwd: process.cwd(),
+      cwd: testCwd,
       skills: [
         {
           name: 'debugging',
@@ -868,7 +871,7 @@ test('custom agent worktree isolation rejects read-only agent definitions', asyn
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [{
       type: 'readonly-isolated',
       description: 'Invalid isolation.',
@@ -1009,7 +1012,7 @@ test('Agent tool bounds persisted sub-agent results', async () => {
     model: 'fake-model',
     tools: () => runtimeTools,
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
   runtimeTools = [agentTool]
   const runner = new ToolRunner(runtimeTools, new PermissionGate(async () => true), {
@@ -1051,7 +1054,7 @@ test('Agent tool exposes sub-agent usage, verdict, and critical files in metadat
     model: 'fake-model',
     tools: () => [readOnlyTool('Glob'), readOnlyTool('Grep'), readOnlyTool('Read')],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   const result = await agentTool.execute({ task: 'plan it', subagent_type: 'plan' }, toolContext('parent-session'))
@@ -1094,7 +1097,7 @@ test('Agent tool ignores prose and non-path tokens under Critical Files heading'
     model: 'fake-model',
     tools: () => [readOnlyTool('Glob'), readOnlyTool('Grep'), readOnlyTool('Read')],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   const result = await agentTool.execute({ task: 'plan it', subagent_type: 'plan' }, toolContext('parent-session'))
@@ -1119,7 +1122,7 @@ test('one-shot explore and plan agents suppress parent context summary messages'
       model: 'fake-model',
       tools: () => runtimeTools,
       permissionPrompt: async () => true,
-      cwd: process.cwd(),
+      cwd: testCwd,
     })
     runtimeTools = [agentTool]
     const records: SessionRecord[] = []
@@ -1158,7 +1161,7 @@ test('Agent tool passes requested maxOutputTokens into the sub-agent request', a
     model: 'fake-model',
     tools: () => [readOnlyTool('Glob'), readOnlyTool('Grep'), readOnlyTool('Read')],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   await agentTool.execute({ task: 'map files', subagent_type: 'explore', maxOutputTokens: 123 }, toolContext())
@@ -1182,7 +1185,7 @@ test('Agent tool uses an isolated agent cache source', async () => {
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   await agentTool.execute({ task: 'hello', subagent_type: 'general' }, toolContext('parent-session'))
@@ -1222,7 +1225,7 @@ test('fork Agent preloads bounded parent records and uses the parent fork cache 
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     loadParentRecords: async () => parentRecords,
   })
 
@@ -1283,7 +1286,7 @@ test('fork Agent reports parent record load failures clearly', async () => {
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     loadParentRecords: async () => {
       throw new Error('bad jsonl')
     },
@@ -1316,7 +1319,7 @@ test('Agent tool gives sub-agents an independent abort signal bridged from the p
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
   const context = { ...toolContext('parent-session'), abortSignal: parentAbort.signal }
 
@@ -1341,7 +1344,7 @@ test('Agent tool runs subagentStart hooks before the sub-agent model request', a
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     hooks: {
       subagentStart: [{
         matcher: 'explore',
@@ -1373,7 +1376,7 @@ test('Agent tool appends subagentStop hook output to the parent-visible result',
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     hooks: {
       subagentStop: [{
         matcher: 'explore',
@@ -1412,7 +1415,7 @@ test('Agent tool preserves subagentStop hook output when the sub-agent result is
     model: 'fake-model',
     tools: () => [readOnlyTool('Read')],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [...BUILT_IN_AGENT_DEFINITIONS, tinyAgent],
     hooks: {
       subagentStop: [{
@@ -1443,7 +1446,7 @@ test('Agent tool appends subagentStop hook failures and blocking errors to the r
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     hooks: {
       subagentStop: [
         {
@@ -1484,7 +1487,7 @@ test('Agent tool honors maxTurns', async () => {
     model: 'fake-model',
     tools: () => [readOnlyTool('noop')],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
   const parentRecords: SessionRecord[] = []
 
@@ -1545,7 +1548,7 @@ test('Agent tool runs sub-agent tools through a permission gate', async () => {
       prompts += 1
       return false
     },
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   const result = await agentTool.execute({ task: 'try dangerous tool', subagent_type: 'general' }, toolContext())
@@ -1601,7 +1604,7 @@ test('Agent tool inherits parent always-allow session rules', async () => {
       return false
     },
     getSessionRules: () => parentGate.getSessionRules(),
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   const result = await agentTool.execute({ task: 'run inherited command', subagent_type: 'general' }, toolContext())
@@ -1626,7 +1629,7 @@ test('Agent tool omits project context for explore and plan agents', async () =>
     model: 'fake-model',
     tools: () => [readOnlyTool('Glob'), readOnlyTool('Grep'), readOnlyTool('Read')],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     projectContext: '# Project rules\nDo expensive things.',
   })
 
@@ -1648,7 +1651,7 @@ test('Agent tool description teaches effective sub-agent prompting', async () =>
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   assert.match(agentTool.description, /complex, multi-step/)
@@ -1670,7 +1673,7 @@ test('Agent tool snapshots agent definitions at creation time', async () => {
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: mutableDefinitions,
   })
 
@@ -1790,7 +1793,7 @@ test('Agent tool requires an explicit subagent_type', async () => {
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   await assert.rejects(
@@ -2006,7 +2009,7 @@ test('Agent tool supports custom subagent types and dynamic descriptions', async
     model: 'fake-model',
     tools: () => [readOnlyTool('Glob'), readOnlyTool('Grep'), readOnlyTool('Read')],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [...BUILT_IN_AGENT_DEFINITIONS, securityAgent],
   })
 
@@ -2080,7 +2083,7 @@ test('parallel custom read-only sub-agents receive isolated tool contexts', asyn
     model: 'fake-model',
     tools: () => [markContextTool],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions,
   })
 
@@ -2107,7 +2110,7 @@ test('Agent tool reports a clear runtime error for unknown custom subagent types
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   const result = await agentTool.execute({ task: 'hello', subagent_type: 'missing-agent' }, toolContext())
@@ -2139,7 +2142,7 @@ test('custom agent maxResultSizeChars controls its result budget', async () => {
     model: 'fake-model',
     tools: () => [readOnlyTool('Read')],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [...BUILT_IN_AGENT_DEFINITIONS, tinyAgent],
   })
 
@@ -2303,7 +2306,7 @@ test('explicit maxTurns in input overrides per-type default', async () => {
     model: 'fake-model',
     tools: () => [readOnlyTool('noop')],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   const result = await agentTool.execute({
@@ -2366,7 +2369,7 @@ test('built-in explore keeps Bash read-only even when the parent is in bypass mo
       return true
     },
     permissionMode: () => 'bypass',
-    cwd: process.cwd(),
+    cwd: testCwd,
   })
 
   assert.equal((await agentTool.execute({ task: 'inspect', subagent_type: 'explore' }, toolContext())).ok, true)
@@ -2463,7 +2466,7 @@ test('fork agent rejects recursive fork when parent records contain fork boilerp
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     loadParentRecords: async () => parentRecords,
   })
 
@@ -2492,7 +2495,7 @@ test('fork agent succeeds when parent records do not contain fork boilerplate', 
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     loadParentRecords: async () => parentRecords,
   })
 
@@ -2667,7 +2670,7 @@ test('MYAGENT_SUBAGENT_MODEL overrides default routing', async () => {
       model: 'parent-model',
       tools: () => [],
       permissionPrompt: async () => true,
-      cwd: process.cwd(),
+      cwd: testCwd,
       resolveSubagentModel: (subagentType, modelKey) => {
         requestedModelKey = modelKey
         return {
@@ -2716,7 +2719,7 @@ test('MYAGENT_SUBAGENT_MODEL per-type override takes precedence', async () => {
       model: 'parent-model',
       tools: () => [],
       permissionPrompt: async () => true,
-      cwd: process.cwd(),
+      cwd: testCwd,
       resolveSubagentModel: (subagentType, modelKey) => {
         requestedModelKey = modelKey
         return {
@@ -2761,7 +2764,7 @@ test('invalid MYAGENT_SUBAGENT_MODEL falls through to default routing', async ()
       model: 'parent-model',
       tools: () => [],
       permissionPrompt: async () => true,
-      cwd: process.cwd(),
+      cwd: testCwd,
       resolveSubagentModel: () => undefined,
     })
 
@@ -2818,7 +2821,7 @@ test('custom agent criticalSystemReminder is injected into sub-agent system prom
     model: 'fake-model',
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [{
       type: 'reminded',
       description: 'Agent with critical reminder.',
@@ -2965,7 +2968,7 @@ test('sub-agent imported images are owned by the parent session, not by the agen
     model: 'fake-model',
     tools: () => [importTool],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     imageAttachments: recordingImageStore(imports),
     agentDefinitions: [...BUILT_IN_AGENT_DEFINITIONS, {
       type: 'reader',
@@ -3013,7 +3016,7 @@ test('a sub-agent without an attachment store keeps no handle at all', async () 
     model: 'fake-model',
     tools: () => [peekTool],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     agentDefinitions: [...BUILT_IN_AGENT_DEFINITIONS, {
       type: 'peeker',
       description: 'Peeks at its context.',
@@ -3058,7 +3061,7 @@ test('a fork sub-agent resolves inherited image refs and only those', async () =
     supportsImageInput: true,
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     loadParentRecords: async () => parentRecords,
     // Registered refs resolve; anything else is a per-image miss, which is the
     // whole of the "only through registered exact references" rule.
@@ -3104,7 +3107,7 @@ test('a text-only fork sub-agent degrades inherited images without asking the pa
     supportsImageInput: true,
     tools: () => [],
     permissionPrompt: async () => true,
-    cwd: process.cwd(),
+    cwd: testCwd,
     loadParentRecords: async () => [{
       type: 'message',
       id: 'parent-1',

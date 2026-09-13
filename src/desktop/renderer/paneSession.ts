@@ -1532,7 +1532,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
         const runtime = client.getRuntimeSnapshot()
         return effortPickerView({
           current: runtime?.effort ?? '',
-          ...(runtime?.supportedEfforts ? { supportedEfforts: runtime.supportedEfforts } : {}),
+          ...(runtime?.status === 'ready' && runtime.supportedEfforts ? { supportedEfforts: runtime.supportedEfforts } : {}),
         })
       }
       case 'background-tasks':
@@ -1551,6 +1551,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
    * to open reads as the app having hung.
    */
   async function openRuntimeMenu(): Promise<void> {
+    if (client.getRuntimeSnapshot()?.status === 'needs_configuration') {
+      deps.onOpenProviderSettings?.()
+      return
+    }
     let models: WireModelsResult | undefined
     try {
       models = await client.listModels()
@@ -1686,6 +1690,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   async function send(): Promise<void> {
     const text = deps.composer.value()
     const classified = classifyInput(text)
+    if (classified.kind !== 'command' && client.getRuntimeSnapshot()?.status === 'needs_configuration') {
+      note('请先配置可用模型，当前草稿已保留。', 'system')
+      deps.onOpenProviderSettings?.()
+      return
+    }
     if (classified.kind === 'empty') {
       // An image-only input is a real message: the draft list is part of the
       // composer's content the way the textarea is, and `classifyInput`'s

@@ -67,6 +67,9 @@ const ALLOWED_INLINE_STYLE_PROPS = ['height']
  */
 const ALLOWED_STYLE_PROPERTY_CONSTANTS = [
   'SIDEBAR_WIDTH_VARIABLE',
+  // Native window controls are measured by Chromium, including zoom/fullscreen.
+  'TITLEBAR_LEFT_INSET_VARIABLE',
+  'TITLEBAR_RIGHT_INSET_VARIABLE',
   // The hover marquee's distance and duration: measured per row, so no token can
   // hold them. `model/marquee.ts` owns both names.
   'MARQUEE_SHIFT_VARIABLE',
@@ -180,6 +183,21 @@ test('the page links the stylesheet and carries no CSS of its own', () => {
   assert.match(html, /<link\s+rel="stylesheet"\s+href="\.\/styles\.css"\s*\/?>/)
   assert.doesNotMatch(html, /<style[\s>]/, 'CSS belongs in styles.css')
   assert.doesNotMatch(html, /\sstyle="/, 'no inline style attribute; add a rule instead')
+})
+
+test('title bar uses measured native insets and keeps entire menus clickable', () => {
+  const bar = blocks.find((block) => block.selector === '#titlebar')
+  assert.ok(bar)
+  assert.ok(bar.decls.some((decl) => decl.prop === 'height' && decl.value === '40px'))
+  assert.ok(bar.decls.some((decl) => decl.prop === '-webkit-app-region' && decl.value === 'drag'))
+  const padding = bar.decls.find((decl) => decl.prop === 'padding')?.value ?? ''
+  assert.match(padding, /var\(--titlebar-inset-left\)/)
+  assert.match(padding, /var\(--titlebar-inset-right\)/)
+  for (const selector of ['#titlebar button', '.titlebar-menu-shell', '.titlebar-menu']) {
+    assert.ok(blocks.some((block) => block.selector.split(',').map((part) => part.trim()).includes(selector)
+      && block.decls.some((decl) => decl.prop === '-webkit-app-region' && decl.value === 'no-drag')),
+    `${selector} must receive pointer events, including the menu's empty padding`)
+  }
 })
 
 test('every token is used and every use is declared', () => {
@@ -366,6 +384,8 @@ test('the palette is the one that was agreed, value for value', () => {
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
       '--sidebar-width': '280px',
+      '--titlebar-inset-left': '0px',
+      '--titlebar-inset-right': '138px',
       // The sidebar seam, and the 7px slice its scrollbar overhangs (2px of air
       // plus the 1px sash line).
       '--sidebar-gutter': '10px',
@@ -473,6 +493,8 @@ test('the palette is the one that was agreed, value for value', () => {
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
       '--sidebar-width': '280px',
+      '--titlebar-inset-left': '0px',
+      '--titlebar-inset-right': '138px',
       // The sidebar seam, and the 7px slice its scrollbar overhangs (2px of air
       // plus the 1px sash line).
       '--sidebar-gutter': '10px',

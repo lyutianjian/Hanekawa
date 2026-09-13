@@ -46,7 +46,7 @@ export function buildRunOverrides(
       effortOverride = typeof clamped === 'string' ? clamped : undefined
     }
   } else if (effortOverride) {
-    const clamped = clampEffort(effortOverride, deps.runtimeSlot.current.modelConfig.supportedEfforts)
+    const clamped = clampEffort(effortOverride, deps.runtimeSlot.requireCurrent().modelConfig.supportedEfforts)
     effortOverride = typeof clamped === 'string' ? clamped : undefined
   }
 

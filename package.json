@@ -20,7 +20,7 @@
     "verify:sharp": "node scripts/verify-sharp.mjs",
     "verify:sharp:electron": "electron scripts/verify-sharp-electron.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.renderer.json && tsc --noEmit -p tsconfig.domtest.json",
-    "test": "node --import tsx --test test/**/*.test.ts",
+    "test": "node scripts/test.mjs",
     "postinstall": "patch-package"
   },
   "dependencies": {

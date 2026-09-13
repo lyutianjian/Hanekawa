@@ -4,8 +4,8 @@
  *
  * Keeping the surface narrow is not just hygiene: a renderer that can call
  * arbitrary IPC is a renderer that bypasses the whole `SessionHost` model.
- * The contract is "the renderer can post messages and listen for messages";
- * everything else is host business.
+ * The renderer can post/listen for messages and read its host platform;
+ * runtime decisions stay with the host.
  *
  * Source bytes for this file travel through esbuild (see `package.json`'s
  * `build:desktop`), not `tsc -p tsconfig.build.json`, so it is excluded from
@@ -26,6 +26,7 @@ import {
 const ipc: RendererSideIpc = ipcRenderer
 
 const bridge: DesktopBridge = {
+  platform: process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux',
   send: (message) => {
     ipc.send(ELECTRON_RUNTIME_CHANNEL, message)
   },

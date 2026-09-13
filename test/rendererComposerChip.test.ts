@@ -10,15 +10,16 @@ import {
   submitButtonView,
   submitLabel,
 } from '../src/desktop/renderer/model/composer.js'
-import type { WireRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
+import type { WireReadyRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
 
 /**
  * The composer chip's decisions, with no DOM in sight — the `model/` half of
  * the renderer's split, same as `test/rendererSidebar.test.ts`.
  */
 
-function runtime(overrides: Partial<WireRuntimeSnapshot> = {}): WireRuntimeSnapshot {
+function runtime(overrides: Partial<WireReadyRuntimeSnapshot> = {}): WireReadyRuntimeSnapshot {
   return {
+    status: 'ready',
     modelKey: 'sonnet',
     model: 'claude-sonnet-5',
     effort: 'high',
@@ -35,6 +36,18 @@ test('the chip is inert until a runtime snapshot arrives', () => {
   assert.equal(view.model, '…')
   assert.equal(view.effort, '…')
   assert.equal(view.atCeiling, false)
+})
+
+test('an unconfigured runtime offers settings instead of a loading placeholder', () => {
+  const view = composerChipView({
+    status: 'needs_configuration',
+    configurationIssue: { code: 'no_default_model', message: '尚未配置模型。' },
+    effort: 'high',
+    permissionMode: 'default',
+  })
+  assert.equal(view.enabled, true)
+  assert.equal(view.model, '配置模型')
+  assert.match(view.title, /点击配置模型与服务商/)
 })
 
 test('the chip shows the model and the effort level', () => {
@@ -66,7 +79,7 @@ test('the provider is in the tooltip, not the chip', () => {
 })
 
 test('a raw token budget is shown verbatim', () => {
-  // `WireRuntimeSnapshot.effort` is a string because `set-effort.level` accepts
+  // `WireReadyRuntimeSnapshot.effort` is a string because `set-effort.level` accepts
   // a decimal token budget as well as a level name. A budget has no rung on the
   // ladder, so there is no label to map it to.
   const view = composerChipView(runtime({ effort: '32000' }))

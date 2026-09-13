@@ -1,8 +1,11 @@
+/** Platforms supported by the Electron desktop build. */
+export type DesktopPlatform = 'darwin' | 'win32' | 'linux'
+
 /**
  * The single API the renderer sees.
  *
- * Kept intentionally narrow: only `HostCommand` and `HostEvent` cross the
- * boundary, and the renderer never sees a `Tool`, a `ModelProvider`, or an
+ * Kept intentionally narrow: runtime messages and read-only platform metadata
+ * cross the boundary, and the renderer never sees a `Tool`, a `ModelProvider`, or an
  * `AbortSignal`. Anything more would have to be cloned on every post, and
  * would leak the host's internal shape into the renderer bundle.
  *
@@ -13,6 +16,8 @@
  * thing. The receiving `parseHostCommand` is the source of truth on shapes.
  */
 export interface DesktopBridge {
+  /** Read-only host metadata, available before the renderer's first paint. */
+  readonly platform: DesktopPlatform
   /** Send a host command. The host validates and replies asynchronously. */
   send(message: unknown): void
   /**

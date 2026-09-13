@@ -1,3 +1,6 @@
+import type { DesktopPlatform } from '../../types.js'
+import { desktopShortcut } from './desktopShortcuts.js'
+
 /**
  * The title bar's menus, as data.
  *
@@ -39,27 +42,29 @@ export interface TitleBarMenu {
   readonly items: readonly TitleBarItem[]
 }
 
-export const TITLE_BAR_MENUS: readonly TitleBarMenu[] = [
-  {
-    id: 'file',
-    label: '文件',
-    items: [
-      { action: 'new-session', label: '新建会话', chord: 'Ctrl+T', needsProject: true },
-      { action: 'open-project', label: '打开项目…', chord: 'Ctrl+Shift+O', needsProject: true },
-      { action: 'open-settings', label: '设置', chord: 'Ctrl+,' },
-    ],
-  },
-  {
-    id: 'view',
-    label: '视图',
-    items: [{ action: 'toggle-sidebar', label: '收起 / 展开侧栏', chord: 'Ctrl+B' }],
-  },
-  {
-    id: 'help',
-    label: '帮助',
-    items: [{ action: 'toggle-help', label: '快捷键', chord: '' }],
-  },
-]
+export function titleBarMenus(platform: DesktopPlatform): readonly TitleBarMenu[] {
+  return [
+    {
+      id: 'file',
+      label: '文件',
+      items: [
+        { action: 'new-session', label: '新建会话', chord: desktopShortcut(platform, 'new-session'), needsProject: true },
+        { action: 'open-project', label: '打开项目…', chord: desktopShortcut(platform, 'open-project'), needsProject: true },
+        { action: 'open-settings', label: '设置', chord: desktopShortcut(platform, 'open-settings') },
+      ],
+    },
+    {
+      id: 'view',
+      label: '视图',
+      items: [{ action: 'toggle-sidebar', label: '收起 / 展开侧栏', chord: desktopShortcut(platform, 'toggle-sidebar') }],
+    },
+    {
+      id: 'help',
+      label: '帮助',
+      items: [{ action: 'toggle-help', label: '快捷键', chord: '' }],
+    },
+  ]
+}
 
 export interface TitleBarView {
   readonly menus: readonly TitleBarMenu[]

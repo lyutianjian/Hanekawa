@@ -54,7 +54,7 @@ export interface ModelPickerOption {
 
 export function buildModelPickerOptions(
   config: ModelPickerConfig,
-  currentModelKey: string,
+  currentModelKey: string | undefined,
   knownModelKeys: string[],
 ): ModelPickerOption[] {
   const defaultModelKey = config.resolveModelReference(config.get().defaultModel)

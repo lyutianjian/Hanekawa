@@ -9,7 +9,7 @@ import {
   statusUsageView,
 } from '../src/desktop/renderer/model/usage.js'
 import type { TokenUsage } from '../src/harness/types.js'
-import type { WireRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
+import type { WireReadyRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
 
 /**
  * The two token readouts, with no DOM — the `model/` half of the renderer's
@@ -20,8 +20,9 @@ function usage(overrides: Partial<TokenUsage> = {}): TokenUsage {
   return { inputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0, ...overrides }
 }
 
-function runtime(overrides: Partial<WireRuntimeSnapshot> = {}): WireRuntimeSnapshot {
+function runtime(overrides: Partial<WireReadyRuntimeSnapshot> = {}): WireReadyRuntimeSnapshot {
   return {
+    status: 'ready',
     modelKey: 'sonnet',
     model: 'claude-sonnet-5',
     effort: 'high',

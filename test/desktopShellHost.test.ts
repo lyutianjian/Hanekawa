@@ -1876,7 +1876,7 @@ test('one edit reloads the project once and refreshes every lane of it', async (
   )
 })
 
-test('an edit in one project leaves another projects lanes alone', async () => {
+test('a global provider edit reloads every open project and refreshes their lanes', async () => {
   const h = createHarness()
   seedConfig(h.project)
   const other = h.addProject('C:\\repo\\beta')
@@ -1893,8 +1893,25 @@ test('an edit in one project leaves another projects lanes alone', async () => {
     key: 'small',
   })
 
-  assert.equal(h.configRefreshes.length, 1)
-  assert.equal(other.project.reloads, 0, 'the other project never reloaded')
+  assert.equal(h.configRefreshes.length, 2)
+  assert.equal(h.project.reloads, 1)
+  assert.equal(other.project.reloads, 1, 'the global configuration reaches the other project too')
+})
+
+test('removing a global model checks running turns in other projects before saving', async () => {
+  const h = createHarness()
+  seedConfig(h.project)
+  const other = h.addProject('C:\\repo\\beta')
+  seedConfig(other.project)
+  const lane = await h.host.openLane(other.entry, {})
+  h.runOn(lane.lane, 'big')
+
+  await assert.rejects(
+    h.client.changeSettings(h.entry.root, { scope: 'provider', kind: 'remove-model', key: 'big' }),
+    /在跑/,
+  )
+  assert.ok(h.project.config.config.models.big)
+  assert.equal(h.project.config.saves, 0)
 })
 
 test('a model a routing role names is deleted anyway, and the role degrades', async () => {

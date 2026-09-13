@@ -239,6 +239,11 @@
   --viewer-zoom: 1;
   --viewer-pan-x: 0px;
   --viewer-pan-y: 0px;
+  /* Native caption controls, updated before the first render and on geometry
+     changes. These defaults retain the Windows/Linux fallback; macOS starts
+     with an 80px left inset supplied by dom/windowChrome.ts. */
+  --titlebar-inset-left: 0px;
+  --titlebar-inset-right: 138px;
 
   /* --- type ---
      The chrome is proportional; anything the user has to read character by
@@ -402,17 +407,9 @@ body {
 }
 
 /* --- title bar ---
-   The frameless window's own caption strip (5g). `-webkit-app-region: drag` is
-   what makes the window movable at all once `frame` is gone, and every control
-   inside has to opt back out or it becomes a place to grab the window rather
-   than a button. The right padding is the space Windows paints its three
-   buttons into (`titleBarOverlay`); nothing may be drawn there. Measured, not
-   guessed (design_guidance 九.2): at the 40px overlay height the strip is
-   276 physical px on a 200%-scale display = 138 CSS px, confirmed two ways —
-   Chromium's `windowControlsOverlay.getTitlebarAreaRect()` and a DPI-aware
-   pixel scan of the live window. The width is DPI-driven, not height-driven:
-   it measured identical at the old 32px height, so the old 148px carried ~10px
-   of unmeasured margin. */
+   Native buttons occupy the left on macOS and normally the right elsewhere.
+   Window Controls Overlay supplies those insets in CSS pixels, including page
+   zoom and fullscreen changes. Only the blank strip is a drag region. */
 #titlebar {
   flex: 0 0 auto;
   display: flex;
@@ -422,15 +419,15 @@ body {
      paints its three buttons onto the same band, and the two numbers disagreeing
      puts the caption text off the controls' centre line. */
   height: 40px;
-  /* The right inset is the measured control strip (above) and stays a literal;
-     the left one is the frame's own gutter and rides the scale. */
-  padding: 0 138px 0 var(--space-3);
+  padding: 0 max(var(--space-3), var(--titlebar-inset-right)) 0 max(var(--space-3), var(--titlebar-inset-left));
   /* Transparent, not `--surface-base`: the frame's material is `body`'s, and a
      fill here would seam that material along the caption strip's foot. */
   background: transparent;
   -webkit-app-region: drag;
 }
-#titlebar button { -webkit-app-region: no-drag; }
+#titlebar button,
+.titlebar-menu-shell,
+.titlebar-menu { -webkit-app-region: no-drag; }
 .titlebar-rail {
   display: inline-flex;
   align-items: center;

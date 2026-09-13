@@ -5,13 +5,14 @@ import { installDomStub, type DomStub, type StubView } from './helpers/domStub.j
 import { createSidebarView } from '../src/desktop/renderer/dom/sidebarView.js'
 import {
   SIDEBAR_COLLAPSE_FALLBACK_MS,
-  SIDEBAR_HINT,
+  sidebarHint,
   sidebarView,
   createSidebarState,
   type SidebarIntent,
   type SidebarState,
   type SidebarView,
 } from '../src/desktop/renderer/model/sidebar.js'
+import type { DesktopPlatform } from '../src/desktop/types.js'
 import type { WireLaneInfo } from '../src/desktop/shellProtocol.js'
 
 /**
@@ -40,12 +41,12 @@ function viewOf(overrides: Partial<SidebarState> = {}): SidebarView {
   return sidebarView(createSidebarState(overrides))
 }
 
-function mount(t: { after(fn: () => void): void }): Rendered {
+function mount(t: { after(fn: () => void): void }, platform: DesktopPlatform = 'win32'): Rendered {
   const stub = installDomStub()
   t.after(() => stub.uninstall())
   const container = stub.createContainer('sidebar')
   const intents: SidebarIntent[] = []
-  const dom = createSidebarView(container, (intent) => intents.push(intent), () => false)
+  const dom = createSidebarView(container, (intent) => intents.push(intent), () => false, platform)
   return {
     stub,
     container,
@@ -688,7 +689,18 @@ test('the chord list is behind the ? and reports a toggle', (t) => {
   render(viewOf({ helpOpen: true }))
   const hint = footer().children.find((child) => child.classes.includes('sidebar-hint'))
   assert.ok(hint, 'the ? panel did not open')
-  assert.equal(hint.text, SIDEBAR_HINT)
+  assert.equal(hint.text, sidebarHint('win32'))
+})
+
+test('macOS sidebar tooltips and help agree on Command shortcuts', (t) => {
+  const { render, root } = mount(t, 'darwin')
+  render(viewOf({ helpOpen: true }))
+  const nav = region(root(), 'sidebar-nav').children
+  assert.equal((nav[0]?.node as HTMLElement).title, '在当前项目里新建会话（⌘T）')
+  assert.equal((nav[1]?.node as HTMLElement).title, '打开另一个项目（⇧⌘O）')
+  assert.equal((find(root(), 'sidebar-settings')?.node as HTMLElement).title, '打开设置（⌘,）')
+  assert.equal(find(root(), 'sidebar-hint')?.text,
+    '[⌘1-9] 切换  [⌘T] 新会话  [⌘W] 关闭  [⌘B] 收起侧栏  [⇧⌘O] 打开项目')
 })
 
 test('a repaint that only flips the help panel is not swallowed by the render guard', (t) => {

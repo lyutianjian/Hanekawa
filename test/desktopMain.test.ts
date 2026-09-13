@@ -78,6 +78,7 @@ function createPair(): { main: RuntimeChannel; renderer: RuntimeChannel } {
   // Renderer → main: every message arrives stamped with the `webContents` that
   // sent it, which is what the host-side pane filter checks.
   const bridge: DesktopBridge = {
+    platform: 'win32',
     send(message) {
       for (const listener of [...mainListeners]) listener({ sender: target }, message)
     },

@@ -102,7 +102,8 @@ import { createStatusView } from './dom/statusView.js'
 import { createSuggestionsView } from './dom/suggestionsView.js'
 import { createSidebarView } from './dom/sidebarView.js'
 import { createTitleBarView } from './dom/titleBarView.js'
-import { TITLE_BAR_MENUS, type TitleBarAction } from './model/titleBar.js'
+import { titleBarMenus, type TitleBarAction } from './model/titleBar.js'
+import { bindWindowChrome, type WindowControlsOverlay } from './dom/windowChrome.js'
 import { REDUCED_MOTION_QUERY } from './model/reducedMotion.js'
 import { finishPresenceWithin } from './dom/presence.js'
 
@@ -111,6 +112,13 @@ if (!bridge) {
   document.body.textContent = 'Preload script not loaded; please reinstall the app.'
   throw new Error('Preload bridge is missing')
 }
+
+// Reserve native controls before any button is mounted, including while the
+// overlay API is still waiting for its first geometry notification.
+const overlayApi = (window.navigator as Navigator & { windowControlsOverlay?: WindowControlsOverlay }).windowControlsOverlay
+const disposeWindowChrome = bindWindowChrome(document.documentElement, bridge.platform, window, overlayApi)
+window.addEventListener('pagehide', disposeWindowChrome, { once: true })
+const titleMenus = titleBarMenus(bridge.platform)
 
 // One transport, many lanes: session traffic rides per-pane lanes untouched,
 // and the reserved `__shell` lane speaks for the window.
@@ -365,7 +373,8 @@ function attachPaneSession(lane: string): void {
     applyPaneBudget()
   })
 
-  void session.start().catch((error) => {
+  session.client.subscribe(() => openModelSetupIfNeeded())
+  void session.start().then(() => openModelSetupIfNeeded()).catch((error) => {
     session.note(`Failed to start: ${describe(error)}`, 'error')
   })
 }
@@ -388,6 +397,7 @@ function activateLane(lane: string): void {
   headerMenuOpen = false
   headerPendingDelete = undefined
   renderCanvasHeader()
+  openModelSetupIfNeeded()
 }
 
 function removePaneSession(lane: string): void {
@@ -543,7 +553,7 @@ function renderSidebar(): void {
   // and whether anything may be opened right now. One call site, so they cannot
   // drift apart — the bar's own signature guard absorbs the repaints.
   titleBar.render({
-    menus: TITLE_BAR_MENUS,
+    menus: titleMenus,
     openMenu: titleBarMenu,
     sidebarCollapsed: view.collapsed,
     canCreate: view.canCreate,
@@ -925,6 +935,7 @@ const canvasHeader = createCanvasHeaderView(required('canvas-header'), {
  * can be pointed at a project none of the open lanes belong to.
  */
 let settingsState = createSettingsState()
+let modelSetupOpened = false
 // Seed the model with the persisted theme so the appearance picker shows it.
 settingsState = { ...settingsState, themePref: themePreference }
 
@@ -947,6 +958,13 @@ function renderSettings(): void {
   // different answers — a collapsed sidebar is not an open settings screen.
   document.body.classList.toggle('settings-open', settingsState.open)
   settingsView_.render(settingsView(settingsState))
+}
+
+/** Once per window, including panes that finish their hello after activation. */
+function openModelSetupIfNeeded(): void {
+  if (modelSetupOpened || activePane()?.client.getRuntimeSnapshot()?.status !== 'needs_configuration') return
+  modelSetupOpened = true
+  if (!settingsState.open) runSettingsIntent({ kind: 'open', category: 'provider' })
 }
 
 /**
@@ -1059,6 +1077,7 @@ const sidebar = createSidebarView(
     runSidebarIntent(intent)
     return true
   },
+  bridge.platform,
 )
 
 // Settle existing work when the OS preference changes or the window hides.

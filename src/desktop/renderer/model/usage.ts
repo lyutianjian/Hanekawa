@@ -190,6 +190,7 @@ export function contextGaugeView(
   used: number | undefined,
   runtime: WireRuntimeSnapshot | undefined,
 ): ContextGaugeView {
+  if (runtime?.status !== 'ready') return HIDDEN
   const usable = runtime?.usableContextWindow
   if (used === undefined || usable === undefined || usable <= 0) return HIDDEN
 

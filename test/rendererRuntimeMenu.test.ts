@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { EFFORT_LABELS } from '../src/desktop/renderer/model/composer.js'
 import { runtimeMenuView } from '../src/desktop/renderer/model/runtimeMenu.js'
-import type { WireModelsResult, WireRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
+import type { WireModelsResult, WireReadyRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
 
 /**
  * The composer chip's popover, as a decision.
@@ -42,8 +42,9 @@ const MODELS: WireModelsResult = {
   ],
 }
 
-function runtime(overrides: Partial<WireRuntimeSnapshot> = {}): WireRuntimeSnapshot {
+function runtime(overrides: Partial<WireReadyRuntimeSnapshot> = {}): WireReadyRuntimeSnapshot {
   return {
+    status: 'ready',
     modelKey: 'sonnet',
     model: 'claude-sonnet-5',
     effort: 'high',

@@ -17,7 +17,7 @@ import { runtimeMenuView, type RuntimeMenuView } from '../src/desktop/renderer/m
 import { CONTEXT_RATIO_VARIABLE, contextGaugeView } from '../src/desktop/renderer/model/usage.js'
 import type { SurfaceAction } from '../src/desktop/renderer/model/surfaces.js'
 import type { PermissionMode } from '../src/harness/permissions.js'
-import type { WireModelsResult, WireRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
+import type { WireModelsResult, WireReadyRuntimeSnapshot } from '../src/runtime/protocol/wire.js'
 
 /**
  * The composer's *nodes* — the half `rendererComposerChip.test.ts` cannot reach.
@@ -41,8 +41,9 @@ const RENDERER = path.join(
   'renderer',
 )
 
-function runtime(overrides: Partial<WireRuntimeSnapshot> = {}): WireRuntimeSnapshot {
+function runtime(overrides: Partial<WireReadyRuntimeSnapshot> = {}): WireReadyRuntimeSnapshot {
   return {
+    status: 'ready',
     modelKey: 'sonnet',
     model: 'claude-sonnet-5',
     effort: 'high',
@@ -212,7 +213,7 @@ const MODELS: WireModelsResult = {
 }
 
 /** The chip popover's rows, built the way the pane builds them. */
-function menuView(snapshot: WireRuntimeSnapshot = runtime()): RuntimeMenuView {
+function menuView(snapshot: WireReadyRuntimeSnapshot = runtime()): RuntimeMenuView {
   return runtimeMenuView({ runtime: snapshot, models: MODELS })
 }
 

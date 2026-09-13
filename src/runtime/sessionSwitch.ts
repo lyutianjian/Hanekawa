@@ -87,15 +87,17 @@ export async function switchToNewSession(
   deps: SessionSwitchDeps,
   options: { previousSessionId: string; title?: string },
 ): Promise<SessionSwitchResult> {
-  deps.runtimeSlot.current.loop.clearCachedSections()
+  deps.runtimeSlot.current?.loop.clearCachedSections()
   await deps.backgroundTasks.stopAll(options.previousSessionId, 'Session cleared')
-  deps.host.store.discardDraft(options.previousSessionId)
 
   const meta = options.title
     ? deps.host.store.createDraft(options.title)
     : deps.host.store.createDraft()
 
   await applySwitch(deps, meta, [])
+  // The queue migration in beforeApply still writes to the outgoing draft.
+  // Release it only after those records and the new binding have settled.
+  deps.host.store.discardDraft(options.previousSessionId)
 
   return { session: meta, records: [], diagnostics: [] }
 }
@@ -106,11 +108,12 @@ async function applySwitch(
   records: SessionRecord[],
 ): Promise<void> {
   await deps.beforeApply?.(meta, records)
-  const next = deps.host.createRuntime(deps.runtimeSlot.current.modelKey, meta, records)
+  const current = deps.runtimeSlot.current
+  const next = current ? deps.host.createRuntime(current.modelKey, meta, records) : undefined
   deps.controller.retarget(meta, records)
   // Last, and never an assignment: replace installs the new runtime before
   // disposing the old one, so a late dispose cannot tear down its successor.
-  deps.runtimeSlot.replace(next)
+  deps.runtimeSlot.replace(next, deps.runtimeSlot.getSnapshot().configurationIssue)
 }
 
 /**

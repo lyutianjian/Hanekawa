@@ -8,7 +8,7 @@
  *
  * Uses a loopback-only SSE fixture and the real agent/tool/permission path.
  * Raw DevTools traces (including screenshots), every delivered rAF sample and
- * projected CSS events stay in the output directory. No production hooks or
+ * projected CSS events are retained only with --out or --keep. No production hooks or
  * animation framework. By default device scale is Chromium's override. The
  * Windows wrapper can instead change and restore native DPI with --dpi=native.
  * Like smoke:desktop, this needs a display and runs outside npm test.
@@ -26,6 +26,7 @@ import { installMotionProbe, summarizeMotion } from './smoke/motionProbe.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const args = Object.fromEntries(process.argv.slice(2).map((arg) => {
+  if (arg === '--keep') return ['keep', true]
   const match = /^--(scale|out|port|theme|dpi)=(.+)$/.exec(arg)
   if (!match) throw new Error('unknown argument: ' + arg)
   return [match[1], match[2]]
@@ -36,17 +37,17 @@ const dpi = args.dpi ?? 'chromium'
 if (!['chromium', 'native'].includes(dpi)) throw new Error('--dpi must be chromium or native')
 const theme = args.theme ?? 'dark'
 if (!['dark', 'light'].includes(theme)) throw new Error('--theme must be dark or light')
-const out = resolve(args.out ?? '.smoke/motion-' + Math.round(scale * 100))
+const tripwires = fixtures.captureTripwires(repoRoot)
+const environment = fixtures.createSmokeEnvironment({ keep: Boolean(args.keep), copyConfig: false })
+const runDir = environment.root
+const out = resolve(args.out ?? join(runDir, 'output'))
+const saveOutput = Boolean(args.keep) || args.out !== undefined
 const port = Number(args.port ?? 9237)
-const pidFile = join(repoRoot, '.smoke', 'motion-electron.pid')
+const pidFile = join(out, 'motion-electron.pid')
 mkdirSync(out, { recursive: true })
 const report = { generatedAt: new Date().toISOString(), scale, dpi, theme, environment: {}, checks: [], scenes: {}, cleanup: [] }
-const globals = fixtures.captureGlobalFiles()
-const tripwires = fixtures.captureTripwires(repoRoot)
-let runDir
 let fixture
 let handle
-let preferences
 let recording
 let tracing
 let screencast
@@ -447,16 +448,15 @@ async function reducedScene() {
 try {
   assertBuild()
   app.preflightProcesses({ port, pidFile, killStale: false })
-  runDir = fixtures.makeRunDir()
+  console.log('scratch: ' + runDir)
   const project = fixtures.makeProject(runDir, 'motion-acceptance')
   fixtures.seedLocalSettings(project, { permissions: { ask: ['Write'], allow: ['Read', 'Glob', 'TaskCreate', 'TaskUpdate'] } })
   fixture = await startMotionFixture(project)
-  writeFileSync(fixtures.globalConfigPath(), JSON.stringify(fixture.config, null, 2) + '\n')
-  writeFileSync(globals[1].path, JSON.stringify({ projects: [project.root] }) + '\n')
-  handle = app.launch({ repoRoot, cwd: project.root, port, out, tag: 'motion', pidFile,
+  writeFileSync(fixtures.globalConfigPath(environment.home), JSON.stringify(fixture.config, null, 2) + '\n', { mode: 0o600 })
+  writeFileSync(join(environment.home, '.myagent', 'projects.json'), JSON.stringify({ projects: [project.root] }) + '\n')
+  handle = app.launch({ repoRoot, cwd: project.root, port, out, tag: 'motion', pidFile, environment,
     switches: dpi === 'native' ? [] : ['--force-device-scale-factor=' + scale] })
   await app.attach(handle)
-  preferences = await read('Object.fromEntries(Object.entries(localStorage))')
   const initialDevicePixelRatio = await read('devicePixelRatio')
   if (dpi === 'native' && initialDevicePixelRatio !== scale) throw new Error('Native DPI does not match --scale: ' + initialDevicePixelRatio)
   // Zero disables scale emulation; only the CSS viewport size is normalized.
@@ -489,12 +489,13 @@ try {
     try { await shot(handle.cdp, join(out, 'failure.png')); await finish() } catch {}
   }
 } finally {
-  // All teardown paths report independently; restoration cannot be skipped by
+  // All teardown paths report independently; cleanup cannot be skipped by
   // a failed screenshot, closed transport or a locked scratch file.
   if (handle) {
     try {
-      if (preferences) await read('localStorage.clear(); for (const [k,v] of Object.entries(' + JSON.stringify(preferences) + ')) localStorage.setItem(k,v)')
       report.cleanup.push(await app.quitGracefully(handle))
+    } catch (error) { report.cleanup.push('ERROR quitting: ' + String(error)) }
+    try {
       const note = await app.ensureStopped(handle)
       if (note) report.cleanup.push(note)
     } catch (error) { report.cleanup.push('ERROR stopping: ' + String(error)) }
@@ -503,10 +504,12 @@ try {
     report.fixtureEvents = fixture.events
     try { await fixture.close() } catch (error) { report.cleanup.push('ERROR fixture: ' + String(error)) }
   }
-  try { report.cleanup.push(...fixtures.restoreGlobalFiles(globals)) } catch (error) { report.cleanup.push('ERROR restoring: ' + String(error)) }
   try { fixtures.assertTripwires(repoRoot, tripwires) } catch (error) { report.cleanup.push('ERROR tripwires: ' + String(error)) }
-  if (runDir) try { fixtures.removeRunDir(runDir) } catch (error) { report.cleanup.push('ERROR scratch: ' + String(error)) }
-  writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2))
+  const failure = environment.cleanup()
+  if (failure) report.cleanup.push('ERROR scratch: ' + failure)
+  report.cleanup.push(`scratch: ${runDir} (${args.keep ? 'kept' : failure ? 'NOT REMOVED' : 'removed'})`)
+  if (saveOutput) writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2))
 }
-console.log('REPORT ' + join(out, 'report.json'))
+console.log(saveOutput ? 'REPORT ' + join(out, 'report.json') : existsSync(out) ? 'Output remains at ' + out : 'Temporary output removed; use --out=<dir> to retain the report and recordings.')
+for (const note of report.cleanup) console.log('teardown: ' + note)
 process.exitCode = report.fatal || report.checks.some((check) => !check.ok) || report.cleanup.some((note) => note.includes('ERROR')) ? 1 : 0

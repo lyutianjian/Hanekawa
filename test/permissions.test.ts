@@ -1569,7 +1569,9 @@ test('PermissionGate plan mode auto-allows write tools (bypass-equivalent)', asy
   assert.equal(prompted, false)
 })
 
-test('PermissionGate plan mode allows session plan file writes despite protected plan dir', async () => {
+test('PermissionGate plan mode allows session plan file writes despite protected plan dir', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-plan-permission-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
   let prompted = false
   const gate = new PermissionGate(
     async () => {
@@ -1577,10 +1579,10 @@ test('PermissionGate plan mode allows session plan file writes despite protected
       return false
     },
     [],
-    { mode: 'plan', cwd: process.cwd() },
+    { mode: 'plan', cwd },
   )
   gate.setPlanSlugProvider(() => 'draft-plan')
-  const planPath = path.join(process.cwd(), '.myagent', 'plans', 'draft-plan.md')
+  const planPath = path.join(cwd, '.myagent', 'plans', 'draft-plan.md')
 
   assert.equal(await gate.approve(writeFileTool, { path: planPath }), true)
   assert.equal(await gate.approve(editFileTool, { path: planPath }), true)
@@ -1588,7 +1590,9 @@ test('PermissionGate plan mode allows session plan file writes despite protected
   assert.equal(prompted, false)
 })
 
-test('PermissionGate clearPlanSlugProvider only uninstalls the provider it was handed', async () => {
+test('PermissionGate clearPlanSlugProvider only uninstalls the provider it was handed', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-plan-permission-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
   let prompted = false
   const gate = new PermissionGate(
     async () => {
@@ -1596,11 +1600,11 @@ test('PermissionGate clearPlanSlugProvider only uninstalls the provider it was h
       return false
     },
     [],
-    { mode: 'plan', cwd: process.cwd() },
+    { mode: 'plan', cwd },
   )
   const provider = () => 'draft-plan'
   gate.setPlanSlugProvider(provider)
-  const planPath = path.join(process.cwd(), '.myagent', 'plans', 'draft-plan.md')
+  const planPath = path.join(cwd, '.myagent', 'plans', 'draft-plan.md')
 
   // A superseded runtime disposing after a newer one installed its own
   // provider must not uninstall the newer one.
@@ -1636,16 +1640,18 @@ test('PermissionGate resetDenialState re-reads the store for the next session', 
   assert.deepEqual(state, { streaks: { Bash: 1 }, total: 1 })
 })
 
-test('PermissionGate plan mode ignores deny rules (bypass-equivalent)', async () => {
+test('PermissionGate plan mode ignores deny rules (bypass-equivalent)', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-plan-permission-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
   let prompted = false
-  const planPath = path.join(process.cwd(), '.myagent', 'plans', 'draft-plan.md')
+  const planPath = path.join(cwd, '.myagent', 'plans', 'draft-plan.md')
   const denyGate = new PermissionGate(
     async () => {
       prompted = true
       return true
     },
     [{ toolName: 'Write', behavior: 'deny', source: 'config' }],
-    { mode: 'plan', cwd: process.cwd() },
+    { mode: 'plan', cwd },
   )
   denyGate.setPlanSlugProvider(() => 'draft-plan')
 

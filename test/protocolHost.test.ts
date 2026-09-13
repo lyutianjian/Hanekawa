@@ -224,6 +224,8 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   }
   const runtimeSlot = {
     current: agentSession,
+    requireCurrent: () => runtimeSlot.current,
+    getSnapshot: () => ({ status: 'ready', session: runtimeSlot.current, effort: 'high' }),
     subscribe: () => () => {},
     getEffort: () => 'high',
     setEffort: (level: string) => level,
@@ -546,6 +548,7 @@ test('hello replays both snapshots and never leaks the model apiKey', async () =
 
   const runtime = harness.received.find((event) => event.type === 'runtime-snapshot')
   assert.ok(runtime && runtime.type === 'runtime-snapshot')
+  assert.equal(runtime.snapshot.status, 'ready')
   assert.equal(runtime.snapshot.modelKey, 'main')
   assert.equal(runtime.snapshot.model, 'test-model')
   assert.equal(runtime.snapshot.permissionMode, 'default')
@@ -1828,6 +1831,7 @@ test('the runtime snapshot carries the usable window, not just the raw one', asy
 
   const runtime = harness.received.find((event) => event.type === 'runtime-snapshot')
   assert.ok(runtime && runtime.type === 'runtime-snapshot')
+  assert.equal(runtime.snapshot.status, 'ready')
   // Both come off the loop rather than off `modelConfig`: only the loop knows
   // which model is active after a fallback, and only it knows what autocompact
   // reserves. `usableContextWindow` is what an occupancy display divides by.

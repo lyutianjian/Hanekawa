@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { autoCompactIfNeeded, resetAutoCompactFailureState, snipLargeToolResults, summarizeRecordsForContinuation } from '../src/harness/compact.js'
 import type { ModelProvider, SessionRecord } from '../src/harness/types.js'
 import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
@@ -948,11 +951,13 @@ test('session memory state is isolated per sessionId', async () => {
   }
 })
 
-test('trySessionMemoryCompaction preserves discoveredToolNames in boundary', async () => {
+test('trySessionMemoryCompaction preserves discoveredToolNames in boundary', async (t) => {
   const { trySessionMemoryCompaction } = await import('../src/services/sessionMemory/compact.js')
   const { setSessionMemory, resetSessionMemoryState } = await import('../src/services/sessionMemory/service.js')
 
   const sessionId = 'test-discovered-tools'
+  const cwd = await mkdtemp(join(tmpdir(), 'myagent-compact-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
   try {
     // Seed session memory so compaction has something to use
     await setSessionMemory(sessionId, {
@@ -960,7 +965,7 @@ test('trySessionMemoryCompaction preserves discoveredToolNames in boundary', asy
       lastSummarizedRecordId: 'record-1',
       lastExtractedAt: '2026-06-16T00:00:00.000Z',
       tokenCount: 50,
-    })
+    }, cwd)
 
     const records: SessionRecord[] = [
       { type: 'message', id: 'record-1', role: 'user', content: 'Build feature X', createdAt: '2026-06-16T00:00:00.000Z' },
@@ -975,6 +980,7 @@ test('trySessionMemoryCompaction preserves discoveredToolNames in boundary', asy
       provider: { name: 'fake', async createMessage() { return { content: '', toolCalls: [] } } },
       model: 'fake-model',
       sessionId,
+      cwd,
       autoCompactThreshold: 100_000,
       discoveredToolNames: discovered,
       config: { enabled: true },
@@ -991,18 +997,20 @@ test('trySessionMemoryCompaction preserves discoveredToolNames in boundary', asy
   }
 })
 
-test('trySessionMemoryCompaction omits preCompactDiscoveredTools when empty', async () => {
+test('trySessionMemoryCompaction omits preCompactDiscoveredTools when empty', async (t) => {
   const { trySessionMemoryCompaction } = await import('../src/services/sessionMemory/compact.js')
   const { setSessionMemory, resetSessionMemoryState } = await import('../src/services/sessionMemory/service.js')
 
   const sessionId = 'test-no-discovered'
+  const cwd = await mkdtemp(join(tmpdir(), 'myagent-compact-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
   try {
     await setSessionMemory(sessionId, {
       content: '## Session Memory\n- Working on feature Y\n- File: src/utils.ts\n- Decision: use Bun instead of Node',
       lastSummarizedRecordId: 'record-1',
       lastExtractedAt: '2026-06-16T00:00:00.000Z',
       tokenCount: 30,
-    })
+    }, cwd)
 
     const records: SessionRecord[] = [
       { type: 'message', id: 'record-1', role: 'user', content: 'Do Y', createdAt: '2026-06-16T00:00:00.000Z' },
@@ -1014,6 +1022,7 @@ test('trySessionMemoryCompaction omits preCompactDiscoveredTools when empty', as
       provider: { name: 'fake', async createMessage() { return { content: '', toolCalls: [] } } },
       model: 'fake-model',
       sessionId,
+      cwd,
       autoCompactThreshold: 100_000,
       config: { enabled: true },
     })

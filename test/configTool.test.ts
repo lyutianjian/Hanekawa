@@ -1,9 +1,26 @@
 import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import test, { afterEach, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { configTool } from '../src/tools/ConfigTool/ConfigTool.js'
+
+// Config writes are global even when its tool context points at a temp project.
+// Isolate every test, including the successful value-coercion cases below.
+const previousHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
+let testHome: string | undefined
+beforeEach(async () => {
+  testHome = await mkdtemp(path.join(os.tmpdir(), 'myagent-config-home-'))
+  process.env.HOME = testHome
+  process.env.USERPROFILE = testHome
+})
+afterEach(async () => {
+  for (const name of ['HOME', 'USERPROFILE'] as const) {
+    if (previousHome[name] === undefined) delete process.env[name]
+    else process.env[name] = previousHome[name]
+  }
+  if (testHome) await rm(testHome, { recursive: true, force: true })
+})
 
 function context(cwd: string) {
   return { cwd, sessionId: 's1', readFiles: new Set<string>() }
@@ -40,7 +57,7 @@ test('Config list returns all supported settings', async () => {
 test('Config get returns current value for known key', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-config-'))
   try {
-    // This reads from the real merged settings — just verify it doesn't error
+    // The isolated home's merged defaults remain readable.
     const result = await configTool.execute({ action: 'get', key: 'effortLevel' }, context(dir))
     assert.equal(result.ok, true)
     assert.ok(result.content.startsWith('effortLevel:'))

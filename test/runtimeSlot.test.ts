@@ -47,7 +47,7 @@ test('the outgoing runtime is disposed only after the incoming one is already li
   // A late dispose must not be able to tear down the runtime that replaced it,
   // so by the time it runs the slot must already report the new runtime.
   const first = session('a', trace, model(), () => {
-    seenDuringDispose.push(slot.current.modelKey)
+    seenDuringDispose.push(slot.requireCurrent().modelKey)
   })
   slot = new RuntimeSlot(first, 'high')
 
@@ -55,7 +55,7 @@ test('the outgoing runtime is disposed only after the incoming one is already li
 
   assert.deepEqual(seenDuringDispose, ['b'])
   assert.deepEqual(trace.disposed, ['a'])
-  assert.equal(slot.current.modelKey, 'b')
+  assert.equal(slot.requireCurrent().modelKey, 'b')
 })
 
 test('replace notifies subscribers exactly once and is a no-op for the same runtime', () => {
@@ -88,14 +88,14 @@ test('the snapshot identity only changes when the runtime or effort changes', ()
 test('patchModel swaps metadata without disposing or rebuilding the loop', () => {
   const trace = createTrace()
   const slot = new RuntimeSlot(session('a', trace), 'high')
-  const loop = slot.current.loop
+  const loop = slot.requireCurrent().loop
 
   slot.patchModel('b', model({ model: 'claude-fallback' }), 'anthropic')
 
-  assert.equal(slot.current.modelKey, 'b')
-  assert.equal(slot.current.modelConfig.model, 'claude-fallback')
+  assert.equal(slot.requireCurrent().modelKey, 'b')
+  assert.equal(slot.requireCurrent().modelConfig.model, 'claude-fallback')
   // Same loop object: a fallback keeps running on the runtime that started the turn.
-  assert.equal(slot.current.loop, loop)
+  assert.equal(slot.requireCurrent().loop, loop)
   assert.deepEqual(trace.disposed, [])
 
   let notifications = 0
@@ -132,4 +132,28 @@ test('dispose tears down the live runtime', () => {
   const slot = new RuntimeSlot(session('a', trace), 'high')
   slot.dispose()
   assert.deepEqual(trace.disposed, ['a'])
+})
+
+test('a slot can enter setup, activate a model, and return to setup without stale runtimes', () => {
+  const trace = createTrace()
+  const slot = new RuntimeSlot(undefined, 'high')
+  assert.equal(slot.getSnapshot().status, 'needs_configuration')
+  assert.throws(() => slot.requireCurrent(), /\/provider/)
+  slot.setEffort('max')
+
+  slot.replace(session('first', trace, model({ supportedEfforts: ['low', 'medium'] })))
+  slot.reapplyEffort()
+  assert.equal(slot.getSnapshot().status, 'ready')
+  assert.equal(slot.getEffort(), 'medium')
+
+  slot.replace(undefined)
+  assert.equal(slot.current, undefined)
+  assert.deepEqual(trace.disposed, ['first'])
+  slot.patchModel('late-event', model())
+  assert.equal(slot.current, undefined)
+
+  slot.replace(session('second', trace))
+  assert.equal(slot.requireCurrent().modelKey, 'second')
+  slot.dispose()
+  assert.deepEqual(trace.disposed, ['first', 'second'])
 })

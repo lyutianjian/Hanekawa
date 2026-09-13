@@ -1,12 +1,13 @@
 import { clampEffort, type EffortLevel, type EffortValue } from '../config/effort.js'
 import type { ModelConfig } from '../config/service.js'
 import type { AgentSession } from './types.js'
+import { MODEL_CONFIGURATION_REQUIRED, MISSING_MODEL_ISSUE, RuntimeStartupError, type RuntimeConfigurationIssue } from './errors.js'
 
 /** What consumers observe: the live runtime plus the effort level applied to it. */
-export interface RuntimeSlotSnapshot {
-  readonly session: AgentSession
-  readonly effort: string
-}
+export type RuntimeSlotSnapshot = { readonly effort: string } & (
+  | { readonly status: 'ready'; readonly session: AgentSession; readonly configurationIssue?: undefined }
+  | { readonly status: 'needs_configuration'; readonly session: undefined; readonly configurationIssue: RuntimeConfigurationIssue }
+)
 
 /**
  * Owns *the* current {@link AgentSession} and the effort level bound to it.
@@ -18,18 +19,31 @@ export interface RuntimeSlotSnapshot {
  * can get the order wrong.
  */
 export class RuntimeSlot {
-  private session: AgentSession
+  private session: AgentSession | undefined
+  private configurationIssue: RuntimeConfigurationIssue
   private effort: string
   private snapshot: RuntimeSlotSnapshot
   private readonly listeners = new Set<() => void>()
 
-  constructor(initial: AgentSession, initialEffort: string) {
+  constructor(initial: AgentSession | undefined, initialEffort: string, issue = MISSING_MODEL_ISSUE) {
     this.session = initial
     this.effort = initialEffort
-    this.snapshot = Object.freeze({ session: initial, effort: initialEffort })
+    this.configurationIssue = issue
+    this.snapshot = this.buildSnapshot()
   }
 
-  get current(): AgentSession {
+  get current(): AgentSession | undefined {
+    return this.session
+  }
+
+  /** Required only by actions that actually use a loop, never by shell startup. */
+  requireCurrent(): AgentSession {
+    if (!this.session) {
+      throw new RuntimeStartupError(
+        this.configurationIssue.code,
+        `${this.configurationIssue.message} ${MODEL_CONFIGURATION_REQUIRED}`,
+      )
+    }
     return this.session
   }
 
@@ -43,11 +57,14 @@ export class RuntimeSlot {
   }
 
   /** Installs a new runtime and disposes the previous one. Order is load-bearing. */
-  replace(next: AgentSession): void {
+  replace(next: AgentSession | undefined, issue = MISSING_MODEL_ISSUE): void {
     const previous = this.session
-    if (previous === next) return
+    if (previous === next && (next || (
+      this.configurationIssue.code === issue.code && this.configurationIssue.message === issue.message
+    ))) return
     this.session = next
-    previous.dispose()
+    this.configurationIssue = issue
+    previous?.dispose()
     this.publish()
   }
 
@@ -57,7 +74,7 @@ export class RuntimeSlot {
    * so nothing is disposed and no runtime is constructed.
    */
   patchModel(modelKey: string, modelConfig: ModelConfig, providerName?: string): void {
-    if (this.session.modelKey === modelKey) return
+    if (!this.session || this.session.modelKey === modelKey) return
     this.session = {
       ...this.session,
       modelKey,
@@ -87,15 +104,16 @@ export class RuntimeSlot {
 
   /** Disposes the live runtime. There is nothing to replace it with afterwards. */
   dispose(): void {
-    this.session.dispose()
+    this.session?.dispose()
+    this.session = undefined
   }
 
   private applyEffort(level: string): string {
-    const clamped = clampEffort(level as EffortValue, this.session.modelConfig.supportedEfforts)
+    const clamped = clampEffort(level as EffortValue, this.session?.modelConfig.supportedEfforts)
     // A numeric effort is a raw token budget, not a level, so it is never clamped
     // down to a named level — keep what the caller asked for.
     const clampedLevel = typeof clamped === 'number' ? level : clamped
-    this.session.loop.setEffort(typeof clamped === 'string' ? clamped as EffortLevel : undefined)
+    this.session?.loop.setEffort(typeof clamped === 'string' ? clamped as EffortLevel : undefined)
     if (clampedLevel !== this.effort) {
       this.effort = clampedLevel
       this.publish()
@@ -103,8 +121,14 @@ export class RuntimeSlot {
     return clampedLevel
   }
 
+  private buildSnapshot(): RuntimeSlotSnapshot {
+    return this.session
+      ? Object.freeze({ status: 'ready', session: this.session, effort: this.effort })
+      : Object.freeze({ status: 'needs_configuration', session: undefined, effort: this.effort, configurationIssue: this.configurationIssue })
+  }
+
   private publish(): void {
-    this.snapshot = Object.freeze({ session: this.session, effort: this.effort })
+    this.snapshot = this.buildSnapshot()
     for (const listener of [...this.listeners]) listener()
   }
 }

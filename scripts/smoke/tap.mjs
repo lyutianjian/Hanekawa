@@ -83,6 +83,7 @@ export const TAP_SOURCE = `(() => {
     if (type === 'runtime-snapshot') {
       var r = body.snapshot || {}
       s.runtime[lane] = {
+        status: r.status,
         modelKey: r.modelKey,
         effort: r.effort,
         permissionMode: r.permissionMode,

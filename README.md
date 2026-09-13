@@ -6,7 +6,7 @@ Hanekawa, also called MyAgent, is a lightweight self-hosted programming agent fo
 
 - Node.js 22 or newer
 - Bun or npm
-- An Anthropic API key, or an OpenAI-compatible API key
+- An Anthropic or OpenAI-compatible API key to use a model; startup and configuration do not require one
 
 ## Install
 
@@ -22,7 +22,26 @@ npm install
 
 ## Configure
 
-Create `~/.myagent/config.json` to configure models once for every project:
+Start the desktop (`npm run build:desktop`, then `npm run start:desktop`) or the TUI
+(`npm run dev:tui`). When no usable default model is configured, the app opens its
+existing configuration screen automatically: **模型与服务商** on desktop, or
+**/provider** in the TUI. You can close it to view sessions and history, and reopen
+it from the desktop's **配置模型** control or the `/provider` command.
+
+Add an endpoint with its provider, API key and optional Base URL, then add a model
+using that endpoint and the provider's model ID. Saving the endpoint before adding
+a model is supported. The first resolvable model you save becomes the default when
+no default has been selected. Configuration takes effect without restarting; all
+open projects receive global provider changes, with running turns finishing before
+their runtime is replaced. Removing the last model returns the app to configuration
+state. An attempted message before setup keeps its draft and attachments.
+
+The app creates and saves `~/.myagent/config.json` for all projects. A missing model,
+broken model reference or incomplete provider configuration leaves setup available.
+Startup does not test network connectivity or remote authentication; request errors
+are reported when a model is used.
+
+You can also edit `~/.myagent/config.json` manually:
 
 ```json
 {
@@ -47,9 +66,9 @@ Create `~/.myagent/config.json` to configure models once for every project:
 }
 ```
 
-A project can override any of this by creating `.myagent/config.json` in its own root; the two are
-merged key by key, with the project file winning. Model changes made from the TUI are written back to
-whichever of the two files applies — the project one if it exists, otherwise the global one.
+`config.json` is global only. Legacy project `.myagent/config.json` files are migrated
+into the global configuration and archived on first load. Settings such as permissions
+and MCP trust continue to support project-specific layers.
 
 ### Project instructions
 
@@ -131,13 +150,13 @@ switch is read when a runtime is built, so it also covers subagents.
 
 ### The desktop settings screen
 
-The desktop app has a settings screen (`⚙ 设置` at the bottom of the sidebar, or Ctrl+,) covering the
+The desktop app has a settings screen (`⚙ 设置` at the bottom of the sidebar, or ⌘, on macOS / Ctrl+, elsewhere) covering the
 same configuration. Which file each page writes is not uniform, and the screen names the file it is
 about to change:
 
 | Page | Writes |
 |---|---|
-| Models and providers, subagent routing, context management | `config.json` (the project one if it exists, else `~/.myagent/config.json`) |
+| Models and providers, subagent routing, context management | `~/.myagent/config.json` |
 | Permission rules, startup permission mode, extended thinking, prompt-cache TTL, MCP trust | `<project>/.myagent/settings.local.json` |
 
 Two consequences worth knowing:
@@ -148,6 +167,23 @@ Two consequences worth knowing:
   revoked from the screen — remove it there.
 - The six context-management numbers are read once when a project starts, so changing them takes effect
   after a restart. Everything else on the screen applies to open sessions immediately.
+
+### Desktop shortcuts on macOS
+
+The desktop title bar reserves space for the native traffic lights, including after resizing,
+zooming, and entering or leaving fullscreen. Drag its blank area to move the window.
+
+| Action | macOS | Windows / Linux |
+|---|---|---|
+| Toggle sidebar | ⌘B | Ctrl+B |
+| New session | ⌘T | Ctrl+T |
+| Close current session | ⌘W | Ctrl+W |
+| Switch open session | ⌘1–9 | Ctrl+1–9 |
+| Open project | ⇧⌘O | Ctrl+Shift+O |
+| Settings | ⌘, | Ctrl+, |
+
+⌘W closes the active session; the red traffic light closes the window. Native editing,
+⌘Q to quit, and Control+⌘F for fullscreen remain available through the macOS menus.
 
 ### Image input
 
@@ -281,11 +317,14 @@ bun run typecheck
 Run one or more test files:
 
 ```bash
-node --import tsx --test test/config.test.ts
-node --import tsx --test test/config.test.ts test/cacheBreakDetection.test.ts
+npm test -- test/config.test.ts
+npm test -- test/config.test.ts test/cacheBreakDetection.test.ts
 ```
 
-### Desktop smoke run (the real app, real credentials)
+`npm test` gives its child processes a disposable home and temp directory, then removes
+them after success, failure or interruption. Use this entry point for focused tests too.
+
+### Desktop smoke run (the real app)
 
 `npm test` never launches Electron: it is offline and hermetic, and worth keeping that
 way. The desktop shell is therefore verified by a separate driver that launches the real
@@ -297,26 +336,31 @@ settings screen persists across a restart.
 ```bash
 npm run build:desktop      # it refuses to run against a stale dist/
 npm run smoke:desktop
+npm run smoke:desktop -- --first-run
 ```
 
-It needs a display and a working provider, so it is a local check rather than a CI one.
+It needs a display, so it is a local check. The default run uses your configured
+provider. `--first-run` starts with no configuration file and uses a local mock
+OpenAI-compatible endpoint: it verifies opening setup, preserving a draft, saving an
+endpoint and model through the UI, sending a message, and using the saved model after
+a restart. This mode needs no real credentials and makes no external model requests.
 
-- **It does not touch your data.** The app is pointed at scratch projects in the OS temp
-  directory, seeded from `~/.myagent/config.json`; the repository's own `.myagent/` is
-  never the project it has open. Four assertions afterwards confirm that your session
-  index, your session files, `~/.myagent/config.json` and `~/.myagent/settings.json` were
-  all left untouched. The seeded copy contains your API keys, so it is written `0600` and
-  the scratch directory is deleted when the run finishes (`--keep` retains it, and the
-  summary always prints the path).
+- **It does not touch your data.** The app uses scratch projects, a disposable home
+  and a private Electron profile. A `0600` copy of `~/.myagent/config.json` supplies the
+  providers; test models, project registrations, sessions and file history stay in the
+  disposable home. Assertions confirm that the repository's sessions and your real
+  config, settings and project registry were left untouched.
 - **It spends nothing by default.** One item — a live turn continuing in the background —
   needs a real model turn, and it only runs with `--paid-turn`. That turn is capped by a
   one-shot latch, pinned to the cheapest configured model, and interrupted if it overruns.
-- Screenshots, logs and a summary land in `.smoke/<timestamp>/` (gitignored). The summary
-  ends with a list of what to look at in each screenshot: category layout, control
-  alignment, how the switches read — the judgements no assertion can make.
+- Temporary projects, configuration, browser caches, screenshots and logs are deleted
+  after success, failure or interruption. The summary is printed to the terminal.
+  Pass `--out=.smoke/<name>` to retain screenshots, logs and a summary, or `--keep` to
+  retain the whole scratch environment for debugging. `smoke:motion` follows the same
+  cleanup rules. SIGKILL or a power loss cannot run teardown.
 
 Useful flags: `--only=S3,S8` to run named steps, `--verbose` to print passing assertions,
-`--kill-stale` when a previous Electron is still holding the single-instance lock,
+`--kill-stale` with the same `--out` directory to stop its previous smoke process,
 `--model=<key>` and `--paid-prompt=<text>` for the paid turn.
 
 ## Architecture

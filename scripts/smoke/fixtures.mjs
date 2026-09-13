@@ -17,42 +17,35 @@
  * its `content` becomes the row title, sliced to 60 characters. The driver uses
  * that title as a marker to map a DOM subtree back to a session.
  *
- * **Why the global files are snapshotted instead of shadowed.** A scratch project
- * used to get a copy of `config.json`, on the theory that `getSaveTarget()` falls
- * back to the global config only when the project has none. That stopped being
- * true: the config layer is **global only** now (`src/config/service.ts:99-125`,
- * `getSaveTarget()` returns `~/.myagent/config.json` unconditionally) and a
- * project-level `config.json` is migrated aside on first load. So the settings
- * step writes the developer's real config however it is launched, and the only
- * honest protection is to snapshot the file up front and put it back in teardown.
- * `~/.myagent/projects.json` gets the same treatment: entering a project registers
- * its root there (`main.ts:275`), so a run would otherwise leave two temp roots in
- * the sidebar's registry — and once the scratch directory is gone, those rows
- * resolve to nothing and every root-keyed command on them fails with
- * "No project is open at …".
+ * Config is global-only, so isolating the project alone is insufficient. The
+ * Electron child also gets a disposable home containing a private config copy.
+ * Models, project registrations, global sessions and file history all stay
+ * inside that home, including when the driver is interrupted.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { homedir, tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { createTestEnvironment } from '../test-environment.mjs'
 
 export function globalConfigPath(home = homedir()) {
   return join(home, '.myagent', 'config.json')
 }
 
-export function makeRunDir() {
-  // `realpath` because macOS hands out a symlinked temp dir and `projectRootKey`
-  // resolves paths — the app would then report a root the driver cannot match.
-  return realpathSync(mkdtempSync(join(tmpdir(), 'hanekawa-smoke-')))
+export function createSmokeEnvironment({ keep = false, copyConfig = true, sourceHome = homedir() } = {}) {
+  const environment = createTestEnvironment('hanekawa-smoke-', { keep })
+  mkdirSync(join(environment.home, '.myagent'))
+  if (copyConfig) {
+    writeFileSync(globalConfigPath(environment.home), readFileSync(globalConfigPath(sourceHome)), { mode: 0o600 })
+  }
+  return environment
 }
 
 /**
  * A scratch project directory.
  *
- * No config is seeded: the app reads the global one whatever is on disk here
- * (see the header), and a project `config.json` would only be migrated aside on
- * first load. Sessions and local settings *are* project-level, and those are what
- * this directory is for.
+ * Config belongs in the disposable home; a project `config.json` would only be
+ * migrated aside on first load. This directory holds sessions and local settings.
  */
 export function makeProject(runDir, name) {
   const root = join(runDir, name)
@@ -150,81 +143,14 @@ export function readLocalSettings(project) {
   return JSON.parse(readFileSync(path, 'utf8'))
 }
 
-/** The config the app actually writes — global, always (see the header). */
-export function readGlobalConfig(home = homedir()) {
+/** Read the config from the Electron child's disposable home. */
+export function readGlobalConfig(home) {
   return JSON.parse(readFileSync(globalConfigPath(home), 'utf8'))
 }
 
 /**
- * The two global files a run is *expected* to write, captured byte for byte.
- *
- * `undefined` text means "did not exist", which restore turns back into "delete
- * it": a run must not leave a `projects.json` behind on a machine that had none.
- */
-export function captureGlobalFiles(home = homedir()) {
-  const config = globalConfigPath(home)
-  if (!existsSync(config)) {
-    throw new Error(`no global config at ${config}; the app needs one to launch with real credentials`)
-  }
-  const read = (path) => (existsSync(path) ? readFileSync(path, 'utf8') : undefined)
-  return [
-    { label: '~/.myagent/config.json', path: config, text: read(config) },
-    { label: '~/.myagent/projects.json', path: join(home, '.myagent', 'projects.json'), text: read(join(home, '.myagent', 'projects.json')) },
-  ]
-}
-
-/**
- * Puts the snapshot back, and reports what had to change.
- *
- * Byte-for-byte rather than a targeted "delete the smoke endpoint": the run
- * writes routing, models and the project registry too, and enumerating those by
- * hand is how the last three leaks survived. A file that is already identical is
- * not rewritten, so an untouched run reports nothing.
- */
-export function restoreGlobalFiles(snapshot) {
-  const restored = []
-  for (const entry of snapshot) {
-    const current = existsSync(entry.path) ? readFileSync(entry.path, 'utf8') : undefined
-    if (current === entry.text) continue
-    if (entry.text === undefined) rmSync(entry.path, { force: true })
-    else writeFileSync(entry.path, entry.text, { mode: 0o600 })
-    restored.push(entry.label)
-  }
-  return restored
-}
-
-/**
- * Removes the scratch directory, reporting the failure instead of throwing it.
- *
- * Both callers run in teardown, one of them *after* a fatal error, and a throw
- * there escaped `main()` entirely: the exit code was lost, the tripwires never
- * ran, and the summary had already claimed "(removed)". Windows is what makes
- * this a real path rather than a defensive one — a still-dying Electron holds
- * handles under `.myagent/`, and `rmSync` gives up half-way through with EBUSY.
- * The retries cover that; the return value covers the rest.
- */
-export function removeRunDir(runDir) {
-  try {
-    rmSync(runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
-  } catch (error) {
-    return error instanceof Error ? error.message : String(error)
-  }
-  return existsSync(runDir) ? 'the directory is still there after rm' : undefined
-}
-
-/**
- * The tripwires.
- *
- * The app is pointed at a temp directory, so it *cannot* reach the repository's
- * sessions or the global settings — but "cannot" is a claim about code that this
- * driver would be the first thing to disprove. Three cheap mtime/file-set checks
- * turn the claim into a test, and they are what make a tracked script that
- * deletes sessions and rewrites config safe to hand to someone else.
- *
- * `config.json` and `projects.json` are deliberately *not* here: the app writes
- * both by design now, so "was it written" is the wrong question. {@link
- * captureGlobalFiles} asks the right one — is it what it was when we started —
- * and answers it by putting the bytes back.
+ * Assert that the disposable environment kept the run off the developer's
+ * sessions, settings, model config and project registry.
  */
 export function captureTripwires(repoRoot) {
   const stamp = (path) => (existsSync(path) ? statSync(path).mtimeMs : undefined)
@@ -233,6 +159,8 @@ export function captureTripwires(repoRoot) {
     repoSessionIndex: stamp(join(repoSessions, 'index.json')),
     repoSessionFiles: existsSync(repoSessions) ? readdirSync(repoSessions).sort().join(',') : '',
     globalSettings: stamp(join(homedir(), '.myagent', 'settings.json')),
+    globalConfig: stamp(globalConfigPath()),
+    globalProjects: stamp(join(homedir(), '.myagent', 'projects.json')),
   }
 }
 
@@ -242,5 +170,7 @@ export function assertTripwires(repoRoot, before) {
   if (after.repoSessionIndex !== before.repoSessionIndex) broken.push("the repo's session index was written")
   if (after.repoSessionFiles !== before.repoSessionFiles) broken.push("the repo's session files changed")
   if (after.globalSettings !== before.globalSettings) broken.push('~/.myagent/settings.json was written')
+  if (after.globalConfig !== before.globalConfig) broken.push('~/.myagent/config.json was written')
+  if (after.globalProjects !== before.globalProjects) broken.push('~/.myagent/projects.json was written')
   if (broken.length > 0) throw new Error(`tripwire: ${broken.join('; ')}`)
 }

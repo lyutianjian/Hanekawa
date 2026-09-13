@@ -2,7 +2,7 @@ import {
   SIDEBAR_COLLAPSE_FALLBACK_MS,
   SIDEBAR_EMPTY_RECENT_TEXT,
   SIDEBAR_EMPTY_TEXT,
-  SIDEBAR_HINT,
+  sidebarHint,
   SIDEBAR_NO_MATCHES_TEXT,
   SIDEBAR_RECENT_LABEL,
   activateRow,
@@ -14,6 +14,8 @@ import {
   type SidebarRow,
   type SidebarView,
 } from '../model/sidebar.js'
+import type { DesktopPlatform } from '../../types.js'
+import { desktopShortcut } from '../model/desktopShortcuts.js'
 import {
   MARQUEE_DURATION_VARIABLE,
   MARQUEE_SHIFT_VARIABLE,
@@ -95,6 +97,7 @@ export function createSidebarView(
    * would activate the row *and* send the composer's text.
    */
   onKey: (chord: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => boolean,
+  platform: DesktopPlatform,
 ): SidebarDom {
   // Persistent, not rebuilt by `render()`: the sidebar repaints on every shell
   // snapshot, and re-creating the input on each pass would drop the caret and the
@@ -676,7 +679,7 @@ export function createSidebarView(
         button(
           'sidebar-nav-item',
           '新建会话',
-          '在当前项目里新建会话（Ctrl+T）',
+          `在当前项目里新建会话（${desktopShortcut(platform, 'new-session')}）`,
           // Through the model, so this and `Ctrl+T` cannot disagree about *which*
           // project — the same rule the row buttons follow via `activateRow`.
           () => onIntent(newSessionIntent(view.activeProjectRoot)),
@@ -685,7 +688,7 @@ export function createSidebarView(
         button(
           'sidebar-nav-item',
           '打开项目…',
-          '打开另一个项目（Ctrl+Shift+O）',
+          `打开另一个项目（${desktopShortcut(platform, 'open-project')}）`,
           () => onIntent({ kind: 'open-project' }),
           { enabled: view.canCreate, icon: 'folder' },
         ),
@@ -780,7 +783,7 @@ export function createSidebarView(
       // Always enabled, unlike the nav items: settings is a window-level screen
       // and does not need a project to be open to be reached.
       footerRow.appendChild(
-        button('sidebar-settings', '设置', '打开设置（Ctrl+,）', () =>
+        button('sidebar-settings', '设置', `打开设置（${desktopShortcut(platform, 'open-settings')}）`, () =>
           onIntent({ kind: 'open-settings' }),
           { icon: 'gear' },
         ),
@@ -796,10 +799,9 @@ export function createSidebarView(
       )
       replace(
         footer,
-        ...(view.helpOpen ? [el('div', 'sidebar-hint', SIDEBAR_HINT)] : []),
+        ...(view.helpOpen ? [el('div', 'sidebar-hint', sidebarHint(platform))] : []),
         footerRow,
       )
     },
   }
 }
-

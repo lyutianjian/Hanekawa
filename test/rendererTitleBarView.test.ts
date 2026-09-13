@@ -3,13 +3,17 @@ import test from 'node:test'
 
 import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
 import { createTitleBarView } from '../src/desktop/renderer/dom/titleBarView.js'
+import { bindWindowChrome } from '../src/desktop/renderer/dom/windowChrome.js'
+import type { TitlebarArea } from '../src/desktop/renderer/model/windowChrome.js'
 import {
-  TITLE_BAR_MENUS,
+  titleBarMenus,
   itemEnabled,
   toggleMenu,
   type TitleBarAction,
   type TitleBarView,
 } from '../src/desktop/renderer/model/titleBar.js'
+
+const TITLE_BAR_MENUS = titleBarMenus('win32')
 
 /**
  * The frameless window's title bar (5g).
@@ -192,4 +196,85 @@ test('every item names an action the model can enable, and toggling is idempoten
   assert.equal(toggleMenu('file', 'file'), undefined)
   assert.equal(toggleMenu('file', 'view'), 'view')
   assert.equal(toggleMenu(undefined, 'help'), 'help')
+})
+
+test('macOS menus and the rail use the supplied Command labels, including on repaint', (t) => {
+  const { render, root, stub, actions } = mount(t)
+  render(viewOf({ openMenu: 'file' }))
+  const macMenus = titleBarMenus('darwin')
+  render(viewOf({ menus: macMenus, openMenu: 'file' }))
+  assert.deepEqual(openList(root())?.children.map((item) => item.text), [
+    '新建会话⌘T', '打开项目…⇧⌘O', '设置⌘,',
+  ])
+  assert.equal((root().children[0]?.node as HTMLElement).title, '收起侧栏（⌘B）')
+  const item = openList(root())?.children[0]?.node
+  render(viewOf({ menus: macMenus, openMenu: 'file', sidebarCollapsed: true }))
+  assert.equal(openList(root())?.children[0]?.node, item, 'a shell repaint rebuilt the open menu')
+  assert.equal((root().children[0]?.node as HTMLElement).title, '展开侧栏（⌘B）')
+  stub.click(item)
+  assert.deepEqual(actions, ['new-session'])
+})
+
+test('window chrome reserves space before measurement and follows resize/fullscreen until disposed', (t) => {
+  const stub = installDomStub()
+  t.after(() => stub.uninstall())
+  const root = stub.documentElement() as HTMLElement
+  const properties = (root.style as unknown as { properties: Map<string, string> }).properties
+  const geometryListeners = new Set<() => void>()
+  const resizeListeners = new Set<() => void>()
+  const overlay = {
+    visible: false,
+    area: { x: 0, width: 0, height: 0 } as TitlebarArea,
+    getTitlebarAreaRect() { return this.area },
+    addEventListener(_event: 'geometrychange', listener: () => void) { geometryListeners.add(listener) },
+    removeEventListener(_event: 'geometrychange', listener: () => void) { geometryListeners.delete(listener) },
+  }
+  const host = {
+    innerWidth: 1080,
+    addEventListener(_event: 'resize', listener: () => void) { resizeListeners.add(listener) },
+    removeEventListener(_event: 'resize', listener: () => void) { resizeListeners.delete(listener) },
+  }
+  const dispose = bindWindowChrome(root, 'darwin', host, overlay)
+  t.after(dispose)
+  const insets = () => [properties.get('--titlebar-inset-left'), properties.get('--titlebar-inset-right')]
+  assert.equal(root.dataset.platform, 'darwin')
+  assert.deepEqual(insets(), ['80px', '0px'], 'an unready API must not remove the native safe area')
+  for (const listener of resizeListeners) listener()
+  assert.deepEqual(insets(), ['80px', '0px'])
+
+  overlay.visible = true
+  overlay.area = { x: 78, width: 1002, height: 40 }
+  for (const listener of geometryListeners) listener()
+  assert.deepEqual(insets(), ['78px', '0px'])
+
+  host.innerWidth = 900
+  overlay.area = { x: 78, width: 822, height: 40 }
+  for (const listener of resizeListeners) listener()
+  assert.deepEqual(insets(), ['78px', '0px'])
+
+  overlay.visible = false
+  overlay.area = { x: 0, width: 0, height: 0 }
+  for (const listener of geometryListeners) listener()
+  assert.deepEqual(insets(), ['0px', '0px'])
+  overlay.visible = true
+  overlay.area = { x: 80, width: 820, height: 40 }
+  for (const listener of geometryListeners) listener()
+  assert.deepEqual(insets(), ['80px', '0px'])
+
+  dispose()
+  assert.equal(geometryListeners.size, 0)
+  assert.equal(resizeListeners.size, 0)
+})
+
+test('a renderer without the optional overlay API still paints a safe title bar', (t) => {
+  const stub = installDomStub()
+  t.after(() => stub.uninstall())
+  const root = stub.documentElement() as HTMLElement
+  const properties = (root.style as unknown as { properties: Map<string, string> }).properties
+  const dispose = bindWindowChrome(root, 'win32', {
+    innerWidth: 1080, addEventListener() {}, removeEventListener() {},
+  }, undefined)
+  t.after(dispose)
+  assert.equal(properties.get('--titlebar-inset-left'), '0px')
+  assert.equal(properties.get('--titlebar-inset-right'), '138px')
 })

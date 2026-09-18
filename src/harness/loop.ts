@@ -4,7 +4,13 @@ import { ContextBuilder } from './contextBuilder.js'
 import { extractDiscoveredToolNames, filterToolsForRequest, resolveToolSearchState, TOOL_SEARCH_TOOL_NAME } from '../utils/toolSearch.js'
 import type { EnvironmentInfo } from './contextBuilder.js'
 import { ToolRunner } from './toolRunner.js'
-import { EMPTY_TOKEN_USAGE, addTokenUsage } from './usage.js'
+import {
+  EMPTY_TOKEN_USAGE,
+  addTokenUsage,
+  cacheCreationTokens,
+  cacheHitRate,
+  reportsCacheCreation,
+} from './usage.js'
 import { autoCompactIfNeeded, summarizeRecordsForContinuation } from './compact.js'
 import {
   prepareRecordsForRequestWithDiagnostics,
@@ -14,7 +20,7 @@ import { applyProgressiveCompaction } from './progressiveCompact.js'
 import { summarizeToolUse } from './toolUseSummary.js'
 import { agentCacheSource, formatCacheHitRate, notifyCompaction, resetCacheBreakDetection, type CacheBreakSource } from './cacheBreakDetection.js'
 import { logDiagnostics, type RuntimeDiagnostic } from './diagnostics.js'
-import { cacheHitRate, type SessionMetricInput } from './metrics.js'
+import type { SessionMetricInput } from './metrics.js'
 import type { RecordStream } from './recordStream.js'
 import { MemoryRecordStream } from './recordStream.js'
 import type { ImageAttachmentRef, UserInput } from '../media/types.js'
@@ -1745,9 +1751,12 @@ export class AgentLoop {
       event: 'turn',
       model: this.activeModel.model,
       input_tokens: usage.inputTokens,
+      // Written only when the provider reported it, so the sidecar keeps the
+      // same "absent means not reported" contract as `TokenUsage` itself.
+      ...(reportsCacheCreation(usage) ? { cache_creation_tokens: cacheCreationTokens(usage) } : {}),
       response_tokens: usage.outputTokens,
       cache_read_tokens: usage.cacheReadInputTokens,
-      cache_hit_rate: cacheHitRate(usage.inputTokens, usage.cacheReadInputTokens),
+      cache_hit_rate: cacheHitRate(usage),
       tool_calls: toolCalls,
       duration_ms: Date.now() - startedAt,
     })

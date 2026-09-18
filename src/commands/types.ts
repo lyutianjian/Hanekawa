@@ -14,6 +14,7 @@ export interface CommandDefinition {
 
 export interface CommandUsage {
   inputTokens: number
+  cacheCreationInputTokens?: number
   cacheReadInputTokens: number
   outputTokens: number
   cost?: number

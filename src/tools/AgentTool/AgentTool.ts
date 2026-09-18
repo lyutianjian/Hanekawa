@@ -1336,6 +1336,7 @@ function formatAgentDoneSummary(
   }
   if (usage) {
     const total = (usage.inputTokens ?? 0)
+      + (usage.cacheCreationInputTokens ?? 0)
       + (usage.cacheReadInputTokens ?? 0)
       + (usage.outputTokens ?? 0)
     if (total > 0) parts.push(`${formatTokenCount(total)} tokens`)

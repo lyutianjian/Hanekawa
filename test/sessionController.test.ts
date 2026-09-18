@@ -517,6 +517,82 @@ test('lastRequest is restored from the metrics sidecar for a session this proces
   )
 })
 
+test('the running total is restored from the sidecar too, not just the last request', async () => {
+  // Left at zero, a resumed session's hit rate was computed over whatever had
+  // been sent since the window opened — and the first request after a resume is
+  // mostly cache writes, so a warm session read as a cold one.
+  const harness = await createHarness()
+  const resumed = await harness.store.create('resumed session')
+  await harness.store.appendMetric(resumed.id, {
+    event: 'turn',
+    model: 'test-model',
+    input_tokens: 1_000,
+    cache_creation_tokens: 500,
+    response_tokens: 100,
+    cache_read_tokens: 0,
+    cache_hit_rate: 0,
+    tool_calls: 0,
+    duration_ms: 10,
+  })
+  await harness.store.appendMetric(resumed.id, {
+    event: 'turn',
+    model: 'test-model',
+    input_tokens: 200,
+    cache_creation_tokens: 50,
+    response_tokens: 60,
+    cache_read_tokens: 1_500,
+    cache_hit_rate: 1_500 / 1_750,
+    tool_calls: 1,
+    duration_ms: 12,
+  })
+
+  harness.controller.retarget(resumed, [])
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (harness.controller.getSnapshot().usage.total.inputTokens > 0) break
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+
+  assert.deepEqual(harness.controller.getSnapshot().usage.total, {
+    inputTokens: 1_200,
+    cacheCreationInputTokens: 550,
+    cacheReadInputTokens: 1_500,
+    outputTokens: 160,
+  })
+  // The last request is still the last turn, not the sum of them.
+  assert.deepEqual(harness.controller.getSnapshot().usage.lastRequest, {
+    inputTokens: 200,
+    cacheCreationInputTokens: 50,
+    cacheReadInputTokens: 1_500,
+    outputTokens: 60,
+  })
+})
+
+test('a request that lands first keeps the sidecar total from double-counting it', async () => {
+  // The seed is fire-and-forget, so a live request can beat it home. Adding the
+  // session's history on top of a total that already counts this process's
+  // requests would report every resumed turn twice.
+  const harness = await createHarness()
+  const resumed = await harness.store.create('resumed session')
+  await harness.store.appendMetric(resumed.id, {
+    event: 'turn',
+    model: 'test-model',
+    input_tokens: 9_000,
+    response_tokens: 100,
+    cache_read_tokens: 1_000,
+    cache_hit_rate: 0.1,
+    tool_calls: 0,
+    duration_ms: 10,
+  })
+
+  harness.controller.retarget(resumed, [])
+  harness.proxy.onRequestUsage(usage(42, 7))
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+
+  assert.deepEqual(harness.controller.getSnapshot().usage.total, usage(42, 7))
+})
+
 test('tool progress drives the spinner text and only lists calls when several are in flight', async () => {
   const harness = await createHarness()
 

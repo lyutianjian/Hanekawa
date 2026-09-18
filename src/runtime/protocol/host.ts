@@ -8,7 +8,7 @@ import { resolveImageCapability } from '../../config/providers.js'
 import type { PermissionRequest } from '../../harness/permissions.js'
 import type { RuntimeDiagnostic } from '../../harness/diagnostics.js'
 import type { SessionRecord } from '../../harness/types.js'
-import { resolveUsageWithCost } from '../../harness/usage.js'
+import { promptTokens, resolveUsageWithCost } from '../../harness/usage.js'
 import { countSessionRecordsTokens } from '../../prompts/budget.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import type { ImageAttachmentRef } from '../../media/types.js'
@@ -439,7 +439,7 @@ export class SessionHost {
    */
   private currentContextUsed(): number | undefined {
     const { lastRequest } = this.controller.getSnapshot().usage
-    if (lastRequest) return lastRequest.inputTokens + lastRequest.cacheReadInputTokens
+    if (lastRequest) return promptTokens(lastRequest)
     const size = this.ledger.size
     if (size === 0) return undefined
     if (this.estimatedContextTokens?.size !== size) {

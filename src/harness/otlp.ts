@@ -57,6 +57,7 @@ const TELEMETRY_SDK_NAME = 'hanekawa'
 const METRIC_NUMERIC_FIELDS: Record<SessionMetric['event'], ReadonlySet<string>> = {
   turn: new Set([
     'input_tokens',
+    'cache_creation_tokens',
     'response_tokens',
     'cache_read_tokens',
     'cache_hit_rate',

@@ -56,8 +56,9 @@ export function createStatusView(els: {
       // One total and a rate: `model/usage.ts` owns which numbers and how they
       // read. The hover carries the split unabbreviated, and so does the
       // accessible name — the chip on screen is a glyph plus a figure, which is
-      // not a sentence a screen reader can make sense of.
-      const usage = statusUsageView(snapshot.usage.total)
+      // not a sentence a screen reader can make sense of. Both halves of the
+      // usage go in: the count is the session's, the rate the last request's.
+      const usage = statusUsageView(snapshot.usage.total, snapshot.usage.lastRequest)
       if (usage.text !== lastUsage) {
         lastUsage = usage.text
         replace(els.usage, ...usageChips(usage))

@@ -1,4 +1,5 @@
 import type { SessionRecord, TaskDisplaySnapshot, TokenUsage } from '../harness/types.js'
+import { cacheCreationTokens, reportsCacheCreation } from '../harness/usage.js'
 import type { SessionStore } from '../sessions/service.js'
 
 /** Token accounting for a session: the last request plus the running total. */
@@ -7,9 +8,24 @@ export interface SessionUsage {
   total: TokenUsage
 }
 
+/**
+ * Cache writes are summed only when a side reported them, so a provider that
+ * never answers with the field keeps producing three-field usage. See
+ * `harness/usage.ts`, which draws the same distinction for the same reason.
+ */
+function combineCacheCreation(
+  a: TokenUsage,
+  b: TokenUsage,
+  combine: (left: number, right: number) => number,
+): Pick<TokenUsage, 'cacheCreationInputTokens'> | Record<string, never> {
+  if (!reportsCacheCreation(a) && !reportsCacheCreation(b)) return {}
+  return { cacheCreationInputTokens: combine(cacheCreationTokens(a), cacheCreationTokens(b)) }
+}
+
 export function addTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   return {
     inputTokens: a.inputTokens + b.inputTokens,
+    ...combineCacheCreation(a, b, (left, right) => left + right),
     cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
   }
@@ -28,6 +44,7 @@ export function addTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
 export function subtractTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   return {
     inputTokens: Math.max(0, a.inputTokens - b.inputTokens),
+    ...combineCacheCreation(a, b, (left, right) => Math.max(0, left - right)),
     cacheReadInputTokens: Math.max(0, a.cacheReadInputTokens - b.cacheReadInputTokens),
     outputTokens: Math.max(0, a.outputTokens - b.outputTokens),
   }
@@ -39,6 +56,14 @@ export function createEmptyUsage(): TokenUsage {
     cacheReadInputTokens: 0,
     outputTokens: 0,
   }
+}
+
+/** Nothing counted yet — the one condition under which a seeded total may land. */
+export function isEmptyUsage(usage: TokenUsage): boolean {
+  return usage.inputTokens === 0
+    && cacheCreationTokens(usage) === 0
+    && usage.cacheReadInputTokens === 0
+    && usage.outputTokens === 0
 }
 
 export function createEmptySessionUsage(): SessionUsage {

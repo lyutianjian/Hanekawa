@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { getMyAgentDir } from '../utils/paths.js'
+import { cacheHitRate } from './usage.js'
 
 export type CacheBreakSource =
   | `agent:${string}`
@@ -115,6 +116,7 @@ export function requireCacheSource(source: CacheBreakSource | undefined): CacheB
 
 export interface CacheUsageSnapshot {
   inputTokens: number
+  cacheCreationInputTokens?: number
   cacheReadInputTokens: number
   outputTokens: number
 }
@@ -344,10 +346,9 @@ export function resetCacheBreakDetection(source?: CacheBreakSource): void {
  * Format a cache hit-rate summary line for debug output.
  */
 export function formatCacheHitRate(usage: CacheUsageSnapshot): string {
-  const total = usage.inputTokens + usage.cacheReadInputTokens
-  if (total === 0) return 'cache: n/a'
-  const hitRate = (usage.cacheReadInputTokens / total) * 100
-  return `cache: ${hitRate.toFixed(0)}% hit`
+  const rate = cacheHitRate(usage)
+  if (rate === null) return 'cache: n/a'
+  return `cache: ${(rate * 100).toFixed(0)}% hit`
 }
 
 function writeCacheBreakDiagnostic(result: CacheBreakResult): string | null {

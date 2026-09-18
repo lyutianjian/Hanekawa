@@ -2,6 +2,7 @@ import { Box, Text } from 'ink'
 import { theme } from '../theme.js'
 import type { TUIUsage } from '../types.js'
 import type { PermissionMode } from '../../harness/permissions.js'
+import { cacheCreationTokens, promptTokens } from '../../harness/usage.js'
 
 const BAR_WIDTH = 20
 const BAR_FULL = '█'
@@ -71,7 +72,7 @@ export function StatusLine({ model, usage, permissionMode, hintMessage, effortLe
 
 function formatBar(usage: TUIUsage, contextWindow?: number): string {
   if (!contextWindow || !usage.lastRequest) return ''
-  const used = usage.lastRequest.inputTokens + usage.lastRequest.cacheReadInputTokens
+  const used = promptTokens(usage.lastRequest)
   const pct = Math.min(1, used / contextWindow)
   const raw = pct * BAR_WIDTH
   const full = Math.floor(raw)
@@ -85,7 +86,7 @@ function formatBar(usage: TUIUsage, contextWindow?: number): string {
 function formatStats(usage: TUIUsage, contextWindow?: number): string {
   if (!usage.lastRequest) return 'Ready'
   const t = usage.lastRequest
-  const used = t.inputTokens + t.cacheReadInputTokens
+  const used = promptTokens(t)
   const parts: string[] = []
 
   if (contextWindow) {
@@ -95,7 +96,9 @@ function formatStats(usage: TUIUsage, contextWindow?: number): string {
   if (t.cacheReadInputTokens > 0) {
     parts.push(`hit:${formatTokens(t.cacheReadInputTokens)}`)
   }
-  parts.push(`in:${formatTokens(t.inputTokens)}`)
+  // Input and cache writes together: both were sent uncached this request, and
+  // splitting them would put a fourth figure on a line read at a glance.
+  parts.push(`in:${formatTokens(t.inputTokens + cacheCreationTokens(t))}`)
   parts.push(`out:${formatTokens(t.outputTokens)}`)
 
   return parts.join('  ')

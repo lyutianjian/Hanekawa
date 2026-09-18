@@ -21,6 +21,7 @@ import {
   createEmptyUsage,
   findLatestTaskSnapshot,
   formatInterruptMessage,
+  isEmptyUsage,
   subtractTokenUsage,
   type SessionUsage,
 } from './sessionUsage.js'
@@ -180,7 +181,7 @@ export class SessionController {
     this.recordProxy.setProgressHandler(this.handleProgress)
     this.recordProxy.setStreamEventHandler(this.handleStreamEvent)
     this.recordProxy.setRequestUsageHandler(this.handleRequestUsage)
-    this.seedLastRequestUsage(this.session.id)
+    this.seedUsageFromMetrics(this.session.id)
   }
 
   // --- pull state -----------------------------------------------------------
@@ -395,7 +396,7 @@ export class SessionController {
     this.activeToolProgress.clear()
     this.subagentProgress.clear()
     this.usage = createEmptySessionUsage()
-    this.seedLastRequestUsage(session.id)
+    this.seedUsageFromMetrics(session.id)
     this.taskSnapshot = findLatestTaskSnapshot(records)
     this.spinnerSubText = undefined
     this.fileHistoryReady = false
@@ -494,20 +495,37 @@ export class SessionController {
   }
 
   /**
-   * Restores `lastRequest` from the metrics sidecar for a session that was not
-   * started in this process.
+   * Restores both halves of the usage from the metrics sidecar for a session
+   * that was not started in this process.
+   *
+   * `lastRequest` is the context readout; the total is what the hit rate and the
+   * cost are computed over, and leaving it at zero made a resumed session read
+   * as a cold one — the first request after a resume is mostly cache writes, so
+   * the rate beside it collapsed until enough warm turns had run to outweigh it.
    *
    * Deliberately fire-and-forget: this is a readout, and neither the
-   * constructor nor `retarget` may become async for it. Both guards matter —
-   * the session can move again before the read lands, and a real request can
-   * beat it, and a stale disk number must never overwrite either.
+   * constructor nor `retarget` may become async for it. Every guard matters —
+   * the session can move again before a read lands, and a real request can beat
+   * it, and a stale disk number must never overwrite either.
    */
-  private seedLastRequestUsage(sessionId: string): void {
+  private seedUsageFromMetrics(sessionId: string): void {
     try {
       void this.store.loadLastRequestUsage(sessionId).then((usage) => {
         if (!usage || this.disposed) return
         if (this.session.id !== sessionId || this.usage.lastRequest) return
         this.usage = { lastRequest: usage, total: this.usage.total }
+        this.publish()
+      }).catch(() => {
+        // Best-effort, exactly like the metrics that back it.
+      })
+      void this.store.loadSessionTotals(sessionId).then((total) => {
+        if (!total || this.disposed) return
+        // `isEmptyUsage` rather than a "did anything arrive" flag: a request
+        // that landed while this was in flight has already counted itself into
+        // the total, and adding the session's history to it would double every
+        // turn that ran in this process.
+        if (this.session.id !== sessionId || !isEmptyUsage(this.usage.total)) return
+        this.usage = { lastRequest: this.usage.lastRequest, total }
         this.publish()
       }).catch(() => {
         // Best-effort, exactly like the metrics that back it.

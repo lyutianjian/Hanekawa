@@ -98,6 +98,7 @@ function formatStats(record: SubagentTaskItem['record']): string {
   }
   if (record.usage) {
     const total = (record.usage.inputTokens ?? 0)
+      + (record.usage.cacheCreationInputTokens ?? 0)
       + (record.usage.cacheReadInputTokens ?? 0)
       + (record.usage.outputTokens ?? 0)
     if (total > 0) segments.push(`${formatTokenCount(total)} tokens`)

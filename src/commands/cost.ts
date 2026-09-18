@@ -16,6 +16,7 @@ export const costCommand: CommandDefinition = {
         title: 'Usage',
         rows: [
           { label: 'Cache read', value: usage.cacheReadInputTokens.toLocaleString() },
+          { label: 'Cache write', value: (usage.cacheCreationInputTokens ?? 0).toLocaleString() },
           { label: 'Input tokens', value: usage.inputTokens.toLocaleString() },
           { label: 'Output tokens', value: usage.outputTokens.toLocaleString() },
           {
@@ -51,6 +52,7 @@ export const costCommand: CommandDefinition = {
     const lines = [
       'Session usage:',
       `  Cache read:    ${usage.cacheReadInputTokens.toLocaleString()}`,
+      `  Cache write:   ${(usage.cacheCreationInputTokens ?? 0).toLocaleString()}`,
       `  Input tokens:  ${usage.inputTokens.toLocaleString()}`,
       `  Output tokens: ${usage.outputTokens.toLocaleString()}`,
       typeof usage.cost === 'number'

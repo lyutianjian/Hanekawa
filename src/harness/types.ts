@@ -691,14 +691,31 @@ export interface ToolCall {
   input: unknown
 }
 
+/**
+ * One request's token counts, split the way a caching provider bills them.
+ *
+ * The three input-side fields are disjoint: `inputTokens` is what was sent
+ * uncached, `cacheCreationInputTokens` what was written into the cache, and
+ * `cacheReadInputTokens` what was served from it. Their sum is the whole prompt
+ * — see `promptTokens()`, which is the only thing that should ever add them up.
+ *
+ * `cacheCreationInputTokens` is optional because it is persisted (subagent
+ * records carry a `TokenUsage`) and because no OpenAI-compatible endpoint
+ * reports it: absent means "this provider does not distinguish cache writes",
+ * never zero writes. Treat it as 0 through `cacheCreationTokens()` and never
+ * read the field directly.
+ */
 export interface TokenUsage {
   inputTokens: number
+  cacheCreationInputTokens?: number
   cacheReadInputTokens: number
   outputTokens: number
 }
 
 export interface ModelPricing {
   cacheReadInputPerMillionTokens?: number
+  /** Cache writes; Anthropic bills these above the input rate (1.25x for 5m). */
+  cacheWriteInputPerMillionTokens?: number
   inputPerMillionTokens?: number
   outputPerMillionTokens?: number
   currency?: string

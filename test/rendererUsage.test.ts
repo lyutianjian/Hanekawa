@@ -52,39 +52,64 @@ test('an untouched session leaves the status line empty', () => {
   }
 })
 
-test('the status line sums all three counts into one total', () => {
-  const view = statusUsageView(usage({
-    inputTokens: 12_400,
-    cacheReadInputTokens: 88_100,
-    outputTokens: 3_200,
-  }))
-  // One chip on screen; its label lives in the accessible name beside it.
+test('the status line sums every count into one total', () => {
+  const view = statusUsageView(
+    usage({
+      inputTokens: 12_400,
+      cacheCreationInputTokens: 4_000,
+      cacheReadInputTokens: 88_100,
+      outputTokens: 3_200,
+    }),
+    usage({ inputTokens: 200, cacheReadInputTokens: 9_800 }),
+  )
+  // One chip on screen; its label lives in the accessible name beside it. Cache
+  // writes are in the total — they were billed like any other input.
   assert.deepEqual(view.metrics.map((metric) => [metric.kind, metric.value]), [
-    ['total', '104k tok'],
+    ['total', '108k tok'],
   ])
-  // The rate is the one field written out on screen — no glyph explains a ratio.
-  assert.deepEqual(view.rate, { label: '缓存命中', percent: '87.7%' })
-  assert.equal(view.text, '总计 104k tok · 缓存命中 87.7%')
-  // The hover still carries the split, unabbreviated.
-  assert.match(view.title, /103,700/)
+  // The rate is the one field written out on screen — no glyph explains a ratio
+  // — and it is the last request's, not the session's.
+  assert.deepEqual(view.rate, { label: '本轮命中', percent: '98.0%' })
+  assert.equal(view.text, '总计 108k tok · 本轮命中 98.0%')
+  // The hover carries the split unabbreviated, and the cumulative rate beside it.
+  assert.match(view.title, /107,700/)
   assert.match(view.title, /12,400/)
+  assert.match(view.title, /4,000/)
   assert.match(view.title, /88,100/)
   assert.match(view.title, /3,200/)
+  assert.match(view.title, /会话累计 84\.3%/)
+})
+
+test('a cache write counts as a miss, not as nothing', () => {
+  // A write is a miss that was paid for. Left out of the denominator, the first
+  // request of every session would read as a perfect 100% hit.
+  const view = statusUsageView(
+    usage({ inputTokens: 1, cacheReadInputTokens: 1 }),
+    usage({ cacheCreationInputTokens: 100, cacheReadInputTokens: 100 }),
+  )
+  assert.equal(view.rate?.percent, '50.0%')
 })
 
 test('the hit rate ignores output tokens', () => {
   // Output is generated and can never be served from cache; folding it into the
   // denominator would drag the number down for a reason nobody can act on.
-  const view = statusUsageView(usage({
-    inputTokens: 100,
-    cacheReadInputTokens: 100,
-    outputTokens: 1_000_000,
-  }))
+  const view = statusUsageView(
+    usage({ inputTokens: 100, cacheReadInputTokens: 100, outputTokens: 1_000_000 }),
+    usage({ inputTokens: 100, cacheReadInputTokens: 100, outputTokens: 1_000_000 }),
+  )
   assert.equal(view.rate?.percent, '50.0%')
 })
 
+test('a session with no request behind it yet shows the count and no rate', () => {
+  // The count is the session's and survives a resume; the rate belongs to a
+  // request, and there is none until one lands.
+  const view = statusUsageView(usage({ inputTokens: 100, outputTokens: 500 }))
+  assert.equal(view.rate, undefined)
+  assert.equal(view.text, '总计 600 tok')
+})
+
 test('a turn with no input side reports no rate at all', () => {
-  const view = statusUsageView(usage({ outputTokens: 500 }))
+  const view = statusUsageView(usage({ outputTokens: 500 }), usage({ outputTokens: 500 }))
   assert.equal(view.rate, undefined)
   assert.equal(view.text, '总计 500 tok')
 })

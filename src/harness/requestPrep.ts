@@ -8,6 +8,7 @@ import type { SessionRecord, ToolResultRecord, TokenUsage } from './types.js'
 import { repairToolResultPairing } from '../sessions/invariants.js'
 import { snipLargeToolResults } from './compact.js'
 import { projectRecordImagesToText } from './turnImages.js'
+import { promptTokens } from './usage.js'
 
 const TOOL_RESULTS_CONTEXT_RATIO = 0.5
 const TOOL_RESULTS_TOKEN_BUDGET_CAP = 200_000
@@ -37,9 +38,9 @@ export interface RequestPrepOptions {
 
 export function requestTokenCountFromUsage(usage?: TokenUsage): number | undefined {
   if (!usage) return undefined
-  return usage.inputTokens
-    + usage.cacheReadInputTokens
-    + usage.outputTokens
+  // The prompt *and* the response: this estimates what the next request will
+  // carry, and the assistant message just generated is part of it.
+  return promptTokens(usage) + usage.outputTokens
 }
 
 export function prepareRecordsForRequest(

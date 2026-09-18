@@ -961,13 +961,18 @@ function sameUsage(a: SessionUsage, b: SessionUsage): boolean {
   return sameTokens(a.total, b.total) && sameTokens(a.lastRequest, b.lastRequest)
 }
 
-function sameTokens(
-  a: { inputTokens: number; cacheReadInputTokens: number; outputTokens: number } | null,
-  b: { inputTokens: number; cacheReadInputTokens: number; outputTokens: number } | null,
-): boolean {
+type TokenCounts = {
+  inputTokens: number
+  cacheCreationInputTokens?: number
+  cacheReadInputTokens: number
+  outputTokens: number
+}
+
+function sameTokens(a: TokenCounts | null, b: TokenCounts | null): boolean {
   if (a === b) return true
   if (!a || !b) return false
   return a.inputTokens === b.inputTokens
+    && (a.cacheCreationInputTokens ?? 0) === (b.cacheCreationInputTokens ?? 0)
     && a.cacheReadInputTokens === b.cacheReadInputTokens
     && a.outputTokens === b.outputTokens
 }

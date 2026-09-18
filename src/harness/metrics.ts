@@ -7,6 +7,13 @@ export type SessionMetric =
       session_id: string
       model: string
       input_tokens?: number
+      /**
+       * Cache writes. Optional because sessions recorded before the split (and
+       * endpoints that do not report writes) have none; a reader that needs the
+       * prompt total must add it in as 0 rather than assume it was folded into
+       * `input_tokens`.
+       */
+      cache_creation_tokens?: number
       response_tokens: number
       cache_read_tokens: number
       cache_hit_rate: number | null
@@ -67,8 +74,7 @@ export type SessionMetricInput =
   | MetricInput<Extract<SessionMetric, { event: 'mcp_connect_failed' }>>
   | MetricInput<Extract<SessionMetric, { event: 'permission_denial_state' }>>
 
-export function cacheHitRate(inputTokens: number, cacheReadTokens: number): number | null {
-  const total = inputTokens + cacheReadTokens
-  if (total === 0) return null
-  return cacheReadTokens / total
-}
+// The hit rate itself lives in `usage.ts`, beside `promptTokens()`: it is a
+// function of a `TokenUsage`, not of two loose numbers, and the denominator has
+// to include cache writes — which a caller passing `(inputTokens, readTokens)`
+// cannot supply.

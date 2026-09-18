@@ -401,6 +401,60 @@ test('SessionStore appends metrics next to session records', async () => {
   }
 })
 
+test('SessionStore reads back both the last request and the session totals', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
+  try {
+    const store = new SessionStore(dir)
+    await store.init()
+    const session = await store.create('metrics session')
+    // Nothing recorded yet is "no answer", not a zeroed one — the caller keeps
+    // counting from zero rather than painting a total it does not have.
+    assert.equal(await store.loadSessionTotals(session.id), null)
+
+    await store.appendMetric(session.id, {
+      event: 'turn',
+      model: 'fake-model',
+      input_tokens: 1_000,
+      cache_creation_tokens: 500,
+      response_tokens: 100,
+      cache_read_tokens: 0,
+      cache_hit_rate: 0,
+      tool_calls: 0,
+      duration_ms: 10,
+    })
+    await store.appendMetric(session.id, {
+      event: 'turn',
+      model: 'fake-model',
+      input_tokens: 200,
+      cache_creation_tokens: 50,
+      response_tokens: 60,
+      cache_read_tokens: 1_500,
+      cache_hit_rate: 1_500 / 1_750,
+      tool_calls: 1,
+      duration_ms: 12,
+    })
+
+    assert.deepEqual(await store.loadSessionTotals(session.id), {
+      inputTokens: 1_200,
+      cacheCreationInputTokens: 550,
+      cacheReadInputTokens: 1_500,
+      outputTokens: 160,
+    })
+    assert.deepEqual(await store.loadLastRequestUsage(session.id), {
+      inputTokens: 200,
+      cacheCreationInputTokens: 50,
+      cacheReadInputTokens: 1_500,
+      outputTokens: 60,
+    })
+
+    // The cumulative rate counts writes as misses: 1500 read of 3250 sent.
+    const summary = await store.loadMetricsSummary(session.id)
+    assert.equal(summary?.totalCacheHitRate, 1_500 / 3_250)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('SessionStore recovery ignores metrics JSONL files and removes polluted index entries', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
   try {

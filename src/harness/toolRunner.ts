@@ -499,6 +499,7 @@ function formatSubagentSummary(value: unknown): string | undefined {
 function totalTokens(usage: Record<string, unknown>): number | undefined {
   const fields = [
     numericUsageField(usage.inputTokens),
+    numericUsageField(usage.cacheCreationInputTokens),
     numericUsageField(usage.cacheReadInputTokens),
     numericUsageField(usage.outputTokens),
   ]

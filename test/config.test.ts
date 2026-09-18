@@ -32,6 +32,7 @@ import {
   providerSupportsImageInput,
   resolveImageCapability,
 } from '../src/config/providers.js'
+import { cacheHitRate, promptTokens } from '../src/harness/usage.js'
 import { getAllTools, getBuiltinTools } from '../src/tools/index.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
 import { resetCacheTTLEvaluation, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from '../src/harness/cacheControl.js'
@@ -1359,9 +1360,48 @@ test('normalizeAnthropicUsage maps cache and output tokens', () => {
     output_tokens: 40,
   }), {
     cacheReadInputTokens: 300,
-    inputTokens: 120,
+    cacheCreationInputTokens: 20,
+    inputTokens: 100,
     outputTokens: 40,
   })
+})
+
+test('normalizeAnthropicUsage keeps cache writes out of the input count', () => {
+  // Folded into `inputTokens`, a write read as a cache miss in the hit rate and
+  // as ordinary input in the cost, which bills writes above the input rate.
+  const usage = normalizeAnthropicUsage({
+    input_tokens: 100,
+    cache_creation_input_tokens: 20,
+    cache_read_input_tokens: 300,
+    output_tokens: 40,
+  })
+  assert.equal(usage.inputTokens, 100)
+  assert.equal(promptTokens(usage), 420)
+  assert.equal(cacheHitRate(usage), 300 / 420)
+})
+
+test('normalizeAnthropicUsage falls back to the per-TTL cache_creation breakdown', () => {
+  // An endpoint that ships the object but not the scalar must not read as zero
+  // writes — that is a context window that shrinks whenever a prefix is cached.
+  assert.equal(normalizeAnthropicUsage({
+    input_tokens: 10,
+    cache_creation: { ephemeral_5m_input_tokens: 700, ephemeral_1h_input_tokens: 300 },
+    cache_read_input_tokens: 0,
+    output_tokens: 5,
+  }).cacheCreationInputTokens, 1000)
+})
+
+test('normalizeOpenAIUsage reports no cache-write count at all', () => {
+  // `prompt_tokens` already covers the whole prompt: absent means "this protocol
+  // has no such field", which is not the same answer as zero writes.
+  const usage = normalizeOpenAIUsage({
+    prompt_tokens: 1000,
+    prompt_tokens_details: { cached_tokens: 400 },
+    completion_tokens: 50,
+  })
+  assert.equal(usage.cacheCreationInputTokens, undefined)
+  assert.equal(usage.inputTokens, 600)
+  assert.equal(promptTokens(usage), 1000)
 })
 
 test('normalizeOpenAIUsage splits cached and uncached prompt tokens', () => {

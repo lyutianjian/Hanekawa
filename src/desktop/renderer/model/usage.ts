@@ -7,17 +7,19 @@ import type { WireRuntimeSnapshot } from '../../../runtime/protocol/wire.js'
  * Pure, like `model/composer.ts`: `dom/statusView.ts` and `dom/composerView.ts`
  * only turn what these return into nodes.
  *
- * The status line prints one count, not three: `总计 X tok · 缓存命中 Y%`. It
+ * The status line prints one count, not three: `总计 X tok · 本轮命中 Y%`. It
  * carried a chip per direction for a while (`输入` / `缓存命中` / `输出`), which
  * is three figures to add up before the line answers the question it is actually
  * asked — how much this session has spent. The split survives in the hover for
  * anyone who wants it.
  *
- * `cache_creation` is deliberately not broken out:
- * `normalizeAnthropicUsage` folds cache writes into `inputTokens`, and splitting
- * them out here would mean a new field on `TokenUsage` — which is persisted in
- * every session's JSONL. The total therefore means "everything billed, cache
- * writes included", which is also what the cost beside it is computed from.
+ * The two numbers are deliberately on different denominators, which is why only
+ * one of them is a total: the count is what the whole session spent, and the
+ * rate is the *last request's*. A cumulative rate can only fall — the cold first
+ * request, every compaction and every subagent prompt sit in its denominator
+ * forever — so it answers "how did this session go" and not "is the cache
+ * working right now", which is the question a status line is read for. The
+ * cumulative figure is in the hover, next to the split.
  */
 
 /** `--context-ratio`, written by `dom/composerView.ts` through `setProperty`. */
@@ -100,19 +102,50 @@ const EMPTY: StatusUsageView = Object.freeze({
   title: '',
 })
 
+/** Cache writes, 0 when the provider does not report them. */
+function writes(usage: TokenUsage): number {
+  const value = usage.cacheCreationInputTokens
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+/**
+ * What one request sent: uncached input + cache writes + cache reads.
+ *
+ * Spelled out here rather than imported from `harness/usage.ts` because the
+ * renderer may not value-import that layer; `test/rendererUsage.test.ts` pins it
+ * against the same numbers the host computes.
+ */
+function prompt(usage: TokenUsage): number {
+  return usage.inputTokens + writes(usage) + usage.cacheReadInputTokens
+}
+
+/**
+ * Cache reads over the whole prompt, or undefined when nothing was sent.
+ *
+ * Writes are in the denominator and output is not: a write is a miss that was
+ * paid for, while generated tokens can never be served from cache and would only
+ * drag the number down for a reason nobody can act on.
+ */
+function hitRate(usage: TokenUsage): number | undefined {
+  const total = prompt(usage)
+  return total > 0 ? (usage.cacheReadInputTokens / total) * 100 : undefined
+}
+
 /**
  * The session's total token spend, and the cache hit rate beside it.
  *
- * Cumulative rather than last-request, to match the cost sitting next to it —
- * two adjacent numbers on different denominators is how a status line stops
- * being readable. The rate's denominator is the *input* side only; output tokens
- * are generated and can never be served from cache, so folding them in would
- * only ever drag the number down for a reason nobody can act on.
+ * The count is cumulative, to match the cost sitting next to it. The rate is the
+ * last request's, because that is the one an unexpectedly cold turn shows up in;
+ * the cumulative rate is in the hover, which is where a number that can only
+ * fall belongs.
  */
-export function statusUsageView(total: TokenUsage | undefined): StatusUsageView {
+export function statusUsageView(
+  total: TokenUsage | undefined,
+  lastRequest?: TokenUsage | null,
+): StatusUsageView {
   if (!total) return EMPTY
   const { inputTokens, cacheReadInputTokens, outputTokens } = total
-  const allTokens = inputTokens + cacheReadInputTokens + outputTokens
+  const allTokens = prompt(total) + outputTokens
   if (allTokens === 0) return EMPTY
 
   const metrics: UsageMetric[] = [
@@ -120,19 +153,23 @@ export function statusUsageView(total: TokenUsage | undefined): StatusUsageView 
   ]
   const titleLines = [
     `总计 ${formatExact(allTokens)} 标记`,
-    `输入 ${formatExact(inputTokens)}（含缓存写入）`,
+    `输入 ${formatExact(inputTokens)}（未缓存）`,
+    `缓存写入 ${formatExact(writes(total))}`,
     `缓存命中 ${formatExact(cacheReadInputTokens)}`,
     `输出 ${formatExact(outputTokens)}`,
   ]
 
   const parts = metrics.map((metric) => `${metric.label} ${metric.value}`)
-  const readSide = inputTokens + cacheReadInputTokens
+  const lastRate = lastRequest ? hitRate(lastRequest) : undefined
   let rate: UsageRateView | undefined
-  if (readSide > 0) {
-    const percentage = (cacheReadInputTokens / readSide) * 100
-    rate = { label: '缓存命中', percent: `${percentage.toFixed(1)}%` }
+  if (lastRate !== undefined) {
+    rate = { label: '本轮命中', percent: `${lastRate.toFixed(1)}%` }
     parts.push(`${rate.label} ${rate.percent}`)
-    titleLines.push(`${rate.label} ${rate.percent}（命中 / (输入 + 命中)）`)
+    titleLines.push(`本轮命中 ${rate.percent}（命中 / 本次请求）`)
+  }
+  const sessionRate = hitRate(total)
+  if (sessionRate !== undefined) {
+    titleLines.push(`会话累计 ${sessionRate.toFixed(1)}%（命中 /（输入 + 写入 + 命中））`)
   }
 
   return {

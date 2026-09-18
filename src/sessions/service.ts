@@ -104,7 +104,9 @@ export function assertSafeSessionId(id: string): void {
 interface RunningCacheSummary {
   totalTurns: number
   totalInputTokens: number
+  totalCacheCreationTokens: number
   totalCacheReadTokens: number
+  totalOutputTokens: number
   firstBreakTurnCount: number | null
   cacheBreakCount: number
   causeDistribution: Record<string, number>
@@ -515,8 +517,48 @@ export class SessionStore {
       if (!last) return null
       return {
         inputTokens: inferTurnInputTokens(last),
+        ...(typeof last.cache_creation_tokens === 'number'
+          ? { cacheCreationInputTokens: Math.max(0, last.cache_creation_tokens) }
+          : {}),
         cacheReadInputTokens: Math.max(0, last.cache_read_tokens),
         outputTokens: Math.max(0, last.response_tokens),
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Everything this session ever spent, summed from the same sidecar.
+   *
+   * The running total is otherwise an in-process figure: reopening a session
+   * restarted it at zero, so the cache hit rate beside it was computed over
+   * whatever had been sent since the window was opened — and the first request
+   * after a resume is mostly cache *writes*, which made a warm session read as
+   * a cold one. Summed from the `turn` metrics instead, so the number means the
+   * session rather than the process.
+   *
+   * Null when the session never completed a request, which is the caller's cue
+   * to keep counting from zero rather than to show a zeroed total.
+   */
+  async loadSessionTotals(sessionIdOrPrefix: string): Promise<TokenUsage | null> {
+    try {
+      if (this.resolveDraft(sessionIdOrPrefix)) return null
+      const session = await this.resolve(sessionIdOrPrefix)
+      const sessionId = session?.id ?? sessionIdOrPrefix
+      const metricsPath = this.sessionMetricsPath(sessionId)
+      if (!existsSync(metricsPath)) return null
+      const summary = this.runningCacheSummary(sessionId, metricsPath)
+      if (summary.totalTurns === 0) return null
+      return {
+        inputTokens: summary.totalInputTokens,
+        // Same contract as one request's usage: a session whose turns never
+        // carried a write count reports no write count either.
+        ...(summary.totalCacheCreationTokens > 0
+          ? { cacheCreationInputTokens: summary.totalCacheCreationTokens }
+          : {}),
+        cacheReadInputTokens: summary.totalCacheReadTokens,
+        outputTokens: summary.totalOutputTokens,
       }
     } catch {
       return null
@@ -1088,7 +1130,9 @@ export class SessionStore {
     const empty = (): RunningCacheSummary => ({
       totalTurns: 0,
       totalInputTokens: 0,
+      totalCacheCreationTokens: 0,
       totalCacheReadTokens: 0,
+      totalOutputTokens: 0,
       firstBreakTurnCount: null,
       cacheBreakCount: 0,
       causeDistribution: {},
@@ -1111,6 +1155,8 @@ export class SessionStore {
     if (metric.event === 'turn') {
       summary.totalTurns += 1
       summary.totalCacheReadTokens += metric.cache_read_tokens
+      summary.totalCacheCreationTokens += Math.max(0, metric.cache_creation_tokens ?? 0)
+      summary.totalOutputTokens += Math.max(0, metric.response_tokens)
       summary.totalInputTokens += inferTurnInputTokens(metric)
       return
     }
@@ -1140,7 +1186,9 @@ export class SessionStore {
   private buildSessionCacheSummaryRecord(sessionId: string, summary: RunningCacheSummary): SessionMetric | null {
     if (summary.totalTurns === 0 && summary.cacheBreakCount === 0) return null
 
-    const denominator = summary.totalInputTokens + summary.totalCacheReadTokens
+    const denominator = summary.totalInputTokens
+      + summary.totalCacheCreationTokens
+      + summary.totalCacheReadTokens
     return {
       event: 'session_cache_summary',
       created_at: new Date().toISOString(),
@@ -1201,8 +1249,10 @@ function inferTurnInputTokens(turn: Extract<SessionMetric, { event: 'turn' }>): 
     return Math.max(0, turn.input_tokens)
   }
   if (turn.cache_hit_rate && turn.cache_hit_rate > 0) {
+    // The rate's denominator is the whole prompt, so what is left after the
+    // reads is input *and* writes; subtract the writes when they were recorded.
     const total = turn.cache_read_tokens / turn.cache_hit_rate
-    return Math.max(0, total - turn.cache_read_tokens)
+    return Math.max(0, total - turn.cache_read_tokens - (turn.cache_creation_tokens ?? 0))
   }
   return 0
 }
@@ -1213,7 +1263,11 @@ function normalizeCacheBreakCause(reason: string): string {
 }
 
 function toMetricsSummary(summary: RunningCacheSummary): SessionMetricsSummary | null {
-  const denominator = summary.totalInputTokens + summary.totalCacheReadTokens
+  // Cache writes belong in the denominator: they were sent uncached and paid
+  // for, so a rate that left them out would read 100% on a cold session.
+  const denominator = summary.totalInputTokens
+    + summary.totalCacheCreationTokens
+    + summary.totalCacheReadTokens
   const compactInterval = averageCompactIntervalTurns(summary)
   if (summary.totalTurns === 0 && summary.cacheBreakCount === 0 && compactInterval === null) return null
   return {

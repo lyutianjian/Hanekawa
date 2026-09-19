@@ -25,7 +25,7 @@ export function buildBashDescription(): string {
   const defaultTimeout = resolveBashTimeoutMs()
   return `Executes a bash command and returns its output.
 
-- Parameters are \`command\` (required), \`timeout\`, and \`run_in_background\`. Any other key is rejected.
+- Parameters are \`command\` (required), \`timeout\`, \`run_in_background\`, and optional \`env\` (key-value object). Any other key is rejected.
 - Each call starts in the session working directory. \`cd\` affects only that one command and does NOT carry over to the next Bash call. Use absolute paths, or chain with \`&&\` inside a single call.
 - Shell state (environment variables, functions, aliases) does not persist between calls either.
 - stdin is closed. Interactive commands (password prompts, pagers, editors, \`-i\` flags) will hang or fail. Pass flags that avoid interaction, such as \`--no-pager\`.

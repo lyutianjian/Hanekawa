@@ -32,6 +32,49 @@ interface BashInput {
   command: string
   timeout?: number
   run_in_background?: boolean
+  env?: Record<string, string | number | boolean>
+}
+
+/**
+ * Sensitive environment variables scrubbed from child shell processes to prevent
+ * prompt injection from exfiltrating credentials.
+ */
+export const SENSITIVE_ENV_VARS = new Set([
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'GROQ_API_KEY',
+  'MISTRAL_API_KEY',
+  'COHERE_API_KEY',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+])
+
+export function buildSubprocessEnv(
+  customEnv?: Record<string, string | number | boolean>,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...baseEnv }
+
+  for (const key of SENSITIVE_ENV_VARS) {
+    delete env[key]
+  }
+
+  // Prevent git from launching an interactive editor (which hangs on closed stdin)
+  env.GIT_EDITOR = 'true'
+  env.GIT_SEQUENCE_EDITOR = 'true'
+
+  if (customEnv) {
+    for (const [key, value] of Object.entries(customEnv)) {
+      if (value !== undefined && value !== null) {
+        env[key] = String(value)
+      }
+    }
+  }
+
+  return env
 }
 
 interface ShellInfo {
@@ -238,6 +281,8 @@ export function createBashTool(backgroundTasks: BackgroundTaskRegistry = default
       .describe(`Optional timeout in milliseconds (default ${DEFAULT_BASH_TIMEOUT_MS}, max ${MAX_BASH_TIMEOUT_MS}). On timeout, non-sleep commands are moved to the background.`),
     run_in_background: z.boolean().optional()
       .describe('Set to true to run this command in the background immediately. Use BashOutput to read output later.'),
+    env: z.record(z.union([z.string(), z.number(), z.boolean()])).optional()
+      .describe('Optional environment variables to set for this command execution.'),
   }).strict(),
   riskLevel: 'dangerous',
   isDestructive: true,
@@ -272,6 +317,7 @@ export function createBashTool(backgroundTasks: BackgroundTaskRegistry = default
     }
 
     const { shell, args: shellArgs } = getShell()
+    const spawnEnv = buildSubprocessEnv(options.env)
 
     // Back up the files this command is about to overwrite, before it runs.
     // Parsing is best effort and never gates execution: an unrecognised
@@ -286,6 +332,7 @@ export function createBashTool(backgroundTasks: BackgroundTaskRegistry = default
         detached: process.platform !== 'win32',
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
+        env: spawnEnv,
       })
       const task = backgroundTasks.registerShell({
         sessionId: context.sessionId,
@@ -325,6 +372,7 @@ export function createBashTool(backgroundTasks: BackgroundTaskRegistry = default
         // Ignore stdin so interactive readers (cat/read/rg) do not hang waiting
         // for input that will never arrive.
         stdio: ['ignore', 'pipe', 'pipe'],
+        env: spawnEnv,
       })
 
       const MAX_OUTPUT_BYTES = 1_000_000

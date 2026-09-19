@@ -7,6 +7,9 @@ import {
   MAX_BASH_TIMEOUT_MS,
   SLEEP_BLOCK_THRESHOLD_SECONDS,
   resolveBashTimeoutMs,
+  buildSubprocessEnv,
+  SENSITIVE_ENV_VARS,
+  bashTool,
 } from '../src/tools/BashTool/BashTool.js'
 import { buildBashDescription } from '../src/tools/BashTool/prompt.js'
 
@@ -134,4 +137,51 @@ test('building the description does not probe for a shell', () => {
   // first prompt build, not to that. Naming a shell here is how it creeps back.
   const description = buildBashDescription()
   assert.doesNotMatch(description, /powershell|bash\.exe|POSIX shell on Windows/i)
+})
+
+test('buildSubprocessEnv scrubs sensitive keys and injects git non-interactive editor', () => {
+  const baseEnv: NodeJS.ProcessEnv = {
+    PATH: '/usr/bin',
+    ANTHROPIC_API_KEY: 'sk-ant-test',
+    OPENAI_API_KEY: 'sk-openai-test',
+    CUSTOM_VAR: 'custom-value',
+  }
+
+  const env = buildSubprocessEnv({ MY_PORT: 8080, MY_FLAG: true }, baseEnv)
+
+  assert.equal(env.PATH, '/usr/bin')
+  assert.equal(env.CUSTOM_VAR, 'custom-value')
+  assert.equal(env.GIT_EDITOR, 'true')
+  assert.equal(env.GIT_SEQUENCE_EDITOR, 'true')
+  assert.equal(env.MY_PORT, '8080')
+  assert.equal(env.MY_FLAG, 'true')
+  assert.equal(env.ANTHROPIC_API_KEY, undefined)
+  assert.equal(env.OPENAI_API_KEY, undefined)
+})
+
+test('buildSubprocessEnv scrubs all defined sensitive keys', () => {
+  const base: NodeJS.ProcessEnv = {}
+  for (const k of SENSITIVE_ENV_VARS) {
+    base[k] = 'secret'
+  }
+  const scrubbed = buildSubprocessEnv(undefined, base)
+  for (const k of SENSITIVE_ENV_VARS) {
+    assert.equal(scrubbed[k], undefined, `expected ${k} to be scrubbed`)
+  }
+})
+
+test('bashTool execution propagates custom env variables to subprocess', async () => {
+  const context = {
+    cwd: process.cwd(),
+    sessionId: 'test-session',
+    readFiles: new Set<string>(),
+  }
+
+  const result = await bashTool.execute({
+    command: 'node -e "console.log(process.env.TEST_HANEKAWA_ENV)"',
+    env: { TEST_HANEKAWA_ENV: 'hanekawa_works' },
+  }, context)
+
+  assert.equal(result.ok, true)
+  assert.match(result.content, /hanekawa_works/)
 })

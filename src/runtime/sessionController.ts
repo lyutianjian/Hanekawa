@@ -9,6 +9,7 @@ import type {
   TokenUsage,
   ToolProgressEvent,
 } from '../harness/types.js'
+import { getRecordsAfterLastCompact } from '../harness/requestPrep.js'
 import { promptTokens } from '../harness/usage.js'
 import { countSessionRecordsTokens } from '../prompts/budget.js'
 import { deriveSessionTitle, type SessionMeta, type SessionStore } from '../sessions/service.js'
@@ -530,6 +531,19 @@ export class SessionController {
    * Memoized because this runs on every publish, and publish now fires per
    * record.
    */
+  /**
+   * The system text, or nothing when no runtime is installed yet — the first
+   * snapshot is built in the constructor, before a session exists, and a
+   * misconfigured model never gets one at all.
+   */
+  private systemPromptForEstimate(): string | undefined {
+    try {
+      return this.getSession().loop.getSystemPrompt()
+    } catch {
+      return undefined
+    }
+  }
+
   private contextUsed(): number | undefined {
     const anchor = this.usageAnchorRecordId
     const size = this.ledger.size
@@ -546,7 +560,11 @@ export class SessionController {
       }
       const tokens = base !== undefined && anchorIndex >= 0
         ? base + countSessionRecordsTokens(records.slice(anchorIndex + 1))
-        : countSessionRecordsTokens([...records])
+        // No anchor: estimate the same thing a request would carry — the
+        // records the compactor would keep, plus the system prompt no record
+        // accounts for. Counting the whole ledger bare reads low on a resumed
+        // session and double-counts everything a compaction already dropped.
+        : countSessionRecordsTokens(getRecordsAfterLastCompact([...records]), this.systemPromptForEstimate())
       this.contextUsedMemo = { anchor, size, base, tokens }
       return tokens
     }

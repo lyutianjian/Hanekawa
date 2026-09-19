@@ -16,7 +16,7 @@ import type { FileHistoryService } from '../src/services/fileHistory/fileHistory
  * status line and the desktop strip cannot drift apart.
  */
 
-async function createHarness(existingRecords: readonly SessionRecord[] = []) {
+async function createHarness(existingRecords: readonly SessionRecord[] = [], system?: string) {
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-context-usage-'))
   const store = new SessionStore(cwd)
   await store.init()
@@ -36,7 +36,7 @@ async function createHarness(existingRecords: readonly SessionRecord[] = []) {
     session,
     existingRecords,
     recordProxy: proxy,
-    getSession: () => ({ loop: { invalidateRecordsCache: () => {} } } as unknown as AgentSession),
+    getSession: () => ({ loop: { invalidateRecordsCache: () => {}, getSystemPrompt: () => system } } as unknown as AgentSession),
     createFileHistoryService: () => fileHistoryService,
   })
   await Promise.resolve()
@@ -114,4 +114,27 @@ test('the readout drops back after the transcript is replaced', async () => {
 
   const after = used(controller) ?? 0
   assert.ok(after < before, `expected the readout to fall, went ${before} -> ${after}`)
+})
+
+test('the anchorless estimate counts the system prompt and stops at the last compaction', async () => {
+  const system = 'y'.repeat(40_000)
+  const { controller, proxy } = await createHarness([], system)
+
+  proxy.onRecord(toolResult('r1', 40_000))
+  const withSystem = used(controller) ?? 0
+  assert.ok(withSystem > 20_000, `the system prompt belongs in the estimate, got ${withSystem}`)
+
+  proxy.onRecord({
+    id: 'c1',
+    type: 'compact_boundary',
+    createdAt: new Date().toISOString(),
+    summary: 'compacted',
+    preTokens: 0,
+    postTokens: 0,
+  } as unknown as SessionRecord)
+  const afterCompact = used(controller) ?? 0
+  assert.ok(
+    afterCompact < withSystem,
+    `records before the boundary are gone from the request, got ${withSystem} -> ${afterCompact}`,
+  )
 })

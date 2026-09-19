@@ -349,6 +349,11 @@ export class AgentLoop {
     }
   }
 
+  /** The caller-supplied system text, for context estimates outside a request. */
+  getSystemPrompt(): string | undefined {
+    return this.options.system
+  }
+
   clearCachedSections(key?: string): void {
     this.options.contextBuilder.clearCachedSections(key)
   }

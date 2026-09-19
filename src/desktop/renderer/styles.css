@@ -194,6 +194,13 @@
      that never touches localStorage — resolves to the resting width.
      `#sidebar` and `.sidebar-shell` both resolve from it; they are one axis. */
   --sidebar-width: 280px;
+  /* The browser panel's width, the third layout number the renderer writes and
+     declared here for the same reason the rail's is: `app.ts` re-declares it on
+     `documentElement` when the handle between the canvas and the panel is
+     dragged, while `model/browserPanel.ts` owns the default and the range.
+     Declared so a first run — and every test that never touches localStorage —
+     resolves to the resting width. */
+  --browser-panel-width: 408px;
   /* The seam from the sidebar's content edge to the canvas, and the part of it
      the sidebar's scrollbar is allowed to occupy. The overhang is the 10px seam
      minus 2px of air and the 1px sash line, so the scrollbar owns 7px and the
@@ -443,6 +450,16 @@ body {
   cursor: pointer;
 }
 .titlebar-rail:hover { color: var(--text-primary); background: var(--surface-hover); }
+/* The browser's rail, pushed to the far end of the strip — the panel it opens is
+   on that side. `margin-left: auto` rather than a spacer element: the bar is a
+   flex row, and the gap between the menus and this control is not a thing that
+   needs to exist in the document. The window's own `padding-right` already
+   reserves the native controls' band, so this lands inside it on Windows too. */
+.titlebar-rail-end { margin-left: auto; margin-right: 0; }
+/* Open reads as pressed, the one state the sidebar's rail does not need: that
+   one's column is visible behind it, while a hidden browser panel leaves the
+   control with nothing to say for itself. */
+.titlebar-rail.open { color: var(--text-primary); background: var(--surface-active); }
 /* Positioned so the menu hangs off its trigger; the bar is not inside a
    scroller, so `overflow` can stay visible here. */
 .titlebar-menu-shell { position: relative; display: inline-flex; }
@@ -830,6 +847,155 @@ body.settings-open #sidebar-resizer { display: none; }
    pointer by a third of a second. `app.ts` owns the class for the drag's
    duration only. */
 body.resizing #sidebar { transition: none; }
+
+/* --- browser panel --- */
+/* The third column. Square at the bottom and flush to the window's edge,
+   deliberately: everything below the address row is covered by a native
+   `WebContentsView`, which is not clipped by this element's `overflow` or its
+   `border-radius` — a rounded bottom corner here would simply have a square
+   page corner painted over it. The top two corners are above the hole, in the
+   panel's own chrome, so they round like every other surface. */
+#browser-panel {
+  flex: 0 0 var(--browser-panel-width);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: var(--space-2) var(--space-2) 0 0;
+  background: var(--surface-canvas);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  overflow: hidden;
+  outline: 1px solid var(--border-subtle);
+  outline-offset: -1px;
+}
+#browser-panel[hidden] { display: none; }
+/* The hole. No padding, no border, no transform — it is a measurement, and
+   anything that moves its rect moves the page out from under the panel. */
+#browser-hole {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--surface-base);
+}
+#browser-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-1) 0;
+}
+/* Tabs shrink rather than the strip scrolling: nothing in this window scrolls
+   sideways but a diff, and a horizontal scrollbar is the wrong answer here
+   anyway — a browser narrows its tabs, it does not hide them off an edge. */
+.browser-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 1 180px;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: default;
+}
+.browser-tab:hover { background: var(--surface-hover); }
+.browser-tab.active { background: var(--surface-card); color: var(--text-primary); }
+.browser-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The one place an accent earns its keep here: a tab the user took back from
+   the agent has to be findable in a strip of otherwise identical rows. */
+.browser-tab.taken-over .browser-tab-label { color: var(--accent-warn); }
+/* The tab's own close affordance, and the strip's `＋`. Both are quiet at rest —
+   this column is dense, and a bordered capsule per tab would read as a second
+   kind of control. */
+.browser-tab-close,
+.browser-tab-new {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: var(--type-meta);
+  padding: 0 var(--space-1);
+  cursor: default;
+}
+.browser-tab-close:hover,
+.browser-tab-new:hover { background: var(--surface-active); color: var(--text-primary); }
+#browser-address {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+}
+/* 后退 / 前进 / 重新加载. Same resting treatment as the two above. */
+.browser-nav {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  padding: 0 var(--space-1);
+  cursor: default;
+}
+.browser-nav:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
+.browser-nav:disabled { color: var(--text-tertiary); }
+/* 接管. A word rather than a glyph, because it is the one control here that
+   changes who is driving; disabled it reads 已接管, which is a state, not a
+   dead button — the accent is what says so. */
+.browser-takeover {
+  flex: 0 0 auto;
+  font-size: var(--type-meta);
+  padding: 0 var(--space-2);
+}
+.browser-takeover:disabled { color: var(--accent-warn); }
+/* A groove rather than a form field, the same call `.sidebar-search` makes: this
+   sits on the panel's own paper, and a bordered white capsule reads there as
+   something unfinished. */
+#browser-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-3);
+  font: inherit;
+  font-size: var(--type-meta);
+}
+#browser-url:focus { outline: none; box-shadow: 0 0 0 1px var(--focus-ring); }
+/* Mirrors `#sidebar-resizer`, reflected: the sash hugs the canvas edge, so the
+   hairline goes on this handle's *left*. */
+#browser-resizer {
+  position: relative;
+  flex: 0 0 var(--space-2);
+  margin-left: calc(-1 * var(--space-2));
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+}
+#browser-resizer[hidden] { display: none; }
+#browser-resizer::after {
+  content: '';
+  position: absolute;
+  top: var(--space-5);
+  bottom: var(--space-5);
+  left: 0;
+  width: 1px;
+  background: var(--border-strong);
+  opacity: 0;
+  transition: opacity var(--motion-micro) var(--ease-standard);
+}
+#browser-resizer:hover::after,
+body.resizing #browser-resizer::after { opacity: 1; }
+/* The settings screen fills the canvas and owns the window; a page painted
+   beside it would be the one thing on screen it does not cover. */
+body.settings-open #browser-panel,
+body.settings-open #browser-resizer { display: none; }
 /* The session search box, the sidebar's first region. It carries the column's
    top inset now that the workspace header above it is gone — the workspaces are
    headings inside the list, not a dropdown over it. */
@@ -2928,12 +3094,21 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  /* The row is a set of fixed controls plus one elastic thing — the model's
+     name. Without this the bar's own `min-width: auto` measures that name at
+     full length and the send button rides off the composer's right edge the
+     moment the column narrows — which is exactly what opening the browser
+     panel does to it. */
+  min-width: 0;
 }
 .composer-spacer { flex: 1 1 auto; }
 #composer-attach {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* Explicit, because the bar now shrinks: a 26px circle squeezed to an oval is
+     not a smaller control, it is a broken one. */
+  flex: 0 0 auto;
   width: 26px;
   height: 26px;
   background: transparent;
@@ -2946,7 +3121,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 /* The permission-mode pill and its menu (design_guidance 六.4). The menu
    opens *upward*: the composer is anchored to the bottom of the canvas, so a
    downward menu would be off-screen. */
-#composer-permission { position: relative; display: inline-flex; }
+#composer-permission { position: relative; display: inline-flex; flex: 0 0 auto; }
 /* Borderless at rest (design_guidance 六.4): two bordered capsules plus the
    composer's own hairline put three lines across the bottom of the input area.
    The border is kept in the box as `transparent` and only coloured on hover and
@@ -3009,7 +3184,11 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 /* The context indicator and the runtime chip are one visual group, but not one
    control: four pixels keeps the gauge beside the model name without borrowing
    the action bar's eight-pixel rhythm. */
-#composer-runtime { display: inline-flex; align-items: center; gap: var(--space-1); }
+/* `min-width: 0` down the whole chain to the name, because each level's own
+   `auto` minimum would otherwise stop the shrink one box short of the text that
+   is meant to give. The gauge and the effort level hold their size: they are
+   two glyphs and a word, and an ellipsised 「high」 says nothing. */
+#composer-runtime { display: inline-flex; align-items: center; gap: var(--space-1); min-width: 0; }
 /* A round groove rather than a bare glyph: the hover card needs a hit area, and
    the composer's other bottom-row controls already speak this shape. */
 #composer-context {
@@ -3017,6 +3196,8 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* Holds its size while the model's name gives — see `.chip-model-label`. */
+  flex: 0 0 auto;
   width: 24px;
   height: 24px;
   background: var(--surface-card);
@@ -3125,7 +3306,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
    effort are one decision about the next turn, so they are one control with a
    local menu now. No `overflow` here: the popover and its flyout are absolutely
    positioned children and would be clipped away. */
-#composer-chip { position: relative; display: inline-flex; }
+#composer-chip { position: relative; display: inline-flex; min-width: 0; }
 /* Same capsule as `#chip-permission`, same borderless resting state. */
 #chip-runtime {
   display: inline-flex;
@@ -3140,8 +3321,13 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   font-size: var(--type-meta);
   white-space: nowrap;
   cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
 }
-.chip-effort-label { color: var(--text-tertiary); }
+/* The one part of the bar that gives. It keeps its `title`, so the full name is
+   one hover away, and the chip's `aria-label` carries it for a screen reader. */
+.chip-model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chip-effort-label { color: var(--text-tertiary); flex: 0 0 auto; }
 #chip-runtime:hover:enabled {
   color: var(--text-primary);
   background: var(--surface-hover);

@@ -18,6 +18,10 @@ import type {
   WireShellPanesResult,
   WireShellSessionsResult,
   WireEditorTarget,
+  WireBrowserRect,
+  WireBrowserTabInfo,
+  WireShellBrowserCreateTabResult,
+  WireShellBrowserOkResult,
 } from '../shellProtocol.js'
 
 /**
@@ -41,7 +45,9 @@ export class ShellClient {
   >()
   private readonly laneListeners = new Set<(lanes: readonly WireLaneInfo[]) => void>()
   private readonly activateListeners = new Set<(lane: string) => void>()
+  private readonly browserListeners = new Set<(tabs: readonly WireBrowserTabInfo[]) => void>()
   private lanes: readonly WireLaneInfo[] = Object.freeze([])
+  private browserTabs: readonly WireBrowserTabInfo[] = Object.freeze([])
   private readonly teardown: Array<() => void> = []
   private disposed = false
 
@@ -212,14 +218,82 @@ export class ShellClient {
     }) as Promise<WireShellPickImagesResult>
   }
 
+  // --- browser ---------------------------------------------------------------
+
+  /** The most recent tab list the host announced, across every lane. */
+  getBrowserTabs = (): readonly WireBrowserTabInfo[] => this.browserTabs
+
+  onBrowserState(listener: (tabs: readonly WireBrowserTabInfo[]) => void): () => void {
+    this.browserListeners.add(listener)
+    return () => {
+      this.browserListeners.delete(listener)
+    }
+  }
+
+  async browserCreateTab(lane: string, url?: string): Promise<WireShellBrowserCreateTabResult> {
+    return this.send({
+      type: 'browser-create-tab',
+      id: crypto.randomUUID(),
+      lane,
+      ...(url !== undefined ? { url } : {}),
+    }) as Promise<WireShellBrowserCreateTabResult>
+  }
+
+  async browserCloseTab(tabId: string): Promise<WireShellBrowserOkResult> {
+    return this.send({ type: 'browser-close-tab', id: crypto.randomUUID(), tabId }) as Promise<WireShellBrowserOkResult>
+  }
+
+  async browserNavigate(tabId: string, url: string): Promise<WireShellBrowserOkResult> {
+    return this.send({ type: 'browser-navigate', id: crypto.randomUUID(), tabId, url }) as Promise<WireShellBrowserOkResult>
+  }
+
+  async browserGoBack(tabId: string): Promise<WireShellBrowserOkResult> {
+    return this.send({ type: 'browser-go-back', id: crypto.randomUUID(), tabId }) as Promise<WireShellBrowserOkResult>
+  }
+
+  async browserGoForward(tabId: string): Promise<WireShellBrowserOkResult> {
+    return this.send({ type: 'browser-go-forward', id: crypto.randomUUID(), tabId }) as Promise<WireShellBrowserOkResult>
+  }
+
+  async browserReload(tabId: string): Promise<WireShellBrowserOkResult> {
+    return this.send({ type: 'browser-reload', id: crypto.randomUUID(), tabId }) as Promise<WireShellBrowserOkResult>
+  }
+
+  async browserTakeOver(tabId: string): Promise<WireShellBrowserOkResult> {
+    return this.send({ type: 'browser-take-over', id: crypto.randomUUID(), tabId }) as Promise<WireShellBrowserOkResult>
+  }
+
+  /**
+   * Where the panel's hole is, and whether the native view may paint.
+   *
+   * The one command posted straight onto the channel instead of through
+   * `send`: it rides every resize frame, every sidebar drag and every
+   * `ResizeObserver` callback, so registering a pending reply per push would
+   * grow the ledger for answers nobody reads. The host replies anyway and
+   * `PendingRequests.settle` drops the unknown id — that is the intended shape,
+   * not a leak.
+   */
+  browserSetBounds(tabId: string, rect: WireBrowserRect, visible: boolean): void {
+    if (this.disposed) return
+    this.channel.post({
+      type: 'browser-set-bounds',
+      id: crypto.randomUUID(),
+      tabId,
+      rect,
+      visible,
+    })
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     for (const off of this.teardown.splice(0)) off()
     this.failAllPending('The shell client was disposed.')
     this.lanes = Object.freeze([])
+    this.browserTabs = Object.freeze([])
     this.laneListeners.clear()
     this.activateListeners.clear()
+    this.browserListeners.clear()
   }
 
   // --- internals -----------------------------------------------------------
@@ -234,6 +308,10 @@ export class ShellClient {
         return
       case 'activate':
         for (const listener of [...this.activateListeners]) listener(event.lane)
+        return
+      case 'browser-state':
+        this.browserTabs = Object.freeze([...event.tabs])
+        for (const listener of [...this.browserListeners]) listener(this.browserTabs)
         return
       case 'reply':
         this.replies.settle(event.id, { ok: true, result: event.result })

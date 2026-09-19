@@ -133,6 +133,31 @@ function extractUrl(input: unknown): string {
   return ''
 }
 
+/**
+ * The tools whose permission is a *host* question, and how to find the host.
+ *
+ * `WebFetch` was the first and used to be hardcoded. `Browser` joins it because
+ * the decision is the same one — this call is about to reach that site — even
+ * though only two of its operations name a URL at all. The rest return '' and
+ * a `domain:` rule simply does not match them, which is the correct answer: a
+ * snapshot of a page already open is not a new host to approve.
+ */
+const HOST_SCOPED_TOOLS: Record<string, (input: unknown) => string> = {
+  [WEB_FETCH_TOOL_NAME]: extractUrl,
+  Browser: (input) => {
+    if (!input || typeof input !== 'object') return ''
+    const operation = (input as { operation?: unknown }).operation
+    // Both operations that can start a navigation, not just `tab.navigate`:
+    // `browser.create_tab` with a url performs the same act.
+    if (operation !== 'tab.navigate' && operation !== 'browser.create_tab') return ''
+    return extractUrl(input)
+  },
+}
+
+function hostScopedUrl(toolName: string, input: unknown): string {
+  return HOST_SCOPED_TOOLS[toolName]?.(input) ?? ''
+}
+
 export { isProtectedPath, checkWindowsPathSafety } from '../utils/permissions/protectedPaths.js'
 
 export function permissionRulesFromSettings(permissions: PermissionSettings | undefined): PermissionRule[] {
@@ -276,10 +301,12 @@ function buildSessionAllowRule(
     return { toolName: tool.name, contentPattern: `${shared}:*`, behavior: 'allow', source: 'session' }
   }
 
-  if (tool.name === WEB_FETCH_TOOL_NAME) {
+  if (tool.name in HOST_SCOPED_TOOLS) {
     // A host, not the exact URL: the next fetch of the same docs site is a
     // different page. Matches what the `WebFetch(domain:...)` rule expresses.
-    const host = urlHostname(extractUrl(input))
+    // A call that names no URL yields no rule at all: "always allow" on a
+    // snapshot must not quietly become a tool-wide allow for navigation too.
+    const host = urlHostname(hostScopedUrl(tool.name, input))
     if (!host) return undefined
     return {
       toolName: tool.name,
@@ -839,8 +866,13 @@ export class PermissionGate {
     if (!ruleAppliesToTool(rule.toolName, toolName)) return false
     if (!rule.contentPattern) return true
 
-    if (toolName === WEB_FETCH_TOOL_NAME && rule.contentPattern.startsWith(DOMAIN_RULE_PREFIX)) {
-      return matchesDomainRule(rule.contentPattern.slice(DOMAIN_RULE_PREFIX.length), extractUrl(input))
+    if (toolName in HOST_SCOPED_TOOLS && rule.contentPattern.startsWith(DOMAIN_RULE_PREFIX)) {
+      const url = hostScopedUrl(toolName, input)
+      // No URL in this call means no host to compare: a `domain:` rule cannot
+      // match it either way, and falling through to the glob below would
+      // compare the pattern against a JSON blob.
+      if (!url) return false
+      return matchesDomainRule(rule.contentPattern.slice(DOMAIN_RULE_PREFIX.length), url)
     }
 
     if (toolName === 'Bash') {

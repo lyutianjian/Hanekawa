@@ -50,6 +50,8 @@ export type IconName =
   // --- the sidebar footer and the title bar (5g) ---
   | 'help'
   | 'sidebar'
+  // --- the title bar's right rail (the browser panel) ---
+  | 'panel-right'
   // --- the inline permission request ---
   | 'terminal'
   | 'shield'
@@ -152,6 +154,14 @@ const ICONS = {
     paths: [
       'M2.6 4a1.4 1.4 0 0 1 1.4-1.4h8a1.4 1.4 0 0 1 1.4 1.4v8a1.4 1.4 0 0 1-1.4 1.4H4A1.4 1.4 0 0 1 2.6 12z',
       'M6.4 2.6v10.8',
+    ],
+  },
+  // The same frame with the divider on the other side: the browser panel is the
+  // sidebar's mirror image, and so is the control that opens it.
+  'panel-right': {
+    paths: [
+      'M2.6 4a1.4 1.4 0 0 1 1.4-1.4h8a1.4 1.4 0 0 1 1.4 1.4v8a1.4 1.4 0 0 1-1.4 1.4H4A1.4 1.4 0 0 1 2.6 12z',
+      'M9.6 2.6v10.8',
     ],
   },
   // A ringed question mark: the sidebar footer's shortcut panel. The ring is what

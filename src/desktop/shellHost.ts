@@ -56,6 +56,10 @@ import {
   type WireShellOpenInEditorResult,
   type WireShellSetWindowThemeResult,
   type WireShellPickImagesResult,
+  type WireBrowserRect,
+  type WireBrowserTabInfo,
+  type WireShellBrowserCreateTabResult,
+  type WireShellBrowserOkResult,
   type WireShellOpenProjectResult,
   type WireShellRemoveProjectResult,
   type WireShellOpenSessionResult,
@@ -328,6 +332,28 @@ export interface ShellHostDeps<
    * without one still closes the lanes, it just cannot make the row stay gone.
    */
   onForgetProject?: (cwd: string) => Promise<void>
+  /**
+   * The browser's tab host, when this shell has one.
+   *
+   * Optional like every other Electron-shaped dependency here, and for the same
+   * reason: the test host has no window to hang a `WebContentsView` on. Without
+   * it the browser commands reject rather than answering `ok`, because a panel
+   * whose tabs silently never opened is indistinguishable from a broken one.
+   *
+   * `closeLane` is the half `detachLane` calls — tabs belong to a lane and die
+   * with it.
+   */
+  browser?: {
+    createTab(lane: string, url?: string): string
+    closeTab(tabId: string): void
+    closeLane(lane: string): void
+    navigate(tabId: string, url: string): void
+    goBack(tabId: string): void
+    goForward(tabId: string): void
+    reload(tabId: string): void
+    takeOver(tabId: string): void
+    setBounds(tabId: string, rect: WireBrowserRect, visible: boolean): void
+  }
 }
 
 interface LaneEntry<P extends DirectoryProject, W extends DirectoryWorkspace, PaneT extends PaneLike> {
@@ -598,6 +624,55 @@ const SHELL_COMMAND_SCHEMAS = {
       projectRoot: z.string().min(1).optional(),
     })
     .strict(),
+  'browser-create-tab': z
+    .object({
+      type: z.literal('browser-create-tab'),
+      id: commandId,
+      lane: z.string().min(1),
+      url: z.string().min(1).optional(),
+    })
+    .strict(),
+  'browser-close-tab': z
+    .object({ type: z.literal('browser-close-tab'), id: commandId, tabId: z.string().min(1) })
+    .strict(),
+  'browser-navigate': z
+    .object({
+      type: z.literal('browser-navigate'),
+      id: commandId,
+      tabId: z.string().min(1),
+      url: z.string().min(1),
+    })
+    .strict(),
+  'browser-go-back': z
+    .object({ type: z.literal('browser-go-back'), id: commandId, tabId: z.string().min(1) })
+    .strict(),
+  'browser-go-forward': z
+    .object({ type: z.literal('browser-go-forward'), id: commandId, tabId: z.string().min(1) })
+    .strict(),
+  'browser-reload': z
+    .object({ type: z.literal('browser-reload'), id: commandId, tabId: z.string().min(1) })
+    .strict(),
+  'browser-take-over': z
+    .object({ type: z.literal('browser-take-over'), id: commandId, tabId: z.string().min(1) })
+    .strict(),
+  'browser-set-bounds': z
+    .object({
+      type: z.literal('browser-set-bounds'),
+      id: commandId,
+      tabId: z.string().min(1),
+      // Finite, because these are multiplied into native pixel bounds: a `NaN`
+      // from a mid-collapse measurement would otherwise reach `setBounds`.
+      rect: z
+        .object({
+          x: z.number().finite(),
+          y: z.number().finite(),
+          width: z.number().finite().nonnegative(),
+          height: z.number().finite().nonnegative(),
+        })
+        .strict(),
+      visible: z.boolean(),
+    })
+    .strict(),
 } as const satisfies Record<ShellCommand['type'], z.ZodTypeAny>
 
 type CommandOption = (typeof SHELL_COMMAND_SCHEMAS)[ShellCommand['type']]
@@ -749,6 +824,11 @@ export class ShellHost<
     if (!entry) return
     this.lanes.delete(key)
     entry.occupant.dispose()
+    // After the occupant, before the channel: a tab belongs to this lane, so it
+    // dies with it — but only once the session that could still be driving it
+    // has stopped. The renderer's own pane budget never reaches this path, which
+    // is what keeps an evicted (merely un-drawn) pane's tabs alive.
+    this.deps.browser?.closeLane(key)
     this.deps.mux.closeLane(key)
     entry.project.workspace.close(entry.pane)
     this.broadcastLanes()
@@ -967,9 +1047,51 @@ export class ShellHost<
         const paths = await this.deps.onPickImages({ ...(cwd !== undefined ? { defaultPath: cwd } : {}) })
         return { ok: true, paths: paths ?? [] } satisfies WireShellPickImagesResult
       }
+      case 'browser-create-tab': {
+        const browser = this.requireBrowser()
+        // The lane is checked here rather than in the schema: a tab on a lane
+        // that has already closed would never be drawn and would never be
+        // cleaned up, because `closeLane` already ran for it.
+        if (!this.lanes.has(command.lane)) throw new Error(`No such lane: ${command.lane}`)
+        return {
+          tabId: browser.createTab(command.lane, command.url),
+        } satisfies WireShellBrowserCreateTabResult
+      }
+      case 'browser-close-tab':
+        this.requireBrowser().closeTab(command.tabId)
+        return { ok: true } satisfies WireShellBrowserOkResult
+      case 'browser-navigate':
+        this.requireBrowser().navigate(command.tabId, command.url)
+        return { ok: true } satisfies WireShellBrowserOkResult
+      case 'browser-go-back':
+        this.requireBrowser().goBack(command.tabId)
+        return { ok: true } satisfies WireShellBrowserOkResult
+      case 'browser-go-forward':
+        this.requireBrowser().goForward(command.tabId)
+        return { ok: true } satisfies WireShellBrowserOkResult
+      case 'browser-reload':
+        this.requireBrowser().reload(command.tabId)
+        return { ok: true } satisfies WireShellBrowserOkResult
+      case 'browser-take-over':
+        this.requireBrowser().takeOver(command.tabId)
+        return { ok: true } satisfies WireShellBrowserOkResult
+      case 'browser-set-bounds': {
+        // The one command whose reply nobody awaits: it rides every resize
+        // frame. A shell without a browser drops it silently rather than
+        // rejecting — there is no user-visible act to report, and a geometry
+        // push is superseded by the next one anyway.
+        this.deps.browser?.setBounds(command.tabId, command.rect, command.visible)
+        return { ok: true } satisfies WireShellBrowserOkResult
+      }
       default:
         return assertNever(command)
     }
+  }
+
+  private requireBrowser(): NonNullable<ShellHostDeps<P, PaneT, W>['browser']> {
+    const browser = this.deps.browser
+    if (!browser) throw new Error('The shell has no browser.')
+    return browser
   }
 
   /**
@@ -1620,6 +1742,18 @@ export class ShellHost<
     }
     if (pane.sessionTitle !== undefined) info.sessionTitle = pane.sessionTitle
     return info
+  }
+
+  /**
+   * Announces the browser's tabs, across every lane.
+   *
+   * Pushed rather than pulled, and whole rather than delta, for the same reasons
+   * `broadcastLanes` is: the panel diffs the list, and the host is the only side
+   * that knows when a page finished loading or changed its title. The tab host
+   * coalesces its own bursts, so one page load is one call here.
+   */
+  broadcastBrowserState(tabs: WireBrowserTabInfo[]): void {
+    this.post({ type: 'browser-state', tabs })
   }
 
   private post(event: ShellEvent): void {

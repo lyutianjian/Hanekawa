@@ -98,6 +98,30 @@ const SPECS: Record<string, AliasSpec> = {
   Glob: {
     rename: { file_pattern: 'pattern' },
   },
+  // The published `Browser` schema is flat (see `BrowserTool/schema.ts`), so
+  // the model has no per-operation shape to copy and reaches for the names it
+  // knows from other browser tools instead.
+  Browser: {
+    rename: {
+      action: 'operation',
+      tab_id: 'tabId',
+      tabID: 'tabId',
+      timeout_ms: 'timeoutMs',
+      timeout: 'timeoutMs',
+      max_chars: 'maxChars',
+      interactive_only: 'interactiveOnly',
+      visible_only: 'visibleOnly',
+      // `selector` is a real parameter as of the input operations, so it is no
+      // longer folded onto `scope`: the two mean different things now — what to
+      // act on versus what to restrict a scan to.
+      element: 'ref',
+      element_ref: 'ref',
+      click_count: 'clickCount',
+      press_enter: 'submit',
+    },
+    numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount'],
+    booleans: ['interactiveOnly', 'visibleOnly', 'clear', 'submit'],
+  },
 }
 
 const NUMERIC_LITERAL = /^-?\d+(\.\d+)?$/

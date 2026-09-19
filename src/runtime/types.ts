@@ -2,7 +2,7 @@ import type { AgentLoop, ActiveModelRuntime, AgentRunOverrides } from '../harnes
 import type { PlanModeManager } from '../harness/planModeManager.js'
 import type { PermissionGate } from '../harness/permissions.js'
 import type { SystemPromptSectionCache } from '../harness/sections.js'
-import type { AgentRunResult, SessionRecord } from '../harness/types.js'
+import type { AgentRunResult, SessionRecord, Tool } from '../harness/types.js'
 import type { RuntimeDiagnostic } from '../harness/diagnostics.js'
 import type { ConfigService, ModelConfig } from '../config/service.js'
 import type { EffortLevel } from '../config/effort.js'
@@ -54,6 +54,15 @@ export interface BootstrapOptions {
    * false records the server as failed and startup continues (fail-open).
    */
   confirmMcpTrust: (name: string, server: McpServerConfig) => Promise<boolean>
+  /**
+   * Tools this shell can offer that the shared registry cannot build.
+   *
+   * The desktop's `Browser` is the case: it needs a live `WebContentsView`, so
+   * it is constructed in the Electron main process and injected here. The TUI
+   * passes nothing and the tool simply does not exist there — which is exactly
+   * the honest answer, since there would be no window to drive.
+   */
+  extraTools?: Tool[]
 }
 
 /**

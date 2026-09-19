@@ -78,6 +78,9 @@ import { SessionHost } from '../runtime/protocol/host.js'
 import { createLaneMux } from '../runtime/protocol/laneChannel.js'
 import type { RuntimeHost } from '../runtime/types.js'
 import { ShellHost } from './shellHost.js'
+import { BrowserTabHost } from './browser/tabs.js'
+import { DesktopBrowserHost } from './browser/host.js'
+import { createBrowserTool } from '../tools/BrowserTool/BrowserTool.js'
 import { openInEditor } from './openInEditor.js'
 import { isMacSessionCloseShortcut } from './renderer/model/desktopShortcuts.js'
 import {
@@ -131,11 +134,34 @@ interface Shell {
 
 /** Every open project. All decisions that used to be module-level variables live here. */
 const directory = new ProjectDirectory()
+/**
+ * The browser's tabs, for every lane.
+ *
+ * Module-level and built before any window, deliberately: `openProject` runs
+ * `ensureProject` — which is where a project's tools are assembled — *before*
+ * `ensureShell`, so the browser has to be addressable while there is still
+ * nothing to paint on. `attachWindow` gives it somewhere to draw later; until
+ * then a tab can exist and load, it just is not on screen.
+ */
+const browserTabs = new BrowserTabHost()
 /** The single window's shell, once the first project has opened it. */
 let shell: Shell | undefined
 let quitting = false
 /** Lane keys are minted here so they are monotonic for the process lifetime. */
 let laneCounter = 0
+/**
+ * The agent-facing half of the browser, and the `Browser` tool built over it.
+ *
+ * Module-level for the same reason the tab host is: the tool is handed to
+ * `bootstrap()` while there is still no window. The lane lookup therefore reads
+ * `shell` lazily — a session that asks before the shell exists has no lane, and
+ * is told so rather than opening a tab nobody can see.
+ */
+const browserHost = new DesktopBrowserHost({
+  tabs: browserTabs,
+  laneForSession: (sessionId) => shell?.host.laneForSessionId(sessionId),
+})
+const browserTool = createBrowserTool(browserHost)
 
 if (!app.requestSingleInstanceLock()) {
   // `app.quit()` does not stop module evaluation, so everything below has to
@@ -259,6 +285,10 @@ async function ensureProject(
     store,
     session,
     confirmMcpTrust: promptTrustMcpServer,
+    // The one tool the shared registry cannot build: it needs this process's
+    // window. The TUI's `bootstrap()` passes none, so `Browser` is desktop-only
+    // by construction rather than by a runtime check.
+    extraTools: [browserTool],
   })
 
   logDiagnostics(project.diagnostics)
@@ -368,7 +398,7 @@ async function ensureShell(): Promise<Shell> {
     // the composer's action bar still fit without wrapping.
     width: 1080,
     height: 720,
-    minWidth: 900,
+    minWidth: 1000,
     minHeight: 620,
     // Frameless chrome (5g): the renderer draws the title bar — the rail toggle
     // and the Chinese menus — and Windows keeps drawing its own three buttons
@@ -387,6 +417,14 @@ async function ensureShell(): Promise<Shell> {
   })
 
   guardNavigation(window)
+
+  // `guardNavigation` locks *this* window's one document down — it denies every
+  // in-window navigation, because the app shell only ever loads its own file.
+  // The browser's views are the deliberate exception and carry their own policy
+  // (`browser/tabs.ts`): they exist to navigate to arbitrary sites, and they are
+  // children of `contentView` rather than this `webContents`, so nothing above
+  // applies to them.
+  browserTabs.attachWindow(window)
 
   if (process.platform === 'darwin') {
     // Electron's default Close Window menu owns Cmd+W. Let that chord reach
@@ -525,6 +563,7 @@ async function ensureShell(): Promise<Shell> {
       if (process.platform === 'darwin') return
       window.setTitleBarOverlay(WINDOW_CHROME[theme])
     },
+    browser: browserTabs,
     isQuitting: () => quitting,
     onAllLanesClosed: () => {
       // The last lane of the single window is the single-window equivalent of
@@ -536,6 +575,13 @@ async function ensureShell(): Promise<Shell> {
   })
   shellHost = host
 
+  // The tab host is the only side that knows a page finished loading or changed
+  // its title; the shell lane is the only way to tell the renderer. Bursts are
+  // already coalesced upstream, so this is one call per page load, not five.
+  browserTabs.onChanged((tabs) => {
+    host.broadcastBrowserState(tabs)
+  })
+
   const built: Shell = { window, host }
   shell = built
 
@@ -545,6 +591,10 @@ async function ensureShell(): Promise<Shell> {
   window.on('closed', () => {
     if (shell !== built) return
     shell = undefined
+    // Before the lanes: `detachLane` closes each lane's tabs one by one, and
+    // every one of those would be reaching into a `contentView` that is already
+    // gone. Dropping the views first makes that a no-op instead of a race.
+    browserTabs.detachWindow()
     for (const key of host.laneKeys()) host.detachLane(key, 'window-closed')
   })
 
@@ -570,6 +620,11 @@ async function teardown(): Promise<void> {
     for (const key of shell.host.laneKeys()) shell.host.detachLane(key, 'app-quit')
     if (!shell.window.isDestroyed()) shell.window.destroy()
   }
+  // After the window, like every other native child: a `WebContentsView` whose
+  // parent is already destroyed has nothing left to detach from, and this call
+  // is then only closing whatever web contents outlived it.
+  browserHost.dispose()
+  browserTabs.dispose()
   // Bounded, because `before-quit` has already cancelled the real quit and is
   // waiting on this: an unbounded await here is how "the window closed but the
   // process is still running" happens. Timing out is not a failure to report to

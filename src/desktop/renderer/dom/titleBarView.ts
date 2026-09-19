@@ -15,8 +15,8 @@ import { createPresence } from './presence.js'
 /**
  * The frameless window's own title bar (5g).
  *
- * Left to right: the sidebar rail toggle, then 文件 / 视图 / 帮助. Everything
- * right of that is empty strip. `dom/windowChrome.ts` reserves the native
+ * Left to right: the sidebar rail toggle, then 文件 / 视图 / 帮助, and — pushed to
+ * the far end — the browser panel's rail toggle. The strip between them is empty. `dom/windowChrome.ts` reserves the native
  * controls' measured space: left on macOS, normally right on Windows/Linux.
  *
  * The strip is `-webkit-app-region: drag`; every control in it is `no-drag`, or
@@ -99,6 +99,13 @@ export function createTitleBarView(
   let menuSource: readonly TitleBarMenu[] | undefined
   let menus: ReturnType<typeof menuNode>[] = []
   const rail = button('titlebar-rail', '', '', () => onAction('toggle-sidebar'), { icon: 'sidebar' })
+  // The browser's own rail, mirrored to the far end of the strip — the panel it
+  // opens is on that side, and a control for it next to the sidebar's would
+  // point the wrong way. It is the second way to reach 视图 →「显示 / 隐藏浏览器」;
+  // the menu item stays, because that is where a user looks for a name.
+  const browserRail = button('titlebar-rail titlebar-rail-end', '', '', () => onAction('toggle-browser'), {
+    icon: 'panel-right',
+  })
 
   return {
     render(view) {
@@ -112,11 +119,15 @@ export function createTitleBarView(
         for (const entry of menus) entry.presence.dispose()
         menuSource = view.menus
         menus = view.menus.map(menuNode)
-        reconcile(container, [rail, ...menus.map((entry) => entry.shell)])
+        reconcile(container, [rail, ...menus.map((entry) => entry.shell), browserRail])
       }
       const chord = view.menus.flatMap((menu) => menu.items).find((item) => item.action === 'toggle-sidebar')?.chord
       rail.title = `${view.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}${chord ? `（${chord}）` : ''}`
       rail.setAttribute('aria-label', rail.title)
+      browserRail.title = view.browserOpen ? '隐藏浏览器' : '显示浏览器'
+      browserRail.setAttribute('aria-label', browserRail.title)
+      browserRail.setAttribute('aria-pressed', String(view.browserOpen))
+      browserRail.classList.toggle('open', view.browserOpen)
       let focus: HTMLElement | undefined
       for (const entry of menus) {
         const open = openMenu === entry.menu.id

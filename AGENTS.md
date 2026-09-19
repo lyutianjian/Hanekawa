@@ -42,7 +42,7 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 - `sessions/`: append-only JSONL records through `RecordStream`.
 - `prompts/`: prompt composition and budgets; never imports `harness/`.
 - `config/`: settings, models, routing, retries, providers.
-- `tools/`: one directory per built-in (`GrepTool/`, `FileEditTool/`, ...) plus shared helpers at the root, all registered in `src/tools/index.ts`.
+- `tools/`: one directory per built-in (`GrepTool/`, `FileEditTool/`, ...) plus shared helpers at the root, all registered in `src/tools/index.ts`. A shell may add tools the shared registry cannot build through `BootstrapOptions.extraTools` — the desktop's `Browser`, which needs a window; such a tool reaches its host through a pure-type interface in `runtime/protocol/`, never by importing Electron.
 - `services/`: project context, file history, background tasks, skills, memory.
 - `tui/`: Ink shell; `desktop/`: Electron main, preload, shell host, renderer.
 

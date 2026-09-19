@@ -18,7 +18,7 @@
  * here are unguarded and the list keeps growing: `scrollTop`/`scrollHeight`/
  * `clientHeight`/`scrollTo`/`scrollIntoView`/`getBoundingClientRect()`/
  * `style.height`/`selectionStart`/
- * `setSelectionRange`/`dispatch`/`focus`/`contains()`/`closest()`/`dataset`/
+ * `setSelectionRange`/`dispatch`/`focus`/`blur`/`contains()`/`closest()`/`dataset`/
  * `insertBefore()`/`parentElement`.
  * Add to that list rather than starting a second one.
  *
@@ -43,7 +43,9 @@ const ID_REGISTRY = new Map<string, StubElement>()
  * same reason `ID_REGISTRY` is: a rule left standing would measure the next
  * file's nodes.
  */
-let LAYOUT: ((view: StubView) => { top: number; bottom: number } | undefined) | undefined
+let LAYOUT:
+  | ((view: StubView) => { top: number; bottom: number; left?: number; right?: number } | undefined)
+  | undefined
 
 interface StubEvent {
   readonly type: string
@@ -117,9 +119,31 @@ class StubElement {
    * gives inside a `display: none` subtree and the one a measuring view has to
    * survive either way.
    */
-  getBoundingClientRect(): { top: number; bottom: number; height: number } {
+  getBoundingClientRect(): {
+    top: number
+    bottom: number
+    left: number
+    right: number
+    width: number
+    height: number
+  } {
     const rect = LAYOUT?.(viewOf(this)) ?? { top: Number.NaN, bottom: Number.NaN }
-    return { ...rect, height: rect.bottom - rect.top }
+    // The horizontal pair is optional in a rule: almost every view here measures
+    // a scroller, which is a vertical question, and making those rules restate
+    // an x-axis they do not care about would be noise. A rule that omits them
+    // leaves the node horizontally unmeasurable — `NaN`, the same answer the
+    // absent rule gives — which is exactly what a view reading `left`/`width`
+    // has to survive. The browser panel's hole is the first node that does.
+    const left = rect.left ?? Number.NaN
+    const right = rect.right ?? Number.NaN
+    return {
+      top: rect.top,
+      bottom: rect.bottom,
+      left,
+      right,
+      width: right - left,
+      height: rect.bottom - rect.top,
+    }
   }
   /**
    * The inline style, which the renderer may reach in exactly two ways
@@ -387,6 +411,16 @@ class StubElement {
     activeElement = this
   }
 
+  /**
+   * Gives focus up, if this node had it.
+   *
+   * The browser panel's address bar blurs itself once a navigation is away, so
+   * the field stops holding the caret over a page it no longer describes.
+   */
+  blur(): void {
+    if (activeElement === this) activeElement = undefined
+  }
+
   dispatch(type: string, init: StubEventInit = {}): StubEvent {
     const event: StubEvent = {
       type,
@@ -477,7 +511,11 @@ export interface DomStub {
    * node *is* can answer for them. Returning `undefined` for a node leaves it
    * unmeasurable, which is the browser's own answer inside `display: none`.
    */
-  onLayout(measure: (view: StubView) => { top: number; bottom: number } | undefined): void
+  onLayout(
+    measure: (
+      view: StubView,
+    ) => { top: number; bottom: number; left?: number; right?: number } | undefined,
+  ): void
   /** The focused node, or `undefined`. */
   activeElement(): unknown
   /** `<html>`, whose `dataset.theme` the stylesheet reads. */
@@ -539,7 +577,28 @@ export function installDomStub(): DomStub {
     return entry
   }
   let selection = { anchorNode: null as unknown, focusNode: null as unknown, isCollapsed: true }
-  Reflect.set(globalThis, 'window', { matchMedia, getSelection: () => selection })
+  // `window`'s event surface. Kept because a view that subscribes on
+  // construction — the browser panel listens for `resize` so its hole can be
+  // re-measured — cannot otherwise be *built* here at all, and because its
+  // teardown needs something to remove. Listeners are stored rather than
+  // dispatched: the views that measure expose an explicit `measure()`, so a
+  // test drives the re-measure directly instead of simulating a resize.
+  const windowListeners = new Map<string, Set<(event: unknown) => void>>()
+  Reflect.set(globalThis, 'window', {
+    matchMedia,
+    getSelection: () => selection,
+    addEventListener(type: string, listener: (event: unknown) => void): void {
+      let listeners = windowListeners.get(type)
+      if (!listeners) {
+        listeners = new Set()
+        windowListeners.set(type, listeners)
+      }
+      listeners.add(listener)
+    },
+    removeEventListener(type: string, listener: (event: unknown) => void): void {
+      windowListeners.get(type)?.delete(listener)
+    },
+  })
   // The page's two fixed nodes. `<html>` carries `dataset.theme` (the whole
   // stylesheet hangs off it) and `<body>` is where `app.ts` writes the message
   // it shows when startup fails — a test that never looks at it lets a thrown

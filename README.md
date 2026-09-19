@@ -237,6 +237,31 @@ deleted, not by sending, by removing a draft attachment, nor by deleting the ses
 session deletes its stored attachments; closing a pane or restarting keeps them; files nothing
 references any more are cleaned up once a 24-hour retention window has passed.
 
+### The built-in browser (desktop only)
+
+The desktop app carries a real browser the agent drives and you watch. Open it from 「视图 →
+显示浏览器」; it takes a panel on the right of the window, with its own tab strip, address bar, and a
+resizable divider. Tabs belong to the lane they were opened in — switching projects switches the tabs
+with them — and closing a lane closes its pages.
+
+The agent reaches the same tabs through the `Browser` tool: it opens and navigates tabs, reads a page
+as a table of operable elements or as plain text, takes screenshots, and clicks, types and scrolls.
+Unlike `WebFetch`, JavaScript runs, logins persist between calls, and what the model reads is the
+rendered page rather than its HTML source. Navigation asks your permission per host, the way
+`WebFetch` does. The tool exists only in the desktop app — the TUI has no window to put a page in, and
+does not register it.
+
+Pages load in their own persistent session partition, so their cookies are separate from the app's,
+and nothing of Hanekawa is reachable from a page: no preload script, no Node integration, sandboxed
+and context-isolated, with automation confined to an isolated world of its own. Password, one-time-code
+and card fields are never projected to the model — their text and value come back empty — and what the
+agent types into one is never echoed back into the transcript.
+
+You can take a tab back at any time: press 「接管」 in the address bar, or simply type, click or scroll
+in the page. The agent's next browser call fails with an instruction to stop and ask you what you
+want, and it stays blocked for the rest of that turn — your next message hands control back. There is
+no button for handing it back, because sending the agent a message is that button.
+
 ## Start
 
 Use the TUI for the interactive agent experience:

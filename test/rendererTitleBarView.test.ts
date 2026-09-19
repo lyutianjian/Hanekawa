@@ -41,6 +41,7 @@ function viewOf(overrides: Partial<TitleBarView> = {}): TitleBarView {
     menus: TITLE_BAR_MENUS,
     openMenu: undefined,
     sidebarCollapsed: false,
+    browserOpen: false,
     canCreate: true,
     ...overrides,
   }
@@ -277,4 +278,25 @@ test('a renderer without the optional overlay API still paints a safe title bar'
   t.after(dispose)
   assert.equal(properties.get('--titlebar-inset-left'), '0px')
   assert.equal(properties.get('--titlebar-inset-right'), '138px')
+})
+
+test('the browser rail sits at the far end and reports its state', (t) => {
+  const r = mount(t)
+  r.render(viewOf())
+
+  // Last child, because the panel it opens is on that side: a control for it
+  // beside the sidebar's rail would point the wrong way.
+  const rail = r.root().children.at(-1)!
+  assert.ok(rail.classes.includes('titlebar-rail-end'), 'the browser rail is the strip\'s last control')
+  assert.equal(rail.attributes.get('aria-label'), '显示浏览器')
+  assert.equal(rail.attributes.get('aria-pressed'), 'false')
+
+  r.stub.click(rail.node)
+  assert.deepEqual(r.actions, ['toggle-browser'])
+
+  r.render(viewOf({ browserOpen: true }))
+  const open = r.root().children.at(-1)!
+  assert.equal(open.attributes.get('aria-label'), '隐藏浏览器')
+  assert.equal(open.attributes.get('aria-pressed'), 'true')
+  assert.ok(open.classes.includes('open'))
 })

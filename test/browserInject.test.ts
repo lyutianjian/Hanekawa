@@ -1,0 +1,590 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import vm from 'node:vm'
+
+import type {
+  ConditionOptions,
+  ConditionResult,
+  ElementScanOptions,
+  ElementScanResult,
+  ScrollOptions,
+  ScrollResult,
+  TargetOptions,
+  TargetResult,
+  TextScanOptions,
+  TextScanResult,
+} from '../src/desktop/browser/inject/bundle.js'
+import {
+  conditionScript,
+  elementsScript,
+  resolveScript,
+  scrollScript,
+  textScript,
+  unwrap,
+} from '../src/desktop/browser/inject/bundle.js'
+import { BrowserHostError } from '../src/desktop/browser/errors.js'
+import {
+  FIELD_MAX_NAME,
+  FIELD_MAX_TEXT,
+  INTERACTIVE_SELECTOR,
+  SCAN_BUDGET_MS,
+  SCAN_MAX_NODES,
+  SENSITIVE_AUTOCOMPLETE,
+} from '../src/desktop/browser/limits.js'
+
+/**
+ * The collectors, actually executed.
+ *
+ * They are the one part of this subsystem that cannot be checked by reading:
+ * they reach the page as *text*, so a helper the bundler forgot to ship is a
+ * `ReferenceError` on a real site and nothing at all at compile time. Running
+ * the built script in `node:vm` against a hand-made DOM catches that, and while
+ * we are in there it also pins the behaviours that matter — refs, the shadow
+ * walk, sensitive fields, and every budget.
+ *
+ * The stub below is deliberately shallow. It implements exactly the methods
+ * `inject/dom.ts` declares, which is the same discipline from the other side: if
+ * a collector ever reaches for something new, this file fails until the
+ * interface and the stub both admit it.
+ */
+
+interface StubStyle {
+  display: string
+  visibility: string
+  opacity: string
+  cursor: string
+}
+
+interface TextNode {
+  nodeType: 3
+  textContent: string
+}
+
+interface ElementSpec {
+  attrs?: Record<string, string>
+  props?: Record<string, unknown>
+  text?: string
+  children?: StubElement[]
+  shadow?: StubElement[]
+  style?: Partial<StubStyle>
+  size?: { width: number; height: number }
+}
+
+class StubElement {
+  readonly nodeType = 1
+  readonly tagName: string
+  readonly attrs: Record<string, string>
+  readonly children: StubElement[] = []
+  readonly childNodes: Array<StubElement | TextNode> = []
+  parentElement: StubElement | null = null
+  shadowRoot: { children: StubElement[] } | null = null
+  readonly style: StubStyle
+  /** A ref outlives its node, so the resolver checks this before acting. */
+  isConnected = true
+  /** Not every element takes focus. `page.type` has to notice when it does not. */
+  focusable = true
+  scrolledIntoView = false
+  owner: { activeElement: StubElement | null } | undefined
+  private readonly size: { width: number; height: number }
+  private root: { host?: StubElement } = {}
+
+  constructor(tag: string, spec: ElementSpec = {}) {
+    this.tagName = tag.toUpperCase()
+    this.attrs = { ...spec.attrs }
+    this.style = { display: 'block', visibility: 'visible', opacity: '1', cursor: 'auto', ...spec.style }
+    this.size = spec.size ?? { width: 100, height: 20 }
+    Object.assign(this, spec.props ?? {})
+    if (spec.text !== undefined) this.childNodes.push({ nodeType: 3, textContent: spec.text })
+    for (const child of spec.children ?? []) {
+      child.parentElement = this
+      this.children.push(child)
+      this.childNodes.push(child)
+    }
+    if (spec.shadow !== undefined) {
+      for (const child of spec.shadow) child.root = { host: this }
+      this.shadowRoot = { children: spec.shadow }
+    }
+  }
+
+  get id(): string {
+    return this.attrs['id'] ?? ''
+  }
+
+  get textContent(): string {
+    return this.childNodes
+      .map((node) => (node instanceof StubElement ? node.textContent : node.textContent))
+      .join(' ')
+      .trim()
+  }
+
+  getRootNode(): { host?: StubElement } {
+    return this.root
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attrs[name] ?? null
+  }
+
+  hasAttribute(name: string): boolean {
+    return name in this.attrs
+  }
+
+  getBoundingClientRect(): { width: number; height: number; top: number; left: number } {
+    return { ...this.size, top: 0, left: 0 }
+  }
+
+  scrollIntoView(): void {
+    this.scrolledIntoView = true
+  }
+
+  focus(): void {
+    if (this.focusable && this.owner !== undefined) this.owner.activeElement = this
+  }
+
+  /** Enough CSS to answer the interactive whitelist: `tag`, `[attr]`, `#id`. */
+  matches(selector: string): boolean {
+    return selector.split(',').some((part) => matchesSimple(this, part.trim()))
+  }
+}
+
+function matchesSimple(el: StubElement, selector: string): boolean {
+  if (selector.startsWith('#')) return el.id === selector.slice(1)
+  const parsed = /^([a-z0-9]*)((?:\[[^\]]+\])*)$/.exec(selector)
+  if (parsed === null) return false
+  if (parsed[1] !== '' && el.tagName.toLowerCase() !== parsed[1]) return false
+  for (const attr of (parsed[2] ?? '').match(/\[[^\]]+\]/g) ?? []) {
+    if (!el.hasAttribute(attr.slice(1, -1))) return false
+  }
+  return true
+}
+
+function el(tag: string, spec: ElementSpec = {}): StubElement {
+  return new StubElement(tag, spec)
+}
+
+function walk(root: StubElement, visit: (el: StubElement) => boolean): StubElement | null {
+  const stack: StubElement[] = [root]
+  while (stack.length > 0) {
+    const node = stack.pop() as StubElement
+    if (visit(node)) return node
+    stack.push(...(node.shadowRoot?.children ?? []), ...node.children)
+  }
+  return null
+}
+
+function documentFor(body: StubElement, activeElement: StubElement | null = null): Record<string, unknown> {
+  const doc: Record<string, unknown> = {
+    body,
+    documentElement: body,
+    title: 'Stub Page',
+    URL: 'https://stub.test/page',
+    activeElement,
+    querySelector: (selector: string) => walk(body, (node) => matchesSimple(node, selector)),
+    getElementById: (id: string) => walk(body, (node) => node.id === id),
+  }
+  // `focus()` has to move the document's own idea of what is focused, which is
+  // the only thing the resolver trusts as proof that focusing worked.
+  walk(body, (node) => {
+    node.owner = doc as unknown as { activeElement: StubElement | null }
+    return false
+  })
+  return doc
+}
+
+/** A fresh window per run: the scroll functions mutate its position. */
+function windowFor(): {
+  getComputedStyle: (node: StubElement) => StubStyle
+  innerWidth: number
+  innerHeight: number
+  scrollX: number
+  scrollY: number
+  scrollBy: (x: number, y: number) => void
+  scrollTo: (x: number, y: number) => void
+} {
+  const win = {
+    getComputedStyle: (node: StubElement) => node.style,
+    innerWidth: 1280,
+    innerHeight: 720,
+    scrollX: 0,
+    scrollY: 0,
+    scrollBy: (_x: number, y: number) => {
+      win.scrollY = Math.max(0, win.scrollY + y)
+    },
+    scrollTo: (_x: number, y: number) => {
+      win.scrollY = Math.max(0, y)
+    },
+  }
+  return win
+}
+
+function elementOptions(overrides: Partial<ElementScanOptions> = {}): ElementScanOptions {
+  return {
+    snapshotId: 'snapshot-1',
+    interactiveOnly: true,
+    visibleOnly: true,
+    maxResults: 50,
+    maxNodes: SCAN_MAX_NODES,
+    budgetMs: SCAN_BUDGET_MS,
+    nameMax: FIELD_MAX_NAME,
+    textMax: FIELD_MAX_TEXT,
+    sensitiveWords: SENSITIVE_AUTOCOMPLETE,
+    interactiveSelector: INTERACTIVE_SELECTOR,
+    ...overrides,
+  }
+}
+
+function runElements(
+  body: StubElement,
+  overrides: Partial<ElementScanOptions> = {},
+  activeElement: StubElement | null = null,
+): { result: ElementScanResult; sandbox: Record<string, unknown> } {
+  const sandbox: Record<string, unknown> = { document: documentFor(body, activeElement), window: windowFor() }
+  const raw = vm.runInNewContext(elementsScript(elementOptions(overrides)), sandbox)
+  return { result: unwrap<ElementScanResult>(serialize(raw)), sandbox }
+}
+
+function runText(body: StubElement, overrides: Partial<TextScanOptions> = {}): TextScanResult {
+  const options: TextScanOptions = {
+    visibleOnly: true,
+    maxResults: 200,
+    maxNodes: SCAN_MAX_NODES,
+    budgetMs: SCAN_BUDGET_MS,
+    segmentMax: FIELD_MAX_TEXT,
+    ...overrides,
+  }
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+  return unwrap<TextScanResult>(serialize(vm.runInNewContext(textScript(options), sandbox)))
+}
+
+/**
+ * The trip a real result takes on its way out of the renderer.
+ *
+ * Electron structured-clones the value of an isolated-world evaluation, so the
+ * object the host sees is a plain one from its own realm. Doing the same here is
+ * not a test convenience: it is what makes the assertions below compare the same
+ * thing production does, including the `undefined` keys that never survive.
+ */
+function serialize(raw: unknown): unknown {
+  return JSON.parse(JSON.stringify(raw))
+}
+
+test('the built script runs with nothing but a DOM, and hands back refs', () => {
+  const body = el('body', {
+    children: [
+      el('a', { attrs: { href: '/home' }, props: { href: 'https://stub.test/home' }, text: 'Home' }),
+      el('button', { text: 'Save' }),
+      el('p', { text: 'Not interactive' }),
+    ],
+  })
+  const { result, sandbox } = runElements(body)
+
+  assert.deepEqual(
+    result.rows.map((row) => [row.ref, row.role, row.name]),
+    [
+      ['e1', 'link', 'Home'],
+      ['e2', 'button', 'Save'],
+    ],
+  )
+  assert.equal(result.rows[0]?.href, 'https://stub.test/home')
+  assert.equal(result.truncated, false)
+  assert.equal(result.url, 'https://stub.test/page')
+
+  // The authority for a ref is the page, not the row we just read.
+  const registry = sandbox['__hanekawaBrowserElements'] as { snapshotId: string; elements: Map<string, unknown> }
+  assert.equal(registry.snapshotId, 'snapshot-1')
+  assert.equal(registry.elements.size, 2)
+})
+
+test('open shadow roots are walked, and slotted light children are not lost', () => {
+  const body = el('body', {
+    children: [
+      el('my-widget', {
+        shadow: [el('button', { text: 'Inside shadow' })],
+        children: [el('button', { text: 'Slotted' })],
+      }),
+    ],
+  })
+  const names = runElements(body).result.rows.map((row) => row.name)
+  assert.deepEqual(new Set(names), new Set(['Inside shadow', 'Slotted']))
+})
+
+test('a transparent ancestor hides a descendant across the shadow boundary', () => {
+  const body = el('body', {
+    children: [
+      el('my-widget', {
+        style: { opacity: '0' },
+        shadow: [el('button', { text: 'Invisible' })],
+      }),
+    ],
+  })
+  assert.equal(runElements(body).result.rows.length, 0)
+  // With the visibility filter off it is reported, and marked for what it is.
+  const relaxed = runElements(body, { visibleOnly: false }).result
+  assert.equal(relaxed.rows.length, 1)
+  assert.equal(relaxed.rows[0]?.visible, undefined)
+})
+
+test('a password field projects neither its text nor its value', () => {
+  const body = el('body', {
+    children: [
+      el('input', { attrs: { type: 'password', 'aria-label': 'Password' }, props: { value: 'hunter2' } }),
+      el('input', { attrs: { type: 'text', autocomplete: 'one-time-code' }, props: { value: '123456' } }),
+      el('input', { attrs: { type: 'text', 'aria-label': 'Search' }, props: { value: 'kittens' } }),
+    ],
+  })
+  const rows = runElements(body).result.rows
+  assert.equal(rows[0]?.name, 'Password')
+  assert.equal(rows[0]?.value, undefined)
+  assert.equal(rows[0]?.text, undefined)
+  assert.equal(rows[1]?.value, undefined)
+  // The ordinary field is untouched: suppression is targeted, not blanket.
+  assert.equal(rows[2]?.value, 'kittens')
+})
+
+test('a pointer leaf counts as a button; a pointer container does not', () => {
+  const inner = el('span', { text: 'Click me', style: { cursor: 'pointer' } })
+  const body = el('body', {
+    children: [el('div', { style: { cursor: 'pointer' }, children: [inner] })],
+  })
+  const rows = runElements(body).result.rows
+  assert.deepEqual(
+    rows.map((row) => row.name),
+    ['Click me'],
+  )
+})
+
+test('the result budget truncates, and says so', () => {
+  const body = el('body', {
+    children: Array.from({ length: 10 }, (_, index) => el('button', { text: `B${index}` })),
+  })
+  const result = runElements(body, { maxResults: 3 }).result
+  assert.equal(result.rows.length, 3)
+  assert.equal(result.truncated, true)
+})
+
+test('the node budget truncates before the walk finishes', () => {
+  const body = el('body', {
+    children: Array.from({ length: 50 }, (_, index) => el('button', { text: `B${index}` })),
+  })
+  const result = runElements(body, { maxNodes: 5 }).result
+  assert.equal(result.truncated, true)
+  assert.ok(result.scanned <= 5)
+})
+
+test('role and text filters run in the page', () => {
+  const body = el('body', {
+    children: [
+      el('a', { attrs: { href: '/a' }, text: 'Apples' }),
+      el('a', { attrs: { href: '/b' }, text: 'Bananas' }),
+      el('button', { text: 'Apples too' }),
+    ],
+  })
+  assert.deepEqual(
+    runElements(body, { role: 'link' }).result.rows.map((row) => row.name),
+    ['Apples', 'Bananas'],
+  )
+  assert.deepEqual(
+    runElements(body, { text: 'apples' }).result.rows.map((row) => row.name),
+    ['Apples', 'Apples too'],
+  )
+})
+
+test('the focused element is marked', () => {
+  const focused = el('input', { attrs: { type: 'text', 'aria-label': 'Query' } })
+  const body = el('body', { children: [focused, el('button', { text: 'Go' })] })
+  const rows = runElements(body, {}, focused).result.rows
+  assert.equal(rows[0]?.focused, true)
+  assert.equal(rows[1]?.focused, undefined)
+})
+
+test('disabled and required come from the property or the ARIA attribute', () => {
+  const body = el('body', {
+    children: [
+      el('button', { text: 'Off', props: { disabled: true } }),
+      el('div', { attrs: { role: 'textbox', 'aria-required': 'true' }, text: 'Needed' }),
+    ],
+  })
+  const rows = runElements(body).result.rows
+  assert.equal(rows[0]?.disabled, true)
+  assert.equal(rows[1]?.required, true)
+})
+
+test('a scope that matches nothing is the caller’s error, with the code to prove it', () => {
+  const body = el('body', { children: [el('button', { text: 'Save' })] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+  const raw = vm.runInNewContext(elementsScript(elementOptions({ scope: '#missing' })), sandbox)
+  assert.throws(
+    () => unwrap<ElementScanResult>(raw),
+    (error: unknown) => error instanceof BrowserHostError && error.code === 'INVALID_REQUEST',
+  )
+})
+
+test('a scope narrows the scan to its subtree', () => {
+  const body = el('body', {
+    children: [
+      el('nav', { attrs: { id: 'nav' }, children: [el('a', { attrs: { href: '/x' }, text: 'In nav' })] }),
+      el('a', { attrs: { href: '/y' }, text: 'Outside' }),
+    ],
+  })
+  assert.deepEqual(
+    runElements(body, { scope: '#nav' }).result.rows.map((row) => row.name),
+    ['In nav'],
+  )
+})
+
+// --- the action scripts ------------------------------------------------------
+
+function targetOptions(overrides: Partial<TargetOptions> = {}): TargetOptions {
+  return {
+    nameMax: FIELD_MAX_NAME,
+    sensitiveWords: SENSITIVE_AUTOCOMPLETE,
+    scrollIntoView: true,
+    focus: false,
+    requireEnabled: true,
+    ...overrides,
+  }
+}
+
+/** Resolves against a sandbox a scan has already run in, so refs exist. */
+function runResolve(sandbox: Record<string, unknown>, overrides: Partial<TargetOptions>): TargetResult {
+  return unwrap<TargetResult>(serialize(vm.runInNewContext(resolveScript(targetOptions(overrides)), sandbox)))
+}
+
+function runCondition(sandbox: Record<string, unknown>, overrides: Partial<ConditionOptions>): ConditionResult {
+  const options: ConditionOptions = {
+    state: 'visible',
+    maxNodes: SCAN_MAX_NODES,
+    budgetMs: SCAN_BUDGET_MS,
+    segmentMax: FIELD_MAX_TEXT,
+    ...overrides,
+  }
+  return unwrap<ConditionResult>(serialize(vm.runInNewContext(conditionScript(options), sandbox)))
+}
+
+function runScroll(sandbox: Record<string, unknown>, overrides: Partial<ScrollOptions>): ScrollResult {
+  const options: ScrollOptions = { direction: 'down', viewportFraction: 0.9, ...overrides }
+  return unwrap<ScrollResult>(serialize(vm.runInNewContext(scrollScript(options), sandbox)))
+}
+
+function hasCode(code: string): (error: unknown) => boolean {
+  return (error: unknown) => error instanceof BrowserHostError && error.code === code
+}
+
+test('a snapshot ref resolves to a point, and dies with its node', () => {
+  const link = el('a', { attrs: { href: '/home' }, text: 'Home' })
+  const body = el('body', { children: [link, el('button', { text: 'Save' })] })
+  const { sandbox } = runElements(body)
+
+  const target = runResolve(sandbox, { ref: 'e1' })
+  assert.equal(target.role, 'link')
+  assert.equal(target.name, 'Home')
+  assert.deepEqual([target.x, target.y], [50, 10])
+  assert.equal(link.scrolledIntoView, true, 'a click has to bring its element on screen first')
+
+  link.isConnected = false
+  assert.throws(() => runResolve(sandbox, { ref: 'e1' }), hasCode('STALE_ELEMENT'))
+  assert.throws(() => runResolve(sandbox, { ref: 'e9' }), hasCode('STALE_ELEMENT'))
+})
+
+test('an invisible element cannot be clicked; a disabled one only when asked', () => {
+  const body = el('body', {
+    children: [
+      el('button', { attrs: { id: 'gone' }, text: 'Gone', size: { width: 0, height: 0 } }),
+      el('button', { attrs: { id: 'off' }, text: 'Off', props: { disabled: true } }),
+    ],
+  })
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+
+  assert.throws(() => runResolve(sandbox, { selector: '#gone' }), hasCode('ELEMENT_NOT_INTERACTABLE'))
+  assert.throws(() => runResolve(sandbox, { selector: '#off' }), hasCode('ELEMENT_NOT_INTERACTABLE'))
+  assert.equal(runResolve(sandbox, { selector: '#off', requireEnabled: false }).role, 'button')
+  assert.throws(() => runResolve(sandbox, { selector: '#absent' }), hasCode('STALE_ELEMENT'))
+  assert.throws(() => runResolve(sandbox, {}), hasCode('INVALID_REQUEST'))
+})
+
+test('typing refuses the field that will not take focus', () => {
+  const body = el('body', {
+    children: [
+      el('input', { attrs: { id: 'query', type: 'text', 'aria-label': 'Query' } }),
+      el('input', { attrs: { id: 'locked', type: 'text', 'aria-label': 'Locked' }, props: { focusable: false } }),
+    ],
+  })
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+
+  const focused = runResolve(sandbox, { selector: '#query', focus: true })
+  assert.equal(focused.focused, true)
+  assert.throws(() => runResolve(sandbox, { selector: '#locked', focus: true }), hasCode('ELEMENT_NOT_INTERACTABLE'))
+})
+
+test('a password field resolves but is marked, so nothing echoes its name', () => {
+  const body = el('body', { children: [el('input', { attrs: { id: 'pw', type: 'password', 'aria-label': 'Password' } })] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+  assert.equal(runResolve(sandbox, { selector: '#pw' }).sensitive, true)
+})
+
+test('a condition is about what is visible, and says what it saw', () => {
+  const body = el('body', {
+    children: [
+      el('p', { attrs: { id: 'status' }, text: 'Loaded' }),
+      el('p', { text: 'Spinner', style: { display: 'none' } }),
+    ],
+  })
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+
+  const found = runCondition(sandbox, { text: 'loaded' })
+  assert.equal(found.matched, true)
+  assert.match(found.observed, /found "loaded" in: Loaded/)
+  assert.equal(found.url, 'https://stub.test/page')
+
+  assert.equal(runCondition(sandbox, { text: 'Spinner' }).matched, false)
+  // Hidden is the same observation, read the other way round.
+  assert.equal(runCondition(sandbox, { text: 'Spinner', state: 'hidden' }).matched, true)
+
+  const bySelector = runCondition(sandbox, { selector: '#status' })
+  assert.equal(bySelector.matched, true)
+  assert.match(bySelector.observed, /#status is visible/)
+
+  const missing = runCondition(sandbox, { selector: '#nope' })
+  assert.equal(missing.matched, false)
+  assert.match(missing.observed, /no element matches #nope/)
+  assert.equal(runCondition(sandbox, { selector: '#nope', state: 'hidden' }).matched, true)
+
+  // A selector plus a text is a search inside that subtree.
+  assert.equal(runCondition(sandbox, { selector: '#status', text: 'Loaded' }).matched, true)
+  assert.equal(runCondition(sandbox, { selector: '#status', text: 'Spinner' }).matched, false)
+})
+
+test('scrolling moves the window and reports where it stopped', () => {
+  const far = el('div', { attrs: { id: 'far' } })
+  const body = el('body', { props: { scrollHeight: 4000 }, children: [far] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+
+  const down = runScroll(sandbox, { direction: 'down' })
+  assert.equal(down.scrollY, 648)
+  assert.equal(down.maxScrollY, 3280)
+  assert.equal(down.atBottom, false)
+  assert.equal(down.target, 'down 648px')
+
+  assert.equal(runScroll(sandbox, { direction: 'up', amount: 100 }).scrollY, 548)
+  const bottom = runScroll(sandbox, { direction: 'bottom' })
+  assert.equal(bottom.scrollY, 3280)
+  assert.equal(bottom.atBottom, true)
+  assert.equal(runScroll(sandbox, { direction: 'top' }).scrollY, 0)
+
+  const targeted = runScroll(sandbox, { selector: '#far' })
+  assert.equal(targeted.target, 'selector #far')
+  assert.equal(far.scrolledIntoView, true)
+})
+
+test('text is gathered per owning element, and scripts never contribute', () => {
+  const body = el('body', {
+    children: [
+      el('p', { children: [el('span', { text: 'Hello' }), el('span', { text: 'world' })], text: '' }),
+      el('script', { text: 'console.log(1)' }),
+      el('p', { text: 'Hidden', style: { display: 'none' } }),
+    ],
+  })
+  const result = runText(body)
+  assert.deepEqual(result.segments, ['Hello', 'world'])
+  assert.equal(result.title, 'Stub Page')
+})

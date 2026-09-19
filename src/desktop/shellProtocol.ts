@@ -154,6 +154,82 @@ export type ShellCommand =
    * `paths: []` rather than rejecting; this command never reads a file.
    */
   | { type: 'pick-images'; id: string; projectRoot?: string }
+  /**
+   * Opens a browser tab on `lane` and answers its id. Without `url` the tab
+   * starts blank — the address bar is then the thing that navigates it.
+   *
+   * Tabs belong to a lane, not to the window: the panel only ever draws the
+   * active lane's tabs, and a lane's tabs die with it (`detachLane`). A pane
+   * evicted by the renderer's own budget keeps its tabs, because eviction is a
+   * renderer-side repaint decision and the tab lives in the main process.
+   */
+  | { type: 'browser-create-tab'; id: string; lane: string; url?: string }
+  | { type: 'browser-close-tab'; id: string; tabId: string }
+  /** Points the tab at `url`. Rejects anything but `http:`/`https:`. */
+  | { type: 'browser-navigate'; id: string; tabId: string; url: string }
+  | { type: 'browser-go-back'; id: string; tabId: string }
+  | { type: 'browser-go-forward'; id: string; tabId: string }
+  | { type: 'browser-reload'; id: string; tabId: string }
+  /**
+   * The user took the browser back from the agent. Blocks the lane's session
+   * until its next turn — see `browser/ownership.ts`.
+   */
+  | { type: 'browser-take-over'; id: string; tabId: string }
+  /**
+   * Where the panel's placeholder element is, in CSS pixels relative to the
+   * window's content area, and whether it should be on screen at all.
+   *
+   * **Fire-and-forget**, like `set-window-theme`: this rides every resize frame,
+   * every sidebar drag and every `ResizeObserver` callback, so a reply ledger
+   * entry per push would be pure overhead — and there is nothing for the user to
+   * act on if a geometry push is lost, because the next one supersedes it.
+   *
+   * `visible` is not just "is this tab active": the panel also reports false when
+   * it is occluded or the window itself is hidden, because a native view keeps
+   * painting over page content that the stylesheet believes it has covered.
+   */
+  | {
+      type: 'browser-set-bounds'
+      id: string
+      tabId: string
+      rect: WireBrowserRect
+      visible: boolean
+    }
+
+// --- browser -----------------------------------------------------------------
+
+/** CSS pixels, relative to the window's content area. */
+export interface WireBrowserRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * One tab as the panel draws it.
+ *
+ * `lane` rather than `paneId`: the lane key is the stable handle (a session id
+ * moves under `/clear` and `/resume`), and the panel's whole job is deciding
+ * which tabs belong to the lane currently on screen.
+ */
+export interface WireBrowserTabInfo {
+  tabId: string
+  lane: string
+  /** The committed URL, or `''` for a tab that has never navigated. */
+  url: string
+  title: string
+  loading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+  /** The last navigation failure, cleared when a new navigation starts. */
+  error?: string
+  /**
+   * The agent's control of this tab was taken back by the user. Drawn as a
+   * badge; cleared when the lane's session starts its next turn.
+   */
+  takenOver?: boolean
+}
 
 // --- settings ----------------------------------------------------------------
 
@@ -496,6 +572,13 @@ export type ShellEvent =
    * renderer concern in a single window — the main process can only ask.
    */
   | { type: 'activate'; lane: string }
+  /**
+   * The browser's tabs changed — opened, closed, navigated, finished loading,
+   * or were taken over. The whole list every time, across every lane, for the
+   * same reason `lanes` is a whole list: the panel diffs it, and a per-tab delta
+   * would need its own ordering guarantees against the open/close events.
+   */
+  | { type: 'browser-state'; tabs: WireBrowserTabInfo[] }
   | { type: 'reply'; id: string; result: unknown }
   | { type: 'fail'; id: string; message: string }
 
@@ -606,6 +689,18 @@ export interface WireShellPickImagesResult {
 
 /** `ok` means the editor process started, not that it drew a window. */
 export interface WireShellOpenInEditorResult {
+  ok: true
+}
+
+export interface WireShellBrowserCreateTabResult {
+  tabId: string
+}
+
+/**
+ * `ok` means the command was accepted, not that the page finished loading —
+ * navigation completion arrives as a `browser-state` event.
+ */
+export interface WireShellBrowserOkResult {
   ok: true
 }
 

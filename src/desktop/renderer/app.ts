@@ -103,6 +103,17 @@ import { createSuggestionsView } from './dom/suggestionsView.js'
 import { createSidebarView } from './dom/sidebarView.js'
 import { createTitleBarView } from './dom/titleBarView.js'
 import { titleBarMenus, type TitleBarAction } from './model/titleBar.js'
+import { createBrowserPanelView, browserPanelNodes } from './dom/browserPanelView.js'
+import {
+  BROWSER_WIDTH_STORAGE_KEY,
+  BROWSER_WIDTH_VARIABLE,
+  BROWSER_WIDTH_DEFAULT,
+  browserWidthVariable,
+  clampBrowserWidth,
+  parseBrowserWidth,
+  resolveActiveTab,
+  tabsForLane,
+} from './model/browserPanel.js'
 import { bindWindowChrome, type WindowControlsOverlay } from './dom/windowChrome.js'
 import { REDUCED_MOTION_QUERY } from './model/reducedMotion.js'
 import { finishPresenceWithin } from './dom/presence.js'
@@ -397,6 +408,9 @@ function activateLane(lane: string): void {
   headerMenuOpen = false
   headerPendingDelete = undefined
   renderCanvasHeader()
+  // The panel follows the lane: a switch changes which tabs exist and which one
+  // is on screen, so the native view has to be repositioned or hidden.
+  renderBrowser()
   openModelSetupIfNeeded()
 }
 
@@ -556,6 +570,7 @@ function renderSidebar(): void {
     menus: titleMenus,
     openMenu: titleBarMenu,
     sidebarCollapsed: view.collapsed,
+    browserOpen,
     canCreate: view.canCreate,
   })
 }
@@ -957,6 +972,9 @@ function renderSettings(): void {
   // conversation's own three regions. Two classes because the two questions have
   // different answers — a collapsed sidebar is not an open settings screen.
   document.body.classList.toggle('settings-open', settingsState.open)
+  // The stylesheet hides the panel's DOM, but a native view is not in the
+  // document and would keep painting over the settings screen. It has to be told.
+  renderBrowser()
   settingsView_.render(settingsView(settingsState))
 }
 
@@ -1049,6 +1067,9 @@ function runTitleBarAction(action: TitleBarAction): void {
     case 'toggle-sidebar':
       runSidebarIntent({ kind: 'toggle-collapse' })
       return
+    case 'toggle-browser':
+      toggleBrowserPanel()
+      return
     case 'toggle-help':
       // Opening the chord panel means showing the sidebar it lives in.
       if (collapsed) runSidebarIntent({ kind: 'toggle-collapse' })
@@ -1057,6 +1078,88 @@ function runTitleBarAction(action: TitleBarAction): void {
     default:
       assertNeverIntent(action)
   }
+}
+
+// --- the browser panel ----------------------------------------------------------
+
+/**
+ * The panel's width, stored and applied exactly like the rail's: a custom
+ * property the stylesheet reads, never an inline `width`.
+ */
+let browserWidth = parseBrowserWidth(localStorage.getItem(BROWSER_WIDTH_STORAGE_KEY))
+function applyBrowserWidth(px: number): void {
+  browserWidth = clampBrowserWidth(px)
+  document.documentElement.style.setProperty(BROWSER_WIDTH_VARIABLE, browserWidthVariable(browserWidth))
+}
+applyBrowserWidth(browserWidth)
+
+/**
+ * Whether the panel is up. A single boolean rather than a derivation from "this
+ * lane has tabs", because it has to be possible to *close* a panel whose lane
+ * still has tabs — a derived flag would spring straight back open.
+ */
+let browserOpen = false
+/** Which tab each lane last had on screen, so switching back restores it. */
+const browserActiveTab = new Map<string, string>()
+
+function noteBrowserError(error: unknown): void {
+  activePane()?.note(describe(error), 'error')
+}
+
+const browserPanel = createBrowserPanelView(browserPanelNodes(), {
+  onSelectTab: (tabId) => {
+    if (activeLane !== undefined) browserActiveTab.set(activeLane, tabId)
+    renderBrowser()
+  },
+  onCloseTab: (tabId) => void shellClient.browserCloseTab(tabId).catch(noteBrowserError),
+  onNewTab: () => {
+    if (activeLane === undefined) return
+    void shellClient.browserCreateTab(activeLane).catch(noteBrowserError)
+  },
+  onNavigate: (tabId, url) => void shellClient.browserNavigate(tabId, url).catch(noteBrowserError),
+  onBack: (tabId) => void shellClient.browserGoBack(tabId).catch(noteBrowserError),
+  onForward: (tabId) => void shellClient.browserGoForward(tabId).catch(noteBrowserError),
+  onReload: (tabId) => void shellClient.browserReload(tabId).catch(noteBrowserError),
+  onTakeOver: (tabId) => void shellClient.browserTakeOver(tabId).catch(noteBrowserError),
+  // Fire-and-forget by construction — see `ShellClient.browserSetBounds`.
+  onBounds: (tabId, rect, visible) => shellClient.browserSetBounds(tabId, rect, visible),
+})
+
+function renderBrowser(): void {
+  const tabs = shellClient.getBrowserTabs()
+  const lane = activeLane
+  const activeTabId = resolveActiveTab(
+    tabs,
+    lane,
+    lane === undefined ? undefined : browserActiveTab.get(lane),
+  )
+  if (lane !== undefined && activeTabId !== undefined) browserActiveTab.set(lane, activeTabId)
+  browserPanel.render({
+    tabs,
+    lane,
+    activeTabId,
+    open: browserOpen,
+    // The settings screen fills the canvas and owns the window; a page painted
+    // beside it would be the one thing on screen it does not cover.
+    occluded: settingsState.open,
+  })
+}
+
+function toggleBrowserPanel(): void {
+  browserOpen = !browserOpen
+  // The title bar's right rail draws this flag, and `renderSidebar` is the one
+  // call site that paints the bar — so the toggle has to go through it.
+  renderSidebar()
+  // Opening onto nothing would be a blank panel, so the first open mints a tab.
+  // Closing never touches the tabs: they belong to the lane, not to the panel.
+  if (
+    browserOpen &&
+    activeLane !== undefined &&
+    tabsForLane(shellClient.getBrowserTabs(), activeLane).length === 0
+  ) {
+    void shellClient.browserCreateTab(activeLane).catch(noteBrowserError)
+  }
+  renderBrowser()
 }
 
 const titleBar = createTitleBarView(
@@ -1157,6 +1260,49 @@ sidebarResizer.addEventListener('pointercancel', endSidebarDrag)
 sidebarResizer.addEventListener('dblclick', () => {
   applySidebarWidth(SIDEBAR_WIDTH_DEFAULT)
   localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth))
+})
+
+/**
+ * The browser panel's drag handle — the rail's, mirrored.
+ *
+ * The sign is the whole difference: this handle is on the panel's *left* edge,
+ * so dragging left (a falling `clientX`) makes the panel wider.
+ */
+const browserResizer = required('browser-resizer')
+let browserDragStartX = 0
+let browserDragStartWidth = BROWSER_WIDTH_DEFAULT
+
+browserResizer.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return
+  event.preventDefault()
+  browserDragStartX = event.clientX
+  browserDragStartWidth = browserWidth
+  browserResizer.setPointerCapture(event.pointerId)
+  document.body.classList.add('resizing')
+})
+
+browserResizer.addEventListener('pointermove', (event) => {
+  if (!browserResizer.hasPointerCapture(event.pointerId)) return
+  applyBrowserWidth(browserDragStartWidth - (event.clientX - browserDragStartX))
+  // The hole moved with the column. `ResizeObserver` would catch this too, but
+  // only after a layout pass — measuring now is what keeps the page glued to
+  // the panel instead of trailing it by a frame.
+  browserPanel.measure()
+})
+
+function endBrowserDrag(event: PointerEvent): void {
+  if (!browserResizer.hasPointerCapture(event.pointerId)) return
+  browserResizer.releasePointerCapture(event.pointerId)
+  document.body.classList.remove('resizing')
+  localStorage.setItem(BROWSER_WIDTH_STORAGE_KEY, String(browserWidth))
+}
+browserResizer.addEventListener('pointerup', endBrowserDrag)
+browserResizer.addEventListener('pointercancel', endBrowserDrag)
+
+browserResizer.addEventListener('dblclick', () => {
+  applyBrowserWidth(BROWSER_WIDTH_DEFAULT)
+  browserPanel.measure()
+  localStorage.setItem(BROWSER_WIDTH_STORAGE_KEY, String(browserWidth))
 })
 
 // --- the window's own dismissals ---------------------------------------------------
@@ -1352,9 +1498,22 @@ shellClient.onLanes((lanes) => {
   // A topology change is also a history change: a new draft appeared, or a
   // `/clear` moved a pane onto a session the last pull had never heard of.
   void refreshSessions()
+  // A lane that went away took its tabs with it, host-side.
+  renderBrowser()
 })
 
 shellClient.onActivate((lane) => activateLane(lane))
+
+shellClient.onBrowserState(() => {
+  // A tab appearing on the active lane raises the panel: the agent opening a
+  // page *is* the request to look at it. It never closes the panel — that stays
+  // the user's decision, which is why `browserOpen` is state and not a
+  // derivation.
+  if (activeLane !== undefined && tabsForLane(shellClient.getBrowserTabs(), activeLane).length > 0) {
+    browserOpen = true
+  }
+  renderBrowser()
+})
 
 void (async () => {
   // Pull the topology rather than trusting early pushes: anything main posted

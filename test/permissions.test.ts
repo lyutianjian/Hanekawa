@@ -1458,6 +1458,82 @@ test('PermissionGate offers a WebFetch always-allow rule scoped to the host', as
   assert.equal(permissionRuleToEntry(offered!), 'WebFetch(domain:example.com)')
 })
 
+const browserTestTool: Tool = {
+  name: 'Browser',
+  description: 'Drive a browser',
+  riskLevel: 'confirm',
+  inputSchema: z.object({ operation: z.string(), tabId: z.string().optional(), url: z.string().optional() }),
+  execute: async () => ({ ok: true, content: '' }),
+}
+
+test('Browser domain rules scope the navigating operations and nothing else', async () => {
+  let prompted = 0
+  const gate = new PermissionGate(
+    async () => {
+      prompted += 1
+      return true
+    },
+    [
+      { toolName: 'Browser', contentPattern: 'domain:blocked.test', behavior: 'deny', source: 'config' },
+      { toolName: 'Browser', contentPattern: 'domain:allowed.test', behavior: 'allow', source: 'config' },
+    ],
+  )
+
+  assert.equal(
+    await gate.approve(browserTestTool, { operation: 'tab.navigate', tabId: 't1', url: 'https://blocked.test/x' }),
+    false,
+  )
+  // `browser.create_tab` with a url performs the same navigation, so it is
+  // scoped the same way.
+  assert.equal(
+    await gate.approve(browserTestTool, { operation: 'browser.create_tab', url: 'https://blocked.test/x' }),
+    false,
+  )
+
+  prompted = 0
+  assert.equal(
+    await gate.approve(browserTestTool, { operation: 'tab.navigate', tabId: 't1', url: 'https://allowed.test/x' }),
+    true,
+  )
+  assert.equal(prompted, 0)
+
+  // An operation that names no host is not covered by either domain rule: it
+  // prompts, rather than inheriting the allow or the deny.
+  assert.equal(await gate.approve(browserTestTool, { operation: 'page.text.snapshot', tabId: 't1' }), true)
+  assert.equal(prompted, 1)
+})
+
+test('a Browser always-allow rule is scoped to the host it navigated to', async () => {
+  const offered: Array<PermissionRule | undefined> = []
+  const gate = new PermissionGate(async (request) => {
+    offered.push(request.alwaysAllowRule)
+    return true
+  })
+
+  await gate.approve(browserTestTool, { operation: 'tab.navigate', tabId: 't1', url: 'https://example.com/a' })
+  assert.deepEqual(offered[0], {
+    toolName: 'Browser',
+    contentPattern: 'domain:example.com',
+    behavior: 'allow',
+    source: 'session',
+  })
+
+  // No host in the call means no host rule to offer — "always allow" on a
+  // snapshot must not quietly approve every future navigation.
+  await gate.approve(browserTestTool, { operation: 'page.screenshot', tabId: 't1' })
+  assert.equal(offered[1], undefined)
+})
+
+test('the WebFetch preapproved host list does not extend to Browser', async () => {
+  let prompted = 0
+  const gate = new PermissionGate(async () => {
+    prompted += 1
+    return true
+  })
+  await gate.approve(browserTestTool, { operation: 'tab.navigate', tabId: 't1', url: 'https://docs.python.org/3/' })
+  assert.equal(prompted, 1)
+})
+
 test('PermissionGate Edit and Read rules govern their whole tool family', async () => {
   let prompted = false
   const gate = new PermissionGate(

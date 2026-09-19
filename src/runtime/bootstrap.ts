@@ -159,7 +159,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   ]
   const clampedInitialEffort = clampEffort(configuredEffortLevel, modelConfig?.supportedEfforts)
 
-  const toolRegistry = new ToolRegistry(await getAllTools(backgroundTasks))
+  // The shell's own tools go last so a name it injects wins over nothing —
+  // there is no built-in to shadow, and a collision would be a bug in the
+  // shell, not a policy this line should paper over.
+  const toolRegistry = new ToolRegistry([...await getAllTools(backgroundTasks), ...(options.extraTools ?? [])])
   // Constructed fresh on every read: the service caches, and a reload exists
   // precisely to see files that changed since startup.
   let skills = await new SkillsService(cwd).list()

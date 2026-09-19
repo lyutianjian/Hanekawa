@@ -24,6 +24,7 @@ export type TitleBarAction =
   | 'open-project'
   | 'open-settings'
   | 'toggle-sidebar'
+  | 'toggle-browser'
   | 'toggle-help'
 
 export interface TitleBarItem {
@@ -56,7 +57,13 @@ export function titleBarMenus(platform: DesktopPlatform): readonly TitleBarMenu[
     {
       id: 'view',
       label: '视图',
-      items: [{ action: 'toggle-sidebar', label: '收起 / 展开侧栏', chord: desktopShortcut(platform, 'toggle-sidebar') }],
+      items: [
+        { action: 'toggle-sidebar', label: '收起 / 展开侧栏', chord: desktopShortcut(platform, 'toggle-sidebar') },
+        // No chord: the browser panel has no accelerator yet, and inventing one
+        // here would show the user a shortcut nothing listens for. Same reason
+        // 快捷键 below carries an empty one.
+        { action: 'toggle-browser', label: '显示 / 隐藏浏览器', chord: '' },
+      ],
     },
     {
       id: 'help',
@@ -71,6 +78,8 @@ export interface TitleBarView {
   /** The open menu's id, or `undefined`. At most one is open. */
   readonly openMenu: string | undefined
   readonly sidebarCollapsed: boolean
+  /** Whether the browser panel is up, for the right rail's state and label. */
+  readonly browserOpen: boolean
   /** False while a blocking dialog is up; greys the items that open something. */
   readonly canCreate: boolean
 }
@@ -102,6 +111,7 @@ export function titleBarRenderSignature(view: TitleBarView): string {
   return [
     view.openMenu ?? '-',
     view.sidebarCollapsed ? 'c' : '-',
+    view.browserOpen ? 'b' : '-',
     view.canCreate ? 'n' : '-',
   ].join('')
 }

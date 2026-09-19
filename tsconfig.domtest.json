@@ -20,6 +20,7 @@
   // `harness/` in, and the ambient declaration has to come with them.
   "include": [
     "test/rendererBoot.test.ts",
+    "test/rendererBrowserPanelView.test.ts",
     "test/rendererCanvasHeaderView.test.ts",
     "test/rendererComposerView.test.ts",
     "test/rendererMarkdownView.test.ts",

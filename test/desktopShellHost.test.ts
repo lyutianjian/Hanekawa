@@ -640,6 +640,20 @@ const COMMAND_SAMPLES = {
   'set-window-theme': { type: 'set-window-theme', id: 'j', theme: 'light' },
   'pick-images': { type: 'pick-images', id: 'l', projectRoot: 'r' },
   'remove-project': { type: 'remove-project', id: 'k', projectRoot: 'r' },
+  'browser-create-tab': { type: 'browser-create-tab', id: 'm', lane: '1', url: 'https://example.com' },
+  'browser-close-tab': { type: 'browser-close-tab', id: 'n', tabId: 't1' },
+  'browser-navigate': { type: 'browser-navigate', id: 'o', tabId: 't1', url: 'https://example.com' },
+  'browser-go-back': { type: 'browser-go-back', id: 'p', tabId: 't1' },
+  'browser-go-forward': { type: 'browser-go-forward', id: 'q', tabId: 't1' },
+  'browser-reload': { type: 'browser-reload', id: 'r', tabId: 't1' },
+  'browser-take-over': { type: 'browser-take-over', id: 's', tabId: 't1' },
+  'browser-set-bounds': {
+    type: 'browser-set-bounds',
+    id: 't',
+    tabId: 't1',
+    rect: { x: 0, y: 0, width: 480, height: 720 },
+    visible: true,
+  },
 } as const satisfies Record<ShellCommand['type'], ShellCommand>
 
 /**
@@ -732,6 +746,14 @@ test('every shell command variant round-trips through its schema', () => {
   assert.deepEqual(
     Object.keys(COMMAND_SAMPLES).sort(),
     [
+      'browser-close-tab',
+      'browser-create-tab',
+      'browser-go-back',
+      'browser-go-forward',
+      'browser-navigate',
+      'browser-reload',
+      'browser-set-bounds',
+      'browser-take-over',
       'delete-session',
       'get-settings',
       'list-sessions',

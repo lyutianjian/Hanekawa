@@ -34,6 +34,7 @@ import type { WireBrowserTabInfo } from '../shellProtocol.js'
 import { cdpSender, pageEvaluator, requirePage } from './cdp.js'
 import { BrowserHostError } from './errors.js'
 import { clickTarget, scrollPage, typeText, type InputDeps } from './input.js'
+import { SCREENSHOT_TIMEOUT_MS } from './limits.js'
 import { BrowserOwnership } from './ownership.js'
 import { BrowserProjection } from './projection.js'
 import type { BrowserPage, BrowserTabHost } from './tabs.js'
@@ -163,19 +164,16 @@ export class DesktopBrowserHost implements BrowserHost {
   async screenshot(caller: BrowserCaller, tabId: string): Promise<BrowserScreenshot> {
     const revision = this.enter(caller)
     const page = this.requirePage(caller, tabId)
-    const image = await page.contents.capturePage()
+    // Asked before capturing, not after: an off-screen `capturePage()` does not
+    // fail, it either hands back a stale frame or never returns at all. That is
+    // a state the user can fix (open the panel, unhide the window), so it says
+    // so rather than attaching a picture nobody can tell is old.
+    if (!this.deps.tabs.isDisplayed(tabId)) throw notDisplayed()
+    const image = await withTimeout(page.contents.capturePage(), SCREENSHOT_TIMEOUT_MS)
+    if (image === undefined) throw notDisplayed()
     this.ownership.assertAllowed(caller.sessionId, revision)
     const { width, height } = image.getSize()
-    // A view with no bounds on screen captures nothing. That is a state the
-    // user can fix (open the panel), so it says so rather than attaching a
-    // blank picture the model would then try to read.
-    if (width === 0 || height === 0) {
-      throw new BrowserHostError(
-        'PAGE_NOT_READY',
-        'The tab is not currently displayed, so there is nothing to capture. Ask the user to open the browser panel, or read the page with page.text.snapshot.',
-        true,
-      )
-    }
+    if (width === 0 || height === 0) throw notDisplayed()
     return { bytes: image.toPNG(), name: screenshotName(this.rowFor(tabId)?.url ?? ''), width, height }
   }
 
@@ -331,4 +329,28 @@ function screenshotName(url: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** The one refusal every unusable capture collapses to. */
+function notDisplayed(): BrowserHostError {
+  return new BrowserHostError(
+    'PAGE_NOT_READY',
+    'The tab is not currently displayed, so there is nothing to capture. Ask the user to open the browser panel, or read the page with page.text.snapshot.',
+    true,
+  )
+}
+
+/** The promise's value, or `undefined` if it took longer than `ms`. */
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }

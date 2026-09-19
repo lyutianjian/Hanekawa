@@ -45,6 +45,15 @@ export const WAIT_POLL_INTERVAL_MS = 100
 export const WAIT_FOR_DEFAULT_MS = 10_000
 export const WAIT_FOR_MAX_MS = 30_000
 
+/**
+ * How long `capturePage()` gets before the screenshot is called off.
+ *
+ * Observed on macOS: with the window hidden the promise never settles — no
+ * error, no blank image, nothing. A capture of a view that is on screen returns
+ * in well under a second, so anything past this is the hang, not a slow page.
+ */
+export const SCREENSHOT_TIMEOUT_MS = 5000
+
 /** One `page.type` call. Long enough for a paragraph, short of a paste bomb. */
 export const TYPE_TEXT_MAX = 10_000
 

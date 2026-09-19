@@ -308,6 +308,22 @@ export class BrowserTabHost {
     }
   }
 
+  /**
+   * Whether the compositor is drawing this tab right now.
+   *
+   * `capturePage()` only answers honestly for a view that is on screen. With the
+   * panel closed it hands back the frame it painted last — byte-identical to the
+   * visible capture, with no hint that it is stale — and with the window hidden
+   * it never settles at all. Neither is a picture worth attaching, so the
+   * screenshot path asks this first instead of trusting the image it gets.
+   */
+  isDisplayed(tabId: string): boolean {
+    const entry = this.tabs.get(tabId)
+    if (entry === undefined || entry.view === undefined || !entry.requestedVisible) return false
+    const window = this.window
+    return window !== undefined && !window.isDestroyed() && window.isVisible() && !window.isMinimized()
+  }
+
   onChanged(listener: (tabs: WireBrowserTabInfo[]) => void): () => void {
     this.listeners.add(listener)
     return () => {

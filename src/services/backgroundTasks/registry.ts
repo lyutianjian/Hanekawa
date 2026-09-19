@@ -274,6 +274,14 @@ export class BackgroundTaskRegistry {
     return this.toSnapshot(task)
   }
 
+  /** Stop this session's running shells started from an identical command string. */
+  async killShellsByCommand(sessionId: string, command: string, reason = 'Restarted by a newer run'): Promise<void> {
+    const stale = [...this.tasks.values()].filter(
+      (task) => task.kind === 'shell' && task.status === 'running' && task.sessionId === sessionId && task.command === command,
+    )
+    await Promise.allSettled(stale.map((task) => this.killShell(sessionId, task.id, reason)))
+  }
+
   async stopAll(sessionId?: string, reason = 'Session exited'): Promise<void> {
     const running = [...this.tasks.values()].filter((task) => task.status === 'running' && (!sessionId || task.sessionId === sessionId))
     await Promise.allSettled(running.map(async (task) => {

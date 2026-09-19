@@ -37,8 +37,12 @@ interface BashInput {
 
 /**
  * Sensitive environment variables scrubbed from child shell processes to prevent
- * prompt injection from exfiltrating credentials.
+ * prompt injection from exfiltrating credentials. Off by default: locally the same
+ * credentials are what legitimate CLIs (`aws`) read, and deleting them silently
+ * breaks them. Turn it on for untrusted contexts (CI running foreign code).
  */
+export const SUBPROCESS_ENV_SCRUB_VAR = 'HANEKAWA_SUBPROCESS_ENV_SCRUB'
+
 export const SENSITIVE_ENV_VARS = new Set([
   'ANTHROPIC_API_KEY',
   'OPENAI_API_KEY',
@@ -52,14 +56,20 @@ export const SENSITIVE_ENV_VARS = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
 ])
 
+const IPV4_FIRST_FLAG = '--dns-result-order=ipv4first'
+
 export function buildSubprocessEnv(
   customEnv?: Record<string, string | number | boolean>,
   baseEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv }
 
-  for (const key of SENSITIVE_ENV_VARS) {
-    delete env[key]
+  const scrubFlag = env[SUBPROCESS_ENV_SCRUB_VAR]
+  if (scrubFlag && scrubFlag !== '0' && scrubFlag !== 'false') {
+    for (const key of SENSITIVE_ENV_VARS) {
+      delete env[key]
+    }
   }
 
   // Prevent git from launching an interactive editor (which hangs on closed stdin)
@@ -72,6 +82,13 @@ export function buildSubprocessEnv(
         env[key] = String(value)
       }
     }
+  }
+
+  // Windows resolves `localhost` to ::1 first (Node's verbatim default), so a node
+  // dev server binds an address the machine's own loopback may not carry. Prefer
+  // IPv4 without clobbering whatever NODE_OPTIONS the user or caller already set.
+  if (platform === 'win32' && !(env.NODE_OPTIONS ?? '').includes(IPV4_FIRST_FLAG)) {
+    env.NODE_OPTIONS = [env.NODE_OPTIONS, IPV4_FIRST_FLAG].filter(Boolean).join(' ')
   }
 
   return env
@@ -203,6 +220,17 @@ export function detectSleepPattern(command: string): number | null {
   return seconds
 }
 
+const DEV_SERVER_PATTERN = /(?:^|[\s;&|])(?:(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+(?:dev|preview)|(?:npx\s+)?vite|(?:next|nuxt|astro)\s+dev)(?:$|[\s;&|])/
+
+/**
+ * A dev server bound to a fixed port refuses to share it: a second one silently
+ * hops to the next port and the user's bookmarked URL stops answering. Detect
+ * the usual suspects so an identical re-run can retire its predecessor first.
+ */
+export function isDevServerCommand(command: string): boolean {
+  return DEV_SERVER_PATTERN.test(command.trim())
+}
+
 /**
  * Commands that should hard-timeout instead of auto-backgrounding.
  * Aligns with Claude Code: only bare leading `sleep` is excluded from auto-bg.
@@ -327,6 +355,9 @@ export function createBashTool(backgroundTasks: BackgroundTaskRegistry = default
     }
 
     if (options.run_in_background) {
+      if (isDevServerCommand(options.command)) {
+        await backgroundTasks.killShellsByCommand(context.sessionId, options.command, 'Restarted by a newer dev server run')
+      }
       const proc = spawn(shell, shellArgs(options.command), {
         cwd: context.cwd,
         detached: process.platform !== 'win32',

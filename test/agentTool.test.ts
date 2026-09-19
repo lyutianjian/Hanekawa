@@ -3143,3 +3143,38 @@ test('a text-only fork sub-agent degrades inherited images without asking the pa
   assert.equal(preloaded.message.images, undefined)
   assert.match(preloaded.message.content, /screenshot\.png/)
 })
+
+test('a subagent turn stops the background shells registered under its own id', async () => {
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      return { content: 'sub-agent result', toolCalls: [] }
+    },
+  }
+  const stopped: Array<{ sessionId?: string, reason?: string }> = []
+  let allocated = ''
+  const backgroundTasks = {
+    allocateAgentId: (_sessionId: string, type: string) => {
+      allocated = `agent-${type}`
+      return allocated
+    },
+    registerAgent: () => undefined,
+    consumePendingAgentMessages: () => [],
+    setAgentContinuation: () => undefined,
+    completeAgent: () => undefined,
+    stopAll: async (sessionId?: string, reason?: string) => { stopped.push({ sessionId, reason }) },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [],
+    permissionPrompt: async () => true,
+    cwd: testCwd,
+    backgroundTasks: backgroundTasks as never,
+  })
+
+  const result = await agentTool.execute({ task: 'research', subagent_type: 'general' }, toolContext('parent'))
+
+  assert.equal(result.ok, true, result.content)
+  assert.deepEqual(stopped, [{ sessionId: allocated, reason: 'Subagent exited' }])
+})

@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { BackgroundTaskRegistry, MAX_BACKGROUND_OUTPUT_BYTES } from '../src/services/backgroundTasks/registry.js'
-import { createBashTool } from '../src/tools/BashTool/BashTool.js'
+import { createBashTool, isDevServerCommand } from '../src/tools/BashTool/BashTool.js'
 import { createBashOutputTool } from '../src/tools/BashOutputTool/BashOutputTool.js'
 import { createKillShellTool } from '../src/tools/KillShellTool/KillShellTool.js'
 import type { SessionRecord } from '../src/harness/types.js'
@@ -182,3 +182,36 @@ async function waitFor(predicate: () => boolean, timeoutMs = 4_000): Promise<voi
     await new Promise((resolve) => setTimeout(resolve, 20))
   }
 }
+
+test('re-running a dev server in background retires the identical previous shell', async () => {
+  const registry = new BackgroundTaskRegistry()
+  const bash = createBashTool(registry)
+  try {
+    const executable = process.platform === 'win32' ? 'node' : JSON.stringify(process.execPath)
+    const devCommand = `${executable} -e "setTimeout(() => {}, 30000)" # npm run dev`
+    const otherCommand = `${executable} -e "setTimeout(() => {}, 30000)" # npm run test:watch`
+
+    const other = await bash.execute({ command: otherCommand, run_in_background: true }, context())
+    const first = await bash.execute({ command: devCommand, run_in_background: true }, context())
+    const firstId = first.content.match(/Task ID: (bash_\d+)/)?.[1]
+    const otherId = other.content.match(/Task ID: (bash_\d+)/)?.[1]
+    assert.ok(firstId && otherId)
+
+    await bash.execute({ command: devCommand, run_in_background: true }, context())
+
+    assert.equal(registry.getTask('session-1', firstId)?.status, 'killed')
+    assert.match(registry.getTask('session-1', firstId)?.reason ?? '', /newer dev server/)
+    assert.equal(registry.getTask('session-1', otherId)?.status, 'running')
+  } finally {
+    await registry.stopAll()
+  }
+})
+
+test('isDevServerCommand matches the usual dev servers and leaves other commands alone', () => {
+  for (const command of ['npm run dev', 'pnpm dev', 'yarn run preview', 'bun run dev', 'vite --port 5173', 'npx vite', 'next dev', 'cd app && astro dev']) {
+    assert.equal(isDevServerCommand(command), true, command)
+  }
+  for (const command of ['npm run build', 'npm test', 'git log --oneline', 'node scripts/devtool.js']) {
+    assert.equal(isDevServerCommand(command), false, command)
+  }
+})

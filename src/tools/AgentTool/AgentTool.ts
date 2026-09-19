@@ -861,6 +861,7 @@ async function runSubagent({
         } finally {
           if (continuationTimeout) clearTimeout(continuationTimeout)
           parentContext.abortSignal?.removeEventListener('abort', forwardAbort)
+          await stopSubagentShells(options, subAgentId)
         }
       },
     }
@@ -902,7 +903,17 @@ async function runSubagent({
     if (linkParentAbort) context.abortSignal?.removeEventListener('abort', forwardParentAbort)
     externalAbortSignal?.removeEventListener('abort', forwardExternalAbort)
     if (!isForkAgent) resetCacheBreakDetection(cacheSource)
+    await stopSubagentShells(options, subAgentId)
   }
+}
+
+/**
+ * Subagent background shells are registered under the subagent id (its tool context
+ * sessionId), so nobody but a shutdown can reach them once the turn ends. Stop them
+ * here; the filter by subagent id keeps the parent session's shells untouched.
+ */
+async function stopSubagentShells(options: CreateAgentToolOptions, subAgentId: string): Promise<void> {
+  await options.backgroundTasks?.stopAll(subAgentId, 'Subagent exited')
 }
 
 async function runBackgroundSubagent(input: {

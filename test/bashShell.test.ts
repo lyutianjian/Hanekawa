@@ -9,6 +9,7 @@ import {
   resolveBashTimeoutMs,
   buildSubprocessEnv,
   SENSITIVE_ENV_VARS,
+  SUBPROCESS_ENV_SCRUB_VAR,
   bashTool,
 } from '../src/tools/BashTool/BashTool.js'
 import { buildBashDescription } from '../src/tools/BashTool/prompt.js'
@@ -139,9 +140,21 @@ test('building the description does not probe for a shell', () => {
   assert.doesNotMatch(description, /powershell|bash\.exe|POSIX shell on Windows/i)
 })
 
+test('buildSubprocessEnv keeps credentials and injects git non-interactive editor by default', () => {
+  const env = buildSubprocessEnv(undefined, {
+    ANTHROPIC_API_KEY: 'sk-ant-test',
+    AWS_SECRET_ACCESS_KEY: 'aws-secret',
+  })
+
+  assert.equal(env.ANTHROPIC_API_KEY, 'sk-ant-test')
+  assert.equal(env.AWS_SECRET_ACCESS_KEY, 'aws-secret')
+  assert.equal(env.GIT_EDITOR, 'true')
+})
+
 test('buildSubprocessEnv scrubs sensitive keys and injects git non-interactive editor', () => {
   const baseEnv: NodeJS.ProcessEnv = {
     PATH: '/usr/bin',
+    [SUBPROCESS_ENV_SCRUB_VAR]: '1',
     ANTHROPIC_API_KEY: 'sk-ant-test',
     OPENAI_API_KEY: 'sk-openai-test',
     CUSTOM_VAR: 'custom-value',
@@ -160,7 +173,7 @@ test('buildSubprocessEnv scrubs sensitive keys and injects git non-interactive e
 })
 
 test('buildSubprocessEnv scrubs all defined sensitive keys', () => {
-  const base: NodeJS.ProcessEnv = {}
+  const base: NodeJS.ProcessEnv = { [SUBPROCESS_ENV_SCRUB_VAR]: 'true' }
   for (const k of SENSITIVE_ENV_VARS) {
     base[k] = 'secret'
   }
@@ -168,6 +181,19 @@ test('buildSubprocessEnv scrubs all defined sensitive keys', () => {
   for (const k of SENSITIVE_ENV_VARS) {
     assert.equal(scrubbed[k], undefined, `expected ${k} to be scrubbed`)
   }
+})
+
+test('buildSubprocessEnv appends ipv4first to NODE_OPTIONS on win32 only', () => {
+  assert.equal(buildSubprocessEnv(undefined, {}, 'win32').NODE_OPTIONS, '--dns-result-order=ipv4first')
+  assert.equal(
+    buildSubprocessEnv(undefined, { NODE_OPTIONS: '--max-old-space-size=4096' }, 'win32').NODE_OPTIONS,
+    '--max-old-space-size=4096 --dns-result-order=ipv4first',
+  )
+  assert.equal(
+    buildSubprocessEnv(undefined, { NODE_OPTIONS: '--dns-result-order=ipv4first' }, 'win32').NODE_OPTIONS,
+    '--dns-result-order=ipv4first',
+  )
+  assert.equal(buildSubprocessEnv(undefined, {}, 'darwin').NODE_OPTIONS, undefined)
 })
 
 test('bashTool execution propagates custom env variables to subprocess', async () => {

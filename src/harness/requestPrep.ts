@@ -1,19 +1,24 @@
 import {
   countSessionRecordTokens,
+  countTextTokens,
   getEffectiveContextWindowSize,
   type ContextManagementConfig,
 } from '../prompts/budget.js'
 import type { ImageTokenStrategy } from '../media/imageTokens.js'
 import type { SessionRecord, ToolResultRecord, TokenUsage } from './types.js'
 import { repairToolResultPairing } from '../sessions/invariants.js'
-import { snipLargeToolResults } from './compact.js'
+import { buildOversizeReplacement, ToolResultTrimState } from './toolResultTrimState.js'
 import { projectRecordImagesToText } from './turnImages.js'
 import { promptTokens } from './usage.js'
 
 const TOOL_RESULTS_CONTEXT_RATIO = 0.5
 const TOOL_RESULTS_TOKEN_BUDGET_CAP = 200_000
-const RECENT_TOOL_RESULTS_TO_KEEP = 10
-const RECENT_ASSISTANT_THINKING_TURNS_TO_KEEP = 3
+/**
+ * Per-result ceiling. ~25k tokens is ~75KB of ASCII — a full test run or a
+ * 2000-line file fits, which the old 10k cap did not, and past it the result
+ * is spilled to disk rather than thrown away (spec §5.2).
+ */
+const TOOL_RESULT_MAX_TOKENS = 25_000
 
 export interface RequestPrepDiagnostic {
   code: 'tool_protocol_repaired'
@@ -31,9 +36,23 @@ export interface PreparedRecordsResult {
 
 export interface RequestPrepOptions {
   repairToolPairing?: boolean
-  recentAssistantThinkingTurnsToKeep?: number
+  /**
+   * Drop every historical thinking block. Only for the case where the blocks
+   * became illegal — the active model changed, so their signatures no longer
+   * verify. History is otherwise left alone: rewriting it each turn would
+   * invalidate the cached prefix behind it (spec §4).
+   */
+  stripAllThinkingBlocks?: boolean
   /** Image-token strategy of the model serving this request (design §11.2). */
   imageTokenStrategy?: ImageTokenStrategy
+  /**
+   * The session's trim ledger. Without one each call decides afresh, which is
+   * fine for a one-shot caller but never for a loop: see `ToolResultTrimState`.
+   */
+  trimState?: ToolResultTrimState
+  /** Where oversized outputs are spilled; absent means preview-only. */
+  spillDir?: string
+  turnId?: string
 }
 
 export function requestTokenCountFromUsage(usage?: TokenUsage): number | undefined {
@@ -57,33 +76,23 @@ export function prepareRecordsForRequestWithDiagnostics(
   now = new Date(),
   options: RequestPrepOptions = {},
 ): PreparedRecordsResult {
-  const requestVisibleRecords = records.filter((record) => record.type !== 'subagent_transcript')
+  void now
+  const requestVisibleRecords = records.filter(
+    (record) => record.type !== 'subagent_transcript' && record.type !== 'tool_result_trim',
+  )
   const recordsAfterCompact = getRecordsAfterLastCompact(requestVisibleRecords)
   // The media-count cap runs after the capability projection in the loop
   // (design §11.1: projection before budget), on the model actually serving
   // the request — see `loadPreparedRecords` and `mediaStrip.ts`.
-  const thinkingStripped = stripThinkingBlocksFromAssistantMessages(
-    recordsAfterCompact,
-    options.recentAssistantThinkingTurnsToKeep,
-  )
-  const toolResultLimit = getToolResultTokenLimit(contextManagement)
-  const compactedToolResultIds = selectToolResultsToCompact(
+  const thinkingStripped = options.stripAllThinkingBlocks
+    ? stripThinkingBlocksFromAssistantMessages(recordsAfterCompact)
+    : recordsAfterCompact
+  const prepared = applyToolResultTrims(
     thinkingStripped,
-    toolResultLimit,
-    now,
-    options.imageTokenStrategy,
+    options.trimState ?? new ToolResultTrimState(),
+    getToolResultTokenLimit(contextManagement),
+    options,
   )
-
-  const budgetCompacted = thinkingStripped.map((record) => {
-    if (record.type !== 'tool_result') return record
-    if (!compactedToolResultIds.has(record.id)) return record
-    const tokens = getToolResultTokens(record, options.imageTokenStrategy)
-    return compactToolResult(record, tokens)
-  })
-
-  // Snip individual oversized tool results (hard cap per result).
-  // Runs after budget compaction so already-summarized results are not re-snipped.
-  const prepared = snipLargeToolResults(budgetCompacted)
 
   if (options.repairToolPairing === false) {
     return { records: prepared, diagnostics: [] }
@@ -92,30 +101,9 @@ export function prepareRecordsForRequestWithDiagnostics(
   return repairToolPairingForRequest(prepared)
 }
 
-export function stripThinkingBlocksFromAssistantMessages(
-  records: SessionRecord[],
-  recentAssistantTurnsToKeep = RECENT_ASSISTANT_THINKING_TURNS_TO_KEEP,
-): SessionRecord[] {
-  const protectedMessageIds = new Set<string>()
-  let assistantTurnsSeen = 0
-
-  for (let index = records.length - 1; index >= 0; index--) {
-    const record = records[index]
-    if (record?.type !== 'message' || record.role !== 'assistant') continue
-
-    assistantTurnsSeen += 1
-    if (assistantTurnsSeen <= recentAssistantTurnsToKeep) {
-      protectedMessageIds.add(record.id)
-    }
-  }
-
+export function stripThinkingBlocksFromAssistantMessages(records: SessionRecord[]): SessionRecord[] {
   return records.map((record) => {
-    if (
-      record.type !== 'message'
-      || record.role !== 'assistant'
-      || protectedMessageIds.has(record.id)
-      || !record.thinkingBlocks
-    ) {
+    if (record.type !== 'message' || record.role !== 'assistant' || !record.thinkingBlocks) {
       return record
     }
 
@@ -132,11 +120,6 @@ export function getRecordsAfterLastCompact(records: SessionRecord[]): SessionRec
   return [...records]
 }
 
-interface ToolResultCandidate {
-  record: ToolResultRecord
-  tokens: number
-}
-
 function getToolResultTokenLimit(
   contextManagement: Partial<ContextManagementConfig>,
 ): number {
@@ -146,64 +129,56 @@ function getToolResultTokenLimit(
   )
 }
 
-function selectToolResultsToCompact(
+/**
+ * Decide what to trim among the results the model has not seen yet, then
+ * replay every decision — old and new — onto the record list.
+ *
+ * The budget is the *new* results' aggregate, not the whole history's: results
+ * already sent are frozen (spec §5.2), and shrinking them retroactively is
+ * exactly the rewrite prompt caching punishes.
+ */
+function applyToolResultTrims(
   records: SessionRecord[],
+  trimState: ToolResultTrimState,
   toolResultLimit: number,
-  now: Date,
-  imageTokenStrategy?: ImageTokenStrategy,
-): Set<string> {
-  void now
-  const candidates: ToolResultCandidate[] = []
-  for (let index = records.length - 1; index >= 0; index--) {
-    const record = records[index]
-    if (record?.type === 'tool_result') {
-      candidates.push({
-        record,
-        tokens: getToolResultTokens(record, imageTokenStrategy),
-      })
+  options: RequestPrepOptions,
+): SessionRecord[] {
+  const unseen: Array<{ record: ToolResultRecord; tokens: number }> = []
+  for (const record of records) {
+    if (record.type !== 'tool_result' || trimState.isSeen(record.toolUseId)) continue
+    unseen.push({ record, tokens: getToolResultTokens(record, options.imageTokenStrategy) })
+  }
+
+  let total = 0
+  for (const candidate of unseen) {
+    // The cap is about the text that would go to disk, so it reads the text
+    // rather than the record's total (which folds in image cost).
+    if (countTextTokens(candidate.record.content) > TOOL_RESULT_MAX_TOKENS) {
+      const replacement = buildOversizeReplacement(candidate.record, options.spillDir)
+      trimState.recordTrim(candidate.record.toolUseId, replacement, options.turnId)
+      total += countTextTokens(replacement)
+      continue
     }
+    total += candidate.tokens
   }
 
-  let totalTokens = candidates.reduce((sum, candidate) => sum + candidate.tokens, 0)
-  if (totalTokens <= toolResultLimit) return new Set()
-
-  const protectedIds = new Set(
-    candidates
-      .slice(0, RECENT_TOOL_RESULTS_TO_KEEP)
-      .map((candidate) => candidate.record.id),
-  )
-  const compactedIds = new Set<string>()
-
-  const unprotectedCandidates = candidates
-    .filter((candidate) => !protectedIds.has(candidate.record.id))
-    .reverse()
-
-  for (const candidate of unprotectedCandidates) {
-    totalTokens = compactCandidate(candidate, compactedIds, totalTokens, imageTokenStrategy)
-    if (totalTokens <= toolResultLimit) return compactedIds
+  // Oldest first: the newest results are the ones the model is reasoning about.
+  for (const candidate of unseen) {
+    if (total <= toolResultLimit) break
+    if (trimState.replacementFor(candidate.record.toolUseId) !== undefined) continue
+    const replacement = summarizedToolResultText(candidate.record, candidate.tokens)
+    trimState.recordTrim(candidate.record.toolUseId, replacement, options.turnId)
+    total += countTextTokens(replacement) - candidate.tokens
   }
 
-  if (totalTokens > toolResultLimit) {
-    for (const candidate of [...candidates].reverse()) {
-      if (compactedIds.has(candidate.record.id)) continue
-      totalTokens = compactCandidate(candidate, compactedIds, totalTokens, imageTokenStrategy)
-      if (totalTokens <= toolResultLimit) break
-    }
-  }
+  for (const candidate of unseen) trimState.markSeen(candidate.record.toolUseId)
 
-  return compactedIds
-}
-
-function compactCandidate(
-  candidate: ToolResultCandidate,
-  compactedIds: Set<string>,
-  totalTokens: number,
-  imageTokenStrategy?: ImageTokenStrategy,
-): number {
-  compactedIds.add(candidate.record.id)
-  return totalTokens
-    - candidate.tokens
-    + getToolResultTokens(compactToolResult(candidate.record, candidate.tokens), imageTokenStrategy)
+  return records.map((record) => {
+    if (record.type !== 'tool_result') return record
+    const replacement = trimState.replacementFor(record.toolUseId)
+    if (replacement === undefined) return record
+    return applyReplacement(record, replacement)
+  })
 }
 
 /**
@@ -215,17 +190,25 @@ function getToolResultTokens(record: ToolResultRecord, imageTokenStrategy?: Imag
   return countSessionRecordTokens(record, imageTokenStrategy)
 }
 
-export function compactToolResult(record: ToolResultRecord, tokens: number): ToolResultRecord {
-  // Images go with the text (design §11.3): a result whose output was removed
-  // for the budget must not keep uploading the pixels that made it expensive.
-  const projected = projectRecordImagesToText(record, {
-    content: [
-      `[summarized: ${record.tool} ${tokens} tokens]`,
-      `status: ${record.ok ? 'ok' : 'error'}`,
-      'The original output was removed from this request to stay within the context budget.',
-    ].join('\n'),
-  })
+function summarizedToolResultText(record: ToolResultRecord, tokens: number): string {
+  return [
+    `[summarized: ${record.tool} ${tokens} tokens]`,
+    `status: ${record.ok ? 'ok' : 'error'}`,
+    'The original output was removed from this request to stay within the context budget.',
+  ].join('\n')
+}
+
+/**
+ * Images go with the text (design §11.3): a result whose output was replaced
+ * must not keep uploading the pixels that made it expensive.
+ */
+function applyReplacement(record: ToolResultRecord, content: string): ToolResultRecord {
+  const projected = projectRecordImagesToText(record, { content })
   return { ...projected, _tokens: undefined }
+}
+
+export function compactToolResult(record: ToolResultRecord, tokens: number): ToolResultRecord {
+  return applyReplacement(record, summarizedToolResultText(record, tokens))
 }
 
 function repairToolPairingForRequest(records: SessionRecord[]): PreparedRecordsResult {

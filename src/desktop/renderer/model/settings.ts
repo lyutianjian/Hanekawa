@@ -1365,11 +1365,11 @@ function cacheCard(snapshot: WireSettingsSnapshot): SettingsCard {
         label: '1 小时提示词缓存',
         detail:
           general.cacheTtl1h === undefined
-            ? '未设置：跟随环境变量 MYAGENT_PROMPT_CACHE_1H。'
+            ? '未设置：默认开启，MYAGENT_PROMPT_CACHE_1H=0 可关闭。'
             : '缓存的命中窗口更长，代价是写入更贵。',
         control: {
           kind: 'toggle',
-          value: general.cacheTtl1h === true,
+          value: general.cacheTtl1h !== false,
           intentOnChange: (enabled: boolean): SettingsIntent => ({ kind: 'set-cache-ttl', enabled }),
         },
       },

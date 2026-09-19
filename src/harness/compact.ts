@@ -15,7 +15,6 @@ import { compactCacheSource } from './cacheBreakDetection.js'
 import { wrapInSystemReminder } from './systemReminder.js'
 import { getCompactPrompt, formatCompactSummary } from '../prompts/compactPrompt.js'
 import {
-  projectRecordImagesToText,
   projectRecordsImagesToText,
   resolveAttachmentFactsForRecords,
   type AttachmentFactsResolver,
@@ -466,28 +465,6 @@ export function compactBoundaryToMessage(record: CompactBoundaryRecord): ChatMes
     content: wrapInSystemReminder(`Prior conversation was compacted. Continue from this summary:\n\n${record.summary}`),
     createdAt: record.createdAt,
   }
-}
-
-const DEFAULT_SNIP_MAX_TOKENS = 10_000
-
-export function snipLargeToolResults(
-  records: SessionRecord[],
-  maxTokens: number = DEFAULT_SNIP_MAX_TOKENS,
-): SessionRecord[] {
-  return records.map((record) => {
-    if (record.type === 'tool_result') {
-      const estimatedTokens = countTextTokens(record.content)
-      if (estimatedTokens > maxTokens) {
-        // Truncating the text while keeping `images` would leave the pixels
-        // uploading on every request (design §11.3); the shared projection
-        // drops them and says what was there.
-        return projectRecordImagesToText(record, {
-          content: `[Result truncated: ${record.tool} output exceeded ${maxTokens} tokens (${estimatedTokens} estimated)]`,
-        })
-      }
-    }
-    return record
-  })
 }
 
 function formatCompactError(error: unknown): string {

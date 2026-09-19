@@ -176,6 +176,7 @@ export class AnthropicProvider implements ModelProvider {
       model: request.model,
       betas,
       cacheScope: getAnthropicCacheScope(request, enableCaching),
+      messages: payload.messages,
     }, cacheSource)
     if (attempt > 1) {
       debugProviderPayload('anthropic-retry', payload, request)

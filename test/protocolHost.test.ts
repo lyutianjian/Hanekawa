@@ -37,6 +37,7 @@ interface Harness {
   sendRaw: (message: unknown) => void
   emit: (event: SessionEvent) => void
   publishSnapshot: () => void
+  setContextUsedTokens: (contextUsedTokens: number | undefined) => void
   /** Sets the turn state rather than toggling it; the queue pump reads the edge. */
   setStreaming: (value: boolean) => void
   setUsageTotal: (total: { inputTokens: number; cacheReadInputTokens: number; outputTokens: number }) => void
@@ -148,9 +149,11 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     usage: { lastRequest: TokenUsage | null; total: TokenUsage }
     taskSnapshot: undefined
     spinnerSubText: undefined
+    contextUsedTokens: number | undefined
   } = {
     isStreaming: false,
     usage: { lastRequest: null, total: { inputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0 } },
+    contextUsedTokens: undefined,
     taskSnapshot: undefined,
     spinnerSubText: undefined,
   }
@@ -400,7 +403,12 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
       snapshot = { ...snapshot, usage: { ...snapshot.usage, total } }
       for (const listener of [...snapshotListeners]) listener()
     },
-    /** The last response's own counts — what the context occupancy is measured from. */
+    /** The occupancy the controller publishes; the host only forwards it. */
+    setContextUsedTokens: (contextUsedTokens: number | undefined) => {
+      snapshot = { ...snapshot, contextUsedTokens }
+      for (const listener of [...snapshotListeners]) listener()
+    },
+    /** The last response's own counts. */
     setLastRequestUsage: (
       lastRequest: { inputTokens: number; cacheReadInputTokens: number; outputTokens: number } | null,
     ) => {
@@ -1818,10 +1826,10 @@ test('the snapshot omits the cost when the model has no complete pricing', async
 
 // --- context occupancy ------------------------------------------------------
 
-/** The `contextUsedTokens` on the most recent snapshot event. */
+/** The occupancy on the most recent snapshot event. */
 function latestContextUsed(received: HostEvent[]): number | undefined {
   const last = received.filter((event) => event.type === 'snapshot').at(-1)
-  return last && last.type === 'snapshot' ? last.contextUsedTokens : undefined
+  return last && last.type === 'snapshot' ? last.snapshot.contextUsedTokens : undefined
 }
 
 test('the runtime snapshot carries the usable window, not just the raw one', async () => {
@@ -1840,64 +1848,15 @@ test('the runtime snapshot carries the usable window, not just the raw one', asy
   harness.dispose()
 })
 
-test('context occupancy is the provider’s own count once a turn has run', async () => {
+test('context occupancy is forwarded, not recomputed', async () => {
+  // The number is the controller's (see `contextUsage.test.ts`); the host's only
+  // job is to let it ride on the snapshot so the desktop and the TUI read one
+  // field. A host that computed its own would drift from the status line.
   const harness = await createHarness()
-  harness.setLastRequestUsage({
-    inputTokens: 4_000,
-    cacheReadInputTokens: 96_000,
-    outputTokens: 500,
-  })
+  harness.setContextUsedTokens(100_000)
   await settle()
 
-  // Input plus cache-read *is* what the model was sent; output is what came
-  // back, and counting it would inflate the occupancy by a turn's answer.
   assert.equal(latestContextUsed(harness.received), 100_000)
-  harness.dispose()
-})
-
-test('before the first turn the occupancy is estimated, and the estimate is cached', async () => {
-  const harness = await createHarness()
-  harness.emit({
-    type: 'record',
-    record: {
-      id: 'm-est',
-      type: 'message',
-      role: 'user',
-      content: 'x'.repeat(3_000),
-      createdAt: new Date().toISOString(),
-    },
-  })
-  harness.publishSnapshot()
-  await settle()
-
-  const estimated = latestContextUsed(harness.received)
-  assert.ok(estimated !== undefined && estimated > 0, 'a resumed session reports something')
-
-  // The estimate walks every record's text and `postSnapshot` fires per output
-  // chunk of a streaming turn, so it may only be recomputed when the ledger
-  // grows. Re-publishing with nothing appended must return the same number.
-  const before = harness.received.length
-  harness.publishSnapshot()
-  await settle()
-  assert.ok(harness.received.length > before, 'a snapshot was posted')
-  assert.equal(latestContextUsed(harness.received), estimated)
-
-  // The other half: the key is the ledger's length, so a record appended must
-  // invalidate it. A cache that never expired would still pass the assertion
-  // above.
-  harness.emit({
-    type: 'record',
-    record: {
-      id: 'm-est-2',
-      type: 'message',
-      role: 'assistant',
-      content: 'y'.repeat(3_000),
-      createdAt: new Date().toISOString(),
-    },
-  })
-  harness.publishSnapshot()
-  await settle()
-  assert.ok((latestContextUsed(harness.received) ?? 0) > estimated, 'the estimate grew with the session')
   harness.dispose()
 })
 

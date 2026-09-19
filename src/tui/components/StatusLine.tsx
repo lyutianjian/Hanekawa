@@ -2,7 +2,7 @@ import { Box, Text } from 'ink'
 import { theme } from '../theme.js'
 import type { TUIUsage } from '../types.js'
 import type { PermissionMode } from '../../harness/permissions.js'
-import { cacheCreationTokens, promptTokens } from '../../harness/usage.js'
+import { cacheCreationTokens } from '../../harness/usage.js'
 
 const BAR_WIDTH = 20
 const BAR_FULL = '█'
@@ -32,10 +32,12 @@ interface StatusLineProps {
   hintMessage?: string | null
   effortLevel?: string
   contextWindow?: number
+  /** The session's context readout; see `SessionControllerSnapshot.contextUsedTokens`. */
+  contextUsedTokens?: number
   backgroundTaskCount?: number
 }
 
-export function StatusLine({ model, usage, permissionMode, hintMessage, effortLevel, contextWindow, backgroundTaskCount = 0 }: StatusLineProps) {
+export function StatusLine({ model, usage, permissionMode, hintMessage, effortLevel, contextWindow, contextUsedTokens, backgroundTaskCount = 0 }: StatusLineProps) {
   const effortSymbol = effortLevel ? EFFORT_SYMBOLS[effortLevel] : undefined
   const modeInfo = permissionMode !== 'default' ? MODE_INDICATOR[permissionMode] : undefined
 
@@ -44,7 +46,7 @@ export function StatusLine({ model, usage, permissionMode, hintMessage, effortLe
       <Box justifyContent="space-between">
         <Text color={theme.subtleText}>
           {model}
-          {'  '}{formatBar(usage, contextWindow)}{'  '}{formatStats(usage, contextWindow)}
+          {'  '}{formatBar(contextUsedTokens, contextWindow)}{'  '}{formatStats(usage, contextUsedTokens, contextWindow)}
         </Text>
         {effortSymbol && (
           <Text color={theme.subtleText}>{effortSymbol} {effortLevel}</Text>
@@ -70,9 +72,8 @@ export function StatusLine({ model, usage, permissionMode, hintMessage, effortLe
   )
 }
 
-function formatBar(usage: TUIUsage, contextWindow?: number): string {
-  if (!contextWindow || !usage.lastRequest) return ''
-  const used = promptTokens(usage.lastRequest)
+function formatBar(used: number | undefined, contextWindow?: number): string {
+  if (!contextWindow || used === undefined) return ''
   const pct = Math.min(1, used / contextWindow)
   const raw = pct * BAR_WIDTH
   const full = Math.floor(raw)
@@ -83,13 +84,14 @@ function formatBar(usage: TUIUsage, contextWindow?: number): string {
   return `${BAR_LEFT}${filled}${empty}${BAR_RIGHT}`
 }
 
-function formatStats(usage: TUIUsage, contextWindow?: number): string {
+// The occupancy half comes from `contextUsedTokens`; `hit:`/`in:`/`out:` stay on
+// `lastRequest`, which is the fact of that one request rather than of the context.
+function formatStats(usage: TUIUsage, used: number | undefined, contextWindow?: number): string {
   if (!usage.lastRequest) return 'Ready'
   const t = usage.lastRequest
-  const used = promptTokens(t)
   const parts: string[] = []
 
-  if (contextWindow) {
+  if (contextWindow && used !== undefined) {
     parts.push(`${(used / contextWindow * 100).toFixed(1)}%`)
     parts.push(`${formatTokens(used)}/${formatTokens(contextWindow)}`)
   }

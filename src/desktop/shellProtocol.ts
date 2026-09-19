@@ -429,8 +429,8 @@ export interface WireGeneralInfo {
   /** `<cwd>/.myagent/settings.local.json`, same file the permission groups use. */
   localPath: string
   /**
-   * `cache.ttl1h`. Absent is not `false`: unset falls through to the
-   * `MYAGENT_PROMPT_CACHE_1H` environment variable, and the row says so.
+   * `cache.ttl1h`. Absent is not `false`: unset means the 1h TTL is on, which
+   * `MYAGENT_PROMPT_CACHE_1H=0` turns off, and the row says so.
    */
   cacheTtl1h?: boolean
   /**

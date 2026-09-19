@@ -1126,7 +1126,7 @@ test('buildAnthropicPayload caches static system and final message text blocks b
     {
       type: 'text',
       text: 'identity text\n\ninstruction text',
-      cache_control: { type: 'ephemeral' },
+      cache_control: { type: 'ephemeral', ttl: '1h' },
     },
     {
       type: 'text',
@@ -1146,7 +1146,7 @@ test('buildAnthropicPayload caches static system and final message text blocks b
       content: [{
         type: 'text',
         text: 'latest',
-        cache_control: { type: 'ephemeral' },
+        cache_control: { type: 'ephemeral', ttl: '1h' },
       }],
     },
   ])
@@ -1198,7 +1198,7 @@ test('buildAnthropicPayload caches only the final tool schema', () => {
   const payload = buildAnthropicPayload(request) as { tools: Array<Record<string, unknown>> }
 
   assert.equal(payload.tools[0]?.cache_control, undefined)
-  assert.deepEqual(payload.tools[1]?.cache_control, { type: 'ephemeral' })
+  assert.deepEqual(payload.tools[1]?.cache_control, { type: 'ephemeral', ttl: '1h' })
 })
 
 test('buildAnthropicPayload gates dynamic ToolSearch independently of caching', () => {

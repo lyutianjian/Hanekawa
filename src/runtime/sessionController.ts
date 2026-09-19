@@ -9,12 +9,15 @@ import type {
   TokenUsage,
   ToolProgressEvent,
 } from '../harness/types.js'
+import { promptTokens } from '../harness/usage.js'
+import { countSessionRecordsTokens } from '../prompts/budget.js'
 import { deriveSessionTitle, type SessionMeta, type SessionStore } from '../sessions/service.js'
 import { FileHistoryService } from '../services/fileHistory/fileHistoryService.js'
 import type { ImageAttachmentRef, UserInput } from '../media/types.js'
 import { describeImageBlockError } from '../media/imageErrors.js'
 import type { RecordProxy } from './bridges.js'
 import { rollbackInterruptedPromptIfSynthetic } from './interruptRollback.js'
+import { SessionRecordLedger } from './recordLedger.js'
 import {
   addTokenUsage,
   createEmptySessionUsage,
@@ -98,6 +101,13 @@ export interface SessionControllerSnapshot {
   readonly usage: SessionUsage
   readonly taskSnapshot: TaskDisplaySnapshot | undefined
   readonly spinnerSubText: string | undefined
+  /**
+   * How much of the context window the conversation occupies, and the only
+   * definition of it: the last request's `promptTokens` plus an estimate for
+   * every record appended since. Both the TUI status line and the desktop strip
+   * read this field rather than deriving a number of their own.
+   */
+  readonly contextUsedTokens: number | undefined
 }
 
 export interface SessionControllerDeps {
@@ -157,6 +167,14 @@ export class SessionController {
   private runReportedUsage = createEmptyUsage()
   private taskSnapshot: TaskDisplaySnapshot | undefined
   private spinnerSubText: string | undefined
+  /** Records of the live session, for the part of the context estimate no usage covers. */
+  private readonly ledger: SessionRecordLedger
+  /** Last record the most recent request carried; everything after it is estimated. */
+  private usageAnchorRecordId: string | undefined
+  /** Memo for {@link contextUsed}, invalidated by either input that feeds it. */
+  private contextUsedMemo:
+    | { anchor: string | undefined; size: number; base: number | undefined; tokens: number }
+    | undefined
 
   private snapshot: SessionControllerSnapshot
   private readonly listeners = new Set<() => void>()
@@ -171,6 +189,7 @@ export class SessionController {
     this.newFileHistoryService = deps.createFileHistoryService
       ?? ((cwd, sessionId) => new FileHistoryService(cwd, sessionId))
     this.session = deps.session
+    this.ledger = new SessionRecordLedger(deps.existingRecords)
     this.taskSnapshot = findLatestTaskSnapshot(deps.existingRecords)
     this.snapshot = this.buildSnapshot()
 
@@ -375,6 +394,7 @@ export class SessionController {
     const loaded = await this.store.loadRecordsWithDiagnostics(this.session.id)
     logDiagnostics(loaded.diagnostics)
     const summary = summarizeDiagnosticsForTui(loaded.diagnostics)
+    this.ledger.rebase(loaded.records)
     this.taskSnapshot = findLatestTaskSnapshot(loaded.records)
     this.publish()
     this.emit({
@@ -396,6 +416,8 @@ export class SessionController {
     this.activeToolProgress.clear()
     this.subagentProgress.clear()
     this.usage = createEmptySessionUsage()
+    this.usageAnchorRecordId = undefined
+    this.ledger.rebase(records)
     this.seedUsageFromMetrics(session.id)
     this.taskSnapshot = findLatestTaskSnapshot(records)
     this.spinnerSubText = undefined
@@ -488,10 +510,47 @@ export class SessionController {
    * A run that aborts or throws keeps what was reported — those tokens were
    * spent whether or not the turn finished.
    */
-  private handleRequestUsage = (usage: TokenUsage): void => {
+  private handleRequestUsage = (usage: TokenUsage, anchorRecordId?: string): void => {
     this.runReportedUsage = addTokenUsage(this.runReportedUsage, usage)
     this.usage = { lastRequest: usage, total: addTokenUsage(this.usage.total, usage) }
+    this.usageAnchorRecordId = anchorRecordId
     this.publish()
+  }
+
+  /**
+   * The context readout (see {@link SessionControllerSnapshot.contextUsedTokens}).
+   *
+   * The provider's count describes the request it answered, which is already a
+   * turn behind by the time its tool results land — so the records after the
+   * anchor are estimated on top of it. Without an anchor (a resumed session
+   * before its first request, or one whose anchor a compaction or a rewind took
+   * away) the whole transcript is estimated instead, which is what the
+   * compactor thresholds on anyway.
+   *
+   * Memoized because this runs on every publish, and publish now fires per
+   * record.
+   */
+  private contextUsed(): number | undefined {
+    const anchor = this.usageAnchorRecordId
+    const size = this.ledger.size
+    const base = this.usage.lastRequest ? promptTokens(this.usage.lastRequest) : undefined
+    if (base === undefined && size === 0) return undefined
+    const memo = this.contextUsedMemo
+    if (!memo || memo.anchor !== anchor || memo.size !== size || memo.base !== base) {
+      const records = this.ledger.list()
+      let anchorIndex = -1
+      if (anchor !== undefined) {
+        for (let i = records.length - 1; i >= 0; i--) {
+          if (records[i]?.id === anchor) { anchorIndex = i; break }
+        }
+      }
+      const tokens = base !== undefined && anchorIndex >= 0
+        ? base + countSessionRecordsTokens(records.slice(anchorIndex + 1))
+        : countSessionRecordsTokens([...records])
+      this.contextUsedMemo = { anchor, size, base, tokens }
+      return tokens
+    }
+    return memo.tokens
   }
 
   /**
@@ -539,6 +598,10 @@ export class SessionController {
   private handleRecord = (record: SessionRecord): void => {
     let approvalToolUseId: string | undefined
     let subagentProgress: string | undefined
+
+    // The context readout grows with the transcript, not just with responses,
+    // so a turn that reads ten files shows it while the tools are still running.
+    if (this.ledger.track(record)) this.publish()
 
     this.noteDerivedTitle(record)
     this.noteQueuedSubmissionAccepted(record)
@@ -668,6 +731,7 @@ export class SessionController {
       if (!records) return false
 
       this.getSession().loop.invalidateRecordsCache()
+      this.ledger.rebase(records)
       this.taskSnapshot = findLatestTaskSnapshot(records)
       this.publish()
       // Rebuilt from scratch, but without bumping the generation: this is a
@@ -719,6 +783,7 @@ export class SessionController {
       usage: this.usage,
       taskSnapshot: this.taskSnapshot,
       spinnerSubText: this.spinnerSubText,
+      contextUsedTokens: this.contextUsed(),
     })
   }
 
@@ -731,6 +796,7 @@ export class SessionController {
       && next.usage === previous.usage
       && next.taskSnapshot === previous.taskSnapshot
       && next.spinnerSubText === previous.spinnerSubText
+      && next.contextUsedTokens === previous.contextUsedTokens
     ) return
 
     this.snapshot = next

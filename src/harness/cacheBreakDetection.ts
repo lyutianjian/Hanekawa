@@ -129,6 +129,7 @@ interface PreviousSnapshot {
   model: string
   systemCharCount: number
   prevCacheReadTokens: number | null
+  messageHashes?: string[]
 }
 
 interface PendingChanges {
@@ -140,6 +141,9 @@ interface PendingChanges {
   systemCharDelta: number
   previous: PromptHashes | null
   current: PromptHashes
+  messagesChangedAt: number | null
+  messageCount?: number
+  previousMessageCount?: number
   pendingSnapshot?: PreviousSnapshot
 }
 
@@ -149,6 +153,13 @@ interface PromptState {
   model: string
   betas?: string[]
   cacheScope?: string
+  /**
+   * The outbound message array. Fingerprinted per message so a break caused by
+   * a rewrite inside the history reports *where* it happened instead of landing
+   * in `server_side`. Only hashed under `MYAGENT_DEBUG_PROVIDER=1` — the normal
+   * path must not pay a full serialization of the history per request.
+   */
+  messages?: readonly unknown[]
 }
 
 export interface PromptHashes {
@@ -191,7 +202,10 @@ export function recordPromptState(
     systemCharDelta: 0,
     previous: null,
     current,
+    messagesChangedAt: null,
   }
+
+  const messageHashes = fingerprintMessages(state.messages)
 
   const previous = previousSnapshots.get(source)
   if (previous) {
@@ -218,6 +232,11 @@ export function recordPromptState(
     if (previous.model !== state.model) {
       changes.modelChanged = true
     }
+    if (messageHashes && previous.messageHashes) {
+      changes.messagesChangedAt = firstChangedMessageIndex(previous.messageHashes, messageHashes)
+      changes.previousMessageCount = previous.messageHashes.length
+      changes.messageCount = messageHashes.length
+    }
   }
 
   pendingChangesBySource.set(source, changes)
@@ -233,7 +252,28 @@ export function recordPromptState(
     model: state.model,
     systemCharCount: state.system.length,
     prevCacheReadTokens: previous?.prevCacheReadTokens ?? null,
+    ...(messageHashes ? { messageHashes } : {}),
   }
+}
+
+function fingerprintMessages(messages: readonly unknown[] | undefined): string[] | undefined {
+  if (!messages || process.env.MYAGENT_DEBUG_PROVIDER !== '1') return undefined
+  return messages.map((message) => hashString(JSON.stringify(message ?? null)))
+}
+
+/**
+ * Index of the first message whose content differs from the previous request,
+ * or null when the previous sequence is still a prefix of the current one.
+ *
+ * A pure append is the healthy shape — it keeps the cached prefix intact — so
+ * only a rewrite at some existing index (or a truncation, which shows up as a
+ * missing entry) counts as a change.
+ */
+function firstChangedMessageIndex(previous: string[], current: string[]): number | null {
+  for (let index = 0; index < previous.length; index++) {
+    if (previous[index] !== current[index]) return index
+  }
+  return null
 }
 
 export function checkResponseForCacheBreak(
@@ -290,6 +330,16 @@ export function checkResponseForCacheBreak(
     if (pending.modelChanged) {
       result.reasons.push('model_changed')
     }
+    if (pending.messagesChangedAt !== null) {
+      result.messagesChangedAt = pending.messagesChangedAt
+      result.reasons.push(`messages_changed_at=${pending.messagesChangedAt}`)
+    }
+    if (pending.messageCount !== undefined) {
+      result.messageCounts = {
+        previous: pending.previousMessageCount ?? 0,
+        current: pending.messageCount,
+      }
+    }
     if (pending.previous) {
       result.hashes = {
         previous: pending.previous,
@@ -322,6 +372,12 @@ export interface CacheBreakResult {
   hashes?: {
     previous: PromptHashes
     current: PromptHashes
+  }
+  /** Index of the first rewritten message, when message fingerprints are on. */
+  messagesChangedAt?: number
+  messageCounts?: {
+    previous: number
+    current: number
   }
 }
 
@@ -372,6 +428,13 @@ function writeCacheBreakDiagnostic(result: CacheBreakResult): string | null {
       current_cache_read_tokens: result.currentCacheRead,
       hashes: result.hashes,
       hash_diff: promptHashDiff(result.hashes.previous, result.hashes.current),
+      ...(result.messagesChangedAt !== undefined ? { messages_changed_at: result.messagesChangedAt } : {}),
+      ...(result.messageCounts
+        ? {
+          prev_message_count: result.messageCounts.previous,
+          current_message_count: result.messageCounts.current,
+        }
+        : {}),
     }
     writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 })
     return filePath

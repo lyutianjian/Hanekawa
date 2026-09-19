@@ -343,6 +343,7 @@ export function App({
     streamMode,
     taskSnapshot,
     usage,
+    contextUsedTokens,
     responseLengthRef,
     loadingStartTimeRef,
     totalPausedMsRef,
@@ -1368,6 +1369,7 @@ export function App({
         <StatusLine
           model={runtime?.modelConfig.model ?? '待配置 · /provider'}
           usage={usage}
+          contextUsedTokens={contextUsedTokens}
           permissionMode={permissionMode}
           hintMessage={hintMessage}
           effortLevel={effortLevel}

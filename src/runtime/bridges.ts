@@ -51,15 +51,15 @@ export interface RecordProxy {
    * own numbers, never a running total: the session totals stay on the
    * end-of-run accounting so nothing is counted twice.
    */
-  onRequestUsage: (usage: TokenUsage) => void
-  setRequestUsageHandler: (fn: (usage: TokenUsage) => void) => void
+  onRequestUsage: (usage: TokenUsage, anchorRecordId?: string) => void
+  setRequestUsageHandler: (fn: (usage: TokenUsage, anchorRecordId?: string) => void) => void
 }
 
 export function createRecordProxy(): RecordProxy {
   let handler: (record: SessionRecord) => void = () => {}
   let progressHandler: (event: ToolProgressEvent) => void = () => {}
   let streamEventHandler: (event: ModelStreamEvent) => void = () => {}
-  let requestUsageHandler: (usage: TokenUsage) => void = () => {}
+  let requestUsageHandler: (usage: TokenUsage, anchorRecordId?: string) => void = () => {}
   return {
     onRecord: (record) => handler(record),
     setHandler: (fn) => { handler = fn },
@@ -67,7 +67,7 @@ export function createRecordProxy(): RecordProxy {
     setProgressHandler: (fn) => { progressHandler = fn },
     onStreamEvent: (event) => streamEventHandler(event),
     setStreamEventHandler: (fn) => { streamEventHandler = fn },
-    onRequestUsage: (usage) => requestUsageHandler(usage),
+    onRequestUsage: (usage, anchorRecordId) => requestUsageHandler(usage, anchorRecordId),
     setRequestUsageHandler: (fn) => { requestUsageHandler = fn },
   }
 }

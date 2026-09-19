@@ -45,7 +45,7 @@ test('addCacheBreakpoints handles string content', () => {
 
   const result = addCacheBreakpoints(messages, true, { env: {} })
   const lastContent = result[1]?.content as Array<Record<string, unknown>>
-  assert.deepEqual(lastContent[0]?.cache_control, { type: 'ephemeral' })
+  assert.deepEqual(lastContent[0]?.cache_control, { type: 'ephemeral', ttl: '1h' })
 })
 
 test('cache ttl1h can be enabled from runtime settings', () => {
@@ -60,6 +60,17 @@ test('cache ttl1h can be enabled from runtime settings', () => {
     settings: { cache: { ttl1h: true } },
     env: { MYAGENT_PROMPT_CACHE_1H: '0' },
   }), { type: 'ephemeral', ttl: '1h' })
+})
+
+test('cache ttl1h is the default and both opt-outs still work', () => {
+  resetCacheTTLEvaluation()
+  assert.equal(should1hCacheTTL({ env: {} }), true)
+
+  resetCacheTTLEvaluation()
+  assert.equal(should1hCacheTTL({ env: { MYAGENT_PROMPT_CACHE_1H: '0' } }), false)
+
+  resetCacheTTLEvaluation()
+  assert.equal(should1hCacheTTL({ settings: { cache: { ttl1h: false } }, env: {} }), false)
 })
 
 test('cache ttl1h settings override environment', () => {
@@ -105,7 +116,7 @@ test('addCacheBreakpoints marks the final tool_result block', () => {
   const result = addCacheBreakpoints(messages, true, { env: {} })
   const content = result[1]?.content as Array<Record<string, unknown>>
   assert.equal(content[0]?.cache_control, undefined)
-  assert.deepEqual(content[1]?.cache_control, { type: 'ephemeral' })
+  assert.deepEqual(content[1]?.cache_control, { type: 'ephemeral', ttl: '1h' })
 })
 
 test('addCacheBreakpoints marks a trailing tool_use rather than an earlier text block', () => {
@@ -123,7 +134,7 @@ test('addCacheBreakpoints marks a trailing tool_use rather than an earlier text 
   const result = addCacheBreakpoints(messages, true, { env: {} })
   const content = result[0]?.content as Array<Record<string, unknown>>
   assert.equal(content[0]?.cache_control, undefined)
-  assert.deepEqual(content[1]?.cache_control, { type: 'ephemeral' })
+  assert.deepEqual(content[1]?.cache_control, { type: 'ephemeral', ttl: '1h' })
 })
 
 test('addCacheBreakpoints walks back past thinking blocks', () => {
@@ -140,7 +151,7 @@ test('addCacheBreakpoints walks back past thinking blocks', () => {
 
   const result = addCacheBreakpoints(messages, true, { env: {} })
   const content = result[0]?.content as Array<Record<string, unknown>>
-  assert.deepEqual(content[0]?.cache_control, { type: 'ephemeral' })
+  assert.deepEqual(content[0]?.cache_control, { type: 'ephemeral', ttl: '1h' })
   assert.equal(content[1]?.cache_control, undefined)
 })
 

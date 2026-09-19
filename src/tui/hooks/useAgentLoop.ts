@@ -73,7 +73,7 @@ export function useAgentLoop({
   const [transcriptGeneration, setTranscriptGeneration] = useState(0)
   const [streamMode, setStreamMode] = useState<StreamDisplayMode>('requesting')
 
-  const { isStreaming, usage, taskSnapshot, spinnerSubText } = useSyncExternalStore(
+  const { isStreaming, usage, taskSnapshot, spinnerSubText, contextUsedTokens } = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
     controller.getSnapshot,
@@ -385,6 +385,7 @@ export function useAgentLoop({
     streamMode,
     taskSnapshot,
     usage,
+    contextUsedTokens,
     responseLengthRef,
     loadingStartTimeRef,
     totalPausedMsRef,

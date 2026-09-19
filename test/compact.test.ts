@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { autoCompactIfNeeded, resetAutoCompactFailureState, snipLargeToolResults, summarizeRecordsForContinuation } from '../src/harness/compact.js'
+import { autoCompactIfNeeded, resetAutoCompactFailureState, summarizeRecordsForContinuation } from '../src/harness/compact.js'
 import type { ModelProvider, SessionRecord } from '../src/harness/types.js'
 import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
@@ -1138,35 +1138,3 @@ test('without an attachment resolver the summary placeholder still names the att
   assert.match(seenPrompt, /a\.png, sent 64x64, cached in this session's attachment store \(attachment img-a\)/)
 })
 
-test('snipLargeToolResults drops the images of a truncated result', () => {
-  const image = makeImageAttachmentRef({ name: 'huge.png' })
-  const records: SessionRecord[] = [
-    {
-      type: 'tool_result',
-      id: 'res-1',
-      toolUseId: 'call-1',
-      tool: 'Read',
-      ok: true,
-      content: 'x '.repeat(50_000),
-      images: [image],
-      createdAt: '2026-05-10T00:00:00.000Z',
-    },
-    {
-      type: 'tool_result',
-      id: 'res-2',
-      toolUseId: 'call-2',
-      tool: 'Read',
-      ok: true,
-      content: 'small',
-      images: [image],
-      createdAt: '2026-05-10T00:00:01.000Z',
-    },
-  ]
-  const snipped = snipLargeToolResults(records, 100)
-  const first = snipped[0]
-  assert.ok(first?.type === 'tool_result')
-  assert.equal('images' in first, false, 'a truncated result must not keep uploading its pixels')
-  assert.match(first.content, /Result truncated[\s\S]*\[Image attachment omitted[\s\S]*huge\.png/)
-  // Results that stay are untouched, images included.
-  assert.equal(snipped[1], records[1])
-})

@@ -340,7 +340,11 @@ test('agent loop stores display input while sending real prompt to the model', a
     assert.equal(userRecord.content, 'Expanded skill prompt')
     assert.equal(userRecord.displayContent, '/debug hello')
   }
-  assert.equal(seenRequest?.messages.at(-1)?.content, 'Expanded skill prompt')
+  // The turn-varying user context trails the prompt now (spec §6.2), so the
+  // prompt is the last *real* message rather than the last one.
+  const sent = seenRequest?.messages.map((message) => message.content) ?? []
+  assert.ok(sent.includes('Expanded skill prompt'))
+  assert.match(String(sent.at(-1)), /# currentDate/)
 })
 
 test('agent loop rejects unknown per-run allowed tools before appending records', async () => {

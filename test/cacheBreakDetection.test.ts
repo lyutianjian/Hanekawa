@@ -329,3 +329,83 @@ test('cache break diagnostics are written under the source\'s own project', asyn
     await rm(projectB, { recursive: true, force: true })
   }
 })
+
+async function withDebugProvider(run: (dir: string) => void | Promise<void>): Promise<void> {
+  const originalDebug = process.env.MYAGENT_DEBUG_PROVIDER
+  const originalCwd = process.cwd()
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-cache-messages-'))
+  process.env.MYAGENT_DEBUG_PROVIDER = '1'
+  process.chdir(dir)
+  try {
+    await run(dir)
+  } finally {
+    process.chdir(originalCwd)
+    if (originalDebug === undefined) delete process.env.MYAGENT_DEBUG_PROVIDER
+    else process.env.MYAGENT_DEBUG_PROVIDER = originalDebug
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
+function message(text: string): Record<string, unknown> {
+  return { role: 'user', content: [{ type: 'text', text }] }
+}
+
+test('a rewritten history message is attributed to its index', async () => {
+  await withDebugProvider((dir) => {
+    resetCacheBreakDetection()
+    const state = { system: 'sys', toolsJson: '[]', model: 'm' }
+    recordPromptState({ ...state, messages: [message('a'), message('b'), message('c')] }, MAIN_SOURCE)
+    assert.equal(checkResponseForCacheBreak(50_000, 1_000, MAIN_SOURCE), null)
+
+    recordPromptState({ ...state, messages: [message('a'), message('rewritten'), message('c')] }, MAIN_SOURCE)
+    const result = checkResponseForCacheBreak(10_000, 1_000, MAIN_SOURCE)
+
+    assert.ok(result)
+    assert.equal(result.messagesChangedAt, 1)
+    assert.deepEqual(result.reasons, ['messages_changed_at=1'])
+
+    const diagnosticsDir = path.join(dir, '.myagent', 'diagnostics')
+    const files = readdirSync(diagnosticsDir).filter((file) => file.includes('cache-break'))
+    const diagnostic = JSON.parse(readFileSync(path.join(diagnosticsDir, files[0] ?? ''), 'utf-8')) as Record<string, unknown>
+    assert.equal(diagnostic.messages_changed_at, 1)
+    assert.equal(diagnostic.current_message_count, 3)
+    // Fingerprints only — no message text leaks into the diagnostic.
+    assert.equal(JSON.stringify(diagnostic).includes('rewritten'), false)
+  })
+})
+
+test('appending messages is not reported as a history change', async () => {
+  await withDebugProvider(() => {
+    resetCacheBreakDetection()
+    const state = { system: 'sys', toolsJson: '[]', model: 'm' }
+    recordPromptState({ ...state, messages: [message('a'), message('b')] }, MAIN_SOURCE)
+    assert.equal(checkResponseForCacheBreak(50_000, 1_000, MAIN_SOURCE), null)
+
+    recordPromptState({ ...state, messages: [message('a'), message('b'), message('c')] }, MAIN_SOURCE)
+    const result = checkResponseForCacheBreak(10_000, 1_000, MAIN_SOURCE)
+
+    assert.ok(result)
+    assert.equal(result.messagesChangedAt, undefined)
+    assert.deepEqual(result.reasons, ['server_side'])
+  })
+})
+
+test('message fingerprints are skipped without MYAGENT_DEBUG_PROVIDER', () => {
+  resetCacheBreakDetection()
+  const originalDebug = process.env.MYAGENT_DEBUG_PROVIDER
+  delete process.env.MYAGENT_DEBUG_PROVIDER
+  try {
+    const state = { system: 'sys', toolsJson: '[]', model: 'm' }
+    recordPromptState({ ...state, messages: [message('a'), message('b')] }, MAIN_SOURCE)
+    assert.equal(checkResponseForCacheBreak(50_000, 1_000, MAIN_SOURCE), null)
+
+    recordPromptState({ ...state, messages: [message('a'), message('changed')] }, MAIN_SOURCE)
+    const result = checkResponseForCacheBreak(10_000, 1_000, MAIN_SOURCE)
+
+    assert.ok(result)
+    assert.equal(result.messagesChangedAt, undefined)
+    assert.deepEqual(result.reasons, ['server_side'])
+  } finally {
+    if (originalDebug !== undefined) process.env.MYAGENT_DEBUG_PROVIDER = originalDebug
+  }
+})

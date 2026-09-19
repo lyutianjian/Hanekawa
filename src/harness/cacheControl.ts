@@ -23,11 +23,17 @@ export function getCacheControl(runtime?: CacheRuntime): { type: 'ephemeral'; tt
  */
 let latchedTtl1h: boolean | undefined
 
+/**
+ * On by default (spec §6.1). A tool loop routinely goes quiet for longer than
+ * five minutes — one full test run, one long build — and a 5m TTL then charges
+ * a fresh cache write for the entire prefix on the very next turn. Opting out
+ * takes `cache.ttl1h === false` or `MYAGENT_PROMPT_CACHE_1H=0`.
+ */
 export function should1hCacheTTL(runtime?: CacheRuntime): boolean {
   if (latchedTtl1h !== undefined) return latchedTtl1h
   latchedTtl1h = typeof runtime?.settings?.cache?.ttl1h === 'boolean'
     ? runtime.settings.cache.ttl1h
-    : (runtime?.env ?? process.env).MYAGENT_PROMPT_CACHE_1H === '1'
+    : (runtime?.env ?? process.env).MYAGENT_PROMPT_CACHE_1H !== '0'
   return latchedTtl1h
 }
 

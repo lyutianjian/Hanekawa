@@ -849,8 +849,9 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
       return [{ id: record.id, kind: 'error', text: `Compaction failed: ${record.error}`, ...stamp }]
 
     default:
-      // tool_approval, at_mention_context, tool_use_summary, background_task,
-      // plan_mode_* and message_queue are bookkeeping, not transcript.
+      // tool_approval, at_mention_context, tool_use_summary, tool_result_trim,
+      // background_task, plan_mode_* and message_queue are bookkeeping, not
+      // transcript.
       return []
   }
 }

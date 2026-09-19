@@ -102,6 +102,7 @@ export class SessionClient {
     usage: createEmptySessionUsage(),
     taskSnapshot: undefined,
     spinnerSubText: undefined,
+    contextUsedTokens: undefined,
   })
   private subagentProgress: ReadonlyMap<string, string> = new Map()
   /**
@@ -113,8 +114,6 @@ export class SessionClient {
    * nothing else changed.
    */
   private cost: WireUsageCost | undefined
-  /** Context occupancy, folded into the snapshot diff for the same reason `cost` is. */
-  private contextUsedTokens: number | undefined
   private runtimeSnapshot: WireRuntimeSnapshot | undefined
   private session: SessionMeta | undefined
   private backgroundTasks: readonly BackgroundTaskSnapshot[] = EMPTY_TASKS
@@ -259,11 +258,11 @@ export class SessionClient {
 
   /**
    * How many tokens the conversation currently occupies, or `undefined` before
-   * the host has anything to report. Measured host-side; see the `snapshot`
-   * event in `wire.ts`.
+   * there is anything to report. Computed by the `SessionController` and carried
+   * on its snapshot, so this and the TUI status line read one number.
    */
   getContextUsedTokens(): number | undefined {
-    return this.contextUsedTokens
+    return this.snapshot.contextUsedTokens
   }
 
   // --- commands ---------------------------------------------------------
@@ -722,7 +721,7 @@ export class SessionClient {
         return
       case 'snapshot':
         this.subagentProgress = new Map(event.subagentProgress)
-        this.applySnapshot(event.snapshot, event.cost, event.contextUsedTokens)
+        this.applySnapshot(event.snapshot, event.cost)
         return
       case 'runtime-snapshot':
         this.runtimeSnapshot = event.snapshot
@@ -772,22 +771,18 @@ export class SessionClient {
    * Swaps the snapshot only when a field actually differs, so `getSnapshot()`
    * keeps returning the same object while nothing has changed.
    *
-   * `cost` and `contextUsedTokens` participate in the same decision even though
-   * they live outside the snapshot object: both ride on this event, so treating
-   * either separately would mean a second `notify()` per tick or a stale readout.
+   * `cost` participates in the same decision even though it lives outside the
+   * snapshot object: it rides on this event, so treating it separately would
+   * mean a second `notify()` per tick or a stale readout.
    */
-  private applySnapshot(
-    next: SessionControllerSnapshot,
-    cost?: WireUsageCost,
-    contextUsedTokens?: number,
-  ): void {
+  private applySnapshot(next: SessionControllerSnapshot, cost?: WireUsageCost): void {
     const previous = this.snapshot
     const usage = sameUsage(previous.usage, next.usage) ? previous.usage : next.usage
     const taskSnapshot = sameTaskSnapshot(previous.taskSnapshot, next.taskSnapshot)
       ? previous.taskSnapshot
       : next.taskSnapshot
     const costChanged = !sameCost(this.cost, cost)
-    const contextChanged = this.contextUsedTokens !== contextUsedTokens
+    const contextChanged = previous.contextUsedTokens !== next.contextUsedTokens
 
     if (
       !costChanged
@@ -799,12 +794,12 @@ export class SessionClient {
     ) return
 
     this.cost = cost
-    this.contextUsedTokens = contextUsedTokens
     this.snapshot = Object.freeze({
       isStreaming: next.isStreaming,
       usage,
       taskSnapshot,
       spinnerSubText: next.spinnerSubText,
+      contextUsedTokens: next.contextUsedTokens,
     })
     this.notify()
   }

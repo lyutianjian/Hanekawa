@@ -206,11 +206,16 @@ export class ContextBuilder {
     const postCompactRestoreContext = input.includePostCompactRestore
       ? await this.buildPostCompactRestoreContext(input.toolContext)
       : []
+    // Everything that can change between turns lives *after* the history
+    // (spec §6.2). The date rolls over, a fileMatch skill activates from a
+    // file the loop just read, a compact restores files — in front of the
+    // history each of those rewrites the first message and voids the whole
+    // cached prefix; at the tail they are an append, which costs nothing.
     const allContextItems = [
-      ...(input.includeUserContext === false ? [] : this.buildUserContext(input.now ?? new Date(), activeSkills)),
-      ...postCompactRestoreContext,
       ...this.recordsToContextItems(input.preloadRecords ?? []),
       ...this.recordsToContextItems(input.records),
+      ...postCompactRestoreContext,
+      ...(input.includeUserContext === false ? [] : this.buildUserContext(input.now ?? new Date(), activeSkills)),
       ...this.buildTransientUserContext(input.transientUserContext ?? [], input.now ?? new Date()),
     ]
 

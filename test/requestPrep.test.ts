@@ -166,9 +166,9 @@ test('prepareRecordsForRequest keeps same-tool history when under token threshol
   assert.equal(toolResultContent(prepared, 'third'), 'third output')
 })
 
-test('prepareRecordsForRequest strips thinking blocks outside recent assistant turns', () => {
+function thinkingRecords(count: number): SessionRecord[] {
   const records: SessionRecord[] = []
-  for (let index = 0; index < 5; index++) {
+  for (let index = 0; index < count; index++) {
     records.push({
       type: 'message',
       id: `assistant-${index}`,
@@ -182,6 +182,11 @@ test('prepareRecordsForRequest strips thinking blocks outside recent assistant t
       createdAt: `2026-05-10T00:0${index}:00.000Z`,
     })
   }
+  return records
+}
+
+test('prepareRecordsForRequest keeps thinking blocks on every assistant turn', () => {
+  const records = thinkingRecords(5)
 
   const prepared = prepareRecordsForRequest(records)
   const assistantMessages = prepared.filter(
@@ -190,12 +195,20 @@ test('prepareRecordsForRequest strips thinking blocks outside recent assistant t
   )
 
   assert.equal(assistantMessages.length, 5)
-  assert.equal(assistantMessages[0]?.thinkingBlocks, undefined)
-  assert.equal(assistantMessages[1]?.thinkingBlocks, undefined)
-  assert.equal(assistantMessages[2]?.thinkingBlocks?.[0]?.signature, 'signature-2')
-  assert.equal(assistantMessages[3]?.thinkingBlocks?.[0]?.signature, 'signature-3')
-  assert.equal(assistantMessages[4]?.thinkingBlocks?.[0]?.signature, 'signature-4')
-  assert.equal(records[0]?.type === 'message' ? records[0].thinkingBlocks?.[0]?.signature : undefined, 'signature-0')
+  for (let index = 0; index < 5; index++) {
+    assert.equal(assistantMessages[index]?.thinkingBlocks?.[0]?.signature, `signature-${index}`)
+  }
+})
+
+test('prepareRecordsForRequest leaves the shared prefix byte-identical as turns accumulate', () => {
+  const records = thinkingRecords(5)
+  const before = prepareRecordsForRequest(records)
+
+  records.push(...thinkingRecords(6).slice(5))
+  const after = prepareRecordsForRequest(records)
+
+  assert.equal(after.length, before.length + 1)
+  assert.deepEqual(after.slice(0, before.length), before)
 })
 
 test('prepareRecordsForRequestWithDiagnostics can strip all assistant thinking for outbound requests', () => {
@@ -216,7 +229,7 @@ test('prepareRecordsForRequestWithDiagnostics can strip all assistant thinking f
     records,
     {},
     new Date('2026-05-10T00:00:00.000Z'),
-    { recentAssistantThinkingTurnsToKeep: 0 },
+    { stripAllThinkingBlocks: true },
   ).records
 
   assert.equal(prepared[0]?.type === 'message' ? prepared[0].thinkingBlocks : undefined, undefined)
@@ -545,11 +558,9 @@ test('recordsAfterAreOnlyInterruptSynthetic treats assistant and tool records as
   assert.equal(recordsAfterAreOnlyInterruptSynthetic([base, toolUse], 'user-1'), false)
 })
 
-test('prepareRecordsForRequest snips individual tool results exceeding max tokens', () => {
-  // Generate content that dynamically exceeds the 10,000 token snip threshold.
-  // Use countTextTokens to verify the setup rather than relying on a fixed chars/token ratio.
-  const targetTokens = 10_001
-  const hugeContent = 'x'.repeat(Math.ceil(targetTokens * 4)) // generous margin
+test('prepareRecordsForRequest replaces an oversized tool result with a preview', () => {
+  const targetTokens = 25_001
+  const hugeContent = `first line of the output\n${'x'.repeat(Math.ceil(targetTokens * 4))}`
   assert.ok(
     countTextTokens(hugeContent) > targetTokens,
     `test setup: content must exceed ${targetTokens} tokens (got ${countTextTokens(hugeContent)})`,
@@ -562,8 +573,10 @@ test('prepareRecordsForRequest snips individual tool results exceeding max token
 
   const prepared = prepareRecordsForRequest(records)
 
-  assert.match(toolResultContent(prepared, 'huge'), /Result truncated/)
-  assert.match(toolResultContent(prepared, 'huge'), /Read/)
+  const huge = toolResultContent(prepared, 'huge')
+  assert.match(huge, /Large result: Read/)
+  assert.match(huge, /first line of the output/, 'the model keeps a preview of what it asked for')
+  assert.ok(huge.length < hugeContent.length / 4)
   assert.equal(toolResultContent(prepared, 'normal'), 'small output')
 })
 
@@ -577,7 +590,7 @@ test('prepareRecordsForRequest does not snip tool results under max tokens', () 
   assert.equal(toolResultContent(prepared, 'ok'), 'short output')
 })
 
-test('prepareRecordsForRequest does not double-snip already budget-compacted results', () => {
+test('prepareRecordsForRequest replaces an oversized result once, not twice', () => {
   const records: SessionRecord[] = [
     ...toolPair('old', 'Read', 'large output '.repeat(7_000), 0),
   ]
@@ -585,24 +598,22 @@ test('prepareRecordsForRequest does not double-snip already budget-compacted res
     records.push(...toolPair(`new-${i}`, 'Read', 'new output '.repeat(10), i + 1))
   }
 
-  // Use a small context window to trigger budget compaction on the old result
+  // Small enough a window that the budget would summarize too, if the
+  // per-result replacement had not already settled this result's shape.
   const prepared = prepareRecordsForRequest(records, {
     contextWindow: 50_000,
     summaryOutputTokens: 0,
   })
 
   const oldContent = toolResultContent(prepared, 'old')
-  // Budget compaction runs first and replaces with [summarized: ...].
-  // snipLargeToolResults should not re-snip already compacted results
-  // because [summarized: ...] is well under 50K tokens.
-  assert.match(oldContent, /summarized/)
-  assert.doesNotMatch(oldContent, /Result truncated/)
+  assert.match(oldContent, /Large result: Read/)
+  assert.doesNotMatch(oldContent, /summarized/)
 })
 
 test('budget compaction of an old tool result drops its images with its output', () => {
   const image = makeImageAttachmentRef({ name: 'shot.png' })
   const records: SessionRecord[] = []
-  const [oldUse, oldResult] = toolPair('old', 'Read', 'large output '.repeat(7_000), 0)
+  const [oldUse, oldResult] = toolPair('old', 'Read', 'large output '.repeat(5_000), 0)
   assert.ok(oldUse && oldResult?.type === 'tool_result')
   records.push(oldUse, { ...oldResult, images: [image] })
   for (let i = 0; i < 10; i++) {
@@ -611,7 +622,7 @@ test('budget compaction of an old tool result drops its images with its output',
     records.push(use, { ...result, images: [image] })
   }
 
-  const prepared = prepareRecordsForRequest(records, { contextWindow: 50_000, summaryOutputTokens: 0 })
+  const prepared = prepareRecordsForRequest(records, { contextWindow: 30_000, summaryOutputTokens: 0 })
 
   const compacted = prepared.find((record) => record.id === 'old-result')
   assert.ok(compacted?.type === 'tool_result')

@@ -79,6 +79,8 @@ import {
   resolveImageTokenStrategy,
   type ImageTokenStrategy,
 } from '../media/imageTokens.js'
+import { ToolResultTrimState } from './toolResultTrimState.js'
+import { getToolResultSpillDir } from '../utils/paths.js'
 import { wrapInSystemReminder } from './systemReminder.js'
 import { maybeExtractSessionMemory } from '../services/sessionMemory/service.js'
 
@@ -190,6 +192,12 @@ export interface AgentLoopOptions {
   attachmentBytes?: AttachmentBytesLoader
   contextManagement?: Partial<ContextManagementConfig>
   isGitRepo?: boolean
+  /**
+   * Cap on tool iterations. Unset means unbounded — the main session relies on
+   * the abort signal, the token budget and auto-compaction instead, so a long
+   * task never loses its work to a turn counter (spec §3.2). Sub-agents pass a
+   * value and get the old bounded behaviour.
+   */
   maxTurns?: number
   maxTurnsExceededBehavior?: 'error' | 'partial'
   maxOutputTokens?: number
@@ -220,7 +228,7 @@ export interface AgentLoopOptions {
    * without it (`AgentTool`), so their requests never retarget the parent's
    * readout.
    */
-  onRequestUsage?(usage: TokenUsage): void
+  onRequestUsage?(usage: TokenUsage, anchorRecordId?: string): void
   consumePendingUserMessages?(): string[]
 }
 
@@ -236,6 +244,8 @@ export class AgentLoop {
   }
   private recordsCache: SessionRecord[] | undefined
   private recordsCacheHasCleanToolProtocol = false
+  /** Frozen tool-result trim decisions; see `ToolResultTrimState`. */
+  private trimState: ToolResultTrimState | undefined
   private pendingSubagentTranscriptUsage: TokenUsage = { ...EMPTY_TOKEN_USAGE }
   private readonly pendingToolUseSummaries: PendingToolUseSummary[] = []
   // Serializes run() and runTool() against each other. Both helpers funnel
@@ -572,7 +582,7 @@ export class AgentLoop {
       let lastResponseRecordCount: number | undefined
       let lastResponseRecordId: string | undefined
 
-      const maxTurns = this.options.maxTurns ?? 100
+      const maxTurns = this.options.maxTurns
       const tokenBudget = this.options.tokenBudget
       const tokenWarnThreshold = this.options.tokenWarningThreshold ?? 0.8
       const cacheSource = this.options.cacheSource
@@ -596,7 +606,7 @@ export class AgentLoop {
         maxOutputTokensRecoveryCount = 0
       }
 
-      for (let iteration = 0; iteration < maxTurns; iteration++) {
+      for (let iteration = 0; maxTurns === undefined || iteration < maxTurns; iteration++) {
         // Check abort signal at the start of each iteration
         if (signal?.aborted) {
           throw new DOMException('The operation was aborted.', 'AbortError')
@@ -841,7 +851,10 @@ export class AgentLoop {
       // Per request, not per turn: this is the only point where the provider's
       // own count for the context just sent is known, and a multi-step turn
       // passes through it once per step.
-      if (response.usage) this.options.onRequestUsage?.(response.usage)
+      // The anchor is the last record this request carried, so a reader can add
+      // the estimate for everything appended after it to the provider's own
+      // count and get a context readout that keeps up mid-turn.
+      if (response.usage) this.options.onRequestUsage?.(response.usage, records.at(-1)?.id)
       await this.emitTurnMetric(modelStartedAt, response.usage ?? EMPTY_TOKEN_USAGE, response.toolCalls.length)
       lastResponseTokenCount = canReuseResponseTokenEstimate
         ? requestTokenCountFromUsage(response.usage)
@@ -1005,7 +1018,9 @@ export class AgentLoop {
       })
       }
 
-      if (this.options.maxTurnsExceededBehavior === 'partial') {
+      // Only reachable with an explicit maxTurns; without one the loop above
+      // never falls through.
+      if (maxTurns !== undefined && this.options.maxTurnsExceededBehavior === 'partial') {
         const content = buildMaxTurnsExceededContent(lastAssistantContent, maxTurns)
         const finished = await this.finishTurn({
           content,
@@ -1370,6 +1385,9 @@ export class AgentLoop {
       this.activeModel.providerName,
       this.activeModel.supportsImageInput,
     )
+    // Built from the log the first time through, before this turn's results
+    // exist: everything already there was already sent, so it freezes as-is.
+    this.trimState ??= ToolResultTrimState.fromRecords(loaded.records)
     const prepared = prepareRecordsForRequestWithDiagnostics(
       loaded.records,
       this.activeContextManagement,
@@ -1377,9 +1395,17 @@ export class AgentLoop {
       {
         repairToolPairing: !this.recordsCacheHasCleanToolProtocol,
         imageTokenStrategy,
-        ...(this.stripAllThinkingBlocksFromRequests ? { recentAssistantThinkingTurnsToKeep: 0 } : {}),
+        trimState: this.trimState,
+        spillDir: getToolResultSpillDir(this.options.toolContext.cwd, this.options.toolContext.sessionId),
+        ...(turnId ? { turnId } : {}),
+        ...(this.stripAllThinkingBlocksFromRequests ? { stripAllThinkingBlocks: true } : {}),
       },
     )
+    // Straight to the stream: a trim record is request-prep bookkeeping, not
+    // transcript content, so it stays out of the records cache and the UI.
+    for (const record of this.trimState.takePendingRecords()) {
+      await this.options.recordStream.append(record)
+    }
     if (!prepared.diagnostics.some((diagnostic) => diagnostic.code === 'tool_protocol_repaired')) {
       this.recordsCacheHasCleanToolProtocol = true
     }

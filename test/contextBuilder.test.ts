@@ -52,12 +52,13 @@ test('ContextBuilder injects layered system and user context', async () => {
     '__MYAGENT_SYSTEM_PROMPT_DYNAMIC_BOUNDARY',
     'custom system',
   ])
-  assert.equal(built.contextItems[0]?.kind, 'message')
-  const first = built.contextItems[0]
-  assert.equal(first.kind, 'message')
-  assert.equal(first.message.id, 'meta:user-context')
-  assert.match(first.message.content, /Today's date is 2026\/05\/10/)
-  assert.doesNotMatch(first.message.content, /Read: Read a file from disk/)
+  // The turn-varying block sits at the tail, behind the history it must not
+  // invalidate (spec §6.2).
+  const last = built.contextItems[built.contextItems.length - 1]
+  assert.equal(last?.kind, 'message')
+  assert.equal(last.message.id, 'meta:user-context')
+  assert.match(last.message.content, /Today's date is 2026\/05\/10/)
+  assert.doesNotMatch(last.message.content, /Read: Read a file from disk/)
   assert.doesNotMatch(built.system ?? '', /Read: Read a file from disk/)
 })
 
@@ -78,6 +79,45 @@ test('ContextBuilder excludes message queue records from model context', async (
 
   const built = await builder.build({ records, tools: [], system: 'system' })
   assert.doesNotMatch(JSON.stringify(built.contextItems), /not submitted yet/)
+})
+
+test('the trailing user context never splits a tool_use from its tool_result', async () => {
+  const builder = new ContextBuilder(undefined, contextWindow(50_000))
+  const records: SessionRecord[] = [
+    {
+      type: 'message',
+      id: 'u1',
+      role: 'user',
+      content: 'read it',
+      createdAt: '2026-05-10T00:00:00.000Z',
+    },
+    {
+      type: 'tool_use',
+      id: 'call-1',
+      tool: 'Read',
+      input: {},
+      riskLevel: 'safe',
+      createdAt: '2026-05-10T00:00:01.000Z',
+    },
+    {
+      type: 'tool_result',
+      id: 'result-1',
+      toolUseId: 'call-1',
+      tool: 'Read',
+      ok: true,
+      content: 'file body',
+      createdAt: '2026-05-10T00:00:02.000Z',
+    },
+  ]
+
+  const built = await builder.build({ records, tools: [], system: 'system' })
+  const ids = built.contextItems.map((item) => {
+    if (item.kind === 'message') return item.message.id
+    return item.kind === 'tool_use' ? item.id : `result:${item.toolUseId}`
+  })
+
+  assert.ok(ids.indexOf('call-1') < ids.indexOf('result:call-1'))
+  assert.equal(ids.at(-1), 'meta:user-context', 'the varying block belongs after the pair, not inside it')
 })
 
 test('ContextBuilder can build a reduced system prompt from enabled sections', async () => {

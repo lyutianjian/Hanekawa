@@ -8,8 +8,7 @@ import { resolveImageCapability } from '../../config/providers.js'
 import type { PermissionRequest } from '../../harness/permissions.js'
 import type { RuntimeDiagnostic } from '../../harness/diagnostics.js'
 import type { SessionRecord } from '../../harness/types.js'
-import { promptTokens, resolveUsageWithCost } from '../../harness/usage.js'
-import { countSessionRecordsTokens } from '../../prompts/budget.js'
+import { resolveUsageWithCost } from '../../harness/usage.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import type { ImageAttachmentRef } from '../../media/types.js'
 import { describeImageBlockError } from '../../media/imageErrors.js'
@@ -309,8 +308,6 @@ export class SessionHost {
   private session: SessionMeta
   private disposed = false
   private taskPostTimer: ReturnType<typeof setTimeout> | undefined
-  /** Memo for `currentContextUsed`'s fallback estimate, keyed by ledger length. */
-  private estimatedContextTokens: { size: number; tokens: number } | undefined
 
   constructor(deps: SessionHostDeps) {
     this.channel = deps.channel
@@ -412,40 +409,13 @@ export class SessionHost {
     // Also the pump's main trigger: this fires when `streaming` flips back to
     // false, which is the moment a queued message becomes sendable.
     const cost = this.currentCost()
-    const contextUsedTokens = this.currentContextUsed()
     this.post({
       type: 'snapshot',
       snapshot: this.controller.getSnapshot(),
       subagentProgress: [...this.controller.getSubagentProgress()],
       ...(cost ? { cost } : {}),
-      ...(contextUsedTokens !== undefined ? { contextUsedTokens } : {}),
     })
     this.pumpQueue()
-  }
-
-  /**
-   * How much of the context window the conversation currently occupies.
-   *
-   * The provider's own number when there is one: `usage.lastRequest` is the loop's
-   * `statusUsage`, and its input plus cache-read *is* what the model was sent.
-   * Before the first turn of a resumed session there is no such number, so this
-   * falls back to the same estimate the compactor thresholds on
-   * (`countSessionRecordsTokens`).
-   *
-   * The estimate is cached against `ledger.size` because this runs on every
-   * `postSnapshot` — which fires per output chunk of a streaming turn — and the
-   * estimate walks every record's text. The cache can only ever serve the
-   * pre-first-turn window, and any record appended invalidates it.
-   */
-  private currentContextUsed(): number | undefined {
-    const { lastRequest } = this.controller.getSnapshot().usage
-    if (lastRequest) return promptTokens(lastRequest)
-    const size = this.ledger.size
-    if (size === 0) return undefined
-    if (this.estimatedContextTokens?.size !== size) {
-      this.estimatedContextTokens = { size, tokens: countSessionRecordsTokens([...this.ledger.list()]) }
-    }
-    return this.estimatedContextTokens.tokens
   }
 
   /**

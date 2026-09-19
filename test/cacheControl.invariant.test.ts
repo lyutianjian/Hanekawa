@@ -169,7 +169,7 @@ test('buildAnthropicTools anchors the marker to the last stable tool and trails 
     'mcp__server__query',
   ])
   assert.equal((built[0] as { cache_control?: unknown }).cache_control, undefined)
-  assert.deepEqual((built[1] as { cache_control?: unknown }).cache_control, { type: 'ephemeral' })
+  assert.deepEqual((built[1] as { cache_control?: unknown }).cache_control, { type: 'ephemeral', ttl: '1h' })
   assert.equal((built[2] as { cache_control?: unknown }).cache_control, undefined)
 })
 
@@ -180,7 +180,7 @@ test('buildAnthropicTools falls back to the last tool when every tool is volatil
   const built = buildAnthropicTools(tools, true, { env: {} }, deferred)
 
   assert.equal((built[0] as { cache_control?: unknown }).cache_control, undefined)
-  assert.deepEqual((built[1] as { cache_control?: unknown }).cache_control, { type: 'ephemeral' })
+  assert.deepEqual((built[1] as { cache_control?: unknown }).cache_control, { type: 'ephemeral', ttl: '1h' })
 })
 
 test('buildAnthropicMessages keeps injected subagent summary after Agent tool_result valid', () => {

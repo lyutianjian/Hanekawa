@@ -1199,13 +1199,13 @@ test('reloading definitions is one change and nothing else', () => {
 
 // --- general, MCP and the context budget --------------------------------------
 
-test('an unset cache toggle says it follows the environment variable', () => {
+test('an unset cache toggle reads as the on-by-default it is', () => {
   const view = settingsView(openState({ category: 'general' }))
   const row = view.cards.find((card) => card.id === 'general')?.rows.find((row) => row.id === 'general:cache-ttl')
   assert.ok(row && row.control.kind === 'toggle')
-  assert.equal(row.control.value, false)
-  // Unset is not the same as false: `should1hCacheTTL` falls through to
-  // MYAGENT_PROMPT_CACHE_1H, and a bare "off" would misreport that.
+  assert.equal(row.control.value, true)
+  // Unset is not the same as false: the 1h TTL is the default, and the row
+  // names the environment variable that turns it off.
   assert.match(row.detail ?? '', /MYAGENT_PROMPT_CACHE_1H/)
   assert.deepEqual(row.control.intentOnChange(true), { kind: 'set-cache-ttl', enabled: true })
 })

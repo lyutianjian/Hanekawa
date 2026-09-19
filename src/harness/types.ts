@@ -169,6 +169,20 @@ export interface ToolUseSummaryRecord {
   model?: string
 }
 
+/**
+ * A tool result's trimmed form, stored verbatim so `/resume` rebuilds the exact
+ * bytes the model already saw (spec §5.1). The string, not the rule that
+ * produced it — a later change to the wording must not move the cached prefix.
+ */
+export interface ToolResultTrimRecord {
+  id: string
+  type: 'tool_result_trim'
+  toolUseId: string
+  content: string
+  createdAt: string
+  turnId?: string
+}
+
 export interface AtMentionFileContext {
   path: string
   displayPath: string
@@ -344,6 +358,7 @@ export type SessionRecord =
   | AtMentionContextRecord
   | ToolUseRecord
   | ToolResultRecord
+  | ToolResultTrimRecord
   | ToolApprovalRecord
   | CompactBoundaryRecord
   | CompactAttemptFailedRecord

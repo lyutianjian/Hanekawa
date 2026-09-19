@@ -384,6 +384,9 @@ test('StatusLine renders per-request tokens without cost', () => {
     },
     permissionMode: 'default',
     contextWindow: 1_000_000,
+    // Occupancy is the session's readout, not this request's size: the two
+    // differ the moment a tool result lands after the request that was sent.
+    contextUsedTokens: 1_466_300,
   })).lastFrame() ?? ''
 
   assert.match(frame, /146\.6%/)

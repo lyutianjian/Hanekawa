@@ -125,6 +125,14 @@ export function getSessionsDir(cwd: string): string {
   return path.join(getMyAgentDir(cwd), 'sessions')
 }
 
+/**
+ * Where a session spills tool output too large to send inline. The model gets
+ * a preview plus this path, so the rest stays reachable with a Read.
+ */
+export function getToolResultSpillDir(cwd: string, sessionId: string): string {
+  return path.join(getMyAgentDir(cwd), 'tool-results', sessionId)
+}
+
 export function getSkillsDir(cwd: string): string {
   return path.join(getMyAgentDir(cwd), 'skills')
 }

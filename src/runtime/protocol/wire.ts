@@ -65,17 +65,15 @@ export type HostEvent =
    * active model has no complete pricing — "not priced" and "free" are different
    * answers.
    *
-   * `contextUsedTokens` rides here for the same reason and is measured the same
-   * way `/compact` measures: the provider's own count for the last request when
-   * there has been one, else `countSessionRecordsTokens` — both of which live
-   * behind the import wall.
+   * Context occupancy needs no such treatment: it is a field of the snapshot
+   * itself, computed by the `SessionController` so that this viewer and the TUI
+   * read one number.
    */
   | {
       type: 'snapshot'
       snapshot: SessionControllerSnapshot
       subagentProgress: Array<[string, string]>
       cost?: WireUsageCost
-      contextUsedTokens?: number
     }
   | { type: 'runtime-snapshot'; snapshot: WireRuntimeSnapshot }
   /**

@@ -73,6 +73,7 @@ export class OpenAIProvider implements ModelProvider {
           toolsJson: JSON.stringify(getOpenAIToolsFromPayload(payload)),
           model: String(payload.model ?? effectiveRequest.model),
           cacheScope: getOpenAICacheScope(effectiveRequest),
+          messages: payload.messages,
         }, cacheSource)
         if (attempt > 1) {
           debugProviderPayload('openai-retry', payload, effectiveRequest)

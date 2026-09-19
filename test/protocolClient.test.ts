@@ -42,6 +42,7 @@ function snapshot(overrides: Partial<SessionControllerSnapshot> = {}): SessionCo
     usage: { lastRequest: null, total: { inputTokens: 1, cacheReadInputTokens: 2, outputTokens: 3 } },
     taskSnapshot: undefined,
     spinnerSubText: undefined,
+    contextUsedTokens: undefined,
     ...overrides,
   }
 }

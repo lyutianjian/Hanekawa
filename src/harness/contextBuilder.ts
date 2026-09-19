@@ -244,6 +244,7 @@ export class ContextBuilder {
           role: 'user',
           content,
           createdAt: now.toISOString(),
+          transient: true,
         },
       })
     }
@@ -454,6 +455,7 @@ export class ContextBuilder {
         role: 'user',
         content,
         createdAt: now.toISOString(),
+        transient: true,
       },
     }]
   }
@@ -544,6 +546,7 @@ export class ContextBuilder {
         role: 'user',
         content,
         createdAt: new Date().toISOString(),
+        transient: true,
       },
     }]
   }

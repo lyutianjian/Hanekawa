@@ -8,6 +8,7 @@ import {
   getCacheControl,
   getPromptCachingEnabled,
   splitSystemForCaching,
+  TRANSIENT_MESSAGE_KEY,
 } from '../../harness/cacheControl.js'
 import {
   ANTHROPIC_CACHE_CONTROL_LIMIT,
@@ -142,6 +143,8 @@ export function buildAnthropicMessages(request: ModelRequest) {
       messages.push({
         role: item.message.role,
         content,
+        // Stripped again by addCacheBreakpoints before the payload is sent.
+        ...(item.message.transient ? { [TRANSIENT_MESSAGE_KEY]: true } : {}),
       })
       continue
     }

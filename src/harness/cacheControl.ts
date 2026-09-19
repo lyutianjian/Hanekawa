@@ -83,21 +83,48 @@ function findBreakpointBlock(
   return undefined
 }
 
+/**
+ * Marks a provider message the context builder rebuilds every request. Set by
+ * `buildAnthropicMessages` from `ChatMessage.transient`, read here, and always
+ * stripped before the payload leaves this function — the API rejects unknown
+ * message fields.
+ */
+export const TRANSIENT_MESSAGE_KEY = '__myagentTransient'
+
+/**
+ * The last message the next turn will still have in the same position.
+ * Anything after it is rebuilt per request, so a breakpoint there writes a
+ * prefix nothing can read back (spec §5). -1 when every message is transient.
+ */
+function findAnchorIndex(messages: ContentMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]?.[TRANSIENT_MESSAGE_KEY] !== true) return index
+  }
+  return -1
+}
+
+function withoutTransientKey(msg: ContentMessage): ContentMessage {
+  if (!(TRANSIENT_MESSAGE_KEY in msg)) return msg
+  const { [TRANSIENT_MESSAGE_KEY]: _transient, ...rest } = msg
+  return rest
+}
+
 export function addCacheBreakpoints(
   messages: ContentMessage[],
   enablePromptCaching: boolean,
   runtime?: CacheRuntime,
 ): ContentMessage[] {
-  if (!enablePromptCaching || messages.length === 0) return messages
+  if (messages.length === 0) return messages
+  const anchorIndex = enablePromptCaching ? findAnchorIndex(messages) : -1
 
   return messages.map((msg, index) => {
-    if (index !== messages.length - 1) return msg
+    if (index !== anchorIndex) return withoutTransientKey(msg)
 
     const rawContent = Array.isArray(msg.content)
       ? msg.content
       : [{ type: 'text', text: msg.content }]
 
-    if (rawContent.length === 0) return msg
+    if (rawContent.length === 0) return withoutTransientKey(msg)
 
     // Deep copy blocks so we don't mutate the original message objects.
     const content = rawContent.map((b) => ({ ...b }))
@@ -108,7 +135,7 @@ export function addCacheBreakpoints(
       targetBlock.cache_control = getCacheControl(runtime)
     }
 
-    return { ...msg, content }
+    return { ...withoutTransientKey(msg), content }
   })
 }
 

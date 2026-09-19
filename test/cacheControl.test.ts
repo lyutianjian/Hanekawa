@@ -5,6 +5,7 @@ import {
   getCacheControl,
   resetCacheTTLEvaluation,
   should1hCacheTTL,
+  TRANSIENT_MESSAGE_KEY,
 } from '../src/harness/cacheControl.js'
 
 test('addCacheBreakpoints marks only the final message with cache_control', () => {
@@ -172,4 +173,36 @@ test('addCacheBreakpoints leaves an all-thinking message unmarked', () => {
   for (const block of content) {
     assert.equal(block?.cache_control, undefined)
   }
+})
+
+test('addCacheBreakpoints anchors ahead of trailing transient messages', () => {
+  resetCacheTTLEvaluation()
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'hi' }] },
+    { role: 'user', content: [{ type: 'text', text: 'user context' }], [TRANSIENT_MESSAGE_KEY]: true },
+    { role: 'user', content: [{ type: 'text', text: 'plan attachment' }], [TRANSIENT_MESSAGE_KEY]: true },
+  ]
+
+  const result = addCacheBreakpoints(messages, true, { env: {} })
+
+  const marked = result.flatMap((msg, index) =>
+    (msg.content as Array<Record<string, unknown>>).some((b) => b.cache_control) ? [index] : [],
+  )
+  assert.deepEqual(marked, [1])
+  for (const msg of result) {
+    assert.ok(!(TRANSIENT_MESSAGE_KEY in msg), 'transient marker must not survive into the payload')
+  }
+})
+
+test('addCacheBreakpoints marks nothing when every message is transient', () => {
+  resetCacheTTLEvaluation()
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: 'user context' }], [TRANSIENT_MESSAGE_KEY]: true },
+  ]
+
+  const result = addCacheBreakpoints(messages, true, { env: {} })
+  const content = result[0]?.content as Array<Record<string, unknown>>
+  assert.equal(content[0]?.cache_control, undefined)
+  assert.ok(!(TRANSIENT_MESSAGE_KEY in result[0]))
 })

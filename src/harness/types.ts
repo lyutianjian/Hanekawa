@@ -77,6 +77,15 @@ export interface ChatMessage {
    * it, and the queued message legitimately comes back.
    */
   sourceQueuedMessageId?: string
+  /**
+   * Built for this request only and never persisted — user context, the
+   * transient attachments, the post-compact restore. They sit after the
+   * history, so next turn the same position holds a real record instead;
+   * a cache breakpoint on one writes a prefix no later turn can read back
+   * (spec §2). The payload builder carries the flag down so
+   * `addCacheBreakpoints` can anchor on the last durable message.
+   */
+  transient?: boolean
 }
 
 export interface ToolUseRecord {

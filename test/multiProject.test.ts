@@ -18,7 +18,7 @@ import type { CommandContext } from '../src/commands/types.js'
 /**
  * Two projects, one process.
  *
- * `CLAUDE.md` used to say N sessions per project were safe but N projects per
+ * `AGENTS.md` used to say N sessions per project were safe but N projects per
  * process were not, and named the two reasons: the slash-command registry was a
  * module-level `Map`, and the cache-break diagnostics root was a process-wide
  * variable. Both are gone; this file is what keeps them gone.

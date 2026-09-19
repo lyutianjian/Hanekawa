@@ -110,7 +110,7 @@ Run the narrowest relevant tests first; run `npm run typecheck` and the full sui
 - Use `.js` extensions for relative imports.
 - Import strict schemas from `zod/v3`.
 - Keep `ink+7.0.6.patch` and `wrap-ansi+10.0.0.patch` paired.
-- Keep `AGENTS.md` and `CLAUDE.md` synchronized except for the title and first guidance sentence.
+- `AGENTS.md` is the only guide this repo keeps. The runtime still reads `CLAUDE.md` from *other* projects; there is no second copy here to maintain.
 - `todo.md` tracks desktop-port work.
 
 ## Instructions

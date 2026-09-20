@@ -359,7 +359,12 @@ export class ImageAttachmentService {
         // Registration is the last write: nothing before this line resolves.
         await writeFile(path.join(dir, METADATA_FILE), serializeMetadata(stored), 'utf8')
       } catch (error) {
-        await rm(dir, { recursive: true, force: true })
+        // Best effort: the half-written directory may not be reachable at all —
+        // a regular file where `.myagent` should be makes the removal itself
+        // fail with ENOTDIR, which `force` does not cover — and a cleanup that
+        // throws would replace the answer the caller is owed with the error of
+        // the tidy-up.
+        await rm(dir, { recursive: true, force: true }).catch(() => {})
         return {
           ok: false,
           reason: 'store-write-failed',

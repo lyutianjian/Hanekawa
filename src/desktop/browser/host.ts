@@ -56,19 +56,25 @@ export interface DesktopBrowserHostDeps {
 export class DesktopBrowserHost implements BrowserHost {
   private readonly projection = new BrowserProjection()
   private readonly ownership = new BrowserOwnership()
-  private readonly unsubscribe: () => void
+  private readonly unsubscribe: readonly (() => void)[]
 
   constructor(private readonly deps: DesktopBrowserHostDeps) {
-    // The tab host reports that the user touched a tab; whether that is a
-    // takeover — and so whether the panel should draw one — is this side's
-    // answer, because only this side knows who was driving.
-    this.unsubscribe = deps.tabs.onTakeOver((tabId) => {
-      if (this.ownership.takeOver(tabId)) deps.tabs.setTakenOver(tabId, true)
-    })
+    // The tab host reports that the user touched a tab, or handed it back;
+    // whether either has anyone to affect — and so whether the panel should
+    // redraw — is this side's answer, because only this side knows who was
+    // driving.
+    this.unsubscribe = [
+      deps.tabs.onTakeOver((tabId) => {
+        if (this.ownership.takeOver(tabId)) deps.tabs.setTakenOver(tabId, true)
+      }),
+      deps.tabs.onRelease((tabId) => {
+        for (const freed of this.ownership.release(tabId)) deps.tabs.setTakenOver(freed, false)
+      }),
+    ]
   }
 
   dispose(): void {
-    this.unsubscribe()
+    for (const off of this.unsubscribe) off()
   }
 
   async listTabs(caller: BrowserCaller): Promise<BrowserTabState[]> {
@@ -81,7 +87,7 @@ export class DesktopBrowserHost implements BrowserHost {
     this.enter(caller)
     const lane = this.requireLane(caller)
     const tabId = this.deps.tabs.createTab(lane, url)
-    this.ownership.claim(tabId, caller.sessionId)
+    this.claim(tabId, caller.sessionId)
     return this.stateOf(tabId)
   }
 
@@ -233,8 +239,8 @@ export class DesktopBrowserHost implements BrowserHost {
    * The two questions every operation opens with: is this a new turn, and may
    * this session still drive the browser?
    *
-   * A new turn is what lifts a takeover — there is no "give control back" — so
-   * observing the turn is also what frees the tabs it had flagged.
+   * A new turn lifts a takeover the user never handed back, so observing the
+   * turn is also what frees the tabs it had flagged.
    */
   private enter(caller: BrowserCaller): number {
     const { revision, released } = this.ownership.observeTurn(caller.sessionId, caller.turnId)
@@ -278,8 +284,18 @@ export class DesktopBrowserHost implements BrowserHost {
       throw new BrowserHostError('TAB_NOT_FOUND', `No such browser tab: ${tabId}. Call browser.get_state for the list.`)
     }
     // Addressing a tab is what makes this session the one a takeover interrupts.
-    this.ownership.claim(tabId, caller.sessionId)
+    this.claim(tabId, caller.sessionId)
     return row
+  }
+
+  /**
+   * Records the driver, on both sides of the split: arbitration needs the
+   * session, and the panel needs to know there is one — a tab nobody drives
+   * draws「接管」as unavailable rather than as a press that does nothing.
+   */
+  private claim(tabId: string, sessionId: string): void {
+    this.ownership.claim(tabId, sessionId)
+    this.deps.tabs.setAgentControlled(tabId)
   }
 
   private requirePage(caller: BrowserCaller, tabId: string): BrowserPage {

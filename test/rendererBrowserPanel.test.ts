@@ -6,8 +6,11 @@ import {
   BROWSER_WIDTH_MAX,
   BROWSER_WIDTH_MIN,
   addressLabel,
+  browserControlState,
+  browserOverlay,
   browserWidthVariable,
   clampBrowserWidth,
+  newTabsForLane,
   normalizeAddress,
   parseBrowserWidth,
   resolveActiveTab,
@@ -72,18 +75,98 @@ test('the preferred tab wins while it exists, and its neighbour inherits when it
   assert.equal(resolveActiveTab(tabs, '2', undefined), undefined)
 })
 
+test('only an arriving tab is new, and only on the lane on screen', () => {
+  const tabs = [tab({ tabId: 'a', lane: '1' }), tab({ tabId: 'b', lane: '2' })]
+  assert.deepEqual(newTabsForLane(tabs, '1', new Set()).map((t) => t.tabId), ['a'])
+  // The same tab, loaded / renamed / navigated: a change, not an arrival. This
+  // is the whole of what keeps a panel the user closed from springing open.
+  const changed = [tab({ tabId: 'a', lane: '1', title: '载入完成', url: 'https://example.com' })]
+  assert.deepEqual(newTabsForLane(changed, '1', new Set(['a', 'b'])), [])
+  assert.deepEqual(newTabsForLane(tabs, undefined, new Set()), [])
+})
+
+// --- who is driving ------------------------------------------------------------------
+
+test('the control reads the tab: nobody driving, agent driving, user holding', () => {
+  const idle = browserControlState(tab({ tabId: 'a', lane: '1' }))
+  assert.equal(idle.disabled, true)
+  assert.equal(idle.action, 'none')
+  assert.match(idle.title, /没有 agent/)
+
+  const driven = browserControlState(tab({ tabId: 'a', lane: '1', agentControlled: true }))
+  assert.deepEqual([driven.label, driven.disabled, driven.action], ['接管', false, 'take-over'])
+
+  // Taken over reads as the way back, whether or not the tab still claims a
+  // driver: the badge and the button are one state.
+  const held = browserControlState(tab({ tabId: 'a', lane: '1', agentControlled: true, takenOver: true }))
+  assert.deepEqual([held.label, held.disabled, held.action], ['交还', false, 'release'])
+  assert.equal(browserControlState(undefined).disabled, true)
+})
+
 // --- visibility --------------------------------------------------------------------
 
-test('the native view paints only when all four conditions hold', () => {
-  const base = { open: true, hasActiveTab: true, occluded: false, windowHidden: false }
+test('the native view paints only when every condition holds', () => {
+  const base = {
+    open: true,
+    hasActiveTab: true,
+    occluded: false,
+    windowHidden: false,
+    overlaid: false,
+  }
   assert.equal(shouldShowBrowserView(base), true)
   assert.equal(shouldShowBrowserView({ ...base, open: false }), false)
   assert.equal(shouldShowBrowserView({ ...base, hasActiveTab: false }), false)
-  // The last two are the ones a DOM-only panel would forget: a WebContentsView
-  // is not in the document, so neither a covering screen nor a hidden window
-  // stops it painting on its own.
+  // These three are the ones a DOM-only panel would forget: a WebContentsView
+  // is not in the document, so neither a covering screen, nor a hidden window,
+  // nor the panel's own error page stops it painting on its own.
   assert.equal(shouldShowBrowserView({ ...base, occluded: true }), false)
   assert.equal(shouldShowBrowserView({ ...base, windowHidden: true }), false)
+  assert.equal(shouldShowBrowserView({ ...base, overlaid: true }), false)
+})
+
+// --- the hole's own page ----------------------------------------------------------
+
+test('a tab that has never navigated is blank, and one that is loading is not', () => {
+  assert.deepEqual(browserOverlay(tab({ tabId: 'a', lane: '1' })), { kind: 'blank' })
+  // The first navigation has begun and the page is about to paint; our own
+  // text over it would be a flash.
+  assert.deepEqual(browserOverlay(tab({ tabId: 'a', lane: '1', loading: true })), { kind: 'none' })
+  assert.deepEqual(
+    browserOverlay(tab({ tabId: 'a', lane: '1', url: 'https://example.com/' })),
+    { kind: 'none' },
+  )
+  assert.deepEqual(browserOverlay(undefined), { kind: 'none' })
+})
+
+test('a failed navigation names the address it was about, not the page still loaded', () => {
+  // Nothing committed, so `url` is the page the tab was showing before the
+  // attempt. The error page — and the address bar — are about the other one.
+  const failed = tab({
+    tabId: 'a',
+    lane: '1',
+    url: 'https://example.com/',
+    error: 'ERR_NAME_NOT_RESOLVED',
+    errorUrl: 'https://nope.invalid/x',
+  })
+  assert.deepEqual(browserOverlay(failed), {
+    kind: 'error',
+    url: 'https://nope.invalid/x',
+    reason: '域名找不到',
+  })
+  assert.equal(addressLabel(failed), 'nope.invalid')
+})
+
+test('the three named causes read as words, and anything else keeps its code', () => {
+  const reason = (error: string): string => {
+    const overlay = browserOverlay(tab({ tabId: 'a', lane: '1', error }))
+    assert.equal(overlay.kind, 'error')
+    return overlay.kind === 'error' ? overlay.reason : ''
+  }
+  assert.equal(reason('ERR_CONNECTION_REFUSED'), '连接被拒')
+  assert.equal(reason('ERR_CONNECTION_TIMED_OUT'), '连接超时')
+  // An unmapped code is not flattened into 「其他」: it is the only handle the
+  // user has for searching what actually went wrong.
+  assert.equal(reason('ERR_SSL_PROTOCOL_ERROR'), 'ERR_SSL_PROTOCOL_ERROR')
 })
 
 // --- the address bar ------------------------------------------------------------------

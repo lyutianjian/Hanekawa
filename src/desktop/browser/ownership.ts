@@ -9,10 +9,11 @@
  *
  * Three decisions are worth stating, because none of them is the obvious one:
  *
- * - **There is no "give control back".** Control returns when the user sends a
- *   new message, which is the only moment we can be sure they are asking the
- *   agent to act again. A button that hands control back would be a second way
- *   to say the same thing, and one of the two would always be stale.
+ * - **Control is handed back, not merely waited out.** Sending the agent a new
+ *   message returns it, and so does the panel's「交还」button; both land in
+ *   `release`, so the two are one state and cannot disagree. The agent's next
+ *   turn still lifts a block that nobody handed back — that is the floor, not
+ *   the only way down.
  * - **A revision, not a flag.** Operations are already in flight when a takeover
  *   lands. Bumping a per-session revision invalidates them at their next
  *   checkpoint without anything having to hold a reference to them.
@@ -111,6 +112,20 @@ export class BrowserOwnership {
     if (owner === undefined) return false
     this.blocked.add(owner)
     return true
+  }
+
+  /**
+   * The user handed a tab back. Returns the tabs whose flag that cleared — the
+   * owner's, all of them: the block is per session, so lifting it for one tab
+   * lifts it for every tab that session was holding.
+   *
+   * Empty when the tab has no owner or its owner was not blocked, which makes a
+   * second release a no-op rather than a second redraw.
+   */
+  release(tabId: string): string[] {
+    const owner = this.tabOwner.get(tabId)
+    if (owner === undefined || !this.blocked.delete(owner)) return []
+    return this.tabsOf(owner)
   }
 
   isBlocked(sessionId: string): boolean {

@@ -81,6 +81,12 @@ export interface UsageRateView {
   readonly percent: string
 }
 
+/** One line of the readout's hover card: a name and its unabbreviated figure. */
+export interface UsageBreakdownRow {
+  readonly label: string
+  readonly value: string
+}
+
 export interface StatusUsageView {
   /**
    * Empty while nothing has been counted, so `#status` collapses to no height.
@@ -91,7 +97,16 @@ export interface StatusUsageView {
   readonly rate: UsageRateView | undefined
   /** The same line as one string, for the readout's accessible name. */
   readonly text: string
-  /** The same numbers unabbreviated, for the hover. Empty when `text` is. */
+  /** The same numbers unabbreviated, for the hover card. Empty when `text` is. */
+  readonly breakdown: readonly UsageBreakdownRow[]
+  /**
+   * The breakdown as one string, for the accessible name only.
+   *
+   * Not an OS tooltip any more: the `title` attribute waits a second before it
+   * says anything and is drawn by the platform rather than by this app's
+   * stylesheet, so the numbers come out in a bubble that belongs to no theme.
+   * `dom/statusView.ts` draws them in a hover card instead.
+   */
   readonly title: string
 }
 
@@ -99,6 +114,7 @@ const EMPTY: StatusUsageView = Object.freeze({
   metrics: [],
   rate: undefined,
   text: '',
+  breakdown: [],
   title: '',
 })
 
@@ -151,12 +167,12 @@ export function statusUsageView(
   const metrics: UsageMetric[] = [
     { kind: 'total', value: `${formatTokens(allTokens)} tok`, label: '总计' },
   ]
-  const titleLines = [
-    `总计 ${formatExact(allTokens)} 标记`,
-    `输入 ${formatExact(inputTokens)}（未缓存）`,
-    `缓存写入 ${formatExact(writes(total))}`,
-    `缓存命中 ${formatExact(cacheReadInputTokens)}`,
-    `输出 ${formatExact(outputTokens)}`,
+  const breakdown: UsageBreakdownRow[] = [
+    { label: '总计', value: `${formatExact(allTokens)} 标记` },
+    { label: '输入（未缓存）', value: formatExact(inputTokens) },
+    { label: '缓存写入', value: formatExact(writes(total)) },
+    { label: '缓存命中', value: formatExact(cacheReadInputTokens) },
+    { label: '输出', value: formatExact(outputTokens) },
   ]
 
   const parts = metrics.map((metric) => `${metric.label} ${metric.value}`)
@@ -165,18 +181,19 @@ export function statusUsageView(
   if (lastRate !== undefined) {
     rate = { label: '本轮命中', percent: `${lastRate.toFixed(1)}%` }
     parts.push(`${rate.label} ${rate.percent}`)
-    titleLines.push(`本轮命中 ${rate.percent}（命中 / 本次请求）`)
+    breakdown.push({ label: '本轮命中', value: rate.percent })
   }
   const sessionRate = hitRate(total)
   if (sessionRate !== undefined) {
-    titleLines.push(`会话累计 ${sessionRate.toFixed(1)}%（命中 /（输入 + 写入 + 命中））`)
+    breakdown.push({ label: '会话累计命中', value: `${sessionRate.toFixed(1)}%` })
   }
 
   return {
     metrics,
     rate,
     text: parts.join(' · '),
-    title: `本会话累计\n${titleLines.join('\n')}`,
+    breakdown,
+    title: `本会话累计\n${breakdown.map((row) => `${row.label} ${row.value}`).join('\n')}`,
   }
 }
 
@@ -246,7 +263,10 @@ export function contextGaugeView(
       : 'normal'
 
   const lines = [
-    `上下文窗口：${percent} 已用（剩余 ${100 - Math.round(ratio * 100)}%）`,
+    // 「可用窗口」, not 「上下文窗口」: the percentage above is measured against
+    // `usableContextWindow`, and calling it the context window promises the
+    // reserve back.
+    `可用窗口：${percent} 已用（剩余 ${100 - Math.round(ratio * 100)}%）`,
     `已用 ${usedText} 标记，共 ${usableText}（已预留自动压缩空间）`,
   ]
   if (modelWindow) lines.push(`模型窗口 ${modelWindow}`)

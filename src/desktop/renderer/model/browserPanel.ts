@@ -78,6 +78,23 @@ export function tabsForLane(
 }
 
 /**
+ * The lane's tabs that `known` has never seen.
+ *
+ * This is the whole of "the agent is asking you to look at something": a tab
+ * appearing is a request, while a tab *changing* — finishing a load, renaming
+ * itself, navigating, failing — is not. A panel the user closed stays closed
+ * through all of the latter, which it could not if arrival were inferred from
+ * "this lane has tabs".
+ */
+export function newTabsForLane(
+  tabs: readonly WireBrowserTabInfo[],
+  lane: string | undefined,
+  known: ReadonlySet<string>,
+): readonly WireBrowserTabInfo[] {
+  return tabsForLane(tabs, lane).filter((tab) => !known.has(tab.tabId))
+}
+
+/**
  * The tab to draw, given what the user last picked.
  *
  * `preferred` wins when it still exists in this lane; otherwise the last tab
@@ -112,8 +129,90 @@ export function shouldShowBrowserView(input: {
   occluded: boolean
   /** `document.visibilityState === 'hidden'`. */
   windowHidden: boolean
+  /** The panel is drawing its own page into the hole — see `browserOverlay`. */
+  overlaid: boolean
 }): boolean {
-  return input.open && input.hasActiveTab && !input.occluded && !input.windowHidden
+  return (
+    input.open && input.hasActiveTab && !input.occluded && !input.windowHidden && !input.overlaid
+  )
+}
+
+// --- what the hole shows when the page cannot speak for itself -------------------
+
+/**
+ * The panel's own page, for the two moments the site has nothing to draw.
+ *
+ * Both are cases where the native view would otherwise be a white rectangle the
+ * user has to interpret: a tab that has never navigated, and a navigation that
+ * failed. The view draws these into the hole *and* tells the page to stop
+ * painting — a `WebContentsView` sits above the document, so an overlay under a
+ * visible page would never be seen.
+ */
+export type BrowserOverlay =
+  | { kind: 'none' }
+  | { kind: 'blank' }
+  | { kind: 'error'; url: string; reason: string }
+
+export function browserOverlay(tab: WireBrowserTabInfo | undefined): BrowserOverlay {
+  if (tab === undefined) return { kind: 'none' }
+  if (tab.error !== undefined) {
+    return { kind: 'error', url: tab.errorUrl ?? tab.url, reason: failureReason(tab.error) }
+  }
+  // Loading is not blank: the first navigation of a fresh tab has begun and the
+  // page is about to paint, so replacing it would be a flash of our own text.
+  if (tab.url === '' && !tab.loading) return { kind: 'blank' }
+  return { kind: 'none' }
+}
+
+/**
+ * Chromium's `ERR_*` description as something to read.
+ *
+ * Three named causes cover nearly every failure a person will meet — the name
+ * is wrong, nothing answered, nothing answered in time — and anything else
+ * keeps its `ERR_` code rather than being flattened into 「其他」: an unmapped
+ * code is still the only handle the user has for searching what went wrong.
+ */
+function failureReason(description: string): string {
+  if (/NAME_NOT_RESOLVED|NAME_RESOLUTION_FAILED|DNS/.test(description)) return '域名找不到'
+  if (/CONNECTION_REFUSED/.test(description)) return '连接被拒'
+  if (/TIMED_OUT|TIMEOUT/.test(description)) return '连接超时'
+  return description
+}
+
+// --- who is driving --------------------------------------------------------------
+
+/** What pressing the control means, `none` being "it cannot be pressed". */
+export type BrowserControlAction = 'take-over' | 'release' | 'none'
+
+export interface BrowserControlState {
+  label: string
+  /** The tooltip, and the button's accessible name. */
+  title: string
+  disabled: boolean
+  action: BrowserControlAction
+}
+
+/**
+ * The one button that says who is driving this tab, in all three of its states.
+ *
+ * The disabled one is the state worth spelling out: a tab the user opened with
+ * 「＋」 has never been addressed by a session, so there is nobody to interrupt
+ * and a press would do nothing at all. Saying so in the tooltip beats a control
+ * that looks live and swallows the click.
+ */
+export function browserControlState(tab: WireBrowserTabInfo | undefined): BrowserControlState {
+  if (tab?.takenOver === true) {
+    return { label: '交还', title: '把此标签页交还给 agent', disabled: false, action: 'release' }
+  }
+  if (tab === undefined || tab.agentControlled !== true) {
+    return { label: '接管', title: '当前没有 agent 在操作此标签页', disabled: true, action: 'none' }
+  }
+  return {
+    label: '接管',
+    title: '接管此标签页，暂停 agent 的浏览器操作',
+    disabled: false,
+    action: 'take-over',
+  }
 }
 
 // --- the address bar -------------------------------------------------------------
@@ -155,13 +254,19 @@ export function normalizeAddress(raw: string): string | undefined {
  * The host alone, not the full URL: the panel is narrow, and the host is the
  * part that answers "what am I looking at". A tab that has never navigated shows
  * nothing rather than `about:blank`, so the field reads as empty and ready.
+ *
+ * A failed navigation never commits, so `url` is still the page the user left.
+ * The bar shows the address they actually typed instead — the one the error page
+ * beneath it is about, and the one they are most likely to want to edit.
  */
 export function addressLabel(tab: WireBrowserTabInfo | undefined): string {
-  if (tab === undefined || tab.url === '') return ''
+  if (tab === undefined) return ''
+  const shown = tab.error !== undefined ? tab.errorUrl ?? tab.url : tab.url
+  if (shown === '') return ''
   try {
-    return new URL(tab.url).host
+    return new URL(shown).host
   } catch {
-    return tab.url
+    return shown
   }
 }
 

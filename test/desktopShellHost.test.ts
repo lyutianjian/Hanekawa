@@ -674,6 +674,7 @@ const COMMAND_SAMPLES = {
   'browser-go-forward': { type: 'browser-go-forward', id: 'q', tabId: 't1' },
   'browser-reload': { type: 'browser-reload', id: 'r', tabId: 't1' },
   'browser-take-over': { type: 'browser-take-over', id: 's', tabId: 't1' },
+  'browser-release': { type: 'browser-release', id: 'u', tabId: 't1' },
   'browser-set-bounds': {
     type: 'browser-set-bounds',
     id: 't',
@@ -779,6 +780,7 @@ test('every shell command variant round-trips through its schema', () => {
       'browser-go-back',
       'browser-go-forward',
       'browser-navigate',
+      'browser-release',
       'browser-reload',
       'browser-set-bounds',
       'browser-take-over',

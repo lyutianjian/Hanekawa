@@ -28,21 +28,21 @@ export interface Declaration {
 export interface Block {
   readonly selector: string
   readonly decls: readonly Declaration[]
+  /** The at-rule prelude this block is nested in, if any — `@container …`, `@media …`. */
+  readonly at?: string
 }
 
 /**
  * A deliberately small CSS parser: strip comments, then take every
  * `selector { … }` block.
  *
- * A nested at-rule is not rejected so much as *flattened*: the regex cannot match
- * across the inner `{`, so the prelude (`@media …`, `@keyframes …`) is skipped
- * and the rules inside it come through as ordinary blocks. That is how
- * `@keyframes` has always parsed here, and it is why the sheet's one `@media`
- * block — the reduced-motion override — uses a selector (`*, *::before,
- * *::after`) that collides with no real rule: flattened, it must still be
- * findable and must not shadow anything. `rendererStyleTokens.test.ts`'s "the
- * stylesheet parses exactly" pins the list of at-rules allowed to do this, and is
- * also the non-vacuity guard for this function.
+ * One level of nesting is understood rather than flattened: an at-rule body is
+ * lifted out first and its rules come back carrying the prelude on `at`, so a
+ * rule that only applies inside `@container …` can never be mistaken for the
+ * unconditional rule of the same name. `@keyframes` parses the same way, its
+ * percentage steps arriving as `at`-tagged blocks.
+ * `rendererStyleTokens.test.ts`'s "the stylesheet parses exactly" pins the list
+ * of at-rules in the sheet, and is also the non-vacuity guard for this function.
  *
  * Values are whitespace-collapsed so a declaration that wraps across lines (the
  * font stacks do) compares as the one string it means.
@@ -50,7 +50,30 @@ export interface Block {
 export function parseCss(css: string): Block[] {
   const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '')
   const blocks: Block[] = []
-  for (const match of withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+  for (let i = 0; i < withoutComments.length;) {
+    const start = withoutComments.indexOf('@', i)
+    const open = start === -1 ? -1 : withoutComments.indexOf('{', start)
+    if (open === -1) {
+      blocks.push(...parseRules(withoutComments.slice(i)))
+      break
+    }
+    blocks.push(...parseRules(withoutComments.slice(i, start)))
+    let depth = 1
+    let end = open + 1
+    for (; end < withoutComments.length && depth > 0; end++) {
+      if (withoutComments[end] === '{') depth++
+      else if (withoutComments[end] === '}') depth--
+    }
+    const at = withoutComments.slice(start, open + 1).replace(/\s+/g, ' ').trim()
+    blocks.push(...parseRules(withoutComments.slice(open + 1, end - 1), at))
+    i = end
+  }
+  return blocks
+}
+
+function parseRules(css: string, at?: string): Block[] {
+  const blocks: Block[] = []
+  for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selector = (match[1] ?? '').trim().replace(/\s+/g, ' ')
     const decls: Declaration[] = []
     for (const part of (match[2] ?? '').split(';')) {
@@ -64,7 +87,7 @@ export function parseCss(css: string): Block[] {
         value: text.slice(colon + 1).trim().replace(/\s+/g, ' '),
       })
     }
-    blocks.push({ selector, decls })
+    blocks.push(at === undefined ? { selector, decls } : { selector, decls, at })
   }
   return blocks
 }

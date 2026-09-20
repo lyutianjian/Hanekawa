@@ -307,7 +307,7 @@
    Overrides only what differs from the dark defaults above. `app.ts` resolves the
    preference (including "follow system") to a concrete theme and writes it to
    `documentElement[data-theme]`, so this is a plain attribute selector, not an
-   `@media` block — the token test parses flat blocks and forbids nested at-rules.
+   `@media` block: the theme is a resolved decision, not a live query.
    The aliases that follow their accents (`--text-danger` & co, `--link`,
    `--focus-ring`), `--surface-knob`, `--radius-*`, `--motion-*` and `--font-*` are
    theme-independent and stay as declared above; the scrim and both shadows
@@ -652,6 +652,9 @@ body {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  /* The hover card with the unabbreviated split is an absolutely positioned
+     child of this readout, so the readout is what it is measured from. */
+  position: relative;
 }
 .usage-metric {
   display: inline-flex;
@@ -875,7 +878,49 @@ body.resizing #sidebar { transition: none; }
   flex: 1 1 auto;
   min-height: 0;
   background: var(--surface-base);
+  /* The panel's own two pages (below) are positioned against this. `relative`
+     is the one thing that can be done to the hole safely: it establishes a
+     containing block without entering its own `getBoundingClientRect()`, which
+     a padding or a border would. */
+  position: relative;
 }
+/* What the hole shows when the site cannot: a tab that has never navigated, and
+   one whose navigation failed. Both are laid over the hole rather than inside
+   its flow, so neither can grow it and move the page out from under the panel.
+   They are drawn only while the native view is told not to paint — it sits
+   above this document and would cover them outright. */
+.browser-blank,
+.browser-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-5);
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--type-meta);
+}
+.browser-blank[hidden],
+.browser-error[hidden] { display: none; }
+.browser-error p { margin: 0; max-width: 100%; overflow-wrap: anywhere; }
+.browser-error-title { color: var(--text-primary); font-size: var(--type-body); }
+.browser-error-address { color: var(--text-secondary); }
+.browser-error-retry {
+  margin-top: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--type-meta);
+  padding: var(--space-1) var(--space-4);
+  cursor: default;
+}
+.browser-error-retry:hover { background: var(--surface-active); }
 #browser-tabs {
   flex: 0 0 auto;
   display: flex;
@@ -886,12 +931,17 @@ body.resizing #sidebar { transition: none; }
 /* Tabs shrink rather than the strip scrolling: nothing in this window scrolls
    sideways but a diff, and a horizontal scrollbar is the wrong answer here
    anyway — a browser narrows its tabs, it does not hide them off an edge. */
+/* Equal width, share and share alike: `1 1 0` makes the basis irrelevant, so
+   three tabs are three identical widths whatever their titles say. The cap is
+   what keeps a lone tab from stretching across the whole strip. */
 .browser-tab {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  flex: 0 1 180px;
+  flex: 1 1 0;
+  max-width: 180px;
   min-width: 0;
+  overflow: hidden;
   padding: var(--space-1) var(--space-2);
   border: 0;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
@@ -903,7 +953,34 @@ body.resizing #sidebar { transition: none; }
 }
 .browser-tab:hover { background: var(--surface-hover); }
 .browser-tab.active { background: var(--surface-card); color: var(--text-primary); }
-.browser-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* `1 1 auto` is what pushes the ✕ to the far edge: the label takes every pixel
+   the icon and the ✕ do not, and truncates inside it. The close affordance sits
+   at the end of the tab with air before it, not tight against the title. */
+.browser-tab-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* One fixed slot at the head of every tab, whichever of the three things is in
+   it — site icon, spinner, or the neutral placeholder for a page that offers no
+   icon. Same size in all three, so nothing in the strip moves when a load
+   starts or ends. */
+.browser-tab-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  object-fit: contain;
+  background: var(--surface-active);
+}
+.browser-tab-icon.loading {
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  animation: spin var(--motion-running) linear infinite;
+}
 /* The one place an accent earns its keep here: a tab the user took back from
    the agent has to be findable in a strip of otherwise identical rows. */
 .browser-tab.taken-over .browser-tab-label { color: var(--accent-warn); }
@@ -944,15 +1021,16 @@ body.resizing #sidebar { transition: none; }
 }
 .browser-nav:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
 .browser-nav:disabled { color: var(--text-tertiary); }
-/* 接管. A word rather than a glyph, because it is the one control here that
-   changes who is driving; disabled it reads 已接管, which is a state, not a
-   dead button — the accent is what says so. */
+/* 接管 / 交还. A word rather than a glyph, because it is the one control here
+   that changes who is driving. Disabled it means nobody is driving this tab, so
+   it greys out with the rest of the row; the accent belongs to 交还, where it
+   pairs with the orange badge the taken-over tab carries. */
 .browser-takeover {
   flex: 0 0 auto;
   font-size: var(--type-meta);
   padding: 0 var(--space-2);
 }
-.browser-takeover:disabled { color: var(--accent-warn); }
+.browser-takeover.holding { color: var(--accent-warn); }
 /* A groove rather than a form field, the same call `.sidebar-search` makes: this
    sits on the panel's own paper, and a bordered white capsule reads there as
    something unfinished. */
@@ -3100,6 +3178,10 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
      moment the column narrows — which is exactly what opening the browser
      panel does to it. */
   min-width: 0;
+  /* The query container for the model chip's collapse (see `#chip-runtime`).
+     The bar's own width comes from the column above it, never from this row's
+     contents, so making it a container costs no layout. */
+  container: composer-bar / inline-size;
 }
 .composer-spacer { flex: 1 1 auto; }
 #composer-attach {
@@ -3211,28 +3293,38 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 /* The context-occupancy ring. A `conic-gradient` swept by `--context-ratio`,
    which `dom/composerView.ts` writes per paint — the one number no stylesheet
    can hold. `currentColor` for the filled arc so the three levels are a single
-   `color` swap; the remainder is a neutral track, never an accent. */
+   `color` swap; the remainder is a neutral track, never an accent.
+
+   A 3px band on a 14px disc, not the 1px hairline this was: at 20% the arc has
+   to be readable without hovering, and a hairline in `--text-tertiary` over a
+   `--border-strong` track was the same grey twice. The filled arc is
+   `--text-secondary` so the two sides of the sweep are a full step apart in
+   both themes; the groove around it does not change size, so nothing in the
+   row moves. */
 .context-gauge {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   flex: 0 0 auto;
   border-radius: var(--radius-pill);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   background: conic-gradient(
     currentColor calc(var(--context-ratio) * 360deg),
     var(--border-strong) 0
   );
   mask-image: radial-gradient(
     closest-side,
-    transparent calc(100% - 2px),
-    currentColor calc(100% - 1px)
+    transparent calc(100% - 3px),
+    currentColor calc(100% - 2px)
   );
 }
 .context-gauge.warn { color: var(--text-warn); }
 .context-gauge.critical { color: var(--text-danger); }
-/* Hover and keyboard focus share the presence lifecycle, including Escape.
-   The parent's accessible name carries the same figures. */
-.context-tooltip {
+/* The app's own hover card, drawn by `dom/hoverCard.ts` for the context ring
+   and for the status line's token readout. Hover and keyboard focus share the
+   presence lifecycle, including Escape; the anchor's accessible name carries
+   the same figures, so the card is decoration. Not a `title` attribute: that
+   one appears a second late and in the platform's own colours. */
+.hover-card {
   position: absolute;
   right: 0;
   bottom: calc(100% + var(--space-2));
@@ -3251,40 +3343,40 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   white-space: nowrap;
   pointer-events: none;
 }
-.context-tooltip-header {
+.hover-card-header {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-3);
 }
-.context-tooltip-title {
+.hover-card-title {
   color: var(--text-tertiary);
   font-size: var(--type-micro);
   font-weight: 500;
   letter-spacing: 0.02em;
 }
-.context-tooltip-percent {
+.hover-card-lead {
   font-size: var(--type-ui);
   font-weight: 600;
   line-height: 1.4;
 }
-.context-tooltip-rows {
+.hover-card-rows {
   display: grid;
   gap: var(--space-2);
   margin: var(--space-2) 0 0;
 }
-.context-tooltip-row {
+.hover-card-row {
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: baseline;
   gap: var(--space-3);
 }
-.context-tooltip-label {
+.hover-card-label {
   color: var(--text-secondary);
   font-size: var(--type-micro);
   line-height: 1.4;
 }
-.context-tooltip-value {
+.hover-card-value {
   margin: 0;
   color: var(--text-primary);
   font-family: var(--font-mono);
@@ -3292,12 +3384,14 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   line-height: 1.45;
   font-variant-numeric: tabular-nums;
 }
-.context-tooltip-note {
+.hover-card-note {
   margin: var(--space-2) 0 0;
   padding-top: var(--space-2);
   border-top: 1px solid var(--border-subtle);
   color: var(--text-tertiary);
   font-size: var(--type-micro);
+  /* The note is the only line allowed to wrap: it is a sentence, not a figure. */
+  white-space: normal;
   line-height: 1.4;
 }
 /* One status label for both fields, and the shell its popover is drawn into —
@@ -3328,6 +3422,27 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
    one hover away, and the chip's `aria-label` carries it for a screen reader. */
 .chip-model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .chip-effort-label { color: var(--text-tertiary); flex: 0 0 auto; }
+/* Drawn at every width, shown only once the labels go. */
+.chip-model-icon { display: none; flex: 0 0 auto; width: 14px; height: 14px; }
+/* Below this the name has no room left to ellipsise into — the 1024-wide window
+   with the browser panel open leaves the chip about 46px, which renders as a
+   single clipped glyph. One icon says "the model" honestly; the full name and
+   the effort level are one click away in the menu, and the chip keeps its
+   `title` and `aria-label`. */
+@container composer-bar (inline-size < 320px) {
+  /* Round and fixed like the row's other icon controls, and no longer the part
+     of the bar that gives: with the name gone there is nothing left to shrink,
+     and a squeezed 26px circle is a broken control rather than a smaller one. */
+  #composer-runtime, #composer-chip { flex: 0 0 auto; min-width: auto; }
+  #chip-runtime {
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+  }
+  .chip-model-icon { display: inline-flex; }
+  .chip-model-label, .chip-effort-label { display: none; }
+}
 #chip-runtime:hover:enabled {
   color: var(--text-primary);
   background: var(--surface-hover);

@@ -7,6 +7,7 @@ import {
   type UsageRateView,
 } from '../model/usage.js'
 import { el, replace } from './dom.js'
+import { createHoverCard } from './hoverCard.js'
 import { icon, type IconName } from './icons.js'
 
 /**
@@ -45,6 +46,10 @@ export function createStatusView(els: {
    * rebuild four elements and three SVGs per streamed chunk.
    */
   let lastUsage: string | undefined
+  // The split — input, cache writes, cache hits, output and both rates — in the
+  // app's own hover card rather than in a `title` attribute, which appears about
+  // a second late and is painted by the OS in a style nothing here controls.
+  const card = createHoverCard(els.usage, 'usage-card')
   return {
     render(snapshot, cost) {
       // No 生成中 field: it said what the transcript above it was already
@@ -61,10 +66,23 @@ export function createStatusView(els: {
       const usage = statusUsageView(snapshot.usage.total, snapshot.usage.lastRequest)
       if (usage.text !== lastUsage) {
         lastUsage = usage.text
-        replace(els.usage, ...usageChips(usage))
-        els.usage.title = usage.title
-        if (usage.text) els.usage.setAttribute('aria-label', usage.text)
-        else els.usage.removeAttribute('aria-label')
+        if (usage.text) {
+          card.set({
+            title: '本会话累计',
+            lead: usage.metrics[0]?.value ?? '',
+            rows: usage.breakdown.map((row) => [row.label, row.value] as const),
+            note: '本轮命中是最近一次请求；会话累计的分母是输入 + 写入 + 命中',
+          })
+          // The card rides inside the readout, so it is part of what `replace`
+          // writes — and it is left out while the line is empty, because
+          // `#status-usage:not(:empty)` is what draws the rule before the cost.
+          replace(els.usage, ...usageChips(usage), card.node)
+          els.usage.setAttribute('aria-label', `${usage.text}。${usage.title.replace(/\n/g, '；')}`)
+        } else {
+          card.set(undefined)
+          replace(els.usage)
+          els.usage.removeAttribute('aria-label')
+        }
       }
       // Absent rather than zero when the model has no complete pricing: "not
       // priced" and "free" are different answers, and the host already decided

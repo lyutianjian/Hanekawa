@@ -353,6 +353,7 @@ export interface ShellHostDeps<
     goForward(tabId: string): void
     reload(tabId: string): void
     takeOver(tabId: string): void
+    releaseTab(tabId: string): void
     setBounds(tabId: string, rect: WireBrowserRect, visible: boolean): void
   }
 }
@@ -663,6 +664,9 @@ const SHELL_COMMAND_SCHEMAS = {
     .strict(),
   'browser-take-over': z
     .object({ type: z.literal('browser-take-over'), id: commandId, tabId: z.string().min(1) })
+    .strict(),
+  'browser-release': z
+    .object({ type: z.literal('browser-release'), id: commandId, tabId: z.string().min(1) })
     .strict(),
   'browser-set-bounds': z
     .object({
@@ -1083,6 +1087,9 @@ export class ShellHost<
         return { ok: true } satisfies WireShellBrowserOkResult
       case 'browser-take-over':
         this.requireBrowser().takeOver(command.tabId)
+        return { ok: true } satisfies WireShellBrowserOkResult
+      case 'browser-release':
+        this.requireBrowser().releaseTab(command.tabId)
         return { ok: true } satisfies WireShellBrowserOkResult
       case 'browser-set-bounds': {
         // The one command whose reply nobody awaits: it rides every resize

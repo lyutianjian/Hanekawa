@@ -263,6 +263,10 @@ export class ShellClient {
     return this.send({ type: 'browser-take-over', id: crypto.randomUUID(), tabId }) as Promise<WireShellBrowserOkResult>
   }
 
+  async browserRelease(tabId: string): Promise<WireShellBrowserOkResult> {
+    return this.send({ type: 'browser-release', id: crypto.randomUUID(), tabId }) as Promise<WireShellBrowserOkResult>
+  }
+
   /**
    * Where the panel's hole is, and whether the native view may paint.
    *

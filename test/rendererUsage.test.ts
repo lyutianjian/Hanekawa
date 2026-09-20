@@ -71,13 +71,23 @@ test('the status line sums every count into one total', () => {
   // — and it is the last request's, not the session's.
   assert.deepEqual(view.rate, { label: '本轮命中', percent: '98.0%' })
   assert.equal(view.text, '总计 108k tok · 本轮命中 98.0%')
-  // The hover carries the split unabbreviated, and the cumulative rate beside it.
+  // The hover card carries the split unabbreviated, and the cumulative rate
+  // beside it; `title` is the same rows joined, for the accessible name only.
+  assert.deepEqual(view.breakdown.map((row) => row.label), [
+    '总计',
+    '输入（未缓存）',
+    '缓存写入',
+    '缓存命中',
+    '输出',
+    '本轮命中',
+    '会话累计命中',
+  ])
   assert.match(view.title, /107,700/)
   assert.match(view.title, /12,400/)
   assert.match(view.title, /4,000/)
   assert.match(view.title, /88,100/)
   assert.match(view.title, /3,200/)
-  assert.match(view.title, /会话累计 84\.3%/)
+  assert.match(view.title, /会话累计命中 84\.3%/)
 })
 
 test('a cache write counts as a miss, not as nothing', () => {
@@ -143,7 +153,10 @@ test('the gauge measures against the usable window, not the raw one', () => {
   assert.equal(view.used, '17k')
   assert.equal(view.usable, '167k')
   assert.equal(view.modelWindow, '200k')
-  assert.match(view.title, /10% 已用（剩余 90%）/)
+  // 「可用窗口」, because that is the denominator above: calling it the context
+  // window would hand the reserve back in the one line a screen reader gets.
+  assert.match(view.title, /^可用窗口：10% 已用（剩余 90%）/)
+  assert.doesNotMatch(view.title, /上下文窗口/)
   assert.match(view.title, /已用 17k 标记，共 167k/)
   assert.match(view.title, /模型窗口 200k/)
 })

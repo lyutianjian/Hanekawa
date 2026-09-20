@@ -273,6 +273,12 @@ export interface PaneSessionDeps {
    * at a project no open lane belongs to — so the pane only forwards the request.
    */
   onOpenProviderSettings?: () => void
+  /**
+   * A prompt went to the host — not a slash command, which is not a message to
+   * the agent. The browser panel hangs a hand-back off this: asking the agent
+   * for something is asking it to drive again.
+   */
+  onUserMessage?: () => void
 }
 
 export interface PaneSession {
@@ -1736,6 +1742,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
         void refreshCommands()
         return
       }
+      // Before the round trip, not after it: the message is on its way, and the
+      // panel's「已接管」badge should clear as the composer does rather than a
+      // network hop later.
+      deps.onUserMessage?.()
       await client.submit(classified.text, imageIds.length > 0 ? { imageIds } : {})
     } catch (error) {
       // The failure restores the whole input — text and attachments. Only

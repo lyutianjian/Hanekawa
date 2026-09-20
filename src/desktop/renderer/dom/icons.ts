@@ -59,6 +59,8 @@ export type IconName =
   | 'copy'
   // --- the status line's token readout ---
   | 'database'
+  // --- the composer's model chip, once the row is too narrow for its name ---
+  | 'model'
 
 interface IconSpec {
   /** Path data on a 16×16 grid. */
@@ -212,6 +214,11 @@ const ICONS = {
       'M12.6 8c0 1-2 1.8-4.6 1.8S3.4 9 3.4 8',
     ],
   },
+  // The model chip's stand-in for its own name, for the widths where the name
+  // would render as half a glyph. A four-point spark — the mark this interface
+  // already reads as "the model", and the one shape in the row that is not a
+  // control's own affordance.
+  model: { paths: ['M8 2.4 9.5 6.5 13.6 8 9.5 9.5 8 13.6 6.5 9.5 2.4 8 6.5 6.5Z'] },
 } as const satisfies Record<IconName, IconSpec>
 
 export function icon(name: IconName, className = 'icon'): SVGSVGElement {

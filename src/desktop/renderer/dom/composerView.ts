@@ -19,6 +19,7 @@ import { el, reconcile, replace, show } from './dom.js'
 import { createPresence, finishPresenceWithin, type Presence } from './presence.js'
 import { button } from './controls.js'
 import { onPressOutside } from './dismiss.js'
+import { createHoverCard } from './hoverCard.js'
 import { icon } from './icons.js'
 
 /**
@@ -690,9 +691,13 @@ export function createComposerView(els: {
     chipSignature = signature
 
     // Spans in one button: the model has to be replaceable without taking the
-    // effort level with it, and nesting buttons is invalid markup.
+    // effort level with it, and nesting buttons is invalid markup. The icon
+    // rides along at every width and the stylesheet decides which of the three
+    // is shown — a narrow row swaps the two labels for it rather than
+    // ellipsising the name down to half a glyph.
     replace(
       els.chipRuntime,
+      icon('model', 'icon chip-model-icon'),
       el('span', 'chip-model-label', chip.model),
       el('span', 'chip-effort-label', chip.effort),
     )
@@ -711,37 +716,9 @@ export function createComposerView(els: {
    */
   const contextRing = el('span', 'context-gauge')
   contextRing.setAttribute('aria-hidden', 'true')
-  const contextTooltip = el('div', 'context-tooltip')
-  contextTooltip.setAttribute('role', 'tooltip')
-  contextTooltip.setAttribute('aria-hidden', 'true')
-  const contextPercent = el('strong', 'context-tooltip-percent')
-  const contextRows = el('dl', 'context-tooltip-rows')
-  const contextValues = new Map<string, { row: HTMLElement; value: HTMLElement }>()
-  reconcile(contextTooltip, [
-    el('div', 'context-tooltip-header', el('span', 'context-tooltip-title', '上下文'), contextPercent),
-    contextRows,
-    el('p', 'context-tooltip-note', '可用上限已预留自动压缩空间'),
-  ])
-  const contextPresence = createPresence(contextTooltip, { decorative: true })
-  let contextHovered = false
-  let contextFocused = false
-  const syncContext = (): void => contextPresence.set(contextGauge.visible && (contextHovered || contextFocused))
-  els.contextIndicator.tabIndex = 0
-  els.contextIndicator.addEventListener('mouseenter', () => { contextHovered = true; syncContext() })
-  els.contextIndicator.addEventListener('mouseleave', () => { contextHovered = false; syncContext() })
-  els.contextIndicator.addEventListener('focusin', () => { contextFocused = true; syncContext() })
-  els.contextIndicator.addEventListener('focusout', (event) => {
-    if (event.relatedTarget === null) return
-    contextFocused = false
-    syncContext()
-  })
-  const closeContext = (): void => { contextHovered = false; contextFocused = false; syncContext() }
-  onPressOutside([els.contextIndicator], closeContext)
-  els.contextIndicator.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return
-    event.stopPropagation()
-    closeContext()
-  })
+  // The card itself — hover, focus, Escape and the row-keeping — is
+  // `dom/hoverCard.ts`; the status line's token readout draws the same one.
+  const contextCard = createHoverCard(els.contextIndicator, 'context-tooltip')
 
   function renderContextGauge(): void {
     const signature = [
@@ -752,8 +729,7 @@ export function createComposerView(els: {
 
     show(els.contextIndicator, contextGauge.visible)
     if (!contextGauge.visible) {
-      closeContext()
-      contextPresence.finish()
+      contextCard.finish()
       replace(els.contextIndicator)
       els.contextIndicator.removeAttribute('aria-label')
       return
@@ -761,30 +737,19 @@ export function createComposerView(els: {
 
     contextRing.className = `context-gauge ${contextGauge.level}`
     contextRing.style.setProperty(CONTEXT_RATIO_VARIABLE, String(contextGauge.ratio))
-    reconcile(els.contextIndicator, [contextRing, contextTooltipNode(contextGauge)])
+    contextCard.set({
+      title: '上下文',
+      lead: `${contextGauge.percent} 已用`,
+      rows: [
+        ['已用', contextGauge.used],
+        ['可用上限', contextGauge.usable],
+        ...(contextGauge.modelWindow ? [['模型窗口', contextGauge.modelWindow] as const] : []),
+      ],
+      note: '可用上限已预留自动压缩空间',
+    })
+    reconcile(els.contextIndicator, [contextRing, contextCard.node])
     els.contextIndicator.setAttribute('role', 'img')
     els.contextIndicator.setAttribute('aria-label', contextGauge.title.replace(/\n/g, '；'))
-  }
-
-  function contextTooltipNode(gauge: ContextGaugeView): HTMLElement {
-    const values: Array<[string, string]> = [
-      ['已用', gauge.used],
-      ['可用上限', gauge.usable],
-    ]
-    if (gauge.modelWindow) values.push(['模型窗口', gauge.modelWindow])
-    const rows = values.map(([label, value]) => {
-      let kept = contextValues.get(label)
-      if (!kept) {
-        const field = el('dd', 'context-tooltip-value')
-        kept = { row: el('div', 'context-tooltip-row', el('dt', 'context-tooltip-label', label), field), value: field }
-        contextValues.set(label, kept)
-      }
-      if (kept.value.textContent !== value) kept.value.textContent = value
-      return kept.row
-    })
-    contextPercent.textContent = `${gauge.percent} 已用`
-    reconcile(contextRows, rows)
-    return contextTooltip
   }
 
   els.input.addEventListener('input', () => applySubmitState())
@@ -917,8 +882,7 @@ export function createComposerView(els: {
     closeMenus() {
       closeRuntimeMenu()
       closeAttachMenu()
-      closeContext()
-      contextPresence.finish()
+      contextCard.finish()
       if (permissionMenuOpen) {
         permissionMenuOpen = false
         renderPermission()

@@ -150,18 +150,19 @@ test('the stylesheet parses exactly, so nothing below can pass vacuously', () =>
   assert.ok(declarations.length >= 300, `parsed only ${declarations.length} declarations`)
   assert.ok(tokens.size >= 15, `expected the token block, found ${tokens.size} custom properties`)
 
-  // The parser takes `selector { … }` with no nesting: a nested at-rule's
-  // prelude is dropped and its inner rules come through as ordinary blocks (the
-  // same way `@keyframes` already does — see `helpers/rendererCss.ts`). That is
-  // exact enough for one known block and nothing else, so exactly one is allowed
-  // through: the reduced-motion override at the foot of the sheet, whose
-  // selector (`*, *::before, *::after`) collides with no real rule.
+  // Conditional rules are parsed, not flattened: each one's prelude rides on the
+  // block (see `helpers/rendererCss.ts`), which is what keeps `blockFor` on the
+  // unconditional rule. The list is pinned so a new condition is a decision
+  // someone takes here rather than a rule that quietly stops applying.
   const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '')
   const atRules = [...withoutComments.matchAll(/@(?:media|supports|container|layer|scope)\b[^;{]*\{/g)]
   assert.deepEqual(
     atRules.map((match) => match[0].replace(/\s+/g, ' ').trim()),
-    ['@media (prefers-reduced-motion: reduce) {'],
-    'a nested at-rule needs a real parser here first',
+    [
+      '@container composer-bar (inline-size < 320px) {',
+      '@media (prefers-reduced-motion: reduce) {',
+    ],
+    'a conditional rule belongs in this list',
   )
 
   const files = rendererFiles()
@@ -832,9 +833,17 @@ const MONOSPACED = [
   '.file-chip-label',
 ]
 
+/** The unconditional rule: a block nested in an at-rule is a conditional override. */
 function blockFor(selector: string): Block {
-  const found = blocks.find((block) => block.selector === selector)
+  const found = blocks.find((block) => block.selector === selector && block.at === undefined)
   assert.ok(found, `no rule for ${selector}; the selector moved and this list did not`)
+  return found
+}
+
+/** The same lookup, inside one at-rule's body. */
+function blockIn(at: string, selector: string): Block {
+  const found = blocks.find((block) => block.selector === selector && block.at === at)
+  assert.ok(found, `no rule for ${selector} under ${at}`)
   return found
 }
 
@@ -1256,8 +1265,40 @@ test('the search box and the composer chips are grooves at rest, not outlined fi
   )
 })
 
+test('a composer row too narrow for the model name swaps it for an icon, not for half a glyph', () => {
+  const CONDITION = '@container composer-bar (inline-size < 320px) {'
+  assert.ok(
+    declares(blockFor('#composer-bar'), 'container', 'composer-bar / inline-size'),
+    'the bar has to be the query container the chip collapses against',
+  )
+  assert.ok(
+    declares(blockFor('.chip-model-icon'), 'display', 'none'),
+    'the icon is drawn at every width and hidden until the labels go',
+  )
+  assert.ok(
+    declares(blockIn(CONDITION, '.chip-model-icon'), 'display', 'inline-flex'),
+    'the narrow row shows the icon',
+  )
+  assert.ok(
+    declares(blockIn(CONDITION, '.chip-model-label, .chip-effort-label'), 'display', 'none'),
+    'both labels go together — an effort level with no model beside it names nothing',
+  )
+  // The other controls are round and fixed at every width; only the chip gives.
+  for (const selector of ['#composer-attach', '#composer-permission', '#submit, #stop']) {
+    assert.ok(declares(blockFor(selector), 'flex', '0 0 auto'), `${selector} cannot be squeezed`)
+  }
+})
+
 test('the independent context gauge sweeps a ring, not a filled disc', () => {
   const gauge = blockFor('.context-gauge')
+  // Thick enough to read at a glance: a 3px band on a 14px disc, its filled arc
+  // a full step away from the track rather than the neighbouring grey.
+  assert.ok(declares(gauge, 'width', '14px') && declares(gauge, 'height', '14px'), 'the ring is 14px')
+  assert.ok(declares(gauge, 'color', 'var(--text-secondary)'), 'the filled arc is a foreground colour')
+  assert.ok(
+    gauge.decls.some((decl) => decl.prop === 'mask-image' && decl.value.includes('calc(100% - 3px)')),
+    'the band is 3px, not a hairline',
+  )
   assert.ok(
     gauge.decls.some((decl) =>
       decl.prop === 'background' &&
@@ -1276,8 +1317,8 @@ test('the independent context gauge sweeps a ring, not a filled disc', () => {
   )
 })
 
-test('the context indicator draws its own rounded hover card with measured typography', () => {
-  const tooltip = blockFor('.context-tooltip')
+test('the readouts draw their own rounded hover card with measured typography', () => {
+  const tooltip = blockFor('.hover-card')
   for (const [prop, value] of [
     ['background', 'var(--surface-card)'],
     ['border', '1px solid var(--border-strong)'],
@@ -1289,9 +1330,9 @@ test('the context indicator draws its own rounded hover card with measured typog
   }
 
   assert.ok(declares(blockFor('.presence[data-presence]'), 'opacity', '1'), 'presence owns the reveal')
-  assert.equal(css.includes('#composer-context:hover .context-tooltip'), false, 'hover cannot override Escape dismissal')
+  assert.equal(css.includes('#composer-context:hover .hover-card'), false, 'hover cannot override Escape dismissal')
 
-  const value = blockFor('.context-tooltip-value')
+  const value = blockFor('.hover-card-value')
   assert.ok(
     declares(value, 'font-family', 'var(--font-mono)'),
     'token counts are read character by character and use the mono stack',
@@ -1301,7 +1342,7 @@ test('the context indicator draws its own rounded hover card with measured typog
     'aligned figures keep the key-value rows readable',
   )
   assert.ok(
-    declares(blockFor('.context-tooltip-note'), 'font-size', 'var(--type-micro)'),
+    declares(blockFor('.hover-card-note'), 'font-size', 'var(--type-micro)'),
     'the reserve note stays metadata-sized',
   )
 })
@@ -1754,7 +1795,7 @@ test('depth is two steps: menus float, modals sit deeper, and the composer joins
     ['#composer-popovers', '4'],
     ['.composer-menu', '5'],
     ['.chip-menu', '5'],
-    ['.context-tooltip', '5'],
+    ['.hover-card', '5'],
     ['.settings-menu', '5'],
     ['.canvas-menu', '5'],
     ['.chip-flyout', '6'],
@@ -1857,10 +1898,10 @@ test('motion comes from the tokens, and the things that rebuild themselves have 
   }
   assert.equal(entranceSteps, 3, 'expected drop-in, rise-in and slide-in to move')
 
-  // The reduced-motion override, which is the one nested at-rule this sheet is
-  // allowed. `1ms` rather than `0s`: a zero-length transition never fires
-  // `transitionend`, and no listener should have to know about the setting.
-  const reduced = blockFor('*, *::before, *::after')
+  // The reduced-motion override. `1ms` rather than `0s`: a zero-length
+  // transition never fires `transitionend`, and no listener should have to know
+  // about the setting.
+  const reduced = blockIn('@media (prefers-reduced-motion: reduce) {', '*, *::before, *::after')
   assert.ok(declares(reduced, 'transition-duration', '1ms !important'), 'transitions must collapse')
   assert.ok(declares(reduced, 'animation-duration', '1ms !important'), 'animations must collapse')
   assert.ok(

@@ -172,9 +172,15 @@ export type ShellCommand =
   | { type: 'browser-reload'; id: string; tabId: string }
   /**
    * The user took the browser back from the agent. Blocks the lane's session
-   * until its next turn — see `browser/ownership.ts`.
+   * until it is handed back — see `browser/ownership.ts`.
    */
   | { type: 'browser-take-over'; id: string; tabId: string }
+  /**
+   * The user handed the tab back: whoever was driving it may drive it again,
+   * now, without waiting for a new turn. Sent by 「交还」 and by sending the
+   * agent a message, which are the same statement made two ways.
+   */
+  | { type: 'browser-release'; id: string; tabId: string }
   /**
    * Where the panel's placeholder element is, in CSS pixels relative to the
    * window's content area, and whether it should be on screen at all.
@@ -225,10 +231,31 @@ export interface WireBrowserTabInfo {
   /** The last navigation failure, cleared when a new navigation starts. */
   error?: string
   /**
+   * The address that failed. Carried separately because a failed navigation
+   * never commits: `url` is still the page the tab was showing before it.
+   */
+  errorUrl?: string
+  /**
+   * The site's icon, as a `data:` URL.
+   *
+   * Encoded rather than linked: the renderer runs under `img-src 'self' data:`,
+   * and a remote `<img>` here would be the app's own window fetching from a
+   * site the model chose. The bytes are read in the browser partition, where
+   * the page that named them already lives.
+   */
+  favicon?: string
+  /**
    * The agent's control of this tab was taken back by the user. Drawn as a
-   * badge; cleared when the lane's session starts its next turn.
+   * badge; cleared by 「交还」, by the user's next message, or by the lane's
+   * session starting its next turn — whichever comes first.
    */
   takenOver?: boolean
+  /**
+   * A session has addressed this tab, so there is something to take over. A tab
+   * the user opened with 「＋」 has nobody driving it and the panel draws its
+   * control as unavailable rather than as a press that does nothing.
+   */
+  agentControlled?: boolean
 }
 
 // --- settings ----------------------------------------------------------------

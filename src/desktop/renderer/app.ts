@@ -109,6 +109,7 @@ import {
   BROWSER_WIDTH_VARIABLE,
   BROWSER_WIDTH_DEFAULT,
   browserWidthVariable,
+  newTabsForLane,
   clampBrowserWidth,
   parseBrowserWidth,
   resolveActiveTab,
@@ -368,6 +369,11 @@ function attachPaneSession(lane: string): void {
     // `Ctrl+,` reaches, named explicitly so the command lands on it rather than
     // on whichever page the user last left open.
     onOpenProviderSettings: () => runSettingsIntent({ kind: 'open', category: 'provider' }),
+    // Sending the agent a message is the other half of「交还」— the same
+    // statement, made by asking for something instead of by pressing a button.
+    // This lane's, not the active one's: a queued send can land on a pane the
+    // user has already switched away from.
+    onUserMessage: () => releaseTakenOverTabs(lane),
   })
   paneSessions.set(lane, session)
   if (!lastActiveTick.has(lane)) lastActiveTick.set(lane, tick)
@@ -1121,6 +1127,7 @@ const browserPanel = createBrowserPanelView(browserPanelNodes(), {
   onForward: (tabId) => void shellClient.browserGoForward(tabId).catch(noteBrowserError),
   onReload: (tabId) => void shellClient.browserReload(tabId).catch(noteBrowserError),
   onTakeOver: (tabId) => void shellClient.browserTakeOver(tabId).catch(noteBrowserError),
+  onRelease: (tabId) => void shellClient.browserRelease(tabId).catch(noteBrowserError),
   // Fire-and-forget by construction — see `ShellClient.browserSetBounds`.
   onBounds: (tabId, rect, visible) => shellClient.browserSetBounds(tabId, rect, visible),
 })
@@ -1143,6 +1150,28 @@ function renderBrowser(): void {
     // beside it would be the one thing on screen it does not cover.
     occluded: settingsState.open,
   })
+}
+
+/**
+ * Every tab the host has announced, so an arrival can be told from a change.
+ *
+ * Across every lane, not just the active one: a tab that first appears on a
+ * background lane is not new any more when that lane is activated, and raising
+ * the panel then would be the agent calling from a conversation the user has
+ * already left.
+ */
+let knownBrowserTabs: ReadonlySet<string> = new Set()
+
+/**
+ * The user is talking to the agent again, so the browser goes back to it.
+ *
+ * Quiet on failure, unlike the button: this rides every send, the tab may have
+ * closed under it, and a message the user sent is not the place to report that.
+ */
+function releaseTakenOverTabs(lane: string): void {
+  for (const tab of tabsForLane(shellClient.getBrowserTabs(), lane)) {
+    if (tab.takenOver === true) void shellClient.browserRelease(tab.tabId).catch(() => {})
+  }
 }
 
 function toggleBrowserPanel(): void {
@@ -1504,13 +1533,24 @@ shellClient.onLanes((lanes) => {
 
 shellClient.onActivate((lane) => activateLane(lane))
 
-shellClient.onBrowserState(() => {
-  // A tab appearing on the active lane raises the panel: the agent opening a
-  // page *is* the request to look at it. It never closes the panel — that stays
-  // the user's decision, which is why `browserOpen` is state and not a
-  // derivation.
-  if (activeLane !== undefined && tabsForLane(shellClient.getBrowserTabs(), activeLane).length > 0) {
+shellClient.onBrowserState((tabs) => {
+  // A *new* tab on the active lane raises the panel: the agent opening a page is
+  // the request to look at it. Nothing else does — a load finishing, a title
+  // changing, a navigation, a failure are all the same tab going about its
+  // business, and a panel the user closed would otherwise be shoved back open by
+  // a page that is merely still loading. It never closes the panel either; that
+  // stays the user's decision, which is why `browserOpen` is state.
+  const arrived = newTabsForLane(tabs, activeLane, knownBrowserTabs)
+  knownBrowserTabs = new Set(tabs.map((tab) => tab.tabId))
+  const latest = arrived.at(-1)
+  if (latest !== undefined && activeLane !== undefined) {
     browserOpen = true
+    // Onto the new tab, not whichever one was last on screen: the page the agent
+    // just opened is the one it is asking about.
+    browserActiveTab.set(activeLane, latest.tabId)
+    // The title bar's browser button draws `browserOpen`, and `renderSidebar` is
+    // the only call site that paints the bar.
+    renderSidebar()
   }
   renderBrowser()
 })

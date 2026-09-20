@@ -26,6 +26,7 @@
     "test/rendererPresenceView.test.ts",
     "test/rendererSettingsView.test.ts",
     "test/rendererSidebarView.test.ts",
+    "test/rendererStatusView.test.ts",
     "test/rendererTaskPanelView.test.ts",
     "test/rendererTitleBarView.test.ts",
     "test/rendererTranscriptView.test.ts",

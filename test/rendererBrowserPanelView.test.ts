@@ -45,6 +45,7 @@ interface Rendered {
   selected: string[]
   navigated: Array<{ tabId: string; url: string }>
   tookOver: string[]
+  released: string[]
   paint(overrides?: Partial<BrowserPanelViewModel>): void
 }
 
@@ -68,6 +69,7 @@ function render(t: { after(fn: () => void): void }, options: { measurable?: bool
   const selected: string[] = []
   const navigated: Rendered['navigated'] = []
   const tookOver: string[] = []
+  const released: string[] = []
 
   const view = createBrowserPanelView(nodes, {
     onSelectTab: (tabId) => selected.push(tabId),
@@ -78,6 +80,7 @@ function render(t: { after(fn: () => void): void }, options: { measurable?: bool
     onForward: () => {},
     onReload: () => {},
     onTakeOver: (tabId) => tookOver.push(tabId),
+    onRelease: (tabId) => released.push(tabId),
     onBounds: (tabId, rect, visible) => bounds.push({ tabId, rect, visible }),
   })
   // One hook, in this order: `after` callbacks run in registration order, and
@@ -100,7 +103,7 @@ function render(t: { after(fn: () => void): void }, options: { measurable?: bool
     })
   }
 
-  return { stub, view, nodes, bounds, closed, selected, navigated, tookOver, paint }
+  return { stub, view, nodes, bounds, closed, selected, navigated, tookOver, released, paint }
 }
 
 // --- geometry ---------------------------------------------------------------------
@@ -212,6 +215,84 @@ test('clicking a row selects it and its ✕ closes it, without selecting', (t) =
   assert.deepEqual(r.selected, ['t1'])
 })
 
+test('every row carries one icon slot, whichever of the three things is in it', (t) => {
+  const r = render(t)
+  r.paint({
+    tabs: [
+      tab({ tabId: 't1', lane: '1', title: '一', favicon: 'data:image/png;base64,AA' }),
+      tab({ tabId: 't2', lane: '1', title: '二', loading: true }),
+      tab({ tabId: 't3', lane: '1', title: '三' }),
+    ],
+  })
+  const slots = r.stub.inspect(r.nodes.tabs).children
+    .slice(0, 3)
+    .map((row) => row.children.find((child) => child.classes.includes('browser-tab-icon'))!)
+  assert.equal(slots.length, 3, 'a tab without an icon still holds the slot, so nothing shifts')
+  assert.equal(slots[0]!.attributes.get('src'), 'data:image/png;base64,AA')
+  assert.equal(slots[1]!.classes.includes('loading'), true)
+  // The placeholder is the bare slot: no source, and not the spinner.
+  assert.equal(slots[2]!.attributes.get('src'), undefined)
+  assert.equal(slots[2]!.classes.includes('loading'), false)
+})
+
+test('the ✕ sits after the label, at the end of the tab', (t) => {
+  const r = render(t)
+  r.paint()
+  const row = r.stub.inspect(r.nodes.tabs).children[0]!
+  assert.deepEqual(
+    row.children.map((child) => child.classes[0]),
+    ['browser-tab-icon', 'browser-tab-label', 'browser-tab-close'],
+  )
+})
+
+// --- the hole's own page ---------------------------------------------------------
+
+test('a tab that has never navigated says so, and the page stops painting under it', (t) => {
+  const r = render(t)
+  r.paint({ tabs: [tab({ tabId: 't1', lane: '1' })] })
+  const blank = r.stub.inspect(r.nodes.hole).children.find((child) => child.classes.includes('browser-blank'))!
+  assert.equal(blank.hidden, false)
+  assert.equal(blank.text, '在上方输入网址开始浏览')
+  // A WebContentsView is above this document: a hint drawn under a painting
+  // page is a hint nobody sees.
+  assert.equal(r.bounds.at(-1)?.visible, false)
+
+  r.paint()
+  assert.equal(r.stub.inspect(r.nodes.hole).children[0]!.hidden, true)
+  assert.equal(r.bounds.at(-1)?.visible, true)
+})
+
+test('a failed navigation draws the address, the reason, and a retry', (t) => {
+  const r = render(t)
+  r.paint({
+    tabs: [
+      tab({
+        tabId: 't1',
+        lane: '1',
+        url: 'https://example.com/a',
+        error: 'ERR_NAME_NOT_RESOLVED',
+        errorUrl: 'https://nope.invalid/x',
+      }),
+    ],
+  })
+  const failure = r.stub.inspect(r.nodes.hole).children.find((child) => child.classes.includes('browser-error'))!
+  assert.equal(failure.hidden, false)
+  assert.match(failure.text, /https:\/\/nope\.invalid\/x/)
+  assert.match(failure.text, /域名找不到/)
+  assert.equal(r.bounds.at(-1)?.visible, false)
+
+  // Retry reloads the address that failed — not the page still committed
+  // underneath, and without the user retyping anything.
+  const retry = failure.children.find((child) => child.classes.includes('browser-error-retry'))!
+  r.stub.click(retry.node)
+  assert.deepEqual(r.navigated, [{ tabId: 't1', url: 'https://nope.invalid/x' }])
+
+  // And the bar stayed on what was typed, not on the page behind the error.
+  const field = r.stub.inspect(r.nodes.address).children
+    .find((child) => child.classes.includes('browser-url'))!.node as HTMLInputElement
+  assert.equal(field.value, 'nope.invalid')
+})
+
 test('the address field is built once and survives every repaint', (t) => {
   const r = render(t)
   r.paint()
@@ -253,19 +334,36 @@ test('back and forward are disabled until the page says otherwise', (t) => {
   assert.equal(r.stub.inspect(r.nodes.address).children[0]!.disabled, false)
 })
 
-test('接管 reports the active tab, and reads as a state once it has happened', (t) => {
+test('the control takes the tab over, then hands it back', (t) => {
   const r = render(t)
-  r.paint()
   const control = () =>
     r.stub.inspect(r.nodes.address).children.find((child) => child.classes.includes('browser-takeover'))!
 
+  // A tab a session has driven: there is something to take.
+  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', agentControlled: true })] })
+  assert.equal(control().disabled, false)
   r.stub.click(control().node)
   assert.deepEqual(r.tookOver, ['t1'])
 
-  // Taking over is one-way: the button becomes the label for what happened,
-  // because control comes back with the user's next message, not with a button.
-  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', takenOver: true })] })
-  assert.equal(control().text, '已接管')
-  // Disabled, so the browser swallows the press: there is nothing left to take.
+  // And back: the same button, now saying the other thing. One control rather
+  // than two, so「已接管」cannot sit beside a tab that is no longer taken.
+  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', agentControlled: true, takenOver: true })] })
+  assert.equal(control().text, '交还')
+  assert.equal(control().disabled, false)
+  r.stub.click(control().node)
+  assert.deepEqual(r.released, ['t1'])
+  assert.deepEqual(r.tookOver, ['t1'], 'the press reports a hand-back, not a second takeover')
+})
+
+test('a tab no agent is driving says so instead of swallowing the press', (t) => {
+  const r = render(t)
+  // What「＋」opens: nobody has driven it, so a takeover has nothing to interrupt.
+  r.paint()
+  const control = () =>
+    r.stub.inspect(r.nodes.address).children.find((child) => child.classes.includes('browser-takeover'))!
   assert.equal(control().disabled, true)
+  assert.equal(control().attributes.get('aria-label'), '当前没有 agent 在操作此标签页')
+
+  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', agentControlled: true })] })
+  assert.equal(control().disabled, false)
 })

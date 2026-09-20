@@ -29,6 +29,7 @@ import { WebContentsView, session, type BaseWindow, type WebContents } from 'ele
 import { randomUUID } from 'node:crypto'
 import type { WireBrowserRect, WireBrowserTabInfo } from '../shellProtocol.js'
 import { BrowserHostError } from './errors.js'
+import { faviconDataUrl } from './favicon.js'
 import { isInputActive } from './input.js'
 
 export { BrowserHostError }
@@ -77,7 +78,13 @@ interface TabEntry {
   title: string
   loading: boolean
   error: string | undefined
+  /** The address the failure was about; `url` still holds the last committed one. */
+  errorUrl: string | undefined
+  /** The site's icon as a data URL, read through `favicon.ts`. */
+  favicon: string | undefined
   takenOver: boolean
+  /** A session has addressed this tab, so a takeover has someone to interrupt. */
+  agentControlled: boolean
 }
 
 /**
@@ -100,6 +107,7 @@ export class BrowserTabHost {
   private readonly tabs = new Map<string, TabEntry>()
   private readonly listeners = new Set<(tabs: WireBrowserTabInfo[]) => void>()
   private readonly takeOverListeners = new Set<(tabId: string) => void>()
+  private readonly releaseListeners = new Set<(tabId: string) => void>()
   private window: BaseWindow | undefined
   private changePending = false
   private disposed = false
@@ -145,7 +153,10 @@ export class BrowserTabHost {
       title: '',
       loading: false,
       error: undefined,
+      errorUrl: undefined,
+      favicon: undefined,
       takenOver: false,
+      agentControlled: false,
     }
     this.tabs.set(entry.tabId, entry)
     // The view is built eagerly rather than on first paint: a tab the agent
@@ -218,6 +229,19 @@ export class BrowserTabHost {
     for (const listener of [...this.takeOverListeners]) listener(entry.tabId)
   }
 
+  /**
+   * The user handed the tab back — from 「交还」, or by sending the agent a
+   * message.
+   *
+   * It only *reports*, for the same reason `takeOver` does: who was driving,
+   * and therefore whose block this lifts, is `ownership.ts`'s answer, and it
+   * comes back through `setTakenOver`.
+   */
+  releaseTab(tabId: string): void {
+    const entry = this.require(tabId)
+    for (const listener of [...this.releaseListeners]) listener(entry.tabId)
+  }
+
   /** The flag the panel draws. Set once arbitration agrees, cleared on release. */
   setTakenOver(tabId: string, takenOver: boolean): void {
     const entry = this.tabs.get(tabId)
@@ -226,10 +250,29 @@ export class BrowserTabHost {
     this.emitChange()
   }
 
+  /**
+   * A session claimed this tab. Sticky for the tab's life: a session that has
+   * driven a tab once is the one a takeover interrupts until the tab closes,
+   * and the panel draws its control as available on that basis.
+   */
+  setAgentControlled(tabId: string): void {
+    const entry = this.tabs.get(tabId)
+    if (entry === undefined || entry.agentControlled) return
+    entry.agentControlled = true
+    this.emitChange()
+  }
+
   onTakeOver(listener: (tabId: string) => void): () => void {
     this.takeOverListeners.add(listener)
     return () => {
       this.takeOverListeners.delete(listener)
+    }
+  }
+
+  onRelease(listener: (tabId: string) => void): () => void {
+    this.releaseListeners.add(listener)
+    return () => {
+      this.releaseListeners.delete(listener)
     }
   }
 
@@ -275,7 +318,10 @@ export class BrowserTabHost {
         canGoForward: live ? contents.navigationHistory.canGoForward() : false,
       }
       if (entry.error !== undefined) info.error = entry.error
+      if (entry.errorUrl !== undefined) info.errorUrl = entry.errorUrl
+      if (entry.favicon !== undefined) info.favicon = entry.favicon
       if (entry.takenOver) info.takenOver = true
+      if (entry.agentControlled) info.agentControlled = true
       return info
     })
   }
@@ -338,6 +384,7 @@ export class BrowserTabHost {
     this.tabs.clear()
     this.listeners.clear()
     this.takeOverListeners.clear()
+    this.releaseListeners.clear()
     this.window = undefined
   }
 
@@ -372,6 +419,11 @@ export class BrowserTabHost {
     entry.completeGeneration = -1
     entry.loading = true
     entry.error = undefined
+    entry.errorUrl = undefined
+    // The icon belongs to the document that is leaving. Kept across a
+    // navigation it would label the new page with the old site's mark for as
+    // long as the load takes — and forever, on a page that declares none.
+    entry.favicon = undefined
   }
 
   private ensureView(entry: TabEntry): WebContentsView {
@@ -466,13 +518,30 @@ export class BrowserTabHost {
       this.emitChange()
     })
 
-    contents.on('did-fail-load', (_event, errorCode, errorDescription, _url, isMainFrame) => {
+    contents.on('did-fail-load', (_event, errorCode, errorDescription, url, isMainFrame) => {
       // A cancelled navigation (-3) is what every redirect and every
       // user-interrupted load reports; it is not a failure worth showing.
       if (!alive() || !isMainFrame || errorCode === -3) return
       entry.error = errorDescription
+      // The address that failed. `entry.url` is not it: nothing committed, so
+      // that still names the page the tab was showing before this attempt — and
+      // the panel's error page and its 「重试」 are both about this one.
+      entry.errorUrl = url
       entry.loading = false
       this.emitChange()
+    })
+
+    // Fetched rather than linked: see `favicon.ts`. The generation guard is what
+    // keeps a slow icon from labelling whatever the tab navigated to meanwhile.
+    contents.on('page-favicon-updated', (_event, favicons) => {
+      const source = favicons[0]
+      if (!alive() || source === undefined) return
+      const generation = entry.generation
+      void faviconDataUrl(contents.session, source).then((encoded) => {
+        if (!alive() || entry.generation !== generation || encoded === undefined) return
+        entry.favicon = encoded
+        this.emitChange()
+      })
     })
 
     contents.on('page-title-updated', (_event, title) => {
@@ -493,6 +562,7 @@ export class BrowserTabHost {
       if (!alive()) return
       entry.loading = false
       entry.error = '页面进程已退出'
+      entry.errorUrl = entry.url
       this.emitChange()
     })
 

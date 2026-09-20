@@ -329,7 +329,13 @@ test('the chip is one label carrying both fields, inert until a snapshot arrives
   r.composer.renderRuntime(runtime())
   assert.deepEqual(
     r.view('chipRuntime').children.map((child) => [child.className, child.text]),
-    [['chip-model-label', 'claude-sonnet-5'], ['chip-effort-label', EFFORT_LABELS.high]],
+    [
+      // Drawn at every width; the stylesheet shows it instead of the two labels
+      // once the row is too narrow for a name (`@container composer-bar`).
+      ['icon chip-model-icon', ''],
+      ['chip-model-label', 'claude-sonnet-5'],
+      ['chip-effort-label', EFFORT_LABELS.high],
+    ],
   )
   assert.equal(r.view('chipRuntime').disabled, false)
 })
@@ -341,8 +347,8 @@ test('the context indicator is independent of the chip, and is absent when there
   assert.deepEqual(r.view('contextIndicator').children, [])
   assert.deepEqual(
     r.view('chipRuntime').children.map((child) => child.className),
-    ['chip-model-label', 'chip-effort-label'],
-    'the chip carries the two fields it opens, and nothing else',
+    ['icon chip-model-icon', 'chip-model-label', 'chip-effort-label'],
+    'the chip carries the two fields it opens and its own stand-in, and nothing else',
   )
   assert.deepEqual(
     r.stub.inspect(r.runtimeShell).children.map((child) => child.node),
@@ -370,7 +376,7 @@ test('the context indicator is independent of the chip, and is absent when there
   assert.match(r.view('contextIndicator').attributes.get('aria-label') ?? '', /90% 已用/)
   assert.equal((r.els.contextIndicator as { title: string }).title, '', 'the hover card is drawn by the renderer, not by the OS')
 
-  assert.equal(tooltip?.classes.includes('context-tooltip'), true)
+  assert.equal(tooltip?.classes.includes('hover-card'), true)
   assert.equal(tooltip?.attributes.get('role'), 'tooltip')
   assert.equal(tooltip?.attributes.get('aria-hidden'), 'true')
   assert.match(tooltip?.text ?? '', /上下文/)
@@ -826,7 +832,7 @@ test('an unchanged runtime snapshot rebuilds neither the chip nor the pill', (t)
   // A snapshot that moved still repaints, or the guard would be a freeze.
   r.composer.renderRuntime(runtime({ model: 'claude-opus-5', permissionMode: 'plan' }))
   assert.notDeepEqual(r.view('chipRuntime').children.map((child) => child.node), chipBefore)
-  assert.equal(r.view('chipRuntime').children[0]!.text, 'claude-opus-5')
+  assert.equal(r.view('chipRuntime').children[1]!.text, 'claude-opus-5')
   assert.equal(r.view('chipPermission').children[0]!.text, PERMISSION_MODE_LABELS.plan)
 })
 

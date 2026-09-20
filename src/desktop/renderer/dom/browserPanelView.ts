@@ -21,13 +21,17 @@
 
 import { el, replace, required, show } from './dom.js'
 import { button } from './controls.js'
+import { icon } from './icons.js'
 import type { WireBrowserRect, WireBrowserTabInfo } from '../../shellProtocol.js'
 import {
   addressLabel,
+  browserControlState,
+  browserOverlay,
   normalizeAddress,
   shouldShowBrowserView,
   tabLabel,
   tabsForLane,
+  type BrowserOverlay,
 } from '../model/browserPanel.js'
 
 export interface BrowserPanelViewModel {
@@ -51,6 +55,8 @@ export interface BrowserPanelHandlers {
   onForward(tabId: string): void
   onReload(tabId: string): void
   onTakeOver(tabId: string): void
+  /** The user handed the tab back to the agent, before sending it a message. */
+  onRelease(tabId: string): void
   /** The hole moved, or the page's right to paint changed. */
   onBounds(tabId: string, rect: WireBrowserRect, visible: boolean): void
 }
@@ -98,12 +104,15 @@ export function createBrowserPanelView(
   url.spellcheck = false
   url.placeholder = '输入网址'
   url.setAttribute('aria-label', '网址')
-  // Taking over is one-way on purpose: there is no "give it back" button,
-  // because control returns when the user sends the agent its next message, and
-  // a second way to say that would always be the stale one.
-  const takeOver = button('browser-nav browser-takeover', '接管', '接管此标签页，暂停 agent 的浏览器操作', () =>
-    withActive(handlers.onTakeOver),
-  )
+  // One control, three states — see `browserControlState`. Its label and its
+  // meaning move together, so the press reads the model rather than a captured
+  // handler: a button that says「交还」and reports a takeover would be the worst
+  // of the possible bugs here.
+  const takeOver = button('browser-nav browser-takeover', '接管', '接管此标签页，暂停 agent 的浏览器操作', () => {
+    const action = browserControlState(activeTab()).action
+    if (action === 'take-over') withActive(handlers.onTakeOver)
+    else if (action === 'release') withActive(handlers.onRelease)
+  })
   replace(nodes.address, back, forward, reload, url, takeOver)
 
   url.addEventListener('keydown', (event) => {
@@ -124,6 +133,33 @@ export function createBrowserPanelView(
   url.addEventListener('blur', () => {
     url.value = addressLabel(activeTab())
   })
+
+  // --- the hole's own page, built once ---------------------------------------------
+  //
+  // Two states the site cannot draw for itself: a tab that has never navigated,
+  // and one whose navigation failed. Both live *inside* the hole and are
+  // absolutely positioned there, so neither changes the rect the page is parked
+  // on — and both are drawn only while the native view is told not to paint,
+  // because a `WebContentsView` sits above this document entirely.
+
+  const blank = el('p', 'browser-blank', '在上方输入网址开始浏览')
+  const failedAddress = el('p', 'browser-error-address')
+  const failedReason = el('p', 'browser-error-reason')
+  /** The address the error page is about, so 「重试」 does not need the bar re-typed. */
+  let failedUrl: string | undefined
+  const failure = el(
+    'div',
+    'browser-error',
+    el('p', 'browser-error-title', '无法打开此页面'),
+    failedAddress,
+    failedReason,
+    button('browser-error-retry', '重试', '重新加载此页面', () => {
+      const tabId = model.activeTabId
+      if (tabId === undefined || failedUrl === undefined || failedUrl === '') return
+      handlers.onNavigate(tabId, failedUrl)
+    }),
+  )
+  replace(nodes.hole, blank, failure)
 
   // --- geometry -------------------------------------------------------------------
 
@@ -155,6 +191,9 @@ export function createBrowserPanelView(
       // question here — the page may not paint while the window is not being
       // shown — and reading the enum would mean spelling one of its values.
       windowHidden: document.hidden,
+      // Read here rather than passed in: `measure()` runs on a resize and on a
+      // visibility change too, with no render in between.
+      overlaid: browserOverlay(activeTab()).kind !== 'none',
     })
     const box = nodes.hole.getBoundingClientRect()
     const rect: WireBrowserRect = {
@@ -219,6 +258,7 @@ export function createBrowserPanelView(
       const row = el('div', tabClass(tab, next.activeTabId))
       row.setAttribute('role', 'tab')
       row.setAttribute('aria-selected', String(tab.tabId === next.activeTabId))
+      row.appendChild(tabIcon(tab))
       row.appendChild(el('span', 'browser-tab-label', tabLabel(tab)))
       row.appendChild(
         button('browser-tab-close', '✕', '关闭标签页', () => handlers.onCloseTab(tab.tabId)),
@@ -232,17 +272,38 @@ export function createBrowserPanelView(
     back.disabled = tab === undefined || !tab.canGoBack
     forward.disabled = tab === undefined || !tab.canGoForward
     reload.disabled = tab === undefined
-    const takenOver = tab?.takenOver === true
-    takeOver.disabled = tab === undefined || takenOver
-    takeOver.textContent = takenOver ? '已接管' : '接管'
+    const control = browserControlState(tab)
+    takeOver.disabled = control.disabled
+    takeOver.textContent = control.label
+    takeOver.title = control.title
+    takeOver.setAttribute('aria-label', control.title)
+    // The accent pairs the button with the tab's own badge while the user holds
+    // the tab: two marks for one state, gone together the moment it ends.
+    takeOver.className = `browser-nav browser-takeover${control.action === 'release' ? ' holding' : ''}`
     // Never while the user is typing in it: this repaints on every title update
     // of a loading page, and overwriting a half-typed address would make the bar
     // unusable exactly when someone is trying to leave the page.
     if (document.activeElement !== url) url.value = addressLabel(tab)
 
+    drawOverlay(browserOverlay(tab))
+
     // Last, and unconditional: a render that changed which tab is active, or
     // whether the panel is drawn at all, has moved the page.
     measure()
+  }
+
+  function drawOverlay(overlay: BrowserOverlay): void {
+    show(blank, overlay.kind === 'blank')
+    show(failure, overlay.kind === 'error')
+    if (overlay.kind !== 'error') {
+      failedUrl = undefined
+      return
+    }
+    failedUrl = overlay.url
+    // The whole address here, not the host the bar shows: which path failed is
+    // half of what tells the user whether they mistyped it.
+    failedAddress.textContent = overlay.url
+    failedReason.textContent = overlay.reason
   }
 
   function dispose(): void {
@@ -262,6 +323,23 @@ export function createBrowserPanelView(
   }
 
   return { render, measure, dispose }
+}
+
+/**
+ * The 16px slot at the head of a tab, in its three states.
+ *
+ * One slot, always the same size, because the point of it is that the strip
+ * stays aligned: a spinner that replaced the icon by *inserting* a node would
+ * shift every label sideways for the length of every load.
+ */
+function tabIcon(tab: WireBrowserTabInfo): HTMLElement | SVGSVGElement {
+  if (tab.loading) return icon('spinner', 'icon browser-tab-icon loading')
+  if (tab.favicon === undefined) return el('span', 'browser-tab-icon')
+  const image = el('img', 'browser-tab-icon')
+  image.setAttribute('src', tab.favicon)
+  // Decoration beside a label that already names the site.
+  image.setAttribute('alt', '')
+  return image
 }
 
 function tabClass(tab: WireBrowserTabInfo, activeTabId: string | undefined): string {

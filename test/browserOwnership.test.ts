@@ -44,6 +44,26 @@ test('a takeover blocks the session that drove the tab, until its next turn', ()
   assert.equal(own.isBlocked('s1'), false)
 })
 
+test('handing a tab back lifts the block now, without waiting for a turn', () => {
+  const own = new BrowserOwnership()
+  const revision = own.observeTurn('s1', 'turn-1').revision
+  own.claim('tab-1', 's1')
+  own.claim('tab-2', 's1')
+  own.takeOver('tab-1')
+
+  // Every tab the owner holds, not just the one pressed: the block is per
+  // session, so a badge left on `tab-2` would outlive the state behind it.
+  assert.deepEqual(own.release('tab-1').sort(), ['tab-1', 'tab-2'])
+  assert.equal(own.isBlocked('s1'), false)
+  // Still the same turn — a hand-back is not a new turn and retires nothing.
+  own.assertAllowed('s1', revision)
+
+  // Idempotent, so 「交还」 followed by a message does not redraw twice.
+  assert.deepEqual(own.release('tab-1'), [])
+  // And a tab nobody drove has nobody to hand it back to.
+  assert.deepEqual(own.release('tab-9'), [])
+})
+
 test('a new turn retires the operations still running from the last one', () => {
   const own = new BrowserOwnership()
   const inFlight = own.observeTurn('s1', 'turn-1').revision

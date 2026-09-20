@@ -62,8 +62,9 @@ function modelRows(rows: readonly SurfaceRow[], options: readonly ModelPickerOpt
       label: option?.label ?? row.label,
       // The picker's three-column detail is noise at flyout width, but the
       // image marker is kept: it is the one attribute worth the width when the
-      // chip is open because the current model just refused an image.
-      detail: option?.supportsImageInput ? '支持图像' : '',
+      // chip is open because the current model just refused an image. Two
+      // characters, not four — 「支持图像」 wrapped the row onto a second line.
+      detail: option?.supportsImageInput ? '视觉' : '',
     }
   })
 }

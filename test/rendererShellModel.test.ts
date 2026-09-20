@@ -271,8 +271,8 @@ test('the model picker marks the current model and explains a disabled one', () 
   assert.match(view.rows[1]?.detail ?? '', /默认/)
   // The capability marker rides in the detail, host-resolved — the row answers
   // "can I send images to this one", which is why a user opens this picker.
-  assert.match(view.rows[1]?.detail ?? '', /支持图像/)
-  assert.doesNotMatch(view.rows[0]?.detail ?? '', /支持图像/)
+  assert.match(view.rows[1]?.detail ?? '', /视觉/)
+  assert.doesNotMatch(view.rows[0]?.detail ?? '', /视觉/)
   assert.equal(view.rows[2]?.disabled, true)
   assert.equal(view.rows[2]?.disabledReason, 'no model configured')
 

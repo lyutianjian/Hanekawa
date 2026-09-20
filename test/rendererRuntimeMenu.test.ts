@@ -72,7 +72,7 @@ test('each row carries the picker rows, actions and marks included', () => {
   // A name and nothing else — except the image marker, the one attribute worth
   // the flyout's width when the current model has just refused an image.
   assert.deepEqual(model!.rows.map((row) => [row.label, row.detail]), [
-    ['Sonnet', '支持图像'],
+    ['Sonnet', '视觉'],
     ['Opus', ''],
   ])
   assert.equal(model!.rows[0]!.current, true)

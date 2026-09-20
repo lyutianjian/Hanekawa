@@ -55,6 +55,13 @@ export type SettingsDraft =
       readonly kind: 'endpoint'
       readonly name: string
       readonly isNew: boolean
+      /**
+       * Set when editing: a changed `name` becomes a rename, not a second
+       * endpoint — and it is what the form is *anchored* by. Anchoring on the
+       * live `name` re-keyed the form on every keystroke, which threw the field
+       * the user was typing in out of the document; see `draftForm`.
+       */
+      readonly originalName?: string
       readonly provider: string
       readonly baseUrl: string
       readonly apiKey: string
@@ -525,6 +532,17 @@ function projectOne(snapshot: WireSettingsSnapshot, change: SettingsChange): Wir
         ...snapshot,
         models: snapshot.models.filter((model) => model.key !== change.key),
       })
+    case 'rename-endpoint':
+      // The models move with it, exactly as `ConfigService.renameEndpoint` does.
+      return {
+        ...snapshot,
+        endpoints: snapshot.endpoints.map((endpoint) =>
+          endpoint.name === change.from ? { ...endpoint, name: change.to } : endpoint,
+        ),
+        models: snapshot.models.map((model) =>
+          model.endpoint === change.from ? { ...model, endpoint: change.to } : model,
+        ),
+      }
     case 'rename-model':
       return {
         ...snapshot,
@@ -725,6 +743,9 @@ export function pendingRowIds(pending: readonly PendingMutation[]): Set<string> 
         break
       case 'rename-model':
         ids.add(`model:${change.to}`)
+        break
+      case 'rename-endpoint':
+        ids.add(`endpoint:${change.to}`)
         break
       case 'set-routing':
         ids.add(`routing:${change.role}`)
@@ -1637,11 +1658,15 @@ function draftForm(
   }
   if (draft.kind === 'endpoint') {
     return {
-      title: draft.isNew ? '新增接入点' : `编辑接入点 ${draft.name}`,
+      // `originalName`, never the live `name`: both of these key the form's kept
+      // nodes, and a title or an anchor that moves per keystroke rebuilds the
+      // form around the field being typed in — which blurs it and, once the
+      // anchor matches no row, throws the whole form to the top of the column.
+      title: draft.isNew ? '新增接入点' : `编辑接入点 ${draft.originalName ?? draft.name}`,
       submitLabel: '保存',
       anchor: {
         cardId: 'endpoints',
-        ...(draft.isNew ? {} : { rowId: `endpoint:${draft.name}` }),
+        ...(draft.originalName === undefined ? {} : { rowId: `endpoint:${draft.originalName}` }),
       },
       fields: [
         { id: 'name', label: '名称', value: draft.name, placeholder: '例如 main' },
@@ -1850,7 +1875,9 @@ export function draftToChange(
   if (draft.kind === 'endpoint') {
     const name = draft.name.trim()
     if (!name) return { error: '名称不能为空。' }
-    if (draft.isNew && snapshot.endpoints.some((endpoint) => endpoint.name === name)) {
+    // A rename collides the same way a creation does, so the check is on "this
+    // is not the row being edited" rather than on `isNew`.
+    if (name !== draft.originalName && snapshot.endpoints.some((endpoint) => endpoint.name === name)) {
       return { error: `已经有一个叫 ${name} 的接入点。` }
     }
     if (!draft.provider) return { error: '请选择服务商。' }
@@ -1919,6 +1946,16 @@ export function draftToChanges(
   if (draft.kind === 'model' && draft.originalKey && draft.originalKey !== draft.key.trim()) {
     return [
       { scope: 'provider', kind: 'rename-model', from: draft.originalKey, to: draft.key.trim() },
+      change,
+    ]
+  }
+  // The same two-step a model rename takes, and for a stronger reason: a
+  // `set-endpoint` under the new name would leave the old endpoint behind with
+  // every model still pointing at it, and deleting that leftover would take
+  // those models with it (`ConfigService.removeEndpoint`).
+  if (draft.kind === 'endpoint' && draft.originalName && draft.originalName !== draft.name.trim()) {
+    return [
+      { scope: 'provider', kind: 'rename-endpoint', from: draft.originalName, to: draft.name.trim() },
       change,
     ]
   }
@@ -2187,6 +2224,7 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
             kind: 'endpoint',
             name: endpoint.name,
             isNew: false,
+            originalName: endpoint.name,
             provider: endpoint.provider,
             baseUrl: endpoint.baseUrl ?? '',
             // Seeded empty rather than with the mask: an empty field with a

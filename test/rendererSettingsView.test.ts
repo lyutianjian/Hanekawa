@@ -34,7 +34,7 @@ function snapshotOf(): WireSettingsSnapshot {
     projectRoot: 'C:\\repo\\alpha',
     projectName: 'alpha',
     saveTarget: 'C:\\repo\\alpha\\.myagent\\config.json',
-    endpoints: [],
+    endpoints: [{ name: 'main', provider: 'anthropic' }],
     models: [{ key: 'big', model: 'claude-big', endpoint: 'main', resolves: true }],
     routing: { main: 'big', plan: 'inherit', compact: 'inherit', subagent: [] },
     defaultModel: 'big',
@@ -715,6 +715,24 @@ test('typing in a form field keeps the caret, because the cell around it is kept
     input.node,
     'the field was blurred mid-word: one character per click was all the user got',
   )
+})
+
+test('typing a new name for an existing endpoint keeps the field, and the form', (t) => {
+  const { view, apply, stub } = mount(t)
+  apply({ kind: 'edit-endpoint', name: 'main' })
+  const body = child(view(), 'settings-body')
+  const form = findOne(body, 'settings-form')
+  const name = findAll(form, 'settings-input')[0]
+  assert.ok(name)
+  stub.focus(name.node)
+
+  // The form used to be keyed by the *live* name, so each of these rebuilt it.
+  apply({ kind: 'draft-field', field: 'name', value: 'mai' })
+  apply({ kind: 'draft-field', field: 'name', value: 'ma' })
+
+  const after = findOne(child(view(), 'settings-body'), 'settings-form')
+  assert.equal(findAll(after, 'settings-input')[0]?.node, name.node, 'the field was rebuilt mid-word')
+  assert.equal(stub.activeElement(), name.node, 'the caret was thrown out of the field')
 })
 
 test('a live field commits on input alone, so a blur cannot fire a second one', (t) => {

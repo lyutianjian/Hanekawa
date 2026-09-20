@@ -436,6 +436,34 @@ test('ConfigService renameModel moves config and cascades references', async () 
   }
 })
 
+test('ConfigService renameEndpoint carries its models over instead of dropping them', async () => {
+  const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
+  try {
+    const service = new ConfigService(dir)
+    await service.load()
+
+    service.setEndpoint('old', { provider: 'anthropic', baseUrl: 'https://api.example' })
+    service.setEndpoint('other', { provider: 'anthropic' })
+    service.setModelConfig('big', { endpoint: 'old', model: 'claude-x' })
+    service.setModelConfig('elsewhere', { endpoint: 'other', model: 'claude-y' })
+
+    service.renameEndpoint('old', 'new')
+
+    const cfg = service.get()
+    assert.equal(cfg.endpoints?.old, undefined)
+    assert.equal(cfg.endpoints?.new?.baseUrl, 'https://api.example')
+    // The half a remove-plus-add would have lost: `removeEndpoint` deletes the
+    // models that resolve through the endpoint it takes away.
+    assert.equal(cfg.models.big?.endpoint, 'new')
+    assert.equal(cfg.models.elsewhere?.endpoint, 'other')
+
+    assert.throws(() => service.renameEndpoint('missing', 'x'), /not found/)
+    assert.throws(() => service.renameEndpoint('new', 'other'), /already exists/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('ConfigService renameModel throws on missing source or existing target', async () => {
   const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-config-'))
   try {

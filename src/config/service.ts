@@ -441,6 +441,27 @@ export class ConfigService {
     this.config.endpoints = Object.keys(rest).length > 0 ? rest : undefined
   }
 
+  /**
+   * Renames an endpoint and re-points the models that resolve through it.
+   *
+   * Its own command rather than a remove plus an add, for the same reason
+   * `renameModel` is: `removeEndpoint` deletes the endpoint's models, so the
+   * pair would turn a rename into a silent deletion of everything that named it.
+   */
+  renameEndpoint(oldName: string, newName: string): void {
+    if (oldName === newName) return
+    const endpoints = this.config.endpoints ?? {}
+    const endpoint = endpoints[oldName]
+    if (!endpoint) throw new Error(`Endpoint "${oldName}" not found.`)
+    if (endpoints[newName]) throw new Error(`Endpoint "${newName}" already exists.`)
+
+    const { [oldName]: _renamed, ...rest } = endpoints
+    this.config.endpoints = { ...rest, [newName]: endpoint }
+    for (const key of this.modelsForEndpoint(oldName)) {
+      this.config.models[key] = { ...this.config.models[key]!, endpoint: newName }
+    }
+  }
+
   setModelConfig(name: string, model: ModelConfig): void {
     this.config.models = { ...this.config.models, [name]: model }
     if (!this.config.defaultModel?.trim() && this.resolveModel(name)) {

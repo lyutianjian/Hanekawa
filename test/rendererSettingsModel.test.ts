@@ -649,6 +649,33 @@ test('renaming a model emits the rename before the write', () => {
   assert.equal(changes[1]?.kind, 'set-model')
 })
 
+test('renaming an endpoint emits the rename before the write, and moves its models', () => {
+  const changes = draftToChanges(
+    endpointDraft({ name: 'backup', isNew: false, originalName: 'main' }),
+    snapshotOf(),
+  )
+  assert.ok(Array.isArray(changes))
+  // Never `set-endpoint` alone: that leaves the old endpoint behind with every
+  // model still pointing at it, and deleting the leftover takes them with it.
+  assert.deepEqual(changes[0], { scope: 'provider', kind: 'rename-endpoint', from: 'main', to: 'backup' })
+  assert.equal(changes[1]?.kind, 'set-endpoint')
+
+  const projected = projectSnapshot(snapshotOf(), pendingOf(changes[0]!))
+  assert.deepEqual(projected.endpoints.map((endpoint) => endpoint.name), ['backup'])
+  assert.equal(projected.models.find((model) => model.key === 'big')?.endpoint, 'backup')
+})
+
+test('the form for an existing endpoint is anchored by the name it was opened on', () => {
+  // The anchor keys the form's kept nodes, so anchoring on the live `name`
+  // rebuilt the form — and blurred the field — on every character typed.
+  const opened = applySettingsIntent(openState(), { kind: 'edit-endpoint', name: 'main' }).state
+  const typed = applySettingsIntent(opened, { kind: 'draft-field', field: 'name', value: 'mai' }).state
+  const form = settingsView(typed).form
+  assert.ok(form)
+  assert.deepEqual(form.anchor, { cardId: 'endpoints', rowId: 'endpoint:main' })
+  assert.equal(form.title, '编辑接入点 main')
+})
+
 test('editing a model without renaming it emits one change', () => {
   const changes = draftToChanges(
     modelDraft({ key: 'big', isNew: false, originalKey: 'big', model: 'claude-big-2' }),
@@ -665,10 +692,16 @@ test('a duplicate endpoint name is rejected only when creating', () => {
   )
   assert.ok('error' in dup)
   const edit = draftToChange(
-    endpointDraft({ name: 'main', isNew: false }),
+    endpointDraft({ name: 'main', isNew: false, originalName: 'main' }),
     snapshotOf(),
   )
   assert.ok(!('error' in edit))
+  // A rename onto another endpoint's name is the same collision as a creation.
+  const collide = draftToChange(
+    endpointDraft({ name: 'main', isNew: false, originalName: 'backup' }),
+    snapshotOf(),
+  )
+  assert.ok('error' in collide)
 })
 
 // --- the view model ----------------------------------------------------------

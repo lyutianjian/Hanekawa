@@ -487,6 +487,7 @@ export type SettingsChange =
   | { scope: 'provider'; kind: 'set-endpoint'; name: string; provider: string; baseUrl?: string; apiKey?: string }
   | { scope: 'provider'; kind: 'clear-endpoint-key'; name: string }
   | { scope: 'provider'; kind: 'remove-endpoint'; name: string }
+  | { scope: 'provider'; kind: 'rename-endpoint'; from: string; to: string }
   | {
       scope: 'provider'
       kind: 'set-model'

@@ -213,6 +213,18 @@ class FakeConfig {
     this.config.routing = routing
   }
 
+  renameEndpoint(oldName: string, newName: string): void {
+    const endpoint = this.config.endpoints?.[oldName]
+    if (!endpoint) throw new Error(`No endpoint named ${oldName}`)
+    const next = { ...this.config.endpoints }
+    delete next[oldName]
+    next[newName] = endpoint
+    this.config.endpoints = next
+    for (const key of this.modelsForEndpoint(oldName)) {
+      this.config.models[key] = { ...this.config.models[key]!, endpoint: newName }
+    }
+  }
+
   renameModel(oldKey: string, newKey: string): void {
     const model = this.config.models[oldKey]
     if (!model) throw new Error(`No model named ${oldKey}`)
@@ -680,6 +692,7 @@ const SETTINGS_CHANGE_SAMPLES = {
   'set-endpoint': { scope: 'provider', kind: 'set-endpoint', name: 'e1', provider: 'anthropic' },
   'clear-endpoint-key': { scope: 'provider', kind: 'clear-endpoint-key', name: 'e1' },
   'remove-endpoint': { scope: 'provider', kind: 'remove-endpoint', name: 'e1' },
+  'rename-endpoint': { scope: 'provider', kind: 'rename-endpoint', from: 'e1', to: 'e2' },
   'set-model': { scope: 'provider', kind: 'set-model', key: 'm1', model: 'claude-x', longContext1m: true, supportsImageInput: true },
   'rename-model': { scope: 'provider', kind: 'rename-model', from: 'm1', to: 'm2' },
   'remove-model': { scope: 'provider', kind: 'remove-model', key: 'm1' },

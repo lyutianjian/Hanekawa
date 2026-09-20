@@ -143,6 +143,7 @@ export interface ShellLaneProject extends DirectoryProject {
     setRouting(routing: Routing): void
     setEndpoint(name: string, endpoint: Endpoint): void
     removeEndpoint(name: string): void
+    renameEndpoint(oldName: string, newName: string): void
     /** The models that resolve through one endpoint — what removing it takes with it. */
     modelsForEndpoint(name: string): string[]
     setModelConfig(name: string, model: ModelConfig): void
@@ -413,6 +414,14 @@ const SETTINGS_CHANGE_SCHEMAS = {
     .strict(),
   'remove-endpoint': z
     .object({ scope: z.literal('provider'), kind: z.literal('remove-endpoint'), name: z.string() })
+    .strict(),
+  'rename-endpoint': z
+    .object({
+      scope: z.literal('provider'),
+      kind: z.literal('rename-endpoint'),
+      from: z.string(),
+      to: z.string(),
+    })
     .strict(),
   'set-model': z
     .object({
@@ -2106,6 +2115,11 @@ function applyProviderChange(
     }
     case 'remove-endpoint':
       config.removeEndpoint(change.name)
+      return 'endpoints'
+    case 'rename-endpoint':
+      // Rewrites the models that named it, which is why this is a variant of its
+      // own: a remove plus an add would delete every one of them.
+      config.renameEndpoint(change.from, change.to)
       return 'endpoints'
     case 'set-model': {
       const model: ModelConfig = { model: change.model }

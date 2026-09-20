@@ -12,6 +12,7 @@ import {
   recordProjectOpen,
   resolveStartupRoot,
 } from '../src/desktop/recentProjects.js'
+import { normalizeCaseForComparison } from '../src/utils/paths.js'
 
 /**
  * The "added projects" registry and the startup resolution over it — plain node
@@ -143,11 +144,12 @@ test('forgetting a project drops just that one, in place', async () => {
 
       // Case-folded on the platforms that fold, exactly like `recordProjectOpen`
       // dedupes — the wire carries a normalized root key, not the literal path.
+      // Which platforms those are is asked of the app's own rule rather than
+      // restated here: macOS folds too, and a hard-coded `win32` made this
+      // assertion claim the opposite of what the registry actually does there.
+      const folds = normalizeCaseForComparison('A') === normalizeCaseForComparison('a')
       await forgetRecentProject(a.toUpperCase(), home)
-      assert.deepEqual(
-        await loadRecentProjects(home),
-        process.platform === 'win32' ? [c] : [a, c],
-      )
+      assert.deepEqual(await loadRecentProjects(home), folds ? [c] : [a, c])
     } finally {
       for (const dir of [a, b, c]) await rm(dir, { recursive: true, force: true })
     }

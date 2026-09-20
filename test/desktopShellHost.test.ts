@@ -54,6 +54,21 @@ import type { McpConnectionStatus } from '../src/runtime/types.js'
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
+/**
+ * An absolute fixture path, spelled the way the running platform spells one.
+ *
+ * These fixtures were written as Windows literals (`C:\repo\alpha`), which made
+ * every assertion that goes *through* `path` platform-specific without saying
+ * so: on a POSIX box `C:\repo\alpha` contains no separator at all, so its
+ * basename is the whole string, nothing is inside anything, and a join produces
+ * a path no check can relate to its root. The paths themselves are arbitrary —
+ * none of them is ever opened — so the one thing that matters is that they are
+ * shaped like a real root here.
+ */
+function fixturePath(...segments: string[]): string {
+  return path.join(process.platform === 'win32' ? 'C:\\' : '/', ...segments)
+}
+
 // The settings cards read the *local* layer off disk and `loadMergedSettings`
 // layers `~/.myagent/settings.json` under it, so without its own home this file
 // would read the developer's settings and assert differently per machine.
@@ -474,7 +489,7 @@ function createHarness(
   // A real directory only when a case actually writes settings files into one;
   // everything else stays on a path that does not exist, which is exactly what
   // the local-layer reader treats as "no local settings".
-  const first = createProject(directory, options.cwd ?? 'C:\\repo\\alpha', log)
+  const first = createProject(directory, options.cwd ?? fixturePath('repo', 'alpha'), log)
 
   const attaches: LaneAttach<FakeProject, FakePane, FakeWorkspace>[] = []
   const disposed: string[] = []
@@ -625,7 +640,7 @@ test('the structural shell halves are satisfied by the real runtime types', () =
 const COMMAND_SAMPLES = {
   panes: { type: 'panes', id: 'a' },
   'open-session': { type: 'open-session', id: 'b', sessionId: 's1', title: 'T', projectRoot: 'r' },
-  'open-project': { type: 'open-project', id: 'c', path: 'C:\\repo' },
+  'open-project': { type: 'open-project', id: 'c', path: fixturePath('repo') },
   'list-sessions': { type: 'list-sessions', id: 'd' },
   'delete-session': { type: 'delete-session', id: 'e', projectRoot: 'r', sessionId: 's1' },
   'get-settings': { type: 'get-settings', id: 'f', projectRoot: 'r' },
@@ -908,7 +923,7 @@ test('panes reports the topology across projects, in open order', async () => {
   h.project.store.sessions.set('s1', sessionOf('s1'))
   await h.client.openSession({ sessionId: 's1', projectRoot: h.entry.root })
 
-  const beta = h.addProject('C:\\repo\\beta')
+  const beta = h.addProject(fixturePath('repo', 'beta'))
   beta.project.store.sessions.set('s2', sessionOf('s2', 'In beta'))
   await h.client.openSession({ sessionId: 's2', projectRoot: beta.entry.root })
   await settle()
@@ -925,10 +940,10 @@ test('panes reports the topology across projects, in open order', async () => {
 
 test('open-project hands the path to the shell and answers ok', async () => {
   const h = createHarness()
-  const result = await h.client.openProject('C:\\repo\\gamma')
+  const result = await h.client.openProject(fixturePath('repo', 'gamma'))
   await settle()
   assert.deepEqual(result, { ok: true })
-  assert.deepEqual(h.openProjectRequests, ['C:\\repo\\gamma'])
+  assert.deepEqual(h.openProjectRequests, [fixturePath('repo', 'gamma')])
 })
 
 test('open-project without a path still reaches the shell', async () => {
@@ -940,7 +955,7 @@ test('open-project without a path still reaches the shell', async () => {
 
 test('open-project rejects when the shell cannot open projects', async () => {
   const h = createHarness({ withOpenProject: false })
-  await assert.rejects(h.client.openProject('C:\\repo\\gamma'), /cannot open projects/)
+  await assert.rejects(h.client.openProject(fixturePath('repo', 'gamma')), /cannot open projects/)
 })
 
 // --- detach ---------------------------------------------------------------------
@@ -1002,7 +1017,7 @@ test('a project survives while another project loses its last lane', async () =>
   const h = createHarness()
   await h.client.openSession({ projectRoot: h.entry.root })
 
-  const beta = h.addProject('C:\\repo\\beta')
+  const beta = h.addProject(fixturePath('repo', 'beta'))
   beta.project.store.sessions.set('s2', sessionOf('s2'))
   const betaLane = await h.client.openSession({ sessionId: 's2', projectRoot: beta.entry.root })
   await settle()
@@ -1087,7 +1102,7 @@ test('list-sessions reports every project, in open order, with sessions newest f
   const h = createHarness()
   h.project.store.sessions.set('a-old', { ...sessionOf('a-old', 'Old'), updatedAt: '2026-08-01T00:00:00.000Z' })
   h.project.store.sessions.set('a-new', { ...sessionOf('a-new', 'New'), updatedAt: '2026-08-19T00:00:00.000Z' })
-  const beta = h.addProject('C:\\repo\\beta')
+  const beta = h.addProject(fixturePath('repo', 'beta'))
   beta.project.store.sessions.set('b-1', sessionOf('b-1', 'In beta'))
 
   const result = await h.client.listSessions()
@@ -1291,7 +1306,7 @@ test('remove-project refuses the global workspace and roots it never saw', async
     /global workspace cannot be removed/,
   )
   await assert.rejects(
-    h.client.removeProject('C:\\repo\\never-opened'),
+    h.client.removeProject(fixturePath('repo', 'never-opened')),
     /No project is open at/,
   )
   assert.deepEqual(h.forgottenProjects, [])
@@ -1538,7 +1553,7 @@ test('delete-session rejects an unknown session and an unopened project', async 
   const h = createHarness()
   await assert.rejects(h.client.deleteSession(h.entry.root, 'nope'), /Session not found: nope/)
   await assert.rejects(
-    h.client.deleteSession('C:\\repo\\never-opened', 's1'),
+    h.client.deleteSession(fixturePath('repo', 'never-opened'), 's1'),
     /No project is open at/,
   )
 })
@@ -1901,7 +1916,7 @@ test('one edit reloads the project once and refreshes every lane of it', async (
 test('a global provider edit reloads every open project and refreshes their lanes', async () => {
   const h = createHarness()
   seedConfig(h.project)
-  const other = h.addProject('C:\\repo\\beta')
+  const other = h.addProject(fixturePath('repo', 'beta'))
   seedConfig(other.project)
   h.project.store.sessions.set('s1', sessionOf('s1'))
   other.project.store.sessions.set('s2', sessionOf('s2'))
@@ -1923,7 +1938,7 @@ test('a global provider edit reloads every open project and refreshes their lane
 test('removing a global model checks running turns in other projects before saving', async () => {
   const h = createHarness()
   seedConfig(h.project)
-  const other = h.addProject('C:\\repo\\beta')
+  const other = h.addProject(fixturePath('repo', 'beta'))
   seedConfig(other.project)
   const lane = await h.host.openLane(other.entry, {})
   h.runOn(lane.lane, 'big')
@@ -2451,7 +2466,7 @@ test('switching a skill off writes the local layer, reloads the skills and rebui
 
 test('reload-skills reloads once per project and writes nothing at all', async () => {
   await withSettingsDir({}, async (h) => {
-    const other = h.addProject('C:\\repo\\beta')
+    const other = h.addProject(fixturePath('repo', 'beta'))
     seedConfig(other.project)
 
     await h.client.changeSettings(h.entry.root, { scope: 'extensions', kind: 'reload-skills' })
@@ -2464,7 +2479,7 @@ test('reload-skills reloads once per project and writes nothing at all', async (
 
 test('reconnect-mcp reconnects once per project and writes nothing at all', async () => {
   await withSettingsDir({}, async (h) => {
-    const other = h.addProject('C:\\repo\\beta')
+    const other = h.addProject(fixturePath('repo', 'beta'))
     seedConfig(other.project)
 
     const result = await h.client.changeSettings(h.entry.root, {
@@ -2593,13 +2608,13 @@ test('rename-session broadcasts, because sessionTitle is a lane field', async ()
 test('open-in-editor hands over the project cwd, not the normalized root', async () => {
   // The lane list only carries the *key*, so that is what the renderer can name;
   // handing that key to a process would pass a case-folded path on Windows.
-  const h = createHarness({ cwd: 'C:\\Repo\\Alpha' })
+  const h = createHarness({ cwd: fixturePath('Repo', 'Alpha') })
 
   const result = await h.client.openInEditor(h.entry.root)
 
   assert.deepEqual(result, { ok: true })
-  assert.deepEqual(h.editorRequests, [{ cwd: 'C:\\Repo\\Alpha' }])
-  assert.notEqual(h.entry.root, 'C:\\Repo\\Alpha', 'the key differs from the cwd, or this proves nothing')
+  assert.deepEqual(h.editorRequests, [{ cwd: fixturePath('Repo', 'Alpha') }])
+  assert.notEqual(h.entry.root, fixturePath('Repo', 'Alpha'), 'the key differs from the cwd, or this proves nothing')
 })
 
 test('open-in-editor reports a launch failure rather than answering ok', async () => {
@@ -2618,7 +2633,7 @@ test('open-in-editor rejects when the shell has no editor and for an unknown pro
   )
 
   const h = createHarness()
-  await assert.rejects(h.client.openInEditor('C:\\repo\\never-opened'), /No project is open/)
+  await assert.rejects(h.client.openInEditor(fixturePath('repo', 'never-opened')), /No project is open/)
   assert.deepEqual(h.editorRequests, [], 'an unknown project must not reach the editor at all')
 })
 
@@ -2627,14 +2642,14 @@ test('open-in-editor resolves a search hit against the real cwd, line and all', 
   // normalized root key, which on Windows is a case-folded path that may not
   // exist — so the host is the one place that can join it to the project's
   // real cwd. `entry.cwd`, not `entry.root`, same rule as the folder open.
-  const h = createHarness({ cwd: 'C:\\Repo\\Alpha' })
+  const h = createHarness({ cwd: fixturePath('Repo', 'Alpha') })
 
-  await h.client.openInEditor(h.entry.root, { path: 'src\\a b.ts', line: 12 })
-  await h.client.openInEditor(h.entry.root, { path: 'src\\c.ts' })
+  await h.client.openInEditor(h.entry.root, { path: path.join('src', 'a b.ts'), line: 12 })
+  await h.client.openInEditor(h.entry.root, { path: path.join('src', 'c.ts') })
 
   assert.deepEqual(h.editorRequests, [
-    { cwd: 'C:\\Repo\\Alpha', target: { path: 'C:\\Repo\\Alpha\\src\\a b.ts', line: 12 } },
-    { cwd: 'C:\\Repo\\Alpha', target: { path: 'C:\\Repo\\Alpha\\src\\c.ts' } },
+    { cwd: fixturePath('Repo', 'Alpha'), target: { path: fixturePath('Repo', 'Alpha', 'src', 'a b.ts'), line: 12 } },
+    { cwd: fixturePath('Repo', 'Alpha'), target: { path: fixturePath('Repo', 'Alpha', 'src', 'c.ts') } },
   ])
 })
 
@@ -2646,11 +2661,11 @@ test('a target outside the project is refused before it reaches the editor', asy
   const h = createHarness()
 
   await assert.rejects(
-    h.client.openInEditor(h.entry.root, { path: '..\\outside.txt' }),
+    h.client.openInEditor(h.entry.root, { path: path.join('..', 'outside.txt') }),
     /outside the project/,
   )
   await assert.rejects(
-    h.client.openInEditor(h.entry.root, { path: 'C:\\other\\root\\a.ts' }),
+    h.client.openInEditor(h.entry.root, { path: fixturePath('other', 'root', 'a.ts') }),
     /outside the project/,
   )
   assert.deepEqual(h.editorRequests, [], 'a refused path must not reach the editor at all')
@@ -2681,15 +2696,15 @@ test('set-window-theme answers ok on a shell with no overlay', async () => {
 
 test('pick-images answers the chosen paths and anchors to the open project', async () => {
   const h = createHarness()
-  h.setPickedImages(['C:\\repo\\alpha\\shot.png', 'C:\\repo\\alpha\\diagram.png'])
+  h.setPickedImages([fixturePath('repo', 'alpha', 'shot.png'), fixturePath('repo', 'alpha', 'diagram.png')])
 
   // `projectRoot` is the normalized key the lane list carries; the shell
   // resolves it to the real cwd and the dialog opens there.
   assert.deepEqual(
     await h.client.pickImages(h.entry.root),
-    { ok: true, paths: ['C:\\repo\\alpha\\shot.png', 'C:\\repo\\alpha\\diagram.png'] },
+    { ok: true, paths: [fixturePath('repo', 'alpha', 'shot.png'), fixturePath('repo', 'alpha', 'diagram.png')] },
   )
-  assert.deepEqual(h.pickedImageAnchors, [{ defaultPath: 'C:\\repo\\alpha' }])
+  assert.deepEqual(h.pickedImageAnchors, [{ defaultPath: fixturePath('repo', 'alpha') }])
 })
 
 test('a cancelled picker answers empty paths, and an unanchored pick omits the anchor', async () => {
@@ -2701,7 +2716,7 @@ test('a cancelled picker answers empty paths, and an unanchored pick omits the a
 
   // An unknown root is an unanchored dialog, not a failure: the anchor never
   // changes what the answer means (the per-pane import re-resolves the project).
-  assert.deepEqual(await h.client.pickImages('C:\\nope'), { ok: true, paths: [] })
+  assert.deepEqual(await h.client.pickImages(fixturePath('nope')), { ok: true, paths: [] })
   assert.deepEqual(h.pickedImageAnchors, [{}, {}])
 })
 
@@ -2713,9 +2728,9 @@ test('pick-images rejects on a shell with no picker, rather than reading as canc
 
 test('settings commands fail cleanly for a project that is not open', async () => {
   const h = createHarness()
-  await assert.rejects(h.client.getSettings('C:\\repo\\never-opened'), /No project is open/)
+  await assert.rejects(h.client.getSettings(fixturePath('repo', 'never-opened')), /No project is open/)
   await assert.rejects(
-    h.client.renameSession('C:\\repo\\never-opened', 's1', 'x'),
+    h.client.renameSession(fixturePath('repo', 'never-opened'), 's1', 'x'),
     /No project is open/,
   )
 })

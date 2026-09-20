@@ -1310,7 +1310,16 @@ test('PermissionGate never auto-approves a dangerous removal, even under an allo
     { mode: 'default', cwd: process.cwd() },
   )
 
-  const dangerous = ['rm -rf /', 'rm -rf ~', 'rm -rf /usr', 'rm -rf C:/Windows', 'rm -rf src/*']
+  const dangerous = [
+    'rm -rf /',
+    'rm -rf ~',
+    'rm -rf /usr',
+    // The drive-rooted one is a Windows case only: the target is resolved
+    // against the cwd before it is judged, and off Windows `C:/Windows` is an
+    // ordinary relative directory name that lands harmlessly inside the project.
+    ...(process.platform === 'win32' ? ['rm -rf C:/Windows'] : []),
+    'rm -rf src/*',
+  ]
   for (const command of dangerous) {
     assert.equal(await gate.approve(bashTool, { command }), false, command)
   }

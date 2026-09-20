@@ -30,8 +30,11 @@ test('the attachment line links the send version on OSC 8 terminals', () => {
   assert.ok(line.includes('[图片 1：screenshot.png，1920×1080]'))
   assert.match(line, /\x1b\]8;;file:/)
   assert.ok(line.includes('image.png'))
-  // Hyperlink terminals get the link, not the path spelled out as text.
-  assert.ok(!line.includes(sendPath))
+  // Hyperlink terminals get the link, not the path spelled out as text — which
+  // is a claim about what the terminal *prints*, so it is asserted against the
+  // visible half. The whole line would not do: a POSIX `file://` URL contains
+  // its own path verbatim, so the substring is there either way.
+  assert.ok(!visibleText(line).includes(sendPath))
 })
 
 test('the attachment line spells out the copyable path without OSC 8', () => {
@@ -118,6 +121,14 @@ test('queued messages show the image count and a pure-image fallback title', () 
   assert.match(frame, /❯ 图片：screenshot\.png \(\+1 image\) \(queued\)/)
   assert.match(frame, /❯ text only \(queued\)/)
 })
+
+/**
+ * What an OSC 8 line actually shows: the label between the two hyperlink
+ * introducers, with the URLs (and every other escape) taken out.
+ */
+function visibleText(line: string): string {
+  return line.replace(/\x1b\]8;;[^\x1b\x07]*(?:\x1b\\|\x07)/g, '')
+}
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

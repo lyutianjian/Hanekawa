@@ -364,6 +364,9 @@ export function createComposerView(els: {
       thumb.addEventListener('click', () => actions.onPreviewAttachment(row.draftId))
       thumb.addEventListener('keydown', (event) => {
         if ((event as KeyboardEvent).key !== 'Enter') return
+        // The viewer takes focus onto its close button; left alone, this same
+        // Enter's keypress would press that button and shut the viewer at once.
+        event.preventDefault()
         actions.onPreviewAttachment(row.draftId)
       })
       item.appendChild(thumb)

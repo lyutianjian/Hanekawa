@@ -168,6 +168,14 @@ export class ProjectDirectory<
     return this.entries_.get(projectRootKey(cwd))
   }
 
+  /**
+   * Settles once any teardown in flight for this root has. A reopen waits on it:
+   * the entry leaves {@link get} as its close starts, not as it ends.
+   */
+  whenClosed(cwd: string): Promise<void> {
+    return this.closing.get(projectRootKey(cwd)) ?? Promise.resolve()
+  }
+
   entries(): readonly ProjectEntry<P, W>[] {
     return [...this.entries_.values()]
   }

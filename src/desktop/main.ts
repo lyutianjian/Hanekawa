@@ -288,6 +288,9 @@ async function bootstrapProject(
   cwd: string,
   options: { sessionId?: string },
 ): Promise<{ entry: ProjectEntry; session: SessionMeta }> {
+  // A macOS Dock reopen can land while the last window's close is still
+  // shutting this root down; two runtimes over one `.myagent/` must not overlap.
+  await directory.whenClosed(cwd)
   const store = new SessionStore(cwd)
   await store.init()
 
@@ -603,7 +606,7 @@ async function ensureShell(): Promise<Shell> {
   // The tab host is the only side that knows a page finished loading or changed
   // its title; the shell lane is the only way to tell the renderer. Bursts are
   // already coalesced upstream, so this is one call per page load, not five.
-  browserTabs.onChanged((tabs) => {
+  const stopTabUpdates = browserTabs.onChanged((tabs) => {
     host.broadcastBrowserState(tabs)
   })
 
@@ -614,6 +617,9 @@ async function ensureShell(): Promise<Shell> {
   // dead by the time 'closed' fires, so `detachLane`'s control frames are
   // dropped by the mux and the local cleanup is the whole job.
   window.on('closed', () => {
+    // Before the guard: the tab host outlives the window, and a failed load
+    // destroys the window after `shell` was already reset.
+    stopTabUpdates()
     if (shell !== built) return
     shell = undefined
     // Before the lanes: `detachLane` closes each lane's tabs one by one, and

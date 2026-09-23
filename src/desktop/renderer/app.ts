@@ -1122,8 +1122,7 @@ const browserPanel = createBrowserPanelView(browserPanelNodes(), {
   },
   onCloseTab: (tabId) => void shellClient.browserCloseTab(tabId).catch(noteBrowserError),
   onNewTab: () => {
-    if (activeLane === undefined) return
-    void shellClient.browserCreateTab(activeLane).catch(noteBrowserError)
+    if (activeLane !== undefined) createPanelTab(activeLane)
   },
   onNavigate: (tabId, url) => void shellClient.browserNavigate(tabId, url).catch(noteBrowserError),
   onBack: (tabId) => void shellClient.browserGoBack(tabId).catch(noteBrowserError),
@@ -1177,6 +1176,29 @@ function releaseTakenOverTabs(lane: string): void {
   }
 }
 
+/** Panel-minted tabs whose create has not answered yet. */
+let mintingTabs = 0
+
+/**
+ * A tab the user asked the panel for. Its arrival must not count as the agent
+ * opening a page: the broadcast can land before or after the reply, and a panel
+ * closed in between would otherwise be raised again by its own tab.
+ */
+function createPanelTab(lane: string): void {
+  mintingTabs++
+  void shellClient
+    .browserCreateTab(lane)
+    .then(({ tabId }) => {
+      knownBrowserTabs = new Set([...knownBrowserTabs, tabId])
+      browserActiveTab.set(lane, tabId)
+      renderBrowser()
+    })
+    .catch(noteBrowserError)
+    .finally(() => {
+      mintingTabs--
+    })
+}
+
 function toggleBrowserPanel(): void {
   browserOpen = !browserOpen
   // The title bar's right rail draws this flag, and `renderSidebar` is the one
@@ -1189,7 +1211,7 @@ function toggleBrowserPanel(): void {
     activeLane !== undefined &&
     tabsForLane(shellClient.getBrowserTabs(), activeLane).length === 0
   ) {
-    void shellClient.browserCreateTab(activeLane).catch(noteBrowserError)
+    createPanelTab(activeLane)
   }
   renderBrowser()
 }
@@ -1564,7 +1586,7 @@ shellClient.onBrowserState((tabs) => {
   const arrived = newTabsForLane(tabs, activeLane, knownBrowserTabs)
   knownBrowserTabs = new Set(tabs.map((tab) => tab.tabId))
   const latest = arrived.at(-1)
-  if (latest !== undefined && activeLane !== undefined) {
+  if (latest !== undefined && activeLane !== undefined && (browserOpen || mintingTabs === 0)) {
     browserOpen = true
     // Onto the new tab, not whichever one was last on screen: the page the agent
     // just opened is the one it is asking about.

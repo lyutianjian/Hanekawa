@@ -1376,6 +1376,21 @@ const EMPTY_SHELL_STATE: ShellState = {
   inputEmpty: true,
 }
 
+const composerInput = required<HTMLTextAreaElement>('input')
+
+/**
+ * A key the focused control answers itself: anything typed into a field other
+ * than the composer (the sidebar search, the browser's address bar), or Enter
+ * on a button. Left to the key map, Escape in those fields stopped the turn and
+ * Enter on a thumbnail or a browser-panel button sent the draft.
+ */
+function ownedByTarget(event: KeyboardEvent): boolean {
+  const target = event.target
+  if (!(target instanceof HTMLElement) || target === composerInput) return false
+  if (target.matches('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return true
+  return event.key === 'Enter' && target.matches('button, a[href], [role="button"]')
+}
+
 document.addEventListener('keydown', (event) => {
   const chord = {
     key: event.key,
@@ -1412,7 +1427,10 @@ document.addEventListener('keydown', (event) => {
   }
 
   const pane = activePane()
-  switch (resolveKey(chord, pane?.shellState() ?? EMPTY_SHELL_STATE)) {
+  const action = resolveKey(chord, pane?.shellState() ?? EMPTY_SHELL_STATE)
+  // A blocking prompt and the rewind panel still take every key, wherever focus is.
+  if (action !== 'overlay' && action !== 'rewind' && ownedByTarget(event)) return
+  switch (action) {
     case 'overlay':
       event.preventDefault()
       pane?.handleOverlayKey(event)
@@ -1475,7 +1493,7 @@ document.addEventListener('keydown', (event) => {
   }
 })
 
-required<HTMLTextAreaElement>('input').addEventListener('input', () => {
+composerInput.addEventListener('input', () => {
   activePane()?.onComposerInput()
 })
 

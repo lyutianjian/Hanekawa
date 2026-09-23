@@ -1701,15 +1701,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       deps.onOpenProviderSettings?.()
       return
     }
-    if (classified.kind === 'empty') {
-      // An image-only input is a real message: the draft list is part of the
-      // composer's content the way the textarea is, and `classifyInput`'s
-      // emptiness is only about text.
-      if (draftImages.length > 0) {
-        note(attachmentsView().sendBlockNote ?? '', 'error')
-      }
-      return
-    }
+    // An image-only input is a real message: the draft list is part of the
+    // composer's content the way the textarea is, and `classifyInput`'s
+    // emptiness is only about text.
+    if (classified.kind === 'empty' && draftImages.length === 0) return
     if (classified.kind !== 'command' && attachmentsView().sendBlockNote !== undefined) {
       // Pending or failed attachments, or images against a text-only model:
       // the rest of the input is not sent as though it were complete, and
@@ -1746,7 +1741,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       // panel's「已接管」badge should clear as the composer does rather than a
       // network hop later.
       deps.onUserMessage?.()
-      await client.submit(classified.text, imageIds.length > 0 ? { imageIds } : {})
+      await client.submit(classified.kind === 'prompt' ? classified.text : '', imageIds.length > 0 ? { imageIds } : {})
     } catch (error) {
       // The failure restores the whole input — text and attachments. Only
       // when the composer is still exactly what was sent: a user who kept
@@ -1773,10 +1768,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
    */
   async function queueMessage(): Promise<void> {
     const classified = classifyInput(deps.composer.value())
-    if (classified.kind === 'empty') {
-      if (draftImages.length > 0) note(attachmentsView().sendBlockNote ?? '', 'error')
-      return
-    }
+    if (classified.kind === 'empty' && draftImages.length === 0) return
     if (classified.kind === 'command') {
       await send()
       return
@@ -1786,13 +1778,16 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       return
     }
 
-    const text = classified.text
+    const text = classified.kind === 'prompt' ? classified.text : ''
     const imageIds = readyAttachmentRefs(draftImages).map((ref) => ref.id)
     const queuedDrafts = draftImages
     deps.composer.clear()
     clearDraftImages()
     closeCompletions()
     try {
+      // A queued message releases the taken-over tabs just as a sent one does:
+      // mid-turn — the usual moment for a takeover — Enter queues, not sends.
+      deps.onUserMessage?.()
       await client.enqueueMessage(text, imageIds.length > 0 ? { imageIds } : {})
     } catch (error) {
       if (deps.composer.value() === '') deps.composer.setValue(text, text.length)

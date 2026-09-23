@@ -60,6 +60,7 @@ import type { McpServerConfig } from '../services/mcp/index.js'
 import { bootstrap, RuntimeStartupError } from '../runtime/index.js'
 import {
   ProjectDirectory,
+  projectRootKey,
   SHUTDOWN_DEADLINE_MS,
   type ProjectEntry,
 } from '../runtime/projectDirectory.js'
@@ -253,6 +254,10 @@ if (!app.requestSingleInstanceLock()) {
  * to the same JSONL files, so an already-open project is handed back as-is —
  * which is also what makes repeated "open this project" requests safe.
  *
+ * A request that arrives while the same root is still bootstrapping waits for
+ * that bootstrap instead of starting a second one, and is answered like the
+ * already-open case: the bootstrap session belongs to the first caller.
+ *
  * Throws for bootstrap failures; the startup path wants an error box and a
  * quit.
  */
@@ -263,6 +268,29 @@ async function ensureProject(
   const open = directory.get(cwd)
   if (open) return { entry: open, session: undefined }
 
+  const key = projectRootKey(cwd)
+  const pending = bootstrapping.get(key)
+  if (pending) return { entry: (await pending).entry, session: undefined }
+
+  const started = bootstrapProject(cwd, options)
+  bootstrapping.set(key, started)
+  try {
+    return await started
+  } finally {
+    bootstrapping.delete(key)
+  }
+}
+
+/** Bootstraps in flight, by root key — what keeps `ensureProject` from racing itself. */
+const bootstrapping = new Map<string, Promise<{ entry: ProjectEntry; session: SessionMeta }>>()
+
+async function bootstrapProject(
+  cwd: string,
+  options: { sessionId?: string },
+): Promise<{ entry: ProjectEntry; session: SessionMeta }> {
+  // A macOS Dock reopen can land while the last window's close is still
+  // shutting this root down; two runtimes over one `.myagent/` must not overlap.
+  await directory.whenClosed(cwd)
   const store = new SessionStore(cwd)
   await store.init()
 
@@ -314,18 +342,18 @@ async function ensureProject(
  * directory picker. An already-open project is focused instead.
  */
 async function openProject(cwd: string): Promise<void> {
-  const open = directory.get(cwd)
-  if (open) {
-    focusProject(open)
+  const { entry, session } = await ensureProject(cwd)
+  // No session of its own: the project was already open, or another request
+  // is bootstrapping it and owns its first pane.
+  if (session === undefined) {
+    focusProject(entry)
     return
   }
-
-  const { entry, session } = await ensureProject(cwd)
   try {
     const built = await ensureShell()
     // The bootstrap pane (over the fresh draft) is the lane's pane — exactly
     // one pane per open, never a ghost draft pane left in the workspace.
-    await built.host.openLane(entry, session !== undefined ? { sessionId: session.id } : {})
+    await built.host.openLane(entry, { sessionId: session.id })
   } catch (error) {
     dialog.showErrorBox(
       'Hanekawa could not open a tab',
@@ -578,7 +606,7 @@ async function ensureShell(): Promise<Shell> {
   // The tab host is the only side that knows a page finished loading or changed
   // its title; the shell lane is the only way to tell the renderer. Bursts are
   // already coalesced upstream, so this is one call per page load, not five.
-  browserTabs.onChanged((tabs) => {
+  const stopTabUpdates = browserTabs.onChanged((tabs) => {
     host.broadcastBrowserState(tabs)
   })
 
@@ -589,6 +617,9 @@ async function ensureShell(): Promise<Shell> {
   // dead by the time 'closed' fires, so `detachLane`'s control frames are
   // dropped by the mux and the local cleanup is the whole job.
   window.on('closed', () => {
+    // Before the guard: the tab host outlives the window, and a failed load
+    // destroys the window after `shell` was already reset.
+    stopTabUpdates()
     if (shell !== built) return
     shell = undefined
     // Before the lanes: `detachLane` closes each lane's tabs one by one, and

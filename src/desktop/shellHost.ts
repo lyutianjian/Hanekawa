@@ -839,8 +839,8 @@ export class ShellHost<
     entry.occupant.dispose()
     // After the occupant, before the channel: a tab belongs to this lane, so it
     // dies with it — but only once the session that could still be driving it
-    // has stopped. The renderer's own pane budget never reaches this path, which
-    // is what keeps an evicted (merely un-drawn) pane's tabs alive.
+    // has stopped. The renderer's pane budget does reach this path, which is
+    // why it never evicts a lane that owns tabs.
     this.deps.browser?.closeLane(key)
     this.deps.mux.closeLane(key)
     entry.project.workspace.close(entry.pane)

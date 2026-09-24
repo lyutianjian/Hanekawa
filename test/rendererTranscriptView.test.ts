@@ -199,7 +199,7 @@ for (const kind of ['tool', 'subagent'] as const) {
 }
 
 for (const reason of ['focus', 'selection', 'reading'] as const) {
-  test(`M14 completion preserves content under ${reason}`, (t) => {
+  test(`M14 completion folds the turn even under ${reason}`, (t) => {
     const view = mount(t)
     const item: TranscriptItem = { id: 's', kind: 'thinking', text: 'reading', turnId: 't1', pending: true }
     view.render(transcript([item]), NO_DISCLOSURE, RUNNING_T1)
@@ -211,9 +211,8 @@ for (const reason of ['focus', 'selection', 'reading'] as const) {
       view.stub.setMetrics(view.container, { scrollTop: 100, scrollHeight: 2000, clientHeight: 400 })
     }
     view.render(transcript([{ ...item, pending: false }]))
-    assert.equal(groupOf(view).classes.includes('collapsed'), false)
-    assert.equal(groupOf(view).children[1]!.children[0]!.children[1]!.node, body)
-    assert.equal(view.stub.inspect(body).attributes.has('inert'), false)
+    // Only a click keeps a turn open past its end; looking at it does not.
+    assert.equal(groupOf(view).classes.includes('collapsed'), true)
   })
 }
 
@@ -609,8 +608,8 @@ test('a turn is one group: the user message outside it, its steps within', (t) =
   assert.equal(group.children[1]?.classes.includes('group-steps'), true)
   assert.deepEqual(
     group.children[1]?.children.map((step) => step.classes),
-    [['step', 'thinking', 'collapsed'], ['step', 'tool', 'running']],
-    'only the current step is open by default',
+    [['step', 'thinking', 'collapsed'], ['step', 'tool', 'running', 'collapsed']],
+    'a running read stays one line',
   )
 })
 
@@ -667,7 +666,7 @@ test('a finished group collapses, and its steps are absent rather than hidden', 
   // second, wordless report of what the steps below already say — and beside
   // 「已处理」 it read as a verdict on the turn.
   const head = group.children[0]!
-  assert.deepEqual(head.children.map((child) => child.className), ['btn-label'])
+  assert.deepEqual(head.children.map((child) => child.className), ['btn-label', 'icon'])
   assert.equal(head.children[0]!.attributes.get('aria-hidden'), 'true')
   assert.match(head.children[0]!.text, /^已完成|^已处理/)
 })
@@ -959,7 +958,7 @@ test('an edit step carries its patch counts in the head and a real diff below', 
 
 test('a folded edit head keeps the counts, and the diff is absent rather than hidden', (t) => {
   const view = mount(t)
-  view.render(transcript([editStep({ detail: EDIT_PATCH })]), new Map([['t1', true]]))
+  view.render(transcript([editStep({ detail: EDIT_PATCH })]), new Map([['t1', true], ['edit-1', false]]))
 
   const step = groupOf(view).children[1]?.children[0]
   assert.equal(step?.children.length, 1, 'folded: the head and nothing else')
@@ -1743,7 +1742,7 @@ test('once the turn opens a group, the row stays at the tail and the head goes q
   // The head is quiet: a count and no second clock or bead.
   const head = groupOf(view).children[0]!
   assert.ok(head.classes.includes('live'))
-  assert.deepEqual(head.children.map((child) => [child.classes.join(' '), child.text]), [['btn-label', '工作中 · 1 步']])
+  assert.deepEqual(head.children.map((child) => [child.classes.join(' '), child.text]), [['btn-label', '工作中 · 1 步'], ['icon', '']])
   assert.equal(head.attributes.get('aria-label'), '工作中')
 
   // The tool settles and the turn keeps running: the row falls back to
@@ -1983,7 +1982,8 @@ test('M15 reading history defers end padding recovery in the same paint as discl
   view.render(transcript(items.map((item) => ({ ...item, pending: false }))))
   assert.equal(pad(view), before, 'reading content and its space remain together')
   assert.equal(view.column().classes.includes('settling'), false)
-  assert.equal(groupOf(view).classes.includes('collapsed'), false)
+  // The turn still folds at its end: reading holds the pad, not the disclosure.
+  assert.equal(groupOf(view).classes.includes('collapsed'), true)
   assert.equal(view.container.scrollTop, 0)
 })
 

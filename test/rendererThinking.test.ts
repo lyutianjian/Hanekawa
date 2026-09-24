@@ -63,10 +63,11 @@ test('a block outside every group folds to its preview, streaming or sealed', ()
  * §5's disclosure: a dynamic default plus the user's absolute answer.
  */
 
-const toolStep = (id: string, status: ToolStepStatus): ActivityStep => ({
+const toolStep = (id: string, status: ToolStepStatus, toolName = 'Read'): ActivityStep => ({
   kind: 'tool',
   id,
   text: id,
+  toolName,
   status,
   tool: { displayName: 'Read', useSummary: 'a.ts' },
   ...(status === 'running' || status === 'awaiting-approval' ? { pending: true as const } : {}),
@@ -81,48 +82,34 @@ const group = (steps: readonly ActivityStep[], status: ActivityGroup['status']):
   failedCount: steps.filter((step) => 'status' in step && step.status === 'failed').length,
 })
 
-test('M02 keeps disclosure open in a live turn with no pending steps', () => {
+test('M02 keeps the group open in a live turn with no pending steps', () => {
   const between = group([toolStep('a', 'done')], 'done')
   assert.equal(isGroupExpanded(between, NO_DISCLOSURE, true), true)
-  assert.equal(isStepExpanded(between, 0, NO_DISCLOSURE, true), true)
-  const manual = new Map([['turn-1', false], ['a', false]])
+  const manual = new Map([['turn-1', false], ['a', true]])
   assert.equal(isGroupExpanded(between, manual, true), false)
-  assert.equal(isStepExpanded(between, 0, manual, true), false)
+  assert.equal(isStepExpanded(between, 0, manual), true)
 })
 
-test('direction A retains observed open steps through a live turn and organises at completion', () => {
-  const protection = { focused: new Set<string>(), selected: new Set<string>(), readingHistory: false }
+test('a turn folds the moment it ends, keeping only what the user opened by hand', () => {
   const entries = (steps: ActivityStep[], status: ActivityGroup['status'] = 'running'): TranscriptEntry[] =>
     [{ kind: 'group', group: group(steps, status) }]
-  let previous = resolveDisclosure(entries([toolStep('a', 'running')]), NO_DISCLOSURE, NO_DISCLOSURE, 'turn-1', protection)
-  previous = resolveDisclosure(entries([toolStep('a', 'done'), toolStep('b', 'running')]), NO_DISCLOSURE, previous, 'turn-1', protection)
-  assert.equal(previous.get('a'), true)
-  assert.equal(previous.get('b'), true)
+  const running = resolveDisclosure(entries([toolStep('a', 'done'), toolStep('e', 'done', 'Edit')]), NO_DISCLOSURE, 'turn-1')
+  assert.equal(running.get('turn-1'), true)
+  assert.equal(running.get('a'), false, 'a successful read stays one line')
+  assert.equal(running.get('e'), true, 'an edit shows its diff')
   const done = entries([toolStep('a', 'done'), toolStep('b', 'done')], 'done')
-  const ended = resolveDisclosure(done, NO_DISCLOSURE, previous, undefined, protection)
-  assert.equal(ended.get('turn-1'), false)
-  const manual = resolveDisclosure(done, new Map([['a', true], ['b', false]]), previous, undefined, protection)
+  assert.equal(resolveDisclosure(done, NO_DISCLOSURE, undefined).get('turn-1'), false)
+  const manual = resolveDisclosure(done, new Map([['a', true], ['b', false]]), undefined)
   assert.equal(manual.get('turn-1'), true, 'a manually opened child keeps its containing group available')
   assert.equal(manual.get('a'), true)
   assert.equal(manual.get('b'), false)
-  for (const reason of ['focused', 'selected', 'readingHistory'] as const) {
-    const protectedView = resolveDisclosure(done, NO_DISCLOSURE, previous, undefined, {
-      ...protection, [reason]: reason === 'readingHistory' ? true : new Set(['a']),
-    })
-    assert.equal(protectedView.get('turn-1'), true, reason)
-    assert.equal(protectedView.get('a'), true, reason)
-  }
 })
 
-test('turn liveness never revives an interruption or overrides a settled session', () => {
-  for (const status of ['running', 'aborted'] as const) {
-    const current = group([toolStep('a', 'running')], status)
-    assert.equal(isGroupExpanded(current, NO_DISCLOSURE, false), false)
-    assert.equal(isStepExpanded(current, 0, NO_DISCLOSURE, false), false)
-  }
+test('turn liveness never revives an interruption', () => {
   const aborted = group([toolStep('a', 'running')], 'aborted')
+  assert.equal(isGroupExpanded(aborted, NO_DISCLOSURE, false), false)
   assert.equal(isGroupExpanded(aborted, NO_DISCLOSURE, true), false)
-  assert.equal(isStepExpanded(aborted, 0, NO_DISCLOSURE, true), false)
+  assert.equal(isGroupExpanded(group([toolStep('a', 'running')], 'running'), NO_DISCLOSURE, false), false)
 })
 
 test('the group head summarises the turn without naming what is happening now', () => {
@@ -164,16 +151,16 @@ test('the group is open while the turn runs and closed once it is over', () => {
   assert.equal(isGroupExpanded(group(steps, 'aborted')), false)
 })
 
-test('only the current step of a running turn is open by default', () => {
-  const running = group([toolStep('a', 'done'), toolStep('b', 'done'), toolStep('c', 'running')], 'running')
-  assert.deepEqual(
-    running.steps.map((_step, index) => isStepExpanded(running, index)),
-    [false, false, true],
-  )
+test('successful steps stay folded, running or sealed; edits and failures open', () => {
+  const running = group([
+    toolStep('a', 'done'), toolStep('e', 'done', 'Edit'), toolStep('c', 'running', 'Bash'),
+  ], 'running')
+  assert.deepEqual(running.steps.map((_step, index) => isStepExpanded(running, index)), [false, true, false])
 
-  // Once the turn ends nothing is current, so everything collapses.
-  const done = group([toolStep('a', 'done'), toolStep('b', 'done')], 'done')
-  assert.deepEqual(done.steps.map((_step, index) => isStepExpanded(done, index)), [false, false])
+  const done = group([toolStep('a', 'done', 'Grep'), toolStep('w', 'done', 'Write'), toolStep('x', 'failed', 'Bash')], 'done')
+  assert.deepEqual(done.steps.map((_step, index) => isStepExpanded(done, index)), [false, true, true])
+  const agent: ActivityStep = { ...toolStep('s', 'done', 'Agent') }
+  assert.equal(isStepExpanded(group([agent], 'running'), 0), false, 'a sub-agent folds too')
 })
 
 test('a failed step opens itself, and one waiting for approval does not', () => {
@@ -182,7 +169,7 @@ test('a failed step opens itself, and one waiting for approval does not', () => 
 
   // The permission request is drawn in the composer; the transcript must not pull
   // the focus back up, not even though this is the running turn's last step.
-  const asking = group([toolStep('a', 'done'), toolStep('b', 'awaiting-approval')], 'running')
+  const asking = group([toolStep('a', 'done'), toolStep('b', 'awaiting-approval', 'Edit')], 'running')
   assert.deepEqual(asking.steps.map((_step, index) => isStepExpanded(asking, index)), [false, false])
 })
 
@@ -204,21 +191,19 @@ test('a step with no body is never a disclosure', () => {
   assert.equal(isStepExpanded(group([], 'done'), 0), false, 'no such step')
 })
 
-test('a hand-collapsed current step stays collapsed when the next step arrives', () => {
-  // The case the deviation model got wrong: under it the arriving step flips the
-  // default to「collapsed」and the recorded deviation re-opens what the user shut.
-  const running = group([toolStep('a', 'running')], 'running')
+test('a hand-collapsed edit stays collapsed when the next step arrives', () => {
+  // The case the deviation model got wrong: a recorded deviation re-opens what
+  // the user shut once the default moves under it.
+  const running = group([toolStep('a', 'done', 'Edit')], 'running')
   assert.equal(isStepExpanded(running, 0), true)
 
   const state = toggleDisclosure(NO_DISCLOSURE, 'a', isStepExpanded(running, 0))
   assert.equal(isStepExpanded(running, 0, state), false, 'closed by hand')
 
-  const grown = group([toolStep('a', 'done'), toolStep('b', 'running')], 'running')
+  const grown = group([toolStep('a', 'done', 'Edit'), toolStep('b', 'done', 'Edit')], 'running')
   assert.equal(isStepExpanded(grown, 0, state), false, 'and it stays closed')
   assert.equal(isStepExpanded(grown, 1, state), true)
-
-  // Absolute, so the answer also survives the turn ending under it.
-  assert.equal(isStepExpanded(group([toolStep('a', 'done')], 'done'), 0, state), false)
+  assert.equal(isStepExpanded(group([toolStep('a', 'done', 'Edit')], 'done'), 0, state), false)
 })
 
 test('a hand-opened step survives the automatic collapse at turn end', () => {

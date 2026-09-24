@@ -7,6 +7,7 @@ import type {
   ConditionResult,
   ElementScanOptions,
   ElementScanResult,
+  GuardOptions,
   ScrollOptions,
   ScrollResult,
   TargetOptions,
@@ -17,6 +18,7 @@ import type {
 import {
   conditionScript,
   elementsScript,
+  guardScript,
   resolveScript,
   scrollScript,
   textScript,
@@ -72,6 +74,13 @@ interface ElementSpec {
   at?: { top: number; left: number }
 }
 
+interface StubShadowRoot {
+  children: StubElement[]
+  childNodes: Array<StubElement | TextNode>
+  activeElement?: StubElement | null
+  elementFromPoint?: HitTest
+}
+
 class StubElement {
   readonly nodeType = 1
   readonly tagName: string
@@ -79,7 +88,7 @@ class StubElement {
   readonly children: StubElement[] = []
   readonly childNodes: Array<StubElement | TextNode> = []
   parentElement: StubElement | null = null
-  shadowRoot: { children: StubElement[] } | null = null
+  shadowRoot: StubShadowRoot | null = null
   readonly style: StubStyle
   /** A ref outlives its node, so the resolver checks this before acting. */
   isConnected = true
@@ -106,7 +115,7 @@ class StubElement {
     }
     if (spec.shadow !== undefined) {
       for (const child of spec.shadow) child.root = { host: this }
-      this.shadowRoot = { children: spec.shadow }
+      this.shadowRoot = { children: spec.shadow, childNodes: spec.shadow }
     }
   }
 
@@ -176,7 +185,14 @@ function walk(root: StubElement, visit: (el: StubElement) => boolean): StubEleme
   return null
 }
 
-function documentFor(body: StubElement, activeElement: StubElement | null = null): Record<string, unknown> {
+/** Says who is on top at a viewport point. The stub has no layout to work it out. */
+type HitTest = (x: number, y: number) => StubElement | null
+
+function documentFor(
+  body: StubElement,
+  activeElement: StubElement | null = null,
+  hit: HitTest = () => null,
+): Record<string, unknown> {
   const doc: Record<string, unknown> = {
     body,
     documentElement: body,
@@ -185,6 +201,7 @@ function documentFor(body: StubElement, activeElement: StubElement | null = null
     activeElement,
     querySelector: (selector: string) => walk(body, (node) => matchesSimple(node, selector)),
     getElementById: (id: string) => walk(body, (node) => node.id === id),
+    elementFromPoint: hit,
   }
   // `focus()` has to move the document's own idea of what is focused, which is
   // the only thing the resolver trusts as proof that focusing worked.
@@ -620,4 +637,96 @@ test('text is gathered per owning element, and scripts never contribute', () => 
   const result = runText(body)
   assert.deepEqual(result.segments, ['Hello', 'world'])
   assert.equal(result.title, 'Stub Page')
+})
+
+// --- aiming: the hit test and the guard ----------------------------------------
+
+function runGuard(sandbox: Record<string, unknown>, overrides: Partial<GuardOptions>): boolean {
+  const options: GuardOptions = {
+    mode: 'pointer',
+    label: 'ref e1',
+    nameMax: FIELD_MAX_NAME,
+    sensitiveWords: SENSITIVE_AUTOCOMPLETE,
+    ...overrides,
+  }
+  return unwrap<boolean>(serialize(vm.runInNewContext(guardScript(options), sandbox)))
+}
+
+test('a click target under an overlay is refused, naming what covers it', () => {
+  const button = el('button', { attrs: { id: 'buy' }, text: 'Buy' })
+  const banner = el('div', { attrs: { role: 'dialog', 'aria-label': 'Cookie consent' } })
+  const body = el('body', { children: [button, banner] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body, null, () => banner), window: windowFor() }
+
+  assert.throws(
+    () => runResolve(sandbox, { selector: '#buy', requireHit: true }),
+    (error: unknown) =>
+      error instanceof BrowserHostError &&
+      error.code === 'ELEMENT_NOT_INTERACTABLE' &&
+      /covered by <div role=dialog> "Cookie consent"/.test(error.message) &&
+      /Dismiss or close it first/.test(error.message),
+  )
+  // Typing does not go through the hit test, so it does not ask for one.
+  assert.equal(runResolve(sandbox, { selector: '#buy' }).role, 'button')
+})
+
+test('a press on the icon inside a button, or inside its shadow root, is a press on the button', () => {
+  const icon = el('svg')
+  const button = el('button', { attrs: { id: 'go' }, children: [icon] })
+  const inner = el('span')
+  const host = el('my-button', { attrs: { id: 'host' }, shadow: [inner] })
+  ;(host.shadowRoot as StubShadowRoot).elementFromPoint = () => inner
+  const body = el('body', { children: [button, host] })
+
+  let top: StubElement = icon
+  const sandbox: Record<string, unknown> = { document: documentFor(body, null, () => top), window: windowFor() }
+  assert.equal(runResolve(sandbox, { selector: '#go', requireHit: true }).role, 'button')
+
+  // `document.elementFromPoint` stops at the host; the shadow root knows better.
+  top = host
+  assert.equal(runResolve(sandbox, { selector: '#host', requireHit: true }).role, 'my-button')
+})
+
+test('a box taller than the viewport is aimed at the middle of its visible part', () => {
+  // The window is 1280×720; the panel starts 200px down and runs 2000px.
+  const panel = el('div', { attrs: { id: 'panel' }, size: { width: 400, height: 2000 }, at: { top: 200, left: -100 } })
+  const body = el('body', { children: [panel] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body, null, () => panel), window: windowFor() }
+  const target = runResolve(sandbox, { selector: '#panel', requireHit: true })
+  assert.deepEqual([target.x, target.y], [150, 460])
+
+  const gone = el('div', { attrs: { id: 'gone' }, at: { top: 900, left: 0 } })
+  const off = { document: documentFor(el('body', { children: [gone] })), window: windowFor() }
+  assert.throws(() => runResolve(off, { selector: '#gone' }), /off screen/)
+})
+
+test('the guard refuses a target that was removed, covered, or lost focus since the resolve', () => {
+  const field = el('input', { attrs: { id: 'q', type: 'text', 'aria-label': 'Query' } })
+  const popup = el('div', { attrs: { role: 'menu', 'aria-label': 'Suggestions' } })
+  const body = el('body', { children: [field, popup] })
+  let top: StubElement = field
+  const doc = documentFor(body, null, () => top)
+  const sandbox: Record<string, unknown> = { document: doc, window: windowFor() }
+
+  runResolve(sandbox, { selector: '#q', focus: true })
+  assert.equal(runGuard(sandbox, { mode: 'pointer', x: 50, y: 10 }), true)
+  assert.equal(runGuard(sandbox, { mode: 'keyboard' }), true)
+
+  top = popup
+  assert.throws(() => runGuard(sandbox, { mode: 'pointer', x: 50, y: 10 }), /no longer under the pointer; <div role=menu> "Suggestions" is/)
+
+  doc['activeElement'] = popup
+  assert.throws(() => runGuard(sandbox, { mode: 'keyboard' }), hasCode('ELEMENT_NOT_INTERACTABLE'))
+
+  field.isConnected = false
+  assert.throws(() => runGuard(sandbox, { mode: 'keyboard' }), hasCode('STALE_ELEMENT'))
+})
+
+test('focus inside an open shadow root counts as focus on the element that holds it', () => {
+  const inner = el('input', { attrs: { type: 'text' } })
+  const host = el('my-field', { attrs: { id: 'field' }, shadow: [inner] })
+  const body = el('body', { children: [host] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body, host), window: windowFor() }
+  ;(host.shadowRoot as StubShadowRoot).activeElement = inner
+  assert.equal(runResolve(sandbox, { selector: '#field' }).focused, true)
 })

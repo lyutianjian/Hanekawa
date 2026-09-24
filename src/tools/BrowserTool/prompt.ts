@@ -23,7 +23,7 @@ Every call names an \`operation\`. The fields each one takes:
 - \`page.elements.snapshot\` — \`tabId\`, optional \`scope\`, \`role\`, \`text\`, \`interactiveOnly\`, \`visibleOnly\`, \`limit\`, \`maxChars\`, \`cursor\`. A table of the operable elements: ref, role, name, text, value, href, flags. The \`offscreen\` flag marks an element that is rendered but scrolled out of the viewport: page.click and page.type still reach it, but page.screenshot will not show it.
 - \`page.text.snapshot\` — \`tabId\`, optional \`scope\`, \`visibleOnly\`, \`limit\`, \`maxChars\`, \`cursor\`. The page's readable text.
 - \`page.screenshot\` — \`tabId\`. Attaches a picture of the visible area; use it for layout questions, not for reading text.
-- \`page.click\` — \`tabId\`, \`ref\` or \`selector\`, optional \`button\`, \`clickCount\`. A real press at the element's centre, after scrolling it into view.
+- \`page.click\` — \`tabId\`, \`ref\` or \`selector\`, optional \`button\`, \`clickCount\`. A real press at the centre of the element's on-screen part, after scrolling it into view. Refused, naming the culprit, when something else (a cookie banner, a modal) covers that point — dismiss it first.
 - \`page.type\` — \`tabId\`, \`ref\` or \`selector\`, \`text\`, optional \`clear\`, \`submit\`. Focuses the field and types into it.
 - \`page.scroll\` — \`tabId\`, optional \`direction\` (up/down/top/bottom, default down), \`amount\`, or a \`ref\`/\`selector\` to bring into view.
 - \`page.wait_for\` — \`tabId\`, \`selector\` and/or \`text\`, optional \`state\` (visible/hidden), \`timeoutMs\` (default ${WAIT_FOR_DEFAULT_MS}, max ${WAIT_FOR_MAX_MS}).

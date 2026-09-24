@@ -49,6 +49,8 @@ function harness(options: {
   scroll?: { scrollY?: number; maxScrollY?: number; atBottom?: boolean; target?: string }
   /** Throws on the n-th `check()`, counting from 1. Stands in for a cancel. */
   cancelAt?: number
+  /** The page's answer to a guard; a message makes it refuse. */
+  guard?: () => string | undefined
 } = {}): Harness {
   const sent: Sent[] = []
   const scripts: string[] = []
@@ -88,6 +90,10 @@ function harness(options: {
     },
     evaluate: async (script) => {
       scripts.push(script)
+      if (script.includes('hkGuardTarget(')) {
+        const refusal = options.guard?.()
+        return refusal === undefined ? { ok: true, value: true } : { ok: false, message: refusal }
+      }
       return { ok: true, value: script.includes('hkScrollPage(') ? scroll : target }
     },
     check: () => {
@@ -113,8 +119,11 @@ test('a click hovers before it presses, and lands on the rounded centre', async 
     'Input.dispatchMouseEvent:mousePressed',
     'Input.dispatchMouseEvent:mouseReleased',
   ])
-  assert.equal(scripts.length, 1)
+  assert.equal(scripts.length, 2)
   assert.match(scripts[0] ?? '', /hkResolveTarget\(document, window, globalThis/)
+  assert.match(scripts[0] ?? '', /"requireHit":true/)
+  // The guard runs after the hover, with the point the press will use.
+  assert.match(scripts[1] ?? '', /hkGuardTarget\(document, globalThis, \{"mode":"pointer".*"x":120,"y":241/)
   for (const entry of sent) {
     assert.equal(entry.params['x'], 120)
     assert.equal(entry.params['y'], 241)
@@ -138,6 +147,29 @@ test('a right or double click says so, in the event and in the evidence', async 
   const doubleResult = await clickTarget(double.deps, { ref: 'e2', clickCount: 2 })
   assert.equal(double.sent[1]?.params['clickCount'], 2)
   assert.match(doubleResult.text, /2× left-clicked/)
+})
+
+test('an element removed between the resolve and the press is never pressed', async () => {
+  const { deps, sent } = harness({
+    guard: () => 'STALE_ELEMENT: ref e1 was removed from the page before the input was sent.',
+  })
+  await assert.rejects(
+    () => clickTarget(deps, { ref: 'e1' }),
+    (error: unknown) => error instanceof BrowserHostError && error.code === 'STALE_ELEMENT',
+  )
+  assert.deepEqual(methods(sent), ['Input.dispatchMouseEvent:mouseMoved'])
+})
+
+test('typing re-checks focus before the text and before Enter, and stops at the first refusal', async () => {
+  let guards = 0
+  const { deps, sent, scripts } = harness({
+    guard: () => (++guards === 2 ? 'ELEMENT_NOT_INTERACTABLE: ref e1 lost focus to <div>.' : undefined),
+  })
+  await assert.rejects(() => typeText(deps, { ref: 'e1', text: 'hi', submit: true }), /lost focus/)
+  assert.doesNotMatch(scripts[0] ?? '', /"requireHit"/, 'a covered field still takes keystrokes')
+  assert.match(scripts[1] ?? '', /"mode":"keyboard"/)
+  // The text went in; the Enter never did.
+  assert.deepEqual(methods(sent), ['Input.insertText:'])
 })
 
 test('an action with neither ref nor selector never reaches the page', async () => {

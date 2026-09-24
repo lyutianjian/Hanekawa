@@ -21,12 +21,18 @@
 
 import {
   hkCheckCondition,
+  hkContains,
+  hkDeepActive,
+  hkDeepHit,
+  hkDescribe,
   hkFindTarget,
+  hkGuardTarget,
   hkQuery,
   hkResolveTarget,
   hkScrollPage,
   type ConditionOptions,
   type ConditionResult,
+  type GuardOptions,
   type ScrollOptions,
   type ScrollResult,
   type TargetOptions,
@@ -68,6 +74,9 @@ const SHARED = [
   hkWalk,
 ]
 
+/** Hit testing and focus, through shadow roots. */
+const AIM = [hkDeepHit, hkContains, hkDeepActive, hkDescribe]
+
 export function elementsScript(options: ElementScanOptions): string {
   const call = `${hkCollectElements.name}(document, window, globalThis, ${literal(options)})`
   return wrap([...SHARED, hkFlag, hkValue, hkOffscreen, hkCollectElements], call)
@@ -81,7 +90,13 @@ export function textScript(options: TextScanOptions): string {
 /** Where an element is, and whether it can be acted on at all. */
 export function resolveScript(options: TargetOptions): string {
   const call = `${hkResolveTarget.name}(document, window, globalThis, ${literal(options)})`
-  return wrap([...SHARED, hkFlag, hkQuery, hkFindTarget, hkResolveTarget], call)
+  return wrap([...SHARED, ...AIM, hkFlag, hkQuery, hkFindTarget, hkResolveTarget], call)
+}
+
+/** Re-checks the resolved element right before an input command goes out. */
+export function guardScript(options: GuardOptions): string {
+  const call = `${hkGuardTarget.name}(document, globalThis, ${literal(options)})`
+  return wrap([...SHARED, ...AIM, hkGuardTarget], call)
 }
 
 export function scrollScript(options: ScrollOptions): string {
@@ -156,6 +171,7 @@ export type {
   ConditionResult,
   ElementScanOptions,
   ElementScanResult,
+  GuardOptions,
   ScrollOptions,
   ScrollResult,
   TargetOptions,

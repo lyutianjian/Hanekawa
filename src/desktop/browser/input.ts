@@ -22,8 +22,8 @@
  *   back through the transcript instead.
  */
 
-import type { ScrollOptions, ScrollResult, TargetOptions, TargetResult } from './inject/bundle.js'
-import { resolveScript, scrollScript, unwrap } from './inject/bundle.js'
+import type { GuardOptions, ScrollOptions, ScrollResult, TargetOptions, TargetResult } from './inject/bundle.js'
+import { guardScript, resolveScript, scrollScript, unwrap } from './inject/bundle.js'
 import { BrowserHostError } from './errors.js'
 import { FIELD_MAX_NAME, SCROLL_VIEWPORT_FRACTION, SENSITIVE_AUTOCOMPLETE, TYPE_TEXT_MAX } from './limits.js'
 
@@ -124,23 +124,11 @@ function exclusive<T>(deps: InputDeps, task: () => Promise<T>): Promise<T> {
 
 export function clickTarget(deps: InputDeps, request: ClickRequest): Promise<ActionResult> {
   return exclusive(deps, async () => {
-    const target = await resolve(deps, request, { focus: false, requireEnabled: true })
+    const target = await resolve(deps, request, { focus: false, requireEnabled: true, requireHit: true })
     const button = request.button ?? 'left'
     const clickCount = Math.min(3, Math.max(1, Math.floor(request.clickCount ?? 1)))
-    const at = { x: Math.round(target.x), y: Math.round(target.y) }
-
-    // The move comes first because half the web only reveals what it is about to
-    // be clicked on hover: a menu that opens on `mouseover` is not open yet when
-    // the press lands without one.
-    deps.check()
-    await deps.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'none', buttons: 0 })
-    deps.check()
-    const buttons = BUTTON_MASK[button] ?? 1
-    await paired(
-      () => deps.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, button, buttons, clickCount }),
-      () => deps.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, button, buttons, clickCount }),
-    )
-    deps.check()
+    const at = await aim(deps, target)
+    await pressAt(deps, at, button, clickCount)
 
     const how = clickCount > 1 ? `${clickCount}× ${button}-clicked` : button === 'left' ? 'clicked' : `${button}-clicked`
     return { text: `${how} ${describe(target)} at (${at.x}, ${at.y}). ${where(target)}` }
@@ -158,7 +146,7 @@ export function typeText(deps: InputDeps, request: TypeRequest): Promise<ActionR
     const target = await resolve(deps, request, { focus: true, requireEnabled: true })
 
     if (request.clear === true) {
-      deps.check()
+      await guard(deps, target, 'keyboard')
       await selectAll(deps)
       deps.check()
       await pressKey(deps, BACKSPACE)
@@ -170,10 +158,12 @@ export function typeText(deps: InputDeps, request: TypeRequest): Promise<ActionR
       // them — cannot tell the difference. Pages keyed on `keydown` for
       // individual characters are the known gap, and `submit` covers the common
       // one of those.
+      await guard(deps, target, 'keyboard')
       await deps.send('Input.insertText', { text: request.text })
       deps.check()
     }
     if (request.submit === true) {
+      await guard(deps, target, 'keyboard')
       await pressKey(deps, ENTER)
       deps.check()
     }
@@ -210,7 +200,7 @@ export function scrollPage(deps: InputDeps, request: ScrollRequest): Promise<Act
 async function resolve(
   deps: InputDeps,
   request: { ref?: string; selector?: string },
-  mode: { focus: boolean; requireEnabled: boolean },
+  mode: { focus: boolean; requireEnabled: boolean; requireHit?: boolean; viaLabel?: boolean },
 ): Promise<TargetResult> {
   if ((request.ref ?? '') === '' && (request.selector ?? '') === '') {
     throw new BrowserHostError(
@@ -225,6 +215,8 @@ async function resolve(
     focus: mode.focus,
     requireEnabled: mode.requireEnabled,
   }
+  if (mode.requireHit === true) options.requireHit = true
+  if (mode.viaLabel === true) options.viaLabel = true
   // A ref wins: it addresses the element the model actually read, while a
   // selector is re-resolved against whatever matches now.
   if ((request.ref ?? '') !== '') options.ref = request.ref
@@ -234,6 +226,59 @@ async function resolve(
   const target = unwrap<TargetResult>(await deps.evaluate(resolveScript(options)))
   deps.check()
   return target
+}
+
+/**
+ * Hover over the target, then make sure the press will still land on it.
+ *
+ * The move comes first because half the web only reveals what it is about to
+ * be clicked on hover: a menu that opens on `mouseover` is not open yet when
+ * the press lands without one. The guard comes after it for the same reason —
+ * whatever the hover opened is now part of what the press would hit.
+ */
+async function aim(deps: InputDeps, target: TargetResult): Promise<{ x: number; y: number }> {
+  const at = { x: Math.round(target.x), y: Math.round(target.y) }
+  deps.check()
+  await deps.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'none', buttons: 0 })
+  await guard(deps, target, 'pointer', at)
+  return at
+}
+
+/** One press and its release at a point the caller has already aimed at and guarded. */
+async function pressAt(
+  deps: InputDeps,
+  at: { x: number; y: number },
+  button: 'left' | 'right' | 'middle',
+  clickCount: number,
+): Promise<void> {
+  const buttons = BUTTON_MASK[button] ?? 1
+  await paired(
+    () => deps.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, button, buttons, clickCount }),
+    () => deps.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, button, buttons, clickCount }),
+  )
+  deps.check()
+}
+
+/** Re-asks the page whether the resolved element is still what the next command reaches. */
+async function guard(
+  deps: InputDeps,
+  target: TargetResult,
+  mode: 'pointer' | 'keyboard',
+  at?: { x: number; y: number },
+): Promise<void> {
+  const options: GuardOptions = {
+    mode,
+    label: target.ref !== undefined ? `ref ${target.ref}` : `selector ${target.selector ?? ''}`,
+    nameMax: FIELD_MAX_NAME,
+    sensitiveWords: SENSITIVE_AUTOCOMPLETE,
+  }
+  if (at !== undefined) {
+    options.x = at.x
+    options.y = at.y
+  }
+  deps.check()
+  unwrap<boolean>(await deps.evaluate(guardScript(options)))
+  deps.check()
 }
 
 /** The element, as the transcript should remember it. Never its value. */

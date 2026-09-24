@@ -8,11 +8,26 @@ export function getMyAgentDir(cwd: string): string {
 }
 
 /**
- * User-level `.myagent`, shared by every project. Resolved lazily through
- * `homedir()` so tests can redirect it via USERPROFILE/HOME.
+ * The home directory whose `.myagent/` holds the user's config and sessions.
+ *
+ * Refused to a test run that did not come through `scripts/test.mjs`: a bare
+ * `tsx --test` keeps the real HOME, and a test writing its fixture config there
+ * once wiped every configured provider. The runner marks the throwaway HOME it
+ * hands out; anything else under the test runner fails loudly instead.
+ */
+export function userHome(): string {
+  if (process.env.NODE_TEST_CONTEXT !== undefined && process.env.HANEKAWA_TEST_HOME === undefined) {
+    throw new Error('Run tests through `npm test` (or `node scripts/test.mjs <file>`), which gives them a throwaway HOME.')
+  }
+  return homedir()
+}
+
+/**
+ * User-level `.myagent`, shared by every project. Resolved lazily so tests can
+ * redirect it via USERPROFILE/HOME.
  */
 export function getGlobalMyAgentDir(): string {
-  return path.join(homedir(), '.myagent')
+  return path.join(userHome(), '.myagent')
 }
 
 /**

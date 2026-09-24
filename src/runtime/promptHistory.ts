@@ -1,5 +1,5 @@
 import { appendFile, mkdir, readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { userHome } from '../utils/paths.js'
 import path from 'node:path'
 
 export const PROMPT_HISTORY_LIMIT = 1000
@@ -11,7 +11,7 @@ export interface PromptHistoryEntry {
   ts: string
 }
 
-export function getPromptHistoryPath(home = homedir()): string {
+export function getPromptHistoryPath(home = userHome()): string {
   return path.join(home, '.myagent', 'history.jsonl')
 }
 

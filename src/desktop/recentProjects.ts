@@ -1,10 +1,9 @@
 import { existsSync } from 'node:fs'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { readJsonFile } from '../utils/json.js'
-import { getMyAgentDir, getSessionsDir } from '../utils/paths.js'
+import { getMyAgentDir, getSessionsDir, userHome } from '../utils/paths.js'
 import { projectRootKey } from '../runtime/projectDirectory.js'
 
 /**
@@ -46,7 +45,7 @@ function registryPath(home: string): string {
 }
 
 /** The registry as written, unfiltered: strings only, order preserved. */
-export async function loadRecentProjects(home = homedir()): Promise<readonly string[]> {
+export async function loadRecentProjects(home = userHome()): Promise<readonly string[]> {
   const file = await readJsonFile<Partial<ProjectsFile>>(registryPath(home), {})
   if (!Array.isArray(file.projects)) return []
   return file.projects.filter((entry): entry is string => typeof entry === 'string')
@@ -64,7 +63,7 @@ export async function loadRecentProjects(home = homedir()): Promise<readonly str
  * Exported for tests; the app-facing wrapper is `main.ts`'s `ensureProject`,
  * which is the only caller that should write.
  */
-export async function recordProjectOpen(cwd: string, home = homedir()): Promise<readonly string[]> {
+export async function recordProjectOpen(cwd: string, home = userHome()): Promise<readonly string[]> {
   const key = projectRootKey(cwd)
   const kept = (await loadRecentProjects(home)).filter((entry) => existsSync(entry))
   const known = kept.some((entry) => projectRootKey(entry) === key)
@@ -83,7 +82,7 @@ export async function recordProjectOpen(cwd: string, home = homedir()): Promise<
  */
 export async function forgetRecentProject(
   cwd: string,
-  home = homedir(),
+  home = userHome(),
 ): Promise<readonly string[]> {
   const key = projectRootKey(cwd)
   const kept = (await loadRecentProjects(home)).filter((entry) => projectRootKey(entry) !== key)
@@ -196,7 +195,7 @@ export interface StartupResolution {
  *
  * Roots that no longer exist on disk are skipped, never resolved to.
  */
-export async function resolveStartupRoot(home = homedir()): Promise<StartupResolution> {
+export async function resolveStartupRoot(home = userHome()): Promise<StartupResolution> {
   const homeKey = projectRootKey(home)
   const registry = (await loadRecentProjects(home)).filter(
     (entry) => projectRootKey(entry) !== homeKey && existsSync(entry),

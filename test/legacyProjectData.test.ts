@@ -8,7 +8,7 @@ import { loadMergedSettings } from '../src/config/settings.js'
 import { buildStartupNotices } from '../src/runtime/startupNotices.js'
 import { migrateLegacyProjectData } from '../src/sessions/legacyProjectData.js'
 import { SessionStore } from '../src/sessions/service.js'
-import { getLocalAgentsDir, getProjectDataDir, getProjectPlansDir, getSessionsDir } from '../src/utils/paths.js'
+import { getLocalAgentsDir, getProjectDataDir, getProjectPlansDir, getSessionsDir, userHome } from '../src/utils/paths.js'
 
 const OLD = '00000000-0000-4000-8000-000000000001'
 const NEW = '00000000-0000-4000-8000-000000000002'
@@ -138,7 +138,8 @@ test('a file that cannot be moved leaves the original data in place and says so'
 })
 
 test('the global workspace moves ~/.myagent/sessions but keeps ~/.myagent', async () => {
-  const home = os.homedir()
+  // `userHome()`, not `os.homedir()`: it refuses the real home to a run that skipped `npm test`.
+  const home = userHome()
   await mkdir(path.join(home, '.myagent', 'sessions'), { recursive: true })
   await writeFile(path.join(home, '.myagent', 'config.json'), '{}')
   await writeFile(path.join(home, '.myagent', 'sessions', `${OLD}.jsonl`), '{"type":"message","id":"m1","role":"user","content":"hi"}\n')

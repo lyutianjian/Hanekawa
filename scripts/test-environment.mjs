@@ -57,7 +57,8 @@ export function createTestEnvironment(prefix = 'hanekawa-test-', { keep = false 
   return {
     root,
     home: testHome,
-    env: { ...process.env, HOME: testHome, USERPROFILE: testHome, TMPDIR: temp, TMP: temp, TEMP: temp },
+    // `HANEKAWA_TEST_HOME` is what `userHome()` looks for before it lets a test near `~/.myagent`.
+    env: { ...process.env, HOME: testHome, USERPROFILE: testHome, TMPDIR: temp, TMP: temp, TEMP: temp, HANEKAWA_TEST_HOME: testHome },
     cleanup() {
       try {
         cleanup()

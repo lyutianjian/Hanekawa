@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { getGlobalMyAgentDir } from '../../utils/paths.js'
 import { z } from 'zod/v3'
 import type { Tool, ToolContext, ToolResult } from '../../harness/types.js'
 import type { MyAgentSettings } from '../../config/settings.js'
@@ -122,7 +122,7 @@ const SETTINGS_MAP = new Map(SUPPORTED_SETTINGS.map((s) => [s.key, s]))
 // ── Settings file I/O (atomic write) ───────────────────────────────────────────
 
 async function loadUserSettings(): Promise<MyAgentSettings> {
-  const settingsPath = join(homedir(), '.myagent', 'settings.json')
+  const settingsPath = join(getGlobalMyAgentDir(), 'settings.json')
   try {
     const raw = await readFile(settingsPath, 'utf-8')
     return JSON.parse(raw) as MyAgentSettings
@@ -137,8 +137,8 @@ async function loadUserSettings(): Promise<MyAgentSettings> {
 }
 
 async function saveUserSettings(settings: MyAgentSettings): Promise<void> {
-  const settingsPath = join(homedir(), '.myagent', 'settings.json')
-  await mkdir(join(homedir(), '.myagent'), { recursive: true })
+  const settingsPath = join(getGlobalMyAgentDir(), 'settings.json')
+  await mkdir(getGlobalMyAgentDir(), { recursive: true })
   const tmpPath = `${settingsPath}.tmp`
   await writeFile(tmpPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
   await rename(tmpPath, settingsPath)

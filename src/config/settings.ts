@@ -1,7 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
-import { homedir } from 'node:os'
-import { getProjectDataDir, isGlobalWorkspaceRoot } from '../utils/paths.js'
+import { getGlobalMyAgentDir, getProjectDataDir, isGlobalWorkspaceRoot } from '../utils/paths.js'
 import type { AgentConfig, ModelConfig } from './service.js'
 import type { Endpoint, Routing } from './routing.js'
 import type { EffortLevel } from './effort.js'
@@ -307,7 +306,7 @@ export interface SettingsLayers {
 }
 
 export async function loadSettingsLayers(cwd: string): Promise<SettingsLayers> {
-  const user = await loadSettingsFile(join(homedir(), '.myagent', 'settings.json'))
+  const user = await loadSettingsFile(join(getGlobalMyAgentDir(), 'settings.json'))
   // The home directory *is* the global workspace, and its "project" layer is
   // the user layer. Loading both would apply every permission entry and hook
   // twice — the same double-load `ConfigService` already guards against for
@@ -567,7 +566,7 @@ export async function persistPermissionRule(cwd: string, rule: PermissionRule): 
 }
 
 export async function saveEffortLevel(level: EffortLevel): Promise<void> {
-  const settingsPath = join(homedir(), '.myagent', 'settings.json')
+  const settingsPath = join(getGlobalMyAgentDir(), 'settings.json')
   const settings = await loadSettingsFile(settingsPath)
   settings.effortLevel = level
   await writeSettingsAtomic(settingsPath, settings)

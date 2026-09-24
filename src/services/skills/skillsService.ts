@@ -67,7 +67,9 @@ export class SkillsService {
         skills.push(skill)
       } catch (error) {
         // Skip skills that can't be read or parsed
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        // ENOTDIR: a stray file such as macOS's .DS_Store sitting beside the skill folders
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
           console.warn(`Failed to load skill from ${entry}:`, (error as Error).message)
         }
       }

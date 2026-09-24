@@ -2076,6 +2076,11 @@ body.settings-open #browser-resizer { display: none; }
   min-width: 0;
   min-height: 0;
   margin-top: var(--space-1);
+  /* The disclosure presence clips this box, and every `.step-head` hangs its
+     hover tint `--space-2` past its left edge. Widen the clip to the left by
+     exactly that much, or the tint's left corners are cut square. */
+  padding-left: var(--space-2);
+  margin-left: calc(-1 * var(--space-2));
   gap: var(--space-1);
   /* No indent and no rule down the edge. Once the hairline went, the padding was
      holding the column off an edge that no longer existed: the steps share the

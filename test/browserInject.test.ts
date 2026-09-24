@@ -7,18 +7,25 @@ import type {
   ConditionResult,
   ElementScanOptions,
   ElementScanResult,
+  GuardOptions,
   ScrollOptions,
   ScrollResult,
+  SelectOptions,
+  SelectResult,
+  CheckStateResult,
   TargetOptions,
   TargetResult,
   TextScanOptions,
   TextScanResult,
 } from '../src/desktop/browser/inject/bundle.js'
 import {
+  checkStateScript,
   conditionScript,
   elementsScript,
+  guardScript,
   resolveScript,
   scrollScript,
+  selectScript,
   textScript,
   unwrap,
 } from '../src/desktop/browser/inject/bundle.js'
@@ -55,9 +62,14 @@ interface StubStyle {
   cursor: string
 }
 
-interface TextNode {
-  nodeType: 3
-  textContent: string
+class TextNode {
+  readonly nodeType = 3
+  parentElement: StubElement | null = null
+  root: { host?: StubElement } = {}
+  constructor(readonly textContent: string) {}
+  getRootNode(): { host?: StubElement } {
+    return this.parentElement === null ? this.root : this.parentElement.getRootNode()
+  }
 }
 
 interface ElementSpec {
@@ -65,9 +77,25 @@ interface ElementSpec {
   props?: Record<string, unknown>
   text?: string
   children?: StubElement[]
-  shadow?: StubElement[]
+  /** Mixed content in document order, for when text and elements interleave. */
+  nodes?: Array<string | StubElement>
+  shadow?: Array<string | StubElement>
+  /** A `<slot>`'s assigned nodes. */
+  assigned?: Array<StubElement | TextNode>
   style?: Partial<StubStyle>
   size?: { width: number; height: number }
+  /** Viewport position of the box. Absent means the top-left corner. */
+  at?: { top: number; left: number }
+}
+
+/** The tags the stub lays out inline, as a browser's default stylesheet would. */
+const INLINE_TAGS = new Set(['a', 'b', 'i', 'em', 'strong', 'span', 'code', 'label', 'small', 'mark', 'slot'])
+
+interface StubShadowRoot {
+  children: StubElement[]
+  childNodes: Array<StubElement | TextNode>
+  activeElement?: StubElement | null
+  elementFromPoint?: HitTest
 }
 
 class StubElement {
@@ -77,32 +105,51 @@ class StubElement {
   readonly children: StubElement[] = []
   readonly childNodes: Array<StubElement | TextNode> = []
   parentElement: StubElement | null = null
-  shadowRoot: { children: StubElement[] } | null = null
+  shadowRoot: StubShadowRoot | null = null
   readonly style: StubStyle
   /** A ref outlives its node, so the resolver checks this before acting. */
   isConnected = true
   /** Not every element takes focus. `page.type` has to notice when it does not. */
   focusable = true
   scrolledIntoView = false
+  scrollBehavior: string | undefined
   owner: { activeElement: StubElement | null } | undefined
   private readonly size: { width: number; height: number }
-  private root: { host?: StubElement } = {}
+  private readonly at: { top: number; left: number }
+  root: { host?: StubElement } = {}
+  assignedNodes?: () => Array<StubElement | TextNode>
+  dispatched: string[] = []
 
   constructor(tag: string, spec: ElementSpec = {}) {
     this.tagName = tag.toUpperCase()
     this.attrs = { ...spec.attrs }
-    this.style = { display: 'block', visibility: 'visible', opacity: '1', cursor: 'auto', ...spec.style }
+    const display = INLINE_TAGS.has(tag) ? 'inline' : 'block'
+    this.style = { display, visibility: 'visible', opacity: '1', cursor: 'auto', ...spec.style }
     this.size = spec.size ?? { width: 100, height: 20 }
+    this.at = spec.at ?? { top: 0, left: 0 }
     Object.assign(this, spec.props ?? {})
-    if (spec.text !== undefined) this.childNodes.push({ nodeType: 3, textContent: spec.text })
-    for (const child of spec.children ?? []) {
-      child.parentElement = this
-      this.children.push(child)
-      this.childNodes.push(child)
+    const content: Array<string | StubElement> = [
+      ...(spec.text !== undefined ? [spec.text] : []),
+      ...(spec.children ?? []),
+      ...(spec.nodes ?? []),
+    ]
+    for (const item of content) {
+      const node = typeof item === 'string' ? new TextNode(item) : item
+      node.parentElement = this
+      if (node instanceof StubElement) this.children.push(node)
+      this.childNodes.push(node)
     }
     if (spec.shadow !== undefined) {
-      for (const child of spec.shadow) child.root = { host: this }
-      this.shadowRoot = { children: spec.shadow }
+      const shadowNodes = spec.shadow.map((item) => (typeof item === 'string' ? new TextNode(item) : item))
+      for (const node of shadowNodes) node.root = { host: this }
+      this.shadowRoot = {
+        children: shadowNodes.filter((node): node is StubElement => node instanceof StubElement),
+        childNodes: shadowNodes,
+      }
+    }
+    if (spec.assigned !== undefined) {
+      const assigned = spec.assigned
+      this.assignedNodes = () => assigned
     }
   }
 
@@ -118,7 +165,12 @@ class StubElement {
   }
 
   getRootNode(): { host?: StubElement } {
-    return this.root
+    return this.parentElement === null ? this.root : this.parentElement.getRootNode()
+  }
+
+  dispatchEvent(event: { type: string }): boolean {
+    this.dispatched.push(event.type)
+    return true
   }
 
   getAttribute(name: string): string | null {
@@ -130,11 +182,12 @@ class StubElement {
   }
 
   getBoundingClientRect(): { width: number; height: number; top: number; left: number } {
-    return { ...this.size, top: 0, left: 0 }
+    return { ...this.size, ...this.at }
   }
 
-  scrollIntoView(): void {
+  scrollIntoView(options?: { behavior?: string }): void {
     this.scrolledIntoView = true
+    this.scrollBehavior = options?.behavior
   }
 
   focus(): void {
@@ -172,7 +225,14 @@ function walk(root: StubElement, visit: (el: StubElement) => boolean): StubEleme
   return null
 }
 
-function documentFor(body: StubElement, activeElement: StubElement | null = null): Record<string, unknown> {
+/** Says who is on top at a viewport point. The stub has no layout to work it out. */
+type HitTest = (x: number, y: number) => StubElement | null
+
+function documentFor(
+  body: StubElement,
+  activeElement: StubElement | null = null,
+  hit: HitTest = () => null,
+): Record<string, unknown> {
   const doc: Record<string, unknown> = {
     body,
     documentElement: body,
@@ -181,6 +241,7 @@ function documentFor(body: StubElement, activeElement: StubElement | null = null
     activeElement,
     querySelector: (selector: string) => walk(body, (node) => matchesSimple(node, selector)),
     getElementById: (id: string) => walk(body, (node) => node.id === id),
+    elementFromPoint: hit,
   }
   // `focus()` has to move the document's own idea of what is focused, which is
   // the only thing the resolver trusts as proof that focusing worked.
@@ -198,20 +259,31 @@ function windowFor(): {
   innerHeight: number
   scrollX: number
   scrollY: number
-  scrollBy: (x: number, y: number) => void
-  scrollTo: (x: number, y: number) => void
+  scrollBehaviors: string[]
+  scrollBy: (options: { top?: number; behavior?: string }) => void
+  scrollTo: (options: { top?: number; behavior?: string }) => void
+  Event: new (type: string, init?: { bubbles?: boolean; composed?: boolean }) => { type: string }
 } {
   const win = {
+    Event: class {
+      constructor(
+        readonly type: string,
+        readonly init?: { bubbles?: boolean; composed?: boolean },
+      ) {}
+    },
     getComputedStyle: (node: StubElement) => node.style,
     innerWidth: 1280,
     innerHeight: 720,
     scrollX: 0,
     scrollY: 0,
-    scrollBy: (_x: number, y: number) => {
-      win.scrollY = Math.max(0, win.scrollY + y)
+    scrollBehaviors: [] as string[],
+    scrollBy: (options: { top?: number; behavior?: string }) => {
+      win.scrollBehaviors.push(String(options.behavior))
+      win.scrollY = Math.max(0, win.scrollY + (options.top ?? 0))
     },
-    scrollTo: (_x: number, y: number) => {
-      win.scrollY = Math.max(0, y)
+    scrollTo: (options: { top?: number; behavior?: string }) => {
+      win.scrollBehaviors.push(String(options.behavior))
+      win.scrollY = Math.max(0, options.top ?? win.scrollY)
     },
   }
   return win
@@ -250,6 +322,7 @@ function runText(body: StubElement, overrides: Partial<TextScanOptions> = {}): T
     maxNodes: SCAN_MAX_NODES,
     budgetMs: SCAN_BUDGET_MS,
     segmentMax: FIELD_MAX_TEXT,
+    sensitiveWords: SENSITIVE_AUTOCOMPLETE,
     ...overrides,
   }
   const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
@@ -322,6 +395,35 @@ test('a transparent ancestor hides a descendant across the shadow boundary', () 
   const relaxed = runElements(body, { visibleOnly: false }).result
   assert.equal(relaxed.rows.length, 1)
   assert.equal(relaxed.rows[0]?.visible, undefined)
+})
+
+test('a rendered element outside the viewport is marked offscreen, one inside is not', () => {
+  // The stub window is 1280×720.
+  const body = el('body', {
+    children: [
+      el('button', { text: 'In view', at: { top: 700, left: 0 } }),
+      el('button', { text: 'Below the fold', at: { top: 720, left: 0 } }),
+      el('button', { text: 'Scrolled past', at: { top: -20, left: 0 } }),
+      el('button', { text: 'Off to the right', at: { top: 10, left: 1280 } }),
+    ],
+  })
+  const rows = runElements(body).result.rows
+  assert.deepEqual(
+    rows.map((row) => [row.name, row.offscreen === true]),
+    [
+      ['In view', false],
+      ['Below the fold', true],
+      ['Scrolled past', true],
+      ['Off to the right', true],
+    ],
+  )
+  // Offscreen is a kind of visible, never a substitute for it.
+  assert.ok(rows.every((row) => row.visible === true))
+
+  const hidden = el('body', {
+    children: [el('button', { text: 'Hidden', style: { display: 'none' }, at: { top: 5000, left: 0 } })],
+  })
+  assert.equal(runElements(hidden, { visibleOnly: false }).result.rows[0]?.offscreen, undefined)
 })
 
 test('a password field projects neither its text nor its value', () => {
@@ -456,6 +558,7 @@ function runCondition(sandbox: Record<string, unknown>, overrides: Partial<Condi
     maxNodes: SCAN_MAX_NODES,
     budgetMs: SCAN_BUDGET_MS,
     segmentMax: FIELD_MAX_TEXT,
+    sensitiveWords: SENSITIVE_AUTOCOMPLETE,
     ...overrides,
   }
   return unwrap<ConditionResult>(serialize(vm.runInNewContext(conditionScript(options), sandbox)))
@@ -480,6 +583,7 @@ test('a snapshot ref resolves to a point, and dies with its node', () => {
   assert.equal(target.name, 'Home')
   assert.deepEqual([target.x, target.y], [50, 10])
   assert.equal(link.scrolledIntoView, true, 'a click has to bring its element on screen first')
+  assert.equal(link.scrollBehavior, 'instant', 'a smooth-scrolling page would leave the rect read at the old position')
 
   link.isConnected = false
   assert.throws(() => runResolve(sandbox, { ref: 'e1' }), hasCode('STALE_ELEMENT'))
@@ -549,9 +653,21 @@ test('a condition is about what is visible, and says what it saw', () => {
   assert.match(missing.observed, /no element matches #nope/)
   assert.equal(runCondition(sandbox, { selector: '#nope', state: 'hidden' }).matched, true)
 
+  const split = documentFor(el('body', { children: [el('p', { nodes: ['Order ', el('b', { text: 'confirmed' })] })] }))
+  assert.equal(runCondition({ document: split, window: windowFor() }, { text: 'Order confirmed' }).matched, true)
+
   // A selector plus a text is a search inside that subtree.
   assert.equal(runCondition(sandbox, { selector: '#status', text: 'Loaded' }).matched, true)
   assert.equal(runCondition(sandbox, { selector: '#status', text: 'Spinner' }).matched, false)
+})
+
+test('a text that was not seen is only "hidden" when the whole page was looked at', () => {
+  const body = el('body', { children: Array.from({ length: 20 }, (_, index) => el('p', { text: `Row ${index}` })) })
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+  assert.equal(runCondition(sandbox, { text: 'Spinner', state: 'hidden' }).matched, true)
+  const cut = runCondition(sandbox, { text: 'Spinner', state: 'hidden', maxNodes: 5 })
+  assert.equal(cut.matched, false)
+  assert.match(cut.observed, /hit its budget/)
 })
 
 test('scrolling moves the window and reports where it stopped', () => {
@@ -574,17 +690,290 @@ test('scrolling moves the window and reports where it stopped', () => {
   const targeted = runScroll(sandbox, { selector: '#far' })
   assert.equal(targeted.target, 'selector #far')
   assert.equal(far.scrolledIntoView, true)
+  // A page's `scroll-behavior: smooth` would otherwise leave every read-back stale.
+  assert.equal(far.scrollBehavior, 'instant')
+  assert.deepEqual((sandbox.window as { scrollBehaviors: string[] }).scrollBehaviors, ['instant', 'instant', 'instant', 'instant'])
 })
 
-test('text is gathered per owning element, and scripts never contribute', () => {
+test('text is grouped by block, in reading order, and scripts never contribute', () => {
   const body = el('body', {
     children: [
-      el('p', { children: [el('span', { text: 'Hello' }), el('span', { text: 'world' })], text: '' }),
+      el('p', { nodes: ['点击', el('a', { attrs: { href: '/x' }, text: '这里' }), '继续'] }),
+      el('p', { children: [el('span', { text: 'Hello' }), el('span', { text: 'world' })] }),
+      el('div', { children: [el('div', { text: 'one' }), el('div', { text: 'two' })] }),
+      el('p', { nodes: ['line', el('br'), 'break'] }),
       el('script', { text: 'console.log(1)' }),
       el('p', { text: 'Hidden', style: { display: 'none' } }),
     ],
   })
   const result = runText(body)
-  assert.deepEqual(result.segments, ['Hello', 'world'])
+  assert.deepEqual(result.blocks, [
+    { kind: 'text', text: '点击这里继续' },
+    // Two inline spans with no space between them draw as one word.
+    { kind: 'text', text: 'Helloworld' },
+    { kind: 'text', text: 'one' },
+    { kind: 'text', text: 'two' },
+    { kind: 'text', text: 'line break' },
+  ])
   assert.equal(result.title, 'Stub Page')
+})
+
+test('list items, headings and table rows say what they are', () => {
+  const body = el('body', {
+    children: [
+      el('h1', { nodes: ['Orders ', el('small', { text: '(3)' })] }),
+      el('ul', { children: [el('li', { children: [el('p', { text: 'first' }), el('p', { text: 'para' })] })] }),
+      el('table', {
+        children: [el('tr', { children: [el('td', { text: 'Widget' }), el('td', { text: '$4' })] })],
+      }),
+    ],
+  })
+  assert.deepEqual(runText(body).blocks, [
+    { kind: 'heading', text: 'Orders (3)' },
+    { kind: 'item', text: 'first para' },
+    { kind: 'row', text: 'Widget $4' },
+  ])
+})
+
+test('a long block is split across rows, never cut, and never through an emoji', () => {
+  // 9 characters then an emoji that straddles the 10-character boundary.
+  const body = el('body', { children: [el('p', { text: 'abcdefghi😀jklmnopqrstuvwxyz' })] })
+  const blocks = runText(body, { segmentMax: 10 }).blocks
+  assert.deepEqual(blocks.map((block) => block.kind), ['text', 'text+', 'text+'])
+  assert.equal(blocks[0]?.text, 'abcdefghi')
+  assert.equal(blocks[1]?.text, '😀jklmnopq')
+  assert.equal(blocks.map((block) => block.text).join(''), 'abcdefghi😀jklmnopqrstuvwxyz')
+})
+
+test('the text walk follows the rendered tree: shadow content once, slotted content in its slot', () => {
+  const slotted = el('span', { text: 'slotted' })
+  const body = el('body', {
+    children: [
+      el('my-card', {
+        children: [slotted],
+        shadow: [el('p', { nodes: ['before ', el('slot', { assigned: [slotted] }), ' after'] })],
+      }),
+      el('input', { attrs: { type: 'text' }, props: { value: 'typed' }, text: 'never' }),
+      el('div', { attrs: { autocomplete: 'one-time-code' }, text: '123456' }),
+    ],
+  })
+  assert.deepEqual(runText(body).blocks, [{ kind: 'text', text: 'before slotted after' }])
+})
+
+test('bare text slotted into a web component is read, though the slot itself has no box', () => {
+  // A real `<slot>` is `display: contents`: its rect is 0×0, which `hkVisible` alone calls hidden.
+  const box = { style: { display: 'contents' }, size: { width: 0, height: 0 } }
+  const assigned: TextNode[] = []
+  const hiddenAssigned: TextNode[] = []
+  const body = el('body', {
+    children: [
+      el('my-btn', {
+        nodes: ['Save changes'],
+        shadow: [el('button', { children: [el('slot', { assigned, ...box })] })],
+      }),
+      el('my-btn', {
+        nodes: ['Secret'],
+        style: { display: 'none' },
+        shadow: [el('button', { children: [el('slot', { assigned: hiddenAssigned, ...box })] })],
+      }),
+    ],
+  })
+  const [shown, hidden] = body.children as [StubElement, StubElement]
+  assigned.push(shown.childNodes[0] as TextNode)
+  hiddenAssigned.push(hidden.childNodes[0] as TextNode)
+  assert.deepEqual(runText(body).blocks, [{ kind: 'text', text: 'Save changes' }])
+})
+
+// --- aiming: the hit test and the guard ----------------------------------------
+
+function runGuard(sandbox: Record<string, unknown>, overrides: Partial<GuardOptions>): boolean {
+  const options: GuardOptions = {
+    mode: 'pointer',
+    label: 'ref e1',
+    nameMax: FIELD_MAX_NAME,
+    sensitiveWords: SENSITIVE_AUTOCOMPLETE,
+    ...overrides,
+  }
+  return unwrap<boolean>(serialize(vm.runInNewContext(guardScript(options), sandbox)))
+}
+
+test('a click target under an overlay is refused, naming what covers it', () => {
+  const button = el('button', { attrs: { id: 'buy' }, text: 'Buy' })
+  const banner = el('div', { attrs: { role: 'dialog', 'aria-label': 'Cookie consent' } })
+  const body = el('body', { children: [button, banner] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body, null, () => banner), window: windowFor() }
+
+  assert.throws(
+    () => runResolve(sandbox, { selector: '#buy', requireHit: true }),
+    (error: unknown) =>
+      error instanceof BrowserHostError &&
+      error.code === 'ELEMENT_NOT_INTERACTABLE' &&
+      /covered by <div role=dialog> "Cookie consent"/.test(error.message) &&
+      /Dismiss or close it first/.test(error.message),
+  )
+  // Typing does not go through the hit test, so it does not ask for one.
+  assert.equal(runResolve(sandbox, { selector: '#buy' }).role, 'button')
+})
+
+test('a press on the icon inside a button, or inside its shadow root, is a press on the button', () => {
+  const icon = el('svg')
+  const button = el('button', { attrs: { id: 'go' }, children: [icon] })
+  const inner = el('span')
+  const host = el('my-button', { attrs: { id: 'host' }, shadow: [inner] })
+  ;(host.shadowRoot as StubShadowRoot).elementFromPoint = () => inner
+  const body = el('body', { children: [button, host] })
+
+  let top: StubElement = icon
+  const sandbox: Record<string, unknown> = { document: documentFor(body, null, () => top), window: windowFor() }
+  assert.equal(runResolve(sandbox, { selector: '#go', requireHit: true }).role, 'button')
+
+  // `document.elementFromPoint` stops at the host; the shadow root knows better.
+  top = host
+  assert.equal(runResolve(sandbox, { selector: '#host', requireHit: true }).role, 'my-button')
+})
+
+test('a box taller than the viewport is aimed at the middle of its visible part', () => {
+  // The window is 1280×720; the panel starts 200px down and runs 2000px.
+  const panel = el('div', { attrs: { id: 'panel' }, size: { width: 400, height: 2000 }, at: { top: 200, left: -100 } })
+  const body = el('body', { children: [panel] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body, null, () => panel), window: windowFor() }
+  const target = runResolve(sandbox, { selector: '#panel', requireHit: true })
+  assert.deepEqual([target.x, target.y], [150, 460])
+
+  const gone = el('div', { attrs: { id: 'gone' }, at: { top: 900, left: 0 } })
+  const off = { document: documentFor(el('body', { children: [gone] })), window: windowFor() }
+  assert.throws(() => runResolve(off, { selector: '#gone' }), /off screen/)
+})
+
+test('the guard refuses a target that was removed, covered, or lost focus since the resolve', () => {
+  const field = el('input', { attrs: { id: 'q', type: 'text', 'aria-label': 'Query' } })
+  const popup = el('div', { attrs: { role: 'menu', 'aria-label': 'Suggestions' } })
+  const body = el('body', { children: [field, popup] })
+  let top: StubElement = field
+  const doc = documentFor(body, null, () => top)
+  const sandbox: Record<string, unknown> = { document: doc, window: windowFor() }
+
+  runResolve(sandbox, { selector: '#q', focus: true })
+  assert.equal(runGuard(sandbox, { mode: 'pointer', x: 50, y: 10 }), true)
+  assert.equal(runGuard(sandbox, { mode: 'keyboard' }), true)
+
+  top = popup
+  assert.throws(() => runGuard(sandbox, { mode: 'pointer', x: 50, y: 10 }), /no longer under the pointer; <div role=menu> "Suggestions" is/)
+
+  doc['activeElement'] = popup
+  assert.throws(() => runGuard(sandbox, { mode: 'keyboard' }), hasCode('ELEMENT_NOT_INTERACTABLE'))
+
+  field.isConnected = false
+  assert.throws(() => runGuard(sandbox, { mode: 'keyboard' }), hasCode('STALE_ELEMENT'))
+})
+
+test('focus inside an open shadow root counts as focus on the element that holds it', () => {
+  const inner = el('input', { attrs: { type: 'text' } })
+  const host = el('my-field', { attrs: { id: 'field' }, shadow: [inner] })
+  const body = el('body', { children: [host] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body, host), window: windowFor() }
+  ;(host.shadowRoot as StubShadowRoot).activeElement = inner
+  assert.equal(runResolve(sandbox, { selector: '#field' }).focused, true)
+})
+
+// --- select_option and set_checked ---------------------------------------------
+
+function runSelect(sandbox: Record<string, unknown>, overrides: Partial<SelectOptions>): SelectResult {
+  const options: SelectOptions = { nameMax: FIELD_MAX_NAME, sensitiveWords: SENSITIVE_AUTOCOMPLETE, ...overrides }
+  return unwrap<SelectResult>(serialize(vm.runInNewContext(selectScript(options), sandbox)))
+}
+
+function runCheckState(sandbox: Record<string, unknown>, selector: string): CheckStateResult {
+  const options = { selector, nameMax: FIELD_MAX_NAME, sensitiveWords: SENSITIVE_AUTOCOMPLETE }
+  return unwrap<CheckStateResult>(serialize(vm.runInNewContext(checkStateScript(options), sandbox)))
+}
+
+function selectFixture(): { select: StubElement; sandbox: Record<string, unknown> } {
+  const options = [
+    el('option', { props: { value: '' }, text: 'Choose…' }),
+    el('option', { props: { value: 'fr' }, text: '  France ' }),
+    el('option', { props: { value: 'de', disabled: true }, text: 'Germany' }),
+  ]
+  const closed = el('option', { props: { value: 'xx' }, text: 'Closed' })
+  const group = el('optgroup', { props: { disabled: true }, children: [closed] })
+  const select = el('select', {
+    attrs: { id: 'country', 'aria-label': 'Country' },
+    props: { options: [...options, closed], selectedIndex: 0 },
+    children: [...options, group],
+  })
+  const body = el('body', { children: [select, el('div', { attrs: { id: 'fake', role: 'combobox' } })] })
+  return { select, sandbox: { document: documentFor(body), window: windowFor() } }
+}
+
+test('select_option picks by value, label or index, and fires input then change', () => {
+  const { select, sandbox } = selectFixture()
+  const byLabel = runSelect(sandbox, { selector: '#country', label: 'France' })
+  assert.equal(byLabel.index, 1)
+  assert.equal(byLabel.label, 'France')
+  assert.equal(byLabel.value, 'fr')
+  assert.equal(byLabel.name, 'Country')
+  assert.equal((select as unknown as { selectedIndex: number }).selectedIndex, 1)
+  assert.deepEqual(select.dispatched, ['input', 'change'])
+
+  assert.equal(runSelect(sandbox, { selector: '#country', value: '' }).index, 0)
+  assert.equal(runSelect(sandbox, { selector: '#country', index: 1 }).value, 'fr')
+})
+
+test('select_option refuses what it cannot honestly select', () => {
+  const { select, sandbox } = selectFixture()
+  assert.throws(
+    () => runSelect(sandbox, { selector: '#fake', index: 0 }),
+    (error: unknown) =>
+      error instanceof BrowserHostError && error.code === 'UNSUPPORTED_ELEMENT' && /page\.click it to open/.test(error.message),
+  )
+  assert.throws(() => runSelect(sandbox, { selector: '#country', value: 'de' }), hasCode('ELEMENT_NOT_INTERACTABLE'))
+  assert.throws(() => runSelect(sandbox, { selector: '#country', value: 'xx' }), /option 3 .* is disabled/)
+  assert.throws(
+    () => runSelect(sandbox, { selector: '#country', label: 'Spain' }),
+    (error: unknown) =>
+      error instanceof BrowserHostError && error.code === 'INVALID_REQUEST' && /1: "France"/.test(error.message),
+  )
+
+  // A page that puts the old value back in its change handler is reported.
+  select.dispatchEvent = (event: { type: string }) => {
+    if (event.type === 'change') (select as unknown as { selectedIndex: number }).selectedIndex = 0
+    return true
+  }
+  assert.throws(() => runSelect(sandbox, { selector: '#country', index: 1 }), /changed it back/)
+
+  ;(select as unknown as { multiple: boolean }).multiple = true
+  assert.throws(() => runSelect(sandbox, { selector: '#country', index: 1 }), hasCode('UNSUPPORTED_ELEMENT'))
+})
+
+test('check state reads the property for native inputs and aria-checked for roles', () => {
+  const body = el('body', {
+    children: [
+      el('input', { attrs: { id: 'box', type: 'checkbox', 'aria-label': 'Remember me' }, props: { checked: true } }),
+      el('input', { attrs: { id: 'radio', type: 'radio' }, props: { checked: false } }),
+      el('div', { attrs: { id: 'switch', role: 'switch', 'aria-checked': 'false' }, text: 'Dark mode' }),
+      el('button', { attrs: { id: 'plain' }, text: 'Save' }),
+    ],
+  })
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+  assert.deepEqual(runCheckState(sandbox, '#box'), { role: 'checkbox', name: 'Remember me', disabled: false, checked: true, radio: false })
+  assert.equal(runCheckState(sandbox, '#radio').radio, true)
+  assert.equal(runCheckState(sandbox, '#switch').checked, false)
+  assert.throws(() => runCheckState(sandbox, '#plain'), hasCode('UNSUPPORTED_ELEMENT'))
+})
+
+test('a native checkbox styled out of sight is aimed at through its visible label', () => {
+  const label = el('label', { text: 'Accept terms', size: { width: 120, height: 20 }, at: { top: 40, left: 0 } })
+  const box = el('input', {
+    attrs: { id: 'terms', type: 'checkbox' },
+    style: { opacity: '0' },
+    props: { labels: [label] },
+  })
+  const body = el('body', { children: [box, label] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body, null, () => label), window: windowFor() }
+
+  const target = runResolve(sandbox, { selector: '#terms', requireHit: true, viaLabel: true })
+  assert.equal(target.role, 'label')
+  assert.deepEqual([target.x, target.y], [60, 50])
+  // Without the flag the hidden input is simply not interactable.
+  assert.throws(() => runResolve(sandbox, { selector: '#terms' }), hasCode('ELEMENT_NOT_INTERACTABLE'))
 })

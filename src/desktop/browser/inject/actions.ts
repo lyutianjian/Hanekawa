@@ -21,8 +21,8 @@
 
 import type { InjDocument, InjElement, InjGlobal, InjWindow } from './dom.js'
 import { hkFlag } from './elements.js'
-import { hkName, hkProp, hkRole, hkSensitive, hkString, hkTrim, hkVisible, hkWalk } from './semantics.js'
-import { hkOwnText } from './text.js'
+import { hkName, hkParent, hkProp, hkRole, hkSensitive, hkString, hkTag, hkTrim, hkVisible } from './semantics.js'
+import { hkTextBlocks, type TextBlock } from './text.js'
 
 export interface TargetOptions {
   /** A ref from the latest `page.elements.snapshot`. Wins over `selector`. */
@@ -36,6 +36,28 @@ export interface TargetOptions {
   focus: boolean
   /** Refuse a disabled element. Off for operations a disabled node can answer. */
   requireEnabled: boolean
+  /**
+   * Refuse an element something else is drawn over at the aim point. Off for
+   * typing: `focus()` does not go through the hit test, so a covered field
+   * still takes its keystrokes.
+   */
+  requireHit?: boolean
+  /**
+   * A native checkbox or radio styled out of sight is operated through its
+   * visible `<label>` instead, which is the element the user actually sees.
+   */
+  viaLabel?: boolean
+}
+
+export interface GuardOptions {
+  /** `pointer` re-runs the hit test at (x, y); `keyboard` re-checks focus. */
+  mode: 'pointer' | 'keyboard'
+  x?: number
+  y?: number
+  /** How the refusal names the target: `ref e3`, `selector #q`. */
+  label: string
+  nameMax: number
+  sensitiveWords: string[]
 }
 
 export interface TargetResult {
@@ -45,7 +67,7 @@ export interface TargetResult {
   name: string
   /** A password-ish field: the host must not echo what it types here. */
   sensitive: boolean
-  /** Viewport coordinates of the element's centre, in CSS pixels. */
+  /** Viewport coordinates of the centre of the element's on-screen part, in CSS pixels. */
   x: number
   y: number
   width: number
@@ -53,6 +75,46 @@ export interface TargetResult {
   focused: boolean
   url: string
   title: string
+}
+
+export interface SelectOptions {
+  ref?: string
+  selector?: string
+  /** Exactly one of the three picks the option. */
+  value?: string
+  label?: string
+  index?: number
+  nameMax: number
+  sensitiveWords: string[]
+}
+
+export interface SelectResult {
+  ref?: string
+  selector?: string
+  role: string
+  name: string
+  sensitive: boolean
+  index: number
+  label: string
+  value: string
+  url: string
+  title: string
+}
+
+export interface CheckStateOptions {
+  ref?: string
+  selector?: string
+  nameMax: number
+  sensitiveWords: string[]
+}
+
+export interface CheckStateResult {
+  role: string
+  name: string
+  checked: boolean
+  /** A radio cannot be unchecked by clicking it. */
+  radio: boolean
+  disabled: boolean
 }
 
 export interface ScrollOptions {
@@ -83,6 +145,7 @@ export interface ConditionOptions {
   maxNodes: number
   budgetMs: number
   segmentMax: number
+  sensitiveWords: string[]
 }
 
 export interface ConditionResult {
@@ -125,18 +188,84 @@ export function hkFindTarget(doc: InjDocument, g: InjGlobal, ref?: string, selec
   return found
 }
 
+/**
+ * The element a press at (x, y) lands on, through every open shadow root.
+ *
+ * `document.elementFromPoint` stops at a shadow host, so the answer is refined
+ * one root at a time until a root has nothing deeper to say.
+ */
+export function hkDeepHit(doc: InjDocument, x: number, y: number): InjElement | null {
+  let hit = doc.elementFromPoint(x, y)
+  for (let depth = 0; hit !== null && depth < 32; depth += 1) {
+    const shadow = hit.shadowRoot
+    if (shadow === null || shadow === undefined || typeof shadow.elementFromPoint !== 'function') break
+    const inner = shadow.elementFromPoint(x, y)
+    if (inner === null || inner === undefined || inner === hit) break
+    hit = inner
+  }
+  return hit
+}
+
+/** `node` is `el` or inside it, across shadow boundaries: an icon in a button is the button. */
+export function hkContains(el: InjElement, node: InjElement | null): boolean {
+  let current = node
+  for (let depth = 0; current !== null && depth < 256; depth += 1) {
+    if (current === el) return true
+    current = hkParent(current)
+  }
+  return false
+}
+
+/** The focused element, drilled through open shadow roots to the innermost one. */
+export function hkDeepActive(doc: InjDocument): InjElement | null {
+  let active = doc.activeElement
+  for (let depth = 0; active !== null && depth < 32; depth += 1) {
+    const shadow = active.shadowRoot
+    const inner = shadow === null || shadow === undefined ? undefined : shadow.activeElement
+    if (inner === null || inner === undefined || inner === active) break
+    active = inner
+  }
+  return active
+}
+
+/** Whatever is in the way, named well enough to dismiss: tag, role, a short name. */
+export function hkDescribe(el: InjElement | null, doc: InjDocument, words: string[]): string {
+  if (el === null) return 'nothing the page reports'
+  const tag = hkTag(el)
+  const role = hkRole(el)
+  const sensitive = hkSensitive(el, words)
+  const name = sensitive ? '' : hkName(el, doc, false, 80)
+  let out = '<' + tag + (role !== tag ? ' role=' + role : '') + '>'
+  if (name !== '') out += ' "' + name + '"'
+  return out
+}
+
 export function hkResolveTarget(
   doc: InjDocument,
   win: InjWindow,
   g: InjGlobal,
   opts: TargetOptions,
 ): TargetResult {
-  const el = hkFindTarget(doc, g, opts.ref, opts.selector)
+  let el = hkFindTarget(doc, g, opts.ref, opts.selector)
   const label = opts.ref !== undefined && opts.ref !== '' ? 'ref ' + opts.ref : 'selector ' + hkString(opts.selector)
+
+  if (opts.viaLabel === true && hkTag(el) === 'input') {
+    const box = el.getBoundingClientRect()
+    if (box.width <= 0 || box.height <= 0 || !hkVisible(el, win)) {
+      const labels = hkProp(el, 'labels') as ArrayLike<InjElement> | null | undefined
+      const first = labels === null || labels === undefined || labels.length === 0 ? undefined : labels[0]
+      if (first !== undefined) {
+        const labelBox = first.getBoundingClientRect()
+        if (labelBox.width > 0 && labelBox.height > 0 && hkVisible(first, win)) el = first
+      }
+    }
+  }
 
   if (opts.scrollIntoView) {
     try {
-      el.scrollIntoView({ block: 'center', inline: 'center' })
+      // `instant` overrides a page's `scroll-behavior: smooth`, which would
+      // leave the rect below at its pre-scroll position and the target off screen.
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
     } catch {
       // Not every element accepts it (a detached one, an exotic polyfill); the
       // geometry check below is what actually decides whether this can proceed.
@@ -151,12 +280,29 @@ export function hkResolveTarget(
     throw new Error('ELEMENT_NOT_INTERACTABLE: ' + label + ' is disabled.')
   }
 
-  const x = rect.left + rect.width / 2
-  const y = rect.top + rect.height / 2
-  if (x < 0 || y < 0 || x >= win.innerWidth || y >= win.innerHeight) {
-    throw new Error(
-      'ELEMENT_NOT_INTERACTABLE: ' + label + ' could not be brought into the viewport; its centre is off screen.',
-    )
+  // Aim at the middle of the part that is on screen, not of the whole box: a
+  // panel taller than the viewport has its centre wherever the scroll left it.
+  const left = Math.max(0, rect.left)
+  const right = Math.min(win.innerWidth, rect.left + rect.width)
+  const top = Math.max(0, rect.top)
+  const bottom = Math.min(win.innerHeight, rect.top + rect.height)
+  if (right <= left || bottom <= top) {
+    throw new Error('ELEMENT_NOT_INTERACTABLE: ' + label + ' could not be brought into the viewport; it is off screen.')
+  }
+  const x = (left + right) / 2
+  const y = (top + bottom) / 2
+
+  if (opts.requireHit === true) {
+    const hit = hkDeepHit(doc, x, y)
+    if (!hkContains(el, hit)) {
+      throw new Error(
+        'ELEMENT_NOT_INTERACTABLE: ' +
+          label +
+          ' is covered by ' +
+          hkDescribe(hit, doc, opts.sensitiveWords) +
+          '. Dismiss or close it first, then retry.',
+      )
+    }
   }
 
   if (opts.focus) {
@@ -166,11 +312,13 @@ export function hkResolveTarget(
       // Same as above: `activeElement` is the answer, not the call.
     }
   }
-  const focused = doc.activeElement === el
+  const active = hkDeepActive(doc)
+  const focused = active !== null && hkContains(el, active)
   if (opts.focus && !focused) {
     throw new Error('ELEMENT_NOT_INTERACTABLE: ' + label + ' did not take focus. Click it first, then type.')
   }
 
+  g.__hanekawaBrowserTarget = el
   const sensitive = hkSensitive(el, opts.sensitiveWords)
   const result: TargetResult = {
     role: hkRole(el),
@@ -189,6 +337,174 @@ export function hkResolveTarget(
   return result
 }
 
+/**
+ * The last word before an input command goes out: is the element the resolve
+ * settled on still the one this press or keystroke will reach?
+ *
+ * Between the resolve and the press there are round trips, a hover that may
+ * open a menu over the target, and the page's own timers. A press that lands
+ * on whatever moved in meanwhile is a click nobody asked for.
+ */
+export function hkGuardTarget(doc: InjDocument, g: InjGlobal, opts: GuardOptions): boolean {
+  const el = g.__hanekawaBrowserTarget
+  if (el === undefined || hkProp(el, 'isConnected') === false) {
+    throw new Error(
+      'STALE_ELEMENT: ' + opts.label + ' was removed from the page before the input was sent. Take a fresh page.elements.snapshot.',
+    )
+  }
+  if (opts.mode === 'pointer') {
+    const x = typeof opts.x === 'number' ? opts.x : 0
+    const y = typeof opts.y === 'number' ? opts.y : 0
+    const hit = hkDeepHit(doc, x, y)
+    if (!hkContains(el, hit)) {
+      throw new Error(
+        'ELEMENT_NOT_INTERACTABLE: ' +
+          opts.label +
+          ' is no longer under the pointer; ' +
+          hkDescribe(hit, doc, opts.sensitiveWords) +
+          ' is. Nothing was pressed. Take a fresh page.elements.snapshot and retry.',
+      )
+    }
+    return true
+  }
+  const active = hkDeepActive(doc)
+  if (active === null || !hkContains(el, active)) {
+    throw new Error(
+      'ELEMENT_NOT_INTERACTABLE: ' +
+        opts.label +
+        ' lost focus to ' +
+        hkDescribe(active, doc, opts.sensitiveWords) +
+        '. Nothing was typed after that point.',
+    )
+  }
+  return true
+}
+
+/**
+ * Picks an option of a native `<select>` the way a user's pick lands.
+ *
+ * There is no real input that does this — a native dropdown's popup is drawn
+ * by the browser, outside the page, and CDP cannot reach into it. So the
+ * selection is set directly and announced with the same `input` and `change`
+ * a user's pick fires; a framework that listens for `change` (React included)
+ * sees an ordinary selection. A value the page resets in its handler is
+ * reported, not assumed.
+ */
+export function hkSelectOption(doc: InjDocument, win: InjWindow, g: InjGlobal, opts: SelectOptions): SelectResult {
+  const el = hkFindTarget(doc, g, opts.ref, opts.selector)
+  const label = opts.ref !== undefined && opts.ref !== '' ? 'ref ' + opts.ref : 'selector ' + hkString(opts.selector)
+  const tag = hkTag(el)
+  if (tag !== 'select') {
+    throw new Error(
+      'UNSUPPORTED_ELEMENT: ' +
+        label +
+        ' is a <' +
+        tag +
+        '>, not a <select>. For a custom dropdown, page.click it to open the list, then page.click the option.',
+    )
+  }
+  if (hkProp(el, 'multiple') === true) {
+    throw new Error('UNSUPPORTED_ELEMENT: ' + label + ' is a multi-select, which page.select_option does not handle yet.')
+  }
+  if (hkFlag(el, 'disabled', 'aria-disabled')) {
+    throw new Error('ELEMENT_NOT_INTERACTABLE: ' + label + ' is disabled.')
+  }
+
+  const options = hkProp(el, 'options') as ArrayLike<InjElement> | null | undefined
+  const count = options === null || options === undefined ? 0 : options.length
+  const labelOf = (option: InjElement): string => {
+    const own = hkString(hkProp(option, 'label'))
+    return (own !== '' ? own : option.textContent === null ? '' : option.textContent).replace(/\s+/g, ' ').trim()
+  }
+  let index = -1
+  for (let i = 0; i < count && index === -1; i += 1) {
+    const option = (options as ArrayLike<InjElement>)[i]
+    if (option === undefined) continue
+    if (typeof opts.index === 'number') {
+      if (i === opts.index) index = i
+    } else if (opts.value !== undefined) {
+      if (hkString(hkProp(option, 'value')) === opts.value) index = i
+    } else if (opts.label !== undefined) {
+      if (labelOf(option) === opts.label.replace(/\s+/g, ' ').trim()) index = i
+    }
+  }
+  if (index === -1) {
+    const wanted =
+      typeof opts.index === 'number'
+        ? 'index ' + opts.index
+        : opts.value !== undefined
+          ? 'value "' + opts.value + '"'
+          : 'label "' + hkString(opts.label) + '"'
+    const sensitive = hkSensitive(el, opts.sensitiveWords)
+    const listed: string[] = []
+    for (let i = 0; i < count && i < 20 && !sensitive; i += 1) {
+      const option = (options as ArrayLike<InjElement>)[i]
+      if (option !== undefined) listed.push(i + ': "' + hkTrim(labelOf(option), 60) + '"')
+    }
+    const more = count > 20 ? ' …' : ''
+    throw new Error(
+      'INVALID_REQUEST: ' + label + ' has no option with ' + wanted + '.' +
+        (listed.length > 0 ? ' Its options: ' + listed.join(', ') + more : ''),
+    )
+  }
+
+  const option = (options as ArrayLike<InjElement>)[index] as InjElement
+  const group = option.parentElement
+  if (hkProp(option, 'disabled') === true || (group !== null && hkTag(group) === 'optgroup' && hkProp(group, 'disabled') === true)) {
+    throw new Error('ELEMENT_NOT_INTERACTABLE: option ' + index + ' of ' + label + ' is disabled.')
+  }
+
+  ;(el as unknown as Record<string, unknown>)['selectedIndex'] = index
+  el.dispatchEvent(new win.Event('input', { bubbles: true, composed: true }))
+  el.dispatchEvent(new win.Event('change', { bubbles: true, composed: true }))
+  if (hkProp(el, 'selectedIndex') !== index) {
+    throw new Error(
+      'ELEMENT_NOT_INTERACTABLE: ' + label + ' was set to option ' + index + ', but the page changed it back.',
+    )
+  }
+
+  const sensitive = hkSensitive(el, opts.sensitiveWords)
+  const result: SelectResult = {
+    role: hkRole(el),
+    name: hkName(el, doc, sensitive, opts.nameMax),
+    sensitive,
+    index,
+    label: sensitive ? '' : hkTrim(labelOf(option), opts.nameMax),
+    value: sensitive ? '' : hkTrim(hkString(hkProp(option, 'value')), opts.nameMax),
+    url: hkString(hkProp(doc as unknown as InjElement, 'URL')),
+    title: typeof doc.title === 'string' ? doc.title : '',
+  }
+  if (opts.ref !== undefined) result.ref = opts.ref
+  if (opts.selector !== undefined) result.selector = opts.selector
+  return result
+}
+
+/**
+ * Whether a checkbox, radio or switch is on: the `checked` property for the
+ * native ones, `aria-checked` for anything that declares the role.
+ */
+export function hkCheckState(doc: InjDocument, g: InjGlobal, opts: CheckStateOptions): CheckStateResult {
+  const el = hkFindTarget(doc, g, opts.ref, opts.selector)
+  const label = opts.ref !== undefined && opts.ref !== '' ? 'ref ' + opts.ref : 'selector ' + hkString(opts.selector)
+  const tag = hkTag(el)
+  const type = hkString(el.getAttribute('type')).toLowerCase()
+  const role = hkRole(el)
+  const sensitive = hkSensitive(el, opts.sensitiveWords)
+  const base = { role, name: hkName(el, doc, sensitive, opts.nameMax), disabled: hkFlag(el, 'disabled', 'aria-disabled') }
+
+  if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {
+    return { ...base, checked: hkProp(el, 'checked') === true, radio: type === 'radio' }
+  }
+  const roles = ['checkbox', 'switch', 'radio', 'menuitemcheckbox', 'menuitemradio']
+  if (roles.indexOf(role) !== -1) {
+    const aria = hkString(el.getAttribute('aria-checked')).toLowerCase()
+    return { ...base, checked: aria === 'true', radio: role === 'radio' || role === 'menuitemradio' }
+  }
+  throw new Error(
+    'UNSUPPORTED_ELEMENT: ' + label + ' is a ' + role + ', not a checkbox, radio or switch. Use page.click to operate it.',
+  )
+}
+
 export function hkScrollPage(doc: InjDocument, win: InjWindow, g: InjGlobal, opts: ScrollOptions): ScrollResult {
   const root = doc.documentElement
   const height = root === null ? 0 : Number(hkProp(root, 'scrollHeight'))
@@ -197,17 +513,17 @@ export function hkScrollPage(doc: InjDocument, win: InjWindow, g: InjGlobal, opt
 
   if ((opts.ref !== undefined && opts.ref !== '') || (opts.selector !== undefined && opts.selector !== '')) {
     const el = hkFindTarget(doc, g, opts.ref, opts.selector)
-    el.scrollIntoView({ block: 'center', inline: 'center' })
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
     target = opts.ref !== undefined && opts.ref !== '' ? 'ref ' + opts.ref : 'selector ' + hkString(opts.selector)
   } else if (opts.direction === 'top') {
-    win.scrollTo(0, 0)
+    win.scrollTo({ top: 0, behavior: 'instant' })
     target = 'top'
   } else if (opts.direction === 'bottom') {
-    win.scrollTo(0, maxScrollY)
+    win.scrollTo({ top: maxScrollY, behavior: 'instant' })
     target = 'bottom'
   } else {
     const step = opts.amount !== undefined ? opts.amount : Math.round(win.innerHeight * opts.viewportFraction)
-    win.scrollBy(0, opts.direction === 'up' ? -step : step)
+    win.scrollBy({ top: opts.direction === 'up' ? -step : step, behavior: 'instant' })
     target = opts.direction + ' ' + step + 'px'
   }
 
@@ -247,21 +563,32 @@ export function hkCheckCondition(doc: InjDocument, win: InjWindow, opts: Conditi
     return answer(visible, visible ? where + ' is visible' : where + ' is present but not visible')
   }
 
-  // Text is matched against each element's *own* text for the reason the text
-  // collector does it: a container's `textContent` matches a phrase that is
-  // scattered across three unrelated children.
+  // Text is matched per block, the unit the text snapshot reads out: a phrase
+  // split across inline tags (`Order <b>confirmed</b>`) is found, while one
+  // scattered across unrelated blocks — which a container's `textContent`
+  // would happily match — is not.
   const lower = needle.toLowerCase()
   const state = { nodes: 0, maxNodes: opts.maxNodes, deadline: Date.now() + opts.budgetMs, truncated: false }
-  let hit = ''
-  hkWalk(root, state, (el) => {
-    const text = hkOwnText(el, opts.segmentMax)
-    if (text === '' || text.toLowerCase().indexOf(lower) === -1) return true
-    if (!hkVisible(el, win)) return true
-    hit = hkTrim(text, 160)
-    return false
+  const blocks = hkTextBlocks(root, win, state, {
+    visibleOnly: true,
+    maxBlocks: opts.maxNodes,
+    maxBlockChars: opts.segmentMax * 100,
+    sensitiveWords: opts.sensitiveWords,
   })
+  let hit = ''
+  for (let i = 0; i < blocks.length; i += 1) {
+    const text = (blocks[i] as TextBlock).text
+    if (text.toLowerCase().indexOf(lower) !== -1) {
+      hit = hkTrim(text, 160)
+      break
+    }
+  }
 
-  if (hit !== '') return answer(true, 'found "' + needle + '" in: ' + hit)
   const suffix = state.truncated ? ' (the scan hit its budget before finishing)' : ''
+  if (hit !== '') return answer(true, 'found "' + needle + '" in: ' + hit)
+  // "Not seen" only proves "hidden" if the whole subtree was looked at.
+  if (state.truncated && !wantVisible) {
+    return { matched: false, observed: '"' + needle + '" was not seen in ' + where + suffix, url, title }
+  }
   return answer(false, '"' + needle + '" is not visible in ' + where + suffix)
 }

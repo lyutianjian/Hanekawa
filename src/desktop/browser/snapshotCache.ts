@@ -35,6 +35,8 @@ export interface Snapshot {
   kind: 'elements' | 'text'
   header: string
   lines: string[]
+  /** The caller's `limit`: rows per page, the first one and every cursor read after it. */
+  pageRows?: number
 }
 
 export function ownerKey(owner: SnapshotOwner): string {

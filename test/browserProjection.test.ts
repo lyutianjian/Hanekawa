@@ -57,6 +57,29 @@ test('a long scan comes back paged, and the cursor walks it without rescanning',
   assert.ok(!second.text.includes('\ne1\t'))
 })
 
+test('limit is a page size: the scan is not cut at it, and the cursor pages on by the same count', async () => {
+  const projection = new BrowserProjection()
+  let maxResults: unknown
+  const evaluate = async (script: string): Promise<unknown> => {
+    maxResults = /"maxResults":(\d+)/.exec(script)?.[1]
+    return { ok: true, value: elementScan(25) }
+  }
+  const first = await projection.elements(owner, evaluate, { limit: 10 })
+  assert.equal(maxResults, '2000', 'the scan runs to the hard cap, not to limit')
+  assert.equal(first.scanTruncated, false)
+  assert.equal(first.total, 25)
+  assert.match(first.text, /\ne10\t/)
+  assert.doesNotMatch(first.text, /\ne11\t/)
+  assert.match(first.text, /# more: 15 remaining/)
+
+  const second = projection.read(owner, first.cursor as string)
+  assert.match(second.text, /\ne11\t/)
+  assert.doesNotMatch(second.text, /\ne21\t/)
+  const third = projection.read(owner, second.cursor as string)
+  assert.match(third.text, /\ne25\t/)
+  assert.equal(third.cursor, undefined)
+})
+
 test('a short scan is one page with no cursor', async () => {
   const projection = new BrowserProjection()
   const result = await projection.elements(owner, evaluator(elementScan(3)), {})
@@ -91,18 +114,21 @@ test('a closing tab drops its snapshots', async () => {
   )
 })
 
-test('text segments page the same way', async () => {
+test('text blocks page the same way, one kind-and-text row each', async () => {
   const scan: TextScanResult = {
     url: 'https://x.test/',
     title: 'X',
-    segments: Array.from({ length: 500 }, (_, index) => `Paragraph ${index + 1} ${'word '.repeat(10)}`),
+    blocks: Array.from({ length: 500 }, (_, index) => ({
+      kind: 'text',
+      text: `Paragraph ${index + 1} ${'word '.repeat(10)}`,
+    })),
     truncated: false,
     scanned: 1500,
   }
   const projection = new BrowserProjection()
   const first = await projection.text(owner, evaluator(scan), {})
   assert.ok(first.cursor !== undefined)
-  assert.match(first.text, /^# text {2}url=https:\/\/x\.test\//)
+  assert.match(first.text, /^# text {2}url=https:\/\/x\.test\/.*\nkind\ttext\ntext\tParagraph 1 word/)
   const second = projection.read(owner, first.cursor as string)
   assert.ok(second.text.includes('Paragraph '))
 })

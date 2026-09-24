@@ -12,7 +12,7 @@
  * would be a different page than the first half described.
  */
 
-import { clampMaxChars, elementsHeader, paginateLines, renderElementRow, textHeader } from './encode.js'
+import { clampMaxChars, elementsHeader, paginateLines, renderElementRow, renderTextBlock, textHeader } from './encode.js'
 import type { ElementScanOptions, ElementScanResult, TextScanOptions, TextScanResult } from './inject/bundle.js'
 import { elementsScript, textScript, unwrap } from './inject/bundle.js'
 import {
@@ -67,7 +67,10 @@ export class BrowserProjection {
       snapshotId: randomUUID(),
       interactiveOnly: request.interactiveOnly ?? true,
       visibleOnly: request.visibleOnly ?? true,
-      maxResults: clampLimit(request.limit),
+      // `limit` is a page size, not a scan bound: a scan cut at it would claim
+      // the page was not read to the end, and the rows past it could never be
+      // paged to. Only the hard cap truncates.
+      maxResults: SCAN_MAX_RESULTS,
       maxNodes: SCAN_MAX_NODES,
       budgetMs: SCAN_BUDGET_MS,
       nameMax: FIELD_MAX_NAME,
@@ -82,22 +85,26 @@ export class BrowserProjection {
     const scan = unwrap<ElementScanResult>(await evaluate(elementsScript(options)))
     const head = { url: scan.url, title: scan.title, scanTruncated: scan.truncated }
     const lines = scan.rows.map(renderElementRow)
-    return this.store(owner, 'elements', elementsHeader(head, lines.length), lines, scan.truncated, request.maxChars)
+    const header = elementsHeader(head, lines.length)
+    return this.store(owner, 'elements', header, lines, scan.truncated, request.maxChars, clampLimit(request.limit))
   }
 
   async text(owner: SnapshotOwner, evaluate: PageEvaluator, request: TextRequest): Promise<ProjectionPage> {
     const options: TextScanOptions = {
       visibleOnly: request.visibleOnly ?? true,
-      maxResults: clampLimit(request.limit, SCAN_MAX_RESULTS),
+      maxResults: SCAN_MAX_RESULTS,
       maxNodes: SCAN_MAX_NODES,
       budgetMs: SCAN_BUDGET_MS,
       segmentMax: FIELD_MAX_TEXT,
+      sensitiveWords: SENSITIVE_AUTOCOMPLETE,
     }
     if (request.scope !== undefined) options.scope = request.scope
 
     const scan = unwrap<TextScanResult>(await evaluate(textScript(options)))
     const head = { url: scan.url, title: scan.title, scanTruncated: scan.truncated }
-    return this.store(owner, 'text', textHeader(head, scan.segments.length), scan.segments, scan.truncated, request.maxChars)
+    const lines = scan.blocks.map(renderTextBlock)
+    const pageRows = clampLimit(request.limit, SCAN_MAX_RESULTS)
+    return this.store(owner, 'text', textHeader(head, lines.length), lines, scan.truncated, request.maxChars, pageRows)
   }
 
   /**
@@ -108,7 +115,14 @@ export class BrowserProjection {
   read(owner: SnapshotOwner, cursor: string, maxChars?: number): ProjectionPage {
     const { snapshotId, snapshot, offset } = this.cache.read(owner, cursor)
     const budget = clampMaxChars(maxChars, snapshot.kind === 'text' ? MAX_CHARS_TEXT : MAX_CHARS_ELEMENTS)
-    const slice = paginateLines(snapshot.header, snapshot.lines, offset, budget, (next) => `${snapshotId}:${next}`)
+    const slice = paginateLines(
+      snapshot.header,
+      snapshot.lines,
+      offset,
+      budget,
+      (next) => `${snapshotId}:${next}`,
+      snapshot.pageRows,
+    )
     return page(snapshotId, slice, snapshot.lines.length, false)
   }
 
@@ -123,10 +137,11 @@ export class BrowserProjection {
     lines: string[],
     scanTruncated: boolean,
     maxChars: number | undefined,
+    pageRows: number,
   ): ProjectionPage {
-    const snapshotId = this.cache.put(owner, { kind, header, lines })
+    const snapshotId = this.cache.put(owner, { kind, header, lines, pageRows })
     const budget = clampMaxChars(maxChars, kind === 'text' ? MAX_CHARS_TEXT : MAX_CHARS_ELEMENTS)
-    const slice = paginateLines(header, lines, 0, budget, (next) => `${snapshotId}:${next}`)
+    const slice = paginateLines(header, lines, 0, budget, (next) => `${snapshotId}:${next}`, pageRows)
     return page(snapshotId, slice, lines.length, scanTruncated)
   }
 }

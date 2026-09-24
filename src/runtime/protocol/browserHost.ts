@@ -86,6 +86,25 @@ export interface BrowserTypeRequest extends BrowserTarget {
   signal?: AbortSignal
 }
 
+/** No target means the keys go to whatever has focus. */
+export interface BrowserPressKeyRequest extends BrowserTarget {
+  keys: string[]
+  signal?: AbortSignal
+}
+
+/** Exactly one of `value`, `label` and `index`. */
+export interface BrowserSelectRequest extends BrowserTarget {
+  value?: string
+  label?: string
+  index?: number
+  signal?: AbortSignal
+}
+
+export interface BrowserSetCheckedRequest extends BrowserTarget {
+  checked: boolean
+  signal?: AbortSignal
+}
+
 export interface BrowserScrollRequest extends BrowserTarget {
   direction?: 'up' | 'down' | 'top' | 'bottom'
   amount?: number
@@ -96,6 +115,9 @@ export interface BrowserWaitRequest {
   selector?: string
   text?: string
   state?: 'visible' | 'hidden'
+  /** The committed URL to wait for; `urlMatch` defaults to `prefix`. */
+  url?: string
+  urlMatch?: 'exact' | 'prefix' | 'contains'
   timeoutMs: number
   signal?: AbortSignal
 }
@@ -125,11 +147,16 @@ export interface BrowserCaller {
   turnId?: string
 }
 
+/** The tab's own history buttons: the three navigations that need no URL. */
+export type BrowserHistoryAction = 'back' | 'forward' | 'reload'
+
 export interface BrowserHost {
   listTabs(caller: BrowserCaller): Promise<BrowserTabState[]>
   createTab(caller: BrowserCaller, url?: string): Promise<BrowserTabState>
   closeTab(caller: BrowserCaller, tabId: string): Promise<void>
   navigate(caller: BrowserCaller, tabId: string, url: string): Promise<BrowserTabState>
+  /** Refuses a back or forward with nowhere to go rather than doing nothing. */
+  history(caller: BrowserCaller, tabId: string, action: BrowserHistoryAction): Promise<BrowserTabState>
   /**
    * Resolves once the tab's *current* navigation finished loading. A navigation
    * that starts while this is waiting replaces what it is waiting for — the
@@ -147,6 +174,10 @@ export interface BrowserHost {
   screenshot(caller: BrowserCaller, tabId: string): Promise<BrowserScreenshot>
   click(caller: BrowserCaller, tabId: string, request: BrowserClickRequest): Promise<BrowserActionResult>
   type(caller: BrowserCaller, tabId: string, request: BrowserTypeRequest): Promise<BrowserActionResult>
+  pressKey(caller: BrowserCaller, tabId: string, request: BrowserPressKeyRequest): Promise<BrowserActionResult>
+  selectOption(caller: BrowserCaller, tabId: string, request: BrowserSelectRequest): Promise<BrowserActionResult>
+  /** Clicks only when the control is not already in the asked-for state. */
+  setChecked(caller: BrowserCaller, tabId: string, request: BrowserSetCheckedRequest): Promise<BrowserActionResult>
   scroll(caller: BrowserCaller, tabId: string, request: BrowserScrollRequest): Promise<BrowserActionResult>
   /** Polls a condition about the page's contents, not about its load state. */
   waitFor(caller: BrowserCaller, tabId: string, request: BrowserWaitRequest): Promise<BrowserActionResult>

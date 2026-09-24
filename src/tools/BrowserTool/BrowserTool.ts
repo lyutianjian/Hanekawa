@@ -1,5 +1,5 @@
 /**
- * The agent's half of the browser: one tool, twelve operations, no Electron.
+ * The agent's half of the browser: one tool, fifteen operations, no Electron.
  *
  * Everything that touches a real tab is behind {@link BrowserHost}, which is a
  * type and nothing else — the TUI never constructs one, so the tool simply does
@@ -57,6 +57,7 @@ function errorCodeFor(failure: HostFailure): ToolResult['errorCode'] {
       return 'not_found'
     case 'INVALID_REQUEST':
     case 'OUTPUT_LIMIT':
+    case 'UNSUPPORTED_ELEMENT':
       return 'invalid_input'
     case 'PAGE_NOT_READY':
     case 'BROWSER_UNAVAILABLE':
@@ -129,12 +130,24 @@ export function createBrowserTool(host: BrowserHost): Tool {
           return parsed.url === undefined ? 'Opening a browser tab' : `Opening ${hostOf(parsed.url)}`
         case 'page.screenshot':
           return 'Taking a screenshot'
+        case 'tab.go_back':
+          return 'Going back'
+        case 'tab.go_forward':
+          return 'Going forward'
+        case 'tab.reload':
+          return 'Reloading the page'
         case 'tab.wait_for_load':
           return 'Waiting for the page to load'
         case 'page.click':
           return 'Clicking the page'
         case 'page.type':
           return 'Typing into the page'
+        case 'page.press_key':
+          return 'Pressing keys'
+        case 'page.select_option':
+          return 'Choosing an option'
+        case 'page.set_checked':
+          return parsed.checked ? 'Checking a box' : 'Unchecking a box'
         case 'page.scroll':
           return 'Scrolling the page'
         case 'page.wait_for':
@@ -216,6 +229,13 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
       const tab = await host.navigate(session, input.tabId, input.url)
       return tabResult(tab, `Navigating to ${hostOf(input.url)}`)
     }
+    case 'tab.go_back':
+    case 'tab.go_forward':
+    case 'tab.reload': {
+      const action = HISTORY_ACTIONS[input.operation]
+      const tab = await host.history(session, input.tabId, action.action)
+      return tabResult(tab, action.summary)
+    }
     case 'tab.wait_for_load': {
       const options: { timeoutMs: number; signal?: AbortSignal } = {
         timeoutMs: input.timeoutMs ?? WAIT_FOR_LOAD_DEFAULT_MS,
@@ -270,6 +290,32 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
       }, context))
       return actionResult(result, 'Typed')
     }
+    case 'page.press_key': {
+      const result = await host.pressKey(session, input.tabId, action({
+        ref: input.ref,
+        selector: input.selector,
+        keys: input.keys,
+      }, context))
+      return actionResult(result, 'Pressed keys')
+    }
+    case 'page.select_option': {
+      const result = await host.selectOption(session, input.tabId, action({
+        ref: input.ref,
+        selector: input.selector,
+        value: input.value,
+        label: input.label,
+        index: input.index,
+      }, context))
+      return actionResult(result, 'Selected an option')
+    }
+    case 'page.set_checked': {
+      const result = await host.setChecked(session, input.tabId, action({
+        ref: input.ref,
+        selector: input.selector,
+        checked: input.checked,
+      }, context))
+      return actionResult(result, input.checked ? 'Checked' : 'Unchecked')
+    }
     case 'page.scroll': {
       const result = await host.scroll(session, input.tabId, action({
         ref: input.ref,
@@ -284,12 +330,20 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
         selector: input.selector,
         text: input.text,
         state: input.state,
+        url: input.url,
+        urlMatch: input.urlMatch,
         timeoutMs: input.timeoutMs ?? WAIT_FOR_DEFAULT_MS,
       }, context))
       return actionResult(result, 'Waited for the page')
     }
   }
 }
+
+const HISTORY_ACTIONS = {
+  'tab.go_back': { action: 'back', summary: 'Went back' },
+  'tab.go_forward': { action: 'forward', summary: 'Went forward' },
+  'tab.reload': { action: 'reload', summary: 'Reloading' },
+} as const
 
 /** A request with its absent fields dropped and the turn's abort signal added. */
 function action<T extends object>(value: T, context: ToolContext): T & { signal?: AbortSignal } {

@@ -3,21 +3,27 @@ export const BROWSER_TOOL_NAME = 'Browser'
 /**
  * Every operation, in the order the description lists them.
  *
- * One tool with an `operation` discriminator rather than twelve tools: they
- * share a tab handle and are useless apart, and twelve entries would cost
- * twelve schemas in every request's tool list.
+ * One tool with an `operation` discriminator rather than one tool each: they
+ * share a tab handle and are useless apart, and fifteen entries would cost
+ * fifteen schemas in every request's tool list.
  */
 export const BROWSER_OPERATIONS = [
   'browser.get_state',
   'browser.create_tab',
   'browser.close_tab',
   'tab.navigate',
+  'tab.go_back',
+  'tab.go_forward',
+  'tab.reload',
   'tab.wait_for_load',
   'page.elements.snapshot',
   'page.text.snapshot',
   'page.screenshot',
   'page.click',
   'page.type',
+  'page.press_key',
+  'page.select_option',
+  'page.set_checked',
   'page.scroll',
   'page.wait_for',
 ] as const
@@ -28,12 +34,18 @@ export type BrowserOperation = (typeof BROWSER_OPERATIONS)[number]
 export const OPERATIONS_NEEDING_TAB: ReadonlySet<string> = new Set<BrowserOperation>([
   'browser.close_tab',
   'tab.navigate',
+  'tab.go_back',
+  'tab.go_forward',
+  'tab.reload',
   'tab.wait_for_load',
   'page.elements.snapshot',
   'page.text.snapshot',
   'page.screenshot',
   'page.click',
   'page.type',
+  'page.press_key',
+  'page.select_option',
+  'page.set_checked',
   'page.scroll',
   'page.wait_for',
 ])
@@ -59,7 +71,12 @@ export const READ_ONLY_OPERATIONS: ReadonlySet<string> = new Set<BrowserOperatio
  * `validate.ts` say it instead — before the call reaches a page that would
  * refuse it with a less useful sentence.
  */
-export const OPERATIONS_NEEDING_TARGET: ReadonlySet<string> = new Set<BrowserOperation>(['page.click', 'page.type'])
+export const OPERATIONS_NEEDING_TARGET: ReadonlySet<string> = new Set<BrowserOperation>([
+  'page.click',
+  'page.type',
+  'page.select_option',
+  'page.set_checked',
+])
 
 /**
  * Restated from `desktop/browser/limits.ts` rather than imported: `src/tools/`
@@ -72,3 +89,4 @@ export const WAIT_FOR_LOAD_MAX_MS = 120_000
 export const WAIT_FOR_DEFAULT_MS = 10_000
 export const WAIT_FOR_MAX_MS = 30_000
 export const TYPE_TEXT_MAX = 10_000
+export const PRESS_KEYS_MAX = 8

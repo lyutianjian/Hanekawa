@@ -21,6 +21,7 @@ import type { InjDocument, InjElement, InjGlobal, InjWindow } from './dom.js'
 import {
   hkInteractive,
   hkName,
+  hkOffscreen,
   hkProp,
   hkRole,
   hkSensitive,
@@ -60,6 +61,8 @@ export interface ElementRow {
   value?: string
   href?: string
   visible?: boolean
+  /** Visible, but scrolled out of the viewport. */
+  offscreen?: boolean
   disabled?: boolean
   checked?: boolean
   focused?: boolean
@@ -134,6 +137,7 @@ export function hkCollectElements(
     const href = hkString(hkProp(el, 'href'))
     if (href !== '' && role === 'link') row.href = hkTrim(href, opts.nameMax)
     if (visible) row.visible = true
+    if (visible && hkOffscreen(el, win)) row.offscreen = true
     if (hkFlag(el, 'disabled', 'aria-disabled')) row.disabled = true
     if (hkFlag(el, 'checked', 'aria-checked')) row.checked = true
     if (active === el) row.focused = true

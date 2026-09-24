@@ -177,6 +177,19 @@ test('a bare host gets https, and a full URL is preserved', () => {
   assert.equal(normalizeAddress('http://example.com/x'), 'http://example.com/x')
 })
 
+test('host:port is a host, and a local one gets http', () => {
+  assert.equal(normalizeAddress('localhost:3000'), 'http://localhost:3000/')
+  assert.equal(normalizeAddress('localhost:3000/api?x=1'), 'http://localhost:3000/api?x=1')
+  assert.equal(normalizeAddress('localhost'), 'http://localhost/')
+  assert.equal(normalizeAddress('127.0.0.1:8080'), 'http://127.0.0.1:8080/')
+  assert.equal(normalizeAddress('192.168.1.20:5173'), 'http://192.168.1.20:5173/')
+  assert.equal(normalizeAddress('[::1]:8000'), 'http://[::1]:8000/')
+  assert.equal(normalizeAddress('example.com:8443'), 'https://example.com:8443/')
+  // A scheme the user typed is theirs, local host or not.
+  assert.equal(normalizeAddress('https://localhost:3000'), 'https://localhost:3000/')
+  assert.equal(normalizeAddress('172.32.0.1'), 'https://172.32.0.1/')
+})
+
 test('anything but http and https is not an address', () => {
   // `file:` by name: this partition is the agent's browsing context, and a
   // file:// document there reads the user's disk with a page's privileges.

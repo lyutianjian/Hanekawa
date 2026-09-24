@@ -13,13 +13,18 @@
 
 import { BrowserHostError } from './errors.js'
 import type { ElementRow } from './inject/elements.js'
+import type { TextBlock } from './inject/text.js'
 import { MAX_CHARS_MAX, MAX_CHARS_MIN, PAGE_OVERHEAD_RESERVE } from './limits.js'
 
 export const ELEMENT_COLUMNS = ['ref', 'role', 'name', 'text', 'value', 'href', 'flags'] as const
 
+/** `kind` is row/item/heading/text; a trailing `+` continues the line above. */
+export const TEXT_COLUMNS = ['kind', 'text'] as const
+
 /** Flag name by row key, in the order they are emitted. */
 const ELEMENT_FLAGS: ReadonlyArray<[keyof ElementRow, string]> = [
   ['visible', 'visible'],
+  ['offscreen', 'offscreen'],
   ['disabled', 'disabled'],
   ['checked', 'checked'],
   ['focused', 'focused'],
@@ -62,7 +67,11 @@ export function elementsHeader(head: SnapshotHeadline, total: number): string {
 }
 
 export function textHeader(head: SnapshotHeadline, total: number): string {
-  return metaLine('text', head, total)
+  return metaLine('text', head, total) + '\n' + TEXT_COLUMNS.join('\t')
+}
+
+export function renderTextBlock(block: TextBlock): string {
+  return block.kind + '\t' + block.text
 }
 
 function metaLine(kind: string, head: SnapshotHeadline, total: number): string {
@@ -97,6 +106,7 @@ export function paginateLines(
   offset: number,
   maxChars: number,
   cursorFor: (nextOffset: number) => string,
+  maxRows = Number.POSITIVE_INFINITY,
 ): PageSlice {
   const start = Math.max(0, Math.floor(offset))
   if (start >= lines.length) return { text: header }
@@ -104,7 +114,7 @@ export function paginateLines(
   const budget = maxChars - PAGE_OVERHEAD_RESERVE
   let used = header.length
   let end = start
-  while (end < lines.length) {
+  while (end < lines.length && end - start < maxRows) {
     const line = lines[end] as string
     const next = used + line.length + 1
     if (next > budget) break

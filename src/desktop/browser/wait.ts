@@ -23,12 +23,23 @@
 import type { ConditionOptions, ConditionResult } from './inject/bundle.js'
 import { conditionScript, unwrap } from './inject/bundle.js'
 import { BrowserHostError } from './errors.js'
-import { FIELD_MAX_TEXT, SCAN_BUDGET_MS, SCAN_MAX_NODES, WAIT_POLL_INTERVAL_MS } from './limits.js'
+import {
+  FIELD_MAX_TEXT,
+  SCAN_BUDGET_MS,
+  SCAN_MAX_NODES,
+  SENSITIVE_AUTOCOMPLETE,
+  WAIT_POLL_INTERVAL_MS,
+} from './limits.js'
+
+export type UrlMatch = 'exact' | 'prefix' | 'contains'
 
 export interface WaitCondition {
   selector?: string
   text?: string
   state?: 'visible' | 'hidden'
+  /** The tab's committed URL, compared by `urlMatch` (default `prefix`). */
+  url?: string
+  urlMatch?: UrlMatch
 }
 
 export interface WaitDeps {
@@ -36,6 +47,13 @@ export interface WaitDeps {
   /** The tab's navigation generation, or `undefined` once its page is gone. */
   generation: () => number | undefined
   check: () => void
+  /**
+   * The tab's committed URL, or `undefined` while it has no page. Only read
+   * when the condition names a URL. Committed means a navigation still in
+   * flight keeps reporting the page it is leaving — which is exactly what a
+   * wait for the new address needs not to be fooled by.
+   */
+  url?: () => string | undefined
   timeoutMs: number
   signal?: AbortSignal
   /** Monotonic. A clock adjustment must not end a wait early or hang it. */
@@ -50,14 +68,18 @@ export interface WaitOutcome {
 const NOT_OBSERVED = 'Not observed yet.'
 
 export async function waitForCondition(deps: WaitDeps, condition: WaitCondition): Promise<WaitOutcome> {
-  if ((condition.selector ?? '') === '' && (condition.text ?? '') === '') {
-    throw new BrowserHostError('INVALID_REQUEST', 'page.wait_for needs a "selector", a "text", or both.')
+  const wantsUrl = (condition.url ?? '') !== ''
+  const wantsPage = (condition.selector ?? '') !== '' || (condition.text ?? '') !== ''
+  if (!wantsUrl && !wantsPage) {
+    throw new BrowserHostError('INVALID_REQUEST', 'page.wait_for needs a "selector", a "text" or a "url".')
   }
+  const urlMatch = condition.urlMatch ?? 'prefix'
   const options: ConditionOptions = {
     state: condition.state ?? 'visible',
     maxNodes: SCAN_MAX_NODES,
     budgetMs: SCAN_BUDGET_MS,
     segmentMax: FIELD_MAX_TEXT,
+    sensitiveWords: SENSITIVE_AUTOCOMPLETE,
   }
   if (condition.selector !== undefined) options.selector = condition.selector
   if (condition.text !== undefined) options.text = condition.text
@@ -76,23 +98,39 @@ export async function waitForCondition(deps: WaitDeps, condition: WaitCondition)
       throw new BrowserHostError('OPERATION_ABORTED', 'The wait was cancelled.')
     }
 
-    let result: ConditionResult | undefined
-    try {
-      result = unwrap<ConditionResult>(await deps.evaluate(script))
-    } catch (error) {
-      // `retryable` is the whole distinction: a page that is navigating cannot
-      // answer yet and will, while a bad selector or a closed tab never will.
-      if (!isRetryable(error)) throw error
-      lastObserved = error instanceof Error ? error.message : String(error)
+    // The URL is asked first and without the page: a wait for an address has
+    // to keep working while the navigation to it has no document to ask.
+    let urlSeen: string | undefined
+    let urlOk = true
+    if (wantsUrl) {
+      urlSeen = deps.url?.()
+      urlOk = urlSeen !== undefined && urlMatches(urlSeen, condition.url as string, urlMatch)
+      lastObserved = `url=${urlSeen ?? '(no page)'}`
     }
-    deps.check()
+
+    let result: ConditionResult | undefined
+    if (wantsPage && urlOk) {
+      try {
+        result = unwrap<ConditionResult>(await deps.evaluate(script))
+      } catch (error) {
+        // `retryable` is the whole distinction: a page that is navigating cannot
+        // answer yet and will, while a bad selector or a closed tab never will.
+        if (!isRetryable(error)) throw error
+        lastObserved = error instanceof Error ? error.message : String(error)
+      }
+      deps.check()
+    }
     if (deps.generation() !== startGeneration) documentChanged = true
 
+    const note = documentChanged ? ' (the document changed while waiting)' : ''
+    if (!wantsPage && urlOk) {
+      return { text: `url ${describeUrlMatch(urlMatch)} ${condition.url}${note}. url=${urlSeen}` }
+    }
     if (result !== undefined) {
-      lastObserved = result.observed
+      lastObserved = wantsUrl ? `url=${urlSeen}; ${result.observed}` : result.observed
       if (result.matched) {
-        const note = documentChanged ? ' (the document changed while waiting)' : ''
-        return { text: `${result.observed}${note}. url=${result.url} title=${result.title}` }
+        const prefix = wantsUrl ? `url ${describeUrlMatch(urlMatch)} ${condition.url}, and ` : ''
+        return { text: `${prefix}${result.observed}${note}. url=${result.url} title=${result.title}` }
       }
     }
 
@@ -107,6 +145,16 @@ export async function waitForCondition(deps: WaitDeps, condition: WaitCondition)
     }
     await sleep(Math.min(WAIT_POLL_INTERVAL_MS, deps.timeoutMs))
   }
+}
+
+export function urlMatches(actual: string, wanted: string, how: UrlMatch): boolean {
+  if (how === 'exact') return actual === wanted
+  if (how === 'contains') return actual.includes(wanted)
+  return actual.startsWith(wanted)
+}
+
+function describeUrlMatch(how: UrlMatch): string {
+  return how === 'exact' ? 'is' : how === 'contains' ? 'contains' : 'starts with'
 }
 
 function isRetryable(error: unknown): boolean {

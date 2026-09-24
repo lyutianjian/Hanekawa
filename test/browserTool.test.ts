@@ -6,6 +6,7 @@ import { BROWSER_OPERATIONS } from '../src/tools/BrowserTool/constants.js'
 import { NO_TABS } from '../src/tools/BrowserTool/encode.js'
 import { browserApiInputSchema, browserInputSchema } from '../src/tools/BrowserTool/schema.js'
 import { fieldsFor, validateBrowserInput } from '../src/tools/BrowserTool/validate.js'
+import { normalizeToolInput } from '../src/tools/inputAliases.js'
 import type {
   BrowserHost,
   BrowserSnapshot,
@@ -41,6 +42,7 @@ function stubHost(overrides: Partial<BrowserHost> = {}): { host: BrowserHost; ca
     createTab: record('createTab', tab),
     closeTab: record('closeTab', undefined),
     navigate: record('navigate', tab),
+    history: record('history', tab),
     waitForLoad: record('waitForLoad', tab),
     elements: record('elements', snapshot),
     text: record('text', snapshot),
@@ -53,6 +55,9 @@ function stubHost(overrides: Partial<BrowserHost> = {}): { host: BrowserHost; ca
     }),
     click: record('click', { text: 'clicked e3 (button "Sign in") at (120, 240).' }),
     type: record('type', { text: 'typed 7 characters into e4 (textbox).' }),
+    pressKey: record('pressKey', { text: 'pressed Escape on the focused element.' }),
+    selectOption: record('selectOption', { text: 'selected option 1 "France" in e5 (combobox "Country").' }),
+    setChecked: record('setChecked', { text: 'e6 (checkbox "Remember me") is already checked; nothing was clicked.' }),
     scroll: record('scroll', { text: 'scrolled down 648px: y=648 of 4000.' }),
     waitFor: record('waitFor', { text: '#done is visible.' }),
     ...overrides,
@@ -99,6 +104,40 @@ test('each operation reaches its own host call', async () => {
   assert.deepEqual(calls[3]?.args[2], { timeoutMs: 15_000 })
 })
 
+test('back, forward and reload reach the host as one history call', async () => {
+  const { host, calls } = stubHost()
+  const tool = createBrowserTool(host)
+
+  const back = await run(tool, { operation: 'tab.go_back', tabId: 'tab-1' })
+  await run(tool, { operation: 'tab.go_forward', tabId: 'tab-1' })
+  await run(tool, { operation: 'tab.reload', tabId: 'tab-1' })
+
+  assert.deepEqual(
+    calls.map((call) => [call.method, call.args[1], call.args[2]]),
+    [
+      ['history', 'tab-1', 'back'],
+      ['history', 'tab-1', 'forward'],
+      ['history', 'tab-1', 'reload'],
+    ],
+  )
+  assert.equal(back.ok, true)
+  assert.match(back.content, /tab-1/)
+  assert.equal(tool.isConcurrencySafeInput?.({ operation: 'tab.reload', tabId: 'tab-1' }), false)
+
+  const missing = validateBrowserInput({ operation: 'tab.go_back' })
+  assert.equal(missing.ok, false)
+  assert.match(missing.errors[0]?.message ?? '', /tab\.go_back requires "tabId"/)
+})
+
+test('a back with nowhere to go comes back as the host’s refusal', async () => {
+  const refusal = Object.assign(new Error('This tab has no page to go back to.'), { code: 'INVALID_REQUEST' })
+  const tool = createBrowserTool(stubHost({ history: async () => { throw refusal } }).host)
+  const result = await run(tool, { operation: 'tab.go_back', tabId: 'tab-1' })
+  assert.equal(result.ok, false)
+  assert.equal(result.errorCode, 'invalid_input')
+  assert.match(result.content, /no page to go back to/)
+})
+
 test('the input operations pass their own fields through, and carry the abort signal', async () => {
   const { host, calls } = stubHost()
   const tool = createBrowserTool(host)
@@ -120,6 +159,65 @@ test('the input operations pass their own fields through, and carry the abort si
   assert.equal(clicked.content, 'clicked e3 (button "Sign in") at (120, 240).')
 })
 
+test('press_key passes its chord through, and takes a single key or a snake-cased alias', async () => {
+  const { host, calls } = stubHost()
+  const tool = createBrowserTool(host)
+
+  const pressed = await run(tool, { operation: 'page.press_key', tabId: 'tab-1', keys: ['Escape'] })
+  await run(tool, { operation: 'page.press_key', tabId: 'tab-1', ref: 'e4', keys: ['Control', 'a'] })
+  assert.equal(pressed.ok, true)
+  assert.deepEqual(calls.map((call) => call.args[2]), [{ keys: ['Escape'] }, { ref: 'e4', keys: ['Control', 'a'] }])
+
+  assert.deepEqual(normalizeToolInput('Browser', { operation: 'page.press_key', tab_id: 't', key: 'Enter' }), {
+    operation: 'page.press_key',
+    tabId: 't',
+    keys: ['Enter'],
+  })
+  assert.equal(validateBrowserInput({ operation: 'page.press_key', tabId: 't', keys: [] }).ok, false)
+  assert.equal(validateBrowserInput({ operation: 'page.press_key', tabId: 't' }).ok, false)
+})
+
+test('operation names from other browser tools map onto the tab history operations', () => {
+  for (const [alias, operation] of [
+    ['back', 'tab.go_back'],
+    ['go_back', 'tab.go_back'],
+    ['forward', 'tab.go_forward'],
+    ['refresh', 'tab.reload'],
+    ['reload', 'tab.reload'],
+  ]) {
+    assert.deepEqual(normalizeToolInput('Browser', { action: alias, tab_id: 't' }), { operation, tabId: 't' }, alias)
+  }
+  // A real operation name is left as it is.
+  const canonical = { operation: 'tab.go_back', tabId: 't' }
+  assert.equal(normalizeToolInput('Browser', canonical), canonical)
+})
+
+test('select_option takes exactly one pick, and set_checked passes its state through', async () => {
+  const { host, calls } = stubHost()
+  const tool = createBrowserTool(host)
+
+  const none = await run(tool, { operation: 'page.select_option', tabId: 'tab-1', ref: 'e5' })
+  assert.equal(none.ok, false)
+  assert.match(none.content, /exactly one of "value", "label" or "index"; this call had none/)
+  const two = await run(tool, { operation: 'page.select_option', tabId: 'tab-1', ref: 'e5', value: 'fr', index: 1 })
+  assert.match(two.content, /had "value" and "index"/)
+  const noTarget = await run(tool, { operation: 'page.set_checked', tabId: 'tab-1', checked: true })
+  assert.match(noTarget.content, /page\.set_checked needs an element/)
+  assert.deepEqual(calls, [])
+
+  await run(tool, { operation: 'page.select_option', tabId: 'tab-1', ref: 'e5', value: '' })
+  await run(tool, { operation: 'page.set_checked', tabId: 'tab-1', selector: '#tos', checked: false })
+  assert.deepEqual((calls as Call[]).map((call) => [call.method, call.args[2]]), [
+    ['selectOption', { ref: 'e5', value: '' }],
+    ['setChecked', { selector: '#tos', checked: false }],
+  ])
+  assert.deepEqual(normalizeToolInput('Browser', { operation: 'page.set_checked', checked: 'true', index: '2' }), {
+    operation: 'page.set_checked',
+    checked: true,
+    index: 2,
+  })
+})
+
 test('an action with no element, and a wait with no condition, are refused before the host', async () => {
   const { host, calls } = stubHost()
   const tool = createBrowserTool(host)
@@ -137,6 +235,11 @@ test('an action with no element, and a wait with no condition, are refused befor
   assert.deepEqual(calls, [], 'a call the model can fix must not reach the browser')
   assert.equal(validateBrowserInput({ operation: 'page.click', tabId: 't', selector: '#a' }).ok, true)
   assert.equal(validateBrowserInput({ operation: 'page.wait_for', tabId: 't', selector: '#a' }).ok, true)
+  assert.equal(validateBrowserInput({ operation: 'page.wait_for', tabId: 't', url: 'https://a.test/' }).ok, true)
+  assert.equal(
+    validateBrowserInput({ operation: 'page.wait_for', tabId: 't', url: 'https://a.test/', urlMatch: 'glob' }).ok,
+    false,
+  )
 })
 
 test('a cursor reads the snapshot already taken instead of scanning again', async () => {

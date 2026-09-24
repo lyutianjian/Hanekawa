@@ -21,14 +21,26 @@
 
 import {
   hkCheckCondition,
+  hkCheckState,
+  hkContains,
+  hkDeepActive,
+  hkDeepHit,
+  hkDescribe,
   hkFindTarget,
+  hkGuardTarget,
   hkQuery,
   hkResolveTarget,
   hkScrollPage,
+  hkSelectOption,
+  type CheckStateOptions,
+  type CheckStateResult,
   type ConditionOptions,
   type ConditionResult,
+  type GuardOptions,
   type ScrollOptions,
   type ScrollResult,
+  type SelectOptions,
+  type SelectResult,
   type TargetOptions,
   type TargetResult,
 } from './actions.js'
@@ -37,6 +49,7 @@ import {
   hkInputRole,
   hkInteractive,
   hkName,
+  hkOffscreen,
   hkParent,
   hkProp,
   hkRole,
@@ -48,7 +61,7 @@ import {
   hkVisible,
   hkWalk,
 } from './semantics.js'
-import { hkCollectText, hkOwnText, type TextScanOptions, type TextScanResult } from './text.js'
+import { hkBlockOf, hkCollectText, hkTextBlocks, type TextScanOptions, type TextScanResult } from './text.js'
 import { BrowserHostError } from '../errors.js'
 
 const SHARED = [
@@ -67,20 +80,42 @@ const SHARED = [
   hkWalk,
 ]
 
+/** Text grouped by block, shared by the text snapshot and `wait_for`'s text match. */
+const TEXT = [hkBlockOf, hkTextBlocks]
+
+/** Hit testing and focus, through shadow roots. */
+const AIM = [hkDeepHit, hkContains, hkDeepActive, hkDescribe]
+
 export function elementsScript(options: ElementScanOptions): string {
   const call = `${hkCollectElements.name}(document, window, globalThis, ${literal(options)})`
-  return wrap([...SHARED, hkFlag, hkValue, hkCollectElements], call)
+  return wrap([...SHARED, hkFlag, hkValue, hkOffscreen, hkCollectElements], call)
 }
 
 export function textScript(options: TextScanOptions): string {
   const call = `${hkCollectText.name}(document, window, ${literal(options)})`
-  return wrap([...SHARED, hkOwnText, hkCollectText], call)
+  return wrap([...SHARED, ...TEXT, hkCollectText], call)
 }
 
 /** Where an element is, and whether it can be acted on at all. */
 export function resolveScript(options: TargetOptions): string {
   const call = `${hkResolveTarget.name}(document, window, globalThis, ${literal(options)})`
-  return wrap([...SHARED, hkFlag, hkQuery, hkFindTarget, hkResolveTarget], call)
+  return wrap([...SHARED, ...AIM, hkFlag, hkQuery, hkFindTarget, hkResolveTarget], call)
+}
+
+/** Re-checks the resolved element right before an input command goes out. */
+export function guardScript(options: GuardOptions): string {
+  const call = `${hkGuardTarget.name}(document, globalThis, ${literal(options)})`
+  return wrap([...SHARED, ...AIM, hkGuardTarget], call)
+}
+
+export function selectScript(options: SelectOptions): string {
+  const call = `${hkSelectOption.name}(document, window, globalThis, ${literal(options)})`
+  return wrap([...SHARED, hkFlag, hkQuery, hkFindTarget, hkSelectOption], call)
+}
+
+export function checkStateScript(options: CheckStateOptions): string {
+  const call = `${hkCheckState.name}(document, globalThis, ${literal(options)})`
+  return wrap([...SHARED, hkFlag, hkQuery, hkFindTarget, hkCheckState], call)
 }
 
 export function scrollScript(options: ScrollOptions): string {
@@ -90,7 +125,7 @@ export function scrollScript(options: ScrollOptions): string {
 
 export function conditionScript(options: ConditionOptions): string {
   const call = `${hkCheckCondition.name}(document, window, ${literal(options)})`
-  return wrap([...SHARED, hkOwnText, hkQuery, hkCheckCondition], call)
+  return wrap([...SHARED, ...TEXT, hkQuery, hkCheckCondition], call)
 }
 
 /**
@@ -151,12 +186,17 @@ function literal(value: unknown): string {
 }
 
 export type {
+  CheckStateOptions,
+  CheckStateResult,
   ConditionOptions,
   ConditionResult,
   ElementScanOptions,
   ElementScanResult,
+  GuardOptions,
   ScrollOptions,
   ScrollResult,
+  SelectOptions,
+  SelectResult,
   TargetOptions,
   TargetResult,
   TextScanOptions,

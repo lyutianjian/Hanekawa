@@ -85,6 +85,16 @@ interface TabEntry {
   takenOver: boolean
   /** A session has addressed this tab, so a takeover has someone to interrupt. */
   agentControlled: boolean
+  /**
+   * The generation of an agent navigation (`navigate`, back, forward, reload) the page refused to leave for: its
+   * `beforeunload` said no. Equal to `generation` only while nothing has
+   * navigated since, which keeps `refusedUnload()` about *this* attempt.
+   */
+  refusedUnload: number | undefined
+  /** The generation `beginAgentNavigation` last opened, before Chromium confirms it. */
+  agentGeneration: number | undefined
+  /** The icon of the page an agent navigation is leaving, for when it stays. */
+  pendingFavicon: string | undefined
 }
 
 /**
@@ -157,6 +167,9 @@ export class BrowserTabHost {
       favicon: undefined,
       takenOver: false,
       agentControlled: false,
+      refusedUnload: undefined,
+      agentGeneration: undefined,
+      pendingFavicon: undefined,
     }
     this.tabs.set(entry.tabId, entry)
     // The view is built eagerly rather than on first paint: a tab the agent
@@ -192,27 +205,47 @@ export class BrowserTabHost {
     const entry = this.require(tabId)
     const target = assertNavigable(url)
     const view = this.ensureView(entry)
-    this.beginNavigation(entry)
-    this.emitChange()
+    const generation = this.beginAgentNavigation(entry)
     // `loadURL` rejects on a failed navigation *and* reports the same failure
-    // through `did-fail-load`. The event is the one that carries the tab's row,
-    // so the rejection is swallowed rather than becoming an unhandled rejection
-    // that says nothing the panel has not already been told.
-    void view.webContents.loadURL(target).catch(() => {})
+    // through `did-fail-load`, which carries the tab's row — so most rejections
+    // are swallowed. One is not reported anywhere else: a page whose
+    // `beforeunload` refuses to be left aborts the load (-3, which
+    // `did-fail-load` ignores) before `did-start-navigation` ever fires.
+    // `will-prevent-unload` sees the same refusal; whichever lands first rolls
+    // the row back and the other finds nothing left to do.
+    view.webContents.loadURL(target).catch((error: unknown) => {
+      if (this.tabs.get(tabId) !== entry || entry.view !== view) return
+      if (isAbort(error)) this.stayed(entry, view.webContents, generation)
+    })
   }
 
-  goBack(tabId: string): void {
-    const contents = this.liveContents(tabId)
-    if (contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack()
+  /** The latest agent navigation was refused by the page it tried to leave. */
+  refusedUnload(tabId: string): boolean {
+    const entry = this.tabs.get(tabId)
+    return entry !== undefined && entry.refusedUnload === entry.generation
   }
 
-  goForward(tabId: string): void {
+  /** Whether there was a page to go back to. The panel ignores it; the agent is told. */
+  goBack(tabId: string): boolean {
     const contents = this.liveContents(tabId)
-    if (contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward()
+    if (!contents.navigationHistory.canGoBack()) return false
+    this.beginAgentNavigation(this.require(tabId))
+    contents.navigationHistory.goBack()
+    return true
+  }
+
+  goForward(tabId: string): boolean {
+    const contents = this.liveContents(tabId)
+    if (!contents.navigationHistory.canGoForward()) return false
+    this.beginAgentNavigation(this.require(tabId))
+    contents.navigationHistory.goForward()
+    return true
   }
 
   reload(tabId: string): void {
-    this.liveContents(tabId).reload()
+    const contents = this.liveContents(tabId)
+    this.beginAgentNavigation(this.require(tabId))
+    contents.reload()
   }
 
   /**
@@ -426,6 +459,41 @@ export class BrowserTabHost {
     entry.favicon = undefined
   }
 
+  /**
+   * A navigation the agent asked for, marked as started before Chromium says so.
+   *
+   * Up front because a page whose `beforeunload` refuses never fires
+   * `did-start-navigation`: without the bump a `wait_for_load` right after
+   * would resolve at once against the page that stayed, and report success.
+   */
+  private beginAgentNavigation(entry: TabEntry): number {
+    // `beginNavigation` clears the icon; a refused navigation puts it back.
+    entry.pendingFavicon = entry.favicon
+    this.beginNavigation(entry)
+    entry.agentGeneration = entry.generation
+    this.emitChange()
+    return entry.generation
+  }
+
+  /**
+   * The page refused to be left, so the navigation at `generation` never began.
+   * The document the tab shows is loaded — it never stopped being — so the
+   * generation is marked as such, and `refusedUnload()` tells the waiter.
+   */
+  private stayed(entry: TabEntry, contents: WebContents, generation: number): void {
+    // Overtaken by a newer navigation: that one owns the row now.
+    if (entry.generation !== generation || entry.agentGeneration !== generation) return
+    if (entry.committedGeneration === generation) return
+    entry.url = contents.getURL()
+    entry.loading = false
+    entry.committedGeneration = generation
+    entry.domReadyGeneration = generation
+    entry.completeGeneration = generation
+    entry.favicon = entry.pendingFavicon
+    entry.refusedUnload = generation
+    this.emitChange()
+  }
+
   private ensureView(entry: TabEntry): WebContentsView {
     const existing = entry.view
     if (existing !== undefined && !existing.webContents.isDestroyed()) return existing
@@ -481,6 +549,12 @@ export class BrowserTabHost {
       this.takeOver(entry.tabId)
     })
 
+    // No `preventDefault`: the page's refusal stands. A navigation the agent
+    // started up front is rolled back rather than left loading forever.
+    contents.on('will-prevent-unload', () => {
+      if (alive() && entry.agentGeneration !== undefined) this.stayed(entry, contents, entry.agentGeneration)
+    })
+
     contents.on('will-navigate', (event, url) => {
       if (!isNavigable(url)) event.preventDefault()
     })
@@ -504,6 +578,15 @@ export class BrowserTabHost {
     contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
       if (!alive() || !isMainFrame) return
       entry.url = url
+      // A back or forward between `pushState` entries keeps the document, so no
+      // load follows to end the navigation `beginAgentNavigation` started.
+      if (entry.agentGeneration === entry.generation && entry.committedGeneration !== entry.generation) {
+        entry.committedGeneration = entry.generation
+        entry.domReadyGeneration = entry.generation
+        entry.completeGeneration = entry.generation
+        entry.loading = false
+        entry.favicon = entry.pendingFavicon
+      }
       this.emitChange()
     })
 
@@ -634,6 +717,13 @@ export class BrowserTabHost {
       for (const listener of [...this.listeners]) listener(tabs)
     })
   }
+}
+
+/** Chromium's ERR_ABORTED, as `loadURL` reports it. */
+function isAbort(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const { code, errno } = error as { code?: unknown; errno?: unknown }
+  return code === 'ERR_ABORTED' || errno === -3
 }
 
 function isNavigable(url: string): boolean {

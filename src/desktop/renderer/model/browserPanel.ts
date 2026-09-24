@@ -221,8 +221,11 @@ export function browserControlState(tab: WireBrowserTabInfo | undefined): Browse
  * What a typed address means, or `undefined` when it means nothing.
  *
  * Three rules, in order:
- * - A bare `host/path` gets `https://`, because a browser address bar that
- *   demanded a scheme would be the only one in existence.
+ * - A bare `host/path` gets a scheme, because a browser address bar that
+ *   demanded one would be the only one in existence: `http://` for a loopback
+ *   or private-network host — a dev server almost never speaks TLS, and there
+ *   is no fallback to rescue the guess — and `https://` for everything else.
+ *   `localhost:3000` is a host and a port, not a `localhost:` scheme.
  * - Only `http:` and `https:` survive. `file:` is the one worth naming: the
  *   panel's partition is the agent's browsing context, and a `file://` tab there
  *   would read the user's disk with the page's own privileges.
@@ -235,17 +238,31 @@ export function normalizeAddress(raw: string): string | undefined {
   const trimmed = raw.trim()
   if (trimmed === '') return undefined
 
-  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`
+  // A scheme is letters then a colon — unless all that follows the colon is a
+  // port, which makes the letters a host.
+  const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^[a-z0-9.-]+:\d+(?:[/?#]|$)/i.test(trimmed)
   let parsed: URL
   try {
-    parsed = new URL(candidate)
+    parsed = new URL(hasScheme ? trimmed : `https://${trimmed}`)
   } catch {
     return undefined
   }
+  if (!hasScheme && isLocalHost(parsed.hostname)) parsed.protocol = 'http:'
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined
   // A host is what makes this an address rather than a scheme with a path.
   if (parsed.hostname === '') return undefined
   return parsed.href
+}
+
+/** Loopback and private-network hosts: where a typed address means plain http. */
+function isLocalHost(hostname: string): boolean {
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true
+  if (hostname === '[::1]' || hostname === '0.0.0.0') return true
+  const ipv4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(hostname)
+  if (ipv4 === null) return false
+  const a = Number(ipv4[1])
+  const b = Number(ipv4[2])
+  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
 }
 
 /**

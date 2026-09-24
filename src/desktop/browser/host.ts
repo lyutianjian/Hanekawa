@@ -21,9 +21,13 @@ import type {
   BrowserCaller,
   BrowserClickRequest,
   BrowserElementsRequest,
+  BrowserHistoryAction,
   BrowserHost,
+  BrowserPressKeyRequest,
   BrowserScreenshot,
   BrowserScrollRequest,
+  BrowserSelectRequest,
+  BrowserSetCheckedRequest,
   BrowserSnapshot,
   BrowserTabState,
   BrowserTextRequest,
@@ -33,7 +37,15 @@ import type {
 import type { WireBrowserTabInfo } from '../shellProtocol.js'
 import { cdpSender, pageEvaluator, requirePage } from './cdp.js'
 import { BrowserHostError } from './errors.js'
-import { clickTarget, scrollPage, typeText, type InputDeps } from './input.js'
+import {
+  clickTarget,
+  pressKeys,
+  scrollPage,
+  selectOption,
+  setChecked,
+  typeText,
+  type InputDeps,
+} from './input.js'
 import { SCREENSHOT_TIMEOUT_MS } from './limits.js'
 import { BrowserOwnership } from './ownership.js'
 import { BrowserProjection } from './projection.js'
@@ -116,6 +128,25 @@ export class DesktopBrowserHost implements BrowserHost {
     return this.stateOf(tabId)
   }
 
+  async history(caller: BrowserCaller, tabId: string, action: BrowserHistoryAction): Promise<BrowserTabState> {
+    this.enter(caller)
+    this.requireTab(caller, tabId)
+    if (action === 'reload') {
+      this.deps.tabs.reload(tabId)
+    } else {
+      const moved = action === 'back' ? this.deps.tabs.goBack(tabId) : this.deps.tabs.goForward(tabId)
+      if (!moved) {
+        throw new BrowserHostError(
+          'INVALID_REQUEST',
+          `This tab has no page to go ${action} to. Use tab.navigate with a URL instead.`,
+        )
+      }
+    }
+    // Same reason as `navigate`: the document is on its way out.
+    this.projection.dropTab(tabId)
+    return this.stateOf(tabId)
+  }
+
   async waitForLoad(
     caller: BrowserCaller,
     tabId: string,
@@ -134,7 +165,15 @@ export class DesktopBrowserHost implements BrowserHost {
       // cannot observe the *previous* document's finished state. A tab that has
       // never navigated is not loading either — it is already as loaded as it
       // will get, and saying so beats timing out.
-      if (!row.loading) return toState(row)
+      if (!row.loading) {
+        if (this.deps.tabs.refusedUnload(tabId)) {
+          throw new BrowserHostError(
+            'NAVIGATION_FAILED',
+            `The page refused to be left (it may hold unsaved input), so the navigation did not happen and the tab still shows ${row.url || '(blank)'}. Ask the user before retrying.`,
+          )
+        }
+        return toState(row)
+      }
       if (performance.now() > deadline) {
         throw new BrowserHostError(
           'WAIT_TIMEOUT',
@@ -195,6 +234,28 @@ export class DesktopBrowserHost implements BrowserHost {
     return typeText(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
+  async pressKey(caller: BrowserCaller, tabId: string, request: BrowserPressKeyRequest): Promise<BrowserActionResult> {
+    const revision = this.enter(caller)
+    const page = this.requirePage(caller, tabId)
+    return pressKeys(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+  }
+
+  async selectOption(caller: BrowserCaller, tabId: string, request: BrowserSelectRequest): Promise<BrowserActionResult> {
+    const revision = this.enter(caller)
+    const page = this.requirePage(caller, tabId)
+    return selectOption(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+  }
+
+  async setChecked(
+    caller: BrowserCaller,
+    tabId: string,
+    request: BrowserSetCheckedRequest,
+  ): Promise<BrowserActionResult> {
+    const revision = this.enter(caller)
+    const page = this.requirePage(caller, tabId)
+    return setChecked(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+  }
+
   async scroll(caller: BrowserCaller, tabId: string, request: BrowserScrollRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
     const page = this.requirePage(caller, tabId)
@@ -203,12 +264,25 @@ export class DesktopBrowserHost implements BrowserHost {
 
   async waitFor(caller: BrowserCaller, tabId: string, request: BrowserWaitRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    // A wait for nothing but an address is about a navigation, and a navigation
+    // is exactly when there is no ready document to insist on.
+    const urlOnly = (request.selector ?? '') === '' && (request.text ?? '') === ''
+    if (urlOnly) this.requireTab(caller, tabId)
+    else this.requirePage(caller, tabId)
     const deps = {
-      evaluate: pageEvaluator(page),
+      // Resolved per poll, like everything below: the page a wait started on
+      // is not necessarily the one it ends on.
+      evaluate: (script: string) => {
+        const page = this.deps.tabs.pageFor(tabId)
+        if (page === undefined) {
+          return Promise.reject(new BrowserHostError('PAGE_NOT_READY', 'The tab has no page right now.', true))
+        }
+        return pageEvaluator(page)(script)
+      },
       // Re-read every poll rather than closing over `page.generation`: a
       // navigation that lands mid-wait is exactly what this has to notice.
       generation: () => this.deps.tabs.pageFor(tabId)?.generation,
+      url: () => this.deps.tabs.pageFor(tabId)?.contents.getURL(),
       check: this.guard(caller, revision, request.signal),
       timeoutMs: request.timeoutMs,
       ...(request.signal ? { signal: request.signal } : {}),

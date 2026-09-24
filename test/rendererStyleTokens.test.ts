@@ -1617,10 +1617,15 @@ test('the bead is the tool step\'s whole status vocabulary, and it stays flat', 
   }
 })
 
-test('running signals stay readable, singular per row, and completion never scales', () => {
+test('running signals stay readable, and completion never scales', () => {
   const source = stripComments(css)
   assert.match(blockFor('.waiting-bead').decls.find((decl) => decl.prop === 'animation')!.value, /^breathe /)
-  assert.ok(!blockFor('.waiting-label').decls.some((decl) => decl.prop === 'animation'))
+  // The tail row's words carry the thinking row's sheen, over secondary text so
+  // every frame stays readable.
+  const label = blockFor('.waiting-label')
+  assert.match(label.decls.find((decl) => decl.prop === 'animation')!.value, /^sheen /)
+  assert.ok(declares(label, 'background-clip', 'text'))
+  assert.match(label.decls.find((decl) => decl.prop === 'background')!.value, /var\(--text-secondary\)/)
   assert.doesNotMatch(source, /\.waiting-bead::after|@keyframes (?:halo|sweep)\b/)
   assert.doesNotMatch(source, /\.thinking-header\s*\{[^}]*animation:/)
   for (const name of ['breathe', 'blink']) {

@@ -389,7 +389,7 @@ function headerNode(
       }),
     )
   }
-  if (view.subtitle) header.appendChild(el('div', 'settings-subtitle', view.subtitle))
+  if (view.subtitle) header.appendChild(hinted(el('div', 'settings-subtitle', view.subtitle), view.subtitleHint))
   return header
 }
 
@@ -422,7 +422,7 @@ function cardNode(
   const { node, onIntent } = context
   const section = node(`card:${card.id}`, 'section', 'settings-card')
   const children: Array<Node | null> = [el('div', 'settings-card-title', card.title)]
-  if (card.note) children.push(el('div', 'settings-card-note', card.note))
+  if (card.note) children.push(hinted(el('div', 'settings-card-note', card.note), card.noteHint))
   if (card.rows.length === 0 && card.empty) {
     children.push(el('div', 'settings-empty', card.empty))
   }
@@ -477,7 +477,7 @@ function rowNode(
 ): HTMLElement {
   const { onIntent } = context
   const label = el('div', 'settings-row-label', el('div', 'settings-row-name', row.label))
-  if (row.detail) label.appendChild(el('div', 'settings-row-desc', row.detail))
+  if (row.detail) label.appendChild(hinted(el('div', 'settings-row-desc', row.detail), row.detailHint))
   if (row.warning) label.appendChild(el('div', 'settings-row-warning', row.warning))
 
   // Kept, like the row around it, and for a reason the row alone does not cover:
@@ -542,6 +542,7 @@ function rowNode(
           intentOnCommit,
         }),
       )
+      if (row.control.unit) controls.push(el('span', 'settings-row-unit', row.control.unit))
       break
     }
     case 'buttons':
@@ -581,6 +582,15 @@ function rowNode(
   if (row.pending) element.setAttribute('aria-busy', 'true')
   else element.removeAttribute('aria-busy')
   reconcile(element, [label, control])
+  return element
+}
+
+/** Hover text for the path or fine print a line of copy stands in for. */
+function hinted(element: HTMLElement, hint: string | undefined): HTMLElement {
+  if (hint) {
+    element.title = hint
+    element.classList.add('has-hint')
+  }
   return element
 }
 

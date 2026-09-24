@@ -271,6 +271,8 @@ export type SettingsControl =
       readonly value: string
       readonly placeholder?: string
       readonly mono?: boolean
+      /** Drawn after the input: 「tokens」, 「%」. */
+      readonly unit?: string
       readonly intentOnCommit: (value: string) => SettingsIntent
     }
   | { readonly kind: 'buttons'; readonly buttons: readonly SettingsButton[] }
@@ -305,6 +307,8 @@ export interface SettingsRow {
   readonly id: string
   readonly label: string
   readonly detail?: string
+  /** The detail's hover text, for the technical footnote the detail leaves out. */
+  readonly detailHint?: string
   /** Drawn in the accent-warning colour: the row is configured but unusable. */
   readonly warning?: string
   readonly control: SettingsControl
@@ -315,7 +319,13 @@ export interface SettingsRow {
 export interface SettingsCard {
   readonly id: string
   readonly title: string
+  /** One plain sentence: where this is saved, what it does — never a file path. */
   readonly note?: string
+  /**
+   * The note's hover text: the file path and the fine print (merge rules,
+   * environment switches) that the note itself leaves out on purpose.
+   */
+  readonly noteHint?: string
   readonly rows: readonly SettingsRow[]
   /** Shown in place of rows when there are none. */
   readonly empty?: string
@@ -390,6 +400,8 @@ export interface SettingsViewModel {
   readonly navGroups: readonly SettingsNavGroup[]
   readonly title: string
   readonly subtitle?: string
+  /** The subtitle's hover text: the file path it stands for. */
+  readonly subtitleHint?: string
   readonly cards: readonly SettingsCard[]
   readonly form?: SettingsForm
   readonly error?: string
@@ -845,7 +857,9 @@ export function settingsView(state: SettingsState): SettingsViewModel {
     title: CATEGORY_LABELS[state.category],
     // Only the provider page has one file to name for the whole page; the other
     // three mix `config.json` with `settings.local.json`, so those say it per card.
-    ...(state.category === 'provider' ? { subtitle: `配置写入 ${projected.saveTarget}` } : {}),
+    ...(state.category === 'provider'
+      ? { subtitle: SAVED_GLOBAL, subtitleHint: projected.saveTarget }
+      : {}),
     ...filterCards(cards, state.query),
     ...(state.draft ? { form: draftForm(state.draft, projected, state.openMenu) } : {}),
   }
@@ -963,6 +977,14 @@ function confirmAnchor(target: { kind: 'endpoint' | 'model' | 'mcp-server'; name
     : { cardId: 'models', rowId: `model:${target.name}` }
 }
 
+/**
+ * Where a card saves, in words. The path itself goes in the hover text: a full
+ * `/Users/…/.myagent/settings.local.json` in every card header is noise to
+ * anyone who is not about to open that file.
+ */
+const SAVED_GLOBAL = '保存在全局配置，所有项目共用。'
+const SAVED_LOCAL = '保存在本项目。'
+
 function providerCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
   return [endpointsCard(snapshot), modelsCard(snapshot), routingCard(snapshot)]
 }
@@ -1040,7 +1062,7 @@ function modelsCard(snapshot: WireSettingsSnapshot): SettingsCard {
     id: 'models',
     title: '模型',
     note: overridden
-      ? `默认模型：${snapshot.defaultModel ?? '未设置'} · 被「路由 · 主循环」覆盖，新会话实际从 ${effective} 开始`
+      ? `默认模型：${snapshot.defaultModel ?? '未设置'} · 被「路由 · 主对话」覆盖，新会话实际从 ${effective} 开始`
       : `默认模型：${snapshot.defaultModel ?? '未设置'}`,
     empty: '还没有配置模型。',
     rows: snapshot.models.map((model) => {
@@ -1104,7 +1126,7 @@ function modelDetail(model: WireModelInfo): string {
 }
 
 const ROUTING_ROLE_LABELS: Record<'main' | 'plan' | 'compact', string> = {
-  main: '主循环',
+  main: '主对话',
   plan: '计划模式',
   compact: '压缩',
 }
@@ -1130,7 +1152,7 @@ function routingCard(snapshot: WireSettingsSnapshot): SettingsCard {
   }))
   const subagents = snapshot.routing.subagent.map((entry) => ({
     id: `routing:subagent:${entry.type}`,
-    label: `子 agent · ${entry.type}`,
+    label: `子代理 · ${entry.type}`,
     control: {
       kind: 'select' as const,
       value: entry.value,
@@ -1145,7 +1167,7 @@ function routingCard(snapshot: WireSettingsSnapshot): SettingsCard {
   return {
     id: 'routing',
     title: '路由',
-    note: `${INHERIT} 表示跟随主循环所用的模型。`,
+    note: '「跟随主模型」表示和主对话用同一个模型。',
     rows: [...roles, ...subagents],
   }
 }
@@ -1162,7 +1184,7 @@ export function routingOptions(
   snapshot: WireSettingsSnapshot,
 ): Array<{ value: string; label: string }> {
   return [
-    { value: INHERIT, label: `${INHERIT}（跟随主模型）` },
+    { value: INHERIT, label: '跟随主模型' },
     ...snapshot.models.map((model) => ({
       value: model.key,
       label: model.resolves ? model.key : `${model.key}（无法解析）`,
@@ -1174,14 +1196,14 @@ export function routingOptions(
 
 const BEHAVIOR_NOTES: Record<PermissionBehavior, string> = {
   allow: '匹配到的工具调用不再提示。',
-  ask: '匹配到的工具调用一定提示，即使处于自动接受模式。',
-  deny: '匹配到的工具调用直接拒绝，bypass 模式也不例外。',
+  ask: '匹配到的工具调用一定提示，即使处于自动接受编辑模式。',
+  deny: '匹配到的工具调用直接拒绝，「跳过询问」模式也不例外。',
 }
 
 const PERMISSION_MODE_LABELS: Record<'default' | 'acceptEdits' | 'bypass', string> = {
-  default: 'default（按规则提示）',
-  acceptEdits: 'acceptEdits（自动接受文件编辑）',
-  bypass: 'bypass（跳过提示，仍然遵守拒绝规则）',
+  default: '按规则询问',
+  acceptEdits: '自动接受文件编辑',
+  bypass: '跳过询问（仍遵守拒绝规则）',
 }
 
 /**
@@ -1200,9 +1222,8 @@ function permissionCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
   const modeCard: SettingsCard = {
     id: 'permission-mode',
     title: '默认权限模式',
-    note: permissions.modeIsLocal
-      ? `写入 ${permissions.localPath}`
-      : `当前值来自上层设置文件；改动写入 ${permissions.localPath}`,
+    note: permissions.modeIsLocal ? SAVED_LOCAL : `当前值来自上层设置；改动${SAVED_LOCAL}`,
+    noteHint: permissions.localPath,
     rows: [
       {
         id: 'permissions:mode',
@@ -1263,13 +1284,14 @@ function permissionGroupCard(group: WirePermissionGroup, localPath: string): Set
   const inherited: SettingsRow[] = group.inherited.map((entry, index) => ({
     id: `permission:${group.behavior}:inherited:${index}`,
     label: entry,
-    detail: '来自上层设置文件，只能在那里改。',
+    detail: '来自上层设置，只能在那里改。',
     control: { kind: 'text' as const, value: '继承', muted: true },
   }))
   return {
     id: `permissions:${group.behavior}`,
     title: BEHAVIOR_LABELS[group.behavior],
-    note: `${BEHAVIOR_NOTES[group.behavior]}本地规则写入 ${localPath}`,
+    note: `${BEHAVIOR_NOTES[group.behavior]}新增的规则${SAVED_LOCAL}`,
+    noteHint: localPath,
     empty: '还没有规则。',
     rows: [...local, ...inherited],
     footerButtons: [
@@ -1290,9 +1312,10 @@ function agentCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
   return [
     {
       id: 'agents',
-      title: '子 agent',
-      note: `定义来自 .myagent/agents/ 下的 md 文件，这里只读；路由写入 ${snapshot.saveTarget}`,
-      empty: '没有可用的子 agent 定义。',
+      title: '子代理',
+      note: '定义来自项目里的代理文件，这里只读；选用的模型保存在全局配置。',
+      noteHint: `定义：.myagent/agents/*.md\n模型路由：${snapshot.saveTarget}`,
+      empty: '没有可用的子代理定义。',
       rows: snapshot.agents.map((agent) => ({
         id: `agent:${agent.type}`,
         label: agent.type,
@@ -1320,12 +1343,22 @@ function agentCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
   ]
 }
 
+/** Every mode an agent file may name, not just the three the startup select offers. */
+const AGENT_PERMISSION_MODE_LABELS: Record<string, string> = {
+  ...PERMISSION_MODE_LABELS,
+  plan: '计划模式',
+  readonly: '只读',
+}
+
 function agentDetail(agent: WireAgentDefinitionInfo): string {
   const parts = [agent.builtIn ? '内置' : '自定义', agent.description]
   // Absent means every tool, which is the opposite of "no tools" — spelling it
   // out is the only way the row cannot be read backwards.
   parts.push(agent.tools ? `工具：${agent.tools.join('、')}` : '工具：全部')
-  if (agent.permissionMode) parts.push(`权限模式：${agent.permissionMode}`)
+  // `readonly` would say 只读 twice: the flag below already says it.
+  if (agent.permissionMode && !(agent.permissionMode === 'readonly' && agent.isReadOnlyAgent)) {
+    parts.push(`权限模式：${AGENT_PERMISSION_MODE_LABELS[agent.permissionMode] ?? agent.permissionMode}`)
+  }
   if (agent.model) parts.push(`模型：${agent.model}`)
   if (agent.isReadOnlyAgent) parts.push('只读')
   parts.push(`最多 ${agent.maxTurns} 轮`)
@@ -1344,7 +1377,7 @@ const CONTEXT_LABELS: Record<WireContextManagementField, string> = {
 }
 
 const CONTEXT_DETAILS: Record<WireContextManagementField, string> = {
-  contextWindow: '模型上下文窗口的 token 数。',
+  contextWindow: '模型一次能看到的 token 总数。',
   summaryOutputTokens: '压缩摘要自身允许占用的输出 token。',
   autoCompactBufferTokens: '自动压缩时预留出来的空间。',
   manualCompactBufferTokens: '手动压缩时预留出来的空间。',
@@ -1365,8 +1398,9 @@ function cacheCard(snapshot: WireSettingsSnapshot): SettingsCard {
   const { general } = snapshot
   return {
     id: 'general',
-    title: '通用',
-    note: `写入 ${general.localPath}`,
+    title: '思考与缓存',
+    note: SAVED_LOCAL,
+    noteHint: general.localPath,
     rows: [
       {
         id: 'general:thinking',
@@ -1386,8 +1420,11 @@ function cacheCard(snapshot: WireSettingsSnapshot): SettingsCard {
         label: '1 小时提示词缓存',
         detail:
           general.cacheTtl1h === undefined
-            ? '未设置：默认开启，MYAGENT_PROMPT_CACHE_1H=0 可关闭。'
+            ? '未设置：默认开启。'
             : '缓存的命中窗口更长，代价是写入更贵。',
+        ...(general.cacheTtl1h === undefined
+          ? { detailHint: '也可以用环境变量 MYAGENT_PROMPT_CACHE_1H=0 关闭。' }
+          : {}),
         control: {
           kind: 'toggle',
           value: general.cacheTtl1h !== false,
@@ -1415,7 +1452,8 @@ function skillsCard(snapshot: WireSettingsSnapshot): SettingsCard {
   return {
     id: 'skills',
     title: '技能',
-    note: `定义来自 ${snapshot.skillsDir} 下的 SKILL.md，内容在这里只读；开关写入 settings.local.json`,
+    note: `内容来自本项目的技能文件夹，这里只读；开关${SAVED_LOCAL}`,
+    noteHint: `技能：${snapshot.skillsDir}\n开关：.myagent/settings.local.json`,
     empty: '还没有技能。可以从别处导入一个技能文件夹。',
     rows: snapshot.skills.map((skill) => ({
       id: `skill:${skill.name}`,
@@ -1472,7 +1510,8 @@ function mcpCard(snapshot: WireSettingsSnapshot): SettingsCard {
   return {
     id: 'mcp',
     title: 'MCP 服务器',
-    note: '信任写入 settings.local.json。上层设置授予的信任在这里撤销不了——信任列表是跨层求并集的。',
+    note: `信任${SAVED_LOCAL}上层设置里已经信任的服务器，在这里关不掉。`,
+    noteHint: '信任写入 .myagent/settings.local.json。各层的信任列表会合并，所以只能在授予信任的那一层撤销。',
     empty: '没有配置 MCP 服务器。',
     rows: snapshot.mcpServers.map((server) => {
       const toggle = {
@@ -1560,14 +1599,16 @@ function contextCard(snapshot: WireSettingsSnapshot): SettingsCard {
     // Not a disclaimer: the numbers are snapshotted into every session scope when
     // the project boots, so neither a settings reload nor a runtime rebuild can
     // reach a session that is already open.
-    note: `写入 ${snapshot.saveTarget}；重启后生效——这些数值在项目启动时就读进了每个会话。`,
+    note: `${SAVED_GLOBAL}重启后生效。`,
+    noteHint: `${snapshot.saveTarget}\n这些数值在项目启动时就读进了每个会话，已打开的会话不受影响。`,
     rows: CONTEXT_MANAGEMENT_FIELDS.map((field) => ({
       id: `context:${field}`,
       label: CONTEXT_LABELS[field],
       detail: CONTEXT_DETAILS[field],
       control: {
         kind: 'input' as const,
-        value: String(snapshot.contextManagement[field]),
+        value: formatContextValue(field, snapshot.contextManagement[field]),
+        unit: CONTEXT_RATIO_FIELDS.includes(field) ? '%' : 'tokens',
         intentOnCommit: (value: string): SettingsIntent => ({
           kind: 'set-context-value',
           field,
@@ -1576,6 +1617,12 @@ function contextCard(snapshot: WireSettingsSnapshot): SettingsCard {
       },
     })),
   }
+}
+
+/** Token counts with thousands separators, ratios as a percentage. */
+export function formatContextValue(field: WireContextManagementField, value: number): string {
+  if (CONTEXT_RATIO_FIELDS.includes(field)) return String(Math.round(value * 1000) / 10)
+  return value.toLocaleString('en-US')
 }
 
 /**
@@ -1589,15 +1636,20 @@ function parseContextValue(
   field: WireContextManagementField,
   raw: string,
 ): number | { error: string } {
-  const trimmed = raw.trim()
+  // Thousands separators are how the field is drawn, so they must read back;
+  // a trailing `k` is how people say token counts.
+  const trimmed = raw.trim().replace(/[,，_\s]/g, '').replace(/%$/, '')
   const label = CONTEXT_LABELS[field]
   if (!trimmed) return { error: `${label}不能为空。` }
-  const value = Number(trimmed)
-  if (!Number.isFinite(value)) return { error: `${label}必须是数字。` }
+  const kilo = /k$/i.test(trimmed)
+  const parsed = Number(kilo ? trimmed.slice(0, -1) : trimmed)
+  if (!Number.isFinite(parsed)) return { error: `${label}必须是数字。` }
   if (CONTEXT_RATIO_FIELDS.includes(field)) {
-    if (value <= 0 || value > 1) return { error: `${label}必须是 0 到 1 之间的比例。` }
-    return value
+    // Drawn as a percentage, stored as a ratio.
+    if (kilo || parsed <= 0 || parsed > 100) return { error: `${label}必须是 0 到 100 之间的百分比。` }
+    return parsed / 100
   }
+  const value = kilo ? Math.round(parsed * 1000) : parsed
   if (!Number.isSafeInteger(value) || value < 1) return { error: `${label}必须是正整数。` }
   return value
 }

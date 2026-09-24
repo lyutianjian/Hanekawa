@@ -899,15 +899,14 @@ test('everything read character by character stays monospaced', () => {
   }
 })
 
-test('the serif is display-only, and only in the three whitelisted spots', () => {
+test('the serif is display-only, and only in the whitelisted spots', () => {
   // design_guidance 三.4: the serif may carry a short, pure heading and nothing
   // else. Body text in it drops mixed CJK into a Songti — the fallback stack's
   // own next entry — and the run breaks visibly mid-sentence. There is no way to
-  // see that in a DOM test, so the discipline lives here as a whitelist: three
+  // see that in a DOM test, so the discipline lives here as a whitelist of
   // spots, spelled out, and every other selector naming `--font-serif` fails.
   const SERIF_WHITELIST = [
     '.welcome-title', // the welcome Hero
-    '.settings-card-title', // the settings sections
     '#overlay-panel .title', // the two dialog titles, which are one object
     '#rewind-panel .title',
   ]

@@ -389,7 +389,7 @@ test('picking an option emits that row’s own change intent', (t) => {
   apply({ kind: 'toggle-menu', menu: 'row:routing:main' })
   intents.length = 0
   const items = findAll(mainRoutingPill(view()), 'settings-menu-item')
-  const inherit = items.find((item) => item.text.includes('inherit') || item.text.includes('继承'))
+  const inherit = items.find((item) => item.text.includes('跟随主模型'))
   assert.ok(inherit, items.map((item) => item.text).join(' | '))
   stub.click(inherit.node)
 

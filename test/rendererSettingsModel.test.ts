@@ -962,9 +962,19 @@ test('set-theme is a client-only write: it updates state but never touches the w
   assert.equal(outcome.load, undefined, 'the theme needs no reload')
 })
 
-test('the view says which file it writes', () => {
+test('the view says where it saves in words, and keeps the path for the hover', () => {
   const view = settingsView(openState())
-  assert.match(view.subtitle ?? '', /config\.json/)
+  assert.match(view.subtitle ?? '', /全局配置/)
+  assert.doesNotMatch(view.subtitle ?? '', /config\.json/)
+  assert.match(view.subtitleHint ?? '', /config\.json/)
+})
+
+test('no card note spells out a file path or an internal value', () => {
+  for (const category of ['provider', 'extensions', 'permissions', 'agent', 'general'] as const) {
+    for (const card of settingsView(openState({ category })).cards) {
+      assert.doesNotMatch(card.note ?? '', /[\\/]\.myagent|\.json|inherit|MYAGENT_|主循环/, `${category}/${card.id}`)
+    }
+  }
 })
 
 test('an unresolvable model row carries a warning instead of being dropped', () => {
@@ -1188,7 +1198,7 @@ test('the startup mode row says it does not reach an open session', () => {
   })
   // The mode is last-writer-wins across layers and the local layer is last, so
   // an inherited mode is still editable — unlike the concatenated groups.
-  assert.match(card?.note ?? '', /settings\.local\.json/)
+  assert.match(card?.noteHint ?? '', /settings\.local\.json/)
 })
 
 // --- agents -------------------------------------------------------------------
@@ -1237,9 +1247,10 @@ test('an unset cache toggle reads as the on-by-default it is', () => {
   const row = view.cards.find((card) => card.id === 'general')?.rows.find((row) => row.id === 'general:cache-ttl')
   assert.ok(row && row.control.kind === 'toggle')
   assert.equal(row.control.value, true)
-  // Unset is not the same as false: the 1h TTL is the default, and the row
-  // names the environment variable that turns it off.
-  assert.match(row.detail ?? '', /MYAGENT_PROMPT_CACHE_1H/)
+  // Unset is not the same as false: the 1h TTL is the default, and the row's
+  // hover names the environment variable that turns it off.
+  assert.match(row.detail ?? '', /默认开启/)
+  assert.match(row.detailHint ?? '', /MYAGENT_PROMPT_CACHE_1H/)
   assert.deepEqual(row.control.intentOnChange(true), { kind: 'set-cache-ttl', enabled: true })
 })
 
@@ -1309,7 +1320,7 @@ test('the skills card lists every skill, switched-off ones included', () => {
   const card = settingsView(openState({ category: 'extensions' })).cards.find(
     (card) => card.id === 'skills',
   )
-  assert.match(card?.note ?? '', /\.myagent\\skills/)
+  assert.match(card?.noteHint ?? '', /\.myagent\\skills/)
   assert.deepEqual(card?.rows.map((row) => row.id), ['skill:release', 'skill:review'])
   assert.equal(card?.rows[0]?.label, '/release')
 
@@ -1385,7 +1396,7 @@ test('the extensions page is the skills card and the MCP card, in that order', (
 
 test('the context card names its file and says the numbers need a restart', () => {
   const card = settingsView(openState({ category: 'general' })).cards.find((card) => card.id === 'context')
-  assert.match(card?.note ?? '', /config\.json/)
+  assert.match(card?.noteHint ?? '', /config\.json/)
   assert.match(card?.note ?? '', /重启后生效/)
   assert.deepEqual(
     card?.rows.map((row) => row.id),
@@ -1400,7 +1411,11 @@ test('the context card names its file and says the numbers need a restart', () =
   )
   const window = card?.rows[0]
   assert.ok(window && window.control.kind === 'input')
-  assert.equal(window.control.value, '200000')
+  assert.equal(window.control.value, '200,000')
+  assert.equal(window.control.unit, 'tokens')
+  const ratio = card?.rows.at(-1)
+  assert.ok(ratio && ratio.control.kind === 'input')
+  assert.equal(ratio.control.unit, '%')
   assert.deepEqual(window.control.intentOnCommit('400000'), {
     kind: 'set-context-value',
     field: 'contextWindow',
@@ -1415,8 +1430,8 @@ test('a context number is validated here, so a typo is not a host error', () => 
     { field: 'contextWindow', value: '2e5x', error: /必须是数字/ },
     { field: 'contextWindow', value: '0', error: /正整数/ },
     { field: 'contextWindow', value: '1.5', error: /正整数/ },
-    { field: 'autoCompactThresholdRatio', value: '1.5', error: /比例/ },
-    { field: 'autoCompactThresholdRatio', value: '0', error: /比例/ },
+    { field: 'autoCompactThresholdRatio', value: '150', error: /百分比/ },
+    { field: 'autoCompactThresholdRatio', value: '0', error: /百分比/ },
   ]
   for (const { field, value, error } of cases) {
     const outcome = applySettingsIntent(state, { kind: 'set-context-value', field, value })
@@ -1424,15 +1439,26 @@ test('a context number is validated here, so a typo is not a host error', () => 
     assert.match(outcome.state.error ?? '', error)
   }
 
-  // A ratio of exactly 1 is legitimate: compact only when the window is full.
+  // A ratio is typed as a percentage; 100% is legitimate: compact only when the
+  // window is full.
   const accepted = applySettingsIntent(state, {
     kind: 'set-context-value',
     field: 'autoCompactThresholdRatio',
-    value: '1',
+    value: '100%',
   })
   assert.deepEqual(accepted.changes, [
     { scope: 'general', kind: 'set-context-management', field: 'autoCompactThresholdRatio', value: 1 },
   ])
+  const ninety = applySettingsIntent(state, { kind: 'set-context-value', field: 'autoCompactThresholdRatio', value: '90' })
+  assert.equal(ninety.changes?.[0] && 'value' in ninety.changes[0] ? ninety.changes[0].value : undefined, 0.9)
+
+  // The separators the field is drawn with, and a `k`, read back as the number.
+  for (const typed of ['200,000', '200k', '200 000']) {
+    const outcome = applySettingsIntent(state, { kind: 'set-context-value', field: 'contextWindow', value: typed })
+    assert.deepEqual(outcome.changes, [
+      { scope: 'general', kind: 'set-context-management', field: 'contextWindow', value: 200000 },
+    ], typed)
+  }
 })
 
 // --- effects -----------------------------------------------------------------

@@ -4361,6 +4361,9 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  /* Reserved whether or not this page scrolls, so switching between a long
+     page and a short one does not shift the column sideways. */
+  scrollbar-gutter: stable;
   padding: var(--space-4) var(--space-5) var(--space-7);
 }
 
@@ -4427,14 +4430,14 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   border-bottom-right-radius: var(--radius-lg);
 }
 
-/* One of the three places the serif is allowed (design_guidance 三.4): a section
-   heading is short, and it is what separates one group from the next now that
-   the card has no border. The size is the page's own title rung — the H1 above
-   is the only thing larger. */
+/* What separates one group from the next now that the card has no border. The
+   size is the page's own title rung — the H1 above is the only thing larger.
+   The UI face, not the serif: these titles mix Latin into Chinese (「MCP 服务器」),
+   and the serif set those letters apart from the sans CJK beside them. */
 .settings-card-title {
   padding: var(--space-3) var(--space-4) var(--space-2);
   color: var(--text-primary);
-  font-family: var(--font-serif);
+  font-family: var(--font-ui);
   font-size: var(--type-title);
   font-weight: 600;
 }
@@ -4470,6 +4473,20 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 
 .settings-row-desc {
   color: var(--text-secondary);
+  font-size: var(--type-meta);
+}
+
+/* A line whose hover text holds the path or fine print behind it. */
+.settings-card-note.has-hint,
+.settings-subtitle.has-hint,
+.settings-row-desc.has-hint {
+  cursor: help;
+}
+
+.settings-row-unit {
+  /* One width for every unit, so 「tokens」 and 「%」 rows keep their inputs in line. */
+  width: 3.5em;
+  color: var(--text-tertiary);
   font-size: var(--type-meta);
 }
 

@@ -66,13 +66,13 @@ test('at-completion token is rejected once the quote is closed', () => {
   assert.equal(extractAtCompletionToken('@"my dir/thing.ts"', 18), null)
 })
 
-test('file suggestions list directories before files and drop non-code extensions', async () => {
+test('file suggestions list directories before files and drop non-text extensions', async () => {
   await withFixture(async (dir) => {
     const suggestions = await generateFileSuggestions('@', 1, dir)
 
-    assert.deepEqual(paths(suggestions), ['docs/', 'my dir/', 'src/', 'root.ts'])
+    assert.deepEqual(paths(suggestions), ['docs/', 'my dir/', 'src/', 'README.md', 'root.ts'])
     assert.equal(suggestions[0]?.description, 'directory')
-    assert.equal(suggestions.at(-1)?.description, 'code file')
+    assert.equal(suggestions.at(-1)?.description, 'file')
   })
 })
 
@@ -84,6 +84,15 @@ test('file suggestions skip node_modules, .git and build directories', async () 
     assert.ok(!listed.includes('node_modules/'), 'node_modules must not be suggested')
     assert.ok(!listed.includes('.git/'), '.git must not be suggested')
     assert.ok(!listed.includes('build/'), 'build must not be suggested')
+  })
+})
+
+test('file suggestions complete markdown and plain-text documents', async () => {
+  await withFixture(async (dir) => {
+    await writeFile(path.join(dir, 'docs', 'todo.txt'), '\n')
+
+    assert.deepEqual(paths(await generateFileSuggestions('@README', 7, dir)), ['README.md'])
+    assert.deepEqual(paths(await generateFileSuggestions('@docs/', 6, dir)), ['docs/notes.md', 'docs/todo.txt'])
   })
 })
 
@@ -156,7 +165,7 @@ test('applying a file suggestion appends a trailing space', () => {
   const suggestion: FileSuggestion = {
     id: 'file:file:src/app.ts',
     displayText: 'src/app.ts',
-    description: 'code file',
+    description: 'file',
     metadata: { replacementText: '@src/app.ts', path: 'src/app.ts', kind: 'file' },
   }
 
@@ -170,7 +179,7 @@ test('applying a suggestion preserves the text after the cursor', () => {
   const suggestion: FileSuggestion = {
     id: 'file:file:root.ts',
     displayText: 'root.ts',
-    description: 'code file',
+    description: 'file',
     metadata: { replacementText: '@root.ts', path: 'root.ts', kind: 'file' },
   }
 
@@ -184,7 +193,7 @@ test('applying a suggestion without a token is a no-op', () => {
   const suggestion: FileSuggestion = {
     id: 'file:file:root.ts',
     displayText: 'root.ts',
-    description: 'code file',
+    description: 'file',
     metadata: { replacementText: '@root.ts', path: 'root.ts', kind: 'file' },
   }
 

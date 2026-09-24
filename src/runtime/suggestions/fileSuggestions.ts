@@ -94,7 +94,7 @@ function createFileSuggestion(item: FileSearchItem, forceQuoted: boolean): FileS
   return {
     id: `file:${item.kind}:${item.path}`,
     displayText: item.path,
-    description: item.kind === 'directory' ? 'directory' : 'code file',
+    description: item.kind === 'directory' ? 'directory' : 'file',
     metadata: {
       replacementText,
       path: item.path,

@@ -81,7 +81,7 @@ interface ElementSpec {
   nodes?: Array<string | StubElement>
   shadow?: Array<string | StubElement>
   /** A `<slot>`'s assigned nodes. */
-  assigned?: StubElement[]
+  assigned?: Array<StubElement | TextNode>
   style?: Partial<StubStyle>
   size?: { width: number; height: number }
   /** Viewport position of the box. Absent means the top-left corner. */
@@ -116,7 +116,7 @@ class StubElement {
   private readonly size: { width: number; height: number }
   private readonly at: { top: number; left: number }
   root: { host?: StubElement } = {}
-  assignedNodes?: () => StubElement[]
+  assignedNodes?: () => Array<StubElement | TextNode>
   dispatched: string[] = []
 
   constructor(tag: string, spec: ElementSpec = {}) {
@@ -748,6 +748,30 @@ test('the text walk follows the rendered tree: shadow content once, slotted cont
     ],
   })
   assert.deepEqual(runText(body).blocks, [{ kind: 'text', text: 'before slotted after' }])
+})
+
+test('bare text slotted into a web component is read, though the slot itself has no box', () => {
+  // A real `<slot>` is `display: contents`: its rect is 0×0, which `hkVisible` alone calls hidden.
+  const box = { style: { display: 'contents' }, size: { width: 0, height: 0 } }
+  const assigned: TextNode[] = []
+  const hiddenAssigned: TextNode[] = []
+  const body = el('body', {
+    children: [
+      el('my-btn', {
+        nodes: ['Save changes'],
+        shadow: [el('button', { children: [el('slot', { assigned, ...box })] })],
+      }),
+      el('my-btn', {
+        nodes: ['Secret'],
+        style: { display: 'none' },
+        shadow: [el('button', { children: [el('slot', { assigned: hiddenAssigned, ...box })] })],
+      }),
+    ],
+  })
+  const [shown, hidden] = body.children as [StubElement, StubElement]
+  assigned.push(shown.childNodes[0] as TextNode)
+  hiddenAssigned.push(hidden.childNodes[0] as TextNode)
+  assert.deepEqual(runText(body).blocks, [{ kind: 'text', text: 'Save changes' }])
 })
 
 // --- aiming: the hit test and the guard ----------------------------------------

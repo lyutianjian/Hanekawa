@@ -32,7 +32,7 @@ const cursor = z
   .min(1)
   .describe('Cursor from a previous snapshot’s "# more:" line. Reads the next page without re-scanning.')
 const maxChars = z.number().int().describe('Character budget for this page of output (2048–24000).')
-const limit = z.number().int().describe('Maximum rows or segments to collect (default 100).')
+const limit = z.number().int().describe('Rows per page (elements default 100; text defaults to as many as maxChars allows). The rest stay reachable through the cursor.')
 const scope = z.string().min(1).describe('CSS selector to restrict the scan to one subtree.')
 const visibleOnly = z.boolean().describe('Skip elements that are not rendered. Default true.')
 
@@ -237,7 +237,7 @@ export const browserApiInputSchema: JsonSchema = {
     state: { type: 'string', enum: ['visible', 'hidden'], description: 'page.wait_for only. Default visible.' },
     interactiveOnly: { type: 'boolean', description: 'page.elements.snapshot only. Default true.' },
     visibleOnly: { type: 'boolean', description: 'Snapshots only. Default true.' },
-    limit: { type: 'number', description: 'Snapshots only: maximum rows or segments. Default 100.' },
+    limit: { type: 'number', description: 'Snapshots only: rows per page, the rest reachable through the cursor. Elements default 100.' },
     maxChars: { type: 'number', description: 'Snapshots only: output budget, 2048–24000.' },
     cursor: { type: 'string', description: 'Snapshots only: page through the previous snapshot instead of rescanning.' },
   },

@@ -106,6 +106,7 @@ export function paginateLines(
   offset: number,
   maxChars: number,
   cursorFor: (nextOffset: number) => string,
+  maxRows = Number.POSITIVE_INFINITY,
 ): PageSlice {
   const start = Math.max(0, Math.floor(offset))
   if (start >= lines.length) return { text: header }
@@ -113,7 +114,7 @@ export function paginateLines(
   const budget = maxChars - PAGE_OVERHEAD_RESERVE
   let used = header.length
   let end = start
-  while (end < lines.length) {
+  while (end < lines.length && end - start < maxRows) {
     const line = lines[end] as string
     const next = used + line.length + 1
     if (next > budget) break

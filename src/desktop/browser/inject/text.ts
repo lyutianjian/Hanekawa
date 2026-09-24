@@ -132,6 +132,29 @@ export function hkTextBlocks(
     return known
   }
 
+  // A `display: contents` element — every `<slot>` by default — has no box of
+  // its own, so `hkVisible` calls it hidden and would drop the text slotted
+  // into a web component. It is as visible as whatever it renders into, unless
+  // its own style hides what it passes on.
+  const isVisible = (el: InjElement): boolean => {
+    let known = visible.get(el)
+    if (known === undefined) {
+      const style = win.getComputedStyle(el)
+      if (style.display === 'contents') {
+        const up = flat.get(el) ?? hkParent(el)
+        known =
+          style.visibility !== 'hidden' &&
+          style.visibility !== 'collapse' &&
+          Number(style.opacity) !== 0 &&
+          (up === null || isVisible(up))
+      } else {
+        known = hkVisible(el, win)
+      }
+      visible.set(el, known)
+    }
+    return known
+  }
+
   // Each entry carries the element it was reached from, which is its parent in
   // the rendered tree: a host for its shadow root's nodes, a slot for what is
   // assigned to it.
@@ -154,14 +177,7 @@ export function hkTextBlocks(
       }
       const parent = entry.from
       if (parent === null) continue
-      if (opts.visibleOnly) {
-        let seen = visible.get(parent)
-        if (seen === undefined) {
-          seen = hkVisible(parent, win)
-          visible.set(parent, seen)
-        }
-        if (!seen) continue
-      }
+      if (opts.visibleOnly && !isVisible(parent)) continue
       let block = blockCache.get(parent)
       if (block === undefined) {
         block = hkBlockOf(parent, root, flat)

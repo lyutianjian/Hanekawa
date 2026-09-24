@@ -36,7 +36,7 @@ Usage:
 - To act on something: take a page.elements.snapshot, then pass a row's \`ref\` to page.click or page.type. A \`ref\` is only valid until the next snapshot or navigation; a \`selector\` never expires but is re-resolved against whatever matches now. When both are given, \`ref\` wins.
 - An action reports what it did, not what the page became. Read the result with a fresh snapshot, and use page.wait_for first when the page updates asynchronously — tab.wait_for_load only answers for navigations.
 - page.type does not fire a key event per character, so a page that reacts to individual keystrokes may not notice. \`submit\` presses a real Enter.
-- Snapshots are paged. When the output ends with a \`# more:\` line, pass that \`cursor\` back with the same operation to continue; the cursor reads the snapshot that was already taken, so the page cannot shift under you. A cursor stops working once the tab navigates.
+- Snapshots are paged. When the output ends with a \`# more:\` line, pass that \`cursor\` back with the same operation to continue; the cursor reads the snapshot that was already taken, so the page cannot shift under you. A cursor stops working once the tab navigates. \`limit\` sets how many rows a page holds, not how much of the page is read.
 - \`scanTruncated=true\` in the header means a page budget ran out mid-scan. Paging cannot reach what it dropped — narrow the request with \`scope\`, \`role\` or \`text\` instead.
 - Password, one-time-code and card fields are never projected: their text and value come back empty by design, and what you type into one is never echoed back.
 - There is no \`prompt\` parameter — pages come back for you to read, not summarized by another model.

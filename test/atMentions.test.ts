@@ -100,17 +100,39 @@ test('buildAtMentionContextRecord injects code file content and updates read sta
   }
 })
 
+test('buildAtMentionContextRecord attaches markdown and plain-text documents', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-at-'))
+  try {
+    await writeFile(path.join(dir, 'README.md'), '# readme\n', 'utf8')
+    await writeFile(path.join(dir, 'notes.txt'), 'todo\n', 'utf8')
+
+    const record = await buildAtMentionContextRecord({
+      userInput: 'read @README.md and @notes.txt',
+      userMessageId: 'u1',
+      turnId: 't1',
+      toolContext: context(dir),
+    })
+
+    assert.ok(record)
+    assert.deepEqual(record.files.map((file) => file.displayPath), ['README.md', 'notes.txt'])
+    assert.match(record.content, /# readme/)
+    assert.match(record.content, /todo/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('buildAtMentionContextRecord skips non-code, empty directories, protected paths, and cwd escapes', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-at-'))
   const outside = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-out-'))
   try {
     await mkdir(path.join(dir, 'src'))
-    await writeFile(path.join(dir, 'src', 'note.txt'), 'nope', 'utf8')
+    await writeFile(path.join(dir, 'src', 'blob.bin'), 'nope', 'utf8')
     await writeFile(path.join(dir, '.env'), 'SECRET=1', 'utf8')
     await writeFile(path.join(outside, 'x.py'), 'print(1)', 'utf8')
 
     const record = await buildAtMentionContextRecord({
-      userInput: `@src @src/note.txt @.env @${path.relative(dir, path.join(outside, 'x.py'))}`,
+      userInput: `@src @src/blob.bin @.env @${path.relative(dir, path.join(outside, 'x.py'))}`,
       userMessageId: 'u1',
       turnId: 't1',
       toolContext: context(dir),
@@ -129,7 +151,7 @@ test('buildAtMentionContextRecord expands mentioned directories to code files', 
     await mkdir(path.join(dir, 'src', 'nested'), { recursive: true })
     await writeFile(path.join(dir, 'src', 'a.py'), 'print(1)\n', 'utf8')
     await writeFile(path.join(dir, 'src', 'nested', 'b.ts'), 'export {}\n', 'utf8')
-    await writeFile(path.join(dir, 'src', 'note.txt'), 'nope\n', 'utf8')
+    await writeFile(path.join(dir, 'src', 'blob.bin'), 'nope\n', 'utf8')
     const ctx = context(dir)
 
     const record = await buildAtMentionContextRecord({
@@ -146,7 +168,7 @@ test('buildAtMentionContextRecord expands mentioned directories to code files', 
     ])
     assert.match(record.content, /<file path="src\/a.py"/)
     assert.match(record.content, /<file path="src\/nested\/b.ts"/)
-    assert.doesNotMatch(record.content, /note.txt/)
+    assert.doesNotMatch(record.content, /blob.bin/)
     assert.equal(ctx.readFiles.has(path.join(dir, 'src', 'a.py')), true)
     assert.equal(ctx.readFiles.has(path.join(dir, 'src', 'nested', 'b.ts')), true)
   } finally {

@@ -55,6 +55,20 @@ export const CODE_TEXT_EXTENSIONS = new Set([
   '.yaml',
   '.yml',
   '.toml',
+  '.xml',
+  '.ini',
+  '.cfg',
+  // Prose and plain-text documents: `@README` must complete like code does.
+  '.md',
+  '.markdown',
+  '.mdx',
+  '.txt',
+  '.rst',
+  '.adoc',
+  '.org',
+  '.tex',
+  '.csv',
+  '.tsv',
 ])
 
 const MAX_AT_MENTION_FILES = 5
@@ -207,7 +221,7 @@ export async function buildAtMentionContextRecord(input: {
   if (attachments.length === 0) return undefined
 
   const innerContent = [
-    'User attached code files with @-mentions. Treat this as user-provided context for the current task.',
+    'User attached files with @-mentions. Treat this as user-provided context for the current task.',
     ...attachments.map(({ file, content: fileContent }) => {
       const truncated = file.truncated ? ' truncated="true"' : ''
       return `<file path="${escapeAttribute(file.displayPath)}" lines="${file.lineStart}-${file.lineEnd}"${truncated}>\n${fileContent}\n</file>`

@@ -3,6 +3,7 @@ import { appendFileSync, readFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { getSessionsDir } from '../utils/paths.js'
+import { migrateLegacyProjectData, type LegacyDataFinding } from './legacyProjectData.js'
 import { readJsonFile, writeJsonFile, parseJsonLines, parseJsonLinesWithDiagnostics } from '../utils/json.js'
 import type { SessionRecord, TokenUsage } from '../harness/types.js'
 import type { SessionMetricInput, SessionMetric } from '../harness/metrics.js'
@@ -166,8 +167,11 @@ export class SessionStore {
   private readonly drafts = new Map<string, DraftSessionState>()
   private readonly otlpExporter?: OtlpMetricExporter
   private sessionsDir: string
+  private readonly cwd: string
+  private migrationFindings: LegacyDataFinding[] = []
 
   constructor(cwd: string, options: SessionStoreOptions = {}) {
+    this.cwd = cwd
     this.sessionsDir = getSessionsDir(cwd)
     this.otlpExporter = options.otlpEndpoint
       ? new OtlpMetricExporter({ endpoint: options.otlpEndpoint })
@@ -175,6 +179,9 @@ export class SessionStore {
   }
 
   async init(): Promise<void> {
+    // Before anything reads the index: a project last opened before runtime
+    // data moved out of `<cwd>/.myagent/` still has its sessions there.
+    this.migrationFindings.push(...await migrateLegacyProjectData(this.cwd))
     await mkdir(this.sessionsDir, { recursive: true })
     await this.cleanupStaleEmptySessions()
   }
@@ -185,6 +192,13 @@ export class SessionStore {
     await writeFile(this.sessionJsonlPath(id), '', { flag: 'a' })
     await this.upsertIndex(meta)
     return meta
+  }
+
+  /** What `init()`'s legacy-data migration reported, handed over once for startup diagnostics. */
+  takeMigrationFindings(): LegacyDataFinding[] {
+    const findings = this.migrationFindings
+    this.migrationFindings = []
+    return findings
   }
 
   createDraft(title?: string): SessionMeta {

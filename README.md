@@ -124,7 +124,10 @@ A project's `.myagent/` holds only configuration you put there (settings, skills
 Sessions and other runtime state — spilled tool output, image attachments, plan files — are kept per
 project under `~/.myagent/projects/<key>/`, where `<key>` is derived from the project's path, so
 opening a folder never creates anything inside it. Renaming or moving a project gives it a new key and
-an empty history; the old history stays under the old key.
+an empty history; the old history stays under the old key. A project whose sessions still sit in its
+own `.myagent/` (from earlier versions) has them moved on the next open: each file is copied and
+verified before the original is removed, an emptied `.myagent/` is deleted, and anything that could not
+be moved stays where it was with a startup warning.
 
 ### Thinking
 

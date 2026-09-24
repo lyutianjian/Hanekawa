@@ -43,7 +43,7 @@ for (const [name, ending, status] of [
       "import { join } from 'node:path'",
       'import { createSmokeEnvironment, globalConfigPath, makeProject } from ' + JSON.stringify(fixturesUrl),
       'const environment = createSmokeEnvironment({ sourceHome: ' + JSON.stringify(sourceHome) + ' })',
-      "makeProject(environment.root, 'test-project')",
+      "makeProject(environment.root, 'test-project', environment.home)",
       "writeFileSync(globalConfigPath(environment.home), '{\"models\":{\"smoke-model\":{}}}')",
       "writeFileSync(join(environment.home, '.myagent/projects.json'), '{\"projects\":[\"test-project\"]}')",
       "mkdirSync(join(environment.home, '.myagent/file-history/test-session'), { recursive: true })",

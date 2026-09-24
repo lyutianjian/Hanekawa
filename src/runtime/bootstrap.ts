@@ -154,6 +154,11 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
       severity: 'warning' as const,
       message,
     })),
+    ...(store.takeMigrationFindings?.() ?? []).map((finding) => ({
+      code: finding.kind === 'failed' ? 'project_data_migration_failed' : 'project_data_migrated',
+      severity: finding.kind === 'failed' ? 'warning' as const : 'info' as const,
+      message: finding.message,
+    })),
     ...checkLegacyModelTiers(config),
     ...checkOptionalModelReferences(config),
   ]

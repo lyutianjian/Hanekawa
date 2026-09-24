@@ -222,6 +222,19 @@ export function groupHeaderLabel(group: ActivityGroup): string {
 }
 
 /**
+ * The head of the turn in flight: 「工作中 · 3 步」, plus failures.
+ *
+ * Not `groupHeaderLabel`: `status` reads `done` in every gap between two tool
+ * calls, and a head that flashed 「已完成」 after each result would report a
+ * running turn as over. Liveness is the session's (`model/waiting.ts`).
+ */
+export function groupRunningLabel(group: ActivityGroup): string {
+  const parts = [RUNNING_LABEL, ...(group.stepCount > 0 ? [`${group.stepCount} 步`] : [])]
+  if (group.failedCount > 0) parts.push(`${group.failedCount} 失败`)
+  return parts.join(' · ')
+}
+
+/**
  * The group head's **accessible name** (§8), which is not its visible label.
  *
  * The label above is a live counter: `工作中 · 2 步` becomes `工作中 · 3 步` the
@@ -238,7 +251,7 @@ export function groupHeaderLabel(group: ActivityGroup): string {
  * exactly what someone reading a finished turn wants read out.
  *
  * `live` is the session's own 「a turn is in flight」 (`model/waiting.ts` decides
- * which head carries it) and outranks `status`, which reads `done` in every gap
+ * which group is live) and outranks `status`, which reads `done` in every gap
  * between two tool calls: a head whose name settled to 「已完成 · 2 步」 while the
  * turn was still working would announce the turn as over, repeatedly.
  */

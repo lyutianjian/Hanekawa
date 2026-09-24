@@ -1857,13 +1857,11 @@ body.settings-open #browser-resizer { display: none; }
    `@keyframes`. */
 @keyframes breathe { 50% { opacity: 0.65; } }
 /* --- the waiting row ---
-   The gap between Enter and the first record, made visible: a breathing bead, a
-   static label, the elapsed time and the key that
-   stops the turn. `model/waiting.ts` decides when it exists — only until the turn
-   opens its activity group, whose head takes these same four pieces over for the
-   rest of the turn — so it needs no fade of its own; a row that appears when the
-   page is still and disappears when the group opens is already a change the eye
-   catches.
+   The turn's live status, at the transcript's tail where the reader is looking:
+   a breathing bead, a label (「正在思考」 or the running tool's name), the
+   elapsed time and the key that stops the turn. `model/waiting.ts` decides when
+   it exists — the whole turn, except while an answer is visibly arriving — so it
+   needs no fade of its own.
 
    Four rungs of loudness on one line, which is the whole design: the bead is the
    only accent, the label is secondary text, and the counter and
@@ -2000,22 +1998,6 @@ body.settings-open #browser-resizer { display: none; }
   white-space: normal;
   overflow-wrap: anywhere;
 }
-/* --- the live head ---
-   While the turn runs, the head *is* the waiting row: the same breathing bead,
-   the same breathing bead, static words, counter and `Esc` hint —
-   pinned to the top of the turn, where a status is looked for, instead of
-   walking down the page behind the steps. It says the running tool's name while
-   one is running and 「正在思考」 in between, and it seals to 「已处理 …」 only
-   when the turn is over.
-
-   The pieces carry their own colours (`.waiting-*` above), so all this rule owns
-   is where the hint sits: out at the row's right edge, because it is the one
-   part that is an offer rather than a report.
-
-   There is no bead strip. One dot per step along the head's right edge was a
-   second, wordless report of what the steps below already say, and next to
-   「已处理」 it read as a verdict on the whole turn. */
-.group-head.live .waiting-hint { margin-left: auto; }
 .group-steps {
   display: flex;
   flex-direction: column;

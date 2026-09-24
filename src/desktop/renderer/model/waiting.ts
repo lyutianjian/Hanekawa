@@ -9,26 +9,24 @@ import {
 /**
  * What the turn is doing **right now**, and where that is said.
  *
- * The rule is one line: the live status belongs at the *top* of the turn, on the
- * activity group's own head, and it stays there while the turn runs. It was a
- * row at the tail of the transcript before, which meant 「正在思考」 walked down
- * the page behind every thought and every tool call — the one label whose job is
- * to be found without looking was the one that never sat still.
+ * The rule is one line: the live status is the transcript's **last row**, for the
+ * whole turn. It used to sit on the activity group's head, at the top of the
+ * turn, so that it would not walk down the page — but a long turn scrolls its
+ * own top out of view, and the one label whose job is to be found without
+ * looking ended up above the fold while the reader followed the tail. The tail
+ * is where the reader is looking, so that is where it goes.
  *
- * So there are two carriers of one status:
+ * So there is one carrier — the standalone **row** (`row`) — and one group that
+ * knows it is running (`liveGroupId`):
  *
- * - the **group head** (`liveGroupId`), for a turn that has already produced a
- *   step. `groupActivityLabel` is what it reads: the running tool's own name, or
- *   「正在思考」 when nothing is running and the model is deciding. It seals to
- *   `groupHeaderLabel`'s 「已处理 …」 when the turn ends, and only then.
- * - the standalone **row** (`row`), for the gap before the first step, when
- *   there is no group yet to head. That gap is the one between pressing Enter
- *   and the first record, and it is the whole reason this file exists: the shell
- *   says 「生成中」 under the composer, but the reader is looking at the end of
- *   the transcript, where a slow first token left an empty page.
+ * - the row reads 「正在思考」 in the gap before the first step, and once a group
+ *   is open, `groupActivityLabel`: the running tool's own name, or 「正在思考」
+ *   when nothing is running and the model is deciding.
+ * - the live group's head stays quiet (「工作中 · 3 步」, no bead or clock) and
+ *   seals to `groupHeaderLabel`'s 「已处理 …」 when the turn ends.
  *
- * Never both, and never a second voice beside a growing draft: if the tail is
- * visibly arriving and no group has been opened, nothing is drawn.
+ * Never a second voice beside a growing draft: if the transcript's last loose
+ * item is visibly arriving, the row is withdrawn — the text itself is the status.
  *
  * DOM-free, like every other `model/` unit: the clock lives in the view, and
  * `startedAt` is only carried through so a test can pin the contents without one.
@@ -58,12 +56,18 @@ export interface WaitingRow {
   readonly label: string
   readonly hint: string
   readonly startedAt: number | undefined
+  /**
+   * Whether the label is spoken. Only in the gap before the first step, where
+   * it appears once and holds still; once it follows the turn from tool to
+   * tool, each step's own head announces what is new (§8).
+   */
+  readonly announce: boolean
 }
 
 export interface TurnActivity {
-  /** The group whose head carries the live status, by `turnId`. */
+  /** The group of the turn in flight, by `turnId`: open, with a quiet head. */
   readonly liveGroupId: string | undefined
-  /** The standalone row, drawn only when no group has been opened yet. */
+  /** The status row at the transcript's tail. */
   readonly row: WaitingRow | undefined
 }
 
@@ -90,13 +94,12 @@ export function waitingElapsedLabel(elapsedMs: number): string {
 }
 
 /**
- * Which carrier says it, for this paint.
+ * Which group is live, and what the tail row reads, for this paint.
  *
- * `entries` is what the view is about to draw, so head and row can never both
- * claim the status. The live group is found by the state's own `turnId` rather
- * than by 「the last group」: a new turn that has not produced a record yet has no
- * `turnId` at all, and the group above it belongs to the turn before — lighting
- * *that* head up would report the wrong turn as running.
+ * The live group is found by the state's own `turnId` rather than by 「the last
+ * group」: a new turn that has not produced a record yet has no `turnId` at all,
+ * and the group above it belongs to the turn before — marking *that* one live
+ * would report the wrong turn as running.
  *
  * `ActivityGroup.status` is deliberately not consulted either. It reads 「done」
  * the moment the last tool result merges in, which happens several times inside
@@ -108,10 +111,14 @@ export function waitingElapsedLabel(elapsedMs: number): string {
 export function turnActivity(entries: readonly TranscriptEntry[], input: WaitingInput): TurnActivity {
   if (!input.isStreaming) return IDLE
   const group = liveGroup(entries, input.turnId)
-  if (group !== undefined) return { liveGroupId: group.turnId, row: undefined }
+  const liveGroupId = group?.turnId
   const last = entries[entries.length - 1]
-  if (last !== undefined && last.kind === 'item' && isArriving(last.item)) return IDLE
-  return { liveGroupId: undefined, row: { label: WAITING_LABEL, hint: WAITING_HINT, startedAt: input.startedAt } }
+  if (last !== undefined && last.kind === 'item' && isArriving(last.item)) return { liveGroupId, row: undefined }
+  const label = group === undefined ? WAITING_LABEL : groupActivityLabel(group)
+  return {
+    liveGroupId,
+    row: { label, hint: WAITING_HINT, startedAt: input.startedAt, announce: group === undefined },
+  }
 }
 
 function liveGroup(entries: readonly TranscriptEntry[], turnId: string | undefined): ActivityGroup | undefined {
@@ -125,9 +132,10 @@ function liveGroup(entries: readonly TranscriptEntry[], turnId: string | undefin
 }
 
 /**
- * The live head's label: the running tool's name, else 「正在思考」.
+ * The tail row's label while a group is open: the running tool's name, else
+ * 「正在思考」.
  *
- * The *name* only — not the call's arguments. A head that is read to find out
+ * The *name* only — not the call's arguments. A status that is read to find out
  * what is happening wants one word, and the command it ran is one line below,
  * on the step's own head, where it can be opened.
  *

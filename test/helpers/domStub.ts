@@ -65,6 +65,8 @@ interface StubEvent {
    * dismissal) from the right-click that toggles the menu.
    */
   readonly button: number
+  /** `wheel`'s vertical delta: negative scrolls up. */
+  readonly deltaY: number
   /** `paste`'s payload, when the test supplies one through `dispatch`. */
   readonly clipboardData: { readonly files: readonly unknown[] } | undefined
   defaultPrevented: boolean
@@ -80,6 +82,7 @@ export interface StubEventInit {
   readonly propertyName?: string
   readonly animationName?: string
   readonly button?: number
+  readonly deltaY?: number
   /** A `paste` event's clipboard; `files` are fake `File`-shaped objects. */
   readonly clipboardData?: { readonly files: readonly unknown[] }
 }
@@ -430,6 +433,7 @@ class StubElement {
       propertyName: init.propertyName ?? '',
       animationName: init.animationName ?? '',
       button: init.button ?? 0,
+      deltaY: init.deltaY ?? 0,
       clipboardData: init.clipboardData,
       defaultPrevented: false,
       preventDefault() {

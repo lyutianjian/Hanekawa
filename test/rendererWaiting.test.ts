@@ -12,9 +12,8 @@ import {
 /**
  * Where the live status is said (`src/desktop/renderer/model/waiting.ts`).
  *
- * Two decisions, both pure: *which carrier* — the running group's head, or the
- * standalone row for the gap before the first step — and *what the head reads*
- * while the turn works. `test/rendererTranscriptView.test.ts` covers what each
+ * Two decisions, both pure: *whether* the tail row is drawn and which group is
+ * live, and *what the row reads* while the turn works. `test/rendererTranscriptView.test.ts` covers what each
  * one is made of in the DOM; this file covers when it exists at all.
  */
 
@@ -48,17 +47,18 @@ test('an idle session says nothing at all', () => {
   assert.equal(idle.row, undefined)
 })
 
-test('the gap before the first step is the standalone row’s, and only that gap', () => {
-  // No records yet, so no `turnId` and no group to head: the row is the only
-  // thing that can say the turn is alive.
+test('the row is the tail for the whole turn, spoken only before the first step', () => {
+  // No records yet, so no `turnId` and no group: the row is the only thing that
+  // can say the turn is alive, and it appears once, so it is announced.
   const row = activity([USER], true, undefined)
-  assert.deepEqual(row.row, { label: '正在思考', hint: 'Esc 中断', startedAt: STARTED_AT })
+  assert.deepEqual(row.row, { label: '正在思考', hint: 'Esc 中断', startedAt: STARTED_AT, announce: true })
   assert.equal(row.liveGroupId, undefined)
 
-  // The moment the turn opens a group, the head takes the status over — the row
-  // must not follow the steps down the page.
+  // Once the turn opens a group the row stays at the tail — a long turn scrolls
+  // its own top away — and it goes quiet: it now tracks the turn from step to
+  // step, and each step's head announces what is new.
   const headed = activity(group([THINKING]))
-  assert.equal(headed.row, undefined)
+  assert.deepEqual(headed.row, { label: '正在思考', hint: 'Esc 中断', startedAt: STARTED_AT, announce: false })
   assert.equal(headed.liveGroupId, TURN)
 })
 
@@ -71,14 +71,15 @@ test('a draft that is actually arriving withdraws the row; an empty one does not
   assert.ok(activity([USER, draft('  \n')], true, undefined).row)
 })
 
-test('the head stays live between steps, where the group itself reads “done”', () => {
+test('the group stays live between steps, where the group itself reads “done”', () => {
   // Every step has settled, so `ActivityGroup.status` is already 'done' — and
   // the turn is very much still running. The session's own `isStreaming` is the
   // only honest source for 「the turn is over」, or the head would flash 已处理
   // after every tool result.
   const between = activity(group([THINKING, DONE_BASH]))
   assert.equal(between.liveGroupId, TURN)
-  assert.equal(between.row, undefined)
+  assert.equal(between.row?.label, '正在思考')
+  assert.equal(activity(group([THINKING, RUNNING_BASH])).row?.label, 'Bash')
 })
 
 test('a group from an earlier turn is never lit up by the next one', () => {
@@ -97,7 +98,7 @@ test('an interrupted turn is not live: its own head already says 已中断', () 
   assert.equal(activity(group([DONE_BASH, interrupted])).liveGroupId, undefined)
 })
 
-test('the head reads the running tool’s name, and 正在思考 in between', () => {
+test('the row reads the running tool’s name, and 正在思考 in between', () => {
   const groupOf = (items: readonly TranscriptItem[]) => {
     const entry = groupTranscript(items).find((one) => one.kind === 'group')
     assert.ok(entry?.kind === 'group')

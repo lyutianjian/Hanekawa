@@ -204,7 +204,10 @@ for (const reason of ['focus', 'selection', 'reading'] as const) {
     const body = groupOf(view).children[1]!.children[0]!.children[1]!.node
     if (reason === 'focus') view.stub.focus(body)
     if (reason === 'selection') view.stub.setSelection(body)
-    if (reason === 'reading') view.stub.setMetrics(view.container, { scrollTop: 100, scrollHeight: 2000, clientHeight: 400 })
+    if (reason === 'reading') {
+      view.stub.dispatch(view.container, 'wheel', { deltaY: -100 })
+      view.stub.setMetrics(view.container, { scrollTop: 100, scrollHeight: 2000, clientHeight: 400 })
+    }
     view.render(transcript([{ ...item, pending: false }]))
     assert.equal(groupOf(view).classes.includes('collapsed'), false)
     assert.equal(groupOf(view).children[1]!.children[0]!.children[1]!.node, body)
@@ -306,7 +309,13 @@ function mount(t: { after(fn: () => void): void }): Rendered {
 }
 
 /** Places the reader `distance` px above the tail of a 1000px scroller. */
+/**
+ * The reader scrolls up: a wheel, then the geometry it leaves behind. The view
+ * stops following the tail on the reader's own input only — content that grows
+ * under a reader who is following is not them scrolling away (see `following`).
+ */
 function scrolledUpBy(stub: DomStub, container: HTMLElement, distance: number): void {
+  stub.dispatch(container, 'wheel', { deltaY: -distance })
   stub.setMetrics(container, { scrollHeight: 1000, clientHeight: 200, scrollTop: 800 - distance })
 }
 
@@ -378,6 +387,21 @@ test('the transcript follows the tail only when the reader is already there', (t
   scrolledUpBy(stub, container, 400)
   render(transcript([{ id: 'a', kind: 'assistant', text: 'xy' }]))
   assert.equal(stub.inspect(container).scrollTop, 400, 'reading back: stay put')
+})
+
+test('content that grows after a paint does not unhook a reader following the tail', (t) => {
+  // The long-turn bug: a paint pinned the scroller to the end, a step's unfold
+  // then grew the content by more than the 24px slack with no scroll event, and
+  // the next paint read the reader as 「scrolled up」 — so the tail was never
+  // followed again and the final answer landed below the viewport.
+  const { render, stub, container, jump } = mount(t)
+
+  stub.setMetrics(container, { scrollHeight: 1000, clientHeight: 200, scrollTop: 800 })
+  render(transcript([{ id: 'a', kind: 'assistant', text: 'x' }]))
+  stub.setMetrics(container, { scrollHeight: 1400 })
+  render(transcript([{ id: 'a', kind: 'assistant', text: 'xy' }]))
+  assert.equal(stub.inspect(container).scrollTop, 1400, 'still following')
+  assert.equal(jump().hidden, true)
 })
 
 test('the items paint inside one reading column, and the scroller stays bare', (t) => {
@@ -537,7 +561,7 @@ test('a turn is one group: the user message outside it, its steps within', (t) =
   const view = mount(t)
   view.render(transcript(turnItems({ pending: true })), NO_DISCLOSURE, RUNNING_T1)
 
-  assert.deepEqual(view.items().map((entry) => entry.classes[0]), ['item', 'activity-group'])
+  assert.deepEqual(view.items().map((entry) => entry.classes[0]), ['item', 'activity-group', 'waiting'])
   const group = groupOf(view)
   // Running, so the group is open and the steps are real nodes under it.
   assert.deepEqual(group.classes, ['activity-group', 'running', 'live'])
@@ -545,7 +569,7 @@ test('a turn is one group: the user message outside it, its steps within', (t) =
   assert.equal(head?.tagName, 'BUTTON')
   // One *action* — the tool call. The thinking step above it is a row in the
   // group but not work the turn did, and it is not counted.
-  assert.equal(head?.children.find((node) => node.className === 'waiting-label')?.text, 'Read')
+  assert.equal(head?.children.find((node) => node.className === 'btn-label')?.text, '工作中 · 1 步')
   assert.equal(head?.attributes.get('aria-expanded'), 'true')
   assert.equal(group.children[1]?.classes.includes('group-steps'), true)
   assert.deepEqual(
@@ -652,8 +676,8 @@ test('the group head reads out a stable name while its visible label tracks acti
   // accessibility tree, because this subtree is an `aria-live` region and the
   // count moves once per step (§8).
   assert.equal(running?.attributes.get('aria-label'), '工作中')
-  const label = running?.children.find((child) => child.classes.includes('waiting-label'))
-  assert.equal(label?.text, 'Read')
+  const label = running?.children.find((child) => child.classes.includes('btn-label'))
+  assert.equal(label?.text, '工作中 · 1 步')
   assert.equal(label?.attributes.get('aria-hidden'), 'true')
 
   // Sealed, the head is written once, so it names the totals it now carries.
@@ -755,7 +779,7 @@ test('a streaming paint detaches nothing, so the open step keeps its fold and it
     { id: 'thinking-0', kind: 'thinking', text: thought, pending: true, turnId: 't1' },
     ...(answer === ''
       ? []
-      : [{ id: 'draft', kind: 'assistant', text: answer, turnId: 't1' } as TranscriptItem]),
+      : [{ id: 'draft', kind: 'assistant', text: answer, pending: true, turnId: 't1' } as TranscriptItem]),
   ]
 
   const view = mount(t)
@@ -777,7 +801,7 @@ test('a streaming paint detaches nothing, so the open step keeps its fold and it
   view.render(transcript(streaming('先看看这个文件', '好')), NO_DISCLOSURE, RUNNING_T1)
   view.render(transcript(streaming('先看看这个文件', '好的，')), NO_DISCLOSURE, RUNNING_T1)
 
-  assert.equal(detached.column(), 0, 'the column re-orders in place; nothing is taken out of the page')
+  assert.equal(detached.column(), 1, 'the column re-orders in place; only the status row leaves, as the answer starts')
   assert.equal(detached.group(), 0, 'a refill of the group leaves the children it hands back where they are')
   assert.equal(detached.steps(), 0, 'and the open step never leaves its box')
   assert.equal(groupOf(view).children[1]?.children[0]?.node, step?.node, 'still the same step')
@@ -1595,7 +1619,7 @@ test('the waiting row is the transcript’s tail while a turn is running and not
   assert.equal(row.children[3]!.attributes.get('aria-hidden'), 'true')
 })
 
-test('once the turn opens a group, the head carries the status and the row is gone', (t) => {
+test('once the turn opens a group, the row stays at the tail and the head goes quiet', (t) => {
   const view = mount(t)
   const live = turnItems({ pending: true })
   const startedAt = Date.now() - 6_000
@@ -1606,36 +1630,42 @@ test('once the turn opens a group, the head carries the status and the row is go
     turnId: 't1',
   })
 
-  // Nothing at the tail: the status moved up to the head, where it stays for the
-  // rest of the turn instead of walking down the page behind every step.
-  assert.equal(view.items().some((item) => item.classes.includes('waiting')), false)
+  // The status is the transcript's last row for the whole turn: a long turn
+  // scrolls its own top away, and the tail is where the reader is looking.
+  const row = view.items().at(-1)!
+  assert.deepEqual(row.classes, ['waiting'])
+  assert.deepEqual(
+    row.children.map((child) => [child.classes.join(' '), child.text]),
+    [['waiting-bead', ''], ['waiting-label', 'Read'], ['waiting-elapsed', '6s'], ['waiting-hint', 'Esc 中断']],
+    'the running tool’s own name, with the bead, counter and hint',
+  )
+  // It tracks the turn from tool to tool, so it is not what gets announced:
+  // each step's own head says what is new.
+  assert.equal(row.children[1]!.attributes.get('aria-hidden'), 'true')
+
+  // The head is quiet: a count and no second clock or bead.
   const head = groupOf(view).children[0]!
   assert.ok(head.classes.includes('live'))
-  assert.deepEqual(
-    head.children.map((child) => [child.classes.join(' '), child.text]),
-    [['waiting-bead', ''], ['waiting-label', 'Read'], ['waiting-elapsed', '6s'], ['waiting-hint', 'Esc 中断']],
-    'the running tool’s own name, with the row’s bead, counter and hint',
-  )
-  // The head's accessible name is the stable one; the label tracks the turn and
-  // this subtree is `aria-live`.
-  assert.equal(head.children[1]!.attributes.get('aria-hidden'), 'true')
+  assert.deepEqual(head.children.map((child) => [child.classes.join(' '), child.text]), [['btn-label', '工作中 · 1 步']])
   assert.equal(head.attributes.get('aria-label'), '工作中')
 
-  // The tool settles and the turn keeps running: the label falls back to
+  // The tool settles and the turn keeps running: the row falls back to
   // 「正在思考」 while all four pieces stay mounted, preserving the breath.
   const between = turnItems()
   view.render(transcript(between, { turnId: 't1' }), NO_DISCLOSURE, { isStreaming: true, startedAt, turnId: 't1' })
-  const still = groupOf(view).children[0]!
-  assert.equal(still.node, head.node, 'the head is kept across the step settling')
-  for (let i = 0; i < head.children.length; i += 1) assert.equal(still.children[i]!.node, head.children[i]!.node)
+  const still = view.items().at(-1)!
+  assert.equal(still.node, row.node, 'the row is kept across the step settling')
+  for (let i = 0; i < row.children.length; i += 1) assert.equal(still.children[i]!.node, row.children[i]!.node)
   assert.equal(still.children[1]!.text, '正在思考')
+  assert.match(groupOf(view).children[0]!.text, /^工作中/, 'a settled step does not seal a running turn')
 
-  // Only the end of the turn seals it.
+  // Only the end of the turn seals it, and the row goes.
   view.render(transcript(between, { turnId: undefined }), NO_DISCLOSURE, {
     isStreaming: false,
     startedAt: undefined,
     turnId: undefined,
   })
+  assert.equal(view.items().some((item) => item.classes.includes('waiting')), false)
   const sealed = groupOf(view).children[0]!
   assert.equal(sealed.classes.includes('live'), false)
   assert.match(sealed.text, /^已完成|^已处理/)
@@ -1652,11 +1682,11 @@ test('M18 keeps the breathing bead and clock mounted across tool handoffs and un
       toolName: toolName ?? 'Read', pending: toolName !== undefined,
       tool: { displayName: toolName ?? 'Read', useSummary: 'a.ts' } }
     view.render(transcript([item]), NO_DISCLOSURE, activity)
-    const head = groupOf(view).children[0]!
-    pieces ??= head.children
-    for (let i = 0; i < pieces.length; i += 1) assert.equal(head.children[i]!.node, pieces[i]!.node)
-    assert.equal(head.children[1]!.text, toolName ?? '正在思考')
-    assert.equal(head.children[2]!.text, '6s')
+    const row = view.items().at(-1)!
+    pieces ??= row.children
+    for (let i = 0; i < pieces.length; i += 1) assert.equal(row.children[i]!.node, pieces[i]!.node)
+    assert.equal(row.children[1]!.text, toolName ?? '正在思考')
+    assert.equal(row.children[2]!.text, '6s')
   }
   assert.equal(starts.starts, 0, 'label updates never detach or reactivate the bead')
 })
@@ -1832,6 +1862,7 @@ test('the lift runs once per question, not once per streamed token', (t) => {
   // 184 of conversation, 16 of scroller inset and the 472 pad the lift wrote —
   // the scroller now has somewhere to be scrolled *from*, and the reader has
   // gone back to the top of it.
+  view.stub.dispatch(view.container, 'wheel', { deltaY: -72 })
   view.stub.setMetrics(view.container, { scrollTop: 0, scrollHeight: 672 })
   const answering = transcript([...items, { id: 'b', kind: 'assistant', text: '你好呀', pending: true }])
   view.render(answering, undefined, live(answering))
@@ -1850,6 +1881,7 @@ test('M15 reading history defers end padding recovery in the same paint as discl
     { id: 's', kind: 'thinking', text: 'body', turnId: 't1', pending: true }]
   view.render(transcript(items), NO_DISCLOSURE, RUNNING_T1)
   const before = pad(view)
+  view.stub.dispatch(view.container, 'wheel', { deltaY: -72 })
   view.stub.setMetrics(view.container, { scrollTop: 0, scrollHeight: 672 })
   view.render(transcript(items.map((item) => ({ ...item, pending: false }))))
   assert.equal(pad(view), before, 'reading content and its space remain together')
@@ -1868,6 +1900,7 @@ test('M15 a disclosure keeps its triggering head at the same viewport offset and
   t.after(() => { globalThis.requestAnimationFrame = previousRaf; globalThis.cancelAnimationFrame = previousCancel })
   const view = mount(t)
   let shift = 0
+  view.stub.dispatch(view.container, 'wheel', { deltaY: -100 })
   view.stub.setMetrics(view.container, { scrollTop: 100, scrollHeight: 2000, clientHeight: 400 })
   view.stub.onLayout((node) => {
     if (node.node === view.container) return { top: 0, bottom: 400 }
@@ -1988,15 +2021,16 @@ test('M19 transcript resize observation pauses on hiding, resumes on paint and e
   const state = transcript([{ id: 'a', kind: 'user', text: 'hello' }])
   view.render(state)
   view.render(state)
-  assert.equal(observed, 1)
+  // Two targets: the scroller, and the column whose content moves under it.
+  assert.equal(observed, 2)
   view.stopClock()
   assert.equal(disconnected, 1)
   view.stub.setHidden(true)
   view.render(state)
-  assert.equal(observed, 1, 'hidden windows do not start observing again')
+  assert.equal(observed, 2, 'hidden windows do not start observing again')
   view.stub.setHidden(false)
   view.render(state)
-  assert.equal(observed, 2)
+  assert.equal(observed, 4)
   view.dispose()
   assert.equal(disconnected, 2)
 })

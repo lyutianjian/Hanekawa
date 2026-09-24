@@ -138,6 +138,8 @@ export function createBrowserTool(host: BrowserHost): Tool {
           return 'Reloading the page'
         case 'tab.wait_for_load':
           return 'Waiting for the page to load'
+        case 'tab.emulate':
+          return parsed.reset === true ? 'Clearing device emulation' : 'Emulating a device'
         case 'page.click':
           return 'Clicking the page'
         case 'page.type':
@@ -247,6 +249,18 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
       const tab = await host.waitForLoad(session, input.tabId, options)
       const loaded = input.until === 'domcontentloaded' && tab.loading ? 'DOM ready' : 'Page loaded'
       return tabResult(tab, tab.error === undefined ? loaded : 'Load failed')
+    }
+    case 'tab.emulate': {
+      const result = await host.emulate(session, input.tabId, action({
+        preset: input.preset,
+        width: input.width,
+        height: input.height,
+        deviceScaleFactor: input.deviceScaleFactor,
+        mobile: input.mobile,
+        userAgent: input.userAgent,
+        reset: input.reset,
+      }, context))
+      return actionResult(result, input.reset === true ? 'Cleared emulation' : `Emulating ${input.preset ?? `${input.width}x${input.height}`}`)
     }
     case 'page.elements.snapshot': {
       const snapshot = input.cursor === undefined

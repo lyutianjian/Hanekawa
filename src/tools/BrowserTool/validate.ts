@@ -90,6 +90,21 @@ function crossFieldRules(operation: string, input: Record<string, unknown>): Too
       )
     }
   }
+  if (operation === 'tab.emulate') {
+    const device = ['preset', 'width', 'height', 'deviceScaleFactor', 'mobile', 'userAgent'].filter((key) => input[key] !== undefined)
+    if (input['reset'] === true && device.length > 0) {
+      return fail(
+        `tab.emulate with reset clears the emulation and takes nothing else; drop ${device.map((key) => `"${key}"`).join(', ')}.`,
+        device[0],
+      )
+    }
+    if (input['reset'] !== true && !has('preset') && (input['width'] === undefined || input['height'] === undefined)) {
+      return fail(
+        'tab.emulate needs a "preset" (iphone, ipad or desktop), or both "width" and "height" — or reset: true to clear it.',
+        'preset',
+      )
+    }
+  }
   if (operation === 'page.wait_for' && !has('selector') && !has('text') && !has('url')) {
     return fail(
       'page.wait_for needs something to wait for: a CSS "selector", a "text", a "url", or a combination (all must hold).',

@@ -290,8 +290,20 @@ test('the flat API schema covers every branch and requires only the discriminato
       assert.ok(published.has(name), `${operation}.${name} is not in the published schema`)
     }
   }
+  assert.deepEqual(browserApiInputSchema.properties?.operation?.enum, [...BROWSER_OPERATIONS])
+  assert.deepEqual(browserApiInputSchema.properties?.state?.enum, ['visible', 'hidden'])
+  assert.match(browserApiInputSchema.properties?.text?.description ?? '', /page\.type: The text to type/)
   // The union is what actually decides, so it must still refuse a mixed call.
   assert.equal(browserInputSchema.safeParse({ operation: 'browser.get_state', url: 'x' }).success, false)
+})
+
+test('a cursor read refuses the filters it would silently ignore', () => {
+  const paged = validateBrowserInput({ operation: 'page.elements.snapshot', tabId: 't', cursor: 'c1', maxChars: 4096 })
+  assert.equal(paged.ok, true)
+  const filtered = validateBrowserInput({ operation: 'page.elements.snapshot', tabId: 't', cursor: 'c1', role: 'button', scope: 'main' })
+  assert.equal(filtered.ok, false)
+  assert.match(filtered.errors[0]?.message ?? '', /"role", "scope" would be ignored.*drop "cursor"/)
+  assert.equal(validateBrowserInput({ operation: 'page.text.snapshot', tabId: 't', cursor: 'c1', limit: 5 }).ok, false)
 })
 
 test('only the read-only operations are concurrency safe', () => {

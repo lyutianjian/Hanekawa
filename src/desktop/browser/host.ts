@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   BrowserActionResult,
   BrowserCaller,
+  BrowserClickAtRequest,
   BrowserClickRequest,
   BrowserElementsRequest,
   BrowserHoverRequest,
@@ -39,8 +40,9 @@ import type {
 import type { WireBrowserTabInfo } from '../shellProtocol.js'
 import { cdpLease, cdpSender, pageEvaluator, requirePage } from './cdp.js'
 import { BrowserHostError } from './errors.js'
-import { forgetRefsScript } from './inject/bundle.js'
+import { forgetRefsScript, unwrap, viewportScript, type ViewportResult } from './inject/bundle.js'
 import {
+  clickAt,
   clickTarget,
   pressKeys,
   hoverTarget,
@@ -246,13 +248,25 @@ export class DesktopBrowserHost implements BrowserHost {
     this.ownership.assertAllowed(caller.sessionId, revision)
     const { width, height } = pngSize(bytes)
     if (width === 0 || height === 0) throw notCaptured()
-    return { bytes, name: screenshotName(this.rowFor(tabId)?.url ?? ''), width, height }
+    const shot: BrowserScreenshot = { bytes, name: screenshotName(this.rowFor(tabId)?.url ?? ''), width, height }
+    const viewport = await readViewport(page)
+    if (viewport !== undefined) {
+      shot.cssWidth = viewport.width
+      shot.cssHeight = viewport.height
+    }
+    return shot
   }
 
   async click(caller: BrowserCaller, tabId: string, request: BrowserClickRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
     const page = this.requirePage(caller, tabId)
     return clickTarget(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+  }
+
+  async clickAt(caller: BrowserCaller, tabId: string, request: BrowserClickAtRequest): Promise<BrowserActionResult> {
+    const revision = this.enter(caller)
+    const page = this.requirePage(caller, tabId)
+    return clickAt(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
   async type(caller: BrowserCaller, tabId: string, request: BrowserTypeRequest): Promise<BrowserActionResult> {
@@ -515,6 +529,19 @@ async function captureViaCdp(page: BrowserPage): Promise<Buffer | undefined> {
     return undefined
   } finally {
     release()
+  }
+}
+
+/**
+ * The CSS viewport the capture shows. Best effort: the picture is still worth
+ * returning without it, only coordinate clicks lose their scale.
+ */
+async function readViewport(page: BrowserPage): Promise<ViewportResult | undefined> {
+  try {
+    const viewport = unwrap<ViewportResult>(await pageEvaluator(page)(viewportScript()))
+    return viewport.width > 0 && viewport.height > 0 ? viewport : undefined
+  } catch {
+    return undefined
   }
 }
 

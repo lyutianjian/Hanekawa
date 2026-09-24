@@ -8,6 +8,7 @@ import type {
   ElementScanOptions,
   ElementScanResult,
   GuardOptions,
+  PointResult,
   ScrollOptions,
   ScrollResult,
   SelectOptions,
@@ -24,10 +25,12 @@ import {
   elementsScript,
   forgetRefsScript,
   guardScript,
+  pointScript,
   resolveScript,
   scrollScript,
   selectScript,
   textScript,
+  viewportScript,
   unwrap,
 } from '../src/desktop/browser/inject/bundle.js'
 import { BrowserHostError } from '../src/desktop/browser/errors.js'
@@ -434,6 +437,35 @@ test('a rendered element outside the viewport is marked offscreen, one inside is
     children: [el('button', { text: 'Hidden', style: { display: 'none' }, at: { top: 5000, left: 0 } })],
   })
   assert.equal(runElements(hidden, { visibleOnly: false }).result.rows[0]?.offscreen, undefined)
+})
+
+test('includeBounds adds each visible row’s rounded viewport box, and only when asked', () => {
+  const body = el('body', {
+    children: [
+      el('button', { text: 'Shown', at: { top: 10.6, left: 20.2 } }),
+      el('button', { text: 'Hidden', style: { display: 'none' } }),
+    ],
+  })
+  const rows = runElements(body, { includeBounds: true, visibleOnly: false }).result.rows
+  const { width, height } = body.children[0]!.getBoundingClientRect()
+  assert.deepEqual(rows.map((row) => row.bounds), [[20, 11, Math.round(width), Math.round(height)], undefined])
+  assert.equal(runElements(body).result.rows[0]?.bounds, undefined)
+})
+
+test('a point names what a press there lands on, and a point off the viewport is refused', () => {
+  const canvas = el('canvas', { attrs: { 'aria-label': 'Map' } })
+  const body = el('body', { children: [canvas] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body, null, () => canvas), window: windowFor() }
+  const run = (x: number, y: number) =>
+    unwrap<PointResult>(serialize(vm.runInNewContext(pointScript({ x, y, sensitiveWords: SENSITIVE_AUTOCOMPLETE }), sandbox)))
+
+  assert.deepEqual(run(100, 100), { hit: '<canvas> "Map"', url: 'https://stub.test/page', title: 'Stub Page' })
+  // The stub window is 1280×720, so x=1280 is one pixel past its right edge.
+  assert.throws(
+    () => run(1280, 10),
+    (error: unknown) => error instanceof BrowserHostError && error.code === 'INVALID_REQUEST' && /1280x720/.test(error.message),
+  )
+  assert.deepEqual(serialize(vm.runInNewContext(viewportScript(), sandbox)), { ok: true, value: { width: 1280, height: 720 } })
 })
 
 test('a password field projects neither its text nor its value', () => {

@@ -26,24 +26,29 @@ import {
   hkDeepActive,
   hkDeepHit,
   hkDescribe,
+  hkDescribePoint,
   hkFindTarget,
   hkGuardTarget,
   hkQuery,
   hkResolveTarget,
   hkScrollPage,
   hkSelectOption,
+  hkViewport,
   type CheckStateOptions,
   type CheckStateResult,
   type ConditionOptions,
   type ConditionResult,
   type ConditionState,
   type GuardOptions,
+  type PointOptions,
+  type PointResult,
   type ScrollOptions,
   type ScrollResult,
   type SelectOptions,
   type SelectResult,
   type TargetOptions,
   type TargetResult,
+  type ViewportResult,
 } from './actions.js'
 import {
   hkCollectElements,
@@ -136,6 +141,17 @@ export function scrollScript(options: ScrollOptions): string {
   return wrap([...SHARED, hkQuery, hkFindTarget, hkScrollPage], call)
 }
 
+/** The CSS-pixel viewport a screenshot shows. */
+export function viewportScript(): string {
+  return wrap([hkViewport], `${hkViewport.name}(window)`)
+}
+
+/** What a coordinate press would land on; refuses a point off the viewport. */
+export function pointScript(options: PointOptions): string {
+  const call = `${hkDescribePoint.name}(document, window, ${literal(options)})`
+  return wrap([...SHARED, ...AIM, hkDescribePoint], call)
+}
+
 export function conditionScript(options: ConditionOptions): string {
   const call = `${hkCheckCondition.name}(document, window, ${literal(options)})`
   return wrap([...SHARED, ...TEXT, hkFlag, hkQuery, hkCheckCondition], call)
@@ -207,6 +223,8 @@ export type {
   ElementScanOptions,
   ElementScanResult,
   GuardOptions,
+  PointOptions,
+  PointResult,
   ScrollOptions,
   ScrollResult,
   SelectOptions,
@@ -215,4 +233,5 @@ export type {
   TargetResult,
   TextScanOptions,
   TextScanResult,
+  ViewportResult,
 }

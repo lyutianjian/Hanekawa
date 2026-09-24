@@ -139,6 +139,7 @@ export function createBrowserTool(host: BrowserHost): Tool {
         case 'tab.wait_for_load':
           return 'Waiting for the page to load'
         case 'page.click':
+        case 'page.click_at':
           return 'Clicking the page'
         case 'page.type':
           return 'Typing into the page'
@@ -256,6 +257,7 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
           text: input.text,
           interactiveOnly: input.interactiveOnly,
           visibleOnly: input.visibleOnly,
+          includeBounds: input.includeBounds,
           limit: input.limit,
           maxChars: input.maxChars,
         }))
@@ -283,6 +285,15 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
         clickCount: input.clickCount,
       }, context))
       return actionResult(result, 'Clicked')
+    }
+    case 'page.click_at': {
+      const result = await host.clickAt(session, input.tabId, action({
+        x: input.x,
+        y: input.y,
+        button: input.button,
+        clickCount: input.clickCount,
+      }, context))
+      return actionResult(result, 'Clicked a point')
     }
     case 'page.type': {
       const result = await host.type(session, input.tabId, action({
@@ -422,11 +433,36 @@ async function screenshot(
     content: [
       `Screenshot of the visible area of tab ${tabId}.`,
       caption,
+      ...coordinateLines(shot, ref.width),
       'The picture is attached as pixels; no text was extracted from it.',
     ].join('\n'),
     images: [ref],
     metadata: { display: { summary: `Screenshot ${shot.width}x${shot.height}` } },
   }
+}
+
+/**
+ * How the picture maps onto the page, for `page.click_at`.
+ *
+ * Two scales stack: the capture's own (device pixels per CSS pixel, 2 on a
+ * HiDPI screen) and the attachment store's downscale. The model only ever sees
+ * the attached picture, so the factor it needs is the product, stated once.
+ */
+export function coordinateLines(
+  shot: { width: number; cssWidth?: number; cssHeight?: number },
+  attachedWidth: number,
+): string[] {
+  if (shot.cssWidth === undefined || shot.cssHeight === undefined || attachedWidth <= 0) return []
+  const scale = shot.width / shot.cssWidth
+  const factor = shot.cssWidth / attachedWidth
+  return [
+    `Viewport: cssWidth=${shot.cssWidth} cssHeight=${shot.cssHeight}; scale=${round(scale)} (captured pixels per CSS pixel).`,
+    `For page.click_at, multiply a point in the attached picture by ${round(factor)} to get CSS pixels.`,
+  ]
+}
+
+function round(value: number): number {
+  return Math.round(value * 1000) / 1000
 }
 
 /** Optional fields the host must see as absent, not as `undefined` keys. */

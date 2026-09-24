@@ -26,6 +26,7 @@ import type {
   CheckStateOptions,
   CheckStateResult,
   GuardOptions,
+  PointResult,
   ScrollOptions,
   ScrollResult,
   SelectOptions,
@@ -33,7 +34,15 @@ import type {
   TargetOptions,
   TargetResult,
 } from './inject/bundle.js'
-import { checkStateScript, guardScript, resolveScript, scrollScript, selectScript, unwrap } from './inject/bundle.js'
+import {
+  checkStateScript,
+  guardScript,
+  pointScript,
+  resolveScript,
+  scrollScript,
+  selectScript,
+  unwrap,
+} from './inject/bundle.js'
 import { BrowserHostError } from './errors.js'
 import { describeKeys, isModifier, macCommand, MODIFIER_BITS, type KeyDescription } from './keys.js'
 import { FIELD_MAX_NAME, SCROLL_VIEWPORT_FRACTION, SENSITIVE_AUTOCOMPLETE, TYPE_TEXT_MAX } from './limits.js'
@@ -60,6 +69,14 @@ export interface InputDeps {
 export interface ClickRequest {
   ref?: string
   selector?: string
+  button?: 'left' | 'right' | 'middle'
+  clickCount?: number
+}
+
+export interface ClickAtRequest {
+  /** Viewport coordinates in CSS pixels. */
+  x: number
+  y: number
   button?: 'left' | 'right' | 'middle'
   clickCount?: number
 }
@@ -173,6 +190,32 @@ export function clickTarget(deps: InputDeps, request: ClickRequest): Promise<Act
 
     const how = clickCount > 1 ? `${clickCount}× ${button}-clicked` : button === 'left' ? 'clicked' : `${button}-clicked`
     return { text: `${how} ${describe(target)} at (${at.x}, ${at.y}). ${where(target)}` }
+  })
+}
+
+/**
+ * A press at a bare viewport point, for pages with no element to name: a
+ * canvas, a map, an image editor.
+ *
+ * No hit test refuses it — at a coordinate there is no intended element for
+ * something else to cover — but the answer names what the point landed on,
+ * read before the press can change the page.
+ */
+export function clickAt(deps: InputDeps, request: ClickAtRequest): Promise<ActionResult> {
+  return exclusive(deps, async () => {
+    const at = { x: Math.round(request.x), y: Math.round(request.y) }
+    const button = request.button ?? 'left'
+    const clickCount = Math.min(3, Math.max(1, Math.floor(request.clickCount ?? 1)))
+    deps.check()
+    // Asked first, so a point off the viewport is refused before anything moves.
+    const point = unwrap<PointResult>(await deps.evaluate(pointScript({ ...at, sensitiveWords: SENSITIVE_AUTOCOMPLETE })))
+    deps.check()
+    await deps.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'none', buttons: 0 })
+    deps.check()
+    await pressAt(deps, at, button, clickCount)
+
+    const how = clickCount > 1 ? `${clickCount}× ${button}-clicked` : button === 'left' ? 'clicked' : `${button}-clicked`
+    return { text: `${how} at (${at.x}, ${at.y}), which landed on ${point.hit}. ${where(point)}` }
   })
 }
 

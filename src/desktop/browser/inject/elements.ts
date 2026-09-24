@@ -43,6 +43,8 @@ export interface ElementScanOptions {
   text?: string
   interactiveOnly: boolean
   visibleOnly: boolean
+  /** Add each visible row's viewport box. Off by default: it costs a column of numbers per row. */
+  includeBounds?: boolean
   maxResults: number
   maxNodes: number
   budgetMs: number
@@ -67,6 +69,8 @@ export interface ElementRow {
   checked?: boolean
   focused?: boolean
   required?: boolean
+  /** Viewport box in CSS pixels, rounded: x, y, width, height. Only when asked for, and only if visible. */
+  bounds?: [number, number, number, number]
 }
 
 export interface ElementScanResult {
@@ -136,8 +140,15 @@ export function hkCollectElements(
     }
     const href = hkString(hkProp(el, 'href'))
     if (href !== '' && role === 'link') row.href = hkTrim(href, opts.nameMax)
-    if (visible) row.visible = true
-    if (visible && hkOffscreen(el, win)) row.offscreen = true
+    if (visible) {
+      row.visible = true
+      // One measurement for both answers: the rect is not free on a large page.
+      const rect = el.getBoundingClientRect()
+      if (hkOffscreen(rect, win)) row.offscreen = true
+      if (opts.includeBounds === true) {
+        row.bounds = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)]
+      }
+    }
     if (hkFlag(el, 'disabled', 'aria-disabled')) row.disabled = true
     if (hkFlag(el, 'checked', 'aria-checked')) row.checked = true
     if (active === el) row.focused = true

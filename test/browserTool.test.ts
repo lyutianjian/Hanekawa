@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createBrowserTool } from '../src/tools/BrowserTool/BrowserTool.js'
+import { coordinateLines, createBrowserTool } from '../src/tools/BrowserTool/BrowserTool.js'
 import { BROWSER_OPERATIONS } from '../src/tools/BrowserTool/constants.js'
 import { NO_TABS } from '../src/tools/BrowserTool/encode.js'
 import { browserApiInputSchema, browserInputSchema } from '../src/tools/BrowserTool/schema.js'
@@ -52,8 +52,11 @@ function stubHost(overrides: Partial<BrowserHost> = {}): { host: BrowserHost; ca
       name: 'screenshot-x.test-abcd1234.png',
       width: 800,
       height: 600,
+      cssWidth: 400,
+      cssHeight: 300,
     }),
     click: record('click', { text: 'clicked e3 (button "Sign in") at (120, 240).' }),
+    clickAt: record('clickAt', { text: 'clicked at (10, 20), which landed on <canvas>.' }),
     type: record('type', { text: 'typed 7 characters into e4 (textbox).' }),
     pressKey: record('pressKey', { text: 'pressed Escape on the focused element.' }),
     selectOption: record('selectOption', { text: 'selected option 1 "France" in e5 (combobox "Country").' }),
@@ -401,5 +404,43 @@ test('a screenshot never becomes text, whether it succeeds or not', async () => 
   assert.equal(ok.ok, true, ok.content)
   assert.deepEqual(ok.images, [ref])
   assert.match(ok.content, /attached as pixels/)
+  assert.match(ok.content, /cssWidth=400 cssHeight=300; scale=2 /)
   assertNoImageBytes(ok)
+})
+
+test('a screenshot states the factor from the attached picture to CSS pixels', () => {
+  // A HiDPI capture (scale 2) that the store then shrank from 1600 to 1000 wide.
+  assert.deepEqual(coordinateLines({ width: 1600, cssWidth: 800, cssHeight: 500 }, 1000), [
+    'Viewport: cssWidth=800 cssHeight=500; scale=2 (captured pixels per CSS pixel).',
+    'For page.click_at, multiply a point in the attached picture by 0.8 to get CSS pixels.',
+  ])
+  // A page that did not answer leaves the coordinates unsaid rather than guessed.
+  assert.deepEqual(coordinateLines({ width: 1600 }, 1000), [])
+})
+
+test('click_at reaches the host with its point, and includeBounds reaches the scan', async () => {
+  const { host, calls } = stubHost()
+  const tool = createBrowserTool(host)
+
+  const clicked = await run(tool, { operation: 'page.click_at', tabId: 'tab-1', x: 10.5, y: 20, clickCount: 2 })
+  assert.equal(clicked.content, 'clicked at (10, 20), which landed on <canvas>.')
+  await run(tool, { operation: 'page.elements.snapshot', tabId: 'tab-1', includeBounds: true })
+  assert.deepEqual(calls.map((call) => call.method), ['clickAt', 'elements'])
+  assert.deepEqual(calls[0]?.args[2], { x: 10.5, y: 20, clickCount: 2 })
+  assert.deepEqual(calls[1]?.args[2], { includeBounds: true })
+
+  assert.equal(validateBrowserInput({ operation: 'page.click_at', tabId: 't', x: 5 }).ok, false)
+  assert.equal(validateBrowserInput({ operation: 'page.click_at', tabId: 't', x: -1, y: 5 }).ok, false)
+  const paged = validateBrowserInput({ operation: 'page.elements.snapshot', tabId: 't', cursor: 's:1', includeBounds: true })
+  assert.equal(paged.ok, false)
+  assert.deepEqual(normalizeToolInput('Browser', { operation: 'click_at', tab_id: 't', x: '3', y: '4' }), {
+    operation: 'page.click_at',
+    tabId: 't',
+    x: 3,
+    y: 4,
+  })
+  assert.deepEqual(normalizeToolInput('Browser', { operation: 'page.elements.snapshot', include_bounds: 'true' }), {
+    operation: 'page.elements.snapshot',
+    includeBounds: true,
+  })
 })

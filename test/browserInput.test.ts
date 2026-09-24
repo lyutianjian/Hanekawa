@@ -4,6 +4,7 @@ import test from 'node:test'
 import { BrowserHostError } from '../src/desktop/browser/errors.js'
 import { describeKeys } from '../src/desktop/browser/keys.js'
 import {
+  clickAt,
   clickTarget,
   dispatchKeys,
   enqueueInput,
@@ -118,6 +119,9 @@ function harness(options: {
         const refusal = options.guard?.()
         return refusal === undefined ? { ok: true, value: true } : { ok: false, message: refusal }
       }
+      if (script.includes('hkDescribePoint(document')) {
+        return { ok: true, value: { hit: '<canvas> "Map"', url: 'https://x.test/', title: 'X' } }
+      }
       return { ok: true, value: script.includes('hkScrollPage(') ? scroll : target }
     },
     check: () => {
@@ -158,6 +162,23 @@ test('a click hovers before it presses, and lands on the rounded centre', async 
   assert.equal(sent[0]?.params['buttons'], 0)
   assert.match(result.text, /clicked e1 \(button "Sign in"\) at \(120, 241\)/)
   assert.match(result.text, /url=https:\/\/x\.test\//)
+})
+
+test('a click at a point names what it lands on, then moves and presses there', async () => {
+  const { deps, sent, scripts } = harness()
+  const result = await clickAt(deps, { x: 300.4, y: 200.6, button: 'right' })
+
+  assert.deepEqual(methods(sent), [
+    'Input.dispatchMouseEvent:mouseMoved',
+    'Input.dispatchMouseEvent:mousePressed',
+    'Input.dispatchMouseEvent:mouseReleased',
+  ])
+  for (const entry of sent) assert.deepEqual([entry.params['x'], entry.params['y']], [300, 201])
+  assert.equal(sent[1]?.params['button'], 'right')
+  // One read of the point and no resolve or guard: a coordinate has no target to cover.
+  assert.equal(scripts.length, 1)
+  assert.match(scripts[0] ?? '', /hkDescribePoint\(document, window, \{"x":300,"y":201/)
+  assert.equal(result.text, 'right-clicked at (300, 201), which landed on <canvas> "Map". url=https://x.test/ title=X')
 })
 
 test('a hover resolves with the hit test, moves once, and presses nothing', async () => {

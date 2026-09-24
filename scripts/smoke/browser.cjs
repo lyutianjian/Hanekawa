@@ -51,6 +51,13 @@ const PAGES = {
     <div style="height:3000px">top</div>
     <button id="far" style="width:200px;height:40px" onclick="document.title = 'clicked'">far</button>
     <div style="height:3000px">bottom</div>`,
+  '/coords': `<!doctype html><title>Coords</title>
+    <style>body { margin: 0 }</style>
+    <button id="box" style="position:absolute;left:50px;top:60px;width:100px;height:30px">box</button>
+    <canvas id="pad" style="position:absolute;left:0;top:200px" width="300" height="200"></canvas>
+    <script>
+      document.getElementById('pad').onclick = (e) => { document.title = 'pad ' + e.offsetX + ',' + e.offsetY }
+    </script>`,
   '/hover': `<!doctype html><title>Hover</title>
     <div id="trigger" style="width:200px;height:40px;background:#ddd">menu</div>
     <ul id="menu" style="display:none"><li>Profile</li></ul>
@@ -239,6 +246,21 @@ async function run() {
   // once the third timer fired and the element then held for 300ms.
   check('stableForMs outlasts a flicker', /held for/.test(stable?.text ?? '') && stableMs >= 300, `${stableMs}ms ${stable?.text ?? stable?.message}`)
 
+  // M: positions in a snapshot, and a press at a bare point, share one CSS-pixel space.
+  await host.navigate(caller, tab.tabId, `${origin}/coords`)
+  await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000 })
+  const bounded = await host.elements(caller, tab.tabId, { includeBounds: true })
+  check('includeBounds reports the viewport box', /\tbox\t.*\t50,60,100,30$/m.test(bounded.text), bounded.text)
+  const unbounded = await host.elements(caller, tab.tabId, {})
+  check('bounds stay out unless asked for', !/bounds/.test(unbounded.text), unbounded.text)
+  const pressed = await host.clickAt(caller, tab.tabId, { x: 30, y: 240 }).catch((error) => error)
+  check('click_at names what it landed on', /landed on <canvas/.test(pressed?.text ?? ''), pressed?.text ?? pressed?.message)
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  const pad = (await host.listTabs(caller)).find((entry) => entry.tabId === tab.tabId)
+  check('click_at pressed at that CSS point', pad?.title === 'pad 30,40', pad?.title)
+  const outside = await codeOf(host.clickAt(caller, tab.tabId, { x: 5000, y: 10 }))
+  check('click_at refuses a point off the viewport', outside === 'INVALID_REQUEST', outside)
+
   const domStart = Date.now()
   await host.navigate(caller, tab.tabId, `${origin}/slow`)
   const dom = await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000, until: 'domcontentloaded' })
@@ -349,6 +371,7 @@ async function run() {
   }
   const visibleShot = await host.screenshot(shooter, tab.tabId)
   check('a shown tab is captured at its size', visibleShot.width === 1000 && visibleShot.height === 800, `${visibleShot.width}x${visibleShot.height}`)
+  check('a screenshot reports its CSS viewport', visibleShot.cssWidth === 1000 && visibleShot.cssHeight === 800, `${visibleShot.cssWidth}x${visibleShot.cssHeight}`)
   tabs.setBounds(tab.tabId, { x: 0, y: 0, width: 1000, height: 800 }, false)
   await paint('rgb(255, 0, 0)')
   const red = await host.screenshot(shooter, tab.tabId).catch((error) => error)

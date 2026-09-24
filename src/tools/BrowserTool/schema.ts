@@ -44,6 +44,10 @@ const elementsFields = {
   text: z.string().min(1).optional().describe('Keep only rows whose name or text contains this (case-insensitive).'),
   interactiveOnly: z.boolean().optional().describe('Keep only operable elements. Default true.'),
   visibleOnly: visibleOnly.optional(),
+  includeBounds: z
+    .boolean()
+    .optional()
+    .describe('Add a bounds column: each visible element’s viewport box as x,y,w,h in CSS pixels. Default false; it costs tokens.'),
   limit: limit.optional(),
   maxChars: maxChars.optional(),
   cursor: cursor.optional(),
@@ -97,6 +101,16 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
       operation: z.literal('page.click'),
       tabId,
       ...target,
+      button: z.enum(['left', 'right', 'middle']).optional().describe('Default left.'),
+      clickCount: z.number().int().min(1).max(3).optional().describe('2 for a double click.'),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('page.click_at'),
+      tabId,
+      x: z.number().min(0).describe('CSS pixels from the left edge of the visible area. Convert from a screenshot with its reported factor.'),
+      y: z.number().min(0).describe('CSS pixels from the top edge of the visible area.'),
       button: z.enum(['left', 'right', 'middle']).optional().describe('Default left.'),
       clickCount: z.number().int().min(1).max(3).optional().describe('2 for a double click.'),
     })

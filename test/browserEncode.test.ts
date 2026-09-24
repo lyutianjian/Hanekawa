@@ -25,6 +25,13 @@ test('a row drops text that merely repeats its name', () => {
   assert.equal(line, ['e1', 'link', 'Home', '', '', '', 'visible'].join('\t'))
 })
 
+test('bounds are one trailing column, present only when asked for', () => {
+  const row = { ref: 'e1', role: 'button', name: 'Go', visible: true, bounds: [10, 20, 80, 24] as [number, number, number, number] }
+  assert.equal(renderElementRow(row), ['e1', 'button', 'Go', '', '', '', 'visible'].join('\t'))
+  assert.equal(renderElementRow(row, true), ['e1', 'button', 'Go', '', '', '', 'visible', '10,20,80,24'].join('\t'))
+  assert.match(elementsHeader({ url: 'u', title: 't', scanTruncated: false }, 1, true), /\tflags\tbounds$/)
+})
+
 test('flags fold into one space-separated field, in a fixed order', () => {
   const line = renderElementRow({
     ref: 'e2',

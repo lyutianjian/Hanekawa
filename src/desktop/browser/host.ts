@@ -229,17 +229,17 @@ export class DesktopBrowserHost implements BrowserHost {
   async screenshot(caller: BrowserCaller, tabId: string): Promise<BrowserScreenshot> {
     const revision = this.enter(caller)
     const page = this.requirePage(caller, tabId)
-    // Asked before capturing, not after: an off-screen `capturePage()` does not
-    // fail, it either hands back a stale frame or never returns at all. That is
-    // a state the user can fix (open the panel, unhide the window), so it says
-    // so rather than attaching a picture nobody can tell is old.
-    if (!this.deps.tabs.isDisplayed(tabId)) throw notDisplayed()
-    const image = await withTimeout(page.contents.capturePage(), SCREENSHOT_TIMEOUT_MS)
-    if (image === undefined) throw notDisplayed()
+    // Through CDP first: `Page.captureScreenshot` asks the renderer for a fresh
+    // frame, which a tab parked off the panel still produces — `capturePage()`
+    // would hand back whatever the window compositor last drew instead. The
+    // latter stays as the fallback for when the debugger is unavailable (DevTools
+    // holds it), and there a stale-but-real frame beats no picture.
+    const bytes = (await captureViaCdp(page)) ?? (await captureViaWindow(page))
+    if (bytes === undefined) throw notCaptured()
     this.ownership.assertAllowed(caller.sessionId, revision)
-    const { width, height } = image.getSize()
-    if (width === 0 || height === 0) throw notDisplayed()
-    return { bytes: image.toPNG(), name: screenshotName(this.rowFor(tabId)?.url ?? ''), width, height }
+    const { width, height } = pngSize(bytes)
+    if (width === 0 || height === 0) throw notCaptured()
+    return { bytes, name: screenshotName(this.rowFor(tabId)?.url ?? ''), width, height }
   }
 
   async click(caller: BrowserCaller, tabId: string, request: BrowserClickRequest): Promise<BrowserActionResult> {
@@ -480,12 +480,41 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** The one refusal every unusable capture collapses to. */
-function notDisplayed(): BrowserHostError {
+function notCaptured(): BrowserHostError {
   return new BrowserHostError(
     'PAGE_NOT_READY',
-    'The tab is not currently displayed, so there is nothing to capture. Ask the user to open the browser panel, or read the page with page.text.snapshot.',
+    'The page could not be captured right now. Try again, or read the page with page.text.snapshot.',
     true,
   )
+}
+
+async function captureViaCdp(page: BrowserPage): Promise<Buffer | undefined> {
+  const release = cdpLease(page)()
+  try {
+    const result = await withTimeout(
+      cdpSender(page)('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }),
+      SCREENSHOT_TIMEOUT_MS,
+    )
+    const data = (result as { data?: unknown } | undefined)?.data
+    return typeof data === 'string' ? Buffer.from(data, 'base64') : undefined
+  } catch {
+    return undefined
+  } finally {
+    release()
+  }
+}
+
+async function captureViaWindow(page: BrowserPage): Promise<Buffer | undefined> {
+  if (page.contents.isDestroyed()) return undefined
+  const image = await withTimeout(page.contents.capturePage(), SCREENSHOT_TIMEOUT_MS).catch(() => undefined)
+  return image === undefined || image.isEmpty() ? undefined : image.toPNG()
+}
+
+/** The pixel size from a PNG's IHDR chunk, which always comes first. */
+export function pngSize(bytes: Uint8Array): { width: number; height: number } {
+  if (bytes.length < 24) return { width: 0, height: 0 }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  return { width: view.getUint32(16), height: view.getUint32(20) }
 }
 
 /** The promise's value, or `undefined` if it took longer than `ms`. */

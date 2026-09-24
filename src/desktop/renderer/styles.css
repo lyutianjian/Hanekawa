@@ -2439,6 +2439,14 @@ body.settings-open #browser-resizer { display: none; }
 .step-agent-prompt .step-agent-text { max-height: 4.8em; }
 .step-agent-response .step-agent-text { max-height: 22em; }
 .step-agent-response { color: var(--text-secondary); }
+/* What the result told the model about the run (truncated, ran in a worktree),
+   one quiet line under the reply. */
+.step-agent-notes {
+  margin-top: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+  overflow-wrap: anywhere;
+}
 
 /* The web family's body (T16): the fetched page, which the tool already turned
    into markdown — an article, clipped inside itself like every other body. */

@@ -35,6 +35,7 @@ import {
 import { anchorPadding, anchorTopGap, TRANSCRIPT_PAD_VARIABLE, viewportPolicy } from '../model/transcriptAnchor.js'
 import { PRESENCE_FALLBACK_MS } from '../model/presence.js'
 import { splitFileMentions } from '../model/userMessage.js'
+import { splitAgentReply } from '../model/agentReply.js'
 import type { ImageAttachmentRef } from '../../../media/types.js'
 import type { ToolErrorCode } from '../../../harness/types.js'
 import {
@@ -1451,15 +1452,18 @@ function stepBody(step: ToolLike, family: FamilyData, painter: Painter): HTMLEle
  * own, the head having taken everything the records can count.
  *
  * The answer is the fuller of the result's `content` and the run's own
- * transcript: they are the same report budgeted differently (the result adds
- * the worktree and continuation notices; the run's record is what a background
- * agent leaves when the result was only a start notice), and the fuller text is
- * the truer reply.
+ * transcript: they are the same report budgeted differently (the run's record
+ * is what a background agent leaves when the result was only a start notice),
+ * and the fuller text is the truer reply. The notices the result appends for
+ * the model are peeled off first (`splitAgentReply`) — the continuation id is
+ * dropped, the rest drawn as one quiet line of notes under the reply.
  */
 function agentBody(step: ToolLike): HTMLElement | undefined {
   if (step.kind !== 'tool' || step.toolName !== AGENT_TOOL) return undefined
   const task = step.tool.task
-  const response = agentResponse(step.tool.content, step.tool.subagent?.summary)
+  const reply = step.tool.content === undefined ? undefined : splitAgentReply(step.tool.content)
+  const response = agentResponse(reply?.text, step.tool.subagent?.summary)
+  const notes = reply?.notes ?? []
   if (task === undefined && response === undefined) return undefined
   return el(
     'div',
@@ -1475,6 +1479,7 @@ function agentBody(step: ToolLike): HTMLElement | undefined {
       'step-agent-response',
       el('div', 'step-agent-label', '回复'),
       el('div', 'step-agent-text md', ...markdownChildren(response)),
+      notes.length === 0 ? undefined : el('div', 'step-agent-notes', notes.join(' · ')),
     ),
   )
 }
